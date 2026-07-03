@@ -58,14 +58,6 @@ function: general temp directories (`/tmp`, `/private/tmp`, and macOS
 scratch/browser caches. It does not include credentials, Fly, deploy, Keychain,
 `~/work`, or other off-box access; those require user config.
 
-A non-overridable real-secret floor is applied after any allowlist, including
-`ops`/`full`: SSH private keys, AWS/GCloud credentials, netrc/git-credentials,
-Keychain, and password-vault stores remain denied even if a profile allows
-`**`. Broad profiles are materialized into generated Fence settings as explicit
-allowlists rather than a bare `**`, so the floor is enforced even where
-generated deny rules do not override universal allow. Fly is deliberately not on
-this floor; deploy/ops profiles may opt into `~/.fly`.
-
 Worktrees are first-class without a convention requirement. A normal agent may
 run `git worktree add /private/tmp/<x>` from its project root because the project
 root and repo git metadata are writable and general temp is writable by default.
@@ -98,9 +90,3 @@ unwrapped until the separate daemon enforcement flip is explicitly approved.
 The legacy `--capability none|read|write|tlda-write|full` field is a shorthand
 request. New callers should use `--privileges` so requests can carry explicit
 operation-zone sets.
-
-Daemon config may define machine-local privilege profiles for personal overlays.
-For example, Skip's machines can define an app-dev profile whose read allowlist
-uses `~/work/**` and includes `~/.fly/**`, while the shipped default remains the
-portable cwd+temp+plumbing profile. These overlays are allowlists plus the same
-hard secret floor, never a return to default-allow.

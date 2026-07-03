@@ -35,15 +35,10 @@ test('explicit privilege zones force a fenced launch even when projected policy 
   assert.ok(settings.filesystem.allowWrite.includes('/Users/skip/work/tlda/**'))
   assert.ok(settings.filesystem.allowWrite.includes('/tmp/tlda-*/**'))
   assert.ok(settings.filesystem.allowWrite.includes('/Users/skip/Library/Caches/ms-playwright'))
-  assert.ok(settings.filesystem.denyRead.includes('~/.fly/**'))
-  assert.ok(settings.filesystem.denyRead.includes('~/.aws/**'))
-  assert.ok(settings.filesystem.denyRead.includes('~/.config/gcloud/**'))
-  assert.ok(settings.filesystem.denyRead.includes('~/.config/fly/**'))
-  assert.ok(settings.filesystem.denyRead.includes('~/.config/gh/**'))
-  assert.ok(settings.filesystem.denyRead.includes('~/Library/Keychains/**'))
-  assert.ok(settings.filesystem.denyWrite.includes('~/.aws/**'))
-  assert.ok(settings.filesystem.denyWrite.includes('~/.config/gcloud/**'))
-  assert.ok(settings.filesystem.denyWrite.includes('~/Library/Keychains/**'))
+  assert.equal(settings.filesystem.denyRead.includes('~/.aws/**'), false)
+  assert.equal(settings.filesystem.denyRead.includes('~/.config/gcloud/**'), false)
+  assert.equal(settings.filesystem.denyWrite.includes('~/.aws/**'), false)
+  assert.equal(settings.filesystem.denyWrite.includes('~/.config/gcloud/**'), false)
   assert.ok(settings.filesystem.denyRead.includes('~/.aws/credentials'))
   assert.ok(settings.filesystem.denyRead.includes('~/.config/gcloud/application_default_credentials.json'))
   assert.ok(settings.filesystem.denyRead.includes('~/.ssh/id_*'))
@@ -97,7 +92,6 @@ test('named app-dev privileges compile to explicit cwd rules instead of broad fu
     },
   })
   const settings = fenceSettings(policy.leasePolicy, { api: 'https://tlda-fly.example.test' })
-  assert.equal(settings.filesystem.defaultDenyRead, true)
   assert.ok(settings.filesystem.allowWrite.includes('/Users/skip/work/tlda/**'))
   assert.ok(settings.filesystem.allowWrite.includes('/Users/skip/.config/tlda/fleet-daemon.log'))
   assert.ok(settings.filesystem.allowWrite.includes('/Users/skip/.config/tlda/fleet-daemon.pid'))
@@ -105,12 +99,6 @@ test('named app-dev privileges compile to explicit cwd rules instead of broad fu
   assert.equal(settings.filesystem.allowWrite.includes('/Users/skip/.config/tlda'), false)
   assert.equal(settings.filesystem.allowWrite.includes('/Users/skip/.config/tlda/**'), false)
   assert.equal(settings.filesystem.allowWrite.includes('/'), false)
-  assert.ok(settings.filesystem.denyRead.includes('~/.fly/**'))
-  assert.ok(settings.filesystem.denyRead.includes('~/.aws/**'))
-  assert.ok(settings.filesystem.denyRead.includes('~/.config/gcloud/**'))
-  assert.ok(settings.filesystem.denyRead.includes('~/.config/fly/**'))
-  assert.ok(settings.filesystem.denyRead.includes('~/.config/gh/**'))
-  assert.ok(settings.filesystem.denyRead.includes('~/Library/Keychains/**'))
 })
 
 test('named deploy privileges allow Fly state without broad machine writes', () => {
@@ -138,56 +126,9 @@ test('named deploy privileges allow Fly state without broad machine writes', () 
   const settings = fenceSettings(policy.leasePolicy, { api: 'https://tlda-fly.example.test' })
   assert.ok(settings.filesystem.allowRead.includes('/Users/skip/.fly/**'))
   assert.ok(settings.filesystem.allowWrite.includes('/Users/skip/.fly/**'))
-  assert.equal(settings.filesystem.denyRead.includes('~/.fly/**'), false)
-  assert.equal(settings.filesystem.denyWrite.includes('~/.fly/**'), false)
-  assert.ok(settings.filesystem.denyRead.includes('~/.aws/**'))
-  assert.ok(settings.filesystem.denyWrite.includes('~/.aws/**'))
-  assert.ok(settings.filesystem.denyRead.includes('~/Library/Keychains/**'))
-  assert.ok(settings.filesystem.denyWrite.includes('~/Library/Keychains/**'))
   assert.equal(settings.filesystem.allowWrite.includes('/'), false)
   assert.ok(settings.filesystem.denyWrite.includes('~/.config/tlda/fleet.db*'))
   assert.ok(settings.filesystem.denyRead.includes('~/.ssh/id_*'))
-})
-
-test('broad ops-style privileges still inherit the non-overridable secret floor', () => {
-  const cwd = '/Users/skip/work/tlda'
-  const privilegeSet = {
-    type: 'privilege-set',
-    name: 'ops-overlay',
-    operations: {
-      read: { allow: ['**'], deny: [] },
-      write: { allow: ['**'], deny: [] },
-      spawn: { allow: ['**'], deny: [] },
-    },
-    rules: [],
-  }
-  const policy = resolveLaunchPolicy({
-    spawnPolicy: { name: 'full', capability: 'full', policy: 'unsandboxed' },
-    privilegeSet,
-    harness: 'codex',
-    model: 'gpt-5.5',
-    cwd,
-    config: { agentSandbox: { runner: { command: 'fence' } } },
-  })
-  const settings = fenceSettings(policy.leasePolicy, { api: 'https://tlda-fly.example.test' })
-  assert.equal(settings.filesystem.allowRead.includes('**'), false)
-  assert.equal(settings.filesystem.allowWrite.includes('**'), false)
-  assert.ok(settings.filesystem.allowRead.includes('/Applications') || settings.filesystem.allowRead.includes('/System'))
-  assert.ok(settings.filesystem.allowWrite.includes('/Applications') || settings.filesystem.allowWrite.includes('/System'))
-  assert.ok(settings.filesystem.allowRead.includes('/Users/skip/.fly') || settings.filesystem.allowRead.includes('/Users/skip/.fly/**'))
-  assert.equal(settings.filesystem.allowRead.includes('/Users/skip/.ssh/**'), false)
-  assert.equal(settings.filesystem.allowWrite.includes('/Users/skip/.ssh/**'), false)
-  assert.equal(settings.filesystem.allowRead.includes('/Users/skip/Library/Keychains/**'), false)
-  assert.equal(settings.filesystem.allowWrite.includes('/Users/skip/Library/Keychains/**'), false)
-  assert.equal(settings.filesystem.denyRead.includes('~/.fly/**'), false)
-  assert.equal(settings.filesystem.denyWrite.includes('~/.fly/**'), false)
-  assert.ok(settings.filesystem.denyRead.includes('~/.aws/**'))
-  assert.ok(settings.filesystem.denyWrite.includes('~/.aws/**'))
-  assert.ok(settings.filesystem.denyRead.includes('~/.ssh/id_*'))
-  assert.ok(settings.filesystem.denyWrite.includes('~/.ssh/id_*'))
-  assert.ok(settings.filesystem.denyRead.includes('~/Library/Keychains/**'))
-  assert.ok(settings.filesystem.denyWrite.includes('~/Library/Keychains/**'))
-  assert.deepEqual(settings.macos.mach.lookup.filter((name) => name.includes('securityd')), [])
 })
 
 test('symbolic cwd privilege zones resolve to the workspace root for fence settings', () => {

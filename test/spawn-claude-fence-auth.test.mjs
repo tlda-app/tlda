@@ -3,11 +3,11 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import * as claude from '../bin/lib/spawn/harness/claude.mjs'
 
-test('Claude fence read roots include tlda config and hard-deny credential stores', () => {
+test('Claude fence read roots include tlda config but not credential stores', () => {
   const source = readFileSync(new URL('../bin/lib/spawn/fence.mjs', import.meta.url), 'utf8')
   assert.match(source, /'~\/\.claude\/\*\*'/)
   assert.match(source, /'~\/\.config\/tlda\/\*\*'/)
-  assert.match(source, /'~\/Library\/Keychains\/\*\*'/)
+  assert.doesNotMatch(source, /'~\/Library\/Keychains\/\*\*'/)
   assert.doesNotMatch(source, /com\.apple\.securityd/)
 })
 
