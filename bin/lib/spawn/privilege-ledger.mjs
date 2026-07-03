@@ -59,6 +59,65 @@ function normalizeDaemonConfig(parsed) {
   return { version: root.version || 1, privileges: { agents }, models }
 }
 
+function looksLikeDaemonModelRow(value) {
+  return !!value
+    && typeof value === 'object'
+    && !Array.isArray(value)
+    && (
+      value.id != null
+      || value.provider_model != null
+      || value.providerModel != null
+      || value.cap != null
+      || value.capability != null
+      || value.spawnPolicy != null
+      || value.model_cap != null
+    )
+}
+
+function daemonModelProvider(alias, row) {
+  const provider = String(row.provider || row.provider_name || '').trim().toLowerCase()
+  if (provider) return provider
+  const id = String(row.id || row.provider_model || row.providerModel || alias || '')
+  if (id.startsWith('claude-')) return 'claude'
+  if (/^gpt/i.test(id)) return 'codex'
+  if (id.startsWith('cursor-agent/')) return 'cursor-agent'
+  return 'openrouter'
+}
+
+function normalizeDaemonModelRows(models = {}) {
+  const aliases = {}
+  const modelCeilings = {}
+  for (const [key, value] of Object.entries(models || {})) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) continue
+    if (!looksLikeDaemonModelRow(value)) {
+      aliases[key] = value
+      for (const [alias, entry] of Object.entries(value)) {
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue
+        const cap = entry.cap || entry.capability || entry.spawnPolicy || entry.model_cap
+        if (!cap) continue
+        const id = entry.id || entry.provider_model || entry.providerModel
+        modelCeilings[alias] = cap
+        if (id) modelCeilings[id] = cap
+      }
+      continue
+    }
+    const provider = daemonModelProvider(key, value)
+    const id = value.id || value.provider_model || value.providerModel || key
+    aliases[provider] ||= {}
+    aliases[provider][key] = {
+      id,
+      ...(value.provider_alias ? { provider_alias: value.provider_alias } : {}),
+      ...(Array.isArray(value.tags) ? { tags: value.tags } : {}),
+    }
+    const cap = value.cap || value.capability || value.spawnPolicy || value.model_cap
+    if (cap) {
+      modelCeilings[key] = cap
+      if (id) modelCeilings[id] = cap
+    }
+  }
+  return { aliases, modelCeilings }
+}
+
 function withStoredSpawnDefault(privilegeSet, policy) {
   if (!privilegeSet || policy.capability === 'none') return privilegeSet
   if (privilegeSet.operations?.spawn) return privilegeSet
@@ -170,13 +229,21 @@ export class PrivilegeLedger {
 }
 
 export function withDaemonModelAliases(config = {}, daemonConfig = {}) {
-  const models = daemonConfig?.models && typeof daemonConfig.models === 'object' && !Array.isArray(daemonConfig.models)
+  const daemonModels = daemonConfig?.models && typeof daemonConfig.models === 'object' && !Array.isArray(daemonConfig.models)
     ? daemonConfig.models
     : {}
-  if (!Object.keys(models).length) return config || {}
+  if (!Object.keys(daemonModels).length) return config || {}
+  const { aliases, modelCeilings } = normalizeDaemonModelRows(daemonModels)
   return {
     ...(config || {}),
-    models,
+    models: aliases,
+    spawnPolicy: {
+      ...((config || {}).spawnPolicy || {}),
+      modelCeilings: {
+        ...(((config || {}).spawnPolicy || {}).modelCeilings || {}),
+        ...modelCeilings,
+      },
+    },
   }
 }
 

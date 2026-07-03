@@ -7,6 +7,7 @@ import os from 'os'
 import path from 'path'
 import YAML from 'yaml'
 import { createPrivilegeLedger, withDaemonModelAliases } from '../bin/lib/spawn/privilege-ledger.mjs'
+import { resolveSpawnGrant } from '../server/lib/spawn-policy.mjs'
 
 function tempLedger() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-privilege-ledger-'))
@@ -81,5 +82,55 @@ describe('daemon privilege ledger', () => {
     const ledger = createPrivilegeLedger(file)
     const config = withDaemonModelAliases({ defaultConfig: 'live', models: { claude: { stale: 'old' } } }, ledger.config)
     assert.deepEqual(config.models, { claude: { localopus: 'claude-opus-local' } })
+  })
+
+  it('maps flat daemon model rows to launch aliases and model caps', () => {
+    const file = tempLedger()
+    fs.writeFileSync(file, YAML.stringify({
+      version: 1,
+      models: {
+        localgpt: {
+          provider: 'codex',
+          provider_model: 'gpt-local',
+          cap: 'read',
+        },
+      },
+      privileges: {
+        agents: {
+          'fleet:spawner': {
+            spawnPolicy: 'full',
+            privilegeSet: {
+              type: 'privilege-set',
+              name: 'spawner-full',
+              operations: {
+                read: { allow: ['**'], deny: [] },
+                write: { allow: ['**'], deny: [] },
+                spawn: { allow: ['**'], deny: [] },
+              },
+            },
+          },
+        },
+      },
+    }))
+
+    const ledger = createPrivilegeLedger(file)
+    const config = withDaemonModelAliases({}, ledger.config)
+    assert.deepEqual(config.models.codex.localgpt, { id: 'gpt-local' })
+    assert.equal(config.spawnPolicy.modelCeilings.localgpt, 'read')
+    assert.equal(config.spawnPolicy.modelCeilings['gpt-local'], 'read')
+
+    const grant = resolveSpawnGrant({
+      requestedCapability: 'full',
+      spawnerPolicy: ledger.grantFor({ id: 'fleet:spawner' }).spawnPolicy,
+      spawnerPrivilegeSet: ledger.grantFor({ id: 'fleet:spawner' }).privilegeSet,
+      model: 'localgpt',
+      kind: 'codex',
+      config,
+      cwd: '/tmp/project',
+    })
+    assert.equal(grant.spawnerCapability, 'full')
+    assert.equal(grant.requestedCapability, 'full')
+    assert.equal(grant.modelCapability, 'read')
+    assert.equal(grant.grantedCapability, 'read')
   })
 })
