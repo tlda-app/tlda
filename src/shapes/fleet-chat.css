@@ -115,17 +115,34 @@ html.mousemove .fleet-reaper-shape:hover .fleet-btn-group {
   opacity: 1;
   background: rgba(128, 128, 128, 0.12);
 }
-/* Phone has no hover to reveal the button group, so the filter (and close/layout)
-   were unreachable. On the phone surface keep the group visible + tappable, at a
-   quiet opacity so the chrome still recedes. */
-body.phone-mode .fleet-shape .fleet-btn-group {
+/* Phone: no button panels. You can't move, resize, or delete a panel in the fixed
+   phone layout, so the close/layout/traffic buttons are meaningless — hide the
+   whole group everywhere. The ONLY real option in this context is the chat's
+   filter, so the chat keeps just that button, enlarged to a real thumb target. */
+body.phone-mode .fleet-btn-group {
+  display: none;
+}
+body.phone-mode .fleet-chat-shape .fleet-btn-group {
+  display: flex;
   opacity: 0.7;
   visibility: visible;
   pointer-events: auto;
   transition: none;
 }
-body.phone-mode .fleet-shape .fleet-btn-group:active,
-body.phone-mode .fleet-shape:has(.fleet-filter-overlay) .fleet-btn-group {
+body.phone-mode .fleet-chat-shape .fleet-btn-group > :not(.fleet-filter-btn) {
+  display: none;
+}
+body.phone-mode .fleet-chat-shape .fleet-btn-group .fleet-filter-btn {
+  width: 44px;
+  height: 44px;
+  opacity: 0.75;
+}
+body.phone-mode .fleet-chat-shape .fleet-btn-group .fleet-filter-btn svg {
+  width: 22px;
+  height: 22px;
+}
+body.phone-mode .fleet-chat-shape .fleet-btn-group .fleet-filter-btn:active,
+body.phone-mode .fleet-chat-shape:has(.fleet-filter-overlay) .fleet-btn-group .fleet-filter-btn {
   opacity: 1;
 }
 
