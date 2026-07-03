@@ -73,3 +73,35 @@ test('spawn request refuses a freshly denied model before launching tmux', async
   )
   assert.equal(launched, false)
 })
+
+test('fresh goose spawn uses configured DeepSeek provider routing at command build time', async () => {
+  let captured = null
+  const result = await spawn({
+    spawnMode: 'fresh',
+    kind: 'goose',
+    model: 'deepseek',
+    name: 'model-gov-deepseek',
+    config: {
+      models: {
+        deepseek: {
+          deepseek: {
+            id: 'deepseek-chat',
+            tags: ['deepseek', 'provider:deepseek', 'cloud'],
+          },
+        },
+      },
+    },
+    _deps: {
+      ensureServer: async () => false,
+      uniqueSessionName: async () => 'fleet-model-gov-deepseek',
+      resolveApi: () => 'http://localhost:5176',
+      spawnTmux: async (session, cwd, cmd) => {
+        captured = { session, cwd, cmd }
+        return true
+      },
+    },
+  })
+  assert.equal(result.model, 'deepseek-chat')
+  assert.match(captured.cmd, /--params provider=.*openai/)
+  assert.match(captured.cmd, /OPENAI_HOST=https:\/\/api\.deepseek\.com/)
+})
