@@ -3173,6 +3173,11 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   color: rgba(176, 146, 230, 0.85);
 }
 
+.fleet-chat-shape .fleet-chat-input-drop-active {
+  box-shadow: inset 0 0 0 1px rgba(147, 112, 219, 0.45);
+  background: rgba(147, 112, 219, 0.06);
+}
+
 /* Terminal hover pane — read-only terminal peek, floats below input area */
 .fleet-chat-shape .fleet-terminal-hover-pane {
   position: absolute;

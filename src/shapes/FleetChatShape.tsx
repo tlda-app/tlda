@@ -71,6 +71,7 @@ import {
 } from '../wm/annotation-viewer-surface'
 import { createLightboxSurfaceRequest } from '../wm/lightbox-surface'
 import { clientPointToPage, pagePointToClient } from '../wm/viewport-coordinates'
+import { subscribeFleetChatInputDropPreview } from './fleet-chat-drop-target'
 import { consumeBulletContexts, subscribeBulletContext, getBulletContexts } from '../stores/bulletContextStore'
 import { getPref, subscribePref } from '../preferences'
 import { DATABASE_HTTP } from '../activeConfig'
@@ -2904,6 +2905,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   const inputAreaRef = useRef<HTMLDivElement>(null)
   const dragClearTimerRef = useRef<number | null>(null)
   const [dragLozenges, setDragLozenges] = useState<Array<'image' | 'file'> | null>(null)
+  const [shapeDropActive, setShapeDropActive] = useState(false)
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
@@ -3286,6 +3288,10 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (dragClearTimerRef.current) clearTimeout(dragClearTimerRef.current)
     }
   }, [shape.id, editor])
+
+  useEffect(() => {
+    return subscribeFleetChatInputDropPreview(shape.id, setShapeDropActive)
+  }, [shape.id])
 
   // Hover events on annotation ref-chips → dispatch to AnnotationViewer
   const annotationHoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -5598,7 +5604,8 @@ function FleetChatInner({ shape }: { shape: any }) {
         {/* Input — outside scroll container, flex sibling with flexShrink:0 */}
         <div
           ref={inputAreaRef}
-          className="fleet-chat-input-area"
+          className={`fleet-chat-input-area${shapeDropActive ? ' fleet-chat-input-drop-active' : ''}`}
+          data-fleet-chat-input-drop-target={shape.id}
           style={{
             borderTop: '1px solid rgba(128, 128, 128, 0.15)',
             padding: 4,
@@ -5658,9 +5665,9 @@ function FleetChatInner({ shape }: { shape: any }) {
             {/* Ghost drop preview — purple lozenges per dragged file (picture
                 glyph for images, document glyph otherwise) shown while a file is
                 dragged over the field. */}
-            {dragLozenges && (
+            {(dragLozenges || shapeDropActive) && (
               <div className="fleet-drop-ghost">
-                {dragLozenges.map((kind, i) => (
+                {(dragLozenges ?? ['file']).map((kind, i) => (
                   <span key={i} className="fleet-drop-lozenge">
                     {kind === 'image' ? (
                       <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3">

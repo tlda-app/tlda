@@ -57,6 +57,11 @@ import {
   dispatchManagedAnnotationViewerHide,
   dispatchManagedAnnotationViewerRequest,
 } from '../wm/annotation-viewer-surface'
+import { pagePointToClient } from '../wm/viewport-coordinates'
+import {
+  findFleetChatInputDropTarget,
+  setFleetChatInputDropPreview,
+} from './fleet-chat-drop-target'
 
 // CodeMirror imports
 import { EditorView, keymap } from '@codemirror/view'
@@ -200,6 +205,21 @@ export function setReplyContext(text: string | null) { pendingReplyContext = tex
 const _isTouchDevice = typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0
 const noKeyboardOnTouch = _isTouchDevice ? [EditorView.contentAttributes.of({ inputmode: 'none' })] : []
 
+function mathNoteCenterClientPoint(editor: any, shape: any) {
+  const bounds = editor.getShapePageBounds(shape.id)
+  if (!bounds) return null
+  return pagePointToClient(editor, {
+    x: bounds.x + bounds.w / 2,
+    y: bounds.y + bounds.h / 2,
+  })
+}
+
+function annotationDropToken(shape: any) {
+  const text = (shape.props.text as string) || ''
+  const displayName = text.replace(/\$\$[\s\S]*?\$\$/g, '').replace(/\$[^$]*\$/g, '').trim().slice(0, 40) || 'note'
+  return `«annotation:${displayName}#${shape.id}»`
+}
+
 // CodeMirror theme: minimal, transparent, monospace
 const cmTheme = EditorView.theme({
   '&': {
@@ -278,38 +298,32 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
 
   override onTranslateStart = (shape: any) => {
     if (!shape.props.docView) beginNativeSnapDrag(this.editor)
+    setFleetChatInputDropPreview(null)
+  }
+
+  override onTranslate = (_initial: any, current: any) => {
+    if (current.props.docView) return
+    const clientPoint = mathNoteCenterClientPoint(this.editor, current)
+    const target = clientPoint ? findFleetChatInputDropTarget(clientPoint) : null
+    setFleetChatInputDropPreview(target?.chatId ?? null)
   }
 
   override onTranslateCancel = (_initial: any, current: any) => {
     if (!current.props.docView) endNativeSnapDrag(this.editor)
+    setFleetChatInputDropPreview(null)
   }
 
   override onTranslateEnd = (initial: any, current: any) => {
     if (!current.props.docView) endNativeSnapDrag(this.editor)
-    // If dropped on a fleet-chat shape → snap back + insert annotation token
-    const bounds = this.editor.getShapePageBounds(current.id)
-    if (bounds) {
-      const center = { x: bounds.x + bounds.w / 2, y: bounds.y + bounds.h / 2 }
-      const chats = this.editor.getCurrentPageShapes().filter(s => (s.type as string) === 'fleet-chat') as any[]
-      for (const chat of chats) {
-        const cb = this.editor.getShapePageBounds(chat.id)
-        if (!cb) continue
-        if (center.x >= cb.x && center.x <= cb.x + cb.w && center.y >= cb.y && center.y <= cb.y + cb.h) {
-          // Snap note back to original position
-          this.editor.updateShape({ id: current.id, type: current.type, x: initial.x, y: initial.y })
-          // Build token from active tab content
-          const text = (current.props.text as string) || ''
-          const displayName = text.replace(/\$\$[\s\S]*?\$\$/g, '').replace(/\$[^$]*\$/g, '').trim().slice(0, 40) || 'note'
-          // Embed the shape ID so FleetChatShape can resolve it via editor.getShape()
-          const token = `«annotation:${displayName}#${current.id}»`
-          const wasLocked = (chat as any).isLocked
-          if (wasLocked) this.editor.updateShape({ id: chat.id, type: 'fleet-chat' as any, isLocked: false })
-          chatInsertBus.dispatchEvent(new CustomEvent('insert', { detail: { chatId: chat.id, text: token } }))
-          if (wasLocked) this.editor.updateShape({ id: chat.id, type: 'fleet-chat' as any, isLocked: true })
-          return
-        }
-      }
-    }
+    const clientPoint = mathNoteCenterClientPoint(this.editor, current)
+    const target = clientPoint ? findFleetChatInputDropTarget(clientPoint) : null
+    setFleetChatInputDropPreview(null)
+    if (!target) return
+
+    this.editor.updateShape({ id: current.id, type: current.type, x: initial.x, y: initial.y })
+    chatInsertBus.dispatchEvent(new CustomEvent('insert', {
+      detail: { chatId: target.chatId, text: annotationDropToken(current) },
+    }))
   }
 
   override onClick = (shape: any) => {
