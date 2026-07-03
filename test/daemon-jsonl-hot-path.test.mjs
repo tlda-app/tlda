@@ -195,3 +195,22 @@ test('decideSessionBackfill skips already search-backfilled sessions with no sca
   assert.equal(d.shouldBackfill, false)  // already indexed → nothing to do
   assert.equal(scans, 0)
 })
+
+import { readFirstLineSync as _firstLine } from '../bin/lib/daemon-jsonl-hot-path.mjs'
+
+test('readFirstLineSync reads ONLY the first line, never the whole (multi-MB) file', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-firstline-'))
+  const file = path.join(dir, 'rollout.jsonl')
+  const originalReadFileSync = fs.readFileSync
+  try {
+    const firstLine = JSON.stringify({ payload: { id: 'abc-123', cwd: '/x' } })
+    fs.writeFileSync(file, firstLine + '\n' + 'y'.repeat(4 * 1024 * 1024)) // 4MB tail
+    fs.readFileSync = () => { throw new Error('must not readFileSync the whole rollout') }
+    assert.equal(_firstLine(file), firstLine)
+    // sanity: it parses to the codex id
+    assert.equal(JSON.parse(_firstLine(file)).payload.id, 'abc-123')
+  } finally {
+    fs.readFileSync = originalReadFileSync
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})

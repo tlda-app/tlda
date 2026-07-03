@@ -102,6 +102,33 @@ export function scanFileOwnersSync(filePath, { fromOffset = 0, chunkSize = 64 * 
   return { owners: [...owners], endOffset: offset }
 }
 
+// Read just the FIRST line of a file without loading the whole thing. Codex
+// rollout files are multi-MB; reading the entire file (readFileSync) only to grab
+// line 1 is the codex-side CPU/IO sink on daemon restart. Reads in chunks and stops
+// at the first newline (or maxBytes).
+export function readFirstLineSync(filePath, { chunkSize = 64 * 1024, maxBytes = 256 * 1024 } = {}) {
+  let fd
+  try {
+    fd = fs.openSync(filePath, 'r')
+    const buf = Buffer.allocUnsafe(chunkSize)
+    let acc = ''
+    let read = 0
+    while (read < maxBytes) {
+      const n = fs.readSync(fd, buf, 0, buf.length, read)
+      if (n <= 0) break
+      read += n
+      acc += buf.toString('utf8', 0, n)
+      const nl = acc.indexOf('\n')
+      if (nl !== -1) return acc.slice(0, nl)
+    }
+    return acc // no newline within maxBytes — return what we have
+  } catch {
+    return ''
+  } finally {
+    if (fd != null) fs.closeSync(fd)
+  }
+}
+
 // Decide whether a session file needs a full search-index backfill for `fleetId`,
 // classifying it (learning its owners) AT MOST ONCE. `entry` is the cursor entry
 // (or undefined). `scan()` runs the one-time owner scan and returns { owners }.

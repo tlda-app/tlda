@@ -91,6 +91,7 @@ import {
   extractOwnersFromText,
   scanFileOwnersSync,
   decideSessionBackfill,
+  readFirstLineSync,
 } from './lib/daemon-jsonl-hot-path.mjs'
 import {
   terminalBackscrollCaptureArgs,
@@ -2895,7 +2896,8 @@ function liveSessionForPids(rootPids, childrenByPpid) {
 
 function codexRolloutIdFromPath(jsonlPath) {
   try {
-    const first = fs.readFileSync(jsonlPath, 'utf8').split(/\r?\n/, 1)[0]
+    // First line only — codex rollouts are multi-MB; never read the whole file.
+    const first = readFirstLineSync(jsonlPath)
     if (first) {
       const parsed = JSON.parse(first)
       const id = parsed?.payload?.id
@@ -2910,7 +2912,8 @@ function codexRolloutIdFromPath(jsonlPath) {
 
 function codexRolloutCwd(jsonlPath) {
   try {
-    const first = fs.readFileSync(jsonlPath, 'utf8').split(/\r?\n/, 1)[0]
+    // First line only — never load the whole multi-MB rollout to read line 1.
+    const first = readFirstLineSync(jsonlPath)
     if (!first) return null
     const parsed = JSON.parse(first)
     const cwd = parsed?.payload?.cwd
