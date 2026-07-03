@@ -19,12 +19,22 @@ All create/navigate/destroy speak the **same fill-the-arrow-past-threshold** lan
 2. **Push / flick-out (left, from an object open in the inbox)** — ejects the in-place open object out of the inbox into its own full-page locked pane on the stack. This is the *only* create primitive.
 3. **Delete (down, past the bottom of a pane)** — scroll the pane normally; at the bottom, keep pulling **down** (overscroll), the arrow fills, cross the threshold → the pane closes. Arrow at **full prominence** (overscroll-at-bottom is already a deliberate/weird motion, so no false triggers — no need to make it subtle).
 
+**Swipe-arrow / commit target is a CONSTANT size (Skip):** the fill-arrow width and the commit threshold are based on **portrait width (~75% of portrait width)** and stay **fixed in both orientations** — NOT scaled to the current viewport. Rationale: thumb reach is a fixed physical distance, so the swipe target must stay the same thumb-reachable size in landscape as in portrait (don't let it stretch to landscape width). *Engine impact:* `phoneLaneCommitPx` and the arrow sizing must key off a stored portrait dimension, not live `screenW`.
+
 ## Inbox states {#inbox-states}
 
 The inbox shape is one of three states:
 - **List** (default): the task list.
 - **Open-in-place**: a tapped task is shown open *inside* the inbox shape (chat + filter overlay, note, etc.). Back → List.
 - **Ejecting**: a left flick past threshold on the open object promotes it out → a new stack pane; the inbox returns to **List**.
+
+## Rotation {#rotation}
+
+**The single-full-screen-pane model is rotation-native** (Skip flags this as a highlight of the redesign): every pane just renders **wide or tall** to fill the screen — there is **no separate portrait/landscape logic** per pane. Snap stops stay `index * screenW` in whatever the current width is.
+
+**The one exception is the agents panel** (agents list + the little compose-chat), which has a sub-layout that **reflows on rotation**:
+- **Landscape:** a **wide** agents panel (all labels visible) with the little chat **on its left**.
+- **Portrait:** vertically **stacked**, with the chat **on top**.
 
 ## Terminal hover on phone {#terminal-hover}
 
