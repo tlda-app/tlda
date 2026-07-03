@@ -636,15 +636,18 @@ function snapPhoneLane(editor: Editor, docLeftPage: number) {
   editor.setCamera({ ...camera, x }, { animation: { duration: PHONE_LANE_SNAP_DURATION } })
 }
 
-// --- Phone lane transition: static-until-threshold + fill-up arrow ---
-// The panes stay put while you drag; a horizontal drag past PHONE_LANE_COMMIT
-// (fraction of screen width) transitions to the adjacent lane on release. The
-// fill-up arrow overlay reads this signal to show how close you are to committing.
-const PHONE_LANE_COMMIT_FRAC = 0.28
-const PHONE_LANE_COMMIT_MIN = 60
+// --- Phone lane transition: big fill-up arrow, ~75%-screen deliberate swipe ---
+// Within ONE continuous drag, a horizontal move fills a big center-screen arrow;
+// crossing PHONE_LANE_COMMIT (fraction of screen width) transitions to the
+// adjacent lane on release. The large threshold means short/choppy pans never
+// fill it — you interact naturally, only a deliberate swipe changes lane. The
+// arrow overlay (PhoneLaneArrow) reads this signal. Shared with PhoneHandTool so
+// the document lane behaves the same (it pans AND fills at once).
+const PHONE_LANE_COMMIT_FRAC = 0.75
+const PHONE_LANE_COMMIT_MIN = 120
 
 export type PhoneLaneDragState = { active: boolean; progress: number; dir: -1 | 0 | 1; armed: boolean }
-const PHONE_LANE_DRAG_IDLE: PhoneLaneDragState = { active: false, progress: 0, dir: 0, armed: false }
+export const PHONE_LANE_DRAG_IDLE: PhoneLaneDragState = { active: false, progress: 0, dir: 0, armed: false }
 let phoneLaneDragState: PhoneLaneDragState = PHONE_LANE_DRAG_IDLE
 const phoneLaneDragListeners = new Set<(s: PhoneLaneDragState) => void>()
 export function subscribePhoneLaneDrag(cb: (s: PhoneLaneDragState) => void): () => void {
@@ -652,7 +655,7 @@ export function subscribePhoneLaneDrag(cb: (s: PhoneLaneDragState) => void): () 
   cb(phoneLaneDragState)
   return () => { phoneLaneDragListeners.delete(cb) }
 }
-function setPhoneLaneDrag(next: PhoneLaneDragState) {
+export function setPhoneLaneDrag(next: PhoneLaneDragState) {
   if (
     next.active === phoneLaneDragState.active &&
     next.dir === phoneLaneDragState.dir &&
@@ -663,7 +666,7 @@ function setPhoneLaneDrag(next: PhoneLaneDragState) {
   phoneLaneDragListeners.forEach(cb => cb(next))
 }
 
-function phoneLaneCommitPx(screenW: number): number {
+export function phoneLaneCommitPx(screenW: number): number {
   return Math.max(PHONE_LANE_COMMIT_MIN, screenW * PHONE_LANE_COMMIT_FRAC)
 }
 
@@ -677,7 +680,7 @@ function currentPhoneLaneDocLeftScreen(editor: Editor, docLeftPage: number): num
 
 // dir +1 pulls toward the agents/inbox lane (higher docLeftScreen), -1 toward the
 // document lane (0). A lane exists in that direction unless we're already at an end.
-function phoneLaneExistsInDirection(editor: Editor, docLeftPage: number, dir: number): boolean {
+export function phoneLaneExistsInDirection(editor: Editor, docLeftPage: number, dir: number): boolean {
   if (dir === 0) return false
   const screenW = editor.getViewportScreenBounds().w
   const cur = currentPhoneLaneDocLeftScreen(editor, docLeftPage)
@@ -685,7 +688,7 @@ function phoneLaneExistsInDirection(editor: Editor, docLeftPage: number, dir: nu
   return target >= -1 && target <= 2 * screenW + 1
 }
 
-function snapPhoneLaneDirectional(editor: Editor, docLeftPage: number, dir: number) {
+export function snapPhoneLaneDirectional(editor: Editor, docLeftPage: number, dir: number) {
   const cam = editor.getCamera()
   const screenW = editor.getViewportScreenBounds().w
   if (!screenW || !Number.isFinite(screenW)) return

@@ -1,11 +1,16 @@
 import { useEffect, useState } from 'react'
 import { subscribePhoneLaneDrag, type PhoneLaneDragState } from './useFleetGestures'
 
-// Fill-up arrow for the phone lane transition. While you drag horizontally the
-// panes stay static; this chevron fills toward the edge of the incoming lane and
-// "arms" once you've dragged far enough that releasing will transition. Only ever
-// visible during an active phone-lane drag (the signal is phone-only).
+// Big center-screen lane-transition arrow. Within one continuous drag it appears
+// subtly and FILLS toward its point as you swipe; a deliberate ~75%-of-screen
+// swipe fills it fully ("armed") and releasing there commits the lane change.
+// Short/choppy pans never fill it, so you interact with the page naturally. Uses
+// the annotation-viewer arrow shape. Only visible during an active phone-lane drag.
 const IDLE: PhoneLaneDragState = { active: false, progress: 0, dir: 0, armed: false }
+
+// Annotation-viewer arrow (viewBox 0 0 250 250), left- and right-pointing.
+const LEFT_ARROW = 'M238 125 H12 M80 12 L12 125 L80 238'
+const RIGHT_ARROW = 'M12 125 H238 M170 12 L238 125 L170 238'
 
 export function PhoneLaneArrow() {
   const [s, setS] = useState<PhoneLaneDragState>(IDLE)
@@ -13,11 +18,15 @@ export function PhoneLaneArrow() {
 
   if (!s.active || s.dir === 0) return null
 
-  // dir +1 pulls toward the agents lane, which slides in from the LEFT; dir -1
-  // toward the document lane, sliding in from the RIGHT. Point the chevron at the
-  // edge the incoming lane comes from.
-  const fromLeft = s.dir === 1
-  const chevronOpacity = 0.35 + 0.65 * s.progress
+  // dir +1 pulls toward the agents lane (points left); -1 toward the document
+  // lane (points right). Fill grows from the tail toward the point (destination).
+  const pointLeft = s.dir === 1
+  const path = pointLeft ? LEFT_ARROW : RIGHT_ARROW
+  const clipInset = pointLeft
+    ? `inset(0 0 0 ${(1 - s.progress) * 100}%)` // reveal right(tail) → left(head)
+    : `inset(0 ${(1 - s.progress) * 100}% 0 0)` // reveal left(tail) → right(head)
+
+  const stroke = s.armed ? 'rgba(120, 160, 255, 0.95)' : 'rgba(230, 235, 245, 0.9)'
 
   return (
     <div
@@ -25,37 +34,31 @@ export function PhoneLaneArrow() {
       style={{
         position: 'fixed',
         top: '50%',
-        [fromLeft ? 'left' : 'right']: 8,
-        transform: `translateY(-50%) scale(${0.82 + 0.18 * s.progress})`,
+        left: '50%',
+        transform: 'translate(-50%, -50%)',
+        width: '75vw',
+        maxWidth: 520,
+        aspectRatio: '1 / 1',
+        maxHeight: '46vh',
         zIndex: 60,
         pointerEvents: 'none',
-        width: 34,
-        height: 56,
-        borderRadius: 10,
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        background: s.armed
-          ? 'rgba(120, 160, 255, 0.85)'
-          : `rgba(140, 140, 150, ${0.10 + 0.26 * s.progress})`,
-        boxShadow: s.armed ? '0 0 12px rgba(120, 160, 255, 0.45)' : 'none',
-        transition: 'background 0.08s linear, box-shadow 0.08s linear',
+        transition: 'opacity 0.08s linear',
       }}
     >
+      {/* Faint full arrow — the "channel" that fills */}
+      <svg viewBox="0 0 250 250" style={{ position: 'absolute', width: '100%', height: '100%' }} fill="none">
+        <path d={path} stroke="rgba(200, 205, 215, 0.18)" strokeWidth={40} strokeLinecap="square" strokeLinejoin="miter" />
+      </svg>
+      {/* Bright fill, revealed to `progress` */}
       <svg
-        width="18"
-        height="18"
-        viewBox="0 0 24 24"
+        viewBox="0 0 250 250"
+        style={{ position: 'absolute', width: '100%', height: '100%', clipPath: clipInset, filter: s.armed ? 'drop-shadow(0 0 8px rgba(120,160,255,0.5))' : 'none' }}
         fill="none"
-        style={{ opacity: chevronOpacity, transform: fromLeft ? 'none' : 'scaleX(-1)' }}
       >
-        <path
-          d="M15 5 L8 12 L15 19"
-          stroke={s.armed ? '#fff' : 'rgba(255, 255, 255, 0.85)'}
-          strokeWidth="2.5"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
+        <path d={path} stroke={stroke} strokeWidth={40} strokeLinecap="square" strokeLinejoin="miter" />
       </svg>
     </div>
   )
