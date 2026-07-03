@@ -3,7 +3,6 @@ import {
   BaseBoxShapeUtil,
   HTMLContainer,
   T,
-  stopEventPropagation,
 } from 'tldraw'
 import { getLiveVideoTiles, subscribeLiveVideoTiles, type LiveVideoTile } from '../livekit/liveVideoRegistry'
 import { isMyFleetShape } from './fleet-utils'
@@ -74,10 +73,6 @@ function FleetVideoComponent({ shape }: { shape: any }) {
     <div
       className="fleet-video-shape"
       style={{ width: w, height: h }}
-      onPointerDown={stopEventPropagation}
-      onPointerMove={stopEventPropagation}
-      onTouchStart={stopEventPropagation}
-      onTouchMove={stopEventPropagation}
     >
       <div className="fleet-video-shape__bar">{title}</div>
       <div className="fleet-video-shape__grid">

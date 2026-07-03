@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
-import type { Editor } from 'tldraw'
+import type { Editor, TLShapeId } from 'tldraw'
 import { Room, RoomEvent, Track } from 'livekit-client'
 import { getLiveSession, subscribeLiveSession, setLiveRuntime, leaveLiveSession } from './liveSession'
 import { setCallMicState } from '../voice.mjs'
@@ -71,7 +71,7 @@ interface LiveKitMediaStreamTrackHolder {
 interface FleetVideoShapeRecord {
   id: string
   type: 'fleet-video'
-  props: { title?: string }
+  props: { title?: string; tileKeys?: string }
   isLocked?: boolean
 }
 
@@ -82,6 +82,10 @@ function isFleetVideoShapeRecord(shape: unknown): shape is FleetVideoShapeRecord
     (shape as { type?: unknown }).type === 'fleet-video' &&
     typeof (shape as { id?: unknown }).id === 'string'
   )
+}
+
+function asShapeId(id: string): TLShapeId {
+  return id as TLShapeId
 }
 
 function sessionId(docName: string) {
@@ -200,6 +204,7 @@ export function LiveRoomAudio({ docName, editor }: LiveRoomAudioProps) {
   const spatialNodesRef = useRef(new Map<string, SpatialTrackState>())
   const disconnectSeqRef = useRef(0)
   const videoShapeIdRef = useRef<string | null>(null)
+  const autoVideoShapeRef = useRef(false)
   const localVideoKeyRef = useRef<string | null>(null)
 
   const session = useSyncExternalStore(subscribeLiveSession, getLiveSession)
@@ -438,15 +443,16 @@ export function LiveRoomAudio({ docName, editor }: LiveRoomAudioProps) {
     for (const tile of getLiveVideoTiles()) removeLiveVideoTile(tile.key)
     localVideoKeyRef.current = null
     setVideoKeys([])
-    if (videoShapeIdRef.current && editor.getShape(videoShapeIdRef.current as any)) {
+    if (autoVideoShapeRef.current && videoShapeIdRef.current && editor.getShape(asShapeId(videoShapeIdRef.current))) {
       const id = videoShapeIdRef.current
       editor.run(() => {
-        const shape = editor.getShape(id as any)
+        const shape = editor.getShape(asShapeId(id))
         if (shape?.isLocked) editor.updateShape({ id: shape.id, type: shape.type, isLocked: false })
-        if (editor.getShape(id as any)) editor.deleteShape(id as any)
+        if (editor.getShape(asShapeId(id))) editor.deleteShape(asShapeId(id))
       }, { history: 'ignore' })
     }
     videoShapeIdRef.current = null
+    autoVideoShapeRef.current = false
     setSpatialEnabled(false)
     setSpatialStatus('off')
     setMicOn(false)
@@ -460,12 +466,12 @@ export function LiveRoomAudio({ docName, editor }: LiveRoomAudioProps) {
   }, [cleanupAllSpatialTracks, editor])
 
   const deleteVideoShape = useCallback((id: string) => {
-    const shape = editor.getShape(id as any)
+    const shape = editor.getShape(asShapeId(id))
     if (!shape) return
     editor.run(() => {
-      const current = editor.getShape(id as any)
+      const current = editor.getShape(asShapeId(id))
       if (current?.isLocked) editor.updateShape({ id: current.id, type: current.type, isLocked: false })
-      if (editor.getShape(id as any)) editor.deleteShape(id as any)
+      if (editor.getShape(asShapeId(id))) editor.deleteShape(asShapeId(id))
     }, { history: 'ignore' })
   }, [editor])
 
@@ -712,18 +718,19 @@ export function LiveRoomAudio({ docName, editor }: LiveRoomAudioProps) {
   useEffect(() => {
     const existingId = videoShapeIdRef.current
     if (videoKeys.length === 0) {
-      if (existingId && editor.getShape(existingId as any)) {
+      if (autoVideoShapeRef.current && existingId && editor.getShape(asShapeId(existingId))) {
         deleteVideoShape(existingId)
       }
       videoShapeIdRef.current = null
+      autoVideoShapeRef.current = false
       return
     }
 
     const tileKeys = JSON.stringify(videoKeys)
-    if (existingId && editor.getShape(existingId as any)) {
+    if (existingId && editor.getShape(asShapeId(existingId))) {
       editor.run(() => {
         editor.updateShape({
-          id: existingId as any,
+          id: asShapeId(existingId),
           type: 'fleet-video' as any,
           props: { tileKeys },
         })
@@ -733,18 +740,28 @@ export function LiveRoomAudio({ docName, editor }: LiveRoomAudioProps) {
 
     const fleetVideoShapes = (editor.getCurrentPageShapes() as readonly unknown[])
       .filter(isFleetVideoShapeRecord)
-    const staleOwnedVideoIds = fleetVideoShapes
+    const ownedVideoShapes = fleetVideoShapes
       .filter(shape => isMyFleetShape(shape) && shape.props.title === 'live video')
-      .map(shape => shape.id)
-    if (staleOwnedVideoIds.length > 0) {
+    const reusable = ownedVideoShapes[0]
+    if (reusable && editor.getShape(asShapeId(reusable.id))) {
       editor.run(() => {
-        for (const id of staleOwnedVideoIds) {
-          const shape = editor.getShape(id as Parameters<Editor['getShape']>[0])
-          if (shape?.isLocked) editor.updateShape({ id: shape.id, type: shape.type, isLocked: false })
-          const current = editor.getShape(id as Parameters<Editor['getShape']>[0])
-          if (current) editor.deleteShape(current)
+        const shape = editor.getShape(asShapeId(reusable.id))
+        if (shape?.isLocked) editor.updateShape({ id: shape.id, type: shape.type, isLocked: false })
+        editor.updateShape({
+          id: asShapeId(reusable.id),
+          type: 'fleet-video' as any,
+          props: { tileKeys },
+        })
+        for (const duplicate of ownedVideoShapes.slice(1)) {
+          const current = editor.getShape(duplicate.id as Parameters<Editor['getShape']>[0])
+          if (!current) continue
+          if (current.isLocked) editor.updateShape({ id: current.id, type: current.type, isLocked: false })
+          editor.deleteShape(current)
         }
       }, { history: 'ignore' })
+      videoShapeIdRef.current = reusable.id
+      autoVideoShapeRef.current = false
+      return
     }
 
     let cancelled = false
@@ -756,9 +773,7 @@ export function LiveRoomAudio({ docName, editor }: LiveRoomAudioProps) {
     }).then((id) => {
       if (!id || cancelled) return
       videoShapeIdRef.current = id
-      editor.run(() => {
-        editor.updateShape({ id: id as any, type: 'fleet-video' as any, isLocked: true })
-      }, { history: 'ignore' })
+      autoVideoShapeRef.current = true
     })
     return () => { cancelled = true }
   }, [deleteVideoShape, editor, videoKeys])

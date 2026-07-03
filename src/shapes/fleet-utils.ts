@@ -198,15 +198,27 @@ export async function placeFleetShapeAtCursor(
   h: number,
   extraProps: Record<string, any> = {},
 ): Promise<string | null> {
+  const screen = editor.inputs.currentScreenPoint
+  return placeFleetShapeAtScreenPoint(editor, type, screen.x, screen.y, w, h, extraProps)
+}
+
+export async function placeFleetShapeAtScreenPoint(
+  editor: Editor,
+  type: string,
+  screenX: number,
+  screenY: number,
+  w: number,
+  h: number,
+  extraProps: Record<string, any> = {},
+): Promise<string | null> {
   const hudEditor = getHudEditor()
   let x: number, y: number
   if (hudEditor) {
-    const screen = editor.inputs.currentScreenPoint
     const cam = hudEditor.getCamera()
-    x = screen.x / cam.z - cam.x - w / 2
-    y = screen.y / cam.z - cam.y - h / 2
+    x = screenX / cam.z - cam.x - w / 2
+    y = screenY / cam.z - cam.y - h / 2
   } else {
-    const point = editor.inputs.currentPagePoint
+    const point = editor.screenToPage({ x: screenX, y: screenY })
     x = point.x - w / 2
     y = point.y - h / 2
   }

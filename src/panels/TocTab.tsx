@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo, useContext, useSyncExternalStore, type DragEvent as ReactDragEvent } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo, useContext, useSyncExternalStore, type DragEvent as ReactDragEvent, type PointerEvent as ReactPointerEvent } from 'react'
 import { useBook } from '../BookContext'
 import { useEditor } from 'tldraw'
 import type { TLShape } from 'tldraw'
@@ -15,9 +15,10 @@ import {
 } from '../hooks/useFleetTheme'
 import { getCameraLinked, toggleCameraLinked, subscribeCameraLinked } from '../cameraLink'
 import {
-  getLiveSession, subscribeLiveSession, toggleLiveSession, toggleMute, toggleSpatial, toggleCamera,
+  getLiveSession, subscribeLiveSession, toggleLiveSession, toggleMute, toggleCamera,
   probeLiveSessionConfig,
 } from '../livekit/liveSession'
+import { FLEET_TOOL_DIMS, placeFleetShapeAtScreenPoint } from '../shapes/fleet-utils'
 import { getSemanticHighlight, toggleSemanticHighlight, subscribeSemanticHighlight } from '../semanticHighlight'
 import { navigateTo, navigateToPage, navigateToAnchor, parseHeadings, renderTocTitle, stripTex, getShapeText, type TocLevel, type TocEntry } from './helpers'
 
@@ -582,11 +583,13 @@ export function TocTab() {
           {ctx.role === 'presenter' ? '\uD83C\uDFA4 Presenting' : '\uD83D\uDC64 Viewing'}
         </div>
       )}
-      <div className="toc-diff-hint" onClick={handleCenterHorizontally}>
-        <span className="toc-toggle-icon">{'\u2299'}</span> Center
+      <div className="toc-bottom-controls">
+        <button className="toc-diff-hint toc-center-link" type="button" onClick={handleCenterHorizontally} title="Center the paper horizontally">
+          <span className="toc-toggle-icon">{'\u2299'}</span> Center
+        </button>
+        <CameraLinkToggle />
+        <JoinVoiceVideoToggle />
       </div>
-      <CameraLinkToggle />
-      <JoinVoiceVideoToggle />
       {/* HideDefsToggle removed */}
     </div>
     </>
@@ -596,68 +599,175 @@ export function TocTab() {
 export function CameraLinkToggle() {
   const linked = useSyncExternalStore(subscribeCameraLinked, getCameraLinked)
   return (
-    <div className="toc-diff-hint" onClick={toggleCameraLinked}>
-      <span className="toc-toggle-icon">{'\u21C6'}</span> {linked ? 'Linked' : 'Link cameras'}
-    </div>
+    <button
+      className={`toc-diff-hint toc-live-glyph${linked ? ' toc-live-glyph--active' : ''}`}
+      type="button"
+      onClick={toggleCameraLinked}
+      title={linked ? 'Stop sharing your viewport' : 'Share what you are looking at'}
+      aria-label={linked ? 'Stop sharing your viewport' : 'Share what you are looking at'}
+    >
+      <GlassesIcon />
+    </button>
   )
 }
 
-// "Join voice/video" \u2014 sibling of CameraLinkToggle. The document is the shared
-// room; this is just another facet of co-presence on the paper. Same surface,
-// weight, and interaction as "Link cameras" (a single .toc-diff-hint line).
-// No always-on corner chrome: the mute / spatial controls only appear while a
-// call is actually connected, and mic status lives in the speech HUD.
 export function JoinVoiceVideoToggle() {
+  const editor = useEditor()
   const s = useSyncExternalStore(subscribeLiveSession, getLiveSession)
+  const dragStartRef = useRef<{ x: number; y: number; summoned: boolean } | null>(null)
+  const suppressVideoClickRef = useRef(false)
   useEffect(() => { void probeLiveSessionConfig() }, [])
+
+  const summonVideoContainer = useCallback(async (clientX: number, clientY: number) => {
+    const dims = FLEET_TOOL_DIMS['fleet-video']
+    await placeFleetShapeAtScreenPoint(editor, 'fleet-video', clientX, clientY, dims.w, dims.h, {
+      title: 'live video',
+      tileKeys: '[]',
+    })
+  }, [editor])
+
+  const onVideoPointerDown = useCallback((e: ReactPointerEvent<HTMLButtonElement>) => {
+    const start = { x: e.clientX, y: e.clientY, summoned: false }
+    dragStartRef.current = start
+    const pointerId = e.pointerId
+    const onMove = (event: PointerEvent) => {
+      if (event.pointerId !== pointerId || start.summoned) return
+      if (Math.hypot(event.clientX - start.x, event.clientY - start.y) < 10) return
+      start.summoned = true
+      suppressVideoClickRef.current = true
+      window.setTimeout(() => { suppressVideoClickRef.current = false }, 500)
+      void summonVideoContainer(event.clientX, event.clientY)
+    }
+    const onEnd = (event: PointerEvent) => {
+      if (event.pointerId !== pointerId) return
+      window.removeEventListener('pointermove', onMove, true)
+      window.removeEventListener('pointerup', onEnd, true)
+      window.removeEventListener('pointercancel', onEnd, true)
+      dragStartRef.current = null
+    }
+    window.addEventListener('pointermove', onMove, true)
+    window.addEventListener('pointerup', onEnd, true)
+    window.addEventListener('pointercancel', onEnd, true)
+  }, [summonVideoContainer])
+
+  const onVideoPointerMove = useCallback((e: ReactPointerEvent<HTMLButtonElement>) => {
+    const start = dragStartRef.current
+    if (!start || start.summoned) return
+    if (Math.hypot(e.clientX - start.x, e.clientY - start.y) < 10) return
+    start.summoned = true
+    suppressVideoClickRef.current = true
+    window.setTimeout(() => { suppressVideoClickRef.current = false }, 500)
+    void summonVideoContainer(e.clientX, e.clientY)
+  }, [summonVideoContainer])
+
+  const clearVideoDrag = useCallback((e?: ReactPointerEvent<HTMLButtonElement>) => {
+    if (e?.currentTarget.hasPointerCapture?.(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId)
+    }
+    dragStartRef.current = null
+  }, [])
 
   // Server has no LiveKit creds: visible but inert, clearly not configured.
   if (s.configured === false) {
     return (
-      <div
-        className="toc-diff-hint"
-        style={{ cursor: 'default' }}
-        title="Voice/video chat is not configured on this server"
-      >
-        <VoiceVideoIcon /> Voice/video off
-      </div>
+      <>
+        <button
+          className="toc-diff-hint toc-live-glyph"
+          type="button"
+          onClick={toggleLiveSession}
+          title="Join the live voice room for this paper"
+          aria-label="Join the live voice room for this paper"
+        >
+          <WhisperIcon />
+        </button>
+        <button
+          className="toc-diff-hint toc-live-glyph"
+          type="button"
+          style={{ cursor: 'default' }}
+          onPointerDown={onVideoPointerDown}
+          onPointerMove={onVideoPointerMove}
+          onPointerUp={clearVideoDrag}
+          onPointerCancel={clearVideoDrag}
+          title="Video chat is not configured on this server; drag to place video"
+          aria-label="Video chat is not configured on this server; drag to place video"
+        >
+          <VideoCameraIcon />
+        </button>
+      </>
     )
   }
 
-  const label =
-    s.status === 'connecting' ? 'Connecting voice/video\u2026' :
-    s.status === 'connected' ? `In voice/video${s.participantCount > 1 ? ` (${s.participantCount})` : ''}` :
-    s.status === 'error' ? 'Voice/video error \u2014 retry' :
-    'Join voice/video'
-
   return (
     <>
-      <div className="toc-diff-hint" onClick={toggleLiveSession} title="Join the live voice/video room for this paper">
-        <VoiceVideoIcon /> {label}
-      </div>
-      {s.status === 'connected' && (
-        <>
-          <div className="toc-diff-hint toc-toggle-indented" onClick={toggleMute}>
-            {s.micOn ? 'Mute mic' : 'Unmute mic'}
-          </div>
-          <div className="toc-diff-hint toc-toggle-indented" onClick={toggleCamera}>
-            {s.cameraOn ? 'Turn camera off' : 'Turn camera on'}
-          </div>
-          <div className="toc-diff-hint toc-toggle-indented" onClick={toggleSpatial}>
-            {s.spatialEnabled ? 'Spatial audio on' : 'Spatial audio'}
-          </div>
-        </>
-      )}
+      <button
+        className={`toc-diff-hint toc-live-glyph${s.intent && !s.muteIntent ? ' toc-live-glyph--active' : ''}`}
+        type="button"
+        onClick={s.intent ? toggleMute : toggleLiveSession}
+        title={!s.intent ? 'Join the live voice room' : s.micOn ? 'Mute your voice' : 'Unmute your voice'}
+        aria-label={!s.intent ? 'Join the live voice room' : s.micOn ? 'Mute your voice' : 'Unmute your voice'}
+      >
+        <WhisperIcon />
+      </button>
+      <button
+        className={`toc-diff-hint toc-live-glyph${s.cameraIntent || s.cameraOn ? ' toc-live-glyph--active' : ''}`}
+        type="button"
+        onClick={() => {
+          if (suppressVideoClickRef.current) {
+            suppressVideoClickRef.current = false
+            return
+          }
+          if (!s.intent) toggleLiveSession()
+          toggleCamera()
+        }}
+        onPointerDown={onVideoPointerDown}
+        onPointerMove={onVideoPointerMove}
+        onPointerUp={clearVideoDrag}
+        onPointerCancel={clearVideoDrag}
+        title={s.cameraIntent || s.cameraOn ? 'Turn camera off; drag to place video' : 'Turn camera on; drag to place video'}
+        aria-label={s.cameraIntent || s.cameraOn ? 'Turn camera off; drag to place video' : 'Turn camera on; drag to place video'}
+      >
+        <VideoCameraIcon />
+      </button>
     </>
   )
 }
 
-function VoiceVideoIcon() {
+function GlassesIcon() {
   return (
-    <span className="toc-toggle-icon" aria-hidden="true">
-      <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M2.5 5.25a1.4 1.4 0 0 1 1.4-1.4h5.2a1.4 1.4 0 0 1 1.4 1.4v5.5a1.4 1.4 0 0 1-1.4 1.4H3.9a1.4 1.4 0 0 1-1.4-1.4z" />
-        <path d="m10.5 6.5 3-1.75v6.5l-3-1.75" />
+    <span className="toc-live-glyph-icon" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="8" cy="14" r="4" />
+        <circle cx="16" cy="14" r="4" />
+        <path d="M12 14h0" />
+        <path d="M4.2 13.1 3 9.5" />
+        <path d="m19.8 13.1 1.2-3.6" />
+      </svg>
+    </span>
+  )
+}
+
+function WhisperIcon() {
+  return (
+    <span className="toc-live-glyph-icon" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M8.4 15.5c1.8 0 3.1-1.4 3.1-3.2V8.8a3.1 3.1 0 0 0-6.2 0v3.5" />
+        <path d="M5.3 12.3c0 3 2.1 5.2 5 5.2" />
+        <path d="M10.3 17.5v2.4" />
+        <path d="M7.8 20h5" />
+        <path d="M15.2 8.4c1.2.8 1.9 2 1.9 3.6s-.7 2.8-1.9 3.6" />
+        <path d="M18 6.2c1.8 1.4 2.8 3.4 2.8 5.8s-1 4.4-2.8 5.8" />
+      </svg>
+    </span>
+  )
+}
+
+function VideoCameraIcon() {
+  return (
+    <span className="toc-live-glyph-icon" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.85" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="4" y="7" width="11" height="10" rx="2.2" />
+        <path d="m15 10 5-2.7v9.4L15 14" />
+        <circle cx="9.5" cy="12" r="1.8" />
       </svg>
     </span>
   )

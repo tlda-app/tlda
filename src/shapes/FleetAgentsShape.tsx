@@ -943,7 +943,9 @@ function FleetAgentsInner({ shape }: { shape: any }) {
                 aria-invalid={spawnInvalid || undefined}
                 aria-describedby={spawnInvalid ? 'fleet-agents-spawn-error' : undefined}
                 autoCapitalize="off"
+                autoComplete="off"
                 autoCorrect="off"
+                name="tlda-fleet-agent-spawn-target"
                 spellCheck={false}
                 onFocus={() => setSpawnFocused(true)}
                 onBlur={() => { setSpawnFocused(false); setDropdownIdx(-1) }}

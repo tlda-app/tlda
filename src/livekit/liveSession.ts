@@ -7,7 +7,7 @@
  * (the "Join voice/video" option in the TOC, next to "Link cameras") with the
  * headless `LiveRoomAudio` controller that owns the actual LiveKit room.
  *
- * - The UI sets *intents* (join/leave, mute, spatial).
+ * - The UI sets *intents* (join/leave, mute, camera).
  * - The controller publishes *runtime* (status, micOn, participant count).
  *
  * There is deliberately no always-on corner chrome: nothing is rendered until
@@ -23,7 +23,7 @@ export interface LiveSessionState {
   intent: boolean
   /** User wants their mic muted. */
   muteIntent: boolean
-  /** User wants spatial audio. */
+  /** User wants spatial audio. This is a preference, default-on, not chrome. */
   spatialIntent: boolean
   /** User wants their camera enabled. */
   cameraIntent: boolean
@@ -42,7 +42,7 @@ let state: LiveSessionState = {
   configured: null,
   intent: false,
   muteIntent: false,
-  spatialIntent: false,
+  spatialIntent: true,
   cameraIntent: false,
   status: 'idle',
   micOn: false,
@@ -91,10 +91,6 @@ export function toggleLiveSession() {
 
 export function toggleMute() {
   set({ muteIntent: !state.muteIntent })
-}
-
-export function toggleSpatial() {
-  set({ spatialIntent: !state.spatialIntent })
 }
 
 export function toggleCamera() {
