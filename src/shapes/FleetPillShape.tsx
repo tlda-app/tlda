@@ -338,6 +338,30 @@ export async function dropPillOnTarget(
       targetPagePoint.y >= b.y && targetPagePoint.y <= b.y + b.h
   })
 
+  // A filter overlay is showing a LIVE preview (a pill is hovering it), so the
+  // drop commits that preview to the overlay's target chat — wherever the drop
+  // lands. On phone the reachable overlay lives on the INBOX (same lane as the
+  // agent pills), which is not a fleet-chat, so the hitShape path below never
+  // fires for it: the drop found no chat and no-op'd (preview showed, filter
+  // never committed). Applying by the preview's own shapeId fixes both the chat
+  // and inbox overlay drops. (Not for content pills — those go to the composer.)
+  if (!content && filterDropPreview.shapeId && filterDropPreview.activePaneRole) {
+    const targetChat = createEditor.getShape(filterDropPreview.shapeId as any) as any
+    const preview = filterDropPreview.activePaneRole === 'replace'
+      ? filterDropPreview.replacePreview
+      : filterDropPreview.activePaneRole === 'to'
+        ? filterDropPreview.toPreview
+        : filterDropPreview.fromPreview
+    if (targetChat && targetChat.type === 'fleet-chat' && preview) {
+      const wasLocked = targetChat.isLocked
+      if (wasLocked) createEditor.updateShape({ id: targetChat.id, type: 'fleet-chat' as any, isLocked: false })
+      createEditor.updateShape({ id: targetChat.id, type: 'fleet-chat' as any, props: { filter: preview } })
+      if (wasLocked) createEditor.updateShape({ id: targetChat.id, type: 'fleet-chat' as any, isLocked: true })
+      chatInsertBus.dispatchEvent(new CustomEvent('filter-applied', { detail: { chatId: targetChat.id } }))
+      return
+    }
+  }
+
   if (hitShape && hitShape.type === 'fleet-chat') {
 
     // Content pill → insert reference chip token into target chat's input
