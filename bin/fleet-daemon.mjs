@@ -1844,6 +1844,13 @@ function syncFsWatchers() {
         state.watcher = createFileWatcher({
           label: `source tree ${name}`,
           paths: state.sourceDir,
+          ignored: (candidate) => {
+            const rel = path.relative(state.sourceDir, candidate)
+            return rel === 'node_modules' ||
+              rel.startsWith(`node_modules${path.sep}`) ||
+              rel === '.git' ||
+              rel.startsWith(`.git${path.sep}`)
+          },
           onEvent: ({ absPath }) => state.onFileChange(path.relative(state.sourceDir, absPath), false),
           log,
         })
