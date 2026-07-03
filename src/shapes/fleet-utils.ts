@@ -631,32 +631,39 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
 
       const screenW = Math.round(vp.w)
       const screenH = Math.round(vp.h)
-      const chatW = screenW
-      const chatH = screenH
-      const colW = screenW
-      const phoneAgentsH = Math.min(Math.round(screenH * 0.42), Math.max(160, Math.round(screenH * 0.38)))
+      // Inset the panels inside their full-screen lanes so the chat/inbox don't
+      // run edge-to-edge (Skip: ~5%+ total padding, inset into the page). The lane
+      // STRIDE stays screenW so the phone-lane snap offsets — computed from screenW
+      // in useFleetGestures/PhoneHandTool — are unaffected by the inset.
+      const pad = Math.round(screenW * 0.03)
+      const laneStride = screenW
+      const chatW = screenW - pad * 2
+      const chatH = screenH - pad * 2
+      const colW = screenW - pad * 2
+      const laneTop = anchorY + pad
+      const phoneAgentsH = Math.min(Math.round(chatH * 0.42), Math.max(160, Math.round(chatH * 0.38)))
       const phoneInboxH = Math.max(160, chatH - gap - phoneAgentsH)
-      const chatX = target.pageX - chatW + dx
-      const colX = target.pageX - chatW - colW + dx
+      const chatX = target.pageX - laneStride + dx + pad
+      const colX = target.pageX - laneStride * 2 + dx + pad
       editor.createShapes([
         {
           id: slotId(myId, myDevice, 'agents'),
           type: 'fleet-agents' as any,
-          x: colX, y: anchorY,
+          x: colX, y: laneTop,
           isLocked: true,
           props: { w: colW, h: phoneAgentsH, userId: myId, deviceId: myDevice },
         },
         {
           id: slotId(myId, myDevice, 'inbox'),
           type: 'fleet-inbox' as any,
-          x: colX, y: anchorY + phoneAgentsH + gap,
+          x: colX, y: laneTop + phoneAgentsH + gap,
           isLocked: true,
           props: { w: colW, h: phoneInboxH, userId: myId, deviceId: myDevice },
         },
         {
           id: slotId(myId, myDevice, 'chat-0'),
           type: 'fleet-chat' as any,
-          x: chatX, y: anchorY,
+          x: chatX, y: laneTop,
           isLocked: true,
           props: { w: chatW, h: chatH, filter: filter1, userId: myId, deviceId: myDevice },
         },

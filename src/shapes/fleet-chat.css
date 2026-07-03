@@ -115,6 +115,19 @@ html.mousemove .fleet-reaper-shape:hover .fleet-btn-group {
   opacity: 1;
   background: rgba(128, 128, 128, 0.12);
 }
+/* Phone has no hover to reveal the button group, so the filter (and close/layout)
+   were unreachable. On the phone surface keep the group visible + tappable, at a
+   quiet opacity so the chrome still recedes. */
+body.phone-mode .fleet-shape .fleet-btn-group {
+  opacity: 0.5;
+  visibility: visible;
+  pointer-events: auto;
+  transition: none;
+}
+body.phone-mode .fleet-shape .fleet-btn-group:active,
+body.phone-mode .fleet-shape:has(.fleet-filter-overlay) .fleet-btn-group {
+  opacity: 1;
+}
 
 .fleet-btn-group button {
   width: 18px;
@@ -1821,6 +1834,40 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   cursor: grab;
   touch-action: none;
   opacity: 0.75;
+}
+
+/* --- Phone: bigger touch targets + a real scrollbar in the agents panel ---
+   On phone the 9px/8px rows are too small to grab with a thumb, and the list
+   only had a hairline `thin` scrollbar. Scoped to .phone-mode so tablets/desktop
+   (which use normal layouts) are untouched. */
+body.phone-mode .fleet-agents-shape .fleet-agents-row-main {
+  height: 40px;
+  padding: 0 12px;
+}
+body.phone-mode .fleet-agents-shape .fleet-agents-col-name {
+  width: 104px;
+  font-size: 13px;
+}
+body.phone-mode .fleet-agents-shape .fleet-agents-col-task,
+body.phone-mode .fleet-agents-shape .fleet-agents-col-seen,
+body.phone-mode .fleet-agents-shape .fleet-agents-col-ctx {
+  font-size: 12px;
+}
+body.phone-mode .fleet-agents-shape .fleet-agents-label-chip {
+  font-size: 12px;
+  line-height: 20px;
+  padding: 0 7px;
+}
+body.phone-mode .fleet-agents-shape .fleet-agents-body {
+  scrollbar-width: auto;
+  scrollbar-color: rgba(255, 255, 255, 0.28) transparent;
+}
+body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar {
+  width: 8px;
+}
+body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.28);
+  border-radius: 4px;
 }
 
 /* --- Section headers (dead) --- */
