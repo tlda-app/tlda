@@ -141,13 +141,14 @@ Started in this branch:
   shape creation from an explicit layout plan. It also owns
   `createOwnedFleetPanelShape`, the adapter for owned app-internal panel
   creation.
-- `src/overlays/fleet-gesture-policy.ts` owns pure touch policy: TLDraw-mirrored
-  move/resize thresholds, anisotropic resize axis locking, and phone lane snap
-  decisions. `useFleetGestures` still owns DOM hit testing, event capture, and
-  editor mutation.
-- `src/overlays/fleet-gesture-frame.ts` owns gesture frame helpers: viewport
+- `src/wm/gesture-policy.ts` owns pure touch policy: TLDraw-mirrored
+  move/resize thresholds, anisotropic resize axis locking, and lane snap
+  decisions with stops supplied by the tlda host. `useFleetGestures` still owns
+  DOM hit testing, event capture, and editor mutation.
+- `src/wm/gesture-frame.ts` owns gesture frame helpers: viewport
   camera/container lookup, screen-to-overlay page conversion, DOM element
-  descriptions, element chains, and corner-control hit checks.
+  descriptions, element chains, and corner-control hit checks with DOM
+  selectors supplied by the tlda host.
 - `src/wm/editor-host-bridge.ts` owns the current host-editor globals and HUD
   reset/toggle event contract used by WM-facing HUD/tool placement. `fleet-utils`,
   `FleetHUD`, `FleetToolGhost`, the fleet/sync pills, and the document reload
@@ -266,7 +267,7 @@ preserved without changing app behavior.
 
 Slice 5 splits the gesture frame adapter out of `useFleetGestures`.
 
-`src/overlays/fleet-gesture-frame.ts` now owns the DOM/frame helpers that are
+`src/wm/gesture-frame.ts` now owns the DOM/frame helpers that are
 not themselves the gesture state machine:
 
 - named viewport camera lookup;

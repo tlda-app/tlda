@@ -6,14 +6,14 @@ import {
   RESIZE_LOCK_AFTER_MOVE,
   RESIZE_LOCK_ON,
   applyShapeResizeAxisLock,
-  classifyFleetSoftGesture,
-  nearestPhoneLaneDocLeftScreen,
+  classifySoftGesture,
+  nearestLaneDocLeftScreen,
   phoneLaneDragDecision,
-} from '../src/overlays/fleet-gesture-policy.ts'
+} from '../src/wm/gesture-policy.ts'
 
 const source = readFileSync(new URL('../src/overlays/useFleetGestures.ts', import.meta.url), 'utf8')
-const policySource = readFileSync(new URL('../src/overlays/fleet-gesture-policy.ts', import.meta.url), 'utf8')
-const frameSource = readFileSync(new URL('../src/overlays/fleet-gesture-frame.ts', import.meta.url), 'utf8')
+const policySource = readFileSync(new URL('../src/wm/gesture-policy.ts', import.meta.url), 'utf8')
+const frameSource = readFileSync(new URL('../src/wm/gesture-frame.ts', import.meta.url), 'utf8')
 const tldrawSource = readFileSync(
   new URL('../node_modules/@tldraw/editor/src/lib/hooks/useGestureEvents.ts', import.meta.url),
   'utf8',
@@ -44,21 +44,21 @@ test('fleet gesture classifier mirrors TLDraw touch pinch thresholds', () => {
     RESIZE_LOCK_AFTER_MOVE,
     tldrawThresholdAt(/touchDistance > (\d+)[\s\S]*?pinchState = 'zooming'/g, 1, 'pan-to-zoom threshold'),
   )
-  assert.match(source, /from '\.\/fleet-gesture-policy'/)
-  assert.match(policySource, /export function classifyFleetSoftGesture/)
+  assert.match(source, /from '\.\.\/wm'/)
+  assert.match(policySource, /export function classifySoftGesture/)
 })
 
 test('fleet gesture frame adapter owns viewport and DOM frame helpers', () => {
-  assert.match(source, /from '\.\/fleet-gesture-frame'/)
+  assert.match(source, /from '\.\.\/wm'/)
   assert.match(frameSource, /export function getGestureViewportCamera/)
   assert.match(frameSource, /export function getGestureViewportContainer/)
-  assert.match(frameSource, /export function screenPointToOverlayPage/)
+  assert.match(frameSource, /export function screenPointToFramePage/)
   assert.match(frameSource, /export function describeElement/)
   assert.match(frameSource, /export function elementChainAt/)
   assert.match(frameSource, /export function cornerControlAtPoint/)
   assert.equal(source.includes('function getViewportCamera'), false)
   assert.equal(source.includes('function getViewportContainer'), false)
-  assert.equal(source.includes('function screenPointToOverlayPage'), false)
+  assert.equal(source.includes('function screenPointToFramePage'), false)
   assert.equal(source.includes('function describeElement'), false)
   assert.equal(source.includes('function elementChainAt'), false)
 })
@@ -92,13 +92,13 @@ test('phone lane drag consumes touch events so TLDraw pinch cannot inherit them'
 })
 
 test('fleet gesture classifier prefers intentional resize before move, then requires larger resize while moving', () => {
-  assert.deepEqual(classifyFleetSoftGesture({ moveActive: false, resizeActive: false, travel: 17, spread: 12 }), { moveActive: true, resizeActive: false })
-  assert.deepEqual(classifyFleetSoftGesture({ moveActive: false, resizeActive: false, travel: 12, spread: 25 }), { moveActive: true, resizeActive: true })
-  assert.deepEqual(classifyFleetSoftGesture({ moveActive: true, resizeActive: false, travel: 30, spread: 25 }), {
+  assert.deepEqual(classifySoftGesture({ moveActive: false, resizeActive: false, travel: 17, spread: 12 }), { moveActive: true, resizeActive: false })
+  assert.deepEqual(classifySoftGesture({ moveActive: false, resizeActive: false, travel: 12, spread: 25 }), { moveActive: true, resizeActive: true })
+  assert.deepEqual(classifySoftGesture({ moveActive: true, resizeActive: false, travel: 30, spread: 25 }), {
     moveActive: true,
     resizeActive: false,
   })
-  assert.deepEqual(classifyFleetSoftGesture({ moveActive: true, resizeActive: false, travel: 30, spread: 65 }), {
+  assert.deepEqual(classifySoftGesture({ moveActive: true, resizeActive: false, travel: 30, spread: 65 }), {
     moveActive: true,
     resizeActive: true,
   })
@@ -138,9 +138,14 @@ test('shape resize axis lock is breakable and disabled for tiny spans', () => {
 })
 
 test('phone lane policy chooses the closest lane and filters accidental vertical drags', () => {
-  assert.deepEqual(nearestPhoneLaneDocLeftScreen(15, 400), { lane: 'document', docLeftScreen: 0 })
-  assert.deepEqual(nearestPhoneLaneDocLeftScreen(365, 400), { lane: 'chat', docLeftScreen: 400 })
-  assert.deepEqual(nearestPhoneLaneDocLeftScreen(780, 400), { lane: 'agents-inbox', docLeftScreen: 800 })
+  const stops = [
+    { lane: 'agents-inbox', docLeftScreen: 800 },
+    { lane: 'chat', docLeftScreen: 400 },
+    { lane: 'document', docLeftScreen: 0 },
+  ]
+  assert.deepEqual(nearestLaneDocLeftScreen(15, stops), { lane: 'document', docLeftScreen: 0 })
+  assert.deepEqual(nearestLaneDocLeftScreen(365, stops), { lane: 'chat', docLeftScreen: 400 })
+  assert.deepEqual(nearestLaneDocLeftScreen(780, stops), { lane: 'agents-inbox', docLeftScreen: 800 })
 
   assert.equal(phoneLaneDragDecision(5, 30), 'abort')
   assert.equal(phoneLaneDragDecision(15, 5), 'pending')

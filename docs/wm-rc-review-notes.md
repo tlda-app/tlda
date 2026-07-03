@@ -45,14 +45,15 @@ modules so tlda can remain the first host while the WM surface becomes separable
 - Shared shape schemas: `shared/shapes/fleet-panel-schema.mjs`
   - fleet panel prop validators imported by both client shape utils and
     `server/lib/sync-rooms.mjs`
-- Gesture policy: `src/overlays/fleet-gesture-policy.ts`
+- Gesture policy: `src/wm/gesture-policy.ts`
   - TLDraw-mirrored move/resize thresholds
   - resize axis lock policy
-  - phone lane snap and drag decisions
-- Gesture frame: `src/overlays/fleet-gesture-frame.ts`
+  - host-supplied lane snap stops and drag decisions
+- Gesture frame: `src/wm/gesture-frame.ts`
   - viewport camera/container lookup
   - screen-to-overlay coordinate conversion
   - DOM element diagnostics and corner-control hit checks
+  - host-supplied viewport DOM selectors
 - Host editor bridge: `src/wm/editor-host-bridge.ts`
   - current main/HUD editor globals isolated behind a WM-facing adapter
   - shared HUD reset/toggle event dispatch/listen contract
@@ -129,11 +130,11 @@ Package candidates:
 - `src/wm/wm-core.ts`
 - `src/wm/hosted-panel-registry.ts`
 - `src/wm/managed-surfaces.ts`
-- `src/overlays/fleet-gesture-policy.ts`
+- `src/wm/gesture-policy.ts`
 - `src/wm/editor-wm.ts`
 - `src/wm/viewport-coordinates.ts`
 - `src/wm/canvas-clip-panel.ts`
-- `src/overlays/fleet-gesture-frame.ts`
+- `src/wm/gesture-frame.ts`
 
 tlda-owned host/app adapters:
 
@@ -148,9 +149,11 @@ tlda-owned host/app adapters:
   `src/wm/markdown-surface.ts`, `src/wm/page-column-surface.ts`,
   `src/wm/lightbox-surface.ts`
 
-Next implementation step: build a package entrypoint from the package candidate
-set and rename the two still-`fleet-*` package candidates (`fleet-gesture-policy`
-and `fleet-gesture-frame`) behind package-neutral names. Keep the tlda-owned
+The package entrypoint now exists as `@tlda/tldraw-wm`, with `.` / `./core` /
+`./tldraw-adapter` exports. The former `fleet-gesture-policy` and
+`fleet-gesture-frame` package candidates are now package-neutral
+`src/wm/gesture-policy.ts` and `src/wm/gesture-frame.ts`; the tlda hook supplies
+its lane stops and viewport DOM selectors. Keep the remaining tlda-owned
 adapters in this repo until their fleet identity, document-page, chat/source,
 annotation, and shadow-column dependencies are supplied by host callbacks/data.
 
@@ -178,8 +181,8 @@ outside this RC slice. The filtered touched-file scan should show no errors in:
 - `src/shapes/fleet-*.ts`
 - fleet panel shape utils
 - `src/overlays/useFleetGestures.ts`
-- `src/overlays/fleet-gesture-policy.ts`
-- `src/overlays/fleet-gesture-frame.ts`
+- `src/wm/gesture-policy.ts`
+- `src/wm/gesture-frame.ts`
 - `src/wm/editor-host-bridge.ts`
 - `src/wm/fleet-hud-state.ts`
 - `src/wm/hosted-panel-registry.ts`

@@ -1,5 +1,19 @@
 import type { Editor } from 'tldraw'
 
+export interface GestureFrameSelectors {
+	viewportRoot?: (viewportId: string) => string
+	viewportCanvas?: string
+	elementChainStopClass?: string
+}
+
+function getGestureViewportElement(viewportId: string, selectors: GestureFrameSelectors = {}): HTMLElement | null {
+	const rootSelector = selectors.viewportRoot?.(viewportId)
+	if (!rootSelector) return null
+	const root = document.querySelector(rootSelector)
+	const el = selectors.viewportCanvas ? root?.querySelector(selectors.viewportCanvas) : root
+	return el instanceof HTMLElement ? el : null
+}
+
 export function getGestureViewportCamera(editor: Editor, viewportId?: string): { x: number; y: number; z: number } {
   if (viewportId) {
     try { return editor.getViewport(viewportId as any).camera } catch { /* fall through */ }
@@ -7,18 +21,26 @@ export function getGestureViewportCamera(editor: Editor, viewportId?: string): {
   return editor.getCamera()
 }
 
-export function getGestureViewportContainer(editor: Editor, viewportId?: string): HTMLElement {
+export function getGestureViewportContainer(
+	editor: Editor,
+	viewportId?: string,
+	selectors: GestureFrameSelectors = {},
+): HTMLElement {
   if (viewportId) {
-    const el = document.querySelector(`[data-viewport-id="${viewportId}"]`)?.querySelector('.clip-panel-canvas')
+    const el = getGestureViewportElement(viewportId, selectors)
     if (el) return el as HTMLElement
   }
   return editor.getContainer()
 }
 
-export function screenPointToOverlayPage(overlay: Editor, clientX: number, clientY: number, viewportId?: string) {
-  const container = viewportId
-    ? document.querySelector(`[data-viewport-id="${viewportId}"]`)?.querySelector('.clip-panel-canvas') ?? getGestureViewportContainer(overlay, viewportId)
-    : getGestureViewportContainer(overlay, viewportId)
+export function screenPointToFramePage(
+	overlay: Editor,
+	clientX: number,
+	clientY: number,
+	options: { viewportId?: string; selectors?: GestureFrameSelectors } = {},
+) {
+	const { viewportId, selectors = {} } = options
+  const container = getGestureViewportContainer(overlay, viewportId, selectors)
   const rect = (container as HTMLElement).getBoundingClientRect()
   return overlay.screenToPage({ x: clientX - rect.left, y: clientY - rect.top }, viewportId ? { viewportId } : undefined)
 }
@@ -42,13 +64,14 @@ export function describeElement(el: Element | null) {
   }
 }
 
-export function elementChainAt(clientX: number, clientY: number, stopClass = 'fleet-hud-wrap') {
+export function elementChainAt(clientX: number, clientY: number, selectors: GestureFrameSelectors = {}) {
+	const stopClass = selectors.elementChainStopClass
   const first = document.elementFromPoint(clientX, clientY)
   const chain: ReturnType<typeof describeElement>[] = []
   let cur: Element | null = first
   for (let i = 0; cur && i < 10; i++) {
     chain.push(describeElement(cur))
-    if (cur.classList.contains(stopClass)) break
+    if (stopClass && cur.classList.contains(stopClass)) break
     cur = cur.parentElement
   }
   return chain

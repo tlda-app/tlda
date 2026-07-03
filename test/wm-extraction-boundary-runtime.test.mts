@@ -25,11 +25,11 @@ test('WM extraction boundary separates package candidates from tlda host modules
 		'src/wm/wm-core.ts',
 		'src/wm/hosted-panel-registry.ts',
 		'src/wm/managed-surfaces.ts',
-		'src/overlays/fleet-gesture-policy.ts',
+		'src/wm/gesture-policy.ts',
 		'src/wm/editor-wm.ts',
 		'src/wm/viewport-coordinates.ts',
 		'src/wm/canvas-clip-panel.ts',
-		'src/overlays/fleet-gesture-frame.ts',
+		'src/wm/gesture-frame.ts',
 	])
 
 	assert(TLDA_HOST_BOUNDARY_MODULES.includes('src/shapes/fleet-panel-registry.ts'))

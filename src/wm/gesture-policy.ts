@@ -22,7 +22,12 @@ export const RESIZE_AXIS_DECAY = 0.8
 
 export type SoftAxis = 'x' | 'y' | null
 
-export function classifyFleetSoftGesture(input: {
+export interface WmLaneStop<TLane extends string = string> {
+	lane: TLane
+	docLeftScreen: number
+}
+
+export function classifySoftGesture(input: {
   moveActive: boolean
   resizeActive: boolean
   travel: number
@@ -74,13 +79,12 @@ export function applyShapeResizeAxisLock(input: {
   return { axis, accX, accY, scaleX, scaleY }
 }
 
-export function nearestPhoneLaneDocLeftScreen(docLeftScreen: number, screenW: number): { lane: string; docLeftScreen: number } {
-  const stops = [
-    { lane: 'agents-inbox', docLeftScreen: screenW * 2 },
-    { lane: 'chat', docLeftScreen: screenW },
-    { lane: 'document', docLeftScreen: 0 },
-  ]
-  return stops.reduce((best, stop) =>
+export function nearestLaneDocLeftScreen<TLane extends string>(
+	docLeftScreen: number,
+	stops: readonly WmLaneStop<TLane>[],
+): WmLaneStop<TLane> {
+	if (stops.length === 0) throw new Error('nearestLaneDocLeftScreen requires at least one lane stop')
+	return stops.reduce((best, stop) =>
     Math.abs(stop.docLeftScreen - docLeftScreen) < Math.abs(best.docLeftScreen - docLeftScreen) ? stop : best,
   )
 }
@@ -90,4 +94,3 @@ export function phoneLaneDragDecision(dx: number, dy: number): 'abort' | 'pendin
   if (Math.abs(dx) < PHONE_LANE_LOCK || Math.abs(dx) < Math.abs(dy) * PHONE_LANE_AXIS_RATIO) return 'pending'
   return 'dragging'
 }
-

@@ -37,18 +37,18 @@ import {
   RESIZE_LOCK_AFTER_MOVE,
   RESIZE_LOCK_ON,
   applyShapeResizeAxisLock,
-  classifyFleetSoftGesture,
-  nearestPhoneLaneDocLeftScreen,
+  classifySoftGesture,
   phoneLaneDragDecision,
-} from './fleet-gesture-policy'
+  type GestureFrameSelectors,
+} from '../wm'
 import {
   cornerControlAtPoint as gestureCornerControlAtPoint,
   describeElement,
   elementChainAt,
   getGestureViewportCamera,
   getGestureViewportContainer,
-  screenPointToOverlayPage,
-} from './fleet-gesture-frame'
+  screenPointToFramePage,
+} from '../wm'
 
 const LOG_NS = 'fleet-gesture'
 
@@ -67,6 +67,19 @@ export const CORNER_CONTROL_SELECTORS = [
 ] as const
 
 const CORNER_CONTROL_SELECTOR = CORNER_CONTROL_SELECTORS.join(',')
+
+const FLEET_GESTURE_FRAME_SELECTORS: GestureFrameSelectors = {
+  viewportRoot: (viewportId) => `[data-viewport-id="${viewportId}"]`,
+  viewportCanvas: '.clip-panel-canvas',
+  elementChainStopClass: 'fleet-hud-wrap',
+}
+
+function screenPointToOverlayPage(overlay: Editor, clientX: number, clientY: number, viewportId?: string) {
+  return screenPointToFramePage(overlay, clientX, clientY, {
+    viewportId,
+    selectors: FLEET_GESTURE_FRAME_SELECTORS,
+  })
+}
 
 function touchDiagEnabled() {
   if (typeof window === 'undefined') return false
@@ -368,7 +381,7 @@ function touchDiagnostics(overlay: Editor | null, touches: Touch[], viewportId?:
       fleetHitSource: hit?.source ?? null,
       rawFleetShapeId: hit?.rawShapeId ?? null,
       rawFleetShapeType: hit?.rawShapeType ?? null,
-      elementChain: elementChainAt(t.clientX, t.clientY),
+      elementChain: elementChainAt(t.clientX, t.clientY, FLEET_GESTURE_FRAME_SELECTORS),
     }
   })
 }
@@ -485,7 +498,7 @@ function clusterOf(overlay: Editor, seedIds: Set<string>, viewportId?: string): 
     const boundsWidth = rectWidth(bounds) || shapeWidth(shape)
     if (!(boundsWidth > 0)) return null
     const cam = getGestureViewportCamera(overlay, viewportId)
-    const containerRect = getGestureViewportContainer(overlay, viewportId).getBoundingClientRect()
+    const containerRect = getGestureViewportContainer(overlay, viewportId, FLEET_GESTURE_FRAME_SELECTORS).getBoundingClientRect()
     const centerX = containerRect.left + (boundsX + boundsWidth / 2 + cam.x) * cam.z
     return centerX < docScreenMidX ? 'L' : 'R'
   }
@@ -920,7 +933,7 @@ export function useFleetGestures(opts: {
     const fleetDomTargets = () => {
       const overlay = overlayEditorRef.current
       if (!overlay) return []
-      const containerRect = getGestureViewportContainer(overlay, viewportId).getBoundingClientRect()
+      const containerRect = getGestureViewportContainer(overlay, viewportId, FLEET_GESTURE_FRAME_SELECTORS).getBoundingClientRect()
       const camera = getGestureViewportCamera(overlay, viewportId)
       return overlay.getCurrentPageShapes()
         .filter(isMyGestureFleetShape)
@@ -1186,7 +1199,7 @@ export function useFleetGestures(opts: {
         rawHit: describeFleetHit(fleetHitAtScreen(overlay, clientX, clientY, viewportId, { ignoreCornerControls: true })),
         guardedContainingPanels: containingFleetPanelsAtPoint(overlay, clientX, clientY).map(describeFleetShape),
         rawContainingPanels: containingFleetPanelsAtPoint(overlay, clientX, clientY, { ignoreCornerControls: true }).map(describeFleetShape),
-        elementChain: elementChainAt(clientX, clientY),
+        elementChain: elementChainAt(clientX, clientY, FLEET_GESTURE_FRAME_SELECTORS),
       }
     }
 
@@ -1746,7 +1759,7 @@ export function useFleetGestures(opts: {
         const spanDx = Math.abs(span.x - state.sx0)
         const spanDy = Math.abs(span.y - state.sy0)
         const spread = Math.max(Math.abs(d - state.d0), spanDx, spanDy) // pinch amount
-        const { moveActive: nextMoveActive, resizeActive: nextResizeActive } = classifyFleetSoftGesture({
+        const { moveActive: nextMoveActive, resizeActive: nextResizeActive } = classifySoftGesture({
           moveActive: state.moveActive,
           resizeActive: state.resizeActive,
           travel,
@@ -1828,7 +1841,7 @@ export function useFleetGestures(opts: {
         const spanDx = Math.abs(span.x - state.sx0)
         const spanDy = Math.abs(span.y - state.sy0)
         const spread = Math.max(Math.abs(d - state.d0), spanDx, spanDy)
-        const { moveActive: nextMoveActive, resizeActive: nextResizeActive } = classifyFleetSoftGesture({
+        const { moveActive: nextMoveActive, resizeActive: nextResizeActive } = classifySoftGesture({
           moveActive: state.moveActive,
           resizeActive: state.resizeActive,
           travel,

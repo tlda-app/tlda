@@ -28,10 +28,9 @@ export const WM_EXTRACTION_MODULES = [
 		publicContract: 'Managed surface request vocabulary, owner policy, placement, cleanup, persistence, and shape metadata.',
 	},
 	{
-		path: 'src/overlays/fleet-gesture-policy.ts',
+		path: 'src/wm/gesture-policy.ts',
 		classification: 'wm-package-core',
-		publicContract: 'Pure gesture thresholds, resize-axis policy, and lane snap decisions.',
-		remainingHostDependency: 'Rename away from fleet and supply lane names from the host.',
+		publicContract: 'Pure gesture thresholds, resize-axis policy, and host-supplied lane snap decisions.',
 	},
 	{
 		path: 'src/wm/editor-wm.ts',
@@ -49,10 +48,9 @@ export const WM_EXTRACTION_MODULES = [
 		publicContract: 'Fork-facing named viewport capabilities, optional viewport lookup, and surface camera sync.',
 	},
 	{
-		path: 'src/overlays/fleet-gesture-frame.ts',
+		path: 'src/wm/gesture-frame.ts',
 		classification: 'wm-package-tldraw-adapter',
-		publicContract: 'DOM and TLDraw viewport frame helpers for gesture hit testing.',
-		remainingHostDependency: 'Rename away from fleet and keep browser DOM wiring as an adapter.',
+		publicContract: 'DOM and TLDraw viewport frame helpers for gesture hit testing with host-supplied selectors.',
 	},
 	{
 		path: 'src/wm/editor-host-bridge.ts',

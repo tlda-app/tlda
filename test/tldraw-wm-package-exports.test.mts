@@ -26,7 +26,7 @@ test('tldraw WM package core exports package-core modules', () => {
 	assert.equal(typeof packageCore.createWMCore, 'function')
 	assert.equal(typeof packageCore.defineHostedPanelApps, 'function')
 	assert.equal(typeof packageCore.managedSurfaceShapeMeta, 'function')
-	assert.equal(typeof packageCore.classifyFleetSoftGesture, 'function')
+	assert.equal(typeof packageCore.classifySoftGesture, 'function')
 })
 
 test('tldraw WM package tldraw adapter exports adapter modules', () => {
