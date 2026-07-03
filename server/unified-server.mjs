@@ -3958,9 +3958,13 @@ async function handleFleetWsMessage(ws, msg) {
       const conflict = fleetStore.db.prepare('SELECT id FROM agents WHERE friendly_name = ? AND dead = 0 AND id != ?').get(newName, agent.id)
       if (conflict || newName === SERVER_OWNER_NAME) { error(`Name "${newName}" already in use`); return }
     }
-    fleetStore.db.prepare('UPDATE agents SET friendly_name = ? WHERE id = ?').run(newName || null, agent.id)
-    broadcastState()
-    reply({ ok: true, agent: agent.id, name: newName || null })
+    try {
+      await fleetStore.renameAgentFriendlyName(agent.id, newName, { actorId: agent.id, reason: 'ws-rename' })
+      broadcastState()
+      reply({ ok: true, agent: agent.id, name: newName || null })
+    } catch (e) {
+      error(e.message)
+    }
     return
   }
 

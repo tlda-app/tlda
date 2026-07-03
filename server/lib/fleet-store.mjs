@@ -1466,6 +1466,26 @@ export class FleetStore {
     this._syncAgentRegistry(id);
   }
 
+  async renameAgentFriendlyName(id, friendlyName, { actorId = null, reason = 'rename' } = {}) {
+    const agent = this._getAgent.get(id);
+    if (!agent) throw new Error('agent not found');
+    const oldName = agent.friendly_name || null;
+    const newName = friendlyName || null;
+    this.db.transaction(() => {
+      this.db.prepare('UPDATE agents SET friendly_name = ?, pretty_name = ? WHERE id = ?')
+        .run(newName, serializePrettyName(prettyNameForFriendlyName(newName)), id);
+      this._bustAgentsCache();
+      this._syncAgentRegistry(id);
+    })();
+    await this.lifecycle('rename', id, `${oldName || id} -> ${newName || '(unnamed)'}`, {
+      actorId,
+      reason,
+      oldName,
+      newName,
+    });
+    return this.getAgent(id);
+  }
+
   updateAgentStatus(id, state, tool, ts) {
     // Store status in metadata JSON blob — no schema migration needed
     const row = this._getAgent.get(id);
