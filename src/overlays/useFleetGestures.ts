@@ -525,6 +525,10 @@ function isPhoneMode() {
   return typeof document !== 'undefined' && document.body.classList.contains('phone-mode')
 }
 
+function isOpenThreadInboxTouch(target: EventTarget | null): boolean {
+  return target instanceof Element && !!target.closest('.fleet-inbox-shape[data-phone-open-thread="true"]')
+}
+
 function getPrimaryDocumentLeft(editor: Editor): number | null {
   const pages = editor.getCurrentPageShapes().filter(isDocumentPageShape)
   if (pages.length === 0) return null
@@ -1516,6 +1520,10 @@ export function useFleetGestures(opts: {
       }
 
       if (ts.length === 1 && isPhoneMode()) {
+        // Open-thread inbox owns horizontal left flicks for push-to-eject. The
+        // window-capture lane pager sees touchstart before the inbox DOM handler,
+        // so it must yield here; list-state inboxes still page normally.
+        if (isOpenThreadInboxTouch(e.target)) return
         const hit = fleetHitAtScreen(overlay, ts[0].clientX, ts[0].clientY, viewportId)
         if (hit?.shape) {
           const docLeftPage = getPrimaryDocumentLeft(main)

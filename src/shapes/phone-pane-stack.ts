@@ -1,5 +1,8 @@
-import type { Editor, TLShape } from 'tldraw'
+import { createShapeId, type Editor, type TLShape } from 'tldraw'
 import { isFleetShapeForOwnerKey, isMyFleetShape } from './fleet-ownership'
+import { isDocumentPageShape } from './document-pages'
+import { fleetPanelDefaultProps } from './fleet-panel-registry'
+import { dispatchFleetHudReset, markMainEditorHistoryStoppingPoint } from '../wm/editor-host-bridge'
 
 export const PHONE_DOCUMENT_PANE_INDEX = 0
 export const PHONE_INBOX_PANE_INDEX = 1
@@ -13,15 +16,41 @@ type PhonePaneCandidate = {
   id?: unknown
   type?: string
   x?: number
+  y?: number
+  isLocked?: boolean
   props?: {
     w?: number
     h?: number
+    userId?: string
+    deviceId?: string
+    filter?: FleetFilter
   }
 }
+
+export type FleetFilter = [string, string][][]
+
+export type PhonePinnedPanePushResult =
+  | { ok: true; createdId: string; shiftedIds: string[]; newIndex: number; maxIndex: number; docLeftPage: number }
+  | { ok: false; reason: 'owner-missing' | 'document-missing' | 'viewport-missing' | 'inbox-not-fullscreen' }
 
 function viewportSize(editor: Editor): { w: number; h: number } {
   const vp = editor.getViewportScreenBounds()
   return { w: Math.round(vp.w || 0), h: Math.round(vp.h || 0) }
+}
+
+function primaryDocumentLeft(editor: Editor): number | null {
+  const pages = editor.getCurrentPageShapes().filter(isDocumentPageShape)
+  if (pages.length === 0) return null
+  const viewport = editor.getViewportPageBounds()
+  const midY = viewport.minY + viewport.height / 2
+  let best: { x: number; d: number } | null = null
+  for (const page of pages) {
+    const bounds = editor.getShapePageBounds(page.id)
+    if (!bounds) continue
+    const d = Math.abs((bounds.y + bounds.h / 2) - midY)
+    if (!best || d < best.d) best = { x: bounds.x, d }
+  }
+  return best?.x ?? null
 }
 
 export function phonePaneX(docLeftPage: number, paneIndex: number, screenW: number, dx: number): number {
@@ -66,6 +95,68 @@ export function getPhonePaneStack(editor: Editor): PhonePaneStackEntry[] {
 
 export function phonePaneStackMaxIndex(editor: Editor): number {
   return getPhonePaneStack(editor).length - 1
+}
+
+function isFullScreenPinnedPaneForOwner(editor: Editor, shape: PhonePaneCandidate, userId: string, deviceId: string): boolean {
+  return isFleetShapeForOwnerKey(shape, userId, deviceId) &&
+    shape.type === 'fleet-chat' &&
+    isFullScreenPhonePane(editor, shape)
+}
+
+export function pushPhonePinnedChatPane(editor: Editor, inboxShape: PhonePaneCandidate, filter: FleetFilter): PhonePinnedPanePushResult {
+  const userId = inboxShape.props?.userId
+  const deviceId = inboxShape.props?.deviceId
+  if (!userId || !deviceId) return { ok: false, reason: 'owner-missing' }
+
+  const { w: screenW, h: screenH } = viewportSize(editor)
+  if (!screenW || !screenH) return { ok: false, reason: 'viewport-missing' }
+  if (!isFullScreenPhonePane(editor, inboxShape)) return { ok: false, reason: 'inbox-not-fullscreen' }
+
+  const docLeft = primaryDocumentLeft(editor)
+  if (docLeft === null) return { ok: false, reason: 'document-missing' }
+
+  const dx = (inboxShape.x || 0) - phonePaneX(docLeft, PHONE_INBOX_PANE_INDEX, screenW, 0)
+  const topPaneX = phonePaneX(docLeft, PHONE_INBOX_PANE_INDEX + 1, screenW, dx)
+  const y = inboxShape.y || 0
+  const pinned = (editor.getCurrentPageShapes() as PhonePaneCandidate[])
+    .filter(shape => isFullScreenPinnedPaneForOwner(editor, shape, userId, deviceId))
+    .sort((a, b) => ((b.x || 0) - (a.x || 0)) || String(a.id).localeCompare(String(b.id)))
+  const createdId = createShapeId()
+
+  markMainEditorHistoryStoppingPoint(editor)
+  editor.run(() => {
+    for (const pane of pinned) {
+      if (!pane.id || !pane.type) continue
+      if (pane.isLocked) {
+        editor.updateShape({ id: pane.id as any, type: pane.type as any, isLocked: false } as any)
+      }
+      editor.updateShape({
+        id: pane.id as any,
+        type: pane.type as any,
+        x: (pane.x || 0) - screenW,
+        props: { ...(pane.props || {}), w: screenW, h: screenH, userId, deviceId },
+        isLocked: true,
+      } as any)
+    }
+    editor.createShape({
+      id: createdId,
+      type: 'fleet-chat' as any,
+      x: topPaneX,
+      y,
+      isLocked: true,
+      props: { ...fleetPanelDefaultProps('fleet-chat'), w: screenW, h: screenH, filter, userId, deviceId },
+    } as any)
+  })
+  dispatchFleetHudReset()
+
+  return {
+    ok: true,
+    createdId: createdId as unknown as string,
+    shiftedIds: pinned.map(pane => String(pane.id)).filter(Boolean),
+    newIndex: PHONE_INBOX_PANE_INDEX + 1,
+    maxIndex: PHONE_INBOX_PANE_INDEX + 1 + pinned.length,
+    docLeftPage: docLeft,
+  }
 }
 
 export function isPhoneLayoutInboxShapeForOwner(editor: Editor, shape: unknown, userId: string, deviceId: string): boolean {

@@ -19,8 +19,9 @@ import {
 } from 'tldraw'
 import { fleetInboxProps } from '../../shared/shapes/fleet-panel-schema.mjs'
 import type { Editor, TLShapeId } from 'tldraw'
-import { agentDisplayLabel, beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
+import { agentDisplayLabel, beginNativeSnapDrag, endNativeSnapDrag, selectFleetShapeForLayout } from './fleet-utils'
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
+import { pushPhonePinnedChatPane, type FleetFilter } from './phone-pane-stack'
 import { usePillDrag } from './FleetAgentsShape'
 import { ChatComposer } from './ChatComposer'
 import { useState, useCallback, useRef, useMemo, useEffect, useContext, memo } from 'react'
@@ -44,13 +45,20 @@ import { getHumanId } from '../fleet/fleet-data.mjs'
 import { useIsInViewport } from './useIsInViewport'
 import { DATABASE_HTTP } from '../activeConfig'
 import { openChatMarkdownColumn, openMarkdownChipFromTarget } from './fleet-chat-markdown-open'
+import {
+  PHONE_LANE_DRAG_IDLE,
+  phoneLaneCommitPx,
+  rememberPhoneLanePortraitWidth,
+  setPhoneLaneDrag,
+  snapToPhoneLaneIndex,
+} from '../overlays/useFleetGestures'
+import { phoneLaneDragDecision } from '../wm'
 import './fleet-chat.css'
 import './fleet-inbox.css'
 
 const DEFAULT_W = 360
 const DEFAULT_H = 560
 const FLEET_API = DATABASE_HTTP
-type FleetFilter = [string, string][][]
 type PhoneChatShape = {
   id: TLShapeId
   type: 'fleet-chat'
@@ -66,6 +74,14 @@ function isPhoneViewportSurface(): boolean {
   const w = Number(vv?.width || window.innerWidth || 0)
   const h = Number(vv?.height || window.innerHeight || 0)
   return Number.isFinite(w) && Number.isFinite(h) && Math.min(w, h) <= 600
+}
+
+type PhoneThreadEjectGesture = {
+  pointerId: number
+  mode: 'pending' | 'dragging'
+  x0: number
+  y0: number
+  lastDx: number
 }
 
 function copySourceTemplate(text: string): string {
@@ -642,6 +658,75 @@ function FleetInboxInner({ shape }: { shape: any }) {
     () => (openPartner ? threads.find(t => t.partnerId === openPartner) || null : null),
     [openPartner, threads],
   )
+  const ejectGestureRef = useRef<PhoneThreadEjectGesture | null>(null)
+
+  const resetThreadEjectGesture = useCallback(() => {
+    ejectGestureRef.current = null
+    setPhoneLaneDrag(PHONE_LANE_DRAG_IDLE)
+  }, [])
+
+  const startThreadEjectGesture = useCallback((e: React.PointerEvent) => {
+    if (!isPhoneSurface || !activeThread) return
+    if (!e.isPrimary) return
+    if (e.pointerType === 'mouse' && e.button !== 0) return
+    const target = e.target instanceof Element ? e.target : null
+    if (target?.closest('.fleet-inbox-composer-slot, .fleet-inbox-back, .fleet-inbox-filter-btn')) return
+    rememberPhoneLanePortraitWidth(mainEd)
+    ejectGestureRef.current = {
+      pointerId: e.pointerId,
+      mode: 'pending',
+      x0: e.clientX,
+      y0: e.clientY,
+      lastDx: 0,
+    }
+    try { (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId) } catch {
+      // Synthetic/offscreen pointer events may not be capturable; move/up still dispatch to this handler.
+    }
+    stopEventPropagation(e)
+  }, [activeThread, isPhoneSurface, mainEd])
+
+  const moveThreadEjectGesture = useCallback((e: React.PointerEvent) => {
+    const gesture = ejectGestureRef.current
+    if (!gesture || gesture.pointerId !== e.pointerId || !activeThread) return
+    const dx = e.clientX - gesture.x0
+    const dy = e.clientY - gesture.y0
+    gesture.lastDx = dx
+    if (gesture.mode === 'pending') {
+      const decision = phoneLaneDragDecision(dx, dy)
+      if (decision === 'abort') {
+        resetThreadEjectGesture()
+        return
+      }
+      if (decision === 'pending') return
+      gesture.mode = 'dragging'
+    }
+
+    e.preventDefault()
+    stopEventPropagation(e)
+    const commit = phoneLaneCommitPx()
+    const progress = dx < 0 ? Math.min(1, Math.abs(dx) / commit) : 0
+    setPhoneLaneDrag({ active: true, progress, dir: progress > 0 ? -1 : 0, armed: progress >= 1, arrowWidthPx: commit })
+  }, [activeThread, resetThreadEjectGesture])
+
+  const finishThreadEjectGesture = useCallback((e: React.PointerEvent) => {
+    const gesture = ejectGestureRef.current
+    if (!gesture || gesture.pointerId !== e.pointerId) return
+    const active = activeThread
+    const shouldCommit = active && gesture.mode === 'dragging' && gesture.lastDx <= -phoneLaneCommitPx()
+    e.preventDefault()
+    stopEventPropagation(e)
+    resetThreadEjectGesture()
+    if (!shouldCommit || !active) return
+
+    const filter: FleetFilter = [[['from', active.friendly]], [['to', active.friendly]]]
+    const result = pushPhonePinnedChatPane(mainEd, shape, filter)
+    if (!result.ok) {
+      console.warn('[phone-pane-stack] push-to-eject failed', result)
+      return
+    }
+    setOpenPartner(null)
+    snapToPhoneLaneIndex(mainEd, result.docLeftPage, result.newIndex)
+  }, [activeThread, mainEd, resetThreadEjectGesture, shape])
 
   const openableItems = useMemo<DetailItem[]>(() => [
     ...proofTasks.direct.map((n): DetailItem => ({ kind: 'node', key: `node:${n.id}`, node: n })),
@@ -691,6 +776,7 @@ function FleetInboxInner({ shape }: { shape: any }) {
       <div
         ref={containerRef}
         className="fleet-shape fleet-inbox-shape"
+        data-phone-open-thread={activeThread ? 'true' : undefined}
         style={{
           width: '100%',
           height: '100%',
@@ -787,7 +873,17 @@ function FleetInboxInner({ shape }: { shape: any }) {
 
         {/* Body */}
         {activeThread ? (
-          <ConversationView shapeId={shape.id} thread={activeThread} ctx={ctx} myId={myId} myName={myName} />
+          <ConversationView
+            shapeId={shape.id}
+            thread={activeThread}
+            ctx={ctx}
+            myId={myId}
+            myName={myName}
+            onEjectPointerDown={startThreadEjectGesture}
+            onEjectPointerMove={moveThreadEjectGesture}
+            onEjectPointerUp={finishThreadEjectGesture}
+            onEjectPointerCancel={resetThreadEjectGesture}
+          />
         ) : activeItem ? (
           <ItemDetail item={activeItem} onApprove={approveNode} />
         ) : (
@@ -1052,7 +1148,27 @@ function ItemDetail({ item, onApprove }: { item: DetailItem; onApprove: (t: Node
   )
 }
 
-function ConversationView({ shapeId, thread, ctx, myId, myName }: { shapeId: TLShapeId; thread: Thread; ctx: any; myId: string | null; myName: string }) {
+function ConversationView({
+  shapeId,
+  thread,
+  ctx,
+  myId,
+  myName,
+  onEjectPointerDown,
+  onEjectPointerMove,
+  onEjectPointerUp,
+  onEjectPointerCancel,
+}: {
+  shapeId: TLShapeId
+  thread: Thread
+  ctx: any
+  myId: string | null
+  myName: string
+  onEjectPointerDown: (e: React.PointerEvent) => void
+  onEjectPointerMove: (e: React.PointerEvent) => void
+  onEjectPointerUp: (e: React.PointerEvent) => void
+  onEjectPointerCancel: () => void
+}) {
   const editor = useEditor()
   const scrollRef = useRef<HTMLDivElement>(null)
   const wasNearBottomRef = useRef(true)
@@ -1161,8 +1277,17 @@ function ConversationView({ shapeId, thread, ctx, myId, myName }: { shapeId: TLS
         className="fleet-inbox-conv fleet-chat-shape"
         onScroll={updateNearBottom}
         onClick={handleConversationClick}
-        onPointerDown={handleConversationPointerDown}
-        onPointerUp={handleConversationPointerUp}
+        onPointerDown={(e) => {
+          handleConversationPointerDown(e)
+          onEjectPointerDown(e)
+        }}
+        onPointerMove={onEjectPointerMove}
+        onPointerUp={(e) => {
+          handleConversationPointerUp(e)
+          onEjectPointerUp(e)
+        }}
+        onPointerCancel={onEjectPointerCancel}
+        style={{ touchAction: 'pan-y' }}
       >
         {thread.messages.map((m, i) => {
           const key = m._dbId || m.id || String(i)
