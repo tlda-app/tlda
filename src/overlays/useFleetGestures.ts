@@ -27,25 +27,30 @@ import type { Editor, TLShape } from 'tldraw'
 import { log } from '../logger'
 import { FLEET_SHAPE_TYPES, isMyFleetShape } from '../shapes/fleet-utils'
 import { isDocumentPageShape } from '../shapes/document-pages'
+import {
+  MOVE_LOCK_ON,
+  PAN_AXIS_DECAY,
+  PAN_BREAK_RATIO,
+  PAN_LOCK_INITIAL,
+  PAN_OFFAXIS_DAMP,
+  PHONE_LANE_SNAP_DURATION,
+  RESIZE_LOCK_AFTER_MOVE,
+  RESIZE_LOCK_ON,
+  applyShapeResizeAxisLock,
+  classifyFleetSoftGesture,
+  nearestPhoneLaneDocLeftScreen,
+  phoneLaneDragDecision,
+} from './fleet-gesture-policy'
+import {
+  cornerControlAtPoint as gestureCornerControlAtPoint,
+  describeElement,
+  elementChainAt,
+  getGestureViewportCamera,
+  getGestureViewportContainer,
+  screenPointToOverlayPage,
+} from './fleet-gesture-frame'
 
 const LOG_NS = 'fleet-gesture'
-
-// Get the viewport camera (fork viewport) or main camera (legacy)
-function getViewportCamera(editor: Editor, viewportId?: string): { x: number; y: number; z: number } {
-  if (viewportId) {
-    try { return editor.getViewport(viewportId as any).camera } catch { /* fall through */ }
-  }
-  return editor.getCamera()
-}
-
-// Get the viewport container (fork viewport) or main container (legacy)
-function getViewportContainer(editor: Editor, viewportId?: string): HTMLElement {
-  if (viewportId) {
-    const el = document.querySelector(`[data-viewport-id="${viewportId}"]`)?.querySelector('.clip-panel-canvas')
-    if (el) return el as HTMLElement
-  }
-  return editor.getContainer()
-}
 
 const TOUCH_TELEMETRY_NS = 'fleet-gesture-telemetry'
 export const TOUCH_TELEMETRY_BUILD = 'touch56-20260617-hud-state-1'
@@ -231,48 +236,8 @@ function shapeHeight(shape: any): number {
   return shape?.props?.h ?? shape?.h ?? 0
 }
 
-function screenPointToOverlayPage(overlay: Editor, clientX: number, clientY: number, viewportId?: string) {
-  const container = viewportId
-    ? document.querySelector(`[data-viewport-id="${viewportId}"]`)?.querySelector('.clip-panel-canvas') ?? getViewportContainer(overlay, viewportId)
-    : getViewportContainer(overlay, viewportId)
-  const rect = (container as HTMLElement).getBoundingClientRect()
-  return overlay.screenToPage({ x: clientX - rect.left, y: clientY - rect.top }, viewportId ? { viewportId } : undefined)
-}
-
-function describeElement(el: Element | null) {
-  if (!el) return null
-  let pointerEvents: string | null = null
-  try {
-    pointerEvents = window.getComputedStyle(el).pointerEvents
-  } catch {
-    pointerEvents = null
-  }
-  return {
-    tag: el.tagName.toLowerCase(),
-    id: el.id || undefined,
-    classes: el instanceof HTMLElement || el instanceof SVGElement ? Array.from(el.classList).slice(0, 8) : [],
-    shapeId: el.getAttribute('data-shape-id') || undefined,
-    shapeType: el.getAttribute('data-shape-type') || undefined,
-    role: el.getAttribute('role') || undefined,
-    pointerEvents,
-  }
-}
-
-function elementChainAt(clientX: number, clientY: number) {
-  const first = document.elementFromPoint(clientX, clientY)
-  const chain: ReturnType<typeof describeElement>[] = []
-  let cur: Element | null = first
-  for (let i = 0; cur && i < 10; i++) {
-    chain.push(describeElement(cur))
-    if (cur.classList.contains('fleet-hud-wrap')) break
-    cur = cur.parentElement
-  }
-  return chain
-}
-
 function cornerControlAtPoint(clientX: number, clientY: number): Element | null {
-  const el = document.elementFromPoint(clientX, clientY)
-  return el?.closest?.(CORNER_CONTROL_SELECTOR) ?? null
+  return gestureCornerControlAtPoint(clientX, clientY, CORNER_CONTROL_SELECTOR)
 }
 
 type FleetHit = {
@@ -519,8 +484,8 @@ function clusterOf(overlay: Editor, seedIds: Set<string>, viewportId?: string): 
     const boundsX = bounds?.x ?? shape?.x
     const boundsWidth = rectWidth(bounds) || shapeWidth(shape)
     if (!(boundsWidth > 0)) return null
-    const cam = getViewportCamera(overlay, viewportId)
-    const containerRect = getViewportContainer(overlay, viewportId).getBoundingClientRect()
+    const cam = getGestureViewportCamera(overlay, viewportId)
+    const containerRect = getGestureViewportContainer(overlay, viewportId).getBoundingClientRect()
     const centerX = containerRect.left + (boundsX + boundsWidth / 2 + cam.x) * cam.z
     return centerX < docScreenMidX ? 'L' : 'R'
   }
@@ -537,58 +502,11 @@ function clusterOf(overlay: Editor, seedIds: Set<string>, viewportId?: string): 
   })
 }
 
-// Match TLDraw's touch pinch classifier where possible:
-//   not-sure -> resize/zoom after 24px finger-distance change
-//   not-sure -> move/pan after 16px center movement
-//   move/pan -> resize/zoom only after 64px finger-distance change
-// See @tldraw/editor/src/lib/hooks/useGestureEvents.ts. We keep anisotropic
-// resizing as our HUD-specific extension, but use the same commitment ordering.
-const MOVE_LOCK_ON = 16
-const RESIZE_LOCK_ON = 24
-const RESIZE_LOCK_AFTER_MOVE = 64
-
-export function classifyFleetSoftGesture(input: {
-  moveActive: boolean
-  resizeActive: boolean
-  travel: number
-  spread: number
-}) {
-  let moveActive = input.moveActive
-  let resizeActive = input.resizeActive
-
-  if (!resizeActive) {
-    if (!moveActive && input.spread > RESIZE_LOCK_ON) {
-      resizeActive = true
-    } else {
-      if (input.travel > MOVE_LOCK_ON) moveActive = true
-      if (moveActive && input.spread > RESIZE_LOCK_AFTER_MOVE) resizeActive = true
-    }
-  }
-
-  // TLDraw's zooming pinch still dispatches center deltas. Once a HUD pinch has
-  // committed to resize, translate by the finger center too so the pinch center
-  // remains the user's fingers rather than the original shape point.
-  if (resizeActive) moveActive = true
-
-  return { moveActive, resizeActive }
-}
-
 // 3-finger pan soft axis lock (Skip's "soft/breakable" choice — cf. the hard-snap
 // variant in src/hooks/usePanMode.ts). Engage after a little travel, bias hard to
 // the dominant axis but leave a sliver of off-axis motion (soft, not rigid), and
 // let a decisive off-axis push re-pick the axis mid-drag (breakable — no pause
 // needed). The accumulators decay each move so the axis tracks RECENT travel.
-const PAN_LOCK_INITIAL = 8    // px of (decayed) travel before the lock engages
-const PAN_BREAK_RATIO = 1.6   // off-axis must out-travel the locked axis by this to flip it
-const PAN_OFFAXIS_DAMP = 0.12 // residual off-axis fraction while locked (0 would be a hard lock)
-const PAN_AXIS_DECAY = 0.8    // per-move decay of the axis accumulators (recent-motion weighting)
-const PHONE_LANE_LOCK = 16
-const PHONE_LANE_AXIS_RATIO = 1.2
-const PHONE_LANE_SNAP_DURATION = 160
-const RESIZE_AXIS_LOCK_INITIAL = 12
-const RESIZE_AXIS_BREAK_RATIO = 1.6
-const RESIZE_AXIS_OFFAXIS_DAMP = 0.12
-const RESIZE_AXIS_DECAY = 0.8
 
 function isPhoneMode() {
   return typeof document !== 'undefined' && document.body.classList.contains('phone-mode')
@@ -687,32 +605,6 @@ export function phoneLaneExistsInDirection(editor: Editor, docLeftPage: number, 
 
 export function snapPhoneLaneDirectional(editor: Editor, docLeftPage: number, dir: number) {
   snapToPhoneLaneIndex(editor, docLeftPage, phoneLaneIndexFromCamera(editor, docLeftPage) + dir)
-}
-
-export function applyShapeResizeAxisLock(input: {
-  enabled: boolean
-  axis: 'x' | 'y' | null
-  accX: number
-  accY: number
-  spanDx: number
-  spanDy: number
-  scaleX: number
-  scaleY: number
-}) {
-  let { axis, accX, accY, scaleX, scaleY } = input
-  if (!input.enabled) return { axis, accX, accY, scaleX, scaleY }
-
-  accX = accX * RESIZE_AXIS_DECAY + Math.abs(input.spanDx)
-  accY = accY * RESIZE_AXIS_DECAY + Math.abs(input.spanDy)
-  if (accX + accY >= RESIZE_AXIS_LOCK_INITIAL) {
-    if (axis === null) axis = accY >= accX ? 'y' : 'x'
-    else if (axis === 'y' && accX > accY * RESIZE_AXIS_BREAK_RATIO) axis = 'x'
-    else if (axis === 'x' && accY > accX * RESIZE_AXIS_BREAK_RATIO) axis = 'y'
-  }
-
-  if (axis === 'x') scaleY = 1 + (scaleY - 1) * RESIZE_AXIS_OFFAXIS_DAMP
-  else if (axis === 'y') scaleX = 1 + (scaleX - 1) * RESIZE_AXIS_OFFAXIS_DAMP
-  return { axis, accX, accY, scaleX, scaleY }
 }
 
 type GestureState =
@@ -896,7 +788,7 @@ export function useFleetGestures(opts: {
         changedTouches: Array.from(e.changedTouches).map(compactTouch),
         stateKind,
         hits: touchHitSummary(overlay, Array.from(e.touches)),
-        overlayCamera: overlay ? getViewportCamera(overlay, viewportId) as any : null,
+        overlayCamera: overlay ? getGestureViewportCamera(overlay, viewportId) as any : null,
         mainCamera: main.getCamera(),
       })
       if ((eventType === 'touchend' || eventType === 'touchcancel') && e.touches.length < 2) {
@@ -1003,7 +895,7 @@ export function useFleetGestures(opts: {
       changedTouches,
       stateKind: state.kind,
       hits: overlay ? touchHitSummary(overlay, touches.map(pointToReplayTouch)) : [],
-      overlayCamera: overlay ? getViewportCamera(overlay, viewportId) as any : null,
+      overlayCamera: overlay ? getGestureViewportCamera(overlay, viewportId) as any : null,
       mainCamera: main.getCamera(),
     })
 
@@ -1028,8 +920,8 @@ export function useFleetGestures(opts: {
     const fleetDomTargets = () => {
       const overlay = overlayEditorRef.current
       if (!overlay) return []
-      const containerRect = getViewportContainer(overlay, viewportId).getBoundingClientRect()
-      const camera = getViewportCamera(overlay, viewportId)
+      const containerRect = getGestureViewportContainer(overlay, viewportId).getBoundingClientRect()
+      const camera = getGestureViewportCamera(overlay, viewportId)
       return overlay.getCurrentPageShapes()
         .filter(isMyGestureFleetShape)
         .map(shape => {
@@ -1166,7 +1058,7 @@ export function useFleetGestures(opts: {
         const sep = Math.min(80, Math.max(24, target.rect.width * 0.22))
         const a = p(1, target.center.x - sep / 2, target.center.y)
         const b = p(2, target.center.x + sep / 2, target.center.y)
-        const z = getViewportCamera(overlay, viewportId).z || 1
+        const z = getGestureViewportCamera(overlay, viewportId).z || 1
         return makeReplayGesture(name, twoTouchFrames(main, overlay, a, b, p(1, a.clientX + 100, a.clientY + 45), p(2, b.clientX + 100, b.clientY + 45)), {
           target: { id: target.id, type: target.type },
           expectedPageDelta: { x: 100 / z, y: 45 / z },
@@ -1188,7 +1080,7 @@ export function useFleetGestures(opts: {
         const sep = Math.min(70, Math.max(24, target.rect.width * 0.18))
         const a = p(1, target.center.x - sep / 2, target.center.y)
         const b = p(2, target.center.x + sep / 2, target.center.y)
-        const z = getViewportCamera(overlay, viewportId).z || 1
+        const z = getGestureViewportCamera(overlay, viewportId).z || 1
         return makeReplayGesture(name, twoTouchFrames(main, overlay, a, b, p(1, target.center.x - sep * 1.5 + 100, target.center.y + 45), p(2, target.center.x + sep * 1.5 + 100, target.center.y + 45)), {
           target: { id: target.id, type: target.type },
           expectedPageDelta: { x: 100 / z, y: 45 / z },
@@ -1202,7 +1094,7 @@ export function useFleetGestures(opts: {
         const sepY = Math.min(120, Math.max(40, target.rect.height * 0.24))
         const a = p(1, target.center.x - sepX / 2, target.center.y - sepY / 2)
         const b = p(2, target.center.x + sepX / 2, target.center.y + sepY / 2)
-        const z = getViewportCamera(overlay, viewportId).z || 1
+        const z = getGestureViewportCamera(overlay, viewportId).z || 1
         return makeReplayGesture(name, twoTouchFrames(main, overlay, a, b, p(1, target.center.x - sepX * 1.5 + 80, target.center.y - sepY * 0.75 + 35), p(2, target.center.x + sepX * 1.5 + 80, target.center.y + sepY * 0.75 + 35)), {
           target: { id: target.id, type: target.type },
           expectedPageDelta: { x: 80 / z, y: 35 / z },
@@ -1226,7 +1118,7 @@ export function useFleetGestures(opts: {
       const a = p(1, pair[0].center.x, pair[0].center.y)
       const b = p(2, pair[1].center.x, pair[1].center.y)
       const clusterIds = clusterOf(overlay, new Set(pair.map(t => t.id, viewportId))).map(s => s.id)
-      const z = getViewportCamera(overlay, viewportId).z || 1
+      const z = getGestureViewportCamera(overlay, viewportId).z || 1
       return makeReplayGesture(name, twoTouchFrames(main, overlay, a, b, p(1, a.clientX + 90, a.clientY + 40), p(2, b.clientX + 90, b.clientY + 40)), {
         targets: pair.map(t => ({ id: t.id, type: t.type })),
         clusterIds,
@@ -1334,7 +1226,7 @@ export function useFleetGestures(opts: {
         at: new Date().toISOString(),
         status: status(),
         mainCamera: main.getCamera(),
-        overlayCamera: overlay ? getViewportCamera(overlay, viewportId) as any : null,
+        overlayCamera: overlay ? getGestureViewportCamera(overlay, viewportId) as any : null,
         mainFleet: shapeSnapshot(main),
         overlayFleet: shapeSnapshot(overlay),
         domRects: domSnapshot(),
@@ -1791,11 +1683,12 @@ export function useFleetGestures(opts: {
         const dy = ts[0].clientY - state.y0
         state.lastDx = dx
         if (state.mode === 'pending') {
-          if (Math.abs(dy) >= PHONE_LANE_LOCK && Math.abs(dy) > Math.abs(dx)) {
+          const decision = phoneLaneDragDecision(dx, dy)
+          if (decision === 'abort') {
             state = { kind: 'none' }
             return
           }
-          if (Math.abs(dx) < PHONE_LANE_LOCK || Math.abs(dx) < Math.abs(dy) * PHONE_LANE_AXIS_RATIO) return
+          if (decision === 'pending') return
           state.mode = 'dragging'
           setGestureActive(true)
           log.debug(LOG_NS, 'phone lane drag start', { dx: Math.round(dx), dy: Math.round(dy) })

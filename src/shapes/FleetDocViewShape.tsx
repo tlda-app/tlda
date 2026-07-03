@@ -20,12 +20,12 @@
 import {
   BaseBoxShapeUtil,
   HTMLContainer,
-  T,
   createShapeId,
   stopEventPropagation,
   useEditor,
   useValue,
 } from 'tldraw'
+import { fleetDocviewProps } from '../../shared/shapes/fleet-panel-schema.mjs'
 import type { Editor } from 'tldraw'
 import { useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
@@ -81,19 +81,7 @@ function findNearestLine(
 
 export class FleetDocViewShapeUtil extends BaseBoxShapeUtil<any> {
   static override type = 'fleet-docview' as const
-  static override props = {
-    w: T.number,
-    h: T.number,
-    sources: T.optional(T.string),  // JSON array of Source values, e.g. '["ref","proof","errors"]'
-    mode: T.optional(T.string),    // legacy — ignored, accepted for backwards compat with old Yjs stores
-    label: T.string,    // current ref label key, set by ref click
-    page: T.number,     // current ref page, set by ref click
-    yTop: T.number,     // current ref region top (PDF coords)
-    yBottom: T.number,  // current ref region bottom (PDF coords)
-    title: T.string,    // display title
-    userId: T.optional(T.string),
-    deviceId: T.optional(T.string),
-  }
+  static override props = fleetDocviewProps
 
   getDefaultProps() {
     return { w: DEFAULT_W, h: DEFAULT_H, sources: JSON.stringify(getPref('docview-sources')), label: '', page: 0, yTop: 0, yBottom: 0, title: '', userId: '', deviceId: '' }

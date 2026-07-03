@@ -32,13 +32,14 @@ import {
 } from '../wm/fleet-hud-layer'
 import type { FleetHudLayerState } from '../wm/fleet-hud-layer'
 import { getEditorWMCore } from '../wm/editor-wm'
+import { FLEET_HUD_RESET_EVENT, FLEET_HUD_TOGGLE_EVENT, setHudEditor } from '../wm/editor-host-bridge'
+import { readFleetHudExpanded, resolveFleetHudToggle, writeFleetHudExpanded } from '../wm/fleet-hud-state'
 import { probe } from '../perf-probe'
 import './FleetHUD.css'
 
 declare global {
   interface Window {
     __tlda_wm_hud__?: FleetHudLayerState
-    __tldraw_hud_editor__?: Editor
     __tldaFleetHudSuppressCameraTrackingUntil?: number
   }
 }
@@ -326,7 +327,7 @@ export function FleetHUD({
 }: FleetHUDProps) {
   const { id: identityId } = useFleetIdentity()
   const [deviceReady, setDeviceReady] = useState(isDeviceReady())
-  const [expanded, setExpanded] = useState(() => localStorage.getItem('fleet-hud-expanded') === '1')
+  const [expanded, setExpanded] = useState(readFleetHudExpanded)
   const [fleetBounds, setFleetBounds] = useState<ClipBounds | null>(() => identityId ? getFleetBounds(mainEditor) : null)
   // True once document page shapes are present — panOffset must not be computed before this.
   // On browser restore, fleet shapes may load before SVG pages, causing panOffset to use
@@ -431,7 +432,7 @@ export function FleetHUD({
       docShapeCount: docShapes.length,
       hasHudRef: !!hudRef.current,
       hasOverlayEditor: !!overlayEditorRef.current,
-      localExpanded: typeof window !== 'undefined' ? window.localStorage.getItem('fleet-hud-expanded') : null,
+      localExpanded: readFleetHudExpanded() ? '1' : '0',
       localGestures: null,
     }
     const sig = JSON.stringify({
@@ -1127,16 +1128,16 @@ export function FleetHUD({
     const onToggle = (e: Event) => {
       setExpanded(prev => {
         const requested = (e as CustomEvent)?.detail?.expanded
-        const next = typeof requested === 'boolean' ? requested : !prev
-        localStorage.setItem('fleet-hud-expanded', next ? '1' : '0')
+        const next = resolveFleetHudToggle(prev, requested)
+        writeFleetHudExpanded(next)
         return next
       })
     }
-    window.addEventListener('fleet-hud-reset', onReset)
-    window.addEventListener('fleet-hud-toggle', onToggle)
+    window.addEventListener(FLEET_HUD_RESET_EVENT, onReset)
+    window.addEventListener(FLEET_HUD_TOGGLE_EVENT, onToggle)
     return () => {
-      window.removeEventListener('fleet-hud-reset', onReset)
-      window.removeEventListener('fleet-hud-toggle', onToggle)
+      window.removeEventListener(FLEET_HUD_RESET_EVENT, onReset)
+      window.removeEventListener(FLEET_HUD_TOGGLE_EVENT, onToggle)
     }
   }, [mainEditor, recenterHudForBounds, resetFleetBoundsTracker])
 
@@ -1308,8 +1309,7 @@ export function FleetHUD({
           customGestureActiveRef={fleetTouchGestureActiveRef}
           onEditorMount={(e) => {
             overlayEditorRef.current = e
-            if (e) window.__tldraw_hud_editor__ = e
-            else delete window.__tldraw_hud_editor__
+            setHudEditor(e)
           }}
           className="fleet-hud"
         />

@@ -36,6 +36,7 @@ import { FleetNotificationsShapeUtil } from './shapes/FleetNotificationsShape'
 import { FleetTouchInboxShapeUtil } from './shapes/FleetTouchInboxShape'
 import { FleetSourceEditorShapeUtil } from './shapes/FleetSourceEditorShape'
 import { getMyAnchorId, isMyFleetShape, FLEET_SHAPE_TYPES } from './shapes/fleet-utils'
+import { dispatchFleetHudReset } from './wm/editor-host-bridge'
 import { ClusterShapeUtil } from './shapes/ClusterShape'
 import { TerminalShapeUtil } from './shapes/TerminalShape'
 import { ReaperShapeUtil } from './shapes/ReaperShape'
@@ -1477,7 +1478,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
                     // late). The HUD should recompute a provisional default but MUST NOT
                     // delete the saved anchor — see onReset. Destructive resets
                     // (layout switch, emergency recovery) dispatch without this flag.
-                    window.dispatchEvent(new CustomEvent('fleet-hud-reset', { detail: { preserveAnchor: true } }))
+                    dispatchFleetHudReset({ preserveAnchor: true })
                   })
                 })
               }

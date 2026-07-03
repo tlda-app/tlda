@@ -1,3 +1,5 @@
+import type { JsonObject } from '@tldraw/utils'
+
 export type ManagedSurfaceKind =
 	| 'temporary-markdown'
 	| 'annotation-viewer'
@@ -75,6 +77,17 @@ export function createManagedSurfaceOwner(userId = '', deviceId = ''): ManagedSu
 	return { userId, deviceId }
 }
 
+export function requireManagedSurfaceOwner(
+	owner: Partial<ManagedSurfaceOwner> | undefined,
+	context = 'managed surface',
+): ManagedSurfaceOwner {
+	const resolved = createManagedSurfaceOwner(owner?.userId, owner?.deviceId)
+	if (!resolved.userId || !resolved.deviceId) {
+		throw new Error(`${context} requires owner userId and deviceId`)
+	}
+	return resolved
+}
+
 export function surfaceSlug(value: string): string {
 	const slug = value.replace(/^shape:/, '').replace(/[^a-zA-Z0-9_-]/g, '-')
 	return slug || 'surface'
@@ -105,4 +118,58 @@ export function clampChipAnchoredPlacement({
 	if (top + surfaceHeight > viewportHeight - margin) top = viewportHeight - surfaceHeight - margin
 
 	return { left, top, margin }
+}
+
+function rectJson(rect: ManagedSurfaceRect): JsonObject {
+	return { x: rect.x, y: rect.y, w: rect.w, h: rect.h }
+}
+
+function placementJson(placement: ManagedSurfacePlacement): JsonObject {
+	return {
+		mode: placement.mode,
+		left: placement.left,
+		top: placement.top,
+		margin: placement.margin,
+	}
+}
+
+function cameraPolicyJson(policy: ManagedSurfaceCameraPolicy): JsonObject {
+	return { x: policy.x, y: policy.y, zoom: policy.zoom }
+}
+
+function cleanupJson(cleanup: ManagedSurfaceCleanup): JsonObject {
+	return {
+		onClose: cleanup.onClose,
+		onReplace: cleanup.onReplace,
+		onOwnerChange: cleanup.onOwnerChange,
+	}
+}
+
+function ownerJson(owner: ManagedSurfaceOwner): JsonObject {
+	return { userId: owner.userId, deviceId: owner.deviceId }
+}
+
+function persistenceJson(persistence: ManagedSurfacePersistence): JsonObject {
+	return { pinned: persistence.pinned, scope: persistence.scope }
+}
+
+export function managedSurfaceShapeMeta(
+	request: ManagedSurfaceRequest,
+	options: { coordinateSpace?: string } = {},
+): JsonObject {
+	const meta: JsonObject = {
+		managedSurfaceId: request.surfaceId,
+		managedLayerId: request.layerId,
+		managedKind: request.kind,
+		managedHitPolicy: request.hitPolicy,
+		managedExtent: rectJson(request.extent),
+		managedPlacement: placementJson(request.placement),
+		managedCameraPolicy: cameraPolicyJson(request.cameraPolicy),
+		managedCleanup: cleanupJson(request.cleanup),
+		managedOwner: ownerJson(request.owner),
+		managedPersistence: persistenceJson(request.persistence),
+		managedSource: request.source,
+	}
+	if (options.coordinateSpace) meta.managedCoordinateSpace = options.coordinateSpace
+	return meta
 }

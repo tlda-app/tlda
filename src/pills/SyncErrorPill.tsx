@@ -8,6 +8,8 @@ import { useEditor } from 'tldraw'
 import type { TLShapeId } from 'tldraw'
 import { DocContext } from '../PanelContext'
 import { isMyFleetShape } from '../shapes/fleet-utils'
+import { dispatchFleetHudReset, dispatchFleetHudToggle } from '../wm/editor-host-bridge'
+import { writeFleetHudExpanded } from '../wm/fleet-hud-state'
 import './SyncErrorPill.css'
 
 interface SyncError { message?: string; file?: string; kind?: 'overleaf-conflict' | 'sync-error' }
@@ -83,9 +85,9 @@ export function SyncErrorPill() {
       type: sourceEditor.type,
       props: { file, title: file, line: 1 },
     } as any)
-    localStorage.setItem('fleet-hud-expanded', '1')
-    window.dispatchEvent(new CustomEvent('fleet-hud-toggle', { detail: { expanded: true } }))
-    window.dispatchEvent(new CustomEvent('fleet-hud-reset'))
+    writeFleetHudExpanded(true)
+    dispatchFleetHudToggle({ expanded: true })
+    dispatchFleetHudReset()
     setShowList(false)
   }
 

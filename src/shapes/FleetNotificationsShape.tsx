@@ -1,9 +1,9 @@
 import {
   BaseBoxShapeUtil,
   HTMLContainer,
-  T,
   stopEventPropagation,
 } from 'tldraw'
+import { fleetNotificationsProps } from '../../shared/shapes/fleet-panel-schema.mjs'
 import { useEffect, useRef, type SyntheticEvent } from 'react'
 import { dismissItem, sendMessage, useItems, type Item, type ItemAction } from '../fleet-data-adapter'
 import './fleet-notifications.css'
@@ -13,12 +13,7 @@ const DEFAULT_H = 220
 
 export class FleetNotificationsShapeUtil extends BaseBoxShapeUtil<any> {
   static override type = 'fleet-notifications' as const
-  static override props = {
-    w: T.number,
-    h: T.number,
-    userId: T.optional(T.string),
-    deviceId: T.optional(T.string),
-  }
+  static override props = fleetNotificationsProps
 
   getDefaultProps() {
     return { w: DEFAULT_W, h: DEFAULT_H, userId: '', deviceId: '' }

@@ -9,12 +9,12 @@
 import {
   BaseBoxShapeUtil,
   HTMLContainer,
-  T,
   stopEventPropagation,
   useEditor,
   useValue,
   createShapeId,
 } from 'tldraw'
+import { fleetAgentsProps } from '../../shared/shapes/fleet-panel-schema.mjs'
 import { useState, useCallback, useMemo, useRef, useEffect, memo, forwardRef } from 'react'
 import { Virtuoso } from 'react-virtuoso'
 import { useFleetAgents, useFleetTasks, useFleetUnreadCounts, useFleetContext, useFleetProjects, useFleetIdentity, searchFleet, hibernateSession, spawnAgent } from '../fleet-data-adapter'
@@ -336,12 +336,7 @@ function formatRelativeTime(ts: number | undefined): string {
 
 export class FleetAgentsShapeUtil extends BaseBoxShapeUtil<any> {
   static override type = 'fleet-agents' as const
-  static override props = {
-    w: T.number,
-    h: T.number,
-    userId: T.optional(T.string),
-    deviceId: T.optional(T.string),
-  }
+  static override props = fleetAgentsProps
 
   getDefaultProps() {
     return { w: DEFAULT_W, h: DEFAULT_H, userId: '', deviceId: '' }

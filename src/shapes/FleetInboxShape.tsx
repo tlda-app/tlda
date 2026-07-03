@@ -13,11 +13,11 @@
 import {
   BaseBoxShapeUtil,
   HTMLContainer,
-  T,
   stopEventPropagation,
   useEditor,
   useValue,
 } from 'tldraw'
+import { fleetInboxProps } from '../../shared/shapes/fleet-panel-schema.mjs'
 import type { Editor, TLShapeId } from 'tldraw'
 import { agentDisplayLabel, beginNativeSnapDrag, endNativeSnapDrag, selectFleetShapeForLayout } from './fleet-utils'
 import { usePillDrag } from './FleetAgentsShape'
@@ -211,12 +211,7 @@ function previewText(text: string): string {
 
 export class FleetInboxShapeUtil extends BaseBoxShapeUtil<any> {
   static override type = 'fleet-inbox' as const
-  static override props = {
-    w: T.number,
-    h: T.number,
-    userId: T.optional(T.string),
-    deviceId: T.optional(T.string),
-  }
+  static override props = fleetInboxProps
 
   getDefaultProps() {
     return { w: DEFAULT_W, h: DEFAULT_H, userId: '', deviceId: '' }

@@ -11,19 +11,19 @@
 import {
   BaseBoxShapeUtil,
   HTMLContainer,
-  T,
   Vec,
   stopEventPropagation,
   useEditor,
   useValue,
 } from 'tldraw'
-import { agentDisplayLabel, beginNativeSnapDrag, endNativeSnapDrag, FLEET_SHAPE_TYPES } from './fleet-utils'
+import { fleetTouchInboxProps } from '../../shared/shapes/fleet-panel-schema.mjs'
+import { agentDisplayLabel, beginNativeSnapDrag, createOwnedFleetPanelShape, endNativeSnapDrag, FLEET_SHAPE_TYPES } from './fleet-utils'
 import { useCallback, useRef, useMemo, useEffect, memo } from 'react'
 import { useFleetAgents, useFleetEvents, useFleetUnreadCounts, useFleetIdentity } from '../fleet-data-adapter'
 // @ts-ignore — vanilla JS module
 import { timeShort } from '../fleet/chat-render.mjs'
 // @ts-ignore — vanilla JS module
-import { getHumanId, getDeviceId, whenDeviceReady } from '../fleet/fleet-data.mjs'
+import { getHumanId } from '../fleet/fleet-data.mjs'
 import { useIsInViewport } from './useIsInViewport'
 import { DATABASE_HTTP } from '../activeConfig'
 import './fleet-inbox.css'
@@ -78,12 +78,7 @@ function partnerFilter(name: string): [string, string][][] {
 
 export class FleetTouchInboxShapeUtil extends BaseBoxShapeUtil<any> {
   static override type = 'fleet-touch-inbox' as const
-  static override props = {
-    w: T.number,
-    h: T.number,
-    userId: T.optional(T.string),
-    deviceId: T.optional(T.string),
-  }
+  static override props = fleetTouchInboxProps
 
   getDefaultProps() {
     return { w: DEFAULT_W, h: DEFAULT_H, userId: '', deviceId: '' }
@@ -227,23 +222,18 @@ function FleetTouchInboxInner({ shape }: { shape: any }) {
   useEffect(() => {
     let cancelled = false
     const createChildChat = async () => {
-      await whenDeviceReady()
-      if (cancelled) return
-    const existing = mainEd.getSortedChildIdsForParent(shape.id)
-      .map((id: any) => mainEd.getShape(id))
-      .find((s: any) => s?.type === 'fleet-chat')
-    if (existing) return
-    const uid = getHumanId()
-    if (!uid) return
-    const dev = getDeviceId()
-    if (!dev) return
-    mainEd.createShape({
-      type: 'fleet-chat' as any,
-      parentId: shape.id,
-      x: 0,
-      y: STRIP_H,
-      props: { w: myW, h: Math.max(80, myH - STRIP_H), filter: [], userId: uid, deviceId: dev },
-    })
+      const existing = mainEd.getSortedChildIdsForParent(shape.id)
+        .map((id: any) => mainEd.getShape(id))
+        .find((s: any) => s?.type === 'fleet-chat')
+      if (cancelled || existing) return
+      await createOwnedFleetPanelShape(mainEd, {
+        type: 'fleet-chat',
+        parentId: shape.id,
+        x: 0,
+        y: STRIP_H,
+        props: { w: myW, h: Math.max(80, myH - STRIP_H), filter: [] },
+        markHistoryStoppingPoint: false,
+      })
     }
     void createChildChat()
     return () => { cancelled = true }

@@ -1,7 +1,56 @@
+import type { Editor, TLViewportId } from 'tldraw'
 import type { Camera, Layer } from './wm-core.ts'
+import type { WMCore } from './wm-core.ts'
 
 export const CANVAS_CLIP_ROOT_LAYER_ID = 'screen'
 export const CANVAS_CLIP_PANEL_LAYER_ID = 'canvas-clip-panel'
+
+export const CANVAS_CLIP_VIEWPORT_CAPABILITIES = {
+	namedViewport: true,
+	independentCamera: true,
+	shapePredicate: true,
+	disableCulling: true,
+	frameAwareCoordinates: true,
+	clippedRendering: true,
+} as const
+
+export interface CanvasClipWMSurface {
+	wm: WMCore
+	layerId: string
+	surfaceId?: string
+}
+
+export function getOptionalCanvasClipViewport(editor: Editor, viewportId: TLViewportId) {
+	try {
+		return editor.getViewport(viewportId)
+	} catch (error) {
+		if (error instanceof Error && error.message.includes('No viewport registered')) {
+			return null
+		}
+		throw error
+	}
+}
+
+export function sameCanvasClipCamera(a: Camera | null, b: Camera) {
+	return !!a && a.x === b.x && a.y === b.y && a.z === b.z
+}
+
+export function canvasClipSurfaceCamera(surface: CanvasClipWMSurface, fullViewport: boolean): Camera {
+	const transform = fullViewport
+		? surface.wm.transform(surface.layerId)
+		: surface.wm.transformInfo(surface.layerId).local
+	return { x: transform.x, y: transform.y, z: transform.scale }
+}
+
+export function setCanvasClipSurfaceCamera(surface: CanvasClipWMSurface, camera: Camera): void {
+	const layer = surface.wm.getLayer(surface.layerId)
+	if (layer.policy.x === 'pin' && layer.policy.y === 'pin' && layer.policy.zoom === 'lock') {
+		surface.wm.setTransform(surface.layerId, { x: camera.x, y: camera.y, scale: camera.z })
+		surface.wm.setCamera(surface.layerId, { x: 0, y: 0, z: 1 })
+		return
+	}
+	surface.wm.setCamera(surface.layerId, camera)
+}
 
 export function shouldRenderLockedFleetViewportShape(shape: {
 	type?: string

@@ -7,7 +7,6 @@
 import {
   BaseBoxShapeUtil,
   HTMLContainer,
-  T,
   createShapeId,
   stopEventPropagation,
   useEditor,
@@ -15,6 +14,7 @@ import {
   type Editor,
   type TLShapeId,
 } from 'tldraw'
+import { fleetChatProps } from '../../shared/shapes/fleet-panel-schema.mjs'
 import { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo, useContext, memo, useSyncExternalStore, forwardRef } from 'react'
 import { createPortal } from 'react-dom'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
@@ -1310,14 +1310,7 @@ function buildRefAttachments(text: string, _editor: any): Array<{
 
 export class FleetChatShapeUtil extends BaseBoxShapeUtil<any> {
   static override type = 'fleet-chat' as const
-  static override props = {
-    w: T.number,
-    h: T.number,
-    filter: T.arrayOf(T.arrayOf(T.arrayOf(T.string))),  // DNF of [role, label] tuples
-    trafficMode: T.optional(T.string),
-    userId: T.optional(T.string),
-    deviceId: T.optional(T.string),
-  }
+  static override props = fleetChatProps
 
   getDefaultProps() {
     return { w: DEFAULT_W, h: DEFAULT_H, filter: [], trafficMode: 'normal', userId: '', deviceId: '' }

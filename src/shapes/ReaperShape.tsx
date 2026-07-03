@@ -1,11 +1,11 @@
 import {
   BaseBoxShapeUtil,
   HTMLContainer,
-  T,
   stopEventPropagation,
   useEditor,
   useValue,
 } from 'tldraw'
+import { fleetReaperProps } from '../../shared/shapes/fleet-panel-schema.mjs'
 import { useState, useCallback, useMemo, useRef, useEffect } from 'react'
 import { useReaperStatus } from '../fleet-data-adapter'
 import { beginNativeSnapDrag, endNativeSnapDrag, selectFleetShapeForLayout } from './fleet-utils'
@@ -15,12 +15,7 @@ const DEFAULT_H = 400
 
 export class ReaperShapeUtil extends BaseBoxShapeUtil<any> {
   static override type = 'fleet-reaper' as const
-  static override props = {
-    w: T.number,
-    h: T.number,
-    userId: T.optional(T.string),
-    deviceId: T.optional(T.string),
-  }
+  static override props = fleetReaperProps
 
   getDefaultProps() {
     return { w: DEFAULT_W, h: DEFAULT_H, userId: '', deviceId: '' }

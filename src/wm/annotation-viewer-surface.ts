@@ -1,6 +1,6 @@
 import {
 	clampChipAnchoredPlacement,
-	createManagedSurfaceOwner,
+	requireManagedSurfaceOwner,
 	surfaceSlug,
 	type ManagedSurfaceClientRect,
 	type ManagedSurfaceOwner,
@@ -39,14 +39,6 @@ export interface AnnotationViewerSurfacePayload {
 	bulletIdx?: number
 }
 
-function requireManagedSurfaceOwner(owner?: Partial<ManagedSurfaceOwner>): ManagedSurfaceOwner {
-	const resolved = createManagedSurfaceOwner(owner?.userId, owner?.deviceId)
-	if (!resolved.userId || !resolved.deviceId) {
-		throw new Error('managed annotation viewer surface requires owner userId and deviceId')
-	}
-	return resolved
-}
-
 export function createAnnotationViewerSurfaceRequest({
 	surfaceKey,
 	bounds,
@@ -64,7 +56,7 @@ export function createAnnotationViewerSurfaceRequest({
 	centerOnAnchor = false,
 }: AnnotationViewerSurfaceInput): ManagedSurfaceRequest<AnnotationViewerSurfacePayload> {
 	const slug = surfaceSlug(surfaceKey)
-	const resolvedOwner = requireManagedSurfaceOwner(owner)
+	const resolvedOwner = requireManagedSurfaceOwner(owner, 'managed annotation viewer surface')
 	const placement = clampChipAnchoredPlacement({
 		chipRect,
 		surfaceWidth: size.w,

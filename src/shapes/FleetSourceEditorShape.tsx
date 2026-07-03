@@ -7,10 +7,10 @@
 import {
   BaseBoxShapeUtil,
   HTMLContainer,
-  T,
   stopEventPropagation,
   useEditor,
 } from 'tldraw'
+import { fleetSourceEditorProps } from '../../shared/shapes/fleet-panel-schema.mjs'
 import { useContext, useEffect, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react'
 import { ChangeSet, EditorState, Prec, Text } from '@codemirror/state'
 import { EditorView, keymap, lineNumbers } from '@codemirror/view'
@@ -103,15 +103,7 @@ const sourceEditorTheme = EditorView.theme({
 
 export class FleetSourceEditorShapeUtil extends BaseBoxShapeUtil<any> {
   static override type = 'fleet-source-editor' as const
-  static override props = {
-    w: T.number,
-    h: T.number,
-    file: T.string,
-    line: T.number,
-    title: T.string,
-    userId: T.optional(T.string),
-    deviceId: T.optional(T.string),
-  }
+  static override props = fleetSourceEditorProps
 
   getDefaultProps() {
     return { w: DEFAULT_W, h: DEFAULT_H, file: '', line: 1, title: 'Source', userId: '', deviceId: '' }

@@ -10,6 +10,7 @@ import { useEditor, useValue } from 'tldraw'
 import { useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { FLEET_TOOL_DIMS } from '../shapes/fleet-utils'
+import { getFleetToolPlacementZoom } from '../wm/editor-host-bridge'
 import './fleet-tool-ghost.css'
 
 export function FleetToolGhost() {
@@ -26,8 +27,7 @@ export function FleetToolGhost() {
   }, [dims])
 
   if (!dims || !pos) return null
-  const hud = (window as any).__tldraw_hud_editor__
-  const z = hud ? hud.getCamera().z : editor.getZoomLevel()
+  const z = getFleetToolPlacementZoom(editor)
   const w = dims.w * z
   const h = dims.h * z
   return createPortal(

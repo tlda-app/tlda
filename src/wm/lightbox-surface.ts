@@ -1,5 +1,5 @@
 import {
-	createManagedSurfaceOwner,
+	requireManagedSurfaceOwner,
 	surfaceSlug,
 	type ManagedSurfaceClientRect,
 	type ManagedSurfaceOwner,
@@ -20,14 +20,6 @@ export interface LightboxSurfacePayload {
 	source: string | null
 }
 
-function requireLightboxOwner(owner?: Partial<ManagedSurfaceOwner>): ManagedSurfaceOwner {
-	const resolved = createManagedSurfaceOwner(owner?.userId, owner?.deviceId)
-	if (!resolved.userId || !resolved.deviceId) {
-		throw new Error('managed lightbox surface requires owner userId and deviceId')
-	}
-	return resolved
-}
-
 export function createLightboxSurfaceRequest({
 	surfaceKey,
 	owner,
@@ -36,7 +28,7 @@ export function createLightboxSurfaceRequest({
 	viewport = typeof window !== 'undefined' ? { w: window.innerWidth, h: window.innerHeight } : { w: 0, h: 0 },
 }: LightboxSurfaceInput): ManagedSurfaceRequest<LightboxSurfacePayload> {
 	const slug = surfaceSlug(surfaceKey)
-	const resolvedOwner = requireLightboxOwner(owner)
+	const resolvedOwner = requireManagedSurfaceOwner(owner, 'managed lightbox surface')
 	return {
 		kind: 'lightbox',
 		surfaceId: `lightbox:${slug}`,

@@ -17,6 +17,17 @@ import { emitShapeChangedDebounced } from './webhooks.mjs'
 import { mathNoteProps } from '../../shared/shapes/math-note-schema.mjs'
 import { outlineProps } from '../../shared/shapes/outline-schema.mjs'
 import { graphNodeProps, graphExplainProps } from '../../shared/shapes/graph-node-schema.mjs'
+import {
+  fleetAgentsProps,
+  fleetChatProps,
+  fleetDocviewProps,
+  fleetInboxProps,
+  fleetNotificationsProps,
+  fleetReaperProps,
+  fleetSearchProps,
+  fleetSourceEditorProps,
+  fleetTouchInboxProps,
+} from '../../shared/shapes/fleet-panel-schema.mjs'
 import { SIGNAL_REPLAY_WINDOWS } from '../../shared/signals.ts'
 
 // --- Custom shape schemas (prop validators only, no React) ---
@@ -166,26 +177,14 @@ const customShapeSchemas = {
     }),
   },
   'fleet-chat': {
-    props: {
-      w: T.number,
-      h: T.number,
-      filter: T.arrayOf(T.arrayOf(T.arrayOf(T.string))),  // DNF of [role, label] tuples
-      trafficMode: T.optional(T.string),
-      userId: T.optional(T.string),
-      deviceId: T.optional(T.string),
-    },
+    props: fleetChatProps,
     migrations: createMigrationSequence({
       sequenceId: 'com.tldraw.shape.fleet-chat',
       sequence: [],
     }),
   },
   'fleet-agents': {
-    props: {
-      w: T.number,
-      h: T.number,
-      userId: T.optional(T.string),
-      deviceId: T.optional(T.string),
-    },
+    props: fleetAgentsProps,
     migrations: createMigrationSequence({
       sequenceId: 'com.tldraw.shape.fleet-agents',
       sequence: [],
@@ -206,82 +205,42 @@ const customShapeSchemas = {
     }),
   },
   'fleet-search': {
-    props: {
-      w: T.number,
-      h: T.number,
-      userId: T.optional(T.string),
-      deviceId: T.optional(T.string),
-    },
+    props: fleetSearchProps,
     migrations: createMigrationSequence({
       sequenceId: 'com.tldraw.shape.fleet-search',
       sequence: [],
     }),
   },
   'fleet-inbox': {
-    props: {
-      w: T.number,
-      h: T.number,
-      userId: T.optional(T.string),
-      deviceId: T.optional(T.string),
-    },
+    props: fleetInboxProps,
     migrations: createMigrationSequence({
       sequenceId: 'com.tldraw.shape.fleet-inbox',
       sequence: [],
     }),
   },
   'fleet-notifications': {
-    props: {
-      w: T.number,
-      h: T.number,
-      userId: T.optional(T.string),
-      deviceId: T.optional(T.string),
-    },
+    props: fleetNotificationsProps,
     migrations: createMigrationSequence({
       sequenceId: 'com.tldraw.shape.fleet-notifications',
       sequence: [],
     }),
   },
   'fleet-touch-inbox': {
-    props: {
-      w: T.number,
-      h: T.number,
-      userId: T.optional(T.string),
-      deviceId: T.optional(T.string),
-    },
+    props: fleetTouchInboxProps,
     migrations: createMigrationSequence({
       sequenceId: 'com.tldraw.shape.fleet-touch-inbox',
       sequence: [],
     }),
   },
   'fleet-docview': {
-    props: {
-      w: T.number,
-      h: T.number,
-      mode: T.optional(T.string),
-      label: T.string,
-      page: T.number,
-      yTop: T.number,
-      yBottom: T.number,
-      title: T.string,
-      sources: T.optional(T.string),
-      userId: T.optional(T.string),
-      deviceId: T.optional(T.string),
-    },
+    props: fleetDocviewProps,
     migrations: createMigrationSequence({
       sequenceId: 'com.tldraw.shape.fleet-docview',
       sequence: [],
     }),
   },
   'fleet-source-editor': {
-    props: {
-      w: T.number,
-      h: T.number,
-      file: T.string,
-      line: T.number,
-      title: T.string,
-      userId: T.optional(T.string),
-      deviceId: T.optional(T.string),
-    },
+    props: fleetSourceEditorProps,
     migrations: createMigrationSequence({
       sequenceId: 'com.tldraw.shape.fleet-source-editor',
       sequence: [],
@@ -374,12 +333,7 @@ const customShapeSchemas = {
     }),
   },
   'fleet-reaper': {
-    props: {
-      w: T.number,
-      h: T.number,
-      userId: T.optional(T.string),
-      deviceId: T.optional(T.string),
-    },
+    props: fleetReaperProps,
     migrations: createMigrationSequence({
       sequenceId: 'com.tldraw.shape.fleet-reaper',
       sequence: [],

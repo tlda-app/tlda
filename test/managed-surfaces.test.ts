@@ -14,6 +14,10 @@ import {
 	pageColumnShapeMeta,
 } from '../src/wm/page-column-surface.ts'
 import { createLightboxSurfaceRequest } from '../src/wm/lightbox-surface.ts'
+import {
+	managedSurfaceShapeMeta,
+	requireManagedSurfaceOwner,
+} from '../src/wm/managed-surfaces.ts'
 
 const chipRect = {
 	left: 1180,
@@ -174,6 +178,30 @@ test('page column page and handle requests carry managed ids owner policies and 
 		managedSource: handle.source,
 		managedCoordinateSpace: 'canvas-page',
 	})
+})
+
+test('managed surface helpers require owners and serialize generic shape meta', () => {
+	assert.throws(
+		() => requireManagedSurfaceOwner({ userId: 'fleet:skip' }, 'managed test surface'),
+		/managed test surface requires owner userId and deviceId/,
+	)
+	assert.deepEqual(
+		requireManagedSurfaceOwner({ userId: 'fleet:skip', deviceId: 'ipad' }, 'managed test surface'),
+		{ userId: 'fleet:skip', deviceId: 'ipad' },
+	)
+
+	const request = createPageColumnSurfaceRequest({
+		columnKey: '1-shadow-abcdef0',
+		pageNum: 2,
+		bounds: { x: 900, y: 1300, w: 800, h: 1035 },
+		owner: { userId: 'fleet:skip', deviceId: 'ipad' },
+		source: 'shadow:bregman:abcdef012345',
+	})
+
+	assert.deepEqual(
+		managedSurfaceShapeMeta(request, { coordinateSpace: request.payload.coordinateSpace }),
+		pageColumnShapeMeta(request),
+	)
 })
 
 test('lightbox request declares viewport modal policy and cleanup', () => {

@@ -13,8 +13,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { TldrawViewport, Vec, stopEventPropagation } from 'tldraw'
 import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor, TLShape, TLViewportId } from 'tldraw'
-import { createCanvasClipPanelPlan, shouldRenderLockedFleetViewportShape } from './wm/canvas-clip-panel'
-import type { WMCore } from './wm/wm-core'
+import {
+  canvasClipSurfaceCamera,
+  createCanvasClipPanelPlan,
+  getOptionalCanvasClipViewport,
+  sameCanvasClipCamera,
+  setCanvasClipSurfaceCamera,
+  shouldRenderLockedFleetViewportShape,
+  type CanvasClipWMSurface,
+} from './wm/canvas-clip-panel'
 import {
   cameraToCoordinateTransform,
   ensureLayer,
@@ -33,54 +40,16 @@ const DEFAULT_MAX_HEIGHT_FRACTION = 0.4
 const MIN_VISIBLE_LINES = 5
 const LINE_HEIGHT_ESTIMATE = 14 // ~12pt in PDF coordinates
 
-function getOptionalViewport(editor: Editor, viewportId: TLViewportId) {
-  try {
-    return editor.getViewport(viewportId)
-  } catch (error) {
-    if (error instanceof Error && error.message.includes('No viewport registered')) {
-      return null
-    }
-    throw error
-  }
-}
-
-interface CanvasClipWMSurface {
-  wm: WMCore
-  layerId: string
-  surfaceId?: string
-}
-
 const wmSurfaceRegistry = new Map<string, {
   surface: CanvasClipWMSurface
   setCamera: (camera: { x: number; y: number; z: number }) => void
   syncViewportCamera: (camera: { x: number; y: number; z: number }) => void
 }>()
 
-function sameCamera(a: { x: number; y: number; z: number } | null, b: { x: number; y: number; z: number }) {
-  return !!a && a.x === b.x && a.y === b.y && a.z === b.z
-}
-
-function wmSurfaceCamera(surface: CanvasClipWMSurface, fullViewport: boolean) {
-  const transform = fullViewport
-    ? surface.wm.transform(surface.layerId)
-    : surface.wm.transformInfo(surface.layerId).local
-  return { x: transform.x, y: transform.y, z: transform.scale }
-}
-
 function applyViewportCameraToDom(canvas: HTMLDivElement | null, camera: { x: number; y: number; z: number }) {
   const htmlLayer = canvas?.querySelector<HTMLElement>('.tl-html-layer.tl-shapes')
   if (!htmlLayer) return
   htmlLayer.style.transform = `scale(${camera.z}) translate(${camera.x}px,${camera.y}px)`
-}
-
-function setSurfaceCamera(surface: CanvasClipWMSurface, camera: { x: number; y: number; z: number }) {
-  const layer = surface.wm.getLayer(surface.layerId)
-  if (layer.policy.x === 'pin' && layer.policy.y === 'pin' && layer.policy.zoom === 'lock') {
-    surface.wm.setTransform(surface.layerId, { x: camera.x, y: camera.y, scale: camera.z })
-    surface.wm.setCamera(surface.layerId, { x: 0, y: 0, z: 1 })
-    return
-  }
-  surface.wm.setCamera(surface.layerId, camera)
 }
 
 function isEditableWheelTarget(target: Element) {
@@ -226,7 +195,7 @@ export function CanvasClipPanel({
         const viewportHost = (target.closest('[data-viewport-id]') || docview.querySelector('[data-viewport-id]')) as HTMLElement | null
         const nestedViewportId = viewportHost?.dataset.viewportId as TLViewportId | undefined
         if (!nestedViewportId) return
-        const registered = getOptionalViewport(mainEditor, nestedViewportId)
+        const registered = getOptionalCanvasClipViewport(mainEditor, nestedViewportId)
         if (!registered) return
         e.preventDefault()
         e.stopPropagation()
@@ -249,15 +218,15 @@ export function CanvasClipPanel({
   useEffect(() => {
     if (!wmSurface) return
     const syncViewportCamera = (camera: { x: number; y: number; z: number }) => {
-      const viewport = getOptionalViewport(mainEditor, viewportId as TLViewportId)
+      const viewport = getOptionalCanvasClipViewport(mainEditor, viewportId as TLViewportId)
       if (viewport?.screenBounds) {
         mainEditor.updateViewport(viewportId as TLViewportId, { camera })
       }
       applyViewportCameraToDom(canvasRef.current, camera)
     }
     const setCamera = (camera: { x: number; y: number; z: number }) => {
-      setSurfaceCamera(wmSurface, camera)
-      syncViewportCamera(wmSurfaceCamera(wmSurface, fullViewport))
+      setCanvasClipSurfaceCamera(wmSurface, camera)
+      syncViewportCamera(canvasClipSurfaceCamera(wmSurface, fullViewport))
     }
     wmSurfaceRegistry.set(viewportId, { surface: wmSurface, setCamera, syncViewportCamera })
     return () => {
@@ -284,7 +253,7 @@ export function CanvasClipPanel({
   const [interactiveCamera, setInteractiveCamera] = useState<{ x: number; y: number; z: number } | null>(null)
   const plannedCamera = (() => {
     const next = (() => {
-      if (wmSurface) return wmSurfaceCamera(wmSurface, fullViewport)
+      if (wmSurface) return canvasClipSurfaceCamera(wmSurface, fullViewport)
       if (!bounds) return { x: 0, y: 0, z: 1 }
       return createCanvasClipPanelPlan({
         bounds, panelWidth, viewportHeight: window.innerHeight,
@@ -408,7 +377,7 @@ export function CanvasClipPanel({
         disableCulling={disableCulling}
         shapePredicate={shapePredicate}
         onCameraChange={lockCamera ? undefined : (newCam) => {
-          setInteractiveCamera(prev => sameCamera(prev, newCam) ? prev : newCam)
+          setInteractiveCamera(prev => sameCanvasClipCamera(prev, newCam) ? prev : newCam)
         }}
       />
     </VisibilityViewportProvider>

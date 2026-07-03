@@ -8,13 +8,13 @@
 import {
   BaseBoxShapeUtil,
   HTMLContainer,
-  T,
   stopEventPropagation,
   useEditor,
   useValue,
   createShapeId,
 } from 'tldraw'
 import { beginNativeSnapDrag, createFleetShape, agentDisplayLabel, endNativeSnapDrag, selectFleetShapeForLayout } from './fleet-utils'
+import { fleetSearchProps } from '../../shared/shapes/fleet-panel-schema.mjs'
 import { useState, useCallback, useRef, useMemo, useEffect, memo } from 'react'
 import { searchFleet, fetchSharedDocs, useFleetAgents, useFleetTasks } from '../fleet-data-adapter'
 import katex from 'katex'
@@ -180,12 +180,7 @@ const CHAT_HEADER_H = 30
 
 export class FleetSearchShapeUtil extends BaseBoxShapeUtil<any> {
   static override type = 'fleet-search' as const
-  static override props = {
-    w: T.number,
-    h: T.number,
-    userId: T.optional(T.string),
-    deviceId: T.optional(T.string),
-  }
+  static override props = fleetSearchProps
 
   getDefaultProps() {
     return { w: DEFAULT_W, h: DEFAULT_H, userId: '', deviceId: '' }

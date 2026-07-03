@@ -18,6 +18,8 @@ import { stopEventPropagation, useUniqueSafeId } from 'tldraw'
 import type { Editor } from 'tldraw'
 import { currentFleetAgents, useAwakeFleetAgentCount, useFleetIdentity } from '../fleet-data-adapter'
 import { createFleetLayoutDetailed, type FleetLayoutCreateResult, type FleetLayoutVariant } from '../shapes/fleet-utils'
+import { dispatchFleetHudReset, dispatchFleetHudToggle } from '../wm/editor-host-bridge'
+import { isFleetHudHidden, writeFleetHudExpanded } from '../wm/fleet-hud-state'
 import { log } from '../logger'
 import { CornerButtonSlider, pickCornerSliderIndex } from '../CornerButtonSlider'
 import './FleetIconPill.css'
@@ -154,7 +156,7 @@ function LayoutIcon({ id, size = 20 }: { id: LayoutId; size?: number }) {
 }
 
 function isFleetHidden() {
-  return localStorage.getItem('fleet-hud-expanded') !== '1'
+  return isFleetHudHidden()
 }
 
 function isTouchLayoutControl() {
@@ -191,8 +193,8 @@ function cleanUrlName(name: string | null) {
 }
 
 function setFleetHudExpanded(expanded: boolean) {
-  localStorage.setItem('fleet-hud-expanded', expanded ? '1' : '0')
-  window.dispatchEvent(new CustomEvent('fleet-hud-toggle', { detail: { expanded } }))
+  writeFleetHudExpanded(expanded)
+  dispatchFleetHudToggle({ expanded })
 }
 
 function applyFleetLayoutPreset({
@@ -254,7 +256,7 @@ function applyFleetLayoutPreset({
         setFleetHudExpanded(true)
         onShown?.()
       }
-      requestAnimationFrame(() => window.dispatchEvent(new CustomEvent('fleet-hud-reset')))
+      requestAnimationFrame(() => dispatchFleetHudReset())
       return
     }
     if (Date.now() >= deadline) {

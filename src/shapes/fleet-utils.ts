@@ -1,26 +1,58 @@
 import type { Editor, TLShape } from 'tldraw'
 import { createShapeId } from 'tldraw'
 // @ts-ignore — vanilla JS module
-import { getHumanId, getHumanName, getDeviceId, getEvents, isDeviceReady, whenDeviceReady } from '../fleet/fleet-data.mjs'
+import { getHumanId, getDeviceId, whenDeviceReady } from '../fleet/fleet-data.mjs'
 // @ts-ignore — vanilla JS module
 import { pretty_name_plain_text } from '../../shared/pretty_name.mjs'
-// @ts-ignore — vanilla JS module
-import { recentChatTargetAgents } from '../fleet/layout-targets.mjs'
-import { getPref } from '../preferences'
 import { isDocumentPageShape } from './document-pages'
+import { dispatchFleetHudReset, getHudEditor, markMainEditorHistoryStoppingPoint } from '../wm/editor-host-bridge'
+import {
+  FLEET_SHAPE_TYPES,
+  fleetPanelDefaultProps,
+} from './fleet-panel-registry'
+import {
+  getAnchorIdForOwnerKey,
+  getMyAnchorId,
+  isFleetShapeForOwnerKey,
+} from './fleet-ownership'
+import {
+  buildFleetLayoutPlanInput,
+  getDocumentPageBounds,
+  getPhoneLayoutTarget,
+} from './fleet-layout-context'
+import { laneDy, layoutOffset } from './fleet-layout-geometry'
+import { planFleetLayoutShapes, type FleetLayoutVariant } from './fleet-layout-plan'
+import type { FleetChatFilter } from './fleet-layout-seeding'
 
-/** Canonical list of fleet shape types — the single source of truth for
- *  ownership filtering, visibility, copy gating, and hit-test exclusion.
- *  Import this everywhere instead of defining local copies. */
-export const FLEET_SHAPE_TYPES = new Set([
-  'fleet-chat', 'fleet-agents', 'fleet-search', 'fleet-docview', 'fleet-source-editor', 'fleet-reaper', 'fleet-inbox', 'fleet-touch-inbox', 'fleet-notifications',
-])
-
-export const FLEET_SHAPE_SELECTOR = [...FLEET_SHAPE_TYPES]
-  .map(type => `[data-shape-type="${type}"]`)
-  .join(', ')
-
-export const FLEET_INTERACTION_SHAPE_SELECTOR = `${FLEET_SHAPE_SELECTOR}, [data-shape-type="fleet-pill"]`
+export {
+  FLEET_INTERACTION_SHAPE_SELECTOR,
+  FLEET_PANEL_DEFINITIONS,
+  FLEET_PANEL_REGISTRY,
+  FLEET_SHAPE_SELECTOR,
+  FLEET_SHAPE_TYPES,
+  FLEET_TOOL_DIMS,
+  fleetPanelDefaultProps,
+  type FleetPanelDefinition,
+  type FleetPanelType,
+} from './fleet-panel-registry'
+export {
+  FLEET_HUD_ANCHOR_ID,
+  getAnchorIdForOwnerKey,
+  getMyAnchorId,
+  isFleetShapeForOwnerKey,
+  isMyFleetShape,
+} from './fleet-ownership'
+export {
+  buildFleetLayoutPlanInput,
+  fleetLayoutPanelCount,
+  getDocumentPageBounds,
+  getPhoneLayoutTarget,
+  type DocumentPageBounds,
+  type PhoneLayoutTarget,
+} from './fleet-layout-context'
+export { ensureMyLaneDisjoint, laneDy, layoutOffset } from './fleet-layout-geometry'
+export { planFleetLayoutShapes, type FleetLayoutPlan, type FleetLayoutShapePlan, type FleetLayoutVariant } from './fleet-layout-plan'
+export { defaultFleetLayoutChatFilters, type FleetChatFilter } from './fleet-layout-seeding'
 
 const nativeSnapModeStack = new WeakMap<Editor, boolean[]>()
 
@@ -49,52 +81,6 @@ export function agentDisplayLabel(agent: any, _allAgents?: any[]): string {
 export function agentExactName(agent: any): string {
   if (!agent) return ''
   return agent.friendly_name || (agent.id || '').replace('fleet:', '')
-}
-
-export const FLEET_HUD_ANCHOR_ID = 'shape:fleet-hud-anchor' as const
-
-export function getMyAnchorId(): string {
-  const uid = getHumanId()
-  if (!uid) return FLEET_HUD_ANCHOR_ID
-  // Per-(identity, device): the anchor stores this device's pan/camera offsets,
-  // so the same identity on two devices doesn't share — and fight over — one
-  // anchor.
-  const dev = getDeviceId()
-  return getAnchorIdForOwnerKey(uid, dev)
-}
-
-export function getAnchorIdForOwnerKey(userId: string, deviceId: string): string {
-  if (!userId || !deviceId) return FLEET_HUD_ANCHOR_ID
-  return `shape:fleet-hud-anchor--${userId.replace('fleet:', '')}--${deviceId}`
-}
-
-export function isFleetShapeForOwnerKey(s: any, userId: string, deviceId: string): boolean {
-  if (!FLEET_SHAPE_TYPES.has(s.type as string)) return false
-  const uid = s.props?.userId
-  const dev = s.props?.deviceId
-  return !!uid && uid === userId && !!dev && dev === deviceId
-}
-
-/**
- * A fleet shape belongs to the current session iff BOTH its userId (identity)
- * and deviceId match this browser. The layout is keyed by (identity, device):
- * the same human on two devices (Mac + iPad) gets two distinct layouts, and
- * each session only renders/manages its own — so two devices never stack on or
- * fight over one shared set of shapes.
- *
- * Shapes with an empty/missing userId OR deviceId belong to NO ONE — orphans
- * created before identity resolved (or by a pre-(identity,device) session) —
- * and must never be shown to or claimed by anyone.
- *
- * Single source of truth for fleet-shape ownership — both the HUD (what to
- * render) and createFleetLayout (what to delete/replace) use it, so the two
- * can never disagree.
- */
-export function isMyFleetShape(s: any): boolean {
-  if (!isDeviceReady()) return false
-  const myId = getHumanId()
-  const myDevice = getDeviceId()
-  return isFleetShapeForOwnerKey(s, myId, myDevice)
 }
 
 /**
@@ -144,6 +130,46 @@ export async function adoptLegacyFleetShapes(editor: Editor): Promise<number> {
 /** Create a fleet shape with ownership stamped. Returns the shape id, or null
  *  if identity is unresolved (shape not created). Every fleet-shape creation
  *  MUST go through this so unowned shapes can never enter the store. */
+export type OwnedFleetPanelCreateInput = {
+  type: string
+  x: number
+  y: number
+  props: Record<string, any>
+  id?: any
+  parentId?: any
+  isLocked?: boolean
+  markHistoryStoppingPoint?: boolean
+}
+
+export async function createOwnedFleetPanelShape(
+  editor: Editor,
+  input: OwnedFleetPanelCreateInput,
+): Promise<string | null> {
+  await whenDeviceReady()
+  const myId = getHumanId()
+  if (!myId) return null
+  const myDevice = getDeviceId()
+  if (!myDevice) return null
+  const id = input.id ?? createShapeId()
+  // Isolate this creation as its own undo step. The owned-panel creation path
+  // can run on the main editor directly (e.g. a tool/agent-drag on the main
+  // canvas) — without a mark, the new shape glues onto whatever the user did
+  // just before (a move/resize), so one undo wrongly reverses that prior
+  // operation. Mark the main editor (undo routes there) regardless of which
+  // editor this create runs on.
+  if (input.markHistoryStoppingPoint !== false) markMainEditorHistoryStoppingPoint(editor)
+  editor.createShape({
+    id,
+    type: input.type as any,
+    parentId: input.parentId,
+    x: input.x,
+    y: input.y,
+    isLocked: input.isLocked,
+    props: { ...fleetPanelDefaultProps(input.type), ...input.props, userId: myId, deviceId: myDevice },
+  } as any)
+  return id as unknown as string
+}
+
 export async function createFleetShape(
   editor: Editor,
   type: string,
@@ -151,41 +177,7 @@ export async function createFleetShape(
   y: number,
   props: Record<string, any>,
 ): Promise<string | null> {
-  await whenDeviceReady()
-  const myId = getHumanId()
-  if (!myId) return null
-  const myDevice = getDeviceId()
-  if (!myDevice) return null
-  const id = createShapeId()
-  // Isolate this creation as its own undo step. createFleetShape is THE choke
-  // point for fleet-shape creation, and it can run on the main editor directly
-  // (e.g. a tool/agent-drag on the main canvas) — without a mark, the new shape
-  // glues onto whatever the user did just before (a move/resize), so one undo
-  // wrongly reverses that prior operation. Mark the main editor (undo routes
-  // there) regardless of which editor this create runs on.
-  const me = (typeof window !== 'undefined' && (window as any).__tldraw_editor__) || editor
-  me.markHistoryStoppingPoint?.()
-  editor.createShape({
-    id,
-    type: type as any,
-    x,
-    y,
-    props: { ...props, userId: myId, deviceId: myDevice },
-  })
-  return id as unknown as string
-}
-
-/** Panel dimensions per fleet tool — the single source of truth shared by the
- *  tools (what they create) and the cursor ghost preview (what it previews). */
-export const FLEET_TOOL_DIMS: Record<string, { w: number; h: number }> = {
-  'fleet-chat': { w: 400, h: 600 },
-  'fleet-agents': { w: 400, h: 500 },
-  'fleet-search': { w: 400, h: 300 },
-  'fleet-inbox': { w: 360, h: 560 },
-  'fleet-touch-inbox': { w: 380, h: 680 },
-  'fleet-notifications': { w: 360, h: 220 },
-  'fleet-source-editor': { w: 560, h: 520 },
-  'fleet-reaper': { w: 480, h: 360 },
+  return createOwnedFleetPanelShape(editor, { type, x, y, props })
 }
 
 /**
@@ -206,7 +198,7 @@ export async function placeFleetShapeAtCursor(
   h: number,
   extraProps: Record<string, any> = {},
 ): Promise<string | null> {
-  const hudEditor = (typeof window !== 'undefined' && (window as any).__tldraw_hud_editor__) || null
+  const hudEditor = getHudEditor()
   let x: number, y: number
   if (hudEditor) {
     const screen = editor.inputs.currentScreenPoint
@@ -273,147 +265,11 @@ export type FleetLayoutCreateResult = {
   documentPagesWithBounds: number
 }
 
-/** Deterministic shape ID for a fleet layout slot. Same (user, device, slot)
- *  always produces the same ID, so concurrent creates are idempotent AND two
- *  devices of the same identity get distinct IDs (no shared/contested shapes). */
-function slotId(userId: string, deviceId: string, slot: string) {
-  return createShapeId(`fleet-${slot}-${userId.replace('fleet:', '')}-${deviceId}`)
+/** Deterministic TLDraw shape ID for a fleet layout slot. The app adapter owns
+ *  TLDraw's ID factory; the layout planner only asks for slot IDs. */
+function layoutSlotId(userId: string, deviceId: string, slot: string) {
+  return createShapeId(`fleet-${slot}-${userId.replace('fleet:', '')}-${deviceId}`) as unknown as string
 }
-
-/** Horizontal offset for an (identity, device) layout. PURE (no room context) so
- *  the HUD can recompute the identical dx from (identity, device) alone and
- *  compensate it — the viewer's own layout then renders in its canonical
- *  horizontal screen position regardless of which zone it physically occupies.
- *  This handles only X (cosmetic horizontal spreading); the spatial *non-overlap*
- *  guarantee between owners is enforced entirely by the vertical lane (laneDy),
- *  which is unique per owner — so two owners can never overlap regardless of dx.
- *  dy is 0 here: vertical placement is owned by laneDy, not this function. */
-export function layoutOffset(userId: string, deviceId: string): { dx: number; dy: number } {
-  if (!userId || !deviceId) return { dx: 0, dy: 0 }
-  const key = `${userId}|${deviceId}`
-  let hash = 0
-  for (let i = 0; i < key.length; i++) hash = ((hash << 5) - hash + key.charCodeAt(i)) | 0
-  const col = Math.abs(hash) % 16
-  return { dx: -col * 4000, dy: 0 }
-}
-
-/** Vertical spacing between two owners' fleet layouts. Far larger than any
- *  single layout's height — even heavily resized — so two different owners can
- *  never occupy the same vertical band. This is the spatial guarantee that keeps
- *  a foreign owner's shapes from ever sitting under this viewer's fingers,
- *  independent of visibility and independent of which touch system (TLDraw
- *  hit-testing, the HUD gesture handler, raw DOM) processes the gesture. */
-const LANE_STEP = 20000
-
-/** The y a lane-0 layout would anchor at: doc top minus the standard top pad.
- *  All sessions compute the same value from the shared document pages, so every
- *  owner's lane index maps to the same absolute band. */
-function canonicalBaseY(editor: Editor): number {
-  const pages = editor.getCurrentPageShapes().filter(isDocumentPageShape)
-  let minTop = Infinity
-  for (const p of pages) {
-    const b = editor.getShapePageBounds(p.id)
-    if (b && b.y < minTop) minTop = b.y
-  }
-  return isFinite(minTop) ? minTop - 1200 : 0
-}
-
-/** Lane indices currently occupied by OTHER owners' fleet shapes, plus the
- *  shared base. "Mine" (this identity+device, AND my pre-device legacy shapes
- *  about to be claimed) is excluded so it never blocks itself; a different
- *  device of the same identity IS a distinct owner and counts as occupied. */
-function occupiedLanes(editor: Editor, myId: string, myDevice: string): { base: number; occupied: Set<number> } {
-  const base = canonicalBaseY(editor)
-  const isMineOrLegacy = (s: any) =>
-    s.props?.userId === myId && (s.props?.deviceId === myDevice || !s.props?.deviceId)
-  const ownerMinY = new Map<string, number>()
-  for (const s of editor.getCurrentPageShapes()) {
-    if (!FLEET_SHAPE_TYPES.has(s.type as string)) continue
-    if (isMineOrLegacy(s)) continue
-    const uid = (s as any).props?.userId, dev = (s as any).props?.deviceId
-    if (!uid || !dev) continue // unowned orphan — belongs to no lane
-    const key = `${uid}::${dev}`
-    const y = (s as any).y
-    const cur = ownerMinY.get(key)
-    if (cur === undefined || y < cur) ownerMinY.set(key, y)
-  }
-  const occupied = new Set<number>()
-  for (const y of ownerMinY.values()) occupied.add(Math.round((y - base) / LANE_STEP))
-  return { base, occupied }
-}
-
-/** Guaranteed-disjoint VERTICAL offset (dy) for THIS (identity, device) layout.
- *  The lane is the lowest index not already occupied by another owner present in
- *  the room, so as owners accumulate they pack into distinct bands and their
- *  shapes can never overlap — collision-free by construction, not a hash that
- *  "rarely" collides. The HUD needs no knowledge of the lane: cameraY derives
- *  from this layout's actual shape bounds, so any dy renders canonically. */
-export function laneDy(editor: Editor, myId: string, myDevice: string): number {
-  if (!myId || !myDevice) return 0
-  const { occupied } = occupiedLanes(editor, myId, myDevice)
-  let lane = 0
-  while (occupied.has(lane)) lane++
-  return lane * LANE_STEP
-}
-
-/** Shift my whole layout to a free lane if it currently overlaps another owner.
- *  Runs on load (after legacy adoption) so a room that accumulated overlapping
- *  layouts under the old hash self-heals: each session, when it opens, slides
- *  its own shapes out of any collision into the lowest free lane. Only ever
- *  moves MY shapes; other owners are untouched. Returns the number moved. */
-export function ensureMyLaneDisjoint(editor: Editor, myId: string, myDevice: string): number {
-  if (!isDeviceReady()) return 0
-  if (!myId || !myDevice) return 0
-  const mine = editor.getCurrentPageShapes().filter(isMyFleetShape)
-  if (mine.length === 0) return 0
-  const bbox = (shapes: any[]) => {
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
-    for (const s of shapes) {
-      const b = editor.getShapePageBounds(s.id)
-      if (!b) continue
-      minX = Math.min(minX, b.x); minY = Math.min(minY, b.y)
-      maxX = Math.max(maxX, b.x + b.w); maxY = Math.max(maxY, b.y + b.h)
-    }
-    return isFinite(minX) ? { minX, minY, maxX, maxY } : null
-  }
-  const myBox = bbox(mine)
-  if (!myBox) return 0
-  // Other owners' boxes.
-  const others = new Map<string, any[]>()
-  for (const s of editor.getCurrentPageShapes()) {
-    if (!FLEET_SHAPE_TYPES.has(s.type as string)) continue
-    if (isMyFleetShape(s)) continue
-    const uid = (s as any).props?.userId, dev = (s as any).props?.deviceId
-    if (!uid || !dev) continue
-    const key = `${uid}::${dev}`
-    if (!others.has(key)) others.set(key, [])
-    others.get(key)!.push(s)
-  }
-  const intersects = (a: any, b: any) =>
-    a.minX < b.maxX && a.maxX > b.minX && a.minY < b.maxY && a.maxY > b.minY
-  // Yield only to lower-sorting owners: if two owners load at once and overlap,
-  // exactly one (the higher key) moves, so they can't both jump and re-collide.
-  const myKey = `${myId}::${myDevice}`
-  let collides = false
-  for (const [key, arr] of others) {
-    const ob = bbox(arr)
-    if (ob && intersects(myBox, ob) && key < myKey) { collides = true; break }
-  }
-  if (!collides) return 0
-  const { base } = occupiedLanes(editor, myId, myDevice)
-  const targetDy = laneDy(editor, myId, myDevice)
-  const currentDy = Math.round((myBox.minY - base) / LANE_STEP) * LANE_STEP
-  const delta = targetDy - currentDy
-  if (delta === 0) return 0
-  editor.run(() => {
-    for (const s of mine) {
-      editor.updateShape({ id: s.id, type: s.type, x: (s as any).x, y: (s as any).y + delta } as any)
-    }
-  }, { history: 'ignore' })
-  return mine.length
-}
-
-export type FleetLayoutVariant = 'phone' | '3-col' | '2x2' | 'big-chat' | 'both-margins' | 'touch'
 
 export async function createFleetLayout(editor: Editor, agents: any[], variant: FleetLayoutVariant = '3-col'): Promise<boolean> {
   const result = await createFleetLayoutDetailed(editor, agents, variant)
@@ -465,53 +321,6 @@ function makeFleetLayoutResult(
   }
 }
 
-function getDocumentPageBounds(editor: Editor) {
-  const pageShapes = editor.getCurrentPageShapes().filter(isDocumentPageShape)
-  let minLeft = Infinity, minTop = Infinity, maxRight = -Infinity
-  const pagesWithBounds: any[] = []
-  for (const ps of pageShapes) {
-    const b = editor.getShapePageBounds(ps.id)
-    if (!b) continue
-    pagesWithBounds.push(ps)
-    if (b.x < minLeft) minLeft = b.x
-    if (b.y < minTop) minTop = b.y
-    if (b.x + b.w > maxRight) maxRight = b.x + b.w
-  }
-  if (pagesWithBounds.length === 0 || !isFinite(minLeft) || !isFinite(minTop) || !isFinite(maxRight)) return null
-  return { pageShapes: pagesWithBounds, minLeft, minTop, maxRight }
-}
-
-function getPhoneLayoutTarget(editor: Editor, pageShapes: any[], vp: ReturnType<Editor['getViewportScreenBounds']>) {
-  let target: { x: number; y: number; w: number; h: number; pageX: number } | null = null
-  let bestArea = -1
-  const sortedPages = [...pageShapes].sort((a: any, b: any) => (a.y ?? 0) - (b.y ?? 0))
-  for (const ps of sortedPages) {
-    const pb = editor.getShapePageBounds(ps.id)
-    if (!pb) continue
-    const tl = editor.pageToScreen({ x: pb.x, y: pb.y })
-    const br = editor.pageToScreen({ x: pb.x + pb.w, y: pb.y + pb.h })
-    const pageRect = {
-      x: Math.min(tl.x, br.x),
-      y: Math.min(tl.y, br.y),
-      w: Math.abs(br.x - tl.x),
-      h: Math.abs(br.y - tl.y),
-      pageX: pb.x,
-    }
-    const clipped = {
-      x: Math.max(pageRect.x, vp.x),
-      y: Math.max(pageRect.y, vp.y),
-      w: Math.max(0, Math.min(pageRect.x + pageRect.w, vp.x + vp.w) - Math.max(pageRect.x, vp.x)),
-      h: Math.max(0, Math.min(pageRect.y + pageRect.h, vp.y + vp.h) - Math.max(pageRect.y, vp.y)),
-    }
-    const area = clipped.w * clipped.h
-    if (area > bestArea) {
-      bestArea = area
-      target = pageRect
-    }
-  }
-  return target
-}
-
 function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string, myId: string, myDevice: string): FleetLayoutCreateResult {
   const docBounds = getDocumentPageBounds(editor)
   if (!docBounds) {
@@ -522,7 +331,7 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
   const existing = editor.getCurrentPageShapes().filter(s => isFleetShapeForOwnerKey(s, myId, myDevice))
   const existingChatFilters = existing
     .filter(s => (s.type as string) === 'fleet-chat')
-    .map(s => (s as any).props?.filter as [string, string][][] | undefined)
+    .map(s => (s as any).props?.filter as FleetChatFilter | undefined)
   const vp = editor.getViewportScreenBounds()
   const phoneTarget = variant === 'phone' ? getPhoneLayoutTarget(editor, docBounds.pageShapes, vp) : null
   if (variant === 'phone' && !phoneTarget) {
@@ -546,280 +355,24 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
       if (proxy) editor.deleteShape(proxy.id)
     } catch {}
 
-    const humanId = getHumanId()
-    const nonHuman = agents.filter((a: any) => a.id !== humanId && !a.human)
-    const sorted = [...nonHuman].sort((a: any, b: any) => {
-      const ta = a.last_seen ? new Date(a.last_seen).getTime() : 0
-      const tb = b.last_seen ? new Date(b.last_seen).getTime() : 0
-      return tb - ta
-    })
-    const seenNames = new Set<string>()
-    const deduped = sorted.filter((a: any) => {
-      const name = a.friendly_name as string | undefined
-      if (!name || seenNames.has(name)) return false
-      seenNames.add(name)
-      return true
-    })
-    const panelCount = variant === '2x2' ? 4 : (variant === 'big-chat' || variant === 'phone') ? 1 : 2
-    const recentChatAgents = recentChatTargetAgents(getEvents(), deduped, humanId, getHumanName(), panelCount)
-    const recentIds = new Set(recentChatAgents.map((a: any) => a.id || a.friendly_name))
-    const topAgents = [
-      ...recentChatAgents,
-      ...deduped.filter((a: any) => !recentIds.has(a.id || a.friendly_name)),
-    ].slice(0, panelCount)
-    const makeFilter = (i: number): [string, string][][] => {
-      if (existingChatFilters[i]) return existingChatFilters[i]!
-      const name = topAgents[i]?.friendly_name as string | undefined
-      return name ? [[['from', name]], [['to', name]]] : []
+    const layoutPlan = planFleetLayoutShapes(buildFleetLayoutPlanInput({
+      editor,
+      agents,
+      variant,
+      myId,
+      myDevice,
+      docBounds,
+      phoneTarget,
+      existingChatFilters,
+      makeSlotId: slot => layoutSlotId(myId, myDevice, slot),
+    }))
+    editor.createShapes(layoutPlan.shapes as any)
+    if (layoutPlan.dispatchHudReset) {
+      dispatchFleetHudReset()
     }
-    const filter1 = makeFilter(0)
-    const filter2 = makeFilter(1)
-    const filter3 = makeFilter(2)
-    const filter4 = makeFilter(3)
-
-    const leftW = getPref('layout-rail-width')
-    const gap = 10
-    const chatW3 = getPref('layout-chat-width')
-    const marginGap = getPref('layout-margin-gap')
-    const rightW = chatW3 * 2 + gap
-    const vp = editor.getViewportScreenBounds()
-    // HUD renders fleet shapes via a z=1 camera (see FleetHUD.tsx), so page units
-    // map 1:1 to screen px — size off the raw viewport, not the main-camera zoom.
-    const totalH = Math.round(vp.h * getPref('layout-height-frac'))
-    const agentsH = 330
-    const searchH = totalH - gap - agentsH
-    const rightChatH = Math.round(totalH * 0.75)
-    const docviewH = totalH - gap - rightChatH
-
-    // Width of the content that sits in the LEFT margin (rail + its chat
-    // columns). Its right edge is anchored marginGap to the left of the
-    // document; the rest stacks outward (further left). The 2-col layout also
-    // places one chat in the RIGHT margin, at docRight + marginGap (below).
-    // Everything is laid out relative to the document edges — never relative to
-    // the HUD position, which is a separate offset (the anchor shape).
-    const leftContentW =
-      variant === 'big-chat' ? leftW + gap + Math.round(chatW3 * 2)
-      : variant === 'both-margins' ? leftW + gap + Math.round(chatW3 * 1.5)
-      : leftW + gap + rightW
-
-    const { minLeft, minTop, maxRight } = docBounds
-    let anchorX = minLeft - marginGap - leftContentW
-    let anchorY = minTop - 1200
-    const docMaxRight = maxRight
-
-    // Push this (identity, device)'s whole layout into its own guaranteed-free
-    // vertical lane so two owners' shapes can never overlap. dy bands owners
-    // vertically by a lane index chosen to miss every other owner present in the
-    // room (laneDy); dx is a cosmetic horizontal spread the HUD compensates. My
-    // HUD view is unaffected — its camera follows my own shapes' bounds — so this
-    // only separates the underlying canvas shapes, which is what keeps a foreign
-    // layout from overlapping mine.
-    const { dx } = layoutOffset(myId, myDevice)
-    const dy = laneDy(editor, myId, myDevice)
-    anchorX += dx
-    anchorY += dy
-
-    // Phone layout: three horizontal, screen-sized lanes.
-    // Left lane: agents over inbox/filter surface.
-    // Middle lane: chat.
-    // Right lane: the document page itself.
-    // The fleet lanes are TLDraw/HUD shapes placed immediately to the left of
-    // the document page; PhoneHandTool snaps the main camera between these
-    // three document-left screen offsets.
-    if (variant === 'phone') {
-      const target = phoneTarget!
-
-      const screenW = Math.round(vp.w)
-      const screenH = Math.round(vp.h)
-      const chatW = screenW
-      const chatH = screenH
-      const colW = screenW
-      const phoneAgentsH = Math.min(Math.round(screenH * 0.42), Math.max(160, Math.round(screenH * 0.38)))
-      const phoneInboxH = Math.max(160, chatH - gap - phoneAgentsH)
-      const chatX = target.pageX - chatW + dx
-      const colX = target.pageX - chatW - colW + dx
-      editor.createShapes([
-        {
-          id: slotId(myId, myDevice, 'agents'),
-          type: 'fleet-agents' as any,
-          x: colX, y: anchorY,
-          isLocked: true,
-          props: { w: colW, h: phoneAgentsH, userId: myId, deviceId: myDevice },
-        },
-        {
-          id: slotId(myId, myDevice, 'inbox'),
-          type: 'fleet-inbox' as any,
-          x: colX, y: anchorY + phoneAgentsH + gap,
-          isLocked: true,
-          props: { w: colW, h: phoneInboxH, userId: myId, deviceId: myDevice },
-        },
-        {
-          id: slotId(myId, myDevice, 'chat-0'),
-          type: 'fleet-chat' as any,
-          x: chatX, y: anchorY,
-          isLocked: true,
-          props: { w: chatW, h: chatH, filter: filter1, userId: myId, deviceId: myDevice },
-        },
-      ])
-      try { window.dispatchEvent(new CustomEvent('fleet-hud-reset')) } catch {}
-      return
-    }
-
-    // Touch layout: a single container (inbox strip + nested chat), one column.
-    // The container auto-creates its own fleet-chat child, so no other shapes.
-    if (variant === 'touch') {
-      const touchW = chatW3
-      editor.createShapes([{
-        id: slotId(myId, myDevice, 'touch-inbox'),
-        type: 'fleet-touch-inbox' as any,
-        x: anchorX + leftW + gap, y: anchorY,
-        isLocked: false,
-        props: { w: touchW, h: totalH, userId: myId, deviceId: myDevice },
-      }])
-      return
-    }
-
-    const shapes: any[] = [
-      {
-        id: slotId(myId, myDevice, 'inbox'),
-        type: 'fleet-inbox' as any,
-        x: anchorX - leftW - gap, y: anchorY,
-        isLocked: false,
-        props: { w: leftW, h: agentsH + gap + searchH },
-      },
-      {
-        id: slotId(myId, myDevice, 'agents'),
-        type: 'fleet-agents' as any,
-        x: anchorX, y: anchorY,
-        isLocked: false,
-        props: { w: leftW, h: agentsH },
-      },
-      {
-        id: slotId(myId, myDevice, 'search'),
-        type: 'fleet-search' as any,
-        x: anchorX, y: anchorY + agentsH + gap,
-        isLocked: false,
-        props: { w: leftW, h: searchH },
-      },
-    ]
-    if (variant === 'big-chat') {
-      // Big-chat layout: half chat over half source editor.
-      const chatWide = Math.round(chatW3 * 2)
-      const wideChatH = Math.round((totalH - gap) / 2)
-      const wideEditorH = totalH - gap - wideChatH
-      shapes.push(
-        {
-          id: slotId(myId, myDevice, 'chat-0'),
-          type: 'fleet-chat' as any,
-          x: anchorX + leftW + gap, y: anchorY,
-          isLocked: false,
-          props: { w: chatWide, h: wideChatH, filter: filter1 },
-        },
-        {
-          id: slotId(myId, myDevice, 'source-editor'),
-          type: 'fleet-source-editor' as any,
-          x: anchorX + leftW + gap, y: anchorY + wideChatH + gap,
-          isLocked: false,
-          props: { w: chatWide, h: wideEditorH, file: '', line: 1, title: 'Source' },
-        },
-      )
-    } else if (variant === '2x2') {
-      // 2×2 layout: four chats in a square (no document viewer).
-      const gridChatW = chatW3
-      const gridChatH = Math.round((totalH - gap) / 2)
-      shapes.push(
-        {
-          id: slotId(myId, myDevice, 'chat-0'),
-          type: 'fleet-chat' as any,
-          x: anchorX + leftW + gap, y: anchorY,
-          isLocked: false,
-          props: { w: gridChatW, h: gridChatH, filter: filter1 },
-        },
-        {
-          id: slotId(myId, myDevice, 'chat-1'),
-          type: 'fleet-chat' as any,
-          x: anchorX + leftW + gap + gridChatW + gap, y: anchorY,
-          isLocked: false,
-          props: { w: gridChatW, h: gridChatH, filter: filter2 },
-        },
-        {
-          id: slotId(myId, myDevice, 'chat-2'),
-          type: 'fleet-chat' as any,
-          x: anchorX + leftW + gap, y: anchorY + gridChatH + gap,
-          isLocked: false,
-          props: { w: gridChatW, h: gridChatH, filter: filter3 },
-        },
-        {
-          id: slotId(myId, myDevice, 'chat-3'),
-          type: 'fleet-chat' as any,
-          x: anchorX + leftW + gap + gridChatW + gap, y: anchorY + gridChatH + gap,
-          isLocked: false,
-          props: { w: gridChatW, h: gridChatH, filter: filter4 },
-        },
-      )
-    } else if (variant === '3-col') {
-      shapes.push(
-        {
-          id: slotId(myId, myDevice, 'chat-0'),
-          type: 'fleet-chat' as any,
-          x: anchorX + leftW + gap, y: anchorY,
-          isLocked: false,
-          props: { w: chatW3, h: totalH, filter: filter1 },
-        },
-        {
-          id: slotId(myId, myDevice, 'chat-1'),
-          type: 'fleet-chat' as any,
-          x: anchorX + leftW + gap + chatW3 + gap, y: anchorY,
-          isLocked: false,
-          props: { w: chatW3, h: rightChatH, filter: filter2 },
-        },
-        {
-          id: slotId(myId, myDevice, 'docview'),
-          type: 'fleet-docview' as any,
-          x: anchorX + leftW + gap + chatW3 + gap, y: anchorY + rightChatH + gap,
-          isLocked: false,
-          props: { w: chatW3, h: docviewH, mode: 'manual', label: '', page: 1, yTop: 0, yBottom: 300, title: '' },
-        },
-      )
-    } else {
-      const chatWide = Math.round(chatW3 * 1.5)
-      // Left group's right edge already sits marginGap left of the document
-      // (via anchorX). The right-margin chat's left edge sits marginGap right
-      // of the document — both in page coords, so the HUD maps them 1:1. Add the
-      // same dx so the WHOLE layout translates as one rigid unit (the HUD then
-      // compensates that dx, rendering every shape in its canonical position).
-      const rightChatX = docMaxRight + marginGap + dx
-
-      shapes.push(
-        {
-          id: slotId(myId, myDevice, 'chat-0'),
-          type: 'fleet-chat' as any,
-          x: anchorX + leftW + gap, y: anchorY,
-          isLocked: false,
-          props: { w: chatWide, h: rightChatH, filter: filter1 },
-        },
-        {
-          id: slotId(myId, myDevice, 'docview'),
-          type: 'fleet-docview' as any,
-          x: anchorX + leftW + gap, y: anchorY + rightChatH + gap,
-          isLocked: false,
-          props: { w: chatWide, h: docviewH, mode: 'manual', label: '', page: 1, yTop: 0, yBottom: 300, title: '' },
-        },
-        // Two-margin layout: the right margin holds the source editor sheet.
-        {
-          id: slotId(myId, myDevice, 'source-editor'),
-          type: 'fleet-source-editor' as any,
-          x: rightChatX, y: anchorY,
-          isLocked: false,
-          props: { w: chatWide, h: totalH, file: '', line: 1, title: 'Source' },
-        },
-      )
-    }
-    for (const s of shapes) { s.props.userId = myId; s.props.deviceId = myDevice }
-    editor.createShapes(shapes)
   })
 
-  try { window.dispatchEvent(new CustomEvent('fleet-hud-reset')) } catch {}
+  dispatchFleetHudReset()
   const result = makeFleetLayoutResult(editor, variant, 'created', myId, myDevice)
   return result.ownedFleetShapeCount > 0
     ? result
