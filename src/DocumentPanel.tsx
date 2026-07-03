@@ -183,7 +183,7 @@ const IS_TOUCH_DEVICE = (typeof navigator !== 'undefined' && navigator.maxTouchP
   || (typeof location !== 'undefined' && new URLSearchParams(location.search).has('forcetouch'))
 
 function activateHlSlot(editor: Editor, idx: number) {
-  const slot = HL_SLOTS[idx]
+  const slot = PHONE_HL_SLOTS[idx]
   if (!slot) return
   if (slot.id === 'eraser') {
     editor.setCurrentTool('eraser')
@@ -191,6 +191,8 @@ function activateHlSlot(editor: Editor, idx: number) {
     editor.setCurrentTool('select')
   } else if (slot.id === 'draw') {
     editor.setCurrentTool('draw')
+  } else if (slot.id === 'phone-hand') {
+    editor.setCurrentTool('phone-hand')
   } else {
     editor.setStyleForNextShapes(DefaultColorStyle, slot.id)
     editor.setCurrentTool('highlight')
@@ -201,7 +203,17 @@ function activateHlSlot(editor: Editor, idx: number) {
 // Phone / touch-tablet overlay
 // ======================
 
-import { HL_SLOTS, TLDRAW_ICON_BASE, hlMaskUrl } from './highlighterSlots'
+import { HL_SLOTS, TLDRAW_ICON_BASE, hlMaskUrl, type HlSlot } from './highlighterSlots'
+
+// Phone-only slots = the shared highlighter slots plus the phone-hand (navigation)
+// tool as the rightmost slot. The phone-hand tool is registered only on phone, so
+// it must NOT go in the shared HL_SLOTS (that would add a broken slot to the
+// desktop HighlighterSliderShape). Selecting it returns you to lane navigation —
+// the escape hatch so picking the highlighter never strands you off phone-hand.
+const PHONE_HL_SLOTS: HlSlot[] = [
+  ...HL_SLOTS,
+  { id: 'phone-hand', color: '#888', label: 'move', svgIcon: `${TLDRAW_ICON_BASE}#tool-hand` },
+]
 
 function PhoneHighlighterButton() {
   const editor = useEditor()
@@ -320,7 +332,7 @@ function PhoneHighlighterButton() {
       const slotPos = Math.round((distFromBtnLeft - 17.5) / slotW)
       // Active slot is the button itself — filter it from the slider
       const activeOrigIdx = colorIdxRef.current
-      const filteredIndices = HL_SLOTS.map((_, i) => i).filter(i => i !== activeOrigIdx)
+      const filteredIndices = PHONE_HL_SLOTS.map((_, i) => i).filter(i => i !== activeOrigIdx)
       const clampedPos = Math.max(0, Math.min(filteredIndices.length - 1, slotPos))
       // Rightmost filtered slot = index 0 (just left of button), leftmost = last index
       const origIdx = filteredIndices[filteredIndices.length - 1 - clampedPos] ?? activeOrigIdx
@@ -382,7 +394,7 @@ function PhoneHighlighterButton() {
   // HighlighterSliderShape uses the same bus, so only one pill ever exists.
   useEffect(() => {
     if (dragging && dragMode === 'color' && dragSlot != null) {
-      const slot = HL_SLOTS[dragSlot]
+      const slot = PHONE_HL_SLOTS[dragSlot]
       if (slot) toolNameHud.show(slot.label, slot.color)
     } else {
       toolNameHud.hide()
@@ -410,7 +422,7 @@ function PhoneHighlighterButton() {
           onPointerDown={stopEventPropagation}
           onTouchStart={stopEventPropagation}
         >
-          {HL_SLOTS.map((slot, i) => {
+          {PHONE_HL_SLOTS.map((slot, i) => {
             if (i === colorIdx) return null // active slot is the button
             const isToolSlot = !!slot.svgIcon // eraser, select, draw — ring style like inactive button
             const slotColor = slot.id === 'draw'

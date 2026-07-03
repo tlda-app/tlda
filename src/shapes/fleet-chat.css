@@ -135,7 +135,7 @@ body.phone-mode .fleet-chat-shape .fleet-btn-group > :not(.fleet-filter-btn) {
 body.phone-mode .fleet-chat-shape .fleet-btn-group .fleet-filter-btn {
   width: 44px;
   height: 44px;
-  opacity: 0.75;
+  opacity: 0.55;
 }
 body.phone-mode .fleet-chat-shape .fleet-btn-group .fleet-filter-btn svg {
   width: 22px;
