@@ -1851,6 +1851,18 @@ body.phone-mode .fleet-inbox-list {
   touch-action: pan-y;
 }
 
+/* --- Phone: the "Active" time column is the scroll grip for the agents list.
+   The list scroller allows pan-y (above), but every other column is
+   touch-action:none, so only a drag on the Active column scrolls — name/label
+   pills stay grabbable without the list sliding under your thumb. (Skip's
+   split-gesture: time column scrolls, name/labels drag.) --- */
+body.phone-mode .fleet-agents-col-name,
+body.phone-mode .fleet-agents-col-task,
+body.phone-mode .fleet-agents-col-ctx,
+body.phone-mode .fleet-agents-col-labels {
+  touch-action: none;
+}
+
 /* --- Phone: bigger touch targets + a real scrollbar in the agents panel ---
    On phone the 9px/8px rows are too small to grab with a thumb, and the list
    only had a hairline `thin` scrollbar. Scoped to .phone-mode so tablets/desktop
