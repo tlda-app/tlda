@@ -3242,7 +3242,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 /* --- Fleet DocView shape --- */
 /* Suppress tldraw hover/selection indicators on ALL shapes in the HUD */
 .fleet-hud .clip-panel-canvas .tl-shape-indicator { display: none !important; }
-.fleet-hud .clip-panel-canvas .tl-overlays__item { pointer-events: none !important; }
+.fleet-hud .clip-panel-canvas .tl-overlays__item { pointer-events: auto !important; }
 .fleet-docview {
   overflow: hidden;
   border: 1px solid rgba(128, 128, 128, 0.1);

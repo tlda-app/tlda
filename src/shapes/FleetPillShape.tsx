@@ -544,7 +544,7 @@ export async function dropPillOnTarget(
       },
     })
   } else if (!content && (!hitShape || (hitShape as any).type !== 'fleet-agents')) {
-    await createFleetShape(editor, 'fleet-chat', pagePoint.x, pagePoint.y, {
+    await createFleetShape(createEditor, 'fleet-chat', targetPagePoint.x, targetPagePoint.y, {
       w: CHAT_W,
       h: CHAT_H,
       filter: [[['to', value]], [['from', value]]],
