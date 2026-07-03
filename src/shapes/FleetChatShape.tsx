@@ -554,6 +554,7 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
   useEffect(() => {
     if (!agentId) return
     wsRef.current?.close()
+    termRef.current?.clear()
     setStatus('connecting')
     let sawAuthoritativeSize = false
     let fallbackFlushed = false
@@ -3486,6 +3487,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   const [atBottom, setAtBottom] = useState(true)
   const [termHoverVisible, setTermHoverVisible] = useState(false)
   const [termHoverPinned, setTermHoverPinned] = useState(false)
+  const [termHoverAgentId, setTermHoverAgentId] = useState<string | null>(null)
   const termHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const termAutoPinnedRef = useRef(false)
   // Skill-state hover popover (hovering an agent name in chat)
@@ -4577,54 +4579,76 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
   }
 
-  // Resolve a send-target label to one agent. The friendly name is an opaque
+  const agentRouteName = useCallback((agent: any) => (
+    agent?.friendly_name || agent?.name || agent?.id || ''
+  ), [])
+
+  const agentDisplayName = useCallback((agent: any) => (
+    agent?.friendly_name || agent?.name?.replace?.(/^fleet:/, '') || agent?.id?.replace?.(/^fleet:/, '') || ''
+  ), [])
+
+  // Resolve a send-target label to one agent. The agent name is an opaque
   // atom — you address an agent by its exact full name (or id, or a label it
   // carries). No suffix games: dawn is "base", day is "base:day", etc.
-  //
-  // Terminal peek needs a concrete tmux owner. Broadcast/group labels such as
-  // "awake" can match many agents, so only return label matches that identify a
-  // single non-human agent. Group panels deliberately show no panel-level
-  // terminal peek: there is no one agent associated with the whole chat.
   const resolveTargetAgent = useCallback((label: string, agentList: any[]) => {
     if (label.startsWith('fleet:')) return agentList.find((a: any) => a.id === label) || null
-    // A friendly name can have a LIVE holder plus one or more DEAD former holders:
-    // a dead agent keeps its friendly_name for provenance (spec G.18), so the name
+    // A route name can have a LIVE holder plus one or more DEAD former holders:
+    // a dead agent keeps its name for provenance (spec G.18), so the name
     // string outlives any single holder. The live holder IS the agent (G.22), so
     // prefer a non-dead match; fall back to a dead one only when the name has no
     // live holder (which keeps resurrect-by-name working for an all-dead name).
-    const byName = agentList.filter((a: any) => a.friendly_name === label || a.id === label)
+    const byName = agentList.filter((a: any) => agentRouteName(a) === label || a.id === label)
     if (byName.length) return byName.find((a: any) => !a.dead) || byName[0]
     const matched = agentList.filter((a: any) => !a.human && labelsForAgent(a).includes(label))
     return matched.length === 1 ? matched[0] : null
-  }, [])
+  }, [agentRouteName])
+
+  const resolveTargetAgents = useCallback((label: string, agentList: any[]) => {
+    if (label.startsWith('fleet:')) {
+      const agent = agentList.find((a: any) => a.id === label)
+      return agent ? [agent] : []
+    }
+    const byName = agentList.filter((a: any) => agentRouteName(a) === label || a.id === label)
+    if (byName.length) return [byName.find((a: any) => !a.dead) || byName[0]]
+    return agentList.filter((a: any) => !a.human && labelsForAgent(a).includes(label))
+  }, [agentRouteName])
 
   const isTerminalReadyAgent = useCallback((agent: any) => {
     return !!agent?.tmux_session && !agent?.dead && !agent?.hibernating && agent?.status !== 'hibernating'
   }, [])
 
-  const hoverTargetAgentId = useMemo(() => {
+  const terminalHoverAgents = useMemo(() => {
+    const seen = new Set<string>()
+    const ready: any[] = []
     const diag: any[] = []
-    const candidateLabels: string[] = []
-    const addLabel = (label: string) => {
-      if (label && !candidateLabels.includes(label)) candidateLabels.push(label)
-    }
     for (const label of sendTargets) {
-      addLabel(label)
-    }
-    for (const clause of filter) {
-      for (const [, label] of clause) addLabel(label)
-    }
-    for (const label of candidateLabels) {
-      const agent = resolveTargetAgent(label, agents)
-      diag.push({ label, fleetId: agent?.id || label, found: !!agent, tmux: agent?.tmux_session || null, dead: agent?.dead ?? null })
-      if (isTerminalReadyAgent(agent)) {
-        log.info('terminal-icon', 'resolved target', { sendTargets, filter, source: 'label', fleetId: agent.id, diag, agentCount: agents.length })
-        return agent.id
+      const matches = resolveTargetAgents(label, agents)
+      diag.push({
+        label,
+        matches: matches.map((agent: any) => ({
+          fleetId: agent?.id || label,
+          found: !!agent,
+          tmux: agent?.tmux_session || null,
+          dead: agent?.dead ?? null,
+          hibernating: agent?.hibernating ?? (agent?.status === 'hibernating'),
+          terminalReady: isTerminalReadyAgent(agent),
+        })),
+      })
+      for (const agent of matches) {
+        if (!isTerminalReadyAgent(agent) || seen.has(agent.id)) continue
+        seen.add(agent.id)
+        ready.push(agent)
       }
     }
-    log.info('terminal-icon', 'no terminal target', { sendTargets, filter, diag, agentCount: agents.length })
-    return null
-  }, [sendTargets, filterKey, agents, resolveTargetAgent, isTerminalReadyAgent])
+    log.info('terminal-icon', ready.length ? 'resolved targets' : 'no terminal target', {
+      sendTargets,
+      source: 'send-targets',
+      fleetIds: ready.map((agent: any) => agent.id),
+      diag,
+      agentCount: agents.length,
+    })
+    return ready
+  }, [sendTargets, agents, resolveTargetAgents, isTerminalReadyAgent])
 
   const deadTargetAgent = useMemo(() => {
     for (const label of sendTargets) {
@@ -4635,20 +4659,34 @@ function FleetChatInner({ shape }: { shape: any }) {
         // IS the agent. Only offer resurrect when the name has NO live holder
         // (the legitimate "the only holder is dead" case). This is what stops
         // dead namesakes nagging "resurrect?" in a chat with the live holder.
-        const name = agent.friendly_name
-        const hasLiveHolder = !!name && agents.some((a: any) => !a.dead && a.friendly_name === name)
+        const name = agentRouteName(agent)
+        const hasLiveHolder = !!name && agents.some((a: any) => !a.dead && agentRouteName(a) === name)
         if (hasLiveHolder) continue
-        return { id: agent.id, name: name || agent.id.replace('fleet:', '') }
+        return { id: agent.id, name: agentDisplayName(agent) || agent.id.replace('fleet:', '') }
       }
     }
     return null
-  }, [sendTargets, agents, resolveTargetAgent])
+  }, [sendTargets, agents, resolveTargetAgent, agentRouteName, agentDisplayName])
 
-  // Reset auto-pin tracking when the target agent changes
+  const terminalHoverAgentKey = useMemo(() => terminalHoverAgents.map((agent: any) => agent.id).join(','), [terminalHoverAgents])
+  const selectedTerminalHoverAgent = useMemo(
+    () => terminalHoverAgents.find((agent: any) => agent.id === termHoverAgentId) || null,
+    [terminalHoverAgents, termHoverAgentId],
+  )
+
+  useEffect(() => {
+    if (!termHoverAgentId) return
+    if (terminalHoverAgents.some((agent: any) => agent.id === termHoverAgentId)) return
+    setTermHoverAgentId(null)
+    setTermHoverPinned(false)
+    setTermHoverVisible(false)
+  }, [termHoverAgentId, terminalHoverAgentKey, terminalHoverAgents])
+
+  // Reset auto-pin tracking when the selected terminal agent changes
   useEffect(() => {
     termAutoPinnedRef.current = false
     lastAttentionTsRef.current = null
-  }, [hoverTargetAgentId])
+  }, [termHoverAgentId])
 
   // (Terminal auto-pin on permission prompts removed — chat cards handle this now)
 
@@ -5576,12 +5614,12 @@ function FleetChatInner({ shape }: { shape: any }) {
           }}
         >
           {/* Terminal hover pane — floats below the input area when the terminal icon is hovered or pinned */}
-          {(termHoverVisible || termHoverPinned) && hoverTargetAgentId && (
+          {(termHoverVisible || termHoverPinned) && selectedTerminalHoverAgent && (
             <TerminalHoverPane
-              agentId={hoverTargetAgentId}
+              agentId={selectedTerminalHoverAgent.id}
               pinned={termHoverPinned}
               anchorRef={inputAreaRef}
-              onDismiss={() => { setTermHoverPinned(false); setTermHoverVisible(false) }}
+              onDismiss={() => { setTermHoverPinned(false); setTermHoverVisible(false); setTermHoverAgentId(null) }}
               onMouseEnter={() => {
                 if (termHideTimerRef.current) {
                   clearTimeout(termHideTimerRef.current)
@@ -5698,21 +5736,30 @@ function FleetChatInner({ shape }: { shape: any }) {
                 </svg>
               )}
             </button>
-            {/* Terminal peek icon — hover to show agent's tmux output. Hidden when no targeted agent has a tmux session. */}
-            {hoverTargetAgentId && (
+            {/* Terminal peek icons — one per resolved displayed send target. */}
+            {terminalHoverAgents.map((agent: any) => (
               <button
-                className={`fleet-terminal-icon${termHoverPinned ? ' active' : ''}`}
+                key={agent.id}
+                className={`fleet-terminal-icon${termHoverPinned && termHoverAgentId === agent.id ? ' active' : ''}`}
                 onPointerDown={stopEventPropagation}
                 onClick={(e) => {
                   stopEventPropagation(e as any)
-                  setTermHoverPinned(p => !p)
-                  setTermHoverVisible(true)
+                  if (termHoverPinned && termHoverAgentId === agent.id) {
+                    setTermHoverPinned(false)
+                    setTermHoverVisible(false)
+                    setTermHoverAgentId(null)
+                  } else {
+                    setTermHoverAgentId(agent.id)
+                    setTermHoverPinned(true)
+                    setTermHoverVisible(true)
+                  }
                 }}
                 onMouseEnter={() => {
                   if (termHideTimerRef.current) {
                     clearTimeout(termHideTimerRef.current)
                     termHideTimerRef.current = null
                   }
+                  setTermHoverAgentId(agent.id)
                   setTermHoverVisible(true)
                 }}
                 onMouseLeave={() => {
@@ -5720,7 +5767,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                     termHideTimerRef.current = setTimeout(() => setTermHoverVisible(false), 80)
                   }
                 }}
-                title={termHoverPinned ? 'Click to unpin terminal' : 'Hover to peek · click to pin'}
+                title={`${agentDisplayName(agent) || agent.id.replace('fleet:', '')} terminal`}
               >
                 <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                   <rect x="1" y="1" width="8" height="8" rx="1.5"/>
@@ -5728,7 +5775,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                   <line x1="5.5" y1="8" x2="7.5" y2="8"/>
                 </svg>
               </button>
-            )}
+            ))}
             <button
               className={`fleet-composer-traffic-toggle fleet-composer-traffic-toggle-${composerTrafficMode}`}
               onPointerDown={(e) => {
