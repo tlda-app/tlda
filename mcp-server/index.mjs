@@ -2758,7 +2758,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const drawnShapes = await collectDrawnShapes(doc);
         for (const s of drawnShapes) {
           if (s.shapeType === 'note') continue;
-          const aType = s.shapeType || 'draw';
+          const aType = s.shapeType === 'highlighter' ? 'highlight' : (s.shapeType || 'draw');
           if (typeFilter && !typeFilter.includes(aType)) continue;
           if (unaddressedOnly && s.meta?.addressed) continue;
           if (sinceTs && s.createdAt && s.createdAt < sinceTs) continue;

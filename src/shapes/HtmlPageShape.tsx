@@ -14,6 +14,7 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import { appendToken } from '../authToken'
 import { useIsInViewport } from './useIsInViewport'
 import { PDF_HEIGHT } from '../layoutConstants'
+import { clearHtmlTextSelection, recordHtmlTextSelection } from '../htmlSelection'
 
 // Heading Y positions reported by bridge scripts, keyed by shape ID
 export const htmlHeadingPositions = new Map<string, Record<string, number>>()
@@ -31,6 +32,7 @@ export function cleanupHtmlShapeData(shapeId: string) {
   htmlHeadingPositions.delete(shapeId)
   htmlIframeElements.delete(shapeId)
   htmlScrollyRegions.delete(shapeId)
+  clearHtmlTextSelection(shapeId)
 }
 
 // Scrollytelling region metadata reported by bridge scripts, keyed by shape ID
@@ -372,6 +374,10 @@ function HtmlPageComponent({ shape }: { shape: any }) {
           metaKey: !!metaKey,
           accelKey: !!(ctrlKey || metaKey),
         })
+        return
+      }
+      if (e.data?.type === 'tlda-text-selection' && e.data.shapeId === shape.id) {
+        recordHtmlTextSelection(e.data)
         return
       }
       if (e.data?.type === 'tlda-navigate') {
