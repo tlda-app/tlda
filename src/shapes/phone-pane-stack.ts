@@ -70,6 +70,10 @@ function primaryDocumentLeft(editor: Editor): number | null {
   return best?.x ?? null
 }
 
+export function getPrimaryPhoneDocumentLeft(editor: Editor): number | null {
+  return primaryDocumentLeft(editor)
+}
+
 export function phonePaneX(docLeftPage: number, paneIndex: number, screenW: number, dx: number): number {
   return docLeftPage - paneIndex * screenW + dx
 }

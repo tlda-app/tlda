@@ -18,6 +18,8 @@ import { stopEventPropagation, useUniqueSafeId } from 'tldraw'
 import type { Editor } from 'tldraw'
 import { currentFleetAgents, useAwakeFleetAgentCount, useFleetIdentity } from '../fleet-data-adapter'
 import { createFleetLayoutDetailed, type FleetLayoutCreateResult, type FleetLayoutVariant } from '../shapes/fleet-utils'
+import { getPrimaryPhoneDocumentLeft, PHONE_INBOX_PANE_INDEX } from '../shapes/phone-pane-stack'
+import { snapToPhoneLaneIndex } from '../overlays/useFleetGestures'
 import { dispatchFleetHudReset, dispatchFleetHudToggle } from '../wm/editor-host-bridge'
 import { isFleetHudHidden, writeFleetHudExpanded } from '../wm/fleet-hud-state'
 import { log } from '../logger'
@@ -256,7 +258,13 @@ function applyFleetLayoutPreset({
         setFleetHudExpanded(true)
         onShown?.()
       }
-      requestAnimationFrame(() => dispatchFleetHudReset())
+      requestAnimationFrame(() => {
+        if (presetId === 'phone') {
+          const docLeft = getPrimaryPhoneDocumentLeft(mainEditor)
+          if (docLeft !== null) snapToPhoneLaneIndex(mainEditor, docLeft, PHONE_INBOX_PANE_INDEX)
+        }
+        dispatchFleetHudReset()
+      })
       return
     }
     if (Date.now() >= deadline) {

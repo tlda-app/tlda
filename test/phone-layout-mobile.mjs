@@ -94,17 +94,20 @@ async function main() {
     const pb = ed.getShapePageBounds(pageShape.id)
     if (!pb) throw new Error('document page has no bounds')
 
-    const desiredLeft = 32
-    const desiredTop = clip ? -220 : 90
-    const desiredW = width - 64
-    const desiredH = height - 180
-    const z = clip ? desiredW / pb.w : Math.min(desiredW / pb.w, desiredH / pb.h)
-    ed.setCamera({
-      x: desiredLeft / z - pb.x,
-      y: desiredTop / z - pb.y,
-      z,
-    }, { animation: { duration: 0 } })
-    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))
+    let z = ed.getCamera().z
+    if (!auto) {
+      const desiredLeft = 32
+      const desiredTop = clip ? -220 : 90
+      const desiredW = width - 64
+      const desiredH = height - 180
+      z = clip ? desiredW / pb.w : Math.min(desiredW / pb.w, desiredH / pb.h)
+      ed.setCamera({
+        x: desiredLeft / z - pb.x,
+        y: desiredTop / z - pb.y,
+        z,
+      }, { animation: { duration: 0 } })
+      await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))
+    }
 
     const topLeft = ed.pageToScreen({ x: pb.x, y: pb.y })
     const bottomRight = ed.pageToScreen({ x: pb.x + pb.w, y: pb.y + pb.h })
@@ -114,7 +117,7 @@ async function main() {
       w: bottomRight.x - topLeft.x,
       h: bottomRight.y - topLeft.y,
     }
-    if (!clip && (docScreen.x < 20 || docScreen.y < 70 || docScreen.x + docScreen.w > width - 20 || docScreen.y + docScreen.h > height - 20)) {
+    if (!auto && !clip && (docScreen.x < 20 || docScreen.y < 70 || docScreen.x + docScreen.w > width - 20 || docScreen.y + docScreen.h > height - 20)) {
       throw new Error(`document does not fit comfortably before layout: ${JSON.stringify(docScreen)}`)
     }
     const clippedDocScreen = {
@@ -233,6 +236,13 @@ async function main() {
       .filter(Boolean)
     if (visibleHudIds.includes(alienId)) {
       throw new Error(`HUD rendered same-user other-device fleet shape: ${alienId}`)
+    }
+    const initialInboxEl = document.querySelector(`.fleet-hud-wrap [data-shape-id="${inbox.id}"] .fleet-inbox-shape`)
+      || document.querySelector(`.fleet-hud-wrap [data-shape-id="${inbox.id}"]`)
+    if (!(initialInboxEl instanceof HTMLElement)) throw new Error(`HUD did not render initial phone inbox shape ${inbox.id}`)
+    const initialInboxBox = initialInboxEl.getBoundingClientRect()
+    if (Math.abs(initialInboxBox.x) > 2 || Math.abs(initialInboxBox.right - width) > 2) {
+      throw new Error(`initial HUD phone inbox does not fill viewport: ${JSON.stringify({ x: initialInboxBox.x, right: initialInboxBox.right, width })}`)
     }
 
     const laneStops = {
@@ -359,6 +369,12 @@ async function main() {
         y: Math.round(inboxBox.y),
         w: Math.round(inboxBox.width),
         h: Math.round(inboxBox.height),
+      },
+      initialHudInboxBox: {
+        x: Math.round(initialInboxBox.x),
+        y: Math.round(initialInboxBox.y),
+        w: Math.round(initialInboxBox.width),
+        h: Math.round(initialInboxBox.height),
       },
       extraPanels: unexpected.map(s => s.type),
       phoneFooter: {

@@ -130,6 +130,8 @@ import { ShadowHistoryOverlay } from './overlays/ShadowHistoryOverlay'
 import { PlaybackPill } from './pills/PlaybackPill'
 import { SlidesNavigator } from './SlidesNavigator'
 import { isPhoneViewport } from './phoneViewport'
+import { getPrimaryPhoneDocumentLeft, PHONE_INBOX_PANE_INDEX } from './shapes/phone-pane-stack'
+import { snapToPhoneLaneIndex } from './overlays/useFleetGestures'
 
 // Shape sync server = the active config's STORE (ws); tldraw license = the active
 // config's licenseKey. Both come from the server-injected config (activeConfig).
@@ -1489,6 +1491,8 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
                   }
                   readinessWindow.__tldaPhoneCameraSettlingUntil = Date.now() + 700
                   const markPhoneCameraReady = () => {
+                    const docLeft = getPrimaryPhoneDocumentLeft(editor)
+                    if (docLeft !== null) snapToPhoneLaneIndex(editor, docLeft, PHONE_INBOX_PANE_INDEX)
                     readinessWindow.__tldaPhoneCameraSettlingUntil = 0
                     readinessWindow.__tldaPhoneCameraReadyAt = Date.now()
                     window.dispatchEvent(new Event('phone-camera-ready'))
