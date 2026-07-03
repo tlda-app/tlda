@@ -619,7 +619,7 @@ export function JoinVoiceVideoToggle() {
         style={{ cursor: 'default' }}
         title="Voice/video chat is not configured on this server"
       >
-        <span className="toc-toggle-icon">{'\u25CB'}</span> Voice/video off
+        <VoiceVideoIcon /> Voice/video off
       </div>
     )
   }
@@ -633,7 +633,7 @@ export function JoinVoiceVideoToggle() {
   return (
     <>
       <div className="toc-diff-hint" onClick={toggleLiveSession} title="Join the live voice/video room for this paper">
-        <span className="toc-toggle-icon">{'\u25CB'}</span> {label}
+        <VoiceVideoIcon /> {label}
       </div>
       {s.status === 'connected' && (
         <>
@@ -646,6 +646,17 @@ export function JoinVoiceVideoToggle() {
         </>
       )}
     </>
+  )
+}
+
+function VoiceVideoIcon() {
+  return (
+    <span className="toc-toggle-icon" aria-hidden="true">
+      <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M2.5 5.25a1.4 1.4 0 0 1 1.4-1.4h5.2a1.4 1.4 0 0 1 1.4 1.4v5.5a1.4 1.4 0 0 1-1.4 1.4H3.9a1.4 1.4 0 0 1-1.4-1.4z" />
+        <path d="m10.5 6.5 3-1.75v6.5l-3-1.75" />
+      </svg>
+    </span>
   )
 }
 
@@ -746,24 +757,66 @@ export function applyZoneWidth(w: number) {
 
 export function ZoneWidthSlider() {
   const [width, setWidth] = useState(getZoneWidth)
+  const [dragging, setDragging] = useState(false)
+  const railRef = useRef<HTMLDivElement>(null)
+  const widthRef = useRef(width)
+
+  widthRef.current = width
 
   useEffect(() => {
     applyZoneWidth(width)
   }, [])
 
-  const onChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    // Invert: slider value increases left→right, zone width decreases left→right
-    const v = ZONE_WIDTH_MAX + ZONE_WIDTH_MIN - parseInt(e.target.value)
+  const setZoneWidth = useCallback((next: number) => {
+    const v = Math.round(Math.max(ZONE_WIDTH_MIN, Math.min(ZONE_WIDTH_MAX, next)))
+    if (v === widthRef.current) return
+    widthRef.current = v
     setWidth(v)
     localStorage.setItem(ZONE_WIDTH_KEY, String(v))
     applyZoneWidth(v)
     window.dispatchEvent(new CustomEvent(ZONE_WIDTH_EVENT, { detail: v }))
   }, [])
 
+  const updateFromClientX = useCallback((clientX: number) => {
+    const rect = railRef.current?.getBoundingClientRect()
+    if (!rect || rect.width <= 0) return
+    const pct = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width))
+    setZoneWidth(ZONE_WIDTH_MAX - pct * (ZONE_WIDTH_MAX - ZONE_WIDTH_MIN))
+  }, [setZoneWidth])
+
+  const onPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    e.stopPropagation()
+    e.preventDefault()
+    setDragging(true)
+    ;(e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId)
+  }, [])
+
+  const onPointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (!dragging) return
+    e.stopPropagation()
+    e.preventDefault()
+    updateFromClientX(e.clientX)
+  }, [dragging, updateFromClientX])
+
+  const onPointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    e.stopPropagation()
+    e.preventDefault()
+    setDragging(false)
+    ;(e.currentTarget as HTMLDivElement).releasePointerCapture(e.pointerId)
+  }, [])
+
+  const thumbLeft = `${((ZONE_WIDTH_MAX - width) / (ZONE_WIDTH_MAX - ZONE_WIDTH_MIN)) * 100}%`
+
   return (
-    <div className="toc-zone-width-slider">
-      <input type="range" min={ZONE_WIDTH_MIN} max={ZONE_WIDTH_MAX} step="1"
-        value={ZONE_WIDTH_MAX + ZONE_WIDTH_MIN - width} onChange={onChange} />
+    <div className="toc-zone-width-slider" ref={railRef} aria-hidden="true">
+      <div
+        className={`toc-zone-width-thumb${dragging ? ' dragging' : ''}`}
+        style={{ left: thumbLeft }}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
+      />
     </div>
   )
 }
