@@ -2535,22 +2535,44 @@ export class FleetStore {
   // Matches against the current friendly_name AND every name an agent ever held
   // (name_history), so a name an agent USED to hold still finds it. Distinct ids.
   resolveAgentQuery(fragment) {
-    const q = (fragment || '').trim().toLowerCase();
+    return this.resolveAgentSelector({ fragment });
+  }
+
+  resolveAgentSelector(selector) {
+    selector = typeof selector === 'string' ? { fragment: selector } : (selector || {});
+    const baseFragment = (selector.fragment || '').trim().toLowerCase();
+    if (!baseFragment) return [];
+    const phase = selector.phase && selector.phase !== 'bare' ? selector.phase : null;
+    const q = phase ? `${baseFragment}:${phase}` : baseFragment;
     if (!q) return [];
     const like = `%${q}%`;
     // A bare name (no ':') gets a virtual ":dawn" so substring is uniform.
     const synth = "CASE WHEN instr(friendly_name, ':') > 0 THEN lower(friendly_name) ELSE lower(friendly_name) || ':dawn' END";
     const rows = this.db.prepare(`
-      SELECT id FROM agents
-        WHERE friendly_name IS NOT NULL AND (${synth}) LIKE ?
-      UNION
-      SELECT fleet_id AS id FROM name_history
-        WHERE friendly_name IS NOT NULL AND (${synth}) LIKE ?
+      WITH matches AS (
+        SELECT id, coalesce(last_seen, registered_at, '') AS seen_at FROM agents
+          WHERE friendly_name IS NOT NULL AND (${synth}) LIKE ?
+        UNION ALL
+        SELECT fleet_id AS id, coalesce(to_ts, from_ts, '') AS seen_at FROM name_history
+          WHERE friendly_name IS NOT NULL AND (${synth}) LIKE ?
+      )
+      SELECT id FROM matches
+      GROUP BY id
+      ORDER BY max(seen_at) DESC, id ASC
     `).all(like, like);
-    return rows.map(r => r.id);
+    let ids = rows.map(r => r.id);
+    if (selector.position != null) {
+      const idx = Math.max(0, Number(selector.position) - 1);
+      ids = ids[idx] ? [ids[idx]] : [];
+    } else if (selector.range) {
+      const from = selector.range.from == null ? 0 : Math.max(0, Number(selector.range.from) - 1);
+      const to = selector.range.to == null ? undefined : Math.max(from, Number(selector.range.to));
+      ids = ids.slice(from, to);
+    }
+    return ids;
   }
 
-  searchAll(query, { limit = 50, agent, role, since, before, agentOnly, fromOnly } = {}) {
+  searchAll(query, { limit = 50, agent, role, since, before, agentOnly, historyOnly, eventOnly, fromOnly } = {}) {
     const ftsQuery = query.replace(/"/g, '""');
     const runQuery = (sql, params) => {
       try { return this.db.prepare(sql).all(...params); } catch { return []; }
@@ -2560,6 +2582,7 @@ export class FleetStore {
     const agentIds = Array.isArray(agent) ? agent : agent ? [agent] : [];
     const hasAgent = agentIds.length > 0;
     const agentPlaceholders = agentIds.map(() => '?').join(',');
+    const historyMode = historyOnly ?? agentOnly ?? false;
 
     function agentClause(fromCol, toCol, agentCol) {
       // `from:` semantics — restrict to messages the agent SENT (from_id only).
@@ -2578,10 +2601,14 @@ export class FleetStore {
 
     // 1. Fleet events
     let eClauses, eParams;
-    if (agentOnly && hasAgent) {
-      const ac = agentClause('e.from_id', 'e.to_id', 'e.agent_id');
-      eClauses = [ac.clause];
-      eParams = [...ac.params];
+    if (historyMode) {
+      eClauses = [];
+      eParams = [];
+      if (hasAgent) {
+        const ac = agentClause('e.from_id', 'e.to_id', 'e.agent_id');
+        eClauses.push(ac.clause);
+        eParams.push(...ac.params);
+      }
     } else {
       eClauses = ['events_fts MATCH ?'];
       eParams = [ftsQuery];
@@ -2590,14 +2617,15 @@ export class FleetStore {
     if (since) { eClauses.push('e.timestamp >= ?'); eParams.push(since); }
     if (before) { eClauses.push('e.timestamp < ?'); eParams.push(before); }
     eParams.push(limit);
-    const ftsJoin = (agentOnly && hasAgent) ? '' : 'events_fts f JOIN';
-    const ftsOn = (agentOnly && hasAgent) ? '' : 'ON e.id = f.rowid';
-    const snippetCol = (agentOnly && hasAgent) ? 'substr(e.text, 1, 120) as snippet' : "snippet(events_fts, 0, '<<', '>>', '...', 40) as snippet";
+    const eventWhere = eClauses.length ? `WHERE ${eClauses.join(' AND ')}` : '';
+    const ftsJoin = historyMode ? '' : 'events_fts f JOIN';
+    const ftsOn = historyMode ? '' : 'ON e.id = f.rowid';
+    const snippetCol = historyMode ? 'substr(e.text, 1, 120) as snippet' : "snippet(events_fts, 0, '<<', '>>', '...', 40) as snippet";
     const eventRows = runQuery(`
       SELECT e.id, e.type, e.timestamp, e.from_id as "from", e.to_id as "to", e.text, e.metadata,
              ${snippetCol}
       FROM ${ftsJoin} events e ${ftsOn}
-      WHERE ${eClauses.join(' AND ')}
+      ${eventWhere}
       ORDER BY e.timestamp DESC LIMIT ?
     `, eParams).map(r => ({
       source: 'fleet',
@@ -2611,15 +2639,23 @@ export class FleetStore {
       snippet: r.snippet?.replace(/<<(.*?)>>/g, '⟨⟨$1⟩⟩'),
     }));
 
+    if (eventOnly) {
+      return eventRows.sort((a, b) => (b.timestamp ?? '').localeCompare(a.timestamp ?? '')).slice(0, limit);
+    }
+
     // 2. Session JSONL entries
     let sClauses, sParams;
-    if (agentOnly && hasAgent) {
-      if (agentIds.length === 1) {
-        sClauses = ['s.agent_id = ?'];
-        sParams = [agentIds[0]];
-      } else {
-        sClauses = [`s.agent_id IN (${agentPlaceholders})`];
-        sParams = [...agentIds];
+    if (historyMode) {
+      sClauses = [];
+      sParams = [];
+      if (hasAgent) {
+        if (agentIds.length === 1) {
+          sClauses.push('s.agent_id = ?');
+          sParams.push(agentIds[0]);
+        } else {
+          sClauses.push(`s.agent_id IN (${agentPlaceholders})`);
+          sParams.push(...agentIds);
+        }
       }
     } else {
       sClauses = ['session_entries_fts MATCH ?'];
@@ -2633,14 +2669,15 @@ export class FleetStore {
     if (since) { sClauses.push('s.timestamp >= ?'); sParams.push(since); }
     if (before) { sClauses.push('s.timestamp < ?'); sParams.push(before); }
     sParams.push(limit);
-    const sFtsJoin = (agentOnly && agent) ? '' : 'session_entries_fts f JOIN';
-    const sFtsOn = (agentOnly && agent) ? '' : 'ON s.id = f.rowid';
-    const sSnippetCol = (agentOnly && agent) ? 'substr(s.text, 1, 120) as snippet' : "snippet(session_entries_fts, 0, '<<', '>>', '...', 40) as snippet";
+    const sessionWhere = sClauses.length ? `WHERE ${sClauses.join(' AND ')}` : '';
+    const sFtsJoin = historyMode ? '' : 'session_entries_fts f JOIN';
+    const sFtsOn = historyMode ? '' : 'ON s.id = f.rowid';
+    const sSnippetCol = historyMode ? 'substr(s.text, 1, 120) as snippet' : "snippet(session_entries_fts, 0, '<<', '>>', '...', 40) as snippet";
     const sessionRows = runQuery(`
       SELECT s.id, s.agent_id, s.session_id, s.role, s.timestamp, s.text,
              ${sSnippetCol}
       FROM ${sFtsJoin} session_entries s ${sFtsOn}
-      WHERE ${sClauses.join(' AND ')}
+      ${sessionWhere}
       ORDER BY s.timestamp DESC LIMIT ?
     `, sParams).map(r => ({
       source: 'session',

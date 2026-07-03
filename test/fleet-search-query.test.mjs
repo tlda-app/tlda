@@ -8,6 +8,7 @@ import {
   parseSearchQuery,
   rankSearchResults,
 } from '../src/fleet/search-query.ts'
+import { FleetStore } from '../server/lib/fleet-store.mjs'
 
 test('parses single reflog position selector', () => {
   assert.deepEqual(parseAgentSelector('chief~2'), {
@@ -97,4 +98,19 @@ test('ranking prefers exact query matches without roster access', () => {
     { id: 3, text: 'alpha appears later', timestamp: '2026-07-03T00:00:04.000Z' },
   ], 'alpha beta')
   assert.deepEqual(ranked.map(r => r.id), [2, 3, 1])
+})
+
+test('server consumes unified selector phase and range metadata', () => {
+  const store = new FleetStore(':memory:')
+  try {
+    store.upsertAgent({ id: 'fleet:dawn', friendly_name: 'chief', labels: [], status: 'awake' })
+    store.upsertAgent({ id: 'fleet:day', friendly_name: 'chief:day', labels: [], status: 'awake' })
+    store.upsertAgent({ id: 'fleet:dusk', friendly_name: 'chief:dusk', labels: [], status: 'awake' })
+
+    assert.deepEqual(store.resolveAgentSelector({ fragment: 'chief', phase: 'day' }), ['fleet:day'])
+    assert.deepEqual(store.resolveAgentSelector({ fragment: 'chief', range: { from: null, to: 2 } }).length, 2)
+    assert.deepEqual(store.resolveAgentSelector({ fragment: 'chief', position: 2 }).length, 1)
+  } finally {
+    store.close()
+  }
 })

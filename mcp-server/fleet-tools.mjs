@@ -25,6 +25,7 @@ import { extractMarkdownSection } from '../shared/markdown-section.mjs';
 import { normalizeChatDisplayMathDelimiters } from '../shared/chat-math-normalize.mjs';
 import { nameForPhase, phaseFromName } from '../shared/lineage-name.mjs';
 import { formatSpawnModelSummary, validateSpawnModelSelection } from '../shared/spawn-model-validation.mjs';
+import { buildFleetSearchFilters, parseSearchQuery } from '../shared/fleet-search-query.mjs';
 import { listModels as listSpawnModels } from '../bin/lib/spawn/models.mjs';
 import { spawn as spawnLocalAgent } from '../bin/lib/spawn/index.mjs';
 import { classifyUserBlame } from '../bin/lib/user-blame-classifier.mjs';
@@ -34,7 +35,7 @@ import {
   crossLaneBlock,
   inferHarnessKind,
 } from '../shared/task-role-routing.mjs';
-import { parseFilter, evalExpr } from '../shared/fleet-labels.mjs';
+import { parseFilter, parseMessageFilter, evalExpr } from '../shared/fleet-labels.mjs';
 import { baseMacros } from '../shared/katex-base-macros.mjs';
 import { normalizeRefNumber as _normalizeRefNumber, refTypeForName as _refTypeForName, buildTheoremRefRegex as _buildTheoremRefRegex } from '../shared/doc-refs.mjs';
 import { harnessFromEnv } from './lib/harness-adapters.mjs';
@@ -749,6 +750,22 @@ async function resolveAgent(query) {
     throw new Error(`Agent resolution transport failed for "${query}": no response from fleet server`);
   }
   return data.agent || null;
+}
+
+function normalizeThreadFilterExpression(raw) {
+  let queryParseError = null;
+  try {
+    const parsed = parseSearchQuery(raw);
+    if (!parsed.query && parsed.filters.filterExpression) return parsed.filters.filterExpression;
+  } catch (e) {
+    queryParseError = e;
+  }
+  try {
+    parseMessageFilter(raw);
+    return raw;
+  } catch (e) {
+    throw queryParseError || e;
+  }
 }
 
 // ---- Report linter ----
@@ -1504,7 +1521,7 @@ export function getFleetTools() {
         properties: {
           query: { type: 'string', description: 'Search query (supports FTS5 syntax: AND, OR, "exact phrase", prefix*)' },
           project: { type: 'string', description: 'Filter to a specific project directory name (e.g. "-Users-skip-work-foo")' },
-          agent: { type: 'string', description: 'Filter to a specific agent (by UUID, name, or friendly name)' },
+          agent: { type: 'string', description: 'Filter to a specific agent selector. Uses the same unified fleet search grammar as the browser search box.' },
           role: { type: 'string', description: 'Filter by role: "user" (human messages), "assistant" (agent responses), "chat", "delegate", "task_done"' },
           limit: { type: 'number', description: 'Max results (default 20, max 100). Ignored when both since and before are set (bounded calls return full range, up to 500).' },
           context: { type: 'number', description: 'Number of surrounding messages to include with each chat match (default 0, max 20). Shows N messages before and after each match.' },
@@ -1531,7 +1548,8 @@ export function getFleetTools() {
       inputSchema: {
         type: 'object',
         properties: {
-          agent: { type: 'string', description: 'Agent identifier (UUID, name, or friendly name). Required unless task_id is given.' },
+          agent: { type: 'string', description: 'Agent selector. Equivalent to filter="agent:<selector>" and resolved by the unified fleet search grammar. Required unless task_id or filter is given.' },
+          filter: { type: 'string', description: 'Unified message filter expression, e.g. "from:tabby", "tabby <> permfix", or "from:(chief | tabby) & type:chat".' },
           task_id: { type: 'string', description: 'Task ID — returns all messages related to this task.' },
           since: { type: 'string', description: 'ISO timestamp or relative shorthand (e.g. "20m", "2h", "1d") — only messages after this time.' },
           until: { type: 'string', description: 'ISO timestamp, relative shorthand, or the literal "now" — only messages before this time.' },
@@ -3830,86 +3848,42 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
 
   // ---- search_logs ----
   if (name === 'search_logs') {
-    const query = args.query;
-    if (!query || query.length < 2) {
+    const rawQuery = args.query;
+    if (!rawQuery || rawQuery.length < 2) {
       return { content: [{ type: 'text', text: 'Query must be at least 2 characters.' }], isError: true };
     }
 
-    const sinceTs = parseTimestamp(args.since) || undefined;
-    const beforeTs = parseTimestamp(args.before) || undefined;
+    let parsedSearch;
+    let searchFilters;
+    try {
+      parsedSearch = parseSearchQuery(args.agent ? `agent:${args.agent} ${rawQuery}` : rawQuery);
+      searchFilters = buildFleetSearchFilters(parsedSearch.filters);
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Search failed: ${e.message}` }], isError: true };
+    }
+    const query = parsedSearch.query;
+    const sinceTs = parseTimestamp(args.since) || searchFilters.since || undefined;
+    const beforeTs = parseTimestamp(args.before) || searchFilters.before || undefined;
     const isBoundedSearch = !!(sinceTs && beforeTs);
     const limit = isBoundedSearch ? Math.min(args.limit || 500, 500) : Math.min(args.limit || 20, 100);
     const contextWindow = Math.min(Math.max(args.context || 0, 0), 20);
-
-    // Resolve agent filter to fleet ID(s).
-    // Also auto-detect: if query matches an agent name but no agent param given,
-    // apply the agent filter automatically so "search_logs(query='e2-prereader')" works.
-    let agentId;
-    let allAgents = [];
-    try { const d = await sendWS('store-agents-all'); if (Array.isArray(d)) allAgents = d; } catch (e) { process.stderr.write(`[fleet] store-agents-all fetch for search failed: ${e.message}\n`); }
-
-    // Lineage-aware agent resolution for search
-    let lineageFleetIds = null;
-    if (args.agent) {
-      // Check for lineage:phase syntax
-      const colonIdx = args.agent.indexOf(':');
-      if (colonIdx > 0 && !args.agent.startsWith('fleet:')) {
-        const lineageName = args.agent.slice(0, colonIdx);
-        const phase = args.agent.slice(colonIdx + 1);
-        if (['dawn', 'day', 'dusk'].includes(phase)) {
-          const phaseAgent = allAgents.find(a => a.friendly_name === nameForPhase(lineageName, phase));
-          agentId = phaseAgent?.id || args.agent;
-        }
-      }
-      if (!agentId) {
-        // Check if it's a lineage name — union all fleet IDs in that lineage
-        const lineageAgents = allAgents.filter(a => a.lineage_name === args.agent);
-        if (lineageAgents.length > 0) {
-          // Get all fleet IDs that have ever held this lineage via server
-          try {
-            const rosterData = await sendWS('lineage-roster', { lineage: args.agent });
-            if (rosterData?.history) {
-              lineageFleetIds = [...new Set(rosterData.history.map(h => h.fleet_id))];
-            }
-          } catch {}
-          if (!lineageFleetIds) {
-            lineageFleetIds = lineageAgents.map(a => a.id);
-          }
-          agentId = lineageFleetIds[0];
-        }
-      }
-      if (!agentId) {
-        const matches = allAgents.filter(a =>
-          a.id === args.agent || a.friendly_name === args.agent || a.id.startsWith(args.agent)
-        );
-        agentId = matches[0]?.id || args.agent;
-      }
-    } else {
-      const qLower = query.toLowerCase().trim();
-      const nameMatch = allAgents.find(a =>
-        a.friendly_name?.toLowerCase() === qLower || a.id === qLower || a.id === `fleet:${qLower}`
-      );
-      if (nameMatch) {
-        agentId = nameMatch.id;
-      }
-    }
 
     // Query the server's unified search (fleet events + session JSONL text)
     let results = [];
     let contextMap = {};
     try {
       const contextTimestamps = [];
-      const agentOnly = !!(agentId && !args.agent);
       const searchParams = {
         query,
         limit,
-        agentOnly,
-        role: args.role || undefined,
+        role: args.role || searchFilters.role || undefined,
         since: sinceTs,
         before: beforeTs,
+        agent: searchFilters.agent,
+        agentQuery: searchFilters.agentQuery,
+        filterExpression: searchFilters.filterExpression,
+        eventType: searchFilters.eventType,
       };
-      if (lineageFleetIds) { searchParams.agents = lineageFleetIds; }
-      else if (agentId) { searchParams.agent = agentId; }
       const data = await sendWS('fleet-search', searchParams);
       results = data?.results || [];
 
@@ -3919,10 +3893,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
           if (r.source === 'fleet' && r.timestamp) contextTimestamps.push(r.timestamp);
         }
         if (contextTimestamps.length > 0) {
-          const ctxSearchParams = { query, limit, role: args.role || undefined, since: sinceTs, before: beforeTs,
-            context_timestamps: contextTimestamps.slice(0, 10), context_window: contextWindow };
-          if (lineageFleetIds) { ctxSearchParams.agents = lineageFleetIds; }
-          else if (agentId) { ctxSearchParams.agent = agentId; }
+          const ctxSearchParams = { ...searchParams, context_timestamps: contextTimestamps.slice(0, 10), context_window: contextWindow };
           const ctxData = await sendWS('fleet-search', ctxSearchParams);
           contextMap = ctxData?.context || {};
         }
@@ -3932,7 +3903,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     }
 
     if (results.length === 0) {
-      return { content: [{ type: 'text', text: `No results for "${query}".` }] };
+      return { content: [{ type: 'text', text: `No results for "${rawQuery}".` }] };
     }
 
     // Format results — full roster (incl. dead) so dead agents' names render.
@@ -4052,14 +4023,16 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     // Log search event
     const filters = [];
     if (args.agent) filters.push(`agent=${args.agent}`);
-    if (args.role) filters.push(`role=${args.role}`);
+    if (args.role || searchFilters.role) filters.push(`role=${args.role || searchFilters.role}`);
+    if (searchFilters.filterExpression) filters.push(`filter=${searchFilters.filterExpression}`);
+    if (searchFilters.eventType) filters.push(`type=${searchFilters.eventType}`);
     if (sinceTs) filters.push(`since=${sinceTs}`);
     if (beforeTs) filters.push(`before=${beforeTs}`);
     if (contextWindow > 0) filters.push(`context=${contextWindow}`);
     logEvent({
       type: 'search',
       from: AGENT_ID || 'unknown',
-      query: args.query,
+      query: rawQuery,
       filters: filters.join(', '),
       resultCount: results.length,
       snippets: results.slice(0, 5).map(r => (r.snippet || '').replace(/⟨⟨/g, '').replace(/⟩⟩/g, '')),
@@ -4169,6 +4142,38 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       }
     };
 
+    const fetchEventsForFilter = async (filterExpression) => {
+      // Fetch one extra row so we can detect "there's more" without a COUNT.
+      const params = {
+        query: '',
+        limit: pageSize + 1,
+        filterExpression,
+        historyOnly: true,
+        eventOnly: true,
+      };
+      if (resolvedSince) params.since = resolvedSince;
+      if (resolvedUntil) params.before = resolvedUntil;
+      if (args.types?.length === 1) params.eventType = args.types[0];
+      const data = await sendWS('fleet-search', params);
+      if (!data) return;
+      for (const e of (data.results || []).filter(r => r.source === 'fleet')) {
+        if (args.types?.length > 1 && !args.types.includes(e.type)) continue;
+        const metadata = parseEventMetadata(e.metadata);
+        const text = e.type === 'activity'
+          ? formatActivityForThread(e, metadata)
+          : e.type === 'delegate'
+          ? `[DELEGATE] ${e.description || ''}\n${e.message || e.text || ''}`
+          : e.type === 'task_done'
+          ? `[DONE] ${e.description || ''}`
+          : e.text || e.message || '';
+        filtered.push({
+          id: e.id, type: e.type, metadata,
+          from: e.from_id || e.from, to: e.to_id || e.to, text, timestamp: e.timestamp,
+          fromName: e.fromName, toName: e.toName, fromNameNow: e.fromNameNow, toNameNow: e.toNameNow,
+        });
+      }
+    };
+
     let primaryId = null;
     if (args.task_id) {
       const task = tasks.find(t => t.id === args.task_id);
@@ -4186,7 +4191,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       try { await fetchEventsForAgent(task.agent); } catch (e) {
         process.stderr.write(`[fleet] get_thread DB fetch failed: ${e.message}\n`);
       }
-    } else if (args.agent) {
+    } else if (args.agent || args.filter) {
       // Reject Claude Code session UUIDs (8-4-4-4-12 hex). These are an
       // internal Claude Code identifier and have no place in fleet — the
       // primary key for agents is the agent name or fleet:UUID. Catching
@@ -4194,7 +4199,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       // (raw JSONL reads, search_logs misuse) when "Agent not found" looks
       // ambiguous.
       const SESSION_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-      if (SESSION_UUID.test(args.agent)) {
+      if (args.agent && SESSION_UUID.test(args.agent)) {
         return {
           content: [{
             type: 'text',
@@ -4203,34 +4208,23 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
           isError: true,
         };
       }
-      let agentEntry = null;
+      const rawThreadFilter = args.filter || `agent:${args.agent}`;
+      let filterExpression;
       try {
-        agentEntry = await resolveAgent(args.agent);
+        filterExpression = normalizeThreadFilterExpression(rawThreadFilter);
       } catch (e) {
-        return { content: [{ type: 'text', text: e.message }], isError: true };
+        return { content: [{ type: 'text', text: `Bad thread filter "${rawThreadFilter}": ${e.message}` }], isError: true };
       }
-      if (!agentEntry) {
-        return { content: [{ type: 'text', text: `Agent "${args.agent}" not found.` }], isError: true };
-      }
-      resolvedAgents.set(agentEntry.id, agentEntry);
-      primaryId = agentEntry.id;
-      // Lineage-aware: if the agent is in a lineage, fetch events for all fleet IDs
-      let threadFleetIds = [agentEntry.id];
-      if (agentEntry.lineage_name && !args.agent.includes(':')) {
-        try {
-          const rosterData = await sendWS('lineage-roster', { lineage: agentEntry.lineage_name });
-          if (rosterData?.history) {
-            threadFleetIds = [...new Set(rosterData.history.map(h => h.fleet_id))];
-          }
-        } catch {}
+      if (!filterExpression) {
+        return { content: [{ type: 'text', text: `get_thread filter "${rawThreadFilter}" did not produce a message filter. Use agent:name, from:name, to:name, or the agent argument.` }], isError: true };
       }
       try {
-        for (const fid of threadFleetIds) { await fetchEventsForAgent(fid); }
+        await fetchEventsForFilter(filterExpression);
       } catch (e) {
-        process.stderr.write(`[fleet] get_thread DB fetch failed: ${e.message}\n`);
+        process.stderr.write(`[fleet] get_thread fleet-search fetch failed: ${e.message}\n`);
       }
     } else {
-      return { content: [{ type: 'text', text: 'Provide either agent or task_id.' }], isError: true };
+      return { content: [{ type: 'text', text: 'Provide agent, filter, or task_id.' }], isError: true };
     }
 
     // Sort by time and deduplicate (server already filters by since/until)
@@ -4242,6 +4236,19 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       seen.add(key);
       return true;
     });
+
+    const threadState = await loadStateAll();
+    for (const m of filtered) {
+      for (const id of [m.from, m.to]) {
+        if (!id || resolvedAgents.has(id)) continue;
+        const agent = getAgent(threadState, id);
+        if (agent) resolvedAgents.set(id, agent);
+      }
+    }
+    if (!primaryId && args.agent) {
+      const first = filtered.find(m => m.from || m.to);
+      primaryId = first?.from || first?.to || null;
+    }
 
     if (filtered.length === 0) {
       return { content: [{ type: 'text', text: 'No messages found for the given criteria.' }] };

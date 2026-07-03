@@ -3342,7 +3342,9 @@ async function handleFleetWsMessage(ws, msg) {
         switch (node.t) {
           case 'lit': {
             if (node.v?.startsWith?.('fleet:')) return new Set([node.v])
-            const ids = fleetStore.resolveAgentQuery(node.selector?.fragment || node.v)
+            const ids = node.selector
+              ? fleetStore.resolveAgentSelector(node.selector)
+              : fleetStore.resolveAgentQuery(node.v)
             return new Set(ids)
           }
           case 'me': return new Set([msg.me || msg.sender || noMatch])
@@ -3429,6 +3431,8 @@ async function handleFleetWsMessage(ws, msg) {
         // No keyword + an agent filter → return that agent's whole history
         // instead of FTS-matching the literal query text.
         agentOnly: msg.agentOnly ?? (!hasText && !!searchAgent),
+        historyOnly: msg.historyOnly,
+        eventOnly: msg.eventOnly,
         fromOnly: msg.fromOnly,
       })
       if (msg.eventType) results = results.filter(r => r.type === msg.eventType || r.role === msg.eventType)
