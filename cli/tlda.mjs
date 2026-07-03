@@ -45,6 +45,7 @@ import {
 import { SPAWN_MACHINE_PREF_KEY } from '../server/lib/spawn-routing.mjs'
 import {
   applyDaemonGrants,
+  applyGrandfatherInfill,
   createPrivilegeLedger,
   defaultDaemonConfigPath,
   privilegeLedgerPathFromDaemonConfig,
@@ -1718,6 +1719,7 @@ async function runFleetSpawn(spawnArgs) {
     ledger = createPrivilegeLedger(privilegeLedgerPathFromDaemonConfig(daemonConfig, CONFIG_DIR))
     applyDaemonGrants(ledger, daemonConfig)
     const config = withDaemonModelAliases(loadConfig(), daemonConfig)
+    applyGrandfatherInfill(ledger, { fleetDbPath: join(CONFIG_DIR, 'fleet.db'), config })
     const spawnerId = flagFromRaw(spawnArgs, 'spawner-id') || process.env.TLDA_SPAWNER_ID || 'fleet:skip'
     const spawnerGrant = ledger.grantFor({ id: spawnerId })
     const grant = resolveSpawnGrant({

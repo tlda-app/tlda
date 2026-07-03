@@ -113,6 +113,7 @@ import { resolveSpawnGrant } from '../server/lib/spawn-policy.mjs'
 import { probeSpawnCapabilities } from './lib/spawn/capabilities.mjs'
 import {
   applyDaemonGrants,
+  applyGrandfatherInfill,
   createPrivilegeLedger,
   defaultDaemonConfigPath,
   privilegeLedgerPathFromDaemonConfig,
@@ -134,6 +135,7 @@ const PID_FILE = path.join(CONFIG_DIR, 'fleet-daemon.pid')
 // structurally impossible. See bin/lib/singleton-lock.mjs.
 const LOCK_FILE = path.join(CONFIG_DIR, 'fleet-daemon.lock')
 const SOURCE_BINDINGS_FILE = path.join(CONFIG_DIR, 'source-bindings.json')
+const FLEET_DB_FILE = path.join(CONFIG_DIR, 'fleet.db')
 const DAEMON_CONFIG_FILE = defaultDaemonConfigPath(CONFIG_DIR)
 const daemonSpawnConfig = readDaemonConfig(DAEMON_CONFIG_FILE)
 const PRIVILEGE_LEDGER_FILE = privilegeLedgerPathFromDaemonConfig(daemonSpawnConfig, CONFIG_DIR)
@@ -3972,6 +3974,8 @@ function handleServerMessage(msg) {
     _serverReady = true
     agents = msg.agents || []
     projects = msg.projects || []
+    applyDaemonGrants(privilegeLedger, daemonSpawnConfig)
+    applyGrandfatherInfill(privilegeLedger, { fleetDbPath: FLEET_DB_FILE, config, projects })
     log.info(`welcome: ${agents.length} agents, ${projects.length} projects`)
     void syncSessionWatchers(agents).catch(e => log.error(`syncSessionWatchers failed: ${e.stack || e.message}`))
     syncSourceWatchers(projects, msg.activeViewers)

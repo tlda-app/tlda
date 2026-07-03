@@ -965,11 +965,6 @@ export function resolveSpawnGrant({
   const spawnerPrivilegeSet = explicitSpawnerPrivilegeSet
     ? materializePrivilegeSet(explicitSpawnerPrivilegeSet, { cwd, project })
     : privilegeSetFromPolicy(spawnerPolicy, { name: spawnerPolicy.name, cwd, project })
-  if (!(spawnerPrivilegeSet?.operations?.spawn?.allow || []).length) {
-    const err = new Error('spawner lacks spawn privilege')
-    err.code = 'SPAWN_PRIVILEGE_DENIED'
-    throw err
-  }
   const requestedPrivilegeSet = requestedPolicy.privilegeSet
     || (requestedPrivileges || requestedCapability
       ? privilegeSetFromPolicy(requestedPolicy, { name: requestedPolicy.name, cwd, project })

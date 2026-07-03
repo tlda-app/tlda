@@ -9,6 +9,7 @@ import Database from 'better-sqlite3'
 import YAML from 'yaml'
 import {
   applyDaemonGrants,
+  applyGrandfatherInfill,
   createPrivilegeLedger,
   defaultDaemonConfigPath,
   privilegeLedgerPathFromDaemonConfig,
@@ -24,6 +25,44 @@ function tempLedger() {
 
 function tempConfigDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-daemon-config-'))
+}
+
+function writeFleetDb(file, agents) {
+  const db = new Database(file)
+  db.exec(`
+    CREATE TABLE agents (
+      id TEXT PRIMARY KEY,
+      friendly_name TEXT,
+      tmux_session TEXT,
+      session_id TEXT,
+      session_ids TEXT,
+      cwd TEXT,
+      labels TEXT,
+      registered_at TEXT,
+      last_seen TEXT,
+      dead INTEGER DEFAULT 0,
+      human INTEGER DEFAULT 0,
+      is_manager INTEGER DEFAULT 0,
+      metadata TEXT,
+      machine_id TEXT
+    );
+  `)
+  const insert = db.prepare(`
+    INSERT INTO agents (id, friendly_name, cwd, dead, human, metadata, machine_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `)
+  for (const agent of agents) {
+    insert.run(
+      agent.id,
+      agent.friendly_name || null,
+      agent.cwd || null,
+      agent.dead || 0,
+      agent.human || 0,
+      agent.metadata ? JSON.stringify(agent.metadata) : null,
+      agent.machine_id || 'mini',
+    )
+  }
+  db.close()
 }
 
 describe('daemon privilege ledger', () => {
@@ -101,7 +140,7 @@ describe('daemon privilege ledger', () => {
     assert.deepEqual(config.models, { claude: { localopus: 'claude-opus-local' } })
   })
 
-  it('rejects daemon yaml keys outside profiles, grants, models, and servers', () => {
+  it('rejects daemon yaml keys outside regions, profiles, grants, models, and servers', () => {
     const dir = tempConfigDir()
     fs.writeFileSync(defaultDaemonConfigPath(dir), YAML.stringify({
       profiles: {},
@@ -113,6 +152,47 @@ describe('daemon privilege ledger', () => {
     assert.throws(
       () => readDaemonConfig(defaultDaemonConfigPath(dir)),
       /unknown key\(s\): classes/,
+    )
+  })
+
+  it('rejects redundant daemon profile fields outside read and write roots', () => {
+    const dir = tempConfigDir()
+    fs.writeFileSync(defaultDaemonConfigPath(dir), YAML.stringify({
+      profiles: {
+        redundant: {
+          capability: 'read',
+          read: { allow: ['cwd'], deny: [] },
+          write: { allow: [], deny: [] },
+        },
+      },
+      regions: { cwd: ['cwd'] },
+      grants: {},
+      models: {},
+      servers: {},
+    }))
+    assert.throws(
+      () => readDaemonConfig(defaultDaemonConfigPath(dir)),
+      /profile "redundant" supports only read and write roots; unknown key\(s\): capability/,
+    )
+  })
+
+  it('rejects profile references to unknown regions', () => {
+    const dir = tempConfigDir()
+    fs.writeFileSync(defaultDaemonConfigPath(dir), YAML.stringify({
+      regions: { cwd: ['cwd'] },
+      profiles: {
+        bad: {
+          read: { allow: ['not-a-region'], deny: [] },
+          write: { allow: [], deny: [] },
+        },
+      },
+      grants: {},
+      models: {},
+      servers: {},
+    }))
+    assert.throws(
+      () => readDaemonConfig(defaultDaemonConfigPath(dir)),
+      /references unknown region "not-a-region"/,
     )
   })
 
@@ -162,17 +242,64 @@ describe('daemon privilege ledger', () => {
     await reopened.close()
   })
 
+  it('grandfathers alive non-human fleet.db agents with project-default intersect model-cap grants', async () => {
+    const dir = tempConfigDir()
+    const ledgerPath = path.join(dir, 'fleet-daemon.db')
+    const fleetDbPath = path.join(dir, 'fleet.db')
+    writeFleetDb(fleetDbPath, [
+      {
+        id: 'fleet:9b21164e',
+        friendly_name: 'browser-lock-infra',
+        cwd: '/Users/skip/work/tlda',
+        metadata: { model: 'claude-sonnet-4-6', kind: 'claude' },
+      },
+      {
+        id: 'fleet:dead',
+        cwd: '/Users/skip/work/tlda',
+        dead: 1,
+        metadata: { model: 'gpt-5.5', kind: 'codex' },
+      },
+      {
+        id: 'fleet:human',
+        cwd: '/Users/skip/work/tlda',
+        human: 1,
+        metadata: { model: 'gpt-5.5', kind: 'codex' },
+      },
+    ])
+
+    const ledger = createPrivilegeLedger(ledgerPath)
+    const result = applyGrandfatherInfill(ledger, {
+      fleetDbPath,
+      config: {},
+      projects: [{ name: 'tlda', sourceDir: '/Users/skip/work/tlda' }],
+    })
+    assert.deepEqual(result, { considered: 1, written: 1, skippedExisting: 0 })
+    const grant = ledger.grantFor({ id: 'fleet:9b21164e' })
+    assert.equal(grant.spawnPolicy.capability, 'write')
+    assert.equal(grant.spawnPolicy.policy, 'cwd')
+    assert.equal(grant.source, 'grandfather:fleet-db-cutover')
+    assert.deepEqual(grant.privilegeSet.operations.write.allow, ['/Users/skip/work/tlda/**'])
+    assert.throws(
+      () => ledger.grantFor({ id: 'fleet:unknown' }),
+      (err) => err.code === 'SPAWN_PRIVILEGE_NO_LEDGER_ENTRY',
+    )
+
+    const again = applyGrandfatherInfill(ledger, { fleetDbPath, config: {} })
+    assert.deepEqual(again, { considered: 1, written: 0, skippedExisting: 1 })
+    await ledger.close()
+  })
+
   it('uses flat daemon yaml for real profiles, grants, model rows, and servers', async () => {
     const dir = tempConfigDir()
     fs.writeFileSync(defaultDaemonConfigPath(dir), YAML.stringify({
+      regions: {
+        ops: ['**'],
+        chat_db: ['~/.config/tlda/fleet.db*'],
+      },
       profiles: {
         ops: {
-          capability: 'full',
-          operations: {
-            read: { allow: ['**'], deny: [] },
-            write: { allow: ['**'], deny: ['~/.config/tlda/fleet.db*'] },
-            spawn: { allow: ['**'], deny: [] },
-          },
+          read: { allow: ['ops'], deny: [] },
+          write: { allow: ['ops'], deny: ['chat_db'] },
         },
       },
       grants: {
@@ -194,8 +321,11 @@ describe('daemon privilege ledger', () => {
     const daemonConfig = readDaemonConfig(defaultDaemonConfigPath(dir))
     const file = privilegeLedgerPathFromDaemonConfig(daemonConfig, dir)
     assert.equal(file, path.join(dir, 'fleet-daemon.db'))
-    assert.deepEqual(Object.keys(daemonConfig).sort(), ['grants', 'models', 'profiles', 'servers'])
+    assert.deepEqual(Object.keys(daemonConfig).sort(), ['grants', 'models', 'profiles', 'regions', 'servers'])
+    assert.deepEqual(daemonConfig.regions.chat_db, ['~/.config/tlda/fleet.db*'])
     assert.equal(daemonConfig.profiles.ops.operations.write.deny[0], '~/.config/tlda/fleet.db*')
+    assert.deepEqual(daemonConfig.profiles.ops.operations.spawn, { allow: [], deny: [] })
+    assert.equal(daemonConfig.profiles.ops.projectedPolicy.capability, 'full')
 
     const ledger = createPrivilegeLedger(file)
     applyDaemonGrants(ledger, daemonConfig)

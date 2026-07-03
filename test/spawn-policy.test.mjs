@@ -376,8 +376,8 @@ describe('spawn policy', () => {
     assert.equal(grant.grantedCapability, 'full')
   })
 
-  it('none spawners cannot spawn agents', () => {
-    assert.throws(() => resolveSpawnGrant({
+  it('none spawners clamp children to none', () => {
+    const grant = resolveSpawnGrant({
       requestedCapability: 'write',
       requester: { id: 'fleet:unknown' },
       spawnerPolicy: 'none',
@@ -385,7 +385,9 @@ describe('spawn policy', () => {
       model: 'gpt-5.5',
       kind: 'codex',
       cwd: '/Users/skip/work/tlda',
-    }), /spawner lacks spawn privilege/)
+    })
+    assert.equal(grant.grantedCapability, 'none')
+    assert.deepEqual(grant.grantedPrivilegeSet.operations.write.allow, [])
   })
 
   it('normalizes requested privilege profiles from names, objects, and profile source text', () => {

@@ -6,6 +6,7 @@ import Database from 'better-sqlite3'
 import YAML from 'yaml'
 import {
   emptyPrivilegeSet,
+  resolveSpawnGrant,
   normalizeRequestedPrivileges,
   normalizeSpawnPolicy,
 } from '../../../server/lib/spawn-policy.mjs'
@@ -61,13 +62,14 @@ export class PrivilegeLedgerError extends Error {
 
 function normalizeDaemonConfig(parsed) {
   const root = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
-  const allowed = new Set(['profiles', 'grants', 'models', 'servers'])
+  const allowed = new Set(['regions', 'profiles', 'grants', 'models', 'servers'])
   const extra = Object.keys(root).filter(key => !allowed.has(key))
-  if (extra.length) throw new Error(`daemon config supports only profiles, grants, models, servers; unknown key(s): ${extra.join(', ')}`)
+  if (extra.length) throw new Error(`daemon config supports only regions, profiles, grants, models, servers; unknown key(s): ${extra.join(', ')}`)
   const models = root.models && typeof root.models === 'object' && !Array.isArray(root.models)
     ? root.models
     : {}
-  const profiles = normalizeDaemonProfiles(root.profiles)
+  const regions = normalizeDaemonRegions(root.regions)
+  const profiles = normalizeDaemonProfiles(root.profiles, regions)
   const grants = root.grants && typeof root.grants === 'object' && !Array.isArray(root.grants)
     ? root.grants
     : {}
@@ -75,6 +77,7 @@ function normalizeDaemonConfig(parsed) {
     ? root.servers
     : {}
   return {
+    regions,
     profiles,
     grants,
     models,
@@ -89,24 +92,79 @@ function normalizeOperationZones(value = {}) {
   return { allow, deny }
 }
 
-function normalizeDaemonProfile(name, value) {
+function normalizeDaemonRegions(value) {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+  const regions = {}
+  for (const [name, paths] of Object.entries(source)) {
+    const key = String(name || '').trim().toLowerCase()
+    if (!key) continue
+    if (!Array.isArray(paths)) throw new Error(`daemon region "${name}" must be a path list`)
+    regions[key] = paths.filter(path => typeof path === 'string' && path.trim())
+  }
+  return regions
+}
+
+function expandProfileRegionRefs(refs, regions, { profile, operation, effect }) {
+  const out = []
+  for (const ref of refs) {
+    const key = String(ref || '').trim().toLowerCase()
+    if (!key) continue
+    const region = regions[key]
+    if (!region) throw new Error(`daemon profile "${profile}" ${operation}.${effect} references unknown region "${ref}"`)
+    out.push(...region)
+  }
+  return out
+}
+
+function normalizeProfileRootRefs(value = {}, regions, context) {
+  const refs = normalizeOperationZones(value)
+  return {
+    allow: expandProfileRegionRefs(refs.allow, regions, { ...context, effect: 'allow' }),
+    deny: expandProfileRegionRefs(refs.deny, regions, { ...context, effect: 'deny' }),
+  }
+}
+
+function derivedPolicyFromOperations(name, operations) {
+  const writeAllow = operations.write?.allow || []
+  const readAllow = operations.read?.allow || []
+  const hasUniversalWrite = writeAllow.some(zone => zone === '**' || zone === '/' || zone === '/**')
+  const hasTldaWrite = writeAllow.some(zone => zone === 'tlda-projects')
+  const capability = hasUniversalWrite
+    ? 'full'
+      : hasTldaWrite
+        ? 'tlda-write'
+        : writeAllow.length
+          ? 'write'
+          : readAllow.length
+            ? 'read'
+            : 'none'
+  return {
+    ...normalizeSpawnPolicy(capability),
+    name,
+  }
+}
+
+function normalizeDaemonProfile(name, value, regions) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error(`daemon profile "${name}" must be an object`)
   }
+  const allowed = new Set(['read', 'write'])
+  const extra = Object.keys(value).filter(key => !allowed.has(key))
+  if (extra.length) throw new Error(`daemon profile "${name}" supports only read and write roots; unknown key(s): ${extra.join(', ')}`)
   const operations = {
-    read: normalizeOperationZones(value.operations?.read),
-    write: normalizeOperationZones(value.operations?.write),
-    spawn: normalizeOperationZones(value.operations?.spawn),
+    read: normalizeProfileRootRefs(value.read, regions, { profile: name, operation: 'read' }),
+    write: normalizeProfileRootRefs(value.write, regions, { profile: name, operation: 'write' }),
+    spawn: { allow: [], deny: [] },
   }
-  const policy = normalizeSpawnPolicy(value.spawnPolicy || value.policy || value.capability || name, null)
   const rules = []
-  for (const operation of ['read', 'write', 'spawn']) {
+  for (const operation of ['read', 'write']) {
     for (const effect of ['allow', 'deny']) {
       for (const zone of operations[operation][effect]) {
         rules.push({ operation, effect, zone, line: null })
       }
     }
   }
+  const policy = derivedPolicyFromOperations(name, operations)
   return {
     type: 'privilege-set',
     name,
@@ -117,13 +175,13 @@ function normalizeDaemonProfile(name, value) {
   }
 }
 
-function normalizeDaemonProfiles(value) {
+function normalizeDaemonProfiles(value, regions) {
   const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {}
   const profiles = {}
   for (const [name, profile] of Object.entries(source)) {
     const key = String(name || '').trim().toLowerCase()
     if (!key) continue
-    profiles[key] = normalizeDaemonProfile(key, profile)
+    profiles[key] = normalizeDaemonProfile(key, profile, regions)
   }
   return profiles
 }
@@ -213,6 +271,65 @@ function withStoredSpawnDefault(privilegeSet, policy) {
       ...(privilegeSet.rules || []),
       { operation: 'spawn', effect: 'allow', zone: '**', line: null },
     ],
+  }
+}
+
+function allPrivilegeSet(name = 'full') {
+  return {
+    type: 'privilege-set',
+    name,
+    operations: {
+      read: { allow: ['**'], deny: [] },
+      write: { allow: ['**'], deny: [] },
+      spawn: { allow: ['**'], deny: [] },
+    },
+    rules: [
+      { operation: 'read', effect: 'allow', zone: '**', line: null },
+      { operation: 'write', effect: 'allow', zone: '**', line: null },
+      { operation: 'spawn', effect: 'allow', zone: '**', line: null },
+    ],
+    projectedPolicy: normalizeSpawnPolicy('full'),
+    compiledFrom: 'grandfather-infill-bound',
+  }
+}
+
+function parseJsonField(value, fallback) {
+  if (!value) return fallback
+  try {
+    return JSON.parse(value)
+  } catch {
+    return fallback
+  }
+}
+
+function pathInside(child, parent) {
+  if (!child || !parent) return false
+  const c = path.resolve(child)
+  const p = path.resolve(parent)
+  return c === p || c.startsWith(`${p}${path.sep}`)
+}
+
+function projectForAgent(agent, projects = []) {
+  const cwd = agent?.cwd
+  if (!cwd) return null
+  return projects.find(project => project?.sourceDir && pathInside(cwd, project.sourceDir)) || null
+}
+
+function fleetAgentsForGrandfatherInfill(fleetDbPath) {
+  if (!fs.existsSync(fleetDbPath)) return []
+  const db = new Database(fleetDbPath, { readonly: true })
+  try {
+    return db.prepare(`
+      SELECT id, friendly_name, cwd, metadata, machine_id
+      FROM agents
+      WHERE dead = 0 AND human = 0
+      ORDER BY id
+    `).all().map(row => ({
+      ...row,
+      metadata: parseJsonField(row.metadata, {}),
+    }))
+  } finally {
+    db.close()
   }
 }
 
@@ -490,6 +607,38 @@ export function applyDaemonGrants(ledger, daemonConfig = {}) {
     written++
   }
   return { written }
+}
+
+export function applyGrandfatherInfill(ledger, { fleetDbPath, config = {}, projects = [] } = {}) {
+  if (!fleetDbPath) return { considered: 0, written: 0, skippedExisting: 0 }
+  const agents = fleetAgentsForGrandfatherInfill(fleetDbPath)
+  let written = 0
+  let skippedExisting = 0
+  for (const agent of agents) {
+    if (!agent.id) continue
+    if (ledger.get(agent.id)) {
+      skippedExisting++
+      continue
+    }
+    const project = projectForAgent(agent, projects)
+    const metadata = agent.metadata || {}
+    const grant = resolveSpawnGrant({
+      spawnerPolicy: 'full',
+      spawnerPrivilegeSet: allPrivilegeSet('grandfather-root-bound'),
+      model: metadata.model || undefined,
+      kind: metadata.kind || undefined,
+      config,
+      project,
+      cwd: agent.cwd || undefined,
+    })
+    ledger.setSync(agent.id, {
+      spawnPolicy: grant.grantedPolicy,
+      privilegeSet: grant.grantedPrivilegeSet,
+      source: 'grandfather:fleet-db-cutover',
+    })
+    written++
+  }
+  return { considered: agents.length, written, skippedExisting }
 }
 
 export function defaultPrivilegeLedgerPath(configDir = path.join(os.homedir(), '.config', 'tlda')) {
