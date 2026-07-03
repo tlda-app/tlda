@@ -1522,8 +1522,6 @@ function processParsedJsonlRecord(pw, record) {
   }
   const agentId = pw.primaryAgentId
   let delivered = true
-  armAgent(agentId)
-
   const ev = harness.parseRecord ? harness.parseRecord(record) : null
   if (ev) {
     const activity = extractActivityEvents([ev])
@@ -2953,8 +2951,8 @@ const _observedLiveRuntimes = new Set() // agent_id
 // ./lib/status-classifier.mjs above \u2014 single source of truth. The daemon OWNS the
 // status STATE (the maps + scanArmedStatus loop below) and emits the transitions;
 // server/client/bots consume them and do not reconstruct status.
-const STATUS_SCAN_MS = 1500          // frequent pane pull for armed agents (1-3s status)
-const ARM_LINGER_MS = 8000           // stay armed this long after the last activity / busy frame
+const STATUS_SCAN_MS = parseInt(process.env.TLDA_STATUS_SCAN_MS, 10) || 5000
+const ARM_LINGER_MS = parseInt(process.env.TLDA_STATUS_ARM_LINGER_MS, 10) || 8000
 const IDLE_CONFIRM_SCANS = 2         // consecutive idle scans before thinking:false (anti-flicker)
 let _statusScanInterval = null
 const _armedSince = new Map()        // agent_id -> last arm/activity ts (armed iff present)
