@@ -161,7 +161,8 @@ Started in this branch:
   hardcode the expanded-state localStorage key.
 - `src/wm/canvas-clip-panel.ts` owns the CanvasClipPanel fork-facing contract:
   named viewport capabilities, optional viewport lookup, surface camera
-  projection/writes, and camera equality.
+  projection/writes, camera equality, and the host-injected shape predicate
+  boundary. Fleet ownership filtering lives in the tlda host adapter.
 - `test/fleet-layout-set.test.mjs` now pins these split boundaries in addition
   to the existing layout and pill-drop regressions, and checks fleet panel
   client/server schemas import the same shared prop definitions. It also checks

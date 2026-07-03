@@ -9,7 +9,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { react } from 'tldraw'
-import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor } from 'tldraw'
+import type { Editor, TLAnyShapeUtilConstructor, TLShape, TLStateNodeConstructor } from 'tldraw'
 import { CanvasClipPanel, syncCanvasClipPanelViewportCamera, type ClipBounds } from '../CanvasClipPanel'
 import { useFleetIdentity } from '../fleet-data-adapter'
 // @ts-ignore — vanilla JS module
@@ -18,6 +18,7 @@ import { getMyAnchorId, isMyFleetShape, FLEET_INTERACTION_SHAPE_SELECTOR, FLEET_
 import { isDocumentPageShape } from '../shapes/document-pages'
 import { fleetTouchGestureActiveRef, postTouchTelemetry, setTouchDiagStatus, useFleetGestures } from './useFleetGestures'
 import { PhoneLaneArrow } from './PhoneLaneArrow'
+import { shouldRenderLockedFleetViewportShape } from './fleet-viewport-predicate'
 import { SuggestionTip } from '../shapes/FleetChatShape'
 import { log } from '../logger'
 import { computeFleetBoundsFromShapes, createFleetBoundsTracker, type FleetBoundsResult } from './fleet-bounds'
@@ -1278,6 +1279,13 @@ export function FleetHUD({
     userId: getHumanId(),
     deviceId: deviceReady ? getDeviceId() : '',
   })
+  const hudShapePredicate = useMemo(() => {
+    const owner = {
+      userId: identityId,
+      deviceId: deviceReady ? getDeviceId() : '',
+    }
+    return (shape: TLShape) => shouldRenderLockedFleetViewportShape(shape, owner)
+  }, [deviceReady, identityId])
   const params = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null
   const exposeForTest = params?.has('pw') || params?.has('wmFlowGate')
   if (import.meta.env.DEV || exposeForTest || (typeof navigator !== 'undefined' && navigator.webdriver)) {
@@ -1305,7 +1313,7 @@ export function FleetHUD({
           wmSurface={{ wm: hudWm, layerId: FLEET_HUD_OVERLAY_LAYER_ID, surfaceId: overlayLayer.overlayLayerId }}
           fullViewport={true}
           disableCulling={true}
-          identityId={identityId}
+          shapePredicate={hudShapePredicate}
           customGestureActiveRef={fleetTouchGestureActiveRef}
           onEditorMount={(e) => {
             overlayEditorRef.current = e

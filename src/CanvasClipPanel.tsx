@@ -19,7 +19,6 @@ import {
   getOptionalCanvasClipViewport,
   sameCanvasClipCamera,
   setCanvasClipSurfaceCamera,
-  shouldRenderLockedFleetViewportShape,
   type CanvasClipWMSurface,
 } from './wm/canvas-clip-panel'
 import {
@@ -32,7 +31,6 @@ import {
   viewportFrameLayerId,
 } from './wm/editor-wm'
 import { VisibilityViewportProvider } from './shapes/useIsInViewport'
-import { getDeviceId, isDeviceReady } from './fleet/fleet-data.mjs'
 import './CanvasClipPanel.css'
 
 const DEFAULT_WIDTH = 600
@@ -128,7 +126,7 @@ interface CanvasClipPanelProps {
   wmSurface?: CanvasClipWMSurface
   fullViewport?: boolean
   disableCulling?: boolean
-  identityId?: string | null
+  shapePredicate?: (shape: TLShape) => boolean
   customGestureActiveRef?: { current: boolean }
   requestedShapeIds?: string[]
   requestedShapeTypes?: string[]
@@ -149,8 +147,8 @@ export function CanvasClipPanel({
   disableCulling = false,
   readOnly = false,
   onEditorMount,
-  identityId,
   requestedShapeIds,
+  shapePredicate: hostShapePredicate,
   viewportId: externalViewportId,
   children,
 }: CanvasClipPanelProps) {
@@ -355,18 +353,12 @@ export function CanvasClipPanel({
     if (!lockCamera && !readOnly) return undefined
 
     return (shape: TLShape) => {
-      // In lockCamera (HUD) mode, only render fleet shapes
-      if (lockCamera) {
-        return shouldRenderLockedFleetViewportShape(shape, {
-          userId: identityId,
-          deviceId: isDeviceReady() ? getDeviceId() : '',
-        })
-      }
+      if (lockCamera) return hostShapePredicate?.(shape) ?? false
 
       // In readOnly mode, render all shapes
       return true
     }
-  }, [identityId, lockCamera, readOnly])
+  }, [hostShapePredicate, lockCamera, readOnly])
 
   const viewportEl = (
     <VisibilityViewportProvider viewportId={viewportId} keepMounted={disableCulling}>

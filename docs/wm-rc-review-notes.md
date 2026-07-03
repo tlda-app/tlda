@@ -24,6 +24,8 @@ modules so tlda can remain the first host while the WM surface becomes separable
   - optional viewport lookup
   - WM surface camera projection and writes
   - camera equality helper consumed by `CanvasClipPanel`
+  - host-injected shape predicate boundary; tlda fleet ownership filtering lives
+    in `src/overlays/fleet-viewport-predicate.ts`
 - Ownership: `src/shapes/fleet-ownership.ts`
   - HUD anchor IDs
   - owner/device predicates
@@ -98,8 +100,10 @@ testing, capture listeners, telemetry/replay, and main-editor writes.
 - Gesture frame helpers are unchanged behaviorally but no longer live inside
   `useFleetGestures`; the hook still owns the gesture state machine and editor
   mutation writes.
-- `CanvasClipPanel` behavior is unchanged, but fork-facing viewport helpers and
-  capability names now live in `src/wm/canvas-clip-panel.ts`.
+- `CanvasClipPanel` behavior is unchanged, but fork-facing viewport helpers,
+  capability names, and the generic shape-predicate boundary now live in
+  `src/wm/canvas-clip-panel.ts`; the fleet ownership predicate is supplied by
+  `FleetHUD` from tlda-owned code.
 - HUD/tool placement behavior is unchanged, but the direct host-editor global
   reads have been removed from `fleet-utils`, `FleetHUD`, and `FleetToolGhost`
   and routed through `src/wm/editor-host-bridge.ts`.

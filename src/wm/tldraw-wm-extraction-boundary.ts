@@ -45,7 +45,7 @@ export const WM_EXTRACTION_MODULES = [
 	{
 		path: 'src/wm/canvas-clip-panel.ts',
 		classification: 'wm-package-tldraw-adapter',
-		publicContract: 'Fork-facing named viewport capabilities, optional viewport lookup, and surface camera sync.',
+		publicContract: 'Fork-facing named viewport capabilities, optional viewport lookup, surface camera sync, and host-injected shape predicates.',
 	},
 	{
 		path: 'src/wm/gesture-frame.ts',
