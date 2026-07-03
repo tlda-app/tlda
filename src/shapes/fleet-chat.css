@@ -1836,6 +1836,21 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   opacity: 0.75;
 }
 
+/* --- Phone: hide the TLDraw toolbar (eats screen; its tools aren't used in this
+   layout). Covers the main canvas and any panel TLDraw instance. --- */
+body.phone-mode .tlui-toolbar {
+  display: none !important;
+}
+
+/* --- Phone: let a horizontal lane-swipe fall through to the lane gesture instead
+   of being swallowed by a panel's vertical scroller — that swallow was leaving you
+   stuck in a lane, unable to swipe back out. Vertical scroll still works. --- */
+body.phone-mode .fleet-agents-body,
+body.phone-mode .fleet-chat-log,
+body.phone-mode .fleet-inbox-list {
+  touch-action: pan-y;
+}
+
 /* --- Phone: bigger touch targets + a real scrollbar in the agents panel ---
    On phone the 9px/8px rows are too small to grab with a thumb, and the list
    only had a hairline `thin` scrollbar. Scoped to .phone-mode so tablets/desktop
