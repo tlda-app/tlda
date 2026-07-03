@@ -692,8 +692,55 @@ function showHud(text, stateColor) {
     textOverflow: 'ellipsis',
   })
   hud.appendChild(span)
+  appendCallSegment(hud)
   hud.style.color = _activeAgentColor || stateColor || 'rgba(255,255,255,0.7)'
   requestAnimationFrame(() => { hud.style.opacity = '1' })
+}
+
+// --- Live voice/video call status (folded into the speech HUD) ---
+// The LiveKit live-room controller reports call mic state here so it shows in
+// the same HUD as dictation, rather than as a separate floating indicator.
+// `_callState` = { inCall, micOn, participantCount } | null.
+let _callState = null
+const CALL_MIC_LIVE = '#7ab8a0'   // mic open in the call (matches DOT_GREEN)
+const CALL_MIC_MUTED = '#c8956a'  // muted (matches DOT_AMBER)
+
+function appendCallSegment(hud) {
+  if (!_callState || !_callState.inCall) return
+  const sep = document.createElement('span')
+  sep.textContent = '·'
+  Object.assign(sep.style, { margin: '0 6px', opacity: '0.4' })
+  hud.appendChild(sep)
+  const dot = document.createElement('span')
+  Object.assign(dot.style, {
+    display: 'inline-block',
+    width: '6px',
+    height: '6px',
+    borderRadius: '50%',
+    marginRight: '5px',
+    backgroundColor: _callState.micOn ? CALL_MIC_LIVE : CALL_MIC_MUTED,
+    opacity: '0.7',
+  })
+  hud.appendChild(dot)
+  const label = document.createElement('span')
+  const count = _callState.participantCount > 1 ? ` (${_callState.participantCount})` : ''
+  label.textContent = `${_callState.micOn ? 'call' : 'call muted'}${count}`
+  label.style.opacity = '0.7'
+  hud.appendChild(label)
+}
+
+// Called by the live-room controller. Pass null when leaving the call.
+export function setCallMicState(state) {
+  _callState = state && state.inCall ? state : null
+  if (_recording) {
+    // Dictation HUD is already visible; re-render it to include the call segment.
+    showRecordingHud()
+  } else if (_callState) {
+    // Not dictating but in a call — show the HUD with just the call segment.
+    showHud('', '#7ab8a0')
+  } else {
+    hideHud()
+  }
 }
 
 // Show recording status — text uses agent color, dot shows health separately

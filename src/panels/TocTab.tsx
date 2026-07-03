@@ -14,6 +14,10 @@ import {
   applyThemeClass,
 } from '../hooks/useFleetTheme'
 import { getCameraLinked, toggleCameraLinked, subscribeCameraLinked } from '../cameraLink'
+import {
+  getLiveSession, subscribeLiveSession, toggleLiveSession, toggleMute, toggleSpatial,
+  probeLiveSessionConfig,
+} from '../livekit/liveSession'
 import { getSemanticHighlight, toggleSemanticHighlight, subscribeSemanticHighlight } from '../semanticHighlight'
 import { navigateTo, navigateToPage, navigateToAnchor, parseHeadings, renderTocTitle, stripTex, getShapeText, type TocLevel, type TocEntry } from './helpers'
 
@@ -386,6 +390,7 @@ export function TocTab() {
         )}
         <SemanticHighlightToggle />
         <CameraLinkToggle />
+        <JoinVoiceVideoToggle />
         {/* HideDefsToggle removed */}
       </div>
     )
@@ -412,6 +417,7 @@ export function TocTab() {
         )}
         <SemanticHighlightToggle />
         <CameraLinkToggle />
+        <JoinVoiceVideoToggle />
         {/* HideDefsToggle removed */}
       </div>
     )
@@ -580,6 +586,7 @@ export function TocTab() {
         <span className="toc-toggle-icon">{'\u2299'}</span> Center
       </div>
       <CameraLinkToggle />
+      <JoinVoiceVideoToggle />
       {/* HideDefsToggle removed */}
     </div>
     </>
@@ -592,6 +599,53 @@ export function CameraLinkToggle() {
     <div className="toc-diff-hint" onClick={toggleCameraLinked}>
       <span className="toc-toggle-icon">{'\u21C6'}</span> {linked ? 'Linked' : 'Link cameras'}
     </div>
+  )
+}
+
+// "Join voice/video" \u2014 sibling of CameraLinkToggle. The document is the shared
+// room; this is just another facet of co-presence on the paper. Same surface,
+// weight, and interaction as "Link cameras" (a single .toc-diff-hint line).
+// No always-on corner chrome: the mute / spatial controls only appear while a
+// call is actually connected, and mic status lives in the speech HUD.
+export function JoinVoiceVideoToggle() {
+  const s = useSyncExternalStore(subscribeLiveSession, getLiveSession)
+  useEffect(() => { void probeLiveSessionConfig() }, [])
+
+  // Server has no LiveKit creds: visible but inert, clearly not configured.
+  if (s.configured === false) {
+    return (
+      <div
+        className="toc-diff-hint"
+        style={{ cursor: 'default' }}
+        title="Voice/video chat is not configured on this server"
+      >
+        <span className="toc-toggle-icon">{'\u25CB'}</span> Voice/video off
+      </div>
+    )
+  }
+
+  const label =
+    s.status === 'connecting' ? 'Connecting voice/video\u2026' :
+    s.status === 'connected' ? `In voice/video${s.participantCount > 1 ? ` (${s.participantCount})` : ''}` :
+    s.status === 'error' ? 'Voice/video error \u2014 retry' :
+    'Join voice/video'
+
+  return (
+    <>
+      <div className="toc-diff-hint" onClick={toggleLiveSession} title="Join the live voice/video room for this paper">
+        <span className="toc-toggle-icon">{'\u25CB'}</span> {label}
+      </div>
+      {s.status === 'connected' && (
+        <>
+          <div className="toc-diff-hint toc-toggle-indented" onClick={toggleMute}>
+            {s.micOn ? 'Mute mic' : 'Unmute mic'}
+          </div>
+          <div className="toc-diff-hint toc-toggle-indented" onClick={toggleSpatial}>
+            {s.spatialEnabled ? 'Spatial audio on' : 'Spatial audio'}
+          </div>
+        </>
+      )}
+    </>
   )
 }
 

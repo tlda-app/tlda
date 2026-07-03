@@ -2565,6 +2565,11 @@ app.use('/api/projects', projectRoutes)
 import recognizeRoutes from './routes/recognize.mjs'
 app.use('/api/recognize', recognizeRoutes)
 
+// Live voice/video room (LiveKit). Inert without LIVEKIT_URL/API_KEY/API_SECRET:
+// /api/livekit/config reports configured:false and /api/livekit/token returns 503.
+import livekitRoutes from './routes/livekit.mjs'
+app.use('/api/livekit', livekitRoutes)
+
 // ---------- Fleet API (embedded) ----------
 function clearEphemeralState(agentId) {
   _thinkingState.delete(agentId)
