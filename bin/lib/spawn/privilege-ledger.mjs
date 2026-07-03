@@ -15,6 +15,7 @@ function nowIso() {
 }
 
 const WRITE_TIMEOUT_MS = Number(process.env.TLDA_PRIVILEGE_LEDGER_WRITE_TIMEOUT_MS || 5000)
+const YAML_MIGRATION_META_KEY = 'migration.daemon-privileges-yaml.v1'
 
 function normalizeLedgerGrant(value, fallback = 'none') {
   if (!value) {
@@ -91,6 +92,19 @@ function normalizeDaemonConfig(parsed) {
     server_identities: serverIdentities,
     ledger,
   }
+}
+
+function normalizeLegacyLedgerAgents(parsed) {
+  const root = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+  const nested = root.privileges && typeof root.privileges === 'object' && !Array.isArray(root.privileges)
+    ? root.privileges.agents
+    : null
+  const agents = nested && typeof nested === 'object' && !Array.isArray(nested)
+    ? nested
+    : root.agents && typeof root.agents === 'object' && !Array.isArray(root.agents)
+      ? root.agents
+      : {}
+  return agents
 }
 
 function looksLikeDaemonModelRow(value) {
@@ -184,8 +198,21 @@ export class PrivilegeLedger {
         updated_at TEXT NOT NULL,
         source TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS ledger_meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
       CREATE INDEX IF NOT EXISTS idx_privilege_grants_updated_at
         ON privilege_grants(updated_at);
+    `)
+    this._metaGet = this.db.prepare('SELECT value FROM ledger_meta WHERE key = ?')
+    this._metaSet = this.db.prepare(`
+      INSERT INTO ledger_meta (key, value, updated_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(key) DO UPDATE SET
+        value = excluded.value,
+        updated_at = excluded.updated_at
     `)
     this._get = this.db.prepare(`
       SELECT id, spawn_policy, privilege_set, updated_at, source
@@ -205,6 +232,41 @@ export class PrivilegeLedger {
     this._worker = null
     this._nextRequestId = 1
     this._pending = new Map()
+    this.migrateLegacyYamlIfNeeded()
+  }
+
+  migrateLegacyYamlIfNeeded() {
+    if (this._metaGet.get(YAML_MIGRATION_META_KEY)) return { skipped: true, imported: 0 }
+    const legacyFile = path.join(path.dirname(this.dbPath), 'daemon-privileges.yaml')
+    if (!fs.existsSync(legacyFile)) {
+      this._metaSet.run(YAML_MIGRATION_META_KEY, JSON.stringify({ imported: 0, file: legacyFile, missing: true }), nowIso())
+      return { skipped: false, imported: 0 }
+    }
+    const parsed = readYamlFile(legacyFile, 'legacy daemon privilege ledger')
+    const agents = normalizeLegacyLedgerAgents(parsed)
+    let imported = 0
+    const importOne = this.db.transaction(() => {
+      for (const [id, sourceRow] of Object.entries(agents)) {
+        if (!id || !sourceRow || typeof sourceRow !== 'object') continue
+        const grant = normalizeLedgerGrant(sourceRow)
+        const row = this.rowFor(id, {
+          spawnPolicy: grant.spawnPolicy,
+          privilegeSet: grant.privilegeSet,
+          source: sourceRow.source || 'migration:daemon-privileges-yaml',
+        })
+        this._upsert.run(
+          row.id,
+          JSON.stringify(row.spawnPolicy),
+          row.privilegeSet ? JSON.stringify(row.privilegeSet) : null,
+          sourceRow.updatedAt || row.updatedAt,
+          row.source,
+        )
+        imported++
+      }
+      this._metaSet.run(YAML_MIGRATION_META_KEY, JSON.stringify({ imported, file: legacyFile }), nowIso())
+    })
+    importOne()
+    return { skipped: false, imported }
   }
 
   get(id) {

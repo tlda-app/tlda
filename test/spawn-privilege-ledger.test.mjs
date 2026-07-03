@@ -101,6 +101,52 @@ describe('daemon privilege ledger', () => {
     assert.deepEqual(config.models, { claude: { localopus: 'claude-opus-local' } })
   })
 
+  it('migrates old daemon-privileges.yaml rows into fleet-daemon.db once', async () => {
+    const dir = tempConfigDir()
+    const dbPath = path.join(dir, 'fleet-daemon.db')
+    fs.writeFileSync(path.join(dir, 'daemon-privileges.yaml'), YAML.stringify({
+      version: 1,
+      privileges: {
+        agents: {
+          'fleet:existing': {
+            spawnPolicy: 'write',
+            privilegeSet: {
+              type: 'privilege-set',
+              name: 'existing-write',
+              operations: {
+                read: { allow: ['/old/project/**'], deny: [] },
+                write: { allow: ['/old/project/**'], deny: [] },
+                spawn: { allow: ['**'], deny: [] },
+              },
+            },
+            updatedAt: '2026-07-03T00:00:00.000Z',
+            source: 'old-ledger',
+          },
+        },
+      },
+    }))
+
+    const ledger = createPrivilegeLedger(dbPath)
+    const existing = ledger.grantFor({ id: 'fleet:existing' })
+    assert.equal(existing.spawnPolicy.capability, 'write')
+    assert.equal(existing.source, 'old-ledger')
+    assert.deepEqual(existing.privilegeSet.operations.write.allow, ['/old/project/**'])
+    assert.throws(
+      () => ledger.grantFor({ id: 'fleet:missing' }),
+      (err) => err.code === 'SPAWN_PRIVILEGE_NO_LEDGER_ENTRY',
+    )
+    await ledger.close()
+
+    const db = new Database(dbPath, { readonly: true })
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM privilege_grants').get().n, 1)
+    assert.equal(db.prepare('SELECT value FROM ledger_meta WHERE key = ?').get('migration.daemon-privileges-yaml.v1') != null, true)
+    db.close()
+
+    const reopened = createPrivilegeLedger(dbPath)
+    assert.equal(reopened.grantFor({ id: 'fleet:existing' }).spawnPolicy.capability, 'write')
+    await reopened.close()
+  })
+
   it('uses daemon yaml for model rows and ledger.db while grants stay in fleet-daemon.db', async () => {
     const dir = tempConfigDir()
     fs.writeFileSync(defaultDaemonConfigPath(dir), YAML.stringify({
