@@ -1,3 +1,4 @@
+import { createShapeId } from 'tldraw'
 import type { Editor, TLShapeId } from 'tldraw'
 
 type HtmlSelectionRect = {
@@ -48,6 +49,9 @@ type HtmlPageShapeLike = {
 
 const RECENT_SELECTION_MS = 2 * 60 * 1000
 const htmlTextSelections = new Map<string, HtmlTextSelection>()
+const SHARE_CARD_W = 300
+const SHARE_CARD_MIN_H = 96
+const SHARE_CARD_MAX_H = 260
 
 function asNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined
@@ -102,6 +106,12 @@ function expandedIntersects(a: { minX: number; minY: number; maxX: number; maxY:
     a.maxY + pad >= b.minY && a.minY - pad <= b.maxY
 }
 
+function estimateShareCardHeight(text: string) {
+  const lineCount = text.split(/\r?\n/).length
+  const wrappedLines = Math.ceil(text.length / 44)
+  return Math.min(SHARE_CARD_MAX_H, Math.max(SHARE_CARD_MIN_H, (lineCount + wrappedLines) * 18 + 36))
+}
+
 export function applyHtmlSelectionToHighlight(editor: Editor, highlightId: TLShapeId): boolean {
   const highlight = editor.getShape(highlightId)
   if (!highlight || (highlight.type as string) !== 'highlight') return false
@@ -143,6 +153,42 @@ export function applyHtmlSelectionToHighlight(editor: Editor, highlightId: TLSha
 
   const { selection, htmlShape } = best
   const lines = selection.text.split(/\r?\n/).map(line => line.trim()).filter(Boolean)
+  const shareCardId = createShapeId()
+  const shareCardH = estimateShareCardHeight(selection.text)
+  const shareCardX = Math.min(
+    htmlShape.x + htmlShape.props.w - SHARE_CARD_W - 20,
+    Math.max(htmlShape.x + 20, highlightBounds.maxX + 24)
+  )
+  const shareCardY = Math.max(htmlShape.y + 20, highlightBounds.minY - 12)
+
+  editor.createShape({
+    id: shareCardId,
+    type: 'math-note',
+    x: shareCardX,
+    y: shareCardY,
+    opacity: 1,
+    parentId: htmlShape.parentId,
+    props: {
+      w: SHARE_CARD_W,
+      h: shareCardH,
+      text: selection.text,
+      color: 'light-violet',
+      autoSize: true,
+      collapsed: false,
+    },
+    meta: {
+      createdAt: Date.now(),
+      copiedFromShapeId: highlight.id,
+      highlightText: selection.text,
+      sourceLines: selection.line
+        ? [{ line: selection.line, content: selection.text, highlighted: true }]
+        : undefined,
+      sourceAnchor: selection.line ? { line: selection.line } : undefined,
+      htmlPageShapeId: htmlShape.id,
+      shareKind: 'highlight-text',
+    },
+  } as unknown as Parameters<Editor['createShape']>[0])
+
   editor.updateShape({
     id: highlight.id,
     type: highlight.type,
@@ -156,6 +202,7 @@ export function applyHtmlSelectionToHighlight(editor: Editor, highlightId: TLSha
         : undefined,
       sourceAnchor: selection.line ? { line: selection.line } : undefined,
       htmlPageShapeId: htmlShape.id,
+      shareCardId,
     },
   } as unknown as Parameters<Editor['updateShape']>[0])
 
