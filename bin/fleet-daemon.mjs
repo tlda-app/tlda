@@ -57,7 +57,7 @@ import fs from 'fs'
 import path from 'path'
 import os from 'os'
 import { fileURLToPath } from 'url'
-import { execFile } from 'child_process'
+import { execFile, fork } from 'child_process'
 import { promisify } from 'util'
 import { resolveFilePath, uploadFileToServer } from '../shared/chat-file-processing.mjs'
 import { processMessageText } from '../shared/message-processing.mjs'
@@ -88,7 +88,9 @@ import { truncatePrettyResult } from '../shared/activity-pretty-result.mjs'
 import {
   createJsonlReadCoalescer,
   createOncePerKeyGate,
-  fileContainsUtf8MarkerSync,
+  extractOwnersFromText,
+  scanFileOwnersSync,
+  decideSessionBackfill,
 } from './lib/daemon-jsonl-hot-path.mjs'
 import {
   terminalBackscrollCaptureArgs,
@@ -299,6 +301,50 @@ let _cursorSaveTimer = null
 function scheduleCursorSave() {
   if (_cursorSaveTimer) return
   _cursorSaveTimer = setTimeout(() => { _cursorSaveTimer = null; saveCursors() }, 2000)
+}
+
+// ---------- session-owner cache ----------
+// Each cursor entry gains `owners: [fleetId,...]` — which agent(s) registered in
+// that session file. Populated the one time we read the file. Once a session is
+// classified, "which sessions does agent X own?" is a cache lookup, never a re-scan
+// of every JSONL. This is the daemon's single writer of cursor state.
+function recordSessionOwners(sessionId, owners) {
+  if (!sessionId) return
+  const entry = cursors[sessionId] || (cursors[sessionId] = {})
+  const prev = entry.owners || []
+  // classified=true means we've fully read the file and `owners` is authoritative
+  // (empty owners on a fully-read file is a valid answer: "nobody registered here").
+  const merged = owners && owners.length ? [...new Set([...prev, ...owners])] : prev
+  const changed = !entry.classified || merged.length !== prev.length
+  entry.owners = merged
+  entry.classified = true
+  if (changed) scheduleCursorSave()
+}
+
+// The niced child that classifies every session's owners in the background
+// (recent→old by mtime), so the daemon's main loop never byte-scans files on a spawn.
+let _ownerHarvester = null
+function startOwnerHarvester() {
+  if (_ownerHarvester) return
+  const script = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fleet-owner-harvester.mjs')
+  if (!fs.existsSync(script)) return
+  try {
+    // execArgv:[] so the child doesn't inherit --import tsx etc.; it's plain ESM.
+    _ownerHarvester = fork(script, [], { execArgv: [], stdio: ['ignore', 'ignore', 'ignore', 'ipc'] })
+  } catch (e) {
+    log.warn(`owner harvester failed to start: ${e.message}`)
+    _ownerHarvester = null
+    return
+  }
+  _ownerHarvester.on('message', (msg) => {
+    if (msg?.type === 'owners') {
+      recordSessionOwners(msg.sessionId, msg.owners)
+    } else if (msg?.type === 'harvest-complete') {
+      log.info(`owner harvest complete: ${msg.count} session(s) classified`)
+    }
+  })
+  _ownerHarvester.on('exit', () => { _ownerHarvester = null })
+  _ownerHarvester.on('error', (e) => { log.warn(`owner harvester error: ${e.message}`); _ownerHarvester = null })
 }
 
 // ---------- Qualification checking ----------
@@ -1433,6 +1479,9 @@ function readNewSessionLines(agentId, jsonlPath, sessionId, harnessKind = 'claud
 function backfillSearchEntries(agentId, jsonlPath, sessionId) {
   try {
     const content = fs.readFileSync(jsonlPath, 'utf8')
+    // We just read the whole file — harvest which agent(s) registered in it so
+    // future "which sessions does X own?" lookups are a cache hit, not a re-scan.
+    recordSessionOwners(sessionId, extractOwnersFromText(content))
     const lines = content.split('\n')
     const entries = []
     for (const line of lines) {
@@ -1461,14 +1510,16 @@ function backfillSearchEntries(agentId, jsonlPath, sessionId) {
   }
 }
 
-// Scan all JSONLs under PROJECTS_DIR for prior sessions belonging to this agent.
-// Called once when an agent is first seen (no cursor). Skips sessions already
-// marked searchBackfilled in cursors.
+// Find + search-index this agent's prior sessions. Consults the session-owner
+// cache: a session already classified (owners known) is answered with ZERO I/O —
+// if it isn't this agent's, we skip it cold. The bug this fixes: the old code
+// only marked the agent's OWN files, so every *non-owned* file was byte-scanned
+// again on every single spawn (O(files × spawns)). Now each file is classified
+// once (chunked owner-scan, no JSON.parse), cached, and never re-read to answer a
+// different agent. The niced child harvester pre-populates this cache in the
+// background so even the first classification is off the daemon's main loop.
 function backfillAllPriorSessions(agentId, fleetId) {
   if (!priorSessionBackfillGate.claim(fleetId)) return
-  // Fleet IDs are like "fleet:f7322ebe" — the registration line contains the suffix.
-  const suffix = fleetId.includes(':') ? fleetId.split(':')[1] : fleetId
-  const marker = `Registered fleet:${suffix}`
   let found = 0
   try {
     for (const dir of fs.readdirSync(PROJECTS_DIR)) {
@@ -1480,9 +1531,15 @@ function backfillAllPriorSessions(agentId, fleetId) {
         const sessionId = file.slice(0, -6)
         if (cursors[sessionId]?.searchBackfilled) continue
         const filePath = path.join(dirPath, file)
+        // Classify once (chunked owner-scan, no JSON.parse), then cache. A session
+        // already classified is decided from cache with zero I/O — the fix.
+        let decision
         try {
-          if (!fileContainsUtf8MarkerSync(filePath, marker)) continue
+          decision = decideSessionBackfill(cursors[sessionId], fleetId, () => scanFileOwnersSync(filePath))
         } catch { continue }
+        if (decision.didScan) recordSessionOwners(sessionId, decision.owners)
+        // Only this agent's own sessions get the full search-index backfill.
+        if (!decision.shouldBackfill) continue
         backfillSearchEntries(agentId, filePath, sessionId)
         cursors[sessionId] = { ...(cursors[sessionId] || {}), searchBackfilled: true }
         found++
@@ -3943,6 +4000,7 @@ function handleServerMessage(msg) {
     if (!_autoAcceptStarted) {
       _autoAcceptStarted = true
       startAutoAcceptSweep()
+      startOwnerHarvester()
     }
     return
   }
@@ -4027,6 +4085,7 @@ function shutdown(signal) {
   // Log WHY we're dying so the next post-mortem isn't a scavenger hunt.
   log.info(`shutdown via ${signal || 'unknown'} signal; saving cursors and exiting`)
   saveCursors()
+  try { _ownerHarvester?.kill() } catch { /* already gone */ }
   unlinkPidfileIfOwnPid(PID_FILE, process.pid)
   _rws?.close()
   process.exit(0)

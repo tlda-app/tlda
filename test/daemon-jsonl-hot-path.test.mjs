@@ -109,3 +109,89 @@ test('marker scan is byte-chunked and does not use full-file readFileSync', () =
     fs.rmSync(dir, { recursive: true, force: true })
   }
 })
+
+// ---------- session-owner harvest (cursor owner-cache fix) ----------
+import {
+  extractOwnersFromText as _extractOwners,
+  scanFileOwnersSync as _scanOwners,
+} from '../bin/lib/daemon-jsonl-hot-path.mjs'
+
+test('extractOwnersFromText pulls every fleet id from Registered lines, deduped', () => {
+  const text = [
+    'noise',
+    'Registered fleet:yolo. 1244 agent(s) registered.',
+    'more noise Registered fleet:791a593e — ok',
+    'Registered fleet:yolo again',            // dup
+    'not a match: fleet:nope without Registered',
+  ].join('\n')
+  assert.deepEqual(_extractOwners(text).sort(), ['fleet:791a593e', 'fleet:yolo'])
+  assert.deepEqual(_extractOwners('nothing here'), [])
+})
+
+test('scanFileOwnersSync harvests owners chunked (marker split across chunk boundary) + returns EOF offset', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-owner-scan-'))
+  const file = path.join(dir, 'session.jsonl')
+  const originalReadFileSync = fs.readFileSync
+  try {
+    // Put the marker so it straddles the 64KB chunk boundary.
+    const prefix = 'x'.repeat(64 * 1024 - 10)
+    const body = prefix + 'Registered fleet:abc123\n' + 'y'.repeat(1000) + 'Registered fleet:def456\n'
+    fs.writeFileSync(file, body)
+    fs.readFileSync = () => { throw new Error('owner scan must be chunked, not readFileSync') }
+    const { owners, endOffset } = _scanOwners(file)
+    assert.deepEqual(owners.sort(), ['fleet:abc123', 'fleet:def456'])
+    assert.equal(endOffset, Buffer.byteLength(body))
+  } finally {
+    fs.readFileSync = originalReadFileSync
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('scanFileOwnersSync from a byte offset only scans the tail', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-owner-tail-'))
+  const file = path.join(dir, 'session.jsonl')
+  try {
+    const head = 'Registered fleet:old\n'
+    const tail = 'Registered fleet:new\n'
+    fs.writeFileSync(file, head + tail)
+    const { owners } = _scanOwners(file, { fromOffset: Buffer.byteLength(head) })
+    assert.deepEqual(owners, ['fleet:new'])  // old owner (before offset) not re-harvested
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+import { decideSessionBackfill as _decide } from '../bin/lib/daemon-jsonl-hot-path.mjs'
+
+test('decideSessionBackfill classifies once — a classified session is NOT re-scanned on later spawns', () => {
+  // Simulate the daemon's cursor entry for one session file.
+  let entry = undefined
+  let scans = 0
+  const scan = () => { scans++; return { owners: ['fleet:alice'] } }
+
+  // First spawn (agent bob): unclassified → scans once, learns owner=alice, not bob's.
+  const d1 = _decide(entry, 'fleet:bob', scan)
+  assert.equal(d1.didScan, true)
+  assert.equal(d1.shouldBackfill, false)          // alice's file, not bob's
+  entry = { classified: true, owners: d1.owners }  // daemon caches it
+
+  // Second spawn (agent carol): classified → MUST NOT scan again.
+  const d2 = _decide(entry, 'fleet:carol', scan)
+  assert.equal(d2.didScan, false)                  // ← the fix: zero I/O
+  assert.equal(d2.shouldBackfill, false)
+  assert.equal(scans, 1)                            // still only ever scanned once
+
+  // Third spawn (the actual owner, alice): still cache — backfill yes, still no re-scan.
+  const d3 = _decide(entry, 'fleet:alice', scan)
+  assert.equal(d3.didScan, false)
+  assert.equal(d3.shouldBackfill, true)
+  assert.equal(scans, 1)
+})
+
+test('decideSessionBackfill skips already search-backfilled sessions with no scan', () => {
+  let scans = 0
+  const d = _decide({ searchBackfilled: true, owners: ['fleet:x'] }, 'fleet:x', () => { scans++; return { owners: [] } })
+  assert.equal(d.didScan, false)
+  assert.equal(d.shouldBackfill, false)  // already indexed → nothing to do
+  assert.equal(scans, 0)
+})
