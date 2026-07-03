@@ -447,4 +447,48 @@ describe('daemon privilege ledger', () => {
     assert.deepEqual(Object.keys(fencedConfig.spawnPolicy.privilegeProfiles).sort(), ['app', 'math', 'ops', 'readonly', 'wd'])
     assert.equal(fenced.grants['fleet:skip'], 'ops')
   })
+
+  it('does not fail a write timeout after the worker commit has landed', async () => {
+    const file = tempLedger()
+    const ledger = createPrivilegeLedger(file)
+    const row = ledger.rowFor('fleet:ack-late', {
+      spawnPolicy: 'write',
+      privilegeSet: {
+        type: 'privilege-set',
+        name: 'ack-late',
+        operations: {
+          read: { allow: ['/tmp/proof/**'], deny: [] },
+          write: { allow: ['/tmp/proof/**'], deny: [] },
+          spawn: { allow: [], deny: [] },
+        },
+      },
+      source: 'test',
+    })
+    ledger.ensureWriter = () => ({
+      postMessage(message) {
+        const written = message.row
+        ledger._upsert.run(
+          written.id,
+          written.spawnPolicy,
+          written.privilegeSet,
+          written.updatedAt,
+          written.source,
+        )
+      },
+    })
+
+    await ledger.writeAsync({
+      op: 'upsert',
+      row: {
+        id: row.id,
+        spawnPolicy: JSON.stringify(row.spawnPolicy),
+        privilegeSet: JSON.stringify(row.privilegeSet),
+        updatedAt: row.updatedAt,
+        source: row.source,
+      },
+    }, 5)
+
+    assert.equal(ledger.grantFor({ id: 'fleet:ack-late' }).spawnPolicy.capability, 'write')
+    await ledger.close()
+  })
 })

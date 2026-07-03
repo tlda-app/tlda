@@ -78,12 +78,12 @@ export function buildCmd({
     parts.push(`TLDA_NODE_DNS_ALIAS_ADDR=${sq(dnsAlias.address)}`)
   }
   parts.push('claude')
+  appendLaunchFlags(parts, harnessOptions)
   if (resumeId) parts.push(`--resume ${sq(resumeId)}`)
   parts.push(`--model ${sq(model)}`)
   if (effort) parts.push(`--effort ${sq(effort)}`)
   if (mode === 'bypassPermissions') parts.push('--dangerously-skip-permissions')
   else if (mode) parts.push(`--permission-mode ${sq(mode)}`)
-  appendLaunchFlags(parts, harnessOptions)
   if (includePrompt) parts.push(sq(registerPrompt(name)))
   return parts.join(' ')
 }

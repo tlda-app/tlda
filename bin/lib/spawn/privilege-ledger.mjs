@@ -550,11 +550,33 @@ export class PrivilegeLedger {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this._pending.delete(requestId)
+        if (this.writeLanded(message)) {
+          resolve()
+          return
+        }
         reject(new Error(`privilege ledger write timed out after ${timeoutMs}ms`))
       }, timeoutMs)
       this._pending.set(requestId, { resolve, reject, timer })
       worker.postMessage({ ...message, requestId })
     })
+  }
+
+  writeLanded(message = {}) {
+    try {
+      if (message.op === 'upsert') {
+        const expected = message.row || {}
+        if (!expected.id) return false
+        const row = this._get.get(expected.id)
+        return !!row
+          && row.spawn_policy === expected.spawnPolicy
+          && row.privilege_set === expected.privilegeSet
+          && row.updated_at === expected.updatedAt
+          && row.source === expected.source
+      }
+      return false
+    } catch {
+      return false
+    }
   }
 
   async set(id, options = {}) {

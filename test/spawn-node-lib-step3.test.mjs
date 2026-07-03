@@ -817,12 +817,15 @@ test('configured harness flags are injected into launch commands', () => {
     fleetId: 'fleet:test',
     tmuxSession: 'fleet-test',
     model: 'claude-opus-4-8',
-    includePrompt: false,
+    name: 'flag-order-proof',
+    includePrompt: true,
     harnessOptions: options,
     config: {},
   })
   assert.match(cmd, /--dangerously-load-development-channels server:tlda/)
   assert.doesNotMatch(cmd, /--dangerously-skip-permissions/)
+  assert.match(cmd, /claude --dangerously-load-development-channels server:tlda --model/)
+  assert.match(cmd, /--model 'claude-opus-4-8' 'Call register\(name="flag-order-proof"\)/)
 })
 
 test('fresh local spawn defers registration when localhost server probe fails', async () => {
