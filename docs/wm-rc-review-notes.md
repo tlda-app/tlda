@@ -99,6 +99,10 @@ testing, capture listeners, telemetry/replay, and main-editor writes.
   outside this RC.
 - Phone lane gesture decisions preserve the existing thresholds and event
   consumption behavior, with pure policy extracted for direct testing.
+- Pill drop callers convert client drop points through `viewport-coordinates`
+  before calling the shared drop path. Empty-canvas chat creation now uses the
+  WM-translated target point, so HUD/page membrane drops do not create chats at
+  the raw overlay point.
 - Gesture frame helpers are unchanged behaviorally but no longer live inside
   `useFleetGestures`; the hook still owns the gesture state machine and editor
   mutation writes.

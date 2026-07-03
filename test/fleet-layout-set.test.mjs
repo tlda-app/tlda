@@ -6,6 +6,9 @@ const pillSource = readFileSync(new URL('../src/pills/FleetIconPill.tsx', import
 const syncErrorPillSource = readFileSync(new URL('../src/pills/SyncErrorPill.tsx', import.meta.url), 'utf8')
 const svgDocumentSource = readFileSync(new URL('../src/SvgDocument.tsx', import.meta.url), 'utf8')
 const pillShapeSource = readFileSync(new URL('../src/shapes/FleetPillShape.tsx', import.meta.url), 'utf8')
+const fleetAgentsSource = readFileSync(new URL('../src/shapes/FleetAgentsShape.tsx', import.meta.url), 'utf8')
+const fleetSearchSource = readFileSync(new URL('../src/shapes/FleetSearchShape.tsx', import.meta.url), 'utf8')
+const fleetChatSource = readFileSync(new URL('../src/shapes/FleetChatShape.tsx', import.meta.url), 'utf8')
 const chatShapeSource = readFileSync(new URL('../src/shapes/FleetChatShape.tsx', import.meta.url), 'utf8')
 const agentsShapeSource = readFileSync(new URL('../src/shapes/FleetAgentsShape.tsx', import.meta.url), 'utf8')
 const searchShapeSource = readFileSync(new URL('../src/shapes/FleetSearchShape.tsx', import.meta.url), 'utf8')
@@ -79,8 +82,19 @@ test('touch layout control opens picker on pointerup without waiting for click',
 test('agent pill drops create owned fleet chats without raw canvas creation', () => {
   const dropPill = sourceBetween(pillShapeSource, 'export async function dropPillOnTarget', 'export class FleetPillShapeUtil')
   assert.match(dropPill, /props: \{ \.\.\.hitShape\.props, filter: newFilter \}/)
-  assert.match(dropPill, /createFleetShape\(editor, 'fleet-chat', pagePoint\.x, pagePoint\.y/)
+  assert.match(dropPill, /translateFleetHudDropPointWithWM\(getEditorWMCore\(mainEditor\), editor, mainEditor, pagePoint\)/)
+  assert.match(dropPill, /createFleetShape\(createEditor, 'fleet-chat', targetPagePoint\.x, targetPagePoint\.y/)
+  assert.doesNotMatch(dropPill, /createFleetShape\(editor, 'fleet-chat', pagePoint\.x, pagePoint\.y/)
   assert.equal(dropPill.includes("createShape({\n      id: createShapeId(),\n      type: 'fleet-chat'"), false)
+})
+
+test('fleet pill drop callers convert client drops through viewport coordinates', () => {
+  assert.match(fleetAgentsSource, /import \{ clientPointToPage \} from '\.\.\/wm\/viewport-coordinates'/)
+  assert.match(fleetAgentsSource, /clientPointToPage\(editor, \{ x: ev\.clientX, y: ev\.clientY \}, viewportId\)/)
+  assert.match(fleetSearchSource, /import \{ clientPointToPage \} from '\.\.\/wm\/viewport-coordinates'/)
+  assert.match(fleetSearchSource, /clientPointToPage\(editor, \{ x: ev\.clientX, y: ev\.clientY \}, viewportId\)/)
+  assert.match(fleetChatSource, /import \{ clientPointToPage, pagePointToClient \} from '\.\.\/wm\/viewport-coordinates'/)
+  assert.match(fleetChatSource, /clientPointToPage\(dropEditor, \{ x: e\.clientX, y: e\.clientY \}, onMain \? undefined : viewportId\)/)
 })
 
 test('fleet panel registry owns panel types, defaults, and tool dimensions', () => {

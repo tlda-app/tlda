@@ -176,6 +176,9 @@ Started in this branch:
 - `test/fleet-gesture-classifier.test.mjs` now imports the gesture policy module
   directly, while still checking TLDraw threshold parity and phone-lane event
   consumption in the hook.
+- `test/fleet-layout-set.test.mjs` pins the pill-drop membrane: drag callers
+  must convert client drops through `viewport-coordinates`, and the empty-canvas
+  chat creation path must use the WM-translated target point.
 
 ## RC Success Criteria
 
