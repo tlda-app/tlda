@@ -211,11 +211,6 @@ function looksLikeDaemonModelRow(value) {
       || value.capability != null
       || value.spawnPolicy != null
       || value.model_cap != null
-      || value.harness != null
-      || value.launch != null
-      || value.required_flags != null
-      || value.requiredFlags != null
-      || value.preferences != null
     )
 }
 
@@ -232,42 +227,18 @@ function daemonModelProvider(alias, row) {
 function normalizeDaemonModelRows(models = {}) {
   const aliases = {}
   const modelCeilings = {}
-  const harnessOptions = {}
-  function mergeHarnessOptions(harness, alias, row) {
-    const normalized = normalizeHarnessOptions(row)
-    if (!normalized) return
-    const key = String(harness || '').trim().toLowerCase()
-    if (!key) return
-    harnessOptions[key] ||= {}
-    if (alias) harnessOptions[key][alias] = normalized
-    if (row?.id || row?.provider_model || row?.providerModel) {
-      harnessOptions[key][row.id || row.provider_model || row.providerModel] = normalized
-    }
-  }
   for (const [key, value] of Object.entries(models || {})) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) continue
     if (!looksLikeDaemonModelRow(value)) {
-      const providerAliases = {}
+      aliases[key] = value
       for (const [alias, entry] of Object.entries(value)) {
-        if (typeof entry === 'string') {
-          providerAliases[alias] = entry
-          continue
-        }
         if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue
-        mergeHarnessOptions(key, alias, entry)
         const cap = entry.cap || entry.capability || entry.spawnPolicy || entry.model_cap
+        if (!cap) continue
         const id = entry.id || entry.provider_model || entry.providerModel
-        if (id) providerAliases[alias] = {
-          id,
-          ...(entry.provider_alias ? { provider_alias: entry.provider_alias } : {}),
-          ...(Array.isArray(entry.tags) ? { tags: entry.tags } : {}),
-        }
-        if (cap) {
-          modelCeilings[alias] = cap
-          if (id) modelCeilings[id] = cap
-        }
+        modelCeilings[alias] = cap
+        if (id) modelCeilings[id] = cap
       }
-      if (Object.keys(providerAliases).length) aliases[key] = providerAliases
       continue
     }
     const provider = daemonModelProvider(key, value)
@@ -283,32 +254,8 @@ function normalizeDaemonModelRows(models = {}) {
       modelCeilings[key] = cap
       if (id) modelCeilings[id] = cap
     }
-    mergeHarnessOptions(provider, key, value)
   }
-  return { aliases, modelCeilings, harnessOptions }
-}
-
-function stringList(value, label) {
-  if (value == null) return []
-  if (typeof value === 'string') return [value].filter(v => v.trim())
-  if (!Array.isArray(value)) throw new Error(`${label} must be a string or string list`)
-  return value.map(v => String(v || '').trim()).filter(Boolean)
-}
-
-function normalizeHarnessOptions(row = {}) {
-  const source = row.harness || row.launch || row
-  if (!source || typeof source !== 'object' || Array.isArray(source)) return null
-  const required = stringList(source.required || source.required_flags || source.requiredFlags, 'harness required flags')
-  const preferences = stringList(source.preferences || source.preference_flags || source.preferenceFlags, 'harness preference flags')
-  const controls = source.controls === false
-    ? false
-    : (source.controls === true || required.length > 0)
-  if (!required.length && !preferences.length && source.controls == null) return null
-  return {
-    required,
-    preferences,
-    controls,
-  }
+  return { aliases, modelCeilings }
 }
 
 function withStoredSpawnDefault(privilegeSet, policy) {
@@ -616,7 +563,7 @@ export function withDaemonModelAliases(config = {}, daemonConfig = {}) {
     ? daemonConfig.profiles
     : {}
   if (!Object.keys(daemonModels).length && !Object.keys(daemonProfiles).length) return config || {}
-  const { aliases, modelCeilings, harnessOptions } = normalizeDaemonModelRows(daemonModels)
+  const { aliases, modelCeilings } = normalizeDaemonModelRows(daemonModels)
   const nextSpawnPolicy = {
     ...((config || {}).spawnPolicy || {}),
     ...(Object.keys(daemonProfiles).length ? {
@@ -624,7 +571,6 @@ export function withDaemonModelAliases(config = {}, daemonConfig = {}) {
         ...(((config || {}).spawnPolicy || {}).privilegeProfiles || {}),
         ...daemonProfiles,
       },
-      fenceEnabled: true,
     } : {}),
     ...(Object.keys(modelCeilings).length ? {
       modelCeilings: {
@@ -635,8 +581,7 @@ export function withDaemonModelAliases(config = {}, daemonConfig = {}) {
   }
   return {
     ...(config || {}),
-    ...(Object.keys(aliases).length ? { models: aliases } : {}),
-    ...(Object.keys(harnessOptions).length ? { harnessOptions } : {}),
+    ...(Object.keys(daemonModels).length ? { models: aliases } : {}),
     spawnPolicy: nextSpawnPolicy,
   }
 }

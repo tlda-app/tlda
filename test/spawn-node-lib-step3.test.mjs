@@ -5,7 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { fenceSettings, wrapSandboxCmd } from '../bin/lib/spawn/fence.mjs'
-import { codexSandboxProjection, resolveHarnessLaunchOptions, resolveLaunchPolicy, resolveLeasePolicy } from '../bin/lib/spawn/permissions.mjs'
+import { codexSandboxProjection, resolveLaunchPolicy, resolveLeasePolicy } from '../bin/lib/spawn/permissions.mjs'
 import * as claude from '../bin/lib/spawn/harness/claude.mjs'
 import * as codex from '../bin/lib/spawn/harness/codex.mjs'
 import { spawn } from '../bin/lib/spawn/index.mjs'
@@ -513,23 +513,23 @@ test('fenced codex uses Codex danger-full-access under the outer fence', () => {
   assert.deepEqual(projection.workspaceWriteConfigArgs, [])
 })
 
-test('unfenced codex uses native workspace-write sandbox as harness security', () => {
+test('codex read requests still run under danger-full-access for the outer fence', () => {
   const projection = codexSandboxProjection(
     { capability: 'read', policy: 'cwd' },
     tmpdir(),
     { fenced: false },
   )
-  assert.equal(projection.sandboxMode, 'workspace-write')
-  assert.equal(projection.networkAccess, true)
+  assert.equal(projection.sandboxMode, 'danger-full-access')
+  assert.equal(projection.networkAccess, false)
 })
 
-test('unfenced codex no-net keeps network off in native sandbox args', () => {
+test('unfenced codex no-net still delegates sandboxing to the outer fence path', () => {
   const projection = codexSandboxProjection(
     { capability: 'write', policy: 'cwd', network: false },
     tmpdir(),
     { fenced: false },
   )
-  assert.equal(projection.sandboxMode, 'workspace-write')
+  assert.equal(projection.sandboxMode, 'danger-full-access')
   assert.equal(projection.networkAccess, false)
   const args = codex.buildWorkspaceWriteConfigArgs({
     writableRoots: projection.writableRoots,
@@ -546,7 +546,6 @@ test('codex explicit daemon grant is externally fenced even while global fence i
     harness: 'codex',
     model: 'gpt-5.5',
     cwd,
-    config: { spawnPolicy: { fenceEnabled: true }, agentSandbox: { runner: { command: 'fence' } } },
     env: {},
   })
   assert.equal(policy.fenceGloballyDisabled, true)
@@ -591,7 +590,6 @@ test('codex explicit no-net external fence preserves network-off in the lease', 
     harness: 'codex',
     model: 'gpt-5.5',
     cwd,
-    config: { spawnPolicy: { fenceEnabled: true }, agentSandbox: { runner: { command: 'fence' } } },
     env: {},
   })
   assert.equal(policy.policyName, 'cwd')
@@ -610,7 +608,7 @@ test('claude explicit write uses the app-development outer fence lease', () => {
     harness: 'claude',
     model: 'claude-opus-4-8',
     cwd,
-    config: { spawnPolicy: { fenceEnabled: true }, agentSandbox: { runner: { command: 'fence' } } },
+    config: { agentSandbox: { runner: { command: 'fence' } } },
   })
   assert.equal(policy.fenceGloballyDisabled, true)
   assert.equal(policy.policyName, 'cwd')
@@ -635,7 +633,7 @@ test('launch policy maps explicit full to a machine-write fence lease', () => {
     harness: 'claude',
     model: 'claude-opus-4-8',
     cwd: tmpdir(),
-    config: { spawnPolicy: { fenceEnabled: true }, agentSandbox: { runner: { command: 'fence' } } },
+    config: { agentSandbox: { runner: { command: 'fence' } } },
   })
   assert.equal(policy.fenceGloballyDisabled, true)
   assert.equal(policy.policyName, 'unsandboxed')
@@ -685,7 +683,7 @@ test('permission-classifier off-switch forces claude bypass at spawn time', () =
     model: 'claude-opus-4-8',
     cwd: tmpdir(),
     env: { TLDA_DISABLE_PERMISSION_CLASSIFIER: '1' },
-    config: { spawnPolicy: { fenceEnabled: true }, agentSandbox: { runner: { command: 'fence' } } },
+    config: { agentSandbox: { runner: { command: 'fence' } } },
   })
   assert.equal(envPolicy.leasePolicy.policy, 'unsandboxed')
   assert.equal(envPolicy.permissionMode, 'bypassPermissions')
@@ -696,7 +694,7 @@ test('permission-classifier off-switch forces claude bypass at spawn time', () =
     harness: 'claude',
     model: 'claude-opus-4-8',
     cwd: tmpdir(),
-    config: { spawnPolicy: { fenceEnabled: true }, agentSandbox: { disablePermissionsClassifier: true, runner: { command: 'fence' } } },
+    config: { agentSandbox: { disablePermissionsClassifier: true, runner: { command: 'fence' } } },
     env: {},
   })
   assert.equal(configPolicy.leasePolicy.policy, 'unsandboxed')
@@ -717,114 +715,6 @@ test('direct requested capability lands in the shared launch-policy helper', () 
   assert.equal(policy.permissionMode, 'bypassPermissions')
 })
 
-test('unfenced launch with harness permissions disabled is refused unless acknowledged', () => {
-  assert.throws(
-    () => resolveLaunchPolicy({
-      spawnPolicy: { capability: 'full', policy: 'unsandboxed' },
-      harness: 'claude',
-      model: 'claude-opus-4-8',
-      cwd: tmpdir(),
-      config: { harnessOptions: { claude: { '*': { required: ['--dangerously-load-development-channels server:tlda'], preferences: ['--dangerously-skip-permissions'], controls: true } } } },
-      env: {},
-    }),
-    /are you fucking sure/,
-  )
-
-  const acknowledged = resolveLaunchPolicy({
-    spawnPolicy: { capability: 'full', policy: 'unsandboxed' },
-    harness: 'claude',
-    model: 'claude-opus-4-8',
-    cwd: tmpdir(),
-    config: { harnessOptions: { claude: { '*': { required: ['--dangerously-load-development-channels server:tlda'], preferences: ['--dangerously-skip-permissions'], controls: true } } } },
-    acknowledgeNoSecurity: true,
-    env: {},
-  })
-  assert.equal(acknowledged.leasePolicy, null)
-  assert.equal(acknowledged.launchSecurity.acknowledgedNoSecurity, true)
-  assert.equal(acknowledged.launchSecurity.hasHarnessControls, false)
-})
-
-test('unfenced claude launch is allowed when harness permissions stay on', () => {
-  const policy = resolveLaunchPolicy({
-    spawnPolicy: { capability: 'write', policy: 'cwd' },
-    harness: 'claude',
-    model: 'claude-opus-4-8',
-    cwd: tmpdir(),
-    config: {
-      harnessOptions: {
-        claude: {
-          '*': {
-            required: ['--dangerously-load-development-channels server:tlda'],
-            preferences: [],
-            controls: true,
-          },
-        },
-      },
-    },
-    env: {},
-  })
-  assert.equal(policy.leasePolicy, null)
-  assert.equal(policy.launchSecurity.hasHarnessControls, true)
-  assert.deepEqual(policy.harnessOptions.required, ['--dangerously-load-development-channels server:tlda'])
-  assert.deepEqual(policy.harnessOptions.preferences, [])
-})
-
-test('fenced claude launch is trusted even when harness permissions are skipped', () => {
-  const cwd = tmpdir()
-  const policy = resolveLaunchPolicy({
-    spawnPolicy: { capability: 'write', policy: 'cwd' },
-    privilegeSet: cwdPrivilegeSet(cwd),
-    harness: 'claude',
-    model: 'claude-opus-4-8',
-    cwd,
-    config: {
-      harnessOptions: {
-        claude: {
-          '*': {
-            required: ['--dangerously-load-development-channels server:tlda'],
-            preferences: ['--dangerously-skip-permissions'],
-            controls: true,
-          },
-        },
-      },
-      spawnPolicy: { fenceEnabled: true },
-      agentSandbox: { runner: { command: 'fence' } },
-    },
-    env: {},
-  })
-  assert.equal(policy.leasePolicy.policy, 'cwd')
-  assert.equal(policy.launchSecurity.hasFence, true)
-  assert.equal(policy.launchSecurity.hasHarnessControls, false)
-})
-
-test('configured harness flags are injected into launch commands', () => {
-  const options = resolveHarnessLaunchOptions({
-    harness: 'claude',
-    model: 'claude-opus-4-8',
-    config: {
-      harnessOptions: {
-        claude: {
-          '*': {
-            required: ['--dangerously-load-development-channels server:tlda'],
-            preferences: [],
-            controls: true,
-          },
-        },
-      },
-    },
-  })
-  const cmd = claude.buildCmd({
-    fleetId: 'fleet:test',
-    tmuxSession: 'fleet-test',
-    model: 'claude-opus-4-8',
-    includePrompt: false,
-    harnessOptions: options,
-    config: {},
-  })
-  assert.match(cmd, /--dangerously-load-development-channels server:tlda/)
-  assert.doesNotMatch(cmd, /--dangerously-skip-permissions/)
-})
-
 test('fresh local spawn defers registration when localhost server probe fails', async () => {
   const { calls, deps } = freshSpawnDeps({
     ensureServer: async () => { throw new Error('server unreachable at http://127.0.0.1:5176') },
@@ -836,7 +726,6 @@ test('fresh local spawn defers registration when localhost server probe fails', 
     name: 'breakglass-local',
     cwd: tmpdir(),
     agentId: 'fleet:testoff',
-    config: {},
     _deps: deps,
   })
   assert.equal(result.ok, true)
@@ -861,7 +750,6 @@ test('fresh local spawn keeps server-up pre-register and registration wait seman
     name: 'server-up-local',
     cwd: tmpdir(),
     agentId: 'fleet:teston',
-    config: {},
     _deps: deps,
   })
   assert.equal(result.ok, true)

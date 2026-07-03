@@ -21,7 +21,7 @@ test('explicit privilege zones force a fenced launch even when projected policy 
     harness: 'codex',
     model: 'gpt-5.5',
     cwd,
-    config: { spawnPolicy: { fenceEnabled: true }, agentSandbox: { runner: { command: 'fence' } } },
+    config: { agentSandbox: { runner: { command: 'fence' } } },
   })
   assert.equal(policy.policyName, 'unsandboxed')
   assert.ok(policy.leasePolicy)
@@ -85,7 +85,6 @@ test('named app-dev privileges compile to explicit cwd rules instead of broad fu
     model: 'gpt-5.5',
     cwd,
     config: {
-      spawnPolicy: { fenceEnabled: true },
       agentSandbox: {
         runner: { command: 'fence' },
         policyOptions: { unsandboxed: { network: true, git: 'write' } },
@@ -118,7 +117,6 @@ test('named deploy privileges allow Fly state without broad machine writes', () 
     model: 'gpt-5.5',
     cwd,
     config: {
-      spawnPolicy: { fenceEnabled: true },
       agentSandbox: {
         runner: { command: 'fence' },
         policyOptions: { cwd: { network: true, git: 'write' } },
@@ -150,7 +148,7 @@ test('symbolic cwd privilege zones resolve to the workspace root for fence setti
     harness: 'codex',
     model: 'gpt-5.5',
     cwd,
-    config: { spawnPolicy: { fenceEnabled: true }, agentSandbox: { runner: { command: 'fence' } } },
+    config: { agentSandbox: { runner: { command: 'fence' } } },
   })
   assert.equal(policy.leasePolicy.explicit_privilege_set, true)
   assert.ok(policy.leasePolicy.read_roots.includes('/Users/skip/work/tlda/**'))

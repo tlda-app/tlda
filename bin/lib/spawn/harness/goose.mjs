@@ -20,13 +20,6 @@ function providerForModel(model, modelProvider = null) {
   return { provider: 'openrouter', model }
 }
 
-function appendLaunchFlags(parts, harnessOptions = {}) {
-  for (const flag of [...(harnessOptions.required || []), ...(harnessOptions.preferences || [])]) {
-    if (typeof flag !== 'string' || !flag.trim()) continue
-    if (!parts.includes(flag)) parts.push(flag)
-  }
-}
-
 export function resolveModel(model, options = {}) {
   return resolveGooseModel(model, options)
 }
@@ -50,7 +43,6 @@ export function buildCmd({
   env = process.env,
   config = readConfig(),
   modelProvider = null,
-  harnessOptions = {},
 } = {}) {
   const recipe = path.join(repoRoot(), 'recipes', 'fleet-deepseek.yaml')
   const sandboxConfig = path.join(path.dirname(recipe), 'goose-sandbox')
@@ -96,7 +88,6 @@ export function buildCmd({
   parts.push(`--params provider=${sq(provider)}`)
   parts.push(`--params model=${sq(providerModel)}`)
   parts.push(`--name ${sq(`fleet-${String(fleetId).split(':').pop()}`)}`)
-  appendLaunchFlags(parts, harnessOptions)
   parts.push('--interactive')
   return `zsh -lc ${sq(parts.join(' '))}`
 }

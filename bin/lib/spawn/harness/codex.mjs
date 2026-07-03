@@ -20,13 +20,6 @@ function cenv(key, value) {
   return `-c ${sq(`mcp_servers.tlda.env.${key}=${value}`)}`
 }
 
-function appendLaunchFlags(parts, harnessOptions = {}) {
-  for (const flag of [...(harnessOptions.required || []), ...(harnessOptions.preferences || [])]) {
-    if (typeof flag !== 'string' || !flag.trim()) continue
-    if (!parts.includes(flag)) parts.push(flag)
-  }
-}
-
 export function resolveModel(model, options = {}) {
   return resolveCodexModel(model, options)
 }
@@ -86,7 +79,6 @@ export function buildCmd({
   resumeId = null,
   env = process.env,
   config = readConfig(),
-  harnessOptions = {},
 } = {}) {
   const processEnv = [
     `FLEET_ID=${sq(fleetId)}`,
@@ -122,7 +114,6 @@ export function buildCmd({
     parts.push(`-s ${sq(sandboxMode)}`)
     parts.push('-a never')
   }
-  appendLaunchFlags(parts, harnessOptions)
   return parts.join(' ')
 }
 

@@ -76,7 +76,7 @@ function resolveAdapterModel(adapter, rawModel, config) {
   return { model: adapter.resolveModel(rawModel, { config }), provider: null, selection: null }
 }
 
-async function buildCommand({ requestedKind, adapter, fleetId, tmuxSession, model, modelProvider = null, name, cwd, effort, permissionMode, spawnPolicy, api, dnsAlias, resumeId = null, includePrompt = true, leasePolicy = null, enforceFence = false, harnessOptions = null }) {
+async function buildCommand({ requestedKind, adapter, fleetId, tmuxSession, model, modelProvider = null, name, cwd, effort, permissionMode, spawnPolicy, api, dnsAlias, resumeId = null, includePrompt = true, leasePolicy = null, enforceFence = false }) {
   let cmd
   let sendKeys = false
   let projection = null
@@ -100,7 +100,6 @@ async function buildCommand({ requestedKind, adapter, fleetId, tmuxSession, mode
             networkAccess: projection.networkAccess !== false,
           })
         : [],
-      harnessOptions,
     })
     sendKeys = true
   } else {
@@ -116,7 +115,6 @@ async function buildCommand({ requestedKind, adapter, fleetId, tmuxSession, mode
       dnsAlias,
       resumeId,
       includePrompt,
-      harnessOptions,
     })
   }
   const commandBeforeFence = cmd
@@ -131,7 +129,6 @@ async function buildCommand({ requestedKind, adapter, fleetId, tmuxSession, mode
       commandContainsFence: /(?:^|['"\s/])fence(?:['"\s]|$)/.test(cmd),
       commandContainsCodexYolo: cmd.includes('--dangerously-bypass-approvals-and-sandbox') || cmd.includes('--yolo'),
       commandContainsDangerSandbox: cmd.includes('danger-full-access'),
-      harnessOptions,
       commandBeforeFence,
     },
   }
@@ -173,7 +170,6 @@ async function spawnFresh(params) {
       permissionMode: params.permissionMode,
       mode: params.mode,
       explicitPolicy: params.explicitPolicy,
-      acknowledgeNoSecurity: !!params.acknowledgeNoSecurity,
     })
     assertNativeTools(launchPolicy, requestedKind)
     traceSpawnDecision('policy', {
@@ -190,10 +186,6 @@ async function spawnFresh(params) {
       permissionMode: launchPolicy.permissionMode,
       fenceTemporarilyDisabled: !!launchPolicy.fenceTemporarilyDisabled,
       hasLeasePolicy: !!launchPolicy.leasePolicy,
-      hasHarnessControls: !!launchPolicy.launchSecurity?.hasHarnessControls,
-      acknowledgedNoSecurity: !!launchPolicy.launchSecurity?.acknowledgedNoSecurity,
-      harnessRequiredFlags: launchPolicy.harnessOptions?.required || [],
-      harnessPreferenceFlags: launchPolicy.harnessOptions?.preferences || [],
       leasePolicyName: launchPolicy.leasePolicy?.policy || null,
       leaseWriteRoots: launchPolicy.leasePolicy?.write_roots || [],
       spawnPolicy: launchPolicy.spawnPolicy || null,
@@ -240,7 +232,6 @@ async function spawnFresh(params) {
       dnsAlias,
       leasePolicy: launchPolicy.leasePolicy,
       enforceFence: !!params.enforceFence,
-      harnessOptions: launchPolicy.harnessOptions,
     })
     traceSpawnDecision('command', {
       name,
@@ -255,7 +246,6 @@ async function spawnFresh(params) {
       commandContainsFence: commandTrace.commandContainsFence,
       commandContainsCodexYolo: commandTrace.commandContainsCodexYolo,
       commandContainsDangerSandbox: commandTrace.commandContainsDangerSandbox,
-      harnessOptions: commandTrace.harnessOptions,
       projection: commandTrace.projection,
       cmd,
     })
