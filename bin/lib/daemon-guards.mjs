@@ -3,7 +3,7 @@ import { readFileSync, unlinkSync } from 'node:fs'
 const warnedMissingKinds = new Set()
 
 // JSONL-watch debounce decision. The trailing debounce (clearTimeout + fresh
-// timer on every fs.watch fire) defers the read until writes quiesce — so during
+// timer on every file-watch event) defers the read until writes quiesce — so during
 // a continuous sub-debounce write burst the read never fires and chat activity
 // lags the whole burst. This adds a max-wait cap: once the first *unread* write
 // is older than maxWaitMs, flush immediately instead of resetting the timer.

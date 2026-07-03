@@ -4,12 +4,12 @@
  *
  * The daemon owns everything that has to happen on the user's local machine:
  *
- *   1. JSONL watching — fs.watch on Claude Code session files in
+ *   1. JSONL watching — library-backed watches on Claude Code session files in
  *      ~/.claude/projects/<projectHash>/<sessionId>.jsonl, parse new
  *      bytes, and push activity-event + terminal-chat messages over
  *      WebSocket to the server.
  *
- *   2. Document source watching — fs.watch on each tlda project's
+ *   2. Document source watching — library-backed watches on each tlda project's
  *      sourceDir; on file change, push a source-change message
  *      containing the file content. The server runs the build.
  *
@@ -108,7 +108,7 @@ import {
   unlinkPidfileIfOwnPid,
 } from './lib/daemon-guards.mjs'
 import { codexRolloutBelongsToAgent, codexRolloutHasOwnerEvidence, resolveTranscript } from './lib/resolve-transcript.mjs'
-import { createRearmableFsWatcher } from './lib/source-watch-health.mjs'
+import { createFileWatcher } from './lib/file-watch.mjs'
 import { resolveSpawnGrant } from '../server/lib/spawn-policy.mjs'
 import { probeSpawnCapabilities } from './lib/spawn/capabilities.mjs'
 import { createPrivilegeLedger, defaultPrivilegeLedgerPath } from './lib/spawn/privilege-ledger.mjs'
@@ -708,9 +708,9 @@ let _serverReady = false
 let _lastLivenessDisconnectWarnAt = 0
 let agents = []                   // current agent list (from welcome / updates)
 let projects = []                 // current project list
-const pathWatchers = new Map()    // jsonlPath -> { fsWatch, primaryAgentId, sessionId, harnessKind }
+const pathWatchers = new Map()    // jsonlPath -> { watcher, primaryAgentId, sessionId, harnessKind }
 const agentPaths = new Map()      // agentId -> jsonlPath
-const sourceWatchers = new Map()  // projectName -> { watcher, sourceDir, debounce, pending }
+const sourceWatchers = new Map()  // projectName -> { watcher, fileWatcher, sourceDir, debounce, pending }
 const priorSessionBackfillGate = createOncePerKeyGate()
 
 // ---------- plan mode detection ----------
@@ -1294,11 +1294,6 @@ async function syncSessionWatchers(agentList) {
         const pw = pathWatchers.get(jsonlPath)
         if (!pw) return
         const now = Date.now()
-        pw.watchSeenAt = now
-        // FSEvents fired -> it's alive for this path. Clear any miss state so a
-        // later silent stretch is judged fresh instead of stuck "dead" forever.
-        pw.watchMisses = 0
-        pw.fsEventsDead = false
         if (firstPending == null) firstPending = now
         // Max-wait cap: a long sub-debounce burst would otherwise keep resetting
         // the trailing timer and starve the read until writes quiesce. Once the
@@ -1310,54 +1305,21 @@ async function syncSessionWatchers(agentList) {
         if (debounce) clearTimeout(debounce)
         debounce = setTimeout(doRead, WATCH_DEBOUNCE_MS)
       }
-      // How many consecutive fs.watch misses to tolerate before declaring it
-      // structurally silent for this path and polling alone.
-      const MAX_WATCH_RECREATES = 3
       const pwState = {
-        fsWatch: null,
+        watcher: null,
         primaryAgentId: agent.id,
         sessionId,
         harnessKind: harness.kind,
-        watchSeenAt: 0,
-        watchMisses: 0,
-        fsEventsDead: false,
       }
-      pwState.fsWatch = createRearmableFsWatcher({
+      pwState.watcher = createFileWatcher({
         label: `${harness.kind} JSONL ${path.basename(jsonlPath)}`,
-        dir: jsonlPath,
+        paths: jsonlPath,
+        usePolling: true,
+        interval: 250,
         onEvent: onWatchFired,
-        shouldWatch: () => pathWatchers.get(jsonlPath) === pwState,
         log,
       })
       pathWatchers.set(jsonlPath, pwState)
-      pwState.fsWatch.start('session connected')
-
-      // Poll fallback: catches writes that fs.watch misses when FSEvents goes silent on macOS.
-      // On NFS-mounted agent JSONLs (the common production case — mini serves ~/work over NFS,
-      // and FSEvents does not fire for NFS paths), the poll is the PRIMARY detection path, not
-      // a rare fallback. Use a tight interval so worst-case detection lag stays sub-second.
-      fs.watchFile(jsonlPath, { interval: 250, persistent: false }, (curr, prev) => {
-        if (curr.mtimeMs === prev.mtimeMs) return
-        const pw = pathWatchers.get(jsonlPath)
-        if (!pw) return
-        // fs.watch fired recently, so its debounced read handles this write.
-        if (pw.watchSeenAt && Date.now() - pw.watchSeenAt < 750) return
-        // fs.watch missed this write. Recreating the watcher does not make
-        // FSEvents start firing on a structurally silent path (macOS/NFS); give
-        // it a few chances to re-arm, then rely on the 250ms poll alone.
-        if (!pw.fsEventsDead) {
-          pw.watchMisses = (pw.watchMisses || 0) + 1
-          if (pw.watchMisses <= MAX_WATCH_RECREATES) {
-            log.warn(`fs.watch missed ${path.basename(jsonlPath)} — recreating (${pw.watchMisses}/${MAX_WATCH_RECREATES})`)
-            pw.fsWatch?.rearm(`missed ${path.basename(jsonlPath)}`)
-          } else {
-            pw.fsEventsDead = true
-            log.warn(`fs.watch structurally silent for ${path.basename(jsonlPath)} — polling alone (250ms)`)
-          }
-        }
-        // The poll is the detection path for this write regardless of recreate.
-        scheduleReadNewSessionLines(pw.primaryAgentId, jsonlPath, pw.sessionId, pw.harnessKind)
-      })
 
       log.info(`watching ${harness.kind} JSONL for ${agent.friendly_name || agent.id}: ${path.basename(jsonlPath)} @ offset=${offset}`)
 
@@ -1376,8 +1338,7 @@ async function syncSessionWatchers(agentList) {
   for (const [p, pw] of pathWatchers) {
     if (!activePaths.has(p)) {
       jsonlReadCoalescer.cancel(p)
-      pw.fsWatch?.stop()
-      fs.unwatchFile(p)
+      pw.watcher?.stop()
       pathWatchers.delete(p)
       for (const [aid, watchedPath] of agentPaths) {
         if (watchedPath === p) agentPaths.delete(aid)
@@ -1741,14 +1702,11 @@ function readFileForUpload(fullPath) {
 function startPolling(state, rel) {
   const full = path.join(state.sourceDir, rel)
   if (!fs.existsSync(full)) return
-  fs.watchFile(full, { interval: 2000 }, (curr, prev) => {
-    if (curr.mtimeMs === prev.mtimeMs) return
-    state.onFileChange(rel, true)
-  })
+  state.fileWatcher?.add(rel)
 }
 
 function stopPolling(state, rel) {
-  try { fs.unwatchFile(path.join(state.sourceDir, rel)) } catch {}
+  state.fileWatcher?.unwatch(rel)
 }
 
 let _activeViewerSet = new Set()
@@ -1768,9 +1726,9 @@ function syncSourceWatchers(projectList, activeViewers) {
     const isMarkdown = isMarkdownDoc(p.format, p.mainFile)
     const hasFlsWatchList = p.watchFiles?.length > 0
     // Bootstrap watchSet (no .fls yet) must include the main's \input deps, not
-    // just the main — else the per-file poller (the backup for when fs.watch
-    // goes stale) only covers the main, and an edit to an \input file (e.g.
-    // appendix_b.tex) is silently dropped when fs.watch misses it → stale doc.
+    // just the main — else the per-file watcher (the backup for when native events
+    // go stale) only covers the main, and an edit to an \input file (e.g.
+    // appendix_b.tex) is silently dropped when native events miss it → stale doc.
     // Scan the deps with the same scanner pushWatchedFiles uses.
     const watchSet = new Set(
       hasFlsWatchList ? p.watchFiles
@@ -1786,7 +1744,20 @@ function syncSourceWatchers(projectList, activeViewers) {
       continue
     }
 
-    const state = { sourceDir, debounce: null, pending: new Set(), watchSet, onFileChange: null, projectName: p.name, mainFile: p.mainFile, extraInputCommands: p.extraInputCommands || [], watchSeen: new Map(), isMarkdown }
+    const state = {
+      sourceDir,
+      debounce: null,
+      pending: new Set(),
+      watchSet,
+      onFileChange: null,
+      projectName: p.name,
+      mainFile: p.mainFile,
+      extraInputCommands: p.extraInputCommands || [],
+      isMarkdown,
+      watcher: null,
+      fileWatcher: null,
+      _symlinkWatchers: new Map(),
+    }
 
     const onFileChange = (filename, fromPoll) => {
       if (!filename) return
@@ -1814,16 +1785,6 @@ function syncSourceWatchers(projectList, activeViewers) {
         }
       }
       }
-      if (!fromPoll) {
-        state.watchSeen.set(filename, Date.now())
-      } else if (state.watcher) {
-        const seenAt = state.watchSeen.get(filename)
-        if (!seenAt || Date.now() - seenAt > 3000) {
-          log.warn(`fs.watch missed ${filename} in ${state.projectName} — recreating`)
-          try { state.watcher.close() } catch {}
-          state.watcher = fs.watch(state.sourceDir, { recursive: true }, (_ev, fn) => state.onFileChange(fn))
-        }
-      }
       state.pending.add(filename)
       if (state.debounce) clearTimeout(state.debounce)
       state.debounce = setTimeout(() => flushSourceChanges(state.projectName), 200)
@@ -1831,6 +1792,15 @@ function syncSourceWatchers(projectList, activeViewers) {
     state.onFileChange = onFileChange
 
     try {
+      state.fileWatcher = createFileWatcher({
+        label: `source files ${p.name}`,
+        paths: [],
+        cwd: sourceDir,
+        usePolling: true,
+        interval: 2000,
+        onEvent: ({ relPath }) => state.onFileChange(relPath, true),
+        log,
+      })
       for (const rel of watchSet) startPolling(state, rel)
       sourceWatchers.set(p.name, state)
       log.info(`watching source ${p.name}: ${sourceDir}${bindings[p.name] ? ' (local binding)' : ''} (${watchSet.size} files${hasFlsWatchList ? '' : ', bootstrap'})`)
@@ -1841,7 +1811,9 @@ function syncSourceWatchers(projectList, activeViewers) {
   }
   for (const [name, state] of sourceWatchers) {
     if (!activeNames.has(name)) {
-      try { state.watcher?.close() } catch {}
+      state.watcher?.stop()
+      state.fileWatcher?.stop()
+      for (const watcher of state._symlinkWatchers?.values?.() || []) watcher.stop()
       for (const rel of state.watchSet) stopPolling(state, rel)
       sourceWatchers.delete(name)
     }
@@ -1854,11 +1826,16 @@ function syncFsWatchers() {
     const needsWatch = _activeViewerSet.has(name)
     if (needsWatch && !state.watcher) {
       try {
-        state.watcher = fs.watch(state.sourceDir, { recursive: true }, (_ev, fn) => state.onFileChange(fn))
-        log.info(`fs.watch started for ${name} (viewer connected)`)
-      } catch (e) { log.error(`fs.watch failed for ${name}: ${e.message}`) }
+        state.watcher = createFileWatcher({
+          label: `source tree ${name}`,
+          paths: state.sourceDir,
+          onEvent: ({ absPath }) => state.onFileChange(path.relative(state.sourceDir, absPath), false),
+          log,
+        })
+        log.info(`source tree watcher started for ${name} (viewer connected)`)
+      } catch (e) { log.error(`source tree watcher failed for ${name}: ${e.message}`) }
     } else if (!needsWatch && state.watcher) {
-      try { state.watcher.close() } catch {}
+      state.watcher.stop()
       state.watcher = null
     }
   }
@@ -1990,10 +1967,16 @@ function flushSourceChanges(projectName) {
       const stat = fs.lstatSync(full)
       if (stat.isSymbolicLink()) {
         const target = fs.realpathSync(full)
-        if (!state._symlinkPolls) state._symlinkPolls = new Map()
-        if (!state._symlinkPolls.has(target)) {
-          state._symlinkPolls.set(target, rel)
-          fs.watchFile(target, { interval: 2000 }, () => state.onFileChange(rel, true))
+        if (!state._symlinkWatchers.has(target)) {
+          const watcher = createFileWatcher({
+            label: `symlink target ${state.projectName}:${rel}`,
+            paths: target,
+            usePolling: true,
+            interval: 2000,
+            onEvent: () => state.onFileChange(rel, true),
+            log,
+          })
+          state._symlinkWatchers.set(target, watcher)
           log.info(`watching symlink target: ${target} -> ${rel}`)
         }
       }
@@ -2025,7 +2008,7 @@ function flushPendingSourceChanges() {
 // When a file changes, we read it and send `file-content-changed`.
 // When we write a file (via RPC), we suppress the next watcher event for it.
 
-/** @type {Map<string, {watcher: import('fs').FSWatcher, docNames: string[], lastWriteAt: number}>} */
+/** @type {Map<string, {watcher: ReturnType<typeof createFileWatcher>, docNames: string[], lastWriteAt: number}>} */
 const backingWatchers = new Map()
 
 /** Expand ~ in file paths */
@@ -2039,27 +2022,32 @@ function syncBackingWatchers(files) {
 
   // Close all existing watchers and rebuild from scratch.
   for (const [, entry] of backingWatchers) {
-    try { entry.watcher.close() } catch {}
+    entry.watcher.stop()
   }
   backingWatchers.clear()
 
   for (const [fp, docNames] of incoming) {
     try {
       let debounce = null
-      const watcher = fs.watch(fp, () => {
-        const entry = backingWatchers.get(fp)
-        if (!entry) return
-        if (Date.now() - entry.lastWriteAt < 2000) return
-        if (debounce) clearTimeout(debounce)
-        debounce = setTimeout(() => {
-          try {
-            const content = fs.readFileSync(fp, 'utf8')
-            log.info(`backing file changed: ${fp} (${content.length} bytes)`)
-            sendMsg({ type: 'file-content-changed', filePath: fp, content })
-          } catch (e) {
-            log.warn(`read backing file ${fp}: ${e.message}`)
-          }
-        }, 200)
+      const watcher = createFileWatcher({
+        label: `backing file ${fp}`,
+        paths: fp,
+        onEvent: () => {
+          const entry = backingWatchers.get(fp)
+          if (!entry) return
+          if (Date.now() - entry.lastWriteAt < 2000) return
+          if (debounce) clearTimeout(debounce)
+          debounce = setTimeout(() => {
+            try {
+              const content = fs.readFileSync(fp, 'utf8')
+              log.info(`backing file changed: ${fp} (${content.length} bytes)`)
+              sendMsg({ type: 'file-content-changed', filePath: fp, content })
+            } catch (e) {
+              log.warn(`read backing file ${fp}: ${e.message}`)
+            }
+          }, 200)
+        },
+        log,
       })
       backingWatchers.set(fp, { watcher, docNames, lastWriteAt: 0 })
       log.info(`watching backing file: ${fp}`)
@@ -3174,7 +3162,7 @@ async function checkAgentLiveness() {
       if (!watchedPath || !watcher) {
         watcherNeedsSync = true
       } else if (watcher.harnessKind === matchedKind) {
-        // fs.watch can go quiet on macOS even while the transcript keeps
+        // native file events can go quiet on macOS even while the transcript keeps
         // growing. The read path is cursor-based, so this is a cheap heartbeat
         // drain for live non-Claude agents and closes the "alive agent, dead
         // activity cards" gap without replaying old history.
@@ -3883,7 +3871,7 @@ function sendMsg(obj) {
 }
 
 function teardownWatchers() {
-  for (const [p, pw] of pathWatchers) { pw.fsWatch?.stop(); fs.unwatchFile(p) }
+  for (const [, pw] of pathWatchers) pw.watcher?.stop()
   pathWatchers.clear()
   agentPaths.clear()
   // Source watchers survive WS disconnects — they detect file changes
@@ -3892,7 +3880,7 @@ function teardownWatchers() {
   terminalWatchPtys.clear()
   for (const [, s] of ephemeralPtys) { s.alive = false; clearTimeout(s.teardownTimer); try { s.pty.kill() } catch {} }
   ephemeralPtys.clear()
-  for (const [, entry] of backingWatchers) { try { entry.watcher.close() } catch {} }
+  for (const [, entry] of backingWatchers) entry.watcher.stop()
   backingWatchers.clear()
 }
 
@@ -4154,8 +4142,13 @@ function watchConfigDrift() {
       setTimeout(() => process.exit(1), 250)
     }
   }
-  fs.watchFile(f, { interval: 1500 }, (curr, prev) => {
-    if (curr.mtimeMs !== prev.mtimeMs) onChange()
+  createFileWatcher({
+    label: `config drift ${f}`,
+    paths: f,
+    usePolling: true,
+    interval: 1500,
+    onEvent: onChange,
+    log,
   })
   log.info(`config drift watcher armed on ${f} (connected to ${SERVER})`)
 }

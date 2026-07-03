@@ -43,6 +43,7 @@ const ROOT = path.resolve(HERE, '..')
 const TMP = path.join(tmpdir(), 'fleet-int-' + Date.now())
 const FLEET_DB = path.join(TMP, 'fleet.db')
 const PROJECTS = path.join(TMP, 'projects')
+const DATA_DIR = path.join(TMP, 'data')
 const FAKE_HOME = path.join(TMP, 'home')
 const SRC_DIR = path.join(TMP, 'docsrc')
 const FAKE_CLAUDE_PROJECTS = path.join(FAKE_HOME, '.claude', 'projects')
@@ -53,6 +54,7 @@ const MACHINE_ID = (process.env.HOSTNAME || execSync('hostname -s', { encoding: 
 
 mkdirSync(TMP, { recursive: true })
 mkdirSync(PROJECTS, { recursive: true })
+mkdirSync(DATA_DIR, { recursive: true })
 mkdirSync(FAKE_HOME, { recursive: true })
 mkdirSync(FAKE_CLAUDE_PROJECTS, { recursive: true })
 mkdirSync(SRC_DIR, { recursive: true })
@@ -106,6 +108,21 @@ async function main() {
   console.log(`[itest] server port=${PORT}`)
   console.log(`[itest] machine_id=${MACHINE_ID}`)
 
+  const configDir = path.join(FAKE_HOME, '.config', 'tlda')
+  mkdirSync(configDir, { recursive: true })
+  writeFileSync(path.join(configDir, 'config.json'), JSON.stringify({
+    defaultConfig: 'itest',
+    configs: {
+      itest: {
+        database: SERVER,
+        store: SERVER,
+        licenseKey: 'itest',
+      },
+    },
+    machineId: MACHINE_ID,
+    bots: [],
+  }, null, 2))
+
   // ---- start the server ----
   // Spawn the server with a clean env: no inherited tokens, auth off.
   const serverEnv = { ...process.env }
@@ -114,11 +131,14 @@ async function main() {
   Object.assign(serverEnv, {
     PORT: String(PORT),
     HOST: '127.0.0.1',
+    HOME: FAKE_HOME,
+    DATA_DIR,
     PROJECTS_DIR: PROJECTS,
     TLDA_FLEET_DB: FLEET_DB,
     TLDA_NO_AUTH: '1',
+    TLDA_DEV_SERVER: '1',
   })
-  serverProc = spawn(process.execPath, [path.join(ROOT, 'server', 'unified-server.mjs')], {
+  serverProc = spawn(process.execPath, [path.join(ROOT, 'server', 'unified-server.mjs'), '--i-am-tlda-cli'], {
     env: serverEnv, stdio: ['ignore', 'pipe', 'pipe'],
   })
   serverProc.stdout.on('data', d => process.stdout.write(`[server] ${d}`))
@@ -129,7 +149,7 @@ async function main() {
   // ---- create a project that the daemon will source-watch ----
   writeFileSync(path.join(SRC_DIR, 'main.md'), '# itest\nhello\n')
   const create = await http('POST', '/api/projects', {
-    name: 'itest', title: 'itest', format: 'markdown', sourceDir: SRC_DIR,
+    name: 'itest', title: 'itest', format: 'markdown', sourceDir: SRC_DIR, mainFile: 'main.md',
   })
   check('create project', create.status === 201, `status=${create.status}`)
 
@@ -179,7 +199,7 @@ async function main() {
   const jsonlDir = path.join(FAKE_CLAUDE_PROJECTS, projectHash)
   mkdirSync(jsonlDir, { recursive: true })
   const jsonlPath = path.join(jsonlDir, sessionId + '.jsonl')
-  writeFileSync(jsonlPath, '') // empty file so the watcher attaches at offset 0
+  writeFileSync(jsonlPath, `Registered ${agentId}\n`) // owner evidence so the daemon can claim the JSONL.
 
   // Re-register the agent with this session_id so the daemon picks it up.
   await new Promise((resolve, reject) => {
