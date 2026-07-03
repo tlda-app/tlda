@@ -994,9 +994,11 @@ async function findRuntimePidForAgent(agent, kind) {
 
 async function resolveCodexJsonl(agent) {
   const pid = await findRuntimePidForAgent(agent, 'codex')
-  const hasKnownRollout = !!(agent?.session_id || (agent?.session_ids || []).length)
-  const hasAgentIdentity = !!(agent?.id || agent?.friendly_name || agent?.name)
-  if (!pid && !hasKnownRollout && !hasAgentIdentity) return null
+  // No live Codex process means there is no transcript being written. Do not
+  // fall back to scanning ~/.codex/sessions for hibernating/stale rows; the real
+  // roster can contain hundreds of old rollouts, and doing that per row pegs the
+  // daemon before it reaches live activity.
+  if (!pid) return null
   const launchTs = Date.parse(agent.registered_at || agent.last_seen || '') || 0
   return resolveTranscript({ pid, kind: 'codex', agent, launchTs })
 }

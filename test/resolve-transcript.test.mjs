@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 
+import { codexAdapter, resolveTranscript } from '../bin/lib/resolve-transcript.mjs'
+
 function rolloutPath(home, day, id) {
   const dir = path.join(home, '.codex', 'sessions', day.slice(0, 4), day.slice(5, 7), day.slice(8, 10))
   mkdirSync(dir, { recursive: true })
@@ -81,4 +83,27 @@ test('codex fallback binds no-owner rollout by cwd and launch window', () => {
   assert.equal(found, matching)
 
   rmSync(home, { recursive: true, force: true })
+})
+
+test('codex transcript resolution does not scan fallback without a live pid', async () => {
+  const original = codexAdapter.findByLaunchWindow
+  let called = false
+  codexAdapter.findByLaunchWindow = () => {
+    called = true
+    return '/should/not/be/read.jsonl'
+  }
+
+  try {
+    const resolved = await resolveTranscript({
+      pid: null,
+      kind: 'codex',
+      agent: { id: 'fleet:test', friendly_name: 'test-codex' },
+      launchTs: Date.now(),
+    })
+
+    assert.equal(resolved, null)
+    assert.equal(called, false)
+  } finally {
+    codexAdapter.findByLaunchWindow = original
+  }
 })
