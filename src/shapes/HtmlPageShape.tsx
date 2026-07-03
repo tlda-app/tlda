@@ -164,9 +164,8 @@ function HtmlPageComponent({ shape }: { shape: any }) {
   }, [shape.id])
 
   // Iframes are pointer-events:none by default so TLDraw tools work normally.
-  // Two ways to enable iframe interaction:
-  // 1. Text-select tool ('t' key) — global, all iframes become interactive
-  // 2. Click the margin ribbon — local, just this iframe becomes interactive
+  // Browse/text-select modes keep HTML clicks and text selection active; the
+  // injected bridge reroutes canvas-navigation gestures by event type.
   const isTextSelectTool = useValue('text-select-tool', () =>
     editor.getCurrentToolId() === 'text-select', [editor])
   const isBrowseTool = useValue('browse-tool', () =>
@@ -355,13 +354,18 @@ function HtmlPageComponent({ shape }: { shape: any }) {
         // Forward wheel events from iframe bridge directly to TLDraw's editor.dispatch
         // (synthetic DOM WheelEvents don't reach @use-gesture's internal handler)
         const { deltaX, deltaY, ctrlKey, metaKey } = e.data
+        const iframe = iframeRef.current
+        const iframeRect = iframe?.getBoundingClientRect()
+        const point = typeof e.data.clientX === 'number' && typeof e.data.clientY === 'number' && iframeRect
+          ? new Vec(iframeRect.left + e.data.clientX, iframeRect.top + e.data.clientY)
+          : new Vec(editor.inputs.currentScreenPoint.x, editor.inputs.currentScreenPoint.y)
         // Negate deltas: browser wheel deltaY>0 = scroll down, but TLDraw's
         // internal convention (from @use-gesture) uses negative = pan down.
         editor.dispatch({
           type: 'wheel',
           name: 'wheel',
           delta: new Vec(-deltaX, -deltaY, 0),
-          point: new Vec(editor.inputs.currentScreenPoint.x, editor.inputs.currentScreenPoint.y),
+          point,
           shiftKey: false,
           altKey: false,
           ctrlKey: !!ctrlKey,

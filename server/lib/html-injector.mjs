@@ -128,34 +128,54 @@ const BRIDGE_SCRIPT = `
     // Prevent iframe from capturing wheel/touch scroll events (Safari ignores
     // pointer-events:none on iframes for scroll gestures).
     // Forward to parent so TLDraw still scrolls when text-select tool is active.
+    function tldaAllowsInternalScroll(target) {
+      return !!(target && target.closest && target.closest('.tlda-scroll'));
+    }
     document.addEventListener('wheel', function(e) {
+      if (tldaAllowsInternalScroll(e.target)) return;
       e.preventDefault();
       if (window.parent !== window) {
         window.parent.postMessage({
           type: 'tlda-wheel', shapeId: shapeId,
           deltaX: e.deltaX, deltaY: e.deltaY, deltaMode: e.deltaMode,
+          clientX: e.clientX, clientY: e.clientY,
           ctrlKey: e.ctrlKey, metaKey: e.metaKey,
         }, '*');
       }
     }, { passive: false });
     var tldaLastTouch = null;
+    function tldaTouchCenter(touches) {
+      var x = 0, y = 0;
+      for (var i = 0; i < touches.length; i++) {
+        x += touches[i].clientX;
+        y += touches[i].clientY;
+      }
+      return { x: x / touches.length, y: y / touches.length };
+    }
     document.addEventListener('touchstart', function(e) {
-      if (!e.touches || e.touches.length !== 1) {
+      if (tldaAllowsInternalScroll(e.target)) {
         tldaLastTouch = null;
         return;
       }
-      tldaLastTouch = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+      if (!e.touches || e.touches.length < 2) {
+        tldaLastTouch = null;
+        return;
+      }
+      tldaLastTouch = tldaTouchCenter(e.touches);
     }, { passive: true });
     document.addEventListener('touchmove', function(e) {
+      if (tldaAllowsInternalScroll(e.target)) return;
+      if (!e.touches || e.touches.length < 2) return;
       e.preventDefault();
-      if (window.parent === window || !e.touches || e.touches.length !== 1 || !tldaLastTouch) return;
-      var touch = e.touches[0];
-      var deltaX = tldaLastTouch.x - touch.clientX;
-      var deltaY = tldaLastTouch.y - touch.clientY;
-      tldaLastTouch = { x: touch.clientX, y: touch.clientY };
+      if (window.parent === window || !tldaLastTouch) return;
+      var touch = tldaTouchCenter(e.touches);
+      var deltaX = tldaLastTouch.x - touch.x;
+      var deltaY = tldaLastTouch.y - touch.y;
+      tldaLastTouch = touch;
       window.parent.postMessage({
         type: 'tlda-wheel', shapeId: shapeId,
         deltaX: deltaX, deltaY: deltaY, deltaMode: 0,
+        clientX: touch.x, clientY: touch.y,
         ctrlKey: false, metaKey: false,
       }, '*');
     }, { passive: false });
@@ -915,17 +935,55 @@ const SLIDES_BRIDGE_SCRIPT = `
     });
 
     // Forward wheel events to parent (TLDraw handles scrolling)
+    function tldaSlideAllowsInternalScroll(target) {
+      return !!(target && target.closest && target.closest('.tlda-scroll'));
+    }
     document.addEventListener('wheel', function(e) {
+      if (tldaSlideAllowsInternalScroll(e.target)) return;
       e.preventDefault();
       if (window.parent !== window) {
         window.parent.postMessage({
           type: 'tlda-wheel', shapeId: shapeId,
           deltaX: e.deltaX, deltaY: e.deltaY, deltaMode: e.deltaMode,
+          clientX: e.clientX, clientY: e.clientY,
           ctrlKey: e.ctrlKey, metaKey: e.metaKey,
         }, '*');
       }
     }, { passive: false });
-    document.addEventListener('touchmove', function(e) { e.preventDefault(); }, { passive: false });
+    var tldaSlideLastTouch = null;
+    function tldaSlideTouchCenter(touches) {
+      var x = 0, y = 0;
+      for (var i = 0; i < touches.length; i++) {
+        x += touches[i].clientX;
+        y += touches[i].clientY;
+      }
+      return { x: x / touches.length, y: y / touches.length };
+    }
+    document.addEventListener('touchstart', function(e) {
+      if (tldaSlideAllowsInternalScroll(e.target)) {
+        tldaSlideLastTouch = null;
+        return;
+      }
+      tldaSlideLastTouch = e.touches && e.touches.length >= 2 ? tldaSlideTouchCenter(e.touches) : null;
+    }, { passive: true });
+    document.addEventListener('touchmove', function(e) {
+      if (tldaSlideAllowsInternalScroll(e.target)) return;
+      if (!e.touches || e.touches.length < 2) return;
+      e.preventDefault();
+      if (window.parent === window || !tldaSlideLastTouch) return;
+      var touch = tldaSlideTouchCenter(e.touches);
+      window.parent.postMessage({
+        type: 'tlda-wheel', shapeId: shapeId,
+        deltaX: tldaSlideLastTouch.x - touch.x,
+        deltaY: tldaSlideLastTouch.y - touch.y,
+        deltaMode: 0,
+        clientX: touch.x, clientY: touch.y,
+        ctrlKey: false, metaKey: false,
+      }, '*');
+      tldaSlideLastTouch = touch;
+    }, { passive: false });
+    document.addEventListener('touchend', function() { tldaSlideLastTouch = null; }, { passive: true });
+    document.addEventListener('touchcancel', function() { tldaSlideLastTouch = null; }, { passive: true });
   }
 
   if (document.readyState === 'loading') {
