@@ -85,6 +85,13 @@ function formatNameCollisions(collisions = []) {
   }).join('; ')
 }
 
+function fleetTableLabelsForAgent(agent) {
+  const labels = labelsForAgent(agent)
+  if (agent?.cwd) labels.push(`cwd:${agent.cwd}`)
+  if (agent?.metadata?.model) labels.push(`model:${agent.metadata.model}`)
+  return labels
+}
+
 export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, clearEphemeralState, suppressEchoFor, sendRpc, resolveRpc, daemonConnections, resolveSpawnTarget, broadcastDaemonAgentsUpdated }) {
   // Helper: route an agent op through the daemon, or 503 cleanly. The
   // op-name is whatever the daemon's rpc dispatcher expects (kebab-case
@@ -303,7 +310,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       if (req.query.filter) {
         try { filterAst = parseFilter(req.query.filter) } catch (e) { res.status(400).json({ error: `bad filter: ${e.message}` }); return }
       }
-      const matched = roster.filter(a => evalExpr(filterAst, labelsForAgent(a)))
+      const matched = roster.filter(a => evalExpr(filterAst, fleetTableLabelsForAgent(a)))
 
       // Awake first, then most-recently-seen.
       const rank = (a) => (a.dead ? 2 : a.status === 'awake' ? 0 : 1)
@@ -311,7 +318,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
 
       const limit = Math.max(1, Math.min(parseInt(req.query.limit) || 50, 500))
       const summary = summarizeFleetRosterTruth({ roster, matched, limit, now })
-      res.json({ totals: summary.totals, agents: summary.agents, shown: summary.shown, matched: summary.matched })
+      res.json({ totals: summary.totals, summary: summary.summary, agents: summary.agents, shown: summary.shown, matched: summary.matched })
     } catch (e) { res.status(500).json({ error: e.message }) }
   })
 

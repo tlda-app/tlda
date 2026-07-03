@@ -11,6 +11,7 @@ function rowForAgent(agent, now = Date.now()) {
     status: agent.dead ? 'dead' : agent.status,
     last_seen_ago_s: lastSeenMs == null ? null : Math.round(lastSeenMs / 1000),
     cwd: agent.cwd || null,
+    model: agent.metadata?.model || null,
     machine_id: agent.machine_id || null,
     tmux_session: agent.tmux_session || null,
     activity: act?.state || null,
@@ -28,6 +29,18 @@ export function fleetRosterTotals(roster) {
   return totals
 }
 
+function countValues(agents, readValue) {
+  const counts = new Map()
+  for (const agent of agents) {
+    const value = readValue(agent)
+    if (!value) continue
+    counts.set(value, (counts.get(value) || 0) + 1)
+  }
+  return [...counts.entries()]
+    .map(([value, count]) => ({ value, count }))
+    .sort((a, b) => b.count - a.count || a.value.localeCompare(b.value))
+}
+
 export function summarizeFleetRosterTruth({
   roster,
   matched = roster,
@@ -38,7 +51,12 @@ export function summarizeFleetRosterTruth({
   const agentRoster = (roster || []).filter(a => !a.human)
   const totals = fleetRosterTotals(agentRoster)
   const capped = Math.max(1, Math.min(Number(limit) || 50, 500))
-  const rows = (matched || agentRoster).slice(0, capped).map(a => rowForAgent(a, now))
+  const matchedRoster = matched || agentRoster
+  const rows = matchedRoster.slice(0, capped).map(a => rowForAgent(a, now))
+  const summary = {
+    models: countValues(matchedRoster, a => a.metadata?.model || null),
+    working_dirs: countValues(matchedRoster, a => a.cwd || null),
+  }
 
   const machines = new Map()
   function entry(machineId) {
@@ -123,8 +141,9 @@ export function summarizeFleetRosterTruth({
     totals,
     panes: paneTotals,
     machines: machineRows,
+    summary,
     agents: rows,
     shown: rows.length,
-    matched: (matched || agentRoster).length,
+    matched: matchedRoster.length,
   }
 }

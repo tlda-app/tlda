@@ -69,9 +69,9 @@ async function main() {
   await waitFor(() => fetch(`${SERVER}/health`).then(r => r.ok).catch(() => false), { name: 'server health' })
 
   // 3 agents (one labelled) + 1 human
-  await register({ id: 'fleet:a1', name: 'alpha', cwd: '/tmp/a', labels: ['worker'], machine_id: 'mini', tmux_session: 'fleet-alpha' })
-  await register({ id: 'fleet:a2', name: 'bravo', cwd: '/tmp/b' })
-  await register({ id: 'fleet:a3', name: 'charlie', cwd: '/tmp/c', labels: ['worker'] })
+  await register({ id: 'fleet:a1', name: 'alpha', cwd: '/tmp/a', labels: ['worker'], machine_id: 'mini', tmux_session: 'fleet-alpha', metadata: { model: 'gpt-5.5' } })
+  await register({ id: 'fleet:a2', name: 'bravo', cwd: '/tmp/b', metadata: { model: 'sonnet' } })
+  await register({ id: 'fleet:a3', name: 'charlie', cwd: '/tmp/c', labels: ['worker'], metadata: { model: 'gpt-5.5' } })
   await register({ id: 'fleet:hu', name: 'thehuman', human: true })
 
   // ---- shape + totals ----
@@ -80,7 +80,10 @@ async function main() {
   check('returns totals + agents + shown/matched', d && d.totals && Array.isArray(d.agents) && typeof d.shown === 'number' && typeof d.matched === 'number', `got ${JSON.stringify(d).slice(0, 200)}`)
   check('totals.total counts the 3 agents (human excluded)', d.totals.total === 3, `got ${d.totals.total}`)
   check('human is not in rows', !d.agents.some(a => a.id === 'fleet:hu'), `rows: ${d.agents.map(a => a.id).join(',')}`)
-  check('rows carry name/status/cwd/machine/session', d.agents.every(a => a.name && a.status && 'cwd' in a && 'machine_id' in a && 'tmux_session' in a), `got ${JSON.stringify(d.agents[0])}`)
+  check('rows carry name/status/cwd/model/machine/session', d.agents.every(a => a.name && a.status && 'cwd' in a && 'model' in a && 'machine_id' in a && 'tmux_session' in a), `got ${JSON.stringify(d.agents[0])}`)
+  check('model round-trips from agent metadata', d.agents.some(a => a.id === 'fleet:a1' && a.model === 'gpt-5.5'), `got ${JSON.stringify(d.agents)}`)
+  check('summary includes model counts', d.summary?.models?.some(m => m.value === 'gpt-5.5' && m.count === 2), `got ${JSON.stringify(d.summary)}`)
+  check('summary includes working directory counts', d.summary?.working_dirs?.some(w => w.value === '/tmp/a' && w.count === 1), `got ${JSON.stringify(d.summary)}`)
   check('machine_id and tmux_session round-trip', d.agents.some(a => a.id === 'fleet:a1' && a.machine_id === 'mini' && a.tmux_session === 'fleet-alpha'), `got ${JSON.stringify(d.agents)}`)
   check('totals.awake + hibernating + dead === total', (d.totals.awake + d.totals.hibernating + d.totals.dead) === d.totals.total, `${JSON.stringify(d.totals)}`)
 
@@ -93,6 +96,12 @@ async function main() {
   // ---- filter by label ----
   r = await get(`/api/fleet-table?filter=${encodeURIComponent('worker')}`)
   check('filter by label returns the 2 labelled agents', r.body.matched === 2 && r.body.agents.length === 2, `got matched=${r.body.matched} names=${r.body.agents.map(a => a.name)}`)
+
+  // ---- filter by fleet-table fields ----
+  r = await get(`/api/fleet-table?filter=${encodeURIComponent('model:gpt-5.5')}`)
+  check('filter by model returns matching agents', r.body.matched === 2 && r.body.agents.every(a => a.model === 'gpt-5.5'), `got ${JSON.stringify(r.body.agents)}`)
+  r = await get(`/api/fleet-table?filter=${encodeURIComponent('cwd:/tmp/b')}`)
+  check('filter by cwd returns matching agent', r.body.matched === 1 && r.body.agents[0]?.name === 'bravo', `got ${JSON.stringify(r.body.agents)}`)
 
   // ---- limit caps rows, totals untouched ----
   r = await get('/api/fleet-table?limit=1')
