@@ -111,7 +111,16 @@ import { codexRolloutBelongsToAgent, codexRolloutHasOwnerEvidence, resolveTransc
 import { createFileWatcher } from './lib/file-watch.mjs'
 import { resolveSpawnGrant } from '../server/lib/spawn-policy.mjs'
 import { probeSpawnCapabilities } from './lib/spawn/capabilities.mjs'
-import { createPrivilegeLedger, defaultPrivilegeLedgerPath } from './lib/spawn/privilege-ledger.mjs'
+import {
+  applyDaemonGrants,
+  applyGrandfatherInfill,
+  createPrivilegeLedger,
+  defaultDaemonConfigPath,
+  privilegeLedgerPathFromDaemonConfig,
+  readDaemonConfig,
+  withDaemonModelAliases,
+} from './lib/spawn/privilege-ledger.mjs'
+import { newFleetId } from './lib/spawn/identity.mjs'
 import { acquireSingletonLock, daemonSingletonLockPath } from './lib/singleton-lock.mjs'
 const log = createLogger('daemon')
 // CONFIG_DIR holds config.json, cursors, PID and log files. Defaults to
@@ -121,8 +130,12 @@ const CONFIG_DIR = process.env.TLDA_DAEMON_CONFIG_DIR || _SHARED_CONFIG_DIR
 const CURSORS_FILE = path.join(CONFIG_DIR, 'daemon-cursors.json')
 const PID_FILE = path.join(CONFIG_DIR, 'fleet-daemon.pid')
 const SOURCE_BINDINGS_FILE = path.join(CONFIG_DIR, 'source-bindings.json')
-const PRIVILEGE_LEDGER_FILE = defaultPrivilegeLedgerPath(CONFIG_DIR)
+const FLEET_DB_FILE = path.join(CONFIG_DIR, 'fleet.db')
+const DAEMON_CONFIG_FILE = defaultDaemonConfigPath(CONFIG_DIR)
+const daemonSpawnConfig = readDaemonConfig(DAEMON_CONFIG_FILE)
+const PRIVILEGE_LEDGER_FILE = privilegeLedgerPathFromDaemonConfig(daemonSpawnConfig, CONFIG_DIR)
 const privilegeLedger = createPrivilegeLedger(PRIVILEGE_LEDGER_FILE)
+applyDaemonGrants(privilegeLedger, daemonSpawnConfig)
 
 // Per-machine source bindings: { projectName -> absolute local source dir }.
 // This is the per-machine fact "where MY copy of project X lives" — it belongs
@@ -180,12 +193,14 @@ const INSTALL_PATH = (() => {
 }
 
 function loadConfig() {
+  let cfg
   if (_usingCustomConfigDir) {
     const f = path.join(CONFIG_DIR, 'config.json')
-    if (!fs.existsSync(f)) return {}
-    return JSON.parse(fs.readFileSync(f, 'utf8'))
+    cfg = fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, 'utf8')) : {}
+  } else {
+    cfg = _loadSharedConfig()
   }
-  return _loadSharedConfig()
+  return withDaemonModelAliases(cfg, daemonSpawnConfig)
 }
 
 function saveConfig(cfg) {
@@ -2711,8 +2726,13 @@ async function rpcSpawn({
       })
   let grant
   try {
-    const config = _loadSharedConfig()
-    const spawnerGrant = requester?.id ? privilegeLedger.grantFor(requester, config) : null
+    const config = loadConfig()
+    if (!requester?.id) {
+      const err = new Error('spawn refused: daemon RPC requester identity is required')
+      err.code = 'SPAWN_PRIVILEGE_NO_REQUESTER'
+      throw err
+    }
+    const spawnerGrant = privilegeLedger.grantFor(requester)
     grant = resolveSpawnGrant({
       requestedCapability: requestedCapability || (policy != null ? 'write' : undefined),
       requestedPrivileges,
@@ -2750,23 +2770,38 @@ async function rpcSpawn({
   _activeSpawns.set(agentName, Date.now())
   try {
     const { spawn: nodeSpawn } = await import('./lib/spawn/index.mjs')
-    const launched = await nodeSpawn({
-      spawnMode: sessionId ? 'session' : (refresh ? 'refresh' : (respawn ? 'respawn' : 'fresh')),
-      agentId: agent_id,
-      name: agentName,
-      model: launchModel,
-      kind: launchKind,
-      cwd: resolvedCwd,
-      sessionId,
-      enroll: !!enroll,
-      effort,
-      permissionMode: mode,
-      spawnPolicy: grant.grantedPolicy,
-      privilegeSet: grant.grantedPrivilegeSet,
-      explicitPolicy: policy != null,
-      machineId: MACHINE_ID,
-      tmuxSocket: TMUX_SOCKET,
-    })
+    const spawnMode = sessionId ? 'session' : (refresh ? 'refresh' : (respawn ? 'respawn' : 'fresh'))
+    const preallocatedAgentId = agent_id || ((spawnMode === 'fresh' || spawnMode === 'session') ? newFleetId() : undefined)
+    if (preallocatedAgentId) {
+      await privilegeLedger.set(preallocatedAgentId, {
+        spawnPolicy: grant.grantedPolicy,
+        privilegeSet: grant.grantedPrivilegeSet,
+        source: 'spawn',
+      })
+    }
+    let launched
+    try {
+      launched = await nodeSpawn({
+        spawnMode,
+        agentId: preallocatedAgentId,
+        name: agentName,
+        model: launchModel,
+        kind: launchKind,
+        cwd: resolvedCwd,
+        sessionId,
+        enroll: !!enroll,
+        effort,
+        permissionMode: mode,
+        spawnPolicy: grant.grantedPolicy,
+        privilegeSet: grant.grantedPrivilegeSet,
+        explicitPolicy: policy != null,
+        machineId: MACHINE_ID,
+        tmuxSocket: TMUX_SOCKET,
+      })
+    } catch (e) {
+      if (preallocatedAgentId) await privilegeLedger.delete(preallocatedAgentId).catch(() => {})
+      throw e
+    }
     traceDaemonSpawn('launched', {
       agentName,
       agent_id: launched.fleetId,
@@ -2779,6 +2814,7 @@ async function rpcSpawn({
     try {
       await tmux('has-session', '-t', launched.tmuxSession)
     } catch (e) {
+      if (preallocatedAgentId) await privilegeLedger.delete(preallocatedAgentId).catch(() => {})
       const detail = ((e.stderr || e.message || '').trim().split('\n').filter(Boolean).pop()) || 'tmux session check failed'
       return {
         ok: false,
@@ -2788,11 +2824,13 @@ async function rpcSpawn({
         error: `spawn launcher returned but tmux session is not usable: ${detail}`,
       }
     }
-    privilegeLedger.set(launched.fleetId, {
-      spawnPolicy: grant.grantedPolicy,
-      privilegeSet: grant.grantedPrivilegeSet,
-      source: 'spawn',
-    })
+    if (!preallocatedAgentId || launched.fleetId !== preallocatedAgentId) {
+      await privilegeLedger.set(launched.fleetId, {
+        spawnPolicy: grant.grantedPolicy,
+        privilegeSet: grant.grantedPrivilegeSet,
+        source: 'spawn',
+      })
+    }
     probeSpawnStartupFailure({
       agentName,
       agent_id: launched.fleetId,
@@ -3924,6 +3962,8 @@ function handleServerMessage(msg) {
     _serverReady = true
     agents = msg.agents || []
     projects = msg.projects || []
+    applyDaemonGrants(privilegeLedger, daemonSpawnConfig)
+    applyGrandfatherInfill(privilegeLedger, { fleetDbPath: FLEET_DB_FILE, config, projects })
     log.info(`welcome: ${agents.length} agents, ${projects.length} projects`)
     void syncSessionWatchers(agents).catch(e => log.error(`syncSessionWatchers failed: ${e.stack || e.message}`))
     syncSourceWatchers(projects, msg.activeViewers)
