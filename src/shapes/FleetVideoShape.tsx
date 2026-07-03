@@ -62,9 +62,9 @@ function FleetVideoComponent({ shape }: { shape: any }) {
 
   const keys = parseTileKeys(shape.props.tileKeys)
   const keySet = new Set(keys)
-  const tiles = allTiles.filter((tile): tile is LiveVideoTile => {
+  const tiles = isOwnPanel ? allTiles : allTiles.filter((tile): tile is LiveVideoTile => {
     if (!keySet.has(tile.key)) return false
-    return isOwnPanel || !tile.local
+    return !tile.local
   })
   if (!isOwnPanel && tiles.length === 0) return null
 
