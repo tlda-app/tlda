@@ -1,0 +1,15 @@
+{
+  "name": "@tlda/tldraw-wm",
+  "version": "0.1.0",
+  "description": "TLDraw window manager core and TLDraw adapter boundary.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./core": "./src/core.ts",
+    "./tldraw-adapter": "./src/tldraw-adapter.ts"
+  },
+  "license": "MIT",
+  "peerDependencies": {
+    "tldraw": "*"
+  }
+}
