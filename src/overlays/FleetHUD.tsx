@@ -1142,6 +1142,14 @@ export function FleetHUD({
     }
   }, [mainEditor, recenterHudForBounds, resetFleetBoundsTracker])
 
+  const hudShapePredicate = useMemo(() => {
+    const owner = {
+      userId: identityId,
+      deviceId: deviceReady ? getDeviceId() : '',
+    }
+    return (shape: TLShape) => shouldRenderLockedFleetViewportShape(shape, owner)
+  }, [deviceReady, identityId])
+
   // Fail loud instead of silently rendering an empty HUD. A common phi/iPad
   // failure mode is a new browser device id: same-user fleet shapes exist in
   // the room, but none are owned by this (identity, device), so the main canvas
@@ -1279,13 +1287,6 @@ export function FleetHUD({
     userId: getHumanId(),
     deviceId: deviceReady ? getDeviceId() : '',
   })
-  const hudShapePredicate = useMemo(() => {
-    const owner = {
-      userId: identityId,
-      deviceId: deviceReady ? getDeviceId() : '',
-    }
-    return (shape: TLShape) => shouldRenderLockedFleetViewportShape(shape, owner)
-  }, [deviceReady, identityId])
   const params = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null
   const exposeForTest = params?.has('pw') || params?.has('wmFlowGate')
   if (import.meta.env.DEV || exposeForTest || (typeof navigator !== 'undefined' && navigator.webdriver)) {
