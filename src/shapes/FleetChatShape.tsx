@@ -19,6 +19,7 @@ import { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo, use
 import { createPortal } from 'react-dom'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import { probe } from '../perf-probe'
+import { isPhoneViewport } from '../phoneViewport'
 
 // @ts-ignore — vanilla JS module
 import { renderChatLine, resolveInlineAttachments, esc } from '../fleet/chat-render.mjs'
@@ -167,7 +168,7 @@ function recordFleetChatRender(shape: any) {
 
 function isPhoneSurfaceNow(): boolean {
   if (typeof window === 'undefined') return false
-  return document.body.classList.contains('phone-mode') || !!window.matchMedia?.('(max-width: 600px)').matches
+  return document.body.classList.contains('phone-mode') || isPhoneViewport()
 }
 
 function isAtScrollBottom(el: HTMLElement, epsilon = 8): boolean {
@@ -244,7 +245,7 @@ const _isTouchDevice = (typeof navigator !== 'undefined' && navigator.maxTouchPo
 // Phone (narrow screen). iOS Safari auto-zooms any focused input under 16px, so
 // the composer font must be ≥16px on phone — and it's set as an INLINE style
 // (below), which CSS can't override, so the value is chosen here.
-const _isPhone = typeof window !== 'undefined' && !!window.matchMedia?.('(max-width: 600px)').matches
+const _isPhone = isPhoneViewport()
 
 function getFleetStyleVars(): React.CSSProperties {
   return {
@@ -1847,14 +1848,20 @@ function FleetChatInner({ shape }: { shape: any }) {
 
   useEffect(() => {
     if (typeof window === 'undefined') return
-    const media = window.matchMedia?.('(max-width: 600px)')
+    const media = window.matchMedia?.('(max-width: 600px), (max-height: 600px)')
     const update = () => setIsPhoneSurface(isPhoneSurfaceNow())
     update()
     media?.addEventListener?.('change', update)
+    window.addEventListener('resize', update)
+    window.addEventListener('orientationchange', update)
+    window.visualViewport?.addEventListener('resize', update)
     const observer = new MutationObserver(update)
     observer.observe(document.body, { attributes: true, attributeFilter: ['class'] })
     return () => {
       media?.removeEventListener?.('change', update)
+      window.removeEventListener('resize', update)
+      window.removeEventListener('orientationchange', update)
+      window.visualViewport?.removeEventListener('resize', update)
       observer.disconnect()
     }
   }, [])

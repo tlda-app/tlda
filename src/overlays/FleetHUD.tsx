@@ -16,7 +16,7 @@ import { useFleetIdentity } from '../fleet-data-adapter'
 import { getHumanId, getDeviceId, isDeviceReady, whenDeviceReady } from '../fleet/fleet-data.mjs'
 import { getMyAnchorId, isMyFleetShape, FLEET_INTERACTION_SHAPE_SELECTOR, FLEET_SHAPE_TYPES, adoptLegacyFleetShapes, layoutOffset, ensureMyLaneDisjoint } from '../shapes/fleet-utils'
 import { isDocumentPageShape } from '../shapes/document-pages'
-import { fleetTouchGestureActiveRef, postTouchTelemetry, setTouchDiagStatus, snapToCurrentPhoneLaneIndex, useFleetGestures } from './useFleetGestures'
+import { fleetTouchGestureActiveRef, postTouchTelemetry, setTouchDiagStatus, snapToPhoneLaneIndex, useFleetGestures } from './useFleetGestures'
 import { PhoneLaneArrow } from './PhoneLaneArrow'
 import { shouldRenderLockedFleetViewportShape } from './fleet-viewport-predicate'
 import { SuggestionTip } from '../shapes/FleetChatShape'
@@ -222,7 +222,8 @@ function isPhoneFleetLayout(editor: Editor): boolean {
   const deviceId = getDeviceId()
   if (!humanId || !deviceId) return false
   if (!isPhoneViewport()) return false
-  return isPhoneStackLayoutForOwner(editor, humanId, deviceId)
+  if (!isPhoneStackLayoutForOwner(editor, humanId, deviceId)) return false
+  return true
 }
 
 function getFleetHudDiagnostic(editor: Editor) {
@@ -503,6 +504,32 @@ export function FleetHUD({
   const phoneLayout = isPhoneFleetLayout(mainEditor)
   const PHONE_TOP_PAD = -20
   const activeTopPad = phoneLayout ? PHONE_TOP_PAD : TOP_PAD
+
+  useEffect(() => {
+    if (!docShapesReady) return
+    let frame: number | null = null
+    const refit = () => {
+      frame = null
+      if (!isPhoneViewport()) return
+      const result = refitPhonePaneStack(mainEditor)
+      if (!result.ok) return
+      snapToPhoneLaneIndex(mainEditor, result.docLeftPage, result.currentIndex)
+      setFleetBounds(getFleetBounds(mainEditor))
+    }
+    const schedule = () => {
+      if (frame !== null) return
+      frame = requestAnimationFrame(refit)
+    }
+    window.addEventListener('resize', schedule)
+    window.addEventListener('orientationchange', schedule)
+    window.visualViewport?.addEventListener('resize', schedule)
+    return () => {
+      if (frame !== null) cancelAnimationFrame(frame)
+      window.removeEventListener('resize', schedule)
+      window.removeEventListener('orientationchange', schedule)
+      window.visualViewport?.removeEventListener('resize', schedule)
+    }
+  }, [docShapesReady, mainEditor])
 
   const recenterHudForBounds = useCallback((bounds: ClipBounds | null): boolean => {
     if (!bounds || !docShapesReady) return false

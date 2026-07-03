@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import './index.css'
 import './frame-probe'  // perf-probe frame timing (inactive unless ?perf=1)
 import App from './App.tsx'
+import { isPhoneViewport } from './phoneViewport'
 
 // High-res display compensation: macOS "More Space" gives huge CSS viewports
 // where CSS pixels are physically tiny (retina display + lots of CSS px = small UI).
@@ -41,11 +42,7 @@ const DEFAULT_FLEET_LAYOUT_PRESET = '3-col'
 const PHONE_FLEET_LAYOUT_PRESET = 'phone'
 
 function getDefaultFleetLayoutPreset() {
-  const vv = window.visualViewport
-  const w = Number(vv?.width || window.innerWidth || 0)
-  const h = Number(vv?.height || window.innerHeight || 0)
-  const phoneSized = Number.isFinite(w) && Number.isFinite(h) && Math.min(w, h) <= 600
-  return phoneSized ? PHONE_FLEET_LAYOUT_PRESET : DEFAULT_FLEET_LAYOUT_PRESET
+  return isPhoneViewport() ? PHONE_FLEET_LAYOUT_PRESET : DEFAULT_FLEET_LAYOUT_PRESET
 }
 
 // Automated browsers (playwright, etc.) get a forced dark theme, camera-link

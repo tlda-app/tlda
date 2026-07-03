@@ -18,6 +18,9 @@ const DOC = String(args.doc || 'test-fleet')
 const WIDTH = Number(args.width || 390)
 const HEIGHT = Number(args.height || 844)
 const CLIP = String(args.clip || '') === '1'
+const AUTO = String(args.auto || '') === '1'
+const ROTATE_WIDTH = Number(args.rotateWidth || 0)
+const ROTATE_HEIGHT = Number(args.rotateHeight || 0)
 
 function findChromiumExecutable() {
   if (process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE) return process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE
@@ -45,7 +48,7 @@ if (token) qs.set('token', token)
 const URL = `${BASE}/?${qs.toString()}`
 
 async function main() {
-  console.log(`phone-layout-mobile url=${URL} viewport=${WIDTH}x${HEIGHT} clip=${CLIP ? '1' : '0'}`)
+  console.log(`phone-layout-mobile url=${URL} viewport=${WIDTH}x${HEIGHT} clip=${CLIP ? '1' : '0'} auto=${AUTO ? '1' : '0'}`)
   const executablePath = findChromiumExecutable()
   const browser = await chromium.launch({ headless: true, ...(executablePath ? { executablePath } : {}) })
   const context = await browser.newContext({
@@ -84,7 +87,7 @@ async function main() {
   }, QA_NAME, { timeout: 15000 })
   await page.waitForTimeout(100)
 
-  await page.evaluate(async ({ width, height, clip, qaId }) => {
+  await page.evaluate(async ({ width, height, clip, qaId, auto }) => {
     const ed = window.__tldraw_editor__
     const pageShape = ed.getCurrentPageShapes().find(s => s.type === 'svg-page' || s.type === 'html-page')
     if (!pageShape) throw new Error('no document page shape')
@@ -151,40 +154,43 @@ async function main() {
       humanId,
       myDeviceId,
       alienId,
+      auto,
     }
-  }, { width: WIDTH, height: HEIGHT, clip: CLIP, qaId: QA_ID })
+  }, { width: WIDTH, height: HEIGHT, clip: CLIP, qaId: QA_ID, auto: AUTO })
 
-  const pill = page.locator('.fleet-icon-pill-badge')
-  await pill.waitFor({ state: 'visible', timeout: 15000 })
-  const pillBox = await pill.boundingBox()
-  if (!pillBox) throw new Error('fleet layout pill has no bounding box')
-  const pillRightGap = WIDTH - (pillBox.x + pillBox.width)
-  if (pillRightGap < 3 || pillRightGap > 8) {
-    throw new Error(`fleet layout pill is not at reachable right edge: ${JSON.stringify(pillBox)}`)
-  }
-  await pill.tap()
-
-  const phonePresetSelector = '.fleet-icon-pill-fan-item[title^="Phone reset"], .corner-button-slider-slot[title^="Phone reset"]'
-  const phonePreset = page.locator(phonePresetSelector)
-  await phonePreset.waitFor({ state: 'visible', timeout: 5000 })
-  const presetBox = await phonePreset.boundingBox()
-  if (!presetBox || presetBox.width < 40 || presetBox.height < 30) {
-    throw new Error(`phone preset touch target is too small: ${JSON.stringify(presetBox)}`)
-  }
-  const hit = await page.evaluate(({ x, y }) => {
-    const el = document.elementFromPoint(x, y)
-    return {
-      hit: !!el?.closest?.('.fleet-icon-pill-fan-item[title^="Phone reset"], .corner-button-slider-slot[title^="Phone reset"]'),
-      className: el instanceof HTMLElement ? el.className : String(el),
+  if (!AUTO) {
+    const pill = page.locator('.fleet-icon-pill-badge')
+    await pill.waitFor({ state: 'visible', timeout: 15000 })
+    const pillBox = await pill.boundingBox()
+    if (!pillBox) throw new Error('fleet layout pill has no bounding box')
+    const pillRightGap = WIDTH - (pillBox.x + pillBox.width)
+    if (pillRightGap < 3 || pillRightGap > 8) {
+      throw new Error(`fleet layout pill is not at reachable right edge: ${JSON.stringify(pillBox)}`)
     }
-  }, { x: presetBox.x + presetBox.width / 2, y: presetBox.y + presetBox.height / 2 })
-  if (!hit.hit) throw new Error(`phone preset is visually present but not touch-hit-testable: ${JSON.stringify(hit)}`)
-  await phonePreset.tap()
+    await pill.tap()
+
+    const phonePresetSelector = '.fleet-icon-pill-fan-item[title^="Phone reset"], .corner-button-slider-slot[title^="Phone reset"]'
+    const phonePreset = page.locator(phonePresetSelector)
+    await phonePreset.waitFor({ state: 'visible', timeout: 5000 })
+    const presetBox = await phonePreset.boundingBox()
+    if (!presetBox || presetBox.width < 40 || presetBox.height < 30) {
+      throw new Error(`phone preset touch target is too small: ${JSON.stringify(presetBox)}`)
+    }
+    const hit = await page.evaluate(({ x, y }) => {
+      const el = document.elementFromPoint(x, y)
+      return {
+        hit: !!el?.closest?.('.fleet-icon-pill-fan-item[title^="Phone reset"], .corner-button-slider-slot[title^="Phone reset"]'),
+        className: el instanceof HTMLElement ? el.className : String(el),
+      }
+    }, { x: presetBox.x + presetBox.width / 2, y: presetBox.y + presetBox.height / 2 })
+    if (!hit.hit) throw new Error(`phone preset is visually present but not touch-hit-testable: ${JSON.stringify(hit)}`)
+    await phonePreset.tap()
+  }
   await page.waitForFunction(() => !!window.__tldraw_hud_editor__, null, { timeout: 10000 })
   await page.waitForFunction(() => !!document.querySelector('.fleet-hud-wrap .fleet-inbox-shape'), null, { timeout: 10000 })
   await page.waitForTimeout(500)
 
-  const report = await page.evaluate(async () => {
+  let report = await page.evaluate(async () => {
     const ed = window.__tldraw_editor__
     const setup = window.__phoneLayoutExpected
     if (!setup) throw new Error('phone layout setup missing')
@@ -341,7 +347,7 @@ async function main() {
         h: Math.round(clippedDocScreen.h),
       },
       camera: { z: Number(cameraZ.toFixed(4)) },
-      control: { pill: 'tapped', preset: 'tapped' },
+      control: setup.auto ? { urlAuto: true } : { pill: 'tapped', preset: 'tapped' },
       panes: {
         inbox: { w: inbox.props.w, h: inbox.props.h, locked: inbox.isLocked },
         document: { docLeftScreen: laneStops.document },
@@ -379,6 +385,62 @@ async function main() {
       touchStyles,
     }
   })
+
+  if (ROTATE_WIDTH > 0 && ROTATE_HEIGHT > 0) {
+    await page.setViewportSize({ width: ROTATE_WIDTH, height: ROTATE_HEIGHT })
+    await page.waitForTimeout(900)
+    report.rotated = await page.evaluate(async ({ width, height }) => {
+      const ed = window.__tldraw_editor__
+      const setup = window.__phoneLayoutExpected
+      if (!ed || !setup) throw new Error('rotation setup missing')
+      const fleet = ed.getCurrentPageShapes().filter(s =>
+        ['fleet-inbox', 'fleet-chat'].includes(s.type) &&
+        s.props?.userId === setup.humanId &&
+        s.props?.deviceId === setup.myDeviceId,
+      )
+      const inbox = fleet.find(s => s.type === 'fleet-inbox')
+      if (!inbox) throw new Error('missing phone inbox after rotation')
+      if (Math.abs(inbox.props.w - width) > 1 || Math.abs(inbox.props.h - height) > 1) {
+        throw new Error(`phone inbox did not refit after rotation: ${JSON.stringify({ got: inbox.props, expected: { width, height } })}`)
+      }
+      const pageShape = ed.getCurrentPageShapes().find(s => s.type === 'svg-page' || s.type === 'html-page')
+      const pb = pageShape ? ed.getShapePageBounds(pageShape.id) : null
+      if (!pb) throw new Error('missing page bounds after rotation')
+      const cam = ed.getCamera()
+      ed.setCamera({ ...cam, x: width / cam.z - pb.x }, { animation: { duration: 0 } })
+      await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))
+      const inboxEl = document.querySelector(`.fleet-hud-wrap [data-shape-id="${inbox.id}"] .fleet-inbox-shape`)
+        || document.querySelector(`.fleet-hud-wrap [data-shape-id="${inbox.id}"]`)
+      if (!(inboxEl instanceof HTMLElement)) throw new Error('HUD did not render rotated phone inbox')
+      const footer = inboxEl.querySelector('.fleet-inbox-phone-footer')
+      const littleChat = inboxEl.querySelector('.fleet-inbox-phone-composer')
+      const phoneAgents = inboxEl.querySelector('.fleet-inbox-phone-agents')
+      if (!(footer instanceof HTMLElement) || !(littleChat instanceof HTMLElement) || !(phoneAgents instanceof HTMLElement)) {
+        throw new Error('rotated phone footer/little-chat/agents sub-layout did not render')
+      }
+      const footerBox = footer.getBoundingClientRect()
+      const littleChatBox = littleChat.getBoundingClientRect()
+      const phoneAgentsBox = phoneAgents.getBoundingClientRect()
+      if (footerBox.left < -1 || footerBox.right > width + 1 || footerBox.bottom > height + 1) {
+        throw new Error(`rotated phone footer is not inside viewport: ${JSON.stringify({ footer: footerBox.toJSON?.() || footerBox, width, height })}`)
+      }
+      if (height >= width) {
+        if (littleChatBox.bottom > phoneAgentsBox.top + 2) throw new Error('rotated portrait footer did not stack')
+      } else if (littleChatBox.right > phoneAgentsBox.left + 2 || phoneAgentsBox.width <= littleChatBox.width) {
+        throw new Error('rotated landscape footer did not put agents to the wider right side')
+      }
+      return {
+        viewport: { w: width, h: height },
+        inbox: { w: inbox.props.w, h: inbox.props.h, locked: inbox.isLocked },
+        footer: {
+          x: Math.round(footerBox.x),
+          y: Math.round(footerBox.y),
+          w: Math.round(footerBox.width),
+          h: Math.round(footerBox.height),
+        },
+      }
+    }, { width: ROTATE_WIDTH, height: ROTATE_HEIGHT })
+  }
 
   await page.evaluate(() => {
     const ed = window.__tldraw_editor__

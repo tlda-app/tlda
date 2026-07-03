@@ -31,6 +31,7 @@ type PhonePaneShapeUpdate = {
   id: TLShapeId
   type: string
   x?: number
+  y?: number
   props?: Record<string, unknown>
   isLocked?: boolean
 }
@@ -44,6 +45,10 @@ export type PhonePinnedPanePushResult =
 export type PhonePinnedPaneDeleteResult =
   | { ok: true; deletedId: string; shiftedIds: string[]; targetIndex: number; maxIndex: number; docLeftPage: number }
   | { ok: false; reason: 'owner-missing' | 'document-missing' | 'viewport-missing' | 'pane-not-pinned' }
+
+export type PhonePaneStackRefitResult =
+  | { ok: true; updatedIds: string[]; currentIndex: number; maxIndex: number; docLeftPage: number }
+  | { ok: false; reason: 'owner-missing' | 'document-missing' | 'viewport-missing' | 'phone-stack-missing' | 'not-phone-stack' }
 
 function viewportSize(editor: Editor): { w: number; h: number } {
   const vp = editor.getViewportScreenBounds()
@@ -113,6 +118,11 @@ function isFullScreenPinnedPaneForOwner(editor: Editor, shape: PhonePaneCandidat
   return isFleetShapeForOwnerKey(shape, userId, deviceId) &&
     shape.type === 'fleet-chat' &&
     isFullScreenPhonePane(editor, shape)
+}
+
+function isPhoneStackPaneForOwner(shape: PhonePaneCandidate, userId: string, deviceId: string): boolean {
+  return isFleetShapeForOwnerKey(shape, userId, deviceId) &&
+    (shape.type === 'fleet-inbox' || shape.type === 'fleet-chat')
 }
 
 function updatePhonePaneShape(editor: Editor, update: PhonePaneShapeUpdate) {
@@ -238,4 +248,75 @@ export function isPhoneLayoutInboxShapeForOwner(editor: Editor, shape: unknown, 
   return isFleetShapeForOwnerKey(pane, userId, deviceId) &&
     pane.type === 'fleet-inbox' &&
     isFullScreenPhonePane(editor, pane)
+}
+
+export function isPhoneStackLayoutForOwner(editor: Editor, userId: string, deviceId: string): boolean {
+  const shapes = editor.getCurrentPageShapes() as PhonePaneCandidate[]
+  const owned = shapes.filter(shape => isFleetShapeForOwnerKey(shape, userId, deviceId))
+  if (!owned.some(shape => shape.type === 'fleet-inbox')) return false
+  return owned.every(shape => isPhoneStackPaneForOwner(shape, userId, deviceId))
+}
+
+export function refitPhonePaneStack(editor: Editor): PhonePaneStackRefitResult {
+  const shapes = editor.getCurrentPageShapes() as PhonePaneCandidate[]
+  const inbox = shapes.find(shape => isMyFleetShape(shape) && shape.type === 'fleet-inbox')
+  const userId = inbox?.props?.userId
+  const deviceId = inbox?.props?.deviceId
+  if (!userId || !deviceId) return { ok: false, reason: 'owner-missing' }
+  if (!inbox?.id || !inbox.type) return { ok: false, reason: 'phone-stack-missing' }
+  if (!isPhoneStackLayoutForOwner(editor, userId, deviceId)) return { ok: false, reason: 'not-phone-stack' }
+
+  const { w: screenW, h: screenH } = viewportSize(editor)
+  if (!screenW || !screenH) return { ok: false, reason: 'viewport-missing' }
+
+  const docLeft = primaryDocumentLeft(editor)
+  if (docLeft === null) return { ok: false, reason: 'document-missing' }
+
+  const oldScreenW = Math.round(inbox.props?.w || screenW)
+  const dx = (inbox.x || 0) - phonePaneX(docLeft, PHONE_INBOX_PANE_INDEX, oldScreenW || screenW, 0)
+  const y = inbox.y || 0
+  const pinned = shapes
+    .filter(shape => isFleetShapeForOwnerKey(shape, userId, deviceId) && shape.type === 'fleet-chat')
+    .sort((a, b) => ((b.x || 0) - (a.x || 0)) || String(a.id).localeCompare(String(b.id)))
+  const maxIndex = PHONE_INBOX_PANE_INDEX + pinned.length
+
+  const paneUpdates: PhonePaneShapeUpdate[] = [
+    {
+      id: inbox.id as TLShapeId,
+      type: inbox.type,
+      x: phonePaneX(docLeft, PHONE_INBOX_PANE_INDEX, screenW, dx),
+      y,
+      props: { ...(inbox.props || {}), w: screenW, h: screenH, userId, deviceId },
+      isLocked: true,
+    },
+  ]
+  pinned.forEach((pane, i) => {
+    if (!pane.id || !pane.type) return
+    paneUpdates.push({
+      id: pane.id as TLShapeId,
+      type: pane.type,
+      x: phonePaneX(docLeft, PHONE_INBOX_PANE_INDEX + 1 + i, screenW, dx),
+      y,
+      props: { ...(pane.props || {}), w: screenW, h: screenH, userId, deviceId },
+      isLocked: true,
+    })
+  })
+
+  const currentIndex = Math.max(0, Math.min(maxIndex, Math.round((editor.getCamera().x + docLeft) * editor.getCamera().z / screenW)))
+  editor.run(() => {
+    for (const update of paneUpdates) {
+      const shape = editor.getShape(update.id)
+      if (shape?.isLocked) updatePhonePaneShape(editor, { id: update.id, type: update.type, isLocked: false })
+      updatePhonePaneShape(editor, update)
+    }
+  }, { history: 'ignore' })
+  dispatchFleetHudReset()
+
+  return {
+    ok: true,
+    updatedIds: paneUpdates.map(update => String(update.id)),
+    currentIndex,
+    maxIndex,
+    docLeftPage: docLeft,
+  }
 }

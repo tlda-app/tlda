@@ -12,9 +12,9 @@ import { TocTab, ZoneWidthSlider } from './panels/TocTab'
 import { NotesTab } from './panels/NotesTab'
 import { PrefsTab } from './panels/PrefsTab'
 import { CornerButtonSlider, pickCornerSliderIndex } from './CornerButtonSlider'
-import { isDocumentPageShape } from './shapes/document-pages'
-import { isPhoneFleetLayoutForCurrentDevice, reflowPhoneFleetLayout } from './shapes/fleet-utils'
-import { snapToCurrentPhoneLaneIndex } from './overlays/useFleetGestures'
+import { isPhoneViewport } from './phoneViewport'
+import { snapToPhoneLaneIndex } from './overlays/useFleetGestures'
+import { refitPhonePaneStack } from './shapes/phone-pane-stack'
 
 import './DocumentPanel.css'
 
@@ -180,24 +180,19 @@ export function DocumentPanel() {
   )
 }
 
-function isPhoneSizedViewport(): boolean {
-  if (typeof window === 'undefined') return false
-  const vv = window.visualViewport
-  const w = Number(vv?.width || window.innerWidth || 0)
-  const h = Number(vv?.height || window.innerHeight || 0)
-  return Number.isFinite(w) && Number.isFinite(h) && Math.min(w, h) <= 600
-}
-
 function usePhoneSizedViewport(): boolean {
-  const [phone, setPhone] = useState(() => isPhoneSizedViewport())
+  const [phone, setPhone] = useState(() => isPhoneViewport())
   useEffect(() => {
     if (typeof window === 'undefined') return
-    const update = () => setPhone(isPhoneSizedViewport())
+    const media = window.matchMedia?.('(max-width: 600px), (max-height: 600px)')
+    const update = () => setPhone(isPhoneViewport())
     update()
+    media?.addEventListener?.('change', update)
     window.addEventListener('resize', update)
     window.addEventListener('orientationchange', update)
     window.visualViewport?.addEventListener('resize', update)
     return () => {
+      media?.removeEventListener?.('change', update)
       window.removeEventListener('resize', update)
       window.removeEventListener('orientationchange', update)
       window.visualViewport?.removeEventListener('resize', update)
@@ -206,15 +201,7 @@ function usePhoneSizedViewport(): boolean {
   return phone
 }
 
-function getDocumentLeftPage(editor: Editor): number | null {
-  let minPageX = Infinity
-  for (const s of editor.getCurrentPageShapes().filter(isDocumentPageShape)) {
-    const b = editor.getShapePageBounds(s.id)
-    if (b && b.x < minPageX) minPageX = b.x
-  }
-  return isFinite(minPageX) ? minPageX : null
-}
-
+const IS_PHONE = isPhoneViewport()
 const IS_TOUCH_DEVICE = (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0)
   || (typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches)
   || (typeof location !== 'undefined' && new URLSearchParams(location.search).has('forcetouch'))
@@ -598,11 +585,10 @@ export function PhoneOverlay() {
     let raf = 0
     const apply = () => {
       raf = 0
-      if (!isPhoneFleetLayoutForCurrentDevice(editor)) return
-      const changed = reflowPhoneFleetLayout(editor)
-      const docLeft = getDocumentLeftPage(editor)
-      if (docLeft !== null) snapToCurrentPhoneLaneIndex(editor, docLeft, 0)
-      if (changed) window.dispatchEvent(new CustomEvent('fleet-phone-layout-reflowed'))
+      const result = refitPhonePaneStack(editor)
+      if (!result.ok) return
+      snapToPhoneLaneIndex(editor, result.docLeftPage, result.currentIndex)
+      if (result.updatedIds.length > 0) window.dispatchEvent(new CustomEvent('fleet-phone-layout-reflowed'))
     }
     const schedule = () => {
       if (raf) cancelAnimationFrame(raf)

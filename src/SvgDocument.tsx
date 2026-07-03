@@ -129,6 +129,7 @@ import { useDividerDiff } from './hooks/useDividerDiff'
 import { ShadowHistoryOverlay } from './overlays/ShadowHistoryOverlay'
 import { PlaybackPill } from './pills/PlaybackPill'
 import { SlidesNavigator } from './SlidesNavigator'
+import { isPhoneViewport } from './phoneViewport'
 
 // Shape sync server = the active config's STORE (ws); tldraw license = the active
 // config's licenseKey. Both come from the server-injected config (activeConfig).
@@ -138,7 +139,7 @@ const LICENSE_KEY = CFG_LICENSE_KEY
 // Phone = the narrow touch layout (matches isPhone in the component + the
 // other phone checks). Module-level so render-time component overrides (e.g.
 // hiding the TLDraw toolbar) can read it without prop threading.
-const IS_PHONE = typeof window !== 'undefined' && window.matchMedia('(max-width: 600px)').matches
+const IS_PHONE = isPhoneViewport()
 
 // Agent attention overlay wrapper (needs useEditor context)
 function AgentAttentionCanvas() {
@@ -906,7 +907,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     return all
   }, [])
   const bindingUtils = useMemo(() => [...defaultBindingUtils], [])
-  const isPhone = typeof window !== 'undefined' && window.matchMedia('(max-width: 600px)').matches
+  const isPhone = isPhoneViewport()
   const tools = useMemo(() => [
     BrowseTool, MathNoteTool, VoiceNoteTool, TextSelectTool, FleetChatTool, FleetAgentsTool, FleetSearchTool, FleetInboxTool, ClusterTool, ReaperTool, UsageMeterTool, PlaybackTool, TerminalTool, TaskInboxTool, RibbonEraserTool, RibbonHighlightTool,
     ...(isPhone ? [PhoneHandTool] : []),

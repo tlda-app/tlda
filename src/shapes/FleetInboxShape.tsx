@@ -34,6 +34,7 @@ import { invalidationFromRanges } from '../invalidationGraph'
 import type { DirectNode, CascadeNode } from '../invalidationGraph'
 import { CascadeGraph } from './CascadeGraph'
 import { FilterOverlay } from './FleetChatShape'
+import { isPhoneViewport } from '../phoneViewport'
 import katex from 'katex'
 import { getActiveMacros } from '../katexMacros'
 import MarkdownIt from 'markdown-it'
@@ -71,10 +72,7 @@ type PhoneChatShape = {
 function isPhoneViewportSurface(): boolean {
   if (typeof window === 'undefined') return false
   if (document.body.classList.contains('phone-mode')) return true
-  const vv = window.visualViewport
-  const w = Number(vv?.width || window.innerWidth || 0)
-  const h = Number(vv?.height || window.innerHeight || 0)
-  return Number.isFinite(w) && Number.isFinite(h) && Math.min(w, h) <= 600
+  return isPhoneViewport()
 }
 
 type PhoneThreadEjectGesture = {
@@ -360,18 +358,21 @@ function FleetInboxInner({ shape }: { shape: any }) {
 
   useEffect(() => {
     if (typeof window === 'undefined') return
+    const media = window.matchMedia?.('(max-width: 600px), (max-height: 600px)')
     const update = () => {
       const vp = mainEd.getViewportScreenBounds()
       const fullScreenPane = Math.abs((shape.props?.w || 0) - (vp.w || 0)) <= 2 && Math.abs((shape.props?.h || 0) - (vp.h || 0)) <= 2
       setIsPhoneSurface(fullScreenPane || isPhoneViewportSurface())
     }
     update()
+    media?.addEventListener?.('change', update)
     window.addEventListener('resize', update)
     window.addEventListener('orientationchange', update)
     window.visualViewport?.addEventListener('resize', update)
     const observer = new MutationObserver(update)
     observer.observe(document.body, { attributes: true, attributeFilter: ['class'] })
     return () => {
+      media?.removeEventListener?.('change', update)
       window.removeEventListener('resize', update)
       window.removeEventListener('orientationchange', update)
       window.visualViewport?.removeEventListener('resize', update)
