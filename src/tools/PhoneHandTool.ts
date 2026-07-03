@@ -1,7 +1,7 @@
 import { StateNode, Vec, type Editor, type TLStateNodeConstructor } from 'tldraw'
 import { log } from '../logger'
 import { isDocumentPageShape } from '../shapes/document-pages'
-import { setPhoneLaneDrag, PHONE_LANE_DRAG_IDLE, phoneLaneCommitPx, phoneLaneIndexFromCamera, snapToPhoneLaneIndex } from '../overlays/useFleetGestures'
+import { setPhoneLaneDrag, PHONE_LANE_DRAG_IDLE, phoneLaneCommitPx, phoneLaneIndexFromCamera, phoneLaneExistsFromIndex, rememberPhoneLanePortraitWidth, snapToPhoneLaneIndex } from '../overlays/useFleetGestures'
 import { phonePaneStackMaxIndex } from '../shapes/phone-pane-stack'
 
 const AXIS_THRESHOLD = 5 // px before locking axis
@@ -151,15 +151,18 @@ class PhoneDragging extends StateNode {
 
   initialCamera = new Vec()
   lockedAxis: 'x' | 'y' | null = null
-  // Lane index (0=document, 1=chat, 2=agents) the drag started on — the commit is
+  // Pane index (0=document, 1=inbox, 2+=pinned panes) the drag started on — the commit is
   // measured from here so panning the doc mid-drag doesn't drift the target lane,
   // and it shares the drift-proof index tracking with the fleet-panel gestures.
   startLaneIndex = 0
+  maxPaneIndex = 1
 
   override onEnter() {
     this.initialCamera = Vec.From(this.editor.getCamera())
     this.lockedAxis = null
-    this.startLaneIndex = phoneLaneIndexFromCamera(this.editor, getPrimaryDocumentLeft(this.editor) ?? 0)
+    this.maxPaneIndex = phonePaneStackMaxIndex(this.editor)
+    rememberPhoneLanePortraitWidth(this.editor)
+    this.startLaneIndex = phoneLaneIndexFromCamera(this.editor, getPrimaryDocumentLeft(this.editor) ?? 0, this.maxPaneIndex)
     this.update()
   }
 
@@ -180,18 +183,15 @@ class PhoneDragging extends StateNode {
     this.complete()
   }
 
-  private horizontalDrag(): { dx: number; dir: -1 | 0 | 1; screenW: number } {
+  private horizontalDrag(): { dx: number; dir: -1 | 0 | 1 } {
     const dx = this.editor.inputs.getCurrentScreenPoint().x - this.editor.inputs.getOriginScreenPoint().x
-    const screenW = this.editor.getViewportScreenBounds().w
     const dir: -1 | 0 | 1 = dx > 0 ? 1 : dx < 0 ? -1 : 0
-    return { dx, dir, screenW }
+    return { dx, dir }
   }
 
   // Does a lane exist one step in `dir` from the lane the drag started on?
   private laneExistsFromStart(dir: number): boolean {
-    if (dir === 0) return false
-    const next = this.startLaneIndex + dir
-    return next >= 0 && next <= phonePaneStackMaxIndex(this.editor)
+    return phoneLaneExistsFromIndex(this.startLaneIndex, this.maxPaneIndex, dir)
   }
 
   private update() {
@@ -213,14 +213,14 @@ class PhoneDragging extends StateNode {
 
     if (this.lockedAxis === 'x') {
       // Pan the doc AND fill the lane arrow at the same time. A deliberate
-      // ~75%-of-screen swipe fills it; short/choppy pans stay below the line and
+      // ~75%-of-portrait swipe fills it; short/choppy pans stay below the line and
       // never transition, so you can move around the page naturally.
       delta = new Vec(delta.x, 0)
-      const { dx, dir, screenW } = this.horizontalDrag()
-      const commit = phoneLaneCommitPx(screenW)
+      const { dx, dir } = this.horizontalDrag()
+      const commit = phoneLaneCommitPx()
       const hasLane = this.laneExistsFromStart(dir)
       const progress = hasLane ? Math.min(1, Math.abs(dx) / commit) : 0
-      setPhoneLaneDrag({ active: true, progress, dir: hasLane ? dir : 0, armed: progress >= 1 })
+      setPhoneLaneDrag({ active: true, progress, dir: hasLane ? dir : 0, armed: progress >= 1, arrowWidthPx: commit })
     } else if (this.lockedAxis === 'y') {
       delta = new Vec(0, delta.y)
     }
@@ -232,8 +232,8 @@ class PhoneDragging extends StateNode {
     const editor = this.editor
 
     if (this.lockedAxis === 'x') {
-      const { dx, dir, screenW } = this.horizontalDrag()
-      const commit = phoneLaneCommitPx(screenW)
+      const { dx, dir } = this.horizontalDrag()
+      const commit = phoneLaneCommitPx()
       const docLeftPage = getPrimaryDocumentLeft(editor)
       // Deliberate 75%+ swipe → transition to the adjacent lane; otherwise settle
       // back onto the lane the drag started from. Snap by INDEX (not the panned

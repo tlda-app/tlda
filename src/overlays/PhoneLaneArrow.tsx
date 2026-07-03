@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { subscribePhoneLaneDrag, type PhoneLaneDragState } from './useFleetGestures'
+import { phoneLaneCommitPx, subscribePhoneLaneDrag, type PhoneLaneDragState } from './useFleetGestures'
 
 // Big center-screen lane-transition arrow. Within one continuous drag it appears
 // subtly and FILLS toward its point as you swipe; a deliberate ~75%-of-screen
@@ -22,6 +22,7 @@ export function PhoneLaneArrow() {
   // lane (points right). Fill grows from the tail toward the point (destination).
   const pointLeft = s.dir === 1
   const path = pointLeft ? LEFT_ARROW : RIGHT_ARROW
+  const arrowWidthPx = s.arrowWidthPx || phoneLaneCommitPx()
   const clipInset = pointLeft
     ? `inset(0 0 0 ${(1 - s.progress) * 100}%)` // reveal right(tail) → left(head)
     : `inset(0 ${(1 - s.progress) * 100}% 0 0)` // reveal left(tail) → right(head)
@@ -36,10 +37,8 @@ export function PhoneLaneArrow() {
         top: '50%',
         left: '50%',
         transform: 'translate(-50%, -50%)',
-        width: '75vw',
-        maxWidth: 520,
+        width: arrowWidthPx,
         aspectRatio: '1 / 1',
-        maxHeight: '46vh',
         zIndex: 60,
         pointerEvents: 'none',
         display: 'flex',

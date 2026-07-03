@@ -12,6 +12,8 @@ import {
 } from '../src/wm/gesture-policy.ts'
 
 const source = readFileSync(new URL('../src/overlays/useFleetGestures.ts', import.meta.url), 'utf8')
+const phoneHandSource = readFileSync(new URL('../src/tools/PhoneHandTool.ts', import.meta.url), 'utf8')
+const phoneArrowSource = readFileSync(new URL('../src/overlays/PhoneLaneArrow.tsx', import.meta.url), 'utf8')
 const policySource = readFileSync(new URL('../src/wm/gesture-policy.ts', import.meta.url), 'utf8')
 const frameSource = readFileSync(new URL('../src/wm/gesture-frame.ts', import.meta.url), 'utf8')
 const tldrawSource = readFileSync(
@@ -89,6 +91,34 @@ test('phone lane drag consumes touch events so TLDraw pinch cannot inherit them'
     /state\.kind === 'phone-lane'[\s\S]*stopTouchEvent\(e\)[\s\S]*main\.setCamera/,
     'phone lane drag must preventDefault, not only stop propagation',
   )
+})
+
+test('phone pane stack max is cached at gesture start, not scanned per move', () => {
+  const touchMoveSource = source.slice(source.indexOf('const onTouchMove = (e: TouchEvent) =>'))
+  const phoneLaneMoveBlock = touchMoveSource.slice(
+    touchMoveSource.indexOf("if (state.kind === 'phone-lane') {"),
+    touchMoveSource.indexOf("if (state.kind === 'pan') {"),
+  )
+
+  assert.match(source, /const maxPaneIndex = phonePaneStackMaxIndex\(main\)[\s\S]*startLaneIndex = phoneLaneIndexFromCamera\(main, docLeftPage, maxPaneIndex\)/)
+  assert.match(source, /state\.kind === 'phone-lane'[\s\S]*phoneLaneExistsFromIndex\(state\.startLaneIndex, state\.maxPaneIndex, dir\)/)
+  assert.doesNotMatch(phoneLaneMoveBlock, /phonePaneStackMaxIndex\(main\)/)
+
+  assert.match(phoneHandSource, /this\.maxPaneIndex = phonePaneStackMaxIndex\(this\.editor\)[\s\S]*phoneLaneIndexFromCamera\(this\.editor, getPrimaryDocumentLeft\(this\.editor\) \?\? 0, this\.maxPaneIndex\)/)
+  assert.match(phoneHandSource, /phoneLaneExistsFromIndex\(this\.startLaneIndex, this\.maxPaneIndex, dir\)/)
+  assert.doesNotMatch(phoneHandSource, /private update\(\)[\s\S]*phonePaneStackMaxIndex\(this\.editor\)/)
+})
+
+test('phone lane commit and arrow use stored portrait width, not live viewport width', () => {
+  assert.match(source, /let phoneLanePortraitWidthPx = 0/)
+  assert.match(source, /export function rememberPhoneLanePortraitWidth\(editor/)
+  assert.match(source, /export function phoneLaneCommitPx\(\)/)
+  assert.doesNotMatch(source, /phoneLaneCommitPx\(screenW/)
+  assert.doesNotMatch(source, /screenW \* PHONE_LANE_COMMIT_FRAC/)
+
+  assert.match(phoneArrowSource, /const arrowWidthPx = s\.arrowWidthPx \|\| phoneLaneCommitPx\(\)/)
+  assert.doesNotMatch(phoneArrowSource, /width: '75vw'/)
+  assert.doesNotMatch(phoneArrowSource, /maxHeight: '46vh'/)
 })
 
 test('fleet gesture classifier prefers intentional resize before move, then requires larger resize while moving', () => {
