@@ -382,6 +382,15 @@ type TerminalOutputFrame = {
   encoding?: string
 }
 
+function phoneTerminalViewportFrame() {
+  if (typeof window === 'undefined') return { active: false, width: 0, height: 0 }
+  if (!isPhoneViewport()) return { active: false, width: 0, height: 0 }
+  const visual = window.visualViewport
+  const width = Math.round(visual?.width || window.innerWidth || 0)
+  const height = Math.round((visual?.height || window.innerHeight || 0) * 0.5)
+  return { active: true, width, height }
+}
+
 // Hover mode: read-only snapshot that resets on each server push.
 // Pinned mode: stays open, shows input bar for sending commands, resizable.
 function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter, onMouseLeave }: {
@@ -427,6 +436,7 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
   const [height, setHeight] = useState(210)
   const [lightboxed, setLightboxed] = useState(false)
   const [scale, setScale] = useState(1)
+  const [phoneFrame, setPhoneFrame] = useState(phoneTerminalViewportFrame)
   // The peek renders a fixed grid sized to the agent's REAL tmux window width
   // (reported by the daemon via a 'size' message), then CSS-scales it to fit the
   // panel. PEEK_COLS/ROWS are only the fallback until the first 'size' arrives —
@@ -458,6 +468,26 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
 
   useEffect(() => { pinnedRef.current = pinned }, [pinned])
   useEffect(() => { lightboxedRef.current = lightboxed }, [lightboxed])
+
+  useEffect(() => {
+    const update = () => {
+      const next = phoneTerminalViewportFrame()
+      setPhoneFrame(prev => (
+        prev.active === next.active && prev.width === next.width && prev.height === next.height
+          ? prev
+          : next
+      ))
+    }
+    update()
+    window.addEventListener('resize', update)
+    window.addEventListener('orientationchange', update)
+    window.visualViewport?.addEventListener('resize', update)
+    return () => {
+      window.removeEventListener('resize', update)
+      window.removeEventListener('orientationchange', update)
+      window.visualViewport?.removeEventListener('resize', update)
+    }
+  }, [])
 
   // On lightbox open, fetch the agent's real tmux scrollback (capture-pane via
   // the daemon). The live attach stream only carries the current screen, so this
@@ -743,6 +773,8 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
     )
   }
 
+  const phoneTopPanel = phoneFrame.active && !lightboxed
+
   return createPortal((
     // Carrier provides the .fleet-chat-shape scoped CSS + custom properties the
     // pane styles depend on (it's portaled out of the real chat shape). display:
@@ -753,8 +785,8 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
       className={`fleet-terminal-hover-pane${pinned ? ' fleet-terminal-hover-pane-pinned' : ''}${lightboxed ? ' fleet-terminal-hover-pane-lightboxed' : ''}`}
       style={{
         position: 'fixed',
-        left: anchor?.left ?? 0,
-        visibility: anchor ? 'visible' : 'hidden',
+        left: phoneTopPanel ? 0 : anchor?.left ?? 0,
+        visibility: phoneTopPanel || anchor ? 'visible' : 'hidden',
         ...(lightboxed
           // Grow UP + RIGHT from the pinned pane's bottom-left, which stays put.
           // Width comes from the lightbox CSS (min(840px,92vw)); height is fixed.
@@ -766,11 +798,19 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
           // Peek/pinned: top-anchored to the input's bottom edge at the chat's
           // width. Height is auto, so pinning ADDS the input bar below and the
           // terminal you saw on hover stays in place (pane grows downward).
-          : {
-              top: anchor?.top ?? 0,
-              width: anchor?.width ?? 0,
-              right: 'auto',
-            }),
+          : phoneTopPanel
+            ? {
+                top: 0,
+                width: phoneFrame.width || '100vw',
+                height: phoneFrame.height || '50vh',
+                right: 'auto',
+                bottom: 'auto',
+              }
+            : {
+                top: anchor?.top ?? 0,
+                width: anchor?.width ?? 0,
+                right: 'auto',
+              }),
       }}
       onMouseEnter={onMouseEnter}
       onMouseLeave={pinned ? undefined : onMouseLeave}
@@ -792,7 +832,7 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
       <div
         ref={bodyRef}
         className="fleet-terminal-hover-body"
-        style={lightboxed ? undefined : { height, flex: 'none' }}
+        style={lightboxed || phoneTopPanel ? undefined : { height, flex: 'none' }}
       >
         {lightboxed && historyText && (
           <div ref={historyContainerRef} className="fleet-terminal-hover-history" />
@@ -806,6 +846,7 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
           style={
             lightboxed && historyText ? { display: 'none' }
             : lightboxed ? { transform: `scale(${scale})`, transformOrigin: 'top left' }
+            : phoneTopPanel ? { transform: `scale(${scale})`, transformOrigin: 'top left', position: 'absolute', left: 0, top: 0 }
             : { transform: `scale(${scale})`, transformOrigin: 'bottom left', position: 'absolute', left: 0, bottom: 0 }
           }
         >
@@ -875,7 +916,7 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
           </button>
         </div>
       )}
-      {pinned && (
+      {pinned && !phoneTopPanel && (
         <div
           className="fleet-terminal-hover-resize-handle"
           onPointerDown={handleResizePointerDown}
