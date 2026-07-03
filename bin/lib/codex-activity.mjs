@@ -159,6 +159,10 @@ function applyPatchEvent(patchBody, callId, ts) {
 export function parseCodexLine(jsonStr) {
   let o
   try { o = JSON.parse(jsonStr) } catch { return null }
+  return parseCodexRecord(o)
+}
+
+export function parseCodexRecord(o) {
   const ts = o.timestamp
   const p = o.payload || {}
 

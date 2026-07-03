@@ -53,6 +53,9 @@
 
 import { WebSocket } from 'ws'
 import { ResilientWS } from '../shared/resilient-ws.mjs'
+import chokidar from 'chokidar'
+import TailFile from '@logdna/tail-file'
+import { parser as jsonlParser } from 'stream-json/jsonl/parser.js'
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
@@ -83,10 +86,9 @@ import {
   THINKING_SCAN_LINES, APPROVAL_PROMPT_SCAN_LINES,
 } from './lib/status-classifier.mjs'
 import { gooseActivityTick } from './lib/goose-activity.mjs'
-import { parseCodexLine } from './lib/codex-activity.mjs'
+import { parseCodexLine, parseCodexRecord } from './lib/codex-activity.mjs'
 import { truncatePrettyResult } from '../shared/activity-pretty-result.mjs'
 import {
-  createJsonlReadCoalescer,
   createOncePerKeyGate,
   extractOwnersFromText,
   scanFileOwnersSync,
@@ -104,11 +106,9 @@ import {
   isPlaywrightBrowserArgs,
   shouldClaimClaudeWatcher,
   shouldClaimCodexWatcher,
-  shouldFlushWatch,
   unlinkPidfileIfOwnPid,
 } from './lib/daemon-guards.mjs'
 import { codexRolloutBelongsToAgent, codexRolloutHasOwnerEvidence, resolveTranscript } from './lib/resolve-transcript.mjs'
-import { createRearmableFsWatcher } from './lib/source-watch-health.mjs'
 import { resolveSpawnGrant } from '../server/lib/spawn-policy.mjs'
 import { probeSpawnCapabilities } from './lib/spawn/capabilities.mjs'
 import {
@@ -546,6 +546,10 @@ loadQualifications()
 function parseSessionLine(jsonStr) {
   let obj
   try { obj = JSON.parse(jsonStr) } catch { return null }
+  return parseSessionRecord(obj)
+}
+
+function parseSessionRecord(obj) {
   const t = obj.type
   if (t === 'progress' || t === 'file-history-snapshot') return null
   const msg = obj.message || {}
@@ -723,8 +727,9 @@ let _serverReady = false
 let _lastLivenessDisconnectWarnAt = 0
 let agents = []                   // current agent list (from welcome / updates)
 let projects = []                 // current project list
-const pathWatchers = new Map()    // jsonlPath -> { fsWatch, primaryAgentId, sessionId, harnessKind }
+const pathWatchers = new Map()    // jsonlPath -> { tail, parser, primaryAgentId, sessionId, harnessKind }
 const agentPaths = new Map()      // agentId -> jsonlPath
+const jsonlDirWatchers = new Map() // dir -> { watcher, refs }
 const sourceWatchers = new Map()  // projectName -> { watcher, sourceDir, debounce, pending }
 const priorSessionBackfillGate = createOncePerKeyGate()
 
@@ -737,7 +742,6 @@ const pendingPlanChecks = new Map()     // agentId -> timeoutHandle
 
 // Strip ANSI escape codes from terminal output.
 function stripAnsi(str) {
-  // eslint-disable-next-line no-control-regex
   return str.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '').replace(/\x1b\][^\x07]*\x07/g, '')
 }
 
@@ -1065,6 +1069,7 @@ const HARNESS_ADAPTERS = {
     activity: {
       kind: 'claude',
       parseLine: parseSessionLine,
+      parseRecord: parseSessionRecord,
       usesClaudeSessionIds: true,
       backfillSearch: true,
       terminalChat: true,
@@ -1076,6 +1081,7 @@ const HARNESS_ADAPTERS = {
     activity: {
       kind: 'codex',
       parseLine: parseCodexLine,
+      parseRecord: parseCodexRecord,
       resolveJsonl: resolveCodexJsonl,
       usesClaudeSessionIds: false,
       backfillSearch: false,
@@ -1159,11 +1165,20 @@ async function resolveAgentKind(agent) {
 }
 
 async function syncSessionWatchers(agentList) {
+  let liveSessions = new Set()
+  try {
+    const r = await rpcListSessions()
+    liveSessions = new Set(r.sessions || [])
+  } catch (e) {
+    log.warn(`tmux session list failed during JSONL watcher sync: ${e.message}`)
+    return
+  }
   const activePaths = new Set()
   const claudeJsonlsByOwner = indexClaudeJsonlsByOwner()
 
   for (const agent of agentList) {
     if (agent.dead) continue
+    if (!agent.tmux_session || !liveSessions.has(agent.tmux_session)) continue
     let harness
     try {
       const kind = await resolveAgentKind(agent)
@@ -1236,35 +1251,40 @@ async function syncSessionWatchers(agentList) {
 
     if (pathWatchers.has(jsonlPath)) {
       const pw = pathWatchers.get(jsonlPath)
-      const fileSessionId = path.basename(jsonlPath, '.jsonl')
-      // The JSONL's embedded owner is authoritative for Claude. Roster
-      // session_id values are only candidate handles, not ownership evidence.
-      if (harness.kind === 'codex') {
-        if (shouldClaimCodexWatcher({
-          currentPrimaryId: pw.primaryAgentId,
-          agent,
-          jsonlPath,
-          rolloutHasOwnerEvidence: codexRolloutHasOwnerEvidence,
-          rolloutBelongsToAgent: codexRolloutBelongsToAgent,
-        })) {
-          pw.primaryAgentId = agent.id
-        }
-      } else if (!harness.usesClaudeSessionIds || harness.kind === 'claude') {
-        if (!harness.usesClaudeSessionIds) {
-          pw.primaryAgentId = agent.id
-        } else {
-          const owners = claudeOwnersForSessionFile(fileSessionId, jsonlPath)
-          if (shouldClaimClaudeWatcher({
+      if (pw.stopped) {
+        pathWatchers.delete(jsonlPath)
+        releaseJsonlDirWatcher(jsonlPath)
+      } else {
+        const fileSessionId = path.basename(jsonlPath, '.jsonl')
+        // The JSONL's embedded owner is authoritative for Claude. Roster
+        // session_id values are only candidate handles, not ownership evidence.
+        if (harness.kind === 'codex') {
+          if (shouldClaimCodexWatcher({
             currentPrimaryId: pw.primaryAgentId,
             agent,
-            owners,
+            jsonlPath,
+            rolloutHasOwnerEvidence: codexRolloutHasOwnerEvidence,
+            rolloutBelongsToAgent: codexRolloutBelongsToAgent,
           })) {
             pw.primaryAgentId = agent.id
           }
+        } else if (!harness.usesClaudeSessionIds || harness.kind === 'claude') {
+          if (!harness.usesClaudeSessionIds) {
+            pw.primaryAgentId = agent.id
+          } else {
+            const owners = claudeOwnersForSessionFile(fileSessionId, jsonlPath)
+            if (shouldClaimClaudeWatcher({
+              currentPrimaryId: pw.primaryAgentId,
+              agent,
+              owners,
+            })) {
+              pw.primaryAgentId = agent.id
+            }
+          }
         }
+        pw.harnessKind = harness.kind
+        continue
       }
-      pw.harnessKind = harness.kind
-      continue
     }
 
     // First time watching this JSONL — initialize cursor.
@@ -1295,93 +1315,11 @@ async function syncSessionWatchers(agentList) {
     }
 
     try {
-      let debounce = null
-      let firstPending = null // timestamp the current debounce started from idle
-      const WATCH_DEBOUNCE_MS = 150
-      const doRead = () => {
-        if (debounce) { clearTimeout(debounce); debounce = null }
-        firstPending = null
-        const cur = pathWatchers.get(jsonlPath)
-        if (!cur) return
-        readNewSessionLines(cur.primaryAgentId, jsonlPath, cur.sessionId, cur.harnessKind)
-      }
-      const onWatchFired = () => {
-        const pw = pathWatchers.get(jsonlPath)
-        if (!pw) return
-        const now = Date.now()
-        pw.watchSeenAt = now
-        // FSEvents fired -> it's alive for this path. Clear any miss state so a
-        // later silent stretch is judged fresh instead of stuck "dead" forever.
-        pw.watchMisses = 0
-        pw.fsEventsDead = false
-        if (firstPending == null) firstPending = now
-        // Max-wait cap: a long sub-debounce burst would otherwise keep resetting
-        // the trailing timer and starve the read until writes quiesce. Once the
-        // first unread write is >= WATCH_DEBOUNCE_MS old, flush immediately.
-        if (shouldFlushWatch(firstPending, now, WATCH_DEBOUNCE_MS)) {
-          doRead()
-          return
-        }
-        if (debounce) clearTimeout(debounce)
-        debounce = setTimeout(doRead, WATCH_DEBOUNCE_MS)
-      }
-      // How many consecutive fs.watch misses to tolerate before declaring it
-      // structurally silent for this path and polling alone.
-      const MAX_WATCH_RECREATES = 3
-      const pwState = {
-        fsWatch: null,
-        primaryAgentId: agent.id,
-        sessionId,
-        harnessKind: harness.kind,
-        watchSeenAt: 0,
-        watchMisses: 0,
-        fsEventsDead: false,
-      }
-      pwState.fsWatch = createRearmableFsWatcher({
-        label: `${harness.kind} JSONL ${path.basename(jsonlPath)}`,
-        dir: jsonlPath,
-        onEvent: onWatchFired,
-        shouldWatch: () => pathWatchers.get(jsonlPath) === pwState,
-        log,
-      })
+      const pwState = startJsonlTail({ agent, jsonlPath, sessionId, harness, startOffset: offset })
       pathWatchers.set(jsonlPath, pwState)
-      pwState.fsWatch.start('session connected')
-
-      // Poll fallback: catches writes that fs.watch misses when FSEvents goes silent on macOS.
-      // On NFS-mounted agent JSONLs (the common production case — mini serves ~/work over NFS,
-      // and FSEvents does not fire for NFS paths), the poll is the PRIMARY detection path, not
-      // a rare fallback. Use a tight interval so worst-case detection lag stays sub-second.
-      fs.watchFile(jsonlPath, { interval: 250, persistent: false }, (curr, prev) => {
-        if (curr.mtimeMs === prev.mtimeMs) return
-        const pw = pathWatchers.get(jsonlPath)
-        if (!pw) return
-        // fs.watch fired recently, so its debounced read handles this write.
-        if (pw.watchSeenAt && Date.now() - pw.watchSeenAt < 750) return
-        // fs.watch missed this write. Recreating the watcher does not make
-        // FSEvents start firing on a structurally silent path (macOS/NFS); give
-        // it a few chances to re-arm, then rely on the 250ms poll alone.
-        if (!pw.fsEventsDead) {
-          pw.watchMisses = (pw.watchMisses || 0) + 1
-          if (pw.watchMisses <= MAX_WATCH_RECREATES) {
-            log.warn(`fs.watch missed ${path.basename(jsonlPath)} — recreating (${pw.watchMisses}/${MAX_WATCH_RECREATES})`)
-            pw.fsWatch?.rearm(`missed ${path.basename(jsonlPath)}`)
-          } else {
-            pw.fsEventsDead = true
-            log.warn(`fs.watch structurally silent for ${path.basename(jsonlPath)} — polling alone (250ms)`)
-          }
-        }
-        // The poll is the detection path for this write regardless of recreate.
-        scheduleReadNewSessionLines(pw.primaryAgentId, jsonlPath, pw.sessionId, pw.harnessKind)
-      })
+      retainJsonlDirWatcher(jsonlPath)
 
       log.info(`watching ${harness.kind} JSONL for ${agent.friendly_name || agent.id}: ${path.basename(jsonlPath)} @ offset=${offset}`)
-
-      // Drain any backlog immediately rather than waiting for the next write to
-      // fire the watcher. This is what makes reconnect lossless: on a resumed
-      // cursor (daemon was disconnected while the agent kept working), the bytes
-      // written during the gap stream in now. Self-guards — for a fresh session
-      // the cursor is at EOF, so this returns without replaying history.
-      readNewSessionLines(agent.id, jsonlPath, sessionId, harness.kind)
     } catch (e) {
       log.error(`watcher creation failed for ${jsonlPath}: ${e.message}`)
     }
@@ -1390,10 +1328,9 @@ async function syncSessionWatchers(agentList) {
   // Close watchers for paths no longer needed.
   for (const [p, pw] of pathWatchers) {
     if (!activePaths.has(p)) {
-      jsonlReadCoalescer.cancel(p)
-      pw.fsWatch?.stop()
-      fs.unwatchFile(p)
+      stopJsonlTail(pw, `no longer active: ${path.basename(p)}`)
       pathWatchers.delete(p)
+      releaseJsonlDirWatcher(p)
       for (const [aid, watchedPath] of agentPaths) {
         if (watchedPath === p) agentPaths.delete(aid)
       }
@@ -1404,166 +1341,231 @@ async function syncSessionWatchers(agentList) {
   }
 }
 
-const jsonlReadCoalescer = createJsonlReadCoalescer({
-  readNow: (agentId, jsonlPath, sessionId, harnessKind) =>
-    readNewSessionLines(agentId, jsonlPath, sessionId, harnessKind),
-})
-
-function scheduleReadNewSessionLines(agentId, jsonlPath, sessionId, harnessKind = 'claude') {
-  jsonlReadCoalescer.schedule(jsonlPath, agentId, jsonlPath, sessionId, harnessKind)
+let _jsonlDirSyncTimer = null
+function scheduleJsonlDirSync(reason) {
+  if (_jsonlDirSyncTimer) return
+  _jsonlDirSyncTimer = setTimeout(() => {
+    _jsonlDirSyncTimer = null
+    log.info(`JSONL directory change detected (${reason}); syncing live session tails`)
+    void syncSessionWatchers(agents).catch(e => log.error(`syncSessionWatchers failed: ${e.stack || e.message}`))
+  }, 500)
 }
 
-function readNewSessionLines(agentId, jsonlPath, sessionId, harnessKind = 'claude') {
-  // The cursor is a high-water mark of *delivered* bytes. If the WS is down we
-  // can't push, so don't read+advance past it — leave the bytes for the next
-  // read. Otherwise the cursor would skip over activity cards whose send was
-  // dropped, losing them permanently. On reconnect, syncSessionWatchers does an
-  // immediate read that drains everything written during the outage.
-  if (!_rws?.connected) return
-  let stat
-  try { stat = fs.statSync(jsonlPath) } catch (e) {
-    if (e.code !== 'ENOENT') log.error(`stat ${jsonlPath}: ${e.message}`)
+function retainJsonlDirWatcher(jsonlPath) {
+  const dir = path.dirname(jsonlPath)
+  const existing = jsonlDirWatchers.get(dir)
+  if (existing) {
+    existing.refs += 1
     return
   }
-  const cursor = cursors[sessionId]
-  if (!cursor) return
+  const watcher = chokidar.watch(dir, {
+    depth: 0,
+    ignoreInitial: true,
+    persistent: true,
+    awaitWriteFinish: false,
+  })
+  watcher
+    .on('add', p => {
+      if (String(p).endsWith('.jsonl')) scheduleJsonlDirSync(`add ${path.basename(p)}`)
+    })
+    .on('unlink', p => {
+      if (String(p).endsWith('.jsonl')) scheduleJsonlDirSync(`unlink ${path.basename(p)}`)
+    })
+    .on('error', e => log.warn(`chokidar JSONL dir watcher failed for ${dir}: ${e?.message || e}`))
+  jsonlDirWatchers.set(dir, { watcher, refs: 1 })
+}
 
-  // Inode rotation — file was deleted+recreated. Reset cursor to start
-  // of the new file.
-  if (cursor.inode !== stat.ino) {
-    cursors[sessionId] = { inode: stat.ino, offset: 0 }
+function releaseJsonlDirWatcher(jsonlPath) {
+  const dir = path.dirname(jsonlPath)
+  const entry = jsonlDirWatchers.get(dir)
+  if (!entry) return
+  entry.refs -= 1
+  if (entry.refs > 0) return
+  jsonlDirWatchers.delete(dir)
+  Promise.resolve(entry.watcher.close()).catch(e => log.warn(`chokidar close failed for ${dir}: ${e?.message || e}`))
+}
+
+function startJsonlTail({ agent, jsonlPath, sessionId, harness, startOffset }) {
+  const parser = jsonlParser.asStream({ ignoreErrors: true })
+  const tail = new TailFile(jsonlPath, {
+    startPos: startOffset,
+    pollFileIntervalMs: Number(process.env.TLDA_JSONL_TAIL_POLL_MS || 1000),
+  })
+  const pw = {
+    tail,
+    parser,
+    jsonlPath,
+    primaryAgentId: agent.id,
+    sessionId,
+    harnessKind: harness.kind,
+    stopped: false,
+    lastDeliveryOk: true,
+    lastSavedOffset: startOffset,
   }
-  if (stat.size <= cursors[sessionId].offset) return
-  // New JSONL bytes = the agent just did something (text OR tool — not only tool
-  // calls). Arm it for the status state machine; the pane scan derives the actual
-  // thinking state. JSONL only ever says "active", never "thinking".
+  parser.on('data', item => {
+    if (pw.stopped || !item || item.value === undefined) return
+    if (!processParsedJsonlRecord(pw, item.value)) {
+      pw.lastDeliveryOk = false
+      retireJsonlTail(pw, `delivery failed for ${path.basename(jsonlPath)}`)
+    }
+  })
+  parser.on('error', e => {
+    log.warn(`JSONL parser error for ${path.basename(jsonlPath)}: ${e?.message || e}`)
+  })
+  tail.on('flush', ({ lastReadPosition }) => {
+    if (pw.stopped) return
+    if (!pw.lastDeliveryOk) {
+      log.warn(`not advancing cursor for ${path.basename(jsonlPath)}; activity delivery failed`)
+      return
+    }
+    updateJsonlCursorFromTail(pw, lastReadPosition)
+  })
+  tail.on('tail_error', e => log.warn(`tail-file error for ${path.basename(jsonlPath)}: ${e?.message || e}`))
+  tail.on('error', e => log.warn(`tail stream error for ${path.basename(jsonlPath)}: ${e?.message || e}`))
+  tail.on('renamed', () => {
+    const entry = cursors[sessionId] || (cursors[sessionId] = {})
+    entry.offset = 0
+    scheduleCursorSave()
+  })
+  tail.on('truncated', () => {
+    const entry = cursors[sessionId] || (cursors[sessionId] = {})
+    entry.offset = 0
+    scheduleCursorSave()
+  })
+  tail.pipe(parser)
+  tail.start().catch(e => {
+    // Startup can race with normal watcher teardown; active tails are retired so a later sync can retry.
+    if (!pw.stopped) {
+      log.warn(`tail-file start failed for ${path.basename(jsonlPath)}: ${e?.message || e}`)
+      retireJsonlTail(pw, `start failed for ${path.basename(jsonlPath)}`)
+    }
+  })
+  return pw
+}
+
+function retireJsonlTail(pw, reason) {
+  if (!pw) return
+  if (pathWatchers.get(pw.jsonlPath) === pw) {
+    pathWatchers.delete(pw.jsonlPath)
+    releaseJsonlDirWatcher(pw.jsonlPath)
+    for (const [aid, watchedPath] of agentPaths) {
+      if (watchedPath === pw.jsonlPath) agentPaths.delete(aid)
+    }
+  }
+  stopJsonlTail(pw, reason)
+}
+
+function stopJsonlTail(pw, reason = 'stop') {
+  if (!pw || pw.stopped) return
+  pw.stopped = true
+  try { pw.tail?.unpipe?.(pw.parser) } catch (e) {
+    // Best-effort cleanup; tail quit below is the actual resource release.
+    log.warn(`tail unpipe failed (${reason}): ${e?.message || e}`)
+  }
+  try { pw.parser?.destroy?.() } catch (e) {
+    // Best-effort cleanup; a parser destroy failure should not block daemon teardown.
+    log.warn(`jsonl parser destroy failed (${reason}): ${e?.message || e}`)
+  }
+  Promise.resolve(pw.tail?.quit?.()).catch(e => log.warn(`tail-file quit failed (${reason}): ${e?.message || e}`))
+}
+
+function updateJsonlCursorFromTail(pw, offset) {
+  const entry = cursors[pw.sessionId] || (cursors[pw.sessionId] = {})
+  if (entry.offset === offset && entry.inode) return
+  try {
+    const stat = fs.statSync(pw.jsonlPath)
+    entry.inode = stat.ino
+  } catch (e) {
+    // Metadata is advisory; offset persistence is still needed if the file vanished mid-flush.
+    log.warn(`could not stat tailed JSONL ${path.basename(pw.jsonlPath)}: ${e?.message || e}`)
+  }
+  entry.offset = offset
+  pw.lastSavedOffset = offset
+  scheduleCursorSave()
+}
+
+function processParsedJsonlRecord(pw, record) {
+  if (!_rws?.connected) return false
+  const harness = HARNESS_ADAPTERS[pw.harnessKind]?.activity
+  if (!harness) {
+    log.error(`processParsedJsonlRecord: unknown harness kind ${pw.harnessKind}`)
+    return true
+  }
+  const agentId = pw.primaryAgentId
+  let delivered = true
   armAgent(agentId)
 
-  let buf
-  try {
-    const fd = fs.openSync(jsonlPath, 'r')
-    const length = stat.size - cursors[sessionId].offset
-    buf = Buffer.alloc(length)
-    fs.readSync(fd, buf, 0, length, cursors[sessionId].offset)
-    fs.closeSync(fd)
-  } catch (e) {
-    log.error(`read ${jsonlPath}: ${e.message}`)
-    return
-  }
-  const lines = buf.toString('utf8').split('\n').filter(l => l.trim())
-  const parsedEvents = []
-  let delivered = true
-  const harness = HARNESS_ADAPTERS[harnessKind]?.activity
-  if (!harness) {
-    log.error(`readNewSessionLines: unknown harness kind ${harnessKind}`)
-    return
-  }
-
-  for (const line of lines) {
-    const ev = harness.parseLine(line)
-    if (ev) parsedEvents.push(ev)
-
-    if (!harness.terminalChat) continue
-
-    // Terminal-chat extraction: user-typed text in the terminal. Same
-    // shape the inline server used: from='fleet:<user>', to=agentId,
-    // metadata.source='terminal'. Server dedups via (timestamp,
-    // from, to, text) so duplicate JSONL lines don't double-fire.
-    let parsed
-    try { parsed = JSON.parse(line) } catch { continue }
-    if (parsed.type !== 'user') continue
-    if (parsed.isMeta) continue
-    const content = parsed.message?.content
-    let text = ''
-    if (typeof content === 'string') text = content
-    else if (Array.isArray(content)) text = content.filter(c => c?.type === 'text').map(c => c.text).join('\n')
-    if (!text || text.length < 3) continue
-    if (text.length > 2000) text = text.substring(0, 2000)
-    if (text.startsWith('<task-notification') || text.startsWith('<system-reminder') ||
-        text.startsWith('<channel') || text.startsWith('📬') ||
-        // The resume/wake bootstrap prompt, in either the no-name `Call register()`
-        // or named `Call register(name="foo")` form — plumbing, never shown to the user.
-        /^Call register\([^)]*\) with the fleet MCP server\b/.test(text)) continue
-    const ts = parsed.timestamp || null
-    if (!ts) continue
-    if (!sendMsg({
-      type: 'terminal-chat',
-      agent_id: agentId,
-      from: `fleet:${os.userInfo?.()?.username || 'user'}`,
-      text,
-      ts,
-      session_id: sessionId,
-    })) delivered = false
-  }
-
-  if (parsedEvents.length > 0) {
-    const activity = extractActivityEvents(parsedEvents)
+  const ev = harness.parseRecord ? harness.parseRecord(record) : null
+  if (ev) {
+    const activity = extractActivityEvents([ev])
     if (activity.length > 0) {
-      log.info(`activity extracted for ${agentId}: ${activity.length} event(s) from ${path.basename(jsonlPath)}`)
+      log.info(`activity extracted for ${agentId}: ${activity.length} event(s) from ${path.basename(pw.jsonlPath)}`)
       if (bufferActivity(agentId, activity) === false) delivered = false
     }
-
-    // Context-percent: find the latest usage data and compute remaining %
-    const lastUsage = [...parsedEvents].reverse().find(ev => ev.usage)
-    if (lastUsage) {
+    if (ev.usage) {
       const MAX_CONTEXT = 200_000
-      const used = lastUsage.usage.input
+      const used = ev.usage.input
       const pct = Math.max(0, Math.round((1 - used / MAX_CONTEXT) * 100))
       if (!sendMsg({ type: 'agent-context', agentId, contextPercent: pct, inputTokens: used })) delivered = false
     }
+    processQualificationEvent(agentId, ev)
+  }
 
-    // Qualification checking: track reads, check edits/writes
-    for (const ev of parsedEvents) {
-      if (!ev.blocks) continue
-      for (const block of ev.blocks) {
-        if (block.type !== 'tool_use') continue
-        const input = block.input || {}
-        const filePath = input.file_path || input.path || ''
-        if (block.name === 'Read' && filePath) trackRead(agentId, filePath)
-        if (block.name === 'Skill' && input.skill) trackRead(agentId, 'skill:' + input.skill)
-        if (block.name === 'Bash' && input.command) trackPartialSkillReads(agentId, input.command)
-        if ((block.name === 'Edit' || block.name === 'Write' || block.name === 'MultiEdit') && filePath) {
-          checkQualification(agentId, block.name, filePath)
-          recordEdit(agentId, filePath)
-        }
-      }
+  if (harness.terminalChat && !sendTerminalChatFromRecord(agentId, pw.sessionId, record)) delivered = false
+  if (harness.backfillSearch && !sendSearchIndexFromRecord(agentId, pw.sessionId, record)) delivered = false
+  return delivered
+}
+
+function processQualificationEvent(agentId, ev) {
+  if (!ev.blocks) return
+  for (const block of ev.blocks) {
+    if (block.type !== 'tool_use') continue
+    const input = block.input || {}
+    const filePath = input.file_path || input.path || ''
+    if (block.name === 'Read' && filePath) trackRead(agentId, filePath)
+    if (block.name === 'Skill' && input.skill) trackRead(agentId, 'skill:' + input.skill)
+    if (block.name === 'Bash' && input.command) trackPartialSkillReads(agentId, input.command)
+    if ((block.name === 'Edit' || block.name === 'Write' || block.name === 'MultiEdit') && filePath) {
+      checkQualification(agentId, block.name, filePath)
+      recordEdit(agentId, filePath)
     }
-
-    // Plan-mode capture DISABLED 2026-05-18 — was spawning tmux capture-pane
-    // per active agent on every JSONL write, flooding the process table under
-    // load. Re-enable only after replacing with a tmux-free detection path
-    // (e.g. regex scan of the JSONL text itself for the plan-mode sentinel).
-
-    // Check for tool approval prompts — these appear when Claude wants to
-    // use a tool that requires permission.
   }
+}
 
-  if (delivered) {
-    cursors[sessionId].offset = stat.size
-    scheduleCursorSave()
-  } else {
-    log.warn(`not advancing cursor for ${path.basename(jsonlPath)}; activity delivery failed`)
-  }
+function sendTerminalChatFromRecord(agentId, sessionId, parsed) {
+  if (parsed.type !== 'user') return true
+  if (parsed.isMeta) return true
+  const content = parsed.message?.content
+  let text = ''
+  if (typeof content === 'string') text = content
+  else if (Array.isArray(content)) text = content.filter(c => c?.type === 'text').map(c => c.text).join('\n')
+  if (!text || text.length < 3) return true
+  if (text.length > 2000) text = text.substring(0, 2000)
+  if (text.startsWith('<task-notification') || text.startsWith('<system-reminder') ||
+      text.startsWith('<channel') || text.startsWith('📬') ||
+      /^Call register\([^)]*\) with the fleet MCP server\b/.test(text)) return true
+  const ts = parsed.timestamp || null
+  if (!ts) return true
+  return sendMsg({
+    type: 'terminal-chat',
+    agent_id: agentId,
+    from: `fleet:${os.userInfo?.()?.username || 'user'}`,
+    text,
+    ts,
+    session_id: sessionId,
+  })
+}
 
-  // Extract text content for unified search and send to server.
-  if (!harness.backfillSearch) return
-
-  const searchEntries = []
-  for (const line of lines) {
-    if (!line.trim()) continue
-    let parsed
-    try { parsed = JSON.parse(line) } catch { continue }
-    if (parsed.type !== 'user' && parsed.type !== 'assistant') continue
-    const ts = parsed.timestamp || parsed.message?.timestamp || parsed.snapshot?.timestamp || null
-    if (!ts) continue
-    const content = parsed.message?.content
-    let text = ''
-    if (typeof content === 'string') text = content
-    else if (Array.isArray(content)) text = content.filter(c => c?.type === 'text').map(c => c.text).join('\n')
-    if (!text || text.length < 3) continue
-    searchEntries.push({ agent_id: agentId, session_id: sessionId, role: parsed.type, timestamp: ts, text })
-  }
-  if (searchEntries.length > 0) sendMsg({ type: 'jsonl-index', entries: searchEntries })
+function sendSearchIndexFromRecord(agentId, sessionId, parsed) {
+  if (parsed.type !== 'user' && parsed.type !== 'assistant') return true
+  const ts = parsed.timestamp || parsed.message?.timestamp || parsed.snapshot?.timestamp || null
+  if (!ts) return true
+  const content = parsed.message?.content
+  let text = ''
+  if (typeof content === 'string') text = content
+  else if (Array.isArray(content)) text = content.filter(c => c?.type === 'text').map(c => c.text).join('\n')
+  if (!text || text.length < 3) return true
+  return sendMsg({ type: 'jsonl-index', entries: [{ agent_id: agentId, session_id: sessionId, role: parsed.type, timestamp: ts, text }] })
 }
 
 // One-time backfill of a JSONL's full content to the search index.
@@ -3026,28 +3028,20 @@ async function checkAgentLiveness() {
     return
   }
 
-  // Collect all candidate sessions in one pass, then batch-query pane PIDs.
-  const candidateAgents = []
+  // Membership source of truth: tmux's live session set. Historical roster rows
+  // are only metadata for sessions that actually exist now; an absent row that
+  // this daemon never observed live is not local work.
+  const agentsBySession = new Map()
   for (const agent of agents) {
-    if (agent.dead || agent.human) continue
-    if (!agent.tmux_session) continue
-    checkedAgentIds.push(agent.id)
-    if (!sessions.has(agent.tmux_session)) {
-      if (!_observedLiveSessions.has(agent.tmux_session)) {
-        // Session was never seen alive by this daemon → it was already gone at
-        // first observation. Mark hibernating, but emit the log/transition exactly
-        // ONCE — not every sweep. Without this gate, every agent whose session
-        // never existed in this daemon's lifetime re-logs "absent on first local
-        // observation" on every 30s sweep (hundreds of dead agents → GB log,
-        // perpetual re-stamp storm). The aliveness cache is the durable record of
-        // "already known absent".
-        if (_alivenessCache.get(agent.tmux_session) !== false) {
-          log.info(`agent ${agent.friendly_name || agent.id} is hibernating (tmux session ${agent.tmux_session} absent on first local observation)`)
-        }
-        agent.hibernating = true
-        _alivenessCache.set(agent.tmux_session, false)
-        continue
-      }
+    if (agent.dead || agent.human || !agent.tmux_session) continue
+    if (!agentsBySession.has(agent.tmux_session)) agentsBySession.set(agent.tmux_session, [])
+    agentsBySession.get(agent.tmux_session).push(agent)
+  }
+
+  for (const session of [..._observedLiveSessions]) {
+    if (sessions.has(session)) continue
+    for (const agent of (agentsBySession.get(session) || [])) {
+      checkedAgentIds.push(agent.id)
       const decision = decideMissingLiveness({
         now,
         missingSince: _missingSessionSince.get(agent.id),
@@ -3056,17 +3050,24 @@ async function checkAgentLiveness() {
       })
       _missingSessionSince.set(agent.id, decision.since)
       if (decision.alive) {
-        _alivenessCache.set(agent.tmux_session, true)
+        _alivenessCache.set(session, true)
         aliveAgentIds.push(agent.id)
         continue
       }
       if (!agent.hibernating) {
-        log.info(`agent ${agent.friendly_name || agent.id} is hibernating (tmux session ${agent.tmux_session} gone for ${Math.round((now - decision.since) / 1000)}s)`)
+        log.info(`agent ${agent.friendly_name || agent.id} is hibernating (tmux session ${session} gone for ${Math.round((now - decision.since) / 1000)}s)`)
       }
       agent.hibernating = true
-      _alivenessCache.set(agent.tmux_session, false)
-      continue
+      _alivenessCache.set(session, false)
     }
+    _observedLiveSessions.delete(session)
+  }
+
+  // Collect live candidate sessions, then batch-query pane PIDs.
+  const candidateAgents = []
+  for (const session of sessions) {
+    for (const agent of (agentsBySession.get(session) || [])) {
+    checkedAgentIds.push(agent.id)
     _observedLiveSessions.add(agent.tmux_session)
     _missingSessionSince.delete(agent.id)
     // Liveness #B(c): session exists AND the agent emitted JSONL activity recently
@@ -3082,6 +3083,7 @@ async function checkAgentLiveness() {
       continue
     }
     candidateAgents.push(agent)
+    }
   }
 
   if (!candidateAgents.length) {
@@ -3216,12 +3218,8 @@ async function checkAgentLiveness() {
       const watcher = watchedPath ? pathWatchers.get(watchedPath) : null
       if (!watchedPath || !watcher) {
         watcherNeedsSync = true
-      } else if (watcher.harnessKind === matchedKind) {
-        // fs.watch can go quiet on macOS even while the transcript keeps
-        // growing. The read path is cursor-based, so this is a cheap heartbeat
-        // drain for live non-Claude agents and closes the "alive agent, dead
-        // activity cards" gap without replaying old history.
-        scheduleReadNewSessionLines(agent.id, watchedPath, watcher.sessionId, watcher.harnessKind)
+      } else if (watcher.harnessKind !== matchedKind) {
+        watcherNeedsSync = true
       }
     }
     aliveAgentIds.push(agent.id)
@@ -3926,9 +3924,22 @@ function sendMsg(obj) {
 }
 
 function teardownWatchers() {
-  for (const [p, pw] of pathWatchers) { pw.fsWatch?.stop(); fs.unwatchFile(p) }
+  for (const [, pw] of pathWatchers) stopJsonlTail(pw, 'daemon watcher teardown')
   pathWatchers.clear()
   agentPaths.clear()
+  for (const [, entry] of jsonlDirWatchers) {
+    try {
+      const closed = entry.watcher.close()
+      Promise.resolve(closed).catch(e => {
+        // Best-effort teardown; daemon shutdown must continue after a Chokidar close rejection.
+        log.warn(`chokidar teardown close failed: ${e?.message || e}`)
+      })
+    } catch (e) {
+      // Best-effort teardown; daemon shutdown must continue after a Chokidar close throw.
+      log.warn(`chokidar teardown close threw: ${e?.message || e}`)
+    }
+  }
+  jsonlDirWatchers.clear()
   // Source watchers survive WS disconnects — they detect file changes
   // independently and queue them for the next connected window.
   for (const [, s] of terminalWatchPtys) { s.alive = false; try { s.pty.kill() } catch {} }
