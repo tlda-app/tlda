@@ -14,12 +14,13 @@ import { CanvasClipPanel, syncCanvasClipPanelViewportCamera, type ClipBounds } f
 import { useFleetIdentity } from '../fleet-data-adapter'
 // @ts-ignore — vanilla JS module
 import { getHumanId, getDeviceId, isDeviceReady, whenDeviceReady } from '../fleet/fleet-data.mjs'
-import { getMyAnchorId, isMyFleetShape, FLEET_INTERACTION_SHAPE_SELECTOR, FLEET_SHAPE_TYPES, adoptLegacyFleetShapes, layoutOffset, ensureMyLaneDisjoint, isPhoneFleetLayoutForCurrentDevice, reflowPhoneFleetLayout } from '../shapes/fleet-utils'
+import { getMyAnchorId, isMyFleetShape, FLEET_INTERACTION_SHAPE_SELECTOR, FLEET_SHAPE_TYPES, adoptLegacyFleetShapes, layoutOffset, ensureMyLaneDisjoint } from '../shapes/fleet-utils'
 import { isDocumentPageShape } from '../shapes/document-pages'
 import { fleetTouchGestureActiveRef, postTouchTelemetry, setTouchDiagStatus, snapToCurrentPhoneLaneIndex, useFleetGestures } from './useFleetGestures'
 import { PhoneLaneArrow } from './PhoneLaneArrow'
 import { shouldRenderLockedFleetViewportShape } from './fleet-viewport-predicate'
 import { SuggestionTip } from '../shapes/FleetChatShape'
+import { isPhoneStackLayoutForOwner, refitPhonePaneStack } from '../shapes/phone-pane-stack'
 import { log } from '../logger'
 import { computeFleetBoundsFromShapes, createFleetBoundsTracker, type FleetBoundsResult } from './fleet-bounds'
 import { computeFleetHudDefaultAnchor } from './fleet-hud-anchor'
@@ -37,6 +38,7 @@ import { FLEET_HUD_RESET_EVENT, FLEET_HUD_TOGGLE_EVENT, setHudEditor } from '../
 import { readFleetHudExpanded, resolveFleetHudToggle, writeFleetHudExpanded } from '../wm/fleet-hud-state'
 import { probe } from '../perf-probe'
 import './FleetHUD.css'
+import { isPhoneViewport } from '../phoneViewport'
 
 declare global {
   interface Window {
@@ -213,6 +215,14 @@ function getDocumentLeftPage(editor: Editor): number | null {
     if (b && b.x < minPageX) minPageX = b.x
   }
   return isFinite(minPageX) ? minPageX : null
+}
+
+function isPhoneFleetLayout(editor: Editor): boolean {
+  const humanId = getHumanId()
+  const deviceId = getDeviceId()
+  if (!humanId || !deviceId) return false
+  if (!isPhoneViewport()) return false
+  return isPhoneStackLayoutForOwner(editor, humanId, deviceId)
 }
 
 function getFleetHudDiagnostic(editor: Editor) {
@@ -490,7 +500,7 @@ export function FleetHUD({
       applyHudAnchor({ panOffset: anchor.meta.panOffset, cameraY: anchor.meta.cameraY }, { syncViewport: false })
     }
   }
-  const phoneLayout = isPhoneFleetLayoutForCurrentDevice(mainEditor)
+  const phoneLayout = isPhoneFleetLayout(mainEditor)
   const PHONE_TOP_PAD = -20
   const activeTopPad = phoneLayout ? PHONE_TOP_PAD : TOP_PAD
 
@@ -668,8 +678,9 @@ export function FleetHUD({
       const sig = `${Math.round(screenW)}x${Math.round(screenH)}`
       if (sig === lastSig) return
       lastSig = sig
-      if (!isPhoneFleetLayoutForCurrentDevice(mainEditor)) return
-      const changed = reflowPhoneFleetLayout(mainEditor)
+      if (!isPhoneFleetLayout(mainEditor)) return
+      const result = refitPhonePaneStack(mainEditor)
+      const changed = result.ok && result.updatedIds.length > 0
       const docLeftPage = getDocumentLeftPage(mainEditor)
       if (docLeftPage !== null) snapToCurrentPhoneLaneIndex(mainEditor, docLeftPage, 0)
       if (changed) {
@@ -801,7 +812,7 @@ export function FleetHUD({
         // same-zoom camera changes as deliberate pan.
       } else if (hudAnchorRef.current !== null) {
         const t0 = probe.isEnabled('hud') ? performance.now() : 0
-        if (isPhoneFleetLayoutForCurrentDevice(mainEditor)) {
+        if (isPhoneFleetLayout(mainEditor)) {
           const latestBounds = readMaintainedFleetBounds() || fleetBounds
           const docShapes = mainEditor.getCurrentPageShapes().filter(isDocumentPageShape)
           let minPageX = Infinity

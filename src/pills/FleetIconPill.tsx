@@ -47,7 +47,7 @@ type LayoutId = Exclude<FleetLayoutVariant, 'touch'>
 type LayoutSource = 'badge-drag-release' | 'fan-preset' | 'url-auto'
 // Order is "outside in": phone/pane layout first, then the desktop layouts.
 const LAYOUT_PRESETS: { id: LayoutId; title: string }[] = [
-  { id: 'phone', title: 'Phone reset: agents/inbox | chat | document' },
+  { id: 'phone', title: 'Phone reset: inbox | document' },
   { id: '3-col', title: 'Three-column: agents + search | chat | chat + docview' },
   { id: '2x2', title: '2×2: agents + search | four chats' },
   { id: 'big-chat', title: 'Big chat: large chat over source editor' },

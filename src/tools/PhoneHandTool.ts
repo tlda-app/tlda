@@ -2,6 +2,7 @@ import { StateNode, Vec, type Editor, type TLStateNodeConstructor } from 'tldraw
 import { log } from '../logger'
 import { isDocumentPageShape } from '../shapes/document-pages'
 import { setPhoneLaneDrag, PHONE_LANE_DRAG_IDLE, phoneLaneCommitPx, phoneLaneIndexFromCamera, snapToPhoneLaneIndex } from '../overlays/useFleetGestures'
+import { phonePaneStackMaxIndex } from '../shapes/phone-pane-stack'
 
 const AXIS_THRESHOLD = 5 // px before locking axis
 const LOG_NS = 'fleet-gesture'
@@ -190,7 +191,7 @@ class PhoneDragging extends StateNode {
   private laneExistsFromStart(dir: number): boolean {
     if (dir === 0) return false
     const next = this.startLaneIndex + dir
-    return next >= 0 && next <= 2
+    return next >= 0 && next <= phonePaneStackMaxIndex(this.editor)
   }
 
   private update() {

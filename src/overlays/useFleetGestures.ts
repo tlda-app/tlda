@@ -27,6 +27,7 @@ import type { Editor, TLShape } from 'tldraw'
 import { log } from '../logger'
 import { FLEET_SHAPE_TYPES, isMyFleetShape } from '../shapes/fleet-utils'
 import { isDocumentPageShape } from '../shapes/document-pages'
+import { phonePaneStackMaxIndex } from '../shapes/phone-pane-stack'
 import {
   MOVE_LOCK_ON,
   PAN_AXIS_DECAY,
@@ -589,11 +590,11 @@ export function phoneLaneCommitPx(screenW: number): number {
   return Math.max(PHONE_LANE_COMMIT_MIN, referenceW * PHONE_LANE_COMMIT_FRAC)
 }
 
-// Explicit lane index — 0 = document, 1 = chat, 2 = agents/inbox (docLeftScreen =
-// index * screenW). Fast repeated swipes read the camera MID snap-animation
-// (between stops); measuring "which lane am I on" off that drifts a little each
-// time and accumulates (agents ends up not-far-enough-left). So we keep an
-// explicit index and only re-sync it from the camera when it's settled ON a stop.
+// Explicit pane index — 0 = document, 1 = inbox, 2+ = pinned panes ordered
+// outward to the left. Fast repeated swipes read the camera MID snap-animation
+// (between stops); measuring "which pane am I on" off that drifts a little each
+// time and accumulates. So we keep an explicit index and only re-sync it from
+// the camera when it's settled ON a stop.
 let phoneLaneIndex = 1
 
 // Current lane index. Re-syncs from the camera only when settled near a stop;
@@ -603,7 +604,8 @@ export function phoneLaneIndexFromCamera(editor: Editor, docLeftPage: number): n
   const screenW = editor.getViewportScreenBounds().w
   if (!screenW || !Number.isFinite(screenW)) return phoneLaneIndex
   const cur = (docLeftPage + cam.x) * cam.z
-  const nearest = Math.max(0, Math.min(2, Math.round(cur / screenW)))
+  const maxIndex = phonePaneStackMaxIndex(editor)
+  const nearest = Math.max(0, Math.min(maxIndex, Math.round(cur / screenW)))
   if (Math.abs(cur - nearest * screenW) < screenW * 0.2) phoneLaneIndex = nearest
   return phoneLaneIndex
 }
@@ -612,7 +614,7 @@ export function snapToPhoneLaneIndex(editor: Editor, docLeftPage: number, index:
   const cam = editor.getCamera()
   const screenW = editor.getViewportScreenBounds().w
   if (!screenW || !Number.isFinite(screenW)) return
-  phoneLaneIndex = Math.max(0, Math.min(2, index))
+  phoneLaneIndex = Math.max(0, Math.min(phonePaneStackMaxIndex(editor), index))
   const x = (phoneLaneIndex * screenW) / cam.z - docLeftPage
   editor.setCamera({ ...cam, x }, { animation: { duration: PHONE_LANE_SNAP_DURATION } })
 }
@@ -622,17 +624,17 @@ export function snapToCurrentPhoneLaneIndex(editor: Editor, docLeftPage: number,
   const screenW = editor.getViewportScreenBounds().w
   if (!screenW || !Number.isFinite(screenW)) return
   const index = phoneLaneIndexFromCamera(editor, docLeftPage)
-  phoneLaneIndex = Math.max(0, Math.min(2, index))
+  phoneLaneIndex = Math.max(0, Math.min(phonePaneStackMaxIndex(editor), index))
   const x = (phoneLaneIndex * screenW) / cam.z - docLeftPage
   editor.setCamera({ ...cam, x }, { animation: { duration: animationDuration } })
 }
 
-// dir +1 pulls toward the agents/inbox lane, -1 toward the document lane. A lane
+// dir +1 pulls toward higher pane indices, -1 toward the document pane. A pane
 // exists in that direction unless we're already at an end.
 export function phoneLaneExistsInDirection(editor: Editor, docLeftPage: number, dir: number): boolean {
   if (dir === 0) return false
   const next = phoneLaneIndexFromCamera(editor, docLeftPage) + dir
-  return next >= 0 && next <= 2
+  return next >= 0 && next <= phonePaneStackMaxIndex(editor)
 }
 
 export function snapPhoneLaneDirectional(editor: Editor, docLeftPage: number, dir: number) {

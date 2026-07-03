@@ -33,19 +33,17 @@ function baseInput(overrides: Partial<FleetLayoutPlanInput> = {}): FleetLayoutPl
   }
 }
 
-test('phone layout plan creates locked owned lanes with viewport dimensions', () => {
+test('phone layout plan creates the locked owned inbox pane with viewport dimensions', () => {
   const plan = planFleetLayoutShapes(baseInput({ variant: 'phone' }))
   assert.equal(plan.dispatchHudReset, true)
   assert.deepEqual(plan.shapes.map(s => [s.id, s.type, s.isLocked]), [
-    ['shape:agents', 'fleet-agents', true],
     ['shape:inbox', 'fleet-inbox', true],
-    ['shape:chat-0', 'fleet-chat', true],
   ])
-  assert.deepEqual(plan.shapes.map(s => s.props.userId), ['fleet:skip', 'fleet:skip', 'fleet:skip'])
-  assert.deepEqual(plan.shapes.map(s => s.props.deviceId), ['air', 'air', 'air'])
-  assert.equal(plan.shapes[2].props.w, 390)
-  assert.equal(plan.shapes[2].props.h, 844)
-  assert.deepEqual(plan.shapes[2].props.filter, [[['from', 'alpha']]])
+  assert.deepEqual(plan.shapes.map(s => s.props.userId), ['fleet:skip'])
+  assert.deepEqual(plan.shapes.map(s => s.props.deviceId), ['air'])
+  assert.equal(plan.shapes[0].props.w, 390)
+  assert.equal(plan.shapes[0].props.h, 844)
+  assert.equal(plan.shapes[0].x, 6000 - 390 - 4000)
 })
 
 test('2x2 layout plan creates four chats and no docview', () => {
