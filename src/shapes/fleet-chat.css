@@ -128,15 +128,6 @@ body.phone-mode .fleet-chat-shape .fleet-btn-group {
   visibility: visible;
   pointer-events: auto;
   transition: none;
-  /* Sit in the bottom-right corner stack (one 52px step above the layout pill at
-     128px), aligned with the highlighter/voice/layout controls, so the filter
-     reads as part of that group instead of floating on the chat's edge. The chat
-     panel is full-screen on phone, so these coords line up with the fixed corner
-     controls. (Skip.) */
-  top: auto;
-  bottom: calc(180px + env(safe-area-inset-bottom));
-  right: max(4px, env(safe-area-inset-right));
-  transform: none;
 }
 body.phone-mode .fleet-chat-shape .fleet-btn-group > :not(.fleet-filter-btn) {
   display: none;
