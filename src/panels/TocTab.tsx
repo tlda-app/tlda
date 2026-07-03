@@ -15,7 +15,7 @@ import {
 } from '../hooks/useFleetTheme'
 import { getCameraLinked, toggleCameraLinked, subscribeCameraLinked } from '../cameraLink'
 import {
-  getLiveSession, subscribeLiveSession, toggleLiveSession, toggleMute, toggleSpatial,
+  getLiveSession, subscribeLiveSession, toggleLiveSession, toggleMute, toggleSpatial, toggleCamera,
   probeLiveSessionConfig,
 } from '../livekit/liveSession'
 import { getSemanticHighlight, toggleSemanticHighlight, subscribeSemanticHighlight } from '../semanticHighlight'
@@ -639,6 +639,9 @@ export function JoinVoiceVideoToggle() {
         <>
           <div className="toc-diff-hint toc-toggle-indented" onClick={toggleMute}>
             {s.micOn ? 'Mute mic' : 'Unmute mic'}
+          </div>
+          <div className="toc-diff-hint toc-toggle-indented" onClick={toggleCamera}>
+            {s.cameraOn ? 'Turn camera off' : 'Turn camera on'}
           </div>
           <div className="toc-diff-hint toc-toggle-indented" onClick={toggleSpatial}>
             {s.spatialEnabled ? 'Spatial audio on' : 'Spatial audio'}

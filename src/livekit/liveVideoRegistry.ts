@@ -3,6 +3,7 @@ export interface LiveVideoTile {
   identity: string
   name?: string
   trackSid?: string
+  local?: boolean
   stream: MediaStream
 }
 

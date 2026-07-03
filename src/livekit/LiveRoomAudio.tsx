@@ -3,10 +3,19 @@ import type { Editor } from 'tldraw'
 import { Room, RoomEvent, Track } from 'livekit-client'
 import { getLiveSession, subscribeLiveSession, setLiveRuntime, leaveLiveSession } from './liveSession'
 import { setCallMicState } from '../voice.mjs'
-import type { RemoteAudioTrack, RemoteVideoTrack, RemoteTrack, RemoteTrackPublication, RemoteParticipant } from 'livekit-client'
+import type {
+  LocalTrackPublication,
+  Participant,
+  RemoteAudioTrack,
+  RemoteVideoTrack,
+  RemoteTrack,
+  RemoteTrackPublication,
+  RemoteParticipant,
+  TrackPublication,
+} from 'livekit-client'
 import { log } from '../logger'
 import { getDeviceId, getHumanId, getHumanName } from '../fleet/fleet-data.mjs'
-import { createFleetShape } from '../shapes/fleet-utils'
+import { createFleetShape, isMyFleetShape } from '../shapes/fleet-utils'
 import { getLiveVideoTiles, removeLiveVideoTile, setLiveVideoTile } from './liveVideoRegistry'
 import './LiveRoomAudio.css'
 
@@ -53,6 +62,26 @@ interface SpatialTrackState {
   mode: 'panner' | 'stereo'
   position: SpatialPosition
   cleanup: () => void
+}
+
+interface LiveKitMediaStreamTrackHolder {
+  mediaStreamTrack?: MediaStreamTrack
+}
+
+interface FleetVideoShapeRecord {
+  id: string
+  type: 'fleet-video'
+  props: { title?: string }
+  isLocked?: boolean
+}
+
+function isFleetVideoShapeRecord(shape: unknown): shape is FleetVideoShapeRecord {
+  return (
+    !!shape &&
+    typeof shape === 'object' &&
+    (shape as { type?: unknown }).type === 'fleet-video' &&
+    typeof (shape as { id?: unknown }).id === 'string'
+  )
 }
 
 function sessionId(docName: string) {
@@ -158,6 +187,7 @@ function spatialPositionForTrack(info: RemoteAudioTrackInfo, slot: number): Spat
 export function LiveRoomAudio({ docName, editor }: LiveRoomAudioProps) {
   const [status, setStatus] = useState<Status>('idle')
   const [micOn, setMicOn] = useState(false)
+  const [cameraOn, setCameraOn] = useState(false)
   const [participantCount, setParticipantCount] = useState(0)
   const [videoKeys, setVideoKeys] = useState<string[]>([])
   const [spatialEnabled, setSpatialEnabled] = useState(false)
@@ -170,6 +200,7 @@ export function LiveRoomAudio({ docName, editor }: LiveRoomAudioProps) {
   const spatialNodesRef = useRef(new Map<string, SpatialTrackState>())
   const disconnectSeqRef = useRef(0)
   const videoShapeIdRef = useRef<string | null>(null)
+  const localVideoKeyRef = useRef<string | null>(null)
 
   const session = useSyncExternalStore(subscribeLiveSession, getLiveSession)
 
@@ -305,6 +336,53 @@ export function LiveRoomAudio({ docName, editor }: LiveRoomAudioProps) {
     }
   }, [cleanupSpatialTrack])
 
+  const removeVideoKey = useCallback((key: string) => {
+    removeLiveVideoTile(key)
+    setVideoKeys(prev => prev.filter(tileKey => tileKey !== key))
+  }, [])
+
+  const videoKeyForPublication = useCallback((publication: TrackPublication, participant: Participant) => {
+    return `${participant.identity}:${publication.trackSid || publication.track?.sid || publication.source || Track.Kind.Video}`
+  }, [])
+
+  const removePublicationVideo = useCallback((publication: TrackPublication, participant: Participant) => {
+    if (publication.kind !== Track.Kind.Video) return
+    removeVideoKey(videoKeyForPublication(publication, participant))
+  }, [removeVideoKey, videoKeyForPublication])
+
+  const setLocalVideoTile = useCallback((publication?: LocalTrackPublication) => {
+    const room = roomRef.current
+    if (!room) return false
+    const pub = publication ?? Array.from(room.localParticipant.videoTrackPublications.values())
+      .find(candidate => candidate.source === Track.Source.Camera)
+    const track = pub?.videoTrack
+    const mediaStreamTrack = (track as unknown as LiveKitMediaStreamTrackHolder | undefined)?.mediaStreamTrack
+    if (!pub || !track || !mediaStreamTrack || pub.isMuted) return false
+
+    const nextKey = videoKeyForPublication(pub, room.localParticipant)
+    const prevKey = localVideoKeyRef.current
+    if (prevKey && prevKey !== nextKey) removeVideoKey(prevKey)
+    localVideoKeyRef.current = nextKey
+
+    setLiveVideoTile({
+      key: nextKey,
+      identity: room.localParticipant.identity,
+      name: 'You',
+      trackSid: pub.trackSid || track.sid,
+      local: true,
+      stream: new MediaStream([mediaStreamTrack]),
+    })
+    setVideoKeys(prev => [nextKey, ...prev.filter(tileKey => tileKey !== nextKey)])
+    return true
+  }, [removeVideoKey, videoKeyForPublication])
+
+  const removeLocalVideoTile = useCallback(() => {
+    const key = localVideoKeyRef.current
+    if (!key) return
+    localVideoKeyRef.current = null
+    removeVideoKey(key)
+  }, [removeVideoKey])
+
   const attachTrack = useCallback((track: RemoteTrack, publication: RemoteTrackPublication, participant: RemoteParticipant) => {
     const key = `${participant.identity}:${publication.trackSid || track.sid || track.kind}`
     detachTrack(track, key)
@@ -358,6 +436,7 @@ export function LiveRoomAudio({ docName, editor }: LiveRoomAudioProps) {
     void spatialAudioContextRef.current?.close().catch(() => {})
     spatialAudioContextRef.current = null
     for (const tile of getLiveVideoTiles()) removeLiveVideoTile(tile.key)
+    localVideoKeyRef.current = null
     setVideoKeys([])
     if (videoShapeIdRef.current && editor.getShape(videoShapeIdRef.current as any)) {
       const id = videoShapeIdRef.current
@@ -371,6 +450,7 @@ export function LiveRoomAudio({ docName, editor }: LiveRoomAudioProps) {
     setSpatialEnabled(false)
     setSpatialStatus('off')
     setMicOn(false)
+    setCameraOn(false)
     setParticipantCount(0)
     if (room) await room.disconnect()
     // Clear join intent so a server-initiated drop doesn't immediately
@@ -439,6 +519,33 @@ export function LiveRoomAudio({ docName, editor }: LiveRoomAudioProps) {
           const key = `${participant.identity}:${publication.trackSid || track.sid || track.kind}`
           detachTrack(track, key)
         })
+        .on(RoomEvent.TrackMuted, (publication: TrackPublication, participant: Participant) => {
+          removePublicationVideo(publication, participant)
+          if (participant === room.localParticipant && publication.source === Track.Source.Camera) {
+            removeLocalVideoTile()
+            setCameraOn(false)
+          }
+        })
+        .on(RoomEvent.TrackUnmuted, (publication: TrackPublication, participant: Participant) => {
+          if (publication.kind !== Track.Kind.Video) return
+          if (participant === room.localParticipant) {
+            if (publication.source === Track.Source.Camera) setCameraOn(setLocalVideoTile(publication as LocalTrackPublication))
+            return
+          }
+          const track = publication.videoTrack
+          if (track && isRemoteVideo(track as RemoteTrack)) {
+            attachTrack(track as RemoteTrack, publication as RemoteTrackPublication, participant as RemoteParticipant)
+          }
+        })
+        .on(RoomEvent.LocalTrackPublished, (publication: LocalTrackPublication) => {
+          if (publication.kind !== Track.Kind.Video || publication.source !== Track.Source.Camera) return
+          setCameraOn(setLocalVideoTile(publication))
+        })
+        .on(RoomEvent.LocalTrackUnpublished, (publication: LocalTrackPublication) => {
+          if (publication.kind !== Track.Kind.Video || publication.source !== Track.Source.Camera) return
+          removeLocalVideoTile()
+          setCameraOn(false)
+        })
         .on(RoomEvent.ActiveSpeakersChanged, () => {
           refreshParticipants()
         })
@@ -456,7 +563,18 @@ export function LiveRoomAudio({ docName, editor }: LiveRoomAudioProps) {
       setError(e instanceof Error ? e.message : String(e))
       await disconnect('error')
     }
-  }, [attachTrack, cleanupSpatialTrack, detachTrack, disconnect, docName, refreshParticipants, status])
+  }, [
+    attachTrack,
+    cleanupSpatialTrack,
+    detachTrack,
+    disconnect,
+    docName,
+    refreshParticipants,
+    removeLocalVideoTile,
+    removePublicationVideo,
+    setLocalVideoTile,
+    status,
+  ])
 
   // --- Entry point: react to the "Join voice/video" intent from the store ---
   // The document is the room; joining is driven by the TOC option (next to
@@ -484,6 +602,31 @@ export function LiveRoomAudio({ docName, editor }: LiveRoomAudioProps) {
     return () => { cancelled = true }
   }, [session.muteIntent, status, micOn])
 
+  // Camera intent mirrors the mic control: the TOC owns the intent, this
+  // controller owns the LiveKit local publication and self-view tile.
+  useEffect(() => {
+    if (status !== 'connected') return
+    const room = roomRef.current
+    if (!room) return
+    const wantCamera = session.cameraIntent
+    if (wantCamera === cameraOn) return
+    let cancelled = false
+    room.localParticipant.setCameraEnabled(wantCamera)
+      .then((publication) => {
+        if (cancelled) return
+        if (wantCamera) {
+          setCameraOn(setLocalVideoTile(publication))
+        } else {
+          removeLocalVideoTile()
+          setCameraOn(false)
+        }
+      })
+      .catch((e) => {
+        if (!cancelled) setError(e instanceof Error ? e.message : String(e))
+      })
+    return () => { cancelled = true }
+  }, [session.cameraIntent, status, cameraOn, removeLocalVideoTile, setLocalVideoTile])
+
   // Spatial audio intent → engaged state. The existing spatialEnabled effect
   // (below) applies/cleans the per-track panner graph.
   useEffect(() => {
@@ -494,13 +637,13 @@ export function LiveRoomAudio({ docName, editor }: LiveRoomAudioProps) {
   // Publish runtime back to the store (drives the TOC label) and fold mic
   // status into the dictation speech HUD — never a standalone floating chip.
   useEffect(() => {
-    setLiveRuntime({ status, micOn, participantCount, spatialEnabled, error })
+    setLiveRuntime({ status, micOn, cameraOn, participantCount, spatialEnabled, error })
     if (status === 'connected') {
       setCallMicState({ inCall: true, micOn, participantCount })
     } else {
       setCallMicState(null)
     }
-  }, [status, micOn, participantCount, spatialEnabled, error])
+  }, [status, micOn, cameraOn, participantCount, spatialEnabled, error])
 
   useEffect(() => {
     return () => { void disconnect() }
@@ -518,6 +661,11 @@ export function LiveRoomAudio({ docName, editor }: LiveRoomAudioProps) {
     ;(window as any).__tldaLiveSession = {
       room: () => roomRef.current,
       videos: () => getLiveVideoTiles().map(({ stream: _stream, ...tile }) => tile),
+      camera: () => ({
+        intent: session.cameraIntent,
+        on: cameraOn,
+        localKey: localVideoKeyRef.current,
+      }),
       spatial: () => ({
         enabled: spatialEnabled,
         status: spatialStatus,
@@ -559,7 +707,7 @@ export function LiveRoomAudio({ docName, editor }: LiveRoomAudioProps) {
         })),
       }),
     }
-  }, [spatialEnabled, spatialStatus])
+  }, [cameraOn, session.cameraIntent, spatialEnabled, spatialStatus])
 
   useEffect(() => {
     const existingId = videoShapeIdRef.current
@@ -581,6 +729,22 @@ export function LiveRoomAudio({ docName, editor }: LiveRoomAudioProps) {
         })
       }, { history: 'ignore' })
       return
+    }
+
+    const fleetVideoShapes = (editor.getCurrentPageShapes() as readonly unknown[])
+      .filter(isFleetVideoShapeRecord)
+    const staleOwnedVideoIds = fleetVideoShapes
+      .filter(shape => isMyFleetShape(shape) && shape.props.title === 'live video')
+      .map(shape => shape.id)
+    if (staleOwnedVideoIds.length > 0) {
+      editor.run(() => {
+        for (const id of staleOwnedVideoIds) {
+          const shape = editor.getShape(id as Parameters<Editor['getShape']>[0])
+          if (shape?.isLocked) editor.updateShape({ id: shape.id, type: shape.type, isLocked: false })
+          const current = editor.getShape(id as Parameters<Editor['getShape']>[0])
+          if (current) editor.deleteShape(current)
+        }
+      }, { history: 'ignore' })
     }
 
     let cancelled = false

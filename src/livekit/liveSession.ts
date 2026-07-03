@@ -25,9 +25,13 @@ export interface LiveSessionState {
   muteIntent: boolean
   /** User wants spatial audio. */
   spatialIntent: boolean
+  /** User wants their camera enabled. */
+  cameraIntent: boolean
   status: LiveStatus
   /** Mic actually live in the room (controller-reported). */
   micOn: boolean
+  /** Camera actually live in the room (controller-reported). */
+  cameraOn: boolean
   /** Spatial audio actually engaged (controller-reported). */
   spatialEnabled: boolean
   participantCount: number
@@ -39,8 +43,10 @@ let state: LiveSessionState = {
   intent: false,
   muteIntent: false,
   spatialIntent: false,
+  cameraIntent: false,
   status: 'idle',
   micOn: false,
+  cameraOn: false,
   spatialEnabled: false,
   participantCount: 0,
   error: null,
@@ -91,10 +97,14 @@ export function toggleSpatial() {
   set({ spatialIntent: !state.spatialIntent })
 }
 
+export function toggleCamera() {
+  set({ cameraIntent: !state.cameraIntent })
+}
+
 // --- Runtime (controller → store) ---
 
 export function setLiveRuntime(
-  patch: Partial<Pick<LiveSessionState, 'status' | 'micOn' | 'participantCount' | 'spatialEnabled' | 'error'>>,
+  patch: Partial<Pick<LiveSessionState, 'status' | 'micOn' | 'cameraOn' | 'participantCount' | 'spatialEnabled' | 'error'>>,
 ) {
   set(patch)
 }

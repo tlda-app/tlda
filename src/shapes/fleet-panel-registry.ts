@@ -16,6 +16,7 @@ export type FleetPanelType =
   | 'fleet-inbox'
   | 'fleet-touch-inbox'
   | 'fleet-notifications'
+  | 'fleet-video'
 
 export type FleetPanelDefinition = HostedPanelAppDefinition<FleetPanelType>
 
@@ -29,6 +30,7 @@ export const FLEET_PANEL_DEFINITIONS = defineHostedPanelApps([
   { type: 'fleet-inbox', defaultSize: { w: 360, h: 560 } },
   { type: 'fleet-touch-inbox', defaultSize: { w: 380, h: 680 } },
   { type: 'fleet-notifications', defaultSize: { w: 360, h: 220 } },
+  { type: 'fleet-video', defaultSize: { w: 260, h: 172 }, defaultProps: { title: 'live video', tileKeys: '[]' } },
 ] satisfies readonly FleetPanelDefinition[])
 
 export const FLEET_PANEL_REGISTRY: ReadonlyMap<FleetPanelType, FleetPanelDefinition> =
