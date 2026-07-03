@@ -2122,6 +2122,33 @@ body.touch-toc-mode:not(.phone-mode) .fleet-icon-pill-container {
   opacity: 0.2;
 }
 
+/* Phone: the ring/fill filled the whole 44px tap target, so it dwarfed its own
+   icon and the other corner controls. Keep the 44px touch area but draw the
+   ring/fill as a smaller, icon-proportionate circle. (Skip.) */
+body.phone-mode .phone-hl-btn {
+  box-shadow: none;
+  background: none;
+}
+body.phone-mode .phone-hl-btn::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 30px;
+  height: 30px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 2px var(--hl-color, transparent);
+  pointer-events: none;
+}
+body.phone-mode .phone-hl-btn.active {
+  background: none;
+}
+body.phone-mode .phone-hl-btn.active::before {
+  background: var(--hl-color, #ffc940);
+  box-shadow: none;
+}
+
 /* Highlighter color slider — appears to the left of button during drag */
 /* Position is set via inline style (dynamic from button rect). */
 .phone-hl-slider {
