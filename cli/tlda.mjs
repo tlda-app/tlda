@@ -100,8 +100,8 @@ const COMMAND_HELP = {
   link:    'tlda doc link <name> [file] [--title "Title"] [--format slides|html|markdown]\n\n  Link the repository containing file to tlda and push files. If the project already exists,\n  pushes files and triggers a rebuild.\n\n  Examples:\n    tlda doc link paper path/to/paper.tex\n    tlda doc link talk path/to/talk.qmd --format slides\n\n  Formats:\n    (default)  LaTeX → SVG pipeline (latexmk → dvisvgm)\n    slides     Reveal.js HTML (from Quarto revealjs or manual)\n    html       Multipage HTML chapters (from Quarto book render)\n    markdown   Markdown with KaTeX math → HTML\n\n  Advanced: --dir <path> and --main <file> override file-derived paths.',
   init:    'tlda doc init <name> [main-file] [--title "Title"] [--dir /path] [--format tex|markdown|html]\n\n  Create a new blank, git-backed project in a fresh directory and register it.\n  Unlike `tlda doc link` (which attaches an existing directory), `init` scaffolds a new one.\n\n  positional <main-file>  Main file name, e.g. paper.tex or notes.md.\n                          Format is inferred from the extension.\n                          Default: main.tex (format: tex/svg)\n  --dir <path>            Where to create the project directory (default: ./<name> in CWD)\n  --title "..."           Display title (default: <name>)\n  --format tex|markdown   Override format inference\n\n  Creates: <dir>/<main-file>, <dir>/README.md, a git repo with an initial commit,\n           then registers and pushes to the tlda server.',
   push:    'tlda doc push [name] [--dir /path]\n\n  Push source files to the server and trigger a rebuild.\n  Project name is inferred from the current directory if omitted.',
-  watch:   'tlda daemon [start|stop|status|log|run]\n\n  Control the per-machine fleet-daemon (bin/fleet-daemon.mjs).\n  The daemon watches Claude Code session JSONLs and project source\n  dirs locally, pushing events to the tlda server over WebSocket.',
-  'watch-all': 'tlda daemon [start|stop|status|log|run]\n\n  Alias for `tlda daemon start/stop/status/log/run` — runs the\n  per-machine fleet-daemon (bin/fleet-daemon.mjs), which watches\n  every project source dir AND every Claude Code session JSONL\n  on this machine and pushes events to the tlda server over WebSocket.',
+  watch:   'tlda daemon [start|stop|status|log|run|install|uninstall]\n\n  Control the per-machine fleet-daemon (bin/fleet-daemon.mjs).\n  The daemon watches Claude Code session JSONLs and project source\n  dirs locally, pushing events to the tlda server over WebSocket.',
+  'watch-all': 'tlda daemon [start|stop|status|log|run|install|uninstall]\n\n  Alias for `tlda daemon start/stop/status/log/run` — runs the\n  per-machine fleet-daemon (bin/fleet-daemon.mjs), which watches\n  every project source dir AND every Claude Code session JSONL\n  on this machine and pushes events to the tlda server over WebSocket.',
   open:    'tlda doc open [name]\n\n  Open the viewer in the default browser (RW token = presenter privilege).',
   share:   'tlda doc share [name|.]\n\n  Print a reachable viewer URL with the read-only token.\n    (no arg)  share the index page (root /)\n    .         share the project inferred from the current directory\n    <name>    share that specific doc\n  Uses the configured remote server when active, otherwise Funnel/Tailscale/LAN.\n  Does not print localhost as a share URL for users on another machine.\n  Recipients can annotate but cannot present.',
   status:  'tlda doc status [name]\n\n  Show build status for a project.',
@@ -121,6 +121,7 @@ const VALUE_FLAGS = new Set([
   'session', 'target', 'timeout', 'id', 'book', 'worktree', 'port', 'browser',
   'model', 'cwd', 'effort', 'mode', 'kind', 'spawn-capability', 'capability',
   'agent-id', 'policy', 'privileges', 'to', 'machine', 'limit', 'from', 'poll', 'config',
+  'label', 'plist',
 ])
 
 function getFlag(name, defaultVal = null) {
@@ -794,11 +795,172 @@ async function cmdInit() {
 // route here, otherwise we fall through to the existing watcher.
 const FLEET_DAEMON_LOGFILE = join(homedir(), '.config', 'tlda', 'fleet-daemon.log')
 const FLEET_DAEMON_PIDFILE = join(homedir(), '.config', 'tlda', 'fleet-daemon.pid')
+const FLEET_DAEMON_LABEL = 'com.tlda.fleet-daemon'
+const FLEET_DAEMON_PLIST = join(homedir(), 'Library', 'LaunchAgents', `${FLEET_DAEMON_LABEL}.plist`)
 const _cliDir = dirname(fileURLToPath(import.meta.url))
-const _cliWorktreeMatch = _cliDir.match(/^(.+?)\/\.claude\/worktrees\//)
+const _cliWorktreeMatch = _cliDir.match(/^(.+?)\/(?:\.claude\/worktrees|\.worktrees)\//)
+const FLEET_DAEMON_MAIN_ROOT = _cliWorktreeMatch ? _cliWorktreeMatch[1] : join(_cliDir, '..')
 const FLEET_DAEMON_SCRIPT = _cliWorktreeMatch
   ? join(_cliWorktreeMatch[1], 'bin', 'fleet-daemon.mjs')
   : join(_cliDir, '..', 'bin', 'fleet-daemon.mjs')
+const FLEET_DAEMON_DNS_ALIAS_PRELOAD = join(FLEET_DAEMON_MAIN_ROOT, 'shared', 'node-dns-alias.cjs')
+
+function plistEscape(value) {
+  return String(value)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&apos;')
+}
+
+function daemonLaunchdTarget(label = FLEET_DAEMON_LABEL) {
+  return `gui/${process.getuid()}/${label}`
+}
+
+function daemonPathEnv() {
+  return [
+    '/opt/homebrew/bin',
+    '/usr/local/bin',
+    '/usr/bin',
+    '/bin',
+    '/usr/sbin',
+    '/sbin',
+  ].join(':')
+}
+
+function daemonEnvironmentEntries({ configDir = null, processTitle = null } = {}) {
+  const entries = [
+    ['PATH', daemonPathEnv()],
+    ['NODE_OPTIONS', `--require=${FLEET_DAEMON_DNS_ALIAS_PRELOAD}`],
+  ]
+  if (existsSync(TLS_CA_PATH)) entries.push(['NODE_EXTRA_CA_CERTS', TLS_CA_PATH])
+  if (configDir) entries.push(['TLDA_DAEMON_CONFIG_DIR', configDir])
+  if (processTitle) entries.push(['TLDA_DAEMON_PROCESS_TITLE', processTitle])
+  return entries
+}
+
+function daemonEnvironmentPlist({ configDir = null, processTitle = null } = {}) {
+  return daemonEnvironmentEntries({ configDir, processTitle })
+    .map(([key, value]) => `        <key>${plistEscape(key)}</key>\n        <string>${plistEscape(value)}</string>`)
+    .join('\n')
+}
+
+function daemonPlistContent({ label = FLEET_DAEMON_LABEL, logFile = FLEET_DAEMON_LOGFILE, configDir = null, cliPath = null, processTitle = null } = {}) {
+  const command = cliPath
+    ? `exec /opt/homebrew/bin/node ${JSON.stringify(cliPath)} daemon run`
+    : 'exec /opt/homebrew/bin/tlda daemon run'
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>${plistEscape(label)}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/zsh</string>
+        <string>-fc</string>
+        <string>${plistEscape(command)}</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>${plistEscape(FLEET_DAEMON_MAIN_ROOT)}</string>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+${daemonEnvironmentPlist({ configDir, processTitle })}
+    </dict>
+    <key>KeepAlive</key>
+    <true/>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>${plistEscape(logFile)}</string>
+    <key>StandardErrorPath</key>
+    <string>${plistEscape(logFile)}</string>
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+</dict>
+</plist>
+`
+}
+
+async function writeDaemonPlist({ plist = FLEET_DAEMON_PLIST, label = FLEET_DAEMON_LABEL, logFile = FLEET_DAEMON_LOGFILE, configDir = null, cliPath = null, processTitle = null } = {}) {
+  if (!existsSync(dirname(plist))) mkdirSync(dirname(plist), { recursive: true })
+  if (!existsSync(dirname(logFile))) mkdirSync(dirname(logFile), { recursive: true })
+  writeFileSync(plist, daemonPlistContent({ label, logFile, configDir, cliPath, processTitle }))
+  return plist
+}
+
+async function runLaunchctl(args, { ignoreFailure = false } = {}) {
+  const { execFileSync } = await import('child_process')
+  try {
+    return execFileSync('launchctl', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+  } catch (e) {
+    if (ignoreFailure) return e.stdout?.toString?.() || ''
+    const detail = e.stderr?.toString?.().trim()
+    throw new Error(detail || e.message)
+  }
+}
+
+function requireLaunchd() {
+  if (process.platform !== 'darwin') {
+    console.error('launchd is macOS-only.')
+    process.exit(1)
+  }
+}
+
+async function bootstrapDaemonPlist(plist = FLEET_DAEMON_PLIST, label = FLEET_DAEMON_LABEL) {
+  await runLaunchctl(['bootstrap', `gui/${process.getuid()}`, plist], { ignoreFailure: true })
+  await runLaunchctl(['kickstart', daemonLaunchdTarget(label)])
+}
+
+async function bootoutDaemonLabel(label = FLEET_DAEMON_LABEL) {
+  await runLaunchctl(['bootout', daemonLaunchdTarget(label)], { ignoreFailure: true })
+}
+
+function sandboxDaemonConfig(configDir, label) {
+  const cfg = loadConfig()
+  return {
+    fleetServer: getFleetServerUrl(cfg),
+    server: getServerUrl(cfg),
+    tokenRw: getRwToken(cfg) || '',
+    machineId: `${label}.${hostname().split('.')[0]}.${process.pid}`,
+  }
+}
+
+async function writeSandboxDaemonPlist() {
+  const label = getFlag('label') || 'com.tlda.fleet-daemon.SANDBOXTEST'
+  const baseDir = getFlag('dir') || join(CONFIG_DIR, 'launchd-sandboxtest')
+  const plist = getFlag('plist') || join(baseDir, `${label}.plist`)
+  const configDir = join(baseDir, 'config')
+  const logFile = join(configDir, 'fleet-daemon.log')
+  if (!existsSync(configDir)) mkdirSync(configDir, { recursive: true })
+  writeFileSync(join(configDir, 'config.json'), JSON.stringify(sandboxDaemonConfig(configDir, label), null, 2))
+  await writeDaemonPlist({
+    plist,
+    label,
+    logFile,
+    configDir,
+    cliPath: join(_cliDir, 'tlda.mjs'),
+    processTitle: `tlda-fleet-daemon-${label.replace(/[^A-Za-z0-9_.-]/g, '-')}`,
+  })
+  console.log(`Wrote test plist: ${plist}`)
+  console.log(`  Label: ${label}`)
+  console.log(`  Config dir: ${configDir}`)
+  console.log(`  WorkingDirectory: ${FLEET_DAEMON_MAIN_ROOT}`)
+  console.log(`  Log: ${logFile}`)
+  console.log('\nYolo acceptance commands:')
+  console.log(`  launchctl bootout gui/$(id -u)/${label} 2>/dev/null || true`)
+  console.log(`  launchctl bootstrap gui/$(id -u) ${JSON.stringify(plist)}`)
+  console.log(`  launchctl kickstart gui/$(id -u)/${label}`)
+  console.log(`  tail -f ${JSON.stringify(logFile)}`)
+  console.log(`  kill "$(cat ${JSON.stringify(join(configDir, 'fleet-daemon.pid'))})"`)
+  console.log(`  launchctl print gui/$(id -u)/${label}`)
+  console.log(`\nCleanup after proof:`)
+  console.log(`  launchctl bootout gui/$(id -u)/${label} 2>/dev/null || true`)
+  return
+}
 
 function lastDaemonConnectedTarget() {
   try {
@@ -810,60 +972,80 @@ function lastDaemonConnectedTarget() {
   }
 }
 
-// Idempotent daemon start — no-op if already running, spawns if not.
+// Idempotent daemon start — ensure launchd has the singleton job loaded.
 // Used by `tlda server start` to make sure the daemon comes up alongside
 // the server. The daemon dying silently was a recurring source of pain.
 async function ensureFleetDaemonRunning() {
-  // Already running?
-  if (existsSync(FLEET_DAEMON_PIDFILE)) {
-    const pid = parseInt(readFileSync(FLEET_DAEMON_PIDFILE, 'utf8').trim(), 10)
-    try { process.kill(pid, 0); return } catch {} // stale pid → fall through
-  }
-  const daemonScript = FLEET_DAEMON_SCRIPT
-  if (!existsSync(daemonScript)) return // not installed; silently skip
-  const { spawn: cpSpawn } = await import('child_process')
-  const { openSync: fsOpenSync } = await import('fs')
-  if (!existsSync(dirname(FLEET_DAEMON_LOGFILE))) mkdirSync(dirname(FLEET_DAEMON_LOGFILE), { recursive: true })
-  const logFd = fsOpenSync(FLEET_DAEMON_LOGFILE, 'a')
-  const child = cpSpawn(process.execPath, ['--import', 'tsx', daemonScript], {
-    detached: true,
-    stdio: ['ignore', logFd, logFd],
-    env: {
-      ...process.env,
-      TMUX: undefined,
-      TMUX_PANE: undefined,
-      ...(hasTls && !process.env.NODE_EXTRA_CA_CERTS ? { NODE_EXTRA_CA_CERTS: TLS_CA_PATH } : {}),
-    },
-  })
-  child.unref()
-  await new Promise(r => setTimeout(r, 800))
-  if (existsSync(FLEET_DAEMON_PIDFILE)) {
-    const pid = readFileSync(FLEET_DAEMON_PIDFILE, 'utf8').trim()
-    console.log(green('Fleet daemon started') + dim(` (pid ${pid})`))
-  } else {
-    console.log(dim('Fleet daemon failed to start — see ' + FLEET_DAEMON_LOGFILE))
-  }
+  if (process.platform !== 'darwin') return
+  if (!existsSync(FLEET_DAEMON_SCRIPT)) return // not installed; silently skip
+  await writeDaemonPlist()
+  await bootstrapDaemonPlist()
+  console.log(green('Fleet daemon launchd job started.'))
 }
 
 async function cmdFleetWatch(sub) {
   const daemonScript = FLEET_DAEMON_SCRIPT
 
-  if (sub === 'stop') {
-    if (existsSync(FLEET_DAEMON_PIDFILE)) {
-      const pid = parseInt(readFileSync(FLEET_DAEMON_PIDFILE, 'utf8').trim(), 10)
-      try { process.kill(pid, 'SIGTERM') } catch {}
-      try { unlinkSync(FLEET_DAEMON_PIDFILE) } catch {}
+  if (sub === 'install') {
+    requireLaunchd()
+    if (!existsSync(daemonScript)) {
+      console.error(red(`Daemon script not found: ${daemonScript}`))
+      process.exit(1)
     }
-    console.log(green('Fleet daemon stopped.'))
+    await writeDaemonPlist()
+    console.log(`Installed ${FLEET_DAEMON_PLIST}`)
+    console.log(`  Label: ${FLEET_DAEMON_LABEL}`)
+    console.log(`  WorkingDirectory: ${FLEET_DAEMON_MAIN_ROOT}`)
+    console.log(`  Log: ${FLEET_DAEMON_LOGFILE}`)
+    console.log('\nThe fleet daemon will auto-restart on crash and start on login.')
+    console.log('Run `tlda daemon start` to start now.')
+    return
+  }
+
+  if (sub === 'uninstall') {
+    requireLaunchd()
+    await bootoutDaemonLabel()
+    if (existsSync(FLEET_DAEMON_PLIST)) unlinkSync(FLEET_DAEMON_PLIST)
+    console.log(green('Uninstalled fleet daemon launchd service.'))
+    return
+  }
+
+  if (sub === 'write-test-plist') {
+    requireLaunchd()
+    return writeSandboxDaemonPlist()
+  }
+
+  if (sub === 'stop') {
+    requireLaunchd()
+    await bootoutDaemonLabel()
+    console.log(green('Fleet daemon launchd job stopped.'))
     return
   }
 
   if (sub === 'status') {
+    if (process.platform === 'darwin' && existsSync(FLEET_DAEMON_PLIST)) {
+      try {
+        const out = await runLaunchctl(['print', daemonLaunchdTarget()])
+        const pidLine = out.split('\n').find(line => line.trim().startsWith('pid ='))
+        const stateLine = out.split('\n').find(line => line.trim().startsWith('state ='))
+        console.log(green('Fleet daemon launchd job loaded'))
+        if (stateLine) console.log(dim(`  ${stateLine.trim()}`))
+        if (pidLine) console.log(dim(`  ${pidLine.trim()}`))
+        console.log(dim(`  Config target: ${getFleetServerUrl()}`))
+        const connectedTarget = lastDaemonConnectedTarget()
+        if (connectedTarget) console.log(dim(`  Last WS target: ${connectedTarget}`))
+        console.log(dim(`  Plist: ${FLEET_DAEMON_PLIST}`))
+        console.log(dim(`  Log: ${FLEET_DAEMON_LOGFILE}`))
+        return
+      } catch {
+        // Expected when a plist exists on disk but the launchd job is not loaded.
+      }
+    }
     if (existsSync(FLEET_DAEMON_PIDFILE)) {
       const pid = parseInt(readFileSync(FLEET_DAEMON_PIDFILE, 'utf8').trim(), 10)
       try {
         process.kill(pid, 0)
-        console.log(green('Fleet daemon running') + dim(` (pid ${pid})`))
+        console.log(yellow('Fleet daemon running outside launchd') + dim(` (pid ${pid})`))
         console.log(dim(`  Config target: ${getFleetServerUrl()}`))
         const connectedTarget = lastDaemonConnectedTarget()
         if (connectedTarget) console.log(dim(`  Last WS target: ${connectedTarget}`))
@@ -890,6 +1072,7 @@ async function cmdFleetWatch(sub) {
     const { spawn: cpSpawn } = await import('child_process')
     const child = cpSpawn(process.execPath, ['--import', 'tsx', daemonScript], {
       stdio: 'inherit',
+      ...(process.env.TLDA_DAEMON_PROCESS_TITLE ? { argv0: process.env.TLDA_DAEMON_PROCESS_TITLE } : {}),
       env: {
         ...process.env,
         TMUX: undefined,
@@ -902,42 +1085,25 @@ async function cmdFleetWatch(sub) {
   }
 
   if (sub === 'start') {
-    // Already running?
-    if (existsSync(FLEET_DAEMON_PIDFILE)) {
-      const pid = parseInt(readFileSync(FLEET_DAEMON_PIDFILE, 'utf8').trim(), 10)
-      try {
-        process.kill(pid, 0)
-        console.log('Fleet daemon already running' + dim(` (pid ${pid})`))
-        return
-      } catch {} // stale pid
-    }
+    requireLaunchd()
 
     if (!existsSync(daemonScript)) {
       console.error(red(`Daemon script not found: ${daemonScript}`))
       process.exit(1)
     }
 
-    const { spawn: cpSpawn } = await import('child_process')
-    const { openSync: fsOpenSync } = await import('fs')
-
-    if (!existsSync(dirname(FLEET_DAEMON_LOGFILE))) mkdirSync(dirname(FLEET_DAEMON_LOGFILE), { recursive: true })
-    const logFd = fsOpenSync(FLEET_DAEMON_LOGFILE, 'a')
-
-    const child = cpSpawn(process.execPath, ['--import', 'tsx', daemonScript], {
-      detached: true,
-      stdio: ['ignore', logFd, logFd],
-      env: { ...process.env, TMUX: undefined, TMUX_PANE: undefined },
-    })
-    child.unref()
+    await writeDaemonPlist()
+    await bootstrapDaemonPlist()
 
     // Daemon writes its own PID file. Wait briefly to confirm.
-    await new Promise(r => setTimeout(r, 800))
+    await new Promise(r => setTimeout(r, 1200))
     if (existsSync(FLEET_DAEMON_PIDFILE)) {
       const pid = readFileSync(FLEET_DAEMON_PIDFILE, 'utf8').trim()
-      console.log(green(`Fleet daemon started`) + dim(` (pid ${pid})`))
+      console.log(green(`Fleet daemon launchd job started`) + dim(` (pid ${pid})`))
+      console.log(dim(`  Plist: ${FLEET_DAEMON_PLIST}`))
       console.log(dim(`  Log: ${FLEET_DAEMON_LOGFILE}`))
     } else {
-      console.error(red('Fleet daemon failed to start within 800ms'))
+      console.error(red('Fleet daemon failed to start within 1200ms'))
       console.error(dim(`Check log: ${FLEET_DAEMON_LOGFILE}`))
       process.exit(1)
     }
@@ -945,7 +1111,7 @@ async function cmdFleetWatch(sub) {
   }
 
   console.error(`Unknown subcommand: tlda daemon ${sub}`)
-  console.error('Usage: tlda daemon [start|stop|status|log|run]')
+  console.error('Usage: tlda daemon [start|stop|status|log|run|install|uninstall|write-test-plist]')
   process.exit(1)
 }
 
@@ -953,7 +1119,8 @@ async function cmdWatch() {
   const arg1 = getPositional(0)
 
   // Fleet-daemon dispatch — `tlda daemon start/stop/status/log/run`
-  if (arg1 === 'start' || arg1 === 'stop' || arg1 === 'status' || arg1 === 'log' || arg1 === 'logs' || arg1 === 'run') {
+  const daemonSubs = new Set(['start', 'stop', 'status', 'log', 'logs', 'run', 'install', 'uninstall', 'write-test-plist'])
+  if (daemonSubs.has(arg1)) {
     return cmdFleetWatch(arg1)
   }
 
