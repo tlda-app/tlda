@@ -5,7 +5,7 @@ import {
   T,
   stopEventPropagation,
 } from 'tldraw'
-import { getLiveVideoTiles, subscribeLiveVideoTiles } from '../livekit/liveVideoRegistry'
+import { getLiveVideoTiles, subscribeLiveVideoTiles, type LiveVideoTile } from '../livekit/liveVideoRegistry'
 import { isMyFleetShape } from './fleet-utils'
 import './fleet-video.css'
 
@@ -58,11 +58,15 @@ function parseTileKeys(value: string): string[] {
 
 function FleetVideoComponent({ shape }: { shape: any }) {
   const allTiles = useSyncExternalStore(subscribeLiveVideoTiles, getLiveVideoTiles, getLiveVideoTiles)
-  if (!isMyFleetShape(shape)) return null
+  const isOwnPanel = isMyFleetShape(shape)
 
   const keys = parseTileKeys(shape.props.tileKeys)
   const keySet = new Set(keys)
-  const tiles = allTiles.filter(tile => keySet.has(tile.key))
+  const tiles = allTiles.filter((tile): tile is LiveVideoTile => {
+    if (!keySet.has(tile.key)) return false
+    return isOwnPanel || !tile.local
+  })
+  if (!isOwnPanel && tiles.length === 0) return null
 
   const { w, h, title } = shape.props
 

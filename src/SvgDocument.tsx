@@ -921,9 +921,12 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
 
   // Hide non-owned fleet shapes (belong to another user or orphans). Owned fleet
   // shapes must remain visible to custom WM viewports; the HUD renders from the
-  // same editor/store, not a copy store.
+  // same editor/store, not a copy store. Video is the exception: local self-view
+  // stays owner-scoped inside FleetVideoShape, but remote camera tiles must be
+  // renderable by receivers.
   const getShapeVisibility = useCallback((shape: any) => {
     if (FLEET_SHAPE_TYPES.has(shape.type)) {
+      if (shape.type === 'fleet-video') return undefined
       if (!isMyFleetShape(shape)) return 'hidden' as const
     }
     return undefined
