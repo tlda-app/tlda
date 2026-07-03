@@ -10,7 +10,6 @@ export function createFileWatcher({
   interval = undefined,
   binaryInterval = undefined,
   depth = undefined,
-  ignored = undefined,
   ignoreInitial = true,
   followSymlinks = true,
   onEvent,
@@ -31,10 +30,9 @@ export function createFileWatcher({
     interval,
     binaryInterval,
     depth,
-    ignored,
     awaitWriteFinish: false,
   }
-  for (const key of ['cwd', 'interval', 'binaryInterval', 'depth', 'ignored']) {
+  for (const key of ['cwd', 'interval', 'binaryInterval', 'depth']) {
     if (options[key] === undefined) delete options[key]
   }
 
