@@ -78,6 +78,15 @@ import { subscribeFleetChatInputDropPreview } from './fleet-chat-drop-target'
 import { consumeBulletContexts, subscribeBulletContext, getBulletContexts } from '../stores/bulletContextStore'
 import { getPref, subscribePref } from '../preferences'
 import { DATABASE_HTTP } from '../activeConfig'
+import { deletePhonePinnedChatPane, isPhonePinnedPaneShape } from './phone-pane-stack'
+import {
+  PHONE_LANE_DRAG_IDLE,
+  phoneLaneCommitPx,
+  rememberPhoneLanePortraitWidth,
+  setPhoneLaneDrag,
+  snapToPhoneLaneIndex,
+} from '../overlays/useFleetGestures'
+import { PHONE_LANE_AXIS_RATIO, PHONE_LANE_LOCK } from '../wm'
 import './fleet-chat.css'
 
 const DEFAULT_W = 400
@@ -85,6 +94,13 @@ const DEFAULT_H = 600
 const FLEET_API = DATABASE_HTTP
 type ChatTrafficMode = 'normal' | 'quiet'
 type ComposerTrafficFilterMode = 'dm-quiet' | 'dm' | 'agent' | 'custom'
+type PhonePaneDeleteGesture = {
+  pointerId: number
+  mode: 'pending' | 'dragging'
+  x0: number
+  y0: number
+  lastDy: number
+}
 type FleetChatRenderCounter = {
   active?: boolean
   renderCount?: number
@@ -147,6 +163,22 @@ function recordFleetChatRender(shape: any) {
     t: typeof performance !== 'undefined' ? performance.now() : Date.now(),
     shapeId: shape?.id,
   })
+}
+
+function isPhoneSurfaceNow(): boolean {
+  if (typeof window === 'undefined') return false
+  return document.body.classList.contains('phone-mode') || !!window.matchMedia?.('(max-width: 600px)').matches
+}
+
+function isAtScrollBottom(el: HTMLElement, epsilon = 8): boolean {
+  return el.scrollTop + el.clientHeight >= el.scrollHeight - epsilon
+}
+
+function phoneDeleteDragDecision(dx: number, dy: number): 'abort' | 'pending' | 'dragging' {
+  if (dy < 0 && Math.abs(dy) >= PHONE_LANE_LOCK) return 'abort'
+  if (Math.abs(dx) >= PHONE_LANE_LOCK && Math.abs(dx) > Math.abs(dy)) return 'abort'
+  if (dy < PHONE_LANE_LOCK || dy < Math.abs(dx) * PHONE_LANE_AXIS_RATIO) return 'pending'
+  return 'dragging'
 }
 
 function isFleetPillRecord(record: any): boolean {
@@ -1798,6 +1830,9 @@ const ChatMessageRow = memo(function ChatMessageRow({
 function FleetChatInner({ shape }: { shape: any }) {
   recordFleetChatRender(shape)
   const editor = useEditor()
+  const mainEd = (typeof window !== 'undefined'
+    ? (window as Window & { __tldraw_editor__?: Editor }).__tldraw_editor__
+    : undefined) || editor
   const viewportId = useVisibilityViewportId()
   const doc = useContext(DocContext)
   const panel = useContext(PanelContext)
@@ -1807,6 +1842,27 @@ function FleetChatInner({ shape }: { shape: any }) {
   void useValue('editing', () => editor.getEditingShapeId() === shape.id, [editor, shape.id])
   const [filterOpen, setFilterOpen] = useState(false)
   const [filterOpenByPill, setFilterOpenByPill] = useState(false)
+  const [isPhoneSurface, setIsPhoneSurface] = useState(isPhoneSurfaceNow)
+  const phoneDeleteGestureRef = useRef<PhonePaneDeleteGesture | null>(null)
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const media = window.matchMedia?.('(max-width: 600px)')
+    const update = () => setIsPhoneSurface(isPhoneSurfaceNow())
+    update()
+    media?.addEventListener?.('change', update)
+    const observer = new MutationObserver(update)
+    observer.observe(document.body, { attributes: true, attributeFilter: ['class'] })
+    return () => {
+      media?.removeEventListener?.('change', update)
+      observer.disconnect()
+    }
+  }, [])
+
+  const resetPhoneDeleteGesture = useCallback(() => {
+    phoneDeleteGestureRef.current = null
+    setPhoneLaneDrag(PHONE_LANE_DRAG_IDLE)
+  }, [])
 
   // Keep a ref to the current filter so the rename effect can read it without a stale closure
   const filterRef = useRef(filter)
@@ -2101,6 +2157,94 @@ function FleetChatInner({ shape }: { shape: any }) {
     [],
   )
   const inputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    const el = chatLogEl
+    if (!el) return
+
+    const shouldHandleDeleteGesture = () =>
+      isPhoneSurface &&
+      isPhonePinnedPaneShape(mainEd, shape) &&
+      isAtScrollBottom(el)
+
+    const onPointerDown = (e: PointerEvent) => {
+      if (!e.isPrimary) return
+      if (e.pointerType === 'mouse' && e.button !== 0) return
+      if (!shouldHandleDeleteGesture()) return
+      rememberPhoneLanePortraitWidth(mainEd)
+      phoneDeleteGestureRef.current = {
+        pointerId: e.pointerId,
+        mode: 'pending',
+        x0: e.clientX,
+        y0: e.clientY,
+        lastDy: 0,
+      }
+      try { el.setPointerCapture?.(e.pointerId) } catch {
+        // Synthetic/offscreen pointer events may not be capturable; move/up still dispatch to this listener.
+      }
+      stopEventPropagation(e)
+    }
+
+    const onPointerMove = (e: PointerEvent) => {
+      const gesture = phoneDeleteGestureRef.current
+      if (!gesture || gesture.pointerId !== e.pointerId) return
+      const dx = e.clientX - gesture.x0
+      const dy = e.clientY - gesture.y0
+      gesture.lastDy = dy
+      if (gesture.mode === 'pending') {
+        if (!isAtScrollBottom(el)) {
+          resetPhoneDeleteGesture()
+          return
+        }
+        const decision = phoneDeleteDragDecision(dx, dy)
+        if (decision === 'abort') {
+          resetPhoneDeleteGesture()
+          return
+        }
+        if (decision === 'pending') return
+        gesture.mode = 'dragging'
+      }
+
+      e.preventDefault()
+      stopEventPropagation(e)
+      const commit = phoneLaneCommitPx()
+      const progress = dy > 0 ? Math.min(1, dy / commit) : 0
+      setPhoneLaneDrag({ active: true, progress, dir: progress > 0 ? 'down' : 0, armed: progress >= 1, arrowWidthPx: commit })
+    }
+
+    const onPointerEnd = (e: PointerEvent) => {
+      const gesture = phoneDeleteGestureRef.current
+      if (!gesture || gesture.pointerId !== e.pointerId) return
+      const shouldCommit = gesture.mode === 'dragging' && gesture.lastDy >= phoneLaneCommitPx()
+      e.preventDefault()
+      stopEventPropagation(e)
+      resetPhoneDeleteGesture()
+      if (!shouldCommit) return
+      const result = deletePhonePinnedChatPane(mainEd, shape)
+      if (!result.ok) {
+        console.warn('[phone-pane-stack] delete-pinned-pane failed', result)
+        return
+      }
+      snapToPhoneLaneIndex(mainEd, result.docLeftPage, result.targetIndex)
+    }
+
+    const onPointerCancel = (e: PointerEvent) => {
+      const gesture = phoneDeleteGestureRef.current
+      if (!gesture || gesture.pointerId !== e.pointerId) return
+      resetPhoneDeleteGesture()
+    }
+
+    el.addEventListener('pointerdown', onPointerDown)
+    el.addEventListener('pointermove', onPointerMove)
+    el.addEventListener('pointerup', onPointerEnd)
+    el.addEventListener('pointercancel', onPointerCancel)
+    return () => {
+      el.removeEventListener('pointerdown', onPointerDown)
+      el.removeEventListener('pointermove', onPointerMove)
+      el.removeEventListener('pointerup', onPointerEnd)
+      el.removeEventListener('pointercancel', onPointerCancel)
+    }
+  }, [chatLogEl, isPhoneSurface, mainEd, resetPhoneDeleteGesture, shape])
 
   // Reactive map of image asset ID → src URL (populated from tldraw store).
   // Image chips use tldraw asset IDs for persistence — assets survive page reload.

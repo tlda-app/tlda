@@ -73,7 +73,9 @@ async function seedThread() {
     ws.once('error', reject)
   })
   await fleetRequest(ws, { type: 'register', agent_id: PARTNER_ID, name: PARTNER, kind: 'codex' })
-  await fleetRequest(ws, { type: 'chat', from: PARTNER_ID, to: QA_NAME, message: `phase 2 eject seed ${RUN}` })
+  for (let i = 0; i < 36; i++) {
+    await fleetRequest(ws, { type: 'chat', from: PARTNER_ID, to: QA_NAME, message: `phase 2/3 pane seed ${RUN} ${i}` })
+  }
   ws.close()
 }
 
@@ -141,6 +143,44 @@ async function dispatchDrag(locator, points, pointerId) {
   })
 }
 
+async function dispatchDeleteDragWithArrowCheck(page, locator, points, pointerId) {
+  const [first, ...rest] = points
+  await locator.dispatchEvent('pointerdown', {
+    pointerId,
+    pointerType: 'touch',
+    isPrimary: true,
+    button: 0,
+    buttons: 1,
+    clientX: first.x,
+    clientY: first.y,
+  })
+  for (const p of rest) {
+    await locator.dispatchEvent('pointermove', {
+      pointerId,
+      pointerType: 'touch',
+      isPrimary: true,
+      button: 0,
+      buttons: 1,
+      clientX: p.x,
+      clientY: p.y,
+    })
+  }
+  await page.waitForFunction(() => {
+    return [...document.querySelectorAll('body svg path')].some(path =>
+      path.getAttribute('d') === 'M125 12 V238 M12 170 L125 238 L238 170')
+  }, null, { timeout: 1000 })
+  const last = rest[rest.length - 1] || first
+  await locator.dispatchEvent('pointerup', {
+    pointerId,
+    pointerType: 'touch',
+    isPrimary: true,
+    button: 0,
+    buttons: 0,
+    clientX: last.x,
+    clientY: last.y,
+  })
+}
+
 async function ownedChats(page) {
   return page.evaluate(({ humanId, deviceId }) => {
     const ed = window.__tldraw_editor__
@@ -179,6 +219,31 @@ async function snapToInbox(page) {
     ed.setCamera({ ...cam, x: screenW / cam.z - pb.x }, { animation: { duration: 0 } })
   }, { humanId: QA_ID, deviceId: QA_DEVICE_ID })
   await page.waitForTimeout(300)
+}
+
+async function snapToPane(page, index) {
+  await page.evaluate((targetIndex) => {
+    const ed = window.__tldraw_editor__
+    const pageShape = ed.getCurrentPageShapes().find(s => s.type === 'svg-page' || s.type === 'html-page')
+    const pb = ed.getShapePageBounds(pageShape.id)
+    const cam = ed.getCamera()
+    const screenW = Math.round(ed.getViewportScreenBounds().w)
+    ed.setCamera({ ...cam, x: (targetIndex * screenW) / cam.z - pb.x }, { animation: { duration: 0 } })
+  }, index)
+  await page.waitForTimeout(300)
+}
+
+async function setChatLogScroll(page, mode) {
+  await page.waitForFunction(() => !!document.querySelector('.fleet-hud-wrap .fleet-chat-shape .fleet-chat-log'), null, { timeout: 10000 })
+  await page.evaluate((scrollMode) => {
+    const logs = [...document.querySelectorAll('.fleet-hud-wrap .fleet-chat-shape .fleet-chat-log')]
+      .filter(el => el.getBoundingClientRect().width > 0 && el.getBoundingClientRect().height > 0)
+    const el = logs[0]
+    if (!el) throw new Error('no visible fleet chat log')
+    if (scrollMode === 'top') el.scrollTop = 0
+    else el.scrollTop = el.scrollHeight
+  }, mode)
+  await page.waitForTimeout(100)
 }
 
 function assert(cond, msg) {
@@ -250,6 +315,33 @@ async function main() {
   }, { humanId: QA_ID, deviceId: QA_DEVICE_ID }, { timeout: 5000 })
   report = await ownedChats(page)
   assert(report.chats.map(c => c.index).join(',') === '2,3', `expected pinned indexes 2,3 after shift: ${JSON.stringify(report.chats)}`)
+
+  await snapToPane(page, 2)
+  const chatLog = page.locator('.fleet-hud-wrap .fleet-chat-shape .fleet-chat-log').first()
+  await setChatLogScroll(page, 'top')
+  await dispatchDrag(chatLog, [{ x: 190, y: 240 }, { x: 192, y: 360 }, { x: 194, y: 535 }], 31)
+  await page.waitForTimeout(250)
+  report = await ownedChats(page)
+  assert(report.chats.map(c => c.index).join(',') === '2,3', `down drag before message-list bottom deleted pane: ${JSON.stringify(report.chats)}`)
+
+  await setChatLogScroll(page, 'bottom')
+  await dispatchDeleteDragWithArrowCheck(page, chatLog, [{ x: 190, y: 240 }, { x: 195, y: 340 }, { x: 198, y: 535 }], 32)
+  await page.waitForFunction(({ humanId, deviceId }) => {
+    const ed = window.__tldraw_editor__
+    return ed.getCurrentPageShapes().filter(s => s.type === 'fleet-chat' && s.props?.userId === humanId && s.props?.deviceId === deviceId).length === 1
+  }, { humanId: QA_ID, deviceId: QA_DEVICE_ID }, { timeout: 5000 })
+  report = await ownedChats(page)
+  assert(report.chats.map(c => c.index).join(',') === '2', `delete did not compact remaining pane to index 2: ${JSON.stringify(report.chats)}`)
+  assert(report.chats[0].w === report.screenW && report.chats[0].h === report.screenH && report.chats[0].locked, `remaining pane lost full-screen/locked props: ${JSON.stringify(report.chats[0])}`)
+
+  await setChatLogScroll(page, 'bottom')
+  await dispatchDrag(chatLog, [{ x: 190, y: 240 }, { x: 195, y: 340 }, { x: 198, y: 535 }], 33)
+  await page.waitForFunction(({ humanId, deviceId }) => {
+    const ed = window.__tldraw_editor__
+    return ed.getCurrentPageShapes().filter(s => s.type === 'fleet-chat' && s.props?.userId === humanId && s.props?.deviceId === deviceId).length === 0
+  }, { humanId: QA_ID, deviceId: QA_DEVICE_ID }, { timeout: 5000 })
+  report = await ownedChats(page)
+  assert(report.chats.length === 0, `rightmost/last delete did not remove final pane: ${JSON.stringify(report.chats)}`)
 
   console.log(JSON.stringify({
     viewport: { w: WIDTH, h: HEIGHT },

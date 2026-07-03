@@ -1,4 +1,4 @@
-import { createShapeId, type Editor, type TLShape } from 'tldraw'
+import { createShapeId, type Editor, type TLShape, type TLShapeId } from 'tldraw'
 import { isFleetShapeForOwnerKey, isMyFleetShape } from './fleet-ownership'
 import { isDocumentPageShape } from './document-pages'
 import { fleetPanelDefaultProps } from './fleet-panel-registry'
@@ -27,11 +27,23 @@ type PhonePaneCandidate = {
   }
 }
 
+type PhonePaneShapeUpdate = {
+  id: TLShapeId
+  type: string
+  x?: number
+  props?: Record<string, unknown>
+  isLocked?: boolean
+}
+
 export type FleetFilter = [string, string][][]
 
 export type PhonePinnedPanePushResult =
   | { ok: true; createdId: string; shiftedIds: string[]; newIndex: number; maxIndex: number; docLeftPage: number }
   | { ok: false; reason: 'owner-missing' | 'document-missing' | 'viewport-missing' | 'inbox-not-fullscreen' }
+
+export type PhonePinnedPaneDeleteResult =
+  | { ok: true; deletedId: string; shiftedIds: string[]; targetIndex: number; maxIndex: number; docLeftPage: number }
+  | { ok: false; reason: 'owner-missing' | 'document-missing' | 'viewport-missing' | 'pane-not-pinned' }
 
 function viewportSize(editor: Editor): { w: number; h: number } {
   const vp = editor.getViewportScreenBounds()
@@ -103,6 +115,10 @@ function isFullScreenPinnedPaneForOwner(editor: Editor, shape: PhonePaneCandidat
     isFullScreenPhonePane(editor, shape)
 }
 
+function updatePhonePaneShape(editor: Editor, update: PhonePaneShapeUpdate) {
+  editor.updateShape(update as never)
+}
+
 export function pushPhonePinnedChatPane(editor: Editor, inboxShape: PhonePaneCandidate, filter: FleetFilter): PhonePinnedPanePushResult {
   const userId = inboxShape.props?.userId
   const deviceId = inboxShape.props?.deviceId
@@ -155,6 +171,64 @@ export function pushPhonePinnedChatPane(editor: Editor, inboxShape: PhonePaneCan
     shiftedIds: pinned.map(pane => String(pane.id)).filter(Boolean),
     newIndex: PHONE_INBOX_PANE_INDEX + 1,
     maxIndex: PHONE_INBOX_PANE_INDEX + 1 + pinned.length,
+    docLeftPage: docLeft,
+  }
+}
+
+export function deletePhonePinnedChatPane(editor: Editor, paneShape: PhonePaneCandidate): PhonePinnedPaneDeleteResult {
+  const userId = paneShape.props?.userId
+  const deviceId = paneShape.props?.deviceId
+  if (!userId || !deviceId) return { ok: false, reason: 'owner-missing' }
+
+  const { w: screenW, h: screenH } = viewportSize(editor)
+  if (!screenW || !screenH) return { ok: false, reason: 'viewport-missing' }
+
+  const docLeft = primaryDocumentLeft(editor)
+  if (docLeft === null) return { ok: false, reason: 'document-missing' }
+
+  const pinned = (editor.getCurrentPageShapes() as PhonePaneCandidate[])
+    .filter(shape => isFullScreenPinnedPaneForOwner(editor, shape, userId, deviceId))
+    .sort((a, b) => ((b.x || 0) - (a.x || 0)) || String(a.id).localeCompare(String(b.id)))
+
+  const targetPosition = pinned.findIndex(shape => String(shape.id) === String(paneShape.id))
+  if (targetPosition < 0 || !paneShape.id || paneShape.type !== 'fleet-chat') return { ok: false, reason: 'pane-not-pinned' }
+  const targetId = paneShape.id as TLShapeId
+  const targetType = paneShape.type
+
+  const targetIndex = PHONE_INBOX_PANE_INDEX + 1 + targetPosition
+  const shifted = pinned.slice(targetPosition + 1)
+  const remainingPinnedCount = Math.max(0, pinned.length - 1)
+  const maxIndex = PHONE_INBOX_PANE_INDEX + remainingPinnedCount
+  const snapIndex = remainingPinnedCount === 0 ? PHONE_INBOX_PANE_INDEX : Math.min(targetIndex, maxIndex)
+
+  markMainEditorHistoryStoppingPoint(editor)
+  editor.run(() => {
+    for (const pane of shifted) {
+      if (!pane.id || !pane.type) continue
+      if (pane.isLocked) {
+        updatePhonePaneShape(editor, { id: pane.id as TLShapeId, type: pane.type, isLocked: false })
+      }
+      updatePhonePaneShape(editor, {
+        id: pane.id as TLShapeId,
+        type: pane.type,
+        x: (pane.x || 0) + screenW,
+        props: { ...(pane.props || {}), w: screenW, h: screenH, userId, deviceId },
+        isLocked: true,
+      })
+    }
+    if (paneShape.isLocked) {
+      updatePhonePaneShape(editor, { id: targetId, type: targetType, isLocked: false })
+    }
+    editor.deleteShapes([targetId])
+  })
+  dispatchFleetHudReset()
+
+  return {
+    ok: true,
+    deletedId: String(targetId),
+    shiftedIds: shifted.map(pane => String(pane.id)).filter(Boolean),
+    targetIndex: snapIndex,
+    maxIndex,
     docLeftPage: docLeft,
   }
 }
