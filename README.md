@@ -303,6 +303,8 @@ tlda doc share my-paper
 
 prints a shareable URL with your read-only token embedded — anyone with it can view and annotate. It detects [Tailscale](https://tailscale.com/) and [Tailscale Funnel](https://tailscale.com/kb/1223/funnel) automatically, so you get a network-reachable URL instead of `localhost` when one's available.
 
+**Want to try it with your own paper but not run anything yourself?** Reach out — I'm happy to set you up with a hosted instance built around your paper (with agents, if you want them).
+
 ### Hosting it for others
 
 You can run tlda on a box other people reach — an always-on machine at home, a VPS, a container host — so they just open a URL and join (the "Joining someone's tlda" path above). It's the same as running your own, with two additions: put a **boundary** around it (next section), and point clients at the server's URL rather than `localhost` by setting `TLDA_SERVER` (and `TLDA_FLEET_SERVER`) to that URL.
