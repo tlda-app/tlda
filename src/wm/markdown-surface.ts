@@ -5,9 +5,11 @@ import {
 	type ManagedSurfaceRect,
 	type ManagedSurfaceRequest,
 } from './managed-surfaces.ts'
+import type { TldaManagedSurfaceKind } from './tlda-managed-surface-kinds.ts'
 
 export const TEMP_MARKDOWN_SURFACE_PREFIX = 'temporary-markdown'
 export const TEMP_MARKDOWN_LAYER_PREFIX = 'temporary-markdown-page'
+export type TemporaryMarkdownSurfaceKind = Extract<TldaManagedSurfaceKind, typeof TEMP_MARKDOWN_SURFACE_PREFIX>
 
 export interface TemporaryMarkdownSurfaceInput {
 	shapeId: string
@@ -39,7 +41,7 @@ export function createTemporaryMarkdownSurfaceRequest({
 	sourceChatShapeId,
 	sharedDocPath,
 	authorId,
-}: TemporaryMarkdownSurfaceInput): ManagedSurfaceRequest<TemporaryMarkdownSurfacePayload> {
+}: TemporaryMarkdownSurfaceInput): ManagedSurfaceRequest<TemporaryMarkdownSurfacePayload, TemporaryMarkdownSurfaceKind> {
 	const slug = surfaceSlug(shapeId)
 	return {
 		kind: 'temporary-markdown',
@@ -75,7 +77,7 @@ export function createTemporaryMarkdownSurfaceRequest({
 }
 
 export function temporaryMarkdownShapeMeta(
-	request: ManagedSurfaceRequest<TemporaryMarkdownSurfacePayload>,
+	request: ManagedSurfaceRequest<TemporaryMarkdownSurfacePayload, TemporaryMarkdownSurfaceKind>,
 ) {
 	return {
 		temporaryMarkdownColumn: true,

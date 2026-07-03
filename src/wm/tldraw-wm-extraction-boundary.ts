@@ -25,7 +25,7 @@ export const WM_EXTRACTION_MODULES = [
 	{
 		path: 'src/wm/managed-surfaces.ts',
 		classification: 'wm-package-core',
-		publicContract: 'Managed surface request vocabulary, owner policy, placement, cleanup, persistence, and shape metadata.',
+		publicContract: 'Managed surface request vocabulary, host-extensible kind strings, owner policy, placement, cleanup, persistence, and shape metadata.',
 	},
 	{
 		path: 'src/wm/gesture-policy.ts',

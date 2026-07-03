@@ -6,10 +6,13 @@ import {
 	type ManagedSurfaceRect,
 	type ManagedSurfaceRequest,
 } from './managed-surfaces.ts'
+import type { TldaManagedSurfaceKind } from './tlda-managed-surface-kinds.ts'
 import type { JsonObject } from '@tldraw/utils'
 
 export const PAGE_COLUMN_SURFACE_PREFIX = 'page-column'
 export const PAGE_COLUMN_HANDLE_SURFACE_PREFIX = 'page-column-handle'
+export type PageColumnSurfaceKind = Extract<TldaManagedSurfaceKind, typeof PAGE_COLUMN_SURFACE_PREFIX>
+export type PageColumnHandleSurfaceKind = Extract<TldaManagedSurfaceKind, typeof PAGE_COLUMN_HANDLE_SURFACE_PREFIX>
 
 export interface PageColumnSurfaceInput {
 	columnKey: string
@@ -32,7 +35,7 @@ export function createPageColumnSurfaceRequest({
 	bounds,
 	owner,
 	source,
-}: PageColumnSurfaceInput): ManagedSurfaceRequest<PageColumnSurfacePayload> {
+}: PageColumnSurfaceInput): ManagedSurfaceRequest<PageColumnSurfacePayload, PageColumnSurfaceKind> {
 	const slug = surfaceSlug(`${columnKey}-p${pageNum}`)
 	const resolvedOwner = requireManagedSurfaceOwner(owner, 'managed page-column surface')
 	return {
@@ -73,7 +76,7 @@ export function createPageColumnHandleSurfaceRequest({
 	bounds,
 	owner,
 	source,
-}: PageColumnHandleSurfaceInput): ManagedSurfaceRequest<PageColumnHandleSurfacePayload> {
+}: PageColumnHandleSurfaceInput): ManagedSurfaceRequest<PageColumnHandleSurfacePayload, PageColumnHandleSurfaceKind> {
 	const slug = surfaceSlug(columnKey)
 	const resolvedOwner = requireManagedSurfaceOwner(owner, 'managed page-column surface')
 	return {
@@ -96,10 +99,10 @@ export function createPageColumnHandleSurfaceRequest({
 	}
 }
 
-export function pageColumnShapeMeta(request: ManagedSurfaceRequest<PageColumnSurfacePayload>): JsonObject {
+export function pageColumnShapeMeta(request: ManagedSurfaceRequest<PageColumnSurfacePayload, PageColumnSurfaceKind>): JsonObject {
 	return managedSurfaceShapeMeta(request, { coordinateSpace: request.payload.coordinateSpace })
 }
 
-export function pageColumnHandleShapeMeta(request: ManagedSurfaceRequest<PageColumnHandleSurfacePayload>): JsonObject {
+export function pageColumnHandleShapeMeta(request: ManagedSurfaceRequest<PageColumnHandleSurfacePayload, PageColumnHandleSurfaceKind>): JsonObject {
 	return managedSurfaceShapeMeta(request, { coordinateSpace: request.payload.coordinateSpace })
 }

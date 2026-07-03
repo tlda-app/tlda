@@ -17,7 +17,9 @@ import { createLightboxSurfaceRequest } from '../src/wm/lightbox-surface.ts'
 import {
 	managedSurfaceShapeMeta,
 	requireManagedSurfaceOwner,
+	type ManagedSurfaceRequest,
 } from '../src/wm/managed-surfaces.ts'
+import { TLDA_MANAGED_SURFACE_KINDS } from '../src/wm/tlda-managed-surface-kinds.ts'
 
 const chipRect = {
 	left: 1180,
@@ -202,6 +204,33 @@ test('managed surface helpers require owners and serialize generic shape meta', 
 		managedSurfaceShapeMeta(request, { coordinateSpace: request.payload.coordinateSpace }),
 		pageColumnShapeMeta(request),
 	)
+})
+
+test('managed surface core accepts host-extensible kind strings', () => {
+	type HostPayload = { hostSurface: true }
+	const request: ManagedSurfaceRequest<HostPayload, 'host-dashboard'> = {
+		kind: 'host-dashboard',
+		surfaceId: 'host-dashboard:main',
+		layerId: 'host-dashboard-layer:main',
+		owner: { userId: 'host:user', deviceId: 'host:device' },
+		extent: { x: 1, y: 2, w: 300, h: 200 },
+		placement: { mode: 'page', left: 1, top: 2, margin: 0 },
+		cameraPolicy: { x: 'pan', y: 'pan', zoom: 'inherit' },
+		hitPolicy: 'preview-readonly',
+		cleanup: { onClose: 'remove-surface' },
+		persistence: { pinned: false, scope: 'session' },
+		source: null,
+		payload: { hostSurface: true },
+	}
+
+	assert.equal(managedSurfaceShapeMeta(request).managedKind, 'host-dashboard')
+	assert.deepEqual(TLDA_MANAGED_SURFACE_KINDS, [
+		'temporary-markdown',
+		'annotation-viewer',
+		'page-column',
+		'page-column-handle',
+		'lightbox',
+	])
 })
 
 test('lightbox request declares viewport modal policy and cleanup', () => {

@@ -7,9 +7,11 @@ import {
 	type ManagedSurfaceRect,
 	type ManagedSurfaceRequest,
 } from './managed-surfaces.ts'
+import type { TldaManagedSurfaceKind } from './tlda-managed-surface-kinds.ts'
 
 export const ANNOTATION_VIEWER_SURFACE_PREFIX = 'annotation-viewer'
 export const ANNOTATION_VIEWER_LAYER_PREFIX = 'annotation-viewer-panel'
+export type AnnotationViewerSurfaceKind = Extract<TldaManagedSurfaceKind, typeof ANNOTATION_VIEWER_SURFACE_PREFIX>
 
 export interface AnnotationViewerSurfaceInput {
 	surfaceKey: string
@@ -54,7 +56,7 @@ export function createAnnotationViewerSurfaceRequest({
 	viewport = { w: 1200, h: 800 },
 	size = { w: 650, h: 450 },
 	centerOnAnchor = false,
-}: AnnotationViewerSurfaceInput): ManagedSurfaceRequest<AnnotationViewerSurfacePayload> {
+}: AnnotationViewerSurfaceInput): ManagedSurfaceRequest<AnnotationViewerSurfacePayload, AnnotationViewerSurfaceKind> {
 	const slug = surfaceSlug(surfaceKey)
 	const resolvedOwner = requireManagedSurfaceOwner(owner, 'managed annotation viewer surface')
 	const placement = clampChipAnchoredPlacement({

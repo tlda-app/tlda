@@ -1,11 +1,6 @@
 import type { JsonObject } from '@tldraw/utils'
 
-export type ManagedSurfaceKind =
-	| 'temporary-markdown'
-	| 'annotation-viewer'
-	| 'page-column'
-	| 'page-column-handle'
-	| 'lightbox'
+export type ManagedSurfaceKind = string
 
 export type ManagedSurfaceHitPolicy =
 	| 'preview-readonly'
@@ -58,8 +53,8 @@ export interface ManagedSurfacePersistence {
 	scope: 'session' | 'room'
 }
 
-export interface ManagedSurfaceRequest<TPayload = unknown> {
-	kind: ManagedSurfaceKind
+export interface ManagedSurfaceRequest<TPayload = unknown, TKind extends ManagedSurfaceKind = ManagedSurfaceKind> {
+	kind: TKind
 	surfaceId: string
 	layerId: string
 	owner: ManagedSurfaceOwner

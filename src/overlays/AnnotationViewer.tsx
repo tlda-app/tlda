@@ -13,6 +13,7 @@ import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { stopEventPropagation, type Editor, type TLAnyShapeUtilConstructor, type TLShapeId, type TLStateNodeConstructor } from 'tldraw'
 import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
 import type {
+  AnnotationViewerSurfaceKind,
   AnnotationViewerSurfacePayload,
 } from '../wm/annotation-viewer-surface'
 import type {
@@ -79,7 +80,7 @@ export function AnnotationViewer({
   // Listen for show/hide events from FleetChatShape
   useEffect(() => {
     function onManagedSurface(e: Event) {
-      const request = (e as CustomEvent).detail?.request as ManagedSurfaceRequest<AnnotationViewerSurfacePayload> | undefined
+      const request = (e as CustomEvent).detail?.request as ManagedSurfaceRequest<AnnotationViewerSurfacePayload, AnnotationViewerSurfaceKind> | undefined
       if (!request || request.kind !== 'annotation-viewer') return
       const payload = request.payload
       setData({

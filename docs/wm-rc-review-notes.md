@@ -65,10 +65,12 @@ modules so tlda can remain the first host while the WM surface becomes separable
   - hidden-state predicate used by pills
   - explicit toggle resolution used by `FleetHUD`
 - Managed surfaces: `src/wm/managed-surfaces.ts`
+  - generic, host-extensible managed surface kind strings
   - generic owner/device requirement helper
   - generic managed-surface shape-meta serialization
   - common request vocabulary for placement, hit policy, cleanup, camera, owner,
     persistence, source, and payload
+  - tlda-owned concrete kind registry in `src/wm/tlda-managed-surface-kinds.ts`
 - Extraction boundary: `src/wm/tldraw-wm-extraction-boundary.ts`
   - module manifest for the package handoff
   - package-core, TLDraw-adapter, tlda-host-adapter, and tlda-app-surface
@@ -120,9 +122,10 @@ testing, capture listeners, telemetry/replay, and main-editor writes.
   now uses `createOwnedFleetPanelShape` instead of manually stamping
   owner/device/default props.
 - Annotation viewer, lightbox, page-column, and temporary markdown requests keep
-  the same IDs, policies, placement, cleanup, persistence, and payloads. Slice 7
-  only moves owner validation and common shape-meta serialization into the WM
-  managed-surface helper.
+  the same IDs, kind strings, policies, placement, cleanup, persistence, and
+  payloads. The concrete tlda kind registry now lives in
+  `src/wm/tlda-managed-surface-kinds.ts`, while `managed-surfaces.ts` accepts
+  host-extensible kind strings.
 - The slice-8 extraction artifact is manifest-only. It does not change runtime
   imports, exports, or behavior; it records the current package boundary after
   slices 2-7.

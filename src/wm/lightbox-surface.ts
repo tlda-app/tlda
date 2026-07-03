@@ -5,6 +5,11 @@ import {
 	type ManagedSurfaceOwner,
 	type ManagedSurfaceRequest,
 } from './managed-surfaces.ts'
+import type { TldaManagedSurfaceKind } from './tlda-managed-surface-kinds.ts'
+
+export const LIGHTBOX_SURFACE_PREFIX = 'lightbox'
+export const LIGHTBOX_LAYER_PREFIX = 'lightbox-modal'
+export type LightboxSurfaceKind = Extract<TldaManagedSurfaceKind, typeof LIGHTBOX_SURFACE_PREFIX>
 
 export interface LightboxSurfaceInput {
 	surfaceKey: string
@@ -26,13 +31,13 @@ export function createLightboxSurfaceRequest({
 	source,
 	anchor,
 	viewport = typeof window !== 'undefined' ? { w: window.innerWidth, h: window.innerHeight } : { w: 0, h: 0 },
-}: LightboxSurfaceInput): ManagedSurfaceRequest<LightboxSurfacePayload> {
+}: LightboxSurfaceInput): ManagedSurfaceRequest<LightboxSurfacePayload, LightboxSurfaceKind> {
 	const slug = surfaceSlug(surfaceKey)
 	const resolvedOwner = requireManagedSurfaceOwner(owner, 'managed lightbox surface')
 	return {
-		kind: 'lightbox',
-		surfaceId: `lightbox:${slug}`,
-		layerId: `lightbox-modal:${slug}`,
+		kind: LIGHTBOX_SURFACE_PREFIX,
+		surfaceId: `${LIGHTBOX_SURFACE_PREFIX}:${slug}`,
+		layerId: `${LIGHTBOX_LAYER_PREFIX}:${slug}`,
 		owner: resolvedOwner,
 		extent: { x: 0, y: 0, w: viewport.w, h: viewport.h },
 		placement: {
