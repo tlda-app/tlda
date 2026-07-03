@@ -201,7 +201,7 @@ async function main() {
       throw new Error(`missing phone layout shapes: ${fleet.map(s => s.type).join(',')}`)
     }
     if (unexpected.length > 0) {
-      throw new Error(`phone layout should only create the inbox pane in Phase 1, got: ${fleet.map(s => s.type).join(',')}`)
+      throw new Error(`phone layout should only create the inbox pane shape, got: ${fleet.map(s => s.type).join(',')}`)
     }
     if (!inbox.isLocked) {
       throw new Error('phone inbox pane should be locked/fixed')
@@ -253,6 +253,29 @@ async function main() {
     if (!filterButtonHit || !filterButtonHit.closest('.fleet-inbox-filter-btn')) {
       throw new Error(`phone inbox filter button is not hit-testable: hit=${filterButtonHit instanceof HTMLElement ? filterButtonHit.className : String(filterButtonHit)}`)
     }
+    const footer = inboxEl.querySelector('.fleet-inbox-phone-footer')
+    const littleChat = inboxEl.querySelector('.fleet-inbox-phone-composer')
+    const phoneAgents = inboxEl.querySelector('.fleet-inbox-phone-agents')
+    if (!(footer instanceof HTMLElement) || !(littleChat instanceof HTMLElement) || !(phoneAgents instanceof HTMLElement)) {
+      throw new Error('phone inbox footer/little-chat/agents sub-layout did not render')
+    }
+    const footerBox = footer.getBoundingClientRect()
+    const littleChatBox = littleChat.getBoundingClientRect()
+    const phoneAgentsBox = phoneAgents.getBoundingClientRect()
+    if (footerBox.left < inboxBox.left - 1 || footerBox.right > inboxBox.right + 1 || footerBox.bottom > inboxBox.bottom + 1) {
+      throw new Error(`phone footer is not inside inbox pane: ${JSON.stringify({ footer: footerBox.toJSON?.() || footerBox, inbox: inboxBox.toJSON?.() || inboxBox })}`)
+    }
+    const portrait = height >= width
+    if (portrait) {
+      if (littleChatBox.bottom > phoneAgentsBox.top + 2) {
+        throw new Error(`portrait phone footer should stack little chat above agents: ${JSON.stringify({ littleChat: littleChatBox.toJSON?.() || littleChatBox, agents: phoneAgentsBox.toJSON?.() || phoneAgentsBox })}`)
+      }
+    } else {
+      if (littleChatBox.right > phoneAgentsBox.left + 2 || phoneAgentsBox.width <= littleChatBox.width) {
+        throw new Error(`landscape phone footer should put little chat left of wider agents: ${JSON.stringify({ littleChat: littleChatBox.toJSON?.() || littleChatBox, agents: phoneAgentsBox.toJSON?.() || phoneAgentsBox })}`)
+      }
+    }
+
     const stopErrors = []
     for (const [name, stop] of Object.entries(laneStops)) {
       ed.setCamera({ ...ed.getCamera(), x: stop / ed.getCamera().z - pb.x }, { animation: { duration: 0 } })
@@ -332,6 +355,27 @@ async function main() {
         h: Math.round(inboxBox.height),
       },
       extraPanels: unexpected.map(s => s.type),
+      phoneFooter: {
+        mode: portrait ? 'portrait' : 'landscape',
+        footer: {
+          x: Math.round(footerBox.x),
+          y: Math.round(footerBox.y),
+          w: Math.round(footerBox.width),
+          h: Math.round(footerBox.height),
+        },
+        littleChat: {
+          x: Math.round(littleChatBox.x),
+          y: Math.round(littleChatBox.y),
+          w: Math.round(littleChatBox.width),
+          h: Math.round(littleChatBox.height),
+        },
+        agents: {
+          x: Math.round(phoneAgentsBox.x),
+          y: Math.round(phoneAgentsBox.y),
+          w: Math.round(phoneAgentsBox.width),
+          h: Math.round(phoneAgentsBox.height),
+        },
+      },
       touchStyles,
     }
   })

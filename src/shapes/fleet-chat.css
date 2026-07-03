@@ -1855,7 +1855,10 @@ body.phone-mode .tlui-toolbar {
    stuck in a lane, unable to swipe back out. Vertical scroll still works. --- */
 body.phone-mode .fleet-agents-body,
 body.phone-mode .fleet-chat-log,
-body.phone-mode .fleet-inbox-list {
+body.phone-mode .fleet-inbox-list,
+body.phone-mode .fleet-inbox-phone-agents,
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-list,
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agents {
   touch-action: pan-y;
 }
 

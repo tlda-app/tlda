@@ -18,6 +18,7 @@ import {
   useValue,
 } from 'tldraw'
 import { fleetInboxProps } from '../../shared/shapes/fleet-panel-schema.mjs'
+import { labelsForAgent } from '../../shared/fleet-labels.mjs'
 import type { Editor, TLShapeId } from 'tldraw'
 import { agentDisplayLabel, beginNativeSnapDrag, endNativeSnapDrag, selectFleetShapeForLayout } from './fleet-utils'
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
@@ -82,6 +83,16 @@ type PhoneThreadEjectGesture = {
   x0: number
   y0: number
   lastDx: number
+}
+
+type PhoneFooterAgent = {
+  id: string
+  name: string
+  display: string
+  status: string
+  labels: string[]
+  unread: number
+  taskText: string
 }
 
 function copySourceTemplate(text: string): string {
@@ -335,15 +346,25 @@ function FleetInboxInner({ shape }: { shape: any }) {
 
   // Which thread is open (partnerId), or null = thread list.
   const [openPartner, setOpenPartner] = useState<string | null>(null)
+  const [phoneFooterTarget, setPhoneFooterTarget] = useState<string>('')
   const [filterOpen, setFilterOpen] = useState(false)
   const [filterOpenByPill, setFilterOpenByPill] = useState(false)
   const [filterTargetId, setFilterTargetId] = useState<TLShapeId | null>(null)
   const [openItemKey, setOpenItemKey] = useState<string | null>(null)
-  const [isPhoneSurface, setIsPhoneSurface] = useState(() => isPhoneViewportSurface())
+  const [isPhoneSurface, setIsPhoneSurface] = useState(() => {
+    if (typeof window === 'undefined') return false
+    const vp = mainEd.getViewportScreenBounds()
+    const fullScreenPane = Math.abs((shape.props?.w || 0) - (vp.w || 0)) <= 2 && Math.abs((shape.props?.h || 0) - (vp.h || 0)) <= 2
+    return fullScreenPane || isPhoneViewportSurface()
+  })
 
   useEffect(() => {
     if (typeof window === 'undefined') return
-    const update = () => setIsPhoneSurface(isPhoneViewportSurface())
+    const update = () => {
+      const vp = mainEd.getViewportScreenBounds()
+      const fullScreenPane = Math.abs((shape.props?.w || 0) - (vp.w || 0)) <= 2 && Math.abs((shape.props?.h || 0) - (vp.h || 0)) <= 2
+      setIsPhoneSurface(fullScreenPane || isPhoneViewportSurface())
+    }
     update()
     window.addEventListener('resize', update)
     window.addEventListener('orientationchange', update)
@@ -356,7 +377,7 @@ function FleetInboxInner({ shape }: { shape: any }) {
       window.visualViewport?.removeEventListener('resize', update)
       observer.disconnect()
     }
-  }, [])
+  }, [mainEd, shape.props?.h, shape.props?.w])
 
   // Sort mode — time (one interleaved stream, newest first) or type (grouped
   // sections). Persisted so it sticks across reloads. Default: time.
@@ -658,6 +679,27 @@ function FleetInboxInner({ shape }: { shape: any }) {
     () => (openPartner ? threads.find(t => t.partnerId === openPartner) || null : null),
     [openPartner, threads],
   )
+  const phoneFooterAgents = useMemo<PhoneFooterAgent[]>(() => {
+    const pendingTasks = tasks.filter((t: any) => t.status === 'pending' || t.status === 'in_progress')
+    return agents
+      .filter((agent: any) => !agent.human && !agent.dead && agent.friendly_name)
+      .map((agent: any) => {
+        const task = pendingTasks.find((t: any) => {
+          const assignee = t.agent || t.assignee || ''
+          return assignee === agent.id || assignee === agent.friendly_name
+        })
+        return {
+          id: agent.id,
+          name: agent.friendly_name,
+          display: agentDisplayLabel(agent, agents),
+          status: agent.status || (agent.hibernating ? 'hibernating' : 'awake'),
+          labels: labelsForAgent(agent).filter((label: string) => label !== agent.friendly_name).slice(0, 8),
+          unread: unreadCounts[agent.id] || 0,
+          taskText: task?.description || task?.title || task?.status || '',
+        }
+      })
+      .sort((a, b) => (b.unread - a.unread) || a.display.localeCompare(b.display))
+  }, [agents, tasks, unreadCounts])
   const ejectGestureRef = useRef<PhoneThreadEjectGesture | null>(null)
 
   const resetThreadEjectGesture = useCallback(() => {
@@ -775,7 +817,7 @@ function FleetInboxInner({ shape }: { shape: any }) {
     <HTMLContainer style={{ width: w, height: h, pointerEvents: 'all', overflow: 'visible' }}>
       <div
         ref={containerRef}
-        className="fleet-shape fleet-inbox-shape"
+        className={`fleet-shape fleet-inbox-shape${isPhoneSurface ? ' phone-inbox-surface' : ''}`}
         data-phone-open-thread={activeThread ? 'true' : undefined}
         style={{
           width: '100%',
@@ -901,8 +943,100 @@ function FleetInboxInner({ shape }: { shape: any }) {
             onStartDrag={startDrag}
           />
         )}
+        {!activeThread && isPhoneSurface && (
+          <PhoneInboxFooter
+            agents={phoneFooterAgents}
+            selectedTarget={phoneFooterTarget}
+            onSelectTarget={setPhoneFooterTarget}
+            onStartDrag={startDrag}
+          />
+        )}
       </div>
     </HTMLContainer>
+  )
+}
+
+function PhoneInboxFooter({
+  agents,
+  selectedTarget,
+  onSelectTarget,
+  onStartDrag,
+}: {
+  agents: PhoneFooterAgent[]
+  selectedTarget: string
+  onSelectTarget: (name: string) => void
+  onStartDrag: ReturnType<typeof usePillDrag>['startDrag']
+}) {
+  const selected = agents.find(agent => agent.name === selectedTarget) || null
+  const targetFilter: FleetFilter = selected ? [[['from', selected.name]], [['to', selected.name]]] : []
+
+  return (
+    <div className="fleet-inbox-phone-footer">
+      <div className="fleet-inbox-phone-composer" onPointerDown={(e) => stopEventPropagation(e)}>
+        <div className="fleet-inbox-phone-composer-head">
+          <span className="fleet-inbox-phone-composer-title">chat</span>
+          {selected ? (
+            <span className="fleet-inbox-phone-target">{selected.display}</span>
+          ) : (
+            <span className="fleet-inbox-phone-target empty">choose agent</span>
+          )}
+        </div>
+        <div className="fleet-inbox-phone-filter-preview" data-filter={JSON.stringify(targetFilter)}>
+          {selected ? (
+            <>
+              <span className="fleet-inbox-phone-filter-chip">from {selected.display}</span>
+              <span className="fleet-inbox-phone-filter-chip">to {selected.display}</span>
+            </>
+          ) : (
+            <span className="fleet-inbox-phone-filter-empty">no target</span>
+          )}
+        </div>
+        <div className="fleet-inbox-phone-composer-disabled" aria-disabled="true" />
+      </div>
+      <div className="fleet-inbox-phone-agents" data-selected-target={selectedTarget || undefined}>
+        {agents.length === 0 ? (
+          <div className="fleet-inbox-phone-agents-empty">no agents</div>
+        ) : agents.map(agent => (
+          <div
+            key={agent.id}
+            className={`fleet-inbox-phone-agent${agent.name === selectedTarget ? ' selected' : ''}`}
+            onPointerUp={(e) => {
+              stopEventPropagation(e)
+              onSelectTarget(agent.name)
+            }}
+          >
+            <div className="fleet-inbox-phone-agent-main">
+              <span
+                className="fleet-inbox-phone-agent-name fleet-inbox-pill"
+                onPointerDown={(e) => {
+                  stopEventPropagation(e)
+                  onStartDrag(e, 'agent', agent.name, agent.display, '#7a9ec8')
+                }}
+              >{agent.display}</span>
+              <span className="fleet-inbox-phone-agent-status">{agent.status}</span>
+              {agent.unread > 0 && <span className="fleet-inbox-phone-agent-unread">{agent.unread}</span>}
+            </div>
+            <div className="fleet-inbox-phone-agent-detail">
+              {agent.taskText && <span className="fleet-inbox-phone-agent-task">{agent.taskText}</span>}
+              {agent.labels.length > 0 && (
+                <span className="fleet-inbox-phone-agent-labels">
+                  {agent.labels.map(label => (
+                    <span
+                      key={label}
+                      className="fleet-inbox-phone-agent-label fleet-inbox-pill"
+                      onPointerDown={(e) => {
+                        stopEventPropagation(e)
+                        onStartDrag(e, 'label', label, label, '#9370db')
+                      }}
+                    >{label}</span>
+                  ))}
+                </span>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
   )
 }
 

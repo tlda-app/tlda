@@ -109,6 +109,29 @@ async function openThread(page) {
   await page.locator('.fleet-hud-wrap .fleet-inbox-conv').waitFor({ state: 'visible', timeout: 5000 })
 }
 
+async function selectFooterTarget(page) {
+  await page.waitForFunction((partner) => {
+    return [...document.querySelectorAll('.fleet-hud-wrap .fleet-inbox-phone-agent-name')]
+      .some(el => el.textContent?.trim() === partner)
+  }, PARTNER, { timeout: 15000 })
+  const row = page.locator('.fleet-hud-wrap .fleet-inbox-phone-agent').filter({ hasText: PARTNER }).first()
+  await row.dispatchEvent('pointerup', {
+    pointerId: 12,
+    pointerType: 'touch',
+    isPrimary: true,
+    button: 0,
+    buttons: 0,
+    clientX: 40,
+    clientY: 560,
+  })
+  await page.waitForFunction((partner) => {
+    const agents = document.querySelector('.fleet-hud-wrap .fleet-inbox-phone-agents')
+    const filter = document.querySelector('.fleet-hud-wrap .fleet-inbox-phone-filter-preview')
+    return agents?.getAttribute('data-selected-target') === partner &&
+      filter?.getAttribute('data-filter') === JSON.stringify([[['from', partner]], [['to', partner]]])
+  }, PARTNER, { timeout: 5000 })
+}
+
 async function dispatchDrag(locator, points, pointerId) {
   const [first, ...rest] = points
   await locator.dispatchEvent('pointerdown', {
@@ -286,6 +309,7 @@ async function main() {
   await seedThread()
   await tapPhonePreset(page)
   await snapToInbox(page)
+  await selectFooterTarget(page)
   await openThread(page)
 
   const conv = page.locator('.fleet-hud-wrap .fleet-inbox-conv')
