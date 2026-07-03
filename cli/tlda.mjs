@@ -39,19 +39,11 @@ import {
   SPAWN_POLICY_OPTIONS,
   SPAWN_PROFILES,
   normalizeRequestedPrivileges,
+  privilegeSetFromPolicy,
   resolveSpawnGrant,
   resolveSpawnPolicyOption,
 } from '../server/lib/spawn-policy.mjs'
 import { SPAWN_MACHINE_PREF_KEY } from '../server/lib/spawn-routing.mjs'
-import {
-  applyDaemonGrants,
-  applyGrandfatherInfill,
-  createPrivilegeLedger,
-  defaultDaemonConfigPath,
-  privilegeLedgerPathFromDaemonConfig,
-  readDaemonConfig,
-  withDaemonModelAliases,
-} from '../bin/lib/spawn/privilege-ledger.mjs'
 
 // --- Argument parsing ---
 
@@ -135,7 +127,7 @@ const VALUE_FLAGS = new Set([
   'server', 'dir', 'title', 'main', 'debounce', 'token', 'members', 'format',
   'session', 'target', 'timeout', 'id', 'book', 'worktree', 'port', 'browser',
   'model', 'cwd', 'effort', 'mode', 'kind', 'spawn-capability', 'capability',
-  'agent-id', 'policy', 'privileges', 'spawner-id', 'to', 'machine', 'limit', 'from', 'poll', 'config',
+  'agent-id', 'policy', 'privileges', 'to', 'machine', 'limit', 'from', 'poll', 'config',
   'label', 'plist',
 ])
 
@@ -1693,12 +1685,10 @@ async function attachToAgent(name) {
 async function runFleetSpawn(spawnArgs) {
   if (spawnArgs.includes('--list-models')) {
     const { listModels } = await import('../bin/lib/spawn/models.mjs')
-    const daemonConfig = readDaemonConfig(defaultDaemonConfigPath(CONFIG_DIR))
-    console.log(JSON.stringify(listModels(withDaemonModelAliases(loadConfig(), daemonConfig)), null, 2))
+    console.log(JSON.stringify(listModels(loadConfig()), null, 2))
     return
   }
   const { spawn } = await import('../bin/lib/spawn/index.mjs')
-  const { newFleetId } = await import('../bin/lib/spawn/identity.mjs')
   const session = flagFromRaw(spawnArgs, 'session')
   const refresh = hasRawFlag(spawnArgs, 'refresh')
   const fresh = hasRawFlag(spawnArgs, 'fresh')
@@ -1713,77 +1703,44 @@ async function runFleetSpawn(spawnArgs) {
   const cwd = resolve(flagFromRaw(spawnArgs, 'cwd') || process.cwd())
   const model = flagFromRaw(spawnArgs, 'model') || undefined
   const kind = flagFromRaw(spawnArgs, 'kind') || undefined
-  let ledger = null
+  const grant = resolveSpawnGrant({
+    requestedCapability: requestedPrivilegePolicy?.capability || requestedCapability,
+    requestedPrivileges,
+    spawnerPolicy: 'full',
+    spawnerPrivilegeSet: privilegeSetFromPolicy('full', { name: 'spawn-direct-operator', cwd }),
+    model,
+    kind,
+    config: loadConfig(),
+    cwd,
+  })
+  const params = {
+    spawnMode: session ? 'session' : (refresh ? 'refresh' : (fresh ? 'fresh' : 'respawn')),
+    name,
+    agentId: flagFromRaw(spawnArgs, 'agent-id') || undefined,
+    model,
+    kind,
+    cwd,
+    effort: flagFromRaw(spawnArgs, 'effort') || undefined,
+    permissionMode: flagFromRaw(spawnArgs, 'mode') || undefined,
+    requestedCapability: grant.grantedCapability,
+    requestedPrivileges,
+    spawnPolicy: grant.grantedPolicy,
+    privilegeSet: grant.grantedPrivilegeSet,
+    explicitPolicy: policyArg != null,
+    enforceFence: true,
+    sessionId: session || undefined,
+    enroll: hasRawFlag(spawnArgs, 'enroll'),
+  }
+  if (!params.name && !params.sessionId) {
+    console.error(red('Usage: tlda agent spawn-direct [--fresh|--refresh|--session uuid] <agent> [--model model] [--kind kind] [--cwd path] [--privileges profile] [--capability read|write|tlda-write|full]'))
+    process.exit(1)
+  }
   try {
-    const daemonConfig = readDaemonConfig(defaultDaemonConfigPath(CONFIG_DIR))
-    ledger = createPrivilegeLedger(privilegeLedgerPathFromDaemonConfig(daemonConfig, CONFIG_DIR))
-    applyDaemonGrants(ledger, daemonConfig)
-    const config = withDaemonModelAliases(loadConfig(), daemonConfig)
-    applyGrandfatherInfill(ledger, { fleetDbPath: join(CONFIG_DIR, 'fleet.db'), config })
-    const spawnerId = flagFromRaw(spawnArgs, 'spawner-id') || process.env.TLDA_SPAWNER_ID || 'fleet:skip'
-    const spawnerGrant = ledger.grantFor({ id: spawnerId })
-    const grant = resolveSpawnGrant({
-      requestedCapability: requestedPrivilegePolicy?.capability || requestedCapability,
-      requestedPrivileges,
-      spawnerPolicy: spawnerGrant.spawnPolicy,
-      spawnerPrivilegeSet: spawnerGrant.privilegeSet,
-      model,
-      kind,
-      config,
-      cwd,
-    })
-    const spawnMode = session ? 'session' : (refresh ? 'refresh' : (fresh ? 'fresh' : 'respawn'))
-    const suppliedAgentId = flagFromRaw(spawnArgs, 'agent-id') || undefined
-    const preallocatedAgentId = suppliedAgentId || ((spawnMode === 'fresh' || spawnMode === 'session') ? newFleetId() : undefined)
-    if (preallocatedAgentId) {
-      await ledger.set(preallocatedAgentId, {
-        spawnPolicy: grant.grantedPolicy,
-        privilegeSet: grant.grantedPrivilegeSet,
-        source: 'spawn-direct',
-      })
-    }
-    const params = {
-      spawnMode,
-      name,
-      agentId: preallocatedAgentId,
-      model,
-      kind,
-      cwd,
-      effort: flagFromRaw(spawnArgs, 'effort') || undefined,
-      permissionMode: flagFromRaw(spawnArgs, 'mode') || undefined,
-      requestedCapability: grant.grantedCapability,
-      requestedPrivileges,
-      spawnPolicy: grant.grantedPolicy,
-      privilegeSet: grant.grantedPrivilegeSet,
-      explicitPolicy: policyArg != null,
-      enforceFence: true,
-      sessionId: session || undefined,
-      enroll: hasRawFlag(spawnArgs, 'enroll'),
-    }
-    if (!params.name && !params.sessionId) {
-      console.error(red('Usage: tlda agent spawn-direct [--fresh|--refresh|--session uuid] <agent> [--model model] [--kind kind] [--cwd path] [--privileges profile] [--capability read|write|tlda-write|full] [--spawner-id fleet:skip]'))
-      process.exit(1)
-    }
-    let result
-    try {
-      result = await spawn(params)
-    } catch (e) {
-      if (preallocatedAgentId) await ledger.delete(preallocatedAgentId).catch(() => {})
-      throw e
-    }
-    if (!preallocatedAgentId || result.fleetId !== preallocatedAgentId) {
-      await ledger.set(result.fleetId, {
-        spawnPolicy: grant.grantedPolicy,
-        privilegeSet: grant.grantedPrivilegeSet,
-        source: 'spawn-direct',
-      })
-    }
+    const result = await spawn(params)
     console.log(`${result.tmuxSession} (${result.fleetId}) spawned in ${params.cwd || process.cwd()}`)
   } catch (e) {
     console.error(red(e?.message || String(e)))
-    process.exitCode = 1
-  } finally {
-    if (ledger) await ledger.close()
+    process.exit(1)
   }
 }
 
@@ -2154,7 +2111,7 @@ Usage:
   tlda agent spawn <agent>
   tlda agent spawn --fresh <name>
   tlda agent spawn --session <uuid> [--enroll] [name]
-  tlda agent spawn-direct <agent> [--privileges profile] [--capability read|write|tlda-write|full] [--spawner-id fleet:skip]
+  tlda agent spawn-direct <agent> [--privileges profile] [--capability read|write|tlda-write|full]
   tlda agent move <agent> --to <machine>
   tlda agent set-spawn-machine <agent-or-user> <machine>
   tlda agent check-ready <agent> [--timeout seconds]
@@ -2174,8 +2131,7 @@ Network:
   --no-net    rare explicit network-off modifier
 
 spawn routes through the fleet server and target daemon; spawn-direct directly invokes
-the local primitive on this machine. Both require a daemon privilege ledger row
-for the spawner and write the child grant back to that ledger.
+the local primitive on this machine.
 Set TLDA_DISABLE_PERMISSION_CLASSIFIER=1 or agentSandbox.disablePermissionsClassifier=true only as a spawn-time break-glass to launch Claude with --dangerously-skip-permissions.
 move must be run on the agent's current machine; only the destination is remote.
 set-spawn-machine stores the caller's default fresh-spawn machine in fleet prefs.

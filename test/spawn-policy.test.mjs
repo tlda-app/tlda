@@ -223,7 +223,7 @@ describe('spawn policy', () => {
       { spawnPolicy: { projectProfiles: { '/Users/skip/work/custom-work': 'math-projects' } } },
       { cwd: '/Users/skip/work/custom-work' }
     ), 'math-projects')
-    assert.equal(resolveProjectProfileName({ spawnPolicy: { defaultProfile: 'full' } }, {}), 'cwd')
+    assert.equal(resolveProjectProfileName({ spawnPolicy: { defaultProfile: 'cwd' } }, {}), 'cwd')
     assert.equal(resolveProjectProfileName({}, {}), 'cwd')
     assert.equal(resolveProjectProfileName({}, { project: { profile: 'math' }, cwd: '/Users/skip/work/math' }), 'math')
     assert.deepEqual(resolveProjectProfile(
@@ -376,8 +376,8 @@ describe('spawn policy', () => {
     assert.equal(grant.grantedCapability, 'full')
   })
 
-  it('none spawners clamp children to none', () => {
-    const grant = resolveSpawnGrant({
+  it('none spawners cannot spawn agents', () => {
+    assert.throws(() => resolveSpawnGrant({
       requestedCapability: 'write',
       requester: { id: 'fleet:unknown' },
       spawnerPolicy: 'none',
@@ -385,9 +385,7 @@ describe('spawn policy', () => {
       model: 'gpt-5.5',
       kind: 'codex',
       cwd: '/Users/skip/work/tlda',
-    })
-    assert.equal(grant.grantedCapability, 'none')
-    assert.deepEqual(grant.grantedPrivilegeSet.operations.write.allow, [])
+    }), /spawner lacks spawn privilege/)
   })
 
   it('normalizes requested privilege profiles from names, objects, and profile source text', () => {
@@ -504,7 +502,7 @@ describe('spawn policy', () => {
       requester: { id: 'fleet:writer', spawnPolicy: { capability: 'write', policy: 'cwd' } },
       model: 'gpt-5.5',
       kind: 'codex',
-      config: { spawnPolicy: { machineGrant: 'full' } },
+      config: { spawnPolicy: { machineGrant: 'full', defaultProfile: 'cwd' } },
       cwd: '/Users/skip/work/tlda',
     })
     assert.equal(grant.requestedCapability, 'full')
@@ -538,6 +536,7 @@ describe('spawn policy', () => {
     const config = {
       spawnPolicy: {
         machineGrant: 'full',
+        defaultProfile: 'cwd',
         projectProfiles: { '/Users/skip/work/tlda': 'app-dev' },
       },
     }
