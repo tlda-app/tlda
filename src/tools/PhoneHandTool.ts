@@ -1,11 +1,10 @@
 import { StateNode, Vec, type Editor, type TLStateNodeConstructor } from 'tldraw'
 import { log } from '../logger'
 import { isDocumentPageShape } from '../shapes/document-pages'
-import { setPhoneLaneDrag, PHONE_LANE_DRAG_IDLE, phoneLaneCommitPx } from '../overlays/useFleetGestures'
+import { setPhoneLaneDrag, PHONE_LANE_DRAG_IDLE, phoneLaneCommitPx, phoneLaneIndexFromCamera, snapToPhoneLaneIndex } from '../overlays/useFleetGestures'
 
 const AXIS_THRESHOLD = 5 // px before locking axis
 const LOG_NS = 'fleet-gesture'
-const PHONE_SNAP_DURATION = 160
 
 function getPrimaryDocumentLeft(editor: Editor): number | null {
   const pages = editor.getCurrentPageShapes()
@@ -151,14 +150,15 @@ class PhoneDragging extends StateNode {
 
   initialCamera = new Vec()
   lockedAxis: 'x' | 'y' | null = null
-  // docLeftScreen of the lane the drag started on — the commit is measured from
-  // here so panning the doc mid-drag doesn't drift the target lane.
-  startLaneDocLeftScreen = 0
+  // Lane index (0=document, 1=chat, 2=agents) the drag started on — the commit is
+  // measured from here so panning the doc mid-drag doesn't drift the target lane,
+  // and it shares the drift-proof index tracking with the fleet-panel gestures.
+  startLaneIndex = 0
 
   override onEnter() {
     this.initialCamera = Vec.From(this.editor.getCamera())
     this.lockedAxis = null
-    this.startLaneDocLeftScreen = this.nearestLaneDocLeftScreen() ?? 0
+    this.startLaneIndex = phoneLaneIndexFromCamera(this.editor, getPrimaryDocumentLeft(this.editor) ?? 0)
     this.update()
   }
 
@@ -179,19 +179,6 @@ class PhoneDragging extends StateNode {
     this.complete()
   }
 
-  // docLeftScreen of the lane nearest the current camera (null if no doc page).
-  private nearestLaneDocLeftScreen(): number | null {
-    const editor = this.editor
-    const docLeftPage = getPrimaryDocumentLeft(editor)
-    if (docLeftPage === null) return null
-    const cam = editor.getCamera()
-    const screenW = editor.getViewportScreenBounds().w
-    if (!screenW || !Number.isFinite(screenW)) return null
-    const cur = (docLeftPage + cam.x) * cam.z
-    const stops = [screenW * 2, screenW, 0]
-    return stops.reduce((best, s) => (Math.abs(s - cur) < Math.abs(best - cur) ? s : best))
-  }
-
   private horizontalDrag(): { dx: number; dir: -1 | 0 | 1; screenW: number } {
     const dx = this.editor.inputs.getCurrentScreenPoint().x - this.editor.inputs.getOriginScreenPoint().x
     const screenW = this.editor.getViewportScreenBounds().w
@@ -200,10 +187,10 @@ class PhoneDragging extends StateNode {
   }
 
   // Does a lane exist one step in `dir` from the lane the drag started on?
-  private laneExistsFromStart(dir: number, screenW: number): boolean {
-    if (dir === 0 || !screenW) return false
-    const next = this.startLaneDocLeftScreen + dir * screenW
-    return next >= -1 && next <= 2 * screenW + 1
+  private laneExistsFromStart(dir: number): boolean {
+    if (dir === 0) return false
+    const next = this.startLaneIndex + dir
+    return next >= 0 && next <= 2
   }
 
   private update() {
@@ -230,7 +217,7 @@ class PhoneDragging extends StateNode {
       delta = new Vec(delta.x, 0)
       const { dx, dir, screenW } = this.horizontalDrag()
       const commit = phoneLaneCommitPx(screenW)
-      const hasLane = this.laneExistsFromStart(dir, screenW)
+      const hasLane = this.laneExistsFromStart(dir)
       const progress = hasLane ? Math.min(1, Math.abs(dx) / commit) : 0
       setPhoneLaneDrag({ active: true, progress, dir: hasLane ? dir : 0, armed: progress >= 1 })
     } else if (this.lockedAxis === 'y') {
@@ -248,15 +235,13 @@ class PhoneDragging extends StateNode {
       const commit = phoneLaneCommitPx(screenW)
       const docLeftPage = getPrimaryDocumentLeft(editor)
       // Deliberate 75%+ swipe → transition to the adjacent lane; otherwise settle
-      // back onto the lane the drag started from.
-      let target = this.startLaneDocLeftScreen
-      if (Math.abs(dx) >= commit && this.laneExistsFromStart(dir, screenW)) {
-        target = this.startLaneDocLeftScreen + dir * screenW
-      }
-      if (docLeftPage !== null && screenW && Number.isFinite(screenW)) {
-        const cam = editor.getCamera()
-        const x = target / cam.z - docLeftPage
-        editor.setCamera({ ...cam, x }, { animation: { duration: PHONE_SNAP_DURATION } })
+      // back onto the lane the drag started from. Snap by INDEX (not the panned
+      // camera) so it lands exactly and can't drift over repeated swipes.
+      const targetIndex = (Math.abs(dx) >= commit && this.laneExistsFromStart(dir))
+        ? this.startLaneIndex + dir
+        : this.startLaneIndex
+      if (docLeftPage !== null) {
+        snapToPhoneLaneIndex(editor, docLeftPage, targetIndex)
       }
       setPhoneLaneDrag(PHONE_LANE_DRAG_IDLE)
       this.parent.transition('idle')

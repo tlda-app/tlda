@@ -609,31 +609,10 @@ function getPrimaryDocumentLeft(editor: Editor): number | null {
   return best?.x ?? null
 }
 
-function nearestPhoneLaneDocLeftScreen(docLeftScreen: number, screenW: number): { lane: string; docLeftScreen: number } {
-  const stops = [
-    { lane: 'agents-inbox', docLeftScreen: screenW * 2 },
-    { lane: 'chat', docLeftScreen: screenW },
-    { lane: 'document', docLeftScreen: 0 },
-  ]
-  return stops.reduce((best, stop) =>
-    Math.abs(stop.docLeftScreen - docLeftScreen) < Math.abs(best.docLeftScreen - docLeftScreen) ? stop : best,
-  )
-}
-
+// Settle onto the current lane (no transition). Uses the explicit lane index so a
+// settle mid-animation can't drift the camera to a wrong stop.
 function snapPhoneLane(editor: Editor, docLeftPage: number) {
-  const camera = editor.getCamera()
-  const screenW = editor.getViewportScreenBounds().w
-  if (!screenW || !Number.isFinite(screenW)) return
-  const currentDocLeftScreen = (docLeftPage + camera.x) * camera.z
-  const target = nearestPhoneLaneDocLeftScreen(currentDocLeftScreen, screenW)
-  const x = target.docLeftScreen / camera.z - docLeftPage
-  log.debug(LOG_NS, 'phone fleet lane snap', {
-    lane: target.lane,
-    docLeftScreen: Math.round(currentDocLeftScreen),
-    targetDocLeftScreen: Math.round(target.docLeftScreen),
-    screenW: Math.round(screenW),
-  })
-  editor.setCamera({ ...camera, x }, { animation: { duration: PHONE_LANE_SNAP_DURATION } })
+  snapToPhoneLaneIndex(editor, docLeftPage, phoneLaneIndexFromCamera(editor, docLeftPage))
 }
 
 // --- Phone lane transition: big fill-up arrow, ~75%-screen deliberate swipe ---
@@ -670,32 +649,44 @@ export function phoneLaneCommitPx(screenW: number): number {
   return Math.max(PHONE_LANE_COMMIT_MIN, screenW * PHONE_LANE_COMMIT_FRAC)
 }
 
-// docLeftScreen of the lane the camera is currently snapped to.
-function currentPhoneLaneDocLeftScreen(editor: Editor, docLeftPage: number): number {
+// Explicit lane index — 0 = document, 1 = chat, 2 = agents/inbox (docLeftScreen =
+// index * screenW). Fast repeated swipes read the camera MID snap-animation
+// (between stops); measuring "which lane am I on" off that drifts a little each
+// time and accumulates (agents ends up not-far-enough-left). So we keep an
+// explicit index and only re-sync it from the camera when it's settled ON a stop.
+let phoneLaneIndex = 1
+
+// Current lane index. Re-syncs from the camera only when settled near a stop;
+// mid-animation it trusts the stored index (the intended target of the last snap).
+export function phoneLaneIndexFromCamera(editor: Editor, docLeftPage: number): number {
   const cam = editor.getCamera()
   const screenW = editor.getViewportScreenBounds().w
+  if (!screenW || !Number.isFinite(screenW)) return phoneLaneIndex
   const cur = (docLeftPage + cam.x) * cam.z
-  return nearestPhoneLaneDocLeftScreen(cur, screenW).docLeftScreen
+  const nearest = Math.max(0, Math.min(2, Math.round(cur / screenW)))
+  if (Math.abs(cur - nearest * screenW) < screenW * 0.2) phoneLaneIndex = nearest
+  return phoneLaneIndex
 }
 
-// dir +1 pulls toward the agents/inbox lane (higher docLeftScreen), -1 toward the
-// document lane (0). A lane exists in that direction unless we're already at an end.
-export function phoneLaneExistsInDirection(editor: Editor, docLeftPage: number, dir: number): boolean {
-  if (dir === 0) return false
-  const screenW = editor.getViewportScreenBounds().w
-  const cur = currentPhoneLaneDocLeftScreen(editor, docLeftPage)
-  const target = cur + dir * screenW
-  return target >= -1 && target <= 2 * screenW + 1
-}
-
-export function snapPhoneLaneDirectional(editor: Editor, docLeftPage: number, dir: number) {
+export function snapToPhoneLaneIndex(editor: Editor, docLeftPage: number, index: number) {
   const cam = editor.getCamera()
   const screenW = editor.getViewportScreenBounds().w
   if (!screenW || !Number.isFinite(screenW)) return
-  const cur = currentPhoneLaneDocLeftScreen(editor, docLeftPage)
-  const target = Math.max(0, Math.min(2 * screenW, cur + dir * screenW))
-  const x = target / cam.z - docLeftPage
+  phoneLaneIndex = Math.max(0, Math.min(2, index))
+  const x = (phoneLaneIndex * screenW) / cam.z - docLeftPage
   editor.setCamera({ ...cam, x }, { animation: { duration: PHONE_LANE_SNAP_DURATION } })
+}
+
+// dir +1 pulls toward the agents/inbox lane, -1 toward the document lane. A lane
+// exists in that direction unless we're already at an end.
+export function phoneLaneExistsInDirection(editor: Editor, docLeftPage: number, dir: number): boolean {
+  if (dir === 0) return false
+  const next = phoneLaneIndexFromCamera(editor, docLeftPage) + dir
+  return next >= 0 && next <= 2
+}
+
+export function snapPhoneLaneDirectional(editor: Editor, docLeftPage: number, dir: number) {
+  snapToPhoneLaneIndex(editor, docLeftPage, phoneLaneIndexFromCamera(editor, docLeftPage) + dir)
 }
 
 export function applyShapeResizeAxisLock(input: {
