@@ -858,13 +858,18 @@ async function autoAcceptPrompt(tmuxSession, reason, acceptKey = '1') {
 }
 
 const AUTO_ACCEPT_INTERVAL_MS = 5000
+const TERMINAL_SIZE_POLL_MS = parseInt(process.env.TLDA_TERMINAL_SIZE_POLL_MS, 10) || 5000
 const promptCooldowns = new Map()
 const surfacedPrompts = new Map()
 
 function startAutoAcceptSweep() {
   setInterval(async () => {
+    const sweptSessions = new Set()
     for (const agent of agents) {
+      if (agent.dead || agent.human || agent.hibernating) continue
       if (!agent.tmux_session) continue
+      if (sweptSessions.has(agent.tmux_session)) continue
+      sweptSessions.add(agent.tmux_session)
       // Skip agents with active PTY watchers — they get real-time detection
       if (terminalWatchPtys.get(agent.tmux_session)?.alive) continue
       try {
@@ -2602,7 +2607,7 @@ async function rpcStartTerminalWatch({ tmux_session, agent_id, poll_ms }) {
     state.rows = cur.rows
     try { state.pty.resize(Math.max(1, cur.cols), Math.max(1, cur.rows)) } catch {}
     sendMsg({ type: 'terminal-size', agent_id, tmux_session, cols: cur.cols, rows: cur.rows })
-  }, 1500)
+  }, TERMINAL_SIZE_POLL_MS)
 
   pty.onData((data) => {
     if (!state.alive) return
