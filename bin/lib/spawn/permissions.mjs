@@ -12,6 +12,29 @@ const FENCE_TEMPORARILY_DISABLED = true
 const DEFAULT_READ_ROOTS = []
 const DEFAULT_OPTIONS = { network: false, git: 'read', artifacts: true }
 const DEFAULT_TRUSTED_MCP_SERVERS = { tlda: { defaultToolsApprovalMode: 'approve' } }
+const BUILTIN_HARNESS_OPTIONS = Object.freeze({
+  claude: Object.freeze({
+    '*': Object.freeze({
+      required: Object.freeze(['--dangerously-load-development-channels server:tlda']),
+      preferences: Object.freeze([]),
+      controls: true,
+    }),
+  }),
+  codex: Object.freeze({
+    '*': Object.freeze({
+      required: Object.freeze([]),
+      preferences: Object.freeze([]),
+      controls: true,
+    }),
+  }),
+})
+
+function isYoloFlag(flag) {
+  return /--dangerously-skip-permissions\b/.test(flag)
+    || /--dangerously-bypass-approvals-and-sandbox\b/.test(flag)
+    || /--yolo\b/.test(flag)
+    || /\bdanger-full-access\b/.test(flag)
+}
 const PLAYWRIGHT_CACHE_ROOT = path.join(os.homedir(), 'Library/Caches/ms-playwright')
 const CHROME_FOR_TESTING_CRASHPAD_ROOT = path.join(os.homedir(), 'Library/Application Support/Google/Chrome for Testing/Crashpad')
 const TLDA_PW_RUNTIME_ROOT = '/tmp/tlda-pw-runtime'
@@ -71,6 +94,56 @@ function truthyEnv(value) {
 function permissionClassifierDisabled(config = {}, env = process.env) {
   return truthyEnv(env.TLDA_DISABLE_PERMISSION_CLASSIFIER)
     || sandboxConfig(config).disablePermissionsClassifier === true
+}
+
+function normalizeFlagList(value) {
+  if (value == null) return []
+  if (typeof value === 'string') return [value].filter(v => v.trim())
+  if (!Array.isArray(value)) return []
+  return value.map(v => String(v || '').trim()).filter(Boolean)
+}
+
+function harnessOptionRow(config = {}, harness, model) {
+  const kind = String(harness || '').trim().toLowerCase()
+  if (!kind) return null
+  const configured = config?.harnessOptions?.[kind]
+  const builtin = BUILTIN_HARNESS_OPTIONS[kind] || {}
+  const table = configured || builtin
+  const row = table?.[model] || table?.['*'] || null
+  if (!row) return null
+  return {
+    required: normalizeFlagList(row.required),
+    preferences: normalizeFlagList(row.preferences),
+    controls: row.controls !== false && (row.controls === true || normalizeFlagList(row.required).length > 0),
+  }
+}
+
+export function resolveHarnessLaunchOptions({ config = {}, harness, model } = {}) {
+  const row = harnessOptionRow(config, harness, model) || { required: [], preferences: [], controls: false }
+  const flags = [...row.required, ...row.preferences]
+  const kind = String(harness || '').trim().toLowerCase()
+  const hasYolo = flags.some(isYoloFlag)
+  const nativeControls = kind === 'claude'
+    ? !hasYolo
+    : kind === 'codex'
+      ? !hasYolo
+      : row.controls && !hasYolo
+  return {
+    ...row,
+    yolo: hasYolo,
+    controls: !!nativeControls,
+  }
+}
+
+export function assertLaunchHasSecurity({ leasePolicy, harnessOptions, acknowledgeNoSecurity = false, harness, permissionMode = null } = {}) {
+  const hasFence = !!leasePolicy
+  const permissionsBypassed = String(harness || '').trim().toLowerCase() === 'claude'
+    && permissionMode === 'bypassPermissions'
+  const hasHarnessControls = !!harnessOptions?.controls && !permissionsBypassed
+  if (hasFence || hasHarnessControls || acknowledgeNoSecurity) {
+    return { hasFence, hasHarnessControls, permissionsBypassed, acknowledgedNoSecurity: !!acknowledgeNoSecurity }
+  }
+  throw new Error(`refusing to launch ${harness || 'agent'} with no security. This is the no-fence/no-harness-controls case; are you fucking sure? Pass --i-like-to-live-dangerously to acknowledge a wide-open launch.`)
 }
 
 function runnerFromConfig(cfg) {
@@ -183,7 +256,7 @@ export function stripRunner(policy) {
 
 export function codexSandboxProjection(spawnPolicy, cwd, { fenced = false } = {}) {
   if (fenced) return { sandboxMode: 'danger-full-access', workspaceWriteConfigArgs: [], networkAccess: false }
-  return { sandboxMode: 'danger-full-access', workspaceWriteConfigArgs: [], networkAccess: false }
+  return { sandboxMode: 'workspace-write', writableRoots: [cwd || process.cwd()], networkAccess: spawnPolicy?.network !== false }
 }
 
 function privilegeZones(privilegeSet, operation, effect) {
@@ -289,13 +362,15 @@ export function resolveLaunchPolicy({
   permissionMode,
   mode,
   explicitPolicy = false,
+  acknowledgeNoSecurity = false,
   env = process.env,
 } = {}) {
   const requestedPolicy = normalizeSpawnPolicy(
     spawnPolicy || requestedCapability || (harness === 'codex' ? 'write' : null),
     null,
   )
-  const useFence = !!requestedPolicy && (!FENCE_TEMPORARILY_DISABLED || explicitPolicy || !!privilegeSet)
+  const fenceEnabled = config?.spawnPolicy?.fenceEnabled === true
+  const useFence = !!requestedPolicy && (!FENCE_TEMPORARILY_DISABLED || explicitPolicy || (!!privilegeSet && fenceEnabled))
   const leaseResolution = useFence
     ? resolveLeasePolicy({ spawnPolicy: requestedPolicy, privilegeSet, harness, model, cwd, config })
     : { policyName: requestedPolicy ? 'unsandboxed' : null, devTools: true, leasePolicy: null }
@@ -305,8 +380,18 @@ export function resolveLaunchPolicy({
     : (explicitMode ?? (leaseResolution.leasePolicy
         ? 'bypassPermissions'
         : (requestedPolicy?.capability ? projectCapabilityToMode(requestedPolicy.capability) : undefined)))
+  const harnessOptions = resolveHarnessLaunchOptions({ config, harness, model })
+  const launchSecurity = assertLaunchHasSecurity({
+    leasePolicy: leaseResolution.leasePolicy,
+    harnessOptions,
+    acknowledgeNoSecurity,
+    harness,
+    permissionMode: effectivePermissionMode,
+  })
   return {
     ...leaseResolution,
+    harnessOptions,
+    launchSecurity,
     spawnPolicy: requestedPolicy,
     permissionMode: effectivePermissionMode,
     classifierDisabled: permissionClassifierDisabled(config, env),

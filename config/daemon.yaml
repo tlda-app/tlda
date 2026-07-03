@@ -1,0 +1,19 @@
+models:
+  claude:
+    "*":
+      harness:
+        required:
+          - "--dangerously-load-development-channels server:tlda"
+        preferences: []
+        controls: true
+  codex:
+    "*":
+      harness:
+        required: []
+        preferences: []
+        controls: true
+
+servers: {}
+regions: {}
+profiles: {}
+grants: {}
