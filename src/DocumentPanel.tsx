@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useContext, useMemo } from 'react'
-import { setStopRecordingCallback } from './tools/VoiceNoteTool'
+import { setStopRecordingCallback, setFinishPlacementCallback } from './tools/VoiceNoteTool'
 import { setVoiceTarget, clearVoiceTarget, setVoiceAccumulator, stopRecording, isRecording, toggleRecording, voiceTap, maybeHandleVoiceSinkPointerDown } from './voice.mjs'
 import { createPortal } from 'react-dom'
 import { useEditor, useValue, stopEventPropagation, DefaultColorStyle } from 'tldraw'
@@ -763,6 +763,7 @@ function useVoiceNoteController() {
       hiddenTARef.current = null
     }
     setStopRecordingCallback(null)
+    setFinishPlacementCallback(null)
     setRecording(false)
     if (resetTool) editor.setCurrentTool('select')
   }, [editor])
@@ -779,6 +780,9 @@ function useVoiceNoteController() {
     if (!isRecording()) toggleRecording()
     setStopRecordingCallback(() => {
       cleanupPlacement({ stopVoice: true, resetTool: false })
+    })
+    setFinishPlacementCallback(() => {
+      cleanupPlacement({ stopVoice: false, resetTool: false })
     })
     setRecording(true)
     editor.setCurrentTool('voice-note', initialPoint ? { initialPoint } : undefined)

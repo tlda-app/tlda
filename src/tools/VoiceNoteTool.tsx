@@ -9,14 +9,19 @@
 import { StateNode, createShapeId, type TLShapeId, type JsonObject } from 'tldraw'
 import { currentDocumentInfo } from '../svgDocumentLoader'
 import { getSourceAnchor, canvasToPdf, type SourceAnchor } from '../synctexAnchor'
-import { getTranscript, resetTranscript } from '../voice.mjs'
+import { getTranscript, resetTranscript, setVoiceAccumulator } from '../voice.mjs'
 import { log } from '../logger'
 import { getPref } from '../preferences'
 
 let _stopRecording: (() => void) | null = null
+let _finishPlacement: (() => void) | null = null
 
 export function setStopRecordingCallback(fn: (() => void) | null) {
   _stopRecording = fn
+}
+
+export function setFinishPlacementCallback(fn: (() => void) | null) {
+  _finishPlacement = fn
 }
 
 // A6 paper width in canvas units — wide enough to read, small enough to drag
@@ -126,15 +131,24 @@ export class VoiceNoteTool extends StateNode {
       }
     }
 
+    let base = transcript
+    const onUpdate = (text: string) => {
+      const next = base + (base && text ? (/\s$/.test(base) ? '' : ' ') : '') + text
+      editor.updateShape({ id, type: 'math-note' as any, props: { text: next } })
+    }
+    const onStop = () => {
+      const shape = editor.getShape(id) as any
+      base = shape?.props?.text || base
+    }
+    resetTranscript(transcript)
+    setVoiceAccumulator(onUpdate, null, onStop, 'note')
+
     log.debug('voice', 'VoiceNoteTool committed', { transcriptLen: transcript.length })
     this._shapeId = null
-    // Finish this note cleanly: stop recording and clear the placement +
-    // selection so the NEXT voice-button tap starts a brand-new, independent
-    // note instead of re-targeting this one (the reported "lost content on the
-    // 2nd note" / needing a "double-click"). Deliberate targeting is preserved:
-    // explicitly selecting an existing note and tapping voice still dictates
-    // into it — only the post-commit AUTO-selection/auto-continue is removed.
-    if (_stopRecording) { _stopRecording(); _stopRecording = null }
+    // Finish placement without stopping the recorder. The committed note becomes
+    // the voice accumulator, so continued speech appends into it until another
+    // target is chosen.
+    if (_finishPlacement) { _finishPlacement(); _finishPlacement = null }
     editor.setCurrentTool('select')
     editor.setSelectedShapes([])
   }
@@ -143,6 +157,7 @@ export class VoiceNoteTool extends StateNode {
     if (info.key === 'Escape') {
       this._clearInterval()
       if (_stopRecording) { _stopRecording(); _stopRecording = null }
+      _finishPlacement = null
       // ESC cancels — delete the shape (nothing was committed)
       if (this._shapeId) {
         this.editor.deleteShape(this._shapeId)

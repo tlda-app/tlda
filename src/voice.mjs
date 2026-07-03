@@ -221,6 +221,7 @@ function postProcessTranscript(text) {
 let _hud = null
 let _recognition = null
 let _recording = false
+const VOICE_HUD_WIDTH = '240px'
 
 // Recording on/off listeners — lets the viewer react when recording starts/stops
 // (e.g. to re-aim the dictation target at the currently-selected note).
@@ -290,6 +291,7 @@ let _firstInterimLogged = false
 let _lastChromeMissingnessMarker = ''
 let _chromeUnexpectedRestartFailures = 0
 const CHROME_UNEXPECTED_RESTART_LIMIT = 5
+const CHROME_MIN_MISSINGNESS_MARKER_MS = 100
 
 // Generation counter — bumped whenever _left is cleared (send, chat-switch,
 // startRecording, setVoiceTarget). Each _setupRecognition() snapshots the
@@ -353,6 +355,11 @@ function ensureHud() {
     opacity: '0',
     pointerEvents: 'none',
     whiteSpace: 'nowrap',
+    width: VOICE_HUD_WIDTH,
+    maxWidth: 'calc(100vw - 40px)',
+    boxSizing: 'border-box',
+    justifyContent: 'center',
+    overflow: 'hidden',
   })
   document.body.appendChild(_hud)
   return _hud
@@ -570,7 +577,7 @@ function hideHealthDot() {
   }
 }
 
-// --- Pause overlay when voice is dead ---
+// --- Voice reconnect notice ---
 let _dontSpeakOverlay = null
 
 function ensureDontSpeakOverlay() {
@@ -600,9 +607,6 @@ function showDontSpeak(reason = 'voice is reconnecting') {
   if (!_recording) return
   _voiceHealthLabel = reason
   showRecordingHud()
-  const el = ensureDontSpeakOverlay()
-  el.textContent = `Pause — ${reason}`
-  el.style.display = 'block'
 }
 
 function hideDontSpeak() {
@@ -682,6 +686,11 @@ function showHud(text, stateColor) {
   hud.appendChild(dot)
   const span = document.createElement('span')
   span.textContent = text
+  Object.assign(span.style, {
+    minWidth: '0',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+  })
   hud.appendChild(span)
   hud.style.color = _activeAgentColor || stateColor || 'rgba(255,255,255,0.7)'
   requestAnimationFrame(() => { hud.style.opacity = '1' })
@@ -690,12 +699,13 @@ function showHud(text, stateColor) {
 // Show recording status — text uses agent color, dot shows health separately
 function voiceStatusLabel() {
   const label = _voiceHealthLabel || ''
-  if (label.startsWith('mic stalled') || label.startsWith('mic stopped') || label.startsWith('connection lost')) {
-    return `paused: ${label}`
-  }
+  if (label.startsWith('mic stalled') || label.startsWith('mic stopped') || label.startsWith('connection lost')) return 'reconnecting'
+  if (label.includes('reconnecting') || label.includes('restarting')) return 'reconnecting'
+  if (label === 'no mic input') return 'reconnecting'
   if (label === 'speech detected') return 'speaking'
-  if (label === 'restarting voice') return 'restarting'
-  if (label === 'starting voice' || label === 'connecting to recognizer' || label === 'recognizer connected') return 'mic live'
+  if (label === 'restarting voice') return 'reconnecting'
+  if (label === 'starting voice' || label === 'connecting to recognizer') return 'reconnecting'
+  if (label === 'recognizer connected') return 'mic live'
   if (label.startsWith('mic live') || label === 'waiting for recognizer') return 'mic live'
   return label || 'mic live'
 }
@@ -1068,6 +1078,10 @@ function formatMissingnessSeconds(ms) {
 
 function insertChromeMissingnessMarker(dropStartedAt, restartedAt = Date.now()) {
   if (!_recording || _backend !== 'chrome') return
+  const hadSpeechText = !!String(_interim || '').trim() || (_state === 'speech' && !!String(_left || '').trim())
+  if (!hadSpeechText) return
+  const missingMs = restartedAt - dropStartedAt
+  if (missingMs < CHROME_MIN_MISSINGNESS_MARKER_MS) return
   const seconds = formatMissingnessSeconds(restartedAt - dropStartedAt)
   const marker = `[missed ${seconds} seconds due to technical difficulties]`
   _lastChromeMissingnessMarker = marker
@@ -1084,7 +1098,12 @@ function insertChromeMissingnessMarker(dropStartedAt, restartedAt = Date.now()) 
     _left += postProcessTranscript(_interim)
     _interim = ''
   }
-  _left += `${_left && !_left.endsWith(' ') ? ' ' : ''}${marker} `
+  const previousMarkerRe = /\s*\[missed [^\]]+ due to technical difficulties\]\s*$/i
+  if (previousMarkerRe.test(_left)) {
+    _left = _left.replace(previousMarkerRe, ` ${marker} `)
+  } else {
+    _left += `${_left && !_left.endsWith(' ') ? ' ' : ''}${marker} `
+  }
   fillTextarea(_left + _right)
 }
 
@@ -1491,18 +1510,29 @@ function _dgTrickleFlush() {
 }
 
 function normalizeDeepgramText(text) {
-  return String(text || '').replace(/\s+/g, ' ').trim().toLowerCase()
+  return String(text || '')
+    .replace(/[.!?,;:]+/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase()
 }
 
-function resetDeepgramTextState({ ignoreUntilUtteranceEnd = false, submittedText = null, preserveLastFinal = false } = {}) {
+function resetDeepgramTextState({ ignoreUntilUtteranceEnd = false, submittedText = null, preserveLastFinal = false, preserveUtteranceGuard = false } = {}) {
   _deepgramInterim = ''
   _dgHasSeenInterim = false
-  _dgIgnoreUntilUtteranceEnd = ignoreUntilUtteranceEnd
-  _dgIgnoredSubmittedText = ignoreUntilUtteranceEnd ? normalizeDeepgramText(submittedText) : null
+  if (!preserveUtteranceGuard) {
+    _dgIgnoreUntilUtteranceEnd = ignoreUntilUtteranceEnd
+    _dgIgnoredSubmittedText = ignoreUntilUtteranceEnd ? normalizeDeepgramText(submittedText) : null
+  }
   if (!preserveLastFinal) _dgLastFinalNorm = ''
   _dgTrickleFlush()
   _dgTrickleWords = []
   _dgTrickleShown = 0
+}
+
+function currentSubmittedVoiceText() {
+  if (_activeTextarea?.value) return _activeTextarea.value
+  return [_left, _interim].filter(Boolean).join(' ')
 }
 
 function escapeRegExp(text) {
@@ -1957,8 +1987,10 @@ function afterSend() {
     return
   }
   if (_backend === 'deepgram') {
+    const submittedText = currentSubmittedVoiceText()
     finalizeDeepgramBridge()
-    resetDeepgramTextState()
+    if (normalizeDeepgramText(submittedText)) resetDeepgramTextState({ ignoreUntilUtteranceEnd: true, submittedText })
+    else resetDeepgramTextState({ preserveUtteranceGuard: true })
     return
   }
   if (!_recording) return
@@ -2004,6 +2036,10 @@ if (typeof window !== 'undefined') {
     getTrickle: () => ({ words: _dgTrickleWords.slice(), shown: _dgTrickleShown, hasTimer: _dgTrickleTimer !== null }),
     showDontSpeak: () => showDontSpeak(),
     isDontSpeakVisible: () => !!_dontSpeakOverlay && _dontSpeakOverlay.style.display === 'block',
+    getVoiceStatusLabel: () => voiceStatusLabel(),
+    getHudText: () => _hud?.textContent || '',
+    getHudStyle: () => _hud?.style || null,
+    getHudWidth: () => VOICE_HUD_WIDTH,
     fakeDeepgramConnected: () => {
       _recording = true
       _backend = 'deepgram'
@@ -2020,6 +2056,7 @@ if (typeof window !== 'undefined') {
     dotAudioStale: () => dotAudioStale(),
     getHealthLabel: () => _voiceHealthLabel,
     getLastChromeMissingnessMarker: () => _lastChromeMissingnessMarker,
+    insertChromeMissingnessMarker: (dropStartedAt, restartedAt) => insertChromeMissingnessMarker(dropStartedAt, restartedAt),
     formatMissingnessSeconds: (ms) => formatMissingnessSeconds(ms),
     shouldAutoStartOnInit: (isTouch, backend) => shouldAutoStartOnInit(isTouch, backend),
   }
@@ -2488,11 +2525,15 @@ export async function setBackend(be) {
   showHud(`voice: ${be === 'deepgram' ? 'deepgram-sdk' : be}`, '#9370db')
   fadeHud(2000)
 }
-export function resetTranscript() {
+/** @param {string | null | undefined} submittedText */
+export function resetTranscript(submittedText = undefined) {
   _state = 'edit'
   _generation++
   _left = _interim = _right = ''
-  if (_backend === 'deepgram') resetDeepgramTextState()
+  if (_backend === 'deepgram') {
+    if (submittedText != null) resetDeepgramTextState({ ignoreUntilUtteranceEnd: true, submittedText })
+    else resetDeepgramTextState({ preserveUtteranceGuard: true })
+  }
   if (_backend === 'whisper-stream') flushWhisperBridge()
   if (_recording && _recognition) {
     try { _recognition.stop() } catch {}

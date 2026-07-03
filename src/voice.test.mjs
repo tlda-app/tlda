@@ -171,7 +171,7 @@ global.AudioWorkletNode = class AudioWorkletNode {
 }
 
 // ---- Import module ----
-const { initVoice, setVoiceTarget, setVoiceAccumulator, clearVoiceAccumulator, toggleRecording, isRecording, getGeneration, enterVoiceSink, setBackend } = await import('./voice.mjs')
+const { initVoice, setVoiceTarget, setVoiceAccumulator, clearVoiceAccumulator, toggleRecording, isRecording, getGeneration, enterVoiceSink, setBackend, resetTranscript } = await import('./voice.mjs')
 const { setPref, loadPrefs } = await import('./preferences.ts')
 await loadPrefs('voice-test')
 setPref('voice-backend', 'chrome')
@@ -463,6 +463,39 @@ function reset() {
   console.log('✓ Test 8: Deepgram magic-word submits once via Enter')
 }
 
+// ---- Test 8a: Enter send clears Deepgram in-flight utterance bleed ----
+{
+  const ta = makeTextarea()
+  const sent = []
+  const sendFn = (targets, text) => { sent.push(text) }
+  attachComposerEnter(ta, sendFn)
+  setVoiceTarget(ta, ['fleet:abc'], { 'fleet:abc': 'agent' }, sendFn)
+  window.__voiceTest.fakeRecord(ta)
+
+  window.__voiceTest.injectTranscript('the old message tail', false)
+  ta.value = 'the old message tail'
+
+  window.__voiceTest.afterSend()
+  ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true }))
+  resetTranscript('the old message tail')
+
+  assert.deepEqual(sent, ['the old message tail'], 'Enter should send and clear the composer')
+  assert.equal(ta.value, '', 'composer starts blank after Enter')
+
+  window.__voiceTest.injectTranscript('the old message tail.', false)
+  assert.equal(ta.value, '', 'late old interim after Enter must not repopulate the blank composer')
+  window.__voiceTest.injectTranscript('the old message tail.', true)
+  assert.equal(ta.value, '', 'late old final after Enter must not repopulate the blank composer')
+
+  window.__voiceTest.injectTranscript('fresh thought', false)
+  tick(100)
+  assert.ok(ta.value.includes('fresh thought'), 'a genuinely new utterance releases the guard')
+
+  window.__voiceTest.fakeStop()
+  reset()
+  console.log('✓ Test 8a: Enter send clears Deepgram in-flight utterance bleed')
+}
+
 // ---- Test 8b: Submit magic words are preference-configurable ----
 {
   const ta = makeTextarea()
@@ -699,20 +732,22 @@ await setBackend('chrome')
   console.log('✓ Test 10: onend with stale generation creates fresh session (chat-switch regression)')
 }
 
-// ---- Test 11: Deepgram mic-frame recovery clears don't-speak banner ----
+// ---- Test 11: transient Deepgram reconnect stays in the quiet fixed HUD ----
 {
   reset()
   window.__voiceTest.fakeDeepgramConnected()
   window.__voiceTest.showDontSpeak()
-  assert.equal(window.__voiceTest.isDontSpeakVisible(), true, 'test starts with banner visible')
+  assert.equal(window.__voiceTest.isDontSpeakVisible(), false, 'transient reconnect must not show the old full-width banner')
+  assert.equal(window.__voiceTest.getVoiceStatusLabel(), 'reconnecting', 'disconnect maps to compact reconnecting state')
+  assert.equal(window.__voiceTest.getHudWidth(), '240px', 'voice HUD keeps a fixed width through reconnect states')
 
   const sent = window.__voiceTest.simulateDeepgramAudioFrame()
   assert.equal(sent, true, 'connected Deepgram frame should be sent')
-  assert.equal(window.__voiceTest.isDontSpeakVisible(), false, 'audio recovery should hide banner before transcript arrives')
+  assert.equal(window.__voiceTest.isDontSpeakVisible(), false, 'audio recovery keeps the banner hidden before transcript arrives')
 
   window.__voiceTest.fakeStop()
   reset()
-  console.log('✓ Test 11: Deepgram mic-frame recovery clears don’t-speak banner')
+  console.log('✓ Test 11: transient Deepgram reconnect uses quiet fixed HUD')
 }
 
 // ---- Test 12: mic watchdog never tears down a live (running) context ----
@@ -868,7 +903,7 @@ await setBackend('chrome')
   console.log('✓ Test 18: time-to-first-interim logged once with elapsed ms')
 }
 
-// Test 19: unexpected Chrome onend recreates/restarts recognition and marks the gap.
+// Test 19: idle Chrome reconnect blips restart recognition without text markers.
 {
   const ta = makeTextarea()
   setVoiceTarget(ta, [], {})
@@ -883,23 +918,56 @@ await setBackend('chrome')
   throwInvalidStateStarts = 1
   firstRec.onend()
   assert.equal(startCount, 2, 'Chrome onend attempts immediate recognition restart')
-  assert.ok(!ta.value.includes('technical difficulties'), 'marker waits until restart succeeds')
+  assert.ok(!ta.value.includes('technical difficulties'), 'idle blip must not insert a missingness marker before restart')
   tick(100)
 
   assert.equal(startCount, 3, 'Chrome onend auto-restarts recognition after retry')
   assert.notEqual(mockRec, firstRec, 'unexpected onend creates a fresh recognition instance')
-  assert.ok(ta.value.includes('[missed 0.1 seconds due to technical difficulties]'), `missingness marker should be inserted, got "${ta.value}"`)
-  assert.equal(window.__voiceTest.getLastChromeMissingnessMarker(), '[missed 0.1 seconds due to technical difficulties]', 'test hook tracks inserted marker')
-  assert.ok(/restarting/i.test(mockDiv.textContent), `HUD should say restarting during auto-restart, got "${mockDiv.textContent}"`)
+  assert.equal(ta.value, '', `idle reconnect should keep composer blank, got "${ta.value}"`)
+  assert.equal(window.__voiceTest.getLastChromeMissingnessMarker(), '', 'idle reconnect must not track a missingness marker')
+  assert.ok(/reconnecting/i.test(mockDiv.textContent), `HUD should say reconnecting during auto-restart, got "${mockDiv.textContent}"`)
   assert.equal(window.__voiceTest.getHealthLabel(), 'restarting voice', 'health label tracks restart state')
 
   mockRec.onresult({ resultIndex: 0, results: [{ isFinal: true, 0: { transcript: 'resumed words' } }] })
   assert.ok(ta.value.includes('resumed words'), `fresh restarted recognizer should accept later results, got "${ta.value}"`)
 
   tick(700)
-  assert.ok(!/restarting/i.test(mockDiv.textContent), `restart label should clear after grace window, got "${mockDiv.textContent}"`)
+  assert.ok(!/reconnecting/i.test(mockDiv.textContent), `restart label should clear after grace window, got "${mockDiv.textContent}"`)
   reset()
-  console.log('✓ Test 19: unexpected Chrome onend restarts recognition and inserts missingness marker')
+  console.log('✓ Test 19: idle Chrome reconnect blips restart without text markers')
+}
+
+// Test 19a: Chrome reconnect during active speech inserts/merges one marker.
+{
+  const ta = makeTextarea()
+  setVoiceTarget(ta, [], {})
+  reset()
+  await setBackend('chrome')
+
+  toggleRecording()
+  tick(300)
+  assert.equal(startCount, 1, 'recognition started')
+  mockRec.onresult({ resultIndex: 0, results: [{ isFinal: true, 0: { transcript: 'spoken words' } }] })
+  const firstRec = mockRec
+
+  throwInvalidStateStarts = 1
+  firstRec.onend()
+  tick(100)
+
+  assert.ok(ta.value.includes('spoken words [missed 0.1 seconds due to technical difficulties]'), `active speech restart should insert one marker, got "${ta.value}"`)
+  assert.equal(window.__voiceTest.getLastChromeMissingnessMarker(), '[missed 0.1 seconds due to technical difficulties]', 'test hook tracks inserted marker')
+
+  const secondRec = mockRec
+  throwInvalidStateStarts = 1
+  secondRec.onend()
+  tick(100)
+
+  const markerCount = (ta.value.match(/technical difficulties/g) || []).length
+  assert.equal(markerCount, 1, `sequential reconnect markers without intervening text should merge, got "${ta.value}"`)
+  assert.ok(ta.value.includes('spoken words [missed 0.1 seconds due to technical difficulties]'), `merged marker should preserve prior speech text, got "${ta.value}"`)
+
+  reset()
+  console.log('✓ Test 19a: Chrome reconnect during active speech inserts/merges one marker')
 }
 
 // Test 19b: user-initiated stop does not auto-restart or insert a marker.

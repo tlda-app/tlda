@@ -140,7 +140,7 @@ export function ChatComposer({
             ta.value = ''
             ta.style.height = ''
             ta.dispatchEvent(new Event('input', { bubbles: true }))
-            resetTranscript()
+            resetTranscript(text)
             restartRecording()
             sentHistoryRef.current = [...sentHistoryRef.current, text]
             historyIndexRef.current = -1
