@@ -43,7 +43,13 @@ import {
   resolveSpawnPolicyOption,
 } from '../server/lib/spawn-policy.mjs'
 import { SPAWN_MACHINE_PREF_KEY } from '../server/lib/spawn-routing.mjs'
-import { createPrivilegeLedger, defaultPrivilegeLedgerPath, withDaemonModelAliases } from '../bin/lib/spawn/privilege-ledger.mjs'
+import {
+  createPrivilegeLedger,
+  defaultDaemonConfigPath,
+  privilegeLedgerPathFromDaemonConfig,
+  readDaemonConfig,
+  withDaemonModelAliases,
+} from '../bin/lib/spawn/privilege-ledger.mjs'
 
 // --- Argument parsing ---
 
@@ -1685,11 +1691,12 @@ async function attachToAgent(name) {
 async function runFleetSpawn(spawnArgs) {
   if (spawnArgs.includes('--list-models')) {
     const { listModels } = await import('../bin/lib/spawn/models.mjs')
-    const ledger = createPrivilegeLedger(defaultPrivilegeLedgerPath(CONFIG_DIR))
-    console.log(JSON.stringify(listModels(withDaemonModelAliases(loadConfig(), ledger.config)), null, 2))
+    const daemonConfig = readDaemonConfig(defaultDaemonConfigPath(CONFIG_DIR))
+    console.log(JSON.stringify(listModels(withDaemonModelAliases(loadConfig(), daemonConfig)), null, 2))
     return
   }
   const { spawn } = await import('../bin/lib/spawn/index.mjs')
+  const { newFleetId } = await import('../bin/lib/spawn/identity.mjs')
   const session = flagFromRaw(spawnArgs, 'session')
   const refresh = hasRawFlag(spawnArgs, 'refresh')
   const fresh = hasRawFlag(spawnArgs, 'fresh')
@@ -1704,9 +1711,11 @@ async function runFleetSpawn(spawnArgs) {
   const cwd = resolve(flagFromRaw(spawnArgs, 'cwd') || process.cwd())
   const model = flagFromRaw(spawnArgs, 'model') || undefined
   const kind = flagFromRaw(spawnArgs, 'kind') || undefined
+  let ledger = null
   try {
-    const ledger = createPrivilegeLedger(defaultPrivilegeLedgerPath(CONFIG_DIR))
-    const config = withDaemonModelAliases(loadConfig(), ledger.config)
+    const daemonConfig = readDaemonConfig(defaultDaemonConfigPath(CONFIG_DIR))
+    ledger = createPrivilegeLedger(privilegeLedgerPathFromDaemonConfig(daemonConfig, CONFIG_DIR))
+    const config = withDaemonModelAliases(loadConfig(), daemonConfig)
     const spawnerId = flagFromRaw(spawnArgs, 'spawner-id') || process.env.TLDA_SPAWNER_ID || 'fleet:skip'
     const spawnerGrant = ledger.grantFor({ id: spawnerId })
     const grant = resolveSpawnGrant({
@@ -1719,10 +1728,20 @@ async function runFleetSpawn(spawnArgs) {
       config,
       cwd,
     })
+    const spawnMode = session ? 'session' : (refresh ? 'refresh' : (fresh ? 'fresh' : 'respawn'))
+    const suppliedAgentId = flagFromRaw(spawnArgs, 'agent-id') || undefined
+    const preallocatedAgentId = suppliedAgentId || ((spawnMode === 'fresh' || spawnMode === 'session') ? newFleetId() : undefined)
+    if (preallocatedAgentId) {
+      await ledger.set(preallocatedAgentId, {
+        spawnPolicy: grant.grantedPolicy,
+        privilegeSet: grant.grantedPrivilegeSet,
+        source: 'spawn-direct',
+      })
+    }
     const params = {
-      spawnMode: session ? 'session' : (refresh ? 'refresh' : (fresh ? 'fresh' : 'respawn')),
+      spawnMode,
       name,
-      agentId: flagFromRaw(spawnArgs, 'agent-id') || undefined,
+      agentId: preallocatedAgentId,
       model,
       kind,
       cwd,
@@ -1741,16 +1760,26 @@ async function runFleetSpawn(spawnArgs) {
       console.error(red('Usage: tlda agent spawn-direct [--fresh|--refresh|--session uuid] <agent> [--model model] [--kind kind] [--cwd path] [--privileges profile] [--capability read|write|tlda-write|full] [--spawner-id fleet:skip]'))
       process.exit(1)
     }
-    const result = await spawn(params)
-    ledger.set(result.fleetId, {
-      spawnPolicy: grant.grantedPolicy,
-      privilegeSet: grant.grantedPrivilegeSet,
-      source: 'spawn-direct',
-    })
+    let result
+    try {
+      result = await spawn(params)
+    } catch (e) {
+      if (preallocatedAgentId) await ledger.delete(preallocatedAgentId).catch(() => {})
+      throw e
+    }
+    if (!preallocatedAgentId || result.fleetId !== preallocatedAgentId) {
+      await ledger.set(result.fleetId, {
+        spawnPolicy: grant.grantedPolicy,
+        privilegeSet: grant.grantedPrivilegeSet,
+        source: 'spawn-direct',
+      })
+    }
     console.log(`${result.tmuxSession} (${result.fleetId}) spawned in ${params.cwd || process.cwd()}`)
   } catch (e) {
     console.error(red(e?.message || String(e)))
-    process.exit(1)
+    process.exitCode = 1
+  } finally {
+    if (ledger) await ledger.close()
   }
 }
 

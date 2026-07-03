@@ -27,7 +27,14 @@ import { nameForPhase, phaseFromName } from '../shared/lineage-name.mjs';
 import { formatSpawnModelSummary, validateSpawnModelSelection } from '../shared/spawn-model-validation.mjs';
 import { listModels as listSpawnModels } from '../bin/lib/spawn/models.mjs';
 import { spawn as spawnLocalAgent } from '../bin/lib/spawn/index.mjs';
-import { createPrivilegeLedger, defaultPrivilegeLedgerPath, withDaemonModelAliases } from '../bin/lib/spawn/privilege-ledger.mjs';
+import { newFleetId } from '../bin/lib/spawn/identity.mjs';
+import {
+  createPrivilegeLedger,
+  defaultDaemonConfigPath,
+  privilegeLedgerPathFromDaemonConfig,
+  readDaemonConfig,
+  withDaemonModelAliases,
+} from '../bin/lib/spawn/privilege-ledger.mjs';
 import { normalizeRequestedPrivileges, resolveSpawnGrant } from '../server/lib/spawn-policy.mjs';
 import { classifyUserBlame } from '../bin/lib/user-blame-classifier.mjs';
 import { classifyLaunder } from '../bin/lib/launder-classifier.mjs';
@@ -356,8 +363,8 @@ let _spawnModelCatalog = null;
 let _spawnModelCatalogAt = 0;
 async function getSpawnModelCatalog({ maxAgeMs = 60_000 } = {}) {
   if (_spawnModelCatalog && Date.now() - _spawnModelCatalogAt < maxAgeMs) return _spawnModelCatalog;
-  const privilegeLedger = createPrivilegeLedger(defaultPrivilegeLedgerPath(CONFIG_DIR));
-  const data = listSpawnModels(withDaemonModelAliases(loadConfig(), privilegeLedger.config));
+  const daemonConfig = readDaemonConfig(defaultDaemonConfigPath(CONFIG_DIR));
+  const data = listSpawnModels(withDaemonModelAliases(loadConfig(), daemonConfig));
   _spawnModelCatalog = data;
   _spawnModelCatalogAt = Date.now();
   return data;
@@ -1228,44 +1235,68 @@ function findValidSession(agent) {
  */
 async function runFleetSpawn(name, opts = {}) {
   const cwd = opts.cwd || getAgentCwd() || process.cwd();
-  const privilegeLedger = createPrivilegeLedger(defaultPrivilegeLedgerPath(CONFIG_DIR));
-  const config = withDaemonModelAliases(loadConfig(), privilegeLedger.config);
-  const requestedCapability = opts.capability || opts.spawnCapability || undefined;
-  const requestedPrivileges = opts.privileges || opts.requestedPrivileges || undefined;
-  const requestedPrivilegePolicy = requestedPrivileges
-    ? normalizeRequestedPrivileges(requestedPrivileges, requestedCapability || undefined)
-    : null;
-  const spawnerGrant = privilegeLedger.grantFor({ id: AGENT_ID });
-  const grant = resolveSpawnGrant({
-    requestedCapability: requestedPrivilegePolicy?.capability || requestedCapability,
-    requestedPrivileges,
-    spawnerPolicy: spawnerGrant.spawnPolicy,
-    spawnerPrivilegeSet: spawnerGrant.privilegeSet,
-    model: opts.model,
-    kind: opts.kind,
-    config,
-    cwd,
-  });
-  const result = await spawnLocalAgent({
-    spawnMode: opts.session ? 'session' : (opts.refresh ? 'refresh' : (opts.fresh ? 'fresh' : 'respawn')),
-    name,
-    sessionId: opts.session || undefined,
-    model: opts.model || undefined,
-    kind: opts.kind || undefined,
-    effort: opts.effort || undefined,
-    cwd,
-    permissionMode: opts.mode || undefined,
-    requestedCapability: grant.grantedCapability,
-    requestedPrivileges,
-    spawnPolicy: grant.grantedPolicy,
-    privilegeSet: grant.grantedPrivilegeSet,
-  });
-  privilegeLedger.set(result.fleetId, {
-    spawnPolicy: grant.grantedPolicy,
-    privilegeSet: grant.grantedPrivilegeSet,
-    source: 'mcp-local-spawn',
-  });
-  return `${result.tmuxSession} (${result.fleetId})`;
+  const daemonConfig = readDaemonConfig(defaultDaemonConfigPath(CONFIG_DIR));
+  const privilegeLedger = createPrivilegeLedger(privilegeLedgerPathFromDaemonConfig(daemonConfig, CONFIG_DIR));
+  try {
+    const config = withDaemonModelAliases(loadConfig(), daemonConfig);
+    const requestedCapability = opts.capability || opts.spawnCapability || undefined;
+    const requestedPrivileges = opts.privileges || opts.requestedPrivileges || undefined;
+    const requestedPrivilegePolicy = requestedPrivileges
+      ? normalizeRequestedPrivileges(requestedPrivileges, requestedCapability || undefined)
+      : null;
+    const spawnerGrant = privilegeLedger.grantFor({ id: AGENT_ID });
+    const grant = resolveSpawnGrant({
+      requestedCapability: requestedPrivilegePolicy?.capability || requestedCapability,
+      requestedPrivileges,
+      spawnerPolicy: spawnerGrant.spawnPolicy,
+      spawnerPrivilegeSet: spawnerGrant.privilegeSet,
+      model: opts.model,
+      kind: opts.kind,
+      config,
+      cwd,
+    });
+    const spawnMode = opts.session ? 'session' : (opts.refresh ? 'refresh' : (opts.fresh ? 'fresh' : 'respawn'));
+    const preallocatedAgentId = opts.agentId || opts.agent_id || ((spawnMode === 'fresh' || spawnMode === 'session') ? newFleetId() : undefined);
+    if (preallocatedAgentId) {
+      await privilegeLedger.set(preallocatedAgentId, {
+        spawnPolicy: grant.grantedPolicy,
+        privilegeSet: grant.grantedPrivilegeSet,
+        source: 'mcp-local-spawn',
+      });
+    }
+    let result;
+    try {
+      result = await spawnLocalAgent({
+        spawnMode,
+        agentId: preallocatedAgentId,
+        agent_id: preallocatedAgentId,
+        name,
+        sessionId: opts.session || undefined,
+        model: opts.model || undefined,
+        kind: opts.kind || undefined,
+        effort: opts.effort || undefined,
+        cwd,
+        permissionMode: opts.mode || undefined,
+        requestedCapability: grant.grantedCapability,
+        requestedPrivileges,
+        spawnPolicy: grant.grantedPolicy,
+        privilegeSet: grant.grantedPrivilegeSet,
+      });
+    } catch (e) {
+      if (preallocatedAgentId) await privilegeLedger.delete(preallocatedAgentId).catch(() => {});
+      throw e;
+    }
+    if (!preallocatedAgentId || result.fleetId !== preallocatedAgentId) {
+      await privilegeLedger.set(result.fleetId, {
+        spawnPolicy: grant.grantedPolicy,
+        privilegeSet: grant.grantedPrivilegeSet,
+        source: 'mcp-local-spawn',
+      });
+    }
+    return `${result.tmuxSession} (${result.fleetId})`;
+  } finally {
+    await privilegeLedger.close();
+  }
 }
 
 function windowTail(output, n = 40) {

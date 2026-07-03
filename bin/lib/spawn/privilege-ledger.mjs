@@ -1,6 +1,8 @@
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
+import { Worker } from 'worker_threads'
+import Database from 'better-sqlite3'
 import YAML from 'yaml'
 import {
   emptyPrivilegeSet,
@@ -11,6 +13,8 @@ import {
 function nowIso() {
   return new Date().toISOString()
 }
+
+const WRITE_TIMEOUT_MS = Number(process.env.TLDA_PRIVILEGE_LEDGER_WRITE_TIMEOUT_MS || 5000)
 
 function normalizeLedgerGrant(value, fallback = 'none') {
   if (!value) {
@@ -35,6 +39,15 @@ function normalizeLedgerGrant(value, fallback = 'none') {
   }
 }
 
+function readYamlFile(file, label) {
+  if (!fs.existsSync(file)) return {}
+  try {
+    return YAML.parse(fs.readFileSync(file, 'utf8')) || {}
+  } catch (e) {
+    throw new Error(`cannot read ${label} ${file}: ${e.message}`)
+  }
+}
+
 export class PrivilegeLedgerError extends Error {
   constructor(code, message, detail = {}) {
     super(message)
@@ -47,16 +60,37 @@ export class PrivilegeLedgerError extends Error {
 
 function normalizeDaemonConfig(parsed) {
   const root = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
-  const privileges = root.privileges && typeof root.privileges === 'object' && !Array.isArray(root.privileges)
-    ? root.privileges
-    : {}
   const models = root.models && typeof root.models === 'object' && !Array.isArray(root.models)
     ? root.models
     : {}
-  const agents = privileges.agents && typeof privileges.agents === 'object' && !Array.isArray(privileges.agents)
-    ? privileges.agents
+  const ledger = root.ledger && typeof root.ledger === 'object' && !Array.isArray(root.ledger)
+    ? root.ledger
     : {}
-  return { version: root.version || 1, privileges: { agents }, models }
+  const profiles = root.profiles && typeof root.profiles === 'object' && !Array.isArray(root.profiles)
+    ? root.profiles
+    : {}
+  const classes = root.classes && typeof root.classes === 'object' && !Array.isArray(root.classes)
+    ? root.classes
+    : {}
+  const assignments = root.assignments && typeof root.assignments === 'object' && !Array.isArray(root.assignments)
+    ? root.assignments
+    : {}
+  const rootGrants = root.root_grants && typeof root.root_grants === 'object' && !Array.isArray(root.root_grants)
+    ? root.root_grants
+    : {}
+  const serverIdentities = root.server_identities && typeof root.server_identities === 'object' && !Array.isArray(root.server_identities)
+    ? root.server_identities
+    : {}
+  return {
+    version: root.version || 1,
+    profiles,
+    classes,
+    assignments,
+    root_grants: rootGrants,
+    models,
+    server_identities: serverIdentities,
+    ledger,
+  }
 }
 
 function looksLikeDaemonModelRow(value) {
@@ -135,42 +169,61 @@ function withStoredSpawnDefault(privilegeSet, policy) {
 }
 
 export class PrivilegeLedger {
-  constructor(file) {
-    this.file = file
-    this.rows = new Map()
-    this.config = { version: 1, privileges: { agents: {} }, models: {} }
-    this.load()
-  }
-
-  load() {
-    this.rows.clear()
-    this.config = { version: 1, privileges: { agents: {} }, models: {} }
-    if (!fs.existsSync(this.file)) return
-    let parsed
-    try {
-      parsed = YAML.parse(fs.readFileSync(this.file, 'utf8')) || {}
-    } catch (e) {
-      throw new Error(`cannot read daemon privilege ledger ${this.file}: ${e.message}`)
-    }
-    this.config = normalizeDaemonConfig(parsed)
-    const agents = this.config.privileges.agents
-    for (const [id, row] of Object.entries(agents)) {
-      if (!id || !row || typeof row !== 'object') continue
-      const grant = normalizeLedgerGrant(row)
-      this.rows.set(id, {
-        id,
-        spawnPolicy: grant.spawnPolicy,
-        privilegeSet: grant.privilegeSet,
-        updatedAt: row.updatedAt || null,
-        source: row.source || 'ledger',
-      })
-    }
+  constructor(dbPath) {
+    this.file = dbPath
+    this.dbPath = dbPath
+    fs.mkdirSync(path.dirname(dbPath), { recursive: true })
+    this.db = new Database(dbPath)
+    this.db.pragma('journal_mode = WAL')
+    this.db.pragma('synchronous = NORMAL')
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS privilege_grants (
+        id TEXT PRIMARY KEY,
+        spawn_policy TEXT NOT NULL,
+        privilege_set TEXT,
+        updated_at TEXT NOT NULL,
+        source TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_privilege_grants_updated_at
+        ON privilege_grants(updated_at);
+    `)
+    this._get = this.db.prepare(`
+      SELECT id, spawn_policy, privilege_set, updated_at, source
+      FROM privilege_grants
+      WHERE id = ?
+    `)
+    this._upsert = this.db.prepare(`
+      INSERT INTO privilege_grants (id, spawn_policy, privilege_set, updated_at, source)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        spawn_policy = excluded.spawn_policy,
+        privilege_set = excluded.privilege_set,
+        updated_at = excluded.updated_at,
+        source = excluded.source
+    `)
+    this._delete = this.db.prepare('DELETE FROM privilege_grants WHERE id = ?')
+    this._worker = null
+    this._nextRequestId = 1
+    this._pending = new Map()
   }
 
   get(id) {
     const key = String(id || '').trim()
     if (!key) return null
-    return this.rows.get(key) || null
+    const row = this._get.get(key)
+    if (!row) return null
+    const parsed = {
+      spawnPolicy: JSON.parse(row.spawn_policy),
+      ...(row.privilege_set ? { privilegeSet: JSON.parse(row.privilege_set) } : {}),
+    }
+    const grant = normalizeLedgerGrant(parsed)
+    return {
+      id: row.id,
+      spawnPolicy: grant.spawnPolicy,
+      privilegeSet: grant.privilegeSet,
+      updatedAt: row.updated_at,
+      source: row.source || 'ledger',
+    }
   }
 
   grantFor(agent) {
@@ -184,11 +237,11 @@ export class PrivilegeLedger {
     )
   }
 
-  set(id, { spawnPolicy, privilegeSet, source = 'spawn' } = {}) {
+  rowFor(id, { spawnPolicy, privilegeSet, source = 'spawn' } = {}) {
     const key = String(id || '').trim()
     if (!key) throw new Error('cannot persist daemon privilege grant without fleet id')
     const policy = normalizeSpawnPolicy(spawnPolicy, 'none')
-    const row = {
+    return {
       id: key,
       spawnPolicy: policy,
       privilegeSet: privilegeSet || (policy.capability === 'none'
@@ -197,35 +250,92 @@ export class PrivilegeLedger {
       updatedAt: nowIso(),
       source,
     }
-    this.rows.set(key, row)
-    this.save()
+  }
+
+  ensureWriter() {
+    if (this._worker) return this._worker
+    this._worker = new Worker(new URL('./privilege-ledger-writer.mjs', import.meta.url), {
+      workerData: { dbPath: this.dbPath },
+    })
+    this._worker.unref()
+    this._worker.on('message', (message) => {
+      const pending = this._pending.get(message.requestId)
+      if (!pending) return
+      this._pending.delete(message.requestId)
+      clearTimeout(pending.timer)
+      if (message.ok) pending.resolve()
+      else pending.reject(new Error(message.error || 'privilege ledger write failed'))
+    })
+    this._worker.on('error', (err) => {
+      const pending = [...this._pending.values()]
+      this._pending.clear()
+      for (const item of pending) {
+        clearTimeout(item.timer)
+        item.reject(err)
+      }
+      this._worker = null
+    })
+    return this._worker
+  }
+
+  writeAsync(message, timeoutMs = WRITE_TIMEOUT_MS) {
+    const worker = this.ensureWriter()
+    const requestId = this._nextRequestId++
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this._pending.delete(requestId)
+        reject(new Error(`privilege ledger write timed out after ${timeoutMs}ms`))
+      }, timeoutMs)
+      this._pending.set(requestId, { resolve, reject, timer })
+      worker.postMessage({ ...message, requestId })
+    })
+  }
+
+  async set(id, options = {}) {
+    const row = this.rowFor(id, options)
+    await this.writeAsync({
+      op: 'upsert',
+      row: {
+        id: row.id,
+        spawnPolicy: JSON.stringify(row.spawnPolicy),
+        privilegeSet: row.privilegeSet ? JSON.stringify(row.privilegeSet) : null,
+        updatedAt: row.updatedAt,
+        source: row.source,
+      },
+    })
     return row
   }
 
-  save() {
-    fs.mkdirSync(path.dirname(this.file), { recursive: true })
-    const agents = {}
-    for (const [id, row] of [...this.rows.entries()].sort(([a], [b]) => a.localeCompare(b))) {
-      agents[id] = {
-        spawnPolicy: row.spawnPolicy,
-        ...(row.privilegeSet ? { privilegeSet: row.privilegeSet } : {}),
-        updatedAt: row.updatedAt || nowIso(),
-        source: row.source || 'ledger',
-      }
-    }
-    this.config = {
-      ...this.config,
-      version: 1,
-      privileges: {
-        ...(this.config.privileges || {}),
-        agents,
-      },
-    }
-    const text = YAML.stringify(this.config)
-    const tmp = path.join(path.dirname(this.file), `.${path.basename(this.file)}.${process.pid}.${Date.now()}.tmp`)
-    fs.writeFileSync(tmp, text, 'utf8')
-    fs.renameSync(tmp, this.file)
+  async delete(id) {
+    const key = String(id || '').trim()
+    if (!key) return
+    await this.writeAsync({ op: 'delete', id: key })
   }
+
+  setSyncForTest(id, options = {}) {
+    const row = this.rowFor(id, options)
+    this._upsert.run(
+      row.id,
+      JSON.stringify(row.spawnPolicy),
+      row.privilegeSet ? JSON.stringify(row.privilegeSet) : null,
+      row.updatedAt,
+      row.source,
+    )
+    return row
+  }
+
+  async close() {
+    for (const item of this._pending.values()) clearTimeout(item.timer)
+    this._pending.clear()
+    const worker = this._worker
+    this._worker = null
+    this.db.close()
+    if (worker) await worker.terminate()
+  }
+}
+
+export function readDaemonConfig(file = defaultDaemonConfigPath()) {
+  return normalizeDaemonConfig(readYamlFile(file, 'daemon config'))
 }
 
 export function withDaemonModelAliases(config = {}, daemonConfig = {}) {
@@ -248,7 +358,20 @@ export function withDaemonModelAliases(config = {}, daemonConfig = {}) {
 }
 
 export function defaultPrivilegeLedgerPath(configDir = path.join(os.homedir(), '.config', 'tlda')) {
-  return path.join(configDir, 'daemon-privileges.yaml')
+  return path.join(configDir, 'fleet-daemon.db')
+}
+
+export function defaultDaemonConfigPath(configDir = path.join(os.homedir(), '.config', 'tlda')) {
+  return path.join(configDir, 'daemon.yaml')
+}
+
+export function privilegeLedgerPathFromDaemonConfig(daemonConfig = {}, configDir = path.join(os.homedir(), '.config', 'tlda')) {
+  const raw = daemonConfig?.ledger?.db
+  if (!raw) return defaultPrivilegeLedgerPath(configDir)
+  const expanded = String(raw).startsWith('~/')
+    ? path.join(os.homedir(), String(raw).slice(2))
+    : String(raw)
+  return path.isAbsolute(expanded) ? expanded : path.join(configDir, expanded)
 }
 
 export function createPrivilegeLedger(file = defaultPrivilegeLedgerPath()) {

@@ -16,7 +16,8 @@ test('spawn-direct uses the daemon privilege ledger as spawner authority', () =>
   assert.match(cli, /spawnerPrivilegeSet: spawnerGrant\.privilegeSet/)
   assert.match(cli, /spawnPolicy: grant\.grantedPolicy/)
   assert.match(cli, /privilegeSet: grant\.grantedPrivilegeSet/)
-  assert.match(cli, /ledger\.set\(result\.fleetId/)
+  assert.match(cli, /await ledger\.set\(preallocatedAgentId/)
+  assert.match(cli, /await ledger\.delete\(preallocatedAgentId\)/)
 })
 
 test('spawn-direct opts into fence enforcement but daemon spawn does not', () => {
@@ -55,7 +56,8 @@ test('MCP local spawn capability is passed to the shared Node spawn helper', () 
   const tools = fs.readFileSync(new URL('../mcp-server/fleet-tools.mjs', import.meta.url), 'utf8')
   assert.match(tools, /const requestedCapability = opts\.capability \|\| opts\.spawnCapability \|\| undefined/)
   assert.match(tools, /requestedCapability: grant\.grantedCapability/)
-  assert.match(tools, /privilegeLedger\.set\(result\.fleetId/)
+  assert.match(tools, /await privilegeLedger\.set\(preallocatedAgentId/)
+  assert.match(tools, /await privilegeLedger\.delete\(preallocatedAgentId\)/)
 })
 
 test('MCP spawn exposes policy as an explicit fence request', () => {
