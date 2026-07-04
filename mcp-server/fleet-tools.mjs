@@ -2316,14 +2316,17 @@ export async function handleFleetTool(name, args) {
               if (!spawned?.id) throw new Error(`spawn started for ${agentName}, but the agent did not register within 5m`);
               if (!spawned.tmux_session) throw new Error(`spawn registered ${agentName} (${spawned.id}), but no tmux session was recorded. Not delegating: a registry row is not a usable agent.`);
               if (!agentAlive(spawned)) throw new Error(`spawn registered ${agentName} (${spawned.id}), but the agent is not alive/usable yet. Not delegating.`);
-              const result = await delegateToResolvedAgent(spawned.id, { agent_id: spawned.id, friendly_name: agentName });
+              const assignedName = spawned.friendly_name || agentName;
+              const result = await delegateToResolvedAgent(spawned.id, { agent_id: spawned.id, friendly_name: assignedName });
               deliverOperationMailboxCompletion(mailbox, 'completed', {
                 task_id: result.data.task_id,
                 agent_id: spawned.id,
-                friendly_name: agentName,
+                friendly_name: assignedName,
                 spawn_mailbox_id: spawnResult.mailbox_id,
                 spawn_agent_id: spawnResult.agent_id,
-                message: `Spawned ${agentName} (${spawned.id}) and delegated [${result.data.task_id}]: ${description}`,
+                requested_name: agentName,
+                name_changed: assignedName !== agentName,
+                message: `Spawned ${assignedName} (${spawned.id}) and delegated [${result.data.task_id}]: ${description}`,
               });
             } catch (e) {
               deliverOperationMailboxCompletion(mailbox, 'failed', {
@@ -2355,7 +2358,7 @@ export async function handleFleetTool(name, args) {
       }
 
       agent = spawned.id;
-      spawnedInfo = { agent_id: agent, friendly_name: agentName };
+      spawnedInfo = { agent_id: agent, friendly_name: spawned.friendly_name || agentName };
     }
 
     try {

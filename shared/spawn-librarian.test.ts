@@ -3,7 +3,6 @@ import { describe, it } from 'node:test'
 
 import {
   resolveSpawnCollision,
-  SpawnBounceError,
   SpawnLibrarian,
   specMismatch,
   type AgentRecord,
@@ -25,23 +24,19 @@ const liveCleanup: AgentRecord = {
 }
 
 describe('spawn librarian collision handling', () => {
-  it('bounces a fresh name collision when the requested spec mismatches', () => {
-    assert.throws(() => resolveSpawnCollision({
+  it('keeps fresh name collisions as new-agent intent for register-time allocation', () => {
+    const resolved = resolveSpawnCollision({
       name: 'cleanup',
       respawn: false,
       fresh: true,
       requested: { model: 'gpt-5.5', kind: 'codex', project: 'tlda' },
       liveMatches: [liveCleanup],
       projectForCwd,
-    }), (err) => {
-      assert.equal(err instanceof SpawnBounceError, true)
-      const bounce = err as SpawnBounceError
-      assert.match(bounce.message, /you asked for gpt-5\.5\/tlda/)
-      return true
     })
+    assert.deepEqual(resolved, { name: 'cleanup', respawn: false })
   })
 
-  it('treats an exact-spec fresh re-issue as an idempotent wake', () => {
+  it('does not convert exact-spec fresh re-issues into wakes', () => {
     assert.equal(specMismatch(
       { model: 'opus48', kind: 'claude', project: 'bregman' },
       liveCleanup,
@@ -60,7 +55,7 @@ describe('spawn librarian collision handling', () => {
       liveMatches: [liveCleanup],
       projectForCwd,
     })
-    assert.deepEqual(resolved, { name: 'fleet:cleanup1', respawn: true, existing: liveCleanup })
+    assert.deepEqual(resolved, { name: 'cleanup', respawn: false })
   })
 
   it('leaves the explicit respawn path intact', () => {

@@ -890,9 +890,10 @@ function surfaceSpawnBounce(error) {
   throw error
 }
 
-// Spawning a name that already belongs to a live agent is an idempotent wake
-// only when the requested spawn spec matches that live namesake. A fresh spawn
-// whose model/kind/project differ is a new-agent intent and gets bounced.
+// A fresh spawn is a new-agent intent. If its tentative name is occupied, the
+// registering agent gets a deterministic variant from FleetStore's allocator.
+// Non-fresh spawns keep the old convenience behavior: a live exact-name match
+// wakes the existing agent by durable fleet id.
 async function resolveSpawnTarget(name, respawn, { fresh = false, requested = {} } = {}) {
   if (respawn || !name || !fleetStore) return { name, respawn }
   let resolved
@@ -972,7 +973,7 @@ async function performSpawnRelay(caller, msg) {
   const {
     name, agent, model, doc, cwd, respawn, fresh, refresh, effort, kind, mode,
     capability, spawnCapability, privileges, requestedPrivileges, session, sessionId, session_id, enroll, routeAgent,
-    iLikeToLiveDangerously, phase,
+    iLikeToLiveDangerously, phase, mailboxTarget,
   } = msg || {}
   const requestedSession = session || sessionId || session_id || null
   const sessionMode = !!requestedSession
@@ -1103,6 +1104,22 @@ async function performSpawnRelay(caller, msg) {
           return
         }
       }
+      if (pendingAgentId && mailboxTarget && result?.reason === 'spawning') {
+        const shell = fleetStore?.getAgent?.(pendingAgentId)
+        if (shell?.metadata?.shell) {
+          result = { ok: true, pending: true, agent: shell }
+        } else {
+          spawnLibrarian.failPending(pendingAgentId, 'register-timeout')
+          const failed = {
+            ok: false,
+            reason: 'register-timeout',
+            error: `spawn started for ${spawnName}, but no reserved shell row exists for ${pendingAgentId}`,
+          }
+          const settled = mailboxLibrarian.fail(mailbox.id, failed.error, failed)
+          if (settled) deliverSpawnMailboxCompletion(settled, 'failed', failed)
+          return
+        }
+      }
       if (result?.ok === false && result.reason !== 'spawning') {
         if (pendingAgentId) spawnLibrarian.failPending(pendingAgentId, result.reason || result.error || 'launch-failed')
         const settled = mailboxLibrarian.fail(mailbox.id, result.error || result.reason || 'launch-failed', result)
@@ -1118,7 +1135,7 @@ async function performSpawnRelay(caller, msg) {
           return
         }
       }
-      const agentRecord = ready?.agent || (result?.agent_id ? fleetStore.findAgent(result.agent_id) : null) || (targetAgentId ? fleetStore.findAgent(targetAgentId) : null)
+      const agentRecord = ready?.agent || result?.agent || (result?.agent_id ? fleetStore.findAgent(result.agent_id) : null) || (targetAgentId ? fleetStore.findAgent(targetAgentId) : null)
       let lineage = null
       if (phase && agentRecord?.id) {
         try {
@@ -1131,12 +1148,20 @@ async function performSpawnRelay(caller, msg) {
       }
       const registeredPolicy = agentRecord?.metadata?.spawnPolicy
       const spawnPolicy = result?.spawnPolicy || registeredPolicy
+      const assignedName = agentRecord?.friendly_name || result?.assigned_name || result?.name || spawnName
+      const requestedName = result?.requested_name || spawnName
       const completion = {
         ...result,
         agentId: agentRecord?.id || result?.agent_id || targetAgentId || null,
-        label: agentRecord?.friendly_name || result?.name || spawnName,
+        label: assignedName,
+        assigned_name: assignedName,
+        requested_name: requestedName,
+        name_changed: result?.name_changed ?? (assignedName !== requestedName),
         spawnPolicy,
         grantedCapability: result?.grantedCapability || spawnPolicy?.capability,
+        spawnerCapability: result?.spawnerCapability,
+        projectCapability: result?.projectCapability,
+        modelCapability: result?.modelCapability,
         lineage,
       }
       const settled = mailboxLibrarian.complete(mailbox.id, completion)
@@ -1200,11 +1225,13 @@ if (fleetStore) {
 // surfaces it as a <channel> system-reminder.
 function deliverTldaFeedbackChat({ from, to, text, metadata }) {
   if (!fleetStore) return
-  const metadataJson = metadata ? JSON.stringify(metadata) : JSON.stringify(null)
-  const event = fleetStore.share?.({ type: 'chat', from, to, text, metadata: metadataJson })
-  if (!event) return
-  fleetStore.addUnread?.(event.id, to)
-  broadcastEvent('fleet-event', { type: 'chat', from, to, id: event.id, text, event_id: event.id })
+  Promise.resolve(fleetStore.share?.({ type: 'chat', from, to, text, metadata }))
+    .then(event => {
+      if (!event) return
+      fleetStore.addUnread?.(event.id, to)
+      broadcastEvent('fleet-event', { type: 'chat', from, to, id: event.id, text, event_id: event.id })
+    })
+    .catch(e => console.error(`[fleet-feedback] delivery failed: ${e.message}`))
 }
 
 // When a project is created or its sourceDir changes, push the new
@@ -3371,17 +3398,20 @@ async function handleFleetWsMessage(ws, msg) {
     // — that would undo a lineage rotation. The terminal/window name lives in
     // tmux_session, independent of the friendly name. So only the *first* name
     // is taken from `name`; once set, it's preserved.
-    const willSetName = !existing?.friendly_name && name
+    const requestedName = name || null
+    let assignedName = existing?.friendly_name || requestedName
+    const willSetName = !existing?.friendly_name && requestedName
     if (willSetName) {
-      const cols = fleetStore.checkNameAvailable([name], { excludeId: agentId, asFriendlyName: true })
-      if (cols.length) {
-        error(`Name "${name}" unavailable: ${cols.map(c => c.kind === 'pseudo_label' ? 'reserved routing label' : `collides with ${c.kind} on ${c.agent_id}`).join('; ')}`)
+      try {
+        assignedName = fleetStore.allocateFreshFriendlyName(requestedName, { excludeId: agentId })
+      } catch (e) {
+        error(e.message)
         return
       }
     }
     const agent = {
       id: agentId,
-      friendly_name: existing?.friendly_name || name || null,
+      friendly_name: assignedName || null,
       pretty_name: pretty_name ?? existing?.pretty_name ?? null,
       tmux_session: tmux_session || existing?.tmux_session || null,
       session_id: session_id || existing?.session_id || null,
@@ -3437,7 +3467,7 @@ async function handleFleetWsMessage(ws, msg) {
       }
       throw e
     }
-    fleetStore.share?.({ type: 'register', agent_id: agentId, from: agentId, to: agentId, text: `${name || agentId} ${msg.shell ? 'pre-registered' : 'registered'}` })
+    fleetStore.share?.({ type: 'register', agent_id: agentId, from: agentId, to: agentId, text: `${agent.friendly_name || requestedName || agentId} ${msg.shell ? 'pre-registered' : 'registered'}` })
     // Every non-human agent belongs to a lineage from birth, as its own `dawn`
     // (the worker). This guarantees a handoff always has a chain to rotate within
     // — a direct handoff promotes that dawn → day (manager). The lineage is an
@@ -3479,7 +3509,14 @@ async function handleFleetWsMessage(ws, msg) {
     // If the agent has a machine_id, push the updated agent list to that
     // machine's daemon so it can start watching the new JSONL.
     if (agent.machine_id) broadcastDaemonAgentsUpdated()
-    reply({ ok: true, agent: fleetStore.getAgent?.(agentId) || agent })
+    const storedAgent = fleetStore.getAgent?.(agentId) || agent
+    reply({
+      ok: true,
+      agent: storedAgent,
+      assigned_name: storedAgent.friendly_name || null,
+      requested_name: requestedName,
+      name_changed: !!(requestedName && storedAgent.friendly_name && requestedName !== storedAgent.friendly_name),
+    })
     return
   }
 
@@ -3694,10 +3731,11 @@ async function handleFleetWsMessage(ws, msg) {
       _wakeQueue.delete(agentId)
       const agent = fleetStore.getAgent?.(agentId)
       if (!agent || agent.dead || agent.human) continue
-      const machineIds = [...daemonConnections.keys()]
-      if (machineIds.length === 0) continue
-      const machineId = agent.machine_id || machineIds[0]
       try {
+        const machineId = agent.machine_id
+        if (!machineId) throw new Error(`agent ${agent.friendly_name || agentId} has no machine_id; cannot route wake/respawn`)
+        const ownerDaemon = daemonConnections.get(machineId)
+        if (!ownerDaemon || ownerDaemon.readyState !== 1) throw new Error(`No fleet-daemon connected for machine "${machineId}"`)
         const serverAlive = isAgentAlive(agentId)
         const liveness = serverAlive
           ? await sendRpc(machineId, 'check-alive', { tmux_session: agent.tmux_session })
