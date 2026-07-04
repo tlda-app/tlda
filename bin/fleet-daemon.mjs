@@ -514,9 +514,22 @@ function handleJsonlIngesterExit(code, signal) {
     _jsonlIngesterRestartTimer = setTimeout(() => {
       _jsonlIngesterRestartTimer = null
       if (_serverReady) {
+        retryPendingJsonlBackfillJobs()
         void syncSessionWatchers(agents).catch(e => log.error(`syncSessionWatchers after ingester exit failed: ${e.stack || e.message}`))
       }
     }, 1000)
+  }
+}
+
+function retryPendingJsonlBackfillJobs() {
+  const jobs = [...searchBackfillJobs.values()]
+  if (jobs.length === 0) return
+  log.warn(`retrying ${jobs.length} JSONL backfill job(s) after ingester exit`)
+  for (const job of jobs) {
+    startJsonlBackfillJob({
+      ...job,
+      ...(job.kind === 'prior' ? { cursors } : {}),
+    })
   }
 }
 
@@ -839,6 +852,8 @@ function extractActivityEvents(events) {
 let _rws = null  // ResilientWS instance, created at startup
 let _serverReady = false
 let _lastLivenessDisconnectWarnAt = 0
+let _daemonRequestSeq = 0
+const pendingDaemonReplies = new Map()
 let agents = []                   // current agent list (from welcome / updates)
 let projects = []                 // current project list
 const pathWatchers = new Map()    // jsonlPath -> child-backed watcher state
@@ -1584,7 +1599,7 @@ function handleJsonlIngesterMessage(msg) {
     return
   }
   if (msg?.type === 'job-batch') {
-    handleJsonlBackfillBatch(msg)
+    void handleJsonlBackfillBatch(msg)
     return
   }
   if (msg?.type === 'job-session-complete') {
@@ -1658,10 +1673,15 @@ function handleJsonlIngesterMessage(msg) {
   }
 }
 
-function handleJsonlBackfillBatch(msg) {
+async function handleJsonlBackfillBatch(msg) {
   let delivered = true
   if (msg.entries?.length) {
-    if (!sendMsg({ type: 'jsonl-index', entries: msg.entries })) delivered = false
+    try {
+      await sendMsgWithReply({ type: 'jsonl-index', entries: msg.entries })
+    } catch (e) {
+      log.warn(`JSONL backfill batch delivery failed for ${msg.jobId}: ${e?.message || e}`)
+      delivered = false
+    }
   }
   try {
     _jsonlIngester?.send?.({ type: 'job-ack', jobId: msg.jobId, seq: msg.seq, ok: delivered })
@@ -1670,9 +1690,6 @@ function handleJsonlBackfillBatch(msg) {
     delivered = false
   }
   if (!delivered) {
-    const job = searchBackfillJobs.get(msg.jobId)
-    if (job?.sessionId) searchBackfillPendingBySession.delete(job.sessionId)
-    searchBackfillJobs.delete(msg.jobId)
     refreshIngestionCaughtUp()
   }
 }
@@ -1686,13 +1703,13 @@ function handleJsonlBackfillSessionComplete(msg) {
 
 function handleJsonlBackfillJobDone(msg) {
   const job = searchBackfillJobs.get(msg.jobId)
-  searchBackfillJobs.delete(msg.jobId)
-  if (job?.sessionId) searchBackfillPendingBySession.delete(job.sessionId)
-  if (job?.kind === 'prior') {
-    priorSessionBackfillPending.delete(job.fleetId)
-    if (msg.type === 'job-complete') priorSessionBackfillComplete.add(job.fleetId)
-  }
   if (msg.type === 'job-complete') {
+    searchBackfillJobs.delete(msg.jobId)
+    if (job?.sessionId) searchBackfillPendingBySession.delete(job.sessionId)
+    if (job?.kind === 'prior') {
+      priorSessionBackfillPending.delete(job.fleetId)
+      priorSessionBackfillComplete.add(job.fleetId)
+    }
     for (const identity of msg.result?.identities || []) recordSessionIdentity(identity, { save: false })
     if (job?.sessionId) {
       cursors[job.sessionId] = { ...(cursors[job.sessionId] || {}), searchBackfilled: true }
@@ -1702,6 +1719,20 @@ function handleJsonlBackfillJobDone(msg) {
     log.info(`JSONL ${job?.kind || 'backfill'} job complete: ${msg.jobId}`)
   } else {
     log.warn(`JSONL ${job?.kind || 'backfill'} job failed: ${msg.jobId}: ${msg.error || 'unknown error'}`)
+    if (job && (job.attempts || 0) < 3 && !_shuttingDown) {
+      setTimeout(() => {
+        if (searchBackfillJobs.has(msg.jobId)) {
+          startJsonlBackfillJob({
+            ...job,
+            ...(job.kind === 'prior' ? { cursors } : {}),
+          })
+        }
+      }, 1000)
+    } else {
+      searchBackfillJobs.delete(msg.jobId)
+      if (job?.sessionId) searchBackfillPendingBySession.delete(job.sessionId)
+      if (job?.kind === 'prior') priorSessionBackfillPending.delete(job.fleetId)
+    }
   }
   refreshIngestionCaughtUp()
 }
@@ -1872,8 +1903,9 @@ function sendSearchIndexFromRecord(agentId, sessionId, parsed) {
 
 function startJsonlBackfillJob(job) {
   const child = startJsonlIngester()
-  searchBackfillJobs.set(job.jobId, job)
-  child.send?.({ type: 'job', ...job })
+  const nextJob = { ...job, attempts: (job.attempts || 0) + 1 }
+  searchBackfillJobs.set(nextJob.jobId, nextJob)
+  child.send?.({ type: 'job', ...nextJob })
   refreshIngestionCaughtUp()
 }
 
@@ -4196,6 +4228,22 @@ function sendMsg(obj) {
   return false
 }
 
+function sendMsgWithReply(obj, { timeoutMs = 15000 } = {}) {
+  const id = `daemon:${process.pid}:${++_daemonRequestSeq}`
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      pendingDaemonReplies.delete(id)
+      reject(new Error(`daemon request timed out: ${obj?.type || 'unknown'}`))
+    }, timeoutMs)
+    pendingDaemonReplies.set(id, { resolve, reject, timer })
+    if (!sendMsg({ ...obj, id })) {
+      clearTimeout(timer)
+      pendingDaemonReplies.delete(id)
+      reject(new Error('daemon websocket is not connected'))
+    }
+  })
+}
+
 function teardownWatchers() {
   for (const [, pw] of pathWatchers) stopJsonlTail(pw, 'daemon watcher teardown')
   pathWatchers.clear()
@@ -4260,6 +4308,14 @@ function connect() {
 }
 
 function handleServerMessage(msg) {
+  if (msg?.id && pendingDaemonReplies.has(msg.id)) {
+    const pending = pendingDaemonReplies.get(msg.id)
+    pendingDaemonReplies.delete(msg.id)
+    clearTimeout(pending.timer)
+    if (msg.error) pending.reject(new Error(msg.error?.message || msg.error))
+    else pending.resolve(msg.result)
+    return
+  }
   if (msg.type === 'daemon-welcome') {
     _serverReady = true
     agents = msg.agents || []

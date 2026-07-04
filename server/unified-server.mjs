@@ -5218,6 +5218,19 @@ async function handleDaemonWsMessage(ws, msg) {
     return
   }
 
+  if (type === 'jsonl-index') {
+    if (!fleetStore) return
+    const entries = msg.entries || []
+    try {
+      fleetStore.insertSessionEntries(entries)
+      if (msg.id) ws.send(JSON.stringify({ id: msg.id, result: { ok: true } }))
+    } catch (e) {
+      console.error(`[jsonl-index] Failed to index ${entries.length} entries — search gaps possible:`, e.message)
+      if (msg.id) ws.send(JSON.stringify({ id: msg.id, error: e.message }))
+    }
+    return
+  }
+
   if (type === 'qualification-warning') {
     // Legacy: daemon still sends these but server now handles qualification
     // checking directly via activity-event. Ignore.
