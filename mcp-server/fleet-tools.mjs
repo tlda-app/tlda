@@ -1826,13 +1826,13 @@ function inboxMessageKind(message) {
   return 'message';
 }
 
-async function resolveInboxMessage(message) {
+async function resolveInboxMessage(message, resolvers) {
   const fromLabel = message.metadata?.fromLabel || message.from;
   const ctx = message.metadata?.context;
   const docHint = formatViewingHint(ctx);
-  const { text: chipResolvedText, images: chipImages } = await resolveChipTokens(message.text, message.metadata);
-  const refResolvedText = resolveTheoremRefs(chipResolvedText, ctx?.doc, ctx?.version);
-  const { text: imgResolvedText, images } = await resolveImages(refResolvedText);
+  const { text: chipResolvedText, images: chipImages } = await resolvers.resolveChipTokens(message.text, message.metadata);
+  const refResolvedText = resolvers.resolveTheoremRefs(chipResolvedText, ctx?.doc, ctx?.version);
+  const { text: imgResolvedText, images } = await resolvers.resolveImages(refResolvedText);
   images.push(...chipImages);
   const reminder = message.metadata?.chatReminder ? `\n⚠️ ${message.metadata.chatReminder}` : '';
   const idHint = message.id ? `, id:${message.id}` : '';
@@ -3633,7 +3633,11 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
     }
     if (!data) return { content: [{ type: 'text', text: `tlda backend didn't answer (it may be restarting). Not yours to debug — tell ops if it persists, then retry shortly.` }], isError: true };
 
-    const messages = await Promise.all((data.messages || []).map(resolveInboxMessage));
+    const messages = await Promise.all((data.messages || []).map(m => resolveInboxMessage(m, {
+      resolveChipTokens,
+      resolveTheoremRefs,
+      resolveImages,
+    })));
     const text = formatInboxText({ mode, task: data.task || null, messages });
     const allImages = messages.flatMap(m => m.images || []);
     if (allImages.length > 0) {
