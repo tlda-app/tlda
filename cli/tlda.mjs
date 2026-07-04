@@ -39,7 +39,7 @@ import {
   SPAWN_POLICY_OPTIONS,
   SPAWN_PROFILES,
   normalizeRequestedPrivileges,
-  resolveSpawnGrant,
+  resolveDirectSpawnGrant,
   resolveSpawnPolicyOption,
 } from '../server/lib/spawn-policy.mjs'
 import { SPAWN_MACHINE_PREF_KEY } from '../server/lib/spawn-routing.mjs'
@@ -135,7 +135,7 @@ const VALUE_FLAGS = new Set([
   'server', 'dir', 'title', 'main', 'debounce', 'token', 'members', 'format',
   'session', 'target', 'timeout', 'id', 'book', 'worktree', 'port', 'browser',
   'model', 'cwd', 'effort', 'mode', 'kind', 'spawn-capability', 'capability',
-  'agent-id', 'policy', 'privileges', 'spawner-id', 'to', 'machine', 'limit', 'from', 'poll', 'config',
+  'agent-id', 'policy', 'privileges', 'to', 'machine', 'limit', 'from', 'poll', 'config',
   'label', 'plist',
 ])
 
@@ -1712,8 +1712,8 @@ async function runFleetSpawn(spawnArgs) {
     : null
   const cwd = resolve(flagFromRaw(spawnArgs, 'cwd') || process.cwd())
   const model = flagFromRaw(spawnArgs, 'model') || undefined
-    const kind = flagFromRaw(spawnArgs, 'kind') || undefined
-    const acknowledgeNoSecurity = hasRawFlag(spawnArgs, 'i-like-to-live-dangerously')
+  const kind = flagFromRaw(spawnArgs, 'kind') || undefined
+  const acknowledgeNoSecurity = hasRawFlag(spawnArgs, 'i-like-to-live-dangerously')
   let ledger = null
   try {
     const daemonConfig = readDaemonConfig(defaultDaemonConfigPath(CONFIG_DIR))
@@ -1721,13 +1721,9 @@ async function runFleetSpawn(spawnArgs) {
     applyDaemonGrants(ledger, daemonConfig)
     const config = withDaemonModelAliases(loadConfig(), daemonConfig)
     applyGrandfatherInfill(ledger, { fleetDbPath: join(CONFIG_DIR, 'fleet.db'), config })
-    const spawnerId = flagFromRaw(spawnArgs, 'spawner-id') || process.env.TLDA_SPAWNER_ID || 'fleet:skip'
-    const spawnerGrant = ledger.grantFor({ id: spawnerId })
-    const grant = resolveSpawnGrant({
+    const grant = resolveDirectSpawnGrant({
       requestedCapability: requestedPrivilegePolicy?.capability || requestedCapability,
       requestedPrivileges,
-      spawnerPolicy: spawnerGrant.spawnPolicy,
-      spawnerPrivilegeSet: spawnerGrant.privilegeSet,
       model,
       kind,
       config,
@@ -1764,7 +1760,7 @@ async function runFleetSpawn(spawnArgs) {
       enroll: hasRawFlag(spawnArgs, 'enroll'),
     }
     if (!params.name && !params.sessionId) {
-      console.error(red('Usage: tlda agent spawn-direct [--fresh|--refresh|--session uuid] <agent> [--model model] [--kind kind] [--cwd path] [--privileges profile] [--capability read|write|tlda-write|full] [--spawner-id fleet:skip] [--i-like-to-live-dangerously]'))
+      console.error(red('Usage: tlda agent spawn-direct [--fresh|--refresh|--session uuid] <agent> [--model model] [--kind kind] [--cwd path] [--privileges profile] [--capability read|write|tlda-write|full] [--i-like-to-live-dangerously]'))
       process.exit(1)
     }
     let result
@@ -2158,7 +2154,7 @@ Usage:
   tlda agent spawn <agent>
   tlda agent spawn --fresh <name>
   tlda agent spawn --session <uuid> [--enroll] [name]
-  tlda agent spawn-direct <agent> [--privileges profile] [--capability read|write|tlda-write|full] [--spawner-id fleet:skip]
+  tlda agent spawn-direct <agent> [--privileges profile] [--capability read|write|tlda-write|full]
   tlda agent move <agent> --to <machine>
   tlda agent set-spawn-machine <agent-or-user> <machine>
   tlda agent check-ready <agent> [--timeout seconds]
@@ -2178,8 +2174,8 @@ Network:
   --no-net    rare explicit network-off modifier
 
 spawn routes through the fleet server and target daemon; spawn-direct directly invokes
-the local primitive on this machine. Both require a daemon privilege ledger row
-for the spawner and write the child grant back to that ledger.
+the local primitive on this machine. Routed spawn is requester-gated; spawn-direct
+is local-operator gated by machine access and writes the child grant to the daemon ledger.
 Set TLDA_DISABLE_PERMISSION_CLASSIFIER=1 or agentSandbox.disablePermissionsClassifier=true only as a spawn-time break-glass to launch Claude with --dangerously-skip-permissions.
 move must be run on the agent's current machine; only the destination is remote.
 set-spawn-machine stores the caller's default fresh-spawn machine in fleet prefs.

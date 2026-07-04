@@ -995,3 +995,10 @@ export function resolveSpawnGrant({
     grantedPrivilegeSet,
   }
 }
+
+export function resolveDirectSpawnGrant(options = {}) {
+  return resolveSpawnGrant({
+    ...options,
+    spawnerPolicy: ROOT_CAPABILITY,
+  })
+}

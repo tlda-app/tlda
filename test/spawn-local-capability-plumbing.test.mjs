@@ -8,17 +8,27 @@ test('spawn-direct capability flags are passed to the shared Node spawn helper',
   assert.match(cli, /requestedCapability,/)
 })
 
-test('spawn-direct uses the daemon privilege ledger as spawner authority', () => {
+test('spawn-direct is not gated by spawner authority', () => {
   const cli = fs.readFileSync(new URL('../cli/tlda.mjs', import.meta.url), 'utf8')
-  assert.match(cli, /resolveSpawnGrant\(\{/)
-  assert.match(cli, /ledger\.grantFor\(\{ id: spawnerId \}\)/)
-  assert.match(cli, /spawnerPolicy: spawnerGrant\.spawnPolicy/)
-  assert.match(cli, /spawnerPrivilegeSet: spawnerGrant\.privilegeSet/)
+  assert.match(cli, /resolveDirectSpawnGrant\(\{/)
+  assert.doesNotMatch(cli, /flagFromRaw\(spawnArgs, 'spawner-id'\)/)
+  assert.doesNotMatch(cli, /TLDA_SPAWNER_ID/)
+  assert.doesNotMatch(cli, /fleet:skip/)
+  assert.doesNotMatch(cli, /ledger\.grantFor/)
   assert.match(cli, /spawnPolicy: grant\.grantedPolicy/)
   assert.match(cli, /privilegeSet: grant\.grantedPrivilegeSet/)
   assert.match(cli, /config,/)
   assert.match(cli, /await ledger\.set\(preallocatedAgentId/)
   assert.match(cli, /await ledger\.delete\(preallocatedAgentId\)/)
+})
+
+test('routed daemon spawn remains requester gated', () => {
+  const daemon = fs.readFileSync(new URL('../bin/fleet-daemon.mjs', import.meta.url), 'utf8')
+  assert.match(daemon, /daemon RPC requester identity is required/)
+  assert.match(daemon, /privilegeLedger\.grantFor\(requester\)/)
+  assert.match(daemon, /resolveSpawnGrant\(\{/)
+  assert.match(daemon, /spawnerPolicy: spawnerGrant\?\.spawnPolicy/)
+  assert.match(daemon, /spawnerPrivilegeSet: spawnerGrant\?\.privilegeSet/)
 })
 
 test('spawn-direct opts into fence enforcement but daemon spawn does not', () => {
