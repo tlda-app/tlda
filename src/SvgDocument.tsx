@@ -44,9 +44,9 @@ import { OutlineShapeUtil } from './shapes/OutlineShape'
 import { GraphNodeShapeUtil } from './shapes/GraphNodeShape'
 import { GraphExplainShapeUtil } from './shapes/GraphExplainShape'
 import { UsageMeterShapeUtil } from './shapes/UsageMeterShape'
-import { materializeChain } from './graphNativeMaterialize'
 import { InlineDocShapeUtil } from './shapes/InlineDocShape'
 import { DocVersionShapeUtil } from './shapes/DocVersionShape'
+import { DocViewerStateShapeUtil } from './shapes/DocViewerStateShape'
 import { PlaybackFrameShapeUtil } from './shapes/PlaybackFrameShape'
 import { HighlighterSlider } from './shapes/HighlighterSliderShape'
 import { ToolNameHud } from './overlays/ToolNameHud'
@@ -74,7 +74,7 @@ import { RibbonHighlightTool } from './tools/RibbonHighlightTool'
 import { RibbonLane } from './shapes/RibbonLane'
 import { ProvenancePanel } from './shapes/ProvenancePanel'
 import { ProvenanceInline } from './shapes/ProvenanceInline'
-import { initSignalConnection, teardownSignalConnection, isSignalConnected, dispatchSignalDirect, writeSignal, broadcastCamera, broadcastPresenter, onBuildStatusSignal, onReloadSignal, onViewPinSignal, onCompareSignal, onFileUpdatedSignal, onGraphDrawSignal, type BuildError, type BuildWarning } from './useYjsSync'
+import { initSignalConnection, teardownSignalConnection, isSignalConnected, dispatchSignalDirect, writeSignal, broadcastCamera, broadcastPresenter, onBuildStatusSignal, onReloadSignal, onCompareSignal, onFileUpdatedSignal, type BuildError, type BuildWarning } from './useYjsSync'
 import { useSync } from '@tldraw/sync'
 import { appendToken } from './authToken'
 import { DocumentPanel, PhoneOverlay, HighlighterButton, SemanticHighlightPill, VoiceNoteButton, MicToggleButton, VoiceTargetFollower } from './DocumentPanel'
@@ -261,46 +261,9 @@ interface SvgDocumentEditorProps {
 
 
 /**
- * ViewPinBadge — shown when the viewer is displaying a pinned old version via doc_view.
- * Disappears automatically when the daemon pushes fresh source files.
- * Click to unpin (trigger a rebuild from current source).
- */
-function ViewPinBadge({ docName }: { docName: string }) {
-  const [pinnedRef, setPinnedRef] = useState<string | null>(null)
-
-  useEffect(() => {
-    return onViewPinSignal((sig) => {
-      setPinnedRef(sig.ref ?? null)
-    })
-  }, [])
-
-  if (!pinnedRef) return null
-
-  return (
-    <span
-      className="view-pin-badge"
-      title="Viewing pinned version — click to return to HEAD"
-      onPointerDown={(e) => e.stopPropagation()}
-      onClick={async () => {
-        try {
-          await fetch(`/api/projects/${docName}/build`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: '{}',
-          })
-        } catch {}
-        setPinnedRef(null)
-      }}
-    >
-      📌 {pinnedRef} ✕
-    </span>
-  )
-}
-
-/**
  * VersionStamp — shows a small stack of recent build timestamps with
  * perspective-style opacity. The current (latest) version is most visible;
- * older versions fade out. Click an older version → doc_view to that hash.
+ * older versions fade out.
  * Updates after each build.
  */
 const MAX_VISIBLE_VERSIONS = 5
@@ -431,21 +394,6 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
 
   const editorRef = useRef<Editor | null>(null)
   const restoredEditorRef = useRef<Editor | null>(null)
-
-  // An agent authored an argument graph → materialize it on this doc's canvas.
-  useEffect(() => {
-    return onGraphDrawSignal((sig) => {
-      const editor = editorRef.current
-      if (!editor || !sig?.chain) return
-      if (sig.replace) {
-        const ids = editor.getCurrentPageShapes()
-          .filter((s: any) => s.type === 'graph-node' || s.meta?.graphEdge)
-          .map((s: any) => s.id)
-        if (ids.length) editor.run(() => editor.deleteShapes(ids), { history: 'ignore' })
-      }
-      try { materializeChain(editor, sig.chain) } catch (e) { console.error('[graph] materialize failed', e) }
-    })
-  }, [])
 
   // --- Cross-cutting refs shared by hooks ---
   const shapeIdSetRef = useRef<Set<TLShapeId>>(new Set())
@@ -952,7 +900,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     )
     // Wrap every custom shape util with an error boundary so a single broken shape
     // renders an error placeholder instead of crashing the entire app.
-    const customUtils = [MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil, TocDropTargetShapeUtil, ReadingAssistBarShapeUtil, UnderstandingLineShapeUtil, TimelineOverlayShapeUtil, ZoomableImageShapeUtil, FleetChatShapeUtil, FleetAgentsShapeUtil, FleetPillShapeUtil, FleetSearchShapeUtil, FleetInboxShapeUtil, FleetNotificationsShapeUtil, FleetTouchInboxShapeUtil, FleetSourceEditorShapeUtil, FleetDocViewShapeUtil, FleetVideoShapeUtil, DocClipShapeUtil, InlineDocShapeUtil, DocVersionShapeUtil, ClusterShapeUtil, TerminalShapeUtil, TaskInboxShapeUtil, PlaybackFrameShapeUtil, ReaperShapeUtil, OutlineShapeUtil, GraphNodeShapeUtil, GraphExplainShapeUtil, UsageMeterShapeUtil]
+    const customUtils = [MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil, TocDropTargetShapeUtil, ReadingAssistBarShapeUtil, UnderstandingLineShapeUtil, TimelineOverlayShapeUtil, ZoomableImageShapeUtil, FleetChatShapeUtil, FleetAgentsShapeUtil, FleetPillShapeUtil, FleetSearchShapeUtil, FleetInboxShapeUtil, FleetNotificationsShapeUtil, FleetTouchInboxShapeUtil, FleetSourceEditorShapeUtil, FleetDocViewShapeUtil, FleetVideoShapeUtil, DocClipShapeUtil, InlineDocShapeUtil, DocVersionShapeUtil, DocViewerStateShapeUtil, ClusterShapeUtil, TerminalShapeUtil, TaskInboxShapeUtil, PlaybackFrameShapeUtil, ReaperShapeUtil, OutlineShapeUtil, GraphNodeShapeUtil, GraphExplainShapeUtil, UsageMeterShapeUtil]
     const all = [...utils, ...customUtils.map(u => withShapeErrorBoundary(u))];
     (window as any).__tldraw_shape_utils__ = all
     return all
@@ -1226,7 +1174,6 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
           <span className="sync-offline-badge" title="Connection lost — signals and sync paused">⚡ offline</span>
         )}
         {isPresentation && <DraftPill />}{isPresentation && role === 'presenter' && <AnnotationVisibilityPill />}<FollowingBadge />
-        <ViewPinBadge docName={document.name} />
         <PlaybackPill state={playbackState} />
         {editorRef.current && (
           <LiveRoomAudio

@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import { SignalBus } from '../src/signalBus.ts'
 import { SIGNAL_REPLAY_WINDOWS, getSignalReplayMs } from '../shared/signals.ts'
 
-test('shared replay table preserves current server replay behavior', () => {
+test('shared replay table is soft replay, not durable state', () => {
   assert.deepEqual(SIGNAL_REPLAY_WINDOWS, {
     'signal:build-status': 600_000,
     'signal:build-progress': 300_000,
@@ -17,7 +17,9 @@ test('shared replay table preserves current server replay behavior', () => {
   })
 
   assert.equal(getSignalReplayMs('signal:reload'), undefined)
-  assert.equal(getSignalReplayMs('signal:view-pin'), undefined)
+  assert.equal(getSignalReplayMs('signal:compare'), undefined)
+  assert.equal(getSignalReplayMs('signal:file-updated'), undefined)
+  assert.equal(getSignalReplayMs('signal:screenshot-request'), undefined)
 })
 
 test('direct signal dispatch drops stale and out-of-order signals', () => {

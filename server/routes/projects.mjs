@@ -460,8 +460,6 @@ export async function processProjectPush(name, body) {
     }
   }
 
-  broadcastSignal(`doc-${name}`, 'signal:view-pin', { ref: null, timestamp: Date.now() })
-
   if (decision.eager) {
     // Non-SVG formats: kick off build async, return immediately.
     const builder = { markdown: buildMarkdown, html: buildHtml, slides: buildSlides }[project.format]

@@ -2209,19 +2209,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['doc'],
       },
     },
-    {
-      name: 'doc_view',
-      description: 'View an old version of a document in the tlda viewer without touching the author\'s working copy. Temporary: the viewer shows the old version until the next edit from the author\'s working copy overwrites it. Use this to scrub through history or investigate. Accepts a version hash or a time string (ISO, unix ms, or relative like "20 minutes ago").',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          doc: { type: 'string', description: 'Document name (e.g. "bregman")' },
-          ref: { type: 'string', description: 'Version hash, or a time string (ISO, "20 minutes ago", etc.)' },
-        },
-        required: ['doc', 'ref'],
-      },
-    },
-    // doc_revert, doc_compare, doc_diff removed — use local git with mirror
+    // Old version-serving tools removed — use side-by-side History/compare.
     {
       name: 'build',
       description: 'Trigger a build (LaTeX/markdown compilation) for a tlda document. If a build is already in progress, polls and returns its status instead of triggering a new one. Returns build status including any errors.',
@@ -3512,83 +3500,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
   }
 
-  // Shared helper: resolve a ref (hash or time string) to a concrete hash
-  async function resolveDocRef(doc, ref) {
-    const isTimeRef = /\d{4}-\d{2}|ago|minutes?|hours?|days?|:/.test(ref);
-    if (!isTimeRef) return { hash: ref, isTimeRef: false };
-    const timeArg = /^\d+$/.test(ref) ? ref : encodeURIComponent(ref);
-    const endpoint = /^\d+$/.test(ref)
-      ? `/api/projects/${doc}/history/shadow?timestamp=${ref}`
-      : `/api/projects/${doc}/history/shadow/at?time=${timeArg}`;
-    const { version } = await serverFetch(endpoint);
-    if (!version) return null;
-    return { hash: version.hash, isTimeRef: true };
-  }
-
-  // Shared helper: wait for build completion
-  async function waitForBuild(doc) {
-    const deadline = Date.now() + 180_000;
-    while (Date.now() < deadline) {
-      await new Promise(r => setTimeout(r, 2000));
-      const status = await serverFetch(`/api/projects/${doc}`);
-      if (status.buildStatus === 'success' || status.buildStatus === 'failed') return true;
-    }
-    return false;
-  }
-
-  if (name === 'doc_view') {
-    const doc = args?.doc;
-    let ref = args?.ref;
-    if (!doc || !ref) return { content: [{ type: 'text', text: 'Missing required parameters: doc, ref' }], isError: true };
-    const mailbox = startOperationMailbox('doc_view', { doc, ref, label: `${doc} ${ref}` });
-    if (!mailbox) return { content: [{ type: 'text', text: 'doc_view mailbox requires fleet registration. Call register() first.' }], isError: true };
-
-    (async () => {
-      try {
-        const resolved = await resolveDocRef(doc, ref);
-        if (!resolved) {
-          deliverOperationMailboxCompletion(mailbox, 'failed', {
-            label: `${doc} ${ref}`,
-            doc,
-            ref,
-            error: `No version found for: ${ref}`,
-          });
-          return;
-        }
-
-        // View: restores source to this version on the server (but not the author's working copy)
-        await serverFetch(`/api/projects/${doc}/history/shadow/${resolved.hash}/checkout`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: '{}',
-        });
-
-        const buildDone = await waitForBuild(doc);
-        const result = resolved.isTimeRef
-          ? `Viewing ${doc} at ${ref} (version ${resolved.hash.slice(0, 7)}). Author's working copy is untouched — next edit overwrites this view.`
-          : `Viewing ${doc} at version ${resolved.hash.slice(0, 7)}. Author's working copy is untouched — next edit overwrites this view.`;
-        deliverOperationMailboxCompletion(mailbox, 'completed', {
-          label: `${doc} ${resolved.hash.slice(0, 7)}`,
-          doc,
-          ref,
-          hash: resolved.hash,
-          buildDone,
-          message: result + (buildDone ? ' Build complete.' : ' Build may still be running.'),
-        });
-      } catch (e) {
-        deliverOperationMailboxCompletion(mailbox, 'failed', {
-          label: `${doc} ${ref}`,
-          doc,
-          ref,
-          error: e.message || String(e),
-        });
-      }
-    })();
-
-    return operationMailboxStartedResult(mailbox, { extra: `doc: ${doc}\nref: ${ref}` });
-  }
-
-  // doc_compare, doc_revert, doc_diff handlers removed — use local git with mirror
+  // Old version-serving tool handlers removed — use side-by-side History/compare.
 
   if (name === 'build') {
     const { doc } = args;

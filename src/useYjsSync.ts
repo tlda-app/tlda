@@ -97,12 +97,6 @@ const scrollToElementHandle = bus.register<RawScrollToElementSignal>({ key: 'sig
 type RawSetChatTargetSignal = { agent: string; panel?: string; chatShapeId?: string; timestamp: number }
 const setChatTargetHandle = bus.register<RawSetChatTargetSignal>({ key: 'signal:set-chat-target' })
 
-// An agent authored an argument graph (claims + inference steps); materialize it
-// onto this doc's canvas. `replace` clears prior graph shapes first.
-export type GraphDrawSignal = { chain: any; replace?: boolean; timestamp: number }
-const graphDrawHandle = bus.register<GraphDrawSignal>({ key: 'signal:graph-draw' })
-export const onGraphDrawSignal = graphDrawHandle.on
-
 type ForwardSyncCallback = (signal: ForwardSyncSignal) => void
 const forwardSyncCallbacks = new Set<ForwardSyncCallback>()
 scrollHandle.on((s) => { for (const cb of forwardSyncCallbacks) cb({ type: 'scroll', ...s }) })
@@ -210,14 +204,6 @@ const buildProgressHandle = bus.register<BuildProgressSignal>({
   ...replayConfig('signal:build-progress'),
 })
 export const onBuildProgressSignal = buildProgressHandle.on
-
-// Viewer pin: set when doc_view loads an old version; cleared when daemon pushes fresh files.
-export type ViewPinSignal = { ref: string | null; timestamp: number }
-const viewPinHandle = bus.register<ViewPinSignal>({
-  key: 'signal:view-pin',
-  ...replayConfig('signal:view-pin'),
-})
-export const onViewPinSignal = viewPinHandle.on
 
 // Compare: side-by-side version viewer signal. initBehavior: 'none' —
 // do NOT fire cached signal on reconnect. The compare shapes persist in

@@ -23,6 +23,8 @@ export class SvgPageShapeUtil extends BaseBoxShapeUtil<any> {
     h: T.number,
     pageIndex: T.number,
     version: T.optional(T.number),
+    compareRef: T.optional(T.string),
+    compareHash7: T.optional(T.string),
   }
 
   getDefaultProps() {
@@ -134,27 +136,27 @@ function SvgPageComponent({ shape }: { shape: any }) {
 
   // Auto-fetch SVG for compare pages: compare shapes sync via Yjs but
   // the SVG text lives in a local JS Map that doesn't sync. Each browser
-  // must independently fetch the SVGs. Detect compare pages by shape ID
-  // and fetch from the shadow cache URL.
+  // must independently fetch the SVGs. The compare ref is persisted on the
+  // shape; the old signal-cache lookup is only for pre-migration shapes.
   useEffect(() => {
     if (svgText) return  // already have it
     const idStr = shape.id as string
-    if (!idStr.includes('compare-page-')) return  // not a compare page
-    // Extract hash from Yjs signal (stored when compare was triggered)
-    // For now, try fetching from all available shadow caches
+    const propHash7 = shape.props.compareHash7 || shape.props.compareRef?.slice(0, 7)
+    if (!propHash7 && !idStr.includes('compare-page-')) return  // not a compare page
     // The shape's pageIndex tells us which page to fetch (0-based → page-N.svg is 1-based)
     const pageIdx = shape.props.pageIndex
-    // Read the compare ref from the signal cache
     const fetchCompare = async () => {
       try {
-        // Get doc name from URL query param
         const docName = new URLSearchParams(window.location.search).get('doc') || 'bregman'
-        const sigRes = await fetch(`/api/projects/${docName}/signal/signal:compare`)
-        if (!sigRes.ok) return
-        const sig = await sigRes.json()
-        const ref = sig?.data?.ref
-        if (!ref) return
-        const hash7 = ref.slice(0, 7)
+        let hash7 = propHash7
+        if (!hash7) {
+          const sigRes = await fetch(`/api/projects/${docName}/signal/signal:compare`)
+          if (!sigRes.ok) return
+          const sig = await sigRes.json()
+          const ref = sig?.data?.ref
+          if (!ref) return
+          hash7 = ref.slice(0, 7)
+        }
         const filename = getPageFilename(pageIdx) ?? `page-${pageIdx + 1}.svg`
         const url = `/docs/${docName}/history/shadow-${hash7}/${filename}`
         const res = await fetch(url)
@@ -164,7 +166,7 @@ function SvgPageComponent({ shape }: { shape: any }) {
       } catch {}
     }
     fetchCompare()
-  }, [shape.id, shape.props.pageIndex, svgText])
+  }, [shape.id, shape.props.compareHash7, shape.props.compareRef, shape.props.pageIndex, svgText])
 
   // Track what's currently injected so we skip redundant DOM work
   const injectedRef = useRef<string | null>(null)

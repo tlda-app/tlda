@@ -35,10 +35,10 @@ test('operation mailbox start returns an immediate handle', () => {
   assert.match(result.content[0].text, /agent: tester/)
 })
 
-test('screenshot, doc_view, and spawn+delegate use operation mailboxes', () => {
+test('screenshot and spawn+delegate use operation mailboxes', () => {
   assert.match(mcpIndexSource, /startOperationMailbox\('screenshot'/)
-  assert.match(mcpIndexSource, /startOperationMailbox\('doc_view'/)
   assert.match(mcpIndexSource, /deliverOperationMailboxCompletion\(mailbox, 'completed'/)
+  assert.doesNotMatch(mcpIndexSource, /startOperationMailbox\('doc_view'/)
 
   assert.match(fleetToolsSource, /startOperationMailbox\('delegate'/)
   assert.match(fleetToolsSource, /spawn_mailbox_id/)

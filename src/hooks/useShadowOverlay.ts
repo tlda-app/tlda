@@ -117,7 +117,9 @@ export function useShadowOverlay(
       if (!editor) return
       const toDelete = editor.getCurrentPageShapes().filter(s => {
         const id = s.id as string
-        return id.startsWith('shape:shadow-col-handle-') || /^shape:col-\d+-shadow-/.test(id)
+        if (id.startsWith('shape:shadow-col-handle-')) return true
+        if (!/^shape:col-\d+-shadow-/.test(id)) return false
+        return !('compareRef' in s.props) && !('compareHash7' in s.props)
       })
       if (toDelete.length === 0) return
       for (const s of toDelete) {

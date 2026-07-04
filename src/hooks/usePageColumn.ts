@@ -367,7 +367,17 @@ class PageColumn {
           id: shapeId, type: 'svg-page' as any,
           x: this.columnX, y: pageY,
           isLocked: true, opacity: this.options.opacity ?? 0.9,
-          props: { w: TARGET_WIDTH, h: dims.height * scale, pageIndex: pageNum - 1 },
+          props: {
+            w: TARGET_WIDTH,
+            h: dims.height * scale,
+            pageIndex: pageNum - 1,
+            ...(this.options.source.type === 'shadow' && this.options.source.ref
+              ? {
+                  compareRef: this.options.source.ref,
+                  compareHash7: this.options.source.ref.slice(0, 7),
+                }
+              : {}),
+          },
           meta: this.pageMeta(pageNum, pageBounds),
         })
       }
@@ -525,7 +535,10 @@ export function usePageColumn(
         if (columnRef.current) return  // column was created before rAF fired
         for (const s of editor.getCurrentPageShapes()) {
           const id = s.id as string
-          if (id.startsWith('shape:shadow-col-handle-') || /^shape:col-\d+-shadow-/.test(id)) {
+          const shouldDelete =
+            id.startsWith('shape:shadow-col-handle-') ||
+            (/^shape:col-\d+-shadow-/.test(id) && !('compareRef' in s.props) && !('compareHash7' in s.props))
+          if (shouldDelete) {
             if (s.isLocked) editor.updateShape({ id: s.id, type: s.type, isLocked: false })
             editor.deleteShapes([s.id])
           }

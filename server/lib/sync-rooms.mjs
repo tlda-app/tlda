@@ -71,6 +71,8 @@ const customShapeSchemas = {
       h: T.number,
       pageIndex: T.number,
       version: T.optional(T.number),
+      compareRef: T.optional(T.string),
+      compareHash7: T.optional(T.string),
     },
     migrations: createMigrationSequence({
       sequenceId: 'com.tldraw.shape.svg-page',
@@ -303,6 +305,19 @@ const customShapeSchemas = {
       sequence: [],
     }),
   },
+  'doc-viewer-state': {
+    props: {
+      w: T.number,
+      h: T.number,
+      timestamp: T.number,
+      diffReviewJson: T.optional(T.string),
+      diffSummariesJson: T.optional(T.string),
+    },
+    migrations: createMigrationSequence({
+      sequenceId: 'com.tldraw.shape.doc-viewer-state',
+      sequence: [],
+    }),
+  },
   'cluster': {
     props: {
       w: T.number,
@@ -466,11 +481,8 @@ function scheduleSave(docName, room) {
   if (saveTimers.has(docName)) clearTimeout(saveTimers.get(docName))
   saveTimers.set(docName, setTimeout(() => {
     saveTimers.delete(docName)
-    try {
-      saveSnapshot(docName, room)
-    } catch (e) {
-      console.error(`[sync] Failed to save snapshot for ${docName}:`, e.message)
-    }
+    saveSnapshot(docName, room)
+      .catch(e => console.error(`[sync] Failed to save snapshot for ${docName}:`, e.message))
   }, 2000))
 }
 
@@ -751,6 +763,9 @@ export async function getOrCreateRoom(docName) {
       onDataChange: () => {
         scheduleSave(docName, room)
         scheduleChangeFlush(docName, room)
+      },
+      onAfterReceiveMessage: ({ message }) => {
+        if (message?.type === 'push') scheduleSave(docName, room)
       },
     }
 
