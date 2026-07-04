@@ -847,9 +847,8 @@ export class FleetStore {
     this._queryEventsLatest = this.db.prepare(`
       SELECT ${E} FROM events ORDER BY timestamp DESC LIMIT ?
     `);
-    // Agent-scoped history matches a *set* of fleet ids (a lineage's incarnations),
-    // so the SQL has variable arity and is built per-call in queryChatHistory()
-    // rather than prepared here. See relatedFleetIds().
+    // Agent-scoped history matches the exact requested fleet ids. The SQL has
+    // variable arity and is built per-call in queryChatHistory().
     this._queryEventsByType = this.db.prepare(`
       SELECT ${E} FROM events WHERE type = ? ORDER BY timestamp DESC LIMIT ?
     `);
@@ -2264,33 +2263,14 @@ export class FleetStore {
     return { ...row, from: row.from, to: row.to, metadata: meta };
   }
 
-  // The set of fleet ids whose events belong to the same logical agent as
-  // `fleetId`. A lineage's history is spread across one fleet id per phase
-  // incarnation; lineage_phase_log is the authoritative link and retains
-  // retired-phase ids (whose agent row may have lineage_id = NULL by now),
-  // so we recover the lineage from the log when the current row has none.
-  relatedFleetIds(fleetId) {
-    let lineageId = this._getAgent.get(fleetId)?.lineage_id;
-    if (!lineageId) {
-      lineageId = this.db
-        .prepare('SELECT lineage_id FROM lineage_phase_log WHERE fleet_id = ? LIMIT 1')
-        .get(fleetId)?.lineage_id;
-    }
-    if (!lineageId) return [fleetId];
-    return [...new Set([fleetId, ...this.getLineageFleetIds(lineageId)])];
-  }
-
-  // `agents` is the set of fleet ids the chat is filtered to (resolved on the
-  // client by the same logic the live display uses — friendly names, lineage
-  // names, and `name:phase` colon labels). Each id is expanded to its lineage's
-  // full incarnation set via relatedFleetIds(), so history for a lineage agent
-  // returns the union across all its phase/respawn ids — matching what live shows.
+  // `agents` is the exact set of fleet ids the normal chat history is filtered to.
+  // Broad name-history or lineage expansion belongs only in explicit search.
   queryChatHistory({ before, agents, limit = 50 } = {}) {
     let rows;
     const ids = Array.isArray(agents) ? agents : [];
     if (ids.length > 0) {
-      const expanded = [...new Set(ids.flatMap(id => this.relatedFleetIds(id)))];
-      const ph = expanded.map(() => '?').join(',');
+      const exactIds = [...new Set(ids)];
+      const ph = exactIds.map(() => '?').join(',');
       const E = this._EVT;
       // OR-across-two-columns can't use an index's sort order, so the naive
       // `WHERE from_id IN(…) OR to_id IN(…) ORDER BY ts DESC LIMIT n` makes SQLite
@@ -2307,14 +2287,14 @@ export class FleetStore {
             UNION
             SELECT * FROM (SELECT ${E} FROM events WHERE timestamp < ? AND to_id IN (${ph}) ORDER BY timestamp DESC LIMIT ?)
           ) ORDER BY timestamp DESC LIMIT ?`;
-        rows = this._query(this.db.prepare(sql), before, ...expanded, limit, before, ...expanded, limit, limit);
+        rows = this._query(this.db.prepare(sql), before, ...exactIds, limit, before, ...exactIds, limit, limit);
       } else {
         const sql = `SELECT * FROM (
             SELECT * FROM (SELECT ${E} FROM events WHERE from_id IN (${ph}) ORDER BY timestamp DESC LIMIT ?)
             UNION
             SELECT * FROM (SELECT ${E} FROM events WHERE to_id IN (${ph}) ORDER BY timestamp DESC LIMIT ?)
           ) ORDER BY timestamp DESC LIMIT ?`;
-        rows = this._query(this.db.prepare(sql), ...expanded, limit, ...expanded, limit, limit);
+        rows = this._query(this.db.prepare(sql), ...exactIds, limit, ...exactIds, limit, limit);
       }
     } else if (before) {
       rows = this._query(this._queryEventsBefore, before, limit);
