@@ -3124,6 +3124,7 @@ async function rpcSpawn({
         acknowledgeNoSecurity: !!acknowledgeNoSecurity,
         machineId: MACHINE_ID,
         tmuxSocket: TMUX_SOCKET,
+        identityConfigDir: CONFIG_DIR,
       })
     } catch (e) {
       if (preallocatedAgentId) await privilegeLedger.delete(preallocatedAgentId).catch(() => {})
@@ -3184,9 +3185,19 @@ async function rpcSpawn({
   } catch (e) {
     const detail = typeof e?.message === 'string' ? e.message : (e?.message ? JSON.stringify(e.message) : String(e))
     const reason = e?.reason || e?.code || 'launch-failed'
-    log.warn(`node fleet-spawn finished with error: ${agentName}: ${reason}: ${detail}`)
-    sendMsg({ type: 'daemon-warning', message: `couldn't ${respawn ? 'wake' : 'spawn'} ${agentName} — ${detail}` })
-    return { ok: false, name: agentName, error: detail, code: reason, detail: e?.detail || null }
+    if (reason !== 'identity-ingestion-pending') {
+      log.warn(`node fleet-spawn finished with error: ${agentName}: ${reason}: ${detail}`)
+      sendMsg({ type: 'daemon-warning', message: `couldn't ${respawn ? 'wake' : 'spawn'} ${agentName} — ${detail}` })
+    }
+    return {
+      ok: false,
+      name: agentName,
+      error: detail,
+      code: reason,
+      reason,
+      detail: e?.detail || null,
+      retry_after_ms: e?.detail?.retry_after_ms || undefined,
+    }
   } finally {
     _activeSpawns.delete(agentName)
   }

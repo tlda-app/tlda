@@ -10,7 +10,8 @@ import { codexSandboxProjection, resolveHarnessLaunchOptions, resolveLaunchPolic
 import * as claude from '../bin/lib/spawn/harness/claude.mjs'
 import * as codex from '../bin/lib/spawn/harness/codex.mjs'
 import { spawn } from '../bin/lib/spawn/index.mjs'
-import { findClaudeSession, findCodexRollout, scanClaudeSessionIdentity, stripSyntheticTail } from '../bin/lib/spawn/resume.mjs'
+import { findClaudeSession, findCodexRollout, isRespawnIdentityCaughtUp, scanClaudeSessionIdentity, stripSyntheticTail } from '../bin/lib/spawn/resume.mjs'
+import { saveSessionIdentityStore, sessionIdentityPath } from '../bin/lib/session-identity-store.mjs'
 import { claudeStartupDialogAction } from '../bin/lib/spawn/tmux.mjs'
 
 function tmpdir() {
@@ -74,6 +75,16 @@ function fullPrivilegeSet(name = 'full-grant') {
 function writeJsonl(file, rows) {
   fs.mkdirSync(path.dirname(file), { recursive: true })
   fs.writeFileSync(file, rows.map((row) => `${typeof row === 'string' ? row : JSON.stringify(row)}\n`).join(''))
+}
+
+function writeSessionIdentity(configDir, store) {
+  saveSessionIdentityStore(sessionIdentityPath(configDir), {
+    version: 1,
+    sessions: {},
+    by_fleet_id: {},
+    ingestion: { caught_up: true, active_tails: 0, pending_jobs: 0, updated_at: null },
+    ...store,
+  })
 }
 
 function codexRegisterRows(fleetId, name, callId) {
@@ -287,6 +298,99 @@ test('Codex respawn lookup checks historical stored rollout ids after primary mi
   )
   assert.equal(found.rolloutId, sid)
   assert.equal(found.cwd, '/tmp/historical')
+})
+
+test('respawn lookup uses session-identity store before scanning JSONLs', () => {
+  const root = tmpdir()
+  const projectsBase = path.join(root, 'claude-projects')
+  const configDir = path.join(root, 'config')
+  const sid = 'aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa'
+  const jsonl = path.join(projectsBase, '-tmp-owned', `${sid}.jsonl`)
+  writeJsonl(jsonl, [
+    { cwd: '/tmp/identity-store-cwd' },
+    { toolUseResult: [{ text: 'Registered fleet:other. Your name: "wrong"' }] },
+  ])
+  writeSessionIdentity(configDir, {
+    sessions: {
+      [sid]: {
+        session_id: sid,
+        harness_kind: 'claude',
+        fleet_id: 'fleet:store-owner',
+        friendly_name: 'store-owner',
+        cwd: '/tmp/store-cwd',
+        jsonl_path: jsonl,
+        classified: true,
+      },
+    },
+    ingestion: { caught_up: false, active_tails: 1, pending_jobs: 1, updated_at: '2026-07-04T00:00:00.000Z' },
+  })
+  const found = findClaudeSession(
+    { id: 'fleet:store-owner', session_id: null, session_ids: [] },
+    { projectsBase, identityConfigDir: configDir },
+  )
+  assert.equal(found.sessionId, sid)
+  assert.equal(found.cwd, '/tmp/store-cwd')
+})
+
+test('respawn lookup blocks broad scan fallback until identity ingestion reaches EOF', () => {
+  const root = tmpdir()
+  const projectsBase = path.join(root, 'claude-projects')
+  const configDir = path.join(root, 'config')
+  const sid = 'bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb'
+  writeJsonl(path.join(projectsBase, '-tmp-impostor', `${sid}.jsonl`), [
+    { cwd: '/tmp/impostor-cwd' },
+    { toolUseResult: [{ text: 'Registered fleet:block-owner. Your name: "block-owner"' }] },
+  ])
+  writeSessionIdentity(configDir, {
+    ingestion: { caught_up: false, active_tails: 1, pending_jobs: 0, updated_at: '2026-07-04T00:00:00.000Z' },
+  })
+  const found = findClaudeSession(
+    { id: 'fleet:block-owner', session_id: null, session_ids: [] },
+    { projectsBase, identityConfigDir: configDir },
+  )
+  assert.equal(found, null)
+  assert.equal(isRespawnIdentityCaughtUp({ identityConfigDir: configDir }), false)
+})
+
+test('explicit session override still works while identity ingestion is pending', () => {
+  const root = tmpdir()
+  const projectsBase = path.join(root, 'claude-projects')
+  const configDir = path.join(root, 'config')
+  const sid = 'cccccccc-3333-4333-8333-cccccccccccc'
+  fs.mkdirSync('/tmp/explicit-cwd', { recursive: true })
+  writeJsonl(path.join(projectsBase, '-tmp-explicit', `${sid}.jsonl`), [
+    { cwd: '/tmp/explicit-cwd' },
+  ])
+  writeSessionIdentity(configDir, {
+    ingestion: { caught_up: false, active_tails: 1, pending_jobs: 0, updated_at: '2026-07-04T00:00:00.000Z' },
+  })
+  const found = findClaudeSession(
+    { id: 'fleet:explicit-owner', session_id: null, session_ids: [] },
+    { projectsBase, identityConfigDir: configDir, sessionOverride: sid },
+  )
+  assert.equal(found.sessionId, sid)
+  assert.equal(found.cwd, '/tmp/explicit-cwd')
+})
+
+test('caught-up identity ingestion preserves broad scan fallback', () => {
+  const root = tmpdir()
+  const projectsBase = path.join(root, 'claude-projects')
+  const configDir = path.join(root, 'config')
+  const sid = 'dddddddd-4444-4444-8444-dddddddddddd'
+  fs.mkdirSync('/tmp/fallback-cwd', { recursive: true })
+  writeJsonl(path.join(projectsBase, '-tmp-fallback', `${sid}.jsonl`), [
+    { cwd: '/tmp/fallback-cwd' },
+    { toolUseResult: [{ text: 'Registered fleet:fallbackowner. Your name: "fallback-owner"' }] },
+  ])
+  writeSessionIdentity(configDir, {
+    ingestion: { caught_up: true, active_tails: 0, pending_jobs: 0, updated_at: '2026-07-04T00:00:00.000Z' },
+  })
+  const found = findClaudeSession(
+    { id: 'fleet:fallbackowner', session_id: null, session_ids: [] },
+    { projectsBase, identityConfigDir: configDir },
+  )
+  assert.equal(found.sessionId, sid)
+  assert.equal(found.cwd, '/tmp/fallback-cwd')
 })
 
 test('lease policy and fence wrapper stay outside harness adapters', () => {

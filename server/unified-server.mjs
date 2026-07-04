@@ -1043,6 +1043,7 @@ async function performSpawnRelay(caller, msg) {
       phase: phase || null,
     },
   })
+  const mailboxDeadlineAt = mailbox.deadlineAt || (Date.now() + 5 * 60_000)
   const readiness = pendingAgentId
     ? spawnLibrarian.awaitRegister({ id: pendingAgentId, name: spawnName, spec: requestedSpec })
     : null
@@ -1073,64 +1074,82 @@ async function performSpawnRelay(caller, msg) {
     refresh: !!refresh,
   }
   void (async () => {
-    let result
     try {
-      result = await sendRpc(machineId, 'spawn', spawnRequest)
-      if (pendingAgentId && result?.ok === false) {
-        spawnLibrarian.failPending(pendingAgentId, result.code || result.reason || 'launch-failed')
-      }
-    } catch (e) {
-      if (pendingAgentId && /RPC timeout .*op=spawn/.test(e.message || '')) {
-        result = { ok: false, reason: 'spawning' }
-      } else {
-        if (pendingAgentId) spawnLibrarian.failPending(pendingAgentId, 'launch-failed')
-        const settled = mailboxLibrarian.fail(mailbox.id, e.message || 'launch-failed', {
-          reason: e.code || 'launch-failed',
-          error: e.message || String(e),
-        })
-        if (settled) deliverSpawnMailboxCompletion(settled, 'failed', { error: e.message || String(e), reason: e.code || 'launch-failed' })
-        return
-      }
-    }
-    if (result?.ok === false && result.reason !== 'spawning') {
-      if (pendingAgentId) spawnLibrarian.failPending(pendingAgentId, result.reason || result.error || 'launch-failed')
-      const settled = mailboxLibrarian.fail(mailbox.id, result.error || result.reason || 'launch-failed', result)
-      if (settled) deliverSpawnMailboxCompletion(settled, 'failed', { ...result, error: result.error || result.reason || 'launch-failed' })
-      return
-    }
-    let ready = null
-    if (readiness) {
-      ready = await readiness
-      if (!ready.ok) {
-        const settled = mailboxLibrarian.fail(mailbox.id, ready.reason, ready)
-        if (settled) deliverSpawnMailboxCompletion(settled, 'failed', { ...ready, error: ready.reason })
-        return
-      }
-    }
-    const agentRecord = ready?.agent || (result?.agent_id ? fleetStore.findAgent(result.agent_id) : null) || (targetAgentId ? fleetStore.findAgent(targetAgentId) : null)
-    let lineage = null
-    if (phase && agentRecord?.id) {
+      let result
       try {
-        lineage = assignSpawnPhase(agentRecord.id, phase)
+        for (;;) {
+          result = await sendRpc(machineId, 'spawn', spawnRequest)
+          const pendingIdentity = result?.ok === false &&
+            (result.reason === 'identity-ingestion-pending' || result.code === 'identity-ingestion-pending')
+          if (!pendingIdentity) break
+          const remaining = mailboxDeadlineAt - Date.now()
+          if (remaining <= 0) break
+          const waitMs = Math.min(Math.max(Number(result.retry_after_ms || 1000), 250), 5000, remaining)
+          await new Promise(r => setTimeout(r, waitMs))
+        }
+        if (pendingAgentId && result?.ok === false) {
+          spawnLibrarian.failPending(pendingAgentId, result.code || result.reason || 'launch-failed')
+        }
       } catch (e) {
-        const settled = mailboxLibrarian.fail(mailbox.id, e.message || 'lineage assignment failed', { ...result, phase, error: e.message })
-        if (settled) deliverSpawnMailboxCompletion(settled, 'failed', { ...result, error: `lineage assignment failed: ${e.message}` })
+        if (pendingAgentId && /RPC timeout .*op=spawn/.test(e.message || '')) {
+          result = { ok: false, reason: 'spawning' }
+        } else {
+          if (pendingAgentId) spawnLibrarian.failPending(pendingAgentId, 'launch-failed')
+          const settled = mailboxLibrarian.fail(mailbox.id, e.message || 'launch-failed', {
+            reason: e.code || 'launch-failed',
+            error: e.message || String(e),
+          })
+          if (settled) deliverSpawnMailboxCompletion(settled, 'failed', { error: e.message || String(e), reason: e.code || 'launch-failed' })
+          return
+        }
+      }
+      if (result?.ok === false && result.reason !== 'spawning') {
+        if (pendingAgentId) spawnLibrarian.failPending(pendingAgentId, result.reason || result.error || 'launch-failed')
+        const settled = mailboxLibrarian.fail(mailbox.id, result.error || result.reason || 'launch-failed', result)
+        if (settled) deliverSpawnMailboxCompletion(settled, 'failed', { ...result, error: result.error || result.reason || 'launch-failed' })
         return
       }
+      let ready = null
+      if (readiness) {
+        ready = await readiness
+        if (!ready.ok) {
+          const settled = mailboxLibrarian.fail(mailbox.id, ready.reason, ready)
+          if (settled) deliverSpawnMailboxCompletion(settled, 'failed', { ...ready, error: ready.reason })
+          return
+        }
+      }
+      const agentRecord = ready?.agent || (result?.agent_id ? fleetStore.findAgent(result.agent_id) : null) || (targetAgentId ? fleetStore.findAgent(targetAgentId) : null)
+      let lineage = null
+      if (phase && agentRecord?.id) {
+        try {
+          lineage = assignSpawnPhase(agentRecord.id, phase)
+        } catch (e) {
+          const settled = mailboxLibrarian.fail(mailbox.id, e.message || 'lineage assignment failed', { ...result, phase, error: e.message })
+          if (settled) deliverSpawnMailboxCompletion(settled, 'failed', { ...result, error: `lineage assignment failed: ${e.message}` })
+          return
+        }
+      }
+      const registeredPolicy = agentRecord?.metadata?.spawnPolicy
+      const spawnPolicy = result?.spawnPolicy || registeredPolicy
+      const completion = {
+        ...result,
+        agentId: agentRecord?.id || result?.agent_id || targetAgentId || null,
+        label: agentRecord?.friendly_name || result?.name || spawnName,
+        spawnPolicy,
+        grantedCapability: result?.grantedCapability || spawnPolicy?.capability,
+        lineage,
+      }
+      const settled = mailboxLibrarian.complete(mailbox.id, completion)
+      if (settled) deliverSpawnMailboxCompletion(settled, 'completed', completion)
+      broadcastState()
+    } catch (e) {
+      if (pendingAgentId) spawnLibrarian.failPending(pendingAgentId, 'launch-failed')
+      const settled = mailboxLibrarian.fail(mailbox.id, e.message || 'launch-failed', {
+        reason: e.code || 'launch-failed',
+        error: e.message || String(e),
+      })
+      if (settled) deliverSpawnMailboxCompletion(settled, 'failed', { error: e.message || String(e), reason: e.code || 'launch-failed' })
     }
-    const registeredPolicy = agentRecord?.metadata?.spawnPolicy
-    const spawnPolicy = result?.spawnPolicy || registeredPolicy
-    const completion = {
-      ...result,
-      agentId: agentRecord?.id || result?.agent_id || targetAgentId || null,
-      label: agentRecord?.friendly_name || result?.name || spawnName,
-      spawnPolicy,
-      grantedCapability: result?.grantedCapability || spawnPolicy?.capability,
-      lineage,
-    }
-    const settled = mailboxLibrarian.complete(mailbox.id, completion)
-    if (settled) deliverSpawnMailboxCompletion(settled, 'completed', completion)
-    broadcastState()
   })()
   return {
     ok: true,

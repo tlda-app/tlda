@@ -1,6 +1,11 @@
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
+import {
+  getSessionIdentity,
+  findSessionsByFleetId,
+  isIngestionCaughtUp,
+} from '../session-identity-store.mjs'
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const UUID_SCAN_RE = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i
@@ -13,6 +18,36 @@ function claudeProjectsBase(base) {
 
 function codexSessionsBase(base) {
   return base || path.join(os.homedir(), '.codex', 'sessions')
+}
+
+function identityStoreLookupOptions(options = {}) {
+  return {
+    configDir: options.identityConfigDir || options.configDir,
+    filePath: options.identityFilePath || options.filePath,
+  }
+}
+
+export function isRespawnIdentityCaughtUp(options = {}) {
+  return isIngestionCaughtUp(identityStoreLookupOptions(options))
+}
+
+function sessionIdentityRecord(sessionId, options = {}) {
+  if (!sessionId) return null
+  return getSessionIdentity(sessionId, identityStoreLookupOptions(options))
+}
+
+function sessionIdentityRecords(agent, kind, options = {}) {
+  if (!agent?.id) return []
+  return findSessionsByFleetId(agent.id, kind, identityStoreLookupOptions(options))
+    .filter(rec => rec?.session_id)
+    .sort((a, b) => Date.parse(b.updated_at || '') - Date.parse(a.updated_at || ''))
+}
+
+function validIdentityRecord(rec, agent, kind) {
+  if (!rec?.session_id) return false
+  if (kind && rec.harness_kind && rec.harness_kind !== kind) return false
+  if (agent?.id && rec.fleet_id && rec.fleet_id !== agent.id) return false
+  return true
 }
 
 function walkFiles(root, accept) {
@@ -107,15 +142,32 @@ export function scanClaudeSessionIdentity(sessionId, { projectsBase } = {}) {
   return { ...identity, jsonlPath, cwd: identity.cwd || jsonlPathToCwd(jsonlPath) }
 }
 
-export function findClaudeSession(agent, { projectsBase, sessionOverride } = {}) {
+export function findClaudeSession(agent, options = {}) {
+  const { projectsBase, sessionOverride } = options
   const primary = sessionOverride || agent?.session_id
   if (primary) {
+    const rec = sessionIdentityRecord(primary, options)
+    if (rec) {
+      if (!validIdentityRecord(rec, agent, 'claude')) return null
+      const p = rec.jsonl_path && fs.existsSync(rec.jsonl_path)
+        ? rec.jsonl_path
+        : claudeJsonlPath(primary, { projectsBase })
+      if (p) return { kind: 'claude', sessionId: primary, jsonlPath: p, cwd: rec.cwd || jsonlPathToCwd(p) }
+    }
+    if (!sessionOverride && !isRespawnIdentityCaughtUp(options)) return null
     const p = claudeJsonlPath(primary, { projectsBase })
     if (p) {
       const identity = scanClaudeJsonlIdentity(p)
       return { kind: 'claude', sessionId: primary, jsonlPath: p, cwd: identity.cwd || jsonlPathToCwd(p) }
     }
   }
+  for (const rec of sessionIdentityRecords(agent, 'claude', options)) {
+    const p = rec.jsonl_path && fs.existsSync(rec.jsonl_path)
+      ? rec.jsonl_path
+      : claudeJsonlPath(rec.session_id, { projectsBase })
+    if (p) return { kind: 'claude', sessionId: rec.session_id, jsonlPath: p, cwd: rec.cwd || jsonlPathToCwd(p) }
+  }
+  if (!isRespawnIdentityCaughtUp(options)) return null
   let ids = agent?.session_ids || agent?.sessions || []
   if (typeof ids === 'string') {
     try {
@@ -248,13 +300,33 @@ export function scanCodexRolloutIdentity(fpath) {
   return { ownId, agentName, sessionMeta: meta || {} }
 }
 
-export function findCodexRollout(agent, { sessionsBase, sessionOverride } = {}) {
+export function findCodexRollout(agent, options = {}) {
+  const { sessionsBase, sessionOverride } = options
   if (sessionOverride) {
+    const rec = sessionIdentityRecord(sessionOverride, options)
+    if (rec) {
+      if (!validIdentityRecord(rec, agent, 'codex')) return null
+      const fpath = rec.jsonl_path && fs.existsSync(rec.jsonl_path)
+        ? rec.jsonl_path
+        : codexRolloutPath(sessionOverride, { sessionsBase })
+      if (!fpath) return null
+      const { sessionMeta } = scanCodexRolloutIdentity(fpath)
+      return { kind: 'codex', rolloutId: sessionOverride, jsonlPath: fpath, cwd: rec.cwd || sessionMeta.cwd, sessionMeta }
+    }
     const fpath = codexRolloutPath(sessionOverride, { sessionsBase })
     if (!fpath) return null
     const { sessionMeta } = scanCodexRolloutIdentity(fpath)
     return { kind: 'codex', rolloutId: sessionOverride, jsonlPath: fpath, cwd: sessionMeta.cwd, sessionMeta }
   }
+  for (const rec of sessionIdentityRecords(agent, 'codex', options)) {
+    const fpath = rec.jsonl_path && fs.existsSync(rec.jsonl_path)
+      ? rec.jsonl_path
+      : codexRolloutPath(rec.session_id, { sessionsBase })
+    if (!fpath) continue
+    const { sessionMeta } = scanCodexRolloutIdentity(fpath)
+    return { kind: 'codex', rolloutId: rec.session_id, jsonlPath: fpath, cwd: rec.cwd || sessionMeta.cwd, sessionMeta }
+  }
+  if (!isRespawnIdentityCaughtUp(options)) return null
   const base = codexSessionsBase(sessionsBase)
   const fleetId = agent?.id
   if (!fleetId || !fs.existsSync(base)) return null

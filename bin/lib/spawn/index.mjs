@@ -9,6 +9,7 @@ import {
   codexRolloutPath,
   findClaudeSession,
   findCodexRollout,
+  isRespawnIdentityCaughtUp,
   scanClaudeSessionIdentity,
   scanCodexRolloutIdentity,
   stripSyntheticTail,
@@ -323,9 +324,21 @@ async function spawnRespawn(params) {
     return { ok: true, fleetId, tmuxSession, harness: requestedKind, model, alreadyAlive: true }
   }
   let handle = null
-  if (requestedKind === 'claude') handle = findClaudeSession(agent, { sessionOverride: params.sessionId || params.session_id })
-  else if (requestedKind === 'codex') handle = findCodexRollout(agent, { sessionOverride: params.sessionId || params.session_id })
+  const identityOptions = {
+    sessionOverride: params.sessionId || params.session_id,
+    identityConfigDir: params.identityConfigDir,
+    identityFilePath: params.identityFilePath,
+  }
+  if (requestedKind === 'claude') handle = findClaudeSession(agent, identityOptions)
+  else if (requestedKind === 'codex') handle = findCodexRollout(agent, identityOptions)
   if (!handle && (requestedKind === 'claude' || requestedKind === 'codex')) {
+    if (!isRespawnIdentityCaughtUp(identityOptions)) {
+      throw new SpawnError(
+        'identity-ingestion-pending',
+        `Cannot respawn ${friendlyName} (${fleetId}) yet: JSONL identity ingestion has not reached EOF. Retry once ingestion is caught up.`,
+        { fleetId, kind: requestedKind, retry_after_ms: 1000 },
+      )
+    }
     throw new SpawnError('launch-failed', `No ${requestedKind} resume handle for ${friendlyName} (${fleetId}). Use refresh to start fresh.`, { fleetId })
   }
   const resumeId = adapter.resumeId?.(handle)
