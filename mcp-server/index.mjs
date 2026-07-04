@@ -9,7 +9,16 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import { getFleetTools, handleFleetTool, initFleet, TLDA_INSTRUCTIONS, setAgentPreambleDoc } from './fleet-tools.mjs';
+import {
+  deliverOperationMailboxCompletion,
+  getFleetTools,
+  handleFleetTool,
+  initFleet,
+  operationMailboxStartedResult,
+  setAgentPreambleDoc,
+  startOperationMailbox,
+  TLDA_INSTRUCTIONS,
+} from './fleet-tools.mjs';
 import http from 'http';
 import fs from 'fs';
 import os from 'os';
@@ -32,8 +41,9 @@ import {
 } from './lib/formatCoords.mjs';
 import { harnessFromEnv } from './lib/harness-adapters.mjs';
 
-import { getServerUrl, assertServerCoherence, DEFAULT_PORT } from '../shared/config.mjs'
+import { getFleetServerUrl, getServerUrl, assertServerCoherence, DEFAULT_PORT } from '../shared/config.mjs'
 import { tldaFetch as _tldaFetch } from '../shared/http-client.mjs'
+import { uploadFileToServer } from '../shared/chat-file-processing.mjs'
 
 // Fail loud if a hand-pinned TLDA_SERVER disagrees with the config this agent's
 // MCP resolved — the 6/27 split, refused at boot rather than joining the wrong
@@ -2623,43 +2633,74 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (Array.isArray(args?.shapeIds) && args.shapeIds.length) signalData.shapeIds = args.shapeIds;
     if (args?.padding != null) signalData.padding = args.padding;
 
-    try {
-      const reqTs = signalData.timestamp;
-      await broadcastSignalRest(docName, 'signal:screenshot-request', signalData);
-      // The viewer captures and POSTs its reply back to the server, which caches
-      // it (signalCache). Poll that cache for a reply newer than our request,
-      // rather than relying on catching the live SSE signal — the reply can
-      // arrive (~0.8s) before an SSE listener finishes registering, and the cache
-      // is the authoritative copy either way.
-      let result = null;
-      // The viewer's capture can take ~15–20s for a content-heavy region, so the
-      // old 8s timeout gave up before the (cached, valid) reply ever landed.
-      const deadline = Date.now() + 30000;
-      while (Date.now() < deadline) {
-        await new Promise(r => setTimeout(r, 350));
-        let cached = null;
-        try {
-          cached = await serverFetch(`/api/projects/${docName}/signal/signal:screenshot`);
-        } catch {
-          cached = null; // 404 until the viewer replies — keep polling
+    const mailbox = startOperationMailbox('screenshot', { doc: docName, label: `${docName}${labelTag}` });
+    if (!mailbox) return { content: [{ type: 'text', text: 'Screenshot mailbox requires fleet registration. Call register() first.' }], isError: true };
+
+    (async () => {
+      try {
+        const reqTs = signalData.timestamp;
+        await broadcastSignalRest(docName, 'signal:screenshot-request', signalData);
+        // The viewer captures and POSTs its reply back to the server, which caches
+        // it (signalCache). Poll that cache for a reply newer than our request,
+        // rather than relying on catching the live SSE signal — the reply can
+        // arrive (~0.8s) before an SSE listener finishes registering, and the cache
+        // is the authoritative copy either way.
+        let result = null;
+        // The viewer's capture can take ~15–20s for a content-heavy region, so the
+        // old 8s timeout gave up before the (cached, valid) reply ever landed.
+        const deadline = Date.now() + 30000;
+        while (Date.now() < deadline) {
+          await new Promise(r => setTimeout(r, 350));
+          let cached = null;
+          try {
+            cached = await serverFetch(`/api/projects/${docName}/signal/signal:screenshot`);
+          } catch {
+            cached = null; // 404 until the viewer replies — keep polling
+          }
+          if (cached?.data && (cached.timestamp || 0) >= reqTs) { result = cached; break; }
         }
-        if (cached?.data && (cached.timestamp || 0) >= reqTs) { result = cached; break; }
+        if (!result?.data) {
+          deliverOperationMailboxCompletion(mailbox, 'failed', {
+            label: `${docName}${labelTag}`,
+            error: 'No viewer responded — open the document in a browser first',
+          });
+          return;
+        }
+
+        let tmpDir = null;
+        let uploaded = null;
+        try {
+          tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-screenshot-mailbox-'));
+          const tmpFile = path.join(tmpDir, `${docName}-${mailbox.id.replace(/[^a-zA-Z0-9_-]/g, '-')}.png`);
+          fs.writeFileSync(tmpFile, Buffer.from(result.data, 'base64'));
+          uploaded = await uploadFileToServer(tmpFile, getFleetServerUrl());
+        } finally {
+          if (tmpDir) {
+            try {
+              fs.rmSync(tmpDir, { recursive: true, force: true });
+            } catch (cleanupError) {
+              process.stderr.write(`[mcp] screenshot mailbox cleanup failed: ${cleanupError.message}\n`);
+            }
+          }
+        }
+        const kb = Math.round(result.data.length / 1024);
+        deliverOperationMailboxCompletion(mailbox, 'completed', {
+          label: `${docName}${labelTag}`,
+          doc: docName,
+          bytes_base64: result.data.length,
+          mimeType: result.mimeType || 'image/png',
+          url: uploaded.url,
+          message: `Screenshot${labelTag} (${kb}KB)\n\n![screenshot](${uploaded.url})`,
+        });
+      } catch (e) {
+        deliverOperationMailboxCompletion(mailbox, 'failed', {
+          label: `${docName}${labelTag}`,
+          error: e.message || String(e),
+        });
       }
-      if (result?.data) {
-        return {
-          content: [
-            { type: 'text', text: `Screenshot${labelTag} (${Math.round(result.data.length / 1024)}KB)` },
-            { type: 'image', data: result.data, mimeType: result.mimeType || 'image/png' },
-          ],
-        };
-      }
-      return {
-        content: [{ type: 'text', text: 'No viewer responded — open the document in a browser first.' }],
-        isError: true,
-      };
-    } catch (e) {
-      return { content: [{ type: 'text', text: `Screenshot failed: ${e.message}` }], isError: true };
-    }
+    })();
+
+    return operationMailboxStartedResult(mailbox, { extra: `doc: ${docName}` });
   }
 
   if (name === 'flash_location') {
@@ -3499,25 +3540,52 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const doc = args?.doc;
     let ref = args?.ref;
     if (!doc || !ref) return { content: [{ type: 'text', text: 'Missing required parameters: doc, ref' }], isError: true };
-    try {
-      const resolved = await resolveDocRef(doc, ref);
-      if (!resolved) return { content: [{ type: 'text', text: `No version found for: ${ref}` }], isError: true };
+    const mailbox = startOperationMailbox('doc_view', { doc, ref, label: `${doc} ${ref}` });
+    if (!mailbox) return { content: [{ type: 'text', text: 'doc_view mailbox requires fleet registration. Call register() first.' }], isError: true };
 
-      // View: restores source to this version on the server (but not the author's working copy)
-      await serverFetch(`/api/projects/${doc}/history/shadow/${resolved.hash}/checkout`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: '{}',
-      });
+    (async () => {
+      try {
+        const resolved = await resolveDocRef(doc, ref);
+        if (!resolved) {
+          deliverOperationMailboxCompletion(mailbox, 'failed', {
+            label: `${doc} ${ref}`,
+            doc,
+            ref,
+            error: `No version found for: ${ref}`,
+          });
+          return;
+        }
 
-      const buildDone = await waitForBuild(doc);
-      const result = resolved.isTimeRef
-        ? `Viewing ${doc} at ${ref} (version ${resolved.hash.slice(0, 7)}). Author's working copy is untouched — next edit overwrites this view.`
-        : `Viewing ${doc} at version ${resolved.hash.slice(0, 7)}. Author's working copy is untouched — next edit overwrites this view.`;
-      return { content: [{ type: 'text', text: result + (buildDone ? ' Build complete.' : ' Build may still be running.') }] };
-    } catch (e) {
-      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
-    }
+        // View: restores source to this version on the server (but not the author's working copy)
+        await serverFetch(`/api/projects/${doc}/history/shadow/${resolved.hash}/checkout`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: '{}',
+        });
+
+        const buildDone = await waitForBuild(doc);
+        const result = resolved.isTimeRef
+          ? `Viewing ${doc} at ${ref} (version ${resolved.hash.slice(0, 7)}). Author's working copy is untouched — next edit overwrites this view.`
+          : `Viewing ${doc} at version ${resolved.hash.slice(0, 7)}. Author's working copy is untouched — next edit overwrites this view.`;
+        deliverOperationMailboxCompletion(mailbox, 'completed', {
+          label: `${doc} ${resolved.hash.slice(0, 7)}`,
+          doc,
+          ref,
+          hash: resolved.hash,
+          buildDone,
+          message: result + (buildDone ? ' Build complete.' : ' Build may still be running.'),
+        });
+      } catch (e) {
+        deliverOperationMailboxCompletion(mailbox, 'failed', {
+          label: `${doc} ${ref}`,
+          doc,
+          ref,
+          error: e.message || String(e),
+        });
+      }
+    })();
+
+    return operationMailboxStartedResult(mailbox, { extra: `doc: ${doc}\nref: ${ref}` });
   }
 
   // doc_compare, doc_revert, doc_diff handlers removed — use local git with mirror
