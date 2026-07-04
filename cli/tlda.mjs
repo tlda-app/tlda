@@ -1955,8 +1955,11 @@ async function runRoutedSpawn(rawArgs) {
   const body = parseRoutedSpawn(rawArgs)
   const fleetServer = getFlag('server') || getFleetServerUrl()
   const token = getToken()
-  const spawnerId = flagFromRaw(rawArgs, 'spawner-id') || process.env.TLDA_SPAWNER_ID || 'fleet:skip'
-  const loginName = spawnerId.replace(/^fleet:/, '')
+  const human = await tldaFetch('/api/human', {
+    method: 'GET',
+    server: fleetServer,
+    token,
+  })
   const { default: WebSocket } = await import('ws')
   const url = `${wsUrlFromHttp(fleetServer)}/ws/fleet${token ? `?token=${encodeURIComponent(token)}` : ''}`
   const ws = new WebSocket(url, { rejectUnauthorized: false, headers: token ? { Authorization: `Bearer ${token}` } : undefined })
@@ -1974,7 +1977,7 @@ async function runRoutedSpawn(rawArgs) {
       ws.once('open', () => { clearTimeout(timer); resolve() })
       ws.once('error', (e) => { clearTimeout(timer); reject(e) })
     })
-    await fleetWsRequest(ws, { type: 'login', name: loginName }, WS_LOGIN_TIMEOUT_MS)
+    await fleetWsRequest(ws, { type: 'login', name: human.name }, WS_LOGIN_TIMEOUT_MS)
     const result = await fleetWsRequest(ws, { type: 'spawn', ...body }, 120000)
     if (result?.ok === false) {
       throw new Error(formatSpawnFailure(result, body))
@@ -2152,9 +2155,9 @@ function usageAgent() {
 
 Usage:
   tlda agent list [--limit N] [--local]
-  tlda agent spawn <agent> [--spawner-id fleet:skip]
-  tlda agent spawn --fresh <name> [--spawner-id fleet:skip]
-  tlda agent spawn --session <uuid> [--enroll] [name] [--spawner-id fleet:skip]
+  tlda agent spawn <agent>
+  tlda agent spawn --fresh <name>
+  tlda agent spawn --session <uuid> [--enroll] [name]
   tlda agent spawn-direct <agent> [--privileges profile] [--capability read|write|tlda-write|full] [--spawner-id fleet:skip]
   tlda agent move <agent> --to <machine>
   tlda agent set-spawn-machine <agent-or-user> <machine>
