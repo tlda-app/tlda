@@ -2346,16 +2346,17 @@ export async function handleFleetTool(name, args) {
     let agent = args.agent;
     let spawnedInfo = null;
 
-    // Combined spawn+delegate: spawn a fresh agent, then delegate to its fleet ID
+    // Combined spawn+delegate: spawn a fresh agent, then delegate to its shell/mailbox.
     if (args.spawn) {
       const spawnOpts = args.spawn;
       const agentName = spawnOpts.name || `agent-${Date.now().toString(36).slice(-4)}`;
       const agentCwd = spawnOpts.cwd || getAgentCwd();
+      let spawnResult = null;
 
       try {
         const modelError = await validateSpawnRequest(spawnOpts);
         if (modelError) return { content: [{ type: 'text', text: modelError }], isError: true };
-        const spawnResult = await sendWS('spawn', {
+        spawnResult = await sendWS('spawn', {
           fresh: true,
           name: agentName,
           model: spawnOpts.model,
@@ -2363,33 +2364,30 @@ export async function handleFleetTool(name, args) {
           kind: spawnOpts.kind,
           cwd: agentCwd,
           capability: spawnOpts.capability,
+          mailboxTarget: true,
         }, { deadlineMs: SPAWN_WS_DEADLINE_MS });
         if (spawnResult?.ok === false || spawnResult?.error) {
           return { content: [{ type: 'text', text: `spawn failed before delegation: ${spawnResult.error || JSON.stringify(spawnResult)}` }], isError: true };
+        }
+        if (!spawnResult) {
+          return { content: [{ type: 'text', text: 'spawn failed before delegation: tlda backend did not answer' }], isError: true };
         }
       } catch (e) {
         const msg = (e.message || '').trim();
         return { content: [{ type: 'text', text: `spawn failed before delegation: ${msg}` }], isError: true };
       }
 
-      let spawned = null;
-      for (let i = 0; i < 20; i++) {
+      let spawned = spawnResult?.agent || null;
+      for (let i = 0; !spawned && i < 20; i++) {
         try {
-          const agents = await sendWS('store-agents');
-          spawned = agents?.find(a => a.friendly_name === agentName || a.id === agentName);
-          if (spawned) break;
+          spawned = (await sendWS('resolve-agent', { agent: agentName }))?.agent || null;
         } catch {}
+        if (spawned) break;
         await new Promise(r => setTimeout(r, 250));
       }
 
       if (!spawned?.id) {
-        return { content: [{ type: 'text', text: `spawn started for ${agentName}, but the agent did not register within 5s` }], isError: true };
-      }
-      if (!spawned.tmux_session) {
-        return { content: [{ type: 'text', text: `spawn registered ${agentName} (${spawned.id}), but no tmux session was recorded. Not delegating: a registry row is not a usable agent.` }], isError: true };
-      }
-      if (!agentAlive(spawned)) {
-        return { content: [{ type: 'text', text: `spawn registered ${agentName} (${spawned.id}), but the agent is not alive/usable yet. Not delegating.` }], isError: true };
+        return { content: [{ type: 'text', text: `spawn started for ${agentName}, but no reserved shell/mailbox was returned or found within 5s` }], isError: true };
       }
 
       agent = spawned.id;
