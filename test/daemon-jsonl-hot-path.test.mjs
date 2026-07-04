@@ -113,7 +113,10 @@ test('marker scan is byte-chunked and does not use full-file readFileSync', () =
 // ---------- session-owner harvest (cursor owner-cache fix) ----------
 import {
   extractOwnersFromText as _extractOwners,
+  extractIdentityFromRecord as _extractIdentity,
+  extractIdentityFromText as _extractIdentityText,
   scanFileOwnersSync as _scanOwners,
+  scanFileIdentitySync as _scanIdentity,
 } from '../bin/lib/daemon-jsonl-hot-path.mjs'
 
 test('extractOwnersFromText pulls every fleet id from Registered lines, deduped', () => {
@@ -126,6 +129,23 @@ test('extractOwnersFromText pulls every fleet id from Registered lines, deduped'
   ].join('\n')
   assert.deepEqual(_extractOwners(text).sort(), ['fleet:791a593e', 'fleet:yolo'])
   assert.deepEqual(_extractOwners('nothing here'), [])
+})
+
+test('extractIdentityFromRecord captures fleet id, friendly name, and cwd from registration output', () => {
+  const text = 'Registered fleet:abc123. Your name: "mailbox-impl".'
+  assert.deepEqual(_extractIdentityText(text), {
+    fleet_id: 'fleet:abc123',
+    friendly_name: 'mailbox-impl',
+  })
+  assert.deepEqual(_extractIdentity({
+    cwd: '/work/tlda',
+    toolUseResult: { content: [{ type: 'text', text }] },
+  }), {
+    fleet_id: 'fleet:abc123',
+    friendly_name: 'mailbox-impl',
+    cwd: '/work/tlda',
+  })
+  assert.deepEqual(_extractIdentity({ payload: { cwd: '/work/other' } }), { cwd: '/work/other' })
 })
 
 test('scanFileOwnersSync harvests owners chunked (marker split across chunk boundary) + returns EOF offset', () => {
@@ -157,6 +177,31 @@ test('scanFileOwnersSync from a byte offset only scans the tail', () => {
     const { owners } = _scanOwners(file, { fromOffset: Buffer.byteLength(head) })
     assert.deepEqual(owners, ['fleet:new'])  // old owner (before offset) not re-harvested
   } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('scanFileIdentitySync harvests identity and cwd without whole-file read', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-identity-scan-'))
+  const file = path.join(dir, 'session.jsonl')
+  const originalReadFileSync = fs.readFileSync
+  try {
+    const record = {
+      cwd: '/repo',
+      toolUseResult: { content: [{ type: 'text', text: 'Registered fleet:abc123. Your name: "daemon-impl".' }] },
+    }
+    fs.writeFileSync(file, 'x'.repeat(64 * 1024 - 20) + '\n' + JSON.stringify(record) + '\n')
+    fs.readFileSync = () => { throw new Error('identity scan must be chunked, not readFileSync') }
+    const { identity, owners, endOffset } = _scanIdentity(file)
+    assert.deepEqual(identity, {
+      fleet_id: 'fleet:abc123',
+      friendly_name: 'daemon-impl',
+      cwd: '/repo',
+    })
+    assert.deepEqual(owners, ['fleet:abc123'])
+    assert.equal(endOffset, fs.statSync(file).size)
+  } finally {
+    fs.readFileSync = originalReadFileSync
     fs.rmSync(dir, { recursive: true, force: true })
   }
 })
