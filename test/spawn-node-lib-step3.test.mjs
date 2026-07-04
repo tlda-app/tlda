@@ -8,6 +8,7 @@ import { fenceSettings, wrapSandboxCmd } from '../bin/lib/spawn/fence.mjs'
 import { codexSandboxProjection, resolveHarnessLaunchOptions, resolveLaunchPolicy, resolveLeasePolicy } from '../bin/lib/spawn/permissions.mjs'
 import * as claude from '../bin/lib/spawn/harness/claude.mjs'
 import * as codex from '../bin/lib/spawn/harness/codex.mjs'
+import * as goose from '../bin/lib/spawn/harness/goose.mjs'
 import { spawn } from '../bin/lib/spawn/index.mjs'
 import { findClaudeSession, findCodexRollout, scanClaudeSessionIdentity, stripSyntheticTail } from '../bin/lib/spawn/resume.mjs'
 import { claudeStartupDialogAction } from '../bin/lib/spawn/tmux.mjs'
@@ -826,6 +827,32 @@ test('configured harness flags are injected into launch commands', () => {
   assert.doesNotMatch(cmd, /--dangerously-skip-permissions/)
   assert.match(cmd, /claude --dangerously-load-development-channels server:tlda --model/)
   assert.match(cmd, /--model 'claude-opus-4-8' 'Call register\(name="flag-order-proof"\)/)
+})
+
+test('spawn harness commands set per-agent git author without overriding committer', () => {
+  const common = {
+    fleetId: 'fleet:testauthor',
+    tmuxSession: 'fleet-testauthor',
+    model: 'test-model',
+    name: 'git-author-agent',
+    api: 'http://127.0.0.1:5176',
+    config: {},
+    env: {},
+  }
+  const commands = [
+    claude.buildCmd({ ...common, includePrompt: false }),
+    codex.buildCmd({ ...common, cwd: tmpdir() }),
+    goose.buildCmd(common),
+  ]
+  for (const cmd of commands) {
+    assert.match(cmd, /GIT_AUTHOR_NAME=/)
+    assert.match(cmd, /git-author-agent/)
+    assert.match(cmd, /GIT_AUTHOR_EMAIL=/)
+    assert.match(cmd, /fleet:testauthor@fleet\.local/)
+    assert.doesNotMatch(cmd, /GIT_COMMITTER_NAME/)
+    assert.doesNotMatch(cmd, /GIT_COMMITTER_EMAIL/)
+  }
+  assert.doesNotMatch(commands[1], /mcp_servers\.tlda\.env\.GIT_AUTHOR/)
 })
 
 test('fresh local spawn defers registration when localhost server probe fails', async () => {

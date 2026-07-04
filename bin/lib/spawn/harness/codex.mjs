@@ -1,7 +1,7 @@
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import { activeConfigName, readConfig, repoRoot } from '../identity.mjs'
+import { activeConfigName, gitAuthorEnv, readConfig, repoRoot } from '../identity.mjs'
 import { resolveCodexModel, resolveCodexModelSelection } from '../models.mjs'
 import { registerPrompt } from './claude.mjs'
 
@@ -92,6 +92,9 @@ export function buildCmd({
     `FLEET_ID=${sq(fleetId)}`,
     `FLEET_TMUX_SESSION=${sq(tmuxSession)}`,
   ]
+  // Fresh spawn names can still be tentative before server confirm/rename;
+  // GIT_AUTHOR_EMAIL carries the stable fleet id for authoritative attribution.
+  processEnv.push(...gitAuthorEnv(fleetId, name).map(v => sqEnv(v)))
   if (name) processEnv.push(`FLEET_NAME=${sq(name)}`)
   if (dnsAlias && fs.existsSync(DNS_ALIAS_PRELOAD)) {
     processEnv.push(`NODE_OPTIONS=${sq(`--require=${DNS_ALIAS_PRELOAD}`)}`)
@@ -124,6 +127,11 @@ export function buildCmd({
   }
   appendLaunchFlags(parts, harnessOptions)
   return parts.join(' ')
+}
+
+function sqEnv(entry) {
+  const [key, ...rest] = String(entry).split('=')
+  return `${key}=${sq(rest.join('='))}`
 }
 
 export function resumeId(handle) {
