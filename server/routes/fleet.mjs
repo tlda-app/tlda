@@ -92,7 +92,7 @@ function fleetTableLabelsForAgent(agent) {
   return labels
 }
 
-export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, clearEphemeralState, suppressEchoFor, sendRpc, resolveRpc, daemonConnections, resolveSpawnTarget, broadcastDaemonAgentsUpdated }) {
+export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, clearEphemeralState, suppressEchoFor, sendRpc, resolveRpc, daemonConnections, resolveSpawnTarget, broadcastDaemonAgentsUpdated, hasOpenFleetSocketForAgent = () => false }) {
   // Helper: route an agent op through the daemon, or 503 cleanly. The
   // op-name is whatever the daemon's rpc dispatcher expects (kebab-case
   // matches the spec: 'send-key', 'capture-pane', etc.).
@@ -386,7 +386,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   })
 
   // --- POST /api/tasks/delegate ---
-  router.post('/api/tasks/delegate', (req, res) => {
+  router.post('/api/tasks/delegate', async (req, res) => {
     const { from: rawFrom, agent: agentQuery, description, message, success_criteria, blocked_by } = req.body || {}
     if (!agentQuery || !description) { res.status(400).send('missing "agent" or "description"'); return }
     const resolvedAgent = fleetStore?.findAgent(agentQuery)
@@ -406,7 +406,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     }
     if (fleetStore) {
       fleetStore.upsertTask(task)
-      fleetStore.delegate(from, agentId, taskId, description, {
+      await fleetStore.delegate(from, agentId, taskId, description, {
         fromLabel: fleetStore.getAgent?.(from)?.friendly_name || from,
         toLabel: resolvedAgent.friendly_name || agentId,
         criteria: success_criteria || [],
@@ -1153,9 +1153,12 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     const agent = fleetStore?.findAgent(rawAgent)?.id || rawAgent
     const task = task_id ? fleetStore?.getTask?.(task_id) : fleetStore?.getTaskByAgent(agent)
     if (!task) { res.status(404).send('no active task'); return }
-    fleetStore?.removeTask?.(task.id)
+    const result = fleetStore?.retractTask?.(task, {
+      recipientExposed: hasOpenFleetSocketForAgent(task.agent),
+      retractedBy: req.body?.from || null,
+    }) || { task_id: task.id, mode: 'removed_task_only' }
     broadcastState()
-    res.json({ ok: true, task_id: task.id })
+    res.json({ ok: true, ...result })
   })
 
   // --- GET /api/health ---

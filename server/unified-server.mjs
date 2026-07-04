@@ -2585,6 +2585,7 @@ const fleetRouter = createFleetRouter({
   suppressEchoFor: () => {},
   sendRpc, resolveRpc, daemonConnections, resolveSpawnTarget,
   broadcastDaemonAgentsUpdated,
+  hasOpenFleetSocketForAgent,
 })
 app.use(fleetRouter)
 
@@ -3870,7 +3871,7 @@ async function handleFleetWsMessage(ws, msg) {
     }
     fleetStore.upsertTask(task)
     const fromAgent = from ? fleetStore.findAgent(from) : null
-    fleetStore.delegate?.(from, resolved.id, taskId, description, {
+    await fleetStore.delegate?.(from, resolved.id, taskId, description, {
       fromLabel: fromAgent?.friendly_name || from || '',
       toLabel: resolved.friendly_name || resolved.id,
       criteria: success_criteria || [],
@@ -4452,9 +4453,12 @@ async function handleFleetWsMessage(ws, msg) {
     const agentId = fleetStore.findAgent(rawAgent)?.id || rawAgent
     const task = task_id ? fleetStore.getTask?.(task_id) : fleetStore.getTaskByAgent?.(agentId)
     if (!task) { error('no active task'); return }
-    fleetStore.removeTask?.(task.id)
+    const result = fleetStore.retractTask?.(task, {
+      recipientExposed: hasOpenFleetSocketForAgent(task.agent, ws),
+      retractedBy: msg.from || null,
+    }) || { task_id: task.id, mode: 'removed_task_only' }
     broadcastState()
-    reply({ ok: true, task_id: task.id })
+    reply({ ok: true, ...result })
     return
   }
 
