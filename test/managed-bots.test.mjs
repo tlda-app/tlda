@@ -32,14 +32,11 @@ function silentLog() {
   return { info() {}, warn() {}, error() {} }
 }
 
-test('daemon bot supervisor starts configured bots for this machine', async () => {
+test('daemon bot supervisor starts configured bots for this machine in tmux', async () => {
   const dir = tmpDir('bot-start')
   const script = path.join(dir, 'bot.mjs')
-  writeFileSync(script, `
-    import { writeFileSync } from 'node:fs'
-    writeFileSync(process.env.TLDA_BOT_PIDFILE, String(process.pid))
-    setInterval(() => {}, 1000)
-  `)
+  writeFileSync(script, '')
+  const spawns = []
 
   const supervisor = createManagedBotSupervisor({
     bots: [{ name: 'testbot', script, machine_id: 'air' }],
@@ -47,15 +44,26 @@ test('daemon bot supervisor starts configured bots for this machine', async () =
     resolveScript: s => s,
     configDir: dir,
     log: silentLog(),
+    env: {},
+    spawnImpl: (cmd, args, opts) => {
+      spawns.push({ cmd, args, env: opts.env })
+      return { unref() {} }
+    },
+    timers: {
+      setTimeout(fn) { fn(); return { unref() {} } },
+      setInterval() { return { unref() {} } },
+    },
   })
 
-  supervisor.ensureAll()
-  const pidFile = path.join(dir, 'testbot.pid')
-  assert.equal(await waitFor(() => existsSync(pidFile)), true)
-  const pid = parseInt(readFileSync(pidFile, 'utf8'), 10)
-  assert.ok(pid > 0)
-
-  try { process.kill(pid, 'SIGTERM') } catch (e) { if (e?.code !== 'ESRCH') throw e }
+  await supervisor.ensureAll()
+  assert.equal(spawns.length, 1)
+  assert.equal(spawns[0].cmd, 'tmux')
+  assert.deepEqual(spawns[0].args.slice(0, 4), ['new-session', '-d', '-s', spawns[0].env.TLDA_BOT_TMUX_SESSION])
+  assert.match(spawns[0].env.TLDA_BOT_TMUX_SESSION, /^fleet-bot-testbot-/)
+  assert.equal(spawns[0].env.TLDA_BOT_NAME, 'testbot')
+  assert.equal(spawns[0].env.TLDA_BOT_PIDFILE, path.join(dir, 'testbot.pid'))
+  assert.equal(spawns[0].env.TLDA_BOT_IDFILE, path.join(dir, 'testbot.fleet-id'))
+  assert.equal(spawns[0].env.TLDA_BOT_MACHINE_ID, 'air')
   rmSync(dir, { recursive: true, force: true })
 })
 
@@ -101,6 +109,7 @@ test('daemon bot supervisor respawns without requiring server readiness', async 
   assert.equal(spawns.length, 2)
   assert.equal(spawns[0].env.TLDA_BOT_NAME, 'serverless')
   assert.equal(spawns[0].env.TLDA_BOT_PIDFILE, path.join(dir, 'serverless.pid'))
+  assert.equal(spawns[0].cmd, 'tmux')
   assert.equal(spawns[0].env.TLDA_SERVER, undefined)
   rmSync(dir, { recursive: true, force: true })
 })
@@ -153,14 +162,14 @@ test('daemon bot supervisor recycles live todd when heartbeat is stale', async (
   rmSync(dir, { recursive: true, force: true })
 })
 
-test('daemon bot supervisor refuses to spawn when fleet bot lease is held', async () => {
-  const dir = tmpDir('bot-lease-held')
+test('daemon bot supervisor does not spawn when canonical bot name is already held', async () => {
+  const dir = tmpDir('bot-name-held')
   const script = path.join(dir, 'bot.mjs')
   writeFileSync(script, '')
   const httpServer = createServer((req, res) => {
-    if (req.url === '/api/fleet/bot-lease/claim') {
-      res.writeHead(409, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ ok: false, lease: { owner: 'mini:/other' } }))
+    if (req.url === '/api/store/agents') {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ agents: [{ id: 'fleet:other', friendly_name: 'todd', dead: false, hibernating: true }] }))
       return
     }
     res.writeHead(404); res.end()

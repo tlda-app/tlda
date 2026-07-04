@@ -1871,32 +1871,6 @@ app.get('/api/runtime-status', requireRead, (_req, res) => {
   }))
 })
 
-app.post('/api/fleet/bot-lease/claim', requireRead, (req, res) => {
-  if (!fleetStore) return res.status(503).json({ error: 'fleet store unavailable' })
-  const { name, owner, machine_id, install_path, script } = req.body || {}
-  if (!name || typeof name !== 'string') return res.status(400).json({ error: 'missing bot name' })
-  if (!owner || typeof owner !== 'string') return res.status(400).json({ error: 'missing lease owner' })
-  const ttlMs = Math.max(10_000, Math.min(Number(req.body?.ttl_ms) || 45_000, 10 * 60_000))
-  const key = `bot-lease:${name.toLowerCase()}`
-  const now = Date.now()
-  const existing = fleetStore.getFleetPref('fleet:tlda', key)
-  if (existing && existing.expires_at_ms > now && existing.owner !== owner) {
-    return res.status(409).json({ ok: false, error: 'bot lease held', lease: existing })
-  }
-  const lease = {
-    name: name.toLowerCase(),
-    owner,
-    machine_id: machine_id || null,
-    install_path: install_path || null,
-    script: script || null,
-    claimed_at_ms: existing?.owner === owner ? existing.claimed_at_ms : now,
-    renewed_at_ms: now,
-    expires_at_ms: now + ttlMs,
-  }
-  fleetStore.setFleetPref('fleet:tlda', key, lease)
-  res.json({ ok: true, lease })
-})
-
 // ---------- Education enforcement ----------
 // PreToolUse hooks call /check with tool+file info; server runs qualification
 // check preventively and returns a pending skill (if any) in one round-trip.
@@ -3444,6 +3418,16 @@ async function handleFleetWsMessage(ws, msg) {
     let assignedName = existing?.friendly_name || requestedName
     const willSetName = !existing?.friendly_name && requestedName
     if (willSetName) {
+      const incomingLabels = Array.isArray(labels) ? labels : []
+      if (incomingLabels.includes('bot') && incomingLabels.includes(requestedName)) {
+        for (const holder of fleetStore.getAllAgents?.() || []) {
+          if (holder.id === agentId || holder.dead || holder.friendly_name !== requestedName || holder.tmux_session) continue
+          const holderLabels = Array.isArray(holder.labels) ? holder.labels : []
+          if (!holderLabels.includes('bot') || !holderLabels.includes(requestedName)) continue
+          console.log(`[register] retiring legacy bot row ${holder.id} so ${agentId} can claim ${requestedName}`)
+          fleetStore.markDead(holder.id)
+        }
+      }
       try {
         assignedName = fleetStore.allocateFreshFriendlyName(requestedName, { excludeId: agentId })
       } catch (e) {

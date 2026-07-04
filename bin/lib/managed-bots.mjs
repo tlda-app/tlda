@@ -11,7 +11,6 @@ const MAX_RAPID_RESPAWNS = 3
 const BACKOFF_MS = 5 * 60_000
 const SPAWN_LOCKOUT_MS = 3000
 const TODD_HEARTBEAT_TIMEOUT_MS = 3 * 60_000
-const BOT_LEASE_TTL_MS = 45_000
 
 function botHeartbeatTimeoutMs(spec, env) {
   const configured = Number(spec?.heartbeat_timeout_ms ?? spec?.heartbeatTimeoutMs ?? env.TLDA_BOT_HEARTBEAT_TIMEOUT_MS)
@@ -19,18 +18,21 @@ function botHeartbeatTimeoutMs(spec, env) {
   return spec?.name === 'todd' ? TODD_HEARTBEAT_TIMEOUT_MS : 0
 }
 
-function requestJson(baseUrl, path, body, timeoutMs = 5000, token = null) {
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`
+}
+
+function getJson(baseUrl, path, timeoutMs = 5000, token = null) {
   if (!baseUrl) return Promise.resolve(null)
   const url = `${baseUrl}${path}`
   const mod = url.startsWith('https') ? https : http
-  const payload = JSON.stringify(body || {})
-  const headers = { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }
+  const headers = {}
   if (token) headers.Authorization = `Bearer ${token}`
   return new Promise((resolve) => {
     let done = false
     const finish = (v) => { if (!done) { done = true; resolve(v) } }
     const req = mod.request(url, {
-      method: 'POST',
+      method: 'GET',
       headers,
     }, res => {
       let buf = ''
@@ -41,9 +43,8 @@ function requestJson(baseUrl, path, body, timeoutMs = 5000, token = null) {
         finish({ status: res.statusCode || 0, json })
       })
     })
-    req.setTimeout(timeoutMs, () => { req.destroy(); finish({ status: 0, json: { error: 'bot lease request timed out' } }) })
+    req.setTimeout(timeoutMs, () => { req.destroy(); finish({ status: 0, json: { error: 'bot roster request timed out' } }) })
     req.on('error', e => finish({ status: 0, json: { error: e.message } }))
-    req.write(payload)
     req.end()
   })
 }
@@ -97,23 +98,49 @@ export function createManagedBotSupervisor({
     return st
   }
 
-  async function claimBotLease(spec, scriptPath) {
-    if (!fleetServerUrl) return true
-    const owner = `${machineId}:${scriptPath}`
-    const res = await requestJson(fleetServerUrl, '/api/fleet/bot-lease/claim', {
-      name: spec.name,
-      machine_id: machineId,
-      owner,
-      install_path: installPath,
-      script: scriptPath,
-      ttl_ms: Number(spec.lease_ttl_ms || spec.leaseTtlMs || BOT_LEASE_TTL_MS),
-    }, 5000, authToken)
-    if (!res || (res.status >= 200 && res.status < 300 && res.json?.ok !== false)) return true
-    if (res.status === 409) {
-      log.warn?.(`[bot-supervisor:${spec.name}] not spawning; fleet lease held by ${res.json?.lease?.owner || 'another supervisor'}`)
-      return false
+  async function canonicalNameIsHeld(spec) {
+    if (!fleetServerUrl) return false
+    const res = await getJson(fleetServerUrl, '/api/store/agents', 5000, authToken)
+    if (!res || res.status < 200 || res.status >= 300) {
+      log.warn?.(`[bot-supervisor:${spec.name}] roster check failed (${res?.json?.error || res?.status || 'no response'}); refusing to spawn duplicate-prone bot`)
+      return true
     }
-    log.warn?.(`[bot-supervisor:${spec.name}] lease check failed (${res.json?.error || res.status}); refusing to spawn duplicate-prone bot`)
+    const agents = Array.isArray(res.json) ? res.json : (res.json?.agents || [])
+    const target = String(spec.name || '').toLowerCase()
+    return agents.some(a => !a?.dead && String(a?.friendly_name || '').toLowerCase() === target)
+  }
+
+  function managedBotEnv(spec, name, pidFile, heartbeatFile, idFile, tmuxSession) {
+    return {
+      ...env,
+      ...(spec.env || {}),
+      TMUX: undefined,
+      TMUX_PANE: undefined,
+      TLDA_BOT_NAME: name,
+      TLDA_BOT_PIDFILE: pidFile,
+      TLDA_BOT_HEARTBEAT: heartbeatFile,
+      TLDA_BOT_IDFILE: idFile,
+      TLDA_BOT_MACHINE_ID: machineId,
+      TLDA_BOT_TMUX_SESSION: tmuxSession,
+    }
+  }
+
+  function tmuxCommand(node, script, commandEnv, logFile) {
+    const assignments = Object.entries(commandEnv)
+      .filter(([key, value]) => (
+        /^[A-Z_][A-Z0-9_]*$/.test(key)
+        && value !== undefined
+        && value !== null
+        && (key === 'HOME' || key === 'PATH' || key === 'NODE_TLS_REJECT_UNAUTHORIZED' || key.startsWith('TLDA_'))
+      ))
+      .map(([key, value]) => `${key}=${shellQuote(value)}`)
+      .join(' ')
+    return `exec env ${assignments} ${shellQuote(node)} ${shellQuote(script)} >> ${shellQuote(logFile)} 2>&1`
+  }
+
+  async function shouldSpawnBot(spec) {
+    if (!(await canonicalNameIsHeld(spec))) return true
+    log.info?.(`[bot-supervisor:${spec.name}] not spawning; canonical name is already held`)
     return false
   }
 
@@ -151,6 +178,7 @@ export function createManagedBotSupervisor({
     const scriptPath = resolveScript(spec.script)
     const pidFile = join(configDir, `${name}.pid`)
     const heartbeatFile = join(configDir, `${name}.heartbeat`)
+    const idFile = join(configDir, `${name}.fleet-id`)
     const logFile = join(configDir, `${name}.log`)
     const st = stateFor(name)
     if (st.spawnInFlight) return false
@@ -170,7 +198,7 @@ export function createManagedBotSupervisor({
     }
 
     if (!existsSync(scriptPath)) return false
-    if (!(await claimBotLease(spec, scriptPath))) return false
+    if (!(await shouldSpawnBot(spec))) return false
 
     if (st.lastSpawnAt > 0 && t - st.lastSpawnAt < FAST_DEATH_MS) {
       st.rapidFails++
@@ -191,18 +219,12 @@ export function createManagedBotSupervisor({
     try {
       if (!existsSync(dirname(logFile))) mkdirSync(dirname(logFile), { recursive: true })
       const logFd = openSync(logFile, 'a')
-      const child = spawnImpl(nodePath, [scriptPath], {
+      const tmuxSession = `fleet-bot-${name.replace(/[^a-z0-9_-]/gi, '-')}-${t.toString(36)}`
+      const childEnv = managedBotEnv(spec, name, pidFile, heartbeatFile, idFile, tmuxSession)
+      const child = spawnImpl('tmux', ['new-session', '-d', '-s', tmuxSession, tmuxCommand(nodePath, scriptPath, childEnv, logFile)], {
         detached: true,
         stdio: ['ignore', logFd, logFd],
-        env: {
-          ...env,
-          ...(spec.env || {}),
-          TMUX: undefined,
-          TMUX_PANE: undefined,
-          TLDA_BOT_NAME: name,
-          TLDA_BOT_PIDFILE: pidFile,
-          TLDA_BOT_HEARTBEAT: heartbeatFile,
-        },
+        env: childEnv,
       })
       child.unref?.()
       st.lastSpawnAt = t

@@ -18,6 +18,7 @@ import WebSocket from 'ws'
 import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
+import { randomUUID } from 'crypto'
 import https from 'https'
 import http from 'http'
 import { execFile } from 'child_process'
@@ -40,11 +41,15 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 // the fleet id, pidfile, the display name, and the address verb Skip speaks.
 // Names are lowercase by fleet convention (fleet:skip, fleet:todd, …).
 const BOT_KEY = (process.env.TLDA_BOT_NAME || 'todd').toLowerCase()
-const AGENT_ID = 'fleet:' + BOT_KEY
 const AGENT_NAME = BOT_KEY
 const VERB = BOT_KEY  // what Skip says to address this bot, e.g. "todd cancel"
 const PID_FILE = process.env.TLDA_BOT_PIDFILE || path.join(CONFIG_DIR, `${BOT_KEY}.pid`)
 const HEARTBEAT_FILE = process.env.TLDA_BOT_HEARTBEAT || path.join(CONFIG_DIR, `${BOT_KEY}.heartbeat`)
+const ID_FILE = process.env.TLDA_BOT_IDFILE || path.join(path.dirname(PID_FILE), `${BOT_KEY}.fleet-id`)
+const MACHINE_ID = process.env.TLDA_BOT_MACHINE_ID || null
+const TMUX_SESSION = process.env.TLDA_BOT_TMUX_SESSION || null
+const BOT_PID = process.pid
+const AGENT_ID = loadOrCreateFleetId()
 const SERVER = getServerUrl()
 const WS_URL = SERVER.replace(/^http/, 'ws') + '/ws/fleet'
 const OWNER_ID = 'fleet:skip'
@@ -76,6 +81,35 @@ const lastRealActivityMs = new Map()
 // knownBotIds is populated from the agents roster in taskKickSweep.
 // Todd itself is always a bot; we seed it here.
 const knownBotIds = new Set()
+
+let assignedName = null
+
+function loadOrCreateFleetId() {
+  try {
+    const existing = fs.readFileSync(ID_FILE, 'utf8').trim()
+    if (/^fleet:[a-zA-Z0-9_-]+$/.test(existing)) return existing
+    throw new Error(`invalid bot fleet id "${existing}"`)
+  } catch (e) {
+    if (e?.code !== 'ENOENT') throw e
+  }
+  const id = `fleet:${randomUUID().slice(0, 8)}`
+  fs.mkdirSync(path.dirname(ID_FILE), { recursive: true })
+  fs.writeFileSync(ID_FILE, id)
+  return id
+}
+
+function updateAssignedNameFromAgent(agent) {
+  if (!agent || agent.id !== AGENT_ID) return
+  const next = agent.friendly_name || null
+  if (next !== assignedName) {
+    assignedName = next
+    console.log(`[todd] assigned_name=${assignedName || '(none)'} canonical=${isCanonicalBot()}`)
+  }
+}
+
+function isCanonicalBot() {
+  return assignedName === AGENT_NAME
+}
 
 // ---- Skip-in-the-room tracker ----
 // When did Skip last message each agent. Todd's PROACTIVE watchdog nudges
@@ -441,6 +475,7 @@ function toddSuggestion(n) {
   }
 }
 function broadcastPendingStatus() {
+  if (!isCanonicalBot()) return
   const suggestions = pendingNudgeQueue.map(toddSuggestion)
   postJson('/api/suggestions', { agentId: AGENT_ID, suggestions }).catch(e =>
     console.error(`[todd] status broadcast failed: ${e.message}`)
@@ -1637,6 +1672,7 @@ function activeTimerAgentSet(events = [], agents = [], now = Date.now()) {
 }
 
 async function taskKickSweep() {
+  if (!isCanonicalBot()) return
   writeHeartbeat('task-kick-sweep')
   const [tasksRaw, agentsRaw, timersRaw] = await Promise.all([
     getJson('/api/store/tasks', []),
@@ -2300,12 +2336,14 @@ function connect() {
     console.log(`[todd] connected to ${WS_URL}`)
     reconnectDelay = 500 // back fast next time too
     await initializeFleetCursor()
-    register()
+    await register()
     writeHeartbeat('ws-open')
     refreshSelfCheckPrefs().catch(e => console.error('[todd] self-check prefs refresh failed:', e.message))
     refreshSelfCheckRoster().catch(e => console.error('[todd] self-check roster refresh failed:', e.message))
-    catchUpFleetEvents().catch(e => console.error('[todd] event catch-up failed:', e.message))
-    broadcastPendingStatus()
+    if (isCanonicalBot()) {
+      catchUpFleetEvents().catch(e => console.error('[todd] event catch-up failed:', e.message))
+      broadcastPendingStatus()
+    }
   })
 
   ws.on('message', (raw) => {
@@ -2377,18 +2415,27 @@ function handleWsReply(msg) {
   return true
 }
 
-function register() {
-  send({
+async function register() {
+  const result = await sendRequest({
     type: 'register',
-    id: AGENT_ID,
+    agent_id: AGENT_ID,
     name: AGENT_NAME,
     cwd: process.cwd(),
     labels: ['bot', BOT_KEY],
-    human: true,
+    human: false,
+    machine_id: MACHINE_ID || undefined,
+    tmux_session: TMUX_SESSION || undefined,
+    metadata: { bot: BOT_KEY, pid: BOT_PID },
   })
+  updateAssignedNameFromAgent(result?.agent)
+  if (!isCanonicalBot()) {
+    console.log(`[todd] inert: requested "${AGENT_NAME}", assigned "${assignedName || '(none)'}"`)
+  }
+  return result
 }
 
 function sendChat(to, text) {
+  if (!isCanonicalBot()) return
   const now = Date.now()
   const key = `${to}\0${text}`
   const lastSent = recentChatSends.get(key) || 0
@@ -2443,7 +2490,18 @@ async function initializeFleetCursor() {
 }
 
 async function handleMessage(msg) {
+  if (msg.agents && !msg.event) {
+    const mine = (msg.agents || []).find(a => a.id === AGENT_ID)
+    updateAssignedNameFromAgent(mine)
+    return
+  }
+  if (msg.event === 'agents-delta') {
+    const mine = (msg.data?.changed || []).find(a => a.id === AGENT_ID)
+    updateAssignedNameFromAgent(mine)
+    return
+  }
   if (msg.event !== 'fleet-event') return
+  if (!isCanonicalBot()) return
   if (!noteFleetEvent(msg.data || {})) return
   writeHeartbeat('fleet-event')
   const rawData = msg.data || {}
