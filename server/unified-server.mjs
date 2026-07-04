@@ -3826,8 +3826,23 @@ async function handleFleetWsMessage(ws, msg) {
     const s = String(raw || '')
     return s.length > max ? `${s.slice(0, max)}…` : s
   }
-  const chatWakeText = (text) => `📬 Message arrived: ${previewForWake(text)}\nCall my_task() to read and respond.`
-  const delegateWakeText = (description) => `📬 New task assigned: ${previewForWake(description)}\nCall my_task() to see it.`
+  const inboxModeFor = (agentId) => {
+    const mode = fleetStore.getAgent?.(agentId)?.metadata?.inboxMode
+    return ['focus', 'inbox', 'monitoring', 'incident', 'available', 'review'].includes(mode) ? mode : 'inbox'
+  }
+  const inboxCallForMode = (mode, action) => mode === 'inbox'
+    ? `Call inbox() to ${action}.`
+    : `Call inbox(mode: "${mode}") to ${action}.`
+  const wakeText = ({ mode, event, preview, action }) => {
+    if (mode === 'focus') return `📬 Focus ${event}: ${preview}\n${inboxCallForMode(mode, action)}`
+    if (mode === 'monitoring') return `📬 Monitoring ${event}: ${preview}\n${inboxCallForMode(mode, action)}`
+    if (mode === 'incident') return `🚨 Incident ${event}: ${preview}\n${inboxCallForMode(mode, action)}`
+    if (mode === 'available') return `📬 Available ${event}: ${preview}\n${inboxCallForMode(mode, action)}`
+    if (mode === 'review') return `📬 Review ${event}: ${preview}\n${inboxCallForMode(mode, action)}`
+    return `📬 ${event}: ${preview}\n${inboxCallForMode(mode, action)}`
+  }
+  const chatWakeText = (text, agentId) => wakeText({ mode: inboxModeFor(agentId), event: 'message arrived', preview: previewForWake(text), action: 'read and respond' })
+  const delegateWakeText = (description, agentId) => wakeText({ mode: inboxModeFor(agentId), event: 'new task assigned', preview: previewForWake(description), action: 'see it' })
 
   if (type === 'amend') {
     // Amend = a NEW event of type 'amend' that REFERENCES the original chat
@@ -3994,7 +4009,7 @@ async function handleFleetWsMessage(ws, msg) {
     for (const to of recipients) {
       const recipient = fleetStore.getAgent?.(to)
       if (recipient && !recipient.human) spawnLibrarian.observeDelivery(to, deliveredAt)
-      requestWake(to, chatWakeText(text))
+      requestWake(to, chatWakeText(text, to))
     }
 
     // Plan mode approval routing: if Skip sends an affirmative/negative and
@@ -4113,7 +4128,7 @@ async function handleFleetWsMessage(ws, msg) {
     })
     broadcastState()
     reply({ ok: true, task_id: taskId })
-    requestWake(resolved.id, delegateWakeText(description))
+    requestWake(resolved.id, delegateWakeText(description, resolved.id))
     return
   }
 
@@ -4175,15 +4190,25 @@ async function handleFleetWsMessage(ws, msg) {
     const unread = fleetStore.getUnread?.(agentId) || []
     // peek=true: caller just wants to see unread (e.g., the channel-WS
     // flush-on-reconnect path that displays a count). Don't mark read in
-    // that case — the actual my_task() call from the agent will do the
+    // that case — the actual inbox()/my_task() call from the agent will do the
     // marking. Without this, peek silently consumes the unread queue and
-    // the subsequent my_task() returns nothing.
+    // the subsequent inbox()/my_task() returns nothing.
     if (unread.length && !msg.peek) {
       const readIds = fleetStore.markRead?.(agentId) || []
       if (readIds.length) broadcastEvent('read-receipt', { event_ids: readIds, agent: agentId })
     }
     broadcastState()
     reply({ task, messages: unread })
+    return
+  }
+
+  if (type === 'inbox-mode') {
+    const { agent, mode } = msg
+    if (!agent) { error('missing agent'); return }
+    if (!['focus', 'inbox', 'monitoring', 'incident', 'available', 'review'].includes(mode)) { error(`bad inbox mode: ${mode}`); return }
+    fleetStore.updateAgentMeta?.(agent, { inboxMode: mode })
+    broadcastState()
+    reply({ ok: true, agent, mode })
     return
   }
 
