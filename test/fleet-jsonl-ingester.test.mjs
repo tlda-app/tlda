@@ -106,3 +106,61 @@ test('forked ingester holds one live-tail batch in flight until parent ack', asy
     fs.rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('forked ingester runs search backfill off-main and waits for parent ack', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-jsonl-backfill-'))
+  const file = path.join(dir, 'sess-backfill.jsonl')
+  fs.writeFileSync(file, [
+    JSON.stringify({
+      type: 'assistant',
+      timestamp: '2026-07-04T12:00:00.000Z',
+      cwd: '/work/tlda',
+      toolUseResult: { content: [{ type: 'text', text: 'Registered fleet:abc123. Your name: "daemon-impl".' }] },
+      message: { content: 'registration complete' },
+    }),
+    JSON.stringify({ type: 'user', timestamp: '2026-07-04T12:01:00.000Z', message: { content: 'find this line' } }),
+  ].join('\n') + '\n')
+
+  const child = fork(INGESTER, [], {
+    execArgv: [],
+    stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+  })
+  const messages = []
+  child.on('message', (m) => {
+    messages.push(m)
+    if (m.type === 'job-batch') child.send({ type: 'job-ack', jobId: m.jobId, seq: m.seq, ok: true })
+  })
+
+  try {
+    await waitFor(() => messages.find(m => m.type === 'ready'))
+    child.send({
+      type: 'job',
+      jobId: 'search-test',
+      jobKind: 'search',
+      agentId: 'fleet:abc123',
+      sessionId: 'sess-backfill',
+      harnessKind: 'claude',
+      jsonlPath: file,
+    })
+
+    const batch = await waitFor(() => messages.find(m => m.type === 'job-batch'))
+    assert.equal(batch.jobId, 'search-test')
+    assert.equal(batch.entries.length, 2)
+    assert.equal(batch.entries[1].text, 'find this line')
+
+    const complete = await waitFor(() => messages.find(m => m.type === 'job-complete'))
+    assert.equal(complete.jobId, 'search-test')
+    assert.equal(complete.result.entries, 2)
+    assert.deepEqual(complete.result.identities, [{
+      session_id: 'sess-backfill',
+      harness_kind: 'claude',
+      jsonl_path: file,
+      fleet_id: 'fleet:abc123',
+      friendly_name: 'daemon-impl',
+      cwd: '/work/tlda',
+    }])
+  } finally {
+    child.kill()
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})

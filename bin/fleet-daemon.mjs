@@ -87,11 +87,16 @@ import { gooseActivityTick } from './lib/goose-activity.mjs'
 import { parseCodexLine, parseCodexRecord } from './lib/codex-activity.mjs'
 import { truncatePrettyResult } from '../shared/activity-pretty-result.mjs'
 import {
-  createOncePerKeyGate,
-  extractOwnersFromText,
   scanFileOwnersSync,
-  decideSessionBackfill,
 } from './lib/daemon-jsonl-hot-path.mjs'
+import {
+  loadSessionIdentityStore,
+  saveSessionIdentityStore,
+  sessionIdentityPath,
+  updateFleetFriendlyName,
+  updateIngestionStatus,
+  upsertSessionIdentity,
+} from './lib/session-identity-store.mjs'
 import {
   terminalBackscrollCaptureArgs,
   terminalVisibleCaptureArgs,
@@ -126,6 +131,7 @@ const log = createLogger('daemon')
 // daemon in parallel without clobbering the live daemon's PID file.
 const CONFIG_DIR = process.env.TLDA_DAEMON_CONFIG_DIR || _SHARED_CONFIG_DIR
 const CURSORS_FILE = path.join(CONFIG_DIR, 'daemon-cursors.json')
+const SESSION_IDENTITY_FILE = sessionIdentityPath(CONFIG_DIR)
 const PID_FILE = path.join(CONFIG_DIR, 'fleet-daemon.pid')
 const SOURCE_BINDINGS_FILE = path.join(CONFIG_DIR, 'source-bindings.json')
 const FLEET_DB_FILE = path.join(CONFIG_DIR, 'fleet.db')
@@ -313,6 +319,7 @@ function saveCursors() {
   catch (e) { log.error(`cursor save failed: ${e.message}`) }
 }
 let cursors = loadCursors() // { sessionId: { inode, offset } }
+let sessionIdentityStore = loadSessionIdentityStore(SESSION_IDENTITY_FILE)
 
 // Throttle saveCursors — flush at most once per 2s.
 let _cursorSaveTimer = null
@@ -321,12 +328,56 @@ function scheduleCursorSave() {
   _cursorSaveTimer = setTimeout(() => { _cursorSaveTimer = null; saveCursors() }, 2000)
 }
 
+function saveSessionIdentityStoreNow() {
+  try { saveSessionIdentityStore(SESSION_IDENTITY_FILE, sessionIdentityStore) }
+  catch (e) {
+    log.error(`session identity save failed: ${e.message}`)
+    throw e
+  }
+}
+
+function recordSessionIdentity(input, { save = true } = {}) {
+  if (!input?.session_id) return
+  if (upsertSessionIdentity(sessionIdentityStore, input) && save) saveSessionIdentityStoreNow()
+}
+
+function syncSessionIdentityNamesFromAgents(agentList = agents) {
+  let changed = false
+  for (const agent of agentList || []) {
+    if (!agent?.id || !agent?.friendly_name) continue
+    if (updateFleetFriendlyName(sessionIdentityStore, agent.id, agent.friendly_name)) changed = true
+  }
+  if (changed) saveSessionIdentityStoreNow()
+}
+
+function isIngestionCaughtUp() {
+  if (searchBackfillJobs.size > 0 || priorSessionBackfillPending.size > 0) return false
+  for (const pw of pathWatchers.values()) {
+    if (!pw || pw.stopped) continue
+    if (pw.pendingDeliveries > 0 || pw.pendingFlushOffset != null) return false
+    let size
+    try { size = fs.statSync(pw.jsonlPath).size } catch { continue }
+    const offset = cursors[pw.sessionId]?.offset ?? pw.lastSavedOffset ?? 0
+    if (offset < size) return false
+  }
+  return true
+}
+
+function refreshIngestionCaughtUp() {
+  const changed = updateIngestionStatus(sessionIdentityStore, {
+    caught_up: isIngestionCaughtUp(),
+    active_tails: [...pathWatchers.values()].filter(pw => pw && !pw.stopped).length,
+    pending_jobs: searchBackfillJobs.size + priorSessionBackfillPending.size,
+  })
+  if (changed) saveSessionIdentityStoreNow()
+}
+
 // ---------- session-owner cache ----------
 // Each cursor entry gains `owners: [fleetId,...]` — which agent(s) registered in
 // that session file. Populated the one time we read the file. Once a session is
 // classified, "which sessions does agent X own?" is a cache lookup, never a re-scan
 // of every JSONL. This is the daemon's single writer of cursor state.
-function recordSessionOwners(sessionId, owners) {
+function recordSessionOwners(sessionId, owners, { jsonlPath = null, harnessKind = 'claude', identity = null } = {}) {
   if (!sessionId) return
   const entry = cursors[sessionId] || (cursors[sessionId] = {})
   const prev = entry.owners || []
@@ -336,7 +387,21 @@ function recordSessionOwners(sessionId, owners) {
   const changed = !entry.classified || merged.length !== prev.length
   entry.owners = merged
   entry.classified = true
+  let identityChanged = false
+  for (const owner of merged) {
+    if (upsertSessionIdentity(sessionIdentityStore, {
+      session_id: sessionId,
+      harness_kind: harnessKind,
+      jsonl_path: jsonlPath,
+      fleet_id: owner,
+      ...(identity?.fleet_id === owner ? identity : {}),
+      classified: true,
+    })) {
+      identityChanged = true
+    }
+  }
   if (changed) scheduleCursorSave()
+  if (changed || identityChanged) saveSessionIdentityStoreNow()
 }
 
 function claudeOwnersForSessionFile(sessionId, jsonlPath) {
@@ -344,7 +409,7 @@ function claudeOwnersForSessionFile(sessionId, jsonlPath) {
   if (entry?.classified) return entry.owners || []
   try {
     const scanned = scanFileOwnersSync(jsonlPath)
-    recordSessionOwners(sessionId, scanned.owners)
+    recordSessionOwners(sessionId, scanned.owners, { jsonlPath })
     return scanned.owners || []
   } catch {
     return []
@@ -395,7 +460,10 @@ function startOwnerHarvester() {
   }
   _ownerHarvester.on('message', (msg) => {
     if (msg?.type === 'owners') {
-      recordSessionOwners(msg.sessionId, msg.owners)
+      recordSessionOwners(msg.sessionId, msg.owners, {
+        jsonlPath: msg.jsonlPath,
+        identity: msg.identity,
+      })
     } else if (msg?.type === 'harvest-complete') {
       log.info(`owner harvest complete: ${msg.count} session(s) classified`)
     }
@@ -778,7 +846,10 @@ const agentPaths = new Map()      // agentId -> jsonlPath
 const jsonlDirWatchers = new Map() // dir -> { watcher, refs }
 let _lastSessionWatcherRosterSig = ''
 const sourceWatchers = new Map()  // projectName -> { watcher, sourceDir, debounce, pending }
-const priorSessionBackfillGate = createOncePerKeyGate()
+const searchBackfillJobs = new Map() // jobId -> { sessionId, jsonlPath }
+const searchBackfillPendingBySession = new Set()
+const priorSessionBackfillPending = new Set()
+const priorSessionBackfillComplete = new Set()
 
 // ---------- plan mode detection ----------
 
@@ -1363,17 +1434,15 @@ async function syncSessionWatchers(agentList) {
       offset = Math.min(stored.offset, stat.size)
       // Backfill search index if not done yet for this session.
       if (!stored.searchBackfilled) {
-        stored.searchBackfilled = true
-        scheduleCursorSave()
-        if (harness.backfillSearch) backfillSearchEntries(agent.id, jsonlPath, sessionId)
+        if (harness.backfillSearch) backfillSearchEntries(agent.id, jsonlPath, sessionId, harness.kind)
       }
     } else {
       // New file (or rotated): start at EOF for activity cards, but backfill
       // all historical content to the search index.
       offset = stat.size
-      cursors[sessionId] = { inode, offset, searchBackfilled: true }
+      cursors[sessionId] = { inode, offset }
       scheduleCursorSave()
-      if (harness.backfillSearch) backfillSearchEntries(agent.id, jsonlPath, sessionId)
+      if (harness.backfillSearch) backfillSearchEntries(agent.id, jsonlPath, sessionId, harness.kind)
       // Also backfill all prior sessions for this agent (other JSONLs that
       // contain a registration line for this fleet ID).
       if (harness.backfillSearch) backfillAllPriorSessions(agent.id, agent.id)
@@ -1505,12 +1574,25 @@ function startJsonlTail({ agent, jsonlPath, sessionId, harness, startOffset }) {
     terminalChat: !!harness.terminalChat,
     backfillSearch: !!harness.backfillSearch,
   })
+  refreshIngestionCaughtUp()
   return pw
 }
 
 function handleJsonlIngesterMessage(msg) {
   if (msg?.type === 'ready') {
     log.info('JSONL ingester child ready')
+    return
+  }
+  if (msg?.type === 'job-batch') {
+    handleJsonlBackfillBatch(msg)
+    return
+  }
+  if (msg?.type === 'job-session-complete') {
+    handleJsonlBackfillSessionComplete(msg)
+    return
+  }
+  if (msg?.type === 'job-complete' || msg?.type === 'job-failed') {
+    handleJsonlBackfillJobDone(msg)
     return
   }
   const pw = msg?.watchId ? childWatchers.get(msg.watchId) : null
@@ -1536,6 +1618,7 @@ function handleJsonlIngesterMessage(msg) {
     const entry = cursors[pw.sessionId] || (cursors[pw.sessionId] = {})
     entry.offset = 0
     scheduleCursorSave()
+    refreshIngestionCaughtUp()
     return
   }
   if (msg.type === 'batch') {
@@ -1575,6 +1658,54 @@ function handleJsonlIngesterMessage(msg) {
   }
 }
 
+function handleJsonlBackfillBatch(msg) {
+  let delivered = true
+  if (msg.entries?.length) {
+    if (!sendMsg({ type: 'jsonl-index', entries: msg.entries })) delivered = false
+  }
+  try {
+    _jsonlIngester?.send?.({ type: 'job-ack', jobId: msg.jobId, seq: msg.seq, ok: delivered })
+  } catch (e) {
+    log.warn(`JSONL backfill job ack failed for ${msg.jobId}: ${e?.message || e}`)
+    delivered = false
+  }
+  if (!delivered) {
+    const job = searchBackfillJobs.get(msg.jobId)
+    if (job?.sessionId) searchBackfillPendingBySession.delete(job.sessionId)
+    searchBackfillJobs.delete(msg.jobId)
+    refreshIngestionCaughtUp()
+  }
+}
+
+function handleJsonlBackfillSessionComplete(msg) {
+  if (!msg.sessionId) return
+  cursors[msg.sessionId] = { ...(cursors[msg.sessionId] || {}), searchBackfilled: true }
+  scheduleCursorSave()
+  refreshIngestionCaughtUp()
+}
+
+function handleJsonlBackfillJobDone(msg) {
+  const job = searchBackfillJobs.get(msg.jobId)
+  searchBackfillJobs.delete(msg.jobId)
+  if (job?.sessionId) searchBackfillPendingBySession.delete(job.sessionId)
+  if (job?.kind === 'prior') {
+    priorSessionBackfillPending.delete(job.fleetId)
+    if (msg.type === 'job-complete') priorSessionBackfillComplete.add(job.fleetId)
+  }
+  if (msg.type === 'job-complete') {
+    for (const identity of msg.result?.identities || []) recordSessionIdentity(identity, { save: false })
+    if (job?.sessionId) {
+      cursors[job.sessionId] = { ...(cursors[job.sessionId] || {}), searchBackfilled: true }
+      scheduleCursorSave()
+    }
+    saveSessionIdentityStoreNow()
+    log.info(`JSONL ${job?.kind || 'backfill'} job complete: ${msg.jobId}`)
+  } else {
+    log.warn(`JSONL ${job?.kind || 'backfill'} job failed: ${msg.jobId}: ${msg.error || 'unknown error'}`)
+  }
+  refreshIngestionCaughtUp()
+}
+
 function processJsonlChildOutputs(pw, outputs) {
   if (!_rws?.connected) return false
   const agentId = pw.primaryAgentId
@@ -1606,6 +1737,14 @@ function processJsonlChildOutputs(pw, outputs) {
       })) delivered = false
     } else if (output.type === 'searchIndex') {
       if (!sendMsg({ type: 'jsonl-index', entries: output.entries || [] })) delivered = false
+    } else if (output.type === 'identity') {
+      recordSessionIdentity({
+        session_id: pw.sessionId,
+        harness_kind: pw.harnessKind,
+        jsonl_path: pw.jsonlPath,
+        ...output.identity,
+        classified: false,
+      })
     }
   }
   return delivered
@@ -1630,6 +1769,7 @@ function stopJsonlTail(pw, reason = 'stop') {
   try { _jsonlIngester?.send?.({ type: 'stop', watchId: pw.watchId, reason }) } catch (e) {
     log.warn(`JSONL ingester stop failed (${reason}): ${e?.message || e}`)
   }
+  refreshIngestionCaughtUp()
 }
 
 function updateJsonlCursorFromTail(pw, offset) {
@@ -1645,6 +1785,7 @@ function updateJsonlCursorFromTail(pw, offset) {
   entry.offset = offset
   pw.lastSavedOffset = offset
   scheduleCursorSave()
+  refreshIngestionCaughtUp()
 }
 
 function processParsedJsonlRecord(pw, record) {
@@ -1729,40 +1870,31 @@ function sendSearchIndexFromRecord(agentId, sessionId, parsed) {
   return sendMsg({ type: 'jsonl-index', entries: [{ agent_id: agentId, session_id: sessionId, role: parsed.type, timestamp: ts, text }] })
 }
 
+function startJsonlBackfillJob(job) {
+  const child = startJsonlIngester()
+  searchBackfillJobs.set(job.jobId, job)
+  child.send?.({ type: 'job', ...job })
+  refreshIngestionCaughtUp()
+}
+
 // One-time backfill of a JSONL's full content to the search index.
-// Called when the daemon first starts watching a new session.
-function backfillSearchEntries(agentId, jsonlPath, sessionId) {
-  try {
-    const content = fs.readFileSync(jsonlPath, 'utf8')
-    // We just read the whole file — harvest which agent(s) registered in it so
-    // future "which sessions does X own?" lookups are a cache hit, not a re-scan.
-    recordSessionOwners(sessionId, extractOwnersFromText(content))
-    const lines = content.split('\n')
-    const entries = []
-    for (const line of lines) {
-      if (!line.trim()) continue
-      let parsed
-      try { parsed = JSON.parse(line) } catch { continue }
-      if (parsed.type !== 'user' && parsed.type !== 'assistant') continue
-      const ts = parsed.timestamp || parsed.message?.timestamp || parsed.snapshot?.timestamp || null
-      if (!ts) continue
-      const c = parsed.message?.content
-      let text = ''
-      if (typeof c === 'string') text = c
-      else if (Array.isArray(c)) text = c.filter(x => x?.type === 'text').map(x => x.text).join('\n')
-      if (!text || text.length < 3) continue
-      entries.push({ agent_id: agentId, session_id: sessionId, role: parsed.type, timestamp: ts, text })
-    }
-    if (entries.length > 0) {
-      // Send in batches of 200 to avoid large WS messages
-      for (let i = 0; i < entries.length; i += 200) {
-        sendMsg({ type: 'jsonl-index', entries: entries.slice(i, i + 200) })
-      }
-      log.info(`search backfill: ${entries.length} entries for ${path.basename(jsonlPath)}`)
-    }
-  } catch (e) {
-    log.error(`search backfill failed for ${sessionId}: ${e.message}`)
-  }
+// Called when the daemon first starts watching a new session. The child does the
+// file IO/parsing; main only delivers batches and marks searchBackfilled after
+// the child reports completion.
+function backfillSearchEntries(agentId, jsonlPath, sessionId, harnessKind = null) {
+  if (cursors[sessionId]?.searchBackfilled) return
+  if (searchBackfillPendingBySession.has(sessionId)) return
+  searchBackfillPendingBySession.add(sessionId)
+  const jobId = `search:${sessionId}:${Date.now()}:${Math.random().toString(36).slice(2)}`
+  startJsonlBackfillJob({
+    jobId,
+    kind: 'search',
+    jobKind: 'search',
+    agentId,
+    jsonlPath,
+    sessionId,
+    harnessKind,
+  })
 }
 
 // Find + search-index this agent's prior sessions. Consults the session-owner
@@ -1774,39 +1906,19 @@ function backfillSearchEntries(agentId, jsonlPath, sessionId) {
 // different agent. The niced child harvester pre-populates this cache in the
 // background so even the first classification is off the daemon's main loop.
 function backfillAllPriorSessions(agentId, fleetId) {
-  if (!priorSessionBackfillGate.claim(fleetId)) return
-  let found = 0
-  try {
-    for (const dir of fs.readdirSync(PROJECTS_DIR)) {
-      const dirPath = path.join(PROJECTS_DIR, dir)
-      let files
-      try { files = fs.readdirSync(dirPath) } catch { continue }
-      for (const file of files) {
-        if (!file.endsWith('.jsonl')) continue
-        const sessionId = file.slice(0, -6)
-        if (cursors[sessionId]?.searchBackfilled) continue
-        const filePath = path.join(dirPath, file)
-        // Classify once (chunked owner-scan, no JSON.parse), then cache. A session
-        // already classified is decided from cache with zero I/O — the fix.
-        let decision
-        try {
-          decision = decideSessionBackfill(cursors[sessionId], fleetId, () => scanFileOwnersSync(filePath))
-        } catch { continue }
-        if (decision.didScan) recordSessionOwners(sessionId, decision.owners)
-        // Only this agent's own sessions get the full search-index backfill.
-        if (!decision.shouldBackfill) continue
-        backfillSearchEntries(agentId, filePath, sessionId)
-        cursors[sessionId] = { ...(cursors[sessionId] || {}), searchBackfilled: true }
-        found++
-      }
-    }
-  } catch (e) {
-    log.error(`backfillAllPriorSessions failed for ${fleetId}: ${e.message}`)
-  }
-  if (found > 0) {
-    log.info(`backfilling ${found} prior session(s) for ${fleetId}`)
-    scheduleCursorSave()
-  }
+  if (priorSessionBackfillComplete.has(fleetId)) return
+  if (priorSessionBackfillPending.has(fleetId)) return
+  priorSessionBackfillPending.add(fleetId)
+  const jobId = `prior:${fleetId}:${Date.now()}:${Math.random().toString(36).slice(2)}`
+  startJsonlBackfillJob({
+    jobId,
+    kind: 'prior',
+    jobKind: 'prior',
+    agentId,
+    fleetId,
+    projectsDir: PROJECTS_DIR,
+    cursors,
+  })
 }
 
 // ---------- source watching ----------
@@ -4152,6 +4264,7 @@ function handleServerMessage(msg) {
     _serverReady = true
     agents = msg.agents || []
     projects = msg.projects || []
+    syncSessionIdentityNamesFromAgents(agents)
     applyDaemonGrants(privilegeLedger, daemonSpawnConfig)
     applyGrandfatherInfill(privilegeLedger, { fleetDbPath: FLEET_DB_FILE, config, projects })
     log.info(`welcome: ${agents.length} agents, ${projects.length} projects`)
@@ -4189,6 +4302,7 @@ function handleServerMessage(msg) {
   }
   if (msg.type === 'agents-updated') {
     agents = msg.agents || []
+    syncSessionIdentityNamesFromAgents(agents)
     syncSessionWatchersIfRosterChanged('agents-updated')
     return
   }

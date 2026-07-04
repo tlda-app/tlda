@@ -11,7 +11,7 @@
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import { scanFileOwnersSync } from './lib/daemon-jsonl-hot-path.mjs'
+import { scanFileIdentitySync } from './lib/daemon-jsonl-hot-path.mjs'
 
 const PROJECTS_DIR = process.env.TLDA_HARVEST_DIR || path.join(os.homedir(), '.claude', 'projects')
 
@@ -47,8 +47,15 @@ async function main() {
   let count = 0
   for (const item of queue) {
     try {
-      const { owners, endOffset } = scanFileOwnersSync(item.filePath)
-      process.send?.({ type: 'owners', sessionId: item.sessionId, owners, endOffset })
+      const { owners, identity, endOffset } = scanFileIdentitySync(item.filePath)
+      process.send?.({
+        type: 'owners',
+        sessionId: item.sessionId,
+        jsonlPath: item.filePath,
+        owners,
+        identity,
+        endOffset,
+      })
       count++
     } catch { /* unreadable file — skip, parent leaves it unclassified */ }
     await breathe() // yield the event loop between files so the harvest stays gentle

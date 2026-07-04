@@ -5,9 +5,17 @@
 // cursor persistence.
 import os from 'os'
 import path from 'path'
+import fs from 'fs'
+import { createInterface } from 'readline'
 import TailFile from '@logdna/tail-file'
 import { parser as jsonlParser } from 'stream-json/jsonl/parser.js'
 import { parseCodexRecord } from './lib/codex-activity.mjs'
+import {
+  decideSessionBackfill,
+  extractIdentityFromRecord,
+  extractOwnersFromText,
+  scanFileIdentitySync,
+} from './lib/daemon-jsonl-hot-path.mjs'
 import {
   defaultActivityExtractor,
   parseSessionRecord,
@@ -17,6 +25,8 @@ try { os.setPriority(process.pid, 10) } catch { /* priority is advisory */ }
 
 const MAX_CONTEXT = 200_000
 const watchers = new Map()
+const pendingJobAcks = new Map()
+const activeJobs = new Map()
 
 function send(msg) {
   process.send?.(msg)
@@ -59,6 +69,8 @@ export function searchEntriesFromRecord(agentId, sessionId, parsed) {
 
 export function extractRecordOutputs({ agentId, sessionId, harnessKind, terminalChat, backfillSearch }, record) {
   const outputs = []
+  const identity = extractIdentityFromRecord(record)
+  if (identity) outputs.push({ type: 'identity', identity })
   const ev = parseRecordForHarness(harnessKind, record)
   if (ev) {
     const activity = defaultActivityExtractor.extractActivityEvents([ev])
@@ -80,6 +92,161 @@ export function extractRecordOutputs({ agentId, sessionId, harnessKind, terminal
     if (entries.length > 0) outputs.push({ type: 'searchIndex', entries })
   }
   return outputs
+}
+
+async function sendJobBatch(job, payload) {
+  const seq = ++job.nextSeq
+  return new Promise((resolve, reject) => {
+    pendingJobAcks.set(`${job.jobId}:${seq}`, { resolve, reject })
+    send({ type: 'job-batch', jobId: job.jobId, seq, ...payload })
+  })
+}
+
+function ackJobBatch(msg) {
+  const key = `${msg.jobId}:${msg.seq}`
+  const waiter = pendingJobAcks.get(key)
+  if (!waiter) return
+  pendingJobAcks.delete(key)
+  if (msg.ok) waiter.resolve()
+  else waiter.reject(new Error(msg.error || 'parent rejected job batch'))
+}
+
+async function readJsonlLines(filePath, onRecord) {
+  const rl = createInterface({
+    input: fs.createReadStream(filePath, { encoding: 'utf8' }),
+    crlfDelay: Infinity,
+  })
+  for await (const line of rl) {
+    if (!line.trim()) continue
+    let parsed
+    try { parsed = JSON.parse(line) } catch (e) {
+      if (!(e instanceof SyntaxError)) throw e
+      continue
+    }
+    await onRecord(parsed, line)
+  }
+}
+
+export async function runSearchBackfillJob(job) {
+  const entries = []
+  const identities = []
+  let sentEntries = 0
+  const identityBase = {
+    session_id: job.sessionId,
+    harness_kind: job.harnessKind || null,
+    jsonl_path: job.jsonlPath,
+  }
+  await readJsonlLines(job.jsonlPath, async (parsed, line) => {
+    const identity = extractIdentityFromRecord(parsed)
+    if (identity) identities.push({ ...identityBase, ...identity })
+    else if (line.includes('Registered fleet:')) {
+      const owners = extractOwnersFromText(line)
+      for (const owner of owners) identities.push({ ...identityBase, fleet_id: owner })
+    }
+    const searchEntries = searchEntriesFromRecord(job.agentId, job.sessionId, parsed)
+    for (const entry of searchEntries) entries.push(entry)
+    while (entries.length >= 200) {
+      const batch = entries.splice(0, 200)
+      sentEntries += batch.length
+      await sendJobBatch(job, { entries: batch })
+    }
+  })
+  if (entries.length > 0) {
+    const batch = entries.splice(0)
+    sentEntries += batch.length
+    await sendJobBatch(job, { entries: batch })
+  }
+  return { entries: sentEntries, identities }
+}
+
+function listJsonlFiles(projectsDir) {
+  const out = []
+  let dirs
+  try { dirs = fs.readdirSync(projectsDir) } catch (e) {
+    if (e?.code === 'ENOENT') return out
+    throw e
+  }
+  for (const dir of dirs) {
+    const dirPath = path.join(projectsDir, dir)
+    let files
+    try { files = fs.readdirSync(dirPath) } catch (e) {
+      if (e?.code === 'ENOTDIR' || e?.code === 'ENOENT') continue
+      throw e
+    }
+    for (const file of files) {
+      if (!file.endsWith('.jsonl')) continue
+      out.push({ sessionId: file.slice(0, -6), filePath: path.join(dirPath, file) })
+    }
+  }
+  return out
+}
+
+async function runPriorBackfillJob(job) {
+  let found = 0
+  const identities = []
+  for (const item of listJsonlFiles(job.projectsDir)) {
+    if (job.cursors?.[item.sessionId]?.searchBackfilled) continue
+    let decision
+    let scanned = null
+    try {
+      decision = decideSessionBackfill(job.cursors?.[item.sessionId], job.fleetId, () => {
+        scanned = scanFileIdentitySync(item.filePath)
+        return { owners: scanned.owners || [] }
+      })
+    } catch (e) {
+      send({ type: 'warn', jobId: job.jobId, warning: `prior backfill scan failed for ${item.filePath}: ${e?.message || e}` })
+      continue
+    }
+    if (scanned?.identity) {
+      identities.push({
+        session_id: item.sessionId,
+        harness_kind: 'claude',
+        jsonl_path: item.filePath,
+        ...scanned.identity,
+        classified: true,
+      })
+    } else if (decision.didScan) {
+      for (const owner of decision.owners || []) {
+        identities.push({
+          session_id: item.sessionId,
+          harness_kind: 'claude',
+          jsonl_path: item.filePath,
+          fleet_id: owner,
+          classified: true,
+        })
+      }
+    }
+    if (!decision.shouldBackfill) continue
+    await runSearchBackfillJob({
+      ...job,
+      sessionId: item.sessionId,
+      harnessKind: 'claude',
+      jsonlPath: item.filePath,
+    })
+    send({ type: 'job-session-complete', jobId: job.jobId, sessionId: item.sessionId, jsonlPath: item.filePath })
+    found++
+  }
+  return { found, identities }
+}
+
+async function startJob(msg) {
+  const job = { ...msg, nextSeq: 0 }
+  activeJobs.set(job.jobId, job)
+  try {
+    let result
+    if (job.jobKind === 'search') {
+      result = await runSearchBackfillJob(job)
+    } else if (job.jobKind === 'prior') {
+      result = await runPriorBackfillJob(job)
+    } else {
+      throw new Error(`unknown job kind: ${job.jobKind}`)
+    }
+    send({ type: 'job-complete', jobId: job.jobId, jobKind: job.jobKind, result })
+  } catch (e) {
+    send({ type: 'job-failed', jobId: job.jobId, jobKind: job.jobKind, error: e?.message || String(e) })
+  } finally {
+    activeJobs.delete(job.jobId)
+  }
 }
 
 function pauseWatcher(w) {
@@ -239,6 +406,8 @@ process.on('message', (msg) => {
   if (msg?.type === 'watch') startWatch(msg)
   else if (msg?.type === 'update') updateWatch(msg)
   else if (msg?.type === 'ack') ackBatch(msg)
+  else if (msg?.type === 'job') void startJob(msg)
+  else if (msg?.type === 'job-ack') ackJobBatch(msg)
   else if (msg?.type === 'stop') stopWatch(msg.watchId)
   else if (msg?.type === 'shutdown') shutdown()
 })
