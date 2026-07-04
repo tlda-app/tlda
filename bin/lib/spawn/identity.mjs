@@ -39,8 +39,9 @@ export function readConfig(configFile = path.join(os.homedir(), '.config', 'tlda
 }
 
 export function activeConfigName(config = readConfig(), env = process.env) {
+  if (env.TLDA_CONFIG) return env.TLDA_CONFIG
   if (env.TLDA_SERVER) return null
-  return env.TLDA_CONFIG || config.defaultConfig || null
+  return config.defaultConfig || null
 }
 
 export async function resolveDnsAlias(api) {

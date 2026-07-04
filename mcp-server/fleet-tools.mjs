@@ -27,16 +27,11 @@ import { nameForPhase, phaseFromName } from '../shared/lineage-name.mjs';
 import { formatSpawnModelSummary, validateSpawnModelSelection } from '../shared/spawn-model-validation.mjs';
 import { buildFleetSearchFilters, parseSearchQuery } from '../shared/fleet-search-query.mjs';
 import { listModels as listSpawnModels } from '../bin/lib/spawn/models.mjs';
-import { spawn as spawnLocalAgent } from '../bin/lib/spawn/index.mjs';
-import { newFleetId } from '../bin/lib/spawn/identity.mjs';
 import {
-  createPrivilegeLedger,
   defaultDaemonConfigPath,
-  privilegeLedgerPathFromDaemonConfig,
   readDaemonConfig,
   withDaemonModelAliases,
 } from '../bin/lib/spawn/privilege-ledger.mjs';
-import { normalizeRequestedPrivileges, resolveSpawnGrant } from '../server/lib/spawn-policy.mjs';
 import { classifyUserBlame } from '../bin/lib/user-blame-classifier.mjs';
 import { classifyLaunder } from '../bin/lib/launder-classifier.mjs';
 import {
@@ -919,12 +914,6 @@ function now() {
   return new Date().toISOString();
 }
 
-function progressBar(completed, total, width = 20) {
-  if (total <= 0) return '[' + '.'.repeat(width) + ']';
-  const filled = Math.round(width * Math.min(completed / total, 1));
-  return '[' + '#'.repeat(filled) + '.'.repeat(width - filled) + ']';
-}
-
 function requireManager() {
   if (!AGENT_ID) return 'Cannot identify caller — no session ID detected.';
   return null; // No permission gating — any agent can do anything
@@ -953,11 +942,6 @@ function getAgent(state, id) {
 function isHuman(state, id) {
   const agent = getAgent(state, id);
   return !!(agent?.human);
-}
-
-function removeAgent(state, id) {
-  if (!state.agents) return;
-  state.agents = state.agents.filter(a => a.id !== id && a.friendly_name !== id);
 }
 
 // Heartbeat-based liveness: agent is alive if last_seen within threshold.
@@ -1145,6 +1129,49 @@ function postMessage(to, from, text, metadata) {
   });
 }
 
+function newMailboxId() {
+  const rand = globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  return `mailbox:${String(rand).slice(0, 12)}`;
+}
+
+export function startOperationMailbox(kind, meta = {}) {
+  if (!AGENT_ID) return null;
+  return {
+    id: newMailboxId(),
+    kind,
+    ownerId: AGENT_ID,
+    startedAt: Date.now(),
+    meta,
+  };
+}
+
+export function deliverOperationMailboxCompletion(mailbox, status, detail = {}) {
+  if (!mailbox?.ownerId) return;
+  const label = detail.label || detail.name || mailbox.meta?.label || mailbox.meta?.doc || mailbox.kind;
+  const error = detail.error || detail.reason;
+  const text = status === 'completed'
+    ? `**${mailbox.kind} mailbox ${mailbox.id} complete**: ${label}.${detail.message ? `\n\n${detail.message}` : ''}`
+    : `**${mailbox.kind} mailbox ${mailbox.id} failed**: ${label}${error ? ` — ${error}` : ''}.`;
+  postMessage(mailbox.ownerId, 'fleet:tlda', text, {
+    metadata: {
+      type: 'mailbox_complete',
+      mailbox_id: mailbox.id,
+      mailbox_kind: mailbox.kind,
+      status,
+      ...detail,
+    },
+  });
+}
+
+export function operationMailboxStartedResult(mailbox, detail = {}) {
+  return {
+    content: [{
+      type: 'text',
+      text: `${mailbox.kind} mailbox ${mailbox.id} started. Completion will arrive as fleet chat from fleet:tlda.\nmailbox_id: ${mailbox.id}${detail.extra ? `\n${detail.extra}` : ''}`,
+    }],
+  };
+}
+
 async function getUnread(_state, agent) {
   try {
     const data = await sendWS('my-task', { agent, peek: true });
@@ -1211,112 +1238,6 @@ function tmuxIsIdle(text) {
   if (!lines.length) return false;
   const last = lines[lines.length - 1];
   return /^[\s]*[❯>][\s📬]*$/.test(last);
-}
-
-function findValidSession(agent) {
-  const claudeDir = path.join(os.homedir(), '.claude', 'projects');
-  const jsonlExists = (uuid) => {
-    try {
-      const dirs = fs.readdirSync(claudeDir);
-      return dirs.some(d => fs.existsSync(path.join(claudeDir, d, `${uuid}.jsonl`)));
-    } catch { return false; }
-  };
-
-  const primary = agent.session_id;
-  if (primary && jsonlExists(primary)) return primary;
-
-  const ids = agent.session_ids || agent.sessions || [];
-  for (let i = ids.length - 1; i >= 0; i--) {
-    if (ids[i] !== primary && jsonlExists(ids[i])) {
-      process.stderr.write(`[fleet] session_id ${primary} has no .jsonl, falling back to ${ids[i]}\n`);
-      return ids[i];
-    }
-  }
-  return primary;
-}
-
-/** Single spawn path — every fleet-shape creation goes through ~/bin/fleet-spawn,
- *  which clears $TMUX, handles registration, and manages tmux sessions.
- *  @param {string} name - Agent name
- *  @param {object} opts
- *  @param {boolean} [opts.fresh] - --fresh (new agent)
- *  @param {boolean} [opts.refresh] - --refresh (fresh session, same fleet ID)
- *  @param {string}  [opts.session] - --session <uuid> (resume specific session)
- *  @param {string}  [opts.model]
- *  @param {string}  [opts.effort]
- *  @param {string}  [opts.cwd]
- *  @param {string}  [opts.mode] - permission mode
- *  @param {string}  [opts.capability] - requested spawn capability
- *  @param {object|string} [opts.privileges] - requested privilege profile/spec
- *  @param {boolean} [opts.iLikeToLiveDangerously] - acknowledge no-fence/no-harness-controls launch
- *  @returns {Promise<string>} spawn summary
- */
-async function runFleetSpawn(name, opts = {}) {
-  const cwd = opts.cwd || getAgentCwd() || process.cwd();
-  const daemonConfig = readDaemonConfig(defaultDaemonConfigPath(CONFIG_DIR));
-  const privilegeLedger = createPrivilegeLedger(privilegeLedgerPathFromDaemonConfig(daemonConfig, CONFIG_DIR));
-  try {
-    const config = withDaemonModelAliases(loadConfig(), daemonConfig);
-    const requestedCapability = opts.capability || opts.spawnCapability || undefined;
-    const requestedPrivileges = opts.privileges || opts.requestedPrivileges || undefined;
-    const requestedPrivilegePolicy = requestedPrivileges
-      ? normalizeRequestedPrivileges(requestedPrivileges, requestedCapability || undefined)
-      : null;
-    const spawnerGrant = privilegeLedger.grantFor({ id: AGENT_ID });
-    const grant = resolveSpawnGrant({
-      requestedCapability: requestedPrivilegePolicy?.capability || requestedCapability,
-      requestedPrivileges,
-      spawnerPolicy: spawnerGrant.spawnPolicy,
-      spawnerPrivilegeSet: spawnerGrant.privilegeSet,
-      model: opts.model,
-      kind: opts.kind,
-      config,
-      cwd,
-    });
-    const spawnMode = opts.session ? 'session' : (opts.refresh ? 'refresh' : (opts.fresh ? 'fresh' : 'respawn'));
-    const preallocatedAgentId = opts.agentId || opts.agent_id || ((spawnMode === 'fresh' || spawnMode === 'session') ? newFleetId() : undefined);
-    if (preallocatedAgentId) {
-      await privilegeLedger.set(preallocatedAgentId, {
-        spawnPolicy: grant.grantedPolicy,
-        privilegeSet: grant.grantedPrivilegeSet,
-        source: 'mcp-local-spawn',
-      });
-    }
-    let result;
-    try {
-      result = await spawnLocalAgent({
-        spawnMode,
-        agentId: preallocatedAgentId,
-        agent_id: preallocatedAgentId,
-        name,
-        sessionId: opts.session || undefined,
-        model: opts.model || undefined,
-        kind: opts.kind || undefined,
-        config,
-        effort: opts.effort || undefined,
-        cwd,
-        permissionMode: opts.mode || undefined,
-        requestedCapability: grant.grantedCapability,
-        requestedPrivileges,
-        spawnPolicy: grant.grantedPolicy,
-        privilegeSet: grant.grantedPrivilegeSet,
-        acknowledgeNoSecurity: !!opts.iLikeToLiveDangerously,
-      });
-    } catch (e) {
-      if (preallocatedAgentId) await privilegeLedger.delete(preallocatedAgentId).catch(() => {});
-      throw e;
-    }
-    if (!preallocatedAgentId || result.fleetId !== preallocatedAgentId) {
-      await privilegeLedger.set(result.fleetId, {
-        spawnPolicy: grant.grantedPolicy,
-        privilegeSet: grant.grantedPrivilegeSet,
-        source: 'mcp-local-spawn',
-      });
-    }
-    return `${result.tmuxSession} (${result.fleetId})`;
-  } finally {
-    await privilegeLedger.close();
-  }
 }
 
 function windowTail(output, n = 40) {
@@ -1705,59 +1626,6 @@ export function getFleetTools() {
         properties: {
           user: { type: 'string', description: 'User fleet ID (default: server owner)' },
         },
-      },
-    },
-    {
-      name: 'batch_respawn',
-      description: 'Batch respawn dead agents into tmux sessions. Finds dead agents with known session_ids and resumes them in tmux.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          agents: { type: 'array', items: { type: 'string' }, description: 'Specific agents to respawn (names or IDs). Omit to respawn all dead agents.' },
-        },
-      },
-    },
-    // ---- Cluster Jobs ----
-    {
-      name: 'job_register',
-      description: 'Register a cluster job for tracking. Call after sbatch. Adds the job to the manifest on the cluster so the watcher counts its output files.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          job_id: { type: 'string', description: 'SLURM job ID (from sbatch output)' },
-          label: { type: 'string', description: 'Short human-readable label (e.g. "c13 sweep fill")' },
-          output_dir: { type: 'string', description: 'Directory containing output files (on cluster, e.g. ~/work/spinoffs/code/spinoff3)' },
-          output_pattern: { type: 'string', description: 'Glob pattern for output files (e.g. sweep-a_grf1_h05_16-n200-rep*.rds)' },
-          total_reps: { type: 'number', description: 'Total expected output files' },
-          cluster: { type: 'string', description: 'Cluster hostname (default: qtm)' },
-        },
-        required: ['job_id', 'label', 'output_dir', 'output_pattern', 'total_reps'],
-      },
-    },
-    {
-      name: 'job_check',
-      description: 'Check cluster job status. Pulls latest status from the cluster watcher, returns queue state and file counts for tracked jobs. Optionally filter to a single job.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          job_id: { type: 'string', description: 'Filter to a specific job ID. Omit to show all.' },
-          cluster: { type: 'string', description: 'Cluster hostname (default: qtm)' },
-        },
-      },
-    },
-    {
-      name: 'job_log',
-      description: 'Tail the log for a cluster job task. SSHes to the cluster and reads the SLURM output log.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          job_id: { type: 'string', description: 'SLURM job ID' },
-          task_id: { type: 'string', description: 'Array task ID (default: most recent)' },
-          lines: { type: 'number', description: 'Number of lines to tail (default: 50)' },
-          stderr: { type: 'boolean', description: 'Read stderr instead of stdout (default: false)' },
-          cluster: { type: 'string', description: 'Cluster hostname (default: qtm)' },
-        },
-        required: ['job_id'],
       },
     },
     // ---- Wiretap ----
@@ -2343,59 +2211,6 @@ export async function handleFleetTool(name, args) {
       return { content: [{ type: 'text', text: 'Do not pass friendly_name with spawn — the spawn name is the agent\'s only name. Put the name in spawn.name.' }], isError: true };
     }
 
-    let agent = args.agent;
-    let spawnedInfo = null;
-
-    // Combined spawn+delegate: spawn a fresh agent, then delegate to its fleet ID
-    if (args.spawn) {
-      const spawnOpts = args.spawn;
-      const agentName = spawnOpts.name || `agent-${Date.now().toString(36).slice(-4)}`;
-      const agentCwd = spawnOpts.cwd || getAgentCwd();
-
-      try {
-        const modelError = await validateSpawnRequest(spawnOpts);
-        if (modelError) return { content: [{ type: 'text', text: modelError }], isError: true };
-        const spawnResult = await sendWS('spawn', {
-          fresh: true,
-          name: agentName,
-          model: spawnOpts.model,
-          effort: spawnOpts.effort,
-          kind: spawnOpts.kind,
-          cwd: agentCwd,
-          capability: spawnOpts.capability,
-        }, { deadlineMs: SPAWN_WS_DEADLINE_MS });
-        if (spawnResult?.ok === false || spawnResult?.error) {
-          return { content: [{ type: 'text', text: `spawn failed before delegation: ${spawnResult.error || JSON.stringify(spawnResult)}` }], isError: true };
-        }
-      } catch (e) {
-        const msg = (e.message || '').trim();
-        return { content: [{ type: 'text', text: `spawn failed before delegation: ${msg}` }], isError: true };
-      }
-
-      let spawned = null;
-      for (let i = 0; i < 20; i++) {
-        try {
-          const agents = await sendWS('store-agents');
-          spawned = agents?.find(a => a.friendly_name === agentName || a.id === agentName);
-          if (spawned) break;
-        } catch {}
-        await new Promise(r => setTimeout(r, 250));
-      }
-
-      if (!spawned?.id) {
-        return { content: [{ type: 'text', text: `spawn started for ${agentName}, but the agent did not register within 5s` }], isError: true };
-      }
-      if (!spawned.tmux_session) {
-        return { content: [{ type: 'text', text: `spawn registered ${agentName} (${spawned.id}), but no tmux session was recorded. Not delegating: a registry row is not a usable agent.` }], isError: true };
-      }
-      if (!agentAlive(spawned)) {
-        return { content: [{ type: 'text', text: `spawn registered ${agentName} (${spawned.id}), but the agent is not alive/usable yet. Not delegating.` }], isError: true };
-      }
-
-      agent = spawned.id;
-      spawnedInfo = { agent_id: agent, friendly_name: agentName };
-    }
-
     const { message } = args;
     if (!message) return { content: [{ type: 'text', text: 'Missing message.' }], isError: true };
 
@@ -2414,32 +2229,137 @@ export async function handleFleetTool(name, args) {
     const criteria = [...templateCriteria, ...(args.success_criteria || [])];
     const afterRaw = args.after;
     const blockedBy = afterRaw ? (Array.isArray(afterRaw) ? afterRaw : [afterRaw]) : [];
-    const laneBlock = await requireInLaneAction(agent, {
-      action: 'delegate',
-      message,
-    });
-    if (laneBlock) return { content: [{ type: 'text', text: laneBlock }], isError: true };
-    const harnessKind = await harnessKindForDelegateTarget(agent, args.spawn);
-    const routedMessage = applyNonClaudeRolePack(message, {
-      template: args.template,
-      description,
-      successCriteria: criteria,
-      harnessKind,
-    });
 
-    try {
-      const delegateBody = { from: AGENT_ID, agent, description, message: routedMessage, success_criteria: criteria.length ? criteria : undefined, blocked_by: blockedBy.length ? blockedBy : undefined, requires_approval: args.requires_approval || undefined };
+    async function findSpawnedDelegateTarget(agentName, spawnResult, { attempts = 20, delayMs = 250 } = {}) {
+      let spawned = null;
+      for (let i = 0; i < attempts; i++) {
+        try {
+          const agents = await sendWS('store-agents');
+          spawned = agents?.find(a =>
+            (spawnResult?.agent_id && a.id === spawnResult.agent_id) ||
+            a.friendly_name === agentName ||
+            a.id === agentName
+          );
+          if (spawned) break;
+        } catch (e) {
+          process.stderr.write(`[fleet] spawn+delegate roster poll failed: ${e.message}\n`);
+        }
+        await new Promise(r => setTimeout(r, delayMs));
+      }
+      return spawned;
+    }
+
+    async function delegateToResolvedAgent(targetAgent, targetSpawnedInfo = null) {
+      const laneBlock = await requireInLaneAction(targetAgent, {
+        action: 'delegate',
+        message,
+      });
+      if (laneBlock) throw new Error(laneBlock);
+      const harnessKind = await harnessKindForDelegateTarget(targetAgent, args.spawn);
+      const routedMessage = applyNonClaudeRolePack(message, {
+        template: args.template,
+        description,
+        successCriteria: criteria,
+        harnessKind,
+      });
+
+      const delegateBody = { from: AGENT_ID, agent: targetAgent, description, message: routedMessage, success_criteria: criteria.length ? criteria : undefined, blocked_by: blockedBy.length ? blockedBy : undefined, requires_approval: args.requires_approval || undefined };
       const data = await sendWS('delegate', delegateBody);
       if (data.event_id) {
         _originatedEventIds.add(data.event_id);
         setTimeout(() => _originatedEventIds.delete(data.event_id), ORIGINATED_TTL_MS);
       }
-      if (!data.ok) return { content: [{ type: 'text', text: `Delegate failed: ${JSON.stringify(data)}` }], isError: true };
+      if (!data.ok) throw new Error(`Delegate failed: ${JSON.stringify(data)}`);
 
       // Set friendly name if provided (two-call form only; spawn form already has the name set)
       if (args.friendly_name) {
-        await sendWS('rename', { agent, name: args.friendly_name })?.catch(e => process.stderr.write(`[fleet] rename failed: ${e.message}\n`));
+        await sendWS('rename', { agent: targetAgent, name: args.friendly_name })?.catch(e => process.stderr.write(`[fleet] rename failed: ${e.message}\n`));
       }
+      return { data, spawnedInfo: targetSpawnedInfo };
+    }
+
+    let agent = args.agent;
+    let spawnedInfo = null;
+
+    // Combined spawn+delegate: spawn a fresh agent, then delegate to its fleet ID
+    if (args.spawn) {
+      const spawnOpts = args.spawn;
+      const agentName = spawnOpts.name || `agent-${Date.now().toString(36).slice(-4)}`;
+      const agentCwd = spawnOpts.cwd || getAgentCwd();
+      let spawnResult = null;
+
+      try {
+        const modelError = await validateSpawnRequest(spawnOpts);
+        if (modelError) return { content: [{ type: 'text', text: modelError }], isError: true };
+        spawnResult = await sendWS('spawn', {
+          fresh: true,
+          name: agentName,
+          model: spawnOpts.model,
+          effort: spawnOpts.effort,
+          kind: spawnOpts.kind,
+          cwd: agentCwd,
+          capability: spawnOpts.capability,
+        });
+        if (spawnResult?.ok === false || spawnResult?.error) {
+          return { content: [{ type: 'text', text: `spawn failed before delegation: ${spawnResult.error || JSON.stringify(spawnResult)}` }], isError: true };
+        }
+        if (spawnResult?.async) {
+          const mailbox = startOperationMailbox('delegate', {
+            agentName,
+            spawn_mailbox_id: spawnResult.mailbox_id,
+            spawn_agent_id: spawnResult.agent_id,
+          });
+          if (!mailbox) return { content: [{ type: 'text', text: 'spawn+delegate started spawn, but cannot start delegate mailbox: not registered.' }], isError: true };
+          (async () => {
+            try {
+              const spawned = await findSpawnedDelegateTarget(agentName, spawnResult, { attempts: 300, delayMs: 1000 });
+              if (!spawned?.id) throw new Error(`spawn started for ${agentName}, but the agent did not register within 5m`);
+              if (!spawned.tmux_session) throw new Error(`spawn registered ${agentName} (${spawned.id}), but no tmux session was recorded. Not delegating: a registry row is not a usable agent.`);
+              if (!agentAlive(spawned)) throw new Error(`spawn registered ${agentName} (${spawned.id}), but the agent is not alive/usable yet. Not delegating.`);
+              const result = await delegateToResolvedAgent(spawned.id, { agent_id: spawned.id, friendly_name: agentName });
+              deliverOperationMailboxCompletion(mailbox, 'completed', {
+                task_id: result.data.task_id,
+                agent_id: spawned.id,
+                friendly_name: agentName,
+                spawn_mailbox_id: spawnResult.mailbox_id,
+                spawn_agent_id: spawnResult.agent_id,
+                message: `Spawned ${agentName} (${spawned.id}) and delegated [${result.data.task_id}]: ${description}`,
+              });
+            } catch (e) {
+              deliverOperationMailboxCompletion(mailbox, 'failed', {
+                agentName,
+                spawn_mailbox_id: spawnResult.mailbox_id,
+                spawn_agent_id: spawnResult.agent_id,
+                error: e.message,
+                message: `spawn+delegate failed for ${agentName}: ${e.message}`,
+              });
+            }
+          })();
+          return operationMailboxStartedResult(mailbox, { extra: `spawn mailbox: ${spawnResult.mailbox_id}\nagent: ${agentName}` });
+        }
+      } catch (e) {
+        const msg = (e.message || '').trim();
+        return { content: [{ type: 'text', text: `spawn failed before delegation: ${msg}` }], isError: true };
+      }
+
+      const spawned = await findSpawnedDelegateTarget(agentName, spawnResult);
+
+      if (!spawned?.id) {
+        return { content: [{ type: 'text', text: `spawn started for ${agentName}, but the agent did not register within 5s` }], isError: true };
+      }
+      if (!spawned.tmux_session) {
+        return { content: [{ type: 'text', text: `spawn registered ${agentName} (${spawned.id}), but no tmux session was recorded. Not delegating: a registry row is not a usable agent.` }], isError: true };
+      }
+      if (!agentAlive(spawned)) {
+        return { content: [{ type: 'text', text: `spawn registered ${agentName} (${spawned.id}), but the agent is not alive/usable yet. Not delegating.` }], isError: true };
+      }
+
+      agent = spawned.id;
+      spawnedInfo = { agent_id: agent, friendly_name: agentName };
+    }
+
+    try {
+      const { data } = await delegateToResolvedAgent(agent, spawnedInfo);
 
       if (spawnedInfo) {
         return { content: [{ type: 'text', text: `Spawned ${spawnedInfo.friendly_name} (${spawnedInfo.agent_id}) and delegated [${data.task_id}]: ${description}\nagent_id: ${spawnedInfo.agent_id}\nfriendly_name: ${spawnedInfo.friendly_name}` }] };
@@ -2998,25 +2918,6 @@ export async function handleFleetTool(name, args) {
     if (args.pass && args.summary) {
       const friendlyName = agent?.friendly_name || AGENT_ID.slice(0, 8);
 
-      let screenshotSection = '';
-      const isUITask = /dashboard|ui|css|chat|widget|panel|render|display|theme|layout|scroll/i.test(task.description);
-      if (isUITask) {
-        try {
-          const screenshotBin = path.join(__dirname, 'bin', 'screenshot-dashboard');
-          const ssResult = execSync(`node ${screenshotBin} --output /tmp/fleet-report-screenshots`, {
-            encoding: 'utf8', timeout: 30000, cwd: __dirname,
-          });
-          const ssData = JSON.parse(ssResult);
-          const shots = (ssData.screenshots || []).filter(s => s.ok);
-          if (shots.length > 0) {
-            screenshotSection = '\n\n## Screenshots\n\n' +
-              shots.map(s => `![${s.view}](${s.path})`).join('\n\n');
-          }
-        } catch (e) {
-          screenshotSection = `\n\n*Auto-screenshot failed: ${e.message}*`;
-        }
-      }
-
       const summaryMsg = `**${friendlyName} report: ${task.description}**\n\n${args.summary}`;
       const to = task.delegated_by || agents.find(a => a.id !== AGENT_ID && agentAlive(a))?.id;
       if (to) {
@@ -3024,7 +2925,7 @@ export async function handleFleetTool(name, args) {
       }
 
       const docName = `report-${task.id}`;
-      const reportContent = `# ${task.description}\n\n**Agent:** ${friendlyName}  \n**Status:** tentative  \n**Filed:** ${new Date().toISOString()}\n\n---\n\n${args.summary}${screenshotSection}`;
+      const reportContent = `# ${task.description}\n\n**Agent:** ${friendlyName}  \n**Status:** tentative  \n**Filed:** ${new Date().toISOString()}\n\n---\n\n${args.summary}`;
       const mainFile = `${docName}.md`;
       let tldaMsg = '';
       try {
@@ -3717,13 +3618,14 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
         privileges: args.privileges,
         policy: args.policy,
         iLikeToLiveDangerously: !!args.iLikeToLiveDangerously,
-      }, { deadlineMs: SPAWN_WS_DEADLINE_MS });
+        phase: phase && isFresh ? phase : undefined,
+      });
       if (result?.ok === false || result?.error) {
         return { content: [{ type: 'text', text: `spawn failed: ${result.error || JSON.stringify(result)}` }], isError: true };
       }
 
       // Assign lineage/phase after spawn
-      if (phase && isFresh) {
+      if (phase && isFresh && !result?.async) {
         try {
           const result = await sendWS('lineage-assign', { agent: agentName, phase });
           if (result?.error) {
@@ -4550,235 +4452,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     }
   }
 
-  // ---- batch_respawn ----
-  if (name === 'batch_respawn') {
-    const guard = requireManager();
-    if (guard) return { content: [{ type: 'text', text: guard }], isError: true };
-
-    const state = await loadState();
-    const lines = [];
-    const respawned = [], failed = [], skipped = [], pruned = [];
-
-    // Build candidate list: agents from registry + ledger
-    let candidates = [];
-
-    if (args.agents && args.agents.length > 0) {
-      // Selective: resolve each name/ID
-      for (const q of args.agents) {
-        const agent = getAgent(state, q);
-        if (agent) {
-          candidates.push(agent);
-        } else {
-          // Check ledger
-          const la = ledger.findByFleetId(q) || ledger.findByName(q) || ledger.findBySession(q);
-          if (la) {
-            candidates.push({
-              id: la.fleet_id, session_id: la.session, cwd: la.cwd,
-              friendly_name: la.name, session_ids: la.sessions || [],
-            });
-          } else {
-            skipped.push(`${q}: not found`);
-          }
-        }
-      }
-    } else {
-      // All: find dead agents + ledger entries not in registry
-      const registryIds = new Set((state.agents || []).map(a => a.id));
-
-      for (const a of (state.agents || [])) {
-        if (a.id === AGENT_ID) continue; // skip self
-        if (a.tmux_session && tmuxHasSession(a.tmux_session)) continue; // already in tmux
-        candidates.push(a);
-      }
-
-      // Ledger entries not in registry
-      const ledgerAgents = ledger.listAgents();
-      for (const la of ledgerAgents) {
-        if (registryIds.has(la.fleet_id)) continue;
-        if (la.fleet_id === AGENT_ID) continue;
-        candidates.push({
-          id: la.fleet_id, session_id: la.session, cwd: la.cwd,
-          friendly_name: la.name, session_ids: la.sessions || [],
-        });
-      }
-    }
-
-    // Deduplicate by fleet ID
-    const seen = new Set();
-    candidates = candidates.filter(a => {
-      if (seen.has(a.id)) return false;
-      seen.add(a.id);
-      return true;
-    });
-
-    // Process each candidate
-    for (const agent of candidates) {
-      const label = agent.friendly_name || agent.id;
-
-      // Skip human agent
-      if (agent.human || agent.id === 'human' || agent.id === 'fleet:human') {
-        skipped.push(`${label}: human agent`);
-        continue;
-      }
-
-      // Prune dead agents with no session_id
-      if (!agent.session_id) {
-        pruned.push(`${label}: no session_id — cannot resume`);
-        const existing = (state.agents || []).find(a => a.id === agent.id);
-        if (existing) {
-          removeAgent(state, agent.id);
-        }
-        continue;
-      }
-
-      // Skip if already alive
-      const existing = getAgent(state, agent.id);
-      if (existing && agentAlive(existing) && existing.tmux_session && tmuxHasSession(existing.tmux_session)) {
-        skipped.push(`${label}: already alive in tmux:${existing.tmux_session}`);
-        continue;
-      }
-
-      const cwd = agent.cwd || os.homedir();
-      const sessionId = findValidSession(agent);
-
-      try {
-        await runFleetSpawn(label, { session: sessionId, cwd });
-
-        logEvent({ type: 'rehydrate', action: 'tmux_respawn', agent: agent.id, name: label, cwd });
-        respawned.push(`${label} (cwd: ${cwd})`);
-
-        // Throttle: wait 5s between spawns to avoid overwhelming the system
-        execSync('sleep 5', { timeout: 10000 });
-      } catch (e) {
-        failed.push(`${label}: ${e.message}`);
-      }
-    }
-
-    // Report
-    if (respawned.length) lines.push(`Respawned (${respawned.length}):\n  ${respawned.join('\n  ')}`);
-    if (skipped.length) lines.push(`\nSkipped (${skipped.length}):\n  ${skipped.join('\n  ')}`);
-    if (failed.length) lines.push(`\nFailed (${failed.length}):\n  ${failed.join('\n  ')}`);
-    if (pruned.length) lines.push(`\nPruned (${pruned.length}):\n  ${pruned.join('\n  ')}`);
-    if (!respawned.length && !skipped.length && !failed.length && !pruned.length) {
-      lines.push('Nothing to rehydrate — no candidates found.');
-    }
-
-    return { content: [{ type: 'text', text: lines.join('\n') }] };
-  }
-
-  // ==== Cluster Jobs ====
-
-  // ---- job_register ----
-  if (name === 'job_register') {
-    const { job_id, label, output_dir, output_pattern, total_reps, cluster } = args;
-    const host = cluster || 'qtm';
-    const manifestLine = `${job_id}\t${output_dir}\t${output_pattern}\t${total_reps}\t${label}`;
-
-    try {
-      execSync(`ssh ${host} 'echo "${manifestLine}" >> ~/.cluster-status/manifest.tsv'`, {
-        encoding: 'utf8', timeout: 15000,
-      });
-    } catch (e) {
-      return { content: [{ type: 'text', text: `Failed to register job on ${host}: ${e.message}` }], isError: true };
-    }
-
-    // TODO: Need server endpoint to track cluster jobs (POST /api/cluster-jobs)
-    // For now, just log the event
-
-    logEvent({ type: 'job_register', job_id, label, cluster: host, agent: AGENT_ID });
-    return { content: [{ type: 'text', text: `Registered job ${job_id} (${label}) on ${host}. Watcher will track ${output_pattern} in ${output_dir}.` }] };
-  }
-
-  // ---- job_check ----
-  if (name === 'job_check') {
-    const host = args.cluster || 'qtm';
-    const localDir = path.join(os.homedir(), '.claude', 'cluster-status');
-
-    try {
-      fs.mkdirSync(localDir, { recursive: true });
-      execSync(`scp -q ${host}:~/.cluster-status/status.json ${localDir}/${host}.json`, {
-        encoding: 'utf8', timeout: 15000,
-      });
-    } catch (e) {
-      return { content: [{ type: 'text', text: `Failed to pull status from ${host}: ${e.message}` }], isError: true };
-    }
-
-    let status;
-    try {
-      status = JSON.parse(fs.readFileSync(path.join(localDir, `${host}.json`), 'utf8'));
-    } catch (e) {
-      return { content: [{ type: 'text', text: `No status file from ${host}. Is the watcher installed? Run: cluster/setup.sh ${host}` }], isError: true };
-    }
-
-    let jobs = status.jobs || [];
-    if (args.job_id) {
-      jobs = jobs.filter(j => j.id === args.job_id);
-    }
-
-    const lines = [];
-    lines.push(`Cluster: ${host} | Updated: ${status.timestamp}`);
-    lines.push('');
-
-    const queueEntries = Object.entries(status.queue || {});
-    if (queueEntries.length > 0) {
-      lines.push('Queue:');
-      for (const [jid, q] of queueEntries) {
-        lines.push(`  ${jid} (${q.name}): ${q.running} running, ${q.pending} pending`);
-      }
-    } else {
-      lines.push('Queue: empty');
-    }
-    lines.push('');
-
-    if (jobs.length > 0) {
-      lines.push('Tracked jobs:');
-      for (const j of jobs) {
-        const pct = j.total > 0 ? Math.round(100 * j.completed / j.total) : 0;
-        const bar = progressBar(j.completed, j.total);
-        const queueStatus = j.in_queue ? ` | ${j.running}R ${j.pending}P` : ' | done';
-        lines.push(`  ${j.id} ${j.label}: ${bar} ${j.completed}/${j.total} (${pct}%)${queueStatus}`);
-      }
-    } else if (args.job_id) {
-      lines.push(`Job ${args.job_id} not found in manifest.`);
-    } else {
-      lines.push('No tracked jobs. Use job_register after sbatch.');
-    }
-
-    return { content: [{ type: 'text', text: lines.join('\n') }] };
-  }
-
-  // ---- job_log ----
-  if (name === 'job_log') {
-    const { job_id, task_id, stderr } = args;
-    const host = args.cluster || 'qtm';
-    const nlines = args.lines || 50;
-    const ext = stderr ? 'err' : 'out';
-
-    let cmd;
-    if (task_id) {
-      cmd = `find ~ -maxdepth 5 -name "*-${job_id}_${task_id}.${ext}" -newer ~/.cluster-status/manifest.tsv 2>/dev/null | head -1`;
-    } else {
-      cmd = `find ~ -maxdepth 5 -name "*-${job_id}_*.${ext}" 2>/dev/null | xargs ls -t 2>/dev/null | head -1`;
-    }
-
-    try {
-      const logFile = execSync(`ssh ${host} '${cmd}'`, {
-        encoding: 'utf8', timeout: 15000,
-      }).trim();
-
-      if (!logFile) {
-        return { content: [{ type: 'text', text: `No log file found for job ${job_id}${task_id ? ' task ' + task_id : ''} on ${host}.` }] };
-      }
-
-      const logContent = execSync(`ssh ${host} 'tail -${nlines} "${logFile}"'`, {
-        encoding: 'utf8', timeout: 15000,
-      });
-
-      return { content: [{ type: 'text', text: `${logFile}:\n\n${logContent}` }] };
-    } catch (e) {
-      return { content: [{ type: 'text', text: `Failed to read log: ${e.message}` }], isError: true };
-    }
-  }
+  // TODO(cluster-jobs): reintroduce cluster job tracking through a factored server-backed tool surface.
 
   // ==== Utilities ====
 
@@ -4984,12 +4658,6 @@ let _channelRWS = null;  // ResilientWS instance
 // Request/response over WS — pending callbacks keyed by correlation ID
 const _wsPending = new Map();
 const WS_REQUEST_IDLE_MS = 45_000;
-// Fresh spawn has a longer valid path than ordinary fleet requests:
-// server spawn RPC timeout/recovery can consume 10s, then registration
-// readiness can wait up to 20s. Spawn is a caller-owned policy deadline, not
-// the transport default for every request.
-const SPAWN_WS_DEADLINE_MS = 30_000;
-
 /**
  * Send a request over the WS channel and wait for a response.
  * Returns the result on success, throws on error or timeout.

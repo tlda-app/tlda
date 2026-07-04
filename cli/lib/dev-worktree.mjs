@@ -333,7 +333,17 @@ export async function cmdServeWorktree(args) {
     const dcfg = daemonConfigDir(branch)
     mkdirSync(dcfg, { recursive: true })
     writeFileSync(join(dcfg, 'config.json'), JSON.stringify({
-      machineId: `dev-${sanitize(branch)}`, fleetServer: base, server: base,
+      defaultConfig: configName(branch),
+      configs: {
+        [configName(branch)]: {
+          database: base,
+          store: base,
+          licenseKey: '',
+        },
+      },
+      machineId: `dev-${sanitize(branch)}`,
+      fleetServer: base,
+      server: base,
     }, null, 2))
     const dlogFd = openSync(daemonLogFile(branch), 'a')
     const dchild = spawn(process.execPath, [join(worktreeDir, 'bin', 'fleet-daemon.mjs')], {

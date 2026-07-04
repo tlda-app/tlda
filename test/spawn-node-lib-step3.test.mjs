@@ -5,12 +5,14 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { fenceSettings, wrapSandboxCmd } from '../bin/lib/spawn/fence.mjs'
+import { activeConfigName } from '../bin/lib/spawn/identity.mjs'
 import { codexSandboxProjection, resolveHarnessLaunchOptions, resolveLaunchPolicy, resolveLeasePolicy } from '../bin/lib/spawn/permissions.mjs'
 import * as claude from '../bin/lib/spawn/harness/claude.mjs'
 import * as codex from '../bin/lib/spawn/harness/codex.mjs'
 import * as goose from '../bin/lib/spawn/harness/goose.mjs'
 import { spawn } from '../bin/lib/spawn/index.mjs'
-import { findClaudeSession, findCodexRollout, scanClaudeSessionIdentity, stripSyntheticTail } from '../bin/lib/spawn/resume.mjs'
+import { findClaudeSession, findCodexRollout, isRespawnIdentityCaughtUp, scanClaudeSessionIdentity, stripSyntheticTail } from '../bin/lib/spawn/resume.mjs'
+import { saveSessionIdentityStore, sessionIdentityPath } from '../bin/lib/session-identity-store.mjs'
 import { claudeStartupDialogAction } from '../bin/lib/spawn/tmux.mjs'
 
 function tmpdir() {
@@ -74,6 +76,16 @@ function fullPrivilegeSet(name = 'full-grant') {
 function writeJsonl(file, rows) {
   fs.mkdirSync(path.dirname(file), { recursive: true })
   fs.writeFileSync(file, rows.map((row) => `${typeof row === 'string' ? row : JSON.stringify(row)}\n`).join(''))
+}
+
+function writeSessionIdentity(configDir, store) {
+  saveSessionIdentityStore(sessionIdentityPath(configDir), {
+    version: 1,
+    sessions: {},
+    by_fleet_id: {},
+    ingestion: { caught_up: true, active_tails: 0, pending_jobs: 0, updated_at: null },
+    ...store,
+  })
 }
 
 function codexRegisterRows(fleetId, name, callId) {
@@ -287,6 +299,99 @@ test('Codex respawn lookup checks historical stored rollout ids after primary mi
   )
   assert.equal(found.rolloutId, sid)
   assert.equal(found.cwd, '/tmp/historical')
+})
+
+test('respawn lookup uses session-identity store before scanning JSONLs', () => {
+  const root = tmpdir()
+  const projectsBase = path.join(root, 'claude-projects')
+  const configDir = path.join(root, 'config')
+  const sid = 'aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa'
+  const jsonl = path.join(projectsBase, '-tmp-owned', `${sid}.jsonl`)
+  writeJsonl(jsonl, [
+    { cwd: '/tmp/identity-store-cwd' },
+    { toolUseResult: [{ text: 'Registered fleet:other. Your name: "wrong"' }] },
+  ])
+  writeSessionIdentity(configDir, {
+    sessions: {
+      [sid]: {
+        session_id: sid,
+        harness_kind: 'claude',
+        fleet_id: 'fleet:store-owner',
+        friendly_name: 'store-owner',
+        cwd: '/tmp/store-cwd',
+        jsonl_path: jsonl,
+        classified: true,
+      },
+    },
+    ingestion: { caught_up: false, active_tails: 1, pending_jobs: 1, updated_at: '2026-07-04T00:00:00.000Z' },
+  })
+  const found = findClaudeSession(
+    { id: 'fleet:store-owner', session_id: null, session_ids: [] },
+    { projectsBase, identityConfigDir: configDir },
+  )
+  assert.equal(found.sessionId, sid)
+  assert.equal(found.cwd, '/tmp/store-cwd')
+})
+
+test('respawn lookup blocks broad scan fallback until identity ingestion reaches EOF', () => {
+  const root = tmpdir()
+  const projectsBase = path.join(root, 'claude-projects')
+  const configDir = path.join(root, 'config')
+  const sid = 'bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb'
+  writeJsonl(path.join(projectsBase, '-tmp-impostor', `${sid}.jsonl`), [
+    { cwd: '/tmp/impostor-cwd' },
+    { toolUseResult: [{ text: 'Registered fleet:block-owner. Your name: "block-owner"' }] },
+  ])
+  writeSessionIdentity(configDir, {
+    ingestion: { caught_up: false, active_tails: 1, pending_jobs: 0, updated_at: '2026-07-04T00:00:00.000Z' },
+  })
+  const found = findClaudeSession(
+    { id: 'fleet:block-owner', session_id: null, session_ids: [] },
+    { projectsBase, identityConfigDir: configDir },
+  )
+  assert.equal(found, null)
+  assert.equal(isRespawnIdentityCaughtUp({ identityConfigDir: configDir }), false)
+})
+
+test('explicit session override still works while identity ingestion is pending', () => {
+  const root = tmpdir()
+  const projectsBase = path.join(root, 'claude-projects')
+  const configDir = path.join(root, 'config')
+  const sid = 'cccccccc-3333-4333-8333-cccccccccccc'
+  fs.mkdirSync('/tmp/explicit-cwd', { recursive: true })
+  writeJsonl(path.join(projectsBase, '-tmp-explicit', `${sid}.jsonl`), [
+    { cwd: '/tmp/explicit-cwd' },
+  ])
+  writeSessionIdentity(configDir, {
+    ingestion: { caught_up: false, active_tails: 1, pending_jobs: 0, updated_at: '2026-07-04T00:00:00.000Z' },
+  })
+  const found = findClaudeSession(
+    { id: 'fleet:explicit-owner', session_id: null, session_ids: [] },
+    { projectsBase, identityConfigDir: configDir, sessionOverride: sid },
+  )
+  assert.equal(found.sessionId, sid)
+  assert.equal(found.cwd, '/tmp/explicit-cwd')
+})
+
+test('caught-up identity ingestion preserves broad scan fallback', () => {
+  const root = tmpdir()
+  const projectsBase = path.join(root, 'claude-projects')
+  const configDir = path.join(root, 'config')
+  const sid = 'dddddddd-4444-4444-8444-dddddddddddd'
+  fs.mkdirSync('/tmp/fallback-cwd', { recursive: true })
+  writeJsonl(path.join(projectsBase, '-tmp-fallback', `${sid}.jsonl`), [
+    { cwd: '/tmp/fallback-cwd' },
+    { toolUseResult: [{ text: 'Registered fleet:fallbackowner. Your name: "fallback-owner"' }] },
+  ])
+  writeSessionIdentity(configDir, {
+    ingestion: { caught_up: true, active_tails: 0, pending_jobs: 0, updated_at: '2026-07-04T00:00:00.000Z' },
+  })
+  const found = findClaudeSession(
+    { id: 'fleet:fallbackowner', session_id: null, session_ids: [] },
+    { projectsBase, identityConfigDir: configDir },
+  )
+  assert.equal(found.sessionId, sid)
+  assert.equal(found.cwd, '/tmp/fallback-cwd')
 })
 
 test('lease policy and fence wrapper stay outside harness adapters', () => {
@@ -537,6 +642,53 @@ test('unfenced codex no-net keeps network off in native sandbox args', () => {
     networkAccess: projection.networkAccess,
   })
   assert.ok(args.some((arg) => arg.includes('sandbox_workspace_write.network_access=false')))
+})
+
+test('spawn harness commands preserve explicit TLDA_CONFIG even when TLDA_SERVER pins the sandbox URL', () => {
+  const env = {
+    TLDA_CONFIG: 'dev-preview/mailbox',
+    TLDA_SERVER: 'https://sandbox.example.test:5192',
+  }
+  assert.equal(activeConfigName({ defaultConfig: 'live' }, env), 'dev-preview/mailbox')
+
+  const claudeCmd = claude.buildCmd({
+    fleetId: 'fleet:test',
+    tmuxSession: 'fleet-test',
+    name: 'sandbox-agent',
+    api: env.TLDA_SERVER,
+    includePrompt: false,
+    config: { defaultConfig: 'live' },
+    env,
+  })
+  assert.match(claudeCmd, /TLDA_CONFIG='dev-preview\/mailbox'/)
+  assert.match(claudeCmd, /TLDA_SERVER='https:\/\/sandbox\.example\.test:5192'/)
+
+  const codexCmd = codex.buildCmd({
+    fleetId: 'fleet:test',
+    tmuxSession: 'fleet-test',
+    name: 'sandbox-agent',
+    api: env.TLDA_SERVER,
+    config: { defaultConfig: 'live' },
+    env,
+  })
+  assert.match(codexCmd, /mcp_servers\.tlda\.env\.TLDA_CONFIG=dev-preview\/mailbox/)
+  assert.match(codexCmd, /mcp_servers\.tlda\.env\.TLDA_SERVER=https:\/\/sandbox\.example\.test:5192/)
+})
+
+test('hand-pinned TLDA_SERVER without explicit TLDA_CONFIG does not forward defaultConfig', () => {
+  const env = { TLDA_SERVER: 'https://sandbox.example.test:5192' }
+  assert.equal(activeConfigName({ defaultConfig: 'live' }, env), null)
+
+  const cmd = claude.buildCmd({
+    fleetId: 'fleet:test',
+    tmuxSession: 'fleet-test',
+    name: 'sandbox-agent',
+    api: env.TLDA_SERVER,
+    includePrompt: false,
+    config: { defaultConfig: 'live' },
+    env,
+  })
+  assert.doesNotMatch(cmd, /TLDA_CONFIG=/)
 })
 
 test('codex explicit daemon grant is externally fenced even while global fence is off', () => {
@@ -880,6 +1032,34 @@ test('fresh local spawn defers registration when localhost server probe fails', 
   assert.equal(calls.includes('observeLiveness'), false)
   assert.equal(calls.includes('waitForAwakeRegistration'), false)
   assert.equal(calls.includes('markAgentDead'), false)
+})
+
+test('fresh local spawn forwards explicit active config name into launch command', async () => {
+  const { calls, deps } = freshSpawnDeps({ ensureServer: async () => true })
+  const result = await spawn({
+    spawnMode: 'fresh',
+    kind: 'claude',
+    model: 'opus48',
+    name: 'sandbox-config-local',
+    cwd: tmpdir(),
+    agentId: 'fleet:testcfg',
+    config: {
+      defaultConfig: 'dev-preview/mailbox',
+      configs: {
+        'dev-preview/mailbox': {
+          database: 'http://127.0.0.1:5176',
+          store: 'http://127.0.0.1:5176',
+          licenseKey: '',
+        },
+      },
+    },
+    activeConfigName: 'dev-preview/mailbox',
+    _deps: deps,
+  })
+  assert.equal(result.ok, true)
+  const cmd = calls.find((value) => typeof value === 'string' && value.includes('FLEET_ID='))
+  assert.match(cmd, /TLDA_CONFIG='dev-preview\/mailbox'/)
+  assert.match(cmd, /TLDA_SERVER='http:\/\/127\.0\.0\.1:5176'/)
 })
 
 test('fresh local spawn keeps server-up pre-register and registration wait semantics', async () => {

@@ -518,10 +518,7 @@ export function respawnAgent(id) {
 }
 
 export function spawnAgent(model, doc, name, effort) {
-  return wsSend(
-    { type: 'spawn', fresh: true, model, ...(doc ? { doc } : {}), ...(name ? { name } : {}), ...(effort ? { effort } : {}) },
-    { deadlineMs: SPAWN_WS_DEADLINE_MS }
-  )
+  return wsSend({ type: 'spawn', fresh: true, model, ...(doc ? { doc } : {}), ...(name ? { name } : {}), ...(effort ? { effort } : {}) })
 }
 
 export function renameAgent(id, name) {
@@ -590,7 +587,6 @@ export function disconnectedFor() { return _connected ? 0 : (_disconnectedAt ? D
 let _wsReqId = 0
 const _wsCallbacks = new Map()
 const WS_REQUEST_IDLE_MS = 45_000
-const SPAWN_WS_DEADLINE_MS = 30_000
 
 function markWsActivity() {
   resetWsRequestIdleTimers(_wsCallbacks)

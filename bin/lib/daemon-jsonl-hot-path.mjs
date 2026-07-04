@@ -66,12 +66,69 @@ export function createOncePerKeyGate() {
 // `Registered fleet:<id>` lines — the fingerprint the daemon uses to learn which
 // agent owns a session. Extract every fleet id mentioned that way.
 const REGISTERED_OWNER_RE = /Registered fleet:([^\s.,;:)"'\\]+)/g
+const REGISTERED_ID_RE = /Registered (fleet:[^\s.,;)"'\\]+)/g
+const NAME_RE = /Your name: "([^"]+)"/
+
 export function extractOwnersFromText(text) {
   const owners = new Set()
   REGISTERED_OWNER_RE.lastIndex = 0
   let m
   while ((m = REGISTERED_OWNER_RE.exec(text)) !== null) owners.add('fleet:' + m[1])
   return [...owners]
+}
+
+function textPartsFromValue(value) {
+  const out = []
+  function visit(item) {
+    if (item == null) return
+    if (typeof item === 'string') {
+      out.push(item)
+      return
+    }
+    if (Array.isArray(item)) {
+      for (const part of item) visit(part)
+      return
+    }
+    if (typeof item !== 'object') return
+    if (typeof item.text === 'string') out.push(item.text)
+    if (typeof item.output === 'string') out.push(item.output)
+    if (typeof item.content === 'string') out.push(item.content)
+    if (Array.isArray(item.content)) visit(item.content)
+    if (item.Ok) visit(item.Ok)
+    if (item.Err) visit(item.Err)
+  }
+  visit(value)
+  return out
+}
+
+export function extractIdentityFromText(text) {
+  REGISTERED_ID_RE.lastIndex = 0
+  const m = REGISTERED_ID_RE.exec(text || '')
+  if (!m) return null
+  return {
+    fleet_id: m[1],
+    friendly_name: NAME_RE.exec(text || '')?.[1] || null,
+  }
+}
+
+export function extractIdentityFromRecord(record) {
+  if (!record || typeof record !== 'object') return null
+  const texts = []
+  if (record.toolUseResult) texts.push(...textPartsFromValue(record.toolUseResult))
+  if (record.message?.content) texts.push(...textPartsFromValue(record.message.content))
+  if (record.payload?.output) texts.push(...textPartsFromValue(record.payload.output))
+  if (record.payload?.result) texts.push(...textPartsFromValue(record.payload.result))
+  let identity = null
+  for (const text of texts) {
+    identity = extractIdentityFromText(text)
+    if (identity) break
+  }
+  const cwd = record.cwd || record.payload?.cwd || record.payload?.session_meta?.cwd || record.payload?.sessionMeta?.cwd || null
+  if (!identity && !cwd) return null
+  return {
+    ...(identity || {}),
+    cwd,
+  }
 }
 
 // Chunk-scan a file (optionally from a byte offset) collecting every owner id,
@@ -100,6 +157,47 @@ export function scanFileOwnersSync(filePath, { fromOffset = 0, chunkSize = 64 * 
     if (fd != null) fs.closeSync(fd)
   }
   return { owners: [...owners], endOffset: offset }
+}
+
+export function scanFileIdentitySync(filePath, { fromOffset = 0, chunkSize = 64 * 1024 } = {}) {
+  let fd
+  let offset = fromOffset
+  let carry = ''
+  let best = null
+  const owners = new Set()
+  try {
+    fd = fs.openSync(filePath, 'r')
+    const buf = Buffer.allocUnsafe(chunkSize)
+    while (true) {
+      const bytesRead = fs.readSync(fd, buf, 0, buf.length, offset)
+      if (bytesRead <= 0) break
+      offset += bytesRead
+      const text = carry + buf.toString('utf8', 0, bytesRead)
+      for (const owner of extractOwnersFromText(text)) owners.add(owner)
+      for (const line of text.split('\n')) {
+        if (!line.includes('Registered fleet:') && !line.includes('"cwd"')) continue
+        try {
+          const rec = JSON.parse(line)
+          const identity = extractIdentityFromRecord(rec)
+          if (identity) {
+            best = { ...(best || {}), ...identity }
+            if (identity.fleet_id) owners.add(identity.fleet_id)
+          }
+        } catch (e) {
+          if (!(e instanceof SyntaxError)) throw e
+          const identity = extractIdentityFromText(line)
+          if (identity) {
+            best = { ...(best || {}), ...identity }
+            if (identity.fleet_id) owners.add(identity.fleet_id)
+          }
+        }
+      }
+      carry = text.slice(-1024)
+    }
+  } finally {
+    if (fd != null) fs.closeSync(fd)
+  }
+  return { identity: best, owners: [...owners], endOffset: offset }
 }
 
 // Read just the FIRST line of a file without loading the whole thing. Codex
