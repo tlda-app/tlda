@@ -13,12 +13,16 @@ test('wake/respawn queue requires the target owner machine', () => {
   assert.match(serverSource, /No fleet-daemon connected for machine/)
 })
 
-test('combined spawn delegate targets the reserved shell mailbox', () => {
-  assert.match(fleetToolsSource, /mailboxTarget:\s*true/)
-  assert.match(fleetToolsSource, /spawnResult\?\.agent/)
-  assert.match(fleetToolsSource, /sendWS\('resolve-agent'/)
-  assert.doesNotMatch(fleetToolsSource, /Not delegating: a registry row is not a usable agent/)
-  assert.doesNotMatch(fleetToolsSource, /not alive\/usable yet\. Not delegating/)
+test('combined spawn delegate follows the async spawn mailbox identity', () => {
+  assert.match(fleetToolsSource, /if \(spawnResult\?\.async\)/)
+  assert.match(fleetToolsSource, /startOperationMailbox\('delegate'/)
+  assert.match(fleetToolsSource, /spawn_mailbox_id: spawnResult\.mailbox_id/)
+  assert.match(fleetToolsSource, /spawn_agent_id: spawnResult\.agent_id/)
+  assert.match(fleetToolsSource, /findSpawnedDelegateTarget\(agentName, spawnResult/)
+  assert.match(fleetToolsSource, /spawnResult\?\.agent_id && a\.id === spawnResult\.agent_id/)
+  assert.match(fleetToolsSource, /delegateToResolvedAgent\(spawned\.id/)
+  assert.match(fleetToolsSource, /const assignedName = spawned\.friendly_name \|\| agentName/)
+  assert.match(fleetToolsSource, /friendly_name: assignedName/)
 })
 
 test('spawn relay can return a pre-claim shell for mailbox delivery', () => {
