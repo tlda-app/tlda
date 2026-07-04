@@ -73,18 +73,23 @@ test('no-security acknowledgment is plumbed through every spawn surface', () => 
   assert.match(cli, /acknowledgeNoSecurity,/)
   assert.match(cli, /body\.iLikeToLiveDangerously = true/)
   assert.match(tools, /iLikeToLiveDangerously/)
-  assert.match(tools, /acknowledgeNoSecurity: !!opts\.iLikeToLiveDangerously/)
+  assert.match(tools, /iLikeToLiveDangerously: !!args\.iLikeToLiveDangerously/)
   assert.match(server, /acknowledgeNoSecurity: !!iLikeToLiveDangerously/)
   assert.match(daemon, /acknowledgeNoSecurity: !!acknowledgeNoSecurity/)
 })
 
-test('MCP local spawn capability is passed to the shared Node spawn helper', () => {
+test('MCP spawn capability is forwarded through the server spawn path', () => {
   const tools = fs.readFileSync(new URL('../mcp-server/fleet-tools.mjs', import.meta.url), 'utf8')
-  assert.match(tools, /const requestedCapability = opts\.capability \|\| opts\.spawnCapability \|\| undefined/)
-  assert.match(tools, /requestedCapability: grant\.grantedCapability/)
-  assert.match(tools, /config,/)
-  assert.match(tools, /await privilegeLedger\.set\(preallocatedAgentId/)
-  assert.match(tools, /await privilegeLedger\.delete\(preallocatedAgentId\)/)
+  const server = fs.readFileSync(new URL('../server/unified-server.mjs', import.meta.url), 'utf8')
+  const spawnHelper = fs.readFileSync(new URL('../bin/lib/spawn/index.mjs', import.meta.url), 'utf8')
+
+  assert.match(tools, /capability: args\.capability/)
+  assert.match(tools, /policy: args\.policy/)
+  assert.match(tools, /privileges: args\.privileges/)
+  assert.match(server, /const requestedCapability = capability \|\| spawnCapability \|\| null/)
+  assert.match(server, /requestedCapability: requestedCapability \|\| undefined/)
+  assert.match(spawnHelper, /requestedCapability: params\.requestedCapability/)
+  assert.match(spawnHelper, /acknowledgeNoSecurity: !!params\.acknowledgeNoSecurity/)
 })
 
 test('MCP spawn exposes policy as an explicit fence request', () => {
