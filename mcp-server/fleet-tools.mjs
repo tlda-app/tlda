@@ -1811,13 +1811,28 @@ function normalizeInboxMode(mode) {
 function inboxTaskSummary(task) {
   if (!task) return null;
   const age = task.delegated_at ? Math.round((Date.now() - new Date(task.delegated_at)) / 60000) : null;
+  const nativeSystem = task.metadata?.native_system || task.metadata?.native?.system || null;
+  const nativeLabel = nativeSystem === 'claude' ? 'Claude Code' : nativeSystem;
   const lines = [
     `[task:${task.id}] ${task.description || '(untitled task)'}`,
     `State: ${task.status || 'active'}${Number.isFinite(age) ? ` | delegated ${age}m ago` : ''}`,
   ];
+  if (task.metadata?.native) lines.push(`Native task in ${nativeLabel || 'native harness'}`);
   if (task.success_criteria?.length) lines.push(`Success criteria: ${task.success_criteria.length}`);
   if (task.metadata?.requires_approval) lines.push('Requires approval before close.');
   return lines.join('\n');
+}
+
+function normalizeInboxTasks({ task, tasks }) {
+  if (Array.isArray(tasks) && tasks.length) return tasks;
+  return task ? [task] : [];
+}
+
+function inboxTaskBlocks(tasks) {
+  return tasks.map(t => {
+    const summary = inboxTaskSummary(t);
+    return t?.message ? `${summary}\n\n${t.message}` : summary;
+  }).filter(Boolean);
 }
 
 function inboxMessageKind(message) {
@@ -1865,8 +1880,9 @@ function groupedInboxLines(messages) {
   return lines;
 }
 
-function formatInboxText({ mode, task, messages }) {
-  const taskSummary = inboxTaskSummary(task);
+function formatInboxText({ mode, task, tasks, messages }) {
+  const activeTasks = normalizeInboxTasks({ task, tasks });
+  const taskBlocks = inboxTaskBlocks(activeTasks);
   const lines = [];
   const count = messages.length;
   lines.push(`INBOX MODE: ${mode}`);
@@ -1874,17 +1890,16 @@ function formatInboxText({ mode, task, messages }) {
   if (mode === 'focus') {
     lines.push('');
     lines.push('NOW');
-    if (!task && count === 0) lines.push('- Clear. No active task or unread messages.');
+    if (!activeTasks.length && count === 0) lines.push('- Clear. No active task or unread messages.');
     if (messages.length) {
       messages
         .filter(m => m.kind !== 'watch')
         .forEach((m, i) => lines.push(`[${i + 1}] ${m.line}`));
     }
-    if (taskSummary) {
+    if (taskBlocks.length) {
       lines.push('');
       lines.push('ACTIVE WORK');
-      lines.push(taskSummary);
-      if (task?.message) lines.push('', task.message);
+      lines.push(...taskBlocks.flatMap((block, i) => i ? ['', block] : [block]));
     }
     const hidden = messages.filter(m => m.kind === 'watch').length;
     if (hidden) lines.push('', `BACKGROUND: ${hidden} watch item(s) hidden in focus mode.`);
@@ -1897,10 +1912,10 @@ function formatInboxText({ mode, task, messages }) {
     const waiting = messages.filter(m => m.kind === 'user' || m.kind === 'task' || m.kind === 'message');
     if (!waiting.length) lines.push('- Nothing currently waiting on this agent.');
     waiting.forEach((m, i) => lines.push(`[${i + 1}] ${m.line}`));
-    if (taskSummary) {
+    if (taskBlocks.length) {
       lines.push('');
       lines.push('OWNED WORK');
-      lines.push(taskSummary);
+      lines.push(...taskBlocks.flatMap((block, i) => i ? ['', block] : [block]));
     }
     const watch = messages.filter(m => m.kind === 'watch');
     if (watch.length) {
@@ -1914,8 +1929,8 @@ function formatInboxText({ mode, task, messages }) {
   if (mode === 'incident') {
     lines.push('');
     lines.push('INCIDENT STATE');
-    if (!task && count === 0) lines.push('- No incident-scoped task or unread event is active.');
-    if (taskSummary) lines.push(taskSummary);
+    if (!activeTasks.length && count === 0) lines.push('- No incident-scoped task or unread event is active.');
+    if (taskBlocks.length) lines.push(...taskBlocks.flatMap((block, i) => i ? ['', block] : [block]));
     if (messages.length) {
       lines.push('');
       lines.push('NEW INCIDENT SIGNALS');
@@ -1927,11 +1942,10 @@ function formatInboxText({ mode, task, messages }) {
   if (mode === 'available') {
     lines.push('');
     lines.push('AMBIENT QUEUE');
-    if (!task && count === 0) lines.push('- Clear. Nothing in the current interest stream.');
-    if (taskSummary) {
+    if (!activeTasks.length && count === 0) lines.push('- Clear. Nothing in the current interest stream.');
+    if (taskBlocks.length) {
       lines.push('ACTIVE WORK');
-      lines.push(taskSummary);
-      if (task?.message) lines.push('', task.message);
+      lines.push(...taskBlocks.flatMap((block, i) => i ? ['', block] : [block]));
       lines.push('');
     }
     lines.push(...groupedInboxLines(messages));
@@ -1943,12 +1957,12 @@ function formatInboxText({ mode, task, messages }) {
     lines.push('');
     lines.push('REVIEW / GATES');
     const reviewRows = messages.filter(m => m.kind === 'task' || /report|review|qa|gate|evidence|approve|reject/i.test(m.line));
-    if (!reviewRows.length && !taskSummary) lines.push('- No review or gate item is currently pending.');
+    if (!reviewRows.length && !taskBlocks.length) lines.push('- No review or gate item is currently pending.');
     reviewRows.forEach((m, i) => lines.push(`[${i + 1}] ${m.line}`));
-    if (taskSummary) {
+    if (taskBlocks.length) {
       lines.push('');
       lines.push('OWNED REVIEW WORK');
-      lines.push(taskSummary);
+      lines.push(...taskBlocks.flatMap((block, i) => i ? ['', block] : [block]));
     }
     const other = messages.filter(m => !reviewRows.includes(m));
     if (other.length) {
@@ -1961,11 +1975,10 @@ function formatInboxText({ mode, task, messages }) {
 
   lines.push('');
   lines.push('ACTIONABLE QUEUE');
-  if (!task && count === 0) lines.push('- Clear. No active task or unread messages.');
-  if (taskSummary) {
-    lines.push('TASK');
-    lines.push(taskSummary);
-    if (task?.message) lines.push('', task.message);
+  if (!activeTasks.length && count === 0) lines.push('- Clear. No active task or unread messages.');
+  if (taskBlocks.length) {
+    lines.push('TASKS');
+    lines.push(...taskBlocks.flatMap((block, i) => i ? ['', block] : [block]));
     lines.push('');
   }
   lines.push(...groupedInboxLines(messages));
@@ -2959,9 +2972,15 @@ export async function handleFleetTool(name, args) {
 
     const showOwner = false;
 
+    const sortedActive = [...active].sort((a, b) => {
+      const an = a.metadata?.native ? 1 : 0;
+      const bn = b.metadata?.native ? 1 : 0;
+      if (an !== bn) return bn - an;
+      return new Date(b.delegated_at || 0) - new Date(a.delegated_at || 0);
+    });
     const agentMap = new Map(agents.map(a => [a.id, a]));
-    const taskHealthSummary = summarizeTaskListHealth(active, agentMap);
-    const lines = active.map(t => {
+    const taskHealthSummary = summarizeTaskListHealth(sortedActive, agentMap);
+    const lines = sortedActive.map(t => {
       const age = Math.round((Date.now() - new Date(t.delegated_at)) / 60000);
       const taskAgent = agentMap.get(t.agent);
       const health = classifyTaskAgentHealth(t, taskAgent);
@@ -2969,10 +2988,13 @@ export async function handleFleetTool(name, args) {
       const includeHealthAction = healthBucket?.kind !== 'stale-backlog';
       const healthNote = formatTaskHealth(health, { includeAction: includeHealthAction });
       let status = t.status;
+      const nativeSystem = t.metadata?.native_system || t.metadata?.native?.system || null;
+      const nativeLabel = nativeSystem === 'claude' ? 'Claude Code' : nativeSystem;
       if (t.synthetic) status = `📬 ${t.priority || 'normal'}`;
       if (t.status === 'blocked' && t.blockedBy) {
         status = `blocked by ${t.blockedBy.join(', ')}`;
       }
+      if (t.metadata?.native) status += ` | Native task in ${nativeLabel || 'native harness'}`;
       if (!t.synthetic && (t.status === 'pending' || t.status === 'working') && age > 1440) {
         status += ` [stale — ${Math.round(age / 60)}h]`;
       }
@@ -2987,10 +3009,10 @@ export async function handleFleetTool(name, args) {
 
     text += lines.join('\n');
 
-    const working = active.filter(t => t.status === 'working');
-    const pending = active.filter(t => t.status === 'pending');
-    const idle = active.filter(t => t.status === 'idle');
-    const blocked = active.filter(t => t.status === 'blocked');
+    const working = sortedActive.filter(t => t.status === 'working');
+    const pending = sortedActive.filter(t => t.status === 'pending');
+    const idle = sortedActive.filter(t => t.status === 'idle');
+    const blocked = sortedActive.filter(t => t.status === 'blocked');
     const { actionableUnhealthy, staleBacklogUnhealthy } = taskHealthSummary;
 
     const unread = AGENT_ID ? await getUnread(null, AGENT_ID) : [];
@@ -3641,7 +3663,7 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
       resolveTheoremRefs,
       resolveImages,
     })));
-    const text = formatInboxText({ mode, task: data.task || null, messages });
+    const text = formatInboxText({ mode, task: data.task || null, tasks: data.tasks || null, messages });
     const allImages = messages.flatMap(m => m.images || []);
     if (allImages.length > 0) {
       const fs = await import('fs');
@@ -3676,13 +3698,29 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
     }
 
     if (!data) return { content: [{ type: 'text', text: `tlda backend didn't answer (it may be restarting). Not yours to debug — tell ops if it persists, then retry shortly.` }], isError: true };
-    const task = data.task;
+    const tasks = normalizeInboxTasks({ task: data.task || null, tasks: data.tasks || null });
+    const task = tasks[0] || null;
     const unread = data.messages || [];
 
     let text = '';
-    if (task) {
-      const age = Math.round((Date.now() - new Date(task.delegated_at)) / 60000);
-      text = `Your task [${task.id}]: ${task.description}\nStatus: ${task.status} | ${age}m ago`;
+    if (tasks.length) {
+      text = tasks.map(t => {
+        const age = Math.round((Date.now() - new Date(t.delegated_at)) / 60000);
+        let taskText = `Your task [${t.id}]: ${t.description}\nStatus: ${t.status} | ${age}m ago`;
+        const nativeSummary = t.metadata?.native ? inboxTaskSummary(t).split('\n').find(line => line.startsWith('Native task in ')) : null;
+        if (nativeSummary) taskText += `\n${nativeSummary}`;
+        if (t.message) {
+          taskText += `\n\n${t.message}`;
+          if (t.success_criteria?.length) {
+            taskText += `\n\n**Success criteria** (verify before calling task_done):`;
+            t.success_criteria.forEach((c, i) => { taskText += `\n${i + 1}. ${c}`; });
+          }
+          if (t.metadata?.requires_approval) {
+            taskText += `\n\n⚠️ **Requires approval.** You cannot close this task without Skip's sign-off. Present your work, get approval in chat, then call task_done(approval_id: <id>) with the message ID shown in brackets (e.g. id:332656).`;
+          }
+        }
+        return taskText;
+      }).join('\n\n---\n\n');
       try {
         const agents = await sendWS('store-agents');
         const agent = Array.isArray(agents) ? agents.find(a => a.id === AGENT_ID) : null;
@@ -3691,16 +3729,6 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
         if (healthNote) text += `\nAgent health: ${healthNote}`;
       } catch (e) {
         text += `\nAgent health: unavailable (${e.message})`;
-      }
-      if (task.message) {
-        text += `\n\n${task.message}`;
-        if (task.success_criteria?.length) {
-          text += `\n\n**Success criteria** (verify before calling task_done):`;
-          task.success_criteria.forEach((c, i) => { text += `\n${i + 1}. ${c}`; });
-        }
-        if (task.metadata?.requires_approval) {
-          text += `\n\n⚠️ **Requires approval.** You cannot close this task without Skip's sign-off. Present your work, get approval in chat, then call task_done(approval_id: <id>) with the message ID shown in brackets (e.g. id:332656).`;
-        }
       }
     } else {
       text = `Nothing new. Keep working or use timer() — you'll see 📬 when a task or message arrives.`;

@@ -1787,6 +1787,15 @@ function processJsonlChildOutputs(pw, outputs) {
       })) delivered = false
     } else if (output.type === 'searchIndex') {
       if (!sendMsg({ type: 'jsonl-index', entries: output.entries || [] })) delivered = false
+    } else if (output.type === 'nativeTask') {
+      if (!sendMsg({
+        type: 'native-task-event',
+        agent_id: agentId,
+        harness: pw.harnessKind,
+        session_id: pw.sessionId,
+        source_path: pw.jsonlPath,
+        events: output.events || [],
+      })) delivered = false
     } else if (output.type === 'identity') {
       recordSessionIdentity({
         session_id: pw.sessionId,

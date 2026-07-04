@@ -59,6 +59,7 @@ import { initSyncRooms, getOrCreateRoom, flushAllRooms, closeAllRooms, replayCac
 import * as tldaFeedback from './lib/tlda-feedback.mjs'
 import { injectBridge, injectSlidesBridge, injectChapterTitle } from './lib/html-injector.mjs'
 import { FleetStore } from './lib/fleet-store.mjs'
+import { applyNativeTaskEvents } from './lib/native-task-wrapper.mjs'
 import { resolveMachine } from './lib/tailscale-peers.mjs'
 import { createFleetRouter } from './routes/fleet.mjs'
 import { coherentSpawnPolicy } from './lib/spawn-policy.mjs'
@@ -4218,7 +4219,8 @@ async function handleFleetWsMessage(ws, msg) {
     const agentId = msg.agent
     if (!agentId) { error('missing agent'); return }
     fleetStore.updateHeartbeat(agentId)
-    const task = fleetStore.getTaskByAgent?.(agentId) || null
+    const tasks = fleetStore.getActiveTasksByAgent?.(agentId) || []
+    const task = tasks[0] || fleetStore.getTaskByAgent?.(agentId) || null
     const unread = fleetStore.getUnread?.(agentId) || []
     // peek=true: caller just wants to see unread (e.g., the channel-WS
     // flush-on-reconnect path that displays a count). Don't mark read in
@@ -4230,7 +4232,7 @@ async function handleFleetWsMessage(ws, msg) {
       if (readIds.length) broadcastEvent('read-receipt', { event_ids: readIds, agent: agentId })
     }
     broadcastState()
-    reply({ task, messages: unread })
+    reply({ task, tasks: tasks.length ? tasks : (task ? [task] : []), messages: unread })
     return
   }
 
@@ -5526,6 +5528,12 @@ async function handleDaemonWsMessage(ws, msg) {
       console.error(`[fleet-daemon] activity write: ${e.message}`)
     }
     checkQualifications(agent_id, tool, arg, input)
+    return
+  }
+
+  if (type === 'native-task-event') {
+    const { changed } = applyNativeTaskEvents(fleetStore, msg)
+    if (changed) broadcastState()
     return
   }
 

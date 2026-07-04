@@ -20,6 +20,10 @@ import {
   defaultActivityExtractor,
   parseSessionRecord,
 } from './lib/jsonl-event-extract.mjs'
+import {
+  createNativeTaskState,
+  extractNativeTaskEvents,
+} from './lib/native-task-events.mjs'
 
 try { os.setPriority(process.pid, 10) } catch { /* priority is advisory */ }
 
@@ -91,6 +95,17 @@ export function extractRecordOutputs({ agentId, sessionId, harnessKind, terminal
     const entries = searchEntriesFromRecord(agentId, sessionId, record)
     if (entries.length > 0) outputs.push({ type: 'searchIndex', entries })
   }
+  return outputs
+}
+
+export function extractRecordOutputsWithState(opts, record, nativeTaskState) {
+  const outputs = extractRecordOutputs(opts, record)
+  const nativeTasks = extractNativeTaskEvents({
+    harnessKind: opts.harnessKind,
+    record,
+    state: nativeTaskState,
+  })
+  if (nativeTasks.length > 0) outputs.push({ type: 'nativeTask', events: nativeTasks })
   return outputs
 }
 
@@ -299,7 +314,7 @@ function sendNext(w) {
 }
 
 function enqueueRecord(w, record) {
-  const outputs = extractRecordOutputs(w, record)
+  const outputs = extractRecordOutputsWithState(w, record, w.nativeTaskState)
   if (outputs.length === 0) return
   w.queue.push({ seq: ++w.nextSeq, outputs })
   sendNext(w)
@@ -326,6 +341,7 @@ function startWatch(msg) {
     nextSeq: 0,
     inFlightSeq: null,
     pendingFlushOffset: null,
+    nativeTaskState: createNativeTaskState(),
     paused: false,
     stopped: false,
   }

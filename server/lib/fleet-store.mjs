@@ -878,6 +878,7 @@ export class FleetStore {
 
     this._getTask = this.db.prepare('SELECT * FROM tasks WHERE id = ?');
     this._getTaskByAgent = this.db.prepare("SELECT * FROM tasks WHERE agent = ? AND status NOT IN ('done', 'retracted') ORDER BY delegated_at DESC LIMIT 1");
+    this._getActiveTasksByAgent = this.db.prepare("SELECT * FROM tasks WHERE agent = ? AND status NOT IN ('done', 'retracted') ORDER BY delegated_at DESC");
     this._getAllActiveTasks = this.db.prepare("SELECT * FROM tasks WHERE status NOT IN ('done', 'retracted') ORDER BY delegated_at DESC");
     this._getAllTasks = this.db.prepare('SELECT * FROM tasks ORDER BY delegated_at DESC');
     this._deleteTask = this.db.prepare('DELETE FROM tasks WHERE id = ?');
@@ -2101,16 +2102,28 @@ export class FleetStore {
   }
 
   getTaskByAgent(agentId) {
-    let row = this._getTaskByAgent.get(agentId);
-    if (!row) {
+    const rows = this.getActiveTasksByAgent(agentId);
+    if (rows.length > 0) return rows[0];
+    {
       // Fallback: check if agent has a friendly name, search tasks by that too
       // (handles tasks stored with friendly_name before the fix)
       const agent = this.getAgent(agentId);
       if (agent?.friendly_name) {
-        row = this._getTaskByAgent.get(agent.friendly_name);
+        const fallbackRows = this.getActiveTasksByAgent(agent.friendly_name);
+        if (fallbackRows.length > 0) return fallbackRows[0];
       }
     }
-    return row ? this._hydrateTask(row) : null;
+    return null;
+  }
+
+  getActiveTasksByAgent(agentId) {
+    const rows = this._getActiveTasksByAgent.all(agentId).map(r => this._hydrateTask(r));
+    return rows.sort((a, b) => {
+      const an = a.metadata?.native ? 1 : 0;
+      const bn = b.metadata?.native ? 1 : 0;
+      if (an !== bn) return bn - an;
+      return (Date.parse(b.delegated_at || '') || 0) - (Date.parse(a.delegated_at || '') || 0);
+    });
   }
 
   getActiveTasks() {

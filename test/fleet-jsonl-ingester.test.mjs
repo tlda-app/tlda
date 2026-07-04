@@ -7,10 +7,12 @@ import { fork } from 'child_process'
 import { fileURLToPath } from 'url'
 
 import {
+  extractRecordOutputsWithState,
   extractRecordOutputs,
   searchEntriesFromRecord,
   terminalChatFromRecord,
 } from '../bin/fleet-jsonl-ingester.mjs'
+import { createNativeTaskState } from '../bin/lib/native-task-events.mjs'
 
 const INGESTER = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'fleet-jsonl-ingester.mjs')
 
@@ -58,6 +60,78 @@ test('extractRecordOutputs preserves activity/context/search/terminal event payl
   }
   assert.deepEqual(terminalChatFromRecord(user), { text: 'hello from terminal', ts: '2026-07-04T12:00:00.000Z' })
   assert.equal(searchEntriesFromRecord('fleet:a1', 'sess1', user)[0].text, 'hello from terminal')
+})
+
+test('extractRecordOutputsWithState wraps Claude TaskCreate and TaskUpdate records', () => {
+  const base = { agentId: 'fleet:a1', sessionId: 'sess1', harnessKind: 'claude', terminalChat: false, backfillSearch: false }
+  const state = createNativeTaskState()
+  const createRecord = {
+    type: 'assistant',
+    timestamp: '2026-07-04T12:00:00.000Z',
+    message: {
+      content: [{
+        type: 'tool_use',
+        id: 'tool-create-1',
+        name: 'TaskCreate',
+        input: {
+          subject: 'Check native wrapping',
+          description: 'Verify the wrapper appears in tlda inbox.',
+          activeForm: 'checking native wrapping',
+        },
+      }],
+    },
+  }
+  assert.equal(extractRecordOutputsWithState(base, createRecord, state).some(o => o.type === 'nativeTask'), false)
+
+  const createResult = {
+    type: 'user',
+    timestamp: '2026-07-04T12:00:01.000Z',
+    message: {
+      content: [{
+        type: 'tool_result',
+        tool_use_id: 'tool-create-1',
+        content: 'Task #2 created',
+      }],
+    },
+    toolUseResult: {
+      task: { id: '2', subject: 'Check native wrapping' },
+    },
+  }
+  const createOutput = extractRecordOutputsWithState(base, createResult, state).find(o => o.type === 'nativeTask')
+  assert.equal(createOutput.events.length, 1)
+  assert.deepEqual(createOutput.events[0], {
+    action: 'create',
+    nativeSystem: 'claude',
+    nativeTaskId: '2',
+    toolUseId: 'tool-create-1',
+    timestamp: '2026-07-04T12:00:01.000Z',
+    subject: 'Check native wrapping',
+    description: 'Verify the wrapper appears in tlda inbox.',
+    activeForm: 'checking native wrapping',
+    status: 'pending',
+    input: createRecord.message.content[0].input,
+  })
+
+  const updateRecord = {
+    type: 'assistant',
+    timestamp: '2026-07-04T12:01:00.000Z',
+    message: {
+      content: [{
+        type: 'tool_use',
+        id: 'tool-update-1',
+        name: 'TaskUpdate',
+        input: {
+          taskId: '2',
+          status: 'in_progress',
+          description: 'Now working on the wrapper.',
+        },
+      }],
+    },
+  }
+  const updateOutput = extractRecordOutputsWithState(base, updateRecord, state).find(o => o.type === 'nativeTask')
+  assert.equal(updateOutput.events[0].nativeTaskId, '2')
+  assert.equal(updateOutput.events[0].status, 'working')
+  assert.equal(updateOutput.events[0].description, 'Now working on the wrapper.')
 })
 
 test('forked ingester holds one live-tail batch in flight until parent ack', async () => {

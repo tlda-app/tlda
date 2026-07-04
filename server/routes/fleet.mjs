@@ -253,7 +253,8 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     const agentId = req.query.agent
     if (!agentId) { res.status(400).send('missing "agent" param'); return }
     if (fleetStore) fleetStore.updateHeartbeat(agentId)
-    const task = fleetStore?.getTaskByAgent(agentId) || null
+    const tasks = fleetStore?.getActiveTasksByAgent?.(agentId) || []
+    const task = tasks[0] || fleetStore?.getTaskByAgent(agentId) || null
     const unread = fleetStore?.getUnread(agentId) || []
     const peek = req.query.peek === 'true'
     if (fleetStore && unread.length && !peek) {
@@ -261,7 +262,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       if (readIds.length) broadcastEvent('read-receipt', { event_ids: readIds, agent: agentId })
     }
     if (!peek) broadcastState()
-    res.json({ task, messages: unread })
+    res.json({ task, tasks: tasks.length ? tasks : (task ? [task] : []), messages: unread })
   })
 
   // --- GET /api/chat/history ---
