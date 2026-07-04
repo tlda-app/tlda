@@ -256,8 +256,12 @@ const diffSummariesHandle = bus.register<{ summaries: Record<number, string>; ti
 export const onDiffSummaries = diffSummariesHandle.on
 
 export type FileUpdatedSignal = {
-  filePath: string   // absolute path on the author's machine
-  content: string    // current file contents
+  filePath?: string
+  backingName?: string
+  project?: string
+  content?: string
+  status?: 'synced' | 'pending' | 'owner-unavailable' | 'owner-missing' | 'deleted' | 'conflict' | 'failed'
+  message?: string
   timestamp: number
 }
 const fileUpdatedHandle = bus.register<FileUpdatedSignal>({ key: 'signal:file-updated' })

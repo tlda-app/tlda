@@ -661,10 +661,18 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
         if (record.typeName !== 'shape') continue
         const shape = record as any
         if (shape.type !== 'math-note') continue
-        if (shape.props.backingFile !== signal.filePath) continue
+        const shapeBackingName = shape.props.backingName || shape.props.backingFile
+        const signalBackingName = signal.backingName || signal.filePath
+        if (shapeBackingName !== signalBackingName && shape.props.backingFile !== signal.filePath) continue
+        if (signal.status && signal.status !== 'synced') continue
         if (shape.props.text === signal.content) continue
+        const backingStatus = shape.props.backingSyncStatus || 'synced'
+        if (backingStatus !== 'synced' && backingStatus !== 'pushing') {
+          editor.updateShape({ id: shape.id, type: 'math-note' as any, props: { backingSyncStatus: 'conflict' } })
+          continue
+        }
         if (editor.getEditingShapeId() === shape.id) continue
-        editor.updateShape({ id: shape.id, type: 'math-note' as any, props: { text: signal.content } })
+        editor.updateShape({ id: shape.id, type: 'math-note' as any, props: { text: signal.content ?? '', backingSyncStatus: 'synced', backingLastSyncedAt: Date.now() } })
       }
     })
   }, [])

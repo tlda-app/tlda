@@ -347,6 +347,7 @@ router.get('/:name/outline', requireRead, async (req, res) => {
   const base = String(file).replace(/\.tex$/, '').split('/').pop()
   const slug = `${base}-L${startLine}c${startCol}-L${endLine}c${endCol}`
   const backingFile = join(root, '.outlines', `${slug}.md`)
+  const backingName = `.outlines/${slug}.md`
   try {
     // Best-effort clause outline; if the span yields nothing, fall back to the
     // raw highlighted text so the extracted note is never empty.
@@ -377,7 +378,7 @@ router.get('/:name/outline', requireRead, async (req, res) => {
       const { execSync } = await import('child_process')
       mdView = execSync('pandoc -f latex -t markdown --wrap=none', { input: region, encoding: 'utf8', timeout: 10000 })
     } catch { /* pandoc unavailable — fall back to raw tex */ }
-    res.json({ markdown, tex, md: mdView, span: { startLine, startCol, endLine, endCol }, file, backingFile, slug: modelOk ? slug : '' })
+    res.json({ markdown, tex, md: mdView, span: { startLine, startCol, endLine, endCol }, file, backingFile, backingName, slug: modelOk ? slug : '' })
   } catch (e) {
     res.status(500).json({ error: String(e?.message || e) })
   }
