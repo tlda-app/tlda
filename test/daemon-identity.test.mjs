@@ -35,9 +35,22 @@ test('resolveDaemonIsolation: worktree rig with TLDA_SERVER alone starts clean (
   const r = resolveDaemonIsolation({
     env: { TLDA_SERVER: 'http://localhost:5599' },
     scriptPath: '/Users/skip/work/tlda/.worktrees/rig/bin/fleet-daemon.mjs',
+    configuredServer: 'https://live.tlda.example',
+    targetServer: 'http://localhost:5599',
   })
   assert.equal(r.refuseReason, null)
   assert.equal(r.isolated, true)
+})
+
+test('resolveDaemonIsolation: worktree rig with TLDA_SERVER pointing at canonical server is refused', () => {
+  const r = resolveDaemonIsolation({
+    env: { TLDA_SERVER: 'https://live.tlda.example/' },
+    scriptPath: '/Users/skip/work/tlda/.worktrees/rig/bin/fleet-daemon.mjs',
+    configuredServer: 'https://live.tlda.example',
+    targetServer: 'https://live.tlda.example/',
+  })
+  assert.match(r.refuseReason, /worktree/)
+  assert.equal(r.isolated, false)
 })
 
 test('resolveDaemonIsolation: worktree daemon with NEITHER signal is refused (the rogue leak)', () => {

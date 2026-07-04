@@ -25,18 +25,27 @@ export function isWorktreePath(p) {
 // Inputs are plain values so this is fully testable without process/env state.
 //   env:        { TLDA_DAEMON_CONFIG_DIR?, TLDA_SERVER? }
 //   scriptPath: the daemon's own resolved script path (import.meta path)
+//   configuredServer: active config's canonical fleet server, when known
+//   targetServer: server this daemon will connect to, when known
 // Returns { usingCustomConfigDir, isolated, refuseReason }. refuseReason is a
 // string when the daemon must abort with a loud error, or null when it's safe.
 //
 // A daemon is "isolated" from the live fleet when EITHER signal is present:
 //   - TLDA_DAEMON_CONFIG_DIR — its own config dir (own machine_id), or
-//   - TLDA_SERVER            — its own server target (honored by the daemon's
-//     SERVER resolution, so it never reaches the live Fly instance).
+//   - TLDA_SERVER            — its own server target, but only when it differs
+//     from the canonical configured server or is the explicit dev-daemon target.
 // The leak is a WORKTREE daemon with NEITHER: it falls through to live Fly with
 // the shared machine_id ("air") and evicts the real daemon. That one is refused.
-export function resolveDaemonIsolation({ env = {}, scriptPath = '' } = {}) {
+export function resolveDaemonIsolation({ env = {}, scriptPath = '', configuredServer = null, targetServer = null } = {}) {
   const usingCustomConfigDir = !!env.TLDA_DAEMON_CONFIG_DIR
-  const isolated = usingCustomConfigDir || !!env.TLDA_SERVER
+  const norm = (u) => u ? String(u).replace(/\/+$/, '') : null
+  const explicitServer = !!env.TLDA_SERVER
+  const serverIsolated = explicitServer && (
+    !configuredServer ||
+    norm(targetServer || env.TLDA_SERVER) !== norm(configuredServer) ||
+    !!env.TLDA_DEV_DAEMON
+  )
+  const isolated = usingCustomConfigDir || serverIsolated
 
   if (isWorktreePath(scriptPath) && !isolated) {
     return {

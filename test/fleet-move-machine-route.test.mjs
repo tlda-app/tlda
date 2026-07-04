@@ -46,7 +46,7 @@ function moveStore(agent) {
 }
 
 async function postJson(base, body) {
-  const res = await fetch(`${base}/api/agents/move-machine`, {
+  const res = await fetch(`${base}/api/agents/move-daemon`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -55,25 +55,27 @@ async function postJson(base, body) {
   return { status: res.status, json }
 }
 
-test('move-machine refuses when expected source does not match current agent machine', async () => {
-  const agent = { id: 'fleet:a', friendly_name: 'alpha', machine_id: 'air', dead: false }
+test('move-daemon refuses when expected source does not match current agent address', async () => {
+  const agent = { id: 'fleet:a', friendly_name: 'alpha', machine_id: 'air', env_name: 'unstable', dead: false }
   await withServer({
     fleetStore: moveStore(agent),
-    daemonConnections: new Map([['mini', { readyState: 1 }]]),
+    daemonConnections: new Map([['mini:stable', { readyState: 1 }]]),
     broadcastState: () => {},
   }, async base => {
     const res = await postJson(base, {
       agent: 'alpha',
       machine_id: 'mini',
+      env_name: 'stable',
       expected_from: 'wrong',
+      expected_env: 'unstable',
     })
     assert.equal(res.status, 409)
     assert.match(res.json.error, /belongs to air/)
   })
 })
 
-test('move-machine refuses when destination daemon is not connected', async () => {
-  const agent = { id: 'fleet:a', friendly_name: 'alpha', machine_id: 'air', dead: false }
+test('move-daemon refuses when destination daemon is not connected', async () => {
+  const agent = { id: 'fleet:a', friendly_name: 'alpha', machine_id: 'air', env_name: 'unstable', dead: false }
   await withServer({
     fleetStore: moveStore(agent),
     daemonConnections: new Map(),
@@ -82,32 +84,37 @@ test('move-machine refuses when destination daemon is not connected', async () =
     const res = await postJson(base, {
       agent: 'alpha',
       machine_id: 'mini',
+      env_name: 'stable',
       expected_from: 'air',
+      expected_env: 'unstable',
     })
     assert.equal(res.status, 503)
     assert.match(res.json.error, /no fleet-daemon connected/)
   })
 })
 
-test('move-machine switches machine_id and refreshes daemon agent lists', async () => {
-  const agent = { id: 'fleet:a', friendly_name: 'alpha', machine_id: 'air', dead: false, metadata: { kind: 'codex' } }
+test('move-daemon switches daemon address and refreshes daemon agent lists', async () => {
+  const agent = { id: 'fleet:a', friendly_name: 'alpha', machine_id: 'air', env_name: 'unstable', dead: false, metadata: { kind: 'codex' } }
   const store = moveStore(agent)
   let stateBroadcasts = 0
   let daemonRefreshes = 0
   await withServer({
     fleetStore: store,
-    daemonConnections: new Map([['mini', { readyState: 1 }]]),
+    daemonConnections: new Map([['mini:stable', { readyState: 1 }]]),
     broadcastState: () => { stateBroadcasts++ },
     broadcastDaemonAgentsUpdated: () => { daemonRefreshes++ },
   }, async base => {
     const res = await postJson(base, {
       agent: 'alpha',
       machine_id: 'mini',
+      env_name: 'stable',
       expected_from: 'air',
+      expected_env: 'unstable',
     })
     assert.equal(res.status, 200)
     assert.equal(res.json.ok, true)
     assert.equal(agent.machine_id, 'mini')
+    assert.equal(agent.env_name, 'stable')
     assert.equal(store.calls.upsert.length, 1)
     assert.equal(store.calls.share[0].agentId, 'fleet:a')
     assert.equal(stateBroadcasts, 1)

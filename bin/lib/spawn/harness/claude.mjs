@@ -69,6 +69,7 @@ export function buildCmd({
   }
   parts.push('NODE_TLS_REJECT_UNAUTHORIZED=0')
   if (name) parts.push(`FLEET_NAME=${sq(name)}`)
+  if (env.TLDA_MACHINE_ID) parts.push(`TLDA_MACHINE_ID=${sq(env.TLDA_MACHINE_ID)}`)
   const configName = activeConfigName(config, env)
   if (configName) parts.push(`TLDA_CONFIG=${sq(configName)}`)
   if (api) {

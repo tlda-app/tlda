@@ -78,9 +78,25 @@ function resolveAdapterModel(adapter, rawModel, config) {
 }
 
 function spawnEnv(params = {}) {
-  return params.activeConfigName
-    ? { ...process.env, TLDA_CONFIG: params.activeConfigName }
-    : process.env
+  const env = { ...process.env }
+  if (params.activeConfigName) env.TLDA_CONFIG = params.activeConfigName
+  if (params.machineId) env.TLDA_MACHINE_ID = params.machineId
+  return env
+}
+
+async function waitForFreshCodexRollout(agent, options = {}) {
+  const deadline = Date.now() + (options.timeoutMs || 60_000)
+  const lookupOptions = {
+    identityConfigDir: options.identityConfigDir,
+    identityFilePath: options.identityFilePath,
+    sessionsBase: options.sessionsBase,
+  }
+  while (Date.now() < deadline) {
+    const handle = findCodexRollout(agent, lookupOptions)
+    if (handle?.rolloutId) return handle
+    await new Promise(r => setTimeout(r, 500))
+  }
+  return findCodexRollout(agent, lookupOptions)
 }
 
 async function buildCommand({ requestedKind, adapter, fleetId, tmuxSession, model, modelProvider = null, name, cwd, effort, permissionMode, spawnPolicy, api, dnsAlias, resumeId = null, includePrompt = true, leasePolicy = null, enforceFence = false, harnessOptions = {}, config = undefined, env = process.env }) {
@@ -278,7 +294,10 @@ async function spawnFresh(params) {
       throw new SpawnError('launch-failed', `tmux session ${tmuxSession} already has a live harness runtime`, { tmuxSession })
     }
     if (requestedKind === 'codex') {
-      await (deps.injectCodexPrompt || injectCodexPrompt)(tmuxSession, codex.kickoffPrompt(name), { tmuxSocket: params.tmuxSocket })
+      const injected = await (deps.injectCodexPrompt || injectCodexPrompt)(tmuxSession, codex.kickoffPrompt(name), { tmuxSocket: params.tmuxSocket })
+      if (!injected) {
+        throw new SpawnError('launch-failed', `codex prompt injection did not reach ${tmuxSession}`, { fleetId, tmuxSession })
+      }
     }
     if (!serverUp) {
       return { ok: true, fleetId, tmuxSession, harness: requestedKind, model, registrationDeferred: true }
@@ -287,7 +306,23 @@ async function spawnFresh(params) {
     if (!registered.ok) {
       throw new SpawnError(registered.reason, `spawn ${fleetId} did not register before deadline`, { fleetId, tmuxSession })
     }
-    return { ok: true, fleetId, tmuxSession, harness: requestedKind, model }
+    let resumeId = null
+    if (requestedKind === 'codex') {
+      const registeredAgent = registered.agent || {
+        id: fleetId,
+        friendly_name: name,
+        cwd,
+        registered_at: new Date().toISOString(),
+      }
+      const handle = await waitForFreshCodexRollout(registeredAgent, {
+        identityConfigDir: params.identityConfigDir,
+        identityFilePath: params.identityFilePath,
+        sessionsBase: params.codexSessionsBase,
+        timeoutMs: params.codexRolloutTimeoutMs,
+      })
+      resumeId = codex.resumeId(handle)
+    }
+    return { ok: true, fleetId, tmuxSession, harness: requestedKind, model, resumeId }
   } catch (e) {
     const err = toSpawnError(e, e?.message?.includes('not available') ? 'name-bounced' : 'launch-failed', { fleetId, tmuxSession, model })
     librarian.failPending(fleetId, err.reason || 'launch-failed')

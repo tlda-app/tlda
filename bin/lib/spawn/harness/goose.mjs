@@ -71,6 +71,7 @@ export function buildCmd({
   // Fresh spawn names can still be tentative before server confirm/rename;
   // GIT_AUTHOR_EMAIL carries the stable fleet id for authoritative attribution.
   parts.push(...gitAuthorEnv(fleetId, name).map(v => sqEnv(v)))
+  if (env.TLDA_MACHINE_ID) parts.push(`TLDA_MACHINE_ID=${sq(env.TLDA_MACHINE_ID)}`)
   const configName = activeConfigName(config, env)
   if (configName) parts.push(`TLDA_CONFIG=${sq(configName)}`)
   if (dnsAlias && fs.existsSync(DNS_ALIAS_PRELOAD)) {

@@ -266,7 +266,29 @@ export class FleetStore {
         human INTEGER DEFAULT 0,
         is_manager INTEGER DEFAULT 0,
         metadata TEXT,                -- JSON blob for extra fields
-        machine_id TEXT               -- which fleet-daemon machine owns this agent (NULL = unknown)
+        machine_id TEXT,              -- which fleet-daemon machine owns this agent (NULL = unknown)
+        env_name TEXT,                -- daemon config lane on that machine
+        daemon_key TEXT,              -- scoped daemon registry key that owns this agent/session
+        resume_id TEXT                -- durable harness resume handle (codex rollout id, claude session id, ...)
+      );
+
+      -- Daemon registry: durable record of scoped daemon identities. This is
+      -- the authority for "which daemon is allowed to do which job"; websocket
+      -- connections are just the current live transport for a registry row.
+      CREATE TABLE IF NOT EXISTS daemon_registry (
+        daemon_key TEXT PRIMARY KEY,
+        machine_id TEXT NOT NULL,
+        env_name TEXT NOT NULL,
+        install_path TEXT,
+        user TEXT,
+        hostname TEXT,
+        version TEXT,
+        boot_id INTEGER,
+        status TEXT NOT NULL DEFAULT 'disconnected',
+        connected_at TEXT,
+        disconnected_at TEXT,
+        last_seen TEXT,
+        metadata TEXT
       );
 
       -- Materialized task state (cache, rebuilt from events)
@@ -403,9 +425,25 @@ export class FleetStore {
     if (!agentCols.some(c => c.name === 'machine_id')) {
       this.db.exec("ALTER TABLE agents ADD COLUMN machine_id TEXT");
     }
+    if (!agentCols.some(c => c.name === 'env_name')) {
+      this.db.exec("ALTER TABLE agents ADD COLUMN env_name TEXT");
+    }
+    if (!agentCols.some(c => c.name === 'daemon_key')) {
+      this.db.exec("ALTER TABLE agents ADD COLUMN daemon_key TEXT");
+    }
+    if (!agentCols.some(c => c.name === 'resume_id')) {
+      this.db.exec("ALTER TABLE agents ADD COLUMN resume_id TEXT");
+    }
     if (!agentCols.some(c => c.name === 'pretty_name')) {
       this.db.exec("ALTER TABLE agents ADD COLUMN pretty_name TEXT");
     }
+    this.db.exec(`
+      UPDATE agents
+      SET daemon_key = machine_id || ':' || env_name
+      WHERE daemon_key IS NULL
+        AND machine_id IS NOT NULL AND machine_id != ''
+        AND env_name IS NOT NULL AND env_name != ''
+    `);
     const backfillPrettyNameRows = this.db.prepare(`
       SELECT id, friendly_name FROM agents
       WHERE friendly_name IS NOT NULL
@@ -420,7 +458,9 @@ export class FleetStore {
         }
       })(backfillPrettyNameRows);
     }
-    this.db.exec("CREATE INDEX IF NOT EXISTS idx_agents_machine ON agents(machine_id)");
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_agents_machine_env ON agents(machine_id, env_name)");
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_agents_daemon_key ON agents(daemon_key)");
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_daemon_registry_status ON daemon_registry(status, machine_id, env_name)");
 
     // Add lineage columns to agents if missing
     if (!agentCols.some(c => c.name === 'lineage_id')) {
@@ -629,7 +669,7 @@ export class FleetStore {
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_agents_last_seen ON agents(last_seen DESC);
       CREATE INDEX IF NOT EXISTS idx_agents_alive ON agents(dead, last_seen DESC);
-      CREATE INDEX IF NOT EXISTS idx_agents_machine_alive ON agents(machine_id, dead);
+      CREATE INDEX IF NOT EXISTS idx_agents_machine_env_alive ON agents(machine_id, env_name, dead);
       CREATE INDEX IF NOT EXISTS idx_agents_friendly_name ON agents(friendly_name);
       CREATE INDEX IF NOT EXISTS idx_unread_unread ON unread(event_id) WHERE read = 0;
     `);
@@ -731,8 +771,8 @@ export class FleetStore {
 
     // Agent queries
     this._upsertAgent = this.db.prepare(`
-      INSERT INTO agents (id, friendly_name, pretty_name, tmux_session, session_id, session_ids, cwd, labels, registered_at, last_seen, dead, human, is_manager, metadata, machine_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO agents (id, friendly_name, pretty_name, tmux_session, session_id, session_ids, cwd, labels, registered_at, last_seen, dead, human, is_manager, metadata, machine_id, env_name, daemon_key, resume_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         friendly_name = COALESCE(excluded.friendly_name, agents.friendly_name),
         pretty_name = COALESCE(excluded.pretty_name, agents.pretty_name),
@@ -751,14 +791,40 @@ export class FleetStore {
           WHEN agents.metadata IS NULL THEN excluded.metadata
           ELSE json_patch(agents.metadata, excluded.metadata)
         END,
-        machine_id = COALESCE(excluded.machine_id, agents.machine_id)
+        machine_id = COALESCE(excluded.machine_id, agents.machine_id),
+        env_name = COALESCE(excluded.env_name, agents.env_name),
+        daemon_key = COALESCE(excluded.daemon_key, agents.daemon_key),
+        resume_id = COALESCE(excluded.resume_id, agents.resume_id)
     `);
 
     const AGENT_SELECT = 'agents.*, lineages.friendly_name AS lineage_name';
     const AGENT_JOIN = 'FROM agents LEFT JOIN lineages ON lineages.id = agents.lineage_id';
     this._getAgent = this.db.prepare(`SELECT ${AGENT_SELECT} ${AGENT_JOIN} WHERE agents.id = ?`);
-    this._getAgentsByMachine = this.db.prepare(`SELECT ${AGENT_SELECT} ${AGENT_JOIN} WHERE agents.machine_id = ? AND agents.dead = 0`);
+    this._getAgentsByDaemonKey = this.db.prepare(`SELECT ${AGENT_SELECT} ${AGENT_JOIN} WHERE agents.daemon_key = ? AND agents.dead = 0`);
     this._getAgentByName = this.db.prepare(`SELECT ${AGENT_SELECT} ${AGENT_JOIN} WHERE agents.friendly_name = ?`);
+    this._upsertDaemonRegistration = this.db.prepare(`
+      INSERT INTO daemon_registry (daemon_key, machine_id, env_name, install_path, user, hostname, version, boot_id, status, connected_at, disconnected_at, last_seen, metadata)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(daemon_key) DO UPDATE SET
+        machine_id = excluded.machine_id,
+        env_name = excluded.env_name,
+        install_path = excluded.install_path,
+        user = excluded.user,
+        hostname = excluded.hostname,
+        version = excluded.version,
+        boot_id = excluded.boot_id,
+        status = excluded.status,
+        connected_at = excluded.connected_at,
+        disconnected_at = excluded.disconnected_at,
+        last_seen = excluded.last_seen,
+        metadata = excluded.metadata
+    `);
+    this._markDaemonDisconnected = this.db.prepare(`
+      UPDATE daemon_registry
+      SET status = 'disconnected', disconnected_at = ?, last_seen = ?
+      WHERE daemon_key = ?
+    `);
+    this._getDaemonRegistration = this.db.prepare('SELECT * FROM daemon_registry WHERE daemon_key = ?');
 
     // Name provenance: span covering an instant (newest qualifying span wins).
     this._nameAtStmt = this.db.prepare(`
@@ -1129,6 +1195,7 @@ export class FleetStore {
           agent = { ...agent, labels: filtered };
         }
       }
+      const daemonKey = agent.daemon_key || (agent.machine_id && agent.env_name ? `${agent.machine_id}:${agent.env_name}` : null);
       this._upsertAgent.run(
         agent.id,
         agent.friendly_name || null,
@@ -1144,7 +1211,10 @@ export class FleetStore {
         agent.human ? 1 : 0,
         agent.is_manager ? 1 : 0,
         agent.metadata ? JSON.stringify(agent.metadata) : null,
-        agent.machine_id || null
+        agent.machine_id || null,
+        agent.env_name || null,
+        daemonKey,
+        agent.resume_id || null
       );
       this._bustAgentsCache();
       this._syncAgentRegistry(agent.id);
@@ -1156,11 +1226,46 @@ export class FleetStore {
     }
   }
 
-  // Agents associated with a particular fleet-daemon machine. Used by the
+  // Agents associated with a particular daemon registry identity. Used by the
   // server when sending a `daemon-welcome` message and when routing RPCs.
-  getAgentsByMachine(machineId) {
-    if (!machineId) return [];
-    return this._getAgentsByMachine.all(machineId).map(r => this._hydrateAgent(r));
+  getAgentsByDaemon(machineId, envName) {
+    if (!machineId || !envName) return [];
+    return this.getAgentsByDaemonKey(`${machineId}:${envName}`);
+  }
+
+  getAgentsByDaemonKey(daemonKey) {
+    if (!daemonKey) return [];
+    return this._getAgentsByDaemonKey.all(daemonKey).map(r => this._hydrateAgent(r));
+  }
+
+  upsertDaemonRegistration(daemon) {
+    const now = daemon.last_seen || new Date().toISOString();
+    this._upsertDaemonRegistration.run(
+      daemon.daemon_key,
+      daemon.machine_id,
+      daemon.env_name,
+      daemon.install_path || null,
+      daemon.user || null,
+      daemon.hostname || null,
+      daemon.version || null,
+      daemon.boot_id || null,
+      daemon.status || 'connected',
+      daemon.connected_at || now,
+      null,
+      now,
+      daemon.metadata ? JSON.stringify(daemon.metadata) : null
+    );
+  }
+
+  markDaemonDisconnected(daemonKey, ts = new Date().toISOString()) {
+    if (!daemonKey) return;
+    this._markDaemonDisconnected.run(ts, ts, daemonKey);
+  }
+
+  getDaemonRegistration(daemonKey) {
+    const row = this._getDaemonRegistration.get(daemonKey);
+    if (!row) return null;
+    return { ...row, metadata: row.metadata ? JSON.parse(row.metadata) : null };
   }
 
   getAgent(id) {

@@ -10,6 +10,48 @@ import { FleetStore } from '../server/lib/fleet-store.mjs'
 import { prettyNameForFriendlyName } from '../shared/lineage-name.mjs'
 
 describe('FleetStore agent metadata', () => {
+  it('persists daemon registry ownership and agent resume handles', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-store-daemon-registry-'))
+    const dbPath = path.join(dir, 'fleet.db')
+    const store = new FleetStore(dbPath)
+
+    try {
+      store.upsertDaemonRegistration({
+        daemon_key: 'mini:stable',
+        machine_id: 'mini',
+        env_name: 'stable',
+        install_path: '/Users/skip/work/tlda/bin/fleet-daemon.mjs',
+        boot_id: 123,
+        status: 'connected',
+      })
+      store.upsertAgent({
+        id: 'fleet:codex',
+        friendly_name: 'codex-worker',
+        machine_id: 'mini',
+        env_name: 'stable',
+        tmux_session: 'fleet-codex',
+        resume_id: 'rollout-abc',
+        metadata: { kind: 'codex' },
+      })
+
+      const daemon = store.getDaemonRegistration('mini:stable')
+      assert.equal(daemon.status, 'connected')
+      assert.equal(daemon.machine_id, 'mini')
+      assert.equal(daemon.env_name, 'stable')
+
+      const agent = store.getAgent('fleet:codex')
+      assert.equal(agent.daemon_key, 'mini:stable')
+      assert.equal(agent.resume_id, 'rollout-abc')
+      assert.deepEqual(store.getAgentsByDaemonKey('mini:stable').map(a => a.id), ['fleet:codex'])
+
+      store.markDaemonDisconnected('mini:stable', '2026-07-04T20:00:00.000Z')
+      assert.equal(store.getDaemonRegistration('mini:stable').status, 'disconnected')
+    } finally {
+      store.close()
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('merges registration metadata without dropping spawn policy', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-store-metadata-'))
     const dbPath = path.join(dir, 'fleet.db')
