@@ -890,9 +890,10 @@ function surfaceSpawnBounce(error) {
   throw error
 }
 
-// Spawning a name that already belongs to a live agent is an idempotent wake
-// only when the requested spawn spec matches that live namesake. A fresh spawn
-// whose model/kind/project differ is a new-agent intent and gets bounced.
+// A fresh spawn is a new-agent intent. If its tentative name is occupied, the
+// registering agent gets a deterministic variant from FleetStore's allocator.
+// Non-fresh spawns keep the old convenience behavior: a live exact-name match
+// wakes the existing agent by durable fleet id.
 async function resolveSpawnTarget(name, respawn, { fresh = false, requested = {} } = {}) {
   if (respawn || !name || !fleetStore) return { name, respawn }
   let resolved
@@ -1205,11 +1206,13 @@ if (fleetStore) {
 // surfaces it as a <channel> system-reminder.
 function deliverTldaFeedbackChat({ from, to, text, metadata }) {
   if (!fleetStore) return
-  const metadataJson = metadata ? JSON.stringify(metadata) : JSON.stringify(null)
-  const event = fleetStore.share?.({ type: 'chat', from, to, text, metadata: metadataJson })
-  if (!event) return
-  fleetStore.addUnread?.(event.id, to)
-  broadcastEvent('fleet-event', { type: 'chat', from, to, id: event.id, text, event_id: event.id })
+  Promise.resolve(fleetStore.share?.({ type: 'chat', from, to, text, metadata }))
+    .then(event => {
+      if (!event) return
+      fleetStore.addUnread?.(event.id, to)
+      broadcastEvent('fleet-event', { type: 'chat', from, to, id: event.id, text, event_id: event.id })
+    })
+    .catch(e => console.error(`[fleet-feedback] delivery failed: ${e.message}`))
 }
 
 // When a project is created or its sourceDir changes, push the new

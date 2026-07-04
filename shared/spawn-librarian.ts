@@ -331,36 +331,13 @@ export function resolveSpawnCollision(input: {
   liveMatches: readonly AgentRecord[]
   projectForCwd?: (cwd?: string | null) => string | null
 }): { name: string; respawn: boolean; existing?: AgentRecord } {
-  const { name, respawn, fresh = false, requested = {}, liveMatches, projectForCwd } = input
+  const { name, respawn, fresh = false, liveMatches } = input
   if (respawn || !name) return { name, respawn }
+  if (fresh) return { name, respawn: false }
   const live = liveMatches.filter((a) => !a.dead)
   if (live.length === 0) return { name, respawn }
-  if (live.length > 1) {
-    if (fresh) {
-      throw new SpawnBounceError(
-        `name "${name}" matches multiple live agents - pick another name, or respawn a specific one by id`,
-        { name, requested, existing: null }
-      )
-    }
-    return { name, respawn }
-  }
+  if (live.length > 1) return { name, respawn }
   const existing = live[0]
   if (!existing) return { name, respawn }
-  if (fresh && specMismatch(requested, existing, { projectForCwd })) {
-    const got = describeAgentSpec(existing, { projectForCwd })
-    const want = describeRequestedSpec(requested)
-    throw new SpawnBounceError(
-      `you asked for ${want}; "${name}" is live as ${got} (${existing.id}) - pick another name, or respawn it (respawn:true) to wake it`,
-      {
-        name,
-        requested,
-        existing: {
-          id: existing.id,
-          model: (existing.metadata || {}).model,
-          project: projectForCwd?.(existing.cwd) || null,
-        },
-      }
-    )
-  }
   return { name: existing.id, respawn: true, existing }
 }
