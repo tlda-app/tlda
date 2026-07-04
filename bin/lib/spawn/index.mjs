@@ -76,7 +76,7 @@ function resolveAdapterModel(adapter, rawModel, config) {
   return { model: adapter.resolveModel(rawModel, { config }), provider: null, selection: null }
 }
 
-async function buildCommand({ requestedKind, adapter, fleetId, tmuxSession, model, modelProvider = null, name, cwd, effort, permissionMode, spawnPolicy, api, dnsAlias, resumeId = null, includePrompt = true, leasePolicy = null, enforceFence = false, harnessOptions = null }) {
+async function buildCommand({ requestedKind, adapter, fleetId, tmuxSession, model, modelProvider = null, name, cwd, effort, permissionMode, spawnPolicy, api, dnsAlias, resumeId = null, includePrompt = true, leasePolicy = null, enforceFence = false, harnessOptions = {} }) {
   let cmd
   let sendKeys = false
   let projection = null
