@@ -1043,6 +1043,7 @@ function ConversationView({ thread, ctx, myId, myName }: { thread: Thread; ctx: 
           onKeyboardSend={send}
           onVoiceSend={(targets, text) => send(text, targets)}
           isTouchDevice={_isTouchDevice}
+          className="fleet-inbox-composer-textarea"
           style={COMPOSER_STYLE}
         />
       </div>

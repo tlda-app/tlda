@@ -36,6 +36,7 @@ export function ChatComposer({
   onDrop,
   onDragOver,
   inputRef: externalRef,
+  className,
   placeholder = '',
   isTouchDevice = false,
   style,
@@ -49,6 +50,7 @@ export function ChatComposer({
   onDrop?: (e: React.DragEvent<HTMLTextAreaElement>) => void
   onDragOver?: (e: React.DragEvent<HTMLTextAreaElement>) => void
   inputRef?: React.RefObject<HTMLTextAreaElement | null>
+  className?: string
   placeholder?: string
   isTouchDevice?: boolean
   style?: React.CSSProperties
@@ -63,6 +65,7 @@ export function ChatComposer({
   return (
     <textarea
       ref={inputRef as any}
+      className={className}
       placeholder={placeholder}
       rows={1}
       inputMode={isTouchDevice ? 'none' : undefined}
