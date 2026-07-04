@@ -1440,6 +1440,58 @@ export class FleetStore {
     return collisions;
   }
 
+  _friendlyNameUnavailableLower({ excludeId = null, asFriendlyName = false } = {}) {
+    const unavailable = new Set(PSEUDO_LABELS.map(name => String(name).toLowerCase()));
+    const rows = this.db.prepare(
+      'SELECT id, friendly_name, labels FROM agents WHERE dead = 0 AND id != ?'
+    ).all(excludeId || '');
+    for (const r of rows) {
+      if (r.id) unavailable.add(String(r.id).toLowerCase());
+      if (r.friendly_name) unavailable.add(String(r.friendly_name).toLowerCase());
+      if (asFriendlyName && r.labels) {
+        let parsed;
+        try { parsed = JSON.parse(r.labels); } catch { continue; }
+        if (Array.isArray(parsed)) {
+          for (const label of parsed) {
+            if (label) unavailable.add(String(label).toLowerCase());
+          }
+        }
+      }
+    }
+    return unavailable;
+  }
+
+  allocateFreshFriendlyName(requestedName, { excludeId = null } = {}) {
+    if (!requestedName || typeof requestedName !== 'string') return null;
+    const requested = requestedName.trim();
+    if (!requested) return null;
+    const lowerRequested = requested.toLowerCase();
+    if (PSEUDO_LABELS.includes(lowerRequested)) {
+      throw new Error(`Name "${requested}" unavailable: reserved routing label`);
+    }
+
+    const unavailable = this._friendlyNameUnavailableLower({ excludeId, asFriendlyName: true });
+    if (!unavailable.has(lowerRequested)) return requested;
+
+    const first = requested[0];
+    const rest = requested.slice(1);
+    if (/^[A-Za-z]$/.test(first)) {
+      const isUpper = first >= 'A' && first <= 'Z';
+      const base = isUpper ? 'A'.charCodeAt(0) : 'a'.charCodeAt(0);
+      const code = first.charCodeAt(0);
+      for (let next = code - 1; next >= base; next--) {
+        const candidate = `${String.fromCharCode(next)}${rest}`;
+        if (!unavailable.has(candidate.toLowerCase())) return candidate;
+      }
+    }
+
+    for (let i = 2; i < 10000; i++) {
+      const candidate = `${requested}-${i}`;
+      if (!unavailable.has(candidate.toLowerCase())) return candidate;
+    }
+    throw new Error(`No available friendly-name variant for "${requested}"`);
+  }
+
   getAliveAgents() {
     // Highest-frequency roster read (store-agents / agents panel /
     // broadcastState). Serve the maintained alive view instead of re-querying

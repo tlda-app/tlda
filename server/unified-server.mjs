@@ -3298,17 +3298,20 @@ async function handleFleetWsMessage(ws, msg) {
     // — that would undo a lineage rotation. The terminal/window name lives in
     // tmux_session, independent of the friendly name. So only the *first* name
     // is taken from `name`; once set, it's preserved.
-    const willSetName = !existing?.friendly_name && name
+    const requestedName = name || null
+    let assignedName = existing?.friendly_name || requestedName
+    const willSetName = !existing?.friendly_name && requestedName
     if (willSetName) {
-      const cols = fleetStore.checkNameAvailable([name], { excludeId: agentId, asFriendlyName: true })
-      if (cols.length) {
-        error(`Name "${name}" unavailable: ${cols.map(c => c.kind === 'pseudo_label' ? 'reserved routing label' : `collides with ${c.kind} on ${c.agent_id}`).join('; ')}`)
+      try {
+        assignedName = fleetStore.allocateFreshFriendlyName(requestedName, { excludeId: agentId })
+      } catch (e) {
+        error(e.message)
         return
       }
     }
     const agent = {
       id: agentId,
-      friendly_name: existing?.friendly_name || name || null,
+      friendly_name: assignedName || null,
       pretty_name: pretty_name ?? existing?.pretty_name ?? null,
       tmux_session: tmux_session || existing?.tmux_session || null,
       session_id: session_id || existing?.session_id || null,
@@ -3364,7 +3367,7 @@ async function handleFleetWsMessage(ws, msg) {
       }
       throw e
     }
-    fleetStore.share?.({ type: 'register', agent_id: agentId, from: agentId, to: agentId, text: `${name || agentId} ${msg.shell ? 'pre-registered' : 'registered'}` })
+    fleetStore.share?.({ type: 'register', agent_id: agentId, from: agentId, to: agentId, text: `${agent.friendly_name || requestedName || agentId} ${msg.shell ? 'pre-registered' : 'registered'}` })
     // Every non-human agent belongs to a lineage from birth, as its own `dawn`
     // (the worker). This guarantees a handoff always has a chain to rotate within
     // — a direct handoff promotes that dawn → day (manager). The lineage is an
@@ -3406,7 +3409,14 @@ async function handleFleetWsMessage(ws, msg) {
     // If the agent has a machine_id, push the updated agent list to that
     // machine's daemon so it can start watching the new JSONL.
     if (agent.machine_id) broadcastDaemonAgentsUpdated()
-    reply({ ok: true, agent: fleetStore.getAgent?.(agentId) || agent })
+    const storedAgent = fleetStore.getAgent?.(agentId) || agent
+    reply({
+      ok: true,
+      agent: storedAgent,
+      assigned_name: storedAgent.friendly_name || null,
+      requested_name: requestedName,
+      name_changed: !!(requestedName && storedAgent.friendly_name && requestedName !== storedAgent.friendly_name),
+    })
     return
   }
 

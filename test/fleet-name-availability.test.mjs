@@ -44,4 +44,29 @@ describe('fleet name/label availability', () => {
   it('allows shared ordinary group labels', () => {
     assert.deepEqual(store.checkNameAvailable(['reviewers'], { excludeId: 'fleet:b' }), [])
   })
+
+  it('allocates deterministic variants for fresh friendly-name collisions', () => {
+    assert.equal(store.allocateFreshFriendlyName('alpha', { excludeId: 'fleet:c' }), 'alpha-2')
+    assert.equal(store.allocateFreshFriendlyName('bravo', { excludeId: 'fleet:c' }), 'aravo')
+    assert.equal(store.allocateFreshFriendlyName('charlie', { excludeId: 'fleet:c' }), 'charlie')
+  })
+
+  it('keeps decrementing when the first variant is also unavailable', () => {
+    store.upsertAgent({ id: 'fleet:c', friendly_name: 'bharlie', labels: [], dead: false })
+    store.upsertAgent({ id: 'fleet:d', friendly_name: 'charlie', labels: [], dead: false })
+    assert.equal(store.allocateFreshFriendlyName('charlie', { excludeId: 'fleet:e' }), 'aharlie')
+  })
+
+  it('avoids labels, durable ids, and case variants when allocating fresh names', () => {
+    assert.equal(store.allocateFreshFriendlyName('reviewers', { excludeId: 'fleet:c' }), 'qeviewers')
+    assert.equal(store.allocateFreshFriendlyName('ALPHA', { excludeId: 'fleet:c' }), 'ALPHA-2')
+    assert.equal(store.allocateFreshFriendlyName('fleet:a', { excludeId: 'fleet:c' }), 'eleet:a')
+  })
+
+  it('keeps reserved pseudo-labels invalid instead of renaming them', () => {
+    assert.throws(
+      () => store.allocateFreshFriendlyName('awake', { excludeId: 'fleet:c' }),
+      /reserved routing label/
+    )
+  })
 })
