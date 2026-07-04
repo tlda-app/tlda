@@ -972,7 +972,7 @@ async function performSpawnRelay(caller, msg) {
   const {
     name, agent, model, doc, cwd, respawn, fresh, refresh, effort, kind, mode,
     capability, spawnCapability, privileges, requestedPrivileges, session, sessionId, session_id, enroll, routeAgent,
-    iLikeToLiveDangerously, phase,
+    iLikeToLiveDangerously, phase, mailboxTarget,
   } = msg || {}
   const requestedSession = session || sessionId || session_id || null
   const sessionMode = !!requestedSession
@@ -1076,7 +1076,7 @@ async function performSpawnRelay(caller, msg) {
     let result
     try {
       result = await sendRpc(machineId, 'spawn', spawnRequest)
-      if (pendingAgentId && result?.ok === false) {
+      if (pendingAgentId && result?.ok === false && !(mailboxTarget && result.reason === 'spawning')) {
         spawnLibrarian.failPending(pendingAgentId, result.code || result.reason || 'launch-failed')
       }
     } catch (e) {
@@ -1089,6 +1089,22 @@ async function performSpawnRelay(caller, msg) {
           error: e.message || String(e),
         })
         if (settled) deliverSpawnMailboxCompletion(settled, 'failed', { error: e.message || String(e), reason: e.code || 'launch-failed' })
+        return
+      }
+    }
+    if (pendingAgentId && mailboxTarget && result?.reason === 'spawning') {
+      const shell = fleetStore?.getAgent?.(pendingAgentId)
+      if (shell?.metadata?.shell) {
+        result = { ok: true, pending: true, agent: shell }
+      } else {
+        spawnLibrarian.failPending(pendingAgentId, 'register-timeout')
+        const failed = {
+          ok: false,
+          reason: 'register-timeout',
+          error: `spawn started for ${spawnName}, but no reserved shell row exists for ${pendingAgentId}`,
+        }
+        const settled = mailboxLibrarian.fail(mailbox.id, failed.error, failed)
+        if (settled) deliverSpawnMailboxCompletion(settled, 'failed', failed)
         return
       }
     }
@@ -1107,7 +1123,7 @@ async function performSpawnRelay(caller, msg) {
         return
       }
     }
-    const agentRecord = ready?.agent || (result?.agent_id ? fleetStore.findAgent(result.agent_id) : null) || (targetAgentId ? fleetStore.findAgent(targetAgentId) : null)
+    const agentRecord = ready?.agent || result?.agent || (result?.agent_id ? fleetStore.findAgent(result.agent_id) : null) || (targetAgentId ? fleetStore.findAgent(targetAgentId) : null)
     let lineage = null
     if (phase && agentRecord?.id) {
       try {
@@ -1120,12 +1136,20 @@ async function performSpawnRelay(caller, msg) {
     }
     const registeredPolicy = agentRecord?.metadata?.spawnPolicy
     const spawnPolicy = result?.spawnPolicy || registeredPolicy
+    const assignedName = agentRecord?.friendly_name || result?.assigned_name || result?.name || spawnName
+    const requestedName = result?.requested_name || spawnName
     const completion = {
       ...result,
       agentId: agentRecord?.id || result?.agent_id || targetAgentId || null,
-      label: agentRecord?.friendly_name || result?.name || spawnName,
+      label: assignedName,
+      assigned_name: assignedName,
+      requested_name: requestedName,
+      name_changed: result?.name_changed ?? (assignedName !== requestedName),
       spawnPolicy,
       grantedCapability: result?.grantedCapability || spawnPolicy?.capability,
+      spawnerCapability: result?.spawnerCapability,
+      projectCapability: result?.projectCapability,
+      modelCapability: result?.modelCapability,
       lineage,
     }
     const settled = mailboxLibrarian.complete(mailbox.id, completion)
@@ -3597,10 +3621,11 @@ async function handleFleetWsMessage(ws, msg) {
       _wakeQueue.delete(agentId)
       const agent = fleetStore.getAgent?.(agentId)
       if (!agent || agent.dead || agent.human) continue
-      const machineIds = [...daemonConnections.keys()]
-      if (machineIds.length === 0) continue
-      const machineId = agent.machine_id || machineIds[0]
       try {
+        const machineId = agent.machine_id
+        if (!machineId) throw new Error(`agent ${agent.friendly_name || agentId} has no machine_id; cannot route wake/respawn`)
+        const ownerDaemon = daemonConnections.get(machineId)
+        if (!ownerDaemon || ownerDaemon.readyState !== 1) throw new Error(`No fleet-daemon connected for machine "${machineId}"`)
         const serverAlive = isAgentAlive(agentId)
         const liveness = serverAlive
           ? await sendRpc(machineId, 'check-alive', { tmux_session: agent.tmux_session })
