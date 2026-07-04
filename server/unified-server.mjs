@@ -2040,10 +2040,12 @@ app.get('/api/local-image', requireRead, (req, res) => {
 })
 
 // ---------- Backing file registry ----------
-// Maps filePath → Set of docNames. Server tells daemon which files to watch.
-// Registry is in-memory; rebuilt from room shapes on daemon connect.
+// Maps project-local backing names to their owning daemon route. The server
+// never expands these into machine-local absolute paths; the owner daemon does.
 
-/** @type {Map<string, Set<string>>} filePath → Set<docName> */
+const DEFAULT_BACKING_OWNER_MACHINE_ID = process.env.TLDA_BACKING_DEFAULT_OWNER_MACHINE_ID || 'mini'
+
+/** @type {Map<string, {project: string, backingName: string, ownerMachineId: string | null, docNames: Set<string>}>} */
 const backingFileRegistry = new Map()
 function backingRegistryPath() { return join(getProjectsDir(), '..', 'data', 'backing-registry.json') }
 // The registry is derived from live room shapes (self-healing): rebuild clears any
@@ -2052,40 +2054,106 @@ function backingRegistryPath() { return join(getProjectsDir(), '..', 'data', 'ba
 // also re-register on mount, so rooms that load later repopulate themselves.
 rebuildBackingFileRegistry().catch(e => console.error('[CRITICAL] backing registry rebuild failed:', e.message))
 
-function backingFileRegister(filePath, docName) {
-  if (!backingFileRegistry.has(filePath)) backingFileRegistry.set(filePath, new Set())
-  backingFileRegistry.get(filePath).add(docName)
+function backingRegistryKey(project, backingName) {
+  return `${project}\0${backingName}`
+}
+
+function normalizeDocName(docName) {
+  return docName?.startsWith('doc-') ? docName : `doc-${docName}`
+}
+
+function projectFromDocName(docName) {
+  const roomName = normalizeDocName(docName)
+  return roomName.replace(/^doc-/, '')
+}
+
+function resolveBackingRecord({ docName, backingName, filePath, ownerMachineId, legacyBackfill }) {
+  const roomName = normalizeDocName(docName)
+  const project = projectFromDocName(docName)
+  const p = readProject(project)
+  let name = backingName || null
+  let legacyProjectLocalBackfill = false
+  if (!name && filePath) {
+    const sourceDir = p?.sourceDir ? resolve(p.sourceDir) : null
+    const absolute = filePath.startsWith('~/') ? join(homedir(), filePath.slice(2)) : filePath
+    if (!path.isAbsolute(absolute)) {
+      name = absolute
+    } else if (sourceDir) {
+      const rel = path.relative(sourceDir, resolve(absolute))
+      if (rel && !rel.startsWith('..') && !path.isAbsolute(rel)) {
+        name = rel
+        legacyProjectLocalBackfill = true
+      }
+    }
+  }
+  if (!name || path.isAbsolute(name) || name.split(/[\\/]/).includes('..')) {
+    return { error: 'backing file is not project-local', status: 'owner-missing', project, roomName }
+  }
+  const resolvedOwnerMachineId = ownerMachineId || (legacyBackfill && legacyProjectLocalBackfill ? DEFAULT_BACKING_OWNER_MACHINE_ID : null)
+  if (!resolvedOwnerMachineId) {
+    return { error: 'backing owner is missing', status: 'owner-missing', project, roomName, backingName: name.replace(/\\/g, '/') }
+  }
+  return {
+    project,
+    roomName,
+    backingName: name.replace(/\\/g, '/'),
+    ownerMachineId: resolvedOwnerMachineId,
+  }
+}
+
+function backingFileRegister(record) {
+  const key = backingRegistryKey(record.project, record.backingName)
+  if (!backingFileRegistry.has(key)) {
+    backingFileRegistry.set(key, {
+      project: record.project,
+      backingName: record.backingName,
+      ownerMachineId: record.ownerMachineId || null,
+      docNames: new Set(),
+    })
+  }
+  const entry = backingFileRegistry.get(key)
+  if (!entry.ownerMachineId && record.ownerMachineId) entry.ownerMachineId = record.ownerMachineId
+  entry.docNames.add(record.roomName)
   sendWatchBackingFiles()
   persistBackingRegistry()
 }
 
-function backingFileUnregister(filePath, docName) {
-  const docNames = backingFileRegistry.get(filePath)
-  if (!docNames) return
-  if (docName) {
-    docNames.delete(docName)
-    if (docNames.size > 0) { persistBackingRegistry(); return }
-  }
-  backingFileRegistry.delete(filePath)
+function backingFileUnregister(record) {
+  const key = backingRegistryKey(record.project, record.backingName)
+  const entry = backingFileRegistry.get(key)
+  if (!entry) return
+  entry.docNames.delete(record.roomName)
+  if (entry.docNames.size > 0) { persistBackingRegistry(); return }
+  backingFileRegistry.delete(key)
   sendWatchBackingFiles()
   persistBackingRegistry()
 }
 
 function sendWatchBackingFiles() {
-  if (daemonConnections.size === 0) return
-  const files = [...backingFileRegistry.entries()].map(([filePath, docNames]) => ({
-    filePath, docNames: [...docNames],
-  }))
-  for (const [, dws] of daemonConnections) {
-    if (dws.readyState !== 1) continue
+  const byOwner = new Map()
+  for (const entry of backingFileRegistry.values()) {
+    if (!entry.ownerMachineId) continue
+    if (!byOwner.has(entry.ownerMachineId)) byOwner.set(entry.ownerMachineId, [])
+    byOwner.get(entry.ownerMachineId).push({
+      project: entry.project,
+      backingName: entry.backingName,
+      docNames: [...entry.docNames],
+    })
+  }
+  for (const [machineId, files] of byOwner) {
+    const dws = daemonConnections.get(machineId)
+    if (!dws || dws.readyState !== 1) continue
     try { dws.send(JSON.stringify({ type: 'watch-backing-files', files })) } catch (e) { console.warn(`[server] daemon send failed: ${e.message}`) }
   }
 }
 
 function persistBackingRegistry() {
   try {
-    const data = [...backingFileRegistry.entries()].map(([filePath, docNames]) => ({
-      filePath, docNames: [...docNames],
+    const data = [...backingFileRegistry.values()].map(entry => ({
+      project: entry.project,
+      backingName: entry.backingName,
+      ownerMachineId: entry.ownerMachineId,
+      docNames: [...entry.docNames],
     }))
     writeFileSync(backingRegistryPath(), JSON.stringify(data, null, 2), 'utf8')
   } catch (e) { console.error(`[CRITICAL] failed to persist backing registry — file watches will be lost on restart: ${e.message}`) }
@@ -2102,9 +2170,15 @@ async function rebuildBackingFileRegistry() {
     try {
       const shapes = await getRoomRecords(docName, 'math-note')
       for (const shape of shapes) {
-        if (shape.props?.backingFile) {
-          if (!backingFileRegistry.has(shape.props.backingFile)) backingFileRegistry.set(shape.props.backingFile, new Set())
-          backingFileRegistry.get(shape.props.backingFile).add(docName)
+        if (shape.props?.backingName || shape.props?.backingFile) {
+          const record = resolveBackingRecord({
+            docName,
+            backingName: shape.props.backingName,
+            filePath: shape.props.backingFile,
+            ownerMachineId: shape.props.backingOwnerMachineId,
+            legacyBackfill: !shape.props.backingName && !shape.props.backingOwnerMachineId && !shape.props.backingSyncStatus,
+          })
+          if (!record.error) backingFileRegister(record)
         }
       }
     } catch (e) { console.warn(`[server] failed to scan backing files for ${docName}: ${e.message}`) }
@@ -2115,35 +2189,38 @@ async function rebuildBackingFileRegistry() {
 
 // POST /api/backing-file-register — client registers a backing file watch
 app.post('/api/backing-file-register', requireRead, (req, res) => {
-  const { filePath, docName } = req.body || {}
-  if (!filePath || !docName) return res.status(400).json({ error: 'Missing filePath or docName' })
-  const expanded = filePath.startsWith('~/') ? join(homedir(), filePath.slice(2)) : filePath
-  const roomName = docName.startsWith('doc-') ? docName : `doc-${docName}`
-  backingFileRegister(expanded, roomName)
-  res.json({ ok: true })
+  const { backingName, filePath, docName, ownerMachineId, legacyBackfill } = req.body || {}
+  if ((!backingName && !filePath) || !docName) return res.status(400).json({ error: 'Missing backingName/filePath or docName' })
+  const record = resolveBackingRecord({ docName, backingName, filePath, ownerMachineId, legacyBackfill })
+  if (record.error) return res.status(409).json({ ok: false, error: record.error, status: record.status })
+  backingFileRegister(record)
+  res.json({ ok: true, status: 'pending', project: record.project, backingName: record.backingName, ownerMachineId: record.ownerMachineId })
 })
 
 // POST /api/backing-file-unregister — client drops a backing file watch when its
 // note is deleted, so the daemon stops watching a file no note is backed by.
 app.post('/api/backing-file-unregister', requireRead, (req, res) => {
-  const { filePath, docName } = req.body || {}
-  if (!filePath) return res.status(400).json({ error: 'Missing filePath' })
-  const expanded = filePath.startsWith('~/') ? join(homedir(), filePath.slice(2)) : filePath
-  const roomName = docName ? (docName.startsWith('doc-') ? docName : `doc-${docName}`) : undefined
-  backingFileUnregister(expanded, roomName)
+  const { backingName, filePath, docName, ownerMachineId, legacyBackfill } = req.body || {}
+  if (!backingName && !filePath) return res.status(400).json({ error: 'Missing backingName/filePath' })
+  if (!docName) return res.status(400).json({ error: 'Missing docName' })
+  const record = resolveBackingRecord({ docName, backingName, filePath, ownerMachineId, legacyBackfill })
+  if (!record.error) backingFileUnregister(record)
   res.json({ ok: true })
 })
 
 // POST /api/backing-file-write — write content to a file via daemon RPC
 app.post('/api/backing-file-write', requireRead, async (req, res) => {
-  const { filePath, content } = req.body || {}
-  if (!filePath) return res.status(400).json({ error: 'Missing filePath' })
-  const expanded = filePath.startsWith('~/') ? join(homedir(), filePath.slice(2)) : filePath
+  const { backingName, filePath, docName, ownerMachineId, legacyBackfill, content, restore } = req.body || {}
+  if ((!backingName && !filePath) || !docName) return res.status(400).json({ error: 'Missing backingName/filePath or docName' })
+  const record = resolveBackingRecord({ docName, backingName, filePath, ownerMachineId, legacyBackfill })
+  if (record.error) return res.status(409).json({ ok: false, error: record.error, status: record.status })
+  backingFileRegister(record)
   try {
-    await sendRpc(LOCAL_MACHINE_ID, 'write-backing-file', { filePath: expanded, content: content ?? '' })
-    res.json({ ok: true })
+    const result = await sendRpc(record.ownerMachineId, 'write-backing-file', { project: record.project, backingName: record.backingName, content: content ?? '', restore: !!restore })
+    res.json({ ok: true, status: result?.status || 'synced', project: record.project, backingName: record.backingName, ownerMachineId: record.ownerMachineId })
   } catch (e) {
-    res.status(503).json({ error: e.message })
+    const status = e?.message?.includes('deleted externally') ? 'deleted' : e?.code === 'NO_DAEMON' ? 'owner-unavailable' : 'failed'
+    res.status(status === 'deleted' ? 409 : 503).json({ ok: false, error: e.message, status })
   }
 })
 
@@ -5477,15 +5554,22 @@ async function handleDaemonWsMessage(ws, msg) {
     return
   }
 
-  if (type === 'file-content-changed') {
-    const { filePath, content } = msg
-    if (!filePath) return
-    const docNames = backingFileRegistry.get(filePath)
-    console.log(`[backing] file-content-changed: ${filePath}, registry size=${backingFileRegistry.size}, docNames=${docNames ? [...docNames].join(',') : 'NONE'}`)
+  if (type === 'backing-file-status') {
+    const { project, backingName, docNames: msgDocNames, content, status, message } = msg
+    if (!project || !backingName) return
+    const entry = backingFileRegistry.get(backingRegistryKey(project, backingName))
+    const docNames = entry?.docNames || new Set(Array.isArray(msgDocNames) ? msgDocNames : [])
+    console.log(`[backing] backing-file-status: ${project}:${backingName} status=${status || 'synced'}, registry size=${backingFileRegistry.size}, docNames=${docNames ? [...docNames].join(',') : 'NONE'}`)
     if (!docNames || docNames.size === 0) return
     for (const docName of docNames) {
-      console.log(`[backing] broadcasting signal:file-updated to room ${docName}`)
-      broadcastSignal(docName, 'signal:file-updated', { filePath, content: content ?? '' })
+      broadcastSignal(docName, 'signal:file-updated', {
+        project,
+        backingName,
+        filePath: backingName,
+        content: content ?? '',
+        status: status || 'synced',
+        ...(message && { message }),
+      })
     }
     return
   }

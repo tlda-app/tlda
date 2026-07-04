@@ -371,7 +371,17 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     // but a drag still moves the shape (see the dot's onPointerUp).
     const dotDownRef = useRef<{ x: number; y: number } | null>(null)
     const [imgVersion, setImgVersion] = useState(0)
-    const [backingSyncState, setBackingSyncState] = useState<'synced' | 'pushing' | 'stale'>('synced')
+    type BackingSyncState = 'synced' | 'pushing' | 'stale' | 'deleted' | 'conflict' | 'owner-missing' | 'owner-unavailable' | 'failed'
+    const initialBackingStatus = (shape.props.backingSyncStatus as BackingSyncState | undefined) || 'synced'
+    const [backingSyncState, setBackingSyncStateState] = useState<BackingSyncState>(initialBackingStatus)
+    const backingSyncStateRef = useRef<BackingSyncState>(initialBackingStatus)
+    const setBackingSyncState = useCallback((status: BackingSyncState, clean = false) => {
+      backingSyncStateRef.current = status
+      setBackingSyncStateState(status)
+      const props: any = { backingSyncStatus: status }
+      if (clean) props.backingLastSyncedAt = Date.now()
+      editor.updateShape({ id: shape.id, type: 'math-note' as any, props })
+    }, [editor, shape.id])
 
     const docName = shape.props.docName as string | undefined
     const showDoc = !!(shape.props.docName && shape.props.docView)
@@ -477,22 +487,37 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
 
     // Backing file: register with the server so the daemon watches for changes
     const backingFile = shape.props.backingFile as string | undefined
+    const backingName = shape.props.backingName as string | undefined
+    const backingKey = backingName || backingFile
+    const backingLabel = backingName || backingFile
+    const backingOwnerMachineId = shape.props.backingOwnerMachineId as string | undefined
+    const legacyBackfill = !backingName && !backingOwnerMachineId && !shape.props.backingSyncStatus
     const hasOutlineTabs = (shape.props.tabs as string[] | undefined)?.length === 3
     const isOutlineTabActive = hasOutlineTabs && (shape.props.activeTab as number | undefined) === 2
     useEffect(() => {
-      if (!backingFile) return
+      if (!backingKey) return
       const docParam = new URLSearchParams(window.location.search).get('doc')
       if (!docParam) return
       fetch('/api/backing-file-register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filePath: backingFile, docName: docParam }),
-      }).catch(e => console.warn('[math-note] backing file register failed:', e.message))
-    }, [backingFile])
+        body: JSON.stringify({ backingName, filePath: backingFile, ownerMachineId: backingOwnerMachineId, legacyBackfill, docName: docParam }),
+      }).then(async resp => {
+        if (!resp.ok) {
+          const data = await resp.json().catch(() => ({}))
+          setBackingSyncState((data.status as any) || 'owner-missing')
+        }
+      }).catch(e => {
+        setBackingSyncState('owner-unavailable')
+        console.warn('[math-note] backing file register failed:', e.message)
+      })
+    }, [backingKey, backingName, backingFile, backingOwnerMachineId, legacyBackfill, setBackingSyncState])
 
     // Backing file: write to file only when the user actually changed the text
     useEffect(() => {
-      if (!backingFile) return
+      if (!backingKey) return
+      const docParam = new URLSearchParams(window.location.search).get('doc')
+      if (!docParam) { setBackingSyncState('owner-missing'); return }
       if (isEditing) {
         textAtEditStartRef.current = (editor.getShape(shape.id) as any)?.props?.text ?? ''
         return
@@ -504,30 +529,46 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       fetch('/api/backing-file-write', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filePath: backingFile, content }),
-      }).then(() => setBackingSyncState('synced'))
-        .catch(() => setBackingSyncState('stale'))
-    }, [isEditing])
+        body: JSON.stringify({ backingName, filePath: backingFile, ownerMachineId: backingOwnerMachineId, legacyBackfill, docName: docParam, content }),
+      }).then(async resp => {
+        if (!resp.ok) {
+          const data = await resp.json().catch(() => ({}))
+          setBackingSyncState((data.status as any) || 'failed')
+          return
+        }
+        setBackingSyncState('synced', true)
+      }).catch(() => setBackingSyncState('failed'))
+    }, [isEditing, backingKey, backingName, backingFile, backingOwnerMachineId, legacyBackfill, shape.id, editor, setBackingSyncState])
 
     // Backing file changed externally: the file is the source of truth for a
     // file-backed note, so update the note in place. (We must NOT spawn a sibling
     // on every divergence — with many actively-edited backing files that floods
     // the room with orphan notes.) Don't clobber while the user is editing.
     useEffect(() => {
-      if (!backingFile) return
+      if (!backingKey) return
       return onFileUpdatedSignal((signal) => {
-        if (signal.filePath !== backingFile) return
+        const signalName = signal.backingName || signal.filePath
+        if (signalName !== backingKey && signal.filePath !== backingFile) return
+        if (signal.status && signal.status !== 'synced') {
+          setBackingSyncState(signal.status as any)
+          return
+        }
         const current = (editor.getShape(shape.id) as any)?.props?.text ?? ''
-        if (signal.content === current) { setBackingSyncState('synced'); return }
-        if (editor.getEditingShapeId() === shape.id) { setBackingSyncState('stale'); return }
+        const currentBackingStatus = backingSyncStateRef.current
+        if (currentBackingStatus !== 'synced' && currentBackingStatus !== 'pushing') {
+          if ((signal.content ?? '') !== current) setBackingSyncState('conflict')
+          return
+        }
+        if ((signal.content ?? '') === current) { setBackingSyncState('synced', true); return }
+        if (editor.getEditingShapeId() === shape.id) { setBackingSyncState('conflict'); return }
         editor.updateShape({
           id: shape.id,
           type: 'math-note' as any,
-          props: { text: signal.content },
+          props: { text: signal.content ?? '', backingSyncStatus: 'synced', backingLastSyncedAt: Date.now() },
         })
-        setBackingSyncState('synced')
+        setBackingSyncState('synced', true)
       })
-    }, [backingFile, shape.id, editor])
+    }, [backingKey, backingFile, shape.id, editor, setBackingSyncState])
 
     // Memoize KaTeX + markdown rendering — only re-parse when text or registered images change
     const renderedHtmlBase = useMemo(
@@ -1259,7 +1300,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
             }}
           >
             <span>
-              {backingFile && <span title={backingFile} style={{
+              {backingKey && <span title={backingLabel} style={{
                 opacity: 0.7,
                 marginRight: 4,
                 color: backingSyncState === 'synced' ? '#4a9' : backingSyncState === 'pushing' ? '#aa7' : '#c55',
@@ -1376,7 +1417,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
               .math-note-prose.tappable-bullets li.bullet-selected { background-color: rgba(124, 58, 237, 0.15); border-left: 3px solid rgba(124, 58, 237, 0.6); padding-left: 6px; }
             `}</style>
             <div
-              className={`math-note-prose${backingFile && isOutlineTabActive ? ' tappable-bullets' : ''}`}
+              className={`math-note-prose${backingKey && isOutlineTabActive ? ' tappable-bullets' : ''}`}
               style={{ maxWidth: '72ch', margin: '0 auto' }}
               dangerouslySetInnerHTML={{ __html: renderedHtml }}
             />
@@ -1582,7 +1623,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
               </svg>
             </div>
             {/* Sync state pip on collapsed dot */}
-            {backingFile && backingSyncState !== 'synced' && (
+            {backingKey && backingSyncState !== 'synced' && (
               <div style={{
                 position: 'absolute',
                 top: -1,
@@ -1668,9 +1709,9 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
             title="Collapse in place"
           />
           {/* Sync state indicator */}
-          {backingFile && (
+          {backingKey && (
             <div
-              title={`${backingFile} — ${backingSyncState}`}
+              title={`${backingLabel} — ${backingSyncState}`}
               style={{
                 position: 'absolute',
                 top: 2,

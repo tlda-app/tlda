@@ -506,6 +506,7 @@ export async function dropPillOnTarget(
               autoSize: true,
               collapsed: false, // open sticky, not a touch-untappable dot
               backingFile: filePath,
+              backingSyncStatus: 'owner-missing',
             },
           })
           // Register backing file watch so the server notifies us when the file changes on disk

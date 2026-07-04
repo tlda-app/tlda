@@ -416,6 +416,7 @@ async function handleOutlineSelection(
   let texView = ''
   let mdView = ''
   let backingFile = ''
+  let backingName = ''
   let slug = ''
   try {
     const url = `${serverUrl}/api/projects/${docName}/outline?${qs}`
@@ -428,6 +429,7 @@ async function handleOutlineSelection(
     texView = data?.tex || ''
     mdView = data?.md || ''
     backingFile = data?.backingFile || ''
+    backingName = data?.backingName || backingFile
     slug = data?.slug || ''
   } catch (e: any) {
     log.error('outline-hl', 'outline fetch threw', { error: String(e?.message || e) })
@@ -440,11 +442,11 @@ async function handleOutlineSelection(
   // so it exists on disk for agents and the file-back icon lights up. The write
   // goes through the daemon (multi-machine correct), so it must target the live
   // server, not __tlda_server (which may be a read-only mirror).
-  if (backingFile) {
+  if (backingName) {
     fetch(`/api/backing-file-write`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ filePath: backingFile, content: markdown }),
+      body: JSON.stringify({ backingName, filePath: backingFile, docName, content: markdown, restore: true }),
     }).catch(e => log.warn('outline-hl', 'backing-file-write failed', { error: String(e?.message || e) }))
   }
 
@@ -468,7 +470,7 @@ async function handleOutlineSelection(
       },
       // tabs are [md, tex, outline] (the order MathNoteShape's switch expects);
       // default to the outline tab since that's what this slot is for.
-      props: { w: 460, h: 200, text: markdown, color: 'light-violet', autoSize: true, tabs: [mdView, texView, markdown], activeTab: 2, ...(backingFile ? { backingFile } : {}) },
+      props: { w: 460, h: 200, text: markdown, color: 'light-violet', autoSize: true, tabs: [mdView, texView, markdown], activeTab: 2, ...(backingFile ? { backingFile } : {}), ...(backingName ? { backingName, backingSyncStatus: 'owner-missing' } : {}) },
     } as any)
   } catch (e: any) {
     log.error('outline-hl', 'createShape threw', { error: String(e?.message || e) })
