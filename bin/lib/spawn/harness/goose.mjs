@@ -1,7 +1,7 @@
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import { activeConfigName, readConfig, repoRoot } from '../identity.mjs'
+import { activeConfigName, gitAuthorEnv, readConfig, repoRoot } from '../identity.mjs'
 import { gooseModelVerified, resolveGooseModel, resolveGooseModelSelection } from '../models.mjs'
 
 const GOOSE_BIN = '/opt/homebrew/bin/goose'
@@ -68,6 +68,9 @@ export function buildCmd({
     `TLDA_SERVER=${sq(api)}`,
     `TLDA_SYNC_SERVER=${sq(api)}`,
   ]
+  // Fresh spawn names can still be tentative before server confirm/rename;
+  // GIT_AUTHOR_EMAIL carries the stable fleet id for authoritative attribution.
+  parts.push(...gitAuthorEnv(fleetId, name).map(v => sqEnv(v)))
   const configName = activeConfigName(config, env)
   if (configName) parts.push(`TLDA_CONFIG=${sq(configName)}`)
   if (dnsAlias && fs.existsSync(DNS_ALIAS_PRELOAD)) {
@@ -99,4 +102,9 @@ export function buildCmd({
   appendLaunchFlags(parts, harnessOptions)
   parts.push('--interactive')
   return `zsh -lc ${sq(parts.join(' '))}`
+}
+
+function sqEnv(entry) {
+  const [key, ...rest] = String(entry).split('=')
+  return `${key}=${sq(rest.join('='))}`
 }
