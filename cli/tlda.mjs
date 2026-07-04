@@ -1978,7 +1978,7 @@ async function runRoutedSpawn(rawArgs) {
       ws.once('error', (e) => { clearTimeout(timer); reject(e) })
     })
     await fleetWsRequest(ws, { type: 'login', name: human.name }, WS_LOGIN_TIMEOUT_MS)
-    const result = await fleetWsRequest(ws, { type: 'spawn', ...body }, 45000)
+    const result = await fleetWsRequest(ws, { type: 'spawn', ...body }, 120000)
     if (result?.ok === false) {
       throw new Error(formatSpawnFailure(result, body))
     }

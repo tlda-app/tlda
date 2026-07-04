@@ -488,6 +488,7 @@ function ensureLocalDaemon() {
 const pendingRpcs = new Map()
 let _rpcSeq = 0
 const RPC_TIMEOUT_MS = 10_000
+const SPAWN_RPC_TIMEOUT_MS = 120_000
 
 // ---------- Plan mode approval tracking ----------
 //
@@ -546,10 +547,11 @@ function sendRpc(machineId, op, params = {}) {
       return reject(new NoDaemonError(machineId))
     }
     const id = `rpc-${++_rpcSeq}-${Date.now().toString(36)}`
+    const timeoutMs = op === 'spawn' ? SPAWN_RPC_TIMEOUT_MS : RPC_TIMEOUT_MS
     const timer = setTimeout(() => {
       pendingRpcs.delete(id)
-      reject(new Error(`RPC timeout after ${RPC_TIMEOUT_MS}ms (op=${op}, machine=${machineId})`))
-    }, RPC_TIMEOUT_MS)
+      reject(new Error(`RPC timeout after ${timeoutMs}ms (op=${op}, machine=${machineId})`))
+    }, timeoutMs)
     pendingRpcs.set(id, { resolve, reject, timer, machine_id: machineId })
     try {
       dws.send(JSON.stringify({ type: 'rpc', id, op, ...params }))

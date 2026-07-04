@@ -366,6 +366,7 @@ async function spawnRespawn(params) {
     includePrompt: !(requestedKind === 'claude' && resumeId),
     leasePolicy: launchPolicy.leasePolicy,
     enforceFence: !!params.enforceFence,
+    harnessOptions: launchPolicy.harnessOptions,
   })
   const launched = await spawnTmux(tmuxSession, cwd, cmd, { autoDismiss: requestedKind === 'claude', sendKeys, tmuxSocket: params.tmuxSocket })
   if (!launched) return { ok: true, fleetId, tmuxSession, harness: requestedKind, model, alreadyAlive: true }
