@@ -278,7 +278,9 @@ const _serverFromConfig = !process.env.TLDA_SERVER && !_usingCustomConfigDir
 // then misroute a spawn, because the spawn carries the real active name.
 // Safe to resolve unconditionally in this branch: SERVER already ran resolveConfig
 // via getFleetServerUrl(config) above, so a broken config would have thrown there.
-const ACTIVE_CONFIG = _serverFromConfig ? getActiveConfigName(config) : null
+const ACTIVE_CONFIG = process.env.TLDA_CONFIG
+  ? getActiveConfigName(config)
+  : (_serverFromConfig ? getActiveConfigName(config) : null)
 
 // Fail loud if a hand-pinned TLDA_SERVER disagrees with the active config — the
 // 6/27 divergence, refused at the door rather than served silently. Bubbles.
@@ -2837,6 +2839,7 @@ async function rpcSpawn({
         model: launchModel,
         kind: launchKind,
         config: spawnConfig,
+        activeConfigName: ACTIVE_CONFIG,
         cwd: resolvedCwd,
         sessionId,
         enroll: !!enroll,

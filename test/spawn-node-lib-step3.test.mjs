@@ -5,6 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { fenceSettings, wrapSandboxCmd } from '../bin/lib/spawn/fence.mjs'
+import { activeConfigName } from '../bin/lib/spawn/identity.mjs'
 import { codexSandboxProjection, resolveHarnessLaunchOptions, resolveLaunchPolicy, resolveLeasePolicy } from '../bin/lib/spawn/permissions.mjs'
 import * as claude from '../bin/lib/spawn/harness/claude.mjs'
 import * as codex from '../bin/lib/spawn/harness/codex.mjs'
@@ -538,6 +539,53 @@ test('unfenced codex no-net keeps network off in native sandbox args', () => {
   assert.ok(args.some((arg) => arg.includes('sandbox_workspace_write.network_access=false')))
 })
 
+test('spawn harness commands preserve explicit TLDA_CONFIG even when TLDA_SERVER pins the sandbox URL', () => {
+  const env = {
+    TLDA_CONFIG: 'dev-preview/mailbox',
+    TLDA_SERVER: 'https://sandbox.example.test:5192',
+  }
+  assert.equal(activeConfigName({ defaultConfig: 'live' }, env), 'dev-preview/mailbox')
+
+  const claudeCmd = claude.buildCmd({
+    fleetId: 'fleet:test',
+    tmuxSession: 'fleet-test',
+    name: 'sandbox-agent',
+    api: env.TLDA_SERVER,
+    includePrompt: false,
+    config: { defaultConfig: 'live' },
+    env,
+  })
+  assert.match(claudeCmd, /TLDA_CONFIG='dev-preview\/mailbox'/)
+  assert.match(claudeCmd, /TLDA_SERVER='https:\/\/sandbox\.example\.test:5192'/)
+
+  const codexCmd = codex.buildCmd({
+    fleetId: 'fleet:test',
+    tmuxSession: 'fleet-test',
+    name: 'sandbox-agent',
+    api: env.TLDA_SERVER,
+    config: { defaultConfig: 'live' },
+    env,
+  })
+  assert.match(codexCmd, /mcp_servers\.tlda\.env\.TLDA_CONFIG=dev-preview\/mailbox/)
+  assert.match(codexCmd, /mcp_servers\.tlda\.env\.TLDA_SERVER=https:\/\/sandbox\.example\.test:5192/)
+})
+
+test('hand-pinned TLDA_SERVER without explicit TLDA_CONFIG does not forward defaultConfig', () => {
+  const env = { TLDA_SERVER: 'https://sandbox.example.test:5192' }
+  assert.equal(activeConfigName({ defaultConfig: 'live' }, env), null)
+
+  const cmd = claude.buildCmd({
+    fleetId: 'fleet:test',
+    tmuxSession: 'fleet-test',
+    name: 'sandbox-agent',
+    api: env.TLDA_SERVER,
+    includePrompt: false,
+    config: { defaultConfig: 'live' },
+    env,
+  })
+  assert.doesNotMatch(cmd, /TLDA_CONFIG=/)
+})
+
 test('codex explicit daemon grant is externally fenced even while global fence is off', () => {
   const cwd = tmpdir()
   const policy = resolveLaunchPolicy({
@@ -853,6 +901,34 @@ test('fresh local spawn defers registration when localhost server probe fails', 
   assert.equal(calls.includes('observeLiveness'), false)
   assert.equal(calls.includes('waitForAwakeRegistration'), false)
   assert.equal(calls.includes('markAgentDead'), false)
+})
+
+test('fresh local spawn forwards explicit active config name into launch command', async () => {
+  const { calls, deps } = freshSpawnDeps({ ensureServer: async () => true })
+  const result = await spawn({
+    spawnMode: 'fresh',
+    kind: 'claude',
+    model: 'opus48',
+    name: 'sandbox-config-local',
+    cwd: tmpdir(),
+    agentId: 'fleet:testcfg',
+    config: {
+      defaultConfig: 'dev-preview/mailbox',
+      configs: {
+        'dev-preview/mailbox': {
+          database: 'http://127.0.0.1:5176',
+          store: 'http://127.0.0.1:5176',
+          licenseKey: '',
+        },
+      },
+    },
+    activeConfigName: 'dev-preview/mailbox',
+    _deps: deps,
+  })
+  assert.equal(result.ok, true)
+  const cmd = calls.find((value) => typeof value === 'string' && value.includes('FLEET_ID='))
+  assert.match(cmd, /TLDA_CONFIG='dev-preview\/mailbox'/)
+  assert.match(cmd, /TLDA_SERVER='http:\/\/127\.0\.0\.1:5176'/)
 })
 
 test('fresh local spawn keeps server-up pre-register and registration wait semantics', async () => {

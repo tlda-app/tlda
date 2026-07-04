@@ -76,7 +76,13 @@ function resolveAdapterModel(adapter, rawModel, config) {
   return { model: adapter.resolveModel(rawModel, { config }), provider: null, selection: null }
 }
 
-async function buildCommand({ requestedKind, adapter, fleetId, tmuxSession, model, modelProvider = null, name, cwd, effort, permissionMode, spawnPolicy, api, dnsAlias, resumeId = null, includePrompt = true, leasePolicy = null, enforceFence = false, harnessOptions = {} }) {
+function spawnEnv(params = {}) {
+  return params.activeConfigName
+    ? { ...process.env, TLDA_CONFIG: params.activeConfigName }
+    : process.env
+}
+
+async function buildCommand({ requestedKind, adapter, fleetId, tmuxSession, model, modelProvider = null, name, cwd, effort, permissionMode, spawnPolicy, api, dnsAlias, resumeId = null, includePrompt = true, leasePolicy = null, enforceFence = false, harnessOptions = {}, config = undefined, env = process.env }) {
   let cmd
   let sendKeys = false
   let projection = null
@@ -93,6 +99,8 @@ async function buildCommand({ requestedKind, adapter, fleetId, tmuxSession, mode
       api,
       dnsAlias,
       resumeId,
+      config,
+      env,
       sandboxMode: projection.sandboxMode,
       workspaceWriteConfigArgs: projection.sandboxMode === 'workspace-write'
         ? codex.buildWorkspaceWriteConfigArgs({
@@ -115,6 +123,8 @@ async function buildCommand({ requestedKind, adapter, fleetId, tmuxSession, mode
       api,
       dnsAlias,
       resumeId,
+      config,
+      env,
       includePrompt,
       harnessOptions,
     })
@@ -241,6 +251,8 @@ async function spawnFresh(params) {
       leasePolicy: launchPolicy.leasePolicy,
       enforceFence: !!params.enforceFence,
       harnessOptions: launchPolicy.harnessOptions,
+      config,
+      env: spawnEnv(params),
     })
     traceSpawnDecision('command', {
       name,
@@ -367,6 +379,8 @@ async function spawnRespawn(params) {
     leasePolicy: launchPolicy.leasePolicy,
     enforceFence: !!params.enforceFence,
     harnessOptions: launchPolicy.harnessOptions,
+    config,
+    env: spawnEnv(params),
   })
   const launched = await spawnTmux(tmuxSession, cwd, cmd, { autoDismiss: requestedKind === 'claude', sendKeys, tmuxSocket: params.tmuxSocket })
   if (!launched) return { ok: true, fleetId, tmuxSession, harness: requestedKind, model, alreadyAlive: true }
@@ -441,6 +455,8 @@ async function spawnRefresh(params) {
     includePrompt: true,
     leasePolicy: launchPolicy.leasePolicy,
     enforceFence: !!params.enforceFence,
+    config,
+    env: spawnEnv(params),
   })
   const launched = await spawnTmux(tmuxSession, cwd, cmd, { autoDismiss: requestedKind === 'claude', sendKeys, tmuxSocket: params.tmuxSocket })
   if (!launched) return { ok: true, fleetId, tmuxSession, harness: requestedKind, model, alreadyAlive: true }
@@ -537,6 +553,8 @@ async function spawnCodexSession(params, { api, sessionId, codexPath }) {
     resumeId: sessionId,
     leasePolicy: launchPolicy.leasePolicy,
     enforceFence: !!params.enforceFence,
+    config,
+    env: spawnEnv(params),
   })
   const launched = await spawnTmux(tmuxSession, cwd, cmd, { sendKeys, tmuxSocket: params.tmuxSocket })
   if (!launched) return { ok: true, fleetId, tmuxSession, harness: 'codex', model, resumeId: sessionId, alreadyAlive: true }
@@ -610,6 +628,8 @@ async function spawnClaudeSession(params, { api, sessionId, identity }) {
     includePrompt: false,
     leasePolicy: launchPolicy.leasePolicy,
     enforceFence: !!params.enforceFence,
+    config,
+    env: spawnEnv(params),
   })
   const launched = await spawnTmux(tmuxSession, cwd, cmd, { autoDismiss: true, sendKeys, tmuxSocket: params.tmuxSocket })
   if (!launched) return { ok: true, fleetId, tmuxSession, harness: 'claude', model, resumeId: sessionId, alreadyAlive: true }
