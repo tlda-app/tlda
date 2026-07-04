@@ -419,6 +419,7 @@ const _refTokens = new Map();
 // used by chat() to stamp outgoing messages with { doc, version } so the
 // recipient knows which document state the sender was reasoning about.
 let _currentDoc = null;
+let _inboxMode = 'inbox';
 let _docVersionCache = { doc: null, version: null, ts: 0 };
 const DOC_VERSION_CACHE_MS = 5000;
 
@@ -1019,7 +1020,7 @@ export function classifyTaskAgentHealth(task, agent, options = {}) {
       level: 'warning',
       code: 'pending-pickup',
       text: `⚠ task still pending ${ageMin}m after delegation`,
-      managerAction: 'The agent may not have called my_task(); nudge, inspect, or redelegate.',
+      managerAction: 'The agent may not have called inbox(); nudge, inspect, or redelegate.',
     };
   }
 
@@ -1247,7 +1248,7 @@ function windowTail(output, n = 40) {
 // ---- Server reference (set by initFleet) ----
 let server = null;
 
-export const TLDA_INSTRUCTIONS = 'Fleet messages arrive as <channel source="tlda"> tags. When you see one, call my_task() to get full context and respond via chat().';
+export const TLDA_INSTRUCTIONS = 'Fleet messages arrive as <channel source="tlda"> tags. When you see one, call inbox() to get full context and respond via chat().';
 
 export function getFleetTools() {
   return [
@@ -1418,8 +1419,26 @@ export function getFleetTools() {
     },
     {
       name: 'my_task',
-      description: 'Show what task is assigned to this agent and any unread messages.',
+      description: 'Legacy alias for inbox-style task checking. Prefer inbox(). Shows what task is assigned to this agent and any unread messages.',
       inputSchema: { type: 'object', properties: {} },
+    },
+    {
+      name: 'inbox',
+      description: 'Show this agent\'s current obligation inbox. Mode controls both the pull view and the server summary style: focus, inbox, monitoring, incident, available, or review.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          mode: {
+            type: 'string',
+            enum: ['focus', 'inbox', 'monitoring', 'incident', 'available', 'review'],
+            description: 'Attention mode for this view. focus = current task and blockers; inbox = general triage; monitoring = gates/stale work/watch items; incident = active breakage coordination; available = broad ambient interest; review = evidence and gate triage.',
+          },
+          peek: {
+            type: 'boolean',
+            description: 'Preview without marking included unread messages seen. Default false.',
+          },
+        },
+      },
     },
     // ---- tlda document feedback (push channel) ----
     {
@@ -1781,6 +1800,177 @@ export function getFleetTools() {
   ];
 }
 
+const INBOX_MODES = new Set(['focus', 'inbox', 'monitoring', 'incident', 'available', 'review']);
+
+function normalizeInboxMode(mode) {
+  const m = String(mode || 'inbox').trim().toLowerCase();
+  return INBOX_MODES.has(m) ? m : 'inbox';
+}
+
+function inboxTaskSummary(task) {
+  if (!task) return null;
+  const age = task.delegated_at ? Math.round((Date.now() - new Date(task.delegated_at)) / 60000) : null;
+  const lines = [
+    `[task:${task.id}] ${task.description || '(untitled task)'}`,
+    `State: ${task.status || 'active'}${Number.isFinite(age) ? ` | delegated ${age}m ago` : ''}`,
+  ];
+  if (task.success_criteria?.length) lines.push(`Success criteria: ${task.success_criteria.length}`);
+  if (task.metadata?.requires_approval) lines.push('Requires approval before close.');
+  return lines.join('\n');
+}
+
+function inboxMessageKind(message) {
+  if (message.from === 'fleet:skip') return 'user';
+  if (message.type === 'delegate') return 'task';
+  if (message.metadata?.wiretap_cc?.length) return 'watch';
+  return 'message';
+}
+
+async function resolveInboxMessage(message) {
+  const fromLabel = message.metadata?.fromLabel || message.from;
+  const ctx = message.metadata?.context;
+  const docHint = formatViewingHint(ctx);
+  const { text: chipResolvedText, images: chipImages } = await resolveChipTokens(message.text, message.metadata);
+  const refResolvedText = resolveTheoremRefs(chipResolvedText, ctx?.doc, ctx?.version);
+  const { text: imgResolvedText, images } = await resolveImages(refResolvedText);
+  images.push(...chipImages);
+  const reminder = message.metadata?.chatReminder ? `\n⚠️ ${message.metadata.chatReminder}` : '';
+  const idHint = message.id ? `, id:${message.id}` : '';
+  return {
+    id: message.id,
+    from: message.from,
+    fromLabel,
+    kind: inboxMessageKind(message),
+    images,
+    line: `[from ${fromLabel}${idHint}${docHint}] (reply with chat(to: "${message.from}")) ${imgResolvedText}${reminder}`,
+  };
+}
+
+function groupedInboxLines(messages) {
+  const groups = [
+    ['user', 'USER / SKIP'],
+    ['task', 'TASK UPDATES'],
+    ['message', 'DIRECT MESSAGES'],
+    ['watch', 'WATCH / WIRETAP'],
+  ];
+  const lines = [];
+  for (const [kind, label] of groups) {
+    const rows = messages.filter(m => m.kind === kind);
+    if (!rows.length) continue;
+    lines.push(label);
+    rows.forEach((m, i) => lines.push(`[${i + 1}] ${m.line}`));
+    lines.push('');
+  }
+  return lines;
+}
+
+function formatInboxText({ mode, task, messages }) {
+  const taskSummary = inboxTaskSummary(task);
+  const lines = [];
+  const count = messages.length;
+  lines.push(`INBOX MODE: ${mode}`);
+
+  if (mode === 'focus') {
+    lines.push('');
+    lines.push('NOW');
+    if (!task && count === 0) lines.push('- Clear. No active task or unread messages.');
+    if (messages.length) {
+      messages
+        .filter(m => m.kind !== 'watch')
+        .forEach((m, i) => lines.push(`[${i + 1}] ${m.line}`));
+    }
+    if (taskSummary) {
+      lines.push('');
+      lines.push('ACTIVE WORK');
+      lines.push(taskSummary);
+      if (task?.message) lines.push('', task.message);
+    }
+    const hidden = messages.filter(m => m.kind === 'watch').length;
+    if (hidden) lines.push('', `BACKGROUND: ${hidden} watch item(s) hidden in focus mode.`);
+    return lines.join('\n');
+  }
+
+  if (mode === 'monitoring') {
+    lines.push('');
+    lines.push('WAITING ON ME');
+    const waiting = messages.filter(m => m.kind === 'user' || m.kind === 'task' || m.kind === 'message');
+    if (!waiting.length) lines.push('- Nothing currently waiting on this agent.');
+    waiting.forEach((m, i) => lines.push(`[${i + 1}] ${m.line}`));
+    if (taskSummary) {
+      lines.push('');
+      lines.push('OWNED WORK');
+      lines.push(taskSummary);
+    }
+    const watch = messages.filter(m => m.kind === 'watch');
+    if (watch.length) {
+      lines.push('');
+      lines.push('WATCHLIST CHANGES');
+      watch.forEach((m, i) => lines.push(`[${i + 1}] ${m.line}`));
+    }
+    return lines.join('\n');
+  }
+
+  if (mode === 'incident') {
+    lines.push('');
+    lines.push('INCIDENT STATE');
+    if (!task && count === 0) lines.push('- No incident-scoped task or unread event is active.');
+    if (taskSummary) lines.push(taskSummary);
+    if (messages.length) {
+      lines.push('');
+      lines.push('NEW INCIDENT SIGNALS');
+      messages.forEach((m, i) => lines.push(`[${i + 1}] ${m.line}`));
+    }
+    return lines.join('\n');
+  }
+
+  if (mode === 'available') {
+    lines.push('');
+    lines.push('AMBIENT QUEUE');
+    if (!task && count === 0) lines.push('- Clear. Nothing in the current interest stream.');
+    if (taskSummary) {
+      lines.push('ACTIVE WORK');
+      lines.push(taskSummary);
+      if (task?.message) lines.push('', task.message);
+      lines.push('');
+    }
+    lines.push(...groupedInboxLines(messages));
+    if (messages.length) lines.push('Mode note: available mode treats the full interest stream as notification-worthy.');
+    return lines.join('\n').trimEnd();
+  }
+
+  if (mode === 'review') {
+    lines.push('');
+    lines.push('REVIEW / GATES');
+    const reviewRows = messages.filter(m => m.kind === 'task' || /report|review|qa|gate|evidence|approve|reject/i.test(m.line));
+    if (!reviewRows.length && !taskSummary) lines.push('- No review or gate item is currently pending.');
+    reviewRows.forEach((m, i) => lines.push(`[${i + 1}] ${m.line}`));
+    if (taskSummary) {
+      lines.push('');
+      lines.push('OWNED REVIEW WORK');
+      lines.push(taskSummary);
+    }
+    const other = messages.filter(m => !reviewRows.includes(m));
+    if (other.length) {
+      lines.push('');
+      lines.push(`OTHER INBOX ITEMS (${other.length})`);
+      other.forEach((m, i) => lines.push(`[${i + 1}] ${m.line}`));
+    }
+    return lines.join('\n');
+  }
+
+  lines.push('');
+  lines.push('ACTIONABLE QUEUE');
+  if (!task && count === 0) lines.push('- Clear. No active task or unread messages.');
+  if (taskSummary) {
+    lines.push('TASK');
+    lines.push(taskSummary);
+    if (task?.message) lines.push('', task.message);
+    lines.push('');
+  }
+  lines.push(...groupedInboxLines(messages));
+  return lines.join('\n').trimEnd();
+}
+
 export async function handleFleetTool(name, args) {
   // Report tool_call status to dashboard (replaces pane scraping for idle detection)
   reportStatus('tool_call', name);
@@ -2093,8 +2283,8 @@ export async function handleFleetTool(name, args) {
       process.stderr.write(`[fleet] WARNING: agent ${AGENT_ID} registered with no session_id — no activity tracking\n`);
     }
 
-    msg += '\n\nAfter registering: call my_task() to check for a task. If nothing, just keep working — you\'ll see 📬 when a task or message arrives.';
-    msg += '\nWhen you see 📬 as input, call my_task() — it means you have a new task or message.';
+    msg += '\n\nAfter registering: call inbox() to check for a task. If nothing, just keep working — you\'ll see 📬 when a task or message arrives.';
+    msg += '\nWhen you see 📬 as input, call inbox() — it means you have a new task or message.';
     msg += '\nChat formatting: dashboard renders markdown (**bold**, `code`, lists, headers) and LaTeX ($inline$, $$display$$). Use them in chat() messages.';
 
     // Health check: report what's up/down so agent knows communication channels
@@ -3421,6 +3611,52 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
     return { text: resolved, images: chipImages }
   }
 
+  // ---- inbox ----
+  if (name === 'inbox') {
+    if (!AGENT_ID) return { content: [{ type: 'text', text: 'No session ID detected.' }], isError: true };
+    const mode = normalizeInboxMode(args?.mode || _inboxMode);
+    if (args?.mode) {
+      _inboxMode = mode;
+      try {
+        await sendWS('inbox-mode', { agent: AGENT_ID, mode });
+      } catch (e) {
+        // Best effort: mode persistence should not block reading the inbox.
+        console.error(`[fleet] failed to publish inbox mode ${mode}: ${e.message}`);
+      }
+    }
+
+    let data;
+    try {
+      data = await sendWS('my-task', { agent: AGENT_ID, peek: !!args?.peek });
+    } catch (e) {
+      return { content: [{ type: 'text', text: `tlda backend didn't answer (it may be restarting). Not yours to debug — tell ops if it persists, then retry shortly. (${e.message})` }], isError: true };
+    }
+    if (!data) return { content: [{ type: 'text', text: `tlda backend didn't answer (it may be restarting). Not yours to debug — tell ops if it persists, then retry shortly.` }], isError: true };
+
+    const messages = await Promise.all((data.messages || []).map(resolveInboxMessage));
+    const text = formatInboxText({ mode, task: data.task || null, messages });
+    const allImages = messages.flatMap(m => m.images || []);
+    if (allImages.length > 0) {
+      const fs = await import('fs');
+      const contentBlocks = [{ type: 'text', text }];
+      for (const img of allImages) {
+        try {
+          const data = fs.readFileSync(img.path);
+          contentBlocks.push({
+            type: 'image',
+            data: data.toString('base64'),
+            mimeType: img.mimeType,
+          });
+        } catch (e) {
+          // Best effort: keep the text inbox usable if one attachment is gone.
+          console.error(`[fleet] failed to attach inbox image ${img.path}: ${e.message}`);
+        }
+      }
+      return { content: contentBlocks };
+    }
+    return { content: [{ type: 'text', text }] };
+  }
+
   // ---- my_task ----
   if (name === 'my_task') {
     if (!AGENT_ID) return { content: [{ type: 'text', text: 'No session ID detected.' }], isError: true };
@@ -4708,8 +4944,9 @@ async function _flushUnread() {
     const task = data.task;
     if (msgs.length === 0 && !task) return;
     const lines = [];
-    if (task) lines.push(`📬 You have a pending task: ${(task.description || '').slice(0, 80)}`);
-    if (msgs.length > 0) lines.push(`📬 ${msgs.length} unread message(s). Call my_task().`);
+    const label = _inboxMode === 'inbox' ? 'Inbox' : _inboxMode[0].toUpperCase() + _inboxMode.slice(1);
+    if (task) lines.push(`📬 ${label}: pending task: ${(task.description || '').slice(0, 80)}`);
+    if (msgs.length > 0) lines.push(`📬 ${label}: ${msgs.length} unread item(s). ${inboxCallText('triage')}`);
     const content = lines.join('\n');
     if (harnessFromEnv().channelNudge) {
       const sess = process.env.FLEET_TMUX_SESSION;
@@ -4782,6 +5019,37 @@ function startChannelWS() {
 const _deliveredChannelIds = new Set();
 const CHANNEL_DEDUP_TTL_MS = 60000;
 
+function inboxCallText(action = 'see it') {
+  return _inboxMode === 'inbox'
+    ? `Call inbox() to ${action}.`
+    : `Call inbox(mode: "${_inboxMode}") to ${action}.`;
+}
+
+function formatModeSummary({ eventType, fromLabel, docHint = '', preview = '', truncNote = '', reminder = '' }) {
+  const source = fromLabel ? ` from ${fromLabel}${docHint}` : '';
+  if (_inboxMode === 'focus') {
+    const kind = eventType === 'delegate' ? 'task' : eventType === 'task_done' ? 'task update' : 'message';
+    return `📬 Focus ${kind}${source}: ${preview}${truncNote}\n${inboxCallText(eventType === 'chat' ? 'read and respond' : 'see it')}${reminder}`;
+  }
+  if (_inboxMode === 'monitoring') {
+    const kind = eventType === 'delegate' ? 'new delegation' : eventType === 'task_done' ? 'task gate' : 'waiting item';
+    return `📬 Monitoring ${kind}${source}: ${preview}${truncNote}\n${inboxCallText(eventType === 'chat' ? 'triage it' : 'see details')}${reminder}`;
+  }
+  if (_inboxMode === 'incident') {
+    const kind = eventType === 'delegate' ? 'task' : eventType === 'task_done' ? 'update' : 'signal';
+    return `🚨 Incident ${kind}${source}: ${preview}${truncNote}\n${inboxCallText(eventType === 'chat' ? 'triage it' : 'see details')}${reminder}`;
+  }
+  if (_inboxMode === 'available') {
+    const kind = eventType === 'delegate' ? 'task' : eventType === 'task_done' ? 'update' : 'ambient item';
+    return `📬 Available ${kind}${source}: ${preview}${truncNote}\n${inboxCallText(eventType === 'chat' ? 'read it' : 'see details')}${reminder}`;
+  }
+  if (_inboxMode === 'review') {
+    const kind = eventType === 'delegate' ? 'review task' : eventType === 'task_done' ? 'gate update' : 'review signal';
+    return `📬 Review ${kind}${source}: ${preview}${truncNote}\n${inboxCallText(eventType === 'chat' ? 'triage it' : 'see details')}${reminder}`;
+  }
+  return null;
+}
+
 async function handleChannelMessage(msg) {
   if (!AGENT_ID) return;
 
@@ -4822,11 +5090,11 @@ async function handleChannelMessage(msg) {
   if (!handleChannelMessage._lastTs) handleChannelMessage._lastTs = 0;
 
   // Build notification content
-  let content = '📬 You have a new fleet message. Call my_task() to see it.';
+  let content = '📬 You have a new fleet message. Call inbox() to see it.';
   // Preview length: long enough to fit a typical voice message in full,
   // with an ellipsis on overflow so Skip doesn't think the system ate
   // Short preview: just enough to know the topic, not enough to act on.
-  // Agents MUST call my_task() to get the full message.
+  // Agents MUST call inbox() to get the full message.
   const PREVIEW_MAX = 120;
   const previewOf = (raw) => {
     const s = String(raw || '');
@@ -4853,18 +5121,21 @@ async function handleChannelMessage(msg) {
     if (eventType === 'delegate') {
       const desc = previewOf(data.text || data.description);
       const rawDesc = data.text || data.description || '';
-      const truncNote = isTruncated(rawDesc) ? `\n(TRUNCATED — showing ${PREVIEW_MAX}/${rawDesc.length} chars. You MUST call my_task() for the full text before responding)` : '';
-      content = `📬 New task assigned: ${desc}${truncNote}\nCall my_task() to see it.`;
+      const truncNote = isTruncated(rawDesc) ? `\n(TRUNCATED — showing ${PREVIEW_MAX}/${rawDesc.length} chars. You MUST call inbox() for the full text before responding)` : '';
+      content = formatModeSummary({ eventType, fromLabel, preview: desc, truncNote })
+        || `📬 New task assigned: ${desc}${truncNote}\nCall inbox() to see it.`;
     } else if (eventType === 'chat') {
       const rawText = data.text || data.message || '';
       const preview = previewOf(rawText);
       const ctx = data.metadata?.context;
       const docHint = formatViewingHint(ctx, { terse: true });
-      const truncNote = isTruncated(rawText) ? `\n(TRUNCATED — showing ${PREVIEW_MAX}/${rawText.length} chars. You MUST call my_task() for the full text before responding)` : '';
+      const truncNote = isTruncated(rawText) ? `\n(TRUNCATED — showing ${PREVIEW_MAX}/${rawText.length} chars. You MUST call inbox() for the full text before responding)` : '';
       const reminder = data.metadata?.chatReminder ? `\n⚠️ ${data.metadata.chatReminder}` : '';
-      content = `📬 Message from ${fromLabel}${docHint}: ${preview}${truncNote}\nCall my_task() to read and respond.${reminder}`;
+      content = formatModeSummary({ eventType, fromLabel, docHint, preview, truncNote, reminder })
+        || `📬 Message from ${fromLabel}${docHint}: ${preview}${truncNote}\nCall inbox() to read and respond.${reminder}`;
     } else if (eventType === 'task_done') {
-      content = `📬 Task update. Call my_task() to see details.`;
+      content = formatModeSummary({ eventType, fromLabel, preview: data.description || data.text || 'Task update' })
+        || `📬 Task update. Call inbox() to see details.`;
     }
   }
 

@@ -3,7 +3,7 @@ import path from 'path'
 import { activeConfigName, gitAuthorEnv, readConfig, repoRoot } from '../identity.mjs'
 import { resolveClaudeModel, resolveClaudeModelSelection } from '../models.mjs'
 
-const REGISTER_PROMPT = 'Call register() with the fleet MCP server. Then call my_task() to check for a pending task.'
+const REGISTER_PROMPT = 'Call register() with the fleet MCP server. Then call inbox() to check for a pending task.'
 const DNS_ALIAS_PRELOAD = path.join(repoRoot(), 'shared', 'node-dns-alias.cjs')
 const FENCE_TMP_ROOT = '/tmp/tlda-fence-env'
 
@@ -20,7 +20,7 @@ function appendLaunchFlags(parts, harnessOptions = {}) {
 
 export function registerPrompt(name) {
   return name
-    ? `Call register(name="${String(name).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}") with the fleet MCP server. Then call my_task() to check for a pending task.`
+    ? `Call register(name="${String(name).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}") with the fleet MCP server. Then call inbox() to check for a pending task.`
     : REGISTER_PROMPT
 }
 
