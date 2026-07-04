@@ -811,10 +811,15 @@ export class FleetStore {
     `);
 
     this._getTask = this.db.prepare('SELECT * FROM tasks WHERE id = ?');
-    this._getTaskByAgent = this.db.prepare("SELECT * FROM tasks WHERE agent = ? AND status != 'done' ORDER BY delegated_at DESC LIMIT 1");
-    this._getAllActiveTasks = this.db.prepare("SELECT * FROM tasks WHERE status != 'done' ORDER BY delegated_at DESC");
+    this._getTaskByAgent = this.db.prepare("SELECT * FROM tasks WHERE agent = ? AND status NOT IN ('done', 'retracted') ORDER BY delegated_at DESC LIMIT 1");
+    this._getAllActiveTasks = this.db.prepare("SELECT * FROM tasks WHERE status NOT IN ('done', 'retracted') ORDER BY delegated_at DESC");
     this._getAllTasks = this.db.prepare('SELECT * FROM tasks ORDER BY delegated_at DESC');
     this._deleteTask = this.db.prepare('DELETE FROM tasks WHERE id = ?');
+    this._getDelegateEventForTask = this.db.prepare(`
+      SELECT ${this._EVT} FROM events WHERE task_id = ? AND type = 'delegate' ORDER BY id DESC LIMIT 1
+    `);
+    this._getUnreadForEvent = this.db.prepare('SELECT event_id, to_id, read FROM unread WHERE event_id = ? AND to_id = ?');
+    this._deleteUnreadForEvent = this.db.prepare('DELETE FROM unread WHERE event_id = ? AND to_id = ? AND read = 0');
 
     // Shared doc queries
     this._upsertSharedDoc = this.db.prepare(`
@@ -925,15 +930,15 @@ export class FleetStore {
       this._w(this._updateAgentLastActive, [ts, ts, event.from || null, event.to || null]);
     }
 
-    // Track unread if this is a message to someone (fire-and-forget on the
-    // worker — same writer, so it's ordered after the event insert above).
+    // Track unread before returning so callers that immediately retract can
+    // operate on a real mailbox row instead of racing the writer worker.
     if (event.unread !== false && event.to && (event.type === 'chat' || event.type === 'delegate')) {
-      this._w(this._insertUnread, [eventId, event.to]);
+      await this._wAwait(this._insertUnread, [eventId, event.to]);
       // Also mark unread for CC recipients
       const cc = event.metadata?.cc;
       if (cc && Array.isArray(cc)) {
         for (const ccId of cc) {
-          this._w(this._insertUnread, [eventId, ccId]);
+          await this._wAwait(this._insertUnread, [eventId, ccId]);
         }
       }
     }
@@ -1962,6 +1967,81 @@ export class FleetStore {
 
   removeTask(id) {
     this._deleteTask.run(id);
+  }
+
+  getTaskDeliveryState(taskOrId, { recipientExposed = false } = {}) {
+    const task = typeof taskOrId === 'string' ? this.getTask(taskOrId) : taskOrId;
+    if (!task) return null;
+    const eventRow = this._getDelegateEventForTask.get(task.id);
+    const event = eventRow
+      ? { ...eventRow, metadata: eventRow.metadata ? JSON.parse(eventRow.metadata) : null }
+      : null;
+    const unread = event ? this._getUnreadForEvent.get(event.id, task.agent) : null;
+    const read = unread ? !!unread.read : false;
+    const hasUnread = !!unread;
+    return {
+      task,
+      event,
+      unread,
+      unreadPending: hasUnread && !read,
+      exposed: !!recipientExposed || read || (event ? !hasUnread : false),
+    };
+  }
+
+  retractTask(taskOrId, { recipientExposed = false, retractedBy = null } = {}) {
+    const state = this.getTaskDeliveryState(taskOrId, { recipientExposed });
+    if (!state) return null;
+    const { task, event, unreadPending, exposed } = state;
+    const retractedAt = new Date().toISOString();
+
+    if (!exposed) {
+      if (event && unreadPending) this._deleteUnreadForEvent.run(event.id, task.agent);
+      if (event) {
+        this.updateEventMetadata(event.id, {
+          retracted: true,
+          retracted_at: retractedAt,
+          retracted_by: retractedBy,
+          retracted_before_delivery: true,
+        });
+      }
+      this.removeTask(task.id);
+      return {
+        task_id: task.id,
+        mode: 'removed_unread',
+        event_id: event?.id || null,
+        unread_removed: !!(event && unreadPending),
+        exposed: false,
+      };
+    }
+
+    const metadata = {
+      ...(task.metadata || {}),
+      retracted: true,
+      retracted_at: retractedAt,
+      retracted_by: retractedBy,
+      retracted_after_delivery: true,
+    };
+    this.upsertTask({
+      ...task,
+      status: 'retracted',
+      completed_at: task.completed_at || retractedAt,
+      metadata,
+    });
+    if (event) {
+      this.updateEventMetadata(event.id, {
+        retracted: true,
+        retracted_at: retractedAt,
+        retracted_by: retractedBy,
+        retracted_after_delivery: true,
+      });
+    }
+    return {
+      task_id: task.id,
+      mode: 'marked_retracted',
+      event_id: event?.id || null,
+      unread_removed: false,
+      exposed: true,
+    };
   }
 
   _hydrateTask(row) {
