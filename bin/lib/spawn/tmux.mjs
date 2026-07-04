@@ -18,6 +18,20 @@ async function tmux(tmuxSocket, ...args) {
   })
 }
 
+async function pasteLiteral(session, text, { tmuxSocket = process.env.TMUX_SOCKET || null } = {}) {
+  const buffer = `tlda-prompt-${process.pid}-${Date.now()}`
+  await tmux(tmuxSocket, 'set-buffer', '-b', buffer, text)
+  await tmux(tmuxSocket, 'paste-buffer', '-dp', '-b', buffer, '-t', session)
+}
+
+async function sendLiteral(session, text, { tmuxSocket = process.env.TMUX_SOCKET || null } = {}) {
+  const chunkSize = 800
+  for (let offset = 0; offset < text.length; offset += chunkSize) {
+    await tmux(tmuxSocket, 'send-keys', '-t', session, '-l', text.slice(offset, offset + chunkSize))
+    await new Promise((resolve) => setTimeout(resolve, 25))
+  }
+}
+
 export async function uniqueSessionName(base, { tmuxSocket = process.env.TMUX_SOCKET || null } = {}) {
   let session = base
   let n = 2
@@ -135,6 +149,7 @@ export async function dismissDevchannels(session, { timeoutMs = 60_000, tmuxSock
 
 export async function injectCodexPrompt(session, prompt, { timeoutMs = 60_000, tmuxSocket = process.env.TMUX_SOCKET || null } = {}) {
   const deadline = Date.now() + timeoutMs
+  const promptMarker = prompt.slice(0, Math.min(prompt.length, 48))
   while (Date.now() < deadline) {
     try {
       const { stdout } = await tmux(tmuxSocket, 'capture-pane', '-t', session, '-p')
@@ -143,14 +158,19 @@ export async function injectCodexPrompt(session, prompt, { timeoutMs = 60_000, t
         await new Promise((resolve) => setTimeout(resolve, 1000))
         continue
       }
-      const promptReady = stdout.split('\n').slice(-5).some((line) => line.includes('›'))
+      const promptReady = stdout.split('\n').some((line) => line.trimStart().startsWith('›'))
       const busy = ['Working', 'Transmuting', 'Thinking'].some((marker) => stdout.includes(marker))
       if (promptReady && !busy) {
+        await tmux(tmuxSocket, 'send-keys', '-t', session, 'Escape')
+        await new Promise((resolve) => setTimeout(resolve, 200))
         await tmux(tmuxSocket, 'send-keys', '-t', session, 'C-u')
         await new Promise((resolve) => setTimeout(resolve, 200))
-        await tmux(tmuxSocket, 'send-keys', '-t', session, prompt)
-        await new Promise((resolve) => setTimeout(resolve, 300))
+        await sendLiteral(session, prompt, { tmuxSocket })
+        await new Promise((resolve) => setTimeout(resolve, 500))
+        const pasted = await tmux(tmuxSocket, 'capture-pane', '-t', session, '-p').catch(() => ({ stdout: '' }))
+        if (!pasted.stdout.includes(promptMarker)) continue
         await tmux(tmuxSocket, 'send-keys', '-t', session, 'Enter')
+        await new Promise((resolve) => setTimeout(resolve, 1000))
         return true
       }
     } catch {

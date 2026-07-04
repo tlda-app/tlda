@@ -40,7 +40,7 @@ import os from 'os'
 const { homedir, hostname } = os
 import { randomUUID } from 'crypto'
 import { lookup as mimeLookup } from 'mime-types'
-import { DEFAULT_PORT, hasTls, loadConfig, resolveConfig } from '../shared/config.mjs'
+import { DEFAULT_PORT, getActiveConfigName, hasTls, loadConfig, resolveConfig } from '../shared/config.mjs'
 import { normalizeUsageStatus } from '../shared/usage-status.mjs'
 import { BARE_METADATA, resolveAsset } from '../shared/doc-assets.mjs'
 import { listModels as listSpawnModels } from '../bin/lib/spawn/models.mjs'
@@ -70,6 +70,7 @@ import { MailboxLibrarian } from '../shared/mailbox-librarian.ts'
 import { trimTerminalSeedBlankRows } from '../shared/terminal-seed.mjs'
 import { daemonSingletonLockPath, inspectSingletonLock } from '../bin/lib/singleton-lock.mjs'
 import { partialSkillReadSummaries, recordPartialSkillReads } from '../shared/partial-skill-reads.mjs'
+import { daemonAddress, describeAgentAddress } from '../shared/agent-move-target.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -138,11 +139,11 @@ function stampNames(rows) {
 const wsFleetClients = new Set()            // active /ws/fleet connections
 const agentFleetConnections = new Map()     // agent_id -> latest /ws/fleet connection
 
-// Daemon connections — keyed by machine_id. Each value is the live WS for
-// that machine's fleet-daemon. Used for RPC routing and for pushing
+// Daemon connections — keyed by machine_id:env_name. Each value is the live WS
+// for that daemon config lane. Used for RPC routing and for pushing
 // agents-updated / projects-updated messages.
-const daemonConnections = new Map()         // machine_id -> ws
-const daemonWelcomeSeenAt = new Map()       // machine_id -> last successful hello setup
+const daemonConnections = new Map()         // machine_id:env_name -> ws
+const daemonWelcomeSeenAt = new Map()       // machine_id:env_name -> last successful hello setup
 
 // "Agent has a running claude process right now" — flat set keyed by agent_id.
 // Populated by `agent-liveness` messages from each machine's daemon (every
@@ -256,8 +257,8 @@ function normalizeAddr(a) {
 
 function findMachineForAddress(addr) {
   const norm = normalizeAddr(addr)
-  for (const [machineId, dws] of daemonConnections) {
-    if (normalizeAddr(dws._remoteAddr) === norm) return machineId
+  for (const [daemonKey, dws] of daemonConnections) {
+    if (normalizeAddr(dws._remoteAddr) === norm) return daemonKey
   }
   return null
 }
@@ -356,6 +357,8 @@ setInterval(() => {
 // of a misfire (an extra short-lived daemon) is much smaller than the
 // cost of silent feature loss.
 const LOCAL_MACHINE_ID = (hostname() || '').split('.')[0] || 'localhost'
+const SERVER_ENV_NAME = getActiveConfigName(loadConfig())
+const LOCAL_DAEMON_ADDRESS = daemonAddress(LOCAL_MACHINE_ID, SERVER_ENV_NAME)
 // Server owner — the human running this server process. Used as fallback
 // identity for MCP agents and CLI operations. Browser users identify
 // themselves via WS 'login' (returning) or 'register' (new) messages.
@@ -369,7 +372,7 @@ const DAEMON_CONFIG_DIR = join(homedir(), '.config', 'tlda')
 function daemonLockFile() {
   return daemonSingletonLockPath({
     configDir: DAEMON_CONFIG_DIR,
-    origin: process.env.TLDA_SERVER || resolveConfig().database.http,
+    origin: `${process.env.TLDA_SERVER || resolveConfig().database.http}#${SERVER_ENV_NAME}`,
   })
 }
 const DAEMON_SCRIPT = (() => {
@@ -405,7 +408,7 @@ function ensureLocalDaemon() {
   const now = Date.now()
   if (now < _daemonBackoffUntil) return
   // Already connected? Done.
-  const ws = daemonConnections.get(LOCAL_MACHINE_ID)
+  const ws = daemonConnections.get(LOCAL_DAEMON_ADDRESS)
   if (ws && ws.readyState === 1) return
   // The daemon owns an origin-keyed singleton lock. If any live daemon already
   // holds this server's origin lock, that is the authoritative answer: do not
@@ -485,7 +488,7 @@ function ensureLocalDaemon() {
 }
 
 // Pending RPCs awaiting a daemon `rpc-reply`. Keyed by RPC id.
-// Each entry: { resolve, reject, timer, machine_id }.
+// Each entry: { resolve, reject, timer, machine_id, env_name }.
 const pendingRpcs = new Map()
 let _rpcSeq = 0
 const RPC_TIMEOUT_MS = 10_000
@@ -532,28 +535,37 @@ function matchApprovalResponse(text) {
  * entry is rejected with a `daemon disconnected` error.
  */
 class NoDaemonError extends Error {
-  constructor(machineId) {
-    super(`No fleet-daemon connected for machine "${machineId}"`)
+  constructor(machineId, envName) {
+    super(`No fleet-daemon connected for ${describeAgentAddress(machineId, envName)}`)
     this.code = 'NO_DAEMON'
     this.machineId = machineId
+    this.envName = envName
   }
 }
 
 function sendRpc(machineId, op, params = {}) {
   return new Promise((resolve, reject) => {
-    if (!machineId) return reject(new NoDaemonError('(unknown)'))
-    const dws = daemonConnections.get(machineId)
+    let targetMachine = machineId
+    let envName = params.daemon_env_name
+    if (!envName && typeof machineId === 'string' && machineId.includes(':')) {
+      const parts = machineId.split(':')
+      targetMachine = parts[0]
+      envName = parts[1]
+    }
+    if (!machineId || !envName) return reject(new NoDaemonError(machineId || '(unknown)', envName || '(unknown)'))
+    const key = daemonAddress(targetMachine, envName)
+    const dws = daemonConnections.get(key)
     if (!dws || dws.readyState !== 1) {
-      if (op === 'spawn') logSpawnDaemonMiss(machineId, 'sendRpc(spawn)', { hasWs: !!dws, readyState: dws?.readyState ?? 'missing', route: params.spawnRoute || 'unknown' })
-      return reject(new NoDaemonError(machineId))
+      if (op === 'spawn') logSpawnDaemonMiss(key, 'sendRpc(spawn)', { hasWs: !!dws, readyState: dws?.readyState ?? 'missing', route: params.spawnRoute || 'unknown' })
+      return reject(new NoDaemonError(targetMachine, envName))
     }
     const id = `rpc-${++_rpcSeq}-${Date.now().toString(36)}`
     const timeoutMs = op === 'spawn' ? SPAWN_RPC_TIMEOUT_MS : RPC_TIMEOUT_MS
     const timer = setTimeout(() => {
       pendingRpcs.delete(id)
-      reject(new Error(`RPC timeout after ${timeoutMs}ms (op=${op}, machine=${machineId})`))
+      reject(new Error(`RPC timeout after ${timeoutMs}ms (op=${op}, daemon=${key})`))
     }, timeoutMs)
-    pendingRpcs.set(id, { resolve, reject, timer, machine_id: machineId })
+    pendingRpcs.set(id, { resolve, reject, timer, machine_id: targetMachine, env_name: envName })
     try {
       dws.send(JSON.stringify({ type: 'rpc', id, op, ...params }))
     } catch (e) {
@@ -578,9 +590,9 @@ function logSpawnDaemonMiss(machineId, context, detail = {}) {
 
 // When a daemon WS drops, fail any in-flight RPCs that targeted it. The
 // HTTP caller decides whether to retry.
-function failPendingRpcsForMachine(machineId, reason = 'daemon disconnected') {
+function failPendingRpcsForDaemon(machineId, envName, reason = 'daemon disconnected') {
   for (const [id, entry] of [...pendingRpcs]) {
-    if (entry.machine_id === machineId) {
+    if (entry.machine_id === machineId && entry.env_name === envName) {
       clearTimeout(entry.timer)
       pendingRpcs.delete(id)
       entry.reject(new Error(reason))
@@ -591,15 +603,16 @@ function failPendingRpcsForMachine(machineId, reason = 'daemon disconnected') {
 setShadowMirrorHandler(async ({ name, hash, bundleBase64 }) => {
   const project = readProject(name)
   const machineId = project?.lastSourceMachineId || null
-  if (!machineId) {
+  const envName = project?.lastSourceEnvName || null
+  if (!machineId || !envName) {
     throw new Error(`no source daemon recorded for ${name}`)
   }
-  const result = await sendRpc(machineId, 'mirror-shadow-ref', {
+  const result = await sendRpc(daemonAddress(machineId, envName), 'mirror-shadow-ref', {
     project: name,
     hash,
     bundleBase64,
   })
-  return { ...result, machine_id: machineId }
+  return { ...result, machine_id: machineId, env_name: envName }
 })
 
 // No server-side echo suppression. Dedup is client-side: the WS reply
@@ -679,7 +692,7 @@ let _lastReaperStatus = null       // latest reaper snapshot from daemon
 const _daemonWarnDedup = new Map() // project → { eventId, count, lastSeen, baseText }
 const DAEMON_WARN_DEDUP_MS = 5 * 60 * 1000
 
-// machine_id → ts when the CURRENT uninterrupted daemon connection began. Reset on
+// daemon address → ts when the CURRENT uninterrupted daemon connection began. Reset on
 // every daemon-hello (i.e. every reconnect). Agent activity events arrive over the
 // daemon WS, so if that WS flapped, an agent's activity wasn't delivered LIVE and its
 // _lastActivityAt was briefly stale — making an active agent *look* idle. The daemon
@@ -765,9 +778,9 @@ function getWouldHibernate() {
     // of connection — just enough settle time for that drain to land. Require
     // the daemon to have been connected for the reconnect grace (~2min, well
     // over the actual drain) before trusting a "no recent activity" reading.
-    const machineId = agent.machine_id
-    if (machineId) {
-      const connectedSince = _daemonConnectedSince.get(machineId)
+    const daemonKey = agent.machine_id && agent.env_name ? agentDaemonAddress(agent) : null
+    if (daemonKey) {
+      const connectedSince = _daemonConnectedSince.get(daemonKey)
       if (!connectedSince || (now - connectedSince) < LIVENESS_RECONNECT_GRACE_MS) continue
     }
     result[agentId] = Math.round(idleMs / 1000)
@@ -1071,6 +1084,7 @@ async function performSpawnRelay(caller, msg) {
       spawnPolicy: caller.metadata?.spawnPolicy || undefined,
     },
     spawnRoute: route.source,
+    daemon_env_name: route.env_name,
     respawn: sessionMode ? false : (refresh ? false : resolved.respawn),
     refresh: !!refresh,
   }
@@ -1135,7 +1149,20 @@ async function performSpawnRelay(caller, msg) {
           return
         }
       }
-      const agentRecord = ready?.agent || result?.agent || (result?.agent_id ? fleetStore.findAgent(result.agent_id) : null) || (targetAgentId ? fleetStore.findAgent(targetAgentId) : null)
+      let agentRecord = ready?.agent || result?.agent || (result?.agent_id ? fleetStore.findAgent(result.agent_id) : null) || (targetAgentId ? fleetStore.findAgent(targetAgentId) : null)
+      if (agentRecord?.id && (result?.resume_id || result?.tmux_session || route.env_name)) {
+        const patchedAgent = {
+          ...agentRecord,
+          tmux_session: result?.tmux_session || agentRecord.tmux_session,
+          resume_id: result?.resume_id || agentRecord.resume_id,
+          machine_id: route.machine_id,
+          env_name: route.env_name,
+          daemon_key: daemonAddress(route.machine_id, route.env_name),
+        }
+        fleetStore.upsertAgent(patchedAgent)
+        agentRecord = fleetStore.getAgent?.(agentRecord.id) || patchedAgent
+        if (ready?.agent?.id === agentRecord.id) ready.agent = agentRecord
+      }
       let lineage = null
       if (phase && agentRecord?.id) {
         try {
@@ -1184,6 +1211,7 @@ async function performSpawnRelay(caller, msg) {
     agent_id: targetAgentId,
     name: spawnName,
     machine_id: machineId,
+    env_name: route.env_name,
   }
 }
 
@@ -1340,14 +1368,18 @@ onGlobalEvent((event) => {
 //   { via: 'daemon', machine_id, daemon: <ws> }   on success
 //   { via: 'none', error: '...', code: 503 }      if no daemon
 function resolveRpc(op, agent) {
-  if (!agent || !agent.machine_id) {
-    return { via: 'none', code: 503, error: `agent has no machine_id (op=${op})` }
+  if (!agent || !agent.machine_id || !agent.env_name) {
+    return { via: 'none', code: 503, error: `agent has no daemon address (op=${op})` }
   }
-  const dws = daemonConnections.get(agent.machine_id)
+  const dws = daemonConnections.get(daemonAddress(agent.machine_id, agent.env_name))
   if (!dws || dws.readyState !== 1) {
-    return { via: 'none', code: 503, error: `no fleet-daemon connected for machine "${agent.machine_id}" (op=${op})` }
+    return { via: 'none', code: 503, error: `no fleet-daemon connected for ${describeAgentAddress(agent.machine_id, agent.env_name)} (op=${op})` }
   }
-  return { via: 'daemon', machine_id: agent.machine_id, daemon: dws }
+  return { via: 'daemon', machine_id: daemonAddress(agent.machine_id, agent.env_name), daemon_address: daemonAddress(agent.machine_id, agent.env_name), env_name: agent.env_name, daemon: dws }
+}
+
+function agentDaemonAddress(agent) {
+  return daemonAddress(agent?.machine_id, agent?.env_name)
 }
 
 // Auth
@@ -1725,7 +1757,7 @@ app.get('/api/usage-status', requireRead, (req, res) => {
 app.post('/api/reaper/kill', requireRead, async (req, res) => {
   const { pid } = req.body
   if (!pid) return res.status(400).json({ error: 'missing pid' })
-  const machineId = LOCAL_MACHINE_ID
+  const machineId = LOCAL_DAEMON_ADDRESS
   try {
     const result = await sendRpc(machineId, 'reaper-kill', { pid })
     res.json(result || { ok: true })
@@ -1735,7 +1767,7 @@ app.post('/api/reaper/kill', requireRead, async (req, res) => {
 })
 
 app.post('/api/reaper/sweep', requireRead, async (req, res) => {
-  const machineId = LOCAL_MACHINE_ID
+  const machineId = LOCAL_DAEMON_ADDRESS
   try {
     const result = await sendRpc(machineId, 'reaper-sweep', {})
     res.json(result || { ok: true })
@@ -3019,19 +3051,27 @@ server.on('upgrade', async (req, socket, head) => {
     const agentId = url.searchParams.get('agent')
     if (!agentId || !fleetStore) { socket.destroy(); return }
     const agent = fleetStore.findAgent(agentId)
-    if (!agent || !agent.machine_id) {
+    if (!agent || !agent.machine_id || !agent.env_name) {
       // Decline cleanly with a JSON message before close so the UI shows
       // a useful error instead of "WebSocket error".
       terminalWss.handleUpgrade(req, socket, head, (ws) => {
-        try { ws.send(JSON.stringify({ type: 'error', message: 'agent has no machine_id; daemon not registered' })) } catch {}
-        try { ws.close() } catch {}
+        try { ws.send(JSON.stringify({ type: 'error', message: 'agent has no daemon address; daemon not registered' })) } catch {
+          // Socket may already be gone; close below is the remaining cleanup.
+        }
+        try { ws.close() } catch {
+          // Socket already closed by peer; no server-side recovery remains.
+        }
       })
       return
     }
     if (!agent.tmux_session) {
       terminalWss.handleUpgrade(req, socket, head, (ws) => {
-        try { ws.send(JSON.stringify({ type: 'error', message: 'agent has no tmux session' })) } catch {}
-        try { ws.close() } catch {}
+        try { ws.send(JSON.stringify({ type: 'error', message: 'agent has no tmux session' })) } catch {
+          // Socket may already be gone; close below is the remaining cleanup.
+        }
+        try { ws.close() } catch {
+          // Socket already closed by peer; no server-side recovery remains.
+        }
       })
       return
     }
@@ -3048,7 +3088,7 @@ server.on('upgrade', async (req, socket, head) => {
 
       if (isFirst) {
         try {
-          const res = await sendRpc(agent.machine_id, 'start-terminal-watch', {
+          const res = await sendRpc(agentDaemonAddress(agent), 'start-terminal-watch', {
             agent_id: agent.id, tmux_session: agent.tmux_session, poll_ms: 500,
           })
           if (res && res.cols && res.rows) terminalSizes.set(agent.id, { cols: res.cols, rows: res.rows })
@@ -3070,7 +3110,7 @@ server.on('upgrade', async (req, socket, head) => {
       // idle awake agent shows nothing. capture-pane takes `lines` and returns
       // the screen as `pane` (see rpcCapturePane in fleet-daemon.mjs).
       try {
-        const { pane } = await sendRpc(agent.machine_id, 'capture-pane', {
+        const { pane } = await sendRpc(agentDaemonAddress(agent), 'capture-pane', {
           tmux_session: agent.tmux_session, visible: true,
         })
         if (pane && ws.readyState === 1) {
@@ -3093,7 +3133,7 @@ server.on('upgrade', async (req, socket, head) => {
         try { msg = JSON.parse(raw.toString()) } catch { return }
         if (msg.type === 'input' && typeof msg.data === 'string') {
           try {
-            await sendRpc(agent.machine_id, 'terminal-input', {
+            await sendRpc(agentDaemonAddress(agent), 'terminal-input', {
               tmux_session: agent.tmux_session, data: msg.data,
             })
           } catch (e) {
@@ -3103,7 +3143,7 @@ server.on('upgrade', async (req, socket, head) => {
           }
         } else if (msg.type === 'submit' && typeof msg.text === 'string') {
           try {
-            await sendRpc(agent.machine_id, 'send-text', {
+            await sendRpc(agentDaemonAddress(agent), 'send-text', {
               tmux_session: agent.tmux_session, text: msg.text, enter: true,
             })
           } catch (e) {
@@ -3113,7 +3153,7 @@ server.on('upgrade', async (req, socket, head) => {
           }
         } else if (msg.type === 'resize' && msg.cols && msg.rows) {
           try {
-            await sendRpc(agent.machine_id, 'terminal-resize', {
+            await sendRpc(agentDaemonAddress(agent), 'terminal-resize', {
               tmux_session: agent.tmux_session, cols: msg.cols, rows: msg.rows,
             })
           } catch {}
@@ -3128,7 +3168,7 @@ server.on('upgrade', async (req, socket, head) => {
           terminalWatchers.delete(agent.id)
           terminalSizes.delete(agent.id)
           try {
-            await sendRpc(agent.machine_id, 'stop-terminal-watch', {
+            await sendRpc(agentDaemonAddress(agent), 'stop-terminal-watch', {
               tmux_session: agent.tmux_session,
             })
           } catch {}
@@ -3163,20 +3203,22 @@ server.on('upgrade', async (req, socket, head) => {
         catch (e) { console.error('[daemon-ws] handler error:', e?.message) }
       })
       ws.on('close', () => {
-        if (ws._machineId && daemonConnections.get(ws._machineId) === ws) {
-          daemonConnections.delete(ws._machineId)
+        if (ws._daemonKey && daemonConnections.get(ws._daemonKey) === ws) {
+          daemonConnections.delete(ws._daemonKey)
+          fleetStore?.markDaemonDisconnected?.(ws._daemonKey)
           // The daemon is gone; process-level visibility is unknown, not false.
           // Preserve prior liveness so a server/Fly redeploy or daemon restart
           // cannot make every working agent on that machine vanish.
-          failPendingRpcsForMachine(ws._machineId, 'daemon disconnected')
+          failPendingRpcsForDaemon(ws._machineId, ws._envName, 'daemon disconnected')
           broadcastState()
-          console.log(`[fleet-daemon] disconnected: machine_id=${ws._machineId}`)
+          console.log(`[fleet-daemon] disconnected: daemon=${ws._daemonKey}`)
         }
       })
       ws.on('error', () => {
-        if (ws._machineId && daemonConnections.get(ws._machineId) === ws) {
-          daemonConnections.delete(ws._machineId)
-          failPendingRpcsForMachine(ws._machineId, 'daemon ws error')
+        if (ws._daemonKey && daemonConnections.get(ws._daemonKey) === ws) {
+          daemonConnections.delete(ws._daemonKey)
+          fleetStore?.markDaemonDisconnected?.(ws._daemonKey)
+          failPendingRpcsForDaemon(ws._machineId, ws._envName, 'daemon ws error')
           broadcastState()
         }
       })
@@ -3381,7 +3423,7 @@ async function handleFleetWsMessage(ws, msg) {
     // back to id keeps python fleet-spawn's ws_register (which sends id=fleet_id
     // directly, no correlation) working. Reading the bare `id` here was the
     // root cause of phantom UUID-keyed agent rows.
-    const { agent_id, id: msgId, name, pretty_name, tmux_session, cwd, labels, manager, session_id, metadata, machine_id, kind } = msg
+    const { agent_id, id: msgId, name, pretty_name, tmux_session, cwd, labels, manager, session_id, resume_id, metadata, machine_id, env_name, kind } = msg
     const agentId = agent_id || msgId
     if (!agentId) { error('missing id'); return }
     // Duplicate clients are allowed to coexist. Closing an existing socket here
@@ -3427,6 +3469,9 @@ async function handleFleetWsMessage(ws, msg) {
         ? { ...(existing?.metadata || {}), ...(metadata || {}), ...(kind ? { kind } : {}) }
         : null,
       machine_id: machine_id || existing?.machine_id || null,
+      env_name: env_name || existing?.env_name || null,
+      daemon_key: (machine_id && env_name) ? daemonAddress(machine_id, env_name) : existing?.daemon_key || null,
+      resume_id: resume_id || existing?.resume_id || null,
     }
     // Persist spawnPolicy ATOMICALLY as a coherent four-name rung. The shallow
     // metadata merge above is what let partial spawnPolicy writes corrupt the
@@ -3731,14 +3776,17 @@ async function handleFleetWsMessage(ws, msg) {
       _wakeQueue.delete(agentId)
       const agent = fleetStore.getAgent?.(agentId)
       if (!agent || agent.dead || agent.human) continue
+      const daemonKeys = [...daemonConnections.keys()]
+      if (daemonKeys.length === 0) continue
+      const daemonKey = agent.machine_id && agent.env_name ? agentDaemonAddress(agent) : daemonKeys[0]
       try {
         const machineId = agent.machine_id
         if (!machineId) throw new Error(`agent ${agent.friendly_name || agentId} has no machine_id; cannot route wake/respawn`)
-        const ownerDaemon = daemonConnections.get(machineId)
-        if (!ownerDaemon || ownerDaemon.readyState !== 1) throw new Error(`No fleet-daemon connected for machine "${machineId}"`)
+        const ownerDaemon = daemonConnections.get(daemonKey)
+        if (!ownerDaemon || ownerDaemon.readyState !== 1) throw new Error(`No fleet-daemon connected for ${daemonKey}`)
         const serverAlive = isAgentAlive(agentId)
         const liveness = serverAlive
-          ? await sendRpc(machineId, 'check-alive', { tmux_session: agent.tmux_session })
+          ? await sendRpc(daemonKey, 'check-alive', { tmux_session: agent.tmux_session })
             .catch(e => ({
               type: 'agent-liveness',
               agent_id: agentId,
@@ -3759,7 +3807,7 @@ async function handleFleetWsMessage(ws, msg) {
         const decision = spawnLibrarian.decideWake(agent, { ...liveness, agent_id: liveness.agent_id || agentId }, { serverAlive })
         if (decision.action === 'deliver') {
           if (nudgeText && agent.tmux_session && terminalNudgeKind(agent)) {
-            await sendRpc(machineId, 'send-text', {
+            await sendRpc(daemonKey, 'send-text', {
               tmux_session: agent.tmux_session,
               text: nudgeText,
               enter: true,
@@ -3786,9 +3834,9 @@ async function handleFleetWsMessage(ws, msg) {
         // agentId is a `fleet:` id, which fleet-spawn resumes directly. This is
         // the chat-wake entry point — the one that fires when Skip chats a
         // hibernating agent — so identity must be carried here above all.
-        const spawnResult = await sendRpc(machineId, 'spawn', { name: agentId, respawn: true })
+        const spawnResult = await sendRpc(daemonKey, 'spawn', { name: agentId, respawn: true })
         if (nudgeText && agent.tmux_session && terminalNudgeKind(agent)) {
-          await sendRpc(machineId, 'send-text', {
+          await sendRpc(daemonKey, 'send-text', {
             tmux_session: spawnResult?.tmux_session || agent.tmux_session,
             text: nudgeText,
             enter: true,
@@ -4026,8 +4074,8 @@ async function handleFleetWsMessage(ws, msg) {
           const [aid, a] = [...pendingPlanApprovals.entries()][0]
           approval = a; pendingPlanApprovals.delete(aid)
         }
-        if (approval?.tmux_session && approval?.machine_id) {
-          sendRpc(approval.machine_id, 'send-text', {
+        if (approval?.tmux_session && approval?.machine_id && approval?.env_name) {
+          sendRpc(daemonAddress(approval.machine_id, approval.env_name), 'send-text', {
             tmux_session: approval.tmux_session,
             text: key,
             enter: false,
@@ -4041,15 +4089,15 @@ async function handleFleetWsMessage(ws, msg) {
       const keyword = planKeywordMatch[2].toLowerCase()
       for (const r of recipients) {
         const agent = fleetStore.findAgent(r)
-        if (!agent?.tmux_session || !agent.machine_id) continue
-        sendRpc(agent.machine_id, 'send-text', {
+        if (!agent?.tmux_session || !agent.machine_id || !agent.env_name) continue
+        sendRpc(agentDaemonAddress(agent), 'send-text', {
           tmux_session: agent.tmux_session,
           text: '/plan',
           enter: true,
         }).catch(e => console.error(`[outline-keyword] plan mode failed for ${r}: ${e.message}`))
         if (keyword === 'outline') {
           setTimeout(() => {
-            sendRpc(agent.machine_id, 'send-text', {
+            sendRpc(agentDaemonAddress(agent), 'send-text', {
               tmux_session: agent.tmux_session,
               text: 'Invoke the outline-before-writing skill now. Write your outline in the plan file, then share the plan file path in chat so it appears as a tappable note.',
               enter: true,
@@ -4656,7 +4704,7 @@ async function handleFleetWsMessage(ws, msg) {
     const agent = fleetStore.findAgent(rawFrom)
     if (!agent) { error(`Agent not found: "${rawFrom}"`); return }
     if (!agent.tmux_session) { error('agent has no tmux_session'); return }
-    if (!agent.machine_id) { error('agent has no machine_id'); return }
+    if (!agent.machine_id || !agent.env_name) { error('agent has no daemon address'); return }
     const label = agent.friendly_name || agent.id.slice(0, 12)
     const text = reason ? `${label}: ${reason}` : `${label}: terminal requested`
     const event = fleetStore.share?.({
@@ -5120,16 +5168,16 @@ function broadcastDaemonAgentsUpdated() {
     if (!fleetStore) console.warn('[fleet-daemon] broadcastDaemonAgentsUpdated: no fleetStore')
     return
   }
-  for (const [mid, dws] of daemonConnections) {
+  for (const [daemonKey, dws] of daemonConnections) {
     if (dws.readyState !== 1) {
-      console.warn(`[fleet-daemon] broadcastDaemonAgentsUpdated: ws for ${mid} not open (readyState=${dws.readyState})`)
+      console.warn(`[fleet-daemon] broadcastDaemonAgentsUpdated: ws for ${daemonKey} not open (readyState=${dws.readyState})`)
       continue
     }
     try {
-      const agents = fleetStore.getAgentsByMachine(mid)
+      const agents = fleetStore.getAgentsByDaemon(dws._machineId, dws._envName)
       dws.send(JSON.stringify({ type: 'agents-updated', agents }))
     } catch (e) {
-      console.error(`[fleet-daemon] broadcastDaemonAgentsUpdated failed for ${mid}: ${e.message}`)
+      console.error(`[fleet-daemon] broadcastDaemonAgentsUpdated failed for ${daemonKey}: ${e.message}`)
     }
   }
 }
@@ -5268,15 +5316,16 @@ async function handleDaemonWsMessage(ws, msg) {
   const { type } = msg
 
   if (type === 'daemon-hello') {
-    const { machine_id, user, hostname, version, boot_id, install_path } = msg
-    if (!machine_id) return
-    // §4b backstop: a machine_id is owned by ONE daemon install. If another
+    const { machine_id, env_name, user, hostname, version, boot_id, install_path } = msg
+    if (!machine_id || !env_name) return
+    const daemonKey = daemonAddress(machine_id, env_name)
+    // §4b backstop: a daemon address is owned by ONE daemon install. If another
     // daemon already holds it live, only the SAME install restarting may take
     // over (newer boot wins); a DIFFERENT install (e.g. a worktree/dev-rig
     // daemon) is refused — it can never evict the real live daemon. This is the
     // hard stop for the "two daemons fighting over `air`" leak, independent of
     // how the rogue daemon was misconfigured.
-    const existing = daemonConnections.get(machine_id)
+    const existing = daemonConnections.get(daemonKey)
     if (existing && existing !== ws) {
       const decision = daemonHelloDecision({
         existing: { open: existing.readyState === 1, bootId: existing._bootId || 0, installPath: existing._installPath },
@@ -5285,8 +5334,8 @@ async function handleDaemonWsMessage(ws, msg) {
       if (decision === 'refuse') {
         const sameInstall = existing._installPath && install_path && existing._installPath === install_path
         const reason = sameInstall
-          ? 'a newer daemon already holds this machine_id'
-          : `machine_id ${machine_id} is already held live by a different daemon install (${existing._installPath || 'unknown'}); refusing this one (${install_path || 'unknown'})`
+          ? 'a newer daemon already holds this daemon address'
+          : `daemon address ${daemonKey} is already held live by a different daemon install (${existing._installPath || 'unknown'}); refusing this one (${install_path || 'unknown'})`
         console.warn(`[fleet-daemon] REFUSED daemon-hello: ${reason}`)
         try {
           ws.send(JSON.stringify({ type: 'daemon-evict', reason, held_by_boot_id: existing._bootId || 0 }))
@@ -5303,35 +5352,50 @@ async function handleDaemonWsMessage(ws, msg) {
         }))
       } catch {}
       try { existing.close() } catch {}
-      daemonConnections.delete(machine_id)
+      daemonConnections.delete(daemonKey)
     }
     ws._machineId = machine_id
+    ws._envName = env_name
+    ws._daemonKey = daemonKey
     ws._bootId = boot_id
     ws._installPath = install_path
     ws._user = user
     ws._hostname = hostname
     ws._version = version
-    daemonConnections.set(machine_id, ws)
-    daemonWelcomeSeenAt.set(machine_id, Date.now())
-    if (daemonConnections.get(machine_id) !== ws) {
-      console.error(`[fleet-daemon] routability invariant failed after welcome setup: machine_id=${machine_id}`)
+    daemonConnections.set(daemonKey, ws)
+    daemonWelcomeSeenAt.set(daemonKey, Date.now())
+    fleetStore?.upsertDaemonRegistration?.({
+      daemon_key: daemonKey,
+      machine_id,
+      env_name,
+      install_path,
+      user,
+      hostname,
+      version,
+      boot_id: boot_id || 0,
+      status: 'connected',
+      connected_at: new Date().toISOString(),
+      metadata: { scope: 'machine-env' },
+    })
+    if (daemonConnections.get(daemonKey) !== ws) {
+      console.error(`[fleet-daemon] routability invariant failed after welcome setup: daemon=${daemonKey}`)
     }
     // Reset the activity-feed uptime clock: this (re)connect starts a fresh
     // continuous window. getWouldHibernate won't hibernate agents on this machine
     // until the feed has been up a full idle window, so a flap can't cause a
     // stale-_lastActivityAt false hibernate.
-    _daemonConnectedSince.set(machine_id, Date.now())
-    if (machine_id === LOCAL_MACHINE_ID) noteDaemonHealthyConnect()
-    console.log(`[fleet-daemon] connected: machine_id=${machine_id} user=${user}@${hostname} v=${version} boot_id=${boot_id}`)
+    _daemonConnectedSince.set(daemonKey, Date.now())
+    if (daemonKey === LOCAL_DAEMON_ADDRESS) noteDaemonHealthyConnect()
+    console.log(`[fleet-daemon] connected: daemon=${daemonKey} user=${user}@${hostname} v=${version} boot_id=${boot_id}`)
 
     // Resume any active terminal watches for agents on this machine.
     // The browser-side watcher set is server-held; the daemon comes back
     // empty after a restart so we re-fire start-terminal-watch.
     if (fleetStore) {
-      const onMachine = fleetStore.getAgentsByMachine(machine_id)
+      const onMachine = fleetStore.getAgentsByDaemon(machine_id, env_name)
       for (const a of onMachine) {
         if (a.tmux_session && terminalWatchers.has(a.id)) {
-          sendRpc(machine_id, 'start-terminal-watch', {
+          sendRpc(daemonKey, 'start-terminal-watch', {
             agent_id: a.id, tmux_session: a.tmux_session, poll_ms: 500,
           }).catch(e => console.warn(`[server] terminal-watch resume failed for ${a.id}: ${e.message}`))
         }
@@ -5341,7 +5405,7 @@ async function handleDaemonWsMessage(ws, msg) {
     // Send daemon-welcome with agents + projects this machine should
     // watch. Agents are filtered by machine_id; legacy NULL agents will
     // be invisible to daemons until the MCP starts sending machine_id.
-    const agentsForMachine = fleetStore?.getAgentsByMachine(machine_id) || []
+    const agentsForMachine = fleetStore?.getAgentsByDaemon(machine_id, env_name) || []
     try {
       ws.send(JSON.stringify({
         type: 'daemon-welcome',
@@ -5636,18 +5700,20 @@ async function handleDaemonWsMessage(ws, msg) {
     try {
       const agent = fleetStore.findAgent(agent_id)
       const machine_id = agent?.machine_id
+      const env_name = agent?.env_name
       const event = await fleetStore.share({
         type: 'plan_approval',
         from: agent_id,
         to: SERVER_OWNER_ID,
         text: plan_text,
-        metadata: { tmux_session: tmux_session || null, machine_id },
+        metadata: { tmux_session: tmux_session || null, machine_id, env_name },
         unread: true,
         timestamp: new Date().toISOString(),
       })
       pendingPlanApprovals.set(agent_id, {
         tmux_session: tmux_session || agent?.tmux_session,
         machine_id,
+        env_name,
         eventId: event?.id,
       })
       const existing = fleetStore.getAgent(agent_id)
@@ -5736,7 +5802,7 @@ async function handleDaemonWsMessage(ws, msg) {
     const { project, files, deletedFiles, editedBy } = msg
     if (!project) return
     if (readProject(project)) {
-      updateProject(project, { lastSourceMachineId: ws._machineId, lastSourceMachineAt: Date.now() })
+      updateProject(project, { lastSourceMachineId: ws._machineId, lastSourceEnvName: ws._envName, lastSourceMachineAt: Date.now() })
     }
     // Hand off to the same pipeline used by HTTP /api/projects/:name/push.
     processProjectPush(project, { files, deletedFiles, editedBy }).then(result => {

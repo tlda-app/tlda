@@ -25,7 +25,7 @@ import { randomBytes } from 'crypto'
 import { collectSourceFiles, collectSourceHashes, collectSpecificFiles } from './lib/source-files.mjs'
 import { collectHtmlArtifactFiles, htmlArtifactMainForSource } from './lib/html-artifact-files.mjs'
 import {
-  loadConfig, saveConfig, getServerUrl, getFleetServerUrl, getRwToken, DEFAULT_PORT,
+  loadConfig, saveConfig, getServerUrl, getFleetServerUrl, getRwToken, getActiveConfigName, DEFAULT_PORT,
   CONFIG_DIR, CONFIG_FILE, hasTls, TLS_CA_PATH,
 } from '../shared/config.mjs'
 import { tldaFetch } from '../shared/http-client.mjs'
@@ -35,6 +35,7 @@ import { scanMarkdownDeps } from '../shared/markdown-deps.mjs'
 import { cmdLogs } from './lib/unified-logs.mjs'
 import { formatSystemStatus } from './lib/system-status.mjs'
 import { resolveAgentQuery } from './lib/agent-resolve.mjs'
+import { parseAgentMoveTarget, describeAgentAddress } from '../shared/agent-move-target.mjs'
 import {
   SPAWN_POLICY_OPTIONS,
   SPAWN_PROFILES,
@@ -135,7 +136,7 @@ const VALUE_FLAGS = new Set([
   'server', 'dir', 'title', 'main', 'debounce', 'token', 'members', 'format',
   'session', 'target', 'timeout', 'id', 'book', 'worktree', 'port', 'browser',
   'model', 'cwd', 'effort', 'mode', 'kind', 'spawn-capability', 'capability',
-  'agent-id', 'policy', 'privileges', 'to', 'machine', 'limit', 'from', 'poll', 'config',
+  'agent-id', 'policy', 'privileges', 'machine', 'limit', 'from', 'poll', 'config',
   'label', 'plist',
 ])
 
@@ -2155,7 +2156,7 @@ Usage:
   tlda agent spawn --fresh <name>
   tlda agent spawn --session <uuid> [--enroll] [name]
   tlda agent spawn-direct <agent> [--privileges profile] [--capability read|write|tlda-write|full]
-  tlda agent move <agent> --to <machine>
+  tlda agent move <agent> [name@][box:]env
   tlda agent set-spawn-machine <agent-or-user> <machine>
   tlda agent check-ready <agent> [--timeout seconds]
   tlda agent attach <agent>
@@ -2177,7 +2178,7 @@ spawn routes through the fleet server and target daemon; spawn-direct directly i
 the local primitive on this machine. Routed spawn is requester-gated; spawn-direct
 is local-operator gated by machine access and writes the child grant to the daemon ledger.
 Set TLDA_DISABLE_PERMISSION_CLASSIFIER=1 or agentSandbox.disablePermissionsClassifier=true only as a spawn-time break-glass to launch Claude with --dangerously-skip-permissions.
-move must be run on the agent's current machine; only the destination is remote.
+move must be run on the agent's current daemon address; cross-box moves use SSH/rsync.
 set-spawn-machine stores the caller's default fresh-spawn machine in fleet prefs.
 The capability command is operator-only: it refuses from fleet agent env/tmux context.
 The privileges command defaults to respawning now; --on-respawn stores only the next-spawn profile.
@@ -2506,56 +2507,71 @@ async function cmdAgentSetSpawnMachine() {
 
 async function cmdAgentMove() {
   const agentQuery = getPositional(1)
-  const targetMachine = getFlag('to')
+  const rawTarget = getPositional(2)
   if (hasFlag('help')) {
-    console.log('Usage: tlda agent move <agent> --to <machine>\n\nRun from the agent current machine. Copies resumable context to the destination, switches the registry machine_id, then respawns the same fleet id there.')
+    console.log('Usage: tlda agent move <agent> [name@][box:]env\n\nRun from the agent current daemon address. Same-box env moves update the daemon lock and respawn under the target config; cross-box moves copy resumable context with SSH/rsync first.')
     return
   }
-  if (!agentQuery || !targetMachine) {
-    console.error('Usage: tlda agent move <agent> --to <machine>')
+  if (!agentQuery || !rawTarget) {
+    console.error('Usage: tlda agent move <agent> [name@][box:]env')
     process.exit(1)
   }
   await assertNotAgentContext()
   await ensureServer()
   const agent = await findSingleAgent(agentQuery)
   const sourceMachine = localMachineId()
-  if (!agent.machine_id) throw new Error(`Agent ${agent.id} has no machine_id; cannot prove this is the source machine.`)
-  if (agent.machine_id !== sourceMachine) {
-    throw new Error(`Agent ${agent.id} belongs to ${agent.machine_id}; run move from ${agent.machine_id}.`)
+  const sourceEnv = getActiveConfigName(loadConfig())
+  if (!agent.machine_id || !agent.env_name) throw new Error(`Agent ${agent.id} has no daemon address; cannot prove this is the source daemon.`)
+  if (agent.machine_id !== sourceMachine || agent.env_name !== sourceEnv) {
+    throw new Error(`Agent ${agent.id} belongs to ${describeAgentAddress(agent.machine_id, agent.env_name)}; run move from ${describeAgentAddress(agent.machine_id, agent.env_name)}.`)
   }
-  if (sourceMachine === targetMachine) {
-    throw new Error(`Agent ${agent.id} is already on ${targetMachine}.`)
+  const parsedTarget = parseAgentMoveTarget(rawTarget)
+  if (parsedTarget.targetName && parsedTarget.targetName !== (agent.friendly_name || agent.id)) {
+    throw new Error('move rename is parsed but not implemented in this slice')
   }
+  const targetMachine = parsedTarget.machine_id || sourceMachine
+  const targetEnv = parsedTarget.env_name
+  if (sourceMachine === targetMachine && sourceEnv === targetEnv) {
+    throw new Error(`Agent ${agent.id} is already on ${describeAgentAddress(targetMachine, targetEnv)}.`)
+  }
+  const sameBox = sourceMachine === targetMachine
 
-  const artifacts = moveArtifactsForAgent(agent)
-  await api('POST', '/api/agents/move-machine', {
+  const artifacts = sameBox ? [] : moveArtifactsForAgent(agent)
+  await api('POST', '/api/agents/move-daemon', {
     agent: agent.id,
     machine_id: targetMachine,
+    env_name: targetEnv,
     expected_from: sourceMachine,
+    expected_env: sourceEnv,
     check_only: true,
   })
 
   const meta = normalizeAgentMetadata(agent.metadata)
   if (hasFlag('dry-run')) {
-    console.log(`[dry-run] would move ${agent.friendly_name || agent.id} (${agent.id}) ${sourceMachine} -> ${targetMachine}`)
-    console.log(`  artifacts: ${artifacts.map(a => a.rel).join(', ')}`)
+    console.log(`[dry-run] would move ${agent.friendly_name || agent.id} (${agent.id}) ${describeAgentAddress(sourceMachine, sourceEnv)} -> ${describeAgentAddress(targetMachine, targetEnv)}`)
+    console.log(`  mode: ${sameBox ? 'same-box env relock' : 'cross-box rsync move'}`)
+    if (artifacts.length) console.log(`  artifacts: ${artifacts.map(a => a.rel).join(', ')}`)
     console.log(`  hibernate: ${hibernateNameForAgent(agent, agentQuery)}`)
     console.log(`  respawn kind: ${meta.kind || 'claude'}`)
+    console.log(`  respawn config: ${targetEnv}`)
     return
   }
 
-  console.log(`Moving ${agent.friendly_name || agent.id} (${agent.id}) ${sourceMachine} -> ${targetMachine}`)
+  console.log(`Moving ${agent.friendly_name || agent.id} (${agent.id}) ${describeAgentAddress(sourceMachine, sourceEnv)} -> ${describeAgentAddress(targetMachine, targetEnv)}`)
   const hibernate = await hibernateLocalAgent(hibernateNameForAgent(agent, agentQuery), { allowMissing: true })
   if (hibernate.status !== 0) throw new Error(`failed to hibernate ${agent.id}`)
-  await copyMoveArtifacts(targetMachine, artifacts)
-  await api('POST', '/api/agents/move-machine', {
+  if (!sameBox) await copyMoveArtifacts(targetMachine, artifacts)
+  await api('POST', '/api/agents/move-daemon', {
     agent: agent.id,
     machine_id: targetMachine,
+    env_name: targetEnv,
     expected_from: sourceMachine,
+    expected_env: sourceEnv,
   })
-  console.log(`Registry now points ${agent.id} at ${targetMachine}. Respawning...`)
+  console.log(`Registry now points ${agent.id} at ${describeAgentAddress(targetMachine, targetEnv)}. Respawning...`)
   const spawnArgs = [agent.id]
   if (meta.kind) spawnArgs.push('--kind', meta.kind)
+  process.env.TLDA_CONFIG = targetEnv
   await runRoutedSpawn(spawnArgs)
 }
 

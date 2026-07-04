@@ -26,6 +26,7 @@ import { normalizeChatDisplayMathDelimiters } from '../shared/chat-math-normaliz
 import { nameForPhase, phaseFromName } from '../shared/lineage-name.mjs';
 import { formatSpawnModelSummary, validateSpawnModelSelection } from '../shared/spawn-model-validation.mjs';
 import { buildFleetSearchFilters, parseSearchQuery } from '../shared/fleet-search-query.mjs';
+import { getActiveConfigName, loadConfig } from '../shared/config.mjs';
 import { listModels as listSpawnModels } from '../bin/lib/spawn/models.mjs';
 import {
   defaultDaemonConfigPath,
@@ -319,7 +320,7 @@ async function bundleSharedMarkdownImages(body, sourceFile, fleetServerUrl) {
 const LOG_FILE = `${os.homedir()}/.claude/agent-messages.jsonl`;
 
 // --- tlda integration ---
-import { CONFIG_DIR, getRwToken, getServerUrl, getFleetServerUrl, loadConfig } from '../shared/config.mjs';
+import { CONFIG_DIR, getRwToken, getServerUrl, getFleetServerUrl } from '../shared/config.mjs';
 import { tldaFetch as _sharedFetch } from '../shared/http-client.mjs';
 import { formatUsageStatus, normalizeUsageStatus } from '../shared/usage-status.mjs';
 const TLDA_SERVER = getServerUrl();
@@ -2225,6 +2226,7 @@ export async function handleFleetTool(name, args) {
     // the tlda server route RPCs (interrupt / send-key / capture-pane /
     // restart-mcp) to the right per-machine fleet-daemon.
     const machineId = process.env.TLDA_MACHINE_ID || os.hostname().split('.')[0];
+    const envName = getActiveConfigName(loadConfig());
     const currentHarness = harnessFromEnv();
     const regBody = {
       // agent_id (not id): sendWS() stamps a correlation `id` onto every
@@ -2238,6 +2240,7 @@ export async function handleFleetTool(name, args) {
       cwd: entry.cwd,
       labels: entry.labels,
       machine_id: machineId,
+      env_name: envName,
       metadata: { kind: currentHarness.kind },
     };
     // Wait up to 2s for WS to connect (it should be fast — localhost)
@@ -4983,7 +4986,8 @@ function startChannelWS() {
         name: process.env.FLEET_NAME || undefined,
         tmux_session: _tmuxSession || undefined,
         cwd: process.cwd(),
-        machine_id: os.hostname().split('.')[0],
+        machine_id: process.env.TLDA_MACHINE_ID || os.hostname().split('.')[0],
+        env_name: getActiveConfigName(loadConfig()),
       };
       sendWS('register', regBody)?.catch(e => process.stderr.write(`[fleet-channel] re-register failed: ${e.message}\n`));
       process.stderr.write(`[fleet-channel] re-registered ${AGENT_ID}\n`);

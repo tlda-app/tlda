@@ -16,6 +16,7 @@ import { DEFAULT_PORT, loadConfig, resolveConfig } from '../../shared/config.mjs
 import { parseFilter, evalExpr, labelsForAgent } from '../../shared/fleet-labels.mjs'
 import { resolveSpawnMachine } from '../lib/spawn-routing.mjs'
 import { summarizeFleetRosterTruth } from '../lib/fleet-roster-truth.mjs'
+import { daemonAddress, describeAgentAddress } from '../../shared/agent-move-target.mjs'
 
 // Server owner — the human running this server process. Browser users
 // log in via the WS 'login' message or register via 'register'.
@@ -531,6 +532,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
           spawnPolicy: caller.metadata?.spawnPolicy || undefined,
         },
         spawnRoute: route.source,
+        daemon_env_name: route.env_name,
         respawn: resolved.respawn,
       })
       broadcastState()
@@ -982,15 +984,15 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     res.json({ ok: true, machine_id: machineId, updated_count: updated.length, updated })
   })
 
-  // --- POST /api/agents/move-machine ---
-  // Operator path for cross-machine agent moves. The CLI does the local,
+  // --- POST /api/agents/move-daemon ---
+  // Operator path for explicit daemon-address moves. The CLI does the local,
   // machine-specific context export/import; this endpoint is the registry
-  // authority for switching the durable fleet identity to a new daemon machine.
-  router.post('/api/agents/move-machine', async (req, res) => {
+  // authority for switching the durable fleet identity to a new daemon lane.
+  router.post('/api/agents/move-daemon', async (req, res) => {
     if (!fleetStore) { res.status(503).json({ error: 'no fleet store' }); return }
-    const { agent: agentQuery, machine_id: targetMachine, expected_from: expectedFrom, check_only: checkOnly } = req.body || {}
-    if (!agentQuery || !targetMachine) {
-      res.status(400).json({ error: 'agent and machine_id are required' })
+    const { agent: agentQuery, machine_id: targetMachine, env_name: targetEnv, expected_from: expectedFrom, expected_env: expectedEnv, check_only: checkOnly } = req.body || {}
+    if (!agentQuery || !targetMachine || !targetEnv) {
+      res.status(400).json({ error: 'agent, machine_id, and env_name are required' })
       return
     }
     const agent = fleetStore.findAgent(agentQuery)
@@ -1004,28 +1006,39 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       })
       return
     }
-    const dws = daemonConnections?.get?.(targetMachine)
+    if (expectedEnv && agent.env_name !== expectedEnv) {
+      res.status(409).json({
+        error: `agent ${agent.id} belongs to ${describeAgentAddress(agent.machine_id, agent.env_name)}, not ${describeAgentAddress(expectedFrom || agent.machine_id, expectedEnv)}`,
+        agent: agent.id,
+        current_machine_id: agent.machine_id || null,
+        current_env_name: agent.env_name || null,
+      })
+      return
+    }
+    const targetDaemon = daemonAddress(targetMachine, targetEnv)
+    const dws = daemonConnections?.get?.(targetDaemon)
     if (!dws || dws.readyState !== 1) {
-      res.status(503).json({ error: `no fleet-daemon connected for machine "${targetMachine}"` })
+      res.status(503).json({ error: `no fleet-daemon connected for ${targetDaemon}` })
       return
     }
     if (checkOnly) {
-      res.json({ ok: true, agent: agent.id, from: agent.machine_id || null, to: targetMachine, check_only: true })
+      res.json({ ok: true, agent: agent.id, from: agent.machine_id || null, from_env: agent.env_name || null, to: targetMachine, to_env: targetEnv, check_only: true })
       return
     }
     const fromMachine = agent.machine_id || null
-    fleetStore.upsertAgent({ ...agent, machine_id: targetMachine, last_seen: new Date().toISOString() })
+    const fromEnv = agent.env_name || null
+    fleetStore.upsertAgent({ ...agent, machine_id: targetMachine, env_name: targetEnv, last_seen: new Date().toISOString() })
     const event = await fleetStore.share?.({
       type: 'lifecycle',
       from: SERVER_OWNER_ID,
       to: agent.id,
       agentId: agent.id,
-      text: `agent moved ${fromMachine || 'unknown'} -> ${targetMachine}`,
-      metadata: { from_machine_id: fromMachine, to_machine_id: targetMachine },
+      text: `agent moved ${describeAgentAddress(fromMachine, fromEnv)} -> ${describeAgentAddress(targetMachine, targetEnv)}`,
+      metadata: { from_machine_id: fromMachine, from_env_name: fromEnv, to_machine_id: targetMachine, to_env_name: targetEnv },
     })
     broadcastDaemonAgentsUpdated?.()
     broadcastState()
-    res.json({ ok: true, agent: agent.id, from: fromMachine, to: targetMachine, event_id: event?.id || null })
+    res.json({ ok: true, agent: agent.id, from: fromMachine, from_env: fromEnv, to: targetMachine, to_env: targetEnv, event_id: event?.id || null })
   })
 
   // --- POST /api/agent-status ---

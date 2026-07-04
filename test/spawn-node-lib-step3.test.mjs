@@ -88,6 +88,10 @@ function writeSessionIdentity(configDir, store) {
   })
 }
 
+function resumeScanOptions(root, extra = {}) {
+  return { identityConfigDir: path.join(root, 'identity-store'), ...extra }
+}
+
 function codexRegisterRows(fleetId, name, callId) {
   return [
     { type: 'response_item', payload: { type: 'function_call', namespace: 'mcp__tlda', name: 'register', call_id: callId, arguments: '{}' } },
@@ -133,6 +137,7 @@ function freshSpawnDeps({ ensureServer }) {
         calls.push(cmd)
         return true
       },
+      injectCodexPrompt: async () => { calls.push('injectCodexPrompt'); return true },
       waitForAwakeRegistration: async () => {
         calls.push('waitForAwakeRegistration')
         return { ok: true }
@@ -158,7 +163,7 @@ test('Claude resume scan uses the first own Registered fleet result and strips s
     { type: 'assistant', message: { id: '22222222-2222-4222-8222-222222222222', model: 'claude-<synthetic>' } },
     '',
   ])
-  const found = findClaudeSession({ id: 'fleet:aaa11111' }, { projectsBase })
+  const found = findClaudeSession({ id: 'fleet:aaa11111' }, resumeScanOptions(root, { projectsBase }))
   assert.equal(found.sessionId, sid)
   const stripped = stripSyntheticTail(sid, { projectsBase })
   assert.equal(stripped.stripped, 2)
@@ -178,7 +183,7 @@ test('Claude session scan prefers JSONL cwd over ambiguous project directory dec
   ])
   const identity = scanClaudeSessionIdentity(sid, { projectsBase })
   assert.equal(identity.cwd, cwd)
-  const found = findClaudeSession({ id: 'fleet:cwd55555' }, { projectsBase })
+  const found = findClaudeSession({ id: 'fleet:cwd55555' }, resumeScanOptions(root, { projectsBase }))
   assert.equal(found.cwd, cwd)
 })
 
@@ -207,7 +212,7 @@ test('Codex rollout scan uses first own registration and newest matching rollout
   ])
   fs.utimesSync(oldPath, new Date('2026-06-27T00:00:00Z'), new Date('2026-06-27T00:00:00Z'))
   fs.utimesSync(newPath, new Date('2026-06-28T00:00:00Z'), new Date('2026-06-28T00:00:00Z'))
-  const found = findCodexRollout({ id: 'fleet:codexaaa' }, { sessionsBase })
+  const found = findCodexRollout({ id: 'fleet:codexaaa' }, resumeScanOptions(root, { sessionsBase }))
   assert.equal(found.rolloutId, newId)
   assert.equal(found.cwd, '/tmp/new')
 })
@@ -221,7 +226,7 @@ test('Codex rollout scan recognizes event_msg register tool results', () => {
     { type: 'session_meta', payload: { id: sid, cwd: '/tmp/event-register' } },
     codexEventRegisterRow('fleet:event1', 'event-agent', 'call-event'),
   ])
-  const found = findCodexRollout({ id: 'fleet:event1' }, { sessionsBase })
+  const found = findCodexRollout({ id: 'fleet:event1' }, resumeScanOptions(root, { sessionsBase }))
   assert.equal(found.rolloutId, sid)
   assert.equal(found.cwd, '/tmp/event-register')
 })
@@ -246,7 +251,7 @@ test('Codex respawn lookup can bind an ownerless launch-window rollout by cwd', 
     id: 'fleet:ownerless',
     cwd: '/tmp/codex-cwd',
     registered_at: '2026-06-29T12:00:00.000Z',
-  }, { sessionsBase })
+  }, resumeScanOptions(root, { sessionsBase }))
   assert.equal(found.rolloutId, sid)
   assert.equal(found.cwd, '/tmp/codex-cwd')
 })
@@ -262,7 +267,7 @@ test('Codex respawn lookup uses stored rollout id without requiring in-rollout M
   ])
   const found = findCodexRollout(
     { id: 'fleet:stored1', session_id: sid, session_ids: [] },
-    { sessionsBase },
+    resumeScanOptions(root, { sessionsBase }),
   )
   assert.equal(found.rolloutId, sid)
   assert.equal(found.cwd, '/tmp/codex-live')
@@ -279,7 +284,7 @@ test('Codex respawn lookup rejects a stored rollout with conflicting owner evide
   ])
   const found = findCodexRollout(
     { id: 'fleet:stored2', session_id: sid, session_ids: [] },
-    { sessionsBase },
+    resumeScanOptions(root, { sessionsBase }),
   )
   assert.equal(found, null)
 })
@@ -295,7 +300,7 @@ test('Codex respawn lookup checks historical stored rollout ids after primary mi
   ])
   const found = findCodexRollout(
     { id: 'fleet:stored3', session_id: missing, session_ids: [sid] },
-    { sessionsBase },
+    resumeScanOptions(root, { sessionsBase }),
   )
   assert.equal(found.rolloutId, sid)
   assert.equal(found.cwd, '/tmp/historical')
@@ -648,6 +653,7 @@ test('spawn harness commands preserve explicit TLDA_CONFIG even when TLDA_SERVER
   const env = {
     TLDA_CONFIG: 'dev-preview/mailbox',
     TLDA_SERVER: 'https://sandbox.example.test:5192',
+    TLDA_MACHINE_ID: 'dev-mailbox',
   }
   assert.equal(activeConfigName({ defaultConfig: 'live' }, env), 'dev-preview/mailbox')
 
@@ -662,6 +668,7 @@ test('spawn harness commands preserve explicit TLDA_CONFIG even when TLDA_SERVER
   })
   assert.match(claudeCmd, /TLDA_CONFIG='dev-preview\/mailbox'/)
   assert.match(claudeCmd, /TLDA_SERVER='https:\/\/sandbox\.example\.test:5192'/)
+  assert.match(claudeCmd, /TLDA_MACHINE_ID='dev-mailbox'/)
 
   const codexCmd = codex.buildCmd({
     fleetId: 'fleet:test',
@@ -673,6 +680,7 @@ test('spawn harness commands preserve explicit TLDA_CONFIG even when TLDA_SERVER
   })
   assert.match(codexCmd, /mcp_servers\.tlda\.env\.TLDA_CONFIG=dev-preview\/mailbox/)
   assert.match(codexCmd, /mcp_servers\.tlda\.env\.TLDA_SERVER=https:\/\/sandbox\.example\.test:5192/)
+  assert.match(codexCmd, /mcp_servers\.tlda\.env\.TLDA_MACHINE_ID=dev-mailbox/)
 })
 
 test('hand-pinned TLDA_SERVER without explicit TLDA_CONFIG does not forward defaultConfig', () => {
@@ -1090,4 +1098,44 @@ test('fresh local spawn keeps server-up pre-register and registration wait seman
     'waitForAwakeRegistration',
   ])
   assert.equal(calls.includes('markAgentDead'), false)
+})
+
+test('fresh codex spawn reconciles durable rollout id after registration', async () => {
+  const root = tmpdir()
+  const sessionsBase = path.join(root, 'codex-sessions')
+  const cwd = tmpdir()
+  const sid = '99999999-9999-4999-8999-999999999999'
+  const fpath = path.join(sessionsBase, '2026', '07', '04', `rollout-2026-07-04T12-00-00-${sid}.jsonl`)
+  writeJsonl(fpath, [
+    { type: 'session_meta', payload: { id: sid, timestamp: '2026-07-04T12:00:00.000Z', cwd } },
+    ...codexRegisterRows('fleet:codexfresh', 'codex-fresh', 'call-fresh'),
+  ])
+  const { calls, deps } = freshSpawnDeps({ ensureServer: async () => true })
+  deps.waitForAwakeRegistration = async () => {
+    calls.push('waitForAwakeRegistration')
+    return {
+      ok: true,
+      agent: {
+        id: 'fleet:codexfresh',
+        friendly_name: 'codex-fresh',
+        cwd,
+        registered_at: '2026-07-04T12:00:00.000Z',
+      },
+    }
+  }
+  const result = await spawn({
+    spawnMode: 'fresh',
+    kind: 'codex',
+    model: 'codex-mini',
+    name: 'codex-fresh',
+    cwd,
+    agentId: 'fleet:codexfresh',
+    config: {},
+    codexSessionsBase: sessionsBase,
+    codexRolloutTimeoutMs: 100,
+    _deps: deps,
+  })
+  assert.equal(result.ok, true)
+  assert.equal(result.resumeId, sid)
+  assert.equal(calls.includes('waitForAwakeRegistration'), true)
 })

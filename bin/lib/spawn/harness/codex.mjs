@@ -96,6 +96,7 @@ export function buildCmd({
   // GIT_AUTHOR_EMAIL carries the stable fleet id for authoritative attribution.
   processEnv.push(...gitAuthorEnv(fleetId, name).map(v => sqEnv(v)))
   if (name) processEnv.push(`FLEET_NAME=${sq(name)}`)
+  if (env.TLDA_MACHINE_ID) processEnv.push(`TLDA_MACHINE_ID=${sq(env.TLDA_MACHINE_ID)}`)
   if (dnsAlias && fs.existsSync(DNS_ALIAS_PRELOAD)) {
     processEnv.push(`NODE_OPTIONS=${sq(`--require=${DNS_ALIAS_PRELOAD}`)}`)
     processEnv.push(`TLDA_NODE_DNS_ALIAS_HOST=${sq(dnsAlias.host)}`)
@@ -111,6 +112,7 @@ export function buildCmd({
   parts.push(cenv('TLDA_SYNC_SERVER', api))
   const configName = activeConfigName(config, env)
   if (configName) parts.push(cenv('TLDA_CONFIG', configName))
+  if (env.TLDA_MACHINE_ID) parts.push(cenv('TLDA_MACHINE_ID', env.TLDA_MACHINE_ID))
   if (dnsAlias && fs.existsSync(DNS_ALIAS_PRELOAD)) {
     parts.push(cenv('NODE_OPTIONS', `--require=${DNS_ALIAS_PRELOAD}`))
     parts.push(cenv('TLDA_NODE_DNS_ALIAS_HOST', dnsAlias.host))

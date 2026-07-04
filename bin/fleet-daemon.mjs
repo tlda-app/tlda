@@ -176,8 +176,8 @@ const _usingCustomConfigDir = !!process.env.TLDA_DAEMON_CONFIG_DIR
 
 // This daemon's own install path — distinguishes a main-tree daemon from a
 // worktree/dev-rig one, both at startup (the isolation guard below) and on the
-// server (the daemon-hello backstop: two distinct installs can't share a
-// machine_id). Resolve symlinks so the comparison is on the real path.
+// server (the daemon-hello backstop: two distinct installs can't claim the same
+// scoped daemon identity). Resolve symlinks so the comparison is on the real path.
 const INSTALL_PATH = (() => {
   try { return fs.realpathSync(fileURLToPath(import.meta.url)) }
   catch { return fileURLToPath(import.meta.url) }
@@ -241,11 +241,38 @@ const SERVER = process.env.TLDA_SERVER
   : (_usingCustomConfigDir
       ? (config.fleetServer || config.server || `${hasTls ? 'https' : 'http'}://localhost:${DEFAULT_PORT}`)
       : getFleetServerUrl(config))
-// Per-origin singleton lock. Same path for a given fleet origin no matter which
-// install/worktree launched us (derived from CONFIG_DIR + SERVER origin, not
-// __dirname), so every daemon binary targeting the same origin contends for the
-// same lock while independent origins can run side by side.
-const LOCK_FILE = daemonSingletonLockPath({ configDir: CONFIG_DIR, origin: SERVER })
+// The active config NAME (TLDA_CONFIG → defaultConfig). This — not a URL — is the
+// single selector we propagate to spawned agents so their MCP resolves the SAME
+// complete config (database + store) the daemon did. A stray defaultConfig can't
+// then misroute a spawn, because the spawn carries the real active name.
+// Safe to resolve unconditionally: SERVER already ran resolveConfig via
+// getFleetServerUrl(config) above, so a broken config would have thrown there.
+const ACTIVE_CONFIG = getActiveConfigName(config)
+if (!ACTIVE_CONFIG) {
+  console.error('[fleet-daemon] REFUSING to start without a named active config; daemon env is required')
+  process.exit(1)
+}
+{
+  const configuredServer = _usingCustomConfigDir
+    ? (config.fleetServer || config.server || `${hasTls ? 'https' : 'http'}://localhost:${DEFAULT_PORT}`)
+    : getFleetServerUrl(config)
+  const { refuseReason } = resolveDaemonIsolation({
+    env: process.env,
+    scriptPath: INSTALL_PATH,
+    configuredServer,
+    targetServer: SERVER,
+  })
+  if (refuseReason) {
+    log.error(`refusing to start: ${refuseReason}`)
+    process.stderr.write(`[fleet-daemon] REFUSING TO START — ${refuseReason}\n`)
+    process.exit(1)
+  }
+}
+// Scoped singleton lock. Same path for a given fleet origin + active config
+// lane no matter which install/worktree launched us, so daemons that claim the
+// same registry job collide while stable/unstable/test lanes can coexist.
+const DAEMON_LOCK_SCOPE = `${SERVER}#${ACTIVE_CONFIG}`
+const LOCK_FILE = daemonSingletonLockPath({ configDir: CONFIG_DIR, origin: DAEMON_LOCK_SCOPE })
 
 // HARD INVARIANT — a dev daemon literally cannot target the real fleet.
 // `tlda-dev serve --sandbox` starts its daemon with TLDA_DEV_DAEMON=<the exact
@@ -275,16 +302,6 @@ if (process.env.TLDA_DEV_DAEMON) {
 // to config.json's defaultConfig drift us off the origin we're connected to, so
 // only then does the runtime drift watcher (watchConfigDrift) arm.
 const _serverFromConfig = !process.env.TLDA_SERVER && !_usingCustomConfigDir
-
-// The active config NAME (TLDA_CONFIG → defaultConfig). This — not a URL — is the
-// single selector we propagate to spawned agents so their MCP resolves the SAME
-// complete config (database + store) the daemon did. A stray defaultConfig can't
-// then misroute a spawn, because the spawn carries the real active name.
-// Safe to resolve unconditionally in this branch: SERVER already ran resolveConfig
-// via getFleetServerUrl(config) above, so a broken config would have thrown there.
-const ACTIVE_CONFIG = process.env.TLDA_CONFIG
-  ? getActiveConfigName(config)
-  : (_serverFromConfig ? getActiveConfigName(config) : null)
 
 // Fail loud if a hand-pinned TLDA_SERVER disagrees with the active config — the
 // 6/27 divergence, refused at the door rather than served silently. Bubbles.
@@ -3216,6 +3233,17 @@ async function rpcSpawn({
         error: `spawn launcher returned but tmux session is not usable: ${detail}`,
       }
     }
+    if (launched.harness === 'codex' && !launched.resumeId) {
+      if (preallocatedAgentId) await privilegeLedger.delete(preallocatedAgentId).catch(() => {})
+      return {
+        ok: false,
+        name: agentName,
+        agent_id: launched.fleetId,
+        tmux_session: launched.tmuxSession,
+        code: 'missing-resume-handle',
+        error: 'spawn launcher returned a codex session without a durable resume handle',
+      }
+    }
     if (!preallocatedAgentId || launched.fleetId !== preallocatedAgentId) {
       await privilegeLedger.set(launched.fleetId, {
         spawnPolicy: grant.grantedPolicy,
@@ -4367,6 +4395,7 @@ function connect() {
       sendMsg({
         type: 'daemon-hello',
         machine_id: MACHINE_ID,
+        env_name: ACTIVE_CONFIG,
         user: USER,
         hostname: HOSTNAME,
         version: VERSION,
@@ -4566,6 +4595,7 @@ function startHeartbeat() {
 log.info(`fleet-daemon ${VERSION} starting pid=${process.pid}`)
 log.info(`  server      = ${SERVER}`)
 log.info(`  machine_id  = ${MACHINE_ID}`)
+log.info(`  env_name    = ${ACTIVE_CONFIG}`)
 log.info(`  boot_id     = ${BOOT_ID}`)
 log.info(`  user        = ${USER}@${HOSTNAME}`)
 startHeartbeat()
