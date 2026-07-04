@@ -11,7 +11,7 @@ import * as claude from '../bin/lib/spawn/harness/claude.mjs'
 import * as codex from '../bin/lib/spawn/harness/codex.mjs'
 import * as goose from '../bin/lib/spawn/harness/goose.mjs'
 import { spawn } from '../bin/lib/spawn/index.mjs'
-import { findClaudeSession, findCodexRollout, isRespawnIdentityCaughtUp, scanClaudeSessionIdentity, stripSyntheticTail } from '../bin/lib/spawn/resume.mjs'
+import { findClaudeSession, findCodexRollout, isRespawnIdentityCaughtUp, scanClaudeSessionIdentity, scanCodexRolloutIdentity, stripSyntheticTail } from '../bin/lib/spawn/resume.mjs'
 import { saveSessionIdentityStore, sessionIdentityPath } from '../bin/lib/session-identity-store.mjs'
 import { claudeStartupDialogAction } from '../bin/lib/spawn/tmux.mjs'
 
@@ -229,6 +229,69 @@ test('Codex rollout scan recognizes event_msg register tool results', () => {
   const found = findCodexRollout({ id: 'fleet:event1' }, resumeScanOptions(root, { sessionsBase }))
   assert.equal(found.rolloutId, sid)
   assert.equal(found.cwd, '/tmp/event-register')
+})
+
+test('Codex rollout scan recognizes direct fleet env inspection output', () => {
+  const root = tmpdir()
+  const sessionsBase = path.join(root, 'codex-sessions')
+  const sid = '12121212-1212-4121-8121-121212121212'
+  const fpath = path.join(sessionsBase, '2026', '06', '29', `rollout-2026-06-29T00-00-00-${sid}.jsonl`)
+  writeJsonl(fpath, [
+    { type: 'session_meta', payload: { id: sid, cwd: '/tmp/env-owned' } },
+    {
+      type: 'response_item',
+      payload: {
+        type: 'function_call',
+        name: 'exec_command',
+        call_id: 'call-env',
+        arguments: JSON.stringify({ cmd: "printenv | rg '^(FLEET|TLDA)'" }),
+      },
+    },
+    {
+      type: 'response_item',
+      payload: {
+        type: 'function_call_output',
+        call_id: 'call-env',
+        output: 'Output:\nFLEET_ID=fleet:envowner\nFLEET_NAME=env-agent\nFLEET_TMUX_SESSION=fleet-env-agent\nTLDA_MACHINE_ID=mini\n',
+      },
+    },
+  ])
+  const identity = scanCodexRolloutIdentity(fpath)
+  assert.equal(identity.ownId, 'fleet:envowner')
+  assert.equal(identity.agentName, 'env-agent')
+  const found = findCodexRollout({ id: 'fleet:envowner' }, resumeScanOptions(root, { sessionsBase }))
+  assert.equal(found.rolloutId, sid)
+  assert.equal(found.cwd, '/tmp/env-owned')
+})
+
+test('Codex rollout scan ignores quoted fleet env lines from non-env commands', () => {
+  const root = tmpdir()
+  const sessionsBase = path.join(root, 'codex-sessions')
+  const sid = '34343434-3434-4343-8343-343434343434'
+  const fpath = path.join(sessionsBase, '2026', '06', '29', `rollout-2026-06-29T00-00-00-${sid}.jsonl`)
+  writeJsonl(fpath, [
+    { type: 'session_meta', payload: { id: sid, cwd: '/tmp/not-env-owned' } },
+    {
+      type: 'response_item',
+      payload: {
+        type: 'function_call',
+        name: 'exec_command',
+        call_id: 'call-search',
+        arguments: JSON.stringify({ cmd: "rg 'FLEET_ID=' ~/.codex/sessions" }),
+      },
+    },
+    {
+      type: 'response_item',
+      payload: {
+        type: 'function_call_output',
+        call_id: 'call-search',
+        output: 'Output:\nFLEET_ID=fleet:quoted\nFLEET_NAME=quoted-agent\nFLEET_TMUX_SESSION=fleet-quoted-agent\n',
+      },
+    },
+  ])
+  const identity = scanCodexRolloutIdentity(fpath)
+  assert.equal(identity.ownId, null)
+  assert.equal(identity.agentName, null)
 })
 
 test('Codex respawn lookup can bind an ownerless launch-window rollout by cwd', () => {

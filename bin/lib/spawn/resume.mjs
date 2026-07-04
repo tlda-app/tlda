@@ -240,6 +240,26 @@ function parseRegistrationText(text) {
   return { ownId: m[1], agentName: NAME_RE.exec(text)?.[1] || null }
 }
 
+function parseFleetEnvText(text) {
+  const ownId = /^FLEET_ID=(fleet:[A-Za-z0-9_-]+)/m.exec(text || '')?.[1] || null
+  if (!ownId) return null
+  const agentName = /^FLEET_NAME=([^\r\n]+)/m.exec(text || '')?.[1]?.trim() || null
+  return { ownId, agentName }
+}
+
+function codexCommandReadsFleetEnv(payload) {
+  if (payload?.type !== 'function_call' || payload.name !== 'exec_command') return false
+  let args
+  try {
+    args = JSON.parse(payload.arguments || '{}')
+  } catch {
+    return false
+  }
+  const cmd = String(args.cmd || '').trim()
+  if (!cmd) return false
+  return /^(?:printenv|env)(?:\s|\||$)/.test(cmd) && /\bFLEET\b/.test(cmd)
+}
+
 function codexRolloutMatchesAgentLaunch(agent, sessionMeta) {
   if (!agent?.cwd || !sessionMeta?.cwd || agent.cwd !== sessionMeta.cwd) return false
   const launchTs = Date.parse(agent.registered_at || '')
@@ -253,6 +273,7 @@ export function scanCodexRolloutIdentity(fpath) {
   let agentName = null
   let meta = null
   const registerCalls = new Set()
+  const fleetEnvCalls = new Set()
   try {
     for (const line of fs.readFileSync(fpath, 'utf8').split(/\n/)) {
       if (meta == null && line.includes('"session_meta"')) {
@@ -274,6 +295,9 @@ export function scanCodexRolloutIdentity(fpath) {
       if (payload.type === 'function_call' && payload.namespace === 'mcp__tlda' && payload.name === 'register' && payload.call_id) {
         registerCalls.add(payload.call_id)
       }
+      if (payload.call_id && codexCommandReadsFleetEnv(payload)) {
+        fleetEnvCalls.add(payload.call_id)
+      }
       if (ownId == null && payload.type === 'function_call_output' && registerCalls.has(payload.call_id)) {
         const output = typeof payload.output === 'string' ? payload.output
           : (payload.output && typeof payload.output.content === 'string' ? payload.output.content : '')
@@ -281,6 +305,15 @@ export function scanCodexRolloutIdentity(fpath) {
         if (registration) {
           ownId = registration.ownId
           agentName = registration.agentName
+        }
+      }
+      if (ownId == null && payload.type === 'function_call_output' && fleetEnvCalls.has(payload.call_id)) {
+        const output = typeof payload.output === 'string' ? payload.output
+          : (payload.output && typeof payload.output.content === 'string' ? payload.output.content : '')
+        const envIdentity = parseFleetEnvText(output)
+        if (envIdentity) {
+          ownId = envIdentity.ownId
+          agentName = envIdentity.agentName
         }
       }
       if (ownId == null && payload.type === 'mcp_tool_call_end' && payload.invocation?.server === 'tlda' && payload.invocation?.tool === 'register') {
