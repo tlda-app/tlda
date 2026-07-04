@@ -54,8 +54,6 @@
 import { WebSocket } from 'ws'
 import { ResilientWS } from '../shared/resilient-ws.mjs'
 import chokidar from 'chokidar'
-import TailFile from '@logdna/tail-file'
-import { parser as jsonlParser } from 'stream-json/jsonl/parser.js'
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
@@ -406,6 +404,54 @@ function startOwnerHarvester() {
   _ownerHarvester.on('error', (e) => { log.warn(`owner harvester error: ${e.message}`); _ownerHarvester = null })
 }
 
+let _jsonlIngester = null
+let _jsonlIngesterRestartTimer = null
+let _shuttingDown = false
+const childWatchers = new Map() // watchId -> path watcher state
+
+function startJsonlIngester() {
+  if (_jsonlIngester) return _jsonlIngester
+  const script = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fleet-jsonl-ingester.mjs')
+  if (!fs.existsSync(script)) throw new Error(`JSONL ingester child missing: ${script}`)
+  try {
+    _jsonlIngester = fork(script, [], { execArgv: [], stdio: ['ignore', 'ignore', 'ignore', 'ipc'] })
+  } catch (e) {
+    _jsonlIngester = null
+    throw e
+  }
+  _jsonlIngester.on('message', handleJsonlIngesterMessage)
+  _jsonlIngester.on('exit', (code, signal) => {
+    _jsonlIngester = null
+    handleJsonlIngesterExit(code, signal)
+  })
+  _jsonlIngester.on('error', (e) => {
+    log.warn(`JSONL ingester child error: ${e.message}`)
+  })
+  return _jsonlIngester
+}
+
+function handleJsonlIngesterExit(code, signal) {
+  if (_shuttingDown) return
+  log.warn(`JSONL ingester exited code=${code ?? 'null'} signal=${signal ?? 'null'}; resyncing live session tails`)
+  for (const [, pw] of childWatchers) {
+    pw.stopped = true
+    if (pathWatchers.get(pw.jsonlPath) === pw) {
+      pathWatchers.delete(pw.jsonlPath)
+      releaseJsonlDirWatcher(pw.jsonlPath)
+    }
+  }
+  childWatchers.clear()
+  agentPaths.clear()
+  if (!_jsonlIngesterRestartTimer) {
+    _jsonlIngesterRestartTimer = setTimeout(() => {
+      _jsonlIngesterRestartTimer = null
+      if (_serverReady) {
+        void syncSessionWatchers(agents).catch(e => log.error(`syncSessionWatchers after ingester exit failed: ${e.stack || e.message}`))
+      }
+    }, 1000)
+  }
+}
+
 // ---------- Qualification checking ----------
 // Detects agents editing files without having read required reference docs.
 // Config: ~/.claude/qualifications.json — array of { edit: glob, requires: [paths] }
@@ -727,7 +773,7 @@ let _serverReady = false
 let _lastLivenessDisconnectWarnAt = 0
 let agents = []                   // current agent list (from welcome / updates)
 let projects = []                 // current project list
-const pathWatchers = new Map()    // jsonlPath -> { tail, parser, primaryAgentId, sessionId, harnessKind }
+const pathWatchers = new Map()    // jsonlPath -> child-backed watcher state
 const agentPaths = new Map()      // agentId -> jsonlPath
 const jsonlDirWatchers = new Map() // dir -> { watcher, refs }
 let _lastSessionWatcherRosterSig = ''
@@ -1289,6 +1335,19 @@ async function syncSessionWatchers(agentList) {
           }
         }
         pw.harnessKind = harness.kind
+        try {
+          _jsonlIngester?.send?.({
+            type: 'update',
+            watchId: pw.watchId,
+            agentId: pw.primaryAgentId,
+            harnessKind: harness.kind,
+            terminalChat: !!harness.terminalChat,
+            backfillSearch: !!harness.backfillSearch,
+          })
+        } catch (e) {
+          log.warn(`JSONL ingester update failed for ${path.basename(jsonlPath)}: ${e?.message || e}`)
+          retireJsonlTail(pw, `ingester update failed for ${path.basename(jsonlPath)}`)
+        }
         continue
       }
     }
@@ -1420,14 +1479,10 @@ function releaseJsonlDirWatcher(jsonlPath) {
 }
 
 function startJsonlTail({ agent, jsonlPath, sessionId, harness, startOffset }) {
-  const parser = jsonlParser.asStream({ ignoreErrors: true })
-  const tail = new TailFile(jsonlPath, {
-    startPos: startOffset,
-    pollFileIntervalMs: Number(process.env.TLDA_JSONL_TAIL_POLL_MS || 1000),
-  })
+  const child = startJsonlIngester()
+  const watchId = `${sessionId}:${agent.id}:${Date.now()}:${Math.random().toString(36).slice(2)}`
   const pw = {
-    tail,
-    parser,
+    watchId,
     jsonlPath,
     primaryAgentId: agent.id,
     sessionId,
@@ -1435,46 +1490,125 @@ function startJsonlTail({ agent, jsonlPath, sessionId, harness, startOffset }) {
     stopped: false,
     lastDeliveryOk: true,
     lastSavedOffset: startOffset,
+    pendingDeliveries: 0,
+    pendingFlushOffset: null,
   }
-  parser.on('data', item => {
-    if (pw.stopped || !item || item.value === undefined) return
-    if (!processParsedJsonlRecord(pw, item.value)) {
-      pw.lastDeliveryOk = false
-      retireJsonlTail(pw, `delivery failed for ${path.basename(jsonlPath)}`)
-    }
-  })
-  parser.on('error', e => {
-    log.warn(`JSONL parser error for ${path.basename(jsonlPath)}: ${e?.message || e}`)
-  })
-  tail.on('flush', ({ lastReadPosition }) => {
-    if (pw.stopped) return
-    if (!pw.lastDeliveryOk) {
-      log.warn(`not advancing cursor for ${path.basename(jsonlPath)}; activity delivery failed`)
-      return
-    }
-    updateJsonlCursorFromTail(pw, lastReadPosition)
-  })
-  tail.on('tail_error', e => log.warn(`tail-file error for ${path.basename(jsonlPath)}: ${e?.message || e}`))
-  tail.on('error', e => log.warn(`tail stream error for ${path.basename(jsonlPath)}: ${e?.message || e}`))
-  tail.on('renamed', () => {
-    const entry = cursors[sessionId] || (cursors[sessionId] = {})
-    entry.offset = 0
-    scheduleCursorSave()
-  })
-  tail.on('truncated', () => {
-    const entry = cursors[sessionId] || (cursors[sessionId] = {})
-    entry.offset = 0
-    scheduleCursorSave()
-  })
-  tail.pipe(parser)
-  tail.start().catch(e => {
-    // Startup can race with normal watcher teardown; active tails are retired so a later sync can retry.
-    if (!pw.stopped) {
-      log.warn(`tail-file start failed for ${path.basename(jsonlPath)}: ${e?.message || e}`)
-      retireJsonlTail(pw, `start failed for ${path.basename(jsonlPath)}`)
-    }
+  childWatchers.set(watchId, pw)
+  child.send?.({
+    type: 'watch',
+    watchId,
+    jsonlPath,
+    sessionId,
+    agentId: agent.id,
+    harnessKind: harness.kind,
+    startOffset,
+    terminalChat: !!harness.terminalChat,
+    backfillSearch: !!harness.backfillSearch,
   })
   return pw
+}
+
+function handleJsonlIngesterMessage(msg) {
+  if (msg?.type === 'ready') {
+    log.info('JSONL ingester child ready')
+    return
+  }
+  const pw = msg?.watchId ? childWatchers.get(msg.watchId) : null
+  if (msg?.type === 'warn') {
+    log.warn(`${msg.warning || 'JSONL ingester warning'}${msg.jsonlPath ? ` for ${path.basename(msg.jsonlPath)}` : ''}`)
+    return
+  }
+  if (!pw) return
+  if (msg.type === 'started') return
+  if (msg.type === 'start-failed') {
+    if (!pw.stopped) {
+      log.warn(`tail-file start failed for ${path.basename(pw.jsonlPath)}: ${msg.error || 'unknown error'}`)
+      retireJsonlTail(pw, `start failed for ${path.basename(pw.jsonlPath)}`)
+    }
+    return
+  }
+  if (msg.type === 'error') {
+    log.warn(`JSONL ingester error for ${path.basename(pw.jsonlPath)}: ${msg.error || 'unknown error'}`)
+    retireJsonlTail(pw, `ingester error for ${path.basename(pw.jsonlPath)}`)
+    return
+  }
+  if (msg.type === 'renamed' || msg.type === 'truncated') {
+    const entry = cursors[pw.sessionId] || (cursors[pw.sessionId] = {})
+    entry.offset = 0
+    scheduleCursorSave()
+    return
+  }
+  if (msg.type === 'batch') {
+    pw.pendingDeliveries += 1
+    const delivered = processJsonlChildOutputs(pw, msg.outputs || [])
+    pw.pendingDeliveries -= 1
+    pw.lastDeliveryOk = delivered
+    try {
+      _jsonlIngester?.send?.({ type: 'ack', watchId: pw.watchId, seq: msg.seq, ok: delivered })
+    } catch (e) {
+      // Child IPC failed; retire this watcher so a later sync can recreate it.
+      log.warn(`JSONL ingester ack failed for ${path.basename(pw.jsonlPath)}: ${e?.message || e}`)
+      retireJsonlTail(pw, `ack failed for ${path.basename(pw.jsonlPath)}`)
+      return
+    }
+    if (!delivered) {
+      retireJsonlTail(pw, `delivery failed for ${path.basename(pw.jsonlPath)}`)
+      return
+    }
+    if (pw.pendingDeliveries === 0 && pw.pendingFlushOffset != null) {
+      const offset = pw.pendingFlushOffset
+      pw.pendingFlushOffset = null
+      updateJsonlCursorFromTail(pw, offset)
+    }
+    return
+  }
+  if (msg.type === 'flush') {
+    if (!pw.lastDeliveryOk) {
+      log.warn(`not advancing cursor for ${path.basename(pw.jsonlPath)}; activity delivery failed`)
+      return
+    }
+    if (pw.pendingDeliveries > 0) {
+      pw.pendingFlushOffset = msg.offset
+      return
+    }
+    updateJsonlCursorFromTail(pw, msg.offset)
+  }
+}
+
+function processJsonlChildOutputs(pw, outputs) {
+  if (!_rws?.connected) return false
+  const agentId = pw.primaryAgentId
+  let delivered = true
+  for (const output of outputs) {
+    if (output.type === 'activity') {
+      const activity = output.events || []
+      if (activity.length > 0) {
+        log.info(`activity extracted for ${agentId}: ${activity.length} event(s) from ${path.basename(pw.jsonlPath)}`)
+        if (bufferActivity(agentId, activity) === false) delivered = false
+      }
+    } else if (output.type === 'context') {
+      if (!sendMsg({
+        type: 'agent-context',
+        agentId,
+        contextPercent: output.contextPercent,
+        inputTokens: output.inputTokens,
+      })) delivered = false
+    } else if (output.type === 'qualification') {
+      processQualificationEvent(agentId, output.event)
+    } else if (output.type === 'terminalChat') {
+      if (!sendMsg({
+        type: 'terminal-chat',
+        agent_id: agentId,
+        from: `fleet:${os.userInfo?.()?.username || 'user'}`,
+        text: output.text,
+        ts: output.ts,
+        session_id: pw.sessionId,
+      })) delivered = false
+    } else if (output.type === 'searchIndex') {
+      if (!sendMsg({ type: 'jsonl-index', entries: output.entries || [] })) delivered = false
+    }
+  }
+  return delivered
 }
 
 function retireJsonlTail(pw, reason) {
@@ -1492,15 +1626,10 @@ function retireJsonlTail(pw, reason) {
 function stopJsonlTail(pw, reason = 'stop') {
   if (!pw || pw.stopped) return
   pw.stopped = true
-  try { pw.tail?.unpipe?.(pw.parser) } catch (e) {
-    // Best-effort cleanup; tail quit below is the actual resource release.
-    log.warn(`tail unpipe failed (${reason}): ${e?.message || e}`)
+  childWatchers.delete(pw.watchId)
+  try { _jsonlIngester?.send?.({ type: 'stop', watchId: pw.watchId, reason }) } catch (e) {
+    log.warn(`JSONL ingester stop failed (${reason}): ${e?.message || e}`)
   }
-  try { pw.parser?.destroy?.() } catch (e) {
-    // Best-effort cleanup; a parser destroy failure should not block daemon teardown.
-    log.warn(`jsonl parser destroy failed (${reason}): ${e?.message || e}`)
-  }
-  Promise.resolve(pw.tail?.quit?.()).catch(e => log.warn(`tail-file quit failed (${reason}): ${e?.message || e}`))
 }
 
 function updateJsonlCursorFromTail(pw, offset) {
@@ -3958,6 +4087,7 @@ function sendMsg(obj) {
 function teardownWatchers() {
   for (const [, pw] of pathWatchers) stopJsonlTail(pw, 'daemon watcher teardown')
   pathWatchers.clear()
+  childWatchers.clear()
   agentPaths.clear()
   for (const [, entry] of jsonlDirWatchers) {
     try {
@@ -4138,8 +4268,11 @@ try { fs.writeFileSync(PID_FILE, String(process.pid)) } catch (e) { log.warn(`fa
 function shutdown(signal) {
   // Log WHY we're dying so the next post-mortem isn't a scavenger hunt.
   log.info(`shutdown via ${signal || 'unknown'} signal; saving cursors and exiting`)
+  _shuttingDown = true
   saveCursors()
   try { _ownerHarvester?.kill() } catch { /* already gone */ }
+  try { _jsonlIngester?.send?.({ type: 'shutdown' }) } catch { /* already gone */ }
+  try { _jsonlIngester?.kill() } catch { /* already gone */ }
   unlinkPidfileIfOwnPid(PID_FILE, process.pid)
   _rws?.close()
   process.exit(0)
