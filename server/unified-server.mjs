@@ -66,6 +66,7 @@ import { buildRuntimeStatus } from './lib/runtime-status.mjs'
 import { resolveSpawnMachine, SPAWN_MACHINE_PREF_KEY } from './lib/spawn-routing.mjs'
 import { resolveFreshSpawnCapabilityModels } from './lib/spawn-capability-models.mjs'
 import { SpawnBounceError, SpawnLibrarian, resolveSpawnCollision } from '../shared/spawn-librarian.ts'
+import { MailboxLibrarian } from '../shared/mailbox-librarian.ts'
 import { trimTerminalSeedBlankRows } from '../shared/terminal-seed.mjs'
 import { daemonSingletonLockPath, inspectSingletonLock } from '../bin/lib/singleton-lock.mjs'
 import { partialSkillReadSummaries, recordPartialSkillReads } from '../shared/partial-skill-reads.mjs'
@@ -655,6 +656,17 @@ const spawnLibrarian = new SpawnLibrarian({
     broadcastState()
   },
 })
+const mailboxLibrarian = new MailboxLibrarian({
+  onExpire: (entry) => {
+    if (entry.kind !== 'spawn') return
+    deliverTldaFeedbackChat({
+      from: 'fleet:tlda',
+      to: entry.ownerId,
+      text: `**Spawn mailbox ${entry.id} failed**: deadline exceeded for \`${entry.meta?.name || entry.meta?.agentId || 'spawn'}\`.`,
+      metadata: { type: 'mailbox_complete', mailbox_id: entry.id, mailbox_kind: entry.kind, status: 'failed' },
+    })
+  },
+})
 // Server-authoritative thinking/compacting state.
 // Populated from agent-thinking / agent-compacting events, included in
 // broadcastState() so state pushes never wipe client indicators.
@@ -917,12 +929,50 @@ async function resolveSpawnTarget(name, respawn, { fresh = false, requested = {}
   return { name: resolved.name, respawn: resolved.respawn }
 }
 
+function assignSpawnPhase(agentQuery, phase) {
+  if (!agentQuery || !phase) return null
+  if (!PHASES.includes(phase)) throw new Error(`phase must be one of: ${PHASES.join(', ')}`)
+  const agent = fleetStore.findAgent(agentQuery)
+  if (!agent) throw new Error(`agent not found for lineage assignment: ${agentQuery}`)
+  const lineageName = agent.friendly_name || agentQuery
+  const lineage = fleetStore.getOrCreateLineage(lineageName)
+  fleetStore.makeRoomForPhase(lineage.id, phase)
+  fleetStore.assignPhase(agent.id, lineage.id, phase)
+  broadcastState()
+  return { agent: agent.id, lineage: lineage.id, lineage_name: lineage.friendly_name, phase }
+}
+
+function spawnMailboxCompletionText(entry, status, detail) {
+  const label = detail.label || detail.agentId || entry.meta?.name || 'spawn'
+  if (status === 'completed') {
+    const agentPart = detail.agentId ? ` (${detail.agentId})` : ''
+    const policyPart = detail.grantedCapability ? ` Capability: \`${detail.grantedCapability}\`.` : ''
+    return `**Spawn mailbox ${entry.id} complete**: \`${label}\`${agentPart} is registered and usable.${policyPart}`
+  }
+  return `**Spawn mailbox ${entry.id} failed**: \`${label}\` — ${detail.error || detail.reason || 'spawn failed'}.`
+}
+
+function deliverSpawnMailboxCompletion(entry, status, detail) {
+  deliverTldaFeedbackChat({
+    from: 'fleet:tlda',
+    to: entry.ownerId,
+    text: spawnMailboxCompletionText(entry, status, detail),
+    metadata: {
+      type: 'mailbox_complete',
+      mailbox_id: entry.id,
+      mailbox_kind: entry.kind,
+      status,
+      ...detail,
+    },
+  })
+}
+
 async function performSpawnRelay(caller, msg) {
   if (!caller?.id) throw new Error('spawn caller identity is required')
   const {
     name, agent, model, doc, cwd, respawn, fresh, refresh, effort, kind, mode,
     capability, spawnCapability, privileges, requestedPrivileges, session, sessionId, session_id, enroll, routeAgent,
-    iLikeToLiveDangerously,
+    iLikeToLiveDangerously, phase,
   } = msg || {}
   const requestedSession = session || sessionId || session_id || null
   const sessionMode = !!requestedSession
@@ -978,69 +1028,119 @@ async function performSpawnRelay(caller, msg) {
       })
     : { name: spawnName, respawn: shouldRespawn && !refresh })
   const pendingAgentId = (!sessionMode && !resolved.respawn && !refresh) ? mintFleetId() : null
+  const targetAgentId = pendingAgentId || routeTarget?.id || (resolved.name?.startsWith?.('fleet:') ? resolved.name : null)
+  const mailbox = mailboxLibrarian.start({
+    kind: 'spawn',
+    ownerId: caller.id,
+    timeoutMs: Number(process.env.TLDA_SPAWN_MAILBOX_DEADLINE_MS || 5 * 60_000),
+    meta: {
+      name: spawnName,
+      agentId: targetAgentId,
+      machineId,
+      fresh: !!fresh || sessionMode,
+      respawn: sessionMode ? false : (refresh ? false : resolved.respawn),
+      refresh: !!refresh,
+      phase: phase || null,
+    },
+  })
   const readiness = pendingAgentId
     ? spawnLibrarian.awaitRegister({ id: pendingAgentId, name: spawnName, spec: requestedSpec })
     : null
-  let result
-  try {
-    result = await sendRpc(machineId, 'spawn', {
-      agent_id: pendingAgentId || undefined,
-      friendly_name: pendingAgentId ? spawnName : undefined,
-      pretty_name: pendingAgentId ? prettyNameForFriendlyName(spawnName) : undefined,
-      name: resolved.name || undefined,
-      model: model || undefined,
-      kind: spawnKind || undefined,
-      doc: doc || undefined,
-      cwd: cwd || undefined,
-      session_id: requestedSession || undefined,
-      enroll: !!enroll || undefined,
-      effort: effort || undefined,
-      mode: mode || undefined,
-      requestedCapability: requestedCapability || undefined,
-      requestedPrivileges: privilegeRequest || undefined,
-      acknowledgeNoSecurity: !!iLikeToLiveDangerously,
-      requester: {
-        id: caller.id,
-        name: caller.friendly_name || caller.name || undefined,
-        human: !!caller.human,
-        spawnPolicy: caller.metadata?.spawnPolicy || undefined,
-      },
-      spawnRoute: route.source,
-      respawn: sessionMode ? false : (refresh ? false : resolved.respawn),
-      refresh: !!refresh,
-    })
-    if (pendingAgentId && result?.ok === false) {
-      spawnLibrarian.failPending(pendingAgentId, result.code || result.reason || 'launch-failed')
-    }
-  } catch (e) {
-    if (pendingAgentId && /RPC timeout .*op=spawn/.test(e.message || '')) {
-      result = { ok: false, reason: 'spawning' }
-    } else {
-      if (pendingAgentId) spawnLibrarian.failPending(pendingAgentId, 'launch-failed')
-      return { ok: false, reason: 'launch-failed' }
-    }
+  const spawnRequest = {
+    agent_id: pendingAgentId || undefined,
+    friendly_name: pendingAgentId ? spawnName : undefined,
+    pretty_name: pendingAgentId ? prettyNameForFriendlyName(spawnName) : undefined,
+    name: resolved.name || undefined,
+    model: model || undefined,
+    kind: spawnKind || undefined,
+    doc: doc || undefined,
+    cwd: cwd || undefined,
+    session_id: requestedSession || undefined,
+    enroll: !!enroll || undefined,
+    effort: effort || undefined,
+    mode: mode || undefined,
+    requestedCapability: requestedCapability || undefined,
+    requestedPrivileges: privilegeRequest || undefined,
+    acknowledgeNoSecurity: !!iLikeToLiveDangerously,
+    requester: {
+      id: caller.id,
+      name: caller.friendly_name || caller.name || undefined,
+      human: !!caller.human,
+      spawnPolicy: caller.metadata?.spawnPolicy || undefined,
+    },
+    spawnRoute: route.source,
+    respawn: sessionMode ? false : (refresh ? false : resolved.respawn),
+    refresh: !!refresh,
   }
-  if (result?.ok === false && result.reason !== 'spawning') {
-    if (pendingAgentId) spawnLibrarian.failPending(pendingAgentId, result.reason || result.error || 'launch-failed')
-    return result
-  }
-  if (readiness) {
-    const ready = await readiness
-    if (!ready.ok) return ready
-    const registeredPolicy = ready.agent?.metadata?.spawnPolicy
-    const spawnPolicy = result.spawnPolicy || registeredPolicy
-    return {
-      ok: true,
-      agent: ready.agent,
+  void (async () => {
+    let result
+    try {
+      result = await sendRpc(machineId, 'spawn', spawnRequest)
+      if (pendingAgentId && result?.ok === false) {
+        spawnLibrarian.failPending(pendingAgentId, result.code || result.reason || 'launch-failed')
+      }
+    } catch (e) {
+      if (pendingAgentId && /RPC timeout .*op=spawn/.test(e.message || '')) {
+        result = { ok: false, reason: 'spawning' }
+      } else {
+        if (pendingAgentId) spawnLibrarian.failPending(pendingAgentId, 'launch-failed')
+        const settled = mailboxLibrarian.fail(mailbox.id, e.message || 'launch-failed', {
+          reason: e.code || 'launch-failed',
+          error: e.message || String(e),
+        })
+        if (settled) deliverSpawnMailboxCompletion(settled, 'failed', { error: e.message || String(e), reason: e.code || 'launch-failed' })
+        return
+      }
+    }
+    if (result?.ok === false && result.reason !== 'spawning') {
+      if (pendingAgentId) spawnLibrarian.failPending(pendingAgentId, result.reason || result.error || 'launch-failed')
+      const settled = mailboxLibrarian.fail(mailbox.id, result.error || result.reason || 'launch-failed', result)
+      if (settled) deliverSpawnMailboxCompletion(settled, 'failed', { ...result, error: result.error || result.reason || 'launch-failed' })
+      return
+    }
+    let ready = null
+    if (readiness) {
+      ready = await readiness
+      if (!ready.ok) {
+        const settled = mailboxLibrarian.fail(mailbox.id, ready.reason, ready)
+        if (settled) deliverSpawnMailboxCompletion(settled, 'failed', { ...ready, error: ready.reason })
+        return
+      }
+    }
+    const agentRecord = ready?.agent || (result?.agent_id ? fleetStore.findAgent(result.agent_id) : null) || (targetAgentId ? fleetStore.findAgent(targetAgentId) : null)
+    let lineage = null
+    if (phase && agentRecord?.id) {
+      try {
+        lineage = assignSpawnPhase(agentRecord.id, phase)
+      } catch (e) {
+        const settled = mailboxLibrarian.fail(mailbox.id, e.message || 'lineage assignment failed', { ...result, phase, error: e.message })
+        if (settled) deliverSpawnMailboxCompletion(settled, 'failed', { ...result, error: `lineage assignment failed: ${e.message}` })
+        return
+      }
+    }
+    const registeredPolicy = agentRecord?.metadata?.spawnPolicy
+    const spawnPolicy = result?.spawnPolicy || registeredPolicy
+    const completion = {
+      ...result,
+      agentId: agentRecord?.id || result?.agent_id || targetAgentId || null,
+      label: agentRecord?.friendly_name || result?.name || spawnName,
       spawnPolicy,
-      grantedCapability: result.grantedCapability || spawnPolicy?.capability,
-      spawnerCapability: result.spawnerCapability,
-      projectCapability: result.projectCapability,
-      modelCapability: result.modelCapability,
+      grantedCapability: result?.grantedCapability || spawnPolicy?.capability,
+      lineage,
     }
+    const settled = mailboxLibrarian.complete(mailbox.id, completion)
+    if (settled) deliverSpawnMailboxCompletion(settled, 'completed', completion)
+    broadcastState()
+  })()
+  return {
+    ok: true,
+    async: true,
+    status: 'pending',
+    mailbox_id: mailbox.id,
+    agent_id: targetAgentId,
+    name: spawnName,
+    machine_id: machineId,
   }
-  broadcastState()
-  return result
 }
 
 // Wire fleet store events → WS broadcast

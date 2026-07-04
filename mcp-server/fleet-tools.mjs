@@ -2363,9 +2363,18 @@ export async function handleFleetTool(name, args) {
           kind: spawnOpts.kind,
           cwd: agentCwd,
           capability: spawnOpts.capability,
-        }, { deadlineMs: SPAWN_WS_DEADLINE_MS });
+        });
         if (spawnResult?.ok === false || spawnResult?.error) {
           return { content: [{ type: 'text', text: `spawn failed before delegation: ${spawnResult.error || JSON.stringify(spawnResult)}` }], isError: true };
+        }
+        if (spawnResult?.async) {
+          return {
+            content: [{
+              type: 'text',
+              text: `spawn+delegate started spawn mailbox ${spawnResult.mailbox_id} for ${agentName}, but async delegation is not migrated yet. Wait for the mailbox completion, then delegate to ${agentName}.`,
+            }],
+            isError: true,
+          };
         }
       } catch (e) {
         const msg = (e.message || '').trim();
@@ -3717,13 +3726,14 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
         privileges: args.privileges,
         policy: args.policy,
         iLikeToLiveDangerously: !!args.iLikeToLiveDangerously,
-      }, { deadlineMs: SPAWN_WS_DEADLINE_MS });
+        phase: phase && isFresh ? phase : undefined,
+      });
       if (result?.ok === false || result?.error) {
         return { content: [{ type: 'text', text: `spawn failed: ${result.error || JSON.stringify(result)}` }], isError: true };
       }
 
       // Assign lineage/phase after spawn
-      if (phase && isFresh) {
+      if (phase && isFresh && !result?.async) {
         try {
           const result = await sendWS('lineage-assign', { agent: agentName, phase });
           if (result?.error) {
@@ -4984,12 +4994,6 @@ let _channelRWS = null;  // ResilientWS instance
 // Request/response over WS — pending callbacks keyed by correlation ID
 const _wsPending = new Map();
 const WS_REQUEST_IDLE_MS = 45_000;
-// Fresh spawn has a longer valid path than ordinary fleet requests:
-// server spawn RPC timeout/recovery can consume 10s, then registration
-// readiness can wait up to 20s. Spawn is a caller-owned policy deadline, not
-// the transport default for every request.
-const SPAWN_WS_DEADLINE_MS = 30_000;
-
 /**
  * Send a request over the WS channel and wait for a response.
  * Returns the result on success, throws on error or timeout.
