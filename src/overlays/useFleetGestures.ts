@@ -611,6 +611,22 @@ export function phoneLaneCommitPx(): number {
 // time and accumulates. So we keep an explicit index and only re-sync it from
 // the camera when it's settled ON a stop.
 let phoneLaneIndex = 1
+let phoneLaneViewportPreserve: { index: number; until: number } | null = null
+
+export function preservePhoneLaneForViewportSettle(editor: Editor, docLeftPage: number, settleMs = 900) {
+  const index = phoneLaneIndexFromCamera(editor, docLeftPage)
+  const until = Date.now() + settleMs
+  phoneLaneViewportPreserve = { index, until }
+  return { index, until }
+}
+
+export function phoneLaneIndexForViewportRefit(fallbackIndex: number) {
+  if (phoneLaneViewportPreserve) {
+    if (Date.now() <= phoneLaneViewportPreserve.until) return phoneLaneViewportPreserve.index
+    phoneLaneViewportPreserve = null
+  }
+  return fallbackIndex
+}
 
 // Current lane index. Re-syncs from the camera only when settled near a stop;
 // mid-animation it trusts the stored index (the intended target of the last snap).

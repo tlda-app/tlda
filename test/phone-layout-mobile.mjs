@@ -19,8 +19,10 @@ const WIDTH = Number(args.width || 390)
 const HEIGHT = Number(args.height || 844)
 const CLIP = String(args.clip || '') === '1'
 const AUTO = String(args.auto || '') === '1'
-const ROTATE_WIDTH = Number(args.rotateWidth || 0)
-const ROTATE_HEIGHT = Number(args.rotateHeight || 0)
+const ROTATE = String(args.rotate || '') === '1'
+const ORIENTATION_EVENT = String(args.orientationEvent || args['orientation-event'] || args.orientationchange || '') === '1'
+const ROTATE_WIDTH = Number(args.rotateWidth || (ROTATE ? HEIGHT : 0))
+const ROTATE_HEIGHT = Number(args.rotateHeight || (ROTATE ? WIDTH : 0))
 
 function findChromiumExecutable() {
   if (process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE) return process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE
@@ -48,7 +50,7 @@ if (token) qs.set('token', token)
 const URL = `${BASE}/?${qs.toString()}`
 
 async function main() {
-  console.log(`phone-layout-mobile url=${URL} viewport=${WIDTH}x${HEIGHT} clip=${CLIP ? '1' : '0'} auto=${AUTO ? '1' : '0'}`)
+  console.log(`phone-layout-mobile url=${URL} viewport=${WIDTH}x${HEIGHT} clip=${CLIP ? '1' : '0'} auto=${AUTO ? '1' : '0'} rotate=${ROTATE_WIDTH}x${ROTATE_HEIGHT} orientationEvent=${ORIENTATION_EVENT ? '1' : '0'}`)
   const executablePath = findChromiumExecutable()
   const browser = await chromium.launch({ headless: true, ...(executablePath ? { executablePath } : {}) })
   const context = await browser.newContext({
@@ -403,9 +405,31 @@ async function main() {
   })
 
   if (ROTATE_WIDTH > 0 && ROTATE_HEIGHT > 0) {
+    await page.evaluate(async () => {
+      const ed = window.__tldraw_editor__
+      const setup = window.__phoneLayoutExpected
+      if (!ed || !setup) throw new Error('pre-rotation setup missing')
+      const pageShape = ed.getCurrentPageShapes().find(s => s.type === 'svg-page' || s.type === 'html-page')
+      const pb = pageShape ? ed.getShapePageBounds(pageShape.id) : null
+      if (!pb) throw new Error('missing page bounds before rotation')
+      const cam = ed.getCamera()
+      ed.setCamera({ ...cam, x: setup.width / cam.z - pb.x }, { animation: { duration: 0 } })
+      await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))
+    })
+    if (ORIENTATION_EVENT) {
+      await page.evaluate(() => window.dispatchEvent(new Event('orientationchange')))
+      await page.waitForTimeout(50)
+    }
     await page.setViewportSize({ width: ROTATE_WIDTH, height: ROTATE_HEIGHT })
-    await page.waitForTimeout(900)
-    report.rotated = await page.evaluate(async ({ width, height }) => {
+    if (ORIENTATION_EVENT) {
+      await page.evaluate(() => window.visualViewport?.dispatchEvent(new Event('resize')))
+    }
+    await page.waitForTimeout(1100)
+    await page.waitForFunction(() => {
+      const until = Number(window.__tldaPhoneCameraSettlingUntil || 0)
+      return !until || Date.now() >= until
+    }, null, { timeout: 5000 })
+    report.rotated = await page.evaluate(async ({ width, height, orientationEvent }) => {
       const ed = window.__tldraw_editor__
       const setup = window.__phoneLayoutExpected
       if (!ed || !setup) throw new Error('rotation setup missing')
@@ -423,6 +447,10 @@ async function main() {
       const pb = pageShape ? ed.getShapePageBounds(pageShape.id) : null
       if (!pb) throw new Error('missing page bounds after rotation')
       const cam = ed.getCamera()
+      const docLeftScreenBeforeManualSnap = (pb.x + cam.x) * cam.z
+      if (orientationEvent && Math.abs(docLeftScreenBeforeManualSnap - width) > 3) {
+        throw new Error(`orientationchange did not preserve inbox pane lane: docLeftScreen=${docLeftScreenBeforeManualSnap}, expected=${width}`)
+      }
       ed.setCamera({ ...cam, x: width / cam.z - pb.x }, { animation: { duration: 0 } })
       await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))
       const inboxEl = document.querySelector(`.fleet-hud-wrap [data-shape-id="${inbox.id}"] .fleet-inbox-shape`)
@@ -447,6 +475,8 @@ async function main() {
       }
       return {
         viewport: { w: width, h: height },
+        orientationEvent,
+        preservedLane: { docLeftScreen: Math.round(docLeftScreenBeforeManualSnap), expected: width },
         inbox: { w: inbox.props.w, h: inbox.props.h, locked: inbox.isLocked },
         footer: {
           x: Math.round(footerBox.x),
@@ -455,7 +485,43 @@ async function main() {
           h: Math.round(footerBox.height),
         },
       }
-    }, { width: ROTATE_WIDTH, height: ROTATE_HEIGHT })
+    }, { width: ROTATE_WIDTH, height: ROTATE_HEIGHT, orientationEvent: ORIENTATION_EVENT })
+    if (ORIENTATION_EVENT) {
+      await page.evaluate(() => window.dispatchEvent(new Event('orientationchange')))
+      await page.waitForTimeout(50)
+      await page.setViewportSize({ width: WIDTH, height: HEIGHT })
+      await page.evaluate(() => window.visualViewport?.dispatchEvent(new Event('resize')))
+      await page.waitForTimeout(1100)
+      await page.waitForFunction(() => {
+        const until = Number(window.__tldaPhoneCameraSettlingUntil || 0)
+        return !until || Date.now() >= until
+      }, null, { timeout: 5000 })
+      report.rotatedBack = await page.evaluate(({ width, height }) => {
+        const ed = window.__tldraw_editor__
+        const setup = window.__phoneLayoutExpected
+        if (!ed || !setup) throw new Error('rotate-back setup missing')
+        const inbox = ed.getCurrentPageShapes().find(s =>
+          s.type === 'fleet-inbox' &&
+          s.props?.userId === setup.humanId &&
+          s.props?.deviceId === setup.myDeviceId)
+        if (!inbox) throw new Error('missing phone inbox after rotate back')
+        if (Math.abs(inbox.props.w - width) > 1 || Math.abs(inbox.props.h - height) > 1) {
+          throw new Error(`phone inbox did not refit after rotate back: ${JSON.stringify({ got: inbox.props, expected: { width, height } })}`)
+        }
+        const pageShape = ed.getCurrentPageShapes().find(s => s.type === 'svg-page' || s.type === 'html-page')
+        const pb = pageShape ? ed.getShapePageBounds(pageShape.id) : null
+        if (!pb) throw new Error('missing page bounds after rotate back')
+        const docLeftScreen = (pb.x + ed.getCamera().x) * ed.getCamera().z
+        if (Math.abs(docLeftScreen - width) > 3) {
+          throw new Error(`orientationchange did not preserve inbox pane lane after rotate back: docLeftScreen=${docLeftScreen}, expected=${width}`)
+        }
+        return {
+          viewport: { w: width, h: height },
+          preservedLane: { docLeftScreen: Math.round(docLeftScreen), expected: width },
+          inbox: { w: inbox.props.w, h: inbox.props.h, locked: inbox.isLocked },
+        }
+      }, { width: WIDTH, height: HEIGHT })
+    }
   }
 
   await page.evaluate(() => {

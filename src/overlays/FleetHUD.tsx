@@ -16,11 +16,11 @@ import { useFleetIdentity } from '../fleet-data-adapter'
 import { getHumanId, getDeviceId, isDeviceReady, whenDeviceReady } from '../fleet/fleet-data.mjs'
 import { getMyAnchorId, isMyFleetShape, FLEET_INTERACTION_SHAPE_SELECTOR, FLEET_SHAPE_TYPES, adoptLegacyFleetShapes, layoutOffset, ensureMyLaneDisjoint } from '../shapes/fleet-utils'
 import { isDocumentPageShape } from '../shapes/document-pages'
-import { fleetTouchGestureActiveRef, postTouchTelemetry, setTouchDiagStatus, snapToPhoneLaneIndex, useFleetGestures } from './useFleetGestures'
+import { fleetTouchGestureActiveRef, phoneLaneIndexForViewportRefit, postTouchTelemetry, preservePhoneLaneForViewportSettle, setTouchDiagStatus, snapToPhoneLaneIndex, useFleetGestures } from './useFleetGestures'
 import { PhoneLaneArrow } from './PhoneLaneArrow'
 import { shouldRenderLockedFleetViewportShape } from './fleet-viewport-predicate'
 import { SuggestionTip } from '../shapes/FleetChatShape'
-import { isPhoneStackLayoutForOwner, refitPhonePaneStack } from '../shapes/phone-pane-stack'
+import { getPrimaryPhoneDocumentLeft, isPhoneStackLayoutForOwner, refitPhonePaneStack } from '../shapes/phone-pane-stack'
 import { log } from '../logger'
 import { computeFleetBoundsFromShapes, createFleetBoundsTracker, type FleetBoundsResult } from './fleet-bounds'
 import { computeFleetHudDefaultAnchor } from './fleet-hud-anchor'
@@ -499,25 +499,44 @@ export function FleetHUD({
   useEffect(() => {
     if (!docShapesReady) return
     let frame: number | null = null
+    let settleTimer = 0
     const refit = () => {
       frame = null
       if (!isPhoneViewport()) return
       const result = refitPhonePaneStack(mainEditor)
       if (!result.ok) return
-      snapToPhoneLaneIndex(mainEditor, result.docLeftPage, result.currentIndex)
+      snapToPhoneLaneIndex(mainEditor, result.docLeftPage, phoneLaneIndexForViewportRefit(result.currentIndex))
       setFleetBounds(getFleetBounds(mainEditor))
     }
     const schedule = () => {
       if (frame !== null) return
       frame = requestAnimationFrame(refit)
     }
+    const scheduleSettledPasses = () => {
+      schedule()
+      for (const delay of [80, 180, 360, 700]) window.setTimeout(schedule, delay)
+    }
+    const handleOrientationChange = () => {
+      const docLeft = getPrimaryPhoneDocumentLeft(mainEditor)
+      if (docLeft !== null) {
+        const preserve = preservePhoneLaneForViewportSettle(mainEditor, docLeft)
+        const w = window as Window & { __tldaPhoneCameraSettlingUntil?: number }
+        w.__tldaPhoneCameraSettlingUntil = Math.max(Number(w.__tldaPhoneCameraSettlingUntil || 0), preserve.until)
+        if (settleTimer) window.clearTimeout(settleTimer)
+        settleTimer = window.setTimeout(() => {
+          if (Number(w.__tldaPhoneCameraSettlingUntil || 0) <= Date.now()) w.__tldaPhoneCameraSettlingUntil = 0
+        }, 950)
+      }
+      scheduleSettledPasses()
+    }
     window.addEventListener('resize', schedule)
-    window.addEventListener('orientationchange', schedule)
+    window.addEventListener('orientationchange', handleOrientationChange)
     window.visualViewport?.addEventListener('resize', schedule)
     return () => {
       if (frame !== null) cancelAnimationFrame(frame)
+      if (settleTimer) window.clearTimeout(settleTimer)
       window.removeEventListener('resize', schedule)
-      window.removeEventListener('orientationchange', schedule)
+      window.removeEventListener('orientationchange', handleOrientationChange)
       window.visualViewport?.removeEventListener('resize', schedule)
     }
   }, [docShapesReady, mainEditor])
@@ -687,6 +706,7 @@ export function FleetHUD({
     if (!identityId || !deviceReady || !docShapesReady) return
     let lastSig = ''
     let raf = 0
+    let settleTimer = 0
     const apply = () => {
       raf = 0
       const vp = mainEditor.getViewportScreenBounds()
@@ -700,7 +720,7 @@ export function FleetHUD({
       const result = refitPhonePaneStack(mainEditor)
       if (!result.ok) return
       const changed = result.updatedIds.length > 0
-      snapToPhoneLaneIndex(mainEditor, result.docLeftPage, result.currentIndex)
+      snapToPhoneLaneIndex(mainEditor, result.docLeftPage, phoneLaneIndexForViewportRefit(result.currentIndex))
       if (changed) {
         hudAnchorRef.current = null
         hudBaseCameraRef.current = mainEditor.getCamera()
@@ -712,14 +732,32 @@ export function FleetHUD({
       if (raf) return
       raf = requestAnimationFrame(apply)
     }
+    const scheduleSettledPasses = () => {
+      schedule()
+      for (const delay of [80, 180, 360, 700]) window.setTimeout(schedule, delay)
+    }
+    const handleOrientationChange = () => {
+      const docLeft = getPrimaryPhoneDocumentLeft(mainEditor)
+      if (docLeft !== null) {
+        const preserve = preservePhoneLaneForViewportSettle(mainEditor, docLeft)
+        const w = window as Window & { __tldaPhoneCameraSettlingUntil?: number }
+        w.__tldaPhoneCameraSettlingUntil = Math.max(Number(w.__tldaPhoneCameraSettlingUntil || 0), preserve.until)
+        if (settleTimer) window.clearTimeout(settleTimer)
+        settleTimer = window.setTimeout(() => {
+          if (Number(w.__tldaPhoneCameraSettlingUntil || 0) <= Date.now()) w.__tldaPhoneCameraSettlingUntil = 0
+        }, 950)
+      }
+      scheduleSettledPasses()
+    }
     schedule()
     window.addEventListener('resize', schedule)
-    window.addEventListener('orientationchange', schedule)
+    window.addEventListener('orientationchange', handleOrientationChange)
     window.visualViewport?.addEventListener('resize', schedule)
     return () => {
       if (raf) cancelAnimationFrame(raf)
+      if (settleTimer) window.clearTimeout(settleTimer)
       window.removeEventListener('resize', schedule)
-      window.removeEventListener('orientationchange', schedule)
+      window.removeEventListener('orientationchange', handleOrientationChange)
       window.visualViewport?.removeEventListener('resize', schedule)
     }
   }, [deviceReady, docShapesReady, identityId, mainEditor, resetFleetBoundsTracker])
