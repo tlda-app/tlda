@@ -2464,7 +2464,7 @@ app.post('/api/kill-session', requireRead, async (req, res) => {
   if (route.via === 'none') return res.status(503).json({ error: route.error })
   try {
     const result = await sendRpc(route.machine_id, 'kill-session', { agent_id: agent.id, tmux_session: agent.tmux_session })
-    fleetStore.markDead(agent.id)
+    markAgentNotAlive(agent.id)
     const killEvent = { type: 'kill-session', from: SERVER_OWNER_ID, to: agent.id, text: `Killed ${agent.friendly_name || agent.id}` }
     await fleetStore.share(killEvent)
     broadcastState()
@@ -2812,6 +2812,7 @@ function clearEphemeralState(agentId) {
 }
 const fleetRouter = createFleetRouter({
   fleetStore, broadcastEvent, broadcastState, clearEphemeralState,
+  markAgentNotAlive,
   suppressEchoFor: () => {},
   sendRpc, resolveRpc, daemonConnections, resolveSpawnTarget,
   broadcastDaemonAgentsUpdated,
@@ -4516,7 +4517,6 @@ async function handleFleetWsMessage(ws, msg) {
     if (route.via === 'none') { error(route.error); return }
     try {
       const result = await sendRpc(route.machine_id, 'kill-session', { agent_id: agent.id, tmux_session: agent.tmux_session })
-      fleetStore.markDead(agent.id)
       markAgentNotAlive(agent.id)
       const killEvent = { type: 'kill-session', from: SERVER_OWNER_ID, to: agent.id, text: `Killed ${agent.friendly_name || agent.id}` }
       await fleetStore.share(killEvent)
