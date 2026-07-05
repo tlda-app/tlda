@@ -512,7 +512,7 @@ const SPAWN_RPC_TIMEOUT_MS = 120_000
 // keyed by agent_id → { tmux_session, machine_id, planText, lastHash, eventId }
 const pendingPlanApprovals = new Map()
 
-// Chat idempotency cache: _tempId → { eventIds, recipients, ts }
+// Chat idempotency cache: _tempId → { eventIds, recipients, receipts, ts }
 // Prevents duplicate DB rows when the browser retries a timed-out send.
 const _chatTempIds = new Map()
 const CHAT_TEMPID_TTL_MS = 60_000
@@ -3943,7 +3943,7 @@ async function handleFleetWsMessage(ws, msg) {
     // previously inserted event IDs instead of creating duplicates.
     if (msg._tempId && _chatTempIds.has(msg._tempId)) {
       const prev = _chatTempIds.get(msg._tempId)
-      reply({ ok: true, event_ids: prev.eventIds, recipients: prev.recipients, _tempId: msg._tempId })
+      reply({ ok: true, event_ids: prev.eventIds, recipients: prev.recipients, receipts: prev.receipts || [], _tempId: msg._tempId })
       return
     }
     const resolveSingle = (id) => {
@@ -4074,7 +4074,7 @@ async function handleFleetWsMessage(ws, msg) {
       }
     }
     // Cache _tempId for idempotent retries
-    if (msg._tempId) _chatTempIds.set(msg._tempId, { eventIds, recipients, ts: Date.now() })
+    if (msg._tempId) _chatTempIds.set(msg._tempId, { eventIds, recipients, receipts, ts: Date.now() })
     // Reply FIRST so the client can reconcile optimistic events before broadcasts arrive.
     reply({ ok: true, event_ids: eventIds, recipients, receipts, _tempId: msg._tempId || null })
     for (const ev of insertedEvents) broadcastEvent('fleet-event', ev)

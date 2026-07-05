@@ -105,12 +105,22 @@ test('chat attention policy is reflected in receipts and unread inbox metadata',
       from: 'fleet:sender',
       to: 'recipient',
       message: 'normal update for batching',
+      _tempId: 'attention-retry-1',
     })
     assert.equal(busyNormal?.receipts?.[0]?.delivery, 'batched')
     assert.equal(busyNormal.receipts[0].priority, 'normal')
     assert.equal(busyNormal.receipts[0].status, 'busy')
     assert.equal(busyNormal.receipts[0].tag, 'spawn broken')
     assert.ok(busyNormal.receipts[0].notifyBy)
+    const busyNormalRetry = await sendFleet('chat', {
+      from: 'fleet:sender',
+      to: 'recipient',
+      message: 'normal update for batching',
+      _tempId: 'attention-retry-1',
+    })
+    assert.deepEqual(busyNormalRetry.event_ids, busyNormal.event_ids)
+    assert.deepEqual(busyNormalRetry.recipients, busyNormal.recipients)
+    assert.deepEqual(busyNormalRetry.receipts, busyNormal.receipts)
 
     const busyImportant = await sendFleet('chat', {
       from: 'fleet:sender',
