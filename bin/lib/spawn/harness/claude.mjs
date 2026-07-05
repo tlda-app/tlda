@@ -6,6 +6,7 @@ import { resolveClaudeModel, resolveClaudeModelSelection } from '../models.mjs'
 const REGISTER_PROMPT = 'Call register() with the fleet MCP server. Then call inbox() to check for a pending task.'
 const DNS_ALIAS_PRELOAD = path.join(repoRoot(), 'shared', 'node-dns-alias.cjs')
 const FENCE_TMP_ROOT = '/tmp/tlda-fence-env'
+const CHANNEL_FLAG = '--dangerously-load-development-channels server:tlda'
 
 function sq(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`
@@ -82,6 +83,7 @@ export function buildCmd({
     parts.push(`TLDA_NODE_DNS_ALIAS_ADDR=${sq(dnsAlias.address)}`)
   }
   parts.push('claude')
+  if (!parts.includes(CHANNEL_FLAG)) parts.push(CHANNEL_FLAG)
   appendLaunchFlags(parts, harnessOptions)
   if (resumeId) parts.push(`--resume ${sq(resumeId)}`)
   parts.push(`--model ${sq(model)}`)

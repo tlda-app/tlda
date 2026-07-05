@@ -28,3 +28,16 @@ test('Claude launch does not point Node at the denied tlda pem path', () => {
   assert.match(cmd, /NODE_TLS_REJECT_UNAUTHORIZED=0/)
   assert.doesNotMatch(cmd, /NODE_EXTRA_CA_CERTS='\/Users\/skip\/\.config\/tlda\/localhost\+2\.pem'/)
 })
+
+test('Claude restored launches always enable tlda channel notifications', () => {
+  const cmd = claude.buildCmd({
+    fleetId: 'fleet:test',
+    tmuxSession: 'fleet-test',
+    model: 'claude-opus-4-8[1m]',
+    name: 'release-train',
+    resumeId: 'd49dd726-7b15-40ae-8d3c-7f77ce997b3b',
+    includePrompt: false,
+    config: {},
+  })
+  assert.match(cmd, /claude --dangerously-load-development-channels server:tlda --resume 'd49dd726-7b15-40ae-8d3c-7f77ce997b3b'/)
+})
