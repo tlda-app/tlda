@@ -272,16 +272,24 @@ async function main() {
       throw new Error(`phone inbox filter button is not hit-testable: hit=${filterButtonHit instanceof HTMLElement ? filterButtonHit.className : String(filterButtonHit)}`)
     }
     const footer = inboxEl.querySelector('.fleet-inbox-phone-footer')
+    const inboxList = inboxEl.querySelector('.fleet-inbox-list')
     const littleChat = inboxEl.querySelector('.fleet-inbox-phone-composer')
     const phoneAgents = inboxEl.querySelector('.fleet-inbox-phone-agents')
-    if (!(footer instanceof HTMLElement) || !(littleChat instanceof HTMLElement) || !(phoneAgents instanceof HTMLElement)) {
+    if (!(footer instanceof HTMLElement) || !(inboxList instanceof HTMLElement) || !(littleChat instanceof HTMLElement) || !(phoneAgents instanceof HTMLElement)) {
       throw new Error('phone inbox footer/little-chat/agents sub-layout did not render')
     }
     const footerBox = footer.getBoundingClientRect()
+    const inboxListBox = inboxList.getBoundingClientRect()
     const littleChatBox = littleChat.getBoundingClientRect()
     const phoneAgentsBox = phoneAgents.getBoundingClientRect()
     if (footerBox.left < inboxBox.left - 1 || footerBox.right > inboxBox.right + 1 || footerBox.bottom > inboxBox.bottom + 1) {
       throw new Error(`phone footer is not inside inbox pane: ${JSON.stringify({ footer: footerBox.toJSON?.() || footerBox, inbox: inboxBox.toJSON?.() || inboxBox })}`)
+    }
+    if (footerBox.height > height * 0.34) {
+      throw new Error(`phone footer should be compact, not half-screen: ${JSON.stringify({ footerH: footerBox.height, viewportH: height })}`)
+    }
+    if (inboxListBox.height <= footerBox.height) {
+      throw new Error(`phone inbox list should remain the dominant region: ${JSON.stringify({ listH: inboxListBox.height, footerH: footerBox.height })}`)
     }
     const portrait = height >= width
     if (portrait) {
@@ -386,6 +394,12 @@ async function main() {
           y: Math.round(footerBox.y),
           w: Math.round(footerBox.width),
           h: Math.round(footerBox.height),
+        },
+        inboxList: {
+          x: Math.round(inboxListBox.x),
+          y: Math.round(inboxListBox.y),
+          w: Math.round(inboxListBox.width),
+          h: Math.round(inboxListBox.height),
         },
         littleChat: {
           x: Math.round(littleChatBox.x),

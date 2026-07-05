@@ -533,8 +533,8 @@
    little chat/composer on the left and leaves agents wide enough for labels. */
 .fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-footer {
   flex-shrink: 0;
-  min-height: 210px;
-  max-height: 46%;
+  min-height: 126px;
+  max-height: min(30%, 190px);
   border-top: 1px solid rgba(128, 128, 128, 0.14);
   background: rgba(128, 128, 128, 0.035);
   display: flex;
@@ -544,7 +544,7 @@
 
 .fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-composer {
   flex-shrink: 0;
-  padding: 8px 10px;
+  padding: 6px 10px;
   border-bottom: 1px solid rgba(128, 128, 128, 0.1);
 }
 
@@ -581,8 +581,8 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  min-height: 24px;
-  margin-top: 4px;
+  min-height: 20px;
+  margin-top: 2px;
   overflow: hidden;
 }
 
@@ -606,8 +606,8 @@
 }
 
 .fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-composer .fleet-inbox-composer-textarea {
-  margin-top: 5px;
-  min-height: 30px;
+  margin-top: 3px;
+  min-height: 28px;
 }
 
 .fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agents {
@@ -636,7 +636,7 @@
 }
 
 .fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent {
-  padding: 7px 10px 8px;
+  padding: 5px 10px;
   border-bottom: 1px solid rgba(128, 128, 128, 0.07);
   cursor: pointer;
 }
@@ -649,7 +649,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  min-height: 22px;
+  min-height: 20px;
 }
 
 .fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent-name {
@@ -687,8 +687,8 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  min-height: 22px;
-  margin-top: 2px;
+  min-height: 18px;
+  margin-top: 1px;
   overflow: hidden;
 }
 
@@ -724,8 +724,8 @@
 
 @media (orientation: landscape) {
   .fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-footer {
-    min-height: 142px;
-    max-height: 38%;
+    min-height: 112px;
+    max-height: min(32%, 128px);
     flex-direction: row;
   }
 
