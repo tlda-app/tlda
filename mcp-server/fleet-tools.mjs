@@ -2978,6 +2978,7 @@ export async function handleFleetTool(name, args) {
         if (a.friendly_name) label += ` [${a.id}]`;
         if (a.dead) label += ' [dead]';
         if (a.human) label += ' [human]';
+        if (a.metadata?.inboxMode) label += ` [mode:${a.metadata.inboxMode}]`;
         // No manager label
         if (a.tmux_session) label += ` tmux:${a.tmux_session}`;
         return label;
@@ -4722,8 +4723,10 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
         .join(', ');
       const summaryLines = [];
       const modelSummary = formatCountSummary(data.summary?.models);
+      const modeSummary = formatCountSummary(data.summary?.inbox_modes);
       const cwdSummary = formatCountSummary(data.summary?.working_dirs);
       if (modelSummary) summaryLines.push(`Models: ${modelSummary}`);
+      if (modeSummary) summaryLines.push(`Inbox modes: ${modeSummary}`);
       if (cwdSummary) summaryLines.push(`Working dirs: ${cwdSummary}`);
       const summaryText = summaryLines.length ? `\n${summaryLines.join('\n')}` : '';
 
@@ -4735,16 +4738,17 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       const fmt = (a) => {
         const seen = a.last_seen_ago_s == null ? 'never' : a.last_seen_ago_s < 90 ? `${a.last_seen_ago_s}s` : a.last_seen_ago_s < 5400 ? `${Math.round(a.last_seen_ago_s / 60)}m` : `${Math.round(a.last_seen_ago_s / 3600)}h`;
         const act = a.activity ? `${a.activity}${a.tool ? `:${a.tool}` : ''}` : '';
-        return { name: a.name, status: a.status, seen, model: a.model || '', cwd: a.cwd || '', act };
+        return { name: a.name, status: a.status, seen, mode: a.inbox_mode || '', model: a.model || '', cwd: a.cwd || '', act };
       };
       const f = rows.map(fmt);
       const w = (k) => Math.max(k.length, ...f.map(r => String(r[k]).length));
       const wn = w('name'), ws = w('status'), wsa = Math.max(4, ...f.map(r => r.seen.length));
+      const wi = w('mode');
       const wm = w('model');
       const lines = f.map(r =>
-        `${r.name.padEnd(wn)}  ${r.status.padEnd(ws)}  ${r.seen.padStart(wsa)}  ${r.model.padEnd(wm)}  ${r.act ? r.act.padEnd(14) : '              '}  ${r.cwd}`.trimEnd()
+        `${r.name.padEnd(wn)}  ${r.status.padEnd(ws)}  ${r.seen.padStart(wsa)}  ${r.mode.padEnd(wi)}  ${r.model.padEnd(wm)}  ${r.act ? r.act.padEnd(14) : '              '}  ${r.cwd}`.trimEnd()
       );
-      const colHead = `${'agent'.padEnd(wn)}  ${'status'.padEnd(ws)}  ${'seen'.padStart(wsa)}  ${'model'.padEnd(wm)}  ${'activity'.padEnd(14)}  cwd`;
+      const colHead = `${'agent'.padEnd(wn)}  ${'status'.padEnd(ws)}  ${'seen'.padStart(wsa)}  ${'mode'.padEnd(wi)}  ${'model'.padEnd(wm)}  ${'activity'.padEnd(14)}  cwd`;
       return { content: [{ type: 'text', text: `${header}${scope}${summaryText}\n\n${colHead}\n${lines.join('\n')}` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `fleet_table failed (tlda backend not answering — tell ops if it persists): ${e.message}` }], isError: true };
