@@ -93,7 +93,7 @@ function fleetTableLabelsForAgent(agent) {
   return labels
 }
 
-export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, clearEphemeralState, markAgentNotAlive = () => {}, suppressEchoFor, sendRpc, resolveRpc, daemonConnections, resolveSpawnTarget, broadcastDaemonAgentsUpdated, hasOpenFleetSocketForAgent = () => false }) {
+export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, clearEphemeralState, suppressEchoFor, sendRpc, resolveRpc, daemonConnections, resolveSpawnTarget, broadcastDaemonAgentsUpdated, hasOpenFleetSocketForAgent = () => false }) {
   // Helper: route an agent op through the daemon, or 503 cleanly. The
   // op-name is whatever the daemon's rpc dispatcher expects (kebab-case
   // matches the spec: 'send-key', 'capture-pane', etc.).
@@ -567,8 +567,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   })
 
   // --- POST /api/kill-session ---
-  // Kill the agent's tmux session outright. This hibernates the agent; it does
-  // not retire the identity or erase its addressability.
+  // Kill the agent's tmux session outright. Marks agent dead.
   router.post('/api/kill-session', async (req, res) => {
     const { agent: agentQuery } = req.body || {}
     const agent = fleetStore?.findAgent(agentQuery)
@@ -578,7 +577,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       agent_id: agent.id, tmux_session: agent.tmux_session,
     })
     if (result === null) return
-    markAgentNotAlive(agent.id)
+    fleetStore?.markDead(agent.id)
     const killEvent = { type: 'kill-session', from: SERVER_OWNER_ID, to: agent.id, text: `Killed ${agent.friendly_name || agent.id}` }
     await fleetStore?.share(killEvent)
     broadcastEvent('fleet-event', killEvent)

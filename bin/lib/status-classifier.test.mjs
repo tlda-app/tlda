@@ -5,9 +5,8 @@
 //                           goose uses its own markers + freeze→stuck escalation)
 //   - decideThinkingEdge(): anti-flicker hysteresis (false edge needs N idle scans)
 //   - shouldDisarm()      : armed → idle-past-linger → disarm
-//   - shouldPromptSweepAgent(): prompt scans stay event-armed
 import assert from 'node:assert/strict'
-import { classifyPane, decideThinkingEdge, shouldDisarm, shouldPromptSweepAgent, THINKING_SPINNER_RE } from './status-classifier.mjs'
+import { classifyPane, decideThinkingEdge, shouldDisarm, THINKING_SPINNER_RE } from './status-classifier.mjs'
 
 let passed = 0
 function t(name, fn) {
@@ -92,24 +91,6 @@ t('idle within linger stays armed', () => {
 })
 t('idle past linger disarms', () => {
   assert.equal(shouldDisarm(20000, 5000, false, 8000), true)
-})
-
-// ---- shouldPromptSweepAgent ----
-const liveAgent = { id: 'fleet:a', tmux_session: 'sess' }
-t('prompt sweep skips unarmed idle agents', () => {
-  assert.equal(shouldPromptSweepAgent(liveAgent, { armed: false, surfaced: false }), false)
-})
-t('prompt sweep includes armed agents', () => {
-  assert.equal(shouldPromptSweepAgent(liveAgent, { armed: true, surfaced: false }), true)
-})
-t('prompt sweep keeps surfaced prompt sessions eligible', () => {
-  assert.equal(shouldPromptSweepAgent(liveAgent, { armed: false, surfaced: true }), true)
-})
-t('prompt sweep excludes dead/human/hibernating/no-session agents', () => {
-  assert.equal(shouldPromptSweepAgent({ ...liveAgent, dead: true }, { armed: true }), false)
-  assert.equal(shouldPromptSweepAgent({ ...liveAgent, human: true }, { armed: true }), false)
-  assert.equal(shouldPromptSweepAgent({ ...liveAgent, hibernating: true }, { armed: true }), false)
-  assert.equal(shouldPromptSweepAgent({ id: 'fleet:a' }, { armed: true }), false)
 })
 
 // regex sanity — the claude spinner is a capitalized "...ing…"

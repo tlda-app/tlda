@@ -26,7 +26,7 @@ import { collectSourceFiles, collectSourceHashes, collectSpecificFiles } from '.
 import { collectHtmlArtifactFiles, htmlArtifactMainForSource } from './lib/html-artifact-files.mjs'
 import {
   loadConfig, saveConfig, getServerUrl, getFleetServerUrl, getRwToken, getActiveConfigName, DEFAULT_PORT,
-  CONFIG_DIR, CONFIG_FILE, hasTls, TLS_CA_PATH, getManagedBots,
+  CONFIG_DIR, CONFIG_FILE, hasTls, TLS_CA_PATH,
 } from '../shared/config.mjs'
 import { tldaFetch } from '../shared/http-client.mjs'
 import { DEV_COMMANDS } from './lib/dev-commands.mjs'
@@ -126,7 +126,6 @@ const COMMAND_HELP = {
   delete:  'tlda doc delete <name>\n\n  Delete a project and all its data.',
   logs:    'tlda logs [agent] [--since 1h|2026-05-23] [--type chat,register] [-n 50] [-f] [--daemon] [--all]\n\n  Unified chronological log across all sources (DB events, daemon log, dead-letters).\n\n  agent      Filter by agent name (fuzzy match)\n  --since    Time range (e.g. 1h, 30m, 2d, or ISO date)\n  --type     Filter by event type (comma-separated)\n  -n N       Number of events (default: 50, or 10000 with --since)\n  -f         Follow mode (tail -f style)\n  --daemon   Include daemon log lines (heartbeats, WS, terminal exits)\n  --all      Include activity and client_error events (excluded by default)',
   server:  'tlda server [start|stop|status|log|install|uninstall]\n\n  start      Start the server (auto-restarts via launchd if installed)\n  stop       Stop the server\n  status     Check if server is running\n  log        Show recent server log\n  install    Install launchd service (macOS)\n  uninstall  Remove launchd service',
-  bot:     'tlda bot [list|install|uninstall|start|stop|status|log] [name] [--dry-run]\n\n  Manage configured fleet bots as launchd services. The bot process registers like an agent; the daemon does not start it.',
   system:  'tlda system status\n\n  Show server, daemon, deploy stamp, and fleet runtime identity.',
   publish: 'tlda publish [--target <name>] [doc ...]\n\n  Publish docs to GitHub Pages (+ optionally Fly).\n\n  With no args, publishes all docs in config.published using the "default" target.\n  With --target, uses the named target config (sync server, repo, etc.).\n  With doc names, publishes those and adds them to the list.\n\n  Config (targets in ~/.config/tlda/config.json):\n    targets.<name>.sync     — sync server WebSocket URL\n    targets.<name>.repo     — git remote for gh-pages (null = same repo)\n    targets.<name>.fly      — deploy to Fly (default: false)\n    targets.<name>.basePath — vite base path (default: /tlda/)',
   config:  'tlda config [set <key> <value> | get [key]]\n\n  Manage persistent configuration.\n  Example: tlda config set server http://myhost:5176',
@@ -936,172 +935,6 @@ async function bootoutDaemonLabel(label = FLEET_DAEMON_LABEL) {
   await runLaunchctl(['bootout', daemonLaunchdTarget(label)], { ignoreFailure: true })
 }
 
-function shellQuote(value) {
-  return `'${String(value).replace(/'/g, `'\\''`)}'`
-}
-
-function botServiceName(name) {
-  return String(name || '').trim()
-}
-
-function botServiceSuffix(name) {
-  const suffix = botServiceName(name).replace(/[^A-Za-z0-9_.-]/g, '-')
-  if (!suffix) throw new Error('bot name is required')
-  return suffix
-}
-
-function botLaunchdLabel(name) {
-  return `com.tlda.bot.${botServiceSuffix(name)}`
-}
-
-function botServicePaths(name) {
-  const suffix = botServiceSuffix(name)
-  return {
-    label: botLaunchdLabel(name),
-    plist: join(homedir(), 'Library', 'LaunchAgents', `${botLaunchdLabel(name)}.plist`),
-    logFile: join(CONFIG_DIR, `${suffix}.log`),
-    pidFile: join(CONFIG_DIR, `${suffix}.pid`),
-    heartbeatFile: join(CONFIG_DIR, `${suffix}.heartbeat`),
-    idFile: join(CONFIG_DIR, `${suffix}.fleet-id`),
-    tmuxSession: `fleet-bot-${suffix}`,
-    waitChannel: `fleet-bot-${suffix}-exit`,
-  }
-}
-
-function resolveBotScriptForCli(script) {
-  if (!script) throw new Error('bot script is required')
-  if (script.startsWith('/')) return script
-  return join(FLEET_DAEMON_MAIN_ROOT, script)
-}
-
-function configuredBots() {
-  return getManagedBots(loadConfig())
-}
-
-function findConfiguredBot(name) {
-  const bots = configuredBots()
-  if (!name) return bots
-  const bot = bots.find(b => b.name === name)
-  if (!bot) throw new Error(`No configured bot named "${name}". Run \`tlda bot list\`.`)
-  return [bot]
-}
-
-function botMachineId(bot) {
-  return bot.machine_id || localMachineId()
-}
-
-function botEnvironmentEntries(bot, paths) {
-  const entries = [
-    ['PATH', daemonPathEnv()],
-    ['TLDA_BOT_NAME', bot.name],
-    ['TLDA_BOT_PIDFILE', paths.pidFile],
-    ['TLDA_BOT_HEARTBEAT', paths.heartbeatFile],
-    ['TLDA_BOT_IDFILE', paths.idFile],
-    ['TLDA_BOT_MACHINE_ID', botMachineId(bot)],
-    ['TLDA_BOT_TMUX_SESSION', paths.tmuxSession],
-  ]
-  if (existsSync(TLS_CA_PATH)) entries.push(['NODE_EXTRA_CA_CERTS', TLS_CA_PATH])
-  if (process.env.TLDA_CONFIG) entries.push(['TLDA_CONFIG', process.env.TLDA_CONFIG])
-  for (const [key, value] of Object.entries(bot.env || {})) entries.push([key, String(value)])
-  return entries
-}
-
-function botEnvironmentPlist(bot, paths) {
-  return botEnvironmentEntries(bot, paths)
-    .filter(([key]) => key === 'PATH' || key === 'NODE_EXTRA_CA_CERTS' || key === 'TLDA_CONFIG')
-    .map(([key, value]) => `        <key>${plistEscape(key)}</key>\n        <string>${plistEscape(value)}</string>`)
-    .join('\n')
-}
-
-function botCommandEnvironment(bot, paths) {
-  return botEnvironmentEntries(bot, paths)
-    .filter(([key, value]) => /^[A-Z_][A-Z0-9_]*$/.test(key) && value !== undefined && value !== null)
-    .map(([key, value]) => `${key}=${shellQuote(value)}`)
-    .join(' ')
-}
-
-function botTmuxCommand(bot, paths) {
-  const script = resolveBotScriptForCli(bot.script)
-  const envPrefix = botCommandEnvironment(bot, paths)
-  const signalExit = `tmux wait-for -S ${shellQuote(paths.waitChannel)}`
-  return `exec env ${envPrefix} ${shellQuote(process.execPath)} ${shellQuote(script)} >> ${shellQuote(paths.logFile)} 2>&1; ${signalExit}`
-}
-
-function botLaunchCommand(bot) {
-  const paths = botServicePaths(bot.name)
-  const tmuxCommand = botTmuxCommand(bot, paths)
-  return [
-    `tmux kill-session -t ${shellQuote(paths.tmuxSession)} 2>/dev/null || true`,
-    `tmux new-session -d -s ${shellQuote(paths.tmuxSession)} ${shellQuote(tmuxCommand)}`,
-    `tmux wait-for ${shellQuote(paths.waitChannel)}`,
-  ].join('\n')
-}
-
-function botPlistContent(bot) {
-  const paths = botServicePaths(bot.name)
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>${plistEscape(paths.label)}</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/bin/zsh</string>
-        <string>-fc</string>
-        <string>${plistEscape(botLaunchCommand(bot))}</string>
-    </array>
-    <key>WorkingDirectory</key>
-    <string>${plistEscape(FLEET_DAEMON_MAIN_ROOT)}</string>
-    <key>ProcessType</key>
-    <string>Background</string>
-    <key>EnvironmentVariables</key>
-    <dict>
-${botEnvironmentPlist(bot, paths)}
-    </dict>
-    <key>KeepAlive</key>
-    <true/>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>StandardOutPath</key>
-    <string>${plistEscape(paths.logFile)}</string>
-    <key>StandardErrorPath</key>
-    <string>${plistEscape(paths.logFile)}</string>
-    <key>ThrottleInterval</key>
-    <integer>5</integer>
-</dict>
-</plist>
-`
-}
-
-function writeBotPlist(bot) {
-  const paths = botServicePaths(bot.name)
-  if (!existsSync(dirname(paths.plist))) mkdirSync(dirname(paths.plist), { recursive: true })
-  if (!existsSync(dirname(paths.logFile))) mkdirSync(dirname(paths.logFile), { recursive: true })
-  writeFileSync(paths.plist, botPlistContent(bot))
-  return paths
-}
-
-async function bootstrapBot(bot) {
-  const paths = botServicePaths(bot.name)
-  await runLaunchctl(['bootstrap', `gui/${process.getuid()}`, paths.plist], { ignoreFailure: true })
-  await runLaunchctl(['kickstart', daemonLaunchdTarget(paths.label)])
-}
-
-async function bootoutBot(bot) {
-  await runLaunchctl(['bootout', daemonLaunchdTarget(botLaunchdLabel(bot.name))], { ignoreFailure: true })
-}
-
-function printBotPlan(bot) {
-  const paths = botServicePaths(bot.name)
-  console.log(`${bot.name}: ${paths.label}`)
-  console.log(dim(`  Script: ${resolveBotScriptForCli(bot.script)}`))
-  console.log(dim(`  Machine: ${botMachineId(bot)}`))
-  console.log(dim(`  Tmux: ${paths.tmuxSession}`))
-  console.log(dim(`  Plist: ${paths.plist}`))
-  console.log(dim(`  Log: ${paths.logFile}`))
-}
-
 function sandboxDaemonConfig(configDir, label) {
   const cfg = loadConfig()
   return {
@@ -1295,111 +1128,6 @@ async function cmdFleetWatch(sub) {
 
   console.error(`Unknown subcommand: tlda daemon ${sub}`)
   console.error('Usage: tlda daemon [start|stop|status|log|run|install|uninstall|write-test-plist]')
-  process.exit(1)
-}
-
-async function cmdBot() {
-  const sub = getPositional(0) || 'list'
-  const name = getPositional(1)
-  const dryRun = hasFlag('dry-run')
-
-  if (sub === 'list') {
-    for (const bot of configuredBots()) printBotPlan(bot)
-    return
-  }
-
-  if (sub === 'install') {
-    const bots = findConfiguredBot(name)
-    if (!dryRun) requireLaunchd()
-    for (const bot of bots) {
-      if (dryRun) {
-        console.log('Would install bot service:')
-        printBotPlan(bot)
-        continue
-      }
-      const paths = writeBotPlist(bot)
-      console.log(`Installed ${paths.plist}`)
-      console.log(`  Label: ${paths.label}`)
-      console.log(`  Script: ${resolveBotScriptForCli(bot.script)}`)
-      console.log(`  Tmux: ${paths.tmuxSession}`)
-      console.log(`  Log: ${paths.logFile}`)
-    }
-    if (!dryRun) console.log('\nRun `tlda bot start <name>` to start now.')
-    return
-  }
-
-  if (sub === 'uninstall') {
-    const bots = findConfiguredBot(name)
-    requireLaunchd()
-    for (const bot of bots) {
-      const paths = botServicePaths(bot.name)
-      await bootoutBot(bot)
-      if (existsSync(paths.plist)) unlinkSync(paths.plist)
-      console.log(green(`Uninstalled ${paths.label}.`))
-    }
-    return
-  }
-
-  if (sub === 'start') {
-    const bots = findConfiguredBot(name)
-    requireLaunchd()
-    for (const bot of bots) {
-      const paths = existsSync(botServicePaths(bot.name).plist) ? botServicePaths(bot.name) : writeBotPlist(bot)
-      await bootstrapBot(bot)
-      console.log(green(`Started ${paths.label}.`))
-      console.log(dim(`  Tmux: ${paths.tmuxSession}`))
-      console.log(dim(`  Log: ${paths.logFile}`))
-    }
-    return
-  }
-
-  if (sub === 'stop') {
-    const bots = findConfiguredBot(name)
-    requireLaunchd()
-    for (const bot of bots) {
-      const paths = botServicePaths(bot.name)
-      await bootoutBot(bot)
-      try { (await import('child_process')).execFileSync('tmux', ['kill-session', '-t', paths.tmuxSession], { stdio: 'ignore' }) } catch {}
-      console.log(green(`Stopped ${paths.label}.`))
-    }
-    return
-  }
-
-  if (sub === 'status') {
-    const bots = findConfiguredBot(name)
-    for (const bot of bots) {
-      const paths = botServicePaths(bot.name)
-      if (process.platform === 'darwin' && existsSync(paths.plist)) {
-        try {
-          const out = await runLaunchctl(['print', daemonLaunchdTarget(paths.label)])
-          const pidLine = out.split('\n').find(line => line.trim().startsWith('pid ='))
-          const stateLine = out.split('\n').find(line => line.trim().startsWith('state ='))
-          console.log(green(`${bot.name} service loaded`) + dim(` (${paths.label})`))
-          if (stateLine) console.log(dim(`  ${stateLine.trim()}`))
-          if (pidLine) console.log(dim(`  ${pidLine.trim()}`))
-          console.log(dim(`  Tmux: ${paths.tmuxSession}`))
-          console.log(dim(`  Log: ${paths.logFile}`))
-          continue
-        } catch {}
-      }
-      console.log(red(`${bot.name} service not running`) + dim(` (${paths.label})`))
-    }
-    return
-  }
-
-  if (sub === 'log' || sub === 'logs') {
-    const bots = findConfiguredBot(name)
-    const { execSync } = await import('child_process')
-    for (const bot of bots) {
-      const { logFile } = botServicePaths(bot.name)
-      if (existsSync(logFile)) execSync(`tail -50 "${logFile}"`, { stdio: 'inherit' })
-      else console.log(`No bot log: ${bot.name}`)
-    }
-    return
-  }
-
-  console.error(`Unknown subcommand: tlda bot ${sub}`)
-  console.error('Usage: tlda bot [list|install|uninstall|start|stop|status|log] [name] [--dry-run]')
   process.exit(1)
 }
 
@@ -1730,7 +1458,6 @@ function cmdCompletions() {
     'logs', 'log', 'config', 'completions',
   ]
   const serverSubs = ['start', 'stop', 'status', 'log', 'logs', 'install', 'uninstall']
-  const botSubs = ['list', 'install', 'uninstall', 'start', 'stop', 'status', 'log']
 
   console.log(`#compdef tlda
 # Install: tlda completions > ~/.zsh/completions/_tlda && fpath=(~/.zsh/completions $fpath)
@@ -1758,7 +1485,6 @@ _tlda() {
     'logs:Show server log'
     'delete:Delete a project'
     'config:Manage configuration'
-    'bot:Manage configured fleet bots'
     'completions:Output zsh completion script'
   )
 
@@ -1772,10 +1498,6 @@ _tlda() {
       case $words[1] in
         server)
           local -a subs=(${serverSubs.map(s => `'${s}'`).join(' ')})
-          _describe 'subcommand' subs
-          ;;
-        bot)
-          local -a subs=(${botSubs.map(s => `'${s}'`).join(' ')})
           _describe 'subcommand' subs
           ;;
         link|push|open|status|errors|build|delete|rm)
@@ -3953,7 +3675,6 @@ async function main() {
       case 'link':   await ensureServer(); await cmdLink(); break
       case 'init':   await cmdInit(); break
       case 'daemon': await ensureServer(); await cmdWatch(); break
-      case 'bot': await cmdBot(); break
       case 'open':   await ensureServer(); await cmdOpen(); break
       case 'share':  await cmdShare(); break
       case 'list':   await ensureServer(); await cmdList(); break
@@ -3999,7 +3720,6 @@ async function main() {
 
   tlda doc <cmd>       work on a document project   (\`tlda doc\` for the list)
   tlda server <cmd>    run/manage the tlda server   (start/stop/status/log)
-  tlda bot <cmd>       manage configured fleet bots
   tlda agent <cmd>     fleet agents on this machine (list/spawn/attach/hibernate/capability)
   tlda config <cmd>    configure tlda               (set/get/setup/mcp-setup/auth)
   tlda daemon [start|stop]  fleet daemon (source watch + activity)

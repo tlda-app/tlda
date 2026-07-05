@@ -83,11 +83,3 @@ export function decideThinkingEdge(prev, idleCount, isThinking, confirm = 2) {
 export function shouldDisarm(now, armedAt, busy, lingerMs) {
   return !busy && (now - armedAt > lingerMs)
 }
-
-// Prompt/attention detection uses deep pane captures, so it must follow the
-// same event-armed boundary as thinking/compacting. A previously surfaced prompt
-// keeps the session eligible long enough to clear or update that prompt.
-export function shouldPromptSweepAgent(agent, { armed = false, surfaced = false } = {}) {
-  if (!agent || agent.dead || agent.human || agent.hibernating || !agent.tmux_session) return false
-  return !!armed || !!surfaced
-}
