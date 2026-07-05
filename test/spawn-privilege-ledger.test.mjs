@@ -430,6 +430,27 @@ describe('daemon privilege ledger', () => {
     await ledger.close()
   })
 
+  it('normalizes model rows without harness flags to neutral launch options', () => {
+    const dir = tempConfigDir()
+    fs.writeFileSync(defaultDaemonConfigPath(dir), YAML.stringify({
+      models: {
+        quietgpt: {
+          provider: 'codex',
+          provider_model: 'gpt-quiet',
+          cap: 'read',
+        },
+      },
+    }))
+    const daemonConfig = readDaemonConfig(defaultDaemonConfigPath(dir))
+    const config = withDaemonModelAliases({}, daemonConfig)
+    assert.deepEqual(config.harnessOptions.codex.quietgpt, {
+      required: [],
+      preferences: [],
+      controls: false,
+    })
+    assert.deepEqual(config.harnessOptions.codex['gpt-quiet'], config.harnessOptions.codex.quietgpt)
+  })
+
   it('ships two static daemon config files: harness default and fenced alternative', () => {
     const harnessDefault = readDaemonConfig(new URL('../config/daemon.yaml', import.meta.url))
     const fenced = readDaemonConfig(new URL('../config/daemon-fenced.yaml', import.meta.url))

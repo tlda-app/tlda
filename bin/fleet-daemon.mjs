@@ -85,6 +85,7 @@ import {
 import { gooseActivityTick } from './lib/goose-activity.mjs'
 import { parseCodexLine, parseCodexRecord } from './lib/codex-activity.mjs'
 import { truncatePrettyResult } from '../shared/activity-pretty-result.mjs'
+import { persistDeadLetter, replayDeadLetters } from './lib/daemon/dead-letters.mjs'
 import {
   scanFileOwnersSync,
 } from './lib/daemon-jsonl-hot-path.mjs'
@@ -4399,19 +4400,15 @@ async function handleRpc(msg) {
 
 // ---------- WS connection ----------
 
-const CRITICAL_MSG_TYPES = new Set(['terminal-dead', 'terminal_attention'])
+const CRITICAL_MSG_TYPES = new Set(['terminal-dead', 'terminal_attention', 'spawn-startup-failed'])
 let _droppedCount = 0
 let _droppedWarnAt = 0
 function sendMsg(obj) {
   if (_rws?.send(obj)) return true
   _droppedCount++
   if (obj?.type && CRITICAL_MSG_TYPES.has(obj.type)) {
-    try {
-      const line = JSON.stringify({ ...obj, ts: new Date().toISOString(), dropped: true })
-      fs.appendFileSync(DEAD_LETTER_FILE, line + '\n')
+    if (persistDeadLetter(DEAD_LETTER_FILE, obj, { log })) {
       log.warn(`WS down — persisted ${obj.type} for ${obj.agent_id || 'unknown'} to dead-letter file`)
-    } catch (e) {
-      log.error(`failed to write dead-letter: ${e.message}`)
     }
   }
   const now = Date.now()
@@ -4520,6 +4517,10 @@ function handleServerMessage(msg) {
     applyDaemonGrants(privilegeLedger, daemonSpawnConfig)
     applyGrandfatherInfill(privilegeLedger, { fleetDbPath: FLEET_DB_FILE, config, projects })
     log.info(`welcome: ${agents.length} agents, ${projects.length} projects`)
+    const replay = replayDeadLetters(DEAD_LETTER_FILE, message => _rws?.send(message), { log })
+    if (replay.replayed || replay.remaining || replay.malformed) {
+      log.warn(`dead-letter replay: replayed=${replay.replayed} remaining=${replay.remaining} malformed=${replay.malformed}`)
+    }
     _lastSessionWatcherRosterSig = sessionWatcherRosterSignature(agents)
     void syncSessionWatchers(agents).catch(e => log.error(`syncSessionWatchers failed: ${e.stack || e.message}`))
     syncSourceWatchers(projects)
