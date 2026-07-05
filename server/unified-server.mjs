@@ -78,6 +78,7 @@ import {
   normalizeInboxStatus,
   normalizeMessagePriority,
   parsePriorityPhrase,
+  shouldWakeBatchedMessage,
 } from '../shared/inbox-attention.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -3871,6 +3872,10 @@ async function handleFleetWsMessage(ws, msg) {
     const status = fleetStore.getAgent?.(agentId)?.metadata?.inboxStatus
     return normalizeInboxStatus(status)
   }
+  const unreadPendingFor = (eventId, agentId) => {
+    const row = fleetStore.db.prepare('SELECT read FROM unread WHERE event_id = ? AND to_id = ?').get(eventId, agentId)
+    return !!row && !row.read
+  }
   const inboxCall = (action) => `Call inbox() to ${action}.`
   const wakeText = ({ status, event, preview, action }) => {
     const label = normalizeInboxStatus(status)
@@ -4062,7 +4067,8 @@ async function handleFleetWsMessage(ws, msg) {
         const delay = Math.max(0, Date.parse(deliveryDecision.notifyBy) - Date.now())
         setTimeout(() => {
           const latestStatus = inboxStatusFor(to)
-          if (latestStatus === 'busy') {
+          const unreadPending = unreadPendingFor(eventId, to)
+          if (shouldWakeBatchedMessage({ status: latestStatus, unreadPending })) {
             requestWake(to, wakeText({
               status: latestStatus,
               event: 'batched message ready',

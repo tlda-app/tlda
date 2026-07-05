@@ -66,6 +66,10 @@ export function decideInboxDelivery({ status, priority, now = Date.now(), batchW
   return { delivery: 'queued', wokeRecipient: 'no', notifyBy: null }
 }
 
+export function shouldWakeBatchedMessage({ status, unreadPending }) {
+  return normalizeInboxStatus(status) === 'busy' && unreadPending === true
+}
+
 export function formatAttentionReceipt({ recipientLabel, status, tag, priority, delivery, notifyBy }) {
   const label = `${recipientLabel || 'recipient'} [${normalizeInboxStatus(status)}${tag ? ` (${tag})` : ''}]`
   const p = normalizeMessagePriority(priority)

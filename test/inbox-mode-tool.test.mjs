@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { formatInboxText, formatRecipientStatusSummary, getFleetTools, handleFleetTool } from '../mcp-server/fleet-tools.mjs'
-import { decideInboxDelivery, parsePriorityPhrase } from '../shared/inbox-attention.mjs'
+import { decideInboxDelivery, parsePriorityPhrase, shouldWakeBatchedMessage } from '../shared/inbox-attention.mjs'
 
 test('set_inbox_status is exposed as the explicit status-control tool', () => {
   const tool = getFleetTools().find(t => t.name === 'set_inbox_status')
@@ -63,6 +63,13 @@ test('priority threshold decides delivery by status', () => {
     wokeRecipient: 'yes',
     notifyBy: null,
   })
+})
+
+test('batched wake only fires while recipient is still busy and unread is pending', () => {
+  assert.equal(shouldWakeBatchedMessage({ status: 'busy', unreadPending: true }), true)
+  assert.equal(shouldWakeBatchedMessage({ status: 'busy', unreadPending: false }), false)
+  assert.equal(shouldWakeBatchedMessage({ status: 'available', unreadPending: true }), false)
+  assert.equal(shouldWakeBatchedMessage({ status: 'dnd', unreadPending: true }), false)
 })
 
 test('fleet_table renders visible inbox statuses', async () => {
