@@ -3417,8 +3417,8 @@ async function handleFleetWsMessage(ws, msg) {
     // tmux_session, independent of the friendly name. So only the *first* name
     // is taken from `name`; once set, it's preserved.
     const requestedName = name || null
-    let assignedName = existing?.friendly_name || requestedName
-    const willSetName = !existing?.friendly_name && requestedName
+    let assignedName = (existing && !existing.dead) ? (existing.friendly_name || requestedName) : requestedName
+    const willSetName = (!existing?.friendly_name || existing?.dead) && requestedName
     if (willSetName) {
       const incomingLabels = Array.isArray(labels) ? labels : []
       if (incomingLabels.includes('bot') && incomingLabels.includes(requestedName)) {
