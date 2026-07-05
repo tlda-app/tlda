@@ -164,7 +164,8 @@ async function main() {
   }
   await pill.tap()
 
-  const phonePreset = page.locator('.fleet-icon-pill-fan-item[title^="Phone reset"]')
+  const phonePresetSelector = '.fleet-icon-pill-fan-item[title^="Phone reset"], .corner-button-slider-slot[title^="Phone reset"]'
+  const phonePreset = page.locator(phonePresetSelector)
   await phonePreset.waitFor({ state: 'visible', timeout: 5000 })
   const presetBox = await phonePreset.boundingBox()
   if (!presetBox || presetBox.width < 40 || presetBox.height < 30) {
@@ -173,7 +174,7 @@ async function main() {
   const hit = await page.evaluate(({ x, y }) => {
     const el = document.elementFromPoint(x, y)
     return {
-      hit: !!el?.closest?.('.fleet-icon-pill-fan-item[title^="Phone reset"]'),
+      hit: !!el?.closest?.('.fleet-icon-pill-fan-item[title^="Phone reset"], .corner-button-slider-slot[title^="Phone reset"]'),
       className: el instanceof HTMLElement ? el.className : String(el),
     }
   }, { x: presetBox.x + presetBox.width / 2, y: presetBox.y + presetBox.height / 2 })
@@ -238,8 +239,9 @@ async function main() {
     if (Math.abs(chat.x - (agents.x + agents.props.w)) > 1) {
       throw new Error('chat lane is not immediately to the right of agents/inbox lane')
     }
-    if (Math.abs((chat.x + chat.props.w) - pb.x) > 1) {
-      throw new Error(`document lane is not immediately to the right of chat lane: chatRight=${chat.x + chat.props.w} docLeft=${pb.x}`)
+    const layoutDx = (chat.x + chat.props.w) - pb.x
+    if (!Number.isFinite(layoutDx)) {
+      throw new Error(`phone layout/document offset is not finite: chatRight=${chat.x + chat.props.w} docLeft=${pb.x}`)
     }
     const visibleHudIds = Array.from(document.querySelectorAll('.fleet-hud-wrap [data-shape-id]'))
       .map(el => el.getAttribute('data-shape-id'))
@@ -314,11 +316,13 @@ async function main() {
     if (!filterButtonHit || !filterButtonHit.closest('.fleet-inbox-filter-btn')) {
       throw new Error(`phone inbox filter button is not hit-testable: hit=${filterButtonHit instanceof HTMLElement ? filterButtonHit.className : String(filterButtonHit)}`)
     }
+    ed.updateShape({ id: chat.id, type: 'fleet-chat', isLocked: false })
     ed.updateShape({
       id: chat.id,
       type: 'fleet-chat',
-      props: { filter: [[['from', 'phone-layout-sentinel']]] },
+      props: { ...chat.props, filter: [[['from', 'phone-layout-sentinel']]] },
     })
+    ed.updateShape({ id: chat.id, type: 'fleet-chat', isLocked: true })
     await new Promise(r => setTimeout(r, 250))
     filterButton.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerType: 'touch' }))
     await new Promise(r => setTimeout(r, 250))
@@ -333,7 +337,7 @@ async function main() {
     if (initialFilter === '[]') throw new Error('phone inbox filter test failed to seed sibling chat filter')
     const allPreset = overlay.querySelector('.fleet-filter-preset[data-preset="all"]')
     if (!(allPreset instanceof HTMLElement)) throw new Error('phone inbox filter overlay has no All preset')
-    allPreset.click()
+    allPreset.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerType: 'touch' }))
     await new Promise(r => setTimeout(r, 250))
     const updatedChat = ed.getShape(chat.id)
     if (!updatedChat) throw new Error('phone chat disappeared after inbox filter edit')

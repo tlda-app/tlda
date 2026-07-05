@@ -577,7 +577,16 @@ export function setPhoneLaneDrag(next: PhoneLaneDragState) {
 }
 
 export function phoneLaneCommitPx(screenW: number): number {
-  return Math.max(PHONE_LANE_COMMIT_MIN, screenW * PHONE_LANE_COMMIT_FRAC)
+  let referenceW = screenW
+  if (typeof window !== 'undefined') {
+    const vv = window.visualViewport
+    const w = Number(vv?.width || window.innerWidth || screenW)
+    const h = Number(vv?.height || window.innerHeight || screenW)
+    if (Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0) {
+      referenceW = Math.min(w, h)
+    }
+  }
+  return Math.max(PHONE_LANE_COMMIT_MIN, referenceW * PHONE_LANE_COMMIT_FRAC)
 }
 
 // Explicit lane index — 0 = document, 1 = chat, 2 = agents/inbox (docLeftScreen =
@@ -606,6 +615,16 @@ export function snapToPhoneLaneIndex(editor: Editor, docLeftPage: number, index:
   phoneLaneIndex = Math.max(0, Math.min(2, index))
   const x = (phoneLaneIndex * screenW) / cam.z - docLeftPage
   editor.setCamera({ ...cam, x }, { animation: { duration: PHONE_LANE_SNAP_DURATION } })
+}
+
+export function snapToCurrentPhoneLaneIndex(editor: Editor, docLeftPage: number, animationDuration = PHONE_LANE_SNAP_DURATION) {
+  const cam = editor.getCamera()
+  const screenW = editor.getViewportScreenBounds().w
+  if (!screenW || !Number.isFinite(screenW)) return
+  const index = phoneLaneIndexFromCamera(editor, docLeftPage)
+  phoneLaneIndex = Math.max(0, Math.min(2, index))
+  const x = (phoneLaneIndex * screenW) / cam.z - docLeftPage
+  editor.setCamera({ ...cam, x }, { animation: { duration: animationDuration } })
 }
 
 // dir +1 pulls toward the agents/inbox lane, -1 toward the document lane. A lane

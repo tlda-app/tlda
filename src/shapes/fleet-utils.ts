@@ -283,6 +283,19 @@ function layoutSlotId(userId: string, deviceId: string, slot: string) {
   return createShapeId(`fleet-${slot}-${userId.replace('fleet:', '')}-${deviceId}`) as unknown as string
 }
 
+function currentFleetOwnerKey(): { myId: string; myDevice: string } {
+  let myId = getHumanId() || ''
+  let myDevice = getDeviceId() || ''
+  if (!myId && typeof localStorage !== 'undefined') {
+    const stored = localStorage.getItem('tlda-identity') || ''
+    if (stored) myId = stored.startsWith('fleet:') ? stored : `fleet:${stored}`
+  }
+  if (!myDevice && typeof localStorage !== 'undefined') {
+    myDevice = localStorage.getItem('tlda-device-id') || ''
+  }
+  return { myId, myDevice }
+}
+
 export async function createFleetLayout(editor: Editor, agents: any[], variant: FleetLayoutVariant = '3-col'): Promise<boolean> {
   const result = await createFleetLayoutDetailed(editor, agents, variant)
   return result.created
@@ -302,6 +315,80 @@ export async function createFleetLayoutDetailed(editor: Editor, agents: any[], v
   } finally {
     _layoutInFlight = false
   }
+}
+
+export function isPhoneFleetLayoutForCurrentDevice(editor: Editor): boolean {
+  const { myId, myDevice } = currentFleetOwnerKey()
+  if (!myId || !myDevice) return false
+  const shapes = editor.getCurrentPageShapes().filter(s => isFleetShapeForOwnerKey(s, myId, myDevice)) as any[]
+  const agents = shapes.find(s => s.type === 'fleet-agents')
+  const inbox = shapes.find(s => s.type === 'fleet-inbox')
+  const chat = shapes.find(s => s.type === 'fleet-chat')
+  if (!agents || !inbox || !chat) return false
+  if (shapes.some(s => ['fleet-search', 'fleet-docview', 'fleet-touch-inbox'].includes(s.type as string))) return false
+  if (!agents.isLocked || !inbox.isLocked || !chat.isLocked) return false
+  const gap = 10
+  const agentsW = Number((agents as any).props?.w || 0)
+  const inboxW = Number((inbox as any).props?.w || 0)
+  const chatW = Number((chat as any).props?.w || 0)
+  const agentsH = Number((agents as any).props?.h || 0)
+  const inboxH = Number((inbox as any).props?.h || 0)
+  const chatH = Number((chat as any).props?.h || 0)
+  if (!(agentsW > 0 && inboxW > 0 && chatW > 0 && agentsH > 0 && inboxH > 0 && chatH > 0)) return false
+  const stackedHeight = agentsH + gap + inboxH
+  const chatX = Number((agents as any).x || 0) + agentsW
+  return Math.abs(agentsW - inboxW) <= 2 &&
+    Math.abs(inboxW - chatW) <= 2 &&
+    Math.abs(stackedHeight - chatH) <= 2 &&
+    Math.abs(Number((chat as any).x || 0) - chatX) <= 2
+}
+
+export function reflowPhoneFleetLayout(editor: Editor): boolean {
+  const { myId, myDevice } = currentFleetOwnerKey()
+  if (!myId || !myDevice) return false
+  if (!isPhoneFleetLayoutForCurrentDevice(editor)) return false
+  const docBounds = getDocumentPageBounds(editor)
+  if (!docBounds) return false
+  const editorVp = editor.getViewportScreenBounds()
+  const vv = typeof window !== 'undefined' ? window.visualViewport : null
+  const viewport = {
+    ...editorVp,
+    w: Math.round(Number(vv?.width || window.innerWidth || editorVp.w)),
+    h: Math.round(Number(vv?.height || window.innerHeight || editorVp.h)),
+  }
+  const phoneTarget = getPhoneLayoutTarget(editor, docBounds.pageShapes, viewport)
+  if (!phoneTarget) return false
+  const existing = editor.getCurrentPageShapes().filter(s => isFleetShapeForOwnerKey(s, myId, myDevice))
+  const existingChatFilters = existing
+    .filter(s => (s.type as string) === 'fleet-chat')
+    .map(s => (s as any).props?.filter as FleetChatFilter | undefined)
+  const plan = planFleetLayoutShapes(buildFleetLayoutPlanInput({
+    editor,
+    agents: [],
+    variant: 'phone',
+    myId,
+    myDevice,
+    docBounds,
+    phoneTarget,
+    existingChatFilters,
+    makeSlotId: slot => layoutSlotId(myId, myDevice, slot),
+    viewport,
+  }))
+  const updates = plan.shapes
+    .filter(s => editor.getShape(s.id as any))
+    .map(s => ({ id: s.id, type: s.type, x: s.x, y: s.y, isLocked: s.isLocked, props: s.props }))
+  if (updates.length === 0) return false
+  editor.run(() => {
+    for (const update of updates) {
+      const existing = editor.getShape(update.id as any) as any
+      if (!existing) continue
+      const wasLocked = !!existing.isLocked
+      if (wasLocked) editor.updateShape({ id: update.id as any, type: update.type, isLocked: false } as any)
+      editor.updateShape(update as any)
+      if (wasLocked && update.isLocked) editor.updateShape({ id: update.id as any, type: update.type, isLocked: true } as any)
+    }
+  }, { history: 'ignore' })
+  return true
 }
 
 function makeFleetLayoutResult(
