@@ -1469,10 +1469,14 @@ export function getFleetTools() {
     },
     {
       name: 'set_delivery_channel',
-      description: 'Set this agent\'s preferred delivery channel for wake pings. Agent-owned only: senders still use chat(); this controls whether future notified messages ping the normal channel or tmux.',
+      description: 'Set an agent\'s preferred delivery channel for wake pings. Defaults to yourself. You may set another agent only if you are that agent\'s manager/delegator.',
       inputSchema: {
         type: 'object',
         properties: {
+          agent: {
+            type: 'string',
+            description: 'Target agent identifier. Omit to set your own delivery channel.',
+          },
           channel: {
             type: 'string',
             enum: DELIVERY_CHANNELS,
@@ -1654,18 +1658,6 @@ export function getFleetTools() {
           agent: { type: 'string', description: 'Agent identifier (UUID, name, or friendly name)' },
         },
         required: ['agent'],
-      },
-    },
-    {
-      name: 'nudge_agent',
-      description: 'Send a short out-of-band tmux nudge to an agent when the normal fleet notification channel may be broken. This is not chat delivery; it tells the agent to call inbox().',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          agent: { type: 'string', description: 'Agent identifier (UUID, name, or friendly name)' },
-          message: { type: 'string', description: 'Short situation-specific nudge text.' },
-        },
-        required: ['agent', 'message'],
       },
     },
     // ---- Fleet Operations ----
@@ -1964,12 +1956,6 @@ function inboxStatusHint(message) {
 
 function inboxDefaultLine(message, now = Date.now()) {
   return `${message.line}${inboxPriorityHint(message)}${inboxTimingHint(message, now)}${inboxStatusHint(message)}`;
-}
-
-export function formatNudgeAgentText(message) {
-  const body = String(message || '').trim();
-  const base = body || 'Your fleet notification channel may be broken.';
-  return `${base}\n\nCall inbox() to catch up.`;
 }
 
 function groupedInboxLines(messages) {
@@ -3843,13 +3829,16 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
     if (!AGENT_ID) return { content: [{ type: 'text', text: 'No session ID detected.' }], isError: true };
     const channel = validateDeliveryChannel(args?.channel);
     if (!channel) return { content: [{ type: 'text', text: `Bad delivery channel: ${args?.channel || '(missing)'}. Use one of: ${DELIVERY_CHANNELS.join(', ')}.` }], isError: true };
+    const agent = typeof args?.agent === 'string' && args.agent.trim() ? args.agent.trim() : AGENT_ID;
     try {
-      const data = await sendWS('delivery-channel', { agent: AGENT_ID, channel });
+      const data = await sendWS('delivery-channel', { caller: AGENT_ID, agent, channel });
       if (data?.error) return { content: [{ type: 'text', text: `Could not set delivery channel: ${data.error}` }], isError: true };
+      const target = data.target_label || data.agent || agent;
+      const ownerNote = data.self ? '' : ' as their manager';
+      return { content: [{ type: 'text', text: `Delivery channel for ${target} set to ${channel}${ownerNote}. Future notified messages for that agent will ping that channel; senders still use chat().` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Could not publish delivery channel "${channel}" to tlda (${e.message}).` }], isError: true };
     }
-    return { content: [{ type: 'text', text: `Delivery channel set to ${channel}. Future notified messages for this agent will ping that channel; senders still use chat().` }] };
   }
 
   // ---- tlda monitor_add / monitor_remove / monitor_list ----
@@ -4718,24 +4707,6 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       return { content: [{ type: 'text', text: `${data.agent || agent}: ${status}.` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Interrupt failed (tlda backend not answering — tell ops if it persists): ${e.message}` }], isError: true };
-    }
-  }
-
-  // ---- nudge_agent ----
-  if (name === 'nudge_agent') {
-    const agent = String(args?.agent || '').trim();
-    const message = String(args?.message || '').trim();
-    if (!agent) return { content: [{ type: 'text', text: 'Specify an agent to nudge.' }], isError: true };
-    if (!message) return { content: [{ type: 'text', text: 'Specify a message for the nudge.' }], isError: true };
-
-    const text = formatNudgeAgentText(message);
-    try {
-      const data = await sendWS('send-text', { agent, text, enter: true });
-      if (data?.error) return { content: [{ type: 'text', text: `Nudge failed: ${data.error}` }], isError: true };
-      logEvent({ type: 'nudge', from: AGENT_ID, to: agent, text, transport: 'tmux', result: data });
-      return { content: [{ type: 'text', text: `Nudged ${agent} via tmux. They should call inbox().` }] };
-    } catch (e) {
-      return { content: [{ type: 'text', text: `Nudge failed (tlda backend not answering — tell ops if it persists): ${e.message}` }], isError: true };
     }
   }
 

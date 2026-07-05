@@ -28,12 +28,13 @@ Notification status and inbox view are separate:
   advisory tag.
 - `inbox(view?)` renders the selected read-time view.
 - `my_task` is not exposed as a public MCP tool; agents call `inbox()` directly.
-- `nudge_agent(agent, message)` is a narrow out-of-band tmux recovery tool for
-  cases where the normal fleet notification channel appears broken. It is not
-  normal chat delivery.
-- `set_delivery_channel(channel)` stores the agent-owned delivery preference:
+- `set_delivery_channel(agent?, channel)` stores the delivery preference:
   `channel` for the normal/current channel behavior, `tmux` to force future
-  notified wakes through the daemon tmux nudge path.
+  notified wakes through the daemon tmux nudge path. Agents can set themselves;
+  setting another agent requires being that agent's manager/delegator via an
+  active task.
+- `nudge_agent` is not exposed as a public MCP tool; persistent `tmux` delivery
+  subsumes the one-off nudge API.
 
 Chat delivery now stamps explicit per-recipient attention metadata:
 
@@ -151,12 +152,14 @@ After rebase and local verification:
    and attention receipts without duplicate unread messages.
 7. Read a batched item before its timer fires; verify no delayed stale wake
    appears for that event.
-8. Use `nudge_agent(agent, message)` against an agent with a tmux route; verify
-   the message appears in the terminal with the standard `Call inbox()` footer
-   and does not create a normal chat event.
-9. Use `set_delivery_channel(channel: "tmux")` on an agent with a tmux route;
-   send that agent a notifying chat; verify the chat remains normal inbox
-   delivery and the agent also receives the tmux ping to check `inbox()`.
+8. Verify `nudge_agent` is absent from the public MCP tool registry.
+9. Use `set_delivery_channel(agent?, channel)` for self, manager, and
+   non-manager cases; verify self and manager succeed, non-manager refuses with
+   the "delegate them a task first" recovery path, and unauthorized attempts do
+   not change metadata.
+10. Use `set_delivery_channel(agent, "tmux")` on an agent with a tmux route;
+    send that agent a notifying chat; verify the chat remains normal inbox
+    delivery and the agent also receives the tmux ping to check `inbox()`.
 
 ## Reviewer Risk Points
 
@@ -172,7 +175,7 @@ After rebase and local verification:
   window drops the delayed wake, while the unread item remains in inbox.
 - Priority detection is exact phrase only by design. Do not broaden it during
   merge unless product explicitly asks for natural-language classification.
-- `nudge_agent` intentionally uses tmux as an emergency/out-of-band recovery
-  path. Do not generalize it into sender-selected chat transport during merge.
-- `set_delivery_channel` is recipient-owned state. Do not add a sender-selected
-  transport argument to `chat()`.
+- `set_delivery_channel` is recipient/manager-owned state. Do not add a
+  sender-selected transport argument to `chat()`.
+- The public `nudge_agent` tool is removed. Keep the tmux nudge machinery
+  internal to wake routing.

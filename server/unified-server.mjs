@@ -4301,20 +4301,28 @@ async function handleFleetWsMessage(ws, msg) {
   }
 
   if (type === 'delivery-channel') {
-    const { agent, channel: rawChannel } = msg
-    if (!agent) { error('missing agent'); return }
+    const { caller: callerQuery, agent: agentQuery, channel: rawChannel } = msg
+    if (!callerQuery) { error('missing caller'); return }
     const channel = validateDeliveryChannel(rawChannel)
     if (!channel) { error(`bad delivery channel: ${rawChannel}; use ${DELIVERY_CHANNELS.join(', ')}`); return }
-    const row = fleetStore.getAgent?.(agent)
-    if (!row) { error('agent not found'); return }
+    const caller = fleetStore.findAgent?.(callerQuery)
+    if (!caller) { error(`caller not found: ${callerQuery}`); return }
+    const row = fleetStore.findAgent?.(agentQuery || caller.id)
+    if (!row) { error(`agent not found: ${agentQuery || caller.id}`); return }
+    const targetLabel = row.friendly_name || row.id
+    const self = caller.id === row.id
+    if (!self && !fleetStore.isDelegatorForAgent?.(caller.id, row.id)) {
+      error(`Cannot set delivery channel for ${targetLabel}: you are not that agent's manager. Delegate them a task first if you mean to take responsibility for their delivery channel, then retry.`)
+      return
+    }
     if (channel === 'tmux') {
       if (!row.tmux_session) { error('agent has no tmux session'); return }
       const route = resolveRpc('send-text', row)
       if (route.via === 'none') { error(route.error); return }
     }
-    fleetStore.updateAgentMeta?.(agent, { deliveryChannel: channel })
+    fleetStore.updateAgentMeta?.(row.id, { deliveryChannel: channel })
     broadcastState()
-    reply({ ok: true, agent, channel })
+    reply({ ok: true, agent: row.id, target_label: targetLabel, caller: caller.id, channel, self })
     return
   }
 

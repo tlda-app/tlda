@@ -99,8 +99,22 @@ test('chat attention policy is reflected in receipts and unread inbox metadata',
     const sendFleet = fleetRpc(fleet)
     assert.equal((await sendFleet('register', { agent_id: 'fleet:sender', name: 'sender' }))?.ok, true)
     assert.equal((await sendFleet('register', { agent_id: 'fleet:recipient', name: 'recipient' }))?.ok, true)
+    assert.equal((await sendFleet('register', { agent_id: 'fleet:manager', name: 'manager' }))?.ok, true)
+    assert.equal((await sendFleet('register', { agent_id: 'fleet:outsider', name: 'outsider' }))?.ok, true)
 
-    assert.equal((await sendFleet('delivery-channel', { agent: 'fleet:recipient', channel: 'channel' }))?.ok, true)
+    assert.equal((await sendFleet('delivery-channel', { caller: 'fleet:recipient', channel: 'channel' }))?.ok, true)
+    assert.equal((await sendFleet('delegate', {
+      from: 'fleet:manager',
+      agent: 'fleet:recipient',
+      description: 'Manage recipient delivery',
+    }))?.ok, true)
+    assert.equal((await sendFleet('delivery-channel', { caller: 'fleet:manager', agent: 'recipient', channel: 'channel' }))?.ok, true)
+    await sendFleet('my-task', { agent: 'fleet:recipient' })
+    const rejectedDelivery = await sendFleet('delivery-channel', { caller: 'fleet:outsider', agent: 'recipient', channel: 'tmux' })
+    assert.match(rejectedDelivery?.error || '', /not that agent's manager/)
+    assert.match(rejectedDelivery?.error || '', /Delegate them a task first/)
+    const agentsAfterReject = await sendFleet('store-agents')
+    assert.equal(agentsAfterReject.find(a => a.id === 'fleet:recipient')?.metadata?.deliveryChannel, 'channel')
     assert.equal((await sendFleet('inbox-status', { agent: 'fleet:recipient', status: 'busy', tag: 'spawn broken' }))?.ok, true)
     const busyNormal = await sendFleet('chat', {
       from: 'fleet:sender',
