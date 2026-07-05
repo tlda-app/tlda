@@ -1,20 +1,21 @@
 # Agent Inbox Modes Merge Readiness
 
-Status as of 2026-07-05: branch-local implementation and tests are in place,
-but this branch is **not merge-ready until rebased onto current `main`**.
+Status as of 2026-07-05: branch-local implementation is rebased onto current
+`main` and the focused regression suite passes. Remaining gates are review,
+live dogfood, and any release-train deploy policy.
 
 ## Branch State
 
 - Worktree: `.worktrees/agent-inbox-modes`
 - Branch: `agent-inbox-modes`
-- Current head: `2ed1f360` (`Skip stale batched inbox wakes`)
+- Current head: `c041261d` (`Document inbox modes merge readiness`)
 - Current `main`: `12c572b6`
-- Merge base with `main`: `ee62050a`
+- Merge base with `main`: `12c572b6`
 
-The branch is behind/diverged from current `main`. Current `main` contains
-HUD/spawn/dead-letter work that is not in this branch. Do not review or merge
-the raw `main..HEAD` diff until after rebase; it currently includes apparent
-changes to unrelated files such as daemon dead-letter and HUD coordinate code.
+The branch was rebased onto current `main` with no conflicts. After rebase,
+`git diff --name-status main..HEAD` is limited to inbox docs, MCP/server/shared
+code, and inbox/roster tests; the previous apparent reversions in daemon
+dead-letter, HUD coordinate-frame, and spawn privilege files are gone.
 
 ## Implemented Scope
 
@@ -57,21 +58,22 @@ Default inbox rendering:
 
 ## Commit Stack
 
-- `ef9d8f33` Add explicit inbox mode control tool
-- `ce8fa7bb` Show inbox modes in fleet roster views
-- `61b8a8c3` Show recipient inbox modes after chat sends
-- `9c6d03f9` Implement inbox status attention policy
-- `653504a7` Render default inbox by attention buckets
-- `45e381ab` Prove inbox attention policy over fleet WS
-- `56e23039` Route my_task through default inbox view
-- `85284555` Make inbox view formatter match public views
-- `a3c06655` Preserve attention receipts on chat retry
-- `e5ca9aef` Sync inbox modes spec with status implementation
-- `2ed1f360` Skip stale batched inbox wakes
+- `0b40acef` Add explicit inbox mode control tool
+- `3286e8bd` Show inbox modes in fleet roster views
+- `9a3bf6c5` Show recipient inbox modes after chat sends
+- `055c9c09` Implement inbox status attention policy
+- `da5ddc3b` Render default inbox by attention buckets
+- `b7df0c30` Prove inbox attention policy over fleet WS
+- `f2bd3948` Route my_task through default inbox view
+- `6bfb1eea` Make inbox view formatter match public views
+- `ea96e12c` Preserve attention receipts on chat retry
+- `96648aa2` Sync inbox modes spec with status implementation
+- `ff2848f8` Skip stale batched inbox wakes
+- `c041261d` Document inbox modes merge readiness
 
 Reviewer note: the first three commits were the earlier mode prototype. The
-later commits reshape the implementation into the status/view split. A rebase or
-cleanup pass may want to squash/reword this history before merge.
+later commits reshape the implementation into the status/view split. A cleanup
+pass may want to squash/reword this history before merge.
 
 ## Verified Locally
 
@@ -104,25 +106,22 @@ the tests pass.
 
 - Not deployed.
 - Not live-verified against the real fleet server.
-- Not rebased onto current `main`.
 - Not browser-verified; this branch is primarily MCP/server behavior, but roster
-  display/status visibility should still be checked after rebase.
+  display/status visibility should still be checked.
 - The delayed batch wake is process-local and non-durable. That is acceptable
   for this V1 slice, but should not be represented as a durable scheduler.
 
 ## Rebase Gate
 
-Before review or merge:
+Completed locally:
 
-1. Rebase onto current `main`.
-2. Resolve conflicts by preserving current `main` HUD/spawn/dead-letter changes.
-3. Re-run the syntax checks and focused regression suite above.
-4. Inspect `git diff main..HEAD --stat` after rebase; it should no longer show
-   unrelated reversions in daemon dead-letter, HUD coordinate-frame, or spawn
-   privilege files.
-5. Re-run a live temp-server WS proof if conflicts touched
-   `server/unified-server.mjs`, `mcp-server/fleet-tools.mjs`, or
-   `shared/inbox-attention.mjs`.
+1. Rebased onto `main` at `12c572b6`.
+2. No conflicts.
+3. Re-ran the syntax checks and focused regression suite above.
+4. Confirmed `git diff --name-status main..HEAD` no longer shows unrelated
+   daemon dead-letter, HUD coordinate-frame, or spawn privilege files.
+
+Repeat this gate if `main` advances before merge.
 
 ## Live Dogfood Gate
 
