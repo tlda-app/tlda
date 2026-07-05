@@ -2065,10 +2065,6 @@ async function runFleetSpawn(spawnArgs) {
   }
 }
 
-function wsUrlFromHttp(server) {
-  return String(server).replace(/^https:/, 'wss:').replace(/^http:/, 'ws:').replace(/\/+$/, '')
-}
-
 function flagFromRaw(rawArgs, name) {
   const idx = rawArgs.indexOf(`--${name}`)
   if (idx === -1) return null
@@ -2145,130 +2141,29 @@ function parseRoutedSpawn(rawArgs) {
   return body
 }
 
-async function fleetWsRequest(ws, payload, timeoutMs = 30000) {
-  const id = Math.floor(Math.random() * 1e9)
-  const message = { ...payload, id }
-  return await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      cleanup()
-      reject(new Error(`fleet WS request timed out: ${payload.type}`))
-    }, timeoutMs)
-    const cleanup = () => {
-      clearTimeout(timer)
-      ws.off('message', onMessage)
-      ws.off('error', onError)
-      ws.off('close', onClose)
-    }
-    const onError = (e) => {
-      cleanup()
-      reject(e)
-    }
-    const onClose = () => {
-      cleanup()
-      reject(new Error('fleet WS closed before reply'))
-    }
-    const onMessage = (raw) => {
-      let msg
-      try { msg = JSON.parse(raw.toString()) } catch { return }
-      if (msg.id !== id) return
-      cleanup()
-      if (msg.error) reject(new Error(formatFleetError(msg.error)))
-      else resolve(msg.result)
-    }
-    ws.on('message', onMessage)
-    ws.on('error', onError)
-    ws.on('close', onClose)
-    ws.send(JSON.stringify(message))
-  })
+function quoteCommandArg(value) {
+  const raw = String(value)
+  return /^[A-Za-z0-9_./:=@+-]+$/.test(raw)
+    ? raw
+    : `'${raw.replace(/'/g, `'\\''`)}'`
 }
 
-function formatFleetError(error) {
-  if (error == null) return 'unknown fleet error'
-  if (typeof error === 'string') return error
-  if (typeof error !== 'object') return String(error)
-  const parts = []
-  if (error.code) parts.push(String(error.code))
-  if (error.reason && error.reason !== error.code) parts.push(String(error.reason))
-  if (error.message) parts.push(String(error.message))
-  else if (error.error) parts.push(String(error.error))
-  if (parts.length) return parts.join(': ')
-  try { return JSON.stringify(error) } catch { return String(error) }
+function spawnDirectSuggestion(rawArgs) {
+  return ['tlda', 'agent', 'spawn-direct', ...rawArgs].map(quoteCommandArg).join(' ')
 }
 
-function formatSpawnFailure(result, body = {}) {
-  const reason = result?.code || result?.reason || (result?.deduped ? 'already-spawning' : 'launch-failed')
-  const detail = result?.error || result?.message
-  const lines = [detail && detail !== reason ? `${reason}: ${detail}` : String(reason)]
-  const agentName = result?.name || body.agent || body.name
-  const agentId = result?.agent_id || result?.fleetId || result?.detail?.fleetId
-  const tmuxSession = result?.tmux_session || result?.detail?.tmuxSession
-  const launchCwd = result?.cwd || body.cwd
-  if (agentName || agentId || tmuxSession || launchCwd) {
-    lines.push(`  spawn: ${[
-      agentName && `name=${agentName}`,
-      agentId && `id=${agentId}`,
-      tmuxSession && `tmux=${tmuxSession}`,
-      launchCwd && `cwd=${launchCwd}`,
-    ].filter(Boolean).join(' ')}`)
-  }
-  if (result?.deduped) {
-    const ageSec = Number.isFinite(result.age_ms) ? Math.round(result.age_ms / 1000) : null
-    const ttlSec = Number.isFinite(result.retry_after_ms) ? Math.ceil(result.retry_after_ms / 1000) : null
-    lines.push(`  status: spawn already in progress${ageSec != null ? ` for ${ageSec}s` : ''}; no verified terminal/session yet`)
-    lines.push(`  inspect: tlda agent check-ready ${agentName || agentId || '<agent>'} --timeout 0`)
-    lines.push(ttlSec != null
-      ? `  clear/retry: wait about ${ttlSec}s for the daemon spawn guard to expire, then retry`
-      : '  clear/retry: wait for the daemon spawn guard to expire, then retry')
-  } else if (reason === 'launch-failed' || reason === 'register-timeout') {
-    lines.push(`  inspect: tlda agent check-ready ${agentName || agentId || '<agent>'} --timeout 0`)
-    if (tmuxSession) lines.push(`  terminal: tlda agent attach ${agentName || tmuxSession.replace(/^fleet-/, '')}`)
-  }
-  return lines.join('\n')
+function routedSpawnCliDisabledMessage(rawArgs) {
+  return [
+    'Server-routed CLI spawn is disabled.',
+    'Local spawn is the operator break-glass path and is authorized by your OS access on the target machine.',
+    `Run locally on the target machine: ${spawnDirectSuggestion(rawArgs)}`,
+    'For remote spawn, SSH to that machine first; routed spawns remain available only through authenticated fleet/MCP agent paths.',
+  ].join('\n')
 }
 
 async function runRoutedSpawn(rawArgs) {
-  const body = parseRoutedSpawn(rawArgs)
-  const fleetServer = getFlag('server') || getFleetServerUrl()
-  const token = getToken()
-  const human = await tldaFetch('/api/human', {
-    method: 'GET',
-    server: fleetServer,
-    token,
-  })
-  const { default: WebSocket } = await import('ws')
-  const url = `${wsUrlFromHttp(fleetServer)}/ws/fleet${token ? `?token=${encodeURIComponent(token)}` : ''}`
-  const ws = new WebSocket(url, { rejectUnauthorized: false, headers: token ? { Authorization: `Bearer ${token}` } : undefined })
-  // Break-glass: this path is how an operator recovers a crippled agent. It must
-  // NOT falsely abort a connection/login that is merely slow under fleet load.
-  // Observed login latency with a large hibernating roster is ~11-14s, so a 10s
-  // client deadline aborted commands that would have succeeded. These deadlines
-  // are sized to worst-case observed latency plus headroom (they only bound a
-  // genuinely-hung socket; a real connection error rejects immediately via 'error').
-  const WS_CONNECT_TIMEOUT_MS = 60000
-  const WS_LOGIN_TIMEOUT_MS = 120000
-  try {
-    await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`fleet WS connect timed out: ${fleetServer}`)), WS_CONNECT_TIMEOUT_MS)
-      ws.once('open', () => { clearTimeout(timer); resolve() })
-      ws.once('error', (e) => { clearTimeout(timer); reject(e) })
-    })
-    await fleetWsRequest(ws, { type: 'login', name: human.name }, WS_LOGIN_TIMEOUT_MS)
-    const result = await fleetWsRequest(ws, { type: 'spawn', ...body }, 120000)
-    if (result?.ok === false) {
-      throw new Error(formatSpawnFailure(result, body))
-    }
-    const agent = result?.agent
-    const label = agent?.friendly_name || result?.name || body.agent || body.name
-    const id = agent?.id || result?.agent_id
-    const session = agent?.tmux_session || result?.tmux_session
-    const spawnPolicy = result?.spawnPolicy || agent?.metadata?.spawnPolicy
-    const grant = spawnPolicy?.capability
-      ? `capability=${spawnPolicy.capability}${spawnPolicy.policy ? `/${spawnPolicy.policy}` : ''}`
-      : null
-    console.log([label, id && `(${id})`, session && session !== label && session, grant].filter(Boolean).join(' '))
-  } finally {
-    if (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN) ws.close()
-  }
+  parseRoutedSpawn(rawArgs)
+  throw new Error(routedSpawnCliDisabledMessage(rawArgs))
 }
 
 async function listLocalAgents() {
@@ -2386,7 +2281,7 @@ async function hibernateLocalAgent(name, { allowMissing = false } = {}) {
   const res = spawnSync('tmux', [...tmuxBase(), 'kill-session', '-t', sess], { stdio: 'inherit' })
   const short = name.replace(/^fleet-/, '')
   if (res.status === 0) {
-    console.log(`Hibernated ${short} — its thread is intact; \`tlda agent spawn ${short}\` brings it back.`)
+    console.log(`Hibernated ${short} — its thread is intact; \`tlda agent spawn-direct ${short}\` brings it back locally.`)
   }
   return { status: res.status ?? 0, hibernated: res.status === 0, session: sess }
 }
@@ -2430,8 +2325,8 @@ function usageAgent() {
 
 Usage:
   tlda agent list [--limit N] [--local]
-  tlda agent spawn <agent>
-  tlda agent spawn --fresh <name>
+  tlda agent spawn <agent>                         # redirects to local spawn-direct
+  tlda agent spawn --fresh <name>                  # redirects to local spawn-direct
   tlda agent spawn --session <uuid> [--enroll] [name]
   tlda agent spawn-direct <agent> [--privileges profile] [--capability read|write|tlda-write|full]
   tlda agent move <agent> [name@][box:]env
@@ -2452,9 +2347,9 @@ Network:
   network is on by default
   --no-net    rare explicit network-off modifier
 
-spawn routes through the fleet server and target daemon; spawn-direct directly invokes
-the local primitive on this machine. Routed spawn is requester-gated; spawn-direct
-is local-operator gated by machine access and writes the child grant to the daemon ledger.
+spawn is disabled for operator CLI use and prints the equivalent local spawn-direct
+command. spawn-direct directly invokes the local primitive on this machine, is
+local-operator gated by machine access, and writes the child grant to the daemon ledger.
 Set TLDA_DISABLE_PERMISSION_CLASSIFIER=1 or agentSandbox.disablePermissionsClassifier=true only as a spawn-time break-glass to launch Claude with --dangerously-skip-permissions.
 move must be run on the agent's current daemon address; cross-box moves use SSH/rsync.
 set-spawn-machine stores the caller's default fresh-spawn machine in fleet prefs.
@@ -2846,11 +2741,11 @@ async function cmdAgentMove() {
     expected_from: sourceMachine,
     expected_env: sourceEnv,
   })
-  console.log(`Registry now points ${agent.id} at ${describeAgentAddress(targetMachine, targetEnv)}. Respawning...`)
   const spawnArgs = [agent.id]
   if (meta.kind) spawnArgs.push('--kind', meta.kind)
-  process.env.TLDA_CONFIG = targetEnv
-  await runRoutedSpawn(spawnArgs)
+  const configPrefix = targetEnv ? `TLDA_CONFIG=${quoteCommandArg(targetEnv)} ` : ''
+  console.log(`Registry now points ${agent.id} at ${describeAgentAddress(targetMachine, targetEnv)}.`)
+  console.log(`Respawn locally on the target machine with: ${configPrefix}${spawnDirectSuggestion(spawnArgs)}`)
 }
 
 async function cmdAgentCapability() {
@@ -2891,7 +2786,7 @@ async function cmdAgentCapability() {
     console.log('  1. look up existing agent identity')
     console.log('  2. hibernate local tmux session if live')
     console.log('  3. update metadata.spawnPolicy policy/category')
-    console.log(`  4. run: tlda agent spawn ${agentQuery}`)
+    console.log(`  4. run locally: ${spawnDirectSuggestion([agentQuery])}`)
     return
   }
 
@@ -2915,8 +2810,8 @@ async function cmdAgentCapability() {
     spawnPolicyChangedAt: new Date().toISOString(),
   })
   const net = network === false ? 'no network' : 'network'
-  console.log(`Updated ${agent.id} spawn policy to ${policyOption.name} (${policy} / ${capability} / ${net}). Resuming ${spawnName}...`)
-  await runRoutedSpawn([spawnName])
+  console.log(`Updated ${agent.id} spawn policy to ${policyOption.name} (${policy} / ${capability} / ${net}).`)
+  console.log(`Respawn locally with: ${spawnDirectSuggestion([spawnName])}`)
 }
 
 async function cmdAgentPrivileges() {
@@ -2975,7 +2870,7 @@ async function cmdAgentPrivileges() {
     console.log('  1. look up existing agent identity')
     console.log('  2. update metadata.requestedPrivileges / metadata.spawnPolicy')
     console.log(respawnNow
-      ? `  3. run: tlda agent spawn ${agentQuery} --privileges ${profileArg}`
+      ? `  3. run locally: ${spawnDirectSuggestion([agentQuery, '--privileges', profileArg])}`
       : '  3. leave the change for the next respawn')
     return
   }
@@ -2995,16 +2890,8 @@ async function cmdAgentPrivileges() {
     console.log(`Updated ${agent.id} privileges to ${description}; will apply on respawn.`)
     return
   }
-  console.log(`Updated ${agent.id} privileges to ${description}. Respawning ${spawnName}...`)
-  try {
-    await runRoutedSpawn([spawnName, '--privileges', profileArg])
-  } catch (e) {
-    throw new Error([
-      `Updated desired privileges for ${agent.id} to ${description}, but respawn failed.`,
-      'Active process/lease may be unchanged until a later successful respawn.',
-      e?.message || String(e),
-    ].join('\n'))
-  }
+  console.log(`Updated ${agent.id} privileges to ${description}.`)
+  console.log(`Respawn locally with: ${spawnDirectSuggestion([spawnName, '--privileges', profileArg])}`)
 }
 
 async function cmdAgent() {
