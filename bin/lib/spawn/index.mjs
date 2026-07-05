@@ -5,6 +5,7 @@ import { checkFreshNameAvailable, ensureServer, findAgent, markAgentDead, resolv
 import { injectClaudePrompt, injectCodexPrompt, sessionHasRuntime, spawnTmux, uniqueSessionName } from './tmux.mjs'
 import { wrapSandboxCmd } from './fence.mjs'
 import { codexSandboxProjection, resolveLaunchPolicy, sandboxMetadata } from './permissions.mjs'
+import { resolveCodexResumeHandle } from '../codex-resume-resolver.mjs'
 import {
   codexRolloutPath,
   findClaudeSession,
@@ -338,10 +339,11 @@ async function spawnFresh(params) {
 }
 
 async function spawnRespawn(params) {
-  const api = resolveApi()
-  await ensureServer({ api })
+  const deps = params._deps || {}
+  const api = (deps.resolveApi || resolveApi)()
+  await (deps.ensureServer || ensureServer)({ api })
   const name = params.name || params.agentId || params.agent_id
-  const agent = await findAgent(name, { api })
+  const agent = await (deps.findAgent || findAgent)(name, { api })
   if (!agent) throw new SpawnError('launch-failed', `No agent '${name}'. Use --fresh to create.`, { name })
   const meta = metadataOf(agent)
   const rawModel = params.model || meta.model
@@ -355,17 +357,50 @@ async function spawnRespawn(params) {
   const modelResolved = resolveAdapterModel(adapter, rawModel, config)
   const model = modelResolved.model
   const tmuxSession = agent.tmux_session || `fleet-${sanitizeSessionName(friendlyName)}`
-  if (await sessionHasRuntime(tmuxSession, { tmuxSocket: params.tmuxSocket })) {
+  if (await (deps.sessionHasRuntime || sessionHasRuntime)(tmuxSession, { tmuxSocket: params.tmuxSocket })) {
     return { ok: true, fleetId, tmuxSession, harness: requestedKind, model, alreadyAlive: true }
   }
   let handle = null
   const identityOptions = {
-    sessionOverride: params.sessionId || params.session_id,
     identityConfigDir: params.identityConfigDir,
     identityFilePath: params.identityFilePath,
+    sessionsBase: params.codexSessionsBase,
   }
-  if (requestedKind === 'claude') handle = findClaudeSession(agent, identityOptions)
-  else if (requestedKind === 'codex') handle = findCodexRollout(agent, identityOptions)
+  if (requestedKind === 'claude') {
+    handle = findClaudeSession(agent, {
+      ...identityOptions,
+      sessionOverride: params.sessionId || params.session_id,
+    })
+  } else if (requestedKind === 'codex') {
+    const resolved = await (deps.resolveCodexResumeHandle || resolveCodexResumeHandle)(agent, {
+      ...identityOptions,
+      mode: params.codexResumeMode || 'daemon',
+      readerCommand: params.codexReaderCommand,
+      advanceOnceOnMiss: !!params.codexAdvanceOnceOnMiss,
+      advanceOnce: params.codexAdvanceOnce,
+    })
+    if (resolved?.ok) {
+      handle = {
+        kind: 'codex',
+        rolloutId: resolved.resumeId,
+        jsonlPath: resolved.jsonlPath,
+        cwd: resolved.cwd,
+        source: resolved.source,
+      }
+    } else if (resolved?.code === 'identity-ingestion-pending') {
+      throw new SpawnError(
+        'identity-ingestion-pending',
+        `Cannot respawn ${friendlyName} (${fleetId}) yet: Codex session identity ingestion has not reached the daemon index. Retry once ingestion is caught up.`,
+        { fleetId, kind: requestedKind, retry_after_ms: resolved.retry_after_ms || 1000, resolution: resolved },
+      )
+    } else {
+      throw new SpawnError(
+        'launch-failed',
+        `No codex resume handle for ${friendlyName} (${fleetId}). Use refresh to start fresh.`,
+        { fleetId, kind: requestedKind, resolution: resolved || null },
+      )
+    }
+  }
   if (!handle && (requestedKind === 'claude' || requestedKind === 'codex')) {
     if (!isRespawnIdentityCaughtUp(identityOptions)) {
       throw new SpawnError(

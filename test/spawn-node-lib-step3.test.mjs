@@ -441,6 +441,43 @@ test('explicit session override still works while identity ingestion is pending'
   assert.equal(found.cwd, '/tmp/explicit-cwd')
 })
 
+test('Codex respawn ignores session override and delegates resolution to daemon-owned resolver', async () => {
+  const calls = []
+  await assert.rejects(
+    spawn({
+      spawnMode: 'respawn',
+      name: 'codex-owner',
+      kind: 'codex',
+      sessionId: 'rollout-2026-07-05T00-00-00-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      config: {},
+      _deps: {
+        resolveApi: () => 'http://127.0.0.1:5176',
+        ensureServer: async () => true,
+        findAgent: async () => ({
+          id: 'fleet:codex-owner',
+          friendly_name: 'codex-owner',
+          kind: 'codex',
+          model: 'gpt',
+          cwd: process.cwd(),
+          metadata: {},
+        }),
+        sessionHasRuntime: async () => false,
+        resolveCodexResumeHandle: async (_agent, options) => {
+          calls.push(options)
+          return { ok: false, code: 'missing-resume-handle', detail: { reason: 'not-indexed' } }
+        },
+      },
+    }),
+    (err) => {
+      assert.equal(err.reason, 'launch-failed')
+      assert.match(err.message, /No codex resume handle/)
+      return true
+    },
+  )
+  assert.equal(calls.length, 1)
+  assert.equal('sessionOverride' in calls[0], false)
+})
+
 test('caught-up identity ingestion preserves broad scan fallback', () => {
   const root = tmpdir()
   const projectsBase = path.join(root, 'claude-projects')
