@@ -71,6 +71,7 @@ import {
 } from '../wm/annotation-viewer-surface'
 import { createLightboxSurfaceRequest } from '../wm/lightbox-surface'
 import { clientPointToPage, pagePointToClient } from '../wm/viewport-coordinates'
+import { fleetInteractionFrame, fleetPointerEventPagePoint } from '../wm/fleet-interaction-frame'
 import { openChatMarkdownColumn, openMarkdownChipFromTarget as openMarkdownChipFromTargetElement } from './fleet-chat-markdown-open'
 import { subscribeFleetChatInputDropPreview } from './fleet-chat-drop-target'
 import { consumeBulletContexts, subscribeBulletContext, getBulletContexts } from '../stores/bulletContextStore'
@@ -88,6 +89,7 @@ type FleetChatRenderCounter = {
   renderCount?: number
   events?: Array<{ type: 'render'; t: number; shapeId?: string }>
 }
+type TldrawEditorWindow = Window & { __tldraw_editor__?: Editor }
 
 type ChatRenderProbeKind =
   | 'shape-render'
@@ -4742,6 +4744,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     started: boolean
     captureEl: HTMLElement | null
     pointerId: number
+    _onMain?: boolean
   } | null>(null)
 
   // Store agent name maps in refs so native listeners can access current values.
@@ -4766,6 +4769,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   useEffect(() => {
     const logEl = chatLogEl
     if (!logEl) return
+    const frame = fleetInteractionFrame(viewportId)
 
     // Document-level capture listeners: fires before tldraw's tl-container
     // listener can intercept. We scope to this chat by checking if the target
@@ -5061,7 +5065,21 @@ function FleetChatInner({ shape }: { shape: any }) {
       downTargetEl = target
 
       // Use shared drag coordinator instead of per-drag capture listeners
-      dragCoordinator.claim(onPointerMove, onPointerUp)
+      dragCoordinator.claim(onPointerMove, onPointerUp, cancelDrag)
+    }
+
+    function cancelDrag() {
+      const drag = dragRef.current
+      dragRef.current = null
+      if (drag?.pillId) {
+        const mainEditor = (window as TldrawEditorWindow).__tldraw_editor__
+        const onMain = !!drag._onMain
+        const deleteEditor = onMain && mainEditor ? mainEditor : editor
+        const id = drag.pillId as TLShapeId
+        if (deleteEditor?.getShape?.(id)) deleteEditor.deleteShapes([id])
+      }
+      const shapeEl = logEl!.closest('.fleet-shape') as HTMLElement | null
+      if (shapeEl) shapeEl.style.boxShadow = ''
     }
 
     function onPointerMove(e: PointerEvent) {
@@ -5073,7 +5091,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (!drag.started) {
         if (Math.abs(dx) < DRAG_THRESHOLD && Math.abs(dy) < DRAG_THRESHOLD) return
         drag.started = true
-        const pagePos = clientPointToPage(editor, { x: e.clientX, y: e.clientY }, viewportId)
+        const pagePos = fleetPointerEventPagePoint(editor, frame, e)
         const pillId = createShapeId()
         editor.createShape({
           id: pillId,
@@ -5098,7 +5116,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         editor.cancel()
       }
       if (drag.pillId) {
-        const pagePos = clientPointToPage(editor, { x: e.clientX, y: e.clientY }, viewportId)
+        const pagePos = fleetPointerEventPagePoint(editor, frame, e)
         editor.updateShape({
           id: drag.pillId as any,
           type: 'fleet-pill' as any,
@@ -5120,7 +5138,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         )
 
         if (mainEditor && mainEditor !== editor) {
-          const onMain = !!(drag as any)._onMain
+          const onMain = !!drag._onMain
           if (outside && !onMain) {
             // Handoff: panel → main
             try { editor.deleteShapes([drag.pillId as any]) } catch {}
@@ -5143,11 +5161,11 @@ function FleetChatInner({ shape }: { shape: any }) {
                 ...(drag.fileUrl ? { fileUrl: drag.fileUrl } : {}),
               },
             })
-            ;(drag as any)._onMain = true
+            drag._onMain = true
           } else if (!outside && onMain) {
             // Handoff back: main → panel
             try { mainEditor.deleteShapes([drag.pillId as any]) } catch {}
-            const panelPos = clientPointToPage(editor, { x: e.clientX, y: e.clientY }, viewportId)
+            const panelPos = fleetPointerEventPagePoint(editor, frame, e)
             editor.createShape({
               id: drag.pillId as any,
               type: 'fleet-pill' as any,
@@ -5161,7 +5179,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                 color: drag.color,
               },
             })
-            ;(drag as any)._onMain = false
+            drag._onMain = false
           } else if (onMain) {
             // Move on main editor
             const mainPos = clientPointToPage(mainEditor, { x: e.clientX, y: e.clientY })
@@ -5222,10 +5240,12 @@ function FleetChatInner({ shape }: { shape: any }) {
       downTargetEl = null
       if (!drag.pillId) return
 
-      const onMain = !!(drag as any)._onMain
-      const mainEditor = (window as any).__tldraw_editor__ as any
+      const onMain = !!drag._onMain
+      const mainEditor = (window as TldrawEditorWindow).__tldraw_editor__
       const dropEditor = (onMain && mainEditor) ? mainEditor : editor
-      const pagePos = clientPointToPage(dropEditor, { x: e.clientX, y: e.clientY }, onMain ? undefined : viewportId)
+      const pagePos = onMain
+        ? clientPointToPage(dropEditor, { x: e.clientX, y: e.clientY })
+        : fleetPointerEventPagePoint(dropEditor, frame, e)
       dropPillOnTarget(dropEditor, drag.pillId as any, drag.value, pagePos, drag.content)
       try { dropEditor.deleteShapes([drag.pillId as any]) } catch {}
     }

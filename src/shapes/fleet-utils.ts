@@ -245,6 +245,9 @@ export function selectFleetShapeForLayout(editor: Editor, shape: TLShape) {
   if (shape.isLocked) editor.updateShape({ id: shape.id, type: shape.type, isLocked: false })
   editor.setCurrentTool('select')
   editor.select(shape.id)
+  if (typeof document !== 'undefined' && FLEET_SHAPE_TYPES.has(shape.type as string)) {
+    document.body.classList.add('fleet-hud-fleet-selected')
+  }
 }
 
 /**

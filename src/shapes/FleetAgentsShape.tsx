@@ -13,6 +13,7 @@ import {
   useEditor,
   useValue,
   createShapeId,
+  type TLShapeId,
 } from 'tldraw'
 import { fleetAgentsProps } from '../../shared/shapes/fleet-panel-schema.mjs'
 import { useState, useCallback, useMemo, useRef, useEffect, memo, forwardRef } from 'react'
@@ -23,7 +24,7 @@ import { agentDisplayLabel, agentExactName, beginNativeSnapDrag, endNativeSnapDr
 import { PrettyName } from './PrettyName'
 import { dragCoordinator } from './dragCoordinator'
 import { useIsInViewport, useVisibilityViewportId } from './useIsInViewport'
-import { clientPointToPage } from '../wm/viewport-coordinates'
+import { fleetInteractionFrame, fleetPointerEventPagePoint } from '../wm/fleet-interaction-frame'
 import { useAvailableSpawnModels } from '../fleet/useAvailableSpawnModels'
 
 
@@ -382,7 +383,19 @@ const DRAG_THRESHOLD = 5
 export function usePillDrag() {
   const editor = useEditor()
   const viewportId = useVisibilityViewportId()
+  const frame = useMemo(() => fleetInteractionFrame(viewportId), [viewportId])
   const dragRef = useRef<DragState | null>(null)
+
+  const cancelDrag = useCallback(() => {
+    const drag = dragRef.current
+    dragRef.current = null
+    if (drag?.pillId) {
+      editor.run(() => {
+        const id = drag.pillId as TLShapeId
+        if (editor.getShape(id)) editor.deleteShapes([id])
+      }, { history: 'ignore' })
+    }
+  }, [editor])
 
   const startDrag = useCallback((
     e: React.PointerEvent,
@@ -413,7 +426,7 @@ export function usePillDrag() {
           if (Math.abs(dx) < DRAG_THRESHOLD && Math.abs(dy) < DRAG_THRESHOLD) return
           drag.started = true
 
-          const pagePos = clientPointToPage(editor, { x: ev.clientX, y: ev.clientY }, viewportId)
+          const pagePos = fleetPointerEventPagePoint(editor, frame, ev)
           const measureEl = document.createElement('span')
           measureEl.style.cssText = "position:absolute;visibility:hidden;font:500 9px 'SF Mono',Menlo,Consolas,monospace;white-space:nowrap;padding:1px 6px;border:1px solid transparent"
           measureEl.textContent = drag.displayName
@@ -437,7 +450,7 @@ export function usePillDrag() {
         }
 
         if (drag.pillId) {
-          const pagePos = clientPointToPage(editor, { x: ev.clientX, y: ev.clientY }, viewportId)
+          const pagePos = fleetPointerEventPagePoint(editor, frame, ev)
           const pillShape = editor.getShape(drag.pillId as any) as any
           const pw = pillShape?.props?.w || 70
           const ph = pillShape?.props?.h || 18
@@ -457,14 +470,15 @@ export function usePillDrag() {
         dragRef.current = null
         if (!drag || !drag.started || !drag.pillId) return
 
-        const pagePos = clientPointToPage(editor, { x: ev.clientX, y: ev.clientY }, viewportId)
+        const pagePos = fleetPointerEventPagePoint(editor, frame, ev)
         dropPillOnTarget(editor, drag.pillId as any, drag.value, pagePos)
         editor.run(() => {
           try { editor.deleteShapes([drag.pillId as any]) } catch {}
         }, { history: 'ignore' })
       },
+      cancelDrag,
     )
-  }, [editor, viewportId])
+  }, [cancelDrag, editor, frame])
 
   return { startDrag }
 }
