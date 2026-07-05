@@ -10,7 +10,7 @@
  * The stroke itself is unchanged — it stays as a freehand highlight.
  */
 
-import { createShapeId, type Editor } from 'tldraw'
+import { createShapeId, type Editor, type TLShapeId, type TLViewportId } from 'tldraw'
 import { canvasToPdf } from './synctexAnchor'
 import { STORE_HTTP } from './activeConfig'
 
@@ -22,6 +22,8 @@ function serverBase(): string {
 import { openInEditor } from './texsync'
 import { dropPillOnTarget } from './shapes/FleetPillShape'
 import { dragCoordinator } from './shapes/dragCoordinator'
+import { FLEET_HUD_VIEWPORT_ID } from './wm/fleet-hud-layer'
+import { fleetInteractionFrame, fleetPointerEventPagePoint } from './wm/fleet-interaction-frame'
 import type { TargetInfo } from './loaders/types'
 import { getViewerId } from './useYjsSync'
 import { log } from './logger'
@@ -1055,8 +1057,9 @@ function showSourceContextCard(
       e.stopPropagation()
       e.preventDefault()
       // Use HUD editor for pill creation (chat shapes live in HUD coordinate system)
-      const hudEditor = (window as any).__tldraw_hud_editor__ as Editor | undefined
+      const hudEditor = window.__tldraw_hud_editor__ as Editor | undefined
       const pillEditor = hudEditor || editor
+      const frame = fleetInteractionFrame(hudEditor ? FLEET_HUD_VIEWPORT_ID as TLViewportId : undefined)
       dragState = { pillId: null, startX: e.clientX, startY: e.clientY, started: false }
 
       dragCoordinator.claim(
@@ -1068,7 +1071,7 @@ function showSourceContextCard(
           if (!dragState.started) {
             if (Math.abs(dx) < 5 && Math.abs(dy) < 5) return
             dragState.started = true
-            const pagePos = pillEditor.screenToPage({ x: ev.clientX, y: ev.clientY })
+            const pagePos = fleetPointerEventPagePoint(pillEditor, frame, ev)
             const pillId = createShapeId()
             pillEditor.run(() => {
               pillEditor.createShape({
@@ -1091,22 +1094,33 @@ function showSourceContextCard(
             return
           }
           if (dragState.pillId) {
-            const pagePos = pillEditor.screenToPage({ x: ev.clientX, y: ev.clientY })
+            const id = dragState.pillId as TLShapeId
+            const pagePos = fleetPointerEventPagePoint(pillEditor, frame, ev)
+            const update = { id, type: 'fleet-pill', x: pagePos.x - 40, y: pagePos.y - 9 } as unknown as Parameters<typeof pillEditor.updateShape>[0]
             pillEditor.run(() => {
-              pillEditor.updateShape({ id: dragState!.pillId as any, type: 'fleet-pill' as any, x: pagePos.x - 40, y: pagePos.y - 9 })
+              pillEditor.updateShape(update)
             }, { history: 'ignore' })
           }
         },
         // onUp
         (ev: PointerEvent) => {
           if (dragState?.pillId) {
-            const pillId = dragState.pillId
-            const dropPoint = pillEditor.screenToPage({ x: ev.clientX, y: ev.clientY })
-            dropPillOnTarget(pillEditor, pillId as any, token, dropPoint, token)
-            try { pillEditor.run(() => { pillEditor.deleteShapes([pillId as any]) }, { history: 'ignore' }) } catch {}
+            const pillId = dragState.pillId as TLShapeId
+            const dropPoint = fleetPointerEventPagePoint(pillEditor, frame, ev)
+            dropPillOnTarget(pillEditor, pillId, token, dropPoint, token)
+            pillEditor.run(() => {
+              if (pillEditor.getShape(pillId)) pillEditor.deleteShapes([pillId])
+            }, { history: 'ignore' })
           }
           dragState = null
           dragCoordinator.release()
+        },
+        () => {
+          const pillId = dragState?.pillId as TLShapeId | undefined
+          dragState = null
+          if (pillId && pillEditor.getShape(pillId)) {
+            pillEditor.run(() => { pillEditor.deleteShapes([pillId]) }, { history: 'ignore' })
+          }
         },
       )
     })

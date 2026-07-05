@@ -1041,12 +1041,15 @@ export function FleetHUD({
       if (!editor) return
       const hasFleetSelected = editor.getSelectedShapeIds().some(id => {
         const s = editor.getShape(id as any)
-        return s && isMyFleetShape(s)
+        return s && FLEET_SHAPE_TYPES.has(s.type as string)
       })
       if (hasFleetSelected) {
         // ADD immediately — user selected a fleet shape, enable interaction
         fleetLayoutActiveRef.current = true
         el.classList.add('hud-layout-active')
+        document.body.classList.add('fleet-hud-fleet-selected')
+      } else {
+        document.body.classList.remove('fleet-hud-fleet-selected')
       }
       // Removal is handled by BrowseIdle.onEnter.
       // Removing from this listener races with TLDraw's state machine and
@@ -1082,19 +1085,7 @@ export function FleetHUD({
     const trySubscribe = () => {
       if (overlayEditorRef.current) {
         checkSelection()
-        unsub = overlayEditorRef.current.store.listen(({ changes }) => {
-          for (const [, to] of Object.values(changes.updated)) {
-            const typeName = (to as any).typeName
-            if (typeName === 'instance_page_state') {
-              checkSelection()
-              return
-            }
-            if (typeName === 'instance' && (to as any).brush == null) {
-              checkSelection()
-              return
-            }
-          }
-        }, { scope: 'session', source: 'all' })
+        unsub = react('fleet-hud-fleet-selection-class', checkSelection)
         el.addEventListener('pointerup', onPointerUp, true)
         window.addEventListener('pointerup', onWindowPointerUp, true)
       } else {
@@ -1113,6 +1104,7 @@ export function FleetHUD({
         fleetLayoutActiveRef.current = false
         el.classList.remove('hud-layout-active')
       }
+      document.body.classList.remove('fleet-hud-fleet-selected')
     }
   }, [expanded])
 

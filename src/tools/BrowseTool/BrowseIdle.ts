@@ -190,6 +190,7 @@ export class BrowseIdle extends StateNode {
         fleetLayoutActiveRef.current = false
         const wrap = this.editor.getContainer().closest('.fleet-hud-wrap') as HTMLElement
         wrap?.classList.remove('hud-layout-active')
+        document.body.classList.remove('fleet-hud-fleet-selected')
       }
     }
 

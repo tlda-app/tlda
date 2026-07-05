@@ -271,6 +271,17 @@ body.fleet-hud-open .fleet-hud-wrap .tl-canvas .fleet-shape {
   pointer-events: all;
 }
 
+/* TLDraw draws selection boxes and resize handles on viewport overlay canvases.
+   When a fleet shape is selected in the HUD, the main-canvas copy is inert; its
+   overlay must not leak. Keep only the top-level HUD viewport's overlay visible,
+   so handles align with the HUD copy the user is editing. */
+body.fleet-hud-open.fleet-hud-fleet-selected .tl-canvas-overlays {
+  visibility: hidden;
+}
+body.fleet-hud-open.fleet-hud-fleet-selected .fleet-hud-wrap .tl-canvas.fleet-hud > .tl-canvas-overlays {
+  visibility: visible;
+}
+
 
 /* Dark mode */
 html[data-theme="dark"] .fleet-pill {

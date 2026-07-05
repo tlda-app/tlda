@@ -15,6 +15,7 @@
 interface DragHandlers {
   onMove: (e: PointerEvent) => void
   onUp: (e: PointerEvent) => void
+  onCancel?: () => void
 }
 
 let active: DragHandlers | null = null
@@ -38,13 +39,23 @@ function installListeners() {
     active = null
     handlers.onUp(e)
   }, { capture: true })
+
+  const cancelActive = () => {
+    if (!active) return
+    const handlers = active
+    active = null
+    handlers.onCancel?.()
+  }
+  document.addEventListener('pointercancel', cancelActive, { capture: true })
+  window.addEventListener('blur', cancelActive, true)
 }
 
 export const dragCoordinator = {
   /** Claim the drag — only one drag can be active at a time. */
-  claim(onMove: (e: PointerEvent) => void, onUp: (e: PointerEvent) => void) {
+  claim(onMove: (e: PointerEvent) => void, onUp: (e: PointerEvent) => void, onCancel?: () => void) {
     installListeners()
-    active = { onMove, onUp }
+    active?.onCancel?.()
+    active = { onMove, onUp, onCancel }
   },
 
   /** Release the active drag (idempotent). */
