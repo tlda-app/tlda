@@ -8,7 +8,7 @@ live dogfood, and any release-train deploy policy.
 
 - Worktree: `.worktrees/agent-inbox-modes`
 - Branch: `agent-inbox-modes`
-- Current head: `c041261d` (`Document inbox modes merge readiness`)
+- Current head: run `git rev-parse --short HEAD` in the worktree
 - Current `main`: `12c572b6`
 - Merge base with `main`: `12c572b6`
 
@@ -27,7 +27,7 @@ Notification status and inbox view are separate:
 - `set_inbox_status(status, tag?)` publishes visible status and optional
   advisory tag.
 - `inbox(view?)` renders the selected read-time view.
-- Legacy `my_task` routes through `inbox(view: "default")`.
+- `my_task` is not exposed as a public MCP tool; agents call `inbox()` directly.
 
 Chat delivery now stamps explicit per-recipient attention metadata:
 
@@ -70,6 +70,10 @@ Default inbox rendering:
 - `96648aa2` Sync inbox modes spec with status implementation
 - `ff2848f8` Skip stale batched inbox wakes
 - `c041261d` Document inbox modes merge readiness
+- `5d269134` Update inbox modes readiness after rebase
+
+The branch may have additional cleanup commits after this document update; use
+`git log --oneline main..HEAD` for the authoritative stack.
 
 Reviewer note: the first three commits were the earlier mode prototype. The
 later commits reshape the implementation into the status/view split. A cleanup
@@ -143,9 +147,9 @@ After rebase and local verification:
 
 - Server chat idempotency now caches `receipts`; verify no caller depended on
   retry responses omitting that field.
-- `my_task` now delegates to `inbox(view: "default")`; this intentionally
-  removes the duplicate legacy formatter. Verify any native-task/task-check
-  expectations still work through the default inbox output.
+- `my_task` is removed from the public MCP tool registry. The internal server
+  WS operation is still named `my-task` because `inbox()` uses it as the backend
+  fetch primitive; a protocol rename would be a separate migration.
 - `inbox(view: "review")` still uses simple explicit regex filtering for
   report/review/gate/evidence terms. That is acceptable for this slice, but is
   not the future turn-search/item model.

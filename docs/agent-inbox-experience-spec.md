@@ -890,8 +890,7 @@ Implementation can still land in stages. A practical first landing slice is:
 Current prototype slice:
 
 - worktree: `.worktrees/agent-inbox-modes`
-- keeps MCP `inbox` as the pull surface and routes legacy `my_task` through
-  the default inbox view
+- keeps MCP `inbox` as the pull surface and removes the public `my_task` alias
 - separates notification status from read-time inbox view:
   - status is persisted as `metadata.inboxStatus` plus optional
     `metadata.inboxStatusTag`
@@ -919,17 +918,17 @@ Release sequencing:
 - After the RC lands, rebase `.worktrees/agent-inbox-modes` onto the new
   `mcp-server/fleet-tools.mjs`, `server/unified-server.mjs`, and
   `bin/lib/spawn/harness/claude.mjs` shapes before live dogfooding.
-- Keep `my_task` as a legacy alias so release is baseline-plus-options, not a
-  forced behavior cutover.
+- Agents should call `inbox()` directly; `my_task` is not kept as a public MCP
+  alias in this slice.
 
 Rebase and dogfood checklist:
 
 1. Rebase `.worktrees/agent-inbox-modes` after the reliability RC reaches main.
 2. Resolve conflicts by preserving the RC's reliability fixes first, then
    re-applying `inbox` as an additive surface.
-3. Verify the MCP registry exposes `inbox`, legacy alias `my_task`, and
-   `set_inbox_status`.
-4. Verify `my_task` routes through `inbox(view: "default")`.
+3. Verify the MCP registry exposes `inbox` and `set_inbox_status`, and does not
+   expose `my_task`.
+4. Verify `inbox()` with no args routes to the default view.
 5. Verify `inbox()` renders bounded `NOW`, `BATCHED`, and `BACKGROUND`
    sections from explicit delivery metadata.
 6. Verify `inbox(view: "current-task")`, `inbox(view: "monitoring")`,
@@ -940,9 +939,9 @@ Rebase and dogfood checklist:
 8. Verify `chat()` receipts preserve the status/priority result, including
    idempotent retry with the same `_tempId`.
 9. Verify a direct chat wake says to call `inbox()` and does not consume unread
-   before `inbox`/`my_task` is called.
+   before `inbox()` is called.
 10. Verify a task/delegate wake says to call `inbox()` and the task remains
-   visible in both `inbox` and `my_task`.
+   visible in `inbox()`.
 11. Dogfood with at least one worker-like agent in `busy`, one unavailable
     agent in `dnd`, and one reviewer/release-like agent using
     `inbox(view: "review")`.

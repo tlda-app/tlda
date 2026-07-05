@@ -3235,7 +3235,7 @@ server.on('upgrade', async (req, socket, head) => {
       // panel and task list. Agent/MCP clients connect with ?agent=... and only
       // use this socket for RPC replies + targeted fleet-event notifications;
       // sending the full roster/task snapshot there is a multi-MB startup tax
-      // that can delay ordinary my_task/chat/delegate requests.
+      // that can delay ordinary inbox/chat/delegate requests.
       if (fleetStore && !agentFilter) {
         const initState = {
           // Full roster incl. dead. Panel filters dead client-side, but the
@@ -4270,9 +4270,9 @@ async function handleFleetWsMessage(ws, msg) {
     const unread = fleetStore.getUnread?.(agentId) || []
     // peek=true: caller just wants to see unread (e.g., the channel-WS
     // flush-on-reconnect path that displays a count). Don't mark read in
-    // that case — the actual inbox()/my_task() call from the agent will do the
+    // that case — the actual inbox() call from the agent will do the
     // marking. Without this, peek silently consumes the unread queue and
-    // the subsequent inbox()/my_task() returns nothing.
+    // the subsequent inbox() returns nothing.
     if (unread.length && !msg.peek) {
       const readIds = fleetStore.markRead?.(agentId) || []
       if (readIds.length) broadcastEvent('read-receipt', { event_ids: readIds, agent: agentId })

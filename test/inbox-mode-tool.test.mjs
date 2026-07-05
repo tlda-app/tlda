@@ -29,6 +29,10 @@ test('inbox exposes read-time views, not notification statuses', () => {
   assert.equal(tool.inputSchema.properties.mode, undefined)
 })
 
+test('my_task is not exposed as a public MCP tool', () => {
+  assert.equal(getFleetTools().some(t => t.name === 'my_task'), false)
+})
+
 test('priority phrase parser uses exact V1 phrases only', () => {
   assert.equal(parsePriorityPhrase('This is important. I need a decision.'), 'important')
   assert.equal(parsePriorityPhrase('ok this is urgent for release'), 'urgent')

@@ -1429,11 +1429,6 @@ export function getFleetTools() {
       },
     },
     {
-      name: 'my_task',
-      description: 'Legacy alias for inbox-style task checking. Prefer inbox(). Shows what task is assigned to this agent and any unread messages.',
-      inputSchema: { type: 'object', properties: {} },
-    },
-    {
       name: 'inbox',
       description: 'Show this agent\'s current obligation inbox. View is read-time presentation only; notification status is controlled separately by set_inbox_status().',
       inputSchema: {
@@ -3803,11 +3798,6 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
       return { content: [{ type: 'text', text: `Could not publish inbox status "${status}" to tlda (${e.message}).` }], isError: true };
     }
     return { content: [{ type: 'text', text: `Inbox status set to ${status}${tag ? ` (${tag})` : ''}. Future wake behavior will use this status; choose presentation separately with inbox(view: ...).` }] };
-  }
-
-  // ---- my_task ----
-  if (name === 'my_task') {
-    return handleFleetTool('inbox', { view: 'default' });
   }
 
   // ---- tlda monitor_add / monitor_remove / monitor_list ----
