@@ -208,15 +208,6 @@ function getFleetBounds(editor: Editor): ClipBounds | null {
   return result.bounds
 }
 
-function getDocumentLeftPage(editor: Editor): number | null {
-  let minPageX = Infinity
-  for (const s of editor.getCurrentPageShapes().filter(isDocumentPageShape)) {
-    const b = editor.getShapePageBounds(s.id)
-    if (b && b.x < minPageX) minPageX = b.x
-  }
-  return isFinite(minPageX) ? minPageX : null
-}
-
 function isPhoneFleetLayout(editor: Editor): boolean {
   const humanId = getHumanId()
   const deviceId = getDeviceId()
@@ -707,9 +698,9 @@ export function FleetHUD({
       lastSig = sig
       if (!isPhoneFleetLayout(mainEditor)) return
       const result = refitPhonePaneStack(mainEditor)
-      const changed = result.ok && result.updatedIds.length > 0
-      const docLeftPage = getDocumentLeftPage(mainEditor)
-      if (docLeftPage !== null) snapToCurrentPhoneLaneIndex(mainEditor, docLeftPage, 0)
+      if (!result.ok) return
+      const changed = result.updatedIds.length > 0
+      snapToPhoneLaneIndex(mainEditor, result.docLeftPage, result.currentIndex)
       if (changed) {
         hudAnchorRef.current = null
         hudBaseCameraRef.current = mainEditor.getCamera()

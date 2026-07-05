@@ -597,8 +597,7 @@
   opacity: 0.8;
 }
 
-.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-filter-empty,
-.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-composer-disabled {
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-filter-empty {
   font-size: 11px;
   opacity: 0.45;
   overflow: hidden;
@@ -606,15 +605,9 @@
   white-space: nowrap;
 }
 
-.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-composer-disabled {
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-composer .fleet-inbox-composer-textarea {
   margin-top: 5px;
-  min-height: 24px;
-  border: 1px solid rgba(128, 128, 128, 0.12);
-  border-radius: 4px;
-  display: flex;
-  align-items: center;
-  padding: 0 8px;
-  background: rgba(0, 0, 0, 0.06);
+  min-height: 30px;
 }
 
 .fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agents {

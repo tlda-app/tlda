@@ -201,7 +201,6 @@ function usePhoneSizedViewport(): boolean {
   return phone
 }
 
-const IS_PHONE = isPhoneViewport()
 const IS_TOUCH_DEVICE = (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0)
   || (typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches)
   || (typeof location !== 'undefined' && new URLSearchParams(location.search).has('forcetouch'))

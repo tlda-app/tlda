@@ -72,7 +72,15 @@ async function seedThread() {
     ws.once('open', resolve)
     ws.once('error', reject)
   })
-  await fleetRequest(ws, { type: 'register', agent_id: PARTNER_ID, name: PARTNER, kind: 'codex' })
+  await fleetRequest(ws, {
+    type: 'register',
+    agent_id: PARTNER_ID,
+    name: PARTNER,
+    kind: 'codex',
+    status: 'awake',
+    machine_id: `phone-eject-machine-${RUN}`,
+    tmux_session: `phone-eject-tmux-${RUN}`,
+  })
   for (let i = 0; i < 36; i++) {
     await fleetRequest(ws, { type: 'chat', from: PARTNER_ID, to: QA_NAME, message: `phase 2/3 pane seed ${RUN} ${i}` })
   }
@@ -110,10 +118,37 @@ async function openThread(page) {
 }
 
 async function selectFooterTarget(page) {
-  await page.waitForFunction((partner) => {
-    return [...document.querySelectorAll('.fleet-hud-wrap .fleet-inbox-phone-agent-name')]
-      .some(el => el.textContent?.trim() === partner)
-  }, PARTNER, { timeout: 15000 })
+  try {
+    await page.waitForFunction((partner) => {
+      return [...document.querySelectorAll('.fleet-hud-wrap .fleet-inbox-phone-agent-name')]
+        .some(el => el.textContent?.trim() === partner)
+    }, PARTNER, { timeout: 15000 })
+  } catch (err) {
+    const diag = await page.evaluate(async ({ partner, partnerId }) => {
+      let state = null
+      try {
+        const res = await fetch('/api/state')
+        state = res.ok ? await res.json() : { error: res.status }
+      } catch (e) {
+        state = { error: e?.message || String(e) }
+      }
+      return {
+        partner,
+        partnerId,
+        footer: !!document.querySelector('.fleet-hud-wrap .fleet-inbox-phone-footer'),
+        bodyClass: document.body.className,
+        viewport: { w: window.visualViewport?.width || window.innerWidth, h: window.visualViewport?.height || window.innerHeight },
+        inbox: [...document.querySelectorAll('.fleet-hud-wrap .fleet-inbox-shape')].map(el => {
+          const r = el.getBoundingClientRect()
+          return { className: el.className, x: r.x, y: r.y, w: r.width, h: r.height, text: el.textContent?.slice(0, 160) }
+        }),
+        names: [...document.querySelectorAll('.fleet-hud-wrap .fleet-inbox-phone-agent-name')].map(el => el.textContent?.trim()),
+        agentsAttr: document.querySelector('.fleet-hud-wrap .fleet-inbox-phone-agents')?.getAttribute('data-selected-target') || '',
+        stateAgents: (state?.agents || []).filter(a => a.id === partnerId || a.friendly_name === partner),
+      }
+    }, { partner: PARTNER, partnerId: PARTNER_ID })
+    throw new Error(`footer target not visible: ${JSON.stringify(diag)}`)
+  }
   const row = page.locator('.fleet-hud-wrap .fleet-inbox-phone-agent').filter({ hasText: PARTNER }).first()
   await row.dispatchEvent('pointerup', {
     pointerId: 12,
@@ -310,35 +345,58 @@ async function main() {
   await tapPhonePreset(page)
   await snapToInbox(page)
   await selectFooterTarget(page)
+  const footerInput = page.locator('.fleet-hud-wrap .fleet-inbox-phone-composer textarea.fleet-inbox-composer-textarea')
+  await footerInput.waitFor({ state: 'visible', timeout: 5000 })
+  const footerText = `footer composer ${RUN}`
+  await footerInput.fill(footerText)
+  await footerInput.press('Enter')
+  await page.waitForFunction((text) => {
+    return [...document.querySelectorAll('.fleet-hud-wrap .fleet-inbox-thread-preview')]
+      .some(el => el.textContent?.includes(text))
+  }, footerText, { timeout: 10000 })
+  const footerComposer = page.locator('.fleet-hud-wrap .fleet-inbox-phone-composer')
+  await dispatchDrag(footerComposer, [{ x: 340, y: 520 }, { x: 220, y: 522 }, { x: 120, y: 524 }, { x: 35, y: 526 }], 20)
+  await page.waitForFunction(({ humanId, deviceId }) => {
+    const ed = window.__tldraw_editor__
+    return ed.getCurrentPageShapes().filter(s => s.type === 'fleet-chat' && s.props?.userId === humanId && s.props?.deviceId === deviceId).length === 1
+  }, { humanId: QA_ID, deviceId: QA_DEVICE_ID }, { timeout: 5000 })
+  let report = await ownedChats(page)
+  assert(report.chats.length === 1, `footer eject should create one pinned chat, got ${JSON.stringify(report.chats)}`)
+  assert(report.chats[0].index === 2, `footer eject chat not at pane index 2: ${JSON.stringify(report.chats[0])}`)
+  assert(JSON.stringify(report.chats[0].filter) === JSON.stringify([[['from', PARTNER]], [['to', PARTNER]]]), `footer eject wrong filter: ${JSON.stringify(report.chats[0].filter)}`)
+  await page.waitForFunction(() => !document.querySelector('.fleet-hud-wrap .fleet-inbox-phone-agents')?.getAttribute('data-selected-target'), null, { timeout: 5000 })
+  await snapToInbox(page)
+  await selectFooterTarget(page)
   await openThread(page)
 
   const conv = page.locator('.fleet-hud-wrap .fleet-inbox-conv')
   await dispatchDrag(conv, [{ x: 320, y: 320 }, { x: 300, y: 420 }, { x: 298, y: 520 }], 21)
   await page.waitForTimeout(250)
-  let report = await ownedChats(page)
-  assert(report.chats.length === 0, `vertical/short gesture created chat: ${JSON.stringify(report.chats)}`)
+  report = await ownedChats(page)
+  assert(report.chats.length === 1, `vertical/short gesture changed pinned chats: ${JSON.stringify(report.chats)}`)
 
   await dispatchDrag(conv, [{ x: 340, y: 320 }, { x: 220, y: 324 }, { x: 120, y: 326 }, { x: 35, y: 328 }], 22)
   await page.waitForFunction(({ humanId, deviceId }) => {
     const ed = window.__tldraw_editor__
-    return ed.getCurrentPageShapes().filter(s => s.type === 'fleet-chat' && s.props?.userId === humanId && s.props?.deviceId === deviceId).length === 1
+    return ed.getCurrentPageShapes().filter(s => s.type === 'fleet-chat' && s.props?.userId === humanId && s.props?.deviceId === deviceId).length === 2
   }, { humanId: QA_ID, deviceId: QA_DEVICE_ID }, { timeout: 5000 })
   report = await ownedChats(page)
-  assert(report.chats.length === 1, `expected one pinned chat, got ${JSON.stringify(report.chats)}`)
-  assert(report.chats[0].index === 2, `new chat not at pane index 2: ${JSON.stringify(report.chats[0])}`)
-  assert(report.chats[0].w === report.screenW && report.chats[0].h === report.screenH, `new chat not full-screen: ${JSON.stringify(report.chats[0])}`)
-  assert(report.chats[0].locked, `new chat not locked: ${JSON.stringify(report.chats[0])}`)
-  assert(JSON.stringify(report.chats[0].filter) === JSON.stringify([[['from', PARTNER]], [['to', PARTNER]]]), `wrong filter: ${JSON.stringify(report.chats[0].filter)}`)
+  assert(report.chats.map(c => c.index).join(',') === '2,3', `expected pinned indexes 2,3 after thread eject: ${JSON.stringify(report.chats)}`)
+  for (const chat of report.chats) {
+    assert(chat.w === report.screenW && chat.h === report.screenH, `pinned chat not full-screen: ${JSON.stringify(chat)}`)
+    assert(chat.locked, `pinned chat not locked: ${JSON.stringify(chat)}`)
+    assert(JSON.stringify(chat.filter) === JSON.stringify([[['from', PARTNER]], [['to', PARTNER]]]), `wrong filter: ${JSON.stringify(chat.filter)}`)
+  }
 
   await snapToInbox(page)
   await openThread(page)
   await dispatchDrag(page.locator('.fleet-hud-wrap .fleet-inbox-conv'), [{ x: 340, y: 320 }, { x: 220, y: 324 }, { x: 120, y: 326 }, { x: 35, y: 328 }], 23)
   await page.waitForFunction(({ humanId, deviceId }) => {
     const ed = window.__tldraw_editor__
-    return ed.getCurrentPageShapes().filter(s => s.type === 'fleet-chat' && s.props?.userId === humanId && s.props?.deviceId === deviceId).length === 2
+    return ed.getCurrentPageShapes().filter(s => s.type === 'fleet-chat' && s.props?.userId === humanId && s.props?.deviceId === deviceId).length === 3
   }, { humanId: QA_ID, deviceId: QA_DEVICE_ID }, { timeout: 5000 })
   report = await ownedChats(page)
-  assert(report.chats.map(c => c.index).join(',') === '2,3', `expected pinned indexes 2,3 after shift: ${JSON.stringify(report.chats)}`)
+  assert(report.chats.map(c => c.index).join(',') === '2,3,4', `expected pinned indexes 2,3,4 after shift: ${JSON.stringify(report.chats)}`)
 
   await snapToPane(page, 2)
   const chatLog = page.locator('.fleet-hud-wrap .fleet-chat-shape .fleet-chat-log').first()
@@ -346,26 +404,26 @@ async function main() {
   await dispatchDrag(chatLog, [{ x: 190, y: 240 }, { x: 192, y: 360 }, { x: 194, y: 535 }], 31)
   await page.waitForTimeout(250)
   report = await ownedChats(page)
-  assert(report.chats.map(c => c.index).join(',') === '2,3', `down drag before message-list bottom deleted pane: ${JSON.stringify(report.chats)}`)
+  assert(report.chats.map(c => c.index).join(',') === '2,3,4', `down drag before message-list bottom deleted pane: ${JSON.stringify(report.chats)}`)
 
   await setChatLogScroll(page, 'bottom')
   await dispatchDeleteDragWithArrowCheck(page, chatLog, [{ x: 190, y: 240 }, { x: 195, y: 340 }, { x: 198, y: 535 }], 32)
   await page.waitForFunction(({ humanId, deviceId }) => {
     const ed = window.__tldraw_editor__
-    return ed.getCurrentPageShapes().filter(s => s.type === 'fleet-chat' && s.props?.userId === humanId && s.props?.deviceId === deviceId).length === 1
+    return ed.getCurrentPageShapes().filter(s => s.type === 'fleet-chat' && s.props?.userId === humanId && s.props?.deviceId === deviceId).length === 2
   }, { humanId: QA_ID, deviceId: QA_DEVICE_ID }, { timeout: 5000 })
   report = await ownedChats(page)
-  assert(report.chats.map(c => c.index).join(',') === '2', `delete did not compact remaining pane to index 2: ${JSON.stringify(report.chats)}`)
-  assert(report.chats[0].w === report.screenW && report.chats[0].h === report.screenH && report.chats[0].locked, `remaining pane lost full-screen/locked props: ${JSON.stringify(report.chats[0])}`)
+  assert(report.chats.map(c => c.index).join(',') === '2,3', `delete did not compact remaining panes to indexes 2,3: ${JSON.stringify(report.chats)}`)
+  assert(report.chats.every(c => c.w === report.screenW && c.h === report.screenH && c.locked), `remaining pane lost full-screen/locked props: ${JSON.stringify(report.chats)}`)
 
   await setChatLogScroll(page, 'bottom')
   await dispatchDrag(chatLog, [{ x: 190, y: 240 }, { x: 195, y: 340 }, { x: 198, y: 535 }], 33)
   await page.waitForFunction(({ humanId, deviceId }) => {
     const ed = window.__tldraw_editor__
-    return ed.getCurrentPageShapes().filter(s => s.type === 'fleet-chat' && s.props?.userId === humanId && s.props?.deviceId === deviceId).length === 0
+    return ed.getCurrentPageShapes().filter(s => s.type === 'fleet-chat' && s.props?.userId === humanId && s.props?.deviceId === deviceId).length === 1
   }, { humanId: QA_ID, deviceId: QA_DEVICE_ID }, { timeout: 5000 })
   report = await ownedChats(page)
-  assert(report.chats.length === 0, `rightmost/last delete did not remove final pane: ${JSON.stringify(report.chats)}`)
+  assert(report.chats.map(c => c.index).join(',') === '2', `rightmost delete did not leave final compacted pane: ${JSON.stringify(report.chats)}`)
 
   console.log(JSON.stringify({
     viewport: { w: WIDTH, h: HEIGHT },
@@ -376,6 +434,6 @@ async function main() {
 }
 
 main().catch(err => {
-  console.error(`phone-pane-eject-mobile failed: ${err.message}`)
+  console.error(`phone-pane-eject-mobile failed: ${err.stack || err.message}`)
   process.exit(1)
 })

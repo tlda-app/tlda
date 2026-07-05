@@ -702,6 +702,7 @@ function FleetInboxInner({ shape }: { shape: any }) {
       .sort((a, b) => (b.unread - a.unread) || a.display.localeCompare(b.display))
   }, [agents, tasks, unreadCounts])
   const ejectGestureRef = useRef<PhoneThreadEjectGesture | null>(null)
+  const footerEjectGestureRef = useRef<PhoneThreadEjectGesture | null>(null)
 
   const resetThreadEjectGesture = useCallback(() => {
     ejectGestureRef.current = null
@@ -770,6 +771,73 @@ function FleetInboxInner({ shape }: { shape: any }) {
     setOpenPartner(null)
     snapToPhoneLaneIndex(mainEd, result.docLeftPage, result.newIndex)
   }, [activeThread, mainEd, resetThreadEjectGesture, shape])
+
+  const resetFooterEjectGesture = useCallback(() => {
+    footerEjectGestureRef.current = null
+    setPhoneLaneDrag(PHONE_LANE_DRAG_IDLE)
+  }, [])
+
+  const startFooterEjectGesture = useCallback((e: React.PointerEvent) => {
+    if (!isPhoneSurface || !phoneFooterTarget) return
+    if (!e.isPrimary) return
+    if (e.pointerType === 'mouse' && e.button !== 0) return
+    const target = e.target instanceof Element ? e.target : null
+    if (!target?.closest('.fleet-inbox-phone-composer')) return
+    rememberPhoneLanePortraitWidth(mainEd)
+    footerEjectGestureRef.current = {
+      pointerId: e.pointerId,
+      mode: 'pending',
+      x0: e.clientX,
+      y0: e.clientY,
+      lastDx: 0,
+    }
+    try { (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId) } catch {
+      // Synthetic/offscreen pointer events may not be capturable; move/up still dispatch to this handler.
+    }
+  }, [isPhoneSurface, mainEd, phoneFooterTarget])
+
+  const moveFooterEjectGesture = useCallback((e: React.PointerEvent) => {
+    const gesture = footerEjectGestureRef.current
+    if (!gesture || gesture.pointerId !== e.pointerId || !phoneFooterTarget) return
+    const dx = e.clientX - gesture.x0
+    const dy = e.clientY - gesture.y0
+    gesture.lastDx = dx
+    if (gesture.mode === 'pending') {
+      const decision = phoneLaneDragDecision(dx, dy)
+      if (decision === 'abort') {
+        resetFooterEjectGesture()
+        return
+      }
+      if (decision === 'pending') return
+      gesture.mode = 'dragging'
+    }
+
+    e.preventDefault()
+    stopEventPropagation(e)
+    const commit = phoneLaneCommitPx()
+    const progress = dx < 0 ? Math.min(1, Math.abs(dx) / commit) : 0
+    setPhoneLaneDrag({ active: true, progress, dir: progress > 0 ? -1 : 0, armed: progress >= 1, arrowWidthPx: commit })
+  }, [phoneFooterTarget, resetFooterEjectGesture])
+
+  const finishFooterEjectGesture = useCallback((e: React.PointerEvent) => {
+    const gesture = footerEjectGestureRef.current
+    if (!gesture || gesture.pointerId !== e.pointerId) return
+    const target = phoneFooterTarget
+    const shouldCommit = !!target && gesture.mode === 'dragging' && gesture.lastDx <= -phoneLaneCommitPx()
+    e.preventDefault()
+    stopEventPropagation(e)
+    resetFooterEjectGesture()
+    if (!shouldCommit || !target) return
+
+    const filter: FleetFilter = [[['from', target]], [['to', target]]]
+    const result = pushPhonePinnedChatPane(mainEd, shape, filter)
+    if (!result.ok) {
+      console.warn('[phone-pane-stack] footer push-to-eject failed', result)
+      return
+    }
+    setPhoneFooterTarget('')
+    snapToPhoneLaneIndex(mainEd, result.docLeftPage, result.newIndex)
+  }, [mainEd, phoneFooterTarget, resetFooterEjectGesture, shape])
 
   const openableItems = useMemo<DetailItem[]>(() => [
     ...proofTasks.direct.map((n): DetailItem => ({ kind: 'node', key: `node:${n.id}`, node: n })),
@@ -950,6 +1018,12 @@ function FleetInboxInner({ shape }: { shape: any }) {
             selectedTarget={phoneFooterTarget}
             onSelectTarget={setPhoneFooterTarget}
             onStartDrag={startDrag}
+            myId={myId}
+            myName={myName}
+            onEjectPointerDown={startFooterEjectGesture}
+            onEjectPointerMove={moveFooterEjectGesture}
+            onEjectPointerUp={finishFooterEjectGesture}
+            onEjectPointerCancel={resetFooterEjectGesture}
           />
         )}
       </div>
@@ -962,18 +1036,72 @@ function PhoneInboxFooter({
   selectedTarget,
   onSelectTarget,
   onStartDrag,
+  myId,
+  myName,
+  onEjectPointerDown,
+  onEjectPointerMove,
+  onEjectPointerUp,
+  onEjectPointerCancel,
 }: {
   agents: PhoneFooterAgent[]
   selectedTarget: string
   onSelectTarget: (name: string) => void
   onStartDrag: ReturnType<typeof usePillDrag>['startDrag']
+  myId: string | null
+  myName: string
+  onEjectPointerDown: (e: React.PointerEvent) => void
+  onEjectPointerMove: (e: React.PointerEvent) => void
+  onEjectPointerUp: (e: React.PointerEvent) => void
+  onEjectPointerCancel: () => void
 }) {
   const selected = agents.find(agent => agent.name === selectedTarget) || null
   const targetFilter: FleetFilter = selected ? [[['from', selected.name]], [['to', selected.name]]] : []
+  const sendTargets = useMemo(() => selected ? [selected.name] : [], [selected])
+  const agentNames = useMemo(() => {
+    const map: Record<string, string> = {}
+    if (selected) {
+      map[selected.id] = selected.display
+      map[selected.name] = selected.display
+    }
+    if (myId) map[myId] = myName || 'user'
+    return map
+  }, [myId, myName, selected])
+  const send = useCallback((text: string, targets: string[]) => {
+    if (!text || targets.length === 0) return
+    const tempId = `opt-inbox-footer-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    injectOptimisticEvent({
+      _tempId: tempId,
+      type: 'chat',
+      event_type: 'chat',
+      from: getHumanId(),
+      to: targets[0],
+      text,
+      timestamp: new Date().toISOString(),
+      read: false,
+    })
+    const sendWithRetry = (attempt: number) => {
+      Promise.all(targets.map((t) => sendMessage(t, text, { _tempId: tempId })))
+        .then((results: { ok: boolean; event_id: number }[]) => {
+          if (!results.every((r) => r.ok)) throw new Error('send failed')
+        })
+        .catch(() => {
+          if (attempt < 3) setTimeout(() => sendWithRetry(attempt + 1), 2000 * attempt)
+          else updateOptimisticEvent(tempId, { _failed: true })
+        })
+    }
+    sendWithRetry(1)
+  }, [])
 
   return (
     <div className="fleet-inbox-phone-footer">
-      <div className="fleet-inbox-phone-composer" onPointerDown={(e) => stopEventPropagation(e)}>
+      <div
+        className="fleet-inbox-phone-composer"
+        onPointerDownCapture={onEjectPointerDown}
+        onPointerMove={onEjectPointerMove}
+        onPointerUp={onEjectPointerUp}
+        onPointerCancel={onEjectPointerCancel}
+        onPointerDown={(e) => stopEventPropagation(e)}
+      >
         <div className="fleet-inbox-phone-composer-head">
           <span className="fleet-inbox-phone-composer-title">chat</span>
           {selected ? (
@@ -992,7 +1120,16 @@ function PhoneInboxFooter({
             <span className="fleet-inbox-phone-filter-empty">no target</span>
           )}
         </div>
-        <div className="fleet-inbox-phone-composer-disabled" aria-disabled="true" />
+        <ChatComposer
+          sendTargets={sendTargets}
+          agentNames={agentNames}
+          onKeyboardSend={send}
+          onVoiceSend={(targets, text) => send(text, targets)}
+          isTouchDevice={_isTouchDevice}
+          className="fleet-inbox-composer-textarea"
+          placeholder={selected ? '' : 'choose agent'}
+          style={COMPOSER_STYLE}
+        />
       </div>
       <div className="fleet-inbox-phone-agents" data-selected-target={selectedTarget || undefined}>
         {agents.length === 0 ? (

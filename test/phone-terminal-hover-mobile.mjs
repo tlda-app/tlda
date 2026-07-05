@@ -42,7 +42,6 @@ const QA_ID = `fleet:${QA_NAME}`
 const QA_DEVICE_ID = `phone-term-device-${RUN}`
 const PARTNER = `phone-term-agent-${RUN}`
 const PARTNER_ID = `fleet:${PARTNER}`
-const CHAT_ID = `shape:phone-term-chat-${RUN}`
 
 function wsUrl() {
   return BASE.replace(/^https:/, 'wss:').replace(/^http:/, 'ws:') + '/ws/fleet'
@@ -100,41 +99,131 @@ async function tapPhonePreset(page) {
   }, null, { timeout: 15000 })
 }
 
+async function selectFooterTarget(page) {
+  await page.waitForFunction((partner) => {
+    return [...document.querySelectorAll('.fleet-hud-wrap .fleet-inbox-phone-agent-name')]
+      .some(el => el.textContent?.trim() === partner)
+  }, PARTNER, { timeout: 15000 })
+  const row = page.locator('.fleet-hud-wrap .fleet-inbox-phone-agent').filter({ hasText: PARTNER }).first()
+  await row.dispatchEvent('pointerup', {
+    pointerId: 12,
+    pointerType: 'touch',
+    isPrimary: true,
+    button: 0,
+    buttons: 0,
+    clientX: 40,
+    clientY: HEIGHT - 90,
+  })
+  await page.waitForFunction((partner) => {
+    const agents = document.querySelector('.fleet-hud-wrap .fleet-inbox-phone-agents')
+    const filter = document.querySelector('.fleet-hud-wrap .fleet-inbox-phone-filter-preview')
+    return agents?.getAttribute('data-selected-target') === partner &&
+      filter?.getAttribute('data-filter') === JSON.stringify([[['from', partner]], [['to', partner]]])
+  }, PARTNER, { timeout: 5000 })
+}
+
+async function dispatchDrag(locator, points, pointerId) {
+  const [first, ...rest] = points
+  await locator.dispatchEvent('pointerdown', {
+    pointerId,
+    pointerType: 'touch',
+    isPrimary: true,
+    button: 0,
+    buttons: 1,
+    clientX: first.x,
+    clientY: first.y,
+  })
+  for (const p of rest) {
+    await locator.dispatchEvent('pointermove', {
+      pointerId,
+      pointerType: 'touch',
+      isPrimary: true,
+      button: 0,
+      buttons: 1,
+      clientX: p.x,
+      clientY: p.y,
+    })
+  }
+  const last = rest[rest.length - 1] || first
+  await locator.dispatchEvent('pointerup', {
+    pointerId,
+    pointerType: 'touch',
+    isPrimary: true,
+    button: 0,
+    buttons: 0,
+    clientX: last.x,
+    clientY: last.y,
+  })
+}
+
 async function createPhoneChatPane(page) {
-  await page.evaluate(({ chatId, humanId, deviceId, partner }) => {
+  await selectFooterTarget(page)
+  const composer = page.locator('.fleet-hud-wrap .fleet-inbox-phone-composer')
+  await dispatchDrag(composer, [
+    { x: WIDTH - 35, y: Math.max(48, HEIGHT - 205) },
+    { x: Math.floor(WIDTH * 0.58), y: Math.max(48, HEIGHT - 207) },
+    { x: 32, y: Math.max(48, HEIGHT - 209) },
+  ], 22)
+  await page.waitForFunction(({ humanId, deviceId, partner }) => {
+    const ed = window.__tldraw_editor__
+    return ed.getCurrentPageShapes().some(s =>
+      s.type === 'fleet-chat' &&
+      s.props?.userId === humanId &&
+      s.props?.deviceId === deviceId &&
+      JSON.stringify(s.props?.filter) === JSON.stringify([[['from', partner]], [['to', partner]]]),
+    )
+  }, { humanId: QA_ID, deviceId: QA_DEVICE_ID, partner: PARTNER }, { timeout: 5000 })
+  await page.waitForFunction(() => {
+    const until = Number(window.__tldaPhoneCameraSettlingUntil || 0)
+    return !until || Date.now() >= until
+  }, null, { timeout: 15000 })
+  await page.evaluate(({ humanId, deviceId, partner }) => {
     const ed = window.__tldraw_editor__
     const pageShape = ed.getCurrentPageShapes().find(s => s.type === 'svg-page' || s.type === 'html-page')
-    if (!pageShape) throw new Error('no document page shape')
     const pb = ed.getShapePageBounds(pageShape.id)
-    const inbox = ed.getCurrentPageShapes().find(s =>
-      s.type === 'fleet-inbox' &&
+    const chat = ed.getCurrentPageShapes().find(s =>
+      s.type === 'fleet-chat' &&
       s.props?.userId === humanId &&
-      s.props?.deviceId === deviceId)
-    if (!inbox) throw new Error('no owned phone inbox')
+      s.props?.deviceId === deviceId &&
+      JSON.stringify(s.props?.filter) === JSON.stringify([[['from', partner]], [['to', partner]]]),
+    )
+    if (!chat) throw new Error('created phone chat pane not found')
     const cam = ed.getCamera()
-    const screen = ed.getViewportScreenBounds()
-    const screenW = Math.round(screen.w)
-    const screenH = Math.round(screen.h)
-    const chatX = pb.x - (2 * screenW)
-    const chatY = inbox.y || pb.y
-    ed.createShape({
-      id: chatId,
-      type: 'fleet-chat',
-      x: chatX,
-      y: chatY,
-      isLocked: true,
-      props: {
-        w: screenW,
-        h: screenH,
-        filter: [[['from', partner]], [['to', partner]]],
-        trafficMode: 'normal',
-        userId: humanId,
-        deviceId,
-      },
-    })
+    const screenW = Math.round(ed.getViewportScreenBounds().w)
     ed.setCamera({ ...cam, x: (2 * screenW) / cam.z - pb.x }, { animation: { duration: 0 } })
-  }, { chatId: CHAT_ID, humanId: QA_ID, deviceId: QA_DEVICE_ID, partner: PARTNER })
-  await page.waitForTimeout(500)
+  }, { humanId: QA_ID, deviceId: QA_DEVICE_ID, partner: PARTNER })
+  try {
+    await page.waitForFunction(() => {
+      return [...document.querySelectorAll('.fleet-hud-wrap .fleet-chat-shape')]
+        .some(el => {
+          const r = el.getBoundingClientRect()
+          return r.width > 0 && r.height > 0 && r.right > 0 && r.left < window.innerWidth
+        })
+    }, null, { timeout: 5000 })
+  } catch (err) {
+    const diag = await page.evaluate(({ humanId, deviceId, partner }) => {
+      const ed = window.__tldraw_editor__
+      const pageShape = ed.getCurrentPageShapes().find(s => s.type === 'svg-page' || s.type === 'html-page')
+      const pb = ed.getShapePageBounds(pageShape.id)
+      const inbox = ed.getCurrentPageShapes().find(s => s.type === 'fleet-inbox' && s.props?.userId === humanId && s.props?.deviceId === deviceId)
+      const chats = ed.getCurrentPageShapes()
+        .filter(s => s.type === 'fleet-chat' && s.props?.userId === humanId && s.props?.deviceId === deviceId)
+        .map(s => ({ id: s.id, x: s.x, y: s.y, props: s.props }))
+      return {
+        partner,
+        camera: ed.getCamera(),
+        viewport: ed.getViewportScreenBounds(),
+        pageBounds: pb,
+        inbox: inbox ? { x: inbox.x, y: inbox.y, props: inbox.props } : null,
+        chats,
+        chatRects: [...document.querySelectorAll('.fleet-hud-wrap .fleet-chat-shape')].map(el => {
+          const r = el.getBoundingClientRect()
+          return { x: r.x, y: r.y, w: r.width, h: r.height, text: el.textContent?.slice(0, 80) }
+        }),
+      }
+    }, { humanId: QA_ID, deviceId: QA_DEVICE_ID, partner: PARTNER })
+    throw new Error(`created phone chat pane not visible after snap: ${JSON.stringify(diag)}`)
+  }
 }
 
 function assert(cond, msg) {
@@ -184,9 +273,14 @@ async function main() {
         .some(el => (el.getAttribute('title') || '').includes(partner))
     }, PARTNER, { timeout: 15000 })
   } catch (err) {
-    const diag = await page.evaluate(({ humanId, deviceId, partner, partnerId, chatId }) => {
+    const diag = await page.evaluate(({ humanId, deviceId, partner, partnerId }) => {
       const ed = window.__tldraw_editor__
-      const chat = ed?.getCurrentPageShapes?.().find(s => s.id === chatId)
+      const chat = ed?.getCurrentPageShapes?.().find(s =>
+        s.type === 'fleet-chat' &&
+        s.props?.userId === humanId &&
+        s.props?.deviceId === deviceId &&
+        JSON.stringify(s.props?.filter) === JSON.stringify([[['from', partner]], [['to', partner]]]),
+      )
       return {
         agents: window.__tldaFleetAgentsForDebug || null,
         stateAgents: null,
@@ -208,7 +302,7 @@ async function main() {
         partner,
         partnerId,
       }
-    }, { humanId: QA_ID, deviceId: QA_DEVICE_ID, partner: PARTNER, partnerId: PARTNER_ID, chatId: CHAT_ID })
+    }, { humanId: QA_ID, deviceId: QA_DEVICE_ID, partner: PARTNER, partnerId: PARTNER_ID })
     try {
       const state = await page.evaluate(async () => {
         const res = await fetch('/api/state')
@@ -220,14 +314,13 @@ async function main() {
     }
     throw new Error(`terminal icon did not render: ${JSON.stringify(diag)}`)
   }
-  await page.evaluate((partner) => {
-    const icon = [...document.querySelectorAll('.fleet-hud-wrap .fleet-terminal-icon')]
-      .find(el => (el.getAttribute('title') || '').includes(partner))
-    if (!(icon instanceof HTMLElement)) throw new Error(`terminal icon not found for ${partner}`)
-    icon.click()
-  }, PARTNER)
+  const terminalIcon = page.locator(`.fleet-hud-wrap .fleet-terminal-icon[title*="${PARTNER}"]`).first()
+  await terminalIcon.tap({ force: true })
+  await page.waitForFunction((partner) => {
+    return [...document.querySelectorAll('.fleet-hud-wrap .fleet-terminal-icon.active')]
+      .some(el => (el.getAttribute('title') || '').includes(partner))
+  }, PARTNER, { timeout: 5000 })
   await page.locator('.fleet-terminal-hover-pane').waitFor({ state: 'visible', timeout: 5000 })
-  await page.waitForTimeout(250)
 
   const report = await page.evaluate(() => {
     const pane = document.querySelector('.fleet-terminal-hover-pane')
@@ -268,6 +361,6 @@ async function main() {
 }
 
 main().catch(err => {
-  console.error(`phone-terminal-hover-mobile failed: ${err.message}`)
+  console.error(`phone-terminal-hover-mobile failed: ${err.stack || err.message}`)
   process.exit(1)
 })
