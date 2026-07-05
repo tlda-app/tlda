@@ -3,7 +3,7 @@ process.env.FLEET_ID = process.env.FLEET_ID || 'fleet:test-inbox-status'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { formatRecipientStatusSummary, getFleetTools, handleFleetTool } from '../mcp-server/fleet-tools.mjs'
+import { formatInboxText, formatRecipientStatusSummary, getFleetTools, handleFleetTool } from '../mcp-server/fleet-tools.mjs'
 import { decideInboxDelivery, parsePriorityPhrase } from '../shared/inbox-attention.mjs'
 
 test('set_inbox_status is exposed as the explicit status-control tool', () => {
@@ -113,4 +113,49 @@ test('chat recipient summaries prefer server attention receipts', () => {
   ])
   assert.match(text, /Batched for worker \[busy\]\./)
   assert.match(text, /Say "this is important"/)
+})
+
+test('default inbox view buckets explicit delivery metadata', () => {
+  const now = Date.parse('2026-07-05T12:00:00Z')
+  const text = formatInboxText({
+    mode: 'default',
+    task: { id: '1', description: 'Keep inbox modes moving', status: 'pending' },
+    tasks: null,
+    now,
+    messages: [
+      {
+        from: 'fleet:skip',
+        fromLabel: 'skip',
+        kind: 'user',
+        priority: 'urgent',
+        inboxDelivery: 'notified',
+        line: '[from skip] this is urgent: can you check this?',
+      },
+      {
+        from: 'fleet:peer',
+        fromLabel: 'peer',
+        kind: 'message',
+        priority: 'normal',
+        inboxDelivery: 'batched',
+        notifyBy: '2026-07-05T12:02:00.000Z',
+        inboxStatus: 'busy',
+        inboxStatusTag: 'spawn broken',
+        line: '[from peer] FYI for later',
+      },
+      {
+        from: 'fleet:watch',
+        fromLabel: 'watch',
+        kind: 'watch',
+        priority: 'normal',
+        inboxDelivery: 'queued',
+        line: '[from watch] background signal',
+      },
+    ],
+  })
+
+  assert.match(text, /INBOX MODE: default/)
+  assert.match(text, /NOW\n\[1\] \[from skip\] this is urgent: can you check this\? \[urgent\]/)
+  assert.match(text, /ACTIVE WORK\n\[task:1\] Keep inbox modes moving/)
+  assert.match(text, /BATCHED\n\[1\] \[from peer\] FYI for later \[delivers in 120s\] \[recipient was busy \(spawn broken\)\]/)
+  assert.match(text, /BACKGROUND\n\[1\] \[from watch\] background signal/)
 })

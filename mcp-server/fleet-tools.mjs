@@ -1893,9 +1893,53 @@ async function resolveInboxMessage(message, resolvers) {
     from: message.from,
     fromLabel,
     kind: inboxMessageKind(message),
+    priority: message.metadata?.priority || 'normal',
+    inboxDelivery: message.metadata?.inbox_delivery || 'notified',
+    inboxStatus: message.metadata?.inbox_status || null,
+    inboxStatusTag: message.metadata?.inbox_status_tag || null,
+    notifyBy: message.metadata?.notify_by || null,
     images,
     line: `[from ${fromLabel}${idHint}${docHint}] (reply with chat(to: "${message.from}")) ${imgResolvedText}${reminder}`,
   };
+}
+
+function isPastNotifyBy(message, now = Date.now()) {
+  if (!message.notifyBy) return false;
+  const ts = Date.parse(message.notifyBy);
+  return Number.isFinite(ts) && ts <= now;
+}
+
+function inboxDefaultBucket(message, now = Date.now()) {
+  if (message.inboxDelivery === 'batched' && !isPastNotifyBy(message, now)) return 'batched';
+  if (message.inboxDelivery === 'queued') return 'background';
+  if (message.kind === 'watch') return 'background';
+  return 'now';
+}
+
+function inboxTimingHint(message, now = Date.now()) {
+  if (message.inboxDelivery === 'batched' && message.notifyBy) {
+    const ts = Date.parse(message.notifyBy);
+    if (Number.isFinite(ts)) {
+      const seconds = Math.max(0, Math.ceil((ts - now) / 1000));
+      if (seconds > 0) return ` [delivers in ${seconds}s]`;
+      return ' [delivery due]';
+    }
+  }
+  return '';
+}
+
+function inboxPriorityHint(message) {
+  return message.priority && message.priority !== 'normal' ? ` [${message.priority}]` : '';
+}
+
+function inboxStatusHint(message) {
+  if (!message.inboxStatus) return '';
+  const tag = message.inboxStatusTag ? ` (${message.inboxStatusTag})` : '';
+  return ` [recipient was ${message.inboxStatus}${tag}]`;
+}
+
+function inboxDefaultLine(message, now = Date.now()) {
+  return `${message.line}${inboxPriorityHint(message)}${inboxTimingHint(message, now)}${inboxStatusHint(message)}`;
 }
 
 function groupedInboxLines(messages) {
@@ -1916,7 +1960,7 @@ function groupedInboxLines(messages) {
   return lines;
 }
 
-function formatInboxText({ mode, task, tasks, messages }) {
+export function formatInboxText({ mode, task, tasks, messages, now = Date.now() }) {
   const activeTasks = normalizeInboxTasks({ task, tasks });
   const taskBlocks = inboxTaskBlocks(activeTasks);
   const lines = [];
@@ -1939,6 +1983,34 @@ function formatInboxText({ mode, task, tasks, messages }) {
     }
     const hidden = messages.filter(m => m.kind === 'watch').length;
     if (hidden) lines.push('', `BACKGROUND: ${hidden} watch item(s) hidden in focus mode.`);
+    return lines.join('\n');
+  }
+
+  if (mode === 'default') {
+    const nowRows = messages.filter(m => inboxDefaultBucket(m, now) === 'now');
+    const batchedRows = messages.filter(m => inboxDefaultBucket(m, now) === 'batched');
+    const backgroundRows = messages.filter(m => inboxDefaultBucket(m, now) === 'background');
+
+    lines.push('');
+    lines.push('NOW');
+    if (!activeTasks.length && !nowRows.length) lines.push('- Clear. No active task or immediate unread messages.');
+    nowRows.forEach((m, i) => lines.push(`[${i + 1}] ${inboxDefaultLine(m, now)}`));
+    if (taskBlocks.length) {
+      lines.push('');
+      lines.push('ACTIVE WORK');
+      lines.push(...taskBlocks.flatMap((block, i) => i ? ['', block] : [block]));
+    }
+
+    lines.push('');
+    lines.push('BATCHED');
+    if (!batchedRows.length) lines.push('- Nothing waiting for the batch window.');
+    batchedRows.forEach((m, i) => lines.push(`[${i + 1}] ${inboxDefaultLine(m, now)}`));
+
+    lines.push('');
+    lines.push('BACKGROUND');
+    if (!backgroundRows.length) lines.push('- No queued or watch items.');
+    backgroundRows.forEach((m, i) => lines.push(`[${i + 1}] ${inboxDefaultLine(m, now)}`));
+
     return lines.join('\n');
   }
 
