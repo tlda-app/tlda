@@ -13,7 +13,7 @@ import { dirname, join } from 'path'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(__dirname, '..')
-const PORT = Number(process.env.PORT || 5194)
+const PORT = Number(process.env.PORT || (5194 + (process.pid % 1000)))
 const DB = `/tmp/suggestions-test-${process.pid}.db`
 const TODD_PID = `/tmp/suggestions-test-todd-${process.pid}.pid`
 const TODD_ID = `/tmp/suggestions-test-todd-${process.pid}.fleet-id`

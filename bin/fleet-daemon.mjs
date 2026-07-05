@@ -2,21 +2,21 @@
 /**
  * fleet-daemon — per-machine local agent for the tlda hub server.
  *
- * The daemon owns everything that has to happen on the user's local machine:
+ * The daemon is the local bridge from this machine into the tlda server:
  *
- *   1. JSONL watching — fs.watch on Claude Code session files in
+ *   1. JSONL watching - stream-tail Claude Code session files in
  *      ~/.claude/projects/<projectHash>/<sessionId>.jsonl, parse new
  *      bytes, and push activity-event + terminal-chat messages over
  *      WebSocket to the server.
  *
- *   2. Document source watching — fs.watch on each tlda project's
+ *   2. Document source watching - chokidar watches each tlda project's
  *      sourceDir; on file change, push a source-change message
  *      containing the file content. The server runs the build.
  *
  * What it does NOT do:
  *   - No SQLite. The server owns the fleet store.
  *   - No HTTP. Browsers talk to the server, not the daemon.
- *   - No tmux RPCs. Phase 2 will add those.
+ *   - No bot/service supervision. The CLI installs those as managed services.
  *
  * Lifecycle:
  *   - Reads ~/.config/tlda/config.json for { server, tokenRw, machineId }.
@@ -66,7 +66,7 @@ import { scanMarkdownDeps } from '../shared/markdown-deps.mjs'
 import {
   loadConfig as _loadSharedConfig, saveConfig as _saveSharedConfig,
   getServerUrl, getFleetServerUrl, getRwToken, DEFAULT_PORT, hasTls,
-  CONFIG_DIR as _SHARED_CONFIG_DIR, getManagedBots,
+  CONFIG_DIR as _SHARED_CONFIG_DIR,
   getActiveConfigName, assertServerCoherence,
 } from '../shared/config.mjs'
 const execFileP = promisify(execFile)
@@ -76,10 +76,9 @@ import { createLogger } from '../shared/logger.mjs'
 import { resolveDaemonIsolation } from '../shared/daemon-identity.mjs'
 import { sendActivityEvents } from './lib/activity-send.mjs'
 import { recordPartialSkillReads } from '../shared/partial-skill-reads.mjs'
-import { createManagedBotSupervisor } from './lib/managed-bots.mjs'
 import { maybeKickGoose, resolveGooseStatus } from './lib/goose-kick.mjs'
 import {
-  classifyPane, decideThinkingEdge, shouldDisarm,
+  classifyPane, decideThinkingEdge, shouldDisarm, shouldPromptSweepAgent,
   THINKING_SPINNER_RE, INTERRUPT_HINT_RE, COMPACTING_RE, APPROVAL_PROMPT_RE,
   THINKING_SCAN_LINES, APPROVAL_PROMPT_SCAN_LINES,
 } from './lib/status-classifier.mjs'
@@ -157,17 +156,6 @@ function loadSourceBindings() {
 const LOG_FILE = path.join(CONFIG_DIR, 'fleet-daemon.log')
 const DEAD_LETTER_FILE = path.join(CONFIG_DIR, 'daemon-dead-letters.jsonl')
 const PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects')
-
-function repoRoot() {
-  const d = path.dirname(fileURLToPath(import.meta.url))
-  const m = d.match(/^(.+?)\/\.claude\/worktrees\//)
-  return m ? m[1] : path.join(d, '..')
-}
-
-function resolveBotScript(script) {
-  if (script.startsWith('/')) return script
-  return path.join(repoRoot(), script)
-}
 
 // ---------- config / machine identity ----------
 
@@ -1017,8 +1005,10 @@ function startAutoAcceptSweep() {
   setInterval(async () => {
     const sweptSessions = new Set()
     for (const agent of agents) {
-      if (agent.dead || agent.human || agent.hibernating) continue
       if (!agent.tmux_session) continue
+      const armed = _armedSince.has(agent.id)
+      const surfaced = surfacedPrompts.has(agent.tmux_session)
+      if (!shouldPromptSweepAgent(agent, { armed, surfaced })) continue
       if (sweptSessions.has(agent.tmux_session)) continue
       sweptSessions.add(agent.tmux_session)
       // Skip agents with active PTY watchers — they get real-time detection
@@ -2088,23 +2078,74 @@ function readFileForUpload(fullPath) {
   return { content: data.toString('base64'), encoding: 'base64' }
 }
 
-function startPolling(state, rel) {
-  const full = path.join(state.sourceDir, rel)
-  if (!fs.existsSync(full)) return
-  fs.watchFile(full, { interval: 2000 }, (curr, prev) => {
-    if (curr.mtimeMs === prev.mtimeMs) return
-    state.onFileChange(rel, true)
+function sourceRel(sourceDir, filePath) {
+  if (!filePath) return null
+  const abs = path.isAbsolute(String(filePath)) ? String(filePath) : path.join(sourceDir, String(filePath))
+  const rel = path.relative(sourceDir, abs)
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return null
+  return rel.split(path.sep).join('/')
+}
+
+function closeWatcher(watcher, label) {
+  if (!watcher) return
+  try {
+    const closed = watcher.close()
+    if (closed?.catch) closed.catch(e => log.warn(`chokidar close failed for ${label}: ${e?.message || e}`))
+  } catch (e) {
+    log.warn(`chokidar close threw for ${label}: ${e?.message || e}`)
+  }
+}
+
+function shouldIgnoreSourceWatchPath(sourceDir, filePath, stats) {
+  const rel = sourceRel(sourceDir, filePath)
+  if (!rel) return false
+  const parts = rel.split('/')
+  if (parts.includes('node_modules') || parts.includes('.git')) return true
+  if (!stats) return false
+  if (stats?.isDirectory?.()) return false
+  return !isSourceFile(rel) && !rel.includes('.tlda/scratch/')
+}
+
+function startSourceWatcher(state, reason = 'start') {
+  closeWatcher(state.watcher, state.projectName)
+  const watcher = chokidar.watch(state.sourceDir, {
+    ignoreInitial: true,
+    persistent: true,
+    followSymlinks: true,
+    ignored: (filePath, stats) => shouldIgnoreSourceWatchPath(state.sourceDir, filePath, stats),
   })
+  state.watcher = watcher
+  const handle = (filePath) => {
+    if (state.watcher !== watcher) return
+    const rel = sourceRel(state.sourceDir, filePath)
+    if (rel) state.onFileChange(rel)
+  }
+  watcher
+    .on('add', handle)
+    .on('change', handle)
+    .on('unlink', handle)
+    .on('error', e => {
+      if (state.watcher !== watcher) return
+      log.warn(`chokidar source watcher failed for ${state.projectName}: ${e?.message || e}`)
+      state.watcher = null
+      closeWatcher(watcher, state.projectName)
+      setTimeout(() => {
+        if (sourceWatchers.get(state.projectName) === state && !state.watcher) startSourceWatcher(state, 'retry')
+      }, 1000).unref?.()
+    })
+  log.info(`chokidar source watcher started for ${state.projectName} (${reason})`)
 }
 
-function stopPolling(state, rel) {
-  try { fs.unwatchFile(path.join(state.sourceDir, rel)) } catch {}
+function closeSourceState(state) {
+  closeWatcher(state.watcher, state.projectName)
+  state.watcher = null
+  if (state._symlinkWatchers) {
+    for (const [target, watcher] of state._symlinkWatchers) closeWatcher(watcher, `symlink target ${target}`)
+    state._symlinkWatchers.clear()
+  }
 }
 
-let _activeViewerSet = new Set()
-
-function syncSourceWatchers(projectList, activeViewers) {
-  if (activeViewers) _activeViewerSet = new Set(activeViewers)
+function syncSourceWatchers(projectList) {
   const activeNames = new Set()
   const bindings = loadSourceBindings()
   for (const p of projectList) {
@@ -2118,10 +2159,8 @@ function syncSourceWatchers(projectList, activeViewers) {
     const isMarkdown = isMarkdownDoc(p.format, p.mainFile)
     const hasFlsWatchList = p.watchFiles?.length > 0
     // Bootstrap watchSet (no .fls yet) must include the main's \input deps, not
-    // just the main — else the per-file poller (the backup for when fs.watch
-    // goes stale) only covers the main, and an edit to an \input file (e.g.
-    // appendix_b.tex) is silently dropped when fs.watch misses it → stale doc.
-    // Scan the deps with the same scanner pushWatchedFiles uses.
+    // just the main, so the initial connect push contains dependencies before
+    // the first build produces a .fls.
     const watchSet = new Set(
       hasFlsWatchList ? p.watchFiles
         : isMarkdown && p.mainFile ? scanMarkdownInputs(sourceDir, p.mainFile)
@@ -2130,15 +2169,22 @@ function syncSourceWatchers(projectList, activeViewers) {
 
     if (sourceWatchers.has(p.name)) {
       const existing = sourceWatchers.get(p.name)
-      for (const rel of existing.watchSet) if (!watchSet.has(rel)) stopPolling(existing, rel)
-      for (const rel of watchSet) if (!existing.watchSet.has(rel)) startPolling(existing, rel)
-      existing.watchSet = watchSet
-      continue
+      if (existing.sourceDir !== sourceDir) {
+        closeSourceState(existing)
+        sourceWatchers.delete(p.name)
+      } else {
+        existing.watchSet = watchSet
+        existing.mainFile = p.mainFile
+        existing.extraInputCommands = p.extraInputCommands || []
+        existing.isMarkdown = isMarkdown
+        if (!existing.watcher) startSourceWatcher(existing, 'resync')
+        continue
+      }
     }
 
-    const state = { sourceDir, debounce: null, pending: new Set(), watchSet, onFileChange: null, projectName: p.name, mainFile: p.mainFile, extraInputCommands: p.extraInputCommands || [], watchSeen: new Map(), isMarkdown }
+    const state = { sourceDir, debounce: null, pending: new Set(), watchSet, onFileChange: null, projectName: p.name, mainFile: p.mainFile, extraInputCommands: p.extraInputCommands || [], isMarkdown, watcher: null, _symlinkWatchers: new Map() }
 
-    const onFileChange = (filename, fromPoll) => {
+    const onFileChange = (filename) => {
       if (!filename) return
       if (state.isMarkdown) {
         // A markdown doc bundles exactly its dependency graph (main + referenced
@@ -2148,30 +2194,20 @@ function syncSourceWatchers(projectList, activeViewers) {
         // changes (see flushSourceChanges), not via the escape hatch below.
         if (!state.watchSet.has(filename)) return
       } else {
-      const isScratch = filename.includes('.tlda/scratch/')
-      if (!isScratch) {
-        // Source files (.tex, .bib, .sty, etc.) always pass — even if not in the watchSet.
-        // The watchSet comes from the PREVIOUS build's .fls; a newly-added \input dep
-        // won't be in it yet, but we must still push it so the build can pick it up.
-        // Non-source files (build artifacts, .aux, etc.) are filtered by watchSet when
-        // available, or dropped entirely when the watchSet is empty (bootstrap mode).
-        if (!isSourceFile(filename)) {
-          if (state.watchSet.size > 0) {
-            if (!state.watchSet.has(filename)) return
-          } else {
-            return
+        const isScratch = filename.includes('.tlda/scratch/')
+        if (!isScratch) {
+          // Source files (.tex, .bib, .sty, etc.) always pass - even if not in the watchSet.
+          // The watchSet comes from the PREVIOUS build's .fls; a newly-added \input dep
+          // won't be in it yet, but we must still push it so the build can pick it up.
+          // Non-source files (build artifacts, .aux, etc.) are filtered by watchSet when
+          // available, or dropped entirely when the watchSet is empty (bootstrap mode).
+          if (!isSourceFile(filename)) {
+            if (state.watchSet.size > 0) {
+              if (!state.watchSet.has(filename)) return
+            } else {
+              return
+            }
           }
-        }
-      }
-      }
-      if (!fromPoll) {
-        state.watchSeen.set(filename, Date.now())
-      } else if (state.watcher) {
-        const seenAt = state.watchSeen.get(filename)
-        if (!seenAt || Date.now() - seenAt > 3000) {
-          log.warn(`fs.watch missed ${filename} in ${state.projectName} — recreating`)
-          try { state.watcher.close() } catch {}
-          state.watcher = fs.watch(state.sourceDir, { recursive: true }, (_ev, fn) => state.onFileChange(fn))
         }
       }
       state.pending.add(filename)
@@ -2181,8 +2217,8 @@ function syncSourceWatchers(projectList, activeViewers) {
     state.onFileChange = onFileChange
 
     try {
-      for (const rel of watchSet) startPolling(state, rel)
       sourceWatchers.set(p.name, state)
+      startSourceWatcher(state, 'project sync')
       log.info(`watching source ${p.name}: ${sourceDir}${bindings[p.name] ? ' (local binding)' : ''} (${watchSet.size} files${hasFlsWatchList ? '' : ', bootstrap'})`)
       pushWatchedFiles(p.name, sourceDir, watchSet, hasFlsWatchList ? null : p.mainFile, p.extraInputCommands, isMarkdown)
     } catch (e) {
@@ -2191,34 +2227,12 @@ function syncSourceWatchers(projectList, activeViewers) {
   }
   for (const [name, state] of sourceWatchers) {
     if (!activeNames.has(name)) {
-      try { state.watcher?.close() } catch {}
-      for (const rel of state.watchSet) stopPolling(state, rel)
+      closeSourceState(state)
       sourceWatchers.delete(name)
     }
   }
-  syncFsWatchers()
 }
 
-function syncFsWatchers() {
-  for (const [name, state] of sourceWatchers) {
-    const needsWatch = _activeViewerSet.has(name)
-    if (needsWatch && !state.watcher) {
-      try {
-        state.watcher = fs.watch(state.sourceDir, { recursive: true }, (_ev, fn) => state.onFileChange(fn))
-        log.info(`fs.watch started for ${name} (viewer connected)`)
-      } catch (e) { log.error(`fs.watch failed for ${name}: ${e.message}`) }
-    } else if (!needsWatch && state.watcher) {
-      try { state.watcher.close() } catch {}
-      state.watcher = null
-    }
-  }
-}
-
-/**
- * Push all source files in a directory to the server (recursive walk).
- * Called when a new watcher is set up so the server gets the current state,
- * catching any edits that occurred while the daemon was disconnected.
- */
 /**
  * Push source files to the server on connect.
  * When mainFile is set (no .fls yet), scan it recursively for \input-like
@@ -2312,14 +2326,13 @@ function flushSourceChanges(projectName) {
 
   // When the main .md of a markdown doc changes, rescan its image refs. A newly-
   // referenced image must be pushed now (the build will otherwise 404 it) and
-  // added to the watchSet + poller so later edits to it pass the strict filter.
+  // added to the watchSet so later edits to it pass the strict filter.
   if (state.isMarkdown && state.mainFile && filePaths.includes(state.mainFile)) {
     const alreadyPushed = new Set(filePaths)
     const deps = scanMarkdownInputs(state.sourceDir, state.mainFile)
     for (const rel of deps) {
       if (!state.watchSet.has(rel)) {
         state.watchSet.add(rel)
-        startPolling(state, rel)
       }
       if (alreadyPushed.has(rel)) continue
       const full = path.join(state.sourceDir, rel)
@@ -2331,8 +2344,8 @@ function flushSourceChanges(projectName) {
     }
   }
 
-  // Watch symlink targets in .tlda/scratch/ — changes to the linked file
-  // should trigger a rebuild. Poll the targets since they're outside the source dir.
+  // Watch symlink targets in .tlda/scratch/ — changes to the linked file should
+  // trigger a rebuild even when the target sits outside the source dir.
   for (const rel of filePaths) {
     if (!rel.includes('.tlda/scratch/')) continue
     const full = path.join(state.sourceDir, rel)
@@ -2340,10 +2353,13 @@ function flushSourceChanges(projectName) {
       const stat = fs.lstatSync(full)
       if (stat.isSymbolicLink()) {
         const target = fs.realpathSync(full)
-        if (!state._symlinkPolls) state._symlinkPolls = new Map()
-        if (!state._symlinkPolls.has(target)) {
-          state._symlinkPolls.set(target, rel)
-          fs.watchFile(target, { interval: 2000 }, () => state.onFileChange(rel, true))
+        if (!state._symlinkWatchers) state._symlinkWatchers = new Map()
+        if (!state._symlinkWatchers.has(target)) {
+          const watcher = chokidar.watch(target, { ignoreInitial: true, persistent: true, followSymlinks: true })
+            .on('change', () => state.onFileChange(rel))
+            .on('unlink', () => state.onFileChange(rel))
+            .on('error', e => log.warn(`chokidar symlink target watcher failed for ${target}: ${e?.message || e}`))
+          state._symlinkWatchers.set(target, watcher)
           log.info(`watching symlink target: ${target} -> ${rel}`)
         }
       }
@@ -2418,11 +2434,7 @@ function syncBackingWatchers(files) {
   }
 
   // Close all existing watchers and rebuild from scratch.
-  for (const [, entry] of backingWatchers) {
-    try { entry.watcher?.close() } catch {
-      // Best-effort watcher cleanup.
-    }
-  }
+  for (const [, entry] of backingWatchers) closeWatcher(entry.watcher, `${entry.project}:${entry.backingName}`)
   backingWatchers.clear()
 
   for (const [, file] of incoming) {
@@ -2445,7 +2457,7 @@ function syncBackingWatchers(files) {
     }
     try {
       let debounce = null
-      const watcher = fs.watch(fp, () => {
+      const handle = () => {
         const entry = backingWatchers.get(key)
         if (!entry) return
         if (Date.now() - entry.lastWriteAt < 2000) return
@@ -2461,9 +2473,21 @@ function syncBackingWatchers(files) {
             sendBackingStatus({ project, backingName, docNames, status, message: e.message })
           }
         }, 200)
+      }
+      const watcher = chokidar.watch(fp, {
+        ignoreInitial: true,
+        persistent: true,
+        followSymlinks: true,
       })
+        .on('add', handle)
+        .on('change', handle)
+        .on('unlink', handle)
+        .on('error', e => {
+          log.warn(`chokidar backing watcher failed for ${project}:${backingName}: ${e?.message || e}`)
+          sendBackingStatus({ project, backingName, docNames, status: 'failed', message: e?.message || String(e) })
+        })
       backingWatchers.set(key, { watcher, project, backingName, docNames, lastWriteAt: 0 })
-      log.info(`watching backing file: ${project}:${backingName}`)
+      log.info(`chokidar backing watcher started for ${project}:${backingName}`)
     } catch (e) {
       log.warn(`watch backing file ${project}:${backingName}: ${e.message}`)
       sendBackingStatus({ project, backingName, docNames, status: 'failed', message: e.message })
@@ -2841,6 +2865,8 @@ async function rpcKillSession({ tmux_session, agent_id: _agent_id }) {
   await tmux('kill-session', '-t', tmux_session)
   // NOTE: killing a tmux session is hibernation, not death. Don't mark dead.
   // Explicit kills go through a separate path that hits /mark-dead directly.
+  if (_agent_id) emitAgentStatus(_agent_id, 'hibernating')
+  _alivenessCache.set(tmux_session, false)
   return { ok: true, tmux_session }
 }
 
@@ -3387,8 +3413,15 @@ function disarmAgent(agentId) {
   _prevCompacting.delete(agentId)
   _prevApprovalFP.delete(agentId)
 }
+function emitAgentStatus(agentId, state, tool = null) {
+  if (!agentId || !state) return
+  if (_prevAgentStatus.get(agentId) === state) return
+  _prevAgentStatus.set(agentId, state)
+  sendMsg({ type: 'agent-status', agentId, state, tool, ts: new Date().toISOString() })
+}
 const _prevThinking = new Map()   // agent_id → boolean
 const _prevCompacting = new Map() // agent_id → boolean
+const _prevAgentStatus = new Map() // agent_id → finite daemon-owned status label
 const _prevGooseLive = new Map()  // agent_id → { fingerprint, since } (goose freeze tracking)
 const _prevApprovalFP = new Map() // agent_id → string (fingerprint)
 // Goose turn-end auto-kick state: agent_id → kick state, owned by
@@ -3478,6 +3511,7 @@ async function checkAgentLiveness() {
         log.info(`agent ${agent.friendly_name || agent.id} is hibernating (tmux session ${session} gone for ${Math.round((now - decision.since) / 1000)}s)`)
       }
       agent.hibernating = true
+      emitAgentStatus(agent.id, 'hibernating')
       _alivenessCache.set(session, false)
     }
     _observedLiveSessions.delete(session)
@@ -3622,6 +3656,7 @@ async function checkAgentLiveness() {
         } catch {}
       }
       agent.hibernating = true
+      emitAgentStatus(agent.id, 'hibernating')
       _alivenessCache.set(agent.tmux_session, false)
       continue
     }
@@ -3629,8 +3664,10 @@ async function checkAgentLiveness() {
     _missingRuntimeSince.delete(agent.id)
 
     if (agent.hibernating) {
-      log.info(`agent ${agent.friendly_name || agent.id} is awake`)
+      log.info(`agent ${agent.friendly_name || agent.id} is present`)
       agent.hibernating = false
+      emitAgentStatus(agent.id, 'present')
+      armAgent(agent.id)
       watcherNeedsSync = true
     }
     if (matchedKind && matchedKind !== 'claude') {
@@ -3703,6 +3740,7 @@ function emitThinkingEdge(agentId, isThinking) {
   if (d.idleCount) _idleScans.set(agentId, d.idleCount)
   else _idleScans.delete(agentId)
   if (d.emit !== null) sendMsg({ type: 'agent-thinking', agentId, thinking: d.emit })
+  return d.prev
 }
 
 function emitCompactingEdge(agentId, isCompacting) {
@@ -3710,6 +3748,7 @@ function emitCompactingEdge(agentId, isCompacting) {
     _prevCompacting.set(agentId, isCompacting)
     sendMsg({ type: 'agent-compacting', agentId, compacting: isCompacting })
   }
+  return isCompacting
 }
 
 // Pull one armed agent's pane and emit its real status. All harnesses share this
@@ -3726,16 +3765,26 @@ async function scanAgentPaneStatus(agent) {
     // Capture failed (session gone / tmux hiccup). Feed the idle side so a truly
     // dead pane resolves to thinking:false via hysteresis; a one-off miss is
     // absorbed by the 2-scan guard.
-    emitThinkingEdge(agent.id, false)
-    emitCompactingEdge(agent.id, false)
+    const effectiveThinking = emitThinkingEdge(agent.id, false)
+    const effectiveCompacting = emitCompactingEdge(agent.id, false)
+    if (!effectiveThinking && !effectiveCompacting) emitAgentStatus(agent.id, 'idle')
     return { busy: false }
   }
   const c = classifyPane(harnessForAgent(agent).kind, pane, _classifierState.get(agent.id) || null, Date.now())
   if (c.state) _classifierState.set(agent.id, c.state)
   else _classifierState.delete(agent.id)
 
-  emitThinkingEdge(agent.id, c.thinking)
-  emitCompactingEdge(agent.id, c.compacting)
+  const effectiveThinking = emitThinkingEdge(agent.id, c.thinking)
+  const effectiveCompacting = emitCompactingEdge(agent.id, c.compacting)
+
+  const statusState = c.approval
+    ? 'needs_terminal_attention'
+    : effectiveCompacting
+      ? 'compacting'
+      : effectiveThinking
+        ? 'thinking'
+        : 'idle'
+  emitAgentStatus(agent.id, statusState)
 
   if (c.approval) {
     if (c.approvalFp !== _prevApprovalFP.get(agent.id)) {
@@ -4383,7 +4432,7 @@ function teardownWatchers() {
   terminalWatchPtys.clear()
   for (const [, s] of ephemeralPtys) { s.alive = false; clearTimeout(s.teardownTimer); try { s.pty.kill() } catch {} }
   ephemeralPtys.clear()
-  for (const [, entry] of backingWatchers) { try { entry.watcher.close() } catch {} }
+  for (const [, entry] of backingWatchers) closeWatcher(entry.watcher, `${entry.project}:${entry.backingName}`)
   backingWatchers.clear()
 }
 
@@ -4442,7 +4491,7 @@ function handleServerMessage(msg) {
     log.info(`welcome: ${agents.length} agents, ${projects.length} projects`)
     _lastSessionWatcherRosterSig = sessionWatcherRosterSignature(agents)
     void syncSessionWatchers(agents).catch(e => log.error(`syncSessionWatchers failed: ${e.stack || e.message}`))
-    syncSourceWatchers(projects, msg.activeViewers)
+    syncSourceWatchers(projects)
     flushPendingSourceChanges()
     // Periodic death detection — O(1) spawns per cycle (one tmux list-sessions).
     if (!_deathCheckInterval) {
@@ -4484,8 +4533,8 @@ function handleServerMessage(msg) {
     return
   }
   if (msg.type === 'active-viewers') {
-    _activeViewerSet = new Set(msg.projects || [])
-    syncFsWatchers()
+    // Source watching is chokidar-backed per project now; active viewer updates
+    // no longer promote/demote a separate fs.watch layer.
     return
   }
   if (msg.type === 'daemon-evict') {
@@ -4608,16 +4657,6 @@ log.info(`  env_name    = ${ACTIVE_CONFIG}`)
 log.info(`  boot_id     = ${BOOT_ID}`)
 log.info(`  user        = ${USER}@${HOSTNAME}`)
 startHeartbeat()
-createManagedBotSupervisor({
-  bots: getManagedBots(config),
-  machineId: MACHINE_ID,
-  resolveScript: resolveBotScript,
-  configDir: CONFIG_DIR,
-  fleetServerUrl: SERVER,
-  authToken: getRwToken(config),
-  installPath: repoRoot(),
-  log,
-}).start()
 startReapers()
 connect()
 watchConfigDrift()
