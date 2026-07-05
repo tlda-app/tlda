@@ -120,6 +120,35 @@ describe('argument parser', () => {
 })
 
 // ---------------------------------------------------------------------------
+// Agent spawn CLI
+// ---------------------------------------------------------------------------
+
+describe('agent spawn CLI', () => {
+  it('refuses routed respawn from operator CLI before contacting the server', () => {
+    const { stderr, exitCode } = tlda('agent', 'spawn', 'alice', {
+      env: scrubAgentEnv(process.env),
+    })
+
+    assert.notEqual(exitCode, 0)
+    assert.ok(stderr.includes('Server-routed CLI spawn is disabled.'))
+    assert.ok(stderr.includes('Run locally on the target machine: tlda agent spawn-direct alice'))
+    assert.ok(!stderr.includes('ECONNREFUSED'))
+    assert.ok(!stderr.includes('localhost:99999'))
+  })
+
+  it('preserves flags in the spawn-direct redirect suggestion', () => {
+    const { stderr, exitCode } = tlda('agent', 'spawn', '--fresh', 'bob', '--kind', 'codex', '--cwd', '/tmp/tlda spawn dir', {
+      env: scrubAgentEnv(process.env),
+    })
+
+    assert.notEqual(exitCode, 0)
+    assert.ok(stderr.includes("Run locally on the target machine: tlda agent spawn-direct --fresh bob --kind codex --cwd '/tmp/tlda spawn dir'"))
+    assert.ok(!stderr.includes('ECONNREFUSED'))
+    assert.ok(!stderr.includes('localhost:99999'))
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Agent capability CLI
 // ---------------------------------------------------------------------------
 
@@ -212,7 +241,7 @@ describe('agent privileges CLI', () => {
     assert.equal(exitCode, 0)
     assert.ok(stdout.includes('[dry-run] would set alice privileges to deploy'))
     assert.ok(stdout.includes('update metadata.requestedPrivileges / metadata.spawnPolicy'))
-    assert.ok(stdout.includes('run: tlda agent spawn alice --privileges deploy'))
+    assert.ok(stdout.includes('run locally: tlda agent spawn-direct alice --privileges deploy'))
   })
 
   it('dry-runs on-respawn as metadata-only staging', () => {
@@ -223,7 +252,7 @@ describe('agent privileges CLI', () => {
     assert.equal(exitCode, 0)
     assert.ok(stdout.includes('[dry-run] would set alice privileges to app-dev'))
     assert.ok(stdout.includes('leave the change for the next respawn'))
-    assert.ok(!stdout.includes('run: tlda agent spawn'))
+    assert.ok(!stdout.includes('run locally: tlda agent spawn-direct'))
   })
 
   it('rejects unknown privilege profiles', () => {

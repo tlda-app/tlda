@@ -22,6 +22,17 @@ test('spawn-direct is not gated by spawner authority', () => {
   assert.match(cli, /await ledger\.delete\(preallocatedAgentId\)/)
 })
 
+test('operator CLI routed spawn refuses and redirects to local spawn-direct', () => {
+  const cli = fs.readFileSync(new URL('../cli/tlda.mjs', import.meta.url), 'utf8')
+  assert.match(cli, /function routedSpawnCliDisabledMessage\(rawArgs\)/)
+  assert.match(cli, /Server-routed CLI spawn is disabled/)
+  assert.match(cli, /spawnDirectSuggestion\(rawArgs\)/)
+  assert.match(cli, /async function runRoutedSpawn\(rawArgs\) \{\n\s+parseRoutedSpawn\(rawArgs\)\n\s+throw new Error\(routedSpawnCliDisabledMessage\(rawArgs\)\)\n\}/)
+  assert.doesNotMatch(cli, /fleetWsRequest/)
+  assert.doesNotMatch(cli, /formatSpawnFailure/)
+  assert.doesNotMatch(cli, /import\('ws'\)/)
+})
+
 test('routed daemon spawn remains requester gated', () => {
   const daemon = fs.readFileSync(new URL('../bin/fleet-daemon.mjs', import.meta.url), 'utf8')
   assert.match(daemon, /daemon RPC requester identity is required/)
