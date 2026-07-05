@@ -235,7 +235,6 @@ function normalizeDaemonModelRows(models = {}) {
   const harnessOptions = {}
   function mergeHarnessOptions(harness, alias, row) {
     const normalized = normalizeHarnessOptions(row)
-    if (!normalized) return
     const key = String(harness || '').trim().toLowerCase()
     if (!key) return
     harnessOptions[key] ||= {}
@@ -297,13 +296,14 @@ function stringList(value, label) {
 
 function normalizeHarnessOptions(row = {}) {
   const source = row.harness || row.launch || row
-  if (!source || typeof source !== 'object' || Array.isArray(source)) return null
+  if (!source || typeof source !== 'object' || Array.isArray(source)) {
+    return { required: [], preferences: [], controls: false }
+  }
   const required = stringList(source.required || source.required_flags || source.requiredFlags, 'harness required flags')
   const preferences = stringList(source.preferences || source.preference_flags || source.preferenceFlags, 'harness preference flags')
   const controls = source.controls === false
     ? false
     : (source.controls === true || required.length > 0)
-  if (!required.length && !preferences.length && source.controls == null) return null
   return {
     required,
     preferences,
