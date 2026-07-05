@@ -1967,25 +1967,6 @@ export function formatInboxText({ mode, task, tasks, messages, now = Date.now() 
   const count = messages.length;
   lines.push(`INBOX MODE: ${mode}`);
 
-  if (mode === 'focus') {
-    lines.push('');
-    lines.push('NOW');
-    if (!activeTasks.length && count === 0) lines.push('- Clear. No active task or unread messages.');
-    if (messages.length) {
-      messages
-        .filter(m => m.kind !== 'watch')
-        .forEach((m, i) => lines.push(`[${i + 1}] ${m.line}`));
-    }
-    if (taskBlocks.length) {
-      lines.push('');
-      lines.push('ACTIVE WORK');
-      lines.push(...taskBlocks.flatMap((block, i) => i ? ['', block] : [block]));
-    }
-    const hidden = messages.filter(m => m.kind === 'watch').length;
-    if (hidden) lines.push('', `BACKGROUND: ${hidden} watch item(s) hidden in focus mode.`);
-    return lines.join('\n');
-  }
-
   if (mode === 'default') {
     const nowRows = messages.filter(m => inboxDefaultBucket(m, now) === 'now');
     const batchedRows = messages.filter(m => inboxDefaultBucket(m, now) === 'batched');
@@ -2014,6 +1995,21 @@ export function formatInboxText({ mode, task, tasks, messages, now = Date.now() 
     return lines.join('\n');
   }
 
+  if (mode === 'current-task') {
+    const directRows = messages.filter(m => m.kind !== 'watch');
+    const watchRows = messages.filter(m => m.kind === 'watch');
+    lines.push('');
+    lines.push('CURRENT TASK');
+    if (!taskBlocks.length) lines.push('- No active task assigned.');
+    if (taskBlocks.length) lines.push(...taskBlocks.flatMap((block, i) => i ? ['', block] : [block]));
+    lines.push('');
+    lines.push('RELATED UNREAD');
+    if (!directRows.length) lines.push('- No direct unread messages.');
+    directRows.forEach((m, i) => lines.push(`[${i + 1}] ${m.line}`));
+    if (watchRows.length) lines.push('', `BACKGROUND: ${watchRows.length} watch item(s).`);
+    return lines.join('\n');
+  }
+
   if (mode === 'monitoring') {
     lines.push('');
     lines.push('WAITING ON ME');
@@ -2034,33 +2030,6 @@ export function formatInboxText({ mode, task, tasks, messages, now = Date.now() 
     return lines.join('\n');
   }
 
-  if (mode === 'incident') {
-    lines.push('');
-    lines.push('INCIDENT STATE');
-    if (!activeTasks.length && count === 0) lines.push('- No incident-scoped task or unread event is active.');
-    if (taskBlocks.length) lines.push(...taskBlocks.flatMap((block, i) => i ? ['', block] : [block]));
-    if (messages.length) {
-      lines.push('');
-      lines.push('NEW INCIDENT SIGNALS');
-      messages.forEach((m, i) => lines.push(`[${i + 1}] ${m.line}`));
-    }
-    return lines.join('\n');
-  }
-
-  if (mode === 'available') {
-    lines.push('');
-    lines.push('AMBIENT QUEUE');
-    if (!activeTasks.length && count === 0) lines.push('- Clear. Nothing in the current interest stream.');
-    if (taskBlocks.length) {
-      lines.push('ACTIVE WORK');
-      lines.push(...taskBlocks.flatMap((block, i) => i ? ['', block] : [block]));
-      lines.push('');
-    }
-    lines.push(...groupedInboxLines(messages));
-    if (messages.length) lines.push('Mode note: available mode treats the full interest stream as notification-worthy.');
-    return lines.join('\n').trimEnd();
-  }
-
   if (mode === 'review') {
     lines.push('');
     lines.push('REVIEW / GATES');
@@ -2079,6 +2048,19 @@ export function formatInboxText({ mode, task, tasks, messages, now = Date.now() 
       other.forEach((m, i) => lines.push(`[${i + 1}] ${m.line}`));
     }
     return lines.join('\n');
+  }
+
+  if (mode === 'all') {
+    lines.push('');
+    lines.push('ALL ACTIVE INBOX');
+    if (!activeTasks.length && count === 0) lines.push('- Clear. No active task or unread messages.');
+    if (taskBlocks.length) {
+      lines.push('TASKS');
+      lines.push(...taskBlocks.flatMap((block, i) => i ? ['', block] : [block]));
+      lines.push('');
+    }
+    lines.push(...groupedInboxLines(messages));
+    return lines.join('\n').trimEnd();
   }
 
   lines.push('');

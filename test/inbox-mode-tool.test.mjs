@@ -159,3 +159,41 @@ test('default inbox view buckets explicit delivery metadata', () => {
   assert.match(text, /BATCHED\n\[1\] \[from peer\] FYI for later \[delivers in 120s\] \[recipient was busy \(spawn broken\)\]/)
   assert.match(text, /BACKGROUND\n\[1\] \[from watch\] background signal/)
 })
+
+test('current-task inbox view puts owned task before direct unread', () => {
+  const text = formatInboxText({
+    mode: 'current-task',
+    task: { id: '1', description: 'Keep inbox modes moving', status: 'pending' },
+    tasks: null,
+    messages: [
+      { kind: 'watch', line: '[from watch] background signal' },
+      { kind: 'message', line: '[from peer] direct question' },
+    ],
+  })
+
+  assert.match(text, /INBOX MODE: current-task/)
+  assert.match(text, /CURRENT TASK\n\[task:1\] Keep inbox modes moving/)
+  assert.match(text, /RELATED UNREAD\n\[1\] \[from peer\] direct question/)
+  assert.match(text, /BACKGROUND: 1 watch item\(s\)\./)
+})
+
+test('all inbox view keeps the broad grouped queue explicit', () => {
+  const text = formatInboxText({
+    mode: 'all',
+    task: null,
+    tasks: null,
+    messages: [
+      { kind: 'user', line: '[from skip] user message' },
+      { kind: 'task', line: '[from chief] task update' },
+      { kind: 'message', line: '[from peer] direct message' },
+      { kind: 'watch', line: '[from wiretap] watch item' },
+    ],
+  })
+
+  assert.match(text, /INBOX MODE: all/)
+  assert.match(text, /ALL ACTIVE INBOX/)
+  assert.match(text, /USER \/ SKIP\n\[1\] \[from skip\] user message/)
+  assert.match(text, /TASK UPDATES\n\[1\] \[from chief\] task update/)
+  assert.match(text, /DIRECT MESSAGES\n\[1\] \[from peer\] direct message/)
+  assert.match(text, /WATCH \/ WIRETAP\n\[1\] \[from wiretap\] watch item/)
+})
