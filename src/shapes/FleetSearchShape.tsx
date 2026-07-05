@@ -12,6 +12,7 @@ import {
   useEditor,
   useValue,
   createShapeId,
+  type TLShapeId,
 } from 'tldraw'
 import { beginNativeSnapDrag, createFleetShape, agentDisplayLabel, endNativeSnapDrag, selectFleetShapeForLayout } from './fleet-utils'
 import { fleetSearchProps } from '../../shared/shapes/fleet-panel-schema.mjs'
@@ -33,7 +34,7 @@ import { buildFleetSearchFilters, parseSearchQuery, rankSearchResults } from '..
 import { useIsInViewport, useVisibilityViewportId } from './useIsInViewport'
 import { dropPillOnTarget } from './FleetPillShape'
 import { dragCoordinator } from './dragCoordinator'
-import { clientPointToPage } from '../wm/viewport-coordinates'
+import { fleetInteractionFrame, fleetPointerEventPagePoint } from '../wm/fleet-interaction-frame'
 import './fleet-chat.css'
 
 const DEFAULT_W = 360
@@ -95,7 +96,18 @@ interface DragState {
 function usePillDrag() {
   const editor = useEditor()
   const viewportId = useVisibilityViewportId()
+  const frame = useMemo(() => fleetInteractionFrame(viewportId), [viewportId])
   const dragRef = useRef<DragState | null>(null)
+  const cancelDrag = useCallback(() => {
+    const drag = dragRef.current
+    dragRef.current = null
+    if (!drag?.pillId) return
+    const id = drag.pillId as TLShapeId
+    editor.run(() => {
+      if (editor.getShape(id)) editor.deleteShapes([id])
+    }, { history: 'ignore' })
+  }, [editor])
+
   const startDrag = useCallback((e: React.PointerEvent, value: string, displayName: string, color: string) => {
     stopEventPropagation(e)
     e.preventDefault()
@@ -108,7 +120,7 @@ function usePillDrag() {
         if (!drag.started) {
           if (Math.abs(dx) < DRAG_THRESHOLD && Math.abs(dy) < DRAG_THRESHOLD) return
           drag.started = true
-          const pagePos = clientPointToPage(editor, { x: ev.clientX, y: ev.clientY }, viewportId)
+          const pagePos = fleetPointerEventPagePoint(editor, frame, ev)
           const measureEl = document.createElement('span')
           measureEl.style.cssText = "position:absolute;visibility:hidden;font:500 9px 'SF Mono',Menlo,Consolas,monospace;white-space:nowrap;padding:1px 6px;border:1px solid transparent"
           measureEl.textContent = drag.displayName
@@ -124,22 +136,28 @@ function usePillDrag() {
           return
         }
         if (drag.pillId) {
-          const pagePos = clientPointToPage(editor, { x: ev.clientX, y: ev.clientY }, viewportId)
-          const pillShape = editor.getShape(drag.pillId as any) as any
+          const pagePos = fleetPointerEventPagePoint(editor, frame, ev)
+          const id = drag.pillId as TLShapeId
+          const pillShape = editor.getShape(id) as { props?: { w?: number; h?: number } } | undefined
           const pw = pillShape?.props?.w || 70, ph = pillShape?.props?.h || 18
-          editor.run(() => { editor.updateShape({ id: drag.pillId as any, type: 'fleet-pill' as any, x: pagePos.x - pw / 2, y: pagePos.y - ph / 2 }) }, { history: 'ignore' })
+          const update = { id, type: 'fleet-pill', x: pagePos.x - pw / 2, y: pagePos.y - ph / 2 } as unknown as Parameters<typeof editor.updateShape>[0]
+          editor.run(() => { editor.updateShape(update) }, { history: 'ignore' })
         }
       },
       (ev: PointerEvent) => {
         const drag = dragRef.current
         dragRef.current = null
         if (!drag || !drag.started || !drag.pillId) return
-        const pagePos = clientPointToPage(editor, { x: ev.clientX, y: ev.clientY }, viewportId)
-        dropPillOnTarget(editor, drag.pillId as any, drag.value, pagePos)
-        editor.run(() => { try { editor.deleteShapes([drag.pillId as any]) } catch {} }, { history: 'ignore' })
-      }
+        const id = drag.pillId as TLShapeId
+        const pagePos = fleetPointerEventPagePoint(editor, frame, ev)
+        dropPillOnTarget(editor, id, drag.value, pagePos)
+        editor.run(() => {
+          if (editor.getShape(id)) editor.deleteShapes([id])
+        }, { history: 'ignore' })
+      },
+      cancelDrag,
     )
-  }, [editor, viewportId])
+  }, [cancelDrag, editor, frame])
   return { startDrag }
 }
 
