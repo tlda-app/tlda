@@ -20,7 +20,7 @@ import {
 import { fleetInboxProps } from '../../shared/shapes/fleet-panel-schema.mjs'
 import { labelsForAgent } from '../../shared/fleet-labels.mjs'
 import type { Editor, TLShapeId } from 'tldraw'
-import { agentDisplayLabel, beginNativeSnapDrag, endNativeSnapDrag, selectFleetShapeForLayout } from './fleet-utils'
+import { agentDisplayLabel, beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import { pushPhonePinnedChatPane, type FleetFilter } from './phone-pane-stack'
 import { usePillDrag } from './FleetAgentsShape'
