@@ -2,7 +2,8 @@
 // Used by MCP chat()/compose(), daemon rechat RPC, and server unquote-file.
 import fs from 'fs'
 import path from 'path'
-import { resolveFilePath, uploadFileToServer } from './chat-file-processing.mjs'
+import { guessMimeType, resolveFilePath, uploadFileToServer } from './chat-file-processing.mjs'
+import { sha256Buffer } from './inbox-reference-materialization.mjs'
 
 const PATH_EXT = 'md|R|qmd|py|mjs|js|ts|tsx|jsx|css|html|tex|bib|rds|csv|tsv|txt|sh|yml|yaml|json|toml|cfg|log|svg|png|jpg|jpeg|gif|webp|pdf|sql|xml|rs|go|c|h|cpp|hpp|lua|rb|jl|rmd'
 const pathRe = new RegExp(
@@ -112,6 +113,10 @@ export async function uploadAttachments(inlineAttachments, serverBaseUrl) {
       try {
         const { url } = await uploadFileToServer(att.path, serverBaseUrl)
         att.url = url
+        const stat = fs.statSync(att.path)
+        att.size = stat.size
+        att.mimeType = guessMimeType(att.name || att.path)
+        att.sha256 = sha256Buffer(fs.readFileSync(att.path))
       } catch (err) {
         console.error('[message-processing] upload failed:', att.path, err.message)
         att.broken = true

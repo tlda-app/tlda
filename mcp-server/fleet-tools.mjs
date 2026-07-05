@@ -37,6 +37,10 @@ import {
   validateInboxStatus,
   validateDeliveryChannel,
 } from '../shared/inbox-attention.mjs';
+import {
+  formatRecipientAttachmentRef,
+  recipientAttachmentRef,
+} from '../shared/inbox-reference-materialization.mjs';
 import { getActiveConfigName, loadConfig } from '../shared/config.mjs';
 import { listModels as listSpawnModels } from '../bin/lib/spawn/models.mjs';
 import {
@@ -1894,12 +1898,21 @@ function inboxMessageKind(message) {
   return 'message';
 }
 
-async function resolveInboxMessage(message, resolvers) {
+export async function resolveInboxMessage(message, resolvers) {
   const fromLabel = message.metadata?.fromLabel || message.from;
   const ctx = message.metadata?.context;
   const docHint = formatViewingHint(ctx);
   const { text: chipResolvedText, images: chipImages } = await resolvers.resolveChipTokens(message.text, message.metadata);
-  const refResolvedText = resolvers.resolveTheoremRefs(chipResolvedText, ctx?.doc, ctx?.version);
+  const recipientId = message.to || AGENT_ID;
+  const attachmentResolvedText = chipResolvedText.replace(/\{\{att:(\d+)\}\}/g, (token, idx) => {
+    const ref = recipientAttachmentRef(message.metadata, recipientId, idx);
+    const rendered = formatRecipientAttachmentRef(ref);
+    if (rendered) return rendered;
+    const att = message.metadata?.inline_attachments?.[+idx];
+    if (att?.url) return `${att.name || `attachment ${idx}`}: ${att.url}`;
+    return token;
+  });
+  const refResolvedText = resolvers.resolveTheoremRefs(attachmentResolvedText, ctx?.doc, ctx?.version);
   const { text: imgResolvedText, images } = await resolvers.resolveImages(refResolvedText);
   images.push(...chipImages);
   const reminder = message.metadata?.chatReminder ? `\n⚠️ ${message.metadata.chatReminder}` : '';
