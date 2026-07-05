@@ -63,6 +63,7 @@ import { promisify } from 'util'
 import { resolveFilePath, uploadFileToServer } from '../shared/chat-file-processing.mjs'
 import { processMessageText } from '../shared/message-processing.mjs'
 import { scanMarkdownDeps } from '../shared/markdown-deps.mjs'
+import { MATERIALIZATION_MAX_BYTES, materializeAttachmentBytes } from '../shared/inbox-reference-materialization.mjs'
 import {
   loadConfig as _loadSharedConfig, saveConfig as _saveSharedConfig,
   getServerUrl, getFleetServerUrl, getRwToken, DEFAULT_PORT, hasTls,
@@ -3864,6 +3865,30 @@ async function rpcRechat({ text, cwd, server_url }) {
   return await processMessageText(text, cwd, serverBase)
 }
 
+async function rpcMaterializeAttachment({ event_id, attachment_id, source_agent, server_url, url, name, size, sha256 }) {
+  if (!url) throw new Error('attachment url required')
+  if (Number.isFinite(Number(size)) && Number(size) > MATERIALIZATION_MAX_BYTES) {
+    throw new Error(`attachment exceeds max size (${size} > ${MATERIALIZATION_MAX_BYTES})`)
+  }
+  const serverBase = server_url || getFleetServerUrl()
+  const target = new URL(url, serverBase).toString()
+  const res = await fetch(target, { signal: AbortSignal.timeout(10000) })
+  if (!res.ok) throw new Error(`attachment fetch failed: HTTP ${res.status}`)
+  const len = Number(res.headers.get('content-length') || 0)
+  if (len > MATERIALIZATION_MAX_BYTES) {
+    throw new Error(`attachment exceeds max size (${len} > ${MATERIALIZATION_MAX_BYTES})`)
+  }
+  const ab = await res.arrayBuffer()
+  return await materializeAttachmentBytes({
+    bytes: Buffer.from(ab),
+    eventId: event_id,
+    attachmentId: attachment_id,
+    sourceAgent: source_agent,
+    name,
+    expectedSha256: sha256 || null,
+  })
+}
+
 // Kill the local playwright chromium process that owns a given TCP source
 // port. Called by the server's zombie reaper when a /sync/ or /ws/fleet
 // connection has been idle for too long.
@@ -4376,6 +4401,7 @@ const RPC_HANDLERS = {
   'spawn-capabilities': rpcSpawnCapabilities,
   'resolve-file': rpcResolveFile,
   'rechat': rpcRechat,
+  'materialize-attachment': rpcMaterializeAttachment,
   'kill-orphan-chromium': rpcKillOrphanChromium,
   'write-backing-file': rpcWriteBackingFile,
   'mirror-shadow-ref': rpcMirrorShadowRef,

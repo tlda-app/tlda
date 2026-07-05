@@ -40,7 +40,7 @@ import os from 'os'
 const { homedir, hostname } = os
 import { randomUUID } from 'crypto'
 import { lookup as mimeLookup } from 'mime-types'
-import { DEFAULT_PORT, getActiveConfigName, hasTls, loadConfig, resolveConfig } from '../shared/config.mjs'
+import { DEFAULT_PORT, getActiveConfigName, getFleetServerUrl, hasTls, loadConfig, resolveConfig } from '../shared/config.mjs'
 import { normalizeUsageStatus } from '../shared/usage-status.mjs'
 import { BARE_METADATA, resolveAsset } from '../shared/doc-assets.mjs'
 import { listModels as listSpawnModels } from '../bin/lib/spawn/models.mjs'
@@ -83,6 +83,11 @@ import {
   shouldWakeBatchedMessage,
   validateDeliveryChannel,
 } from '../shared/inbox-attention.mjs'
+import {
+  initializeRecipientRefs,
+  isMaterializableAttachment,
+  setRecipientAttachmentState,
+} from '../shared/inbox-reference-materialization.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -1392,6 +1397,111 @@ function resolveRpc(op, agent) {
 
 function agentDaemonAddress(agent) {
   return daemonAddress(agent?.machine_id, agent?.env_name)
+}
+
+function patchEventMetadata(eventId, updater) {
+  const event = fleetStore.getEventById?.(eventId)
+  if (!event) return null
+  const current = event.metadata || {}
+  const next = updater(current)
+  fleetStore.db.prepare('UPDATE events SET metadata = ? WHERE id = ?')
+    .run(JSON.stringify(next), eventId)
+  broadcastEvent('event-update', { id: eventId, metadata_patch: next })
+  return next
+}
+
+function patchRecipientAttachmentState(eventId, recipientId, attachmentId, record) {
+  return patchEventMetadata(eventId, metadata => (
+    setRecipientAttachmentState(metadata, recipientId, attachmentId, record)
+  ))
+}
+
+async function materializeRecipientAttachment({ eventId, recipientId, sourceAgent, attachment }) {
+  const recipient = fleetStore.getAgent?.(recipientId)
+  if (!recipient || recipient.human) return
+  const fail = (error) => patchRecipientAttachmentState(eventId, recipientId, attachment.id, {
+    kind: 'attachment',
+    state: 'failed',
+    status: 'failed',
+    title: attachment.name || null,
+    contentType: attachment.mimeType || null,
+    hash: attachment.sha256 || null,
+    sourceAgent: sourceAgent || 'unknown',
+    provenance: {
+      eventId,
+      attachmentId: String(attachment.id),
+      url: attachment.url || null,
+    },
+    error,
+    updated_at: new Date().toISOString(),
+  })
+  const route = resolveRpc('materialize-attachment', recipient)
+  if (route.via === 'none') {
+    fail(route.error)
+    return
+  }
+  try {
+    const result = await sendRpc(route.machine_id, 'materialize-attachment', {
+      event_id: eventId,
+      attachment_id: attachment.id,
+      source_agent: sourceAgent || 'unknown',
+      server_url: getFleetServerUrl(),
+      url: attachment.url,
+      name: attachment.name,
+      mimeType: attachment.mimeType,
+      size: attachment.size,
+      sha256: attachment.sha256,
+    })
+    patchRecipientAttachmentState(eventId, recipientId, attachment.id, {
+      kind: 'attachment',
+      state: 'available',
+      status: 'ready',
+      title: attachment.name || null,
+      localPath: result.localPath || result.path,
+      projectPath: null,
+      projectArtifactId: null,
+      contentType: attachment.mimeType || null,
+      hash: result.hash || result.sha256,
+      sourceAgent: sourceAgent || 'unknown',
+      provenance: {
+        eventId,
+        attachmentId: String(attachment.id),
+        url: attachment.url || null,
+      },
+      size: result.size,
+      sha256: result.sha256,
+      materialized_at: new Date().toISOString(),
+    })
+  } catch (e) {
+    fail(e.message || String(e))
+  }
+}
+
+function queueRecipientMaterialization({ eventId, recipientId, sourceAgent, attachments }) {
+  for (const attachment of attachments || []) {
+    if (!isMaterializableAttachment(attachment)) continue
+    setImmediate(() => {
+      materializeRecipientAttachment({ eventId, recipientId, sourceAgent, attachment })
+        .catch(e => {
+          patchRecipientAttachmentState(eventId, recipientId, attachment.id, {
+            kind: 'attachment',
+            state: 'failed',
+            status: 'failed',
+            title: attachment.name || null,
+            contentType: attachment.mimeType || null,
+            hash: attachment.sha256 || null,
+            sourceAgent: sourceAgent || 'unknown',
+            provenance: {
+              eventId,
+              attachmentId: String(attachment.id),
+              url: attachment.url || null,
+            },
+            error: e.message || String(e),
+            updated_at: new Date().toISOString(),
+          })
+        })
+    })
+  }
 }
 
 // Auth
@@ -4030,7 +4140,8 @@ async function handleFleetWsMessage(ws, msg) {
       const inboxStatusTag = recipientAgent?.metadata?.inboxStatusTag || null
       const deliveryChannel = normalizeDeliveryChannel(recipientAgent?.metadata?.deliveryChannel)
       const deliveryDecision = decideInboxDelivery({ status: inboxStatus, priority: basePriority, now: Date.parse(ts) || Date.now() })
-      const combinedMetadata = {
+      const materializableAttachments = (inline_attachments || []).filter(isMaterializableAttachment)
+      let combinedMetadata = {
         ...(metadata || {}),
         priority: basePriority,
         inbox_delivery: deliveryDecision.delivery,
@@ -4047,6 +4158,9 @@ async function handleFleetWsMessage(ws, msg) {
         ...(preambleRef ? { preambleRef } : {}),
         ...(chatReminder ? { chatReminder } : {}),
         ...(source ? { source } : {}),
+      }
+      if (recipientAgent && !recipientAgent.human && materializableAttachments.length) {
+        combinedMetadata = initializeRecipientRefs(combinedMetadata, to, materializableAttachments, { sourceAgent: from })
       }
       const metaStr = Object.keys(combinedMetadata).length ? JSON.stringify(combinedMetadata) : null
       const result = fleetStore.db.prepare(
@@ -4068,7 +4182,7 @@ async function handleFleetWsMessage(ws, msg) {
       // Echo _tempId on the broadcast so a client whose WS reply was lost during
       // a hiccup can still bind this echo to its orphaned optimistic entry
       // (the reply, not the DB row, is what normally carries _tempId).
-      insertedEvents.push({ id: eventId, type: 'chat', timestamp: ts, from_id: from, to_id: to, text, metadata: Object.keys(combinedMetadata).length ? combinedMetadata : null, ...(msg._tempId ? { _tempId: msg._tempId } : {}) })
+      insertedEvents.push({ id: eventId, type: 'chat', timestamp: ts, from_id: from, to_id: to, text, metadata: Object.keys(combinedMetadata).length ? combinedMetadata : null, materializableAttachments, ...(msg._tempId ? { _tempId: msg._tempId } : {}) })
       if (deliveryDecision.delivery === 'notified') {
         wakeRequests.push({ to, text: chatWakeText(text, to) })
       } else if (deliveryDecision.delivery === 'batched' && deliveryDecision.notifyBy) {
@@ -4091,7 +4205,18 @@ async function handleFleetWsMessage(ws, msg) {
     if (msg._tempId) _chatTempIds.set(msg._tempId, { eventIds, recipients, receipts, ts: Date.now() })
     // Reply FIRST so the client can reconcile optimistic events before broadcasts arrive.
     reply({ ok: true, event_ids: eventIds, recipients, receipts, _tempId: msg._tempId || null })
-    for (const ev of insertedEvents) broadcastEvent('fleet-event', ev)
+    for (const ev of insertedEvents) {
+      const { materializableAttachments: _materializableAttachments, ...broadcastEv } = ev
+      broadcastEvent('fleet-event', broadcastEv)
+      if (_materializableAttachments?.length) {
+        queueRecipientMaterialization({
+          eventId: ev.id,
+          recipientId: ev.to_id,
+          sourceAgent: ev.from_id,
+          attachments: _materializableAttachments,
+        })
+      }
+    }
     const deliveredAt = Date.parse(ts) || Date.now()
     for (const to of recipients) {
       const recipient = fleetStore.getAgent?.(to)
