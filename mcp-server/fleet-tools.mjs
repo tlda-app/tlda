@@ -26,6 +26,15 @@ import { normalizeChatDisplayMathDelimiters } from '../shared/chat-math-normaliz
 import { nameForPhase, phaseFromName } from '../shared/lineage-name.mjs';
 import { formatSpawnModelSummary, validateSpawnModelSelection } from '../shared/spawn-model-validation.mjs';
 import { buildFleetSearchFilters, parseSearchQuery } from '../shared/fleet-search-query.mjs';
+import {
+  INBOX_STATUSES,
+  INBOX_VIEWS,
+  formatAttentionReceipt,
+  normalizeInboxStatus,
+  normalizeInboxView,
+  parsePriorityPhrase,
+  validateInboxStatus,
+} from '../shared/inbox-attention.mjs';
 import { getActiveConfigName, loadConfig } from '../shared/config.mjs';
 import { listModels as listSpawnModels } from '../bin/lib/spawn/models.mjs';
 import {
@@ -420,7 +429,8 @@ const _refTokens = new Map();
 // used by chat() to stamp outgoing messages with { doc, version } so the
 // recipient knows which document state the sender was reasoning about.
 let _currentDoc = null;
-let _inboxMode = 'inbox';
+let _inboxStatus = 'available';
+let _inboxView = 'default';
 let _docVersionCache = { doc: null, version: null, ts: 0 };
 const DOC_VERSION_CACHE_MS = 5000;
 
@@ -1425,14 +1435,14 @@ export function getFleetTools() {
     },
     {
       name: 'inbox',
-      description: 'Show this agent\'s current obligation inbox. Mode controls both the pull view and the server summary style: focus, inbox, monitoring, incident, available, or review.',
+      description: 'Show this agent\'s current obligation inbox. View is read-time presentation only; notification status is controlled separately by set_inbox_status().',
       inputSchema: {
         type: 'object',
         properties: {
-          mode: {
+          view: {
             type: 'string',
-            enum: ['focus', 'inbox', 'monitoring', 'incident', 'available', 'review'],
-            description: 'Attention mode for this view. focus = current task and blockers; inbox = general triage; monitoring = gates/stale work/watch items; incident = active breakage coordination; available = broad ambient interest; review = evidence and gate triage.',
+            enum: INBOX_VIEWS,
+            description: 'Read-time inbox view. default = bounded NOW/BATCHED/BACKGROUND; review = reports/gates/missing evidence; monitoring = blockers/stale/incident/release gates; current-task = active task/thread first; all = broad grouped view.',
           },
           peek: {
             type: 'boolean',
@@ -1442,18 +1452,22 @@ export function getFleetTools() {
       },
     },
     {
-      name: 'set_inbox_mode',
-      description: 'Set this agent\'s visible inbox/attention mode without reading or marking inbox items. This controls future wake summaries and the default inbox() view.',
+      name: 'set_inbox_status',
+      description: 'Set this agent\'s visible notification status without reading or marking inbox items. Status controls future wake behavior; inbox views are chosen separately when calling inbox().',
       inputSchema: {
         type: 'object',
         properties: {
-          mode: {
+          status: {
             type: 'string',
-            enum: ['focus', 'inbox', 'monitoring', 'incident', 'available', 'review'],
-            description: 'Attention mode to advertise for this agent.',
+            enum: INBOX_STATUSES,
+            description: 'Notification status to advertise for this agent.',
+          },
+          tag: {
+            type: 'string',
+            description: 'Optional short advisory context, e.g. "spawn broken" or "writing patch". Does not change wake policy.',
           },
         },
-        required: ['mode'],
+        required: ['status'],
       },
     },
     // ---- tlda document feedback (push channel) ----
@@ -1816,25 +1830,17 @@ export function getFleetTools() {
   ];
 }
 
-const INBOX_MODES = new Set(['focus', 'inbox', 'monitoring', 'incident', 'available', 'review']);
-
-function normalizeInboxMode(mode) {
-  const m = String(mode || 'inbox').trim().toLowerCase();
-  return INBOX_MODES.has(m) ? m : 'inbox';
-}
-
-function validateInboxMode(mode) {
-  const m = String(mode || '').trim().toLowerCase();
-  return INBOX_MODES.has(m) ? m : null;
-}
-
-export function formatRecipientModeSummary(recipients = [], agents = []) {
+export function formatRecipientStatusSummary(recipients = [], agents = [], receipts = []) {
   const agentMap = new Map((agents || []).map(a => [a.id, a]));
+  const receiptMap = new Map((receipts || []).map(r => [r.recipient || r.to, r]));
   return recipients.map(id => {
     const agent = agentMap.get(id);
     const label = agent?.friendly_name || id;
-    const mode = agent?.metadata?.inboxMode || null;
-    return mode ? `${label} [mode:${mode}]` : label;
+    const status = agent?.metadata?.inboxStatus || null;
+    const tag = agent?.metadata?.inboxStatusTag || null;
+    const receipt = receiptMap.get(id);
+    if (receipt) return formatAttentionReceipt({ recipientLabel: label, ...receipt });
+    return status ? `${label} [status:${status}${tag ? ` (${tag})` : ''}]` : label;
   }).join(', ');
 }
 
@@ -2821,9 +2827,11 @@ export async function handleFleetTool(name, args) {
     // Single write: send to dashboard server via WS.
     const sent = [];
     const failed = [];
+    const receipts = [];
     let lastEventId = null;
+    const priority = parsePriorityPhrase(resolvedMessage) || 'normal';
     for (const to of recipients) {
-      const chatBody = { message: resolvedMessage, to, from: AGENT_ID };
+      const chatBody = { message: resolvedMessage, to, from: AGENT_ID, metadata: { priority } };
       if (inlineAttachments.length) chatBody.inline_attachments = inlineAttachments;
       if (refAttachments.length) chatBody.attachments = refAttachments;
       if (docContext) chatBody.context = docContext;
@@ -2831,7 +2839,11 @@ export async function handleFleetTool(name, args) {
       if (source) chatBody.source = source;
       try {
         const data = await sendWS('chat', chatBody);
-        if (data?.ok) { sent.push(to); if (data.event_ids?.length) lastEventId = data.event_ids[0]; }
+        if (data?.ok) {
+          sent.push(to);
+          if (data.event_ids?.length) lastEventId = data.event_ids[0];
+          if (Array.isArray(data.receipts)) receipts.push(...data.receipts);
+        }
         else failed.push(to);
       } catch (e) {
         failed.push(`${to} (${e.message})`);
@@ -2905,8 +2917,11 @@ export async function handleFleetTool(name, args) {
         console.error(`[fleet] recipient mode lookup after chat send failed: ${e.message}`);
       }
     }
-    const sentSummary = formatRecipientModeSummary(sent, agents);
-    return { content: [{ type: 'text', text: `Message queued for ${sentSummary || sent.join(', ')}.${suggestionNotice}${amendHint}${warning}` }] };
+    const sentSummary = formatRecipientStatusSummary(sent, agents, receipts);
+    const deliveryText = receipts.length
+      ? `.\n${sentSummary.split(', ').join('\n')}`
+      : ` for ${sentSummary || sent.join(', ')}.`;
+    return { content: [{ type: 'text', text: `Message queued${deliveryText}${suggestionNotice}${amendHint}${warning}` }] };
   }
 
   // ---- request_terminal ----
@@ -2998,7 +3013,9 @@ export async function handleFleetTool(name, args) {
         if (a.friendly_name) label += ` [${a.id}]`;
         if (a.dead) label += ' [dead]';
         if (a.human) label += ' [human]';
-        if (a.metadata?.inboxMode) label += ` [mode:${a.metadata.inboxMode}]`;
+        if (a.metadata?.inboxStatus) {
+          label += ` [status:${a.metadata.inboxStatus}${a.metadata.inboxStatusTag ? ` (${a.metadata.inboxStatusTag})` : ''}]`;
+        }
         // No manager label
         if (a.tmux_session) label += ` tmux:${a.tmux_session}`;
         return label;
@@ -3680,16 +3697,8 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
   // ---- inbox ----
   if (name === 'inbox') {
     if (!AGENT_ID) return { content: [{ type: 'text', text: 'No session ID detected.' }], isError: true };
-    const mode = normalizeInboxMode(args?.mode || _inboxMode);
-    if (args?.mode) {
-      _inboxMode = mode;
-      try {
-        await sendWS('inbox-mode', { agent: AGENT_ID, mode });
-      } catch (e) {
-        // Best effort: mode persistence should not block reading the inbox.
-        console.error(`[fleet] failed to publish inbox mode ${mode}: ${e.message}`);
-      }
-    }
+    const view = normalizeInboxView(args?.view || _inboxView);
+    if (args?.view) _inboxView = view;
 
     let data;
     try {
@@ -3704,7 +3713,7 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
       resolveTheoremRefs,
       resolveImages,
     })));
-    const text = formatInboxText({ mode, task: data.task || null, tasks: data.tasks || null, messages });
+    const text = formatInboxText({ mode: view, task: data.task || null, tasks: data.tasks || null, messages });
     const allImages = messages.flatMap(m => m.images || []);
     if (allImages.length > 0) {
       const fs = await import('fs');
@@ -3727,19 +3736,19 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
     return { content: [{ type: 'text', text }] };
   }
 
-  // ---- set_inbox_mode ----
-  if (name === 'set_inbox_mode') {
+  // ---- set_inbox_status ----
+  if (name === 'set_inbox_status') {
     if (!AGENT_ID) return { content: [{ type: 'text', text: 'No session ID detected.' }], isError: true };
-    const mode = validateInboxMode(args?.mode);
-    if (!mode) return { content: [{ type: 'text', text: `Bad inbox mode: ${args?.mode || '(missing)'}. Use one of: ${[...INBOX_MODES].join(', ')}.` }], isError: true };
-    _inboxMode = mode;
+    const status = validateInboxStatus(args?.status);
+    if (!status) return { content: [{ type: 'text', text: `Bad inbox status: ${args?.status || '(missing)'}. Use one of: ${INBOX_STATUSES.join(', ')}.` }], isError: true };
+    const tag = typeof args?.tag === 'string' && args.tag.trim() ? args.tag.trim().slice(0, 80) : null;
+    _inboxStatus = status;
     try {
-      await sendWS('inbox-mode', { agent: AGENT_ID, mode });
+      await sendWS('inbox-status', { agent: AGENT_ID, status, tag });
     } catch (e) {
-      return { content: [{ type: 'text', text: `Could not publish inbox mode "${mode}" to tlda (${e.message}).` }], isError: true };
+      return { content: [{ type: 'text', text: `Could not publish inbox status "${status}" to tlda (${e.message}).` }], isError: true };
     }
-    const call = mode === 'inbox' ? 'inbox()' : `inbox(mode: "${mode}")`;
-    return { content: [{ type: 'text', text: `Inbox mode set to ${mode}. Future wake summaries will use this mode; call ${call} to read the matching view.` }] };
+    return { content: [{ type: 'text', text: `Inbox status set to ${status}${tag ? ` (${tag})` : ''}. Future wake behavior will use this status; choose presentation separately with inbox(view: ...).` }] };
   }
 
   // ---- my_task ----
@@ -4743,10 +4752,10 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
         .join(', ');
       const summaryLines = [];
       const modelSummary = formatCountSummary(data.summary?.models);
-      const modeSummary = formatCountSummary(data.summary?.inbox_modes);
+      const statusSummary = formatCountSummary(data.summary?.inbox_statuses);
       const cwdSummary = formatCountSummary(data.summary?.working_dirs);
       if (modelSummary) summaryLines.push(`Models: ${modelSummary}`);
-      if (modeSummary) summaryLines.push(`Inbox modes: ${modeSummary}`);
+      if (statusSummary) summaryLines.push(`Inbox statuses: ${statusSummary}`);
       if (cwdSummary) summaryLines.push(`Working dirs: ${cwdSummary}`);
       const summaryText = summaryLines.length ? `\n${summaryLines.join('\n')}` : '';
 
@@ -4758,17 +4767,17 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       const fmt = (a) => {
         const seen = a.last_seen_ago_s == null ? 'never' : a.last_seen_ago_s < 90 ? `${a.last_seen_ago_s}s` : a.last_seen_ago_s < 5400 ? `${Math.round(a.last_seen_ago_s / 60)}m` : `${Math.round(a.last_seen_ago_s / 3600)}h`;
         const act = a.activity ? `${a.activity}${a.tool ? `:${a.tool}` : ''}` : '';
-        return { name: a.name, status: a.status, seen, mode: a.inbox_mode || '', model: a.model || '', cwd: a.cwd || '', act };
+        return { name: a.name, status: a.status, seen, inbox: a.inbox_status || '', model: a.model || '', cwd: a.cwd || '', act };
       };
       const f = rows.map(fmt);
       const w = (k) => Math.max(k.length, ...f.map(r => String(r[k]).length));
       const wn = w('name'), ws = w('status'), wsa = Math.max(4, ...f.map(r => r.seen.length));
-      const wi = w('mode');
+      const wi = w('inbox');
       const wm = w('model');
       const lines = f.map(r =>
-        `${r.name.padEnd(wn)}  ${r.status.padEnd(ws)}  ${r.seen.padStart(wsa)}  ${r.mode.padEnd(wi)}  ${r.model.padEnd(wm)}  ${r.act ? r.act.padEnd(14) : '              '}  ${r.cwd}`.trimEnd()
+        `${r.name.padEnd(wn)}  ${r.status.padEnd(ws)}  ${r.seen.padStart(wsa)}  ${r.inbox.padEnd(wi)}  ${r.model.padEnd(wm)}  ${r.act ? r.act.padEnd(14) : '              '}  ${r.cwd}`.trimEnd()
       );
-      const colHead = `${'agent'.padEnd(wn)}  ${'status'.padEnd(ws)}  ${'seen'.padStart(wsa)}  ${'mode'.padEnd(wi)}  ${'model'.padEnd(wm)}  ${'activity'.padEnd(14)}  cwd`;
+      const colHead = `${'agent'.padEnd(wn)}  ${'status'.padEnd(ws)}  ${'seen'.padStart(wsa)}  ${'inbox'.padEnd(wi)}  ${'model'.padEnd(wm)}  ${'activity'.padEnd(14)}  cwd`;
       return { content: [{ type: 'text', text: `${header}${scope}${summaryText}\n\n${colHead}\n${lines.join('\n')}` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `fleet_table failed (tlda backend not answering — tell ops if it persists): ${e.message}` }], isError: true };
@@ -5038,7 +5047,7 @@ async function _flushUnread() {
     const task = data.task;
     if (msgs.length === 0 && !task) return;
     const lines = [];
-    const label = _inboxMode === 'inbox' ? 'Inbox' : _inboxMode[0].toUpperCase() + _inboxMode.slice(1);
+    const label = _inboxStatus[0].toUpperCase() + _inboxStatus.slice(1);
     if (task) lines.push(`📬 ${label}: pending task: ${(task.description || '').slice(0, 80)}`);
     if (msgs.length > 0) lines.push(`📬 ${label}: ${msgs.length} unread item(s). ${inboxCallText('triage')}`);
     const content = lines.join('\n');
@@ -5115,34 +5124,16 @@ const _deliveredChannelIds = new Set();
 const CHANNEL_DEDUP_TTL_MS = 60000;
 
 function inboxCallText(action = 'see it') {
-  return _inboxMode === 'inbox'
+  return _inboxView === 'default'
     ? `Call inbox() to ${action}.`
-    : `Call inbox(mode: "${_inboxMode}") to ${action}.`;
+    : `Call inbox(view: "${_inboxView}") to ${action}.`;
 }
 
-function formatModeSummary({ eventType, fromLabel, docHint = '', preview = '', truncNote = '', reminder = '' }) {
+function formatStatusSummary({ eventType, fromLabel, docHint = '', preview = '', truncNote = '', reminder = '' }) {
   const source = fromLabel ? ` from ${fromLabel}${docHint}` : '';
-  if (_inboxMode === 'focus') {
-    const kind = eventType === 'delegate' ? 'task' : eventType === 'task_done' ? 'task update' : 'message';
-    return `📬 Focus ${kind}${source}: ${preview}${truncNote}\n${inboxCallText(eventType === 'chat' ? 'read and respond' : 'see it')}${reminder}`;
-  }
-  if (_inboxMode === 'monitoring') {
-    const kind = eventType === 'delegate' ? 'new delegation' : eventType === 'task_done' ? 'task gate' : 'waiting item';
-    return `📬 Monitoring ${kind}${source}: ${preview}${truncNote}\n${inboxCallText(eventType === 'chat' ? 'triage it' : 'see details')}${reminder}`;
-  }
-  if (_inboxMode === 'incident') {
-    const kind = eventType === 'delegate' ? 'task' : eventType === 'task_done' ? 'update' : 'signal';
-    return `🚨 Incident ${kind}${source}: ${preview}${truncNote}\n${inboxCallText(eventType === 'chat' ? 'triage it' : 'see details')}${reminder}`;
-  }
-  if (_inboxMode === 'available') {
-    const kind = eventType === 'delegate' ? 'task' : eventType === 'task_done' ? 'update' : 'ambient item';
-    return `📬 Available ${kind}${source}: ${preview}${truncNote}\n${inboxCallText(eventType === 'chat' ? 'read it' : 'see details')}${reminder}`;
-  }
-  if (_inboxMode === 'review') {
-    const kind = eventType === 'delegate' ? 'review task' : eventType === 'task_done' ? 'gate update' : 'review signal';
-    return `📬 Review ${kind}${source}: ${preview}${truncNote}\n${inboxCallText(eventType === 'chat' ? 'triage it' : 'see details')}${reminder}`;
-  }
-  return null;
+  const kind = eventType === 'delegate' ? 'task' : eventType === 'task_done' ? 'update' : 'message';
+  const label = _inboxStatus[0].toUpperCase() + _inboxStatus.slice(1);
+  return `📬 ${label} ${kind}${source}: ${preview}${truncNote}\n${inboxCallText(eventType === 'chat' ? 'read and respond' : 'see it')}${reminder}`;
 }
 
 async function handleChannelMessage(msg) {
@@ -5217,7 +5208,7 @@ async function handleChannelMessage(msg) {
       const desc = previewOf(data.text || data.description);
       const rawDesc = data.text || data.description || '';
       const truncNote = isTruncated(rawDesc) ? `\n(TRUNCATED — showing ${PREVIEW_MAX}/${rawDesc.length} chars. You MUST call inbox() for the full text before responding)` : '';
-      content = formatModeSummary({ eventType, fromLabel, preview: desc, truncNote })
+      content = formatStatusSummary({ eventType, fromLabel, preview: desc, truncNote })
         || `📬 New task assigned: ${desc}${truncNote}\nCall inbox() to see it.`;
     } else if (eventType === 'chat') {
       const rawText = data.text || data.message || '';
@@ -5226,10 +5217,10 @@ async function handleChannelMessage(msg) {
       const docHint = formatViewingHint(ctx, { terse: true });
       const truncNote = isTruncated(rawText) ? `\n(TRUNCATED — showing ${PREVIEW_MAX}/${rawText.length} chars. You MUST call inbox() for the full text before responding)` : '';
       const reminder = data.metadata?.chatReminder ? `\n⚠️ ${data.metadata.chatReminder}` : '';
-      content = formatModeSummary({ eventType, fromLabel, docHint, preview, truncNote, reminder })
+      content = formatStatusSummary({ eventType, fromLabel, docHint, preview, truncNote, reminder })
         || `📬 Message from ${fromLabel}${docHint}: ${preview}${truncNote}\nCall inbox() to read and respond.${reminder}`;
     } else if (eventType === 'task_done') {
-      content = formatModeSummary({ eventType, fromLabel, preview: data.description || data.text || 'Task update' })
+      content = formatStatusSummary({ eventType, fromLabel, preview: data.description || data.text || 'Task update' })
         || `📬 Task update. Call inbox() to see details.`;
     }
   }
