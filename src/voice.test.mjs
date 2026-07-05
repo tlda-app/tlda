@@ -1371,6 +1371,27 @@ await setBackend('chrome')
   assert.ok(longStored.text.startsWith('Frontier says look here: word'), 'radio subtitle should clean markdown without punctuation gaps')
   assert.ok(longStored.text.length <= 180, 'radio subtitle should keep a bounded excerpt')
   assert.ok(longStored.text.endsWith('...'), 'radio subtitle should mark truncated excerpts')
+  assert.deepEqual(
+    window.__voiceTest.getRadioHistory().map(item => item.text).slice(0, 2),
+    [longStored.text, 'Radio line one now'],
+    'radio history should keep newest messages first',
+  )
+
+  for (const text of ['trace alpha', 'trace beta', 'trace gamma']) {
+    window.__voiceTest.maybeShowRadioSubtitleForIncomingChat(
+      { type: 'chat', from: 'fleet:frontier', to: 'fleet:skip', text },
+      agents,
+      'fleet:skip',
+    )
+  }
+  const history = window.__voiceTest.getRadioHistory()
+  assert.equal(history.length, 4, 'radio history should stay bounded')
+  assert.deepEqual(
+    history.map(item => item.text),
+    ['trace gamma', 'trace beta', 'trace alpha', longStored.text],
+    'radio history should keep a short receding trace',
+  )
+  assert.ok(window.__voiceTest.getHudText().includes('frontier: trace beta'), 'HUD should include previous radio events while expanded')
 
   window.location.search = ''
   location.search = ''

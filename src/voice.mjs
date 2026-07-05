@@ -223,6 +223,7 @@ let _recording = false
 const VOICE_HUD_WIDTH = '240px'
 const RADIO_HUD_EXPANDED_MS = 4500
 const RADIO_HUD_MAX_CHARS = 180
+const RADIO_HUD_HISTORY_LIMIT = 4
 
 // Recording on/off listeners — lets the viewer react when recording starts/stops
 // (e.g. to re-aim the dictation target at the currently-selected note).
@@ -324,6 +325,7 @@ const _micChannel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChann
 // --- HUD ---
 
 let _radioSubtitle = null
+let _radioHistory = []
 let _radioExpanded = false
 let _radioCollapseTimer = null
 
@@ -399,12 +401,14 @@ function showRadioSubtitle(event, agents = []) {
   const text = cleanRadioSubtitleText(event?.text)
   if (!text) return false
   const from = event.from || event.agent || ''
-  _radioSubtitle = {
+  const entry = {
     from,
     label: labelForRadioAgent(from, agents),
     text,
     timestamp: event.timestamp || new Date().toISOString(),
   }
+  _radioSubtitle = entry
+  _radioHistory = [entry, ..._radioHistory].slice(0, RADIO_HUD_HISTORY_LIMIT)
   _radioExpanded = true
   clearTimeout(_radioCollapseTimer)
   showHud(`radio <- ${_radioSubtitle.label}`, '#7ab8a0')
@@ -830,6 +834,33 @@ function showHud(text, stateColor) {
       width: '100%',
     })
     hud.appendChild(line)
+    const prior = _radioHistory.slice(1)
+    if (prior.length) {
+      const trace = document.createElement('div')
+      Object.assign(trace.style, {
+        marginTop: '3px',
+        width: '100%',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '1px',
+      })
+      for (const item of prior) {
+        const row = document.createElement('div')
+        row.textContent = `${item.label}: ${item.text}`
+        Object.assign(row.style, {
+          minWidth: '0',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+          color: 'rgba(255,255,255,0.42)',
+          fontSize: '9px',
+          lineHeight: '1.2',
+          textAlign: 'left',
+        })
+        trace.appendChild(row)
+      }
+      hud.appendChild(trace)
+    }
   }
   hud.style.color = activeAgentColor() || stateColor || 'rgba(255,255,255,0.7)'
   requestAnimationFrame(() => { hud.style.opacity = '1' })
@@ -2327,6 +2358,7 @@ if (typeof window !== 'undefined') {
     getHudStyle: () => _hud?.style || null,
     getHudWidth: () => VOICE_HUD_WIDTH,
     getRadioSubtitle: () => _radioSubtitle ? { ..._radioSubtitle, expanded: _radioExpanded } : null,
+    getRadioHistory: () => _radioHistory.map(item => ({ ...item })),
     maybeShowRadioSubtitleForIncomingChat,
     fakeDeepgramConnected: () => {
       _recording = true
