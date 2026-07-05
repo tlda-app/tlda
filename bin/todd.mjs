@@ -30,6 +30,7 @@ import { labelsForAgent } from '../shared/fleet-labels.mjs'
 import { commitMdShare } from './md-share-commit.mjs'
 import { decideTaskKicks, formatTaskKickMessage } from './lib/todd-kicks.mjs'
 import { decideLooseEndNudge, LOOSE_END_COOLDOWN_MS } from './lib/todd-loose-ends.mjs'
+import { GLOBAL_ACTIVITY_RULES } from './lib/todd-global-activity-rules.mjs'
 import { DispositionScheduler } from './lib/disposition-scheduler.mjs'
 import { createDispositionWiring } from './lib/disposition-wiring.mjs'
 import { pokeFor } from './lib/disposition-poke.mjs'
@@ -1211,7 +1212,6 @@ const agentPatternArms = new Map()
 // these fire for ANY agent and match against the agent's tool-call command text
 // (activity events). Keep this list small: noisy global rules interrupt active
 // testing lanes.
-const GLOBAL_ACTIVITY_RULES = []
 const globalRuleCooldowns = new Map() // `${ruleName}:${agentId}` → lastFired ms
 const recentChatSends = new Map() // `${to}\0${text}` → lastSent ms
 const CHAT_DEDUPE_MS = 10 * 60_000
