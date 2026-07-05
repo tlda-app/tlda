@@ -24,7 +24,7 @@ import { isDocumentPageShape, sendCanvasPageShapesToBack } from '../shapes/docum
 import { isMyFleetShape } from '../shapes/fleet-utils'
 import './AnnotationViewer.css'
 
-type ViewerState = 'hovering' | 'pinned' | 'navigated'
+type ViewerState = 'hovering' | 'pinned' | 'navigated' | 'phone-pane'
 
 const RETURN_HUD_RIGHT = 'calc(10px + env(safe-area-inset-right))'
 const RETURN_HUD_MARGIN = 10
@@ -61,6 +61,25 @@ function suppressFleetHudCameraTracking(durationMs = 700) {
   )
 }
 
+function isPhoneViewportSurface(): boolean {
+  if (typeof window === 'undefined') return false
+  if (document.body.classList.contains('phone-mode')) return true
+  const vv = window.visualViewport
+  const w = Number(vv?.width || window.innerWidth || 0)
+  const h = Number(vv?.height || window.innerHeight || 0)
+  return Number.isFinite(w) && Number.isFinite(h) && Math.min(w, h) <= 600
+}
+
+function phoneViewerSize() {
+  const vv = typeof window !== 'undefined' ? window.visualViewport : null
+  const w = Number(vv?.width || window.innerWidth || 375)
+  const h = Number(vv?.height || window.innerHeight || 664)
+  return {
+    w: Math.max(300, Math.round(w - 16)),
+    h: Math.max(260, Math.round(h - 24)),
+  }
+}
+
 export function AnnotationViewer({
   mainEditor,
   shapeUtils,
@@ -83,6 +102,7 @@ export function AnnotationViewer({
       const request = (e as CustomEvent).detail?.request as ManagedSurfaceRequest<AnnotationViewerSurfacePayload, AnnotationViewerSurfaceKind> | undefined
       if (!request || request.kind !== 'annotation-viewer') return
       const payload = request.payload
+      const nextSize = isPhoneViewportSurface() ? phoneViewerSize() : { w: request.extent.w, h: request.extent.h }
       setData({
         bounds: payload.bounds,
         shapeIds: payload.shapeIds,
@@ -98,6 +118,7 @@ export function AnnotationViewer({
         pinned: payload.pinned,
         bulletIdx: payload.bulletIdx,
       })
+      setSize(nextSize)
       setState(request.persistence.pinned ? 'pinned' : 'hovering')
       prevViewRef.current = null
       if (dismissTimerRef.current) clearTimeout(dismissTimerRef.current)
@@ -247,6 +268,11 @@ export function AnnotationViewer({
   const handleGo = useCallback((e: React.MouseEvent) => {
     stopEventPropagation(e)
     if (!data) return
+    if (isPhoneViewportSurface()) {
+      setSize(phoneViewerSize())
+      setState('phone-pane')
+      return
+    }
     const cam = mainEditor.getCamera()
     prevViewRef.current = {
       pageId: mainEditor.getCurrentPageId(),
@@ -375,7 +401,8 @@ export function AnnotationViewer({
     return Math.max(8, Math.min(top, window.innerHeight - RETURN_HUD_SIZE - 8))
   }
 
-  const isPinnedOrNav = state === 'pinned' || state === 'navigated'
+  const isPhonePane = state === 'phone-pane'
+  const isPinnedOrNav = state === 'pinned' || state === 'navigated' || isPhonePane
   const backArrowPath = (
     <path d="M238 125 H12 M80 12 L12 125 L80 238" fill="none" stroke="currentColor"
       strokeWidth="48" strokeLinecap="square" strokeLinejoin="miter" />
@@ -389,8 +416,13 @@ export function AnnotationViewer({
   let left: number
   let top: number
   if (data.managedPlacement?.left != null && data.managedPlacement?.top != null) {
-    left = data.managedPlacement.left
-    top = data.managedPlacement.top
+    if (isPhoneViewportSurface()) {
+      left = 8
+      top = 8
+    } else {
+      left = data.managedPlacement.left
+      top = data.managedPlacement.top
+    }
   } else if (chip) {
     // Horizontal: center the viewer in the viewport; vertical still follows the chip.
     left = (vw - size.w) / 2
@@ -465,7 +497,7 @@ export function AnnotationViewer({
           tools={[]}
           licenseKey={licenseKey}
           panelWidth={size.w}
-          maxHeightFraction={0.5}
+          maxHeightFraction={isPhoneViewportSurface() ? 1 : 0.5}
           emphasizeShapeIds={data.shapeIds}
           readOnly
           className="annotation-viewer-clip"
@@ -480,6 +512,7 @@ export function AnnotationViewer({
             className="annotation-viewer-nav-btn annotation-viewer-nav-left"
             onPointerDown={stopEventPropagation}
             onClick={state === 'pinned' ? handleGo : handleBack}
+            style={isPhonePane ? { display: 'none' } : undefined}
           >
             <svg width="250" height="250" viewBox="0 0 250 250">
               {state === 'pinned' ? (

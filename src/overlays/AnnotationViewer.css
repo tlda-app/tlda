@@ -21,9 +21,14 @@
 }
 
 .annotation-viewer--pinned,
-.annotation-viewer--navigated {
+.annotation-viewer--navigated,
+.annotation-viewer--phone-pane {
   opacity: 1;
   cursor: default;
+}
+
+.annotation-viewer--phone-pane {
+  border-radius: 0;
 }
 
 /* Canvas area */
