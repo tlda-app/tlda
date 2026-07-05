@@ -72,6 +72,13 @@ export function resolveCodexResumeHandleFromIdentity(agent, options = {}) {
   for (const rec of records) {
     if (!rec?.session_id) continue
     if (!isBareCodexResumeId(rec.session_id)) {
+      if (rec.jsonl_path && fs.existsSync(rec.jsonl_path)) {
+        const { sessionMeta } = scanCodexRolloutIdentity(rec.jsonl_path)
+        const repairedId = codexResumeIdFromPath(rec.jsonl_path, sessionMeta)
+        if (repairedId) {
+          return success(agent, { ...rec, session_id: repairedId }, options.source || 'identity-store-repaired')
+        }
+      }
       return typedMiss(agent, 'missing-resume-handle', 'invalid-uuid', {
         retry_after_ms: options.retryAfterMs,
         extra: { session_id: rec.session_id },

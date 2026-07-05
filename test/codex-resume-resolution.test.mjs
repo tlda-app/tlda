@@ -91,6 +91,33 @@ test('resolveCodexResumeHandle rejects stored rollout basename as invalid UUID',
   assert.equal(result.detail.session_id, sid)
 })
 
+test('resolveCodexResumeHandle repairs existing corrupted rollout basename record from jsonl path', async () => {
+  const root = tmpdir()
+  const configDir = path.join(root, 'config')
+  const bareId = '019f2a8d-d06e-74c2-9c7c-f7ca108b0a6d'
+  const corruptedId = `rollout-2026-07-03T20-36-04-${bareId}`
+  const jsonl = path.join(root, 'sessions', '2026', '07', '03', `${corruptedId}.jsonl`)
+  writeJsonl(jsonl, [{ type: 'session_meta', payload: { id: bareId, cwd: '/tmp/corrupted' } }])
+  writeSessionIdentity(configDir, {
+    sessions: {
+      [corruptedId]: {
+        session_id: corruptedId,
+        harness_kind: 'codex',
+        fleet_id: 'fleet:corrupted',
+        cwd: '/tmp/corrupted',
+        jsonl_path: jsonl,
+        updated_at: '2026-07-05T00:00:00.000Z',
+      },
+    },
+  })
+
+  const result = await resolveCodexResumeHandle({ id: 'fleet:corrupted' }, { identityConfigDir: configDir })
+  assert.equal(result.ok, true)
+  assert.equal(result.resumeId, bareId)
+  assert.equal(result.jsonlPath, jsonl)
+  assert.equal(result.source, 'identity-store-repaired')
+})
+
 test('direct cold read returns newest owned Codex rollout as bare UUID', () => {
   const root = tmpdir()
   const sessionsBase = path.join(root, 'codex-sessions')
