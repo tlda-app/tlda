@@ -72,6 +72,14 @@ import { trimTerminalSeedBlankRows } from '../shared/terminal-seed.mjs'
 import { daemonSingletonLockPath, inspectSingletonLock } from '../bin/lib/singleton-lock.mjs'
 import { partialSkillReadSummaries, recordPartialSkillReads } from '../shared/partial-skill-reads.mjs'
 import { daemonAddress, describeAgentAddress } from '../shared/agent-move-target.mjs'
+import {
+  INBOX_STATUSES,
+  decideInboxDelivery,
+  normalizeInboxStatus,
+  normalizeMessagePriority,
+  parsePriorityPhrase,
+  shouldWakeBatchedMessage,
+} from '../shared/inbox-attention.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -505,7 +513,7 @@ const SPAWN_RPC_TIMEOUT_MS = 120_000
 // keyed by agent_id → { tmux_session, machine_id, planText, lastHash, eventId }
 const pendingPlanApprovals = new Map()
 
-// Chat idempotency cache: _tempId → { eventIds, recipients, ts }
+// Chat idempotency cache: _tempId → { eventIds, recipients, receipts, ts }
 // Prevents duplicate DB rows when the browser retries a timed-out send.
 const _chatTempIds = new Map()
 const CHAT_TEMPID_TTL_MS = 60_000
@@ -3227,7 +3235,7 @@ server.on('upgrade', async (req, socket, head) => {
       // panel and task list. Agent/MCP clients connect with ?agent=... and only
       // use this socket for RPC replies + targeted fleet-event notifications;
       // sending the full roster/task snapshot there is a multi-MB startup tax
-      // that can delay ordinary my_task/chat/delegate requests.
+      // that can delay ordinary inbox/chat/delegate requests.
       if (fleetStore && !agentFilter) {
         const initState = {
           // Full roster incl. dead. Panel filters dead client-side, but the
@@ -3860,23 +3868,22 @@ async function handleFleetWsMessage(ws, msg) {
     const s = String(raw || '')
     return s.length > max ? `${s.slice(0, max)}…` : s
   }
-  const inboxModeFor = (agentId) => {
-    const mode = fleetStore.getAgent?.(agentId)?.metadata?.inboxMode
-    return ['focus', 'inbox', 'monitoring', 'incident', 'available', 'review'].includes(mode) ? mode : 'inbox'
+  const inboxStatusFor = (agentId) => {
+    const status = fleetStore.getAgent?.(agentId)?.metadata?.inboxStatus
+    return normalizeInboxStatus(status)
   }
-  const inboxCallForMode = (mode, action) => mode === 'inbox'
-    ? `Call inbox() to ${action}.`
-    : `Call inbox(mode: "${mode}") to ${action}.`
-  const wakeText = ({ mode, event, preview, action }) => {
-    if (mode === 'focus') return `📬 Focus ${event}: ${preview}\n${inboxCallForMode(mode, action)}`
-    if (mode === 'monitoring') return `📬 Monitoring ${event}: ${preview}\n${inboxCallForMode(mode, action)}`
-    if (mode === 'incident') return `🚨 Incident ${event}: ${preview}\n${inboxCallForMode(mode, action)}`
-    if (mode === 'available') return `📬 Available ${event}: ${preview}\n${inboxCallForMode(mode, action)}`
-    if (mode === 'review') return `📬 Review ${event}: ${preview}\n${inboxCallForMode(mode, action)}`
-    return `📬 ${event}: ${preview}\n${inboxCallForMode(mode, action)}`
+  const unreadPendingFor = (eventId, agentId) => {
+    const row = fleetStore.db.prepare('SELECT read FROM unread WHERE event_id = ? AND to_id = ?').get(eventId, agentId)
+    return !!row && !row.read
   }
-  const chatWakeText = (text, agentId) => wakeText({ mode: inboxModeFor(agentId), event: 'message arrived', preview: previewForWake(text), action: 'read and respond' })
-  const delegateWakeText = (description, agentId) => wakeText({ mode: inboxModeFor(agentId), event: 'new task assigned', preview: previewForWake(description), action: 'see it' })
+  const inboxCall = (action) => `Call inbox() to ${action}.`
+  const wakeText = ({ status, event, preview, action }) => {
+    const label = normalizeInboxStatus(status)
+    const prefix = label[0].toUpperCase() + label.slice(1)
+    return `📬 ${prefix} ${event}: ${preview}\n${inboxCall(action)}`
+  }
+  const chatWakeText = (text, agentId) => wakeText({ status: inboxStatusFor(agentId), event: 'message arrived', preview: previewForWake(text), action: 'read and respond' })
+  const delegateWakeText = (description, agentId) => wakeText({ status: inboxStatusFor(agentId), event: 'new task assigned', preview: previewForWake(description), action: 'see it' })
 
   if (type === 'amend') {
     // Amend = a NEW event of type 'amend' that REFERENCES the original chat
@@ -3941,7 +3948,7 @@ async function handleFleetWsMessage(ws, msg) {
     // previously inserted event IDs instead of creating duplicates.
     if (msg._tempId && _chatTempIds.has(msg._tempId)) {
       const prev = _chatTempIds.get(msg._tempId)
-      reply({ ok: true, event_ids: prev.eventIds, recipients: prev.recipients, _tempId: msg._tempId })
+      reply({ ok: true, event_ids: prev.eventIds, recipients: prev.recipients, receipts: prev.receipts || [], _tempId: msg._tempId })
       return
     }
     const resolveSingle = (id) => {
@@ -4007,11 +4014,23 @@ async function handleFleetWsMessage(ws, msg) {
     const ts = new Date().toISOString()
     const eventIds = []
     const insertedEvents = []
+    const receipts = []
+    const wakeRequests = []
+    const basePriority = normalizeMessagePriority(metadata?.priority || parsePriorityPhrase(text) || (from === SERVER_OWNER_ID ? 'urgent' : 'normal'))
     for (const to of recipients) {
       // Resolve wiretaps per recipient — tap labels are matched against this `to`.
       const wiretapRecipients = fleetStore.resolveWiretaps(from, to, 'chat')
+      const recipientAgent = fleetStore.getAgent?.(to)
+      const inboxStatus = normalizeInboxStatus(recipientAgent?.metadata?.inboxStatus)
+      const inboxStatusTag = recipientAgent?.metadata?.inboxStatusTag || null
+      const deliveryDecision = decideInboxDelivery({ status: inboxStatus, priority: basePriority, now: Date.parse(ts) || Date.now() })
       const combinedMetadata = {
         ...(metadata || {}),
+        priority: basePriority,
+        inbox_delivery: deliveryDecision.delivery,
+        inbox_status: inboxStatus,
+        ...(inboxStatusTag ? { inbox_status_tag: inboxStatusTag } : {}),
+        ...(deliveryDecision.notifyBy ? { notify_by: deliveryDecision.notifyBy } : {}),
         ...(ccResolved ? { cc: ccResolved } : {}),
         ...(processedAttachments ? { attachments: processedAttachments } : {}),
         ...(inline_attachments ? { inline_attachments } : {}),
@@ -4029,22 +4048,48 @@ async function handleFleetWsMessage(ws, msg) {
       const eventId = Number(result.lastInsertRowid)
       fleetStore.db.prepare('INSERT OR IGNORE INTO unread (event_id, to_id, read) VALUES (?, ?, 0)').run(eventId, to)
       eventIds.push(eventId)
+      receipts.push({
+        recipient: to,
+        status: inboxStatus,
+        tag: inboxStatusTag,
+        priority: basePriority,
+        delivery: deliveryDecision.delivery,
+        wokeRecipient: deliveryDecision.wokeRecipient,
+        notifyBy: deliveryDecision.notifyBy,
+      })
       // Echo _tempId on the broadcast so a client whose WS reply was lost during
       // a hiccup can still bind this echo to its orphaned optimistic entry
       // (the reply, not the DB row, is what normally carries _tempId).
       insertedEvents.push({ id: eventId, type: 'chat', timestamp: ts, from_id: from, to_id: to, text, metadata: Object.keys(combinedMetadata).length ? combinedMetadata : null, ...(msg._tempId ? { _tempId: msg._tempId } : {}) })
+      if (deliveryDecision.delivery === 'notified') {
+        wakeRequests.push({ to, text: chatWakeText(text, to) })
+      } else if (deliveryDecision.delivery === 'batched' && deliveryDecision.notifyBy) {
+        const delay = Math.max(0, Date.parse(deliveryDecision.notifyBy) - Date.now())
+        setTimeout(() => {
+          const latestStatus = inboxStatusFor(to)
+          const unreadPending = unreadPendingFor(eventId, to)
+          if (shouldWakeBatchedMessage({ status: latestStatus, unreadPending })) {
+            requestWake(to, wakeText({
+              status: latestStatus,
+              event: 'batched message ready',
+              preview: previewForWake(text),
+              action: 'read and respond',
+            }))
+          }
+        }, delay)
+      }
     }
     // Cache _tempId for idempotent retries
-    if (msg._tempId) _chatTempIds.set(msg._tempId, { eventIds, recipients, ts: Date.now() })
+    if (msg._tempId) _chatTempIds.set(msg._tempId, { eventIds, recipients, receipts, ts: Date.now() })
     // Reply FIRST so the client can reconcile optimistic events before broadcasts arrive.
-    reply({ ok: true, event_ids: eventIds, recipients, _tempId: msg._tempId || null })
+    reply({ ok: true, event_ids: eventIds, recipients, receipts, _tempId: msg._tempId || null })
     for (const ev of insertedEvents) broadcastEvent('fleet-event', ev)
     const deliveredAt = Date.parse(ts) || Date.now()
     for (const to of recipients) {
       const recipient = fleetStore.getAgent?.(to)
       if (recipient && !recipient.human) spawnLibrarian.observeDelivery(to, deliveredAt)
-      requestWake(to, chatWakeText(text, to))
     }
+    for (const wake of wakeRequests) requestWake(wake.to, wake.text)
 
     // Plan mode approval routing: if Skip sends an affirmative/negative and
     // there's a pending plan approval for the targeted agent (or any agent),
@@ -4225,9 +4270,9 @@ async function handleFleetWsMessage(ws, msg) {
     const unread = fleetStore.getUnread?.(agentId) || []
     // peek=true: caller just wants to see unread (e.g., the channel-WS
     // flush-on-reconnect path that displays a count). Don't mark read in
-    // that case — the actual inbox()/my_task() call from the agent will do the
+    // that case — the actual inbox() call from the agent will do the
     // marking. Without this, peek silently consumes the unread queue and
-    // the subsequent inbox()/my_task() returns nothing.
+    // the subsequent inbox() returns nothing.
     if (unread.length && !msg.peek) {
       const readIds = fleetStore.markRead?.(agentId) || []
       if (readIds.length) broadcastEvent('read-receipt', { event_ids: readIds, agent: agentId })
@@ -4237,13 +4282,13 @@ async function handleFleetWsMessage(ws, msg) {
     return
   }
 
-  if (type === 'inbox-mode') {
-    const { agent, mode } = msg
+  if (type === 'inbox-status') {
+    const { agent, status, tag } = msg
     if (!agent) { error('missing agent'); return }
-    if (!['focus', 'inbox', 'monitoring', 'incident', 'available', 'review'].includes(mode)) { error(`bad inbox mode: ${mode}`); return }
-    fleetStore.updateAgentMeta?.(agent, { inboxMode: mode })
+    if (!INBOX_STATUSES.includes(status)) { error(`bad inbox status: ${status}`); return }
+    fleetStore.updateAgentMeta?.(agent, { inboxStatus: status, inboxStatusTag: tag || null })
     broadcastState()
-    reply({ ok: true, agent, mode })
+    reply({ ok: true, agent, status, tag: tag || null })
     return
   }
 

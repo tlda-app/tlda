@@ -15,7 +15,7 @@ test('generated AGENTS.md is current and has expanded includes', () => {
 test('Claude Code gets project guidance through the thin CLAUDE importer', () => {
   assert.equal(fs.readFileSync('CLAUDE.md', 'utf8'), '@AGENTS.md\n')
   assert.ok(fs.existsSync('AGENTS.md'))
-  assert.equal(claude.kickoffPrompt('alpha'), 'Call register(name="alpha") with the fleet MCP server. Then call my_task() to check for a pending task.')
+  assert.equal(claude.kickoffPrompt('alpha'), 'Call register(name="alpha") with the fleet MCP server. Then call inbox() to check for a pending task.')
 })
 
 test('non-Claude fleet prompts read AGENTS.md without double-reading CLAUDE.md', () => {
