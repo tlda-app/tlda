@@ -113,7 +113,7 @@ test('frontend loader uses fresh-spawn-current endpoint instead of global model 
 })
 
 test('fresh-spawn endpoint helper resolves target machine server-side before probing', async () => {
-  const daemonConnections = new Map([['mini', {}]])
+  const daemonConnections = new Map([['mini:stable', { _machineId: 'mini', _envName: 'stable' }]])
   const fleetStore = {
     getAgent: id => id === user.id ? user : null,
     getFleetPref: () => undefined,
