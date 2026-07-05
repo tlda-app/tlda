@@ -84,13 +84,14 @@ test('bare single-token search also asks the server to resolve an involved agent
   assert.equal(parsed.query, 'msg-threading')
   assert.deepEqual(buildFleetSearchFilters(parsed.filters), {
     naturalAgentQuery: 'msg-threading',
+    naturalAgentQueries: ['msg-threading'],
   })
 })
 
-test('multi-token content search does not become an implicit agent filter', () => {
+test('multi-token content search keeps the full text query', () => {
   const parsed = parseSearchQuery('message threading')
   assert.equal(parsed.query, 'message threading')
-  assert.deepEqual(buildFleetSearchFilters(parsed.filters), {})
+  assert.deepEqual(parsed.filters.naturalTextQuery, 'message threading')
 })
 
 test('search query preserves tilde top-N ranges in message filters', () => {
@@ -105,6 +106,25 @@ test('search query preserves tilde top-N ranges in message filters', () => {
       range: { from: null, to: 3 },
     },
     filterExpression: 'from:chief~..3',
+  })
+})
+
+test('bare lineage selector becomes a natural involved-agent candidate', () => {
+  const parsed = parseSearchQuery('chief~..3')
+  assert.equal(parsed.query, 'chief~..3')
+  assert.deepEqual(buildFleetSearchFilters(parsed.filters), {
+    naturalAgentQuery: 'chief~..3',
+    naturalAgentQueries: ['chief~..3'],
+  })
+})
+
+test('bare lineage selector composes with remaining text as a narrowing query', () => {
+  const parsed = parseSearchQuery('chief~..3 consensus')
+  assert.equal(parsed.query, 'chief~..3 consensus')
+  assert.deepEqual(buildFleetSearchFilters(parsed.filters), {
+    naturalAgentQuery: 'chief~..3',
+    naturalAgentQueries: ['chief~..3', 'consensus'],
+    naturalTextQuery: 'consensus',
   })
 })
 

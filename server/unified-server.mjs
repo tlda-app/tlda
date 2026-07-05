@@ -45,6 +45,7 @@ import { normalizeUsageStatus } from '../shared/usage-status.mjs'
 import { BARE_METADATA, resolveAsset } from '../shared/doc-assets.mjs'
 import { listModels as listSpawnModels } from '../bin/lib/spawn/models.mjs'
 import { labelsForAgent, parseFilter, parseMessageFilter, evalExpr } from '../shared/fleet-labels.mjs'
+import { parseAgentSelector as parseUnifiedAgentSelector } from '../shared/unified-filter-grammar.mjs'
 import { phaseFromName, baseName, PHASES, prettyNameForFriendlyName } from '../shared/lineage-name.mjs'
 import { daemonHelloDecision } from '../shared/daemon-identity.mjs'
 import { resolveServerIsolation } from '../shared/server-identity.mjs'
@@ -3717,12 +3718,14 @@ async function handleFleetWsMessage(ws, msg) {
         eventOnly: msg.eventOnly,
         fromOnly: msg.fromOnly,
       })
-      if (hasText && msg.naturalAgentQuery && !searchAgent && !msg.filterExpression) {
-        const ids = fleetStore.resolveAgentQuery(msg.naturalAgentQuery)
+      if (hasText && (msg.naturalAgentQuery || msg.naturalAgentQueries?.length) && !searchAgent && !msg.filterExpression) {
+        const naturalQueries = msg.naturalAgentQueries?.length ? msg.naturalAgentQueries : [msg.naturalAgentQuery]
+        const ids = [...new Set(naturalQueries.flatMap(query => fleetStore.resolveAgentSelector(parseUnifiedAgentSelector(query) || { fragment: query })))]
         if (ids.length) {
-          const agentResults = fleetStore.searchAll('', {
+          const naturalTextQuery = (msg.naturalTextQuery || '').trim()
+          const agentResults = fleetStore.searchAll(naturalTextQuery, {
             limit: msg.limit, agent: ids, role: msg.role, since: msg.since, before: msg.before,
-            agentOnly: true,
+            agentOnly: !naturalTextQuery,
             historyOnly: msg.historyOnly,
             eventOnly: msg.eventOnly,
           })
