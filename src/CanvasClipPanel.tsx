@@ -317,6 +317,84 @@ export function CanvasClipPanel({
     return Math.max(minH, Math.min(contentH, window.innerHeight * maxHeightFraction))
   }, [bounds, panelWidth, maxHeightFraction])
 
+  useEffect(() => {
+    if (!readOnly || !bounds) return
+    const panel = panelRef.current
+    if (!panel) return
+    const active = new Map<number, { x: number; y: number }>()
+    let lastCenter: { x: number; y: number } | null = null
+
+    const center = () => {
+      const points = [...active.values()]
+      if (points.length === 0) return null
+      return {
+        x: points.reduce((sum, p) => sum + p.x, 0) / points.length,
+        y: points.reduce((sum, p) => sum + p.y, 0) / points.length,
+      }
+    }
+    const shouldHandle = (e: PointerEvent) =>
+      (e.pointerType === 'touch' || e.pointerType === 'pen') &&
+      e.target instanceof Element &&
+      !isEditableWheelTarget(e.target)
+
+    const onPointerDown = (e: PointerEvent) => {
+      if (!shouldHandle(e)) return
+      active.set(e.pointerId, { x: e.clientX, y: e.clientY })
+      lastCenter = center()
+      try { panel.setPointerCapture(e.pointerId) } catch {
+        // Pointer capture can fail for synthetic/cancelled touches; panel listeners still pan without it.
+      }
+      e.preventDefault()
+      e.stopPropagation()
+      e.stopImmediatePropagation()
+    }
+    const onPointerMove = (e: PointerEvent) => {
+      if (!active.has(e.pointerId)) return
+      active.set(e.pointerId, { x: e.clientX, y: e.clientY })
+      const nextCenter = center()
+      if (!lastCenter || !nextCenter) {
+        lastCenter = nextCenter
+        return
+      }
+      const dx = nextCenter.x - lastCenter.x
+      const dy = nextCenter.y - lastCenter.y
+      lastCenter = nextCenter
+      setInteractiveCamera(prev => {
+        const base = prev ?? plannedCamera
+        const z = base.z || 1
+        return clampClipCameraToBounds({
+          ...base,
+          x: base.x + dx / z,
+          y: base.y + dy / z,
+        }, bounds, panelWidth, canvasHeight)
+      })
+      e.preventDefault()
+      e.stopPropagation()
+      e.stopImmediatePropagation()
+    }
+    const onPointerUp = (e: PointerEvent) => {
+      if (!active.has(e.pointerId)) return
+      active.delete(e.pointerId)
+      lastCenter = center()
+      try { panel.releasePointerCapture(e.pointerId) } catch {
+        // Release can fail after browser-cancelled touches; there is no retained capture to clean up.
+      }
+      e.preventDefault()
+      e.stopPropagation()
+      e.stopImmediatePropagation()
+    }
+    panel.addEventListener('pointerdown', onPointerDown, { capture: true })
+    panel.addEventListener('pointermove', onPointerMove, { capture: true })
+    panel.addEventListener('pointerup', onPointerUp, { capture: true })
+    panel.addEventListener('pointercancel', onPointerUp, { capture: true })
+    return () => {
+      panel.removeEventListener('pointerdown', onPointerDown, { capture: true })
+      panel.removeEventListener('pointermove', onPointerMove, { capture: true })
+      panel.removeEventListener('pointerup', onPointerUp, { capture: true })
+      panel.removeEventListener('pointercancel', onPointerUp, { capture: true })
+    }
+  }, [bounds, canvasHeight, panelWidth, plannedCamera, readOnly])
+
   const requestedShapeIdsKey = useMemo(
     () => (requestedShapeIds || []).join('\0'),
     [requestedShapeIds],
