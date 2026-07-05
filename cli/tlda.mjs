@@ -2,19 +2,9 @@
 /**
  * tlda — tlda CLI.
  *
- * Commands:
- *   tlda doc link <name> [main.tex] [--title "Title"] [--dir /path] [--main main.tex]
- *   tlda doc push [name] [--dir /path]
- *   tlda daemon [/path/to/main.tex] [name]
- *   tlda daemon
- *   tlda doc open [name]
- *   tlda doc list
- *   tlda doc status [name]
- *   tlda config set server <url>
- *
- * Server URL resolution:
- *   TLDA_SERVER env → --server flag → ~/.config/tlda/config.json → <proto>://localhost:5176
- *   (<proto> = https when the mkcert certs exist, else http — see getServerUrl in shared/config.mjs)
+ * The user-facing command surface is noun-first: doc/server/daemon/agent/config.
+ * Server URL resolution is centralized in shared/config.mjs; do not document
+ * ad-hoc fallback chains here.
  */
 
 import { resolve, basename, dirname, join, delimiter } from 'path'
@@ -69,6 +59,60 @@ const DOC_SUBS = new Set([
 ])
 const REMOVED_DOC_SUBS = new Set(['create', 'preview'])
 const CONFIG_SUBS = new Set(['setup', 'mcp-setup', 'auth'])  // config subs that map to existing handlers
+const TOP_LEVEL_COMMANDS = [
+  ['doc', 'work on a document project'],
+  ['server', 'run/manage the tlda server'],
+  ['daemon', 'fleet daemon (source watch + activity)'],
+  ['bot', 'manage configured fleet bots'],
+  ['agent', 'fleet agents on this machine'],
+  ['config', 'configure tlda'],
+  ['system', 'show server, daemon, deploy stamp, and fleet runtime identity'],
+  ['doctor', 'health check'],
+  ['logs', 'unified logs across all sources'],
+  ['completions', 'output zsh completion script'],
+]
+const DOC_COMMANDS = [
+  ['init', 'Create a new blank git-backed project'],
+  ['link', 'Link an existing project, push files, build'],
+  ['open', 'Open the viewer'],
+  ['push', 'Push source, rebuild'],
+  ['status', 'Build status'],
+  ['errors', 'LaTeX errors/warnings'],
+  ['list', 'List projects'],
+  ['share', 'Print a shareable read-only URL'],
+  ['delete', 'Delete a project'],
+  ['publish', 'Publish to GitHub Pages + Fly'],
+  ['scratch', 'Publish a scratch .md'],
+  ['book', 'Group existing docs into a book'],
+  ['repo-doctor', 'Diagnose/repair a project source repo'],
+  ['init-shadow', 'Rebuild a project shadow history repo'],
+]
+const SERVER_COMMANDS = [
+  ['start', 'Start the server'],
+  ['stop', 'Stop the server'],
+  ['status', 'Check if server is running'],
+  ['log', 'Show recent server log'],
+  ['install', 'Install launchd service'],
+  ['uninstall', 'Remove launchd service'],
+]
+const DAEMON_COMMANDS = [
+  ['start', 'Start the fleet daemon'],
+  ['stop', 'Stop the fleet daemon'],
+  ['status', 'Check daemon status'],
+  ['log', 'Show recent daemon log'],
+  ['run', 'Run the daemon in the foreground'],
+  ['install', 'Install launchd service'],
+  ['uninstall', 'Remove launchd service'],
+]
+const BOT_COMMANDS = [
+  ['list', 'List configured fleet bots'],
+  ['install', 'Install bot launchd services'],
+  ['uninstall', 'Remove bot launchd services'],
+  ['start', 'Start bot services'],
+  ['stop', 'Stop bot services'],
+  ['status', 'Check bot services'],
+  ['log', 'Show recent bot logs'],
+]
 let _nounUsed = null
 {
   const noun = process.argv[2]
@@ -128,6 +172,9 @@ const COMMAND_HELP = {
   server:  'tlda server [start|stop|status|log|install|uninstall]\n\n  start      Start the server (auto-restarts via launchd if installed)\n  stop       Stop the server\n  status     Check if server is running\n  log        Show recent server log\n  install    Install launchd service (macOS)\n  uninstall  Remove launchd service',
   bot:     'tlda bot [list|install|uninstall|start|stop|status|log] [name] [--dry-run]\n\n  Manage configured fleet bots as launchd services. The bot process registers like an agent; the daemon does not start it.',
   system:  'tlda system status\n\n  Show server, daemon, deploy stamp, and fleet runtime identity.',
+  daemon:  'tlda daemon [start|stop|status|log|run|install|uninstall]\n\n  Control the per-machine fleet daemon.\n  It watches project source directories and agent session activity,\n  then pushes events to the tlda server over WebSocket.',
+  doctor:  'tlda doctor [--fix]\n\n  Run a health check for local tools, server, SPA bundle, daemon, MCP setup,\n  project builds, and doc sync stores.\n\n  --fix  Apply the limited automatic repairs that doctor explicitly offers.',
+  'repo-doctor': 'tlda doc repo-doctor <project> [--rescue|--apply|--rollback|--cleanup]\n\n  Diagnose a project source repo for tlda-induced damage.\n  No flag: diagnose only (read-only).\n  --rescue   Compute a rescue plan (dry run).\n  --apply    Execute the rescue plan.\n  --rollback Roll back a previous rescue apply.\n  --cleanup  Clean rescue apply state.',
   publish: 'tlda publish [--target <name>] [doc ...]\n\n  Publish docs to GitHub Pages (+ optionally Fly).\n\n  With no args, publishes all docs in config.published using the "default" target.\n  With --target, uses the named target config (sync server, repo, etc.).\n  With doc names, publishes those and adds them to the list.\n\n  Config (targets in ~/.config/tlda/config.json):\n    targets.<name>.sync     — sync server WebSocket URL\n    targets.<name>.repo     — git remote for gh-pages (null = same repo)\n    targets.<name>.fly      — deploy to Fly (default: false)\n    targets.<name>.basePath — vite base path (default: /tlda/)',
   config:  'tlda config [set <key> <value> | get [key]]\n\n  Manage persistent configuration.\n  Example: tlda config set server http://myhost:5176',
 }
@@ -152,6 +199,11 @@ function getFlag(name, defaultVal = null) {
 
 function hasFlag(name) {
   return args.includes(`--${name}`)
+}
+
+function formatCommandRows(rows) {
+  const width = rows.reduce((n, [name]) => Math.max(n, name.length), 0)
+  return rows.map(([name, description]) => `  ${name.padEnd(width)}  ${description}`).join('\n')
 }
 
 function getPositional(index) {
@@ -1724,13 +1776,18 @@ async function cmdAuth() {
 
 function cmdCompletions() {
   // Fetch project names at completion time via a helper function in the script
-  const commands = [
-    'server', 'agent', 'link', 'push', 'watch', 'watch-all', 'open', 'list', 'ls',
-    'status', 'errors', 'delete', 'rm', 'revert',
-    'logs', 'log', 'config', 'completions',
-  ]
-  const serverSubs = ['start', 'stop', 'status', 'log', 'logs', 'install', 'uninstall']
-  const botSubs = ['list', 'install', 'uninstall', 'start', 'stop', 'status', 'log']
+  const commandEntries = TOP_LEVEL_COMMANDS
+    .map(([name, description]) => `    '${name}:${description}'`)
+    .join('\n')
+  const docSubs = DOC_COMMANDS.map(([name]) => `'${name}'`).join(' ')
+  const serverSubs = SERVER_COMMANDS.map(([name]) => `'${name}'`).join(' ')
+  const daemonSubs = DAEMON_COMMANDS.map(([name]) => `'${name}'`).join(' ')
+  const botSubs = BOT_COMMANDS.map(([name]) => `'${name}'`).join(' ')
+  const agentSubs = [
+    'list', 'spawn', 'spawn-direct', 'move', 'set-spawn-machine',
+    'check-ready', 'attach', 'hibernate', 'capability', 'privileges',
+  ].map(s => `'${s}'`).join(' ')
+  const configSubs = ['set', 'get', 'setup', 'mcp-setup', 'auth'].map(s => `'${s}'`).join(' ')
 
   console.log(`#compdef tlda
 # Install: tlda completions > ~/.zsh/completions/_tlda && fpath=(~/.zsh/completions $fpath)
@@ -1745,21 +1802,7 @@ _tlda_projects() {
 _tlda() {
   local -a commands
   commands=(
-    'server:Manage the server'
-    'link:Link project and upload files'
-    'push:Push source files and rebuild'
-    'watch:Watch for changes and auto-push'
-    'watch-all:Watch all projects'
-    'publish:Publish docs to GitHub Pages + Fly'
-    'open:Open viewer in browser'
-    'list:List projects'
-    'status:Show build status'
-    'errors:Show LaTeX errors/warnings'
-    'logs:Show server log'
-    'delete:Delete a project'
-    'config:Manage configuration'
-    'bot:Manage configured fleet bots'
-    'completions:Output zsh completion script'
+${commandEntries}
   )
 
   _arguments -C '1:command:->cmd' '*::arg:->args'
@@ -1770,16 +1813,37 @@ _tlda() {
       ;;
     args)
       case $words[1] in
+        doc)
+          if (( CURRENT == 2 )); then
+            local -a subs=(${docSubs})
+            _describe 'subcommand' subs
+          else
+            case $words[2] in
+              link|push|open|status|errors|delete)
+                _tlda_projects
+                ;;
+            esac
+          fi
+          ;;
         server)
-          local -a subs=(${serverSubs.map(s => `'${s}'`).join(' ')})
+          local -a subs=(${serverSubs})
+          _describe 'subcommand' subs
+          ;;
+        daemon)
+          local -a subs=(${daemonSubs})
           _describe 'subcommand' subs
           ;;
         bot)
-          local -a subs=(${botSubs.map(s => `'${s}'`).join(' ')})
+          local -a subs=(${botSubs})
           _describe 'subcommand' subs
           ;;
-        link|push|open|status|errors|build|delete|rm)
-          _tlda_projects
+        agent)
+          local -a subs=(${agentSubs})
+          _describe 'subcommand' subs
+          ;;
+        config)
+          local -a subs=(${configSubs})
+          _describe 'subcommand' subs
           ;;
       esac
       ;;
@@ -3974,37 +4038,18 @@ async function main() {
       case 'dev-url': await cmdDevUrl(); break
       case 'deploy': await cmdDeploy(); break
       case 'doctor': await cmdDoctor(); break
+      case 'completions': cmdCompletions(); break
       case 'init-shadow': await cmdInitShadow(); break
       case 'repo-doctor': await cmdRepoDoctor(); break
       case 'doc':
         console.log(`tlda doc — work on a document project
 
-  init <name> [main]   Create a new blank git-backed project
-  link <name> [main]   Link an existing project, push files, build
-  open [name]          Open the viewer
-  push [name]          Push source, rebuild
-  status [name]        Build status
-  errors [name]        LaTeX errors/warnings
-  list                 List projects
-  share [name]         Print a shareable read-only URL
-  delete <name>        Delete a project
-  publish [doc …]      Publish to GitHub Pages + Fly
-  scratch <file>       Publish a scratch .md
-  book <name>          Group existing docs into a book
-  repo-doctor <proj>   Diagnose/repair a project's source repo
-  init-shadow <proj>   Rebuild a project's shadow (version-history) repo`)
+${formatCommandRows(DOC_COMMANDS)}`)
         break
       default:
         console.log(`tlda — collaborative LaTeX paper review
 
-  tlda doc <cmd>       work on a document project   (\`tlda doc\` for the list)
-  tlda server <cmd>    run/manage the tlda server   (start/stop/status/log)
-  tlda bot <cmd>       manage configured fleet bots
-  tlda agent <cmd>     fleet agents on this machine (list/spawn/attach/hibernate/capability)
-  tlda config <cmd>    configure tlda               (set/get/setup/mcp-setup/auth)
-  tlda daemon [start|stop]  fleet daemon (source watch + activity)
-  tlda doctor          health check (--fix to repair)
-  tlda logs [agent]    unified logs across all sources
+${formatCommandRows(TOP_LEVEL_COMMANDS.map(([name, description]) => [`tlda ${name}${name === 'logs' ? ' [agent]' : name === 'daemon' ? ' [start|stop]' : name === 'doctor' ? ' [--fix]' : name === 'doc' || name === 'server' || name === 'agent' || name === 'config' || name === 'bot' ? ' <cmd>' : ''}`, description]))}
 
 Run \`tlda <noun>\` (e.g. \`tlda doc\`) to list that group's commands.
 Developer commands (hacking on tlda itself): \`tlda-dev --help\`
