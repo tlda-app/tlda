@@ -49,9 +49,19 @@ export const CHAT_TOOLS = new Set([
 
 // --- Pretty-print tool results ---
 
+const MARKDOWN_PRETTY_TOOLS = new Set([
+  'inbox',
+  'mcp/tlda/inbox',
+  'mcp__tlda__inbox',
+])
+
+function normalizedToolName(toolName) {
+  return String(toolName || '').toLowerCase().replace(/^mcp__/, 'mcp/').replace(/__/g, '/')
+}
+
 function renderPrettyResult(toolName, text, ctx, input, ts) {
   text = normalizePrettyResult(text)
-  const tool = (toolName || '').toLowerCase()
+  const tool = normalizedToolName(toolName)
   if (tool.includes('get_thread') || tool.includes('thread')) {
     return renderThreadResult(text, ctx)
   }
@@ -64,9 +74,28 @@ function renderPrettyResult(toolName, text, ctx, input, ts) {
   if (tool === 'schedulewakeup') {
     return renderScheduleResult(text, input, ts)
   }
-  // Fallback: render as markdown
+  if (MARKDOWN_PRETTY_TOOLS.has(tool)) {
+    return renderMarkdownPrettyResult(toolName, text, ctx)
+  }
   const md = ctx.renderMarkdown ? ctx.renderMarkdown(text) : esc(text)
   return `<div class="tool-pretty-result">${md}</div>`
+}
+
+function renderMarkdownPrettyResult(toolName, text, ctx) {
+  const lines = String(text || '').split('\n')
+  const h = ctx?.foldHeights?.toolMarkdown ?? 12
+  const shouldFold = h > 0 && lines.length > h
+  const maxH = shouldFold ? `max-height:${(h * 1.4).toFixed(1)}em;` : ''
+  const foldStyle = shouldFold ? ` style="${maxH}"` : ''
+  const foldCls = shouldFold ? ' code-collapsed' : ''
+  const toggleHtml = shouldFold
+    ? `<span class="code-block-toggle" onclick="(function(e){var w=e.closest('.code-block-wrap'),p=w.querySelector('.fold-body');if(p.classList.contains('code-collapsed')){p.classList.remove('code-collapsed');p.style.maxHeight='';e.textContent='collapse'}else{p.classList.add('code-collapsed');p.style.maxHeight='${(h * 1.4).toFixed(1)}em';e.textContent='${lines.length} lines — show all'}})(this)">${lines.length} lines — show all</span>`
+    : ''
+  const md = ctx.renderMarkdown ? ctx.renderMarkdown(esc(text)) : esc(text)
+  return `<div class="tool-pretty-result tool-pretty-markdown code-block-wrap">
+    <div class="code-block-header"><span class="code-block-lang">${esc(humanizeToolName(toolName))}</span>${toggleHtml}</div>
+    <div class="pretty-msg-body fold-body${foldCls}"${foldStyle}>${md}</div>
+  </div>`
 }
 
 // Format remaining ms-until-fire as "in Xm Ys" / "in Ys" / "fired". Shared shape
