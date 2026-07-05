@@ -1441,6 +1441,21 @@ export function getFleetTools() {
         },
       },
     },
+    {
+      name: 'set_inbox_mode',
+      description: 'Set this agent\'s visible inbox/attention mode without reading or marking inbox items. This controls future wake summaries and the default inbox() view.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          mode: {
+            type: 'string',
+            enum: ['focus', 'inbox', 'monitoring', 'incident', 'available', 'review'],
+            description: 'Attention mode to advertise for this agent.',
+          },
+        },
+        required: ['mode'],
+      },
+    },
     // ---- tlda document feedback (push channel) ----
     {
       name: 'monitor_add',
@@ -1806,6 +1821,11 @@ const INBOX_MODES = new Set(['focus', 'inbox', 'monitoring', 'incident', 'availa
 function normalizeInboxMode(mode) {
   const m = String(mode || 'inbox').trim().toLowerCase();
   return INBOX_MODES.has(m) ? m : 'inbox';
+}
+
+function validateInboxMode(mode) {
+  const m = String(mode || '').trim().toLowerCase();
+  return INBOX_MODES.has(m) ? m : null;
 }
 
 function inboxTaskSummary(task) {
@@ -3684,6 +3704,21 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
       return { content: contentBlocks };
     }
     return { content: [{ type: 'text', text }] };
+  }
+
+  // ---- set_inbox_mode ----
+  if (name === 'set_inbox_mode') {
+    if (!AGENT_ID) return { content: [{ type: 'text', text: 'No session ID detected.' }], isError: true };
+    const mode = validateInboxMode(args?.mode);
+    if (!mode) return { content: [{ type: 'text', text: `Bad inbox mode: ${args?.mode || '(missing)'}. Use one of: ${[...INBOX_MODES].join(', ')}.` }], isError: true };
+    _inboxMode = mode;
+    try {
+      await sendWS('inbox-mode', { agent: AGENT_ID, mode });
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Could not publish inbox mode "${mode}" to tlda (${e.message}).` }], isError: true };
+    }
+    const call = mode === 'inbox' ? 'inbox()' : `inbox(mode: "${mode}")`;
+    return { content: [{ type: 'text', text: `Inbox mode set to ${mode}. Future wake summaries will use this mode; call ${call} to read the matching view.` }] };
   }
 
   // ---- my_task ----
