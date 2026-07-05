@@ -3774,6 +3774,27 @@ async function handleFleetWsMessage(ws, msg) {
       enter_delay_ms: agent?.metadata?.kind === 'codex' ? 400 : 0,
     }).catch(e => console.warn(`[wake-nudge] ${phase} failed for ${agent.id}: ${e.message}`))
   }
+  function livenessFromCheckAliveResult(agentId, tmuxSession, result) {
+    if (result?.state) return { ...result, agent_id: result.agent_id || agentId, tmux_session: result.tmux_session || tmuxSession }
+    if (typeof result?.alive === 'boolean') {
+      return {
+        type: 'agent-liveness',
+        agent_id: agentId,
+        tmux_session: tmuxSession,
+        state: result.alive ? 'alive' : 'dead',
+        reason: result.alive ? undefined : 'daemon check-alive: tmux session absent',
+        ts: new Date().toISOString(),
+      }
+    }
+    return {
+      type: 'agent-liveness',
+      agent_id: agentId,
+      tmux_session: tmuxSession,
+      state: 'unknown',
+      reason: 'daemon check-alive returned no liveness state',
+      ts: new Date().toISOString(),
+    }
+  }
   function requestWake(agentId, nudgeText = null) {
     const agent = fleetStore.getAgent?.(agentId)
     if (!agent || agent.dead || agent.human) return
@@ -3800,6 +3821,7 @@ async function handleFleetWsMessage(ws, msg) {
         const serverAlive = isAgentAlive(agentId)
         const liveness = serverAlive
           ? await sendRpc(daemonKey, 'check-alive', { tmux_session: agent.tmux_session })
+            .then(result => livenessFromCheckAliveResult(agentId, agent.tmux_session, result))
             .catch(e => ({
               type: 'agent-liveness',
               agent_id: agentId,
