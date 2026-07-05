@@ -66,10 +66,56 @@ describe('argument parser', () => {
     }
   })
 
-  it('completions is advertised in top-level help', () => {
+  it('completions prints the zsh completion script', () => {
     const { stdout, exitCode } = tlda('completions')
     assert.equal(exitCode, 0)
-    assert.ok(stdout.includes('tlda — collaborative LaTeX paper review'))
+    assert.ok(stdout.includes('#compdef tlda'))
+    assert.ok(stdout.includes("'completions:output zsh completion script'"))
+  })
+
+  it('advertised help commands exit 0 without live work', () => {
+    const cases = [
+      ['doc', '--help'],
+      ['server', '--help'],
+      ['daemon', '--help'],
+      ['bot', '--help'],
+      ['agent', '--help'],
+      ['config', '--help'],
+      ['system', '--help'],
+      ['doctor', '--help'],
+      ['logs', '--help'],
+      ['doc', 'repo-doctor', '--help'],
+    ]
+    const liveWorkNeedles = [
+      'Server not running',
+      'Server running at',
+      'fleet daemon not running',
+      'Fleet daemon launchd job started',
+      'No .tex file found',
+      'All checks passed',
+      'issues found',
+      'Project "',
+    ]
+
+    for (const args of cases) {
+      const { stdout, stderr, exitCode } = tlda(...args)
+      assert.equal(exitCode, 0, `${args.join(' ')} should exit 0\nstdout:\n${stdout}\nstderr:\n${stderr}`)
+      assert.match(stdout, /tlda/)
+      for (const needle of liveWorkNeedles) {
+        assert.ok(!stdout.includes(needle), `${args.join(' ')} should not run live work: ${needle}`)
+        assert.ok(!stderr.includes(needle), `${args.join(' ')} should not run live work: ${needle}`)
+      }
+    }
+  })
+
+  it('completions use noun-first command names', () => {
+    const { stdout, exitCode } = tlda('completions')
+    assert.equal(exitCode, 0)
+    assert.ok(stdout.includes("'doc:work on a document project'"))
+    assert.ok(stdout.includes("'daemon:fleet daemon (source watch + activity)'"))
+    assert.ok(!stdout.includes("'watch:"))
+    assert.ok(!stdout.includes("'watch-all:"))
+    assert.ok(!stdout.includes("'link:Link project"))
   })
 })
 
