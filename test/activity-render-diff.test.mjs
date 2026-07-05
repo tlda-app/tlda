@@ -370,3 +370,39 @@ test('search pretty result strips Codex wall-time output wrapper before renderin
   assert.doesNotMatch(html, /Output:/)
   assert.doesNotMatch(html, /\[\{&quot;type&quot;:&quot;text&quot;/)
 })
+
+test('inbox pretty result uses shared foldable markdown renderer', () => {
+  const prettyText = [
+    'INBOX MODE: review',
+    '',
+    'REVIEW / GATES',
+    '',
+    'OWNED REVIEW WORK',
+    '[task:fleet:190f-mr6p8ib8] Own inbox modes project',
+    'State: pending',
+    '',
+    'DIRECT MESSAGES',
+    '[1] [from fleet:skip] Product direction',
+    '',
+    'line 11',
+    'line 12',
+    'line 13',
+  ].join('\n')
+  const html = renderActivityGroup([{
+    from: 'agent-1',
+    timestamp: '2026-06-18T12:00:00.000Z',
+    _activity: true,
+    _toolName: 'mcp__tlda__inbox',
+    _toolArg: 'review',
+    _prettyResult: JSON.stringify([{ type: 'text', text: prettyText }]),
+  }], { ...ctx, foldHeights: { ...ctx.foldHeights, toolMarkdown: 4 } })
+
+  assert.match(html, /tool-pretty-markdown/)
+  assert.match(html, /code-block-toggle/)
+  assert.match(html, /14 lines — show all/)
+  assert.match(html, /code-collapsed/)
+  assert.match(html, /tlda\/inbox/)
+  assert.match(html, /INBOX MODE: review/)
+  assert.match(html, /Own inbox modes project/)
+  assert.doesNotMatch(html, /\[\{&quot;type&quot;:&quot;text&quot;/)
+})
