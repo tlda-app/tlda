@@ -1213,7 +1213,7 @@ async function resolveCodexJsonl(agent) {
 const HARNESS_ADAPTERS = {
   claude: {
     kind: 'claude',
-    processRe: /(?:^|\s|\/)claude(?:\s|$)/,
+    processRe: /(?:^|\s|[/\\])claude(?:\.exe)?(?:\s|$)/,
     activity: {
       kind: 'claude',
       parseLine: parseSessionLine,

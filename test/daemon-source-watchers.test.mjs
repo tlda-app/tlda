@@ -51,3 +51,14 @@ test('daemon liveness observation emits present, not awake activity status', () 
   assert.equal(source.includes("emitAgentStatus(agent.id, 'present')"), true)
   assert.equal(source.includes("emitAgentStatus(agent.id, 'awake')"), false)
 })
+
+test('daemon claude runtime matcher accepts claude.exe wrapper process names', () => {
+  const source = daemonSource()
+  const matcher = /(?:^|\s|[/\\])claude(?:\.exe)?(?:\s|$)/
+
+  assert.equal(source.includes('claude(?:\\.exe)?'), true)
+  assert.equal(matcher.test('claude'), true)
+  assert.equal(matcher.test('/opt/homebrew/bin/claude --resume'), true)
+  assert.equal(matcher.test('/Users/skip/.local/bin/claude.exe --resume'), true)
+  assert.equal(matcher.test('notclaude.exe --resume'), false)
+})
