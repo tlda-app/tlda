@@ -42,6 +42,7 @@ import { highlightSyntax, langFromFilePath } from '../fleet/utils.mjs'
 import { getHumanId } from '../fleet/fleet-data.mjs'
 import { useIsInViewport } from './useIsInViewport'
 import { DATABASE_HTTP } from '../activeConfig'
+import { openChatMarkdownColumn, openMarkdownChipFromTarget } from './fleet-chat-markdown-open'
 import './fleet-chat.css'
 import './fleet-inbox.css'
 
@@ -796,7 +797,7 @@ function FleetInboxInner({ shape }: { shape: any }) {
 
         {/* Body */}
         {activeThread ? (
-          <ConversationView thread={activeThread} ctx={ctx} myId={myId} myName={myName} />
+          <ConversationView shapeId={shape.id} thread={activeThread} ctx={ctx} myId={myId} myName={myName} />
         ) : activeItem ? (
           <ItemDetail item={activeItem} onApprove={approveNode} />
         ) : (
@@ -1061,9 +1062,12 @@ function ItemDetail({ item, onApprove }: { item: DetailItem; onApprove: (t: Node
   )
 }
 
-function ConversationView({ thread, ctx, myId, myName }: { thread: Thread; ctx: any; myId: string | null; myName: string }) {
+function ConversationView({ shapeId, thread, ctx, myId, myName }: { shapeId: TLShapeId; thread: Thread; ctx: any; myId: string | null; myName: string }) {
+  const editor = useEditor()
   const scrollRef = useRef<HTMLDivElement>(null)
   const wasNearBottomRef = useRef(true)
+  const downTargetRef = useRef<HTMLElement | null>(null)
+  const suppressNativeChipClickUntilRef = useRef(0)
   useWheelScroll(scrollRef)
 
   const updateNearBottom = useCallback(() => {
@@ -1123,9 +1127,53 @@ function ConversationView({ thread, ctx, myId, myName }: { thread: Thread; ctx: 
     sendWithRetry(1)
   }, [scrollToBottom])
 
+  const openMarkdownColumn = useCallback((title: string, markdown: string, sourceEl: HTMLElement) => {
+    openChatMarkdownColumn({
+      editor,
+      sourceShapeId: shapeId,
+      title,
+      markdown,
+      sourceEl,
+      placementEl: scrollRef.current,
+      logPrefix: 'fleet-inbox',
+    })
+  }, [editor, shapeId])
+
+  const openMarkdownChipFromEventTarget = useCallback((target: EventTarget | null, stopPropagation: () => void) => {
+    if (!(target instanceof HTMLElement)) return false
+    return openMarkdownChipFromTarget({ target, stopPropagation, openMarkdownColumn })
+  }, [openMarkdownColumn])
+
+  const handleConversationClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    if (Date.now() < suppressNativeChipClickUntilRef.current) return
+    if (openMarkdownChipFromEventTarget(e.target, () => e.stopPropagation())) return
+  }, [openMarkdownChipFromEventTarget])
+
+  const handleConversationPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const target = e.target instanceof HTMLElement ? e.target.closest('.ref-chip-doc, .md-file-card') as HTMLElement | null : null
+    downTargetRef.current = target
+  }, [])
+
+  const handleConversationPointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const target = downTargetRef.current
+    downTargetRef.current = null
+    if (!target) return
+    if (!e.currentTarget.contains(target)) return
+    if (openMarkdownChipFromEventTarget(target, () => stopEventPropagation(e))) {
+      suppressNativeChipClickUntilRef.current = Date.now() + 700
+    }
+  }, [openMarkdownChipFromEventTarget])
+
   return (
     <>
-      <div ref={scrollRef} className="fleet-inbox-conv fleet-chat-shape" onScroll={updateNearBottom}>
+      <div
+        ref={scrollRef}
+        className="fleet-inbox-conv fleet-chat-shape"
+        onScroll={updateNearBottom}
+        onClick={handleConversationClick}
+        onPointerDown={handleConversationPointerDown}
+        onPointerUp={handleConversationPointerUp}
+      >
         {thread.messages.map((m, i) => {
           const key = m._dbId || m.id || String(i)
           const lineHtml = renderChatLine(m, ctx)
