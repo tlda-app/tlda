@@ -155,6 +155,7 @@ interface RibbonTask {
 
 interface DocNote {
   id: string            // the math-note shape id (also the annotation-viewer target)
+  text: string          // full note body, rendered in the detail view
   preview: string       // one-line text preview
   file: string
   line: number | null
@@ -190,6 +191,11 @@ type InboxItem =
   | { kind: 'node'; key: string; time: number; node: NodeTask }
   | { kind: 'note'; key: string; time: number; note: DocNote }
   | { kind: 'message'; key: string; time: number; thread: Thread }
+
+type DetailItem =
+  | { kind: 'task'; key: string; task: RibbonTask }
+  | { kind: 'node'; key: string; node: NodeTask }
+  | { kind: 'note'; key: string; note: DocNote }
 
 type SortMode = 'time' | 'type' | 'graph'
 
@@ -314,6 +320,7 @@ function FleetInboxInner({ shape }: { shape: any }) {
   const [filterOpen, setFilterOpen] = useState(false)
   const [filterOpenByPill, setFilterOpenByPill] = useState(false)
   const [filterTargetId, setFilterTargetId] = useState<TLShapeId | null>(null)
+  const [openItemKey, setOpenItemKey] = useState<string | null>(null)
   const [isPhoneSurface, setIsPhoneSurface] = useState(() => isPhoneViewportSurface())
 
   useEffect(() => {
@@ -598,6 +605,7 @@ function FleetInboxInner({ shape }: { shape: any }) {
           const anchor = s.meta?.sourceAnchor
           return {
             id: s.id,
+            text: String(s.props?.text || ''),
             preview: previewText(s.props?.text || ''),
             file: (anchor?.file as string) || '',
             line: (anchor?.line as number) ?? null,
@@ -632,6 +640,32 @@ function FleetInboxInner({ shape }: { shape: any }) {
     () => (openPartner ? threads.find(t => t.partnerId === openPartner) || null : null),
     [openPartner, threads],
   )
+
+  const openableItems = useMemo<DetailItem[]>(() => [
+    ...proofTasks.direct.map((n): DetailItem => ({ kind: 'node', key: `node:${n.id}`, node: n })),
+    ...proofTasks.cascade.map((n): DetailItem => ({ kind: 'node', key: `node:${n.id}`, node: n })),
+    ...proofTasks.spanTasks.map((t): DetailItem => ({ kind: 'task', key: `task:${t.id}`, task: t })),
+    ...docNotes.map((n: DocNote): DetailItem => ({ kind: 'note', key: `note:${n.id}`, note: n })),
+  ], [proofTasks, docNotes])
+
+  const activeItem = useMemo(
+    () => (openItemKey ? openableItems.find((it) => it.key === openItemKey) || null : null),
+    [openItemKey, openableItems],
+  )
+
+  useEffect(() => {
+    if (openItemKey && !activeItem) setOpenItemKey(null)
+  }, [openItemKey, activeItem])
+
+  const activeTitle = activeThread
+    ? activeThread.partnerName
+    : activeItem?.kind === 'node'
+      ? activeItem.node.title
+      : activeItem?.kind === 'task'
+        ? `lines ${activeItem.task.lo}-${activeItem.task.hi}`
+        : activeItem?.kind === 'note'
+          ? 'note'
+          : null
 
   // The interleaved stream: every row as a typed item, newest first. Items with
   // no usable time (undated notes, tasks with no staleAt) sink to the bottom but
@@ -697,8 +731,8 @@ function FleetInboxInner({ shape }: { shape: any }) {
 
         {/* Header */}
         <div className="fleet-inbox-header" onPointerDown={(e) => stopEventPropagation(e)}>
-          {activeThread ? (
-            <button className="fleet-inbox-back" onPointerUp={(e) => { stopEventPropagation(e); setOpenPartner(null) }}>
+          {activeThread || activeItem ? (
+            <button className="fleet-inbox-back" onPointerUp={(e) => { stopEventPropagation(e); setOpenPartner(null); setOpenItemKey(null) }}>
               ← inbox
             </button>
           ) : (
@@ -721,12 +755,16 @@ function FleetInboxInner({ shape }: { shape: any }) {
               )}
             </>
           )}
-          {activeThread ? (
-            <span
-              className={`fleet-inbox-thread-name fleet-inbox-pill ${activeThread.nickClass}`}
-              style={{ cursor: 'grab', touchAction: 'none' }}
-              onPointerDown={(e) => { e.stopPropagation(); startDrag(e, 'agent', activeThread.friendly, activeThread.partnerName, activeThread.color) }}
-            >{activeThread.partnerName}</span>
+          {activeThread || activeItem ? (
+            activeThread ? (
+              <span
+                className={`fleet-inbox-thread-name fleet-inbox-pill ${activeThread.nickClass}`}
+                style={{ cursor: 'grab', touchAction: 'none' }}
+                onPointerDown={(e) => { e.stopPropagation(); startDrag(e, 'agent', activeThread.friendly, activeThread.partnerName, activeThread.color) }}
+              >{activeThread.partnerName}</span>
+            ) : (
+              <span className="fleet-inbox-detail-title">{activeTitle}</span>
+            )
           ) : (
             <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 6, alignItems: 'center' }}>
               {/* Sort toggle — time (interleaved) ↔ type (grouped). */}
@@ -759,6 +797,8 @@ function FleetInboxInner({ shape }: { shape: any }) {
         {/* Body */}
         {activeThread ? (
           <ConversationView thread={activeThread} ctx={ctx} myId={myId} myName={myName} />
+        ) : activeItem ? (
+          <ItemDetail item={activeItem} onApprove={approveNode} />
         ) : (
           <InboxList
             sortMode={sortMode}
@@ -770,6 +810,7 @@ function FleetInboxInner({ shape }: { shape: any }) {
             notes={docNotes}
             onApprove={approveNode}
             onOpen={openThread}
+            onOpenItem={setOpenItemKey}
             onStartDrag={startDrag}
           />
         )}
@@ -811,9 +852,9 @@ type StartDrag = (e: React.PointerEvent, pillType: 'agent' | 'label', value: str
 // --- Row components — one per kind, shared by both the grouped and the
 // interleaved renderers so the two views can't visually drift. ---
 
-function TaskRow({ t }: { t: RibbonTask }) {
+function TaskRow({ t, onOpen }: { t: RibbonTask; onOpen?: () => void }) {
   return (
-    <div className="fleet-inbox-task">
+    <div className="fleet-inbox-task" onPointerUp={onOpen ? (e) => { stopEventPropagation(e); onOpen() } : undefined}>
       <div className="fleet-inbox-task-row">
         <span className="fleet-inbox-task-icon">⟳</span>
         <span className="fleet-inbox-task-text">Re-vet lines {t.lo}–{t.hi}</span>
@@ -826,13 +867,14 @@ function TaskRow({ t }: { t: RibbonTask }) {
 // A proof-graph revalidation task. Direct = its own statement changed (offers an
 // approve action that re-vets it and clears its cascade); cascade = it depends on
 // a changed node (shows the `via` link, resolves when the upstream is approved).
-function NodeRow({ task, onApprove }: {
+function NodeRow({ task, onApprove, onOpen }: {
   task: NodeTask
   onApprove: (t: NodeTask) => void
+  onOpen?: () => void
 }) {
   if (task.stale === 'cascade') {
     return (
-      <div className="fleet-inbox-node fleet-inbox-node-cascade">
+      <div className="fleet-inbox-node fleet-inbox-node-cascade" onPointerUp={onOpen ? (e) => { stopEventPropagation(e); onOpen() } : undefined}>
         <div className="fleet-inbox-node-row">
           <span className="fleet-inbox-node-icon cascade">↯</span>
           <span className="fleet-inbox-node-title">{task.title}</span>
@@ -842,7 +884,7 @@ function NodeRow({ task, onApprove }: {
     )
   }
   return (
-    <div className="fleet-inbox-node fleet-inbox-node-direct">
+    <div className="fleet-inbox-node fleet-inbox-node-direct" onPointerUp={onOpen ? (e) => { stopEventPropagation(e); onOpen() } : undefined}>
       <div className="fleet-inbox-node-row">
         <span className="fleet-inbox-node-icon">⟳</span>
         <span className="fleet-inbox-node-title">{task.title}</span>
@@ -857,9 +899,9 @@ function NodeRow({ task, onApprove }: {
   )
 }
 
-function NoteRow({ n }: { n: DocNote }) {
+function NoteRow({ n, onOpen }: { n: DocNote; onOpen?: () => void }) {
   return (
-    <div className="fleet-inbox-note">
+    <div className="fleet-inbox-note" onPointerUp={onOpen ? (e) => { stopEventPropagation(e); onOpen() } : undefined}>
       <div className="fleet-inbox-note-row">
         <span className="fleet-inbox-note-dot" style={n.color ? { color: n.color } : undefined}>●</span>
         <span className="fleet-inbox-note-text">{n.preview || '(empty note)'}</span>
@@ -899,20 +941,21 @@ interface InboxListProps {
   notes: DocNote[]
   onApprove: (t: NodeTask) => void
   onOpen: (t: Thread) => void
+  onOpenItem: (key: string) => void
   onStartDrag: StartDrag
 }
 
 function InboxList(props: InboxListProps) {
-  const { sortMode, timeItems, threads, directNodes, cascadeNodes, spanTasks, notes, onApprove, onOpen, onStartDrag } = props
+  const { sortMode, timeItems, threads, directNodes, cascadeNodes, spanTasks, notes, onApprove, onOpen, onOpenItem, onStartDrag } = props
   const listRef = useRef<HTMLDivElement>(null)
   useWheelScroll(listRef)
 
   const empty = threads.length === 0 && directNodes.length === 0 && cascadeNodes.length === 0 && spanTasks.length === 0 && notes.length === 0
 
   const renderItem = (it: InboxItem) => {
-    if (it.kind === 'task') return <TaskRow key={it.key} t={it.task} />
-    if (it.kind === 'node') return <NodeRow key={it.key} task={it.node} onApprove={onApprove} />
-    if (it.kind === 'note') return <NoteRow key={it.key} n={it.note} />
+    if (it.kind === 'task') return <TaskRow key={it.key} t={it.task} onOpen={() => onOpenItem(it.key)} />
+    if (it.kind === 'node') return <NodeRow key={it.key} task={it.node} onApprove={onApprove} onOpen={() => onOpenItem(it.key)} />
+    if (it.kind === 'note') return <NoteRow key={it.key} n={it.note} onOpen={() => onOpenItem(it.key)} />
     return <MessageRow key={it.key} t={it.thread} onOpen={onOpen} onStartDrag={onStartDrag} />
   }
 
@@ -940,20 +983,20 @@ function InboxList(props: InboxListProps) {
           {(directNodes.length > 0 || spanTasks.length > 0) && (
             <div className="fleet-inbox-tasks">
               <div className="fleet-inbox-group-label">Tasks</div>
-              {directNodes.map((t) => <NodeRow key={t.id} task={t} onApprove={onApprove} />)}
-              {spanTasks.map((t) => <TaskRow key={t.id} t={t} />)}
+              {directNodes.map((t) => <NodeRow key={t.id} task={t} onApprove={onApprove} onOpen={() => onOpenItem(`node:${t.id}`)} />)}
+              {spanTasks.map((t) => <TaskRow key={t.id} t={t} onOpen={() => onOpenItem(`task:${t.id}`)} />)}
             </div>
           )}
           {cascadeNodes.length > 0 && (
             <div className="fleet-inbox-cascade">
               <div className="fleet-inbox-group-label">Cascade</div>
-              {cascadeNodes.map((t) => <NodeRow key={t.id} task={t} onApprove={onApprove} />)}
+              {cascadeNodes.map((t) => <NodeRow key={t.id} task={t} onApprove={onApprove} onOpen={() => onOpenItem(`node:${t.id}`)} />)}
             </div>
           )}
           {notes.length > 0 && (
             <div className="fleet-inbox-notes">
               <div className="fleet-inbox-group-label">Notes</div>
-              {notes.map((n) => <NoteRow key={n.id} n={n} />)}
+              {notes.map((n) => <NoteRow key={n.id} n={n} onOpen={() => onOpenItem(`note:${n.id}`)} />)}
             </div>
           )}
           {threads.length > 0 && (
@@ -962,6 +1005,56 @@ function InboxList(props: InboxListProps) {
               {threads.map((t) => <MessageRow key={t.partnerId} t={t} onOpen={onOpen} onStartDrag={onStartDrag} />)}
             </div>
           )}
+        </>
+      )}
+    </div>
+  )
+}
+
+function ItemDetail({ item, onApprove }: { item: DetailItem; onApprove: (t: NodeTask) => void }) {
+  const detailRef = useRef<HTMLDivElement>(null)
+  useWheelScroll(detailRef)
+
+  if (item.kind === 'note') {
+    const note = item.note
+    const html = inboxRenderMarkdown(esc(note.text || note.preview || '(empty note)'))
+    return (
+      <div ref={detailRef} className="fleet-inbox-detail">
+        <div className="fleet-inbox-detail-kicker">Open note</div>
+        <div className="fleet-inbox-detail-body" dangerouslySetInnerHTML={{ __html: html }} />
+        <div className="fleet-inbox-detail-meta">{note.line != null ? `line ${note.line}` : 'unanchored'}{note.file ? ` · ${note.file}` : ''}</div>
+      </div>
+    )
+  }
+
+  if (item.kind === 'task') {
+    const task = item.task
+    return (
+      <div ref={detailRef} className="fleet-inbox-detail">
+        <div className="fleet-inbox-detail-kicker">Revalidation task</div>
+        <div className="fleet-inbox-detail-heading">Re-vet lines {task.lo}-{task.hi}</div>
+        <div className="fleet-inbox-detail-meta">{task.file || 'current source'}</div>
+        <div className="fleet-inbox-detail-copy">This approved span changed after vetting. It stays in the stack until the live ribbon span is re-approved.</div>
+      </div>
+    )
+  }
+
+  const node = item.node
+  const cascade = node.stale === 'cascade'
+  return (
+    <div ref={detailRef} className="fleet-inbox-detail">
+      <div className="fleet-inbox-detail-kicker">{cascade ? 'Cascade task' : 'Revalidation task'}</div>
+      <div className="fleet-inbox-detail-heading">{node.title}</div>
+      <div className="fleet-inbox-detail-meta">lines {node.lo}-{node.hi}</div>
+      {cascade ? (
+        <div className="fleet-inbox-detail-copy">Depends on {node.viaTitle || node.via}{node.depth && node.depth > 1 ? ` through ${node.depth} hops` : ''}. It clears when the upstream proof node is re-approved.</div>
+      ) : (
+        <>
+          <div className="fleet-inbox-detail-copy">The statement source changed after approval. Re-approving it clears this task and downstream cascade entries.</div>
+          <button
+            className="fleet-inbox-detail-approve"
+            onPointerUp={(e) => { stopEventPropagation(e); onApprove(node) }}
+          >approve</button>
         </>
       )}
     </div>
