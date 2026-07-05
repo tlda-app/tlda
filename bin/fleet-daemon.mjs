@@ -2106,9 +2106,35 @@ function shouldIgnoreSourceWatchPath(sourceDir, filePath, stats) {
   return !isSourceFile(rel) && !rel.includes('.tlda/scratch/')
 }
 
+function sourceWatcherPaths(state) {
+  const rels = new Set(state.watchSet || [])
+  if (state.mainFile) rels.add(state.mainFile)
+  const paths = []
+  for (const rel of rels) {
+    if (!rel || typeof rel !== 'string') continue
+    const normalized = rel.split(/[\\/]+/).filter(Boolean).join(path.sep)
+    if (!normalized) continue
+    const full = path.join(state.sourceDir, normalized)
+    paths.push(full)
+  }
+  paths.sort()
+  return paths
+}
+
+function sourceWatcherKey(state) {
+  return sourceWatcherPaths(state).join('\0')
+}
+
 function startSourceWatcher(state, reason = 'start') {
   closeWatcher(state.watcher, state.projectName)
-  const watcher = chokidar.watch(state.sourceDir, {
+  const watchPaths = sourceWatcherPaths(state)
+  state.watcherKey = watchPaths.join('\0')
+  if (watchPaths.length === 0) {
+    state.watcher = null
+    log.warn(`source watcher disabled for ${state.projectName}: no bounded source files to watch`)
+    return
+  }
+  const watcher = chokidar.watch(watchPaths, {
     ignoreInitial: true,
     persistent: true,
     followSymlinks: true,
@@ -2133,7 +2159,7 @@ function startSourceWatcher(state, reason = 'start') {
         if (sourceWatchers.get(state.projectName) === state && !state.watcher) startSourceWatcher(state, 'retry')
       }, 1000).unref?.()
     })
-  log.info(`chokidar source watcher started for ${state.projectName} (${reason})`)
+  log.info(`chokidar source watcher started for ${state.projectName} (${reason}, ${watchPaths.length} paths)`)
 }
 
 function closeSourceState(state) {
@@ -2177,12 +2203,13 @@ function syncSourceWatchers(projectList) {
         existing.mainFile = p.mainFile
         existing.extraInputCommands = p.extraInputCommands || []
         existing.isMarkdown = isMarkdown
-        if (!existing.watcher) startSourceWatcher(existing, 'resync')
+        const nextWatcherKey = sourceWatcherKey(existing)
+        if (!existing.watcher || existing.watcherKey !== nextWatcherKey) startSourceWatcher(existing, 'resync')
         continue
       }
     }
 
-    const state = { sourceDir, debounce: null, pending: new Set(), watchSet, onFileChange: null, projectName: p.name, mainFile: p.mainFile, extraInputCommands: p.extraInputCommands || [], isMarkdown, watcher: null, _symlinkWatchers: new Map() }
+    const state = { sourceDir, debounce: null, pending: new Set(), watchSet, onFileChange: null, projectName: p.name, mainFile: p.mainFile, extraInputCommands: p.extraInputCommands || [], isMarkdown, watcher: null, watcherKey: '', _symlinkWatchers: new Map() }
 
     const onFileChange = (filename) => {
       if (!filename) return
@@ -2317,6 +2344,7 @@ function flushSourceChanges(projectName) {
       if (alreadyPushed.has(rel) || state.watchSet.has(rel)) continue
       const full = path.join(state.sourceDir, rel)
       if (!fs.existsSync(full)) continue
+      state.watchSet.add(rel)
       try {
         files.push({ path: rel, ...readFileForUpload(full) })
         log.info(`rescan discovered new dep: ${rel}`)
@@ -2367,6 +2395,9 @@ function flushSourceChanges(projectName) {
   }
 
   if (files.length === 0 && deleted.length === 0) return
+
+  const nextWatcherKey = sourceWatcherKey(state)
+  if (state.watcherKey !== nextWatcherKey) startSourceWatcher(state, 'dependency rescan')
 
   // Edit attribution: which agent's recent Edit/Write touched a changed file.
   const editedBy = resolveEditor(filePaths.map(rel => path.join(state.sourceDir, rel)))

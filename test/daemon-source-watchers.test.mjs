@@ -14,7 +14,9 @@ test('project source watching is chokidar-backed, not active-viewer fs.watch bac
   const source = daemonSource()
 
   assert.equal(source.includes('function startSourceWatcher'), true)
-  assert.equal(source.includes('chokidar.watch(state.sourceDir'), true)
+  assert.equal(source.includes('function sourceWatcherPaths'), true)
+  assert.equal(source.includes('chokidar.watch(watchPaths'), true)
+  assert.equal(source.includes('chokidar.watch(state.sourceDir'), false)
   assert.equal(source.includes('function syncFsWatchers'), false)
   assert.equal(source.includes('_activeViewerSet'), false)
   assert.equal(source.includes('fs.watch(state.sourceDir'), false)
