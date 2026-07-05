@@ -168,11 +168,9 @@ if (useTls) {
 }
 console.log(`[deepgram-sdk-bridge] Using ${KEYWORDS.length} keyterm boosts`)
 
-function broadcast(msg) {
+function sendToBrowser(ws, msg) {
   const str = typeof msg === 'string' ? msg : JSON.stringify(msg)
-  for (const ws of wss.clients) {
-    if (ws.readyState === WebSocket.OPEN) ws.send(str)
-  }
+  if (ws.readyState === WebSocket.OPEN) ws.send(str)
 }
 
 wss.on('connection', (browserWs) => {
@@ -236,7 +234,7 @@ wss.on('connection', (browserWs) => {
       console.log('[deepgram-sdk-bridge] connected to Deepgram')
       reconnectFailures = 0
       lastSpeechAt = Date.now()
-      broadcast({ type: 'status', status: 'connected', implementation: 'sdk' })
+      sendToBrowser(browserWs, { type: 'status', status: 'connected', implementation: 'sdk' })
       keepAliveInterval = setInterval(() => {
         try { sendDeepgramJson(dg, { type: 'KeepAlive' }) } catch {}
       }, 3000)
@@ -259,7 +257,7 @@ wss.on('connection', (browserWs) => {
 
         lastSpeechAt = Date.now() // speech activity → keep the upstream session alive
         console.log(`[deepgram-sdk-bridge] transcript: is_final=${msg.is_final} speech_final=${msg.speech_final} from_finalize=${msg.from_finalize} "${text.slice(0, 60)}"`)
-        broadcast({
+        sendToBrowser(browserWs, {
           type: 'transcript',
           text,
           is_final: msg.is_final || false,
@@ -273,17 +271,17 @@ wss.on('connection', (browserWs) => {
       if (msg.type === 'SpeechStarted') {
         lastSpeechAt = Date.now()
         console.log('[deepgram-sdk-bridge] speech started')
-        broadcast({ type: 'speech_started', timestamp: Date.now() })
+        sendToBrowser(browserWs, { type: 'speech_started', timestamp: Date.now() })
         return
       }
 
       if (msg.type === 'UtteranceEnd') {
-        broadcast({ type: 'utterance_end', timestamp: Date.now() })
+        sendToBrowser(browserWs, { type: 'utterance_end', timestamp: Date.now() })
         return
       }
 
       if (msg.type === 'Metadata') {
-        broadcast({ type: 'metadata', request_id: msg.request_id, timestamp: Date.now() })
+        sendToBrowser(browserWs, { type: 'metadata', request_id: msg.request_id, timestamp: Date.now() })
       }
     })
 
@@ -308,7 +306,7 @@ wss.on('connection', (browserWs) => {
 
     connection.on('error', (err) => {
       console.error('[deepgram-sdk-bridge] Deepgram error:', err.message)
-      broadcast({ type: 'status', status: 'error', error: err.message, implementation: 'sdk' })
+      sendToBrowser(browserWs, { type: 'status', status: 'error', error: err.message, implementation: 'sdk' })
     })
   }
 
@@ -348,7 +346,7 @@ wss.on('connection', (browserWs) => {
     console.log(`[deepgram-sdk-bridge] idle cutoff — no speech for ${IDLE_CUTOFF_MS}ms, closing upstream`)
     idleClosed = true
     disconnectDeepgram()
-    broadcast({ type: 'status', status: 'idle', implementation: 'sdk' })
+    sendToBrowser(browserWs, { type: 'status', status: 'idle', implementation: 'sdk' })
   }
 
   function disconnectDeepgram() {

@@ -19,6 +19,16 @@ class FakeConnection {
         let kind = 'audio'
         if (typeof data === 'string') {
           try { kind = 'json:' + (JSON.parse(data).type || '?') } catch { kind = 'json:?' }
+        } else if (process.env.FAKE_DG_RESULT_ON_AUDIO) {
+          const text = process.env.FAKE_DG_RESULT_ON_AUDIO
+          queueMicrotask(() => {
+            this._handlers.message && this._handlers.message({
+              type: 'Results',
+              is_final: true,
+              speech_final: true,
+              channel: { alternatives: [{ transcript: text }] },
+            })
+          })
         }
         emit('send ' + kind)
       },
