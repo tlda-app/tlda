@@ -28,6 +28,9 @@ Notification status and inbox view are separate:
   advisory tag.
 - `inbox(view?)` renders the selected read-time view.
 - `my_task` is not exposed as a public MCP tool; agents call `inbox()` directly.
+- `nudge_agent(agent, message)` is a narrow out-of-band tmux recovery tool for
+  cases where the normal fleet notification channel appears broken. It is not
+  normal chat delivery.
 
 Chat delivery now stamps explicit per-recipient attention metadata:
 
@@ -142,6 +145,9 @@ After rebase and local verification:
    and attention receipts without duplicate unread messages.
 7. Read a batched item before its timer fires; verify no delayed stale wake
    appears for that event.
+8. Use `nudge_agent(agent, message)` against an agent with a tmux route; verify
+   the message appears in the terminal with the standard `Call inbox()` footer
+   and does not create a normal chat event.
 
 ## Reviewer Risk Points
 
@@ -157,3 +163,5 @@ After rebase and local verification:
   window drops the delayed wake, while the unread item remains in inbox.
 - Priority detection is exact phrase only by design. Do not broaden it during
   merge unless product explicitly asks for natural-language classification.
+- `nudge_agent` intentionally uses tmux as an emergency/out-of-band recovery
+  path. Do not generalize it into sender-selected chat transport during merge.

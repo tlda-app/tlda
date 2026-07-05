@@ -1639,6 +1639,18 @@ export function getFleetTools() {
         required: ['agent'],
       },
     },
+    {
+      name: 'nudge_agent',
+      description: 'Send a short out-of-band tmux nudge to an agent when the normal fleet notification channel may be broken. This is not chat delivery; it tells the agent to call inbox().',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          agent: { type: 'string', description: 'Agent identifier (UUID, name, or friendly name)' },
+          message: { type: 'string', description: 'Short situation-specific nudge text.' },
+        },
+        required: ['agent', 'message'],
+      },
+    },
     // ---- Fleet Operations ----
     {
       name: 'fleet_table',
@@ -1935,6 +1947,12 @@ function inboxStatusHint(message) {
 
 function inboxDefaultLine(message, now = Date.now()) {
   return `${message.line}${inboxPriorityHint(message)}${inboxTimingHint(message, now)}${inboxStatusHint(message)}`;
+}
+
+export function formatNudgeAgentText(message) {
+  const body = String(message || '').trim();
+  const base = body || 'Your fleet notification channel may be broken.';
+  return `${base}\n\nCall inbox() to catch up.`;
 }
 
 function groupedInboxLines(messages) {
@@ -4666,6 +4684,24 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       return { content: [{ type: 'text', text: `${data.agent || agent}: ${status}.` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Interrupt failed (tlda backend not answering — tell ops if it persists): ${e.message}` }], isError: true };
+    }
+  }
+
+  // ---- nudge_agent ----
+  if (name === 'nudge_agent') {
+    const agent = String(args?.agent || '').trim();
+    const message = String(args?.message || '').trim();
+    if (!agent) return { content: [{ type: 'text', text: 'Specify an agent to nudge.' }], isError: true };
+    if (!message) return { content: [{ type: 'text', text: 'Specify a message for the nudge.' }], isError: true };
+
+    const text = formatNudgeAgentText(message);
+    try {
+      const data = await sendWS('send-text', { agent, text, enter: true });
+      if (data?.error) return { content: [{ type: 'text', text: `Nudge failed: ${data.error}` }], isError: true };
+      logEvent({ type: 'nudge', from: AGENT_ID, to: agent, text, transport: 'tmux', result: data });
+      return { content: [{ type: 'text', text: `Nudged ${agent} via tmux. They should call inbox().` }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Nudge failed (tlda backend not answering — tell ops if it persists): ${e.message}` }], isError: true };
     }
   }
 

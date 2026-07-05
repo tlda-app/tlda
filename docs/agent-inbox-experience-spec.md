@@ -906,6 +906,10 @@ Current prototype slice:
 - returns sender receipts that say whether the message notified, batched, or
   queued for the recipient
 - changes wake/startup copy to prefer `inbox()`
+- adds `nudge_agent(agent, message)` as a narrow out-of-band tmux recovery
+  tool for cases where the normal fleet notification channel appears broken.
+  This is not normal chat delivery and always tells the target to call
+  `inbox()`.
 
 This prototype is not the full long-term architecture. It is a dogfoodable slice
 of the pull surface plus status-shaped delivery. It still uses the existing
@@ -942,10 +946,12 @@ Rebase and dogfood checklist:
    before `inbox()` is called.
 10. Verify a task/delegate wake says to call `inbox()` and the task remains
    visible in `inbox()`.
-11. Dogfood with at least one worker-like agent in `busy`, one unavailable
+11. Verify `nudge_agent(agent, message)` sends only a tmux nudge with an
+    `inbox()` footer and does not create normal chat delivery semantics.
+12. Dogfood with at least one worker-like agent in `busy`, one unavailable
     agent in `dnd`, and one reviewer/release-like agent using
     `inbox(view: "review")`.
-12. Send release-train the post-rebase diff, exact verification output, and
+13. Send release-train the post-rebase diff, exact verification output, and
     dogfood notes before requesting a merge slot.
 
 ## Reviewer Feedback Incorporated

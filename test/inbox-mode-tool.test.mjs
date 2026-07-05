@@ -3,7 +3,7 @@ process.env.FLEET_ID = process.env.FLEET_ID || 'fleet:test-inbox-status'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { formatInboxText, formatRecipientStatusSummary, getFleetTools, handleFleetTool } from '../mcp-server/fleet-tools.mjs'
+import { formatInboxText, formatNudgeAgentText, formatRecipientStatusSummary, getFleetTools, handleFleetTool } from '../mcp-server/fleet-tools.mjs'
 import { decideInboxDelivery, parsePriorityPhrase, shouldWakeBatchedMessage } from '../shared/inbox-attention.mjs'
 
 test('set_inbox_status is exposed as the explicit status-control tool', () => {
@@ -31,6 +31,37 @@ test('inbox exposes read-time views, not notification statuses', () => {
 
 test('my_task is not exposed as a public MCP tool', () => {
   assert.equal(getFleetTools().some(t => t.name === 'my_task'), false)
+})
+
+test('nudge_agent is exposed as out-of-band tmux recovery, not chat', () => {
+  const tool = getFleetTools().find(t => t.name === 'nudge_agent')
+  assert.ok(tool)
+  assert.match(tool.description, /out-of-band tmux nudge/)
+  assert.match(tool.description, /not chat delivery/)
+  assert.deepEqual(tool.inputSchema.required, ['agent', 'message'])
+  assert.equal(tool.inputSchema.properties.agent.type, 'string')
+  assert.equal(tool.inputSchema.properties.message.type, 'string')
+})
+
+test('nudge_agent text appends the inbox recovery footer', () => {
+  assert.equal(
+    formatNudgeAgentText('Your fleet channel may be broken. Please re-register.'),
+    'Your fleet channel may be broken. Please re-register.\n\nCall inbox() to catch up.',
+  )
+  assert.equal(
+    formatNudgeAgentText(''),
+    'Your fleet notification channel may be broken.\n\nCall inbox() to catch up.',
+  )
+})
+
+test('nudge_agent validates required args before server routing', async () => {
+  const noAgent = await handleFleetTool('nudge_agent', { message: 'wake up' })
+  assert.equal(noAgent.isError, true)
+  assert.match(noAgent.content[0].text, /Specify an agent/)
+
+  const noMessage = await handleFleetTool('nudge_agent', { agent: 'release-train' })
+  assert.equal(noMessage.isError, true)
+  assert.match(noMessage.content[0].text, /Specify a message/)
 })
 
 test('priority phrase parser uses exact V1 phrases only', () => {
