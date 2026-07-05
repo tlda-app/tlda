@@ -922,6 +922,7 @@ const DASHBOARD_URL = typeof window !== 'undefined' ? window.location.origin : '
 export interface FleetSearchFilters {
   agent?: string       // explicit fleet id (or array) — exact match
   agentQuery?: string  // typed name fragment — server resolves to ids (substring, dawn-aware)
+  naturalAgentQuery?: string // bare term also resolved as involved-agent union
   fromOnly?: boolean   // agentQuery refers to the SENDER only (from:)
   role?: string
   since?: string
@@ -936,6 +937,7 @@ export async function searchFleet(query: string, limit = 50, filters: FleetSearc
     const payload: Record<string, any> = { query, limit }
     if (filters.agent) payload.agent = filters.agent
     if (filters.agentQuery) payload.agentQuery = filters.agentQuery
+    if (filters.naturalAgentQuery) payload.naturalAgentQuery = filters.naturalAgentQuery
     if (filters.fromOnly) payload.fromOnly = true
     if (filters.role) payload.role = filters.role
     if (filters.since) payload.since = filters.since

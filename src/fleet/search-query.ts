@@ -38,6 +38,7 @@ export interface SearchFilters {
   since?: string
   type?: string
   agentResolve?: AgentResolveRequest
+  naturalAgentQuery?: string
 }
 
 export interface ParsedSearchQuery {
@@ -49,6 +50,7 @@ export interface FleetSearchPayloadFilters {
   agent?: string
   agentQuery?: string
   agentResolve?: AgentResolveRequest
+  naturalAgentQuery?: string
   fromOnly?: boolean
   role?: string
   since?: string

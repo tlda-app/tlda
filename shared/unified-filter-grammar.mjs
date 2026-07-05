@@ -155,11 +155,15 @@ export function parseAgentSelector(raw) {
 function parseRangeSuffix(text) {
   const single = text.match(/~(\d+)$/)
   if (single) return { fragment: text.slice(0, -single[0].length), position: parseInt(single[1], 10) }
-  const tildeRange = text.match(/~(\d+)\.\.(\d*)$/)
+  const tildeRange = text.match(/~(\d*)\.\.(\d*)$/)
   if (tildeRange) {
+    if (!tildeRange[1] && !tildeRange[2]) return null
     return {
       fragment: text.slice(0, -tildeRange[0].length),
-      range: { from: parseInt(tildeRange[1], 10), to: tildeRange[2] ? parseInt(tildeRange[2], 10) : null },
+      range: {
+        from: tildeRange[1] ? parseInt(tildeRange[1], 10) : null,
+        to: tildeRange[2] ? parseInt(tildeRange[2], 10) : null,
+      },
     }
   }
   const colonRange = text.match(/:(\d+)\.\.(\d*)$/)
