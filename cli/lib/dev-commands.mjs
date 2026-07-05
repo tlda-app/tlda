@@ -18,7 +18,7 @@ injected config, plus a few dev-only verbs. Read-only mirrors (doc status, …)
 forward to \`tlda\`. Raw \`server\`/\`daemon\` lifecycle is DISABLED here — a worktree
 daemon could target the real fleet; use \`serve\` instead.
 
-  serve [--sandbox] [--doc NAME] [--port N] [--no-build]
+  serve [start] [--sandbox] [--doc NAME] [--port N] [--no-build]
                      The ONE dev bring-up command. Stands up THIS worktree's branch
                      as a preview, REACHABLE from your other devices (Tailscale
                      MagicDNS host, valid cert), SPA config pointed at that host,
@@ -27,7 +27,10 @@ daemon could target the real fleet; use \`serve\` instead.
                      launching agent exiting. Isolated (own projects/DB/chat).
                      \`--sandbox\` also brings up a fleet-daemon wired ONLY to this
                      sandbox server (it literally cannot reach prod). Prints the
-                     clean URL + a QR. \`serve stop|status|url\` to manage it.
+                     clean URL + a QR. \`serve stop|status|status --all|url|reap-orphans\`
+                     to manage it. \`serve --help\` prints command help without
+                     starting a preview. Positional branch names are refused because
+                     serve is worktree-relative.
   share [--doc NAME] Print the reachable, tokenless URL + QR for this worktree's
                      running preview (mirror of \`tlda doc share\`, per-worktree).
 
