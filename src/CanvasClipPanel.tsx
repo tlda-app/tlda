@@ -42,6 +42,7 @@ const wmSurfaceRegistry = new Map<string, {
   surface: CanvasClipWMSurface
   setCamera: (camera: { x: number; y: number; z: number }) => void
   syncViewportCamera: (camera: { x: number; y: number; z: number }) => void
+  syncCoordinateCamera: (camera: { x: number; y: number; z: number }) => void
 }>()
 
 function applyViewportCameraToDom(canvas: HTMLDivElement | null, camera: { x: number; y: number; z: number }) {
@@ -215,7 +216,14 @@ export function CanvasClipPanel({
 
   useEffect(() => {
     if (!wmSurface) return
+    const coordinateLayerId = viewportCoordinateLayerId(viewportId as TLViewportId)
+    const syncCoordinateCamera = (camera: { x: number; y: number; z: number }) => {
+      if (wmSurface.wm.hasLayer(coordinateLayerId)) {
+        wmSurface.wm.setTransform(coordinateLayerId, cameraToCoordinateTransform(camera))
+      }
+    }
     const syncViewportCamera = (camera: { x: number; y: number; z: number }) => {
+      syncCoordinateCamera(camera)
       const viewport = getOptionalCanvasClipViewport(mainEditor, viewportId as TLViewportId)
       if (viewport?.screenBounds) {
         mainEditor.updateViewport(viewportId as TLViewportId, { camera })
@@ -226,7 +234,7 @@ export function CanvasClipPanel({
       setCanvasClipSurfaceCamera(wmSurface, camera)
       syncViewportCamera(canvasClipSurfaceCamera(wmSurface, fullViewport))
     }
-    wmSurfaceRegistry.set(viewportId, { surface: wmSurface, setCamera, syncViewportCamera })
+    wmSurfaceRegistry.set(viewportId, { surface: wmSurface, setCamera, syncViewportCamera, syncCoordinateCamera })
     return () => {
       const registered = wmSurfaceRegistry.get(viewportId)
       if (registered?.surface === wmSurface) wmSurfaceRegistry.delete(viewportId)
