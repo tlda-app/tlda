@@ -1828,6 +1828,16 @@ function validateInboxMode(mode) {
   return INBOX_MODES.has(m) ? m : null;
 }
 
+export function formatRecipientModeSummary(recipients = [], agents = []) {
+  const agentMap = new Map((agents || []).map(a => [a.id, a]));
+  return recipients.map(id => {
+    const agent = agentMap.get(id);
+    const label = agent?.friendly_name || id;
+    const mode = agent?.metadata?.inboxMode || null;
+    return mode ? `${label} [mode:${mode}]` : label;
+  }).join(', ');
+}
+
 function inboxTaskSummary(task) {
   if (!task) return null;
   const age = task.delegated_at ? Math.round((Date.now() - new Date(task.delegated_at)) / 60000) : null;
@@ -2886,7 +2896,17 @@ export async function handleFleetTool(name, args) {
     }
 
     const amendHint = lastEventId != null ? ` (message id ${lastEventId} — chat({ amend_id: ${lastEventId} }) to edit it in place)` : '';
-    return { content: [{ type: 'text', text: `Message queued for ${sent.join(', ')}.${suggestionNotice}${amendHint}${warning}` }] };
+    if (!agents.length || sent.some(id => !agents.some(a => a.id === id))) {
+      try {
+        agents = (await sendWS('store-agents')) || agents;
+      } catch (e) {
+        // Best-effort enrichment only: the chat already delivered; keep the
+        // id-only send receipt rather than turning a sent message into failure.
+        console.error(`[fleet] recipient mode lookup after chat send failed: ${e.message}`);
+      }
+    }
+    const sentSummary = formatRecipientModeSummary(sent, agents);
+    return { content: [{ type: 'text', text: `Message queued for ${sentSummary || sent.join(', ')}.${suggestionNotice}${amendHint}${warning}` }] };
   }
 
   // ---- request_terminal ----

@@ -3,7 +3,7 @@ process.env.FLEET_ID = process.env.FLEET_ID || 'fleet:test-inbox-mode'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { getFleetTools, handleFleetTool } from '../mcp-server/fleet-tools.mjs'
+import { formatRecipientModeSummary, getFleetTools, handleFleetTool } from '../mcp-server/fleet-tools.mjs'
 
 test('set_inbox_mode is exposed as the explicit mode-control tool', () => {
   const tool = getFleetTools().find(t => t.name === 'set_inbox_mode')
@@ -50,4 +50,12 @@ test('fleet_table renders visible inbox modes', async () => {
   } finally {
     globalThis.fetch = prevFetch
   }
+})
+
+test('chat recipient summaries expose exact recipient mode labels', () => {
+  const text = formatRecipientModeSummary(['fleet:a', 'fleet:b', 'fleet:c'], [
+    { id: 'fleet:a', friendly_name: 'chief:day', metadata: { inboxMode: 'monitoring' } },
+    { id: 'fleet:b', friendly_name: 'worker', metadata: { inboxMode: 'focus' } },
+  ])
+  assert.equal(text, 'chief:day [mode:monitoring], worker [mode:focus], fleet:c')
 })
