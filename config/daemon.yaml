@@ -1,10 +1,14 @@
 models:
   claude:
     "*":
+      # Strongly recommended default: enables first-class fleet channel
+      # notifications. The tmux-only alternative works, but is janky
+      # (notably the Enter inconsistency), so do not choose it unless you
+      # explicitly accept that tradeoff.
       harness:
-        required:
+        required: []
+        preferences:
           - "--dangerously-load-development-channels server:tlda"
-        preferences: []
         controls: true
   codex:
     "*":

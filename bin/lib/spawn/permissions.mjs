@@ -12,11 +12,17 @@ const FENCE_TEMPORARILY_DISABLED = true
 const DEFAULT_READ_ROOTS = []
 const DEFAULT_OPTIONS = { network: false, git: 'read', artifacts: true }
 const DEFAULT_TRUSTED_MCP_SERVERS = { tlda: { defaultToolsApprovalMode: 'approve' } }
+// Built-in harness launch options are the visible defaults for fleet-managed
+// harnesses. For Claude, the dev-channel flag is the strongly recommended
+// default: it enables first-class fleet channel notifications. The alternative
+// is tmux-only delivery, which is intentionally kept available but is janky
+// (notably the tmux Enter inconsistency), so do not choose it unless you mean
+// to accept that tradeoff.
 const BUILTIN_HARNESS_OPTIONS = Object.freeze({
   claude: Object.freeze({
     '*': Object.freeze({
-      required: Object.freeze(['--dangerously-load-development-channels server:tlda']),
-      preferences: Object.freeze([]),
+      required: Object.freeze([]),
+      preferences: Object.freeze(['--dangerously-load-development-channels server:tlda']),
       controls: true,
     }),
   }),
@@ -108,13 +114,17 @@ function harnessOptionRow(config = {}, harness, model) {
   if (!kind) return null
   const configured = config?.harnessOptions?.[kind]
   const builtin = BUILTIN_HARNESS_OPTIONS[kind] || {}
-  const table = configured || builtin
-  const row = table?.[model] || table?.['*'] || null
+  const builtinRow = builtin?.[model] || builtin?.['*'] || null
+  const configuredRow = configured?.[model] || configured?.['*'] || null
+  const row = configuredRow || builtinRow
   if (!row) return null
+  const required = normalizeFlagList(row.required)
+  const preferences = normalizeFlagList(row.preferences)
+  const controls = configuredRow?.controls ?? builtinRow?.controls
   return {
-    required: normalizeFlagList(row.required),
-    preferences: normalizeFlagList(row.preferences),
-    controls: row.controls !== false && (row.controls === true || normalizeFlagList(row.required).length > 0),
+    required,
+    preferences,
+    controls: controls !== false && (controls === true || required.length > 0),
   }
 }
 

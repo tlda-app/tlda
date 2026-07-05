@@ -456,14 +456,15 @@ describe('daemon privilege ledger', () => {
     const fenced = readDaemonConfig(new URL('../config/daemon-fenced.yaml', import.meta.url))
 
     const defaultConfig = withDaemonModelAliases({}, harnessDefault)
-    assert.deepEqual(defaultConfig.harnessOptions.claude['*'].required, ['--dangerously-load-development-channels server:tlda'])
-    assert.deepEqual(defaultConfig.harnessOptions.claude['*'].preferences, [])
+    assert.deepEqual(defaultConfig.harnessOptions.claude['*'].required, [])
+    assert.deepEqual(defaultConfig.harnessOptions.claude['*'].preferences, ['--dangerously-load-development-channels server:tlda'])
     assert.equal(defaultConfig.harnessOptions.claude['*'].controls, true)
     assert.equal(Object.keys(defaultConfig.spawnPolicy.privilegeProfiles || {}).length, 0)
     assert.equal(Object.keys(harnessDefault.grants).length, 0)
 
     const fencedConfig = withDaemonModelAliases({}, fenced)
-    assert.deepEqual(fencedConfig.harnessOptions.claude['*'].preferences, ['--dangerously-skip-permissions'])
+    assert.deepEqual(fencedConfig.harnessOptions.claude['*'].required, [])
+    assert.deepEqual(fencedConfig.harnessOptions.claude['*'].preferences, ['--dangerously-load-development-channels server:tlda', '--dangerously-skip-permissions'])
     assert.equal(fencedConfig.harnessOptions.claude['*'].controls, true)
     assert.deepEqual(Object.keys(fencedConfig.spawnPolicy.privilegeProfiles).sort(), ['app', 'math', 'ops', 'readonly', 'wd'])
     assert.equal(fenced.grants['fleet:skip'], 'ops')

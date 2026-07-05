@@ -993,6 +993,19 @@ test('unfenced claude launch is allowed when harness permissions stay on', () =>
   assert.deepEqual(policy.harnessOptions.preferences, [])
 })
 
+test('default Claude launch steers channel notifications as a preference', () => {
+  const policy = resolveLaunchPolicy({
+    spawnPolicy: { capability: 'write', policy: 'cwd' },
+    harness: 'claude',
+    model: 'claude-opus-4-8',
+    cwd: tmpdir(),
+    config: {},
+    env: {},
+  })
+  assert.deepEqual(policy.harnessOptions.required, [])
+  assert.deepEqual(policy.harnessOptions.preferences, ['--dangerously-load-development-channels server:tlda'])
+})
+
 test('fenced claude launch is trusted even when harness permissions are skipped', () => {
   const cwd = tmpdir()
   const policy = resolveLaunchPolicy({

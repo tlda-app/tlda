@@ -2,6 +2,7 @@ import fs from 'fs'
 import path from 'path'
 import { activeConfigName, gitAuthorEnv, readConfig, repoRoot } from '../identity.mjs'
 import { resolveClaudeModel, resolveClaudeModelSelection } from '../models.mjs'
+import { resolveHarnessLaunchOptions } from '../permissions.mjs'
 
 const REGISTER_PROMPT = 'Call register() with the fleet MCP server. Then call inbox() to check for a pending task.'
 const DNS_ALIAS_PRELOAD = path.join(repoRoot(), 'shared', 'node-dns-alias.cjs')
@@ -45,8 +46,11 @@ export function buildCmd({
   includePrompt = true,
   env = process.env,
   config = readConfig(),
-  harnessOptions = {},
+  harnessOptions = null,
 } = {}) {
+  const effectiveHarnessOptions = harnessOptions && Object.keys(harnessOptions).length
+    ? harnessOptions
+    : resolveHarnessLaunchOptions({ config, harness: 'claude', model })
   const parts = [
     `FLEET_ID=${sq(fleetId)}`,
     `FLEET_TMUX_SESSION=${sq(tmuxSession)}`,
@@ -82,7 +86,7 @@ export function buildCmd({
     parts.push(`TLDA_NODE_DNS_ALIAS_ADDR=${sq(dnsAlias.address)}`)
   }
   parts.push('claude')
-  appendLaunchFlags(parts, harnessOptions)
+  appendLaunchFlags(parts, effectiveHarnessOptions)
   if (resumeId) parts.push(`--resume ${sq(resumeId)}`)
   parts.push(`--model ${sq(model)}`)
   if (effort) parts.push(`--effort ${sq(effort)}`)

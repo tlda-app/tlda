@@ -503,6 +503,7 @@ async function spawnRefresh(params) {
     includePrompt: true,
     leasePolicy: launchPolicy.leasePolicy,
     enforceFence: !!params.enforceFence,
+    harnessOptions: launchPolicy.harnessOptions,
     config,
     env: spawnEnv(params),
   })
