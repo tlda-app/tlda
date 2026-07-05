@@ -8,18 +8,8 @@
   font-family: -apple-system, BlinkMacSystemFont, sans-serif;
 }
 
-.fleet-video-shape__bar {
-  height: 18px;
-  display: flex;
-  align-items: center;
-  padding: 0 7px;
-  font-size: 10px;
-  line-height: 1;
-  opacity: 0.68;
-}
-
 .fleet-video-shape__grid {
-  height: calc(100% - 18px);
+  height: 100%;
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
   gap: 1px;

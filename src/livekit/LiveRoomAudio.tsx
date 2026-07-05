@@ -741,7 +741,7 @@ export function LiveRoomAudio({ docName, editor }: LiveRoomAudioProps) {
     const fleetVideoShapes = (editor.getCurrentPageShapes() as readonly unknown[])
       .filter(isFleetVideoShapeRecord)
     const ownedVideoShapes = fleetVideoShapes
-      .filter(shape => isMyFleetShape(shape) && shape.props.title === 'live video')
+      .filter(shape => isMyFleetShape(shape))
     const reusable = ownedVideoShapes[0]
     if (reusable && editor.getShape(asShapeId(reusable.id))) {
       editor.run(() => {
@@ -768,7 +768,6 @@ export function LiveRoomAudio({ docName, editor }: LiveRoomAudioProps) {
     void createFleetShape(editor, 'fleet-video', 24, 72, {
       w: 260,
       h: 172,
-      title: 'live video',
       tileKeys,
     }).then((id) => {
       if (!id || cancelled) return

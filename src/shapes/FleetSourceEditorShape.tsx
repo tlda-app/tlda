@@ -31,7 +31,8 @@ import {
   sourceLineToEditorCanvas,
 } from '../synctexAnchor'
 import { getVimMode, subscribeVimMode } from '../vimMode'
-import { beginNativeSnapDrag, endNativeSnapDrag, selectFleetShapeForLayout } from './fleet-utils'
+import { beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
+import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import './fleet-chat.css'
 
 const DEFAULT_W = 560
@@ -1121,27 +1122,7 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
       onKeyDown={handleKeyDown}
       onWheel={handleWheel}
     >
-      <div className="fleet-btn-group" onPointerDown={(e) => e.stopPropagation()}>
-        <button
-          className="fleet-close-btn"
-          onPointerUp={(e) => {
-            e.stopPropagation()
-            editor.deleteShapes([shape.id])
-          }}
-        >
-          ×
-        </button>
-        <button
-          className="fleet-layout-btn"
-          onPointerUp={(e) => {
-            e.stopPropagation()
-            selectFleetShapeForLayout(editor, shape)
-          }}
-          title="Resize / move"
-        >
-          ⊞
-        </button>
-      </div>
+      <FleetPanelButtonGroup editor={editor} shape={shape} />
       {currentFileConflicted && (
         <div className="fleet-source-editor-conflict" onPointerDown={stopEventPropagation}>
           <button type="button" onClick={() => applyConflictSide('ours')} disabled={!sourceHasConflictMarkers && !conflictMergeActive}>ours</button>
