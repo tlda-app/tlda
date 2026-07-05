@@ -222,6 +222,7 @@ let _recognition = null
 let _recording = false
 const VOICE_HUD_WIDTH = '240px'
 const RADIO_HUD_EXPANDED_MS = 4500
+const RADIO_HUD_MAX_CHARS = 180
 
 // Recording on/off listeners — lets the viewer react when recording starts/stops
 // (e.g. to re-aim the dictation target at the currently-selected note).
@@ -327,10 +328,20 @@ let _radioExpanded = false
 let _radioCollapseTimer = null
 
 function cleanRadioSubtitleText(text) {
-  return String(text || '')
+  const cleaned = String(text || '')
     .replace(/<(?:task-notification|system-reminder|local-command-caveat|command-name|command-message|command-args|local-command-stdout)[^>]*>[\s\S]*?<\/(?:task-notification|system-reminder|local-command-caveat|command-name|command-args|local-command-stdout)>/g, '')
+    .replace(/!\[([^\]]*)\]\([^)]+\)/g, '$1')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/\*([^*]+)\*/g, '$1')
+    .replace(/\bhttps?:\/\/\S+/g, '')
     .replace(/\s+/g, ' ')
+    .replace(/\s+([:;,.!?])/g, '$1')
     .trim()
+  if (cleaned.length <= RADIO_HUD_MAX_CHARS) return cleaned
+  const prefix = cleaned.slice(0, RADIO_HUD_MAX_CHARS - 3).replace(/\s+\S*$/, '')
+  return `${prefix || cleaned.slice(0, RADIO_HUD_MAX_CHARS - 3)}...`
 }
 
 function labelForRadioAgent(agentId, agents = []) {
@@ -807,8 +818,11 @@ function showHud(text, stateColor) {
       marginTop: '2px',
       minWidth: '0',
       overflow: 'hidden',
-      textOverflow: 'ellipsis',
-      whiteSpace: 'nowrap',
+      display: '-webkit-box',
+      WebkitBoxOrient: 'vertical',
+      WebkitLineClamp: '2',
+      whiteSpace: 'normal',
+      wordBreak: 'break-word',
       color: 'rgba(255,255,255,0.82)',
       fontSize: '11px',
       lineHeight: '1.25',

@@ -1331,23 +1331,46 @@ await setBackend('chrome')
   assert.equal(unrelated, false, 'unrelated incoming chat should not render in radio HUD')
 
   const shown = window.__voiceTest.maybeShowRadioSubtitleForIncomingChat(
-    { type: 'chat', from: 'fleet:frontier', to: 'fleet:skip', text: 'Radio line one' },
+    {
+      type: 'chat',
+      from: 'fleet:frontier',
+      to: 'fleet:skip',
+      text: '<system-reminder>hide this</system-reminder>**Radio** line [one](https://example.com) `now` https://example.com/noise',
+    },
     agents,
     'fleet:skip',
   )
   assert.equal(shown, true, 'active-target incoming chat should render in radio HUD')
   assert.ok(window.__voiceTest.getHudText().includes('radio <- frontier'), 'HUD should show radio source')
-  assert.ok(window.__voiceTest.getHudText().includes('Radio line one'), 'HUD should show subtitle text')
-  assert.deepEqual(
-    window.__voiceTest.getRadioSubtitle(),
-    { from: 'fleet:frontier', label: 'frontier', text: 'Radio line one', timestamp: window.__voiceTest.getRadioSubtitle().timestamp, expanded: true },
-    'radio subtitle should be stored while expanded',
-  )
+  assert.ok(window.__voiceTest.getHudText().includes('Radio line one now'), 'HUD should show cleaned subtitle text')
+  assert.ok(!window.__voiceTest.getHudText().includes('hide this'), 'HUD should strip system reminder text')
+  assert.ok(!window.__voiceTest.getHudText().includes('https://example.com'), 'HUD should strip raw URLs')
+  const live = window.__voiceTest.getRadioSubtitle()
+  assert.equal(live.from, 'fleet:frontier', 'radio subtitle should store source')
+  assert.equal(live.label, 'frontier', 'radio subtitle should store display label')
+  assert.equal(live.text, 'Radio line one now', 'radio subtitle should store cleaned text')
+  assert.equal(live.expanded, true, 'radio subtitle should be expanded immediately after an incoming chat')
 
   tick(4500)
   const stored = window.__voiceTest.getRadioSubtitle()
-  assert.equal(stored.text, 'Radio line one', 'last radio subtitle should persist until replaced')
+  assert.equal(stored.text, 'Radio line one now', 'last radio subtitle should persist until replaced')
   assert.equal(stored.expanded, false, 'radio subtitle should collapse after the expanded window')
+
+  const longShown = window.__voiceTest.maybeShowRadioSubtitleForIncomingChat(
+    {
+      type: 'chat',
+      from: 'fleet:frontier',
+      to: 'fleet:skip',
+      text: `Frontier says [look here](https://example.com): ${'word '.repeat(80)}`,
+    },
+    agents,
+    'fleet:skip',
+  )
+  assert.equal(longShown, true, 'long active-target chat should render in radio HUD')
+  const longStored = window.__voiceTest.getRadioSubtitle()
+  assert.ok(longStored.text.startsWith('Frontier says look here: word'), 'radio subtitle should clean markdown without punctuation gaps')
+  assert.ok(longStored.text.length <= 180, 'radio subtitle should keep a bounded excerpt')
+  assert.ok(longStored.text.endsWith('...'), 'radio subtitle should mark truncated excerpts')
 
   window.location.search = ''
   location.search = ''
