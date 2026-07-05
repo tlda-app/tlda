@@ -21,6 +21,15 @@ import { setVoiceTarget, resetTranscript, restartRecording } from '../voice.mjs'
 
 export type KeyboardSend = (text: string, targets: string[]) => void
 export type VoiceSend = (targets: string[], text: string) => void | Promise<void>
+type VoiceTargetHandle = {
+  sendTargets: string[]
+  agentNames: Record<string, string>
+  onVoiceSend: VoiceSend
+  getSendTargets: () => string[]
+  getAgentNames: () => Record<string, string>
+  sendVoice: (targets: string[], text: string) => void | Promise<void>
+}
+type VoiceSubmitKeyboardEvent = KeyboardEvent & { __tldaVoiceSubmit?: boolean }
 /** Pre-send command hook (e.g. /terminal). Gets the textarea so it can clear (or
  *  not) exactly as the original did. Return true if it consumed the input — the
  *  composer then preventDefaults and does NOT send or push history. */
@@ -61,6 +70,17 @@ export function ChatComposer({
   // other consumer of these refs.
   const sentHistoryRef = useRef<string[]>([])
   const historyIndexRef = useRef<number>(-1)
+  const voiceTargetRef = useRef<VoiceTargetHandle>({
+    sendTargets: [],
+    agentNames: {},
+    onVoiceSend: () => {},
+    getSendTargets() { return this.sendTargets },
+    getAgentNames() { return this.agentNames },
+    sendVoice(targets, text) { return this.onVoiceSend(targets, text) },
+  })
+  voiceTargetRef.current.sendTargets = sendTargets
+  voiceTargetRef.current.agentNames = agentNames
+  voiceTargetRef.current.onVoiceSend = onVoiceSend
 
   return (
     <textarea
@@ -135,11 +155,14 @@ export function ChatComposer({
           const doSend = () => {
             const text = val.trim()
             if (!text || sendTargets.length === 0) return
+            const nativeEvent = e.nativeEvent as VoiceSubmitKeyboardEvent
+            const isVoiceSubmit = !!nativeEvent.__tldaVoiceSubmit
             // Call the host send FIRST: its synchronous prefix (optimistic echo)
             // runs before it yields at its first await, then we clear the field
             // synchronously — preserving the original "echo + clear before any
             // awaited work" ordering that prevents Enter-mash duplicate sends.
-            onKeyboardSend(text, sendTargets)
+            if (isVoiceSubmit) onVoiceSend(sendTargets, text)
+            else onKeyboardSend(text, sendTargets)
             ta.value = ''
             ta.style.height = ''
             ta.dispatchEvent(new Event('input', { bubbles: true }))
@@ -165,11 +188,11 @@ export function ChatComposer({
         stopEventPropagation(e)
         // Register this field as the voice target — dictated text appends here and
         // saying "send" fires onVoiceSend (same registration the main chat uses).
-        setVoiceTarget(e.currentTarget, sendTargets, agentNames, onVoiceSend)
+        setVoiceTarget(e.currentTarget, voiceTargetRef.current)
       }}
       onFocus={(e) => {
         stopEventPropagation(e)
-        setVoiceTarget(e.currentTarget, sendTargets, agentNames, onVoiceSend)
+        setVoiceTarget(e.currentTarget, voiceTargetRef.current)
       }}
       onDrop={onDrop}
       onDragOver={onDragOver}

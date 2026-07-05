@@ -655,9 +655,13 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
   // "send" runs the command in the terminal pane (mirrors the chat textarea's
   // setVoiceTarget wiring, but with a terminal-specific send).
   const registerVoice = (el: HTMLTextAreaElement) => {
-    setVoiceTarget(el, [agentId], { [agentId]: shortId }, async (_targets: string[], text: string) => {
-      submitInput(text)
-      el.value = ''
+    setVoiceTarget(el, {
+      getSendTargets: () => [agentId],
+      getAgentNames: () => ({ [agentId]: shortId }),
+      sendVoice: async (_targets: string[], text: string) => {
+        submitInput(text)
+        el.value = ''
+      },
     })
   }
 

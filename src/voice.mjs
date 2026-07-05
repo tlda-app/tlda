@@ -8,7 +8,7 @@
 //   import { initVoice, setVoiceTarget } from './voice.mjs'
 //   initVoice()
 //   // When user focuses a chat input:
-//   setVoiceTarget(textarea, sendTargets, agentNames)
+//   setVoiceTarget(textarea, targetHandle)
 
 import { appendToken } from './authToken.ts'
 import { log } from './logger.ts'
@@ -301,10 +301,7 @@ let _generation = 0
 
 // Active chat target
 let _activeTextarea = null
-let _activeSendTargets = []
-let _activeAgentNames = {}
-let _activeAgentColor = null
-let _activeSendFn = null
+let _activeTargetHandle = null
 let _voiceDumping = false
 // The real field voice was routed to just before going to <nowhere>, captured so
 // the sink's second click can wipe its in-flight interim (left+right kept).
@@ -701,7 +698,7 @@ function showHud(text, stateColor) {
   })
   hud.appendChild(span)
   appendCallSegment(hud)
-  hud.style.color = _activeAgentColor || stateColor || 'rgba(255,255,255,0.7)'
+  hud.style.color = activeAgentColor() || stateColor || 'rgba(255,255,255,0.7)'
   requestAnimationFrame(() => { hud.style.opacity = '1' })
 }
 
@@ -811,7 +808,19 @@ function enterEdit() {
   }
 }
 
-export function setVoiceTarget(textarea, sendTargets, agentNames, sendFn, agentColor) {
+function activeSendTargets() {
+  return _activeTargetHandle?.getSendTargets?.() || []
+}
+
+function activeAgentNames() {
+  return _activeTargetHandle?.getAgentNames?.() || {}
+}
+
+function activeAgentColor() {
+  return _activeTargetHandle?.getAgentColor?.() || null
+}
+
+export function setVoiceTarget(textarea, targetHandle) {
   let wasRecording = false
   _voiceDumping = false
   if (textarea !== _activeTextarea) {
@@ -859,10 +868,7 @@ export function setVoiceTarget(textarea, sendTargets, agentNames, sendFn, agentC
     }
   }
   _activeTextarea = textarea
-  _activeSendTargets = sendTargets || []
-  _activeAgentNames = agentNames || {}
-  _activeAgentColor = agentColor || null
-  _activeSendFn = sendFn || null
+  _activeTargetHandle = targetHandle || null
   // Prime the always-present transparent ring so the first record-start is a
   // colour-only transition, not a 0→2px geometry pop (see setTextareaGlow).
   if (textarea && !textarea.style.boxShadow) textarea.style.boxShadow = '0 0 0 2px transparent'
@@ -879,9 +885,7 @@ export function clearVoiceTarget(textarea) {
   if (_activeTextarea === textarea) {
     _voiceDumping = false
     _activeTextarea = null
-    _activeSendTargets = []
-    _activeAgentNames = {}
-    _activeSendFn = null
+    _activeTargetHandle = null
     // Keep recording; just refresh the HUD to the targetless label.
     if (_recording) showRecordingHud()
     emitVoiceTargetChange()
@@ -958,7 +962,7 @@ export function dumpVoiceTarget() {
 // or chat send-targets) and NOT dumping to nowhere. Streaming to Deepgram is
 // gated on this so "recording to nowhere" / dumb mode never bills.
 function voiceHasRoute() {
-  return !_voiceDumping && (!!_activeTextarea || !!_accumulator || _activeSendTargets.length > 0)
+  return !_voiceDumping && (!!_activeTextarea || !!_accumulator || activeSendTargets().length > 0)
 }
 
 // Pure decision for the upstream lifecycle (unit-tested). `paused` = we've already
@@ -974,9 +978,11 @@ export function upstreamAction({ recording, routed, tabHidden, paused }) {
 function targetLabel() {
   if (_voiceDumping) return '<nowhere>'
   if (_accumulator) return _accumulator.label || 'note'
-  if (_activeSendTargets.length === 0) return null
-  return _activeSendTargets
-    .map(id => _activeAgentNames[id] || id.replace('fleet:', ''))
+  const targets = activeSendTargets()
+  const names = activeAgentNames()
+  if (targets.length === 0) return null
+  return targets
+    .map(id => names[id] || id.replace('fleet:', ''))
     .join(', ')
 }
 
@@ -1066,10 +1072,7 @@ export function enterVoiceSink() {
     _inputListeners = null
   }
   _activeTextarea = null
-  _activeSendTargets = []
-  _activeAgentNames = {}
-  _activeAgentColor = null
-  _activeSendFn = null
+  _activeTargetHandle = null
   _accumulator = null
   _voiceDumping = true
   _state = 'edit'
@@ -1633,12 +1636,14 @@ function pressEnterOnActiveTextarea() {
   if (typeof KeyboardEvent === 'undefined') {
     throw new Error('voice send magic word requires KeyboardEvent')
   }
-  return ta.dispatchEvent(new KeyboardEvent('keydown', {
+  const event = new KeyboardEvent('keydown', {
     key: 'Enter',
     code: 'Enter',
     bubbles: true,
     cancelable: true,
-  }))
+  })
+  Object.defineProperty(event, '__tldaVoiceSubmit', { value: true })
+  return ta.dispatchEvent(event)
 }
 
 function submitTextareaViaMagicWord(cleanText, submittedText) {
@@ -2084,7 +2089,12 @@ if (typeof window !== 'undefined') {
   window.__voiceTest = {
     fakeRecord: (ta) => { _recording = true; _state = 'edit'; _backend = 'deepgram'; _voiceDumping = false; resetDeepgramTextState(); if (ta) _activeTextarea = ta; },
     fakeStop: () => { _recording = false; stopVoiceLivenessWatchdog(); stopDeepgramMic(); resetDeepgramTextState(); },
-    switchTarget: (ta) => setVoiceTarget(ta, [], {}, null, null),
+    switchTarget: (ta) => setVoiceTarget(ta, {
+      getSendTargets: () => [],
+      getAgentNames: () => ({}),
+      getAgentColor: () => null,
+      sendVoice: () => {},
+    }),
     getState: () => ({ recording: _recording, backend: _backend, state: _state, connected: _deepgramConnected, hasMic: !!_deepgramStream, left: _left, interim: _interim, dumping: _voiceDumping, hasTextarea: !!_activeTextarea }),
     injectTranscript: (text, isFinal) => onDeepgramMessage({ data: JSON.stringify({ type: 'transcript', text, is_final: isFinal, speech_final: false }) }),
     afterSend: () => afterSend(),
@@ -2284,14 +2294,15 @@ function sendCurrentText() {
     return
   }
 
-  if (_activeSendTargets.length === 0) {
+  const targets = activeSendTargets()
+  if (targets.length === 0) {
     showHud('no send target', '#c8956a')
     fadeHud(2000)
     return
   }
 
-  if (_activeSendFn) {
-    _activeSendFn(_activeSendTargets, text)
+  if (_activeTargetHandle?.sendVoice) {
+    _activeTargetHandle.sendVoice(targets, text)
   }
 
   const who = targetLabel()

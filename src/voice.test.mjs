@@ -179,7 +179,7 @@ global.AudioWorkletNode = class AudioWorkletNode {
 }
 
 // ---- Import module ----
-const { initVoice, setVoiceTarget, setVoiceAccumulator, clearVoiceAccumulator, toggleRecording, isRecording, getGeneration, enterVoiceSink, setBackend, resetTranscript } = await import('./voice.mjs')
+const { initVoice, setVoiceTarget: registerVoiceTarget, setVoiceAccumulator, clearVoiceAccumulator, toggleRecording, isRecording, getGeneration, enterVoiceSink, setBackend, resetTranscript, sendCurrentText } = await import('./voice.mjs')
 const { setPref, loadPrefs } = await import('./preferences.ts')
 await loadPrefs('voice-test')
 setPref('voice-backend', 'chrome')
@@ -221,10 +221,19 @@ function attachComposerEnter(ta, sendFn, targets = ['fleet:abc']) {
     e.preventDefault()
     const text = ta.value.trim()
     if (!text) return
-    sendFn(targets, text)
+    sendFn(targets, text, { voice: !!e.__tldaVoiceSubmit })
     ta.value = ''
     ta.style.height = 'auto'
     ta.dispatchEvent(new Event('input', { bubbles: true }))
+  })
+}
+
+function setVoiceTarget(textarea, sendTargets = [], agentNames = {}, sendFn = null, agentColor = null) {
+  registerVoiceTarget(textarea, {
+    getSendTargets: () => sendTargets,
+    getAgentNames: () => agentNames,
+    getAgentColor: () => agentColor,
+    sendVoice: (targets, text) => sendFn?.(targets, text),
   })
 }
 
@@ -469,6 +478,126 @@ function reset() {
   window.__voiceTest.fakeStop()
   reset()
   console.log('✓ Test 8: Deepgram magic-word submits once via Enter')
+}
+
+// ---- Test 8.0a: Deepgram magic-word is a voice submit through the active composer ----
+{
+  const ta = makeTextarea()
+  const sent = []
+  const targets = ['fleet:panel-target', 'fleet:inbox-target']
+  const sendFn = (sendTargets, text, meta) => { sent.push({ targets: sendTargets, text, voice: meta?.voice }) }
+  attachComposerEnter(ta, sendFn, targets)
+  setVoiceTarget(ta, targets, { 'fleet:panel-target': 'panel', 'fleet:inbox-target': 'inbox' }, sendFn)
+  window.__voiceTest.fakeRecord(ta)
+
+  window.__voiceTest.injectTranscript('first thought send', false)
+  window.__voiceTest.injectTranscript('first thought send', true)
+  window.__voiceTest.injectTranscript('second thought send', false)
+  window.__voiceTest.injectTranscript('second thought send', true)
+
+  assert.deepEqual(sent, [
+    { targets: ['fleet:panel-target', 'fleet:inbox-target'], text: 'first thought', voice: true },
+    { targets: ['fleet:panel-target', 'fleet:inbox-target'], text: 'second thought', voice: true },
+  ], 'voice magic-word should mark synthetic Enter and submit separate messages through the active composer targets')
+
+  window.__voiceTest.fakeStop()
+  reset()
+  console.log('✓ Test 8.0a: Deepgram magic-word uses active composer targets and keeps thoughts separate')
+}
+
+// ---- Test 8.0b: Direct voice send control uses active composer targets ----
+{
+  const ta = makeTextarea()
+  const sent = []
+  const targets = ['fleet:panel-target', 'fleet:inbox-target']
+  setVoiceTarget(ta, targets, { 'fleet:panel-target': 'panel', 'fleet:inbox-target': 'inbox' }, (sendTargets, text) => {
+    sent.push({ targets: sendTargets, text })
+  })
+  window.__voiceTest.fakeRecord(ta)
+  ta.value = 'manual voice control'
+
+  sendCurrentText()
+
+  assert.deepEqual(sent, [
+    { targets: ['fleet:panel-target', 'fleet:inbox-target'], text: 'manual voice control' },
+  ], 'direct voice send control should submit through the active composer targets')
+  assert.equal(ta.value, '', 'direct voice send should clear the composer')
+
+  window.__voiceTest.fakeStop()
+  reset()
+  console.log('✓ Test 8.0b: Direct voice send control uses active composer targets')
+}
+
+// ---- Test 8.0c: Plain composer Enter uses its own targets ----
+{
+  const ta = makeTextarea()
+  const sent = []
+  const targets = ['fleet:panel-target', 'fleet:inbox-target']
+  attachComposerEnter(ta, (sendTargets, text, meta) => {
+    sent.push({ targets: sendTargets, text, voice: meta?.voice })
+  }, targets)
+  ta.value = 'keyboard message'
+
+  ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true }))
+
+  assert.deepEqual(sent, [
+    { targets: ['fleet:panel-target', 'fleet:inbox-target'], text: 'keyboard message', voice: false },
+  ], 'plain composer Enter should submit through its own targets')
+  assert.equal(ta.value, '', 'plain composer Enter should clear the composer')
+
+  reset()
+  console.log('✓ Test 8.0c: Plain composer Enter uses its own targets')
+}
+
+// ---- Test 8.0d: Direct voice send uses the currently active composer handle ----
+{
+  const chatTa = makeTextarea()
+  const inboxTa = makeTextarea()
+  const sent = []
+  setVoiceTarget(chatTa, ['fleet:panel-target'], { 'fleet:panel-target': 'panel' }, (sendTargets, text) => {
+    sent.push({ surface: 'panel', targets: sendTargets, text })
+  })
+  setVoiceTarget(inboxTa, ['fleet:inbox-target'], { 'fleet:inbox-target': 'inbox' }, (sendTargets, text) => {
+    sent.push({ surface: 'inbox', targets: sendTargets, text })
+  })
+  window.__voiceTest.fakeRecord(inboxTa)
+  inboxTa.value = 'inbox reply only'
+
+  sendCurrentText()
+
+  assert.deepEqual(sent, [
+    { surface: 'inbox', targets: ['fleet:inbox-target'], text: 'inbox reply only' },
+  ], 'direct voice send should use the active composer handle, not a prior chat-panel handle')
+  assert.equal(inboxTa.value, '', 'direct voice send should clear the active composer')
+
+  window.__voiceTest.fakeStop()
+  reset()
+  console.log('✓ Test 8.0d: Direct voice send uses the currently active composer handle')
+}
+
+// ---- Test 8.0e: Active handle reflects updated composer targets without re-registering ----
+{
+  const ta = makeTextarea()
+  const sent = []
+  const targets = ['fleet:initial-target']
+  const names = { 'fleet:initial-target': 'initial' }
+  setVoiceTarget(ta, targets, names, (sendTargets, text) => {
+    sent.push({ targets: sendTargets.slice(), text })
+  })
+  window.__voiceTest.fakeRecord(ta)
+  targets.splice(0, targets.length, 'fleet:updated-target')
+  names['fleet:updated-target'] = 'updated'
+  ta.value = 'updated target message'
+
+  sendCurrentText()
+
+  assert.deepEqual(sent, [
+    { targets: ['fleet:updated-target'], text: 'updated target message' },
+  ], 'active voice handle should read the composer target state at send time')
+
+  window.__voiceTest.fakeStop()
+  reset()
+  console.log('✓ Test 8.0e: Active handle reflects updated composer targets without re-registering')
 }
 
 // ---- Test 8a: Enter send clears Deepgram in-flight utterance bleed ----

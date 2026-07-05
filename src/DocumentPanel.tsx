@@ -863,7 +863,12 @@ function useVoiceNoteController() {
     ta.style.cssText = 'position:fixed;opacity:0;pointer-events:none;width:1px;height:1px;top:-9999px'
     document.body.appendChild(ta)
     hiddenTARef.current = ta
-    setVoiceTarget(ta, [], {}, null, null)
+    setVoiceTarget(ta, {
+      getSendTargets: () => [],
+      getAgentNames: () => ({}),
+      getAgentColor: () => null,
+      sendVoice: () => {},
+    })
     if (!isRecording()) toggleRecording()
     setStopRecordingCallback(() => {
       cleanupPlacement({ stopVoice: true, resetTool: false })
