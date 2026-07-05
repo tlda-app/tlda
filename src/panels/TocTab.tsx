@@ -621,7 +621,6 @@ export function JoinVoiceVideoToggle() {
   const summonVideoContainer = useCallback(async (clientX: number, clientY: number) => {
     const dims = FLEET_TOOL_DIMS['fleet-video']
     await placeFleetShapeAtScreenPoint(editor, 'fleet-video', clientX, clientY, dims.w, dims.h, {
-      title: 'live video',
       tileKeys: '[]',
     })
   }, [editor])

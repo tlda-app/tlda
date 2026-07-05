@@ -14,7 +14,8 @@ import {
   createShapeId,
   type TLShapeId,
 } from 'tldraw'
-import { beginNativeSnapDrag, createFleetShape, agentDisplayLabel, endNativeSnapDrag, selectFleetShapeForLayout } from './fleet-utils'
+import { beginNativeSnapDrag, createFleetShape, agentDisplayLabel, endNativeSnapDrag } from './fleet-utils'
+import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import { fleetSearchProps } from '../../shared/shapes/fleet-panel-schema.mjs'
 import { useState, useCallback, useRef, useMemo, useEffect, memo } from 'react'
 import { searchFleet, fetchSharedDocs, useFleetAgents, useFleetTasks } from '../fleet-data-adapter'
@@ -431,28 +432,7 @@ function FleetSearchInner({ shape }: { shape: any }) {
           </div>
         ) : <>
 
-        {/* Close + layout buttons */}
-        <div className="fleet-btn-group" onPointerDown={(e) => e.stopPropagation()}>
-          <button
-            className="fleet-close-btn"
-            onPointerUp={(e) => {
-              e.stopPropagation()
-              editor.deleteShapes([shape.id])
-            }}
-          >
-            ×
-          </button>
-          <button
-            className="fleet-layout-btn"
-            onPointerUp={(e) => {
-              e.stopPropagation()
-              selectFleetShapeForLayout(editor, shape)
-            }}
-            title="Resize / move"
-          >
-            ⊞
-          </button>
-        </div>
+        <FleetPanelButtonGroup editor={editor} shape={shape} />
 
         {/* Search input */}
         <div

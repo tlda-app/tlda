@@ -170,15 +170,6 @@ body.phone-mode .fleet-chat-shape:has(.fleet-filter-overlay) .fleet-btn-group .f
 .fleet-btn-group .fleet-filter-btn svg {
   display: block;
 }
-.fleet-btn-group .fleet-traffic-mode-btn {
-  font-size: 9px;
-  text-transform: uppercase;
-}
-.fleet-btn-group .fleet-traffic-mode-btn-active {
-  color: var(--accent);
-  opacity: 0.9;
-}
-
 /* --- Layout/resize button (inside fleet-btn-group flex column) --- */
 .fleet-shape .fleet-layout-btn {
   letter-spacing: -1px;

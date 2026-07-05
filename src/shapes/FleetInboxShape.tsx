@@ -19,7 +19,8 @@ import {
 } from 'tldraw'
 import { fleetInboxProps } from '../../shared/shapes/fleet-panel-schema.mjs'
 import type { Editor, TLShapeId } from 'tldraw'
-import { agentDisplayLabel, beginNativeSnapDrag, endNativeSnapDrag, selectFleetShapeForLayout } from './fleet-utils'
+import { agentDisplayLabel, beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
+import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import { usePillDrag } from './FleetAgentsShape'
 import { ChatComposer } from './ChatComposer'
 import { useState, useCallback, useRef, useMemo, useEffect, useContext, memo } from 'react'
@@ -705,18 +706,7 @@ function FleetInboxInner({ shape }: { shape: any }) {
           color: 'var(--text, #8888a0)',
         }}
       >
-        {/* Close + layout buttons */}
-        <div className="fleet-btn-group" onPointerDown={(e) => e.stopPropagation()}>
-          <button
-            className="fleet-close-btn"
-            onPointerUp={(e) => { e.stopPropagation(); editor.deleteShapes([shape.id]) }}
-          >×</button>
-          <button
-            className="fleet-layout-btn"
-            onPointerUp={(e) => { e.stopPropagation(); selectFleetShapeForLayout(editor, shape) }}
-            title="Resize / move"
-          >⊞</button>
-        </div>
+        <FleetPanelButtonGroup editor={editor} shape={shape} />
 
         {filterOpen && phoneChat && (
           <FilterOverlay

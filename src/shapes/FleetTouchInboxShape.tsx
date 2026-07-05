@@ -18,6 +18,7 @@ import {
 } from 'tldraw'
 import { fleetTouchInboxProps } from '../../shared/shapes/fleet-panel-schema.mjs'
 import { agentDisplayLabel, beginNativeSnapDrag, createOwnedFleetPanelShape, endNativeSnapDrag, FLEET_SHAPE_TYPES } from './fleet-utils'
+import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import { useCallback, useRef, useMemo, useEffect, memo } from 'react'
 import { useFleetAgents, useFleetEvents, useFleetUnreadCounts, useFleetIdentity } from '../fleet-data-adapter'
 // @ts-ignore — vanilla JS module
@@ -302,6 +303,7 @@ function FleetTouchInboxInner({ shape }: { shape: any }) {
           pointerEvents: 'all',
         }}
       >
+        <FleetPanelButtonGroup editor={editor} shape={shape} />
         <div className="fleet-inbox-header">
           <span className="fleet-inbox-title">Inbox</span>
         </div>

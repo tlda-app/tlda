@@ -20,7 +20,8 @@ import { useState, useCallback, useMemo, useRef, useEffect, memo, forwardRef } f
 import { Virtuoso } from 'react-virtuoso'
 import { useFleetAgents, useFleetTasks, useFleetUnreadCounts, useFleetContext, useFleetProjects, useFleetIdentity, searchFleet, hibernateSession, spawnAgent } from '../fleet-data-adapter'
 import { dropPillOnTarget } from './FleetPillShape'
-import { agentDisplayLabel, agentExactName, beginNativeSnapDrag, endNativeSnapDrag, selectFleetShapeForLayout } from './fleet-utils'
+import { agentDisplayLabel, agentExactName, beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
+import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import { PrettyName } from './PrettyName'
 import { dragCoordinator } from './dragCoordinator'
 import { useIsInViewport, useVisibilityViewportId } from './useIsInViewport'
@@ -826,28 +827,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
           position: 'relative',
         }}
       >
-        {/* Close + layout buttons */}
-        <div className="fleet-btn-group" onPointerDown={(e) => e.stopPropagation()}>
-          <button
-            className="fleet-close-btn"
-            onPointerUp={(e) => {
-              e.stopPropagation()
-              editor.deleteShapes([shape.id])
-            }}
-          >
-            ×
-          </button>
-          <button
-            className="fleet-layout-btn"
-            onPointerUp={(e) => {
-              e.stopPropagation()
-              selectFleetShapeForLayout(editor, shape)
-            }}
-            title="Resize / move"
-          >
-            ⊞
-          </button>
-        </div>
+        <FleetPanelButtonGroup editor={editor} shape={shape} />
 
         {/* Header with sort toggle */}
         <div

@@ -37,7 +37,8 @@ import { pdfToCanvas } from '../synctexAnchor'
 import { getSvgText, setSvgText } from '../stores/svgTextStore'
 import { getPageUrl } from '../stores/pageUrlStore'
 import { getPref } from '../preferences'
-import { beginNativeSnapDrag, endNativeSnapDrag, FLEET_SHAPE_TYPES, selectFleetShapeForLayout } from './fleet-utils'
+import { beginNativeSnapDrag, endNativeSnapDrag, FLEET_SHAPE_TYPES } from './fleet-utils'
+import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import { createFleetDocviewSurface, type FleetDocviewSurfaceState } from '../wm/fleet-docview-layer'
 import { getEditorWMCore, removeLayers } from '../wm/editor-wm'
 
@@ -461,8 +462,7 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
         </div>
       )}
 
-      {/* Right-edge button group */}
-      <div className="fleet-btn-group" onPointerDown={(e: any) => e.stopPropagation()}>
+      <FleetPanelButtonGroup editor={editor} shape={shape} basePosition="last">
         <button
           className={`fleet-layout-btn${showSources ? ' active' : ''}`}
           onPointerUp={(e: any) => { e.stopPropagation(); setShowSources(v => !v) }}
@@ -500,16 +500,7 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
           }}
           title="Split horizontal"
         >⬓</button>
-        <button
-          className="fleet-layout-btn"
-          onPointerUp={(e: any) => { e.stopPropagation(); selectFleetShapeForLayout(editor, shape) }}
-          title="Resize / move"
-        >⊞</button>
-        <button
-          className="fleet-close-btn"
-          onPointerUp={(e: any) => { e.stopPropagation(); editor.deleteShapes([shape.id]) }}
-        >×</button>
-      </div>
+      </FleetPanelButtonGroup>
 
       {/* Top-right nav group */}
       <div className="fleet-btn-group fleet-btn-group-topright" onPointerDown={(e: any) => e.stopPropagation()}>

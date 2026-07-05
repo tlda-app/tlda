@@ -3,9 +3,12 @@ import {
   BaseBoxShapeUtil,
   HTMLContainer,
   T,
+  useEditor,
+  type TLPropsMigrations,
 } from 'tldraw'
 import { getLiveVideoTiles, subscribeLiveVideoTiles, type LiveVideoTile } from '../livekit/liveVideoRegistry'
 import { isMyFleetShape } from './fleet-utils'
+import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import './fleet-video.css'
 
 export class FleetVideoShapeUtil extends BaseBoxShapeUtil<any> {
@@ -13,14 +16,25 @@ export class FleetVideoShapeUtil extends BaseBoxShapeUtil<any> {
   static override props = {
     w: T.number,
     h: T.number,
-    title: T.string,
     tileKeys: T.string,
     userId: T.optional(T.string),
     deviceId: T.optional(T.string),
   }
+  static override migrations: TLPropsMigrations = {
+    sequence: [
+      {
+        id: 'com.tldraw.shape.fleet-video/1',
+        up: (props: any) => {
+          const { title: _title, ...rest } = props
+          return rest
+        },
+        down: 'none' as const,
+      },
+    ],
+  }
 
   getDefaultProps() {
-    return { w: 260, h: 172, title: 'live video', tileKeys: '[]', userId: undefined, deviceId: undefined }
+    return { w: 260, h: 172, tileKeys: '[]', userId: undefined, deviceId: undefined }
   }
 
   override canEdit = () => false
@@ -56,6 +70,7 @@ function parseTileKeys(value: string): string[] {
 }
 
 function FleetVideoComponent({ shape }: { shape: any }) {
+  const editor = useEditor()
   const allTiles = useSyncExternalStore(subscribeLiveVideoTiles, getLiveVideoTiles, getLiveVideoTiles)
   const isOwnPanel = isMyFleetShape(shape)
 
@@ -67,14 +82,14 @@ function FleetVideoComponent({ shape }: { shape: any }) {
   })
   if (!isOwnPanel && tiles.length === 0) return null
 
-  const { w, h, title } = shape.props
+  const { w, h } = shape.props
 
   return (
     <div
-      className="fleet-video-shape"
+      className="fleet-shape fleet-video-shape"
       style={{ width: w, height: h }}
     >
-      <div className="fleet-video-shape__bar">{title}</div>
+      <FleetPanelButtonGroup editor={editor} shape={shape} />
       <div className="fleet-video-shape__grid">
         {tiles.length === 0 ? (
           <div className="fleet-video-shape__empty">waiting for video</div>
