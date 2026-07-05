@@ -29,11 +29,13 @@ import { buildFleetSearchFilters, parseSearchQuery } from '../shared/fleet-searc
 import {
   INBOX_STATUSES,
   INBOX_VIEWS,
+  DELIVERY_CHANNELS,
   formatAttentionReceipt,
   normalizeInboxStatus,
   normalizeInboxView,
   parsePriorityPhrase,
   validateInboxStatus,
+  validateDeliveryChannel,
 } from '../shared/inbox-attention.mjs';
 import { getActiveConfigName, loadConfig } from '../shared/config.mjs';
 import { listModels as listSpawnModels } from '../bin/lib/spawn/models.mjs';
@@ -1463,6 +1465,21 @@ export function getFleetTools() {
           },
         },
         required: ['status'],
+      },
+    },
+    {
+      name: 'set_delivery_channel',
+      description: 'Set this agent\'s preferred delivery channel for wake pings. Agent-owned only: senders still use chat(); this controls whether future notified messages ping the normal channel or tmux.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          channel: {
+            type: 'string',
+            enum: DELIVERY_CHANNELS,
+            description: 'channel = normal fleet/inbox notification channel; tmux = terminal nudge when a tmux route exists.',
+          },
+        },
+        required: ['channel'],
       },
     },
     // ---- tlda document feedback (push channel) ----
@@ -3083,6 +3100,9 @@ export async function handleFleetTool(name, args) {
         if (a.metadata?.inboxStatus) {
           label += ` [status:${a.metadata.inboxStatus}${a.metadata.inboxStatusTag ? ` (${a.metadata.inboxStatusTag})` : ''}]`;
         }
+        if (a.metadata?.deliveryChannel && a.metadata.deliveryChannel !== 'channel') {
+          label += ` [delivery:${a.metadata.deliveryChannel}]`;
+        }
         // No manager label
         if (a.tmux_session) label += ` tmux:${a.tmux_session}`;
         return label;
@@ -3816,6 +3836,20 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
       return { content: [{ type: 'text', text: `Could not publish inbox status "${status}" to tlda (${e.message}).` }], isError: true };
     }
     return { content: [{ type: 'text', text: `Inbox status set to ${status}${tag ? ` (${tag})` : ''}. Future wake behavior will use this status; choose presentation separately with inbox(view: ...).` }] };
+  }
+
+  // ---- set_delivery_channel ----
+  if (name === 'set_delivery_channel') {
+    if (!AGENT_ID) return { content: [{ type: 'text', text: 'No session ID detected.' }], isError: true };
+    const channel = validateDeliveryChannel(args?.channel);
+    if (!channel) return { content: [{ type: 'text', text: `Bad delivery channel: ${args?.channel || '(missing)'}. Use one of: ${DELIVERY_CHANNELS.join(', ')}.` }], isError: true };
+    try {
+      const data = await sendWS('delivery-channel', { agent: AGENT_ID, channel });
+      if (data?.error) return { content: [{ type: 'text', text: `Could not set delivery channel: ${data.error}` }], isError: true };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Could not publish delivery channel "${channel}" to tlda (${e.message}).` }], isError: true };
+    }
+    return { content: [{ type: 'text', text: `Delivery channel set to ${channel}. Future notified messages for this agent will ping that channel; senders still use chat().` }] };
   }
 
   // ---- tlda monitor_add / monitor_remove / monitor_list ----
@@ -4752,9 +4786,11 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       const summaryLines = [];
       const modelSummary = formatCountSummary(data.summary?.models);
       const statusSummary = formatCountSummary(data.summary?.inbox_statuses);
+      const channelSummary = formatCountSummary(data.summary?.delivery_channels);
       const cwdSummary = formatCountSummary(data.summary?.working_dirs);
       if (modelSummary) summaryLines.push(`Models: ${modelSummary}`);
       if (statusSummary) summaryLines.push(`Inbox statuses: ${statusSummary}`);
+      if (channelSummary) summaryLines.push(`Delivery channels: ${channelSummary}`);
       if (cwdSummary) summaryLines.push(`Working dirs: ${cwdSummary}`);
       const summaryText = summaryLines.length ? `\n${summaryLines.join('\n')}` : '';
 
@@ -4766,17 +4802,18 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       const fmt = (a) => {
         const seen = a.last_seen_ago_s == null ? 'never' : a.last_seen_ago_s < 90 ? `${a.last_seen_ago_s}s` : a.last_seen_ago_s < 5400 ? `${Math.round(a.last_seen_ago_s / 60)}m` : `${Math.round(a.last_seen_ago_s / 3600)}h`;
         const act = a.activity ? `${a.activity}${a.tool ? `:${a.tool}` : ''}` : '';
-        return { name: a.name, status: a.status, seen, inbox: a.inbox_status || '', model: a.model || '', cwd: a.cwd || '', act };
+        return { name: a.name, status: a.status, seen, inbox: a.inbox_status || '', delivery: a.delivery_channel || '', model: a.model || '', cwd: a.cwd || '', act };
       };
       const f = rows.map(fmt);
       const w = (k) => Math.max(k.length, ...f.map(r => String(r[k]).length));
       const wn = w('name'), ws = w('status'), wsa = Math.max(4, ...f.map(r => r.seen.length));
       const wi = w('inbox');
+      const wc = w('delivery');
       const wm = w('model');
       const lines = f.map(r =>
-        `${r.name.padEnd(wn)}  ${r.status.padEnd(ws)}  ${r.seen.padStart(wsa)}  ${r.inbox.padEnd(wi)}  ${r.model.padEnd(wm)}  ${r.act ? r.act.padEnd(14) : '              '}  ${r.cwd}`.trimEnd()
+        `${r.name.padEnd(wn)}  ${r.status.padEnd(ws)}  ${r.seen.padStart(wsa)}  ${r.inbox.padEnd(wi)}  ${r.delivery.padEnd(wc)}  ${r.model.padEnd(wm)}  ${r.act ? r.act.padEnd(14) : '              '}  ${r.cwd}`.trimEnd()
       );
-      const colHead = `${'agent'.padEnd(wn)}  ${'status'.padEnd(ws)}  ${'seen'.padStart(wsa)}  ${'inbox'.padEnd(wi)}  ${'model'.padEnd(wm)}  ${'activity'.padEnd(14)}  cwd`;
+      const colHead = `${'agent'.padEnd(wn)}  ${'status'.padEnd(ws)}  ${'seen'.padStart(wsa)}  ${'inbox'.padEnd(wi)}  ${'delivery'.padEnd(wc)}  ${'model'.padEnd(wm)}  ${'activity'.padEnd(14)}  cwd`;
       return { content: [{ type: 'text', text: `${header}${scope}${summaryText}\n\n${colHead}\n${lines.join('\n')}` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `fleet_table failed (tlda backend not answering — tell ops if it persists): ${e.message}` }], isError: true };

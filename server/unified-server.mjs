@@ -73,12 +73,15 @@ import { daemonSingletonLockPath, inspectSingletonLock } from '../bin/lib/single
 import { partialSkillReadSummaries, recordPartialSkillReads } from '../shared/partial-skill-reads.mjs'
 import { daemonAddress, describeAgentAddress } from '../shared/agent-move-target.mjs'
 import {
+  DELIVERY_CHANNELS,
   INBOX_STATUSES,
   decideInboxDelivery,
+  normalizeDeliveryChannel,
   normalizeInboxStatus,
   normalizeMessagePriority,
   parsePriorityPhrase,
   shouldWakeBatchedMessage,
+  validateDeliveryChannel,
 } from '../shared/inbox-attention.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -3755,6 +3758,22 @@ async function handleFleetWsMessage(ws, msg) {
     const kind = agent?.metadata?.kind || agent?.kind
     return kind === 'codex' || kind === 'goose'
   }
+  function deliveryChannelFor(agent) {
+    return normalizeDeliveryChannel(agent?.metadata?.deliveryChannel)
+  }
+  function shouldSendWakeNudge(agent, nudgeText) {
+    if (!nudgeText || !agent?.tmux_session) return false
+    return deliveryChannelFor(agent) === 'tmux' || terminalNudgeKind(agent)
+  }
+  async function sendWakeNudge(daemonKey, agent, tmuxSession, nudgeText, phase) {
+    if (!shouldSendWakeNudge(agent, nudgeText)) return
+    await sendRpc(daemonKey, 'send-text', {
+      tmux_session: tmuxSession,
+      text: nudgeText,
+      enter: true,
+      enter_delay_ms: agent?.metadata?.kind === 'codex' ? 400 : 0,
+    }).catch(e => console.warn(`[wake-nudge] ${phase} failed for ${agent.id}: ${e.message}`))
+  }
   function requestWake(agentId, nudgeText = null) {
     const agent = fleetStore.getAgent?.(agentId)
     if (!agent || agent.dead || agent.human) return
@@ -3800,14 +3819,7 @@ async function handleFleetWsMessage(ws, msg) {
         spawnLibrarian.observeLiveness({ ...liveness, agent_id: liveness.agent_id || agentId })
         const decision = spawnLibrarian.decideWake(agent, { ...liveness, agent_id: liveness.agent_id || agentId }, { serverAlive })
         if (decision.action === 'deliver') {
-          if (nudgeText && agent.tmux_session && terminalNudgeKind(agent)) {
-            await sendRpc(daemonKey, 'send-text', {
-              tmux_session: agent.tmux_session,
-              text: nudgeText,
-              enter: true,
-              enter_delay_ms: agent?.metadata?.kind === 'codex' ? 400 : 0,
-            }).catch(e => console.warn(`[wake-nudge] failed for ${agentId}: ${e.message}`))
-          }
+          await sendWakeNudge(daemonKey, agent, agent.tmux_session, nudgeText, 'deliver')
           continue
         }
         if (decision.action === 'queue') {
@@ -3829,14 +3841,7 @@ async function handleFleetWsMessage(ws, msg) {
         // the chat-wake entry point — the one that fires when Skip chats a
         // hibernating agent — so identity must be carried here above all.
         const spawnResult = await sendRpc(daemonKey, 'spawn', { name: agentId, respawn: true })
-        if (nudgeText && agent.tmux_session && terminalNudgeKind(agent)) {
-          await sendRpc(daemonKey, 'send-text', {
-            tmux_session: spawnResult?.tmux_session || agent.tmux_session,
-            text: nudgeText,
-            enter: true,
-            enter_delay_ms: agent?.metadata?.kind === 'codex' ? 400 : 0,
-          }).catch(e => console.warn(`[wake-nudge] post-respawn failed for ${agentId}: ${e.message}`))
-        }
+        await sendWakeNudge(daemonKey, agent, spawnResult?.tmux_session || agent.tmux_session, nudgeText, 'post-respawn')
         const wakeTs = new Date().toISOString()
         fleetStore.db.prepare(
           'INSERT INTO events (type, timestamp, from_id, to_id, text, metadata) VALUES (?, ?, ?, ?, ?, ?)'
@@ -4023,12 +4028,14 @@ async function handleFleetWsMessage(ws, msg) {
       const recipientAgent = fleetStore.getAgent?.(to)
       const inboxStatus = normalizeInboxStatus(recipientAgent?.metadata?.inboxStatus)
       const inboxStatusTag = recipientAgent?.metadata?.inboxStatusTag || null
+      const deliveryChannel = normalizeDeliveryChannel(recipientAgent?.metadata?.deliveryChannel)
       const deliveryDecision = decideInboxDelivery({ status: inboxStatus, priority: basePriority, now: Date.parse(ts) || Date.now() })
       const combinedMetadata = {
         ...(metadata || {}),
         priority: basePriority,
         inbox_delivery: deliveryDecision.delivery,
         inbox_status: inboxStatus,
+        delivery_channel: deliveryChannel,
         ...(inboxStatusTag ? { inbox_status_tag: inboxStatusTag } : {}),
         ...(deliveryDecision.notifyBy ? { notify_by: deliveryDecision.notifyBy } : {}),
         ...(ccResolved ? { cc: ccResolved } : {}),
@@ -4054,6 +4061,7 @@ async function handleFleetWsMessage(ws, msg) {
         tag: inboxStatusTag,
         priority: basePriority,
         delivery: deliveryDecision.delivery,
+        deliveryChannel,
         wokeRecipient: deliveryDecision.wokeRecipient,
         notifyBy: deliveryDecision.notifyBy,
       })
@@ -4289,6 +4297,24 @@ async function handleFleetWsMessage(ws, msg) {
     fleetStore.updateAgentMeta?.(agent, { inboxStatus: status, inboxStatusTag: tag || null })
     broadcastState()
     reply({ ok: true, agent, status, tag: tag || null })
+    return
+  }
+
+  if (type === 'delivery-channel') {
+    const { agent, channel: rawChannel } = msg
+    if (!agent) { error('missing agent'); return }
+    const channel = validateDeliveryChannel(rawChannel)
+    if (!channel) { error(`bad delivery channel: ${rawChannel}; use ${DELIVERY_CHANNELS.join(', ')}`); return }
+    const row = fleetStore.getAgent?.(agent)
+    if (!row) { error('agent not found'); return }
+    if (channel === 'tmux') {
+      if (!row.tmux_session) { error('agent has no tmux session'); return }
+      const route = resolveRpc('send-text', row)
+      if (route.via === 'none') { error(route.error); return }
+    }
+    fleetStore.updateAgentMeta?.(agent, { deliveryChannel: channel })
+    broadcastState()
+    reply({ ok: true, agent, channel })
     return
   }
 

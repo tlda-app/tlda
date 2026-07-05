@@ -910,6 +910,10 @@ Current prototype slice:
   tool for cases where the normal fleet notification channel appears broken.
   This is not normal chat delivery and always tells the target to call
   `inbox()`.
+- adds `set_delivery_channel(channel)` with `channel | tmux` as an agent-owned
+  preference. Senders still use normal `chat()`; when a notified wake targets an
+  agent whose preference is `tmux`, the server uses the same daemon tmux nudge
+  path so the agent is told to check `inbox()`.
 
 This prototype is not the full long-term architecture. It is a dogfoodable slice
 of the pull surface plus status-shaped delivery. It still uses the existing
@@ -930,8 +934,8 @@ Rebase and dogfood checklist:
 1. Rebase `.worktrees/agent-inbox-modes` after the reliability RC reaches main.
 2. Resolve conflicts by preserving the RC's reliability fixes first, then
    re-applying `inbox` as an additive surface.
-3. Verify the MCP registry exposes `inbox` and `set_inbox_status`, and does not
-   expose `my_task`.
+3. Verify the MCP registry exposes `inbox`, `set_inbox_status`, and
+   `set_delivery_channel`, and does not expose `my_task`.
 4. Verify `inbox()` with no args routes to the default view.
 5. Verify `inbox()` renders bounded `NOW`, `BATCHED`, and `BACKGROUND`
    sections from explicit delivery metadata.
@@ -948,10 +952,13 @@ Rebase and dogfood checklist:
    visible in `inbox()`.
 11. Verify `nudge_agent(agent, message)` sends only a tmux nudge with an
     `inbox()` footer and does not create normal chat delivery semantics.
-12. Dogfood with at least one worker-like agent in `busy`, one unavailable
+12. Verify `set_delivery_channel(channel: "tmux")` persists
+    `metadata.deliveryChannel`, rejects agents without a tmux route, and causes
+    future notified chat wakes to send a tmux ping to check `inbox()`.
+13. Dogfood with at least one worker-like agent in `busy`, one unavailable
     agent in `dnd`, and one reviewer/release-like agent using
     `inbox(view: "review")`.
-13. Send release-train the post-rebase diff, exact verification output, and
+14. Send release-train the post-rebase diff, exact verification output, and
     dogfood notes before requesting a merge slot.
 
 ## Reviewer Feedback Incorporated

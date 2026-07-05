@@ -31,12 +31,16 @@ Notification status and inbox view are separate:
 - `nudge_agent(agent, message)` is a narrow out-of-band tmux recovery tool for
   cases where the normal fleet notification channel appears broken. It is not
   normal chat delivery.
+- `set_delivery_channel(channel)` stores the agent-owned delivery preference:
+  `channel` for the normal/current channel behavior, `tmux` to force future
+  notified wakes through the daemon tmux nudge path.
 
 Chat delivery now stamps explicit per-recipient attention metadata:
 
 - `priority`
 - `inbox_delivery`
 - `inbox_status`
+- `delivery_channel`
 - optional `inbox_status_tag`
 - optional `notify_by`
 
@@ -52,6 +56,8 @@ Wake policy:
 - `dnd`: normal and `important` queue; `urgent` notifies.
 - Batched busy wake is delayed and only fires if the recipient is still `busy`
   and the exact unread event is still pending.
+- A notified wake for an agent whose `metadata.deliveryChannel` is `tmux` sends
+  a terminal nudge asking the agent to check `inbox()`.
 
 Default inbox rendering:
 
@@ -148,6 +154,9 @@ After rebase and local verification:
 8. Use `nudge_agent(agent, message)` against an agent with a tmux route; verify
    the message appears in the terminal with the standard `Call inbox()` footer
    and does not create a normal chat event.
+9. Use `set_delivery_channel(channel: "tmux")` on an agent with a tmux route;
+   send that agent a notifying chat; verify the chat remains normal inbox
+   delivery and the agent also receives the tmux ping to check `inbox()`.
 
 ## Reviewer Risk Points
 
@@ -165,3 +174,5 @@ After rebase and local verification:
   merge unless product explicitly asks for natural-language classification.
 - `nudge_agent` intentionally uses tmux as an emergency/out-of-band recovery
   path. Do not generalize it into sender-selected chat transport during merge.
+- `set_delivery_channel` is recipient-owned state. Do not add a sender-selected
+  transport argument to `chat()`.
