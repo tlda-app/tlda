@@ -9,8 +9,9 @@ test('wake/respawn queue requires the target owner machine', () => {
   assert.doesNotMatch(serverSource, /agent\.machine_id\s*\|\|\s*machineIds\[0\]/)
   assert.doesNotMatch(serverSource, /machineIds\.length\s*===\s*0\)\s*continue/)
   assert.match(serverSource, /agent .* has no machine_id; cannot route wake\/respawn/)
-  assert.match(serverSource, /daemonConnections\.get\(machineId\)/)
-  assert.match(serverSource, /No fleet-daemon connected for machine/)
+  assert.match(serverSource, /agentDaemonAddress\(agent\)/)
+  assert.match(serverSource, /daemonConnections\.get\(daemonKey\)/)
+  assert.match(serverSource, /No fleet-daemon connected for \$\{daemonKey\}/)
 })
 
 test('combined spawn delegate follows the async spawn mailbox identity', () => {
