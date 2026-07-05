@@ -3,8 +3,8 @@ process.env.FLEET_ID = process.env.FLEET_ID || 'fleet:test-inbox-status'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { formatInboxText, formatNudgeAgentText, formatRecipientStatusSummary, getFleetTools, handleFleetTool } from '../mcp-server/fleet-tools.mjs'
-import { decideInboxDelivery, parsePriorityPhrase, shouldWakeBatchedMessage } from '../shared/inbox-attention.mjs'
+import { formatInboxText, formatRecipientStatusSummary, getFleetTools, handleFleetTool } from '../mcp-server/fleet-tools.mjs'
+import { decideInboxDelivery, parsePriorityPhrase, shouldWakeBatchedMessage, validateDeliveryChannel } from '../shared/inbox-attention.mjs'
 
 test('set_inbox_status is exposed as the explicit status-control tool', () => {
   const tool = getFleetTools().find(t => t.name === 'set_inbox_status')
@@ -22,6 +22,22 @@ test('set_inbox_status rejects invalid statuses before publishing', async () => 
   assert.match(res.content[0].text, /available, busy, dnd/)
 })
 
+test('set_delivery_channel is exposed as the explicit agent-owned channel tool', () => {
+  const tool = getFleetTools().find(t => t.name === 'set_delivery_channel')
+  assert.ok(tool)
+  assert.match(tool.description, /manager\/delegator/)
+  assert.deepEqual(tool.inputSchema.required, ['channel'])
+  assert.equal(tool.inputSchema.properties.agent.type, 'string')
+  assert.deepEqual(tool.inputSchema.properties.channel.enum, ['channel', 'tmux'])
+})
+
+test('set_delivery_channel rejects invalid channels before publishing', async () => {
+  const res = await handleFleetTool('set_delivery_channel', { channel: 'pager' })
+  assert.equal(res.isError, true)
+  assert.match(res.content[0].text, /Bad delivery channel: pager/)
+  assert.match(res.content[0].text, /channel, tmux/)
+})
+
 test('inbox exposes read-time views, not notification statuses', () => {
   const tool = getFleetTools().find(t => t.name === 'inbox')
   assert.ok(tool)
@@ -33,35 +49,8 @@ test('my_task is not exposed as a public MCP tool', () => {
   assert.equal(getFleetTools().some(t => t.name === 'my_task'), false)
 })
 
-test('nudge_agent is exposed as out-of-band tmux recovery, not chat', () => {
-  const tool = getFleetTools().find(t => t.name === 'nudge_agent')
-  assert.ok(tool)
-  assert.match(tool.description, /out-of-band tmux nudge/)
-  assert.match(tool.description, /not chat delivery/)
-  assert.deepEqual(tool.inputSchema.required, ['agent', 'message'])
-  assert.equal(tool.inputSchema.properties.agent.type, 'string')
-  assert.equal(tool.inputSchema.properties.message.type, 'string')
-})
-
-test('nudge_agent text appends the inbox recovery footer', () => {
-  assert.equal(
-    formatNudgeAgentText('Your fleet channel may be broken. Please re-register.'),
-    'Your fleet channel may be broken. Please re-register.\n\nCall inbox() to catch up.',
-  )
-  assert.equal(
-    formatNudgeAgentText(''),
-    'Your fleet notification channel may be broken.\n\nCall inbox() to catch up.',
-  )
-})
-
-test('nudge_agent validates required args before server routing', async () => {
-  const noAgent = await handleFleetTool('nudge_agent', { message: 'wake up' })
-  assert.equal(noAgent.isError, true)
-  assert.match(noAgent.content[0].text, /Specify an agent/)
-
-  const noMessage = await handleFleetTool('nudge_agent', { agent: 'release-train' })
-  assert.equal(noMessage.isError, true)
-  assert.match(noMessage.content[0].text, /Specify a message/)
+test('nudge_agent is not exposed as a public MCP tool', () => {
+  assert.equal(getFleetTools().some(t => t.name === 'nudge_agent'), false)
 })
 
 test('priority phrase parser uses exact V1 phrases only', () => {
@@ -69,6 +58,13 @@ test('priority phrase parser uses exact V1 phrases only', () => {
   assert.equal(parsePriorityPhrase('ok this is urgent for release'), 'urgent')
   assert.equal(parsePriorityPhrase('important update but not the literal phrase'), null)
   assert.equal(parsePriorityPhrase('this is not urgent'), null)
+})
+
+test('delivery channel validation uses the explicit V1 channel names', () => {
+  assert.equal(validateDeliveryChannel('channel'), 'channel')
+  assert.equal(validateDeliveryChannel('tmux'), 'tmux')
+  assert.equal(validateDeliveryChannel('fleet'), null)
+  assert.equal(validateDeliveryChannel('auto'), null)
 })
 
 test('priority threshold decides delivery by status', () => {
@@ -115,12 +111,16 @@ test('fleet_table renders visible inbox statuses', async () => {
       totals: { awake: 1, hibernating: 0, dead: 0, total: 1 },
       matched: 1,
       shown: 1,
-      summary: { inbox_statuses: [{ value: 'busy', count: 1 }] },
+      summary: {
+        inbox_statuses: [{ value: 'busy', count: 1 }],
+        delivery_channels: [{ value: 'tmux', count: 1 }],
+      },
       agents: [{
         name: 'status-agent',
         status: 'awake',
         last_seen_ago_s: 10,
         inbox_status: 'busy',
+        delivery_channel: 'tmux',
         model: 'gpt-test',
         activity: null,
         tool: null,
@@ -132,8 +132,9 @@ test('fleet_table renders visible inbox statuses', async () => {
     const res = await handleFleetTool('fleet_table', {})
     assert.equal(res.isError, undefined)
     assert.match(res.content[0].text, /Inbox statuses: busy/)
-    assert.match(res.content[0].text, /agent\s+status\s+seen\s+inbox\s+model\s+activity\s+cwd/)
-    assert.match(res.content[0].text, /status-agent\s+awake\s+10s\s+busy\s+gpt-test/)
+    assert.match(res.content[0].text, /Delivery channels: tmux/)
+    assert.match(res.content[0].text, /agent\s+status\s+seen\s+inbox\s+delivery\s+model\s+activity\s+cwd/)
+    assert.match(res.content[0].text, /status-agent\s+awake\s+10s\s+busy\s+tmux\s+gpt-test/)
   } finally {
     globalThis.fetch = prevFetch
   }

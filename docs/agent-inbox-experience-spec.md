@@ -906,10 +906,14 @@ Current prototype slice:
 - returns sender receipts that say whether the message notified, batched, or
   queued for the recipient
 - changes wake/startup copy to prefer `inbox()`
-- adds `nudge_agent(agent, message)` as a narrow out-of-band tmux recovery
-  tool for cases where the normal fleet notification channel appears broken.
-  This is not normal chat delivery and always tells the target to call
-  `inbox()`.
+- adds `set_delivery_channel(agent?, channel)` with `channel | tmux` as the
+  consolidated delivery preference. Senders still use normal `chat()`; when a
+  notified wake targets an agent whose preference is `tmux`, the server uses the
+  internal daemon tmux nudge path so the agent is told to check `inbox()`.
+  Agents may set their own channel freely. Setting another agent's channel
+  requires being that agent's manager/delegator via an active task.
+- removes the public `nudge_agent` tool; persistent `tmux` delivery replaces the
+  one-off nudge API.
 
 This prototype is not the full long-term architecture. It is a dogfoodable slice
 of the pull surface plus status-shaped delivery. It still uses the existing
@@ -930,8 +934,8 @@ Rebase and dogfood checklist:
 1. Rebase `.worktrees/agent-inbox-modes` after the reliability RC reaches main.
 2. Resolve conflicts by preserving the RC's reliability fixes first, then
    re-applying `inbox` as an additive surface.
-3. Verify the MCP registry exposes `inbox` and `set_inbox_status`, and does not
-   expose `my_task`.
+3. Verify the MCP registry exposes `inbox`, `set_inbox_status`, and
+   `set_delivery_channel`, and does not expose `my_task`.
 4. Verify `inbox()` with no args routes to the default view.
 5. Verify `inbox()` renders bounded `NOW`, `BATCHED`, and `BACKGROUND`
    sections from explicit delivery metadata.
@@ -946,12 +950,16 @@ Rebase and dogfood checklist:
    before `inbox()` is called.
 10. Verify a task/delegate wake says to call `inbox()` and the task remains
    visible in `inbox()`.
-11. Verify `nudge_agent(agent, message)` sends only a tmux nudge with an
-    `inbox()` footer and does not create normal chat delivery semantics.
-12. Dogfood with at least one worker-like agent in `busy`, one unavailable
+11. Verify `nudge_agent` is not exposed as a public MCP tool.
+12. Verify `set_delivery_channel(agent?, channel)` persists
+    `metadata.deliveryChannel`, allows self-setting, allows a manager/delegator
+    to set a delegatee's channel, rejects non-managers with the "delegate them a
+    task first" recovery path, rejects `tmux` for agents without a tmux route,
+    and causes future notified chat wakes to send a tmux ping to check `inbox()`.
+13. Dogfood with at least one worker-like agent in `busy`, one unavailable
     agent in `dnd`, and one reviewer/release-like agent using
     `inbox(view: "review")`.
-13. Send release-train the post-rebase diff, exact verification output, and
+14. Send release-train the post-rebase diff, exact verification output, and
     dogfood notes before requesting a merge slot.
 
 ## Reviewer Feedback Incorporated

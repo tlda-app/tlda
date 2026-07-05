@@ -2126,6 +2126,11 @@ export class FleetStore {
     });
   }
 
+  isDelegatorForAgent(delegatorId, agentId) {
+    if (!delegatorId || !agentId) return false;
+    return this.getActiveTasksByAgent(agentId).some(task => task.delegated_by === delegatorId);
+  }
+
   getActiveTasks() {
     return this._getAllActiveTasks.all().map(r => this._hydrateTask(r));
   }

@@ -1,6 +1,7 @@
 export const INBOX_STATUSES = ['available', 'busy', 'dnd']
 export const INBOX_VIEWS = ['default', 'review', 'monitoring', 'current-task', 'all']
 export const MESSAGE_PRIORITIES = ['normal', 'important', 'urgent']
+export const DELIVERY_CHANNELS = ['channel', 'tmux']
 
 const PRIORITY_LEVEL = {
   normal: 1,
@@ -37,6 +38,16 @@ export function validateInboxView(view) {
 export function normalizeMessagePriority(priority) {
   const p = String(priority || 'normal').trim().toLowerCase()
   return MESSAGE_PRIORITIES.includes(p) ? p : 'normal'
+}
+
+export function normalizeDeliveryChannel(channel) {
+  const c = String(channel || 'channel').trim().toLowerCase()
+  return DELIVERY_CHANNELS.includes(c) ? c : 'channel'
+}
+
+export function validateDeliveryChannel(channel) {
+  const c = String(channel || '').trim().toLowerCase()
+  return DELIVERY_CHANNELS.includes(c) ? c : null
 }
 
 export function parsePriorityPhrase(text) {
