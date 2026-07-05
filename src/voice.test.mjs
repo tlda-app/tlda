@@ -89,10 +89,34 @@ class MockSpeechRecognition {
 }
 
 // ---- Mock document ----
-const mockDiv = { textContent: '', style: {}, id: '', appendChild: () => {}, remove: () => {} }
+function makeMockElement() {
+  return {
+    _ownText: '',
+    children: [],
+    style: {},
+    id: '',
+    appendChild(child) {
+      this.children.push(child)
+      return child
+    },
+    remove() {},
+    set textContent(value) {
+      this._ownText = String(value ?? '')
+      this.children = []
+    },
+    get textContent() {
+      return this._ownText + this.children.map(child => child?.textContent || '').join('')
+    },
+  }
+}
+let mockDiv = null
 const bodyClasses = new Set()
 global.document = {
-  createElement: () => mockDiv,
+  createElement: () => {
+    const el = makeMockElement()
+    if (!mockDiv) mockDiv = el
+    return el
+  },
   body: {
     appendChild: () => {},
     classList: {
@@ -1289,4 +1313,47 @@ await setBackend('chrome')
   console.log('✓ Test 21: server-inserted fly URL survives dictation; spoken "fly" is still corrected')
 }
 
-console.log('\nAll 24 tests passed.')
+// ---- Test 22: radio subtitle first slice ----
+{
+  reset()
+  bodyClasses.add('phone-mode')
+  window.location.search = '?doc=bregman'
+  location.search = '?doc=bregman'
+  const ta = makeTextarea()
+  setVoiceTarget(ta, ['frontier'], { 'fleet:frontier': 'frontier' }, null)
+
+  const agents = [{ id: 'fleet:frontier', friendly_name: 'frontier' }]
+  const unrelated = window.__voiceTest.maybeShowRadioSubtitleForIncomingChat(
+    { type: 'chat', from: 'fleet:someone-else', to: 'fleet:skip', text: 'wrong channel' },
+    [{ id: 'fleet:someone-else', friendly_name: 'someone-else' }],
+    'fleet:skip',
+  )
+  assert.equal(unrelated, false, 'unrelated incoming chat should not render in radio HUD')
+
+  const shown = window.__voiceTest.maybeShowRadioSubtitleForIncomingChat(
+    { type: 'chat', from: 'fleet:frontier', to: 'fleet:skip', text: 'Radio line one' },
+    agents,
+    'fleet:skip',
+  )
+  assert.equal(shown, true, 'active-target incoming chat should render in radio HUD')
+  assert.ok(window.__voiceTest.getHudText().includes('radio <- frontier'), 'HUD should show radio source')
+  assert.ok(window.__voiceTest.getHudText().includes('Radio line one'), 'HUD should show subtitle text')
+  assert.deepEqual(
+    window.__voiceTest.getRadioSubtitle(),
+    { from: 'fleet:frontier', label: 'frontier', text: 'Radio line one', timestamp: window.__voiceTest.getRadioSubtitle().timestamp, expanded: true },
+    'radio subtitle should be stored while expanded',
+  )
+
+  tick(4500)
+  const stored = window.__voiceTest.getRadioSubtitle()
+  assert.equal(stored.text, 'Radio line one', 'last radio subtitle should persist until replaced')
+  assert.equal(stored.expanded, false, 'radio subtitle should collapse after the expanded window')
+
+  window.location.search = ''
+  location.search = ''
+  bodyClasses.delete('phone-mode')
+  reset()
+  console.log('✓ Test 22: radio subtitle is active-target, phone-doc gated, and collapses')
+}
+
+console.log('\nAll voice tests passed.')

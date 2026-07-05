@@ -32,6 +32,7 @@ import { probe } from '../perf-probe'
 import { DATABASE_HTTP, DATABASE_WS } from '../activeConfig'
 import { isUsableIdentityName, sanitizeIdentityName, storedIdentityLoginFailureAction } from './identity-persistence.mjs'
 import { rejectWsRequests, resetWsRequestIdleTimers, startWsRequest } from '../../shared/ws-request-policy.mjs'
+import { maybeShowRadioSubtitleForIncomingChat } from '../voice.mjs'
 
 // The global fleet/event store (chat, agents, activity, tasks) = the active
 // config's DATABASE, read directly from the server-injected config. No fetch, no
@@ -839,6 +840,9 @@ export function connect() {
         }
         if (data.type === 'interrupt' || data.type === 'kill-session') {
           log.warn('interrupt-recv', 'event received', { type: data.type, id: data.id, from: data.from_id||data.from, to: data.to_id||data.to, isNew })
+        }
+        if (isNew && data.type === 'chat') {
+          maybeShowRadioSubtitleForIncomingChat(event, _agents, _humanId)
         }
         notify('messages', isNew ? event : null)
       } else if (eventType === 'event-update') {
