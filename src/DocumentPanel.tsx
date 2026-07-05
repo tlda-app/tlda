@@ -12,6 +12,9 @@ import { TocTab, ZoneWidthSlider } from './panels/TocTab'
 import { NotesTab } from './panels/NotesTab'
 import { PrefsTab } from './panels/PrefsTab'
 import { CornerButtonSlider, pickCornerSliderIndex } from './CornerButtonSlider'
+import { isDocumentPageShape } from './shapes/document-pages'
+import { isPhoneFleetLayoutForCurrentDevice, reflowPhoneFleetLayout } from './shapes/fleet-utils'
+import { snapToCurrentPhoneLaneIndex } from './overlays/useFleetGestures'
 
 import './DocumentPanel.css'
 
@@ -177,7 +180,41 @@ export function DocumentPanel() {
   )
 }
 
-const IS_PHONE = typeof window !== 'undefined' && window.matchMedia('(max-width: 600px)').matches
+function isPhoneSizedViewport(): boolean {
+  if (typeof window === 'undefined') return false
+  const vv = window.visualViewport
+  const w = Number(vv?.width || window.innerWidth || 0)
+  const h = Number(vv?.height || window.innerHeight || 0)
+  return Number.isFinite(w) && Number.isFinite(h) && Math.min(w, h) <= 600
+}
+
+function usePhoneSizedViewport(): boolean {
+  const [phone, setPhone] = useState(() => isPhoneSizedViewport())
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const update = () => setPhone(isPhoneSizedViewport())
+    update()
+    window.addEventListener('resize', update)
+    window.addEventListener('orientationchange', update)
+    window.visualViewport?.addEventListener('resize', update)
+    return () => {
+      window.removeEventListener('resize', update)
+      window.removeEventListener('orientationchange', update)
+      window.visualViewport?.removeEventListener('resize', update)
+    }
+  }, [])
+  return phone
+}
+
+function getDocumentLeftPage(editor: Editor): number | null {
+  let minPageX = Infinity
+  for (const s of editor.getCurrentPageShapes().filter(isDocumentPageShape)) {
+    const b = editor.getShapePageBounds(s.id)
+    if (b && b.x < minPageX) minPageX = b.x
+  }
+  return isFinite(minPageX) ? minPageX : null
+}
+
 const IS_TOUCH_DEVICE = (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0)
   || (typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches)
   || (typeof location !== 'undefined' && new URLSearchParams(location.search).has('forcetouch'))
@@ -541,28 +578,65 @@ function PhonePageIndicator() {
 }
 
 export function PhoneOverlay() {
+  const editor = useEditor()
   const doc = useContext(DocContext)
   const [menuOpen, setMenuOpen] = useState(false)
   const [tab, setTab] = useState<Tab>('toc')
-  const showButtonToc = doc?.format === 'slides' || IS_PHONE || IS_TOUCH_DEVICE
+  const isPhone = usePhoneSizedViewport()
+  const showButtonToc = doc?.format === 'slides' || isPhone || IS_TOUCH_DEVICE
+  const phoneViewportSig = useValue(
+    'phone-overlay-viewport',
+    () => {
+      const vp = editor.getViewportScreenBounds()
+      return `${Math.round(vp.w)}x${Math.round(vp.h)}`
+    },
+    [editor],
+  )
 
   useEffect(() => {
-    if (!IS_PHONE) return
+    if (!isPhone) return
+    let raf = 0
+    const apply = () => {
+      raf = 0
+      if (!isPhoneFleetLayoutForCurrentDevice(editor)) return
+      const changed = reflowPhoneFleetLayout(editor)
+      const docLeft = getDocumentLeftPage(editor)
+      if (docLeft !== null) snapToCurrentPhoneLaneIndex(editor, docLeft, 0)
+      if (changed) window.dispatchEvent(new CustomEvent('fleet-phone-layout-reflowed'))
+    }
+    const schedule = () => {
+      if (raf) cancelAnimationFrame(raf)
+      raf = requestAnimationFrame(apply)
+    }
+    schedule()
+    window.addEventListener('resize', schedule)
+    window.addEventListener('orientationchange', schedule)
+    window.visualViewport?.addEventListener('resize', schedule)
+    return () => {
+      if (raf) cancelAnimationFrame(raf)
+      window.removeEventListener('resize', schedule)
+      window.removeEventListener('orientationchange', schedule)
+      window.visualViewport?.removeEventListener('resize', schedule)
+    }
+  }, [editor, isPhone, phoneViewportSig])
+
+  useEffect(() => {
+    if (!isPhone) return
     // Show toolbar when menu is open
     document.body.classList.toggle('phone-bar-visible', menuOpen)
-  }, [menuOpen])
+  }, [isPhone, menuOpen])
 
   useEffect(() => {
-    if (!IS_PHONE) return
+    if (!isPhone) return
     document.body.classList.add('phone-mode')
     return () => { document.body.classList.remove('phone-mode') }
-  }, [])
+  }, [isPhone])
 
   useEffect(() => {
-    if (!showButtonToc || IS_PHONE) return
+    if (!showButtonToc || isPhone) return
     document.body.classList.add('touch-toc-mode')
     return () => { document.body.classList.remove('touch-toc-mode') }
-  }, [showButtonToc])
+  }, [showButtonToc, isPhone])
 
   if (!showButtonToc) return null
 
@@ -581,7 +655,7 @@ export function PhoneOverlay() {
         {menuOpen ? '✕' : '☰'}
       </button>
 
-      {IS_PHONE && (
+      {isPhone && (
         <>
           {/* Highlighter toggle — bottom right, drag for color slider */}
           <PhoneHighlighterButton />
@@ -744,7 +818,8 @@ export function AgentPill({ editor }: { editor: Editor }) {
 // actual phones, where the PhoneOverlay renders its own copy. iPad is a
 // touch device but not a phone, so it gets the same layout as desktop.
 export function HighlighterButton() {
-  if (IS_PHONE) return null
+  const isPhone = usePhoneSizedViewport()
+  if (isPhone) return null
   return <PhoneHighlighterButton />
 }
 export function SemanticHighlightPill() { return null }
@@ -1057,8 +1132,8 @@ export function VoiceTargetFollower() {
 }
 
 export function VoiceNoteButton() {
-  if (typeof window === 'undefined') return null
-  if (IS_PHONE) return null
+  const isPhone = usePhoneSizedViewport()
+  if (typeof window === 'undefined' || isPhone) return null
   return <VoiceNoteButtonInner />
 }
 

@@ -57,6 +57,15 @@ type PhoneChatShape = {
   props?: { filter?: FleetFilter }
 }
 
+function isPhoneViewportSurface(): boolean {
+  if (typeof window === 'undefined') return false
+  if (document.body.classList.contains('phone-mode')) return true
+  const vv = window.visualViewport
+  const w = Number(vv?.width || window.innerWidth || 0)
+  const h = Number(vv?.height || window.innerHeight || 0)
+  return Number.isFinite(w) && Number.isFinite(h) && Math.min(w, h) <= 600
+}
+
 function copySourceTemplate(text: string): string {
   return `<template class="code-block-copy-source">${esc(text)}</template>`
 }
@@ -305,21 +314,21 @@ function FleetInboxInner({ shape }: { shape: any }) {
   const [filterOpen, setFilterOpen] = useState(false)
   const [filterOpenByPill, setFilterOpenByPill] = useState(false)
   const [filterTargetId, setFilterTargetId] = useState<TLShapeId | null>(null)
-  const [isPhoneSurface, setIsPhoneSurface] = useState(() => {
-    if (typeof window === 'undefined') return false
-    return document.body.classList.contains('phone-mode') || !!window.matchMedia?.('(max-width: 600px)').matches
-  })
+  const [isPhoneSurface, setIsPhoneSurface] = useState(() => isPhoneViewportSurface())
 
   useEffect(() => {
     if (typeof window === 'undefined') return
-    const media = window.matchMedia?.('(max-width: 600px)')
-    const update = () => setIsPhoneSurface(document.body.classList.contains('phone-mode') || !!media?.matches)
+    const update = () => setIsPhoneSurface(isPhoneViewportSurface())
     update()
-    media?.addEventListener?.('change', update)
+    window.addEventListener('resize', update)
+    window.addEventListener('orientationchange', update)
+    window.visualViewport?.addEventListener('resize', update)
     const observer = new MutationObserver(update)
     observer.observe(document.body, { attributes: true, attributeFilter: ['class'] })
     return () => {
-      media?.removeEventListener?.('change', update)
+      window.removeEventListener('resize', update)
+      window.removeEventListener('orientationchange', update)
+      window.visualViewport?.removeEventListener('resize', update)
       observer.disconnect()
     }
   }, [])

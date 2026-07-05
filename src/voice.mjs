@@ -362,7 +362,14 @@ function ensureHud() {
     overflow: 'hidden',
   })
   document.body.appendChild(_hud)
+  positionHud(_hud)
   return _hud
+}
+
+function positionHud(hud) {
+  const phone = document.body?.classList?.contains('phone-mode')
+  hud.style.top = phone ? '12px' : ''
+  hud.style.bottom = phone ? '' : '20px'
 }
 
 // Health dot: green at 20% when audio is flowing, amber at 40% when no audio.
@@ -677,6 +684,7 @@ function finalizeDeepgramBridge() {
 
 function showHud(text, stateColor) {
   const hud = ensureHud()
+  positionHud(hud)
   clearTimeout(_fadeTimer)
   // Build HUD content with health dot + text
   const dot = ensureHealthDot()

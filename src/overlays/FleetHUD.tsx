@@ -14,9 +14,9 @@ import { CanvasClipPanel, syncCanvasClipPanelViewportCamera, type ClipBounds } f
 import { useFleetIdentity } from '../fleet-data-adapter'
 // @ts-ignore — vanilla JS module
 import { getHumanId, getDeviceId, isDeviceReady, whenDeviceReady } from '../fleet/fleet-data.mjs'
-import { getMyAnchorId, isMyFleetShape, FLEET_INTERACTION_SHAPE_SELECTOR, FLEET_SHAPE_TYPES, adoptLegacyFleetShapes, layoutOffset, ensureMyLaneDisjoint } from '../shapes/fleet-utils'
+import { getMyAnchorId, isMyFleetShape, FLEET_INTERACTION_SHAPE_SELECTOR, FLEET_SHAPE_TYPES, adoptLegacyFleetShapes, layoutOffset, ensureMyLaneDisjoint, isPhoneFleetLayoutForCurrentDevice, reflowPhoneFleetLayout } from '../shapes/fleet-utils'
 import { isDocumentPageShape } from '../shapes/document-pages'
-import { fleetTouchGestureActiveRef, postTouchTelemetry, setTouchDiagStatus, useFleetGestures } from './useFleetGestures'
+import { fleetTouchGestureActiveRef, postTouchTelemetry, setTouchDiagStatus, snapToCurrentPhoneLaneIndex, useFleetGestures } from './useFleetGestures'
 import { PhoneLaneArrow } from './PhoneLaneArrow'
 import { shouldRenderLockedFleetViewportShape } from './fleet-viewport-predicate'
 import { SuggestionTip } from '../shapes/FleetChatShape'
@@ -206,31 +206,13 @@ function getFleetBounds(editor: Editor): ClipBounds | null {
   return result.bounds
 }
 
-function isPhoneFleetLayout(editor: Editor): boolean {
-  type FleetLayoutShape = {
-    type: string
-    x: number
-    props?: { w?: number; h?: number }
+function getDocumentLeftPage(editor: Editor): number | null {
+  let minPageX = Infinity
+  for (const s of editor.getCurrentPageShapes().filter(isDocumentPageShape)) {
+    const b = editor.getShapePageBounds(s.id)
+    if (b && b.x < minPageX) minPageX = b.x
   }
-  const shapes = editor.getCurrentPageShapes().filter(isMyFleetShape) as unknown as FleetLayoutShape[]
-  const agents = shapes.find(s => s.type === 'fleet-agents')
-  const inbox = shapes.find(s => s.type === 'fleet-inbox')
-  const chat = shapes.find(s => s.type === 'fleet-chat')
-  if (!agents || !inbox || !chat) return false
-  if (shapes.some(s => s.type === 'fleet-search' || s.type === 'fleet-docview' || s.type === 'fleet-touch-inbox')) return false
-  const vp = editor.getViewportScreenBounds()
-  if (!vp.w || !vp.h) return false
-  const oneScreenWide =
-    Math.abs((agents.props?.w || 0) - vp.w) <= 2 &&
-    Math.abs((inbox.props?.w || 0) - vp.w) <= 2 &&
-    Math.abs((chat.props?.w || 0) - vp.w) <= 2
-  if (!oneScreenWide) return false
-  if (Math.abs((chat.props?.h || 0) - vp.h) > 2) return false
-  const gap = 10
-  const stackedHeight = (agents.props?.h || 0) + gap + (inbox.props?.h || 0)
-  const chatH = chat.props?.h || 0
-  const chatX = (agents.x || 0) + (agents.props?.w || 0)
-  return Math.abs(stackedHeight - chatH) <= 2 && Math.abs((chat.x || 0) - chatX) <= 2
+  return isFinite(minPageX) ? minPageX : null
 }
 
 function getFleetHudDiagnostic(editor: Editor) {
@@ -508,7 +490,7 @@ export function FleetHUD({
       applyHudAnchor({ panOffset: anchor.meta.panOffset, cameraY: anchor.meta.cameraY }, { syncViewport: false })
     }
   }
-  const phoneLayout = isPhoneFleetLayout(mainEditor)
+  const phoneLayout = isPhoneFleetLayoutForCurrentDevice(mainEditor)
   const PHONE_TOP_PAD = -20
   const activeTopPad = phoneLayout ? PHONE_TOP_PAD : TOP_PAD
 
@@ -673,6 +655,46 @@ export function FleetHUD({
     return unsub
   }, [mainEditor, docShapesReady])
 
+  useEffect(() => {
+    if (!identityId || !deviceReady || !docShapesReady) return
+    let lastSig = ''
+    let raf = 0
+    const apply = () => {
+      raf = 0
+      const vp = mainEditor.getViewportScreenBounds()
+      const vv = window.visualViewport
+      const screenW = Number(vv?.width || window.innerWidth || vp.w)
+      const screenH = Number(vv?.height || window.innerHeight || vp.h)
+      const sig = `${Math.round(screenW)}x${Math.round(screenH)}`
+      if (sig === lastSig) return
+      lastSig = sig
+      if (!isPhoneFleetLayoutForCurrentDevice(mainEditor)) return
+      const changed = reflowPhoneFleetLayout(mainEditor)
+      const docLeftPage = getDocumentLeftPage(mainEditor)
+      if (docLeftPage !== null) snapToCurrentPhoneLaneIndex(mainEditor, docLeftPage, 0)
+      if (changed) {
+        hudAnchorRef.current = null
+        hudBaseCameraRef.current = mainEditor.getCamera()
+        const bounds = resetFleetBoundsTracker()
+        setFleetBounds(bounds)
+      }
+    }
+    const schedule = () => {
+      if (raf) return
+      raf = requestAnimationFrame(apply)
+    }
+    schedule()
+    window.addEventListener('resize', schedule)
+    window.addEventListener('orientationchange', schedule)
+    window.visualViewport?.addEventListener('resize', schedule)
+    return () => {
+      if (raf) cancelAnimationFrame(raf)
+      window.removeEventListener('resize', schedule)
+      window.removeEventListener('orientationchange', schedule)
+      window.visualViewport?.removeEventListener('resize', schedule)
+    }
+  }, [deviceReady, docShapesReady, identityId, mainEditor, resetFleetBoundsTracker])
+
   // In the copy-store HUD, opening the HUD hides fleet shapes in the main
   // editor because CanvasClipPanel renders separate copies. The fork viewport
   // HUD renders the same editor/store, so that global visibility switch would
@@ -779,7 +801,7 @@ export function FleetHUD({
         // same-zoom camera changes as deliberate pan.
       } else if (hudAnchorRef.current !== null) {
         const t0 = probe.isEnabled('hud') ? performance.now() : 0
-        if (isPhoneFleetLayout(mainEditor)) {
+        if (isPhoneFleetLayoutForCurrentDevice(mainEditor)) {
           const latestBounds = readMaintainedFleetBounds() || fleetBounds
           const docShapes = mainEditor.getCurrentPageShapes().filter(isDocumentPageShape)
           let minPageX = Infinity

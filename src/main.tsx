@@ -41,7 +41,10 @@ const DEFAULT_FLEET_LAYOUT_PRESET = '3-col'
 const PHONE_FLEET_LAYOUT_PRESET = 'phone'
 
 function getDefaultFleetLayoutPreset() {
-  const phoneSized = window.matchMedia?.('(max-width: 600px)').matches || window.innerWidth <= 600
+  const vv = window.visualViewport
+  const w = Number(vv?.width || window.innerWidth || 0)
+  const h = Number(vv?.height || window.innerHeight || 0)
+  const phoneSized = Number.isFinite(w) && Number.isFinite(h) && Math.min(w, h) <= 600
   return phoneSized ? PHONE_FLEET_LAYOUT_PRESET : DEFAULT_FLEET_LAYOUT_PRESET
 }
 

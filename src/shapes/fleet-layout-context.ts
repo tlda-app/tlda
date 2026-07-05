@@ -13,6 +13,7 @@ export type DocumentPageBounds = {
 }
 
 export type PhoneLayoutTarget = { x: number; y: number; w: number; h: number; pageX: number }
+export type FleetLayoutViewportBounds = { x: number; y: number; w: number; h: number }
 
 export function fleetLayoutPanelCount(variant: string): number {
   return variant === '2x2' ? 4 : (variant === 'big-chat' || variant === 'phone') ? 1 : 2
@@ -28,6 +29,7 @@ export function buildFleetLayoutPlanInput({
   phoneTarget,
   existingChatFilters,
   makeSlotId,
+  viewport,
 }: {
   editor: Editor
   agents: any[]
@@ -38,6 +40,7 @@ export function buildFleetLayoutPlanInput({
   phoneTarget: PhoneLayoutTarget | null
   existingChatFilters: Array<FleetChatFilter | undefined>
   makeSlotId: (slot: string) => string
+  viewport?: FleetLayoutViewportBounds
 }): FleetLayoutPlanInput {
   const panelCount = fleetLayoutPanelCount(variant)
   const [filter1 = [], filter2 = [], filter3 = [], filter4 = []] = defaultFleetLayoutChatFilters({
@@ -52,7 +55,7 @@ export function buildFleetLayoutPlanInput({
   const chatW3 = getPref('layout-chat-width')
   const marginGap = getPref('layout-margin-gap')
   const rightW = chatW3 * 2 + gap
-  const vp = editor.getViewportScreenBounds()
+  const vp = viewport ?? editor.getViewportScreenBounds()
   // HUD renders fleet shapes via a z=1 camera (see FleetHUD.tsx), so page units
   // map 1:1 to screen px — size off the raw viewport, not the main-camera zoom.
   const totalH = Math.round(vp.h * getPref('layout-height-frac'))
@@ -130,7 +133,7 @@ export function getDocumentPageBounds(editor: Editor): DocumentPageBounds | null
 export function getPhoneLayoutTarget(
   editor: Editor,
   pageShapes: any[],
-  vp: ReturnType<Editor['getViewportScreenBounds']>,
+  vp: FleetLayoutViewportBounds,
 ): PhoneLayoutTarget | null {
   let target: PhoneLayoutTarget | null = null
   let bestArea = -1

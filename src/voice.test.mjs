@@ -90,9 +90,17 @@ class MockSpeechRecognition {
 
 // ---- Mock document ----
 const mockDiv = { textContent: '', style: {}, id: '', appendChild: () => {}, remove: () => {} }
+const bodyClasses = new Set()
 global.document = {
   createElement: () => mockDiv,
-  body: { appendChild: () => {} },
+  body: {
+    appendChild: () => {},
+    classList: {
+      add: (name) => bodyClasses.add(name),
+      remove: (name) => bodyClasses.delete(name),
+      contains: (name) => bodyClasses.has(name),
+    },
+  },
   addEventListener: () => {},
   querySelectorAll: () => [],
 }
@@ -748,6 +756,23 @@ await setBackend('chrome')
   window.__voiceTest.fakeStop()
   reset()
   console.log('✓ Test 11: transient Deepgram reconnect uses quiet fixed HUD')
+}
+
+// ---- Test 11a: phone voice HUD sits at the top of the viewport ----
+{
+  reset()
+  document.body.classList.add('phone-mode')
+  window.__voiceTest.fakeDeepgramConnected()
+  window.__voiceTest.showDontSpeak()
+  assert.equal(window.__voiceTest.getHudStyle().top, '12px', 'phone voice HUD should be anchored near the top')
+  assert.equal(window.__voiceTest.getHudStyle().bottom, '', 'phone voice HUD should not also keep the desktop bottom anchor')
+  document.body.classList.remove('phone-mode')
+  window.__voiceTest.showDontSpeak()
+  assert.equal(window.__voiceTest.getHudStyle().top, '', 'desktop voice HUD clears the phone top anchor')
+  assert.equal(window.__voiceTest.getHudStyle().bottom, '20px', 'desktop voice HUD keeps the bottom anchor')
+  window.__voiceTest.fakeStop()
+  reset()
+  console.log('✓ Test 11a: phone voice HUD is top anchored')
 }
 
 // ---- Test 12: mic watchdog never tears down a live (running) context ----
