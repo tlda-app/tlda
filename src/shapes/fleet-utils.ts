@@ -1,4 +1,4 @@
-import type { Editor, TLShape } from 'tldraw'
+import type { Editor, TLShape, TLViewportId } from 'tldraw'
 import { createShapeId } from 'tldraw'
 // @ts-ignore — vanilla JS module
 import { getHumanId, getDeviceId, whenDeviceReady } from '../fleet/fleet-data.mjs'
@@ -6,6 +6,8 @@ import { getHumanId, getDeviceId, whenDeviceReady } from '../fleet/fleet-data.mj
 import { pretty_name_plain_text } from '../../shared/pretty_name.mjs'
 import { isDocumentPageShape } from './document-pages'
 import { dispatchFleetHudReset, getHudEditor, markMainEditorHistoryStoppingPoint } from '../wm/editor-host-bridge'
+import { FLEET_HUD_VIEWPORT_ID } from '../wm/fleet-hud-layer'
+import { clientPointToPage } from '../wm/viewport-coordinates'
 import {
   FLEET_SHAPE_TYPES,
   fleetPanelDefaultProps,
@@ -214,9 +216,9 @@ export async function placeFleetShapeAtScreenPoint(
   const hudEditor = getHudEditor()
   let x: number, y: number
   if (hudEditor) {
-    const cam = hudEditor.getCamera()
-    x = screenX / cam.z - cam.x - w / 2
-    y = screenY / cam.z - cam.y - h / 2
+    const point = clientPointToPage(editor, { x: screenX, y: screenY }, FLEET_HUD_VIEWPORT_ID as TLViewportId)
+    x = point.x - w / 2
+    y = point.y - h / 2
   } else {
     const point = editor.screenToPage({ x: screenX, y: screenY })
     x = point.x - w / 2

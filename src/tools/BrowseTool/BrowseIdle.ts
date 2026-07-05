@@ -24,6 +24,7 @@ import type {
   TLShape,
   TLRichText,
   TLShapeId,
+  TLViewportId,
   VecLike,
 } from '@tldraw/editor'
 import {
@@ -35,6 +36,7 @@ import { getOnSourceClick } from '../../stores'
 import { getHumanId } from '../../fleet/fleet-data.mjs'
 import { FLEET_SHAPE_TYPES } from '../../shapes/fleet-utils'
 import { probe } from '../../perf-probe'
+import { clientPointToPage } from '../../wm/viewport-coordinates'
 
 // --- Fleet shape types that get DOM interaction ---
 const FLEET_TYPES = FLEET_SHAPE_TYPES
@@ -227,7 +229,8 @@ export class BrowseIdle extends StateNode {
       // Scope to main editor container — document.querySelector would find
       // the HUD editor's copy of the shape first (same shape IDs, synced store).
       const container = this.editor.getContainer()
-      const pagePoint = this.editor.screenToPage({ x: e.clientX, y: e.clientY })
+      const viewportId = (target.closest('[data-viewport-id]')?.getAttribute('data-viewport-id') ?? undefined) as TLViewportId | undefined
+      const pagePoint = clientPointToPage(this.editor, { x: e.clientX, y: e.clientY }, viewportId)
       for (const id of selected) {
         // WM/HUD viewports can render another DOM copy of the same selected
         // shape outside the editor's primary container. If the event path is

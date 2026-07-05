@@ -1,4 +1,5 @@
-import type { Editor } from 'tldraw'
+import type { Editor, TLViewportId } from 'tldraw'
+import { clientPointToPage } from './viewport-coordinates.ts'
 
 export interface GestureFrameSelectors {
 	viewportRoot?: (viewportId: string) => string
@@ -39,10 +40,8 @@ export function screenPointToFramePage(
 	clientY: number,
 	options: { viewportId?: string; selectors?: GestureFrameSelectors } = {},
 ) {
-	const { viewportId, selectors = {} } = options
-  const container = getGestureViewportContainer(overlay, viewportId, selectors)
-  const rect = (container as HTMLElement).getBoundingClientRect()
-  return overlay.screenToPage({ x: clientX - rect.left, y: clientY - rect.top }, viewportId ? { viewportId } : undefined)
+	const { viewportId } = options
+  return clientPointToPage(overlay, { x: clientX, y: clientY }, viewportId as TLViewportId | undefined)
 }
 
 export function describeElement(el: Element | null) {
