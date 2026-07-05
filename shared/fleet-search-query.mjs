@@ -48,6 +48,10 @@ export function parseSearchQuery(raw) {
     filters.filterExpression = expression
   }
 
+  if (filterParts.length === 0 && queryParts.length === 1 && isNaturalAgentCandidate(queryParts[0])) {
+    filters.naturalAgentQuery = queryParts[0]
+  }
+
   const selector = filters.agent ?? filters.from ?? filters.to
   if (selector && !isExplicitFleetId(selector)) {
     filters.agentResolve = parseAgentSelector(selector, filters.from ? 'from' : filters.to ? 'to' : 'any')
@@ -77,6 +81,7 @@ export function buildFleetSearchFilters(filters) {
     agent: explicitId,
     agentQuery: !filters.filterExpression ? agentResolve?.fragment : undefined,
     agentResolve,
+    naturalAgentQuery: filters.naturalAgentQuery,
     fromOnly: !filters.agent && !!filters.from && !filters.filterExpression,
     role: filters.role,
     since: (filters.since || filters.after) ? (resolveTimeFilter(filters.since || filters.after || '') || undefined) : undefined,
@@ -150,6 +155,10 @@ function normalizeSearchFilterToken(token) {
 
 function isExplicitFleetId(value) {
   return value.startsWith('fleet:')
+}
+
+function isNaturalAgentCandidate(value) {
+  return /^[A-Za-z0-9][A-Za-z0-9_.:-]*$/.test(String(value || ''))
 }
 
 function scoreResult(result, query, terms) {

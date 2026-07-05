@@ -42,6 +42,13 @@ test('parses open-ended, bounded, and top-N reflog ranges', () => {
     match: 'substring',
     range: { from: null, to: 3 },
   })
+  assert.deepEqual(parseAgentSelector('chief~..3'), {
+    fragment: 'chief',
+    scope: 'any',
+    expansion: 'stack',
+    match: 'substring',
+    range: { from: null, to: 3 },
+  })
 })
 
 test('parses colon all-but-current range and phase together', () => {
@@ -69,6 +76,35 @@ test('search query lowers legacy agent syntax to unified message expression', ()
     role: 'assistant',
     before: '2026-07-03T00:00:00.000Z',
     filterExpression: 'involving:chief~1..3',
+  })
+})
+
+test('bare single-token search also asks the server to resolve an involved agent', () => {
+  const parsed = parseSearchQuery('msg-threading')
+  assert.equal(parsed.query, 'msg-threading')
+  assert.deepEqual(buildFleetSearchFilters(parsed.filters), {
+    naturalAgentQuery: 'msg-threading',
+  })
+})
+
+test('multi-token content search does not become an implicit agent filter', () => {
+  const parsed = parseSearchQuery('message threading')
+  assert.equal(parsed.query, 'message threading')
+  assert.deepEqual(buildFleetSearchFilters(parsed.filters), {})
+})
+
+test('search query preserves tilde top-N ranges in message filters', () => {
+  const parsed = parseSearchQuery('from:chief~..3')
+  assert.equal(parsed.query, '')
+  assert.deepEqual(buildFleetSearchFilters(parsed.filters), {
+    agentResolve: {
+      fragment: 'chief',
+      scope: 'from',
+      expansion: 'stack',
+      match: 'substring',
+      range: { from: null, to: 3 },
+    },
+    filterExpression: 'from:chief~..3',
   })
 })
 
@@ -109,6 +145,8 @@ test('server consumes unified selector phase and range metadata', () => {
 
     assert.deepEqual(store.resolveAgentSelector({ fragment: 'chief', phase: 'day' }), ['fleet:day'])
     assert.deepEqual(store.resolveAgentSelector({ fragment: 'chief', range: { from: null, to: 2 } }).length, 2)
+    assert.deepEqual(store.resolveAgentSelector(parseAgentSelector('chief~..2')).length, 2)
+    assert.deepEqual(store.resolveAgentSelector(parseAgentSelector('chief~2..3')).length, 2)
     assert.deepEqual(store.resolveAgentSelector({ fragment: 'chief', position: 2 }).length, 1)
   } finally {
     store.close()

@@ -3717,6 +3717,26 @@ async function handleFleetWsMessage(ws, msg) {
         eventOnly: msg.eventOnly,
         fromOnly: msg.fromOnly,
       })
+      if (hasText && msg.naturalAgentQuery && !searchAgent && !msg.filterExpression) {
+        const ids = fleetStore.resolveAgentQuery(msg.naturalAgentQuery)
+        if (ids.length) {
+          const agentResults = fleetStore.searchAll('', {
+            limit: msg.limit, agent: ids, role: msg.role, since: msg.since, before: msg.before,
+            agentOnly: true,
+            historyOnly: msg.historyOnly,
+            eventOnly: msg.eventOnly,
+          })
+          const seen = new Set(results.map(r => `${r.source}:${r.id}`))
+          for (const row of agentResults) {
+            const key = `${row.source}:${row.id}`
+            if (!seen.has(key)) {
+              seen.add(key)
+              results.push(row)
+            }
+          }
+          results = results.sort((a, b) => (b.timestamp ?? '').localeCompare(a.timestamp ?? '')).slice(0, msg.limit || 50)
+        }
+      }
       if (msg.eventType) results = results.filter(r => r.type === msg.eventType || r.role === msg.eventType)
       if (messageFilter) results = results.filter(r => matchesMessageNode(messageFilter, r))
       results = stampNames(results)
