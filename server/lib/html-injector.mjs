@@ -518,6 +518,31 @@ const BRIDGE_SCRIPT = `
     }
   }
 
+  function reportMermaidDiagrams() {
+    var placeholders = document.querySelectorAll('.tlda-mermaid-placeholder[data-tlda-mermaid-id]');
+    if (placeholders.length === 0 || window.parent === window) return;
+    var diagrams = [];
+    placeholders.forEach(function(el) {
+      var rect = el.getBoundingClientRect();
+      if (rect.height < 10) return;
+      var sourceEl = el.querySelector('template[data-tlda-mermaid-source]');
+      var source = sourceEl ? ((sourceEl.content && sourceEl.content.textContent) || sourceEl.textContent || '') : '';
+      if (!source.trim()) return;
+      diagrams.push({
+        id: el.getAttribute('data-tlda-mermaid-id'),
+        source: source,
+        offsetX: getOffsetX(el),
+        offsetY: getOffsetY(el),
+        w: rect.width,
+        h: rect.height,
+        docWidth: Math.max(document.body.scrollWidth, document.documentElement.scrollWidth, 800),
+      });
+    });
+    if (diagrams.length > 0) {
+      window.parent.postMessage({ type: 'tlda-mermaid-diagrams', shapeId: shapeId, diagrams: diagrams }, '*');
+    }
+  }
+
   // Report scrollytelling region metadata to parent for overlay rendering.
   // The overlay shows the figure in a floating panel; step text stays inline.
   // Note: image-toggle.js (Quarto extension) restructures the DOM before this
@@ -681,6 +706,9 @@ const BRIDGE_SCRIPT = `
       setTimeout(reportFigures, 500);
       setTimeout(reportFigures, 2000);
       setTimeout(reportFigures, 5000);
+      setTimeout(reportMermaidDiagrams, 500);
+      setTimeout(reportMermaidDiagrams, 2000);
+      setTimeout(reportMermaidDiagrams, 5000);
     });
   } else {
     stripNav();
@@ -693,6 +721,8 @@ const BRIDGE_SCRIPT = `
     setTimeout(reportScrollyRegions, 2500);
     setTimeout(reportFigures, 500);
     setTimeout(reportFigures, 2000);
+    setTimeout(reportMermaidDiagrams, 500);
+    setTimeout(reportMermaidDiagrams, 2000);
   }
 
   // Observe DOM mutations (webR output, MathJax rendering, etc.)
@@ -708,6 +738,7 @@ const BRIDGE_SCRIPT = `
         reportHeadings();
         reportScrollyRegions();
         if (!figuresReported) reportFigures();
+        reportMermaidDiagrams();
       }
     }, 300);
   });

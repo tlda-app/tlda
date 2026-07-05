@@ -9,7 +9,7 @@ import {
   stopEventPropagation,
   Box,
 } from 'tldraw'
-import type { Editor, TLPageId, TLShapeId } from 'tldraw'
+import type { Editor, TLPageId, TLShape, TLShapeId } from 'tldraw'
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { appendToken } from '../authToken'
 import { useIsInViewport } from './useIsInViewport'
@@ -112,6 +112,154 @@ function isFleetDocviewShapeRecord(value: unknown): value is FleetDocviewShapeRe
   )
 }
 
+type MermaidDiagramPayload = {
+  id: string
+  source: string
+  offsetX: number
+  offsetY: number
+  w?: number
+  h?: number
+  docWidth?: number
+}
+
+const MERMAID_RENDER_VERSION = 3
+const mermaidRenderInFlight = new Set<string>()
+
+type MermaidShapeMeta = {
+  tldaMermaid?: {
+    htmlShapeId?: TLShapeId
+    diagramId?: string
+    fingerprint?: string
+    renderVersion?: number
+  }
+}
+
+function hashMermaidSource(source: string) {
+  let hash = 5381
+  for (let i = 0; i < source.length; i++) hash = ((hash << 5) + hash) ^ source.charCodeAt(i)
+  return (hash >>> 0).toString(36)
+}
+
+function isShapeRecord(record: unknown): record is TLShape {
+  return (
+    !!record &&
+    typeof record === 'object' &&
+    (record as { typeName?: unknown }).typeName === 'shape' &&
+    typeof (record as { id?: unknown }).id === 'string'
+  )
+}
+
+function getMermaidMeta(shape: TLShape) {
+  return (shape.meta as MermaidShapeMeta).tldaMermaid
+}
+
+function getGeneratedMermaidShapes(editor: Editor, htmlShapeId: TLShapeId) {
+  return Object.values(editor.store.allRecords())
+    .filter((record): record is TLShape => isShapeRecord(record) && getMermaidMeta(record)?.htmlShapeId === htmlShapeId)
+}
+
+function getCreatedMermaidShapes(editor: Editor, created: TLShape[], htmlShape: HtmlPageShapeRecord, diagram: MermaidDiagramPayload) {
+  const scale = htmlShape.props.w / Math.max(1, diagram.docWidth || 800)
+  const left = htmlShape.x + (Number(diagram.offsetX) || 0) * scale
+  const top = htmlShape.y + (Number(diagram.offsetY) || 0) * scale
+  const right = htmlShape.x + htmlShape.props.w
+  const bottom = top + Math.max(1200, (Number(diagram.h) || 0) * scale + 1200)
+
+  return created.filter(record => {
+    const bounds = editor.getShapePageBounds(record.id)
+    if (!bounds) return false
+    return (
+      bounds.maxX >= left - 24 &&
+      bounds.minX <= right + 1200 &&
+      bounds.maxY >= top - 24 &&
+      bounds.minY <= bottom
+    )
+  })
+}
+
+async function syncMermaidDiagrams(
+  editor: Editor,
+  htmlShape: HtmlPageShapeRecord,
+  diagrams: MermaidDiagramPayload[],
+) {
+  if (htmlShape.parentId && htmlShape.parentId !== editor.getCurrentPageId()) return
+
+  const currentIds = new Set(diagrams.map(d => d.id))
+  const generated = getGeneratedMermaidShapes(editor, htmlShape.id)
+  const stale = generated.filter(s => !currentIds.has(String(getMermaidMeta(s)?.diagramId || '')))
+  if (stale.length > 0) editor.deleteShapes(stale.map(s => s.id))
+
+  const { createMermaidDiagram } = await import('@tldraw/mermaid')
+
+  for (const diagram of diagrams) {
+    const source = String(diagram.source || '').trim()
+    if (!diagram.id || !source) continue
+    const fingerprint = hashMermaidSource(source)
+    const renderKey = `${htmlShape.id}:${diagram.id}:${fingerprint}`
+    const existing = getGeneratedMermaidShapes(editor, htmlShape.id)
+      .filter(s => getMermaidMeta(s)?.diagramId === diagram.id)
+    if (existing.length > 0 && existing.every(s =>
+      getMermaidMeta(s)?.fingerprint === fingerprint &&
+      getMermaidMeta(s)?.renderVersion === MERMAID_RENDER_VERSION
+    )) {
+      continue
+    }
+    if (mermaidRenderInFlight.has(renderKey)) continue
+    mermaidRenderInFlight.add(renderKey)
+    if (existing.length > 0) editor.deleteShapes(existing.map(s => s.id))
+
+    try {
+      const beforeIds = new Set(
+        Object.values(editor.store.allRecords())
+          .filter(isShapeRecord)
+          .map(record => record.id)
+      )
+      const scale = htmlShape.props.w / Math.max(1, diagram.docWidth || 800)
+      const position = {
+        x: htmlShape.x + (Number(diagram.offsetX) || 0) * scale,
+        y: htmlShape.y + (Number(diagram.offsetY) || 0) * scale,
+      }
+
+      await createMermaidDiagram(editor, source, {
+        mermaidConfig: {
+          flowchart: { nodeSpacing: 32, rankSpacing: 36, padding: 8 },
+          state: { nodeSpacing: 32, rankSpacing: 36, padding: 8 },
+          mindmap: { padding: 8 },
+          sequence: { actorMargin: 28, noteMargin: 12 },
+          themeVariables: { fontSize: '8px' },
+        },
+        blueprintRender: { position, centerOnPosition: false },
+      })
+      const created = Object.values(editor.store.allRecords())
+        .filter((record): record is TLShape => isShapeRecord(record) && !beforeIds.has(record.id))
+      const mermaidShapes = getCreatedMermaidShapes(editor, created, htmlShape, diagram)
+      if (mermaidShapes.length === 0) {
+        console.warn('[html-page] Mermaid diagram produced no in-page TLDraw shapes', diagram.id)
+        continue
+      }
+      for (const createdShape of mermaidShapes) {
+        editor.updateShape({
+          id: createdShape.id,
+          type: createdShape.type,
+          meta: {
+            ...createdShape.meta,
+            tldaMermaid: {
+              htmlShapeId: htmlShape.id,
+              diagramId: diagram.id,
+              fingerprint,
+              renderVersion: MERMAID_RENDER_VERSION,
+            },
+          },
+        })
+      }
+    } catch (error) {
+      console.warn('[html-page] Mermaid diagram render failed', error)
+      continue
+    } finally {
+      mermaidRenderInFlight.delete(renderKey)
+    }
+  }
+}
 
 export class HtmlPageShapeUtil extends BaseBoxShapeUtil<any> {
   static override type = 'html-page' as const
@@ -568,6 +716,13 @@ function HtmlPageComponent({ shape }: { shape: any }) {
             editor.createShapes(toCreate)
           }
         })
+        return
+      }
+      if (e.data?.type === 'tlda-mermaid-diagrams' && e.data.shapeId === shape.id) {
+        const current = editor.store.get(shape.id)
+        if (!isHtmlPageShapeRecord(current)) return
+        const diagrams = Array.isArray(e.data.diagrams) ? e.data.diagrams : []
+        void syncMermaidDiagrams(editor, current, diagrams)
         return
       }
       if (e.data?.type === 'tlda-element-position' && e.data.shapeId === shape.id) {

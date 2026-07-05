@@ -42,6 +42,7 @@
     "@tanstack/react-virtual": "^3.13.23",
     "@tldraw/driver": "file:./tldraw-fork/packages/driver",
     "@tldraw/editor": "file:./tldraw-fork/packages/editor",
+    "@tldraw/mermaid": "^5.1.1",
     "@tldraw/state": "file:./tldraw-fork/packages/state",
     "@tldraw/state-react": "file:./tldraw-fork/packages/state-react",
     "@tldraw/store": "file:./tldraw-fork/packages/store",

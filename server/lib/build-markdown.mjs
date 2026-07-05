@@ -191,6 +191,10 @@ function escAttr(s) {
   return String(s ?? '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')
 }
 
+function escHtml(s) {
+  return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
 function splitHtmlParts(html) {
   const tagRe = /<[^>]+>/g
   const parts = []
@@ -332,6 +336,18 @@ export async function buildMarkdownDocument(name, addLog = console.log) {
     .use(mathPlugin)
     .use(markdownItAnchor, { slugify })
 
+  let mermaidIndex = 0
+  const defaultFence = md.renderer.rules.fence || ((tokens, idx, options, env, self) => self.renderToken(tokens, idx, options))
+  md.renderer.rules.fence = (tokens, idx, options, env, self) => {
+    const token = tokens[idx]
+    const info = token.info ? token.info.trim().split(/\s+/)[0].toLowerCase() : ''
+    if (info !== 'mermaid') return defaultFence(tokens, idx, options, env, self)
+    const id = `mermaid-${mermaidIndex++}`
+    const lineCount = token.content.split(/\r?\n/).filter(Boolean).length
+    const minHeight = Math.min(1200, Math.max(360, lineCount * 28))
+    return `<div class="tlda-mermaid-placeholder" data-tlda-mermaid-id="${id}" style="min-height:${minHeight}px"><template data-tlda-mermaid-source>${escHtml(token.content)}</template></div>\n`
+  }
+
   // Add line-number anchors to block elements for scroll_to_line support
   function lineAnchorPlugin(md) {
     const defaultOpen = (type) => {
@@ -431,6 +447,10 @@ export async function buildMarkdownDocument(name, addLog = console.log) {
     .doc-link:hover { opacity: 0.72; }
     .katex-display { overflow-x: auto; overflow-y: hidden; }
     .math-error { color: red; font-family: monospace; }
+    .tlda-mermaid-placeholder {
+      margin: 1.4em 0;
+      width: 100%;
+    }
   </style>
 </head>
 <body>
