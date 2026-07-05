@@ -51,6 +51,11 @@ export function daemonSingletonLockPath({ configDir, origin }) {
   return path.join(configDir, `fleet-daemon.${digest}.lock`)
 }
 
+export function sessionReaderLockPath({ configDir }) {
+  if (!configDir) throw new Error('session reader lock requires configDir')
+  return path.join(configDir, 'session-reader.lock')
+}
+
 export function normalizeLockOrigin(origin) {
   const raw = String(origin || '').trim()
   if (!raw) throw new Error('daemon singleton lock requires a non-empty origin')
