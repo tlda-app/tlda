@@ -100,6 +100,7 @@ const BLOCKED_VERBS = new Set([
 
 // Image extensions a screenshot filename is allowed to have.
 const IMG_EXT = /\.(png|jpg|jpeg|webp)$/i
+const CONSOLE_LEVELS = new Set(['info', 'warning', 'error'])
 
 function who() {
   return (
@@ -553,16 +554,61 @@ function rewriteGoto(rest) {
 // relative path against the AGENT's cwd — playwright-cli now runs with cwd pinned
 // to the canonical workspace (PW_CWD), so a bare `foo.png` would otherwise be
 // written into the main checkout instead of where the agent expects it.
-function rewriteScreenshot(rest) {
+function resolveArtifactFilename(rest, { image = false } = {}) {
   const out = [...rest]
   const i = out.findIndex(a => a === '--filename' || a === '-f')
+  let resolved = null
   if (i !== -1 && out[i + 1]) {
     let f = out[i + 1]
-    if (!IMG_EXT.test(f)) f = f.replace(/\.[^./]*$/, '') + '.png'
+    if (image && !IMG_EXT.test(f)) f = f.replace(/\.[^./]*$/, '') + '.png'
     if (!isAbsolute(f)) f = resolve(AGENT_CWD, f)
     out[i + 1] = f
+    resolved = f
   }
-  return out
+  return { args: out, resolved }
+}
+
+function rewriteScreenshot(rest) {
+  return resolveArtifactFilename(rest, { image: true })
+}
+
+function rewriteSnapshot(rest) {
+  return resolveArtifactFilename(rest)
+}
+
+function parseConsoleArgs(rest) {
+  let level = null
+  let clear = false
+  let lines = null
+  const pass = []
+  for (let i = 0; i < rest.length; i++) {
+    const a = rest[i]
+    if (a === '--clear') {
+      clear = true
+      continue
+    }
+    if (a === '--lines') {
+      const n = Number(rest[i + 1])
+      if (!Number.isInteger(n) || n < 1) return { error: 'console --lines requires a positive integer' }
+      lines = n
+      i++
+      continue
+    }
+    if (a.startsWith('--lines=')) {
+      const n = Number(a.slice('--lines='.length))
+      if (!Number.isInteger(n) || n < 1) return { error: 'console --lines requires a positive integer' }
+      lines = n
+      continue
+    }
+    if (!level && CONSOLE_LEVELS.has(a)) {
+      level = a
+      pass.push(a)
+      continue
+    }
+    return { error: `unexpected console argument: ${a}` }
+  }
+  if (clear) pass.push('--clear')
+  return { pass, lines }
 }
 
 // Wait until the TLDraw editor has mounted, so a screenshot can't come back
@@ -579,6 +625,23 @@ function waitForRender(maxMs = 8000) {
 
 function forward(verb, rest) {
   return pw([verb, ...rest], { stdio: 'inherit' }).status ?? 0
+}
+
+function forwardConsole(rest) {
+  const parsed = parseConsoleArgs(rest)
+  if (parsed.error) {
+    console.error(`${parsed.error}\nUsage: tlda-dev pw console [info|warning|error] [--clear] [--lines N]`)
+    return 2
+  }
+  if (!parsed.lines) return forward('console', parsed.pass)
+  const r = pw(['console', ...parsed.pass], { encoding: 'utf8' })
+  const out = r.stdout || ''
+  const err = r.stderr || ''
+  if (err) process.stderr.write(err)
+  const lines = out.trimEnd().split('\n')
+  process.stdout.write(lines.slice(-parsed.lines).join('\n'))
+  if (lines.length) process.stdout.write('\n')
+  return r.status ?? 0
 }
 
 // Camera-centering snippets, run as eval on the agent's tab.
@@ -605,6 +668,7 @@ export async function cmdPw(args, repoRoot) {
         '  tlda-dev pw status            session state + my tab + URL',
         '  tlda-dev pw reap              close the whole shared browser',
         '  tlda-dev pw center <region>   center camera on: doc | chat | fleet',
+        '  tlda-dev pw console [level]   print console messages; supports --lines N',
         '  tlda-dev pw <verb> [args]     forward a playwright-cli verb to MY tab',
         '                            (goto, click, snapshot, screenshot, eval, …)',
         '',
@@ -646,6 +710,14 @@ export async function cmdPw(args, repoRoot) {
 
   if (!['status', 'reap', 'help', '--help', 'lock', 'unlock'].includes(verb)) {
     enforceCanonicalSession()
+  }
+
+  if (verb === 'console') {
+    const parsed = parseConsoleArgs(rest)
+    if (parsed.error) {
+      console.error(`${parsed.error}\nUsage: tlda-dev pw console [info|warning|error] [--clear] [--lines N]`)
+      process.exit(2)
+    }
   }
 
   if (verb === 'status') {
@@ -757,7 +829,15 @@ export async function cmdPw(args, repoRoot) {
       code = forward('goto', rewriteGoto(rest))
     } else if (verb === 'screenshot') {
       waitForRender()
-      code = forward('screenshot', rewriteScreenshot(rest))
+      const rewritten = rewriteScreenshot(rest)
+      if (rewritten.resolved) console.error(`pw: artifact filename resolved to ${rewritten.resolved}`)
+      code = forward('screenshot', rewritten.args)
+    } else if (verb === 'snapshot') {
+      const rewritten = rewriteSnapshot(rest)
+      if (rewritten.resolved) console.error(`pw: artifact filename resolved to ${rewritten.resolved}`)
+      code = forward('snapshot', rewritten.args)
+    } else if (verb === 'console') {
+      code = forwardConsole(rest)
     } else {
       code = forward(verb, rest)
     }

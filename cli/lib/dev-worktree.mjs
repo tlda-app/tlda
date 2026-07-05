@@ -31,7 +31,7 @@
  */
 
 import { spawn, spawnSync, execFileSync } from 'child_process'
-import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, openSync, cpSync, rmSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, openSync, cpSync, rmSync, readdirSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 import { X509Certificate } from 'crypto'
@@ -42,6 +42,22 @@ import { findTailscaleIPv4 } from './share-url.mjs'
 
 const BASE_DIR = join(homedir(), '.config', 'tlda', 'dev-worktree')
 const TLS_CERT = join(CONFIG_DIR, 'localhost+2.pem')
+const PREVIEW_PORT_MIN = 5190
+const PREVIEW_PORT_MAX = 5299
+
+const SERVE_HELP = `tlda-dev serve — run THIS worktree as an isolated preview
+
+Usage:
+  tlda-dev serve [start] [--sandbox] [--doc NAME] [--port N] [--no-build]
+  tlda-dev serve stop [--json]
+  tlda-dev serve status [--all] [--json]
+  tlda-dev serve url [--doc NAME]
+  tlda-dev serve reap-orphans [--json]
+
+Notes:
+  tlda-dev serve is worktree-relative. It serves the branch checked out in the
+  current working tree; it does not accept a positional branch name.
+`
 
 // ---- worktree identity (everything is relative to cwd, not a positional) ----
 
@@ -106,6 +122,73 @@ function readManifest(branch) {
   const f = manifestFile(branch)
   if (!existsSync(f)) return null
   try { return JSON.parse(readFileSync(f, 'utf8')) } catch { return null }
+}
+
+function readRawPidFile(branch) {
+  const f = pidFile(branch)
+  if (!existsSync(f)) return null
+  const pid = parseInt(readFileSync(f, 'utf8').trim(), 10)
+  return Number.isInteger(pid) ? pid : null
+}
+
+function listPreviewStates() {
+  if (!existsSync(BASE_DIR)) return []
+  const dirs = readdirSync(BASE_DIR, { withFileTypes: true }).filter(d => d.isDirectory())
+  return dirs.map(d => {
+    const branch = d.name
+    const m = readManifest(branch)
+    const rawPid = readRawPidFile(branch)
+    const pid = rawPid && alive(rawPid) ? rawPid : null
+    return {
+      key: branch,
+      branch: m?.branch || branch,
+      worktreeDir: m?.worktreeDir || null,
+      base: m?.base || null,
+      doc: m?.doc || null,
+      port: m?.port || null,
+      pid,
+      rawPid,
+      manifest: !!m,
+      log: logFile(branch),
+    }
+  })
+}
+
+function parseListenPort(name) {
+  const m = String(name || '').match(/:(\d+)(?:\s|\b).*LISTEN/)
+  if (!m) return null
+  const port = Number(m[1])
+  return Number.isInteger(port) ? port : null
+}
+
+function previewListeners() {
+  const out = spawnSync('lsof', ['-nP', '-iTCP', '-sTCP:LISTEN'], { encoding: 'utf8' }).stdout || ''
+  const listeners = []
+  const lines = out.split('\n').slice(1)
+  for (const line of lines) {
+    const parts = line.trim().split(/\s+/)
+    if (parts.length < 9) continue
+    const pid = Number(parts[1])
+    const port = parseListenPort(parts.slice(8).join(' '))
+    if (!Number.isInteger(pid) || !port) continue
+    if (port < PREVIEW_PORT_MIN || port > PREVIEW_PORT_MAX) continue
+    listeners.push({ command: parts[0], pid, port, name: parts.slice(8).join(' ') })
+  }
+  return listeners
+}
+
+function orphanPreviewListeners(states = listPreviewStates()) {
+  const knownPorts = new Set(states.filter(s => s.pid && s.port).map(s => Number(s.port)))
+  const knownPids = new Set(states.filter(s => s.pid).map(s => Number(s.pid)))
+  return previewListeners().filter(l => !knownPorts.has(l.port) && !knownPids.has(l.pid))
+}
+
+function printOrphanHint(orphans) {
+  if (!orphans.length) return
+  console.error(`possible orphan preview listener(s) on tlda-dev preview ports ${PREVIEW_PORT_MIN}-${PREVIEW_PORT_MAX}:`)
+  for (const o of orphans) console.error(`  pid ${o.pid} ${o.command} listening on :${o.port}`)
+  console.error('  inspect all previews with: tlda-dev serve status --all')
+  console.error('  reap unmatched preview-port listeners with: tlda-dev serve reap-orphans')
 }
 
 // ---- reachable-host resolution (only ever a cert-valid host) ----
@@ -222,13 +305,27 @@ function parseArgs(args) {
 
 export async function cmdServeWorktree(args) {
   const { flags, values, positionals } = parseArgs(args)
-  const verb = ['start', 'stop', 'status', 'url'].includes(positionals[0]) ? positionals[0] : 'start'
+  if (flags.has('help') || flags.has('h') || positionals[0] === 'help' || positionals[0] === '--help' || positionals[0] === '-h') {
+    console.log(SERVE_HELP)
+    return
+  }
+
+  const subcommands = new Set(['start', 'stop', 'status', 'url', 'reap-orphans'])
+  const verb = subcommands.has(positionals[0]) ? positionals[0] : 'start'
+  const unexpected = subcommands.has(positionals[0]) ? positionals.slice(1) : positionals
+  if (unexpected.length) {
+    console.error(`Unexpected positional argument: ${unexpected[0]}`)
+    console.error('tlda-dev serve is worktree-relative. Run it from the worktree you want to serve, or create/switch to that worktree first.')
+    process.exit(2)
+  }
+
   const json = flags.has('json')
   const branch = worktreeBranch()
   const worktreeDir = worktreeRoot()
 
   if (verb === 'stop') return stopPreview(branch, json)
-  if (verb === 'status') return statusPreview(branch, json)
+  if (verb === 'status') return statusPreview(branch, json, flags)
+  if (verb === 'reap-orphans') return reapOrphanPreviews(json)
   if (verb === 'url') {
     const m = readManifest(branch)
     if (m && readPid(branch)) { console.log(viewerUrl(m.base, values.get('doc') || m.doc)); return }
@@ -254,6 +351,9 @@ export async function cmdServeWorktree(args) {
   const port = values.has('port') ? parseInt(values.get('port'), 10) : await findFreePort(5190)
   const base = `${reach.scheme}://${reach.host}:${port}`
   const doc = values.get('doc') || null
+
+  console.log(`Serving worktree: ${worktreeDir}`)
+  console.log(`Branch: ${branch}`)
 
   mkdirSync(stateDir(branch), { recursive: true })
   mkdirSync(projectsDir(branch), { recursive: true })
@@ -402,6 +502,7 @@ export async function cmdShareWorktree(args) {
 
 function stopPreview(branch, json) {
   const pid = readPid(branch)
+  const hadManifest = !!readManifest(branch)
   if (pid) { try { process.kill(pid) } catch { /* gone */ } }
   // Tear down the sandbox daemon too, if --sandbox started one.
   if (existsSync(daemonPidFile(branch))) {
@@ -413,10 +514,16 @@ function stopPreview(branch, json) {
   // Drop the isolated projects + fleet DB so a stopped preview leaves nothing behind.
   try { rmSync(stateDir(branch), { recursive: true, force: true }) } catch { /* best effort */ }
   if (json) console.log(JSON.stringify({ status: 'down', stopped: !!pid, branch }))
-  else console.log(pid ? `preview stopped (${branch}, pid ${pid})` : `no preview running for ${branch}`)
+  else {
+    console.log(pid ? `preview stopped (${branch}, pid ${pid})` : `no preview running for ${branch}`)
+    if (!pid && !hadManifest) printOrphanHint(orphanPreviewListeners())
+  }
 }
 
-async function statusPreview(branch, json) {
+async function statusPreview(branch, json, flags = new Set()) {
+  if (flags.has('all')) {
+    return statusAllPreviews(json)
+  }
   const pid = readPid(branch)
   const m = readManifest(branch)
   const up = pid && m ? await health(m.base) : false
@@ -430,5 +537,51 @@ async function statusPreview(branch, json) {
     console.log(`preview: pid ${pid} alive but not answering — see ${logFile(branch)}`)
   } else {
     console.log(`preview: down (${branch})`)
+  }
+}
+
+async function statusAllPreviews(json) {
+  const states = listPreviewStates()
+  const orphans = orphanPreviewListeners(states)
+  if (json) {
+    console.log(JSON.stringify({ previews: states, orphanListeners: orphans }, null, 2))
+    return
+  }
+  if (!states.length) {
+    console.log('previews: none recorded')
+  } else {
+    console.log('previews:')
+    for (const s of states) {
+      const status = s.pid ? 'pid-alive' : s.rawPid ? 'pid-dead' : 'no-pid'
+      const url = s.base ? ` ${viewerUrl(s.base, s.doc)}` : ''
+      console.log(`  ${s.branch}: ${status}${url}`)
+      if (s.worktreeDir) console.log(`    worktree: ${s.worktreeDir}`)
+      console.log(`    log: ${s.log}`)
+    }
+  }
+  if (orphans.length) printOrphanHint(orphans)
+}
+
+function reapOrphanPreviews(json) {
+  const orphans = orphanPreviewListeners()
+  const reaped = []
+  for (const o of orphans) {
+    if (!/^node/i.test(o.command)) continue
+    try {
+      process.kill(o.pid)
+      reaped.push(o)
+    } catch { /* already gone */ }
+  }
+  if (json) {
+    console.log(JSON.stringify({ reaped, skipped: orphans.filter(o => !reaped.includes(o)) }, null, 2))
+    return
+  }
+  if (!orphans.length) {
+    console.log('no orphan preview listeners found')
+    return
+  }
+  for (const o of reaped) console.log(`reaped orphan preview listener pid ${o.pid} on :${o.port}`)
+  for (const o of orphans.filter(o => !reaped.includes(o))) {
+    console.log(`left listener pid ${o.pid} ${o.command} on :${o.port} (not a node preview process)`)
   }
 }
