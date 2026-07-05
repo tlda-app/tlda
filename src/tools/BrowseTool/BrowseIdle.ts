@@ -228,6 +228,10 @@ export class BrowseIdle extends StateNode {
       const container = this.editor.getContainer()
       const pagePoint = this.editor.screenToPage({ x: e.clientX, y: e.clientY })
       for (const id of selected) {
+        // WM/HUD viewports can render another DOM copy of the same selected
+        // shape outside the editor's primary container. If the event path is
+        // inside that copy, it is still an inside-selected-shape click.
+        if (target.closest(`[data-shape-id="${id}"]`)) return
         const el = container.querySelector(`[data-shape-id="${id}"]`)
         if (el?.contains(target)) return
         // When a fleet shape has pointer-events:none (drag mode), the click
