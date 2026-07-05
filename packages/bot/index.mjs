@@ -1,47 +1,115 @@
 // @tlda/bot — the lifecycle harness for a tlda-compatible bot.
 //
 // A standing bot (todd, teacher) is a long-lived fleet participant: it holds a
-// single fleet id, registers, keeps a WebSocket alive with reconnect/backoff,
-// owns a pidfile (so the supervisor can keep exactly one alive), and dispatches
-// chat messages addressed to it. todd and teacher hand-rolled all of this
-// identically; this factors it into one surface:
+// persisted fleet id, requests a canonical friendly name from the allocator,
+// keeps a WebSocket alive with reconnect/backoff, owns a pidfile, and dispatches
+// chat messages addressed to it only when the allocator assigned that canonical
+// name. todd and teacher hand-rolled most of this identically; this factors it
+// into one surface:
 //
 //   import { runBot } from '@tlda/bot'
-//   const bot = runBot({ name: 'teacher', human: true, labels: ['bot','teacher'] })
+//   const bot = runBot({ name: 'teacher', labels: ['bot','teacher'] })
 //   bot.onCommand(({ text, from, reply }) => {
 //     if (text === 'ping') reply('pong')
 //   })
 //
-// Identity is config-driven exactly like the shipped example: TLDA_BOT_NAME and
-// TLDA_BOT_PIDFILE override `name`/pidfile, so the supervisor can run the same
-// script under any name. `name` is the fallback when run by hand.
+// Identity is config-driven: TLDA_BOT_NAME and TLDA_BOT_PIDFILE override
+// `name`/pidfile, TLDA_BOT_IDFILE persists the fleet id, and TLDA_BOT_MACHINE_ID
+// / TLDA_BOT_TMUX_SESSION wire it into normal fleet lifecycle machinery.
 
 import WebSocket from 'ws';
-import { writeFileSync, readFileSync, existsSync, unlinkSync } from 'node:fs';
-import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { writeFileSync, readFileSync, existsSync, unlinkSync, mkdirSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import { getServerUrl } from '../../shared/config.mjs';
 
+function loadOrCreateFleetId(file) {
+  try {
+    const existing = readFileSync(file, 'utf8').trim();
+    if (/^fleet:[a-zA-Z0-9_-]+$/.test(existing)) return existing;
+    throw new Error(`invalid bot fleet id "${existing}"`);
+  } catch (e) {
+    if (e?.code !== 'ENOENT') throw e;
+  }
+  const id = `fleet:${randomUUID().slice(0, 8)}`;
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, id);
+  return id;
+}
+
+async function confirmRegisteredFromRoster(server, id, timeoutMs = 10_000) {
+  const res = await fetch(`${server}/api/store/agents`, {
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!res.ok) throw new Error(`roster check failed: HTTP ${res.status}`);
+  const data = await res.json();
+  const agents = Array.isArray(data) ? data : (data?.agents || []);
+  return agents.find(a => a?.id === id && !a?.dead) || null;
+}
+
 export function createBot({ name = 'bot', pretty_name = null, labels = ['bot'], human = false, allow = null, server } = {}) {
   const key = (process.env.TLDA_BOT_NAME || name).toLowerCase();
-  const id = 'fleet:' + key;
   const SERVER = server || process.env.TLDA_SERVER || getServerUrl();
   const WS_URL = SERVER.replace(/^http/, 'ws') + '/ws/fleet';
   const PID_FILE = process.env.TLDA_BOT_PIDFILE || join(homedir(), '.config', 'tlda', `${key}.pid`);
+  const ID_FILE = process.env.TLDA_BOT_IDFILE || join(dirname(PID_FILE), `${key}.fleet-id`);
+  const MACHINE_ID = process.env.TLDA_BOT_MACHINE_ID || null;
+  const TMUX_SESSION = process.env.TLDA_BOT_TMUX_SESSION || null;
+  const id = loadOrCreateFleetId(ID_FILE);
   const allowSet = allow ? new Set(allow) : null;
 
   let ws = null, msgId = 1, reconnectTimer = null, reconnectDelay = 500;
+  let assignedName = null;
   const pending = new Map();
   const cbs = { command: [], message: [], open: [], close: [] };
 
   const log = (...a) => console.log(`[${key}]`, ...a);
-  const fire = (ev, data) => { for (const cb of cbs[ev]) { try { cb(data); } catch (e) { log('handler error:', e.message); } } };
+  const fire = (ev, data) => {
+    for (const cb of cbs[ev]) {
+      try {
+        cb(data);
+      } catch (e) {
+        // Callback failure should not break the bot websocket loop.
+        log('handler error:', e.message);
+      }
+    }
+  };
+
+  function updateAssignedNameFromAgent(agent) {
+    if (!agent || agent.id !== id) return;
+    const next = agent.friendly_name || null;
+    if (next !== assignedName) {
+      assignedName = next;
+      log(`assigned_name=${assignedName || '(none)'} canonical=${isCanonical()}`);
+    }
+  }
+
+  function isCanonical() {
+    return assignedName === key;
+  }
 
   function connect() {
     ws = new WebSocket(WS_URL, { rejectUnauthorized: false });
-    ws.on('open', () => { log(`connected to ${WS_URL}`); reconnectDelay = 500; register(); fire('open'); });
+    ws.on('open', async () => {
+      log(`connected to ${WS_URL}`);
+      reconnectDelay = 500;
+      try {
+        const result = await register();
+        fire('open', result);
+      } catch (e) {
+        log(`register failed: ${e.message}`);
+        ws?.close();
+      }
+    });
     ws.on('message', (raw) => {
-      let msg; try { msg = JSON.parse(raw.toString()); } catch { return; }
+      let msg;
+      try {
+        msg = JSON.parse(raw.toString());
+      } catch {
+        // Ignore malformed websocket frames; the next valid frame can still proceed.
+        return;
+      }
       if (msg.id && pending.has(msg.id)) {
         const { resolve, reject, timer } = pending.get(msg.id);
         pending.delete(msg.id); clearTimeout(timer);
@@ -58,8 +126,9 @@ export function createBot({ name = 'bot', pretty_name = null, labels = ['bot'], 
     reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, reconnectDelay);
     reconnectDelay = Math.min(reconnectDelay * 2, 5000);
   }
-  function send(msg) { if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ id: msgId++, ...msg })); }
-  function request(msg, timeoutMs = 10_000) {
+  function sendRaw(msg) { if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ id: msgId++, ...msg })); }
+  function send(msg) { if (isCanonical()) sendRaw(msg); }
+  function requestRaw(msg, timeoutMs = 10_000) {
     return new Promise((resolve, reject) => {
       if (!ws || ws.readyState !== WebSocket.OPEN) return reject(new Error('WS not connected'));
       const rid = msgId++;
@@ -68,8 +137,35 @@ export function createBot({ name = 'bot', pretty_name = null, labels = ['bot'], 
       ws.send(JSON.stringify({ id: rid, ...msg }));
     });
   }
-  function register() {
-    send({ type: 'register', id, name: key, pretty_name, cwd: process.cwd(), labels, human });
+  function request(msg, timeoutMs = 10_000) {
+    if (!isCanonical()) return Promise.reject(new Error(`bot "${key}" is not canonical (assigned ${assignedName || 'none'})`));
+    return requestRaw(msg, timeoutMs);
+  }
+  async function register() {
+    const payload = {
+      type: 'register',
+      agent_id: id,
+      name: key,
+      pretty_name,
+      cwd: process.cwd(),
+      labels,
+      human,
+      machine_id: MACHINE_ID || undefined,
+      tmux_session: TMUX_SESSION || undefined,
+      metadata: { bot: key, pid: process.pid },
+    };
+    let result;
+    try {
+      result = await requestRaw(payload);
+    } catch (e) {
+      const agent = await confirmRegisteredFromRoster(SERVER, id);
+      if (!agent) throw e;
+      log('register reply timed out; confirmed live registration from roster');
+      result = { ok: true, agent };
+    }
+    updateAssignedNameFromAgent(result?.agent);
+    if (!isCanonical()) log(`inert: requested "${key}", assigned "${assignedName || '(none)'}"`);
+    return result;
   }
   function chat(to, message) { send({ type: 'chat', from: id, to, message }); }
 
@@ -87,6 +183,15 @@ export function createBot({ name = 'bot', pretty_name = null, labels = ['bot'], 
   }
 
   function dispatch(msg) {
+    if (msg.agents && !msg.event) {
+      updateAssignedNameFromAgent((msg.agents || []).find(a => a.id === id));
+      return;
+    }
+    if (msg.event === 'agents-delta') {
+      updateAssignedNameFromAgent((msg.data?.changed || []).find(a => a.id === id));
+      return;
+    }
+    if (!isCanonical()) return;
     fire('message', msg);
     // The server wraps chats in a fleet-event envelope: { event, data: { type, from_id, to_id, text } }.
     if (msg.event !== 'fleet-event') return;
@@ -108,7 +213,7 @@ export function createBot({ name = 'bot', pretty_name = null, labels = ['bot'], 
       // through and take over. It only reaches exit() when a live instance owns it.
       try { process.kill(existing, 0); log(`already running (pid ${existing}) — exiting`); process.exit(0); } catch { /* stale pid — take over */ }
     }
-    try { writeFileSync(PID_FILE, String(process.pid)); } catch { /* pidfile is best-effort; running without one only loses the singleton guard */ }
+    writeFileSync(PID_FILE, String(process.pid));
     const cleanup = () => { try { unlinkSync(PID_FILE); } catch { /* already gone */ } };
     process.on('SIGINT', () => { log('shutting down'); cleanup(); ws?.close(); process.exit(0); });
     process.on('exit', cleanup);
@@ -116,10 +221,13 @@ export function createBot({ name = 'bot', pretty_name = null, labels = ['bot'], 
     connect();
     return api;
   }
-  function stop() { try { ws?.close(); } catch {} }
+  function stop() { ws?.close(); }
 
   const api = {
     id, key, name: key, server: SERVER,
+    get assignedName() { return assignedName; },
+    get canonical() { return isCanonical(); },
+    isCanonical,
     start, stop, send, request, chat, addressedText,
     onCommand: (cb) => { cbs.command.push(cb); return api; },
     onMessage: (cb) => { cbs.message.push(cb); return api; },

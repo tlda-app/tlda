@@ -2333,16 +2333,23 @@ function connect() {
   ws = new WebSocket(WS_URL)
 
   ws.on('open', async () => {
-    console.log(`[todd] connected to ${WS_URL}`)
-    reconnectDelay = 500 // back fast next time too
-    await initializeFleetCursor()
-    await register()
-    writeHeartbeat('ws-open')
-    refreshSelfCheckPrefs().catch(e => console.error('[todd] self-check prefs refresh failed:', e.message))
-    refreshSelfCheckRoster().catch(e => console.error('[todd] self-check roster refresh failed:', e.message))
-    if (isCanonicalBot()) {
-      catchUpFleetEvents().catch(e => console.error('[todd] event catch-up failed:', e.message))
-      broadcastPendingStatus()
+    try {
+      console.log(`[todd] connected to ${WS_URL}`)
+      reconnectDelay = 500 // back fast next time too
+      await initializeFleetCursor()
+      await register()
+      writeHeartbeat('ws-open')
+      refreshSelfCheckPrefs().catch(e => console.error('[todd] self-check prefs refresh failed:', e.message))
+      refreshSelfCheckRoster().catch(e => console.error('[todd] self-check roster refresh failed:', e.message))
+      if (isCanonicalBot()) {
+        catchUpFleetEvents().catch(e => console.error('[todd] event catch-up failed:', e.message))
+        broadcastPendingStatus()
+      }
+    } catch (e) {
+      console.error(`[todd] startup after connect failed: ${e.message}`)
+      try { ws?.close() } catch {
+        // Best-effort reconnect trigger; the startup error is already logged.
+      }
     }
   })
 
@@ -2416,7 +2423,7 @@ function handleWsReply(msg) {
 }
 
 async function register() {
-  const result = await sendRequest({
+  const payload = {
     type: 'register',
     agent_id: AGENT_ID,
     name: AGENT_NAME,
@@ -2426,7 +2433,18 @@ async function register() {
     machine_id: MACHINE_ID || undefined,
     tmux_session: TMUX_SESSION || undefined,
     metadata: { bot: BOT_KEY, pid: BOT_PID },
-  })
+  }
+  let result
+  try {
+    result = await sendRequest(payload)
+  } catch (e) {
+    const data = await getJson('/api/store/agents', [])
+    const agents = Array.isArray(data) ? data : (data?.agents || [])
+    const agent = agents.find(a => a?.id === AGENT_ID && !a?.dead)
+    if (!agent) throw e
+    console.warn(`[todd] register reply timed out; confirmed live registration from roster`)
+    result = { ok: true, agent }
+  }
   updateAssignedNameFromAgent(result?.agent)
   if (!isCanonicalBot()) {
     console.log(`[todd] inert: requested "${AGENT_NAME}", assigned "${assignedName || '(none)'}"`)
