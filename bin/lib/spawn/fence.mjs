@@ -253,7 +253,7 @@ export function writeFenceSettings(policy, opts = {}) {
   return file
 }
 
-function formatRunnerArg(arg, policy, cmd) {
+function formatRunnerArg(arg, policy, cmd, extra = {}) {
   const leaseJson = JSON.stringify(stripRunner(policy))
   const vals = {
     workspace: policy.workspace,
@@ -267,6 +267,7 @@ function formatRunnerArg(arg, policy, cmd) {
     write_roots: (policy.write_roots || []).join(path.delimiter),
     lease_json: leaseJson,
     cmd,
+    ...extra,
   }
   return String(arg).replace(/\{(\w+)\}/g, (_m, key) => vals[key] ?? '')
 }
@@ -311,7 +312,8 @@ export function wrapSandboxCmd(cmd, policy, opts = {}) {
   const env = ensureFenceEnv()
   env.TLDA_SANDBOX_PROFILE = policy.policy
   env.TLDA_SANDBOX_POLICY = policy.policy
-  env.TLDA_SANDBOX_LEASE = JSON.stringify(stripRunner(policy))
+  // The lease is passed via the --settings file (`_tldaLease`), NOT an inline
+  // env var — keeps the multi-KB lease JSON off the command line (tmux 16KB cap).
   const xcodeGit = '/Applications/Xcode.app/Contents/Developer/usr/bin/git'
   if (fs.existsSync(xcodeGit)) {
     env.PATH = `/Applications/Xcode.app/Contents/Developer/usr/bin:${process.env.PATH || ''}`
@@ -319,12 +321,12 @@ export function wrapSandboxCmd(cmd, policy, opts = {}) {
   }
   const prefix = Object.entries(env).map(([k, v]) => `${k}=${sq(v)}`).join(' ')
   const innerCmd = `${prefix} ${cmd}`
+  const settingsFile = writeFenceSettings(policy, opts)
   let wrapped
   if (path.basename(command) === 'fence' && !(runner.args || []).length) {
-    const settings = writeFenceSettings(policy, opts)
-    wrapped = [command, '--monitor', '--fence-log-file', fenceLogPath(policy), '--settings', settings, '--', runner.shell || 'zsh', '-lc', innerCmd].map(sq).join(' ')
+    wrapped = [command, '--monitor', '--fence-log-file', fenceLogPath(policy), '--settings', settingsFile, '--', runner.shell || 'zsh', '-lc', innerCmd].map(sq).join(' ')
   } else {
-    const args = (runner.args || []).map((arg) => formatRunnerArg(arg, policy, innerCmd))
+    const args = (runner.args || []).map((arg) => formatRunnerArg(arg, policy, innerCmd, { settings: settingsFile }))
     const hasCmd = (runner.args || []).some((arg) => String(arg).includes('{cmd}'))
     const argv = [command, ...args]
     if (!hasCmd) argv.push('--', runner.shell || 'zsh', '-lc', innerCmd)

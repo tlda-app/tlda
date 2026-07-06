@@ -871,7 +871,14 @@ function storedConferralRung(stored) {
 export function callerSpawnPolicy(caller, { serverOwnerId } = {}) {
   if (isOperator(caller, { serverOwnerId })) return normalizeSpawnPolicy(ROOT_CAPABILITY)
   const stored = caller?.metadata?.spawnPolicy
-  if (stored == null) return normalizeSpawnPolicy(DEFAULT_AGENT_CAPABILITY)
+  // Skip's model: fencing is OPT-IN, the default is full. An agent with no
+  // stored grant confers `full`, NOT `write`/cwd — so agents (and their
+  // sub-spawns) aren't trapped in the working directory. The actual fence is not
+  // a capped capability: it's the project profile (app-dev = machine minus
+  // secrets), whose secret denies survive the grant intersection (verified —
+  // deny is unioned, so a full spawner never re-opens secrets). This is what
+  // makes app-dev the real default instead of the cwd cage.
+  if (stored == null) return normalizeSpawnPolicy(ROOT_CAPABILITY)
   return normalizeSpawnPolicy(storedConferralRung(stored) || 'read')
 }
 
