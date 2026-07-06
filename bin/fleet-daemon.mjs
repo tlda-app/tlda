@@ -3175,13 +3175,28 @@ function rpcTerminalInput({ tmux_session, data }) {
 const _activeSpawns = new Map()
 const STARTUP_FAILURE_PROBE_MS = Number(process.env.TLDA_SPAWN_STARTUP_FAILURE_PROBE_MS || 2500)
 const SPAWN_LAUNCH_TIMEOUT_MS = Number(process.env.TLDA_SPAWN_LAUNCH_TIMEOUT_MS || 20000)
+const SPAWN_CRASH_LOG_DIR = path.join(CONFIG_DIR, 'spawn-crashes')
 const _reportedStartupFailures = new Set()
 
 function traceDaemonSpawn(label, detail) {
   log.info(`[spawn-trace] ${label} ${JSON.stringify({ ts: new Date().toISOString(), machineId: MACHINE_ID, ...detail })}`)
 }
 
-async function probeSpawnStartupFailure({ agentName, agent_id, tmux_session, harness, model, respawn }) {
+function spawnCrashLogPath({ agentName, agent_id, tmux_session }) {
+  const base = String(agent_id || agentName || tmux_session || 'unknown').replace(/[^A-Za-z0-9_.:-]/g, '_')
+  return path.join(SPAWN_CRASH_LOG_DIR, `${base}.log`)
+}
+
+function readFileTail(file, max = 6000) {
+  try {
+    const text = fs.readFileSync(file, 'utf8')
+    return text.slice(-max)
+  } catch {
+    return ''
+  }
+}
+
+async function probeSpawnStartupFailure({ agentName, agent_id, tmux_session, harness, model, respawn, crash_log_path }) {
   if (!agent_id || !tmux_session) return null
   const dedupKey = `${agent_id}:${tmux_session}`
   if (_reportedStartupFailures.has(dedupKey)) return null
@@ -3204,10 +3219,12 @@ async function probeSpawnStartupFailure({ agentName, agent_id, tmux_session, har
       code: failure.code,
       reason: failure.reason,
       snippet: failure.snippet,
+      crash_log_path: crash_log_path || null,
     })
     return failure
   } catch (e) {
-    log.warn(`startup failure probe failed for ${agentName || agent_id}: ${e.message}`)
+    const crashTail = crash_log_path ? readFileTail(crash_log_path) : ''
+    log.warn(`startup failure probe failed for ${agentName || agent_id}: ${e.message}${crash_log_path ? `; crash_log=${crash_log_path}` : ''}${crashTail ? `\n${crashTail}` : ''}`)
     return null
   }
 }
@@ -3321,6 +3338,7 @@ async function rpcSpawn({
     const { spawn: nodeSpawn } = await import('./lib/spawn/index.mjs')
     const spawnMode = sessionId ? 'session' : (refresh ? 'refresh' : (respawn ? 'respawn' : 'fresh'))
     const preallocatedAgentId = agent_id || ((spawnMode === 'fresh' || spawnMode === 'session') ? newFleetId() : undefined)
+    const crashLogPath = spawnCrashLogPath({ agentName, agent_id: preallocatedAgentId || agent_id, tmux_session: null })
     if (preallocatedAgentId) {
       await privilegeLedger.set(preallocatedAgentId, {
         spawnPolicy: grant.grantedPolicy,
@@ -3349,6 +3367,7 @@ async function rpcSpawn({
         acknowledgeNoSecurity: !!acknowledgeNoSecurity,
         machineId: MACHINE_ID,
         tmuxSocket: TMUX_SOCKET,
+        crashLogPath,
         identityConfigDir: CONFIG_DIR,
         codexAdvanceOnceOnMiss: respawn && launchKind === 'codex',
         codexAdvanceOnce: respawn && launchKind === 'codex' ? advanceCodexResumeIndexOnce : undefined,
@@ -3361,6 +3380,7 @@ async function rpcSpawn({
       agentName,
       agent_id: launched.fleetId,
       tmux_session: launched.tmuxSession,
+      crash_log_path: crashLogPath,
       harness: launched.harness,
       model: launched.model,
       spawnPolicy: grant.grantedPolicy || null,
@@ -3401,6 +3421,7 @@ async function rpcSpawn({
       agentName,
       agent_id: launched.fleetId,
       tmux_session: launched.tmuxSession,
+      crash_log_path: crashLogPath,
       harness: launched.harness,
       model: launched.model,
       respawn,
