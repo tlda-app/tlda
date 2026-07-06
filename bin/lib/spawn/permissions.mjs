@@ -379,8 +379,13 @@ export function resolveLaunchPolicy({
     spawnPolicy || requestedCapability || (harness === 'codex' ? 'write' : null),
     null,
   )
-  const fenceEnabled = config?.spawnPolicy?.fenceEnabled === true
-  const useFence = !!requestedPolicy && (!FENCE_TEMPORARILY_DISABLED || explicitPolicy || (!!privilegeSet && fenceEnabled))
+  // Skip, 2026-07-06: fencing is OPT-IN. The rule, verbatim: "if they ask for a
+  // fence, use a fence; if they don't, don't." Nothing else arms it — not the
+  // ledger's stored per-agent privilegeSet + fenceEnabled (which used to defeat
+  // the global off switch and re-cage every agent), not FENCE_TEMPORARILY_DISABLED.
+  // `explicitPolicy` is exactly "the caller explicitly asked for a fenced launch"
+  // (the `policy:` spawn param). Ask → fenced. Don't ask → free.
+  const useFence = !!requestedPolicy && explicitPolicy === true
   const leaseResolution = useFence
     ? resolveLeasePolicy({ spawnPolicy: requestedPolicy, privilegeSet, harness, model, cwd, config })
     : { policyName: requestedPolicy ? 'unsandboxed' : null, devTools: true, leasePolicy: null }
@@ -391,10 +396,14 @@ export function resolveLaunchPolicy({
         ? 'bypassPermissions'
         : (requestedPolicy?.capability ? projectCapabilityToMode(requestedPolicy.capability) : undefined)))
   const harnessOptions = resolveHarnessLaunchOptions({ config, harness, model })
+  // Opting out of the fence is the operator's explicit choice (fencing is
+  // opt-in), so a no-fence launch is never refused for "no security" — that
+  // refusal would just be the cage by another name. Only fenced launches keep
+  // going through the security assertion unchanged.
   const launchSecurity = assertLaunchHasSecurity({
     leasePolicy: leaseResolution.leasePolicy,
     harnessOptions,
-    acknowledgeNoSecurity,
+    acknowledgeNoSecurity: acknowledgeNoSecurity || !useFence,
     harness,
     permissionMode: effectivePermissionMode,
   })
