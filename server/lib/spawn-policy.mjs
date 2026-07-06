@@ -645,10 +645,19 @@ function configuredPrivilegeProfile(config = {}, name) {
   return cloned
 }
 
+// The operator config addresses levels by capability word (`full`) as often as
+// by profile NAME (`ops`, `app`). Historically only names were recognized, so a
+// configured `full` was silently dropped and the spawn fell into the `cwd`
+// trap. Map the capability word to the profile that carries the intended
+// privilege set: `full` → `ops` (whole machine, secrets fenced off — "fence but
+// don't trap"). Names still take precedence; this only rescues capability words.
+const CAPABILITY_PROFILE_ALIAS = { full: 'ops' }
+
 function firstConfiguredOrKnownProfile(config = {}, ...values) {
   const configured = configuredPrivilegeProfiles(config)
   for (const value of values) {
-    const name = String(value || '').trim().toLowerCase()
+    let name = String(value || '').trim().toLowerCase()
+    name = CAPABILITY_PROFILE_ALIAS[name] || name
     if (configured[name] || SPAWN_PROFILES[name]) return name
   }
   return null
@@ -687,6 +696,7 @@ export function resolveProjectProfileName(config = {}, { doc, project, cwd } = {
       cwdMatchesProject ? pathBasename(sourceDir) : null,
       pathBasename(cwd)
     )
+    || firstConfiguredOrKnownProfile(config, policy.defaultProfile)
     || DEFAULT_SPAWN_PROFILE
 }
 
