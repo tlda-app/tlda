@@ -396,7 +396,7 @@ async function spawnRespawn(params) {
     } else {
       throw new SpawnError(
         'launch-failed',
-        `No codex resume handle for ${friendlyName} (${fleetId}). Use refresh to start fresh.`,
+        `Session resolution failed for ${friendlyName} (${fleetId}): could not locate the existing codex rollout. This is a session-tracking fault in the resolver, not a lost session.`,
         { fleetId, kind: requestedKind, resolution: resolved || null },
       )
     }
@@ -409,7 +409,7 @@ async function spawnRespawn(params) {
         { fleetId, kind: requestedKind, retry_after_ms: 1000 },
       )
     }
-    throw new SpawnError('launch-failed', `No ${requestedKind} resume handle for ${friendlyName} (${fleetId}). Use refresh to start fresh.`, { fleetId })
+    throw new SpawnError('launch-failed', `Session resolution failed for ${friendlyName} (${fleetId}): could not locate the existing ${requestedKind} rollout. This is a session-tracking fault in the resolver, not a lost session.`, { fleetId })
   }
   const resumeId = adapter.resumeId?.(handle)
   if (handle?.cwd) cwd = resolveSpawnCwd(handle.cwd)
