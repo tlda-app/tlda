@@ -131,7 +131,7 @@ describe('agent lifecycle CLI', () => {
       })
 
       assert.notEqual(exitCode, 0)
-      assert.ok(stderr.includes('Usage: tlda agent <list|create|wake|move|set-create-machine|check-ready|attach|hibernate|dismiss|permission|permissions>'))
+      assert.ok(stderr.includes('Usage: tlda agent <list|create|enroll|wake|move|set-create-machine|check-ready|attach|hibernate|dismiss|permissions>'))
       assert.ok(!stderr.includes('ECONNREFUSED'))
       assert.ok(!stderr.includes('localhost:99999'))
     }
@@ -152,51 +152,46 @@ describe('agent lifecycle CLI', () => {
 })
 
 // ---------------------------------------------------------------------------
-// Agent permission CLI
+// Agent create / enroll CLI (profiles-only surface)
 // ---------------------------------------------------------------------------
 
-describe('agent permission CLI', () => {
-  it('dry-runs friendly names without contacting the server from user context', () => {
-    const { stdout, exitCode } = tlda('agent', 'permission', 'alice', 'write', '--dry-run', {
-      env: scrubAgentEnv(process.env),
-    })
-
-    assert.equal(exitCode, 0)
-    assert.ok(stdout.includes('[dry-run] would set alice permission to write (cwd / write / network)'))
-    assert.ok(stdout.includes('update metadata.spawnPolicy policy/category'))
-  })
-
-  it('uses no-net as a modifier, not a permission type', () => {
-    const dryRun = tlda('agent', 'permission', 'alice', 'write', '--no-net', '--dry-run', {
-      env: scrubAgentEnv(process.env),
-    })
-    assert.equal(dryRun.exitCode, 0)
-    assert.ok(dryRun.stdout.includes('write (cwd / write / no network)'))
-
-    const asType = tlda('agent', 'permission', 'alice', 'no-net', '--dry-run', {
-      env: scrubAgentEnv(process.env),
-    })
-    assert.notEqual(asType.exitCode, 0)
-    assert.ok(asType.stderr.includes('Unknown permission "no-net"'))
-  })
-
-  it('shows permission-specific help', () => {
-    const { stdout, exitCode } = tlda('agent', 'permission', '--help')
-
-    assert.equal(exitCode, 0)
-    assert.ok(stdout.includes('Write scope:'))
-    assert.ok(stdout.includes('tlda-write  write configured TLDA project/source roots'))
-    assert.ok(stdout.includes('--no-net    rare explicit network-off modifier'))
-  })
-
-  it('rejects unknown permissions', () => {
-    const { stderr, exitCode } = tlda('agent', 'permission', 'alice', 'workspace-write', '--dry-run', {
+describe('agent create/enroll CLI', () => {
+  it('create is fresh-only and points --session at enroll', () => {
+    const { stderr, exitCode } = tlda('agent', 'create', 'alice', '--session', 'abc-123', {
       env: scrubAgentEnv(process.env),
     })
 
     assert.notEqual(exitCode, 0)
-    assert.ok(stderr.includes('Unknown permission "workspace-write"'))
-    assert.ok(stderr.includes('read, write, tlda-write, full'))
+    assert.ok(stderr.includes('makes a FRESH agent'))
+    assert.ok(stderr.includes('tlda agent enroll'))
+  })
+
+  it('enroll requires an explicit --kind (session ids are not unique across harnesses)', () => {
+    const { stderr, exitCode } = tlda('agent', 'enroll', '--session', 'abc-123', {
+      env: scrubAgentEnv(process.env),
+    })
+
+    assert.notEqual(exitCode, 0)
+    assert.ok(stderr.includes('requires --kind <codex|claude>'))
+  })
+
+  it('enroll requires --session', () => {
+    const { stderr, exitCode } = tlda('agent', 'enroll', '--kind', 'codex', {
+      env: scrubAgentEnv(process.env),
+    })
+
+    assert.notEqual(exitCode, 0)
+    assert.ok(stderr.includes('tlda agent enroll --session'))
+  })
+
+  it('rejects an unknown --permissions profile with the real daemon.yaml list', () => {
+    const { stderr, exitCode } = tlda('agent', 'create', 'alice', '--permissions', 'launch-the-moon', '--cwd', '/tmp', {
+      env: scrubAgentEnv(process.env),
+    })
+
+    assert.notEqual(exitCode, 0)
+    assert.ok(stderr.includes('unknown permission profile "launch-the-moon"'))
+    assert.ok(stderr.includes('Profiles (daemon.yaml):'))
   })
 
   it('does not expose an escalate alias', () => {
@@ -205,17 +200,7 @@ describe('agent permission CLI', () => {
     })
 
     assert.notEqual(exitCode, 0)
-    assert.ok(stderr.includes('Usage: tlda agent <list|create|wake|move|set-create-machine|check-ready|attach|hibernate|dismiss|permission|permissions>'))
-  })
-
-  it('refuses from an agent context before dry-run escalation', () => {
-    const { stderr, exitCode } = tlda('agent', 'permission', 'alice', 'read', '--dry-run', {
-      env: { ...scrubAgentEnv(process.env), FLEET_ID: 'fleet:test-agent', FLEET_NAME: 'test-agent' },
-    })
-
-    assert.notEqual(exitCode, 0)
-    assert.ok(stderr.includes('user/operator-only'))
-    assert.ok(stderr.includes('agent context'))
+    assert.ok(stderr.includes('Usage: tlda agent <list|create|enroll|wake|move|set-create-machine|check-ready|attach|hibernate|dismiss|permissions>'))
   })
 
   it('shows set-create-machine help and refuses agent-context dry runs', () => {
