@@ -29,7 +29,7 @@ import { parseAgentMoveTarget, describeAgentAddress } from '../shared/agent-move
 import {
   SPAWN_POLICY_OPTIONS,
   SPAWN_PROFILES,
-  normalizeRequestedPrivileges,
+  normalizeRequestedPermissions,
   resolveDirectSpawnGrant,
   resolveSpawnPolicyOption,
 } from '../server/lib/spawn-policy.mjs'
@@ -37,12 +37,12 @@ import { SPAWN_MACHINE_PREF_KEY } from '../server/lib/spawn-routing.mjs'
 import {
   applyDaemonGrants,
   applyGrandfatherInfill,
-  createPrivilegeLedger,
+  createPermissionLedger,
   defaultDaemonConfigPath,
-  privilegeLedgerPathFromDaemonConfig,
+  permissionLedgerPathFromDaemonConfig,
   readDaemonConfig,
   withDaemonModelAliases,
-} from '../bin/lib/spawn/privilege-ledger.mjs'
+} from '../bin/lib/spawn/permission-ledger.mjs'
 
 // --- Argument parsing ---
 
@@ -162,7 +162,7 @@ const COMMAND_HELP = {
   push:    'tlda doc push [name] [--dir /path]\n\n  Push source files to the server and trigger a rebuild.\n  Project name is inferred from the current directory if omitted.',
   watch:   'tlda daemon [start|stop|status|log|run|install|uninstall]\n\n  Control the per-machine fleet-daemon (bin/fleet-daemon.mjs).\n  The daemon watches Claude Code session JSONLs and project source\n  dirs locally, pushing events to the tlda server over WebSocket.',
   'watch-all': 'tlda daemon [start|stop|status|log|run|install|uninstall]\n\n  Alias for `tlda daemon start/stop/status/log/run` — runs the\n  per-machine fleet-daemon (bin/fleet-daemon.mjs), which watches\n  every project source dir AND every Claude Code session JSONL\n  on this machine and pushes events to the tlda server over WebSocket.',
-  open:    'tlda doc open [name]\n\n  Open the viewer in the default browser (RW token = presenter privilege).',
+  open:    'tlda doc open [name]\n\n  Open the viewer in the default browser (RW token = presenter permission).',
   share:   'tlda doc share [name|.]\n\n  Print a reachable viewer URL with the read-only token.\n    (no arg)  share the index page (root /)\n    .         share the project inferred from the current directory\n    <name>    share that specific doc\n  Uses the configured remote server when active, otherwise Funnel/Tailscale/LAN.\n  Does not print localhost as a share URL for users on another machine.\n  Recipients can annotate but cannot present.',
   status:  'tlda doc status [name]\n\n  Show build status for a project.',
   errors:  'tlda doc errors [name] [--wait]\n\n  Extract LaTeX errors and warnings from the last build log.\n  With --wait (-w), blocks until the current build finishes.',
@@ -183,8 +183,8 @@ const COMMAND_HELP = {
 const VALUE_FLAGS = new Set([
   'server', 'dir', 'title', 'main', 'debounce', 'token', 'members', 'format',
   'session', 'target', 'timeout', 'id', 'book', 'worktree', 'port', 'browser',
-  'model', 'cwd', 'effort', 'mode', 'kind', 'spawn-capability', 'capability',
-  'agent-id', 'policy', 'privileges', 'machine', 'limit', 'from', 'poll', 'config',
+  'model', 'cwd', 'effort', 'mode', 'kind',
+  'agent-id', 'policy', 'permissions', 'machine', 'limit', 'from', 'poll', 'config',
   'label', 'plist',
 ])
 
@@ -1785,7 +1785,7 @@ function cmdCompletions() {
   const botSubs = BOT_COMMANDS.map(([name]) => `'${name}'`).join(' ')
   const agentSubs = [
     'list', 'create', 'wake', 'move', 'set-create-machine',
-    'check-ready', 'attach', 'hibernate', 'dismiss', 'capability', 'privileges',
+    'check-ready', 'attach', 'hibernate', 'dismiss', 'permission', 'permissions',
   ].map(s => `'${s}'`).join(' ')
   const configSubs = ['set', 'get', 'setup', 'mcp-setup', 'auth'].map(s => `'${s}'`).join(' ')
 
@@ -2054,11 +2054,11 @@ async function runFleetSpawn(spawnArgs) {
   const fresh = hasRawFlag(spawnArgs, 'fresh')
   const name = positionalFromRaw(spawnArgs, 0)
   const policyArg = flagFromRaw(spawnArgs, 'policy')
-  const capabilityArg = flagFromRaw(spawnArgs, 'capability') || flagFromRaw(spawnArgs, 'spawn-capability') || undefined
-  const requestedCapability = capabilityArg || (policyArg != null ? 'write' : undefined)
-  const requestedPrivileges = privilegesFromRaw(spawnArgs)
-  const requestedPrivilegePolicy = requestedPrivileges || policyArg
-    ? normalizeRequestedPrivileges(requestedPrivileges || policyArg, requestedCapability || undefined)
+  const permissionArg = flagFromRaw(spawnArgs, 'permissions') || undefined
+  const requestedPermission = permissionArg || (policyArg != null ? 'write' : undefined)
+  const requestedPermissions = permissionsFromRaw(spawnArgs)
+  const requestedPermissionPolicy = requestedPermissions || policyArg
+    ? normalizeRequestedPermissions(requestedPermissions || policyArg, requestedPermission || undefined)
     : null
   const cwd = resolve(flagFromRaw(spawnArgs, 'cwd') || process.cwd())
   const model = flagFromRaw(spawnArgs, 'model') || undefined
@@ -2067,13 +2067,13 @@ async function runFleetSpawn(spawnArgs) {
   let ledger = null
   try {
     const daemonConfig = readDaemonConfig(defaultDaemonConfigPath(CONFIG_DIR))
-    ledger = createPrivilegeLedger(privilegeLedgerPathFromDaemonConfig(daemonConfig, CONFIG_DIR))
+    ledger = createPermissionLedger(permissionLedgerPathFromDaemonConfig(daemonConfig, CONFIG_DIR))
     applyDaemonGrants(ledger, daemonConfig)
     const config = withDaemonModelAliases(loadConfig(), daemonConfig)
     applyGrandfatherInfill(ledger, { fleetDbPath: join(CONFIG_DIR, 'fleet.db'), config })
     const grant = resolveDirectSpawnGrant({
-      requestedCapability: requestedPrivilegePolicy?.capability || requestedCapability,
-      requestedPrivileges,
+      requestedPermission: requestedPermissionPolicy?.permission || requestedPermission,
+      requestedPermissions,
       model,
       kind,
       config,
@@ -2085,7 +2085,7 @@ async function runFleetSpawn(spawnArgs) {
     if (preallocatedAgentId) {
       await ledger.set(preallocatedAgentId, {
         spawnPolicy: grant.grantedPolicy,
-        privilegeSet: grant.grantedPrivilegeSet,
+        permissionSet: grant.grantedPermissionSet,
         source: 'agent-lifecycle-cli',
       })
     }
@@ -2099,10 +2099,10 @@ async function runFleetSpawn(spawnArgs) {
       cwd,
       effort: flagFromRaw(spawnArgs, 'effort') || undefined,
       permissionMode: flagFromRaw(spawnArgs, 'mode') || undefined,
-      requestedCapability: grant.grantedCapability,
-      requestedPrivileges,
+      requestedPermission: grant.grantedPermission,
+      requestedPermissions,
       spawnPolicy: grant.grantedPolicy,
-      privilegeSet: grant.grantedPrivilegeSet,
+      permissionSet: grant.grantedPermissionSet,
       explicitPolicy: policyArg != null,
       acknowledgeNoSecurity,
       enforceFence: true,
@@ -2110,7 +2110,7 @@ async function runFleetSpawn(spawnArgs) {
       enroll: hasRawFlag(spawnArgs, 'enroll'),
     }
     if (!params.name && !params.sessionId) {
-      console.error(red('Usage: tlda agent <create|wake> <agent> [--model model] [--kind kind] [--cwd path] [--privileges profile] [--capability read|write|tlda-write|full] [--i-like-to-live-dangerously]'))
+      console.error(red('Usage: tlda agent <create|wake> <agent> [--model model] [--kind kind] [--cwd path] [--permissions profile] [--permission read|write|tlda-write|full] [--i-like-to-live-dangerously]'))
       process.exit(1)
     }
     let result
@@ -2123,12 +2123,23 @@ async function runFleetSpawn(spawnArgs) {
     if (!preallocatedAgentId || result.fleetId !== preallocatedAgentId) {
       await ledger.set(result.fleetId, {
         spawnPolicy: grant.grantedPolicy,
-        privilegeSet: grant.grantedPrivilegeSet,
+        permissionSet: grant.grantedPermissionSet,
         source: 'agent-lifecycle-cli',
       })
     }
     const action = params.spawnMode === 'fresh' || params.spawnMode === 'session' ? 'Created' : 'Woke'
     console.log(`${action} ${result.tmuxSession} (${result.fleetId}) in ${params.cwd || process.cwd()}`)
+    // Transparency: state plainly what permissions the agent got and why, so no one
+    // has to guess from a name or a cwd. Fencing is opt-in — it is on iff a fence was
+    // explicitly requested (--policy sets explicitPolicy, the only thing that arms
+    // the fence). This mirrors the real launch decision (permissions.mjs useFence).
+    if (params.explicitPolicy) {
+      const profile = grant?.grantedPolicy?.name || (typeof requestedPermissions === 'string' ? requestedPermissions : null) || policyArg
+      const scope = grant?.grantedPolicy?.policy || 'scoped'
+      console.log(`  permissions: ${profile} — fenced (${scope}); requested via --policy`)
+    } else {
+      console.log(`  permissions: unfenced — no fence requested (full access)`)
+    }
   } catch (e) {
     console.error(red(e?.message || String(e)))
     process.exitCode = 1
@@ -2164,8 +2175,8 @@ function positionalFromRaw(rawArgs, index = 0) {
   return null
 }
 
-function privilegesFromRaw(rawArgs) {
-  const value = flagFromRaw(rawArgs, 'privileges')
+function permissionsFromRaw(rawArgs) {
+  const value = flagFromRaw(rawArgs, 'permissions')
   if (!value) return undefined
   if (existsSync(value)) {
     const text = readFileSync(value, 'utf8')
@@ -2335,8 +2346,8 @@ async function dismissAgent(name) {
   console.log(`Dismissed ${label} (${agent.id}) — marked dead and removed from the live roster.`)
 }
 
-function usageAgentCapability() {
-  const out = `Usage: tlda agent capability <agent> <capability> [--no-net] [--dry-run]
+function usageAgentPermission() {
+  const out = `Usage: tlda agent permission <agent> <permission> [--no-net] [--dry-run]
 
 Write scope:
   read        no workspace writes
@@ -2351,18 +2362,37 @@ Network:
   else console.error(out)
 }
 
-function usageAgentPrivileges() {
-  const out = `Usage: tlda agent privileges <agent> [profile] [--on-wake] [--dry-run]
+// The profile list in help is DERIVED from daemon.yaml — never hardcoded — so it
+// can't drift from the real config. Each profile's human description is the inert
+// `description:` field in the YAML (falls back to the derived region if absent).
+// One place defines names and descriptions: the config.
+function daemonProfileHelpBlock() {
+  let profiles = {}
+  try {
+    const cfg = readDaemonConfig(defaultDaemonConfigPath(CONFIG_DIR))
+    profiles = cfg?.profiles && typeof cfg.profiles === 'object' && !Array.isArray(cfg.profiles) ? cfg.profiles : {}
+  } catch {
+    profiles = {}
+  }
+  const names = Object.keys(profiles)
+  if (!names.length) return '  (no profiles configured in daemon.yaml)'
+  const width = Math.max(...names.map((n) => n.length))
+  return names
+    .map((n) => {
+      const desc = profiles[n]?.description || `${profiles[n]?.projectedPolicy?.policy || 'scoped'} scope`
+      return `  ${n.padEnd(width)}  ${desc}`
+    })
+    .join('\n')
+}
 
-Profiles:
-  app-dev  app worktree + git + browser/dev caches
-  deploy   app worktree + git + Fly state/cache
-  read     read-only
-  write    write launch working directory
-  full     unfenced operator access
+function usageAgentPermissions() {
+  const out = `Usage: tlda agent permissions <agent> [profile] [--on-wake] [--dry-run]
+
+Profiles (from daemon.yaml):
+${daemonProfileHelpBlock()}
 
 Default behavior:
-  With a profile, update the agent's next-wake privileges and wake it now.
+  With a profile, update the agent's next-wake permissions and wake it now.
   --on-wake  update metadata only; the next wake applies it
   --dry-run  print the change without mutating or waking`
   if (hasFlag('help')) console.log(out)
@@ -2376,15 +2406,15 @@ Usage:
   tlda agent list [--limit N] [--local]
   tlda agent create <name> [--model model] [--kind kind] [--cwd path]
   tlda agent create --session <uuid> [--enroll] [name]
-  tlda agent wake <agent> [--privileges profile] [--capability read|write|tlda-write|full]
+  tlda agent wake <agent> [--permissions profile] [--permission read|write|tlda-write|full]
   tlda agent move <agent> [name@][box:]env
   tlda agent set-create-machine <agent-or-user> <machine>
   tlda agent check-ready <agent> [--timeout seconds]
   tlda agent attach <agent>
   tlda agent hibernate <agent>
   tlda agent dismiss <agent>
-  tlda agent capability <agent> <capability> [--no-net] [--dry-run]
-  tlda agent privileges <agent> [profile] [--on-wake] [--dry-run]
+  tlda agent permission <agent> <permission> [--no-net] [--dry-run]
+  tlda agent permissions <agent> [profile] [--on-wake] [--dry-run]
 
 Write scope:
   read        no workspace writes
@@ -2401,26 +2431,26 @@ local-operator gated by machine access, and write the child grant to the daemon 
 Set TLDA_DISABLE_PERMISSION_CLASSIFIER=1 or agentSandbox.disablePermissionsClassifier=true only as a create/wake-time break-glass to launch Claude with --dangerously-skip-permissions.
 move must be run on the agent's current daemon address; cross-box moves use SSH/rsync.
 set-create-machine stores the caller's default create machine in fleet prefs.
-The capability command is operator-only: it refuses from fleet agent env/tmux context.
-The privileges command defaults to waking now; --on-wake stores only the next-wake profile.
+The permission command is operator-only: it refuses from fleet agent env/tmux context.
+The permissions command defaults to waking now; --on-wake stores only the next-wake profile.
 check-ready verifies registry + local tmux/runtime + recent register/my_task evidence.
 list reads the server roster by default; --local shows only tmux sessions on this machine.`)
 }
 
-function capabilityNamesForError() {
+function permissionLevelNamesForError() {
   return Object.keys(SPAWN_POLICY_OPTIONS).join(', ')
 }
 
-function privilegeNamesForError() {
+function permissionProfileNamesForError() {
   return [...new Set([...Object.keys(SPAWN_PROFILES), ...Object.keys(SPAWN_POLICY_OPTIONS)])].join(', ')
 }
 
-function describePrivilegeProfile(profileName, policy) {
+function describePermissionProfile(profileName, policy) {
   const name = profileName || policy?.name || 'custom'
-  const capability = policy?.capability || 'unknown'
+  const permission = policy?.permission || 'unknown'
   const policyName = policy?.policy || 'unknown'
-  const profileType = policy?.privilegeSet ? 'explicit privileges' : 'policy'
-  return `${name} (${policyName} / ${capability} / ${profileType})`
+  const profileType = policy?.permissionSet ? 'explicit permissions' : 'policy'
+  return `${name} (${policyName} / ${permission} / ${profileType})`
 }
 
 function applyNetworkModifier(policyOption) {
@@ -2428,7 +2458,7 @@ function applyNetworkModifier(policyOption) {
   if (policyOption.name === 'full') {
     throw new Error('--no-net cannot modify full; full is unfenced operator access.')
   }
-  // no-net is a MODIFIER, never a capability (Skip: "no-net should be a modifier,
+  // no-net is a MODIFIER, never a permission (Skip: "no-net should be a modifier,
   // it's not a type"). The rung name (read/write/tlda-write) is unchanged; the
   // restriction rides as network:false. Net is on for everyone by default, so
   // this flag is the never-used opt-out.
@@ -2570,7 +2600,7 @@ function printAgentReadiness(r) {
   console.log(`  result: ${r.ok ? 'READY' : 'NOT READY'}`)
 }
 
-async function findAgentForCapability(agentQuery) {
+async function findAgentForPermission(agentQuery) {
   const state = await api('GET', '/api/state')
   const agents = Array.isArray(state?.agents) ? state.agents : []
   const agent = resolveAgentQuery(agents, agentQuery)
@@ -2796,20 +2826,20 @@ async function cmdAgentMove() {
   console.log(`Wake locally on the target machine with: ${configPrefix}${agentWakeSuggestion(spawnArgs)}`)
 }
 
-async function cmdAgentCapability() {
+async function cmdAgentPermission() {
   const agentQuery = getPositional(1)
-  const capabilityArg = getPositional(2)
+  const permissionArg = getPositional(2)
   if (hasFlag('help')) {
-    usageAgentCapability()
+    usageAgentPermission()
     return
   }
-  if (!agentQuery || !capabilityArg) {
-    usageAgentCapability()
+  if (!agentQuery || !permissionArg) {
+    usageAgentPermission()
     process.exit(1)
   }
-  const policyOption = resolveSpawnPolicyOption(capabilityArg)
+  const policyOption = resolveSpawnPolicyOption(permissionArg)
   if (!policyOption) {
-    console.error(`Unknown capability "${capabilityArg}". Supported capabilities: ${capabilityNamesForError()}`)
+    console.error(`Unknown permission "${permissionArg}". Supported permissions: ${permissionLevelNamesForError()}`)
     process.exit(1)
   }
   let resolvedPolicy
@@ -2819,7 +2849,7 @@ async function cmdAgentCapability() {
     console.error(e.message)
     process.exit(1)
   }
-  const { capability, policy, network } = resolvedPolicy
+  const { permission, policy, network } = resolvedPolicy
 
   try {
     await assertNotAgentContext()
@@ -2830,7 +2860,7 @@ async function cmdAgentCapability() {
 
   if (hasFlag('dry-run')) {
     const net = network === false ? 'no network' : 'network'
-    console.log(`[dry-run] would set ${agentQuery} capability to ${policyOption.name} (${policy} / ${capability} / ${net})`)
+    console.log(`[dry-run] would set ${agentQuery} permission to ${policyOption.name} (${policy} / ${permission} / ${net})`)
     console.log('  1. look up existing agent identity')
     console.log('  2. hibernate local tmux session if live')
     console.log('  3. update metadata.spawnPolicy policy/category')
@@ -2839,7 +2869,7 @@ async function cmdAgentCapability() {
   }
 
   await ensureServer()
-  const agent = await findAgentForCapability(agentQuery)
+  const agent = await findAgentForPermission(agentQuery)
   const spawnName = spawnNameForAgent(agent, agentQuery)
   const hibernateName = hibernateNameForAgent(agent, agentQuery)
   const hibernate = await hibernateLocalAgent(hibernateName, { allowMissing: true })
@@ -2850,27 +2880,27 @@ async function cmdAgentCapability() {
 
   const meta = normalizeAgentMetadata(agent.metadata)
   const currentSpawnPolicy = normalizeAgentMetadata(meta.spawnPolicy)
-  const nextSpawnPolicy = { ...currentSpawnPolicy, name: policyOption.name, capability, policy, network }
+  const nextSpawnPolicy = { ...currentSpawnPolicy, name: policyOption.name, permission, policy, network }
   await api('POST', '/api/set-metadata', {
     agent: agent.id,
     spawnPolicy: nextSpawnPolicy,
-    spawnPolicyChangedBy: 'tlda-agent-capability-cli',
+    spawnPolicyChangedBy: 'tlda-agent-permission-cli',
     spawnPolicyChangedAt: new Date().toISOString(),
   })
   const net = network === false ? 'no network' : 'network'
-  console.log(`Updated ${agent.id} wake policy to ${policyOption.name} (${policy} / ${capability} / ${net}).`)
+  console.log(`Updated ${agent.id} wake policy to ${policyOption.name} (${policy} / ${permission} / ${net}).`)
   console.log(`Wake locally with: ${agentWakeSuggestion([spawnName])}`)
 }
 
-async function cmdAgentPrivileges() {
+async function cmdAgentPermissions() {
   const agentQuery = getPositional(1)
   const profileArg = getPositional(2)
   if (hasFlag('help')) {
-    usageAgentPrivileges()
+    usageAgentPermissions()
     return
   }
   if (!agentQuery) {
-    usageAgentPrivileges()
+    usageAgentPermissions()
     process.exit(1)
   }
 
@@ -2885,66 +2915,66 @@ async function cmdAgentPrivileges() {
     await ensureServer()
     const agent = await findSingleAgent(agentQuery)
     const meta = normalizeAgentMetadata(agent.metadata)
-    const stored = meta.requestedPrivileges || meta.privilegeProfile || meta.spawnPolicy || null
+    const stored = meta.requestedPermissions || meta.permissionProfile || meta.spawnPolicy || null
     const storedText = stored ? (typeof stored === 'string' ? stored : JSON.stringify(stored)) : 'none'
     const policy = meta.spawnPolicy || null
     console.log(`${agent.friendly_name || agent.id} (${agent.id})`)
-    console.log(`  privilege profile: ${meta.privilegeProfile || (policy?.name || 'none')}`)
-    console.log(`  requested privileges: ${storedText}`)
-    console.log(`  spawn policy: ${policy ? `${policy.name || 'custom'} (${policy.policy || 'unknown'} / ${policy.capability || 'unknown'})` : 'none'}`)
+    console.log(`  permission profile: ${meta.permissionProfile || (policy?.name || 'none')}`)
+    console.log(`  requested permissions: ${storedText}`)
+    console.log(`  spawn policy: ${policy ? `${policy.name || 'custom'} (${policy.policy || 'unknown'} / ${policy.permission || 'unknown'})` : 'none'}`)
     return
   }
 
   let requestedPolicy
   try {
-    requestedPolicy = normalizeRequestedPrivileges(profileArg)
+    requestedPolicy = normalizeRequestedPermissions(profileArg)
   } catch (e) {
     const detail = e?.message ? `: ${e.message}` : ''
-    console.error(`Unknown privilege profile "${profileArg}"${detail}. Supported profiles: ${privilegeNamesForError()}`)
+    console.error(`Unknown permission profile "${profileArg}"${detail}. Supported profiles: ${permissionProfileNamesForError()}`)
     process.exit(1)
   }
   const nextSpawnPolicy = {
     name: requestedPolicy.name || profileArg,
-    capability: requestedPolicy.capability,
+    permission: requestedPolicy.permission,
     policy: requestedPolicy.policy,
     network: requestedPolicy.network,
-    privilegeSet: requestedPolicy.privilegeSet,
+    permissionSet: requestedPolicy.permissionSet,
   }
-  const description = describePrivilegeProfile(profileArg, requestedPolicy)
+  const description = describePermissionProfile(profileArg, requestedPolicy)
   const wakeNow = !hasFlag('on-wake')
 
   if (hasFlag('dry-run')) {
-    console.log(`[dry-run] would set ${agentQuery} privileges to ${description}`)
+    console.log(`[dry-run] would set ${agentQuery} permissions to ${description}`)
     console.log('  1. look up existing agent identity')
-    console.log('  2. update metadata.requestedPrivileges / metadata.spawnPolicy')
+    console.log('  2. update metadata.requestedPermissions / metadata.spawnPolicy')
     console.log(wakeNow
-      ? `  3. run locally: ${agentWakeSuggestion([agentQuery, '--privileges', profileArg])}`
+      ? `  3. run locally: ${agentWakeSuggestion([agentQuery, '--permissions', profileArg])}`
       : '  3. leave the change for the next wake')
     return
   }
 
   await ensureServer()
-  const agent = await findAgentForCapability(agentQuery)
+  const agent = await findAgentForPermission(agentQuery)
   const spawnName = spawnNameForAgent(agent, agentQuery)
   await api('POST', '/api/set-metadata', {
     agent: agent.id,
-    requestedPrivileges: profileArg,
-    privilegeProfile: profileArg,
+    requestedPermissions: profileArg,
+    permissionProfile: profileArg,
     spawnPolicy: nextSpawnPolicy,
-    spawnPolicyChangedBy: 'tlda-agent-privileges-cli',
+    spawnPolicyChangedBy: 'tlda-agent-permissions-cli',
     spawnPolicyChangedAt: new Date().toISOString(),
   })
   if (!wakeNow) {
-    console.log(`Updated ${agent.id} privileges to ${description}; will apply on wake.`)
+    console.log(`Updated ${agent.id} permissions to ${description}; will apply on wake.`)
     return
   }
-  console.log(`Updated ${agent.id} privileges to ${description}.`)
-  console.log(`Wake locally with: ${agentWakeSuggestion([spawnName, '--privileges', profileArg])}`)
+  console.log(`Updated ${agent.id} permissions to ${description}.`)
+  console.log(`Wake locally with: ${agentWakeSuggestion([spawnName, '--permissions', profileArg])}`)
 }
 
 async function cmdAgent() {
   const sub = getPositional(0)
-  if (!sub || (hasFlag('help') && sub !== 'capability' && sub !== 'privileges' && sub !== 'move' && sub !== 'set-create-machine')) {
+  if (!sub || (hasFlag('help') && sub !== 'permission' && sub !== 'permissions' && sub !== 'move' && sub !== 'set-create-machine')) {
     usageAgent()
     return
   }
@@ -2959,10 +2989,10 @@ async function cmdAgent() {
     case 'attach':    await attachToAgent(getPositional(1)); break
     case 'hibernate': await hibernateAgent(getPositional(1)); break
     case 'dismiss':   await dismissAgent(getPositional(1)); break
-    case 'capability': await cmdAgentCapability(); break
-    case 'privileges': await cmdAgentPrivileges(); break
+    case 'permission': await cmdAgentPermission(); break
+    case 'permissions': await cmdAgentPermissions(); break
     default:
-      console.error('Usage: tlda agent <list|create|wake|move|set-create-machine|check-ready|attach|hibernate|dismiss|capability|privileges> [name]')
+      console.error('Usage: tlda agent <list|create|wake|move|set-create-machine|check-ready|attach|hibernate|dismiss|permission|permissions> [name]')
       process.exit(1)
   }
 }

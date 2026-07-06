@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { resolveSpawnMachine } from '../server/lib/spawn-routing.mjs'
-import { resolveFreshSpawnCapabilityModels } from '../server/lib/spawn-capability-models.mjs'
+import { resolveFreshSpawnAvailabilityModels } from '../server/lib/spawn-availability-models.mjs'
 import { flattenAvailableSpawnModels, spawnModelsFromCapabilitiesResponse } from '../shared/spawn-model-options.mjs'
 import { loadAvailableSpawnModels } from '../src/fleet/useAvailableSpawnModels.ts'
 
@@ -107,7 +107,7 @@ test('frontend loader uses fresh-spawn-current endpoint instead of global model 
       }),
     }
   })
-  assert.deepEqual(calls, ['/api/fleet/spawn-capabilities?target=fresh-spawn-current&user=fleet%3Askip'])
+  assert.deepEqual(calls, ['/api/fleet/spawn-availability?target=fresh-spawn-current&user=fleet%3Askip'])
   assert.deepEqual(result.aliases, ['codex', 'gpt', 'gpt55'])
   assert.equal(result.defaultAlias, 'gpt')
 })
@@ -119,7 +119,7 @@ test('fresh-spawn endpoint helper resolves target machine server-side before pro
     getFleetPref: () => undefined,
   }
   const rpcCalls = []
-  const result = await resolveFreshSpawnCapabilityModels({
+  const result = await resolveFreshSpawnAvailabilityModels({
     userId: user.id,
     fleetStore,
     daemonConnections,
@@ -130,7 +130,7 @@ test('fresh-spawn endpoint helper resolves target machine server-side before pro
     },
   })
 
-  assert.deepEqual(rpcCalls, [{ machineId: 'mini', op: 'spawn-capabilities' }])
+  assert.deepEqual(rpcCalls, [{ machineId: 'mini', op: 'spawn-availability' }])
   assert.equal(result.ok, true)
   assert.equal(result.machine_id, 'mini')
   assert.equal(result.route, 'sole-connected-daemon')
@@ -139,7 +139,7 @@ test('fresh-spawn endpoint helper resolves target machine server-side before pro
 })
 
 test('fresh-spawn endpoint helper returns no aliases when no target capability exists', async () => {
-  const result = await resolveFreshSpawnCapabilityModels({
+  const result = await resolveFreshSpawnAvailabilityModels({
     userId: user.id,
     fleetStore: {
       getAgent: id => id === user.id ? user : null,

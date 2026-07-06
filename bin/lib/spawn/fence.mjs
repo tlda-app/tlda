@@ -190,20 +190,20 @@ function apiNeedsLocalOutbound(dnsAlias) {
 }
 
 export function fenceSettings(policy, { api, dnsAlias } = {}) {
-  const emptyCapability = policy.capability === 'none'
-  const allowRead = uniqueSorted([...(policy.read_roots || []), ...(emptyCapability ? [] : FENCE_AGENT_READ_ROOTS)].map(expandPathPattern))
-  const broadWriteRoots = policy.explicit_privilege_set ? [] : FENCE_BROAD_WRITE_ROOTS
+  const emptyPermission = policy.permission === 'none'
+  const allowRead = uniqueSorted([...(policy.read_roots || []), ...(emptyPermission ? [] : FENCE_AGENT_READ_ROOTS)].map(expandPathPattern))
+  const broadWriteRoots = policy.explicit_permission_set ? [] : FENCE_BROAD_WRITE_ROOTS
   const allowWrite = uniqueSorted([
     ...(policy.write_roots || []),
-    ...(emptyCapability ? [] : FENCE_AGENT_WRITE_ROOTS),
-    ...(emptyCapability ? [] : broadWriteRoots),
+    ...(emptyPermission ? [] : FENCE_AGENT_WRITE_ROOTS),
+    ...(emptyPermission ? [] : broadWriteRoots),
   ].map(expandPathPattern))
   const denyRead = [...FENCE_DENY_READ, ...(policy.deny_read_roots || [])]
   const denyWrite = [...FENCE_DENY_WRITE, ...(policy.deny_write_roots || [])]
   if (String(policy.git || 'read') !== 'write' && !hasGitWriteRoot(policy)) denyWrite.push(...FENCE_GIT_READONLY_DENY)
   const allowedDomains = ['*']
   const localOutbound = apiNeedsLocalOutbound(dnsAlias)
-  const allowUnixSockets = emptyCapability ? [] : [
+  const allowUnixSockets = emptyPermission ? [] : [
     ...FENCE_TEMP_ROOTS,
     TLDA_PW_RUNTIME_ROOT,
     `${TLDA_PW_RUNTIME_ROOT}/**`,
@@ -214,7 +214,7 @@ export function fenceSettings(policy, { api, dnsAlias } = {}) {
     TLDA_PW_SOCKETS_REAL_ROOT,
     `${TLDA_PW_SOCKETS_REAL_ROOT}/**`,
   ]
-  const machServices = emptyCapability ? [] : CHROME_FOR_TESTING_MACH_SERVICES
+  const machServices = emptyPermission ? [] : CHROME_FOR_TESTING_MACH_SERVICES
   return {
     allowPty: true,
     network: {
@@ -225,7 +225,7 @@ export function fenceSettings(policy, { api, dnsAlias } = {}) {
       allowUnixSockets,
     },
     filesystem: {
-      defaultDenyRead: emptyCapability,
+      defaultDenyRead: emptyPermission,
       allowRead,
       denyRead,
       allowWrite,

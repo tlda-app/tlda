@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { probeSpawnCapabilities } from '../bin/lib/spawn/capabilities.mjs'
+import { probeSpawnAvailability } from '../bin/lib/spawn/availability.mjs'
 
 function runner({ commands = {}, env = {} } = {}) {
   return async (command, args = []) => {
@@ -24,11 +24,11 @@ function runner({ commands = {}, env = {} } = {}) {
   }
 }
 
-test('capability probe reports installed/authed harnesses and verified goose models', async () => {
+test('availability probe reports installed/authed harnesses and verified goose models', async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'spawn-cap-'))
   const authFile = path.join(tmp, 'auth.json')
   fs.writeFileSync(authFile, JSON.stringify({ auth_mode: 'chatgpt', tokens: { access_token: 'x' } }))
-  const report = await probeSpawnCapabilities({
+  const report = await probeSpawnAvailability({
     now: new Date('2026-06-28T00:00:00Z'),
     deps: {
       codexAuthFile: authFile,
@@ -56,8 +56,8 @@ test('capability probe reports installed/authed harnesses and verified goose mod
   assert.ok(report.harnesses.goose.models.some((m) => m.id === 'google/gemini-3.5-flash' && !m.available && !m.verified))
 })
 
-test('capability probe is explicit about missing auth and binaries', async () => {
-  const report = await probeSpawnCapabilities({
+test('availability probe is explicit about missing auth and binaries', async () => {
+  const report = await probeSpawnAvailability({
     deps: {
       codexAuthFile: path.join(os.tmpdir(), 'missing-codex-auth.json'),
       run: runner({ commands: { codex: '/opt/homebrew/bin/codex' } }),

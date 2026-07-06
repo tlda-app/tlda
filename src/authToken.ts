@@ -74,7 +74,7 @@ export async function fetchAuthLevel(): Promise<void> {
   presentListeners.forEach(fn => fn())
 }
 
-/** Whether this token has presenter privilege. True if auth disabled or RW token. */
+/** Whether this token has presenter permission. True if auth disabled or RW token. */
 export function canPresent(): boolean {
   return _canPresent ?? true  // default true until fetched (local dev)
 }

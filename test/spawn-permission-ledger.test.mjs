@@ -10,16 +10,16 @@ import YAML from 'yaml'
 import {
   applyDaemonGrants,
   applyGrandfatherInfill,
-  createPrivilegeLedger,
+  createPermissionLedger,
   defaultDaemonConfigPath,
-  privilegeLedgerPathFromDaemonConfig,
+  permissionLedgerPathFromDaemonConfig,
   readDaemonConfig,
   withDaemonModelAliases,
-} from '../bin/lib/spawn/privilege-ledger.mjs'
+} from '../bin/lib/spawn/permission-ledger.mjs'
 import { resolveSpawnGrant } from '../server/lib/spawn-policy.mjs'
 
 function tempLedger() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-privilege-ledger-'))
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-permission-ledger-'))
   return path.join(dir, 'fleet-daemon.db')
 }
 
@@ -65,29 +65,29 @@ function writeFleetDb(file, agents) {
   db.close()
 }
 
-describe('daemon privilege ledger', () => {
+describe('daemon permission ledger', () => {
   it('refuses unknown agents without writing a row', async () => {
     const file = tempLedger()
-    const ledger = createPrivilegeLedger(file)
+    const ledger = createPermissionLedger(file)
 
     assert.throws(
       () => ledger.grantFor({ id: 'fleet:unknown' }),
-      (err) => err.code === 'SPAWN_PRIVILEGE_NO_LEDGER_ENTRY',
+      (err) => err.code === 'SPAWN_PERMISSION_NO_LEDGER_ENTRY',
     )
     const db = new Database(file, { readonly: true })
-    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM privilege_grants').get().n, 0)
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM permission_grants').get().n, 0)
     db.close()
     await ledger.close()
   })
 
   it('writes and reloads grants from daemon-owned sqlite rows', async () => {
     const file = tempLedger()
-    const ledger = createPrivilegeLedger(file)
+    const ledger = createPermissionLedger(file)
 
     const root = await ledger.set('fleet:skip', {
       spawnPolicy: 'write',
-      privilegeSet: {
-        type: 'privilege-set',
+      permissionSet: {
+        type: 'permission-set',
         name: 'root-worktree',
         operations: {
           read: { allow: ['/private/tmp/worktree/**'], deny: [] },
@@ -97,30 +97,30 @@ describe('daemon privilege ledger', () => {
       },
       source: 'operator',
     })
-    assert.equal(root.spawnPolicy.capability, 'write')
+    assert.equal(root.spawnPolicy.permission, 'write')
     assert.equal(fs.existsSync(file), true)
 
     const child = await ledger.set('fleet:child', {
       spawnPolicy: root.spawnPolicy,
-      privilegeSet: root.privilegeSet,
+      permissionSet: root.permissionSet,
       source: 'spawn',
     })
-    assert.equal(child.privilegeSet.name, 'root-worktree')
+    assert.equal(child.permissionSet.name, 'root-worktree')
 
     const db = new Database(file, { readonly: true })
-    const rows = db.prepare('SELECT id, spawn_policy, privilege_set, source FROM privilege_grants ORDER BY id').all()
+    const rows = db.prepare('SELECT id, spawn_policy, permission_set, source FROM permission_grants ORDER BY id').all()
     assert.deepEqual(rows.map(row => row.id), ['fleet:child', 'fleet:skip'])
-    assert.equal(JSON.parse(rows[0].spawn_policy).capability, 'write')
-    assert.equal(JSON.parse(rows[0].privilege_set).name, 'root-worktree')
+    assert.equal(JSON.parse(rows[0].spawn_policy).permission, 'write')
+    assert.equal(JSON.parse(rows[0].permission_set).name, 'root-worktree')
     assert.equal(rows[0].source, 'spawn')
     assert.equal(rows[1].source, 'operator')
     db.close()
 
-    const reloaded = createPrivilegeLedger(file)
+    const reloaded = createPermissionLedger(file)
     const grant = reloaded.grantFor({ id: 'fleet:child' })
-    assert.equal(grant.spawnPolicy.capability, 'write')
-    assert.deepEqual(grant.privilegeSet.operations.write.allow, ['/private/tmp/worktree/**'])
-    assert.deepEqual(grant.privilegeSet.operations.spawn.allow, ['**'])
+    assert.equal(grant.spawnPolicy.permission, 'write')
+    assert.deepEqual(grant.permissionSet.operations.write.allow, ['/private/tmp/worktree/**'])
+    assert.deepEqual(grant.permissionSet.operations.spawn.allow, ['**'])
     await reloaded.close()
     await ledger.close()
   })
@@ -160,7 +160,7 @@ describe('daemon privilege ledger', () => {
     fs.writeFileSync(defaultDaemonConfigPath(dir), YAML.stringify({
       profiles: {
         redundant: {
-          capability: 'read',
+          permission: 'read',
           read: { allow: ['cwd'], deny: [] },
           write: { allow: [], deny: [] },
         },
@@ -172,7 +172,7 @@ describe('daemon privilege ledger', () => {
     }))
     assert.throws(
       () => readDaemonConfig(defaultDaemonConfigPath(dir)),
-      /profile "redundant" supports only read and write roots; unknown key\(s\): capability/,
+      /profile "redundant" supports only read, write, and description; unknown key\(s\): permission/,
     )
   })
 
@@ -196,17 +196,17 @@ describe('daemon privilege ledger', () => {
     )
   })
 
-  it('migrates old daemon-privileges.yaml rows into fleet-daemon.db once', async () => {
+  it('migrates old daemon-permissions.yaml rows into fleet-daemon.db once', async () => {
     const dir = tempConfigDir()
     const dbPath = path.join(dir, 'fleet-daemon.db')
-    fs.writeFileSync(path.join(dir, 'daemon-privileges.yaml'), YAML.stringify({
+    fs.writeFileSync(path.join(dir, 'daemon-permissions.yaml'), YAML.stringify({
       version: 1,
-      privileges: {
+      permissions: {
         agents: {
           'fleet:existing': {
             spawnPolicy: 'write',
-            privilegeSet: {
-              type: 'privilege-set',
+            permissionSet: {
+              type: 'permission-set',
               name: 'existing-write',
               operations: {
                 read: { allow: ['/old/project/**'], deny: [] },
@@ -221,24 +221,24 @@ describe('daemon privilege ledger', () => {
       },
     }))
 
-    const ledger = createPrivilegeLedger(dbPath)
+    const ledger = createPermissionLedger(dbPath)
     const existing = ledger.grantFor({ id: 'fleet:existing' })
-    assert.equal(existing.spawnPolicy.capability, 'write')
+    assert.equal(existing.spawnPolicy.permission, 'write')
     assert.equal(existing.source, 'old-ledger')
-    assert.deepEqual(existing.privilegeSet.operations.write.allow, ['/old/project/**'])
+    assert.deepEqual(existing.permissionSet.operations.write.allow, ['/old/project/**'])
     assert.throws(
       () => ledger.grantFor({ id: 'fleet:missing' }),
-      (err) => err.code === 'SPAWN_PRIVILEGE_NO_LEDGER_ENTRY',
+      (err) => err.code === 'SPAWN_PERMISSION_NO_LEDGER_ENTRY',
     )
     await ledger.close()
 
     const db = new Database(dbPath, { readonly: true })
-    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM privilege_grants').get().n, 1)
-    assert.equal(db.prepare('SELECT value FROM ledger_meta WHERE key = ?').get('migration.daemon-privileges-yaml.v1') != null, true)
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM permission_grants').get().n, 1)
+    assert.equal(db.prepare('SELECT value FROM ledger_meta WHERE key = ?').get('migration.daemon-permissions-yaml.v1') != null, true)
     db.close()
 
-    const reopened = createPrivilegeLedger(dbPath)
-    assert.equal(reopened.grantFor({ id: 'fleet:existing' }).spawnPolicy.capability, 'write')
+    const reopened = createPermissionLedger(dbPath)
+    assert.equal(reopened.grantFor({ id: 'fleet:existing' }).spawnPolicy.permission, 'write')
     await reopened.close()
   })
 
@@ -267,7 +267,7 @@ describe('daemon privilege ledger', () => {
       },
     ])
 
-    const ledger = createPrivilegeLedger(ledgerPath)
+    const ledger = createPermissionLedger(ledgerPath)
     const result = applyGrandfatherInfill(ledger, {
       fleetDbPath,
       config: {},
@@ -275,13 +275,13 @@ describe('daemon privilege ledger', () => {
     })
     assert.deepEqual(result, { considered: 1, written: 1, skippedExisting: 0 })
     const grant = ledger.grantFor({ id: 'fleet:9b21164e' })
-    assert.equal(grant.spawnPolicy.capability, 'write')
+    assert.equal(grant.spawnPolicy.permission, 'write')
     assert.equal(grant.spawnPolicy.policy, 'cwd')
     assert.equal(grant.source, 'grandfather:fleet-db-cutover')
-    assert.deepEqual(grant.privilegeSet.operations.write.allow, ['/Users/skip/work/tlda/**'])
+    assert.deepEqual(grant.permissionSet.operations.write.allow, ['/Users/skip/work/tlda/**'])
     assert.throws(
       () => ledger.grantFor({ id: 'fleet:unknown' }),
-      (err) => err.code === 'SPAWN_PRIVILEGE_NO_LEDGER_ENTRY',
+      (err) => err.code === 'SPAWN_PERMISSION_NO_LEDGER_ENTRY',
     )
 
     const again = applyGrandfatherInfill(ledger, { fleetDbPath, config: {} })
@@ -349,7 +349,7 @@ describe('daemon privilege ledger', () => {
       },
     }))
     const daemonConfig = readDaemonConfig(defaultDaemonConfigPath(dir))
-    const file = privilegeLedgerPathFromDaemonConfig(daemonConfig, dir)
+    const file = permissionLedgerPathFromDaemonConfig(daemonConfig, dir)
     assert.equal(file, path.join(dir, 'fleet-daemon.db'))
     assert.deepEqual(Object.keys(daemonConfig).sort(), ['grants', 'models', 'profiles', 'regions', 'servers'])
     assert.deepEqual(Object.keys(daemonConfig.profiles).sort(), ['app', 'math', 'ops', 'readonly', 'wd'])
@@ -358,18 +358,18 @@ describe('daemon privilege ledger', () => {
     assert.equal(daemonConfig.profiles.math.operations.read.deny.includes('~/work/tlda/**'), true)
     assert.equal(daemonConfig.profiles.math.operations.write.deny.includes('~/work/tlda/**'), true)
     assert.deepEqual(daemonConfig.profiles.ops.operations.spawn, { allow: [], deny: [] })
-    assert.equal(daemonConfig.profiles.ops.projectedPolicy.capability, 'full')
+    assert.equal(daemonConfig.profiles.ops.projectedPolicy.permission, 'full')
 
-    const ledger = createPrivilegeLedger(file)
+    const ledger = createPermissionLedger(file)
     applyDaemonGrants(ledger, daemonConfig)
     const db = new Database(file, { readonly: true })
-    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM privilege_grants').get().n, 1)
-    assert.equal(db.prepare('SELECT source FROM privilege_grants WHERE id = ?').get('fleet:skip').source, 'daemon.yaml:grants')
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM permission_grants').get().n, 1)
+    assert.equal(db.prepare('SELECT source FROM permission_grants WHERE id = ?').get('fleet:skip').source, 'daemon.yaml:grants')
     db.close()
 
     assert.equal(fs.readFileSync(defaultDaemonConfigPath(dir), 'utf8').includes('classes:'), false)
     assert.equal(fs.readFileSync(defaultDaemonConfigPath(dir), 'utf8').includes('assignments:'), false)
-    assert.equal(fs.existsSync(path.join(dir, 'daemon-privileges.yaml')), false)
+    assert.equal(fs.existsSync(path.join(dir, 'daemon-permissions.yaml')), false)
 
     const config = withDaemonModelAliases({}, daemonConfig)
     assert.deepEqual(config.models.codex.localgpt, { id: 'gpt-local' })
@@ -379,28 +379,28 @@ describe('daemon privilege ledger', () => {
       controls: true,
     })
     assert.deepEqual(config.harnessOptions.codex['gpt-local'], config.harnessOptions.codex.localgpt)
-    assert.equal(config.spawnPolicy.privilegeProfiles.app.operations.write.deny[0], '~/.config/tlda/fleet.db*')
+    assert.equal(config.spawnPolicy.permissionProfiles.app.operations.write.deny[0], '~/.config/tlda/fleet.db*')
     assert.equal(config.spawnPolicy.modelCeilings.localgpt, 'read')
     assert.equal(config.spawnPolicy.modelCeilings['gpt-local'], 'read')
 
     const grant = resolveSpawnGrant({
-      requestedCapability: 'full',
+      requestedPermission: 'full',
       spawnerPolicy: ledger.grantFor({ id: 'fleet:skip' }).spawnPolicy,
-      spawnerPrivilegeSet: ledger.grantFor({ id: 'fleet:skip' }).privilegeSet,
+      spawnerPermissionSet: ledger.grantFor({ id: 'fleet:skip' }).permissionSet,
       model: 'localgpt',
       kind: 'codex',
       config,
       cwd: '/tmp/project',
     })
-    assert.equal(grant.spawnerCapability, 'full')
-    assert.equal(grant.requestedCapability, 'full')
-    assert.equal(grant.modelCapability, 'read')
-    assert.equal(grant.grantedCapability, 'read')
+    assert.equal(grant.spawnerPermission, 'full')
+    assert.equal(grant.requestedPermission, 'full')
+    assert.equal(grant.modelPermission, 'read')
+    assert.equal(grant.grantedPermission, 'read')
 
     const mathGrant = resolveSpawnGrant({
       spawnerPolicy: 'full',
-      spawnerPrivilegeSet: {
-        type: 'privilege-set',
+      spawnerPermissionSet: {
+        type: 'permission-set',
         name: 'root',
         operations: {
           read: { allow: ['**'], deny: [] },
@@ -415,17 +415,17 @@ describe('daemon privilege ledger', () => {
       cwd: '/Users/skip/work/math-paper',
       project: { name: 'mathdoc', sourceDir: '/Users/skip/work/math-paper' },
     })
-    assert.equal(mathGrant.requestedPrivilegeSet.operations.read.deny.includes('~/work/tlda/**'), true)
-    assert.equal(mathGrant.grantedPrivilegeSet.operations.read.deny.includes('/Users/skip/work/tlda/**'), true)
-    assert.equal(mathGrant.grantedPrivilegeSet.operations.write.allow.includes('/Users/skip/work/**'), true)
+    assert.equal(mathGrant.requestedPermissionSet.operations.read.deny.includes('~/work/tlda/**'), true)
+    assert.equal(mathGrant.grantedPermissionSet.operations.read.deny.includes('/Users/skip/work/tlda/**'), true)
+    assert.equal(mathGrant.grantedPermissionSet.operations.write.allow.includes('/Users/skip/work/**'), true)
 
     await ledger.set('fleet:child', {
       spawnPolicy: grant.grantedPolicy,
-      privilegeSet: grant.grantedPrivilegeSet,
+      permissionSet: grant.grantedPermissionSet,
       source: 'spawn',
     })
     const check = new Database(file, { readonly: true })
-    assert.equal(JSON.parse(check.prepare('SELECT spawn_policy FROM privilege_grants WHERE id = ?').get('fleet:child').spawn_policy).capability, 'read')
+    assert.equal(JSON.parse(check.prepare('SELECT spawn_policy FROM permission_grants WHERE id = ?').get('fleet:child').spawn_policy).permission, 'read')
     check.close()
     await ledger.close()
   })
@@ -459,24 +459,24 @@ describe('daemon privilege ledger', () => {
     assert.deepEqual(defaultConfig.harnessOptions.claude['*'].required, [])
     assert.deepEqual(defaultConfig.harnessOptions.claude['*'].preferences, ['--dangerously-load-development-channels server:tlda'])
     assert.equal(defaultConfig.harnessOptions.claude['*'].controls, true)
-    assert.equal(Object.keys(defaultConfig.spawnPolicy.privilegeProfiles || {}).length, 0)
+    assert.equal(Object.keys(defaultConfig.spawnPolicy.permissionProfiles || {}).length, 0)
     assert.equal(Object.keys(harnessDefault.grants).length, 0)
 
     const fencedConfig = withDaemonModelAliases({}, fenced)
     assert.deepEqual(fencedConfig.harnessOptions.claude['*'].required, [])
     assert.deepEqual(fencedConfig.harnessOptions.claude['*'].preferences, ['--dangerously-load-development-channels server:tlda', '--dangerously-skip-permissions'])
     assert.equal(fencedConfig.harnessOptions.claude['*'].controls, true)
-    assert.deepEqual(Object.keys(fencedConfig.spawnPolicy.privilegeProfiles).sort(), ['app', 'math', 'ops', 'readonly', 'wd'])
+    assert.deepEqual(Object.keys(fencedConfig.spawnPolicy.permissionProfiles).sort(), ['app', 'math', 'ops', 'readonly', 'wd'])
     assert.equal(fenced.grants['fleet:skip'], 'ops')
   })
 
   it('does not fail a write timeout after the worker commit has landed', async () => {
     const file = tempLedger()
-    const ledger = createPrivilegeLedger(file)
+    const ledger = createPermissionLedger(file)
     const row = ledger.rowFor('fleet:ack-late', {
       spawnPolicy: 'write',
-      privilegeSet: {
-        type: 'privilege-set',
+      permissionSet: {
+        type: 'permission-set',
         name: 'ack-late',
         operations: {
           read: { allow: ['/tmp/proof/**'], deny: [] },
@@ -492,7 +492,7 @@ describe('daemon privilege ledger', () => {
         ledger._upsert.run(
           written.id,
           written.spawnPolicy,
-          written.privilegeSet,
+          written.permissionSet,
           written.updatedAt,
           written.source,
         )
@@ -504,13 +504,13 @@ describe('daemon privilege ledger', () => {
       row: {
         id: row.id,
         spawnPolicy: JSON.stringify(row.spawnPolicy),
-        privilegeSet: JSON.stringify(row.privilegeSet),
+        permissionSet: JSON.stringify(row.permissionSet),
         updatedAt: row.updatedAt,
         source: row.source,
       },
     }, 5)
 
-    assert.equal(ledger.grantFor({ id: 'fleet:ack-late' }).spawnPolicy.capability, 'write')
+    assert.equal(ledger.grantFor({ id: 'fleet:ack-late' }).spawnPolicy.permission, 'write')
     await ledger.close()
   })
 })

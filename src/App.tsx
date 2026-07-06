@@ -12,7 +12,7 @@ import './themes.css'
 
 // Initialize auth token from URL query param — patches fetch() to inject Authorization header
 initToken()
-// Fetch auth level (presenter privilege) — fire and forget, UI updates reactively
+// Fetch auth level (presenter permission) — fire and forget, UI updates reactively
 fetchAuthLevel()
 
 // Error boundary to prevent blank screen on errors

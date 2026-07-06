@@ -117,16 +117,16 @@ import {
 } from './lib/daemon-guards.mjs'
 import { codexRolloutBelongsToAgent, codexRolloutHasOwnerEvidence, resolveTranscript } from './lib/resolve-transcript.mjs'
 import { resolveSpawnGrant } from '../server/lib/spawn-policy.mjs'
-import { probeSpawnCapabilities } from './lib/spawn/capabilities.mjs'
+import { probeSpawnAvailability } from './lib/spawn/availability.mjs'
 import {
   applyDaemonGrants,
   applyGrandfatherInfill,
-  createPrivilegeLedger,
+  createPermissionLedger,
   defaultDaemonConfigPath,
-  privilegeLedgerPathFromDaemonConfig,
+  permissionLedgerPathFromDaemonConfig,
   readDaemonConfig,
   withDaemonModelAliases,
-} from './lib/spawn/privilege-ledger.mjs'
+} from './lib/spawn/permission-ledger.mjs'
 import { newFleetId } from './lib/spawn/identity.mjs'
 import { acquireSingletonLock, daemonSingletonLockPath, sessionReaderLockPath } from './lib/singleton-lock.mjs'
 const log = createLogger('daemon')
@@ -141,9 +141,9 @@ const SOURCE_BINDINGS_FILE = path.join(CONFIG_DIR, 'source-bindings.json')
 const FLEET_DB_FILE = path.join(CONFIG_DIR, 'fleet.db')
 const DAEMON_CONFIG_FILE = defaultDaemonConfigPath(CONFIG_DIR)
 const daemonSpawnConfig = readDaemonConfig(DAEMON_CONFIG_FILE)
-const PRIVILEGE_LEDGER_FILE = privilegeLedgerPathFromDaemonConfig(daemonSpawnConfig, CONFIG_DIR)
-const privilegeLedger = createPrivilegeLedger(PRIVILEGE_LEDGER_FILE)
-applyDaemonGrants(privilegeLedger, daemonSpawnConfig)
+const PERMISSION_LEDGER_FILE = permissionLedgerPathFromDaemonConfig(daemonSpawnConfig, CONFIG_DIR)
+const permissionLedger = createPermissionLedger(PERMISSION_LEDGER_FILE)
+applyDaemonGrants(permissionLedger, daemonSpawnConfig)
 
 // Per-machine source bindings: { projectName -> absolute local source dir }.
 // This is the per-machine fact "where MY copy of project X lives" — it belongs
@@ -3200,8 +3200,8 @@ async function rpcSpawn({
   enroll,
   effort,
   mode,
-  requestedCapability,
-  requestedPrivileges,
+  requestedPermission,
+  requestedPermissions,
   policy,
   acknowledgeNoSecurity,
   callerRung,
@@ -3252,17 +3252,17 @@ async function rpcSpawn({
     spawnConfig = config
     if (!requester?.id) {
       const err = new Error('spawn refused: daemon RPC requester identity is required')
-      err.code = 'SPAWN_PRIVILEGE_NO_REQUESTER'
+      err.code = 'SPAWN_PERMISSION_NO_REQUESTER'
       throw err
     }
-    const spawnerGrant = privilegeLedger.grantFor(requester)
+    const spawnerGrant = permissionLedger.grantFor(requester)
     grant = resolveSpawnGrant({
-      requestedCapability: requestedCapability || (policy != null ? 'write' : undefined),
-      requestedPrivileges,
+      requestedPermission: requestedPermission || (policy != null ? 'write' : undefined),
+      requestedPermissions,
       callerRung,
       requester,
       spawnerPolicy: spawnerGrant?.spawnPolicy,
-      spawnerPrivilegeSet: spawnerGrant?.privilegeSet,
+      spawnerPermissionSet: spawnerGrant?.permissionSet,
       model: launchModel,
       kind: launchKind,
       config,
@@ -3280,12 +3280,12 @@ async function rpcSpawn({
     launchKind: launchKind || null,
     requestedModel: model || null,
     launchModel: launchModel || null,
-    requestedCapability: requestedCapability || null,
+    requestedPermission: requestedPermission || null,
     requestedPolicy: policy || null,
-    hasRequestedPrivileges: !!requestedPrivileges,
-    grantedCapability: grant.grantedCapability || null,
+    hasRequestedPermissions: !!requestedPermissions,
+    grantedPermission: grant.grantedPermission || null,
     grantedPolicy: grant.grantedPolicy || null,
-    hasGrantedPrivilegeSet: !!grant.grantedPrivilegeSet,
+    hasGrantedPermissionSet: !!grant.grantedPermissionSet,
     cwd: resolvedCwd || null,
     doc: doc || null,
     requester: requester ? { id: requester.id || null, name: requester.name || null, human: !!requester.human, spawnPolicy: requester.spawnPolicy || null } : null,
@@ -3297,9 +3297,9 @@ async function rpcSpawn({
     const preallocatedAgentId = agent_id || ((spawnMode === 'fresh' || spawnMode === 'session') ? newFleetId() : undefined)
     const crashLogPath = spawnCrashLogPath({ agentName, agent_id: preallocatedAgentId || agent_id, tmux_session: null })
     if (preallocatedAgentId) {
-      await privilegeLedger.set(preallocatedAgentId, {
+      await permissionLedger.set(preallocatedAgentId, {
         spawnPolicy: grant.grantedPolicy,
-        privilegeSet: grant.grantedPrivilegeSet,
+        permissionSet: grant.grantedPermissionSet,
         source: 'spawn',
       })
     }
@@ -3319,7 +3319,7 @@ async function rpcSpawn({
         effort,
         permissionMode: mode,
         spawnPolicy: grant.grantedPolicy,
-        privilegeSet: grant.grantedPrivilegeSet,
+        permissionSet: grant.grantedPermissionSet,
         explicitPolicy: policy != null,
         acknowledgeNoSecurity: !!acknowledgeNoSecurity,
         machineId: MACHINE_ID,
@@ -3328,7 +3328,7 @@ async function rpcSpawn({
         identityConfigDir: CONFIG_DIR,
       })
     } catch (e) {
-      if (preallocatedAgentId) await privilegeLedger.delete(preallocatedAgentId).catch(() => {})
+      if (preallocatedAgentId) await permissionLedger.delete(preallocatedAgentId).catch(() => {})
       throw e
     }
     traceDaemonSpawn('launched', {
@@ -3339,12 +3339,12 @@ async function rpcSpawn({
       harness: launched.harness,
       model: launched.model,
       spawnPolicy: grant.grantedPolicy || null,
-      grantedCapability: grant.grantedCapability || null,
+      grantedPermission: grant.grantedPermission || null,
     })
     try {
       await tmux('has-session', '-t', launched.tmuxSession)
     } catch (e) {
-      if (preallocatedAgentId) await privilegeLedger.delete(preallocatedAgentId).catch(() => {})
+      if (preallocatedAgentId) await permissionLedger.delete(preallocatedAgentId).catch(() => {})
       const detail = ((e.stderr || e.message || '').trim().split('\n').filter(Boolean).pop()) || 'tmux session check failed'
       return {
         ok: false,
@@ -3355,7 +3355,7 @@ async function rpcSpawn({
       }
     }
     if (launched.harness === 'codex' && !launched.resumeId) {
-      if (preallocatedAgentId) await privilegeLedger.delete(preallocatedAgentId).catch(() => {})
+      if (preallocatedAgentId) await permissionLedger.delete(preallocatedAgentId).catch(() => {})
       return {
         ok: false,
         name: agentName,
@@ -3366,9 +3366,9 @@ async function rpcSpawn({
       }
     }
     if (!preallocatedAgentId || launched.fleetId !== preallocatedAgentId) {
-      await privilegeLedger.set(launched.fleetId, {
+      await permissionLedger.set(launched.fleetId, {
         spawnPolicy: grant.grantedPolicy,
-        privilegeSet: grant.grantedPrivilegeSet,
+        permissionSet: grant.grantedPermissionSet,
         source: 'spawn',
       })
     }
@@ -3388,13 +3388,13 @@ async function rpcSpawn({
       tmux_session: launched.tmuxSession,
       resume_id: launched.resumeId,
       enrolled: launched.enrolled,
-      spawnerCapability: grant.spawnerCapability,
-      projectCapability: grant.projectCapability,
-      modelCapability: grant.modelCapability,
-      requestedPrivilegeSet: grant.requestedPrivilegeSet,
-      grantedPrivilegeSet: grant.grantedPrivilegeSet,
+      spawnerPermission: grant.spawnerPermission,
+      projectPermission: grant.projectPermission,
+      modelPermission: grant.modelPermission,
+      requestedPermissionSet: grant.requestedPermissionSet,
+      grantedPermissionSet: grant.grantedPermissionSet,
       spawnPolicy: grant.grantedPolicy,
-      grantedCapability: grant.grantedCapability,
+      grantedPermission: grant.grantedPermission,
     }
   } catch (e) {
     const detail = typeof e?.message === 'string' ? e.message : (e?.message ? JSON.stringify(e.message) : String(e))
@@ -3417,8 +3417,8 @@ async function rpcSpawn({
   }
 }
 
-async function rpcSpawnCapabilities() {
-  return await probeSpawnCapabilities()
+async function rpcSpawnAvailability() {
+  return await probeSpawnAvailability()
 }
 
 // --- Agent death detection ---
@@ -4610,7 +4610,7 @@ const RPC_HANDLERS = {
   'terminal-resize': rpcTerminalResize,
   'terminal-input': rpcTerminalInput,
   'spawn': rpcSpawn,
-  'spawn-capabilities': rpcSpawnCapabilities,
+  'spawn-availability': rpcSpawnAvailability,
   'resolve-file': rpcResolveFile,
   'rechat': rpcRechat,
   'materialize-attachment': rpcMaterializeAttachment,
@@ -4752,8 +4752,8 @@ function handleServerMessage(msg) {
     agents = msg.agents || []
     projects = msg.projects || []
     syncSessionIdentityNamesFromAgents(agents)
-    applyDaemonGrants(privilegeLedger, daemonSpawnConfig)
-    applyGrandfatherInfill(privilegeLedger, { fleetDbPath: FLEET_DB_FILE, config, projects })
+    applyDaemonGrants(permissionLedger, daemonSpawnConfig)
+    applyGrandfatherInfill(permissionLedger, { fleetDbPath: FLEET_DB_FILE, config, projects })
     log.info(`welcome: ${agents.length} agents, ${projects.length} projects`)
     const replay = replayDeadLetters(DEAD_LETTER_FILE, message => _rws?.send(message), { log })
     if (replay.replayed || replay.remaining || replay.malformed) {

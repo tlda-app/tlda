@@ -17,7 +17,7 @@ import { handleFleetTool } from '../mcp-server/fleet-tools.mjs'
 test('delegate rejects friendly_name on the spawn path (one name, enforced)', async () => {
   const res = await handleFleetTool('delegate', {
     spawn: { name: 'math-historian' },
-    friendly_name: 'math historian (fence/capability/guidance)',
+    friendly_name: 'math historian (fence/permission/guidance)',
     message: 'do a thing',
   })
   assert.equal(res.isError, true, 'spawn + divergent friendly_name must be rejected')

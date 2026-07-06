@@ -2,12 +2,12 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { fenceSettings } from '../bin/lib/spawn/fence.mjs'
 import { codexSandboxProjection, resolveLaunchPolicy } from '../bin/lib/spawn/permissions.mjs'
-import { normalizeRequestedPrivileges } from '../server/lib/spawn-policy.mjs'
+import { normalizeRequestedPermissions } from '../server/lib/spawn-policy.mjs'
 
-test('explicit privilege zones force a fenced launch even when projected policy is full', () => {
+test('explicit permission zones force a fenced launch even when projected policy is full', () => {
   const cwd = '/Users/skip/work/tlda'
-  const privilegeSet = {
-    type: 'privilege-set',
+  const permissionSet = {
+    type: 'permission-set',
     name: 'app-dev',
     operations: {
       read: { allow: ['/Users/skip/work/tlda/**'], deny: ['~/.ssh/id_*'] },
@@ -16,8 +16,8 @@ test('explicit privilege zones force a fenced launch even when projected policy 
     rules: [],
   }
   const policy = resolveLaunchPolicy({
-    spawnPolicy: { name: 'full', capability: 'full', policy: 'unsandboxed' },
-    privilegeSet,
+    spawnPolicy: { name: 'full', permission: 'full', policy: 'unsandboxed' },
+    permissionSet,
     harness: 'codex',
     model: 'gpt-5.5',
     cwd,
@@ -25,8 +25,8 @@ test('explicit privilege zones force a fenced launch even when projected policy 
   })
   assert.equal(policy.policyName, 'unsandboxed')
   assert.ok(policy.leasePolicy)
-  assert.equal(policy.leasePolicy.explicit_privilege_set, true)
-  assert.deepEqual(policy.leasePolicy.privilege_set, privilegeSet)
+  assert.equal(policy.leasePolicy.explicit_permission_set, true)
+  assert.deepEqual(policy.leasePolicy.permission_set, permissionSet)
   assert.ok(policy.leasePolicy.write_roots.includes('/Users/skip/work/tlda/**'))
   assert.ok(policy.leasePolicy.write_roots.includes('/tmp/tlda-*/**'))
   assert.deepEqual(policy.leasePolicy.deny_write_roots, ['/Users/skip/.ssh/id_*'])
@@ -59,20 +59,20 @@ test('explicit privilege zones force a fenced launch even when projected policy 
   assert.equal(projection.sandboxMode, 'danger-full-access')
 })
 
-test('named app-dev privileges compile to explicit cwd rules instead of broad full access', () => {
+test('named app-dev permissions compile to explicit cwd rules instead of broad full access', () => {
   const cwd = '/Users/skip/work/tlda'
-  const request = normalizeRequestedPrivileges('app-dev')
+  const request = normalizeRequestedPermissions('app-dev')
   assert.equal(request.name, 'app-dev')
-  assert.equal(request.capability, 'full')
+  assert.equal(request.permission, 'full')
   assert.equal(request.policy, 'unsandboxed')
-  assert.equal(request.privilegeSet.name, 'app-dev')
-  assert.deepEqual(request.privilegeSet.operations.read.allow, [
+  assert.equal(request.permissionSet.name, 'app-dev')
+  assert.deepEqual(request.permissionSet.operations.read.allow, [
     'cwd',
     '~/.config/tlda/fleet-daemon.log',
     '~/.config/tlda/fleet-daemon.pid',
     '~/.config/tlda/fleet-daemon.*.lock',
   ])
-  assert.deepEqual(request.privilegeSet.operations.write.allow, [
+  assert.deepEqual(request.permissionSet.operations.write.allow, [
     'cwd',
     '~/.config/tlda/fleet-daemon.log',
     '~/.config/tlda/fleet-daemon.pid',
@@ -80,7 +80,7 @@ test('named app-dev privileges compile to explicit cwd rules instead of broad fu
   ])
   const policy = resolveLaunchPolicy({
     spawnPolicy: request,
-    privilegeSet: request.privilegeSet,
+    permissionSet: request.permissionSet,
     harness: 'codex',
     model: 'gpt-5.5',
     cwd,
@@ -102,18 +102,18 @@ test('named app-dev privileges compile to explicit cwd rules instead of broad fu
   assert.equal(settings.filesystem.allowWrite.includes('/'), false)
 })
 
-test('named deploy privileges allow Fly state without broad machine writes', () => {
+test('named deploy permissions allow Fly state without broad machine writes', () => {
   const cwd = '/Users/skip/work/tlda'
-  const request = normalizeRequestedPrivileges('deploy')
+  const request = normalizeRequestedPermissions('deploy')
   assert.equal(request.name, 'deploy')
-  assert.equal(request.capability, 'write')
+  assert.equal(request.permission, 'write')
   assert.equal(request.policy, 'cwd')
-  assert.equal(request.privilegeSet.name, 'deploy')
-  assert.ok(request.privilegeSet.operations.read.allow.includes('~/.fly/**'))
-  assert.ok(request.privilegeSet.operations.write.allow.includes('~/.fly/**'))
+  assert.equal(request.permissionSet.name, 'deploy')
+  assert.ok(request.permissionSet.operations.read.allow.includes('~/.fly/**'))
+  assert.ok(request.permissionSet.operations.write.allow.includes('~/.fly/**'))
   const policy = resolveLaunchPolicy({
     spawnPolicy: request,
-    privilegeSet: request.privilegeSet,
+    permissionSet: request.permissionSet,
     harness: 'codex',
     model: 'gpt-5.5',
     cwd,
@@ -133,10 +133,10 @@ test('named deploy privileges allow Fly state without broad machine writes', () 
   assert.ok(settings.filesystem.denyRead.includes('~/.ssh/id_*'))
 })
 
-test('symbolic cwd privilege zones resolve to the workspace root for fence settings', () => {
+test('symbolic cwd permission zones resolve to the workspace root for fence settings', () => {
   const cwd = '/Users/skip/work/tlda'
-  const privilegeSet = {
-    type: 'privilege-set',
+  const permissionSet = {
+    type: 'permission-set',
     name: 'write',
     operations: {
       read: { allow: ['cwd'], deny: [] },
@@ -145,14 +145,14 @@ test('symbolic cwd privilege zones resolve to the workspace root for fence setti
     rules: [],
   }
   const policy = resolveLaunchPolicy({
-    spawnPolicy: { name: 'write', capability: 'write', policy: 'cwd' },
-    privilegeSet,
+    spawnPolicy: { name: 'write', permission: 'write', policy: 'cwd' },
+    permissionSet,
     harness: 'codex',
     model: 'gpt-5.5',
     cwd,
     config: { spawnPolicy: { fenceEnabled: true }, agentSandbox: { runner: { command: 'fence' } } },
   })
-  assert.equal(policy.leasePolicy.explicit_privilege_set, true)
+  assert.equal(policy.leasePolicy.explicit_permission_set, true)
   assert.ok(policy.leasePolicy.read_roots.includes('/Users/skip/work/tlda/**'))
   assert.ok(policy.leasePolicy.write_roots.includes('/Users/skip/work/tlda/**'))
   assert.equal(policy.leasePolicy.write_roots.includes('/Users/skip/work/tlda/cwd'), false)
@@ -163,8 +163,8 @@ test('symbolic cwd privilege zones resolve to the workspace root for fence setti
 
 test('explicit cwd policy honors config git write and does not deny git refs', () => {
   const cwd = '/Users/skip/work/tlda'
-  const privilegeSet = {
-    type: 'privilege-set',
+  const permissionSet = {
+    type: 'permission-set',
     name: 'cwd',
     operations: {
       read: { allow: ['cwd'], deny: [] },
@@ -173,8 +173,8 @@ test('explicit cwd policy honors config git write and does not deny git refs', (
     rules: [],
   }
   const policy = resolveLaunchPolicy({
-    spawnPolicy: { name: 'write', capability: 'write', policy: 'cwd' },
-    privilegeSet,
+    spawnPolicy: { name: 'write', permission: 'write', policy: 'cwd' },
+    permissionSet,
     explicitPolicy: true,
     harness: 'codex',
     model: 'gpt-5.5',

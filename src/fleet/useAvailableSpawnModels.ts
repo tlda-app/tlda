@@ -24,7 +24,7 @@ export async function loadAvailableSpawnModels(
   userId: string,
   fetchFn: typeof fetch = fetch,
 ): Promise<Omit<AvailableSpawnModels, 'loading'>> {
-  const r = await fetchFn(`/api/fleet/spawn-capabilities?target=fresh-spawn-current&user=${encodeURIComponent(userId)}`)
+  const r = await fetchFn(`/api/fleet/spawn-availability?target=fresh-spawn-current&user=${encodeURIComponent(userId)}`)
   if (!r.ok) throw new Error(String(r.status))
   const next = spawnModelsFromCapabilitiesResponse(await r.json())
   return {

@@ -192,8 +192,8 @@ async function spawnFresh(params) {
     const dnsAlias = await (deps.resolveDnsAlias || resolveDnsAlias)(api)
     const launchPolicy = resolveLaunchPolicy({
       spawnPolicy: params.spawnPolicy,
-      privilegeSet: params.privilegeSet,
-      requestedCapability: params.requestedCapability,
+      permissionSet: params.permissionSet,
+      requestedPermission: params.requestedPermission,
       harness: requestedKind,
       model,
       cwd,
@@ -211,7 +211,7 @@ async function spawnFresh(params) {
       model,
       modelProvider: modelResolved.provider,
       cwd,
-      requestedCapability: params.requestedCapability || null,
+      requestedPermission: params.requestedPermission || null,
       requestedSpawnPolicy: params.spawnPolicy || null,
       explicitPolicy: !!params.explicitPolicy,
       policyName: launchPolicy.policyName,
@@ -238,7 +238,7 @@ async function spawnFresh(params) {
         refresh: true,
         shell: true,
         kind: requestedKind,
-        spawnCapability: launchPolicy.spawnPolicy?.capability || params.requestedCapability,
+        spawnPermission: launchPolicy.spawnPolicy?.permission || params.requestedPermission,
         metadata: sandboxMetadata(launchPolicy.spawnPolicy, launchPolicy.leasePolicy),
         machineId: params.machineId,
         api,
@@ -414,8 +414,8 @@ async function spawnRespawn(params) {
   const dnsAlias = await resolveDnsAlias(api)
   const launchPolicy = resolveLaunchPolicy({
     spawnPolicy: params.spawnPolicy || meta.spawnPolicy,
-    privilegeSet: params.privilegeSet || meta.privilegeSet,
-    requestedCapability: params.requestedCapability,
+    permissionSet: params.permissionSet || meta.permissionSet,
+    requestedPermission: params.requestedPermission,
     harness: requestedKind,
     model,
     cwd,
@@ -494,8 +494,8 @@ async function spawnRefresh(params) {
   const dnsAlias = await resolveDnsAlias(api)
   const launchPolicy = resolveLaunchPolicy({
     spawnPolicy: params.spawnPolicy || meta.spawnPolicy,
-    privilegeSet: params.privilegeSet || meta.privilegeSet,
-    requestedCapability: params.requestedCapability,
+    permissionSet: params.permissionSet || meta.permissionSet,
+    requestedPermission: params.requestedPermission,
     harness: requestedKind,
     model,
     cwd,
@@ -515,7 +515,7 @@ async function spawnRefresh(params) {
     effort: params.effort || meta.effort,
     refresh: true,
     kind: requestedKind,
-    spawnCapability: launchPolicy.spawnPolicy?.capability || params.requestedCapability,
+    spawnPermission: launchPolicy.spawnPolicy?.permission || params.requestedPermission,
     metadata: sandboxMetadata(launchPolicy.spawnPolicy, launchPolicy.leasePolicy),
     machineId: params.machineId,
     api,
@@ -594,8 +594,8 @@ async function spawnCodexSession(params, { api, sessionId, codexPath }) {
   const dnsAlias = await resolveDnsAlias(api)
   const launchPolicy = resolveLaunchPolicy({
     spawnPolicy: params.spawnPolicy,
-    privilegeSet: params.privilegeSet,
-    requestedCapability: params.requestedCapability,
+    permissionSet: params.permissionSet,
+    requestedPermission: params.requestedPermission,
     harness: 'codex',
     model,
     cwd,
@@ -615,7 +615,7 @@ async function spawnCodexSession(params, { api, sessionId, codexPath }) {
     effort: params.effort,
     kind: 'codex',
     sessionId,
-    spawnCapability: launchPolicy.spawnPolicy?.capability || params.requestedCapability,
+    spawnPermission: launchPolicy.spawnPolicy?.permission || params.requestedPermission,
     metadata: sandboxMetadata(launchPolicy.spawnPolicy, launchPolicy.leasePolicy),
     machineId: params.machineId,
     api,
@@ -670,8 +670,8 @@ async function spawnClaudeSession(params, { api, sessionId, identity }) {
   const dnsAlias = await resolveDnsAlias(api)
   const launchPolicy = resolveLaunchPolicy({
     spawnPolicy: params.spawnPolicy,
-    privilegeSet: params.privilegeSet,
-    requestedCapability: params.requestedCapability,
+    permissionSet: params.permissionSet,
+    requestedPermission: params.requestedPermission,
     harness: 'claude',
     model,
     cwd,
@@ -691,7 +691,7 @@ async function spawnClaudeSession(params, { api, sessionId, identity }) {
     effort: params.effort,
     kind: 'claude',
     sessionId,
-    spawnCapability: launchPolicy.spawnPolicy?.capability || params.requestedCapability,
+    spawnPermission: launchPolicy.spawnPolicy?.permission || params.requestedPermission,
     metadata: sandboxMetadata(launchPolicy.spawnPolicy, launchPolicy.leasePolicy),
     machineId: params.machineId,
     api,

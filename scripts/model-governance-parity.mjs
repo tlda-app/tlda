@@ -110,7 +110,7 @@ function snapshot() {
       concrete_id: concreteId,
       family: modelFamily({ model: classifyModel, kind: row.kind }),
       trust_tier: modelTrustTier({ model: classifyModel, kind: row.kind }),
-      spawn_ceiling: modelSpawnCeiling({}, { model: classifyModel, kind: row.kind }).capability,
+      spawn_ceiling: modelSpawnCeiling({}, { model: classifyModel, kind: row.kind }).permission,
       one_m_context: /\[1m\]$/u.test(String(concreteId || row.requestedModel || '')),
     }
     if (error) tuple.error = error
