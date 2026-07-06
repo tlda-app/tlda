@@ -67,6 +67,7 @@ import { coherentSpawnPolicy } from './lib/spawn-policy.mjs'
 import { buildRuntimeStatus } from './lib/runtime-status.mjs'
 import { resolveSpawnMachine, SPAWN_MACHINE_PREF_KEY } from './lib/spawn-routing.mjs'
 import { resolveFreshSpawnCapabilityModels } from './lib/spawn-capability-models.mjs'
+import { decideTaskRenudges } from './lib/task-renudge.mjs'
 import { SpawnBounceError, SpawnLibrarian, resolveSpawnCollision } from '../shared/spawn-librarian.ts'
 import { MailboxLibrarian } from '../shared/mailbox-librarian.ts'
 import { trimTerminalSeedBlankRows } from '../shared/terminal-seed.mjs'
@@ -530,6 +531,166 @@ setInterval(() => {
   const cutoff = Date.now() - CHAT_TEMPID_TTL_MS
   for (const [k, v] of _chatTempIds) { if (v.ts < cutoff) _chatTempIds.delete(k) }
 }, 30_000).unref?.()
+
+const TASK_RENUDGE_SWEEP_MS = Number(process.env.TLDA_TASK_RENUDGE_SWEEP_MS || 60_000)
+const TASK_RENUDGE_INTERVAL_MS = Number(process.env.TLDA_TASK_RENUDGE_INTERVAL_MS || 5 * 60_000)
+const _taskRenudged = new Map()
+const _taskWakeQueue = new Map()
+let _taskWakeDraining = false
+
+function taskTerminalNudgeKind(agent) {
+  const kind = agent?.metadata?.kind || agent?.kind
+  return kind === 'codex' || kind === 'goose'
+}
+
+function taskDeliveryChannelFor(agent) {
+  return normalizeDeliveryChannel(agent?.metadata?.deliveryChannel)
+}
+
+function shouldSendTaskWakeNudge(agent, nudgeText) {
+  if (!nudgeText || !agent?.tmux_session) return false
+  return taskDeliveryChannelFor(agent) === 'tmux' || taskTerminalNudgeKind(agent)
+}
+
+async function sendTaskWakeNudge(daemonKey, agent, tmuxSession, nudgeText, phase) {
+  if (!shouldSendTaskWakeNudge(agent, nudgeText)) return
+  await sendRpc(daemonKey, 'send-text', {
+    tmux_session: tmuxSession,
+    text: nudgeText,
+    enter: true,
+    enter_delay_ms: agent?.metadata?.kind === 'codex' ? 400 : 0,
+  }).catch(e => console.warn(`[task-renudge] ${phase} failed for ${agent.id}: ${e.message}`))
+}
+
+function taskLivenessFromCheckAliveResult(agentId, tmuxSession, result) {
+  if (result?.state) return { ...result, agent_id: result.agent_id || agentId, tmux_session: result.tmux_session || tmuxSession }
+  if (typeof result?.alive === 'boolean') {
+    return {
+      type: 'agent-liveness',
+      agent_id: agentId,
+      tmux_session: tmuxSession,
+      state: result.alive ? 'alive' : 'dead',
+      reason: result.alive ? undefined : 'daemon check-alive: tmux session absent',
+      ts: new Date().toISOString(),
+    }
+  }
+  return {
+    type: 'agent-liveness',
+    agent_id: agentId,
+    tmux_session: tmuxSession,
+    state: 'unknown',
+    reason: 'daemon check-alive returned no liveness state',
+    ts: new Date().toISOString(),
+  }
+}
+
+function requestTaskWake(agentId, nudgeText = null) {
+  const agent = fleetStore?.getAgent?.(agentId)
+  if (!agent || agent.dead || agent.human) return
+  const prev = _taskWakeQueue.get(agentId)
+  _taskWakeQueue.set(agentId, nudgeText || prev || null)
+  if (!_taskWakeDraining) drainTaskWakeQueue()
+}
+
+async function drainTaskWakeQueue() {
+  _taskWakeDraining = true
+  while (_taskWakeQueue.size > 0) {
+    const [agentId, nudgeText] = _taskWakeQueue.entries().next().value
+    _taskWakeQueue.delete(agentId)
+    const agent = fleetStore?.getAgent?.(agentId)
+    if (!agent || agent.dead || agent.human) continue
+    const daemonKeys = [...daemonConnections.keys()]
+    if (daemonKeys.length === 0) continue
+    const daemonKey = agent.machine_id && agent.env_name ? agentDaemonAddress(agent) : daemonKeys[0]
+    try {
+      if (!agent.machine_id) throw new Error(`agent ${agent.friendly_name || agentId} has no machine_id; cannot route task re-nudge`)
+      const ownerDaemon = daemonConnections.get(daemonKey)
+      if (!ownerDaemon || ownerDaemon.readyState !== 1) throw new Error(`No fleet-daemon connected for ${daemonKey}`)
+      const serverAlive = isAgentAlive(agentId)
+      const liveness = serverAlive
+        ? await sendRpc(daemonKey, 'check-alive', { tmux_session: agent.tmux_session })
+          .then(result => taskLivenessFromCheckAliveResult(agentId, agent.tmux_session, result))
+          .catch(e => ({
+            type: 'agent-liveness',
+            agent_id: agentId,
+            tmux_session: agent.tmux_session,
+            state: 'unknown',
+            reason: e.message,
+            ts: new Date().toISOString(),
+          }))
+        : {
+            type: 'agent-liveness',
+            agent_id: agentId,
+            tmux_session: agent.tmux_session,
+            state: 'unknown',
+            reason: 'server liveness says hibernating',
+            ts: new Date().toISOString(),
+          }
+      spawnLibrarian.observeLiveness({ ...liveness, agent_id: liveness.agent_id || agentId })
+      const decision = spawnLibrarian.decideWake(agent, { ...liveness, agent_id: liveness.agent_id || agentId }, { serverAlive })
+      if (decision.action === 'deliver') {
+        await sendTaskWakeNudge(daemonKey, agent, agent.tmux_session, nudgeText, 'deliver')
+        continue
+      }
+      if (decision.action === 'queue') {
+        setTimeout(() => requestTaskWake(agentId, nudgeText), 2000).unref?.()
+        continue
+      }
+      if (decision.action === 'hold') continue
+      if (decision.action === 'surface') {
+        broadcastEvent('agent-wedged', { agentId, reason: decision.message, ts: new Date().toISOString() })
+        continue
+      }
+      const spawnResult = await sendRpc(daemonKey, 'spawn', { name: agentId, respawn: true })
+      await sendTaskWakeNudge(daemonKey, agent, spawnResult?.tmux_session || agent.tmux_session, nudgeText, 'post-respawn')
+    } catch (e) {
+      console.warn(`[task-renudge] failed for ${agentId}: ${e.message}`)
+      broadcastEvent('agent-wedged', {
+        agentId,
+        reason: `task re-nudge failed: ${e.message}`,
+        ts: new Date().toISOString(),
+      })
+    }
+  }
+  _taskWakeDraining = false
+}
+
+function taskInboxStatusFor(agentId) {
+  const status = fleetStore?.getAgent?.(agentId)?.metadata?.inboxStatus
+  return normalizeInboxStatus(status)
+}
+
+function taskWakePreview(raw, max = 120) {
+  const s = String(raw || '')
+  return s.length > max ? `${s.slice(0, max)}…` : s
+}
+
+function taskDelegateWakeText(description, agentId) {
+  const status = taskInboxStatusFor(agentId)
+  const prefix = status[0].toUpperCase() + status.slice(1)
+  return `📬 ${prefix} new task assigned: ${taskWakePreview(description)}\nCall inbox() to see it.`
+}
+
+function runTaskRenudgeSweep() {
+  if (!fleetStore) return
+  const tasks = fleetStore.getActiveTasks?.() || []
+  const taskStates = tasks.map(task => fleetStore.getTaskDeliveryState?.(task)).filter(Boolean)
+  const nudges = decideTaskRenudges({
+    taskStates,
+    agents: fleetStore.getAllAgents?.() || [],
+    now: Date.now(),
+    lastRenudged: _taskRenudged,
+    renudgeIntervalMs: TASK_RENUDGE_INTERVAL_MS,
+  })
+  for (const nudge of nudges) {
+    _taskRenudged.set(nudge.key, { ts: Date.now(), reason: nudge.reason })
+    requestTaskWake(nudge.task.agent, taskDelegateWakeText(nudge.task.description || nudge.event.text || nudge.task.id, nudge.task.agent))
+  }
+}
+
+if (TASK_RENUDGE_SWEEP_MS > 0) {
+  setInterval(runTaskRenudgeSweep, TASK_RENUDGE_SWEEP_MS).unref?.()
+}
 
 // detectPlanApproval removed — plan detection is handled by the daemon
 
