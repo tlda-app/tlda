@@ -148,14 +148,24 @@ async function buildCommand({ requestedKind, adapter, fleetId, tmuxSession, mode
     })
   }
   const commandBeforeFence = cmd
-  if (leasePolicy) cmd = wrapSandboxCmd(cmd, leasePolicy, { api, dnsAlias, enforce: enforceFence })
+  // Re-enable the OS fence (seatbelt) whenever the lease declares secret denies.
+  // The wrapper was turned off 2026-07-02 because the OLD cage leases (cwd-only
+  // allow) over-restricted every agent (no ps / ~/.fly / worktrees). Now the
+  // default profile is permissive (machine-wide allow + secrets deny), so
+  // wrapping enforces ONLY the secret denies — fence-but-don't-trap — while a
+  // genuinely fenced profile (e.g. wd) still narrows via its own lease. Enforce
+  // only when the lease actually carries denies so a deny-free lease stays
+  // unwrapped (no regression for the wide-open case).
+  const leaseHasDenies = !!(leasePolicy && ((leasePolicy.deny_read_roots || []).length || (leasePolicy.deny_write_roots || []).length))
+  const effectiveEnforce = enforceFence || leaseHasDenies
+  if (leasePolicy) cmd = wrapSandboxCmd(cmd, leasePolicy, { api, dnsAlias, enforce: effectiveEnforce })
   return {
     cmd,
     sendKeys,
     commandTrace: {
       projection,
       hasLeasePolicy: !!leasePolicy,
-      wrappedByFence: !!leasePolicy && !!enforceFence,
+      wrappedByFence: !!leasePolicy && !!effectiveEnforce,
       commandContainsFence: /(?:^|['"\s/])fence(?:['"\s]|$)/.test(cmd),
       commandContainsCodexYolo: cmd.includes('--dangerously-bypass-approvals-and-sandbox') || cmd.includes('--yolo'),
       commandContainsDangerSandbox: cmd.includes('danger-full-access'),
