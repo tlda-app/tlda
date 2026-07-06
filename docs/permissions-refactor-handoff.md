@@ -125,6 +125,46 @@ Worktree: `/Users/skip/work/tlda/.worktrees/perms-clean`. Commits on top of main
    ops:
      description: the whole machine minus secrets — the most open profile
    ```
+5. **Spawn command → a `fleet-env` file.** Skip's ask, verbatim intent: the spawn
+   command is an unreadable wall of inline env vars (`FLEET_ID=… GIT_AUTHOR_NAME=…
+   NODE_EXTRA_CA_CERTS=… TLDA_SERVER=…` etc. — see the trace in
+   `bin/lib/spawn/*` where the launch cmd is assembled). Move that env into a
+   generated **`fleet-env` file** the spawn sources (`env -S` / an env-file arg),
+   so the launched command is short and readable — "we have a permissions file and
+   an environment file," not a giant one-liner. Symmetry with the permissions
+   (daemon.yaml) config.
+6. **Consolidate into one home, files where the code runs.** Skip: spawn/permission
+   code runs in the DAEMON, so it belongs in the daemon folder — not `server/`.
+   Move `server/lib/spawn-policy.mjs` (the shared brain, imported by daemon+cli+
+   server) into `bin/lib/spawn/`; update all importers. Goal: one implementation,
+   no "is it the server or the daemon?" confusion. (There were ~three overlapping
+   implementations historically — the graveyard of `perm-*`/`ledgerauth-*`/
+   `perms-model-xserver` branches. Do NOT resurrect those; this branch is the
+   clean line.)
+7. **Reliability is the priority Skip named: "agents must be wakeable into a state
+   in which they can act."** Right now they are NOT (pty exhaustion + roster lies —
+   see top). "Make it never happen again." This is bigger than the permissions
+   rename and is infra/ops-lane, but it's the thing that actually blocks Skip. The
+   pty leak on the mini and the fence-that-traps-agents are both instances. Owner:
+   ops/reliability, not the permissions cleanup.
+
+## Skip's directives this session, condensed (so he never repeats them)
+1. Fencing OPT-IN, never default. (done, live)
+2. ONE word `permissions`; excise `capability`/`privilege` from the whole codebase,
+   not just user-facing. (done on branch)
+3. Profiles are the ENTIRE model. **NO LEVELS** — the read/write/full ladder was
+   never supposed to exist. Kill it. (task #1)
+4. Named, working-directory-based profiles (`readonly/wd/math/app/ops`) with the
+   `ops` grant for `fleet:skip`. (exists in daemon.yaml)
+5. Help + descriptions derive from `daemon.yaml`; inert `description:` per profile.
+   (done on branch)
+6. Every spawn is transparent about what permissions it got. (partly done)
+7. Documented so agents stop fabricating (`docs/permissions.md`). (done)
+8. `fleet-env` file instead of the inline env wall. (task #5)
+9. One implementation, files where the code runs (daemon). (task #6)
+10. Merge when done. Deploy freely; rollback is ~30s.
+11. Reliability: agents must be spawnable/wakeable into a working state, and it must
+    stay that way. (task #7 — the real blocker)
 
 ## Hazards / judgment calls already resolved
 - `capability` has THREE meanings; only the permission one was renamed. The other
