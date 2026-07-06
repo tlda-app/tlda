@@ -99,6 +99,12 @@ Worktree: `/Users/skip/work/tlda/.worktrees/perms-clean`. Commits on top of main
      the `permission` entry in the subcommand list ~1788, and usage strings that
      mention `read|write|tlda-write|full`). Keep `tlda agent permissions <profile>`
      and `--permissions <profile>` — those are the profile surface.
+   - **Excise `--policy`** (and never introduce `--fence`). Skip: "in what world is
+     anything named policy?" The spawn flag is `--permissions <profile>`, one word.
+     Wire it so naming a profile via `--permissions` IS the explicit fence request
+     (i.e. `--permissions <profile>` sets what `explicitPolicy`/`--policy` used to).
+     No profile = unfenced. Commands: unfenced `tlda agent create NAME --cwd …`;
+     profiled `tlda agent create NAME --permissions ops`.
    - Internal `server/lib/spawn-policy.mjs`: the rung ladder (`PERMISSION_LEVELS`,
      `meetSpawnPolicies`/clamp, level-based model ceilings) is the redundant
      authorization axis. Replace level-based authorization with
@@ -125,14 +131,20 @@ Worktree: `/Users/skip/work/tlda/.worktrees/perms-clean`. Commits on top of main
    ops:
      description: the whole machine minus secrets — the most open profile
    ```
-5. **Spawn command → a `fleet-env` file.** Skip's ask, verbatim intent: the spawn
-   command is an unreadable wall of inline env vars (`FLEET_ID=… GIT_AUTHOR_NAME=…
-   NODE_EXTRA_CA_CERTS=… TLDA_SERVER=…` etc. — see the trace in
-   `bin/lib/spawn/*` where the launch cmd is assembled). Move that env into a
-   generated **`fleet-env` file** the spawn sources (`env -S` / an env-file arg),
-   so the launched command is short and readable — "we have a permissions file and
-   an environment file," not a giant one-liner. Symmetry with the permissions
-   (daemon.yaml) config.
+5. **Spawn command → per-agent files in a temp folder.** Skip's design, verbatim:
+   the launch command is an unreadable wall of inline env vars (`FLEET_ID=…
+   GIT_AUTHOR_NAME=… NODE_EXTRA_CA_CERTS=… TLDA_SERVER=…` — assembled in
+   `bin/lib/spawn/*`). Write them to files **scoped to the agent id**, in a temp
+   folder (a `~/tmp`-style dir), named:
+   - **`<agentId>-environment`** — that agent's spawn environment; the launch
+     command **sources this file** instead of inlining the vars.
+   - **`<agentId>-permissions`** — that agent's resolved permissions (this is
+     effectively the fence lease, which today is written as
+     `TLDA_SANDBOX_LEASE_FILE=…/claude-cwd-lease-<hash>.json` — rename/relocate it
+     to the `<agentId>-permissions` convention).
+   Naming both by agent id **so you can debug**: to see what any agent actually got,
+   read its two files. Result: short readable launch command + inspectable per-agent
+   state. (Ties into the transparency goal — same principle, on disk.)
 6. **Consolidate into one home, files where the code runs.** Skip: spawn/permission
    code runs in the DAEMON, so it belongs in the daemon folder — not `server/`.
    Move `server/lib/spawn-policy.mjs` (the shared brain, imported by daemon+cli+

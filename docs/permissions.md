@@ -91,10 +91,15 @@ fencing is opt-in, a grant by itself does **not** fence anyone.
   to happen and was the source of the "I can never opt out" nightmare; it is
   fixed — see history below.)
 
-### How a spawn asks for a fence
+### How to spawn — the two commands
 
-- CLI: pass a profile explicitly, e.g. `tlda agent create <name> --fence <profile>`.
-- No fence flag → free agent.
+- **Unfenced (full access):** `tlda agent create NAME --cwd ~/work/tlda`
+  No `--permissions` flag = no profile = unfenced. This is the default.
+- **With a permission profile:** `tlda agent create NAME --permissions ops`
+  Naming a profile via `--permissions` is the request; the agent gets that profile.
+
+The flag is **`--permissions <profile>`** — one word, the same word as everywhere
+else. There is no `--policy` and no `--fence` flag (both are excised).
 
 ### How you tell what an agent actually got
 
