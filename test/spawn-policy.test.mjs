@@ -3,17 +3,12 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  PERMISSION_LEVELS,
-  PERMISSION_REGION,
-  authorizeSpawn,
-  permissionLte,
   callerPermission,
   callerSpawnPolicy,
   compilePermissionProfiles,
   emptyPermissionSet,
   intersectPermissionSets,
   isOperator,
-  meetSpawnPolicies,
   modelCeiling,
   modelSpawnCeiling,
   modelTrustTier,
@@ -25,28 +20,23 @@ import {
   normalizeRequestedPermissions,
   resolveProjectProfile,
   resolveProjectProfileName,
-  spawnPolicyLte,
 } from '../server/lib/spawn-policy.mjs'
 
+const CWD = '/Users/skip/work/tlda'
+
 describe('spawn policy', () => {
-  it('is one axis of named rungs, region derived from the rung', () => {
-    assert.deepEqual(PERMISSION_LEVELS, ['none', 'read', 'write', 'tlda-write', 'full'])
-    assert.equal(permissionLte('none', 'read'), true)
-    assert.equal(permissionLte('read', 'write'), true)
-    assert.equal(permissionLte('write', 'tlda-write'), true)
-    assert.equal(permissionLte('tlda-write', 'full'), true)
-    assert.equal(permissionLte('full', 'read'), false)
-    // region follows the name — no second axis to type
+  it('names a coarse policy with its region derived from the name', () => {
+    // The coarse names are a LABEL over a region set, not a rank ladder — the
+    // region follows the name via the flat REGION_FOR_PERMISSION dictionary.
     assert.equal(normalizeSpawnPolicy('read').policy, 'cwd')
     assert.equal(normalizeSpawnPolicy('write').policy, 'cwd')
     assert.equal(normalizeSpawnPolicy('tlda-write').policy, 'tlda-projects')
     assert.equal(normalizeSpawnPolicy('full').policy, 'unsandboxed')
-    assert.deepEqual(PERMISSION_REGION, { none: 'cwd', read: 'cwd', write: 'cwd', 'tlda-write': 'tlda-projects', full: 'unsandboxed' })
   })
 
   it('rejects machine vocabulary as a typed permission', () => {
-    // The user surface accepts only the named rungs; the old machine words are
-    // tolerated ONLY as persisted-metadata reads, never as a normalized rung name.
+    // The user surface accepts only the coarse names; the old machine words are
+    // tolerated ONLY as persisted-metadata reads, never as a normalized name.
     for (const name of ['none', 'read', 'write', 'tlda-write', 'full']) {
       assert.equal(normalizePermission(name), name)
     }
@@ -79,9 +69,7 @@ describe('spawn policy', () => {
     assert.equal(modelCeiling({}, { kind: 'codex' }), 'full')
   })
 
-  it('orders the rungs and reports the normalized caller policy', () => {
-    assert.equal(spawnPolicyLte('write', 'tlda-write'), true)
-    assert.equal(spawnPolicyLte('tlda-write', 'write'), false)
+  it('reports the normalized caller policy', () => {
     assert.deepEqual(callerSpawnPolicy({
       id: 'fleet:a',
       metadata: { spawnPolicy: { permission: 'tlda-write', policy: 'tlda-projects' } },
@@ -103,39 +91,46 @@ describe('spawn policy', () => {
 
   it('lets a write agent always confer write to a trusted-model child', () => {
     // The thing that hurt Skip: a write-capable agent must be able to hand a
-    // child write — never down-clamped to read, never refused.
-    const r = authorizeSpawn({
-      caller: { id: 'fleet:a', metadata: { spawnPolicy: { permission: 'write', policy: 'cwd' } } },
+    // child write — never down-clamped to read, never refused. The region
+    // intersection of write/cwd ∩ full-model ∩ write-spawner is the cwd tree.
+    const r = resolveSpawnGrant({
       requestedPermission: 'write',
+      requester: { id: 'fleet:a', spawnPolicy: { permission: 'write', policy: 'cwd' } },
       model: 'opus48',
+      cwd: CWD,
     })
     assert.equal(r.grantedPolicy.permission, 'write')
     assert.equal(r.grantedPolicy.policy, 'cwd')
-    assert.equal(r.grantedPolicy.name, 'write')
+    assert.deepEqual(r.grantedPermissionSet.operations.write.allow.includes(`${CWD}/**`), true)
   })
 
-  it('clamps requests above caller permission instead of refusing', () => {
-    const r = authorizeSpawn({
-      caller: { id: 'fleet:a', metadata: { spawnPolicy: { permission: 'write', policy: 'cwd' } } },
+  it('clamps a request above the spawner authority by region intersection', () => {
+    // Request tlda-write (write across ~/work) but the spawner may only confer
+    // its own cwd; the intersection is the cwd tree — clamp, never refuse.
+    const r = resolveSpawnGrant({
       requestedPermission: 'tlda-write',
+      requester: { id: 'fleet:a', spawnPolicy: { permission: 'write', policy: 'cwd' } },
       model: 'opus46',
+      cwd: CWD,
     })
     assert.equal(r.grantedPolicy.permission, 'write')
     assert.equal(r.grantedPolicy.policy, 'cwd')
-    assert.equal(r.grantedPolicy.name, 'write')
+    assert.deepEqual(r.grantedPermissionSet.operations.write.allow, [`${CWD}/**`])
   })
 
-  it('clamps requests above the model ceiling instead of refusing', () => {
+  it('clamps a request above the model ceiling by region intersection', () => {
     // Operator (root) spawning a deepseek asks for full; the deepseek-narrow
-    // model ceiling clamps the child to write/cwd — "lock down dangerous agents"
-    // as a clamp, never a refusal.
-    const r = authorizeSpawn({
-      caller: { id: 'fleet:skip', human: true },
+    // model ceiling (write/cwd) clamps the child's write region to the cwd tree —
+    // "lock down dangerous agents" as a clamp, never a refusal.
+    const r = resolveSpawnGrant({
       requestedPermission: 'full',
+      requester: { id: 'fleet:skip', human: true },
       model: 'deepseek/deepseek-v4-pro',
+      cwd: CWD,
     })
     assert.equal(r.grantedPolicy.permission, 'write')
     assert.equal(r.grantedPolicy.policy, 'cwd')
+    assert.equal(r.grantedPermissionSet.operations.write.allow.includes('**'), false)
   })
 
   it('clamps a configured family ceiling too', () => {
@@ -147,11 +142,12 @@ describe('spawn policy', () => {
       policy: 'cwd',
       category: 'write-scope',
     })
-    const r = authorizeSpawn({
-      caller: { id: 'fleet:skip', human: true },
+    const r = resolveSpawnGrant({
       requestedPermission: 'tlda-write',
+      requester: { id: 'fleet:skip', human: true },
       kind: 'goose',
       config: { spawnPolicy: { familyCeilings: { goose: 'write' } } },
+      cwd: CWD,
     })
     assert.equal(r.grantedPolicy.permission, 'write')
     assert.equal(r.grantedPolicy.policy, 'cwd')
@@ -174,44 +170,22 @@ describe('spawn policy', () => {
     assert.deepEqual(modelSpawnCeiling({}, { model: 'minimax/minimax-m3' }), {
       name: 'tlda-write', permission: 'tlda-write', policy: 'tlda-projects', category: 'write-scope',
     })
-    assert.equal(spawnPolicyLte(modelSpawnCeiling({}, { model: 'deepseek/deepseek-v4-pro' }),
-                               modelSpawnCeiling({}, { model: 'minimax/minimax-m3' })), true)
     // A deepseek can't be granted machine-level even by the operator: clamped to
     // write/cwd, never refused.
-    const r = authorizeSpawn({
-      caller: { id: 'fleet:skip', human: true },
+    const r = resolveSpawnGrant({
       requestedPermission: 'full',
+      requester: { id: 'fleet:skip', human: true },
       model: 'deepseek/deepseek-v4-pro',
+      cwd: CWD,
     })
     assert.equal(r.grantedPolicy.permission, 'write')
     assert.equal(r.grantedPolicy.policy, 'cwd')
   })
 
-  it('lets the operator raise a model ceiling per-agent, but never an agent', () => {
-    const result = authorizeSpawn({
-      caller: { id: 'fleet:skip', human: true },
-      requestedPermission: 'full',
-      model: 'minimax/minimax-m3',
-      trustOverride: 'full',
-    })
-    assert.equal(result.requestedPermission, 'full')
-    assert.equal(result.modelCeiling, 'full')
-    // Without the override the same request clamps to minimax's elevated ceiling
-    // (tlda-write), not refused.
-    const noOverride = authorizeSpawn({
-      caller: { id: 'fleet:skip', human: true },
-      requestedPermission: 'full',
-      model: 'minimax/minimax-m3',
-    })
-    assert.equal(noOverride.grantedPolicy.permission, 'tlda-write')
-    assert.equal(noOverride.grantedPolicy.policy, 'tlda-projects')
-    // An agent presenting a trust override is refused outright — no self-escalation.
-    assert.throws(() => authorizeSpawn({
-      caller: { id: 'fleet:a', metadata: { spawnPolicy: { permission: 'full' } } },
-      requestedPermission: 'full',
-      model: 'minimax/minimax-m3',
-      trustOverride: 'full',
-    }), /operator-only/)
+  it('lets the operator raise a model ceiling per-agent via trustOverride', () => {
+    assert.equal(modelSpawnCeiling({}, { model: 'minimax/minimax-m3', trustOverride: 'full' }).permission, 'full')
+    // Without the override minimax's own ceiling is elevated (tlda-write).
+    assert.equal(modelSpawnCeiling({}, { model: 'minimax/minimax-m3' }).permission, 'tlda-write')
     assert.equal(isOperator({ id: 'fleet:skip', human: true }), true)
     assert.equal(isOperator({ id: 'fleet:a', metadata: { spawnPolicy: { permission: 'full' } } }), false)
   })
@@ -223,7 +197,9 @@ describe('spawn policy', () => {
       { spawnPolicy: { projectProfiles: { '/Users/skip/work/custom-work': 'math-projects' } } },
       { cwd: '/Users/skip/work/custom-work' }
     ), 'math-projects')
-    assert.equal(resolveProjectProfileName({ spawnPolicy: { defaultProfile: 'full' } }, {}), 'cwd')
+    // A config defaultProfile of the permission word `full` aliases to the `ops`
+    // profile (whole machine, secrets fenced off) — PERMISSION_PROFILE_ALIAS.
+    assert.equal(resolveProjectProfileName({ spawnPolicy: { defaultProfile: 'full' } }, {}), 'ops')
     assert.equal(resolveProjectProfileName({}, {}), 'cwd')
     assert.equal(resolveProjectProfileName({}, { project: { profile: 'math' }, cwd: '/Users/skip/work/math' }), 'math')
     assert.deepEqual(resolveProjectProfile(
@@ -243,74 +219,54 @@ describe('spawn policy', () => {
   it('caps an inherited profile by the model ceiling — even for Claude', () => {
     const config = { spawnPolicy: { projectProfiles: { mathdoc: 'math-projects' } } }
     const mathProfile = resolveProjectProfile(config, { doc: 'mathdoc' })
-    const claudeInMath = authorizeSpawn({
-      caller: { id: 'fleet:skip', human: true },
+    const claudeInMath = resolveSpawnGrant({
       requestedPermission: mathProfile,
+      requester: { id: 'fleet:skip', human: true },
       model: 'opus48',
+      cwd: CWD,
     })
     assert.equal(claudeInMath.requestedPolicy.policy, 'tlda-projects')
     assert.equal(claudeInMath.requestedPermission, 'tlda-write')
     // A deepseek in the same math project: the profile asks for tlda-write, but
-    // its narrow ceiling clamps it to write/cwd — never refused.
-    const deepseekInMath = authorizeSpawn({
-      caller: { id: 'fleet:skip', human: true },
+    // its narrow ceiling clamps its write region to the cwd tree — never refused.
+    const deepseekInMath = resolveSpawnGrant({
       requestedPermission: mathProfile,
+      requester: { id: 'fleet:skip', human: true },
       model: 'deepseek/deepseek-v4-pro',
+      cwd: CWD,
     })
     assert.equal(deepseekInMath.grantedPolicy.permission, 'write')
     assert.equal(deepseekInMath.grantedPolicy.policy, 'cwd')
   })
 
   it('preserves an explicit read request as the requested operation set', () => {
-    const result = authorizeSpawn({
-      caller: { id: 'fleet:skip', human: true },
+    const result = resolveSpawnGrant({
       requestedPermission: 'read',
+      requester: { id: 'fleet:skip', human: true },
       model: 'deepseek/deepseek-v4-pro',
+      cwd: CWD,
     })
     assert.equal(result.requestedPermission, 'read')
     assert.equal(result.grantedPolicy.permission, 'read')
     assert.equal(result.grantedPolicy.policy, 'cwd')
+    assert.deepEqual(result.grantedPermissionSet.operations.write.allow, [])
   })
 
-  it('returns the granted (clamped) policy for daemon launch metadata', () => {
-    const result = authorizeSpawn({
-      caller: { id: 'fleet:skip', human: true },
-      requestedPermission: 'tlda-write',
-      model: 'opus46',
-    })
-    assert.deepEqual(result.requestedPolicy, {
-      name: 'tlda-write',
-      permission: 'tlda-write',
-      policy: 'tlda-projects',
-      category: 'write-scope',
-    })
-  })
-
-  it('meet is the min rung with the region derived', () => {
-    assert.deepEqual(meetSpawnPolicies(['full', 'tlda-write', 'write']), {
-      name: 'write', permission: 'write', policy: 'cwd', category: 'write-scope',
-    })
-    assert.deepEqual(meetSpawnPolicies(['full', 'tlda-write']), {
-      name: 'tlda-write', permission: 'tlda-write', policy: 'tlda-projects', category: 'write-scope',
-    })
-  })
-
-  it('daemon grant is meet(requested, spawner row, model cap)', () => {
+  it('daemon grant is the region intersection of requested, spawner row, and model cap', () => {
     const grant = resolveSpawnGrant({
       requestedPermission: 'full',
       callerRung: 'tlda-write',
       model: 'deepseek/deepseek-v4-pro',
       config: {},
+      cwd: CWD,
     })
     assert.equal(grant.requestedPermission, 'full')
     assert.equal(grant.callerPermission, 'tlda-write')
-    assert.equal(grant.machineAllowedPermission, 'write')
-    assert.deepEqual(grant.grantedPolicy, {
-      name: 'write',
-      permission: 'write',
-      policy: 'cwd',
-      category: 'write-scope',
-    })
+    // full ∩ tlda-write-spawner ∩ deepseek-narrow → the cwd tree.
+    assert.equal(grant.grantedPolicy.permission, 'write')
+    assert.equal(grant.grantedPolicy.policy, 'cwd')
+    assert.deepEqual(grant.grantedPermissionSet.operations.write.allow.includes(`${CWD}/**`), true)
+    assert.equal(grant.grantedPermissionSet.operations.write.allow.includes('**'), false)
   })
 
   it('daemon derives the project default as request, not authority', () => {
@@ -319,17 +275,18 @@ describe('spawn policy', () => {
       model: 'opus48',
       config: { spawnPolicy: { projectProfiles: { mathdoc: 'math-projects' }, machineGrant: 'tlda-write' } },
       doc: 'mathdoc',
-      project: { name: 'mathdoc' },
+      project: { name: 'mathdoc', sourceDir: '/Users/skip/work/mathdoc' },
+      cwd: '/Users/skip/work/mathdoc',
     })
     assert.equal(grant.requestedPermission, 'tlda-write')
     assert.equal(grant.projectPermission, 'tlda-write')
     assert.equal(grant.modelPermission, 'full')
-    assert.deepEqual(grant.grantedPolicy, {
-      name: 'tlda-write',
-      permission: 'tlda-write',
-      policy: 'tlda-projects',
-      category: 'write-scope',
-    })
+    // The tlda-write project default materializes to the project's own tree
+    // (/Users/skip/work/mathdoc/**), so the granted region is that tree and its
+    // derived coarse label is write/cwd — the fence uses the region set, not the
+    // label. It is a real write scope, never machine-wide.
+    assert.deepEqual(grant.grantedPermissionSet.operations.write.allow.includes('/Users/skip/work/mathdoc/**'), true)
+    assert.equal(grant.grantedPermissionSet.operations.write.allow.includes('**'), false)
   })
 
   it('daemon derives the project default from cwd when no doc is supplied', () => {
@@ -347,6 +304,7 @@ describe('spawn policy', () => {
       policy: 'unsandboxed',
       category: 'write-scope',
     })
+    assert.deepEqual(ops.grantedPermissionSet.operations.write.allow, ['**'])
 
     const cwdDefault = resolveSpawnGrant({
       callerRung: 'full',
@@ -356,12 +314,8 @@ describe('spawn policy', () => {
       cwd: '/Users/skip/work/tlda',
     })
     assert.equal(cwdDefault.requestedPermission, 'write')
-    assert.deepEqual(cwdDefault.grantedPolicy, {
-      name: 'write',
-      permission: 'write',
-      policy: 'cwd',
-      category: 'write-scope',
-    })
+    assert.equal(cwdDefault.grantedPolicy.permission, 'write')
+    assert.equal(cwdDefault.grantedPolicy.policy, 'cwd')
   })
 
   it('machineGrant/local ACL no longer act as authority clamps', () => {
@@ -391,12 +345,26 @@ describe('spawn policy', () => {
   })
 
   it('normalizes requested permission profiles from names, objects, and profile source text', () => {
+    // The built-in `app-dev`/`math-project` profile NAMES carry their own
+    // coarse projectedPolicy (full / tlda-write).
     assert.equal(normalizeRequestedPermissions('app-dev').permission, 'full')
     assert.equal(normalizeRequestedPermissions({ profile: 'math-project' }).permission, 'tlda-write')
-    assert.equal(normalizeRequestedPermissions({
+    // A compiled-from-source profile has no builtin projectedPolicy, so its
+    // coarse label is DERIVED from its own regions: a /Users/skip/work/tlda/**
+    // write scope is not machine-wide, so it derives `write`, not `full`.
+    const compiled = normalizeRequestedPermissions({
       source: `profile app-dev:
   read  + /Users/skip/work/tlda/**
   write + /Users/skip/work/tlda/**
+`,
+    })
+    assert.equal(compiled.permission, 'write')
+    assert.deepEqual(compiled.permissionSet.operations.write.allow, ['/Users/skip/work/tlda/**'])
+    // A machine-wide write source DOES derive full.
+    assert.equal(normalizeRequestedPermissions({
+      source: `profile wide:
+  read  + **
+  write + **
 `,
     }).permission, 'full')
   })
@@ -447,8 +415,11 @@ describe('spawn policy', () => {
       },
       cwd: '/Users/skip/work/tlda',
     })
-    assert.equal(grant.requestedPermission, 'full')
-    assert.equal(grant.grantedPermission, 'full')
+    // The compiled profile's write scope is /Users/skip/work/tlda/** + a tmp
+    // glob — not machine-wide — so the coarse label derives `write`, while the
+    // real fence is the full region set below.
+    assert.equal(grant.requestedPermission, 'write')
+    assert.equal(grant.grantedPermission, 'write')
     assert.deepEqual(grant.requestedPermissionSet.operations.write.allow, [
       '/Users/skip/work/tlda/**',
       '/tmp/tlda-*/**',
@@ -507,7 +478,10 @@ describe('spawn policy', () => {
       config: { spawnPolicy: { machineGrant: 'full' } },
       cwd: '/Users/skip/work/tlda',
     })
-    assert.equal(grant.requestedPermission, 'full')
+    // Requested write scope is /Users/skip/work/** (broad but not machine-wide)
+    // ⇒ coarse label `write`; the spawner row narrows the granted region to the
+    // cwd tree.
+    assert.equal(grant.requestedPermission, 'write')
     assert.equal(grant.grantedPermission, 'write')
     assert.deepEqual(grant.grantedPermissionSet.operations.read.allow, ['/Users/skip/work/tlda/**'])
     assert.deepEqual(grant.grantedPermissionSet.operations.write.allow, ['/Users/skip/work/tlda/**'])

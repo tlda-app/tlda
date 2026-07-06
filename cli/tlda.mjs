@@ -28,7 +28,7 @@ import { resolveAgentQuery } from './lib/agent-resolve.mjs'
 import { parseAgentMoveTarget, describeAgentAddress } from '../shared/agent-move-target.mjs'
 import {
   SPAWN_POLICY_OPTIONS,
-  SPAWN_PROFILES,
+  builtinPermissionProfileNames,
   normalizeRequestedPermissions,
   resolveDirectSpawnGrant,
   resolveSpawnPolicyOption,
@@ -2443,7 +2443,18 @@ list reads the server roster by default; --local shows only tmux sessions on thi
 }
 
 function permissionProfileNamesForError() {
-  return [...new Set([...Object.keys(SPAWN_PROFILES), ...Object.keys(SPAWN_POLICY_OPTIONS)])].join(', ')
+  // The real profiles are the operator's daemon.yaml region sets; the coarse
+  // policy words (read/write/tlda-write/full) are always accepted too.
+  let daemonProfiles = []
+  try {
+    const cfg = readDaemonConfig(defaultDaemonConfigPath(CONFIG_DIR))
+    if (cfg?.profiles && typeof cfg.profiles === 'object' && !Array.isArray(cfg.profiles)) {
+      daemonProfiles = Object.keys(cfg.profiles)
+    }
+  } catch {
+    daemonProfiles = []
+  }
+  return [...new Set([...daemonProfiles, ...builtinPermissionProfileNames(), ...Object.keys(SPAWN_POLICY_OPTIONS)])].join(', ')
 }
 
 function describePermissionProfile(profileName, policy) {

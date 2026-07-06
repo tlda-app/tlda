@@ -3,24 +3,27 @@ import { homedir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 import { modelFamily as sharedModelFamily, modelTrustTier as sharedModelTrustTier } from '../../shared/harness.ts'
 
-// Skip's ONE permission vocabulary — named rungs, low → high. This is the
+// Skip's ONE permission vocabulary — the coarse permission NAMES. This is the
 // only permission vocabulary tlda owns; there is NO machine vocabulary
-// (workspace-*, *-no-net, full-access) on any tlda surface. The filesystem
-// REGION each rung fences to is PART OF THE NAME (tlda-write = write across all
-// tlda projects), not a second axis. "no-net" is not a rung — net is always on
-// (Skip: "literally every type of agent should be able to use the Internet");
-// it survives only as a never-typed `network:false` modifier. The single foreign
-// string that survives is Codex's own sandbox API value, mapped at the
-// fleet-spawn boundary, not here.
-export const PERMISSION_LEVELS = ['none', 'read', 'write', 'tlda-write', 'full']
-const PERMISSION_RANK = new Map(PERMISSION_LEVELS.map((cap, idx) => [cap, idx]))
+// (workspace-*, *-no-net, full-access) on any tlda surface. These names are a
+// COARSE LABEL for a region set, not a rank ladder: the real authority is the
+// region-set intersection (intersectPermissionSets); the name is derived FROM
+// the region set (policyForPermissionSet) for display and for the sandbox-region
+// selection downstream. The filesystem REGION each name maps to is PART OF THE
+// NAME (tlda-write = write across all tlda projects), not a second axis. "no-net"
+// is not a name — net is always on (Skip: "literally every type of agent should
+// be able to use the Internet"); it survives only as a never-typed
+// `network:false` modifier. The single foreign string that survives is Codex's
+// own sandbox API value, mapped at the fleet-spawn boundary, not here.
+const PERMISSION_NAMES = new Set(['none', 'read', 'write', 'tlda-write', 'full'])
 
-// The fence directory-region each rung fences to. These region names
+// The fence directory-region each coarse name maps to. These region names
 // (cwd / tlda-projects / unsandboxed) are the FENCE's own vocabulary for
-// directory scopes — not a second permission vocabulary — and are DERIVED from
-// the rung, never typed by anyone. Because the region follows the rung, the four
-// names form a single total chain: there is no separate filesystem-policy axis.
-export const PERMISSION_REGION = {
+// directory scopes — not a second permission vocabulary — and follow the name.
+// This is a flat label→region dictionary, NOT an ordered ladder: nothing here
+// ranks or compares names. It exists only so normalizeSpawnPolicy can emit a
+// coherent `.policy` field once policyForPermissionSet has named the region set.
+const REGION_FOR_PERMISSION = {
   none: 'cwd',
   read: 'cwd',
   write: 'cwd',
@@ -40,7 +43,7 @@ export const ROOT_PERMISSION = 'full'
 // Removable once every live agent and fence.json use the current names.
 function legacyRung(permission, region) {
   const raw = String(permission ?? '').trim().toLowerCase()
-  if (PERMISSION_RANK.has(raw)) return raw // already a four-name rung
+  if (PERMISSION_NAMES.has(raw)) return raw // already a coarse permission name
   const reg = region == null ? null : String(region).trim().toLowerCase()
   if (raw === 'read-only') return 'read'
   if (raw === 'full-access') return 'full'
@@ -87,8 +90,8 @@ function loadFenceConfigPolicies() {
 function buildSpawnPolicyOptions() {
   const merged = {}
   for (const [name, def] of Object.entries(BUILTIN_SPAWN_POLICY_OPTIONS)) merged[name] = { ...def }
-  // Valid fence region names — the values PERMISSION_REGION can produce plus the
-  // regions the fence's own sandbox resolver (permissions.mjs SANDBOX_POLICIES)
+  // Valid fence region names — the values REGION_FOR_PERMISSION can produce plus
+  // the regions the fence's own sandbox resolver (permissions.mjs SANDBOX_POLICIES)
   // accepts as write-scope policies. 'no-dev' is a valid sandbox policy but not
   // a write-scope region, so it is excluded here.
   const VALID_REGIONS = new Set(['cwd', 'tlda-projects', 'unsandboxed'])
@@ -97,16 +100,16 @@ function buildSpawnPolicyOptions() {
     // The operator's fence.json may still describe a policy in OLD vocabulary
     // (permission `full-access`, writeScope `unsandboxed`). Normalize it to a
     // four-name rung so a stale config can't reintroduce machine vocabulary.
-    const rung = legacyRung(def.permission, def.policy ?? def.writeScope)
-      || (PERMISSION_RANK.has(name) ? name : merged[name]?.permission)
-    if (!rung || !PERMISSION_RANK.has(rung)) continue
+    const cap = legacyRung(def.permission, def.policy ?? def.writeScope)
+      || (PERMISSION_NAMES.has(name) ? name : merged[name]?.permission)
+    if (!cap || !PERMISSION_NAMES.has(cap)) continue
     // Use the operator's configured region when it is a recognized fence region,
-    // falling back to the rung-derived default. This fixes the "config thrown
-    // out" bug where every policy was force-derived from PERMISSION_REGION[rung]
+    // falling back to the name-derived default. This fixes the "config thrown
+    // out" bug where every policy was force-derived from REGION_FOR_PERMISSION[cap]
     // regardless of what the operator wrote in fence.json.
     const operatorRegion = (def.policy ?? def.writeScope ?? '')
-    const region = VALID_REGIONS.has(operatorRegion) ? operatorRegion : PERMISSION_REGION[rung]
-    merged[name] = { permission: rung, policy: region, category: 'write-scope' }
+    const region = VALID_REGIONS.has(operatorRegion) ? operatorRegion : REGION_FOR_PERMISSION[cap]
+    merged[name] = { permission: cap, policy: region, category: 'write-scope' }
   }
   return merged
 }
@@ -127,15 +130,15 @@ export function normalizePermission(value, fallback = null) {
   }
   const raw = String(value).trim().toLowerCase()
   const cap = resolveSpawnPolicyOption(raw)?.permission || legacyRung(raw, null) || raw
-  if (!PERMISSION_RANK.has(cap)) {
+  if (!PERMISSION_NAMES.has(cap)) {
     throw new Error(`unknown spawn permission "${value}"`)
   }
   return cap
 }
 
 // Normalize any input into a coherent spawn policy. The region is DERIVED from
-// the rung (PERMISSION_REGION), so the result is always coherent — a custom
-// fence.json option may override the region, but the four built-in rungs never
+// the coarse name (REGION_FOR_PERMISSION), so the result is always coherent — a
+// custom fence.json option may override the region, but the built-in names never
 // disagree with their region. `network:false` (the only modifier) is carried
 // through when explicitly present; otherwise net is on.
 export function normalizeSpawnPolicy(value, fallback = null) {
@@ -148,7 +151,7 @@ export function normalizeSpawnPolicy(value, fallback = null) {
     const option = resolveSpawnPolicyOption(value)
     if (option) return { name: option.name, permission: option.permission, policy: option.policy, category: 'write-scope' }
     const permission = normalizePermission(value)
-    return { name: permission, permission, policy: PERMISSION_REGION[permission], category: 'write-scope' }
+    return { name: permission, permission, policy: REGION_FOR_PERMISSION[permission], category: 'write-scope' }
   }
 
   if (typeof value !== 'object' || Array.isArray(value)) {
@@ -157,49 +160,13 @@ export function normalizeSpawnPolicy(value, fallback = null) {
 
   const option = value.name ? resolveSpawnPolicyOption(value.name) : null
   const permission = normalizePermission(value.permission || option?.permission)
-  const policy = String(option?.policy || PERMISSION_REGION[permission] || '').trim().toLowerCase()
+  const policy = String(option?.policy || REGION_FOR_PERMISSION[permission] || '').trim().toLowerCase()
   return {
     name: option?.name || permission,
     permission,
     policy,
     category: 'write-scope',
     ...(value.network === false ? { network: false } : {}),
-  }
-}
-
-export function permissionLte(left, right) {
-  const a = normalizePermission(left)
-  const b = normalizePermission(right)
-  return PERMISSION_RANK.get(a) <= PERMISSION_RANK.get(b)
-}
-
-// One axis: a policy is ≤ another iff its rung is ≤ the other's. The region
-// follows the rung, so there is no separate filesystem-policy comparison.
-export function spawnPolicyLte(left, right) {
-  return permissionLte(normalizeSpawnPolicy(left).permission, normalizeSpawnPolicy(right).permission)
-}
-
-// The greatest-lower-bound (meet) of a set of spawn policies: the min rung over
-// the single permission ladder (the region follows it). The result is always ≤
-// every input, so it can never confer more than any bound allows. This is how a
-// spawn CLAMPS instead of refusing — Skip's rule: "Every agent should be able to
-// spawn agents with no more permissions than they have." A spawn never fails on
-// permission grounds; it hands down the lower of the bounds. If any bound is
-// net-restricted, the child is too.
-export function meetSpawnPolicies(policies) {
-  const norm = policies.map((p) => normalizeSpawnPolicy(p))
-  let permission = norm[0].permission
-  let network = norm[0].network === false ? false : undefined
-  for (const p of norm.slice(1)) {
-    if (PERMISSION_RANK.get(p.permission) < PERMISSION_RANK.get(permission)) permission = p.permission
-    if (p.network === false) network = false
-  }
-  return {
-    name: permission,
-    permission,
-    policy: PERMISSION_REGION[permission],
-    category: 'write-scope',
-    ...(network === false ? { network: false } : {}),
   }
 }
 
@@ -226,7 +193,12 @@ export function modelFamily({ model, kind } = {}) {
 //              unrecognized model: write only their own cwd project, never
 //              across projects and never machine-level. Safe by construction —
 //              a tlda project is versioned on build, so any bad write recovers.
-export const MODEL_TRUST_TIERS = {
+//
+// This is a trust-TIER → coarse-policy dictionary (three named tiers → their
+// region label), NOT a rank ladder: it is looked up by tier name, never
+// ordered or compared. The model ceiling it produces is one of the region sets
+// intersected in resolveSpawnGrant — a real fence input, not a parallel clamp.
+const MODEL_TIER_POLICY = {
   full: { permission: 'full', policy: 'unsandboxed' },
   elevated: { permission: 'tlda-write', policy: 'tlda-projects' },
   narrow: { permission: 'write', policy: 'cwd' },
@@ -236,8 +208,8 @@ export function modelTrustTier({ model, kind } = {}) {
   return sharedModelTrustTier({ model, kind })
 }
 
-export function defaultModelCeiling({ model, kind } = {}) {
-  return MODEL_TRUST_TIERS[modelTrustTier({ model, kind })]
+function defaultModelCeiling({ model, kind } = {}) {
+  return MODEL_TIER_POLICY[modelTrustTier({ model, kind })]
 }
 
 export function modelCeiling(config = {}, { model, kind, trustOverride } = {}) {
@@ -246,8 +218,8 @@ export function modelCeiling(config = {}, { model, kind, trustOverride } = {}) {
 
 export function modelSpawnCeiling(config = {}, { model, kind, trustOverride } = {}) {
   // Per-agent operator override (e.g. a trusted minimax raised above its model
-  // default). Operator-gated in authorizeSpawn — this function trusts that the
-  // caller already proved root before a trustOverride reached it.
+  // default). Operator-gated at the spawn boundary — this function trusts that
+  // the caller already proved root before a trustOverride reached it.
   if (trustOverride != null && trustOverride !== '') {
     return normalizeSpawnPolicy(trustOverride, defaultModelCeiling({ model, kind }))
   }
@@ -277,7 +249,14 @@ export function modelSpawnCeiling(config = {}, { model, kind, trustOverride } = 
 //   untrusted — write only its own project (cwd); never across projects, never
 //               machine-level. Same lane as app; the trust difference is carried
 //               by the model ceiling, not the lane.
-export const SPAWN_PROFILES = {
+// Built-in profile-name → coarse-policy fallback. The real authority for a
+// profile is the operator's daemon.yaml region set (configuredPermissionProfile),
+// whose coarse label is DERIVED from its regions (derivedPolicyFromRegionSet).
+// This dictionary only names the built-in profiles the config does not define —
+// so a bare `ops`/`math`/`cwd` still resolves when no daemon.yaml entry covers
+// it. It is a flat name→policy lookup, NOT a rank ladder: nothing here orders,
+// ranks, or meets these names.
+const BUILTIN_PROFILE_POLICY = {
   none: { permission: 'none', policy: 'cwd' },
   'read-only': { permission: 'read', policy: 'cwd' },
   ops: { permission: 'full', policy: 'unsandboxed' },
@@ -414,6 +393,13 @@ function builtinPermissionProfiles() {
   return builtinPermissionBundle
 }
 
+// The built-in permission-profile names (app-dev, deploy) — the region-set
+// profiles that ship in code, distinct from the operator's daemon.yaml profiles.
+// Exposed so CLI help/error text can list every recognized profile name.
+export function builtinPermissionProfileNames() {
+  return Object.keys(builtinPermissionProfiles().profiles)
+}
+
 function zoneForPolicy(policy, { cwd, project } = {}) {
   if (policy.policy === 'unsandboxed') return '**'
   const base = policy.policy === 'tlda-projects'
@@ -522,7 +508,7 @@ function builtinPermissionProfile(name) {
   const profile = builtinPermissionProfiles().profiles[key]
   if (!profile) return null
   const cloned = clonePermissionSet(profile)
-  cloned.projectedPolicy = normalizeSpawnPolicy(SPAWN_PROFILES[key] || 'write')
+  cloned.projectedPolicy = normalizeSpawnPolicy(BUILTIN_PROFILE_POLICY[key] || 'write')
   cloned.compiledFrom = 'builtin-permission-profile'
   return cloned
 }
@@ -591,15 +577,41 @@ function looksLikePermissionSet(value) {
     && typeof value.operations === 'object'
 }
 
+// A write zone that covers the whole machine — the signal that a region set is
+// "unsandboxed / full". Matches the universal globs the fence treats as machine
+// scope (permissions.mjs / permission-ledger.mjs derivedPolicyFromOperations).
+function isMachineZone(zone) {
+  const raw = String(zone || '').trim()
+  return raw === '**' || raw === '/' || raw === '/**'
+}
+
+// Derive the coarse permission NAME from a region set's operation zones — no
+// rank ladder, just region inspection. A machine-covering write ⇒ full; an
+// explicit tlda-projects write ⇒ tlda-write; any other write ⇒ write; read-only
+// ⇒ read; nothing ⇒ none. This is the canonical way to name an INTERSECTED
+// region set (the real fence input) for display and sandbox-region selection.
+function derivedPolicyFromRegionSet(permissions, name, fallback = DEFAULT_AGENT_PERMISSION) {
+  const writeAllow = permissions.operations?.write?.allow || []
+  const readAllow = permissions.operations?.read?.allow || []
+  const permission = writeAllow.some(isMachineZone)
+    ? 'full'
+    : writeAllow.some((zone) => String(zone).trim() === 'tlda-projects')
+      ? 'tlda-write'
+      : writeAllow.length
+        ? 'write'
+        : readAllow.length
+          ? 'read'
+          : 'none'
+  return { ...normalizeSpawnPolicy(permission, fallback), ...(name ? { name } : {}) }
+}
+
+// Name a permission set as a coarse policy. A daemon.yaml (or builtin) profile
+// already carries a `projectedPolicy` computed from its regions at
+// normalization; honor it. Otherwise derive the name from the set's own region
+// zones — no rung ladder, no parallel profile map.
 function policyForPermissionSet(permissions, fallback = DEFAULT_AGENT_PERMISSION) {
   if (permissions.projectedPolicy) return normalizeSpawnPolicy(permissions.projectedPolicy, fallback)
-  const named = permissions.name ? firstKnownProfile(permissions.name) : null
-  if (named) return normalizeProfileOrPolicyName(named)
-  const write = permissions.operations?.write || {}
-  const read = permissions.operations?.read || {}
-  const hasWrite = (write.allow || []).length > 0
-  const hasRead = (read.allow || []).length > 0
-  return normalizeSpawnPolicy(hasWrite ? DEFAULT_AGENT_PERMISSION : (hasRead ? 'read' : 'none'), fallback)
+  return derivedPolicyFromRegionSet(permissions, null, fallback)
 }
 
 function normalizedPath(value) {
@@ -625,7 +637,7 @@ function pathBasename(value) {
 function firstKnownProfile(...values) {
   for (const value of values) {
     const name = String(value || '').trim().toLowerCase()
-    if (SPAWN_PROFILES[name]) return name
+    if (BUILTIN_PROFILE_POLICY[name]) return name
   }
   return null
 }
@@ -658,7 +670,7 @@ function firstConfiguredOrKnownProfile(config = {}, ...values) {
   for (const value of values) {
     let name = String(value || '').trim().toLowerCase()
     name = PERMISSION_PROFILE_ALIAS[name] || name
-    if (configured[name] || SPAWN_PROFILES[name]) return name
+    if (configured[name] || BUILTIN_PROFILE_POLICY[name]) return name
   }
   return null
 }
@@ -702,16 +714,16 @@ export function resolveProjectProfileName(config = {}, { doc, project, cwd } = {
 
 // The profile a spawn inherits, as a normalized spawn policy. This becomes the
 // requested permission when the caller does not request one explicitly — the
-// default fence. authorizeSpawn still bounds it by the model ceiling and the
-// caller's own authority.
+// default fence. resolveSpawnGrant still bounds it, via the region-set
+// intersection, by the model ceiling and the spawner's own authority.
 export function resolveProjectProfile(config = {}, { doc, project, cwd } = {}) {
   const name = resolveProjectProfileName(config, { doc, project, cwd })
   const configured = configuredPermissionProfile(config, name)
   if (configured) {
-    const policy = policyForPermissionSet(configured, SPAWN_PROFILES[name] || DEFAULT_AGENT_PERMISSION)
+    const policy = policyForPermissionSet(configured, BUILTIN_PROFILE_POLICY[name] || DEFAULT_AGENT_PERMISSION)
     return { ...policy, name }
   }
-  return { ...normalizeSpawnPolicy(SPAWN_PROFILES[name]), name }
+  return { ...normalizeSpawnPolicy(BUILTIN_PROFILE_POLICY[name]), name }
 }
 
 function permissionSetForProfileName(name, policy, { cwd, project, config } = {}) {
@@ -762,7 +774,7 @@ function materializePermissionSet(permissionSet, { cwd, project } = {}) {
 
 function normalizeProfileOrPolicyName(value) {
   const name = String(value || '').trim().toLowerCase()
-  if (SPAWN_PROFILES[name]) return { ...normalizeSpawnPolicy(SPAWN_PROFILES[name]), name }
+  if (BUILTIN_PROFILE_POLICY[name]) return { ...normalizeSpawnPolicy(BUILTIN_PROFILE_POLICY[name]), name }
   return normalizeSpawnPolicy(value)
 }
 
@@ -836,8 +848,8 @@ export function isOperator(caller, { serverOwnerId } = {}) {
 // used to shallow-merge spawnPolicy across writers and the global fence-off
 // stamped `unsandboxed` onto many rows, corrupting the REGION — but the
 // permission field still reflects what the agent was spawned with. So we honor
-// the permission and DERIVE the region (PERMISSION_REGION), which both (a)
-// repairs the corrupted region by tightening it back to the rung's real scope,
+// the permission and DERIVE the region (REGION_FOR_PERMISSION), which both (a)
+// repairs the corrupted region by tightening it back to the name's real scope,
 // and (b) never confers above the stored rung — no auto-promotion on a guess.
 //
 // The one place the stored region carries meaning is the legacy write /
@@ -908,39 +920,6 @@ export function projectPermissionToMode(permission, explicitMode = null) {
   return 'default'
 }
 
-export function authorizeSpawn({ caller, requestedPermission, model, kind, trustOverride, config = {}, serverOwnerId }) {
-  if (!caller?.id) throw new Error('spawn caller identity is required')
-  // A per-agent trust override raises (or sets) the model ceiling for this one
-  // spawn — the operator-only exception that lets a trusted minimax sit above
-  // its model default. Only the operator may supply it; an agent presenting one
-  // is trying to self-escalate, which is refused outright. This is the ONLY
-  // refusal authorizeSpawn ever makes.
-  if (trustOverride != null && trustOverride !== '' && !isOperator(caller, { serverOwnerId })) {
-    const err = new Error('trust override is operator-only; agents cannot raise their own ceiling')
-    err.code = 'SPAWN_TRUST_OVERRIDE_FORBIDDEN'
-    throw err
-  }
-  const requestedPolicy = normalizeSpawnPolicy(requestedPermission, DEFAULT_AGENT_PERMISSION)
-  const callerPolicy = callerSpawnPolicy(caller, { serverOwnerId })
-  const ceilingPolicy = modelSpawnCeiling(config, { model, kind, trustOverride })
-  // Skip's rule: a spawn NEVER fails on permission grounds. The granted policy is
-  // the meet (greatest lower bound) of what was asked for, the caller's own
-  // authority, and the model's trust ceiling — clamp down and hand it off, never
-  // refuse. A `full` agent spawning a deepseek yields a deepseek-narrow child
-  // (the model ceiling clamps it), not an error — exactly "lock down dangerous
-  // agents" expressed as a clamp.
-  const grantedPolicy = meetSpawnPolicies([requestedPolicy, callerPolicy, ceilingPolicy])
-  return {
-    requestedPermission: grantedPolicy.permission,
-    requestedPolicy: grantedPolicy,
-    grantedPolicy,
-    callerPermission: callerPolicy.permission,
-    callerPolicy,
-    modelCeiling: ceilingPolicy.permission,
-    modelCeilingPolicy: ceilingPolicy,
-  }
-}
-
 export function resolveSpawnGrant({
   requestedPermission,
   requestedPermissions,
@@ -980,7 +959,6 @@ export function resolveSpawnGrant({
     : requestedPermissions || requestedPermission
     ? normalizeRequestedPermissions(requestedPermissions || requestedPermission, DEFAULT_AGENT_PERMISSION)
     : withPermissionSet(projectPolicy, projectPermissionSet)
-  const grantedPolicy = meetSpawnPolicies([requestedPolicy, modelPolicy, spawnerPolicy])
   const modelPermissionSet = permissionSetFromPolicy(modelPolicy, { name: modelPolicy.name, cwd, project })
   const spawnerPermissionSet = explicitSpawnerPermissionSet
     ? materializePermissionSet(explicitSpawnerPermissionSet, { cwd, project })
@@ -989,11 +967,20 @@ export function resolveSpawnGrant({
     || (requestedPermissions || requestedPermission
       ? permissionSetFromPolicy(requestedPolicy, { name: requestedPolicy.name, cwd, project })
       : projectPermissionSet)
+  // The grant is the region-set intersection of what was requested, what the
+  // model may ever hold, and what the spawner can confer — the ONE fence input.
+  // The coarse grantedPolicy (a "how open" label) is DERIVED from that
+  // intersected region set (policyForPermissionSet): a machine-covering write ⇒
+  // full/unsandboxed (ops stays bypass), an empty write region ⇒ read-only. No
+  // parallel rank clamp computes it.
   const grantedPermissionSet = intersectPermissionSets([
     materializePermissionSet(requestedPermissionSet, { cwd, project }),
     modelPermissionSet,
     spawnerPermissionSet,
-  ], { name: grantedPolicy.name, projectedPolicy: grantedPolicy })
+  ], { name: 'grant' })
+  const grantedPolicy = policyForPermissionSet(grantedPermissionSet, DEFAULT_AGENT_PERMISSION)
+  grantedPermissionSet.name = grantedPolicy.name
+  grantedPermissionSet.projectedPolicy = grantedPolicy
   return {
     requestedPermission: requestedPolicy.permission,
     requestedPolicy,
