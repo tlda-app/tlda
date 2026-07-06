@@ -37,10 +37,13 @@ event. This is the main artifact path for agents. `TLDA_FLEET_SERVER` matters:
 uploads target the fleet/event server where chat is viewed, not the document
 server.
 
-`shared/message-processing.mjs` detects local paths and localhost
-`/api/file?path=...` image links, skips backticked code spans and fenced blocks,
+`shared/message-processing.mjs` detects local paths plus local
+`/api/file?path=...` URLs, skips backticked code spans and fenced blocks,
 resolves paths relative to the sender's cwd, uploads existing files, and returns
-`{ resolvedMessage, inlineAttachments, brokenPaths }`.
+`{ resolvedMessage, inlineAttachments, brokenPaths }`. Local file API URLs are
+relative `/api/file?...`, localhost loopback URLs, or URLs whose origin matches
+the configured fleet server and whose referenced path exists on the sender's
+machine; arbitrary off-origin `/api/file?...` links remain ordinary links.
 
 If `brokenPaths` is non-empty, `chat()` refuses to send the message. If files
 upload successfully, the stored chat event contains `metadata.inline_attachments`,
@@ -157,6 +160,8 @@ path, not the contract.
 - bare local image paths become `{{att:0}}` and upload;
 - missing bare local paths are marked broken;
 - backticked local paths remain literal and do not upload.
+- local `/api/file?path=...` URLs upload and rewrite through the attachment
+  pipeline, while arbitrary off-origin `/api/file?path=...` URLs do not.
 
 Future browser-visible tests should also prove that a local screenshot path sent
 via chat renders as `img.chat-image` in a mounted fleet chat panel.
