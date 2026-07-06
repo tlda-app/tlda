@@ -967,7 +967,17 @@ export function resolveSpawnGrant({
       })
     : normalizeSpawnPolicy(callerRung, ROOT_PERMISSION)
   const projectPermissionSet = permissionSetForProfileName(projectPolicy.name, projectPolicy, { cwd, project, config })
-  const requestedPolicy = requestedPermissions || requestedPermission
+  // A requested --permissions <profile> is resolved against the operator's
+  // daemon.yaml profiles (named read/write region-sets) FIRST; only a request that
+  // is not one of those falls back to the legacy named policies. This is what makes
+  // readonly/wd/math/app/ops resolve to their real regions instead of throwing.
+  const requestedName = typeof (requestedPermissions ?? requestedPermission) === 'string'
+    ? String(requestedPermissions ?? requestedPermission).trim().toLowerCase()
+    : null
+  const configuredRequested = requestedName ? configuredPermissionProfile(config, requestedName) : null
+  const requestedPolicy = configuredRequested
+    ? withPermissionSet({ ...policyForPermissionSet(configuredRequested, DEFAULT_AGENT_PERMISSION), name: requestedName }, configuredRequested)
+    : requestedPermissions || requestedPermission
     ? normalizeRequestedPermissions(requestedPermissions || requestedPermission, DEFAULT_AGENT_PERMISSION)
     : withPermissionSet(projectPolicy, projectPermissionSet)
   const grantedPolicy = meetSpawnPolicies([requestedPolicy, modelPolicy, spawnerPolicy])
