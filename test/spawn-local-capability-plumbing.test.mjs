@@ -2,13 +2,13 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import test from 'node:test'
 
-test('spawn-direct capability flags are passed to the shared Node spawn helper', () => {
+test('wake/create capability flags are passed to the shared Node spawn helper', () => {
   const cli = fs.readFileSync(new URL('../cli/tlda.mjs', import.meta.url), 'utf8')
   assert.match(cli, /flagFromRaw\(spawnArgs, 'capability'\) \|\| flagFromRaw\(spawnArgs, 'spawn-capability'\)/)
   assert.match(cli, /requestedCapability,/)
 })
 
-test('spawn-direct is not gated by spawner authority', () => {
+test('operator lifecycle CLI is not gated by spawner authority', () => {
   const cli = fs.readFileSync(new URL('../cli/tlda.mjs', import.meta.url), 'utf8')
   assert.match(cli, /resolveDirectSpawnGrant\(\{/)
   assert.doesNotMatch(cli, /flagFromRaw\(spawnArgs, 'spawner-id'\)/)
@@ -22,12 +22,14 @@ test('spawn-direct is not gated by spawner authority', () => {
   assert.match(cli, /await ledger\.delete\(preallocatedAgentId\)/)
 })
 
-test('operator CLI routed spawn refuses and redirects to local spawn-direct', () => {
+test('operator lifecycle CLI exposes no routed spawn redirect helper', () => {
   const cli = fs.readFileSync(new URL('../cli/tlda.mjs', import.meta.url), 'utf8')
-  assert.match(cli, /function routedSpawnCliDisabledMessage\(rawArgs\)/)
-  assert.match(cli, /Server-routed CLI spawn is disabled/)
-  assert.match(cli, /spawnDirectSuggestion\(rawArgs\)/)
-  assert.match(cli, /async function runRoutedSpawn\(rawArgs\) \{\n\s+parseRoutedSpawn\(rawArgs\)\n\s+throw new Error\(routedSpawnCliDisabledMessage\(rawArgs\)\)\n\}/)
+  assert.doesNotMatch(cli, /function routedSpawnCliDisabledMessage\(rawArgs\)/)
+  assert.doesNotMatch(cli, /Server-routed CLI spawn is disabled/)
+  assert.doesNotMatch(cli, /spawnDirectSuggestion\(rawArgs\)/)
+  assert.doesNotMatch(cli, /async function runRoutedSpawn\(rawArgs\)/)
+  assert.match(cli, /case 'create':\s+await runFleetSpawn\(agentCreateArgs\(process\.argv\.slice\(4\)\)\)/)
+  assert.match(cli, /case 'wake':\s+await runFleetSpawn\(process\.argv\.slice\(4\)\)/)
   assert.doesNotMatch(cli, /fleetWsRequest/)
   assert.doesNotMatch(cli, /formatSpawnFailure/)
   assert.doesNotMatch(cli, /import\('ws'\)/)
@@ -42,7 +44,7 @@ test('routed daemon spawn remains requester gated', () => {
   assert.match(daemon, /spawnerPrivilegeSet: spawnerGrant\?\.privilegeSet/)
 })
 
-test('spawn-direct opts into fence enforcement but daemon spawn does not', () => {
+test('operator lifecycle CLI opts into fence enforcement but daemon spawn does not', () => {
   const cli = fs.readFileSync(new URL('../cli/tlda.mjs', import.meta.url), 'utf8')
   const daemon = fs.readFileSync(new URL('../bin/fleet-daemon.mjs', import.meta.url), 'utf8')
   assert.match(cli, /enforceFence: true/)
@@ -59,13 +61,12 @@ test('spawn privilege specs are accepted as CLI file-or-name and relayed to daem
   assert.match(cli, /function privilegesFromRaw\(rawArgs\)/)
   assert.match(cli, /normalizeRequestedPrivileges\(requestedPrivileges \|\| policyArg, requestedCapability \|\| undefined\)/)
   assert.match(cli, /privilegeSet: grant\.grantedPrivilegeSet/)
-  assert.match(cli, /body\.privileges = privileges/)
   assert.match(tools, /privileges: args\.privileges/)
   assert.match(server, /requestedPrivileges: privilegeRequest \|\| undefined/)
   assert.match(daemon, /requestedPrivileges,/)
 })
 
-test('spawn-direct policy flag forces an explicit fenced launch without raising capability', () => {
+test('operator lifecycle policy flag forces an explicit fenced launch without raising capability', () => {
   const cli = fs.readFileSync(new URL('../cli/tlda.mjs', import.meta.url), 'utf8')
   assert.match(cli, /const policyArg = flagFromRaw\(spawnArgs, 'policy'\)/)
   assert.match(cli, /const requestedCapability = capabilityArg \|\| \(policyArg != null \? 'write' : undefined\)/)
@@ -82,7 +83,6 @@ test('no-security acknowledgment is plumbed through every spawn surface', () => 
 
   assert.match(cli, /hasRawFlag\(spawnArgs, 'i-like-to-live-dangerously'\)/)
   assert.match(cli, /acknowledgeNoSecurity,/)
-  assert.match(cli, /body\.iLikeToLiveDangerously = true/)
   assert.match(tools, /iLikeToLiveDangerously/)
   assert.match(tools, /iLikeToLiveDangerously: !!args\.iLikeToLiveDangerously/)
   assert.match(server, /acknowledgeNoSecurity: !!iLikeToLiveDangerously/)

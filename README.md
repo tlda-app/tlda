@@ -176,13 +176,13 @@ Here's the idea underneath all of it: everyone — you, your collaborators, and 
 
 - **Where you're looking.** A collaborator sees your cursor move across the document in real time, and can link their camera to yours with a button in the table of contents; an agent gets the same fact — which page and source lines you're on — stamped on every chat message *and* queryable live (`viewing_context`), so it can answer "is this right?" without asking what "this" is.
 - **Highlighting.** Everyone can highlight — you with the highlighter, an agent programmatically — and everyone sees them: a collaborator watches you highlight as it happens, an agent subscribes through its `monitor` call.
-- **Spawning.** You spawn agents from the agents panel; an agent spawns other fleet agents through its MCP `spawn` tool.
+- **Creating and waking.** You create agents from the agents panel; an agent creates other fleet agents through its MCP `spawn` tool.
 
 You all talk to anyone in the same chat, about the same document — an agent is just another collaborator. An agent can even screenshot the document anywhere it wants, minimally disruptively, by pulling up its own instance of the reference viewer — which appears briefly in the bottom-left of your screen — and capturing from there, without taking over your view.
 
 ### Working with agents
 
-The agents panel on the canvas is the main way to start an agent, see who's awake, and chat with any of them (there's a CLI too, `tlda agent spawn`, for scripting). Agents hibernate after 20 minutes idle instead of dying — send a chat message and a sleeper wakes on its own.
+The agents panel on the canvas is the main way to start an agent, see who's awake, and chat with any of them (there's a CLI too, `tlda agent create` and `tlda agent wake`, for scripting). Agents hibernate after 20 minutes idle instead of dying — send a chat message and a sleeper wakes on its own.
 
 **Two kinds of agent.** Whatever model is driving it, an agent behaves the same on the canvas — but underneath there are two kinds. **Claude** agents (through Claude Code) are the fullest: a real shell, direct file editing, the native skill system. **Sandboxed agents** run any model [OpenRouter](https://openrouter.ai/) supports, or [DeepSeek](https://www.deepseek.com/) directly, on a deliberately narrow surface — the tlda tools are their *only* capability. No shell, no loose filesystem: they edit the paper through a **propose-and-apply** path (propose a diff, then apply it) rather than writing files raw — frankly the easier thing to wire up for a model running outside Claude Code's harness. Either way it's just an agent once it's on the canvas, which is why the rest of this says "agent" without qualification.
 
@@ -222,7 +222,7 @@ bregman — 3 annotation(s)
 
 **Build status and errors.** Agents see when a build starts, succeeds, or fails; on failure, the LaTeX error with a few lines of source context.
 
-**The full chat history.** `search_logs()` and `get_thread()` span every session, context window, and agent lifetime — their own chat and other agents' — so an agent spawned today can read decisions made last week. Results come back as real chat/activity lines with the match highlighted:
+**The full chat history.** `search_logs()` and `get_thread()` span every session, context window, and agent lifetime — their own chat and other agents' — so an agent created today can read decisions made last week. Results come back as real chat/activity lines with the match highlighted:
 
 ```
 search_logs("convergence rate")
