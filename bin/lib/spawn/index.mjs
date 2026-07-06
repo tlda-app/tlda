@@ -148,20 +148,14 @@ async function buildCommand({ requestedKind, adapter, fleetId, tmuxSession, mode
     })
   }
   const commandBeforeFence = cmd
-  // Enforce the seatbelt whenever the lease declares secret denies. With the
-  // permissive seatbelt runner (allow-all except secrets + scoped writes) this
-  // is fence-but-don't-trap: ps/reads/writes work, only secrets are blocked.
-  // Deny-free leases stay unwrapped (no regression for the wide-open case).
-  const leaseHasDenies = !!(leasePolicy && ((leasePolicy.deny_read_roots || []).length || (leasePolicy.deny_write_roots || []).length))
-  const effectiveEnforce = enforceFence || leaseHasDenies
-  if (leasePolicy) cmd = wrapSandboxCmd(cmd, leasePolicy, { api, dnsAlias, enforce: effectiveEnforce })
+  if (leasePolicy) cmd = wrapSandboxCmd(cmd, leasePolicy, { api, dnsAlias, enforce: enforceFence })
   return {
     cmd,
     sendKeys,
     commandTrace: {
       projection,
       hasLeasePolicy: !!leasePolicy,
-      wrappedByFence: !!leasePolicy && !!effectiveEnforce,
+      wrappedByFence: !!leasePolicy && !!enforceFence,
       commandContainsFence: /(?:^|['"\s/])fence(?:['"\s]|$)/.test(cmd),
       commandContainsCodexYolo: cmd.includes('--dangerously-bypass-approvals-and-sandbox') || cmd.includes('--yolo'),
       commandContainsDangerSandbox: cmd.includes('danger-full-access'),
