@@ -66,7 +66,7 @@ import { createFleetRouter } from './routes/fleet.mjs'
 import { coherentSpawnPolicy } from './lib/spawn-policy.mjs'
 import { buildRuntimeStatus } from './lib/runtime-status.mjs'
 import { resolveSpawnMachine, SPAWN_MACHINE_PREF_KEY } from './lib/spawn-routing.mjs'
-import { resolveFreshSpawnCapabilityModels } from './lib/spawn-capability-models.mjs'
+import { resolveFreshSpawnAvailabilityModels } from './lib/spawn-availability-models.mjs'
 import { decideTaskRenudges } from './lib/task-renudge.mjs'
 import { SpawnBounceError, SpawnLibrarian, resolveSpawnCollision } from '../shared/spawn-librarian.ts'
 import { MailboxLibrarian } from '../shared/mailbox-librarian.ts'
@@ -2093,9 +2093,9 @@ app.get('/api/fleet/models', requireRead, (req, res) => {
   res.json(listSpawnModels())
 })
 
-app.get('/api/fleet/spawn-capabilities', requireRead, async (req, res) => {
+app.get('/api/fleet/spawn-availability', requireRead, async (req, res) => {
   if (req.query.target === 'fresh-spawn-current') {
-    const result = await resolveFreshSpawnCapabilityModels({
+    const result = await resolveFreshSpawnAvailabilityModels({
       userId: req.query.user,
       fleetStore,
       daemonConnections,
@@ -2111,7 +2111,7 @@ app.get('/api/fleet/spawn-capabilities', requireRead, async (req, res) => {
   const results = {}
   await Promise.all(machines.map(async (machineId) => {
     try {
-      results[machineId] = await sendRpc(machineId, 'spawn-capabilities', {})
+      results[machineId] = await sendRpc(machineId, 'spawn-availability', {})
     } catch (e) {
       results[machineId] = { ok: false, error: e.message || String(e) }
     }

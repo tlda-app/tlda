@@ -117,7 +117,7 @@ import {
 } from './lib/daemon-guards.mjs'
 import { codexRolloutBelongsToAgent, codexRolloutHasOwnerEvidence, resolveTranscript } from './lib/resolve-transcript.mjs'
 import { resolveSpawnGrant } from '../server/lib/spawn-policy.mjs'
-import { probeSpawnCapabilities } from './lib/spawn/capabilities.mjs'
+import { probeSpawnAvailability } from './lib/spawn/availability.mjs'
 import {
   applyDaemonGrants,
   applyGrandfatherInfill,
@@ -3417,8 +3417,8 @@ async function rpcSpawn({
   }
 }
 
-async function rpcSpawnCapabilities() {
-  return await probeSpawnCapabilities()
+async function rpcSpawnAvailability() {
+  return await probeSpawnAvailability()
 }
 
 // --- Agent death detection ---
@@ -4610,7 +4610,7 @@ const RPC_HANDLERS = {
   'terminal-resize': rpcTerminalResize,
   'terminal-input': rpcTerminalInput,
   'spawn': rpcSpawn,
-  'spawn-capabilities': rpcSpawnCapabilities,
+  'spawn-availability': rpcSpawnAvailability,
   'resolve-file': rpcResolveFile,
   'rechat': rpcRechat,
   'materialize-attachment': rpcMaterializeAttachment,
