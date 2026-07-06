@@ -253,8 +253,15 @@ export function writeFenceSettings(policy, opts = {}) {
   return file
 }
 
-function formatRunnerArg(arg, policy, cmd) {
-  const leaseJson = JSON.stringify(stripRunner(policy))
+export function writeFenceLease(policy) {
+  const dir = path.join(os.tmpdir(), 'tlda-fence-leases')
+  fs.mkdirSync(dir, { recursive: true })
+  const file = path.join(dir, `${policy.harness}-${policy.policy}-lease-${randomUUID().replace(/-/g, '')}.json`)
+  fs.writeFileSync(file, `${JSON.stringify(stripRunner(policy), null, 2)}\n`)
+  return file
+}
+
+function formatRunnerArg(arg, policy, cmd, files = {}) {
   const vals = {
     workspace: policy.workspace,
     profile: policy.policy,
@@ -265,7 +272,9 @@ function formatRunnerArg(arg, policy, cmd) {
     git: String(policy.git),
     read_roots: (policy.read_roots || []).join(path.delimiter),
     write_roots: (policy.write_roots || []).join(path.delimiter),
-    lease_json: leaseJson,
+    lease_file: files.leaseFile || '',
+    settings_file: files.settingsFile || '',
+    lease_json: files.leaseFile || '',
     cmd,
   }
   return String(arg).replace(/\{(\w+)\}/g, (_m, key) => vals[key] ?? '')
@@ -279,7 +288,7 @@ function ensureFenceEnv() {
   return {
     TLDA_SANDBOX_PROFILE: null,
     TLDA_SANDBOX_POLICY: null,
-    TLDA_SANDBOX_LEASE: null,
+    TLDA_SANDBOX_LEASE_FILE: null,
     TMPDIR: TLDA_FENCE_TMP_ROOT,
     GIT_CONFIG_GLOBAL: path.join(TLDA_FENCE_TMP_ROOT, 'empty-gitconfig'),
     GIT_CONFIG_NOSYSTEM: '1',
@@ -311,7 +320,8 @@ export function wrapSandboxCmd(cmd, policy, opts = {}) {
   const env = ensureFenceEnv()
   env.TLDA_SANDBOX_PROFILE = policy.policy
   env.TLDA_SANDBOX_POLICY = policy.policy
-  env.TLDA_SANDBOX_LEASE = JSON.stringify(stripRunner(policy))
+  const leaseFile = writeFenceLease(policy)
+  env.TLDA_SANDBOX_LEASE_FILE = leaseFile
   const xcodeGit = '/Applications/Xcode.app/Contents/Developer/usr/bin/git'
   if (fs.existsSync(xcodeGit)) {
     env.PATH = `/Applications/Xcode.app/Contents/Developer/usr/bin:${process.env.PATH || ''}`
@@ -324,8 +334,13 @@ export function wrapSandboxCmd(cmd, policy, opts = {}) {
     const settings = writeFenceSettings(policy, opts)
     wrapped = [command, '--monitor', '--fence-log-file', fenceLogPath(policy), '--settings', settings, '--', runner.shell || 'zsh', '-lc', innerCmd].map(sq).join(' ')
   } else {
-    const args = (runner.args || []).map((arg) => formatRunnerArg(arg, policy, innerCmd))
-    const hasCmd = (runner.args || []).some((arg) => String(arg).includes('{cmd}'))
+    const rawArgs = runner.args || []
+    const settingsFile = rawArgs.some((arg) => String(arg).includes('{settings_file}'))
+      ? writeFenceSettings(policy, opts)
+      : ''
+    const files = { leaseFile, settingsFile }
+    const args = rawArgs.map((arg) => formatRunnerArg(arg, policy, innerCmd, files))
+    const hasCmd = rawArgs.some((arg) => String(arg).includes('{cmd}'))
     const argv = [command, ...args]
     if (!hasCmd) argv.push('--', runner.shell || 'zsh', '-lc', innerCmd)
     wrapped = argv.map(sq).join(' ')

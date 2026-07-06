@@ -578,6 +578,38 @@ test('lease policy and fence wrapper stay outside harness adapters', () => {
   assert.match(enforced, /(?:^|['"\s/])fence(?:['"\s]|$)/)
   assert.match(enforced, /--settings/)
   assert.match(enforced, /echo hi/)
+  assert.doesNotMatch(enforced, /TLDA_SANDBOX_LEASE=/)
+  assert.match(enforced, /TLDA_SANDBOX_LEASE_FILE=/)
+  assert.doesNotMatch(enforced, /"read_roots"|"write_roots"|"_tldaLease"/)
+})
+
+test('fence runner placeholders use files instead of raw lease json', () => {
+  const cwd = tmpdir()
+  const { leasePolicy } = resolveLeasePolicy({
+    spawnPolicy: { capability: 'write', policy: 'cwd' },
+    privilegeSet: cwdPrivilegeSet(cwd),
+    harness: 'codex',
+    model: 'gpt-5.5',
+    cwd,
+    config: {
+      agentSandbox: {
+        runner: {
+          command: 'fence',
+          args: ['--lease', '{lease_json}', '--settings', '{settings_file}'],
+        },
+      },
+    },
+  })
+  const enforced = wrapSandboxCmd('echo hi', leasePolicy, { api: 'https://tlda-fly.example.test', enforce: true })
+  assert.doesNotMatch(enforced, /"read_roots"|"write_roots"|"_tldaLease"/)
+  const leaseMatch = enforced.match(/--lease'\s+'([^']+)'/)
+  const settingsMatch = enforced.match(/--settings'\s+'([^']+)'/)
+  assert.ok(leaseMatch, enforced)
+  assert.ok(settingsMatch, enforced)
+  assert.ok(fs.existsSync(leaseMatch[1]))
+  assert.ok(fs.existsSync(settingsMatch[1]))
+  assert.match(fs.readFileSync(leaseMatch[1], 'utf8'), /"read_roots"/)
+  assert.match(fs.readFileSync(settingsMatch[1], 'utf8'), /"_tldaLease"/)
 })
 
 test('default cwd lease writes cwd plus tool-support roots with unrestricted git', () => {
