@@ -98,6 +98,7 @@ import {
   updateIngestionStatus,
   upsertSessionIdentity,
 } from './lib/session-identity-store.mjs'
+import { tailSessionIdentityInput } from './lib/session-identity-tail.mjs'
 import {
   terminalBackscrollCaptureArgs,
   terminalVisibleCaptureArgs,
@@ -487,7 +488,6 @@ let _jsonlIngesterRestartTimer = null
 let _shuttingDown = false
 let _sessionReaderLock = null
 const childWatchers = new Map() // watchId -> path watcher state
-const jsonlDrainRequests = new Map() // requestId -> { resolve, timer }
 
 function startJsonlIngester() {
   if (_jsonlIngester) return _jsonlIngester
@@ -1625,14 +1625,6 @@ function handleJsonlIngesterMessage(msg) {
     log.info('JSONL ingester child ready')
     return
   }
-  if (msg?.type === 'drained') {
-    const pending = msg.requestId ? jsonlDrainRequests.get(msg.requestId) : null
-    if (!pending) return
-    jsonlDrainRequests.delete(msg.requestId)
-    clearTimeout(pending.timer)
-    pending.resolve(msg)
-    return
-  }
   if (msg?.type === 'job-batch') {
     void handleJsonlBackfillBatch(msg)
     return
@@ -1813,13 +1805,13 @@ function processJsonlChildOutputs(pw, outputs) {
         events: output.events || [],
       })) delivered = false
     } else if (output.type === 'identity') {
-      recordSessionIdentity({
-        session_id: pw.sessionId,
-        harness_kind: pw.harnessKind,
-        jsonl_path: pw.jsonlPath,
-        ...output.identity,
-        classified: false,
-      })
+      recordSessionIdentity(tailSessionIdentityInput({
+        sessionId: pw.sessionId,
+        harnessKind: pw.harnessKind,
+        jsonlPath: pw.jsonlPath,
+        ownerFleetId: agentId,
+        contentIdentity: output.identity,
+      }))
     }
   }
   return delivered
@@ -1845,59 +1837,6 @@ function stopJsonlTail(pw, reason = 'stop') {
     log.warn(`JSONL ingester stop failed (${reason}): ${e?.message || e}`)
   }
   refreshIngestionCaughtUp()
-}
-
-function drainJsonlTailOnce(pw, { timeoutMs = 2500, minWaitMs = 250 } = {}) {
-  if (!pw || pw.stopped) {
-    return Promise.resolve({ ok: false, active_tail: false, reason: 'no-live-tail' })
-  }
-  const child = startJsonlIngester()
-  const requestId = `drain:${pw.watchId}:${Date.now()}:${Math.random().toString(36).slice(2)}`
-  return new Promise((resolve) => {
-    const timer = setTimeout(() => {
-      jsonlDrainRequests.delete(requestId)
-      resolve({ ok: false, active_tail: true, reason: 'timeout' })
-    }, timeoutMs)
-    jsonlDrainRequests.set(requestId, { resolve, timer })
-    try {
-      child.send?.({
-        type: 'drain-once',
-        requestId,
-        watchId: pw.watchId,
-        timeoutMs,
-        minWaitMs,
-      })
-    } catch (e) {
-      jsonlDrainRequests.delete(requestId)
-      clearTimeout(timer)
-      resolve({ ok: false, active_tail: false, reason: e?.message || String(e) })
-    }
-  })
-}
-
-async function advanceCodexResumeIndexOnce(agent) {
-  const watchedPath = agent?.id ? agentPaths.get(agent.id) : null
-  const pw = watchedPath ? pathWatchers.get(watchedPath) : null
-  if (!pw) {
-    return {
-      ok: false,
-      code: 'identity-ingestion-pending',
-      retry_after_ms: 1000,
-      detail: { advanced_once: false, active_tail: false, reason: 'no-live-tail' },
-    }
-  }
-  const drained = await drainJsonlTailOnce(pw)
-  if (drained?.ok) return { ok: true, active_tail: true }
-  return {
-    ok: false,
-    code: 'identity-ingestion-pending',
-    retry_after_ms: 1000,
-    detail: {
-      advanced_once: true,
-      active_tail: !!drained?.active_tail,
-      reason: drained?.reason || 'drain-failed',
-    },
-  }
 }
 
 function updateJsonlCursorFromTail(pw, offset) {
@@ -3367,8 +3306,6 @@ async function rpcSpawn({
         machineId: MACHINE_ID,
         tmuxSocket: TMUX_SOCKET,
         identityConfigDir: CONFIG_DIR,
-        codexAdvanceOnceOnMiss: respawn && launchKind === 'codex',
-        codexAdvanceOnce: respawn && launchKind === 'codex' ? advanceCodexResumeIndexOnce : undefined,
       })
     } catch (e) {
       if (preallocatedAgentId) await privilegeLedger.delete(preallocatedAgentId).catch(() => {})

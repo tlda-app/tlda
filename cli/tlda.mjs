@@ -2101,8 +2101,6 @@ async function runFleetSpawn(spawnArgs) {
       enforceFence: true,
       sessionId: session || undefined,
       enroll: hasRawFlag(spawnArgs, 'enroll'),
-      codexResumeMode: spawnMode === 'respawn' ? 'direct' : undefined,
-      codexReaderCommand: spawnMode === 'respawn' ? 'cold-read' : undefined,
     }
     if (!params.name && !params.sessionId) {
       console.error(red('Usage: tlda agent spawn-direct [--fresh|--refresh|--session uuid] <agent> [--model model] [--kind kind] [--cwd path] [--privileges profile] [--capability read|write|tlda-write|full] [--i-like-to-live-dangerously]'))

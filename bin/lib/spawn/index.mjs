@@ -374,10 +374,6 @@ async function spawnRespawn(params) {
   } else if (requestedKind === 'codex') {
     const resolved = await (deps.resolveCodexResumeHandle || resolveCodexResumeHandle)(agent, {
       ...identityOptions,
-      mode: params.codexResumeMode || 'daemon',
-      readerCommand: params.codexReaderCommand,
-      advanceOnceOnMiss: !!params.codexAdvanceOnceOnMiss,
-      advanceOnce: params.codexAdvanceOnce,
     })
     if (resolved?.ok) {
       handle = {
@@ -394,9 +390,10 @@ async function spawnRespawn(params) {
         { fleetId, kind: requestedKind, retry_after_ms: resolved.retry_after_ms || 1000, resolution: resolved },
       )
     } else {
+      const message = resolved?.message || resolved?.detail?.message
       throw new SpawnError(
         'launch-failed',
-        `Session resolution failed for ${friendlyName} (${fleetId}): could not locate the existing codex rollout. This is a session-tracking fault in the resolver, not a lost session.`,
+        message || `Session resolution failed for ${friendlyName} (${fleetId}): could not locate the existing codex rollout. This is a session-tracking fault in the resolver, not a lost session.`,
         { fleetId, kind: requestedKind, resolution: resolved || null },
       )
     }
