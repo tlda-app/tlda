@@ -3583,6 +3583,7 @@ function _paneSubtreeHasAgent(panePid, childrenByPpid, agentProcPids) {
 }
 
 async function checkAgentLiveness() {
+  return // KILL-SWITCH (Skip 2026-07-06): hibernation/liveness sweep disabled so agents are never marked hibernating. Revert this line to re-enable.
   if (!agents.length) return
   if (!_serverReady || !_rws?.connected) {
     // A server/Fly redeploy can drop the daemon websocket while local tmux
