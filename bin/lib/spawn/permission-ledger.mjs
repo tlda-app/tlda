@@ -5,9 +5,9 @@ import { Worker } from 'worker_threads'
 import Database from 'better-sqlite3'
 import YAML from 'yaml'
 import {
-  emptyPrivilegeSet,
+  emptyPermissionSet,
   resolveSpawnGrant,
-  normalizeRequestedPrivileges,
+  normalizeRequestedPermissions,
   normalizeSpawnPolicy,
 } from '../../../server/lib/spawn-policy.mjs'
 
@@ -15,28 +15,28 @@ function nowIso() {
   return new Date().toISOString()
 }
 
-const WRITE_TIMEOUT_MS = Number(process.env.TLDA_PRIVILEGE_LEDGER_WRITE_TIMEOUT_MS || 5000)
-const YAML_MIGRATION_META_KEY = 'migration.daemon-privileges-yaml.v1'
+const WRITE_TIMEOUT_MS = Number(process.env.TLDA_PERMISSION_LEDGER_WRITE_TIMEOUT_MS || 5000)
+const YAML_MIGRATION_META_KEY = 'migration.daemon-permissions-yaml.v1'
 
 function normalizeLedgerGrant(value, fallback = 'none') {
   if (!value) {
     const policy = normalizeSpawnPolicy(fallback, 'none')
-    return { spawnPolicy: policy, privilegeSet: emptyPrivilegeSet({ name: policy.name, projectedPolicy: policy }) }
+    return { spawnPolicy: policy, permissionSet: emptyPermissionSet({ name: policy.name, projectedPolicy: policy }) }
   }
-  const rawPrivilegeSet = value.privilegeSet || value.privileges || null
-  if (rawPrivilegeSet) {
+  const rawPermissionSet = value.permissionSet || value.permissions || null
+  if (rawPermissionSet) {
     const policy = value.spawnPolicy
       ? normalizeSpawnPolicy(value.spawnPolicy, fallback)
-      : normalizeRequestedPrivileges(rawPrivilegeSet, fallback)
+      : normalizeRequestedPermissions(rawPermissionSet, fallback)
     const spawnPolicy = { ...policy }
-    delete spawnPolicy.privilegeSet
-    return { spawnPolicy, privilegeSet: withStoredSpawnDefault(rawPrivilegeSet, spawnPolicy) }
+    delete spawnPolicy.permissionSet
+    return { spawnPolicy, permissionSet: withStoredSpawnDefault(rawPermissionSet, spawnPolicy) }
   }
-  const policy = normalizeSpawnPolicy(value.spawnPolicy || value.policy || value.capability || value, fallback)
+  const policy = normalizeSpawnPolicy(value.spawnPolicy || value.policy || value.permission || value, fallback)
   return {
     spawnPolicy: policy,
-    privilegeSet: policy.capability === 'none'
-      ? emptyPrivilegeSet({ name: policy.name, projectedPolicy: policy })
+    permissionSet: policy.permission === 'none'
+      ? emptyPermissionSet({ name: policy.name, projectedPolicy: policy })
       : null,
   }
 }
@@ -50,10 +50,10 @@ function readYamlFile(file, label) {
   }
 }
 
-export class PrivilegeLedgerError extends Error {
+export class PermissionLedgerError extends Error {
   constructor(code, message, detail = {}) {
     super(message)
-    this.name = 'PrivilegeLedgerError'
+    this.name = 'PermissionLedgerError'
     this.code = code
     this.reason = code
     this.detail = detail
@@ -129,7 +129,7 @@ function derivedPolicyFromOperations(name, operations) {
   const readAllow = operations.read?.allow || []
   const hasUniversalWrite = writeAllow.some(zone => zone === '**' || zone === '/' || zone === '/**')
   const hasTldaWrite = writeAllow.some(zone => zone === 'tlda-projects')
-  const capability = hasUniversalWrite
+  const permission = hasUniversalWrite
     ? 'full'
     : hasTldaWrite
       ? 'tlda-write'
@@ -139,7 +139,7 @@ function derivedPolicyFromOperations(name, operations) {
           ? 'read'
           : 'none'
   return {
-    ...normalizeSpawnPolicy(capability),
+    ...normalizeSpawnPolicy(permission),
     name,
   }
 }
@@ -169,7 +169,7 @@ function normalizeDaemonProfile(name, value, regions) {
   }
   const policy = derivedPolicyFromOperations(name, operations)
   return {
-    type: 'privilege-set',
+    type: 'permission-set',
     name,
     operations,
     rules,
@@ -194,8 +194,8 @@ function normalizeDaemonProfiles(value, regions) {
 
 function normalizeLegacyLedgerAgents(parsed) {
   const root = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
-  const nested = root.privileges && typeof root.privileges === 'object' && !Array.isArray(root.privileges)
-    ? root.privileges.agents
+  const nested = root.permissions && typeof root.permissions === 'object' && !Array.isArray(root.permissions)
+    ? root.permissions.agents
     : null
   const agents = nested && typeof nested === 'object' && !Array.isArray(nested)
     ? nested
@@ -214,7 +214,7 @@ function looksLikeDaemonModelRow(value) {
       || value.provider_model != null
       || value.providerModel != null
       || value.cap != null
-      || value.capability != null
+      || value.permission != null
       || value.spawnPolicy != null
       || value.model_cap != null
       || value.harness != null
@@ -260,7 +260,7 @@ function normalizeDaemonModelRows(models = {}) {
         }
         if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue
         mergeHarnessOptions(key, alias, entry)
-        const cap = entry.cap || entry.capability || entry.spawnPolicy || entry.model_cap
+        const cap = entry.cap || entry.permission || entry.spawnPolicy || entry.model_cap
         const id = entry.id || entry.provider_model || entry.providerModel
         if (id) providerAliases[alias] = {
           id,
@@ -283,7 +283,7 @@ function normalizeDaemonModelRows(models = {}) {
       ...(value.provider_alias ? { provider_alias: value.provider_alias } : {}),
       ...(Array.isArray(value.tags) ? { tags: value.tags } : {}),
     }
-    const cap = value.cap || value.capability || value.spawnPolicy || value.model_cap
+    const cap = value.cap || value.permission || value.spawnPolicy || value.model_cap
     if (cap) {
       modelCeilings[key] = cap
       if (id) modelCeilings[id] = cap
@@ -317,25 +317,25 @@ function normalizeHarnessOptions(row = {}) {
   }
 }
 
-function withStoredSpawnDefault(privilegeSet, policy) {
-  if (!privilegeSet || policy.capability === 'none') return privilegeSet
-  if (privilegeSet.operations?.spawn) return privilegeSet
+function withStoredSpawnDefault(permissionSet, policy) {
+  if (!permissionSet || policy.permission === 'none') return permissionSet
+  if (permissionSet.operations?.spawn) return permissionSet
   return {
-    ...privilegeSet,
+    ...permissionSet,
     operations: {
-      ...privilegeSet.operations,
+      ...permissionSet.operations,
       spawn: { allow: ['**'], deny: [] },
     },
     rules: [
-      ...(privilegeSet.rules || []),
+      ...(permissionSet.rules || []),
       { operation: 'spawn', effect: 'allow', zone: '**', line: null },
     ],
   }
 }
 
-function allPrivilegeSet(name = 'full') {
+function allPermissionSet(name = 'full') {
   return {
-    type: 'privilege-set',
+    type: 'permission-set',
     name,
     operations: {
       read: { allow: ['**'], deny: [] },
@@ -392,7 +392,7 @@ function fleetAgentsForGrandfatherInfill(fleetDbPath) {
   }
 }
 
-export class PrivilegeLedger {
+export class PermissionLedger {
   constructor(dbPath) {
     this.file = dbPath
     this.dbPath = dbPath
@@ -401,10 +401,10 @@ export class PrivilegeLedger {
     this.db.pragma('journal_mode = WAL')
     this.db.pragma('synchronous = NORMAL')
     this.db.exec(`
-      CREATE TABLE IF NOT EXISTS privilege_grants (
+      CREATE TABLE IF NOT EXISTS permission_grants (
         id TEXT PRIMARY KEY,
         spawn_policy TEXT NOT NULL,
-        privilege_set TEXT,
+        permission_set TEXT,
         updated_at TEXT NOT NULL,
         source TEXT NOT NULL
       );
@@ -413,8 +413,8 @@ export class PrivilegeLedger {
         value TEXT NOT NULL,
         updated_at TEXT NOT NULL
       );
-      CREATE INDEX IF NOT EXISTS idx_privilege_grants_updated_at
-        ON privilege_grants(updated_at);
+      CREATE INDEX IF NOT EXISTS idx_permission_grants_updated_at
+        ON permission_grants(updated_at);
     `)
     this._metaGet = this.db.prepare('SELECT value FROM ledger_meta WHERE key = ?')
     this._metaSet = this.db.prepare(`
@@ -425,20 +425,20 @@ export class PrivilegeLedger {
         updated_at = excluded.updated_at
     `)
     this._get = this.db.prepare(`
-      SELECT id, spawn_policy, privilege_set, updated_at, source
-      FROM privilege_grants
+      SELECT id, spawn_policy, permission_set, updated_at, source
+      FROM permission_grants
       WHERE id = ?
     `)
     this._upsert = this.db.prepare(`
-      INSERT INTO privilege_grants (id, spawn_policy, privilege_set, updated_at, source)
+      INSERT INTO permission_grants (id, spawn_policy, permission_set, updated_at, source)
       VALUES (?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         spawn_policy = excluded.spawn_policy,
-        privilege_set = excluded.privilege_set,
+        permission_set = excluded.permission_set,
         updated_at = excluded.updated_at,
         source = excluded.source
     `)
-    this._delete = this.db.prepare('DELETE FROM privilege_grants WHERE id = ?')
+    this._delete = this.db.prepare('DELETE FROM permission_grants WHERE id = ?')
     this._worker = null
     this._nextRequestId = 1
     this._pending = new Map()
@@ -447,12 +447,12 @@ export class PrivilegeLedger {
 
   migrateLegacyYamlIfNeeded() {
     if (this._metaGet.get(YAML_MIGRATION_META_KEY)) return { skipped: true, imported: 0 }
-    const legacyFile = path.join(path.dirname(this.dbPath), 'daemon-privileges.yaml')
+    const legacyFile = path.join(path.dirname(this.dbPath), 'daemon-permissions.yaml')
     if (!fs.existsSync(legacyFile)) {
       this._metaSet.run(YAML_MIGRATION_META_KEY, JSON.stringify({ imported: 0, file: legacyFile, missing: true }), nowIso())
       return { skipped: false, imported: 0 }
     }
-    const parsed = readYamlFile(legacyFile, 'legacy daemon privilege ledger')
+    const parsed = readYamlFile(legacyFile, 'legacy daemon permission ledger')
     const agents = normalizeLegacyLedgerAgents(parsed)
     let imported = 0
     const importOne = this.db.transaction(() => {
@@ -461,13 +461,13 @@ export class PrivilegeLedger {
         const grant = normalizeLedgerGrant(sourceRow)
         const row = this.rowFor(id, {
           spawnPolicy: grant.spawnPolicy,
-          privilegeSet: grant.privilegeSet,
-          source: sourceRow.source || 'migration:daemon-privileges-yaml',
+          permissionSet: grant.permissionSet,
+          source: sourceRow.source || 'migration:daemon-permissions-yaml',
         })
         this._upsert.run(
           row.id,
           JSON.stringify(row.spawnPolicy),
-          row.privilegeSet ? JSON.stringify(row.privilegeSet) : null,
+          row.permissionSet ? JSON.stringify(row.permissionSet) : null,
           sourceRow.updatedAt || row.updatedAt,
           row.source,
         )
@@ -486,13 +486,13 @@ export class PrivilegeLedger {
     if (!row) return null
     const parsed = {
       spawnPolicy: JSON.parse(row.spawn_policy),
-      ...(row.privilege_set ? { privilegeSet: JSON.parse(row.privilege_set) } : {}),
+      ...(row.permission_set ? { permissionSet: JSON.parse(row.permission_set) } : {}),
     }
     const grant = normalizeLedgerGrant(parsed)
     return {
       id: row.id,
       spawnPolicy: grant.spawnPolicy,
-      privilegeSet: grant.privilegeSet,
+      permissionSet: grant.permissionSet,
       updatedAt: row.updated_at,
       source: row.source || 'ledger',
     }
@@ -502,22 +502,22 @@ export class PrivilegeLedger {
     const id = String(agent?.id || '').trim()
     const existing = this.get(id)
     if (existing) return existing
-    throw new PrivilegeLedgerError(
-      'SPAWN_PRIVILEGE_NO_LEDGER_ENTRY',
-      `spawn refused: ${id || 'caller'} has no daemon privilege ledger entry`,
+    throw new PermissionLedgerError(
+      'SPAWN_PERMISSION_NO_LEDGER_ENTRY',
+      `spawn refused: ${id || 'caller'} has no daemon permission ledger entry`,
       { id: id || null },
     )
   }
 
-  rowFor(id, { spawnPolicy, privilegeSet, source = 'spawn' } = {}) {
+  rowFor(id, { spawnPolicy, permissionSet, source = 'spawn' } = {}) {
     const key = String(id || '').trim()
-    if (!key) throw new Error('cannot persist daemon privilege grant without fleet id')
+    if (!key) throw new Error('cannot persist daemon permission grant without fleet id')
     const policy = normalizeSpawnPolicy(spawnPolicy, 'none')
     return {
       id: key,
       spawnPolicy: policy,
-      privilegeSet: privilegeSet || (policy.capability === 'none'
-        ? emptyPrivilegeSet({ name: policy.name, projectedPolicy: policy })
+      permissionSet: permissionSet || (policy.permission === 'none'
+        ? emptyPermissionSet({ name: policy.name, projectedPolicy: policy })
         : null),
       updatedAt: nowIso(),
       source,
@@ -526,7 +526,7 @@ export class PrivilegeLedger {
 
   ensureWriter() {
     if (this._worker) return this._worker
-    this._worker = new Worker(new URL('./privilege-ledger-writer.mjs', import.meta.url), {
+    this._worker = new Worker(new URL('./permission-ledger-writer.mjs', import.meta.url), {
       workerData: { dbPath: this.dbPath },
     })
     this._worker.unref()
@@ -536,7 +536,7 @@ export class PrivilegeLedger {
       this._pending.delete(message.requestId)
       clearTimeout(pending.timer)
       if (message.ok) pending.resolve()
-      else pending.reject(new Error(message.error || 'privilege ledger write failed'))
+      else pending.reject(new Error(message.error || 'permission ledger write failed'))
     })
     this._worker.on('error', (err) => {
       const pending = [...this._pending.values()]
@@ -560,7 +560,7 @@ export class PrivilegeLedger {
           resolve()
           return
         }
-        reject(new Error(`privilege ledger write timed out after ${timeoutMs}ms`))
+        reject(new Error(`permission ledger write timed out after ${timeoutMs}ms`))
       }, timeoutMs)
       this._pending.set(requestId, { resolve, reject, timer })
       worker.postMessage({ ...message, requestId })
@@ -575,7 +575,7 @@ export class PrivilegeLedger {
         const row = this._get.get(expected.id)
         return !!row
           && row.spawn_policy === expected.spawnPolicy
-          && row.privilege_set === expected.privilegeSet
+          && row.permission_set === expected.permissionSet
           && row.updated_at === expected.updatedAt
           && row.source === expected.source
       }
@@ -592,7 +592,7 @@ export class PrivilegeLedger {
       row: {
         id: row.id,
         spawnPolicy: JSON.stringify(row.spawnPolicy),
-        privilegeSet: row.privilegeSet ? JSON.stringify(row.privilegeSet) : null,
+        permissionSet: row.permissionSet ? JSON.stringify(row.permissionSet) : null,
         updatedAt: row.updatedAt,
         source: row.source,
       },
@@ -615,7 +615,7 @@ export class PrivilegeLedger {
     this._upsert.run(
       row.id,
       JSON.stringify(row.spawnPolicy),
-      row.privilegeSet ? JSON.stringify(row.privilegeSet) : null,
+      row.permissionSet ? JSON.stringify(row.permissionSet) : null,
       row.updatedAt,
       row.source,
     )
@@ -648,8 +648,8 @@ export function withDaemonModelAliases(config = {}, daemonConfig = {}) {
   const nextSpawnPolicy = {
     ...((config || {}).spawnPolicy || {}),
     ...(Object.keys(daemonProfiles).length ? {
-      privilegeProfiles: {
-        ...(((config || {}).spawnPolicy || {}).privilegeProfiles || {}),
+      permissionProfiles: {
+        ...(((config || {}).spawnPolicy || {}).permissionProfiles || {}),
         ...daemonProfiles,
       },
       fenceEnabled: true,
@@ -681,10 +681,10 @@ export function applyDaemonGrants(ledger, daemonConfig = {}) {
     const profileName = typeof value === 'string' ? value.trim().toLowerCase() : null
     const source = profileName ? profiles[profileName] : value
     if (!source) throw new Error(`daemon grant for ${id} references unknown profile "${value}"`)
-    const grant = normalizeLedgerGrant(profileName ? { privilegeSet: source } : source)
+    const grant = normalizeLedgerGrant(profileName ? { permissionSet: source } : source)
     ledger.setSync(id, {
       spawnPolicy: grant.spawnPolicy,
-      privilegeSet: grant.privilegeSet,
+      permissionSet: grant.permissionSet,
       source: 'daemon.yaml:grants',
     })
     written++
@@ -707,7 +707,7 @@ export function applyGrandfatherInfill(ledger, { fleetDbPath, config = {}, proje
     const metadata = agent.metadata || {}
     const grant = resolveSpawnGrant({
       spawnerPolicy: 'full',
-      spawnerPrivilegeSet: allPrivilegeSet('grandfather-root-bound'),
+      spawnerPermissionSet: allPermissionSet('grandfather-root-bound'),
       model: metadata.model || undefined,
       kind: metadata.kind || undefined,
       config,
@@ -716,7 +716,7 @@ export function applyGrandfatherInfill(ledger, { fleetDbPath, config = {}, proje
     })
     ledger.setSync(agent.id, {
       spawnPolicy: grant.grantedPolicy,
-      privilegeSet: grant.grantedPrivilegeSet,
+      permissionSet: grant.grantedPermissionSet,
       source: 'grandfather:fleet-db-cutover',
     })
     written++
@@ -724,7 +724,7 @@ export function applyGrandfatherInfill(ledger, { fleetDbPath, config = {}, proje
   return { considered: agents.length, written, skippedExisting }
 }
 
-export function defaultPrivilegeLedgerPath(configDir = path.join(os.homedir(), '.config', 'tlda')) {
+export function defaultPermissionLedgerPath(configDir = path.join(os.homedir(), '.config', 'tlda')) {
   return path.join(configDir, 'fleet-daemon.db')
 }
 
@@ -732,10 +732,10 @@ export function defaultDaemonConfigPath(configDir = path.join(os.homedir(), '.co
   return path.join(configDir, 'daemon.yaml')
 }
 
-export function privilegeLedgerPathFromDaemonConfig(daemonConfig = {}, configDir = path.join(os.homedir(), '.config', 'tlda')) {
-  return defaultPrivilegeLedgerPath(configDir)
+export function permissionLedgerPathFromDaemonConfig(daemonConfig = {}, configDir = path.join(os.homedir(), '.config', 'tlda')) {
+  return defaultPermissionLedgerPath(configDir)
 }
 
-export function createPrivilegeLedger(file = defaultPrivilegeLedgerPath()) {
-  return new PrivilegeLedger(file)
+export function createPermissionLedger(file = defaultPermissionLedgerPath()) {
+  return new PermissionLedger(file)
 }

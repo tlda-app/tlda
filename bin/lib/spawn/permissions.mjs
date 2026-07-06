@@ -1,7 +1,7 @@
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import { normalizeSpawnPolicy, projectCapabilityToMode } from '../../../server/lib/spawn-policy.mjs'
+import { normalizeSpawnPolicy, projectPermissionToMode } from '../../../server/lib/spawn-policy.mjs'
 import { repoRoot } from './identity.mjs'
 
 const SANDBOX_POLICIES = new Set(['no-dev', 'cwd', 'tlda-projects', 'unsandboxed'])
@@ -64,7 +64,7 @@ function absOrPattern(value) {
   return path.resolve(expanded)
 }
 
-function resolvePrivilegeZone(value, workspace) {
+function resolvePermissionZone(value, workspace) {
   const raw = String(value || '').trim()
   if (!raw) return null
   if (raw === '**') return raw
@@ -249,11 +249,11 @@ export function sandboxMetadata(spawnPolicy, leasePolicy = null) {
   if (!spawnPolicy) return {}
   return {
     spawnPolicy: {
-      ...(spawnPolicy.capability ? { capability: spawnPolicy.capability } : {}),
+      ...(spawnPolicy.permission ? { permission: spawnPolicy.permission } : {}),
       ...(spawnPolicy.policy ? { policy: spawnPolicy.policy } : {}),
       ...(spawnPolicy.name ? { name: spawnPolicy.name } : {}),
     },
-    ...(leasePolicy?.privilege_set ? { privilegeSet: leasePolicy.privilege_set } : {}),
+    ...(leasePolicy?.permission_set ? { permissionSet: leasePolicy.permission_set } : {}),
     ...(leasePolicy ? { sandbox: stripRunner(leasePolicy) } : {}),
   }
 }
@@ -269,31 +269,31 @@ export function codexSandboxProjection(spawnPolicy, cwd, { fenced = false } = {}
   return { sandboxMode: 'workspace-write', writableRoots: [cwd || process.cwd()], networkAccess: spawnPolicy?.network !== false }
 }
 
-function privilegeZones(privilegeSet, operation, effect) {
-  const zones = privilegeSet?.operations?.[operation]?.[effect] || []
+function permissionZones(permissionSet, operation, effect) {
+  const zones = permissionSet?.operations?.[operation]?.[effect] || []
   return Array.isArray(zones) ? zones.filter((zone) => typeof zone === 'string' && zone.trim()) : []
 }
 
-function resolvedPrivilegeZones(privilegeSet, operation, effect, workspace) {
-  return privilegeZones(privilegeSet, operation, effect)
-    .map((zone) => resolvePrivilegeZone(zone, workspace))
+function resolvedPermissionZones(permissionSet, operation, effect, workspace) {
+  return permissionZones(permissionSet, operation, effect)
+    .map((zone) => resolvePermissionZone(zone, workspace))
     .filter(Boolean)
 }
 
-export function resolveLeasePolicy({ spawnPolicy, privilegeSet = null, harness, model, cwd, config = {} } = {}) {
+export function resolveLeasePolicy({ spawnPolicy, permissionSet = null, harness, model, cwd, config = {} } = {}) {
   if (!spawnPolicy) return { policyName: null, devTools: true, leasePolicy: null }
   const normalized = normalizeSpawnPolicy(spawnPolicy)
   const policyName = normalized.policy
   if (!SANDBOX_POLICIES.has(policyName)) throw new Error(`agentSandbox policy "${policyName}" is not valid`)
-  const explicitPrivilegeSet = privilegeSet && typeof privilegeSet === 'object' && !Array.isArray(privilegeSet)
-  if (policyName === 'unsandboxed' && !explicitPrivilegeSet) return { policyName, devTools: true, leasePolicy: null }
+  const explicitPermissionSet = permissionSet && typeof permissionSet === 'object' && !Array.isArray(permissionSet)
+  if (policyName === 'unsandboxed' && !explicitPermissionSet) return { policyName, devTools: true, leasePolicy: null }
   if (policyName === 'no-dev') return { policyName, devTools: false, leasePolicy: null }
 
   const workspace = abs(cwd || process.cwd())
   let writeRoots = []
   let matchedRoot = workspace
-  if (explicitPrivilegeSet) {
-    writeRoots = resolvedPrivilegeZones(privilegeSet, 'write', 'allow', workspace)
+  if (explicitPermissionSet) {
+    writeRoots = resolvedPermissionZones(permissionSet, 'write', 'allow', workspace)
     matchedRoot = workspace
   } else if (policyName === 'cwd') {
     writeRoots = [workspace]
@@ -307,8 +307,8 @@ export function resolveLeasePolicy({ spawnPolicy, privilegeSet = null, harness, 
   const cfg = sandboxConfig(config)
   const policyOptions = cfg.policyOptions && typeof cfg.policyOptions === 'object' ? cfg.policyOptions : {}
   const options = deepMerge(DEFAULT_OPTIONS, policyOptions[policyName] || {})
-  const cap = normalized.capability
-  if (explicitPrivilegeSet) {
+  const cap = normalized.permission
+  if (explicitPermissionSet) {
     if (cap !== 'none' && normalized.network !== false) options.network = true
   } else if (cap === 'read') {
     writeRoots = []
@@ -324,9 +324,9 @@ export function resolveLeasePolicy({ spawnPolicy, privilegeSet = null, harness, 
     if (normalized.network !== false) options.network = true
   }
   if (cap !== 'none' && cap !== 'read') writeRoots = [...writeRoots, ...gitMetadataRoots(workspace)]
-  const explicitReadRoots = explicitPrivilegeSet ? resolvedPrivilegeZones(privilegeSet, 'read', 'allow', workspace) : []
+  const explicitReadRoots = explicitPermissionSet ? resolvedPermissionZones(permissionSet, 'read', 'allow', workspace) : []
   const readRoots = [...new Set([
-    ...(explicitPrivilegeSet ? [] : [workspace]),
+    ...(explicitPermissionSet ? [] : [workspace]),
     ...(cap === 'none' ? [] : [PLAYWRIGHT_CACHE_ROOT, CHROME_FOR_TESTING_CRASHPAD_ROOT]),
     ...(cap === 'none' ? [] : configPathList(cfg, 'readRoots', DEFAULT_READ_ROOTS)),
     ...explicitReadRoots,
@@ -341,15 +341,15 @@ export function resolveLeasePolicy({ spawnPolicy, privilegeSet = null, harness, 
     leasePolicy: {
       schema: 1,
       policy: policyName,
-      capability: cap,
+      permission: cap,
       harness,
       model: model || '',
       workspace,
       read_roots: readRoots,
       write_roots: writeRoots,
-      deny_read_roots: explicitPrivilegeSet ? resolvedPrivilegeZones(privilegeSet, 'read', 'deny', workspace) : [],
-      deny_write_roots: explicitPrivilegeSet ? resolvedPrivilegeZones(privilegeSet, 'write', 'deny', workspace) : [],
-      ...(explicitPrivilegeSet ? { explicit_privilege_set: true, privilege_set: privilegeSet } : {}),
+      deny_read_roots: explicitPermissionSet ? resolvedPermissionZones(permissionSet, 'read', 'deny', workspace) : [],
+      deny_write_roots: explicitPermissionSet ? resolvedPermissionZones(permissionSet, 'write', 'deny', workspace) : [],
+      ...(explicitPermissionSet ? { explicit_permission_set: true, permission_set: permissionSet } : {}),
       network: options.network !== false,
       git: options.git || 'read',
       artifacts: options.artifacts !== false,
@@ -363,8 +363,8 @@ export function resolveLeasePolicy({ spawnPolicy, privilegeSet = null, harness, 
 
 export function resolveLaunchPolicy({
   spawnPolicy,
-  privilegeSet = null,
-  requestedCapability,
+  permissionSet = null,
+  requestedPermission,
   harness,
   model,
   cwd,
@@ -376,25 +376,25 @@ export function resolveLaunchPolicy({
   env = process.env,
 } = {}) {
   const requestedPolicy = normalizeSpawnPolicy(
-    spawnPolicy || requestedCapability || (harness === 'codex' ? 'write' : null),
+    spawnPolicy || requestedPermission || (harness === 'codex' ? 'write' : null),
     null,
   )
   // Skip, 2026-07-06: fencing is OPT-IN. The rule, verbatim: "if they ask for a
   // fence, use a fence; if they don't, don't." Nothing else arms it — not the
-  // ledger's stored per-agent privilegeSet + fenceEnabled (which used to defeat
+  // ledger's stored per-agent permissionSet + fenceEnabled (which used to defeat
   // the global off switch and re-cage every agent), not FENCE_TEMPORARILY_DISABLED.
   // `explicitPolicy` is exactly "the caller explicitly asked for a fenced launch"
   // (the `policy:` spawn param). Ask → fenced. Don't ask → free.
   const useFence = !!requestedPolicy && explicitPolicy === true
   const leaseResolution = useFence
-    ? resolveLeasePolicy({ spawnPolicy: requestedPolicy, privilegeSet, harness, model, cwd, config })
+    ? resolveLeasePolicy({ spawnPolicy: requestedPolicy, permissionSet, harness, model, cwd, config })
     : { policyName: requestedPolicy ? 'unsandboxed' : null, devTools: true, leasePolicy: null }
   const explicitMode = permissionMode ?? mode
   const effectivePermissionMode = permissionClassifierDisabled(config, env)
     ? 'bypassPermissions'
     : (explicitMode ?? (leaseResolution.leasePolicy
         ? 'bypassPermissions'
-        : (requestedPolicy?.capability ? projectCapabilityToMode(requestedPolicy.capability) : undefined)))
+        : (requestedPolicy?.permission ? projectPermissionToMode(requestedPolicy.permission) : undefined)))
   const harnessOptions = resolveHarnessLaunchOptions({ config, harness, model })
   // Opting out of the fence is the operator's explicit choice (fencing is
   // opt-in), so a no-fence launch is never refused for "no security" — that

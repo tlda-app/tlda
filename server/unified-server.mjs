@@ -1139,7 +1139,7 @@ function spawnMailboxCompletionText(entry, status, detail) {
   const label = detail.label || detail.agentId || entry.meta?.name || 'spawn'
   if (status === 'completed') {
     const agentPart = detail.agentId ? ` (${detail.agentId})` : ''
-    const policyPart = detail.grantedCapability ? ` Capability: \`${detail.grantedCapability}\`.` : ''
+    const policyPart = detail.grantedPermission ? ` Permission: \`${detail.grantedPermission}\`.` : ''
     return `**Spawn mailbox ${entry.id} complete**: \`${label}\`${agentPart} is registered and usable.${policyPart}`
   }
   return `**Spawn mailbox ${entry.id} failed**: \`${label}\` — ${detail.error || detail.reason || 'spawn failed'}.`
@@ -1164,7 +1164,7 @@ async function performSpawnRelay(caller, msg) {
   if (!caller?.id) throw new Error('spawn caller identity is required')
   const {
     name, agent, model, doc, cwd, respawn, fresh, refresh, effort, kind, mode,
-    capability, spawnCapability, privileges, requestedPrivileges, session, sessionId, session_id, enroll, routeAgent,
+    permission, spawnPermission, permissions, requestedPermissions, session, sessionId, session_id, enroll, routeAgent,
     iLikeToLiveDangerously, phase, mailboxTarget,
   } = msg || {}
   const requestedSession = session || sessionId || session_id || null
@@ -1196,11 +1196,11 @@ async function performSpawnRelay(caller, msg) {
     throw new Error('codex refresh is not supported through MCP spawn; use respawn with a real resume handle')
   }
   const requestedSpec = { model, kind: spawnKind, project: doc }
-  const requestedCapability = capability || spawnCapability || null
-  const storedRespawnPrivileges = (!sessionMode && !fresh && routeTarget?.metadata)
-    ? (routeTarget.metadata.requestedPrivileges || routeTarget.metadata.privilegeProfile || routeTarget.metadata.spawnPolicy || null)
+  const requestedPermission = permission || spawnPermission || null
+  const storedRespawnPermissions = (!sessionMode && !fresh && routeTarget?.metadata)
+    ? (routeTarget.metadata.requestedPermissions || routeTarget.metadata.permissionProfile || routeTarget.metadata.spawnPolicy || null)
     : null
-  const privilegeRequest = privileges || requestedPrivileges || storedRespawnPrivileges || null
+  const permissionRequest = permissions || requestedPermissions || storedRespawnPermissions || null
   const route = resolveSpawnMachine({
     caller,
     targetAgent: routeTarget,
@@ -1253,8 +1253,8 @@ async function performSpawnRelay(caller, msg) {
     enroll: !!enroll || undefined,
     effort: effort || undefined,
     mode: mode || undefined,
-    requestedCapability: requestedCapability || undefined,
-    requestedPrivileges: privilegeRequest || undefined,
+    requestedPermission: requestedPermission || undefined,
+    requestedPermissions: permissionRequest || undefined,
     acknowledgeNoSecurity: !!iLikeToLiveDangerously,
     requester: {
       id: caller.id,
@@ -1364,10 +1364,10 @@ async function performSpawnRelay(caller, msg) {
         requested_name: requestedName,
         name_changed: result?.name_changed ?? (assignedName !== requestedName),
         spawnPolicy,
-        grantedCapability: result?.grantedCapability || spawnPolicy?.capability,
-        spawnerCapability: result?.spawnerCapability,
-        projectCapability: result?.projectCapability,
-        modelCapability: result?.modelCapability,
+        grantedPermission: result?.grantedPermission || spawnPolicy?.permission,
+        spawnerPermission: result?.spawnerPermission,
+        projectPermission: result?.projectPermission,
+        modelPermission: result?.modelPermission,
         lineage,
       }
       const settled = mailboxLibrarian.complete(mailbox.id, completion)
@@ -2321,7 +2321,7 @@ async function emitSkillDismissCard(agentId, dismissed, reason) {
 // ---------- Agent suggestion chips ----------
 // Any agent can push its CURRENT set of clickable suggestion chips — actionable
 // "you might want to do X" affordances rendered at the bottom of the chat. This
-// is a generic fleet capability, not tied to any one agent: a Claude session
+// is a generic fleet permission, not tied to any one agent: a Claude session
 // uses the `suggest` MCP tool; a bot (e.g. the Todd example) hits this route
 // directly. Replace-semantics PER agent — posting overwrites that agent's set,
 // an empty array clears it — so agents never clobber each other. The broadcast
@@ -3747,7 +3747,7 @@ async function handleFleetWsMessage(ws, msg) {
     // blob across re-registrations (e.g. mathchat2's {read-only, unsandboxed});
     // coercing to a coherent rung here means no new corruption can form. This is
     // representation-only — the conferral level (the rung) is unchanged, so it
-    // never re-grants (a real capability change is the operator-gated sweep).
+    // never re-grants (a real permission change is the operator-gated sweep).
     if (agent.metadata?.spawnPolicy) {
       const coherent = coherentSpawnPolicy(agent.metadata.spawnPolicy)
       if (coherent) {
@@ -4979,7 +4979,7 @@ async function handleFleetWsMessage(ws, msg) {
   // (The authoritative `spawn` handler is above — it runs through
   // performAuthorizedSpawn / authorizeSpawn and returns for every spawn message.
   // A second, older `if (type === 'spawn')` block used to live here that sent the
-  // daemon RPC WITHOUT capability authorization or a spawnPolicy; it was dead
+  // daemon RPC WITHOUT permission authorization or a spawnPolicy; it was dead
   // (unreachable after the first handler's return) and a latent self-escalation
   // bypass, so it was removed. Do not reintroduce an unauthorized spawn path.)
 

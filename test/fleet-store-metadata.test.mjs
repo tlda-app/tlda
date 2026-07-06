@@ -64,7 +64,7 @@ describe('FleetStore agent metadata', () => {
         metadata: {
           kind: 'goose',
           model: 'deepseek/deepseek-v4-pro',
-          spawnPolicy: { capability: 'read-only' },
+          spawnPolicy: { permission: 'read-only' },
         },
       })
       store.upsertAgent({
@@ -77,7 +77,7 @@ describe('FleetStore agent metadata', () => {
       assert.deepEqual(agent.metadata, {
         kind: 'goose',
         model: 'deepseek/deepseek-v4-pro',
-        spawnPolicy: { capability: 'read-only' },
+        spawnPolicy: { permission: 'read-only' },
       })
     } finally {
       store.close()
