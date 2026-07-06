@@ -401,24 +401,64 @@ test('respawn lookup uses session-identity store before scanning JSONLs', () => 
   assert.equal(found.cwd, '/tmp/store-cwd')
 })
 
-test('respawn lookup blocks broad scan fallback until identity ingestion reaches EOF', () => {
+test('respawn lookup scans embedded fleet registration even while identity ingestion is pending', () => {
   const root = tmpdir()
   const projectsBase = path.join(root, 'claude-projects')
   const configDir = path.join(root, 'config')
   const sid = 'bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb'
-  writeJsonl(path.join(projectsBase, '-tmp-impostor', `${sid}.jsonl`), [
-    { cwd: '/tmp/impostor-cwd' },
-    { toolUseResult: [{ text: 'Registered fleet:block-owner. Your name: "block-owner"' }] },
+  fs.mkdirSync('/tmp/pending-owned-cwd', { recursive: true })
+  writeJsonl(path.join(projectsBase, '-tmp-pending-owned', `${sid}.jsonl`), [
+    { cwd: '/tmp/pending-owned-cwd' },
+    { toolUseResult: [{ text: 'Registered fleet:blockowner. Your name: "block-owner"' }] },
   ])
   writeSessionIdentity(configDir, {
     ingestion: { caught_up: false, active_tails: 1, pending_jobs: 0, updated_at: '2026-07-04T00:00:00.000Z' },
   })
   const found = findClaudeSession(
-    { id: 'fleet:block-owner', session_id: null, session_ids: [] },
+    { id: 'fleet:blockowner', session_id: null, session_ids: [] },
     { projectsBase, identityConfigDir: configDir },
   )
-  assert.equal(found, null)
+  assert.equal(found.sessionId, sid)
+  assert.equal(found.cwd, '/tmp/pending-owned-cwd')
   assert.equal(isRespawnIdentityCaughtUp({ identityConfigDir: configDir }), false)
+})
+
+test('respawn lookup skips stale primary identity and finds the JSONL registered to the agent', () => {
+  const root = tmpdir()
+  const projectsBase = path.join(root, 'claude-projects')
+  const configDir = path.join(root, 'config')
+  const stale = 'eeeeeeee-5555-4555-8555-eeeeeeeeeeee'
+  const live = 'ffffffff-6666-4666-8666-ffffffffffff'
+  fs.mkdirSync('/tmp/live-owned-cwd', { recursive: true })
+  writeJsonl(path.join(projectsBase, '-tmp-stale', `${stale}.jsonl`), [
+    { cwd: '/tmp/stale-cwd' },
+    { toolUseResult: [{ text: 'Registered fleet:someoneelse. Your name: "wrong"' }] },
+  ])
+  writeJsonl(path.join(projectsBase, '-tmp-live-owned', `${live}.jsonl`), [
+    { cwd: '/tmp/live-owned-cwd' },
+    { toolUseResult: [{ text: 'Registered fleet:staleowner. Your name: "stale-owner"' }] },
+  ])
+  fs.utimesSync(path.join(projectsBase, '-tmp-live-owned', `${live}.jsonl`), new Date('2026-07-04T00:05:00Z'), new Date('2026-07-04T00:05:00Z'))
+  writeSessionIdentity(configDir, {
+    sessions: {
+      [stale]: {
+        session_id: stale,
+        harness_kind: 'claude',
+        fleet_id: 'fleet:someoneelse',
+        friendly_name: 'wrong',
+        cwd: '/tmp/stale-cwd',
+        jsonl_path: path.join(projectsBase, '-tmp-stale', `${stale}.jsonl`),
+        classified: true,
+      },
+    },
+    ingestion: { caught_up: false, active_tails: 1, pending_jobs: 0, updated_at: '2026-07-04T00:00:00.000Z' },
+  })
+  const found = findClaudeSession(
+    { id: 'fleet:staleowner', session_id: stale, session_ids: [] },
+    { projectsBase, identityConfigDir: configDir },
+  )
+  assert.equal(found.sessionId, live)
+  assert.equal(found.cwd, '/tmp/live-owned-cwd')
 })
 
 test('explicit session override still works while identity ingestion is pending', () => {
@@ -470,7 +510,7 @@ test('Codex respawn ignores session override and delegates resolution to daemon-
     }),
     (err) => {
       assert.equal(err.reason, 'launch-failed')
-      assert.match(err.message, /No codex resume handle/)
+      assert.match(err.message, /could not locate the existing codex rollout/)
       return true
     },
   )

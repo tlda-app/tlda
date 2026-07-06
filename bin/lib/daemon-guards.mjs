@@ -110,6 +110,13 @@ export function decideMissingLiveness({
   return { alive: false, hibernate: true, since }
 }
 
+export function decideTerminalWatchExit({ paneLive } = {}) {
+  return {
+    terminalDead: !paneLive,
+    reason: paneLive ? 'watcher-exited-pane-live' : 'pane-dead-or-missing',
+  }
+}
+
 const STARTUP_FAILURE_PATTERNS = [
   {
     code: 'codex-unsupported-model',

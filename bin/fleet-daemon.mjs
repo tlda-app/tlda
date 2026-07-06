@@ -105,6 +105,7 @@ import {
 } from '../shared/terminal-seed.mjs'
 import {
   decideMissingLiveness,
+  decideTerminalWatchExit,
   detectSpawnStartupFailureTranscript,
   harnessKindForAgent,
   isPlaywrightBrowserArgs,
@@ -3037,6 +3038,15 @@ async function queryWindowSize(tmux_session) {
   return null
 }
 
+async function tmuxPaneIsLive(tmux_session) {
+  try {
+    const { stdout } = await tmux('display-message', '-p', '-t', tmux_session, '#{pane_dead}')
+    return stdout.trim() === '0'
+  } catch {
+    return false
+  }
+}
+
 async function rpcStartTerminalWatch({ tmux_session, agent_id, poll_ms }) {
   checkSession(tmux_session)
   {
@@ -3127,8 +3137,15 @@ async function rpcStartTerminalWatch({ tmux_session, agent_id, poll_ms }) {
     state.alive = false
     if (state.sizePoll) { clearInterval(state.sizePoll); state.sizePoll = null }
     terminalWatchPtys.delete(tmux_session)
-    log.info(`terminal exited: agent=${agent_id} session=${tmux_session} exitCode=${exitCode}`)
-    sendMsg({ type: 'terminal-dead', agent_id, tmux_session, exitCode })
+    void (async () => {
+      const decision = decideTerminalWatchExit({ paneLive: await tmuxPaneIsLive(tmux_session) })
+      if (!decision.terminalDead) {
+        log.warn(`terminal-watch exited while pane is still live: agent=${agent_id} session=${tmux_session} exitCode=${exitCode}; suppressing terminal-dead`)
+        return
+      }
+      log.info(`terminal exited: agent=${agent_id} session=${tmux_session} exitCode=${exitCode}`)
+      sendMsg({ type: 'terminal-dead', agent_id, tmux_session, exitCode })
+    })()
   })
 
   return { ok: true, streaming: true, cols: size.cols, rows: size.rows }

@@ -7,6 +7,7 @@ import path from 'node:path'
 import {
   claudeSessionBelongsToAgent,
   decideMissingLiveness,
+  decideTerminalWatchExit,
   detectSpawnStartupFailureTranscript,
   harnessKindForAgent,
   isPlaywrightBrowserArgs,
@@ -197,6 +198,20 @@ test('runtime liveness miss can hibernate immediately when process truth is requ
     alive: false,
     hibernate: true,
     since: 10_000,
+  })
+})
+
+test('terminal-watch exit does not imply agent death while tmux pane is live', () => {
+  assert.deepEqual(decideTerminalWatchExit({ paneLive: true }), {
+    terminalDead: false,
+    reason: 'watcher-exited-pane-live',
+  })
+})
+
+test('terminal-watch exit reports terminal-dead only when tmux pane is dead or missing', () => {
+  assert.deepEqual(decideTerminalWatchExit({ paneLive: false }), {
+    terminalDead: true,
+    reason: 'pane-dead-or-missing',
   })
 })
 

@@ -426,6 +426,7 @@ async function spawnRespawn(params) {
     permissionMode: params.permissionMode,
     mode: params.mode,
     explicitPolicy: params.explicitPolicy,
+    acknowledgeNoSecurity: !!params.acknowledgeNoSecurity,
   })
   assertNativeTools(launchPolicy, requestedKind)
   if (requestedKind === 'codex' && resumeId) {
@@ -505,6 +506,7 @@ async function spawnRefresh(params) {
     permissionMode: params.permissionMode,
     mode: params.mode,
     explicitPolicy: params.explicitPolicy,
+    acknowledgeNoSecurity: !!params.acknowledgeNoSecurity,
   })
   assertNativeTools(launchPolicy, requestedKind)
   await wsRegister({
@@ -604,6 +606,7 @@ async function spawnCodexSession(params, { api, sessionId, codexPath }) {
     permissionMode: params.permissionMode,
     mode: params.mode,
     explicitPolicy: params.explicitPolicy,
+    acknowledgeNoSecurity: !!params.acknowledgeNoSecurity,
   })
   assertNativeTools(launchPolicy, 'codex')
   await wsRegister({
@@ -670,6 +673,7 @@ async function spawnClaudeSession(params, { api, sessionId, identity }) {
   const dnsAlias = await resolveDnsAlias(api)
   const launchPolicy = resolveLaunchPolicy({
     spawnPolicy: params.spawnPolicy,
+    privilegeSet: params.privilegeSet,
     requestedCapability: params.requestedCapability,
     harness: 'claude',
     model,
@@ -678,6 +682,7 @@ async function spawnClaudeSession(params, { api, sessionId, identity }) {
     permissionMode: params.permissionMode,
     mode: params.mode,
     explicitPolicy: params.explicitPolicy,
+    acknowledgeNoSecurity: !!params.acknowledgeNoSecurity,
   })
   assertNativeTools(launchPolicy, 'claude')
   await wsRegister({

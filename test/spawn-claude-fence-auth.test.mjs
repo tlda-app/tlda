@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 import test from 'node:test'
 import * as claude from '../bin/lib/spawn/harness/claude.mjs'
 
@@ -40,6 +42,26 @@ test('Claude restored launches always enable tlda channel notifications', () => 
     config: {},
   })
   assert.match(cmd, /claude --dangerously-load-development-channels server:tlda --resume 'd49dd726-7b15-40ae-8d3c-7f77ce997b3b'/)
+})
+
+test('Claude launch uses static fleet OAuth token file without logging the token value', () => {
+  const home = mkdtempSync(path.join(tmpdir(), 'tlda-claude-auth-'))
+  const tokenDir = path.join(home, '.claude')
+  const tokenPath = path.join(tokenDir, '.fleet-oauth-token')
+  mkdirSync(tokenDir, { recursive: true })
+  writeFileSync(tokenPath, 'secret-token-value\n')
+  const cmd = claude.buildCmd({
+    fleetId: 'fleet:test',
+    tmuxSession: 'fleet-test',
+    model: 'claude-opus-4-8[1m]',
+    name: 'release-train',
+    includePrompt: false,
+    config: {},
+    env: { HOME: home },
+  })
+  assert.match(cmd, /CLAUDE_CODE_OAUTH_TOKEN=\$\(cat '/)
+  assert.match(cmd, new RegExp(tokenPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+  assert.doesNotMatch(cmd, /secret-token-value/)
 })
 
 test('Claude channel flag is a recommended default that config may deliberately replace', () => {

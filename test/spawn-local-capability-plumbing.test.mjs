@@ -101,6 +101,7 @@ test('MCP spawn capability is forwarded through the server spawn path', () => {
   assert.match(server, /requestedCapability: requestedCapability \|\| undefined/)
   assert.match(spawnHelper, /requestedCapability: params\.requestedCapability/)
   assert.match(spawnHelper, /acknowledgeNoSecurity: !!params\.acknowledgeNoSecurity/)
+  assert.match(spawnHelper, /privilegeSet: params\.privilegeSet/)
 })
 
 test('MCP spawn exposes policy as an explicit fence request', () => {

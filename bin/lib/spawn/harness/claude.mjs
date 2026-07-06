@@ -80,6 +80,10 @@ export function buildCmd({
     parts.push(`TLDA_SERVER=${sq(api)}`)
     parts.push(`TLDA_SYNC_SERVER=${sq(api)}`)
   }
+  const fleetOauthToken = path.join(env.HOME || process.env.HOME || '', '.claude', '.fleet-oauth-token')
+  if (fs.existsSync(fleetOauthToken)) {
+    parts.push(`CLAUDE_CODE_OAUTH_TOKEN=$(cat ${sq(fleetOauthToken)})`)
+  }
   if (dnsAlias && fs.existsSync(DNS_ALIAS_PRELOAD)) {
     parts.push(`NODE_OPTIONS=${sq(`--require=${DNS_ALIAS_PRELOAD}`)}`)
     parts.push(`TLDA_NODE_DNS_ALIAS_HOST=${sq(dnsAlias.host)}`)
