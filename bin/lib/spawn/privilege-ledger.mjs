@@ -148,9 +148,12 @@ function normalizeDaemonProfile(name, value, regions) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error(`daemon profile "${name}" must be an object`)
   }
-  const allowed = new Set(['read', 'write'])
+  // `description` is an inert, operator-owned help string: the daemon ignores it
+  // for policy, but the CLI help and docs read it so the profile's name AND its
+  // human description live in one place (daemon.yaml) and can't drift.
+  const allowed = new Set(['read', 'write', 'description'])
   const extra = Object.keys(value).filter(key => !allowed.has(key))
-  if (extra.length) throw new Error(`daemon profile "${name}" supports only read and write roots; unknown key(s): ${extra.join(', ')}`)
+  if (extra.length) throw new Error(`daemon profile "${name}" supports only read, write, and description; unknown key(s): ${extra.join(', ')}`)
   const operations = {
     read: normalizeProfileRootRefs(value.read, regions, { profile: name, operation: 'read' }),
     write: normalizeProfileRootRefs(value.write, regions, { profile: name, operation: 'write' }),
@@ -172,6 +175,9 @@ function normalizeDaemonProfile(name, value, regions) {
     rules,
     projectedPolicy: policy,
     compiledFrom: 'daemon.yaml',
+    ...(typeof value.description === 'string' && value.description.trim()
+      ? { description: value.description.trim() }
+      : {}),
   }
 }
 

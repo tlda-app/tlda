@@ -2362,15 +2362,34 @@ Network:
   else console.error(out)
 }
 
+// The profile list in help is DERIVED from daemon.yaml — never hardcoded — so it
+// can't drift from the real config. Each profile's human description is the inert
+// `description:` field in the YAML (falls back to the derived region if absent).
+// One place defines names and descriptions: the config.
+function daemonProfileHelpBlock() {
+  let profiles = {}
+  try {
+    const cfg = readDaemonConfig(defaultDaemonConfigPath(CONFIG_DIR))
+    profiles = cfg?.profiles && typeof cfg.profiles === 'object' && !Array.isArray(cfg.profiles) ? cfg.profiles : {}
+  } catch {
+    profiles = {}
+  }
+  const names = Object.keys(profiles)
+  if (!names.length) return '  (no profiles configured in daemon.yaml)'
+  const width = Math.max(...names.map((n) => n.length))
+  return names
+    .map((n) => {
+      const desc = profiles[n]?.description || `${profiles[n]?.projectedPolicy?.policy || 'scoped'} scope`
+      return `  ${n.padEnd(width)}  ${desc}`
+    })
+    .join('\n')
+}
+
 function usageAgentPrivileges() {
   const out = `Usage: tlda agent privileges <agent> [profile] [--on-wake] [--dry-run]
 
-Profiles:
-  app-dev  app worktree + git + browser/dev caches
-  deploy   app worktree + git + Fly state/cache
-  read     read-only
-  write    write launch working directory
-  full     unfenced operator access
+Profiles (from daemon.yaml):
+${daemonProfileHelpBlock()}
 
 Default behavior:
   With a profile, update the agent's next-wake privileges and wake it now.
