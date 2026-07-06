@@ -2574,7 +2574,7 @@ export async function handleFleetTool(name, args) {
       return spawned;
     }
 
-    async function delegateToResolvedAgent(targetAgent, targetSpawnedInfo = null) {
+    async function delegateToResolvedAgent(targetAgent, targetSpawnedInfo = null, opts = {}) {
       const laneBlock = await requireInLaneAction(targetAgent, {
         action: 'delegate',
         message,
@@ -2588,7 +2588,7 @@ export async function handleFleetTool(name, args) {
         harnessKind,
       });
 
-      const delegateBody = { from: AGENT_ID, agent: targetAgent, description, message: routedMessage, success_criteria: criteria.length ? criteria : undefined, blocked_by: blockedBy.length ? blockedBy : undefined, requires_approval: args.requires_approval || undefined };
+      const delegateBody = { from: AGENT_ID, agent: targetAgent, description, message: routedMessage, success_criteria: criteria.length ? criteria : undefined, blocked_by: blockedBy.length ? blockedBy : undefined, requires_approval: args.requires_approval || undefined, allow_pending_agent: opts.allowPendingAgent || undefined };
       const data = await sendWS('delegate', delegateBody);
       if (data.event_id) {
         _originatedEventIds.add(data.event_id);
@@ -2629,10 +2629,19 @@ export async function handleFleetTool(name, args) {
           return { content: [{ type: 'text', text: `spawn failed before delegation: ${spawnResult.error || JSON.stringify(spawnResult)}` }], isError: true };
         }
         if (spawnResult?.async) {
+          const pendingAgentId = spawnResult.agent_id;
+          if (!pendingAgentId) return { content: [{ type: 'text', text: `spawn started for ${agentName}, but returned no reserved agent id. Not delegating.` }], isError: true };
+          let delegated = null;
+          try {
+            delegated = await delegateToResolvedAgent(pendingAgentId, { agent_id: pendingAgentId, friendly_name: agentName }, { allowPendingAgent: true });
+          } catch (e) {
+            return { content: [{ type: 'text', text: `spawn reserved ${agentName} (${pendingAgentId}), but durable delegation failed: ${e.message}` }], isError: true };
+          }
           const mailbox = startOperationMailbox('delegate', {
             agentName,
             spawn_mailbox_id: spawnResult.mailbox_id,
-            spawn_agent_id: spawnResult.agent_id,
+            spawn_agent_id: pendingAgentId,
+            task_id: delegated.data.task_id,
           });
           if (!mailbox) return { content: [{ type: 'text', text: 'spawn+delegate started spawn, but cannot start delegate mailbox: not registered.' }], isError: true };
           (async () => {
@@ -2642,28 +2651,28 @@ export async function handleFleetTool(name, args) {
               if (!spawned.tmux_session) throw new Error(`spawn registered ${agentName} (${spawned.id}), but no tmux session was recorded. Not delegating: a registry row is not a usable agent.`);
               if (!agentAlive(spawned)) throw new Error(`spawn registered ${agentName} (${spawned.id}), but the agent is not alive/usable yet. Not delegating.`);
               const assignedName = spawned.friendly_name || agentName;
-              const result = await delegateToResolvedAgent(spawned.id, { agent_id: spawned.id, friendly_name: assignedName });
               deliverOperationMailboxCompletion(mailbox, 'completed', {
-                task_id: result.data.task_id,
+                task_id: delegated.data.task_id,
                 agent_id: spawned.id,
                 friendly_name: assignedName,
                 spawn_mailbox_id: spawnResult.mailbox_id,
-                spawn_agent_id: spawnResult.agent_id,
+                spawn_agent_id: pendingAgentId,
                 requested_name: agentName,
                 name_changed: assignedName !== agentName,
-                message: `Spawned ${assignedName} (${spawned.id}) and delegated [${result.data.task_id}]: ${description}`,
+                message: `Spawned ${assignedName} (${spawned.id}) and delegated [${delegated.data.task_id}]: ${description}`,
               });
             } catch (e) {
               deliverOperationMailboxCompletion(mailbox, 'failed', {
                 agentName,
                 spawn_mailbox_id: spawnResult.mailbox_id,
-                spawn_agent_id: spawnResult.agent_id,
+                spawn_agent_id: pendingAgentId,
+                task_id: delegated.data.task_id,
                 error: e.message,
-                message: `spawn+delegate failed for ${agentName}: ${e.message}`,
+                message: `spawn+delegate delegated [${delegated.data.task_id}] to reserved ${pendingAgentId}, but attach failed for ${agentName}: ${e.message}`,
               });
             }
           })();
-          return operationMailboxStartedResult(mailbox, { extra: `spawn mailbox: ${spawnResult.mailbox_id}\nagent: ${agentName}` });
+          return operationMailboxStartedResult(mailbox, { extra: `spawn mailbox: ${spawnResult.mailbox_id}\nagent: ${agentName}\nagent_id: ${pendingAgentId}\ntask_id: ${delegated.data.task_id}` });
         }
       } catch (e) {
         const msg = (e.message || '').trim();
