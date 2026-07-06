@@ -120,31 +120,34 @@ describe('argument parser', () => {
 })
 
 // ---------------------------------------------------------------------------
-// Agent spawn CLI
+// Agent lifecycle CLI
 // ---------------------------------------------------------------------------
 
-describe('agent spawn CLI', () => {
-  it('refuses routed respawn from operator CLI before contacting the server', () => {
-    const { stderr, exitCode } = tlda('agent', 'spawn', 'alice', {
-      env: scrubAgentEnv(process.env),
-    })
+describe('agent lifecycle CLI', () => {
+  it('rejects retired lifecycle verbs without aliases', () => {
+    for (const verb of ['spawn', 'spawn-direct', 'resume']) {
+      const { stderr, exitCode } = tlda('agent', verb, 'alice', {
+        env: scrubAgentEnv(process.env),
+      })
 
-    assert.notEqual(exitCode, 0)
-    assert.ok(stderr.includes('Server-routed CLI spawn is disabled.'))
-    assert.ok(stderr.includes('Run locally on the target machine: tlda agent spawn-direct alice'))
-    assert.ok(!stderr.includes('ECONNREFUSED'))
-    assert.ok(!stderr.includes('localhost:99999'))
+      assert.notEqual(exitCode, 0)
+      assert.ok(stderr.includes('Usage: tlda agent <list|create|wake|move|set-create-machine|check-ready|attach|hibernate|dismiss|capability|privileges>'))
+      assert.ok(!stderr.includes('ECONNREFUSED'))
+      assert.ok(!stderr.includes('localhost:99999'))
+    }
   })
 
-  it('preserves flags in the spawn-direct redirect suggestion', () => {
-    const { stderr, exitCode } = tlda('agent', 'spawn', '--fresh', 'bob', '--kind', 'codex', '--cwd', '/tmp/tlda spawn dir', {
-      env: scrubAgentEnv(process.env),
-    })
+  it('validates new lifecycle commands without contacting the server when required args are missing', () => {
+    for (const verb of ['create', 'wake', 'dismiss']) {
+      const { stderr, exitCode } = tlda('agent', verb, {
+        env: scrubAgentEnv(process.env),
+      })
 
-    assert.notEqual(exitCode, 0)
-    assert.ok(stderr.includes("Run locally on the target machine: tlda agent spawn-direct --fresh bob --kind codex --cwd '/tmp/tlda spawn dir'"))
-    assert.ok(!stderr.includes('ECONNREFUSED'))
-    assert.ok(!stderr.includes('localhost:99999'))
+      assert.notEqual(exitCode, 0)
+      assert.ok(stderr.includes(`Usage: tlda agent ${verb}`) || stderr.includes('Usage: tlda agent <create|wake>'))
+      assert.ok(!stderr.includes('ECONNREFUSED'))
+      assert.ok(!stderr.includes('localhost:99999'))
+    }
   })
 })
 
@@ -202,7 +205,7 @@ describe('agent capability CLI', () => {
     })
 
     assert.notEqual(exitCode, 0)
-    assert.ok(stderr.includes('Usage: tlda agent <list|spawn|spawn-direct|move|set-spawn-machine|check-ready|attach|hibernate|capability|privileges>'))
+    assert.ok(stderr.includes('Usage: tlda agent <list|create|wake|move|set-create-machine|check-ready|attach|hibernate|dismiss|capability|privileges>'))
   })
 
   it('refuses from an agent context before dry-run escalation', () => {
@@ -215,12 +218,12 @@ describe('agent capability CLI', () => {
     assert.ok(stderr.includes('agent context'))
   })
 
-  it('shows set-spawn-machine help and refuses agent-context dry runs', () => {
-    const help = tlda('agent', 'set-spawn-machine', '--help')
+  it('shows set-create-machine help and refuses agent-context dry runs', () => {
+    const help = tlda('agent', 'set-create-machine', '--help')
     assert.equal(help.exitCode, 0)
     assert.ok(help.stdout.includes('fleet_prefs.spawn_machine_id'))
 
-    const denied = tlda('agent', 'set-spawn-machine', 'todd', 'mini', '--dry-run', {
+    const denied = tlda('agent', 'set-create-machine', 'todd', 'mini', '--dry-run', {
       env: { ...scrubAgentEnv(process.env), FLEET_ID: 'fleet:test-agent', FLEET_NAME: 'test-agent' },
     })
     assert.notEqual(denied.exitCode, 0)
@@ -233,7 +236,7 @@ describe('agent capability CLI', () => {
 // ---------------------------------------------------------------------------
 
 describe('agent privileges CLI', () => {
-  it('dry-runs default respawn behavior without contacting the server', () => {
+  it('dry-runs default wake behavior without contacting the server', () => {
     const { stdout, exitCode } = tlda('agent', 'privileges', 'alice', 'deploy', '--dry-run', {
       env: scrubAgentEnv(process.env),
     })
@@ -241,18 +244,18 @@ describe('agent privileges CLI', () => {
     assert.equal(exitCode, 0)
     assert.ok(stdout.includes('[dry-run] would set alice privileges to deploy'))
     assert.ok(stdout.includes('update metadata.requestedPrivileges / metadata.spawnPolicy'))
-    assert.ok(stdout.includes('run locally: tlda agent spawn-direct alice --privileges deploy'))
+    assert.ok(stdout.includes('run locally: tlda agent wake alice --privileges deploy'))
   })
 
-  it('dry-runs on-respawn as metadata-only staging', () => {
-    const { stdout, exitCode } = tlda('agent', 'privileges', 'alice', 'app-dev', '--on-respawn', '--dry-run', {
+  it('dry-runs on-wake as metadata-only staging', () => {
+    const { stdout, exitCode } = tlda('agent', 'privileges', 'alice', 'app-dev', '--on-wake', '--dry-run', {
       env: scrubAgentEnv(process.env),
     })
 
     assert.equal(exitCode, 0)
     assert.ok(stdout.includes('[dry-run] would set alice privileges to app-dev'))
-    assert.ok(stdout.includes('leave the change for the next respawn'))
-    assert.ok(!stdout.includes('run locally: tlda agent spawn-direct'))
+    assert.ok(stdout.includes('leave the change for the next wake'))
+    assert.ok(!stdout.includes('run locally: tlda agent wake'))
   })
 
   it('rejects unknown privilege profiles', () => {
