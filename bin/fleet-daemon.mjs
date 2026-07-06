@@ -2653,60 +2653,16 @@ async function rpcSendKey({ tmux_session, key }) {
   return { ok: true }
 }
 
-// Ephemeral PTY connections for reliable keystroke delivery.
-// Spawned on demand when no long-lived watcher exists, torn down after idle.
-const ephemeralPtys = new Map() // tmux_session -> { pty, alive, teardownTimer }
-const EPHEMERAL_TTL_MS = 5000
-
-async function getOrSpawnEphemeralPty(tmuxSession) {
-  const existing = ephemeralPtys.get(tmuxSession)
-  if (existing?.alive) {
-    clearTimeout(existing.teardownTimer)
-    existing.teardownTimer = setTimeout(() => teardownEphemeral(tmuxSession), EPHEMERAL_TTL_MS)
-    return existing.pty
-  }
-  const nodePty = await getPty()
-  const pty = nodePty.spawn('tmux', [...TMUX_ARGS, 'attach-session', '-t', tmuxSession], {
-    name: 'xterm-256color',
-    cols: 120,
-    rows: 40,
-    env: { ...process.env, TERM: 'xterm-256color', TMUX: '', TMUX_PANE: '' },
-  })
-  const state = { pty, alive: true, teardownTimer: null }
-  state.teardownTimer = setTimeout(() => teardownEphemeral(tmuxSession), EPHEMERAL_TTL_MS)
-  ephemeralPtys.set(tmuxSession, state)
-  pty.onExit(() => {
-    state.alive = false
-    clearTimeout(state.teardownTimer)
-    ephemeralPtys.delete(tmuxSession)
-  })
-  // Discard output — ephemeral PTYs are write-only
-  pty.onData(() => {})
-  return pty
-}
-
-function teardownEphemeral(tmuxSession) {
-  const state = ephemeralPtys.get(tmuxSession)
-  if (!state) return
-  state.alive = false
-  ephemeralPtys.delete(tmuxSession)
-  try { state.pty.kill() } catch {}
-}
-
 async function rpcSendText({ tmux_session, text, enter, enter_delay_ms }) {
   checkSession(tmux_session)
   armBySession(tmux_session)   // delivering input/wake-bootstrap → arm the status machine
-  // Prefer long-lived PTY watcher, then ephemeral PTY, never tmux send-keys
-  let pty = terminalWatchPtys.get(tmux_session)?.alive
+  // Prefer the existing long-lived PTY watcher when a terminal card is open.
+  // Do not create on-demand "ephemeral" PTYs here: node-pty's macOS spawn path
+  // can throw after opening native PTY fds and before returning a JS handle, so
+  // the daemon cannot close that handle. tmux send-keys is the bounded fallback.
+  const pty = terminalWatchPtys.get(tmux_session)?.alive
     ? terminalWatchPtys.get(tmux_session).pty
     : null
-  if (!pty) {
-    try {
-      pty = await getOrSpawnEphemeralPty(tmux_session)
-    } catch (e) {
-      log.error(`ephemeral PTY failed for ${tmux_session}: ${e.message}, falling back to tmux`)
-    }
-  }
   if (pty) {
     if (text) pty.write(text)
     if (enter !== false) {
@@ -4696,8 +4652,6 @@ function teardownWatchers() {
   // independently and queue them for the next connected window.
   for (const [, s] of terminalWatchPtys) { s.alive = false; try { s.pty.kill() } catch {} }
   terminalWatchPtys.clear()
-  for (const [, s] of ephemeralPtys) { s.alive = false; clearTimeout(s.teardownTimer); try { s.pty.kill() } catch {} }
-  ephemeralPtys.clear()
   for (const [, entry] of backingWatchers) closeWatcher(entry.watcher, `${entry.project}:${entry.backingName}`)
   backingWatchers.clear()
 }
@@ -4875,6 +4829,7 @@ function shutdown(signal) {
   log.info(`shutdown via ${signal || 'unknown'} signal; saving cursors and exiting`)
   _shuttingDown = true
   saveCursors()
+  teardownWatchers()
   try { _ownerHarvester?.kill() } catch { /* already gone */ }
   try { _jsonlIngester?.send?.({ type: 'shutdown' }) } catch { /* already gone */ }
   try { _jsonlIngester?.kill() } catch { /* already gone */ }

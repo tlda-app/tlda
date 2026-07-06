@@ -62,3 +62,17 @@ test('daemon claude runtime matcher accepts claude.exe wrapper process names', (
   assert.equal(matcher.test('/Users/skip/.local/bin/claude.exe --resume'), true)
   assert.equal(matcher.test('notclaude.exe --resume'), false)
 })
+
+test('send-text does not spawn on-demand ephemeral PTYs', () => {
+  const source = daemonSource()
+
+  assert.equal(source.includes('ephemeralPtys'), false)
+  assert.equal(source.includes('getOrSpawnEphemeralPty'), false)
+  assert.equal(source.includes('ephemeral PTY failed'), false)
+
+  const ptySpawns = source.match(/nodePty\.spawn\(/g) || []
+  assert.equal(ptySpawns.length, 1)
+  assert.match(source, /async function rpcStartTerminalWatch/)
+  assert.match(source, /const pty = nodePty\.spawn\('tmux'/)
+  assert.match(source, /function shutdown\(signal\)[\s\S]*teardownWatchers\(\)/)
+})
