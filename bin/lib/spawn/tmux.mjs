@@ -18,6 +18,22 @@ async function tmux(tmuxSocket, ...args) {
   })
 }
 
+function shellQuote(s) {
+  return `'${String(s).replace(/'/g, `'\\''`)}'`
+}
+
+async function enableCrashCapture(session, logPath, { tmuxSocket = process.env.TMUX_SOCKET || null } = {}) {
+  if (!logPath) return
+  fs.mkdirSync(path.dirname(logPath), { recursive: true })
+  fs.appendFileSync(logPath, `\n=== spawn ${new Date().toISOString()} session=${session} ===\n`)
+  try { await tmux(tmuxSocket, 'set-option', '-t', session, 'remain-on-exit', 'on') } catch {
+    // Diagnostic only; the launch should continue even if tmux cannot preserve panes.
+  }
+  try { await tmux(tmuxSocket, 'pipe-pane', '-o', '-t', session, `cat >> ${shellQuote(logPath)}`) } catch {
+    // Diagnostic only; startup probing still provides the slower fallback.
+  }
+}
+
 async function pasteLiteral(session, text, { tmuxSocket = process.env.TMUX_SOCKET || null } = {}) {
   const buffer = `tlda-prompt-${process.pid}-${Date.now()}`
   await tmux(tmuxSocket, 'set-buffer', '-b', buffer, text)
@@ -77,10 +93,11 @@ export async function sessionHasRuntime(session, { tmuxSocket = process.env.TMUX
   return false
 }
 
-export async function spawnTmux(session, cwd, cmd, { autoDismiss = true, sendKeys = false, tmuxSocket = process.env.TMUX_SOCKET || null } = {}) {
+export async function spawnTmux(session, cwd, cmd, { autoDismiss = true, sendKeys = false, tmuxSocket = process.env.TMUX_SOCKET || null, crashLogPath = null } = {}) {
+  const launchViaShell = sendKeys || !!crashLogPath
   try {
     const args = ['respawn-pane', '-t', session, '-c', cwd]
-    if (!sendKeys) args.push(cmd)
+    if (!launchViaShell) args.push(cmd)
     await tmux(tmuxSocket, ...args)
   } catch {
     if (await sessionHasRuntime(session, { tmuxSocket })) return false
@@ -88,15 +105,16 @@ export async function spawnTmux(session, cwd, cmd, { autoDismiss = true, sendKey
       // Stale-session cleanup is best effort before creating a fresh session.
     }
     const args = ['new-session', '-d', '-s', session, '-c', cwd]
-    if (!sendKeys) args.push(cmd)
+    if (!launchViaShell) args.push(cmd)
     await tmux(tmuxSocket, ...args)
     try { await tmux(tmuxSocket, 'set-option', '-t', session, 'remain-on-exit', 'on') } catch {
       // remain-on-exit is diagnostic only; launch success does not depend on it.
     }
   }
+  await enableCrashCapture(session, crashLogPath, { tmuxSocket })
   await tmux(tmuxSocket, 'set-option', '-t', session, 'window-size', 'manual')
   await tmux(tmuxSocket, 'resize-window', '-t', session, '-x', '120', '-y', '40')
-  if (sendKeys) {
+  if (launchViaShell) {
     const script = path.join(os.tmpdir(), `tlda-launch-${process.pid}-${Date.now()}.sh`)
     fs.writeFileSync(script, `${cmd}\n`, { mode: 0o600 })
     await tmux(tmuxSocket, 'send-keys', '-t', session, '--', `source ${script}`)

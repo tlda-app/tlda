@@ -289,7 +289,7 @@ async function spawnFresh(params) {
       projection: commandTrace.projection,
       cmd,
     })
-    const launched = await (deps.spawnTmux || spawnTmux)(tmuxSession, cwd, cmd, { autoDismiss: requestedKind === 'claude', sendKeys, tmuxSocket: params.tmuxSocket })
+    const launched = await (deps.spawnTmux || spawnTmux)(tmuxSession, cwd, cmd, { autoDismiss: requestedKind === 'claude', sendKeys, tmuxSocket: params.tmuxSocket, crashLogPath: params.crashLogPath })
     if (!launched) {
       librarian.failPending(fleetId, 'launch-failed')
       throw new SpawnError('launch-failed', `tmux session ${tmuxSession} already has a live harness runtime`, { tmuxSession })
@@ -463,7 +463,7 @@ async function spawnRespawn(params) {
     config,
     env: spawnEnv(params),
   })
-  const launched = await spawnTmux(tmuxSession, cwd, cmd, { autoDismiss: requestedKind === 'claude', sendKeys, tmuxSocket: params.tmuxSocket })
+  const launched = await spawnTmux(tmuxSession, cwd, cmd, { autoDismiss: requestedKind === 'claude', sendKeys, tmuxSocket: params.tmuxSocket, crashLogPath: params.crashLogPath })
   if (!launched) return { ok: true, fleetId, tmuxSession, harness: requestedKind, model, alreadyAlive: true }
   if (requestedKind === 'codex') {
     await injectCodexPrompt(tmuxSession, codex.kickoffPrompt(friendlyName), { tmuxSocket: params.tmuxSocket })
@@ -541,7 +541,7 @@ async function spawnRefresh(params) {
     config,
     env: spawnEnv(params),
   })
-  const launched = await spawnTmux(tmuxSession, cwd, cmd, { autoDismiss: requestedKind === 'claude', sendKeys, tmuxSocket: params.tmuxSocket })
+  const launched = await spawnTmux(tmuxSession, cwd, cmd, { autoDismiss: requestedKind === 'claude', sendKeys, tmuxSocket: params.tmuxSocket, crashLogPath: params.crashLogPath })
   if (!launched) return { ok: true, fleetId, tmuxSession, harness: requestedKind, model, alreadyAlive: true }
   if (requestedKind === 'codex') {
     await injectCodexPrompt(tmuxSession, codex.kickoffPrompt(friendlyName), { tmuxSocket: params.tmuxSocket })
@@ -640,7 +640,7 @@ async function spawnCodexSession(params, { api, sessionId, codexPath }) {
     config,
     env: spawnEnv(params),
   })
-  const launched = await spawnTmux(tmuxSession, cwd, cmd, { sendKeys, tmuxSocket: params.tmuxSocket })
+  const launched = await spawnTmux(tmuxSession, cwd, cmd, { sendKeys, tmuxSocket: params.tmuxSocket, crashLogPath: params.crashLogPath })
   if (!launched) return { ok: true, fleetId, tmuxSession, harness: 'codex', model, resumeId: sessionId, alreadyAlive: true }
   await injectCodexPrompt(tmuxSession, codex.kickoffPrompt(friendlyName), { tmuxSocket: params.tmuxSocket })
   return { ok: true, fleetId, tmuxSession, harness: 'codex', model, resumeId: sessionId, enrolled: !!params.enroll }
@@ -717,7 +717,7 @@ async function spawnClaudeSession(params, { api, sessionId, identity }) {
     config,
     env: spawnEnv(params),
   })
-  const launched = await spawnTmux(tmuxSession, cwd, cmd, { autoDismiss: true, sendKeys, tmuxSocket: params.tmuxSocket })
+  const launched = await spawnTmux(tmuxSession, cwd, cmd, { autoDismiss: true, sendKeys, tmuxSocket: params.tmuxSocket, crashLogPath: params.crashLogPath })
   if (!launched) return { ok: true, fleetId, tmuxSession, harness: 'claude', model, resumeId: sessionId, alreadyAlive: true }
   await injectClaudePrompt(tmuxSession, claude.kickoffPrompt(friendlyName), { tmuxSocket: params.tmuxSocket })
   return { ok: true, fleetId, tmuxSession, harness: 'claude', model, resumeId: sessionId, enrolled: !!params.enroll }
