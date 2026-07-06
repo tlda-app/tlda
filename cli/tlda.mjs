@@ -2129,6 +2129,17 @@ async function runFleetSpawn(spawnArgs) {
     }
     const action = params.spawnMode === 'fresh' || params.spawnMode === 'session' ? 'Created' : 'Woke'
     console.log(`${action} ${result.tmuxSession} (${result.fleetId}) in ${params.cwd || process.cwd()}`)
+    // Transparency: state plainly what permissions the agent got and why, so no one
+    // has to guess from a name or a cwd. Fencing is opt-in — it is on iff a fence was
+    // explicitly requested (--policy sets explicitPolicy, the only thing that arms
+    // the fence). This mirrors the real launch decision (permissions.mjs useFence).
+    if (params.explicitPolicy) {
+      const profile = grant?.grantedPolicy?.name || (typeof requestedPrivileges === 'string' ? requestedPrivileges : null) || policyArg
+      const scope = grant?.grantedPolicy?.policy || 'scoped'
+      console.log(`  permissions: ${profile} — fenced (${scope}); requested via --policy`)
+    } else {
+      console.log(`  permissions: unfenced — no fence requested (full access)`)
+    }
   } catch (e) {
     console.error(red(e?.message || String(e)))
     process.exitCode = 1
