@@ -558,16 +558,31 @@ function defaultEnrolledName(params, sessionId) {
   return `agent-${String(sessionId).slice(0, 8)}`
 }
 
+// Enroll requires the harness KIND explicitly. Session ids are not unique across
+// harnesses, so we never guess by which file happens to exist on disk (Skip: "you
+// pass it a session id but not a model… you just have to hope it guesses").
+function normalizeSessionKind(kind) {
+  const k = String(kind ?? '').trim().toLowerCase()
+  return k === 'codex' || k === 'claude' ? k : null
+}
+
 async function spawnSession(params) {
   const api = resolveApi()
   await ensureServer({ api })
   const sessionId = sessionIdOf(params)
   if (!sessionId) throw new SpawnError('launch-failed', 'session spawn requires --session <uuid>')
-  const codexPath = codexRolloutPath(sessionId)
-  if (codexPath) return await spawnCodexSession(params, { api, sessionId, codexPath })
+  const kind = normalizeSessionKind(params.kind)
+  if (!kind) {
+    throw new SpawnError('launch-failed', 'enroll requires --kind <codex|claude>: session ids are not unique across harnesses', { sessionId })
+  }
+  if (kind === 'codex') {
+    const codexPath = codexRolloutPath(sessionId)
+    if (!codexPath) throw new SpawnError('launch-failed', `No Codex rollout found for session ${sessionId}`, { sessionId })
+    return await spawnCodexSession(params, { api, sessionId, codexPath })
+  }
   const claudeIdentity = scanClaudeSessionIdentity(sessionId)
-  if (claudeIdentity) return await spawnClaudeSession(params, { api, sessionId, identity: claudeIdentity })
-  throw new SpawnError('launch-failed', `No Claude JSONL or Codex rollout found for session ${sessionId}`, { sessionId })
+  if (!claudeIdentity) throw new SpawnError('launch-failed', `No Claude JSONL found for session ${sessionId}`, { sessionId })
+  return await spawnClaudeSession(params, { api, sessionId, identity: claudeIdentity })
 }
 
 async function spawnCodexSession(params, { api, sessionId, codexPath }) {

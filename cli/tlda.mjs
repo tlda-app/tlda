@@ -2034,10 +2034,31 @@ async function attachToAgent(name) {
   process.exit(result.status ?? 0)
 }
 
+// `create` makes a FRESH agent only. Adopting an already-running external session
+// is a separate verb (`enroll`) so the two are never confused (Skip: "the create
+// command now is overloaded, to both create fresh agents and enroll extant agents").
 function agentCreateArgs(rawArgs) {
-  return (hasRawFlag(rawArgs, 'fresh') || flagFromRaw(rawArgs, 'session'))
-    ? rawArgs
-    : ['--fresh', ...rawArgs]
+  if (flagFromRaw(rawArgs, 'session')) {
+    console.error(red('`tlda agent create` makes a FRESH agent. To adopt an existing session, use:\n  tlda agent enroll --session <uuid> --kind <codex|claude> [name]'))
+    process.exit(1)
+  }
+  return hasRawFlag(rawArgs, 'fresh') ? rawArgs : ['--fresh', ...rawArgs]
+}
+
+// `enroll` adopts an already-running external session as a fleet agent. The harness
+// KIND is required and explicit — session ids are not unique across harnesses, so
+// nothing is guessed.
+function agentEnrollArgs(rawArgs) {
+  if (!flagFromRaw(rawArgs, 'session')) {
+    console.error(red('Usage: tlda agent enroll --session <uuid> --kind <codex|claude> [name] [--permissions <profile>]'))
+    process.exit(1)
+  }
+  const kind = flagFromRaw(rawArgs, 'kind')
+  if (kind !== 'codex' && kind !== 'claude') {
+    console.error(red('`tlda agent enroll` requires --kind <codex|claude> (session ids are not unique across harnesses).'))
+    process.exit(1)
+  }
+  return hasRawFlag(rawArgs, 'enroll') ? rawArgs : ['--enroll', ...rawArgs]
 }
 
 async function runFleetSpawn(spawnArgs) {
@@ -2127,7 +2148,7 @@ async function runFleetSpawn(spawnArgs) {
         source: 'agent-lifecycle-cli',
       })
     }
-    const action = params.spawnMode === 'fresh' || params.spawnMode === 'session' ? 'Created' : 'Woke'
+    const action = params.enroll ? 'Enrolled' : (params.spawnMode === 'fresh' || params.spawnMode === 'session' ? 'Created' : 'Woke')
     console.log(`${action} ${result.tmuxSession} (${result.fleetId}) in ${params.cwd || process.cwd()}`)
     // Transparency: state plainly what permissions the agent got and why, so no one
     // has to guess from a name or a cwd. Fencing is opt-in — it is on iff a fence was
@@ -2982,6 +3003,7 @@ async function cmdAgent() {
     case 'list':
     case 'ls':        await listFleetAgents(); break
     case 'create':    await runFleetSpawn(agentCreateArgs(process.argv.slice(4))); break
+    case 'enroll':    await runFleetSpawn(agentEnrollArgs(process.argv.slice(4))); break
     case 'wake':      await runFleetSpawn(process.argv.slice(4)); break
     case 'move':      await cmdAgentMove(); break
     case 'set-create-machine': await cmdAgentSetSpawnMachine(); break
