@@ -47,9 +47,13 @@ function ownerFromRollout(jsonlPath) {
   }
 }
 
+// A valid fleet id is `fleet:` + an 8-hex handle. Null OR malformed (e.g. the
+// truncated `fleet:` the live content-derivation bug writes) both make the
+// fleet-id -> rollout resume lookup miss, so recover both.
+const VALID_FLEET_ID = /^fleet:[0-9a-f]{8}$/
 const store = loadSessionIdentityStore(storePath)
 const codexNulls = Object.values(store.sessions).filter(
-  r => r.harness_kind === 'codex' && !r.fleet_id,
+  r => r.harness_kind === 'codex' && !VALID_FLEET_ID.test(r.fleet_id || ''),
 )
 
 console.log(`store: ${storePath}`)
