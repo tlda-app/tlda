@@ -4359,12 +4359,20 @@ async function handleFleetWsMessage(ws, msg) {
   }
 
   if (type === 'delegate') {
-    const { agent: agentQuery, description, message: taskMsg, success_criteria, blocked_by, from, requires_approval } = msg
+    const { agent: agentQuery, description, message: taskMsg, success_criteria, blocked_by, from, requires_approval, allow_pending_agent } = msg
     if (!agentQuery || !description) { error('missing agent or description'); return }
-    const resolved = fleetStore.findAgent(agentQuery)
+    const resolved = fleetStore.findAgent(agentQuery) || (
+      allow_pending_agent && typeof agentQuery === 'string' && agentQuery.startsWith('fleet:')
+        ? { id: agentQuery, friendly_name: null }
+        : null
+    )
     if (!resolved) { error(`agent not found: ${agentQuery}`); return }
     const taskId = `${resolved.id.slice(0, 10)}-${Date.now().toString(36)}`
     const now = new Date().toISOString()
+    const metadata = {
+      ...(requires_approval ? { requires_approval: true } : {}),
+      ...(allow_pending_agent && !fleetStore.findAgent(agentQuery) ? { pending_spawn_delegate: true } : {}),
+    }
     const task = {
       id: taskId, agent: resolved.id, description,
       message: taskMsg || description,
@@ -4373,7 +4381,7 @@ async function handleFleetWsMessage(ws, msg) {
       acknowledged: false,
       blockedBy: blocked_by || undefined,
       success_criteria: success_criteria || undefined,
-      metadata: requires_approval ? { requires_approval: true } : undefined,
+      metadata: Object.keys(metadata).length ? metadata : undefined,
     }
     fleetStore.upsertTask(task)
     const fromAgent = from ? fleetStore.findAgent(from) : null

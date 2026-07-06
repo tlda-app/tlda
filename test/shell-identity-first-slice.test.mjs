@@ -16,12 +16,14 @@ test('wake/respawn queue requires the target owner machine', () => {
 
 test('combined spawn delegate follows the async spawn mailbox identity', () => {
   assert.match(fleetToolsSource, /if \(spawnResult\?\.async\)/)
+  assert.match(fleetToolsSource, /const pendingAgentId = spawnResult\.agent_id/)
   assert.match(fleetToolsSource, /startOperationMailbox\('delegate'/)
   assert.match(fleetToolsSource, /spawn_mailbox_id: spawnResult\.mailbox_id/)
-  assert.match(fleetToolsSource, /spawn_agent_id: spawnResult\.agent_id/)
+  assert.match(fleetToolsSource, /spawn_agent_id: pendingAgentId/)
+  assert.match(fleetToolsSource, /delegateToResolvedAgent\(pendingAgentId,[\s\S]*allowPendingAgent: true/)
   assert.match(fleetToolsSource, /findSpawnedDelegateTarget\(agentName, spawnResult/)
   assert.match(fleetToolsSource, /spawnResult\?\.agent_id && a\.id === spawnResult\.agent_id/)
-  assert.match(fleetToolsSource, /delegateToResolvedAgent\(spawned\.id/)
+  assert.doesNotMatch(fleetToolsSource, /delegateToResolvedAgent\(spawned\.id/)
   assert.match(fleetToolsSource, /const assignedName = spawned\.friendly_name \|\| agentName/)
   assert.match(fleetToolsSource, /friendly_name: assignedName/)
 })
