@@ -361,14 +361,11 @@ export function renderMarkdown(html, extraMacros) {
       </div>
     </div>`, true)
   })
-  // Bare image file paths → <img> tags (before marked mangles them)
-  // Matches absolute paths (/... or ~/...) ending in image extensions
-  // Handles: bare paths, backtick-wrapped paths, paths at end of line
-  text = text.replace(/(^|\n|\s|`)((?:\/|~\/)[^\s<>"'`]+\.(?:png|jpg|jpeg|gif|svg|webp))`?(?=\s|$|[)\].,;!?`])/gim, (_, before, imgPath) => {
+  // Bare image file paths → <img> tags (before marked mangles them).
+  // Backtick-wrapped paths are literal code/path mentions and must stay text.
+  text = text.replace(/(^|\n|\s)((?:\/|~\/)[^\s<>"'`]+\.(?:png|jpg|jpeg|gif|svg|webp))(?=\s|$|[)\].,;!?])/gim, (_, before, imgPath) => {
     const src = `/api/file?path=${encodeURIComponent(imgPath)}`
-    // Strip backtick from before if present (it's part of the match group)
-    const prefix = before === '`' ? '' : before
-    return prefix + ph(`<img class="chat-image" src="${src}" alt="${esc(imgPath.split('/').pop())}" loading="lazy">`, true)
+    return before + ph(`<img class="chat-image" src="${src}" alt="${esc(imgPath.split('/').pop())}" loading="lazy">`, true)
   })
 
   // --- Run marked ---

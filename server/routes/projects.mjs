@@ -31,6 +31,7 @@ import { outlineForRegion, regionFromSpan, structuralLeaves } from '../lib/outli
 import { buildModel, assertRoundTrip } from '../lib/outline/model.mjs'
 import { findTextNearSourceLine, sourceTextSpanToPdfSpans } from '../lib/synctex-query.mjs'
 import { buildMarkdown, buildHtml, buildSlides } from '../lib/format-builders.mjs'
+import { writeProjectMarkdownArtifact } from '../lib/project-artifact-materializer.mjs'
 import { shouldBuildOnPush } from '../lib/build-decision.mjs'
 import historyRoutes from './history.mjs'
 import { linkOverleaf, unlinkOverleaf, syncOverleaf, pushSourceToOverleaf, stopPolling, isPolling } from '../lib/overleaf-sync.mjs'
@@ -141,6 +142,29 @@ router.get('/:name', requireRead, (req, res) => {
     ...project,
     ...(activeBuild?.building && { activeBuild }),
   })
+})
+
+// Write back a project-owned markdown artifact part.
+router.put('/:name/parts/:partId/markdown', requireRw, async (req, res) => {
+  try {
+    const result = writeProjectMarkdownArtifact({
+      project: req.params.name,
+      projectArtifactId: req.params.partId,
+      markdown: req.body?.markdown,
+      title: req.body?.title,
+      actor: req.body?.actor,
+      provenance: req.body?.provenance,
+    })
+    const project = readProject(req.params.name)
+    if (project?.format === 'markdown') {
+      await buildMarkdown(req.params.name)
+    }
+    res.json({ ok: true, ...result })
+  } catch (e) {
+    const message = e?.message || String(e)
+    const status = /not found|not in the parts manifest|missing/i.test(message) ? 404 : /requires|invalid|mismatch|not an artifact/i.test(message) ? 400 : 500
+    res.status(status).json({ ok: false, error: message })
+  }
 })
 
 // Archive/unarchive project

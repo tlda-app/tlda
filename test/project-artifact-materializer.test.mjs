@@ -10,6 +10,7 @@ import {
   realizeProjectMarkdownArtifact,
   resolveArtifactProject,
   resolveProjectCwd,
+  writeProjectMarkdownArtifact,
 } from '../server/lib/project-artifact-materializer.mjs'
 import {
   createProject,
@@ -125,6 +126,71 @@ test('realizeProjectMarkdownArtifact preserves existing non-artifact manifest pa
   ]))
   assert.equal(manifest.parts.find(part => part.kind === 'task-doc').title, 'Tasks for paper')
   assert.equal(manifest.parts.find(part => part.kind === 'artifact').title, 'New artifact')
+})
+
+test('writeProjectMarkdownArtifact updates a project-owned artifact without clobbering other parts', () => {
+  const { root } = setupProject()
+  writeProjectPartsManifest(root, createProjectPartsManifest([{
+    id: '11111111-1111-4111-8111-111111111111',
+    kind: 'task-doc',
+    path: 'TASKS.md',
+    title: 'Tasks for paper',
+    metadata: { managed: true },
+  }]))
+
+  const created = realizeProjectMarkdownArtifact({
+    project: 'paper',
+    markdown: '# Original artifact\n\nOld body.\n',
+    idFactory: () => '33333333-3333-4333-8333-333333333333',
+  })
+
+  const updated = writeProjectMarkdownArtifact({
+    project: 'paper',
+    projectArtifactId: created.projectArtifactId,
+    markdown: '# Revised artifact\n\nNew body.\n',
+    actor: { friendlyName: 'editor', fleetId: 'fleet:editor' },
+    provenance: { thread: '961000' },
+    now: () => '2026-07-07T12:00:00.000Z',
+  })
+
+  assert.equal(updated.status, 'ready')
+  assert.equal(updated.projectArtifactId, created.projectArtifactId)
+  assert.equal(updated.projectPath, created.projectPath)
+  assert.equal(updated.title, 'Revised artifact')
+
+  const content = readFileSync(created.localPath, 'utf8')
+  assert.match(content, /tlda-id: 33333333-3333-4333-8333-333333333333/)
+  assert.match(content, /title: "Revised artifact"/)
+  assert.match(content, /# Revised artifact/)
+  assert.match(content, /New body\./)
+  assert.doesNotMatch(content, /Old body/)
+
+  const manifest = readProjectPartsManifest(root)
+  assert.deepEqual(new Set(manifest.parts.map(part => part.id)), new Set([
+    '11111111-1111-4111-8111-111111111111',
+    '33333333-3333-4333-8333-333333333333',
+  ]))
+  const artifact = manifest.parts.find(part => part.id === created.projectArtifactId)
+  assert.equal(artifact.title, 'Revised artifact')
+  assert.equal(artifact.metadata.provenance.thread, '961000')
+  assert.equal(artifact.metadata.updatedAt, '2026-07-07T12:00:00.000Z')
+  assert.equal(manifest.parts.find(part => part.kind === 'task-doc').title, 'Tasks for paper')
+  assert.equal(git(['log', '-1', '--format=%s'], root), 'Update markdown artifact: Revised artifact')
+})
+
+test('writeProjectMarkdownArtifact refuses content with another artifact id', () => {
+  setupProject()
+  const created = realizeProjectMarkdownArtifact({
+    project: 'paper',
+    markdown: '# Original artifact\n',
+    idFactory: () => '44444444-4444-4444-8444-444444444444',
+  })
+
+  assert.throws(() => writeProjectMarkdownArtifact({
+    project: 'paper',
+    projectArtifactId: created.projectArtifactId,
+    markdown: '---\ntlda-id: 55555555-5555-4555-8555-555555555555\ntlda-kind: artifact\n---\n\n# Wrong identity\n',
+  }), /id mismatch/)
 })
 
 test('project resolution maps .worktrees cwd back to the underlying project', () => {

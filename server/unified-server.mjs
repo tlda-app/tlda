@@ -86,10 +86,12 @@ import {
   validateDeliveryChannel,
 } from '../shared/inbox-attention.mjs'
 import {
+  MATERIALIZATION_MAX_BYTES,
   initializeRecipientRefs,
   isMaterializableAttachment,
   setRecipientAttachmentState,
 } from '../shared/inbox-reference-materialization.mjs'
+import { realizeProjectMarkdownArtifact } from './lib/project-artifact-materializer.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -1586,6 +1588,51 @@ function patchRecipientAttachmentState(eventId, recipientId, attachmentId, recor
   ))
 }
 
+function isMarkdownAttachment(attachment = {}, result = {}) {
+  const mime = String(attachment.mimeType || attachment.contentType || result.contentType || '').toLowerCase()
+  if (mime === 'text/markdown' || mime === 'text/x-markdown') return true
+  const name = String(attachment.name || result.name || result.localPath || result.path || '').toLowerCase()
+  return name.endsWith('.md') || name.endsWith('.markdown')
+}
+
+async function fetchAttachmentTextForProjectArtifact(attachment) {
+  if (!attachment?.url) throw new Error('attachment url required')
+  const target = new URL(attachment.url, getFleetServerUrl()).toString()
+  const res = await fetch(target, { signal: AbortSignal.timeout(10000) })
+  if (!res.ok) throw new Error(`attachment fetch failed: HTTP ${res.status}`)
+  const len = Number(res.headers.get('content-length') || 0)
+  if (len > MATERIALIZATION_MAX_BYTES) {
+    throw new Error(`attachment exceeds max size (${len} > ${MATERIALIZATION_MAX_BYTES})`)
+  }
+  const ab = await res.arrayBuffer()
+  if (ab.byteLength > MATERIALIZATION_MAX_BYTES) {
+    throw new Error(`attachment exceeds max size (${ab.byteLength} > ${MATERIALIZATION_MAX_BYTES})`)
+  }
+  return Buffer.from(ab).toString('utf8')
+}
+
+async function materializeProjectMarkdownAttachment({ eventId, recipient, sourceAgent, attachment }) {
+  if (!isMarkdownAttachment(attachment)) return null
+  const markdown = await fetchAttachmentTextForProjectArtifact(attachment)
+  const sourceAgentRow = sourceAgent ? fleetStore.getAgent?.(sourceAgent) : null
+  return realizeProjectMarkdownArtifact({
+    cwd: recipient.cwd,
+    markdown,
+    title: attachment.name || null,
+    actor: sourceAgentRow ? {
+      friendlyName: sourceAgentRow.friendly_name || sourceAgent,
+      fleetId: sourceAgent,
+    } : sourceAgent,
+    provenance: {
+      sourceAgent: sourceAgent || 'unknown',
+      recipient: recipient.id,
+      eventId,
+      attachmentId: String(attachment.id),
+      url: attachment.url || null,
+    },
+  })
+}
+
 async function materializeRecipientAttachment({ eventId, recipientId, sourceAgent, attachment }) {
   const recipient = fleetStore.getAgent?.(recipientId)
   if (!recipient || recipient.human) return
@@ -1622,14 +1669,31 @@ async function materializeRecipientAttachment({ eventId, recipientId, sourceAgen
       size: attachment.size,
       sha256: attachment.sha256,
     })
+    let projectArtifact = null
+    try {
+      projectArtifact = await materializeProjectMarkdownAttachment({ eventId, recipient, sourceAgent, attachment })
+    } catch (e) {
+      projectArtifact = {
+        state: 'failed',
+        status: 'failed',
+        projectArtifactId: null,
+        error: e.message || String(e),
+      }
+    }
     patchRecipientAttachmentState(eventId, recipientId, attachment.id, {
       kind: 'attachment',
       state: 'available',
       status: 'ready',
       title: attachment.name || null,
       localPath: result.localPath || result.path,
-      projectPath: null,
-      projectArtifactId: null,
+      projectPath: projectArtifact?.projectPath || null,
+      projectArtifactId: projectArtifact?.projectArtifactId || null,
+      ...(projectArtifact ? {
+        projectArtifactStatus: projectArtifact.status || projectArtifact.state || null,
+        ...(projectArtifact.project ? { project: projectArtifact.project } : {}),
+        ...(projectArtifact.render ? { render: projectArtifact.render } : {}),
+        ...(projectArtifact.error ? { projectArtifactError: projectArtifact.error } : {}),
+      } : {}),
       contentType: attachment.mimeType || null,
       hash: result.hash || result.sha256,
       sourceAgent: sourceAgent || 'unknown',
@@ -2972,6 +3036,52 @@ app.use('/docs', (req, res, next) => {
     if (aliased) {
       res.set('Cache-Control', 'no-cache')
       return res.sendFile(resolve(aliased), { dotfiles: 'allow' })
+    }
+  }
+
+  if (filePath.endsWith('.html')) {
+    try {
+      const project = readProject(name)
+      if (project?.format === 'markdown') {
+        const { listDocumentColumns } = await import('./lib/document-columns.mjs')
+        const { renderMarkdownColumnHtml } = await import('./lib/build-markdown.mjs')
+        const columns = listDocumentColumns(name, { project, srcDir: join(PROJECTS_DIR, name, 'source') })
+        const column = columns.find(c => c.file === filePath)
+        if (column) {
+          const source = readFileSync(join(PROJECTS_DIR, name, 'source', column.sourceFile), 'utf8')
+          const isTaskDoc = /(^|\n)tlda-kind:\s*task-doc\s*(\n|$)/.test(source)
+          const html = renderMarkdownColumnHtml({ source, title: column.title, isTaskDoc })
+          const bridged = injectBridge(html, `/docs/${name}/`, '', true, {})
+
+          function memberTitle(memberName) {
+            const tp = join(PROJECTS_DIR, memberName, 'output', 'toc.json')
+            if (!existsSync(tp)) return memberName
+            try {
+              const toc = JSON.parse(readFileSync(tp, 'utf8'))
+              return (toc.length > 0 && toc[0].level === 'section') ? toc[0].title : memberName
+            } catch { return memberName }
+          }
+
+          const chapterTitle = memberTitle(name)
+          let prev = null, next = null
+          for (const p of listProjects()) {
+            if (p.format !== 'book') continue
+            const members = p.members || []
+            const idx = members.indexOf(name)
+            if (idx === -1) continue
+            if (idx > 0) prev = { name: members[idx - 1], title: memberTitle(members[idx - 1]) }
+            if (idx < members.length - 1) next = { name: members[idx + 1], title: memberTitle(members[idx + 1]) }
+            break
+          }
+
+          res.set('Cache-Control', 'no-cache')
+          res.type('html').send(injectChapterTitle(bridged, chapterTitle, prev, next))
+          return
+        }
+      }
+    } catch (e) {
+      console.error(`[docs] lazy column render failed for ${name}/${filePath}: ${e.message}`)
+      return res.status(500).json({ error: 'Column render failed', detail: e.message })
     }
   }
 

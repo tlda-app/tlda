@@ -5,8 +5,10 @@ import { randomUUID, createHash } from 'node:crypto'
 import { homedir } from 'node:os'
 
 import { createProjectPartRecord } from '../../shared/project-parts.mjs'
+import { parseMarkdownPart } from '../../shared/project-parts.mjs'
 import { readProject, listProjects, projectPartsRoot } from './project-store.mjs'
 import {
+  readProjectPartsManifest,
   upsertProjectPartsManifest,
 } from './project-parts-scanner.mjs'
 
@@ -97,6 +99,93 @@ export function realizeProjectMarkdownArtifact({
   })
 }
 
+export function writeProjectMarkdownArtifact({
+  project,
+  projectArtifactId,
+  projectPath = null,
+  markdown,
+  title = null,
+  actor = null,
+  provenance = {},
+  git = runGit,
+  now = () => new Date().toISOString(),
+  logger = console,
+} = {}) {
+  if (!project) throw new Error('Project artifact writeback requires project')
+  if (!projectArtifactId && !projectPath) throw new Error('Project artifact writeback requires projectArtifactId or projectPath')
+  if (markdown == null) throw new Error('Project artifact writeback requires markdown')
+
+  const root = projectPartsRoot(project)
+  const manifest = readProjectPartsManifest(root)
+  const normalizedPath = projectPath ? normalizeProjectPath(projectPath) : null
+  const existing = manifest.parts.find(part =>
+    (projectArtifactId && part.id === projectArtifactId) ||
+    (normalizedPath && part.path === normalizedPath)
+  )
+  if (!existing) throw new Error('Project artifact is not in the parts manifest')
+  if (existing.kind !== PROJECT_ARTIFACT_KIND) throw new Error(`Project part ${existing.id} is not an artifact`)
+
+  const targetPath = normalizeProjectPath(existing.path || existing.storage?.path)
+  if (!targetPath || targetPath.includes('\0') || targetPath.startsWith('/') || targetPath.split('/').includes('..')) {
+    throw new Error('Project artifact has invalid path')
+  }
+  const localPath = join(root, targetPath)
+  if (!existsSync(localPath)) throw new Error('Project artifact file is missing')
+
+  const parsed = parseMarkdownPart(String(markdown), { contextualTitle: existing.title })
+  if (parsed.id && parsed.id !== existing.id) {
+    throw new Error(`Project artifact id mismatch: expected ${existing.id}, got ${parsed.id}`)
+  }
+  const nextTitle = title || parsed.title || existing.title || 'Untitled artifact'
+  const body = stripMarkdownFrontmatter(String(markdown)).trimStart()
+  const content = artifactMarkdown({ id: existing.id, title: nextTitle, body })
+  writeFileSync(localPath, content)
+  const updatedAt = now()
+
+  const nextManifest = upsertArtifactManifest(root, {
+    id: existing.id,
+    path: targetPath,
+    title: nextTitle,
+    sourcePath: existing.metadata?.sourcePath || null,
+    provenance: {
+      ...(existing.metadata?.provenance || {}),
+      ...provenance,
+    },
+    createdAt: existing.metadata?.createdAt || updatedAt,
+    updatedAt,
+    hash: sha256(content),
+  })
+
+  const actorInfo = normalizeActor(actor)
+  const gitResult = commitArtifact(root, {
+    projectPath: targetPath,
+    manifestPath: join('.tlda', 'parts.json'),
+    title: nextTitle,
+    actor: actorInfo,
+    git,
+    logger,
+    messagePrefix: 'Update markdown artifact',
+  })
+
+  return artifactPayload({
+    id: existing.id,
+    title: nextTitle,
+    project,
+    projectRoot: root,
+    projectPath: targetPath,
+    localPath,
+    content,
+    sourcePath: existing.metadata?.sourcePath || null,
+    provenance: {
+      ...(existing.metadata?.provenance || {}),
+      ...provenance,
+      updatedAt,
+    },
+    manifest: nextManifest,
+    gitResult,
+  })
+}
+
 export function resolveArtifactProject({ project = null, cwd = null, projectsProvider = listProjects } = {}) {
   const projects = projectsProvider().map(p => ({
     ...p,
@@ -163,7 +252,7 @@ function readMarkdownArtifactSource({ markdown, sourcePath }) {
   throw new Error('Project artifact materialization requires markdown or sourcePath')
 }
 
-function upsertArtifactManifest(root, { id, path, title, sourcePath, provenance, createdAt, hash }) {
+function upsertArtifactManifest(root, { id, path, title, sourcePath, provenance, createdAt, updatedAt, hash }) {
   const part = createProjectPartRecord({
     id,
     kind: PROJECT_ARTIFACT_KIND,
@@ -174,6 +263,7 @@ function upsertArtifactManifest(root, { id, path, title, sourcePath, provenance,
       sourcePath: sourcePath ? resolve(expandHome(sourcePath)) : null,
       provenance,
       createdAt,
+      updatedAt,
       hash,
     }),
   })
@@ -253,13 +343,13 @@ function notReadyPayload({ status, title, sourcePath, provenance, error }) {
   }
 }
 
-function commitArtifact(root, { projectPath, manifestPath, title, actor, git, logger }) {
+function commitArtifact(root, { projectPath, manifestPath, title, actor, git, logger, messagePrefix = 'Realize markdown artifact' }) {
   if (!isGitRepo(root, git)) return { committed: false, reason: 'not a git repo' }
   try {
     git(['add', projectPath, manifestPath], root)
     const status = git(['status', '--porcelain=v1', '--', projectPath, manifestPath], root)
     if (!status.trim()) return { committed: false, reason: 'no changes' }
-    const message = `Realize markdown artifact: ${truncate(title, 72)}`
+    const message = `${messagePrefix}: ${truncate(title, 72)}`
     git([
       '-c', `user.name=${actor.name}`,
       '-c', `user.email=${actor.email}`,

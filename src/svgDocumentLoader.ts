@@ -27,7 +27,7 @@ export {
 } from './loaders/svgLoader'
 
 // HTML loader
-export { loadHtmlDocument } from './loaders/htmlLoader'
+export { loadHtmlDocument, createHtmlDocumentFromPageInfo } from './loaders/htmlLoader'
 export type { HtmlPageEntry } from './loaders/htmlLoader'
 
 // Slides loader (Quarto reveal.js decks)

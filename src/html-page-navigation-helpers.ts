@@ -15,3 +15,21 @@ export function htmlPageFileFromUrl(url: string, basePath: string, locationHref 
   }
   return decodeURIComponent(pageUrl.pathname.replace(/^\/+/, ''))
 }
+
+export function htmlPageUrlMatchesTargetFile(url: string, targetFile: string) {
+  const cleanUrl = String(url || '').split('#', 1)[0].split('?', 1)[0]
+  const cleanTarget = String(targetFile || '').replace(/^\.?\//, '').split('#', 1)[0].split('?', 1)[0]
+  if (!cleanUrl || !cleanTarget) return false
+  const targetCandidates = new Set([
+    cleanTarget,
+    cleanTarget.replace(/\.(md|markdown)$/i, '.html'),
+    cleanTarget.replace(/^.*\//, ''),
+    cleanTarget.replace(/^.*\//, '').replace(/\.(md|markdown)$/i, '.html'),
+  ])
+  for (const candidate of targetCandidates) {
+    if (!candidate) continue
+    if (cleanUrl.endsWith('/' + candidate)) return true
+    if (cleanUrl.includes('/' + candidate + '/')) return true
+  }
+  return false
+}

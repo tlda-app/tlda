@@ -14,8 +14,8 @@ import markdownItAnchor from 'markdown-it-anchor'
 import katex from 'katex'
 import { readFileSync, writeFileSync, mkdirSync, cpSync, existsSync, readdirSync } from 'fs'
 import { join, basename, dirname } from 'path'
-import { injectBridge } from './html-injector.mjs'
 import { updateProject, readProject, listProjects, aggregateBookToc, sourceDir as getSourceDir, outputDir as getOutputDir } from './project-store.mjs'
+import { listDocumentColumns, pageInfoFromDocumentColumns } from './document-columns.mjs'
 import { broadcastSignal } from './sync-rooms.mjs'
 import { writeSentinel } from './sentinel.mjs'
 
@@ -584,6 +584,122 @@ function linkifyMarkdownDocRefs(html) {
   return enhanceTexsyncAnchors(linkifyMarkdownTextRefs(html))
 }
 
+function installLineAnchorPlugin(md) {
+  const defaultOpen = (type) => {
+    const original = md.renderer.rules[type]
+    md.renderer.rules[type] = (tokens, idx, options, env, self) => {
+      const token = tokens[idx]
+      if (token.map && token.map[0] != null) {
+        token.attrSet('id', `line-${token.map[0] + 1}`)
+      }
+      return original ? original(tokens, idx, options, env, self) : self.renderToken(tokens, idx, options)
+    }
+  }
+  for (const tag of ['paragraph_open', 'heading_open', 'blockquote_open', 'bullet_list_open', 'ordered_list_open', 'table_open', 'hr']) {
+    defaultOpen(tag)
+  }
+}
+
+function markdownPathToHtmlPath(file) {
+  const clean = String(file || '').replace(/\\/g, '/').replace(/^\/+/, '')
+  return clean.replace(/\.(md|markdown)$/i, '.html')
+}
+
+function rewriteMarkdownHrefTargets(html) {
+  return html.replace(/\bhref="([^"]+\.(?:md|markdown)(?:#[^"]*)?)"/gi, (_m, href) => {
+    const [path, hash = ''] = String(href).split('#', 2)
+    const next = markdownPathToHtmlPath(path)
+    return `href="${escAttr(hash ? `${next}#${hash}` : next)}"`
+  })
+}
+
+function markdownTocForSource(source, page) {
+  const renderSource = stripMarkdownFrontmatter(source)
+  const slugify = s => s.toLowerCase().replace(/[^\w]+/g, '-').replace(/^-|-$/g, '')
+  const levels = { 1: 'section', 2: 'subsection', 3: 'subsubsection', 4: 'subsubsection' }
+  const toc = []
+  const mdToc = new MarkdownIt()
+  const tocTokens = mdToc.parse(renderSource, {})
+  for (let i = 0; i < tocTokens.length; i++) {
+    if (tocTokens[i].type !== 'heading_open') continue
+    const level = parseInt(tocTokens[i].tag.slice(1))
+    const inlineToken = tocTokens[i + 1]
+    let headingTitle = inlineToken?.children?.map(t => t.content).join('') || ''
+    const explicitId = headingTitle.match(/\{#([\w-]+)\}/)
+    if (explicitId) headingTitle = headingTitle.replace(/\s*\{#[\w-]+\}/, '').trim()
+    const anchor = slugify(headingTitle)
+    if (level <= 4 && headingTitle && anchor) {
+      toc.push({ title: headingTitle, level: levels[level] || 'subsubsection', page, anchor })
+    }
+  }
+  return toc
+}
+
+export function renderMarkdownColumnHtml({ source, title, isTaskDoc }) {
+  _macros = extractMacros(source)
+  const renderSource = stripMarkdownFrontmatter(source)
+  const slugify = s => s.toLowerCase().replace(/[^\w]+/g, '-').replace(/^-|-$/g, '')
+  const processedSource = renderSource.replace(/(^#{1,6}[^\n]*?)\s*\{#[\w-]+\}/gm, '$1')
+  const md = new MarkdownIt({ html: true, linkify: true, typographer: true })
+    .use(mathPlugin)
+    .use(markdownItAnchor, { slugify })
+  let mermaidIndex = 0
+  const defaultFence = md.renderer.rules.fence || ((tokens, idx, options, env, self) => self.renderToken(tokens, idx, options))
+  md.renderer.rules.fence = (tokens, idx, options, env, self) => {
+    const token = tokens[idx]
+    const info = token.info ? token.info.trim().split(/\s+/)[0].toLowerCase() : ''
+    if (info !== 'mermaid') return defaultFence(tokens, idx, options, env, self)
+    const id = `mermaid-${mermaidIndex++}`
+    const lineCount = token.content.split(/\r?\n/).filter(Boolean).length
+    const minHeight = Math.min(1200, Math.max(360, lineCount * 28))
+    return `<div class="tlda-mermaid-placeholder" data-tlda-mermaid-id="${id}" style="min-height:${minHeight}px"><template data-tlda-mermaid-source>${escHtml(token.content)}</template></div>\n`
+  }
+  installLineAnchorPlugin(md)
+  const env = {}
+  const tokens = md.parse(processedSource, env)
+  let content = md.renderer.render(tokens, md.options, env)
+  content = rewriteMarkdownHrefTargets(linkifyMarkdownDocRefs(content))
+  const taskDocAssets = taskDocRenderLayerAssets(isTaskDoc)
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${title.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css">
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; font-size: 0.875rem; font-weight: 400; line-height: 1.5; color: #212529; max-width: 680px; margin: 0 auto; padding: 48px 0 80px; }
+    h1, h2, h3, h4 { font-weight: 500; line-height: 1.25; margin-top: 1.8em; margin-bottom: 0.5em; }
+    h1 { font-size: 1.8em; margin-top: 0; }
+    h2 { font-size: 1.35em; }
+    h3 { font-size: 1.1em; }
+    p { margin: 0 0 1em; }
+    pre { background: #f5f5f5; padding: 1em; border-radius: 4px; overflow-x: auto; font-size: 0.88em; }
+    code { font-family: 'SF Mono', 'Fira Mono', monospace; font-size: 0.9em; background: rgba(0,0,0,0.06); padding: 0.1em 0.35em; border-radius: 3px; }
+    pre code { background: none; padding: 0; }
+    blockquote { margin: 1em 0; padding: 0 0 0 1em; border-left: 3px solid #ccc; color: #555; }
+    table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+    th, td { border: 1px solid #ddd; padding: 0.5em 0.75em; text-align: left; }
+    th { background: #f5f5f5; font-weight: 500; }
+    img { max-width: 100%; height: auto; }
+    div[style*="flex"] { max-width: none; width: max-content; }
+    div[style*="flex"] img { max-width: none; height: 360px; width: auto; }
+    a { color: #2563eb; }
+    .doc-link { color: #2563eb; cursor: pointer; border-bottom: 1px dotted currentColor; text-decoration: none; }
+    .doc-link:hover { opacity: 0.72; }
+    .katex-display { overflow-x: auto; overflow-y: hidden; }
+    .math-error { color: red; font-family: monospace; }
+    .tlda-mermaid-placeholder { margin: 1.4em 0; width: 100%; }
+${taskDocAssets.style}
+  </style>
+</head>
+<body>
+${content}
+${taskDocAssets.script}
+</body>
+</html>`
+}
+
 // ---- Main build function ----
 
 export async function buildMarkdownDocument(name, addLog = console.log) {
@@ -606,173 +722,13 @@ export async function buildMarkdownDocument(name, addLog = console.log) {
     return
   }
 
-  // Extract preamble macros for KaTeX
-  _macros = extractMacros(source)
-  const macroCount = Object.keys(_macros).length
-  if (macroCount > 0) addLog(`[markdown] Extracted ${macroCount} macros from preamble`)
-
-  const renderSource = stripMarkdownFrontmatter(source)
-  const frontmatter = markdownFrontmatter(source)
-  const isTaskDoc = frontmatter['tlda-kind'] === 'task-doc'
-
-  const slugify = s => s.toLowerCase().replace(/[^\w]+/g, '-').replace(/^-|-$/g, '')
-
-  // Extract TOC from original source (before stripping {#id} tags)
-  // Pandoc-style {#explicit-id} in headings: strip from title, use as anchor
-  const LEVEL_MAP = { 1: 'section', 2: 'subsection', 3: 'subsubsection', 4: 'subsubsection' }
-  const toc = []
-  const mdToc = new MarkdownIt()
-  const tocTokens = mdToc.parse(renderSource, {})
-  for (let i = 0; i < tocTokens.length; i++) {
-    if (tocTokens[i].type === 'heading_open') {
-      const level = parseInt(tocTokens[i].tag.slice(1))
-      const inlineToken = tocTokens[i + 1]
-      let headingTitle = inlineToken?.children?.map(t => t.content).join('') || ''
-      const explicitId = headingTitle.match(/\{#([\w-]+)\}/)
-      if (explicitId) headingTitle = headingTitle.replace(/\s*\{#[\w-]+\}/, '').trim()
-      const anchor = slugify(headingTitle)
-      if (level <= 4 && headingTitle && anchor) {
-        toc.push({ title: headingTitle, level: LEVEL_MAP[level] || 'subsubsection', page: 1, anchor })
-      }
-    }
-  }
-
-  // Strip {#id} tags from headings so they don't appear in rendered HTML
-  const processedSource = renderSource.replace(/(^#{1,6}[^\n]*?)\s*\{#[\w-]+\}/gm, '$1')
-
-  const md = new MarkdownIt({ html: true, linkify: true, typographer: true })
-    .use(mathPlugin)
-    .use(markdownItAnchor, { slugify })
-
-  let mermaidIndex = 0
-  const defaultFence = md.renderer.rules.fence || ((tokens, idx, options, env, self) => self.renderToken(tokens, idx, options))
-  md.renderer.rules.fence = (tokens, idx, options, env, self) => {
-    const token = tokens[idx]
-    const info = token.info ? token.info.trim().split(/\s+/)[0].toLowerCase() : ''
-    if (info !== 'mermaid') return defaultFence(tokens, idx, options, env, self)
-    const id = `mermaid-${mermaidIndex++}`
-    const lineCount = token.content.split(/\r?\n/).filter(Boolean).length
-    const minHeight = Math.min(1200, Math.max(360, lineCount * 28))
-    return `<div class="tlda-mermaid-placeholder" data-tlda-mermaid-id="${id}" style="min-height:${minHeight}px"><template data-tlda-mermaid-source>${escHtml(token.content)}</template></div>\n`
-  }
-
-  // Add line-number anchors to block elements for scroll_to_line support
-  function lineAnchorPlugin(md) {
-    const defaultOpen = (type) => {
-      const original = md.renderer.rules[type]
-      md.renderer.rules[type] = (tokens, idx, options, env, self) => {
-        const token = tokens[idx]
-        if (token.map && token.map[0] != null) {
-          // +1 because source lines are 1-indexed for users
-          token.attrSet('id', `line-${token.map[0] + 1}`)
-        }
-        return original ? original(tokens, idx, options, env, self) : self.renderToken(tokens, idx, options)
-      }
-    }
-    for (const tag of ['paragraph_open', 'heading_open', 'blockquote_open', 'bullet_list_open', 'ordered_list_open', 'table_open', 'hr']) {
-      defaultOpen(tag)
-    }
-  }
-  md.use(lineAnchorPlugin)
-
-  // Render and collect tokens
-  const env = {}
-  const tokens = md.parse(processedSource, env)
-  let content = md.renderer.render(tokens, md.options, env)
-  content = linkifyMarkdownDocRefs(content)
-  const title = extractTitle(source)
-  const taskDocAssets = taskDocRenderLayerAssets(isTaskDoc)
-
-  const html = `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>${title.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</title>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css">
-  <style>
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-      font-size: 0.875rem;
-      font-weight: 400;
-      line-height: 1.5;
-      color: #212529;
-      max-width: 680px;
-      margin: 0 auto;
-      padding: 48px 0 80px;
-    }
-    h1, h2, h3, h4 {
-      font-weight: 500;
-      line-height: 1.25;
-      margin-top: 1.8em;
-      margin-bottom: 0.5em;
-    }
-    h1 { font-size: 1.8em; margin-top: 0; }
-    h2 { font-size: 1.35em; }
-    h3 { font-size: 1.1em; }
-    p { margin: 0 0 1em; }
-    pre {
-      background: #f5f5f5;
-      padding: 1em;
-      border-radius: 4px;
-      overflow-x: auto;
-      font-size: 0.88em;
-    }
-    code {
-      font-family: 'SF Mono', 'Fira Mono', monospace;
-      font-size: 0.9em;
-      background: rgba(0,0,0,0.06);
-      padding: 0.1em 0.35em;
-      border-radius: 3px;
-    }
-    pre code { background: none; padding: 0; }
-    blockquote {
-      margin: 1em 0;
-      padding: 0 0 0 1em;
-      border-left: 3px solid #ccc;
-      color: #555;
-    }
-    table { border-collapse: collapse; width: 100%; margin: 1em 0; }
-    th, td { border: 1px solid #ddd; padding: 0.5em 0.75em; text-align: left; }
-    th { background: #f5f5f5; font-weight: 500; }
-    img { max-width: 100%; height: auto; }
-    /* Fragment image sequences — break out of body max-width */
-    div[style*="flex"] {
-      max-width: none;
-      width: max-content;
-    }
-    div[style*="flex"] img {
-      max-width: none;
-      height: 360px;
-      width: auto;
-    }
-    a { color: #2563eb; }
-    .doc-link {
-      color: #2563eb;
-      cursor: pointer;
-      border-bottom: 1px dotted currentColor;
-      text-decoration: none;
-    }
-    .doc-link:hover { opacity: 0.72; }
-    .katex-display { overflow-x: auto; overflow-y: hidden; }
-    .math-error { color: red; font-family: monospace; }
-    .tlda-mermaid-placeholder {
-      margin: 1.4em 0;
-      width: 100%;
-    }
-${taskDocAssets.style}
-  </style>
-</head>
-<body>
-${content}
-${taskDocAssets.script}
-</body>
-</html>`
-
-  const injected = injectBridge(html, '', '', true, {})
-
   mkdirSync(outDir, { recursive: true })
-  writeFileSync(join(outDir, 'index.html'), injected)
+  const columns = listDocumentColumns(name, { project, srcDir })
+  const toc = []
+  for (let i = 0; i < columns.length; i++) {
+    const columnSource = readFileSync(join(srcDir, columns[i].sourceFile), 'utf8')
+    toc.push(...markdownTocForSource(columnSource, i + 1))
+  }
 
   // Copy image/asset directories from source to output
   for (const dir of ['img', 'images', 'assets', 'png']) {
@@ -805,8 +761,11 @@ ${taskDocAssets.script}
     mkdirSync(dirname(to), { recursive: true })
     cpSync(from, to)
   }
-  for (const m of source.matchAll(/!\[[^\]]*\]\(([^)]+)\)/g)) copyRef(m[1])
-  for (const m of source.matchAll(/<img\s[^>]*\bsrc=["']([^"']+)["']/g)) copyRef(m[1])
+  for (const column of columns) {
+    const columnSource = readFileSync(join(srcDir, column.sourceFile), 'utf8')
+    for (const m of columnSource.matchAll(/!\[[^\]]*\]\(([^)]+)\)/g)) copyRef(m[1])
+    for (const m of columnSource.matchAll(/<img\s[^>]*\bsrc=["']([^"']+)["']/g)) copyRef(m[1])
+  }
 
 
   // Write relevant-files.json — the markdown analog of .fls.
@@ -814,36 +773,34 @@ ${taskDocAssets.script}
   // Paths must be under the authoring sourceDir (not the server mirror)
   // so they match what the daemon pushes from.
   const authorDir = project.sourceDir || srcDir
-  const referencedFiles = [join(authorDir, mainFile)]
-  const imgRe = /!\[[^\]]*\]\(([^)]+)\)/g
-  let imgMatch
-  while ((imgMatch = imgRe.exec(source)) !== null) {
-    const ref = imgMatch[1].split(/[#?]/)[0].trim()
-    if (ref && !ref.startsWith('http://') && !ref.startsWith('https://') && !ref.startsWith('data:')) {
-      referencedFiles.push(join(authorDir, ref))
-    }
-  }
-  const htmlImgRe = /<img\s[^>]*src=["']([^"']+)["']/g
-  while ((imgMatch = htmlImgRe.exec(source)) !== null) {
-    const ref = imgMatch[1].split(/[#?]/)[0].trim()
-    if (ref && !ref.startsWith('http://') && !ref.startsWith('https://') && !ref.startsWith('data:')) {
-      referencedFiles.push(join(authorDir, ref))
+  const referencedFiles = []
+  for (const column of columns) {
+    referencedFiles.push(join(authorDir, column.sourceFile))
+    const columnSource = readFileSync(join(srcDir, column.sourceFile), 'utf8')
+    for (const raw of [
+      ...[...columnSource.matchAll(/!\[[^\]]*\]\(([^)]+)\)/g)].map(m => m[1]),
+      ...[...columnSource.matchAll(/<img\s[^>]*src=["']([^"']+)["']/g)].map(m => m[1]),
+    ]) {
+      const ref = raw.split(/[#?]/)[0].trim()
+      if (ref && !ref.startsWith('http://') && !ref.startsWith('https://') && !ref.startsWith('data:')) {
+        referencedFiles.push(join(authorDir, ref))
+      }
     }
   }
   writeFileSync(join(outDir, 'relevant-files.json'), JSON.stringify({ files: referencedFiles }, null, 2))
 
-  const pageInfo = [{ file: 'index.html', width: 800, height: 1200, title }]
+  const pageInfo = pageInfoFromDocumentColumns(name, columns)
   writeFileSync(join(outDir, 'page-info.json'), JSON.stringify(pageInfo, null, 2))
   writeFileSync(join(outDir, 'toc.json'), JSON.stringify(toc, null, 2))
 
   const buildReadyAt = Date.now()
-  updateProject(name, { buildStatus: 'success', pages: 1, lastBuild: new Date(buildReadyAt).toISOString() })
+  updateProject(name, { buildStatus: 'success', pages: pageInfo.length, lastBuild: new Date(buildReadyAt).toISOString() })
   await writeSentinel(`doc-${name}`, {
     commitHash: `markdown-${buildReadyAt}`,
     timestamp: buildReadyAt,
     buildReadyAt,
   })
-  broadcastSignal(`doc-${name}`, 'signal:reload', { pages: 1, timestamp: buildReadyAt })
+  broadcastSignal(`doc-${name}`, 'signal:reload', { pages: pageInfo.length, timestamp: buildReadyAt })
 
   // Re-aggregate any book that contains this doc as a member
   for (const proj of listProjects()) {
@@ -852,5 +809,5 @@ ${taskDocAssets.script}
     }
   }
 
-  addLog(`[markdown] ${name}: rendered "${title}"`)
+  addLog(`[markdown] ${name}: indexed ${pageInfo.length} column${pageInfo.length === 1 ? '' : 's'}`)
 }

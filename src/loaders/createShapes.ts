@@ -9,8 +9,11 @@ import type { SvgDocument } from './types'
 type HtmlPageShape = {
   id: TLShapeId
   type: 'html-page'
+  typeName?: 'shape'
+  parentId?: TLPageId
   x: number
   y: number
+  isLocked?: boolean
   props: { w: number; h: number; url?: string }
 } & Record<string, unknown>
 
@@ -21,6 +24,7 @@ function isHtmlPageShape(shape: unknown): shape is HtmlPageShape {
 type HtmlPageShapePartial = {
   id: TLShapeId
   type: 'html-page'
+  parentId?: TLPageId
   x: number
   y: number
   isLocked: boolean
@@ -38,6 +42,16 @@ function putHtmlPageShape(editor: Editor, shape: HtmlPageShape) {
   // Same custom-shape boundary as createHtmlPageShape; this preserves the
   // existing shape record's parent/index/meta fields while updating deck props.
   editor.store.put([shape as unknown as Parameters<Editor['store']['put']>[0][number]])
+}
+
+function getAllHtmlPageShapes(editor: Editor): HtmlPageShape[] {
+  return Object.values(editor.store.allRecords())
+    .filter(record =>
+      typeof record === 'object' &&
+      record !== null &&
+      (record as { typeName?: unknown }).typeName === 'shape' &&
+      (record as { type?: unknown }).type === 'html-page'
+    ) as unknown as HtmlPageShape[]
 }
 
 function sendDocumentPagesToBack(editor: Editor) {
@@ -102,20 +116,15 @@ export function createSvgShapes(editor: Editor, document: SvgDocument): boolean 
  */
 export function createHtmlShapes(editor: Editor, document: SvgDocument): boolean {
   const existingShapes = editor.getCurrentPageShapes()
-
-  // Check if already migrated to multipage
-  const tlPages = editor.getPages()
-  const hasMultiplePages = tlPages.length > 1
-  const hasHtmlShapes = existingShapes.some(s => (s.type as string) === 'html-page')
-
-  if (hasMultiplePages && hasHtmlShapes) {
-    sendDocumentPagesToBack(editor)
-    return true // already set up
-  }
+  const allHtmlShapes = getAllHtmlPageShapes(editor)
+  const expectedIds = new Set(document.pages.map(page => page.shapeId))
+  let changed = false
 
   // Old format: shapes on single page — delete and recreate as multipage
   let annotationMigration: Array<{ noteId: TLShapeId; chapterIdx: number; relY: number }> | undefined
-  if (hasHtmlShapes) {
+  const hasCurrentPageHtmlShapes = existingShapes.some(s => (s.type as string) === 'html-page')
+  const hasOwnedHtmlShapes = allHtmlShapes.some(s => expectedIds.has(s.id))
+  if (hasCurrentPageHtmlShapes && !hasOwnedHtmlShapes) {
     const oldHtmlShapes = existingShapes.filter(s => (s.type as string) === 'html-page')
     const oldFigShapes = existingShapes.filter(s => (s.type as string) === 'svg-figure')
     const annotations = existingShapes.filter(s =>
@@ -132,8 +141,7 @@ export function createHtmlShapes(editor: Editor, document: SvgDocument): boolean
       return { noteId: note.id, chapterIdx: bestIdx, relY: note.y - sortedOld[bestIdx].y }
     })
     editor.deleteShapes([...oldHtmlShapes.map(s => s.id), ...oldFigShapes.map(s => s.id)])
-  } else if (hasHtmlShapes) {
-    return true
+    changed = true
   }
 
   // Collect unique tldrawPageIds in order
@@ -148,7 +156,7 @@ export function createHtmlShapes(editor: Editor, document: SvgDocument): boolean
   }
 
   // Create TLDraw pages (reuse default page for first chapter)
-  const defaultPageId = editor.getCurrentPageId()
+  const defaultPageId = editor.getPages()[0]?.id || editor.getCurrentPageId()
   const pageIdMap = new Map<string, TLPageId>()
 
   for (let pi = 0; pi < pageIds.length; pi++) {
@@ -162,31 +170,68 @@ export function createHtmlShapes(editor: Editor, document: SvgDocument): boolean
     } else {
       const newPageId = tlPageId as TLPageId
       const pageName = document.pages.find(p => p.tldrawPageId === tlPageId)?.tldrawPageName || `Chapter ${pi + 1}`
-      editor.createPage({ id: newPageId, name: pageName })
+      if (!editor.getPages().some(page => page.id === newPageId)) {
+        editor.createPage({ id: newPageId, name: pageName })
+        changed = true
+      }
       pageIdMap.set(tlPageId, newPageId)
     }
   }
 
-  // Create shapes on their respective pages
+  const ownedPrefix = `shape:${document.name}-page-`
+  const staleHtmlShapes = getAllHtmlPageShapes(editor)
+    .filter(shape => String(shape.id).startsWith(ownedPrefix) && !expectedIds.has(shape.id))
+  if (staleHtmlShapes.length > 0) {
+    editor.deleteShapes(staleHtmlShapes.map(shape => shape.id))
+    changed = true
+  }
+
+  // Create or update shapes on their respective pages.
   for (const page of document.pages) {
     const targetPageId = page.tldrawPageId ? pageIdMap.get(page.tldrawPageId) : defaultPageId
-    editor.createShapes([{
-      id: page.shapeId,
-      type: 'html-page' as any,
+    const existing = editor.getShape(page.shapeId) as HtmlPageShape | undefined
+    if (!existing) {
+      createHtmlPageShape(editor, {
+        id: page.shapeId,
+        type: 'html-page',
+        parentId: targetPageId,
+        x: page.bounds.x,
+        y: page.bounds.y,
+        isLocked: true,
+        props: {
+          w: page.bounds.w,
+          h: page.bounds.h,
+          url: page.src,
+        },
+      })
+      changed = true
+      continue
+    }
+    if (
+      existing.parentId === targetPageId &&
+      existing.x === page.bounds.x &&
+      existing.y === page.bounds.y &&
+      existing.isLocked === true &&
+      existing.props?.w === page.bounds.w &&
+      existing.props?.h === page.bounds.h &&
+      existing.props?.url === page.src
+    ) continue
+    putHtmlPageShape(editor, {
+      ...existing,
       parentId: targetPageId,
       x: page.bounds.x,
       y: page.bounds.y,
       isLocked: true,
       props: {
+        ...existing.props,
         w: page.bounds.w,
         h: page.bounds.h,
         url: page.src,
       },
-    }])
+    })
+    changed = true
   }
 
-  // Switch back to first page
-  editor.setCurrentPage(defaultPageId)
   sendDocumentPagesToBack(editor)
 
   // Migrate annotations from old single-page format
@@ -200,7 +245,7 @@ export function createHtmlShapes(editor: Editor, document: SvgDocument): boolean
     }
   }
 
-  return false
+  return !changed
 }
 
 /**

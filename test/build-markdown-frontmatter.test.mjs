@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict'
 import test, { afterEach } from 'node:test'
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { JSDOM } from 'jsdom'
 
-import { buildMarkdownDocument, stripMarkdownFrontmatter } from '../server/lib/build-markdown.mjs'
+import { buildMarkdownDocument, renderMarkdownColumnHtml, stripMarkdownFrontmatter } from '../server/lib/build-markdown.mjs'
 import { createProject, initProjectStore, outputDir, sourceDir } from '../server/lib/project-store.mjs'
+import { realizeProjectMarkdownArtifact } from '../server/lib/project-artifact-materializer.mjs'
 import { closeAllRooms } from '../server/lib/sync-rooms.mjs'
 
 afterEach(() => {
@@ -51,7 +52,11 @@ tlda-kind: task-doc
 
   await buildMarkdownDocument('task-doc-md', () => {})
 
-  const html = readFileSync(join(outputDir('task-doc-md'), 'index.html'), 'utf8')
+  const html = renderMarkdownColumnHtml({
+    source: readFileSync(join(sourceDir('task-doc-md'), 'TASKS.md'), 'utf8'),
+    title: 'Fleet tasks',
+    isTaskDoc: true,
+  })
   assert.equal(html.includes('tlda-id'), false)
   assert.equal(html.includes('tlda-kind'), false)
   assert.match(html, /<table\b/)
@@ -77,7 +82,11 @@ tlda-kind: task-doc
 `)
 
   await buildMarkdownDocument('fleet-task-doc', () => {})
-  const html = readFileSync(join(outputDir('fleet-task-doc'), 'index.html'), 'utf8')
+  const html = renderMarkdownColumnHtml({
+    source: readFileSync(join(sourceDir('fleet-task-doc'), 'TASKS.md'), 'utf8'),
+    title: 'Fleet tasks',
+    isTaskDoc: true,
+  })
   assert.match(html, /task-doc-tools/)
 
   const dom = new JSDOM(html, {
@@ -140,7 +149,58 @@ test('ordinary markdown docs do not get task-doc render controls', async () => {
 
   await buildMarkdownDocument('plain-md', () => {})
 
-  const html = readFileSync(join(outputDir('plain-md'), 'index.html'), 'utf8')
+  const html = renderMarkdownColumnHtml({
+    source: readFileSync(join(sourceDir('plain-md'), 'README.md'), 'utf8'),
+    title: 'Plain',
+    isTaskDoc: false,
+  })
   assert.doesNotMatch(html, /task-doc-tools/)
   assert.doesNotMatch(html, /data-task-doc-sort/)
+})
+
+test('markdown build renders project artifact parts as same-canvas html pages', async () => {
+  const projectsDir = mkdtempSync(join(tmpdir(), 'tlda-md-project-world-'))
+  initProjectStore(projectsDir)
+  createProject({ name: 'world-md', mainFile: 'README.md', format: 'markdown' })
+
+  const artifact = realizeProjectMarkdownArtifact({
+    project: 'world-md',
+    markdown: '# Agent report {#agent-report}\n\nArtifact body.\n',
+    idFactory: () => '77777777-7777-4777-8777-777777777777',
+  })
+
+  writeFileSync(join(sourceDir('world-md'), 'README.md'), `# Main document
+
+Open the [agent report](${artifact.projectPath}#agent-report).
+`)
+
+  await buildMarkdownDocument('world-md', () => {})
+
+  const out = outputDir('world-md')
+  const pageInfo = JSON.parse(readFileSync(join(out, 'page-info.json'), 'utf8'))
+  assert.equal(pageInfo.length, 2)
+  assert.deepEqual(pageInfo.map(p => p.file), ['index.html', 'parts/77777777.html'])
+  assert.deepEqual(pageInfo.map(p => p.format), ['markdown', 'markdown'])
+  assert.deepEqual(pageInfo.map(p => p.source.file), ['README.md', 'parts/77777777.md'])
+  assert.equal(pageInfo[0].group, 'world-md-world')
+  assert.equal(pageInfo[1].group, 'world-md-world')
+  assert.equal(pageInfo[0].tabLabel, 'Main document')
+  assert.equal(pageInfo[1].tabLabel, 'Agent report')
+  assert.equal(existsSync(join(out, 'index.html')), false)
+  assert.equal(existsSync(join(out, 'parts', '77777777.html')), false)
+
+  const mainHtml = renderMarkdownColumnHtml({
+    source: readFileSync(join(sourceDir('world-md'), 'README.md'), 'utf8'),
+    title: 'Main document',
+    isTaskDoc: false,
+  })
+  assert.match(mainHtml, /href="parts\/77777777\.html#agent-report"/)
+
+  const partHtml = renderMarkdownColumnHtml({
+    source: readFileSync(join(sourceDir('world-md'), 'parts', '77777777.md'), 'utf8'),
+    title: 'Agent report',
+    isTaskDoc: false,
+  })
+  assert.match(partHtml, /Agent report/)
+  assert.equal(partHtml.includes('tlda-id'), false)
 })

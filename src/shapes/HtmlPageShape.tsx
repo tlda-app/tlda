@@ -12,6 +12,12 @@ import {
 import type { Editor, TLPageId, TLShape, TLShapeId } from 'tldraw'
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { appendToken } from '../authToken'
+import { htmlPageUrlMatchesTargetFile } from '../html-page-navigation-helpers'
+import {
+  installHtmlNavigationHistory,
+  recordHtmlNavigationEnd,
+  recordHtmlNavigationStart,
+} from '../html-page-navigation-history'
 import { useIsInViewport } from './useIsInViewport'
 import { PDF_HEIGHT } from '../layoutConstants'
 import { clearHtmlTextSelection, recordHtmlTextSelection } from '../htmlSelection'
@@ -313,6 +319,8 @@ function HtmlPageComponent({ shape }: { shape: any }) {
     return () => { htmlIframeElements.delete(shape.id) }
   }, [shape.id])
 
+  useEffect(() => installHtmlNavigationHistory(editor), [editor])
+
   // Iframes are pointer-events:none by default so TLDraw tools work normally.
   // Browse/text-select modes keep HTML clicks and text selection active; the
   // injected bridge reroutes canvas-navigation gestures by event type.
@@ -528,28 +536,30 @@ function HtmlPageComponent({ shape }: { shape: any }) {
         return
       }
       if (e.data?.type === 'tlda-navigate') {
-        // Route navigation from iframe links to page switch + anchor scroll.
-        // Search ALL pages for the target shape (cross-chapter navigation).
+        if (e.data.shapeId && e.data.shapeId !== shape.id) return
+        // Route navigation from iframe links to camera movement + anchor scroll.
         const sourceShape = editor.store.get(shape.id) as any
+        const isTemporaryMarkdownNavigation = !!sourceShape?.meta?.temporaryMarkdownColumn
         const allHtmlShapes = Object.values(editor.store.allRecords())
           .filter((r: any) => r.typeName === 'shape' && r.type === 'html-page') as any[]
+        const candidateHtmlShapes = isTemporaryMarkdownNavigation
+          ? allHtmlShapes.filter((s: any) => s.parentId === sourceShape?.parentId)
+          : allHtmlShapes
         let targetShape: any = null
         const anchor = e.data.anchor || null
         if (e.data.targetFile) {
-          targetShape = allHtmlShapes.find((s: any) => {
+          targetShape = candidateHtmlShapes.find((s: any) => {
             const url = s.props.url || ''
-            return url.endsWith('/' + e.data.targetFile) ||
-              url.includes('/' + e.data.targetFile + '?') ||
-              url.includes('/' + e.data.targetFile + '/')
+            return htmlPageUrlMatchesTargetFile(url, e.data.targetFile)
           })
         } else {
-          targetShape = allHtmlShapes.find((s: any) => s.id === e.data.shapeId)
+          targetShape = candidateHtmlShapes.find((s: any) => s.id === e.data.shapeId)
         }
         // Fall back to searching heading positions if anchor not in target
         if (targetShape && anchor) {
           const positions = htmlHeadingPositions.get(targetShape.id)
           if (!positions?.[anchor]) {
-            const altShape = allHtmlShapes.find((s: any) => {
+            const altShape = candidateHtmlShapes.find((s: any) => {
               const pos = htmlHeadingPositions.get(s.id)
               return pos?.[anchor] != null
             })
@@ -557,7 +567,7 @@ function HtmlPageComponent({ shape }: { shape: any }) {
           }
         }
         if (!targetShape) return
-        const isTemporaryMarkdownNavigation = !!sourceShape?.meta?.temporaryMarkdownColumn
+        recordHtmlNavigationStart(editor)
         const sourceLeftScreen = isTemporaryMarkdownNavigation
           ? editor.pageToScreen({ x: sourceShape.x, y: sourceShape.y }).x
           : null
@@ -567,9 +577,8 @@ function HtmlPageComponent({ shape }: { shape: any }) {
           }))
         }
 
-        // Switch to the target shape's TLDraw page
         const targetPageId = targetShape.parentId as TLPageId
-        if (targetPageId !== editor.getCurrentPageId()) {
+        if (!isTemporaryMarkdownNavigation && targetPageId !== editor.getCurrentPageId()) {
           editor.setCurrentPage(targetPageId)
         }
 
@@ -585,6 +594,7 @@ function HtmlPageComponent({ shape }: { shape: any }) {
             } else {
               editor.centerOnPoint({ x: cx, y: targetShape.y + yOff + vpHeight * 0.35 }, { animation: { duration: 300 } })
             }
+            recordHtmlNavigationEnd(editor)
           } else {
             // Anchor not resolved yet — center on page top, poll for anchor
             if (isTemporaryMarkdownNavigation) {
@@ -592,6 +602,7 @@ function HtmlPageComponent({ shape }: { shape: any }) {
             } else {
               editor.centerOnPoint({ x: cx, y: targetShape.y + vpHeight * 0.3 }, { animation: { duration: 300 } })
             }
+            recordHtmlNavigationEnd(editor)
             const poll = setInterval(() => {
               const yOff2 = htmlHeadingPositions.get(targetShape.id)?.[anchor!]
               if (yOff2 != null) {
@@ -615,26 +626,42 @@ function HtmlPageComponent({ shape }: { shape: any }) {
           } else {
             editor.centerOnPoint({ x: cx, y: targetShape.y + vpHeight * 0.3 }, { animation: { duration: 300 } })
           }
+          recordHtmlNavigationEnd(editor)
         }
         return
       }
       if (e.data?.type === 'tlda-navigate-rel') {
+        if (e.data.shapeId && e.data.shapeId !== shape.id) return
         // Prev/next chapter navigation from footer links
         const sourceShape = editor.store.get(shape.id) as any
+        const isTemporaryMarkdownNavigation = !!sourceShape?.meta?.temporaryMarkdownColumn
+        if (isTemporaryMarkdownNavigation) {
+          const samePageHtmlShapes = (Object.values(editor.store.allRecords()) as unknown[])
+            .filter(isHtmlPageShapeRecord)
+            .filter(r => r.parentId === sourceShape?.parentId)
+            .sort((a, b) => a.x - b.x)
+          const currentIdx = samePageHtmlShapes.findIndex(s => s.id === shape.id)
+          const targetIdx = e.data.direction === 'next' ? currentIdx + 1 : currentIdx - 1
+          const targetShape = samePageHtmlShapes[targetIdx]
+          if (!targetShape) return
+          recordHtmlNavigationStart(editor)
+          const sourceLeftScreen = isTemporaryMarkdownNavigation
+            ? editor.pageToScreen({ x: sourceShape.x, y: sourceShape.y }).x
+            : null
+          window.dispatchEvent(new CustomEvent('annotation-viewer-navigation-start', {
+            detail: { shapeId: shape.id },
+          }))
+          setCameraKeepingDocumentMargin(editor, targetShape, targetShape.y, 0.2, sourceLeftScreen)
+          recordHtmlNavigationEnd(editor)
+          return
+        }
+
         const pages = editor.getPages()
         const currentPageId = editor.getCurrentPageId()
         const currentIdx = pages.findIndex(p => p.id === currentPageId)
         const targetIdx = e.data.direction === 'next' ? currentIdx + 1 : currentIdx - 1
         if (targetIdx >= 0 && targetIdx < pages.length) {
-          const isTemporaryMarkdownNavigation = !!sourceShape?.meta?.temporaryMarkdownColumn
-          const sourceLeftScreen = isTemporaryMarkdownNavigation
-            ? editor.pageToScreen({ x: sourceShape.x, y: sourceShape.y }).x
-            : null
-          if (isTemporaryMarkdownNavigation) {
-            window.dispatchEvent(new CustomEvent('annotation-viewer-navigation-start', {
-              detail: { shapeId: shape.id },
-            }))
-          }
+          recordHtmlNavigationStart(editor)
           editor.setCurrentPage(pages[targetIdx].id)
           // Center on top of the new page's html-page shape
           setTimeout(() => {
@@ -642,14 +669,11 @@ function HtmlPageComponent({ shape }: { shape: any }) {
             const htmlShape = shapes.find((s: any) => s.type === 'html-page') as any
             if (htmlShape) {
               const vpHeight = editor.getViewportPageBounds().h
-              if (isTemporaryMarkdownNavigation) {
-                setCameraKeepingDocumentMargin(editor, htmlShape, htmlShape.y, 0.2, sourceLeftScreen)
-              } else {
-                editor.centerOnPoint(
-                  { x: htmlShape.x + htmlShape.props.w / 2, y: htmlShape.y + vpHeight * 0.3 },
-                  { animation: { duration: 300 } }
-                )
-              }
+              editor.centerOnPoint(
+                { x: htmlShape.x + htmlShape.props.w / 2, y: htmlShape.y + vpHeight * 0.3 },
+                { animation: { duration: 300 } }
+              )
+              recordHtmlNavigationEnd(editor)
             }
           }, 100)
         }
