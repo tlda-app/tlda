@@ -94,3 +94,9 @@ export function phoneLaneDragDecision(dx: number, dy: number): 'abort' | 'pendin
   if (Math.abs(dx) < PHONE_LANE_LOCK || Math.abs(dx) < Math.abs(dy) * PHONE_LANE_AXIS_RATIO) return 'pending'
   return 'dragging'
 }
+
+export function phoneLaneSweepCanFit(startX: number, viewportW: number, dir: number, commit: number): boolean {
+  if (dir < 0) return startX >= commit
+  if (dir > 0) return viewportW - startX >= commit
+  return false
+}

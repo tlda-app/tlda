@@ -9,6 +9,7 @@ import {
   classifySoftGesture,
   nearestLaneDocLeftScreen,
   phoneLaneDragDecision,
+  phoneLaneSweepCanFit,
 } from '../src/wm/gesture-policy.ts'
 
 const source = readFileSync(new URL('../src/overlays/useFleetGestures.ts', import.meta.url), 'utf8')
@@ -180,4 +181,15 @@ test('phone lane policy chooses the closest lane and filters accidental vertical
   assert.equal(phoneLaneDragDecision(5, 30), 'abort')
   assert.equal(phoneLaneDragDecision(15, 5), 'pending')
   assert.equal(phoneLaneDragDecision(30, 10), 'dragging')
+})
+
+test('phone lane pane arrows only arm when the sweep can fit on screen', () => {
+  assert.equal(phoneLaneSweepCanFit(260, 360, -1, 240), true)
+  assert.equal(phoneLaneSweepCanFit(120, 360, -1, 240), false)
+  assert.equal(phoneLaneSweepCanFit(80, 360, 1, 240), true)
+  assert.equal(phoneLaneSweepCanFit(180, 360, 1, 240), false)
+  assert.equal(phoneLaneSweepCanFit(180, 360, 0, 240), false)
+
+  assert.match(source, /phoneLaneSweepCanFit\(state\.startXInViewport, state\.viewportW, dir, commit\)/)
+  assert.match(phoneHandSource, /phoneLaneSweepCanFit\(this\.startXInViewport, this\.viewportW, dir, commit\)/)
 })

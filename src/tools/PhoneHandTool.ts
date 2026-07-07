@@ -3,6 +3,7 @@ import { log } from '../logger'
 import { isDocumentPageShape } from '../shapes/document-pages'
 import { setPhoneLaneDrag, PHONE_LANE_DRAG_IDLE, phoneLaneCommitPx, phoneLaneIndexFromCamera, phoneLaneExistsFromIndex, rememberPhoneLanePortraitWidth, snapToPhoneLaneIndex } from '../overlays/useFleetGestures'
 import { phonePaneStackMaxIndex } from '../shapes/phone-pane-stack'
+import { phoneLaneSweepCanFit } from '../wm'
 
 const AXIS_THRESHOLD = 5 // px before locking axis
 const LOG_NS = 'fleet-gesture'
@@ -156,6 +157,8 @@ class PhoneDragging extends StateNode {
   // and it shares the drift-proof index tracking with the fleet-panel gestures.
   startLaneIndex = 0
   maxPaneIndex = 1
+  startXInViewport = 0
+  viewportW = 0
 
   override onEnter() {
     this.initialCamera = Vec.From(this.editor.getCamera())
@@ -163,6 +166,8 @@ class PhoneDragging extends StateNode {
     this.maxPaneIndex = phonePaneStackMaxIndex(this.editor)
     rememberPhoneLanePortraitWidth(this.editor)
     this.startLaneIndex = phoneLaneIndexFromCamera(this.editor, getPrimaryDocumentLeft(this.editor) ?? 0, this.maxPaneIndex)
+    this.startXInViewport = this.editor.inputs.getOriginScreenPoint().x
+    this.viewportW = this.editor.getViewportScreenBounds().w || 0
     this.update()
   }
 
@@ -218,7 +223,8 @@ class PhoneDragging extends StateNode {
       delta = new Vec(delta.x, 0)
       const { dx, dir } = this.horizontalDrag()
       const commit = phoneLaneCommitPx()
-      const hasLane = this.laneExistsFromStart(dir)
+      const sweepFits = phoneLaneSweepCanFit(this.startXInViewport, this.viewportW, dir, commit)
+      const hasLane = sweepFits && this.laneExistsFromStart(dir)
       const progress = hasLane ? Math.min(1, Math.abs(dx) / commit) : 0
       setPhoneLaneDrag({ active: true, progress, dir: hasLane ? dir : 0, armed: progress >= 1, arrowWidthPx: commit })
     } else if (this.lockedAxis === 'y') {
@@ -238,7 +244,8 @@ class PhoneDragging extends StateNode {
       // Deliberate 75%+ swipe → transition to the adjacent lane; otherwise settle
       // back onto the lane the drag started from. Snap by INDEX (not the panned
       // camera) so it lands exactly and can't drift over repeated swipes.
-      const targetIndex = (Math.abs(dx) >= commit && this.laneExistsFromStart(dir))
+      const sweepFits = phoneLaneSweepCanFit(this.startXInViewport, this.viewportW, dir, commit)
+      const targetIndex = (sweepFits && Math.abs(dx) >= commit && this.laneExistsFromStart(dir))
         ? this.startLaneIndex + dir
         : this.startLaneIndex
       if (docLeftPage !== null) {

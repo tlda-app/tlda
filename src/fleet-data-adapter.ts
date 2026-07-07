@@ -45,6 +45,7 @@ import {
   getResolvedFleetAgentIdsForLabel,
   getResolvedFleetAgentIds,
   subscribeFleetAgents,
+  upsertFleetEvents,
   viewFleetEvents,
   type FleetEvent,
 } from './fleet/fleet-data.ts'
@@ -440,6 +441,13 @@ export function useFleetEvents(dnfFilter?: [string, string][][] | null, frameId?
   }, [frameId, filter, filterKey])
 
   return isPlaybackMode ? playbackEvents : [...liveEvents]
+}
+
+export async function loadFleetHistoryForAgents(agentIds: string[], limit = 300): Promise<number> {
+  await ensureInit()
+  const events = await fetchHistory(agentIds, limit)
+  upsertFleetEvents(events)
+  return events.length
 }
 
 type FleetStatusTargets = {

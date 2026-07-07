@@ -40,6 +40,7 @@ import {
   applyShapeResizeAxisLock,
   classifySoftGesture,
   phoneLaneDragDecision,
+  phoneLaneSweepCanFit,
   type GestureFrameSelectors,
 } from '../wm'
 import {
@@ -447,9 +448,10 @@ function finishPhoneLaneGesture(main: Editor, state: Extract<GestureState, { kin
   if (state.mode === 'dragging') {
     const commit = phoneLaneCommitPx()
     const dir = state.lastDx > 0 ? 1 : state.lastDx < 0 ? -1 : 0
+    const sweepFits = phoneLaneSweepCanFit(state.startXInViewport, state.viewportW, dir, commit)
     // Static-until-threshold: the camera never moved during the drag, so on
     // release we either transition one lane (past the commit distance) or stay put.
-    if (dir !== 0 && Math.abs(state.lastDx) >= commit && phoneLaneExistsFromIndex(state.startLaneIndex, state.maxPaneIndex, dir)) {
+    if (dir !== 0 && sweepFits && Math.abs(state.lastDx) >= commit && phoneLaneExistsFromIndex(state.startLaneIndex, state.maxPaneIndex, dir)) {
       snapToPhoneLaneIndex(main, state.docLeftPage, state.startLaneIndex + dir)
     } else {
       // Re-settle exactly onto the current lane (no-op if already aligned).
@@ -681,7 +683,7 @@ type GestureState =
   | { kind: 'none' }
   | { kind: 'shape'; mode: 'pending' | 'combined'; moveActive: boolean; resizeActive: boolean; id: string; type: string; x0: number; y0: number; w0: number; h0: number; d0: number; sx0: number; sy0: number; relX: number; relY: number; c0: { x: number; y: number }; p0: { x: number; y: number }; resizeAxis: 'x' | 'y' | null; resizeAccX: number; resizeAccY: number; writeCount: number }
   | { kind: 'cluster'; mode: 'pending' | 'combined'; moveActive: boolean; resizeActive: boolean; shapes: { id: string; type: string; x0: number; y0: number; w0: number; h0: number }[]; anchor: { x: number; y: number }; d0: number; sx0: number; sy0: number; c0: { x: number; y: number }; p0: { x: number; y: number }; writeCount: number }
-  | { kind: 'phone-lane'; mode: 'pending' | 'dragging'; x0: number; y0: number; cameraX0: number; z0: number; docLeftPage: number; startLaneIndex: number; maxPaneIndex: number; lastDx: number }
+  | { kind: 'phone-lane'; mode: 'pending' | 'dragging'; x0: number; y0: number; startXInViewport: number; viewportW: number; cameraX0: number; z0: number; docLeftPage: number; startLaneIndex: number; maxPaneIndex: number; lastDx: number }
   // 3-finger: pan the main canvas from anywhere (even over the panels). Drive the
   // main camera; the HUD's camera-poll mirrors a main-camera pan onto the HUD.
   // Keep z byte-identical — a z wobble makes the poll skip the HUD update.
@@ -1547,11 +1549,15 @@ export function useFleetGestures(opts: {
             const maxPaneIndex = phonePaneStackMaxIndex(main)
             rememberPhoneLanePortraitWidth(main)
             const startLaneIndex = phoneLaneIndexFromCamera(main, docLeftPage, maxPaneIndex)
+            const viewportRect = main.getContainer().getBoundingClientRect()
+            const viewportW = main.getViewportScreenBounds().w || viewportRect.width || 0
             state = {
               kind: 'phone-lane',
               mode: 'pending',
               x0: ts[0].clientX,
               y0: ts[0].clientY,
+              startXInViewport: ts[0].clientX - viewportRect.left,
+              viewportW,
               cameraX0: main.getCamera().x,
               z0: main.getCamera().z,
               docLeftPage,
@@ -1780,7 +1786,8 @@ export function useFleetGestures(opts: {
         // impending transition; the actual lane switch happens on release.
         const commit = phoneLaneCommitPx()
         const dir: -1 | 0 | 1 = dx > 0 ? 1 : dx < 0 ? -1 : 0
-        const hasLane = phoneLaneExistsFromIndex(state.startLaneIndex, state.maxPaneIndex, dir)
+        const sweepFits = phoneLaneSweepCanFit(state.startXInViewport, state.viewportW, dir, commit)
+        const hasLane = sweepFits && phoneLaneExistsFromIndex(state.startLaneIndex, state.maxPaneIndex, dir)
         const progress = hasLane ? Math.min(1, Math.abs(dx) / commit) : 0
         setPhoneLaneDrag({ active: true, progress, dir: hasLane ? dir : 0, armed: progress >= 1, arrowWidthPx: commit })
         return
