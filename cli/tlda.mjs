@@ -3460,7 +3460,7 @@ async function cmdDoctorYolo() {
   const dnsAlias = await resolveDnsAlias(api).catch(() => null)
   const harnessOptions = {
     required: ['--dangerously-load-development-channels server:tlda'],
-    preferences: [],
+    preferences: ['--dangerously-skip-permissions'],
     controls: false,
   }
   const cmd = claude.buildCmd({
