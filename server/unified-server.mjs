@@ -86,10 +86,12 @@ import {
   validateDeliveryChannel,
 } from '../shared/inbox-attention.mjs'
 import {
+  MATERIALIZATION_MAX_BYTES,
   initializeRecipientRefs,
   isMaterializableAttachment,
   setRecipientAttachmentState,
 } from '../shared/inbox-reference-materialization.mjs'
+import { realizeProjectMarkdownArtifact } from './lib/project-artifact-materializer.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -1586,6 +1588,51 @@ function patchRecipientAttachmentState(eventId, recipientId, attachmentId, recor
   ))
 }
 
+function isMarkdownAttachment(attachment = {}, result = {}) {
+  const mime = String(attachment.mimeType || attachment.contentType || result.contentType || '').toLowerCase()
+  if (mime === 'text/markdown' || mime === 'text/x-markdown') return true
+  const name = String(attachment.name || result.name || result.localPath || result.path || '').toLowerCase()
+  return name.endsWith('.md') || name.endsWith('.markdown')
+}
+
+async function fetchAttachmentTextForProjectArtifact(attachment) {
+  if (!attachment?.url) throw new Error('attachment url required')
+  const target = new URL(attachment.url, getFleetServerUrl()).toString()
+  const res = await fetch(target, { signal: AbortSignal.timeout(10000) })
+  if (!res.ok) throw new Error(`attachment fetch failed: HTTP ${res.status}`)
+  const len = Number(res.headers.get('content-length') || 0)
+  if (len > MATERIALIZATION_MAX_BYTES) {
+    throw new Error(`attachment exceeds max size (${len} > ${MATERIALIZATION_MAX_BYTES})`)
+  }
+  const ab = await res.arrayBuffer()
+  if (ab.byteLength > MATERIALIZATION_MAX_BYTES) {
+    throw new Error(`attachment exceeds max size (${ab.byteLength} > ${MATERIALIZATION_MAX_BYTES})`)
+  }
+  return Buffer.from(ab).toString('utf8')
+}
+
+async function materializeProjectMarkdownAttachment({ eventId, recipient, sourceAgent, attachment }) {
+  if (!isMarkdownAttachment(attachment)) return null
+  const markdown = await fetchAttachmentTextForProjectArtifact(attachment)
+  const sourceAgentRow = sourceAgent ? fleetStore.getAgent?.(sourceAgent) : null
+  return realizeProjectMarkdownArtifact({
+    cwd: recipient.cwd,
+    markdown,
+    title: attachment.name || null,
+    actor: sourceAgentRow ? {
+      friendlyName: sourceAgentRow.friendly_name || sourceAgent,
+      fleetId: sourceAgent,
+    } : sourceAgent,
+    provenance: {
+      sourceAgent: sourceAgent || 'unknown',
+      recipient: recipient.id,
+      eventId,
+      attachmentId: String(attachment.id),
+      url: attachment.url || null,
+    },
+  })
+}
+
 async function materializeRecipientAttachment({ eventId, recipientId, sourceAgent, attachment }) {
   const recipient = fleetStore.getAgent?.(recipientId)
   if (!recipient || recipient.human) return
@@ -1622,14 +1669,31 @@ async function materializeRecipientAttachment({ eventId, recipientId, sourceAgen
       size: attachment.size,
       sha256: attachment.sha256,
     })
+    let projectArtifact = null
+    try {
+      projectArtifact = await materializeProjectMarkdownAttachment({ eventId, recipient, sourceAgent, attachment })
+    } catch (e) {
+      projectArtifact = {
+        state: 'failed',
+        status: 'failed',
+        projectArtifactId: null,
+        error: e.message || String(e),
+      }
+    }
     patchRecipientAttachmentState(eventId, recipientId, attachment.id, {
       kind: 'attachment',
       state: 'available',
       status: 'ready',
       title: attachment.name || null,
       localPath: result.localPath || result.path,
-      projectPath: null,
-      projectArtifactId: null,
+      projectPath: projectArtifact?.projectPath || null,
+      projectArtifactId: projectArtifact?.projectArtifactId || null,
+      ...(projectArtifact ? {
+        projectArtifactStatus: projectArtifact.status || projectArtifact.state || null,
+        ...(projectArtifact.project ? { project: projectArtifact.project } : {}),
+        ...(projectArtifact.render ? { render: projectArtifact.render } : {}),
+        ...(projectArtifact.error ? { projectArtifactError: projectArtifact.error } : {}),
+      } : {}),
       contentType: attachment.mimeType || null,
       hash: result.hash || result.sha256,
       sourceAgent: sourceAgent || 'unknown',
