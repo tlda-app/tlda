@@ -20,6 +20,7 @@ import { captureSnapshot } from './snapshotStore'
 import { diffWords, extractFlatWords } from './wordDiff'
 import { setupDiffOverlays, setupDiffHoverEffect, setupDiffReviewEffect } from './diffHelpers'
 import { getViewerId } from './useYjsSync'
+import { htmlPageFileFromUrl, htmlPageReloadUrl } from './html-page-navigation-helpers'
 import {
   getVisibilityMode, subscribeVisibility,
   isDraft, subscribeDrafts, addDraft, getDraftHovering, subscribeDraftHovering, isDraftMode,
@@ -309,6 +310,78 @@ export async function fetchSvgPagesAsync(
 // Generation counter for reloadPages — prevents interleaved concurrent reloads
 let reloadGeneration = 0
 
+type HtmlPageInfo = {
+  file: string
+  width?: number
+  height?: number
+}
+
+type HtmlPageShapeRecord = {
+  id: TLShapeId
+  typeName: 'shape'
+  type: 'html-page'
+  props: {
+    url?: string
+    w?: number
+    h?: number
+  }
+}
+
+function isHtmlPageShapeRecord(record: unknown): record is HtmlPageShapeRecord {
+  if (!record || typeof record !== 'object') return false
+  const candidate = record as { typeName?: unknown; type?: unknown; props?: unknown }
+  return candidate.typeName === 'shape' && candidate.type === 'html-page' && !!candidate.props && typeof candidate.props === 'object'
+}
+
+function putHtmlPageShapeRecord(editor: Editor, shape: HtmlPageShapeRecord) {
+  // tldraw's Editor type is compiled against its built-in shape union, while
+  // this app registers html-page at runtime. Keep the cast at that API boundary.
+  editor.store.put([shape as unknown as Parameters<Editor['store']['put']>[0][number]])
+}
+
+async function reloadHtmlPages(editor: Editor, document: SvgDocument): Promise<ReloadResult> {
+  const timestamp = Date.now()
+  const basePath = document.basePath || `${import.meta.env.BASE_URL || '/'}docs/${document.name}/`
+  let pageInfoByFile = new Map<string, HtmlPageInfo>()
+
+  try {
+    const res = await fetch(`${basePath}page-info.json?t=${timestamp}`)
+    if (res.ok) {
+      const infos = await res.json() as HtmlPageInfo[]
+      pageInfoByFile = new Map(infos.map(info => [info.file, info]))
+    }
+  } catch (e) {
+    console.warn('[Reload] HTML page-info refresh failed:', (e as Error).message)
+  }
+
+  const pageShapeIds = new Set(document.pages.map(page => page.shapeId))
+  let refreshed = 0
+  const records: unknown[] = editor.store.allRecords()
+  for (const record of records) {
+    if (!isHtmlPageShapeRecord(record)) continue
+    const shape = record
+    if (!pageShapeIds.has(shape.id)) continue
+    const currentUrl = shape.props.url
+    if (!currentUrl) continue
+
+    const file = htmlPageFileFromUrl(currentUrl, basePath)
+    const info = pageInfoByFile.get(file)
+    putHtmlPageShapeRecord(editor, {
+      ...shape,
+      props: {
+        ...shape.props,
+        ...(info?.width ? { w: info.width } : {}),
+        ...(info?.height ? { h: info.height } : {}),
+        url: htmlPageReloadUrl(currentUrl, timestamp),
+      },
+    })
+    refreshed += 1
+  }
+
+  console.log(`[Reload] Refreshed ${refreshed} html-page iframe(s)`)
+  return { failedPages: [] }
+}
+
 /**
  * Re-fetch SVG pages and hot-swap their TLDraw assets.
  * Called when a reload signal arrives from the MCP server after a rebuild.
@@ -320,6 +393,7 @@ export async function reloadPages(
 ): Promise<ReloadResult> {
   // Hot-reload is LaTeX-specific (re-fetch SVGs after rebuild)
   if (document.format === 'png' || document.format === 'diff') return { failedPages: [] }
+  if (document.format === 'html' || document.format === 'markdown') return reloadHtmlPages(editor, document)
 
   const gen = ++reloadGeneration
 
@@ -329,7 +403,7 @@ export async function reloadPages(
   // and the viewer wedges on the stale layout (showing the last old page on
   // repeat). Re-fetch the count and, if it changed, rebuild the layout and
   // reconcile the page shapes (create new, drop removed) before fetching SVGs.
-  if (pageNumbers === null && document.format !== 'html' && document.format !== 'markdown' && document.format !== 'slides') {
+  if (pageNumbers === null && document.format !== 'slides') {
     try {
       const res = await fetch(`/api/projects/${encodeURIComponent(document.name)}`)
       if (res.ok) {

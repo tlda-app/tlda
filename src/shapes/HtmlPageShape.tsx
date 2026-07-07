@@ -385,7 +385,7 @@ function HtmlPageComponent({ shape }: { shape: any }) {
     if (!iframe?.contentWindow) return
     htmlIframeElements.set(shape.id, iframe)
     iframe.contentWindow.postMessage({ type: 'tlda-dark-mode', dark: isDark }, '*')
-  }, [isDark])
+  }, [isDark, shape.id])
 
   // Listen for height reports from iframe content
   // Read current height from the store (not the closure) to avoid stale delta calculations
@@ -499,10 +499,9 @@ function HtmlPageComponent({ shape }: { shape: any }) {
         return
       }
       if (e.data?.type === 'tlda-wheel') {
-        const current = editor.store.get(shape.id) as any
-        if (current?.meta?.temporaryMarkdownColumn) return
-        // Forward wheel events from iframe bridge directly to TLDraw's editor.dispatch
-        // (synthetic DOM WheelEvents don't reach @use-gesture's internal handler)
+        if (e.data.shapeId !== shape.id) return
+        // Forward wheel events from this iframe bridge directly to TLDraw's editor.dispatch
+        // (synthetic DOM WheelEvents don't reach @use-gesture's internal handler).
         const { deltaX, deltaY, ctrlKey, metaKey } = e.data
         const iframe = iframeRef.current
         const iframeRect = iframe?.getBoundingClientRect()
@@ -514,7 +513,7 @@ function HtmlPageComponent({ shape }: { shape: any }) {
         editor.dispatch({
           type: 'wheel',
           name: 'wheel',
-          delta: new Vec(-deltaX, -deltaY, 0),
+          delta: new Vec(-(deltaX || 0), -(deltaY || 0), 0),
           point,
           shiftKey: false,
           altKey: false,

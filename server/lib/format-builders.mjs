@@ -9,11 +9,21 @@ import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, cpSync
 import { join, basename } from 'path'
 import { updateProject, sourceDir as getSourceDir, outputDir as getOutputDir, listProjects, aggregateBookToc } from './project-store.mjs'
 import { broadcastSignal } from './sync-rooms.mjs'
+import { writeSentinel } from './sentinel.mjs'
 import { generateSlidesPageInfo } from './slides-parser.mjs'
 import { buildMarkdownDocument } from './build-markdown.mjs'
 
 function signalReload(name, pages) {
   broadcastSignal(`doc-${name}`, 'signal:reload', { pages, timestamp: Date.now() })
+}
+
+async function signalLightweightBuildReady(name, pages, format, buildReadyAt) {
+  await writeSentinel(`doc-${name}`, {
+    commitHash: `${format}-${buildReadyAt}`,
+    timestamp: buildReadyAt,
+    buildReadyAt,
+  })
+  broadcastSignal(`doc-${name}`, 'signal:reload', { pages, timestamp: buildReadyAt })
 }
 
 function regenerateBookTocs(name) {
@@ -65,8 +75,9 @@ export async function buildHtml(name) {
     writeFileSync(pageInfoPath, JSON.stringify(pageInfo, null, 2))
   }
 
-  updateProject(name, { buildStatus: 'success', pages: pageInfo.length, lastBuild: new Date().toISOString() })
-  signalReload(name, pageInfo.length)
+  const buildReadyAt = Date.now()
+  updateProject(name, { buildStatus: 'success', pages: pageInfo.length, lastBuild: new Date(buildReadyAt).toISOString() })
+  await signalLightweightBuildReady(name, pageInfo.length, 'html', buildReadyAt)
   console.log(`[html] ${name}: ${pageInfo.length} pages`)
 }
 

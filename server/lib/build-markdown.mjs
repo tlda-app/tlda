@@ -17,6 +17,7 @@ import { join, basename, dirname } from 'path'
 import { injectBridge } from './html-injector.mjs'
 import { updateProject, readProject, listProjects, aggregateBookToc, sourceDir as getSourceDir, outputDir as getOutputDir } from './project-store.mjs'
 import { broadcastSignal } from './sync-rooms.mjs'
+import { writeSentinel } from './sentinel.mjs'
 
 const FRONTMATTER_RE = /^---[ \t]*\r?\n[\s\S]*?\r?\n---[ \t]*(?:\r?\n|$)/
 
@@ -835,8 +836,14 @@ ${taskDocAssets.script}
   writeFileSync(join(outDir, 'page-info.json'), JSON.stringify(pageInfo, null, 2))
   writeFileSync(join(outDir, 'toc.json'), JSON.stringify(toc, null, 2))
 
-  updateProject(name, { buildStatus: 'success', pages: 1, lastBuild: new Date().toISOString() })
-  broadcastSignal(`doc-${name}`, 'signal:reload', { pages: 1, timestamp: Date.now() })
+  const buildReadyAt = Date.now()
+  updateProject(name, { buildStatus: 'success', pages: 1, lastBuild: new Date(buildReadyAt).toISOString() })
+  await writeSentinel(`doc-${name}`, {
+    commitHash: `markdown-${buildReadyAt}`,
+    timestamp: buildReadyAt,
+    buildReadyAt,
+  })
+  broadcastSignal(`doc-${name}`, 'signal:reload', { pages: 1, timestamp: buildReadyAt })
 
   // Re-aggregate any book that contains this doc as a member
   for (const proj of listProjects()) {
