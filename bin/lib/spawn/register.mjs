@@ -122,12 +122,7 @@ export async function findAgent(name, { api = resolveApi() } = {}) {
   if (!name) return null
   const agents = await apiJson('/api/store/agents', { api })
   if (name.startsWith('fleet:')) return agents.find((a) => a.id === name) || null
-  // A name IS the seat (the being) — resolve it regardless of the current session's
-  // liveness. A dead/hibernating seat must still resolve so a wake reuses its durable
-  // fleet_id and resumes its rollout, instead of the seat reading as "gone" and a fresh
-  // spawn minting an impostor under the same name. Most-recent session first (Skip: a
-  // wake is always the most recent session).
-  const matches = agents.filter((a) => a.friendly_name === name)
+  const matches = agents.filter((a) => a.friendly_name === name && !a.dead)
   if (!matches.length) return null
   matches.sort((a, b) => Number(b.last_seen || b.last_active || 0) - Number(a.last_seen || a.last_active || 0))
   return matches[0]
