@@ -1,6 +1,6 @@
 import type { Editor } from 'tldraw'
 import { getPref } from '../preferences'
-import { isDocumentPageShape } from './document-pages'
+import { isCanvasPageShape, isDocumentPageShape } from './document-pages'
 import { laneDy, layoutOffset } from './fleet-layout-geometry'
 import type { FleetLayoutPlanInput, FleetLayoutVariant } from './fleet-layout-plan'
 import { defaultFleetLayoutChatFilters, type FleetChatFilter } from './fleet-layout-seeding'
@@ -115,7 +115,14 @@ export function buildFleetLayoutPlanInput({
 }
 
 export function getDocumentPageBounds(editor: Editor): DocumentPageBounds | null {
+  const currentPlaceBounds = getCurrentVisibleDocumentPlaceBounds(editor)
+  if (currentPlaceBounds) return currentPlaceBounds
+
   const pageShapes = editor.getCurrentPageShapes().filter(isDocumentPageShape)
+  return boundsForPageShapes(editor, pageShapes)
+}
+
+function boundsForPageShapes(editor: Editor, pageShapes: any[]): DocumentPageBounds | null {
   let minLeft = Infinity, minTop = Infinity, maxRight = -Infinity
   const pagesWithBounds: any[] = []
   for (const ps of pageShapes) {
@@ -128,6 +135,29 @@ export function getDocumentPageBounds(editor: Editor): DocumentPageBounds | null
   }
   if (pagesWithBounds.length === 0 || !isFinite(minLeft) || !isFinite(minTop) || !isFinite(maxRight)) return null
   return { pageShapes: pagesWithBounds, minLeft, minTop, maxRight }
+}
+
+function getCurrentVisibleDocumentPlaceBounds(editor: Editor): DocumentPageBounds | null {
+  const viewport = editor.getViewportPageBounds()
+  let best: { shape: any; area: number } | null = null
+  for (const shape of editor.getCurrentPageShapes().filter(isCanvasPageShape)) {
+    const bounds = editor.getShapePageBounds(shape.id)
+    if (!bounds) continue
+    const overlapW = Math.max(0, Math.min(bounds.x + bounds.w, viewport.x + viewport.w) - Math.max(bounds.x, viewport.x))
+    const overlapH = Math.max(0, Math.min(bounds.y + bounds.h, viewport.y + viewport.h) - Math.max(bounds.y, viewport.y))
+    const area = overlapW * overlapH
+    if (area <= 0) continue
+    if (!best || area > best.area) best = { shape, area }
+  }
+  if (!best?.shape?.meta?.temporaryMarkdownColumn) return null
+  const bounds = editor.getShapePageBounds(best.shape.id)
+  if (!bounds) return null
+  return {
+    pageShapes: [best.shape],
+    minLeft: bounds.x,
+    minTop: bounds.y,
+    maxRight: bounds.x + bounds.w,
+  }
 }
 
 export function getPhoneLayoutTarget(

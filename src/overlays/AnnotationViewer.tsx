@@ -85,14 +85,15 @@ export function AnnotationViewer({
   shapeUtils,
   licenseKey,
 }: AnnotationViewerProps) {
-  const [data, setData] = useState<ViewerData | null>(null)
-  const [state, setState] = useState<ViewerState>('hovering')
-  const [size, setSize] = useState({ w: 650, h: 450 })
-  const prevViewRef = useRef<{
+  type ViewSnapshot = {
     pageId: ReturnType<Editor['getCurrentPageId']>
     camera: { x: number; y: number; z: number }
     movedShapes?: Array<{ id: TLShapeId; x: number; y: number }>
-  } | null>(null)
+  }
+  const [data, setData] = useState<ViewerData | null>(null)
+  const [state, setState] = useState<ViewerState>('hovering')
+  const [size, setSize] = useState({ w: 650, h: 450 })
+  const prevViewStackRef = useRef<ViewSnapshot[]>([])
   const dismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const clickStartRef = useRef<{ x: number; y: number } | null>(null)
 
@@ -120,7 +121,7 @@ export function AnnotationViewer({
       })
       setSize(nextSize)
       setState(request.persistence.pinned ? 'pinned' : 'hovering')
-      prevViewRef.current = null
+      prevViewStackRef.current = []
       if (dismissTimerRef.current) clearTimeout(dismissTimerRef.current)
       requestAnimationFrame(() => sendCanvasPageShapesToBack(mainEditor))
     }
@@ -228,13 +229,14 @@ export function AnnotationViewer({
     const onNavigationStart = (e: Event) => {
       const shapeId = (e as CustomEvent).detail?.shapeId
       if (!shapeId || !data.shapeIds?.includes(shapeId)) return
-      if (!prevViewRef.current) {
-        const cam = mainEditor.getCamera()
-        prevViewRef.current = {
+      const cam = mainEditor.getCamera()
+      prevViewStackRef.current = [
+        ...prevViewStackRef.current,
+        {
           pageId: mainEditor.getCurrentPageId(),
           camera: { x: cam.x, y: cam.y, z: cam.z },
-        }
-      }
+        },
+      ]
       setState('navigated')
     }
     window.addEventListener('annotation-viewer-navigation-start', onNavigationStart)
@@ -285,11 +287,14 @@ export function AnnotationViewer({
       return
     }
     const cam = mainEditor.getCamera()
-    prevViewRef.current = {
-      pageId: mainEditor.getCurrentPageId(),
-      camera: { x: cam.x, y: cam.y, z: cam.z },
-      movedShapes: shiftMarginShapesForTarget(targetBounds),
-    }
+    prevViewStackRef.current = [
+      ...prevViewStackRef.current,
+      {
+        pageId: mainEditor.getCurrentPageId(),
+        camera: { x: cam.x, y: cam.y, z: cam.z },
+        movedShapes: shiftMarginShapesForTarget(targetBounds),
+      },
+    ]
     sendCanvasPageShapesToBack(mainEditor)
     suppressFleetHudCameraTracking()
     if (data.useFullBounds) {
@@ -310,13 +315,14 @@ export function AnnotationViewer({
   // Go back
   const handleBack = useCallback((e: React.MouseEvent) => {
     stopEventPropagation(e)
-    if (!prevViewRef.current) return
+    const prevView = prevViewStackRef.current.pop()
+    if (!prevView) return
     sendCanvasPageShapesToBack(mainEditor)
     suppressFleetHudCameraTracking()
-    if (mainEditor.getCurrentPageId() !== prevViewRef.current.pageId) {
-      mainEditor.setCurrentPage(prevViewRef.current.pageId)
+    if (mainEditor.getCurrentPageId() !== prevView.pageId) {
+      mainEditor.setCurrentPage(prevView.pageId)
     }
-    const movedShapes = prevViewRef.current.movedShapes || []
+    const movedShapes = prevView.movedShapes || []
     if (movedShapes.length > 0) {
       mainEditor.updateShapes(movedShapes.map((shape) => {
         const current = mainEditor.getShape(shape.id) as any
@@ -324,10 +330,9 @@ export function AnnotationViewer({
       }).filter(Boolean) as any)
       try { window.dispatchEvent(new CustomEvent('fleet-hud-reset', { detail: { preserveAnchor: true } })) } catch {}
     }
-    mainEditor.setCamera(prevViewRef.current.camera, { animation: { duration: 300 } })
-    prevViewRef.current = null
+    mainEditor.setCamera(prevView.camera, { animation: { duration: 300 } })
     window.setTimeout(() => sendCanvasPageShapesToBack(mainEditor), 350)
-    setState('pinned')
+    setState(prevViewStackRef.current.length > 0 ? 'navigated' : 'pinned')
   }, [mainEditor])
 
   // Close
@@ -355,7 +360,7 @@ export function AnnotationViewer({
     }
     setData(null)
     setState('hovering')
-    prevViewRef.current = null
+    prevViewStackRef.current = []
   }, [data, mainEditor])
 
   // Resize drag

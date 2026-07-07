@@ -1,8 +1,9 @@
-import type { Editor } from 'tldraw'
+import type { Editor, TLPageId } from 'tldraw'
 
 export const HTML_NAV_STATE_KEY = '__tldaHtmlNavigation'
 
 type HtmlNavigationLocation = {
+  pageId: string
   camera: { x: number; y: number; z: number }
 }
 
@@ -15,6 +16,7 @@ function isHtmlNavigationLocation(value: unknown): value is HtmlNavigationLocati
   if (!value || typeof value !== 'object') return false
   const candidate = value as { pageId?: unknown; camera?: { x?: unknown; y?: unknown; z?: unknown } }
   return (
+    typeof candidate.pageId === 'string' &&
     typeof candidate.camera?.x === 'number' &&
     typeof candidate.camera?.y === 'number' &&
     typeof candidate.camera?.z === 'number'
@@ -24,6 +26,7 @@ function isHtmlNavigationLocation(value: unknown): value is HtmlNavigationLocati
 function currentHtmlNavigationLocation(editor: Editor): HtmlNavigationLocation {
   const camera = editor.getCamera()
   return {
+    pageId: String(editor.getCurrentPageId()),
     camera: { x: camera.x, y: camera.y, z: camera.z },
   }
 }
@@ -42,15 +45,11 @@ export function htmlNavigationLocationFromHistoryState(state: unknown) {
   return isHtmlNavigationLocation(location) ? location : null
 }
 
-function sameHtmlNavigationLocation(a: HtmlNavigationLocation | null, b: HtmlNavigationLocation) {
-  return !!a &&
-    a.camera.x === b.camera.x &&
-    a.camera.y === b.camera.y &&
-    a.camera.z === b.camera.z
-}
-
 function restoreHtmlNavigationLocation(editor: Editor, location: HtmlNavigationLocation) {
   restoringHtmlNavigationState = true
+  if (location.pageId && location.pageId !== editor.getCurrentPageId()) {
+    editor.setCurrentPage(location.pageId as TLPageId)
+  }
   editor.setCamera(location.camera, { animation: { duration: 300 } })
   window.setTimeout(() => { restoringHtmlNavigationState = false }, 0)
 }
@@ -68,7 +67,6 @@ function pushHtmlNavigationHistoryLocation(editor: Editor) {
   if (restoringHtmlNavigationState) return
   ensureHtmlNavigationHistoryBaseline(editor)
   const location = currentHtmlNavigationLocation(editor)
-  if (sameHtmlNavigationLocation(htmlNavigationLocationFromHistoryState(window.history.state), location)) return
   window.history.pushState(historyStateWithHtmlNavigation(window.history.state, location), '')
 }
 
