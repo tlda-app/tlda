@@ -116,7 +116,7 @@ import {
   unlinkPidfileIfOwnPid,
 } from './lib/daemon-guards.mjs'
 import { codexRolloutBelongsToAgent, codexRolloutHasOwnerEvidence, resolveTranscript } from './lib/resolve-transcript.mjs'
-import { resolveSpawnGrant, normalizeSpawnPolicy, emptyPermissionSet } from '../server/lib/spawn-policy.mjs'
+import { resolveSpawnGrant } from '../server/lib/spawn-policy.mjs'
 import { probeSpawnAvailability } from './lib/spawn/availability.mjs'
 import {
   applyDaemonGrants,
@@ -3207,25 +3207,17 @@ async function rpcSpawn({
     const config = loadConfig()
     spawnConfig = config
     if (respawn) {
-      // Hibernation is transparent (Skip's design): waking a real, ledgered agent
-      // carries NO privilege check — no requester, no spawn-auth gate. Waking is
-      // just the invisible step that delivers a chat, so chatting a hibernating
+      // Wake = resume an EXISTING seat with its OWN ledger grant. A wake carries no
+      // requester, no spawn-auth gate, no grantFor, no fleet:root, no none-grant: it
+      // is just the invisible step that delivers a chat, so chatting a hibernating
       // agent is identical to chatting an awake one, and wake is open to anyone.
-      // Such an agent resumes with its OWN recorded grant, unchanged.
-      //
-      // Being a real agent IS being in the ledger. An un-ledgered id is therefore
-      // NOT a real agent (anomalous) — it resumes with NO meaningful privileges: it
-      // can exist/wait but cannot spawn or do anything privileged. We do not grant it
-      // a config default. (The real fix is getting real agents into the ledger under
-      // the id the wake resolves — a separate lineage/infill bug, not handled here.)
+      // A real agent IS its seat (a fleet-id + its ledger entry). If a resolved seat
+      // has no ledger entry that's an anomaly — fail LOUDLY, never fabricate a grant.
       const own = agent_id ? permissionLedger.get(agent_id) : null
-      grant = own
-        ? { grantedPolicy: own.spawnPolicy, grantedPermissionSet: own.permissionSet, grantPreserved: true }
-        : {
-            grantedPolicy: normalizeSpawnPolicy('none'),
-            grantedPermissionSet: emptyPermissionSet({ name: 'none', projectedPolicy: 'none' }),
-            grantUnledgered: true,
-          }
+      if (!own) {
+        throw new Error(`wake refused: seat ${agent_id || '(no id)'} has no ledger entry — a real agent must have a seat; refusing to resume with a fabricated grant`)
+      }
+      grant = { grantedPolicy: own.spawnPolicy, grantedPermissionSet: own.permissionSet, grantPreserved: true }
     } else {
       // Fresh spawn stays privileged: requester required, grant derived from it.
       if (!requester?.id) {

@@ -593,7 +593,14 @@ async function spawnCodexSession(params, { api, sessionId, codexPath }) {
   if (!ownId && !params.enroll) {
     throw new SpawnError('launch-failed', `Codex session ${sessionId} has no fleet registration; use --enroll`, { sessionId })
   }
-  const fleetId = ownId || params.agentId || params.agent_id || newFleetId()
+  // Ids are minted ONLY on create (spawnFresh). A session/enroll spawn must arrive
+  // with a resolved seat id — the embedded rollout ownId, or a preallocated agentId
+  // from the create path. No `|| newFleetId()` here: an unresolved id is a bug to
+  // surface, not a fresh mint that would orphan the seat.
+  const fleetId = ownId || params.agentId || params.agent_id
+  if (!fleetId) {
+    throw new SpawnError('launch-failed', `Cannot resume codex session ${sessionId}: no embedded fleet id and no preallocated seat id. Ids are minted only on create.`, { sessionId })
+  }
   const friendlyName = params.name && !String(params.name).startsWith('fleet:')
     ? params.name
     : (agentName || defaultEnrolledName(params, sessionId))
@@ -668,7 +675,13 @@ async function spawnClaudeSession(params, { api, sessionId, identity }) {
   if (!identity.fleetId && !params.enroll) {
     throw new SpawnError('launch-failed', `Claude session ${sessionId} has no fleet registration; use --enroll`, { sessionId })
   }
-  const fleetId = identity.fleetId || params.agentId || params.agent_id || newFleetId()
+  // Ids are minted ONLY on create (spawnFresh). Resolve the seat id from the JSONL
+  // identity or a preallocated agentId; no `|| newFleetId()` fallback — an unresolved
+  // id surfaces as an error, it does not silently mint and orphan the seat.
+  const fleetId = identity.fleetId || params.agentId || params.agent_id
+  if (!fleetId) {
+    throw new SpawnError('launch-failed', `Cannot resume claude session ${sessionId}: no embedded fleet id and no preallocated seat id. Ids are minted only on create.`, { sessionId })
+  }
   const friendlyName = params.name && !String(params.name).startsWith('fleet:')
     ? params.name
     : (identity.agentName || defaultEnrolledName(params, sessionId))
