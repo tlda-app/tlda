@@ -84,7 +84,7 @@ type PhoneThreadEjectGesture = {
   lastDx: number
 }
 
-type PhoneFooterAgent = {
+type PhoneInboxAgent = {
   id: string
   name: string
   display: string
@@ -92,6 +92,10 @@ type PhoneFooterAgent = {
   labels: string[]
   unread: number
   taskText: string
+}
+
+function phoneAgentFilter(agentName: string): FleetFilter {
+  return [[['from', agentName]], [['to', agentName]]]
 }
 
 function copySourceTemplate(text: string): string {
@@ -374,7 +378,7 @@ function FleetInboxInner({ shape }: { shape: any }) {
 
   // Which thread is open (partnerId), or null = thread list.
   const [openPartner, setOpenPartner] = useState<string | null>(null)
-  const [phoneFooterTarget, setPhoneFooterTarget] = useState<string>('')
+  const [phoneAgentTarget, setPhoneAgentTarget] = useState<string>('')
   const [filterOpen, setFilterOpen] = useState(false)
   const [filterOpenByPill, setFilterOpenByPill] = useState(false)
   const [filterTargetId, setFilterTargetId] = useState<TLShapeId | null>(null)
@@ -710,7 +714,7 @@ function FleetInboxInner({ shape }: { shape: any }) {
     () => (openPartner ? threads.find(t => t.partnerId === openPartner) || null : null),
     [openPartner, threads],
   )
-  const phoneFooterAgents = useMemo<PhoneFooterAgent[]>(() => {
+  const phoneInboxAgents = useMemo<PhoneInboxAgent[]>(() => {
     const pendingTasks = tasks.filter((t: any) => t.status === 'pending' || t.status === 'in_progress')
     return agents
       .filter((agent: any) => !agent.human && !agent.dead && agent.friendly_name)
@@ -811,6 +815,28 @@ function FleetInboxInner({ shape }: { shape: any }) {
     if (openPartner === thread.partnerId) setOpenPartner(null)
     snapToPhoneLaneIndex(mainEd, result.docLeftPage, result.newIndex)
   }, [mainEd, openPartner, shape])
+
+  const applyPhoneAgentFilter = useCallback((agent: PhoneInboxAgent) => {
+    setPhoneAgentTarget(agent.name)
+    const target = resolvePhoneChat()
+    if (!target) return
+    setFilterTargetId(target.id)
+    mainEd.updateShape({
+      id: target.id,
+      type: 'fleet-chat',
+      props: { filter: phoneAgentFilter(agent.name) },
+    } as never)
+  }, [mainEd, resolvePhoneChat])
+
+  const pushPhoneAgentToStack = useCallback((agent: PhoneInboxAgent) => {
+    setPhoneAgentTarget(agent.name)
+    const result = pushPhonePinnedChatPane(mainEd, shape, phoneAgentFilter(agent.name))
+    if (!result.ok) {
+      console.warn('[phone-pane-stack] push-agent-filter failed', result)
+      return
+    }
+    snapToPhoneLaneIndex(mainEd, result.docLeftPage, result.newIndex)
+  }, [mainEd, shape])
 
   const openableItems = useMemo<DetailItem[]>(() => [
     ...(isPhoneSurface ? [{ kind: 'agents' as const, key: 'agents' as const }] : []),
@@ -973,11 +999,13 @@ function FleetInboxInner({ shape }: { shape: any }) {
           />
         ) : activeItem?.kind === 'agents' ? (
           <div className="fleet-inbox-agents-detail">
-            <PhoneInboxFooter
-              agents={phoneFooterAgents}
-              selectedTarget={phoneFooterTarget}
-              onSelectTarget={setPhoneFooterTarget}
+            <PhoneAgentsPanel
+              agents={phoneInboxAgents}
+              selectedTarget={phoneAgentTarget}
+              onSelectTarget={applyPhoneAgentFilter}
+              onFlickTargetToStack={pushPhoneAgentToStack}
               onStartDrag={startDrag}
+              ctx={ctx}
               myId={myId}
               myName={myName}
             />
@@ -999,8 +1027,8 @@ function FleetInboxInner({ shape }: { shape: any }) {
             onOpenItem={setOpenItemKey}
             onStartDrag={startDrag}
             isPhoneSurface={isPhoneSurface}
-            agentCount={phoneFooterAgents.length}
-            selectedAgentTarget={phoneFooterTarget}
+            agentCount={phoneInboxAgents.length}
+            selectedAgentTarget={phoneAgentTarget}
           />
         )}
       </div>
@@ -1008,23 +1036,30 @@ function FleetInboxInner({ shape }: { shape: any }) {
   )
 }
 
-function PhoneInboxFooter({
+function PhoneAgentsPanel({
   agents,
   selectedTarget,
   onSelectTarget,
+  onFlickTargetToStack,
   onStartDrag,
+  ctx,
   myId,
   myName,
 }: {
-  agents: PhoneFooterAgent[]
+  agents: PhoneInboxAgent[]
   selectedTarget: string
-  onSelectTarget: (name: string) => void
+  onSelectTarget: (agent: PhoneInboxAgent) => void
+  onFlickTargetToStack: (agent: PhoneInboxAgent) => void
   onStartDrag: ReturnType<typeof usePillDrag>['startDrag']
+  ctx: any
   myId: string | null
   myName: string
 }) {
   const selected = agents.find(agent => agent.name === selectedTarget) || null
-  const targetFilter: FleetFilter = selected ? [[['from', selected.name]], [['to', selected.name]]] : []
+  const filter = selected ? phoneAgentFilter(selected.name) : null
+  const miniEvents = useFleetEvents(filter)
+  const miniChatRef = useRef<HTMLDivElement>(null)
+  useWheelScroll(miniChatRef)
   const sendTargets = useMemo(() => selected ? [selected.name] : [], [selected])
   const agentNames = useMemo(() => {
     const map: Record<string, string> = {}
@@ -1062,79 +1097,173 @@ function PhoneInboxFooter({
   }, [])
 
   return (
-    <div className="fleet-inbox-phone-footer">
-      <div className="fleet-inbox-phone-composer" onPointerDown={(e) => stopEventPropagation(e)}>
-        <div className="fleet-inbox-phone-composer-head">
-          <span className="fleet-inbox-phone-composer-title">agents</span>
+    <div className="fleet-inbox-agents-panel" data-selected-target={selectedTarget || undefined}>
+      <div className="fleet-inbox-agents-mini-chat">
+        <div className="fleet-inbox-agents-panel-status">
+          {selected ? `chat filtered to ${selected.display}` : 'choose an agent to filter chat'}
+        </div>
+        <div ref={miniChatRef} className="fleet-inbox-agents-mini-chat-log fleet-chat-shape">
           {selected ? (
-            <span className="fleet-inbox-phone-target">{selected.display}</span>
+            miniEvents.length > 0 ? miniEvents.map((m: any, i: number) => {
+              const key = m._dbId || m.id || String(i)
+              const lineHtml = renderChatLine(m, ctx)
+              if (!lineHtml) return null
+              const mine = m.from === myId
+              return (
+                <div key={key} className={`fleet-inbox-msg${mine ? ' mine' : ''}`}>
+                  <div dangerouslySetInnerHTML={{ __html: lineHtml }} />
+                </div>
+              )
+            }) : (
+              <div className="fleet-inbox-agents-mini-empty">no messages</div>
+            )
           ) : (
-            <span className="fleet-inbox-phone-target empty">choose agent</span>
+            <div className="fleet-inbox-agents-mini-empty">no filter set</div>
           )}
         </div>
-        <div className="fleet-inbox-phone-filter-preview" data-filter={JSON.stringify(targetFilter)}>
-          {selected ? (
-            <>
-              <span className="fleet-inbox-phone-filter-chip">from {selected.display}</span>
-              <span className="fleet-inbox-phone-filter-chip">to {selected.display}</span>
-            </>
-          ) : (
-            <span className="fleet-inbox-phone-filter-empty">choose an agent; drag pills with the existing gesture</span>
-          )}
+        <div className="fleet-inbox-agents-composer" onPointerDown={(e) => stopEventPropagation(e)}>
+          <ChatComposer
+            sendTargets={sendTargets}
+            agentNames={agentNames}
+            onKeyboardSend={send}
+            onVoiceSend={(targets, text) => send(text, targets)}
+            isTouchDevice={_isTouchDevice}
+            className="fleet-inbox-composer-textarea"
+            placeholder={selected ? '' : 'choose agent'}
+            style={COMPOSER_STYLE}
+          />
         </div>
-        <ChatComposer
-          sendTargets={sendTargets}
-          agentNames={agentNames}
-          onKeyboardSend={send}
-          onVoiceSend={(targets, text) => send(text, targets)}
-          isTouchDevice={_isTouchDevice}
-          className="fleet-inbox-composer-textarea"
-          placeholder={selected ? '' : 'choose agent'}
-          style={COMPOSER_STYLE}
-        />
       </div>
-      <div className="fleet-inbox-phone-agents" data-selected-target={selectedTarget || undefined}>
+      <div className="fleet-inbox-phone-agents">
         {agents.length === 0 ? (
           <div className="fleet-inbox-phone-agents-empty">no agents</div>
         ) : agents.map(agent => (
-          <div
+          <AgentPanelRow
             key={agent.id}
-            className={`fleet-inbox-phone-agent${agent.name === selectedTarget ? ' selected' : ''}`}
-            onPointerUp={(e) => {
-              stopEventPropagation(e)
-              onSelectTarget(agent.name)
-            }}
-          >
-            <div className="fleet-inbox-phone-agent-main">
+            agent={agent}
+            selected={agent.name === selectedTarget}
+            onSelect={onSelectTarget}
+            onFlickToStack={onFlickTargetToStack}
+            onStartDrag={onStartDrag}
+          />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function AgentPanelRow({
+  agent,
+  selected,
+  onSelect,
+  onFlickToStack,
+  onStartDrag,
+}: {
+  agent: PhoneInboxAgent
+  selected: boolean
+  onSelect: (agent: PhoneInboxAgent) => void
+  onFlickToStack: (agent: PhoneInboxAgent) => void
+  onStartDrag: StartDrag
+}) {
+  const editor = useEditor()
+  const gestureRef = useRef<PhoneThreadEjectGesture | null>(null)
+  const resetGesture = useCallback(() => {
+    gestureRef.current = null
+    setPhoneLaneDrag(PHONE_LANE_DRAG_IDLE)
+  }, [])
+  const handlePointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (!e.isPrimary) return
+    if (e.pointerType === 'mouse' && e.button !== 0) return
+    const target = e.target instanceof Element ? e.target : null
+    if (target?.closest('.fleet-inbox-pill')) return
+    rememberPhoneLanePortraitWidth(editor)
+    gestureRef.current = {
+      pointerId: e.pointerId,
+      mode: 'pending',
+      x0: e.clientX,
+      y0: e.clientY,
+      lastDx: 0,
+    }
+    try { e.currentTarget.setPointerCapture?.(e.pointerId) } catch {
+      // Synthetic/offscreen pointer events may not be capturable.
+    }
+  }, [editor])
+  const handlePointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const gesture = gestureRef.current
+    if (!gesture || gesture.pointerId !== e.pointerId) return
+    const dx = e.clientX - gesture.x0
+    const dy = e.clientY - gesture.y0
+    gesture.lastDx = dx
+    if (gesture.mode === 'pending') {
+      const decision = phoneLaneDragDecision(dx, dy)
+      if (decision === 'abort') {
+        resetGesture()
+        return
+      }
+      if (decision === 'pending') return
+      gesture.mode = 'dragging'
+    }
+    if (dx > 0) {
+      resetGesture()
+      return
+    }
+    e.preventDefault()
+    stopEventPropagation(e)
+    const commit = PHONE_ROW_FLICK_COMMIT_PX
+    const progress = dx < 0 ? Math.min(1, Math.abs(dx) / commit) : 0
+    setPhoneLaneDrag({ active: true, progress, dir: progress > 0 ? -1 : 0, armed: progress >= 1, arrowWidthPx: commit })
+  }, [resetGesture])
+  const handlePointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const gesture = gestureRef.current
+    if (!gesture || gesture.pointerId !== e.pointerId) {
+      stopEventPropagation(e)
+      onSelect(agent)
+      return
+    }
+    const shouldCommit = gesture.mode === 'dragging' && gesture.lastDx <= -PHONE_ROW_FLICK_COMMIT_PX
+    const wasDragging = gesture.mode === 'dragging'
+    resetGesture()
+    stopEventPropagation(e)
+    if (shouldCommit) onFlickToStack(agent)
+    else if (!wasDragging) onSelect(agent)
+  }, [agent, onFlickToStack, onSelect, resetGesture])
+
+  return (
+    <div
+      className={`fleet-inbox-phone-agent${selected ? ' selected' : ''}`}
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      onPointerCancel={resetGesture}
+      style={{ touchAction: 'pan-y' }}
+    >
+      <div className="fleet-inbox-phone-agent-main">
+        <span
+          className="fleet-inbox-phone-agent-name fleet-inbox-pill"
+          onPointerDown={(e) => {
+            stopEventPropagation(e)
+            onStartDrag(e, 'agent', agent.name, agent.display, '#7a9ec8')
+          }}
+        >{agent.display}</span>
+        <span className="fleet-inbox-phone-agent-status">{agent.status}</span>
+        {agent.unread > 0 && <span className="fleet-inbox-phone-agent-unread">{agent.unread}</span>}
+      </div>
+      <div className="fleet-inbox-phone-agent-detail">
+        {agent.taskText && <span className="fleet-inbox-phone-agent-task">{agent.taskText}</span>}
+        {agent.labels.length > 0 && (
+          <span className="fleet-inbox-phone-agent-labels">
+            {agent.labels.map(label => (
               <span
-                className="fleet-inbox-phone-agent-name fleet-inbox-pill"
+                key={label}
+                className="fleet-inbox-phone-agent-label fleet-inbox-pill"
                 onPointerDown={(e) => {
                   stopEventPropagation(e)
-                  onStartDrag(e, 'agent', agent.name, agent.display, '#7a9ec8')
+                  onStartDrag(e, 'label', label, label, '#9370db')
                 }}
-              >{agent.display}</span>
-              <span className="fleet-inbox-phone-agent-status">{agent.status}</span>
-              {agent.unread > 0 && <span className="fleet-inbox-phone-agent-unread">{agent.unread}</span>}
-            </div>
-            <div className="fleet-inbox-phone-agent-detail">
-              {agent.taskText && <span className="fleet-inbox-phone-agent-task">{agent.taskText}</span>}
-              {agent.labels.length > 0 && (
-                <span className="fleet-inbox-phone-agent-labels">
-                  {agent.labels.map(label => (
-                    <span
-                      key={label}
-                      className="fleet-inbox-phone-agent-label fleet-inbox-pill"
-                      onPointerDown={(e) => {
-                        stopEventPropagation(e)
-                        onStartDrag(e, 'label', label, label, '#9370db')
-                      }}
-                    >{label}</span>
-                  ))}
-                </span>
-              )}
-            </div>
-          </div>
-        ))}
+              >{label}</span>
+            ))}
+          </span>
+        )}
       </div>
     </div>
   )
@@ -1241,7 +1370,7 @@ function AgentsRow({ count, selectedTarget, onOpen }: { count: number; selectedT
         <span className="fleet-inbox-agents-row-count">{count}</span>
       </div>
       <div className="fleet-inbox-agents-row-sub">
-        {selectedTarget ? `filtered to ${selectedTarget}` : 'agent filter and chat mode'}
+        {selectedTarget ? `filtered to ${selectedTarget}` : 'filter existing chat'}
       </div>
     </div>
   )
