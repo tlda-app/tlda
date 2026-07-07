@@ -1,0 +1,5 @@
+# Project-local daemon override (git-style). Deep-joined over the base
+# ~/.config/tlda/daemon.yaml, with these values winning, for any agent whose cwd is
+# inside this project. Agents in the tlda project default to app-dev (machine-wide
+# access, secrets denied) rather than a cwd cage.
+default: app

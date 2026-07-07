@@ -62,9 +62,9 @@ export class PermissionLedgerError extends Error {
 
 function normalizeDaemonConfig(parsed) {
   const root = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
-  const allowed = new Set(['regions', 'profiles', 'grants', 'models', 'servers'])
+  const allowed = new Set(['regions', 'profiles', 'grants', 'models', 'servers', 'default'])
   const extra = Object.keys(root).filter(key => !allowed.has(key))
-  if (extra.length) throw new Error(`daemon config supports only regions, profiles, grants, models, servers; unknown key(s): ${extra.join(', ')}`)
+  if (extra.length) throw new Error(`daemon config supports only regions, profiles, grants, models, servers, default; unknown key(s): ${extra.join(', ')}`)
   const models = root.models && typeof root.models === 'object' && !Array.isArray(root.models)
     ? root.models
     : {}
@@ -76,13 +76,27 @@ function normalizeDaemonConfig(parsed) {
   const servers = root.servers && typeof root.servers === 'object' && !Array.isArray(root.servers)
     ? root.servers
     : {}
+  const defaultProfile = typeof root.default === 'string' && root.default.trim() ? root.default.trim() : null
   return {
     regions,
     profiles,
     grants,
     models,
     servers,
+    ...(defaultProfile ? { default: defaultProfile } : {}),
   }
+}
+
+// Deep-merge helper for the base ⊕ project-override join (project values win).
+function joinConfigs(base, override) {
+  if (!override || typeof override !== 'object' || Array.isArray(override)) return base
+  const out = { ...base }
+  for (const [k, v] of Object.entries(override)) {
+    out[k] = v && typeof v === 'object' && !Array.isArray(v) && base[k] && typeof base[k] === 'object' && !Array.isArray(base[k])
+      ? joinConfigs(base[k], v)
+      : v
+  }
+  return out
 }
 
 function normalizeOperationZones(value = {}) {
@@ -634,6 +648,30 @@ export class PermissionLedger {
 
 export function readDaemonConfig(file = defaultDaemonConfigPath()) {
   return normalizeDaemonConfig(readYamlFile(file, 'daemon config'))
+}
+
+// Git-style project override: walk up from the agent's cwd for a `.tlda-daemon.yaml`.
+export function projectDaemonOverridePath(cwd) {
+  let dir = cwd ? path.resolve(cwd) : null
+  while (dir) {
+    const f = path.join(dir, '.tlda-daemon.yaml')
+    if (fs.existsSync(f)) return f
+    const parent = path.dirname(dir)
+    if (parent === dir) break
+    dir = parent
+  }
+  return null
+}
+
+// Resolve the daemon config an agent in `cwd` sees: the base config deep-joined
+// with its project's `.tlda-daemon.yaml`, the project's values overwriting (like a
+// git config local override, or a DB join with the project row winning).
+export function readDaemonConfigForCwd(cwd, file = defaultDaemonConfigPath()) {
+  const base = readDaemonConfig(file)
+  const overridePath = projectDaemonOverridePath(cwd)
+  if (!overridePath) return base
+  const override = normalizeDaemonConfig(readYamlFile(overridePath, 'project daemon override'))
+  return joinConfigs(base, override)
 }
 
 export function withDaemonModelAliases(config = {}, daemonConfig = {}) {
