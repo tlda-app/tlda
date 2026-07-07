@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import test from 'node:test'
+import test, { afterEach } from 'node:test'
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -7,6 +7,11 @@ import { JSDOM } from 'jsdom'
 
 import { buildMarkdownDocument, stripMarkdownFrontmatter } from '../server/lib/build-markdown.mjs'
 import { createProject, initProjectStore, outputDir, sourceDir } from '../server/lib/project-store.mjs'
+import { closeAllRooms } from '../server/lib/sync-rooms.mjs'
+
+afterEach(() => {
+  closeAllRooms()
+})
 
 test('stripMarkdownFrontmatter hides only leading YAML metadata', () => {
   const source = `---
