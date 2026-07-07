@@ -144,6 +144,25 @@ test('markdown project columns are indexed and lazily served over /docs', { time
     assert.match(response.data, /Agent report/)
     assert.match(response.data, /Artifact body/)
     assert.doesNotMatch(response.data, /tlda-id/)
+
+    response = await request('PUT', `/api/projects/world-md-http/parts/${id}/markdown`, {
+      markdown: '# Agent report\n\nUpdated artifact body.\n',
+      title: 'Agent report',
+      actor: 'test',
+      provenance: { source: 'markdown-column-http.test' },
+    })
+    assert.equal(response.status, 200)
+    assert.equal(response.data.ok, true)
+
+    response = await request('GET', '/api/projects/world-md-http/build/status')
+    assert.equal(response.status, 200)
+    assert.equal(response.data.status, 'success')
+    assert.doesNotMatch(response.data.log || '', /pdflatex|latexmk|BUILD FAILED/)
+
+    response = await request('GET', '/docs/world-md-http/parts/report.html')
+    assert.equal(response.status, 200)
+    assert.match(response.data, /Updated artifact body/)
+    assert.doesNotMatch(response.data, /Artifact body\./)
   } finally {
     await server.cleanup()
   }

@@ -157,7 +157,7 @@ router.put('/:name/parts/:partId/markdown', requireRw, async (req, res) => {
     })
     const project = readProject(req.params.name)
     if (project?.format === 'markdown') {
-      await dispatchBuild(req.params.name)
+      await buildMarkdown(req.params.name)
     }
     res.json({ ok: true, ...result })
   } catch (e) {
