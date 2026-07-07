@@ -6,7 +6,7 @@ import path from 'node:path'
 import test from 'node:test'
 import { fenceSettings, wrapSandboxCmd } from '../bin/lib/spawn/fence.mjs'
 import { activeConfigName } from '../bin/lib/spawn/identity.mjs'
-import { codexSandboxProjection, resolveHarnessLaunchOptions, resolveLaunchPolicy, resolveLeasePolicy } from '../bin/lib/spawn/permissions.mjs'
+import { resolveHarnessLaunchOptions, resolveLaunchPolicy, resolveLeasePolicy } from '../bin/lib/spawn/permissions.mjs'
 import * as claude from '../bin/lib/spawn/harness/claude.mjs'
 import * as codex from '../bin/lib/spawn/harness/codex.mjs'
 import * as goose from '../bin/lib/spawn/harness/goose.mjs'
@@ -786,39 +786,19 @@ test('explicit full lease is machine-write with secret/chat denies still active'
   assert.deepEqual(settings.command.deny, [])
 })
 
-test('fenced codex uses Codex danger-full-access under the outer fence', () => {
-  const projection = codexSandboxProjection(
-    { permission: 'write', policy: 'cwd' },
-    tmpdir(),
-    { fenced: true },
-  )
-  assert.equal(projection.sandboxMode, 'danger-full-access')
-  assert.deepEqual(projection.workspaceWriteConfigArgs, [])
-})
-
-test('unfenced codex uses native workspace-write sandbox as harness security', () => {
-  const projection = codexSandboxProjection(
-    { permission: 'read', policy: 'cwd' },
-    tmpdir(),
-    { fenced: false },
-  )
-  assert.equal(projection.sandboxMode, 'workspace-write')
-  assert.equal(projection.networkAccess, true)
-})
-
-test('unfenced codex no-net keeps network off in native sandbox args', () => {
-  const projection = codexSandboxProjection(
-    { permission: 'write', policy: 'cwd', network: false },
-    tmpdir(),
-    { fenced: false },
-  )
-  assert.equal(projection.sandboxMode, 'workspace-write')
-  assert.equal(projection.networkAccess, false)
-  const args = codex.buildWorkspaceWriteConfigArgs({
-    writableRoots: projection.writableRoots,
-    networkAccess: projection.networkAccess,
+test('codex launches with its own sandbox off (the fence does containment)', () => {
+  // Permissions come from the daemon-config grant via the fence, not from computed
+  // harness logic: codex always launches native-sandbox-off, never self-caged.
+  const cmd = codex.buildCmd({
+    fleetId: 'fleet:test',
+    tmuxSession: 'fleet-test',
+    name: 'codex-agent',
+    cwd: tmpdir(),
+    api: 'https://sandbox.example.test:5192',
   })
-  assert.ok(args.some((arg) => arg.includes('sandbox_workspace_write.network_access=false')))
+  assert.ok(cmd.includes('--dangerously-bypass-approvals-and-sandbox'))
+  assert.ok(!cmd.includes('-s workspace-write'))
+  assert.ok(!/\s-a\s+never(\s|$)/.test(cmd))
 })
 
 test('spawn harness commands preserve explicit TLDA_CONFIG even when TLDA_SERVER pins the sandbox URL', () => {
@@ -888,7 +868,6 @@ test('codex explicit daemon grant is externally fenced even while global fence i
   assert.equal(policy.policyName, 'cwd')
   assert.equal(policy.leasePolicy.policy, 'cwd')
   assert.equal(policy.permissionMode, 'bypassPermissions')
-  const projection = codexSandboxProjection(policy.spawnPolicy, cwd, { fenced: !!policy.leasePolicy })
   const cmd = codex.buildCmd({
     fleetId: 'fleet:test',
     tmuxSession: 'fleet-test',
@@ -896,13 +875,6 @@ test('codex explicit daemon grant is externally fenced even while global fence i
     name: 'codex-fenced',
     cwd,
     api: 'http://127.0.0.1:5176',
-    sandboxMode: projection.sandboxMode,
-    workspaceWriteConfigArgs: projection.sandboxMode === 'workspace-write'
-      ? codex.buildWorkspaceWriteConfigArgs({
-          writableRoots: projection.writableRoots || [],
-          networkAccess: projection.networkAccess !== false,
-        })
-      : [],
     config: {},
     env: {},
   })

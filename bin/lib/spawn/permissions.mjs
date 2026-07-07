@@ -264,11 +264,6 @@ export function stripRunner(policy) {
   return rest
 }
 
-export function codexSandboxProjection(spawnPolicy, cwd, { fenced = false } = {}) {
-  if (fenced) return { sandboxMode: 'danger-full-access', workspaceWriteConfigArgs: [], networkAccess: false }
-  return { sandboxMode: 'workspace-write', writableRoots: [cwd || process.cwd()], networkAccess: spawnPolicy?.network !== false }
-}
-
 function permissionZones(permissionSet, operation, effect) {
   const zones = permissionSet?.operations?.[operation]?.[effect] || []
   return Array.isArray(zones) ? zones.filter((zone) => typeof zone === 'string' && zone.trim()) : []

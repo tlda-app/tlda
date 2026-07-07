@@ -4,7 +4,7 @@ import { inferHarnessKind } from './models.mjs'
 import { checkFreshNameAvailable, ensureServer, findAgent, markAgentDead, resolveApi, waitForAwakeRegistration, wsRegister } from './register.mjs'
 import { injectClaudePrompt, injectCodexPrompt, sessionHasRuntime, spawnTmux, uniqueSessionName } from './tmux.mjs'
 import { wrapSandboxCmd } from './fence.mjs'
-import { codexSandboxProjection, resolveLaunchPolicy, sandboxMetadata } from './permissions.mjs'
+import { resolveLaunchPolicy, sandboxMetadata } from './permissions.mjs'
 import { resolveCodexResumeHandle } from '../codex-resume-resolver.mjs'
 import {
   codexRolloutPath,
@@ -103,10 +103,11 @@ async function waitForFreshCodexRollout(agent, options = {}) {
 async function buildCommand({ requestedKind, adapter, fleetId, tmuxSession, model, modelProvider = null, name, cwd, effort, permissionMode, spawnPolicy, api, dnsAlias, resumeId = null, includePrompt = true, leasePolicy = null, enforceFence = false, harnessOptions = {}, config = undefined, env = process.env }) {
   let cmd
   let sendKeys = false
-  let projection = null
   if (requestedKind === 'codex') {
     codex.ensureProjectTrusted(cwd)
-    projection = codexSandboxProjection(spawnPolicy, cwd, { fenced: !!leasePolicy })
+    // Permissions come from the daemon config, not from computed harness logic:
+    // codex launches with its own sandbox off and the fence (from the grant)
+    // does the containment. The code just passes args + harness config + fence.
     cmd = codex.buildCmd({
       fleetId,
       tmuxSession,
@@ -119,13 +120,6 @@ async function buildCommand({ requestedKind, adapter, fleetId, tmuxSession, mode
       resumeId,
       config,
       env,
-      sandboxMode: projection.sandboxMode,
-      workspaceWriteConfigArgs: projection.sandboxMode === 'workspace-write'
-        ? codex.buildWorkspaceWriteConfigArgs({
-            writableRoots: projection.writableRoots || [],
-            networkAccess: projection.networkAccess !== false,
-          })
-        : [],
       harnessOptions,
     })
     sendKeys = true
@@ -153,7 +147,6 @@ async function buildCommand({ requestedKind, adapter, fleetId, tmuxSession, mode
     cmd,
     sendKeys,
     commandTrace: {
-      projection,
       hasLeasePolicy: !!leasePolicy,
       wrappedByFence: !!leasePolicy && !!enforceFence,
       commandContainsFence: /(?:^|['"\s/])fence(?:['"\s]|$)/.test(cmd),

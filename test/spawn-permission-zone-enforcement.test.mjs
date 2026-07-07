@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { fenceSettings } from '../bin/lib/spawn/fence.mjs'
-import { codexSandboxProjection, resolveLaunchPolicy } from '../bin/lib/spawn/permissions.mjs'
+import { resolveLaunchPolicy } from '../bin/lib/spawn/permissions.mjs'
 import { normalizeRequestedPermissions } from '../server/lib/spawn-policy.mjs'
 
 test('explicit permission zones force a fenced launch even when projected policy is full', () => {
@@ -55,8 +55,6 @@ test('explicit permission zones force a fenced launch even when projected policy
   assert.equal(settings.filesystem.denyWrite.includes('**/.env.*'), false)
   assert.equal(settings.filesystem.denyWrite.includes('**/.env.example'), false)
   assert.ok(settings.filesystem.denyWrite.includes('**/*.pem'))
-  const projection = codexSandboxProjection(policy.spawnPolicy, cwd, { fenced: !!policy.leasePolicy })
-  assert.equal(projection.sandboxMode, 'danger-full-access')
 })
 
 test('named app-dev permissions compile to explicit cwd rules instead of broad full access', () => {
