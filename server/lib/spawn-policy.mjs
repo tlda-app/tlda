@@ -209,6 +209,19 @@ export function modelTrustTier({ model, kind } = {}) {
 }
 
 function defaultModelCeiling({ model, kind } = {}) {
+  // Invariant (Skip): an agent's kind is ALWAYS known — a fresh spawn is passed it,
+  // a woken agent has it in the ledger. So "neither model nor kind" is never a real
+  // agent; it's a caller that failed to thread identity through. The OLD behavior
+  // silently resolved that absence to the narrow tier and CAGED the agent to its cwd,
+  // overriding its project profile — the exact bug that folder-clamped the whole
+  // fleet. The model ceiling is a CAP on trust, not a lane; with no identity to cap,
+  // it must contribute NO clamp (∩ ** is identity), leaving the project profile and
+  // the spawner authority to bound the grant. We surface the missing identity loudly
+  // (a record-keeping bug to fix at the caller) but never wedge on it.
+  if (!model && !kind) {
+    process.stderr.write('[spawn-policy] model ceiling requested with neither model nor kind; identity is always known — fix the caller. Applying no model cap.\n')
+    return MODEL_TIER_POLICY.full // no cap: bounded by project profile ∩ spawner only
+  }
   return MODEL_TIER_POLICY[modelTrustTier({ model, kind })]
 }
 
