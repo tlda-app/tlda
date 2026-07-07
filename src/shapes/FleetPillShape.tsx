@@ -415,37 +415,13 @@ export async function dropPillOnTarget(
       }
     }
 
-    // Fallback: no overlay open — use position-based role (top half = to, bottom half = from)
-    const chatBounds = hitEditor.getShapePageBounds(hitShape.id)
-    const role = chatBounds && targetPagePoint.y > chatBounds.y + chatBounds.h / 2 ? 'from' : 'to'
-
-    const existingFilter: [string, string][][] = (hitShape as any).props.filter || []
-    const newTerm: [string, string] = [role, value]
-    let newFilter: [string, string][][]
-    if (existingFilter.length === 0) {
-      newFilter = [[newTerm]]
-    } else {
-      const lastClause = existingFilter[existingFilter.length - 1]
-      if (lastClause.some(([r, l]) => r === role && l === value)) {
-        newFilter = existingFilter
-      } else {
-        newFilter = [
-          ...existingFilter.slice(0, -1),
-          [...lastClause, newTerm],
-        ]
-      }
-    }
-    const wasLocked = hitShape.isLocked
-    if (wasLocked) createEditor.updateShape({ id: hitShape.id, type: 'fleet-chat' as any, isLocked: false })
-    createEditor.updateShape({
-      id: hitShape.id,
-      type: 'fleet-chat' as any,
-      props: { ...hitShape.props, filter: newFilter },
-    })
-    if (wasLocked) createEditor.updateShape({ id: hitShape.id, type: 'fleet-chat' as any, isLocked: true })
-    chatInsertBus.dispatchEvent(new CustomEvent('filter-applied', {
-      detail: { chatId: hitShape.id },
-    }))
+    // No pane resolved → do NOTHING. There is deliberately no position-based
+    // fallback: a pill dropped over a chat does exactly one thing — apply the
+    // pane the three-pane overlay resolved (to / from / replace) — or nothing.
+    // The overlay covers the whole chat and its panes tile it, so hoveredGroup
+    // always resolves to a pane while dragging; this branch is unreachable in
+    // practice. It must never silently AND terms into the last clause — that
+    // divergent second path was the unsatisfiable-filter ("mixed state") bug.
   } else if (overFleet) {
     // Drop landed on the HUD (a fleet shape) but isn't a handled fleet-chat
     // interaction — evaporate instead of spawning a sticky/new-chat on top of

@@ -6074,7 +6074,26 @@ export function FilterOverlay({
       }
       return { pane, idx: foundIdx }
     }
-    return null
+    // Pill is over the chat but not inside any pane rect — the ~12px overlay
+    // padding ring or a hairline between panes. Resolve to the NEAREST of the
+    // three zones so a drop ALWAYS lands on exactly one pane. There is no
+    // "no pane" outcome, so dropPillOnTarget never falls to a divergent path:
+    // one drop does exactly one of {to, from, replace}.
+    const zones: Array<{ pane: 'replace' | 'to' | 'from'; el: HTMLDivElement | null }> = [
+      { pane: 'replace', el: replaceZoneRef.current },
+      { pane: 'to', el: toPaneRef.current },
+      { pane: 'from', el: fromPaneRef.current },
+    ]
+    let best: { pane: 'replace' | 'to' | 'from'; d: number } | null = null
+    for (const z of zones) {
+      if (!z.el) continue
+      const r = z.el.getBoundingClientRect()
+      const dx = Math.max(r.x - screenPt.x, 0, screenPt.x - (r.x + r.width))
+      const dy = Math.max(r.y - screenPt.y, 0, screenPt.y - (r.y + r.height))
+      const d = dx * dx + dy * dy
+      if (!best || d < best.d) best = { pane: z.pane, d }
+    }
+    return best ? { pane: best.pane as any, idx: -1 } : null
   }, [editor, pillOver, fleetPillCount])
 
   // Compute preview DNF for each pane based on hovered AND group
