@@ -3039,6 +3039,52 @@ app.use('/docs', (req, res, next) => {
     }
   }
 
+  if (filePath.endsWith('.html')) {
+    try {
+      const project = readProject(name)
+      if (project?.format === 'markdown') {
+        const { listDocumentColumns } = await import('./lib/document-columns.mjs')
+        const { renderMarkdownColumnHtml } = await import('./lib/build-markdown.mjs')
+        const columns = listDocumentColumns(name, { project, srcDir: join(PROJECTS_DIR, name, 'source') })
+        const column = columns.find(c => c.file === filePath)
+        if (column) {
+          const source = readFileSync(join(PROJECTS_DIR, name, 'source', column.sourceFile), 'utf8')
+          const isTaskDoc = /(^|\n)tlda-kind:\s*task-doc\s*(\n|$)/.test(source)
+          const html = renderMarkdownColumnHtml({ source, title: column.title, isTaskDoc })
+          const bridged = injectBridge(html, `/docs/${name}/`, '', true, {})
+
+          function memberTitle(memberName) {
+            const tp = join(PROJECTS_DIR, memberName, 'output', 'toc.json')
+            if (!existsSync(tp)) return memberName
+            try {
+              const toc = JSON.parse(readFileSync(tp, 'utf8'))
+              return (toc.length > 0 && toc[0].level === 'section') ? toc[0].title : memberName
+            } catch { return memberName }
+          }
+
+          const chapterTitle = memberTitle(name)
+          let prev = null, next = null
+          for (const p of listProjects()) {
+            if (p.format !== 'book') continue
+            const members = p.members || []
+            const idx = members.indexOf(name)
+            if (idx === -1) continue
+            if (idx > 0) prev = { name: members[idx - 1], title: memberTitle(members[idx - 1]) }
+            if (idx < members.length - 1) next = { name: members[idx + 1], title: memberTitle(members[idx + 1]) }
+            break
+          }
+
+          res.set('Cache-Control', 'no-cache')
+          res.type('html').send(injectChapterTitle(bridged, chapterTitle, prev, next))
+          return
+        }
+      }
+    } catch (e) {
+      console.error(`[docs] lazy column render failed for ${name}/${filePath}: ${e.message}`)
+      return res.status(500).json({ error: 'Column render failed', detail: e.message })
+    }
+  }
+
   // Try project output first
   const projectPath = join(PROJECTS_DIR, name, 'output', filePath)
   if (existsSync(projectPath)) {
