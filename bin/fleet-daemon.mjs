@@ -116,7 +116,7 @@ import {
   unlinkPidfileIfOwnPid,
 } from './lib/daemon-guards.mjs'
 import { codexRolloutBelongsToAgent, codexRolloutHasOwnerEvidence, resolveTranscript } from './lib/resolve-transcript.mjs'
-import { resolveSpawnGrant } from '../server/lib/spawn-policy.mjs'
+import { resolveSpawnGrant, normalizeSpawnPolicy, emptyPermissionSet } from '../server/lib/spawn-policy.mjs'
 import { probeSpawnAvailability } from './lib/spawn/availability.mjs'
 import {
   applyDaemonGrants,
@@ -3207,24 +3207,25 @@ async function rpcSpawn({
     const config = loadConfig()
     spawnConfig = config
     if (respawn) {
-      // Hibernation is transparent (Skip's design): waking an existing agent
+      // Hibernation is transparent (Skip's design): waking a real, ledgered agent
       // carries NO privilege check — no requester, no spawn-auth gate. Waking is
       // just the invisible step that delivers a chat, so chatting a hibernating
       // agent is identical to chatting an awake one, and wake is open to anyone.
-      // The agent resumes with its OWN recorded grant; if it has none (un-ledgered),
-      // resolve the config/project default with no spawner clamp. A wake never
-      // re-permissions and never refuses. (Fresh spawn, below, stays privileged.)
+      // Such an agent resumes with its OWN recorded grant, unchanged.
+      //
+      // Being a real agent IS being in the ledger. An un-ledgered id is therefore
+      // NOT a real agent (anomalous) — it resumes with NO meaningful privileges: it
+      // can exist/wait but cannot spawn or do anything privileged. We do not grant it
+      // a config default. (The real fix is getting real agents into the ledger under
+      // the id the wake resolves — a separate lineage/infill bug, not handled here.)
       const own = agent_id ? permissionLedger.get(agent_id) : null
       grant = own
         ? { grantedPolicy: own.spawnPolicy, grantedPermissionSet: own.permissionSet, grantPreserved: true }
-        : resolveSpawnGrant({
-            model: launchModel,
-            kind: launchKind,
-            config,
-            doc,
-            project: projectForGrant,
-            cwd: resolvedCwd,
-          })
+        : {
+            grantedPolicy: normalizeSpawnPolicy('none'),
+            grantedPermissionSet: emptyPermissionSet({ name: 'none', projectedPolicy: 'none' }),
+            grantUnledgered: true,
+          }
     } else {
       // Fresh spawn stays privileged: requester required, grant derived from it.
       if (!requester?.id) {
