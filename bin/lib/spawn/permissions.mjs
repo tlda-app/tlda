@@ -163,9 +163,14 @@ function runnerFromConfig(cfg) {
     if (runner.args != null && !Array.isArray(runner.args)) throw new Error('agentSandbox.runner.args must be an array')
     return runner
   }
-  const localFence = path.join(os.homedir(), '.claude', 'bin', 'fence')
-  if (!fs.existsSync(localFence)) throw new Error(`required fence runner is missing: ${localFence}`)
-  return { command: localFence }
+  // Default runner: the in-repo permissive seatbelt (allow-all except secrets +
+  // scoped writes), NOT the old Go `fence` binary, which over-restricted — no `ps`,
+  // no `~/.fly`, no git worktrees — the 2026-07-02 reason the fence was disabled.
+  // It reads the lease from the `--settings` file (keeps the big JSON off the
+  // command line, under the tmux length cap).
+  const seatbelt = path.join(repoRoot(), 'bin', 'fence-seatbelt.mjs')
+  if (!fs.existsSync(seatbelt)) throw new Error(`required seatbelt runner is missing: ${seatbelt}`)
+  return { command: seatbelt, args: ['--settings', '{settings_file}', '--', 'zsh', '-lc', '{cmd}'] }
 }
 
 function configPathList(cfg, key, fallback = []) {
