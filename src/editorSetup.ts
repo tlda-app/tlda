@@ -8,7 +8,7 @@ import type { TLShapePartial, Editor, TLShape, TLShapeId } from 'tldraw'
 import { getSvgText, setSvgText, svgViewBoxStore, anchorIndex, setChangeHighlights, dismissAllChanges, getPageUrl, setPageRenderHash, setBuiltPageCount } from './stores'
 import { resolvAnchor, pdfToCanvas, type SourceAnchor } from './synctexAnchor'
 import { extractTextFromSvgAsync, type PageTextData } from './TextSelectionLayer'
-import { currentDocumentInfo, setCurrentDocumentInfo, createSvgDocumentLayout, type SvgDocument } from './svgDocumentLoader'
+import { currentDocumentInfo, setCurrentDocumentInfo, createSvgDocumentLayout, createHtmlDocumentFromPageInfo, type SvgDocument } from './svgDocumentLoader'
 import { createSvgShapes, createHtmlShapes, createSlidesShapes, createImageShapes } from './loaders/createShapes'
 import { anchorShape } from './anchorCluster'
 import { snapHighlighterToText, restoreHighlightsFromShapes, showSourceContextCardForShape } from './highlighterSnap'
@@ -20,7 +20,7 @@ import { captureSnapshot } from './snapshotStore'
 import { diffWords, extractFlatWords } from './wordDiff'
 import { setupDiffOverlays, setupDiffHoverEffect, setupDiffReviewEffect } from './diffHelpers'
 import { getViewerId } from './useYjsSync'
-import { htmlPageFileFromUrl, htmlPageReloadUrl } from './html-page-navigation-helpers'
+import { htmlPageReloadUrl } from './html-page-navigation-helpers'
 import {
   getVisibilityMode, subscribeVisibility,
   isDraft, subscribeDrafts, addDraft, getDraftHovering, subscribeDraftHovering, isDraftMode,
@@ -310,12 +310,6 @@ export async function fetchSvgPagesAsync(
 // Generation counter for reloadPages — prevents interleaved concurrent reloads
 let reloadGeneration = 0
 
-type HtmlPageInfo = {
-  file: string
-  width?: number
-  height?: number
-}
-
 type HtmlPageShapeRecord = {
   id: TLShapeId
   typeName: 'shape'
@@ -342,14 +336,16 @@ function putHtmlPageShapeRecord(editor: Editor, shape: HtmlPageShapeRecord) {
 async function reloadHtmlPages(editor: Editor, document: SvgDocument): Promise<ReloadResult> {
   const timestamp = Date.now()
   const basePath = document.basePath || `${import.meta.env.BASE_URL || '/'}docs/${document.name}/`
-  let pageInfoByFile = new Map<string, HtmlPageInfo>()
 
   try {
     const res = await fetch(`${basePath}page-info.json?t=${timestamp}`)
-    if (res.ok) {
-      const infos = await res.json() as HtmlPageInfo[]
-      pageInfoByFile = new Map(infos.map(info => [info.file, info]))
-    }
+    if (!res.ok) throw new Error(`page-info.json returned ${res.status}`)
+    const pageInfos = await res.json()
+    const fresh = createHtmlDocumentFromPageInfo(document.name, basePath, pageInfos)
+    document.pages.length = 0
+    document.pages.push(...fresh.pages)
+    document.basePath = basePath
+    createHtmlShapes(editor, document)
   } catch (e) {
     console.warn('[Reload] HTML page-info refresh failed:', (e as Error).message)
   }
@@ -364,14 +360,10 @@ async function reloadHtmlPages(editor: Editor, document: SvgDocument): Promise<R
     const currentUrl = shape.props.url
     if (!currentUrl) continue
 
-    const file = htmlPageFileFromUrl(currentUrl, basePath)
-    const info = pageInfoByFile.get(file)
     putHtmlPageShapeRecord(editor, {
       ...shape,
       props: {
         ...shape.props,
-        ...(info?.width ? { w: info.width } : {}),
-        ...(info?.height ? { h: info.height } : {}),
         url: htmlPageReloadUrl(currentUrl, timestamp),
       },
     })

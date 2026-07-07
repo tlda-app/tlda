@@ -26,7 +26,14 @@ export async function loadHtmlDocument(
 
   const infoUrl = basePath + 'page-info.json'
   const pageInfos: HtmlPageEntry[] = await fetch(infoUrl).then(r => r.json())
+  return createHtmlDocumentFromPageInfo(name, basePath, pageInfos)
+}
 
+export function createHtmlDocumentFromPageInfo(
+  name: string,
+  basePath: string,
+  pageInfos: HtmlPageEntry[],
+): SvgDocument {
   console.log(`Found ${pageInfos.length} HTML pages`)
 
   // Multipage: each chapter (or tab group) gets its own TLDraw page.
