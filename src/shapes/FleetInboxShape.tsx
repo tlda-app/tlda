@@ -22,7 +22,7 @@ import { labelsForAgent } from '../../shared/fleet-labels.mjs'
 import type { Editor, TLShapeId } from 'tldraw'
 import { agentDisplayLabel, beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
-import { isPhoneLayoutInboxShapeForOwner, isPhoneStackLayoutForOwner, pushPhonePinnedChatPane, type FleetFilter } from './phone-pane-stack'
+import { isPhoneLayoutInboxShapeForOwner, pushPhonePinnedChatPane, type FleetFilter } from './phone-pane-stack'
 import { usePillDrag } from './FleetAgentsShape'
 import { ChatComposer } from './ChatComposer'
 import { useState, useCallback, useRef, useMemo, useEffect, useContext, memo, type Dispatch, type SetStateAction } from 'react'
@@ -421,8 +421,7 @@ function FleetInboxInner({ shape }: { shape: any }) {
     const userId = shape.props?.userId
     const deviceId = shape.props?.deviceId
     if (!userId || !deviceId) return false
-    return isPhoneLayoutInboxShapeForOwner(mainEd, shape, userId, deviceId) &&
-      isPhoneStackLayoutForOwner(mainEd, userId, deviceId)
+    return isPhoneLayoutInboxShapeForOwner(mainEd, shape, userId, deviceId)
   }, [mainEd, shape])
 
   // Sort mode — time (one interleaved stream, newest first) or type (grouped

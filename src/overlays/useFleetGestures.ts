@@ -262,6 +262,14 @@ type FleetHit = {
   rawShapeType?: string
 }
 
+type PhoneInboxPaneCandidate = {
+  type?: string
+  props?: {
+    w?: number
+    h?: number
+  }
+}
+
 function isMyGestureFleetShape(shape: TLShape | null | undefined): shape is TLShape {
   return !!shape && FLEET_SHAPE_TYPES.has(shape.type as string) && isMyFleetShape(shape)
 }
@@ -525,6 +533,33 @@ function clusterOf(overlay: Editor, seedIds: Set<string>, viewportId?: string): 
 
 function isPhoneMode() {
   return typeof document !== 'undefined' && document.body.classList.contains('phone-mode')
+}
+
+function isPhoneLayoutRequested() {
+  if (typeof window === 'undefined') return false
+  try {
+    return new URLSearchParams(window.location.search).get('fleetLayout') === 'phone'
+  } catch {
+    return false
+  }
+}
+
+function hasMyFullscreenPhoneInbox(editor: Editor) {
+  const vp = editor.getViewportScreenBounds()
+  const screenW = Math.round(vp.w || 0)
+  const screenH = Math.round(vp.h || 0)
+  if (!screenW || !screenH) return false
+  return editor.getCurrentPageShapes().some(shape => {
+    const pane = shape as unknown as PhoneInboxPaneCandidate
+    if (typeof pane.type !== 'string' || !FLEET_SHAPE_TYPES.has(pane.type) || !isMyFleetShape(pane) || pane.type !== 'fleet-inbox') return false
+    const w = Math.round(pane.props?.w || 0)
+    const h = Math.round(pane.props?.h || 0)
+    return Math.abs(w - screenW) <= 2 && Math.abs(h - screenH) <= 2
+  })
+}
+
+function isPhonePaneStackMode(editor: Editor) {
+  return isPhoneMode() || isPhoneLayoutRequested() || hasMyFullscreenPhoneInbox(editor)
 }
 
 function isOpenThreadInboxTouch(target: EventTarget | null): boolean {
@@ -1525,7 +1560,7 @@ export function useFleetGestures(opts: {
       if (!overlay) return
       const main = getMainEditor(mainEditor)
 
-      if (ts.length === 3 && isPhoneMode()) {
+      if (ts.length === 3 && isPhonePaneStackMode(main)) {
         // Phone only: pan the doc from anywhere — even over the panels — with the
         // soft breakable axis-lock below. Confined to the phone layout so every
         // other layout gets plain TLDraw touch behavior (no phone-ish "almost-pan").
@@ -1537,7 +1572,7 @@ export function useFleetGestures(opts: {
         return
       }
 
-      if (ts.length === 1 && isPhoneMode()) {
+      if (ts.length === 1 && isPhonePaneStackMode(main)) {
         // Open-thread inbox owns horizontal left flicks for push-to-eject. The
         // window-capture lane pager sees touchstart before the inbox DOM handler,
         // so it must yield here; list-state inboxes still page normally.
@@ -1996,7 +2031,8 @@ export function useFleetGestures(opts: {
     }
 
     const onGlobalThreeFingerStart = (e: TouchEvent) => {
-      if (!isPhoneMode() || e.touches.length !== 3) return
+      if (e.touches.length !== 3) return
+      if (!isPhonePaneStackMode(getMainEditor(mainEditor))) return
       onTouchStart(e)
     }
 
@@ -2011,7 +2047,8 @@ export function useFleetGestures(opts: {
     }
 
     const onGlobalPhoneLaneStart = (e: TouchEvent) => {
-      if (!isPhoneMode() || e.touches.length !== 1) return
+      if (e.touches.length !== 1) return
+      if (!isPhonePaneStackMode(getMainEditor(mainEditor))) return
       onTouchStart(e)
     }
 

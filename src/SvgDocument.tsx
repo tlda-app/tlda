@@ -910,10 +910,12 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
   }, [])
   const bindingUtils = useMemo(() => [...defaultBindingUtils], [])
   const isPhone = isPhoneViewport()
+  const isPhoneLayoutRequested = typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('fleetLayout') === 'phone'
+  const usePhoneLaneNavigation = isPhone || isPhoneLayoutRequested
   const tools = useMemo(() => [
     BrowseTool, MathNoteTool, VoiceNoteTool, TextSelectTool, FleetChatTool, FleetAgentsTool, FleetSearchTool, FleetInboxTool, ClusterTool, ReaperTool, UsageMeterTool, PlaybackTool, TerminalTool, TaskInboxTool, RibbonEraserTool, RibbonHighlightTool,
-    ...(isPhone ? [PhoneHandTool] : []),
-  ], [])
+    ...(usePhoneLaneNavigation ? [PhoneHandTool] : []),
+  ], [usePhoneLaneNavigation])
 
   // --- @tldraw/sync: shape CRDT sync ---
   const syncUri = useMemo(
@@ -1504,7 +1506,11 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
                     markPhoneCameraReady()
                   }, 500)
                 }
-                // Phone: always start in phone-hand tool for axis-locked scroll
+              }
+              if (usePhoneLaneNavigation) {
+                // Phone pane stack: always start in phone-hand so lane navigation
+                // works whenever the phone layout is active, including desktop
+                // browsers opened explicitly with fleetLayout=phone.
                 editor.setCurrentTool('phone-hand')
               } else if (session?.tool) {
                 try { editor.setCurrentTool(session.tool) } catch { /* tool may not exist */ }
