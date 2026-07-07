@@ -63,6 +63,7 @@ import { promisify } from 'util'
 import { resolveFilePath, uploadFileToServer } from '../shared/chat-file-processing.mjs'
 import { processMessageText } from '../shared/message-processing.mjs'
 import { scanMarkdownDeps } from '../shared/markdown-deps.mjs'
+import { MATERIALIZATION_MAX_BYTES, materializeAttachmentBytes } from '../shared/inbox-reference-materialization.mjs'
 import {
   loadConfig as _loadSharedConfig, saveConfig as _saveSharedConfig,
   getServerUrl, getFleetServerUrl, getRwToken, DEFAULT_PORT, hasTls,
@@ -97,6 +98,7 @@ import {
   updateIngestionStatus,
   upsertSessionIdentity,
 } from './lib/session-identity-store.mjs'
+import { tailSessionIdentityInput } from './lib/session-identity-tail.mjs'
 import {
   terminalBackscrollCaptureArgs,
   terminalVisibleCaptureArgs,
@@ -104,27 +106,30 @@ import {
 } from '../shared/terminal-seed.mjs'
 import {
   decideMissingLiveness,
+  decideTerminalWatchExit,
   detectSpawnStartupFailureTranscript,
   harnessKindForAgent,
   isPlaywrightBrowserArgs,
+  selectOrphanAgentProcesses,
   shouldClaimClaudeWatcher,
   shouldClaimCodexWatcher,
   unlinkPidfileIfOwnPid,
 } from './lib/daemon-guards.mjs'
 import { codexRolloutBelongsToAgent, codexRolloutHasOwnerEvidence, resolveTranscript } from './lib/resolve-transcript.mjs'
 import { resolveSpawnGrant } from '../server/lib/spawn-policy.mjs'
-import { probeSpawnCapabilities } from './lib/spawn/capabilities.mjs'
+import { probeSpawnAvailability } from './lib/spawn/availability.mjs'
 import {
   applyDaemonGrants,
   applyGrandfatherInfill,
-  createPrivilegeLedger,
+  createPermissionLedger,
   defaultDaemonConfigPath,
-  privilegeLedgerPathFromDaemonConfig,
+  permissionLedgerPathFromDaemonConfig,
   readDaemonConfig,
+  readDaemonConfigForCwd,
   withDaemonModelAliases,
-} from './lib/spawn/privilege-ledger.mjs'
+} from './lib/spawn/permission-ledger.mjs'
 import { newFleetId } from './lib/spawn/identity.mjs'
-import { acquireSingletonLock, daemonSingletonLockPath } from './lib/singleton-lock.mjs'
+import { acquireSingletonLock, daemonSingletonLockPath, sessionReaderLockPath } from './lib/singleton-lock.mjs'
 const log = createLogger('daemon')
 // CONFIG_DIR holds config.json, cursors, PID and log files. Defaults to
 // ~/.config/tlda. TLDA_DAEMON_CONFIG_DIR lets the E2E test start a second
@@ -137,9 +142,9 @@ const SOURCE_BINDINGS_FILE = path.join(CONFIG_DIR, 'source-bindings.json')
 const FLEET_DB_FILE = path.join(CONFIG_DIR, 'fleet.db')
 const DAEMON_CONFIG_FILE = defaultDaemonConfigPath(CONFIG_DIR)
 const daemonSpawnConfig = readDaemonConfig(DAEMON_CONFIG_FILE)
-const PRIVILEGE_LEDGER_FILE = privilegeLedgerPathFromDaemonConfig(daemonSpawnConfig, CONFIG_DIR)
-const privilegeLedger = createPrivilegeLedger(PRIVILEGE_LEDGER_FILE)
-applyDaemonGrants(privilegeLedger, daemonSpawnConfig)
+const PERMISSION_LEDGER_FILE = permissionLedgerPathFromDaemonConfig(daemonSpawnConfig, CONFIG_DIR)
+const permissionLedger = createPermissionLedger(PERMISSION_LEDGER_FILE)
+applyDaemonGrants(permissionLedger, daemonSpawnConfig)
 
 // Per-machine source bindings: { projectName -> absolute local source dir }.
 // This is the per-machine fact "where MY copy of project X lives" — it belongs
@@ -483,10 +488,24 @@ function startOwnerHarvester() {
 let _jsonlIngester = null
 let _jsonlIngesterRestartTimer = null
 let _shuttingDown = false
+let _sessionReaderLock = null
 const childWatchers = new Map() // watchId -> path watcher state
 
 function startJsonlIngester() {
   if (_jsonlIngester) return _jsonlIngester
+  if (!_sessionReaderLock) {
+    const lockPath = sessionReaderLockPath({ configDir: CONFIG_DIR })
+    const lock = acquireSingletonLock({
+      lockPath,
+      installPath: path.dirname(fileURLToPath(import.meta.url)),
+      origin: null,
+    })
+    if (!lock.ok) {
+      const holder = lock.holder?.pid ? ` pid=${lock.holder.pid}` : ''
+      throw new Error(`session JSONL reader already running for ${CONFIG_DIR}${holder}`)
+    }
+    _sessionReaderLock = { ...lock, lockPath }
+  }
   const script = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fleet-jsonl-ingester.mjs')
   if (!fs.existsSync(script)) throw new Error(`JSONL ingester child missing: ${script}`)
   try {
@@ -747,10 +766,14 @@ const ACTIVITY_NOISE = new Set([
 // Keep the accepted names broad: Claude/Codex use mcp__tlda__get_thread, while
 // Goose and stored activity can use tlda__get_thread or get_thread.
 const PRETTY_PRINT_TOOLS = new Set([
+  'mcp__tlda__inbox',
   'mcp__tlda__search_logs',
   'mcp__tlda__get_thread',
+  'tlda/inbox',
+  'tlda__inbox',
   'tlda__search_logs',
   'tlda__get_thread',
+  'inbox',
   'search_logs',
   'get_thread',
   'ScheduleWakeup',
@@ -1788,13 +1811,13 @@ function processJsonlChildOutputs(pw, outputs) {
         events: output.events || [],
       })) delivered = false
     } else if (output.type === 'identity') {
-      recordSessionIdentity({
-        session_id: pw.sessionId,
-        harness_kind: pw.harnessKind,
-        jsonl_path: pw.jsonlPath,
-        ...output.identity,
-        classified: false,
-      })
+      recordSessionIdentity(tailSessionIdentityInput({
+        sessionId: pw.sessionId,
+        harnessKind: pw.harnessKind,
+        jsonlPath: pw.jsonlPath,
+        ownerFleetId: agentId,
+        contentIdentity: output.identity,
+      }))
     }
   }
   return delivered
@@ -2635,60 +2658,16 @@ async function rpcSendKey({ tmux_session, key }) {
   return { ok: true }
 }
 
-// Ephemeral PTY connections for reliable keystroke delivery.
-// Spawned on demand when no long-lived watcher exists, torn down after idle.
-const ephemeralPtys = new Map() // tmux_session -> { pty, alive, teardownTimer }
-const EPHEMERAL_TTL_MS = 5000
-
-async function getOrSpawnEphemeralPty(tmuxSession) {
-  const existing = ephemeralPtys.get(tmuxSession)
-  if (existing?.alive) {
-    clearTimeout(existing.teardownTimer)
-    existing.teardownTimer = setTimeout(() => teardownEphemeral(tmuxSession), EPHEMERAL_TTL_MS)
-    return existing.pty
-  }
-  const nodePty = await getPty()
-  const pty = nodePty.spawn('tmux', [...TMUX_ARGS, 'attach-session', '-t', tmuxSession], {
-    name: 'xterm-256color',
-    cols: 120,
-    rows: 40,
-    env: { ...process.env, TERM: 'xterm-256color', TMUX: '', TMUX_PANE: '' },
-  })
-  const state = { pty, alive: true, teardownTimer: null }
-  state.teardownTimer = setTimeout(() => teardownEphemeral(tmuxSession), EPHEMERAL_TTL_MS)
-  ephemeralPtys.set(tmuxSession, state)
-  pty.onExit(() => {
-    state.alive = false
-    clearTimeout(state.teardownTimer)
-    ephemeralPtys.delete(tmuxSession)
-  })
-  // Discard output — ephemeral PTYs are write-only
-  pty.onData(() => {})
-  return pty
-}
-
-function teardownEphemeral(tmuxSession) {
-  const state = ephemeralPtys.get(tmuxSession)
-  if (!state) return
-  state.alive = false
-  ephemeralPtys.delete(tmuxSession)
-  try { state.pty.kill() } catch {}
-}
-
 async function rpcSendText({ tmux_session, text, enter, enter_delay_ms }) {
   checkSession(tmux_session)
   armBySession(tmux_session)   // delivering input/wake-bootstrap → arm the status machine
-  // Prefer long-lived PTY watcher, then ephemeral PTY, never tmux send-keys
-  let pty = terminalWatchPtys.get(tmux_session)?.alive
+  // Prefer the existing long-lived PTY watcher when a terminal card is open.
+  // Do not create on-demand "ephemeral" PTYs here: node-pty's macOS spawn path
+  // can throw after opening native PTY fds and before returning a JS handle, so
+  // the daemon cannot close that handle. tmux send-keys is the bounded fallback.
+  const pty = terminalWatchPtys.get(tmux_session)?.alive
     ? terminalWatchPtys.get(tmux_session).pty
     : null
-  if (!pty) {
-    try {
-      pty = await getOrSpawnEphemeralPty(tmux_session)
-    } catch (e) {
-      log.error(`ephemeral PTY failed for ${tmux_session}: ${e.message}, falling back to tmux`)
-    }
-  }
   if (pty) {
     if (text) pty.write(text)
     if (enter !== false) {
@@ -2960,6 +2939,15 @@ async function queryWindowSize(tmux_session) {
   return null
 }
 
+async function tmuxPaneIsLive(tmux_session) {
+  try {
+    const { stdout } = await tmux('display-message', '-p', '-t', tmux_session, '#{pane_dead}')
+    return stdout.trim() === '0'
+  } catch {
+    return false
+  }
+}
+
 async function rpcStartTerminalWatch({ tmux_session, agent_id, poll_ms }) {
   checkSession(tmux_session)
   {
@@ -3050,8 +3038,15 @@ async function rpcStartTerminalWatch({ tmux_session, agent_id, poll_ms }) {
     state.alive = false
     if (state.sizePoll) { clearInterval(state.sizePoll); state.sizePoll = null }
     terminalWatchPtys.delete(tmux_session)
-    log.info(`terminal exited: agent=${agent_id} session=${tmux_session} exitCode=${exitCode}`)
-    sendMsg({ type: 'terminal-dead', agent_id, tmux_session, exitCode })
+    void (async () => {
+      const decision = decideTerminalWatchExit({ paneLive: await tmuxPaneIsLive(tmux_session) })
+      if (!decision.terminalDead) {
+        log.warn(`terminal-watch exited while pane is still live: agent=${agent_id} session=${tmux_session} exitCode=${exitCode}; suppressing terminal-dead`)
+        return
+      }
+      log.info(`terminal exited: agent=${agent_id} session=${tmux_session} exitCode=${exitCode}`)
+      sendMsg({ type: 'terminal-dead', agent_id, tmux_session, exitCode })
+    })()
   })
 
   return { ok: true, streaming: true, cols: size.cols, rows: size.rows }
@@ -3098,13 +3093,28 @@ function rpcTerminalInput({ tmux_session, data }) {
 const _activeSpawns = new Map()
 const STARTUP_FAILURE_PROBE_MS = Number(process.env.TLDA_SPAWN_STARTUP_FAILURE_PROBE_MS || 2500)
 const SPAWN_LAUNCH_TIMEOUT_MS = Number(process.env.TLDA_SPAWN_LAUNCH_TIMEOUT_MS || 20000)
+const SPAWN_CRASH_LOG_DIR = path.join(CONFIG_DIR, 'spawn-crashes')
 const _reportedStartupFailures = new Set()
 
 function traceDaemonSpawn(label, detail) {
   log.info(`[spawn-trace] ${label} ${JSON.stringify({ ts: new Date().toISOString(), machineId: MACHINE_ID, ...detail })}`)
 }
 
-async function probeSpawnStartupFailure({ agentName, agent_id, tmux_session, harness, model, respawn }) {
+function spawnCrashLogPath({ agentName, agent_id, tmux_session }) {
+  const base = String(agent_id || agentName || tmux_session || 'unknown').replace(/[^A-Za-z0-9_.:-]/g, '_')
+  return path.join(SPAWN_CRASH_LOG_DIR, `${base}.log`)
+}
+
+function readFileTail(file, max = 6000) {
+  try {
+    const text = fs.readFileSync(file, 'utf8')
+    return text.slice(-max)
+  } catch {
+    return ''
+  }
+}
+
+async function probeSpawnStartupFailure({ agentName, agent_id, tmux_session, harness, model, respawn, crash_log_path }) {
   if (!agent_id || !tmux_session) return null
   const dedupKey = `${agent_id}:${tmux_session}`
   if (_reportedStartupFailures.has(dedupKey)) return null
@@ -3127,10 +3137,12 @@ async function probeSpawnStartupFailure({ agentName, agent_id, tmux_session, har
       code: failure.code,
       reason: failure.reason,
       snippet: failure.snippet,
+      crash_log_path: crash_log_path || null,
     })
     return failure
   } catch (e) {
-    log.warn(`startup failure probe failed for ${agentName || agent_id}: ${e.message}`)
+    const crashTail = crash_log_path ? readFileTail(crash_log_path) : ''
+    log.warn(`startup failure probe failed for ${agentName || agent_id}: ${e.message}${crash_log_path ? `; crash_log=${crash_log_path}` : ''}${crashTail ? `\n${crashTail}` : ''}`)
     return null
   }
 }
@@ -3149,8 +3161,8 @@ async function rpcSpawn({
   enroll,
   effort,
   mode,
-  requestedCapability,
-  requestedPrivileges,
+  requestedPermission,
+  requestedPermissions,
   policy,
   acknowledgeNoSecurity,
   callerRung,
@@ -3199,26 +3211,50 @@ async function rpcSpawn({
   try {
     const config = loadConfig()
     spawnConfig = config
-    if (!requester?.id) {
-      const err = new Error('spawn refused: daemon RPC requester identity is required')
-      err.code = 'SPAWN_PRIVILEGE_NO_REQUESTER'
-      throw err
+    if (respawn) {
+      // Wake = resume an EXISTING seat with its OWN ledger grant. A wake carries no
+      // requester, no spawn-auth gate, no grantFor, no fleet:root, no none-grant: it
+      // is just the invisible step that delivers a chat, so chatting a hibernating
+      // agent is identical to chatting an awake one, and wake is open to anyone.
+      // A real agent IS its seat (a fleet-id + its ledger entry). If a resolved seat
+      // has no ledger entry that's an anomaly — fail LOUDLY, never fabricate a grant.
+      const own = agent_id ? permissionLedger.get(agent_id) : null
+      if (!own) {
+        throw new Error(`wake refused: seat ${agent_id || '(no id)'} has no ledger entry — a real agent must have a seat; refusing to resume with a fabricated grant`)
+      }
+      grant = { grantedPolicy: own.spawnPolicy, grantedPermissionSet: own.permissionSet, grantPreserved: true }
+    } else {
+      // Fresh spawn stays privileged: requester required, grant derived from it.
+      if (!requester?.id) {
+        const err = new Error('spawn refused: daemon RPC requester identity is required')
+        err.code = 'SPAWN_PERMISSION_NO_REQUESTER'
+        throw err
+      }
+      const spawnerGrant = permissionLedger.grantFor(requester)
+      // Project-local override (git-style): the agent's cwd project may carry a
+      // `.tlda-daemon.yaml` whose `default` profile is joined over the base daemon
+      // config. Surface it as the project profile so an un-granted agent in that
+      // project gets the project's default (e.g. tlda → app-dev), still bounded by
+      // the spawner + model-ceiling intersection.
+      const projectDefaultProfile = resolvedCwd ? readDaemonConfigForCwd(resolvedCwd)?.default : null
+      const grantConfig = projectDefaultProfile
+        ? { ...config, spawnPolicy: { ...(config?.spawnPolicy || {}), projectProfiles: { ...((config?.spawnPolicy || {}).projectProfiles || {}), [resolvedCwd]: projectDefaultProfile } } }
+        : config
+      grant = resolveSpawnGrant({
+        requestedPermission: requestedPermission || (policy != null ? 'write' : undefined),
+        requestedPermissions,
+        callerRung,
+        requester,
+        spawnerPolicy: spawnerGrant?.spawnPolicy,
+        spawnerPermissionSet: spawnerGrant?.permissionSet,
+        model: launchModel,
+        kind: launchKind,
+        config: grantConfig,
+        doc,
+        project: projectForGrant,
+        cwd: resolvedCwd,
+      })
     }
-    const spawnerGrant = privilegeLedger.grantFor(requester)
-    grant = resolveSpawnGrant({
-      requestedCapability: requestedCapability || (policy != null ? 'write' : undefined),
-      requestedPrivileges,
-      callerRung,
-      requester,
-      spawnerPolicy: spawnerGrant?.spawnPolicy,
-      spawnerPrivilegeSet: spawnerGrant?.privilegeSet,
-      model: launchModel,
-      kind: launchKind,
-      config,
-      doc,
-      project: projectForGrant,
-      cwd: resolvedCwd,
-    })
   } catch (e) {
     return { ok: false, name: agentName, error: `spawn policy resolution failed: ${e.message}` }
   }
@@ -3229,12 +3265,12 @@ async function rpcSpawn({
     launchKind: launchKind || null,
     requestedModel: model || null,
     launchModel: launchModel || null,
-    requestedCapability: requestedCapability || null,
+    requestedPermission: requestedPermission || null,
     requestedPolicy: policy || null,
-    hasRequestedPrivileges: !!requestedPrivileges,
-    grantedCapability: grant.grantedCapability || null,
+    hasRequestedPermissions: !!requestedPermissions,
+    grantedPermission: grant.grantedPermission || null,
     grantedPolicy: grant.grantedPolicy || null,
-    hasGrantedPrivilegeSet: !!grant.grantedPrivilegeSet,
+    hasGrantedPermissionSet: !!grant.grantedPermissionSet,
     cwd: resolvedCwd || null,
     doc: doc || null,
     requester: requester ? { id: requester.id || null, name: requester.name || null, human: !!requester.human, spawnPolicy: requester.spawnPolicy || null } : null,
@@ -3244,10 +3280,11 @@ async function rpcSpawn({
     const { spawn: nodeSpawn } = await import('./lib/spawn/index.mjs')
     const spawnMode = sessionId ? 'session' : (refresh ? 'refresh' : (respawn ? 'respawn' : 'fresh'))
     const preallocatedAgentId = agent_id || ((spawnMode === 'fresh' || spawnMode === 'session') ? newFleetId() : undefined)
+    const crashLogPath = spawnCrashLogPath({ agentName, agent_id: preallocatedAgentId || agent_id, tmux_session: null })
     if (preallocatedAgentId) {
-      await privilegeLedger.set(preallocatedAgentId, {
+      await permissionLedger.set(preallocatedAgentId, {
         spawnPolicy: grant.grantedPolicy,
-        privilegeSet: grant.grantedPrivilegeSet,
+        permissionSet: grant.grantedPermissionSet,
         source: 'spawn',
       })
     }
@@ -3267,30 +3304,32 @@ async function rpcSpawn({
         effort,
         permissionMode: mode,
         spawnPolicy: grant.grantedPolicy,
-        privilegeSet: grant.grantedPrivilegeSet,
+        permissionSet: grant.grantedPermissionSet,
         explicitPolicy: policy != null,
         acknowledgeNoSecurity: !!acknowledgeNoSecurity,
         machineId: MACHINE_ID,
         tmuxSocket: TMUX_SOCKET,
+        crashLogPath,
         identityConfigDir: CONFIG_DIR,
       })
     } catch (e) {
-      if (preallocatedAgentId) await privilegeLedger.delete(preallocatedAgentId).catch(() => {})
+      if (preallocatedAgentId) await permissionLedger.delete(preallocatedAgentId).catch(() => {})
       throw e
     }
     traceDaemonSpawn('launched', {
       agentName,
       agent_id: launched.fleetId,
       tmux_session: launched.tmuxSession,
+      crash_log_path: crashLogPath,
       harness: launched.harness,
       model: launched.model,
       spawnPolicy: grant.grantedPolicy || null,
-      grantedCapability: grant.grantedCapability || null,
+      grantedPermission: grant.grantedPermission || null,
     })
     try {
       await tmux('has-session', '-t', launched.tmuxSession)
     } catch (e) {
-      if (preallocatedAgentId) await privilegeLedger.delete(preallocatedAgentId).catch(() => {})
+      if (preallocatedAgentId) await permissionLedger.delete(preallocatedAgentId).catch(() => {})
       const detail = ((e.stderr || e.message || '').trim().split('\n').filter(Boolean).pop()) || 'tmux session check failed'
       return {
         ok: false,
@@ -3301,7 +3340,7 @@ async function rpcSpawn({
       }
     }
     if (launched.harness === 'codex' && !launched.resumeId) {
-      if (preallocatedAgentId) await privilegeLedger.delete(preallocatedAgentId).catch(() => {})
+      if (preallocatedAgentId) await permissionLedger.delete(preallocatedAgentId).catch(() => {})
       return {
         ok: false,
         name: agentName,
@@ -3312,9 +3351,9 @@ async function rpcSpawn({
       }
     }
     if (!preallocatedAgentId || launched.fleetId !== preallocatedAgentId) {
-      await privilegeLedger.set(launched.fleetId, {
+      await permissionLedger.set(launched.fleetId, {
         spawnPolicy: grant.grantedPolicy,
-        privilegeSet: grant.grantedPrivilegeSet,
+        permissionSet: grant.grantedPermissionSet,
         source: 'spawn',
       })
     }
@@ -3322,6 +3361,7 @@ async function rpcSpawn({
       agentName,
       agent_id: launched.fleetId,
       tmux_session: launched.tmuxSession,
+      crash_log_path: crashLogPath,
       harness: launched.harness,
       model: launched.model,
       respawn,
@@ -3333,13 +3373,13 @@ async function rpcSpawn({
       tmux_session: launched.tmuxSession,
       resume_id: launched.resumeId,
       enrolled: launched.enrolled,
-      spawnerCapability: grant.spawnerCapability,
-      projectCapability: grant.projectCapability,
-      modelCapability: grant.modelCapability,
-      requestedPrivilegeSet: grant.requestedPrivilegeSet,
-      grantedPrivilegeSet: grant.grantedPrivilegeSet,
+      spawnerPermission: grant.spawnerPermission,
+      projectPermission: grant.projectPermission,
+      modelPermission: grant.modelPermission,
+      requestedPermissionSet: grant.requestedPermissionSet,
+      grantedPermissionSet: grant.grantedPermissionSet,
       spawnPolicy: grant.grantedPolicy,
-      grantedCapability: grant.grantedCapability,
+      grantedPermission: grant.grantedPermission,
     }
   } catch (e) {
     const detail = typeof e?.message === 'string' ? e.message : (e?.message ? JSON.stringify(e.message) : String(e))
@@ -3362,8 +3402,8 @@ async function rpcSpawn({
   }
 }
 
-async function rpcSpawnCapabilities() {
-  return await probeSpawnCapabilities()
+async function rpcSpawnAvailability() {
+  return await probeSpawnAvailability()
 }
 
 // --- Agent death detection ---
@@ -3487,6 +3527,7 @@ function _paneSubtreeHasAgent(panePid, childrenByPpid, agentProcPids) {
 }
 
 async function checkAgentLiveness() {
+  return // KILL-SWITCH (Skip 2026-07-06): hibernation/liveness sweep disabled so agents are never marked hibernating. Revert this line to re-enable.
   if (!agents.length) return
   if (!_serverReady || !_rws?.connected) {
     // A server/Fly redeploy can drop the daemon websocket while local tmux
@@ -3864,6 +3905,30 @@ async function rpcRechat({ text, cwd, server_url }) {
   return await processMessageText(text, cwd, serverBase)
 }
 
+async function rpcMaterializeAttachment({ event_id, attachment_id, source_agent, server_url, url, name, size, sha256 }) {
+  if (!url) throw new Error('attachment url required')
+  if (Number.isFinite(Number(size)) && Number(size) > MATERIALIZATION_MAX_BYTES) {
+    throw new Error(`attachment exceeds max size (${size} > ${MATERIALIZATION_MAX_BYTES})`)
+  }
+  const serverBase = server_url || getFleetServerUrl()
+  const target = new URL(url, serverBase).toString()
+  const res = await fetch(target, { signal: AbortSignal.timeout(10000) })
+  if (!res.ok) throw new Error(`attachment fetch failed: HTTP ${res.status}`)
+  const len = Number(res.headers.get('content-length') || 0)
+  if (len > MATERIALIZATION_MAX_BYTES) {
+    throw new Error(`attachment exceeds max size (${len} > ${MATERIALIZATION_MAX_BYTES})`)
+  }
+  const ab = await res.arrayBuffer()
+  return await materializeAttachmentBytes({
+    bytes: Buffer.from(ab),
+    eventId: event_id,
+    attachmentId: attachment_id,
+    sourceAgent: source_agent,
+    name,
+    expectedSha256: sha256 || null,
+  })
+}
+
 // Kill the local playwright chromium process that owns a given TCP source
 // port. Called by the server's zombie reaper when a /sync/ or /ws/fleet
 // connection has been idle for too long.
@@ -4235,6 +4300,159 @@ async function reapPlaywright() {
   return { browsers: enriched, killed }
 }
 
+// ─── Agent-process reaper — kill orphaned harness runtimes ─────────
+const AGENT_PROCESS_ORPHAN_MS = parseInt(process.env.REAPER_AGENT_PROCESS_MS, 10) || 30 * 60 * 1000
+const AGENT_PROCESS_TERM_GRACE_MS = parseInt(process.env.REAPER_AGENT_PROCESS_TERM_GRACE_MS, 10) || 5000
+
+async function listAgentHarnessProcesses() {
+  let psOut = ''
+  try {
+    const { stdout } = await execFileP('ps', ['-axo', 'pid=,ppid=,etimes=,args='], { timeout: 5000, encoding: 'utf8' })
+    psOut = stdout
+  } catch {
+    return []
+  }
+  const now = Date.now()
+  const procs = []
+  for (const line of psOut.split('\n')) {
+    const m = line.match(/^\s*(\d+)\s+(\d+)\s+(\d+)\s+(.+)$/)
+    if (!m) continue
+    const pid = parseInt(m[1], 10)
+    const ppid = parseInt(m[2], 10)
+    const ageSeconds = parseInt(m[3], 10)
+    if (!Number.isFinite(pid) || !Number.isFinite(ppid) || !Number.isFinite(ageSeconds)) continue
+    procs.push({ pid, ppid, ageMs: ageSeconds * 1000, startedAt: now - ageSeconds * 1000, args: m[4] })
+  }
+  return procs
+}
+
+async function liveTmuxSessionNames() {
+  try {
+    const { stdout } = await execFileP('tmux', [...TMUX_ARGS, 'list-sessions', '-F', '#S'], { timeout: 3000, encoding: 'utf8' })
+    return new Set(stdout.split('\n').map(s => s.trim()).filter(Boolean))
+  } catch {
+    return new Set()
+  }
+}
+
+async function liveTmuxPaneProcessPids(processes) {
+  let paneOut = ''
+  try {
+    const { stdout } = await execFileP('tmux', [...TMUX_ARGS, 'list-panes', '-a', '-F', '#{pane_pid}'], { timeout: 3000, encoding: 'utf8' })
+    paneOut = stdout
+  } catch {
+    return new Set()
+  }
+  const roots = paneOut.split('\n').map(s => parseInt(s.trim(), 10)).filter(Number.isFinite)
+  const childrenByPpid = new Map()
+  for (const proc of processes) {
+    const ppid = Number(proc.ppid)
+    if (!Number.isFinite(ppid)) continue
+    if (!childrenByPpid.has(ppid)) childrenByPpid.set(ppid, [])
+    childrenByPpid.get(ppid).push(Number(proc.pid))
+  }
+  const protectedPids = new Set()
+  const stack = [...roots]
+  while (stack.length) {
+    const pid = stack.pop()
+    if (protectedPids.has(pid)) continue
+    protectedPids.add(pid)
+    for (const child of (childrenByPpid.get(pid) || [])) stack.push(child)
+  }
+  return protectedPids
+}
+
+function processAlive(pid) {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function waitForProcessExit(pid, timeoutMs) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (!processAlive(pid)) return true
+    await new Promise(resolve => setTimeout(resolve, 250))
+  }
+  return !processAlive(pid)
+}
+
+async function terminateOrphanAgentProcess(proc) {
+  try {
+    process.kill(proc.pid, 'SIGTERM')
+    try { await execFileP('pkill', ['-TERM', '-P', String(proc.pid)], { timeout: 2000 }) } catch {
+      // Expected when the harness has no child processes left to signal.
+    }
+  } catch (e) {
+    if (!processAlive(proc.pid)) return { ok: true, signal: 'already-exited' }
+    throw e
+  }
+  if (await waitForProcessExit(proc.pid, AGENT_PROCESS_TERM_GRACE_MS)) return { ok: true, signal: 'SIGTERM' }
+  process.kill(proc.pid, 'SIGKILL')
+  try { await execFileP('pkill', ['-9', '-P', String(proc.pid)], { timeout: 2000 }) } catch {
+    // Expected when the harness has no child processes left to kill.
+  }
+  return { ok: true, signal: 'SIGKILL' }
+}
+
+async function reapOrphanAgentProcesses() {
+  const processes = await listAgentHarnessProcesses()
+  const [liveSessions, protectedPids] = await Promise.all([
+    liveTmuxSessionNames(),
+    liveTmuxPaneProcessPids(processes),
+  ])
+  const { selected, skipped } = selectOrphanAgentProcesses({
+    processes,
+    agents,
+    liveTmuxSessions: liveSessions,
+    protectedPids,
+    minAgeMs: AGENT_PROCESS_ORPHAN_MS,
+  })
+  const killed = []
+  const failed = []
+  for (const proc of selected) {
+    try {
+      const result = await terminateOrphanAgentProcess(proc)
+      console.log(`[agent-reaper] killed pid=${proc.pid} agent=${proc.agentName || proc.agentId} harness=${proc.harness} tmux=${proc.tmuxSession || '-'} age=${Math.round(proc.ageMs / 60000)}m signal=${result.signal} pressure=${(getMemoryPressure() * 100).toFixed(0)}%`)
+      killed.push({
+        pid: proc.pid,
+        kind: 'agent-process',
+        ts: Date.now(),
+        reason: `orphan agent process ${Math.round(proc.ageMs / 60000)}m`,
+        agent: proc.agentName || null,
+        agentId: proc.agentId || null,
+        harness: proc.harness,
+        signal: result.signal,
+      })
+    } catch (e) {
+      console.log(`[agent-reaper] kill pid=${proc.pid} agent=${proc.agentName || proc.agentId} failed: ${e.message}`)
+      failed.push({
+        pid: proc.pid,
+        agent: proc.agentName || null,
+        agentId: proc.agentId || null,
+        error: e.message,
+      })
+    }
+  }
+  return {
+    processes: selected.map(proc => ({
+      pid: proc.pid,
+      ppid: proc.ppid,
+      ageMs: proc.ageMs,
+      harness: proc.harness,
+      agent: proc.agentName || null,
+      agentId: proc.agentId || null,
+      tmuxSession: proc.tmuxSession || null,
+    })),
+    killed,
+    failed,
+    skippedCount: skipped.length,
+  }
+}
+
 async function getMemoryByAgent() {
   try {
     const { stdout } = await execFileP('ps', ['-axo', 'pid=,ppid=,rss=,comm='], { timeout: 5000, encoding: 'utf8' })
@@ -4274,9 +4492,10 @@ const MAX_RECENT_KILLS = 10
 async function reaperSweep() {
   const viteResult = await reapVites().catch(e => { console.error('[vite-reaper] sweep failed:', e.message); return { vites: [], killed: [] } })
   const pwResult = await reapPlaywright().catch(e => { console.error('[pw-reaper] sweep failed:', e.message); return { browsers: [], killed: [] } })
+  const agentProcessResult = await reapOrphanAgentProcesses().catch(e => { console.error('[agent-reaper] sweep failed:', e.message); return { processes: [], killed: [], failed: [], skippedCount: 0 } })
   _sweepCount++
 
-  const allKills = [...(viteResult.killed || []), ...(pwResult.killed || [])]
+  const allKills = [...(viteResult.killed || []), ...(pwResult.killed || []), ...(agentProcessResult.killed || [])]
   _recentKills.push(...allKills)
   while (_recentKills.length > MAX_RECENT_KILLS) _recentKills.shift()
 
@@ -4320,9 +4539,12 @@ async function reaperSweep() {
         agent: browserAgentMap[b.pid]?.agent || null,
         agentId: browserAgentMap[b.pid]?.agentId || null,
       })),
+      agentProcesses: agentProcessResult.processes || [],
+      agentProcessFailures: agentProcessResult.failed || [],
+      agentProcessSkippedCount: agentProcessResult.skippedCount || 0,
       lastKills: _recentKills.slice(),
-      thresholds: { viteMs: VITE_IDLE_THRESHOLD_MS, pwMs: PW_IDLE_THRESHOLD_MS },
-      scaledThresholds: { viteMs: pressureScaledTimeout(VITE_IDLE_THRESHOLD_MS), pwMs: pressureScaledTimeout(PW_IDLE_THRESHOLD_MS) },
+      thresholds: { viteMs: VITE_IDLE_THRESHOLD_MS, pwMs: PW_IDLE_THRESHOLD_MS, agentProcessMs: AGENT_PROCESS_ORPHAN_MS },
+      scaledThresholds: { viteMs: pressureScaledTimeout(VITE_IDLE_THRESHOLD_MS), pwMs: pressureScaledTimeout(PW_IDLE_THRESHOLD_MS), agentProcessMs: AGENT_PROCESS_ORPHAN_MS },
       sweepCount: _sweepCount,
       lastSweep: now,
     },
@@ -4373,9 +4595,10 @@ const RPC_HANDLERS = {
   'terminal-resize': rpcTerminalResize,
   'terminal-input': rpcTerminalInput,
   'spawn': rpcSpawn,
-  'spawn-capabilities': rpcSpawnCapabilities,
+  'spawn-availability': rpcSpawnAvailability,
   'resolve-file': rpcResolveFile,
   'rechat': rpcRechat,
+  'materialize-attachment': rpcMaterializeAttachment,
   'kill-orphan-chromium': rpcKillOrphanChromium,
   'write-backing-file': rpcWriteBackingFile,
   'mirror-shadow-ref': rpcMirrorShadowRef,
@@ -4458,8 +4681,6 @@ function teardownWatchers() {
   // independently and queue them for the next connected window.
   for (const [, s] of terminalWatchPtys) { s.alive = false; try { s.pty.kill() } catch {} }
   terminalWatchPtys.clear()
-  for (const [, s] of ephemeralPtys) { s.alive = false; clearTimeout(s.teardownTimer); try { s.pty.kill() } catch {} }
-  ephemeralPtys.clear()
   for (const [, entry] of backingWatchers) closeWatcher(entry.watcher, `${entry.project}:${entry.backingName}`)
   backingWatchers.clear()
 }
@@ -4514,8 +4735,8 @@ function handleServerMessage(msg) {
     agents = msg.agents || []
     projects = msg.projects || []
     syncSessionIdentityNamesFromAgents(agents)
-    applyDaemonGrants(privilegeLedger, daemonSpawnConfig)
-    applyGrandfatherInfill(privilegeLedger, { fleetDbPath: FLEET_DB_FILE, config, projects })
+    applyDaemonGrants(permissionLedger, daemonSpawnConfig)
+    applyGrandfatherInfill(permissionLedger, { fleetDbPath: FLEET_DB_FILE, config, projects })
     log.info(`welcome: ${agents.length} agents, ${projects.length} projects`)
     const replay = replayDeadLetters(DEAD_LETTER_FILE, message => _rws?.send(message), { log })
     if (replay.replayed || replay.remaining || replay.malformed) {
@@ -4637,6 +4858,7 @@ function shutdown(signal) {
   log.info(`shutdown via ${signal || 'unknown'} signal; saving cursors and exiting`)
   _shuttingDown = true
   saveCursors()
+  teardownWatchers()
   try { _ownerHarvester?.kill() } catch { /* already gone */ }
   try { _jsonlIngester?.send?.({ type: 'shutdown' }) } catch { /* already gone */ }
   try { _jsonlIngester?.kill() } catch { /* already gone */ }

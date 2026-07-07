@@ -392,7 +392,7 @@ test('inbox pretty result uses shared foldable markdown renderer', () => {
     from: 'agent-1',
     timestamp: '2026-06-18T12:00:00.000Z',
     _activity: true,
-    _toolName: 'mcp__tlda__inbox',
+    _toolName: 'tlda/inbox',
     _toolArg: 'review',
     _prettyResult: JSON.stringify([{ type: 'text', text: prettyText }]),
   }], { ...ctx, foldHeights: { ...ctx.foldHeights, toolMarkdown: 4 } })

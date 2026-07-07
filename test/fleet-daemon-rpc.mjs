@@ -14,7 +14,7 @@
  */
 import { WebSocketServer } from 'ws'
 import { spawn } from 'child_process'
-import { chmodSync, mkdirSync, rmSync, writeFileSync } from 'fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import path from 'path'
 
@@ -38,6 +38,14 @@ writeFileSync(path.join(SHARED_CFG, 'config.json'), JSON.stringify({
   },
 }, null, 2))
 writeFileSync(path.join(DAEMON_CFG, 'config.json'), JSON.stringify({
+  defaultConfig: 'test',
+  configs: {
+    test: {
+      database: BASE,
+      store: BASE,
+      licenseKey: '',
+    },
+  },
   server: BASE,
   fleetServer: BASE,
   token: '',
@@ -49,6 +57,7 @@ let unknownOpResult = null
 let sendKeyResult = null
 let captureVisibleResult = null
 let captureBackscrollResult = null
+let materializeResult = null
 let helloOk = false
 
 function send(ws, obj) { ws.send(JSON.stringify(obj)) }
@@ -70,6 +79,19 @@ wss.on('connection', (ws) => {
       // backscroll capture remains available for lightbox/history views.
       setTimeout(() => send(ws, { type: 'rpc', id: 'r7', op: 'capture-pane', tmux_session: 'fleet-visible-canary', visible: true }), 700)
       setTimeout(() => send(ws, { type: 'rpc', id: 'r8', op: 'capture-pane', tmux_session: 'fleet-backscroll-canary', lines: 80 }), 800)
+      setTimeout(() => send(ws, {
+        type: 'rpc',
+        id: 'r9',
+        op: 'materialize-attachment',
+        event_id: 42,
+        attachment_id: 0,
+        source_agent: 'fleet:sender',
+        server_url: BASE,
+        url: 'data:text/plain;base64,aGVsbG8tcmVjaXBpZW50',
+        name: '../recipient-note.txt',
+        size: 15,
+        sha256: '06029fdf564d5c1de82ccdcff595bc9abd7342f499613af084cd88ac76987d27',
+      }), 900)
     }
     if (msg.type === 'rpc-reply') {
       if (msg.id === 'r1') listSessionsResult = msg
@@ -77,6 +99,7 @@ wss.on('connection', (ws) => {
       if (msg.id === 'r3') sendKeyResult = msg
       if (msg.id === 'r7') captureVisibleResult = msg
       if (msg.id === 'r8') captureBackscrollResult = msg
+      if (msg.id === 'r9') materializeResult = msg
     }
   })
 })
@@ -131,9 +154,10 @@ setTimeout(() => {
   console.log(`  send-key (bad session) reply: ${JSON.stringify(sendKeyResult)}`)
   console.log(`  visible capture reply: ${JSON.stringify(captureVisibleResult)}`)
   console.log(`  backscroll capture reply: ${JSON.stringify(captureBackscrollResult)}`)
+  console.log(`  materialize attachment reply: ${JSON.stringify(materializeResult)}`)
 
   // The daemon should always reply to every rpc id, regardless of success.
-  const allReplied = !!(listSessionsResult && unknownOpResult && sendKeyResult && captureVisibleResult && captureBackscrollResult)
+  const allReplied = !!(listSessionsResult && unknownOpResult && sendKeyResult && captureVisibleResult && captureBackscrollResult && materializeResult)
   // Unknown op MUST return error.
   const unknownIsError = unknownOpResult?.error?.includes('unknown op')
   // list-sessions either returns ok with sessions array, or errors out
@@ -147,15 +171,22 @@ setTimeout(() => {
     && !/(^| )-S( |$)/.test(captureVisibleResult.result.pane || '')
   const backscrollCaptureUsesStart = captureBackscrollResult?.result?.ok === true
     && /(^| )-S -80(\s|$)/.test(captureBackscrollResult.result.pane || '')
+  const materializedPath = materializeResult?.result?.localPath || materializeResult?.result?.path || ''
+  const materializeOk = materializeResult?.result?.sha256 === '06029fdf564d5c1de82ccdcff595bc9abd7342f499613af084cd88ac76987d27'
+    && materializeResult?.result?.localPath === materializeResult?.result?.path
+    && materializedPath.startsWith(path.join(TMP, '.config', 'tlda', 'inbox-refs'))
+    && materializedPath.endsWith('recipient-note.txt')
+    && existsSync(materializedPath)
+    && readFileSync(materializedPath, 'utf8') === 'hello-recipient'
   child.kill('SIGTERM')
   wss.close()
   rmSync(TMP, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
 
-  if (helloOk && allReplied && unknownIsError && listOk && sendOk && visibleCaptureUsesCurrentPane && backscrollCaptureUsesStart) {
+  if (helloOk && allReplied && unknownIsError && listOk && sendOk && visibleCaptureUsesCurrentPane && backscrollCaptureUsesStart && materializeOk) {
     console.log('PASS')
     process.exit(0)
   } else {
-    console.error(`FAIL — helloOk=${helloOk} allReplied=${allReplied} unknownIsError=${unknownIsError} listOk=${listOk} sendOk=${!!sendOk} visibleCaptureUsesCurrentPane=${visibleCaptureUsesCurrentPane} backscrollCaptureUsesStart=${backscrollCaptureUsesStart}`)
+    console.error(`FAIL — helloOk=${helloOk} allReplied=${allReplied} unknownIsError=${unknownIsError} listOk=${listOk} sendOk=${!!sendOk} visibleCaptureUsesCurrentPane=${visibleCaptureUsesCurrentPane} backscrollCaptureUsesStart=${backscrollCaptureUsesStart} materializeOk=${materializeOk}`)
     process.exit(1)
   }
 }, 2500)

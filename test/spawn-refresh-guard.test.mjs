@@ -12,7 +12,8 @@ function read(rel) {
 test('missing resume handle error does not recommend refresh', () => {
   const source = read('bin/lib/spawn/index.mjs')
   assert.doesNotMatch(source, /Use refresh to start fresh/)
-  assert.match(source, /Recover the original resume handle before respawning/)
+  assert.match(source, /Session resolution failed/)
+  assert.match(source, /session-tracking fault/)
 })
 
 test('MCP spawn surface does not expose refresh', () => {

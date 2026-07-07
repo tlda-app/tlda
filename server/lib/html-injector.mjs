@@ -51,6 +51,8 @@ const BRIDGE_SCRIPT = `
   // Read shape ID from query string
   var params = new URLSearchParams(window.location.search);
   var shapeId = params.get('_tldaShape') || '';
+  var tldaWheelOwner = 'page';
+  var tldaWheelViewportId = '';
 
   // Strip Quarto navigation elements for clean embedding
   function stripNav() {
@@ -96,6 +98,10 @@ const BRIDGE_SCRIPT = `
       if (e.data?.type === 'tlda-dark-mode') {
         document.documentElement.classList.toggle('tlda-dark', !!e.data.dark);
       }
+      if (e.data?.type === 'tlda-wheel-owner') {
+        tldaWheelOwner = e.data.owner === 'clip' ? 'clip' : 'page';
+        tldaWheelViewportId = tldaWheelOwner === 'clip' ? (e.data.viewportId || '') : '';
+      }
       if (e.data?.type === 'tlda-scroll-to-id') {
         var el = document.getElementById(e.data.id);
         if (el) {
@@ -136,7 +142,9 @@ const BRIDGE_SCRIPT = `
       e.preventDefault();
       if (window.parent !== window) {
         window.parent.postMessage({
-          type: 'tlda-wheel', shapeId: shapeId,
+          type: tldaWheelOwner === 'clip' ? 'tlda-clip-wheel' : 'tlda-wheel',
+          shapeId: shapeId,
+          viewportId: tldaWheelViewportId,
           deltaX: e.deltaX, deltaY: e.deltaY, deltaMode: e.deltaMode,
           clientX: e.clientX, clientY: e.clientY,
           ctrlKey: e.ctrlKey, metaKey: e.metaKey,
@@ -173,7 +181,9 @@ const BRIDGE_SCRIPT = `
       var deltaY = tldaLastTouch.y - touch.y;
       tldaLastTouch = touch;
       window.parent.postMessage({
-        type: 'tlda-wheel', shapeId: shapeId,
+        type: tldaWheelOwner === 'clip' ? 'tlda-clip-wheel' : 'tlda-wheel',
+        shapeId: shapeId,
+        viewportId: tldaWheelViewportId,
         deltaX: deltaX, deltaY: deltaY, deltaMode: 0,
         clientX: touch.x, clientY: touch.y,
         ctrlKey: false, metaKey: false,
@@ -773,6 +783,8 @@ const SLIDES_BRIDGE_SCRIPT = `
   var indexh = parseInt(params.get('_tldaH') || '0', 10);
   var indexv = parseInt(params.get('_tldaV') || '0', 10);
   var deckMode = params.get('_tldaDeck') === '1';
+  var tldaWheelOwner = 'page';
+  var tldaWheelViewportId = '';
   var slideBackground = null;
 
   function isVisibleColor(color) {
@@ -1014,6 +1026,10 @@ const SLIDES_BRIDGE_SCRIPT = `
         setTimeout(reportFragmentState, 50);
         setTimeout(reportSlideHeight, 50);
       }
+      if (e.data.type === 'tlda-wheel-owner') {
+        tldaWheelOwner = e.data.owner === 'clip' ? 'clip' : 'page';
+        tldaWheelViewportId = tldaWheelOwner === 'clip' ? (e.data.viewportId || '') : '';
+      }
     });
 
     // Forward wheel events to parent (TLDraw handles scrolling)
@@ -1025,7 +1041,9 @@ const SLIDES_BRIDGE_SCRIPT = `
       e.preventDefault();
       if (window.parent !== window) {
         window.parent.postMessage({
-          type: 'tlda-wheel', shapeId: shapeId,
+          type: tldaWheelOwner === 'clip' ? 'tlda-clip-wheel' : 'tlda-wheel',
+          shapeId: shapeId,
+          viewportId: tldaWheelViewportId,
           deltaX: e.deltaX, deltaY: e.deltaY, deltaMode: e.deltaMode,
           clientX: e.clientX, clientY: e.clientY,
           ctrlKey: e.ctrlKey, metaKey: e.metaKey,
@@ -1055,7 +1073,9 @@ const SLIDES_BRIDGE_SCRIPT = `
       if (window.parent === window || !tldaSlideLastTouch) return;
       var touch = tldaSlideTouchCenter(e.touches);
       window.parent.postMessage({
-        type: 'tlda-wheel', shapeId: shapeId,
+        type: tldaWheelOwner === 'clip' ? 'tlda-clip-wheel' : 'tlda-wheel',
+        shapeId: shapeId,
+        viewportId: tldaWheelViewportId,
         deltaX: tldaSlideLastTouch.x - touch.x,
         deltaY: tldaSlideLastTouch.y - touch.y,
         deltaMode: 0,

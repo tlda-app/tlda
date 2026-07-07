@@ -108,7 +108,7 @@ import { initSnapshots } from './snapshotStore'
 import { PDF_HEIGHT } from './layoutConstants'
 import { setupPulseForDiffLayout } from './diffHelpers'
 import { openInEditor } from './texsync'
-import { setupSvgEditor, anchorIdToLabel, type ReloadResult } from './editorSetup'
+import { setupSvgEditor, anchorIdToLabel, reloadPages, type ReloadResult } from './editorSetup'
 import * as sourceMap from './sourceMap'
 import { getFormatConfig, homeTool as getHomeTool } from './formatConfig'
 import { useSnapshotTimeline } from './hooks/useSnapshotTimeline'
@@ -268,14 +268,17 @@ interface SvgDocumentEditorProps {
  */
 const MAX_VISIBLE_VERSIONS = 5
 
-function VersionStamp({ docName }: { docName: string }) {
+function VersionStamp({ document }: { document: SvgDocument }) {
+  const docName = document.name
   const editor = useEditor()
   const [sentinel, setSentinel] = useState<{ commitHash: string; buildReadyAt: number } | null>(null)
   const [history, setHistory] = useState<Array<{ hash: string; timestamp: number }>>([])
   const [activeIdx, setActiveIdx] = useState(0)
   const [hovering, setHovering] = useState(false)
   const lastReloadAtRef = useRef<number>(0)
+  const lastHtmlReloadAtRef = useRef<number>(0)
   const prevHashRef = useRef<string | null>(null)
+  const usesHtmlPages = document.format === 'html' || document.format === 'markdown'
 
   // Watch the Yjs sentinel — updates exactly when the shadow git commit completes.
   // Yjs is convergent: reconnecting always delivers the latest state.
@@ -315,7 +318,11 @@ function VersionStamp({ docName }: { docName: string }) {
     if (lastReloadAtRef.current > 0 && sentinel.buildReadyAt > lastReloadAtRef.current + 5000) {
       dispatchSignalDirect('signal:reload', { type: 'full', timestamp: Date.now() })
     }
-  }, [sentinel?.commitHash, docName])
+    if (usesHtmlPages && sentinel.buildReadyAt > lastHtmlReloadAtRef.current) {
+      lastHtmlReloadAtRef.current = sentinel.buildReadyAt
+      reloadPages(editor, document, null)
+    }
+  }, [sentinel?.commitHash, docName, document, editor, usesHtmlPages])
 
   // Track reload signals to detect misses.
   useEffect(() => {
@@ -1203,7 +1210,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
   // AgentPill replaced by FleetIconPill in build-pills-row
   const agentPillContent = null
 
-  const versionStampContent = <VersionStamp docName={document.name} />
+  const versionStampContent = <VersionStamp document={document} />
 
   return (
     <>

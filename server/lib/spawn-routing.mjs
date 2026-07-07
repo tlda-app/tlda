@@ -25,6 +25,15 @@ function getConfiguredSpawnMachine(fleetStore, identity) {
   return typeof value === 'string' && value.trim() ? value.trim() : null
 }
 
+function splitDaemonKey(value) {
+  const idx = String(value || '').indexOf(':')
+  if (idx < 1) return { machine_id: String(value || ''), env_name: null }
+  return {
+    machine_id: String(value).slice(0, idx),
+    env_name: String(value).slice(idx + 1) || null,
+  }
+}
+
 function requireConnected(machineId, daemonConnections, context, onDaemonMissing, envName = null) {
   if (!machineId || !envName) throw new Error(`${context} has no daemon address configured — cannot spawn agents`)
   const key = daemonKey(machineId, envName)
@@ -35,12 +44,41 @@ function requireConnected(machineId, daemonConnections, context, onDaemonMissing
   return { machine_id: machineId, env_name: envName }
 }
 
+function requireConnectedMachine(machineId, daemonConnections, context, onDaemonMissing) {
+  const matches = connectedDaemonAddresses(daemonConnections)
+    .filter(d => d.machine_id === machineId)
+  if (matches.length === 1) {
+    return requireConnected(machineId, daemonConnections, context, onDaemonMissing, matches[0].env_name)
+  }
+  if (matches.length > 1) {
+    throw new Error(
+      `${context} has multiple daemon environments configured for "${machineId}" (${matches.map(d => d.key).join(', ')}) — cannot spawn agents`,
+    )
+  }
+  onDaemonMissing?.(machineId, context, { envName: null, hasWs: false, readyState: 'missing' })
+  throw new Error(`No fleet daemon connected for machine "${machineId}" (${context}) — cannot spawn agents`)
+}
+
+function requireConnectedRoute(route, daemonConnections, context, onDaemonMissing) {
+  if (route?.env_name) {
+    return requireConnected(route.machine_id, daemonConnections, context, onDaemonMissing, route.env_name)
+  }
+  return requireConnectedMachine(route?.machine_id, daemonConnections, context, onDaemonMissing)
+}
+
+function normalizeConfiguredSpawnMachine(fleetStore, identity, rawValue, route) {
+  if (!fleetStore?.setFleetPref || !identity?.id || !rawValue || !route?.machine_id || !route?.env_name) return
+  const normalized = daemonKey(route.machine_id, route.env_name)
+  if (rawValue === normalized) return
+  fleetStore.setFleetPref(identity.id, SPAWN_MACHINE_PREF_KEY, normalized)
+}
+
 function documentedDefaultMachine(identity, daemonConnections) {
   const daemons = connectedDaemonAddresses(daemonConnections)
-  if (!identity?.human && identity?.machine_id && identity?.env_name) {
+  if (!identity?.human && identity?.machine_id) {
     return {
       machine_id: identity.machine_id,
-      env_name: identity.env_name,
+      env_name: identity.env_name || null,
       source: 'agent-own-machine',
     }
   }
@@ -80,22 +118,25 @@ export function resolveSpawnMachine({ caller, targetAgent, fresh, respawn, refre
   if (!fresh) {
     const inferred = documentedDefaultMachine(caller, daemonConnections)
     return {
-      ...requireConnected(inferred.machine_id, daemonConnections, `caller ${caller?.id || 'identity'} default spawn machine`, onDaemonMissing, inferred.env_name),
+      ...requireConnectedRoute(inferred, daemonConnections, `caller ${caller?.id || 'identity'} default spawn machine`, onDaemonMissing),
       source: inferred.source,
     }
   }
 
   const configured = getConfiguredSpawnMachine(fleetStore, caller)
   if (configured) {
+    const configuredRoute = splitDaemonKey(configured)
+    const route = requireConnectedRoute(configuredRoute, daemonConnections, `caller ${caller.id} configured spawn machine`, onDaemonMissing)
+    normalizeConfiguredSpawnMachine(fleetStore, caller, configured, route)
     return {
-      ...requireConnected(configured, daemonConnections, `caller ${caller.id} configured spawn machine`, onDaemonMissing, caller.env_name),
+      ...route,
       source: 'caller-configured-spawn-machine',
     }
   }
 
   const inferred = documentedDefaultMachine(caller, daemonConnections)
   return {
-    ...requireConnected(inferred.machine_id, daemonConnections, `caller ${caller?.id || 'identity'} default spawn machine`, onDaemonMissing, inferred.env_name),
+    ...requireConnectedRoute(inferred, daemonConnections, `caller ${caller?.id || 'identity'} default spawn machine`, onDaemonMissing),
     source: inferred.source,
   }
 }

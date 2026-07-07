@@ -9,6 +9,8 @@ import { JSDOM } from 'jsdom'
 import { detectAttachments, processMessageText } from '../shared/message-processing.mjs'
 import { renderChatLine, resolveInlineAttachments } from '../src/fleet/chat-render.mjs'
 
+const apiFileUrlRe = /^(?:https?:\/\/[^/]+)?\/api\/file\?path=/
+
 function withTempDir(fn) {
   return async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-artifacts-'))
@@ -85,7 +87,7 @@ test('bare local image path uploads and rewrites to an attachment token', withTe
     assert.equal(result.inlineAttachments.length, 1)
     assert.equal(result.inlineAttachments[0].path, img)
     assert.equal(result.inlineAttachments[0].name, 'activity-card.png')
-    assert.match(result.inlineAttachments[0].url, /^\/api\/file\?path=/)
+    assert.match(result.inlineAttachments[0].url, apiFileUrlRe)
     assert.equal(stub.uploads.length, 1)
     assert.equal(stub.uploads[0].name, 'activity-card.png')
   } finally {
@@ -110,7 +112,7 @@ test('uploaded local image token renders as a visible chat image', withTempDir(a
     const dom = new JSDOM(`<div id="root">${html}</div>`)
     const rendered = dom.window.document.querySelector('img.chat-image')
     assert.ok(rendered)
-    assert.match(rendered.getAttribute('src'), /^\/api\/file\?path=/)
+    assert.match(rendered.getAttribute('src'), apiFileUrlRe)
     assert.equal(rendered.getAttribute('alt'), 'activity-card.png')
     assert.equal(dom.window.document.getElementById('root').textContent.includes(img), false)
   } finally {
@@ -128,7 +130,7 @@ test('uploaded local image token in markdown image syntax renders with server UR
     const dom = new JSDOM(`<div id="root">${html}</div>`)
     const rendered = dom.window.document.querySelector('img.chat-image')
     assert.ok(rendered)
-    assert.match(rendered.getAttribute('src'), /^\/api\/file\?path=/)
+    assert.match(rendered.getAttribute('src'), apiFileUrlRe)
     assert.equal(rendered.getAttribute('alt'), 'proof')
   } finally {
     await stub.close()
@@ -166,7 +168,7 @@ test('markdown link local target uploads instead of leaking a sender-local link'
     assert.deepEqual(result.brokenPaths, [])
     assert.equal(result.inlineAttachments.length, 1)
     assert.equal(result.inlineAttachments[0].path, actual)
-    assert.match(result.inlineAttachments[0].url, /^\/api\/file\?path=/)
+    assert.match(result.inlineAttachments[0].url, apiFileUrlRe)
     assert.equal(stub.uploads.length, 1)
     assert.equal(stub.uploads[0].name, 'wm-implementation-plan.md')
   } finally {
@@ -189,8 +191,108 @@ test('markdown link /tmp image target uploads and renders inline', async () => {
     assert.deepEqual(result.brokenPaths, [])
     assert.equal(result.inlineAttachments[0].path, img)
     assert.ok(rendered)
-    assert.match(rendered.getAttribute('src'), /^\/api\/file\?path=/)
+    assert.match(rendered.getAttribute('src'), apiFileUrlRe)
     assert.equal(dom.window.document.getElementById('root').textContent.includes(img), false)
+  } finally {
+    await stub.close()
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('same-origin /api/file temp image URL uploads and renders inline', async () => {
+  const dir = fs.mkdtempSync(path.join('/tmp', 'tlda-artifacts-'))
+  const img = path.join(dir, 'activity-card.png')
+  fs.writeFileSync(img, Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+  const stub = await startUploadStub()
+  try {
+    const localUrl = `/api/file?path=${encodeURIComponent(img)}`
+    const result = await processMessageText(`Artifact: ${localUrl}`, '/Users/skip/work/tlda', stub.baseUrl)
+    const html = resolveInlineAttachments(result.resolvedMessage, result.inlineAttachments, renderMarkdownStub)
+    const dom = new JSDOM(`<div id="root">${html}</div>`)
+    const rendered = dom.window.document.querySelector('img.chat-image')
+
+    assert.equal(result.resolvedMessage, 'Artifact: {{att:0}}')
+    assert.deepEqual(result.brokenPaths, [])
+    assert.equal(result.inlineAttachments[0].path, img)
+    assert.equal(result.inlineAttachments[0].name, 'activity-card.png')
+    assert.match(result.inlineAttachments[0].url, apiFileUrlRe)
+    assert.ok(rendered)
+    assert.match(rendered.getAttribute('src'), apiFileUrlRe)
+    assert.equal(dom.window.document.getElementById('root').textContent.includes('/api/file?path='), false)
+    assert.equal(stub.uploads.length, 1)
+    assert.equal(stub.uploads[0].name, 'activity-card.png')
+  } finally {
+    await stub.close()
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('localhost /api/file temp non-image URL uploads and renders as file chip', async () => {
+  const dir = fs.mkdtempSync(path.join('/tmp', 'tlda-artifacts-'))
+  const report = path.join(dir, 'artifact-report.txt')
+  fs.writeFileSync(report, 'artifact report\n')
+  const stub = await startUploadStub()
+  try {
+    const localUrl = `http://localhost:5176/api/file?path=${encodeURIComponent(report)}`
+    const result = await processMessageText(`Report: ${localUrl}`, '/Users/skip/work/tlda', stub.baseUrl)
+    const html = resolveInlineAttachments(result.resolvedMessage, result.inlineAttachments, renderMarkdownStub)
+    const dom = new JSDOM(`<div id="root">${html}</div>`)
+    const chip = dom.window.document.querySelector('.ref-chip-doc')
+    const renderedImage = dom.window.document.querySelector('img.chat-image')
+
+    assert.equal(result.resolvedMessage, 'Report: {{att:0}}')
+    assert.deepEqual(result.brokenPaths, [])
+    assert.equal(result.inlineAttachments[0].path, report)
+    assert.equal(result.inlineAttachments[0].name, 'artifact-report.txt')
+    assert.match(result.inlineAttachments[0].url, apiFileUrlRe)
+    assert.ok(chip)
+    assert.equal(renderedImage, null)
+    assert.match(chip.getAttribute('data-url'), apiFileUrlRe)
+    assert.equal(chip.textContent.includes('artifact-report.txt'), true)
+    assert.equal(dom.window.document.getElementById('root').textContent.includes('/api/file?path='), false)
+    assert.equal(stub.uploads.length, 1)
+    assert.equal(stub.uploads[0].name, 'artifact-report.txt')
+  } finally {
+    await stub.close()
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('configured-server /api/file temp URL uploads when sender has the file', async () => {
+  const dir = fs.mkdtempSync(path.join('/tmp', 'tlda-artifacts-'))
+  const img = path.join(dir, 'server-origin-shot.png')
+  fs.writeFileSync(img, Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+  const stub = await startUploadStub()
+  try {
+    const localUrl = `${stub.baseUrl}/api/file?path=${encodeURIComponent(img)}`
+    const result = await processMessageText(`Artifact: ${localUrl}`, '/Users/skip/work/tlda', stub.baseUrl)
+
+    assert.equal(result.resolvedMessage, 'Artifact: {{att:0}}')
+    assert.deepEqual(result.brokenPaths, [])
+    assert.equal(result.inlineAttachments[0].path, img)
+    assert.equal(result.inlineAttachments[0].name, 'server-origin-shot.png')
+    assert.match(result.inlineAttachments[0].url, apiFileUrlRe)
+    assert.equal(stub.uploads.length, 1)
+    assert.equal(stub.uploads[0].name, 'server-origin-shot.png')
+  } finally {
+    await stub.close()
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('off-origin /api/file temp URL is not uploaded from sender filesystem', async () => {
+  const dir = fs.mkdtempSync(path.join('/tmp', 'tlda-artifacts-'))
+  const img = path.join(dir, 'off-origin-shot.png')
+  fs.writeFileSync(img, Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+  const stub = await startUploadStub()
+  try {
+    const remoteUrl = `https://example.test/api/file?path=${encodeURIComponent(img)}`
+    const result = await processMessageText(`Artifact: ${remoteUrl}`, '/Users/skip/work/tlda', stub.baseUrl)
+
+    assert.equal(result.resolvedMessage, `Artifact: ${remoteUrl}`)
+    assert.deepEqual(result.inlineAttachments, [])
+    assert.deepEqual(result.brokenPaths, [])
+    assert.equal(stub.uploads.length, 0)
   } finally {
     await stub.close()
     fs.rmSync(dir, { recursive: true, force: true })

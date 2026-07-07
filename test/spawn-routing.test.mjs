@@ -7,6 +7,9 @@ function store(prefs = {}) {
     getFleetPref(userId, key) {
       return prefs[`${userId}:${key}`]
     },
+    setFleetPref(userId, key, value) {
+      prefs[`${userId}:${key}`] = value
+    },
   }
 }
 
@@ -17,17 +20,49 @@ function daemons(...machineIds) {
   }))
 }
 
-test('fresh human spawn routes to configured spawn machine, not current device', () => {
-  const caller = { id: 'fleet:skip', human: true, machine_id: 'ipad', env_name: 'unstable' }
+test('fresh human spawn routes to configured spawn machine and uses the daemon env', () => {
+  const caller = { id: 'fleet:skip', human: true, machine_id: 'ipad' }
+  const prefs = { [`fleet:skip:${SPAWN_MACHINE_PREF_KEY}`]: 'air' }
   const route = resolveSpawnMachine({
     caller,
     fresh: true,
-    fleetStore: store({ [`fleet:skip:${SPAWN_MACHINE_PREF_KEY}`]: 'air' }),
-    daemonConnections: daemons('air:unstable', 'ipad:unstable'),
+    fleetStore: store(prefs),
+    daemonConnections: daemons('air:stable', 'ipad:unstable'),
   })
   assert.equal(route.machine_id, 'air')
-  assert.equal(route.env_name, 'unstable')
+  assert.equal(route.env_name, 'stable')
   assert.equal(route.source, 'caller-configured-spawn-machine')
+  assert.equal(prefs[`fleet:skip:${SPAWN_MACHINE_PREF_KEY}`], 'air:stable')
+})
+
+test('fresh human spawn routes machine-only mini pref to connected mini daemon and normalizes it', () => {
+  const caller = { id: 'fleet:skip', human: true, machine_id: null, env_name: null }
+  const prefs = { [`fleet:skip:${SPAWN_MACHINE_PREF_KEY}`]: 'mini' }
+  const route = resolveSpawnMachine({
+    caller,
+    fresh: true,
+    fleetStore: store(prefs),
+    daemonConnections: daemons('mini:default'),
+  })
+  assert.equal(route.machine_id, 'mini')
+  assert.equal(route.env_name, 'default')
+  assert.equal(route.source, 'caller-configured-spawn-machine')
+  assert.equal(prefs[`fleet:skip:${SPAWN_MACHINE_PREF_KEY}`], 'mini:default')
+})
+
+test('fresh human spawn routes already-normalized daemon pref directly', () => {
+  const caller = { id: 'fleet:skip', human: true, machine_id: null, env_name: null }
+  const prefs = { [`fleet:skip:${SPAWN_MACHINE_PREF_KEY}`]: 'mini:default' }
+  const route = resolveSpawnMachine({
+    caller,
+    fresh: true,
+    fleetStore: store(prefs),
+    daemonConnections: daemons('mini:default'),
+  })
+  assert.equal(route.machine_id, 'mini')
+  assert.equal(route.env_name, 'default')
+  assert.equal(route.source, 'caller-configured-spawn-machine')
+  assert.equal(prefs[`fleet:skip:${SPAWN_MACHINE_PREF_KEY}`], 'mini:default')
 })
 
 test('fresh non-human spawn defaults to the agent own machine', () => {
@@ -40,6 +75,19 @@ test('fresh non-human spawn defaults to the agent own machine', () => {
   })
   assert.equal(route.machine_id, 'mini')
   assert.equal(route.env_name, 'stable')
+  assert.equal(route.source, 'agent-own-machine')
+})
+
+test('fresh non-human default routes own machine through connected daemon when env is missing', () => {
+  const caller = { id: 'fleet:worker', human: false, machine_id: 'mini', env_name: null }
+  const route = resolveSpawnMachine({
+    caller,
+    fresh: true,
+    fleetStore: store(),
+    daemonConnections: daemons('mini:default', 'air:stable'),
+  })
+  assert.equal(route.machine_id, 'mini')
+  assert.equal(route.env_name, 'default')
   assert.equal(route.source, 'agent-own-machine')
 })
 
@@ -107,7 +155,7 @@ test('welcomed daemon map entry is routable by the same resolver', () => {
   daemonConnections.set('air:stable', welcomedDaemonWs)
 
   const route = resolveSpawnMachine({
-    caller: { id: 'fleet:skip', human: true, machine_id: 'ipad', env_name: 'stable' },
+    caller: { id: 'fleet:skip', human: true, machine_id: 'ipad' },
     fresh: true,
     fleetStore: store({ [`fleet:skip:${SPAWN_MACHINE_PREF_KEY}`]: 'air' }),
     daemonConnections,
@@ -119,23 +167,32 @@ test('welcomed daemon map entry is routable by the same resolver', () => {
 
 test('configured spawn machine must be connected', () => {
   assert.throws(() => resolveSpawnMachine({
-    caller: { id: 'fleet:skip', human: true, machine_id: 'ipad', env_name: 'stable' },
+    caller: { id: 'fleet:skip', human: true, machine_id: 'ipad' },
     fresh: true,
     fleetStore: store({ [`fleet:skip:${SPAWN_MACHINE_PREF_KEY}`]: 'air' }),
     daemonConnections: daemons('mini:stable'),
-  }), /No fleet daemon connected for "air:stable"/)
+  }), /No fleet daemon connected for machine "air"/)
 })
 
 test('missing configured daemon invokes observability hook before failing', () => {
   const misses = []
   assert.throws(() => resolveSpawnMachine({
-    caller: { id: 'fleet:skip', human: true, machine_id: 'ipad', env_name: 'stable' },
+    caller: { id: 'fleet:skip', human: true, machine_id: 'ipad' },
     fresh: true,
     fleetStore: store({ [`fleet:skip:${SPAWN_MACHINE_PREF_KEY}`]: 'air' }),
     daemonConnections: daemons('mini:stable'),
     onDaemonMissing: (...args) => misses.push(args),
-  }), /No fleet daemon connected for "air:stable"/)
+  }), /No fleet daemon connected for machine "air"/)
   assert.equal(misses.length, 1)
   assert.equal(misses[0][0], 'air')
   assert.match(misses[0][1], /configured spawn machine/)
+})
+
+test('configured spawn machine fails loud when multiple daemon envs match', () => {
+  assert.throws(() => resolveSpawnMachine({
+    caller: { id: 'fleet:skip', human: true, machine_id: 'ipad' },
+    fresh: true,
+    fleetStore: store({ [`fleet:skip:${SPAWN_MACHINE_PREF_KEY}`]: 'air' }),
+    daemonConnections: daemons('air:stable', 'air:unstable'),
+  }), /multiple daemon environments configured for "air".*air:stable, air:unstable/)
 })

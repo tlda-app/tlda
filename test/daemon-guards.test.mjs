@@ -7,9 +7,12 @@ import path from 'node:path'
 import {
   claudeSessionBelongsToAgent,
   decideMissingLiveness,
+  decideTerminalWatchExit,
   detectSpawnStartupFailureTranscript,
+  extractFleetProcessIdentity,
   harnessKindForAgent,
   isPlaywrightBrowserArgs,
+  selectOrphanAgentProcesses,
   shouldClaimClaudeWatcher,
   shouldClaimCodexWatcher,
   shouldFlushWatch,
@@ -72,6 +75,75 @@ test('playwright reaper does not classify codex cache grants as browsers', () =>
   assert.equal(isPlaywrightBrowserArgs(
     '/Users/skip/Library/Caches/ms-playwright/chromium-1234/chrome-mac/Chromium.app/Contents/MacOS/Chromium --remote-debugging-port=12345'
   ), true)
+})
+
+test('agent process identity is extracted from claude env and resume args', () => {
+  const identity = extractFleetProcessIdentity(
+    "FLEET_ID='fleet:abc123' FLEET_TMUX_SESSION='fleet-worker' claude --resume 'sess-123' --model opus"
+  )
+  assert.deepEqual(identity, {
+    fleetId: 'fleet:abc123',
+    tmuxSession: 'fleet-worker',
+    resumeId: 'sess-123',
+  })
+})
+
+test('agent process identity is extracted from codex mcp env config args', () => {
+  const identity = extractFleetProcessIdentity(
+    "codex resume 'rollout-123' -c 'mcp_servers.tlda.env.FLEET_ID=fleet:codex1' -c 'mcp_servers.tlda.env.FLEET_TMUX_SESSION=fleet-codex1'"
+  )
+  assert.deepEqual(identity, {
+    fleetId: 'fleet:codex1',
+    tmuxSession: 'fleet-codex1',
+    resumeId: 'rollout-123',
+  })
+})
+
+test('orphan agent selector chooses only old known harness processes without a live tmux backing', () => {
+  const agents = [
+    { id: 'fleet:old', friendly_name: 'old-agent', tmux_session: 'fleet-old', session_id: 'sess-old', session_ids: [], metadata: { kind: 'claude' } },
+    { id: 'fleet:live', friendly_name: 'live-agent', tmux_session: 'fleet-live', session_id: 'sess-live', session_ids: [], metadata: { kind: 'claude' } },
+    { id: 'fleet:bot', friendly_name: 'todd', tmux_session: 'fleet-todd', session_id: 'sess-bot', labels: ['bot'], metadata: { kind: 'claude', bot: 'todd' } },
+  ]
+  const processes = [
+    { pid: 101, ppid: 1, ageMs: 3 * 60 * 60 * 1000, args: "FLEET_ID='fleet:old' FLEET_TMUX_SESSION='fleet-old' claude --resume sess-old" },
+    { pid: 102, ppid: 1, ageMs: 3 * 60 * 60 * 1000, args: "FLEET_ID='fleet:live' FLEET_TMUX_SESSION='fleet-live' claude --resume sess-live" },
+    { pid: 103, ppid: 1, ageMs: 3 * 60 * 60 * 1000, args: "FLEET_ID='fleet:bot' FLEET_TMUX_SESSION='fleet-todd' claude --resume sess-bot" },
+    { pid: 104, ppid: 1, ageMs: 3 * 60 * 60 * 1000, args: "claude --resume unknown-user-session" },
+    { pid: 105, ppid: 1, ageMs: 5 * 60 * 1000, args: "FLEET_ID='fleet:old' FLEET_TMUX_SESSION='fleet-old' claude --resume sess-old" },
+  ]
+
+  const { selected, skipped } = selectOrphanAgentProcesses({
+    processes,
+    agents,
+    liveTmuxSessions: new Set(['fleet-live']),
+    protectedPids: new Set(),
+    minAgeMs: 30 * 60 * 1000,
+  })
+
+  assert.deepEqual(selected.map(p => p.pid), [101])
+  assert.equal(selected[0].agentId, 'fleet:old')
+  assert.equal(skipped.find(p => p.pid === 102)?.reason, 'agent-session-live')
+  assert.equal(skipped.find(p => p.pid === 103)?.reason, 'no-known-agent-match')
+  assert.equal(skipped.find(p => p.pid === 104)?.reason, 'no-known-agent-match')
+  assert.equal(skipped.find(p => p.pid === 105)?.reason, 'too-new')
+})
+
+test('orphan agent selector protects processes in a live tmux pane tree even without session text', () => {
+  const { selected, skipped } = selectOrphanAgentProcesses({
+    processes: [
+      { pid: 201, ppid: 200, ageMs: 2 * 60 * 60 * 1000, args: "FLEET_ID='fleet:a' claude --resume sess-a" },
+    ],
+    agents: [
+      { id: 'fleet:a', friendly_name: 'a', session_id: 'sess-a', session_ids: [], metadata: { kind: 'claude' } },
+    ],
+    liveTmuxSessions: new Set(),
+    protectedPids: new Set([201]),
+    minAgeMs: 30 * 60 * 1000,
+  })
+
+  assert.deepEqual(selected, [])
+  assert.equal(skipped[0].reason, 'live-pane-process')
 })
 
 test('codex watcher ownership is not stolen without a matching rollout id', () => {
@@ -197,6 +269,20 @@ test('runtime liveness miss can hibernate immediately when process truth is requ
     alive: false,
     hibernate: true,
     since: 10_000,
+  })
+})
+
+test('terminal-watch exit does not imply agent death while tmux pane is live', () => {
+  assert.deepEqual(decideTerminalWatchExit({ paneLive: true }), {
+    terminalDead: false,
+    reason: 'watcher-exited-pane-live',
+  })
+})
+
+test('terminal-watch exit reports terminal-dead only when tmux pane is dead or missing', () => {
+  assert.deepEqual(decideTerminalWatchExit({ paneLive: false }), {
+    terminalDead: true,
+    reason: 'pane-dead-or-missing',
   })
 })
 

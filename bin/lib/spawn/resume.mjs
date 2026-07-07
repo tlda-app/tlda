@@ -50,6 +50,27 @@ function validIdentityRecord(rec, agent, kind) {
   return true
 }
 
+function findClaudeSessionByFleetId(agent, { projectsBase } = {}) {
+  const base = claudeProjectsBase(projectsBase)
+  const fleetId = agent?.id
+  if (!fleetId || !fs.existsSync(base)) return null
+  const candidates = []
+  for (const fpath of walkFiles(base, (_full, name) => name.endsWith('.jsonl'))) {
+    const identity = scanClaudeJsonlIdentity(fpath)
+    if (identity.fleetId !== fleetId) continue
+    let st
+    try {
+      st = fs.statSync(fpath)
+    } catch {
+      continue
+    }
+    candidates.push({ sessionId: path.basename(fpath, '.jsonl'), mtime: st.mtimeMs, fpath, cwd: identity.cwd || jsonlPathToCwd(fpath) })
+  }
+  candidates.sort((a, b) => b.mtime - a.mtime)
+  const best = candidates[0]
+  return best ? { kind: 'claude', sessionId: best.sessionId, jsonlPath: best.fpath, cwd: best.cwd } : null
+}
+
 function walkFiles(root, accept) {
   const out = []
   function visit(dir) {
@@ -148,17 +169,21 @@ export function findClaudeSession(agent, options = {}) {
   if (primary) {
     const rec = sessionIdentityRecord(primary, options)
     if (rec) {
-      if (!validIdentityRecord(rec, agent, 'claude')) return null
-      const p = rec.jsonl_path && fs.existsSync(rec.jsonl_path)
-        ? rec.jsonl_path
-        : claudeJsonlPath(primary, { projectsBase })
-      if (p) return { kind: 'claude', sessionId: primary, jsonlPath: p, cwd: rec.cwd || jsonlPathToCwd(p) }
+      if (!validIdentityRecord(rec, agent, 'claude')) {
+        if (sessionOverride) return null
+      } else {
+        const p = rec.jsonl_path && fs.existsSync(rec.jsonl_path)
+          ? rec.jsonl_path
+          : claudeJsonlPath(primary, { projectsBase })
+        if (p) return { kind: 'claude', sessionId: primary, jsonlPath: p, cwd: rec.cwd || jsonlPathToCwd(p) }
+      }
     }
-    if (!sessionOverride && !isRespawnIdentityCaughtUp(options)) return null
     const p = claudeJsonlPath(primary, { projectsBase })
     if (p) {
       const identity = scanClaudeJsonlIdentity(p)
-      return { kind: 'claude', sessionId: primary, jsonlPath: p, cwd: identity.cwd || jsonlPathToCwd(p) }
+      if (sessionOverride || !identity.fleetId || !agent?.id || identity.fleetId === agent.id) {
+        return { kind: 'claude', sessionId: primary, jsonlPath: p, cwd: identity.cwd || jsonlPathToCwd(p) }
+      }
     }
   }
   for (const rec of sessionIdentityRecords(agent, 'claude', options)) {
@@ -167,7 +192,6 @@ export function findClaudeSession(agent, options = {}) {
       : claudeJsonlPath(rec.session_id, { projectsBase })
     if (p) return { kind: 'claude', sessionId: rec.session_id, jsonlPath: p, cwd: rec.cwd || jsonlPathToCwd(p) }
   }
-  if (!isRespawnIdentityCaughtUp(options)) return null
   let ids = agent?.session_ids || agent?.sessions || []
   if (typeof ids === 'string') {
     try {
@@ -181,27 +205,15 @@ export function findClaudeSession(agent, options = {}) {
     const p = claudeJsonlPath(sid, { projectsBase })
     if (p) {
       const identity = scanClaudeJsonlIdentity(p)
-      return { kind: 'claude', sessionId: sid, jsonlPath: p, cwd: identity.cwd || jsonlPathToCwd(p) }
+      if (!identity.fleetId || !agent?.id || identity.fleetId === agent.id) {
+        return { kind: 'claude', sessionId: sid, jsonlPath: p, cwd: identity.cwd || jsonlPathToCwd(p) }
+      }
     }
   }
-  const base = claudeProjectsBase(projectsBase)
-  const fleetId = agent?.id
-  if (!fleetId || !fs.existsSync(base)) return null
-  const candidates = []
-  for (const fpath of walkFiles(base, (_full, name) => name.endsWith('.jsonl'))) {
-    const identity = scanClaudeJsonlIdentity(fpath)
-    if (identity.fleetId !== fleetId) continue
-    let st
-    try {
-      st = fs.statSync(fpath)
-    } catch {
-      continue
-    }
-    candidates.push({ sessionId: path.basename(fpath, '.jsonl'), mtime: st.mtimeMs, fpath, cwd: identity.cwd || jsonlPathToCwd(fpath) })
-  }
-  candidates.sort((a, b) => b.mtime - a.mtime)
-  const best = candidates[0]
-  return best ? { kind: 'claude', sessionId: best.sessionId, jsonlPath: best.fpath, cwd: best.cwd } : null
+  const owned = findClaudeSessionByFleetId(agent, { projectsBase })
+  if (owned) return owned
+  if (!isRespawnIdentityCaughtUp(options)) return null
+  return null
 }
 
 export function codexRolloutPath(rolloutId, { sessionsBase } = {}) {

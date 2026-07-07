@@ -10,7 +10,7 @@
  * Triggered by custom DOM events from FleetChatShape ref-chip hover.
  */
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
-import { stopEventPropagation, type Editor, type TLAnyShapeUtilConstructor, type TLShapeId, type TLStateNodeConstructor } from 'tldraw'
+import { stopEventPropagation, useValue, type Editor, type TLAnyShapeUtilConstructor, type TLShapeId, type TLStateNodeConstructor } from 'tldraw'
 import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
 import type {
   AnnotationViewerSurfaceKind,
@@ -265,9 +265,20 @@ export function AnnotationViewer({
     }
   }, [data])
 
+  const shapeIdsKey = useMemo(() => (data?.shapeIds || []).join('\0'), [data?.shapeIds])
+  const liveHtmlPageBounds = useValue('annotation-viewer-live-html-page-bounds', () => {
+    if (!data?.useFullBounds || !data.shapeIds?.length) return null
+    const shapeId = data.shapeIds[0] as TLShapeId
+    const shape = mainEditor.getShape(shapeId) as { type?: string } | undefined
+    if (shape?.type !== 'html-page') return null
+    const bounds = mainEditor.getShapePageBounds(shapeId)
+    return bounds ? { x: bounds.x, y: bounds.y, w: bounds.w, h: bounds.h } : null
+  }, [data?.useFullBounds, shapeIdsKey, mainEditor])
+  const targetBounds = liveHtmlPageBounds || data?.bounds || null
+
   const handleGo = useCallback((e: React.MouseEvent) => {
     stopEventPropagation(e)
-    if (!data) return
+    if (!data || !targetBounds) return
     if (isPhoneViewportSurface()) {
       setSize(phoneViewerSize())
       setState('phone-pane')
@@ -277,16 +288,16 @@ export function AnnotationViewer({
     prevViewRef.current = {
       pageId: mainEditor.getCurrentPageId(),
       camera: { x: cam.x, y: cam.y, z: cam.z },
-      movedShapes: shiftMarginShapesForTarget(data.bounds),
+      movedShapes: shiftMarginShapesForTarget(targetBounds),
     }
     sendCanvasPageShapesToBack(mainEditor)
     suppressFleetHudCameraTracking()
     if (data.useFullBounds) {
-      const cx = data.bounds.x + data.bounds.w / 2
-      const cy = data.bounds.y + data.bounds.h / 2
+      const cx = targetBounds.x + targetBounds.w / 2
+      const cy = targetBounds.y + targetBounds.h / 2
       mainEditor.centerOnPoint({ x: cx, y: cy }, { animation: { duration: 300 } })
     } else {
-      const targetY = -(data.bounds.y - 100)
+      const targetY = -(targetBounds.y - 100)
       mainEditor.setCamera(
         { x: cam.x, y: targetY, z: cam.z },
         { animation: { duration: 300 } }
@@ -294,7 +305,7 @@ export function AnnotationViewer({
     }
     window.setTimeout(() => sendCanvasPageShapesToBack(mainEditor), 350)
     setState('navigated')
-  }, [data, mainEditor])
+  }, [data, mainEditor, shiftMarginShapesForTarget, targetBounds])
 
   // Go back
   const handleBack = useCallback((e: React.MouseEvent) => {
@@ -376,19 +387,19 @@ export function AnnotationViewer({
   // object literal the prop reference changes on every render, so any other
   // state update would snap the camera back and undo any pan the user did.
   const clipBounds = useMemo<ClipBounds | null>(() => {
-    if (!data) return null
+    if (!data || !targetBounds) return null
     return data.useFullBounds ? {
-      x: data.bounds.x - 20,
-      y: data.bounds.y - 20,
-      w: data.bounds.w + 40,
-      h: data.bounds.h + 40,
+      x: targetBounds.x - 20,
+      y: targetBounds.y - 20,
+      w: targetBounds.w + 40,
+      h: targetBounds.h + 40,
     } : {
       x: 0,
-      y: data.bounds.y - 200,
+      y: targetBounds.y - 200,
       w: 800,
       h: 1035,
     }
-  }, [data])
+  }, [data, targetBounds])
 
   if (!data || !clipBounds) return null
 
@@ -502,6 +513,7 @@ export function AnnotationViewer({
           readOnly
           className="annotation-viewer-clip"
           requestedShapeIds={data.shapeIds}
+          interactionMode={state === 'hovering' ? 'preview' : 'pinned'}
         />
       </div>
 

@@ -146,7 +146,7 @@ export async function wsRegister({
   effort,
   refresh = false,
   kind = 'claude',
-  spawnCapability,
+  spawnPermission,
   sessionId,
   metadata,
   shell = false,
@@ -185,8 +185,8 @@ export async function wsRegister({
   if (model) meta.model = model
   if (effort) meta.effort = effort
   if (refresh) meta.refresh = true
-  if (spawnCapability) {
-    meta.spawnPolicy = { ...(meta.spawnPolicy || {}), capability: spawnCapability }
+  if (spawnPermission) {
+    meta.spawnPolicy = { ...(meta.spawnPolicy || {}), permission: spawnPermission }
   }
   if (Object.keys(meta).length) msg.metadata = meta
   const reply = new Promise((resolve, reject) => {

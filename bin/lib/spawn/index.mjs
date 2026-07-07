@@ -4,7 +4,8 @@ import { inferHarnessKind } from './models.mjs'
 import { checkFreshNameAvailable, ensureServer, findAgent, markAgentDead, resolveApi, waitForAwakeRegistration, wsRegister } from './register.mjs'
 import { injectClaudePrompt, injectCodexPrompt, sessionHasRuntime, spawnTmux, uniqueSessionName } from './tmux.mjs'
 import { wrapSandboxCmd } from './fence.mjs'
-import { codexSandboxProjection, resolveLaunchPolicy, sandboxMetadata } from './permissions.mjs'
+import { resolveLaunchPolicy, sandboxMetadata } from './permissions.mjs'
+import { resolveCodexResumeHandle } from '../codex-resume-resolver.mjs'
 import {
   codexRolloutPath,
   findClaudeSession,
@@ -102,10 +103,11 @@ async function waitForFreshCodexRollout(agent, options = {}) {
 async function buildCommand({ requestedKind, adapter, fleetId, tmuxSession, model, modelProvider = null, name, cwd, effort, permissionMode, spawnPolicy, api, dnsAlias, resumeId = null, includePrompt = true, leasePolicy = null, enforceFence = false, harnessOptions = {}, config = undefined, env = process.env }) {
   let cmd
   let sendKeys = false
-  let projection = null
   if (requestedKind === 'codex') {
     codex.ensureProjectTrusted(cwd)
-    projection = codexSandboxProjection(spawnPolicy, cwd, { fenced: !!leasePolicy })
+    // Permissions come from the daemon config, not from computed harness logic:
+    // codex launches with its own sandbox off and the fence (from the grant)
+    // does the containment. The code just passes args + harness config + fence.
     cmd = codex.buildCmd({
       fleetId,
       tmuxSession,
@@ -118,13 +120,6 @@ async function buildCommand({ requestedKind, adapter, fleetId, tmuxSession, mode
       resumeId,
       config,
       env,
-      sandboxMode: projection.sandboxMode,
-      workspaceWriteConfigArgs: projection.sandboxMode === 'workspace-write'
-        ? codex.buildWorkspaceWriteConfigArgs({
-            writableRoots: projection.writableRoots || [],
-            networkAccess: projection.networkAccess !== false,
-          })
-        : [],
       harnessOptions,
     })
     sendKeys = true
@@ -147,14 +142,19 @@ async function buildCommand({ requestedKind, adapter, fleetId, tmuxSession, mode
     })
   }
   const commandBeforeFence = cmd
-  if (leasePolicy) cmd = wrapSandboxCmd(cmd, leasePolicy, { api, dnsAlias, enforce: enforceFence })
+  // Enforce the seatbelt whenever the lease declares secret denies. With the
+  // permissive seatbelt runner (allow-all except secrets + scoped writes) this is
+  // fence-but-don't-trap: ps/reads/writes work, only secrets are blocked. Deny-free
+  // leases stay unwrapped, so the wide-open (no-fence) case is unchanged.
+  const leaseHasDenies = !!(leasePolicy && ((leasePolicy.deny_read_roots || []).length || (leasePolicy.deny_write_roots || []).length))
+  const effectiveEnforce = enforceFence || leaseHasDenies
+  if (leasePolicy) cmd = wrapSandboxCmd(cmd, leasePolicy, { api, dnsAlias, enforce: effectiveEnforce })
   return {
     cmd,
     sendKeys,
     commandTrace: {
-      projection,
       hasLeasePolicy: !!leasePolicy,
-      wrappedByFence: !!leasePolicy && !!enforceFence,
+      wrappedByFence: !!leasePolicy && !!effectiveEnforce,
       commandContainsFence: /(?:^|['"\s/])fence(?:['"\s]|$)/.test(cmd),
       commandContainsCodexYolo: cmd.includes('--dangerously-bypass-approvals-and-sandbox') || cmd.includes('--yolo'),
       commandContainsDangerSandbox: cmd.includes('danger-full-access'),
@@ -191,8 +191,8 @@ async function spawnFresh(params) {
     const dnsAlias = await (deps.resolveDnsAlias || resolveDnsAlias)(api)
     const launchPolicy = resolveLaunchPolicy({
       spawnPolicy: params.spawnPolicy,
-      privilegeSet: params.privilegeSet,
-      requestedCapability: params.requestedCapability,
+      permissionSet: params.permissionSet,
+      requestedPermission: params.requestedPermission,
       harness: requestedKind,
       model,
       cwd,
@@ -210,12 +210,11 @@ async function spawnFresh(params) {
       model,
       modelProvider: modelResolved.provider,
       cwd,
-      requestedCapability: params.requestedCapability || null,
+      requestedPermission: params.requestedPermission || null,
       requestedSpawnPolicy: params.spawnPolicy || null,
       explicitPolicy: !!params.explicitPolicy,
       policyName: launchPolicy.policyName,
       permissionMode: launchPolicy.permissionMode,
-      fenceTemporarilyDisabled: !!launchPolicy.fenceTemporarilyDisabled,
       hasLeasePolicy: !!launchPolicy.leasePolicy,
       hasHarnessControls: !!launchPolicy.launchSecurity?.hasHarnessControls,
       acknowledgedNoSecurity: !!launchPolicy.launchSecurity?.acknowledgedNoSecurity,
@@ -237,7 +236,7 @@ async function spawnFresh(params) {
         refresh: true,
         shell: true,
         kind: requestedKind,
-        spawnCapability: launchPolicy.spawnPolicy?.capability || params.requestedCapability,
+        spawnPermission: launchPolicy.spawnPolicy?.permission || params.requestedPermission,
         metadata: sandboxMetadata(launchPolicy.spawnPolicy, launchPolicy.leasePolicy),
         machineId: params.machineId,
         api,
@@ -288,7 +287,7 @@ async function spawnFresh(params) {
       projection: commandTrace.projection,
       cmd,
     })
-    const launched = await (deps.spawnTmux || spawnTmux)(tmuxSession, cwd, cmd, { autoDismiss: requestedKind === 'claude', sendKeys, tmuxSocket: params.tmuxSocket })
+    const launched = await (deps.spawnTmux || spawnTmux)(tmuxSession, cwd, cmd, { autoDismiss: requestedKind === 'claude', sendKeys, tmuxSocket: params.tmuxSocket, crashLogPath: params.crashLogPath })
     if (!launched) {
       librarian.failPending(fleetId, 'launch-failed')
       throw new SpawnError('launch-failed', `tmux session ${tmuxSession} already has a live harness runtime`, { tmuxSession })
@@ -338,10 +337,11 @@ async function spawnFresh(params) {
 }
 
 async function spawnRespawn(params) {
-  const api = resolveApi()
-  await ensureServer({ api })
+  const deps = params._deps || {}
+  const api = (deps.resolveApi || resolveApi)()
+  await (deps.ensureServer || ensureServer)({ api })
   const name = params.name || params.agentId || params.agent_id
-  const agent = await findAgent(name, { api })
+  const agent = await (deps.findAgent || findAgent)(name, { api })
   if (!agent) throw new SpawnError('launch-failed', `No agent '${name}'. Use --fresh to create.`, { name })
   const meta = metadataOf(agent)
   const rawModel = params.model || meta.model
@@ -355,17 +355,47 @@ async function spawnRespawn(params) {
   const modelResolved = resolveAdapterModel(adapter, rawModel, config)
   const model = modelResolved.model
   const tmuxSession = agent.tmux_session || `fleet-${sanitizeSessionName(friendlyName)}`
-  if (await sessionHasRuntime(tmuxSession, { tmuxSocket: params.tmuxSocket })) {
+  if (await (deps.sessionHasRuntime || sessionHasRuntime)(tmuxSession, { tmuxSocket: params.tmuxSocket })) {
     return { ok: true, fleetId, tmuxSession, harness: requestedKind, model, alreadyAlive: true }
   }
   let handle = null
   const identityOptions = {
-    sessionOverride: params.sessionId || params.session_id,
     identityConfigDir: params.identityConfigDir,
     identityFilePath: params.identityFilePath,
+    sessionsBase: params.codexSessionsBase,
   }
-  if (requestedKind === 'claude') handle = findClaudeSession(agent, identityOptions)
-  else if (requestedKind === 'codex') handle = findCodexRollout(agent, identityOptions)
+  if (requestedKind === 'claude') {
+    handle = findClaudeSession(agent, {
+      ...identityOptions,
+      sessionOverride: params.sessionId || params.session_id,
+    })
+  } else if (requestedKind === 'codex') {
+    const resolved = await (deps.resolveCodexResumeHandle || resolveCodexResumeHandle)(agent, {
+      ...identityOptions,
+    })
+    if (resolved?.ok) {
+      handle = {
+        kind: 'codex',
+        rolloutId: resolved.resumeId,
+        jsonlPath: resolved.jsonlPath,
+        cwd: resolved.cwd,
+        source: resolved.source,
+      }
+    } else if (resolved?.code === 'identity-ingestion-pending') {
+      throw new SpawnError(
+        'identity-ingestion-pending',
+        `Cannot respawn ${friendlyName} (${fleetId}) yet: Codex session identity ingestion has not reached the daemon index. Retry once ingestion is caught up.`,
+        { fleetId, kind: requestedKind, retry_after_ms: resolved.retry_after_ms || 1000, resolution: resolved },
+      )
+    } else {
+      const message = resolved?.message || resolved?.detail?.message
+      throw new SpawnError(
+        'launch-failed',
+        message || `Session resolution failed for ${friendlyName} (${fleetId}): could not locate the existing codex rollout. This is a session-tracking fault in the resolver, not a lost session.`,
+        { fleetId, kind: requestedKind, resolution: resolved || null },
+      )
+    }
+  }
   if (!handle && (requestedKind === 'claude' || requestedKind === 'codex')) {
     if (!isRespawnIdentityCaughtUp(identityOptions)) {
       throw new SpawnError(
@@ -374,7 +404,7 @@ async function spawnRespawn(params) {
         { fleetId, kind: requestedKind, retry_after_ms: 1000 },
       )
     }
-    throw new SpawnError('launch-failed', `No ${requestedKind} resume handle for ${friendlyName} (${fleetId}). Recover the original resume handle before respawning.`, { fleetId })
+    throw new SpawnError('launch-failed', `Session resolution failed for ${friendlyName} (${fleetId}): could not locate the existing ${requestedKind} rollout. This is a session-tracking fault in the resolver, not a lost session.`, { fleetId })
   }
   const resumeId = adapter.resumeId?.(handle)
   if (handle?.cwd) cwd = resolveSpawnCwd(handle.cwd)
@@ -382,8 +412,8 @@ async function spawnRespawn(params) {
   const dnsAlias = await resolveDnsAlias(api)
   const launchPolicy = resolveLaunchPolicy({
     spawnPolicy: params.spawnPolicy || meta.spawnPolicy,
-    privilegeSet: params.privilegeSet || meta.privilegeSet,
-    requestedCapability: params.requestedCapability,
+    permissionSet: params.permissionSet || meta.permissionSet,
+    requestedPermission: params.requestedPermission,
     harness: requestedKind,
     model,
     cwd,
@@ -391,6 +421,7 @@ async function spawnRespawn(params) {
     permissionMode: params.permissionMode,
     mode: params.mode,
     explicitPolicy: params.explicitPolicy,
+    acknowledgeNoSecurity: !!params.acknowledgeNoSecurity,
   })
   assertNativeTools(launchPolicy, requestedKind)
   if (requestedKind === 'codex' && resumeId) {
@@ -430,7 +461,7 @@ async function spawnRespawn(params) {
     config,
     env: spawnEnv(params),
   })
-  const launched = await spawnTmux(tmuxSession, cwd, cmd, { autoDismiss: requestedKind === 'claude', sendKeys, tmuxSocket: params.tmuxSocket })
+  const launched = await spawnTmux(tmuxSession, cwd, cmd, { autoDismiss: requestedKind === 'claude', sendKeys, tmuxSocket: params.tmuxSocket, crashLogPath: params.crashLogPath })
   if (!launched) return { ok: true, fleetId, tmuxSession, harness: requestedKind, model, alreadyAlive: true }
   if (requestedKind === 'codex') {
     await injectCodexPrompt(tmuxSession, codex.kickoffPrompt(friendlyName), { tmuxSocket: params.tmuxSocket })
@@ -461,8 +492,8 @@ async function spawnRefresh(params) {
   const dnsAlias = await resolveDnsAlias(api)
   const launchPolicy = resolveLaunchPolicy({
     spawnPolicy: params.spawnPolicy || meta.spawnPolicy,
-    privilegeSet: params.privilegeSet || meta.privilegeSet,
-    requestedCapability: params.requestedCapability,
+    permissionSet: params.permissionSet || meta.permissionSet,
+    requestedPermission: params.requestedPermission,
     harness: requestedKind,
     model,
     cwd,
@@ -470,6 +501,7 @@ async function spawnRefresh(params) {
     permissionMode: params.permissionMode,
     mode: params.mode,
     explicitPolicy: params.explicitPolicy,
+    acknowledgeNoSecurity: !!params.acknowledgeNoSecurity,
   })
   assertNativeTools(launchPolicy, requestedKind)
   await wsRegister({
@@ -481,7 +513,7 @@ async function spawnRefresh(params) {
     effort: params.effort || meta.effort,
     refresh: true,
     kind: requestedKind,
-    spawnCapability: launchPolicy.spawnPolicy?.capability || params.requestedCapability,
+    spawnPermission: launchPolicy.spawnPolicy?.permission || params.requestedPermission,
     metadata: sandboxMetadata(launchPolicy.spawnPolicy, launchPolicy.leasePolicy),
     machineId: params.machineId,
     api,
@@ -507,7 +539,7 @@ async function spawnRefresh(params) {
     config,
     env: spawnEnv(params),
   })
-  const launched = await spawnTmux(tmuxSession, cwd, cmd, { autoDismiss: requestedKind === 'claude', sendKeys, tmuxSocket: params.tmuxSocket })
+  const launched = await spawnTmux(tmuxSession, cwd, cmd, { autoDismiss: requestedKind === 'claude', sendKeys, tmuxSocket: params.tmuxSocket, crashLogPath: params.crashLogPath })
   if (!launched) return { ok: true, fleetId, tmuxSession, harness: requestedKind, model, alreadyAlive: true }
   if (requestedKind === 'codex') {
     await injectCodexPrompt(tmuxSession, codex.kickoffPrompt(friendlyName), { tmuxSocket: params.tmuxSocket })
@@ -524,17 +556,32 @@ function defaultEnrolledName(params, sessionId) {
   return `agent-${String(sessionId).slice(0, 8)}`
 }
 
+// Enroll requires the harness KIND explicitly. Session ids are not unique across
+// harnesses, so we never guess by which file happens to exist on disk (Skip: "you
+// pass it a session id but not a model… you just have to hope it guesses").
+function normalizeSessionKind(kind) {
+  const k = String(kind ?? '').trim().toLowerCase()
+  return k === 'codex' || k === 'claude' ? k : null
+}
+
 async function spawnSession(params) {
   const deps = params._deps || {}
   const api = (deps.resolveApi || resolveApi)()
   await (deps.ensureServer || ensureServer)({ api })
   const sessionId = sessionIdOf(params)
   if (!sessionId) throw new SpawnError('launch-failed', 'session spawn requires --session <uuid>')
-  const codexPath = codexRolloutPath(sessionId, { sessionsBase: params.codexSessionsBase })
-  if (codexPath) return await spawnCodexSession(params, { api, sessionId, codexPath, deps })
+  const kind = normalizeSessionKind(params.kind)
+  if (!kind) {
+    throw new SpawnError('launch-failed', 'enroll requires --kind <codex|claude>: session ids are not unique across harnesses', { sessionId })
+  }
+  if (kind === 'codex') {
+    const codexPath = codexRolloutPath(sessionId, { sessionsBase: params.codexSessionsBase })
+    if (!codexPath) throw new SpawnError('launch-failed', `No Codex rollout found for session ${sessionId}`, { sessionId })
+    return await spawnCodexSession(params, { api, sessionId, codexPath, deps })
+  }
   const claudeIdentity = scanClaudeSessionIdentity(sessionId, { projectsBase: params.claudeProjectsBase })
-  if (claudeIdentity) return await spawnClaudeSession(params, { api, sessionId, identity: claudeIdentity, deps })
-  throw new SpawnError('launch-failed', `No Claude JSONL or Codex rollout found for session ${sessionId}`, { sessionId })
+  if (!claudeIdentity) throw new SpawnError('launch-failed', `No Claude JSONL found for session ${sessionId}`, { sessionId })
+  return await spawnClaudeSession(params, { api, sessionId, identity: claudeIdentity, deps })
 }
 
 async function spawnCodexSession(params, { api, sessionId, codexPath, deps = {} }) {
@@ -545,7 +592,14 @@ async function spawnCodexSession(params, { api, sessionId, codexPath, deps = {} 
   if (!ownId && !params.enroll) {
     throw new SpawnError('launch-failed', `Codex session ${sessionId} has no fleet registration; use --enroll`, { sessionId })
   }
-  const fleetId = ownId || params.agentId || params.agent_id || newFleetId()
+  // Ids are minted ONLY on create (spawnFresh). A session/enroll spawn must arrive
+  // with a resolved seat id — the embedded rollout ownId, or a preallocated agentId
+  // from the create path. No `|| newFleetId()` here: an unresolved id is a bug to
+  // surface, not a fresh mint that would orphan the seat.
+  const fleetId = ownId || params.agentId || params.agent_id
+  if (!fleetId) {
+    throw new SpawnError('launch-failed', `Cannot resume codex session ${sessionId}: no embedded fleet id and no preallocated seat id. Ids are minted only on create.`, { sessionId })
+  }
   const friendlyName = params.name && !String(params.name).startsWith('fleet:')
     ? params.name
     : (agentName || defaultEnrolledName(params, sessionId))
@@ -561,8 +615,8 @@ async function spawnCodexSession(params, { api, sessionId, codexPath, deps = {} 
   const dnsAlias = await (deps.resolveDnsAlias || resolveDnsAlias)(api)
   const launchPolicy = resolveLaunchPolicy({
     spawnPolicy: params.spawnPolicy,
-    privilegeSet: params.privilegeSet,
-    requestedCapability: params.requestedCapability,
+    permissionSet: params.permissionSet,
+    requestedPermission: params.requestedPermission,
     harness: 'codex',
     model,
     cwd,
@@ -570,6 +624,7 @@ async function spawnCodexSession(params, { api, sessionId, codexPath, deps = {} 
     permissionMode: params.permissionMode,
     mode: params.mode,
     explicitPolicy: params.explicitPolicy,
+    acknowledgeNoSecurity: !!params.acknowledgeNoSecurity,
   })
   assertNativeTools(launchPolicy, 'codex')
   await (deps.wsRegister || wsRegister)({
@@ -581,7 +636,7 @@ async function spawnCodexSession(params, { api, sessionId, codexPath, deps = {} 
     effort: params.effort,
     kind: 'codex',
     sessionId,
-    spawnCapability: launchPolicy.spawnPolicy?.capability || params.requestedCapability,
+    spawnPermission: launchPolicy.spawnPolicy?.permission || params.requestedPermission,
     metadata: sandboxMetadata(launchPolicy.spawnPolicy, launchPolicy.leasePolicy),
     machineId: params.machineId,
     api,
@@ -607,7 +662,7 @@ async function spawnCodexSession(params, { api, sessionId, codexPath, deps = {} 
     config,
     env: spawnEnv(params),
   })
-  const launched = await (deps.spawnTmux || spawnTmux)(tmuxSession, cwd, cmd, { sendKeys, tmuxSocket: params.tmuxSocket })
+  const launched = await (deps.spawnTmux || spawnTmux)(tmuxSession, cwd, cmd, { sendKeys, tmuxSocket: params.tmuxSocket, crashLogPath: params.crashLogPath })
   if (!launched) return { ok: true, fleetId, tmuxSession, harness: 'codex', model, resumeId: sessionId, alreadyAlive: true }
   await (deps.injectCodexPrompt || injectCodexPrompt)(tmuxSession, codex.kickoffPrompt(friendlyName), { tmuxSocket: params.tmuxSocket })
   return { ok: true, fleetId, tmuxSession, harness: 'codex', model, resumeId: sessionId, enrolled: !!params.enroll }
@@ -620,7 +675,13 @@ async function spawnClaudeSession(params, { api, sessionId, identity, deps = {} 
   if (!identity.fleetId && !params.enroll) {
     throw new SpawnError('launch-failed', `Claude session ${sessionId} has no fleet registration; use --enroll`, { sessionId })
   }
-  const fleetId = identity.fleetId || params.agentId || params.agent_id || newFleetId()
+  // Ids are minted ONLY on create (spawnFresh). Resolve the seat id from the JSONL
+  // identity or a preallocated agentId; no `|| newFleetId()` fallback — an unresolved
+  // id surfaces as an error, it does not silently mint and orphan the seat.
+  const fleetId = identity.fleetId || params.agentId || params.agent_id
+  if (!fleetId) {
+    throw new SpawnError('launch-failed', `Cannot resume claude session ${sessionId}: no embedded fleet id and no preallocated seat id. Ids are minted only on create.`, { sessionId })
+  }
   const friendlyName = params.name && !String(params.name).startsWith('fleet:')
     ? params.name
     : (identity.agentName || defaultEnrolledName(params, sessionId))
@@ -637,7 +698,8 @@ async function spawnClaudeSession(params, { api, sessionId, identity, deps = {} 
   const dnsAlias = await (deps.resolveDnsAlias || resolveDnsAlias)(api)
   const launchPolicy = resolveLaunchPolicy({
     spawnPolicy: params.spawnPolicy,
-    requestedCapability: params.requestedCapability,
+    permissionSet: params.permissionSet,
+    requestedPermission: params.requestedPermission,
     harness: 'claude',
     model,
     cwd,
@@ -657,7 +719,7 @@ async function spawnClaudeSession(params, { api, sessionId, identity, deps = {} 
     effort: params.effort,
     kind: 'claude',
     sessionId,
-    spawnCapability: launchPolicy.spawnPolicy?.capability || params.requestedCapability,
+    spawnPermission: launchPolicy.spawnPolicy?.permission || params.requestedPermission,
     metadata: sandboxMetadata(launchPolicy.spawnPolicy, launchPolicy.leasePolicy),
     machineId: params.machineId,
     api,
@@ -684,8 +746,9 @@ async function spawnClaudeSession(params, { api, sessionId, identity, deps = {} 
     config,
     env: spawnEnv(params),
   })
-  const launched = await (deps.spawnTmux || spawnTmux)(tmuxSession, cwd, cmd, { autoDismiss: true, sendKeys, tmuxSocket: params.tmuxSocket })
+  const launched = await (deps.spawnTmux || spawnTmux)(tmuxSession, cwd, cmd, { autoDismiss: true, sendKeys, tmuxSocket: params.tmuxSocket, crashLogPath: params.crashLogPath })
   if (!launched) return { ok: true, fleetId, tmuxSession, harness: 'claude', model, resumeId: sessionId, alreadyAlive: true }
+  await (deps.injectClaudePrompt || injectClaudePrompt)(tmuxSession, claude.kickoffPrompt(friendlyName), { tmuxSocket: params.tmuxSocket })
   return { ok: true, fleetId, tmuxSession, harness: 'claude', model, resumeId: sessionId, enrolled: !!params.enroll }
 }
 

@@ -48,7 +48,8 @@ import { labelsForAgent } from '../../shared/fleet-labels.mjs'
 import { useFleetChatAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useFleetStatusTargets, useFleetFilterHasMatchingAgent, useSuggestions, clearGroup, sendMessage, loadBefore, resolveFleetAgentLabelIds, injectOptimisticEvent, updateOptimisticEvent, removeOptimisticEvent } from '../fleet-data-adapter'
 import type { Suggestion } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
-import { agentDisplayLabel, agentExactName, beginNativeSnapDrag, endNativeSnapDrag, selectFleetShapeForLayout } from './fleet-utils'
+import { agentDisplayLabel, agentExactName, beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
+import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import { ChatComposer } from './ChatComposer'
 import { PrettyName } from './PrettyName'
 import { dragCoordinator } from './dragCoordinator'
@@ -1802,7 +1803,6 @@ function FleetChatInner({ shape }: { shape: any }) {
   const panel = useContext(PanelContext)
   const fleetStyleVars = useFleetStyleVars()
   const { w, h, filter, trafficMode = 'normal' } = shape.props as { w: number; h: number; filter: [string, string][][]; trafficMode?: ChatTrafficMode }
-  const quietTraffic = trafficMode === 'quiet'
   const quietDmTraffic = quietTrafficSuppressesActivity(filter, trafficMode)
   void useValue('editing', () => editor.getEditingShapeId() === shape.id, [editor, shape.id])
   const [filterOpen, setFilterOpen] = useState(false)
@@ -5327,27 +5327,7 @@ function FleetChatInner({ shape }: { shape: any }) {
           position: 'relative',
         }}
       >
-        {/* Close, filter edit, and layout buttons */}
-        <div className="fleet-btn-group" onPointerDown={(e) => e.stopPropagation()}>
-          <button
-            className="fleet-close-btn"
-            onPointerUp={(e) => {
-              e.stopPropagation()
-              editor.deleteShapes([shape.id])
-            }}
-          >
-            ×
-          </button>
-          <button
-            className="fleet-layout-btn"
-            onPointerUp={(e) => {
-              e.stopPropagation()
-              selectFleetShapeForLayout(editor, shape)
-            }}
-            title="Resize / move"
-          >
-            ⊞
-          </button>
+        <FleetPanelButtonGroup editor={editor} shape={shape}>
           <button
             className="fleet-filter-btn"
             onPointerDown={stopEventPropagation}
@@ -5362,25 +5342,7 @@ function FleetChatInner({ shape }: { shape: any }) {
               : <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M1 2h14M3 7h10M6 12h4"/></svg>
             }
           </button>
-          <button
-            className={`fleet-traffic-mode-btn${quietTraffic ? ' fleet-traffic-mode-btn-active' : ''}`}
-            onPointerDown={stopEventPropagation}
-            // text-label button ('q'/'t'): onPointerUp so a touch tap fires (a
-            // text label in the canvas gets no synthesized click on iPad, same
-            // class as the DM/All toggle); pointerup covers mouse too.
-            onPointerUp={(e) => {
-              stopEventPropagation(e)
-              editor.updateShape({
-                id: shape.id,
-                type: shape.type,
-                props: { trafficMode: quietTraffic ? 'normal' : 'quiet' },
-              })
-            }}
-            title={quietTraffic ? 'Quiet traffic: tools hidden' : 'Normal traffic: tools visible'}
-          >
-            {quietTraffic ? 'q' : 't'}
-          </button>
-        </div>
+        </FleetPanelButtonGroup>
 
         {/* Filter editor — full overlay showing DNF expression */}
         {filterOpen && (

@@ -20,7 +20,8 @@ import { useState, useCallback, useMemo, useRef, useEffect, memo, forwardRef } f
 import { Virtuoso } from 'react-virtuoso'
 import { useFleetAgents, useFleetTasks, useFleetUnreadCounts, useFleetContext, useFleetProjects, useFleetIdentity, searchFleet, hibernateSession, spawnAgent } from '../fleet-data-adapter'
 import { dropPillOnTarget } from './FleetPillShape'
-import { agentDisplayLabel, agentExactName, beginNativeSnapDrag, endNativeSnapDrag, selectFleetShapeForLayout } from './fleet-utils'
+import { agentDisplayLabel, agentExactName, beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
+import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import { PrettyName } from './PrettyName'
 import { dragCoordinator } from './dragCoordinator'
 import { useIsInViewport, useVisibilityViewportId } from './useIsInViewport'
@@ -282,13 +283,13 @@ function formatModel(model: string | null | undefined): string {
   return s.replace(/[.\-]/g, '')
 }
 
-// Surface the agent's capability / fence in the panel (topic-1: capability
+// Surface the agent's permission / fence in the panel (topic-1: permission
 // discoverable in the agent panel). Derived from metadata.spawnPolicy, which the
-// server stamps at spawn (the resolved capability + filesystem policy).
-// Skip's four names are the only capability labels shown in the UI. Net is
-// always on, so there is no "nonet" capability to surface. Legacy machine words
+// server stamps at spawn (the resolved permission + filesystem policy).
+// Skip's four names are the only permission labels shown in the UI. Net is
+// always on, so there is no "nonet" permission to surface. Legacy machine words
 // (still in pre-rename agents' metadata until they respawn) map to the four names.
-const CAPABILITY_LABELS: Record<string, string> = {
+const PERMISSION_LABELS: Record<string, string> = {
   read: 'read',
   write: 'write',
   'tlda-write': 'tlda-write',
@@ -304,13 +305,13 @@ const POLICY_LABELS: Record<string, string> = {
   'tlda-projects': 'all projects',
   unsandboxed: 'machine',
 }
-function formatCapability(meta: any): string {
+function formatPermission(meta: any): string {
   const sp = meta?.spawnPolicy
   if (!sp) return ''
-  const cap = typeof sp === 'string' ? sp : sp.capability
+  const cap = typeof sp === 'string' ? sp : sp.permission
   const policy = typeof sp === 'object' ? sp.policy : null
   if (!cap) return ''
-  const capLabel = CAPABILITY_LABELS[cap] || cap
+  const capLabel = PERMISSION_LABELS[cap] || cap
   const policyLabel = policy ? (POLICY_LABELS[policy] || policy) : ''
   return policyLabel ? `${capLabel} · ${policyLabel}` : capLabel
 }
@@ -826,28 +827,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
           position: 'relative',
         }}
       >
-        {/* Close + layout buttons */}
-        <div className="fleet-btn-group" onPointerDown={(e) => e.stopPropagation()}>
-          <button
-            className="fleet-close-btn"
-            onPointerUp={(e) => {
-              e.stopPropagation()
-              editor.deleteShapes([shape.id])
-            }}
-          >
-            ×
-          </button>
-          <button
-            className="fleet-layout-btn"
-            onPointerUp={(e) => {
-              e.stopPropagation()
-              selectFleetShapeForLayout(editor, shape)
-            }}
-            title="Resize / move"
-          >
-            ⊞
-          </button>
-        </div>
+        <FleetPanelButtonGroup editor={editor} shape={shape} />
 
         {/* Header with sort toggle */}
         <div
@@ -1145,7 +1125,7 @@ function AgentRow({
   const meta = agent.metadata || {}
   const modelStr = formatModel(meta.model)
   const effortStr = formatEffort(meta.effort, meta.kind)
-  const capStr = formatCapability(meta)
+  const capStr = formatPermission(meta)
   const machineStr = agent.machine_id || ''
   const taskTitle = taskDesc
   // Desktop hover summary (touch users get the same via tap-to-expand).
@@ -1226,7 +1206,7 @@ function AgentRow({
             {machineStr && <span className="fleet-agents-detail-machine" title="machine">{machineStr}</span>}
             {modelStr && <span className="fleet-agents-detail-model">{modelStr}</span>}
             {effortStr && <span className="fleet-agents-detail-effort">{effortStr}</span>}
-            {capStr && <span className="fleet-agents-detail-cap" title="capability / fence">{capStr}</span>}
+            {capStr && <span className="fleet-agents-detail-cap" title="permission / fence">{capStr}</span>}
             {ago && <span className="fleet-agents-detail-seen">seen {ago}</span>}
           </div>
           <div className="fleet-agents-detail-current">

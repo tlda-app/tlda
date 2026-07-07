@@ -294,9 +294,31 @@ function maybeSendFlush(w) {
   send({ type: 'flush', watchId: w.watchId, sessionId: w.sessionId, jsonlPath: w.jsonlPath, offset })
 }
 
+function watcherIdle(w) {
+  return !w.inFlightSeq && w.queue.length === 0 && w.pendingFlushOffset == null
+}
+
+function completeDrainRequests(w) {
+  if (!w.drainRequests?.length || !watcherIdle(w)) return
+  const requests = w.drainRequests.splice(0)
+  for (const req of requests) {
+    clearTimeout(req.timer)
+    send({
+      type: 'drained',
+      requestId: req.requestId,
+      watchId: w.watchId,
+      sessionId: w.sessionId,
+      jsonlPath: w.jsonlPath,
+      ok: true,
+      active: true,
+    })
+  }
+}
+
 function sendNext(w) {
   if (w.inFlightSeq || w.queue.length === 0) {
     maybeSendFlush(w)
+    completeDrainRequests(w)
     resumeWatcher(w)
     return
   }
@@ -342,6 +364,7 @@ function startWatch(msg) {
     inFlightSeq: null,
     pendingFlushOffset: null,
     nativeTaskState: createNativeTaskState(),
+    drainRequests: [],
     paused: false,
     stopped: false,
   }
@@ -388,6 +411,39 @@ function ackBatch(msg) {
   sendNext(w)
 }
 
+function drainOnce(msg) {
+  const w = watchers.get(msg.watchId)
+  if (!w) {
+    send({ type: 'drained', requestId: msg.requestId, watchId: msg.watchId, ok: false, active: false, reason: 'no-live-tail' })
+    return
+  }
+  const requestId = msg.requestId || `${msg.watchId}:${Date.now()}`
+  const timeoutMs = Number(msg.timeoutMs || 2000)
+  const minWaitMs = Number(msg.minWaitMs || 0)
+  const req = {
+    requestId,
+    timer: setTimeout(() => {
+      const idx = w.drainRequests.findIndex(item => item.requestId === requestId)
+      if (idx !== -1) w.drainRequests.splice(idx, 1)
+      send({
+        type: 'drained',
+        requestId,
+        watchId: w.watchId,
+        sessionId: w.sessionId,
+        jsonlPath: w.jsonlPath,
+        ok: false,
+        active: true,
+        reason: 'timeout',
+      })
+    }, timeoutMs),
+  }
+  w.drainRequests.push(req)
+  setTimeout(() => {
+    maybeSendFlush(w)
+    completeDrainRequests(w)
+  }, minWaitMs)
+}
+
 function updateWatch(msg) {
   const w = watchers.get(msg.watchId)
   if (!w) return
@@ -422,6 +478,7 @@ process.on('message', (msg) => {
   if (msg?.type === 'watch') startWatch(msg)
   else if (msg?.type === 'update') updateWatch(msg)
   else if (msg?.type === 'ack') ackBatch(msg)
+  else if (msg?.type === 'drain-once') drainOnce(msg)
   else if (msg?.type === 'job') void startJob(msg)
   else if (msg?.type === 'job-ack') ackJobBatch(msg)
   else if (msg?.type === 'stop') stopWatch(msg.watchId)

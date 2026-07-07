@@ -24,7 +24,7 @@
     "publish-snapshot": "node scripts/publish-snapshot.mjs",
     "start": "tlda server start && npm run dev",
     "smoke": "node scripts/smoke-test.mjs",
-    "test": "node --test test/cli.test.mjs test/server.test.mjs test/slides-format.test.mjs test/resilient-ws-heartbeat.test.mjs test/singleton-lock.test.mjs",
+    "test": "node --test test/cli.test.mjs test/server.test.mjs test/slides-format.test.mjs test/resilient-ws-heartbeat.test.mjs test/singleton-lock.test.mjs test/daemon-guards.test.mjs test/spawn-tmux-crash-capture.test.mjs test/task-renudge.test.mjs",
     "test:all": "node --test test/cli.test.mjs test/server.test.mjs test/pipeline.test.mjs test/annotations.test.mjs",
     "test:e2e": "node --test test/pipeline.test.mjs test/annotations.test.mjs",
     "test:annotations": "node --test test/annotations.test.mjs"

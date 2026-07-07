@@ -6,7 +6,7 @@ import path from 'node:path'
 import test from 'node:test'
 import { fenceSettings, wrapSandboxCmd } from '../bin/lib/spawn/fence.mjs'
 import { activeConfigName } from '../bin/lib/spawn/identity.mjs'
-import { codexSandboxProjection, resolveHarnessLaunchOptions, resolveLaunchPolicy, resolveLeasePolicy } from '../bin/lib/spawn/permissions.mjs'
+import { resolveHarnessLaunchOptions, resolveLaunchPolicy, resolveLeasePolicy } from '../bin/lib/spawn/permissions.mjs'
 import * as claude from '../bin/lib/spawn/harness/claude.mjs'
 import * as codex from '../bin/lib/spawn/harness/codex.mjs'
 import * as goose from '../bin/lib/spawn/harness/goose.mjs'
@@ -43,9 +43,9 @@ function makeGitRepo() {
   return dir
 }
 
-function privilegeSet(name, operations) {
+function permissionSet(name, operations) {
   return {
-    type: 'privilege-set',
+    type: 'permission-set',
     name,
     operations: {
       read: { allow: operations.read || [], deny: [] },
@@ -57,16 +57,16 @@ function privilegeSet(name, operations) {
   }
 }
 
-function cwdPrivilegeSet(cwd, name = 'cwd-grant') {
-  return privilegeSet(name, {
+function cwdPermissionSet(cwd, name = 'cwd-grant') {
+  return permissionSet(name, {
     read: [path.join(cwd, '**')],
     write: [path.join(cwd, '**')],
     spawn: ['**'],
   })
 }
 
-function fullPrivilegeSet(name = 'full-grant') {
-  return privilegeSet(name, {
+function fullPermissionSet(name = 'full-grant') {
+  return permissionSet(name, {
     read: ['**'],
     write: ['**'],
     spawn: ['**'],
@@ -138,6 +138,7 @@ function freshSpawnDeps({ ensureServer }) {
         return true
       },
       injectCodexPrompt: async () => { calls.push('injectCodexPrompt'); return true },
+      injectClaudePrompt: async () => { calls.push('injectClaudePrompt'); return true },
       waitForAwakeRegistration: async () => {
         calls.push('waitForAwakeRegistration')
         return { ok: true }
@@ -401,24 +402,64 @@ test('respawn lookup uses session-identity store before scanning JSONLs', () => 
   assert.equal(found.cwd, '/tmp/store-cwd')
 })
 
-test('respawn lookup blocks broad scan fallback until identity ingestion reaches EOF', () => {
+test('respawn lookup scans embedded fleet registration even while identity ingestion is pending', () => {
   const root = tmpdir()
   const projectsBase = path.join(root, 'claude-projects')
   const configDir = path.join(root, 'config')
   const sid = 'bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb'
-  writeJsonl(path.join(projectsBase, '-tmp-impostor', `${sid}.jsonl`), [
-    { cwd: '/tmp/impostor-cwd' },
-    { toolUseResult: [{ text: 'Registered fleet:block-owner. Your name: "block-owner"' }] },
+  fs.mkdirSync('/tmp/pending-owned-cwd', { recursive: true })
+  writeJsonl(path.join(projectsBase, '-tmp-pending-owned', `${sid}.jsonl`), [
+    { cwd: '/tmp/pending-owned-cwd' },
+    { toolUseResult: [{ text: 'Registered fleet:blockowner. Your name: "block-owner"' }] },
   ])
   writeSessionIdentity(configDir, {
     ingestion: { caught_up: false, active_tails: 1, pending_jobs: 0, updated_at: '2026-07-04T00:00:00.000Z' },
   })
   const found = findClaudeSession(
-    { id: 'fleet:block-owner', session_id: null, session_ids: [] },
+    { id: 'fleet:blockowner', session_id: null, session_ids: [] },
     { projectsBase, identityConfigDir: configDir },
   )
-  assert.equal(found, null)
+  assert.equal(found.sessionId, sid)
+  assert.equal(found.cwd, '/tmp/pending-owned-cwd')
   assert.equal(isRespawnIdentityCaughtUp({ identityConfigDir: configDir }), false)
+})
+
+test('respawn lookup skips stale primary identity and finds the JSONL registered to the agent', () => {
+  const root = tmpdir()
+  const projectsBase = path.join(root, 'claude-projects')
+  const configDir = path.join(root, 'config')
+  const stale = 'eeeeeeee-5555-4555-8555-eeeeeeeeeeee'
+  const live = 'ffffffff-6666-4666-8666-ffffffffffff'
+  fs.mkdirSync('/tmp/live-owned-cwd', { recursive: true })
+  writeJsonl(path.join(projectsBase, '-tmp-stale', `${stale}.jsonl`), [
+    { cwd: '/tmp/stale-cwd' },
+    { toolUseResult: [{ text: 'Registered fleet:someoneelse. Your name: "wrong"' }] },
+  ])
+  writeJsonl(path.join(projectsBase, '-tmp-live-owned', `${live}.jsonl`), [
+    { cwd: '/tmp/live-owned-cwd' },
+    { toolUseResult: [{ text: 'Registered fleet:staleowner. Your name: "stale-owner"' }] },
+  ])
+  fs.utimesSync(path.join(projectsBase, '-tmp-live-owned', `${live}.jsonl`), new Date('2026-07-04T00:05:00Z'), new Date('2026-07-04T00:05:00Z'))
+  writeSessionIdentity(configDir, {
+    sessions: {
+      [stale]: {
+        session_id: stale,
+        harness_kind: 'claude',
+        fleet_id: 'fleet:someoneelse',
+        friendly_name: 'wrong',
+        cwd: '/tmp/stale-cwd',
+        jsonl_path: path.join(projectsBase, '-tmp-stale', `${stale}.jsonl`),
+        classified: true,
+      },
+    },
+    ingestion: { caught_up: false, active_tails: 1, pending_jobs: 0, updated_at: '2026-07-04T00:00:00.000Z' },
+  })
+  const found = findClaudeSession(
+    { id: 'fleet:staleowner', session_id: stale, session_ids: [] },
+    { projectsBase, identityConfigDir: configDir },
+  )
+  assert.equal(found.sessionId, live)
+  assert.equal(found.cwd, '/tmp/live-owned-cwd')
 })
 
 test('explicit session override still works while identity ingestion is pending', () => {
@@ -439,6 +480,43 @@ test('explicit session override still works while identity ingestion is pending'
   )
   assert.equal(found.sessionId, sid)
   assert.equal(found.cwd, '/tmp/explicit-cwd')
+})
+
+test('Codex respawn ignores session override and delegates resolution to daemon-owned resolver', async () => {
+  const calls = []
+  await assert.rejects(
+    spawn({
+      spawnMode: 'respawn',
+      name: 'codex-owner',
+      kind: 'codex',
+      sessionId: 'rollout-2026-07-05T00-00-00-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      config: {},
+      _deps: {
+        resolveApi: () => 'http://127.0.0.1:5176',
+        ensureServer: async () => true,
+        findAgent: async () => ({
+          id: 'fleet:codex-owner',
+          friendly_name: 'codex-owner',
+          kind: 'codex',
+          model: 'gpt',
+          cwd: process.cwd(),
+          metadata: {},
+        }),
+        sessionHasRuntime: async () => false,
+        resolveCodexResumeHandle: async (_agent, options) => {
+          calls.push(options)
+          return { ok: false, code: 'missing-resume-handle', detail: { reason: 'not-indexed' } }
+        },
+      },
+    }),
+    (err) => {
+      assert.equal(err.reason, 'launch-failed')
+      assert.match(err.message, /could not locate the existing codex rollout/)
+      return true
+    },
+  )
+  assert.equal(calls.length, 1)
+  assert.equal('sessionOverride' in calls[0], false)
 })
 
 test('caught-up identity ingestion preserves broad scan fallback', () => {
@@ -465,8 +543,8 @@ test('caught-up identity ingestion preserves broad scan fallback', () => {
 test('lease policy and fence wrapper stay outside harness adapters', () => {
   const cwd = tmpdir()
   const { leasePolicy } = resolveLeasePolicy({
-    spawnPolicy: { capability: 'write', policy: 'cwd' },
-    privilegeSet: cwdPrivilegeSet(cwd),
+    spawnPolicy: { permission: 'write', policy: 'cwd' },
+    permissionSet: cwdPermissionSet(cwd),
     harness: 'codex',
     model: 'gpt-5.5',
     cwd,
@@ -501,13 +579,45 @@ test('lease policy and fence wrapper stay outside harness adapters', () => {
   assert.match(enforced, /(?:^|['"\s/])fence(?:['"\s]|$)/)
   assert.match(enforced, /--settings/)
   assert.match(enforced, /echo hi/)
+  assert.doesNotMatch(enforced, /TLDA_SANDBOX_LEASE=/)
+  assert.match(enforced, /TLDA_SANDBOX_LEASE_FILE=/)
+  assert.doesNotMatch(enforced, /"read_roots"|"write_roots"|"_tldaLease"/)
+})
+
+test('fence runner placeholders use files instead of raw lease json', () => {
+  const cwd = tmpdir()
+  const { leasePolicy } = resolveLeasePolicy({
+    spawnPolicy: { permission: 'write', policy: 'cwd' },
+    permissionSet: cwdPermissionSet(cwd),
+    harness: 'codex',
+    model: 'gpt-5.5',
+    cwd,
+    config: {
+      agentSandbox: {
+        runner: {
+          command: 'fence',
+          args: ['--lease', '{lease_json}', '--settings', '{settings_file}'],
+        },
+      },
+    },
+  })
+  const enforced = wrapSandboxCmd('echo hi', leasePolicy, { api: 'https://tlda-fly.example.test', enforce: true })
+  assert.doesNotMatch(enforced, /"read_roots"|"write_roots"|"_tldaLease"/)
+  const leaseMatch = enforced.match(/--lease'\s+'([^']+)'/)
+  const settingsMatch = enforced.match(/--settings'\s+'([^']+)'/)
+  assert.ok(leaseMatch, enforced)
+  assert.ok(settingsMatch, enforced)
+  assert.ok(fs.existsSync(leaseMatch[1]))
+  assert.ok(fs.existsSync(settingsMatch[1]))
+  assert.match(fs.readFileSync(leaseMatch[1], 'utf8'), /"read_roots"/)
+  assert.match(fs.readFileSync(settingsMatch[1], 'utf8'), /"_tldaLease"/)
 })
 
 test('default cwd lease writes cwd plus tool-support roots with unrestricted git', () => {
   const cwd = tmpdir()
   const { leasePolicy } = resolveLeasePolicy({
-    spawnPolicy: { capability: 'write', policy: 'cwd' },
-    privilegeSet: cwdPrivilegeSet(cwd),
+    spawnPolicy: { permission: 'write', policy: 'cwd' },
+    permissionSet: cwdPermissionSet(cwd),
     harness: 'codex',
     model: 'gpt-5.5',
     cwd,
@@ -536,14 +646,14 @@ test('default cwd lease writes cwd plus tool-support roots with unrestricted git
 test('none lease and fence settings are truly empty', () => {
   const cwd = tmpdir()
   const { leasePolicy } = resolveLeasePolicy({
-    spawnPolicy: { capability: 'none', policy: 'cwd' },
-    privilegeSet: privilegeSet('none', {}),
+    spawnPolicy: { permission: 'none', policy: 'cwd' },
+    permissionSet: permissionSet('none', {}),
     harness: 'codex',
     model: 'gpt-5.5',
     cwd,
     config: { agentSandbox: { runner: { command: 'fence' } } },
   })
-  assert.equal(leasePolicy.capability, 'none')
+  assert.equal(leasePolicy.permission, 'none')
   assert.deepEqual(leasePolicy.read_roots, [])
   assert.deepEqual(leasePolicy.write_roots, [])
   assert.equal(leasePolicy.network, false)
@@ -572,8 +682,8 @@ test('worktree cwd lease includes external gitdir and commondir metadata roots',
     const commonDir = path.resolve(gitDir, commonDirText)
 
     const { leasePolicy } = resolveLeasePolicy({
-      spawnPolicy: { capability: 'write', policy: 'cwd' },
-      privilegeSet: cwdPrivilegeSet(worktree),
+      spawnPolicy: { permission: 'write', policy: 'cwd' },
+      permissionSet: cwdPermissionSet(worktree),
       harness: 'codex',
       model: 'gpt-5.5',
       cwd: worktree,
@@ -601,8 +711,8 @@ test('project root cwd default allows creating and committing in a private tmp w
   const worktree = path.join(worktreeParent, 'tmp-worktree')
   try {
     const { leasePolicy } = resolveLeasePolicy({
-      spawnPolicy: { capability: 'write', policy: 'cwd' },
-      privilegeSet: cwdPrivilegeSet(repo),
+      spawnPolicy: { permission: 'write', policy: 'cwd' },
+      permissionSet: cwdPermissionSet(repo),
       harness: 'codex',
       model: 'gpt-5.5',
       cwd: repo,
@@ -636,8 +746,8 @@ test('math lease writes tlda project roots plus shared guidance, not the app rep
   const cwd = path.join(mathRoot, 'paper')
   fs.mkdirSync(cwd, { recursive: true })
   const { leasePolicy } = resolveLeasePolicy({
-    spawnPolicy: { capability: 'tlda-write', policy: 'tlda-projects' },
-    privilegeSet: privilegeSet('math-grant', {
+    spawnPolicy: { permission: 'tlda-write', policy: 'tlda-projects' },
+    permissionSet: permissionSet('math-grant', {
       read: [path.join(mathRoot, '**')],
       write: [path.join(mathRoot, '**')],
     }),
@@ -660,8 +770,8 @@ test('math lease writes tlda project roots plus shared guidance, not the app rep
 
 test('explicit full lease is machine-write with secret/chat denies still active', () => {
   const { leasePolicy } = resolveLeasePolicy({
-    spawnPolicy: { capability: 'full', policy: 'unsandboxed' },
-    privilegeSet: fullPrivilegeSet(),
+    spawnPolicy: { permission: 'full', policy: 'unsandboxed' },
+    permissionSet: fullPermissionSet(),
     harness: 'codex',
     model: 'gpt-5.5',
     cwd: tmpdir(),
@@ -677,39 +787,31 @@ test('explicit full lease is machine-write with secret/chat denies still active'
   assert.deepEqual(settings.command.deny, [])
 })
 
-test('fenced codex uses Codex danger-full-access under the outer fence', () => {
-  const projection = codexSandboxProjection(
-    { capability: 'write', policy: 'cwd' },
-    tmpdir(),
-    { fenced: true },
-  )
-  assert.equal(projection.sandboxMode, 'danger-full-access')
-  assert.deepEqual(projection.workspaceWriteConfigArgs, [])
-})
-
-test('unfenced codex uses native workspace-write sandbox as harness security', () => {
-  const projection = codexSandboxProjection(
-    { capability: 'read', policy: 'cwd' },
-    tmpdir(),
-    { fenced: false },
-  )
-  assert.equal(projection.sandboxMode, 'workspace-write')
-  assert.equal(projection.networkAccess, true)
-})
-
-test('unfenced codex no-net keeps network off in native sandbox args', () => {
-  const projection = codexSandboxProjection(
-    { capability: 'write', policy: 'cwd', network: false },
-    tmpdir(),
-    { fenced: false },
-  )
-  assert.equal(projection.sandboxMode, 'workspace-write')
-  assert.equal(projection.networkAccess, false)
-  const args = codex.buildWorkspaceWriteConfigArgs({
-    writableRoots: projection.writableRoots,
-    networkAccess: projection.networkAccess,
+test('codex passes the configured sandbox flag and decides none itself', () => {
+  // The code decides no sandbox/permission argument. When the daemon config supplies
+  // one (harnessOptions.required), codex.buildCmd passes it through verbatim.
+  const withFlag = codex.buildCmd({
+    fleetId: 'fleet:test',
+    tmuxSession: 'fleet-test',
+    name: 'codex-agent',
+    cwd: tmpdir(),
+    api: 'https://sandbox.example.test:5192',
+    harnessOptions: { required: ['--dangerously-bypass-approvals-and-sandbox'], preferences: [] },
   })
-  assert.ok(args.some((arg) => arg.includes('sandbox_workspace_write.network_access=false')))
+  assert.ok(withFlag.includes('--dangerously-bypass-approvals-and-sandbox'))
+
+  // With no configured flag, the command carries NO sandbox flag at all — the code
+  // never decides one on its own (no baked-in cwd cage, no baked-in bypass).
+  const noFlag = codex.buildCmd({
+    fleetId: 'fleet:test',
+    tmuxSession: 'fleet-test',
+    name: 'codex-agent',
+    cwd: tmpdir(),
+    api: 'https://sandbox.example.test:5192',
+  })
+  assert.ok(!noFlag.includes('--dangerously-bypass-approvals-and-sandbox'))
+  assert.ok(!noFlag.includes('-s workspace-write'))
+  assert.ok(!/\s-a\s+never(\s|$)/.test(noFlag))
 })
 
 test('spawn harness commands preserve explicit TLDA_CONFIG even when TLDA_SERVER pins the sandbox URL', () => {
@@ -765,8 +867,8 @@ test('hand-pinned TLDA_SERVER without explicit TLDA_CONFIG does not forward defa
 test('codex explicit daemon grant is externally fenced even while global fence is off', () => {
   const cwd = tmpdir()
   const policy = resolveLaunchPolicy({
-    spawnPolicy: { capability: 'write', policy: 'cwd' },
-    privilegeSet: cwdPrivilegeSet(cwd),
+    spawnPolicy: { permission: 'write', policy: 'cwd' },
+    permissionSet: cwdPermissionSet(cwd),
     harness: 'codex',
     model: 'gpt-5.5',
     cwd,
@@ -774,12 +876,11 @@ test('codex explicit daemon grant is externally fenced even while global fence i
     env: {},
   })
   assert.equal(policy.fenceGloballyDisabled, true)
-  assert.equal(policy.spawnPolicy.capability, 'write')
+  assert.equal(policy.spawnPolicy.permission, 'write')
   assert.equal(policy.spawnPolicy.policy, 'cwd')
   assert.equal(policy.policyName, 'cwd')
   assert.equal(policy.leasePolicy.policy, 'cwd')
   assert.equal(policy.permissionMode, 'bypassPermissions')
-  const projection = codexSandboxProjection(policy.spawnPolicy, cwd, { fenced: !!policy.leasePolicy })
   const cmd = codex.buildCmd({
     fleetId: 'fleet:test',
     tmuxSession: 'fleet-test',
@@ -787,13 +888,6 @@ test('codex explicit daemon grant is externally fenced even while global fence i
     name: 'codex-fenced',
     cwd,
     api: 'http://127.0.0.1:5176',
-    sandboxMode: projection.sandboxMode,
-    workspaceWriteConfigArgs: projection.sandboxMode === 'workspace-write'
-      ? codex.buildWorkspaceWriteConfigArgs({
-          writableRoots: projection.writableRoots || [],
-          networkAccess: projection.networkAccess !== false,
-        })
-      : [],
     config: {},
     env: {},
   })
@@ -810,8 +904,8 @@ test('codex explicit daemon grant is externally fenced even while global fence i
 test('codex explicit no-net external fence preserves network-off in the lease', () => {
   const cwd = tmpdir()
   const policy = resolveLaunchPolicy({
-    spawnPolicy: { capability: 'write', policy: 'cwd', network: false },
-    privilegeSet: cwdPrivilegeSet(cwd),
+    spawnPolicy: { permission: 'write', policy: 'cwd', network: false },
+    permissionSet: cwdPermissionSet(cwd),
     harness: 'codex',
     model: 'gpt-5.5',
     cwd,
@@ -829,8 +923,8 @@ test('codex explicit no-net external fence preserves network-off in the lease', 
 test('claude explicit write uses the app-development outer fence lease', () => {
   const cwd = tmpdir()
   const policy = resolveLaunchPolicy({
-    spawnPolicy: { capability: 'write', policy: 'cwd' },
-    privilegeSet: cwdPrivilegeSet(cwd),
+    spawnPolicy: { permission: 'write', policy: 'cwd' },
+    permissionSet: cwdPermissionSet(cwd),
     harness: 'claude',
     model: 'claude-opus-4-8',
     cwd,
@@ -854,8 +948,8 @@ test('claude explicit write uses the app-development outer fence lease', () => {
 
 test('launch policy maps explicit full to a machine-write fence lease', () => {
   const policy = resolveLaunchPolicy({
-    spawnPolicy: { capability: 'full', policy: 'unsandboxed' },
-    privilegeSet: fullPrivilegeSet(),
+    spawnPolicy: { permission: 'full', policy: 'unsandboxed' },
+    permissionSet: fullPermissionSet(),
     harness: 'claude',
     model: 'claude-opus-4-8',
     cwd: tmpdir(),
@@ -880,7 +974,7 @@ test('launch policy maps explicit full to a machine-write fence lease', () => {
 
 test('explicit fenced claude launch bypasses the native permission classifier', () => {
   const policy = resolveLaunchPolicy({
-    spawnPolicy: { capability: 'write', policy: 'cwd' },
+    spawnPolicy: { permission: 'write', policy: 'cwd' },
     harness: 'claude',
     model: 'claude-opus-4-8',
     cwd: tmpdir(),
@@ -903,8 +997,8 @@ test('explicit fenced claude launch bypasses the native permission classifier', 
 
 test('permission-classifier off-switch forces claude bypass at spawn time', () => {
   const envPolicy = resolveLaunchPolicy({
-    spawnPolicy: { capability: 'full', policy: 'unsandboxed' },
-    privilegeSet: fullPrivilegeSet('env-full-grant'),
+    spawnPolicy: { permission: 'full', policy: 'unsandboxed' },
+    permissionSet: fullPermissionSet('env-full-grant'),
     harness: 'claude',
     model: 'claude-opus-4-8',
     cwd: tmpdir(),
@@ -915,8 +1009,8 @@ test('permission-classifier off-switch forces claude bypass at spawn time', () =
   assert.equal(envPolicy.permissionMode, 'bypassPermissions')
 
   const configPolicy = resolveLaunchPolicy({
-    spawnPolicy: { capability: 'full', policy: 'unsandboxed' },
-    privilegeSet: fullPrivilegeSet('config-full-grant'),
+    spawnPolicy: { permission: 'full', policy: 'unsandboxed' },
+    permissionSet: fullPermissionSet('config-full-grant'),
     harness: 'claude',
     model: 'claude-opus-4-8',
     cwd: tmpdir(),
@@ -927,16 +1021,16 @@ test('permission-classifier off-switch forces claude bypass at spawn time', () =
   assert.equal(configPolicy.permissionMode, 'bypassPermissions')
 })
 
-test('direct requested capability lands in the shared launch-policy helper', () => {
+test('direct requested permission lands in the shared launch-policy helper', () => {
   const policy = resolveLaunchPolicy({
-    requestedCapability: 'write',
+    requestedPermission: 'write',
     harness: 'claude',
     model: 'claude-opus-4-8',
     cwd: tmpdir(),
     config: { agentSandbox: { runner: { command: 'fence' } } },
     explicitPolicy: true,
   })
-  assert.equal(policy.spawnPolicy.capability, 'write')
+  assert.equal(policy.spawnPolicy.permission, 'write')
   assert.equal(policy.spawnPolicy.policy, 'cwd')
   assert.equal(policy.permissionMode, 'bypassPermissions')
 })
@@ -944,7 +1038,7 @@ test('direct requested capability lands in the shared launch-policy helper', () 
 test('unfenced launch with harness permissions disabled is refused unless acknowledged', () => {
   assert.throws(
     () => resolveLaunchPolicy({
-      spawnPolicy: { capability: 'full', policy: 'unsandboxed' },
+      spawnPolicy: { permission: 'full', policy: 'unsandboxed' },
       harness: 'claude',
       model: 'claude-opus-4-8',
       cwd: tmpdir(),
@@ -955,7 +1049,7 @@ test('unfenced launch with harness permissions disabled is refused unless acknow
   )
 
   const acknowledged = resolveLaunchPolicy({
-    spawnPolicy: { capability: 'full', policy: 'unsandboxed' },
+    spawnPolicy: { permission: 'full', policy: 'unsandboxed' },
     harness: 'claude',
     model: 'claude-opus-4-8',
     cwd: tmpdir(),
@@ -970,7 +1064,7 @@ test('unfenced launch with harness permissions disabled is refused unless acknow
 
 test('unfenced claude launch is allowed when harness permissions stay on', () => {
   const policy = resolveLaunchPolicy({
-    spawnPolicy: { capability: 'write', policy: 'cwd' },
+    spawnPolicy: { permission: 'write', policy: 'cwd' },
     harness: 'claude',
     model: 'claude-opus-4-8',
     cwd: tmpdir(),
@@ -993,11 +1087,24 @@ test('unfenced claude launch is allowed when harness permissions stay on', () =>
   assert.deepEqual(policy.harnessOptions.preferences, [])
 })
 
+test('default Claude launch steers channel notifications as a preference', () => {
+  const policy = resolveLaunchPolicy({
+    spawnPolicy: { permission: 'write', policy: 'cwd' },
+    harness: 'claude',
+    model: 'claude-opus-4-8',
+    cwd: tmpdir(),
+    config: {},
+    env: {},
+  })
+  assert.deepEqual(policy.harnessOptions.required, [])
+  assert.deepEqual(policy.harnessOptions.preferences, ['--dangerously-load-development-channels server:tlda'])
+})
+
 test('fenced claude launch is trusted even when harness permissions are skipped', () => {
   const cwd = tmpdir()
   const policy = resolveLaunchPolicy({
-    spawnPolicy: { capability: 'write', policy: 'cwd' },
-    privilegeSet: cwdPrivilegeSet(cwd),
+    spawnPolicy: { permission: 'write', policy: 'cwd' },
+    permissionSet: cwdPermissionSet(cwd),
     harness: 'claude',
     model: 'claude-opus-4-8',
     cwd,

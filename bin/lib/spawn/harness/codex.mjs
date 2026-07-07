@@ -35,15 +35,6 @@ export function resolveModelSelection(model, options = {}) {
   return resolveCodexModelSelection(model, options)
 }
 
-export function buildWorkspaceWriteConfigArgs({ writableRoots = [], networkAccess = true } = {}) {
-  const args = []
-  args.push(`-c ${sq(`sandbox_workspace_write.network_access=${networkAccess !== false ? 'true' : 'false'}`)}`)
-  if (writableRoots.length) {
-    args.push(`-c ${sq(`sandbox_workspace_write.writable_roots=${JSON.stringify(writableRoots)}`)}`)
-  }
-  return args
-}
-
 export function ensureProjectTrusted(cwd, configFile = CODEX_CONFIG_FILE) {
   if (!cwd) return false
   const project = fs.realpathSync(cwd)
@@ -80,8 +71,6 @@ export function buildCmd({
   name,
   cwd,
   api,
-  sandboxMode = 'workspace-write',
-  workspaceWriteConfigArgs = [],
   dnsAlias = null,
   resumeId = null,
   env = process.env,
@@ -118,15 +107,12 @@ export function buildCmd({
     parts.push(cenv('TLDA_NODE_DNS_ALIAS_HOST', dnsAlias.host))
     parts.push(cenv('TLDA_NODE_DNS_ALIAS_ADDR', dnsAlias.address))
   }
-  parts.push(...workspaceWriteConfigArgs)
   if (model) parts.push(`-m ${sq(model)}`)
   if (cwd) parts.push(`-C ${sq(cwd)}`)
-  if (sandboxMode === 'danger-full-access') {
-    parts.push('--dangerously-bypass-approvals-and-sandbox')
-  } else {
-    parts.push(`-s ${sq(sandboxMode)}`)
-    parts.push('-a never')
-  }
+  // The code decides no sandbox/permission argument. Every launch flag — including
+  // the sandbox setting — comes from the daemon config (harnessOptions) and is
+  // appended here. Containment is whatever the config specifies (fence and/or a
+  // harness sandbox flag); the code only passes it through.
   appendLaunchFlags(parts, harnessOptions)
   return parts.join(' ')
 }

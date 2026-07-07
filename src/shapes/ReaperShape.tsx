@@ -8,7 +8,8 @@ import {
 import { fleetReaperProps } from '../../shared/shapes/fleet-panel-schema.mjs'
 import { useState, useCallback, useMemo, useRef, useEffect } from 'react'
 import { useReaperStatus } from '../fleet-data-adapter'
-import { beginNativeSnapDrag, endNativeSnapDrag, selectFleetShapeForLayout } from './fleet-utils'
+import { beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
+import { FleetPanelButtonGroup } from './FleetPanelChrome'
 
 const DEFAULT_W = 480
 const DEFAULT_H = 400
@@ -280,28 +281,7 @@ function ReaperComponent({ shape }: { shape: any }) {
           position: 'relative',
         }}
       >
-        {/* Close + layout buttons — same as other fleet shapes */}
-        <div className="fleet-btn-group" onPointerDown={(e) => e.stopPropagation()}>
-          <button
-            className="fleet-close-btn"
-            onPointerUp={(e) => {
-              e.stopPropagation()
-              editor.deleteShapes([shape.id])
-            }}
-          >
-            ×
-          </button>
-          <button
-            className="fleet-layout-btn"
-            onPointerUp={(e) => {
-              e.stopPropagation()
-              selectFleetShapeForLayout(editor, shape)
-            }}
-            title="Resize / move"
-          >
-            ⊞
-          </button>
-        </div>
+        <FleetPanelButtonGroup editor={editor} shape={shape} />
 
         {/* Header */}
         <div style={{

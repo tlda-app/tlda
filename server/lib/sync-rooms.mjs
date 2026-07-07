@@ -252,14 +252,23 @@ const customShapeSchemas = {
     props: {
       w: T.number,
       h: T.number,
-      title: T.string,
       tileKeys: T.string,
       userId: T.optional(T.string),
       deviceId: T.optional(T.string),
     },
     migrations: createMigrationSequence({
       sequenceId: 'com.tldraw.shape.fleet-video',
-      sequence: [],
+      sequence: [
+        {
+          id: 'com.tldraw.shape.fleet-video/1',
+          scope: 'record',
+          filter: (record) => record.typeName === 'shape' && record.type === 'fleet-video',
+          up: (record) => {
+            const { title: _title, ...props } = record.props
+            record.props = props
+          },
+        },
+      ],
     }),
   },
   'doc-clip': {

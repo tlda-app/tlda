@@ -118,7 +118,7 @@ function chooseDefault(harnesses) {
   return null
 }
 
-export async function probeSpawnCapabilities({ env = process.env, now = new Date(), deps = {} } = {}) {
+export async function probeSpawnAvailability({ env = process.env, now = new Date(), deps = {} } = {}) {
   const config = deps.config ?? readConfig()
   const runner = {
     run: deps.run || ((command, args, opts = {}) => run(command, args, { ...opts, env })),

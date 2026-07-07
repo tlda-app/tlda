@@ -2,10 +2,12 @@ import {
   BaseBoxShapeUtil,
   HTMLContainer,
   stopEventPropagation,
+  useEditor,
 } from 'tldraw'
 import { fleetNotificationsProps } from '../../shared/shapes/fleet-panel-schema.mjs'
 import { useEffect, useRef, type SyntheticEvent } from 'react'
 import { dismissItem, sendMessage, useItems, type Item, type ItemAction } from '../fleet-data-adapter'
+import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import './fleet-notifications.css'
 
 const DEFAULT_W = 360
@@ -39,6 +41,7 @@ export class FleetNotificationsShapeUtil extends BaseBoxShapeUtil<any> {
 
 function FleetNotificationsComponent({ shape }: { shape: any }) {
   const { w, h } = shape.props
+  const editor = useEditor()
   const items = useItems('hud')
   const containerRef = useRef<HTMLDivElement>(null)
 
@@ -64,6 +67,7 @@ function FleetNotificationsComponent({ shape }: { shape: any }) {
         style={{ width: w, height: h }}
         onPointerDown={stopEventPropagation}
       >
+        <FleetPanelButtonGroup editor={editor} shape={shape} />
         <div className="fleet-notifications-header">
           <span className="fleet-notifications-title">Notifications</span>
           {items.length > 0 && <span className="fleet-notifications-count">{items.length}</span>}

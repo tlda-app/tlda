@@ -56,7 +56,7 @@ test('task health flags tasks not picked up after grace', () => {
   })
 
   assert.equal(health.code, 'pending-pickup')
-  assert.match(health.managerAction, /my_task/)
+  assert.match(health.managerAction, /inbox/)
 })
 
 test('task health treats recent active assignees as healthy', () => {

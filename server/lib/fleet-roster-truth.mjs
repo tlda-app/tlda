@@ -12,6 +12,9 @@ function rowForAgent(agent, now = Date.now()) {
     last_seen_ago_s: lastSeenMs == null ? null : Math.round(lastSeenMs / 1000),
     cwd: agent.cwd || null,
     model: agent.metadata?.model || null,
+    inbox_status: agent.metadata?.inboxStatus || null,
+    inbox_status_tag: agent.metadata?.inboxStatusTag || null,
+    delivery_channel: agent.metadata?.deliveryChannel || null,
     machine_id: agent.machine_id || null,
     tmux_session: agent.tmux_session || null,
     activity: act?.state || null,
@@ -55,6 +58,8 @@ export function summarizeFleetRosterTruth({
   const rows = matchedRoster.slice(0, capped).map(a => rowForAgent(a, now))
   const summary = {
     models: countValues(matchedRoster, a => a.metadata?.model || null),
+    inbox_statuses: countValues(matchedRoster, a => a.metadata?.inboxStatus || null),
+    delivery_channels: countValues(matchedRoster, a => a.metadata?.deliveryChannel || null),
     working_dirs: countValues(matchedRoster, a => a.cwd || null),
   }
 

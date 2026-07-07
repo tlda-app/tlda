@@ -148,6 +148,18 @@ test('extractIdentityFromRecord captures fleet id, friendly name, and cwd from r
   assert.deepEqual(_extractIdentity({ payload: { cwd: '/work/other' } }), { cwd: '/work/other' })
 })
 
+test('registration capture rejects markdown/template junk and keeps real ids clean', () => {
+  // A hex id and a hyphenated named id are captured verbatim.
+  assert.deepEqual(_extractIdentityText('Registered fleet:32cd2551.'), { fleet_id: 'fleet:32cd2551', friendly_name: null })
+  assert.deepEqual(_extractIdentityText('Registered fleet:phone-bugs and more'), { fleet_id: 'fleet:phone-bugs', friendly_name: null })
+  // A doc/template line echoing the placeholder must NOT become an identity.
+  assert.equal(_extractIdentityText('Usage: Registered `fleet:<id>` here'), null)
+  assert.deepEqual(_extractOwners('Usage: Registered `fleet:<id>` here'), [])
+  // A stray trailing backtick is dropped, not stored as part of the id.
+  assert.deepEqual(_extractIdentityText('quote: Registered fleet:reconA` end'), { fleet_id: 'fleet:reconA', friendly_name: null })
+  assert.deepEqual(_extractOwners('quote: Registered fleet:reconA` end'), ['fleet:reconA'])
+})
+
 test('scanFileOwnersSync harvests owners chunked (marker split across chunk boundary) + returns EOF offset', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-owner-scan-'))
   const file = path.join(dir, 'session.jsonl')

@@ -1,6 +1,6 @@
 import { flattenAvailableSpawnModels } from '../../shared/spawn-model-options.mjs'
 
-export async function resolveFreshSpawnCapabilityModels({
+export async function resolveFreshSpawnAvailabilityModels({
   userId,
   fleetStore,
   daemonConnections,
@@ -35,7 +35,7 @@ export async function resolveFreshSpawnCapabilityModels({
   }
 
   try {
-    const capabilities = await sendRpc(route.machine_id, 'spawn-capabilities', {})
+    const capabilities = await sendRpc(route.machine_id, 'spawn-availability', {})
     const flattened = flattenAvailableSpawnModels(capabilities)
     return {
       ok: true,

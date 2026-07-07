@@ -890,15 +890,34 @@ Implementation can still land in stages. A practical first landing slice is:
 Current prototype slice:
 
 - worktree: `.worktrees/agent-inbox-modes`
-- adds MCP `inbox` beside legacy `my_task`
-- supports `focus`, `inbox`, `monitoring`, `incident`, `available`, and `review` formatting over the
-  existing task/unread backend path
-- persists selected mode as `metadata.inboxMode`
+- keeps MCP `inbox` as the pull surface and removes the public `my_task` alias
+- separates notification status from read-time inbox view:
+  - status is persisted as `metadata.inboxStatus` plus optional
+    `metadata.inboxStatusTag`
+  - view is chosen per `inbox(view: ...)` call and is not the wake policy
+- supports `default`, `current-task`, `monitoring`, `review`, and `all`
+  formatting over the existing task/unread backend path
+- adds exact-phrase sender priority:
+  - `this is important` wakes `busy`
+  - `this is urgent` wakes `dnd`
+- stamps explicit per-recipient delivery metadata on chat events:
+  `priority`, `inbox_delivery`, `inbox_status`, optional
+  `inbox_status_tag`, and optional `notify_by`
+- returns sender receipts that say whether the message notified, batched, or
+  queued for the recipient
 - changes wake/startup copy to prefer `inbox()`
+- adds `set_delivery_channel(agent?, channel)` with `channel | tmux` as the
+  consolidated delivery preference. Senders still use normal `chat()`; when a
+  notified wake targets an agent whose preference is `tmux`, the server uses the
+  internal daemon tmux nudge path so the agent is told to check `inbox()`.
+  Agents may set their own channel freely. Setting another agent's channel
+  requires being that agent's manager/delegator via an active task.
+- removes the public `nudge_agent` tool; persistent `tmux` delivery replaces the
+  one-off nudge API.
 
 This prototype is not the full long-term architecture. It is a dogfoodable slice
-of the pull surface and mode-shaped summaries, with current behavior preserved
-as the default `inbox` mode.
+of the pull surface plus status-shaped delivery. It still uses the existing
+task/unread backend path rather than the long-term item/thread receipt model.
 
 Release sequencing:
 
@@ -907,28 +926,40 @@ Release sequencing:
 - After the RC lands, rebase `.worktrees/agent-inbox-modes` onto the new
   `mcp-server/fleet-tools.mjs`, `server/unified-server.mjs`, and
   `bin/lib/spawn/harness/claude.mjs` shapes before live dogfooding.
-- Keep `my_task` as a legacy alias so release is baseline-plus-options, not a
-  forced behavior cutover.
+- Agents should call `inbox()` directly; `my_task` is not kept as a public MCP
+  alias in this slice.
 
 Rebase and dogfood checklist:
 
 1. Rebase `.worktrees/agent-inbox-modes` after the reliability RC reaches main.
 2. Resolve conflicts by preserving the RC's reliability fixes first, then
    re-applying `inbox` as an additive surface.
-3. Verify the MCP registry exposes both `inbox` and `my_task`.
-4. Verify `my_task` still returns the legacy task/message view.
-5. Verify `inbox()` defaults to current behavior as baseline-plus-options.
-6. Verify `inbox(mode: "focus")`, `inbox(mode: "monitoring")`,
-   `inbox(mode: "available")`, and `inbox(mode: "review")` render distinct
-   mode-shaped views over the same task/unread data.
-7. Verify selecting a mode persists `metadata.inboxMode`.
-8. Verify a direct chat wake says to call `inbox()` and does not consume unread
-   before `inbox`/`my_task` is called.
-9. Verify a task/delegate wake says to call `inbox()` and the task remains
-   visible in both `inbox` and `my_task`.
-10. Dogfood with at least one worker-like agent in `focus`, one manager-like
-    agent in `monitoring`, and one reviewer/release-like agent in `review`.
-11. Send release-train the post-rebase diff, exact verification output, and
+3. Verify the MCP registry exposes `inbox`, `set_inbox_status`, and
+   `set_delivery_channel`, and does not expose `my_task`.
+4. Verify `inbox()` with no args routes to the default view.
+5. Verify `inbox()` renders bounded `NOW`, `BATCHED`, and `BACKGROUND`
+   sections from explicit delivery metadata.
+6. Verify `inbox(view: "current-task")`, `inbox(view: "monitoring")`,
+   `inbox(view: "review")`, and `inbox(view: "all")` render distinct views over
+   the same task/unread data.
+7. Verify `set_inbox_status(status, tag?)` persists `metadata.inboxStatus` and
+   optional `metadata.inboxStatusTag`.
+8. Verify `chat()` receipts preserve the status/priority result, including
+   idempotent retry with the same `_tempId`.
+9. Verify a direct chat wake says to call `inbox()` and does not consume unread
+   before `inbox()` is called.
+10. Verify a task/delegate wake says to call `inbox()` and the task remains
+   visible in `inbox()`.
+11. Verify `nudge_agent` is not exposed as a public MCP tool.
+12. Verify `set_delivery_channel(agent?, channel)` persists
+    `metadata.deliveryChannel`, allows self-setting, allows a manager/delegator
+    to set a delegatee's channel, rejects non-managers with the "delegate them a
+    task first" recovery path, rejects `tmux` for agents without a tmux route,
+    and causes future notified chat wakes to send a tmux ping to check `inbox()`.
+13. Dogfood with at least one worker-like agent in `busy`, one unavailable
+    agent in `dnd`, and one reviewer/release-like agent using
+    `inbox(view: "review")`.
+14. Send release-train the post-rebase diff, exact verification output, and
     dogfood notes before requesting a merge slot.
 
 ## Reviewer Feedback Incorporated

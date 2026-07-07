@@ -94,7 +94,7 @@ async function run() {
     agent_id: 'fleet:tester1',
     name: 'collidertest',
     machine_id: 'testbox-caller',
-    metadata: { spawnPolicy: { capability: 'read', policy: 'cwd' } },
+    metadata: { spawnPolicy: { permission: 'read', policy: 'cwd' } },
   }))
   await sleep(800)
 
@@ -103,7 +103,7 @@ async function run() {
   await sleep(1200)
 
   // --- Case B: spawn a brand-new name. Expect fresh (respawn falsy).
-  ws.send(JSON.stringify({ type: 'spawn', name: 'totallynewname', model: 'sonnet', capability: 'full' }))
+  ws.send(JSON.stringify({ type: 'spawn', name: 'totallynewname', model: 'sonnet', permission: 'full' }))
   await sleep(1200)
 
   const spawnRpcs = capturedRpcs.filter(r => r.op === 'spawn')
@@ -112,7 +112,7 @@ async function run() {
 
   if (!collide) fail(`no spawn RPC for fleet:tester1 reached the daemon. RPCs: ${JSON.stringify(spawnRpcs)}`)
   if (collide.respawn !== true) fail(`collision spawn should coerce respawn=true, got ${collide.respawn}`)
-  if (collide.spawnPolicy || collide.grantedCapability || collide.mode) {
+  if (collide.spawnPolicy || collide.grantedPermission || collide.mode) {
     fail(`server must not send granted policy/mode/fence on collision wake: ${JSON.stringify(collide)}`)
   }
   if (collide.callerRung !== 'read') fail(`server should relay callerRung read, got ${collide.callerRung}`)
@@ -120,13 +120,13 @@ async function run() {
 
   if (!fresh) fail(`no spawn RPC for totallynewname reached the daemon. RPCs: ${JSON.stringify(spawnRpcs)}`)
   if (fresh.respawn === true) fail(`new-name spawn should stay fresh (respawn falsy), got ${fresh.respawn}`)
-  if (fresh.requestedCapability !== 'full') fail(`server should relay requestedCapability full, got ${fresh.requestedCapability}`)
+  if (fresh.requestedPermission !== 'full') fail(`server should relay requestedPermission full, got ${fresh.requestedPermission}`)
   if (fresh.callerRung !== 'read') fail(`server should relay callerRung read, got ${fresh.callerRung}`)
-  if (fresh.spawnPolicy || fresh.grantedCapability || fresh.mode) {
+  if (fresh.spawnPolicy || fresh.grantedPermission || fresh.mode) {
     fail(`server readiness/policy handling must be status-only; it must not choose grant/mode/fence: ${JSON.stringify(fresh)}`)
   }
   console.log('PASS: new-name spawn stayed fresh (respawn falsy)')
-  console.log('PASS: server spawn path is relay-only for capability/fence/mode')
+  console.log('PASS: server spawn path is relay-only for permission/fence/mode')
 
   // Assert the synthetic activity: a fresh 'activity' event for fleet:tester1 and
   // a bumped last_active. Read it back over the events API.

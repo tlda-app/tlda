@@ -2,6 +2,7 @@ import fs from 'fs'
 import path from 'path'
 import { activeConfigName, gitAuthorEnv, readConfig, repoRoot } from '../identity.mjs'
 import { resolveClaudeModel, resolveClaudeModelSelection } from '../models.mjs'
+import { resolveHarnessLaunchOptions } from '../permissions.mjs'
 
 const REGISTER_PROMPT = 'Call register() with the fleet MCP server. Then call inbox() to check for a pending task.'
 const DNS_ALIAS_PRELOAD = path.join(repoRoot(), 'shared', 'node-dns-alias.cjs')
@@ -37,7 +38,6 @@ export function buildCmd({
   tmuxSession,
   model,
   effort,
-  mode,
   name,
   api,
   dnsAlias = null,
@@ -45,8 +45,11 @@ export function buildCmd({
   includePrompt = true,
   env = process.env,
   config = readConfig(),
-  harnessOptions = {},
+  harnessOptions = null,
 } = {}) {
+  const effectiveHarnessOptions = harnessOptions && Object.keys(harnessOptions).length
+    ? harnessOptions
+    : resolveHarnessLaunchOptions({ config, harness: 'claude', model })
   const parts = [
     `FLEET_ID=${sq(fleetId)}`,
     `FLEET_TMUX_SESSION=${sq(tmuxSession)}`,
@@ -76,18 +79,24 @@ export function buildCmd({
     parts.push(`TLDA_SERVER=${sq(api)}`)
     parts.push(`TLDA_SYNC_SERVER=${sq(api)}`)
   }
+  const fleetOauthToken = path.join(env.HOME || process.env.HOME || '', '.claude', '.fleet-oauth-token')
+  if (fs.existsSync(fleetOauthToken)) {
+    parts.push(`CLAUDE_CODE_OAUTH_TOKEN=$(cat ${sq(fleetOauthToken)})`)
+  }
   if (dnsAlias && fs.existsSync(DNS_ALIAS_PRELOAD)) {
     parts.push(`NODE_OPTIONS=${sq(`--require=${DNS_ALIAS_PRELOAD}`)}`)
     parts.push(`TLDA_NODE_DNS_ALIAS_HOST=${sq(dnsAlias.host)}`)
     parts.push(`TLDA_NODE_DNS_ALIAS_ADDR=${sq(dnsAlias.address)}`)
   }
   parts.push('claude')
-  appendLaunchFlags(parts, harnessOptions)
+  appendLaunchFlags(parts, effectiveHarnessOptions)
   if (resumeId) parts.push(`--resume ${sq(resumeId)}`)
   parts.push(`--model ${sq(model)}`)
   if (effort) parts.push(`--effort ${sq(effort)}`)
-  if (mode === 'bypassPermissions') parts.push('--dangerously-skip-permissions')
-  else if (mode) parts.push(`--permission-mode ${sq(mode)}`)
+  // Permission flags (--dangerously-skip-permissions / --permission-mode) are NOT
+  // derived here; they come from the configured harness options via appendLaunchFlags
+  // above, exactly like the codex sandbox flag. The fence (region-set lease) is the
+  // security; the classifier flag is the operator's configured choice.
   if (includePrompt) parts.push(sq(registerPrompt(name)))
   return parts.join(' ')
 }

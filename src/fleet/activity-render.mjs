@@ -51,6 +51,7 @@ export const CHAT_TOOLS = new Set([
 
 const MARKDOWN_PRETTY_TOOLS = new Set([
   'inbox',
+  'tlda/inbox',
   'mcp/tlda/inbox',
   'mcp__tlda__inbox',
 ])
