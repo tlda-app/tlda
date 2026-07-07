@@ -109,9 +109,10 @@ export function buildCmd({
   }
   if (model) parts.push(`-m ${sq(model)}`)
   if (cwd) parts.push(`-C ${sq(cwd)}`)
-  // Codex's own sandbox is off; the fence (from the daemon-config grant) does the
-  // containment. Per-harness launch params still come from config via harnessOptions.
-  parts.push('--dangerously-bypass-approvals-and-sandbox')
+  // The code decides no sandbox/permission argument. Every launch flag — including
+  // the sandbox setting — comes from the daemon config (harnessOptions) and is
+  // appended here. Containment is whatever the config specifies (fence and/or a
+  // harness sandbox flag); the code only passes it through.
   appendLaunchFlags(parts, harnessOptions)
   return parts.join(' ')
 }

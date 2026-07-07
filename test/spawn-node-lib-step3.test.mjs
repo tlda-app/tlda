@@ -786,19 +786,31 @@ test('explicit full lease is machine-write with secret/chat denies still active'
   assert.deepEqual(settings.command.deny, [])
 })
 
-test('codex launches with its own sandbox off (the fence does containment)', () => {
-  // Permissions come from the daemon-config grant via the fence, not from computed
-  // harness logic: codex always launches native-sandbox-off, never self-caged.
-  const cmd = codex.buildCmd({
+test('codex passes the configured sandbox flag and decides none itself', () => {
+  // The code decides no sandbox/permission argument. When the daemon config supplies
+  // one (harnessOptions.required), codex.buildCmd passes it through verbatim.
+  const withFlag = codex.buildCmd({
+    fleetId: 'fleet:test',
+    tmuxSession: 'fleet-test',
+    name: 'codex-agent',
+    cwd: tmpdir(),
+    api: 'https://sandbox.example.test:5192',
+    harnessOptions: { required: ['--dangerously-bypass-approvals-and-sandbox'], preferences: [] },
+  })
+  assert.ok(withFlag.includes('--dangerously-bypass-approvals-and-sandbox'))
+
+  // With no configured flag, the command carries NO sandbox flag at all — the code
+  // never decides one on its own (no baked-in cwd cage, no baked-in bypass).
+  const noFlag = codex.buildCmd({
     fleetId: 'fleet:test',
     tmuxSession: 'fleet-test',
     name: 'codex-agent',
     cwd: tmpdir(),
     api: 'https://sandbox.example.test:5192',
   })
-  assert.ok(cmd.includes('--dangerously-bypass-approvals-and-sandbox'))
-  assert.ok(!cmd.includes('-s workspace-write'))
-  assert.ok(!/\s-a\s+never(\s|$)/.test(cmd))
+  assert.ok(!noFlag.includes('--dangerously-bypass-approvals-and-sandbox'))
+  assert.ok(!noFlag.includes('-s workspace-write'))
+  assert.ok(!/\s-a\s+never(\s|$)/.test(noFlag))
 })
 
 test('spawn harness commands preserve explicit TLDA_CONFIG even when TLDA_SERVER pins the sandbox URL', () => {
