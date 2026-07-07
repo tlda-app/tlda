@@ -63,7 +63,7 @@ import { FleetStore } from './lib/fleet-store.mjs'
 import { applyNativeTaskEvents } from './lib/native-task-wrapper.mjs'
 import { resolveMachine } from './lib/tailscale-peers.mjs'
 import { createFleetRouter } from './routes/fleet.mjs'
-import { coherentSpawnPolicy } from './lib/spawn-policy.mjs'
+import { normalizeRegionPolicy } from './lib/spawn-policy.mjs'
 import { buildRuntimeStatus } from './lib/runtime-status.mjs'
 import { resolveSpawnMachine, SPAWN_MACHINE_PREF_KEY } from './lib/spawn-routing.mjs'
 import { resolveFreshSpawnAvailabilityModels } from './lib/spawn-availability-models.mjs'
@@ -3750,20 +3750,13 @@ async function handleFleetWsMessage(ws, msg) {
       daemon_key: (machine_id && env_name) ? daemonAddress(machine_id, env_name) : existing?.daemon_key || null,
       resume_id: resume_id || existing?.resume_id || null,
     }
-    // Persist spawnPolicy ATOMICALLY as a coherent four-name rung. The shallow
-    // metadata merge above is what let partial spawnPolicy writes corrupt the
-    // blob across re-registrations (e.g. mathchat2's {read-only, unsandboxed});
-    // coercing to a coherent rung here means no new corruption can form. This is
-    // representation-only — the conferral level (the rung) is unchanged, so it
-    // never re-grants (a real permission change is the operator-gated sweep).
+    // Persist spawnPolicy ATOMICALLY as a coherent region blob. The shallow metadata
+    // merge above is what let partial spawnPolicy writes corrupt the blob across
+    // re-registrations; coercing to a coherent { name, policy } region here means no new
+    // corruption can form. Representation-only — it reads the region off the stored blob
+    // (new or legacy), never re-grants.
     if (agent.metadata?.spawnPolicy) {
-      const coherent = coherentSpawnPolicy(agent.metadata.spawnPolicy)
-      if (coherent) {
-        agent.metadata = { ...agent.metadata, spawnPolicy: coherent }
-      } else {
-        const { spawnPolicy: _drop, ...rest } = agent.metadata
-        agent.metadata = rest
-      }
+      agent.metadata = { ...agent.metadata, spawnPolicy: normalizeRegionPolicy(agent.metadata.spawnPolicy) }
     }
     // Pre-register vs claim. The spawn flow registers the identity as a "shell"
     // (msg.shell) before the agent process exists — addressable (dead=0, in the

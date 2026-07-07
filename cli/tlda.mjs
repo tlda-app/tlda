@@ -27,11 +27,9 @@ import { formatSystemStatus } from './lib/system-status.mjs'
 import { resolveAgentQuery } from './lib/agent-resolve.mjs'
 import { parseAgentMoveTarget, describeAgentAddress } from '../shared/agent-move-target.mjs'
 import {
-  SPAWN_POLICY_OPTIONS,
   builtinPermissionProfileNames,
   normalizeRequestedPermissions,
   resolveDirectSpawnGrant,
-  resolveSpawnPolicyOption,
 } from '../server/lib/spawn-policy.mjs'
 import { SPAWN_MACHINE_PREF_KEY } from '../server/lib/spawn-routing.mjs'
 import {
@@ -2454,7 +2452,7 @@ function permissionProfileNamesForError() {
   } catch {
     daemonProfiles = []
   }
-  return [...new Set([...daemonProfiles, ...builtinPermissionProfileNames(), ...Object.keys(SPAWN_POLICY_OPTIONS)])].join(', ')
+  return [...new Set([...daemonProfiles, ...builtinPermissionProfileNames()])].join(', ')
 }
 
 function describePermissionProfile(profileName, policy) {
