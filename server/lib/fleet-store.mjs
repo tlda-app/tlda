@@ -25,6 +25,7 @@ import os from 'os';
 import { createLiveStore } from '../../shared/live-store.ts';
 import { PSEUDO_LABELS, parseFilter, evalExpr, evalExprDirectional, labelsForAgent } from '../../shared/fleet-labels.mjs';
 import { baseName, nameForPhase, phaseFromName, ALL_PHASES, prettyNameForFriendlyName } from '../../shared/lineage-name.mjs';
+import { createTaskDocMaterializer } from './task-doc-materializer.mjs';
 
 // Persistent DB under ~/.config/tlda/ (survives macOS reboots).
 // Previously /tmp/fleet.db which got wiped on reboot — lost all agents/state.
@@ -66,7 +67,7 @@ function parsePrettyName(value) {
 export { PSEUDO_LABELS };
 
 export class FleetStore {
-  constructor(dbPath) {
+  constructor(dbPath, options = {}) {
     dbPath = dbPath || DB_PATH;
     // Ensure directory exists
     const dir = path.dirname(dbPath);
@@ -111,6 +112,9 @@ export class FleetStore {
     this._wiretapCache = null;
     this._backfillNameHistory();
     this._listeners = []; // SSE broadcast callbacks
+    this._taskDocMaterializer = options.taskDoc === true && process.env.TLDA_TASK_DOC_DISABLE !== '1'
+      ? createTaskDocMaterializer({ fleetStore: this, ...(options.taskDocOptions || {}) })
+      : null;
 
     // The writer worker owns the connection that writes the high-frequency
     // `events` rows (every activity card / chat). better-sqlite3 is synchronous,
@@ -303,6 +307,7 @@ export class FleetStore {
         acknowledged INTEGER DEFAULT 0,
         completed_at TEXT,
         last_checked TEXT,
+        updated_at TEXT,
         blocked_by TEXT,              -- JSON array of task IDs
         success_criteria TEXT,        -- JSON array
         reported INTEGER DEFAULT 0,
@@ -461,6 +466,12 @@ export class FleetStore {
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_agents_machine_env ON agents(machine_id, env_name)");
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_agents_daemon_key ON agents(daemon_key)");
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_daemon_registry_status ON daemon_registry(status, machine_id, env_name)");
+
+    const taskCols = this.db.prepare("PRAGMA table_info(tasks)").all();
+    if (!taskCols.some(c => c.name === 'updated_at')) {
+      this.db.exec("ALTER TABLE tasks ADD COLUMN updated_at TEXT");
+      this.db.exec("UPDATE tasks SET updated_at = COALESCE(completed_at, last_checked, delegated_at) WHERE updated_at IS NULL");
+    }
 
     // Add lineage columns to agents if missing
     if (!agentCols.some(c => c.name === 'lineage_id')) {
@@ -858,8 +869,8 @@ export class FleetStore {
 
     // Task queries
     this._upsertTask = this.db.prepare(`
-      INSERT INTO tasks (id, agent, description, message, delegated_by, delegated_at, status, acknowledged, completed_at, last_checked, blocked_by, success_criteria, reported, synthetic, metadata)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO tasks (id, agent, description, message, delegated_by, delegated_at, status, acknowledged, completed_at, last_checked, updated_at, blocked_by, success_criteria, reported, synthetic, metadata)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         agent = excluded.agent,
         description = excluded.description,
@@ -869,6 +880,7 @@ export class FleetStore {
         acknowledged = excluded.acknowledged,
         completed_at = excluded.completed_at,
         last_checked = excluded.last_checked,
+        updated_at = excluded.updated_at,
         blocked_by = excluded.blocked_by,
         success_criteria = COALESCE(excluded.success_criteria, tasks.success_criteria),
         reported = excluded.reported,
@@ -2077,6 +2089,10 @@ export class FleetStore {
   // ---- Task state management ----
 
   upsertTask(task) {
+    const existing = task.id ? this.getTask(task.id) : null;
+    const updatedAt = existing
+      ? (task.updated_at && task.updated_at !== existing.updated_at ? task.updated_at : new Date().toISOString())
+      : (task.updated_at || task.completed_at || task.last_checked || task.delegated_at || new Date().toISOString());
     this._upsertTask.run(
       task.id,
       task.agent,
@@ -2088,12 +2104,14 @@ export class FleetStore {
       task.acknowledged ? 1 : 0,
       task.completed_at || null,
       task.last_checked || null,
+      updatedAt,
       task.blockedBy ? JSON.stringify(task.blockedBy) : null,
       task.success_criteria ? JSON.stringify(task.success_criteria) : null,
       task.reported ? 1 : 0,
       task.synthetic ? 1 : 0,
       task.metadata ? JSON.stringify(task.metadata) : null
     );
+    this._queueTaskDocChange({ type: 'update', task, actor: task.agent });
   }
 
   getTask(id) {
@@ -2140,7 +2158,9 @@ export class FleetStore {
   }
 
   removeTask(id) {
+    const task = this.getTask(id);
     this._deleteTask.run(id);
+    this._queueTaskDocChange({ type: 'delete', task, taskId: id, actor: task?.agent });
   }
 
   getTaskDeliveryState(taskOrId, { recipientExposed = false } = {}) {
@@ -2228,6 +2248,14 @@ export class FleetStore {
       synthetic: !!row.synthetic,
       metadata: row.metadata ? JSON.parse(row.metadata) : null,
     };
+  }
+
+  _queueTaskDocChange(change) {
+    this._taskDocMaterializer?.queue(change);
+  }
+
+  flushTaskDocs() {
+    return this._taskDocMaterializer?.flushNow();
   }
 
   // ---- Shared doc management ----

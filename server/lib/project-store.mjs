@@ -11,6 +11,12 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, rmSync, unlinkSync, realpathSync } from 'fs'
 import { join, relative, dirname } from 'path'
 import { createHash } from 'crypto'
+import {
+  projectPartsManifestPath as partsManifestPathForRoot,
+  readProjectPartsManifest as readPartsManifestForRoot,
+  recoverProjectPartsManifest as recoverPartsManifestForRoot,
+  writeProjectPartsManifest as writePartsManifestForRoot,
+} from './project-parts-scanner.mjs'
 
 let projectsDir = null
 
@@ -158,6 +164,29 @@ export function sourceDir(name) {
 
 export function outputDir(name) {
   return join(projectsDir, name, 'output')
+}
+
+export function projectPartsRoot(name) {
+  return sourceDir(name)
+}
+
+export function projectPartsManifestPath(name) {
+  return partsManifestPathForRoot(projectPartsRoot(name))
+}
+
+export function readProjectPartsManifest(name) {
+  if (!readProject(name)) throw new Error(`Project "${name}" not found`)
+  return readPartsManifestForRoot(projectPartsRoot(name))
+}
+
+export function writeProjectPartsManifest(name, manifest) {
+  if (!readProject(name)) throw new Error(`Project "${name}" not found`)
+  return writePartsManifestForRoot(projectPartsRoot(name), manifest)
+}
+
+export function recoverProjectPartsManifest(name, options = {}) {
+  if (!readProject(name)) throw new Error(`Project "${name}" not found`)
+  return recoverPartsManifestForRoot(projectPartsRoot(name), options)
 }
 
 // Build artifacts that latexmk leaves in the source directory

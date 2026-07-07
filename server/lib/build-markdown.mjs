@@ -18,6 +18,29 @@ import { injectBridge } from './html-injector.mjs'
 import { updateProject, readProject, listProjects, aggregateBookToc, sourceDir as getSourceDir, outputDir as getOutputDir } from './project-store.mjs'
 import { broadcastSignal } from './sync-rooms.mjs'
 
+const FRONTMATTER_RE = /^---[ \t]*\r?\n[\s\S]*?\r?\n---[ \t]*(?:\r?\n|$)/
+
+export function stripMarkdownFrontmatter(source, { preserveLineNumbers = true } = {}) {
+  const text = String(source ?? '')
+  const match = text.match(FRONTMATTER_RE)
+  if (!match) return text
+  if (!preserveLineNumbers) return text.slice(match[0].length)
+  return match[0].replace(/[^\r\n]/g, '') + text.slice(match[0].length)
+}
+
+function markdownFrontmatter(source) {
+  const text = String(source ?? '')
+  const match = text.match(FRONTMATTER_RE)
+  if (!match) return {}
+  const body = match[0].replace(/^---[ \t]*\r?\n/, '').replace(/\r?\n---[ \t]*(?:\r?\n|$)$/, '')
+  const values = {}
+  for (const line of body.split(/\r?\n/)) {
+    const m = line.match(/^([A-Za-z0-9_-]+):\s*(.*?)\s*$/)
+    if (m) values[m[1]] = m[2]
+  }
+  return values
+}
+
 // ---- KaTeX math plugin for markdown-it ----
 
 function escapedDollar(state, silent) {
@@ -265,6 +288,286 @@ function linkifyMarkdownTextRefs(html) {
   return result.join('')
 }
 
+function taskDocRenderLayerAssets(enabled) {
+  if (!enabled) return { style: '', script: '' }
+  return {
+    style: `
+    .task-doc-tools {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.5rem;
+      margin: 1rem 0 0.5rem;
+      font-size: 0.82rem;
+      color: #4b5563;
+    }
+    .task-doc-tools label {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      white-space: nowrap;
+    }
+    .task-doc-tools select,
+    .task-doc-tools button {
+      font: inherit;
+      color: inherit;
+      border: 1px solid #d1d5db;
+      border-radius: 4px;
+      background: #fff;
+      padding: 0.22rem 0.45rem;
+    }
+    .task-doc-tools button { cursor: pointer; }
+    .task-doc-row-count { margin-left: auto; color: #6b7280; }
+    table.task-doc-table th[data-task-doc-sort] {
+      cursor: pointer;
+      user-select: none;
+      white-space: nowrap;
+    }
+    table.task-doc-table th[data-task-doc-sort]::after {
+      content: attr(data-sort-indicator);
+      display: inline-block;
+      min-width: 1.2em;
+      color: #6b7280;
+      font-size: 0.85em;
+      text-align: right;
+    }
+    .task-doc-fleet-id {
+      border-bottom: 1px dotted #9ca3af;
+      cursor: help;
+    }
+    .task-doc-empty-row td {
+      color: #6b7280;
+      font-style: italic;
+    }`,
+    script: `
+<script>
+(() => {
+  const SORTABLE = new Set(['project', 'status', 'created', 'last-modified'])
+  const FILTERABLE = new Set(['project', 'status'])
+
+  function norm(value) {
+    return String(value || '').trim().toLowerCase()
+  }
+
+  function displayNameFor(value, exactNames, prefixNames) {
+    const id = String(value || '').trim()
+    if (!id.startsWith('fleet:')) return null
+    if (exactNames.has(id)) return exactNames.get(id)
+    const dash = id.indexOf('-')
+    if (dash > 0) {
+      const prefix = id.slice(0, dash)
+      const name = prefixNames.get(prefix)
+      if (name) return name + '-' + id.slice(dash + 1)
+    }
+    return null
+  }
+
+  function parseTime(value) {
+    const text = String(value || '').trim()
+    if (!text) return 0
+    const parsed = Date.parse(text.replace(/ UTC$/, 'Z'))
+    return Number.isNaN(parsed) ? 0 : parsed
+  }
+
+  function tableState(table) {
+    const headers = Array.from(table.tHead?.rows?.[0]?.cells || [])
+    const columns = headers.map(th => norm(th.textContent))
+    return {
+      headers,
+      columns,
+      rows: Array.from(table.tBodies[0]?.rows || []),
+      sort: { column: null, dir: 'asc' },
+      filters: { project: '', status: '' },
+      emptyRow: null,
+    }
+  }
+
+  function rowValue(row, state, column) {
+    const idx = state.columns.indexOf(column)
+    return idx >= 0 ? row.cells[idx]?.dataset.rawValue || row.cells[idx]?.textContent || '' : ''
+  }
+
+  function compareRows(a, b, state, column, dir) {
+    const av = rowValue(a, state, column)
+    const bv = rowValue(b, state, column)
+    let delta
+    if (column === 'created' || column === 'last-modified') {
+      delta = parseTime(av) - parseTime(bv)
+    } else {
+      delta = av.localeCompare(bv, undefined, { numeric: true, sensitivity: 'base' })
+    }
+    return dir === 'desc' ? -delta : delta
+  }
+
+  function update(table, state) {
+    let visible = 0
+    for (const row of state.rows) {
+      const projectOk = !state.filters.project || rowValue(row, state, 'project') === state.filters.project
+      const statusOk = !state.filters.status || rowValue(row, state, 'status') === state.filters.status
+      const show = projectOk && statusOk
+      row.hidden = !show
+      if (show) visible += 1
+    }
+    if (state.sort.column) {
+      const sorted = [...state.rows].sort((a, b) => compareRows(a, b, state, state.sort.column, state.sort.dir))
+      for (const row of sorted) table.tBodies[0].appendChild(row)
+    }
+    if (state.emptyRow) {
+      table.tBodies[0].appendChild(state.emptyRow)
+      state.emptyRow.hidden = visible !== 0
+    }
+    const count = table.previousElementSibling?.querySelector?.('.task-doc-row-count')
+    if (count) count.textContent = visible + ' shown'
+    for (const th of state.headers) {
+      const column = norm(th.textContent)
+      const active = state.sort.column === column
+      th.dataset.sortIndicator = active ? (state.sort.dir === 'asc' ? '▲' : '▼') : ''
+      th.setAttribute('aria-sort', active ? (state.sort.dir === 'asc' ? 'ascending' : 'descending') : 'none')
+    }
+  }
+
+  function addControls(table, state) {
+    const controls = document.createElement('div')
+    controls.className = 'task-doc-tools'
+    for (const column of ['project', 'status']) {
+      if (!FILTERABLE.has(column) || !state.columns.includes(column)) continue
+      const label = document.createElement('label')
+      label.textContent = column + ' '
+      const select = document.createElement('select')
+      const all = document.createElement('option')
+      all.value = ''
+      all.textContent = 'all'
+      select.appendChild(all)
+      const values = [...new Set(state.rows.map(row => rowValue(row, state, column)).filter(Boolean))].sort((a, b) => a.localeCompare(b))
+      for (const value of values) {
+        const option = document.createElement('option')
+        option.value = value
+        option.textContent = value
+        select.appendChild(option)
+      }
+      select.addEventListener('change', () => {
+        state.filters[column] = select.value
+        update(table, state)
+      })
+      label.appendChild(select)
+      controls.appendChild(label)
+    }
+    const clear = document.createElement('button')
+    clear.type = 'button'
+    clear.textContent = 'clear'
+    clear.addEventListener('click', () => {
+      state.filters.project = ''
+      state.filters.status = ''
+      for (const select of controls.querySelectorAll('select')) select.value = ''
+      update(table, state)
+    })
+    controls.appendChild(clear)
+    const count = document.createElement('span')
+    count.className = 'task-doc-row-count'
+    controls.appendChild(count)
+    table.before(controls)
+  }
+
+  function addSorting(table, state) {
+    for (const th of state.headers) {
+      const column = norm(th.textContent)
+      if (!SORTABLE.has(column)) continue
+      th.dataset.taskDocSort = column
+      th.tabIndex = 0
+      th.setAttribute('role', 'button')
+      th.setAttribute('aria-sort', 'none')
+      const activate = () => {
+        if (state.sort.column === column) state.sort.dir = state.sort.dir === 'asc' ? 'desc' : 'asc'
+        else state.sort = { column, dir: column === 'created' || column === 'last-modified' ? 'desc' : 'asc' }
+        update(table, state)
+      }
+      th.addEventListener('click', activate)
+      th.addEventListener('keydown', event => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault()
+          activate()
+        }
+      })
+    }
+  }
+
+  function addEmptyRow(table, state) {
+    const tr = document.createElement('tr')
+    tr.className = 'task-doc-empty-row'
+    tr.hidden = true
+    const td = document.createElement('td')
+    td.colSpan = state.columns.length
+    td.textContent = 'No tasks match the current filters.'
+    tr.appendChild(td)
+    table.tBodies[0].appendChild(tr)
+    state.emptyRow = tr
+  }
+
+  function captureRawValues(state) {
+    for (const row of state.rows) {
+      Array.from(row.cells).forEach(cell => {
+        cell.dataset.rawValue = cell.textContent.trim()
+      })
+    }
+  }
+
+  async function loadAgentNames() {
+    try {
+      const res = await fetch('/api/store/agents')
+      if (!res.ok) return { exactNames: new Map(), prefixNames: new Map() }
+      const agents = await res.json()
+      const exactNames = new Map()
+      const prefixNames = new Map()
+      for (const agent of agents) {
+        if (!agent?.id) continue
+        const display = agent.pretty_name || agent.friendly_name || agent.lineage_name || agent.id
+        exactNames.set(agent.id, display)
+        prefixNames.set(agent.id.slice(0, 10), display)
+      }
+      return { exactNames, prefixNames }
+    } catch {
+      return { exactNames: new Map(), prefixNames: new Map() }
+    }
+  }
+
+  function prettyPrintFleetIds(table, state, names) {
+    for (const column of ['id', 'owner']) {
+      const idx = state.columns.indexOf(column)
+      if (idx < 0) continue
+      for (const row of state.rows) {
+        const cell = row.cells[idx]
+        const raw = cell?.dataset.rawValue || ''
+        const display = displayNameFor(raw, names.exactNames, names.prefixNames)
+        if (!display || display === raw) continue
+        cell.textContent = display
+        cell.title = raw
+        cell.classList.add('task-doc-fleet-id')
+      }
+    }
+  }
+
+  function enhance(table) {
+    if (table.dataset.taskDocEnhanced) return
+    const state = tableState(table)
+    if (!state.columns.includes('id') || !state.columns.includes('status')) return
+    table.dataset.taskDocEnhanced = 'true'
+    table.classList.add('task-doc-table')
+    captureRawValues(state)
+    addControls(table, state)
+    addSorting(table, state)
+    addEmptyRow(table, state)
+    update(table, state)
+    loadAgentNames().then(names => prettyPrintFleetIds(table, state, names))
+  }
+
+  document.addEventListener('DOMContentLoaded', () => {
+    for (const table of document.querySelectorAll('table')) enhance(table)
+  })
+})()
+</script>`,
+  }
+}
+
 function enhanceTexsyncAnchors(html) {
   return html.replace(/<a\b([^>]*?)\bhref="texsync:\/\/file([^"]+?):(\d+)"([^>]*)>/g, (_m, before, file, line, after) => {
     const attrs = `${before} href="texsync://file${escAttr(file)}:${line}"${after}`
@@ -307,6 +610,10 @@ export async function buildMarkdownDocument(name, addLog = console.log) {
   const macroCount = Object.keys(_macros).length
   if (macroCount > 0) addLog(`[markdown] Extracted ${macroCount} macros from preamble`)
 
+  const renderSource = stripMarkdownFrontmatter(source)
+  const frontmatter = markdownFrontmatter(source)
+  const isTaskDoc = frontmatter['tlda-kind'] === 'task-doc'
+
   const slugify = s => s.toLowerCase().replace(/[^\w]+/g, '-').replace(/^-|-$/g, '')
 
   // Extract TOC from original source (before stripping {#id} tags)
@@ -314,7 +621,7 @@ export async function buildMarkdownDocument(name, addLog = console.log) {
   const LEVEL_MAP = { 1: 'section', 2: 'subsection', 3: 'subsubsection', 4: 'subsubsection' }
   const toc = []
   const mdToc = new MarkdownIt()
-  const tocTokens = mdToc.parse(source, {})
+  const tocTokens = mdToc.parse(renderSource, {})
   for (let i = 0; i < tocTokens.length; i++) {
     if (tocTokens[i].type === 'heading_open') {
       const level = parseInt(tocTokens[i].tag.slice(1))
@@ -330,7 +637,7 @@ export async function buildMarkdownDocument(name, addLog = console.log) {
   }
 
   // Strip {#id} tags from headings so they don't appear in rendered HTML
-  const processedSource = source.replace(/(^#{1,6}[^\n]*?)\s*\{#[\w-]+\}/gm, '$1')
+  const processedSource = renderSource.replace(/(^#{1,6}[^\n]*?)\s*\{#[\w-]+\}/gm, '$1')
 
   const md = new MarkdownIt({ html: true, linkify: true, typographer: true })
     .use(mathPlugin)
@@ -373,6 +680,7 @@ export async function buildMarkdownDocument(name, addLog = console.log) {
   let content = md.renderer.render(tokens, md.options, env)
   content = linkifyMarkdownDocRefs(content)
   const title = extractTitle(source)
+  const taskDocAssets = taskDocRenderLayerAssets(isTaskDoc)
 
   const html = `<!DOCTYPE html>
 <html lang="en">
@@ -451,10 +759,12 @@ export async function buildMarkdownDocument(name, addLog = console.log) {
       margin: 1.4em 0;
       width: 100%;
     }
+${taskDocAssets.style}
   </style>
 </head>
 <body>
 ${content}
+${taskDocAssets.script}
 </body>
 </html>`
 

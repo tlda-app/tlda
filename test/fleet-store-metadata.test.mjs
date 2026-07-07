@@ -52,6 +52,36 @@ describe('FleetStore agent metadata', () => {
     }
   })
 
+  it('persists task updated_at for task document last-modified output', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-store-task-updated-at-'))
+    const dbPath = path.join(dir, 'fleet.db')
+    const store = new FleetStore(dbPath)
+
+    try {
+      store.upsertTask({
+        id: 'task-updated',
+        agent: 'fleet:worker',
+        description: 'Track modified time',
+        delegated_at: '2026-07-05T10:00:00.000Z',
+        updated_at: '2026-07-05T10:15:00.000Z',
+        status: 'pending',
+      })
+
+      const task = store.getTask('task-updated')
+      assert.equal(task.updated_at, '2026-07-05T10:15:00.000Z')
+
+      task.status = 'done'
+      task.completed_at = '2026-07-05T10:30:00.000Z'
+      store.upsertTask(task)
+
+      const updated = store.getTask('task-updated')
+      assert.notEqual(updated.updated_at, '2026-07-05T10:15:00.000Z')
+    } finally {
+      store.close()
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('merges registration metadata without dropping spawn policy', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fleet-store-metadata-'))
     const dbPath = path.join(dir, 'fleet.db')

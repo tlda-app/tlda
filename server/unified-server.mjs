@@ -123,7 +123,8 @@ resetStaleBuildStates()
 // Fleet store (SQLite-backed agent registry + chat).
 // TLDA_FLEET_DB overrides the default path — used by integration tests
 // to isolate from the live /tmp/fleet.db.
-const fleetStore = new FleetStore(process.env.TLDA_FLEET_DB)
+const fleetStore = new FleetStore(process.env.TLDA_FLEET_DB, { taskDoc: true })
+fleetStore.flushTaskDocs?.()
 
 // Name provenance: stamp each event/result row with the friendly name its
 // sender/recipient ACTUALLY held at the row's timestamp (via name_history),
