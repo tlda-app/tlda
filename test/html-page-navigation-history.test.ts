@@ -50,7 +50,7 @@ test('html page navigation history restores page and camera', async () => {
     editor.setCurrentPage('page:two' as TLPageId)
     editor.setCamera({ x: 30, y: 40, z: 2 })
     recordHtmlNavigationEnd(editor)
-    await new Promise(resolve => setTimeout(resolve, 5))
+    await new Promise(resolve => setTimeout(resolve, 400))
 
     assert.deepEqual(htmlNavigationLocationFromHistoryState(window.history.state), {
       pageId: 'page:two',
@@ -90,9 +90,9 @@ test('html page navigation history pushes repeated camera locations as explicit 
     }
 
     recordHtmlNavigationEnd(editor)
-    await new Promise(resolve => setTimeout(resolve, 5))
+    await new Promise(resolve => setTimeout(resolve, 400))
     recordHtmlNavigationEnd(editor)
-    await new Promise(resolve => setTimeout(resolve, 5))
+    await new Promise(resolve => setTimeout(resolve, 400))
 
     assert.equal(pushedStates.length, 2)
     assert.deepEqual(pushedStates.map(htmlNavigationLocationFromHistoryState), [

@@ -1,6 +1,7 @@
 import type { Editor, TLPageId } from 'tldraw'
 
 export const HTML_NAV_STATE_KEY = '__tldaHtmlNavigation'
+const HTML_NAV_RECORD_DELAY_MS = 350
 
 type HtmlNavigationLocation = {
   pageId: string
@@ -77,7 +78,7 @@ export function recordHtmlNavigationStart(editor: Editor) {
 
 export function recordHtmlNavigationEnd(editor: Editor) {
   if (restoringHtmlNavigationState) return
-  window.setTimeout(() => pushHtmlNavigationHistoryLocation(editor), 0)
+  window.setTimeout(() => pushHtmlNavigationHistoryLocation(editor), HTML_NAV_RECORD_DELAY_MS)
 }
 
 export function installHtmlNavigationHistory(editor: Editor) {
