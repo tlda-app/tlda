@@ -194,54 +194,50 @@ export function modelFamily({ model, kind } = {}) {
 //              across projects and never machine-level. Safe by construction —
 //              a tlda project is versioned on build, so any bad write recovers.
 //
-// This is a trust-TIER → coarse-policy dictionary (three named tiers → their
-// region label), NOT a rank ladder: it is looked up by tier name, never
-// ordered or compared. The model ceiling it produces is one of the region sets
-// intersected in resolveSpawnGrant — a real fence input, not a parallel clamp.
-const MODEL_TIER_POLICY = {
-  full: { permission: 'full', policy: 'unsandboxed' },
-  elevated: { permission: 'tlda-write', policy: 'tlda-projects' },
-  narrow: { permission: 'write', policy: 'cwd' },
-}
+// This maps a trust tier to the fence REGION its ceiling covers (cwd / tlda-projects /
+// unsandboxed(**) are the fence's own region vocabulary, not permission levels). It is
+// looked up by tier name, never ordered or compared.
+const MODEL_TIER_REGION = { full: '**', elevated: 'tlda-projects', narrow: 'cwd' }
 
 export function modelTrustTier({ model, kind } = {}) {
   return sharedModelTrustTier({ model, kind })
 }
 
-function defaultModelCeiling({ model, kind } = {}) {
-  // Invariant (Skip): an agent's kind is ALWAYS known — a fresh spawn is passed it,
-  // a woken agent has it in the ledger. So "neither model nor kind" is never a real
-  // agent; it's a caller that failed to thread identity through. The OLD behavior
-  // silently resolved that absence to the narrow tier and CAGED the agent to its cwd,
-  // overriding its project profile — the exact bug that folder-clamped the whole
-  // fleet. The model ceiling is a CAP on trust, not a lane; with no identity to cap,
-  // it must contribute NO clamp (∩ ** is identity), leaving the project profile and
-  // the spawner authority to bound the grant. We surface the missing identity loudly
-  // (a record-keeping bug to fix at the caller) but never wedge on it.
+// The model's trust ceiling as a REGION SET — one of the sets intersected in
+// resolveSpawnGrant. Keyed on the model's trust tier (Skip 06-19: keyed on the model,
+// not the harness). read == write == the tier's region; spawn is open (a ceiling never
+// caps who you may spawn — that's the spawner's own grant). A per-model override
+// configured in daemon.yaml (spawnPolicy.modelCeilings[model], a profile name) wins.
+function modelCeilingPermissionSet(config = {}, { model, kind, cwd, project } = {}) {
+  const configured = model ? (config.spawnPolicy?.modelCeilings || {})[model] : null
+  if (configured) {
+    const profile = configuredPermissionProfile(config, configured) || builtinPermissionProfile(configured)
+    if (profile) return materializePermissionSet(profile, { cwd, project })
+  }
+  let zone
   if (!model && !kind) {
+    // Invariant (Skip): kind is ALWAYS known. "Neither model nor kind" is a caller
+    // that failed to thread identity through — never a real untrusted agent. The old
+    // code silently clamped that absence to cwd (the fleet-wide folder cage). With no
+    // identity to cap, the ceiling contributes no clamp (∩ ** is identity); the project
+    // profile and spawner still bound the grant. Surfaced loudly, never wedges.
     process.stderr.write('[spawn-policy] model ceiling requested with neither model nor kind; identity is always known — fix the caller. Applying no model cap.\n')
-    return MODEL_TIER_POLICY.full // no cap: bounded by project profile ∩ spawner only
+    zone = '**'
+  } else {
+    zone = MODEL_TIER_REGION[modelTrustTier({ model, kind })] || 'cwd'
   }
-  return MODEL_TIER_POLICY[modelTrustTier({ model, kind })]
-}
-
-export function modelCeiling(config = {}, { model, kind, trustOverride } = {}) {
-  return modelSpawnCeiling(config, { model, kind, trustOverride }).permission
-}
-
-export function modelSpawnCeiling(config = {}, { model, kind, trustOverride } = {}) {
-  // Per-agent operator override (e.g. a trusted minimax raised above its model
-  // default). Operator-gated at the spawn boundary — this function trusts that
-  // the caller already proved root before a trustOverride reached it.
-  if (trustOverride != null && trustOverride !== '') {
-    return normalizeSpawnPolicy(trustOverride, defaultModelCeiling({ model, kind }))
+  const operations = emptyPermissionOperations()
+  const rules = []
+  for (const op of ['read', 'write']) {
+    operations[op].allow.push(zone)
+    rules.push({ operation: op, effect: 'allow', zone, line: null })
   }
-  const family = modelFamily({ model, kind })
-  const policy = config.spawnPolicy || {}
-  const byModel = policy.modelCeilings || {}
-  const byFamily = policy.familyCeilings || {}
-  const configured = (model && byModel[model]) || byFamily[family] || policy.defaultCeiling
-  return normalizeSpawnPolicy(configured, defaultModelCeiling({ model, kind }))
+  operations.spawn.allow.push('**')
+  rules.push({ operation: 'spawn', effect: 'allow', zone: '**', line: null })
+  return materializePermissionSet(
+    { type: 'permission-set', name: `model:${zone}`, operations, rules, compiledFrom: 'model-ceiling' },
+    { cwd, project },
+  )
 }
 
 // Project-default profiles (Skip 06-19: "reasonable configurations on a
@@ -936,7 +932,6 @@ export function resolveSpawnGrant({
   cwd,
 } = {}) {
   const projectPolicy = resolveProjectProfile(config, { doc, project, cwd })
-  const modelPolicy = modelSpawnCeiling(config, { model, kind })
   const spawnerPolicy = explicitSpawnerPolicy
     ? normalizeSpawnPolicy(explicitSpawnerPolicy)
     : requester?.id
@@ -960,7 +955,7 @@ export function resolveSpawnGrant({
     : requestedPermissions || requestedPermission
     ? normalizeRequestedPermissions(requestedPermissions || requestedPermission, DEFAULT_AGENT_PERMISSION)
     : withPermissionSet(projectPolicy, projectPermissionSet)
-  const modelPermissionSet = permissionSetFromPolicy(modelPolicy, { name: modelPolicy.name, cwd, project })
+  const modelPermissionSet = modelCeilingPermissionSet(config, { model, kind, cwd, project })
   const spawnerPermissionSet = explicitSpawnerPermissionSet
     ? materializePermissionSet(explicitSpawnerPermissionSet, { cwd, project })
     : permissionSetFromPolicy(spawnerPolicy, { name: spawnerPolicy.name, cwd, project })
@@ -993,8 +988,6 @@ export function resolveSpawnGrant({
     spawnerPolicy,
     projectPermission: projectPolicy.permission,
     projectPolicy,
-    modelPermission: modelPolicy.permission,
-    modelPolicy,
     machineAllowedPermission: grantedPolicy.permission,
     machineAllowedPolicy: grantedPolicy,
     grantedPermission: grantedPolicy.permission,
