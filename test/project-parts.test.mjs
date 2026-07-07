@@ -15,6 +15,7 @@ import {
   readProjectPartsManifest,
   recoverProjectPartsManifest,
   scanProjectMarkdownParts,
+  upsertProjectPartsManifest,
   writeProjectPartsManifest,
 } from '../server/lib/project-parts-scanner.mjs'
 import {
@@ -201,4 +202,37 @@ tlda-kind: note
   assert.equal(recovered.parts.length, 1)
   assert.equal(storeProjectPartsManifestPath('paper'), join(sourceRoot, '.tlda', 'parts.json'))
   assert.equal(storeReadProjectPartsManifest('paper').parts[0].title, 'Store note')
+})
+
+test('upsertProjectPartsManifest preserves unrelated project parts', () => {
+  const root = mkdtempSync(join(tmpdir(), 'tlda-parts-upsert-'))
+
+  writeProjectPartsManifest(root, createProjectPartsManifest([{
+    id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    kind: 'artifact',
+    path: 'parts/report.md',
+    title: 'Report',
+    metadata: { author: 'agent' },
+  }], {
+    externalAuthorities: [{ originMachine: 'mini', transport: 'daemon-rpc' }],
+  }))
+
+  upsertProjectPartsManifest(root, {
+    id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    kind: 'task-doc',
+    path: 'TASKS.md',
+    title: 'Tasks',
+    metadata: { managed: true },
+  }, {
+    externalAuthorities: [{ originMachine: 'air', transport: 'daemon-rpc' }],
+  })
+
+  const manifest = readProjectPartsManifest(root)
+  assert.deepEqual(new Set(manifest.parts.map(part => part.id)), new Set([
+    'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+  ]))
+  assert.equal(manifest.parts.find(part => part.kind === 'artifact').metadata.author, 'agent')
+  assert.equal(manifest.parts.find(part => part.kind === 'task-doc').metadata.managed, true)
+  assert.equal(manifest.externalAuthorities.length, 2)
 })

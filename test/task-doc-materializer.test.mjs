@@ -11,6 +11,11 @@ import {
   resolveProjectCwd,
   resolveTaskProject,
 } from '../server/lib/task-doc-materializer.mjs'
+import { createProjectPartsManifest } from '../shared/project-parts.mjs'
+import {
+  readProjectPartsManifest,
+  writeProjectPartsManifest,
+} from '../server/lib/project-parts-scanner.mjs'
 
 function git(args, cwd) {
   return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
@@ -73,6 +78,49 @@ test('materializeTaskDocs writes project and global markdown tables and attribut
 
   assert.equal(git(['log', '-1', '--format=%an <%ae>'], projectRoot), 'worker <fleet:worker>')
   assert.match(git(['log', '-1', '--format=%s'], projectRoot), /task-doc: delegate/)
+})
+
+test('materializeTaskDocs preserves unrelated project parts in the manifest', () => {
+  const root = mkdtempSync(join(tmpdir(), 'task-doc-preserve-parts-'))
+  const projectRoot = join(root, 'paper')
+  const globalRoot = join(root, 'fleet')
+  mkdirSync(projectRoot, { recursive: true })
+  mkdirSync(globalRoot, { recursive: true })
+
+  writeProjectPartsManifest(projectRoot, createProjectPartsManifest([{
+    id: '99999999-9999-4999-8999-999999999999',
+    kind: 'artifact',
+    path: 'parts/existing.md',
+    title: 'Existing artifact',
+    metadata: { sourceAgent: 'agent' },
+  }]))
+
+  const tasks = [{
+    id: 'task-keep-manifest',
+    agent: 'fleet:worker',
+    description: 'Keep existing manifest entries',
+    delegated_at: '2026-07-05T10:00:00.000Z',
+    status: 'pending',
+  }]
+
+  materializeTaskDocs({
+    fleetStore: {
+      getAllAgents: () => [{ id: 'fleet:worker', friendly_name: 'worker', cwd: projectRoot }],
+      getActiveTasks: () => tasks,
+    },
+    globalDir: globalRoot,
+    projectsProvider: () => [{ name: 'paper', sourceDir: projectRoot, taskDocRoot: projectRoot }],
+    changes: [{ type: 'delegate', task: tasks[0], actor: 'fleet:worker', at: tasks[0].delegated_at }],
+    git: () => '',
+  })
+
+  const manifest = readProjectPartsManifest(projectRoot)
+  assert.deepEqual(new Set(manifest.parts.map(part => part.id)), new Set([
+    '11111111-1111-4111-8111-111111111111',
+    '99999999-9999-4999-8999-999999999999',
+  ]))
+  assert.equal(manifest.parts.find(part => part.kind === 'artifact').title, 'Existing artifact')
+  assert.equal(manifest.parts.find(part => part.kind === 'task-doc').title, 'Tasks for paper')
 })
 
 test('materializeTaskDocs does not write or commit ordinary project source dirs', () => {

@@ -76,10 +76,67 @@ export function writeProjectPartsManifest(projectRoot, manifest) {
   return writeManifestFile(path, normalized)
 }
 
+export function upsertProjectPartsManifest(projectRoot, parts, options = {}) {
+  const current = readProjectPartsManifest(projectRoot)
+  const updates = (Array.isArray(parts) ? parts : [parts])
+    .filter(Boolean)
+    .map(part => createProjectPartRecord(part))
+  const byId = new Map(current.parts.map(part => [part.id, part]))
+  for (const part of updates) {
+    const existing = byId.get(part.id)
+    byId.set(part.id, mergeProjectPartRecord(existing, part))
+  }
+  const externalAuthorities = mergeExternalAuthorities(
+    current.externalAuthorities,
+    options.externalAuthorities,
+  )
+  const manifest = createProjectPartsManifest(
+    [...byId.values()].sort(comparePartRecords),
+    { externalAuthorities },
+  )
+  return writeProjectPartsManifest(projectRoot, manifest)
+}
+
 export function recoverProjectPartsManifest(projectRoot, options = {}) {
   const scanned = scanProjectMarkdownParts(projectRoot, options)
   writeProjectPartsManifest(projectRoot, scanned.manifest)
   return scanned
+}
+
+function mergeProjectPartRecord(existing, update) {
+  if (!existing) return update
+  return {
+    ...existing,
+    ...update,
+    metadata: mergeObjects(existing.metadata, update.metadata),
+    authority: mergeObjects(existing.authority, update.authority),
+    storage: mergeObjects(existing.storage, update.storage),
+  }
+}
+
+function mergeObjects(existing, update) {
+  if (!existing && !update) return undefined
+  return {
+    ...(existing || {}),
+    ...(update || {}),
+  }
+}
+
+function mergeExternalAuthorities(existing = [], updates = []) {
+  const result = []
+  const seen = new Set()
+  for (const authority of [...existing, ...updates]) {
+    if (!authority || typeof authority !== 'object') continue
+    const key = JSON.stringify(authority)
+    if (seen.has(key)) continue
+    seen.add(key)
+    result.push(authority)
+  }
+  return result
+}
+
+function comparePartRecords(a, b) {
+  return String(a.path || '').localeCompare(String(b.path || '')) || String(a.id).localeCompare(String(b.id))
 }
 
 function walkMarkdownFiles(dir) {

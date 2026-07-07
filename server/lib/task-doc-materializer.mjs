@@ -4,9 +4,9 @@ import { dirname, join, resolve, sep } from 'node:path'
 import { homedir } from 'node:os'
 
 import { CONFIG_DIR, loadConfig } from '../../shared/config.mjs'
-import { createProjectPartRecord, createProjectPartsManifest } from '../../shared/project-parts.mjs'
+import { createProjectPartRecord } from '../../shared/project-parts.mjs'
 import { listProjects } from './project-store.mjs'
-import { writeProjectPartsManifest } from './project-parts-scanner.mjs'
+import { upsertProjectPartsManifest } from './project-parts-scanner.mjs'
 
 export const TASK_DOC_FILENAME = 'TASKS.md'
 export const TASK_DOC_KIND = 'task-doc'
@@ -281,16 +281,14 @@ function taskTableRow(task, { includeProject = false } = {}) {
 }
 
 function writeTaskDocManifest(root, { id, title }) {
-  writeProjectPartsManifest(root, createProjectPartsManifest([
-    createProjectPartRecord({
-      id,
-      kind: TASK_DOC_KIND,
-      path: TASK_DOC_FILENAME,
-      title,
-      storage: { type: 'project', path: TASK_DOC_FILENAME },
-      metadata: { managed: true },
-    }),
-  ]))
+  upsertProjectPartsManifest(root, createProjectPartRecord({
+    id,
+    kind: TASK_DOC_KIND,
+    path: TASK_DOC_FILENAME,
+    title,
+    storage: { type: 'project', path: TASK_DOC_FILENAME },
+    metadata: { managed: true },
+  }))
 }
 
 function commitTaskDoc(dir, { message, actor, git, logger }) {
