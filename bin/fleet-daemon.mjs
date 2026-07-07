@@ -125,6 +125,7 @@ import {
   defaultDaemonConfigPath,
   permissionLedgerPathFromDaemonConfig,
   readDaemonConfig,
+  readDaemonConfigForCwd,
   withDaemonModelAliases,
 } from './lib/spawn/permission-ledger.mjs'
 import { newFleetId } from './lib/spawn/identity.mjs'
@@ -3226,6 +3227,15 @@ async function rpcSpawn({
         throw err
       }
       const spawnerGrant = permissionLedger.grantFor(requester)
+      // Project-local override (git-style): the agent's cwd project may carry a
+      // `.tlda-daemon.yaml` whose `default` profile is joined over the base daemon
+      // config. Surface it as the project profile so an un-granted agent in that
+      // project gets the project's default (e.g. tlda → app-dev), still bounded by
+      // the spawner + model-ceiling intersection.
+      const projectDefaultProfile = resolvedCwd ? readDaemonConfigForCwd(resolvedCwd)?.default : null
+      const grantConfig = projectDefaultProfile
+        ? { ...config, spawnPolicy: { ...(config?.spawnPolicy || {}), projectProfiles: { ...((config?.spawnPolicy || {}).projectProfiles || {}), [resolvedCwd]: projectDefaultProfile } } }
+        : config
       grant = resolveSpawnGrant({
         requestedPermission: requestedPermission || (policy != null ? 'write' : undefined),
         requestedPermissions,
@@ -3235,7 +3245,7 @@ async function rpcSpawn({
         spawnerPermissionSet: spawnerGrant?.permissionSet,
         model: launchModel,
         kind: launchKind,
-        config,
+        config: grantConfig,
         doc,
         project: projectForGrant,
         cwd: resolvedCwd,

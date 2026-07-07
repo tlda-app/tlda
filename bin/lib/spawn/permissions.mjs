@@ -372,8 +372,10 @@ export function resolveLaunchPolicy({
   acknowledgeNoSecurity = false,
   env = process.env,
 } = {}) {
+  // No hardcoded fallback: an un-granted agent has no fabricated policy. The policy
+  // is whatever the grant resolved (project default ∩ spawner ∩ ceiling), passed in.
   const requestedPolicy = normalizeSpawnPolicy(
-    spawnPolicy || requestedPermission || (harness === 'codex' ? 'write' : null),
+    spawnPolicy || requestedPermission || null,
     null,
   )
   // Apply the specified policy. No opt-in gate, no global off-switch, no silent
