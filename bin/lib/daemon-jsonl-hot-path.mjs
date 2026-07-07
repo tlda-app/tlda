@@ -65,8 +65,15 @@ export function createOncePerKeyGate() {
 // A session JSONL contains one (or, if something rotated through it, several)
 // `Registered fleet:<id>` lines — the fingerprint the daemon uses to learn which
 // agent owns a session. Extract every fleet id mentioned that way.
-const REGISTERED_OWNER_RE = /Registered fleet:([^\s.,;:)"'\\]+)/g
-const REGISTERED_ID_RE = /Registered (fleet:[^\s.,;)"'\\]+)/g
+// Match ONLY the characters a real fleet id can contain — the union of both
+// minters: hex from newFleetId() and sanitizeSessionName()'s `[A-Za-z0-9_-]`.
+// A blacklist char class (anything-but-punctuation) captured markdown/template
+// junk like ``Registered `fleet:<id>` `` and `Registered fleet:reconA\`` verbatim,
+// writing `fleet:<id>\`` / `fleet:reconA\`` into the identity store. A whitelist
+// stops at the first invalid char, so `fleet:<id>` yields no match (rejected) and
+// a stray trailing backtick is dropped.
+const REGISTERED_OWNER_RE = /Registered fleet:([A-Za-z0-9_-]+)/g
+const REGISTERED_ID_RE = /Registered (fleet:[A-Za-z0-9_-]+)/g
 const NAME_RE = /Your name: "([^"]+)"/
 
 export function extractOwnersFromText(text) {
