@@ -1543,13 +1543,12 @@ export function getFleetTools() {
     },
     {
       name: 'spawn',
-      description: 'Spawn or respawn a fleet agent via the server-authorized spawn path. Default: respawn existing agent (resume session). Pass fresh=true to create a new agent. Pass refresh=true to start a fresh session for an existing agent (same fleet ID — rejected for Codex). Supports lineage: set phase to join/create a lineage (auto-created from the agent name on first spawn).',
+      description: 'Spawn or respawn a fleet agent via the server-authorized spawn path. Default: respawn existing agent (resume session). Pass fresh=true to create a new agent. Supports lineage: set phase to join/create a lineage (auto-created from the agent name on first spawn).',
       inputSchema: {
         type: 'object',
         properties: {
           agent: { type: 'string', description: 'Agent name to respawn (default behavior).' },
           fresh: { type: 'boolean', description: 'Create a fresh agent instead of respawning.' },
-          refresh: { type: 'boolean', description: 'Fresh session for existing agent (same fleet ID, breaks compaction loops).' },
           name: { type: 'string', description: 'Name for the new agent (fresh mode only).' },
           model: { type: 'string', description: 'Model alias/id. Call spawn_models() for valid values. Common aliases: opus48/sonnet/haiku for Claude, gpt-5.5 or gpt for Codex, deepseek for Goose deepseek/deepseek-v4-pro.' },
           cwd: { type: 'string', description: 'Working directory (fresh mode only).' },

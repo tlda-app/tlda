@@ -10,6 +10,10 @@ function daemonSource() {
   return readFileSync(path.join(ROOT, 'bin', 'fleet-daemon.mjs'), 'utf8')
 }
 
+function tmuxSource() {
+  return readFileSync(path.join(ROOT, 'bin', 'lib', 'spawn', 'tmux.mjs'), 'utf8')
+}
+
 test('project source watching is chokidar-backed, not active-viewer fs.watch backed', () => {
   const source = daemonSource()
 
@@ -61,6 +65,20 @@ test('daemon claude runtime matcher accepts claude.exe wrapper process names', (
   assert.equal(matcher.test('/opt/homebrew/bin/claude --resume'), true)
   assert.equal(matcher.test('/Users/skip/.local/bin/claude.exe --resume'), true)
   assert.equal(matcher.test('notclaude.exe --resume'), false)
+})
+
+test('daemon runtime matchers recognize exe-suffixed harness commands', () => {
+  const source = daemonSource()
+
+  assert.equal(source.includes('processRe: /(?:^|\\s|[/\\\\])claude(?:\\.exe)?(?:\\s|$)/'), true)
+  assert.equal(source.includes('processRe: /(?:^|\\s|[/\\\\])codex(?:\\.exe)?(?:\\s|$)/'), true)
+  assert.equal(source.includes('processRe: /(?:^|\\s|[/\\\\])goose(?:\\.exe)?(?:\\s|$).*?\\brun\\b|\\bgoose(?:\\.exe)? run\\b/'), true)
+})
+
+test('tmux runtime matcher recognizes exe-suffixed harness commands', () => {
+  const source = tmuxSource()
+
+  assert.equal(source.includes('/(?:^|\\s|[/\\\\])(claude|codex|goose)(?:\\.exe)?(?:\\s|$)/'), true)
 })
 
 test('send-text does not spawn on-demand ephemeral PTYs', () => {

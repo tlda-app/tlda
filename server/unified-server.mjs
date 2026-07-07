@@ -1177,6 +1177,9 @@ async function performSpawnRelay(caller, msg) {
   } = msg || {}
   const requestedSession = session || sessionId || session_id || null
   const sessionMode = !!requestedSession
+  if (refresh) {
+    throw new Error('refresh is disabled through MCP spawn; recover the original resume handle before respawning')
+  }
   const shouldRespawn = !!respawn || (!fresh && !refresh && !!agent)
   let spawnName = sessionMode ? (name || null) : (fresh ? name : (agent || name))
   let refreshTarget = null
@@ -1200,9 +1203,6 @@ async function performSpawnRelay(caller, msg) {
   if (!sessionMode && (shouldRespawn || refresh) && !routeTarget) routeTarget = fleetStore?.findAgent(spawnName) || null
   if (!sessionMode && (shouldRespawn || refresh) && !routeTarget) throw new Error(`spawn target not found: ${spawnName}`)
   const spawnKind = kind || refreshTarget?.metadata?.kind
-  if (refresh && spawnKind === 'codex') {
-    throw new Error('codex refresh is not supported through MCP spawn; use respawn with a real resume handle')
-  }
   const requestedSpec = { model, kind: spawnKind, project: doc }
   const requestedPermission = permission || spawnPermission || null
   const storedRespawnPermissions = (!sessionMode && !fresh && routeTarget?.metadata)
