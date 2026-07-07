@@ -15,7 +15,8 @@ import katex from 'katex'
 import { readFileSync, writeFileSync, mkdirSync, cpSync, existsSync, readdirSync } from 'fs'
 import { join, basename, dirname } from 'path'
 import { injectBridge } from './html-injector.mjs'
-import { updateProject, readProject, listProjects, aggregateBookToc, sourceDir as getSourceDir, outputDir as getOutputDir } from './project-store.mjs'
+import { updateProject, readProject, listProjects, aggregateBookToc, sourceDir as getSourceDir, outputDir as getOutputDir, projectPartsRoot } from './project-store.mjs'
+import { readProjectPartsManifest } from './project-parts-scanner.mjs'
 import { broadcastSignal } from './sync-rooms.mjs'
 import { writeSentinel } from './sentinel.mjs'
 
@@ -584,6 +585,99 @@ function linkifyMarkdownDocRefs(html) {
   return enhanceTexsyncAnchors(linkifyMarkdownTextRefs(html))
 }
 
+function installLineAnchorPlugin(md) {
+  const defaultOpen = (type) => {
+    const original = md.renderer.rules[type]
+    md.renderer.rules[type] = (tokens, idx, options, env, self) => {
+      const token = tokens[idx]
+      if (token.map && token.map[0] != null) {
+        token.attrSet('id', `line-${token.map[0] + 1}`)
+      }
+      return original ? original(tokens, idx, options, env, self) : self.renderToken(tokens, idx, options)
+    }
+  }
+  for (const tag of ['paragraph_open', 'heading_open', 'blockquote_open', 'bullet_list_open', 'ordered_list_open', 'table_open', 'hr']) {
+    defaultOpen(tag)
+  }
+}
+
+function markdownPathToHtmlPath(file) {
+  const clean = String(file || '').replace(/\\/g, '/').replace(/^\/+/, '')
+  return clean.replace(/\.(md|markdown)$/i, '.html')
+}
+
+function rewriteMarkdownHrefTargets(html) {
+  return html.replace(/\bhref="([^"]+\.(?:md|markdown)(?:#[^"]*)?)"/gi, (_m, href) => {
+    const [path, hash = ''] = String(href).split('#', 2)
+    const next = markdownPathToHtmlPath(path)
+    return `href="${escAttr(hash ? `${next}#${hash}` : next)}"`
+  })
+}
+
+function renderMarkdownPageHtml({ source, title, isTaskDoc }) {
+  const renderSource = stripMarkdownFrontmatter(source)
+  const slugify = s => s.toLowerCase().replace(/[^\w]+/g, '-').replace(/^-|-$/g, '')
+  const processedSource = renderSource.replace(/(^#{1,6}[^\n]*?)\s*\{#[\w-]+\}/gm, '$1')
+  const md = new MarkdownIt({ html: true, linkify: true, typographer: true })
+    .use(mathPlugin)
+    .use(markdownItAnchor, { slugify })
+  let mermaidIndex = 0
+  const defaultFence = md.renderer.rules.fence || ((tokens, idx, options, env, self) => self.renderToken(tokens, idx, options))
+  md.renderer.rules.fence = (tokens, idx, options, env, self) => {
+    const token = tokens[idx]
+    const info = token.info ? token.info.trim().split(/\s+/)[0].toLowerCase() : ''
+    if (info !== 'mermaid') return defaultFence(tokens, idx, options, env, self)
+    const id = `mermaid-${mermaidIndex++}`
+    const lineCount = token.content.split(/\r?\n/).filter(Boolean).length
+    const minHeight = Math.min(1200, Math.max(360, lineCount * 28))
+    return `<div class="tlda-mermaid-placeholder" data-tlda-mermaid-id="${id}" style="min-height:${minHeight}px"><template data-tlda-mermaid-source>${escHtml(token.content)}</template></div>\n`
+  }
+  installLineAnchorPlugin(md)
+  const env = {}
+  const tokens = md.parse(processedSource, env)
+  let content = md.renderer.render(tokens, md.options, env)
+  content = rewriteMarkdownHrefTargets(linkifyMarkdownDocRefs(content))
+  const taskDocAssets = taskDocRenderLayerAssets(isTaskDoc)
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${title.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css">
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; font-size: 0.875rem; font-weight: 400; line-height: 1.5; color: #212529; max-width: 680px; margin: 0 auto; padding: 48px 0 80px; }
+    h1, h2, h3, h4 { font-weight: 500; line-height: 1.25; margin-top: 1.8em; margin-bottom: 0.5em; }
+    h1 { font-size: 1.8em; margin-top: 0; }
+    h2 { font-size: 1.35em; }
+    h3 { font-size: 1.1em; }
+    p { margin: 0 0 1em; }
+    pre { background: #f5f5f5; padding: 1em; border-radius: 4px; overflow-x: auto; font-size: 0.88em; }
+    code { font-family: 'SF Mono', 'Fira Mono', monospace; font-size: 0.9em; background: rgba(0,0,0,0.06); padding: 0.1em 0.35em; border-radius: 3px; }
+    pre code { background: none; padding: 0; }
+    blockquote { margin: 1em 0; padding: 0 0 0 1em; border-left: 3px solid #ccc; color: #555; }
+    table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+    th, td { border: 1px solid #ddd; padding: 0.5em 0.75em; text-align: left; }
+    th { background: #f5f5f5; font-weight: 500; }
+    img { max-width: 100%; height: auto; }
+    div[style*="flex"] { max-width: none; width: max-content; }
+    div[style*="flex"] img { max-width: none; height: 360px; width: auto; }
+    a { color: #2563eb; }
+    .doc-link { color: #2563eb; cursor: pointer; border-bottom: 1px dotted currentColor; text-decoration: none; }
+    .doc-link:hover { opacity: 0.72; }
+    .katex-display { overflow-x: auto; overflow-y: hidden; }
+    .math-error { color: red; font-family: monospace; }
+    .tlda-mermaid-placeholder { margin: 1.4em 0; width: 100%; }
+${taskDocAssets.style}
+  </style>
+</head>
+<body>
+${content}
+${taskDocAssets.script}
+</body>
+</html>`
+}
+
 // ---- Main build function ----
 
 export async function buildMarkdownDocument(name, addLog = console.log) {
@@ -679,7 +773,7 @@ export async function buildMarkdownDocument(name, addLog = console.log) {
   const env = {}
   const tokens = md.parse(processedSource, env)
   let content = md.renderer.render(tokens, md.options, env)
-  content = linkifyMarkdownDocRefs(content)
+  content = rewriteMarkdownHrefTargets(linkifyMarkdownDocRefs(content))
   const title = extractTitle(source)
   const taskDocAssets = taskDocRenderLayerAssets(isTaskDoc)
 
@@ -774,6 +868,36 @@ ${taskDocAssets.script}
   mkdirSync(outDir, { recursive: true })
   writeFileSync(join(outDir, 'index.html'), injected)
 
+  const projectParts = []
+  try {
+    const root = projectPartsRoot(name)
+    const manifest = readProjectPartsManifest(root)
+    for (const part of manifest.parts || []) {
+      const partPath = String(part.path || part.storage?.path || '')
+      if (!partPath || !/\.(md|markdown)$/i.test(partPath)) continue
+      const sourcePath = join(srcDir, partPath)
+      if (!existsSync(sourcePath)) continue
+      const partSource = readFileSync(sourcePath, 'utf8')
+      _macros = extractMacros(partSource)
+      const partFrontmatter = markdownFrontmatter(partSource)
+      const partTitle = part.title || extractTitle(partSource)
+      const partOutFile = markdownPathToHtmlPath(partPath)
+      const partHtml = renderMarkdownPageHtml({
+        source: partSource,
+        title: partTitle,
+        isTaskDoc: partFrontmatter['tlda-kind'] === 'task-doc',
+      })
+      const injectedPart = injectBridge(partHtml, '', '', true, {})
+      const outPath = join(outDir, partOutFile)
+      mkdirSync(dirname(outPath), { recursive: true })
+      writeFileSync(outPath, injectedPart)
+      projectParts.push({ file: partOutFile, width: 800, height: 1200, title: partTitle })
+    }
+    _macros = extractMacros(source)
+  } catch (e) {
+    addLog(`[markdown] Project parts skipped: ${e.message}`)
+  }
+
   // Copy image/asset directories from source to output
   for (const dir of ['img', 'images', 'assets', 'png']) {
     const src = join(srcDir, dir)
@@ -832,18 +956,26 @@ ${taskDocAssets.script}
   }
   writeFileSync(join(outDir, 'relevant-files.json'), JSON.stringify({ files: referencedFiles }, null, 2))
 
-  const pageInfo = [{ file: 'index.html', width: 800, height: 1200, title }]
+  const allPages = [{ file: 'index.html', width: 800, height: 1200, title }, ...projectParts]
+  const pageInfo = projectParts.length
+    ? allPages.map((page, idx) => ({
+        ...page,
+        group: `${name}-world`,
+        groupIndex: idx,
+        tabLabel: idx === 0 ? 'main' : page.title,
+      }))
+    : allPages
   writeFileSync(join(outDir, 'page-info.json'), JSON.stringify(pageInfo, null, 2))
   writeFileSync(join(outDir, 'toc.json'), JSON.stringify(toc, null, 2))
 
   const buildReadyAt = Date.now()
-  updateProject(name, { buildStatus: 'success', pages: 1, lastBuild: new Date(buildReadyAt).toISOString() })
+  updateProject(name, { buildStatus: 'success', pages: pageInfo.length, lastBuild: new Date(buildReadyAt).toISOString() })
   await writeSentinel(`doc-${name}`, {
     commitHash: `markdown-${buildReadyAt}`,
     timestamp: buildReadyAt,
     buildReadyAt,
   })
-  broadcastSignal(`doc-${name}`, 'signal:reload', { pages: 1, timestamp: buildReadyAt })
+  broadcastSignal(`doc-${name}`, 'signal:reload', { pages: pageInfo.length, timestamp: buildReadyAt })
 
   // Re-aggregate any book that contains this doc as a member
   for (const proj of listProjects()) {

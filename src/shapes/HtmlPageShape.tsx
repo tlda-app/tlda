@@ -12,6 +12,7 @@ import {
 import type { Editor, TLPageId, TLShape, TLShapeId } from 'tldraw'
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { appendToken } from '../authToken'
+import { htmlPageUrlMatchesTargetFile } from '../html-page-navigation-helpers'
 import { useIsInViewport } from './useIsInViewport'
 import { PDF_HEIGHT } from '../layoutConstants'
 import { clearHtmlTextSelection, recordHtmlTextSelection } from '../htmlSelection'
@@ -538,9 +539,7 @@ function HtmlPageComponent({ shape }: { shape: any }) {
         if (e.data.targetFile) {
           targetShape = allHtmlShapes.find((s: any) => {
             const url = s.props.url || ''
-            return url.endsWith('/' + e.data.targetFile) ||
-              url.includes('/' + e.data.targetFile + '?') ||
-              url.includes('/' + e.data.targetFile + '/')
+            return htmlPageUrlMatchesTargetFile(url, e.data.targetFile)
           })
         } else {
           targetShape = allHtmlShapes.find((s: any) => s.id === e.data.shapeId)

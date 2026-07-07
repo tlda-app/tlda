@@ -7,6 +7,7 @@ import { JSDOM } from 'jsdom'
 
 import { buildMarkdownDocument, stripMarkdownFrontmatter } from '../server/lib/build-markdown.mjs'
 import { createProject, initProjectStore, outputDir, sourceDir } from '../server/lib/project-store.mjs'
+import { realizeProjectMarkdownArtifact } from '../server/lib/project-artifact-materializer.mjs'
 import { closeAllRooms } from '../server/lib/sync-rooms.mjs'
 
 afterEach(() => {
@@ -143,4 +144,37 @@ test('ordinary markdown docs do not get task-doc render controls', async () => {
   const html = readFileSync(join(outputDir('plain-md'), 'index.html'), 'utf8')
   assert.doesNotMatch(html, /task-doc-tools/)
   assert.doesNotMatch(html, /data-task-doc-sort/)
+})
+
+test('markdown build renders project artifact parts as same-canvas html pages', async () => {
+  const projectsDir = mkdtempSync(join(tmpdir(), 'tlda-md-project-world-'))
+  initProjectStore(projectsDir)
+  createProject({ name: 'world-md', mainFile: 'README.md', format: 'markdown' })
+
+  const artifact = realizeProjectMarkdownArtifact({
+    project: 'world-md',
+    markdown: '# Agent report {#agent-report}\n\nArtifact body.\n',
+    idFactory: () => '77777777-7777-4777-8777-777777777777',
+  })
+
+  writeFileSync(join(sourceDir('world-md'), 'README.md'), `# Main document
+
+Open the [agent report](${artifact.projectPath}#agent-report).
+`)
+
+  await buildMarkdownDocument('world-md', () => {})
+
+  const out = outputDir('world-md')
+  const pageInfo = JSON.parse(readFileSync(join(out, 'page-info.json'), 'utf8'))
+  assert.equal(pageInfo.length, 2)
+  assert.deepEqual(pageInfo.map(p => p.file), ['index.html', 'parts/77777777.html'])
+  assert.equal(pageInfo[0].group, 'world-md-world')
+  assert.equal(pageInfo[1].group, 'world-md-world')
+
+  const mainHtml = readFileSync(join(out, 'index.html'), 'utf8')
+  assert.match(mainHtml, /href="parts\/77777777\.html#agent-report"/)
+
+  const partHtml = readFileSync(join(out, 'parts', '77777777.html'), 'utf8')
+  assert.match(partHtml, /Agent report/)
+  assert.equal(partHtml.includes('tlda-id'), false)
 })
