@@ -7,8 +7,8 @@ import YAML from 'yaml'
 import {
   emptyPermissionSet,
   resolveSpawnGrant,
-  normalizeRequestedPermissions,
-  normalizeSpawnPolicy,
+  normalizeRegionPolicy,
+  regionPolicyFromSet,
 } from '../../../server/lib/spawn-policy.mjs'
 
 function nowIso() {
@@ -18,25 +18,34 @@ function nowIso() {
 const WRITE_TIMEOUT_MS = Number(process.env.TLDA_PERMISSION_LEDGER_WRITE_TIMEOUT_MS || 5000)
 const YAML_MIGRATION_META_KEY = 'migration.daemon-permissions-yaml.v1'
 
+// An explicit empty ('none') grant — confers nothing. Detected off the raw input so a
+// stored 'none' still materializes as an empty permission set after the level strip.
+function isNoneGrant(value) {
+  if (value == null || value === '') return false
+  const s = typeof value === 'string' ? value : (value.permission ?? value.policy ?? value.name ?? '')
+  return String(s).trim().toLowerCase() === 'none'
+}
+
 function normalizeLedgerGrant(value, fallback = 'none') {
   if (!value) {
-    const policy = normalizeSpawnPolicy(fallback, 'none')
+    const policy = normalizeRegionPolicy(fallback)
     return { spawnPolicy: policy, permissionSet: emptyPermissionSet({ name: policy.name, projectedPolicy: policy }) }
   }
   const rawPermissionSet = value.permissionSet || value.permissions || null
   if (rawPermissionSet) {
-    const policy = value.spawnPolicy
-      ? normalizeSpawnPolicy(value.spawnPolicy, fallback)
-      : normalizeRequestedPermissions(rawPermissionSet, fallback)
-    const spawnPolicy = { ...policy }
-    delete spawnPolicy.permissionSet
+    // The region set IS the grant; its region scope is read off value.spawnPolicy (new
+    // region blob or a legacy level blob) or derived from the set itself.
+    const spawnPolicy = value.spawnPolicy
+      ? normalizeRegionPolicy(value.spawnPolicy, fallback)
+      : regionPolicyFromSet(rawPermissionSet)
     return { spawnPolicy, permissionSet: withStoredSpawnDefault(rawPermissionSet, spawnPolicy) }
   }
-  const policy = normalizeSpawnPolicy(value.spawnPolicy || value.policy || value.permission || value, fallback)
+  const raw = value.spawnPolicy || value.policy || value.permission || value
+  const spawnPolicy = normalizeRegionPolicy(raw, fallback)
   return {
-    spawnPolicy: policy,
-    permissionSet: policy.permission === 'none'
-      ? emptyPermissionSet({ name: policy.name, projectedPolicy: policy })
+    spawnPolicy,
+    permissionSet: isNoneGrant(raw)
+      ? emptyPermissionSet({ name: spawnPolicy.name, projectedPolicy: spawnPolicy })
       : null,
   }
 }
@@ -140,22 +149,11 @@ function normalizeProfileRootRefs(value = {}, regions, context) {
 
 function derivedPolicyFromOperations(name, operations) {
   const writeAllow = operations.write?.allow || []
-  const readAllow = operations.read?.allow || []
   const hasUniversalWrite = writeAllow.some(zone => zone === '**' || zone === '/' || zone === '/**')
   const hasTldaWrite = writeAllow.some(zone => zone === 'tlda-projects')
-  const permission = hasUniversalWrite
-    ? 'full'
-    : hasTldaWrite
-      ? 'tlda-write'
-      : writeAllow.length
-        ? 'write'
-        : readAllow.length
-          ? 'read'
-          : 'none'
-  return {
-    ...normalizeSpawnPolicy(permission),
-    name,
-  }
+  // The fence REGION this profile's zones cover — not a level.
+  const policy = hasUniversalWrite ? 'unsandboxed' : hasTldaWrite ? 'tlda-projects' : 'cwd'
+  return { name, policy }
 }
 
 function normalizeDaemonProfile(name, value, regions) {
@@ -361,7 +359,7 @@ function allPermissionSet(name = 'full') {
       { operation: 'write', effect: 'allow', zone: '**', line: null },
       { operation: 'spawn', effect: 'allow', zone: '**', line: null },
     ],
-    projectedPolicy: normalizeSpawnPolicy('full'),
+    projectedPolicy: normalizeRegionPolicy('unsandboxed'),
     compiledFrom: 'grandfather-infill-bound',
   }
 }
@@ -526,11 +524,11 @@ export class PermissionLedger {
   rowFor(id, { spawnPolicy, permissionSet, source = 'spawn' } = {}) {
     const key = String(id || '').trim()
     if (!key) throw new Error('cannot persist daemon permission grant without fleet id')
-    const policy = normalizeSpawnPolicy(spawnPolicy, 'none')
+    const policy = normalizeRegionPolicy(spawnPolicy, 'cwd')
     return {
       id: key,
       spawnPolicy: policy,
-      permissionSet: permissionSet || (policy.permission === 'none'
+      permissionSet: permissionSet || (isNoneGrant(spawnPolicy)
         ? emptyPermissionSet({ name: policy.name, projectedPolicy: policy })
         : null),
       updatedAt: nowIso(),

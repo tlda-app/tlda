@@ -203,11 +203,79 @@ export function modelTrustTier({ model, kind } = {}) {
   return sharedModelTrustTier({ model, kind })
 }
 
+// Build a region set: read == write == the zone, spawn open. The one shape used for
+// model ceilings, bare profile-name fallbacks, and the machine (root) spawner set.
+function regionPermissionSet(zone, { name, cwd, project } = {}) {
+  const operations = emptyPermissionOperations()
+  const rules = []
+  for (const op of ['read', 'write']) {
+    operations[op].allow.push(zone)
+    rules.push({ operation: op, effect: 'allow', zone, line: null })
+  }
+  operations.spawn.allow.push('**')
+  rules.push({ operation: 'spawn', effect: 'allow', zone: '**', line: null })
+  return materializePermissionSet(
+    { type: 'permission-set', name: name || `region:${zone}`, operations, rules, compiledFrom: 'region' },
+    { cwd, project },
+  )
+}
+
+// The whole machine — the spawner set for root/operator/direct spawns.
+function allMachineSet(name = 'machine') {
+  return regionPermissionSet('**', { name })
+}
+
+// The fence REGION a set covers, read off its write zones — NOT a level. A
+// machine-covering write ⇒ unsandboxed; the literal tlda-projects token ⇒
+// tlda-projects; anything else (bounded write, read-only, or empty) ⇒ cwd. This is
+// the only thing derived from the region set, and it's a region scope for the lease,
+// never a rank.
+export function regionPolicyFromSet(set) {
+  const writeAllow = set.operations?.write?.allow || []
+  const policy = writeAllow.some(isMachineZone)
+    ? 'unsandboxed'
+    : writeAllow.some((z) => String(z).trim() === 'tlda-projects')
+      ? 'tlda-projects'
+      : 'cwd'
+  return { name: policy, policy }
+}
+
+// Coerce any stored/legacy grant blob (or a bare string) into a region policy
+// { name, policy } where policy is a fence region. Reads the `policy` region straight
+// off new region-only blobs; maps legacy level words (from grants stored before the
+// strip, or an operator string) to their region for compatibility. No level survives
+// in the output.
+const REGION_SCOPES = new Set(['cwd', 'tlda-projects', 'unsandboxed', 'no-dev'])
+const LEGACY_LEVEL_REGION = {
+  machine: 'unsandboxed', '**': 'unsandboxed', full: 'unsandboxed', 'full-access': 'unsandboxed',
+  'tlda-write': 'tlda-projects', write: 'cwd', 'workspace-write': 'cwd', read: 'cwd', 'read-only': 'cwd', none: 'cwd',
+}
+function regionOf(raw) {
+  const s = String(raw || '').trim().toLowerCase()
+  if (REGION_SCOPES.has(s)) return s
+  return LEGACY_LEVEL_REGION[s] || null
+}
+export function normalizeRegionPolicy(value, fallback = 'cwd') {
+  if (value == null || value === '') return { name: fallback, policy: regionOf(fallback) || 'cwd' }
+  if (typeof value === 'string') {
+    const policy = regionOf(value) || 'cwd'
+    return { name: value.trim().toLowerCase(), policy }
+  }
+  if (typeof value === 'object' && !Array.isArray(value)) {
+    const policy = regionOf(value.policy) || regionOf(value.permission) || regionOf(fallback) || 'cwd'
+    return {
+      name: value.name || policy,
+      policy,
+      ...(value.network === false ? { network: false } : {}),
+    }
+  }
+  return { name: fallback, policy: 'cwd' }
+}
+
 // The model's trust ceiling as a REGION SET — one of the sets intersected in
 // resolveSpawnGrant. Keyed on the model's trust tier (Skip 06-19: keyed on the model,
-// not the harness). read == write == the tier's region; spawn is open (a ceiling never
-// caps who you may spawn — that's the spawner's own grant). A per-model override
-// configured in daemon.yaml (spawnPolicy.modelCeilings[model], a profile name) wins.
+// not the harness). A per-model override configured in daemon.yaml
+// (spawnPolicy.modelCeilings[model], a profile name) wins over the tier default.
 function modelCeilingPermissionSet(config = {}, { model, kind, cwd, project } = {}) {
   const configured = model ? (config.spawnPolicy?.modelCeilings || {})[model] : null
   if (configured) {
@@ -226,18 +294,7 @@ function modelCeilingPermissionSet(config = {}, { model, kind, cwd, project } = 
   } else {
     zone = MODEL_TIER_REGION[modelTrustTier({ model, kind })] || 'cwd'
   }
-  const operations = emptyPermissionOperations()
-  const rules = []
-  for (const op of ['read', 'write']) {
-    operations[op].allow.push(zone)
-    rules.push({ operation: op, effect: 'allow', zone, line: null })
-  }
-  operations.spawn.allow.push('**')
-  rules.push({ operation: 'spawn', effect: 'allow', zone: '**', line: null })
-  return materializePermissionSet(
-    { type: 'permission-set', name: `model:${zone}`, operations, rules, compiledFrom: 'model-ceiling' },
-    { cwd, project },
-  )
+  return regionPermissionSet(zone, { name: `model:${zone}`, cwd, project })
 }
 
 // Project-default profiles (Skip 06-19: "reasonable configurations on a
@@ -735,12 +792,17 @@ export function resolveProjectProfile(config = {}, { doc, project, cwd } = {}) {
   return { ...normalizeSpawnPolicy(BUILTIN_PROFILE_POLICY[name]), name }
 }
 
-function permissionSetForProfileName(name, policy, { cwd, project, config } = {}) {
+function permissionSetForProfileName(name, { cwd, project, config } = {}) {
   const configured = configuredPermissionProfile(config, name)
   if (configured) return configured
   const builtinProfile = builtinPermissionProfile(name)
   if (builtinProfile) return builtinProfile
-  return permissionSetFromPolicy(policy, { name: policy.name, cwd, project })
+  // Bare/unknown name → a region set for the fence region it names (default cwd).
+  const key = String(name || '').toLowerCase()
+  const zone = (key === 'unsandboxed' || key === 'machine') ? '**'
+    : key === 'tlda-projects' ? 'tlda-projects'
+    : 'cwd'
+  return regionPermissionSet(zone, { name: name || zone, cwd, project })
 }
 
 function materializePermissionZone(zone, { cwd, project } = {}) {
@@ -920,9 +982,6 @@ export function coherentSpawnPolicy(stored) {
 export function resolveSpawnGrant({
   requestedPermission,
   requestedPermissions,
-  callerRung,
-  requester,
-  spawnerPolicy: explicitSpawnerPolicy,
   spawnerPermissionSet: explicitSpawnerPermissionSet,
   model,
   kind,
@@ -931,75 +990,43 @@ export function resolveSpawnGrant({
   project,
   cwd,
 } = {}) {
-  const projectPolicy = resolveProjectProfile(config, { doc, project, cwd })
-  const spawnerPolicy = explicitSpawnerPolicy
-    ? normalizeSpawnPolicy(explicitSpawnerPolicy)
-    : requester?.id
-    ? callerSpawnPolicy({
-        id: requester.id,
-        human: !!requester.human,
-        metadata: { spawnPolicy: requester.spawnPolicy || requester.metadata?.spawnPolicy },
-      })
-    : normalizeSpawnPolicy(callerRung, ROOT_PERMISSION)
-  const projectPermissionSet = permissionSetForProfileName(projectPolicy.name, projectPolicy, { cwd, project, config })
-  // A requested --permissions <profile> is resolved against the operator's
-  // daemon.yaml profiles (named read/write region-sets) FIRST; only a request that
-  // is not one of those falls back to the legacy named policies. This is what makes
-  // readonly/wd/math/app/ops resolve to their real regions instead of throwing.
+  // Three region sets, intersected. That is the whole grant — the only logic is the
+  // intersection of regions (project ∩ model-ceiling ∩ spawner). The intersected
+  // allow/deny path set IS the fence; nothing ranks or labels it.
+  const projectProfileName = resolveProjectProfileName(config, { doc, project, cwd })
+  const projectPermissionSet = permissionSetForProfileName(projectProfileName, { cwd, project, config })
+
+  // An explicit --permissions request: a named daemon profile (its region set) or an
+  // inline permission set. Absent → the project's default profile.
   const requestedName = typeof (requestedPermissions ?? requestedPermission) === 'string'
     ? String(requestedPermissions ?? requestedPermission).trim().toLowerCase()
     : null
   const configuredRequested = requestedName ? configuredPermissionProfile(config, requestedName) : null
-  const requestedPolicy = configuredRequested
-    ? withPermissionSet({ ...policyForPermissionSet(configuredRequested, DEFAULT_AGENT_PERMISSION), name: requestedName }, configuredRequested)
-    : requestedPermissions || requestedPermission
-    ? normalizeRequestedPermissions(requestedPermissions || requestedPermission, DEFAULT_AGENT_PERMISSION)
-    : withPermissionSet(projectPolicy, projectPermissionSet)
+  const requestedPermissionSet = configuredRequested
+    || ((requestedPermissions || requestedPermission)
+      ? normalizeRequestedPermissions(requestedPermissions || requestedPermission).permissionSet
+      : projectPermissionSet)
+
   const modelPermissionSet = modelCeilingPermissionSet(config, { model, kind, cwd, project })
   const spawnerPermissionSet = explicitSpawnerPermissionSet
     ? materializePermissionSet(explicitSpawnerPermissionSet, { cwd, project })
-    : permissionSetFromPolicy(spawnerPolicy, { name: spawnerPolicy.name, cwd, project })
-  const requestedPermissionSet = requestedPolicy.permissionSet
-    || (requestedPermissions || requestedPermission
-      ? permissionSetFromPolicy(requestedPolicy, { name: requestedPolicy.name, cwd, project })
-      : projectPermissionSet)
-  // The grant is the region-set intersection of what was requested, what the
-  // model may ever hold, and what the spawner can confer — the ONE fence input.
-  // The coarse grantedPolicy (a "how open" label) is DERIVED from that
-  // intersected region set (policyForPermissionSet): a machine-covering write ⇒
-  // full/unsandboxed (ops stays bypass), an empty write region ⇒ read-only. No
-  // parallel rank clamp computes it.
+    : allMachineSet() // root/direct fallback; real callers always pass their explicit set
+
   const grantedPermissionSet = intersectPermissionSets([
     materializePermissionSet(requestedPermissionSet, { cwd, project }),
     modelPermissionSet,
     spawnerPermissionSet,
   ], { name: 'grant' })
-  const grantedPolicy = policyForPermissionSet(grantedPermissionSet, DEFAULT_AGENT_PERMISSION)
+  // The stored policy is just the region scope the fence needs, read off the set.
+  const grantedPolicy = regionPolicyFromSet(grantedPermissionSet)
   grantedPermissionSet.name = grantedPolicy.name
   grantedPermissionSet.projectedPolicy = grantedPolicy
-  return {
-    requestedPermission: requestedPolicy.permission,
-    requestedPolicy,
-    requestedPermissions: requestedPermissionSet,
-    requestedPermissionSet,
-    callerPermission: spawnerPolicy.permission,
-    callerPolicy: spawnerPolicy,
-    spawnerPermission: spawnerPolicy.permission,
-    spawnerPolicy,
-    projectPermission: projectPolicy.permission,
-    projectPolicy,
-    machineAllowedPermission: grantedPolicy.permission,
-    machineAllowedPolicy: grantedPolicy,
-    grantedPermission: grantedPolicy.permission,
-    grantedPolicy,
-    grantedPermissions: grantedPermissionSet,
-    grantedPermissionSet,
-  }
+  return { grantedPolicy, grantedPermissionSet, grantedPermissions: grantedPermissionSet }
 }
 
 export function resolveDirectSpawnGrant(options = {}) {
   return resolveSpawnGrant({
     ...options,
-    spawnerPolicy: ROOT_PERMISSION,
+    spawnerPermissionSet: options.spawnerPermissionSet || allMachineSet('root'),
   })
 }

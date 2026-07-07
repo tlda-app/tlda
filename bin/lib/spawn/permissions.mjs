@@ -1,7 +1,6 @@
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import { normalizeSpawnPolicy } from '../../../server/lib/spawn-policy.mjs'
 import { repoRoot } from './identity.mjs'
 
 const SANDBOX_POLICIES = new Set(['no-dev', 'cwd', 'tlda-projects', 'unsandboxed'])
@@ -280,10 +279,21 @@ function resolvedPermissionZones(permissionSet, operation, effect, workspace) {
     .filter(Boolean)
 }
 
+// The fence REGION scope from a grant blob (or a bare region string). The grant now
+// carries only its region (`policy`), never a permission level.
+function regionScope(spawnPolicy) {
+  const raw = typeof spawnPolicy === 'string'
+    ? spawnPolicy
+    : (spawnPolicy && typeof spawnPolicy === 'object' ? spawnPolicy.policy : '')
+  const s = String(raw || '').trim().toLowerCase()
+  if (SANDBOX_POLICIES.has(s)) return s
+  if (s === 'machine' || s === '**' || s === '/' || s === 'unsandboxed') return 'unsandboxed'
+  return 'cwd'
+}
+
 export function resolveLeasePolicy({ spawnPolicy, permissionSet = null, harness, model, cwd, config = {} } = {}) {
   if (!spawnPolicy) return { policyName: null, devTools: true, leasePolicy: null }
-  const normalized = normalizeSpawnPolicy(spawnPolicy)
-  const policyName = normalized.policy
+  const policyName = regionScope(spawnPolicy)
   if (!SANDBOX_POLICIES.has(policyName)) throw new Error(`agentSandbox policy "${policyName}" is not valid`)
   const explicitPermissionSet = permissionSet && typeof permissionSet === 'object' && !Array.isArray(permissionSet)
   if (policyName === 'unsandboxed' && !explicitPermissionSet) return { policyName, devTools: true, leasePolicy: null }
@@ -307,12 +317,19 @@ export function resolveLeasePolicy({ spawnPolicy, permissionSet = null, harness,
   const cfg = sandboxConfig(config)
   const policyOptions = cfg.policyOptions && typeof cfg.policyOptions === 'object' ? cfg.policyOptions : {}
   const options = deepMerge(DEFAULT_OPTIONS, policyOptions[policyName] || {})
-  const cap = normalized.permission
-  if (explicitPermissionSet) {
-    if (cap !== 'none' && normalized.network !== false) options.network = true
-  } else if (cap === 'read') {
-    writeRoots = []
-  } else if (cap === 'write' || cap === 'tlda-write') {
+  // Read/write come straight off the region set (explicit grant) or the region (bare
+  // policy) — no permission level. Any write-bearing grant gets git metadata; a
+  // bare-policy write grant also gets the dev caches so a fenced job is never trapped.
+  // Network is on whenever the grant allows anything, unless it explicitly turned it off.
+  const networkOff = (explicitPermissionSet && permissionSet.network === false)
+    || (spawnPolicy && typeof spawnPolicy === 'object' && spawnPolicy.network === false)
+  const grantsWrite = explicitPermissionSet
+    ? (permissionSet.operations?.write?.allow || []).length > 0
+    : (policyName === 'cwd' || policyName === 'tlda-projects')
+  const grantsAnything = explicitPermissionSet
+    ? grantsWrite || (permissionSet.operations?.read?.allow || []).length > 0
+    : true
+  if (grantsWrite && !explicitPermissionSet) {
     writeRoots = [
       ...writeRoots,
       path.join(os.homedir(), '.config', 'tlda'),
@@ -321,14 +338,14 @@ export function resolveLeasePolicy({ spawnPolicy, permissionSet = null, harness,
       TLDA_PW_RUNTIME_ROOT,
       TLDA_FENCE_TMP_ROOT,
     ]
-    if (normalized.network !== false) options.network = true
   }
-  if (cap !== 'none' && cap !== 'read') writeRoots = [...writeRoots, ...gitMetadataRoots(workspace)]
+  if (grantsWrite) writeRoots = [...writeRoots, ...gitMetadataRoots(workspace)]
+  if (grantsAnything && !networkOff) options.network = true
   const explicitReadRoots = explicitPermissionSet ? resolvedPermissionZones(permissionSet, 'read', 'allow', workspace) : []
   const readRoots = [...new Set([
     ...(explicitPermissionSet ? [] : [workspace]),
-    ...(cap === 'none' ? [] : [PLAYWRIGHT_CACHE_ROOT, CHROME_FOR_TESTING_CRASHPAD_ROOT]),
-    ...(cap === 'none' ? [] : configPathList(cfg, 'readRoots', DEFAULT_READ_ROOTS)),
+    ...(grantsAnything ? [PLAYWRIGHT_CACHE_ROOT, CHROME_FOR_TESTING_CRASHPAD_ROOT] : []),
+    ...(grantsAnything ? configPathList(cfg, 'readRoots', DEFAULT_READ_ROOTS) : []),
     ...explicitReadRoots,
     ...writeRoots,
   ].map(absOrPattern))].sort()
@@ -341,7 +358,9 @@ export function resolveLeasePolicy({ spawnPolicy, permissionSet = null, harness,
     leasePolicy: {
       schema: 1,
       policy: policyName,
-      permission: cap,
+      // An empty grant confers nothing (no read, no write) — the seatbelt default-denies
+      // and adds no agent roots. Replaces the old `permission === 'none'` signal.
+      empty: !grantsAnything,
       harness,
       model: model || '',
       workspace,
@@ -375,16 +394,13 @@ export function resolveLaunchPolicy({
   acknowledgeNoSecurity = false,
   env = process.env,
 } = {}) {
-  // No hardcoded fallback: an un-granted agent has no fabricated policy. The policy
-  // is whatever the grant resolved (project default ∩ spawner ∩ ceiling), passed in.
-  const requestedPolicy = normalizeSpawnPolicy(
-    spawnPolicy || requestedPermission || null,
-    null,
-  )
+  // No hardcoded fallback: an un-granted agent has no fabricated policy. The grant
+  // (already the intersection of project ∩ spawner ∩ model-ceiling region sets) is
+  // passed in as spawnPolicy (its region scope) + permissionSet (its zones).
+  const requestedPolicy = spawnPolicy || requestedPermission || null
   // Apply the specified policy. No opt-in gate, no global off-switch, no silent
-  // waiver — the agent's grant (already the intersection of the specified policy,
-  // the spawner's authority, and the model ceiling) IS the fence, and it is
-  // enforced as written. If there is a policy to apply, apply it.
+  // waiver — the agent's grant IS the fence, and it is enforced as written. If there
+  // is a policy to apply, apply it.
   const useFence = !!requestedPolicy
   const leaseResolution = useFence
     ? resolveLeasePolicy({ spawnPolicy: requestedPolicy, permissionSet, harness, model, cwd, config })

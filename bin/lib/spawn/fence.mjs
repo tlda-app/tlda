@@ -190,7 +190,7 @@ function apiNeedsLocalOutbound(dnsAlias) {
 }
 
 export function fenceSettings(policy, { api, dnsAlias } = {}) {
-  const emptyPermission = policy.permission === 'none'
+  const emptyPermission = policy.empty === true
   const allowRead = uniqueSorted([...(policy.read_roots || []), ...(emptyPermission ? [] : FENCE_AGENT_READ_ROOTS)].map(expandPathPattern))
   const broadWriteRoots = policy.explicit_permission_set ? [] : FENCE_BROAD_WRITE_ROOTS
   const allowWrite = uniqueSorted([
