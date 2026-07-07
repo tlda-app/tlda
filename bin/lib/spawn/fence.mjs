@@ -30,6 +30,8 @@ const FENCE_AGENT_WRITE_ROOTS = [
   '/private/tmp/tlda-pw-sockets/**',
   '~/.config/tlda/dev-worktree',
   '~/.config/tlda/dev-worktree/**',
+  '~/.config/tlda/dev-server',
+  '~/.config/tlda/dev-server/**',
   '~/Library/Application Support/Google/Chrome for Testing',
   '~/Library/Application Support/Google/Chrome for Testing/**',
   '~/Library/Caches/ms-playwright',
