@@ -3,7 +3,7 @@ process.env.FLEET_ID = process.env.FLEET_ID || 'fleet:test-inbox-status'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { formatInboxText, formatRecipientStatusSummary, getFleetTools, handleFleetTool } from '../mcp-server/fleet-tools.mjs'
+import { formatInboxText, formatRecipientStatusSummary, getFleetTools, handleFleetTool, inboxViewForArgs } from '../mcp-server/fleet-tools.mjs'
 import { decideInboxDelivery, parsePriorityPhrase, shouldWakeBatchedMessage, validateDeliveryChannel } from '../shared/inbox-attention.mjs'
 
 test('set_inbox_status is exposed as the explicit status-control tool', () => {
@@ -43,6 +43,12 @@ test('inbox exposes read-time views, not notification statuses', () => {
   assert.ok(tool)
   assert.deepEqual(tool.inputSchema.properties.view.enum, ['default', 'review', 'monitoring', 'current-task', 'all'])
   assert.equal(tool.inputSchema.properties.mode, undefined)
+})
+
+test('inbox with no view always uses default view', () => {
+  assert.equal(inboxViewForArgs({ view: 'current-task' }), 'current-task')
+  assert.equal(inboxViewForArgs({}), 'default')
+  assert.equal(inboxViewForArgs(null), 'default')
 })
 
 test('my_task is not exposed as a public MCP tool', () => {

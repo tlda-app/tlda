@@ -766,10 +766,14 @@ const ACTIVITY_NOISE = new Set([
 // Keep the accepted names broad: Claude/Codex use mcp__tlda__get_thread, while
 // Goose and stored activity can use tlda__get_thread or get_thread.
 const PRETTY_PRINT_TOOLS = new Set([
+  'mcp__tlda__inbox',
   'mcp__tlda__search_logs',
   'mcp__tlda__get_thread',
+  'tlda/inbox',
+  'tlda__inbox',
   'tlda__search_logs',
   'tlda__get_thread',
+  'inbox',
   'search_logs',
   'get_thread',
   'ScheduleWakeup',

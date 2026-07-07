@@ -436,7 +436,6 @@ const _refTokens = new Map();
 // recipient knows which document state the sender was reasoning about.
 let _currentDoc = null;
 let _inboxStatus = 'available';
-let _inboxView = 'default';
 let _docVersionCache = { doc: null, version: null, ts: 0 };
 const DOC_VERSION_CACHE_MS = 5000;
 
@@ -2102,6 +2101,10 @@ export function formatInboxText({ mode, task, tasks, messages, now = Date.now() 
   }
   lines.push(...groupedInboxLines(messages));
   return lines.join('\n').trimEnd();
+}
+
+export function inboxViewForArgs(args = {}) {
+  return normalizeInboxView(args?.view || 'default');
 }
 
 export async function handleFleetTool(name, args) {
@@ -3792,8 +3795,7 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
   // ---- inbox ----
   if (name === 'inbox') {
     if (!AGENT_ID) return { content: [{ type: 'text', text: 'No session ID detected.' }], isError: true };
-    const view = normalizeInboxView(args?.view || _inboxView);
-    if (args?.view) _inboxView = view;
+    const view = inboxViewForArgs(args);
 
     let data;
     try {
@@ -5153,9 +5155,7 @@ const _deliveredChannelIds = new Set();
 const CHANNEL_DEDUP_TTL_MS = 60000;
 
 function inboxCallText(action = 'see it') {
-  return _inboxView === 'default'
-    ? `Call inbox() to ${action}.`
-    : `Call inbox(view: "${_inboxView}") to ${action}.`;
+  return `Call inbox() to ${action}.`;
 }
 
 function formatStatusSummary({ eventType, fromLabel, docHint = '', preview = '', truncNote = '', reminder = '' }) {
