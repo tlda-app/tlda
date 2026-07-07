@@ -563,7 +563,7 @@ const PHONE_LANE_COMMIT_FRAC = 0.75
 const PHONE_LANE_COMMIT_MIN = 120
 let phoneLanePortraitWidthPx = 0
 
-export type PhoneLaneDragState = { active: boolean; progress: number; dir: -1 | 0 | 1 | 'down'; armed: boolean; arrowWidthPx?: number }
+export type PhoneLaneDragState = { active: boolean; progress: number; dir: -1 | 0 | 1 | 'up'; armed: boolean; arrowWidthPx?: number }
 export const PHONE_LANE_DRAG_IDLE: PhoneLaneDragState = { active: false, progress: 0, dir: 0, armed: false }
 let phoneLaneDragState: PhoneLaneDragState = PHONE_LANE_DRAG_IDLE
 const phoneLaneDragListeners = new Set<(s: PhoneLaneDragState) => void>()

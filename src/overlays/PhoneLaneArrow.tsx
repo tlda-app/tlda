@@ -8,10 +8,10 @@ import { phoneLaneCommitPx, subscribePhoneLaneDrag, type PhoneLaneDragState } fr
 // the annotation-viewer arrow shape. Only visible during an active phone-lane drag.
 const IDLE: PhoneLaneDragState = { active: false, progress: 0, dir: 0, armed: false }
 
-// Annotation-viewer arrow (viewBox 0 0 250 250), left-, right-, and down-pointing.
+// Annotation-viewer arrow (viewBox 0 0 250 250), left-, right-, and up-pointing.
 const LEFT_ARROW = 'M238 125 H12 M80 12 L12 125 L80 238'
 const RIGHT_ARROW = 'M12 125 H238 M170 12 L238 125 L170 238'
-const DOWN_ARROW = 'M125 12 V238 M12 170 L125 238 L238 170'
+const UP_ARROW = 'M125 238 V12 M12 80 L125 12 L238 80'
 
 export function PhoneLaneArrow() {
   const [s, setS] = useState<PhoneLaneDragState>(IDLE)
@@ -20,14 +20,14 @@ export function PhoneLaneArrow() {
   if (!s.active || s.dir === 0) return null
 
   // dir +1 pulls toward the agents lane (points left); -1 toward the document
-  // lane (points right); "down" deletes a pinned phone chat at bottom overscroll.
+  // lane (points right); "up" pops/dismisses at bottom overscroll.
   // Fill grows from the tail toward the point (destination/action).
   const pointLeft = s.dir === 1
-  const pointDown = s.dir === 'down'
-  const path = pointDown ? DOWN_ARROW : pointLeft ? LEFT_ARROW : RIGHT_ARROW
+  const pointUp = s.dir === 'up'
+  const path = pointUp ? UP_ARROW : pointLeft ? LEFT_ARROW : RIGHT_ARROW
   const arrowWidthPx = s.arrowWidthPx || phoneLaneCommitPx()
-  const clipInset = pointDown
-    ? `inset(0 0 ${(1 - s.progress) * 100}% 0)` // reveal top(tail) → bottom(head)
+  const clipInset = pointUp
+    ? `inset(${(1 - s.progress) * 100}% 0 0 0)` // reveal bottom(tail) → top(head)
     : pointLeft
       ? `inset(0 0 0 ${(1 - s.progress) * 100}%)` // reveal right(tail) → left(head)
       : `inset(0 ${(1 - s.progress) * 100}% 0 0)` // reveal left(tail) → right(head)

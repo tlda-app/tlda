@@ -447,6 +447,13 @@
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
 }
+.fleet-inbox-modal-pop-wrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  position: relative;
+  overflow: hidden;
+}
 .fleet-inbox-detail-kicker {
   font-size: 9px;
   font-weight: 500;
@@ -578,7 +585,48 @@
   flex: 1 1 auto;
   min-height: 0;
   display: flex;
+  position: relative;
   overflow: hidden;
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-pop-arrow {
+  position: absolute;
+  left: 50%;
+  bottom: 6px;
+  width: 34px;
+  height: 34px;
+  border-radius: 17px;
+  background: rgba(128, 128, 128, 0.08);
+  opacity: 0.7;
+  pointer-events: auto;
+  transform: translateX(-50%);
+  touch-action: none;
+  z-index: 20;
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-pop-arrow::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: 9px;
+  width: 1px;
+  height: 12px;
+  background: currentColor;
+  opacity: 0.8;
+  transform: translateX(-50%);
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-pop-arrow::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  width: 8px;
+  height: 8px;
+  border-left: 1px solid currentColor;
+  border-top: 1px solid currentColor;
+  opacity: 0.8;
+  transform: translateX(-50%) rotate(45deg);
 }
 
 .fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-detail .fleet-inbox-agents-panel {
@@ -595,25 +643,44 @@
   flex: 0 0 auto;
   width: 100%;
   aspect-ratio: 1 / 1;
+  max-height: 100%;
   min-height: 0;
   display: flex;
   flex-direction: column;
+  position: relative;
   border-bottom: 1px solid rgba(128, 128, 128, 0.1);
   background: rgba(128, 128, 128, 0.025);
   overflow: hidden;
 }
 
-.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-panel-status {
-  flex-shrink: 0;
-  padding: 7px 10px;
-  border-bottom: 1px solid rgba(128, 128, 128, 0.08);
-  font-size: 9px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  opacity: 0.45;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-filter-btn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 18;
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 6px;
+  background: rgba(128, 128, 128, 0.08);
+  color: inherit;
+  opacity: 0.55;
+  padding: 0;
+  touch-action: manipulation;
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-filter-btn.active,
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-filter-btn:active {
+  opacity: 0.9;
+  background: rgba(128, 128, 128, 0.14);
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-filter-btn svg {
+  width: 18px;
+  height: 18px;
 }
 
 .fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-mini-chat-log {
@@ -623,6 +690,21 @@
   padding: 4px 0;
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-mini-chat-log .chat-line {
+  padding: 1px 7px;
+  font-size: 10px;
+  line-height: 1.25;
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-mini-chat-log .chat-ts {
+  display: none;
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-mini-chat .fleet-filter-overlay {
+  border-radius: 0;
+  padding: 8px;
 }
 
 .fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-mini-empty {
@@ -665,42 +747,115 @@
 }
 
 .fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent {
-  padding: 5px 10px;
+  display: grid;
+  grid-template-columns: minmax(96px, 1fr) 72px minmax(104px, 1.15fr);
+  min-height: 48px;
+  padding: 0;
   border-bottom: 1px solid rgba(128, 128, 128, 0.07);
-  cursor: pointer;
 }
 
 .fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent.selected {
   background: rgba(120, 160, 220, 0.1);
 }
 
-.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent-main {
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent-name-zone,
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent-label-zone {
   display: flex;
   align-items: center;
-  gap: 8px;
-  min-height: 20px;
+  min-width: 0;
+  min-height: 48px;
+  background: rgba(120, 160, 220, 0.05);
+  cursor: grab;
+  touch-action: none;
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent-name-zone {
+  padding: 0;
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent-label-zone {
+  padding: 0 8px 0 0;
+  justify-content: flex-end;
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent.selected .fleet-inbox-phone-agent-name-zone,
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent.selected .fleet-inbox-phone-agent-label-zone {
+  background: rgba(120, 160, 220, 0.14);
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent-name-zone:active,
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent-label-zone:active {
+  background: rgba(120, 160, 220, 0.18);
 }
 
 .fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent-name {
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
   font-size: 13px;
   font-weight: 500;
-  cursor: grab;
-  touch-action: none;
+  padding: 0 10px;
   min-width: 0;
-  max-width: 44%;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent-status {
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent-push-arrow {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  margin: 0 8px 0 auto;
+  border-radius: 9px;
+  background: rgba(128, 128, 128, 0.09);
+  position: relative;
+  opacity: 0.72;
+  pointer-events: none;
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent-push-arrow::before {
+  content: "";
+  position: absolute;
+  left: 6px;
+  top: 8px;
+  width: 8px;
+  height: 1px;
+  background: currentColor;
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent-push-arrow::after {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 5px;
+  width: 6px;
+  height: 6px;
+  border-left: 1px solid currentColor;
+  border-bottom: 1px solid currentColor;
+  transform: rotate(45deg);
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent-activity {
   font-size: 11px;
   opacity: 0.55;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent-context {
+  font-size: 11px;
+  opacity: 0.7;
+  color: #81c784;
   flex-shrink: 0;
 }
 
 .fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent-unread {
   margin-left: auto;
+  flex-shrink: 0;
   min-width: 18px;
   height: 18px;
   padding: 0 5px;
@@ -712,13 +867,17 @@
   font-size: 11px;
 }
 
-.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent-detail {
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent-scroll-zone {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
-  min-height: 18px;
-  margin-top: 1px;
+  min-width: 0;
+  min-height: 0;
+  padding: 0 6px;
   overflow: hidden;
+  cursor: pointer;
+  touch-action: pan-y;
 }
 
 .fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent-task {
@@ -733,22 +892,35 @@
 
 .fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent-labels {
   display: flex;
+  align-self: stretch;
   align-items: center;
-  gap: 4px;
+  gap: 0;
   min-width: 0;
   overflow: hidden;
 }
 
 .fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent-label {
+  align-self: stretch;
+  display: flex;
+  align-items: center;
   flex-shrink: 0;
   font-size: 11px;
-  line-height: 20px;
-  padding: 0 6px;
-  border-radius: 4px;
-  background: rgba(147, 112, 219, 0.1);
+  line-height: 1;
+  padding: 0 8px;
+  border-radius: 0;
+  border-left: 1px solid rgba(147, 112, 219, 0.13);
+  background: rgba(147, 112, 219, 0.055);
   opacity: 0.75;
-  cursor: grab;
-  touch-action: none;
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent-label:active {
+  background: rgba(147, 112, 219, 0.16);
+  opacity: 0.95;
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent-label-placeholder {
+  flex: 1 1 auto;
+  align-self: stretch;
 }
 
 @media (orientation: landscape) {
@@ -757,18 +929,16 @@
   }
 
   .fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-mini-chat {
-    height: 100%;
+    height: min(100%, 100vw);
     width: auto;
+    aspect-ratio: 1 / 1;
     border-right: 1px solid rgba(128, 128, 128, 0.1);
     border-bottom: none;
   }
 
   .fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent {
-    padding: 6px 12px;
-  }
-
-  .fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent-name {
-    max-width: 30%;
+    min-height: 46px;
+    grid-template-columns: minmax(92px, 1fr) 68px minmax(96px, 1.1fr);
   }
 
   .fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent-labels {

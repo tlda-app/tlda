@@ -176,9 +176,10 @@ function isAtScrollBottom(el: HTMLElement, epsilon = 8): boolean {
 }
 
 function phoneDeleteDragDecision(dx: number, dy: number): 'abort' | 'pending' | 'dragging' {
-  if (dy < 0 && Math.abs(dy) >= PHONE_LANE_LOCK) return 'abort'
+  if (dy > 0 && Math.abs(dy) >= PHONE_LANE_LOCK) return 'abort'
   if (Math.abs(dx) >= PHONE_LANE_LOCK && Math.abs(dx) > Math.abs(dy)) return 'abort'
-  if (dy < PHONE_LANE_LOCK || dy < Math.abs(dx) * PHONE_LANE_AXIS_RATIO) return 'pending'
+  const up = -dy
+  if (up < PHONE_LANE_LOCK || up < Math.abs(dx) * PHONE_LANE_AXIS_RATIO) return 'pending'
   return 'dragging'
 }
 
@@ -2256,14 +2257,14 @@ function FleetChatInner({ shape }: { shape: any }) {
       e.preventDefault()
       stopEventPropagation(e)
       const commit = phoneLaneCommitPx()
-      const progress = dy > 0 ? Math.min(1, dy / commit) : 0
-      setPhoneLaneDrag({ active: true, progress, dir: progress > 0 ? 'down' : 0, armed: progress >= 1, arrowWidthPx: commit })
+      const progress = dy < 0 ? Math.min(1, Math.abs(dy) / commit) : 0
+      setPhoneLaneDrag({ active: true, progress, dir: progress > 0 ? 'up' : 0, armed: progress >= 1, arrowWidthPx: commit })
     }
 
     const onPointerEnd = (e: PointerEvent) => {
       const gesture = phoneDeleteGestureRef.current
       if (!gesture || gesture.pointerId !== e.pointerId) return
-      const shouldCommit = gesture.mode === 'dragging' && gesture.lastDy >= phoneLaneCommitPx()
+      const shouldCommit = gesture.mode === 'dragging' && gesture.lastDy <= -phoneLaneCommitPx()
       e.preventDefault()
       stopEventPropagation(e)
       resetPhoneDeleteGesture()

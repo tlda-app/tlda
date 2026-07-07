@@ -22,11 +22,11 @@ import { labelsForAgent } from '../../shared/fleet-labels.mjs'
 import type { Editor, TLShapeId } from 'tldraw'
 import { agentDisplayLabel, beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
-import { pushPhonePinnedChatPane, type FleetFilter } from './phone-pane-stack'
+import { isPhoneLayoutInboxShapeForOwner, isPhoneStackLayoutForOwner, pushPhonePinnedChatPane, type FleetFilter } from './phone-pane-stack'
 import { usePillDrag } from './FleetAgentsShape'
 import { ChatComposer } from './ChatComposer'
-import { useState, useCallback, useRef, useMemo, useEffect, useContext, memo } from 'react'
-import { useFleetAgents, useFleetTasks, useFleetEvents, useFleetUnreadCounts, useFleetIdentity, sendMessage, injectOptimisticEvent, updateOptimisticEvent, loadFleetHistoryForAgents } from '../fleet-data-adapter'
+import { useState, useCallback, useRef, useMemo, useEffect, useContext, memo, type Dispatch, type SetStateAction } from 'react'
+import { useFleetAgents, useFleetTasks, useFleetEvents, useFleetUnreadCounts, useFleetIdentity, useFleetContext, sendMessage, injectOptimisticEvent, updateOptimisticEvent, loadFleetHistoryForAgents } from '../fleet-data-adapter'
 import { DocContext } from '../PanelContext'
 import { fetchProofInfo } from '../docInfoCache'
 import { onReloadSignal } from '../useYjsSync'
@@ -34,7 +34,6 @@ import { invalidationFromRanges } from '../invalidationGraph'
 import type { DirectNode, CascadeNode } from '../invalidationGraph'
 import { CascadeGraph } from './CascadeGraph'
 import { FilterOverlay } from './FleetChatShape'
-import { isPhoneViewport } from '../phoneViewport'
 import katex from 'katex'
 import { getActiveMacros } from '../katexMacros'
 import MarkdownIt from 'markdown-it'
@@ -54,7 +53,7 @@ import {
   setPhoneLaneDrag,
   snapToPhoneLaneIndex,
 } from '../overlays/useFleetGestures'
-import { phoneLaneDragDecision } from '../wm'
+import { PHONE_LANE_AXIS_RATIO, PHONE_LANE_LOCK, phoneLaneDragDecision } from '../wm'
 import './fleet-chat.css'
 import './fleet-inbox.css'
 
@@ -70,25 +69,22 @@ type PhoneChatShape = {
   props?: { filter?: FleetFilter }
 }
 
-function isPhoneViewportSurface(): boolean {
-  if (typeof window === 'undefined') return false
-  if (document.body.classList.contains('phone-mode')) return true
-  return isPhoneViewport()
-}
-
 type PhoneThreadEjectGesture = {
   pointerId: number
   mode: 'pending' | 'dragging'
+  action?: 'push' | 'pop'
   x0: number
   y0: number
   lastDx: number
+  lastDy: number
 }
 
 type PhoneInboxAgent = {
   id: string
   name: string
   display: string
-  status: string
+  active: string
+  contextPct?: number
   labels: string[]
   unread: number
   taskText: string
@@ -96,6 +92,44 @@ type PhoneInboxAgent = {
 
 function phoneAgentFilter(agentName: string): FleetFilter {
   return [[['from', agentName]], [['to', agentName]]]
+}
+
+function phoneAgentActivity(agent: any): string {
+  const ts = agent.last_active || agent.last_seen || agent.registered_at
+  if (!ts) return ''
+  const time = new Date(ts).getTime()
+  if (!Number.isFinite(time) || time <= 0) return ''
+  const age = Math.max(0, Date.now() - time)
+  if (age < 60_000) return 'now'
+  if (age < 3_600_000) return `${Math.floor(age / 60_000)}m`
+  if (age < 86_400_000) return `${Math.floor(age / 3_600_000)}h`
+  return `${Math.floor(age / 86_400_000)}d`
+}
+
+function isAtScrollBottom(el: HTMLElement, epsilon = 8): boolean {
+  return el.scrollTop + el.clientHeight >= el.scrollHeight - epsilon
+}
+
+function nearestScrollableModalTarget(target: EventTarget | null): HTMLElement | null {
+  if (!(target instanceof Element)) return null
+  return target.closest(
+    '.fleet-inbox-conv, .fleet-inbox-agents-mini-chat-log, .fleet-inbox-phone-agents, .fleet-inbox-detail',
+  ) as HTMLElement | null
+}
+
+function canStartPhoneUpPop(target: EventTarget | null): boolean {
+  const scroller = nearestScrollableModalTarget(target)
+  if (!scroller) return true
+  if (scroller.scrollHeight <= scroller.clientHeight + 1) return true
+  return isAtScrollBottom(scroller)
+}
+
+function phoneUpPopDecision(dx: number, dy: number): 'abort' | 'pending' | 'dragging' {
+  if (dy > 0 && Math.abs(dy) >= PHONE_LANE_LOCK) return 'abort'
+  if (Math.abs(dx) >= PHONE_LANE_LOCK && Math.abs(dx) > Math.abs(dy)) return 'abort'
+  const up = -dy
+  if (up < PHONE_LANE_LOCK || up < Math.abs(dx) * PHONE_LANE_AXIS_RATIO) return 'pending'
+  return 'dragging'
 }
 
 function copySourceTemplate(text: string): string {
@@ -383,36 +417,13 @@ function FleetInboxInner({ shape }: { shape: any }) {
   const [filterOpenByPill, setFilterOpenByPill] = useState(false)
   const [filterTargetId, setFilterTargetId] = useState<TLShapeId | null>(null)
   const [openItemKey, setOpenItemKey] = useState<string | null>(null)
-  const [isPhoneSurface, setIsPhoneSurface] = useState(() => {
-    if (typeof window === 'undefined') return false
-    const vp = mainEd.getViewportScreenBounds()
-    const fullScreenPane = Math.abs((shape.props?.w || 0) - (vp.w || 0)) <= 2 && Math.abs((shape.props?.h || 0) - (vp.h || 0)) <= 2
-    return fullScreenPane || isPhoneViewportSurface()
-  })
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return
-    const media = window.matchMedia?.('(max-width: 600px), (max-height: 600px)')
-    const update = () => {
-      const vp = mainEd.getViewportScreenBounds()
-      const fullScreenPane = Math.abs((shape.props?.w || 0) - (vp.w || 0)) <= 2 && Math.abs((shape.props?.h || 0) - (vp.h || 0)) <= 2
-      setIsPhoneSurface(fullScreenPane || isPhoneViewportSurface())
-    }
-    update()
-    media?.addEventListener?.('change', update)
-    window.addEventListener('resize', update)
-    window.addEventListener('orientationchange', update)
-    window.visualViewport?.addEventListener('resize', update)
-    const observer = new MutationObserver(update)
-    observer.observe(document.body, { attributes: true, attributeFilter: ['class'] })
-    return () => {
-      media?.removeEventListener?.('change', update)
-      window.removeEventListener('resize', update)
-      window.removeEventListener('orientationchange', update)
-      window.visualViewport?.removeEventListener('resize', update)
-      observer.disconnect()
-    }
-  }, [mainEd, shape.props?.h, shape.props?.w])
+  const isPhoneSurface = useValue('phone-stack-inbox-surface', () => {
+    const userId = shape.props?.userId
+    const deviceId = shape.props?.deviceId
+    if (!userId || !deviceId) return false
+    return isPhoneLayoutInboxShapeForOwner(mainEd, shape, userId, deviceId) &&
+      isPhoneStackLayoutForOwner(mainEd, userId, deviceId)
+  }, [mainEd, shape])
 
   // Sort mode — time (one interleaved stream, newest first) or type (grouped
   // sections). Persisted so it sticks across reloads. Default: time.
@@ -714,6 +725,7 @@ function FleetInboxInner({ shape }: { shape: any }) {
     () => (openPartner ? threads.find(t => t.partnerId === openPartner) || null : null),
     [openPartner, threads],
   )
+  const contextPercent = useFleetContext(null)
   const phoneInboxAgents = useMemo<PhoneInboxAgent[]>(() => {
     const pendingTasks = tasks.filter((t: any) => t.status === 'pending' || t.status === 'in_progress')
     return agents
@@ -727,14 +739,15 @@ function FleetInboxInner({ shape }: { shape: any }) {
           id: agent.id,
           name: agent.friendly_name,
           display: agentDisplayLabel(agent, agents),
-          status: agent.status || (agent.hibernating ? 'hibernating' : 'awake'),
+          active: phoneAgentActivity(agent),
+          contextPct: contextPercent.get(agent.id),
           labels: labelsForAgent(agent).filter((label: string) => label !== agent.friendly_name).slice(0, 8),
           unread: unreadCounts[agent.id] || 0,
-          taskText: task?.description || task?.title || task?.status || '',
+          taskText: task?.description || task?.title || '',
         }
       })
       .sort((a, b) => (b.unread - a.unread) || a.display.localeCompare(b.display))
-  }, [agents, tasks, unreadCounts])
+  }, [agents, contextPercent, tasks, unreadCounts])
   const ejectGestureRef = useRef<PhoneThreadEjectGesture | null>(null)
 
   const resetThreadEjectGesture = useCallback(() => {
@@ -748,6 +761,7 @@ function FleetInboxInner({ shape }: { shape: any }) {
     if (e.pointerType === 'mouse' && e.button !== 0) return
     const target = e.target instanceof Element ? e.target : null
     if (target?.closest('.fleet-inbox-composer-slot, .fleet-inbox-back, .fleet-inbox-filter-btn')) return
+    const canPopUp = canStartPhoneUpPop(e.target)
     rememberPhoneLanePortraitWidth(mainEd)
     ejectGestureRef.current = {
       pointerId: e.pointerId,
@@ -755,6 +769,8 @@ function FleetInboxInner({ shape }: { shape: any }) {
       x0: e.clientX,
       y0: e.clientY,
       lastDx: 0,
+      lastDy: 0,
+      action: canPopUp ? undefined : 'push',
     }
     try { (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId) } catch {
       // Synthetic/offscreen pointer events may not be capturable; move/up still dispatch to this handler.
@@ -768,32 +784,47 @@ function FleetInboxInner({ shape }: { shape: any }) {
     const dx = e.clientX - gesture.x0
     const dy = e.clientY - gesture.y0
     gesture.lastDx = dx
+    gesture.lastDy = dy
     if (gesture.mode === 'pending') {
-      const decision = phoneLaneDragDecision(dx, dy)
+      const upDecision = gesture.action !== 'push' ? phoneUpPopDecision(dx, dy) : 'abort'
+      const pushDecision = gesture.action !== 'pop' ? phoneLaneDragDecision(dx, dy) : 'abort'
+      const decision = upDecision === 'dragging' ? 'dragging' : pushDecision
       if (decision === 'abort') {
         resetThreadEjectGesture()
         return
       }
       if (decision === 'pending') return
       gesture.mode = 'dragging'
+      gesture.action = upDecision === 'dragging' ? 'pop' : 'push'
     }
 
     e.preventDefault()
     stopEventPropagation(e)
     const commit = phoneLaneCommitPx()
-    const progress = dx < 0 ? Math.min(1, Math.abs(dx) / commit) : 0
-    setPhoneLaneDrag({ active: true, progress, dir: progress > 0 ? -1 : 0, armed: progress >= 1, arrowWidthPx: commit })
+    if (gesture.action === 'pop') {
+      const progress = dy < 0 ? Math.min(1, Math.abs(dy) / commit) : 0
+      setPhoneLaneDrag({ active: true, progress, dir: progress > 0 ? 'up' : 0, armed: progress >= 1, arrowWidthPx: commit })
+    } else {
+      const progress = dx < 0 ? Math.min(1, Math.abs(dx) / commit) : 0
+      setPhoneLaneDrag({ active: true, progress, dir: progress > 0 ? -1 : 0, armed: progress >= 1, arrowWidthPx: commit })
+    }
   }, [activeThread, resetThreadEjectGesture])
 
   const finishThreadEjectGesture = useCallback((e: React.PointerEvent) => {
     const gesture = ejectGestureRef.current
     if (!gesture || gesture.pointerId !== e.pointerId) return
     const active = activeThread
-    const shouldCommit = active && gesture.mode === 'dragging' && gesture.lastDx <= -phoneLaneCommitPx()
+    const shouldPop = active && gesture.mode === 'dragging' && gesture.action === 'pop' && gesture.lastDy <= -phoneLaneCommitPx()
+    const shouldPush = active && gesture.mode === 'dragging' && gesture.action !== 'pop' && gesture.lastDx <= -phoneLaneCommitPx()
     e.preventDefault()
     stopEventPropagation(e)
     resetThreadEjectGesture()
-    if (!shouldCommit || !active) return
+    if (!active) return
+    if (shouldPop) {
+      setOpenPartner(null)
+      return
+    }
+    if (!shouldPush) return
 
     const filter: FleetFilter = [[['from', active.friendly]], [['to', active.friendly]]]
     const result = pushPhonePinnedChatPane(mainEd, shape, filter)
@@ -828,22 +859,12 @@ function FleetInboxInner({ shape }: { shape: any }) {
     } as never)
   }, [mainEd, resolvePhoneChat])
 
-  const pushPhoneAgentToStack = useCallback((agent: PhoneInboxAgent) => {
-    setPhoneAgentTarget(agent.name)
-    const result = pushPhonePinnedChatPane(mainEd, shape, phoneAgentFilter(agent.name))
-    if (!result.ok) {
-      console.warn('[phone-pane-stack] push-agent-filter failed', result)
-      return
-    }
-    snapToPhoneLaneIndex(mainEd, result.docLeftPage, result.newIndex)
-  }, [mainEd, shape])
-
   const openableItems = useMemo<DetailItem[]>(() => [
-    ...(isPhoneSurface ? [{ kind: 'agents' as const, key: 'agents' as const }] : []),
     ...proofTasks.direct.map((n): DetailItem => ({ kind: 'node', key: `node:${n.id}`, node: n })),
     ...proofTasks.cascade.map((n): DetailItem => ({ kind: 'node', key: `node:${n.id}`, node: n })),
     ...proofTasks.spanTasks.map((t): DetailItem => ({ kind: 'task', key: `task:${t.id}`, task: t })),
     ...docNotes.map((n: DocNote): DetailItem => ({ kind: 'note', key: `note:${n.id}`, note: n })),
+    ...(isPhoneSurface ? [{ kind: 'agents' as const, key: 'agents' as const }] : []),
   ], [isPhoneSurface, proofTasks, docNotes])
 
   const activeItem = useMemo(
@@ -854,6 +875,64 @@ function FleetInboxInner({ shape }: { shape: any }) {
   useEffect(() => {
     if (openItemKey && !activeItem) setOpenItemKey(null)
   }, [openItemKey, activeItem])
+
+  const modalPopGestureRef = useRef<PhoneThreadEjectGesture | null>(null)
+  const resetModalPopGesture = useCallback(() => {
+    modalPopGestureRef.current = null
+    setPhoneLaneDrag(PHONE_LANE_DRAG_IDLE)
+  }, [])
+  const startModalPopGesture = useCallback((e: React.PointerEvent) => {
+    if (!isPhoneSurface || !activeItem) return
+    if (!e.isPrimary) return
+    if (e.pointerType === 'mouse' && e.button !== 0) return
+    const target = e.target instanceof Element ? e.target : null
+    if (target?.closest('.fleet-inbox-composer-slot, .fleet-inbox-back, .fleet-inbox-agents-filter-btn, .fleet-filter-overlay')) return
+    if (!canStartPhoneUpPop(e.target)) return
+    rememberPhoneLanePortraitWidth(mainEd)
+    modalPopGestureRef.current = {
+      pointerId: e.pointerId,
+      mode: 'pending',
+      action: 'pop',
+      x0: e.clientX,
+      y0: e.clientY,
+      lastDx: 0,
+      lastDy: 0,
+    }
+    try { (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId) } catch {
+      // Synthetic/offscreen pointer events may not be capturable.
+    }
+  }, [activeItem, isPhoneSurface, mainEd])
+  const moveModalPopGesture = useCallback((e: React.PointerEvent) => {
+    const gesture = modalPopGestureRef.current
+    if (!gesture || gesture.pointerId !== e.pointerId || !activeItem) return
+    const dx = e.clientX - gesture.x0
+    const dy = e.clientY - gesture.y0
+    gesture.lastDx = dx
+    gesture.lastDy = dy
+    if (gesture.mode === 'pending') {
+      const decision = phoneUpPopDecision(dx, dy)
+      if (decision === 'abort') {
+        resetModalPopGesture()
+        return
+      }
+      if (decision === 'pending') return
+      gesture.mode = 'dragging'
+    }
+    e.preventDefault()
+    stopEventPropagation(e)
+    const commit = phoneLaneCommitPx()
+    const progress = dy < 0 ? Math.min(1, Math.abs(dy) / commit) : 0
+    setPhoneLaneDrag({ active: true, progress, dir: progress > 0 ? 'up' : 0, armed: progress >= 1, arrowWidthPx: commit })
+  }, [activeItem, resetModalPopGesture])
+  const finishModalPopGesture = useCallback((e: React.PointerEvent) => {
+    const gesture = modalPopGestureRef.current
+    if (!gesture || gesture.pointerId !== e.pointerId) return
+    const shouldPop = gesture.mode === 'dragging' && gesture.lastDy <= -phoneLaneCommitPx()
+    e.preventDefault()
+    stopEventPropagation(e)
+    resetModalPopGesture()
+    if (shouldPop) setOpenItemKey(null)
+  }, [resetModalPopGesture])
 
   const activeTitle = activeThread
     ? activeThread.partnerName
@@ -907,7 +986,7 @@ function FleetInboxInner({ shape }: { shape: any }) {
       >
         <FleetPanelButtonGroup editor={editor} shape={shape} />
 
-        {filterOpen && phoneChat && (
+        {filterOpen && phoneChat && activeItem?.kind !== 'agents' && (
           <FilterOverlay
             filter={phoneChat.props?.filter || []}
             shapeId={phoneChat.id}
@@ -998,20 +1077,40 @@ function FleetInboxInner({ shape }: { shape: any }) {
             onEjectPointerCancel={resetThreadEjectGesture}
           />
         ) : activeItem?.kind === 'agents' ? (
-          <div className="fleet-inbox-agents-detail">
+          <div
+            className="fleet-inbox-agents-detail"
+            onPointerDown={startModalPopGesture}
+            onPointerMove={moveModalPopGesture}
+            onPointerUp={finishModalPopGesture}
+            onPointerCancel={resetModalPopGesture}
+          >
+            <div className="fleet-inbox-pop-arrow" aria-hidden="true" />
             <PhoneAgentsPanel
               agents={phoneInboxAgents}
               selectedTarget={phoneAgentTarget}
               onSelectTarget={applyPhoneAgentFilter}
-              onFlickTargetToStack={pushPhoneAgentToStack}
               onStartDrag={startDrag}
               ctx={ctx}
               myId={myId}
               myName={myName}
+              phoneChat={phoneChat}
+              mainEd={mainEd}
+              filterOpen={filterOpen}
+              setFilterOpen={setFilterOpen}
+              pillOver={pillOver}
             />
           </div>
         ) : activeItem ? (
-          <ItemDetail item={activeItem} onApprove={approveNode} />
+          <div
+            className="fleet-inbox-modal-pop-wrap"
+            onPointerDown={startModalPopGesture}
+            onPointerMove={moveModalPopGesture}
+            onPointerUp={finishModalPopGesture}
+            onPointerCancel={resetModalPopGesture}
+          >
+            <div className="fleet-inbox-pop-arrow" aria-hidden="true" />
+            <ItemDetail item={activeItem} onApprove={approveNode} />
+          </div>
         ) : (
           <InboxList
             sortMode={sortMode}
@@ -1040,20 +1139,28 @@ function PhoneAgentsPanel({
   agents,
   selectedTarget,
   onSelectTarget,
-  onFlickTargetToStack,
   onStartDrag,
   ctx,
   myId,
   myName,
+  phoneChat,
+  mainEd,
+  filterOpen,
+  setFilterOpen,
+  pillOver,
 }: {
   agents: PhoneInboxAgent[]
   selectedTarget: string
   onSelectTarget: (agent: PhoneInboxAgent) => void
-  onFlickTargetToStack: (agent: PhoneInboxAgent) => void
   onStartDrag: ReturnType<typeof usePillDrag>['startDrag']
   ctx: any
   myId: string | null
   myName: string
+  phoneChat: PhoneChatShape | null
+  mainEd: Editor
+  filterOpen: boolean
+  setFilterOpen: Dispatch<SetStateAction<boolean>>
+  pillOver: { role: string; value: string; displayName: string } | null
 }) {
   const selected = agents.find(agent => agent.name === selectedTarget) || null
   const filter = selected ? phoneAgentFilter(selected.name) : null
@@ -1099,9 +1206,29 @@ function PhoneAgentsPanel({
   return (
     <div className="fleet-inbox-agents-panel" data-selected-target={selectedTarget || undefined}>
       <div className="fleet-inbox-agents-mini-chat">
-        <div className="fleet-inbox-agents-panel-status">
-          {selected ? `chat filtered to ${selected.display}` : 'choose an agent to filter chat'}
-        </div>
+        {phoneChat && (
+          <button
+            className={`fleet-inbox-agents-filter-btn${filterOpen ? ' active' : ''}`}
+            onPointerUp={(e) => {
+              stopEventPropagation(e)
+              setFilterOpen(prev => !prev)
+            }}
+            title="Edit chat filter"
+          >
+            <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M1 2h14M3 7h10M6 12h4"/></svg>
+          </button>
+        )}
+        {filterOpen && phoneChat && (
+          <FilterOverlay
+            filter={phoneChat.props?.filter || []}
+            shapeId={phoneChat.id}
+            editor={mainEd}
+            onClose={() => setFilterOpen(false)}
+            externalPillOver={pillOver}
+            agents={agents}
+            sendTargets={sendTargets}
+          />
+        )}
         <div ref={miniChatRef} className="fleet-inbox-agents-mini-chat-log fleet-chat-shape">
           {selected ? (
             miniEvents.length > 0 ? miniEvents.map((m: any, i: number) => {
@@ -1143,7 +1270,6 @@ function PhoneAgentsPanel({
             agent={agent}
             selected={agent.name === selectedTarget}
             onSelect={onSelectTarget}
-            onFlickToStack={onFlickTargetToStack}
             onStartDrag={onStartDrag}
           />
         ))}
@@ -1156,114 +1282,65 @@ function AgentPanelRow({
   agent,
   selected,
   onSelect,
-  onFlickToStack,
   onStartDrag,
 }: {
   agent: PhoneInboxAgent
   selected: boolean
   onSelect: (agent: PhoneInboxAgent) => void
-  onFlickToStack: (agent: PhoneInboxAgent) => void
   onStartDrag: StartDrag
 }) {
-  const editor = useEditor()
-  const gestureRef = useRef<PhoneThreadEjectGesture | null>(null)
-  const resetGesture = useCallback(() => {
-    gestureRef.current = null
-    setPhoneLaneDrag(PHONE_LANE_DRAG_IDLE)
-  }, [])
-  const handlePointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    if (!e.isPrimary) return
-    if (e.pointerType === 'mouse' && e.button !== 0) return
-    const target = e.target instanceof Element ? e.target : null
-    if (target?.closest('.fleet-inbox-pill')) return
-    rememberPhoneLanePortraitWidth(editor)
-    gestureRef.current = {
-      pointerId: e.pointerId,
-      mode: 'pending',
-      x0: e.clientX,
-      y0: e.clientY,
-      lastDx: 0,
-    }
-    try { e.currentTarget.setPointerCapture?.(e.pointerId) } catch {
-      // Synthetic/offscreen pointer events may not be capturable.
-    }
-  }, [editor])
-  const handlePointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    const gesture = gestureRef.current
-    if (!gesture || gesture.pointerId !== e.pointerId) return
-    const dx = e.clientX - gesture.x0
-    const dy = e.clientY - gesture.y0
-    gesture.lastDx = dx
-    if (gesture.mode === 'pending') {
-      const decision = phoneLaneDragDecision(dx, dy)
-      if (decision === 'abort') {
-        resetGesture()
-        return
-      }
-      if (decision === 'pending') return
-      gesture.mode = 'dragging'
-    }
-    if (dx > 0) {
-      resetGesture()
-      return
-    }
-    e.preventDefault()
-    stopEventPropagation(e)
-    const commit = PHONE_ROW_FLICK_COMMIT_PX
-    const progress = dx < 0 ? Math.min(1, Math.abs(dx) / commit) : 0
-    setPhoneLaneDrag({ active: true, progress, dir: progress > 0 ? -1 : 0, armed: progress >= 1, arrowWidthPx: commit })
-  }, [resetGesture])
-  const handlePointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    const gesture = gestureRef.current
-    if (!gesture || gesture.pointerId !== e.pointerId) {
-      stopEventPropagation(e)
-      onSelect(agent)
-      return
-    }
-    const shouldCommit = gesture.mode === 'dragging' && gesture.lastDx <= -PHONE_ROW_FLICK_COMMIT_PX
-    const wasDragging = gesture.mode === 'dragging'
-    resetGesture()
-    stopEventPropagation(e)
-    if (shouldCommit) onFlickToStack(agent)
-    else if (!wasDragging) onSelect(agent)
-  }, [agent, onFlickToStack, onSelect, resetGesture])
+  const fallbackDragValue = agent.labels[0] || agent.name
+  const fallbackDragType = agent.labels[0] ? 'label' : 'agent'
+  const fallbackDragDisplay = agent.labels[0] || agent.display
+  const fallbackDragColor = agent.labels[0] ? '#9370db' : '#7a9ec8'
 
   return (
     <div
       className={`fleet-inbox-phone-agent${selected ? ' selected' : ''}`}
-      onPointerDown={handlePointerDown}
-      onPointerMove={handlePointerMove}
-      onPointerUp={handlePointerUp}
-      onPointerCancel={resetGesture}
       style={{ touchAction: 'pan-y' }}
     >
-      <div className="fleet-inbox-phone-agent-main">
-        <span
-          className="fleet-inbox-phone-agent-name fleet-inbox-pill"
-          onPointerDown={(e) => {
-            stopEventPropagation(e)
-            onStartDrag(e, 'agent', agent.name, agent.display, '#7a9ec8')
-          }}
-        >{agent.display}</span>
-        <span className="fleet-inbox-phone-agent-status">{agent.status}</span>
+      <div
+        className="fleet-inbox-phone-agent-name-zone fleet-inbox-pill"
+        onPointerDown={(e) => onStartDrag(e, 'agent', agent.name, agent.display, '#7a9ec8')}
+      >
+        <span className="fleet-inbox-phone-agent-name">{agent.display}</span>
+        <span className="fleet-inbox-phone-agent-push-arrow" aria-hidden="true" />
+      </div>
+      <div
+        className="fleet-inbox-phone-agent-scroll-zone"
+        onPointerUp={(e) => { stopEventPropagation(e); onSelect(agent) }}
+      >
+        <span className="fleet-inbox-phone-agent-activity">{agent.active}</span>
+        {agent.contextPct != null && <span className="fleet-inbox-phone-agent-context">{Math.round(agent.contextPct)}%</span>}
         {agent.unread > 0 && <span className="fleet-inbox-phone-agent-unread">{agent.unread}</span>}
       </div>
-      <div className="fleet-inbox-phone-agent-detail">
-        {agent.taskText && <span className="fleet-inbox-phone-agent-task">{agent.taskText}</span>}
-        {agent.labels.length > 0 && (
+      <div
+        className="fleet-inbox-phone-agent-label-zone fleet-inbox-pill"
+        onPointerDown={(e) => {
+          const target = e.target instanceof Element ? e.target : null
+          const label = target?.closest<HTMLElement>('.fleet-inbox-phone-agent-label')?.dataset.label || fallbackDragValue
+          const pillType = agent.labels.includes(label) ? 'label' : fallbackDragType
+          const display = pillType === 'label' ? label : fallbackDragDisplay
+          const color = pillType === 'label' ? '#9370db' : fallbackDragColor
+          onStartDrag(e, pillType, label, display, color)
+        }}
+      >
+        {agent.labels.length > 0 ? (
           <span className="fleet-inbox-phone-agent-labels">
             {agent.labels.map(label => (
               <span
                 key={label}
-                className="fleet-inbox-phone-agent-label fleet-inbox-pill"
-                onPointerDown={(e) => {
-                  stopEventPropagation(e)
-                  onStartDrag(e, 'label', label, label, '#9370db')
-                }}
+                className="fleet-inbox-phone-agent-label"
+                data-label={label}
               >{label}</span>
             ))}
           </span>
+        ) : agent.taskText ? (
+          <span className="fleet-inbox-phone-agent-task">{agent.taskText}</span>
+        ) : (
+          <span className="fleet-inbox-phone-agent-label-placeholder" />
         )}
+        <span className="fleet-inbox-phone-agent-push-arrow" aria-hidden="true" />
       </div>
     </div>
   )
@@ -1407,6 +1484,7 @@ function MessageRow({
       x0: e.clientX,
       y0: e.clientY,
       lastDx: 0,
+      lastDy: 0,
     }
     try { e.currentTarget.setPointerCapture?.(e.pointerId) } catch {
       // Synthetic/offscreen pointer events may not be capturable.
@@ -1513,7 +1591,6 @@ function InboxList(props: InboxListProps) {
 
   return (
     <div ref={listRef} className="fleet-inbox-list">
-      {isPhoneSurface && <AgentsRow count={agentCount} selectedTarget={selectedAgentTarget} onOpen={() => onOpenItem('agents')} />}
       {empty && !isPhoneSurface && sortMode !== 'graph' && <div className="fleet-inbox-empty">no messages yet</div>}
 
       {sortMode === 'graph' ? (
@@ -1560,6 +1637,7 @@ function InboxList(props: InboxListProps) {
           )}
         </>
       )}
+      {isPhoneSurface && <AgentsRow count={agentCount} selectedTarget={selectedAgentTarget} onOpen={() => onOpenItem('agents')} />}
     </div>
   )
 }
