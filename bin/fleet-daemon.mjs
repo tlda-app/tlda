@@ -1213,7 +1213,7 @@ async function resolveCodexJsonl(agent) {
 const HARNESS_ADAPTERS = {
   claude: {
     kind: 'claude',
-    processRe: /(?:^|\s|\/)claude(?:\s|$)/,
+    processRe: /(?:^|\s|[/\\])claude(?:\.exe)?(?:\s|$)/,
     activity: {
       kind: 'claude',
       parseLine: parseSessionLine,
@@ -1225,7 +1225,7 @@ const HARNESS_ADAPTERS = {
   },
   codex: {
     kind: 'codex',
-    processRe: /(?:^|\s|\/)codex(?:\s|$)/,
+    processRe: /(?:^|\s|[/\\])codex(?:\.exe)?(?:\s|$)/,
     activity: {
       kind: 'codex',
       parseLine: parseCodexLine,
@@ -1238,7 +1238,7 @@ const HARNESS_ADAPTERS = {
   },
   goose: {
     kind: 'goose',
-    processRe: /(?:^|\s|\/)goose(?:\s|$).*?\brun\b|\bgoose run\b/,
+    processRe: /(?:^|\s|[/\\])goose(?:\.exe)?(?:\s|$).*?\brun\b|\bgoose(?:\.exe)? run\b/,
     activity: {
       kind: 'goose',
       source: 'sqlite',

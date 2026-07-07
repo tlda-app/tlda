@@ -68,7 +68,7 @@ export async function sessionHasRuntime(session, { tmuxSocket = process.env.TMUX
       if (seen.has(pid)) continue
       seen.add(pid)
       const args = argsByPid.get(pid) || ''
-      if (/(?:^|\s|\/)(claude|codex|goose)(?:\s|$)/.test(args)) return true
+      if (/(?:^|\s|[/\\])(claude|codex|goose)(?:\.exe)?(?:\s|$)/.test(args)) return true
       stack.push(...(children.get(pid) || []))
     }
   } catch {

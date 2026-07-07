@@ -1133,6 +1133,42 @@ test('fresh local spawn forwards explicit active config name into launch command
   assert.match(cmd, /TLDA_SERVER='http:\/\/127\.0\.0\.1:5176'/)
 })
 
+test('explicit Claude session resume forwards configured harness flags into launch command', async () => {
+  const root = tmpdir()
+  const projectsBase = path.join(root, 'claude-projects')
+  const cwd = tmpdir()
+  const sid = '77777777-7777-4777-8777-777777777777'
+  writeJsonl(path.join(projectsBase, '-tmp-resume-flags', `${sid}.jsonl`), [
+    { cwd },
+    { toolUseResult: [{ text: 'Registered fleet:resume777. Your name: "resume-flags"' }] },
+  ])
+  const { calls, deps } = freshSpawnDeps({ ensureServer: async () => true })
+  deps.sessionHasRuntime = async () => false
+  const result = await spawn({
+    session: sid,
+    kind: 'claude',
+    model: 'opus48',
+    claudeProjectsBase: projectsBase,
+    config: {
+      harnessOptions: {
+        claude: {
+          '*': {
+            required: ['--dangerously-load-development-channels server:tlda'],
+            preferences: [],
+            controls: true,
+          },
+        },
+      },
+    },
+    _deps: deps,
+  })
+  assert.equal(result.ok, true)
+  assert.equal(result.resumeId, sid)
+  const cmd = calls.find((value) => typeof value === 'string' && value.includes('FLEET_ID='))
+  assert.match(cmd, /claude --dangerously-load-development-channels server:tlda --resume/)
+  assert.match(cmd, new RegExp(`--resume '${sid}'`))
+})
+
 test('fresh local spawn keeps server-up pre-register and registration wait semantics', async () => {
   const { calls, deps } = freshSpawnDeps({ ensureServer: async () => true })
   const result = await spawn({
