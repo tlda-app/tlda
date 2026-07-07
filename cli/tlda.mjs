@@ -173,7 +173,7 @@ const COMMAND_HELP = {
   bot:     'tlda bot [list|install|uninstall|start|stop|status|log] [name] [--dry-run]\n\n  Manage configured fleet bots as launchd services. The bot process registers like an agent; the daemon does not start it.',
   system:  'tlda system status\n\n  Show server, daemon, deploy stamp, and fleet runtime identity.',
   daemon:  'tlda daemon [start|stop|status|log|run|install|uninstall]\n\n  Control the per-machine fleet daemon.\n  It watches project source directories and agent session activity,\n  then pushes events to the tlda server over WebSocket.',
-  doctor:  'tlda doctor [--fix]\n\n  Run a health check for local tools, server, SPA bundle, daemon, MCP setup,\n  project builds, and doc sync stores.\n\n  --fix  Apply the limited automatic repairs that doctor explicitly offers.',
+  doctor:  'tlda doctor [--fix]\ntlda doctor yolo [--name yolo] [--model opus] [--cwd /path] [--dry-run]\n\n  Run a health check for local tools, server, SPA bundle, daemon, MCP setup,\n  project builds, and doc sync stores.\n\n  --fix  Apply the limited automatic repairs that doctor explicitly offers.\n\n  yolo   Break-glass: locally launch an unfenced in-fleet Claude agent with a real FLEET_ID.\n         This path pre-registers with fleet, then starts tmux directly instead of using the\n         fleet/daemon spawn permission gate.',
   'repo-doctor': 'tlda doc repo-doctor <project> [--rescue|--apply|--rollback|--cleanup]\n\n  Diagnose a project source repo for tlda-induced damage.\n  No flag: diagnose only (read-only).\n  --rescue   Compute a rescue plan (dry run).\n  --apply    Execute the rescue plan.\n  --rollback Roll back a previous rescue apply.\n  --cleanup  Clean rescue apply state.',
   publish: 'tlda publish [--target <name>] [doc ...]\n\n  Publish docs to GitHub Pages (+ optionally Fly).\n\n  With no args, publishes all docs in config.published using the "default" target.\n  With --target, uses the named target config (sync server, repo, etc.).\n  With doc names, publishes those and adds them to the list.\n\n  Config (targets in ~/.config/tlda/config.json):\n    targets.<name>.sync     — sync server WebSocket URL\n    targets.<name>.repo     — git remote for gh-pages (null = same repo)\n    targets.<name>.fly      — deploy to Fly (default: false)\n    targets.<name>.basePath — vite base path (default: /tlda/)',
   config:  'tlda config [set <key> <value> | get [key]]\n\n  Manage persistent configuration.\n  Example: tlda config set server http://myhost:5176',
@@ -183,7 +183,7 @@ const COMMAND_HELP = {
 const VALUE_FLAGS = new Set([
   'server', 'dir', 'title', 'main', 'debounce', 'token', 'members', 'format',
   'session', 'target', 'timeout', 'id', 'book', 'worktree', 'port', 'browser',
-  'model', 'cwd', 'effort', 'mode', 'kind',
+  'model', 'cwd', 'effort', 'mode', 'kind', 'name',
   'agent-id', 'policy', 'permissions', 'machine', 'limit', 'from', 'poll', 'config',
   'label', 'plist',
 ])
@@ -3053,6 +3053,9 @@ async function cmdInitShadow() {
 }
 
 async function cmdDoctor() {
+  const sub = getPositional(0)
+  if (sub === 'yolo') return await cmdDoctorYolo()
+
   const { execSync, spawnSync } = await import('child_process')
   const autoFix = process.argv.includes('--fix')
   const fixes = []  // { label, fn } — accumulated during checks, run at end if --fix
@@ -3437,6 +3440,84 @@ async function cmdDoctor() {
     if (fixes.length > 0) console.log(dim(`Run \`tlda doctor --fix\` to auto-fix.`))
     process.exit(1)
   }
+}
+
+async function cmdDoctorYolo() {
+  const { sanitizeSessionName, readConfig, resolveDnsAlias } = await import('../bin/lib/spawn/identity.mjs')
+  const { resolveApi, wsRegister } = await import('../bin/lib/spawn/register.mjs')
+  const { uniqueSessionName, spawnTmux } = await import('../bin/lib/spawn/tmux.mjs')
+  const claude = await import('../bin/lib/spawn/harness/claude.mjs')
+
+  const name = String(getFlag('name', 'yolo') || 'yolo')
+  const safeName = sanitizeSessionName(name)
+  const rawFleetId = String(getFlag('id', `fleet:${safeName}`) || `fleet:${safeName}`)
+  const fleetId = rawFleetId.startsWith('fleet:') ? rawFleetId : `fleet:${rawFleetId}`
+  const cwd = resolve(getFlag('cwd') || process.cwd())
+  const config = readConfig()
+  const api = resolveApi({ config })
+  const tmuxSocket = loadConfig().tmuxSocket || null
+  const dryRun = hasFlag('dry-run')
+  const tmuxSession = dryRun ? `fleet-${safeName}` : await uniqueSessionName(`fleet-${safeName}`, { tmuxSocket })
+  const model = claude.resolveModel(getFlag('model', 'opus'), { config })
+  const dnsAlias = await resolveDnsAlias(api).catch(() => null)
+  const harnessOptions = {
+    required: ['--dangerously-load-development-channels server:tlda'],
+    preferences: [],
+    controls: false,
+  }
+  const cmd = claude.buildCmd({
+    fleetId,
+    tmuxSession,
+    model,
+    mode: 'bypassPermissions',
+    name,
+    api,
+    dnsAlias,
+    includePrompt: true,
+    config,
+    harnessOptions,
+  })
+
+  if (dryRun) {
+    console.log('tlda doctor yolo dry run')
+    console.log(`  fleet_id: ${fleetId}`)
+    console.log(`  name: ${name}`)
+    console.log(`  tmux: ${tmuxSession}`)
+    console.log(`  cwd: ${cwd}`)
+    console.log(`  model: ${model}`)
+    console.log(`  api: ${api}`)
+    console.log(`  command: ${cmd}`)
+    return
+  }
+
+  await wsRegister({
+    fleetId,
+    name,
+    tmuxSession,
+    cwd,
+    model,
+    refresh: true,
+    shell: true,
+    kind: 'claude',
+    metadata: {
+      breakGlass: true,
+      yolo: true,
+      launchPath: 'tlda doctor yolo',
+      spawnGateBypassed: true,
+    },
+    api,
+  })
+  const launched = await spawnTmux(tmuxSession, cwd, cmd, { autoDismiss: true, tmuxSocket })
+  if (!launched) {
+    throw new Error(`tmux session ${tmuxSession} already has a live harness runtime`)
+  }
+  console.log(green(bold('Break-glass agent launched.')))
+  console.log(`  fleet_id: ${fleetId}`)
+  console.log(`  name: ${name}`)
+  console.log(`  tmux: ${tmuxSession}`)
+  console.log(`  cwd: ${cwd}`)
+  console.log(`  model: ${model}`)
+  console.log(dim('  The agent is prompted to register with fleet and check inbox.'))
 }
 
 

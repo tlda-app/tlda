@@ -108,6 +108,19 @@ describe('argument parser', () => {
     }
   })
 
+  it('doctor yolo dry-run exposes the break-glass launch shape without live work', () => {
+    const { stdout, stderr, exitCode } = tlda('doctor', 'yolo', '--dry-run', '--name', 'rescue-yolo', '--model', 'opus', '--cwd', ROOT)
+    assert.equal(exitCode, 0, `doctor yolo --dry-run should exit 0\nstdout:\n${stdout}\nstderr:\n${stderr}`)
+    assert.ok(stdout.includes('tlda doctor yolo dry run'))
+    assert.ok(stdout.includes('fleet_id: fleet:rescue-yolo'))
+    assert.ok(stdout.includes('tmux: fleet-rescue-yolo'))
+    assert.ok(stdout.includes('FLEET_ID='))
+    assert.ok(stdout.includes('--dangerously-load-development-channels server:tlda'))
+    assert.ok(stdout.includes('--dangerously-skip-permissions'))
+    assert.ok(!stdout.includes('Server not running'))
+    assert.ok(!stderr.includes('ECONNREFUSED'))
+  })
+
   it('completions use noun-first command names', () => {
     const { stdout, exitCode } = tlda('completions')
     assert.equal(exitCode, 0)
