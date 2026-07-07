@@ -641,7 +641,10 @@ async function drainTaskWakeQueue() {
         broadcastEvent('agent-wedged', { agentId, reason: decision.message, ts: new Date().toISOString() })
         continue
       }
-      const spawnResult = await sendRpc(daemonKey, 'spawn', { name: agentId, agent_id: agentId, respawn: true, requester: { id: SERVER_OWNER_ID } })
+      // Wake carries NO privilege check (hibernation is transparent) — pass no
+      // requester; the daemon resumes the agent with its own privileges. agent_id
+      // lets the daemon find that agent's own grant.
+      const spawnResult = await sendRpc(daemonKey, 'spawn', { name: agentId, agent_id: agentId, respawn: true })
       if (!spawnResult?.ok) {
         // Don't drop a failed re-nudge silently — surface via the catch (agent-wedged).
         throw new Error(spawnResult?.error || spawnResult?.reason || 'daemon returned ok:false with no reason')
@@ -4165,7 +4168,10 @@ async function handleFleetWsMessage(ws, msg) {
         // agentId is a `fleet:` id, which fleet-spawn resumes directly. This is
         // the chat-wake entry point — the one that fires when Skip chats a
         // hibernating agent — so identity must be carried here above all.
-        const spawnResult = await sendRpc(daemonKey, 'spawn', { name: agentId, agent_id: agentId, respawn: true, requester: { id: SERVER_OWNER_ID } })
+        // Wake carries NO privilege check (hibernation is transparent) — pass no
+      // requester; the daemon resumes the agent with its own privileges. agent_id
+      // lets the daemon find that agent's own grant.
+      const spawnResult = await sendRpc(daemonKey, 'spawn', { name: agentId, agent_id: agentId, respawn: true })
         if (!spawnResult?.ok) {
           // A returned {ok:false} used to be dropped on the floor: no wake, no
           // signal, and (worse) a false "agent woken" event below. Convert it to

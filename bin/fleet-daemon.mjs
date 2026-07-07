@@ -3206,25 +3206,32 @@ async function rpcSpawn({
   try {
     const config = loadConfig()
     spawnConfig = config
-    if (!requester?.id) {
-      const err = new Error('spawn refused: daemon RPC requester identity is required')
-      err.code = 'SPAWN_PERMISSION_NO_REQUESTER'
-      throw err
-    }
-    // Waking an existing agent PRESERVES its own permissions — a wake is not a
-    // re-permissioning. When we respawn a known, already-ledgered agent, use that
-    // agent's stored grant verbatim instead of re-deriving from the waker's grant
-    // (which would silently up/downgrade the agent on every wake). The `requester`
-    // check above still stands: it is the authorization that this wake is allowed,
-    // not the source of the woken agent's permissions.
-    const preservedGrant = (respawn && agent_id) ? permissionLedger.get(agent_id) : null
-    if (preservedGrant) {
-      grant = {
-        grantedPolicy: preservedGrant.spawnPolicy,
-        grantedPermissionSet: preservedGrant.permissionSet,
-        grantPreserved: true,
-      }
+    if (respawn) {
+      // Hibernation is transparent (Skip's design): waking an existing agent
+      // carries NO privilege check — no requester, no spawn-auth gate. Waking is
+      // just the invisible step that delivers a chat, so chatting a hibernating
+      // agent is identical to chatting an awake one, and wake is open to anyone.
+      // The agent resumes with its OWN recorded grant; if it has none (un-ledgered),
+      // resolve the config/project default with no spawner clamp. A wake never
+      // re-permissions and never refuses. (Fresh spawn, below, stays privileged.)
+      const own = agent_id ? permissionLedger.get(agent_id) : null
+      grant = own
+        ? { grantedPolicy: own.spawnPolicy, grantedPermissionSet: own.permissionSet, grantPreserved: true }
+        : resolveSpawnGrant({
+            model: launchModel,
+            kind: launchKind,
+            config,
+            doc,
+            project: projectForGrant,
+            cwd: resolvedCwd,
+          })
     } else {
+      // Fresh spawn stays privileged: requester required, grant derived from it.
+      if (!requester?.id) {
+        const err = new Error('spawn refused: daemon RPC requester identity is required')
+        err.code = 'SPAWN_PERMISSION_NO_REQUESTER'
+        throw err
+      }
       const spawnerGrant = permissionLedger.grantFor(requester)
       grant = resolveSpawnGrant({
         requestedPermission: requestedPermission || (policy != null ? 'write' : undefined),
