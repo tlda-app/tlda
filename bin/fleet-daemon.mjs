@@ -3211,21 +3211,36 @@ async function rpcSpawn({
       err.code = 'SPAWN_PERMISSION_NO_REQUESTER'
       throw err
     }
-    const spawnerGrant = permissionLedger.grantFor(requester)
-    grant = resolveSpawnGrant({
-      requestedPermission: requestedPermission || (policy != null ? 'write' : undefined),
-      requestedPermissions,
-      callerRung,
-      requester,
-      spawnerPolicy: spawnerGrant?.spawnPolicy,
-      spawnerPermissionSet: spawnerGrant?.permissionSet,
-      model: launchModel,
-      kind: launchKind,
-      config,
-      doc,
-      project: projectForGrant,
-      cwd: resolvedCwd,
-    })
+    // Waking an existing agent PRESERVES its own permissions — a wake is not a
+    // re-permissioning. When we respawn a known, already-ledgered agent, use that
+    // agent's stored grant verbatim instead of re-deriving from the waker's grant
+    // (which would silently up/downgrade the agent on every wake). The `requester`
+    // check above still stands: it is the authorization that this wake is allowed,
+    // not the source of the woken agent's permissions.
+    const preservedGrant = (respawn && agent_id) ? permissionLedger.get(agent_id) : null
+    if (preservedGrant) {
+      grant = {
+        grantedPolicy: preservedGrant.spawnPolicy,
+        grantedPermissionSet: preservedGrant.permissionSet,
+        grantPreserved: true,
+      }
+    } else {
+      const spawnerGrant = permissionLedger.grantFor(requester)
+      grant = resolveSpawnGrant({
+        requestedPermission: requestedPermission || (policy != null ? 'write' : undefined),
+        requestedPermissions,
+        callerRung,
+        requester,
+        spawnerPolicy: spawnerGrant?.spawnPolicy,
+        spawnerPermissionSet: spawnerGrant?.permissionSet,
+        model: launchModel,
+        kind: launchKind,
+        config,
+        doc,
+        project: projectForGrant,
+        cwd: resolvedCwd,
+      })
+    }
   } catch (e) {
     return { ok: false, name: agentName, error: `spawn policy resolution failed: ${e.message}` }
   }

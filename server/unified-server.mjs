@@ -641,7 +641,11 @@ async function drainTaskWakeQueue() {
         broadcastEvent('agent-wedged', { agentId, reason: decision.message, ts: new Date().toISOString() })
         continue
       }
-      const spawnResult = await sendRpc(daemonKey, 'spawn', { name: agentId, respawn: true })
+      const spawnResult = await sendRpc(daemonKey, 'spawn', { name: agentId, agent_id: agentId, respawn: true, requester: { id: SERVER_OWNER_ID } })
+      if (!spawnResult?.ok) {
+        // Don't drop a failed re-nudge silently — surface via the catch (agent-wedged).
+        throw new Error(spawnResult?.error || spawnResult?.reason || 'daemon returned ok:false with no reason')
+      }
       await sendTaskWakeNudge(daemonKey, agent, spawnResult?.tmux_session || agent.tmux_session, nudgeText, 'post-respawn')
     } catch (e) {
       console.warn(`[task-renudge] failed for ${agentId}: ${e.message}`)
@@ -4089,19 +4093,24 @@ async function handleFleetWsMessage(ws, msg) {
       ts: new Date().toISOString(),
     }
   }
-  function requestWake(agentId, nudgeText = null) {
+  function requestWake(agentId, nudgeText = null, asker = null) {
     const agent = fleetStore.getAgent?.(agentId)
     if (!agent || agent.dead || agent.human) return
     const prev = _wakeQueue.get(agentId)
-    _wakeQueue.set(agentId, nudgeText || prev || null)
+    _wakeQueue.set(agentId, {
+      nudgeText: nudgeText || prev?.nudgeText || null,
+      asker: asker || prev?.asker || null,
+    })
     if (!_wakeDraining) drainWakeQueue()
   }
 
   async function drainWakeQueue() {
     _wakeDraining = true
     while (_wakeQueue.size > 0) {
-      const [agentId, nudgeText] = _wakeQueue.entries().next().value
+      const [agentId, wakeEntry] = _wakeQueue.entries().next().value
       _wakeQueue.delete(agentId)
+      const nudgeText = wakeEntry?.nudgeText || null
+      const asker = wakeEntry?.asker || null
       const agent = fleetStore.getAgent?.(agentId)
       if (!agent || agent.dead || agent.human) continue
       const daemonKeys = [...daemonConnections.keys()]
@@ -4139,7 +4148,7 @@ async function handleFleetWsMessage(ws, msg) {
           continue
         }
         if (decision.action === 'queue') {
-          setTimeout(() => requestWake(agentId, nudgeText), 2000).unref?.()
+          setTimeout(() => requestWake(agentId, nudgeText, asker), 2000).unref?.()
           continue
         }
         if (decision.action === 'hold') continue
@@ -4156,7 +4165,13 @@ async function handleFleetWsMessage(ws, msg) {
         // agentId is a `fleet:` id, which fleet-spawn resumes directly. This is
         // the chat-wake entry point — the one that fires when Skip chats a
         // hibernating agent — so identity must be carried here above all.
-        const spawnResult = await sendRpc(daemonKey, 'spawn', { name: agentId, respawn: true })
+        const spawnResult = await sendRpc(daemonKey, 'spawn', { name: agentId, agent_id: agentId, respawn: true, requester: { id: SERVER_OWNER_ID } })
+        if (!spawnResult?.ok) {
+          // A returned {ok:false} used to be dropped on the floor: no wake, no
+          // signal, and (worse) a false "agent woken" event below. Convert it to
+          // the surfaced path (catch → chat the asker + agent-wedged). Never silent.
+          throw new Error(spawnResult?.error || spawnResult?.reason || 'daemon returned ok:false with no reason')
+        }
         await sendWakeNudge(daemonKey, agent, spawnResult?.tmux_session || agent.tmux_session, nudgeText, 'post-respawn')
         const wakeTs = new Date().toISOString()
         fleetStore.db.prepare(
@@ -4164,15 +4179,21 @@ async function handleFleetWsMessage(ws, msg) {
         ).run('lifecycle', wakeTs, agentId, agentId, 'agent woken', null)
       } catch (e) {
         console.warn(`[respawn] failed for ${agentId}: ${e.message}`)
-        // Surface the failure to Skip instead of failing silently (throttled
-        // per-agent so a stuck wake doesn't spam chat).
+        // Convergent, visible signal on the roster (not just a chat) so a failed
+        // wake shows up in the UI, not invisibly.
+        broadcastEvent('agent-wedged', { agentId, reason: `wake failed: ${e.message}`, ts: new Date().toISOString() })
+        // Surface the failure to WHOEVER ASKED (Skip's rule) — the agent/human who
+        // chatted or delegated — falling back to the server owner for wakes with no
+        // identifiable asker (internal retries). Throttled per-agent so a stuck wake
+        // doesn't spam chat.
         const _now = Date.now()
         if (!_wakeFailWarned.has(agentId) || _now - _wakeFailWarned.get(agentId) > WAKE_FAIL_WARN_MS) {
           _wakeFailWarned.set(agentId, _now)
+          const notify = asker && asker !== agentId ? asker : SERVER_OWNER_ID
           try {
             deliverTldaFeedbackChat({
               from: 'fleet:tlda',
-              to: SERVER_OWNER_ID,
+              to: notify,
               text: `⚠️ Couldn't wake **${agent.friendly_name || agentId}** — ${e.message}`,
               metadata: { type: 'wake_failed', agentId },
             })
@@ -4390,7 +4411,7 @@ async function handleFleetWsMessage(ws, msg) {
       // (the reply, not the DB row, is what normally carries _tempId).
       insertedEvents.push({ id: eventId, type: 'chat', timestamp: ts, from_id: from, to_id: to, text, metadata: Object.keys(combinedMetadata).length ? combinedMetadata : null, materializableAttachments, ...(msg._tempId ? { _tempId: msg._tempId } : {}) })
       if (deliveryDecision.delivery === 'notified') {
-        wakeRequests.push({ to, text: chatWakeText(text, to) })
+        wakeRequests.push({ to, text: chatWakeText(text, to), asker: from })
       } else if (deliveryDecision.delivery === 'batched' && deliveryDecision.notifyBy) {
         const delay = Math.max(0, Date.parse(deliveryDecision.notifyBy) - Date.now())
         setTimeout(() => {
@@ -4402,7 +4423,7 @@ async function handleFleetWsMessage(ws, msg) {
               event: 'batched message ready',
               preview: previewForWake(text),
               action: 'read and respond',
-            }))
+            }), from)
           }
         }, delay)
       }
@@ -4428,7 +4449,7 @@ async function handleFleetWsMessage(ws, msg) {
       const recipient = fleetStore.getAgent?.(to)
       if (recipient && !recipient.human) spawnLibrarian.observeDelivery(to, deliveredAt)
     }
-    for (const wake of wakeRequests) requestWake(wake.to, wake.text)
+    for (const wake of wakeRequests) requestWake(wake.to, wake.text, wake.asker)
 
     // Plan mode approval routing: if Skip sends an affirmative/negative and
     // there's a pending plan approval for the targeted agent (or any agent),
@@ -4554,7 +4575,7 @@ async function handleFleetWsMessage(ws, msg) {
     })
     broadcastState()
     reply({ ok: true, task_id: taskId })
-    requestWake(resolved.id, delegateWakeText(description, resolved.id))
+    requestWake(resolved.id, delegateWakeText(description, resolved.id), from)
     return
   }
 
