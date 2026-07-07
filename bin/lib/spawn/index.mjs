@@ -215,7 +215,6 @@ async function spawnFresh(params) {
       explicitPolicy: !!params.explicitPolicy,
       policyName: launchPolicy.policyName,
       permissionMode: launchPolicy.permissionMode,
-      fenceTemporarilyDisabled: !!launchPolicy.fenceTemporarilyDisabled,
       hasLeasePolicy: !!launchPolicy.leasePolicy,
       hasHarnessControls: !!launchPolicy.launchSecurity?.hasHarnessControls,
       acknowledgedNoSecurity: !!launchPolicy.launchSecurity?.acknowledgedNoSecurity,

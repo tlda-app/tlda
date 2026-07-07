@@ -6,9 +6,6 @@ import { repoRoot } from './identity.mjs'
 
 const SANDBOX_POLICIES = new Set(['no-dev', 'cwd', 'tlda-projects', 'unsandboxed'])
 const BUILTIN_POLICY_NAMES = new Set(['read', 'write', 'tlda-write', 'full'])
-// Break-glass switch only. The durable target is a pw-capable fence: broad
-// safe writes work, while secret/chat-db/destructive paths stay denied.
-const FENCE_TEMPORARILY_DISABLED = true
 const DEFAULT_READ_ROOTS = []
 const DEFAULT_OPTIONS = { network: false, git: 'read', artifacts: true }
 const DEFAULT_TRUSTED_MCP_SERVERS = { tlda: { defaultToolsApprovalMode: 'approve' } }
@@ -379,16 +376,14 @@ export function resolveLaunchPolicy({
     spawnPolicy || requestedPermission || (harness === 'codex' ? 'write' : null),
     null,
   )
-  // Skip, 2026-07-06: fencing is OPT-IN. The rule, verbatim: "if they ask for a
-  // fence, use a fence; if they don't, don't." Nothing else arms it — not the
-  // ledger's stored per-agent permissionSet + fenceEnabled (which used to defeat
-  // the global off switch and re-cage every agent), not FENCE_TEMPORARILY_DISABLED.
-  // `explicitPolicy` is exactly "the caller explicitly asked for a fenced launch"
-  // (the `policy:` spawn param). Ask → fenced. Don't ask → free.
-  const useFence = !!requestedPolicy && explicitPolicy === true
+  // Apply the specified policy. No opt-in gate, no global off-switch, no silent
+  // waiver — the agent's grant (already the intersection of the specified policy,
+  // the spawner's authority, and the model ceiling) IS the fence, and it is
+  // enforced as written. If there is a policy to apply, apply it.
+  const useFence = !!requestedPolicy
   const leaseResolution = useFence
     ? resolveLeasePolicy({ spawnPolicy: requestedPolicy, permissionSet, harness, model, cwd, config })
-    : { policyName: requestedPolicy ? 'unsandboxed' : null, devTools: true, leasePolicy: null }
+    : { policyName: null, devTools: true, leasePolicy: null }
   const explicitMode = permissionMode ?? mode
   const effectivePermissionMode = permissionClassifierDisabled(config, env)
     ? 'bypassPermissions'
@@ -396,14 +391,13 @@ export function resolveLaunchPolicy({
         ? 'bypassPermissions'
         : (requestedPolicy?.permission ? projectPermissionToMode(requestedPolicy.permission) : undefined)))
   const harnessOptions = resolveHarnessLaunchOptions({ config, harness, model })
-  // Opting out of the fence is the operator's explicit choice (fencing is
-  // opt-in), so a no-fence launch is never refused for "no security" — that
-  // refusal would just be the cage by another name. Only fenced launches keep
-  // going through the security assertion unchanged.
+  // Security comes from the applied grant (a fence) or the harness's own controls.
+  // A genuinely wide-open launch (no fence, no controls) must be acknowledged
+  // explicitly by the caller — no silent auto-waiver.
   const launchSecurity = assertLaunchHasSecurity({
     leasePolicy: leaseResolution.leasePolicy,
     harnessOptions,
-    acknowledgeNoSecurity: acknowledgeNoSecurity || !useFence,
+    acknowledgeNoSecurity,
     harness,
     permissionMode: effectivePermissionMode,
   })
@@ -414,7 +408,5 @@ export function resolveLaunchPolicy({
     spawnPolicy: requestedPolicy,
     permissionMode: effectivePermissionMode,
     classifierDisabled: permissionClassifierDisabled(config, env),
-    fenceTemporarilyDisabled: FENCE_TEMPORARILY_DISABLED,
-    fenceGloballyDisabled: FENCE_TEMPORARILY_DISABLED,
   }
 }
