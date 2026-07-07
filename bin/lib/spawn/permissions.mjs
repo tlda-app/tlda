@@ -1,7 +1,7 @@
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import { normalizeSpawnPolicy, projectPermissionToMode } from '../../../server/lib/spawn-policy.mjs'
+import { normalizeSpawnPolicy } from '../../../server/lib/spawn-policy.mjs'
 import { repoRoot } from './identity.mjs'
 
 const SANDBOX_POLICIES = new Set(['no-dev', 'cwd', 'tlda-projects', 'unsandboxed'])
@@ -142,11 +142,14 @@ export function resolveHarnessLaunchOptions({ config = {}, harness, model } = {}
   }
 }
 
-export function assertLaunchHasSecurity({ leasePolicy, harnessOptions, acknowledgeNoSecurity = false, harness, permissionMode = null } = {}) {
+export function assertLaunchHasSecurity({ leasePolicy, harnessOptions, acknowledgeNoSecurity = false, harness } = {}) {
   const hasFence = !!leasePolicy
-  const permissionsBypassed = String(harness || '').trim().toLowerCase() === 'claude'
-    && permissionMode === 'bypassPermissions'
-  const hasHarnessControls = !!harnessOptions?.controls && !permissionsBypassed
+  // Whether the classifier is bypassed is a property of the CONFIGURED harness flags
+  // (a --dangerously-skip-permissions / --yolo the operator put in settings), surfaced
+  // as harnessOptions.yolo — not a mode we computed. resolveHarnessLaunchOptions already
+  // sets controls=false when a yolo flag is present, so bypassed controls never count.
+  const permissionsBypassed = !!harnessOptions?.yolo
+  const hasHarnessControls = !!harnessOptions?.controls
   if (hasFence || hasHarnessControls || acknowledgeNoSecurity) {
     return { hasFence, hasHarnessControls, permissionsBypassed, acknowledgedNoSecurity: !!acknowledgeNoSecurity }
   }
@@ -386,22 +389,26 @@ export function resolveLaunchPolicy({
   const leaseResolution = useFence
     ? resolveLeasePolicy({ spawnPolicy: requestedPolicy, permissionSet, harness, model, cwd, config })
     : { policyName: null, devTools: true, leasePolicy: null }
-  const explicitMode = permissionMode ?? mode
+  // Permission mode is NOT derived from the grant or a permission level. The flag the
+  // operator wants (--dangerously-skip-permissions, --permission-mode plan, …) is
+  // configured in the daemon settings' harness options and passed straight through by
+  // the harness adapter, exactly like the codex sandbox flag. The only mode honored
+  // here is an explicit caller override or the emergency classifier-disable switch —
+  // never one computed from what the agent was granted.
   const effectivePermissionMode = permissionClassifierDisabled(config, env)
     ? 'bypassPermissions'
-    : (explicitMode ?? (leaseResolution.leasePolicy
-        ? 'bypassPermissions'
-        : (requestedPolicy?.permission ? projectPermissionToMode(requestedPolicy.permission) : undefined)))
+    : (permissionMode ?? mode ?? undefined)
   const harnessOptions = resolveHarnessLaunchOptions({ config, harness, model })
   // Security comes from the applied grant (a fence) or the harness's own controls.
   // A genuinely wide-open launch (no fence, no controls) must be acknowledged
-  // explicitly by the caller — no silent auto-waiver.
+  // explicitly by the caller — no silent auto-waiver. Whether the classifier is
+  // bypassed is read from the configured harness flags (harnessOptions.controls),
+  // not from a derived mode.
   const launchSecurity = assertLaunchHasSecurity({
     leasePolicy: leaseResolution.leasePolicy,
     harnessOptions,
     acknowledgeNoSecurity,
     harness,
-    permissionMode: effectivePermissionMode,
   })
   return {
     ...leaseResolution,

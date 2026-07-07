@@ -38,7 +38,6 @@ export function buildCmd({
   tmuxSession,
   model,
   effort,
-  mode,
   name,
   api,
   dnsAlias = null,
@@ -94,8 +93,10 @@ export function buildCmd({
   if (resumeId) parts.push(`--resume ${sq(resumeId)}`)
   parts.push(`--model ${sq(model)}`)
   if (effort) parts.push(`--effort ${sq(effort)}`)
-  if (mode === 'bypassPermissions') parts.push('--dangerously-skip-permissions')
-  else if (mode) parts.push(`--permission-mode ${sq(mode)}`)
+  // Permission flags (--dangerously-skip-permissions / --permission-mode) are NOT
+  // derived here; they come from the configured harness options via appendLaunchFlags
+  // above, exactly like the codex sandbox flag. The fence (region-set lease) is the
+  // security; the classifier flag is the operator's configured choice.
   if (includePrompt) parts.push(sq(registerPrompt(name)))
   return parts.join(' ')
 }
