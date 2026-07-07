@@ -1297,8 +1297,8 @@ export function injectBridge(html, basePath = '', chapterTitle = '', isFirstPage
     const escNext = nav.next ? nav.next.replace(/&/g, '&amp;').replace(/</g, '&lt;') : ''
     const navFooter = `
 <div class="tlda-chapter-nav">
-  ${nav.prev ? `<div class="tlda-nav-prev" onclick="window.parent.postMessage({type:'tlda-navigate-rel',direction:'prev'},'*')"><span class="tlda-nav-arrow">\u2190</span> ${escPrev}</div>` : '<div></div>'}
-  ${nav.next ? `<div class="tlda-nav-next" onclick="window.parent.postMessage({type:'tlda-navigate-rel',direction:'next'},'*')"><span class="tlda-nav-arrow">\u2192</span> ${escNext}</div>` : '<div></div>'}
+  ${nav.prev ? `<div class="tlda-nav-prev" onclick="window.parent.postMessage({type:'tlda-navigate-rel',shapeId:shapeId,direction:'prev'},'*')"><span class="tlda-nav-arrow">\u2190</span> ${escPrev}</div>` : '<div></div>'}
+  ${nav.next ? `<div class="tlda-nav-next" onclick="window.parent.postMessage({type:'tlda-navigate-rel',shapeId:shapeId,direction:'next'},'*')"><span class="tlda-nav-arrow">\u2192</span> ${escNext}</div>` : '<div></div>'}
 </div>
 <style>
 .tlda-chapter-nav {
