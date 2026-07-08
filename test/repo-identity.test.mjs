@@ -66,26 +66,54 @@ test('resolveRepoIdentity reports dirty tracked and untracked files', () => {
   }
 })
 
-test('resolveRepoIdentity reports detached ref without branch', () => {
+test('resolveRepoIdentity reports a non-null detached ref off main\'s tip', () => {
+  // A detached HEAD whose commit is NOT main's tip keeps a detached ref — but branch
+  // must be a non-null string now (readBuildInfo requires a non-empty branch).
   const repo = makeRepo()
   try {
-    const sha = git(repo, ['rev-parse', 'HEAD'])
-    git(repo, ['checkout', '--detach', 'HEAD'])
+    const first = git(repo, ['rev-parse', 'HEAD'])
+    writeFileSync(join(repo, 'README.md'), 'second\n')
+    git(repo, ['commit', '-am', 'second'])
+    git(repo, ['checkout', '--detach', first])
     const identity = resolveRepoIdentity(repo)
 
-    assert.equal(identity.branch, null)
-    assert.equal(identity.ref, `detached:${sha.slice(0, 12)}`)
-    assert.equal(identity.gitSha, sha)
+    assert.equal(identity.gitSha, first)
+    assert.equal(identity.ref, `detached:${first.slice(0, 12)}`)
+    assert.equal(identity.branch, `detached:${first.slice(0, 12)}`)
+    assert.notEqual(identity.branch, null)
   } finally {
     rmSync(repo, { recursive: true, force: true })
   }
 })
 
-test('resolveRepoIdentity detects a real git worktree checkout', () => {
+test('resolveRepoIdentity reports main when a worktree checkout IS at main\'s tip', () => {
+  // The live-deploy case: a build runs from a transient staging worktree whose commit is
+  // main's tip. build-info should name main, not the throwaway staging branch.
+  const repo = makeRepo()
+  const worktree = join(repo, '.worktrees', 'staging')
+  try {
+    const mainTip = git(repo, ['rev-parse', 'main'])
+    git(repo, ['worktree', 'add', '-b', 'staging', worktree])
+    const identity = resolveRepoIdentity(worktree)
+
+    assert.equal(identity.checkoutPath, realpathSync(worktree))
+    assert.equal(identity.gitSha, mainTip)
+    assert.equal(identity.branch, 'main')
+    assert.equal(identity.ref, 'main')
+    assert.equal(identity.isWorktree, true)
+  } finally {
+    rmSync(repo, { recursive: true, force: true })
+  }
+})
+
+test('resolveRepoIdentity keeps a worktree branch name when off main\'s tip', () => {
+  // A worktree branch that has advanced past main's tip keeps its own branch name.
   const repo = makeRepo()
   const worktree = join(repo, '.worktrees', 'side')
   try {
     git(repo, ['worktree', 'add', '-b', 'side', worktree])
+    writeFileSync(join(worktree, 'README.md'), 'side change\n')
+    git(worktree, ['commit', '-am', 'side commit'])
     const identity = resolveRepoIdentity(worktree)
 
     assert.equal(identity.checkoutPath, realpathSync(worktree))

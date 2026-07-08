@@ -36,7 +36,20 @@ export function resolveRepoIdentity(path = process.cwd(), { git = defaultGit } =
     branch = null
   }
 
+  // Report the canonical branch (main) when the deployed commit IS main's tip. A live deploy
+  // is built from a transient staging worktree (a throwaway branch or a detached HEAD), but
+  // "everything runs from main", so build-info should name main rather than the worktree's
+  // branch. Also guarantees a non-null branch string — readBuildInfo requires a non-empty one.
+  if (branch !== 'main') {
+    try {
+      if (git(['rev-parse', 'main'], checkoutPath) === gitSha) branch = 'main'
+    } catch {
+      // no main ref (e.g. a bare/empty runtime checkout) — leave branch as resolved
+    }
+  }
+
   const ref = branch || `detached:${gitSha.slice(0, 12)}`
+  if (!branch) branch = ref
   const status = git(['status', '--porcelain=v1', '--untracked-files=all'], checkoutPath)
   const commonDir = absPath(checkoutPath, git(['rev-parse', '--git-common-dir'], checkoutPath))
   const mainGitDir = resolve(checkoutPath, '.git')
