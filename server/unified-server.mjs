@@ -67,7 +67,7 @@ import { normalizeRegionPolicy } from './lib/spawn-policy.mjs'
 import { buildRuntimeStatus } from './lib/runtime-status.mjs'
 import { resolveSpawnMachine, SPAWN_MACHINE_PREF_KEY } from './lib/spawn-routing.mjs'
 import { resolveFreshSpawnAvailabilityModels } from './lib/spawn-availability-models.mjs'
-import { decideTaskRenudges } from './lib/task-renudge.mjs'
+import { decideTaskRenudges, wakeBreakerBackoffMs } from './lib/task-renudge.mjs'
 import { SpawnBounceError, SpawnLibrarian, resolveSpawnCollision } from '../shared/spawn-librarian.ts'
 import { MailboxLibrarian } from '../shared/mailbox-librarian.ts'
 import { trimTerminalSeedBlankRows } from '../shared/terminal-seed.mjs'
@@ -185,7 +185,12 @@ function markAgentAlive(agentId, now = Date.now()) {
   const wasAlive = _aliveAgents.has(agentId)
   if (!wasAlive || !_aliveSince.has(agentId)) _aliveSince.set(agentId, now)
   _aliveAgents.add(agentId)
-  if (!wasAlive) fleetStore?.refreshAgentLiveness?.(agentId)
+  if (!wasAlive) {
+    fleetStore?.refreshAgentLiveness?.(agentId)
+    // Recovery: an agent transitioning to alive (register/reconnect) clears its
+    // wake breaker so a restored session is nudged again immediately (§4.2).
+    _wakeBreaker.delete(agentId)
+  }
 }
 
 function markAgentNotAlive(agentId) {
@@ -540,6 +545,14 @@ const TASK_RENUDGE_SWEEP_MS = Number(process.env.TLDA_TASK_RENUDGE_SWEEP_MS || 6
 const TASK_RENUDGE_INTERVAL_MS = Number(process.env.TLDA_TASK_RENUDGE_INTERVAL_MS || 5 * 60_000)
 const _taskRenudged = new Map()
 const _taskWakeQueue = new Map()
+
+// Per-agent wake circuit breaker. Consecutive terminal wake failures (a session
+// that can't be resolved → endless `launch-failed`) put an agent into exponential
+// backoff so runTaskRenudgeSweep stops respawning it every 5 min. Reset on real
+// recovery (markAgentAlive) or a successful wake. Keyed by agentId.
+const _wakeBreaker = new Map() // agentId -> { fails, nextTs, lastError }
+const WAKE_BREAKER_BASE_MS = TASK_RENUDGE_INTERVAL_MS // 5 min, first backoff step
+const WAKE_BREAKER_CAP_MS = Number(process.env.TLDA_WAKE_BREAKER_CAP_MS || 2 * 60 * 60_000) // 2h ceiling (also a slow self-heal probe)
 let _taskWakeDraining = false
 
 function taskTerminalNudgeKind(agent) {
@@ -588,19 +601,35 @@ function taskLivenessFromCheckAliveResult(agentId, tmuxSession, result) {
   }
 }
 
-function requestTaskWake(agentId, nudgeText = null) {
+function requestTaskWake(agentId, nudgeText = null, keys = []) {
   const agent = fleetStore?.getAgent?.(agentId)
   if (!agent || agent.dead || agent.human) return
   const prev = _taskWakeQueue.get(agentId)
-  _taskWakeQueue.set(agentId, nudgeText || prev || null)
+  // Queue value carries the task keys riding this wake so the drain can refresh
+  // their renudge throttle on success (§5). Multiple tasks for one agent collapse
+  // to a single wake (dedup by agentId); their keys accumulate.
+  const mergedKeys = [...new Set([...(prev?.keys || []), ...keys])]
+  _taskWakeQueue.set(agentId, { nudgeText: nudgeText || prev?.nudgeText || null, keys: mergedKeys })
   if (!_taskWakeDraining) drainTaskWakeQueue()
+}
+
+// A successful wake clears the agent's circuit breaker and refreshes the 5-min
+// renudge throttle for every task key that rode this wake (§4.1 + §5). Moving the
+// throttle stamp here — off the pre-attempt sweep — means a failing agent's
+// throttle never stays warm; it's gated by the breaker's backoff instead.
+function onTaskWakeSuccess(agentId, keys = []) {
+  _wakeBreaker.delete(agentId)
+  const now = Date.now()
+  for (const key of keys) _taskRenudged.set(key, { ts: now })
 }
 
 async function drainTaskWakeQueue() {
   _taskWakeDraining = true
   while (_taskWakeQueue.size > 0) {
-    const [agentId, nudgeText] = _taskWakeQueue.entries().next().value
+    const [agentId, entry] = _taskWakeQueue.entries().next().value
     _taskWakeQueue.delete(agentId)
+    const nudgeText = entry?.nudgeText || null
+    const taskKeys = entry?.keys || []
     const agent = fleetStore?.getAgent?.(agentId)
     if (!agent || agent.dead || agent.human) continue
     const daemonKeys = [...daemonConnections.keys()]
@@ -634,10 +663,11 @@ async function drainTaskWakeQueue() {
       const decision = spawnLibrarian.decideWake(agent, { ...liveness, agent_id: liveness.agent_id || agentId }, { serverAlive })
       if (decision.action === 'deliver') {
         await sendTaskWakeNudge(daemonKey, agent, agent.tmux_session, nudgeText, 'deliver')
+        onTaskWakeSuccess(agentId, taskKeys)
         continue
       }
       if (decision.action === 'queue') {
-        setTimeout(() => requestTaskWake(agentId, nudgeText), 2000).unref?.()
+        setTimeout(() => requestTaskWake(agentId, nudgeText, taskKeys), 2000).unref?.()
         continue
       }
       if (decision.action === 'hold') continue
@@ -654,8 +684,18 @@ async function drainTaskWakeQueue() {
         throw new Error(spawnResult?.error || spawnResult?.reason || 'daemon returned ok:false with no reason')
       }
       await sendTaskWakeNudge(daemonKey, agent, spawnResult?.tmux_session || agent.tmux_session, nudgeText, 'post-respawn')
+      onTaskWakeSuccess(agentId, taskKeys)
     } catch (e) {
-      console.warn(`[task-renudge] failed for ${agentId}: ${e.message}`)
+      // Record a terminal wake failure → open/extend the agent's circuit breaker
+      // (exponential backoff) so runTaskRenudgeSweep stops respawning it every
+      // 5 min (§2). Covers the `!spawnResult.ok` throw (launch-failed) and any
+      // RPC/transport error; a transient failure self-clears on the next success.
+      const b = _wakeBreaker.get(agentId) || { fails: 0 }
+      b.fails += 1
+      b.lastError = e.message
+      b.nextTs = Date.now() + wakeBreakerBackoffMs(b.fails, WAKE_BREAKER_BASE_MS, WAKE_BREAKER_CAP_MS)
+      _wakeBreaker.set(agentId, b)
+      console.warn(`[task-renudge] failed for ${agentId} (fails=${b.fails}, backoff until ${new Date(b.nextTs).toISOString()}): ${e.message}`)
       broadcastEvent('agent-wedged', {
         agentId,
         reason: `task re-nudge failed: ${e.message}`,
@@ -692,10 +732,14 @@ function runTaskRenudgeSweep() {
     now: Date.now(),
     lastRenudged: _taskRenudged,
     renudgeIntervalMs: TASK_RENUDGE_INTERVAL_MS,
+    wakeBreaker: _wakeBreaker,
   })
   for (const nudge of nudges) {
-    _taskRenudged.set(nudge.key, { ts: Date.now(), reason: nudge.reason })
-    requestTaskWake(nudge.task.agent, taskDelegateWakeText(nudge.task.description || nudge.event.text || nudge.task.id, nudge.task.agent))
+    // The renudge throttle is stamped on SUCCESSFUL wake (onTaskWakeSuccess), not
+    // here (§5) — so a failing agent's 5-min throttle never stays warm; its
+    // backoff is governed solely by the breaker. Pass the task key through so the
+    // drain can stamp it on delivery.
+    requestTaskWake(nudge.task.agent, taskDelegateWakeText(nudge.task.description || nudge.event.text || nudge.task.id, nudge.task.agent), [nudge.key])
   }
 }
 

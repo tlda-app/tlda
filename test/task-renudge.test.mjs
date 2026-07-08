@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { decideTaskRenudges } from '../server/lib/task-renudge.mjs'
+import { decideTaskRenudges, isWakeBreakerOpen, wakeBreakerBackoffMs } from '../server/lib/task-renudge.mjs'
 
 const now = Date.parse('2026-07-06T10:00:00.000Z')
 
@@ -114,4 +114,37 @@ test('includes hibernating agents so requestWake can respawn them', () => {
 
   assert.equal(nudges.length, 1)
   assert.equal(nudges[0].reason, 'hibernating-unread-task')
+})
+
+test('wake breaker gates an agent whose breaker is open', () => {
+  const wakeBreaker = new Map([['fleet:agent-1', { fails: 2, nextTs: now + 10 * 60_000 }]])
+  const nudges = decideTaskRenudges({ taskStates: [state()], agents: [agent()], now, wakeBreaker })
+  assert.equal(nudges.length, 0)
+})
+
+test('wake breaker reopens once nextTs has passed', () => {
+  const wakeBreaker = new Map([['fleet:agent-1', { fails: 2, nextTs: now - 1 }]])
+  const nudges = decideTaskRenudges({ taskStates: [state()], agents: [agent()], now, wakeBreaker })
+  assert.equal(nudges.length, 1)
+})
+
+test('a breaker on a different agent does not gate this one', () => {
+  const wakeBreaker = new Map([['fleet:other', { fails: 3, nextTs: now + 60 * 60_000 }]])
+  const nudges = decideTaskRenudges({ taskStates: [state()], agents: [agent()], now, wakeBreaker })
+  assert.equal(nudges.length, 1)
+})
+
+test('isWakeBreakerOpen: open only while nextTs is in the future', () => {
+  const m = new Map([['a', { nextTs: now + 1000 }], ['b', { nextTs: now - 1000 }]])
+  assert.equal(isWakeBreakerOpen(m, 'a', now), true)
+  assert.equal(isWakeBreakerOpen(m, 'b', now), false)
+  assert.equal(isWakeBreakerOpen(m, 'missing', now), false)
+  assert.equal(isWakeBreakerOpen(null, 'a', now), false)
+})
+
+test('wakeBreakerBackoffMs: exponential with cap (5→10→20→40→80→120→120 min)', () => {
+  const base = 5 * 60_000
+  const cap = 120 * 60_000
+  const mins = [1, 2, 3, 4, 5, 6, 7].map(f => wakeBreakerBackoffMs(f, base, cap) / 60_000)
+  assert.deepEqual(mins, [5, 10, 20, 40, 80, 120, 120])
 })
