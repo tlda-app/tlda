@@ -3490,9 +3490,6 @@ server.on('upgrade', async (req, socket, head) => {
         const { pane } = await sendRpc(agentDaemonAddress(agent), 'capture-pane', {
           tmux_session: agent.tmux_session, visible: true,
         })
-        // Diagnostic: record the seed outcome so an empty/stale capture (the
-        // "blank" symptom) leaves a trace instead of silently sending nothing.
-        console.warn(`[term-seed] agent=${agent.id} session=${agent.tmux_session} machine=${agent.machine_id} isFirst=${isFirst} paneLen=${pane ? pane.length : 0} empty=${!pane}`)
         if (pane && ws.readyState === 1) {
           // capture-pane emits bare `\n` line endings; xterm has no convertEol,
           // so `\n` is a line-feed WITHOUT carriage-return → every line renders
@@ -3506,6 +3503,11 @@ server.on('upgrade', async (req, socket, head) => {
         }
       } catch (e) {
         console.warn(`[terminal] seed capture failed for ${agent.id} (${agent.tmux_session}): ${e.message}`)
+        if (ws.readyState === 1) {
+          ws.send(JSON.stringify({ type: 'not-live', reason: 'terminal session not live' }), (sendError) => {
+            if (sendError) console.warn(`[terminal] failed to send not-live frame for ${agent.id}: ${sendError.message}`)
+          })
+        }
       }
 
       ws.on('message', async (raw) => {
