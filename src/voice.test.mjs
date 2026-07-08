@@ -786,11 +786,56 @@ function reset() {
 
   window.__voiceTest.injectTranscript('shows up again', false)
   window.__voiceTest.injectTranscript('shows up again', true)
-  assert.equal(ta.value, 'shows up again shows up again', 'same words after fresh interim should still be allowed')
+  assert.equal(ta.value, 'shows up again', 'same words after fresh interim should still be dropped in the same utterance')
+
+  window.__voiceTest.injectTranscript('second phrase', false)
+  window.__voiceTest.injectTranscript('second phrase', true)
+  assert.equal(ta.value, 'shows up again second phrase', 'different fresh interim should still be accepted without an utterance_end')
 
   window.__voiceTest.fakeStop()
   reset()
-  console.log('✓ Test 8e: Deepgram duplicate stale final is dropped')
+  console.log('✓ Test 8e: Deepgram duplicate stale final/interim is dropped')
+}
+
+// ---- Test 8f: Deepgram utterance boundary permits repeated text later ----
+{
+  const ta = makeTextarea()
+  setVoiceTarget(ta, [], {})
+  window.__voiceTest.fakeRecord(ta)
+
+  window.__voiceTest.injectTranscript('repeatable phrase', false)
+  window.__voiceTest.injectTranscript('repeatable phrase', true)
+  assert.equal(ta.value, 'repeatable phrase', 'first utterance should commit text')
+
+  window.__voiceTest.injectDeepgramMessage({ type: 'utterance_end' })
+  window.__voiceTest.injectDeepgramMessage({ type: 'speech_started' })
+  window.__voiceTest.injectTranscript('repeatable phrase', false)
+  window.__voiceTest.injectTranscript('repeatable phrase', true)
+  assert.equal(ta.value, 'repeatable phrase repeatable phrase', 'same text should be allowed again after an utterance boundary')
+
+  window.__voiceTest.fakeStop()
+  reset()
+  console.log('✓ Test 8f: Deepgram utterance boundary permits repeated text later')
+}
+
+// ---- Test 8g: Deepgram genuine repeated words survive the echo guard ----
+{
+  const ta = makeTextarea()
+  setVoiceTarget(ta, [], {})
+  window.__voiceTest.fakeRecord(ta)
+
+  window.__voiceTest.injectTranscript('no', false)
+  window.__voiceTest.injectTranscript('no', true)
+  assert.equal(ta.value, 'no', 'first repeated word should commit text')
+
+  tick(1300)
+  window.__voiceTest.injectTranscript('no', false)
+  window.__voiceTest.injectTranscript('no', true)
+  assert.equal(ta.value, 'no no', 'same word after the echo window should be kept as genuine repeated speech')
+
+  window.__voiceTest.fakeStop()
+  reset()
+  console.log('✓ Test 8g: Deepgram genuine repeated words survive the echo guard')
 }
 
 await setBackend('chrome')

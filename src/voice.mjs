@@ -1561,6 +1561,8 @@ let _dgTrickleDelay = 40         // ms between words (adjusted per burst)
 let _dgIgnoreUntilUtteranceEnd = false // true after voice-send; drops trailing old-utterance results
 let _dgIgnoredSubmittedText = null // normalized utterance submitted before waiting for utterance_end
 let _dgLastFinalNorm = ''        // last committed final; used to drop duplicate stale finals
+let _dgLastFinalAt = 0           // timestamp for same-final echo suppression
+const DEEPGRAM_REPEAT_ECHO_WINDOW_MS = 1200
 
 function _dgTrickleFlush() {
   clearTimeout(_dgTrickleTimer)
@@ -1583,6 +1585,7 @@ function resetDeepgramTextState({ ignoreUntilUtteranceEnd = false, submittedText
     _dgIgnoredSubmittedText = ignoreUntilUtteranceEnd ? normalizeDeepgramText(submittedText) : null
   }
   if (!preserveLastFinal) _dgLastFinalNorm = ''
+  if (!preserveLastFinal) _dgLastFinalAt = 0
   _dgTrickleFlush()
   _dgTrickleWords = []
   _dgTrickleShown = 0
@@ -1709,6 +1712,8 @@ function onDeepgramMessage(event) {
     if (msg.type === 'speech_started') {
       _lastResultTime = Date.now()
       dotAudioFlowing()
+      _dgLastFinalNorm = ''
+      _dgLastFinalAt = 0
       vlog('speech started')
       return
     }
@@ -1716,6 +1721,8 @@ function onDeepgramMessage(event) {
     if (msg.type === 'utterance_end') {
       _dgIgnoreUntilUtteranceEnd = false
       _dgIgnoredSubmittedText = null
+      _dgLastFinalNorm = ''
+      _dgLastFinalAt = 0
       if (_deepgramInterim || _interim) {
         resetDeepgramTextState()
         _interim = ''
@@ -1767,10 +1774,17 @@ function onDeepgramMessage(event) {
       }
       _left += (_left.length && !_left.endsWith(' ') ? ' ' : '') + processed
       _dgLastFinalNorm = normalizedFinal
+      _dgLastFinalAt = Date.now()
       resetDeepgramTextState({ preserveLastFinal: true })
       _interim = ''
     } else {
       // Interim — trickle new words in one at a time, smoothed
+      const normalizedInterim = normalizeDeepgramText(postProcessTranscript(text))
+      const sinceLastFinal = _dgLastFinalAt ? Date.now() - _dgLastFinalAt : Infinity
+      if (normalizedInterim && normalizedInterim === _dgLastFinalNorm && sinceLastFinal <= DEEPGRAM_REPEAT_ECHO_WINDOW_MS) {
+        vlog('DROPPED transcript (duplicate interim)', { text: text.slice(0, 30), sinceLastFinal })
+        return
+      }
       _deepgramInterim = text
       _dgHasSeenInterim = true   // saw an interim → finals for this utterance are valid
       _dgLastFinalNorm = ''
@@ -2118,6 +2132,7 @@ if (typeof window !== 'undefined') {
     chromeLiveness: (resultAgo, hasActiveSession, editStopped, deadTimeoutMs) => chromeLiveness(resultAgo, hasActiveSession, editStopped, deadTimeoutMs),
     whisperLiveness: (messageAgo, wsReadyState, connected, timeoutMs) => whisperLiveness(messageAgo, wsReadyState, connected, timeoutMs),
     serviceUnavailableMessage: (isIOS) => serviceUnavailableMessage(isIOS),
+    injectDeepgramMessage: (message) => onDeepgramMessage({ data: JSON.stringify(message) }),
     dotAudioStale: () => dotAudioStale(),
     getHealthLabel: () => _voiceHealthLabel,
     getLastChromeMissingnessMarker: () => _lastChromeMissingnessMarker,
