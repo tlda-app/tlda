@@ -391,6 +391,7 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
   const pinnedRef = useRef(pinned)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const [status, setStatus] = useState<'connecting' | 'connected' | 'error'>('connecting')
+  const [notLive, setNotLive] = useState(false)
   const [height, setHeight] = useState(210)
   const [lightboxed, setLightboxed] = useState(false)
   const [scale, setScale] = useState(1)
@@ -561,17 +562,7 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
     wsRef.current?.close()
     termRef.current?.clear()
     setStatus('connecting')
-    // Terminal-data delivery instrumentation (diagnostic — see `term-hover` in
-    // client.log). Records whether seed/stream data actually arrives per hover,
-    // to catch the intermittent absent/blank CONTENT (the UI renders fine).
-    // Remove once the mechanism is fixed.
-    log.info('term-hover', 'connect', { agent: agentId })
-    let sawOutput = false
-    let sawSizeMsg = false
-    let sawErrorMsg = false
-    const noSeedTimer = setTimeout(() => {
-      if (!sawOutput) log.warn('term-hover', 'no-data-2s', { agent: agentId, sawSize: sawSizeMsg, sawError: sawErrorMsg })
-    }, 2000)
+    setNotLive(false)
     let sawAuthoritativeSize = false
     let fallbackFlushed = false
     let fallbackTimer: ReturnType<typeof setTimeout> | null = null
@@ -603,19 +594,11 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
     wsRef.current = ws
     ws.onopen = () => {
       setStatus('connected')
-      log.info('term-hover', 'ws-open', { agent: agentId })
     }
     ws.onmessage = (evt) => {
       try {
         const msg = JSON.parse(evt.data)
-        if (msg.type === 'output' && msg.data && !sawOutput) {
-          sawOutput = true
-          clearTimeout(noSeedTimer)
-          const bytes = msg.encoding === 'base64' ? atob(msg.data).length : (msg.data?.length || 0)
-          log.info('term-hover', 'output-first', { agent: agentId, bytes, empty: bytes === 0 })
-        }
         if (msg.type === 'size' && msg.cols && msg.rows) {
-          sawSizeMsg = true
           // The daemon reports the agent's real tmux window size. Resize the live
           // grid to match so the absolute-positioned stream renders cleanly; the
           // scale effect then re-fits it to the panel width.
@@ -635,6 +618,7 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
             }
           } catch { void 0 }
         } else if (msg.type === 'output' && msg.data && termRef.current) {
+          setNotLive(false)
           if (sawAuthoritativeSize) {
             writeOutput(msg)
           } else {
@@ -642,17 +626,17 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
             if (fallbackFlushed) writeOutput(msg)
           }
         } else if (msg.type === 'error') {
-          sawErrorMsg = true
+          setNotLive(true)
           setStatus('error')
-          log.warn('term-hover', 'error-frame', { agent: agentId, message: msg.message })
+        } else if (msg.type === 'not-live') {
+          setNotLive(true)
         }
       } catch {}
     }
-    ws.onerror = () => { setStatus('error'); log.warn('term-hover', 'ws-error', { agent: agentId }) }
+    ws.onerror = () => setStatus('error')
     ws.onclose = () => {}
     return () => {
       if (fallbackTimer) clearTimeout(fallbackTimer)
-      clearTimeout(noSeedTimer)
       ws.close()
     }
   }, [agentId])
@@ -786,6 +770,9 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
         {lightboxed && historyText && (
           <div ref={historyContainerRef} className="fleet-terminal-hover-history" />
         )}
+        {notLive && (
+          <div className="fleet-terminal-hover-notlive">terminal not live</div>
+        )}
         {/* Live scaled screen for the hover/pinned peek. In the lightbox we show
             the single continuous capture instead (history + current screen as one
             block), so the live wrapper is hidden once the capture has loaded —
@@ -793,7 +780,8 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
         <div
           className="fleet-terminal-hover-scale"
           style={
-            lightboxed && historyText ? { display: 'none' }
+            notLive ? { display: 'none' }
+            : lightboxed && historyText ? { display: 'none' }
             : lightboxed ? { transform: `scale(${scale})`, transformOrigin: 'top left' }
             : { transform: `scale(${scale})`, transformOrigin: 'bottom left', position: 'absolute', left: 0, bottom: 0 }
           }
@@ -4551,7 +4539,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   }, [agentRouteName])
 
   const isTerminalReadyAgent = useCallback((agent: any) => {
-    return !!agent?.tmux_session && !agent?.dead && !agent?.hibernating && agent?.status !== 'hibernating'
+    return !!agent && agent.dead !== true
   }, [])
 
   const terminalHoverAgents = useMemo(() => {
