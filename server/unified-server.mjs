@@ -1251,7 +1251,7 @@ async function performSpawnRelay(caller, msg) {
     ? spawnLibrarian.awaitRegister({ id: pendingAgentId, name: spawnName, spec: requestedSpec })
     : null
   const spawnRequest = {
-    agent_id: pendingAgentId || undefined,
+    agent_id: targetAgentId,
     friendly_name: pendingAgentId ? spawnName : undefined,
     pretty_name: pendingAgentId ? prettyNameForFriendlyName(spawnName) : undefined,
     name: resolved.name || undefined,
