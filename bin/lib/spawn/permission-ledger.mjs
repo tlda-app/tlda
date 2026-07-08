@@ -386,22 +386,36 @@ function projectForAgent(agent, projects = []) {
   return projects.find(project => project?.sourceDir && pathInside(cwd, project.sourceDir)) || null
 }
 
-function fleetAgentsForGrandfatherInfill(fleetDbPath) {
-  if (!fs.existsSync(fleetDbPath)) return []
-  const db = new Database(fleetDbPath, { readonly: true })
-  try {
-    return db.prepare(`
-      SELECT id, friendly_name, cwd, metadata, machine_id
-      FROM agents
-      WHERE dead = 0 AND human = 0
-      ORDER BY id
-    `).all().map(row => ({
-      ...row,
-      metadata: parseJsonField(row.metadata, {}),
+// Grant-eligible agents from an in-memory roster (the authoritative `msg.agents`
+// the daemon receives). Never grant dead or human seats. This replaces the old
+// local-`fleet.db` read, which was stale/incomplete (missed live agents that had
+// never been written to the local db) — the roster is the complete source.
+function normalizeGrandfatherAgents(agents = []) {
+  if (!Array.isArray(agents)) return []
+  return agents
+    .filter(agent => agent && typeof agent === 'object')
+    .filter(agent => !agent.dead && !agent.human)
+    .map(agent => ({
+      ...agent,
+      metadata: typeof agent.metadata === 'string' ? parseJsonField(agent.metadata, {}) : (agent.metadata || {}),
     }))
-  } finally {
-    db.close()
-  }
+}
+
+// The fleet-standard grandfather grant: full spawn policy bounded to the agent's
+// project/cwd region. This is the same derivation the ledger has always used for
+// non-spawn-tracked seats — reused verbatim, no new grant shape.
+export function resolveGrandfatherGrant(agent, { config = {}, projects = [] } = {}) {
+  const project = projectForAgent(agent, projects)
+  const metadata = agent.metadata || {}
+  return resolveSpawnGrant({
+    spawnerPolicy: 'full',
+    spawnerPermissionSet: allPermissionSet('grandfather-root-bound'),
+    model: metadata.model || undefined,
+    kind: metadata.kind || undefined,
+    config,
+    project,
+    cwd: agent.cwd || undefined,
+  })
 }
 
 export class PermissionLedger {
@@ -728,28 +742,22 @@ export function applyDaemonGrants(ledger, daemonConfig = {}) {
   return { written }
 }
 
-export function applyGrandfatherInfill(ledger, { fleetDbPath, config = {}, projects = [] } = {}) {
-  if (!fleetDbPath) return { considered: 0, written: 0, skippedExisting: 0 }
-  const agents = fleetAgentsForGrandfatherInfill(fleetDbPath)
+// Fill a missing permission-ledger grant for every eligible agent in `agents`
+// (the authoritative roster). FILL-NULL-ONLY: writes only when `ledger.get(id)`
+// is null — never overwrites or broadens an existing grant, so narrower
+// spawn-derived grants are preserved and it is safe to run on every roster
+// change. Idempotent: a second pass over the same roster is a no-op.
+export function applyGrandfatherInfill(ledger, { agents = [], config = {}, projects = [] } = {}) {
+  const eligible = normalizeGrandfatherAgents(agents)
   let written = 0
   let skippedExisting = 0
-  for (const agent of agents) {
+  for (const agent of eligible) {
     if (!agent.id) continue
     if (ledger.get(agent.id)) {
       skippedExisting++
       continue
     }
-    const project = projectForAgent(agent, projects)
-    const metadata = agent.metadata || {}
-    const grant = resolveSpawnGrant({
-      spawnerPolicy: 'full',
-      spawnerPermissionSet: allPermissionSet('grandfather-root-bound'),
-      model: metadata.model || undefined,
-      kind: metadata.kind || undefined,
-      config,
-      project,
-      cwd: agent.cwd || undefined,
-    })
+    const grant = resolveGrandfatherGrant(agent, { config, projects })
     ledger.setSync(agent.id, {
       spawnPolicy: grant.grantedPolicy,
       permissionSet: grant.grantedPermissionSet,
@@ -757,7 +765,7 @@ export function applyGrandfatherInfill(ledger, { fleetDbPath, config = {}, proje
     })
     written++
   }
-  return { considered: agents.length, written, skippedExisting }
+  return { considered: eligible.length, written, skippedExisting }
 }
 
 export function defaultPermissionLedgerPath(configDir = path.join(os.homedir(), '.config', 'tlda')) {

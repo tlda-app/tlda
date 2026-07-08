@@ -139,7 +139,6 @@ const CURSORS_FILE = path.join(CONFIG_DIR, 'daemon-cursors.json')
 const SESSION_IDENTITY_FILE = sessionIdentityPath(CONFIG_DIR)
 const PID_FILE = path.join(CONFIG_DIR, 'fleet-daemon.pid')
 const SOURCE_BINDINGS_FILE = path.join(CONFIG_DIR, 'source-bindings.json')
-const FLEET_DB_FILE = path.join(CONFIG_DIR, 'fleet.db')
 const DAEMON_CONFIG_FILE = defaultDaemonConfigPath(CONFIG_DIR)
 const daemonSpawnConfig = readDaemonConfig(DAEMON_CONFIG_FILE)
 const PERMISSION_LEDGER_FILE = permissionLedgerPathFromDaemonConfig(daemonSpawnConfig, CONFIG_DIR)
@@ -1543,11 +1542,30 @@ function sessionWatcherRosterSignature(agentList) {
     .join('\n')
 }
 
+// grant-on-mint: ensure every agent THIS daemon hosts has a permission-ledger
+// grant (fill-null-only), from the authoritative in-memory roster. Machine-scoped
+// (`machine_id === MACHINE_ID`) so we never grant off-machine seats; dead/human are
+// filtered inside applyGrandfatherInfill. Runs at welcome and on every hosted-roster
+// change (debounced by the roster signature below), so a newly-registered agent is
+// wakeable the moment the daemon sees it — no separate register hook, no infill lag.
+function grantOnMintInfill(reason) {
+  try {
+    const hosted = agents.filter(a => a && a.machine_id === MACHINE_ID)
+    const r = applyGrandfatherInfill(permissionLedger, { agents: hosted, config, projects })
+    if (r.written) log.info(`grant-on-mint (${reason}): granted ${r.written} previously-ungranted seat(s) (${r.skippedExisting} already granted)`)
+  } catch (e) {
+    log.error(`grant-on-mint infill failed (${reason}): ${e.stack || e.message}`)
+  }
+}
+
 function syncSessionWatchersIfRosterChanged(reason) {
   const sig = sessionWatcherRosterSignature(agents)
   if (sig === _lastSessionWatcherRosterSig) return
   _lastSessionWatcherRosterSig = sig
   log.info(`session watcher roster changed (${reason}); syncing live session tails`)
+  // A roster change is exactly when a newly-registered agent first appears, so this
+  // is the grant-on-mint moment for the agents-updated path (debounced by the sig check).
+  grantOnMintInfill(reason)
   void syncSessionWatchers(agents).catch(e => log.error(`syncSessionWatchers failed: ${e.stack || e.message}`))
 }
 
@@ -4736,7 +4754,7 @@ function handleServerMessage(msg) {
     projects = msg.projects || []
     syncSessionIdentityNamesFromAgents(agents)
     applyDaemonGrants(permissionLedger, daemonSpawnConfig)
-    applyGrandfatherInfill(permissionLedger, { fleetDbPath: FLEET_DB_FILE, config, projects })
+    grantOnMintInfill('daemon-welcome')
     log.info(`welcome: ${agents.length} agents, ${projects.length} projects`)
     const replay = replayDeadLetters(DEAD_LETTER_FILE, message => _rws?.send(message), { log })
     if (replay.replayed || replay.remaining || replay.malformed) {

@@ -27,44 +27,6 @@ function tempConfigDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-daemon-config-'))
 }
 
-function writeFleetDb(file, agents) {
-  const db = new Database(file)
-  db.exec(`
-    CREATE TABLE agents (
-      id TEXT PRIMARY KEY,
-      friendly_name TEXT,
-      tmux_session TEXT,
-      session_id TEXT,
-      session_ids TEXT,
-      cwd TEXT,
-      labels TEXT,
-      registered_at TEXT,
-      last_seen TEXT,
-      dead INTEGER DEFAULT 0,
-      human INTEGER DEFAULT 0,
-      is_manager INTEGER DEFAULT 0,
-      metadata TEXT,
-      machine_id TEXT
-    );
-  `)
-  const insert = db.prepare(`
-    INSERT INTO agents (id, friendly_name, cwd, dead, human, metadata, machine_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `)
-  for (const agent of agents) {
-    insert.run(
-      agent.id,
-      agent.friendly_name || null,
-      agent.cwd || null,
-      agent.dead || 0,
-      agent.human || 0,
-      agent.metadata ? JSON.stringify(agent.metadata) : null,
-      agent.machine_id || 'mini',
-    )
-  }
-  db.close()
-}
-
 describe('daemon permission ledger', () => {
   it('refuses unknown agents without writing a row', async () => {
     const file = tempLedger()
@@ -242,40 +204,28 @@ describe('daemon permission ledger', () => {
     await reopened.close()
   })
 
-  it('grandfathers alive non-human fleet.db agents with project-default intersect model-cap grants', async () => {
+  it('grandfathers alive non-human roster agents (fill-null-only) with project-default intersect model-cap grants', async () => {
     const dir = tempConfigDir()
     const ledgerPath = path.join(dir, 'fleet-daemon.db')
-    const fleetDbPath = path.join(dir, 'fleet.db')
-    writeFleetDb(fleetDbPath, [
+    // grant-on-mint reads the authoritative in-memory roster, not local fleet.db.
+    const agents = [
       {
         id: 'fleet:9b21164e',
         friendly_name: 'browser-lock-infra',
         cwd: '/Users/skip/work/tlda',
         metadata: { model: 'claude-sonnet-4-6', kind: 'claude' },
       },
-      {
-        id: 'fleet:dead',
-        cwd: '/Users/skip/work/tlda',
-        dead: 1,
-        metadata: { model: 'gpt-5.5', kind: 'codex' },
-      },
-      {
-        id: 'fleet:human',
-        cwd: '/Users/skip/work/tlda',
-        human: 1,
-        metadata: { model: 'gpt-5.5', kind: 'codex' },
-      },
-    ])
+      { id: 'fleet:dead', cwd: '/Users/skip/work/tlda', dead: 1, metadata: { model: 'gpt-5.5', kind: 'codex' } },
+      { id: 'fleet:human', cwd: '/Users/skip/work/tlda', human: 1, metadata: { model: 'gpt-5.5', kind: 'codex' } },
+    ]
+    const projects = [{ name: 'tlda', sourceDir: '/Users/skip/work/tlda' }]
 
     const ledger = createPermissionLedger(ledgerPath)
-    const result = applyGrandfatherInfill(ledger, {
-      fleetDbPath,
-      config: {},
-      projects: [{ name: 'tlda', sourceDir: '/Users/skip/work/tlda' }],
-    })
+    const result = applyGrandfatherInfill(ledger, { agents, config: {}, projects })
+    // dead + human filtered out; only the one live non-human seat granted.
     assert.deepEqual(result, { considered: 1, written: 1, skippedExisting: 0 })
     const grant = ledger.grantFor({ id: 'fleet:9b21164e' })
-    assert.equal(grant.spawnPolicy.permission, 'write')
+    // Grandfather grant = a cwd-scoped region grant (write access to the agent's project).
     assert.equal(grant.spawnPolicy.policy, 'cwd')
     assert.equal(grant.source, 'grandfather:fleet-db-cutover')
     assert.deepEqual(grant.permissionSet.operations.write.allow, ['/Users/skip/work/tlda/**'])
@@ -284,8 +234,41 @@ describe('daemon permission ledger', () => {
       (err) => err.code === 'SPAWN_PERMISSION_NO_LEDGER_ENTRY',
     )
 
-    const again = applyGrandfatherInfill(ledger, { fleetDbPath, config: {} })
+    // Idempotency: a second pass over the same roster is a no-op.
+    const again = applyGrandfatherInfill(ledger, { agents, config: {}, projects })
     assert.deepEqual(again, { considered: 1, written: 0, skippedExisting: 1 })
+    await ledger.close()
+  })
+
+  it('grant-on-mint infill never overwrites or broadens an existing (spawn-derived) grant', async () => {
+    const dir = tempConfigDir()
+    const ledger = createPermissionLedger(path.join(dir, 'fleet-daemon.db'))
+    const projects = [{ name: 'tlda', sourceDir: '/Users/skip/work/tlda' }]
+    // Pre-seed a NARROWER, spawn-derived grant — the kind rpcSpawn writes at :3285/:3354.
+    const narrow = resolveSpawnGrant({
+      spawnerPolicy: 'read',
+      requestedPermission: 'read',
+      cwd: '/Users/skip/work/tlda',
+      config: {},
+      project: projects[0],
+    })
+    ledger.setSync('fleet:spawned', {
+      spawnPolicy: narrow.grantedPolicy,
+      permissionSet: narrow.grantedPermissionSet,
+      source: 'spawn',
+    })
+    const before = ledger.get('fleet:spawned')
+
+    const result = applyGrandfatherInfill(ledger, {
+      agents: [{ id: 'fleet:spawned', cwd: '/Users/skip/work/tlda', metadata: { model: 'gpt-5.5', kind: 'codex' } }],
+      config: {},
+      projects,
+    })
+    // Existing grant → skipped, not rewritten.
+    assert.deepEqual(result, { considered: 1, written: 0, skippedExisting: 1 })
+    const after = ledger.get('fleet:spawned')
+    assert.equal(after.source, 'spawn')                     // NOT rewritten to the grandfather source
+    assert.deepEqual(after.spawnPolicy, before.spawnPolicy) // NOT broadened
     await ledger.close()
   })
 
