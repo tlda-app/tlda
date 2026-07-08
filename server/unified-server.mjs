@@ -74,6 +74,7 @@ import { trimTerminalSeedBlankRows } from '../shared/terminal-seed.mjs'
 import { daemonSingletonLockPath, inspectSingletonLock } from '../bin/lib/singleton-lock.mjs'
 import { partialSkillReadSummaries, recordPartialSkillReads } from '../shared/partial-skill-reads.mjs'
 import { daemonAddress, describeAgentAddress } from '../shared/agent-move-target.mjs'
+import { readBuildInfo } from './lib/build-info.mjs'
 import {
   DELIVERY_CHANNELS,
   INBOX_STATUSES,
@@ -1765,6 +1766,21 @@ app.use((req, res, next) => {
 // Health
 app.get('/health', (req, res) => {
   res.json({ ok: true, uptime: process.uptime(), pid: process.pid })
+})
+
+app.get('/api/build-info', (_req, res) => {
+  const result = readBuildInfo(join(__dirname, 'build-info.json'))
+  if (!result.ok) {
+    res.status(result.status).json({
+      ok: false,
+      error: result.error,
+    })
+    return
+  }
+  res.json({
+    ok: true,
+    ...result.buildInfo,
+  })
 })
 
 // Kill playwright Chromium processes that may be poisoning Chrome's speech service.
