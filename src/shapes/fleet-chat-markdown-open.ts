@@ -75,6 +75,9 @@ export function openChatMarkdownColumn(options: MarkdownColumnOptions) {
 
   void createTemporaryMarkdownColumn(mainEditor, anchor, title, markdown || title, {
     sourceChatShapeId: sourceShapeId,
+    // CLICK path: render through the REAL main-document path (built project served
+    // at /docs/..), not the data:text/html lookalike. Drag-drop stays on the data-URL.
+    realRender: true,
     wmManagedSurfaceProofFixture: isManagedSurfaceProofFixtureEnabled(),
   }).then((result) => {
     if (!result?.bounds) return
