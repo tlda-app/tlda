@@ -795,6 +795,42 @@ html[data-theme="dark"] .toc-drop-hint {
   margin-right: 3px;
 }
 
+.toc-row-center {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  margin-right: 3px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 9px;
+  line-height: 1;
+  opacity: 0.12;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.toc-item:hover .toc-row-center,
+.toc-row-center:hover,
+.toc-row-center:focus-visible {
+  opacity: 0.5;
+}
+
+.toc-title {
+  min-width: 0;
+}
+
+@media (pointer: coarse) {
+  .toc-row-center {
+    width: 22px;
+    height: 22px;
+    margin-right: 5px;
+    font-size: 12px;
+  }
+}
+
 /* Live session link (shown in static/read-only mode) */
 .toc-live-link {
   display: block;
@@ -1625,11 +1661,6 @@ html[data-theme="dark"] .history-compare-btn.active {
   pointer-events: all;
 }
 
-.toc-center-link {
-  gap: 2px;
-  flex: 0 0 auto;
-}
-
 .toc-live-glyph {
   justify-content: center;
   width: 22px;
@@ -2009,6 +2040,13 @@ body.touch-toc-mode:not(.phone-mode) .phone-toc-modal {
 .phone-toc-modal .toc-item {
   padding: 8px 12px;
   color: rgba(0, 0, 0, 0.4);
+}
+
+.phone-toc-modal .toc-row-center {
+  width: 22px;
+  height: 22px;
+  margin-right: 5px;
+  opacity: 0.25;
 }
 
 .phone-toc-modal .toc-item.section {

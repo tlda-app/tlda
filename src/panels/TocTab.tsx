@@ -150,19 +150,13 @@ export function TocTab() {
     editor.centerOnPoint({ x: vp.x + vp.w / 2, y: pos.y }, { animation: { duration: 300 } })
   }, [editor, doc])
 
-  const handleCenterHorizontally = useCallback(() => {
-    if (!doc || doc.pages.length === 0) return
-    const vp = editor.getViewportPageBounds()
-    const vpCenterY = vp.y + vp.h / 2
-    // Find which page the viewport center is in
-    let pageCenterX = doc.pages[0].bounds.x + doc.pages[0].bounds.width / 2
-    for (const page of doc.pages) {
-      if (vpCenterY >= page.bounds.y && vpCenterY <= page.bounds.y + page.bounds.height) {
-        pageCenterX = page.bounds.x + page.bounds.width / 2
-        break
-      }
-    }
-    editor.centerOnPoint({ x: pageCenterX, y: vpCenterY }, { animation: { duration: 300 } })
+  const handleCenterEntry = useCallback((entry: LookupEntry) => {
+    if (!doc) return
+    const pos = pdfToCanvas(entry.page, entry.x, entry.y, doc.pages)
+    if (!pos) return
+    const page = doc.pages[entry.page - 1]
+    const pageCenterX = page ? page.bounds.x + page.bounds.width / 2 : pos.x
+    editor.centerOnPoint({ x: pageCenterX, y: pos.y }, { animation: { duration: 300 } })
   }, [editor, doc])
 
   const handleHtmlNav = useCallback((pageNum: number, anchor?: string, targetFile?: string) => {
@@ -427,9 +421,20 @@ export function TocTab() {
   const liveUrl = getLiveUrl()
 
   // Unified render for both TeX and HTML TOC entries
-  let items: Array<{ level: TocLevel; title: string; nav: () => void; targetFile?: string }> = useHtml
-    ? tocItems!.map(h => ({ level: h.level, title: h.title, nav: () => handleHtmlNav(h.page, h.anchor, h.targetFile), targetFile: h.targetFile }))
-    : headings.map(h => ({ level: h.level, title: renderTocTitle(h.title), nav: () => handleNav(h.entry) }))
+  let items: Array<{ level: TocLevel; title: string; nav: () => void; center: () => void; targetFile?: string }> = useHtml
+    ? tocItems!.map(h => ({
+        level: h.level,
+        title: h.title,
+        nav: () => handleHtmlNav(h.page, h.anchor, h.targetFile),
+        center: () => handleHtmlNav(h.page, h.anchor, h.targetFile),
+        targetFile: h.targetFile,
+      }))
+    : headings.map(h => ({
+        level: h.level,
+        title: renderTocTitle(h.title),
+        nav: () => handleNav(h.entry),
+        center: () => handleCenterEntry(h.entry),
+      }))
 
   // Book: if no TOC from active member, show book members as chapters
   if (items.length === 0 && book) {
@@ -437,6 +442,7 @@ export function TocTab() {
       level: 'chapter' as TocLevel,
       title: m.name || m.key,
       nav: () => book.switchTo(i),
+      center: () => book.switchTo(i),
       targetFile: m.key,
     }))
   }
@@ -447,7 +453,21 @@ export function TocTab() {
   let currentSectionIdx = -1
   let currentSubsectionIdx = -1
 
-  function renderFoldableItem(i: number, h: { level: TocLevel; title: string; nav: () => void; targetFile?: string }, nextLevel: TocLevel | TocLevel[]) {
+  function renderCenterButton(h: { title: string; center: () => void }) {
+    return (
+      <button
+        className="toc-row-center"
+        type="button"
+        onClick={() => { h.center() }}
+        title="Center this heading"
+        aria-label="Center this heading"
+      >
+        <span aria-hidden="true">{'\u2299'}</span>
+      </button>
+    )
+  }
+
+  function renderFoldableItem(i: number, h: { level: TocLevel; title: string; nav: () => void; center: () => void; targetFile?: string }, nextLevel: TocLevel | TocLevel[]) {
     const isCollapsed = collapsed?.has(i) ?? false
     const next = items[i + 1]
     const childLevels = Array.isArray(nextLevel) ? nextLevel : [nextLevel]
@@ -463,7 +483,8 @@ export function TocTab() {
         ) : (
           <span className="toc-fold-spacer" />
         )}
-        <span onClick={h.nav} dangerouslySetInnerHTML={{ __html: h.title }} />
+        {renderCenterButton(h)}
+        <span className="toc-title" onClick={h.nav} dangerouslySetInnerHTML={{ __html: h.title }} />
         {isHot && <span className="book-tab-hot-dot" title="Active session" />}
       </div>
     )
@@ -565,8 +586,11 @@ export function TocTab() {
         }
         if (currentSubsectionIdx >= 0 && collapsed?.has(currentSubsectionIdx)) return null
         return (
-          <div key={i} className="toc-item subsubsection" onClick={h.nav}
-            dangerouslySetInnerHTML={{ __html: h.title }} />
+          <div key={i} className="toc-item subsubsection">
+            <span className="toc-fold-spacer" />
+            {renderCenterButton(h)}
+            <span className="toc-title" onClick={h.nav} dangerouslySetInnerHTML={{ __html: h.title }} />
+          </div>
         )
       })}
       {tocDragOver && book && (
@@ -584,9 +608,6 @@ export function TocTab() {
         </div>
       )}
       <div className="toc-bottom-controls">
-        <button className="toc-diff-hint toc-center-link" type="button" onClick={handleCenterHorizontally} title="Center the paper horizontally">
-          <span className="toc-toggle-icon">{'\u2299'}</span> Center
-        </button>
         <CameraLinkToggle />
         <JoinVoiceVideoToggle />
       </div>
