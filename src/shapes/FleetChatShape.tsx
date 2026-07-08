@@ -561,6 +561,17 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
     wsRef.current?.close()
     termRef.current?.clear()
     setStatus('connecting')
+    // Terminal-data delivery instrumentation (diagnostic — see `term-hover` in
+    // client.log). Records whether seed/stream data actually arrives per hover,
+    // to catch the intermittent absent/blank CONTENT (the UI renders fine).
+    // Remove once the mechanism is fixed.
+    log.info('term-hover', 'connect', { agent: agentId })
+    let sawOutput = false
+    let sawSizeMsg = false
+    let sawErrorMsg = false
+    const noSeedTimer = setTimeout(() => {
+      if (!sawOutput) log.warn('term-hover', 'no-data-2s', { agent: agentId, sawSize: sawSizeMsg, sawError: sawErrorMsg })
+    }, 2000)
     let sawAuthoritativeSize = false
     let fallbackFlushed = false
     let fallbackTimer: ReturnType<typeof setTimeout> | null = null
@@ -592,11 +603,19 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
     wsRef.current = ws
     ws.onopen = () => {
       setStatus('connected')
+      log.info('term-hover', 'ws-open', { agent: agentId })
     }
     ws.onmessage = (evt) => {
       try {
         const msg = JSON.parse(evt.data)
+        if (msg.type === 'output' && msg.data && !sawOutput) {
+          sawOutput = true
+          clearTimeout(noSeedTimer)
+          const bytes = msg.encoding === 'base64' ? atob(msg.data).length : (msg.data?.length || 0)
+          log.info('term-hover', 'output-first', { agent: agentId, bytes, empty: bytes === 0 })
+        }
         if (msg.type === 'size' && msg.cols && msg.rows) {
+          sawSizeMsg = true
           // The daemon reports the agent's real tmux window size. Resize the live
           // grid to match so the absolute-positioned stream renders cleanly; the
           // scale effect then re-fits it to the panel width.
@@ -623,14 +642,17 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
             if (fallbackFlushed) writeOutput(msg)
           }
         } else if (msg.type === 'error') {
+          sawErrorMsg = true
           setStatus('error')
+          log.warn('term-hover', 'error-frame', { agent: agentId, message: msg.message })
         }
       } catch {}
     }
-    ws.onerror = () => setStatus('error')
+    ws.onerror = () => { setStatus('error'); log.warn('term-hover', 'ws-error', { agent: agentId }) }
     ws.onclose = () => {}
     return () => {
       if (fallbackTimer) clearTimeout(fallbackTimer)
+      clearTimeout(noSeedTimer)
       ws.close()
     }
   }, [agentId])
