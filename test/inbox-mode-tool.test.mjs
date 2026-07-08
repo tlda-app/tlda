@@ -202,11 +202,11 @@ test('default inbox view buckets explicit delivery metadata', () => {
     ],
   })
 
-  assert.match(text, /INBOX MODE: default/)
-  assert.match(text, /NOW\n\[1\] \[from skip\] this is urgent: can you check this\? \[urgent\]/)
-  assert.match(text, /ACTIVE WORK\n\[task:1\] Keep inbox modes moving/)
-  assert.match(text, /BATCHED\n\[1\] \[from peer\] FYI for later \[delivers in 120s\] \[recipient was busy \(spawn broken\)\]/)
-  assert.match(text, /BACKGROUND\n\[1\] \[from watch\] background signal/)
+  assert.match(text, /\*\*INBOX MODE:\*\* default/)
+  assert.match(text, /## NOW\n\[1\] \[from skip\] this is urgent: can you check this\? \[urgent\]/)
+  assert.match(text, /## ACTIVE WORK\n\[task:1\] Keep inbox modes moving/)
+  assert.match(text, /## BATCHED\n\[1\] \[from peer\] FYI for later \[delivers in 120s\] \[recipient was busy \(spawn broken\)\]/)
+  assert.match(text, /## BACKGROUND\n\[1\] \[from watch\] background signal/)
 })
 
 test('current-task inbox view puts owned task before direct unread', () => {
@@ -220,9 +220,9 @@ test('current-task inbox view puts owned task before direct unread', () => {
     ],
   })
 
-  assert.match(text, /INBOX MODE: current-task/)
-  assert.match(text, /CURRENT TASK\n\[task:1\] Keep inbox modes moving/)
-  assert.match(text, /RELATED UNREAD\n\[1\] \[from peer\] direct question/)
+  assert.match(text, /\*\*INBOX MODE:\*\* current-task/)
+  assert.match(text, /## CURRENT TASK\n\[task:1\] Keep inbox modes moving/)
+  assert.match(text, /## RELATED UNREAD\n\[1\] \[from peer\] direct question/)
   assert.match(text, /BACKGROUND: 1 watch item\(s\)\./)
 })
 
@@ -239,10 +239,10 @@ test('all inbox view keeps the broad grouped queue explicit', () => {
     ],
   })
 
-  assert.match(text, /INBOX MODE: all/)
-  assert.match(text, /ALL ACTIVE INBOX/)
-  assert.match(text, /USER \/ SKIP\n\[1\] \[from skip\] user message/)
-  assert.match(text, /TASK UPDATES\n\[1\] \[from chief\] task update/)
-  assert.match(text, /DIRECT MESSAGES\n\[1\] \[from peer\] direct message/)
-  assert.match(text, /WATCH \/ WIRETAP\n\[1\] \[from wiretap\] watch item/)
+  assert.match(text, /\*\*INBOX MODE:\*\* all/)
+  assert.match(text, /## ALL ACTIVE INBOX/)
+  assert.match(text, /## USER \/ SKIP\n\[1\] \[from skip\] user message/)
+  assert.match(text, /## TASK UPDATES\n\[1\] \[from chief\] task update/)
+  assert.match(text, /## DIRECT MESSAGES\n\[1\] \[from peer\] direct message/)
+  assert.match(text, /## WATCH \/ WIRETAP\n\[1\] \[from wiretap\] watch item/)
 })

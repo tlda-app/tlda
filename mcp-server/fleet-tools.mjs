@@ -1926,7 +1926,14 @@ export async function resolveInboxMessage(message, resolvers) {
     inboxStatusTag: message.metadata?.inbox_status_tag || null,
     notifyBy: message.metadata?.notify_by || null,
     images,
-    line: `[from ${fromLabel}${idHint}${docHint}] (reply with chat(to: "${message.from}")) ${imgResolvedText}${reminder}`,
+    // Markdown-formatted so the inbox renders cleanly in Skip's chat (which
+    // markdown-renders tool output) AND reads well as raw text for agents:
+    // a bold-sender metadata line, then the message on its own line. Every
+    // field is preserved (sender, id, viewing/machine, reply target) — this is
+    // a formatter, not a filter (Skip: "show me what you experience, nicely
+    // formatted… written in proper markdown"). `\n` renders as a line break
+    // (marked `breaks:true`).
+    line: `**${fromLabel}**${idHint}${docHint}  ·  reply \`chat(to: "${message.from}")\`\n${imgResolvedText}${reminder}`,
   };
 }
 
@@ -1980,11 +1987,21 @@ function groupedInboxLines(messages) {
   for (const [kind, label] of groups) {
     const rows = messages.filter(m => m.kind === kind);
     if (!rows.length) continue;
-    lines.push(label);
-    rows.forEach((m, i) => lines.push(`[${i + 1}] ${m.line}`));
+    lines.push(`## ${label}`);
+    pushInboxEntries(lines, rows, m => m.line);
     lines.push('');
   }
   return lines;
+}
+
+// Push numbered message entries with a blank line between them, so each reads
+// as its own block in the markdown-rendered inbox (clear separation on the
+// reading surface — the message lines are two-line markdown).
+function pushInboxEntries(lines, rows, fmt) {
+  rows.forEach((m, i) => {
+    if (i > 0) lines.push('');
+    lines.push(`[${i + 1}] ${fmt(m)}`);
+  });
 }
 
 export function formatInboxText({ mode, task, tasks, messages, now = Date.now() }) {
@@ -1992,7 +2009,7 @@ export function formatInboxText({ mode, task, tasks, messages, now = Date.now() 
   const taskBlocks = inboxTaskBlocks(activeTasks);
   const lines = [];
   const count = messages.length;
-  lines.push(`INBOX MODE: ${mode}`);
+  lines.push(`**INBOX MODE:** ${mode}`);
 
   if (mode === 'default') {
     const nowRows = messages.filter(m => inboxDefaultBucket(m, now) === 'now');
@@ -2000,24 +2017,24 @@ export function formatInboxText({ mode, task, tasks, messages, now = Date.now() 
     const backgroundRows = messages.filter(m => inboxDefaultBucket(m, now) === 'background');
 
     lines.push('');
-    lines.push('NOW');
+    lines.push('## NOW');
     if (!activeTasks.length && !nowRows.length) lines.push('- Clear. No active task or immediate unread messages.');
-    nowRows.forEach((m, i) => lines.push(`[${i + 1}] ${inboxDefaultLine(m, now)}`));
+    pushInboxEntries(lines, nowRows, m => inboxDefaultLine(m, now));
     if (taskBlocks.length) {
       lines.push('');
-      lines.push('ACTIVE WORK');
+      lines.push('## ACTIVE WORK');
       lines.push(...taskBlocks.flatMap((block, i) => i ? ['', block] : [block]));
     }
 
     lines.push('');
-    lines.push('BATCHED');
+    lines.push('## BATCHED');
     if (!batchedRows.length) lines.push('- Nothing waiting for the batch window.');
-    batchedRows.forEach((m, i) => lines.push(`[${i + 1}] ${inboxDefaultLine(m, now)}`));
+    pushInboxEntries(lines, batchedRows, m => inboxDefaultLine(m, now));
 
     lines.push('');
-    lines.push('BACKGROUND');
+    lines.push('## BACKGROUND');
     if (!backgroundRows.length) lines.push('- No queued or watch items.');
-    backgroundRows.forEach((m, i) => lines.push(`[${i + 1}] ${inboxDefaultLine(m, now)}`));
+    pushInboxEntries(lines, backgroundRows, m => inboxDefaultLine(m, now));
 
     return lines.join('\n');
   }
@@ -2026,63 +2043,63 @@ export function formatInboxText({ mode, task, tasks, messages, now = Date.now() 
     const directRows = messages.filter(m => m.kind !== 'watch');
     const watchRows = messages.filter(m => m.kind === 'watch');
     lines.push('');
-    lines.push('CURRENT TASK');
+    lines.push('## CURRENT TASK');
     if (!taskBlocks.length) lines.push('- No active task assigned.');
     if (taskBlocks.length) lines.push(...taskBlocks.flatMap((block, i) => i ? ['', block] : [block]));
     lines.push('');
-    lines.push('RELATED UNREAD');
+    lines.push('## RELATED UNREAD');
     if (!directRows.length) lines.push('- No direct unread messages.');
-    directRows.forEach((m, i) => lines.push(`[${i + 1}] ${m.line}`));
+    pushInboxEntries(lines, directRows, m => m.line);
     if (watchRows.length) lines.push('', `BACKGROUND: ${watchRows.length} watch item(s).`);
     return lines.join('\n');
   }
 
   if (mode === 'monitoring') {
     lines.push('');
-    lines.push('WAITING ON ME');
+    lines.push('## WAITING ON ME');
     const waiting = messages.filter(m => m.kind === 'user' || m.kind === 'task' || m.kind === 'message');
     if (!waiting.length) lines.push('- Nothing currently waiting on this agent.');
-    waiting.forEach((m, i) => lines.push(`[${i + 1}] ${m.line}`));
+    pushInboxEntries(lines, waiting, m => m.line);
     if (taskBlocks.length) {
       lines.push('');
-      lines.push('OWNED WORK');
+      lines.push('## OWNED WORK');
       lines.push(...taskBlocks.flatMap((block, i) => i ? ['', block] : [block]));
     }
     const watch = messages.filter(m => m.kind === 'watch');
     if (watch.length) {
       lines.push('');
-      lines.push('WATCHLIST CHANGES');
-      watch.forEach((m, i) => lines.push(`[${i + 1}] ${m.line}`));
+      lines.push('## WATCHLIST CHANGES');
+      pushInboxEntries(lines, watch, m => m.line);
     }
     return lines.join('\n');
   }
 
   if (mode === 'review') {
     lines.push('');
-    lines.push('REVIEW / GATES');
+    lines.push('## REVIEW / GATES');
     const reviewRows = messages.filter(m => m.kind === 'task' || /report|review|qa|gate|evidence|approve|reject/i.test(m.line));
     if (!reviewRows.length && !taskBlocks.length) lines.push('- No review or gate item is currently pending.');
-    reviewRows.forEach((m, i) => lines.push(`[${i + 1}] ${m.line}`));
+    pushInboxEntries(lines, reviewRows, m => m.line);
     if (taskBlocks.length) {
       lines.push('');
-      lines.push('OWNED REVIEW WORK');
+      lines.push('## OWNED REVIEW WORK');
       lines.push(...taskBlocks.flatMap((block, i) => i ? ['', block] : [block]));
     }
     const other = messages.filter(m => !reviewRows.includes(m));
     if (other.length) {
       lines.push('');
-      lines.push(`OTHER INBOX ITEMS (${other.length})`);
-      other.forEach((m, i) => lines.push(`[${i + 1}] ${m.line}`));
+      lines.push(`## OTHER INBOX ITEMS (${other.length})`);
+      pushInboxEntries(lines, other, m => m.line);
     }
     return lines.join('\n');
   }
 
   if (mode === 'all') {
     lines.push('');
-    lines.push('ALL ACTIVE INBOX');
+    lines.push('## ALL ACTIVE INBOX');
     if (!activeTasks.length && count === 0) lines.push('- Clear. No active task or unread messages.');
     if (taskBlocks.length) {
-      lines.push('TASKS');
+      lines.push('## TASKS');
       lines.push(...taskBlocks.flatMap((block, i) => i ? ['', block] : [block]));
       lines.push('');
     }
@@ -2091,7 +2108,7 @@ export function formatInboxText({ mode, task, tasks, messages, now = Date.now() 
   }
 
   lines.push('');
-  lines.push('ACTIONABLE QUEUE');
+  lines.push('## ACTIONABLE QUEUE');
   if (!activeTasks.length && count === 0) lines.push('- Clear. No active task or unread messages.');
   if (taskBlocks.length) {
     lines.push('TASKS');
