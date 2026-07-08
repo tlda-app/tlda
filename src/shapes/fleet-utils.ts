@@ -25,6 +25,7 @@ import {
 import { laneDy, layoutOffset } from './fleet-layout-geometry'
 import { planFleetLayoutShapes, type FleetLayoutVariant } from './fleet-layout-plan'
 import type { FleetChatFilter } from './fleet-layout-seeding'
+import { isPhoneStackLayoutForOwner } from './phone-pane-stack'
 
 export {
   FLEET_INTERACTION_SHAPE_SELECTOR,
@@ -325,27 +326,7 @@ export async function createFleetLayoutDetailed(editor: Editor, agents: any[], v
 export function isPhoneFleetLayoutForCurrentDevice(editor: Editor): boolean {
   const { myId, myDevice } = currentFleetOwnerKey()
   if (!myId || !myDevice) return false
-  const shapes = editor.getCurrentPageShapes().filter(s => isFleetShapeForOwnerKey(s, myId, myDevice)) as any[]
-  const agents = shapes.find(s => s.type === 'fleet-agents')
-  const inbox = shapes.find(s => s.type === 'fleet-inbox')
-  const chat = shapes.find(s => s.type === 'fleet-chat')
-  if (!agents || !inbox || !chat) return false
-  if (shapes.some(s => ['fleet-search', 'fleet-docview', 'fleet-touch-inbox'].includes(s.type as string))) return false
-  if (!agents.isLocked || !inbox.isLocked || !chat.isLocked) return false
-  const gap = 10
-  const agentsW = Number((agents as any).props?.w || 0)
-  const inboxW = Number((inbox as any).props?.w || 0)
-  const chatW = Number((chat as any).props?.w || 0)
-  const agentsH = Number((agents as any).props?.h || 0)
-  const inboxH = Number((inbox as any).props?.h || 0)
-  const chatH = Number((chat as any).props?.h || 0)
-  if (!(agentsW > 0 && inboxW > 0 && chatW > 0 && agentsH > 0 && inboxH > 0 && chatH > 0)) return false
-  const stackedHeight = agentsH + gap + inboxH
-  const chatX = Number((agents as any).x || 0) + agentsW
-  return Math.abs(agentsW - inboxW) <= 2 &&
-    Math.abs(inboxW - chatW) <= 2 &&
-    Math.abs(stackedHeight - chatH) <= 2 &&
-    Math.abs(Number((chat as any).x || 0) - chatX) <= 2
+  return isPhoneStackLayoutForOwner(editor, myId, myDevice)
 }
 
 export function reflowPhoneFleetLayout(editor: Editor): boolean {

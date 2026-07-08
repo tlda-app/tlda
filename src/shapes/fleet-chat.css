@@ -542,7 +542,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 .fleet-chat-shape .chat-line {
   padding: 2px 8px;
   font-size: var(--fleet-base-font, 11px);
-  line-height: var(--fleet-line-height, 1.5);
+  line-height: 1.5;
   word-break: break-word;
   -webkit-user-select: text !important;
   user-select: text !important;
@@ -599,7 +599,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 .fleet-chat-shape .chat-arrow {
   margin: 0 2px;
   color: var(--text-dim);
-  font-size: calc(var(--fleet-base-font, 11px) - 1px);
+  font-size: 10px;
 }
 
 /* --- Age-based opacity --- */

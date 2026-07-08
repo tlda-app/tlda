@@ -4,13 +4,11 @@
 
 .fleet-inbox-shape {
   background: var(--fleet-bg, transparent);
-  font-size: var(--fleet-base-font, 11px);
-  line-height: var(--fleet-line-height, 1.4);
 }
 
 /* --- Header --- */
 .fleet-inbox-header {
-  min-height: var(--fleet-touch-target, 30px);
+  height: 30px;
   flex-shrink: 0;
   display: flex;
   align-items: center;
@@ -19,15 +17,15 @@
   border-bottom: 1px solid rgba(128, 128, 128, 0.12);
 }
 .fleet-inbox-title {
-  font-size: calc(var(--fleet-base-font, 11px) - 1px);
+  font-size: 10px;
   font-weight: 500;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   opacity: 0.5;
 }
 .fleet-inbox-filter-btn {
-  width: max(18px, calc(var(--fleet-touch-target, 28px) * 0.65));
-  height: max(18px, calc(var(--fleet-touch-target, 28px) * 0.65));
+  width: 18px;
+  height: 18px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -49,7 +47,7 @@
 }
 .fleet-inbox-unread-total {
   margin-left: auto;
-  font-size: calc(var(--fleet-base-font, 11px) - 2px);
+  font-size: 9px;
   min-width: 14px;
   height: 14px;
   padding: 0 4px;
@@ -65,7 +63,7 @@
   background: none;
   border: none;
   padding: 0;
-  font-size: calc(var(--fleet-base-font, 11px) - 2px);
+  font-size: 9px;
   font-family: inherit;
   color: inherit;
   opacity: 0.5;
@@ -76,14 +74,14 @@
   opacity: 0.9;
 }
 .fleet-inbox-thread-name {
-  font-size: var(--fleet-base-font, 11px);
+  font-size: 11px;
   font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .fleet-inbox-detail-title {
-  font-size: var(--fleet-base-font, 11px);
+  font-size: 11px;
   font-weight: 500;
   opacity: 0.78;
   overflow: hidden;
@@ -96,7 +94,7 @@
 .fleet-inbox-sort {
   display: inline-flex;
   gap: 1px;
-  font-size: calc(var(--fleet-base-font, 11px) - 2px);
+  font-size: 9px;
   opacity: 0.5;
   transition: opacity 0.15s;
 }
@@ -108,7 +106,7 @@
   border: none;
   padding: 1px 4px;
   font-family: inherit;
-  font-size: calc(var(--fleet-base-font, 11px) - 2px);
+  font-size: 9px;
   color: inherit;
   opacity: 0.55;
   cursor: pointer;
@@ -134,7 +132,7 @@
   padding: 20px 10px;
   opacity: 0.35;
   text-align: center;
-  font-size: calc(var(--fleet-base-font, 11px) - 1px);
+  font-size: 10px;
 }
 .fleet-inbox-thread {
   padding: 6px 10px;
@@ -151,7 +149,7 @@
   gap: 6px;
 }
 .fleet-inbox-thread-partner {
-  font-size: var(--fleet-base-font, 11px);
+  font-size: 11px;
   font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -162,12 +160,12 @@
 }
 .fleet-inbox-thread-time {
   margin-left: auto;
-  font-size: calc(var(--fleet-base-font, 11px) - 2px);
+  font-size: 9px;
   opacity: 0.35;
   flex-shrink: 0;
 }
 .fleet-inbox-thread-badge {
-  font-size: calc(var(--fleet-base-font, 11px) - 2px);
+  font-size: 9px;
   min-width: 14px;
   height: 14px;
   padding: 0 4px;
@@ -181,7 +179,7 @@
   flex-shrink: 0;
 }
 .fleet-inbox-thread-preview {
-  font-size: calc(var(--fleet-base-font, 11px) - 1px);
+  font-size: 10px;
   opacity: 0.45;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -449,6 +447,13 @@
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
 }
+.fleet-inbox-modal-pop-wrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  position: relative;
+  overflow: hidden;
+}
 .fleet-inbox-detail-kicker {
   font-size: 9px;
   font-weight: 500;
@@ -527,5 +532,500 @@
 @media (max-width: 600px) {
   .fleet-inbox-composer-textarea {
     font-size: 16px !important;
+  }
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-list {
+  flex: 1 1 auto;
+  min-height: 34%;
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-row {
+  flex: 0 0 auto;
+  padding: 7px 10px;
+  border-top: 1px solid rgba(128, 128, 128, 0.1);
+  cursor: pointer;
+  background: rgba(128, 128, 128, 0.035);
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-row:hover {
+  background: rgba(128, 128, 128, 0.05);
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-row-main {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 20px;
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-row-icon {
+  opacity: 0.55;
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-row-title {
+  font-size: 12px;
+  color: var(--text, #cdd);
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-row-count {
+  margin-left: auto;
+  opacity: 0.5;
+  font-size: 10px;
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-row-sub {
+  margin-top: 1px;
+  font-size: 10px;
+  opacity: 0.5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-sheet {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: min(75%, calc(100% - 34px));
+  z-index: 26;
+  display: flex;
+  overflow: hidden;
+  border-top: 1px solid rgba(128, 128, 128, 0.14);
+  background: color-mix(in srgb, var(--panel-bg, #111317) 94%, transparent);
+  box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.22);
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-detail {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  position: relative;
+  overflow: hidden;
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-pop-arrow {
+  position: absolute;
+  left: 50%;
+  bottom: 6px;
+  width: 34px;
+  height: 34px;
+  border-radius: 17px;
+  background: rgba(128, 128, 128, 0.08);
+  opacity: 0.7;
+  pointer-events: auto;
+  transform: translateX(-50%);
+  touch-action: none;
+  z-index: 20;
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-pop-arrow::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: 9px;
+  width: 1px;
+  height: 12px;
+  background: currentColor;
+  opacity: 0.8;
+  transform: translateX(-50%);
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-pop-arrow::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  width: 8px;
+  height: 8px;
+  border-left: 1px solid currentColor;
+  border-top: 1px solid currentColor;
+  opacity: 0.8;
+  transform: translateX(-50%) rotate(45deg);
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-detail .fleet-inbox-agents-panel {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+  max-height: none;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-sheet .fleet-inbox-agents-panel {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+  max-height: none;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  position: relative;
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-mini-chat {
+  flex: 0 0 auto;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  max-height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.1);
+  background: rgba(128, 128, 128, 0.025);
+  overflow: hidden;
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-close {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  z-index: 19;
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 6px;
+  background: rgba(128, 128, 128, 0.08);
+  color: inherit;
+  opacity: 0.55;
+  padding: 0;
+  touch-action: manipulation;
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-close:active {
+  opacity: 0.9;
+  background: rgba(128, 128, 128, 0.14);
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-filter-btn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 18;
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 6px;
+  background: rgba(128, 128, 128, 0.08);
+  color: inherit;
+  opacity: 0.55;
+  padding: 0;
+  touch-action: manipulation;
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-filter-btn.active,
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-filter-btn:active {
+  opacity: 0.9;
+  background: rgba(128, 128, 128, 0.14);
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-filter-btn svg {
+  width: 18px;
+  height: 18px;
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-mini-chat-log {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 0;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-mini-chat-log .chat-line {
+  padding: 1px 7px;
+  font-size: 10px;
+  line-height: 1.25;
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-mini-chat-log .chat-ts {
+  display: none;
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-mini-chat .fleet-filter-overlay {
+  border-radius: 0;
+  padding: 8px;
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-mini-empty {
+  padding: 14px 10px;
+  text-align: center;
+  font-size: 10px;
+  opacity: 0.4;
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-composer {
+  flex-shrink: 0;
+  padding: 4px 6px 6px;
+  border-top: 1px solid rgba(128, 128, 128, 0.1);
+  background: rgba(128, 128, 128, 0.03);
+  position: relative;
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-assign {
+  position: absolute;
+  right: 10px;
+  top: 9px;
+  z-index: 2;
+  border: 0;
+  border-radius: 5px;
+  padding: 2px 7px;
+  font-size: 10px;
+  line-height: 1.4;
+  color: inherit;
+  background: rgba(128, 128, 128, 0.12);
+  opacity: 0.65;
+  touch-action: manipulation;
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-assign:disabled {
+  opacity: 0.28;
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-composer .fleet-inbox-composer-textarea {
+  padding-right: 64px !important;
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agents {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: auto;
+  scrollbar-color: rgba(255, 255, 255, 0.28) transparent;
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agents::-webkit-scrollbar {
+  width: 8px;
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agents::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.28);
+  border-radius: 4px;
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agents-empty {
+  padding: 22px 10px;
+  text-align: center;
+  font-size: 11px;
+  opacity: 0.55;
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent {
+  display: grid;
+  grid-template-columns: minmax(96px, 1fr) 72px minmax(104px, 1.15fr);
+  min-height: 48px;
+  padding: 0;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.07);
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent.selected {
+  background: rgba(120, 160, 220, 0.1);
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent-name-zone,
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent-label-zone {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  min-height: 48px;
+  background: rgba(120, 160, 220, 0.05);
+  cursor: grab;
+  touch-action: none;
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent-name-zone {
+  padding: 0;
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent-label-zone {
+  padding: 0 8px 0 0;
+  justify-content: flex-end;
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent.selected .fleet-inbox-phone-agent-name-zone,
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent.selected .fleet-inbox-phone-agent-label-zone {
+  background: rgba(120, 160, 220, 0.14);
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent-name-zone:active,
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent-label-zone:active {
+  background: rgba(120, 160, 220, 0.18);
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent-name {
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 0 10px;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent-push-arrow {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  margin: 0 8px 0 auto;
+  border-radius: 9px;
+  background: rgba(128, 128, 128, 0.09);
+  position: relative;
+  opacity: 0.72;
+  pointer-events: none;
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent-push-arrow::before {
+  content: "";
+  position: absolute;
+  left: 6px;
+  top: 8px;
+  width: 8px;
+  height: 1px;
+  background: currentColor;
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent-push-arrow::after {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 5px;
+  width: 6px;
+  height: 6px;
+  border-left: 1px solid currentColor;
+  border-bottom: 1px solid currentColor;
+  transform: rotate(45deg);
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent-activity {
+  font-size: 11px;
+  opacity: 0.55;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent-context {
+  font-size: 11px;
+  opacity: 0.7;
+  color: #81c784;
+  flex-shrink: 0;
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent-unread {
+  margin-left: auto;
+  flex-shrink: 0;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: rgba(120, 160, 220, 0.14);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent-scroll-zone {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 0;
+  min-height: 0;
+  padding: 0 6px;
+  overflow: hidden;
+  cursor: pointer;
+  touch-action: pan-y;
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent-task {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11px;
+  opacity: 0.62;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent-labels {
+  display: flex;
+  align-self: stretch;
+  align-items: center;
+  gap: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent-label {
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  font-size: 11px;
+  line-height: 1;
+  padding: 0 8px;
+  border-radius: 0;
+  border-left: 1px solid rgba(147, 112, 219, 0.13);
+  background: rgba(147, 112, 219, 0.055);
+  opacity: 0.75;
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent-label:active {
+  background: rgba(147, 112, 219, 0.16);
+  opacity: 0.95;
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent-label-placeholder {
+  flex: 1 1 auto;
+  align-self: stretch;
+}
+
+@media (orientation: landscape) {
+  .fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-sheet {
+    height: 75%;
+  }
+
+  .fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-sheet .fleet-inbox-agents-panel {
+    flex-direction: row;
+  }
+
+  .fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-detail .fleet-inbox-agents-panel {
+    flex-direction: row;
+  }
+
+  .fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-mini-chat {
+    height: min(100%, 100vw);
+    width: auto;
+    aspect-ratio: 1 / 1;
+    border-right: 1px solid rgba(128, 128, 128, 0.1);
+    border-bottom: none;
+  }
+
+  .fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent {
+    min-height: 46px;
+    grid-template-columns: minmax(92px, 1fr) 68px minmax(96px, 1.1fr);
+  }
+
+  .fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent-labels {
+    flex-wrap: nowrap;
   }
 }

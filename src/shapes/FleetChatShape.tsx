@@ -79,6 +79,7 @@ import { consumeBulletContexts, subscribeBulletContext, getBulletContexts } from
 import { getPref, subscribePref } from '../preferences'
 import { readabilityStyleVars } from '../readabilityProfile'
 import { DATABASE_HTTP } from '../activeConfig'
+import { isPhoneViewport } from '../phoneViewport'
 import './fleet-chat.css'
 
 const DEFAULT_W = 400
@@ -712,6 +713,8 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
     )
   }
 
+  const phoneTopPanel = isPhoneViewport() && !lightboxed
+
   return createPortal((
     // Carrier provides the .fleet-chat-shape scoped CSS + custom properties the
     // pane styles depend on (it's portaled out of the real chat shape). display:
@@ -722,7 +725,7 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
       className={`fleet-terminal-hover-pane${pinned ? ' fleet-terminal-hover-pane-pinned' : ''}${lightboxed ? ' fleet-terminal-hover-pane-lightboxed' : ''}`}
       style={{
         position: 'fixed',
-        left: anchor?.left ?? 0,
+        left: phoneTopPanel ? 0 : (anchor?.left ?? 0),
         visibility: anchor ? 'visible' : 'hidden',
         ...(lightboxed
           // Grow UP + RIGHT from the pinned pane's bottom-left, which stays put.
@@ -736,8 +739,9 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
           // width. Height is auto, so pinning ADDS the input bar below and the
           // terminal you saw on hover stays in place (pane grows downward).
           : {
-              top: anchor?.top ?? 0,
-              width: anchor?.width ?? 0,
+              top: phoneTopPanel ? 0 : (anchor?.top ?? 0),
+              width: phoneTopPanel ? '100vw' : (anchor?.width ?? 0),
+              height: phoneTopPanel ? '50vh' : undefined,
               right: 'auto',
             }),
       }}
@@ -761,7 +765,7 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
       <div
         ref={bodyRef}
         className="fleet-terminal-hover-body"
-        style={lightboxed ? undefined : { height, flex: 'none' }}
+        style={lightboxed ? undefined : phoneTopPanel ? { flex: '1 1 auto', minHeight: 0 } : { height, flex: 'none' }}
       >
         {lightboxed && historyText && (
           <div ref={historyContainerRef} className="fleet-terminal-hover-history" />
@@ -5904,6 +5908,7 @@ export function FilterOverlay({
   externalPillOver,
   agents,
   sendTargets,
+  onFilterChange,
 }: {
   filter: [string, string][][]
   shapeId: any
@@ -5912,6 +5917,7 @@ export function FilterOverlay({
   externalPillOver?: { role: string; value: string; displayName: string } | null
   agents: any[]
   sendTargets: string[]
+  onFilterChange?: (filter: [string, string][][]) => void
 }) {
   // Native pointerup delegation on document capture — bypasses tldraw and works on touch.
   const overlayRef = useRef<HTMLDivElement>(null)
@@ -5920,6 +5926,10 @@ export function FilterOverlay({
   filterRef.current = filter
   const humanLabel = getHumanName() || getHumanId() || 'user'
   const updateChatProps = useCallback((props: Record<string, unknown>) => {
+    if (onFilterChange && Array.isArray(props.filter)) {
+      onFilterChange(props.filter as [string, string][][])
+      return
+    }
     const shape = editor.getShape(shapeId)
     const wasLocked = !!shape?.isLocked
     if (wasLocked) editor.updateShape({ id: shapeId, type: 'fleet-chat', isLocked: false })
@@ -5929,7 +5939,7 @@ export function FilterOverlay({
       props,
     })
     if (wasLocked) editor.updateShape({ id: shapeId, type: 'fleet-chat', isLocked: true })
-  }, [editor, shapeId])
+  }, [editor, onFilterChange, shapeId])
   const activeAgentLabel = useMemo(() => {
     for (const clause of filter) {
       for (const [, label] of clause) {
