@@ -586,6 +586,29 @@ html[data-theme="dark"] .agent-indicator[data-agent="todd"].agent-stale {
 [data-theme="dark"] .prefs-num-unit {
   color: rgba(255, 255, 255, 0.5);
 }
+.prefs-segment-row {
+  display: inline-flex;
+  gap: 2px;
+  margin-bottom: 8px;
+  padding: 2px;
+  border: 1px solid rgba(128, 128, 128, 0.18);
+  border-radius: 4px;
+}
+.prefs-segment {
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 10px;
+  opacity: 0.55;
+  padding: 2px 7px;
+}
+.prefs-segment:hover,
+.prefs-segment.active {
+  background: rgba(128, 128, 128, 0.12);
+  opacity: 0.95;
+}
 .prefs-btn {
   font-size: 11px;
   padding: 2px 10px;

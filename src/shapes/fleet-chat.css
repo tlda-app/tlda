@@ -542,7 +542,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 .fleet-chat-shape .chat-line {
   padding: 2px 8px;
   font-size: var(--fleet-base-font, 11px);
-  line-height: 1.5;
+  line-height: var(--fleet-line-height, 1.5);
   word-break: break-word;
   -webkit-user-select: text !important;
   user-select: text !important;
@@ -599,7 +599,7 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 .fleet-chat-shape .chat-arrow {
   margin: 0 2px;
   color: var(--text-dim);
-  font-size: 10px;
+  font-size: calc(var(--fleet-base-font, 11px) - 1px);
 }
 
 /* --- Age-based opacity --- */
@@ -1894,21 +1894,21 @@ body.phone-mode .fleet-agents-sort-toggle { opacity: 0.75; }
    only had a hairline `thin` scrollbar. Scoped to .phone-mode so tablets/desktop
    (which use normal layouts) are untouched. */
 body.phone-mode .fleet-agents-shape .fleet-agents-row-main {
-  height: 40px;
+  height: var(--fleet-touch-target, 44px);
   padding: 0 12px;
 }
 body.phone-mode .fleet-agents-shape .fleet-agents-col-name {
   width: 104px;
-  font-size: 13px;
+  font-size: var(--fleet-base-font, 16px);
 }
 body.phone-mode .fleet-agents-shape .fleet-agents-col-task,
 body.phone-mode .fleet-agents-shape .fleet-agents-col-seen,
 body.phone-mode .fleet-agents-shape .fleet-agents-col-ctx {
-  font-size: 12px;
+  font-size: calc(var(--fleet-base-font, 16px) - 1px);
 }
 body.phone-mode .fleet-agents-shape .fleet-agents-label-chip {
-  font-size: 12px;
-  line-height: 20px;
+  font-size: calc(var(--fleet-base-font, 16px) - 1px);
+  line-height: calc(var(--fleet-touch-target, 44px) * 0.45);
   padding: 0 7px;
 }
 body.phone-mode .fleet-agents-shape .fleet-agents-body {

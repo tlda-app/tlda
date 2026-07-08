@@ -9,6 +9,12 @@ import { useFleetAgents, useFleetIdentity } from '../fleet-data-adapter'
 import { getDeviceId } from '../fleet/fleet-data.mjs'
 import { agentDisplayLabel } from '../shapes/fleet-utils'
 import { useAvailableSpawnModels } from '../fleet/useAvailableSpawnModels'
+import {
+  DEFAULT_READABILITY_PROFILE,
+  getCurrentReadabilityDeviceId,
+  getReadabilityProfiles,
+  type ReadabilityProfile,
+} from '../readabilityProfile'
 
 type DeviceRecord = { lastSeen: string }
 
@@ -260,6 +266,8 @@ function readAll() {
     voiceResumeRms: getPref('voice-resume-rms'),
     voiceEndpointing: getPref('voice-endpointing'),
     voiceUtteranceEndMs: getPref('voice-utterance-end-ms'),
+    readabilityDeviceId: getCurrentReadabilityDeviceId(),
+    readabilityProfiles: getReadabilityProfiles(),
     fontSize: getPref('fleet-font-size'),
     heightFrac: getPref('layout-height-frac'),
     railWidth: getPref('layout-rail-width'),
@@ -323,6 +331,31 @@ export function PrefsTab() {
   const sinkShapes = csvToSet(prefs.voiceSinkShapeTypes)
   const runningBots = agents.filter(isRunningBot)
   const selectedVoiceBackend = voiceBackends.some(b => b.value === prefs.voiceBackend) ? prefs.voiceBackend : ''
+  const currentDeviceId = getCurrentReadabilityDeviceId()
+  const knownReadabilityDevices = Object.entries(prefs.knownDevices as Record<string, DeviceRecord>)
+    .sort((a, b) => new Date(b[1]?.lastSeen || 0).getTime() - new Date(a[1]?.lastSeen || 0).getTime())
+    .map(([id]) => id)
+  const readabilityDeviceIds = Array.from(new Set([currentDeviceId, ...knownReadabilityDevices].filter(Boolean)))
+  const activeReadability = {
+    ...DEFAULT_READABILITY_PROFILE,
+    ...(prefs.readabilityProfiles[prefs.readabilityDeviceId] ?? {}),
+  } as ReadabilityProfile
+
+  const setReadabilityDevice = useCallback((deviceId: string) => {
+    setPrefs(prev => ({ ...prev, readabilityDeviceId: deviceId }))
+  }, [])
+
+  const setReadability = useCallback(<K extends keyof ReadabilityProfile>(key: K, value: ReadabilityProfile[K]) => {
+    const profiles = getReadabilityProfiles()
+    const deviceId = prefs.readabilityDeviceId || getCurrentReadabilityDeviceId()
+    setPref('readability-profiles', {
+      ...profiles,
+      [deviceId]: {
+        ...profiles[deviceId],
+        [key]: value,
+      },
+    })
+  }, [prefs.readabilityDeviceId])
 
   const setBotEnabled = useCallback((botId: string, enabled: boolean) => {
     setPref('bot-self-check-enabled', { ...(getPref('bot-self-check-enabled') as Record<string, boolean>), [botId]: enabled })
@@ -355,7 +388,7 @@ export function PrefsTab() {
       <CollapsiblePrefsSection
         id="appearance"
         title="Appearance"
-        summary={`${prefs.fontSize}px / ${Math.round(prefs.heightFrac * 100)}% layout / ${prefs.provenanceMode}`}
+        summary={`${prefs.deviceNames[prefs.readabilityDeviceId] || (prefs.readabilityDeviceId === currentDeviceId ? 'this device' : prefs.readabilityDeviceId)}: ${activeReadability.fontSize}px / ${Math.round(activeReadability.layoutHeightFrac * 100)}% height`}
         open={prefs.openSections.includes('appearance')}
         onToggle={toggleSection}
       >
@@ -365,50 +398,66 @@ export function PrefsTab() {
         </PrefSubsection>
 
         <PrefSubsection title="Readability">
+          <div className="prefs-segment-row">
+            {readabilityDeviceIds.map(deviceId => (
+              <button
+                key={deviceId}
+                type="button"
+                className={`prefs-segment${prefs.readabilityDeviceId === deviceId ? ' active' : ''}`}
+                onClick={() => setReadabilityDevice(deviceId)}
+              >
+                {prefs.deviceNames[deviceId] || (deviceId === currentDeviceId ? 'this device' : deviceId)}
+              </button>
+            ))}
+          </div>
           <div className="prefs-num-row">
             <span className="prefs-num-label">Font size</span>
-            <input type="number" min={8} max={24} step={1} value={prefs.fontSize} onChange={e => setPref('fleet-font-size', Number(e.target.value))} className="prefs-num" />
+            <input type="number" min={8} max={24} step={1} value={activeReadability.fontSize} onChange={e => setReadability('fontSize', Number(e.target.value))} className="prefs-num" />
+            <span className="prefs-num-unit">px</span>
+          </div>
+          <div className="prefs-num-row">
+            <span className="prefs-num-label">Line height</span>
+            <input type="number" min={1.15} max={1.8} step={0.05} value={activeReadability.lineHeight} onChange={e => setReadability('lineHeight', Number(e.target.value))} className="prefs-num" />
+            <span className="prefs-num-unit">x</span>
+          </div>
+          <div className="prefs-num-row">
+            <span className="prefs-num-label">Touch target</span>
+            <input type="number" min={24} max={64} step={2} value={activeReadability.touchTarget} onChange={e => setReadability('touchTarget', Number(e.target.value))} className="prefs-num" />
             <span className="prefs-num-unit">px</span>
           </div>
           <div className="prefs-num-row">
             <span className="prefs-num-label">Chrome opacity</span>
-            <input type="number" min={0} max={150} step={5} value={Math.round(prefs.chromeOpacity * 100)} onChange={e => setPref('fleet-chrome-opacity', Number(e.target.value) / 100)} className="prefs-num" />
+            <input type="number" min={0} max={150} step={5} value={Math.round(activeReadability.chromeOpacity * 100)} onChange={e => setReadability('chromeOpacity', Number(e.target.value) / 100)} className="prefs-num" />
             <span className="prefs-num-unit">%</span>
           </div>
           <div className="prefs-num-row">
             <span className="prefs-num-label">Content opacity</span>
-            <input type="number" min={0} max={100} step={5} value={Math.round(prefs.contentOpacity * 100)} onChange={e => setPref('fleet-content-opacity', Number(e.target.value) / 100)} className="prefs-num" />
+            <input type="number" min={0} max={100} step={5} value={Math.round(activeReadability.contentOpacity * 100)} onChange={e => setReadability('contentOpacity', Number(e.target.value) / 100)} className="prefs-num" />
             <span className="prefs-num-unit">%</span>
           </div>
           <label className="prefs-check">
-            <input type="checkbox" checked={prefs.ageFade} onChange={e => setPref('fleet-age-fade', e.target.checked)} />
+            <input type="checkbox" checked={activeReadability.ageFade} onChange={e => setReadability('ageFade', e.target.checked)} />
             <span>Age fade</span>
           </label>
-        </PrefSubsection>
-
-        <PrefSubsection title="Default layout size">
-          <div style={{ fontSize: 10, color: '#6b7280', marginBottom: 4 }}>
-            Applied when you pick a layout preset. Re-pick a layout to apply changes.
-          </div>
           <div className="prefs-num-row">
-            <span className="prefs-num-label">Height</span>
-            <input type="number" min={10} max={100} step={5} value={Math.round(prefs.heightFrac * 100)} onChange={e => setPref('layout-height-frac', Number(e.target.value) / 100)} className="prefs-num" />
+            <span className="prefs-num-label">Layout height</span>
+            <input type="number" min={10} max={100} step={5} value={Math.round(activeReadability.layoutHeightFrac * 100)} onChange={e => setReadability('layoutHeightFrac', Number(e.target.value) / 100)} className="prefs-num" />
             <span className="prefs-num-unit">% of view</span>
           </div>
           <div className="prefs-num-row">
-            <span className="prefs-num-label">Rail width</span>
-            <input type="number" min={200} max={800} step={5} value={prefs.railWidth} onChange={e => setPref('layout-rail-width', Number(e.target.value))} className="prefs-num" />
-            <span className="prefs-num-unit">px</span>
+            <span className="prefs-num-label">Rail aspect</span>
+            <input type="number" min={0.2} max={2} step={0.05} value={activeReadability.railAspect} onChange={e => setReadability('railAspect', Number(e.target.value))} className="prefs-num" />
+            <span className="prefs-num-unit">w/h</span>
           </div>
           <div className="prefs-num-row">
-            <span className="prefs-num-label">Chat width</span>
-            <input type="number" min={200} max={1000} step={5} value={prefs.chatWidth} onChange={e => setPref('layout-chat-width', Number(e.target.value))} className="prefs-num" />
-            <span className="prefs-num-unit">px</span>
+            <span className="prefs-num-label">Chat aspect</span>
+            <input type="number" min={0.2} max={2} step={0.05} value={activeReadability.chatAspect} onChange={e => setReadability('chatAspect', Number(e.target.value))} className="prefs-num" />
+            <span className="prefs-num-unit">w/h</span>
           </div>
           <div className="prefs-num-row">
-            <span className="prefs-num-label">Margin gap</span>
-            <input type="number" min={0} max={300} step={5} value={prefs.marginGap} onChange={e => setPref('layout-margin-gap', Number(e.target.value))} className="prefs-num" />
-            <span className="prefs-num-unit">px</span>
+            <span className="prefs-num-label">Margin aspect</span>
+            <input type="number" min={0} max={0.4} step={0.01} value={activeReadability.marginAspect} onChange={e => setReadability('marginAspect', Number(e.target.value))} className="prefs-num" />
+            <span className="prefs-num-unit">gap/h</span>
           </div>
         </PrefSubsection>
 

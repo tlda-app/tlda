@@ -44,6 +44,8 @@ import { getHumanId } from '../fleet/fleet-data.mjs'
 import { useIsInViewport } from './useIsInViewport'
 import { DATABASE_HTTP } from '../activeConfig'
 import { openChatMarkdownColumn, openMarkdownChipFromTarget } from './fleet-chat-markdown-open'
+import { readabilityStyleVars } from '../readabilityProfile'
+import { subscribePref } from '../preferences'
 import './fleet-chat.css'
 import './fleet-inbox.css'
 
@@ -258,6 +260,7 @@ export class FleetInboxShapeUtil extends BaseBoxShapeUtil<any> {
 
 function FleetInboxInner({ shape }: { shape: any }) {
   const editor = useEditor()
+  const [styleVars, setStyleVars] = useState(readabilityStyleVars)
   const mainEd = (typeof window !== 'undefined'
     ? (window as Window & { __tldraw_editor__?: Editor }).__tldraw_editor__
     : undefined) || editor
@@ -324,6 +327,8 @@ function FleetInboxInner({ shape }: { shape: any }) {
   const [filterTargetId, setFilterTargetId] = useState<TLShapeId | null>(null)
   const [openItemKey, setOpenItemKey] = useState<string | null>(null)
   const [isPhoneSurface, setIsPhoneSurface] = useState(() => isPhoneViewportSurface())
+
+  useEffect(() => subscribePref(() => setStyleVars(readabilityStyleVars())), [])
 
   useEffect(() => {
     if (typeof window === 'undefined') return
@@ -697,13 +702,14 @@ function FleetInboxInner({ shape }: { shape: any }) {
           display: 'flex',
           flexDirection: 'column',
           borderRadius: 0,
-          fontSize: 11,
+          fontSize: 'var(--fleet-base-font, 11px)',
           overflow: 'hidden',
           fontFamily: "'SF Mono', 'Menlo', 'Consolas', monospace",
           fontWeight: 300,
-          lineHeight: 1.4,
+          lineHeight: 'var(--fleet-line-height, 1.4)',
           position: 'relative',
           color: 'var(--text, #8888a0)',
+          ...styleVars,
         }}
       >
         <FleetPanelButtonGroup editor={editor} shape={shape} />

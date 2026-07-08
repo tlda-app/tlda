@@ -77,6 +77,7 @@ import { openChatMarkdownColumn, openMarkdownChipFromTarget as openMarkdownChipF
 import { subscribeFleetChatInputDropPreview } from './fleet-chat-drop-target'
 import { consumeBulletContexts, subscribeBulletContext, getBulletContexts } from '../stores/bulletContextStore'
 import { getPref, subscribePref } from '../preferences'
+import { readabilityStyleVars } from '../readabilityProfile'
 import { DATABASE_HTTP } from '../activeConfig'
 import './fleet-chat.css'
 
@@ -215,12 +216,7 @@ const _isTouchDevice = (typeof navigator !== 'undefined' && navigator.maxTouchPo
 const _isPhone = typeof window !== 'undefined' && !!window.matchMedia?.('(max-width: 600px)').matches
 
 function getFleetStyleVars(): React.CSSProperties {
-  return {
-    '--fleet-base-font': `${getPref('fleet-font-size')}px`,
-    '--fleet-chrome-alpha': String(getPref('fleet-chrome-opacity')),
-    '--fleet-content-alpha': String(getPref('fleet-content-opacity')),
-    '--fleet-age-fade': getPref('fleet-age-fade') ? '1' : '0',
-  } as React.CSSProperties
+  return readabilityStyleVars()
 }
 
 function useFleetStyleVars() {

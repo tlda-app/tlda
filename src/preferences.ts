@@ -10,6 +10,7 @@
 
 import type { CurveHandles } from './curveEditor.ts'
 import { DEFAULT_CURVE } from './curveEditor.ts'
+import { DEFAULT_READABILITY_PROFILES, type ReadabilityProfiles } from './readabilityDefaults.ts'
 
 const DEFAULTS = {
   'docview-sources': ['ref'] as string[],
@@ -39,6 +40,7 @@ const DEFAULTS = {
   // keeps cutting off the tail of a sentence.
   'voice-endpointing': 300 as number,
   'voice-utterance-end-ms': 1000 as number,
+  'readability-profiles': DEFAULT_READABILITY_PROFILES as ReadabilityProfiles,
   'fleet-font-size': 11 as number,
   // Default fleet layout sizing (used by createFleetLayout). margin-gap is the
   // distance from each document edge to the near edge of the fleet shapes in

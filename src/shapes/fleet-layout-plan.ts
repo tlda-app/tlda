@@ -1,5 +1,6 @@
 import type { FleetChatFilter } from './fleet-layout-seeding'
 import { fleetPanelDefaultProps, type FleetPanelType } from './fleet-panel-registry'
+import { getLayoutReadabilityTokens } from '../readabilityProfile'
 
 export type FleetLayoutVariant = 'phone' | '3-col' | '2x2' | 'big-chat' | 'both-margins' | 'touch'
 
@@ -97,7 +98,7 @@ export function planFleetLayoutShapes(input: FleetLayoutPlanInput): FleetLayoutP
     const chatW = screenW
     const chatH = screenH
     const colW = screenW
-    const phoneAgentsH = Math.min(Math.round(screenH * 0.42), Math.max(160, Math.round(screenH * 0.38)))
+    const phoneAgentsH = Math.max(160, getLayoutReadabilityTokens(viewport).agentsH)
     const phoneInboxH = Math.max(160, chatH - gap - phoneAgentsH)
     const chatX = phoneTarget.pageX - chatW + dx
     const colX = phoneTarget.pageX - chatW - colW + dx

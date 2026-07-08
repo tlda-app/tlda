@@ -26,7 +26,8 @@ import { Terminal } from 'xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import 'xterm/css/xterm.css'
 import './TerminalShape.css'
-import { getPref, subscribePref } from '../preferences'
+import { subscribePref } from '../preferences'
+import { getReadabilityProfile, readabilityStyleVars } from '../readabilityProfile'
 import { getFleetWsBase } from '../fleet/fleet-data.mjs'
 import { appendToken } from '../authToken'
 
@@ -38,11 +39,7 @@ const DEFAULT_W = 560
 const DEFAULT_H = 380
 
 function getFleetStyleVars(): React.CSSProperties {
-  return {
-    '--fleet-base-font': `${getPref('fleet-font-size')}px`,
-    '--fleet-chrome-alpha': String(getPref('fleet-chrome-opacity')),
-    '--fleet-content-alpha': String(getPref('fleet-content-opacity')),
-  } as React.CSSProperties
+  return readabilityStyleVars()
 }
 
 function useFleetStyleVars() {
@@ -141,7 +138,7 @@ function TerminalComponent({ shape }: { shape: any }) {
     if (!containerRef.current) return
 
     const term = new Terminal({
-      fontSize: 11,
+      fontSize: getReadabilityProfile().fontSize,
       fontFamily: "'SF Mono', 'Fira Code', Menlo, monospace",
       theme: {
         background: '#1a1a1a',

@@ -21,7 +21,8 @@ import { latex } from 'codemirror-lang-latex'
 import { DocContext } from '../PanelContext'
 import { STORE_HTTP } from '../activeConfig'
 import { PDF_HEIGHT, PDF_WIDTH } from '../layoutConstants'
-import { getPref, subscribePref } from '../preferences'
+import { subscribePref } from '../preferences'
+import { readabilityStyleVars } from '../readabilityProfile'
 import { loadLookup, type LookupData } from '../synctexLookup'
 import {
   SYNCTEX_MAX_Y,
@@ -149,11 +150,7 @@ function projectApiPath(docName: string, path: string) {
 }
 
 function getFleetStyleVars(): CSSProperties {
-  return {
-    '--fleet-base-font': `${getPref('fleet-font-size')}px`,
-    '--fleet-chrome-alpha': String(getPref('fleet-chrome-opacity')),
-    '--fleet-content-alpha': String(getPref('fleet-content-opacity')),
-  } as CSSProperties
+  return readabilityStyleVars() as CSSProperties
 }
 
 function useFleetStyleVars() {

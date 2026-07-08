@@ -1,5 +1,5 @@
 import type { Editor } from 'tldraw'
-import { getPref } from '../preferences'
+import { getLayoutReadabilityTokens } from '../readabilityProfile'
 import { isCanvasPageShape, isDocumentPageShape } from './document-pages'
 import { laneDy, layoutOffset } from './fleet-layout-geometry'
 import type { FleetLayoutPlanInput, FleetLayoutVariant } from './fleet-layout-plan'
@@ -50,16 +50,17 @@ export function buildFleetLayoutPlanInput({
     panelCount,
   })
 
-  const leftW = getPref('layout-rail-width')
-  const gap = 10
-  const chatW3 = getPref('layout-chat-width')
-  const marginGap = getPref('layout-margin-gap')
-  const rightW = chatW3 * 2 + gap
   const vp = viewport ?? editor.getViewportScreenBounds()
+  const layoutTokens = getLayoutReadabilityTokens(vp)
+  const leftW = layoutTokens.leftW
+  const gap = layoutTokens.gap
+  const chatW3 = layoutTokens.chatW
+  const marginGap = layoutTokens.marginGap
+  const rightW = chatW3 * 2 + gap
   // HUD renders fleet shapes via a z=1 camera (see FleetHUD.tsx), so page units
   // map 1:1 to screen px — size off the raw viewport, not the main-camera zoom.
-  const totalH = Math.round(vp.h * getPref('layout-height-frac'))
-  const agentsH = 330
+  const totalH = layoutTokens.totalH
+  const agentsH = Math.min(Math.round(totalH * 0.42), Math.max(220, Math.round(totalH * 0.38)))
   const searchH = totalH - gap - agentsH
   const rightChatH = Math.round(totalH * 0.75)
   const docviewH = totalH - gap - rightChatH
