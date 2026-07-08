@@ -189,6 +189,17 @@ const INSTALL_PATH = (() => {
   }
 }
 
+// The daemon config (fence profiles + model aliases) is re-read from daemon.yaml
+// fresh on every loadConfig() call — which runs per-spawn at rpcSpawn — so edits to
+// daemon.yaml take effect on the NEXT spawn without a daemon restart. Both levers
+// ride this single read: withDaemonModelAliases injects daemonConfig.profiles
+// (fence) AND daemonConfig.models (aliases) into the spawnPolicy resolveSpawnGrant
+// consumes. Keep-last-good: a malformed daemon.yaml (readDaemonConfig throws) must
+// never half-apply — fall back to the last successfully parsed config and warn.
+// Running agents' leases are untouched; only new spawns re-read. The startup const
+// daemonSpawnConfig still seeds the ledger path + startup grants (those must not
+// move without a restart), and seeds _lastGoodDaemon here.
+let _lastGoodDaemon = daemonSpawnConfig
 function loadConfig() {
   let cfg
   if (_usingCustomConfigDir) {
@@ -197,7 +208,15 @@ function loadConfig() {
   } else {
     cfg = _loadSharedConfig()
   }
-  return withDaemonModelAliases(cfg, daemonSpawnConfig)
+  let freshDaemon
+  try {
+    freshDaemon = readDaemonConfig(DAEMON_CONFIG_FILE)
+    _lastGoodDaemon = freshDaemon
+  } catch (e) {
+    log.warn(`daemon config re-read failed, using last good: ${e.message}`)
+    freshDaemon = _lastGoodDaemon
+  }
+  return withDaemonModelAliases(cfg, freshDaemon)
 }
 
 function saveConfig(cfg) {
