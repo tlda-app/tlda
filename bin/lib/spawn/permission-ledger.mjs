@@ -1,6 +1,7 @@
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
+import { execFileSync } from 'child_process'
 import { Worker } from 'worker_threads'
 import Database from 'better-sqlite3'
 import YAML from 'yaml'
@@ -671,6 +672,29 @@ export function projectDaemonOverridePath(cwd) {
     const parent = path.dirname(dir)
     if (parent === dir) break
     dir = parent
+  }
+  // Walk-up found nothing. If cwd is a git worktree (e.g. an app agent in
+  // /private/tmp/*-wt), its `.tlda-daemon.yaml` lives in the MAIN checkout — a
+  // linked worktree does not copy the main tree's untracked/gitignored files, so
+  // walk-up alone misses it and the agent falls to the base `wd` cage. Resolve the
+  // main checkout via `git rev-parse --git-common-dir` (the canonical way, robust
+  // vs. hand-parsing the `.git` file): it yields `<main-checkout>/.git`, so its
+  // parent is the main checkout root — look for the override there. Any non-git cwd
+  // or git error falls through to null (base profile), unchanged from today. The
+  // walk-up runs first, so a worktree carrying its own `.tlda-daemon.yaml` wins.
+  if (cwd) {
+    try {
+      const resolved = path.resolve(cwd)
+      const commonDir = execFileSync('git', ['-C', resolved, 'rev-parse', '--git-common-dir'], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim()
+      if (commonDir) {
+        const mainCheckout = path.dirname(path.resolve(resolved, commonDir))
+        const f = path.join(mainCheckout, '.tlda-daemon.yaml')
+        if (fs.existsSync(f)) return f
+      }
+    } catch { /* non-git cwd or git error → base profile (null), unchanged from today */ }
   }
   return null
 }
