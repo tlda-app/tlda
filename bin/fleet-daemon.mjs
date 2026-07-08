@@ -3298,8 +3298,14 @@ async function rpcSpawn({
     const { spawn: nodeSpawn } = await import('./lib/spawn/index.mjs')
     const spawnMode = sessionId ? 'session' : (refresh ? 'refresh' : (respawn ? 'respawn' : 'fresh'))
     const preallocatedAgentId = agent_id || ((spawnMode === 'fresh' || spawnMode === 'session') ? newFleetId() : undefined)
+    // Only a FRESHLY-MINTED id (fresh/session, no caller agent_id) is a throwaway we
+    // preallocate + roll back in this call. A respawn carries an existing agent_id →
+    // its grant is durable (possibly grandfather/infill-sourced) and must NOT be written
+    // or deleted by the spawn lifecycle, or a launch failure silently wipes a real
+    // seat's grant (the respawn-delete bug that vanished 7725aeba's grant repeatedly).
+    const mintedThisCall = !agent_id && (spawnMode === 'fresh' || spawnMode === 'session')
     const crashLogPath = spawnCrashLogPath({ agentName, agent_id: preallocatedAgentId || agent_id, tmux_session: null })
-    if (preallocatedAgentId) {
+    if (mintedThisCall) {
       await permissionLedger.set(preallocatedAgentId, {
         spawnPolicy: grant.grantedPolicy,
         permissionSet: grant.grantedPermissionSet,
@@ -3331,7 +3337,7 @@ async function rpcSpawn({
         identityConfigDir: CONFIG_DIR,
       })
     } catch (e) {
-      if (preallocatedAgentId) await permissionLedger.delete(preallocatedAgentId).catch(() => {})
+      if (mintedThisCall) await permissionLedger.delete(preallocatedAgentId).catch(() => {})
       throw e
     }
     traceDaemonSpawn('launched', {
@@ -3347,7 +3353,7 @@ async function rpcSpawn({
     try {
       await tmux('has-session', '-t', launched.tmuxSession)
     } catch (e) {
-      if (preallocatedAgentId) await permissionLedger.delete(preallocatedAgentId).catch(() => {})
+      if (mintedThisCall) await permissionLedger.delete(preallocatedAgentId).catch(() => {})
       const detail = ((e.stderr || e.message || '').trim().split('\n').filter(Boolean).pop()) || 'tmux session check failed'
       return {
         ok: false,
@@ -3358,7 +3364,7 @@ async function rpcSpawn({
       }
     }
     if (launched.harness === 'codex' && !launched.resumeId) {
-      if (preallocatedAgentId) await permissionLedger.delete(preallocatedAgentId).catch(() => {})
+      if (mintedThisCall) await permissionLedger.delete(preallocatedAgentId).catch(() => {})
       return {
         ok: false,
         name: agentName,
