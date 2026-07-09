@@ -32,13 +32,19 @@ import { buildModel, assertRoundTrip } from '../lib/outline/model.mjs'
 import { findTextNearSourceLine, sourceTextSpanToPdfSpans } from '../lib/synctex-query.mjs'
 import { buildMarkdown, buildHtml, buildSlides } from '../lib/format-builders.mjs'
 import { realizeProjectMarkdownArtifact, writeProjectMarkdownArtifact } from '../lib/project-artifact-materializer.mjs'
-import { markdownColumnFileForSource } from '../lib/document-columns.mjs'
+import { markdownColumnFileForSource, listProjectPartColumns, pageInfoFromDocumentColumns } from '../lib/document-columns.mjs'
 import { shouldBuildOnPush } from '../lib/build-decision.mjs'
 import historyRoutes from './history.mjs'
 import { linkOverleaf, unlinkOverleaf, syncOverleaf, pushSourceToOverleaf, stopPolling, isPolling } from '../lib/overleaf-sync.mjs'
 import { getRoomRecords, getRecord, putShape, updateShape, deleteShape, onShapeChange, getOrCreateRoom, broadcastSignal, getLastSignal, onSignal, replaceRoomSnapshot, getShapesAt, emitGlobalEvent, onGlobalEvent } from '../lib/sync-rooms.mjs'
 
 const router = Router()
+
+// Formats that already write their own page-info.json via their own build
+// pipeline (server/lib/format-builders.mjs) — writing a parts-only one would
+// clobber it. Everything else (svg, png, diff, ...) has no page-info.json of
+// its own, so a project's parts get one.
+const FORMATS_WITH_OWN_PAGE_INFO = new Set(['markdown', 'html', 'slides'])
 
 // Mount history sub-router
 router.use('/:name/history', historyRoutes)
@@ -165,6 +171,12 @@ router.post('/:name/parts', requireRw, async (req, res) => {
     const project = readProject(req.params.name)
     if (project?.format === 'markdown') {
       await buildMarkdown(req.params.name)
+    } else if (!FORMATS_WITH_OWN_PAGE_INFO.has(project?.format)) {
+      // svg/png/diff and any other format with no page-info.json of its own —
+      // write the parts-only manifest and tell open viewers to reload.
+      // (html/slides own page-info.json via their own build pipeline; wiring
+      // parts into those is a separate, unstarted piece.)
+      writePartsPageInfo(req.params.name)
     }
     res.json({ ok: true, ...result, outputFile: markdownColumnFileForSource(result.projectPath) })
   } catch (e) {
@@ -172,6 +184,29 @@ router.post('/:name/parts', requireRw, async (req, res) => {
     res.status(500).json({ ok: false, error: message })
   }
 })
+
+// Markdown-part columns for a project whose own main document is NOT
+// markdown — e.g. the scratch/notes parts on a LaTeX/svg project. Any
+// project format can have parts; each part always renders through the
+// markdown renderer regardless of the parent project's own format.
+router.get('/:name/parts', requireRead, (req, res) => {
+  const project = readProject(req.params.name)
+  if (!project) return res.status(404).json({ error: 'Project not found' })
+  const columns = listProjectPartColumns(req.params.name)
+  res.json(pageInfoFromDocumentColumns(req.params.name, columns, { forceGroup: true }))
+})
+
+// Regenerate the parts-only page-info manifest for a non-markdown project
+// and tell any open viewers to reload — the same signal:reload path that
+// already drives live updates for markdown-format projects.
+function writePartsPageInfo(name) {
+  const columns = listProjectPartColumns(name)
+  const pageInfo = pageInfoFromDocumentColumns(name, columns, { forceGroup: true })
+  const outDir = getOutputDir(name)
+  mkdirSync(outDir, { recursive: true })
+  writeFileSync(join(outDir, 'page-info.json'), JSON.stringify(pageInfo, null, 2))
+  broadcastSignal(`doc-${name}`, 'signal:reload', { parts: pageInfo.length, timestamp: Date.now() })
+}
 
 // Write back a project-owned markdown artifact part.
 router.put('/:name/parts/:partId/markdown', requireRw, async (req, res) => {

@@ -3102,10 +3102,16 @@ app.use('/docs', (req, res, next) => {
   if (filePath.endsWith('.html')) {
     try {
       const project = readProject(name)
-      if (project?.format === 'markdown') {
-        const { listDocumentColumns } = await import('./lib/document-columns.mjs')
+      if (project) {
+        const { listDocumentColumns, listProjectPartColumns } = await import('./lib/document-columns.mjs')
         const { renderMarkdownColumnHtml } = await import('./lib/build-markdown.mjs')
-        const columns = listDocumentColumns(name, { project, srcDir: join(PROJECTS_DIR, name, 'source') })
+        // Markdown-format projects: main file + parts (existing behavior).
+        // Any other format: its markdown PARTS still render through this same
+        // markdown renderer — the parent project's own format only owns its
+        // own main document, not its parts.
+        const columns = project.format === 'markdown'
+          ? listDocumentColumns(name, { project, srcDir: join(PROJECTS_DIR, name, 'source') })
+          : listProjectPartColumns(name, { srcDir: join(PROJECTS_DIR, name, 'source') })
         const column = columns.find(c => c.file === filePath)
         if (column) {
           const source = readFileSync(join(PROJECTS_DIR, name, 'source', column.sourceFile), 'utf8')

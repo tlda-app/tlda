@@ -375,6 +375,29 @@ async function reloadHtmlPages(editor: Editor, document: SvgDocument): Promise<R
 }
 
 /**
+ * Markdown parts (notes/scratch) attached to a non-html/markdown project —
+ * e.g. a LaTeX project's scratch columns. They render through the exact same
+ * markdown renderer and html-page shape machinery as a markdown project's
+ * own columns, on their own TLDraw page — separate from this document's SVG
+ * pages, which createSvgShapes owns exclusively. Best-effort and self-
+ * correcting: a project with no parts yet just 404s and no-ops.
+ */
+async function refreshSvgProjectParts(editor: Editor, document: SvgDocument) {
+  const basePath = document.basePath || `${import.meta.env.BASE_URL || '/'}docs/${document.name}/`
+  try {
+    const res = await fetch(`${basePath}page-info.json?t=${Date.now()}`)
+    if (!res.ok) return
+    const pageInfos = await res.json()
+    if (!Array.isArray(pageInfos) || pageInfos.length === 0) return
+    const partsDoc = createHtmlDocumentFromPageInfo(document.name, basePath, pageInfos)
+    document.partPages = partsDoc.pages
+    createHtmlShapes(editor, { ...document, pages: partsDoc.pages, format: 'html' })
+  } catch (e) {
+    console.warn('[Parts] refresh failed:', (e as Error).message)
+  }
+}
+
+/**
  * Re-fetch SVG pages and hot-swap their TLDraw assets.
  * Called when a reload signal arrives from the MCP server after a rebuild.
  */
@@ -383,9 +406,14 @@ export async function reloadPages(
   document: SvgDocument,
   pageNumbers: number[] | null, // null = all pages
 ): Promise<ReloadResult> {
+  if (document.format === 'html' || document.format === 'markdown') return reloadHtmlPages(editor, document)
+
+  // Markdown parts attached to this project — independent of whatever this
+  // document's own reload does below (own try/catch, never blocks it).
+  void refreshSvgProjectParts(editor, document)
+
   // Hot-reload is LaTeX-specific (re-fetch SVGs after rebuild)
   if (document.format === 'png' || document.format === 'diff') return { failedPages: [] }
-  if (document.format === 'html' || document.format === 'markdown') return reloadHtmlPages(editor, document)
 
   const gen = ++reloadGeneration
 
@@ -650,6 +678,13 @@ export function setupSvgEditor(editor: Editor, document: SvgDocument): {
     createImageShapes(editor, document)
   } else {
     createSvgShapes(editor, document)
+  }
+
+  // Markdown parts (scratch/notes) attached to this project, if any — not
+  // html/markdown format's own concern (those already include parts in
+  // `document.pages` via page-info.json).
+  if (document.format !== 'html' && document.format !== 'markdown') {
+    void refreshSvgProjectParts(editor, document)
   }
 
   // Set up diff layout: old page opacity, highlight overlays

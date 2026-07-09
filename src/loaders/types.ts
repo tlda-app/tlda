@@ -55,6 +55,10 @@ export interface SvgDocument {
   format?: 'svg' | 'png' | 'html' | 'diff' | 'slides' | 'markdown'
   diffLayout?: DiffLayout
   targets?: TargetInfo[]  // present for multi-target projects
+  // Markdown parts (notes/scratch) attached to a non-html/markdown project —
+  // e.g. a LaTeX project's scratch columns. Rendered as html-page shapes on
+  // their own TLDraw page, separate from this document's own `pages`.
+  partPages?: SvgPage[]
 }
 
 export interface DiffHighlight {
