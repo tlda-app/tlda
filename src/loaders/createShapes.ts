@@ -114,7 +114,11 @@ export function createSvgShapes(editor: Editor, document: SvgDocument): boolean 
  * Each chapter gets its own TLDraw page. Handles migration from
  * old single-page format (reparents annotations to correct pages).
  */
-export function createHtmlShapes(editor: Editor, document: SvgDocument): boolean {
+export function createHtmlShapes(
+  editor: Editor,
+  document: SvgDocument,
+  { reuseDefaultPage = true }: { reuseDefaultPage?: boolean } = {},
+): boolean {
   const existingShapes = editor.getCurrentPageShapes()
   const allHtmlShapes = getAllHtmlPageShapes(editor)
   const expectedIds = new Set(document.pages.map(page => page.shapeId))
@@ -161,7 +165,7 @@ export function createHtmlShapes(editor: Editor, document: SvgDocument): boolean
 
   for (let pi = 0; pi < pageIds.length; pi++) {
     const tlPageId = pageIds[pi]
-    if (pi === 0) {
+    if (pi === 0 && reuseDefaultPage) {
       const firstPage = document.pages.find(p => p.tldrawPageId === tlPageId)
       if (firstPage?.tldrawPageName) {
         editor.renamePage(defaultPageId, firstPage.tldrawPageName)

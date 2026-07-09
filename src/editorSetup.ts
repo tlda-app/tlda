@@ -384,14 +384,19 @@ async function reloadHtmlPages(editor: Editor, document: SvgDocument): Promise<R
  */
 async function refreshSvgProjectParts(editor: Editor, document: SvgDocument) {
   const basePath = document.basePath || `${import.meta.env.BASE_URL || '/'}docs/${document.name}/`
+  // Distinct namespace from the main document's own page/shape ids — the
+  // main document already owns `${name}-page-N`; parts must never collide
+  // with that, and must never land on the main document's default TLDraw
+  // page (reuseDefaultPage: false).
+  const partsName = `${document.name}--parts`
   try {
     const res = await fetch(`${basePath}page-info.json?t=${Date.now()}`)
     if (!res.ok) return
     const pageInfos = await res.json()
     if (!Array.isArray(pageInfos) || pageInfos.length === 0) return
-    const partsDoc = createHtmlDocumentFromPageInfo(document.name, basePath, pageInfos)
+    const partsDoc = createHtmlDocumentFromPageInfo(partsName, basePath, pageInfos)
     document.partPages = partsDoc.pages
-    createHtmlShapes(editor, { ...document, pages: partsDoc.pages, format: 'html' })
+    createHtmlShapes(editor, { ...document, name: partsName, pages: partsDoc.pages, format: 'html' }, { reuseDefaultPage: false })
   } catch (e) {
     console.warn('[Parts] refresh failed:', (e as Error).message)
   }
