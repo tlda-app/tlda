@@ -668,7 +668,7 @@ export function renderMarkdownColumnHtml({ source, title, isTaskDoc }) {
   <title>${title.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css">
   <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; font-size: 0.875rem; font-weight: 400; line-height: 1.5; color: #212529; max-width: 680px; margin: 0 auto; padding: 48px 0 80px; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; font-size: 0.875rem; font-weight: 400; line-height: 1.5; color: #212529; max-width: none; margin: 0; padding: 48px 40px 80px; }
     h1, h2, h3, h4 { font-weight: 500; line-height: 1.25; margin-top: 1.8em; margin-bottom: 0.5em; }
     h1 { font-size: 1.8em; margin-top: 0; }
     h2 { font-size: 1.35em; }
