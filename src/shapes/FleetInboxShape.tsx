@@ -1101,7 +1101,6 @@ function FleetInboxInner({ shape }: { shape: any }) {
         {/* Body */}
         {activeThread ? (
           <ConversationView
-            shapeId={shape.id}
             thread={activeThread}
             ctx={ctx}
             myId={myId}
@@ -1734,7 +1733,6 @@ function ItemDetail({ item, onApprove }: { item: Exclude<DetailItem, { kind: 'ag
 }
 
 function ConversationView({
-  shapeId,
   thread,
   ctx,
   myId,
@@ -1744,7 +1742,6 @@ function ConversationView({
   onEjectPointerUp,
   onEjectPointerCancel,
 }: {
-  shapeId: TLShapeId
   thread: Thread
   ctx: any
   myId: string | null
@@ -1754,7 +1751,6 @@ function ConversationView({
   onEjectPointerUp: (e: React.PointerEvent) => void
   onEjectPointerCancel: () => void
 }) {
-  const editor = useEditor()
   const scrollRef = useRef<HTMLDivElement>(null)
   const wasNearBottomRef = useRef(true)
   const downTargetRef = useRef<HTMLElement | null>(null)
@@ -1818,17 +1814,15 @@ function ConversationView({
     sendWithRetry(1)
   }, [scrollToBottom])
 
-  const openMarkdownColumn = useCallback((title: string, markdown: string, sourceEl: HTMLElement) => {
+  const openMarkdownColumn = useCallback((title: string, markdown: string, _sourceEl: HTMLElement, source?: { path?: string; section?: string }) => {
     openChatMarkdownColumn({
-      editor,
-      sourceShapeId: shapeId,
       title,
       markdown,
-      sourceEl,
-      placementEl: scrollRef.current,
+      sourcePath: source?.path,
+      sourceSection: source?.section,
       logPrefix: 'fleet-inbox',
     })
-  }, [editor, shapeId])
+  }, [])
 
   const openMarkdownChipFromEventTarget = useCallback((target: EventTarget | null, stopPropagation: () => void) => {
     if (!(target instanceof HTMLElement)) return false

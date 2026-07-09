@@ -2203,17 +2203,15 @@ function FleetChatInner({ shape }: { shape: any }) {
   useEffect(() => { docRef.current = doc }, [doc])
   const shapeContainerRef = useRef<HTMLDivElement>(null)
 
-  const openMarkdownColumn = useCallback((title: string, markdown: string, sourceEl: HTMLElement) => {
+  const openMarkdownColumn = useCallback((title: string, markdown: string, _sourceEl: HTMLElement, source?: { path?: string; section?: string }) => {
     openChatMarkdownColumn({
-      editor,
-      sourceShapeId: shape.id,
       title,
       markdown,
-      sourceEl,
-      placementEl: shapeContainerRef.current,
+      sourcePath: source?.path,
+      sourceSection: source?.section,
       logPrefix: 'fleet-chat',
     })
-  }, [editor, shape.id])
+  }, [])
 
   // Incremental render cache: non-activity messages are independent and can be
   // cached by (msgKey, ctxVersion). When ctx changes (agent rename, task done),

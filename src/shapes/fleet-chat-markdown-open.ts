@@ -1,40 +1,20 @@
-import type { Editor, TLShapeId } from 'tldraw'
-import { createTemporaryMarkdownColumn } from './FleetPillShape'
-import { getDeviceId, getHumanId, isDeviceReady } from '../fleet/fleet-data.mjs'
-import { dispatchManagedAnnotationViewerRequest } from '../wm/annotation-viewer-surface'
-import { clientPointToPage } from '../wm/viewport-coordinates'
-
 type MarkdownColumnOptions = {
-  editor: Editor
-  sourceShapeId: string
   title: string
   markdown: string
-  sourceEl: HTMLElement
-  placementEl?: HTMLElement | null
+  sourcePath?: string
+  sourceSection?: string
   logPrefix: string
+}
+
+type ChipSource = {
+  path?: string
+  section?: string
 }
 
 type OpenMarkdownChipOptions = {
   target: HTMLElement
   stopPropagation: () => void
-  openMarkdownColumn: (title: string, markdown: string, sourceEl: HTMLElement) => void
-}
-
-function isManagedSurfaceProofFixtureEnabled() {
-  if (typeof window === 'undefined') return false
-  return new URLSearchParams(window.location.search).get('wmManagedSurfaceProof') === '1'
-}
-
-function currentManagedSurfaceOwner() {
-  if (!isDeviceReady()) return { userId: '', deviceId: '' }
-  return { userId: getHumanId(), deviceId: getDeviceId() }
-}
-
-function managedViewportSize() {
-  return {
-    w: typeof window === 'undefined' ? 1200 : window.innerWidth,
-    h: typeof window === 'undefined' ? 800 : window.innerHeight,
-  }
+  openMarkdownColumn: (title: string, markdown: string, sourceEl: HTMLElement, source?: ChipSource) => void
 }
 
 export async function fetchMarkdownChipText(chipUrl: string, chipPath: string): Promise<string> {
@@ -55,56 +35,59 @@ export async function fetchMarkdownChipText(chipUrl: string, chipPath: string): 
   throw lastError instanceof Error ? lastError : new Error('markdown chip fetch failed')
 }
 
-export function openChatMarkdownColumn(options: MarkdownColumnOptions) {
-  const { editor, sourceShapeId, title, markdown, sourceEl, placementEl, logPrefix } = options
-  const sourceRect = sourceEl.getBoundingClientRect()
-  const left = Math.max(12, sourceRect.left)
-  const top = Math.max(12, sourceRect.bottom + 8)
-  const mainEditor = (window as Window & { __tldraw_editor__?: Editor }).__tldraw_editor__ || editor
-  const chipAnchor = clientPointToPage(mainEditor, { x: left, y: top })
-  const occupiedBounds = (mainEditor.getCurrentPageShapes() as Array<{ id: TLShapeId; meta?: { temporaryMarkdownColumn?: unknown } }>)
-    .filter((s) => !s.meta?.temporaryMarkdownColumn)
-    .map((s) => mainEditor.getShapePageBounds(s.id))
-    .filter(Boolean) as Array<{ x: number; y: number; w: number; h: number }>
-  const anchor = occupiedBounds.length
-    ? {
-        x: Math.max(...occupiedBounds.map(b => b.x + b.w)) + 10000,
-        y: Math.max(...occupiedBounds.map(b => b.y + b.h)) + 10000,
-      }
-    : chipAnchor
+export type MaterializeChipResult = {
+  ok: boolean
+  outputFile?: string
+  error?: string
+}
 
-  void createTemporaryMarkdownColumn(mainEditor, anchor, title, markdown || title, {
-    sourceChatShapeId: sourceShapeId,
-    // CLICK path: render through the REAL main-document path (built project served
-    // at /docs/..), not the data:text/html lookalike. Drag-drop stays on the data-URL.
-    realRender: true,
-    wmManagedSurfaceProofFixture: isManagedSurfaceProofFixtureEnabled(),
-  }).then((result) => {
-    if (!result?.bounds) return
-    const chipRect = sourceEl.getBoundingClientRect()
-    const placementRect = placementEl?.getBoundingClientRect() ?? chipRect
-    dispatchManagedAnnotationViewerRequest({
-      surfaceKey: result.surface.surfaceId,
-      bounds: { x: result.bounds.x, y: result.bounds.y, w: result.bounds.w, h: result.bounds.h },
-      shapeIds: [result.surface.payload.shapeId],
-      label: title || 'Markdown chip',
-      chipRect: {
-        left: placementRect.left,
-        top: placementRect.top,
-        right: placementRect.right,
-        bottom: placementRect.bottom,
-        width: placementRect.width,
-        height: placementRect.height,
-      },
-      useFullBounds: true,
-      pinned: true,
-      owner: currentManagedSurfaceOwner(),
-      source: result.surface.surfaceId,
-      viewport: managedViewportSize(),
-      centerOnAnchor: true,
+// Turns a shared/embedded markdown chip into a real, synced column of the
+// document currently open on canvas — not a separate project, not a
+// throwaway snapshot. The target project is whatever `?doc=` is loaded;
+// the server writes the file as a project part and rebuilds, and the
+// existing reload/signal pipeline picks up the new column for everyone
+// looking at that doc (the same mechanism that already keeps project
+// parts/notes live).
+export async function materializeMarkdownChip({
+  markdown,
+  title,
+  sourcePath,
+  sourceSection,
+}: {
+  markdown: string
+  title: string
+  sourcePath?: string
+  sourceSection?: string
+}): Promise<MaterializeChipResult> {
+  const docName = typeof window === 'undefined' ? null : new URLSearchParams(window.location.search).get('doc')
+  if (!docName) return { ok: false, error: 'no open document to attach to' }
+  try {
+    const res = await fetch(`/api/projects/${docName}/parts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        markdown,
+        title,
+        sourcePath,
+        provenance: sourceSection ? { section: sourceSection } : undefined,
+      }),
     })
-  }).catch((err) => {
-    console.warn(`[${logPrefix}] markdown annotation viewer create failed:`, err?.message || err)
+    const result = await res.json().catch(() => null)
+    if (!res.ok || !result?.ok) {
+      return { ok: false, error: result?.error || `materialize failed: HTTP ${res.status}` }
+    }
+    return { ok: true, outputFile: result.outputFile }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+export function openChatMarkdownColumn(options: MarkdownColumnOptions) {
+  const { title, markdown, sourcePath, sourceSection, logPrefix } = options
+  void materializeMarkdownChip({ markdown, title, sourcePath, sourceSection }).then((result) => {
+    if (!result.ok) {
+      console.warn(`[${logPrefix}] markdown materialize failed:`, result.error)
+    }
   })
 }
 
@@ -113,17 +96,22 @@ export function openMarkdownChipFromTarget(options: OpenMarkdownChipOptions): bo
   const mdChip = target.closest('.ref-chip-doc, .md-file-card') as HTMLElement | null
   if (!mdChip) return false
 
+  const chipUrl = mdChip.dataset.url || ''
+  const chipPath = mdChip.dataset.path || ''
+  const chipSection = mdChip.dataset.section || undefined
+
   if (mdChip.classList.contains('src-chip')) {
     stopPropagation()
-    const line = mdChip.closest('.chat-line')
-    const body = line?.querySelector('.message-body') as HTMLElement | null
     const title = mdChip.getAttribute('title') || mdChip.textContent || 'source'
-    openMarkdownColumn(title, body?.innerText || body?.textContent || title, mdChip)
+    // Provenance chips are a shared-file chip plus a section focus, not a
+    // section-only snapshot — fetch the whole raw source file (same path as
+    // a plain file chip), never the rendered chat bubble text.
+    fetchMarkdownChipText(chipUrl, chipPath)
+      .then(text => openMarkdownColumn(title, text, mdChip, { path: chipPath, section: chipSection }))
+      .catch(() => openMarkdownColumn(title, `# Failed to load\n\n${chipPath || title}`, mdChip, { path: chipPath, section: chipSection }))
     return true
   }
 
-  const chipUrl = mdChip.dataset.url || ''
-  const chipPath = mdChip.dataset.path || ''
   const isMd = /\.md$/i.test(chipUrl || chipPath)
   const fetchUrl = chipUrl || (chipPath ? `/api/read-file?path=${encodeURIComponent(chipPath)}` : '')
   if (!isMd || !fetchUrl) return false
@@ -137,10 +125,10 @@ export function openMarkdownChipFromTarget(options: OpenMarkdownChipOptions): bo
         if (src.startsWith('http') || src.startsWith('/')) return match
         return `![${alt}](${baseUrl}${src})`
       }) : text
-      openMarkdownColumn(title, resolved, mdChip)
+      openMarkdownColumn(title, resolved, mdChip, { path: chipPath })
     })
     .catch(() => {
-      openMarkdownColumn(title, `# Failed to load\n\n${chipUrl || chipPath || title}`, mdChip)
+      openMarkdownColumn(title, `# Failed to load\n\n${chipUrl || chipPath || title}`, mdChip, { path: chipPath })
     })
   return true
 }

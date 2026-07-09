@@ -34,12 +34,6 @@ const TEMP_MARKDOWN_SHAPE_ID = createShapeId('fleet-markdown-chip-temp-column')
 const TEMP_MARKDOWN_W = 800
 const TEMP_MARKDOWN_H = 1200
 const TEMP_MARKDOWN_PARKING_OFFSET = 50000
-// Real-render (chip-CLICK) path: a temporary markdown project that's built by the
-// pipeline and served at /docs/<project>/index.html — the SAME render path as the
-// main document (true html-page shapes, correct input handling). Restored from
-// 933332be^; 933332be regressed chip-click doc-open to a data:text/html lookalike.
-const TEMP_MARKDOWN_PROJECT = 'fleet-markdown-chip-temp'
-const TEMP_MARKDOWN_FILE = 'content.md'
 
 const FLEET_TYPES = FLEET_SHAPE_TYPES
 
@@ -228,44 +222,6 @@ function getShapeClipBounds(editor: Editor, shapeId: TLShapeId) {
   return { x: bounds.x, y: bounds.y, w: bounds.w, h: bounds.h }
 }
 
-function encodeUtf8Base64(text: string): string {
-  const bytes = new TextEncoder().encode(text)
-  let binary = ''
-  for (const byte of bytes) binary += String.fromCharCode(byte)
-  return btoa(binary)
-}
-
-async function ensureTemporaryMarkdownProject() {
-  const createRes = await fetch('/api/projects', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      name: TEMP_MARKDOWN_PROJECT,
-      title: 'Markdown chip',
-      format: 'markdown',
-      mainFile: TEMP_MARKDOWN_FILE,
-    }),
-  })
-  if (!createRes.ok && createRes.status !== 409) {
-    throw new Error(`project create failed: ${createRes.status}`)
-  }
-}
-
-async function waitForTemporaryMarkdownBuild(startedAt: number, allowExisting = false) {
-  const deadline = startedAt + 8000
-  while (Date.now() < deadline) {
-    const res = await fetch(`/api/projects/${TEMP_MARKDOWN_PROJECT}?t=${Date.now()}`)
-    if (res.ok) {
-      const project = await res.json()
-      const lastBuild = project.lastBuild ? Date.parse(project.lastBuild) : 0
-      if (project.buildStatus === 'success' && project.pages > 0 && (allowExisting || lastBuild >= startedAt - 1000)) return
-      if (project.buildStatus === 'error') throw new Error('markdown build failed')
-    }
-    await new Promise(resolve => setTimeout(resolve, 200))
-  }
-  throw new Error('markdown build timed out')
-}
-
 export async function createTemporaryMarkdownColumn(
   editor: Editor,
   pagePoint: { x: number; y: number },
@@ -274,28 +230,9 @@ export async function createTemporaryMarkdownColumn(
   meta: Record<string, unknown> = {},
 ) {
   const source = markdown.trim() ? markdown : `# ${title || 'Markdown chip'}`
-  // CLICK path (`realRender`) renders the doc through the REAL main-document path:
-  // create + build + serve a real markdown project → true html-page shapes with
-  // correct input handling. DRAG-drop leaves `realRender` unset and keeps the
-  // lightweight data:text/html render (unchanged — "don't touch drag").
-  let url: string
-  if (meta.realRender) {
-    const startedAt = Date.now()
-    await ensureTemporaryMarkdownProject()
-    const pushRes = await fetch(`/api/projects/${TEMP_MARKDOWN_PROJECT}/push`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        files: [{ path: TEMP_MARKDOWN_FILE, content: encodeUtf8Base64(source), encoding: 'base64' }],
-      }),
-    })
-    if (!pushRes.ok) throw new Error(`markdown push failed: ${pushRes.status}`)
-    const pushResult = await pushRes.json().catch(() => null)
-    await waitForTemporaryMarkdownBuild(startedAt, !!pushResult?.unchanged)
-    url = `/docs/${TEMP_MARKDOWN_PROJECT}/index.html?t=${Date.now()}`
-  } else {
-    url = temporaryMarkdownDataUrl(title || 'Markdown chip', source)
-  }
+  // Drag-drop only (chip CLICK no longer goes through this — it materializes
+  // a real project part instead; see fleet-chat-markdown-open.ts).
+  const url = temporaryMarkdownDataUrl(title || 'Markdown chip', source)
   const parkedPoint = getParkedMarkdownPoint(editor, pagePoint)
   const existing = editor.getShape(TEMP_MARKDOWN_SHAPE_ID)
   if (existing) {

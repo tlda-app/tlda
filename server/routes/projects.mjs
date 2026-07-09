@@ -31,7 +31,8 @@ import { outlineForRegion, regionFromSpan, structuralLeaves } from '../lib/outli
 import { buildModel, assertRoundTrip } from '../lib/outline/model.mjs'
 import { findTextNearSourceLine, sourceTextSpanToPdfSpans } from '../lib/synctex-query.mjs'
 import { buildMarkdown, buildHtml, buildSlides } from '../lib/format-builders.mjs'
-import { writeProjectMarkdownArtifact } from '../lib/project-artifact-materializer.mjs'
+import { realizeProjectMarkdownArtifact, writeProjectMarkdownArtifact } from '../lib/project-artifact-materializer.mjs'
+import { markdownColumnFileForSource } from '../lib/document-columns.mjs'
 import { shouldBuildOnPush } from '../lib/build-decision.mjs'
 import historyRoutes from './history.mjs'
 import { linkOverleaf, unlinkOverleaf, syncOverleaf, pushSourceToOverleaf, stopPolling, isPolling } from '../lib/overleaf-sync.mjs'
@@ -142,6 +143,34 @@ router.get('/:name', requireRead, (req, res) => {
     ...project,
     ...(activeBuild?.building && { activeBuild }),
   })
+})
+
+// Materialize shared/embedded markdown as a real, synced column of this project
+// (not a separate project, not a temp snapshot) — the same manifest/rebuild
+// pipeline that already backs project parts/notes.
+router.post('/:name/parts', requireRw, async (req, res) => {
+  try {
+    const result = realizeProjectMarkdownArtifact({
+      project: req.params.name,
+      markdown: req.body?.markdown,
+      sourcePath: req.body?.sourcePath,
+      title: req.body?.title,
+      actor: req.body?.actor,
+      provenance: req.body?.provenance,
+    })
+    if (!result.ready) {
+      const status = result.status === 'not materialized' && /no project resolved/i.test(result.error || '') ? 404 : 400
+      return res.status(status).json({ ok: false, error: result.error, ...result })
+    }
+    const project = readProject(req.params.name)
+    if (project?.format === 'markdown') {
+      await buildMarkdown(req.params.name)
+    }
+    res.json({ ok: true, ...result, outputFile: markdownColumnFileForSource(result.projectPath) })
+  } catch (e) {
+    const message = e?.message || String(e)
+    res.status(500).json({ ok: false, error: message })
+  }
 })
 
 // Write back a project-owned markdown artifact part.

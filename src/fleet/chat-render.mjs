@@ -592,7 +592,8 @@ export function renderChatLine(m, ctx) {
     const _section = _src.section ? esc(String(_src.section)) : ''
     const _sectionHtml = _section ? `<span class="src-chip-section">§${_section}</span>` : ''
     const _title = `from ${esc(String(_src.file))}${_section ? ' §' + _section : ''}`
-    sourceChipHtml = ` <span class="ref-chip ref-chip-doc src-chip" data-path="${esc(String(_src.file))}" title="${_title}" draggable="true"><span class="ref-chip-doc-icon">📄</span>${_fileName}${_sectionHtml}</span>`
+    const _sectionAttr = _section ? ` data-section="${_section}"` : ''
+    sourceChipHtml = ` <span class="ref-chip ref-chip-doc src-chip" data-path="${esc(String(_src.file))}"${_sectionAttr} title="${_title}" draggable="true"><span class="ref-chip-doc-icon">📄</span>${_fileName}${_sectionHtml}</span>`
   }
   // Amend version stepper (V{n} ◀▶) — present only on a message that's been
   // amended (folded by FleetChatShape, which sets m._amendStepper).
