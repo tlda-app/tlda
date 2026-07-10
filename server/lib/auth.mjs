@@ -27,8 +27,13 @@ export function initAuth() {
     return
   }
 
-  tokenRead = getReadToken()
-  tokenRw = process.env.TLDA_TOKEN_RW || getRwToken()
+  const flySecretTokensOnly = !!process.env.TLDA_FLEET_SERVER
+  tokenRead = process.env.TLDA_TOKEN_READ || (flySecretTokensOnly ? null : getReadToken())
+  tokenRw = process.env.TLDA_TOKEN_RW || (flySecretTokensOnly ? null : getRwToken())
+
+  if (flySecretTokensOnly && !tokenRead && !tokenRw) {
+    throw new Error('[auth] TLDA_FLEET_SERVER is set but no TLDA_TOKEN_READ/TLDA_TOKEN_RW Fly secrets are configured')
+  }
 
   authEnabled = !!(tokenRead || tokenRw)
 
