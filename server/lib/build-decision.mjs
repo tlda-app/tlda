@@ -60,7 +60,7 @@ export function shouldBuildOnPush(project, name, { changedFiles = [], anyChanged
         return { build: false, eager: false, reason: 'outside-tree' }
       }
     } catch (e) {
-      return { build: false, eager: false, reason: 'relevant-files-parse-failed' }
+      return { build: true, eager: false, reason: `relevant-files-parse-failed: ${e.message}` }
     }
   }
 
