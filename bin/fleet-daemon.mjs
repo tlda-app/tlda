@@ -323,13 +323,9 @@ const harnessRuntime = createHarnessRuntime({
 // ---------- activity event buffer ----------
 
 function bufferActivity(agentId, evts) {
-  // Liveness #B(a): a JSONL line IS a per-turn heartbeat — the agent just processed
-  // a turn, so it is alive NOW. Warm the liveness cache (keyed by tmux_session) and
-  // stamp last_seen, so rpcCheckAlive / the wake path read "alive" from activity
-  // without a tmux probe. Strictly additive: it only ever marks a live agent alive
-  // (never dead), so it can't cause respawn-churn — it just keeps the cache warm and
-  // shrinks the cold-miss window the 30s sweep used to own (the step that lets the
-  // sweep later demote to a slow drift-reconciler).
+  // A JSONL line is a per-turn heartbeat. Warm the liveness cache keyed by
+  // tmux_session so rpcCheckAlive / wake read "alive" from observed activity,
+  // without a fleet-wide background demotion sweep.
   agentLiveness.noteActivity(agentId)
   // Any buffered activity (claude/codex JSONL or goose sqlite) is a reason to
   // watch this agent's pane frequently — arm it for the status state machine.
@@ -440,16 +436,7 @@ const agentStatus = createAgentStatus({
 
 let gooseSupervisor
 const agentLiveness = createAgentLiveness({
-  tmuxArgs: TMUX_ARGS,
-  log,
-  sendMsg,
   getAgents: () => agents,
-  harnessAdapters: harnessRuntime.harnessAdapters,
-  listSessions: rpcListSessions,
-  agentStatus,
-  jsonlIngestor,
-  isConnected: () => _serverReady && _rws?.connected,
-  gooseKickSweep: candidateAgents => gooseSupervisor.kickSweep(candidateAgents),
 })
 
 const promptPlan = createPromptPlan({
