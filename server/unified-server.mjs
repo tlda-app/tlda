@@ -5873,7 +5873,11 @@ function projectsForDaemon() {
           // Filter to only author-dir paths (not the server mirror paths)
           watchFiles = daemonWatchFilesFromAbsolutePaths(p, rf.files || [])
         }
-      } catch {}
+      } catch (e) {
+        // Keep daemon welcome/project updates flowing; null watchFiles makes the
+        // daemon watch the main file until the next build regenerates paper scope.
+        console.warn(`[daemon] relevant-files.json unavailable for ${p.name}; using main-file watch only: ${e.message}`)
+      }
       if (p.sourceDir) {
         const partSourceWatchFiles = daemonProjectPartSourceWatchFiles(p)
         if (partSourceWatchFiles.length > 0) {
