@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef } from 'react'
 import { createShapeId } from 'tldraw'
-import type { Editor } from 'tldraw'
-import { onReloadSignal, onSourceChangedSignal, onForwardSync, onScreenshotRequest, onScreenshotBounds, isSignalConnected, readSignal, writeSignal } from '../useYjsSync'
+import type { Editor, TLShape } from 'tldraw'
+import { onReloadSignal, onSourceChangedSignal, onProjectPartsChangedSignal, onForwardSync, onScreenshotRequest, onScreenshotBounds, isSignalConnected, readSignal, writeSignal } from '../useYjsSync'
 import type { ForwardSyncSignal } from '../useYjsSync'
 import { clearLookupCache, loadLookup } from '../synctexLookup'
 import * as sourceMap from '../sourceMap'
@@ -15,6 +15,35 @@ import {
   dispatchManagedAnnotationViewerHide,
   dispatchManagedAnnotationViewerRequest,
 } from '../wm/annotation-viewer-surface'
+
+const TEMP_MARKDOWN_SHAPE_ID = createShapeId('fleet-markdown-chip-temp-column')
+
+type ProjectPartMarkdownShape = TLShape & {
+  props: TLShape['props'] & { url?: string }
+  meta: TLShape['meta'] & {
+    temporaryMarkdownColumn?: boolean
+    materializedDoc?: string
+    materializedFile?: string
+  }
+}
+
+function isProjectPartMarkdownShape(shape: TLShape | undefined): shape is ProjectPartMarkdownShape {
+  return !!shape?.meta?.temporaryMarkdownColumn
+}
+
+function withCacheBust(rawUrl: string, timestamp: number) {
+  try {
+    const url = new URL(rawUrl, window.location.origin)
+    url.searchParams.set('t', String(timestamp))
+    return `${url.pathname}${url.search}${url.hash}`
+  } catch {
+    const [baseAndSearch, hash = ''] = rawUrl.split('#')
+    const [base, search = ''] = baseAndSearch.split('?')
+    const params = new URLSearchParams(search)
+    params.set('t', String(timestamp))
+    return `${base}?${params.toString()}${hash ? `#${hash}` : ''}`
+  }
+}
 
 export interface ScreenshotCaptureState {
   bounds: { x: number; y: number; w: number; h: number }
@@ -102,6 +131,34 @@ export function useYjsSignals({
       }
     })
   }, [document, hasSynctex, reloadSlidesViewer])
+
+  // Refresh only the pinned/shared markdown popup whose materialized part
+  // actually changed. This avoids the old flicker bug from refreshing the
+  // singleton popup on every project reload or poll fallback.
+  useEffect(() => {
+    return onProjectPartsChangedSignal((signal) => {
+      const editor = editorRef.current
+      if (!editor || !Array.isArray(signal.files) || signal.files.length === 0) return
+      const shape = editor.getShape(TEMP_MARKDOWN_SHAPE_ID)
+      if (!isProjectPartMarkdownShape(shape)) return
+      if (shape.meta.materializedDoc !== document.name) return
+      const materializedFile = shape.meta.materializedFile
+      if (typeof materializedFile !== 'string' || !signal.files.includes(materializedFile)) return
+      const currentUrl = shape.props?.url
+      if (typeof currentUrl !== 'string' || !currentUrl) return
+      const nextUrl = withCacheBust(currentUrl, signal.timestamp || Date.now())
+      if (nextUrl === currentUrl) return
+      const wasLocked = !!shape.isLocked
+      if (wasLocked) editor.updateShape({ id: shape.id, type: shape.type, isLocked: false } as unknown as Parameters<Editor['updateShape']>[0])
+      editor.updateShape({
+        id: shape.id,
+        type: shape.type,
+        props: { ...shape.props, url: nextUrl },
+        meta: { ...shape.meta, updatedAt: Date.now() },
+      } as unknown as Parameters<Editor['updateShape']>[0])
+      if (wasLocked) editor.updateShape({ id: shape.id, type: shape.type, isLocked: true } as unknown as Parameters<Editor['updateShape']>[0])
+    })
+  }, [document.name])
 
   // Re-fetch visible pages when source files change — triggers the ensure system
   // which rebuilds if source.stamp > build.stamp. The build then sends signal:reload.

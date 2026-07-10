@@ -14,7 +14,7 @@ import markdownItAnchor from 'markdown-it-anchor'
 import katex from 'katex'
 import { readFileSync, writeFileSync, mkdirSync, cpSync, existsSync, readdirSync } from 'fs'
 import { join, basename, dirname } from 'path'
-import { updateProject, readProject, listProjects, aggregateBookToc, sourceDir as getSourceDir, outputDir as getOutputDir } from './project-store.mjs'
+import { updateProject, readProject, listProjects, aggregateBookToc, sourceDir as getSourceDir, outputDir as getOutputDir, readProjectPartsManifest } from './project-store.mjs'
 import { listDocumentColumns, pageInfoFromDocumentColumns } from './document-columns.mjs'
 import { broadcastSignal } from './sync-rooms.mjs'
 import { writeSentinel } from './sentinel.mjs'
@@ -787,6 +787,9 @@ export async function buildMarkdownDocument(name, addLog = console.log) {
       }
     }
   }
+  for (const sourcePath of externalProjectPartSourcePaths(name)) {
+    referencedFiles.push(sourcePath)
+  }
   writeFileSync(join(outDir, 'relevant-files.json'), JSON.stringify({ files: referencedFiles }, null, 2))
 
   const pageInfo = pageInfoFromDocumentColumns(name, columns)
@@ -810,4 +813,15 @@ export async function buildMarkdownDocument(name, addLog = console.log) {
   }
 
   addLog(`[markdown] ${name}: indexed ${pageInfo.length} column${pageInfo.length === 1 ? '' : 's'}`)
+}
+
+function externalProjectPartSourcePaths(name) {
+  try {
+    const manifest = readProjectPartsManifest(name)
+    return (manifest.parts || [])
+      .map(part => part?.metadata?.sourcePath)
+      .filter(path => typeof path === 'string' && path.length > 0)
+  } catch {
+    return []
+  }
 }

@@ -49,7 +49,7 @@ import { parseAgentSelector as parseUnifiedAgentSelector } from '../shared/unifi
 import { phaseFromName, baseName, PHASES, prettyNameForFriendlyName } from '../shared/lineage-name.mjs'
 import { daemonHelloDecision } from '../shared/daemon-identity.mjs'
 import { resolveServerIsolation } from '../shared/server-identity.mjs'
-import { initProjectStore, listProjects, readProject, updateProject, getProjectsDir } from './lib/project-store.mjs'
+import { initProjectStore, listProjects, readProject, updateProject, getProjectsDir, readProjectPartsManifest } from './lib/project-store.mjs'
 import { resumeOverleafPollers } from './lib/overleaf-sync.mjs'
 import { resetStaleBuildStates, killAllBuilds, setShadowMirrorHandler } from './lib/build-runner.mjs'
 import { dispatchBuild, killAllDispatchedBuilds } from './lib/build-dispatch.mjs'
@@ -5753,11 +5753,15 @@ function projectsForDaemon() {
         if (p.sourceDir && existsSync(rfPath)) {
           const rf = JSON.parse(readFileSync(rfPath, 'utf8'))
           // Filter to only author-dir paths (not the server mirror paths)
-          watchFiles = (rf.files || [])
-            .filter(f => f.startsWith(p.sourceDir))
-            .map(f => f.slice(p.sourceDir.length + 1))  // relative paths
+          watchFiles = daemonWatchFilesFromAbsolutePaths(p, rf.files || [])
         }
       } catch {}
+      if (p.sourceDir) {
+        const partSourceWatchFiles = daemonProjectPartSourceWatchFiles(p)
+        if (partSourceWatchFiles.length > 0) {
+          watchFiles = [...new Set([...(watchFiles || []), ...partSourceWatchFiles])]
+        }
+      }
       return {
         name: p.name,
         sourceDir: p.sourceDir,
@@ -5767,6 +5771,24 @@ function projectsForDaemon() {
         extraInputCommands: p.extraInputCommands || null,
       }
     })
+}
+
+function daemonWatchFilesFromAbsolutePaths(project, files) {
+  return (files || [])
+    .filter(f => typeof f === 'string' && f.startsWith(project.sourceDir))
+    .map(f => f.slice(project.sourceDir.length + 1))
+}
+
+function daemonProjectPartSourceWatchFiles(project) {
+  try {
+    const manifest = readProjectPartsManifest(project.name)
+    return daemonWatchFilesFromAbsolutePaths(
+      project,
+      (manifest.parts || []).map(part => part?.metadata?.sourcePath),
+    )
+  } catch {
+    return []
+  }
 }
 
 function broadcastDaemonAgentsUpdated() {

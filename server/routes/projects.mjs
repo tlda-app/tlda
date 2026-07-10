@@ -18,7 +18,7 @@
 
 import { Router } from 'express'
 import { existsSync, readFileSync, readdirSync, mkdirSync, statSync, writeFileSync, rmSync } from 'fs'
-import { join, dirname } from 'path'
+import { join, dirname, resolve } from 'path'
 import { requireRead, requireRw } from '../lib/auth.mjs'
 import {
   createProject, readProject, updateProject, listProjects, deleteProject,
@@ -179,6 +179,7 @@ router.post('/:name/parts', requireRw, async (req, res) => {
       // parts into those is a separate, unstarted piece.)
       writePartsPageInfo(req.params.name)
     }
+    emitGlobalEvent('project-changed', { name: req.params.name })
     res.json({ ok: true, ...result, outputFile: markdownColumnFileForSource(result.projectPath) })
   } catch (e) {
     const message = e?.message || String(e)
@@ -249,6 +250,10 @@ router.put('/:name/parts/:partId/markdown', requireRw, async (req, res) => {
     const project = readProject(req.params.name)
     if (project?.format === 'markdown') {
       await buildMarkdown(req.params.name)
+      emitGlobalEvent('project-changed', { name: req.params.name })
+    } else if (!FORMATS_WITH_OWN_PAGE_INFO.has(project?.format)) {
+      writePartsPageInfo(req.params.name)
+      emitGlobalEvent('project-changed', { name: req.params.name })
     }
     res.json({ ok: true, ...result })
   } catch (e) {
@@ -538,12 +543,16 @@ export async function processProjectPush(name, body) {
   }
 
   let anyChanged = false
+  const changedPushFiles = []
   if (files?.length > 0) {
     for (const file of files) {
       const content = file.encoding === 'base64'
         ? Buffer.from(file.content, 'base64')
         : file.content
-      if (writeSourceFile(name, file.path, content)) anyChanged = true
+      if (writeSourceFile(name, file.path, content)) {
+        anyChanged = true
+        changedPushFiles.push({ path: file.path, content })
+      }
     }
   }
   if (deletedFiles?.length > 0) {
@@ -562,9 +571,16 @@ export async function processProjectPush(name, body) {
   }
 
   const changedFiles = (files || []).map(f => f.path)
+  const changedPartFiles = refreshMaterializedPartsFromChangedSources(name, project, changedPushFiles)
+  const projectPartsChanged = changedPartFiles.length > 0
   const decision = shouldBuildOnPush(project, name, { changedFiles, anyChanged })
 
   if (!decision.build) {
+    if (projectPartsChanged) {
+      await rebuildProjectPartsView(name, project)
+      broadcastProjectPartsChanged(name, changedPartFiles)
+      return { status: 200, ok: true, filesWritten: files?.length || 0, building: true, partsChanged: true }
+    }
     const filtered = decision.reason === 'outside-tree' || decision.reason === 'relevant-files-parse-failed'
     if (decision.reason === 'relevant-files-parse-failed') {
       console.error(`[${name}] relevant-files.json parse failed`)
@@ -579,6 +595,7 @@ export async function processProjectPush(name, body) {
     // Non-SVG formats: kick off build async, return immediately.
     const builder = { markdown: buildMarkdown, html: buildHtml, slides: buildSlides }[project.format]
     builder(name).then(() => {
+      if (projectPartsChanged) broadcastProjectPartsChanged(name, changedPartFiles)
       const updated = readProject(name)
       if (updated?.buildStatus === 'success') {
         emitGlobalEvent('doc-arrived', {
@@ -593,10 +610,56 @@ export async function processProjectPush(name, body) {
     return { status: 200, ok: true, filesWritten: files?.length || 0, building: true }
   }
 
+  if (projectPartsChanged) {
+    await rebuildProjectPartsView(name, project)
+    broadcastProjectPartsChanged(name, changedPartFiles)
+  }
+
   // SVG: mark stale, let ensure handle it on next page request
   markProjectStale(name)
   broadcastSignal(`doc-${name}`, 'signal:source-changed', { timestamp: Date.now() })
   return { status: 200, ok: true, filesWritten: files?.length || 0, building: false }
+}
+
+function refreshMaterializedPartsFromChangedSources(name, project, changedPushFiles) {
+  if (!changedPushFiles.length) return []
+  const manifest = readProjectPartsManifest(name)
+  const sourceRoot = project.sourceDir || getSourceDir(name)
+  const changedPartFiles = new Set()
+
+  for (const file of changedPushFiles) {
+    const sourcePath = resolve(sourceRoot, file.path)
+    const matchingParts = manifest.parts.filter(part => part.metadata?.sourcePath === sourcePath)
+    for (const part of matchingParts) {
+      const result = realizeProjectMarkdownArtifact({
+        project: name,
+        markdown: bufferToUtf8(file.content),
+        sourcePath,
+        title: part.title,
+        provenance: part.metadata?.provenance || {},
+      })
+      if (result.ready && result.projectPath) changedPartFiles.add(markdownColumnFileForSource(result.projectPath))
+    }
+  }
+
+  return [...changedPartFiles]
+}
+
+async function rebuildProjectPartsView(name, project) {
+  if (project?.format === 'markdown') {
+    await buildMarkdown(name)
+  } else if (!FORMATS_WITH_OWN_PAGE_INFO.has(project?.format)) {
+    writePartsPageInfo(name)
+  }
+}
+
+function bufferToUtf8(value) {
+  return Buffer.isBuffer(value) ? value.toString('utf8') : String(value ?? '')
+}
+
+function broadcastProjectPartsChanged(name, files) {
+  if (!files.length) return
+  broadcastSignal(`doc-${name}`, 'signal:project-parts-changed', { files, timestamp: Date.now() })
 }
 
 /**

@@ -78,6 +78,10 @@ export const onReloadSignal = reloadHandle.on
 const sourceChangedHandle = bus.register<{ timestamp: number }>({ key: 'signal:source-changed' })
 export const onSourceChangedSignal = sourceChangedHandle.on
 
+export type ProjectPartsChangedSignal = { files: string[], timestamp: number }
+const projectPartsChangedHandle = bus.register<ProjectPartsChangedSignal>({ key: 'signal:project-parts-changed' })
+export const onProjectPartsChangedSignal = projectPartsChangedHandle.on
+
 export type ForwardSyncSignal =
   | { type: 'scroll', x: number, y: number, timestamp: number }
   | { type: 'highlight', x: number, y: number, page: number, timestamp: number }
