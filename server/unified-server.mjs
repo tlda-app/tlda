@@ -4093,6 +4093,11 @@ async function handleFleetWsMessage(ws, msg) {
   if (type === 'fleet-search') {
     try {
       const noMatch = '__fleet_search_no_match__'
+      const currentSearchActor = () => {
+        const me = String(msg.me || '').trim()
+        if (!me) throw new Error('fleet-search requires caller identity for `me`')
+        return me
+      }
       const resolveAgentNode = (node) => {
         if (!node) return new Set()
         switch (node.t) {
@@ -4103,7 +4108,7 @@ async function handleFleetWsMessage(ws, msg) {
               : fleetStore.resolveAgentQuery(node.v)
             return new Set(ids)
           }
-          case 'me': return new Set([msg.me || msg.sender || noMatch])
+          case 'me': return new Set([currentSearchActor()])
           case 'and': {
             const left = resolveAgentNode(node.l)
             const right = resolveAgentNode(node.r)
@@ -4193,7 +4198,11 @@ async function handleFleetWsMessage(ws, msg) {
       })
       if (hasText && (msg.naturalAgentQuery || msg.naturalAgentQueries?.length) && !searchAgent && !msg.filterExpression) {
         const naturalQueries = msg.naturalAgentQueries?.length ? msg.naturalAgentQueries : [msg.naturalAgentQuery]
-        const ids = [...new Set(naturalQueries.flatMap(query => fleetStore.resolveAgentSelector(parseUnifiedAgentSelector(query) || { fragment: query })))]
+        const ids = [...new Set(naturalQueries.flatMap(query => (
+          String(query || '').trim() === 'me'
+            ? [currentSearchActor()]
+            : fleetStore.resolveAgentSelector(parseUnifiedAgentSelector(query) || { fragment: query })
+        )))]
         if (ids.length) {
           const naturalTextQuery = (msg.naturalTextQuery || '').trim()
           const agentResults = fleetStore.searchAll(naturalTextQuery, {

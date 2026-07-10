@@ -4199,6 +4199,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
 
   // ---- search_logs ----
   if (name === 'search_logs') {
+    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not registered. Call register() first.' }], isError: true };
     const rawQuery = args.query;
     if (!rawQuery || rawQuery.length < 2) {
       return { content: [{ type: 'text', text: 'Query must be at least 2 characters.' }], isError: true };
@@ -4227,7 +4228,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       const searchParams = {
         query,
         limit,
-        me: AGENT_ID || undefined,
+        me: AGENT_ID,
         role: args.role || searchFilters.role || undefined,
         since: sinceTs,
         before: beforeTs,
