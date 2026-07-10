@@ -1,5 +1,5 @@
 import { spawnSync } from 'child_process'
-import { randomBytes } from 'crypto'
+import { createHash, randomBytes } from 'crypto'
 import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { createInterface } from 'readline/promises'
 import { dirname, join, relative, resolve } from 'path'
@@ -11,6 +11,7 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
 const FLY_BUILD_DIR = join(REPO_ROOT, '.tlda-fly')
 const AGENT_CONFIG_BUILD_PATH = join(FLY_BUILD_DIR, 'agent-config.tgz')
 const TLDA_CLI = join(REPO_ROOT, 'cli', 'tlda.mjs')
+const FLY_VOLUME_NAME_MAX = 30
 
 const VALUE_FLAGS = new Set([
   'from', 'token', 'token-env', 'token-file', 'main', 'person', 'title', 'poll', 'region',
@@ -46,6 +47,17 @@ function slugify(value) {
     .replace(/[^a-z0-9-]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .replace(/-{2,}/g, '-')
+}
+
+export function flyVolumeName(value, max = FLY_VOLUME_NAME_MAX) {
+  const raw = String(value || '')
+  const normalized = slugify(raw).replace(/-/g, '_')
+  if (!normalized) throw new Error('Fly volume name cannot be empty')
+  if (normalized.length <= max) return normalized
+  const hash = createHash('sha256').update(raw).digest('hex').slice(0, 6)
+  const prefixLength = max - hash.length - 1
+  if (prefixLength < 1) throw new Error(`Fly volume name max too small: ${max}`)
+  return `${normalized.slice(0, prefixLength).replace(/_+$/g, '')}_${hash}`
 }
 
 function shellQuote(value) {
@@ -269,8 +281,8 @@ async function buildFriendPlan(flags, verb) {
   const stem = person ? slugify(`${person}-${project}`) : project
   const renderApp = flags['render-app'] || `tlda-${stem}`
   const agentApp = flags['agent-app'] || `tlda-${stem}-agent`
-  const renderVolume = flags['render-volume'] || `${slugify(stem).replace(/-/g, '_')}_data`
-  const agentVolume = flags['agent-volume'] || `${slugify(stem).replace(/-/g, '_')}_agent_data`
+  const renderVolume = flags['render-volume'] || flyVolumeName(`${stem}_data`)
+  const agentVolume = flags['agent-volume'] || flyVolumeName(`${stem}_agent_data`)
   const machineId = flags['machine-id'] || `agent-${stem}`
   const poll = flags.poll || '60'
   const renderUrl = `https://${renderApp}.fly.dev`

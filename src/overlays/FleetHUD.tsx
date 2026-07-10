@@ -29,6 +29,7 @@ import {
   ensureFleetHudLayers,
   FLEET_HUD_OVERLAY_LAYER_ID,
   FLEET_HUD_VIEWPORT_ID,
+  installFleetHudResizeCursor,
   projectFleetHudDocumentLeftWithWM,
   readFleetHudOverlayLayer,
 } from '../wm/fleet-hud-layer'
@@ -1165,6 +1166,25 @@ export function FleetHUD({
         el.classList.remove('hud-layout-active')
       }
       document.body.classList.remove('fleet-hud-fleet-selected')
+    }
+  }, [expanded])
+
+  useEffect(() => {
+    if (!expanded) return
+    let cleanup: (() => void) | null = null
+    let raf = 0
+    const install = () => {
+      const el = hudRef.current
+      if (!el) {
+        raf = requestAnimationFrame(install)
+        return
+      }
+      cleanup = installFleetHudResizeCursor(el)
+    }
+    install()
+    return () => {
+      cancelAnimationFrame(raf)
+      cleanup?.()
     }
   }, [expanded])
 

@@ -11,7 +11,7 @@
 # here never build locally — builds happen on the render box. (Skip: "I kind of
 # think of that as a win because it forces agents to not try to build locally.")
 # What it DOES need: node + the daemon's deps, tmux, codex, and python for
-# fleet-spawn.py.
+# small helper scripts used by the fleet tooling.
 #
 # node:24 (NOT 20): the daemon surface imports TypeScript modules directly
 # (server/lib/spawn-policy.mjs → ../../shared/harness.ts; fleet-store → live-store.ts;
@@ -27,16 +27,15 @@ WORKDIR /app
 #   git             — fleet tooling shells out to git.
 #   build-essential, python3, python3-venv — native npm modules (node-pty,
 #                     better-sqlite3) compile via node-gyp; python also runs
-#                     fleet-spawn.py.
+#                     small helper probes used by fleet tooling.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       tmux git ca-certificates curl \
       build-essential python3 python3-venv procps \
     && rm -rf /var/lib/apt/lists/*
 
-# --- python deps for fleet-spawn.py ---
-# Its ONLY non-stdlib import is `websocket` (websocket-client). Debian's system
-# python is PEP-668 externally-managed, so install into an isolated venv and put
-# it first on PATH (fleet-spawn is invoked as `python3 fleet-spawn.py`).
+# --- python deps for helper probes ---
+# Debian's system python is PEP-668 externally-managed, so install into an
+# isolated venv and put it first on PATH.
 ENV PATH="/opt/venv/bin:$PATH"
 RUN python3 -m venv /opt/venv \
     && pip install --no-cache-dir "websocket-client>=1.8,<2"
@@ -62,10 +61,9 @@ COPY mcp-server/ ./mcp-server/
 RUN cd mcp-server && npm install --production
 
 # --- app code ---
-# fleet-spawn.py computes REPO_DIR as the parent of bin/, so it needs cli/,
-# shared/, and server/ siblings of bin/ under /app.
+# The daemon and Node spawn library need cli/, shared/, and server/ siblings of
+# bin/ under /app.
 COPY bin/fleet-daemon.mjs ./bin/fleet-daemon.mjs
-COPY bin/fleet-spawn.py ./bin/fleet-spawn.py
 COPY bin/requirements.txt ./bin/requirements.txt
 COPY bin/lib/ ./bin/lib/
 COPY cli/ ./cli/
