@@ -106,7 +106,11 @@ function parseArgs(args) {
 
 function readManifest() {
   if (!existsSync(MANIFEST_FILE)) return null
-  try { return JSON.parse(readFileSync(MANIFEST_FILE, 'utf8')) } catch { return null }
+  try {
+    return JSON.parse(readFileSync(MANIFEST_FILE, 'utf8'))
+  } catch (e) {
+    throw new Error(`dev sandbox manifest is corrupt (${MANIFEST_FILE}): ${e.message}`)
+  }
 }
 
 function manifestPort(manifest) {
@@ -183,9 +187,9 @@ export async function cmdDevServer(args, repoRoot) {
   const branch = (!isVerb && first) ? first : null
   const portArg = parsed.values.get('port')
   const doc = parsed.values.get('doc') || null
-  const port = portArg ? parseInt(portArg, 10) : manifestPort(readManifest())
 
   if (sub === 'status') {
+    const port = portArg ? parseInt(portArg, 10) : manifestPort(readManifest())
     const state = await sandboxState({ port, doc })
     if (json) {
       printJson(state)
@@ -213,6 +217,7 @@ export async function cmdDevServer(args, repoRoot) {
   }
 
   if (sub === 'url') {
+    const port = portArg ? parseInt(portArg, 10) : manifestPort(readManifest())
     const state = await sandboxState({ port, doc })
     if (json) {
       printJson(state)
@@ -244,6 +249,7 @@ export async function cmdDevServer(args, repoRoot) {
   }
 
   // start (idempotent — one sandbox at a time; stop to switch branch)
+  const port = portArg ? parseInt(portArg, 10) : manifestPort(readManifest())
   const existing = readPid()
   if (existing) {
     const state = await sandboxState({ port, doc })
