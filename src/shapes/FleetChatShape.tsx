@@ -6484,6 +6484,9 @@ export function FilterOverlay({
     return { value, displayName }
   }, [pillOverKey])
   const pillOver = externalPillOver ?? internalPillOver
+  const externalPane = externalPillOver?.role === 'to' || externalPillOver?.role === 'from' || externalPillOver?.role === 'replace'
+    ? externalPillOver.role
+    : null
 
   // AND-group hover detection via pill shape position vs DOM bounding rects.
   // Pointer events don't work during drag because FleetAgentsShape holds pointer capture.
@@ -6498,6 +6501,7 @@ export function FilterOverlay({
   const lastGroupRef = useRef<{ pane: string; idx: number; rect: DOMRect } | null>(null)
 
   const hoveredGroup = useValue('filter-hovered-group', () => {
+    if (externalPane) return { pane: externalPane, idx: -1 }
     if (!pillOver) { lastGroupRef.current = null; return null }
     if (fleetPillCount === 0) { lastGroupRef.current = null; return null }
     const pills = editor.getCurrentPageShapes().filter((s: any) => s.type === 'fleet-pill')
@@ -6554,7 +6558,7 @@ export function FilterOverlay({
       return { pane, idx: foundIdx }
     }
     return null
-  }, [editor, pillOver, fleetPillCount])
+  }, [editor, externalPane, pillOver, fleetPillCount])
 
   // Compute preview DNF for each pane based on hovered AND group
   const toGroupIdx = hoveredGroup?.pane === 'to' ? hoveredGroup.idx : -1
