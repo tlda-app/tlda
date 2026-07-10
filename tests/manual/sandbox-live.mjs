@@ -1,5 +1,5 @@
 // Live end-to-end driver for the turn-end INTROSPECTION POKE bot against the
-// sandbox. Run AFTER: tlda-dev sandbox backend up on :5280, AND disposition-bot
+// sandbox. Run AFTER: tlda-dev serve --sandbox --port 5280 is up, AND disposition-bot
 // running pointed at TLDA_SERVER=https://localhost:5280 with a SHORT countdown
 // (DISPO_COUNTDOWN_SEC=2) so the test is quick.
 //

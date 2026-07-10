@@ -2,7 +2,7 @@
 // End-to-end integration test for filter expressions against a running sandbox.
 // Registers a few agents, then exercises (a) the WS chat router's expression
 // resolution and (b) the /api/fleet-table REST filter. Run with the sandbox up:
-//   tlda-dev sandbox filter-expr  &&  node bin/filter-expr-integration.mjs
+//   tlda-dev serve --sandbox --port 5280  &&  node bin/filter-expr-integration.mjs
 import WebSocket from 'ws'
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'
 
