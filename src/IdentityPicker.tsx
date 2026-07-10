@@ -36,7 +36,7 @@ export function IdentityPicker() {
             try { await login(candidate) }
             catch { await register(candidate) }
           } else {
-            await register(candidate)
+            await register(candidate, { persist: false })
           }
           if (!cancelled) {
             setNotice(requestedName

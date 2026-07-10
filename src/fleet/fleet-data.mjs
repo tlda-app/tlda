@@ -30,7 +30,7 @@ import {
 import { log } from '../logger'
 import { probe } from '../perf-probe'
 import { DATABASE_HTTP, DATABASE_WS } from '../activeConfig'
-import { isUsableIdentityName, sanitizeIdentityName, storedIdentityLoginFailureAction, temporaryIdentityName } from './identity-persistence.mjs'
+import { isUsableIdentityName, sanitizeIdentityName, storedIdentityLoginFailureAction } from './identity-persistence.mjs'
 import { rejectWsRequests, resetWsRequestIdleTimers, startWsRequest } from '../../shared/ws-request-policy.mjs'
 
 // The global fleet/event store (chat, agents, activity, tasks) = the active
@@ -62,6 +62,7 @@ let _humanId = null
 let _humanName = null
 let _identifyPending = false   // true while waiting for identify response
 let _lastEventId = 0
+let _identityRetryTimer = null
 // Buffer for event-updates that arrive before their target event is in the
 // store (e.g. an async file-upload's `event-update` racing ahead of the chat
 // event it patches). Without this, the update is dropped and its change — most
@@ -389,6 +390,13 @@ function clearTemporaryIdentity() {
   }
 }
 
+function clearIdentityRetry() {
+  if (_identityRetryTimer) {
+    window.clearTimeout(_identityRetryTimer)
+    _identityRetryTimer = null
+  }
+}
+
 /** Log in as an existing agent. Used by returning users and ?name= auto-login. */
 export async function login(name) {
   const clean = sanitizeIdentityName(name)
@@ -397,6 +405,7 @@ export async function login(name) {
   _humanId = res.id
   _humanName = res.name
   _identifyPending = false
+  clearIdentityRetry()
   writeStoredIdentity(res.name)
   clearTemporaryIdentity()
   notify('identity', { type: 'identity', id: _humanId, name: _humanName })
@@ -413,6 +422,7 @@ export async function registerHuman(name, { persist = true } = {}) {
   _humanId = res.agent?.id || humanId
   _humanName = sanitized
   _identifyPending = false
+  clearIdentityRetry()
   if (persist) {
     writeStoredIdentity(sanitized)
     clearTemporaryIdentity()
@@ -424,21 +434,11 @@ export async function registerHuman(name, { persist = true } = {}) {
   return res
 }
 
-async function registerTemporaryHuman() {
-  let lastErr = null
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      return await registerHuman(temporaryIdentityName(), { persist: false })
-    } catch (err) {
-      lastErr = err
-    }
-  }
-  throw lastErr || new Error('temporary identity registration failed')
-}
-
 function retryStoredIdentity(storedName) {
   if (!storedName) return
-  window.setTimeout(() => {
+  if (_identityRetryTimer) return
+  _identityRetryTimer = window.setTimeout(() => {
+    _identityRetryTimer = null
     if (!_ws || _ws.readyState !== 1) return
     if (readStoredIdentity() !== storedName) return
     if (_humanName === storedName) return
@@ -446,10 +446,15 @@ function retryStoredIdentity(storedName) {
       _humanId = res.id
       _humanName = res.name
       _identifyPending = false
+      clearIdentityRetry()
       clearTemporaryIdentity()
       notify('identity', { type: 'identity', id: _humanId, name: _humanName })
       _startHeartbeat()
-    }).catch(() => {})
+    }).catch(() => {
+      _identifyPending = true
+      notify('identity', { type: 'identity', id: null, name: storedName, needsIdentity: true })
+      retryStoredIdentity(storedName)
+    })
   }, 5000)
 }
 
@@ -687,16 +692,12 @@ export function connect() {
         _startHeartbeat()
       }).catch((err) => {
         // A deploy/restart can drop or time out this login request. Do not erase
-        // the browser's chosen identity for a transient transport failure. Use
-        // a real temporary human for this session instead of exposing the app as
-        // an id-less "nobody", and retry the stored name later.
+        // or mask the browser's chosen identity with a generated temporary human:
+        // the stored name is the durable "who I am" claim, so keep retrying it.
         if (storedIdentityLoginFailureAction(err) !== 'register-stored') {
-          registerTemporaryHuman().then(() => {
-            retryStoredIdentity(storedName)
-          }).catch(() => {
-            _identifyPending = true
-            notify('identity', { type: 'identity', id: null, name: null, needsIdentity: true })
-          })
+          _identifyPending = true
+          notify('identity', { type: 'identity', id: null, name: storedName, needsIdentity: true })
+          retryStoredIdentity(storedName)
           return
         }
         // Fresh/test servers may not have the human row yet. Preserve the
