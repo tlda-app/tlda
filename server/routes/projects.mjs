@@ -17,7 +17,7 @@
  */
 
 import { Router } from 'express'
-import { existsSync, readFileSync, readdirSync, mkdirSync, statSync, writeFileSync, rmSync } from 'fs'
+import { existsSync, readFileSync, readdirSync, mkdirSync, statSync, writeFileSync, rmSync, unlinkSync } from 'fs'
 import { join, dirname, resolve } from 'path'
 import { requireRead, requireRw } from '../lib/auth.mjs'
 import {
@@ -711,7 +711,12 @@ router.post('/:name/build', requireRw, async (req, res) => {
       const cleanExts = ['.aux', '.bbl', '.bcf', '.blg', '.run.xml', '.fls', '.fdb_latexmk', '.synctex.gz', '.log', '.out', '.toc', '.lof', '.lot']
       for (const file of readdirSync(srcDir)) {
         if (cleanExts.some(ext => file.endsWith(ext))) {
-          try { const { unlinkSync } = await import('fs'); unlinkSync(join(srcDir, file)) } catch {}
+          try {
+            unlinkSync(join(srcDir, file))
+          } catch (e) {
+            console.error(`[api] Clean build: failed to delete aux file ${file} for ${req.params.name}: ${e.message}`)
+            return res.status(500).json({ error: 'Clean build failed to delete aux file', file, detail: e.message })
+          }
         }
       }
       console.log(`[api] Clean build: deleted aux files for ${req.params.name}`)
