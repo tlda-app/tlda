@@ -80,7 +80,9 @@ export function createLocalArtifacts({ getServerUrl, getFleetServerUrl }) {
         const { stdout } = await execFileP('ps', ['-p', String(pid), '-o', 'args='],
           { timeout: 2000, encoding: 'utf8' })
         return stdout.trim()
-      } catch { return '' }
+      } catch (e) {
+        throw new Error(`inspect args for pid ${pid}: ${e.message}`)
+      }
     }
     const psPpid = async (pid) => {
       try {
@@ -88,21 +90,40 @@ export function createLocalArtifacts({ getServerUrl, getFleetServerUrl }) {
           { timeout: 2000, encoding: 'utf8' })
         const v = parseInt(stdout.trim(), 10)
         return Number.isFinite(v) ? v : null
-      } catch { return null }
+      } catch (e) {
+        throw new Error(`inspect parent for pid ${pid}: ${e.message}`)
+      }
     }
     const isPlaywright = (args) => {
       return args.includes('playwright_chromiumdev_profile') ||
              args.includes('ms-playwright')
     }
 
+    const inspectionErrors = []
     for (const owner of owners) {
       let pid = parseInt(owner.pid, 10)
-      let args = await psArgs(pid)
+      let args
+      try {
+        args = await psArgs(pid)
+      } catch (e) {
+        inspectionErrors.push(e.message)
+        continue
+      }
       if (!isPlaywright(args)) continue
       while (true) {
-        const ppid = await psPpid(pid)
+        let ppid
+        try {
+          ppid = await psPpid(pid)
+        } catch (e) {
+          return { killed: false, reason: e.message }
+        }
         if (!ppid || ppid <= 1) break
-        const pargs = await psArgs(ppid)
+        let pargs
+        try {
+          pargs = await psArgs(ppid)
+        } catch (e) {
+          return { killed: false, reason: e.message }
+        }
         if (!isPlaywright(pargs)) break
         pid = ppid
         args = pargs
@@ -117,7 +138,12 @@ export function createLocalArtifacts({ getServerUrl, getFleetServerUrl }) {
         return { killed: false, reason: `kill ${pid}: ${e.message}` }
       }
     }
-    return { killed: false, reason: 'no playwright owner among port holders' }
+    return {
+      killed: false,
+      reason: inspectionErrors.length
+        ? `no playwright owner among port holders; inspection errors: ${inspectionErrors.join('; ')}`
+        : 'no playwright owner among port holders',
+    }
   }
 
   return {
