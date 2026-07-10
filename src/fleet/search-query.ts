@@ -50,6 +50,7 @@ export interface ParsedSearchQuery {
 
 export interface FleetSearchPayloadFilters {
   agent?: string
+  me?: string
   agentQuery?: string
   agentResolve?: AgentResolveRequest
   naturalAgentQuery?: string

@@ -4227,6 +4227,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       const searchParams = {
         query,
         limit,
+        me: AGENT_ID || undefined,
         role: args.role || searchFilters.role || undefined,
         since: sinceTs,
         before: beforeTs,

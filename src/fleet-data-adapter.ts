@@ -929,6 +929,7 @@ const DASHBOARD_URL = typeof window !== 'undefined' ? window.location.origin : '
 
 export interface FleetSearchFilters {
   agent?: string       // explicit fleet id (or array) — exact match
+  me?: string          // current syntax user; resolves `me` in message filters
   agentQuery?: string  // typed name fragment — server resolves to ids (substring, dawn-aware)
   naturalAgentQuery?: string // bare term also resolved as involved-agent union
   naturalAgentQueries?: string[]
@@ -945,6 +946,8 @@ export async function searchFleet(query: string, limit = 50, filters: FleetSearc
   await ensureInit()
   try {
     const payload: Record<string, any> = { query, limit }
+    const me = filters.me || getHumanId()
+    if (me) payload.me = me
     if (filters.agent) payload.agent = filters.agent
     if (filters.agentQuery) payload.agentQuery = filters.agentQuery
     if (filters.naturalAgentQuery) payload.naturalAgentQuery = filters.naturalAgentQuery
