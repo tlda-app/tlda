@@ -358,7 +358,7 @@ What `fleet-spawn` does:
 3. Pre-registers the agent via WebSocket (so it appears in the panel immediately)
 4. Creates a tmux session named `fleet-[name]`
 5. Launches Claude Code inside it with the fleet MCP loaded
-6. After a few seconds, sends keystrokes to accept the channels dialog and tells the agent to call `register()`
+6. Prompts the launched agent to call `login()` so it claims the server-created shell
 
 ### tmux sessions
 
@@ -377,7 +377,7 @@ Terminal cards are designed to surface this automatically in fleet chat, but the
 
 ### Identity model
 
-**Agents**: each agent gets a unique fleet ID (`fleet:<hash>`) and a friendly name. The identity ledger (`mcp-server/identity.mjs`) maps Claude Code session IDs to fleet IDs, so agents can resume across session restarts. When an agent calls `register()` in the fleet MCP, it associates its current session with its fleet ID.
+**Agents**: each spawned agent gets a unique fleet ID (`fleet:<hash>`) and a friendly name. The server creates the shell row before launch. When the agent calls `login()` in the fleet MCP, it claims that server-created shell and attaches its current session metadata.
 
 **Humans**: each human gets an identity via the browser. On first visit, a name picker appears. The name is stored in localStorage and sent to the server via WebSocket on every connection. The server creates a human agent record with `human: true`. Multiple humans can use the same server — each browser has its own identity.
 
@@ -386,7 +386,7 @@ Terminal cards are designed to surface this automatically in fleet chat, but the
 ### Agent lifecycle
 
 1. **Spawn**: `fleet-spawn` creates tmux session + launches Claude Code
-2. **Register**: agent calls `register()` via MCP → appears in agent panel with green dot
+2. **Login**: agent calls `login()` via MCP → claims the pre-created shell and starts heartbeating
 3. **Active**: agent processes tasks, sends/receives chat, heartbeats periodically
 4. **Stale**: no heartbeat for 10+ minutes → amber dot
 5. **Dead**: no heartbeat AND tmux session gone → grey dot, collapsed in panel

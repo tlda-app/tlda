@@ -53,8 +53,11 @@ assertServerCoherence();
 const TLDA_TOKEN = resolveToken();
 const TLDA_AUTH_HEADERS = TLDA_TOKEN ? { 'Authorization': `Bearer ${TLDA_TOKEN}` } : {};
 const TLDA_SERVER = getServerUrl();
-// Separate sync server for shapes/signals (e.g. Fly.io) — falls back to TLDA_SERVER
+// Separate sync server for shapes/signals (e.g. Fly.io); defaults to the active
+// store server when no split-sync override is configured.
 const TLDA_SYNC_SERVER = process.env.TLDA_SYNC_SERVER || TLDA_SERVER;
+const STORE_IS_LOCAL = /^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/.test(TLDA_SERVER);
+const ALLOW_LOCAL_DOC_DISK = !!process.env.TLDA_SYNC_SERVER || STORE_IS_LOCAL;
 // ---- REST API helpers (shape CRUD via @tldraw/sync rooms) ----
 
 async function serverFetch(urlPath, options = {}) {
@@ -326,22 +329,26 @@ async function checkDocBuildStatus(docName) {
       }
       return { ok: true, pages: info.pages, buildStatus: info.buildStatus };
     }
-    // API returned error — fall back to disk check
-    return checkDocBuildStatusDisk(docName);
+    if (ALLOW_LOCAL_DOC_DISK) return checkDocBuildStatusDisk(docName);
+    return { ok: false, reason: `Document "${docName}" status check failed on ${sUrl}: HTTP ${res.status}` };
   } catch (e) {
-    // No local server — fall back to disk (project.json or manifest)
-    const diskResult = checkDocBuildStatusDisk(docName);
-    if (diskResult.ok) return diskResult;
-    if (e?.cause?.code === 'ECONNREFUSED' || e?.code === 'ECONNREFUSED') {
-      // Disk also failed — if we have a separate sync server, that's fine (doc assets are on disk)
-      if (process.env.TLDA_SYNC_SERVER) return diskResult;
-      return { ok: false, reason: `Server is not running (connection refused on port ${DEFAULT_PORT}). Start it with "tlda server start"` };
+    if (ALLOW_LOCAL_DOC_DISK) {
+      const diskResult = checkDocBuildStatusDisk(docName);
+      if (diskResult.ok) return diskResult;
+      if (e?.cause?.code === 'ECONNREFUSED' || e?.code === 'ECONNREFUSED') {
+        if (process.env.TLDA_SYNC_SERVER) return diskResult;
+        return { ok: false, reason: `Server is not running (connection refused on port ${DEFAULT_PORT}). Start it with "tlda server start"` };
+      }
+      return diskResult;
     }
-    return diskResult;
+    if (e?.cause?.code === 'ECONNREFUSED' || e?.code === 'ECONNREFUSED') {
+      return { ok: false, reason: `Document "${docName}" status check failed: ${sUrl} is unreachable` };
+    }
+    return { ok: false, reason: `Document "${docName}" status check failed on ${sUrl}: ${e.message}` };
   }
 }
 
-/** Disk-based fallback: check project.json directly. */
+/** Local-store status check: read project.json directly when disk mode is allowed. */
 function checkDocBuildStatusDisk(docName) {
   const projDir = path.join(PROJECT_ROOT, 'server', 'projects', docName);
   const projJson = path.join(projDir, 'project.json');
@@ -365,8 +372,7 @@ function checkDocBuildStatusDisk(docName) {
 // it must HTTP from store). Disk mode is preserved for a local store (localhost,
 // same-machine dev) and the deliberate split-sync (TLDA_SYNC_SERVER — the published
 // triage clone reads assets from disk while shapes sync elsewhere).
-const _storeIsLocal = /^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/.test(TLDA_SERVER);
-initDataSource(PROJECT_ROOT, (process.env.TLDA_SYNC_SERVER || _storeIsLocal) ? null : TLDA_SERVER);
+initDataSource(PROJECT_ROOT, ALLOW_LOCAL_DOC_DISK ? null : TLDA_SERVER);
 
 // ---- Lookup.json support ----
 
@@ -2622,7 +2628,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (args?.padding != null) signalData.padding = args.padding;
 
     const mailbox = startOperationMailbox('screenshot', { doc: docName, label: `${docName}${labelTag}` });
-    if (!mailbox) return { content: [{ type: 'text', text: 'Screenshot mailbox requires fleet registration. Call register() first.' }], isError: true };
+    if (!mailbox) return { content: [{ type: 'text', text: 'Screenshot mailbox requires fleet login. Call login() first.' }], isError: true };
 
     (async () => {
       try {
@@ -3676,18 +3682,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       } catch {}
 
       const smPath = path.join(tldaProjectsDir, doc, 'output', `${texBase}-source-map.json`);
-      const mapPath = path.join(tldaProjectsDir, doc, 'output', `${texBase}-theorem-map.json`);
 
       if (fs.existsSync(smPath)) {
         const sm = JSON.parse(fs.readFileSync(smPath, 'utf8'));
         const labels = sm.labels || [];
         entry = labels.find(e => e.label === q || e.number === q);
         if (!entry) entry = labels.find(e => e.label.includes(q) || e.number.includes(q));
-      } else if (fs.existsSync(mapPath)) {
-        // Legacy fallback
-        const mapData = JSON.parse(fs.readFileSync(mapPath, 'utf8'));
-        entry = mapData[q];
-        if (!entry) entry = Object.values(mapData).find(e => e.number === q);
+      } else {
+        return { content: [{ type: 'text', text: `lookup_theorem: source map unavailable for ${doc} (build the doc first).` }], isError: true };
       }
 
       if (!entry) {
@@ -3696,9 +3698,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           const sm = JSON.parse(fs.readFileSync(smPath, 'utf8'));
           const named = (sm.labels || []).filter(e => ['thm','lem','prop','cor','def','ass'].includes(e.type));
           available = named.map(e => `${e.number} (${e.label})`).join(', ');
-        } else if (fs.existsSync(mapPath)) {
-          const mapData = JSON.parse(fs.readFileSync(mapPath, 'utf8'));
-          available = Object.values(mapData).map(e => `${e.number} (${e.label})`).join(', ');
         }
         return { content: [{ type: 'text', text: `No match for "${q}" in ${doc}.${available ? '\nAvailable: ' + available : ''}` }] };
       }

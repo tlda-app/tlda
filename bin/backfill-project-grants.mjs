@@ -23,7 +23,7 @@ import {
   withDaemonModelAliases,
   defaultDaemonConfigPath,
   applyDaemonGrants,
-} from './lib/spawn/permission-ledger.mjs'
+} from '../agent-launch/permission-ledger.mjs'
 import { resolveSpawnGrant } from '../server/lib/spawn-policy.mjs'
 
 const APPLY = process.argv.includes('--apply')

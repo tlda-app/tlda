@@ -58,7 +58,6 @@ const _store = makeEventStore()
 const HISTORY_PAGE = 150
 // Activity events are now stored in the events table (type='activity')
 // and flow through the same channel as chat — no separate store needed.
-let _reaperStatus = null     // latest reaper-status from daemon
 let _humanId = null
 let _humanName = null
 let _identifyPending = false   // true while waiting for identify response
@@ -202,7 +201,6 @@ function resolveFilter(filter) {
 export { resolveFilter }
 
 // --- Read API ---
-export function getReaperStatus() { return _reaperStatus }
 export function getAgents() { return _agents }
 export function getTasks() { return _tasks }
 export function getItems() { return _items }
@@ -836,9 +834,6 @@ export function connect() {
           }
         }
         if (ids.size) notify('messages', null)
-      } else if (eventType === 'reaper-status') {
-        _reaperStatus = data
-        notify('reaper', data)
       } else if (eventType === 'suggestions') {
         notify('suggestions', data)
       } else if (eventType === 'items') {

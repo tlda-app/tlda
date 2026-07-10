@@ -31,7 +31,11 @@ server/data/
 
 # Built viewer SPA (copied from dist/ to server/public/ for unified server)
 server/public/
+server/public.*/
 server/build-info.json
+
+# Fleet runtime uploads / generated chat artifacts
+mcp-server/fleet-data/
 
 # Project build output (gitignore all except test fixtures)
 server/projects/*

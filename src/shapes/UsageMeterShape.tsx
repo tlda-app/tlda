@@ -109,7 +109,7 @@ function UsageMeterComponent({ shape }: { shape: any }) {
   }, [])
 
   // Capture-phase pointerdown so the × button and scroll work without tldraw
-  // hijacking the pointer (mirrors ReaperShape / FleetSearchShape).
+  // hijacking the pointer (mirrors FleetSearchShape).
   const containerRef = useRef<HTMLDivElement>(null)
   const isSelectedRef = useRef(false)
   isSelectedRef.current = useValue('isSelected', () => editor.getSelectedShapeIds().includes(shape.id), [editor, shape.id])

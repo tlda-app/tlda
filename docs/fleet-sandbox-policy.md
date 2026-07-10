@@ -19,7 +19,7 @@ Fence, or the configured outer sandbox runner, is the authority for native devel
 
 The harness should run as normally as possible inside that boundary. For Codex, that means avoiding a nested Codex/macOS sandbox when an outer fence lease is active, because the nested sandbox can fail before commands run. For Claude, it means using the least noisy permission mode compatible with the lease. For other harnesses, the adapter should project the same lease into that harness without changing the policy semantics.
 
-MCP approval prompts are not the security boundary. TLDA MCP tools should be trusted or denied by server-side policy and by the outer sandbox, not by asking Skip about routine `register`, `my_task`, `chat`, `read_doc`, etc.
+MCP approval prompts are not the security boundary. TLDA MCP tools should be trusted or denied by server-side policy and by the outer sandbox, not by asking Skip about routine `login`, `inbox`, `chat`, `read_doc`, etc.
 
 Break-glass: `TLDA_DISABLE_PERMISSION_CLASSIFIER=1` or `agentSandbox.disablePermissionsClassifier=true` disables Claude's permission classifier at spawn time by launching with `--dangerously-skip-permissions`. This is for misclassified trusted launches only; already-running agents must be respawned or refreshed to pick it up.
 
@@ -34,7 +34,7 @@ Write scope is the core policy. Other grants are secondary knobs attached to the
 - trusted MCP servers/tools
 - artifact/cache write locations
 
-Network may be part of the capability model, but it should not obscure the write-scope vocabulary. For example, a `cwd` agent may need local/Fly control-plane access so `my_task()` works; that does not mean it gets broader write authority.
+Network may be part of the capability model, but it should not obscure the write-scope vocabulary. For example, a `cwd` agent may need local/Fly control-plane access so `inbox()` works; that does not mean it gets broader write authority.
 
 ### Git Rights
 
@@ -68,7 +68,7 @@ Until this reconciliation is complete, do not present the implementation labels 
 
 For a spawned agent, these should work inside the granted policy:
 
-- `register()` and `my_task()`
+- `login()` and `inbox()`
 - chat wakeups
 - clean `git status --short` when git read access is allowed
 - expected write success or denial according to write scope

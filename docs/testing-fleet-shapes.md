@@ -13,7 +13,7 @@ Chat and the other fleet panels are **per-device fleet shapes**:
 
 ```
 fleet-chat, fleet-agents, fleet-search, fleet-docview,
-fleet-source-editor, fleet-reaper, fleet-inbox, fleet-touch-inbox, fleet-notifications
+fleet-source-editor, fleet-inbox, fleet-touch-inbox, fleet-notifications
 ```
 
 (`FLEET_SHAPE_TYPES` in `src/shapes/fleet-utils.ts`.) The markdown chip lives

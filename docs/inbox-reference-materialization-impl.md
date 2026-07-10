@@ -239,7 +239,7 @@ still giving each recipient a local path.
 
 Initial surfaces to update:
 
-- MCP `inbox()` / `my_task()` formatting in `mcp-server/fleet-tools.mjs`.
+- MCP `inbox()` formatting in `mcp-server/fleet-tools.mjs`.
 - Fleet browser message rendering can display materialization state later, but
   Phase 1 proof should be the agent-facing inbox/MCP output and metadata update.
 

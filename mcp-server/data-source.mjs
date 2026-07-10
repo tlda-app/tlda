@@ -1,8 +1,8 @@
 /**
  * Data source abstraction for MCP server.
  *
- * When TLDA_SERVER is set: fetches doc assets from the server over HTTP.
- * Otherwise: reads from PROJECT_ROOT/public/docs/ (backward compat).
+ * When a remote server is configured: fetches doc assets from the server over
+ * HTTP. Otherwise: reads from PROJECT_ROOT/public/docs/ or server/projects.
  *
  * Provides both sync (from cache/disk) and async (fetch + cache) APIs.
  * Call ensureDoc(docName) at the start of tool handlers to pre-fetch.
@@ -33,6 +33,7 @@ const DEFAULT_TTL = 60_000 // 1min for unknown files
 export function initDataSource(root, server) {
   projectRoot = root
   serverUrl = server || null
+  cache.clear()
 }
 
 export function isRemote() {
@@ -128,19 +129,18 @@ export async function readManifest() {
     const cached = getCached('_root', 'manifest.json')
     if (cached !== undefined) return cached
 
+    let res
     try {
-      const res = await fetch(`${serverUrl}/docs/manifest.json`, { headers: authHeaders })
-      if (!res.ok) {
-        // HTTP failed — fall back to scanning projects on disk
-        return buildManifestFromProjects()
-      }
-      const data = await res.json()
-      setCache('_root', 'manifest.json', data)
-      return data
-    } catch {
-      // fetch() itself failed (sandbox, network) — fall back to disk scan
-      return buildManifestFromProjects()
+      res = await fetch(`${serverUrl}/docs/manifest.json`, { headers: authHeaders })
+    } catch (e) {
+      throw new Error(`manifest fetch failed on ${serverUrl}: ${e.message}`)
     }
+    if (!res.ok) {
+      throw new Error(`manifest fetch failed on ${serverUrl}: HTTP ${res.status}`)
+    }
+    const data = await res.json()
+    setCache('_root', 'manifest.json', data)
+    return data
   }
 
   return readManifestSync()

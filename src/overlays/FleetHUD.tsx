@@ -14,7 +14,7 @@ import { CanvasClipPanel, syncCanvasClipPanelViewportCamera, type ClipBounds } f
 import { useFleetIdentity } from '../fleet-data-adapter'
 // @ts-ignore — vanilla JS module
 import { getHumanId, getDeviceId, isDeviceReady, whenDeviceReady } from '../fleet/fleet-data.mjs'
-import { getMyAnchorId, isMyFleetShape, FLEET_INTERACTION_SHAPE_SELECTOR, FLEET_SHAPE_TYPES, adoptLegacyFleetShapes, layoutOffset, ensureMyLaneDisjoint } from '../shapes/fleet-utils'
+import { getMyAnchorId, isMyFleetShape, isFleetShapeForOwnerKey, FLEET_INTERACTION_SHAPE_SELECTOR, FLEET_SHAPE_TYPES, adoptLegacyFleetShapes, layoutOffset, ensureMyLaneDisjoint } from '../shapes/fleet-utils'
 import { isDocumentPageShape } from '../shapes/document-pages'
 import { fleetTouchGestureActiveRef, phoneLaneIndexForViewportRefit, postTouchTelemetry, preservePhoneLaneForViewportSettle, setTouchDiagStatus, snapToPhoneLaneIndex, useFleetGestures } from './useFleetGestures'
 import { PhoneLaneArrow } from './PhoneLaneArrow'
@@ -164,18 +164,11 @@ export function repackFleetShapes(editor: Editor, targetBounds?: { x: number; y:
 // HUD. We log both null reasons (kept permanently): they're the signal to look
 // for if the fleet panels ever flash/blank. `fleet-hud` namespace; grep
 // client.log for it.
-function isFleetShapeForOwner(s: any, humanId: string, deviceId: string): boolean {
-  if (!FLEET_SHAPE_TYPES.has(s.type as string)) return false
-  const uid = s.props?.userId
-  const dev = s.props?.deviceId
-  return !!uid && uid === humanId && !!dev && dev === deviceId
-}
-
 function ownerFleetPredicate() {
   if (!isDeviceReady()) return () => false
   const humanId = getHumanId()
   const deviceId = getDeviceId()
-  return (shape: any) => isFleetShapeForOwner(shape, humanId, deviceId)
+  return (shape: any) => isFleetShapeForOwnerKey(shape, humanId, deviceId)
 }
 
 function logFleetBoundsResult(result: FleetBoundsResult): void {
@@ -238,7 +231,7 @@ function getFleetHudDiagnostic(editor: Editor) {
     }
     if (!FLEET_SHAPE_TYPES.has(type)) continue
     fleetShapes.push(s)
-    if (isFleetShapeForOwner(s, humanId, deviceId)) myFleetShapeCount += 1
+    if (isFleetShapeForOwnerKey(s, humanId, deviceId)) myFleetShapeCount += 1
     if (!s.props?.userId || !s.props?.deviceId) orphanFleetShapeCount += 1
     if (
       !!humanId &&
@@ -580,7 +573,7 @@ export function FleetHUD({
       const humanId = getHumanId()
       const deviceId = getDeviceId()
       const isFleetChange = (record: any) =>
-        record.typeName === 'shape' && isFleetShapeForOwner(record, humanId, deviceId)
+        record.typeName === 'shape' && isFleetShapeForOwnerKey(record, humanId, deviceId)
       // Immediate: add/remove always recalculates
       const hasAddition = Object.values(changes.added).some(isFleetChange)
       const hasRemoval = Object.values(changes.removed).some(isFleetChange)

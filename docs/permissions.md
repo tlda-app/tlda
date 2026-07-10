@@ -116,10 +116,10 @@ name or its cwd.
 The spawn/permissions decision runs in the **daemon** (the process that launches
 agents), so the code lives with the daemon, not the server:
 
-- `bin/lib/spawn/permissions.mjs` — resolves the launch policy (the opt-in fence
+- `agent-launch/permissions.mjs` — resolves the launch policy (the opt-in fence
   decision lives in `resolveLaunchPolicy`).
-- `bin/lib/spawn/fence.mjs` — builds the actual fence/seatbelt invocation.
-- `bin/lib/spawn/privilege-ledger.mjs` — the per-agent grant store the daemon
+- `agent-launch/fence.mjs` — builds the actual fence/seatbelt invocation.
+- `agent-launch/permission-ledger.mjs` — the per-agent grant store the daemon
   reads at spawn time; seeded from `daemon.yaml` `grants:`/`profiles:`.
 - `~/.config/tlda/daemon.yaml` — the operator-owned source of truth for regions,
   profiles, and grants.
