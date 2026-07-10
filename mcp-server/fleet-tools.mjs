@@ -2624,13 +2624,6 @@ export async function handleFleetTool(name, args) {
     }
   }
 
-  // ---- stale suggest_action ----
-  // New MCP sessions no longer see a standalone suggest tool. Keep a clear error
-  // for old sessions whose tool list was captured before this removal.
-  if (name === 'suggest') {
-    return { content: [{ type: 'text', text: 'The standalone `suggest` tool has been removed. Send suggestions in `chat()` using a markdown `.suggest` section, e.g. `## Pick one {.suggest}` followed by `- label | hover text | command` list items.' }], isError: true };
-  }
-
   // ---- notify ----
   if (name === 'notify') {
     if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not logged in. Call login() first.' }], isError: true };

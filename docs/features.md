@@ -495,7 +495,7 @@ Agents interact with the canvas through MCP tools. Key tools:
 | `doc_revert` | Restore old version | Remove — use local git |
 | `doc_diff` | Source diff between versions | Remove — use local git |
 | `doc_compare` | Side-by-side comparison | Remove — use local git |
-| `wait_for_feedback` | Block until annotation | Remove — use `tlda monitor` |
+| `wait_for_feedback` | Block until annotation | Remove — use `monitor_add` notifications |
 | `reply_annotation` | Reply in thread | Remove — threading removed |
 | `mark_annotation_done` | Mark done | Remove — done state removed |
 
