@@ -13,7 +13,11 @@ models:
   codex:
     "*":
       harness:
-        required: []
+        # Codex's own sandbox is off; containment is the fence (from the grant) or a
+        # deliberate wide-open daemon launch. The code decides no launch argument —
+        # this flag is the config passing codex's sandbox setting through.
+        required:
+          - "--dangerously-bypass-approvals-and-sandbox"
         preferences: []
         controls: true
 
