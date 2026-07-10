@@ -2099,7 +2099,7 @@ app.get('/api/auth/me', (req, res) => {
 // Clients POST log entries here (one or many). Each entry is appended as a
 // JSON line to ~/.config/tlda/client.log so we can tail/grep. Use this from
 // the browser via src/logger.ts — every log.{debug,info,warn,error} call
-// gets forwarded here automatically. See CLAUDE.md "Client logging".
+// gets forwarded here automatically. See project guidance on client logging.
 const CLIENT_LOG_FILE = join(homedir(), '.config', 'tlda', 'client.log')
 const CLIENT_PROFILE_FILE = join(homedir(), '.config', 'tlda', 'client-profile.jsonl')
 function appendClientLogEntry(entry) {

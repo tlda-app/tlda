@@ -38,7 +38,7 @@ export const ForkTransport = {
  * RPC channel. Routes job → build host daemon → streams side-effects back as
  * RPC messages → onMessage.
  *
- * NOT IMPLEMENTED. Per the no-local-fallback rule (CLAUDE.md): if the build
+ * NOT IMPLEMENTED. Per the project no-local-fallback rule: if the build
  * host's daemon is unreachable (via:'none'), MUST NOT fall back to forking
  * locally — return 503-equivalent instead. This stub calls onError + onExit(1)
  * so the seam is real and the contract is pinned; implement the RPC channel
