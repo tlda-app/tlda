@@ -1688,11 +1688,12 @@ export class FleetStore {
   }
 
   // Liveness oracle: optional function (agentId) => boolean.
-  // Installed by the server. Returns true if the agent's claude process is
-  // running on its machine right now (as reported by that machine's daemon).
+  // Installed by the server. Returns true if the server currently believes the
+  // agent is live, based on login, activity, thinking/status, and explicit wake
+  // probes.
   // No oracle installed → no agent reports awake (all hibernating). The
-  // daemon's first liveness sweep populates the oracle within seconds of
-  // connect, so this is only the cold-start transient.
+  // server installs the oracle during normal boot, so this is only a cold-start
+  // transient.
   setLivenessOracle(fn) {
     this._isLiveOracle = fn;
     this._bustAgentsCache();
@@ -2061,9 +2062,9 @@ export class FleetStore {
       const seenAgo = row.last_seen ? Date.now() - new Date(row.last_seen).getTime() : Infinity
       status = seenAgo < 90_000 ? 'human' : 'human-away'
     } else if (metadata?.shell) {
-      // A pre-registered identity with no live process yet — a "shell" created at
+      // A reserved identity with no live process yet — a "shell" created at
       // spawn time so the agent is addressable (dead=0, in the not-dead registry)
-      // before it inhabits. It is NOT awake; the agent's own register clears the
+      // before it inhabits. It is NOT awake; the agent's own login clears the
       // shell flag (the claim) and flips it to awake.
       status = 'shell'
     } else {

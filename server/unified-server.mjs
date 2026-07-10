@@ -178,14 +178,12 @@ const agentFleetConnections = new Map()     // agent_id -> latest /ws/fleet conn
 const daemonConnections = new Map()         // machine_id:env_name -> ws
 const daemonWelcomeSeenAt = new Map()       // machine_id:env_name -> last successful hello setup
 
-// "Agent has a running claude process right now" — flat set keyed by agent_id.
-// Populated by `agent-liveness` messages from each machine's daemon (every
-// ~30s checkAgentLiveness pass) and seeded on register. The fleet store reads
-// this via an installed oracle when computing each agent's awake/hibernating
-// status. An agent leaves the set when (a) a stable daemon sweep reports it
-// gone, or (b) the agent is killed. Daemon disconnect/reconnect windows are
-// explicitly not proof of hibernation: after a deploy or local restart, stale
-// "awake" is safer than hiding every working agent on the machine.
+// "Server currently believes this agent is live" — flat set keyed by agent_id.
+// Populated by login, agent activity, thinking/status events, and explicit wake
+// probes. The fleet store reads this via an installed oracle when computing each
+// agent's awake/hibernating status. Daemon disconnect/reconnect windows are not
+// proof of hibernation: after a deploy or local restart, stale "awake" is safer
+// than hiding every working agent on the machine.
 const _aliveAgents = new Set()              // Set<agent_id>
 const _aliveSince = new Map()               // agent_id -> first ms in current alive run
 
@@ -993,9 +991,8 @@ function getWouldHibernate() {
   const now = Date.now()
   const result = {}
   for (const agentId of _aliveAgents) {
-    // A dead/removed row can linger in this in-memory set: it's only pruned by
-    // the daemon's agent-liveness reconciliation, which queries dead=0 rows and
-    // therefore can never evict a row already flipped to dead. Such a ghost
+    // A dead/removed row can linger in this in-memory set until the next explicit
+    // state update. Such a ghost
     // would otherwise be hibernated on its ancient _lastActivityAt — and since
     // lineage twins share a tmux_session, that kill-session would take down the
     // LIVE agent occupying the session. Skip anything not currently alive.
@@ -1012,8 +1009,8 @@ function getWouldHibernate() {
     // Idle baseline = last REAL activity, or — if we've recorded none this
     // server-run (e.g. the agent was already idle before the last restart) —
     // the start of its current alive run. aliveSince is set once by
-    // markAgentAlive and, unlike the old liveness touchActivity, is NOT bumped
-    // by the 30s liveness sweep, so it's a true floor for "has done nothing".
+    // markAgentAlive and is not bumped by passive roster/status reads, so it's
+    // a true floor for "has done nothing".
     // Without this, every deploy would leave pre-existing idle agents
     // permanently un-hibernatable (no lastActive → skipped forever).
     const lastActive = _lastActivityAt.get(agentId) || aliveSince
@@ -6227,9 +6224,6 @@ async function handleDaemonWsMessage(ws, msg) {
         })
         if (batchState === 'alive') {
           // Liveness = "the tmux process still exists", NOT "the agent did work".
-          // The daemon sends this batch every 30s (DEATH_CHECK_MS) for EVERY live
-          // agent, so calling touchActivity here would reset the idle clock each
-          // sweep and no idle agent could ever reach the 20-min hibernate threshold.
           // markAgentAlive is idempotent for _aliveSince; real activity is recorded
           // by agent-activity / agent-thinking / chat, not by this liveness ping.
           markAgentAlive(id)
@@ -6402,7 +6396,7 @@ async function handleDaemonWsMessage(ws, msg) {
     try {
       markAgentNotAlive(agent_id)
       // A shell that never booted (never claimed) must be marked dead so it
-      // leaves the not-dead registry — otherwise the pre-registered identity
+      // leaves the not-dead registry — otherwise the reserved identity
       // lingers as a phantom addressable agent that will never inhabit.
       if (agent?.metadata?.shell) fleetStore.markDead?.(agent_id)
       fleetStore.updateAgentMeta?.(agent_id, {
