@@ -5,14 +5,7 @@ import os from 'os'
 import path from 'path'
 
 import { recordPartialSkillReads } from '../shared/partial-skill-reads.mjs'
-import {
-  loadSessionIdentityStore,
-  saveSessionIdentityStore,
-  updateFleetFriendlyName,
-  updateIngestionStatus,
-  upsertSessionIdentity,
-} from '../agent-runtime/session-identity-store.mjs'
-import { tailSessionIdentityInput } from '../agent-runtime/session-identity-tail.mjs'
+import { ledgerSessionId, tailLedgerSessionInput } from '../agent-runtime/ledger-session-tail.mjs'
 import { scanFileIdentitySync, scanFileOwnersSync } from '../agent-runtime/daemon-jsonl-hot-path.mjs'
 import {
   shouldClaimClaudeWatcher,
@@ -37,7 +30,6 @@ export function shouldSuppressCatchupOutput(output) {
 export function createJsonlIngestor({
   configDir,
   cursorsFile,
-  sessionIdentityFile,
   projectsDir,
   daemonDir,
   log,
@@ -49,6 +41,7 @@ export function createJsonlIngestor({
   listSessions,
   selectAgentKind,
   harnessAdapters,
+  permissionLedger,
   bufferActivity,
   extractActivityEvents,
 }) {
@@ -68,7 +61,6 @@ export function createJsonlIngestor({
     }
   }
   let cursors = loadCursors() // { sessionId: { inode, offset } }
-  let sessionIdentityStore = loadSessionIdentityStore(sessionIdentityFile)
 
   // Throttle saveCursors — flush at most once per 2s.
   let _cursorSaveTimer = null
@@ -77,26 +69,34 @@ export function createJsonlIngestor({
     _cursorSaveTimer = setTimeout(() => { _cursorSaveTimer = null; saveCursors() }, 2000)
   }
 
-  function saveSessionIdentityStoreNow() {
-    try { saveSessionIdentityStore(sessionIdentityFile, sessionIdentityStore) }
-    catch (e) {
-      log.error(`session identity save failed: ${e.message}`)
+  function recordSessionIdentity(input) {
+    const fleetId = input?.fleet_id
+    const sessionId = ledgerSessionId(input)
+    if (!fleetId || !sessionId || !permissionLedger?.setSessionSync) return
+    try {
+      permissionLedger.setSessionSync(fleetId, {
+        sessionId,
+        sessionKind: input.harness_kind,
+        sessionPath: input.jsonl_path,
+        cwd: input.cwd,
+        friendlyName: input.friendly_name,
+      })
+    } catch (e) {
+      log.error(`daemon ledger session identity write failed for ${fleetId}: ${e.message}`)
       throw e
     }
   }
 
-  function recordSessionIdentity(input, { save = true } = {}) {
-    if (!input?.session_id) return
-    if (upsertSessionIdentity(sessionIdentityStore, input) && save) saveSessionIdentityStoreNow()
-  }
-
   function syncSessionIdentityNamesFromAgents(agentList = getAgents()) {
-    let changed = false
     for (const agent of agentList || []) {
       if (!agent?.id || !agent?.friendly_name) continue
-      if (updateFleetFriendlyName(sessionIdentityStore, agent.id, agent.friendly_name)) changed = true
+      try {
+        permissionLedger?.setSessionSync?.(agent.id, { friendlyName: agent.friendly_name })
+      } catch (e) {
+        // Friendly-name sync is display-only; session identity writes fail loudly elsewhere.
+        log.warn(`daemon ledger friendly-name sync failed for ${agent.id}: ${e.message}`)
+      }
     }
-    if (changed) saveSessionIdentityStoreNow()
   }
 
   function isIngestionCaughtUp() {
@@ -113,12 +113,8 @@ export function createJsonlIngestor({
   }
 
   function refreshIngestionCaughtUp() {
-    const changed = updateIngestionStatus(sessionIdentityStore, {
-      caught_up: isIngestionCaughtUp(),
-      active_tails: [...pathWatchers.values()].filter(pw => pw && !pw.stopped).length,
-      pending_jobs: searchBackfillJobs.size + priorSessionBackfillPending.size,
-    })
-    if (changed) saveSessionIdentityStoreNow()
+    // Session identity now lives in the daemon ledger. Liveness checks that need
+    // "caught up" should use the daemon's runtime state, not a sidecar file.
   }
 
   // ---------- session-owner cache ----------
@@ -136,21 +132,17 @@ export function createJsonlIngestor({
     const changed = !entry.classified || merged.length !== prev.length
     entry.owners = merged
     entry.classified = true
-    let identityChanged = false
     for (const owner of merged) {
-      if (upsertSessionIdentity(sessionIdentityStore, {
+      recordSessionIdentity({
         session_id: sessionId,
         harness_kind: harnessKind,
         jsonl_path: jsonlPath,
         fleet_id: owner,
         ...(identity?.fleet_id === owner ? identity : {}),
         classified: true,
-      })) {
-        identityChanged = true
-      }
+      })
     }
     if (changed) scheduleCursorSave()
-    if (changed || identityChanged) saveSessionIdentityStoreNow()
   }
 
   function claudeOwnersForSessionFile(sessionId, jsonlPath) {
@@ -894,12 +886,11 @@ export function createJsonlIngestor({
         priorSessionBackfillPending.delete(job.fleetId)
         priorSessionBackfillComplete.add(job.fleetId)
       }
-      for (const identity of msg.result?.identities || []) recordSessionIdentity(identity, { save: false })
+      for (const identity of msg.result?.identities || []) recordSessionIdentity(identity)
       if (job?.sessionId) {
         cursors[job.sessionId] = { ...(cursors[job.sessionId] || {}), searchBackfilled: true }
         scheduleCursorSave()
       }
-      saveSessionIdentityStoreNow()
       log.info(`JSONL ${job?.kind || 'backfill'} job complete: ${msg.jobId}`)
     } else {
       log.warn(`JSONL ${job?.kind || 'backfill'} job failed: ${msg.jobId}: ${msg.error || 'unknown error'}`)
@@ -966,7 +957,7 @@ export function createJsonlIngestor({
           events: output.events || [],
         })) delivered = false
       } else if (output.type === 'identity') {
-        recordSessionIdentity(tailSessionIdentityInput({
+        recordSessionIdentity(tailLedgerSessionInput({
           sessionId: pw.sessionId,
           harnessKind: pw.harnessKind,
           jsonlPath: pw.jsonlPath,

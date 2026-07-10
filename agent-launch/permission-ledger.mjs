@@ -441,7 +441,13 @@ export class PermissionLedger {
         spawn_policy TEXT NOT NULL,
         permission_set TEXT,
         updated_at TEXT NOT NULL,
-        source TEXT NOT NULL
+        source TEXT NOT NULL,
+        friendly_name TEXT,
+        session_id TEXT,
+        session_kind TEXT,
+        session_path TEXT,
+        cwd TEXT,
+        last_seen TEXT
       );
       CREATE TABLE IF NOT EXISTS ledger_meta (
         key TEXT PRIMARY KEY,
@@ -451,6 +457,18 @@ export class PermissionLedger {
       CREATE INDEX IF NOT EXISTS idx_permission_grants_updated_at
         ON permission_grants(updated_at);
     `)
+    for (const ddl of [
+      'ALTER TABLE permission_grants ADD COLUMN friendly_name TEXT',
+      'ALTER TABLE permission_grants ADD COLUMN session_id TEXT',
+      'ALTER TABLE permission_grants ADD COLUMN session_kind TEXT',
+      'ALTER TABLE permission_grants ADD COLUMN session_path TEXT',
+      'ALTER TABLE permission_grants ADD COLUMN cwd TEXT',
+      'ALTER TABLE permission_grants ADD COLUMN last_seen TEXT',
+    ]) {
+      try { this.db.exec(ddl) } catch (e) {
+        if (!String(e?.message || '').includes('duplicate column name')) throw e
+      }
+    }
     this._metaGet = this.db.prepare('SELECT value FROM ledger_meta WHERE key = ?')
     this._metaSet = this.db.prepare(`
       INSERT INTO ledger_meta (key, value, updated_at)
@@ -460,7 +478,8 @@ export class PermissionLedger {
         updated_at = excluded.updated_at
     `)
     this._get = this.db.prepare(`
-      SELECT id, spawn_policy, permission_set, updated_at, source
+      SELECT id, spawn_policy, permission_set, updated_at, source,
+        friendly_name, session_id, session_kind, session_path, cwd, last_seen
       FROM permission_grants
       WHERE id = ?
     `)
@@ -530,6 +549,12 @@ export class PermissionLedger {
       permissionSet: grant.permissionSet,
       updatedAt: row.updated_at,
       source: row.source || 'ledger',
+      friendlyName: row.friendly_name || null,
+      sessionId: row.session_id || null,
+      sessionKind: row.session_kind || null,
+      sessionPath: row.session_path || null,
+      cwd: row.cwd || null,
+      lastSeen: row.last_seen || null,
     }
   }
 
@@ -655,6 +680,49 @@ export class PermissionLedger {
       row.source,
     )
     return row
+  }
+
+  setSessionSync(id, {
+    sessionId,
+    sessionKind,
+    sessionPath,
+    cwd,
+    friendlyName,
+    lastSeen = nowIso(),
+  } = {}) {
+    const key = String(id || '').trim()
+    if (!key) throw new Error('cannot persist daemon session identity without fleet id')
+    if (!sessionId && !sessionKind && !sessionPath && !cwd && !friendlyName) return this.get(key)
+    const existing = this.get(key)
+    if (!existing) {
+      const policy = normalizeRegionPolicy('none')
+      this._upsert.run(
+        key,
+        JSON.stringify(policy),
+        JSON.stringify(emptyPermissionSet({ name: policy.name, projectedPolicy: policy })),
+        nowIso(),
+        'daemon-ledger:session-autocreate',
+      )
+    }
+    this.db.prepare(`
+      UPDATE permission_grants SET
+        session_id = COALESCE(?, session_id),
+        session_kind = COALESCE(?, session_kind),
+        session_path = COALESCE(?, session_path),
+        cwd = COALESCE(?, cwd),
+        friendly_name = COALESCE(?, friendly_name),
+        last_seen = ?
+      WHERE id = ?
+    `).run(
+      sessionId || null,
+      sessionKind || null,
+      sessionPath || null,
+      cwd || null,
+      friendlyName || null,
+      lastSeen,
+      key,
+    )
+    return this.get(key)
   }
 
   async close() {

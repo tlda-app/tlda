@@ -876,7 +876,11 @@ function plistEscape(value) {
 }
 
 function daemonLaunchdTarget(label = FLEET_DAEMON_LABEL) {
-  return `gui/${process.getuid()}/${label}`
+  return `${daemonLaunchdDomain()}/${label}`
+}
+
+function daemonLaunchdDomain() {
+  return process.env.TLDA_DAEMON_LAUNCHD_DOMAIN || `user/${process.getuid()}`
 }
 
 function daemonPathEnv() {
@@ -972,7 +976,7 @@ function requireLaunchd() {
 }
 
 async function bootstrapDaemonPlist(plist = FLEET_DAEMON_PLIST, label = FLEET_DAEMON_LABEL) {
-  await runLaunchctl(['bootstrap', `gui/${process.getuid()}`, plist], { ignoreFailure: true })
+  await runLaunchctl(['bootstrap', daemonLaunchdDomain(), plist], { ignoreFailure: true })
   await runLaunchctl(['kickstart', daemonLaunchdTarget(label)])
 }
 
@@ -1178,14 +1182,14 @@ async function writeSandboxDaemonPlist() {
   console.log(`  WorkingDirectory: ${FLEET_DAEMON_MAIN_ROOT}`)
   console.log(`  Log: ${logFile}`)
   console.log('\nYolo acceptance commands:')
-  console.log(`  launchctl bootout gui/$(id -u)/${label} 2>/dev/null || true`)
-  console.log(`  launchctl bootstrap gui/$(id -u) ${JSON.stringify(plist)}`)
-  console.log(`  launchctl kickstart gui/$(id -u)/${label}`)
+  console.log(`  launchctl bootout ${daemonLaunchdTarget(label)} 2>/dev/null || true`)
+  console.log(`  launchctl bootstrap ${daemonLaunchdDomain()} ${JSON.stringify(plist)}`)
+  console.log(`  launchctl kickstart ${daemonLaunchdTarget(label)}`)
   console.log(`  tail -f ${JSON.stringify(logFile)}`)
   console.log(`  kill "$(cat ${JSON.stringify(join(configDir, 'fleet-daemon.pid'))})"`)
-  console.log(`  launchctl print gui/$(id -u)/${label}`)
+  console.log(`  launchctl print ${daemonLaunchdTarget(label)}`)
   console.log(`\nCleanup after proof:`)
-  console.log(`  launchctl bootout gui/$(id -u)/${label} 2>/dev/null || true`)
+  console.log(`  launchctl bootout ${daemonLaunchdTarget(label)} 2>/dev/null || true`)
   return
 }
 
@@ -1199,12 +1203,29 @@ function lastDaemonConnectedTarget() {
   }
 }
 
+function runningFleetDaemonPid() {
+  if (!existsSync(FLEET_DAEMON_PIDFILE)) return null
+  const pid = parseInt(readFileSync(FLEET_DAEMON_PIDFILE, 'utf8').trim(), 10)
+  if (!Number.isFinite(pid) || pid <= 0) return null
+  try {
+    process.kill(pid, 0)
+    return pid
+  } catch {
+    return null
+  }
+}
+
 // Idempotent daemon start — ensure launchd has the singleton job loaded.
 // Used by `tlda server start` to make sure the daemon comes up alongside
 // the server. The daemon dying silently was a recurring source of pain.
 async function ensureFleetDaemonRunning() {
   if (process.platform !== 'darwin') return
   if (!existsSync(FLEET_DAEMON_SCRIPT)) return // not installed; silently skip
+  const pid = runningFleetDaemonPid()
+  if (pid) {
+    console.log(yellow('Fleet daemon already running outside launchd') + dim(` (pid ${pid})`))
+    return
+  }
   await writeDaemonPlist()
   await bootstrapDaemonPlist()
   console.log(green('Fleet daemon launchd job started.'))
@@ -1317,6 +1338,16 @@ async function cmdFleetWatch(sub) {
     if (!existsSync(daemonScript)) {
       console.error(red(`Daemon script not found: ${daemonScript}`))
       process.exit(1)
+    }
+
+    const existingPid = runningFleetDaemonPid()
+    if (existingPid) {
+      console.log(yellow('Fleet daemon already running outside launchd') + dim(` (pid ${existingPid})`))
+      console.log(dim(`  Config target: ${getFleetServerUrl()}`))
+      const connectedTarget = lastDaemonConnectedTarget()
+      if (connectedTarget) console.log(dim(`  Last WS target: ${connectedTarget}`))
+      console.log(dim(`  Log: ${FLEET_DAEMON_LOGFILE}`))
+      return
     }
 
     await writeDaemonPlist()
@@ -2127,6 +2158,7 @@ async function runFleetSpawn(spawnArgs) {
       requestedPermissions,
       spawnPolicy: grant.grantedPolicy,
       permissionSet: grant.grantedPermissionSet,
+      permissionLedger: ledger,
       explicitPolicy: !!permissionArg,
       acknowledgeNoSecurity,
       enforceFence: true,

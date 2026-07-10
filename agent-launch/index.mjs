@@ -318,7 +318,13 @@ async function spawnRespawn(params) {
   const modelResolved = resolveAdapterModel(adapter, rawModel, config)
   const model = modelResolved.model
   const tmuxSession = agent.tmux_session || `fleet-${sanitizeSessionName(friendlyName)}`
-  if (await (deps.sessionHasRuntime || sessionHasRuntime)(tmuxSession, { tmuxSocket: params.tmuxSocket })) {
+  const explicitRelaunch = !!(
+    params.explicitPolicy ||
+    params.requestedPermission ||
+    params.permissionSet ||
+    params.requestedPermissions
+  )
+  if (!explicitRelaunch && await (deps.sessionHasRuntime || sessionHasRuntime)(tmuxSession, { tmuxSocket: params.tmuxSocket })) {
     return { ok: true, fleetId, tmuxSession, harness: requestedKind, model, alreadyAlive: true }
   }
   let handle = null
@@ -335,6 +341,8 @@ async function spawnRespawn(params) {
   } else if (requestedKind === 'codex') {
     const resolved = await (deps.resolveCodexResumeHandle || resolveCodexResumeHandle)(agent, {
       ...identityOptions,
+      permissionLedger: params.permissionLedger,
+      permissionLedgerPath: params.permissionLedgerPath,
     })
     if (resolved?.ok) {
       handle = {
@@ -372,7 +380,7 @@ async function spawnRespawn(params) {
   const resumeId = adapter.resumeId?.(handle)
   if (handle?.cwd) cwd = resolveSpawnCwd(handle.cwd)
   if (requestedKind === 'claude' && resumeId) stripSyntheticTail(resumeId)
-  const dnsAlias = await resolveDnsAlias(api)
+  const dnsAlias = await (deps.resolveDnsAlias || resolveDnsAlias)(api)
   const launchPolicy = resolveLaunchPolicy({
     spawnPolicy: params.spawnPolicy || meta.spawnPolicy,
     permissionSet: params.permissionSet || meta.permissionSet,
@@ -388,7 +396,7 @@ async function spawnRespawn(params) {
   })
   assertNativeTools(launchPolicy, requestedKind)
   if (requestedKind === 'codex' && resumeId) {
-    await wsReserveShell({
+    await (deps.wsReserveShell || wsReserveShell)({
       fleetId,
       name: friendlyName,
       tmuxSession,
@@ -424,10 +432,13 @@ async function spawnRespawn(params) {
     config,
     env: spawnEnv(params),
   })
-  const launched = await spawnTmux(tmuxSession, cwd, cmd, { autoDismiss: requestedKind === 'claude', sendKeys, tmuxSocket: params.tmuxSocket, crashLogPath: params.crashLogPath })
+  const launched = await (deps.spawnTmux || spawnTmux)(tmuxSession, cwd, cmd, { autoDismiss: requestedKind === 'claude', sendKeys, tmuxSocket: params.tmuxSocket, crashLogPath: params.crashLogPath, killExisting: explicitRelaunch })
   if (!launched) return { ok: true, fleetId, tmuxSession, harness: requestedKind, model, alreadyAlive: true }
   if (requestedKind === 'codex') {
-    await injectCodexPrompt(tmuxSession, codex.kickoffPrompt(friendlyName), { tmuxSocket: params.tmuxSocket })
+    const injected = await (deps.injectCodexPrompt || injectCodexPrompt)(tmuxSession, codex.kickoffPrompt(friendlyName), { tmuxSocket: params.tmuxSocket })
+    if (!injected) {
+      throw new SpawnError('launch-failed', `codex prompt injection did not reach ${tmuxSession}`, { fleetId, tmuxSession })
+    }
   } else if (requestedKind === 'claude' && resumeId) {
     await injectClaudePrompt(tmuxSession, claude.kickoffPrompt(friendlyName), { tmuxSocket: params.tmuxSocket })
   }
@@ -435,6 +446,7 @@ async function spawnRespawn(params) {
 }
 
 async function spawnRefresh(params) {
+  const deps = params._deps || {}
   const api = resolveApi()
   await ensureServer({ api })
   const name = params.name || params.agentId || params.agent_id
@@ -452,7 +464,7 @@ async function spawnRefresh(params) {
   const modelResolved = resolveAdapterModel(adapter, rawModel, config)
   const model = modelResolved.model
   const tmuxSession = agent.tmux_session || `fleet-${sanitizeSessionName(friendlyName)}`
-  const dnsAlias = await resolveDnsAlias(api)
+  const dnsAlias = await (deps.resolveDnsAlias || resolveDnsAlias)(api)
   const launchPolicy = resolveLaunchPolicy({
     spawnPolicy: params.spawnPolicy || meta.spawnPolicy,
     permissionSet: params.permissionSet || meta.permissionSet,
@@ -501,10 +513,13 @@ async function spawnRefresh(params) {
     config,
     env: spawnEnv(params),
   })
-  const launched = await spawnTmux(tmuxSession, cwd, cmd, { autoDismiss: requestedKind === 'claude', sendKeys, tmuxSocket: params.tmuxSocket, crashLogPath: params.crashLogPath })
+  const launched = await (deps.spawnTmux || spawnTmux)(tmuxSession, cwd, cmd, { autoDismiss: requestedKind === 'claude', sendKeys, tmuxSocket: params.tmuxSocket, crashLogPath: params.crashLogPath, killExisting: true })
   if (!launched) return { ok: true, fleetId, tmuxSession, harness: requestedKind, model, alreadyAlive: true }
   if (requestedKind === 'codex') {
-    await injectCodexPrompt(tmuxSession, codex.kickoffPrompt(friendlyName), { tmuxSocket: params.tmuxSocket })
+    const injected = await (deps.injectCodexPrompt || injectCodexPrompt)(tmuxSession, codex.kickoffPrompt(friendlyName), { tmuxSocket: params.tmuxSocket })
+    if (!injected) {
+      throw new SpawnError('launch-failed', `codex prompt injection did not reach ${tmuxSession}`, { fleetId, tmuxSession })
+    }
   }
   return { ok: true, fleetId, tmuxSession, harness: requestedKind, model, refreshed: true }
 }

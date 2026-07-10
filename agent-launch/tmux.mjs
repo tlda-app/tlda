@@ -93,10 +93,12 @@ export async function sessionHasRuntime(session, { tmuxSocket = process.env.TMUX
   return false
 }
 
-export async function spawnTmux(session, cwd, cmd, { autoDismiss = true, sendKeys = false, tmuxSocket = process.env.TMUX_SOCKET || null, crashLogPath = null } = {}) {
+export async function spawnTmux(session, cwd, cmd, { autoDismiss = true, sendKeys = false, tmuxSocket = process.env.TMUX_SOCKET || null, crashLogPath = null, killExisting = false } = {}) {
   const launchViaShell = sendKeys || !!crashLogPath
   try {
-    const args = ['respawn-pane', '-t', session, '-c', cwd]
+    const args = ['respawn-pane']
+    if (killExisting) args.push('-k')
+    args.push('-t', session, '-c', cwd)
     if (!launchViaShell) args.push(cmd)
     await tmux(tmuxSocket, ...args)
   } catch {

@@ -31,6 +31,7 @@ export function createAgentLauncher({
   tmux,
   tmuxArgs = [],
   tmuxSocket = null,
+  spawnImpl = null,
   startupFailureProbeMs = Number(process.env.TLDA_SPAWN_STARTUP_FAILURE_PROBE_MS || 2500),
 }) {
   const activeSpawns = new Map()
@@ -196,7 +197,7 @@ export function createAgentLauncher({
     })
     activeSpawns.set(agentName, Date.now())
     try {
-      const { spawn: nodeSpawn } = await import('./index.mjs')
+      const nodeSpawn = spawnImpl || (await import('./index.mjs')).spawn
       const spawnMode = sessionId ? 'session' : (refresh ? 'refresh' : (respawn ? 'respawn' : 'fresh'))
       const preallocatedAgentId = agent_id || ((spawnMode === 'fresh' || spawnMode === 'session') ? newFleetId() : undefined)
       const mintedThisCall = !agent_id && (spawnMode === 'fresh' || spawnMode === 'session')
@@ -218,6 +219,7 @@ export function createAgentLauncher({
           kind: launchKind,
           config: spawnConfig,
           activeConfigName,
+          permissionLedger,
           cwd: resolvedCwd,
           sessionId,
           enroll: !!enroll,
@@ -259,7 +261,7 @@ export function createAgentLauncher({
           error: `spawn launcher returned but tmux session is not usable: ${detail}`,
         }
       }
-      if (launched.harness === 'codex' && !launched.resumeId) {
+      if (launched.harness === 'codex' && !launched.resumeId && !launched.pending) {
         if (mintedThisCall) await permissionLedger.delete(preallocatedAgentId).catch(() => {})
         return {
           ok: false,
@@ -292,6 +294,7 @@ export function createAgentLauncher({
         agent_id: launched.fleetId,
         tmux_session: launched.tmuxSession,
         resume_id: launched.resumeId,
+        pending: !!launched.pending,
         enrolled: launched.enrolled,
         spawnerPermission: grant.spawnerPermission,
         projectPermission: grant.projectPermission,
