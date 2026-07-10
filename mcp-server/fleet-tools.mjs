@@ -2643,6 +2643,7 @@ export async function handleFleetTool(name, args) {
           kind: spawnOpts.kind,
           cwd: agentCwd,
           permission: spawnOpts.permission,
+          requestedPermissions: spawnOpts.permissions,
         });
         if (spawnResult?.ok === false || spawnResult?.error) {
           return { content: [{ type: 'text', text: `spawn failed before delegation: ${spawnResult.error || JSON.stringify(spawnResult)}` }], isError: true };
@@ -3998,7 +3999,7 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
         cwd: args.cwd,
         mode: args.mode,
         permission: args.permission,
-        permissions: args.permissions,
+        requestedPermissions: args.permissions,
         policy: args.policy,
         iLikeToLiveDangerously: !!args.iLikeToLiveDangerously,
         phase: phase && isFresh ? phase : undefined,

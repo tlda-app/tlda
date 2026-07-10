@@ -202,10 +202,9 @@ function addTap(el: Element | null | undefined, fn: (e: Event) => void) {
   })
 }
 
-// On touch devices the chat input is voice-only: tapping it focuses the field
-// for dictation, and iOS must NOT raise the on-screen keyboard (it eats half the
-// screen). inputmode="none" reliably suppresses the soft keyboard on a <textarea>
-// while keeping focus + programmatic/hardware-keyboard input working.
+// On touch devices, the shared ChatComposer suppresses the iOS keyboard while an
+// app voice backend is selected (Browser/Deepgram/Whisper). With Voice Off, the
+// keyboard stays available for ordinary typing or native dictation.
 // maxTouchPoints (not pointer:coarse) — a Magic Keyboard/trackpad makes the
 // iPad's primary pointer "fine", which would wrongly drop the no-keyboard rule.
 const _isTouchDevice = (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0)

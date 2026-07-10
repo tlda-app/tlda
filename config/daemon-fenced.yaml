@@ -97,7 +97,6 @@ profiles:
         - temp
         - agent-state-read
       deny:
-        - apps
         - secrets
     write:
       allow:

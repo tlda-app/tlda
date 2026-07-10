@@ -47,13 +47,13 @@ RUN python3 -m venv /opt/venv \
 RUN npm install -g @openai/codex@0.142.3
 
 # --- node runtime deps ---
-# Install the full root package.json at /app (like Dockerfile.live) so both the
-# daemon code and shared/*.mjs resolve up to one /app/node_modules — shared/
-# imports @tldraw/* (file: deps), so the tldraw-fork workspace must be present.
-COPY server/package.json ./package.json
-COPY server/package-lock.json* ./
+# Install the ordinary tlda runtime package at /app so the daemon and its child
+# helpers resolve the same dependencies they use in the main app.
+COPY package.json ./package.json
+COPY package-lock.json* ./
 COPY tldraw-fork/ ./tldraw-fork/
-RUN npm install --production
+RUN npm install --omit=dev --ignore-scripts \
+    && npm rebuild better-sqlite3 node-pty
 
 # mcp-server has its own package.json (ws, yjs, @modelcontextprotocol/sdk) and
 # expects a local node_modules. codex spawns it as the `tlda` MCP server.
@@ -64,6 +64,8 @@ RUN cd mcp-server && npm install --production
 # The daemon and Node spawn library need cli/, shared/, and server/ siblings of
 # bin/ under /app.
 COPY bin/fleet-daemon.mjs ./bin/fleet-daemon.mjs
+COPY bin/fleet-jsonl-ingester.mjs ./bin/fleet-jsonl-ingester.mjs
+COPY bin/fence-seatbelt.mjs ./bin/fence-seatbelt.mjs
 COPY bin/requirements.txt ./bin/requirements.txt
 COPY bin/lib/ ./bin/lib/
 COPY cli/ ./cli/

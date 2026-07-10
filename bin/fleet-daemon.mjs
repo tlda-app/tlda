@@ -92,6 +92,7 @@ import { DaemonDeliveryRuntime } from './lib/daemon/delivery-runtime.mjs'
 import { DAEMON_OUTBOX_ACK_TYPE } from '../shared/daemon-delivery.mjs'
 import {
   scanFileOwnersSync,
+  scanFileIdentitySync,
 } from './lib/daemon-jsonl-hot-path.mjs'
 import {
   loadSessionIdentityStore,
@@ -1441,6 +1442,27 @@ async function syncSessionWatchers(agentList) {
 
     activePaths.add(jsonlPath)
     agentPaths.set(agent.id, jsonlPath)
+    if (harness.kind === 'codex') {
+      try {
+        const { identity, owners, endOffset } = scanFileIdentitySync(jsonlPath)
+        const claimedOwners = owners.length ? owners : [agent.id]
+        recordSessionOwners(path.basename(jsonlPath, '.jsonl'), claimedOwners, {
+          jsonlPath,
+          harnessKind: harness.kind,
+          identity,
+        })
+        if (endOffset > 0) {
+          const sessionId = path.basename(jsonlPath, '.jsonl')
+          const entry = cursors[sessionId] || (cursors[sessionId] = {})
+          if (!entry.identityScanned) {
+            entry.identityScanned = true
+            scheduleCursorSave()
+          }
+        }
+      } catch (e) {
+        log.warn(`codex identity scan failed for ${path.basename(jsonlPath)}: ${e.message}`)
+      }
+    }
 
     if (pathWatchers.has(jsonlPath)) {
       const pw = pathWatchers.get(jsonlPath)

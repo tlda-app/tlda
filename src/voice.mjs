@@ -25,9 +25,8 @@ const _isTouchDevice = typeof navigator !== 'undefined' && navigator.maxTouchPoi
 // iOS = iPhone/iPad/iPod (incl. iPadOS pretending to be a Mac). EVERY iOS browser
 // runs on WebKit (Apple's App Store rule), so Chrome/Firefox-on-iOS are WKWebView.
 // Web Speech availability varies across iOS/WebKit builds and can fail at
-// SpeechRecognition.start() with 'service-not-allowed'. Treat that as a hard
-// recognizer failure for this session, not as a reason to bounce through more
-// startup/retry behavior.
+// SpeechRecognition.start() with 'service-not-allowed'. Before treating that as
+// a hard recognizer failure, run one explicit mic-permission probe and retry.
 const _isIOS = typeof navigator !== 'undefined' && (
   /iPad|iPhone|iPod/.test(navigator.userAgent) ||
   (navigator.maxTouchPoints > 1 && /Macintosh/.test(navigator.userAgent))
@@ -38,8 +37,8 @@ const _isIOS = typeof navigator !== 'undefined' && (
 // more confusing than useful on phone.
 function serviceUnavailableMessage(isIOS) {
   return isIOS
-    ? 'voice unavailable on this iPhone browser'
-    : 'speech service unavailable'
+    ? 'Browser voice refused by iPhone browser'
+    : 'Browser voice service refused'
 }
 
 // --- Backend selection ---
@@ -285,6 +284,7 @@ let _fadeTimer = null
 let _lastTapTime = 0
 let _singleTapTimer = null
 let _audioCaptureRetries = 0
+let _serviceUnavailableRetries = 0
 let _lastResultTime = 0  // timestamp of last onresult — used for HUD health color
 let _recordStartTime = 0   // Date.now() at record start — for time-to-first-interim instrumentation
 let _firstInterimLogged = false
@@ -700,6 +700,48 @@ function showHud(text, stateColor) {
   appendCallSegment(hud)
   hud.style.color = activeAgentColor() || stateColor || 'rgba(255,255,255,0.7)'
   requestAnimationFrame(() => { hud.style.opacity = '1' })
+}
+
+function speechContext(extra = {}) {
+  let standalone = false
+  try {
+    standalone = !!navigator.standalone || !!window.matchMedia?.('(display-mode: standalone)').matches
+  } catch {}
+  let topLevel = true
+  try { topLevel = window.top === window.self } catch { topLevel = false }
+  return {
+    backend: _backend,
+    isIOS: _isIOS,
+    isSafari: _isSafari,
+    isTouch: _isTouchDevice,
+    hasSpeechRecognition: !!SpeechRecognition,
+    hasMediaDevices: !!navigator.mediaDevices?.getUserMedia,
+    isSecureContext: typeof window !== 'undefined' ? !!window.isSecureContext : null,
+    standalone,
+    topLevel,
+    visibilityState: typeof document !== 'undefined' ? document.visibilityState : null,
+    userActivationActive: navigator.userActivation?.isActive ?? null,
+    userActivationSeen: navigator.userActivation?.hasBeenActive ?? null,
+    hostname: location.hostname,
+    protocol: location.protocol,
+    ...extra,
+  }
+}
+
+async function logSpeechContext(stage, extra = {}) {
+  const data = speechContext(extra)
+  try {
+    const permissions = navigator.permissions
+    if (permissions?.query) {
+      const status = await permissions.query({ name: 'microphone' })
+      data.microphonePermission = status?.state || null
+    }
+  } catch (err) {
+    data.microphonePermission = 'query-failed'
+    data.microphonePermissionError = err?.name || String(err)
+  }
+  log.metric('voice', stage, data)
+  return data
 }
 
 // --- Live voice/video call status (folded into the speech HUD) ---
@@ -1366,11 +1408,41 @@ function _setupRecognition() {
       return
     }
     if (e.error === 'service-not-allowed') {
-      // On the tested iPhone path, Web Speech is unavailable even in Safari. Do NOT
-      // retry; stop and point to backends that do not depend on Web Speech.
-      stopRecording()
-      showHud(serviceUnavailableMessage(_isIOS), '#c87070')
-      fadeHud(8000)
+      logSpeechContext('browser voice service refused', { error: e.error, retry: _serviceUnavailableRetries })
+      if (_serviceUnavailableRetries < 1) {
+        _serviceUnavailableRetries++
+        showHud('checking Browser mic permission…', '#c8956a')
+        navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+          stream.getTracks().forEach(t => t.stop())
+          logSpeechContext('browser voice mic probe passed', { retry: _serviceUnavailableRetries })
+          if (!_recording) return
+          _setupRecognition()
+          try {
+            showHud('mic allowed — retrying Browser voice…', '#c8956a')
+            showVoiceRestarting('service permission retry')
+            _recognition.start()
+            logSpeechContext('browser voice retry started', { retry: _serviceUnavailableRetries })
+            markVoiceRestarted()
+            showRecordingHud()
+          } catch (err) {
+            console.warn('voice: service-not-allowed retry failed', err)
+            logSpeechContext('browser voice retry threw', { retry: _serviceUnavailableRetries, error: err?.name || String(err) })
+            stopRecording()
+            showHud(serviceUnavailableMessage(_isIOS), '#c87070')
+            fadeHud(8000)
+          }
+        }).catch((err) => {
+          logSpeechContext('browser voice mic probe failed', { retry: _serviceUnavailableRetries, error: err?.name || String(err) })
+          stopRecording()
+          showHud(serviceUnavailableMessage(_isIOS), '#c87070')
+          fadeHud(8000)
+        })
+      } else {
+        logSpeechContext('browser voice service refused after retry', { error: e.error, retry: _serviceUnavailableRetries })
+        stopRecording()
+        showHud(serviceUnavailableMessage(_isIOS), '#c87070')
+        fadeHud(8000)
+      }
       return
     }
     showHud('mic error: ' + e.error, '#c87070')
@@ -2172,6 +2244,7 @@ function startRecording() {
   startVoiceLivenessWatchdog()
 
   _audioCaptureRetries = 0
+  _serviceUnavailableRetries = 0
 
   if (_backend === 'deepgram') {
     connectDeepgramBridge()
@@ -2185,13 +2258,17 @@ function startRecording() {
     // Just ensure we're connected to the bridge WebSocket.
     connectWhisperBridge()
   } else {
+    logSpeechContext('browser voice start requested')
+    showHud('starting Browser voice…', '#c8956a')
     const doStart = () => {
       if (!_recording) return
       _setupRecognition()
       try {
         _recognition.start()
+        logSpeechContext('browser voice recognizer start called')
       } catch (err) {
         console.warn('voice: could not start recognition', err)
+        logSpeechContext('browser voice start threw', { error: err?.name || String(err) })
         _recording = false
         showHud('mic failed — tap to retry', '#c87070')
         fadeHud(3000)
@@ -2274,6 +2351,7 @@ async function hardResetVoice({ keepDeepgramMic = false } = {}) {
   _editStopped = false
   _filling = false
   _audioCaptureRetries = 0
+  _serviceUnavailableRetries = 0
   _lastResultTime = 0
   _lastWhisperMessageTime = 0
   stopVoiceLivenessWatchdog()

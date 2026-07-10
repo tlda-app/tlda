@@ -1956,7 +1956,7 @@ function hasDeepgramKey() {
   try { return !!loadConfig()?.deepgramApiKey } catch { return false }
 }
 
-app.get('/api/voice/backends', requireRead, async (req, res) => {
+app.get('/api/voice/backends', async (req, res) => {
   try {
     const backends = [
       { value: '', label: 'Off', available: true },

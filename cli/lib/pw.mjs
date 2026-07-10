@@ -219,6 +219,10 @@ function pw(args, opts = {}) {
   return spawnSync(playwrightCliBin(), [`-s=${SESSION}`, ...args], { encoding: 'utf8', cwd: PW_CWD, ...opts })
 }
 
+function escapeRegex(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
 export function classifyPlaywrightProcessLine(line, session = CANONICAL_SESSION) {
   const m = String(line || '').match(/^\s*(\d+)\s+(\d+)\s+(.+)$/)
   if (!m) return null

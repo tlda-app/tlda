@@ -1,12 +1,12 @@
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import { activeConfigName, gitAuthorEnv, readConfig, repoRoot } from '../identity.mjs'
+import { activeConfigName, gitAuthorEnv, readConfig } from '../identity.mjs'
 import { resolveCodexModel, resolveCodexModelSelection } from '../models.mjs'
 import { registerPrompt } from './claude.mjs'
+import { dnsAliasPreloadPath } from './dns-alias-preload.mjs'
 
 const CODEX_CONFIG_FILE = path.join(os.homedir(), '.codex', 'config.toml')
-const DNS_ALIAS_PRELOAD = path.join(repoRoot(), 'shared', 'node-dns-alias.cjs')
 
 function sq(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`
@@ -17,7 +17,7 @@ function tomlBasicString(value) {
 }
 
 function cenv(key, value) {
-  return `-c ${sq(`mcp_servers.tlda.env.${key}=${value}`)}`
+  return `-c ${sq(`mcp_servers.tlda.env.${key}=${tomlBasicString(value)}`)}`
 }
 
 function appendLaunchFlags(parts, harnessOptions = {}) {
@@ -80,30 +80,34 @@ export function buildCmd({
   const processEnv = [
     `FLEET_ID=${sq(fleetId)}`,
     `FLEET_TMUX_SESSION=${sq(tmuxSession)}`,
+    'FLEET_HARNESS=codex',
+    'TLDA_MCP_FLEET_ONLY=1',
   ]
   // Fresh spawn names can still be tentative before server confirm/rename;
   // GIT_AUTHOR_EMAIL carries the stable fleet id for authoritative attribution.
   processEnv.push(...gitAuthorEnv(fleetId, name).map(v => sqEnv(v)))
   if (name) processEnv.push(`FLEET_NAME=${sq(name)}`)
   if (env.TLDA_MACHINE_ID) processEnv.push(`TLDA_MACHINE_ID=${sq(env.TLDA_MACHINE_ID)}`)
-  if (dnsAlias && fs.existsSync(DNS_ALIAS_PRELOAD)) {
-    processEnv.push(`NODE_OPTIONS=${sq(`--require=${DNS_ALIAS_PRELOAD}`)}`)
+  const dnsAliasPreload = dnsAlias ? dnsAliasPreloadPath() : null
+  if (dnsAlias && dnsAliasPreload) {
+    processEnv.push(`NODE_OPTIONS=${sq(`--require=${dnsAliasPreload}`)}`)
     processEnv.push(`TLDA_NODE_DNS_ALIAS_HOST=${sq(dnsAlias.host)}`)
     processEnv.push(`TLDA_NODE_DNS_ALIAS_ADDR=${sq(dnsAlias.address)}`)
   }
-  const parts = [...processEnv, 'codex']
+  const parts = [...processEnv, 'codex', '--no-alt-screen']
   if (resumeId) parts.push(`resume ${sq(resumeId)}`)
   parts.push(cenv('FLEET_ID', fleetId))
   if (name) parts.push(cenv('FLEET_NAME', name))
   parts.push(cenv('FLEET_HARNESS', 'codex'))
   parts.push(cenv('FLEET_TMUX_SESSION', tmuxSession))
+  parts.push(cenv('TLDA_MCP_FLEET_ONLY', '1'))
   parts.push(cenv('TLDA_SERVER', api))
   parts.push(cenv('TLDA_SYNC_SERVER', api))
   const configName = activeConfigName(config, env)
   if (configName) parts.push(cenv('TLDA_CONFIG', configName))
   if (env.TLDA_MACHINE_ID) parts.push(cenv('TLDA_MACHINE_ID', env.TLDA_MACHINE_ID))
-  if (dnsAlias && fs.existsSync(DNS_ALIAS_PRELOAD)) {
-    parts.push(cenv('NODE_OPTIONS', `--require=${DNS_ALIAS_PRELOAD}`))
+  if (dnsAlias && dnsAliasPreload) {
+    parts.push(cenv('NODE_OPTIONS', `--require=${dnsAliasPreload}`))
     parts.push(cenv('TLDA_NODE_DNS_ALIAS_HOST', dnsAlias.host))
     parts.push(cenv('TLDA_NODE_DNS_ALIAS_ADDR', dnsAlias.address))
   }

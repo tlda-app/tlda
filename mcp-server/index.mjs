@@ -55,6 +55,7 @@ const TLDA_AUTH_HEADERS = TLDA_TOKEN ? { 'Authorization': `Bearer ${TLDA_TOKEN}`
 const TLDA_SERVER = getServerUrl();
 // Separate sync server for shapes/signals (e.g. Fly.io) — falls back to TLDA_SERVER
 const TLDA_SYNC_SERVER = process.env.TLDA_SYNC_SERVER || TLDA_SERVER;
+const FLEET_ONLY_MCP = process.env.TLDA_MCP_FLEET_ONLY === '1';
 // ---- REST API helpers (shape CRUD via @tldraw/sync rooms) ----
 
 async function serverFetch(urlPath, options = {}) {
@@ -1840,35 +1841,39 @@ const httpServer = http.createServer(async (req, res) => {
 // Start HTTP server (skip if port in use — collab mode may already have it)
 const HTTP_PORT = 5174;
 let httpRunning = false;
-httpServer.on('error', (err) => {
-  if (err.code === 'EADDRINUSE') {
-    console.error(`Port ${HTTP_PORT} in use — skipping HTTP server (collab instance likely running)`);
-    return;
-  }
-  throw err;
-});
-httpServer.listen(HTTP_PORT, '0.0.0.0', () => {
-  httpRunning = true;
-  console.error(`Feedback HTTP server running on port ${HTTP_PORT}`);
-});
+if (!FLEET_ONLY_MCP) {
+  httpServer.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+      console.error(`Port ${HTTP_PORT} in use — skipping HTTP server (collab instance likely running)`);
+      return;
+    }
+    throw err;
+  });
+  httpServer.listen(HTTP_PORT, '0.0.0.0', () => {
+    httpRunning = true;
+    console.error(`Feedback HTTP server running on port ${HTTP_PORT}`);
+  });
+}
 
 // WebSocket server for forward sync (Claude → iPad)
 const WS_PORT = 5175;
 let wss = null;
 const wsClients = new Set();
 
-try {
-  wss = new WebSocketServer({ port: WS_PORT });
-  wss.on('error', (err) => {
-    if (err.code === 'EADDRINUSE') {
-      console.error(`Port ${WS_PORT} in use — skipping WebSocket server (collab instance likely running)`);
-      wss = null;
-      return;
-    }
-    throw err;
-  });
-} catch {
-  console.error(`Port ${WS_PORT} in use — skipping WebSocket server`);
+if (!FLEET_ONLY_MCP) {
+  try {
+    wss = new WebSocketServer({ port: WS_PORT });
+    wss.on('error', (err) => {
+      if (err.code === 'EADDRINUSE') {
+        console.error(`Port ${WS_PORT} in use — skipping WebSocket server (collab instance likely running)`);
+        wss = null;
+        return;
+      }
+      throw err;
+    });
+  } catch {
+    console.error(`Port ${WS_PORT} in use — skipping WebSocket server`);
+  }
 }
 
 if (wss) {
@@ -1930,20 +1935,20 @@ function broadcastReply(shapeId, text) {
 }
 
 // MCP Server
+const SERVER_CAPABILITIES = { tools: {} };
+if ((process.env.FLEET_HARNESS || '').toLowerCase() === 'claude') {
+  SERVER_CAPABILITIES.experimental = {
+    'claude/channel': {},
+  };
+}
+
 const server = new Server(
   { name: 'tlda', version: '1.0.0' },
   {
-    capabilities: {
-      tools: {},
-      experimental: {
-        'claude/channel': {},
-      },
-    },
+    capabilities: SERVER_CAPABILITIES,
     instructions: TLDA_INSTRUCTIONS,
   }
 );
-
-const FLEET_ONLY_MCP = process.env.TLDA_MCP_FLEET_ONLY === '1'
 
 // List available tools
 server.setRequestHandler(ListToolsRequestSchema, async () => ({

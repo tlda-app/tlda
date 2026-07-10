@@ -1032,9 +1032,9 @@ await setBackend('chrome')
   console.log('✓ Test 16: service-not-allowed message is plain + iOS-aware')
 }
 
-// Test 17: Chrome 'service-not-allowed' (iOS WKWebView blocks Web Speech) stops
-// cleanly, routes the error to the log sink, shows the actionable message, and
-// does NOT retry a hard platform restriction.
+// Test 17: Chrome 'service-not-allowed' first tries an explicit mic-permission
+// probe and recognition restart. If the speech service still refuses after that,
+// it stops cleanly, logs the error, and shows the plain hard-failure message.
 {
   const { log } = await import('./logger.ts')
   const warnCalls = []
@@ -1053,20 +1053,27 @@ await setBackend('chrome')
 
     mockRec.onerror({ error: 'service-not-allowed' })
 
+    await Promise.resolve()
+
+    assert.ok(isRecording(), 'first service-not-allowed should keep recording while retrying')
+    assert.equal(startCount, startsBefore + 1, 'first service-not-allowed should retry once after mic probe')
+
+    mockRec.onerror({ error: 'service-not-allowed' })
+
     assert.ok(!isRecording(), 'service-not-allowed must stop recording')
     const voiceWarn = warnCalls.find(a => a[0] === 'voice' && a[2] && a[2].error === 'service-not-allowed')
     assert.ok(voiceWarn, 'must route the error through log.warn("voice", ...) carrying the error code')
-    assert.ok(/speech service unavailable|voice unavailable/i.test(mockDiv.textContent), `HUD must show the plain hard-failure message, got "${mockDiv.textContent}"`)
+    assert.ok(/browser voice .*refused/i.test(mockDiv.textContent), `HUD must show the plain hard-failure message, got "${mockDiv.textContent}"`)
     assert.ok(!/preferences|deepgram|whisper|safari/i.test(mockDiv.textContent), `HUD must not tell the user to switch tools, got "${mockDiv.textContent}"`)
     assert.ok(!/mic error/i.test(mockDiv.textContent), 'must NOT fall through to the generic "mic error" HUD')
 
-    tick(5000)              // give any (wrong) retry timer a chance to fire
-    assert.equal(startCount, startsBefore, 'must NOT auto-retry a hard platform restriction')
+    tick(5000)              // give any extra (wrong) retry timer a chance to fire
+    assert.equal(startCount, startsBefore + 1, 'must retry exactly once before treating it as a hard platform restriction')
   } finally {
     log.warn = origWarn
   }
   reset()
-  console.log('✓ Test 17: Chrome service-not-allowed stops, logs, messages, no retry')
+  console.log('✓ Test 17: Chrome service-not-allowed retries once, then stops/logs/messages')
 }
 
 // Test 18: time-to-first-interim is logged once per recording, tagged + timed.
