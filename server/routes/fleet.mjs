@@ -67,16 +67,6 @@ function extractFirstFilePart(body, boundary) {
   return null
 }
 
-function copyAttachment(srcPath) {
-  try {
-    fs.mkdirSync(UPLOAD_DIR, { recursive: true })
-    const name = `${Date.now()}-${path.basename(srcPath)}`
-    const dest = path.join(UPLOAD_DIR, name)
-    fs.copyFileSync(srcPath, dest)
-    return dest
-  } catch { return null }
-}
-
 function formatNameCollisions(collisions = []) {
   return collisions.map(c => {
     if (c.kind === 'pseudo_label') return `${c.name} is a reserved routing label`
