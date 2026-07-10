@@ -277,6 +277,7 @@ export class SpawnLibrarian {
     const state = checked?.state || this.liveness.get(agent.id)?.state || (agent.dead ? 'dead' : 'unknown')
     if (state === 'alive') return { action: 'deliver' }
     if (state === 'spawning') return { action: 'queue', reason: 'spawning' }
+    if (state === 'unknown' && opts.serverAlive === true) return { action: 'deliver' }
     if (state === 'unknown') return { action: 'hold', reason: 'unknown' }
     if (state === 'dead') return { action: 'respawn' }
     return {

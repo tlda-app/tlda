@@ -586,7 +586,7 @@ async function sendWakeNudge(daemonKey, agent, tmuxSession, nudgeText, phase, lo
     text: nudgeText,
     enter: true,
     enter_delay_ms: agent?.metadata?.kind === 'codex' ? 400 : 0,
-  }).catch(e => console.warn(`[${logTag}] ${phase} failed for ${agent.id}: ${e.message}`))
+  })
 }
 
 function livenessFromCheckAliveResult(agentId, tmuxSession, result) {

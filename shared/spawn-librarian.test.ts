@@ -146,6 +146,19 @@ describe('spawn librarian liveness routing', () => {
     )
   })
 
+  it('delivers wake nudges when daemon liveness is unknown but server state is alive', () => {
+    const librarian = new SpawnLibrarian()
+    const agent = { id: 'fleet:a', friendly_name: 'a' }
+    assert.deepEqual(
+      librarian.decideWake(
+        agent,
+        { agent_id: agent.id, tmux_session: 'fleet-a', state: 'unknown', reason: 'daemon probe failed' },
+        { serverAlive: true }
+      ),
+      { action: 'deliver' }
+    )
+  })
+
   it('respawns when daemon check-alive reports the tmux session absent', () => {
     const librarian = new SpawnLibrarian()
     const agent = { id: 'fleet:a', friendly_name: 'a' }
