@@ -39,7 +39,6 @@ import { FLEET_HUD_RESET_EVENT, FLEET_HUD_TOGGLE_EVENT, setHudEditor } from '../
 import { readFleetHudExpanded, resolveFleetHudToggle, writeFleetHudExpanded } from '../wm/fleet-hud-state'
 import { probe } from '../perf-probe'
 import './FleetHUD.css'
-import { isPhoneViewport } from '../phoneViewport'
 
 declare global {
   interface Window {
@@ -213,7 +212,6 @@ function isPhoneFleetLayout(editor: Editor): boolean {
   const humanId = getHumanId()
   const deviceId = getDeviceId()
   if (!humanId || !deviceId) return false
-  if (!isPhoneViewport()) return false
   if (!isPhoneStackLayoutForOwner(editor, humanId, deviceId)) return false
   return true
 }
@@ -503,7 +501,7 @@ export function FleetHUD({
     let settleTimer = 0
     const refit = () => {
       frame = null
-      if (!isPhoneViewport()) return
+      if (!isPhoneFleetLayout(mainEditor)) return
       const result = refitPhonePaneStack(mainEditor)
       if (!result.ok) return
       snapToPhoneLaneIndex(mainEditor, result.docLeftPage, phoneLaneIndexForViewportRefit(result.currentIndex))
