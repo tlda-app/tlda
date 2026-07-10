@@ -1,2 +1,4 @@
 export const DAEMON_OUTBOX_ACK_TYPE = 'daemon-outbox-ack'
 export const DAEMON_OUTBOX_ID_FIELD = '__daemon_outbox_id'
+export const SERVER_DAEMON_OUTBOX_ACK_TYPE = 'server-daemon-outbox-ack'
+export const SERVER_DAEMON_OUTBOX_ID_FIELD = '__server_daemon_outbox_id'

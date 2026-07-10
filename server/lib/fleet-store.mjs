@@ -836,6 +836,7 @@ export class FleetStore {
       WHERE daemon_key = ?
     `);
     this._getDaemonRegistration = this.db.prepare('SELECT * FROM daemon_registry WHERE daemon_key = ?');
+    this._listDaemonRegistrations = this.db.prepare('SELECT * FROM daemon_registry ORDER BY daemon_key');
 
     // Name provenance: span covering an instant (newest qualifying span wins).
     this._nameAtStmt = this.db.prepare(`
@@ -1279,6 +1280,13 @@ export class FleetStore {
     const row = this._getDaemonRegistration.get(daemonKey);
     if (!row) return null;
     return { ...row, metadata: row.metadata ? JSON.parse(row.metadata) : null };
+  }
+
+  listDaemonRegistrations() {
+    return this._listDaemonRegistrations.all().map(row => ({
+      ...row,
+      metadata: row.metadata ? JSON.parse(row.metadata) : null,
+    }));
   }
 
   getAgent(id) {

@@ -76,8 +76,13 @@ import { trimTerminalSeedBlankRows } from '../shared/terminal-seed.mjs'
 import { daemonSingletonLockPath, inspectSingletonLock } from '../agent-runtime/singleton-lock.mjs'
 import { partialSkillReadSummaries, recordPartialSkillReads } from '../shared/partial-skill-reads.mjs'
 import { daemonAddress, describeAgentAddress } from '../shared/agent-move-target.mjs'
-import { DAEMON_OUTBOX_ACK_TYPE, DAEMON_OUTBOX_ID_FIELD } from '../shared/daemon-delivery.mjs'
+import {
+  DAEMON_OUTBOX_ACK_TYPE,
+  DAEMON_OUTBOX_ID_FIELD,
+  SERVER_DAEMON_OUTBOX_ACK_TYPE,
+} from '../shared/daemon-delivery.mjs'
 import { readBuildInfo } from './lib/build-info.mjs'
+import { ServerDaemonOutbox } from './lib/server-daemon-outbox.mjs'
 import {
   DELIVERY_CHANNELS,
   INBOX_STATUSES,
@@ -131,6 +136,8 @@ resetStaleBuildStates()
 // to isolate from the live /tmp/fleet.db.
 const fleetStore = new FleetStore(process.env.TLDA_FLEET_DB, { taskDoc: true })
 fleetStore.flushTaskDocs?.()
+const serverDaemonOutbox = new ServerDaemonOutbox(fleetStore.db)
+const serverDaemonOutboxInflight = new Set()
 
 // Name provenance: stamp each event/result row with the friendly name its
 // sender/recipient ACTUALLY held at the row's timestamp (via name_history),
@@ -2724,9 +2731,7 @@ function sendWatchBackingFiles() {
     })
   }
   for (const [machineId, files] of byOwner) {
-    const dws = daemonConnections.get(machineId)
-    if (!dws || dws.readyState !== 1) continue
-    try { dws.send(JSON.stringify({ type: 'watch-backing-files', files })) } catch (e) { console.warn(`[server] daemon send failed: ${e.message}`) }
+    enqueueDaemonMessage(machineId, { type: 'watch-backing-files', files }, { dedupeKey: 'watch-backing-files' })
   }
 }
 
@@ -3655,6 +3660,10 @@ server.on('upgrade', async (req, socket, head) => {
         let msg
         try { msg = JSON.parse(raw.toString()) } catch { return }
         try {
+          if (msg?.type === SERVER_DAEMON_OUTBOX_ACK_TYPE) {
+            ackServerDaemonOutboxMessage(msg)
+            return
+          }
           if (isProcessedDaemonOutboxMessage(msg)) {
             ackDaemonOutboxMessage(ws, msg)
             return
@@ -3673,6 +3682,7 @@ server.on('upgrade', async (req, socket, head) => {
           // Preserve prior liveness so a server/Fly redeploy or daemon restart
           // cannot make every working agent on that machine vanish.
           failPendingRpcsForDaemon(ws._machineId, ws._envName, 'daemon disconnected')
+          clearServerDaemonOutboxInflightForDaemon(ws._daemonKey)
           broadcastState()
           console.log(`[fleet-daemon] disconnected: daemon=${ws._daemonKey}`)
         }
@@ -3682,6 +3692,7 @@ server.on('upgrade', async (req, socket, head) => {
           daemonConnections.delete(ws._daemonKey)
           fleetStore?.markDaemonDisconnected?.(ws._daemonKey)
           failPendingRpcsForDaemon(ws._machineId, ws._envName, 'daemon ws error')
+          clearServerDaemonOutboxInflightForDaemon(ws._daemonKey)
           broadcastState()
         }
       })
@@ -5828,6 +5839,51 @@ function ackDaemonOutboxMessage(ws, msg) {
   ws.send(JSON.stringify({ type: DAEMON_OUTBOX_ACK_TYPE, outbox_id: outboxId }))
 }
 
+function enqueueDaemonMessage(daemonKey, message, { dedupeKey = null } = {}) {
+  const id = serverDaemonOutbox.enqueue(daemonKey, message, { dedupeKey })
+  flushServerDaemonOutbox(daemonKey)
+  return id
+}
+
+function ackServerDaemonOutboxMessage(msg) {
+  const outboxId = msg?.outbox_id
+  if (!outboxId) return
+  serverDaemonOutbox.ack(outboxId)
+  serverDaemonOutboxInflight.delete(outboxId)
+}
+
+function flushServerDaemonOutbox(daemonKey) {
+  const dws = daemonConnections.get(daemonKey)
+  if (!dws || dws.readyState !== 1) return
+  for (const row of serverDaemonOutbox.pendingForDaemon(daemonKey, 100)) {
+    if (serverDaemonOutboxInflight.has(row.id)) continue
+    try {
+      serverDaemonOutbox.markAttempt(row.id)
+      dws.send(JSON.stringify(row.payload))
+      serverDaemonOutboxInflight.add(row.id)
+    } catch (e) {
+      serverDaemonOutbox.markError(row.id, e)
+      serverDaemonOutboxInflight.delete(row.id)
+      console.warn(`[server-daemon-outbox] send failed for ${daemonKey}:${row.type}: ${e.message}`)
+      break
+    }
+  }
+}
+
+function clearServerDaemonOutboxInflightForDaemon(daemonKey) {
+  for (const row of serverDaemonOutbox.pendingForDaemon(daemonKey, 1000)) {
+    serverDaemonOutboxInflight.delete(row.id)
+  }
+}
+
+function knownDaemonKeys() {
+  const keys = new Set([...daemonConnections.keys()])
+  for (const row of fleetStore?.listDaemonRegistrations?.() || []) {
+    if (row.daemon_key) keys.add(row.daemon_key)
+  }
+  return [...keys].sort()
+}
+
 function projectsForDaemon() {
   // Returns the project list a daemon needs to watch source dirs for,
   // including each project's relevant-files set (from the last build's
@@ -5881,18 +5937,15 @@ function daemonProjectPartSourceWatchFiles(project) {
 }
 
 function broadcastDaemonAgentsUpdated() {
-  if (!fleetStore || daemonConnections.size === 0) {
+  const daemonKeys = knownDaemonKeys()
+  if (!fleetStore || daemonKeys.length === 0) {
     if (!fleetStore) console.warn('[fleet-daemon] broadcastDaemonAgentsUpdated: no fleetStore')
     return
   }
-  for (const [daemonKey, dws] of daemonConnections) {
-    if (dws.readyState !== 1) {
-      console.warn(`[fleet-daemon] broadcastDaemonAgentsUpdated: ws for ${daemonKey} not open (readyState=${dws.readyState})`)
-      continue
-    }
+  for (const daemonKey of daemonKeys) {
     try {
-      const agents = fleetStore.getAgentsByDaemon(dws._machineId, dws._envName)
-      dws.send(JSON.stringify({ type: 'agents-updated', agents }))
+      const agents = fleetStore.getAgentsByDaemonKey(daemonKey)
+      enqueueDaemonMessage(daemonKey, { type: 'agents-updated', agents }, { dedupeKey: 'agents-updated' })
     } catch (e) {
       console.error(`[fleet-daemon] broadcastDaemonAgentsUpdated failed for ${daemonKey}: ${e.message}`)
     }
@@ -5900,20 +5953,20 @@ function broadcastDaemonAgentsUpdated() {
 }
 
 function broadcastDaemonProjectsUpdated() {
-  if (daemonConnections.size === 0) return
+  const daemonKeys = knownDaemonKeys()
+  if (daemonKeys.length === 0) return
   const projects = projectsForDaemon()
-  for (const [, dws] of daemonConnections) {
-    if (dws.readyState !== 1) continue
-    try { dws.send(JSON.stringify({ type: 'projects-updated', projects })) } catch {}
+  for (const daemonKey of daemonKeys) {
+    enqueueDaemonMessage(daemonKey, { type: 'projects-updated', projects }, { dedupeKey: 'projects-updated' })
   }
 }
 
 function broadcastDaemonActiveViewers() {
-  if (daemonConnections.size === 0) return
+  const daemonKeys = knownDaemonKeys()
+  if (daemonKeys.length === 0) return
   const viewers = [...getActiveViewerProjects()]
-  for (const [, dws] of daemonConnections) {
-    if (dws.readyState !== 1) continue
-    try { dws.send(JSON.stringify({ type: 'active-viewers', projects: viewers })) } catch {}
+  for (const daemonKey of daemonKeys) {
+    enqueueDaemonMessage(daemonKey, { type: 'active-viewers', projects: viewers }, { dedupeKey: 'active-viewers' })
   }
 }
 
@@ -6080,6 +6133,7 @@ async function handleDaemonWsMessage(ws, msg) {
     ws._hostname = hostname
     ws._version = version
     daemonConnections.set(daemonKey, ws)
+    clearServerDaemonOutboxInflightForDaemon(daemonKey)
     daemonWelcomeSeenAt.set(daemonKey, Date.now())
     fleetStore?.upsertDaemonRegistration?.({
       daemon_key: daemonKey,
@@ -6136,6 +6190,7 @@ async function handleDaemonWsMessage(ws, msg) {
     }
     // Send persisted backing file watch list to daemon.
     sendWatchBackingFiles()
+    flushServerDaemonOutbox(daemonKey)
 
     // Check each project's shadow repo for agent commits that haven't been built yet.
     // This catches the case where an agent committed directly to the shadow repo

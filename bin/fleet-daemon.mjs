@@ -71,7 +71,11 @@ import {
   THINKING_SPINNER_RE, INTERRUPT_HINT_RE,
 } from '../agent-runtime/status-classifier.mjs'
 import { sessionIdentityPath } from '../agent-runtime/session-identity-store.mjs'
-import { DAEMON_OUTBOX_ACK_TYPE } from '../shared/daemon-delivery.mjs'
+import {
+  DAEMON_OUTBOX_ACK_TYPE,
+  SERVER_DAEMON_OUTBOX_ACK_TYPE,
+  SERVER_DAEMON_OUTBOX_ID_FIELD,
+} from '../shared/daemon-delivery.mjs'
 import {
   decideTerminalWatchExit,
   unlinkPidfileIfOwnPid,
@@ -570,6 +574,15 @@ function sendMsgWithReply(obj, { timeoutMs = 15000 } = {}) {
   return machineRpc.requestWithReply(obj, { timeoutMs })
 }
 
+function ackServerDaemonOutboxMessage(msg) {
+  const outboxId = msg?.[SERVER_DAEMON_OUTBOX_ID_FIELD]
+  if (!outboxId) return
+  sendMsg({
+    type: SERVER_DAEMON_OUTBOX_ACK_TYPE,
+    outbox_id: outboxId,
+  })
+}
+
 function teardownWatchers({ jsonl = true } = {}) {
   if (jsonl) jsonlIngestor.teardown()
   // Source watchers survive WS disconnects — they detect file changes
@@ -651,16 +664,19 @@ function handleServerMessage(msg) {
       reason: 'agents-updated',
       onChanged: () => grantOnMintInfill('agents-updated'),
     })
+    ackServerDaemonOutboxMessage(msg)
     return
   }
   if (msg.type === 'projects-updated') {
     projects = msg.projects || []
     sourceSync.sync(projects)
+    ackServerDaemonOutboxMessage(msg)
     return
   }
   if (msg.type === 'active-viewers') {
     // Source watching is chokidar-backed per project now; active viewer updates
     // no longer promote/demote a separate fs.watch layer.
+    ackServerDaemonOutboxMessage(msg)
     return
   }
   if (msg.type === 'daemon-evict') {
@@ -683,6 +699,7 @@ function handleServerMessage(msg) {
   }
   if (msg.type === 'watch-backing-files') {
     backingFiles.sync(msg.files || [])
+    ackServerDaemonOutboxMessage(msg)
     return
   }
   if (msg.type === 'rpc') {
