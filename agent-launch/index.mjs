@@ -153,8 +153,8 @@ async function spawnFresh(params) {
   const deps = params._deps || {}
   const api = (deps.resolveApi || resolveApi)()
   const librarian = deps.createLibrarian
-    ? deps.createLibrarian({ registerDeadlineMs: params.registerDeadlineMs || 60_000 })
-    : new SpawnLibrarian({ registerDeadlineMs: params.registerDeadlineMs || 60_000 })
+    ? deps.createLibrarian({ loginDeadlineMs: params.loginDeadlineMs || 60_000 })
+    : new SpawnLibrarian({ loginDeadlineMs: params.loginDeadlineMs || 60_000 })
   const name = params.name || `agent-${Date.now().toString(36).slice(-4)}`
   const fleetId = params.agentId || params.agent_id || newFleetId()
   const cwd = resolveSpawnCwd(params.cwd)

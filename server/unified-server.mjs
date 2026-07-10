@@ -887,7 +887,7 @@ function hasOpenFleetSocketForAgent(agentId, exceptWs = null) {
 }
 
 const spawnLibrarian = new SpawnLibrarian({
-  registerDeadlineMs: Number(process.env.TLDA_SPAWN_REGISTER_DEADLINE_MS || 60_000),
+  loginDeadlineMs: Number(process.env.TLDA_SPAWN_LOGIN_DEADLINE_MS || 60_000),
   wedgedWindowMs: Number(process.env.TLDA_WEDGED_JOIN_MS || 90_000),
   onWedged: ({ agent_id, liveness }) => {
     const agent = fleetStore?.getAgent?.(agent_id)
@@ -906,7 +906,7 @@ const spawnLibrarian = new SpawnLibrarian({
     broadcastEvent('agent-wedged', metadata)
     broadcastState()
   },
-  onLateRegister: (agent) => {
+  onLateLogin: (agent) => {
     const label = agent.friendly_name || agent.id
     const metadata = { type: 'spawn_late_login', agentId: agent.id, agentLabel: label, ts: new Date().toISOString() }
     broadcastEvent('spawn-late-login', metadata)
@@ -1309,7 +1309,7 @@ async function performSpawnRelay(caller, msg) {
   })
   const mailboxDeadlineAt = mailbox.deadlineAt || (Date.now() + 5 * 60_000)
   const readiness = pendingAgentId
-    ? spawnLibrarian.awaitRegister({ id: pendingAgentId, name: spawnName, spec: requestedSpec })
+    ? spawnLibrarian.awaitLogin({ id: pendingAgentId, name: spawnName, spec: requestedSpec })
     : null
   const spawnRequest = {
     agent_id: targetAgentId,
@@ -4089,7 +4089,7 @@ async function handleFleetWsMessage(ws, msg) {
         state: 'alive',
         ts: now,
       })
-      spawnLibrarian.observeRegister(fleetStore.getAgent?.(agent_id) || agent)
+      spawnLibrarian.observeLogin(fleetStore.getAgent?.(agent_id) || agent)
       broadcastState()
       if (agent.machine_id) broadcastDaemonAgentsUpdated()
       const storedAgent = fleetStore.getAgent?.(agent_id) || agent
