@@ -18,23 +18,23 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
   }
 
   // ---------- source watching ----------
-  
+
   // Source files we care about for tlda projects. Kept in sync with
   // cli/lib/source-files.mjs's allowlist (extensions only — the cli
   // helper does more, but the daemon stays standalone).
   const SOURCE_EXTS = new Set(['.tex', '.bib', '.sty', '.cls', '.bst', '.md', '.qmd', '.html', '.css', '.js', '.svg', '.png', '.jpg', '.jpeg', '.pdf', '.json', '.yml', '.yaml'])
   const JUNK_PATTERNS = [/^\.#/, /\.swp$/, /~$/, /\.tmp$/, /\.lock$/]
-  
+
   // Bootstrap input scanner — regex-scan .tex files for \input-like commands
   // to discover dependencies before the first successful build produces a .fls.
   const DEFAULT_INPUT_COMMANDS = ['input', 'include', 'inputscratch', 'addbibresource', 'bibliography', 'usepackage']
-  
+
   function scanTexInputs(sourceDir, mainFile, extraCommands = []) {
     const commands = [...DEFAULT_INPUT_COMMANDS, ...extraCommands]
     const pattern = new RegExp(`\\\\(?:${commands.join('|')})\\{([^}]+)\\}`, 'g')
     const seen = new Set()
     const result = new Set()
-  
+
     function scan(relPath) {
       if (seen.has(relPath)) return
       seen.add(relPath)
@@ -44,10 +44,10 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
       try { stat = fs.statSync(full) } catch { return }
       if (!stat.isFile()) return
       result.add(relPath)
-  
+
       const ext = path.extname(relPath).toLowerCase()
       if (ext !== '.tex' && ext !== '.sty' && ext !== '.cls') return
-  
+
       let content
       try { content = fs.readFileSync(full, 'utf8') } catch { return }
       for (const m of content.matchAll(pattern)) {
@@ -77,11 +77,11 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
         }
       }
     }
-  
+
     scan(mainFile)
     return result
   }
-  
+
   // A markdown doc is NOT a single file — it's the main .md PLUS the images it
   // references. This is the markdown analog of scanTexInputs: returns a Set of
   // sourceDir-relative paths (main + referenced images that live under sourceDir),
@@ -100,21 +100,21 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
     }
     return result
   }
-  
+
   // A markdown doc bundles only its dependency graph (main + images), never the
   // rest of sourceDir — so the "any source file always passes" escape hatch must
   // not apply to it.
   function isMarkdownDoc(format, mainFile) {
     return format === 'markdown' || (mainFile?.toLowerCase().endsWith('.md') ?? false)
   }
-  
+
   function isSourceFile(name) {
     if (JUNK_PATTERNS.some(r => r.test(name))) return false
     if (name.includes('node_modules') || name.includes('.git/')) return false
     const ext = path.extname(name).toLowerCase()
     return SOURCE_EXTS.has(ext)
   }
-  
+
   function readFileForUpload(fullPath) {
     const data = fs.readFileSync(fullPath)
     // Heuristic: text-y if mostly ASCII; otherwise base64.
@@ -123,7 +123,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
     if (TEXT_EXTS.has(ext)) return { content: data.toString('utf8') }
     return { content: data.toString('base64'), encoding: 'base64' }
   }
-  
+
   function sourceRel(sourceDir, filePath) {
     if (!filePath) return null
     const abs = path.isAbsolute(String(filePath)) ? String(filePath) : path.join(sourceDir, String(filePath))
@@ -131,7 +131,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
     if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return null
     return rel.split(path.sep).join('/')
   }
-  
+
   function closeWatcher(watcher, label) {
     if (!watcher) return
     try {
@@ -141,7 +141,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
       log.warn(`chokidar close threw for ${label}: ${e?.message || e}`)
     }
   }
-  
+
   function shouldIgnoreSourceWatchPath(sourceDir, filePath, stats) {
     const rel = sourceRel(sourceDir, filePath)
     if (!rel) return false
@@ -151,7 +151,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
     if (stats?.isDirectory?.()) return false
     return !isSourceFile(rel) && !rel.includes('.tlda/scratch/')
   }
-  
+
   function sourceWatcherPaths(state) {
     const rels = new Set(state.watchSet || [])
     if (state.mainFile) rels.add(state.mainFile)
@@ -166,11 +166,11 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
     paths.sort()
     return paths
   }
-  
+
   function sourceWatcherKey(state) {
     return sourceWatcherPaths(state).join('\0')
   }
-  
+
   function startSourceWatcher(state, reason = 'start') {
     closeWatcher(state.watcher, state.projectName)
     const watchPaths = sourceWatcherPaths(state)
@@ -207,7 +207,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
       })
     log.info(`chokidar source watcher started for ${state.projectName} (${reason}, ${watchPaths.length} paths)`)
   }
-  
+
   function closeSourceState(state) {
     closeWatcher(state.watcher, state.projectName)
     state.watcher = null
@@ -216,7 +216,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
       state._symlinkWatchers.clear()
     }
   }
-  
+
   function sync(projectList) {
     const activeNames = new Set()
     const bindings = loadSourceBindings()
@@ -227,7 +227,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
       if (!sourceDir) continue
       if (!fs.existsSync(sourceDir)) continue
       activeNames.add(p.name)
-  
+
       const isMarkdown = isMarkdownDoc(p.format, p.mainFile)
       const hasFlsWatchList = p.watchFiles?.length > 0
       // Bootstrap watchSet (no .fls yet) must include the main's \input deps, not
@@ -238,7 +238,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
           : isMarkdown && p.mainFile ? scanMarkdownInputs(sourceDir, p.mainFile)
           : p.mainFile ? scanTexInputs(sourceDir, p.mainFile, p.extraInputCommands || []) : []
       )
-  
+
       if (sourceWatchers.has(p.name)) {
         const existing = sourceWatchers.get(p.name)
         if (existing.sourceDir !== sourceDir) {
@@ -254,9 +254,9 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
           continue
         }
       }
-  
+
       const state = { sourceDir, debounce: null, pending: new Set(), watchSet, onFileChange: null, projectName: p.name, mainFile: p.mainFile, extraInputCommands: p.extraInputCommands || [], isMarkdown, watcher: null, watcherKey: '', _symlinkWatchers: new Map() }
-  
+
       const onFileChange = (filename) => {
         if (!filename) return
         if (state.isMarkdown) {
@@ -288,7 +288,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
         state.debounce = setTimeout(() => flushSourceChanges(state.projectName), 200)
       }
       state.onFileChange = onFileChange
-  
+
       try {
         sourceWatchers.set(p.name, state)
         startSourceWatcher(state, 'project sync')
@@ -305,7 +305,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
       }
     }
   }
-  
+
   /**
    * Push source files to the server on connect.
    * When mainFile is set (no .fls yet), scan it recursively for \input-like
@@ -338,23 +338,23 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
     log.info(`connect push: ${files.length} files for ${projectName}`)
     sendMsg({ type: 'source-change', project: projectName, files })
   }
-  
+
   const _pendingSourceProjects = new Set()
-  
+
   function flushSourceChanges(projectName) {
     const state = sourceWatchers.get(projectName)
     if (!state) return
     state.debounce = null
-  
+
     if (!isConnected()) {
       _pendingSourceProjects.add(projectName)
       return
     }
-  
+
     const filePaths = [...state.pending]
     state.pending.clear()
     _pendingSourceProjects.delete(projectName)
-  
+
     const files = []
     const deleted = []
     for (const rel of filePaths) {
@@ -378,7 +378,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
       try { files.push({ path: pushPath, ...readFileForUpload(full) }) }
       catch (e) { log.error(`read ${full}: ${e.message}`) }
     }
-  
+
     // When a .tex file changes, rescan for new \input deps not yet on the server.
     // This catches newly-added \input{} or \inputscratch{} lines before the build
     // fails with "file not found".
@@ -397,7 +397,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
         } catch (e) { log.error(`read ${full}: ${e.message}`) }
       }
     }
-  
+
     // When the main .md of a markdown doc changes, rescan its image refs. A newly-
     // referenced image must be pushed now (the build will otherwise 404 it) and
     // added to the watchSet so later edits to it pass the strict filter.
@@ -417,7 +417,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
         } catch (e) { log.error(`read ${full}: ${e.message}`) }
       }
     }
-  
+
     // Watch symlink targets in .tlda/scratch/ — changes to the linked file should
     // trigger a rebuild even when the target sits outside the source dir.
     for (const rel of filePaths) {
@@ -439,15 +439,15 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
         }
       } catch {}
     }
-  
+
     if (files.length === 0 && deleted.length === 0) return
-  
+
     const nextWatcherKey = sourceWatcherKey(state)
     if (state.watcherKey !== nextWatcherKey) startSourceWatcher(state, 'dependency rescan')
-  
+
     // Edit attribution: which agent's recent Edit/Write touched a changed file.
     const editedBy = resolveEditor(filePaths.map(rel => path.join(state.sourceDir, rel)))
-  
+
     sendMsg({
       type: 'source-change',
       project: projectName,
@@ -456,14 +456,14 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
       ...(editedBy && { editedBy }),
     })
   }
-  
+
   function flushPending() {
     for (const name of _pendingSourceProjects) {
       flushSourceChanges(name)
     }
   }
-  
-  
+
+
 
   function getSourceDir(project) {
     return sourceWatchers.get(project)?.sourceDir || null

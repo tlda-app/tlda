@@ -37,13 +37,13 @@ export function formatReaperMarkdownReport(status = {}) {
 export function createDevReaper({ getAgents, tmuxArgs = [], sendMsg = () => {} } = {}) {
   const currentAgents = () => getAgents?.() || []
   // ─── Memory pressure ────────────────────────────────────────────────
-  
+
   function getMemoryPressure() {
     const total = os.totalmem()
     const free = os.freemem()
     return 1 - free / total  // 0 = empty, 1 = full
   }
-  
+
   // Scale an idle timeout by memory pressure. At ≥90% usage the timeout
   // drops to 1/10 of the base; below 50% usage it stays at the full base.
   function pressureScaledTimeout(baseMs) {
@@ -52,11 +52,11 @@ export function createDevReaper({ getAgents, tmuxArgs = [], sendMsg = () => {} }
     const scale = Math.max(0.1, 1 - (p - 0.5) / 0.4)  // linear 1→0.1 over 50%→90%
     return Math.round(baseMs * scale)
   }
-  
+
   // ─── Process → agent attribution ───────────────────────────────────
   // Walk up the ppid chain to find a `claude` process. Extract --resume
   // session ID or tmux session name, match against the agent list.
-  
+
   async function getProcessInfo(pid) {
     try {
       const { stdout } = await execFileP('ps', ['-p', String(pid), '-o', 'pid=,ppid=,args='],
@@ -66,7 +66,7 @@ export function createDevReaper({ getAgents, tmuxArgs = [], sendMsg = () => {} }
       return { pid: parseInt(m[1], 10), ppid: parseInt(m[2], 10), args: m[3] }
     } catch { return null }
   }
-  
+
   async function attributeToAgent(pid) {
     let cur = pid
     const visited = new Set()
@@ -89,7 +89,7 @@ export function createDevReaper({ getAgents, tmuxArgs = [], sendMsg = () => {} }
     }
     return null
   }
-  
+
   async function attributeViteByCwd(pid) {
     try {
       const { stdout } = await execFileP('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn'],
@@ -102,7 +102,7 @@ export function createDevReaper({ getAgents, tmuxArgs = [], sendMsg = () => {} }
     } catch {}
     return null
   }
-  
+
   // ─── Vite reaper — kill dev servers nobody's using ──────────────────
   const VITE_IDLE_THRESHOLD_MS = parseInt(process.env.REAPER_VITE_MS, 10) || 10 * 60 * 1000
   // Floor the pressure-scaled timeout: even at 99% memory the threshold collapsed
@@ -114,12 +114,12 @@ export function createDevReaper({ getAgents, tmuxArgs = [], sendMsg = () => {} }
   const VITE_SWEEP_INTERVAL_MS = parseInt(process.env.REAPER_VITE_INTERVAL_MS, 10) || 60 * 1000
   const _viteLastClient = new Map()
   const BROWSER_NAME_RE = /Google|Chrome|Chromium|Firefox|Safari|WebKit/i
-  
+
   function isViteArgs(args) {
     if (!args.startsWith('node ')) return false
     return /[\/\\]vite(\.js)?(\s|$)/.test(args)
   }
-  
+
   async function findListeningPorts(pid) {
     try {
       const { stdout } = await execFileP('lsof',
@@ -134,7 +134,7 @@ export function createDevReaper({ getAgents, tmuxArgs = [], sendMsg = () => {} }
       return [...new Set(ports)]
     } catch { return [] }
   }
-  
+
   async function listVites() {
     let psOut = ''
     try {
@@ -155,7 +155,7 @@ export function createDevReaper({ getAgents, tmuxArgs = [], sendMsg = () => {} }
     }
     return vites
   }
-  
+
   async function viteHasBrowserClient(port) {
     let lsofOut = ''
     try {
@@ -181,7 +181,7 @@ export function createDevReaper({ getAgents, tmuxArgs = [], sendMsg = () => {} }
     }
     return false
   }
-  
+
   async function reapVites() {
     const vites = await listVites()
     const now = Date.now()
@@ -216,11 +216,11 @@ export function createDevReaper({ getAgents, tmuxArgs = [], sendMsg = () => {} }
     }
     return { vites, killed }
   }
-  
+
   // ─── Playwright reaper — kill orphan chromium browsers ──────────────
   const PW_IDLE_THRESHOLD_MS = parseInt(process.env.REAPER_PW_MS, 10) || 5 * 60 * 1000
   const _pwLastSeen = new Map()
-  
+
   async function listPlaywrightBrowsers() {
     let psOut = ''
     try {
@@ -254,7 +254,7 @@ export function createDevReaper({ getAgents, tmuxArgs = [], sendMsg = () => {} }
     }
     return browsers
   }
-  
+
   async function isPlaywrightControllerAlive(ppid) {
     if (!ppid || ppid <= 1) return false
     try {
@@ -264,7 +264,7 @@ export function createDevReaper({ getAgents, tmuxArgs = [], sendMsg = () => {} }
       return args.includes('playwright') || args.includes('node')
     } catch { return false }
   }
-  
+
   async function reapPlaywright() {
     const browsers = await listPlaywrightBrowsers()
     if (browsers.length === 0) return { browsers: [], killed: [] }
@@ -305,11 +305,11 @@ export function createDevReaper({ getAgents, tmuxArgs = [], sendMsg = () => {} }
     }
     return { browsers: enriched, killed }
   }
-  
+
   // ─── Agent-process reaper — kill orphaned harness runtimes ─────────
   const AGENT_PROCESS_ORPHAN_MS = parseInt(process.env.REAPER_AGENT_PROCESS_MS, 10) || 30 * 60 * 1000
   const AGENT_PROCESS_TERM_GRACE_MS = parseInt(process.env.REAPER_AGENT_PROCESS_TERM_GRACE_MS, 10) || 5000
-  
+
   async function listAgentHarnessProcesses() {
     let psOut = ''
     try {
@@ -331,7 +331,7 @@ export function createDevReaper({ getAgents, tmuxArgs = [], sendMsg = () => {} }
     }
     return procs
   }
-  
+
   async function liveTmuxSessionNames() {
     try {
       const { stdout } = await execFileP('tmux', [...tmuxArgs, 'list-sessions', '-F', '#S'], { timeout: 3000, encoding: 'utf8' })
@@ -340,7 +340,7 @@ export function createDevReaper({ getAgents, tmuxArgs = [], sendMsg = () => {} }
       return new Set()
     }
   }
-  
+
   async function liveTmuxPaneProcessPids(processes) {
     let paneOut = ''
     try {
@@ -367,7 +367,7 @@ export function createDevReaper({ getAgents, tmuxArgs = [], sendMsg = () => {} }
     }
     return protectedPids
   }
-  
+
   function processAlive(pid) {
     try {
       process.kill(pid, 0)
@@ -376,7 +376,7 @@ export function createDevReaper({ getAgents, tmuxArgs = [], sendMsg = () => {} }
       return false
     }
   }
-  
+
   async function waitForProcessExit(pid, timeoutMs) {
     const deadline = Date.now() + timeoutMs
     while (Date.now() < deadline) {
@@ -385,7 +385,7 @@ export function createDevReaper({ getAgents, tmuxArgs = [], sendMsg = () => {} }
     }
     return !processAlive(pid)
   }
-  
+
   async function terminateOrphanAgentProcess(proc) {
     try {
       process.kill(proc.pid, 'SIGTERM')
@@ -403,7 +403,7 @@ export function createDevReaper({ getAgents, tmuxArgs = [], sendMsg = () => {} }
     }
     return { ok: true, signal: 'SIGKILL' }
   }
-  
+
   async function reapOrphanAgentProcesses() {
     const processes = await listAgentHarnessProcesses()
     const [liveSessions, protectedPids] = await Promise.all([
@@ -458,7 +458,7 @@ export function createDevReaper({ getAgents, tmuxArgs = [], sendMsg = () => {} }
       skippedCount: skipped.length,
     }
   }
-  
+
   async function getMemoryByAgent() {
     try {
       const { stdout } = await execFileP('ps', ['-axo', 'pid=,ppid=,rss=,comm='], { timeout: 5000, encoding: 'utf8' })
@@ -490,26 +490,26 @@ export function createDevReaper({ getAgents, tmuxArgs = [], sendMsg = () => {} }
       throw new Error(`getMemoryByAgent failed: ${e.message}`)
     }
   }
-  
+
   // ─── Combined reaper sweep with status broadcast ──────────────────
   let _reaperTimer = null
   let _sweepCount = 0
   const _recentKills = []  // last 10 kills across sweeps
   const MAX_RECENT_KILLS = 10
-  
+
   async function reaperSweep() {
     const viteResult = await reapVites().catch(e => { console.error('[vite-reaper] sweep failed:', e.message); return { vites: [], killed: [] } })
     const pwResult = await reapPlaywright().catch(e => { console.error('[pw-reaper] sweep failed:', e.message); return { browsers: [], killed: [] } })
     const agentProcessResult = await reapOrphanAgentProcesses().catch(e => { console.error('[agent-reaper] sweep failed:', e.message); return { processes: [], killed: [], failed: [], skippedCount: 0 } })
     _sweepCount++
-  
+
     const allKills = [...(viteResult.killed || []), ...(pwResult.killed || []), ...(agentProcessResult.killed || [])]
     _recentKills.push(...allKills)
     while (_recentKills.length > MAX_RECENT_KILLS) _recentKills.shift()
-  
+
     const now = Date.now()
     const pressure = getMemoryPressure()
-  
+
     // Attribute processes to agents (in parallel for speed)
     const viteAttrs = await Promise.all((viteResult.vites || []).map(async v => {
       const worktree = await attributeViteByCwd(v.pid)
@@ -522,7 +522,7 @@ export function createDevReaper({ getAgents, tmuxArgs = [], sendMsg = () => {} }
     }))
     const viteAgentMap = Object.fromEntries(viteAttrs.map(a => [a.pid, { agent: a.agent, agentId: a.agentId }]))
     const browserAgentMap = Object.fromEntries(browserAttrs.map(a => [a.pid, { agent: a.agent, agentId: a.agentId }]))
-  
+
     const viteSnap = (viteResult.vites || []).map(v => ({
       pid: v.pid,
       ports: v.ports,
@@ -531,7 +531,7 @@ export function createDevReaper({ getAgents, tmuxArgs = [], sendMsg = () => {} }
       agent: viteAgentMap[v.pid]?.agent || null,
       agentId: viteAgentMap[v.pid]?.agentId || null,
     }))
-  
+
     let memoryByAgent = []
     let memoryByAgentError = null
     try {
@@ -540,7 +540,7 @@ export function createDevReaper({ getAgents, tmuxArgs = [], sendMsg = () => {} }
       memoryByAgentError = e.message
       console.error('[dev-reaper] memory attribution failed:', e.message)
     }
-  
+
     const status = {
         pressure,
         totalMem: os.totalmem(),
@@ -565,7 +565,7 @@ export function createDevReaper({ getAgents, tmuxArgs = [], sendMsg = () => {} }
     status.markdownReport = formatReaperMarkdownReport(status)
     sendMsg({ type: 'reaper-status', data: status })
   }
-  
+
   function start() {
     if (_reaperTimer) return
     setTimeout(() => {
@@ -574,7 +574,7 @@ export function createDevReaper({ getAgents, tmuxArgs = [], sendMsg = () => {} }
       _reaperTimer.unref?.()
     }, 10_000)
   }
-  
+
   // ─── Reaper RPC handlers ──────────────────────────────────────────
   async function rpcKill({ pid }) {
     if (!pid) throw new Error('missing pid')
@@ -589,13 +589,13 @@ export function createDevReaper({ getAgents, tmuxArgs = [], sendMsg = () => {} }
       return { killed: false, error: e.message }
     }
   }
-  
+
   async function rpcSweep() {
     await reaperSweep()
     return { ok: true, sweepCount: _sweepCount }
   }
-  
-  
+
+
   return {
     start,
     sweep: reaperSweep,

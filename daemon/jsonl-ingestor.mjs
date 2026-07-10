@@ -40,7 +40,7 @@ export function createJsonlIngestor({
   extractActivityEvents,
 }) {
   // ---------- cursor persistence ----------
-  
+
   function loadCursors() {
     if (!fs.existsSync(cursorsFile)) return {}
     try { return JSON.parse(fs.readFileSync(cursorsFile, 'utf8')) }
@@ -53,14 +53,14 @@ export function createJsonlIngestor({
   }
   let cursors = loadCursors() // { sessionId: { inode, offset } }
   let sessionIdentityStore = loadSessionIdentityStore(sessionIdentityFile)
-  
+
   // Throttle saveCursors — flush at most once per 2s.
   let _cursorSaveTimer = null
   function scheduleCursorSave() {
     if (_cursorSaveTimer) return
     _cursorSaveTimer = setTimeout(() => { _cursorSaveTimer = null; saveCursors() }, 2000)
   }
-  
+
   function saveSessionIdentityStoreNow() {
     try { saveSessionIdentityStore(sessionIdentityFile, sessionIdentityStore) }
     catch (e) {
@@ -68,12 +68,12 @@ export function createJsonlIngestor({
       throw e
     }
   }
-  
+
   function recordSessionIdentity(input, { save = true } = {}) {
     if (!input?.session_id) return
     if (upsertSessionIdentity(sessionIdentityStore, input) && save) saveSessionIdentityStoreNow()
   }
-  
+
   function syncSessionIdentityNamesFromAgents(agentList = getAgents()) {
     let changed = false
     for (const agent of agentList || []) {
@@ -82,7 +82,7 @@ export function createJsonlIngestor({
     }
     if (changed) saveSessionIdentityStoreNow()
   }
-  
+
   function isIngestionCaughtUp() {
     if (searchBackfillJobs.size > 0 || priorSessionBackfillPending.size > 0) return false
     for (const pw of pathWatchers.values()) {
@@ -95,7 +95,7 @@ export function createJsonlIngestor({
     }
     return true
   }
-  
+
   function refreshIngestionCaughtUp() {
     const changed = updateIngestionStatus(sessionIdentityStore, {
       caught_up: isIngestionCaughtUp(),
@@ -104,7 +104,7 @@ export function createJsonlIngestor({
     })
     if (changed) saveSessionIdentityStoreNow()
   }
-  
+
   // ---------- session-owner cache ----------
   // Each cursor entry gains `owners: [fleetId,...]` — which agent(s) registered in
   // that session file. Populated the one time we read the file. Once a session is
@@ -136,7 +136,7 @@ export function createJsonlIngestor({
     if (changed) scheduleCursorSave()
     if (changed || identityChanged) saveSessionIdentityStoreNow()
   }
-  
+
   function claudeOwnersForSessionFile(sessionId, jsonlPath) {
     const entry = cursors[sessionId]
     if (entry?.classified) return entry.owners || []
@@ -148,7 +148,7 @@ export function createJsonlIngestor({
       return []
     }
   }
-  
+
   function indexClaudeJsonlsByOwner() {
     const byOwner = new Map()
     try {
@@ -175,7 +175,7 @@ export function createJsonlIngestor({
     }
     return byOwner
   }
-  
+
   // The niced child that classifies every session's owners in the background
   // (recent→old by mtime), so the daemon's main loop never byte-scans files on a spawn.
   let _ownerHarvester = null
@@ -204,7 +204,7 @@ export function createJsonlIngestor({
     _ownerHarvester.on('exit', () => { _ownerHarvester = null })
     _ownerHarvester.on('error', (e) => { log.warn(`owner harvester error: ${e.message}`); _ownerHarvester = null })
   }
-  
+
   let _jsonlIngester = null
   let _jsonlIngesterRestartTimer = null
   let _shuttingDown = false
@@ -217,7 +217,7 @@ export function createJsonlIngestor({
   const searchBackfillPendingBySession = new Set()
   const priorSessionBackfillPending = new Set()
   const priorSessionBackfillComplete = new Set()
-  
+
   function startJsonlIngester() {
     if (_jsonlIngester) return _jsonlIngester
     if (!_sessionReaderLock) {
@@ -251,7 +251,7 @@ export function createJsonlIngestor({
     })
     return _jsonlIngester
   }
-  
+
   function handleJsonlIngesterExit(code, signal) {
     if (_shuttingDown) return
     log.warn(`JSONL ingester exited code=${code ?? 'null'} signal=${signal ?? 'null'}; resyncing live session tails`)
@@ -274,7 +274,7 @@ export function createJsonlIngestor({
       }, 1000)
     }
   }
-  
+
   function retryPendingJsonlBackfillJobs() {
     const jobs = [...searchBackfillJobs.values()]
     if (jobs.length === 0) return
@@ -286,11 +286,11 @@ export function createJsonlIngestor({
       })
     }
   }
-  
+
   // ---------- Qualification checking ----------
   // Detects agents editing files without having read required reference docs.
   // Config: ~/.claude/qualifications.json — array of { edit: glob, requires: [paths] }
-  
+
   const QUALIFICATIONS_FILE = path.join(os.homedir(), '.claude', 'qualifications.json')
   let _qualRules = []
   // Per-agent read tracking: agentId → Set of resolved file paths they've Read
@@ -298,7 +298,7 @@ export function createJsonlIngestor({
   const _agentPartialSkillReads = new Map()
   // Per-agent warnings already fired: agentId → Set of "editPath:requiredPath" to avoid spam
   const _agentWarned = new Map()
-  
+
   function loadQualifications() {
     try {
       if (!fs.existsSync(QUALIFICATIONS_FILE)) return
@@ -319,7 +319,7 @@ export function createJsonlIngestor({
       log.error(`failed to load qualifications: ${e.message}`)
     }
   }
-  
+
   function globToRegex(glob) {
     const escaped = glob
       .replace(/[.+^${}()|[\]\\]/g, '\\$&')
@@ -332,7 +332,7 @@ export function createJsonlIngestor({
       '(' + inner.split(',').join('|') + ')')
     return new RegExp('^' + withAlts + '$')
   }
-  
+
   // Derive the virtual skill key from a skill SKILL.md path, e.g.
   // ~/.claude/skills/writing/SKILL.md → 'skill:writing'
   function skillKeyFromPath(resolvedPath) {
@@ -344,17 +344,17 @@ export function createJsonlIngestor({
     if (parts.length === 2 && parts[1] === 'SKILL.md') return 'skill:' + parts[0]
     return null
   }
-  
+
   function checkQualification(agentId, toolName, filePath) {
     if (!filePath || _qualRules.length === 0) return
     if (toolName !== 'Edit' && toolName !== 'Write') return
-  
+
     // Normalize path for matching — strip leading home dir for glob matching
     const home = os.homedir()
     const relative = filePath.startsWith(home) ? filePath.slice(home.length + 1) : filePath
     const reads = _agentReads.get(agentId) || new Set()
     const warned = _agentWarned.get(agentId) || new Set()
-  
+
     for (const rule of _qualRules) {
       if (!rule.editRe.test(relative) && !rule.editRe.test(filePath)) continue
       for (const req of rule.requires) {
@@ -380,20 +380,20 @@ export function createJsonlIngestor({
       }
     }
   }
-  
+
   function trackRead(agentId, filePath) {
     if (!filePath) return
     if (!_agentReads.has(agentId)) _agentReads.set(agentId, new Set())
     _agentReads.get(agentId).add(filePath)
   }
-  
+
   function trackPartialSkillReads(agentId, command) {
     recordPartialSkillReads(_agentPartialSkillReads, agentId, command, (id, skillKey, filePath) => {
       trackRead(id, filePath)
       trackRead(id, skillKey)
     })
   }
-  
+
   // Edit attribution: remember which agent most recently Edited/Wrote each file
   // (by canonical absolute path), so a source-change can be attributed to the
   // agent whose edit triggered the build. Keyed by realpath where resolvable.
@@ -419,10 +419,10 @@ export function createJsonlIngestor({
     }
     return best?.agentId || null
   }
-  
+
   loadQualifications()
-  
-  
+
+
   async function syncSessionWatchers(agentList) {
     let liveSessions = new Set()
     try {
@@ -434,7 +434,7 @@ export function createJsonlIngestor({
     }
     const activePaths = new Set()
     const claudeJsonlsByOwner = indexClaudeJsonlsByOwner()
-  
+
     for (const agent of agentList) {
       if (agent.dead) continue
       if (!agent.tmux_session || !liveSessions.has(agent.tmux_session)) continue
@@ -453,7 +453,7 @@ export function createJsonlIngestor({
       // stores the JSONL (at the original project root, not the worktree).
       const canonicalCwd = cwd.replace(/\/\.claude\/worktrees\/[^/]+$/, '').replace(/\/\.worktrees\/[^/]+$/, '')
       const projectHash = canonicalCwd.replace(/[/.]/g, '-')
-  
+
       // Pick the freshest JSONL across this agent's registered session_ids.
       // Claude ownership is not inferred from roster aliases, tmux panes, or
       // other agents' claimed session_id values. The JSONL's embedded
@@ -463,7 +463,7 @@ export function createJsonlIngestor({
       for (const sid of (agent.session_ids || [])) {
         if (!candidateIds.includes(sid)) candidateIds.push(sid)
       }
-  
+
       let jsonlPath = null
       let bestMtime = 0
       if (harness.resolveJsonl) {
@@ -504,10 +504,10 @@ export function createJsonlIngestor({
         }
       }
       if (!jsonlPath) continue
-  
+
       activePaths.add(jsonlPath)
       agentPaths.set(agent.id, jsonlPath)
-  
+
       if (pathWatchers.has(jsonlPath)) {
         const pw = pathWatchers.get(jsonlPath)
         if (pw.stopped) {
@@ -558,7 +558,7 @@ export function createJsonlIngestor({
           continue
         }
       }
-  
+
       // First time watching this JSONL — initialize cursor.
       const sessionId = path.basename(jsonlPath, '.jsonl')
       let stat
@@ -583,18 +583,18 @@ export function createJsonlIngestor({
         // contain a registration line for this fleet ID).
         if (harness.backfillSearch) backfillAllPriorSessions(agent.id, agent.id)
       }
-  
+
       try {
         const pwState = startJsonlTail({ agent, jsonlPath, sessionId, harness, startOffset: offset })
         pathWatchers.set(jsonlPath, pwState)
         retainJsonlDirWatcher(jsonlPath)
-  
+
         log.info(`watching ${harness.kind} JSONL for ${agent.friendly_name || agent.id}: ${path.basename(jsonlPath)} @ offset=${offset}`)
       } catch (e) {
         log.error(`watcher creation failed for ${jsonlPath}: ${e.message}`)
       }
     }
-  
+
     // Close watchers for paths no longer needed.
     for (const [p, pw] of pathWatchers) {
       if (!activePaths.has(p)) {
@@ -610,7 +610,7 @@ export function createJsonlIngestor({
       if (!agentList.some(a => a.id === aid && !a.dead)) agentPaths.delete(aid)
     }
   }
-  
+
   function sessionWatcherRosterSignature(agentList) {
     return agentList
       .filter(a => !a.human)
@@ -630,8 +630,8 @@ export function createJsonlIngestor({
       .sort()
       .join('\n')
   }
-  
-  
+
+
   let _jsonlDirSyncTimer = null
   function scheduleJsonlDirSync(reason) {
     if (_jsonlDirSyncTimer) return
@@ -641,7 +641,7 @@ export function createJsonlIngestor({
       void syncSessionWatchers(getAgents()).catch(e => log.error(`syncSessionWatchers failed: ${e.stack || e.message}`))
     }, 500)
   }
-  
+
   function retainJsonlDirWatcher(jsonlPath) {
     const dir = path.dirname(jsonlPath)
     const existing = jsonlDirWatchers.get(dir)
@@ -665,7 +665,7 @@ export function createJsonlIngestor({
       .on('error', e => log.warn(`chokidar JSONL dir watcher failed for ${dir}: ${e?.message || e}`))
     jsonlDirWatchers.set(dir, { watcher, refs: 1 })
   }
-  
+
   function releaseJsonlDirWatcher(jsonlPath) {
     const dir = path.dirname(jsonlPath)
     const entry = jsonlDirWatchers.get(dir)
@@ -675,7 +675,7 @@ export function createJsonlIngestor({
     jsonlDirWatchers.delete(dir)
     Promise.resolve(entry.watcher.close()).catch(e => log.warn(`chokidar close failed for ${dir}: ${e?.message || e}`))
   }
-  
+
   function startJsonlTail({ agent, jsonlPath, sessionId, harness, startOffset }) {
     const child = startJsonlIngester()
     const watchId = `${sessionId}:${agent.id}:${Date.now()}:${Math.random().toString(36).slice(2)}`
@@ -706,7 +706,7 @@ export function createJsonlIngestor({
     refreshIngestionCaughtUp()
     return pw
   }
-  
+
   function handleJsonlIngesterMessage(msg) {
     if (msg?.type === 'ready') {
       log.info('JSONL ingester child ready')
@@ -786,7 +786,7 @@ export function createJsonlIngestor({
       updateJsonlCursorFromTail(pw, msg.offset)
     }
   }
-  
+
   async function handleJsonlBackfillBatch(msg) {
     let delivered = true
     if (msg.entries?.length) {
@@ -807,14 +807,14 @@ export function createJsonlIngestor({
       refreshIngestionCaughtUp()
     }
   }
-  
+
   function handleJsonlBackfillSessionComplete(msg) {
     if (!msg.sessionId) return
     cursors[msg.sessionId] = { ...(cursors[msg.sessionId] || {}), searchBackfilled: true }
     scheduleCursorSave()
     refreshIngestionCaughtUp()
   }
-  
+
   function handleJsonlBackfillJobDone(msg) {
     const job = searchBackfillJobs.get(msg.jobId)
     if (msg.type === 'job-complete') {
@@ -850,7 +850,7 @@ export function createJsonlIngestor({
     }
     refreshIngestionCaughtUp()
   }
-  
+
   function processJsonlChildOutputs(pw, outputs) {
     if (!isConnected()) return false
     const agentId = pw.primaryAgentId
@@ -903,7 +903,7 @@ export function createJsonlIngestor({
     }
     return delivered
   }
-  
+
   function retireJsonlTail(pw, reason) {
     if (!pw) return
     if (pathWatchers.get(pw.jsonlPath) === pw) {
@@ -915,7 +915,7 @@ export function createJsonlIngestor({
     }
     stopJsonlTail(pw, reason)
   }
-  
+
   function stopJsonlTail(pw, reason = 'stop') {
     if (!pw || pw.stopped) return
     pw.stopped = true
@@ -925,7 +925,7 @@ export function createJsonlIngestor({
     }
     refreshIngestionCaughtUp()
   }
-  
+
   function updateJsonlCursorFromTail(pw, offset) {
     const entry = cursors[pw.sessionId] || (cursors[pw.sessionId] = {})
     if (entry.offset === offset && entry.inode) return
@@ -941,7 +941,7 @@ export function createJsonlIngestor({
     scheduleCursorSave()
     refreshIngestionCaughtUp()
   }
-  
+
   function processParsedJsonlRecord(pw, record) {
     if (!isConnected()) return false
     const harness = harnessAdapters[pw.harnessKind]?.activity
@@ -966,12 +966,12 @@ export function createJsonlIngestor({
       }
       processQualificationEvent(agentId, ev)
     }
-  
+
     if (harness.terminalChat && !sendTerminalChatFromRecord(agentId, pw.sessionId, record)) delivered = false
     if (harness.backfillSearch && !sendSearchIndexFromRecord(agentId, pw.sessionId, record)) delivered = false
     return delivered
   }
-  
+
   function processQualificationEvent(agentId, ev) {
     if (!ev.blocks) return
     for (const block of ev.blocks) {
@@ -987,7 +987,7 @@ export function createJsonlIngestor({
       }
     }
   }
-  
+
   function sendTerminalChatFromRecord(agentId, sessionId, parsed) {
     if (parsed.type !== 'user') return true
     if (parsed.isMeta) return true
@@ -1011,7 +1011,7 @@ export function createJsonlIngestor({
       session_id: sessionId,
     })
   }
-  
+
   function sendSearchIndexFromRecord(agentId, sessionId, parsed) {
     if (parsed.type !== 'user' && parsed.type !== 'assistant') return true
     const ts = parsed.timestamp || parsed.message?.timestamp || parsed.snapshot?.timestamp || null
@@ -1023,7 +1023,7 @@ export function createJsonlIngestor({
     if (!text || text.length < 3) return true
     return sendMsg({ type: 'jsonl-index', entries: [{ agent_id: agentId, session_id: sessionId, role: parsed.type, timestamp: ts, text }] })
   }
-  
+
   function startJsonlBackfillJob(job) {
     const child = startJsonlIngester()
     const nextJob = { ...job, attempts: (job.attempts || 0) + 1 }
@@ -1031,7 +1031,7 @@ export function createJsonlIngestor({
     child.send?.({ type: 'job', ...nextJob })
     refreshIngestionCaughtUp()
   }
-  
+
   // One-time backfill of a JSONL's full content to the search index.
   // Called when the daemon first starts watching a new session. The child does the
   // file IO/parsing; main only delivers batches and marks searchBackfilled after
@@ -1051,7 +1051,7 @@ export function createJsonlIngestor({
       harnessKind,
     })
   }
-  
+
   // Find + search-index this agent's prior sessions. Consults the session-owner
   // cache: a session already classified (owners known) is answered with ZERO I/O —
   // if it isn't this agent's, we skip it cold. The bug this fixes: the old code
@@ -1075,8 +1075,8 @@ export function createJsonlIngestor({
       cursors,
     })
   }
-  
-  
+
+
 
   function syncIfRosterChanged({ agents, signature, reason, onChanged }) {
     const nextSignature = sessionWatcherRosterSignature(agents)
