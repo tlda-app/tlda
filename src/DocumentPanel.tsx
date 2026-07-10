@@ -12,9 +12,9 @@ import { TocTab, ZoneWidthSlider } from './panels/TocTab'
 import { NotesTab } from './panels/NotesTab'
 import { PrefsTab } from './panels/PrefsTab'
 import { CornerButtonSlider, pickCornerSliderIndex } from './CornerButtonSlider'
-import { isDocumentPageShape } from './shapes/document-pages'
-import { isPhoneFleetLayoutForCurrentDevice, reflowPhoneFleetLayout } from './shapes/fleet-utils'
-import { snapToCurrentPhoneLaneIndex } from './overlays/useFleetGestures'
+import { isPhoneViewport } from './phoneViewport'
+import { phoneLaneIndexForViewportRefit, preservePhoneLaneForViewportSettle, snapToPhoneLaneIndex } from './overlays/useFleetGestures'
+import { getPrimaryPhoneDocumentLeft, refitPhonePaneStack } from './shapes/phone-pane-stack'
 
 import './DocumentPanel.css'
 
@@ -180,24 +180,19 @@ export function DocumentPanel() {
   )
 }
 
-function isPhoneSizedViewport(): boolean {
-  if (typeof window === 'undefined') return false
-  const vv = window.visualViewport
-  const w = Number(vv?.width || window.innerWidth || 0)
-  const h = Number(vv?.height || window.innerHeight || 0)
-  return Number.isFinite(w) && Number.isFinite(h) && Math.min(w, h) <= 600
-}
-
 function usePhoneSizedViewport(): boolean {
-  const [phone, setPhone] = useState(() => isPhoneSizedViewport())
+  const [phone, setPhone] = useState(() => isPhoneViewport())
   useEffect(() => {
     if (typeof window === 'undefined') return
-    const update = () => setPhone(isPhoneSizedViewport())
+    const media = window.matchMedia?.('(max-width: 600px), (max-height: 600px)')
+    const update = () => setPhone(isPhoneViewport())
     update()
+    media?.addEventListener?.('change', update)
     window.addEventListener('resize', update)
     window.addEventListener('orientationchange', update)
     window.visualViewport?.addEventListener('resize', update)
     return () => {
+      media?.removeEventListener?.('change', update)
       window.removeEventListener('resize', update)
       window.removeEventListener('orientationchange', update)
       window.visualViewport?.removeEventListener('resize', update)
@@ -206,13 +201,41 @@ function usePhoneSizedViewport(): boolean {
   return phone
 }
 
-function getDocumentLeftPage(editor: Editor): number | null {
-  let minPageX = Infinity
-  for (const s of editor.getCurrentPageShapes().filter(isDocumentPageShape)) {
-    const b = editor.getShapePageBounds(s.id)
-    if (b && b.x < minPageX) minPageX = b.x
-  }
-  return isFinite(minPageX) ? minPageX : null
+function useVisualViewportControlAnchor(active: boolean) {
+  useEffect(() => {
+    if (!active || typeof window === 'undefined') return
+    let raf = 0
+    const root = document.documentElement
+    const apply = () => {
+      raf = 0
+      const vv = window.visualViewport
+      const right = vv ? Math.max(0, window.innerWidth - vv.width - vv.offsetLeft) : 0
+      const bottom = vv ? Math.max(0, window.innerHeight - vv.height - vv.offsetTop) : 0
+      const top = vv ? Math.max(0, vv.offsetTop) : 0
+      root.style.setProperty('--tlda-vv-right', `${Math.round(right)}px`)
+      root.style.setProperty('--tlda-vv-bottom', `${Math.round(bottom)}px`)
+      root.style.setProperty('--tlda-vv-top', `${Math.round(top)}px`)
+    }
+    const schedule = () => {
+      if (raf) cancelAnimationFrame(raf)
+      raf = requestAnimationFrame(apply)
+    }
+    apply()
+    window.addEventListener('resize', schedule)
+    window.addEventListener('orientationchange', schedule)
+    window.visualViewport?.addEventListener('resize', schedule)
+    window.visualViewport?.addEventListener('scroll', schedule)
+    return () => {
+      if (raf) cancelAnimationFrame(raf)
+      window.removeEventListener('resize', schedule)
+      window.removeEventListener('orientationchange', schedule)
+      window.visualViewport?.removeEventListener('resize', schedule)
+      window.visualViewport?.removeEventListener('scroll', schedule)
+      root.style.removeProperty('--tlda-vv-right')
+      root.style.removeProperty('--tlda-vv-bottom')
+      root.style.removeProperty('--tlda-vv-top')
+    }
+  }, [active])
 }
 
 const IS_TOUCH_DEVICE = (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0)
@@ -584,6 +607,7 @@ export function PhoneOverlay() {
   const [tab, setTab] = useState<Tab>('toc')
   const isPhone = usePhoneSizedViewport()
   const showButtonToc = doc?.format === 'slides' || isPhone || IS_TOUCH_DEVICE
+  useVisualViewportControlAnchor(showButtonToc)
   const phoneViewportSig = useValue(
     'phone-overlay-viewport',
     () => {
@@ -596,26 +620,44 @@ export function PhoneOverlay() {
   useEffect(() => {
     if (!isPhone) return
     let raf = 0
+    let settleTimer = 0
     const apply = () => {
       raf = 0
-      if (!isPhoneFleetLayoutForCurrentDevice(editor)) return
-      const changed = reflowPhoneFleetLayout(editor)
-      const docLeft = getDocumentLeftPage(editor)
-      if (docLeft !== null) snapToCurrentPhoneLaneIndex(editor, docLeft, 0)
-      if (changed) window.dispatchEvent(new CustomEvent('fleet-phone-layout-reflowed'))
+      const result = refitPhonePaneStack(editor)
+      if (!result.ok) return
+      snapToPhoneLaneIndex(editor, result.docLeftPage, phoneLaneIndexForViewportRefit(result.currentIndex))
+      if (result.updatedIds.length > 0) window.dispatchEvent(new CustomEvent('fleet-phone-layout-reflowed'))
     }
     const schedule = () => {
       if (raf) cancelAnimationFrame(raf)
       raf = requestAnimationFrame(apply)
     }
+    const scheduleSettledPasses = () => {
+      schedule()
+      for (const delay of [80, 180, 360, 700]) window.setTimeout(schedule, delay)
+    }
+    const handleOrientationChange = () => {
+      const docLeft = getPrimaryPhoneDocumentLeft(editor)
+      if (docLeft !== null) {
+        const preserve = preservePhoneLaneForViewportSettle(editor, docLeft)
+        const w = window as Window & { __tldaPhoneCameraSettlingUntil?: number }
+        w.__tldaPhoneCameraSettlingUntil = Math.max(Number(w.__tldaPhoneCameraSettlingUntil || 0), preserve.until)
+        if (settleTimer) window.clearTimeout(settleTimer)
+        settleTimer = window.setTimeout(() => {
+          if (Number(w.__tldaPhoneCameraSettlingUntil || 0) <= Date.now()) w.__tldaPhoneCameraSettlingUntil = 0
+        }, 950)
+      }
+      scheduleSettledPasses()
+    }
     schedule()
     window.addEventListener('resize', schedule)
-    window.addEventListener('orientationchange', schedule)
+    window.addEventListener('orientationchange', handleOrientationChange)
     window.visualViewport?.addEventListener('resize', schedule)
     return () => {
       if (raf) cancelAnimationFrame(raf)
+      if (settleTimer) window.clearTimeout(settleTimer)
       window.removeEventListener('resize', schedule)
-      window.removeEventListener('orientationchange', schedule)
+      window.removeEventListener('orientationchange', handleOrientationChange)
       window.visualViewport?.removeEventListener('resize', schedule)
     }
   }, [editor, isPhone, phoneViewportSig])

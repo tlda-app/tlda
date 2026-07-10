@@ -13,7 +13,7 @@ import {
   upsertSessionIdentity,
 } from '../agent-runtime/session-identity-store.mjs'
 import { tailSessionIdentityInput } from '../agent-runtime/session-identity-tail.mjs'
-import { scanFileOwnersSync } from '../agent-runtime/daemon-jsonl-hot-path.mjs'
+import { scanFileIdentitySync, scanFileOwnersSync } from '../agent-runtime/daemon-jsonl-hot-path.mjs'
 import {
   shouldClaimClaudeWatcher,
   shouldClaimCodexWatcher,
@@ -607,6 +607,27 @@ export function createJsonlIngestor({
       }
 
       try {
+        if (harness.kind === 'codex') {
+          try {
+            const { identity, owners, endOffset } = scanFileIdentitySync(jsonlPath)
+            const claimedOwners = owners.length ? owners : [agent.id]
+            recordSessionOwners(sessionId, claimedOwners, {
+              jsonlPath,
+              harnessKind: harness.kind,
+              identity,
+            })
+            if (endOffset > 0) {
+              const entry = cursors[sessionId] || (cursors[sessionId] = {})
+              if (!entry.identityScanned) {
+                entry.identityScanned = true
+                scheduleCursorSave()
+              }
+          }
+        } catch (e) {
+          // Identity recovery is opportunistic; the JSONL watcher must still start.
+          log.warn(`codex identity scan failed for ${path.basename(jsonlPath)}: ${e.message}`)
+        }
+      }
         const pwState = startJsonlTail({ agent, jsonlPath, sessionId, harness, startOffset: offset, liveOffset: stat.size })
         pathWatchers.set(jsonlPath, pwState)
         retainJsonlDirWatcher(jsonlPath)

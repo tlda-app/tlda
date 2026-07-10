@@ -30,6 +30,8 @@ const PILL_W = 70
 const PILL_H = 18
 const CHAT_W = 400
 const CHAT_H = 600
+const TEMP_MARKDOWN_PROJECT = 'fleet-markdown-chip-temp'
+const TEMP_MARKDOWN_FILE = 'content.md'
 const TEMP_MARKDOWN_SHAPE_ID = createShapeId('fleet-markdown-chip-temp-column')
 const TEMP_MARKDOWN_W = 800
 const TEMP_MARKDOWN_H = 1200
@@ -70,119 +72,88 @@ export const filterDropPreview = {
   activePaneRole: null as 'to' | 'from' | 'replace' | null,
 }
 
-function escapeHtml(text: string): string {
-  return text.replace(/[&<>"']/g, (ch) => ({
+function encodeUtf8Base64(text: string): string {
+  const bytes = new TextEncoder().encode(text)
+  let binary = ''
+  for (const byte of bytes) binary += String.fromCharCode(byte)
+  return btoa(binary)
+}
+
+function isTemporaryMarkdownProofFixture(meta: Record<string, unknown>) {
+  if (meta.wmManagedSurfaceProofFixture !== true) return false
+  if (typeof window === 'undefined') return false
+  return new URLSearchParams(window.location.search).get('wmManagedSurfaceProof') === '1'
+}
+
+function temporaryMarkdownProofFixtureUrl(title: string, markdown: string) {
+  const escapedTitle = title.replace(/[&<>"']/g, (ch) => ({
     '&': '&amp;',
     '<': '&lt;',
     '>': '&gt;',
     '"': '&quot;',
     "'": '&#39;',
   }[ch] || ch))
-}
-
-function slugifyHeading(text: string): string {
-  return text.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'section'
-}
-
-function inlineMarkdown(text: string): string {
-  return escapeHtml(text)
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
-    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-    .replace(/\*([^*]+)\*/g, '<em>$1</em>')
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, label, href) => {
-      const safeHref = escapeHtml(String(href))
-      return `<a href="${safeHref}">${escapeHtml(String(label))}</a>`
-    })
-}
-
-function renderSimpleMarkdown(markdown: string): string {
-  const blocks: string[] = []
-  const lines = markdown.replace(/\r\n?/g, '\n').split('\n')
-  let paragraph: string[] = []
-  let code: string[] | null = null
-  const flushParagraph = () => {
-    if (!paragraph.length) return
-    blocks.push(`<p>${inlineMarkdown(paragraph.join(' '))}</p>`)
-    paragraph = []
-  }
-
-  for (const line of lines) {
-    if (line.trim().startsWith('```')) {
-      if (code) {
-        blocks.push(`<pre><code>${escapeHtml(code.join('\n'))}</code></pre>`)
-        code = null
-      } else {
-        flushParagraph()
-        code = []
-      }
-      continue
-    }
-    if (code) {
-      code.push(line)
-      continue
-    }
-    const heading = line.match(/^(#{1,6})\s+(.+)$/)
-    if (heading) {
-      flushParagraph()
-      const level = heading[1].length
-      const text = heading[2].trim()
-      blocks.push(`<h${level} id="${slugifyHeading(text)}">${inlineMarkdown(text)}</h${level}>`)
-      continue
-    }
-    if (!line.trim()) {
-      flushParagraph()
-      continue
-    }
-    paragraph.push(line.trim())
-  }
-  if (code) blocks.push(`<pre><code>${escapeHtml(code.join('\n'))}</code></pre>`)
-  flushParagraph()
-  return blocks.join('\n')
-}
-
-function temporaryMarkdownDataUrl(title: string, markdown: string) {
-  const html = `<!doctype html>
-<html>
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${escapeHtml(title)}</title>
-<style>
-body{margin:0;background:#fff;color:#111;font:16px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
-main{box-sizing:border-box;width:100%;min-height:100vh;padding:48px 64px}
-pre{white-space:pre-wrap;background:#f6f6f6;padding:12px;border-radius:6px}
-code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
-a{color:#2457a6}
-</style>
-</head>
-<body>
-<main>${renderSimpleMarkdown(markdown)}</main>
-<script>
-(function(){
-  function reportHeadings(){
-    var positions = {};
-    document.querySelectorAll('h1,h2,h3,h4,h5,h6').forEach(function(el){
-      if (!el.id) return;
-      positions[el.id] = el.getBoundingClientRect().top + window.scrollY;
-    });
-    parent.postMessage({ type: 'tlda-headings', positions: positions }, '*');
-  }
-  document.addEventListener('click', function(e){
-    var link = e.target && e.target.closest ? e.target.closest('a[href]') : null;
-    if (!link) return;
-    var href = link.getAttribute('href') || '';
-    if (href.charAt(0) === '#') {
-      e.preventDefault();
-      parent.postMessage({ type: 'tlda-navigate', anchor: href.slice(1) }, '*');
-    }
-  });
-  window.addEventListener('load', reportHeadings);
-  setTimeout(reportHeadings, 50);
-})();
-</script>
-</body>
-</html>`
+  const escapedMarkdown = markdown.replace(/[&<>"']/g, (ch) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  }[ch] || ch))
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>${escapedTitle}</title></head><body><main><h1>${escapedTitle}</h1><pre>${escapedMarkdown}</pre></main></body></html>`
   return `data:text/html;charset=utf-8,${encodeURIComponent(html)}`
+}
+
+async function ensureTemporaryMarkdownProject() {
+  const createRes = await fetch('/api/projects', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name: TEMP_MARKDOWN_PROJECT,
+      title: 'Markdown chip',
+      format: 'markdown',
+      mainFile: TEMP_MARKDOWN_FILE,
+    }),
+  })
+  if (!createRes.ok && createRes.status !== 409) {
+    throw new Error(`project create failed: ${createRes.status}`)
+  }
+}
+
+async function waitForTemporaryMarkdownBuild(startedAt: number, allowExisting = false) {
+  const deadline = startedAt + 8000
+  while (Date.now() < deadline) {
+    const res = await fetch(`/api/projects/${TEMP_MARKDOWN_PROJECT}?t=${Date.now()}`)
+    if (res.ok) {
+      const project = await res.json()
+      const lastBuild = project.lastBuild ? Date.parse(project.lastBuild) : 0
+      if (project.buildStatus === 'success' && project.pages > 0 && (allowExisting || lastBuild >= startedAt - 1000)) return
+      if (project.buildStatus === 'error') throw new Error('markdown build failed')
+    }
+    await new Promise(resolve => setTimeout(resolve, 200))
+  }
+  throw new Error('markdown build timed out')
+}
+
+export async function createTemporaryMarkdownPageUrl(title: string, markdown: string) {
+  const source = markdown.trim() ? markdown : `# ${title || 'Markdown chip'}`
+  const startedAt = Date.now()
+  await ensureTemporaryMarkdownProject()
+  const pushRes = await fetch(`/api/projects/${TEMP_MARKDOWN_PROJECT}/push`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      files: [{
+        path: TEMP_MARKDOWN_FILE,
+        content: encodeUtf8Base64(source),
+        encoding: 'base64',
+      }],
+    }),
+  })
+  if (!pushRes.ok) throw new Error(`markdown push failed: ${pushRes.status}`)
+  const pushResult = await pushRes.json().catch(() => null)
+  await waitForTemporaryMarkdownBuild(startedAt, !!pushResult?.unchanged)
+  return `/docs/${TEMP_MARKDOWN_PROJECT}/index.html?t=${Date.now()}`
 }
 
 function getParkedMarkdownPoint(editor: Editor, fallbackPoint: { x: number; y: number }) {
@@ -231,10 +202,19 @@ export async function createTemporaryMarkdownColumn(
   overrideUrl?: string,
 ) {
   const source = markdown.trim() ? markdown : `# ${title || 'Markdown chip'}`
-  // Drag-drop: lightweight data:text/html render (unchanged). Chip CLICK
-  // passes overrideUrl — a real, rebuilt project-part URL — so this same
-  // pinned popup UI shows live content instead of a static snapshot.
-  const url = overrideUrl || temporaryMarkdownDataUrl(title || 'Markdown chip', source)
+  const proofFixture = isTemporaryMarkdownProofFixture(meta)
+  let url = `/docs/${TEMP_MARKDOWN_PROJECT}/index.html?t=${Date.now()}`
+  if (overrideUrl) {
+    url = overrideUrl
+  } else if (proofFixture) {
+    url = temporaryMarkdownProofFixtureUrl(title, source)
+  } else {
+    url = await createTemporaryMarkdownPageUrl(title, source)
+  }
+  const staleTemporaryMarkdown = editor.getCurrentPageShapes()
+    .filter((shape: any) => shape.meta?.temporaryMarkdownColumn && shape.id !== TEMP_MARKDOWN_SHAPE_ID)
+    .map(shape => shape.id)
+  if (staleTemporaryMarkdown.length > 0) editor.store.remove(staleTemporaryMarkdown)
   const parkedPoint = getParkedMarkdownPoint(editor, pagePoint)
   const existing = editor.getShape(TEMP_MARKDOWN_SHAPE_ID)
   if (existing) {

@@ -15,6 +15,7 @@ import { changeStore, onShapeChangeUpdate, type ChangeRegion } from '../stores/c
 import { anchorIndex, getNavigateToAnchor } from '../stores/anchorIndex'
 import { svgViewBoxStore } from '../stores/svgViewBoxStore'
 import { getPageUrl, getPageFilename } from '../stores/pageUrlStore'
+import { isPhoneViewport } from '../phoneViewport'
 
 export class SvgPageShapeUtil extends BaseBoxShapeUtil<any> {
   static override type = 'svg-page' as const
@@ -58,7 +59,7 @@ export class SvgPageShapeUtil extends BaseBoxShapeUtil<any> {
 }
 
 // Number of page-heights beyond the viewport to keep SVG content injected
-const IS_PHONE = typeof window !== 'undefined' && window.matchMedia('(max-width: 600px)').matches
+const IS_PHONE = isPhoneViewport()
 const VIEWPORT_BUFFER_PAGES = IS_PHONE ? 4 : 2
 
 // Cache processed SVG HTML (post-fonts + word spaces + link processing) keyed by shape ID.

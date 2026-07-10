@@ -4,6 +4,7 @@
 
 .fleet-inbox-shape {
   background: var(--fleet-bg, transparent);
+  position: relative;
 }
 
 /* --- Header --- */
@@ -139,6 +140,8 @@
   border-bottom: 1px solid rgba(128, 128, 128, 0.06);
   cursor: pointer;
   transition: background 0.1s;
+  position: relative;
+  overflow: hidden;
 }
 .fleet-inbox-thread:hover {
   background: rgba(128, 128, 128, 0.06);
@@ -147,6 +150,8 @@
   display: flex;
   align-items: baseline;
   gap: 6px;
+  position: relative;
+  z-index: 1;
 }
 .fleet-inbox-thread-partner {
   font-size: 11px;
@@ -178,16 +183,195 @@
   justify-content: center;
   flex-shrink: 0;
 }
+.fleet-inbox-thread-preview-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin-top: 2px;
+  position: relative;
+  z-index: 1;
+}
 .fleet-inbox-thread-preview {
   font-size: 10px;
   opacity: 0.45;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  margin-top: 2px;
+  min-width: 0;
+  flex: 1 1 auto;
 }
 .fleet-inbox-thread.unread .fleet-inbox-thread-preview {
   opacity: 0.7;
+}
+.fleet-inbox-markdown-chip {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 46%;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid rgba(99, 160, 219, 0.22);
+  border-radius: 3px;
+  padding: 0 5px;
+  background: rgba(99, 160, 219, 0.12);
+  color: inherit;
+  font: inherit;
+  font-size: 9px;
+  opacity: 0.74;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.fleet-inbox-markdown-chip:hover,
+.fleet-inbox-markdown-chip:active {
+  opacity: 0.95;
+  background: rgba(99, 160, 219, 0.2);
+  border-color: rgba(99, 160, 219, 0.38);
+}
+.fleet-inbox-markdown-chip-icon {
+  flex: 0 0 auto;
+  font-size: 8px;
+  text-transform: uppercase;
+  opacity: 0.7;
+}
+.fleet-inbox-markdown-chip-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fleet-inbox-thread-action {
+  position: absolute;
+  inset-block: 0;
+  width: 74%;
+  pointer-events: none;
+  opacity: 0;
+  transform: scaleX(0);
+  transition: opacity 0.08s, transform 0.08s;
+  display: flex;
+  align-items: center;
+  z-index: 0;
+}
+.fleet-inbox-thread-action-stack {
+  left: 0;
+  transform-origin: left center;
+  justify-content: flex-start;
+  padding-left: 14px;
+  background: linear-gradient(to right, rgba(120, 160, 220, 0.34), rgba(120, 160, 220, 0.12));
+  color: rgba(210, 230, 255, 0.96);
+}
+.fleet-inbox-thread-action-dismiss {
+  right: 0;
+  transform-origin: right center;
+  justify-content: flex-end;
+  padding-right: 14px;
+  background: linear-gradient(to left, rgba(210, 95, 95, 0.34), rgba(210, 95, 95, 0.12));
+  color: rgba(255, 220, 220, 0.98);
+}
+.fleet-inbox-thread-action::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  width: min(42%, 86px);
+  height: 6px;
+  border-radius: 999px;
+  background: currentColor;
+  opacity: 0.55;
+  transform: translateY(-50%);
+}
+.fleet-inbox-thread-action::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  width: 20px;
+  height: 20px;
+  border-top: 6px solid currentColor;
+  border-left: 6px solid currentColor;
+  opacity: 0.58;
+}
+.fleet-inbox-thread-action-stack::before {
+  left: 20px;
+}
+.fleet-inbox-thread-action-stack::after {
+  left: 18px;
+  transform: translateY(-50%) rotate(-45deg);
+}
+.fleet-inbox-thread-action-dismiss::before {
+  right: 20px;
+}
+.fleet-inbox-thread-action-dismiss::after {
+  right: 18px;
+  transform: translateY(-50%) rotate(135deg);
+}
+.fleet-inbox-thread-action-icon {
+  width: 46px;
+  height: 46px;
+  border-radius: 23px;
+  background: rgba(0, 0, 0, 0.24);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.95;
+  position: relative;
+  z-index: 1;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+.fleet-inbox-thread-action-icon svg {
+  width: 30px;
+  height: 30px;
+}
+.fleet-inbox-thread-action-doc-head {
+  position: absolute;
+  top: 50%;
+  left: 58px;
+  width: 20px;
+  height: 20px;
+  border-top: 6px solid currentColor;
+  border-left: 6px solid currentColor;
+  opacity: calc(0.18 + (var(--phone-row-doc-progress, 0) * 0.72));
+  transform: translateY(-50%) rotate(-45deg) scale(calc(0.72 + (var(--phone-row-doc-progress, 0) * 0.28)));
+  transform-origin: center;
+}
+.fleet-inbox-thread.phone-row-stack .fleet-inbox-thread-action-stack,
+.fleet-inbox-thread.phone-row-dismiss .fleet-inbox-thread-action-dismiss {
+  opacity: var(--phone-row-progress, 0);
+  transform: scaleX(var(--phone-row-progress, 0));
+}
+.fleet-inbox-thread.action-armed .fleet-inbox-thread-action-icon {
+  background: rgba(0, 0, 0, 0.34);
+  opacity: 1;
+}
+.fleet-inbox-thread.action-armed .fleet-inbox-thread-action::before,
+.fleet-inbox-thread.action-armed .fleet-inbox-thread-action::after {
+  opacity: 0.82;
+}
+.fleet-inbox-thread.doc-action-armed .fleet-inbox-thread-action-doc-head {
+  opacity: 1;
+}
+.fleet-inbox-dismissible-row {
+  position: relative;
+  overflow: hidden;
+}
+.fleet-inbox-dismissible-row > :not(.fleet-inbox-thread-action) {
+  position: relative;
+  z-index: 1;
+}
+.fleet-inbox-dismissible-row.phone-row-dismiss .fleet-inbox-thread-action-dismiss {
+  opacity: var(--phone-row-progress, 0);
+  transform: scaleX(var(--phone-row-progress, 0));
+}
+.fleet-inbox-dismissible-row.phone-row-stack .fleet-inbox-thread-action-stack {
+  opacity: var(--phone-row-progress, 0);
+  transform: scaleX(var(--phone-row-progress, 0));
+}
+.fleet-inbox-dismissible-row.action-armed .fleet-inbox-thread-action-icon {
+  background: rgba(0, 0, 0, 0.34);
+  opacity: 1;
+}
+.fleet-inbox-dismissible-row.action-armed .fleet-inbox-thread-action::before,
+.fleet-inbox-dismissible-row.action-armed .fleet-inbox-thread-action::after {
+  opacity: 0.82;
 }
 
 /* --- Tasks group (revalidation items projected from the ribbon's stale spans) ---
@@ -443,6 +627,7 @@
 .fleet-inbox-detail {
   flex: 1;
   overflow-y: auto;
+  overscroll-behavior-y: contain;
   padding: 12px 12px 18px;
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
@@ -511,6 +696,7 @@
 .fleet-inbox-conv {
   flex: 1;
   overflow-y: auto;
+  overscroll-behavior-y: contain;
   padding: 4px 0;
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
@@ -541,11 +727,14 @@
 }
 
 .fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-row {
-  flex: 0 0 auto;
   padding: 7px 10px;
-  border-top: 1px solid rgba(128, 128, 128, 0.1);
+  border-bottom: 1px solid rgba(128, 128, 128, 0.08);
   cursor: pointer;
-  background: rgba(128, 128, 128, 0.035);
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--fleet-bg, rgba(0, 0, 0, 0.72));
+  backdrop-filter: blur(8px);
 }
 
 .fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-row:hover {
@@ -583,20 +772,6 @@
   white-space: nowrap;
 }
 
-.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-sheet {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  height: min(75%, calc(100% - 34px));
-  z-index: 26;
-  display: flex;
-  overflow: hidden;
-  border-top: 1px solid rgba(128, 128, 128, 0.14);
-  background: color-mix(in srgb, var(--panel-bg, #111317) 94%, transparent);
-  box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.22);
-}
-
 .fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-detail {
   flex: 1 1 auto;
   min-height: 0;
@@ -605,28 +780,44 @@
   overflow: hidden;
 }
 
-.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-pop-arrow {
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-pop-zone,
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-thread-pop-layer {
   position: absolute;
-  left: 50%;
-  bottom: 6px;
-  width: 34px;
-  height: 34px;
-  border-radius: 17px;
-  background: rgba(128, 128, 128, 0.08);
-  opacity: 0.7;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 72px;
   pointer-events: auto;
-  transform: translateX(-50%);
   touch-action: none;
   z-index: 20;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding-bottom: 6px;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.18), transparent);
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-thread-pop-layer {
+  bottom: 48px;
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-pop-arrow {
+  width: 42px;
+  height: 42px;
+  border-radius: 21px;
+  background: rgba(128, 128, 128, 0.1);
+  opacity: 0.72;
+  pointer-events: none;
+  position: relative;
 }
 
 .fleet-inbox-shape.phone-inbox-surface .fleet-inbox-pop-arrow::before {
   content: "";
   position: absolute;
   left: 50%;
-  bottom: 9px;
-  width: 1px;
-  height: 12px;
+  bottom: 10px;
+  width: 2px;
+  height: 18px;
   background: currentColor;
   opacity: 0.8;
   transform: translateX(-50%);
@@ -636,13 +827,20 @@
   content: "";
   position: absolute;
   left: 50%;
-  bottom: 18px;
-  width: 8px;
-  height: 8px;
-  border-left: 1px solid currentColor;
-  border-top: 1px solid currentColor;
+  bottom: 23px;
+  width: 11px;
+  height: 11px;
+  border-left: 2px solid currentColor;
+  border-top: 2px solid currentColor;
   opacity: 0.8;
   transform: translateX(-50%) rotate(45deg);
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-thread-pop-layer .fleet-inbox-pop-zone {
+  position: static;
+  width: 100%;
+  height: 72px;
+  background: transparent;
 }
 
 .fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-detail .fleet-inbox-agents-panel {
@@ -655,22 +853,11 @@
   overflow: hidden;
 }
 
-.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-sheet .fleet-inbox-agents-panel {
-  flex: 1 1 auto;
-  width: 100%;
-  min-height: 0;
-  max-height: none;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  position: relative;
-}
-
 .fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-mini-chat {
   flex: 0 0 auto;
   width: 100%;
   aspect-ratio: 1 / 1;
-  max-height: 100%;
+  max-height: min(100%, 420px);
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -680,35 +867,11 @@
   overflow: hidden;
 }
 
-.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-close {
-  position: absolute;
-  top: 6px;
-  left: 6px;
-  z-index: 19;
-  width: 34px;
-  height: 34px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 0;
-  border-radius: 6px;
-  background: rgba(128, 128, 128, 0.08);
-  color: inherit;
-  opacity: 0.55;
-  padding: 0;
-  touch-action: manipulation;
-}
-
-.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-close:active {
-  opacity: 0.9;
-  background: rgba(128, 128, 128, 0.14);
-}
-
 .fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-filter-btn {
   position: absolute;
   top: 6px;
   right: 6px;
-  z-index: 18;
+  z-index: 34;
   width: 34px;
   height: 34px;
   display: inline-flex;
@@ -735,9 +898,12 @@
 }
 
 .fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-mini-chat-log {
+  position: relative;
+  z-index: 1;
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
+  overscroll-behavior-y: contain;
   padding: 4px 0;
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
@@ -754,8 +920,14 @@
 }
 
 .fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-mini-chat .fleet-filter-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 32;
   border-radius: 0;
-  padding: 8px;
+  padding: 42px 8px 8px;
+  overflow: auto;
+  background: color-mix(in srgb, var(--fleet-bg, #090b10) 94%, transparent);
+  backdrop-filter: blur(10px);
 }
 
 .fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-mini-empty {
@@ -766,35 +938,55 @@
 }
 
 .fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-composer {
+  position: relative;
+  z-index: 1;
   flex-shrink: 0;
   padding: 4px 6px 6px;
   border-top: 1px solid rgba(128, 128, 128, 0.1);
   background: rgba(128, 128, 128, 0.03);
-  position: relative;
 }
 
-.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-assign {
-  position: absolute;
-  right: 10px;
-  top: 9px;
-  z-index: 2;
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agents-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 28px;
+  padding: 4px 6px;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.08);
+  background: rgba(128, 128, 128, 0.025);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agents-header::-webkit-scrollbar {
+  display: none;
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agents-header-label {
+  flex: 0 0 auto;
+  font-size: 9px;
+  opacity: 0.42;
+}
+
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agents-sort-btn {
+  flex: 0 0 auto;
   border: 0;
   border-radius: 5px;
-  padding: 2px 7px;
+  padding: 4px 6px;
+  min-height: 22px;
+  font: inherit;
   font-size: 10px;
-  line-height: 1.4;
   color: inherit;
-  background: rgba(128, 128, 128, 0.12);
-  opacity: 0.65;
+  background: rgba(128, 128, 128, 0.06);
+  opacity: 0.62;
   touch-action: manipulation;
 }
 
-.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-assign:disabled {
-  opacity: 0.28;
-}
-
-.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-composer .fleet-inbox-composer-textarea {
-  padding-right: 64px !important;
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agents-sort-btn.active,
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agents-sort-btn:active {
+  background: rgba(128, 128, 128, 0.14);
+  opacity: 0.95;
 }
 
 .fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agents {
@@ -802,6 +994,7 @@
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
+  overscroll-behavior-y: contain;
   scrollbar-width: auto;
   scrollbar-color: rgba(255, 255, 255, 0.28) transparent;
 }
@@ -877,40 +1070,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent-push-arrow {
-  flex: 0 0 auto;
-  width: 18px;
-  height: 18px;
-  margin: 0 8px 0 auto;
-  border-radius: 9px;
-  background: rgba(128, 128, 128, 0.09);
-  position: relative;
-  opacity: 0.72;
-  pointer-events: none;
-}
-
-.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent-push-arrow::before {
-  content: "";
-  position: absolute;
-  left: 6px;
-  top: 8px;
-  width: 8px;
-  height: 1px;
-  background: currentColor;
-}
-
-.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent-push-arrow::after {
-  content: "";
-  position: absolute;
-  left: 5px;
-  top: 5px;
-  width: 6px;
-  height: 6px;
-  border-left: 1px solid currentColor;
-  border-bottom: 1px solid currentColor;
-  transform: rotate(45deg);
 }
 
 .fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent-activity {
@@ -1000,14 +1159,6 @@
 }
 
 @media (orientation: landscape) {
-  .fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-sheet {
-    height: 75%;
-  }
-
-  .fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-sheet .fleet-inbox-agents-panel {
-    flex-direction: row;
-  }
-
   .fleet-inbox-shape.phone-inbox-surface .fleet-inbox-agents-detail .fleet-inbox-agents-panel {
     flex-direction: row;
   }

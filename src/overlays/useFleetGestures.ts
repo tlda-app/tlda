@@ -23,18 +23,17 @@
  * the "snap-back" the old two-finger move exhibited).
  */
 import { useEffect } from 'react'
-import type { Editor, TLShape, TLShapeId } from 'tldraw'
+import type { Editor, TLShape } from 'tldraw'
 import { log } from '../logger'
 import { FLEET_SHAPE_TYPES, isMyFleetShape } from '../shapes/fleet-utils'
 import { isDocumentPageShape } from '../shapes/document-pages'
-import { deletePhonePinnedChatPane, isPhonePinnedPaneShape, phonePaneStackMaxIndex } from '../shapes/phone-pane-stack'
+import { phonePaneStackMaxIndex } from '../shapes/phone-pane-stack'
 import {
   MOVE_LOCK_ON,
   PAN_AXIS_DECAY,
   PAN_BREAK_RATIO,
   PAN_LOCK_INITIAL,
   PAN_OFFAXIS_DAMP,
-  PHONE_LANE_LOCK,
   PHONE_LANE_SNAP_DURATION,
   RESIZE_LOCK_AFTER_MOVE,
   RESIZE_LOCK_ON,
@@ -271,16 +270,6 @@ type PhoneInboxPaneCandidate = {
   }
 }
 
-function nearestPhonePaneScroller(target: EventTarget | null): HTMLElement | null {
-  if (!(target instanceof Element)) return null
-  return target.closest('.fleet-chat-log, .fleet-inbox-conv, .fleet-inbox-list') as HTMLElement | null
-}
-
-function isAtScrollBottom(el: HTMLElement | null): boolean {
-  if (!el) return true
-  return el.scrollTop + el.clientHeight >= el.scrollHeight - 2
-}
-
 function isMyGestureFleetShape(shape: TLShape | null | undefined): shape is TLShape {
   return !!shape && FLEET_SHAPE_TYPES.has(shape.type as string) && isMyFleetShape(shape)
 }
@@ -473,8 +462,9 @@ function finishPhoneLaneGesture(main: Editor, state: Extract<GestureState, { kin
     if (dir !== 0 && sweepFits && Math.abs(state.lastDx) >= commit && phoneLaneExistsFromIndex(state.startLaneIndex, state.maxPaneIndex, dir)) {
       snapToPhoneLaneIndex(main, state.docLeftPage, state.startLaneIndex + dir)
     } else {
-      // Re-settle exactly onto the current lane (no-op if already aligned).
-      snapPhoneLane(main, state.docLeftPage)
+      // Failed/edge swipes should not visibly bounce at the terminal lane.
+      // The camera is static during the drag, so re-settle without animation.
+      snapPhoneLane(main, state.docLeftPage, 0)
     }
   }
   setPhoneLaneDrag(PHONE_LANE_DRAG_IDLE)
@@ -542,11 +532,7 @@ function clusterOf(overlay: Editor, seedIds: Set<string>, viewportId?: string): 
 // let a decisive off-axis push re-pick the axis mid-drag (breakable — no pause
 // needed). The accumulators decay each move so the axis tracks RECENT travel.
 
-function isPhoneMode() {
-  return typeof document !== 'undefined' && document.body.classList.contains('phone-mode')
-}
-
-function isPhoneLayoutRequested() {
+export function isPhoneLayoutRequested() {
   if (typeof window === 'undefined') return false
   try {
     return new URLSearchParams(window.location.search).get('fleetLayout') === 'phone'
@@ -555,7 +541,7 @@ function isPhoneLayoutRequested() {
   }
 }
 
-function hasMyFullscreenPhoneInbox(editor: Editor) {
+export function hasMyFullscreenPhoneInbox(editor: Editor) {
   const vp = editor.getViewportScreenBounds()
   const screenW = Math.round(vp.w || 0)
   const screenH = Math.round(vp.h || 0)
@@ -569,12 +555,8 @@ function hasMyFullscreenPhoneInbox(editor: Editor) {
   })
 }
 
-function isPhonePaneStackMode(editor: Editor) {
-  return isPhoneMode() || isPhoneLayoutRequested() || hasMyFullscreenPhoneInbox(editor)
-}
-
-function isOpenThreadInboxTouch(target: EventTarget | null): boolean {
-  return target instanceof Element && !!target.closest('.fleet-inbox-shape[data-phone-open-thread="true"]')
+export function isPhonePaneStackMode(editor: Editor) {
+  return isPhoneLayoutRequested() || hasMyFullscreenPhoneInbox(editor)
 }
 
 function getPrimaryDocumentLeft(editor: Editor): number | null {
@@ -594,8 +576,8 @@ function getPrimaryDocumentLeft(editor: Editor): number | null {
 
 // Settle onto the current lane (no transition). Uses the explicit lane index so a
 // settle mid-animation can't drift the camera to a wrong stop.
-function snapPhoneLane(editor: Editor, docLeftPage: number) {
-  snapToPhoneLaneIndex(editor, docLeftPage, phoneLaneIndexFromCamera(editor, docLeftPage))
+function snapPhoneLane(editor: Editor, docLeftPage: number, animationDuration = PHONE_LANE_SNAP_DURATION) {
+  snapToCurrentPhoneLaneIndex(editor, docLeftPage, animationDuration)
 }
 
 // --- Phone lane transition: big fill-up arrow, ~75%-portrait deliberate swipe ---
@@ -609,7 +591,16 @@ const PHONE_LANE_COMMIT_FRAC = 0.75
 const PHONE_LANE_COMMIT_MIN = 120
 let phoneLanePortraitWidthPx = 0
 
-export type PhoneLaneDragState = { active: boolean; progress: number; dir: -1 | 0 | 1 | 'up' | 'down'; armed: boolean; arrowWidthPx?: number }
+export type PhoneLaneDragState = {
+  active: boolean
+  progress: number
+  dir: -1 | 0 | 1 | 'up'
+  armed: boolean
+  arrowWidthPx?: number
+  kind?: 'pane' | 'item-push' | 'stack-pop'
+  originX?: number
+  originY?: number
+}
 export const PHONE_LANE_DRAG_IDLE: PhoneLaneDragState = { active: false, progress: 0, dir: 0, armed: false }
 let phoneLaneDragState: PhoneLaneDragState = PHONE_LANE_DRAG_IDLE
 const phoneLaneDragListeners = new Set<(s: PhoneLaneDragState) => void>()
@@ -623,11 +614,42 @@ export function setPhoneLaneDrag(next: PhoneLaneDragState) {
     next.active === phoneLaneDragState.active &&
     next.dir === phoneLaneDragState.dir &&
     next.armed === phoneLaneDragState.armed &&
+    next.kind === phoneLaneDragState.kind &&
     (next.arrowWidthPx || 0) === (phoneLaneDragState.arrowWidthPx || 0) &&
+    Math.abs((next.originX || 0) - (phoneLaneDragState.originX || 0)) < 1 &&
+    Math.abs((next.originY || 0) - (phoneLaneDragState.originY || 0)) < 1 &&
     Math.abs(next.progress - phoneLaneDragState.progress) < 0.02
   ) return
   phoneLaneDragState = next
   phoneLaneDragListeners.forEach(cb => cb(next))
+}
+
+export function setPhoneGestureCandidate(
+  dir: PhoneLaneDragState['dir'],
+  arrowWidthPx = phoneLaneCommitPx(),
+  kind: PhoneLaneDragState['kind'] = 'pane',
+  origin?: { x: number; y: number },
+) {
+  if (dir === 0) {
+    setPhoneLaneDrag(PHONE_LANE_DRAG_IDLE)
+    return
+  }
+  setPhoneLaneDrag({ active: true, progress: 0, dir, armed: false, arrowWidthPx, kind, originX: origin?.x, originY: origin?.y })
+}
+
+export function setPhoneGestureProgress(
+  dir: PhoneLaneDragState['dir'],
+  progress: number,
+  arrowWidthPx = phoneLaneCommitPx(),
+  kind: PhoneLaneDragState['kind'] = 'pane',
+  origin?: { x: number; y: number },
+) {
+  if (dir === 0) {
+    setPhoneLaneDrag(PHONE_LANE_DRAG_IDLE)
+    return
+  }
+  const clamped = Math.min(1, Math.max(0, progress))
+  setPhoneLaneDrag({ active: true, progress: clamped, dir, armed: clamped >= 1, arrowWidthPx, kind, originX: origin?.x, originY: origin?.y })
 }
 
 function viewportPortraitWidth(w: number, h: number): number {
@@ -730,7 +752,7 @@ type GestureState =
   | { kind: 'shape'; mode: 'pending' | 'combined'; moveActive: boolean; resizeActive: boolean; id: string; type: string; x0: number; y0: number; w0: number; h0: number; d0: number; sx0: number; sy0: number; relX: number; relY: number; c0: { x: number; y: number }; p0: { x: number; y: number }; resizeAxis: 'x' | 'y' | null; resizeAccX: number; resizeAccY: number; writeCount: number }
   | { kind: 'cluster'; mode: 'pending' | 'combined'; moveActive: boolean; resizeActive: boolean; shapes: { id: string; type: string; x0: number; y0: number; w0: number; h0: number }[]; anchor: { x: number; y: number }; d0: number; sx0: number; sy0: number; c0: { x: number; y: number }; p0: { x: number; y: number }; writeCount: number }
   | { kind: 'phone-lane'; mode: 'pending' | 'dragging'; x0: number; y0: number; startXInViewport: number; viewportW: number; cameraX0: number; z0: number; docLeftPage: number; startLaneIndex: number; maxPaneIndex: number; lastDx: number }
-  | { kind: 'phone-delete'; mode: 'pending' | 'dragging'; x0: number; y0: number; shapeId: TLShapeId; shapeType: string; docLeftPage: number; lastDy: number }
+  | { kind: 'doc-pinch'; d0: number; z0: number; centerPage0: { x: number; y: number } }
   // 3-finger: pan the main canvas from anywhere (even over the panels). Drive the
   // main camera; the HUD's camera-poll mirrors a main-camera pan onto the HUD.
   // Keep z byte-identical — a z wobble makes the poll skip the HUD update.
@@ -1561,14 +1583,6 @@ export function useFleetGestures(opts: {
         log.debug(LOG_NS, 'phone lane cancelled by multitouch', { touchesLength: ts.length })
         return
       }
-      if (state.kind === 'phone-delete' && ts.length > 1) {
-        consumeTouchEvent(e)
-        setPhoneLaneDrag(PHONE_LANE_DRAG_IDLE)
-        state = { kind: 'none' }
-        setGestureActive(false, 250)
-        log.debug(LOG_NS, 'phone delete cancelled by multitouch', { touchesLength: ts.length })
-        return
-      }
       if (ts.length <= 1 && state.kind !== 'none') {
         log.warn(LOG_NS, 'stale gesture state reset on fresh touchstart', {
           previousKind: state.kind,
@@ -1593,61 +1607,40 @@ export function useFleetGestures(opts: {
       }
 
       if (ts.length === 1 && isPhonePaneStackMode(main)) {
-        // Open-thread inbox owns horizontal left flicks for push-to-eject. The
-        // window-capture lane pager sees touchstart before the inbox DOM handler,
-        // so it must yield here; list-state inboxes still page normally.
-        if (isOpenThreadInboxTouch(e.target)) return
-        const hit = fleetHitAtScreen(overlay, ts[0].clientX, ts[0].clientY, viewportId)
-        if (hit?.shape) {
-          const docLeftPage = getPrimaryDocumentLeft(main)
-          if (docLeftPage !== null) {
-            const mainShape = main.getShape(hit.shape.id as TLShapeId) ?? hit.shape
-            if (isPhonePinnedPaneShape(main, mainShape) && isAtScrollBottom(nearestPhonePaneScroller(e.target))) {
-              rememberPhoneLanePortraitWidth(main)
-              state = {
-                kind: 'phone-delete',
-                mode: 'pending',
-                x0: ts[0].clientX,
-                y0: ts[0].clientY,
-                shapeId: hit.shape.id,
-                shapeType: hit.shape.type as string,
-                docLeftPage,
-                lastDy: 0,
-              }
-              log.debug(LOG_NS, 'phone delete pending', {
-                shape: { id: hit.shape.id, type: hit.shape.type },
-                x: Math.round(ts[0].clientX),
-                y: Math.round(ts[0].clientY),
-              })
-              return
-            }
-            const maxPaneIndex = phonePaneStackMaxIndex(main)
-            rememberPhoneLanePortraitWidth(main)
-            const startLaneIndex = phoneLaneIndexFromCamera(main, docLeftPage, maxPaneIndex)
-            const viewportRect = main.getContainer().getBoundingClientRect()
-            const viewportW = main.getViewportScreenBounds().w || viewportRect.width || 0
-            state = {
-              kind: 'phone-lane',
-              mode: 'pending',
-              x0: ts[0].clientX,
-              y0: ts[0].clientY,
-              startXInViewport: ts[0].clientX - viewportRect.left,
-              viewportW,
-              cameraX0: main.getCamera().x,
-              z0: main.getCamera().z,
-              docLeftPage,
-              startLaneIndex,
-              maxPaneIndex,
-              lastDx: 0,
-            }
-            log.debug(LOG_NS, 'phone lane pending', {
-              shape: { id: hit.shape.id, type: hit.shape.type },
-              x: Math.round(ts[0].clientX),
-              y: Math.round(ts[0].clientY),
-              startLaneIndex,
-              maxPaneIndex,
-            })
+        // Pane swap is universal in phone-stack mode. Local row actions only win
+        // later if the start point leaves too little room for the big pane arrow
+        // to commit in the actual drag direction.
+        const docLeftPage = getPrimaryDocumentLeft(main)
+        if (docLeftPage !== null) {
+          const maxPaneIndex = phonePaneStackMaxIndex(main)
+          rememberPhoneLanePortraitWidth(main)
+          const startLaneIndex = phoneLaneIndexFromCamera(main, docLeftPage, maxPaneIndex)
+          const viewportRect = main.getContainer().getBoundingClientRect()
+          const viewportW = main.getViewportScreenBounds().w || viewportRect.width || 0
+          const startXInViewport = ts[0].clientX - viewportRect.left
+          const hit = fleetHitAtScreen(overlay, ts[0].clientX, ts[0].clientY, viewportId)
+          state = {
+            kind: 'phone-lane',
+            mode: 'pending',
+            x0: ts[0].clientX,
+            y0: ts[0].clientY,
+            startXInViewport,
+            viewportW,
+            cameraX0: main.getCamera().x,
+            z0: main.getCamera().z,
+            docLeftPage,
+            startLaneIndex,
+            maxPaneIndex,
+            lastDx: 0,
           }
+          log.debug(LOG_NS, 'phone lane pending', {
+            shape: hit?.shape ? { id: hit.shape.id, type: hit.shape.type } : null,
+            universal: !hit?.shape,
+            x: Math.round(ts[0].clientX),
+            y: Math.round(ts[0].clientY),
+            startLaneIndex,
+            maxPaneIndex,
+          })
         }
       }
 
@@ -1674,6 +1667,19 @@ export function useFleetGestures(opts: {
           second: s1 ? { id: s1.id, type: s1.type, source: hit1?.source, rawId: hit1?.rawShapeId, rawType: hit1?.rawShapeType } : null,
         })
         if (!s0 && !s1) {
+          if (isPhonePaneStackMode(main)) {
+            consumeTouchEvent(e)
+            setGestureActive(true)
+            const c = touchCenter(ts)
+            state = {
+              kind: 'doc-pinch',
+              d0: touchDist(ts[0], ts[1]),
+              z0: main.getCamera().z,
+              centerPage0: main.screenToPage({ x: c.x, y: c.y }),
+            }
+            log.debug(LOG_NS, 'gesture start: doc pinch', { z: main.getCamera().z, distance: touchDist(ts[0], ts[1]) })
+            return
+          }
           log.debug(LOG_NS, 'gesture pass-through: no fleet shape under either touch', {})
           state = { kind: 'none' }
           setGestureActive(false)
@@ -1832,35 +1838,6 @@ export function useFleetGestures(opts: {
       const main = getMainEditor(mainEditor)
       const ts = Array.from(e.touches)
 
-      if (state.kind === 'phone-delete') {
-        if (ts.length !== 1) {
-          consumeTouchEvent(e)
-          setPhoneLaneDrag(PHONE_LANE_DRAG_IDLE)
-          state = { kind: 'none' }
-          setGestureActive(false, 250)
-          log.debug(LOG_NS, 'phone delete ended by touch-count change', { touchesLength: ts.length })
-          return
-        }
-        const dx = ts[0].clientX - state.x0
-        const dy = ts[0].clientY - state.y0
-        state.lastDy = dy
-        if (state.mode === 'pending') {
-          if (dy < -PHONE_LANE_LOCK || Math.abs(dx) >= PHONE_LANE_LOCK && Math.abs(dx) > Math.abs(dy)) {
-            state = { kind: 'none' }
-            return
-          }
-          if (dy < PHONE_LANE_LOCK) return
-          state.mode = 'dragging'
-          setGestureActive(true)
-          log.debug(LOG_NS, 'phone delete drag start', { dx: Math.round(dx), dy: Math.round(dy) })
-        }
-        consumeTouchEvent(e)
-        const commit = phoneLaneCommitPx()
-        const progress = dy > 0 ? Math.min(1, dy / commit) : 0
-        setPhoneLaneDrag({ active: true, progress, dir: progress > 0 ? 'down' : 0, armed: progress >= 1, arrowWidthPx: commit })
-        return
-      }
-
       if (state.kind === 'phone-lane') {
         if (ts.length !== 1) {
           consumeTouchEvent(e)
@@ -1873,9 +1850,17 @@ export function useFleetGestures(opts: {
         const dx = ts[0].clientX - state.x0
         const dy = ts[0].clientY - state.y0
         state.lastDx = dx
+        const commit = phoneLaneCommitPx()
+        const dir: -1 | 0 | 1 = dx > 0 ? 1 : dx < 0 ? -1 : 0
+        const sweepFits = phoneLaneSweepCanFit(state.startXInViewport, state.viewportW, dir, commit)
+        const hasLane = sweepFits && phoneLaneExistsFromIndex(state.startLaneIndex, state.maxPaneIndex, dir)
+        const progress = hasLane ? Math.min(1, Math.abs(dx) / commit) : 0
+        if (hasLane) setPhoneGestureProgress(dir, progress, commit, 'pane', { x: state.x0, y: state.y0 })
+        else setPhoneLaneDrag(PHONE_LANE_DRAG_IDLE)
         if (state.mode === 'pending') {
           const decision = phoneLaneDragDecision(dx, dy)
           if (decision === 'abort') {
+            setPhoneLaneDrag(PHONE_LANE_DRAG_IDLE)
             state = { kind: 'none' }
             return
           }
@@ -1885,15 +1870,6 @@ export function useFleetGestures(opts: {
           log.debug(LOG_NS, 'phone lane drag start', { dx: Math.round(dx), dy: Math.round(dy) })
         }
         consumeTouchEvent(e)
-        // Static panes: do NOT move the camera while dragging. Instead report how
-        // close this drag is to the commit threshold so the fill-up arrow shows the
-        // impending transition; the actual lane switch happens on release.
-        const commit = phoneLaneCommitPx()
-        const dir: -1 | 0 | 1 = dx > 0 ? 1 : dx < 0 ? -1 : 0
-        const sweepFits = phoneLaneSweepCanFit(state.startXInViewport, state.viewportW, dir, commit)
-        const hasLane = sweepFits && phoneLaneExistsFromIndex(state.startLaneIndex, state.maxPaneIndex, dir)
-        const progress = hasLane ? Math.min(1, Math.abs(dx) / commit) : 0
-        setPhoneLaneDrag({ active: true, progress, dir: hasLane ? dir : 0, armed: progress >= 1, arrowWidthPx: commit })
         return
       }
 
@@ -1923,6 +1899,23 @@ export function useFleetGestures(opts: {
         const cam = main.getCamera()
         main.setCamera(
           { x: cam.x + mx / state.z0, y: cam.y + my / state.z0, z: state.z0 },
+          { animation: { duration: 0 } },
+        )
+        return
+      }
+
+      if (state.kind === 'doc-pinch' && ts.length >= 2) {
+        consumeTouchEvent(e)
+        const c = touchCenter(ts)
+        const d = touchDist(ts[0], ts[1])
+        if (state.d0 <= 0 || d <= 0) return
+        const nextZ = Math.max(0.1, Math.min(8, state.z0 * (d / state.d0)))
+        main.setCamera(
+          {
+            x: c.x / nextZ - state.centerPage0.x,
+            y: c.y / nextZ - state.centerPage0.y,
+            z: nextZ,
+          },
           { animation: { duration: 0 } },
         )
         return
@@ -2092,26 +2085,6 @@ export function useFleetGestures(opts: {
         setGestureActive(false, 250)
         return
       }
-      if (state.kind === 'phone-delete') {
-        if (state.mode === 'dragging') {
-          stopTouchEvent(e)
-          const main = getMainEditor(mainEditor)
-          const commit = phoneLaneCommitPx()
-          const pane = main.getShape(state.shapeId)
-          if (pane && state.lastDy >= commit) {
-            const result = deletePhonePinnedChatPane(main, pane)
-            if (result.ok) {
-              snapToPhoneLaneIndex(main, result.docLeftPage, result.targetIndex)
-            } else {
-              log.warn(LOG_NS, 'phone delete failed', { result, shapeId: state.shapeId })
-            }
-          }
-        }
-        setPhoneLaneDrag(PHONE_LANE_DRAG_IDLE)
-        state = { kind: 'none' }
-        setGestureActive(false, 250)
-        return
-      }
       if (state.kind !== 'none' && e.touches.length < 2) {
         log.debug(LOG_NS, 'gesture reset', { previousKind: state.kind, remainingTouches: e.touches.length, eventType: e.type })
       }
@@ -2142,12 +2115,12 @@ export function useFleetGestures(opts: {
     }
 
     const onGlobalPhoneLaneMove = (e: TouchEvent) => {
-      if (state.kind !== 'phone-lane' && state.kind !== 'phone-delete') return
+      if (state.kind !== 'phone-lane') return
       onTouchMove(e)
     }
 
     const onGlobalPhoneLaneEnd = (e: TouchEvent) => {
-      if (state.kind !== 'phone-lane' && state.kind !== 'phone-delete') return
+      if (state.kind !== 'phone-lane') return
       reset(e)
     }
 

@@ -39,7 +39,6 @@ import { FLEET_HUD_RESET_EVENT, FLEET_HUD_TOGGLE_EVENT, setHudEditor } from '../
 import { readFleetHudExpanded, resolveFleetHudToggle, writeFleetHudExpanded } from '../wm/fleet-hud-state'
 import { probe } from '../perf-probe'
 import './FleetHUD.css'
-import { isPhoneViewport } from '../phoneViewport'
 
 declare global {
   interface Window {
@@ -206,7 +205,6 @@ function isPhoneFleetLayout(editor: Editor): boolean {
   const humanId = getHumanId()
   const deviceId = getDeviceId()
   if (!humanId || !deviceId) return false
-  if (!isPhoneViewport()) return false
   if (!isPhoneStackLayoutForOwner(editor, humanId, deviceId)) return false
   return true
 }
@@ -496,7 +494,7 @@ export function FleetHUD({
     let settleTimer = 0
     const refit = () => {
       frame = null
-      if (!isPhoneViewport()) return
+      if (!isPhoneFleetLayout(mainEditor)) return
       const result = refitPhonePaneStack(mainEditor)
       if (!result.ok) return
       snapToPhoneLaneIndex(mainEditor, result.docLeftPage, phoneLaneIndexForViewportRefit(result.currentIndex))
@@ -558,6 +556,23 @@ export function FleetHUD({
     userPannedRef.current = false
     return true
   }, [activeTopPad, applyHudAnchor, docShapesReady, mainEditor])
+
+  useEffect(() => {
+    if (!identityId || !deviceReady || !docShapesReady || fleetBounds) return
+    let cancelled = false
+    const delays = [0, 80, 240, 600, 1200]
+    const timers = delays.map(delay => window.setTimeout(() => {
+      if (cancelled) return
+      const nextBounds = resetFleetBoundsTracker()
+      if (!nextBounds) return
+      recenterHudForBounds(nextBounds)
+      setFleetBounds(nextBounds)
+    }, delay))
+    return () => {
+      cancelled = true
+      for (const timer of timers) window.clearTimeout(timer)
+    }
+  }, [deviceReady, docShapesReady, fleetBounds, identityId, recenterHudForBounds, resetFleetBoundsTracker])
 
   // Reactively update fleet bounds when shapes change.
   //

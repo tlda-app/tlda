@@ -1,11 +1,11 @@
 import fs from 'fs'
 import path from 'path'
-import { activeConfigName, gitAuthorEnv, readConfig, repoRoot } from '../identity.mjs'
+import { activeConfigName, gitAuthorEnv, readConfig } from '../identity.mjs'
 import { resolveClaudeModel, resolveClaudeModelSelection } from '../models.mjs'
 import { resolveHarnessLaunchOptions } from '../permissions.mjs'
+import { dnsAliasPreloadPath } from './dns-alias-preload.mjs'
 
 const LOGIN_PROMPT = 'Call login() with the fleet MCP server. Then call inbox() to check for a pending task.'
-const DNS_ALIAS_PRELOAD = path.join(repoRoot(), 'shared', 'node-dns-alias.cjs')
 const FENCE_TMP_ROOT = '/tmp/tlda-fence-env'
 
 function sq(value) {
@@ -51,6 +51,7 @@ export function buildCmd({
   const parts = [
     `FLEET_ID=${sq(fleetId)}`,
     `FLEET_TMUX_SESSION=${sq(tmuxSession)}`,
+    'FLEET_HARNESS=claude',
   ]
   // Fresh spawn names can still be tentative before server confirm/rename;
   // GIT_AUTHOR_EMAIL carries the stable fleet id for authoritative attribution.
@@ -81,8 +82,9 @@ export function buildCmd({
   if (fs.existsSync(fleetOauthToken)) {
     parts.push(`CLAUDE_CODE_OAUTH_TOKEN=$(cat ${sq(fleetOauthToken)})`)
   }
-  if (dnsAlias && fs.existsSync(DNS_ALIAS_PRELOAD)) {
-    parts.push(`NODE_OPTIONS=${sq(`--require=${DNS_ALIAS_PRELOAD}`)}`)
+  const dnsAliasPreload = dnsAlias ? dnsAliasPreloadPath() : null
+  if (dnsAlias && dnsAliasPreload) {
+    parts.push(`NODE_OPTIONS=${sq(`--require=${dnsAliasPreload}`)}`)
     parts.push(`TLDA_NODE_DNS_ALIAS_HOST=${sq(dnsAlias.host)}`)
     parts.push(`TLDA_NODE_DNS_ALIAS_ADDR=${sq(dnsAlias.address)}`)
   }

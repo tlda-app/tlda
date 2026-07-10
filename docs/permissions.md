@@ -57,7 +57,7 @@ configured:
 |---|---|---|---|
 | `readonly` | cwd, temp, agent-state | *(nothing)* | look but don't touch |
 | `wd` | cwd, temp, agent-state | cwd, temp, agent-state | **the working-directory cage** |
-| `math` | `~/work`, temp, agent-state | `~/work` (but **not** the app), temp, agent-state | math work, hands off tlda |
+| `math` | `~/work`, temp, agent-state | `~/work` (but **not** the app), temp, agent-state | math work, can load fleet tools, hands off tlda writes |
 | `app` | cwd, temp, daemon-files, browser-runtime, agent-state | same | app dev + browser testing |
 | `ops` | **machine** (`**`) | **machine** (`**`) | whole machine, minus secrets/daemon-db |
 

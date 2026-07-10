@@ -70,9 +70,15 @@ function isRunningBot(agent: any): boolean {
 }
 
 function useVoiceBackends(): VoiceBackendOption[] {
-  const [backends, setBackends] = useState<VoiceBackendOption[]>([
-    { value: '', label: 'Off', available: true },
-  ])
+  const browserFallback = () => {
+    const speechWindow = typeof window !== 'undefined' ? window as SpeechRecognitionWindow : null
+    const hasBrowserSpeech = !!(speechWindow?.SpeechRecognition || speechWindow?.webkitSpeechRecognition)
+    return [
+      { value: '', label: 'Off', available: true },
+      ...(hasBrowserSpeech ? [{ value: 'chrome', label: 'Browser', available: true }] : []),
+    ]
+  }
+  const [backends, setBackends] = useState<VoiceBackendOption[]>(browserFallback)
 
   useEffect(() => {
     let cancelled = false
@@ -88,7 +94,7 @@ function useVoiceBackends(): VoiceBackendOption[] {
         setBackends(next)
       })
       .catch(() => {
-        if (!cancelled) setBackends([{ value: '', label: 'Off', available: true }])
+        if (!cancelled) setBackends(browserFallback())
       })
     return () => { cancelled = true }
   }, [])

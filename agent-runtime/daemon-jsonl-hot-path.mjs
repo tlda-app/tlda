@@ -134,7 +134,7 @@ export function extractIdentityFromRecord(record) {
   if (!identity && !cwd) return null
   return {
     ...(identity || {}),
-    cwd,
+    ...(cwd ? { cwd } : {}),
   }
 }
 

@@ -3,12 +3,12 @@ import os from 'os'
 import path from 'path'
 import { activeConfigName, gitAuthorEnv, readConfig, repoRoot } from '../identity.mjs'
 import { gooseModelVerified, resolveGooseModel, resolveGooseModelSelection } from '../models.mjs'
+import { dnsAliasPreloadPath } from './dns-alias-preload.mjs'
 
 const GOOSE_BIN = '/opt/homebrew/bin/goose'
 const GOOSE_STATE_ROOT = '/tmp/tlda-goose-state'
 const GOOSE_MAX_TOKENS = '32768'
 const CURSOR_AGENT_COMMAND = path.join(os.homedir(), '.local/bin/cursor-agent')
-const DNS_ALIAS_PRELOAD = path.join(repoRoot(), 'shared', 'node-dns-alias.cjs')
 
 function sq(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`
@@ -74,8 +74,9 @@ export function buildCmd({
   if (env.TLDA_MACHINE_ID) parts.push(`TLDA_MACHINE_ID=${sq(env.TLDA_MACHINE_ID)}`)
   const configName = activeConfigName(config, env)
   if (configName) parts.push(`TLDA_CONFIG=${sq(configName)}`)
-  if (dnsAlias && fs.existsSync(DNS_ALIAS_PRELOAD)) {
-    parts.push(`NODE_OPTIONS=${sq(`--require=${DNS_ALIAS_PRELOAD}`)}`)
+  const dnsAliasPreload = dnsAlias ? dnsAliasPreloadPath() : null
+  if (dnsAlias && dnsAliasPreload) {
+    parts.push(`NODE_OPTIONS=${sq(`--require=${dnsAliasPreload}`)}`)
     parts.push(`TLDA_NODE_DNS_ALIAS_HOST=${sq(dnsAlias.host)}`)
     parts.push(`TLDA_NODE_DNS_ALIAS_ADDR=${sq(dnsAlias.address)}`)
   }

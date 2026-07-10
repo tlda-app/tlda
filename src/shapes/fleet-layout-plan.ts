@@ -1,6 +1,6 @@
 import type { FleetChatFilter } from './fleet-layout-seeding'
 import { fleetPanelDefaultProps, type FleetPanelType } from './fleet-panel-registry'
-import { PHONE_INBOX_PANE_INDEX, phonePaneX } from './phone-pane-stack'
+import { PHONE_INBOX_PANE_INDEX, phonePaneX } from './phone-pane-geometry'
 
 export type FleetLayoutVariant = 'phone' | '3-col' | '2x2' | 'big-chat' | 'both-margins' | 'touch'
 
