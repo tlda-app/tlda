@@ -617,16 +617,6 @@ export function checkChatRender(message, macros = {}) {
   return { validity, style };
 }
 
-// Backward-compatible flat view: validity issues first, then style hints.
-export function lintChatMessage(message, macros = {}) {
-  const { validity, style } = checkChatRender(message, macros);
-  return [...validity, ...style];
-}
-
-export function blockingChatLintIssues(issues = []) {
-  return [];
-}
-
 export function checkUserBlameChatLint(message, recipients = []) {
   const result = classifyUserBlame({
     text: message,
@@ -681,12 +671,6 @@ async function fetchCurrentDocVersion(doc) {
     return null;
   }
 }
-// Detect Claude session ID at startup. Claude Code maintains a per-PID
-// metadata file at ~/.claude/sessions/<PID>.json that maps the Claude Code
-// process PID to its sessionId. Since the fleet MCP runs as a stdio child
-// of Claude Code, process.ppid is exactly the Claude Code process whose
-// session we belong to — a deterministic lookup, no birthtime guessing,
-// no collisions when multiple agents share a cwd.
 // Detect Claude session ID at startup. Claude Code maintains a per-PID
 // metadata file at ~/.claude/sessions/<PID>.json that maps the Claude Code
 // process PID to its sessionId. The fleet MCP runs as a stdio child of
