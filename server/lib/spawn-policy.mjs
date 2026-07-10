@@ -279,7 +279,7 @@ export function normalizeRegionPolicy(value, fallback = 'cwd') {
 function modelCeilingPermissionSet(config = {}, { model, kind, cwd, project } = {}) {
   const configured = model ? (config.spawnPolicy?.modelCeilings || {})[model] : null
   if (configured) {
-    const profile = configuredPermissionProfile(config, configured) || builtinPermissionProfile(configured)
+    const profile = configuredPermissionProfile(config, configured)
     if (profile) return materializePermissionSet(profile, { cwd, project })
   }
   let zone
@@ -308,35 +308,13 @@ function modelCeilingPermissionSet(config = {}, { model, kind, cwd, project } = 
 // model tier sets the TRUST (how high the operator could raise you).
 //
 //   ops       — machine-level (the operator's host-work project): full.
-//   app       — dev + tester: code, git, dev-server, browser, network, all
-//               inside the worktree (cwd); the fence lease widens cwd to include
-//               the dev caches so the job is never blocked.
+//   app-dev   — dev + tester: code, git, dev-server, browser, network, according
+//               to the daemon.yaml profile named app-dev.
 //   math      — write across all tlda/math projects (tlda-write).
 //   untrusted — write only its own project (cwd); never across projects, never
 //               machine-level. Same lane as app; the trust difference is carried
 //               by the model ceiling, not the lane.
-// Built-in profile-name → coarse-policy fallback. The real authority for a
-// profile is the operator's daemon.yaml region set (configuredPermissionProfile),
-// whose coarse label is DERIVED from its regions (derivedPolicyFromRegionSet).
-// This dictionary only names the built-in profiles the config does not define —
-// so a bare `ops`/`math`/`cwd` still resolves when no daemon.yaml entry covers
-// it. It is a flat name→policy lookup, NOT a rank ladder: nothing here orders,
-// ranks, or meets these names.
-const BUILTIN_PROFILE_POLICY = {
-  none: { permission: 'none', policy: 'cwd' },
-  'read-only': { permission: 'read', policy: 'cwd' },
-  ops: { permission: 'full', policy: 'unsandboxed' },
-  'app-dev': { permission: 'full', policy: 'unsandboxed' },
-  deploy: { permission: 'write', policy: 'cwd' },
-  app: { permission: 'write', policy: 'cwd' },
-  cwd: { permission: 'write', policy: 'cwd' },
-  math: { permission: 'tlda-write', policy: 'tlda-projects' },
-  'math-project': { permission: 'tlda-write', policy: 'tlda-projects' },
-  'math-projects': { permission: 'tlda-write', policy: 'tlda-projects' },
-  untrusted: { permission: 'write', policy: 'cwd' },
-}
-
-export const DEFAULT_SPAWN_PROFILE = 'cwd'
+export const DEFAULT_SPAWN_PROFILE = null
 export const PERMISSION_OPERATIONS = ['read', 'write', 'spawn']
 
 function emptyPermissionOperations() {
@@ -426,44 +404,6 @@ function selectCompiledPermissionProfile(bundle, requestedName = null) {
   }
   if (keys.length === 1) return bundle.profiles[keys[0]]
   throw new Error('permission profile source has multiple profiles; specify profile/name')
-}
-
-const BUILTIN_PERMISSION_PROFILE_SOURCE = `
-profile app-dev:
-  read + cwd
-  write + cwd
-  spawn + **
-  read + ~/.config/tlda/fleet-daemon.log
-  write + ~/.config/tlda/fleet-daemon.log
-  read + ~/.config/tlda/fleet-daemon.pid
-  write + ~/.config/tlda/fleet-daemon.pid
-  read + ~/.config/tlda/fleet-daemon.*.lock
-  write + ~/.config/tlda/fleet-daemon.*.lock
-
-profile deploy:
-  read + cwd
-  write + cwd
-  spawn + **
-  read + ~/.fly/**
-  write + ~/.fly/**
-  read + ~/.cache/fly/**
-  write + ~/.cache/fly/**
-  read + ~/Library/Caches/fly/**
-  write + ~/Library/Caches/fly/**
-`
-
-let builtinPermissionBundle = null
-
-function builtinPermissionProfiles() {
-  if (!builtinPermissionBundle) builtinPermissionBundle = compilePermissionProfiles(BUILTIN_PERMISSION_PROFILE_SOURCE, { sourcePath: 'builtin' })
-  return builtinPermissionBundle
-}
-
-// The built-in permission-profile names (app-dev, deploy) — the region-set
-// profiles that ship in code, distinct from the operator's daemon.yaml profiles.
-// Exposed so CLI help/error text can list every recognized profile name.
-export function builtinPermissionProfileNames() {
-  return Object.keys(builtinPermissionProfiles().profiles)
 }
 
 function zoneForPolicy(policy, { cwd, project } = {}) {
@@ -566,17 +506,6 @@ function clonePermissionSet(set) {
   }
   for (const rule of set.rules || []) rules.push({ ...rule })
   return { ...set, operations, rules }
-}
-
-function builtinPermissionProfile(name) {
-  const key = String(name || '').trim().toLowerCase()
-  if (!key) return null
-  const profile = builtinPermissionProfiles().profiles[key]
-  if (!profile) return null
-  const cloned = clonePermissionSet(profile)
-  cloned.projectedPolicy = normalizeSpawnPolicy(BUILTIN_PROFILE_POLICY[key] || 'write')
-  cloned.compiledFrom = 'builtin-permission-profile'
-  return cloned
 }
 
 function intersectPermissionPair(left, right) {
@@ -700,43 +629,28 @@ function pathBasename(value) {
   return p ? basename(p).toLowerCase() : null
 }
 
-function firstKnownProfile(...values) {
-  for (const value of values) {
-    const name = String(value || '').trim().toLowerCase()
-    if (BUILTIN_PROFILE_POLICY[name]) return name
-  }
-  return null
-}
-
 function configuredPermissionProfiles(config = {}) {
   const profiles = config.spawnPolicy?.permissionProfiles || {}
   return profiles && typeof profiles === 'object' && !Array.isArray(profiles) ? profiles : {}
 }
 
 function configuredPermissionProfile(config = {}, name) {
-  const key = String(name || '').trim().toLowerCase()
+  const key = String(name || '').trim()
   if (!key) return null
-  const profile = configuredPermissionProfiles(config)[key]
+  const profiles = configuredPermissionProfiles(config)
+  const profile = profiles[key]
   if (!looksLikePermissionSet(profile)) return null
   const cloned = clonePermissionSet(profile)
   cloned.compiledFrom = cloned.compiledFrom || 'daemon-config-profile'
   return cloned
 }
 
-// The operator config addresses levels by permission word (`full`) as often as
-// by profile NAME (`ops`, `app`). Historically only names were recognized, so a
-// configured `full` was silently dropped and the spawn fell into the `cwd`
-// trap. Map the permission word to the profile that carries the intended
-// permission set: `full` → `ops` (whole machine, secrets fenced off — "fence but
-// don't trap"). Names still take precedence; this only rescues permission words.
-const PERMISSION_PROFILE_ALIAS = { full: 'ops' }
-
-function firstConfiguredOrKnownProfile(config = {}, ...values) {
+function firstConfiguredProfile(config = {}, ...values) {
   const configured = configuredPermissionProfiles(config)
   for (const value of values) {
-    let name = String(value || '').trim().toLowerCase()
-    name = PERMISSION_PROFILE_ALIAS[name] || name
-    if (configured[name] || BUILTIN_PROFILE_POLICY[name]) return name
+    const name = String(value || '').trim()
+    if (!name) continue
+    if (configured[name]) return name
   }
   return null
 }
@@ -745,7 +659,7 @@ function configuredProjectProfileName(config = {}, projectProfiles = {}, keys = 
   for (const key of keys) {
     if (!key) continue
     const configured = projectProfiles[key] ?? projectProfiles[String(key).toLowerCase()]
-    const name = firstConfiguredOrKnownProfile(config, configured)
+    const name = firstConfiguredProfile(config, configured)
     if (name) return name
   }
   return null
@@ -753,15 +667,15 @@ function configuredProjectProfileName(config = {}, projectProfiles = {}, keys = 
 
 // Resolve which profile NAME a spawn should inherit. Precedence:
 // the project record's own `profile` field → config.spawnPolicy.projectProfiles
-// keyed by project name / sourceDir / cwd basename → built-in basename profile
-// → DEFAULT_SPAWN_PROFILE. The daemon permission ledger is the authority for
-// caller grants; config.json must not invent a broad default profile.
+// keyed by project name / sourceDir / cwd basename → configured default profile.
+// The daemon permission ledger is the authority for caller grants; config.json
+// must not invent a broad default profile.
 export function resolveProjectProfileName(config = {}, { doc, project, cwd } = {}) {
   const policy = config.spawnPolicy || {}
   const projectProfiles = policy.projectProfiles || {}
   const sourceDir = project?.sourceDir || null
   const cwdMatchesProject = cwd && sourceDir && pathInside(cwd, sourceDir)
-  return firstConfiguredOrKnownProfile(config, project?.profile)
+  return firstConfiguredProfile(config, project?.profile)
     || configuredProjectProfileName(config, projectProfiles, [
       doc,
       project?.name,
@@ -770,11 +684,11 @@ export function resolveProjectProfileName(config = {}, { doc, project, cwd } = {
       cwd,
       pathBasename(cwd),
     ])
-    || firstConfiguredOrKnownProfile(config,
+    || firstConfiguredProfile(config,
       cwdMatchesProject ? pathBasename(sourceDir) : null,
       pathBasename(cwd)
     )
-    || firstConfiguredOrKnownProfile(config, policy.defaultProfile)
+    || firstConfiguredProfile(config, policy.defaultProfile)
     || DEFAULT_SPAWN_PROFILE
 }
 
@@ -784,25 +698,25 @@ export function resolveProjectProfileName(config = {}, { doc, project, cwd } = {
 // intersection, by the model ceiling and the spawner's own authority.
 export function resolveProjectProfile(config = {}, { doc, project, cwd } = {}) {
   const name = resolveProjectProfileName(config, { doc, project, cwd })
+  if (!name) {
+    throw new Error('no configured project permission profile')
+  }
   const configured = configuredPermissionProfile(config, name)
   if (configured) {
-    const policy = policyForPermissionSet(configured, BUILTIN_PROFILE_POLICY[name] || DEFAULT_AGENT_PERMISSION)
+    const policy = policyForPermissionSet(configured, DEFAULT_AGENT_PERMISSION)
     return { ...policy, name }
   }
-  return { ...normalizeSpawnPolicy(BUILTIN_PROFILE_POLICY[name]), name }
+  throw new Error(`unknown permission profile "${name}"`)
 }
 
 function permissionSetForProfileName(name, { cwd, project, config } = {}) {
+  const key = String(name || '').trim()
+  if (!key) {
+    throw new Error('no configured project permission profile')
+  }
   const configured = configuredPermissionProfile(config, name)
   if (configured) return configured
-  const builtinProfile = builtinPermissionProfile(name)
-  if (builtinProfile) return builtinProfile
-  // Bare/unknown name → a region set for the fence region it names (default cwd).
-  const key = String(name || '').toLowerCase()
-  const zone = (key === 'unsandboxed' || key === 'machine') ? '**'
-    : key === 'tlda-projects' ? 'tlda-projects'
-    : 'cwd'
-  return regionPermissionSet(zone, { name: name || zone, cwd, project })
+  throw new Error(`unknown permission profile "${name}"`)
 }
 
 function materializePermissionZone(zone, { cwd, project } = {}) {
@@ -843,66 +757,26 @@ function materializePermissionSet(permissionSet, { cwd, project } = {}) {
   }
 }
 
-function normalizeProfileOrPolicyName(value) {
-  const name = String(value || '').trim().toLowerCase()
-  if (BUILTIN_PROFILE_POLICY[name]) return { ...normalizeSpawnPolicy(BUILTIN_PROFILE_POLICY[name]), name }
-  return normalizeSpawnPolicy(value)
+function unknownPermissionProfileError(config = {}, name) {
+  const configured = Object.keys(configuredPermissionProfiles(config)).sort()
+  return new Error(`unknown permission profile "${name}". Profiles: ${configured.join(', ') || '(none configured)'}`)
 }
 
-function withPermissionSet(policy, permissionSet) {
-  return {
-    ...policy,
-    permissionSet,
+function explicitPermissionProfileRequest(config = {}, value, fallback = null) {
+  const named = typeof value === 'string'
+    ? value
+    : (value && typeof value === 'object' && !Array.isArray(value) && !value.permission && !value.source && !looksLikePermissionSet(value)
+      ? (value.profile || value.preset || value.name)
+      : null)
+  if (!named) return null
+  const name = String(named || '').trim()
+  if (!name) return null
+  const configured = configuredPermissionProfile(config, name)
+  if (configured) {
+    const policy = policyForPermissionSet(configured, fallback || DEFAULT_AGENT_PERMISSION)
+    return { ...policy, name, permissionSet: configured }
   }
-}
-
-export function normalizeRequestedPermissions(value, fallback = null) {
-  if (value == null || value === '') {
-    if (fallback == null) return null
-    return normalizeRequestedPermissions(fallback)
-  }
-  if (typeof value === 'string') {
-    const builtinProfile = builtinPermissionProfile(value)
-    if (builtinProfile) {
-      const policy = policyForPermissionSet(builtinProfile, fallback || DEFAULT_AGENT_PERMISSION)
-      return withPermissionSet({ ...policy, name: builtinProfile.name }, builtinProfile)
-    }
-    const policy = normalizeProfileOrPolicyName(value)
-    return withPermissionSet(policy, permissionSetFromPolicy(policy, { name: policy.name }))
-  }
-  if (typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error(`unknown permission request "${value}"`)
-  }
-  if (looksLikePermissionSet(value)) {
-    const policy = policyForPermissionSet(value, fallback || DEFAULT_AGENT_PERMISSION)
-    return withPermissionSet(policy, value)
-  }
-  if (value.permission) {
-    const policy = normalizeSpawnPolicy(value)
-    return withPermissionSet(policy, permissionSetFromPolicy(policy, { name: policy.name }))
-  }
-  if (value.type === 'permission-profile-bundle') {
-    const profile = selectCompiledPermissionProfile(value, value.profile || value.preset || value.name)
-    const policy = policyForPermissionSet(profile, fallback || DEFAULT_AGENT_PERMISSION)
-    return withPermissionSet(policy, profile)
-  }
-  if (typeof value.source === 'string') {
-    const bundle = compilePermissionProfiles(value.source, { sourcePath: value.sourcePath })
-    const profile = selectCompiledPermissionProfile(bundle, value.profile || value.preset || value.name)
-    const policy = policyForPermissionSet(profile, fallback || DEFAULT_AGENT_PERMISSION)
-    return withPermissionSet(policy, profile)
-  }
-  const named = value.profile || value.preset || value.name
-  if (named) {
-    const builtinProfile = builtinPermissionProfile(named)
-    if (builtinProfile) {
-      const policy = policyForPermissionSet(builtinProfile, fallback || DEFAULT_AGENT_PERMISSION)
-      return withPermissionSet({ ...policy, name: builtinProfile.name }, builtinProfile)
-    }
-    const policy = normalizeProfileOrPolicyName(named)
-    return withPermissionSet(policy, permissionSetFromPolicy(policy, { name: policy.name }))
-  }
-  throw new Error('unknown permission request; expected a named profile, compiled permission set, or profile source')
+  throw unknownPermissionProfileError(config, name)
 }
 
 // The operator (human, or the server owner identity) is root: never fenced, can
@@ -929,18 +803,17 @@ export function resolveSpawnGrant({
   // Three region sets, intersected. That is the whole grant — the only logic is the
   // intersection of regions (project ∩ model-ceiling ∩ spawner). The intersected
   // allow/deny path set IS the fence; nothing ranks or labels it.
-  const projectProfileName = resolveProjectProfileName(config, { doc, project, cwd })
-  const projectPermissionSet = permissionSetForProfileName(projectProfileName, { cwd, project, config })
-
   // An explicit --permissions request: a named daemon profile (its region set) or an
   // inline permission set. Absent → the project's default profile.
-  const requestedName = typeof (requestedPermissions ?? requestedPermission) === 'string'
-    ? String(requestedPermissions ?? requestedPermission).trim().toLowerCase()
+  const explicitPermissions = requestedPermissions
+    ? explicitPermissionProfileRequest(config, requestedPermissions)
     : null
-  const configuredRequested = requestedName ? configuredPermissionProfile(config, requestedName) : null
-  const requestedPermissionSet = configuredRequested
-    || ((requestedPermissions || requestedPermission)
-      ? normalizeRequestedPermissions(requestedPermissions || requestedPermission).permissionSet
+  const projectPermissionSet = (!explicitPermissions && !requestedPermission)
+    ? permissionSetForProfileName(resolveProjectProfileName(config, { doc, project, cwd }), { cwd, project, config })
+    : null
+  const requestedPermissionSet = explicitPermissions?.permissionSet
+    || (requestedPermission
+      ? explicitPermissionProfileRequest(config, requestedPermission).permissionSet
       : projectPermissionSet)
 
   const modelPermissionSet = modelCeilingPermissionSet(config, { model, kind, cwd, project })

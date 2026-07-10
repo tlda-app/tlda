@@ -27,8 +27,6 @@ import { formatSystemStatus } from './lib/system-status.mjs'
 import { resolveAgentQuery } from './lib/agent-resolve.mjs'
 import { parseAgentMoveTarget, describeAgentAddress } from '../shared/agent-move-target.mjs'
 import {
-  builtinPermissionProfileNames,
-  normalizeRequestedPermissions,
   resolveDirectSpawnGrant,
 } from '../server/lib/spawn-policy.mjs'
 import { SPAWN_MACHINE_PREF_KEY } from '../server/lib/spawn-routing.mjs'
@@ -2072,6 +2070,10 @@ async function runFleetSpawn(spawnArgs) {
   const refresh = hasRawFlag(spawnArgs, 'refresh')
   const fresh = hasRawFlag(spawnArgs, 'fresh')
   const name = positionalFromRaw(spawnArgs, 0)
+  if (!name && !session) {
+    console.error(red('Usage: tlda agent <create|wake> <agent> [--model model] [--kind kind] [--cwd path] [--permissions <profile>] [--i-like-to-live-dangerously]'))
+    process.exit(1)
+  }
   // The ONE permission knob is --permissions <profile>, a named profile from
   // daemon.yaml (Skip: "in terms of the CLI, I just want my fucking profiles").
   // Naming a profile IS the fence request; no flag = unfenced. There is no
@@ -2134,10 +2136,6 @@ async function runFleetSpawn(spawnArgs) {
       enforceFence: true,
       sessionId: session || undefined,
       enroll: hasRawFlag(spawnArgs, 'enroll'),
-    }
-    if (!params.name && !params.sessionId) {
-      console.error(red('Usage: tlda agent <create|wake> <agent> [--model model] [--kind kind] [--cwd path] [--permissions <profile>] [--i-like-to-live-dangerously]'))
-      process.exit(1)
     }
     let result
     try {
@@ -2441,8 +2439,6 @@ list reads the server roster by default; --local shows only tmux sessions on thi
 }
 
 function permissionProfileNamesForError() {
-  // The real profiles are the operator's daemon.yaml region sets; the coarse
-  // policy words (read/write/tlda-write/full) are always accepted too.
   let daemonProfiles = []
   try {
     const cfg = readDaemonConfig(defaultDaemonConfigPath(CONFIG_DIR))
@@ -2452,7 +2448,7 @@ function permissionProfileNamesForError() {
   } catch {
     daemonProfiles = []
   }
-  return [...new Set([...daemonProfiles, ...builtinPermissionProfileNames()])].join(', ')
+  return daemonProfiles.join(', ')
 }
 
 function describePermissionProfile(profileName, policy) {
@@ -2859,7 +2855,25 @@ async function cmdAgentPermissions() {
 
   let requestedPolicy
   try {
-    requestedPolicy = normalizeRequestedPermissions(profileArg)
+    const daemonConfig = readDaemonConfig(defaultDaemonConfigPath(CONFIG_DIR))
+    const config = withDaemonModelAliases(loadConfig(), daemonConfig)
+    const profiles = config?.spawnPolicy?.permissionProfiles || {}
+    const name = String(profileArg || '').trim()
+    const profile = profiles[name]
+    if (!profile) throw new Error('not configured')
+    const writeZones = profile.operations?.write?.allow || []
+    const readZones = profile.operations?.read?.allow || []
+    const machineWrite = writeZones.some((zone) => ['**', '/', '/**'].includes(String(zone || '').trim()))
+    const tldaWrite = writeZones.some((zone) => String(zone || '').trim() === 'tlda-projects')
+    const permission = machineWrite ? 'full'
+      : tldaWrite ? 'tlda-write'
+        : writeZones.length ? 'write'
+          : readZones.length ? 'read'
+            : 'none'
+    const policy = machineWrite ? 'unsandboxed'
+      : tldaWrite ? 'tlda-projects'
+        : 'cwd'
+    requestedPolicy = { name, permission, policy, permissionSet: profile }
   } catch (e) {
     const detail = e?.message ? `: ${e.message}` : ''
     console.error(`Unknown permission profile "${profileArg}"${detail}. Supported profiles: ${permissionProfileNamesForError()}`)

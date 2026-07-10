@@ -70,7 +70,14 @@ export class PermissionLedgerError extends Error {
   }
 }
 
-function normalizeDaemonConfig(parsed) {
+function validateDaemonDefault(config = {}) {
+  if (config.default && !(config.profiles || {})[config.default]) {
+    throw new Error(`daemon default references unknown profile "${config.default}"`)
+  }
+  return config
+}
+
+function normalizeDaemonConfig(parsed, { validateDefault = true } = {}) {
   const root = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
   const allowed = new Set(['regions', 'profiles', 'grants', 'models', 'servers', 'default'])
   const extra = Object.keys(root).filter(key => !allowed.has(key))
@@ -87,7 +94,7 @@ function normalizeDaemonConfig(parsed) {
     ? root.servers
     : {}
   const defaultProfile = typeof root.default === 'string' && root.default.trim() ? root.default.trim() : null
-  return {
+  const config = {
     regions,
     profiles,
     grants,
@@ -95,6 +102,7 @@ function normalizeDaemonConfig(parsed) {
     servers,
     ...(defaultProfile ? { default: defaultProfile } : {}),
   }
+  return validateDefault ? validateDaemonDefault(config) : config
 }
 
 // Deep-merge helper for the base ⊕ project-override join (project values win).
@@ -706,8 +714,8 @@ export function readDaemonConfigForCwd(cwd, file = defaultDaemonConfigPath()) {
   const base = readDaemonConfig(file)
   const overridePath = projectDaemonOverridePath(cwd)
   if (!overridePath) return base
-  const override = normalizeDaemonConfig(readYamlFile(overridePath, 'project daemon override'))
-  return joinConfigs(base, override)
+  const override = normalizeDaemonConfig(readYamlFile(overridePath, 'project daemon override'), { validateDefault: false })
+  return validateDaemonDefault(joinConfigs(base, override))
 }
 
 export function withDaemonModelAliases(config = {}, daemonConfig = {}) {
@@ -727,6 +735,7 @@ export function withDaemonModelAliases(config = {}, daemonConfig = {}) {
         ...daemonProfiles,
       },
       fenceEnabled: true,
+      defaultProfile: daemonConfig.default || null,
     } : {}),
     ...(Object.keys(modelCeilings).length ? {
       modelCeilings: {
