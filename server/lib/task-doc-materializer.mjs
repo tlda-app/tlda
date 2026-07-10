@@ -5,7 +5,7 @@ import { homedir } from 'node:os'
 
 import { CONFIG_DIR, loadConfig } from '../../shared/config.mjs'
 import { createProjectPartRecord } from '../../shared/project-parts.mjs'
-import { listProjects } from './project-store.mjs'
+import { listProjects, projectPartsRoot } from './project-store.mjs'
 import { readProjectPartsManifest, upsertProjectPartsManifest } from './project-parts-scanner.mjs'
 import {
   checkpointProjectPartWriteback,
@@ -78,16 +78,31 @@ export function materializeTaskDocs({
   globalDir = resolveTaskDocGlobalDir(),
   projectsProvider = listProjects,
   writebackOptions = {},
+  projectNames = null,
+  useProjectPartsRoot = false,
   logger = console,
   git = runGit,
 } = {}) {
+  const projectNameSet = projectNames == null
+    ? null
+    : new Set((Array.isArray(projectNames) ? projectNames : [projectNames]).map(name => String(name)).filter(Boolean))
   const agents = Array.isArray(fleetStore.getAllAgents?.()) ? fleetStore.getAllAgents() : []
   const agentById = new Map(agents.map(agent => [agent.id, agent]))
   const projects = projectsProvider().map(project => ({
     ...project,
-    taskDocRoot: explicitTaskDocRoot(project) || (project.sourceDir ? resolve(project.sourceDir) : null),
+    taskDocRoot:
+      explicitTaskDocRoot(project) ||
+      (project.sourceDir ? resolve(project.sourceDir) : null) ||
+      (useProjectPartsRoot ? safeProjectPartsRoot(project.name) : null),
     resolvedRoot: safeRealpath(project.sourceDir || ''),
-  })).filter(project => project.sourceDir || project.taskDocRoot)
+  })).filter(project =>
+    (project.sourceDir || project.taskDocRoot) &&
+    (!projectNameSet || projectNameSet.has(project.name))
+  )
+  const projectMetaByName = new Map(projects.map(project => [project.name, {
+    name: project.name,
+    taskDocRoot: project.taskDocRoot,
+  }]))
   const tasks = (fleetStore.getActiveTasks?.() || [])
     .filter(task => !task.synthetic && isCurrentTask(task))
     .sort(compareTasksChronologically)
@@ -106,9 +121,14 @@ export function materializeTaskDocs({
   const writebacks = []
 
   const projectKeys = new Set([...grouped.projects.keys(), ...changedProjects.keys()])
+  if (projectNameSet) {
+    for (const project of projects) {
+      if (project.taskDocRoot) projectKeys.add(project.name)
+    }
+  }
   for (const projectKey of [...projectKeys].sort()) {
     const rows = grouped.projects.get(projectKey) || []
-    const project = grouped.projectMeta.get(projectKey) || changedProjects.get(projectKey)
+    const project = grouped.projectMeta.get(projectKey) || changedProjects.get(projectKey) || projectMetaByName.get(projectKey)
     if (!project?.taskDocRoot) continue
     const writeback = writeTaskDoc({
       filePath: join(project.taskDocRoot, TASK_DOC_FILENAME),
@@ -219,6 +239,15 @@ function explicitTaskDocRoot(project) {
   return project?.taskDocRoot ? resolve(project.taskDocRoot) : null
 }
 
+function safeProjectPartsRoot(name) {
+  if (!name) return null
+  try {
+    return projectPartsRoot(name)
+  } catch {
+    return null
+  }
+}
+
 function groupTasksByProject(tasks) {
   const projects = new Map()
   const projectMeta = new Map()
@@ -272,17 +301,17 @@ function writeTaskDoc({ filePath, root, id, title, rows, heading, writebackOptio
   })
 }
 
-function markdownTable(rows, { includeProject = false, sort = compareTasksForDoc } = {}) {
+function markdownTable(rows, { includeProject = false, sort = compareTasksByModified } = {}) {
   const columns = [
     ...(includeProject ? ['project'] : []),
-    'id',
     'subject',
-    'owner',
+    'assigned to',
+    'delegator',
     'status',
     'created',
-    'last-modified',
+    'updated',
     'blockers',
-    'links',
+    'details',
   ]
   const ordered = [...rows].sort(sort)
   return [
@@ -293,11 +322,14 @@ function markdownTable(rows, { includeProject = false, sort = compareTasksForDoc
 }
 
 function taskTableRow(task, { includeProject = false } = {}) {
+  const selfAssigned = !!task.agent && task.agent === task.delegated_by
   const cells = [
     ...(includeProject ? [task.projectName || 'global'] : []),
-    task.id,
-    task.description || '',
-    task.agent || '',
+    formatTaskSubject(task),
+    formatAgentCell(task.ownerName || task.agent, task.agent),
+    selfAssigned
+      ? formatAgentCell('self-assigned', task.delegated_by)
+      : formatAgentCell(task.delegatedByName || task.delegated_by, task.delegated_by),
     task.status || '',
     formatTaskTime(task.delegated_at),
     formatTaskTime(task.updated_at || task.completed_at || task.last_checked || task.delegated_at),
@@ -363,15 +395,20 @@ function describeChanges(changes) {
 }
 
 function formatBlockers(task) {
-  return Array.isArray(task.blockedBy) && task.blockedBy.length ? task.blockedBy.join(', ') : ''
+  if (!Array.isArray(task.blockedBy) || !task.blockedBy.length) return ''
+  const label = task.blockedBy.length === 1 ? 'blocked by 1 task' : `blocked by ${task.blockedBy.length} tasks`
+  return `<span class="task-doc-detail" title="${escapeHtmlAttr(task.blockedBy.join(', '))}">${label}</span>`
 }
 
 function formatLinks(task) {
-  const links = []
-  if (task.message && task.message !== task.description) links.push('message')
-  if (task.success_criteria?.length) links.push('criteria')
-  if (task.ownerCwd) links.push(`cwd:${task.ownerCwd}`)
-  return links.join('<br>')
+  const details = []
+  if (task.message && task.message !== task.description) details.push('message')
+  if (task.success_criteria?.length) details.push('success criteria')
+  if (!details.length) return ''
+  const title = [
+    task.success_criteria?.length ? `${task.success_criteria.length} success ${task.success_criteria.length === 1 ? 'criterion' : 'criteria'}` : '',
+  ].filter(Boolean).join(' · ')
+  return `<span class="task-doc-detail"${title ? ` title="${escapeHtmlAttr(title)}"` : ''}>${details.map(escapeHtml).join(', ')}</span>`
 }
 
 function compareTasksChronologically(a, b) {
@@ -380,12 +417,6 @@ function compareTasksChronologically(a, b) {
 
 function isCurrentTask(task) {
   return task.status !== 'done' && task.status !== 'deleted'
-}
-
-function compareTasksForDoc(a, b) {
-  const statusDelta = statusRank(a.status) - statusRank(b.status)
-  if (statusDelta) return statusDelta
-  return compareTasksChronologically(a, b)
 }
 
 function compareTasksByModified(a, b) {
@@ -407,11 +438,28 @@ function tableCell(value) {
   return escapeMarkdown(String(value ?? '').replace(/\r?\n/g, '<br>'))
 }
 
+function formatTaskSubject(task) {
+  const subject = task.description || task.id || ''
+  if (!task.id || subject === task.id) return subject
+  return `<span class="task-doc-task-subject" title="${escapeHtmlAttr(task.id)}">${escapeHtml(subject)}</span>`
+}
+
+function formatAgentCell(label, id) {
+  const text = label || id || ''
+  if (!text) return ''
+  if (id?.startsWith?.('fleet:') && text === id) {
+    return `<span class="task-doc-agent task-doc-agent-unknown" title="${escapeHtmlAttr(id)}">unknown agent</span>`
+  }
+  if (!id || text === id) return escapeHtml(text)
+  return `<span class="task-doc-agent" title="${escapeHtmlAttr(id)}">${escapeHtml(text)}</span>`
+}
+
 function formatTaskTime(value) {
   if (!value) return ''
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return value
-  return date.toISOString().slice(0, 16).replace('T', ' ') + ' UTC'
+  const iso = date.toISOString()
+  return `<time class="task-doc-time" datetime="${escapeHtmlAttr(iso)}" title="${escapeHtmlAttr(iso.replace('T', ' ').replace('.000Z', ' UTC'))}">${escapeHtml(iso.slice(0, 10))}</time>`
 }
 
 function escapeMarkdown(value) {
@@ -440,6 +488,19 @@ function writeIfChanged(filePath, content, { part = null, writebackOptions = {},
 
 function canRetryWriteback(result) {
   return result?.status === 'failed'
+}
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+}
+
+function escapeHtmlAttr(value) {
+  return escapeHtml(value)
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
 }
 
 function runGit(args, cwd) {

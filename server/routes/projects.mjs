@@ -33,11 +33,13 @@ import { buildModel, assertRoundTrip } from '../lib/outline/model.mjs'
 import { findTextNearSourceLine, sourceTextSpanToPdfSpans } from '../lib/synctex-query.mjs'
 import { buildMarkdown, buildHtml, buildSlides } from '../lib/format-builders.mjs'
 import { realizeProjectMarkdownArtifact, writeProjectMarkdownArtifact } from '../lib/project-artifact-materializer.mjs'
+import { TASK_DOC_FILENAME, TASK_DOC_PROJECT_ID, materializeTaskDocs } from '../lib/task-doc-materializer.mjs'
 import { markdownColumnFileForSource, listProjectPartColumns, pageInfoFromDocumentColumns } from '../lib/document-columns.mjs'
 import { shouldBuildOnPush } from '../lib/build-decision.mjs'
 import historyRoutes from './history.mjs'
 import { linkOverleaf, unlinkOverleaf, syncOverleaf, pushSourceToOverleaf, stopPolling, isPolling } from '../lib/overleaf-sync.mjs'
 import { getRoomRecords, getRecord, putShape, updateShape, deleteShape, onShapeChange, getOrCreateRoom, broadcastSignal, getLastSignal, onSignal, replaceRoomSnapshot, getShapesAt, emitGlobalEvent, onGlobalEvent } from '../lib/sync-rooms.mjs'
+import { getFleetServerUrl, getServerUrl } from '../../shared/config.mjs'
 
 const router = Router()
 
@@ -46,6 +48,39 @@ const router = Router()
 // clobber it. Everything else (svg, png, diff, ...) has no page-info.json of
 // its own, so a project's parts get one.
 const FORMATS_WITH_OWN_PAGE_INFO = new Set(['markdown', 'html', 'slides'])
+
+function sameOrigin(a, b) {
+  try {
+    return new URL(a).origin === new URL(b).origin
+  } catch {
+    return a === b
+  }
+}
+
+async function fetchJson(url) {
+  const res = await fetch(url, { signal: AbortSignal.timeout(10000) })
+  if (!res.ok) throw new Error(`${url} returned ${res.status}`)
+  return res.json()
+}
+
+async function taskDocFleetSource(localFleetStore) {
+  const fleetServer = getFleetServerUrl()
+  const storeServer = getServerUrl()
+  if (sameOrigin(fleetServer, storeServer)) return localFleetStore
+
+  const [agents, tasks] = await Promise.all([
+    fetchJson(new URL('/api/store/agents', fleetServer).toString()),
+    fetchJson(new URL('/api/store/tasks', fleetServer).toString()),
+  ])
+  return {
+    getAllAgents() {
+      return Array.isArray(agents) ? agents : []
+    },
+    getActiveTasks() {
+      return Array.isArray(tasks) ? tasks : []
+    },
+  }
+}
 
 // Mount history sub-router
 router.use('/:name/history', historyRoutes)
@@ -196,6 +231,47 @@ router.get('/:name/parts', requireRead, (req, res) => {
   if (!project) return res.status(404).json({ error: 'Project not found' })
   const columns = listProjectPartColumns(req.params.name)
   res.json(pageInfoFromDocumentColumns(req.params.name, columns, { forceGroup: true }))
+})
+
+// Refresh the managed task document as a first-class project part. Unlike the
+// generic markdown artifact route, this preserves tlda-kind: task-doc so the
+// markdown renderer installs the task controls.
+router.post('/:name/task-doc/refresh', requireRw, async (req, res) => {
+  const project = readProject(req.params.name)
+  if (!project) return res.status(404).json({ error: 'Project not found' })
+  const fleetStore = req.app?.locals?.fleetStore
+  if (!fleetStore) return res.status(503).json({ ok: false, error: 'Fleet store not available' })
+
+  try {
+    const sourceFleetStore = await taskDocFleetSource(fleetStore)
+    const result = materializeTaskDocs({
+      fleetStore: sourceFleetStore,
+      projectNames: [req.params.name],
+      useProjectPartsRoot: true,
+      changes: [{ type: 'refresh', description: `refresh task doc for ${req.params.name}` }],
+    })
+    const touched = result.touchedDirs?.includes(projectPartsRoot(req.params.name)) || false
+    if (project.format === 'markdown') {
+      await buildMarkdown(req.params.name)
+    } else if (!FORMATS_WITH_OWN_PAGE_INFO.has(project.format)) {
+      writePartsPageInfo(req.params.name)
+    }
+    emitGlobalEvent('project-changed', { name: req.params.name })
+    res.json({
+      ok: true,
+      project: req.params.name,
+      touched,
+      taskCount: result.tasks.filter(task => task.projectName === req.params.name).length,
+      part: {
+        id: TASK_DOC_PROJECT_ID,
+        kind: 'task-doc',
+        path: TASK_DOC_FILENAME,
+        outputFile: markdownColumnFileForSource(TASK_DOC_FILENAME),
+      },
+    })
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e?.message || String(e) })
+  }
 })
 
 // Remove a project part (its file + manifest entry) and tell open viewers to

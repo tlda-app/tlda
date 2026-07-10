@@ -32,6 +32,7 @@ import {
   sourceLineToEditorCanvas,
 } from '../synctexAnchor'
 import { getVimMode, subscribeVimMode } from '../vimMode'
+import { clearVoiceAccumulator, notifyAccumulatorCursorMoved, setVoiceAccumulator } from '../voice.mjs'
 import { beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import './fleet-chat.css'
@@ -411,6 +412,51 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
   const vimModeRef = useRef(vimMode)
   const laserSessionRef = useRef<string | null>(null)
   const cursorLaserSeqRef = useRef(0)
+  const voiceSessionRef = useRef<{ view: EditorView; from: number; to: number } | null>(null)
+  const voiceApplyingRef = useRef(false)
+  const voiceUpdateRef = useRef<((text: string) => void) | null>(null)
+  const voiceStopRef = useRef<(() => void) | null>(null)
+
+  if (!voiceUpdateRef.current) {
+    voiceUpdateRef.current = (text: string) => {
+      const session = voiceSessionRef.current
+      if (!session) return
+      const view = session.view
+      const insert = String(text || '')
+      const from = Math.max(0, Math.min(session.from, view.state.doc.length))
+      const to = Math.max(from, Math.min(session.to, view.state.doc.length))
+      voiceApplyingRef.current = true
+      try {
+        view.dispatch({
+          changes: { from, to, insert },
+          selection: { anchor: from + insert.length },
+        })
+        voiceSessionRef.current = { view, from, to: from + insert.length }
+      } finally {
+        requestAnimationFrame(() => { voiceApplyingRef.current = false })
+      }
+    }
+  }
+  if (!voiceStopRef.current) {
+    voiceStopRef.current = () => {
+      voiceSessionRef.current = null
+    }
+  }
+
+  const activateVoiceEditor = (view: EditorView | null, label = 'editor') => {
+    if (!view) return
+    const head = view.state.selection.main.head
+    voiceSessionRef.current = { view, from: head, to: head }
+    view.focus()
+    setVoiceAccumulator(voiceUpdateRef.current!, null, voiceStopRef.current!, label)
+  }
+
+  useEffect(() => {
+    const onUpdate = voiceUpdateRef.current
+    return () => {
+      if (onUpdate) clearVoiceAccumulator(onUpdate)
+    }
+  }, [])
 
   useEffect(() => { statusRef.current = status }, [status])
   useEffect(() => { vimModeRef.current = vimMode }, [vimMode])
@@ -811,7 +857,17 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
             EditorView.lineWrapping,
             sourceEditorTheme,
 	            EditorView.updateListener.of((update) => {
-	              if (update.selectionSet) updateCursorLaserFromView(update.view)
+	              if (update.selectionSet) {
+	                updateCursorLaserFromView(update.view)
+	                if (!voiceApplyingRef.current && voiceSessionRef.current?.view === update.view) {
+	                  voiceSessionRef.current = {
+	                    view: update.view,
+	                    from: update.view.state.selection.main.head,
+	                    to: update.view.state.selection.main.head,
+	                  }
+	                  notifyAccumulatorCursorMoved()
+	                }
+	              }
 	              if (!update.docChanged) return
 	              const currentText = update.state.doc.toString()
 	              fullSourceRef.current = currentText
@@ -845,8 +901,11 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
           runEditorUndoRedo(view, key === 'y' || event.shiftKey)
         }
         view.dom.addEventListener('keydown', handleNativeKeydown, { capture: true })
+        const handleVoiceFocus = () => activateVoiceEditor(view)
+        view.dom.addEventListener('focusin', handleVoiceFocus)
 	        cmKeydownCleanupRef.current = () => {
 	          view.dom.removeEventListener('keydown', handleNativeKeydown, { capture: true })
+	          view.dom.removeEventListener('focusin', handleVoiceFocus)
 	        }
 	        stripVimRegexHints(view.dom)
 	        const panelObserver = new MutationObserver(() => stripVimRegexHints(view.dom))
@@ -934,8 +993,8 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
     const target = e.target as Node
     if (!cmHostRef.current?.contains(target) && !secondaryCmHostRef.current?.contains(target)) return
     requestAnimationFrame(() => {
-      if (secondaryCmHostRef.current?.contains(target)) secondaryCmViewRef.current?.focus()
-      else cmViewRef.current?.focus()
+      if (secondaryCmHostRef.current?.contains(target)) activateVoiceEditor(secondaryCmViewRef.current)
+      else activateVoiceEditor(cmViewRef.current)
     })
   }
   const handleKeyDown = (e: any) => {
@@ -1006,6 +1065,14 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
             EditorView.lineWrapping,
             sourceEditorTheme,
             EditorView.updateListener.of((update) => {
+              if (update.selectionSet && !voiceApplyingRef.current && voiceSessionRef.current?.view === update.view) {
+                voiceSessionRef.current = {
+                  view: update.view,
+                  from: update.view.state.selection.main.head,
+                  to: update.view.state.selection.main.head,
+                }
+                notifyAccumulatorCursorMoved()
+              }
               if (!update.docChanged) return
               const currentText = update.state.doc.toString()
               secondaryFullSourceRef.current = currentText
@@ -1037,7 +1104,14 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
           else undo(view)
         }
         view.dom.addEventListener('keydown', handleNativeKeydown, { capture: true })
+        const handleVoiceFocus = () => activateVoiceEditor(view)
+        view.dom.addEventListener('focusin', handleVoiceFocus)
         keydownCleanup = () => view.dom.removeEventListener('keydown', handleNativeKeydown, { capture: true })
+        const previousKeydownCleanup = keydownCleanup
+        keydownCleanup = () => {
+          previousKeydownCleanup?.()
+          view.dom.removeEventListener('focusin', handleVoiceFocus)
+        }
         stripVimRegexHints(view.dom)
         const panelObserver = new MutationObserver(() => stripVimRegexHints(view.dom))
         panelObserver.observe(view.dom, { childList: true, subtree: true, characterData: true })

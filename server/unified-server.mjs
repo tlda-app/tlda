@@ -3118,7 +3118,7 @@ app.use('/docs', (req, res, next) => {
             } catch { return memberName }
           }
 
-          const chapterTitle = memberTitle(name)
+          const chapterTitle = column.title || memberTitle(name)
           let prev = null, next = null
           for (const p of listProjects()) {
             if (p.format !== 'book') continue
@@ -3250,6 +3250,7 @@ app.use('/docs', (req, res, next) => {
 
 // ---------- API routes ----------
 
+app.locals.fleetStore = fleetStore
 app.use('/api/projects', projectRoutes)
 
 // Handwriting recognition (MyScript proxy)

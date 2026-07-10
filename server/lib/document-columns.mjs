@@ -6,6 +6,7 @@ import { readProjectPartsManifest } from './project-parts-scanner.mjs'
 
 const DEFAULT_COLUMN_WIDTH = 800
 const DEFAULT_COLUMN_HEIGHT = 1200
+const TASK_DOC_COLUMN_WIDTH = 2200
 
 export function markdownColumnFileForSource(path, { defaultColumn = false } = {}) {
   if (defaultColumn) return 'index.html'
@@ -91,7 +92,7 @@ function addMarkdownColumn(columns, { sourceFile, outputFile, srcDir, title = nu
     sourceFile,
     outputFile,
     file: outputFile,
-    width: DEFAULT_COLUMN_WIDTH,
+    width: kind === 'task-doc' ? TASK_DOC_COLUMN_WIDTH : DEFAULT_COLUMN_WIDTH,
     height: DEFAULT_COLUMN_HEIGHT,
     title: title || titleFromMarkdown(source) || sourceFile.replace(/\.(md|markdown)$/i, ''),
     metadata: {

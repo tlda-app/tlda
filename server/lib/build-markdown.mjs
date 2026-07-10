@@ -309,6 +309,7 @@ function taskDocRenderLayerAssets(enabled) {
       white-space: nowrap;
     }
     .task-doc-tools select,
+    .task-doc-tools input,
     .task-doc-tools button {
       font: inherit;
       color: inherit;
@@ -317,8 +318,36 @@ function taskDocRenderLayerAssets(enabled) {
       background: #fff;
       padding: 0.22rem 0.45rem;
     }
+    .task-doc-tools input {
+      width: min(18rem, 100%);
+    }
     .task-doc-tools button { cursor: pointer; }
     .task-doc-row-count { margin-left: auto; color: #6b7280; }
+    body.task-doc-body {
+      width: max-content;
+      min-width: 100%;
+      overflow-x: visible;
+    }
+    .task-doc-table-wrap {
+      width: max-content;
+      max-width: none;
+      overflow: visible;
+    }
+    .task-doc-table {
+      width: max-content;
+      min-width: 0;
+      max-width: none;
+    }
+    .task-doc-table th,
+    .task-doc-table td {
+      white-space: nowrap;
+    }
+    .task-doc-table td:nth-child(1),
+    .task-doc-table td:nth-child(2) {
+      white-space: normal;
+      min-width: 14rem;
+      max-width: 34rem;
+    }
     table.task-doc-table th[data-task-doc-sort] {
       cursor: pointer;
       user-select: none;
@@ -336,6 +365,15 @@ function taskDocRenderLayerAssets(enabled) {
       border-bottom: 1px dotted #9ca3af;
       cursor: help;
     }
+    .task-doc-agent,
+    .task-doc-task-subject,
+    .task-doc-detail,
+    .task-doc-time {
+      cursor: help;
+    }
+    .task-doc-detail {
+      color: #4b5563;
+    }
     .task-doc-empty-row td {
       color: #6b7280;
       font-style: italic;
@@ -343,7 +381,7 @@ function taskDocRenderLayerAssets(enabled) {
     script: `
 <script>
 (() => {
-  const SORTABLE = new Set(['project', 'status', 'created', 'last-modified'])
+  const SORTABLE = new Set(['project', 'status', 'created', 'updated', 'last-modified'])
   const FILTERABLE = new Set(['project', 'status'])
 
   function norm(value) {
@@ -372,13 +410,17 @@ function taskDocRenderLayerAssets(enabled) {
 
   function tableState(table) {
     const headers = Array.from(table.tHead?.rows?.[0]?.cells || [])
+    const body = table.tBodies[0] || table.appendChild(document.createElement('tbody'))
     const columns = headers.map(th => norm(th.textContent))
     return {
       headers,
       columns,
-      rows: Array.from(table.tBodies[0]?.rows || []),
-      sort: { column: null, dir: 'asc' },
-      filters: { project: '', status: '' },
+      body,
+      rows: Array.from(body.rows || []),
+      sort: columns.includes('updated')
+        ? { column: 'updated', dir: 'desc' }
+        : { column: null, dir: 'asc' },
+      filters: { project: '', status: '', search: '' },
       emptyRow: null,
     }
   }
@@ -392,7 +434,7 @@ function taskDocRenderLayerAssets(enabled) {
     const av = rowValue(a, state, column)
     const bv = rowValue(b, state, column)
     let delta
-    if (column === 'created' || column === 'last-modified') {
+    if (column === 'created' || column === 'updated' || column === 'last-modified') {
       delta = parseTime(av) - parseTime(bv)
     } else {
       delta = av.localeCompare(bv, undefined, { numeric: true, sensitivity: 'base' })
@@ -405,16 +447,17 @@ function taskDocRenderLayerAssets(enabled) {
     for (const row of state.rows) {
       const projectOk = !state.filters.project || rowValue(row, state, 'project') === state.filters.project
       const statusOk = !state.filters.status || rowValue(row, state, 'status') === state.filters.status
-      const show = projectOk && statusOk
+      const searchOk = !state.filters.search || norm(row.textContent).includes(state.filters.search)
+      const show = projectOk && statusOk && searchOk
       row.hidden = !show
       if (show) visible += 1
     }
     if (state.sort.column) {
       const sorted = [...state.rows].sort((a, b) => compareRows(a, b, state, state.sort.column, state.sort.dir))
-      for (const row of sorted) table.tBodies[0].appendChild(row)
+      for (const row of sorted) state.body.appendChild(row)
     }
     if (state.emptyRow) {
-      table.tBodies[0].appendChild(state.emptyRow)
+      state.body.appendChild(state.emptyRow)
       state.emptyRow.hidden = visible !== 0
     }
     const count = table.previousElementSibling?.querySelector?.('.task-doc-row-count')
@@ -435,6 +478,7 @@ function taskDocRenderLayerAssets(enabled) {
       const label = document.createElement('label')
       label.textContent = column + ' '
       const select = document.createElement('select')
+      select.dataset.taskDocFilter = column
       const all = document.createElement('option')
       all.value = ''
       all.textContent = 'all'
@@ -453,13 +497,27 @@ function taskDocRenderLayerAssets(enabled) {
       label.appendChild(select)
       controls.appendChild(label)
     }
+    const searchLabel = document.createElement('label')
+    searchLabel.textContent = 'search '
+    const search = document.createElement('input')
+    search.type = 'search'
+    search.placeholder = 'find task'
+    search.dataset.taskDocFilter = 'search'
+    search.addEventListener('input', () => {
+      state.filters.search = norm(search.value)
+      update(table, state)
+    })
+    searchLabel.appendChild(search)
+    controls.appendChild(searchLabel)
     const clear = document.createElement('button')
     clear.type = 'button'
-    clear.textContent = 'clear'
+    clear.textContent = 'reset'
     clear.addEventListener('click', () => {
       state.filters.project = ''
       state.filters.status = ''
+      state.filters.search = ''
       for (const select of controls.querySelectorAll('select')) select.value = ''
+      for (const input of controls.querySelectorAll('input')) input.value = ''
       update(table, state)
     })
     controls.appendChild(clear)
@@ -479,7 +537,7 @@ function taskDocRenderLayerAssets(enabled) {
       th.setAttribute('aria-sort', 'none')
       const activate = () => {
         if (state.sort.column === column) state.sort.dir = state.sort.dir === 'asc' ? 'desc' : 'asc'
-        else state.sort = { column, dir: column === 'created' || column === 'last-modified' ? 'desc' : 'asc' }
+        else state.sort = { column, dir: column === 'created' || column === 'updated' || column === 'last-modified' ? 'desc' : 'asc' }
         update(table, state)
       }
       th.addEventListener('click', activate)
@@ -500,15 +558,43 @@ function taskDocRenderLayerAssets(enabled) {
     td.colSpan = state.columns.length
     td.textContent = 'No tasks match the current filters.'
     tr.appendChild(td)
-    table.tBodies[0].appendChild(tr)
+    state.body.appendChild(tr)
     state.emptyRow = tr
   }
 
   function captureRawValues(state) {
     for (const row of state.rows) {
       Array.from(row.cells).forEach(cell => {
-        cell.dataset.rawValue = cell.textContent.trim()
+        const time = cell.querySelector('time[datetime]')
+        cell.dataset.rawValue = time?.getAttribute('datetime') || cell.textContent.trim()
       })
+    }
+  }
+
+  function formatLocalTimes(table) {
+    const now = new Date()
+    const currentYear = now.getFullYear()
+    for (const el of table.querySelectorAll('time.task-doc-time[datetime]')) {
+      const iso = el.getAttribute('datetime')
+      const date = new Date(iso)
+      if (Number.isNaN(date.getTime())) continue
+      const sameYear = date.getFullYear() === currentYear
+      el.textContent = new Intl.DateTimeFormat(undefined, {
+        ...(sameYear ? {} : { year: 'numeric' }),
+        month: 'short',
+        day: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit',
+      }).format(date)
+      el.title = new Intl.DateTimeFormat(undefined, {
+        weekday: 'short',
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit',
+        timeZoneName: 'short',
+      }).format(date)
     }
   }
 
@@ -532,7 +618,7 @@ function taskDocRenderLayerAssets(enabled) {
   }
 
   function prettyPrintFleetIds(table, state, names) {
-    for (const column of ['id', 'owner']) {
+    for (const column of ['id', 'owner', 'assigned to', 'delegator']) {
       const idx = state.columns.indexOf(column)
       if (idx < 0) continue
       for (const row of state.rows) {
@@ -550,15 +636,25 @@ function taskDocRenderLayerAssets(enabled) {
   function enhance(table) {
     if (table.dataset.taskDocEnhanced) return
     const state = tableState(table)
-    if (!state.columns.includes('id') || !state.columns.includes('status')) return
+    if (!state.columns.includes('subject') || !state.columns.includes('status')) return
     table.dataset.taskDocEnhanced = 'true'
     table.classList.add('task-doc-table')
+    wrapTable(table)
+    formatLocalTimes(table)
     captureRawValues(state)
     addControls(table, state)
     addSorting(table, state)
     addEmptyRow(table, state)
     update(table, state)
     loadAgentNames().then(names => prettyPrintFleetIds(table, state, names))
+  }
+
+  function wrapTable(table) {
+    if (table.parentElement?.classList?.contains('task-doc-table-wrap')) return
+    const wrap = document.createElement('div')
+    wrap.className = 'task-doc-table-wrap'
+    table.before(wrap)
+    wrap.appendChild(table)
   }
 
   document.addEventListener('DOMContentLoaded', () => {
@@ -693,7 +789,7 @@ export function renderMarkdownColumnHtml({ source, title, isTaskDoc }) {
 ${taskDocAssets.style}
   </style>
 </head>
-<body>
+<body${isTaskDoc ? ' class="task-doc-body"' : ''}>
 ${content}
 ${taskDocAssets.script}
 </body>
