@@ -185,10 +185,10 @@ export function findRenderedText(docName, canvasBBox, projectRoot) {
 
   // Determine which page(s) the bbox falls on
   // Each SVG has its own viewBox; we need to load it to get accurate dimensions
-  const docDir = localDocDir(docName) || path.join(projectRoot, 'public', 'docs', docName);
+  const docDir = localDocDir(docName);
 
   // Read project.json for multi-target info (targets[] with texBase + pages).
-  // Single-target or legacy docs won't have targets — fall back to bare naming.
+  // Single-target docs do not need target metadata; they use bare page names.
   let targets = null;
   const projPath = path.join(projectRoot, 'server', 'projects', docName, 'project.json');
   if (fs.existsSync(projPath)) {
