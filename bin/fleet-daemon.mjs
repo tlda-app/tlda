@@ -70,7 +70,6 @@ import { sendActivityEvents } from '../agent-runtime/activity-send.mjs'
 import {
   THINKING_SPINNER_RE, INTERRUPT_HINT_RE, THINKING_SCAN_LINES,
 } from '../agent-runtime/status-classifier.mjs'
-import { sessionIdentityPath } from '../agent-runtime/session-identity-store.mjs'
 import {
   DAEMON_OUTBOX_ACK_TYPE,
   SERVER_DAEMON_OUTBOX_ACK_TYPE,
@@ -113,7 +112,6 @@ const log = createLogger('daemon')
 // daemon in parallel without clobbering the live daemon's PID file.
 const CONFIG_DIR = process.env.TLDA_DAEMON_CONFIG_DIR || _SHARED_CONFIG_DIR
 const CURSORS_FILE = path.join(CONFIG_DIR, 'daemon-cursors.json')
-const SESSION_IDENTITY_FILE = sessionIdentityPath(CONFIG_DIR)
 const PID_FILE = path.join(CONFIG_DIR, 'fleet-daemon.pid')
 const SOURCE_BINDINGS_FILE = path.join(CONFIG_DIR, 'source-bindings.json')
 const DAEMON_CONFIG_FILE = defaultDaemonConfigPath(CONFIG_DIR)
@@ -353,7 +351,6 @@ function grantOnMintInfill(reason) {
 jsonlIngestor = createJsonlIngestor({
   configDir: CONFIG_DIR,
   cursorsFile: CURSORS_FILE,
-  sessionIdentityFile: SESSION_IDENTITY_FILE,
   projectsDir: PROJECTS_DIR,
   daemonDir: path.dirname(fileURLToPath(import.meta.url)),
   log,
@@ -365,6 +362,7 @@ jsonlIngestor = createJsonlIngestor({
   listSessions: rpcListSessions,
   selectAgentKind: harnessRuntime.resolveAgentKind,
   harnessAdapters: harnessRuntime.harnessAdapters,
+  permissionLedger,
   bufferActivity,
   extractActivityEvents: harnessRuntime.extractActivityEvents,
 })

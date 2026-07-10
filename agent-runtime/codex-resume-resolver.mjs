@@ -1,27 +1,9 @@
 import fs from 'fs'
-import path from 'path'
-import { findSessionsByFleetId } from './session-identity-store.mjs'
-import { scanCodexRolloutIdentity } from '../agent-launch/resume.mjs'
-
-export const CODEX_FLEET_ID_MIGRATION_COMMAND = 'node scripts/migrate-codex-fleet-ids.mjs'
+import { createPermissionLedger } from '../agent-launch/permission-ledger.mjs'
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-const UUID_SCAN_RE = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i
-
-function identityStoreLookupOptions(options = {}) {
-  return {
-    configDir: options.identityConfigDir || options.configDir,
-    filePath: options.identityFilePath || options.filePath,
-  }
-}
-
 export function isBareCodexResumeId(value) {
   return typeof value === 'string' && UUID_RE.test(value)
-}
-
-export function codexResumeIdFromPath(filePath, sessionMeta = {}) {
-  const id = sessionMeta?.id || UUID_SCAN_RE.exec(path.basename(filePath || ''))?.[1] || null
-  return isBareCodexResumeId(id) ? id : null
 }
 
 function typedMiss(agent, code, reason, detail = {}) {
@@ -45,10 +27,9 @@ function cachedIdentityMiss(agent, options = {}) {
   const fleetId = agent?.id || 'unknown'
   return typedMiss(agent, 'missing-resume-handle', 'no-record', {
     retry_after_ms: options.retryAfterMs,
-    message: `can't find a cached identity for ${name} (${fleetId}) - historically we've mis-recorded this. To scan for it, run: \`${CODEX_FLEET_ID_MIGRATION_COMMAND}\` (daemon stopped).`,
+    message: `can't find a daemon-ledger resume identity for ${name} (${fleetId}); this is a ledger write/key bug, not a lost rollout`,
     extra: {
-      escape_hatch: CODEX_FLEET_ID_MIGRATION_COMMAND,
-      daemon_must_be_stopped: true,
+      expected_source: 'daemon permission ledger session_id',
     },
   })
 }
@@ -65,36 +46,46 @@ function success(agent, rec, source) {
   }
 }
 
-function newestRecords(records) {
-  return [...records].sort((a, b) => Date.parse(b.updated_at || '') - Date.parse(a.updated_at || ''))
+function openLedger(options = {}) {
+  if (options.permissionLedger) return { ledger: options.permissionLedger, close: async () => {} }
+  const ledger = createPermissionLedger(options.permissionLedgerPath)
+  return { ledger, close: () => ledger.close() }
 }
 
-export function resolveCodexResumeHandleFromIdentity(agent, options = {}) {
+export async function resolveCodexResumeHandleFromLedger(agent, options = {}) {
   if (!agent?.id) return typedMiss(agent, 'missing-resume-handle', 'no-agent-id', { retry_after_ms: options.retryAfterMs })
-  const records = newestRecords(findSessionsByFleetId(agent.id, 'codex', identityStoreLookupOptions(options)))
-  for (const rec of records) {
-    if (!rec?.session_id) continue
-    if (!isBareCodexResumeId(rec.session_id)) {
-      if (rec.jsonl_path && fs.existsSync(rec.jsonl_path)) {
-        const { sessionMeta } = scanCodexRolloutIdentity(rec.jsonl_path)
-        const repairedId = codexResumeIdFromPath(rec.jsonl_path, sessionMeta)
-        if (repairedId) {
-          return success(agent, { ...rec, session_id: repairedId }, options.source || 'identity-store-repaired')
-        }
-      }
+  const { ledger, close } = openLedger(options)
+  try {
+    const rec = ledger.get(agent.id)
+    if (!rec?.sessionId) return cachedIdentityMiss(agent, options)
+    if (rec.sessionKind && rec.sessionKind !== 'codex') {
       return typedMiss(agent, 'missing-resume-handle', 'invalid-uuid', {
         retry_after_ms: options.retryAfterMs,
-        extra: { session_id: rec.session_id },
+        extra: { session_kind: rec.sessionKind },
       })
     }
-    if (rec.jsonl_path && !fs.existsSync(rec.jsonl_path)) continue
-    return success(agent, rec, options.source || 'identity-store')
+    if (!isBareCodexResumeId(rec.sessionId)) {
+      return typedMiss(agent, 'missing-resume-handle', 'invalid-uuid', {
+        retry_after_ms: options.retryAfterMs,
+        extra: { session_id: rec.sessionId },
+      })
+    }
+    if (rec.sessionPath && !fs.existsSync(rec.sessionPath)) {
+      return typedMiss(agent, 'missing-resume-handle', 'missing-session-path', {
+        retry_after_ms: options.retryAfterMs,
+        extra: { session_path: rec.sessionPath },
+      })
+    }
+    return success(agent, {
+      session_id: rec.sessionId,
+      jsonl_path: rec.sessionPath,
+      cwd: rec.cwd,
+    }, options.source || 'daemon-ledger')
+  } finally {
+    await close()
   }
-  return cachedIdentityMiss(agent, options)
 }
 
 export async function resolveCodexResumeHandle(agent, options = {}) {
-  const indexed = resolveCodexResumeHandleFromIdentity(agent, options)
-  if (indexed.ok) return indexed
-  return indexed
+  return resolveCodexResumeHandleFromLedger(agent, options)
 }

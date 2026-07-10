@@ -1,11 +1,6 @@
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import {
-  getSessionIdentity,
-  findSessionsByFleetId,
-  isIngestionCaughtUp,
-} from '../agent-runtime/session-identity-store.mjs'
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const UUID_SCAN_RE = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i
@@ -20,27 +15,16 @@ function codexSessionsBase(base) {
   return base || path.join(os.homedir(), '.codex', 'sessions')
 }
 
-function identityStoreLookupOptions(options = {}) {
-  return {
-    configDir: options.identityConfigDir || options.configDir,
-    filePath: options.identityFilePath || options.filePath,
-  }
+export function isRespawnIdentityCaughtUp(_options = {}) {
+  return true
 }
 
-export function isRespawnIdentityCaughtUp(options = {}) {
-  return isIngestionCaughtUp(identityStoreLookupOptions(options))
+function indexedSessionRecord(_sessionId, _options = {}) {
+  return null
 }
 
-function sessionIdentityRecord(sessionId, options = {}) {
-  if (!sessionId) return null
-  return getSessionIdentity(sessionId, identityStoreLookupOptions(options))
-}
-
-function sessionIdentityRecords(agent, kind, options = {}) {
-  if (!agent?.id) return []
-  return findSessionsByFleetId(agent.id, kind, identityStoreLookupOptions(options))
-    .filter(rec => rec?.session_id)
-    .sort((a, b) => Date.parse(b.updated_at || '') - Date.parse(a.updated_at || ''))
+function indexedSessionRecords(_agent, _kind, _options = {}) {
+  return []
 }
 
 function validIdentityRecord(rec, agent, kind) {
@@ -167,7 +151,7 @@ export function findClaudeSession(agent, options = {}) {
   const { projectsBase, sessionOverride } = options
   const primary = sessionOverride || agent?.session_id
   if (primary) {
-    const rec = sessionIdentityRecord(primary, options)
+    const rec = indexedSessionRecord(primary, options)
     if (rec) {
       if (!validIdentityRecord(rec, agent, 'claude')) {
         if (sessionOverride) return null
@@ -186,7 +170,7 @@ export function findClaudeSession(agent, options = {}) {
       }
     }
   }
-  for (const rec of sessionIdentityRecords(agent, 'claude', options)) {
+  for (const rec of indexedSessionRecords(agent, 'claude', options)) {
     const p = rec.jsonl_path && fs.existsSync(rec.jsonl_path)
       ? rec.jsonl_path
       : claudeJsonlPath(rec.session_id, { projectsBase })
@@ -348,7 +332,7 @@ export function scanCodexRolloutIdentity(fpath) {
 export function findCodexRollout(agent, options = {}) {
   const { sessionsBase, sessionOverride } = options
   if (sessionOverride) {
-    const rec = sessionIdentityRecord(sessionOverride, options)
+    const rec = indexedSessionRecord(sessionOverride, options)
     if (rec) {
       if (!validIdentityRecord(rec, agent, 'codex')) return null
       const fpath = rec.jsonl_path && fs.existsSync(rec.jsonl_path)
@@ -363,7 +347,7 @@ export function findCodexRollout(agent, options = {}) {
     const { sessionMeta } = scanCodexRolloutIdentity(fpath)
     return { kind: 'codex', rolloutId: sessionOverride, jsonlPath: fpath, cwd: sessionMeta.cwd, sessionMeta }
   }
-  for (const rec of sessionIdentityRecords(agent, 'codex', options)) {
+  for (const rec of indexedSessionRecords(agent, 'codex', options)) {
     const fpath = rec.jsonl_path && fs.existsSync(rec.jsonl_path)
       ? rec.jsonl_path
       : codexRolloutPath(rec.session_id, { sessionsBase })
