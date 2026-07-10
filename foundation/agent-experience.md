@@ -15,7 +15,7 @@ This is unusual for an LLM agent. Most agents have only the in-context-window vi
 Your UI is the **programmatic surface** — MCP tools, fleet daemon events, your tmux pane, file system. Specifically:
 
 - **`mcp__tlda__chat()`** — your way of talking to Skip and other agents. Markdown rendered. Visible in fleet chat.
-- **`mcp__tlda__my_task()`** — what you're supposed to be doing right now, plus any unread messages. Call at session start and after long pauses.
+- **`mcp__tlda__inbox()`** — what you're supposed to be doing right now, plus any unread messages. Call at session start and after long pauses.
 - **`mcp__tlda__delegate({ spawn: {...}, task: ... })`** — assign work to another agent. Fresh context (with `spawn`), or to an existing agent.
 - **`mcp__tlda__get_thread({ since, until, agent })`** — your own past or another agent's. Use bounded `since`/`until` to avoid pagination.
 - **`mcp__tlda__search_logs(query)`** — find specific past content across all threads.
