@@ -49,7 +49,10 @@ export function createJsonlIngestor({
   function saveCursors() {
     if (!fs.existsSync(configDir)) fs.mkdirSync(configDir, { recursive: true })
     try { fs.writeFileSync(cursorsFile, JSON.stringify(cursors, null, 2)) }
-    catch (e) { log.error(`cursor save failed: ${e.message}`) }
+    catch (e) {
+      // Cursor persistence failure is surfaced in logs; ingestion continues from memory.
+      log.error(`cursor save failed: ${e.message}`)
+    }
   }
   let cursors = loadCursors() // { sessionId: { inode, offset } }
   let sessionIdentityStore = loadSessionIdentityStore(sessionIdentityFile)
@@ -316,6 +319,7 @@ export function createJsonlIngestor({
         }))
       log.info(`loaded ${_qualRules.length} qualification rules`)
     } catch (e) {
+      // Qualification rules are advisory gates; failed loads leave no rules active.
       log.error(`failed to load qualifications: ${e.message}`)
     }
   }
@@ -483,9 +487,13 @@ export function createJsonlIngestor({
             try {
               for (const dir of fs.readdirSync(projectsDir)) {
                 const candidate = path.join(projectsDir, dir, sid + '.jsonl')
-                try { foundStat = fs.statSync(candidate); p = candidate; break } catch {}
+                try { foundStat = fs.statSync(candidate); p = candidate; break } catch {
+                  // Global session search probes many project dirs; misses are expected.
+                }
               }
-            } catch {}
+            } catch {
+              // If project-dir enumeration fails, this candidate simply remains unresolved.
+            }
           }
           if (foundStat) {
             const owners = claudeOwnersForSessionFile(sid, p)
@@ -552,6 +560,7 @@ export function createJsonlIngestor({
               backfillSearch: !!harness.backfillSearch,
             })
           } catch (e) {
+            // Retire this broken tail; other JSONL watchers must keep flowing.
             log.warn(`JSONL ingester update failed for ${path.basename(jsonlPath)}: ${e?.message || e}`)
             retireJsonlTail(pw, `ingester update failed for ${path.basename(jsonlPath)}`)
           }
@@ -591,6 +600,7 @@ export function createJsonlIngestor({
 
         log.info(`watching ${harness.kind} JSONL for ${agent.friendly_name || agent.id}: ${path.basename(jsonlPath)} @ offset=${offset}`)
       } catch (e) {
+        // One failed watcher should not prevent other agents from being watched.
         log.error(`watcher creation failed for ${jsonlPath}: ${e.message}`)
       }
     }
@@ -1106,6 +1116,7 @@ export function createJsonlIngestor({
           log.warn(`chokidar teardown close failed: ${e?.message || e}`)
         })
       } catch (e) {
+        // Watcher shutdown is cleanup-only; log and continue closing peers.
         log.warn(`chokidar teardown close threw: ${e?.message || e}`)
       }
     }
@@ -1116,9 +1127,15 @@ export function createJsonlIngestor({
     _shuttingDown = true
     saveCursors()
     teardown()
-    try { _ownerHarvester?.kill() } catch {}
-    try { _jsonlIngester?.send?.({ type: 'shutdown' }) } catch {}
-    try { _jsonlIngester?.kill() } catch {}
+    try { _ownerHarvester?.kill() } catch {
+      // Shutdown must keep progressing even if the helper has already exited.
+    }
+    try { _jsonlIngester?.send?.({ type: 'shutdown' }) } catch {
+      // IPC may already be closed during shutdown; killing below is the fallback.
+    }
+    try { _jsonlIngester?.kill() } catch {
+      // Shutdown must keep progressing even if the helper has already exited.
+    }
   }
 
   return {

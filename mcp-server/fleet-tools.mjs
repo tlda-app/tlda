@@ -2034,7 +2034,9 @@ export async function handleFleetTool(name, args) {
       try {
         const tmuxSession = execSync('tmux display-message -p "#{session_name}"', { encoding: 'utf8', timeout: 3000 }).trim();
         if (tmuxSession.startsWith('fleet-')) detectedTmux = tmuxSession;
-      } catch {}
+      } catch {
+        // Tmux auto-detection is optional; login still proceeds without a tmux name.
+      }
     }
 
     AGENT_ID = shellId;

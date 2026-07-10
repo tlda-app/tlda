@@ -121,6 +121,7 @@ export function createPromptPlan({
         planText = fs.readFileSync(planFileMatch[0], 'utf8').trim()
         log.info(`plan-mode: read plan file ${planFileMatch[0]}`)
       } catch (e) {
+        // Plan file discovery is opportunistic; pane parsing still handles inline text.
         log.warn(`plan-mode: couldn't read plan file ${planFileMatch[0]}: ${e.message}`)
       }
     }

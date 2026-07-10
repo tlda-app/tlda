@@ -138,6 +138,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
       const closed = watcher.close()
       if (closed?.catch) closed.catch(e => log.warn(`chokidar close failed for ${label}: ${e?.message || e}`))
     } catch (e) {
+      // Watcher shutdown is cleanup-only; log and continue tearing down peers.
       log.warn(`chokidar close threw for ${label}: ${e?.message || e}`)
     }
   }
@@ -295,6 +296,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
         log.info(`watching source ${p.name}: ${sourceDir}${bindings[p.name] ? ' (local binding)' : ''} (${watchSet.size} files${hasFlsWatchList ? '' : ', bootstrap'})`)
         pushWatchedFiles(p.name, sourceDir, watchSet, hasFlsWatchList ? null : p.mainFile, p.extraInputCommands, isMarkdown)
       } catch (e) {
+        // One source watcher failing should not stop other projects from syncing.
         log.error(`source watcher failed for ${p.name}: ${e.message}`)
       }
     }
@@ -324,14 +326,20 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
       for (const rel of deps) {
         const full = path.join(sourceDir, rel)
         try { files.push({ path: rel, ...readFileForUpload(full) }) }
-        catch (e) { log.error(`read ${full}: ${e.message}`) }
+        catch (e) {
+          // Per-file upload failures are surfaced; readable files still push.
+          log.error(`read ${full}: ${e.message}`)
+        }
       }
     } else if (watchSet.size > 0) {
       for (const rel of watchSet) {
         const full = path.join(sourceDir, rel)
         if (!fs.existsSync(full)) continue
         try { files.push({ path: rel, ...readFileForUpload(full) }) }
-        catch (e) { log.error(`read ${full}: ${e.message}`) }
+        catch (e) {
+          // Per-file upload failures are surfaced; readable files still push.
+          log.error(`read ${full}: ${e.message}`)
+        }
       }
     }
     if (files.length === 0) return
@@ -374,9 +382,14 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
             if (canonical !== rel) log.info(`resolved symlink: ${rel} → ${canonical}`)
           }
         }
-      } catch {}
+      } catch {
+        // Realpath is advisory; unresolved symlinks still push by original path.
+      }
       try { files.push({ path: pushPath, ...readFileForUpload(full) }) }
-      catch (e) { log.error(`read ${full}: ${e.message}`) }
+      catch (e) {
+        // Per-file upload failures are surfaced; readable files still push.
+        log.error(`read ${full}: ${e.message}`)
+      }
     }
 
     // When a .tex file changes, rescan for new \input deps not yet on the server.
@@ -394,7 +407,10 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
         try {
           files.push({ path: rel, ...readFileForUpload(full) })
           log.info(`rescan discovered new dep: ${rel}`)
-        } catch (e) { log.error(`read ${full}: ${e.message}`) }
+        } catch (e) {
+          // Per-file upload failures are surfaced; readable files still push.
+          log.error(`read ${full}: ${e.message}`)
+        }
       }
     }
 
@@ -414,7 +430,10 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
         try {
           files.push({ path: rel, ...readFileForUpload(full) })
           log.info(`md rescan discovered dep: ${rel}`)
-        } catch (e) { log.error(`read ${full}: ${e.message}`) }
+        } catch (e) {
+          // Per-file upload failures are surfaced; readable files still push.
+          log.error(`read ${full}: ${e.message}`)
+        }
       }
     }
 
@@ -437,7 +456,9 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
             log.info(`watching symlink target: ${target} -> ${rel}`)
           }
         }
-      } catch {}
+      } catch {
+        // Symlink target watching is advisory; the source file itself still triggers pushes.
+      }
     }
 
     if (files.length === 0 && deleted.length === 0) return

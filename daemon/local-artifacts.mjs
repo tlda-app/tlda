@@ -132,7 +132,9 @@ export function createLocalArtifacts({ getServerUrl, getFleetServerUrl }) {
         process.kill(pid, 'SIGKILL')
         try {
           await execFileP('pkill', ['-9', '-P', String(pid)], { timeout: 2000 })
-        } catch {}
+        } catch {
+          // Child cleanup is advisory after killing the browser process tree root.
+        }
         return { killed: true, pid, binary: args.slice(0, 200) }
       } catch (e) {
         return { killed: false, reason: `kill ${pid}: ${e.message}` }

@@ -150,14 +150,20 @@ export function createTerminalRpc({
 
   async function rpcInterrupt({ tmux_session }) {
     checkSession(tmux_session)
-    try { await tmux('send-keys', '-t', tmux_session, 'Escape') } catch {}
+    try { await tmux('send-keys', '-t', tmux_session, 'Escape') } catch {
+      // Interrupt is best-effort; the capture loop below reports whether it stopped.
+    }
     let stopped = false
     for (let i = 0; i < 3; i++) {
       await new Promise(r => setTimeout(r, 1200))
       let pane = ''
-      try { pane = await capturePaneTail(tmux_session) } catch {}
+      try { pane = await capturePaneTail(tmux_session) } catch {
+        // Missing capture means no proof of ongoing work; keep trying escape.
+      }
       if (!paneIsWorking(pane)) { stopped = true; break }
-      try { await tmux('send-keys', '-t', tmux_session, 'Escape') } catch {}
+      try { await tmux('send-keys', '-t', tmux_session, 'Escape') } catch {
+        // Repeated escape is best-effort; stopped=false reports remaining uncertainty.
+      }
     }
     return { ok: true, stopped }
   }
@@ -174,15 +180,21 @@ export function createTerminalRpc({
     checkSession(tmux_session)
     if (agent_id) onArmAgent(agent_id); else onArmBySession(tmux_session)
     let pane = ''
-    try { pane = await capturePaneTail(tmux_session) } catch {}
+    try { pane = await capturePaneTail(tmux_session) } catch {
+      // Missing capture means there is no queued prompt to promote.
+    }
     let lines = pane.split('\n').slice(-thinkingScanLines)
     if (!paneIsWorking(pane) || pendingQueuedIdx(lines) < 0) {
       return { ok: true, promoted: false, reason: 'nothing-queued' }
     }
-    try { await tmux('send-keys', '-t', tmux_session, 'Escape') } catch {}
+    try { await tmux('send-keys', '-t', tmux_session, 'Escape') } catch {
+      // Soft interrupt is best-effort; queued-state polling below determines result.
+    }
     for (let i = 0; i < 5; i++) {
       await new Promise(r => setTimeout(r, 700))
-      try { pane = await capturePaneTail(tmux_session) } catch {}
+      try { pane = await capturePaneTail(tmux_session) } catch {
+        // Missing capture leaves the queued state unknown for this iteration.
+      }
       lines = pane.split('\n').slice(-thinkingScanLines)
       if (pendingQueuedIdx(lines) < 0) return { ok: true, promoted: true }
     }
@@ -267,7 +279,9 @@ export function createTerminalRpc({
       const { stdout } = await tmux('display-message', '-p', '-t', tmux_session, '#{window_width} #{window_height}')
       const [w, h] = stdout.trim().split(/\s+/).map(n => parseInt(n, 10))
       if (Number.isFinite(w) && w > 0 && Number.isFinite(h) && h > 0) return { cols: w, rows: h }
-    } catch {}
+    } catch {
+      // Size probing is optional; terminal watch falls back to its pinned dimensions.
+    }
     return null
   }
 
@@ -276,6 +290,7 @@ export function createTerminalRpc({
       const { stdout } = await tmux('display-message', '-p', '-t', tmux_session, '#{pane_dead}')
       return stdout.trim() === '0'
     } catch {
+      // Treat tmux probe failure as not live; callers use this as a guard.
       return false
     }
   }
@@ -287,13 +302,18 @@ export function createTerminalRpc({
       if (existing) return { ok: true, already: true, cols: existing.cols, rows: existing.rows }
     }
 
-    try { await execFileP('tmux', [...TMUX_ARGS, 'set-option', '-t', tmux_session, 'status', 'off'], { timeout: 3000 }) } catch {}
+    try { await execFileP('tmux', [...TMUX_ARGS, 'set-option', '-t', tmux_session, 'status', 'off'], { timeout: 3000 }) } catch {
+      // Hiding tmux status is cosmetic; terminal streaming still works.
+    }
 
     const PINNED_COLS = 120, PINNED_ROWS = 40
     try {
       await execFileP('tmux', [...TMUX_ARGS, 'set-option', '-t', tmux_session, 'window-size', 'manual'], { timeout: 3000 })
       await execFileP('tmux', [...TMUX_ARGS, 'resize-window', '-t', tmux_session, '-x', String(PINNED_COLS), '-y', String(PINNED_ROWS)], { timeout: 3000 })
-    } catch (e) { log.warn(`terminal-watch: failed to pin window for ${tmux_session}: ${e?.message || e}`) }
+    } catch (e) {
+      // Pinning improves stable rendering; existing tmux size remains usable.
+      log.warn(`terminal-watch: failed to pin window for ${tmux_session}: ${e?.message || e}`)
+    }
 
     const size = await queryWindowSize(tmux_session) || { cols: PINNED_COLS, rows: PINNED_ROWS }
     const nodePty = await getPty()
@@ -324,6 +344,7 @@ export function createTerminalRpc({
         detectPromptFromPty(agent_id, tmux_session, state)
       }
     } catch (e) {
+      // Initial snapshot is optional; live PTY data follows after attach.
       log.warn(`terminal-watch: initial capture failed for ${tmux_session}: ${e?.message || e}`)
     }
 
@@ -333,7 +354,9 @@ export function createTerminalRpc({
       if (!cur || (cur.cols === state.cols && cur.rows === state.rows)) return
       state.cols = cur.cols
       state.rows = cur.rows
-      try { state.pty.resize(Math.max(1, cur.cols), Math.max(1, cur.rows)) } catch {}
+      try { state.pty.resize(Math.max(1, cur.cols), Math.max(1, cur.rows)) } catch {
+        // Resize failures are transient; next poll can retry.
+      }
       sendMsg({ type: 'terminal-size', agent_id, tmux_session, cols: cur.cols, rows: cur.rows })
     }, TERMINAL_SIZE_POLL_MS)
 
@@ -373,7 +396,9 @@ export function createTerminalRpc({
     if (!state) return { ok: true, already: true }
     state.alive = false
     if (state.sizePoll) { clearInterval(state.sizePoll); state.sizePoll = null }
-    try { state.pty.kill() } catch {}
+    try { state.pty.kill() } catch {
+      // PTY may already be closed by its exit handler.
+    }
     terminalWatchPtys.delete(tmux_session)
     return { ok: true }
   }
@@ -389,6 +414,7 @@ export function createTerminalRpc({
     try {
       state.pty.resize(Math.max(1, target.cols), Math.max(1, target.rows))
     } catch (e) {
+      // Resize failure is reported but should not close the watch.
       log.warn(`terminal-watch: failed to resize watcher PTY for ${tmux_session}: ${e?.message || e}`)
     }
     return { ok: true, cols: target.cols, rows: target.rows }
@@ -410,7 +436,9 @@ export function createTerminalRpc({
     for (const [, s] of terminalWatchPtys) {
       s.alive = false
       if (s.sizePoll) { clearInterval(s.sizePoll); s.sizePoll = null }
-      try { s.pty.kill() } catch {}
+      try { s.pty.kill() } catch {
+        // PTY may already be closed while stopping all watches.
+      }
     }
     terminalWatchPtys.clear()
   }

@@ -99,7 +99,9 @@ export function createDevReaper({ getAgents, tmuxArgs = [], sendMsg = () => {} }
       const cwd = cwdLine.slice(1)
       const wtMatch = cwd.match(/\.worktrees\/([^/]+)/)
       if (wtMatch) return wtMatch[1]
-    } catch {}
+    } catch {
+      // Process cwd attribution is advisory; an inaccessible lsof entry only drops the label.
+    }
     return null
   }
 
@@ -205,6 +207,7 @@ export function createDevReaper({ getAgents, tmuxArgs = [], sendMsg = () => {} }
           const attr = await attributeToAgent(v.pid).catch(() => null)
           killed.push({ pid: v.pid, kind: 'vite', ts: now, reason: `idle ${Math.round(idleMs / 60000)}m`, agent: attr?.name || null })
         } catch (e) {
+          // Reaper sweep continues after one kill race; process may have exited first.
           console.log(`[vite-reaper] kill pid=${v.pid} failed: ${e.message}`)
         }
         _viteLastClient.delete(v.pid)
@@ -287,11 +290,14 @@ export function createDevReaper({ getAgents, tmuxArgs = [], sendMsg = () => {} }
       if (orphanMs > threshold) {
         try {
           process.kill(b.pid, 'SIGKILL')
-          try { await execFileP('pkill', ['-9', '-P', String(b.pid)], { timeout: 2000 }) } catch {}
+          try { await execFileP('pkill', ['-9', '-P', String(b.pid)], { timeout: 2000 }) } catch {
+            // Child processes may already be gone after killing the browser parent.
+          }
           console.log(`[pw-reaper] killed pid=${b.pid} orphan=${Math.round(orphanMs / 1000)}s threshold=${Math.round(threshold / 1000)}s pressure=${(getMemoryPressure() * 100).toFixed(0)}%`)
           const attr = await attributeToAgent(b.pid).catch(() => null)
           killed.push({ pid: b.pid, kind: 'playwright', ts: now, reason: `orphan ${Math.round(orphanMs / 1000)}s`, agent: attr?.name || null })
         } catch (e) {
+          // Reaper sweep continues after one kill race; process may have exited first.
           console.log(`[pw-reaper] kill pid=${b.pid} failed: ${e.message}`)
         }
         _pwLastSeen.delete(b.pid)
@@ -581,7 +587,9 @@ export function createDevReaper({ getAgents, tmuxArgs = [], sendMsg = () => {} }
     const attr = await attributeToAgent(pid).catch(() => null)
     try {
       process.kill(pid, 'SIGKILL')
-      try { await execFileP('pkill', ['-9', '-P', String(pid)], { timeout: 2000 }) } catch {}
+      try { await execFileP('pkill', ['-9', '-P', String(pid)], { timeout: 2000 }) } catch {
+        // Child cleanup is advisory after the requested process was killed.
+      }
       _recentKills.push({ pid, kind: 'manual', ts: Date.now(), reason: 'manual kill', agent: attr?.name || null })
       while (_recentKills.length > MAX_RECENT_KILLS) _recentKills.shift()
       return { killed: true, pid }

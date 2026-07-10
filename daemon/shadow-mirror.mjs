@@ -49,6 +49,7 @@ export function createShadowMirror({ getSourceDir, log }) {
       try {
         fs.rmSync(bundlePath, { force: true })
       } catch (e) {
+        // Temporary bundle cleanup must not mask the mirror result.
         log.warn(`failed to remove temporary shadow bundle ${bundlePath}: ${e.message}`)
       }
     }

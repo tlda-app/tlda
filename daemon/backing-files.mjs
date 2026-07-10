@@ -8,6 +8,7 @@ function closeWatcher(watcher, label, log) {
     const closed = watcher.close()
     if (closed?.catch) closed.catch(e => log.warn(`chokidar close failed for ${label}: ${e?.message || e}`))
   } catch (e) {
+    // Watcher shutdown is cleanup-only; log and continue tearing down peers.
     log.warn(`chokidar close threw for ${label}: ${e?.message || e}`)
   }
 }
