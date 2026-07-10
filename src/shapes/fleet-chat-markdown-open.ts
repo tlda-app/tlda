@@ -1,6 +1,16 @@
+import type { Editor, TLShapeId } from 'tldraw'
+import { createTemporaryMarkdownColumn } from './FleetPillShape'
+import { getDeviceId, getHumanId, isDeviceReady } from '../fleet/fleet-data.mjs'
+import { dispatchManagedAnnotationViewerRequest } from '../wm/annotation-viewer-surface'
+import { clientPointToPage } from '../wm/viewport-coordinates'
+
 type MarkdownColumnOptions = {
+  editor: Editor
+  sourceShapeId: string
   title: string
   markdown: string
+  sourceEl: HTMLElement
+  placementEl?: HTMLElement | null
   sourcePath?: string
   sourceSection?: string
   logPrefix: string
@@ -15,6 +25,18 @@ type OpenMarkdownChipOptions = {
   target: HTMLElement
   stopPropagation: () => void
   openMarkdownColumn: (title: string, markdown: string, sourceEl: HTMLElement, source?: ChipSource) => void
+}
+
+function currentManagedSurfaceOwner() {
+  if (!isDeviceReady()) return { userId: '', deviceId: '' }
+  return { userId: getHumanId(), deviceId: getDeviceId() }
+}
+
+function managedViewportSize() {
+  return {
+    w: typeof window === 'undefined' ? 1200 : window.innerWidth,
+    h: typeof window === 'undefined' ? 800 : window.innerHeight,
+  }
 }
 
 export async function fetchMarkdownChipText(chipUrl: string, chipPath: string): Promise<string> {
@@ -41,13 +63,11 @@ export type MaterializeChipResult = {
   error?: string
 }
 
-// Turns a shared/embedded markdown chip into a real, synced column of the
+// Writes the chip's markdown as a real, synced column (project part) of the
 // document currently open on canvas — not a separate project, not a
-// throwaway snapshot. The target project is whatever `?doc=` is loaded;
-// the server writes the file as a project part and rebuilds, and the
-// existing reload/signal pipeline picks up the new column for everyone
-// looking at that doc (the same mechanism that already keeps project
-// parts/notes live).
+// throwaway snapshot. The target project is whatever `?doc=` is loaded; the
+// server writes the file and rebuilds, so the existing reload/signal
+// pipeline that already keeps project parts live also keeps this part live.
 export async function materializeMarkdownChip({
   markdown,
   title,
@@ -83,11 +103,62 @@ export async function materializeMarkdownChip({
 }
 
 export function openChatMarkdownColumn(options: MarkdownColumnOptions) {
-  const { title, markdown, sourcePath, sourceSection, logPrefix } = options
-  void materializeMarkdownChip({ markdown, title, sourcePath, sourceSection }).then((result) => {
-    if (!result.ok) {
-      console.warn(`[${logPrefix}] markdown materialize failed:`, result.error)
+  const { editor, sourceShapeId, title, markdown, sourceEl, placementEl, sourcePath, sourceSection, logPrefix } = options
+  const sourceRect = sourceEl.getBoundingClientRect()
+  const left = Math.max(12, sourceRect.left)
+  const top = Math.max(12, sourceRect.bottom + 8)
+  const mainEditor = (window as Window & { __tldraw_editor__?: Editor }).__tldraw_editor__ || editor
+  const chipAnchor = clientPointToPage(mainEditor, { x: left, y: top })
+  const occupiedBounds = (mainEditor.getCurrentPageShapes() as Array<{ id: TLShapeId; meta?: { temporaryMarkdownColumn?: unknown } }>)
+    .filter((s) => !s.meta?.temporaryMarkdownColumn)
+    .map((s) => mainEditor.getShapePageBounds(s.id))
+    .filter(Boolean) as Array<{ x: number; y: number; w: number; h: number }>
+  const anchor = occupiedBounds.length
+    ? {
+        x: Math.max(...occupiedBounds.map(b => b.x + b.w)) + 10000,
+        y: Math.max(...occupiedBounds.map(b => b.y + b.h)) + 10000,
+      }
+    : chipAnchor
+
+  const docName = new URLSearchParams(window.location.search).get('doc')
+
+  void materializeMarkdownChip({ markdown, title, sourcePath, sourceSection }).then((materialized) => {
+    if (!materialized.ok || !materialized.outputFile || !docName) {
+      console.warn(`[${logPrefix}] markdown materialize failed:`, materialized.error)
+      return
     }
+    const url = `/docs/${docName}/${materialized.outputFile}?t=${Date.now()}`
+    return createTemporaryMarkdownColumn(mainEditor, anchor, title, markdown || title, {
+      sourceChatShapeId: sourceShapeId,
+      materializedDoc: docName,
+      materializedFile: materialized.outputFile,
+    }, url)
+  }).then((result) => {
+    if (!result?.bounds) return
+    const chipRect = sourceEl.getBoundingClientRect()
+    const placementRect = placementEl?.getBoundingClientRect() ?? chipRect
+    dispatchManagedAnnotationViewerRequest({
+      surfaceKey: result.surface.surfaceId,
+      bounds: { x: result.bounds.x, y: result.bounds.y, w: result.bounds.w, h: result.bounds.h },
+      shapeIds: [result.surface.payload.shapeId],
+      label: title || 'Markdown chip',
+      chipRect: {
+        left: placementRect.left,
+        top: placementRect.top,
+        right: placementRect.right,
+        bottom: placementRect.bottom,
+        width: placementRect.width,
+        height: placementRect.height,
+      },
+      useFullBounds: true,
+      pinned: true,
+      owner: currentManagedSurfaceOwner(),
+      source: result.surface.surfaceId,
+      viewport: managedViewportSize(),
+      centerOnAnchor: true,
+    })
+  }).catch((err) => {
+    console.warn(`[${logPrefix}] markdown annotation viewer create failed:`, err?.message || err)
   })
 }
 

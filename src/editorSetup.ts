@@ -333,9 +333,30 @@ function putHtmlPageShapeRecord(editor: Editor, shape: HtmlPageShapeRecord) {
   editor.store.put([shape as unknown as Parameters<Editor['store']['put']>[0][number]])
 }
 
+// The pinned popup a chip click opens (createTemporaryMarkdownColumn in
+// FleetPillShape.tsx) points at a real, rebuilt project-part URL now, but
+// it's a standalone shape outside `document.pages` — none of the per-format
+// reload loops below know about it. Refresh it here, on every reload for the
+// doc it's materialized into, so it doesn't go stale while pinned open.
+function refreshPinnedMarkdownChip(editor: Editor, docName: string, timestamp: number) {
+  const records: unknown[] = editor.store.allRecords()
+  for (const record of records) {
+    if (!isHtmlPageShapeRecord(record)) continue
+    const meta = (record as { meta?: Record<string, unknown> }).meta
+    if (!meta?.temporaryMarkdownColumn || meta.materializedDoc !== docName) continue
+    const currentUrl = record.props.url
+    if (!currentUrl) continue
+    putHtmlPageShapeRecord(editor, {
+      ...record,
+      props: { ...record.props, url: htmlPageReloadUrl(currentUrl, timestamp) },
+    })
+  }
+}
+
 async function reloadHtmlPages(editor: Editor, document: SvgDocument): Promise<ReloadResult> {
   const timestamp = Date.now()
   const basePath = document.basePath || `${import.meta.env.BASE_URL || '/'}docs/${document.name}/`
+  refreshPinnedMarkdownChip(editor, document.name, timestamp)
 
   try {
     const res = await fetch(`${basePath}page-info.json?t=${timestamp}`)
@@ -412,6 +433,8 @@ export async function reloadPages(
   pageNumbers: number[] | null, // null = all pages
 ): Promise<ReloadResult> {
   if (document.format === 'html' || document.format === 'markdown') return reloadHtmlPages(editor, document)
+
+  refreshPinnedMarkdownChip(editor, document.name, Date.now())
 
   // Markdown parts attached to this project — independent of whatever this
   // document's own reload does below (own try/catch, never blocks it).

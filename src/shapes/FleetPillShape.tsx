@@ -228,11 +228,13 @@ export async function createTemporaryMarkdownColumn(
   title: string,
   markdown: string,
   meta: Record<string, unknown> = {},
+  overrideUrl?: string,
 ) {
   const source = markdown.trim() ? markdown : `# ${title || 'Markdown chip'}`
-  // Drag-drop only (chip CLICK no longer goes through this — it materializes
-  // a real project part instead; see fleet-chat-markdown-open.ts).
-  const url = temporaryMarkdownDataUrl(title || 'Markdown chip', source)
+  // Drag-drop: lightweight data:text/html render (unchanged). Chip CLICK
+  // passes overrideUrl — a real, rebuilt project-part URL — so this same
+  // pinned popup UI shows live content instead of a static snapshot.
+  const url = overrideUrl || temporaryMarkdownDataUrl(title || 'Markdown chip', source)
   const parkedPoint = getParkedMarkdownPoint(editor, pagePoint)
   const existing = editor.getShape(TEMP_MARKDOWN_SHAPE_ID)
   if (existing) {
