@@ -392,7 +392,7 @@ async function validateSpawnRequest(opts = {}) {
 }
 
 // Append-only message log (backup). Fleet store writes are handled by
-// individual handlers (chat, delegate, task_done, login/register) to avoid
+// individual handlers (chat, delegate, task_done, login) to avoid
 // double-writes. logEvent only writes JSONL + fleet store for event
 // types that DON'T have dedicated handlers.
 const _HANDLED_EVENT_TYPES = new Set(['chat', 'delegate', 'task_done', 'login', 'register', 'report']);
@@ -2104,11 +2104,6 @@ export async function handleFleetTool(name, args) {
       'Chat formatting: dashboard renders markdown (**bold**, `code`, lists, headers) and LaTeX ($inline$, $$display$$). Use them in chat() messages.',
     ].join('\n');
     return { content: [{ type: 'text', text: msg }] };
-  }
-
-  // ---- register ----
-  if (name === 'register') {
-    return { content: [{ type: 'text', text: 'register() has been removed for agent startup. Spawned agents must call login() to claim the server-created shell.' }], isError: true };
   }
 
   // reclaim_identity removed — tmux-based identity detection handles this automatically

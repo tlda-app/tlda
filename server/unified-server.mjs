@@ -399,7 +399,7 @@ const SERVER_ENV_NAME = getActiveConfigName(loadConfig())
 const LOCAL_DAEMON_ADDRESS = daemonAddress(LOCAL_MACHINE_ID, SERVER_ENV_NAME)
 // Server owner — the human running this server process. Used as fallback
 // identity for MCP agents and CLI operations. Browser users identify
-// themselves via WS 'login' (returning) or 'register' (new) messages.
+// themselves via WS 'login' (returning) or 'register' (new human) messages.
 const SERVER_OWNER_NAME = process.env.TLDA_USER || (() => { try { return os.userInfo()?.username } catch { return 'user' } })()
 const SERVER_OWNER_ID = `fleet:${SERVER_OWNER_NAME}`
 const SERVER_BOOT_ID = Date.now()   // unique per server start; daemon uses this to detect restarts
@@ -908,12 +908,12 @@ const spawnLibrarian = new SpawnLibrarian({
   },
   onLateRegister: (agent) => {
     const label = agent.friendly_name || agent.id
-    const metadata = { type: 'spawn_late_register', agentId: agent.id, agentLabel: label, ts: new Date().toISOString() }
-    broadcastEvent('spawn-late-register', metadata)
+    const metadata = { type: 'spawn_late_login', agentId: agent.id, agentLabel: label, ts: new Date().toISOString() }
+    broadcastEvent('spawn-late-login', metadata)
     deliverTldaFeedbackChat({
       from: 'fleet:tlda',
       to: SERVER_OWNER_ID,
-      text: `**Late registration**: \`${label}\` registered after the spawn deadline — it is now available.`,
+      text: `**Late login**: \`${label}\` logged in after the spawn deadline — it is now available.`,
       metadata,
     })
     broadcastState()
@@ -3891,13 +3891,21 @@ async function handleFleetWsMessage(ws, msg) {
     return
   }
 
-  if (type === 'register') {
+  if (type === 'register' || type === 'reserve-shell') {
     // Prefer agent_id over id: the MCP's sendWS() stamps a correlation `id`
     // onto every message, so the real fleet id arrives as agent_id. Falling
-    // back to id keeps python fleet-spawn's ws_register (which sends id=fleet_id
-    // directly, no correlation) working. Reading the bare `id` here was the
-    // root cause of phantom UUID-keyed agent rows.
+    // back to id keeps direct WS callers that send id=fleet_id working. Reading
+    // the bare `id` first here was the root cause of phantom UUID-keyed rows.
     const { agent_id, id: msgId, name, pretty_name, tmux_session, cwd, labels, manager, session_id, resume_id, metadata, machine_id, env_name, kind } = msg
+    const isShellReservation = type === 'reserve-shell'
+    if (type === 'register' && !msg.human) {
+      error('register is only for human browser sessions; agents must use reserve-shell before startup and login after startup')
+      return
+    }
+    if (isShellReservation && msg.human) {
+      error('reserve-shell is only for agent spawn shells')
+      return
+    }
     const agentId = agent_id || msgId
     if (!agentId) { error('missing id'); return }
     // Duplicate clients are allowed to coexist. Closing an existing socket here
@@ -3909,8 +3917,8 @@ async function handleFleetWsMessage(ws, msg) {
     ws._tldaAgentId = agentId
     const now = new Date().toISOString()
     const existing = fleetStore.getAgent?.(agentId)
-    // The friendly name is set once (first registration) and is thereafter owned
-    // by rename/rotation. Re-registration must NOT clobber it with the spawn name
+    // The friendly name is set once (first identity creation) and is thereafter owned
+    // by rename/rotation. Re-login must NOT clobber it with the spawn name
     // — that would undo a lineage rotation. The terminal/window name lives in
     // tmux_session, independent of the friendly name. So only the *first* name
     // is taken from `name`; once set, it's preserved.
@@ -3959,7 +3967,7 @@ async function handleFleetWsMessage(ws, msg) {
     }
     // Persist spawnPolicy ATOMICALLY as a coherent region blob. The shallow metadata
     // merge above is what let partial spawnPolicy writes corrupt the blob across
-    // re-registrations; coercing to a coherent { name, policy } region here means no new
+    // repeated identity updates; coercing to a coherent { name, policy } region here means no new
     // corruption can form. Representation-only — it reads the region off the stored blob
     // (new or legacy), never re-grants.
     if (agent.metadata?.spawnPolicy) {
@@ -3968,11 +3976,12 @@ async function handleFleetWsMessage(ws, msg) {
     // Shell reservation vs claim. The spawn flow reserves the identity as a
     // "shell" (msg.shell) before the agent process exists — addressable
     // (dead=0, in the not-dead registry) but NOT awake. The agent's login/claim
-    // has no shell flag: clear the flag so the row hydrates as awake.
-    if (msg.shell) {
+    // is a separate login message, handled below.
+    if (isShellReservation) {
       agent.metadata = { ...(agent.metadata || {}), shell: true }
     } else if (agent.metadata?.shell) {
-      // Claim: clear the shell flag. upsertAgent merges metadata via SQLite
+      // Human registration can replace a stale shell row. Clear the shell flag
+      // explicitly because upsertAgent merges metadata via SQLite
       // json_patch, which DELETES a key only when the patch sets it to null —
       // omitting it would leave the old shell:true intact through the merge.
       agent.metadata = { ...agent.metadata, shell: null }
@@ -3990,15 +3999,15 @@ async function handleFleetWsMessage(ws, msg) {
       throw e
     }
     const lifecycleLabel = agent.friendly_name || requestedName || agentId
-    const eventType = msg.shell ? 'lifecycle' : (agent.human ? 'register' : 'login')
-    const eventText = msg.shell
+    const eventType = isShellReservation ? 'lifecycle' : 'register'
+    const eventText = isShellReservation
       ? `${lifecycleLabel} shell reserved`
-      : (agent.human ? `${lifecycleLabel} registered` : `${lifecycleLabel} logged in`)
+      : `${lifecycleLabel} registered`
     fleetStore.share?.({ type: eventType, agent_id: agentId, from: agentId, to: agentId, text: eventText })
     // Every non-human agent belongs to a lineage from birth, as its own `dawn`
     // (the worker). This guarantees a handoff always has a chain to rotate within
     // — a direct handoff promotes that dawn → day (manager). The lineage is an
-    // overlay, so a failure here must never block registration.
+    // overlay, so a failure here must never block identity creation.
     if (!agent.human && agent.friendly_name) {
       const stored = fleetStore.getAgent?.(agentId)
       if (stored && !stored.lineage_id) {
@@ -4013,24 +4022,6 @@ async function handleFleetWsMessage(ws, msg) {
           fleetStore.assignPhase(agentId, lineage.id, phase)
         } catch (e) { console.error(`[lineage] auto-assign failed for ${agentId}: ${e.message}`) }
       }
-    }
-    // Registration implies a live claude process — mark alive immediately so
-    // the agent shows "awake" right away. The daemon's next sweep confirms
-    // or evicts within 30s. A shell pre-register is the exception: there is no
-    // process yet, so it must NOT be marked alive (that was the roster-lie —
-    // spawned-but-not-booted agents showing "awake"). The agent's login/claim
-    // is what marks it alive.
-    if (!agent.human && !msg.shell) {
-      markAgentAlive(agentId)
-      touchActivity(agentId)
-      spawnLibrarian.observeLiveness({
-        type: 'agent-liveness',
-        agent_id: agentId,
-        tmux_session: agent.tmux_session,
-        state: 'alive',
-        ts: now,
-      })
-      spawnLibrarian.observeRegister(fleetStore.getAgent?.(agentId) || agent)
     }
     broadcastState()
     // If the agent has a machine_id, push the updated agent list to that

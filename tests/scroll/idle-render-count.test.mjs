@@ -146,12 +146,11 @@ function assertExactlyOne(observation, label) {
 function sendHeartbeatOnlyChurn(ctx) {
   for (let i = 0; i < 5; i++) {
     ctx.fleetWs.send(JSON.stringify({
-      type: 'register',
-      id: ctx.recipientId,
+      type: 'login',
+      agent_id: ctx.recipientId,
       name: ctx.recipientName,
       cwd: process.cwd(),
       labels: ['bot', 'scroll-test'],
-      human: false,
     }))
   }
 }

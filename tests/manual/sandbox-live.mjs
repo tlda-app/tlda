@@ -40,7 +40,9 @@ await new Promise((resolve) => ws.on('open', resolve))
 
 // Register the three workers.
 for (const id of [POKE, CANCEL, KICK]) {
-  send({ type: 'register', id, name: id.replace('fleet:', ''), human: false, labels: ['worker'] })
+  send({ type: 'reserve-shell', id, name: id.replace('fleet:', ''), labels: ['worker'] })
+  await sleep(150)
+  send({ type: 'login', agent_id: id, labels: ['worker'] })
   await sleep(150)
 }
 

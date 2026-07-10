@@ -137,7 +137,7 @@ export async function markAgentDead(fleetId, { api = resolveApi(), timeoutMs = 5
   })
 }
 
-export async function wsRegister({
+async function wsIdentityMessage(type, {
   fleetId,
   name,
   tmuxSession,
@@ -169,7 +169,7 @@ export async function wsRegister({
   await opened
   const cfg = readConfig()
   const msg = {
-    type: 'register',
+    type,
     id: fleetId,
     name,
     pretty_name: prettyNameForFriendlyName(name),
@@ -210,21 +210,6 @@ export async function wsRegister({
   }
 }
 
-export async function waitForAwakeRegistration(fleetId, { api = resolveApi(), librarian, timeoutMs = 60_000 } = {}) {
-  const waiter = librarian.awaitRegister({ id: fleetId, name: fleetId })
-  const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
-    try {
-      const agents = await apiJson('/api/store/agents', { api, timeoutMs: 5000 })
-      const agent = agents.find((a) => a.id === fleetId)
-      if (agent && !agent.metadata?.shell) {
-        librarian.observeRegister(agent)
-        return await waiter
-      }
-    } catch {
-      // Registration polling is best effort; keep waiting until the deadline.
-    }
-    await new Promise((resolve) => setTimeout(resolve, 1000))
-  }
-  return await waiter
+export async function wsReserveShell(options = {}) {
+  return wsIdentityMessage('reserve-shell', { ...options, shell: true })
 }

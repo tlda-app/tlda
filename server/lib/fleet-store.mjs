@@ -1094,13 +1094,6 @@ export class FleetStore {
     });
   }
 
-  registerEvent(agentId, metadata) {
-    return this.share({
-      type: 'register', agentId, text: `agent registered`,
-      metadata,
-    });
-  }
-
   lifecycle(type, agentId, text, metadata) {
     return this.share({
       type: 'lifecycle', agentId, text: `${type}: ${text}`,

@@ -128,10 +128,12 @@ function connectFleet(ctx) {
       // "register first"). getHumanId() then === ctx.userId, so a chat shape
       // stamped with that userId actually renders under the ownership rule.
       ws.send(JSON.stringify({ type: 'register', id: ctx.userId, name: ctx.humanSanitized, cwd: process.cwd(), labels: ['scroll-test'], human: true }))
-      // Register both throwaway bots so the recipient exists (else the server
-      // rejects the chat with "no recipients matched").
-      ws.send(JSON.stringify({ type: 'register', id: ctx.agentId, name: ctx.senderName, cwd: process.cwd(), labels: ['bot', 'scroll-test'], human: false }))
-      ws.send(JSON.stringify({ type: 'register', id: ctx.recipientId, name: ctx.recipientName, cwd: process.cwd(), labels: ['bot', 'scroll-test'], human: false }))
+      // Reserve then log in both throwaway bots so the recipient exists (else
+      // the server rejects the chat with "no recipients matched").
+      ws.send(JSON.stringify({ type: 'reserve-shell', id: ctx.agentId, name: ctx.senderName, cwd: process.cwd(), labels: ['bot', 'scroll-test'] }))
+      ws.send(JSON.stringify({ type: 'login', agent_id: ctx.agentId, cwd: process.cwd(), labels: ['bot', 'scroll-test'] }))
+      ws.send(JSON.stringify({ type: 'reserve-shell', id: ctx.recipientId, name: ctx.recipientName, cwd: process.cwd(), labels: ['bot', 'scroll-test'] }))
+      ws.send(JSON.stringify({ type: 'login', agent_id: ctx.recipientId, cwd: process.cwd(), labels: ['bot', 'scroll-test'] }))
       resolve(ws)
     })
     ws.on('error', (err) => { clearTimeout(timer); reject(err) })

@@ -1,7 +1,7 @@
 import { SpawnLibrarian } from '../shared/spawn-librarian.ts'
 import { newFleetId, readConfig, resolveDnsAlias, resolveSpawnCwd, sanitizeSessionName } from './identity.mjs'
 import { inferHarnessKind } from './models.mjs'
-import { checkFreshNameAvailable, ensureServer, findAgent, markAgentDead, resolveApi, waitForAwakeRegistration, wsRegister } from './register.mjs'
+import { checkFreshNameAvailable, ensureServer, findAgent, markAgentDead, resolveApi, wsReserveShell } from './register.mjs'
 import { injectClaudePrompt, injectCodexPrompt, sessionHasRuntime, spawnTmux, uniqueSessionName } from './tmux.mjs'
 import { wrapSandboxCmd } from './fence.mjs'
 import { resolveLaunchPolicy, sandboxMetadata } from './permissions.mjs'
@@ -9,7 +9,6 @@ import { resolveCodexResumeHandle } from '../agent-runtime/codex-resume-resolver
 import {
   codexRolloutPath,
   findClaudeSession,
-  findCodexRollout,
   isRespawnIdentityCaughtUp,
   scanClaudeSessionIdentity,
   scanCodexRolloutIdentity,
@@ -83,21 +82,6 @@ function spawnEnv(params = {}) {
   if (params.activeConfigName) env.TLDA_CONFIG = params.activeConfigName
   if (params.machineId) env.TLDA_MACHINE_ID = params.machineId
   return env
-}
-
-async function waitForFreshCodexRollout(agent, options = {}) {
-  const deadline = Date.now() + (options.timeoutMs || 60_000)
-  const lookupOptions = {
-    identityConfigDir: options.identityConfigDir,
-    identityFilePath: options.identityFilePath,
-    sessionsBase: options.sessionsBase,
-  }
-  while (Date.now() < deadline) {
-    const handle = findCodexRollout(agent, lookupOptions)
-    if (handle?.rolloutId) return handle
-    await new Promise(r => setTimeout(r, 500))
-  }
-  return findCodexRollout(agent, lookupOptions)
 }
 
 async function buildCommand({ requestedKind, adapter, fleetId, tmuxSession, model, modelProvider = null, name, cwd, effort, permissionMode, spawnPolicy, api, dnsAlias, resumeId = null, includePrompt = true, leasePolicy = null, enforceFence = false, harnessOptions = {}, config = undefined, env = process.env }) {
@@ -226,15 +210,13 @@ async function spawnFresh(params) {
     })
     if (serverUp) {
       await (deps.checkFreshNameAvailable || checkFreshNameAvailable)(name, { api, serverUp })
-      await (deps.wsRegister || wsRegister)({
+      await (deps.wsReserveShell || wsReserveShell)({
         fleetId,
         name,
         tmuxSession,
         cwd,
         model,
         effort: params.effort,
-        refresh: true,
-        shell: true,
         kind: requestedKind,
         spawnPermission: launchPolicy.spawnPolicy?.permission || params.requestedPermission,
         metadata: sandboxMetadata(launchPolicy.spawnPolicy, launchPolicy.leasePolicy),
@@ -301,27 +283,8 @@ async function spawnFresh(params) {
     if (!serverUp) {
       return { ok: true, fleetId, tmuxSession, harness: requestedKind, model, registrationDeferred: true }
     }
-    const registered = await (deps.waitForAwakeRegistration || waitForAwakeRegistration)(fleetId, { api, librarian, timeoutMs: params.registerDeadlineMs || 60_000 })
-    if (!registered.ok) {
-      throw new SpawnError(registered.reason, `spawn ${fleetId} did not log in before deadline`, { fleetId, tmuxSession })
-    }
     let resumeId = null
-    if (requestedKind === 'codex') {
-      const registeredAgent = registered.agent || {
-        id: fleetId,
-        friendly_name: name,
-        cwd,
-        registered_at: new Date().toISOString(),
-      }
-      const handle = await waitForFreshCodexRollout(registeredAgent, {
-        identityConfigDir: params.identityConfigDir,
-        identityFilePath: params.identityFilePath,
-        sessionsBase: params.codexSessionsBase,
-        timeoutMs: params.codexRolloutTimeoutMs,
-      })
-      resumeId = codex.resumeId(handle)
-    }
-    return { ok: true, fleetId, tmuxSession, harness: requestedKind, model, resumeId }
+    return { ok: true, pending: true, fleetId, tmuxSession, harness: requestedKind, model, resumeId }
   } catch (e) {
     const err = toSpawnError(e, e?.message?.includes('not available') ? 'name-bounced' : 'launch-failed', { fleetId, tmuxSession, model })
     librarian.failPending(fleetId, err.reason || 'launch-failed')
@@ -425,7 +388,7 @@ async function spawnRespawn(params) {
   })
   assertNativeTools(launchPolicy, requestedKind)
   if (requestedKind === 'codex' && resumeId) {
-    await wsRegister({
+    await wsReserveShell({
       fleetId,
       name: friendlyName,
       tmuxSession,
@@ -504,14 +467,13 @@ async function spawnRefresh(params) {
     acknowledgeNoSecurity: !!params.acknowledgeNoSecurity,
   })
   assertNativeTools(launchPolicy, requestedKind)
-  await wsRegister({
+  await wsReserveShell({
     fleetId,
     name: friendlyName,
     tmuxSession,
     cwd,
     model,
     effort: params.effort || meta.effort,
-    refresh: true,
     kind: requestedKind,
     spawnPermission: launchPolicy.spawnPolicy?.permission || params.requestedPermission,
     metadata: sandboxMetadata(launchPolicy.spawnPolicy, launchPolicy.leasePolicy),
@@ -627,7 +589,7 @@ async function spawnCodexSession(params, { api, sessionId, codexPath, deps = {} 
     acknowledgeNoSecurity: !!params.acknowledgeNoSecurity,
   })
   assertNativeTools(launchPolicy, 'codex')
-  await (deps.wsRegister || wsRegister)({
+  await (deps.wsReserveShell || wsReserveShell)({
     fleetId,
     name: friendlyName,
     tmuxSession,
@@ -710,7 +672,7 @@ async function spawnClaudeSession(params, { api, sessionId, identity, deps = {} 
     acknowledgeNoSecurity: !!params.acknowledgeNoSecurity,
   })
   assertNativeTools(launchPolicy, 'claude')
-  await (deps.wsRegister || wsRegister)({
+  await (deps.wsReserveShell || wsReserveShell)({
     fleetId,
     name: friendlyName,
     tmuxSession,
