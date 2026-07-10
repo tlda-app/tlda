@@ -2137,7 +2137,11 @@ async function runFleetSpawn(spawnArgs) {
     try {
       result = await spawn(params)
     } catch (e) {
-      if (preallocatedAgentId) await ledger.delete(preallocatedAgentId).catch(() => {})
+      if (preallocatedAgentId) {
+        await ledger.delete(preallocatedAgentId).catch(cleanupError => {
+          console.error(`warning: failed to clean preallocated grant for ${preallocatedAgentId}: ${cleanupError.message}`)
+        })
+      }
       throw e
     }
     if (!preallocatedAgentId || result.fleetId !== preallocatedAgentId) {
