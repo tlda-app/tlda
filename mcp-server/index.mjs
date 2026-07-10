@@ -1995,28 +1995,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
-      name: 'flash_location',
-      description: 'DEPRECATED — prefer mentioning a label or line number in chat (auto-links to hoverable reference), or use draw_highlight for persistent marks. Flash a temporary red circle at a source location — disruptive, moves the user\'s viewport.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          doc: {
-            type: 'string',
-            description: 'Document name (e.g. "bregman"). If omitted, inferred from file path.',
-          },
-          file: {
-            type: 'string',
-            description: 'Path to the TeX file',
-          },
-          line: {
-            type: 'number',
-            description: 'Line number in the TeX file',
-          },
-        },
-        required: ['file', 'line'],
-      },
-    },
-    {
       name: 'add_note',
       description: 'Add a math note annotation to the document at a specific source line. The note appears in the TLDraw canvas and syncs to all viewers. Supports @label cross-references (e.g. @thm:bias-decomp) — broken refs are reported in the response. For multiple-choice options with long LaTeX content, prefer `options_file` over inline `text`+`choices` — the file format avoids escaping pain and gives the options a durable artifact.',
       inputSchema: {
@@ -2480,7 +2458,7 @@ function formatStrokeResult(r, docName, prefix, entry, agent) {
 // Tools that need built document pages to work
 const TOOLS_NEEDING_BUILD = new Set([
   'screenshot',
-  'flash_location', 'add_note',
+  'add_note',
   'scroll_to_line', 'read_annotations',
   'draw_highlight', 'draw_arrow',
   'set_understanding', 'get_understanding',
@@ -2695,18 +2673,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     })();
 
     return operationMailboxStartedResult(mailbox, { extra: `doc: ${docName}` });
-  }
-
-  if (name === 'flash_location') {
-    const { doc, file, line } = args;
-    if (!file || !line) {
-      return { content: [{ type: 'text', text: 'Missing file or line parameter' }], isError: true };
-    }
-    const result = await highlightLine(doc, file, line);
-    if (!result.ok) {
-      return { content: [{ type: 'text', text: result.error }], isError: true };
-    }
-    return { content: [{ type: 'text', text: `Highlighted page ${result.page} at (${result.x.toFixed(0)}, ${result.y.toFixed(0)})` }] };
   }
 
   if (name === 'add_note') {
