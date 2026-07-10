@@ -264,6 +264,7 @@ function FleetSearchInner({ shape }: { shape: any }) {
   const [docResults, setDocResults] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
   const [searched, setSearched] = useState(false)
+  const [queryError, setQueryError] = useState<string | null>(null)
   // When ↗ is clicked, a real fleet-chat shape is created on top of us
   const [chatShapeId, setChatShapeId] = useState<string | null>(null)
 
@@ -303,17 +304,33 @@ function FleetSearchInner({ shape }: { shape: any }) {
       setResults([])
       setDocResults([])
       setSearched(false)
+      setLoading(false)
+      setQueryError(null)
       closeChat()
       return
     }
 
-    const { query: ftsQuery, filters } = parseSearchQuery(q)
+    let parsed: ReturnType<typeof parseSearchQuery>
+    try {
+      parsed = parseSearchQuery(q)
+    } catch (e) {
+      setResults([])
+      setDocResults([])
+      setSearched(false)
+      setLoading(false)
+      setQueryError((e as Error).message || 'Invalid search query')
+      closeChat()
+      return
+    }
+    const { query: ftsQuery, filters } = parsed
+    setQueryError(null)
 
     // Need at least a query or a filter
     if (!ftsQuery && !filters.from && !filters.to && !filters.agent && !filters.filterExpression) {
       setResults([])
       setDocResults([])
       setSearched(false)
+      setLoading(false)
       return
     }
 
@@ -321,23 +338,25 @@ function FleetSearchInner({ shape }: { shape: any }) {
     setSearched(true)
     closeChat()
 
-    const serverFilters = buildFleetSearchFilters(filters)
-    const [res, allDocs] = await Promise.all([
-      searchFleet(ftsQuery || '', 100, serverFilters),
-      fetchSharedDocs(),
-    ])
+    try {
+      const serverFilters = buildFleetSearchFilters(filters)
+      const [res, allDocs] = await Promise.all([
+        searchFleet(ftsQuery || '', 100, serverFilters),
+        fetchSharedDocs(),
+      ])
 
-    setResults(rankSearchResults(res, ftsQuery).slice(0, 50))
+      setResults(rankSearchResults(res, ftsQuery).slice(0, 50))
 
-    // Filter shared docs by title match (only if there's an FTS query)
-    if (ftsQuery) {
-      const ql = ftsQuery.toLowerCase()
-      setDocResults(allDocs.filter(d => d.title?.toLowerCase().includes(ql) || d.doc?.toLowerCase().includes(ql)))
-    } else {
-      setDocResults([])
+      // Filter shared docs by title match (only if there's an FTS query)
+      if (ftsQuery) {
+        const ql = ftsQuery.toLowerCase()
+        setDocResults(allDocs.filter(d => d.title?.toLowerCase().includes(ql) || d.doc?.toLowerCase().includes(ql)))
+      } else {
+        setDocResults([])
+      }
+    } finally {
+      setLoading(false)
     }
-
-    setLoading(false)
   }, [closeChat])
 
   // Create a real fleet-chat shape on top of this search shape, filtered to the result's agent
@@ -382,7 +401,13 @@ function FleetSearchInner({ shape }: { shape: any }) {
   }, [doSearch, query, editor, chatShapeId, closeChat])
 
   // Parse current filters for display
-  const { filters: activeFilters } = useMemo(() => parseSearchQuery(query), [query])
+  const activeFilters = useMemo<Record<string, any>>(() => {
+    try {
+      return parseSearchQuery(query).filters
+    } catch {
+      return {}
+    }
+  }, [query])
 
   return (
     <HTMLContainer
@@ -492,6 +517,11 @@ function FleetSearchInner({ shape }: { shape: any }) {
           {loading && (
             <div style={{ padding: '12px 10px', opacity: 0.3, textAlign: 'center', fontSize: 10 }}>
               searching…
+            </div>
+          )}
+          {!loading && queryError && (
+            <div style={{ padding: '12px 10px', opacity: 0.55, textAlign: 'center', fontSize: 10, color: 'var(--color-accent, #c8956a)' }}>
+              {queryError}
             </div>
           )}
           {!loading && searched && results.length === 0 && docResults.length === 0 && (

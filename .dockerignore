@@ -5,7 +5,8 @@ node_modules
 .git
 .worktrees
 .env
-.env.example
+.env.*
+!.env.example
 server/projects
 server/data
 server/persist

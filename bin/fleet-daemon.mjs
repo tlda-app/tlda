@@ -70,8 +70,8 @@ import { sendActivityEvents } from '../agent-runtime/activity-send.mjs'
 import {
   THINKING_SPINNER_RE, INTERRUPT_HINT_RE,
 } from '../agent-runtime/status-classifier.mjs'
-import { persistDeadLetter, replayDeadLetters } from '../daemon/dead-letters.mjs'
 import { sessionIdentityPath } from '../agent-runtime/session-identity-store.mjs'
+import { DAEMON_OUTBOX_ACK_TYPE } from '../shared/daemon-delivery.mjs'
 import {
   decideTerminalWatchExit,
   unlinkPidfileIfOwnPid,
@@ -90,6 +90,8 @@ import { createAgentLiveness } from '../daemon/agent-liveness.mjs'
 import { ACTIVITY_NOISE } from '../daemon/activity-events.mjs'
 import { createHarnessRuntime } from '../daemon/harness-runtime.mjs'
 import { createShadowMirror } from '../daemon/shadow-mirror.mjs'
+import { DaemonDeliveryRuntime } from '../daemon/delivery-runtime.mjs'
+import { DaemonOutbox, defaultOutboxPath } from '../daemon/outbox.mjs'
 import { createAgentLauncher } from '../agent-launch/agent-launch.mjs'
 import {
   applyDaemonGrants,
@@ -117,7 +119,8 @@ const permissionLedger = createPermissionLedger(PERMISSION_LEDGER_FILE)
 applyDaemonGrants(permissionLedger, daemonSpawnConfig)
 
 const LOG_FILE = path.join(CONFIG_DIR, 'fleet-daemon.log')
-const DEAD_LETTER_FILE = path.join(CONFIG_DIR, 'daemon-dead-letters.jsonl')
+const DAEMON_OUTBOX_FILE = defaultOutboxPath(CONFIG_DIR)
+const LEGACY_DEAD_LETTER_FILE = path.join(CONFIG_DIR, 'daemon-dead-letters.jsonl')
 const PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects')
 
 // ---------- config / machine identity ----------
@@ -530,24 +533,37 @@ async function handleRpc(msg) {
 
 // ---------- WS connection ----------
 
-const CRITICAL_MSG_TYPES = new Set(['terminal-dead', 'terminal_attention', 'spawn-startup-failed'])
-let _droppedCount = 0
-let _droppedWarnAt = 0
-function sendMsg(obj) {
-  if (_rws?.send(obj)) return true
-  _droppedCount++
-  if (obj?.type && CRITICAL_MSG_TYPES.has(obj.type)) {
-    if (persistDeadLetter(DEAD_LETTER_FILE, obj, { log })) {
-      log.warn(`WS down — persisted ${obj.type} for ${obj.agent_id || 'unknown'} to dead-letter file`)
+const daemonOutbox = new DaemonOutbox(DAEMON_OUTBOX_FILE)
+migrateLegacyDeadLetters()
+const daemonDelivery = new DaemonDeliveryRuntime({
+  outbox: daemonOutbox,
+  send: message => _rws?.send(message) === true,
+  isConnected: () => _rws?.connected === true,
+  isReady: () => _serverReady === true,
+  log,
+})
+
+function migrateLegacyDeadLetters() {
+  if (!fs.existsSync(LEGACY_DEAD_LETTER_FILE)) return
+  const lines = fs.readFileSync(LEGACY_DEAD_LETTER_FILE, 'utf8').split(/\n/).filter(line => line.trim())
+  let migrated = 0
+  let malformed = 0
+  for (const line of lines) {
+    try {
+      const msg = JSON.parse(line)
+      delete msg.dropped
+      daemonOutbox.enqueue(msg)
+      migrated++
+    } catch {
+      malformed++
     }
   }
-  const now = Date.now()
-  if (now - _droppedWarnAt > 5000) {
-    log.warn(`dropping messages (ws not open); dropped ${_droppedCount} since last warn; sample type=${obj?.type}`)
-    _droppedCount = 0
-    _droppedWarnAt = now
-  }
-  return false
+  fs.rmSync(LEGACY_DEAD_LETTER_FILE, { force: true })
+  log.warn(`migrated legacy daemon dead letters into outbox: migrated=${migrated} malformed=${malformed}`)
+}
+
+function sendMsg(obj) {
+  return daemonDelivery.send(obj)
 }
 
 function sendMsgWithReply(obj, { timeoutMs = 15000 } = {}) {
@@ -599,6 +615,10 @@ function connect() {
 
 function handleServerMessage(msg) {
   if (machineRpc.handleReply(msg)) return
+  if (msg.type === DAEMON_OUTBOX_ACK_TYPE) {
+    if (msg.outbox_id) daemonDelivery.handleAck(msg.outbox_id)
+    return
+  }
   if (msg.type === 'daemon-welcome') {
     _serverReady = true
     agents = msg.agents || []
@@ -607,10 +627,7 @@ function handleServerMessage(msg) {
     applyDaemonGrants(permissionLedger, daemonSpawnConfig)
     grantOnMintInfill('daemon-welcome')
     log.info(`welcome: ${agents.length} agents, ${projects.length} projects`)
-    const replay = replayDeadLetters(DEAD_LETTER_FILE, message => _rws?.send(message), { log })
-    if (replay.replayed || replay.remaining || replay.malformed) {
-      log.warn(`dead-letter replay: replayed=${replay.replayed} remaining=${replay.remaining} malformed=${replay.malformed}`)
-    }
+    daemonDelivery.noteReady()
     _lastSessionWatcherRosterSig = jsonlIngestor.rosterSignature(agents)
     void jsonlIngestor.sync(agents).catch(e => log.error(`syncSessionWatchers failed: ${e.stack || e.message}`))
     sourceSync.sync(projects)
