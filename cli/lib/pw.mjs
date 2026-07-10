@@ -189,7 +189,11 @@ function isDisabled() {
   return existsSync(DISABLE_FILE)
 }
 function disableInfo() {
-  try { return JSON.parse(readFileSync(DISABLE_FILE, 'utf8')) } catch { return {} }
+  try {
+    return JSON.parse(readFileSync(DISABLE_FILE, 'utf8'))
+  } catch (e) {
+    return { by: 'unknown', reason: `corrupt lock metadata: ${e.message}` }
+  }
 }
 function writeDisable(by, reason) {
   try {
