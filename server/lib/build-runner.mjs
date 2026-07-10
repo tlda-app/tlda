@@ -26,6 +26,18 @@ for (const texbin of ['/Library/TeX/texbin', '/usr/local/texlive/2024/bin/x86_64
 }
 const execAsync = (cmd, opts = {}) => _execAsync(cmd, { maxBuffer: 50 * 1024 * 1024, ...opts })
 
+function readBuildFilesForEvent(name, projDir = projectDir(name)) {
+  const relPath = join(projDir, 'output', 'relevant-files.json')
+  if (!existsSync(relPath)) return null
+  try {
+    const files = JSON.parse(readFileSync(relPath, 'utf8'))?.files
+    return Array.isArray(files) ? files : null
+  } catch (e) {
+    console.warn(`[build:${name}] relevant-files.json unavailable for build-card: ${e.message}`)
+    return null
+  }
+}
+
 async function _gitRetryOnLock(fn, retries = 3, delayMs = 500) {
   for (let i = 0; i < retries; i++) {
     try { return await fn() }
@@ -1944,11 +1956,7 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
           // window to edits that happened after the last clean mirror.
           const lastMirrorSuccess = readProject(name)?.lastMirrorSuccess || null
           // Include build file list so the handler matches edits to actual build files.
-          let buildFiles = null
-          try {
-            const relPath = join(projDir, 'output', 'relevant-files.json')
-            buildFiles = JSON.parse(readFileSync(relPath, 'utf8'))?.files || null
-          } catch {}
+          const buildFiles = readBuildFilesForEvent(name, projDir)
           _reporter.emitGlobalEvent('build-card', {
             name,
             hash: result.hash.slice(0, 7),
@@ -2013,11 +2021,7 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
             }
             // Emit single build-card event (aggregates summary + all lint findings)
             if (summary || lintFindings.length > 0) {
-              let buildFiles = null
-              try {
-                const relPath = join(projDir, 'output', 'relevant-files.json')
-                buildFiles = JSON.parse(readFileSync(relPath, 'utf8'))?.files || null
-              } catch {}
+              const buildFiles = readBuildFilesForEvent(name, projDir)
               _reporter.emitGlobalEvent('build-card', {
                 name,
                 hash: result.hash.slice(0, 7),
@@ -2142,11 +2146,7 @@ function emitBuildFailureCard(name, message) {
   } catch (e) {
     console.error(`[build:${name}] extractBuildErrors for build-card failed: ${e.message}`)
   }
-  let buildFiles = null
-  const relPath = join(projectDir(name), 'output', 'relevant-files.json')
-  if (existsSync(relPath)) {
-    buildFiles = JSON.parse(readFileSync(relPath, 'utf8'))?.files || null
-  }
+  const buildFiles = readBuildFilesForEvent(name)
   _reporter.emitGlobalEvent('build-card', {
     name,
     hash: null,
