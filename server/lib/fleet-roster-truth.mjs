@@ -2,6 +2,13 @@ function agentName(agent) {
   return agent.friendly_name || agent.name || agent.id
 }
 
+function agentDaemonKey(agent) {
+  if (agent.daemon_key) return agent.daemon_key
+  if (agent.daemonKey) return agent.daemonKey
+  if (agent.machine_id && agent.env_name) return `${agent.machine_id}:${agent.env_name}`
+  return agent.machine_id || 'unassigned'
+}
+
 function rowForAgent(agent, now = Date.now()) {
   const lastSeenMs = agent.last_seen ? now - new Date(agent.last_seen).getTime() : null
   const act = agent.metadata?.status || null
@@ -16,6 +23,8 @@ function rowForAgent(agent, now = Date.now()) {
     inbox_status_tag: agent.metadata?.inboxStatusTag || null,
     delivery_channel: agent.metadata?.deliveryChannel || null,
     machine_id: agent.machine_id || null,
+    env_name: agent.env_name || null,
+    daemon_key: agentDaemonKey(agent),
     tmux_session: agent.tmux_session || null,
     activity: act?.state || null,
     tool: act?.tool || null,
@@ -81,7 +90,7 @@ export function summarizeFleetRosterTruth({
   }
 
   for (const agent of agentRoster) {
-    const e = entry(agent.machine_id)
+    const e = entry(agentDaemonKey(agent))
     e.registry.total++
     if (agent.dead) e.registry.dead++
     else if (agent.status === 'awake') e.registry.awake++
@@ -93,7 +102,7 @@ export function summarizeFleetRosterTruth({
   const activeBySession = new Map()
   for (const agent of agentRoster) {
     if (agent.dead || !agent.tmux_session) continue
-    const key = `${agent.machine_id || 'unassigned'}\u0000${agent.tmux_session}`
+    const key = `${agentDaemonKey(agent)}\u0000${agent.tmux_session}`
     if (!activeBySession.has(key)) activeBySession.set(key, [])
     activeBySession.get(key).push(agent)
   }
@@ -119,7 +128,7 @@ export function summarizeFleetRosterTruth({
       }
     }
     for (const agent of agentRoster) {
-      if (agent.dead || (agent.machine_id || 'unassigned') !== machineId || !agent.tmux_session) continue
+      if (agent.dead || agentDaemonKey(agent) !== machineId || !agent.tmux_session) continue
       if (!sessionSet.has(agent.tmux_session)) {
         e.registry_without_pane++
         if (e.registry_without_pane_rows.length < 25) {
@@ -127,6 +136,7 @@ export function summarizeFleetRosterTruth({
             id: agent.id,
             name: agentName(agent),
             status: agent.status,
+            daemon_key: agentDaemonKey(agent),
             tmux_session: agent.tmux_session,
           })
         }

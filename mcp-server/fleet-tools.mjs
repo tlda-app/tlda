@@ -1132,6 +1132,48 @@ function postMessage(to, from, text, metadata) {
   });
 }
 
+export function startOperationMailbox(kind, meta = {}, options = {}) {
+  if (!AGENT_ID) return null;
+  const id = `mailbox:mcp-${kind}-${Date.now().toString(36)}-${crypto.randomUUID().slice(0, 8)}`;
+  const now = Date.now();
+  return {
+    id,
+    kind,
+    ownerId: AGENT_ID,
+    startedAt: now,
+    deadlineAt: now + (options.timeoutMs || 5 * 60_000),
+    meta,
+  };
+}
+
+export function operationMailboxStartedResult(mailbox, { extra = '' } = {}) {
+  const label = mailbox?.meta?.label ? ` for ${mailbox.meta.label}` : '';
+  const suffix = extra ? `\n${extra}` : '';
+  return {
+    content: [{
+      type: 'text',
+      text: `Started ${mailbox.kind}${label}.\nmailbox_id: ${mailbox.id}${suffix}\nCompletion will arrive in fleet chat.`,
+    }],
+  };
+}
+
+export function deliverOperationMailboxCompletion(mailbox, status, detail = {}) {
+  if (!mailbox?.ownerId) return;
+  const label = detail.label || mailbox.meta?.label || mailbox.kind;
+  const text = status === 'completed'
+    ? `**${mailbox.kind} mailbox ${mailbox.id} complete**: ${label}\n\n${detail.message || detail.url || 'completed'}`
+    : `**${mailbox.kind} mailbox ${mailbox.id} failed**: ${label} — ${detail.error || detail.reason || 'failed'}`;
+  postMessage(mailbox.ownerId, AGENT_ID, text, {
+    metadata: {
+      type: 'mailbox_complete',
+      mailbox_id: mailbox.id,
+      mailbox_kind: mailbox.kind,
+      status,
+      detail,
+    },
+  });
+}
+
 async function getUnread(_state, agent) {
   try {
     const data = await sendWS('my-task', { agent, peek: true });

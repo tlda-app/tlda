@@ -6,7 +6,7 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 
 export function repoRoot() {
-  return path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..')
+  return path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 }
 
 export function resolveSpawnCwd(cwd) {

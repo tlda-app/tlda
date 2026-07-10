@@ -437,6 +437,9 @@ const agentStatus = createAgentStatus({
 let gooseSupervisor
 const agentLiveness = createAgentLiveness({
   getAgents: () => agents,
+  listSessions: () => terminalRpc.listSessions(),
+  sendMsg,
+  log,
 })
 
 const promptPlan = createPromptPlan({
@@ -633,6 +636,7 @@ function handleServerMessage(msg) {
     sourceSync.sync(projects)
     sourceSync.flushPending()
     agentLiveness.start()
+    void agentLiveness.reportHostedSessions('daemon-welcome')
     // Fast status state machine — pulls panes only for agents armed by recent
     // activity, so it's bounded to the few agents actually working (1-3s status,
     // accurate turn edges) without a fleet-wide sweep.
@@ -649,7 +653,10 @@ function handleServerMessage(msg) {
       agents,
       signature: _lastSessionWatcherRosterSig,
       reason: 'agents-updated',
-      onChanged: () => grantOnMintInfill('agents-updated'),
+      onChanged: () => {
+        grantOnMintInfill('agents-updated')
+        void agentLiveness.reportHostedSessions('agents-updated')
+      },
     })
     ackServerDaemonOutboxMessage(msg)
     return
