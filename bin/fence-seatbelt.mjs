@@ -116,12 +116,11 @@ function isFleetDbPattern(pattern) {
   return stripGlobSuffix(pattern).includes('/.config/tlda/fleet.db')
 }
 
-function denyBlock(readRoots, writeRoots) {
-  const patterns = unique([...(readRoots || []), ...(writeRoots || [])])
-    .filter((pattern) => !isFleetDbPattern(pattern))
+function denyBlock(operation, roots) {
+  const patterns = unique(roots || []).filter((pattern) => !isFleetDbPattern(pattern))
   if (!patterns.length) return ''
   return [
-    '(deny file-read* file-write*',
+    `(deny ${operation}`,
     ...patterns.map((pattern) => `  ${pathPatternMatcher(pattern)}`),
     ')',
   ].join('\n')
@@ -139,8 +138,10 @@ export function buildSeatbeltProfile(settings) {
     lines.push(`(allow file-write* ${allowWrite.map(writeRootMatcher).join(' ')} (literal ${sbplString(DEV_NULL)}))`)
   }
 
-  const deny = denyBlock(filesystem.denyRead || [], filesystem.denyWrite || [])
-  if (deny) lines.push(deny)
+  const denyRead = denyBlock('file-read* file-write*', filesystem.denyRead || [])
+  if (denyRead) lines.push(denyRead)
+  const denyWrite = denyBlock('file-write*', filesystem.denyWrite || [])
+  if (denyWrite) lines.push(denyWrite)
   lines.push(`(deny file-write* ${pathPatternMatcher(FLEET_DB_DENY)})`)
   return `${lines.join('\n')}\n`
 }

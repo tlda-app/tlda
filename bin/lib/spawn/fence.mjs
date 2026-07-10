@@ -116,7 +116,6 @@ const FENCE_SECRET_PATTERNS = [
 ]
 const FENCE_DENY_READ = [...FENCE_SECRET_PATTERNS]
 const FENCE_DENY_WRITE = [
-  '~/.config/tlda/fleet.db*',
   ...FENCE_SECRET_PATTERNS,
 ]
 const FENCE_GIT_READONLY_DENY = ['**/.git/**', '**/.git', '**/.git/worktrees/**']

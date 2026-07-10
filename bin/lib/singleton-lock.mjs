@@ -35,6 +35,7 @@
  */
 
 import fs from 'fs'
+import os from 'os'
 import path from 'path'
 import { createHash } from 'crypto'
 
@@ -100,7 +101,7 @@ export function inspectSingletonLock({ lockPath }) {
   if (process.platform === 'darwin') {
     return inspectExlock({ lockPath, holder })
   }
-  return inspectPidfileFallback({ holder })
+  return inspectPidfileFallback({ holder, lockPath })
 }
 
 function readHolder(lockPath) {
@@ -112,10 +113,14 @@ function readHolder(lockPath) {
 }
 
 function writeHolder(fd, installPath, origin = null) {
+  const identity = processIdentityForPid(process.pid)
   const record = JSON.stringify({
     pid: process.pid,
     installPath,
     ...(origin ? { origin: normalizeLockOrigin(origin) } : {}),
+    ...(identity.bootId ? { bootId: identity.bootId } : {}),
+    ...(identity.startTime ? { processStartTime: identity.startTime } : {}),
+    hostname: os.hostname(),
     startedAt: Date.now(),
   })
   fs.ftruncateSync(fd, 0)
@@ -165,22 +170,93 @@ function inspectExlock({ lockPath, holder }) {
 function acquirePidfileFallback({ lockPath, installPath, origin }) {
   const existing = readHolder(lockPath)
   if (existing && existing.pid && existing.pid !== process.pid) {
-    try {
-      process.kill(existing.pid, 0) // existence check only
+    if (isPidfileHolderCurrent(existing, processIdentityForPid, { lockPath })) {
       return { ok: false, holder: existing } // alive → refuse
-    } catch { /* dead → reclaim below */ }
+    }
   }
   const fd = fs.openSync(lockPath, fs.constants.O_RDWR | fs.constants.O_CREAT, 0o644)
   writeHolder(fd, installPath, origin)
   return { ok: true, fd }
 }
 
-function inspectPidfileFallback({ holder }) {
+function inspectPidfileFallback({ holder, lockPath }) {
   if (holder && holder.pid && holder.pid !== process.pid) {
-    try {
-      process.kill(holder.pid, 0)
+    if (isPidfileHolderCurrent(holder, processIdentityForPid, { lockPath })) {
       return { held: true, holder }
-    } catch { /* expected: pid liveness probe says holder is dead */ }
+    }
   }
   return { held: false, holder }
+}
+
+export function isPidfileHolderCurrent(holder, readIdentity = processIdentityForPid, opts = {}) {
+  if (!holder?.pid) return false
+  try {
+    process.kill(holder.pid, 0) // existence check only
+  } catch {
+    return false
+  }
+
+  const current = readIdentity(holder.pid)
+  if (holder.bootId && current.bootId && holder.bootId !== current.bootId) return false
+  if (holder.processStartTime && current.startTime && holder.processStartTime !== current.startTime) return false
+
+  // Legacy holder records did not contain boot/start identity. Keep the old
+  // conservative behavior for those records unless the lockfile itself predates
+  // the current Linux boot. That case is exactly a persisted-volume stale lock:
+  // the old daemon died with the previous VM, and the recorded pid may now be
+  // reused by an unrelated process in the new VM.
+  if (!holder.bootId && !holder.processStartTime && opts.lockPath && lockFilePredatesBoot(opts.lockPath)) {
+    return false
+  }
+  return true
+}
+
+export function processIdentityForPid(pid) {
+  return {
+    bootId: readBootId(),
+    startTime: readProcStartTime(pid),
+  }
+}
+
+function readBootId() {
+  if (process.platform !== 'linux') return null
+  try {
+    return fs.readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim()
+  } catch {
+    return null
+  }
+}
+
+function lockFilePredatesBoot(lockPath) {
+  if (process.platform !== 'linux') return false
+  const bootTimeMs = readBootTimeMs()
+  if (!bootTimeMs) return false
+  try {
+    return fs.statSync(lockPath).mtimeMs < bootTimeMs
+  } catch {
+    return false
+  }
+}
+
+function readBootTimeMs() {
+  if (process.platform !== 'linux') return null
+  try {
+    const stat = fs.readFileSync('/proc/stat', 'utf8')
+    const line = stat.split('\n').find((entry) => entry.startsWith('btime '))
+    const seconds = Number(line?.trim().split(/\s+/)[1])
+    return Number.isFinite(seconds) ? seconds * 1000 : null
+  } catch {
+    return null
+  }
+}
+
+function readProcStartTime(pid) {
+  if (process.platform !== 'linux') return null
+  try {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8')
+    const afterComm = stat.slice(stat.lastIndexOf(')') + 2).trim().split(/\s+/)
+    return afterComm[19] || null
+  } catch {
+    return null
+  }
 }
