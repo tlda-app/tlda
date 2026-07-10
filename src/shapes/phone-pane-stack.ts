@@ -442,8 +442,11 @@ export function refitPhonePaneStack(editor: Editor): PhonePaneStackRefitResult {
   const docLeft = primaryDocumentLeft(editor)
   if (docLeft === null) return { ok: false, reason: 'document-missing' }
 
-  const oldScreenW = Math.round(inbox.props?.w || screenW)
-  const dx = (inbox.x || 0) - phonePaneX(docLeft, PHONE_INBOX_PANE_INDEX, oldScreenW || screenW, 0)
+  // Phone pane stops are defined relative to the visible document viewport.
+  // Older persisted phone panes may still carry the desktop layout spread in
+  // their x coordinate; refit is the repair point that pulls them back onto the
+  // canonical phone stack instead of preserving that stale offset forever.
+  const dx = 0
   const y = inbox.y || 0
   const markdownY = phonePaneY(editor, y)
   const pinned = shapes
