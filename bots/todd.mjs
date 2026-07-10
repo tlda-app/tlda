@@ -166,7 +166,7 @@ selfCheckWiring = createDispositionWiring({
 })
 
 async function refreshSelfCheckPrefs() {
-  const prefs = await getJson(`/api/fleet/prefs?user=${encodeURIComponent(OWNER_ID)}`, null)
+  const prefs = await getJson(`/api/fleet/prefs?user=${encodeURIComponent(OWNER_ID)}`)
   if (!prefs || typeof prefs !== 'object') return
   const perBotEnabled = prefs[PREF_BOT_SELF_CHECK_ENABLED_KEY]?.[AGENT_ID]
   if (perBotEnabled !== undefined) selfCheckAutoEnabled = perBotEnabled === true
@@ -178,7 +178,7 @@ async function refreshSelfCheckPrefs() {
 }
 
 async function refreshSelfCheckRoster() {
-  const data = await getJson('/api/store/agents', [])
+  const data = await getJson('/api/store/agents')
   selfCheckWiring.updateRoster(Array.isArray(data) ? data : (data?.agents || []))
 }
 
@@ -1259,7 +1259,7 @@ function stripPhase(name) {
 // Returns "topic-Nb" for briefings, "topic-N" for pickups/managers.
 async function nextAgentName(baseTopic, suffix) {
   try {
-    const agents = await getJson('/api/store/agents', [])
+    const agents = await getJson('/api/store/agents')
     const list = Array.isArray(agents) ? agents : (agents.agents || [])
     const names = list.map(a => a.friendly_name || '')
     let maxN = 0
@@ -1269,13 +1269,14 @@ async function nextAgentName(baseTopic, suffix) {
       if (m) maxN = Math.max(maxN, parseInt(m[1], 10))
     }
     return `${baseTopic}-${maxN + 1}${suffix || ''}`
-  } catch {
+  } catch (e) {
+    console.error(`[todd] nextAgentName lookup failed: ${e.message}`)
     return `${baseTopic}-${Date.now().toString(36).slice(-4)}${suffix || ''}`
   }
 }
 
 function resolveAgentId(nameOrId) {
-  return getJson('/api/store/agents', []).then(agents => {
+  return getJson('/api/store/agents').then(agents => {
     const list = Array.isArray(agents) ? agents : (agents.agents || [])
     // Shared label universe: id, friendly_name, explicit labels, pseudo
     // and lineage tags — matches the chat router's resolution.
@@ -1592,29 +1593,32 @@ async function spawnAgent(body) {
   }
 }
 
-// RESILIENCE companion to postJson: a GET that always resolves (parsed JSON,
-// or `fallback` on timeout / network error / parse error). Never hangs — the
-// inline get blocks here had no timeout and could freeze todd the same way a
-// stuck postJson did.
-function getJson(urlPath, fallback = null) {
+function getJson(urlPath) {
   const url = `${SERVER}${urlPath}`
   const mod = url.startsWith('https') ? https : http
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     let done = false
-    const finish = (v) => { if (!done) { done = true; resolve(v) } }
+    const finish = (fn, v) => { if (!done) { done = true; fn(v) } }
     const req = mod.get(url, res => {
       let buf = ''
       res.on('data', c => buf += c)
-      res.on('end', () => { try { finish(JSON.parse(buf)) } catch { finish(fallback) } })
+      res.on('end', () => {
+        if (res.statusCode && res.statusCode >= 400) {
+          finish(reject, new Error(`GET ${urlPath} failed: HTTP ${res.statusCode}${buf ? ` ${buf.slice(0, 200)}` : ''}`))
+          return
+        }
+        try { finish(resolve, JSON.parse(buf)) }
+        catch (e) { finish(reject, new Error(`GET ${urlPath} returned invalid JSON: ${e.message}`)) }
+      })
     })
-    req.setTimeout(15_000, () => { req.destroy(); finish(fallback) })
-    req.on('error', () => finish(fallback))
+    req.setTimeout(15_000, () => { req.destroy(); finish(reject, new Error(`GET ${urlPath} timed out after 15000ms`)) })
+    req.on('error', e => finish(reject, new Error(`GET ${urlPath} failed: ${e.message}`)))
   })
 }
 
 async function findAgentManager(agentId) {
   try {
-    const data = await getJson('/api/store/tasks', [])
+    const data = await getJson('/api/store/tasks')
     const tasks = Array.isArray(data) ? data : (data.tasks || [])
     const activeTask = tasks.find(t => t.agent === agentId && t.status === 'pending' && t.delegated_by)
     return activeTask?.delegated_by || null
@@ -1625,7 +1629,7 @@ async function findAgentManager(agentId) {
 }
 
 function resolveAgentName(agentId) {
-  return getJson('/api/store/agents', []).then(agents => {
+  return getJson('/api/store/agents').then(agents => {
     const agent = (Array.isArray(agents) ? agents : (agents.agents || []))
       .find(a => a.id === agentId || a.friendly_name === agentId)
     return agent?.friendly_name || agentId
@@ -1633,7 +1637,7 @@ function resolveAgentName(agentId) {
 }
 
 function resolveAgentCwd(agentId) {
-  return getJson('/api/store/agents', []).then(agents => {
+  return getJson('/api/store/agents').then(agents => {
     const agent = (Array.isArray(agents) ? agents : (agents.agents || []))
       .find(a => a.id === agentId || a.friendly_name === agentId)
     return agent?.cwd || null
@@ -1641,7 +1645,7 @@ function resolveAgentCwd(agentId) {
 }
 
 function resolveAgentSpawnSpec(agentId) {
-  return getJson('/api/store/agents', []).then(agents => {
+  return getJson('/api/store/agents').then(agents => {
     const agent = (Array.isArray(agents) ? agents : (agents.agents || []))
       .find(a => a.id === agentId || a.friendly_name === agentId)
     const metadata = typeof agent?.metadata === 'string'
@@ -1676,9 +1680,9 @@ async function taskKickSweep() {
   if (!isCanonicalBot()) return
   writeHeartbeat('task-kick-sweep')
   const [tasksRaw, agentsRaw, timersRaw] = await Promise.all([
-    getJson('/api/store/tasks', []),
-    getJson('/api/store/agents', []),
-    getJson('/api/store/events?type=timer&limit=500', { events: [] }),
+    getJson('/api/store/tasks'),
+    getJson('/api/store/agents'),
+    getJson('/api/store/events?type=timer&limit=500'),
   ])
   const tasks = Array.isArray(tasksRaw) ? tasksRaw : (tasksRaw?.tasks || [])
   const agents = Array.isArray(agentsRaw) ? agentsRaw : (agentsRaw?.agents || [])
@@ -1827,7 +1831,7 @@ async function hasInvokedSkillSince(agentId, skillName, sinceTs) {
   try {
     const since = new Date(sinceTs).toISOString()
     const url = `/api/store/events?agent=${encodeURIComponent(agentId)}&type=activity&since=${encodeURIComponent(since)}&limit=200`
-    const data = await getJson(url, { events: [] })
+    const data = await getJson(url)
     return (data.events || []).some(e => {
       try {
         const meta = typeof e.metadata === 'string' ? JSON.parse(e.metadata) : (e.metadata || {})
@@ -1952,7 +1956,7 @@ function isDeicticDisinheritTarget(raw = '') {
 }
 
 async function activeTaskForAgent(agentId, agentName) {
-  const data = await getJson('/api/store/tasks', [])
+  const data = await getJson('/api/store/tasks')
   const tasks = Array.isArray(data) ? data : (data?.tasks || [])
   return tasks.find(t =>
     (t.agent === agentId || t.agent === agentName) &&
@@ -1971,7 +1975,7 @@ function randomDisinheritCatName() {
 async function chooseDisinheritCatName(agentId) {
   const names = [...DISINHERIT_CAT_NAMES].sort(() => Math.random() - 0.5)
   for (const name of names) {
-    const availability = await getJson(`/api/check-name?name=${encodeURIComponent(name)}&exclude=${encodeURIComponent(agentId)}`, null)
+    const availability = await getJson(`/api/check-name?name=${encodeURIComponent(name)}&exclude=${encodeURIComponent(agentId)}`)
     if (availability?.ok !== false) return name
   }
   return `${randomDisinheritCatName()} ${Date.now().toString(36).slice(-4)}`
@@ -2477,7 +2481,7 @@ function noteFleetEvent(data = {}) {
 
 async function catchUpFleetEvents() {
   const after = lastFleetEventId
-  const data = await getJson(`/api/store/events?after=${after}&limit=1000`, { events: [] })
+  const data = await getJson(`/api/store/events?after=${after}&limit=1000`)
   const events = Array.isArray(data?.events) ? data.events : []
   if (!events.length) return
   console.log(`[todd] replaying ${events.length} fleet events after reconnect (after=${after})`)
@@ -2489,7 +2493,7 @@ async function catchUpFleetEvents() {
 
 async function initializeFleetCursor() {
   if (fleetCursorInitialized) return false
-  const data = await getJson('/api/store/events?after=0&limit=1', null)
+  const data = await getJson('/api/store/events?after=0&limit=1')
   if (Number.isFinite(Number(data?.lastId))) lastFleetEventId = Number(data.lastId)
   fleetCursorInitialized = true
   writeHeartbeat('cursor-init')
@@ -2800,7 +2804,7 @@ function pwReadTouch(key) {
 
 async function pwIsAwake(agentId) {
   if (!agentId) return false
-  const data = await getJson('/api/store/agents', [])
+  const data = await getJson('/api/store/agents')
   const list = Array.isArray(data) ? data : (data.agents || [])
   const a = list.find(x => x.id === agentId)
   return !!a && !a.dead

@@ -118,7 +118,7 @@ function logDecision(event, agentId, detail) {
 // ─────────────────────────────────────────────────────────────────────────
 
 async function refreshPrefs() {
-  const prefs = await getJson(`/api/fleet/prefs?user=${encodeURIComponent(OWNER_ID)}`, null)
+  const prefs = await getJson(`/api/fleet/prefs?user=${encodeURIComponent(OWNER_ID)}`)
   if (!prefs || typeof prefs !== 'object') return
   const perBotEnabled = prefs[PREF_BOT_ENABLED_KEY]?.[AGENT_ID]
   if (perBotEnabled !== undefined) scheduler.setEnabled(perBotEnabled !== false)
@@ -264,20 +264,26 @@ function handleMessage(msg) {
   wiring.handleFleetEvent(msg.data || {})
 }
 
-// RESILIENT GET — always resolves (parsed JSON or `fallback`); never hangs.
-function getJson(urlPath, fallback = null) {
+function getJson(urlPath) {
   const url = `${SERVER}${urlPath}`
   const mod = url.startsWith('https') ? https : http
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     let done = false
-    const finish = (v) => { if (!done) { done = true; resolve(v) } }
+    const finish = (fn, v) => { if (!done) { done = true; fn(v) } }
     const req = mod.get(url, res => {
       let buf = ''
       res.on('data', c => buf += c)
-      res.on('end', () => { try { finish(JSON.parse(buf)) } catch { finish(fallback) } })
+      res.on('end', () => {
+        if (res.statusCode && res.statusCode >= 400) {
+          finish(reject, new Error(`GET ${urlPath} failed: HTTP ${res.statusCode}${buf ? ` ${buf.slice(0, 200)}` : ''}`))
+          return
+        }
+        try { finish(resolve, JSON.parse(buf)) }
+        catch (e) { finish(reject, new Error(`GET ${urlPath} returned invalid JSON: ${e.message}`)) }
+      })
     })
-    req.setTimeout(15_000, () => { req.destroy(); finish(fallback) })
-    req.on('error', () => finish(fallback))
+    req.setTimeout(15_000, () => { req.destroy(); finish(reject, new Error(`GET ${urlPath} timed out after 15000ms`)) })
+    req.on('error', e => finish(reject, new Error(`GET ${urlPath} failed: ${e.message}`)))
   })
 }
 
