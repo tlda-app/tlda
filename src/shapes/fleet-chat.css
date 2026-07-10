@@ -1855,7 +1855,10 @@ body.phone-mode .tlui-toolbar {
    stuck in a lane, unable to swipe back out. Vertical scroll still works. --- */
 body.phone-mode .fleet-agents-body,
 body.phone-mode .fleet-chat-log,
-body.phone-mode .fleet-inbox-list {
+body.phone-mode .fleet-inbox-list,
+body.phone-mode .fleet-inbox-phone-agents,
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-list,
+.fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agents {
   touch-action: pan-y;
 }
 
@@ -3033,27 +3036,59 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   color: #9370db;
 }
 
-/* Terminal, traffic toggle, then magnet: inline chrome floats over the textfield.
-   The three controls live in a tight flex cluster (.fleet-composer-gutter) so
-   they sit adjacent regardless of the traffic label width — no dead gap. The
-   container is pointer-events:none so the inter-button gaps fall through to the
-   textarea; each button re-enables pointer events. Every button is the full
-   row height (touch target) with a transparent box, so nothing drawn moves. */
+/* Composer utility rail: terminal, traffic toggle, follow/jump, and clear stay
+   normal buttons, while the rail gives phone users a forgiving touch band. */
 .fleet-chat-shape .fleet-composer-gutter {
   position: absolute;
   left: 6px;
-  top: 0;
-  bottom: 0;
+  top: -5px;
+  bottom: -5px;
   display: flex;
   align-items: center;
   gap: 3px;
   z-index: 2;
+  pointer-events: auto;
+  padding: 0 4px;
+  border-radius: 10px;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+.fleet-chat-shape .fleet-composer-rail-preview {
+  position: absolute;
+  top: -20px;
+  transform: translateX(-50%) translateY(-2px);
+  min-width: 28px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: rgba(32, 32, 36, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 9px;
+  line-height: 1.2;
+  text-align: center;
   pointer-events: none;
+  white-space: nowrap;
+  animation: fleet-composer-rail-lift 140ms ease-out;
+}
+.tl-theme__dark .fleet-chat-shape .fleet-composer-rail-preview {
+  background: rgba(18, 18, 22, 0.9);
+}
+@keyframes fleet-composer-rail-lift {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(3px) scale(0.92);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(-2px) scale(1);
+  }
 }
 .fleet-chat-shape .fleet-hardlock-toggle {
   order: 3;
   pointer-events: auto;
-  height: 36px;
+  height: 42px;
   border: none;
   background: transparent;
   color: inherit;
@@ -3077,7 +3112,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
 .fleet-chat-shape .fleet-terminal-icon {
   order: 1;
   pointer-events: auto;
-  height: 36px;
+  height: 42px;
   border: none;
   background: transparent;
   color: inherit;
@@ -3104,7 +3139,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   order: 2;
   pointer-events: auto;
   min-width: 0;
-  height: 36px;
+  height: 42px;
   border: none;
   border-radius: 0;
   background: transparent;
@@ -3128,6 +3163,29 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   -webkit-user-select: none;
   -webkit-touch-callout: none;
   touch-action: manipulation;
+}
+.fleet-chat-shape .fleet-composer-clear-toggle {
+  order: 4;
+  pointer-events: auto;
+  height: 42px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.12;
+  transition: opacity 0.3s;
+  padding: 0 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  font: inherit;
+  font-size: 13px;
+}
+.fleet-chat-shape .fleet-composer-clear-toggle:hover,
+.fleet-chat-shape .fleet-composer-clear-toggle:focus-visible,
+.fleet-chat-shape .fleet-composer-clear-toggle.unclear-mode {
+  opacity: 0.62;
 }
 .fleet-chat-shape .fleet-composer-traffic-toggle:hover,
 .fleet-chat-shape .fleet-composer-traffic-toggle:focus-visible {

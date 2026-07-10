@@ -44,6 +44,35 @@ function injectedConfig(hasTls: boolean) {
   }
 }
 
+function wsFromHttp(http: string) {
+  return http.replace(/^https:/, 'wss:').replace(/^http:/, 'ws:')
+}
+
+function proxyTargets(hasTls: boolean) {
+  if (process.env.TLDA_VITE_PROXY_ACTIVE_CONFIG === '1') {
+    const cfg = resolveConfig()
+    return {
+      databaseHttp: cfg.database.http,
+      databaseWs: cfg.database.ws || wsFromHttp(cfg.database.http),
+      storeHttp: cfg.store.http,
+      storeWs: cfg.store.ws || wsFromHttp(cfg.store.http),
+      changeOrigin: true,
+      secure: false,
+    }
+  }
+
+  const localHttp = `${hasTls ? 'https' : 'http'}://localhost:${process.env.VITE_SERVER_PORT || 5176}`
+  const localWs = `${hasTls ? 'wss' : 'ws'}://localhost:${process.env.VITE_SERVER_PORT || 5176}`
+  return {
+    databaseHttp: localHttp,
+    databaseWs: localWs,
+    storeHttp: localHttp,
+    storeWs: localWs,
+    changeOrigin: false,
+    secure: !hasTls,
+  }
+}
+
 const activeConfigPlugin = {
   name: 'tlda-active-config',
   transformIndexHtml(html: string) {
@@ -78,6 +107,7 @@ const localImagePlugin = {
 // https://vite.dev/config/
 export default defineConfig(({ command }) => {
 const hasTls = command === 'serve' && hasLocalTls
+const proxies = proxyTargets(hasTls)
 return {
   base: process.env.VITE_BASE_PATH || '/',
   esbuild: {
@@ -112,31 +142,37 @@ return {
     },
     proxy: {
       '/ws/fleet': {
-        target: `${hasTls ? 'wss' : 'ws'}://localhost:${process.env.VITE_SERVER_PORT || 5176}`,
+        target: proxies.databaseWs,
         ws: true,
-        ...(hasTls ? { secure: false } : {}),
+        changeOrigin: proxies.changeOrigin,
+        secure: proxies.secure,
       },
       '/ws/terminal': {
-        target: `${hasTls ? 'wss' : 'ws'}://localhost:${process.env.VITE_SERVER_PORT || 5176}`,
+        target: proxies.databaseWs,
         ws: true,
-        ...(hasTls ? { secure: false } : {}),
+        changeOrigin: proxies.changeOrigin,
+        secure: proxies.secure,
       },
       '/sync': {
-        target: `${hasTls ? 'wss' : 'ws'}://localhost:${process.env.VITE_SERVER_PORT || 5176}`,
+        target: proxies.storeWs,
         ws: true,
-        ...(hasTls ? { secure: false } : {}),
+        changeOrigin: proxies.changeOrigin,
+        secure: proxies.secure,
       },
       '/api': {
-        target: `${hasTls ? 'https' : 'http'}://localhost:${process.env.VITE_SERVER_PORT || 5176}`,
-        ...(hasTls ? { secure: false } : {}),
+        target: proxies.storeHttp,
+        changeOrigin: proxies.changeOrigin,
+        secure: proxies.secure,
       },
       '/docs': {
-        target: `${hasTls ? 'https' : 'http'}://localhost:${process.env.VITE_SERVER_PORT || 5176}`,
-        ...(hasTls ? { secure: false } : {}),
+        target: proxies.storeHttp,
+        changeOrigin: proxies.changeOrigin,
+        secure: proxies.secure,
       },
       '/health': {
-        target: `${hasTls ? 'https' : 'http'}://localhost:${process.env.VITE_SERVER_PORT || 5176}`,
-        ...(hasTls ? { secure: false } : {}),
+        target: proxies.storeHttp,
+        changeOrigin: proxies.changeOrigin,
+        secure: proxies.secure,
       },
     },
   },

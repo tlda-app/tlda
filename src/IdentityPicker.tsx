@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react'
 import { useFleetIdentity } from './fleet-data-adapter'
 import { subscribeCanPresent } from './authToken'
-import { temporaryIdentityName } from './fleet/identity-persistence.mjs'
+import { isUsableIdentityName, sanitizeIdentityName, temporaryIdentityName } from './fleet/identity-persistence.mjs'
 
 function cleanName(name: string | null) {
-  return name?.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '') || ''
+  const clean = sanitizeIdentityName(name)
+  return isUsableIdentityName(clean) ? clean : ''
 }
 
 export function IdentityPicker() {

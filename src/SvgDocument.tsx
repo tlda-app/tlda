@@ -129,6 +129,9 @@ import { useDividerDiff } from './hooks/useDividerDiff'
 import { ShadowHistoryOverlay } from './overlays/ShadowHistoryOverlay'
 import { PlaybackPill } from './pills/PlaybackPill'
 import { SlidesNavigator } from './SlidesNavigator'
+import { isPhoneViewport } from './phoneViewport'
+import { getPrimaryPhoneDocumentLeft, PHONE_INBOX_PANE_INDEX } from './shapes/phone-pane-stack'
+import { snapToPhoneLaneIndex } from './overlays/useFleetGestures'
 
 // Shape sync server = the active config's STORE (ws); tldraw license = the active
 // config's licenseKey. Both come from the server-injected config (activeConfig).
@@ -138,7 +141,7 @@ const LICENSE_KEY = CFG_LICENSE_KEY
 // Phone = the narrow touch layout (matches isPhone in the component + the
 // other phone checks). Module-level so render-time component overrides (e.g.
 // hiding the TLDraw toolbar) can read it without prop threading.
-const IS_PHONE = typeof window !== 'undefined' && window.matchMedia('(max-width: 600px)').matches
+const IS_PHONE = isPhoneViewport()
 
 // Agent attention overlay wrapper (needs useEditor context)
 function AgentAttentionCanvas() {
@@ -913,11 +916,13 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     return all
   }, [])
   const bindingUtils = useMemo(() => [...defaultBindingUtils], [])
-  const isPhone = typeof window !== 'undefined' && window.matchMedia('(max-width: 600px)').matches
+  const isPhone = isPhoneViewport()
+  const isPhoneLayoutRequested = typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('fleetLayout') === 'phone'
+  const usePhoneLaneNavigation = isPhone || isPhoneLayoutRequested
   const tools = useMemo(() => [
     BrowseTool, MathNoteTool, VoiceNoteTool, TextSelectTool, FleetChatTool, FleetAgentsTool, FleetSearchTool, FleetInboxTool, ClusterTool, ReaperTool, UsageMeterTool, PlaybackTool, TerminalTool, TaskInboxTool, RibbonEraserTool, RibbonHighlightTool,
-    ...(isPhone ? [PhoneHandTool] : []),
-  ], [])
+    ...(usePhoneLaneNavigation ? [PhoneHandTool] : []),
+  ], [usePhoneLaneNavigation])
 
   // --- @tldraw/sync: shape CRDT sync ---
   const syncUri = useMemo(
@@ -1495,6 +1500,8 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
                   }
                   readinessWindow.__tldaPhoneCameraSettlingUntil = Date.now() + 700
                   const markPhoneCameraReady = () => {
+                    const docLeft = getPrimaryPhoneDocumentLeft(editor)
+                    if (docLeft !== null) snapToPhoneLaneIndex(editor, docLeft, PHONE_INBOX_PANE_INDEX)
                     readinessWindow.__tldaPhoneCameraSettlingUntil = 0
                     readinessWindow.__tldaPhoneCameraReadyAt = Date.now()
                     window.dispatchEvent(new Event('phone-camera-ready'))
@@ -1506,7 +1513,11 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
                     markPhoneCameraReady()
                   }, 500)
                 }
-                // Phone: always start in phone-hand tool for axis-locked scroll
+              }
+              if (usePhoneLaneNavigation) {
+                // Phone pane stack: always start in phone-hand so lane navigation
+                // works whenever the phone layout is active, including desktop
+                // browsers opened explicitly with fleetLayout=phone.
                 editor.setCurrentTool('phone-hand')
               } else if (session?.tool) {
                 try { editor.setCurrentTool(session.tool) } catch { /* tool may not exist */ }

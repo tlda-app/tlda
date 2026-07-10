@@ -15,9 +15,10 @@
  * faithfully preserving each.
  */
 import { stopEventPropagation } from 'tldraw'
-import { useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 // @ts-ignore — vanilla JS module
 import { setVoiceTarget, resetTranscript, restartRecording } from '../voice.mjs'
+import { getPref, subscribePref } from '../preferences'
 
 export type KeyboardSend = (text: string, targets: string[]) => void
 export type VoiceSend = (targets: string[], text: string) => void | Promise<void>
@@ -34,6 +35,10 @@ type VoiceSubmitKeyboardEvent = KeyboardEvent & { __tldaVoiceSubmit?: boolean }
  *  not) exactly as the original did. Return true if it consumed the input — the
  *  composer then preventDefaults and does NOT send or push history. */
 export type ChatCommand = (text: string, targets: string[], ta: HTMLTextAreaElement) => boolean
+
+function shouldSuppressNativeKeyboard(backend: string) {
+  return backend === 'chrome' || backend === 'deepgram' || backend === 'deepgram-sdk' || backend === 'whisper'
+}
 
 export function ChatComposer({
   sendTargets,
@@ -66,6 +71,11 @@ export function ChatComposer({
 }) {
   const localRef = useRef<HTMLTextAreaElement>(null)
   const inputRef = externalRef ?? localRef
+  const [voiceBackend, setVoiceBackend] = useState(() => getPref('voice-backend') as string)
+  useEffect(() => subscribePref(() => {
+    setVoiceBackend(getPref('voice-backend') as string)
+  }), [])
+  const inputMode = isTouchDevice && shouldSuppressNativeKeyboard(voiceBackend) ? 'none' : undefined
   // Sent-message history (ArrowUp/Down) — composer-owned; the chat shape had no
   // other consumer of these refs.
   const sentHistoryRef = useRef<string[]>([])
@@ -88,7 +98,7 @@ export function ChatComposer({
       className={className}
       placeholder={placeholder}
       rows={1}
-      inputMode={isTouchDevice ? 'none' : undefined}
+      inputMode={inputMode}
       autoCorrect="off"
       autoCapitalize="off"
       autoComplete="off"

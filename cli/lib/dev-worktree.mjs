@@ -48,7 +48,7 @@ const PREVIEW_PORT_MAX = 5299
 const SERVE_HELP = `tlda-dev serve — run THIS worktree as an isolated preview
 
 Usage:
-  tlda-dev serve [start] [--sandbox] [--doc NAME] [--port N] [--no-build]
+  tlda-dev serve [start] [--sandbox] [--real-fleet] [--doc NAME] [--port N] [--no-build]
   tlda-dev serve stop [--json]
   tlda-dev serve status [--all] [--json]
   tlda-dev serve url [--doc NAME]
@@ -244,13 +244,15 @@ export function resolveReachableHost() {
 
 // ---- throwaway config pointing the SPA back at the reachable host ----
 
-function writePreviewConfig(branch, base) {
+function writePreviewConfig(branch, base, { realFleet = false } = {}) {
   const cfg = loadConfig()
   cfg.configs = cfg.configs || {}
   // Borrow a licenseKey from any existing config (tldraw sync license).
   const donor = Object.values(cfg.configs).find(c => typeof c?.licenseKey === 'string')
+  const active = cfg.configs[cfg.defaultConfig]
+  const database = realFleet && typeof active?.database === 'string' ? active.database : base
   cfg.configs[configName(branch)] = {
-    database: base,   // fleet/chat/agents → the preview server itself
+    database,         // fleet/chat/agents → preview by default, or live with --real-fleet
     store: base,      // shapes + doc assets → the preview server itself
     licenseKey: donor?.licenseKey ?? '',
   }
@@ -383,7 +385,12 @@ export async function cmdServeWorktree(args) {
     console.error('--no-build but no dist/index.html — build first'); process.exit(1)
   }
 
-  writePreviewConfig(branch, base)
+  const realFleet = flags.has('real-fleet')
+  if (realFleet && flags.has('sandbox')) {
+    console.error('--real-fleet cannot be combined with --sandbox')
+    process.exit(2)
+  }
+  writePreviewConfig(branch, base, { realFleet })
 
   // Delegate to the SAME robust detached spawn `tlda server start` uses — don't
   // hand-roll a parallel spawn (a hand-rolled `node … &` is exactly what dies
@@ -401,7 +408,7 @@ export async function cmdServeWorktree(args) {
       TLDA_DEV_SERVER: '1',          // no daemon supervisor / hibernate; isolated
       PROJECTS_DIR: projectsDir(branch),
       TLDA_FLEET_DB: fleetDb(branch),
-      TLDA_FLEET_SERVER: base,       // /api/fleet-config → this server (own chat)
+      TLDA_FLEET_SERVER: realFleet ? '' : base,
     },
   })
 
@@ -470,7 +477,7 @@ export async function cmdServeWorktree(args) {
   const url = viewerUrl(base, doc)
   const manifest = {
     branch, worktreeDir, base, doc, port, host: reach.host, kind: reach.kind,
-    url, pid, daemonPid, sandbox: flags.has('sandbox'), tokenless: true, config: configName(branch),
+    url, pid, daemonPid, sandbox: flags.has('sandbox'), realFleet, tokenless: true, config: configName(branch),
     projectsDir: projectsDir(branch), fleetDb: fleetDb(branch),
   }
   writeFileSync(manifestFile(branch), JSON.stringify(manifest, null, 2))

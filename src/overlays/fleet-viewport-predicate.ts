@@ -1,7 +1,7 @@
 import type { TLShape } from 'tldraw'
 
 export function shouldRenderLockedFleetViewportShape(
-	shape: TLShape | { type?: string; props?: unknown },
+	shape: TLShape | { type?: string; props?: unknown; meta?: unknown },
 	owner?: { userId?: string | null; deviceId?: string | null },
 ): boolean {
 	const type = shape.type

@@ -3,6 +3,8 @@ import { isFleetShapeForOwnerKey, isMyFleetShape } from './fleet-ownership'
 import { isDocumentPageShape } from './document-pages'
 import { fleetPanelDefaultProps } from './fleet-panel-registry'
 import { dispatchFleetHudReset, markMainEditorHistoryStoppingPoint } from '../wm/editor-host-bridge'
+// @ts-ignore — vanilla JS module
+import { getDeviceId, getHumanId, isDeviceReady } from '../fleet/fleet-data.mjs'
 
 export const PHONE_DOCUMENT_PANE_INDEX = 0
 export const PHONE_INBOX_PANE_INDEX = 1
@@ -24,6 +26,12 @@ type PhonePaneCandidate = {
     userId?: string
     deviceId?: string
     filter?: FleetFilter
+    url?: string
+  }
+  meta?: {
+    temporaryMarkdownColumn?: unknown
+    phonePaneOwner?: { userId?: string; deviceId?: string }
+    title?: string
   }
 }
 
@@ -34,10 +42,6 @@ type PhonePaneShapeUpdate = {
   y?: number
   props?: Record<string, unknown>
   isLocked?: boolean
-}
-
-type PhonePaneShapeCreate = Required<Pick<PhonePaneShapeUpdate, 'id' | 'type' | 'x' | 'props' | 'isLocked'>> & {
-  y: number
 }
 
 export type FleetFilter = [string, string][][]
@@ -87,13 +91,22 @@ function isFullScreenPhonePane(editor: Editor, shape: PhonePaneCandidate): boole
   if (!screenW || !screenH) return false
   const w = shape.props?.w || 0
   const h = shape.props?.h || 0
+  if (shape.type === 'html-page') {
+    const z = editor.getCamera().z || 1
+    return Math.abs(w * z - screenW) <= 2 && h * z >= screenH - 2
+  }
   return Math.abs(w - screenW) <= 2 && Math.abs(h - screenH) <= 2
 }
 
 export function isPhonePinnedPaneShape(editor: Editor, shape: TLShape | PhonePaneCandidate): boolean {
   const pane = shape as PhonePaneCandidate
-  if (!isMyFleetShape(pane)) return false
-  if (pane.type !== 'fleet-chat') return false
+  if (pane.type === 'html-page' && isDeviceReady()) {
+    const userId = getHumanId()
+    const deviceId = getDeviceId()
+    if (!isPhoneMarkdownPaneForOwner(pane, userId, deviceId)) return false
+  } else if (!isMyFleetShape(pane) || pane.type !== 'fleet-chat') {
+    return false
+  }
   return isFullScreenPhonePane(editor, pane)
 }
 
@@ -123,22 +136,70 @@ export function phonePaneStackMaxIndex(editor: Editor): number {
 }
 
 function isFullScreenPinnedPaneForOwner(editor: Editor, shape: PhonePaneCandidate, userId: string, deviceId: string): boolean {
-  return isFleetShapeForOwnerKey(shape, userId, deviceId) &&
-    shape.type === 'fleet-chat' &&
+  return isPhonePinnedPaneForOwner(shape, userId, deviceId) &&
     isFullScreenPhonePane(editor, shape)
 }
 
+function isPhoneMarkdownPaneForOwner(shape: PhonePaneCandidate, userId: string, deviceId: string): boolean {
+  return shape.type === 'html-page' &&
+    shape.meta?.temporaryMarkdownColumn === true &&
+    shape.meta?.phonePaneOwner?.userId === userId &&
+    shape.meta?.phonePaneOwner?.deviceId === deviceId
+}
+
+function isTemporaryMarkdownPane(shape: PhonePaneCandidate): boolean {
+  return shape.type === 'html-page' && shape.meta?.temporaryMarkdownColumn === true
+}
+
+function isPhonePinnedPaneForOwner(shape: PhonePaneCandidate, userId: string, deviceId: string): boolean {
+  return (
+    (isFleetShapeForOwnerKey(shape, userId, deviceId) && shape.type === 'fleet-chat') ||
+    isPhoneMarkdownPaneForOwner(shape, userId, deviceId)
+  )
+}
+
 function isPhoneStackPaneForOwner(shape: PhonePaneCandidate, userId: string, deviceId: string): boolean {
-  return isFleetShapeForOwnerKey(shape, userId, deviceId) &&
-    (shape.type === 'fleet-inbox' || shape.type === 'fleet-chat')
+  return (isFleetShapeForOwnerKey(shape, userId, deviceId) &&
+    (shape.type === 'fleet-inbox' || shape.type === 'fleet-chat')) ||
+    isPhoneMarkdownPaneForOwner(shape, userId, deviceId)
 }
 
 function updatePhonePaneShape(editor: Editor, update: PhonePaneShapeUpdate) {
   editor.updateShape(update as never)
 }
 
-function createPhonePaneShape(editor: Editor, shape: PhonePaneShapeCreate) {
-  editor.createShape(shape as never)
+function resizedPhonePaneProps(
+  pane: PhonePaneCandidate,
+  screenW: number,
+  screenH: number,
+  userId: string,
+  deviceId: string,
+): Record<string, unknown> {
+  if (pane.type === 'html-page') return { w: screenW, h: screenH, url: pane.props?.url || '' }
+  return { ...(pane.props || {}), w: screenW, h: screenH, userId, deviceId }
+}
+
+function phonePaneY(editor: Editor, fallbackY: number): number {
+  const viewport = editor.getViewportPageBounds()
+  return Number.isFinite(viewport.y) ? viewport.y : fallbackY
+}
+
+function phoneMarkdownPaneSize(editor: Editor, screenW: number, screenH: number): { w: number; h: number } {
+  const z = editor.getCamera().z || 1
+  return { w: screenW / z, h: screenH / z }
+}
+
+function phonePinnedPaneX(
+  editor: Editor,
+  pane: PhonePaneCandidate,
+  docLeftPage: number,
+  paneIndex: number,
+  screenW: number,
+  dx: number,
+): number {
+  return pane.type === 'html-page'
+    ? docLeftPage - paneIndex * phoneMarkdownPaneSize(editor, screenW, 1).w
+    : phonePaneX(docLeftPage, paneIndex, screenW, dx)
 }
 
 export function pushPhonePinnedChatPane(editor: Editor, inboxShape: PhonePaneCandidate, filter: FleetFilter): PhonePinnedPanePushResult {
@@ -156,34 +217,48 @@ export function pushPhonePinnedChatPane(editor: Editor, inboxShape: PhonePaneCan
   const dx = (inboxShape.x || 0) - phonePaneX(docLeft, PHONE_INBOX_PANE_INDEX, screenW, 0)
   const topPaneX = phonePaneX(docLeft, PHONE_INBOX_PANE_INDEX + 1, screenW, dx)
   const y = inboxShape.y || 0
-  const pinned = (editor.getCurrentPageShapes() as PhonePaneCandidate[])
+  const markdownY = phonePaneY(editor, y)
+  const shapes = editor.getCurrentPageShapes() as PhonePaneCandidate[]
+  const oldMarkdownPaneIds = shapes
+    .filter(isTemporaryMarkdownPane)
+    .map(shape => shape.id)
+    .filter((id): id is TLShapeId => typeof id === 'string')
+  const pinned = shapes
     .filter(shape => isFullScreenPinnedPaneForOwner(editor, shape, userId, deviceId))
+    .filter(shape => !oldMarkdownPaneIds.includes(shape.id as TLShapeId))
     .sort((a, b) => ((b.x || 0) - (a.x || 0)) || String(a.id).localeCompare(String(b.id)))
   const createdId = createShapeId()
+  const markdownSize = phoneMarkdownPaneSize(editor, screenW, screenH)
 
   markMainEditorHistoryStoppingPoint(editor)
   editor.run(() => {
+    if (oldMarkdownPaneIds.length > 0) editor.deleteShapes(oldMarkdownPaneIds)
     for (const pane of pinned) {
       if (!pane.id || !pane.type) continue
       if (pane.isLocked) {
-        updatePhonePaneShape(editor, { id: pane.id as TLShapeId, type: pane.type, isLocked: false })
+        editor.updateShape({ id: pane.id as any, type: pane.type as any, isLocked: false } as any)
       }
-      updatePhonePaneShape(editor, {
-        id: pane.id as TLShapeId,
-        type: pane.type,
-        x: (pane.x || 0) - screenW,
-        props: { ...(pane.props || {}), w: screenW, h: screenH, userId, deviceId },
+      editor.updateShape({
+        id: pane.id as any,
+        type: pane.type as any,
+        x: pane.type === 'html-page'
+          ? docLeft - (PHONE_INBOX_PANE_INDEX + 2) * markdownSize.w
+          : (pane.x || 0) - screenW,
+        y: pane.type === 'html-page' ? markdownY : undefined,
+        props: pane.type === 'html-page'
+          ? { w: markdownSize.w, h: markdownSize.h, url: pane.props?.url || '' }
+          : resizedPhonePaneProps(pane, screenW, screenH, userId, deviceId),
         isLocked: true,
-      })
+      } as any)
     }
-    createPhonePaneShape(editor, {
+    editor.createShape({
       id: createdId,
-      type: 'fleet-chat',
+      type: 'fleet-chat' as any,
       x: topPaneX,
       y,
       isLocked: true,
       props: { ...fleetPanelDefaultProps('fleet-chat'), w: screenW, h: screenH, filter, userId, deviceId },
-    })
+    } as any)
   })
   dispatchFleetHudReset()
 
@@ -197,10 +272,88 @@ export function pushPhonePinnedChatPane(editor: Editor, inboxShape: PhonePaneCan
   }
 }
 
-export function deletePhonePinnedChatPane(editor: Editor, paneShape: TLShape | PhonePaneCandidate): PhonePinnedPaneDeleteResult {
-  const pane = paneShape as PhonePaneCandidate
-  const userId = pane.props?.userId
-  const deviceId = pane.props?.deviceId
+export function pushPhonePinnedMarkdownPane(
+  editor: Editor,
+  inboxShape: PhonePaneCandidate,
+  url: string,
+  title: string,
+): PhonePinnedPanePushResult {
+  const userId = inboxShape.props?.userId
+  const deviceId = inboxShape.props?.deviceId
+  if (!userId || !deviceId) return { ok: false, reason: 'owner-missing' }
+
+  const { w: screenW, h: screenH } = viewportSize(editor)
+  if (!screenW || !screenH) return { ok: false, reason: 'viewport-missing' }
+  if (!isFullScreenPhonePane(editor, inboxShape)) return { ok: false, reason: 'inbox-not-fullscreen' }
+
+  const docLeft = primaryDocumentLeft(editor)
+  if (docLeft === null) return { ok: false, reason: 'document-missing' }
+
+  const y = inboxShape.y || 0
+  const markdownY = phonePaneY(editor, y)
+  const shapes = editor.getCurrentPageShapes() as PhonePaneCandidate[]
+  const oldMarkdownPaneIds = shapes
+    .filter(isTemporaryMarkdownPane)
+    .map(shape => shape.id)
+    .filter((id): id is TLShapeId => typeof id === 'string')
+  const pinned = shapes
+    .filter(shape => isFullScreenPinnedPaneForOwner(editor, shape, userId, deviceId))
+    .filter(shape => !oldMarkdownPaneIds.includes(shape.id as TLShapeId))
+    .sort((a, b) => ((b.x || 0) - (a.x || 0)) || String(a.id).localeCompare(String(b.id)))
+  const createdId = createShapeId()
+  const markdownSize = phoneMarkdownPaneSize(editor, screenW, screenH)
+
+  markMainEditorHistoryStoppingPoint(editor)
+  editor.run(() => {
+    if (oldMarkdownPaneIds.length > 0) editor.store.remove(oldMarkdownPaneIds)
+    for (const pane of pinned) {
+      if (!pane.id || !pane.type) continue
+      if (pane.isLocked) {
+        editor.updateShape({ id: pane.id as any, type: pane.type as any, isLocked: false } as any)
+      }
+      editor.updateShape({
+        id: pane.id as any,
+        type: pane.type as any,
+        x: pane.type === 'html-page'
+          ? docLeft - (PHONE_INBOX_PANE_INDEX + 2) * markdownSize.w
+          : (pane.x || 0) - screenW,
+        y: pane.type === 'html-page' ? markdownY : undefined,
+        props: pane.type === 'html-page'
+          ? { w: markdownSize.w, h: markdownSize.h, url: pane.props?.url || '' }
+          : resizedPhonePaneProps(pane, screenW, screenH, userId, deviceId),
+        isLocked: true,
+      } as any)
+    }
+    editor.createShape({
+      id: createdId,
+      type: 'html-page' as any,
+      x: docLeft - (PHONE_INBOX_PANE_INDEX + 1) * markdownSize.w,
+      y: markdownY,
+      isLocked: true,
+      props: { w: markdownSize.w, h: markdownSize.h, url },
+      meta: {
+        temporaryMarkdownColumn: true,
+        title,
+        phonePaneOwner: { userId, deviceId },
+        createdAt: Date.now(),
+      },
+    } as any)
+  })
+  dispatchFleetHudReset()
+
+  return {
+    ok: true,
+    createdId: createdId as unknown as string,
+    shiftedIds: pinned.map(pane => String(pane.id)).filter(Boolean),
+    newIndex: PHONE_INBOX_PANE_INDEX + 1,
+    maxIndex: PHONE_INBOX_PANE_INDEX + 1 + pinned.length,
+    docLeftPage: docLeft,
+  }
+}
+
+export function deletePhonePinnedChatPane(editor: Editor, paneShape: PhonePaneCandidate): PhonePinnedPaneDeleteResult {
+  const userId = paneShape.props?.userId || paneShape.meta?.phonePaneOwner?.userId
+  const deviceId = paneShape.props?.deviceId || paneShape.meta?.phonePaneOwner?.deviceId
   if (!userId || !deviceId) return { ok: false, reason: 'owner-missing' }
 
   const { w: screenW, h: screenH } = viewportSize(editor)
@@ -209,14 +362,21 @@ export function deletePhonePinnedChatPane(editor: Editor, paneShape: TLShape | P
   const docLeft = primaryDocumentLeft(editor)
   if (docLeft === null) return { ok: false, reason: 'document-missing' }
 
-  const pinned = (editor.getCurrentPageShapes() as PhonePaneCandidate[])
+  const shapes = editor.getCurrentPageShapes() as PhonePaneCandidate[]
+  const inbox = shapes.find(shape =>
+    isFleetShapeForOwnerKey(shape, userId, deviceId) &&
+    shape.type === 'fleet-inbox'
+  )
+  const dx = (inbox?.x || 0) - phonePaneX(docLeft, PHONE_INBOX_PANE_INDEX, Math.round(inbox?.props?.w || screenW) || screenW, 0)
+
+  const pinned = shapes
     .filter(shape => isFullScreenPinnedPaneForOwner(editor, shape, userId, deviceId))
     .sort((a, b) => ((b.x || 0) - (a.x || 0)) || String(a.id).localeCompare(String(b.id)))
 
-  const targetPosition = pinned.findIndex(shape => String(shape.id) === String(pane.id))
-  if (targetPosition < 0 || !pane.id || pane.type !== 'fleet-chat') return { ok: false, reason: 'pane-not-pinned' }
-  const targetId = pane.id as TLShapeId
-  const targetType = pane.type
+  const targetPosition = pinned.findIndex(shape => String(shape.id) === String(paneShape.id))
+  if (targetPosition < 0 || !paneShape.id || !paneShape.type) return { ok: false, reason: 'pane-not-pinned' }
+  const targetId = paneShape.id as TLShapeId
+  const targetType = paneShape.type
 
   const targetIndex = PHONE_INBOX_PANE_INDEX + 1 + targetPosition
   const shifted = pinned.slice(targetPosition + 1)
@@ -226,20 +386,22 @@ export function deletePhonePinnedChatPane(editor: Editor, paneShape: TLShape | P
 
   markMainEditorHistoryStoppingPoint(editor)
   editor.run(() => {
-    for (const pane of shifted) {
+    for (const [i, pane] of shifted.entries()) {
       if (!pane.id || !pane.type) continue
+      const nextIndex = targetIndex + i
       if (pane.isLocked) {
         updatePhonePaneShape(editor, { id: pane.id as TLShapeId, type: pane.type, isLocked: false })
       }
       updatePhonePaneShape(editor, {
         id: pane.id as TLShapeId,
         type: pane.type,
-        x: (pane.x || 0) + screenW,
-        props: { ...(pane.props || {}), w: screenW, h: screenH, userId, deviceId },
+        x: phonePinnedPaneX(editor, pane, docLeft, nextIndex, screenW, dx),
+        y: pane.type === 'html-page' ? phonePaneY(editor, pane.y || 0) : undefined,
+        props: resizedPhonePaneProps(pane, screenW, screenH, userId, deviceId),
         isLocked: true,
       })
     }
-    if (pane.isLocked) {
+    if (paneShape.isLocked) {
       updatePhonePaneShape(editor, { id: targetId, type: targetType, isLocked: false })
     }
     editor.deleteShapes([targetId])
@@ -288,8 +450,9 @@ export function refitPhonePaneStack(editor: Editor): PhonePaneStackRefitResult {
   const oldScreenW = Math.round(inbox.props?.w || screenW)
   const dx = (inbox.x || 0) - phonePaneX(docLeft, PHONE_INBOX_PANE_INDEX, oldScreenW || screenW, 0)
   const y = inbox.y || 0
+  const markdownY = phonePaneY(editor, y)
   const pinned = shapes
-    .filter(shape => isFleetShapeForOwnerKey(shape, userId, deviceId) && shape.type === 'fleet-chat')
+    .filter(shape => isFullScreenPinnedPaneForOwner(editor, shape, userId, deviceId))
     .sort((a, b) => ((b.x || 0) - (a.x || 0)) || String(a.id).localeCompare(String(b.id)))
   const maxIndex = PHONE_INBOX_PANE_INDEX + pinned.length
 
@@ -305,12 +468,15 @@ export function refitPhonePaneStack(editor: Editor): PhonePaneStackRefitResult {
   ]
   pinned.forEach((pane, i) => {
     if (!pane.id || !pane.type) return
+    const paneIndex = PHONE_INBOX_PANE_INDEX + 1 + i
     paneUpdates.push({
       id: pane.id as TLShapeId,
       type: pane.type,
-      x: phonePaneX(docLeft, PHONE_INBOX_PANE_INDEX + 1 + i, screenW, dx),
-      y,
-      props: { ...(pane.props || {}), w: screenW, h: screenH, userId, deviceId },
+      x: phonePinnedPaneX(editor, pane, docLeft, paneIndex, screenW, dx),
+      y: pane.type === 'html-page' ? markdownY : y,
+      props: pane.type === 'html-page'
+        ? { w: phoneMarkdownPaneSize(editor, screenW, screenH).w, h: phoneMarkdownPaneSize(editor, screenW, screenH).h, url: pane.props?.url || '' }
+        : resizedPhonePaneProps(pane, screenW, screenH, userId, deviceId),
       isLocked: true,
     })
   })

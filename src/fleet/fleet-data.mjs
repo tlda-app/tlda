@@ -30,7 +30,7 @@ import {
 import { log } from '../logger'
 import { probe } from '../perf-probe'
 import { DATABASE_HTTP, DATABASE_WS } from '../activeConfig'
-import { storedIdentityLoginFailureAction, temporaryIdentityName } from './identity-persistence.mjs'
+import { isUsableIdentityName, sanitizeIdentityName, storedIdentityLoginFailureAction, temporaryIdentityName } from './identity-persistence.mjs'
 import { rejectWsRequests, resetWsRequestIdleTimers, startWsRequest } from '../../shared/ws-request-policy.mjs'
 
 // The global fleet/event store (chat, agents, activity, tasks) = the active
@@ -211,6 +211,16 @@ export function getActivity(agentId) { return _store.all().filter(e => e._activi
 export function getHumanId() { return _humanId }
 export function getHumanName() { return _humanName }
 
+if (typeof window !== 'undefined') {
+  window.__tldaFleetIdentity = () => ({
+    id: _humanId,
+    name: _humanName,
+    identifyPending: _identifyPending,
+    connected: _connected,
+    wsReadyState: _ws?.readyState ?? null,
+  })
+}
+
 // A stable per-browser id, generated once and persisted. This is the "device"
 // half of the (identity, device) fleet-layout key: the same human identity open
 // on two devices (Mac + iPad) gets two distinct device ids, so each device owns
@@ -339,9 +349,26 @@ export function getDeviceId() {
 export function needsIdentity() { return !_humanId && _identifyPending }
 
 function readStoredIdentity() {
-  try { return localStorage.getItem('tlda-identity') }
+  try {
+    const stored = localStorage.getItem('tlda-identity')
+    const clean = sanitizeIdentityName(stored)
+    if (!isUsableIdentityName(clean)) {
+      if (stored) localStorage.removeItem('tlda-identity')
+      return null
+    }
+    return clean
+  }
   catch {
     // Storage access can be blocked by the browser; fall back to temporary identity.
+    return null
+  }
+}
+
+function readUrlIdentity() {
+  try {
+    const clean = sanitizeIdentityName(new URLSearchParams(window.location.search).get('name'))
+    return isUsableIdentityName(clean) ? clean : null
+  } catch {
     return null
   }
 }
@@ -366,7 +393,9 @@ function clearTemporaryIdentity() {
 
 /** Log in as an existing agent. Used by returning users and ?name= auto-login. */
 export async function login(name) {
-  const res = await wsSend({ type: 'login', name })
+  const clean = sanitizeIdentityName(name)
+  if (!isUsableIdentityName(clean)) throw new Error('invalid identity name')
+  const res = await wsSend({ type: 'login', name: clean })
   _humanId = res.id
   _humanName = res.name
   _identifyPending = false
@@ -379,7 +408,8 @@ export async function login(name) {
 
 /** Register a new human agent. Used by the IdentityPicker for new users. */
 export async function registerHuman(name, { persist = true } = {}) {
-  const sanitized = name.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '')
+  const sanitized = sanitizeIdentityName(name)
+  if (!isUsableIdentityName(sanitized)) throw new Error('invalid identity name')
   const humanId = `fleet:${sanitized}`
   const res = await wsSend({ type: 'register', agent_id: humanId, name: sanitized, human: true })
   _humanId = res.agent?.id || humanId
@@ -645,9 +675,12 @@ export function connect() {
     _reconnectDelay = 1000
     _connected = true
     notify('connection', { type: 'connection', connected: true })
-    // Log in if we have a stored identity
-    const storedName = readStoredIdentity()
+    // Log in if we have a requested or stored identity. The URL is explicit for
+    // this tab and must beat stale browser storage.
+    const storedName = readUrlIdentity() || readStoredIdentity()
     if (storedName) {
+      _identifyPending = true
+      notify('identity', { type: 'identity', id: null, name: storedName, needsIdentity: true })
       wsSend({ type: 'login', name: storedName }).then(res => {
         _humanId = res.id
         _humanName = res.name

@@ -18,9 +18,12 @@ import { stopEventPropagation, useUniqueSafeId } from 'tldraw'
 import type { Editor } from 'tldraw'
 import { currentFleetAgents, useAwakeFleetAgentCount, useFleetIdentity } from '../fleet-data-adapter'
 import { createFleetLayoutDetailed, type FleetLayoutCreateResult, type FleetLayoutVariant } from '../shapes/fleet-utils'
+import { getPrimaryPhoneDocumentLeft, PHONE_INBOX_PANE_INDEX } from '../shapes/phone-pane-stack'
+import { snapToPhoneLaneIndex } from '../overlays/useFleetGestures'
 import { dispatchFleetHudReset, dispatchFleetHudToggle } from '../wm/editor-host-bridge'
 import { isFleetHudHidden, writeFleetHudExpanded } from '../wm/fleet-hud-state'
 import { log } from '../logger'
+import { isUsableIdentityName, sanitizeIdentityName } from '../fleet/identity-persistence.mjs'
 import { CornerButtonSlider, pickCornerSliderIndex } from '../CornerButtonSlider'
 import './FleetIconPill.css'
 
@@ -47,7 +50,7 @@ type LayoutId = Exclude<FleetLayoutVariant, 'touch'>
 type LayoutSource = 'badge-drag-release' | 'fan-preset' | 'url-auto'
 // Order is "outside in": phone/pane layout first, then the desktop layouts.
 const LAYOUT_PRESETS: { id: LayoutId; title: string }[] = [
-  { id: 'phone', title: 'Phone reset: agents/inbox | chat | document' },
+  { id: 'phone', title: 'Phone reset: inbox | document' },
   { id: '3-col', title: 'Three-column: agents + search | chat | chat + docview' },
   { id: '2x2', title: '2×2: agents + search | four chats' },
   { id: 'big-chat', title: 'Big chat: large chat over source editor' },
@@ -189,7 +192,8 @@ function getPhoneCameraSettlingDelay() {
 }
 
 function cleanUrlName(name: string | null) {
-  return name?.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '') || ''
+  const clean = sanitizeIdentityName(name)
+  return isUsableIdentityName(clean) ? clean : ''
 }
 
 function setFleetHudExpanded(expanded: boolean) {
@@ -232,6 +236,38 @@ function applyFleetLayoutPreset({
     unsub?.()
     unsub = null
   }
+  const fitPhonePageInViewport = () => {
+    const pageShapes = mainEditor.getCurrentPageShapes().filter(s => (s.type as string) === 'svg-page')
+    if (pageShapes.length === 0) return false
+    const first = pageShapes.sort((a, b) => (a as any).y - (b as any).y)[0]
+    const b = mainEditor.getShapePageBounds(first.id)
+    if (!b) return false
+    const el = window.document.querySelector(`[data-shape-id="${first.id}"]:not(.tl-shape-background)`)
+    const svg = el?.querySelector('svg')
+    const vp = mainEditor.getViewportScreenBounds()
+    if (svg?.viewBox?.baseVal?.width) {
+      const vb = svg.viewBox.baseVal
+      const texts = svg.querySelectorAll('text')
+      let minX = Infinity
+      let maxX = -Infinity
+      for (const t of texts) {
+        if (t.closest('defs')) continue
+        const x = parseFloat(t.getAttribute('x') || '0')
+        const len = (t as SVGTextContentElement).getComputedTextLength?.() || 0
+        if (x < minX) minX = x
+        if (x + len > maxX) maxX = x + len
+      }
+      if (minX < maxX) {
+        const sx = b.width / vb.width
+        const colMinX = b.minX + minX * sx
+        const colW = (maxX - minX) * sx
+        mainEditor.setCamera({ x: -colMinX, y: -b.minY, z: vp.width / colW })
+        return true
+      }
+    }
+    mainEditor.setCamera({ x: -b.minX, y: -b.minY, z: vp.width / b.width })
+    return true
+  }
   const applyWhenReady = async () => {
     if (presetId === 'phone') {
       const delay = getPhoneCameraSettlingDelay()
@@ -256,7 +292,14 @@ function applyFleetLayoutPreset({
         setFleetHudExpanded(true)
         onShown?.()
       }
-      requestAnimationFrame(() => dispatchFleetHudReset())
+      requestAnimationFrame(() => {
+        if (presetId === 'phone') {
+          fitPhonePageInViewport()
+          const docLeft = getPrimaryPhoneDocumentLeft(mainEditor)
+          if (docLeft !== null) snapToPhoneLaneIndex(mainEditor, docLeft, PHONE_INBOX_PANE_INDEX)
+        }
+        dispatchFleetHudReset()
+      })
       return
     }
     if (Date.now() >= deadline) {

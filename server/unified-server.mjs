@@ -1956,7 +1956,7 @@ function hasDeepgramKey() {
   try { return !!loadConfig()?.deepgramApiKey } catch { return false }
 }
 
-app.get('/api/voice/backends', requireRead, async (req, res) => {
+app.get('/api/voice/backends', async (req, res) => {
   try {
     const backends = [
       { value: '', label: 'Off', available: true },
@@ -4033,7 +4033,7 @@ async function handleFleetWsMessage(ws, msg) {
     const sanitized = name.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '')
     if (!sanitized) { error('invalid name'); return }
     // Find existing agent by friendly_name
-    const nameRows = fleetStore.db.prepare('SELECT * FROM agents WHERE friendly_name = ? AND dead = 0').all(sanitized)
+    const nameRows = fleetStore.db.prepare('SELECT * FROM agents WHERE friendly_name = ? AND dead = 0 AND human = 1').all(sanitized)
     if (nameRows.length === 0) {
       error(`No agent named "${sanitized}". Register first.`)
       return

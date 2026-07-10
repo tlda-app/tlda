@@ -100,3 +100,36 @@ export function phoneLaneSweepCanFit(startX: number, viewportW: number, dir: num
   if (dir > 0) return viewportW - startX >= commit
   return false
 }
+
+export function phoneItemStackPushCanStart(startX: number, viewportW: number, paneCommit: number): boolean {
+  if (viewportW <= 0) return false
+  return !phoneLaneSweepCanFit(startX, viewportW, -1, paneCommit)
+}
+
+export type PhoneStackGestureKind = 'pane' | 'item-push' | 'stack-pop'
+export type PhoneStackGestureDecision = 'abort' | 'pending' | 'dragging'
+
+export function phoneStackPopCommitPx(paneCommit: number): number {
+  return Math.min(paneCommit, 88)
+}
+
+export function phoneStackGestureDecision(kind: PhoneStackGestureKind, dx: number, dy: number): PhoneStackGestureDecision {
+  if (kind === 'pane' || kind === 'item-push') return phoneLaneDragDecision(dx, dy)
+  if (dy > 0 && Math.abs(dy) >= PHONE_LANE_LOCK) return 'abort'
+  if (Math.abs(dx) >= PHONE_LANE_LOCK && Math.abs(dx) > Math.abs(dy)) return 'abort'
+  const up = -dy
+  if (up < PHONE_LANE_LOCK || up < Math.abs(dx) * PHONE_LANE_AXIS_RATIO) return 'pending'
+  return 'dragging'
+}
+
+export function phoneStackGestureProgress(kind: PhoneStackGestureKind, dx: number, dy: number, commit: number): number {
+  if (commit <= 0) return 0
+  const distance = kind === 'stack-pop'
+    ? Math.max(0, -dy)
+    : Math.max(0, -dx)
+  return Math.min(1, distance / commit)
+}
+
+export function phoneStackGestureCommits(kind: PhoneStackGestureKind, dx: number, dy: number, commit: number): boolean {
+  return phoneStackGestureProgress(kind, dx, dy, commit) >= 1
+}

@@ -19,6 +19,7 @@ import { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo, use
 import { createPortal } from 'react-dom'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import { probe } from '../perf-probe'
+import { isPhoneViewport } from '../phoneViewport'
 
 // @ts-ignore — vanilla JS module
 import { renderChatLine, resolveInlineAttachments, esc } from '../fleet/chat-render.mjs'
@@ -77,9 +78,23 @@ import { openChatMarkdownColumn, openMarkdownChipFromTarget as openMarkdownChipF
 import { subscribeFleetChatInputDropPreview } from './fleet-chat-drop-target'
 import { consumeBulletContexts, subscribeBulletContext, getBulletContexts } from '../stores/bulletContextStore'
 import { getPref, subscribePref } from '../preferences'
-import { readabilityStyleVars } from '../readabilityProfile'
 import { DATABASE_HTTP } from '../activeConfig'
-import { isPhoneViewport } from '../phoneViewport'
+import { deletePhonePinnedChatPane, isPhonePinnedPaneShape } from './phone-pane-stack'
+import {
+  PHONE_LANE_DRAG_IDLE,
+  phoneLaneCommitPx,
+  rememberPhoneLanePortraitWidth,
+  setPhoneGestureCandidate,
+  setPhoneGestureProgress,
+  setPhoneLaneDrag,
+  snapToPhoneLaneIndex,
+} from '../overlays/useFleetGestures'
+import {
+  phoneStackGestureCommits,
+  phoneStackGestureDecision,
+  phoneStackGestureProgress,
+  phoneStackPopCommitPx as phoneStackPopCommitPxForPane,
+} from '../wm'
 import './fleet-chat.css'
 
 const DEFAULT_W = 400
@@ -87,6 +102,15 @@ const DEFAULT_H = 600
 const FLEET_API = DATABASE_HTTP
 type ChatTrafficMode = 'normal' | 'quiet'
 type ComposerTrafficFilterMode = 'dm-quiet' | 'dm' | 'agent' | 'custom'
+type PhonePaneDeleteGesture = {
+  pointerId: number
+  touchId?: number
+  mode: 'pending' | 'dragging'
+  x0: number
+  y0: number
+  lastDy: number
+  maxUp: number
+}
 type FleetChatRenderCounter = {
   active?: boolean
   renderCount?: number
@@ -151,6 +175,21 @@ function recordFleetChatRender(shape: any) {
   })
 }
 
+function isPhoneSurfaceNow(): boolean {
+  if (typeof window === 'undefined') return false
+  return new URLSearchParams(window.location.search).get('fleetLayout') === 'phone' ||
+    document.body.classList.contains('phone-mode') ||
+    isPhoneViewport()
+}
+
+function isAtScrollBottom(el: HTMLElement, epsilon = 8): boolean {
+  return el.scrollTop + el.clientHeight >= el.scrollHeight - epsilon
+}
+
+function phoneStackPopCommitPx(): number {
+  return phoneStackPopCommitPxForPane(phoneLaneCommitPx())
+}
+
 function isFleetPillRecord(record: any): boolean {
   return record?.typeName === 'shape' && record.type === 'fleet-pill'
 }
@@ -202,10 +241,9 @@ function addTap(el: Element | null | undefined, fn: (e: Event) => void) {
   })
 }
 
-// On touch devices the chat input is voice-only: tapping it focuses the field
-// for dictation, and iOS must NOT raise the on-screen keyboard (it eats half the
-// screen). inputmode="none" reliably suppresses the soft keyboard on a <textarea>
-// while keeping focus + programmatic/hardware-keyboard input working.
+// On touch devices, the shared ChatComposer suppresses the iOS keyboard while an
+// app voice backend is selected (Browser/Deepgram/Whisper). With Voice Off, the
+// keyboard stays available for ordinary typing or native dictation.
 // maxTouchPoints (not pointer:coarse) — a Magic Keyboard/trackpad makes the
 // iPad's primary pointer "fine", which would wrongly drop the no-keyboard rule.
 const _isTouchDevice = (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0)
@@ -214,10 +252,15 @@ const _isTouchDevice = (typeof navigator !== 'undefined' && navigator.maxTouchPo
 // Phone (narrow screen). iOS Safari auto-zooms any focused input under 16px, so
 // the composer font must be ≥16px on phone — and it's set as an INLINE style
 // (below), which CSS can't override, so the value is chosen here.
-const _isPhone = typeof window !== 'undefined' && !!window.matchMedia?.('(max-width: 600px)').matches
+const _isPhone = isPhoneViewport()
 
 function getFleetStyleVars(): React.CSSProperties {
-  return readabilityStyleVars()
+  return {
+    '--fleet-base-font': `${getPref('fleet-font-size')}px`,
+    '--fleet-chrome-alpha': String(getPref('fleet-chrome-opacity')),
+    '--fleet-content-alpha': String(getPref('fleet-content-opacity')),
+    '--fleet-age-fade': getPref('fleet-age-fade') ? '1' : '0',
+  } as React.CSSProperties
 }
 
 function useFleetStyleVars() {
@@ -346,6 +389,15 @@ type TerminalOutputFrame = {
   encoding?: string
 }
 
+function phoneTerminalViewportFrame() {
+  if (typeof window === 'undefined') return { active: false, width: 0, height: 0 }
+  if (!isPhoneViewport()) return { active: false, width: 0, height: 0 }
+  const visual = window.visualViewport
+  const width = Math.round(visual?.width || window.innerWidth || 0)
+  const height = Math.round((visual?.height || window.innerHeight || 0) * 0.5)
+  return { active: true, width, height }
+}
+
 // Hover mode: read-only snapshot that resets on each server push.
 // Pinned mode: stays open, shows input bar for sending commands, resizable.
 function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter, onMouseLeave }: {
@@ -388,10 +440,10 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
   const pinnedRef = useRef(pinned)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const [status, setStatus] = useState<'connecting' | 'connected' | 'error'>('connecting')
-  const [notLive, setNotLive] = useState(false)
   const [height, setHeight] = useState(210)
   const [lightboxed, setLightboxed] = useState(false)
   const [scale, setScale] = useState(1)
+  const [phoneFrame, setPhoneFrame] = useState(phoneTerminalViewportFrame)
   // The peek renders a fixed grid sized to the agent's REAL tmux window width
   // (reported by the daemon via a 'size' message), then CSS-scales it to fit the
   // panel. PEEK_COLS/ROWS are only the fallback until the first 'size' arrives —
@@ -423,6 +475,26 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
 
   useEffect(() => { pinnedRef.current = pinned }, [pinned])
   useEffect(() => { lightboxedRef.current = lightboxed }, [lightboxed])
+
+  useEffect(() => {
+    const update = () => {
+      const next = phoneTerminalViewportFrame()
+      setPhoneFrame(prev => (
+        prev.active === next.active && prev.width === next.width && prev.height === next.height
+          ? prev
+          : next
+      ))
+    }
+    update()
+    window.addEventListener('resize', update)
+    window.addEventListener('orientationchange', update)
+    window.visualViewport?.addEventListener('resize', update)
+    return () => {
+      window.removeEventListener('resize', update)
+      window.removeEventListener('orientationchange', update)
+      window.visualViewport?.removeEventListener('resize', update)
+    }
+  }, [])
 
   // On lightbox open, fetch the agent's real tmux scrollback (capture-pane via
   // the daemon). The live attach stream only carries the current screen, so this
@@ -559,7 +631,6 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
     wsRef.current?.close()
     termRef.current?.clear()
     setStatus('connecting')
-    setNotLive(false)
     let sawAuthoritativeSize = false
     let fallbackFlushed = false
     let fallbackTimer: ReturnType<typeof setTimeout> | null = null
@@ -615,7 +686,6 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
             }
           } catch { void 0 }
         } else if (msg.type === 'output' && msg.data && termRef.current) {
-          setNotLive(false)
           if (sawAuthoritativeSize) {
             writeOutput(msg)
           } else {
@@ -623,10 +693,7 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
             if (fallbackFlushed) writeOutput(msg)
           }
         } else if (msg.type === 'error') {
-          setNotLive(true)
           setStatus('error')
-        } else if (msg.type === 'not-live') {
-          setNotLive(true)
         }
       } catch {}
     }
@@ -713,7 +780,7 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
     )
   }
 
-  const phoneTopPanel = isPhoneViewport() && !lightboxed
+  const phoneTopPanel = phoneFrame.active && !lightboxed
 
   return createPortal((
     // Carrier provides the .fleet-chat-shape scoped CSS + custom properties the
@@ -725,8 +792,8 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
       className={`fleet-terminal-hover-pane${pinned ? ' fleet-terminal-hover-pane-pinned' : ''}${lightboxed ? ' fleet-terminal-hover-pane-lightboxed' : ''}`}
       style={{
         position: 'fixed',
-        left: phoneTopPanel ? 0 : (anchor?.left ?? 0),
-        visibility: anchor ? 'visible' : 'hidden',
+        left: phoneTopPanel ? 0 : anchor?.left ?? 0,
+        visibility: phoneTopPanel || anchor ? 'visible' : 'hidden',
         ...(lightboxed
           // Grow UP + RIGHT from the pinned pane's bottom-left, which stays put.
           // Width comes from the lightbox CSS (min(840px,92vw)); height is fixed.
@@ -738,12 +805,19 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
           // Peek/pinned: top-anchored to the input's bottom edge at the chat's
           // width. Height is auto, so pinning ADDS the input bar below and the
           // terminal you saw on hover stays in place (pane grows downward).
-          : {
-              top: phoneTopPanel ? 0 : (anchor?.top ?? 0),
-              width: phoneTopPanel ? '100vw' : (anchor?.width ?? 0),
-              height: phoneTopPanel ? '50vh' : undefined,
-              right: 'auto',
-            }),
+          : phoneTopPanel
+            ? {
+                top: 0,
+                width: phoneFrame.width || '100vw',
+                height: phoneFrame.height || '50vh',
+                right: 'auto',
+                bottom: 'auto',
+              }
+            : {
+                top: anchor?.top ?? 0,
+                width: anchor?.width ?? 0,
+                right: 'auto',
+              }),
       }}
       onMouseEnter={onMouseEnter}
       onMouseLeave={pinned ? undefined : onMouseLeave}
@@ -765,13 +839,10 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
       <div
         ref={bodyRef}
         className="fleet-terminal-hover-body"
-        style={lightboxed ? undefined : phoneTopPanel ? { flex: '1 1 auto', minHeight: 0 } : { height, flex: 'none' }}
+        style={lightboxed || phoneTopPanel ? undefined : { height, flex: 'none' }}
       >
         {lightboxed && historyText && (
           <div ref={historyContainerRef} className="fleet-terminal-hover-history" />
-        )}
-        {notLive && (
-          <div className="fleet-terminal-hover-notlive">terminal not live</div>
         )}
         {/* Live scaled screen for the hover/pinned peek. In the lightbox we show
             the single continuous capture instead (history + current screen as one
@@ -780,9 +851,9 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
         <div
           className="fleet-terminal-hover-scale"
           style={
-            notLive ? { display: 'none' }
-            : lightboxed && historyText ? { display: 'none' }
+            lightboxed && historyText ? { display: 'none' }
             : lightboxed ? { transform: `scale(${scale})`, transformOrigin: 'top left' }
+            : phoneTopPanel ? { transform: `scale(${scale})`, transformOrigin: 'top left', position: 'absolute', left: 0, top: 0 }
             : { transform: `scale(${scale})`, transformOrigin: 'bottom left', position: 'absolute', left: 0, bottom: 0 }
           }
         >
@@ -852,7 +923,7 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
           </button>
         </div>
       )}
-      {pinned && (
+      {pinned && !phoneTopPanel && (
         <div
           className="fleet-terminal-hover-resize-handle"
           onPointerDown={handleResizePointerDown}
@@ -1808,6 +1879,9 @@ const ChatMessageRow = memo(function ChatMessageRow({
 function FleetChatInner({ shape }: { shape: any }) {
   recordFleetChatRender(shape)
   const editor = useEditor()
+  const mainEd = (typeof window !== 'undefined'
+    ? (window as Window & { __tldraw_editor__?: Editor }).__tldraw_editor__
+    : undefined) || editor
   const viewportId = useVisibilityViewportId()
   const doc = useContext(DocContext)
   const panel = useContext(PanelContext)
@@ -1817,6 +1891,33 @@ function FleetChatInner({ shape }: { shape: any }) {
   void useValue('editing', () => editor.getEditingShapeId() === shape.id, [editor, shape.id])
   const [filterOpen, setFilterOpen] = useState(false)
   const [filterOpenByPill, setFilterOpenByPill] = useState(false)
+  const [isPhoneSurface, setIsPhoneSurface] = useState(isPhoneSurfaceNow)
+  const phoneDeleteGestureRef = useRef<PhonePaneDeleteGesture | null>(null)
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const media = window.matchMedia?.('(max-width: 600px), (max-height: 600px)')
+    const update = () => setIsPhoneSurface(isPhoneSurfaceNow())
+    update()
+    media?.addEventListener?.('change', update)
+    window.addEventListener('resize', update)
+    window.addEventListener('orientationchange', update)
+    window.visualViewport?.addEventListener('resize', update)
+    const observer = new MutationObserver(update)
+    observer.observe(document.body, { attributes: true, attributeFilter: ['class'] })
+    return () => {
+      media?.removeEventListener?.('change', update)
+      window.removeEventListener('resize', update)
+      window.removeEventListener('orientationchange', update)
+      window.visualViewport?.removeEventListener('resize', update)
+      observer.disconnect()
+    }
+  }, [])
+
+  const resetPhoneDeleteGesture = useCallback(() => {
+    phoneDeleteGestureRef.current = null
+    setPhoneLaneDrag(PHONE_LANE_DRAG_IDLE)
+  }, [])
 
   // Keep a ref to the current filter so the rename effect can read it without a stale closure
   const filterRef = useRef(filter)
@@ -2103,7 +2204,7 @@ function FleetChatInner({ shape }: { shape: any }) {
             chatLogRef.current = el
             setChatLogEl(el)
           }}
-          className="fleet-chat-log"
+          className={['fleet-chat-log', props.className].filter(Boolean).join(' ')}
           style={{ ...props.style, padding: '4px 0' }}
         />
       )
@@ -2111,6 +2212,195 @@ function FleetChatInner({ shape }: { shape: any }) {
     [],
   )
   const inputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    const logEl = chatLogEl
+    const el = shapeContainerRef.current
+    if (!logEl || !el) return
+
+    const isPinnedPhoneChatPane = () =>
+      isPhoneSurface &&
+      isPhonePinnedPaneShape(mainEd, shape)
+
+    const canStartDeleteGesture = (target: EventTarget | null) => {
+      if (!isPinnedPhoneChatPane()) return false
+      if (!(target instanceof Element)) return true
+      if (target.closest('textarea, input, button, select, [contenteditable="true"], .fleet-filter-overlay')) return false
+      const logTarget = target.closest('.fleet-chat-log')
+      return !logTarget || isAtScrollBottom(logEl)
+    }
+
+    const onPointerDown = (e: PointerEvent) => {
+      if (!e.isPrimary) return
+      if (e.pointerType === 'mouse' && e.button !== 0) return
+      if (phoneDeleteGestureRef.current?.touchId != null) return
+      if (!canStartDeleteGesture(e.target)) return
+      rememberPhoneLanePortraitWidth(mainEd)
+      const commit = phoneStackPopCommitPx()
+      setPhoneGestureCandidate('up', commit, 'stack-pop')
+      phoneDeleteGestureRef.current = {
+        pointerId: e.pointerId,
+        mode: 'pending',
+        x0: e.clientX,
+        y0: e.clientY,
+        lastDy: 0,
+        maxUp: 0,
+      }
+      try { el.setPointerCapture?.(e.pointerId) } catch {
+        // Synthetic/offscreen pointer events may not be capturable; move/up still dispatch to this listener.
+      }
+    }
+
+    const beginTouchDeleteGesture = (touch: Touch, target: EventTarget | null) => {
+      if (!canStartDeleteGesture(target)) return false
+      rememberPhoneLanePortraitWidth(mainEd)
+      setPhoneGestureCandidate('up', phoneStackPopCommitPx(), 'stack-pop')
+      phoneDeleteGestureRef.current = {
+        pointerId: -1,
+        touchId: touch.identifier,
+        mode: 'pending',
+        x0: touch.clientX,
+        y0: touch.clientY,
+        lastDy: 0,
+        maxUp: 0,
+      }
+      return true
+    }
+
+    const updateDeleteGesture = (x: number, y: number, event: { preventDefault: () => void }) => {
+      const gesture = phoneDeleteGestureRef.current
+      if (!gesture) return false
+      const dx = x - gesture.x0
+      const dy = y - gesture.y0
+      gesture.lastDy = dy
+      gesture.maxUp = Math.max(gesture.maxUp, -dy)
+      const commit = phoneStackPopCommitPx()
+      const decision = gesture.mode === 'pending' ? phoneStackGestureDecision('stack-pop', dx, dy) : 'dragging'
+      if (decision === 'abort') {
+        resetPhoneDeleteGesture()
+        return false
+      }
+      if (dy <= 0 || decision === 'dragging') event.preventDefault()
+      setPhoneGestureProgress('up', phoneStackGestureProgress('stack-pop', dx, dy, commit), commit, 'stack-pop')
+      if (gesture.mode === 'pending') {
+        if (decision === 'pending') return true
+        gesture.mode = 'dragging'
+      }
+
+      setPhoneGestureProgress('up', phoneStackGestureProgress('stack-pop', dx, dy, commit), commit, 'stack-pop')
+      return true
+    }
+
+    const finishDeleteGesture = () => {
+      const gesture = phoneDeleteGestureRef.current
+      if (!gesture) return
+      const shouldCommit = gesture.mode === 'dragging' && phoneStackGestureCommits('stack-pop', 0, -gesture.maxUp, phoneStackPopCommitPx())
+      resetPhoneDeleteGesture()
+      if (!shouldCommit) return
+      const result = deletePhonePinnedChatPane(mainEd, shape)
+      if (!result.ok) {
+        console.warn('[phone-pane-stack] delete-pinned-pane failed', result)
+        return
+      }
+      snapToPhoneLaneIndex(mainEd, result.docLeftPage, result.targetIndex)
+    }
+
+    const onPointerMove = (e: PointerEvent) => {
+      const gesture = phoneDeleteGestureRef.current
+      if (!gesture || gesture.pointerId !== e.pointerId) return
+      const dx = e.clientX - gesture.x0
+      const dy = e.clientY - gesture.y0
+      gesture.lastDy = dy
+      gesture.maxUp = Math.max(gesture.maxUp, -dy)
+      const commit = phoneStackPopCommitPx()
+      const decision = gesture.mode === 'pending' ? phoneStackGestureDecision('stack-pop', dx, dy) : 'dragging'
+      if (decision === 'abort') {
+        resetPhoneDeleteGesture()
+        return
+      }
+      if (dy <= 0 || decision === 'dragging') {
+        e.preventDefault()
+        stopEventPropagation(e)
+      }
+      setPhoneGestureProgress('up', phoneStackGestureProgress('stack-pop', dx, dy, commit), commit, 'stack-pop')
+      if (gesture.mode === 'pending') {
+        if (decision === 'pending') return
+        gesture.mode = 'dragging'
+      }
+
+      setPhoneGestureProgress('up', phoneStackGestureProgress('stack-pop', dx, dy, commit), commit, 'stack-pop')
+    }
+
+    const onPointerEnd = (e: PointerEvent) => {
+      const gesture = phoneDeleteGestureRef.current
+      if (!gesture || gesture.pointerId !== e.pointerId) return
+      const shouldCommit = gesture.mode === 'dragging' && phoneStackGestureCommits('stack-pop', 0, -gesture.maxUp, phoneStackPopCommitPx())
+      e.preventDefault()
+      stopEventPropagation(e)
+      resetPhoneDeleteGesture()
+      if (!shouldCommit) return
+      const result = deletePhonePinnedChatPane(mainEd, shape)
+      if (!result.ok) {
+        console.warn('[phone-pane-stack] delete-pinned-pane failed', result)
+        return
+      }
+      snapToPhoneLaneIndex(mainEd, result.docLeftPage, result.targetIndex)
+    }
+
+    const onPointerCancel = (e: PointerEvent) => {
+      const gesture = phoneDeleteGestureRef.current
+      if (!gesture || gesture.pointerId !== e.pointerId) return
+      resetPhoneDeleteGesture()
+    }
+
+    const onTouchStart = (e: TouchEvent) => {
+      if (e.touches.length !== 1) return
+      beginTouchDeleteGesture(e.touches[0], e.target)
+    }
+
+    const onTouchMove = (e: TouchEvent) => {
+      const gesture = phoneDeleteGestureRef.current
+      if (!gesture || gesture.touchId == null) return
+      const touch = Array.from(e.touches).find(t => t.identifier === gesture.touchId)
+      if (!touch) return
+      updateDeleteGesture(touch.clientX, touch.clientY, e)
+    }
+
+    const onTouchEnd = (e: TouchEvent) => {
+      const gesture = phoneDeleteGestureRef.current
+      if (!gesture || gesture.touchId == null) return
+      const ended = Array.from(e.changedTouches).some(t => t.identifier === gesture.touchId)
+      if (!ended) return
+      e.preventDefault()
+      finishDeleteGesture()
+    }
+
+    const onTouchCancel = (e: TouchEvent) => {
+      const gesture = phoneDeleteGestureRef.current
+      if (!gesture || gesture.touchId == null) return
+      const ended = Array.from(e.changedTouches).some(t => t.identifier === gesture.touchId)
+      if (ended) resetPhoneDeleteGesture()
+    }
+
+    el.addEventListener('pointerdown', onPointerDown)
+    el.addEventListener('pointermove', onPointerMove)
+    el.addEventListener('pointerup', onPointerEnd)
+    el.addEventListener('pointercancel', onPointerCancel)
+    el.addEventListener('touchstart', onTouchStart, { passive: false })
+    el.addEventListener('touchmove', onTouchMove, { passive: false })
+    el.addEventListener('touchend', onTouchEnd, { passive: false })
+    el.addEventListener('touchcancel', onTouchCancel, { passive: false })
+    return () => {
+      el.removeEventListener('pointerdown', onPointerDown)
+      el.removeEventListener('pointermove', onPointerMove)
+      el.removeEventListener('pointerup', onPointerEnd)
+      el.removeEventListener('pointercancel', onPointerCancel)
+      el.removeEventListener('touchstart', onTouchStart)
+      el.removeEventListener('touchmove', onTouchMove)
+      el.removeEventListener('touchend', onTouchEnd)
+      el.removeEventListener('touchcancel', onTouchCancel)
+    }
+  }, [chatLogEl, isPhoneSurface, mainEd, resetPhoneDeleteGesture, shape])
 
   // Reactive map of image asset ID → src URL (populated from tldraw store).
   // Image chips use tldraw asset IDs for persistence — assets survive page reload.
@@ -2203,7 +2493,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   useEffect(() => { docRef.current = doc }, [doc])
   const shapeContainerRef = useRef<HTMLDivElement>(null)
 
-  const openMarkdownColumn = useCallback((title: string, markdown: string, sourceEl: HTMLElement, source?: { path?: string; section?: string }) => {
+  const openMarkdownColumn = useCallback((title: string, markdown: string, sourceEl: HTMLElement) => {
     openChatMarkdownColumn({
       editor,
       sourceShapeId: shape.id,
@@ -2211,8 +2501,6 @@ function FleetChatInner({ shape }: { shape: any }) {
       markdown,
       sourceEl,
       placementEl: shapeContainerRef.current,
-      sourcePath: source?.path,
-      sourceSection: source?.section,
       logPrefix: 'fleet-chat',
     })
   }, [editor, shape.id])
@@ -3415,7 +3703,12 @@ function FleetChatInner({ shape }: { shape: any }) {
   const [termHoverVisible, setTermHoverVisible] = useState(false)
   const [termHoverPinned, setTermHoverPinned] = useState(false)
   const [termHoverAgentId, setTermHoverAgentId] = useState<string | null>(null)
+  const [composerRailActive, setComposerRailActive] = useState<{ label: string; x: number } | null>(null)
+  const [composerDraftVersion, setComposerDraftVersion] = useState(0)
   const termHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const composerRailRef = useRef<HTMLDivElement | null>(null)
+  const composerRailTouchRef = useRef<{ id: number; startedOnButton: boolean } | null>(null)
+  const clearedComposerDraftRef = useRef<string | null>(null)
   const termAutoPinnedRef = useRef(false)
   // Skill-state hover popover (hovering an agent name in chat)
   const [skillHover, setSkillHover] = useState<{ agentId: string; agentName: string; rect: { left: number; bottom: number; top: number } } | null>(null)
@@ -4274,6 +4567,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   // send remain DISTINCT — the original had two genuinely-different inline paths
   // (keyboard: inject→…→plan→send; voice: context→inject→send, no plan).
   const composerKeyboardSend = (text: string, targets: string[]) => {
+    expireClearedComposerDraft()
     const tempId = `opt-${Date.now()}-${Math.random().toString(36).slice(2)}`
     injectOptimisticEvent({
       _tempId: tempId,
@@ -4362,6 +4656,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   }
 
   const composerVoiceSend = async (targets: string[], text: string) => {
+    expireClearedComposerDraft()
     const context = gatherViewerContext(editor, doc, shape.id, currentDocVersion(panel, editor))
     if (context) await enrichContextWithSourceLines(context)
     const bullets = consumeBulletContexts()
@@ -4413,6 +4708,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       targetId = targets[0]
     }
     if (targetId) {
+      expireClearedComposerDraft()
       setTermCardPinnedId(targetId)
       ta.value = ''
       ta.style.height = ''
@@ -4421,6 +4717,10 @@ function FleetChatInner({ shape }: { shape: any }) {
   }
 
   const composerKeyActivity = () => {
+    setComposerDraftVersion(v => v + 1)
+    if ((inputRef.current as HTMLTextAreaElement | null)?.value) {
+      expireClearedComposerDraft()
+    }
     if (escCountRef.current > 0) {
       escCountRef.current = 0
       setEscalationState({})
@@ -4541,7 +4841,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   }, [agentRouteName])
 
   const isTerminalReadyAgent = useCallback((agent: any) => {
-    return !!agent && agent.dead !== true
+    return !!agent?.tmux_session && !agent?.dead && !agent?.hibernating && agent?.status !== 'hibernating'
   }, [])
 
   const terminalHoverAgents = useMemo(() => {
@@ -4576,6 +4876,125 @@ function FleetChatInner({ shape }: { shape: any }) {
     })
     return ready
   }, [sendTargets, agents, resolveTargetAgents, isTerminalReadyAgent])
+
+  void composerDraftVersion
+  const composerHasText = !!((inputRef.current as HTMLTextAreaElement | null)?.value)
+  const canUnclearComposer = !composerHasText && !!clearedComposerDraftRef.current
+
+  const expireClearedComposerDraft = () => {
+    clearedComposerDraftRef.current = null
+  }
+
+  const resizeComposerTextarea = (ta: HTMLTextAreaElement) => {
+    ta.style.height = ''
+    ta.style.height = `${Math.min(ta.scrollHeight, 140)}px`
+  }
+
+  const toggleComposerClear = () => {
+    const ta = inputRef.current as HTMLTextAreaElement | null
+    if (!ta) return
+    if (ta.value !== '') {
+      clearedComposerDraftRef.current = ta.value
+      ta.value = ''
+      ta.style.height = ''
+      ta.dispatchEvent(new Event('input', { bubbles: true }))
+      ta.focus()
+      return
+    }
+    const draft = clearedComposerDraftRef.current
+    if (!draft) return
+    clearedComposerDraftRef.current = null
+    ta.value = draft
+    resizeComposerTextarea(ta)
+    ta.dispatchEvent(new Event('input', { bubbles: true }))
+    ta.focus()
+    ta.setSelectionRange(ta.value.length, ta.value.length)
+  }
+
+  const findComposerRailButton = useCallback((clientX: number, clientY: number): HTMLButtonElement | null => {
+    const rail = composerRailRef.current
+    if (!rail) return null
+    const buttons = Array.from(
+      rail.querySelectorAll<HTMLButtonElement>('[data-composer-rail-action]:not(:disabled)')
+    )
+    if (buttons.length === 0) return null
+    let best: HTMLButtonElement | null = null
+    let bestDist = Number.POSITIVE_INFINITY
+    for (const button of buttons) {
+      const rect = button.getBoundingClientRect()
+      const dx = clientX - (rect.left + rect.width / 2)
+      const dy = clientY - (rect.top + rect.height / 2)
+      const dist = dx * dx + dy * dy
+      if (dist < bestDist) {
+        best = button
+        bestDist = dist
+      }
+    }
+    return best
+  }, [])
+
+  const setComposerRailCandidate = useCallback((button: HTMLButtonElement | null) => {
+    const rail = composerRailRef.current
+    if (!rail || !button) {
+      setComposerRailActive(null)
+      return
+    }
+    const railRect = rail.getBoundingClientRect()
+    const buttonRect = button.getBoundingClientRect()
+    setComposerRailActive({
+      label: button.dataset.composerRailLabel || button.title || button.getAttribute('aria-label') || '',
+      x: buttonRect.left + buttonRect.width / 2 - railRect.left,
+    })
+  }, [])
+
+  const handleComposerRailPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    stopEventPropagation(e)
+    const startedButton = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-composer-rail-action]')
+    const button = startedButton && !startedButton.disabled
+      ? startedButton
+      : findComposerRailButton(e.clientX, e.clientY)
+    composerRailTouchRef.current = { id: e.pointerId, startedOnButton: !!startedButton }
+    try { e.currentTarget.setPointerCapture?.(e.pointerId) } catch {
+      // Synthetic/offscreen verification events may not be capturable.
+    }
+    setComposerRailCandidate(button)
+  }, [findComposerRailButton, setComposerRailCandidate])
+
+  const handleComposerRailPointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const touch = composerRailTouchRef.current
+    if (!touch || touch.id !== e.pointerId) return
+    stopEventPropagation(e)
+    setComposerRailCandidate(findComposerRailButton(e.clientX, e.clientY))
+  }, [findComposerRailButton, setComposerRailCandidate])
+
+  const handleComposerRailPointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const touch = composerRailTouchRef.current
+    if (!touch || touch.id !== e.pointerId) return
+    stopEventPropagation(e)
+    composerRailTouchRef.current = null
+    const button = findComposerRailButton(e.clientX, e.clientY)
+    setComposerRailCandidate(button)
+    if (!touch.startedOnButton && button) {
+      const action = button.dataset.composerRailAction
+      if (action === 'traffic') {
+        if (composerAgentLabel) cycleComposerTrafficMode()
+      } else if (action === 'clear') {
+        toggleComposerClear()
+        setComposerDraftVersion(v => v + 1)
+      } else {
+        button.click()
+      }
+    }
+    window.setTimeout(() => setComposerRailActive(null), 140)
+  }, [composerAgentLabel, cycleComposerTrafficMode, findComposerRailButton, setComposerRailCandidate, toggleComposerClear])
+
+  const handleComposerRailPointerCancel = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const touch = composerRailTouchRef.current
+    if (!touch || touch.id !== e.pointerId) return
+    stopEventPropagation(e)
+    composerRailTouchRef.current = null
+    setComposerRailActive(null)
+  }, [])
 
   const deadTargetAgent = useMemo(() => {
     for (const label of sendTargets) {
@@ -4737,6 +5156,16 @@ function FleetChatInner({ shape }: { shape: any }) {
     void fillUnderfullInitialView()
     return () => { cancelled = true }
   }, [chatLogEl, filterKey, loadBeforeAgentsKey, hasChatMessages, chatEventBufferKey])
+
+  useEffect(() => {
+    if (!chatLogEl || !hasChatMessages) return
+    if (!isPhoneSurface || !isPhonePinnedPaneShape(mainEd, shape)) return
+    userScrolledUpRef.current = false
+    isAtBottomRef.current = true
+    setAtBottom(true)
+    setFleetEventsLiveTailPinned(shape.id, true, chatEventBufferKey)
+    settleToTail('phone-pinned-open', { force: true, resumeFollow: true })
+  }, [chatLogEl, hasChatMessages, isPhoneSurface, mainEd, shape.id, filterKey, chatEventBufferKey, settleToTail])
 
   // --- Chat log drag → ghost pill ---
   // Uses native capture-phase listeners because tldraw intercepts React events
@@ -5599,7 +6028,22 @@ function FleetChatInner({ shape }: { shape: any }) {
                 follow/hard-lock ("magnet") button laid out as a tight flex row
                 so they sit adjacent regardless of the traffic label's width
                 (no dead gap). Order is set via CSS `order`, not DOM order. */}
-            <div className="fleet-composer-gutter">
+            <div
+              ref={composerRailRef}
+              className="fleet-composer-gutter"
+              onPointerDown={handleComposerRailPointerDown}
+              onPointerMove={handleComposerRailPointerMove}
+              onPointerUp={handleComposerRailPointerUp}
+              onPointerCancel={handleComposerRailPointerCancel}
+            >
+            {composerRailActive && (
+              <div
+                className="fleet-composer-rail-preview"
+                style={{ left: `${composerRailActive.x}px` }}
+              >
+                {composerRailActive.label}
+              </div>
+            )}
             {/* Unified follow / jump-to-bottom control. One button, fixed here:
                   - off bottom → ⇣ arrow; click jumps to bottom (does NOT change
                     follow mode — you return to the bottom first, then it's a
@@ -5609,6 +6053,8 @@ function FleetChatInner({ shape }: { shape: any }) {
                 This replaces the separate floating ⇣ arrow. */}
             <button
               className={`fleet-hardlock-toggle${!atBottom ? ' jump-mode' : ''}`}
+              data-composer-rail-action="follow"
+              data-composer-rail-label={!atBottom ? 'Bottom' : hardLocked ? 'Lock' : 'Follow'}
               onPointerDown={stopEventPropagation}
               onClick={(e) => {
                 stopEventPropagation(e as any)
@@ -5649,6 +6095,8 @@ function FleetChatInner({ shape }: { shape: any }) {
               <button
                 key={agent.id}
                 className={`fleet-terminal-icon${termHoverPinned && termHoverAgentId === agent.id ? ' active' : ''}`}
+                data-composer-rail-action={`terminal-${agent.id}`}
+                data-composer-rail-label="Terminal"
                 onPointerDown={stopEventPropagation}
                 onClick={(e) => {
                   stopEventPropagation(e as any)
@@ -5686,6 +6134,8 @@ function FleetChatInner({ shape }: { shape: any }) {
             ))}
             <button
               className={`fleet-composer-traffic-toggle fleet-composer-traffic-toggle-${composerTrafficMode}`}
+              data-composer-rail-action="traffic"
+              data-composer-rail-label="Traffic"
               onPointerDown={(e) => {
                 stopEventPropagation(e)
                 trafficTapRef.current = { x: e.clientX, y: e.clientY, id: e.pointerId }
@@ -5728,6 +6178,23 @@ function FleetChatInner({ shape }: { shape: any }) {
                     ? 'All'
                     : 'DM'}
             </button>
+            {(composerHasText || canUnclearComposer) && (
+              <button
+                className={`fleet-composer-clear-toggle${canUnclearComposer ? ' unclear-mode' : ''}`}
+                data-composer-rail-action="clear"
+                data-composer-rail-label={canUnclearComposer ? 'Unclear' : 'Clear'}
+                onPointerDown={stopEventPropagation}
+                onClick={(e) => {
+                  stopEventPropagation(e as any)
+                  toggleComposerClear()
+                  setComposerDraftVersion(v => v + 1)
+                }}
+                title={canUnclearComposer ? 'Restore cleared text' : 'Clear composer'}
+                aria-label={canUnclearComposer ? 'Restore cleared composer text' : 'Clear composer text'}
+              >
+                {canUnclearComposer ? '↺' : '×'}
+              </button>
+            )}
             </div>
             <ChatComposer
               sendTargets={sendTargets}
@@ -5910,7 +6377,6 @@ export function FilterOverlay({
   externalPillOver,
   agents,
   sendTargets,
-  onFilterChange,
 }: {
   filter: [string, string][][]
   shapeId: any
@@ -5919,7 +6385,6 @@ export function FilterOverlay({
   externalPillOver?: { role: string; value: string; displayName: string } | null
   agents: any[]
   sendTargets: string[]
-  onFilterChange?: (filter: [string, string][][]) => void
 }) {
   // Native pointerup delegation on document capture — bypasses tldraw and works on touch.
   const overlayRef = useRef<HTMLDivElement>(null)
@@ -5928,10 +6393,6 @@ export function FilterOverlay({
   filterRef.current = filter
   const humanLabel = getHumanName() || getHumanId() || 'user'
   const updateChatProps = useCallback((props: Record<string, unknown>) => {
-    if (onFilterChange && Array.isArray(props.filter)) {
-      onFilterChange(props.filter as [string, string][][])
-      return
-    }
     const shape = editor.getShape(shapeId)
     const wasLocked = !!shape?.isLocked
     if (wasLocked) editor.updateShape({ id: shapeId, type: 'fleet-chat', isLocked: false })
@@ -5941,7 +6402,7 @@ export function FilterOverlay({
       props,
     })
     if (wasLocked) editor.updateShape({ id: shapeId, type: 'fleet-chat', isLocked: true })
-  }, [editor, onFilterChange, shapeId])
+  }, [editor, shapeId])
   const activeAgentLabel = useMemo(() => {
     for (const clause of filter) {
       for (const [, label] of clause) {
@@ -6092,26 +6553,7 @@ export function FilterOverlay({
       }
       return { pane, idx: foundIdx }
     }
-    // Pill is over the chat but not inside any pane rect — the ~12px overlay
-    // padding ring or a hairline between panes. Resolve to the NEAREST of the
-    // three zones so a drop ALWAYS lands on exactly one pane. There is no
-    // "no pane" outcome, so dropPillOnTarget never falls to a divergent path:
-    // one drop does exactly one of {to, from, replace}.
-    const zones: Array<{ pane: 'replace' | 'to' | 'from'; el: HTMLDivElement | null }> = [
-      { pane: 'replace', el: replaceZoneRef.current },
-      { pane: 'to', el: toPaneRef.current },
-      { pane: 'from', el: fromPaneRef.current },
-    ]
-    let best: { pane: 'replace' | 'to' | 'from'; d: number } | null = null
-    for (const z of zones) {
-      if (!z.el) continue
-      const r = z.el.getBoundingClientRect()
-      const dx = Math.max(r.x - screenPt.x, 0, screenPt.x - (r.x + r.width))
-      const dy = Math.max(r.y - screenPt.y, 0, screenPt.y - (r.y + r.height))
-      const d = dx * dx + dy * dy
-      if (!best || d < best.d) best = { pane: z.pane, d }
-    }
-    return best ? { pane: best.pane as any, idx: -1 } : null
+    return null
   }, [editor, pillOver, fleetPillCount])
 
   // Compute preview DNF for each pane based on hovered AND group

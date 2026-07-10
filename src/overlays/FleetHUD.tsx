@@ -566,6 +566,23 @@ export function FleetHUD({
     return true
   }, [activeTopPad, applyHudAnchor, docShapesReady, mainEditor])
 
+  useEffect(() => {
+    if (!identityId || !deviceReady || !docShapesReady || fleetBounds) return
+    let cancelled = false
+    const delays = [0, 80, 240, 600, 1200]
+    const timers = delays.map(delay => window.setTimeout(() => {
+      if (cancelled) return
+      const nextBounds = resetFleetBoundsTracker()
+      if (!nextBounds) return
+      recenterHudForBounds(nextBounds)
+      setFleetBounds(nextBounds)
+    }, delay))
+    return () => {
+      cancelled = true
+      for (const timer of timers) window.clearTimeout(timer)
+    }
+  }, [deviceReady, docShapesReady, fleetBounds, identityId, recenterHudForBounds, resetFleetBoundsTracker])
+
   // Reactively update fleet bounds when shapes change.
   //
   // Position updates: freeze during USER drag (so the auto-zoom panel doesn't

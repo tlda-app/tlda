@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { phoneLaneCommitPx, subscribePhoneLaneDrag, type PhoneLaneDragState } from './useFleetGestures'
+import { useEditor } from 'tldraw'
+import { isPhonePaneStackMode, phoneLaneCommitPx, subscribePhoneLaneDrag, type PhoneLaneDragState } from './useFleetGestures'
 
 // Big center-screen lane-transition arrow. Within one continuous drag it appears
 // subtly and FILLS toward its point as you swipe; a deliberate ~75%-of-screen
@@ -8,40 +9,47 @@ import { phoneLaneCommitPx, subscribePhoneLaneDrag, type PhoneLaneDragState } fr
 // the annotation-viewer arrow shape. Only visible during an active phone-lane drag.
 const IDLE: PhoneLaneDragState = { active: false, progress: 0, dir: 0, armed: false }
 
-// Annotation-viewer arrow (viewBox 0 0 250 250), left- and right-pointing.
+// Annotation-viewer arrow (viewBox 0 0 250 250), left-, right-, and up-pointing.
 const LEFT_ARROW = 'M238 125 H12 M80 12 L12 125 L80 238'
 const RIGHT_ARROW = 'M12 125 H238 M170 12 L238 125 L170 238'
 const UP_ARROW = 'M125 238 V12 M12 80 L125 12 L238 80'
-const DOWN_ARROW = 'M125 12 V238 M12 170 L125 238 L238 170'
 
 export function PhoneLaneArrow() {
+  const editor = useEditor()
   const [s, setS] = useState<PhoneLaneDragState>(IDLE)
   useEffect(() => subscribePhoneLaneDrag(setS), [])
 
-  if (!s.active || s.dir === 0) return null
+  if (!s.active || s.dir === 0 || !isPhonePaneStackMode(editor)) return null
 
   // dir +1 pulls toward the agents lane (points left); -1 toward the document
-  // lane (points right). Vertical arrows are used for phone pop/delete gestures.
-  // Fill grows from the tail toward the point (destination).
-  const path = s.dir === 'up' ? UP_ARROW : s.dir === 'down' ? DOWN_ARROW : s.dir === 1 ? LEFT_ARROW : RIGHT_ARROW
+  // lane (points right). Stack push/pop use the same visual channel with their
+  // own kind so local row/modal code cannot drift into a different arrow system.
+  // Fill grows from the tail toward the point (destination/action).
+  const pointUp = s.kind === 'stack-pop' || s.dir === 'up'
+  const pointLeft = s.kind === 'item-push' || (!pointUp && s.dir === 1)
+  const path = pointUp ? UP_ARROW : pointLeft ? LEFT_ARROW : RIGHT_ARROW
   const arrowWidthPx = s.arrowWidthPx || phoneLaneCommitPx()
-  const clipInset = s.dir === 1
-    ? `inset(0 0 0 ${(1 - s.progress) * 100}%)` // reveal right(tail) → left(head)
-    : s.dir === -1
-      ? `inset(0 ${(1 - s.progress) * 100}% 0 0)` // reveal left(tail) → right(head)
-      : s.dir === 'up'
-        ? `inset(${(1 - s.progress) * 100}% 0 0 0)` // reveal bottom(tail) → top(head)
-        : `inset(0 0 ${(1 - s.progress) * 100}% 0)` // reveal top(tail) → bottom(head)
+  const clipInset = pointUp
+    ? `inset(${(1 - s.progress) * 100}% 0 0 0)` // reveal bottom(tail) → top(head)
+    : pointLeft
+      ? `inset(0 0 0 ${(1 - s.progress) * 100}%)` // reveal right(tail) → left(head)
+      : `inset(0 ${(1 - s.progress) * 100}% 0 0)` // reveal left(tail) → right(head)
 
   const stroke = s.armed ? 'rgba(120, 160, 255, 0.95)' : 'rgba(230, 235, 245, 0.9)'
+  const originLeft = typeof s.originX === 'number'
+    ? Math.max(arrowWidthPx / 2, Math.min(window.innerWidth - arrowWidthPx / 2, s.originX))
+    : undefined
+  const originTop = typeof s.originY === 'number'
+    ? Math.max(arrowWidthPx / 2, Math.min(window.innerHeight - arrowWidthPx / 2, s.originY))
+    : undefined
 
   return (
     <div
       aria-hidden
       style={{
         position: 'fixed',
-        top: '50%',
-        left: '50%',
+        top: originTop ?? '50%',
+        left: originLeft ?? '50%',
         transform: 'translate(-50%, -50%)',
         width: arrowWidthPx,
         aspectRatio: '1 / 1',
