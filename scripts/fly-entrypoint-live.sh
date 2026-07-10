@@ -15,6 +15,9 @@ mkdir -p "$PERSIST/projects" "$PERSIST/data" "$PERSIST/tlda-config"
 # fleet.db is hardcoded to ~/.config/tlda/fleet.db (server/lib/fleet-store.mjs).
 # On Fly the home dir is /root, so point that whole dir at the volume.
 mkdir -p /root/.config
+if [ -e /root/.config/tlda ] && [ ! -L /root/.config/tlda ]; then
+  rm -rf /root/.config/tlda
+fi
 ln -sfn "$PERSIST/tlda-config" /root/.config/tlda
 
 # Projects + Yjs data live on the volume (nothing is baked into the live image).
