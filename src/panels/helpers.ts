@@ -1,4 +1,4 @@
-import type { Editor, TLShape, TLPageId } from 'tldraw'
+import type { Editor, TLPageId, TLShape, TLShapeId } from 'tldraw'
 import katex from 'katex'
 import { getActiveMacros } from '../katexMacros'
 import type { LookupEntry } from '../synctexLookup'
@@ -6,6 +6,33 @@ import type { DocContextValue } from '../PanelContext'
 import { getHtmlHeadingY } from '../shapes/HtmlPageShape'
 
 // --- Helpers ---
+
+type HtmlPageNavShape = {
+  id: string
+  type: 'html-page'
+  parentId: TLPageId
+  x: number
+  y: number
+  props: { w: number; h: number }
+}
+
+function htmlPageNavShape(shape: unknown): HtmlPageNavShape | undefined {
+  const candidate = shape as Partial<HtmlPageNavShape> & { type?: unknown; props?: Partial<HtmlPageNavShape['props']> }
+  if (candidate?.type !== 'html-page') return undefined
+  if (typeof candidate.id !== 'string') return undefined
+  if (typeof candidate.parentId !== 'string') return undefined
+  if (typeof candidate.x !== 'number' || typeof candidate.y !== 'number') return undefined
+  if (typeof candidate.props?.w !== 'number' || typeof candidate.props?.h !== 'number') return undefined
+  return candidate as HtmlPageNavShape
+}
+
+function currentHtmlPageShape(editor: Editor): HtmlPageNavShape | undefined {
+  for (const shape of editor.getCurrentPageShapes()) {
+    const htmlShape = htmlPageNavShape(shape)
+    if (htmlShape) return htmlShape
+  }
+  return undefined
+}
 
 export function formatRelativeTime(ts: number | undefined): string {
   if (!ts) return ''
@@ -25,11 +52,13 @@ export function navigateToPage(editor: Editor, doc: Pick<DocContextValue, 'pages
   const pageIndex = pageNum - 1
   if (pageIndex < 0 || pageIndex >= doc.pages.length) return
   const page = doc.pages[pageIndex]
+  const pageShape = page.shapeId ? htmlPageNavShape(editor.getShape(page.shapeId as TLShapeId)) : undefined
+  const tlPageId = pageShape?.parentId || (page.tldrawPageId as TLPageId | undefined)
 
-  if (page.tldrawPageId) {
+  if (tlPageId) {
     // Multipage HTML: switch TLDraw page and center on the shape
-    editor.setCurrentPage(page.tldrawPageId as TLPageId)
-    const shape = editor.getCurrentPageShapes().find((s: any) => s.type === 'html-page') as any
+    editor.setCurrentPage(tlPageId)
+    const shape = pageShape || currentHtmlPageShape(editor)
     if (shape) {
       const vpH = editor.getViewportPageBounds().h
       editor.centerOnPoint(
@@ -47,14 +76,16 @@ export function navigateToAnchor(editor: Editor, doc: Pick<DocContextValue, 'pag
   const pageIndex = pageNum - 1
   if (pageIndex < 0 || pageIndex >= doc.pages.length) return
   const page = doc.pages[pageIndex]
+  const pageShape = page.shapeId ? htmlPageNavShape(editor.getShape(page.shapeId as TLShapeId)) : undefined
+  const tlPageId = pageShape?.parentId || (page.tldrawPageId as TLPageId | undefined)
 
-  if (!page.tldrawPageId) {
+  if (!tlPageId) {
     return navigateToPage(editor, doc, pageNum)
   }
 
   // Switch to the target TLDraw page
-  editor.setCurrentPage(page.tldrawPageId as TLPageId)
-  const shape = editor.getCurrentPageShapes().find((s: any) => s.type === 'html-page') as any
+  editor.setCurrentPage(tlPageId)
+  const shape = pageShape || currentHtmlPageShape(editor)
   if (!shape) return
 
   const cx = shape.x + shape.props.w / 2
@@ -75,7 +106,7 @@ export function navigateToAnchor(editor: Editor, doc: Pick<DocContextValue, 'pag
     const y = getHtmlHeadingY(targetId, anchor)
     if (y != null) {
       clearInterval(poll)
-      const fresh = editor.store.get(targetId) as any
+      const fresh = htmlPageNavShape(editor.getShape(targetId as TLShapeId))
       if (fresh) {
         editor.centerOnPoint(
           { x: fresh.x + fresh.props.w / 2, y: fresh.y + y },
