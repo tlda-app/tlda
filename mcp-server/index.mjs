@@ -3378,7 +3378,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       // Return current status with errors
-      const errData = await serverFetch(`/api/projects/${doc}/build/errors`).catch(() => []);
+      let errData = [];
+      let errorsWarning = '';
+      try {
+        errData = await serverFetch(`/api/projects/${doc}/build/errors`);
+      } catch (e) {
+        errorsWarning = `**Errors**: diagnostics unavailable (${e.message})`;
+        process.stderr.write(`[mcp] build error fetch failed for "${doc}": ${e.message}\n`);
+      }
       const errors = Array.isArray(errData) ? errData : [];
       // Check viewer version vs latest build
       let viewerInfo = '';
@@ -3404,7 +3411,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         triggered,
         `**Phase**: ${status.phase || 'unknown'}`,
         `**Status**: ${status.status || 'unknown'}`,
-        errors.length > 0 ? `**Errors** (${errors.length}):\n${errors.map(e => `  • ${e.message || e}`).join('\n')}` : '**Errors**: none',
+        errorsWarning || (errors.length > 0 ? `**Errors** (${errors.length}):\n${errors.map(e => `  • ${e.message || e}`).join('\n')}` : '**Errors**: none'),
         viewerInfo,
       ].filter(Boolean).join('\n');
       return { content: [{ type: 'text', text: summary }] };
