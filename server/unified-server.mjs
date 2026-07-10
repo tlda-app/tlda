@@ -2348,26 +2348,6 @@ app.get('/api/education/check/:agentId', (req, res) => {
   res.json(entry)
 })
 
-// Legacy endpoints — kept for backward compat during transition
-app.post('/api/education/pending', (req, res) => {
-  const { agent, skill } = req.body
-  if (!agent || !skill) return res.status(400).json({ error: 'Missing agent or skill' })
-  pendingEducation.set(agent, { skill, ts: Date.now() })
-  console.log(`[education] pending: ${agent} owes ${skill}`)
-  res.json({ ok: true })
-})
-
-app.get('/api/education/pending/:agentId', (req, res) => {
-  const entry = pendingEducation.get(req.params.agentId)
-  if (!entry) return res.json({})
-  res.json(entry)
-})
-
-app.delete('/api/education/pending/:agentId', (req, res) => {
-  pendingEducation.delete(req.params.agentId)
-  res.json({ ok: true })
-})
-
 // Manual dismiss — the one deliberate way past a sticky skill block. The agent
 // must give a reason; the dismissal is recorded (so the block lifts) and a card
 // is posted so Skip sees the skip and its justification.
