@@ -303,7 +303,7 @@ async function spawnFresh(params) {
     }
     const registered = await (deps.waitForAwakeRegistration || waitForAwakeRegistration)(fleetId, { api, librarian, timeoutMs: params.registerDeadlineMs || 60_000 })
     if (!registered.ok) {
-      throw new SpawnError(registered.reason, `spawn ${fleetId} did not register before deadline`, { fleetId, tmuxSession })
+      throw new SpawnError(registered.reason, `spawn ${fleetId} did not log in before deadline`, { fleetId, tmuxSession })
     }
     let resumeId = null
     if (requestedKind === 'codex') {

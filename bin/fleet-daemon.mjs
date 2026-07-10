@@ -68,7 +68,7 @@ import { createLogger } from '../shared/logger.mjs'
 import { resolveDaemonIsolation } from '../shared/daemon-identity.mjs'
 import { sendActivityEvents } from '../agent-runtime/activity-send.mjs'
 import {
-  THINKING_SPINNER_RE, INTERRUPT_HINT_RE,
+  THINKING_SPINNER_RE, INTERRUPT_HINT_RE, THINKING_SCAN_LINES,
 } from '../agent-runtime/status-classifier.mjs'
 import { sessionIdentityPath } from '../agent-runtime/session-identity-store.mjs'
 import {
@@ -91,7 +91,7 @@ import { createPromptPlan } from '../daemon/prompt-plan.mjs'
 import { createAgentStatus } from '../daemon/agent-status.mjs'
 import { createGooseSupervisor } from '../daemon/goose-supervisor.mjs'
 import { createAgentLiveness } from '../daemon/agent-liveness.mjs'
-import { ACTIVITY_NOISE } from '../daemon/activity-events.mjs'
+import { ACTIVITY_NOISE } from '../shared/activity-tool-classification.mjs'
 import { createHarnessRuntime } from '../daemon/harness-runtime.mjs'
 import { createShadowMirror } from '../daemon/shadow-mirror.mjs'
 import { DaemonDeliveryRuntime } from '../daemon/delivery-runtime.mjs'

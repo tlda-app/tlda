@@ -1211,7 +1211,7 @@ function spawnMailboxCompletionText(entry, status, detail) {
   if (status === 'completed') {
     const agentPart = detail.agentId ? ` (${detail.agentId})` : ''
     const policyPart = detail.grantedPermission ? ` Permission: \`${detail.grantedPermission}\`.` : ''
-    return `**Spawn mailbox ${entry.id} complete**: \`${label}\`${agentPart} is registered and usable.${policyPart}`
+    return `**Spawn mailbox ${entry.id} complete**: \`${label}\`${agentPart} is logged in and usable.${policyPart}`
   }
   return `**Spawn mailbox ${entry.id} failed**: \`${label}\` — ${detail.error || detail.reason || 'spawn failed'}.`
 }
@@ -1374,10 +1374,10 @@ async function performSpawnRelay(caller, msg) {
         if (shell?.metadata?.shell) {
           result = { ok: true, pending: true, agent: shell }
         } else {
-          spawnLibrarian.failPending(pendingAgentId, 'register-timeout')
+          spawnLibrarian.failPending(pendingAgentId, 'login-timeout')
           const failed = {
             ok: false,
-            reason: 'register-timeout',
+            reason: 'login-timeout',
             error: `spawn started for ${spawnName}, but no reserved shell row exists for ${pendingAgentId}`,
           }
           const settled = mailboxLibrarian.fail(mailbox.id, failed.error, failed)
@@ -3965,10 +3965,10 @@ async function handleFleetWsMessage(ws, msg) {
     if (agent.metadata?.spawnPolicy) {
       agent.metadata = { ...agent.metadata, spawnPolicy: normalizeRegionPolicy(agent.metadata.spawnPolicy) }
     }
-    // Pre-register vs claim. The spawn flow registers the identity as a "shell"
-    // (msg.shell) before the agent process exists — addressable (dead=0, in the
-    // not-dead registry) but NOT awake. The agent's OWN register has no shell
-    // flag and is the claim: clear the flag so the row hydrates as awake.
+    // Shell reservation vs claim. The spawn flow reserves the identity as a
+    // "shell" (msg.shell) before the agent process exists — addressable
+    // (dead=0, in the not-dead registry) but NOT awake. The agent's login/claim
+    // has no shell flag: clear the flag so the row hydrates as awake.
     if (msg.shell) {
       agent.metadata = { ...(agent.metadata || {}), shell: true }
     } else if (agent.metadata?.shell) {
@@ -3989,7 +3989,12 @@ async function handleFleetWsMessage(ws, msg) {
       }
       throw e
     }
-    fleetStore.share?.({ type: 'register', agent_id: agentId, from: agentId, to: agentId, text: `${agent.friendly_name || requestedName || agentId} ${msg.shell ? 'pre-registered' : 'registered'}` })
+    const lifecycleLabel = agent.friendly_name || requestedName || agentId
+    const eventType = msg.shell ? 'lifecycle' : (agent.human ? 'register' : 'login')
+    const eventText = msg.shell
+      ? `${lifecycleLabel} shell reserved`
+      : (agent.human ? `${lifecycleLabel} registered` : `${lifecycleLabel} logged in`)
+    fleetStore.share?.({ type: eventType, agent_id: agentId, from: agentId, to: agentId, text: eventText })
     // Every non-human agent belongs to a lineage from birth, as its own `dawn`
     // (the worker). This guarantees a handoff always has a chain to rotate within
     // — a direct handoff promotes that dawn → day (manager). The lineage is an
@@ -4013,8 +4018,8 @@ async function handleFleetWsMessage(ws, msg) {
     // the agent shows "awake" right away. The daemon's next sweep confirms
     // or evicts within 30s. A shell pre-register is the exception: there is no
     // process yet, so it must NOT be marked alive (that was the roster-lie —
-    // spawned-but-not-booted agents showing "awake"). The agent's own register
-    // (the claim, msg.shell falsy) is what marks it alive.
+    // spawned-but-not-booted agents showing "awake"). The agent's login/claim
+    // is what marks it alive.
     if (!agent.human && !msg.shell) {
       markAgentAlive(agentId)
       touchActivity(agentId)
@@ -6444,7 +6449,7 @@ async function handleDaemonWsMessage(ws, msg) {
           type: 'chat',
           from: 'fleet:tlda',
           to,
-          text: `**Spawn startup failed** for \`${label}\`\n\n${reason || 'The harness printed a fatal startup error before the agent registered.'}`,
+          text: `**Spawn startup failed** for \`${label}\`\n\n${reason || 'The harness printed a fatal startup error before the agent logged in.'}`,
           metadata,
           unread: true,
         })

@@ -35,10 +35,10 @@ function copySourceTemplate(text) {
 // --- Constants ---
 
 export const ACTIVITY_NOISE = new Set([
-  'wait_for_task', 'my_task', 'task_list', 'register', 'register_manager',
+  'wait_for_task', 'my_task', 'task_list', 'login', 'register', 'register_manager',
   'task_check', 'unregister_manager', 'task_done', 'timer',
   'mcp__tlda__wait_for_task', 'mcp__tlda__my_task', 'mcp__tlda__task_list',
-  'mcp__tlda__register', 'mcp__tlda__register_manager', 'mcp__tlda__task_check',
+  'mcp__tlda__login', 'mcp__tlda__register', 'mcp__tlda__register_manager', 'mcp__tlda__task_check',
   'mcp__tlda__task_done', 'mcp__tlda__timer',
   'ToolSearch',
 ])

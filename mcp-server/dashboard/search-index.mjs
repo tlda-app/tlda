@@ -699,7 +699,7 @@ export class SearchIndex {
   // --- Chat History ---
 
   // Map JSONL event types to chat-renderable types
-  static CHAT_EVENT_TYPES = new Set(['chat', 'delegate', 'task_done', 'name_change', 'auto_prune', 'deregister', 'cleanup', 'identity_match', 'adopt', 'rehydrate']);
+  static CHAT_EVENT_TYPES = new Set(['chat', 'delegate', 'task_done', 'login', 'name_change', 'auto_prune', 'deregister', 'cleanup', 'identity_match', 'adopt', 'rehydrate']);
 
   indexChatEvents() {
     if (!fs.existsSync(LOG_FILE)) return 0;

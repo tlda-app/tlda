@@ -9,7 +9,7 @@ import {
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const UUID_SCAN_RE = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i
-const REGISTER_RE = /Registered (fleet:\w+)/
+const LOGIN_RE = /(?:Logged in|Registered) (fleet:[A-Za-z0-9_-]+)/
 const NAME_RE = /Your name: "([^"]+)"/
 
 function claudeProjectsBase(base) {
@@ -246,8 +246,8 @@ function textPartsFromToolResult(value) {
   return out
 }
 
-function parseRegistrationText(text) {
-  const m = REGISTER_RE.exec(text || '')
+function parseLoginText(text) {
+  const m = LOGIN_RE.exec(text || '')
   if (!m) return null
   return { ownId: m[1], agentName: NAME_RE.exec(text)?.[1] || null }
 }
@@ -284,7 +284,7 @@ export function scanCodexRolloutIdentity(fpath) {
   let ownId = null
   let agentName = null
   let meta = null
-  const registerCalls = new Set()
+  const loginCalls = new Set()
   const fleetEnvCalls = new Set()
   try {
     for (const line of fs.readFileSync(fpath, 'utf8').split(/\n/)) {
@@ -304,19 +304,19 @@ export function scanCodexRolloutIdentity(fpath) {
         }
       }
       const payload = parsed?.payload || {}
-      if (payload.type === 'function_call' && payload.namespace === 'mcp__tlda' && payload.name === 'register' && payload.call_id) {
-        registerCalls.add(payload.call_id)
+      if (payload.type === 'function_call' && payload.namespace === 'mcp__tlda' && payload.name === 'login' && payload.call_id) {
+        loginCalls.add(payload.call_id)
       }
       if (payload.call_id && codexCommandReadsFleetEnv(payload)) {
         fleetEnvCalls.add(payload.call_id)
       }
-      if (ownId == null && payload.type === 'function_call_output' && registerCalls.has(payload.call_id)) {
+      if (ownId == null && payload.type === 'function_call_output' && loginCalls.has(payload.call_id)) {
         const output = typeof payload.output === 'string' ? payload.output
           : (payload.output && typeof payload.output.content === 'string' ? payload.output.content : '')
-        const registration = parseRegistrationText(output)
-        if (registration) {
-          ownId = registration.ownId
-          agentName = registration.agentName
+        const login = parseLoginText(output)
+        if (login) {
+          ownId = login.ownId
+          agentName = login.agentName
         }
       }
       if (ownId == null && payload.type === 'function_call_output' && fleetEnvCalls.has(payload.call_id)) {
@@ -328,12 +328,12 @@ export function scanCodexRolloutIdentity(fpath) {
           agentName = envIdentity.agentName
         }
       }
-      if (ownId == null && payload.type === 'mcp_tool_call_end' && payload.invocation?.server === 'tlda' && payload.invocation?.tool === 'register') {
+      if (ownId == null && payload.type === 'mcp_tool_call_end' && payload.invocation?.server === 'tlda' && payload.invocation?.tool === 'login') {
         for (const text of textPartsFromToolResult(payload.result)) {
-          const registration = parseRegistrationText(text)
-          if (!registration) continue
-          ownId = registration.ownId
-          agentName = registration.agentName
+          const login = parseLoginText(text)
+          if (!login) continue
+          ownId = login.ownId
+          agentName = login.agentName
           break
         }
       }

@@ -392,10 +392,10 @@ async function validateSpawnRequest(opts = {}) {
 }
 
 // Append-only message log (backup). Fleet store writes are handled by
-// individual handlers (chat, delegate, task_done, register) to avoid
+// individual handlers (chat, delegate, task_done, login/register) to avoid
 // double-writes. logEvent only writes JSONL + fleet store for event
 // types that DON'T have dedicated handlers.
-const _HANDLED_EVENT_TYPES = new Set(['chat', 'delegate', 'task_done', 'register', 'report']);
+const _HANDLED_EVENT_TYPES = new Set(['chat', 'delegate', 'task_done', 'login', 'register', 'report']);
 
 function logEvent(event) {
   const entry = { ...event, timestamp: new Date().toISOString() };
@@ -423,7 +423,7 @@ function logEvent(event) {
 }
 
 // --- Identity ---
-// Simple: $FLEET_ID env var = your identity. No FLEET_ID = new agent (register creates one).
+// Simple: $FLEET_ID env var = your identity. Spawned agents claim it with login().
 // No JSONL scanning, no state file reading, no guessing.
 const ALIVE_THRESHOLD_MS = 10 * 60 * 1000;
 let AGENT_ID = process.env.FLEET_ID || null;
@@ -1516,7 +1516,7 @@ export function getFleetTools() {
           since: { type: 'string', description: 'ISO timestamp or relative shorthand (e.g. "20m", "2h", "1d") — only messages after this time.' },
           until: { type: 'string', description: 'ISO timestamp, relative shorthand, or the literal "now" — only messages before this time.' },
           include_delegations: { type: 'boolean', description: 'Include task delegations (default true).' },
-          types: { type: 'array', items: { type: 'string' }, description: 'Filter to specific event types. Valid values: chat, delegate, task_done, task_update, report, register, lifecycle. Example: ["chat"] returns only chat messages. Omit for all types.' },
+          types: { type: 'array', items: { type: 'string' }, description: 'Filter to specific event types. Valid values: chat, delegate, task_done, task_update, report, login, register, lifecycle. Example: ["chat"] returns only chat messages. Omit for all types.' },
           page_size: { type: 'number', description: 'Max messages per page (default 200). To get the next page, call again with `since` set to the last returned timestamp. Ignored when both since and until are set (bounded calls return full range).' },
           doc: { type: 'string', description: 'Document name — when provided, each message is annotated with the shadow repo version hash active at that time.' },
         },
@@ -2182,7 +2182,7 @@ export async function handleFleetTool(name, args) {
 
   // ---- delegate ----
   if (name === 'delegate') {
-    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Cannot delegate: not registered.' }], isError: true };
+    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Cannot delegate: not logged in. Call login() first.' }], isError: true };
 
     if (args.agent && args.spawn) {
       return { content: [{ type: 'text', text: 'Provide agent or spawn, not both.' }], isError: true };
@@ -2193,7 +2193,7 @@ export async function handleFleetTool(name, args) {
     }
 
     // One name, enforced: on the spawn path the spawn name is the single source
-    // of identity (pre-registration, FLEET_NAME, the register prompt, and the
+    // of identity (shell reservation, FLEET_NAME, the login prompt, and the
     // roster all key off it). A separate `friendly_name` would rename the row to
     // a second string after spawn — the exact desync that produces ghost rows
     // (a never-seen "math-historian" stub beside a live "math historian"). So
@@ -2314,7 +2314,7 @@ export async function handleFleetTool(name, args) {
   // ==== Messaging ====
 
   if (name === 'dismiss_skill') {
-    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Cannot dismiss: not registered.' }], isError: true };
+    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Cannot dismiss: not logged in. Call login() first.' }], isError: true };
     const reason = (args.reason || '').trim();
     if (!reason) return { content: [{ type: 'text', text: 'A reason is required to dismiss a skill. Say why it does not apply — or read the skill instead.' }], isError: true };
     const skills = Array.isArray(args.skills) ? args.skills.filter(Boolean) : null;
@@ -2341,7 +2341,7 @@ export async function handleFleetTool(name, args) {
   }
 
   if (name === 'chat') {
-    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Cannot send chat: not registered.' }], isError: true };
+    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Cannot send chat: not logged in. Call login() first.' }], isError: true };
 
     // Resolve the message body — either an inline `message` string or a
     // `file`+`section` markdown reference (extracted agent-side).
@@ -3466,7 +3466,7 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
   // fleet chat from "fleet:tlda" — the agent sees it exactly like a normal
   // chat message between tool calls. No polling, no PostToolUse hook.
   if (name === 'monitor_add') {
-    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not registered.' }], isError: true };
+    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not logged in. Call login() first.' }], isError: true };
     if (!args?.doc) return { content: [{ type: 'text', text: 'Missing doc argument.' }], isError: true };
     try {
       const data = await sendWS('tlda-monitor-add', { agentId: AGENT_ID, doc: args.doc });
@@ -3482,7 +3482,7 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
     }
   }
   if (name === 'monitor_remove') {
-    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not registered.' }], isError: true };
+    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not logged in. Call login() first.' }], isError: true };
     if (!args?.doc) return { content: [{ type: 'text', text: 'Missing doc argument.' }], isError: true };
     try {
       const data = await sendWS('tlda-monitor-remove', { agentId: AGENT_ID, doc: args.doc });
@@ -3494,7 +3494,7 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
     }
   }
   if (name === 'monitor_list') {
-    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not registered.' }], isError: true };
+    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not logged in. Call login() first.' }], isError: true };
     try {
       const data = await sendWS('tlda-monitor-list', { agentId: AGENT_ID });
       if (!data) return { content: [{ type: 'text', text: `tlda backend didn't answer (it may be restarting). Not yours to debug — tell ops if it persists, then retry shortly.` }], isError: true };
@@ -3753,7 +3753,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
 
   // ---- search_logs ----
   if (name === 'search_logs') {
-    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not registered. Call register() first.' }], isError: true };
+    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not logged in. Call login() first.' }], isError: true };
     const rawQuery = args.query;
     if (!rawQuery || rawQuery.length < 2) {
       return { content: [{ type: 'text', text: 'Query must be at least 2 characters.' }], isError: true };
