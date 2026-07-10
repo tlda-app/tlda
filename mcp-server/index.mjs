@@ -2187,7 +2187,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['doc'],
       },
     },
-    // Old version-serving tools removed — use side-by-side History/compare.
     {
       name: 'build',
       description: 'Trigger a build (LaTeX/markdown compilation) for a tlda document. If a build is already in progress, polls and returns its status instead of triggering a new one. Returns build status including any errors.',
@@ -2199,7 +2198,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['doc'],
       },
     },
-    // build_status tool definition removed — merged into build
     {
       name: 'push',
       description: 'Push source files to a tlda document and optionally trigger a build. Files are read from the local filesystem.',
@@ -2292,8 +2290,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['doc'],
       },
     },
-    // suggest tool definition removed — functionality merged into add_note
-    // update_shared_doc removed — use `tlda push` CLI instead
     ...getFleetTools(),
   ],
 }));
@@ -3344,8 +3340,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
     }
   }
-
-  // Old version-serving tool handlers removed — use side-by-side History/compare.
 
   if (name === 'build') {
     const { doc } = args;

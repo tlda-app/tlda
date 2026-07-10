@@ -1711,9 +1711,6 @@ export function getFleetTools() {
         required: ['id'],
       },
     },
-    // share tool removed — use `tlda scratch` CLI to create docs and send links in chat
-    // ---- Checkpoint / Rollback REMOVED ----
-    // Use doc_checkout (tldraw-feedback MCP) instead — shadow repo auto-saves on every build.
     // ---- Report Gate ----
     {
       name: 'report',
@@ -2089,8 +2086,6 @@ export async function handleFleetTool(name, args) {
     ].join('\n');
     return { content: [{ type: 'text', text: msg }] };
   }
-
-  // reclaim_identity removed — tmux-based identity detection handles this automatically
 
   // ==== Task Templates ====
   const TASK_TEMPLATES = {
@@ -4368,8 +4363,6 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       return { content: [{ type: 'text', text: `usage_status failed: ${e.message}` }], isError: true };
     }
   }
-
-  // TODO(cluster-jobs): reintroduce cluster job tracking through a factored server-backed tool surface.
 
   // ==== Utilities ====
 
