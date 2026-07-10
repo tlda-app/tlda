@@ -24,6 +24,7 @@ import {
   createProject, readProject, updateProject, listProjects, deleteProject,
   listSourceFiles, hashSourceFiles, readSourceFile, writeSourceFile, deleteSourceFile, readBuildLog, sourceDir as getSourceDir, outputDir as getOutputDir,
   extractBuildErrors, extractPipelineWarnings, addBookMember, getProjectsDir, projectDir as getProjectDir,
+  projectPartsRoot, readProjectPartsManifest, writeProjectPartsManifest,
 } from '../lib/project-store.mjs'
 import { getBuildStatus } from '../lib/build-runner.mjs'
 import { dispatchBuild } from '../lib/build-dispatch.mjs'
@@ -194,6 +195,32 @@ router.get('/:name/parts', requireRead, (req, res) => {
   if (!project) return res.status(404).json({ error: 'Project not found' })
   const columns = listProjectPartColumns(req.params.name)
   res.json(pageInfoFromDocumentColumns(req.params.name, columns, { forceGroup: true }))
+})
+
+// Remove a project part (its file + manifest entry) and tell open viewers to
+// reload so the removed column disappears from the canvas.
+router.delete('/:name/parts/:id', requireRw, async (req, res) => {
+  const project = readProject(req.params.name)
+  if (!project) return res.status(404).json({ error: 'Project not found' })
+  const root = projectPartsRoot(req.params.name)
+  const manifest = readProjectPartsManifest(req.params.name)
+  const part = manifest.parts.find(p => p.id === req.params.id)
+  if (!part) return res.status(404).json({ error: 'Part not found' })
+  const targetPath = String(part.path || part.storage?.path || '')
+  if (targetPath && !targetPath.startsWith('/') && !targetPath.split('/').includes('..')) {
+    const localPath = join(root, targetPath)
+    if (existsSync(localPath)) rmSync(localPath)
+  }
+  writeProjectPartsManifest(req.params.name, {
+    ...manifest,
+    parts: manifest.parts.filter(p => p.id !== req.params.id),
+  })
+  if (project.format === 'markdown') {
+    await buildMarkdown(req.params.name)
+  } else if (!FORMATS_WITH_OWN_PAGE_INFO.has(project.format)) {
+    writePartsPageInfo(req.params.name)
+  }
+  res.json({ ok: true, deleted: req.params.id })
 })
 
 // Regenerate the parts-only page-info manifest for a non-markdown project

@@ -56,6 +56,29 @@ export function realizeProjectMarkdownArtifact({
   const root = projectPartsRoot(resolved.name)
   mkdirSync(join(root, PROJECT_ARTIFACT_DIR), { recursive: true })
 
+  // Re-clicking the same chip/source file should update its existing column,
+  // not pile up a fresh duplicate every time — match by resolved sourcePath.
+  if (sourcePath) {
+    const resolvedSourcePath = resolve(expandHome(sourcePath))
+    const manifest = readProjectPartsManifest(root)
+    const existing = manifest.parts.find(part =>
+      part.kind === PROJECT_ARTIFACT_KIND && part.metadata?.sourcePath === resolvedSourcePath
+    )
+    if (existing) {
+      return writeProjectMarkdownArtifact({
+        project: resolved.name,
+        projectArtifactId: existing.id,
+        markdown: source.markdown,
+        title,
+        actor,
+        provenance,
+        git,
+        now,
+        logger,
+      })
+    }
+  }
+
   const id = idFactory()
   const projectPath = uniqueArtifactPath(root, id)
   const localPath = join(root, projectPath)
