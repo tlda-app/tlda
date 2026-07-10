@@ -11,7 +11,7 @@
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import { scanFileIdentitySync } from './lib/daemon-jsonl-hot-path.mjs'
+import { scanFileIdentitySync } from '../agent-runtime/daemon-jsonl-hot-path.mjs'
 
 const PROJECTS_DIR = process.env.TLDA_HARVEST_DIR || path.join(os.homedir(), '.claude', 'projects')
 

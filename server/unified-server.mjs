@@ -43,7 +43,7 @@ import { lookup as mimeLookup } from 'mime-types'
 import { DEFAULT_PORT, getActiveConfigName, getFleetServerUrl, hasTls, loadConfig, resolveConfig } from '../shared/config.mjs'
 import { normalizeUsageStatus } from '../shared/usage-status.mjs'
 import { BARE_METADATA, resolveAsset } from '../shared/doc-assets.mjs'
-import { listModels as listSpawnModels } from '../bin/lib/spawn/models.mjs'
+import { listModels as listSpawnModels } from '../agent-launch/models.mjs'
 import { labelsForAgent, parseFilter, parseMessageFilter, evalExpr } from '../shared/fleet-labels.mjs'
 import { parseAgentSelector as parseUnifiedAgentSelector } from '../shared/unified-filter-grammar.mjs'
 import { phaseFromName, baseName, PHASES, prettyNameForFriendlyName } from '../shared/lineage-name.mjs'
@@ -68,14 +68,21 @@ import { buildRuntimeStatus } from './lib/runtime-status.mjs'
 import { resolveSpawnMachine, SPAWN_MACHINE_PREF_KEY } from './lib/spawn-routing.mjs'
 import { resolveFreshSpawnAvailabilityModels } from './lib/spawn-availability-models.mjs'
 import { decideTaskRenudges, wakeBreakerBackoffMs } from './lib/task-renudge.mjs'
+import { rejectMatchingWsRequests, startWsRequest } from '../shared/ws-request-policy.mjs'
+import { isPlanModeResponse, planModeResponseKey } from './lib/plan-mode-response.mjs'
 import { SpawnBounceError, SpawnLibrarian, resolveSpawnCollision } from '../shared/spawn-librarian.ts'
 import { MailboxLibrarian } from '../shared/mailbox-librarian.ts'
 import { trimTerminalSeedBlankRows } from '../shared/terminal-seed.mjs'
-import { daemonSingletonLockPath, inspectSingletonLock } from '../bin/lib/singleton-lock.mjs'
+import { daemonSingletonLockPath, inspectSingletonLock } from '../agent-runtime/singleton-lock.mjs'
 import { partialSkillReadSummaries, recordPartialSkillReads } from '../shared/partial-skill-reads.mjs'
 import { daemonAddress, describeAgentAddress } from '../shared/agent-move-target.mjs'
-import { DAEMON_OUTBOX_ACK_TYPE, DAEMON_OUTBOX_ID_FIELD } from '../shared/daemon-delivery.mjs'
+import {
+  DAEMON_OUTBOX_ACK_TYPE,
+  DAEMON_OUTBOX_ID_FIELD,
+  SERVER_DAEMON_OUTBOX_ACK_TYPE,
+} from '../shared/daemon-delivery.mjs'
 import { readBuildInfo } from './lib/build-info.mjs'
+import { ServerDaemonOutbox } from './lib/server-daemon-outbox.mjs'
 import {
   DELIVERY_CHANNELS,
   INBOX_STATUSES,
@@ -129,6 +136,8 @@ resetStaleBuildStates()
 // to isolate from the live /tmp/fleet.db.
 const fleetStore = new FleetStore(process.env.TLDA_FLEET_DB, { taskDoc: true })
 fleetStore.flushTaskDocs?.()
+const serverDaemonOutbox = new ServerDaemonOutbox(fleetStore.db)
+const serverDaemonOutboxInflight = new Set()
 
 // Name provenance: stamp each event/result row with the friendly name its
 // sender/recipient ACTUALLY held at the row's timestamp (via name_history),
@@ -169,14 +178,12 @@ const agentFleetConnections = new Map()     // agent_id -> latest /ws/fleet conn
 const daemonConnections = new Map()         // machine_id:env_name -> ws
 const daemonWelcomeSeenAt = new Map()       // machine_id:env_name -> last successful hello setup
 
-// "Agent has a running claude process right now" — flat set keyed by agent_id.
-// Populated by `agent-liveness` messages from each machine's daemon (every
-// ~30s checkAgentLiveness pass) and seeded on register. The fleet store reads
-// this via an installed oracle when computing each agent's awake/hibernating
-// status. An agent leaves the set when (a) a stable daemon sweep reports it
-// gone, or (b) the agent is killed. Daemon disconnect/reconnect windows are
-// explicitly not proof of hibernation: after a deploy or local restart, stale
-// "awake" is safer than hiding every working agent on the machine.
+// "Server currently believes this agent is live" — flat set keyed by agent_id.
+// Populated by login, agent activity, thinking/status events, and explicit wake
+// probes. The fleet store reads this via an installed oracle when computing each
+// agent's awake/hibernating status. Daemon disconnect/reconnect windows are not
+// proof of hibernation: after a deploy or local restart, stale "awake" is safer
+// than hiding every working agent on the machine.
 const _aliveAgents = new Set()              // Set<agent_id>
 const _aliveSince = new Map()               // agent_id -> first ms in current alive run
 
@@ -188,7 +195,7 @@ function markAgentAlive(agentId, now = Date.now()) {
   _aliveAgents.add(agentId)
   if (!wasAlive) {
     fleetStore?.refreshAgentLiveness?.(agentId)
-    // Recovery: an agent transitioning to alive (register/reconnect) clears its
+    // Recovery: an agent transitioning to alive (login/reconnect) clears its
     // wake breaker so a restored session is nudged again immediately (§4.2).
     _wakeBreaker.delete(agentId)
   }
@@ -390,7 +397,7 @@ const SERVER_ENV_NAME = getActiveConfigName(loadConfig())
 const LOCAL_DAEMON_ADDRESS = daemonAddress(LOCAL_MACHINE_ID, SERVER_ENV_NAME)
 // Server owner — the human running this server process. Used as fallback
 // identity for MCP agents and CLI operations. Browser users identify
-// themselves via WS 'login' (returning) or 'register' (new) messages.
+// themselves via WS 'login' (returning) or 'register' (new human) messages.
 const SERVER_OWNER_NAME = process.env.TLDA_USER || (() => { try { return os.userInfo()?.username } catch { return 'user' } })()
 const SERVER_OWNER_ID = `fleet:${SERVER_OWNER_NAME}`
 const SERVER_BOOT_ID = Date.now()   // unique per server start; daemon uses this to detect restarts
@@ -517,7 +524,7 @@ function ensureLocalDaemon() {
 }
 
 // Pending RPCs awaiting a daemon `rpc-reply`. Keyed by RPC id.
-// Each entry: { resolve, reject, timer, machine_id, env_name }.
+// Each entry is the shared ws-request-policy shape plus { machine_id, env_name }.
 const pendingRpcs = new Map()
 let _rpcSeq = 0
 const RPC_TIMEOUT_MS = 10_000
@@ -556,31 +563,31 @@ const WAKE_BREAKER_BASE_MS = TASK_RENUDGE_INTERVAL_MS // 5 min, first backoff st
 const WAKE_BREAKER_CAP_MS = Number(process.env.TLDA_WAKE_BREAKER_CAP_MS || 2 * 60 * 60_000) // 2h ceiling (also a slow self-heal probe)
 let _taskWakeDraining = false
 
-function taskTerminalNudgeKind(agent) {
+function terminalNudgeKind(agent) {
   const kind = agent?.metadata?.kind || agent?.kind
   return kind === 'codex' || kind === 'goose'
 }
 
-function taskDeliveryChannelFor(agent) {
+function deliveryChannelFor(agent) {
   return normalizeDeliveryChannel(agent?.metadata?.deliveryChannel)
 }
 
-function shouldSendTaskWakeNudge(agent, nudgeText) {
+function shouldSendWakeNudge(agent, nudgeText) {
   if (!nudgeText || !agent?.tmux_session) return false
-  return taskDeliveryChannelFor(agent) === 'tmux' || taskTerminalNudgeKind(agent)
+  return deliveryChannelFor(agent) === 'tmux' || terminalNudgeKind(agent)
 }
 
-async function sendTaskWakeNudge(daemonKey, agent, tmuxSession, nudgeText, phase) {
-  if (!shouldSendTaskWakeNudge(agent, nudgeText)) return
+async function sendWakeNudge(daemonKey, agent, tmuxSession, nudgeText, phase, logTag = 'wake-nudge') {
+  if (!shouldSendWakeNudge(agent, nudgeText)) return
   await sendRpc(daemonKey, 'send-text', {
     tmux_session: tmuxSession,
     text: nudgeText,
     enter: true,
     enter_delay_ms: agent?.metadata?.kind === 'codex' ? 400 : 0,
-  }).catch(e => console.warn(`[task-renudge] ${phase} failed for ${agent.id}: ${e.message}`))
+  })
 }
 
-function taskLivenessFromCheckAliveResult(agentId, tmuxSession, result) {
+function livenessFromCheckAliveResult(agentId, tmuxSession, result) {
   if (result?.state) return { ...result, agent_id: result.agent_id || agentId, tmux_session: result.tmux_session || tmuxSession }
   if (typeof result?.alive === 'boolean') {
     return {
@@ -643,7 +650,7 @@ async function drainTaskWakeQueue() {
       const serverAlive = isAgentAlive(agentId)
       const liveness = serverAlive
         ? await sendRpc(daemonKey, 'check-alive', { tmux_session: agent.tmux_session })
-          .then(result => taskLivenessFromCheckAliveResult(agentId, agent.tmux_session, result))
+          .then(result => livenessFromCheckAliveResult(agentId, agent.tmux_session, result))
           .catch(e => ({
             type: 'agent-liveness',
             agent_id: agentId,
@@ -663,7 +670,7 @@ async function drainTaskWakeQueue() {
       spawnLibrarian.observeLiveness({ ...liveness, agent_id: liveness.agent_id || agentId })
       const decision = spawnLibrarian.decideWake(agent, { ...liveness, agent_id: liveness.agent_id || agentId }, { serverAlive })
       if (decision.action === 'deliver') {
-        await sendTaskWakeNudge(daemonKey, agent, agent.tmux_session, nudgeText, 'deliver')
+        await sendWakeNudge(daemonKey, agent, agent.tmux_session, nudgeText, 'deliver', 'task-renudge')
         onTaskWakeSuccess(agentId, taskKeys)
         continue
       }
@@ -684,7 +691,7 @@ async function drainTaskWakeQueue() {
         // Don't drop a failed re-nudge silently — surface via the catch (agent-wedged).
         throw new Error(spawnResult?.error || spawnResult?.reason || 'daemon returned ok:false with no reason')
       }
-      await sendTaskWakeNudge(daemonKey, agent, spawnResult?.tmux_session || agent.tmux_session, nudgeText, 'post-respawn')
+      await sendWakeNudge(daemonKey, agent, spawnResult?.tmux_session || agent.tmux_session, nudgeText, 'post-respawn', 'task-renudge')
       onTaskWakeSuccess(agentId, taskKeys)
     } catch (e) {
       // Record a terminal wake failure → open/extend the agent's circuit breaker
@@ -779,36 +786,44 @@ class NoDaemonError extends Error {
 }
 
 function sendRpc(machineId, op, params = {}) {
-  return new Promise((resolve, reject) => {
-    let targetMachine = machineId
-    let envName = params.daemon_env_name
-    if (!envName && typeof machineId === 'string' && machineId.includes(':')) {
-      const parts = machineId.split(':')
-      targetMachine = parts[0]
-      envName = parts[1]
-    }
-    if (!machineId || !envName) return reject(new NoDaemonError(machineId || '(unknown)', envName || '(unknown)'))
-    const key = daemonAddress(targetMachine, envName)
-    const dws = daemonConnections.get(key)
-    if (!dws || dws.readyState !== 1) {
-      if (op === 'spawn') logSpawnDaemonMiss(key, 'sendRpc(spawn)', { hasWs: !!dws, readyState: dws?.readyState ?? 'missing', route: params.spawnRoute || 'unknown' })
-      return reject(new NoDaemonError(targetMachine, envName))
-    }
-    const id = `rpc-${++_rpcSeq}-${Date.now().toString(36)}`
-    const timeoutMs = op === 'spawn' ? SPAWN_RPC_TIMEOUT_MS : RPC_TIMEOUT_MS
-    const timer = setTimeout(() => {
-      pendingRpcs.delete(id)
-      reject(new Error(`RPC timeout after ${timeoutMs}ms (op=${op}, daemon=${key})`))
-    }, timeoutMs)
-    pendingRpcs.set(id, { resolve, reject, timer, machine_id: targetMachine, env_name: envName })
-    try {
-      dws.send(JSON.stringify({ type: 'rpc', id, op, ...params }))
-    } catch (e) {
-      clearTimeout(timer)
-      pendingRpcs.delete(id)
-      reject(e)
-    }
+  let targetMachine = machineId
+  let envName = params.daemon_env_name
+  if (!envName && typeof machineId === 'string' && machineId.includes(':')) {
+    const parts = machineId.split(':')
+    targetMachine = parts[0]
+    envName = parts[1]
+  }
+  if (!machineId || !envName) return Promise.reject(new NoDaemonError(machineId || '(unknown)', envName || '(unknown)'))
+  const key = daemonAddress(targetMachine, envName)
+  const dws = daemonConnections.get(key)
+  if (!dws || dws.readyState !== 1) {
+    if (op === 'spawn') logSpawnDaemonMiss(key, 'sendRpc(spawn)', { hasWs: !!dws, readyState: dws?.readyState ?? 'missing', route: params.spawnRoute || 'unknown' })
+    return Promise.reject(new NoDaemonError(targetMachine, envName))
+  }
+  const id = `rpc-${++_rpcSeq}-${Date.now().toString(36)}`
+  const timeoutMs = op === 'spawn' ? SPAWN_RPC_TIMEOUT_MS : RPC_TIMEOUT_MS
+  const promise = startWsRequest({
+    pending: pendingRpcs,
+    id,
+    type: `rpc:${op}`,
+    deadlineMs: timeoutMs,
+    makeDeadlineError: () => new Error(`RPC timeout after ${timeoutMs}ms (op=${op}, daemon=${key})`),
+    send: () => {
+      try {
+        dws.send(JSON.stringify({ type: 'rpc', id, op, ...params }))
+        return true
+      } catch (e) {
+        pendingRpcs.get(id)?.reject(e)
+        return true
+      }
+    },
   })
+  const entry = pendingRpcs.get(id)
+  if (entry) {
+    entry.machine_id = targetMachine
+    entry.env_name = envName
+  }
+  return promise
 }
 
 function rpcErrorMessage(error) {
@@ -826,13 +841,11 @@ function logSpawnDaemonMiss(machineId, context, detail = {}) {
 // When a daemon WS drops, fail any in-flight RPCs that targeted it. The
 // HTTP caller decides whether to retry.
 function failPendingRpcsForDaemon(machineId, envName, reason = 'daemon disconnected') {
-  for (const [id, entry] of [...pendingRpcs]) {
-    if (entry.machine_id === machineId && entry.env_name === envName) {
-      clearTimeout(entry.timer)
-      pendingRpcs.delete(id)
-      entry.reject(new Error(reason))
-    }
-  }
+  rejectMatchingWsRequests(
+    pendingRpcs,
+    entry => entry.machine_id === machineId && entry.env_name === envName,
+    () => new Error(reason)
+  )
 }
 
 setShadowMirrorHandler(async ({ name, hash, bundleBase64 }) => {
@@ -872,7 +885,7 @@ function hasOpenFleetSocketForAgent(agentId, exceptWs = null) {
 }
 
 const spawnLibrarian = new SpawnLibrarian({
-  registerDeadlineMs: Number(process.env.TLDA_SPAWN_REGISTER_DEADLINE_MS || 60_000),
+  loginDeadlineMs: Number(process.env.TLDA_SPAWN_LOGIN_DEADLINE_MS || 60_000),
   wedgedWindowMs: Number(process.env.TLDA_WEDGED_JOIN_MS || 90_000),
   onWedged: ({ agent_id, liveness }) => {
     const agent = fleetStore?.getAgent?.(agent_id)
@@ -891,14 +904,14 @@ const spawnLibrarian = new SpawnLibrarian({
     broadcastEvent('agent-wedged', metadata)
     broadcastState()
   },
-  onLateRegister: (agent) => {
+  onLateLogin: (agent) => {
     const label = agent.friendly_name || agent.id
-    const metadata = { type: 'spawn_late_register', agentId: agent.id, agentLabel: label, ts: new Date().toISOString() }
-    broadcastEvent('spawn-late-register', metadata)
+    const metadata = { type: 'spawn_late_login', agentId: agent.id, agentLabel: label, ts: new Date().toISOString() }
+    broadcastEvent('spawn-late-login', metadata)
     deliverTldaFeedbackChat({
       from: 'fleet:tlda',
       to: SERVER_OWNER_ID,
-      text: `**Late registration**: \`${label}\` registered after the spawn deadline — it is now available.`,
+      text: `**Late login**: \`${label}\` logged in after the spawn deadline — it is now available.`,
       metadata,
     })
     broadcastState()
@@ -949,7 +962,7 @@ function touchActivity(agentId) {
 // events DB. Because every share() is auto-broadcast as a fleet-event (see the
 // fleetStore.onEvent wiring below), bots can SUBSCRIBE to turn boundaries live
 // AND catch up after a disconnect by polling /api/store/events?type=turn_ended.
-// This is the signal the disposition self-check bot (bin/disposition-bot.mjs)
+// This is the signal the disposition self-check bot (bin/bots/disposition.mjs)
 // rides on. The true→false edge is deduped upstream by _thinkingState, so this
 // fires exactly once per turn.
 function emitTurnEnded(agentId, startedAtMs) {
@@ -978,9 +991,8 @@ function getWouldHibernate() {
   const now = Date.now()
   const result = {}
   for (const agentId of _aliveAgents) {
-    // A dead/removed row can linger in this in-memory set: it's only pruned by
-    // the daemon's agent-liveness reconciliation, which queries dead=0 rows and
-    // therefore can never evict a row already flipped to dead. Such a ghost
+    // A dead/removed row can linger in this in-memory set until the next explicit
+    // state update. Such a ghost
     // would otherwise be hibernated on its ancient _lastActivityAt — and since
     // lineage twins share a tmux_session, that kill-session would take down the
     // LIVE agent occupying the session. Skip anything not currently alive.
@@ -997,8 +1009,8 @@ function getWouldHibernate() {
     // Idle baseline = last REAL activity, or — if we've recorded none this
     // server-run (e.g. the agent was already idle before the last restart) —
     // the start of its current alive run. aliveSince is set once by
-    // markAgentAlive and, unlike the old liveness touchActivity, is NOT bumped
-    // by the 30s liveness sweep, so it's a true floor for "has done nothing".
+    // markAgentAlive and is not bumped by passive roster/status reads, so it's
+    // a true floor for "has done nothing".
     // Without this, every deploy would leave pre-existing idle agents
     // permanently un-hibernatable (no lastActive → skipped forever).
     const lastActive = _lastActivityAt.get(agentId) || aliveSince
@@ -1196,7 +1208,7 @@ function spawnMailboxCompletionText(entry, status, detail) {
   if (status === 'completed') {
     const agentPart = detail.agentId ? ` (${detail.agentId})` : ''
     const policyPart = detail.grantedPermission ? ` Permission: \`${detail.grantedPermission}\`.` : ''
-    return `**Spawn mailbox ${entry.id} complete**: \`${label}\`${agentPart} is registered and usable.${policyPart}`
+    return `**Spawn mailbox ${entry.id} complete**: \`${label}\`${agentPart} is logged in and usable.${policyPart}`
   }
   return `**Spawn mailbox ${entry.id} failed**: \`${label}\` — ${detail.error || detail.reason || 'spawn failed'}.`
 }
@@ -1220,7 +1232,7 @@ async function performSpawnRelay(caller, msg) {
   if (!caller?.id) throw new Error('spawn caller identity is required')
   const {
     name, agent, model, doc, cwd, respawn, fresh, refresh, effort, kind, mode,
-    permission, spawnPermission, permissions, requestedPermissions, session, sessionId, session_id, enroll, routeAgent,
+    permission, spawnPermission, permissions, requestedPermissions, policy, session, sessionId, session_id, enroll, routeAgent,
     iLikeToLiveDangerously, phase, mailboxTarget,
   } = msg || {}
   const requestedSession = session || sessionId || session_id || null
@@ -1294,7 +1306,7 @@ async function performSpawnRelay(caller, msg) {
   })
   const mailboxDeadlineAt = mailbox.deadlineAt || (Date.now() + 5 * 60_000)
   const readiness = pendingAgentId
-    ? spawnLibrarian.awaitRegister({ id: pendingAgentId, name: spawnName, spec: requestedSpec })
+    ? spawnLibrarian.awaitLogin({ id: pendingAgentId, name: spawnName, spec: requestedSpec })
     : null
   const spawnRequest = {
     agent_id: targetAgentId,
@@ -1311,6 +1323,7 @@ async function performSpawnRelay(caller, msg) {
     mode: mode || undefined,
     requestedPermission: requestedPermission || undefined,
     requestedPermissions: permissionRequest || undefined,
+    policy: policy || undefined,
     acknowledgeNoSecurity: !!iLikeToLiveDangerously,
     requester: {
       id: caller.id,
@@ -1358,10 +1371,10 @@ async function performSpawnRelay(caller, msg) {
         if (shell?.metadata?.shell) {
           result = { ok: true, pending: true, agent: shell }
         } else {
-          spawnLibrarian.failPending(pendingAgentId, 'register-timeout')
+          spawnLibrarian.failPending(pendingAgentId, 'login-timeout')
           const failed = {
             ok: false,
-            reason: 'register-timeout',
+            reason: 'login-timeout',
             error: `spawn started for ${spawnName}, but no reserved shell row exists for ${pendingAgentId}`,
           }
           const settled = mailboxLibrarian.fail(mailbox.id, failed.error, failed)
@@ -1509,8 +1522,8 @@ onGlobalEvent((event) => {
   if (event?.type === 'version-committed') {
     // Auto-spawn a QA watcher agent when new content is committed to the shadow repo.
     // version-committed is the semantic trigger (new prose exists); build-card is UI-level.
-    // The spawn library pre-registers the agent before starting tmux, so findAgent() works
-    // immediately after the spawn RPC resolves — no register hook or name-pattern needed.
+    // The spawn library reserves an agent shell before starting tmux, so findAgent() works
+    // immediately after the spawn RPC resolves — no login hook or name-pattern needed.
     if (fleetStore) {
       const docName = event.name
       const qaName = `qa-${docName}`
@@ -2086,7 +2099,7 @@ app.get('/api/auth/me', (req, res) => {
 // Clients POST log entries here (one or many). Each entry is appended as a
 // JSON line to ~/.config/tlda/client.log so we can tail/grep. Use this from
 // the browser via src/logger.ts — every log.{debug,info,warn,error} call
-// gets forwarded here automatically. See CLAUDE.md "Client logging".
+// gets forwarded here automatically. See project guidance on client logging.
 const CLIENT_LOG_FILE = join(homedir(), '.config', 'tlda', 'client.log')
 const CLIENT_PROFILE_FILE = join(homedir(), '.config', 'tlda', 'client-profile.jsonl')
 function appendClientLogEntry(entry) {
@@ -2160,6 +2173,11 @@ app.get('/api/reaper/status', requireRead, (req, res) => {
   res.json(_lastReaperStatus || { error: 'no data yet' })
 })
 
+app.get('/api/reaper/report.md', requireRead, (req, res) => {
+  const report = _lastReaperStatus?.markdownReport || '## Dev Reaper\n\nNo reaper status is available yet.'
+  res.type('text/markdown').send(report)
+})
+
 // Sanitized provider/account usage status for the usage-meter shape. Same data
 // as the `usage_status` MCP tool — manual/static config only, no scraping, no
 // tokens. The shape polls this; missing config returns an empty accounts list.
@@ -2220,7 +2238,7 @@ app.get('/api/fleet/viewing', requireRead, (req, res) => {
 })
 
 // Spawn model list for the spawn UI's autocomplete + validation. Single source
-// of truth is bin/lib/spawn/models.mjs, so the UI never drifts from what spawn
+// of truth is agent-launch/models.mjs, so the UI never drifts from what spawn
 // actually accepts. Shape: { default, models:[{alias,id,verified,kind}], verified:[id…] }.
 app.get('/api/fleet/models', requireRead, (req, res) => {
   res.json(listSpawnModels())
@@ -2328,26 +2346,6 @@ app.get('/api/education/check/:agentId', (req, res) => {
   if (!entry) return res.json({})
   pendingEducation.delete(agentId)
   res.json(entry)
-})
-
-// Legacy endpoints — kept for backward compat during transition
-app.post('/api/education/pending', (req, res) => {
-  const { agent, skill } = req.body
-  if (!agent || !skill) return res.status(400).json({ error: 'Missing agent or skill' })
-  pendingEducation.set(agent, { skill, ts: Date.now() })
-  console.log(`[education] pending: ${agent} owes ${skill}`)
-  res.json({ ok: true })
-})
-
-app.get('/api/education/pending/:agentId', (req, res) => {
-  const entry = pendingEducation.get(req.params.agentId)
-  if (!entry) return res.json({})
-  res.json(entry)
-})
-
-app.delete('/api/education/pending/:agentId', (req, res) => {
-  pendingEducation.delete(req.params.agentId)
-  res.json({ ok: true })
 })
 
 // Manual dismiss — the one deliberate way past a sticky skill block. The agent
@@ -2710,9 +2708,7 @@ function sendWatchBackingFiles() {
     })
   }
   for (const [machineId, files] of byOwner) {
-    const dws = daemonConnections.get(machineId)
-    if (!dws || dws.readyState !== 1) continue
-    try { dws.send(JSON.stringify({ type: 'watch-backing-files', files })) } catch (e) { console.warn(`[server] daemon send failed: ${e.message}`) }
+    enqueueDaemonMessage(machineId, { type: 'watch-backing-files', files }, { dedupeKey: 'watch-backing-files' })
   }
 }
 
@@ -2895,18 +2891,11 @@ app.post('/api/plan-mode-respond', requireRead, async (req, res) => {
   const agent = fleetStore.findAgent(agentQuery)
   if (!agent) return res.status(404).json({ error: 'agent not found' })
   if (!agent.tmux_session) return res.status(400).json({ error: 'no tmux session' })
-  if (!['approve', 'supervised', 'reject'].includes(response)) return res.status(400).json({ error: 'response must be approve, supervised, or reject' })
-  const rpcType = response === 'reject' ? 'send-key' : 'send-text'
-  const route = resolveRpc(rpcType, agent)
+  if (!isPlanModeResponse(response)) return res.status(400).json({ error: 'response must be approve, supervised, or reject' })
+  const route = resolveRpc('send-text', agent)
   if (route.via === 'none') return res.status(503).json({ error: route.error })
   try {
-    let result
-    if (response === 'reject') {
-      result = await sendRpc(route.machine_id, 'send-key', { tmux_session: agent.tmux_session, key: 'Escape' })
-    } else {
-      const key = response === 'approve' ? '1' : '2'
-      result = await sendRpc(route.machine_id, 'send-text', { tmux_session: agent.tmux_session, text: key, enter: false })
-    }
+    const result = await sendRpc(route.machine_id, 'send-text', { tmux_session: agent.tmux_session, text: planModeResponseKey(response), enter: false })
     fleetStore.updateAgentMeta?.(agent.id, { permission_mode: null, inPlanMode: false, planModeType: null })
     const pending = pendingPlanApprovals.get(agent.id)
     if (pending?.eventId) {
@@ -3280,7 +3269,6 @@ function clearEphemeralState(agentId) {
 }
 const fleetRouter = createFleetRouter({
   fleetStore, broadcastEvent, broadcastState, clearEphemeralState,
-  markAgentNotAlive,
   suppressEchoFor: () => {},
   sendRpc, resolveRpc, daemonConnections, resolveSpawnTarget,
   broadcastDaemonAgentsUpdated,
@@ -3649,6 +3637,10 @@ server.on('upgrade', async (req, socket, head) => {
         let msg
         try { msg = JSON.parse(raw.toString()) } catch { return }
         try {
+          if (msg?.type === SERVER_DAEMON_OUTBOX_ACK_TYPE) {
+            ackServerDaemonOutboxMessage(msg)
+            return
+          }
           if (isProcessedDaemonOutboxMessage(msg)) {
             ackDaemonOutboxMessage(ws, msg)
             return
@@ -3667,6 +3659,7 @@ server.on('upgrade', async (req, socket, head) => {
           // Preserve prior liveness so a server/Fly redeploy or daemon restart
           // cannot make every working agent on that machine vanish.
           failPendingRpcsForDaemon(ws._machineId, ws._envName, 'daemon disconnected')
+          clearServerDaemonOutboxInflightForDaemon(ws._daemonKey)
           broadcastState()
           console.log(`[fleet-daemon] disconnected: daemon=${ws._daemonKey}`)
         }
@@ -3676,6 +3669,7 @@ server.on('upgrade', async (req, socket, head) => {
           daemonConnections.delete(ws._daemonKey)
           fleetStore?.markDaemonDisconnected?.(ws._daemonKey)
           failPendingRpcsForDaemon(ws._machineId, ws._envName, 'daemon ws error')
+          clearServerDaemonOutboxInflightForDaemon(ws._daemonKey)
           broadcastState()
         }
       })
@@ -3874,13 +3868,21 @@ async function handleFleetWsMessage(ws, msg) {
     return
   }
 
-  if (type === 'register') {
+  if (type === 'register' || type === 'reserve-shell') {
     // Prefer agent_id over id: the MCP's sendWS() stamps a correlation `id`
     // onto every message, so the real fleet id arrives as agent_id. Falling
-    // back to id keeps python fleet-spawn's ws_register (which sends id=fleet_id
-    // directly, no correlation) working. Reading the bare `id` here was the
-    // root cause of phantom UUID-keyed agent rows.
+    // back to id keeps direct WS callers that send id=fleet_id working. Reading
+    // the bare `id` first here was the root cause of phantom UUID-keyed rows.
     const { agent_id, id: msgId, name, pretty_name, tmux_session, cwd, labels, manager, session_id, resume_id, metadata, machine_id, env_name, kind } = msg
+    const isShellReservation = type === 'reserve-shell'
+    if (type === 'register' && !msg.human) {
+      error('register is only for human browser sessions; agents must use reserve-shell before startup and login after startup')
+      return
+    }
+    if (isShellReservation && msg.human) {
+      error('reserve-shell is only for agent spawn shells')
+      return
+    }
     const agentId = agent_id || msgId
     if (!agentId) { error('missing id'); return }
     // Duplicate clients are allowed to coexist. Closing an existing socket here
@@ -3892,8 +3894,8 @@ async function handleFleetWsMessage(ws, msg) {
     ws._tldaAgentId = agentId
     const now = new Date().toISOString()
     const existing = fleetStore.getAgent?.(agentId)
-    // The friendly name is set once (first registration) and is thereafter owned
-    // by rename/rotation. Re-registration must NOT clobber it with the spawn name
+    // The friendly name is set once (first identity creation) and is thereafter owned
+    // by rename/rotation. Re-login must NOT clobber it with the spawn name
     // — that would undo a lineage rotation. The terminal/window name lives in
     // tmux_session, independent of the friendly name. So only the *first* name
     // is taken from `name`; once set, it's preserved.
@@ -3942,20 +3944,21 @@ async function handleFleetWsMessage(ws, msg) {
     }
     // Persist spawnPolicy ATOMICALLY as a coherent region blob. The shallow metadata
     // merge above is what let partial spawnPolicy writes corrupt the blob across
-    // re-registrations; coercing to a coherent { name, policy } region here means no new
+    // repeated identity updates; coercing to a coherent { name, policy } region here means no new
     // corruption can form. Representation-only — it reads the region off the stored blob
     // (new or legacy), never re-grants.
     if (agent.metadata?.spawnPolicy) {
       agent.metadata = { ...agent.metadata, spawnPolicy: normalizeRegionPolicy(agent.metadata.spawnPolicy) }
     }
-    // Pre-register vs claim. The spawn flow registers the identity as a "shell"
-    // (msg.shell) before the agent process exists — addressable (dead=0, in the
-    // not-dead registry) but NOT awake. The agent's OWN register has no shell
-    // flag and is the claim: clear the flag so the row hydrates as awake.
-    if (msg.shell) {
+    // Shell reservation vs claim. The spawn flow reserves the identity as a
+    // "shell" (msg.shell) before the agent process exists — addressable
+    // (dead=0, in the not-dead registry) but NOT awake. The agent's login/claim
+    // is a separate login message, handled below.
+    if (isShellReservation) {
       agent.metadata = { ...(agent.metadata || {}), shell: true }
     } else if (agent.metadata?.shell) {
-      // Claim: clear the shell flag. upsertAgent merges metadata via SQLite
+      // Human registration can replace a stale shell row. Clear the shell flag
+      // explicitly because upsertAgent merges metadata via SQLite
       // json_patch, which DELETES a key only when the patch sets it to null —
       // omitting it would leave the old shell:true intact through the merge.
       agent.metadata = { ...agent.metadata, shell: null }
@@ -3972,11 +3975,16 @@ async function handleFleetWsMessage(ws, msg) {
       }
       throw e
     }
-    fleetStore.share?.({ type: 'register', agent_id: agentId, from: agentId, to: agentId, text: `${agent.friendly_name || requestedName || agentId} ${msg.shell ? 'pre-registered' : 'registered'}` })
+    const lifecycleLabel = agent.friendly_name || requestedName || agentId
+    const eventType = isShellReservation ? 'lifecycle' : 'register'
+    const eventText = isShellReservation
+      ? `${lifecycleLabel} shell reserved`
+      : `${lifecycleLabel} registered`
+    fleetStore.share?.({ type: eventType, agent_id: agentId, from: agentId, to: agentId, text: eventText })
     // Every non-human agent belongs to a lineage from birth, as its own `dawn`
     // (the worker). This guarantees a handoff always has a chain to rotate within
     // — a direct handoff promotes that dawn → day (manager). The lineage is an
-    // overlay, so a failure here must never block registration.
+    // overlay, so a failure here must never block identity creation.
     if (!agent.human && agent.friendly_name) {
       const stored = fleetStore.getAgent?.(agentId)
       if (stored && !stored.lineage_id) {
@@ -3991,24 +3999,6 @@ async function handleFleetWsMessage(ws, msg) {
           fleetStore.assignPhase(agentId, lineage.id, phase)
         } catch (e) { console.error(`[lineage] auto-assign failed for ${agentId}: ${e.message}`) }
       }
-    }
-    // Registration implies a live claude process — mark alive immediately so
-    // the agent shows "awake" right away. The daemon's next sweep confirms
-    // or evicts within 30s. A shell pre-register is the exception: there is no
-    // process yet, so it must NOT be marked alive (that was the roster-lie —
-    // spawned-but-not-booted agents showing "awake"). The agent's own register
-    // (the claim, msg.shell falsy) is what marks it alive.
-    if (!agent.human && !msg.shell) {
-      markAgentAlive(agentId)
-      touchActivity(agentId)
-      spawnLibrarian.observeLiveness({
-        type: 'agent-liveness',
-        agent_id: agentId,
-        tmux_session: agent.tmux_session,
-        state: 'alive',
-        ts: now,
-      })
-      spawnLibrarian.observeRegister(fleetStore.getAgent?.(agentId) || agent)
     }
     broadcastState()
     // If the agent has a machine_id, push the updated agent list to that
@@ -4025,15 +4015,70 @@ async function handleFleetWsMessage(ws, msg) {
     return
   }
 
-  // Login: browser sends { type: "login", name: "skip" } to log in as an
-  // existing agent. Never creates — just attaches this WS to the agent.
+  // Login has two forms:
+  // - agents claim a server-created shell by `agent_id`
+  // - humans attach by `name`
+  // Neither form creates a new identity.
   if (type === 'login') {
-    const { name } = msg
+    const { agent_id, name, tmux_session, cwd, labels, manager, session_id, resume_id, metadata, machine_id, env_name, kind } = msg
+    if (agent_id) {
+      const existing = fleetStore.getAgent?.(agent_id)
+      if (!existing || existing.dead) { error(`No live shell for agent "${agent_id}". Spawn must create the shell before login.`); return }
+      agentFleetConnections.set(agent_id, ws)
+      ws._tldaAgentId = agent_id
+      const now = new Date().toISOString()
+      const agent = {
+        ...existing,
+        tmux_session: tmux_session || existing.tmux_session || null,
+        session_id: session_id || existing.session_id || null,
+        session_ids: existing.session_ids || [],
+        cwd: cwd || existing.cwd || null,
+        labels: labels || existing.labels || [],
+        last_seen: now,
+        dead: false,
+        human: false,
+        is_manager: !!manager,
+        metadata: (metadata || existing.metadata || kind)
+          ? { ...(existing.metadata || {}), ...(metadata || {}), ...(kind ? { kind } : {}) }
+          : null,
+        machine_id: machine_id || existing.machine_id || null,
+        env_name: env_name || existing.env_name || null,
+        daemon_key: (machine_id && env_name) ? daemonAddress(machine_id, env_name) : existing.daemon_key || null,
+        resume_id: resume_id || existing.resume_id || null,
+      }
+      if (agent.metadata?.spawnPolicy) {
+        agent.metadata = { ...agent.metadata, spawnPolicy: normalizeRegionPolicy(agent.metadata.spawnPolicy) }
+      }
+      if (agent.metadata?.shell) {
+        agent.metadata = { ...agent.metadata, shell: null }
+      }
+      if (session_id && !agent.session_ids.includes(session_id)) {
+        agent.session_ids = [...(agent.session_ids || []), session_id].slice(-10)
+      }
+      fleetStore.upsertAgent(agent)
+      fleetStore.share?.({ type: 'login', agent_id, from: agent_id, to: agent_id, text: `${agent.friendly_name || agent_id} logged in` })
+      markAgentAlive(agent_id)
+      touchActivity(agent_id)
+      spawnLibrarian.observeLiveness({
+        type: 'agent-liveness',
+        agent_id,
+        tmux_session: agent.tmux_session,
+        state: 'alive',
+        ts: now,
+      })
+      spawnLibrarian.observeLogin(fleetStore.getAgent?.(agent_id) || agent)
+      broadcastState()
+      if (agent.machine_id) broadcastDaemonAgentsUpdated()
+      const storedAgent = fleetStore.getAgent?.(agent_id) || agent
+      reply({ ok: true, agent: storedAgent, assigned_name: storedAgent.friendly_name || null })
+      return
+    }
+
     if (!name || typeof name !== 'string') { error('missing name'); return }
     const sanitized = name.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '')
     if (!sanitized) { error('invalid name'); return }
     // Find existing agent by friendly_name
-    const nameRows = fleetStore.db.prepare('SELECT * FROM agents WHERE friendly_name = ? AND dead = 0').all(sanitized)
+    const nameRows = fleetStore.db.prepare('SELECT * FROM agents WHERE friendly_name = ? AND dead = 0 AND human = 1').all(sanitized)
     if (nameRows.length === 0) {
       error(`No agent named "${sanitized}". Register first.`)
       return
@@ -4048,7 +4093,7 @@ async function handleFleetWsMessage(ws, msg) {
 
   if (type === 'spawn') {
     const callerId = ws._tldaAgentId || ws._tldaHumanId
-    if (!callerId) { error('spawn requires an authenticated fleet WS identity; call register() or login first'); return }
+    if (!callerId) { error('spawn requires an authenticated fleet WS identity; call login() first'); return }
     const caller = fleetStore.getAgent?.(callerId)
     if (!caller) { error(`spawn caller ${callerId} is not registered`); return }
     try {
@@ -4248,47 +4293,6 @@ async function handleFleetWsMessage(ws, msg) {
   // Per-agent throttle so a repeatedly-failing wake doesn't spam Skip's chat.
   const _wakeFailWarned = new Map() // agentId → last-warned ms
   const WAKE_FAIL_WARN_MS = 5 * 60 * 1000
-  function terminalNudgeKind(agent) {
-    const kind = agent?.metadata?.kind || agent?.kind
-    return kind === 'codex' || kind === 'goose'
-  }
-  function deliveryChannelFor(agent) {
-    return normalizeDeliveryChannel(agent?.metadata?.deliveryChannel)
-  }
-  function shouldSendWakeNudge(agent, nudgeText) {
-    if (!nudgeText || !agent?.tmux_session) return false
-    return deliveryChannelFor(agent) === 'tmux' || terminalNudgeKind(agent)
-  }
-  async function sendWakeNudge(daemonKey, agent, tmuxSession, nudgeText, phase) {
-    if (!shouldSendWakeNudge(agent, nudgeText)) return
-    await sendRpc(daemonKey, 'send-text', {
-      tmux_session: tmuxSession,
-      text: nudgeText,
-      enter: true,
-      enter_delay_ms: agent?.metadata?.kind === 'codex' ? 400 : 0,
-    }).catch(e => console.warn(`[wake-nudge] ${phase} failed for ${agent.id}: ${e.message}`))
-  }
-  function livenessFromCheckAliveResult(agentId, tmuxSession, result) {
-    if (result?.state) return { ...result, agent_id: result.agent_id || agentId, tmux_session: result.tmux_session || tmuxSession }
-    if (typeof result?.alive === 'boolean') {
-      return {
-        type: 'agent-liveness',
-        agent_id: agentId,
-        tmux_session: tmuxSession,
-        state: result.alive ? 'alive' : 'dead',
-        reason: result.alive ? undefined : 'daemon check-alive: tmux session absent',
-        ts: new Date().toISOString(),
-      }
-    }
-    return {
-      type: 'agent-liveness',
-      agent_id: agentId,
-      tmux_session: tmuxSession,
-      state: 'unknown',
-      reason: 'daemon check-alive returned no liveness state',
-      ts: new Date().toISOString(),
-    }
-  }
   function requestWake(agentId, nudgeText = null, asker = null) {
     const agent = fleetStore.getAgent?.(agentId)
     if (!agent || agent.dead || agent.human) return
@@ -5248,18 +5252,32 @@ async function handleFleetWsMessage(ws, msg) {
     return
   }
 
+  // ---- check-alive ----
+  if (type === 'check-alive') {
+    const { agent: agentQuery } = msg
+    const agent = fleetStore.findAgent(agentQuery)
+    if (!agent) { error('agent not found'); return }
+    if (!agent.tmux_session) { reply(livenessFromCheckAliveResult(agent.id, null, { alive: false })); return }
+    const route = resolveRpc('check-alive', agent)
+    if (route.via === 'none') { error(route.error); return }
+    try {
+      const result = await sendRpc(route.machine_id, 'check-alive', { tmux_session: agent.tmux_session })
+      reply(livenessFromCheckAliveResult(agent.id, agent.tmux_session, result))
+    } catch (e) { error(e.message) }
+    return
+  }
+
   // ---- plan-mode-respond ----
   if (type === 'plan-mode-respond') {
     const { agent: agentQuery, response } = msg
     const agent = fleetStore.findAgent(agentQuery)
     if (!agent) { error('agent not found'); return }
     if (!agent.tmux_session) { error('no tmux session'); return }
-    if (!['approve', 'supervised', 'reject'].includes(response)) { error('response must be approve, supervised, or reject'); return }
+    if (!isPlanModeResponse(response)) { error('response must be approve, supervised, or reject'); return }
     const route = resolveRpc('send-text', agent)
     if (route.via === 'none') { error(route.error); return }
     try {
-      const key = response === 'approve' ? '1' : response === 'supervised' ? '2' : '3'
-      let result = await sendRpc(route.machine_id, 'send-text', { tmux_session: agent.tmux_session, text: key, enter: false })
+      let result = await sendRpc(route.machine_id, 'send-text', { tmux_session: agent.tmux_session, text: planModeResponseKey(response), enter: false })
       fleetStore.updateAgentMeta?.(agent.id, { permission_mode: null, inPlanMode: false, planModeType: null })
       // Persist response on the plan_approval event
       const pending = pendingPlanApprovals.get(agent.id)
@@ -5794,6 +5812,51 @@ function ackDaemonOutboxMessage(ws, msg) {
   ws.send(JSON.stringify({ type: DAEMON_OUTBOX_ACK_TYPE, outbox_id: outboxId }))
 }
 
+function enqueueDaemonMessage(daemonKey, message, { dedupeKey = null } = {}) {
+  const id = serverDaemonOutbox.enqueue(daemonKey, message, { dedupeKey })
+  flushServerDaemonOutbox(daemonKey)
+  return id
+}
+
+function ackServerDaemonOutboxMessage(msg) {
+  const outboxId = msg?.outbox_id
+  if (!outboxId) return
+  serverDaemonOutbox.ack(outboxId)
+  serverDaemonOutboxInflight.delete(outboxId)
+}
+
+function flushServerDaemonOutbox(daemonKey) {
+  const dws = daemonConnections.get(daemonKey)
+  if (!dws || dws.readyState !== 1) return
+  for (const row of serverDaemonOutbox.pendingForDaemon(daemonKey, 100)) {
+    if (serverDaemonOutboxInflight.has(row.id)) continue
+    try {
+      serverDaemonOutbox.markAttempt(row.id)
+      dws.send(JSON.stringify(row.payload))
+      serverDaemonOutboxInflight.add(row.id)
+    } catch (e) {
+      serverDaemonOutbox.markError(row.id, e)
+      serverDaemonOutboxInflight.delete(row.id)
+      console.warn(`[server-daemon-outbox] send failed for ${daemonKey}:${row.type}: ${e.message}`)
+      break
+    }
+  }
+}
+
+function clearServerDaemonOutboxInflightForDaemon(daemonKey) {
+  for (const row of serverDaemonOutbox.pendingForDaemon(daemonKey, 1000)) {
+    serverDaemonOutboxInflight.delete(row.id)
+  }
+}
+
+function knownDaemonKeys() {
+  const keys = new Set([...daemonConnections.keys()])
+  for (const row of fleetStore?.listDaemonRegistrations?.() || []) {
+    if (row.daemon_key) keys.add(row.daemon_key)
+  }
+  return [...keys].sort()
+}
+
 function projectsForDaemon() {
   // Returns the project list a daemon needs to watch source dirs for,
   // including each project's relevant-files set (from the last build's
@@ -5810,7 +5873,11 @@ function projectsForDaemon() {
           // Filter to only author-dir paths (not the server mirror paths)
           watchFiles = daemonWatchFilesFromAbsolutePaths(p, rf.files || [])
         }
-      } catch {}
+      } catch (e) {
+        // Keep daemon welcome/project updates flowing; null watchFiles makes the
+        // daemon watch the main file until the next build regenerates paper scope.
+        console.warn(`[daemon] relevant-files.json unavailable for ${p.name}; using main-file watch only: ${e.message}`)
+      }
       if (p.sourceDir) {
         const partSourceWatchFiles = daemonProjectPartSourceWatchFiles(p)
         if (partSourceWatchFiles.length > 0) {
@@ -5847,18 +5914,15 @@ function daemonProjectPartSourceWatchFiles(project) {
 }
 
 function broadcastDaemonAgentsUpdated() {
-  if (!fleetStore || daemonConnections.size === 0) {
+  const daemonKeys = knownDaemonKeys()
+  if (!fleetStore || daemonKeys.length === 0) {
     if (!fleetStore) console.warn('[fleet-daemon] broadcastDaemonAgentsUpdated: no fleetStore')
     return
   }
-  for (const [daemonKey, dws] of daemonConnections) {
-    if (dws.readyState !== 1) {
-      console.warn(`[fleet-daemon] broadcastDaemonAgentsUpdated: ws for ${daemonKey} not open (readyState=${dws.readyState})`)
-      continue
-    }
+  for (const daemonKey of daemonKeys) {
     try {
-      const agents = fleetStore.getAgentsByDaemon(dws._machineId, dws._envName)
-      dws.send(JSON.stringify({ type: 'agents-updated', agents }))
+      const agents = fleetStore.getAgentsByDaemonKey(daemonKey)
+      enqueueDaemonMessage(daemonKey, { type: 'agents-updated', agents }, { dedupeKey: 'agents-updated' })
     } catch (e) {
       console.error(`[fleet-daemon] broadcastDaemonAgentsUpdated failed for ${daemonKey}: ${e.message}`)
     }
@@ -5866,20 +5930,20 @@ function broadcastDaemonAgentsUpdated() {
 }
 
 function broadcastDaemonProjectsUpdated() {
-  if (daemonConnections.size === 0) return
+  const daemonKeys = knownDaemonKeys()
+  if (daemonKeys.length === 0) return
   const projects = projectsForDaemon()
-  for (const [, dws] of daemonConnections) {
-    if (dws.readyState !== 1) continue
-    try { dws.send(JSON.stringify({ type: 'projects-updated', projects })) } catch {}
+  for (const daemonKey of daemonKeys) {
+    enqueueDaemonMessage(daemonKey, { type: 'projects-updated', projects }, { dedupeKey: 'projects-updated' })
   }
 }
 
 function broadcastDaemonActiveViewers() {
-  if (daemonConnections.size === 0) return
+  const daemonKeys = knownDaemonKeys()
+  if (daemonKeys.length === 0) return
   const viewers = [...getActiveViewerProjects()]
-  for (const [, dws] of daemonConnections) {
-    if (dws.readyState !== 1) continue
-    try { dws.send(JSON.stringify({ type: 'active-viewers', projects: viewers })) } catch {}
+  for (const daemonKey of daemonKeys) {
+    enqueueDaemonMessage(daemonKey, { type: 'active-viewers', projects: viewers }, { dedupeKey: 'active-viewers' })
   }
 }
 
@@ -6046,6 +6110,7 @@ async function handleDaemonWsMessage(ws, msg) {
     ws._hostname = hostname
     ws._version = version
     daemonConnections.set(daemonKey, ws)
+    clearServerDaemonOutboxInflightForDaemon(daemonKey)
     daemonWelcomeSeenAt.set(daemonKey, Date.now())
     fleetStore?.upsertDaemonRegistration?.({
       daemon_key: daemonKey,
@@ -6102,6 +6167,7 @@ async function handleDaemonWsMessage(ws, msg) {
     }
     // Send persisted backing file watch list to daemon.
     sendWatchBackingFiles()
+    flushServerDaemonOutbox(daemonKey)
 
     // Check each project's shadow repo for agent commits that haven't been built yet.
     // This catches the case where an agent committed directly to the shadow repo
@@ -6142,9 +6208,6 @@ async function handleDaemonWsMessage(ws, msg) {
         })
         if (batchState === 'alive') {
           // Liveness = "the tmux process still exists", NOT "the agent did work".
-          // The daemon sends this batch every 30s (DEATH_CHECK_MS) for EVERY live
-          // agent, so calling touchActivity here would reset the idle clock each
-          // sweep and no idle agent could ever reach the 20-min hibernate threshold.
           // markAgentAlive is idempotent for _aliveSince; real activity is recorded
           // by agent-activity / agent-thinking / chat, not by this liveness ping.
           markAgentAlive(id)
@@ -6317,7 +6380,7 @@ async function handleDaemonWsMessage(ws, msg) {
     try {
       markAgentNotAlive(agent_id)
       // A shell that never booted (never claimed) must be marked dead so it
-      // leaves the not-dead registry — otherwise the pre-registered identity
+      // leaves the not-dead registry — otherwise the reserved identity
       // lingers as a phantom addressable agent that will never inhabit.
       if (agent?.metadata?.shell) fleetStore.markDead?.(agent_id)
       fleetStore.updateAgentMeta?.(agent_id, {
@@ -6355,7 +6418,7 @@ async function handleDaemonWsMessage(ws, msg) {
           type: 'chat',
           from: 'fleet:tlda',
           to,
-          text: `**Spawn startup failed** for \`${label}\`\n\n${reason || 'The harness printed a fatal startup error before the agent registered.'}`,
+          text: `**Spawn startup failed** for \`${label}\`\n\n${reason || 'The harness printed a fatal startup error before the agent logged in.'}`,
           metadata,
           unread: true,
         })
@@ -6452,8 +6515,6 @@ async function handleDaemonWsMessage(ws, msg) {
   if (type === 'rpc-reply') {
     const entry = pendingRpcs.get(msg.id)
     if (!entry) return // unknown / already-timed-out RPC
-    clearTimeout(entry.timer)
-    pendingRpcs.delete(msg.id)
     if (msg.error) entry.reject(new Error(rpcErrorMessage(msg.error)))
     else entry.resolve(msg.result)
     return

@@ -191,7 +191,7 @@ export async function createFleetShape(
  * side, so a page-coord placement drops the panel off-screen and it "vanishes."
  * Translate the screen point through the HUD camera so it lands under the
  * cursor. Falls back to page coords when there's no HUD. Centers the shape on
- * the cursor (matching ReaperTool). Returns the new shape id, or null if
+ * the cursor. Returns the new shape id, or null if
  * identity is unresolved (no shape created).
  */
 export async function placeFleetShapeAtCursor(

@@ -95,30 +95,30 @@ describe('spawn librarian collision handling', () => {
   })
 })
 
-describe('spawn librarian register readiness', () => {
-  it('resolves readiness on the register event rather than a timer', async () => {
-    const librarian = new SpawnLibrarian({ registerDeadlineMs: 100 })
-    const wait = librarian.awaitRegister({ id: 'fleet:new1', name: 'new1', spec: { model: 'gpt-5.5' } })
+describe('spawn librarian login readiness', () => {
+  it('resolves readiness on login rather than a timer', async () => {
+    const librarian = new SpawnLibrarian({ loginDeadlineMs: 100 })
+    const wait = librarian.awaitLogin({ id: 'fleet:new1', name: 'new1', spec: { model: 'gpt-5.5' } })
     assert.equal(librarian.pendingSpawns.size, 1)
-    librarian.observeRegister({ id: 'fleet:new1', friendly_name: 'new1' })
+    librarian.observeLogin({ id: 'fleet:new1', friendly_name: 'new1' })
     assert.deepEqual(await wait, { ok: true, agent: { id: 'fleet:new1', friendly_name: 'new1' } })
     assert.equal(librarian.pendingSpawns.size, 0)
   })
 
   it('allows a slow spawn when the failure deadline has not elapsed', async () => {
-    const librarian = new SpawnLibrarian({ registerDeadlineMs: 80 })
-    const wait = librarian.awaitRegister({ id: 'fleet:slow', name: 'slow' })
+    const librarian = new SpawnLibrarian({ loginDeadlineMs: 80 })
+    const wait = librarian.awaitLogin({ id: 'fleet:slow', name: 'slow' })
     await new Promise((resolve) => setTimeout(resolve, 30))
-    librarian.observeRegister({ id: 'fleet:slow', friendly_name: 'slow' })
+    librarian.observeLogin({ id: 'fleet:slow', friendly_name: 'slow' })
     assert.equal((await wait).ok, true)
   })
 
-  it('returns register-timeout for a launch that never registers and does not duplicate', async () => {
-    const librarian = new SpawnLibrarian({ registerDeadlineMs: 5 })
-    const wait = librarian.awaitRegister({ id: 'fleet:never', name: 'never' })
-    assert.deepEqual(await wait, { ok: false, reason: 'register-timeout' })
+  it('returns login-timeout for a launch that never logs in and does not duplicate', async () => {
+    const librarian = new SpawnLibrarian({ loginDeadlineMs: 5 })
+    const wait = librarian.awaitLogin({ id: 'fleet:never', name: 'never' })
+    assert.deepEqual(await wait, { ok: false, reason: 'login-timeout' })
     assert.equal(librarian.pendingSpawns.has('fleet:never'), false)
-    librarian.observeRegister({ id: 'fleet:other', friendly_name: 'never' })
+    librarian.observeLogin({ id: 'fleet:other', friendly_name: 'never' })
     assert.equal(librarian.pendingSpawns.size, 0)
   })
 })
@@ -143,6 +143,19 @@ describe('spawn librarian liveness routing', () => {
         { serverAlive: false }
       ),
       { action: 'respawn' }
+    )
+  })
+
+  it('delivers wake nudges when daemon liveness is unknown but server state is alive', () => {
+    const librarian = new SpawnLibrarian()
+    const agent = { id: 'fleet:a', friendly_name: 'a' }
+    assert.deepEqual(
+      librarian.decideWake(
+        agent,
+        { agent_id: agent.id, tmux_session: 'fleet-a', state: 'unknown', reason: 'daemon probe failed' },
+        { serverAlive: true }
+      ),
+      { action: 'deliver' }
     )
   })
 

@@ -76,25 +76,41 @@ def fleet_chat(to, message):
         log(f"chat failed: {e}")
         return None
 
-def register():
+def ws_frame(payload):
+    data = json.dumps(payload).encode()
+    if len(data) < 126:
+        return bytes([0x81, len(data)]) + data
+    if len(data) < 65536:
+        return bytes([0x81, 126]) + len(data).to_bytes(2, 'big') + data
+    return bytes([0x81, 127]) + len(data).to_bytes(8, 'big') + data
+
+def login_payload():
+    return {
+        "agent_id": FLEET_ID,
+        "name": "qa-gate",
+        "cwd": os.getcwd(),
+        "machine_id": socket.gethostname().split('.')[0],
+    }
+
+def send_login(ws):
+    payload = login_payload()
+    ws.send(json.dumps({**payload, "type": "reserve-shell"}))
+    ws.send(json.dumps({**payload, "type": "login"}))
+
+def login():
     ws_url = f"ws://{FLEET_HOST}:{FLEET_PORT}/ws/fleet"
+    payload = login_payload()
     try:
         import websocket as ws_mod
         ws = ws_mod.create_connection(ws_url, timeout=5)
-        ws.send(json.dumps({
-            "type": "register",
-            "agent_id": FLEET_ID,
-            "name": "qa-gate",
-            "cwd": os.getcwd(),
-            "machine_id": socket.gethostname().split('.')[0],
-        }))
+        send_login(ws)
         try:
             resp = ws.recv()
-            log(f"Registered: {json.loads(resp).get('type', '?')}")
+            log(f"Logged in: {json.loads(resp).get('type', '?')}")
         except: pass
         ws.close()
     except ImportError:
-        log("websocket-client not installed, using raw socket registration")
+        log("websocket-client not installed, using raw socket login")
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.settimeout(5)
@@ -107,18 +123,13 @@ def register():
             resp = b""
             while b"\r\n\r\n" not in resp: resp += s.recv(4096)
             if b"101" in resp.split(b"\r\n")[0]:
-                payload = json.dumps({
-                    "type": "register", "agent_id": FLEET_ID,
-                    "name": "qa-gate", "cwd": os.getcwd(),
-                    "machine_id": socket.gethostname().split('.')[0],
-                }).encode()
-                frame = bytes([0x81, len(payload)]) + payload
-                s.sendall(frame)
+                s.sendall(ws_frame({**payload, "type": "reserve-shell"}))
+                s.sendall(ws_frame({**payload, "type": "login"}))
                 time.sleep(0.5)
-                log("Registered via raw WS")
+                log("Logged in via raw WS")
             s.close()
         except Exception as e:
-            log(f"Registration failed: {e}")
+            log(f"Login failed: {e}")
 
 def get_all_agents():
     try:
@@ -524,13 +535,7 @@ def watch_ws(agents_map):
         try:
             ws = websocket.create_connection(ws_url, timeout=300)
             _ws_conn = ws
-            ws.send(json.dumps({
-                "type": "register",
-                "agent_id": FLEET_ID,
-                "name": "qa-gate",
-                "cwd": os.getcwd(),
-                "machine_id": socket.gethostname().split('.')[0],
-            }))
+            send_login(ws)
             watching_names = [agents_map.get(a, a) for a in watched] if watched else ["all"]
             log(f"Connected. Watching: {', '.join(watching_names)}")
             if not greeted:

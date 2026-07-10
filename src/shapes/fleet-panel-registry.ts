@@ -12,7 +12,6 @@ export type FleetPanelType =
   | 'fleet-search'
   | 'fleet-docview'
   | 'fleet-source-editor'
-  | 'fleet-reaper'
   | 'fleet-inbox'
   | 'fleet-touch-inbox'
   | 'fleet-notifications'
@@ -26,7 +25,6 @@ export const FLEET_PANEL_DEFINITIONS = defineHostedPanelApps([
   { type: 'fleet-search', defaultSize: { w: 400, h: 300 } },
   { type: 'fleet-docview', defaultSize: { w: 400, h: 300 } },
   { type: 'fleet-source-editor', defaultSize: { w: 560, h: 520 }, defaultProps: { file: '', line: 1, title: 'Source' } },
-  { type: 'fleet-reaper', defaultSize: { w: 480, h: 360 } },
   { type: 'fleet-inbox', defaultSize: { w: 360, h: 560 } },
   { type: 'fleet-touch-inbox', defaultSize: { w: 380, h: 680 } },
   { type: 'fleet-notifications', defaultSize: { w: 360, h: 220 } },

@@ -1,6 +1,5 @@
-// invalidationGraph.ts — client port of the structural (dependency-graph)
-// invalidation engine. Mirrors server/lib/invalidation-graph.mjs exactly so the
-// live viewer and the server dry-run share ONE algorithm (the "one path" rule).
+// invalidationGraph.ts — structural (dependency-graph) invalidation for the
+// viewer's live proof-vetting inbox/provenance surfaces.
 //
 // The vetting model is a graph of proof nodes (theorem / lemma / prop / …), each
 // anchored to a source line range, with dependency edges: a pair P "depends on"
@@ -9,9 +8,8 @@
 // propagates transitively along the edges (the cascade the linear ribbon
 // structurally can't do: edit Lemma B → B stale → Theorem A that uses B stale).
 //
-// The server module runs this over a *proposed* edit range (the dry-run). Here
-// the changed ranges come from the live ribbon's stale spans, so the viewer
-// projects the same cascade onto the inbox with no server round-trip.
+// The changed ranges come from the live ribbon's stale spans, so the viewer
+// projects the cascade onto the inbox with no server round-trip.
 
 export interface ProofPairLite {
   id: string

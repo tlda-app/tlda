@@ -24,6 +24,8 @@ Primary modules:
 - `shared/spawn-librarian.ts`
 - `server/lib/spawn-policy.mjs`
 - `bin/fleet-daemon.mjs`
+- `agent-launch/agent-launch.mjs`
+- `agent-launch/index.mjs`
 - `bin/fleet-spawn.py`
 
 Spawn is routed by identity and machine ownership.
@@ -39,7 +41,7 @@ Spawn is routed by identity and machine ownership.
 3. `resolveSpawnCollision()` and `SpawnLibrarian.awaitRegister()` in
    `shared/spawn-librarian.ts` handle name collisions and register readiness.
 4. The server sends exactly one `spawn` RPC to the selected daemon.
-5. The daemon invokes `bin/fleet-spawn.py` and reports the result.
+5. The daemon's agent-launch module invokes the spawn launcher and reports the result.
 
 There is no silent fallback to server-local spawn or another daemon. If the
 selected daemon is unavailable, the spawn path returns failure.
@@ -52,9 +54,9 @@ Primary modules:
 - `bin/lib/status-classifier.mjs`
 - `shared/spawn-librarian.ts`
 - `server/unified-server.mjs`
-- `bin/todd.mjs`
-- `bin/lib/disposition-scheduler.mjs`
-- `bin/lib/disposition-poke.mjs`
+- `bots/todd.mjs` (executed through `bin/bots/todd.mjs`)
+- `bots/self-check/scheduler.mjs`
+- `bots/self-check/poke.mjs`
 
 The daemon is the source of process/status truth. It scans tmux panes, JSONL
 activity, and harness-specific status surfaces, then emits liveness and

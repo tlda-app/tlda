@@ -30,7 +30,7 @@ import {
 import { log } from '../logger'
 import { probe } from '../perf-probe'
 import { DATABASE_HTTP, DATABASE_WS } from '../activeConfig'
-import { storedIdentityLoginFailureAction, temporaryIdentityName } from './identity-persistence.mjs'
+import { isUsableIdentityName, sanitizeIdentityName, storedIdentityLoginFailureAction } from './identity-persistence.mjs'
 import { rejectWsRequests, resetWsRequestIdleTimers, startWsRequest } from '../../shared/ws-request-policy.mjs'
 
 // The global fleet/event store (chat, agents, activity, tasks) = the active
@@ -58,11 +58,11 @@ const _store = makeEventStore()
 const HISTORY_PAGE = 150
 // Activity events are now stored in the events table (type='activity')
 // and flow through the same channel as chat — no separate store needed.
-let _reaperStatus = null     // latest reaper-status from daemon
 let _humanId = null
 let _humanName = null
 let _identifyPending = false   // true while waiting for identify response
 let _lastEventId = 0
+let _identityRetryTimer = null
 // Buffer for event-updates that arrive before their target event is in the
 // store (e.g. an async file-upload's `event-update` racing ahead of the chat
 // event it patches). Without this, the update is dropped and its change — most
@@ -202,7 +202,6 @@ function resolveFilter(filter) {
 export { resolveFilter }
 
 // --- Read API ---
-export function getReaperStatus() { return _reaperStatus }
 export function getAgents() { return _agents }
 export function getTasks() { return _tasks }
 export function getItems() { return _items }
@@ -210,6 +209,16 @@ export function getEvents() { return _store.all() }
 export function getActivity(agentId) { return _store.all().filter(e => e._activity && e.agent === agentId) }
 export function getHumanId() { return _humanId }
 export function getHumanName() { return _humanName }
+
+if (typeof window !== 'undefined') {
+  window.__tldaFleetIdentity = () => ({
+    id: _humanId,
+    name: _humanName,
+    identifyPending: _identifyPending,
+    connected: _connected,
+    wsReadyState: _ws?.readyState ?? null,
+  })
+}
 
 // A stable per-browser id, generated once and persisted. This is the "device"
 // half of the (identity, device) fleet-layout key: the same human identity open
@@ -339,9 +348,26 @@ export function getDeviceId() {
 export function needsIdentity() { return !_humanId && _identifyPending }
 
 function readStoredIdentity() {
-  try { return localStorage.getItem('tlda-identity') }
+  try {
+    const stored = localStorage.getItem('tlda-identity')
+    const clean = sanitizeIdentityName(stored)
+    if (!isUsableIdentityName(clean)) {
+      if (stored) localStorage.removeItem('tlda-identity')
+      return null
+    }
+    return clean
+  }
   catch {
     // Storage access can be blocked by the browser; fall back to temporary identity.
+    return null
+  }
+}
+
+function readUrlIdentity() {
+  try {
+    const clean = sanitizeIdentityName(new URLSearchParams(window.location.search).get('name'))
+    return isUsableIdentityName(clean) ? clean : null
+  } catch {
     return null
   }
 }
@@ -364,12 +390,22 @@ function clearTemporaryIdentity() {
   }
 }
 
+function clearIdentityRetry() {
+  if (_identityRetryTimer) {
+    window.clearTimeout(_identityRetryTimer)
+    _identityRetryTimer = null
+  }
+}
+
 /** Log in as an existing agent. Used by returning users and ?name= auto-login. */
 export async function login(name) {
-  const res = await wsSend({ type: 'login', name })
+  const clean = sanitizeIdentityName(name)
+  if (!isUsableIdentityName(clean)) throw new Error('invalid identity name')
+  const res = await wsSend({ type: 'login', name: clean })
   _humanId = res.id
   _humanName = res.name
   _identifyPending = false
+  clearIdentityRetry()
   writeStoredIdentity(res.name)
   clearTemporaryIdentity()
   notify('identity', { type: 'identity', id: _humanId, name: _humanName })
@@ -379,12 +415,14 @@ export async function login(name) {
 
 /** Register a new human agent. Used by the IdentityPicker for new users. */
 export async function registerHuman(name, { persist = true } = {}) {
-  const sanitized = name.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '')
+  const sanitized = sanitizeIdentityName(name)
+  if (!isUsableIdentityName(sanitized)) throw new Error('invalid identity name')
   const humanId = `fleet:${sanitized}`
   const res = await wsSend({ type: 'register', agent_id: humanId, name: sanitized, human: true })
   _humanId = res.agent?.id || humanId
   _humanName = sanitized
   _identifyPending = false
+  clearIdentityRetry()
   if (persist) {
     writeStoredIdentity(sanitized)
     clearTemporaryIdentity()
@@ -396,21 +434,11 @@ export async function registerHuman(name, { persist = true } = {}) {
   return res
 }
 
-async function registerTemporaryHuman() {
-  let lastErr = null
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      return await registerHuman(temporaryIdentityName(), { persist: false })
-    } catch (err) {
-      lastErr = err
-    }
-  }
-  throw lastErr || new Error('temporary identity registration failed')
-}
-
 function retryStoredIdentity(storedName) {
   if (!storedName) return
-  window.setTimeout(() => {
+  if (_identityRetryTimer) return
+  _identityRetryTimer = window.setTimeout(() => {
+    _identityRetryTimer = null
     if (!_ws || _ws.readyState !== 1) return
     if (readStoredIdentity() !== storedName) return
     if (_humanName === storedName) return
@@ -418,10 +446,15 @@ function retryStoredIdentity(storedName) {
       _humanId = res.id
       _humanName = res.name
       _identifyPending = false
+      clearIdentityRetry()
       clearTemporaryIdentity()
       notify('identity', { type: 'identity', id: _humanId, name: _humanName })
       _startHeartbeat()
-    }).catch(() => {})
+    }).catch(() => {
+      _identifyPending = true
+      notify('identity', { type: 'identity', id: null, name: storedName, needsIdentity: true })
+      retryStoredIdentity(storedName)
+    })
   }, 5000)
 }
 
@@ -645,9 +678,12 @@ export function connect() {
     _reconnectDelay = 1000
     _connected = true
     notify('connection', { type: 'connection', connected: true })
-    // Log in if we have a stored identity
-    const storedName = readStoredIdentity()
+    // Log in if we have a requested or stored identity. The URL is explicit for
+    // this tab and must beat stale browser storage.
+    const storedName = readUrlIdentity() || readStoredIdentity()
     if (storedName) {
+      _identifyPending = true
+      notify('identity', { type: 'identity', id: null, name: storedName, needsIdentity: true })
       wsSend({ type: 'login', name: storedName }).then(res => {
         _humanId = res.id
         _humanName = res.name
@@ -656,16 +692,12 @@ export function connect() {
         _startHeartbeat()
       }).catch((err) => {
         // A deploy/restart can drop or time out this login request. Do not erase
-        // the browser's chosen identity for a transient transport failure. Use
-        // a real temporary human for this session instead of exposing the app as
-        // an id-less "nobody", and retry the stored name later.
+        // or mask the browser's chosen identity with a generated temporary human:
+        // the stored name is the durable "who I am" claim, so keep retrying it.
         if (storedIdentityLoginFailureAction(err) !== 'register-stored') {
-          registerTemporaryHuman().then(() => {
-            retryStoredIdentity(storedName)
-          }).catch(() => {
-            _identifyPending = true
-            notify('identity', { type: 'identity', id: null, name: null, needsIdentity: true })
-          })
+          _identifyPending = true
+          notify('identity', { type: 'identity', id: null, name: storedName, needsIdentity: true })
+          retryStoredIdentity(storedName)
           return
         }
         // Fresh/test servers may not have the human row yet. Preserve the
@@ -836,9 +868,6 @@ export function connect() {
           }
         }
         if (ids.size) notify('messages', null)
-      } else if (eventType === 'reaper-status') {
-        _reaperStatus = data
-        notify('reaper', data)
       } else if (eventType === 'suggestions') {
         notify('suggestions', data)
       } else if (eventType === 'items') {

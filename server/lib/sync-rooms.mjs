@@ -23,7 +23,6 @@ import {
   fleetDocviewProps,
   fleetInboxProps,
   fleetNotificationsProps,
-  fleetReaperProps,
   fleetSearchProps,
   fleetSourceEditorProps,
   fleetTouchInboxProps,
@@ -367,13 +366,6 @@ const customShapeSchemas = {
     },
     migrations: createMigrationSequence({
       sequenceId: 'com.tldraw.shape.task-inbox',
-      sequence: [],
-    }),
-  },
-  'fleet-reaper': {
-    props: fleetReaperProps,
-    migrations: createMigrationSequence({
-      sequenceId: 'com.tldraw.shape.fleet-reaper',
       sequence: [],
     }),
   },

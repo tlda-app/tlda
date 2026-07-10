@@ -16,18 +16,18 @@ import { setup, teardown, getScrollState, scrollToBottom, sendChat,
 
 const suite = new Suite('E false-userScrolledUp')
 
-const ctx = await setup({ agentName: process.env.TLDA_TEST_AGENT || 'tlda-ops' })
+const ctx = await setup({})
 
 try {
   await scrollToBottom(ctx)
   await delay(500)
 
   // E2: new message height change
-  sendChat(ctx, { from: ctx.agentId, to: 'fleet:skip',
+  sendChat(ctx, { from: ctx.agentId,
     message: '## Big Header\n\n```\ncode block that makes the message tall\nline 2\nline 3\nline 4\nline 5\n```\n\ntext after code' })
   await delay(1500)
   // Now send a FOLLOW-UP — if E2 falsely set userScrolledUp, this won't scroll
-  sendChat(ctx, { from: ctx.agentId, to: 'fleet:skip',
+  sendChat(ctx, { from: ctx.agentId,
     message: 'E2 follow-up: should auto-scroll' })
   await delay(1200)
   await suite.run('E2: auto-scroll after tall message (no false userup)', () =>
@@ -41,7 +41,7 @@ try {
   pwEval(ctx.sessionName, `(function(){var ta=document.querySelector(".fleet-chat-input-area textarea");if(!ta)return "no ta";ta.value="";ta.style.height="auto";ta.dispatchEvent(new Event("input",{bubbles:true}));return "cleared"})()`)
   await delay(500)
   // Send follow-up from agent
-  sendChat(ctx, { from: ctx.agentId, to: 'fleet:skip',
+  sendChat(ctx, { from: ctx.agentId,
     message: 'E3 follow-up: auto-scroll after textarea collapse' })
   await delay(1200)
   await suite.run('E3: auto-scroll after textarea collapse (no false userup)', () =>
@@ -51,7 +51,7 @@ try {
   // Force scrollTop = scrollHeight (programmatic), then send a message
   pwEval(ctx.sessionName, `(function(){var els=document.querySelectorAll(".fleet-chat-log");var best=null,bC=-1;for(var i=0;i<els.length;i++){var c=els[i].querySelectorAll(".chat-line").length;if(c>bC){bC=c;best=els[i]}}if(best)best.scrollTop=best.scrollHeight;return "ok"})()`)
   await delay(300)
-  sendChat(ctx, { from: ctx.agentId, to: 'fleet:skip',
+  sendChat(ctx, { from: ctx.agentId,
     message: 'E5 follow-up: auto-scroll after programmatic scrollTop set' })
   await delay(1200)
   await suite.run('E5: auto-scroll after programmatic scroll (no false userup)', () =>
@@ -60,11 +60,11 @@ try {
   // E4: virtualizer effect — send a burst of messages rapidly to trigger
   // virtualizer re-measurement, then verify auto-scroll
   for (let i = 0; i < 8; i++) {
-    sendChat(ctx, { from: ctx.agentId, to: 'fleet:skip',
+    sendChat(ctx, { from: ctx.agentId,
       message: `Burst msg ${i} — triggers virtualizer remeasure` })
   }
   await delay(2000)
-  sendChat(ctx, { from: ctx.agentId, to: 'fleet:skip',
+  sendChat(ctx, { from: ctx.agentId,
     message: 'E4 follow-up: auto-scroll after virtualizer burst' })
   await delay(1200)
   await suite.run('E4: auto-scroll after rapid burst / virtualizer churn', () =>

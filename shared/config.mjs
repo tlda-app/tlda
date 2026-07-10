@@ -181,5 +181,5 @@ export function getReadToken(config = null) {
 export function getManagedBots(config = null) {
   const cfg = config ?? loadConfig()
   if (Array.isArray(cfg.bots)) return cfg.bots
-  return [{ name: 'todd', script: 'bin/todd.mjs' }]
+  return [{ name: 'todd', script: 'bin/bots/todd.mjs' }]
 }

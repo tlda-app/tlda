@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react'
 import { useFleetIdentity } from './fleet-data-adapter'
 import { subscribeCanPresent } from './authToken'
-import { temporaryIdentityName } from './fleet/identity-persistence.mjs'
+import { isUsableIdentityName, sanitizeIdentityName, temporaryIdentityName } from './fleet/identity-persistence.mjs'
 
 function cleanName(name: string | null) {
-  return name?.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '') || ''
+  const clean = sanitizeIdentityName(name)
+  return isUsableIdentityName(clean) ? clean : ''
 }
 
 export function IdentityPicker() {
@@ -35,7 +36,7 @@ export function IdentityPicker() {
             try { await login(candidate) }
             catch { await register(candidate) }
           } else {
-            await register(candidate)
+            await register(candidate, { persist: false })
           }
           if (!cancelled) {
             setNotice(requestedName

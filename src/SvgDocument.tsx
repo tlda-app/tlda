@@ -39,7 +39,6 @@ import { getMyAnchorId, isMyFleetShape, FLEET_SHAPE_TYPES } from './shapes/fleet
 import { dispatchFleetHudReset } from './wm/editor-host-bridge'
 import { ClusterShapeUtil } from './shapes/ClusterShape'
 import { TerminalShapeUtil } from './shapes/TerminalShape'
-import { ReaperShapeUtil } from './shapes/ReaperShape'
 import { OutlineShapeUtil } from './shapes/OutlineShape'
 import { GraphNodeShapeUtil } from './shapes/GraphNodeShape'
 import { GraphExplainShapeUtil } from './shapes/GraphExplainShape'
@@ -61,7 +60,6 @@ import { FleetAgentsTool } from './tools/FleetAgentsTool'
 import { FleetSearchTool } from './tools/FleetSearchTool'
 import { FleetInboxTool } from './tools/FleetInboxTool'
 import { ClusterTool } from './tools/ClusterTool'
-import { ReaperTool } from './tools/ReaperTool'
 import { UsageMeterTool } from './tools/UsageMeterTool'
 import { TerminalTool } from './tools/TerminalTool'
 import { PlaybackTool } from './tools/PlaybackTool'
@@ -129,6 +127,9 @@ import { useDividerDiff } from './hooks/useDividerDiff'
 import { ShadowHistoryOverlay } from './overlays/ShadowHistoryOverlay'
 import { PlaybackPill } from './pills/PlaybackPill'
 import { SlidesNavigator } from './SlidesNavigator'
+import { isPhoneViewport } from './phoneViewport'
+import { getPrimaryPhoneDocumentLeft, PHONE_INBOX_PANE_INDEX } from './shapes/phone-pane-stack'
+import { snapToPhoneLaneIndex } from './overlays/useFleetGestures'
 
 // Shape sync server = the active config's STORE (ws); tldraw license = the active
 // config's licenseKey. Both come from the server-injected config (activeConfig).
@@ -138,7 +139,7 @@ const LICENSE_KEY = CFG_LICENSE_KEY
 // Phone = the narrow touch layout (matches isPhone in the component + the
 // other phone checks). Module-level so render-time component overrides (e.g.
 // hiding the TLDraw toolbar) can read it without prop threading.
-const IS_PHONE = typeof window !== 'undefined' && window.matchMedia('(max-width: 600px)').matches
+const IS_PHONE = isPhoneViewport()
 
 // Agent attention overlay wrapper (needs useEditor context)
 function AgentAttentionCanvas() {
@@ -907,17 +908,19 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     )
     // Wrap every custom shape util with an error boundary so a single broken shape
     // renders an error placeholder instead of crashing the entire app.
-    const customUtils = [MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil, TocDropTargetShapeUtil, ReadingAssistBarShapeUtil, UnderstandingLineShapeUtil, TimelineOverlayShapeUtil, ZoomableImageShapeUtil, FleetChatShapeUtil, FleetAgentsShapeUtil, FleetPillShapeUtil, FleetSearchShapeUtil, FleetInboxShapeUtil, FleetNotificationsShapeUtil, FleetTouchInboxShapeUtil, FleetSourceEditorShapeUtil, FleetDocViewShapeUtil, FleetVideoShapeUtil, DocClipShapeUtil, InlineDocShapeUtil, DocVersionShapeUtil, DocViewerStateShapeUtil, ClusterShapeUtil, TerminalShapeUtil, TaskInboxShapeUtil, PlaybackFrameShapeUtil, ReaperShapeUtil, OutlineShapeUtil, GraphNodeShapeUtil, GraphExplainShapeUtil, UsageMeterShapeUtil]
+    const customUtils = [MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil, TocDropTargetShapeUtil, ReadingAssistBarShapeUtil, UnderstandingLineShapeUtil, TimelineOverlayShapeUtil, ZoomableImageShapeUtil, FleetChatShapeUtil, FleetAgentsShapeUtil, FleetPillShapeUtil, FleetSearchShapeUtil, FleetInboxShapeUtil, FleetNotificationsShapeUtil, FleetTouchInboxShapeUtil, FleetSourceEditorShapeUtil, FleetDocViewShapeUtil, FleetVideoShapeUtil, DocClipShapeUtil, InlineDocShapeUtil, DocVersionShapeUtil, DocViewerStateShapeUtil, ClusterShapeUtil, TerminalShapeUtil, TaskInboxShapeUtil, PlaybackFrameShapeUtil, OutlineShapeUtil, GraphNodeShapeUtil, GraphExplainShapeUtil, UsageMeterShapeUtil]
     const all = [...utils, ...customUtils.map(u => withShapeErrorBoundary(u))];
     (window as any).__tldraw_shape_utils__ = all
     return all
   }, [])
   const bindingUtils = useMemo(() => [...defaultBindingUtils], [])
-  const isPhone = typeof window !== 'undefined' && window.matchMedia('(max-width: 600px)').matches
+  const isPhone = isPhoneViewport()
+  const isPhoneLayoutRequested = typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('fleetLayout') === 'phone'
+  const usePhoneLaneNavigation = isPhone || isPhoneLayoutRequested
   const tools = useMemo(() => [
-    BrowseTool, MathNoteTool, VoiceNoteTool, TextSelectTool, FleetChatTool, FleetAgentsTool, FleetSearchTool, FleetInboxTool, ClusterTool, ReaperTool, UsageMeterTool, PlaybackTool, TerminalTool, TaskInboxTool, RibbonEraserTool, RibbonHighlightTool,
-    ...(isPhone ? [PhoneHandTool] : []),
-  ], [])
+    BrowseTool, MathNoteTool, VoiceNoteTool, TextSelectTool, FleetChatTool, FleetAgentsTool, FleetSearchTool, FleetInboxTool, ClusterTool, UsageMeterTool, PlaybackTool, TerminalTool, TaskInboxTool, RibbonEraserTool, RibbonHighlightTool,
+    ...(usePhoneLaneNavigation ? [PhoneHandTool] : []),
+  ], [usePhoneLaneNavigation])
 
   // --- @tldraw/sync: shape CRDT sync ---
   const syncUri = useMemo(
@@ -1040,23 +1043,6 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
         </svg>) as any,
         label: 'Cluster Monitor',
         onSelect: () => _editor.setCurrentTool('cluster'),
-      }
-      // Register reaper tool — scythe/process icon
-      tools['fleet-reaper'] = {
-        id: 'fleet-reaper',
-        icon: (<svg className="tlui-icon" style={{ backgroundColor: 'transparent' }} width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-          {/* Skull outline */}
-          <circle cx="9" cy="8" r="5.5" />
-          {/* Eyes */}
-          <circle cx="7" cy="7" r="1.2" fill="currentColor" stroke="none" />
-          <circle cx="11" cy="7" r="1.2" fill="currentColor" stroke="none" />
-          {/* Teeth */}
-          <line x1="7.5" y1="11" x2="7.5" y2="13" strokeWidth="1" />
-          <line x1="9" y1="11" x2="9" y2="13.5" strokeWidth="1" />
-          <line x1="10.5" y1="11" x2="10.5" y2="13" strokeWidth="1" />
-        </svg>) as any,
-        label: 'Reaper',
-        onSelect: () => _editor.setCurrentTool('fleet-reaper'),
       }
       // Register usage-meter tool — gauge icon
       tools['usage-meter'] = {
@@ -1495,6 +1481,8 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
                   }
                   readinessWindow.__tldaPhoneCameraSettlingUntil = Date.now() + 700
                   const markPhoneCameraReady = () => {
+                    const docLeft = getPrimaryPhoneDocumentLeft(editor)
+                    if (docLeft !== null) snapToPhoneLaneIndex(editor, docLeft, PHONE_INBOX_PANE_INDEX)
                     readinessWindow.__tldaPhoneCameraSettlingUntil = 0
                     readinessWindow.__tldaPhoneCameraReadyAt = Date.now()
                     window.dispatchEvent(new Event('phone-camera-ready'))
@@ -1506,7 +1494,11 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
                     markPhoneCameraReady()
                   }, 500)
                 }
-                // Phone: always start in phone-hand tool for axis-locked scroll
+              }
+              if (usePhoneLaneNavigation) {
+                // Phone pane stack: always start in phone-hand so lane navigation
+                // works whenever the phone layout is active, including desktop
+                // browsers opened explicitly with fleetLayout=phone.
                 editor.setCurrentTool('phone-hand')
               } else if (session?.tool) {
                 try { editor.setCurrentTool(session.tool) } catch { /* tool may not exist */ }

@@ -2,7 +2,7 @@
 #
 # Phase-2 of the 5/29 agent-panel-guy decision: a DeepSeek-backed agent that
 # "reads chat, sends chat, reads markdown like the rest of us." The agent's ROLE
-# (adversary, QA, reviewer, …) is briefed in chat via my_task; nothing
+# (adversary, QA, reviewer, …) is briefed in chat via inbox; nothing
 # role-specific is baked in here.
 #
 # ── LAUNCH REQUIREMENT (sandbox-critical) ────────────────────────────────────
@@ -33,11 +33,10 @@ instructions: |
   annotations, and tlda actions.
 
   At the start of every session:
-  1. Call `register()` with NO name argument — your identity is configured in
-     your environment, and the server names you from it. Passing a name would
-     override that with the wrong one.
-  2. Call `my_task` to read your assignment. YOUR ROLE AND INSTRUCTIONS COME
-     FROM CHAT, not from this prompt — `my_task` tells you what you are here to
+  1. Call `login()` — your identity is configured in your environment, and the
+     server-created shell is claimed from it. Do not invent or override a name.
+  2. Call `inbox()` to read your assignment. YOUR ROLE AND INSTRUCTIONS COME
+     FROM CHAT, not from this prompt — `inbox()` tells you what you are here to
      do. If nothing is pending, wait; you will be messaged.
   3. Before task work, read the project guidance in `AGENTS.md` if it exists.
      Do not read `CLAUDE.md`; in this repo it is a template source for
@@ -46,7 +45,7 @@ instructions: |
   While working:
   - Talk to Skip and other agents ONLY via `chat` (markdown supported). Anything
     you print to the terminal is NOT seen by anyone — `chat` is the channel.
-  - When you receive a message (a 📬 marker), call `my_task` to read it in full,
+  - When you receive a message (a 📬 marker), call `inbox()` to read it in full,
     then respond with `chat`.
   - Read documents with the annotation/doc tools. Read local source, project
     guidance, scratch notes, and markdown with native file reads/searches. Read
@@ -67,7 +66,7 @@ instructions: |
     apply:
     `dismiss_skill(skills: ["<name>"], reason: "<why it does not apply>")`.
     The block lifts once every owed skill is loaded or dismissed.
-  - If `my_task` gives you a role (reviewer, adversary, manager, …) and names a
+  - If `inbox()` gives you a role (reviewer, adversary, manager, …) and names a
     skill, load it with native Summon before you start.
 
   Suggestion chips:
@@ -86,18 +85,16 @@ instructions: |
   - If corrected, stop and change course before continuing.
   - Proof obligations are requirements, not optional suggestions.
 
-  Be direct and concrete. Do the task your `my_task` describes — nothing else.
+  Be direct and concrete. Do the task your `inbox()` view describes — nothing else.
 
 # Initial kickoff message. `goose run --recipe` forbids --text, so the launch
-# sequence lives here. register() takes no name — the server names the agent
-# from FLEET_NAME in the environment (set by fleet-spawn).
+# sequence lives here. login() claims the server-created shell from FLEET_ID in
+# the environment (set by fleet-spawn).
 prompt: |
-  Call register() now (no name argument — your name comes from the
-  environment). Then call my_task() to check for a pending assignment. Before
-  task work, read AGENTS.md in the workspace if it exists. Do not read
-  CLAUDE.md; in this repo it is a template source for AGENTS.md, not
-  agent-facing guidance. Then follow that guidance and the Non-Claude guidance
-  contract above.
+  Call login() now. Then call inbox() to check for a pending assignment. Before
+  task work, read AGENTS.md in the workspace if it exists. Do not read CLAUDE.md;
+  in this repo it is a template source for AGENTS.md, not agent-facing guidance.
+  Then follow that guidance and the Non-Claude guidance contract above.
   If nothing is pending, wait quietly; you will be messaged.
 
 extensions:
@@ -115,7 +112,7 @@ extensions:
     # stdio MCP subprocess already inherits goose's process environment, and
     # fleet-spawn sets all four vars in that environment, so the tools get what
     # they need without env_keys.
-    description: "Fleet/tlda tools (register, my_task, chat, read_annotations, scratch). Use native developer tools for local file reads and native Summon for skills."
+    description: "Fleet/tlda tools (login, inbox, chat, read_annotations, scratch). Use native developer tools for local file reads and native Summon for skills."
 
 settings:
   goose_provider: "{{ provider }}"

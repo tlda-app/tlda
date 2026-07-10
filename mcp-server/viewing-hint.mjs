@@ -7,7 +7,7 @@
 //   [viewing balancing-act@a1b2c3 p43 src.tex:12-14 | machine: davids-macbook-air-2]
 //   [machine: davids-macbook-air-2]            (machine present, not viewing a doc)
 //
-// Shared by the my_task full render and the 📬 preview so the two can't drift.
+// Shared by the inbox full render and the 📬 preview so the two can't drift.
 
 /**
  * Format the exceptional staleness flag for a viewing-context. The version is

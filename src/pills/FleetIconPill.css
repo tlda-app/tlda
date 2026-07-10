@@ -12,8 +12,8 @@
 /* Phone: the whole stack shifts in by the safe-area inset. The phone controls
    are 44px touch targets stacked with an 8px gap. */
 body.phone-mode .fleet-icon-pill-container {
-  bottom: calc(128px + env(safe-area-inset-bottom));
-  right: max(4px, env(safe-area-inset-right));
+  bottom: calc(128px + env(safe-area-inset-bottom) + var(--tlda-vv-bottom, 0px));
+  right: calc(max(4px, env(safe-area-inset-right)) + var(--tlda-vv-right, 0px));
 }
 
 body.phone-mode .fleet-icon-pill-badge {
@@ -25,8 +25,8 @@ body.phone-mode .fleet-icon-pill-badge {
    treatment as the mic/voice buttons. */
 @media (pointer: coarse) and (min-width: 601px) {
   .fleet-icon-pill-container {
-    bottom: calc(82px + env(safe-area-inset-bottom));
-    right: max(4px, env(safe-area-inset-right));
+    bottom: calc(82px + env(safe-area-inset-bottom) + var(--tlda-vv-bottom, 0px));
+    right: calc(max(4px, env(safe-area-inset-right)) + var(--tlda-vv-right, 0px));
   }
 }
 

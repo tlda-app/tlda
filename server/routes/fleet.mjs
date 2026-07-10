@@ -67,16 +67,6 @@ function extractFirstFilePart(body, boundary) {
   return null
 }
 
-function copyAttachment(srcPath) {
-  try {
-    fs.mkdirSync(UPLOAD_DIR, { recursive: true })
-    const name = `${Date.now()}-${path.basename(srcPath)}`
-    const dest = path.join(UPLOAD_DIR, name)
-    fs.copyFileSync(srcPath, dest)
-    return dest
-  } catch { return null }
-}
-
 function formatNameCollisions(collisions = []) {
   return collisions.map(c => {
     if (c.kind === 'pseudo_label') return `${c.name} is a reserved routing label`
@@ -93,7 +83,7 @@ function fleetTableLabelsForAgent(agent) {
   return labels
 }
 
-export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, clearEphemeralState, markAgentNotAlive = () => {}, suppressEchoFor, sendRpc, resolveRpc, daemonConnections, resolveSpawnTarget, broadcastDaemonAgentsUpdated, hasOpenFleetSocketForAgent = () => false }) {
+export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, clearEphemeralState, suppressEchoFor, sendRpc, resolveRpc, daemonConnections, resolveSpawnTarget, broadcastDaemonAgentsUpdated, hasOpenFleetSocketForAgent = () => false }) {
   // Helper: route an agent op through the daemon, or 503 cleanly. The
   // op-name is whatever the daemon's rpc dispatcher expects (kebab-case
   // matches the spec: 'send-key', 'capture-pane', etc.).
@@ -566,41 +556,6 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     res.json(result)
   })
 
-  // --- POST /api/kill-session ---
-  // Kill the agent's tmux session outright. This hibernates the agent; it does
-  // not retire the identity or erase its addressability.
-  router.post('/api/kill-session', async (req, res) => {
-    const { agent: agentQuery } = req.body || {}
-    const agent = fleetStore?.findAgent(agentQuery)
-    if (!agent) { res.status(404).json({ error: 'agent not found' }); return }
-    if (!agent.tmux_session) { res.json({ ok: false, error: 'no tmux session' }); return }
-    const result = await rpcAgent(res, agent, 'kill-session', {
-      agent_id: agent.id, tmux_session: agent.tmux_session,
-    })
-    if (result === null) return
-    markAgentNotAlive(agent.id)
-    const killEvent = { type: 'kill-session', from: SERVER_OWNER_ID, to: agent.id, text: `Killed ${agent.friendly_name || agent.id}` }
-    await fleetStore?.share(killEvent)
-    broadcastEvent('fleet-event', killEvent)
-    broadcastState()
-    res.json({ ok: true, agent: agent.friendly_name || agent.id, ...result })
-  })
-
-  // --- POST /api/interrupt ---
-  // Two-phase: kick the agent immediately so the caller can move on, then
-  // let the daemon do the polled re-interrupt loop in the background.
-  router.post('/api/interrupt', async (req, res) => {
-    const { agent: agentQuery } = req.body || {}
-    const agent = fleetStore?.findAgent(agentQuery)
-    if (!agent) { res.status(404).json({ error: 'agent not found' }); return }
-    if (!agent.tmux_session) { res.json({ ok: false, error: 'no tmux session' }); return }
-    const result = await rpcAgent(res, agent, 'interrupt', {
-      agent_id: agent.id, tmux_session: agent.tmux_session,
-    })
-    if (result === null) return
-    res.json({ ok: true, agent: agent.friendly_name || agent.id, ...result })
-  })
-
   // --- POST /api/rename ---
   router.post('/api/rename', async (req, res) => {
     const { agent: agentQuery, name: newName } = req.body || {}
@@ -655,28 +610,6 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     res.json({ ok: true, agent: agent.id, metadata: meta })
   })
 
-  // --- POST /api/send-key ---
-  router.post('/api/send-key', async (req, res) => {
-    const { agent: agentQuery, key } = req.body || {}
-    const agent = fleetStore?.findAgent(agentQuery)
-    if (!agent) { res.status(404).json({ error: 'agent not found' }); return }
-    if (!agent.tmux_session) { res.status(400).json({ error: 'no tmux session' }); return }
-    const result = await rpcAgent(res, agent, 'send-key', { tmux_session: agent.tmux_session, key })
-    if (result !== null) res.json(result)
-  })
-
-  // --- POST /api/send-text ---
-  router.post('/api/send-text', async (req, res) => {
-    const { agent: agentQuery, text, enter } = req.body || {}
-    const agent = fleetStore?.findAgent(agentQuery)
-    if (!agent) { res.status(404).json({ error: 'agent not found' }); return }
-    if (!agent.tmux_session) { res.status(400).json({ error: 'no tmux session' }); return }
-    const result = await rpcAgent(res, agent, 'send-text', {
-      tmux_session: agent.tmux_session, text, enter: enter !== false,
-    })
-    if (result !== null) res.json(result)
-  })
-
   // --- POST /api/capture-pane ---
   // One-shot capture for terminal cards. Live-watching is the separate
   // start/stop-terminal-watch RPC pair.
@@ -689,58 +622,6 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       tmux_session: agent.tmux_session, lines: lines || 50,
     })
     if (result !== null) res.json(result)
-  })
-
-  // --- POST /api/plan-mode-respond ---
-  // Responds to a plan-mode approval prompt for an agent.
-  // body: { agent: <id|name>, response: 'approve' | 'reject' }
-  // 'approve' sends 'yes' + Enter; 'reject' sends 'no' + Enter
-  router.post('/api/plan-mode-respond', async (req, res) => {
-    const { agent: agentQuery, response } = req.body || {}
-    const agent = fleetStore?.findAgent(agentQuery)
-    if (!agent) { res.status(404).json({ error: 'agent not found' }); return }
-    if (!agent.tmux_session) { res.status(400).json({ error: 'no tmux session' }); return }
-    if (response !== 'approve' && response !== 'reject') {
-      res.status(400).json({ error: 'response must be approve or reject' }); return
-    }
-    const text = response === 'approve' ? 'yes' : 'no'
-    const r1 = await rpcAgent(res, agent, 'send-text', { tmux_session: agent.tmux_session, text, enter: true })
-    if (r1 !== null) {
-      fleetStore?.updateAgentMeta(agent.id, { permission_mode: null, inPlanMode: false })
-      // Persist response on the plan_approval event so the UI survives re-renders
-      const now = new Date().toISOString()
-      try {
-        const planEvent = fleetStore?.db.prepare(
-          `SELECT id FROM events WHERE type = 'plan_approval' AND from_id = ? ORDER BY id DESC LIMIT 1`
-        ).get(agent.id)
-        if (planEvent) {
-          const patch = response === 'approve' ? { approvedAt: now } : { rejectedAt: now }
-          fleetStore.updateEventMetadata(planEvent.id, patch)
-          broadcastEvent('event-update', { id: planEvent.id, metadata_patch: patch })
-        }
-      } catch {}
-      broadcastState()
-      res.json(r1)
-    }
-  })
-
-  // --- POST /api/prompt-respond ---
-  // Persists approval/rejection state on any event (permission cards, etc.)
-  // body: { eventId: number, response: 'approved' | 'rejected' }
-  router.post('/api/prompt-respond', (req, res) => {
-    const { eventId, response } = req.body || {}
-    if (!eventId || (response !== 'approved' && response !== 'rejected')) {
-      return res.status(400).json({ error: 'eventId and response (approved|rejected) required' })
-    }
-    try {
-      const now = new Date().toISOString()
-      const patch = response === 'approved' ? { approvedAt: now } : { rejectedAt: now }
-      fleetStore.updateEventMetadata(eventId, patch)
-      broadcastEvent('event-update', { id: eventId, metadata_patch: patch })
-      res.json({ ok: true })
-    } catch (e) {
-      res.status(500).json({ error: e.message })
-    }
   })
 
   // --- POST /api/plan-mode-toggle ---
@@ -950,40 +831,6 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       broadcastEvent('fleet-event', event)
     }
     res.json({ ok: true })
-  })
-
-  // --- POST /api/fleet/resync-machine-ids ---
-  // One-shot migration helper for the fleet-daemon cutover. After the
-  // server upgrade, every existing alive agent has machine_id = NULL
-  // because their fleet MCP register payload pre-dates the new field.
-  // Until each agent re-registers (which happens automatically on next
-  // session start, but Skip's long-running ones won't), their RPCs
-  // return 503 from the daemon-routing path.
-  //
-  // This endpoint walks all live agents with machine_id IS NULL and
-  // sets it to a single value — defaulting to this server's hostname.
-  // Single-machine assumption is fine for now; multi-user is future work.
-  // Pass `?machine_id=foo` to override.
-  //
-  // Not a backwards-compat shim — this is a migration aid the manager
-  // explicitly asked for. Run once after deploying the new server,
-  // then forget about it.
-  router.post('/api/fleet/resync-machine-ids', (req, res) => {
-    if (!fleetStore) { res.status(503).json({ error: 'no fleet store' }); return }
-    const machineId = (req.query.machine_id || os.hostname().split('.')[0]).toString()
-    const agents = fleetStore.getAllAgents().filter(a => !a.dead && !a.machine_id)
-    const updated = []
-    for (const a of agents) {
-      try {
-        fleetStore.upsertAgent({ ...a, machine_id: machineId })
-        updated.push({ id: a.id, name: a.friendly_name || null })
-      } catch (e) {
-        // Don't fail the whole batch on one bad row.
-        console.error(`[resync] ${a.id}: ${e.message}`)
-      }
-    }
-    broadcastState()
-    res.json({ ok: true, machine_id: machineId, updated_count: updated.length, updated })
   })
 
   // --- POST /api/agents/move-daemon ---

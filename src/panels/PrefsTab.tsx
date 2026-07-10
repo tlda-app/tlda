@@ -33,7 +33,6 @@ const FLEET_SHAPE_OPTIONS = [
   ['fleet-search', 'Search'],
   ['fleet-docview', 'Doc view'],
   ['fleet-source-editor', 'Source editor'],
-  ['fleet-reaper', 'Reaper'],
   ['fleet-inbox', 'Inbox'],
   ['fleet-touch-inbox', 'Touch inbox'],
   ['fleet-notifications', 'Notifications'],

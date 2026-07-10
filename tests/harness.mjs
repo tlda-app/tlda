@@ -7,10 +7,10 @@
  * Tests built on this harness should:
  *   import { setup, teardown, getScrollState, sendChat, ... } from './harness.mjs'
  *
- *   const ctx = await setup({ agentName: 'tlda-ops' })
+ *   const ctx = await setup({})
  *   try {
  *     await scrollToBottom(ctx)
- *     await sendChat(ctx, { from: 'X', to: 'Y', message: 'test' })
+ *     await sendChat(ctx, { from: 'X', message: 'test' })
  *     await delay(1000)
  *     expectAtBottom(getScrollState(ctx))
  *   } finally {
@@ -112,9 +112,10 @@ export function pwEval(sessionName, expr) {
 // --- fleet WS (chat injection over wss://…/ws/fleet) ---------------------
 // The old POST /api/chat REST route was removed; chat now flows over the fleet
 // WebSocket. We register two THROWAWAY bots per run (a sender + a recipient) so
-// test traffic is fully isolated: messages go bot→bot, never to a real agent
-// and never to fleet:skip. The chat shape filters to the sender, so it starts
-// EMPTY (no backlog polluting scroll measurements).
+// test traffic is fully isolated: messages stay among throwaway identities,
+// never to a real agent and never to fleet:skip. The chat shape filters to the
+// sender bot in both directions, so it starts EMPTY (no backlog polluting scroll
+// measurements).
 function connectFleet(ctx) {
   const wsUrl = `wss://localhost:${cfg.fleetPort}/ws/fleet`
   return new Promise((resolve, reject) => {
@@ -128,10 +129,12 @@ function connectFleet(ctx) {
       // "register first"). getHumanId() then === ctx.userId, so a chat shape
       // stamped with that userId actually renders under the ownership rule.
       ws.send(JSON.stringify({ type: 'register', id: ctx.userId, name: ctx.humanSanitized, cwd: process.cwd(), labels: ['scroll-test'], human: true }))
-      // Register both throwaway bots so the recipient exists (else the server
-      // rejects the chat with "no recipients matched").
-      ws.send(JSON.stringify({ type: 'register', id: ctx.agentId, name: ctx.senderName, cwd: process.cwd(), labels: ['bot', 'scroll-test'], human: false }))
-      ws.send(JSON.stringify({ type: 'register', id: ctx.recipientId, name: ctx.recipientName, cwd: process.cwd(), labels: ['bot', 'scroll-test'], human: false }))
+      // Reserve then log in both throwaway bots so the recipient exists (else
+      // the server rejects the chat with "no recipients matched").
+      ws.send(JSON.stringify({ type: 'reserve-shell', id: ctx.agentId, name: ctx.senderName, cwd: process.cwd(), labels: ['bot', 'scroll-test'] }))
+      ws.send(JSON.stringify({ type: 'login', agent_id: ctx.agentId, cwd: process.cwd(), labels: ['bot', 'scroll-test'] }))
+      ws.send(JSON.stringify({ type: 'reserve-shell', id: ctx.recipientId, name: ctx.recipientName, cwd: process.cwd(), labels: ['bot', 'scroll-test'] }))
+      ws.send(JSON.stringify({ type: 'login', agent_id: ctx.recipientId, cwd: process.cwd(), labels: ['bot', 'scroll-test'] }))
       resolve(ws)
     })
     ws.on('error', (err) => { clearTimeout(timer); reject(err) })
@@ -146,7 +149,6 @@ function connectFleet(ctx) {
  * Returns a `ctx` object passed into all other harness fns.
  */
 export async function setup({
-  agentName = 'tlda-ops', // kept for back-compat; identity now uses throwaway bots
   doc = cfg.doc,
   name = null,
   sessionName = null,
@@ -175,7 +177,7 @@ export async function setup({
   // Mirror the server's login sanitize: toLowerCase, keep [a-z0-9_-].
   const humanSanitized = humanName.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '')
   const ctx = {
-    sessionName, agentName, doc, db: null, fleetWs: null, keepOpen,
+    sessionName, doc, db: null, fleetWs: null, keepOpen,
     humanName, humanSanitized,
     userId: `fleet:${humanSanitized}`,       // === getHumanId() after login
     senderName: `scrolltest-snd-${runStamp}`,
@@ -183,9 +185,6 @@ export async function setup({
     agentId: `fleet:scrolltest-snd-${runStamp}`,
     recipientId: `fleet:scrolltest-rcv-${runStamp}`,
   }
-
-  // Read-only DB handle (for loadEvents real-data replay).
-  ctx.db = new Database(cfg.dbPath, { readonly: true })
 
   // Open the fleet WS and register the throwaway human + bots.
   await connectFleet(ctx)
@@ -210,7 +209,7 @@ export async function setup({
   // proof AND don't exercise the on-screen render path Skip actually hits). We
   // recreate even in reuse mode so each run starts from a CLEAN chat with this
   // run's fresh sender filter (no backlog from a prior run).
-  const filterDnf = filter || [[['from', ctx.senderName]]]
+  const filterDnf = filter || [[['from', ctx.senderName]], [['to', ctx.senderName]]]
   const filterJson = JSON.stringify(filterDnf)
   const uid = JSON.stringify(ctx.userId)
   localStorage_set(sessionName, 'fleet-hud-expanded', '1')
@@ -317,7 +316,7 @@ export async function wheelScrollUp(ctx, px = 300) {
 /** Send filler messages so the chat has enough content to be scrollable. */
 export async function populateChat(ctx, n = 15) {
   for (let i = 0; i < n; i++) {
-    sendChat(ctx, { from: ctx.agentId, to: 'fleet:skip',
+    sendChat(ctx, { from: ctx.agentId,
       message: `Padding ${i}: ensuring chat is tall enough to scroll.\nLine 2.\nLine 3.` })
   }
   await delay(2500)
@@ -327,22 +326,30 @@ let _wsMsgId = 1
 /**
  * Send a chat over the fleet WS. Routing is forced bot→bot for isolation:
  * `from` defaults to the sender bot and the recipient is ALWAYS the throwaway
- * recipient bot — the `to` arg is ignored so callers (and the legacy corpus,
- * which hardcodes `to: 'fleet:skip'`) can never deliver test traffic to a real
- * agent or to Skip.
+ * recipient bot so test traffic cannot reach a real agent or Skip.
  */
-export function sendChat(ctx, { from, message } = {}) {
+export function sendChat(ctx, { from, to, message } = {}) {
   if (!ctx.fleetWs || ctx.fleetWs.readyState !== WebSocket.OPEN) {
     throw new Error('fleet WS not open — call setup() first')
+  }
+  const target = to || ctx.recipientId
+  const allowedTargets = new Set([ctx.agentId, ctx.recipientId, ctx.userId, ctx.senderName, ctx.recipientName])
+  if (!allowedTargets.has(target)) {
+    throw new Error(`Refusing to send test chat to non-throwaway recipient: ${target}`)
   }
   ctx.fleetWs.send(JSON.stringify({
     id: _wsMsgId++,
     type: 'chat',
     from: from || ctx.agentId,
-    to: ctx.recipientId,
+    to: target,
     message,
   }))
   return true
+}
+
+function getDb(ctx) {
+  if (!ctx.db) ctx.db = new Database(cfg.dbPath, { readonly: true })
+  return ctx.db
 }
 
 /**
@@ -352,7 +359,7 @@ export function sendChat(ctx, { from, message } = {}) {
  * (ctx.agentId is a throwaway bot with no history) — e.g. resolve fleet:skip.
  */
 export function loadEvents(ctx, agentId, n = 200) {
-  const rows = ctx.db.prepare(`
+  const rows = getDb(ctx).prepare(`
     SELECT id, type, timestamp, from_id, to_id, text, metadata
     FROM events
     WHERE type='chat' AND (from_id=? OR to_id=?)
@@ -364,7 +371,7 @@ export function loadEvents(ctx, agentId, n = 200) {
 
 /** Resolve a real agent's fleet id from a friendly name (read-only). */
 export function resolveAgentId(ctx, friendlyName) {
-  const a = ctx.db.prepare(`SELECT id FROM agents WHERE friendly_name = ? OR id = ?`).get(friendlyName, friendlyName)
+  const a = getDb(ctx).prepare(`SELECT id FROM agents WHERE friendly_name = ? OR id = ?`).get(friendlyName, friendlyName)
   return a ? a.id : null
 }
 
@@ -380,7 +387,7 @@ export function resolveAgentId(ctx, friendlyName) {
  * previous message (so a replay can preserve burst structure).
  */
 export function listChatDays(ctx, who = 'fleet:skip', limit = 14) {
-  return ctx.db.prepare(`
+  return getDb(ctx).prepare(`
     SELECT substr(timestamp,1,10) d, COUNT(*) c
     FROM events WHERE type='chat' AND (to_id=? OR from_id=?)
     GROUP BY d ORDER BY d DESC LIMIT ?
@@ -388,7 +395,7 @@ export function listChatDays(ctx, who = 'fleet:skip', limit = 14) {
 }
 
 export function loadDay(ctx, { date, who = 'fleet:skip' } = {}) {
-  const rows = ctx.db.prepare(`
+  const rows = getDb(ctx).prepare(`
     SELECT timestamp, from_id, to_id, text
     FROM events
     WHERE type='chat' AND (to_id=? OR from_id=?) AND substr(timestamp,1,10)=?

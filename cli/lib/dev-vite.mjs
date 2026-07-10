@@ -1,11 +1,11 @@
 /**
- * Shared dev-environment helpers for `tlda-dev serve` and `tlda-dev sandbox`.
+ * Shared dev-environment helpers for `tlda-dev serve`.
  *
  * Both commands need the same three things: find the repo root from anywhere,
  * resolve/create a worktree for a branch, and start a detached Vite dev server
- * off that worktree. `serve` points Vite at the normal local backend (chat → the
- * global store via /api/fleet-config); `sandbox` points it at an isolated backend
- * (VITE_SERVER_PORT) so nothing is shared.
+ * off that worktree. Normal `serve` points Vite at the normal local backend
+ * (chat → the global store via /api/fleet-config); `serve --sandbox` points it
+ * at an isolated backend (VITE_SERVER_PORT) so nothing is shared.
  */
 
 import { execSync, spawn } from 'child_process'

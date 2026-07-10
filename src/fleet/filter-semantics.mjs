@@ -150,6 +150,43 @@ export function buildFleetAgentFilter(agentLabel) {
   ]
 }
 
+function findAgentById(agents, id) {
+  if (!id) return null
+  return (agents || []).find(agent => agent?.id === id) || null
+}
+
+function isHumanAgentId(id, { agents = [], humanId = null } = {}) {
+  if (!id) return false
+  if (humanId && id === humanId) return true
+  const agent = findAgentById(agents, id)
+  return !!agent?.human || agent?.status === 'human' || agent?.status === 'human-away'
+}
+
+function nonHumanAgentById(id, context = {}) {
+  if (!id || isHumanAgentId(id, context)) return null
+  const agent = findAgentById(context.agents, id)
+  if (!agent || agent.human) return null
+  return agent
+}
+
+export function fleetSearchResultTargetAgentLabel(result, context = {}) {
+  if (!result) return ''
+  const owningAgent = nonHumanAgentById(result.agentId || result.agent || '', context)
+  if (owningAgent?.friendly_name) return owningAgent.friendly_name
+
+  for (const participant of [result.from, result.to]) {
+    const agent = nonHumanAgentById(participant, context)
+    if (agent?.friendly_name) return agent.friendly_name
+  }
+
+  return ''
+}
+
+export function fleetSearchResultAgentChatFilter(result, context = {}) {
+  const label = fleetSearchResultTargetAgentLabel(result, context)
+  return label ? buildFleetAgentFilter(label) : []
+}
+
 function canonicalFilter(filter) {
   if (!Array.isArray(filter)) return ''
   return filter

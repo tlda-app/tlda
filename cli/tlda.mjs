@@ -38,7 +38,7 @@ import {
   permissionLedgerPathFromDaemonConfig,
   readDaemonConfig,
   withDaemonModelAliases,
-} from '../bin/lib/spawn/permission-ledger.mjs'
+} from '../agent-launch/permission-ledger.mjs'
 
 // --- Argument parsing ---
 
@@ -166,10 +166,10 @@ const COMMAND_HELP = {
   delete:  'tlda doc delete <name>\n\n  Delete a project and all its data.',
   logs:    'tlda logs [agent] [--since 1h|2026-05-23] [--type chat,register] [-n 50] [-f] [--daemon] [--all]\n\n  Unified chronological log across all sources (DB events, daemon log, dead-letters).\n\n  agent      Filter by agent name (fuzzy match)\n  --since    Time range (e.g. 1h, 30m, 2d, or ISO date)\n  --type     Filter by event type (comma-separated)\n  -n N       Number of events (default: 50, or 10000 with --since)\n  -f         Follow mode (tail -f style)\n  --daemon   Include daemon log lines (heartbeats, WS, terminal exits)\n  --all      Include activity and client_error events (excluded by default)',
   server:  'tlda server [start|stop|status|log|install|uninstall]\n\n  start      Start the server (auto-restarts via launchd if installed)\n  stop       Stop the server\n  status     Check if server is running\n  log        Show recent server log\n  install    Install launchd service (macOS)\n  uninstall  Remove launchd service',
-  bot:     'tlda bot [list|install|uninstall|start|stop|status|log] [name] [--dry-run]\n\n  Manage configured fleet bots as launchd services. The bot process registers like an agent; the daemon does not start it.',
+  bot:     'tlda bot [list|install|uninstall|start|stop|status|log] [name] [--dry-run]\n\n  Manage configured fleet bots as launchd services. The bot process logs in like an agent; the daemon does not start it.',
   system:  'tlda system status\n\n  Show server, daemon, deploy stamp, and fleet runtime identity.',
   daemon:  'tlda daemon [start|stop|status|log|run|install|uninstall]\n\n  Control the per-machine fleet daemon.\n  It watches project source directories and agent session activity,\n  then pushes events to the tlda server over WebSocket.',
-  doctor:  'tlda doctor [--fix]\ntlda doctor yolo [--name yolo] [--model opus] [--cwd /path] [--dry-run]\n\n  Run a health check for local tools, server, SPA bundle, daemon, MCP setup,\n  project builds, and doc sync stores.\n\n  --fix  Apply the limited automatic repairs that doctor explicitly offers.\n\n  yolo   Break-glass: locally launch an unfenced in-fleet Claude agent with a real FLEET_ID.\n         This path pre-registers with fleet, then starts tmux directly instead of using the\n         fleet/daemon spawn permission gate.',
+  doctor:  'tlda doctor [--fix]\ntlda doctor yolo [--name yolo] [--model opus] [--cwd /path] [--dry-run]\n\n  Run a health check for local tools, server, SPA bundle, daemon, MCP setup,\n  project builds, and doc sync stores.\n\n  --fix  Apply the limited automatic repairs that doctor explicitly offers.\n\n  yolo   Break-glass: locally launch an unfenced in-fleet Claude agent with a real FLEET_ID.\n         This path reserves a fleet shell, then starts tmux directly instead of using the\n         fleet/daemon spawn permission gate.',
   'repo-doctor': 'tlda doc repo-doctor <project> [--rescue|--apply|--rollback|--cleanup]\n\n  Diagnose a project source repo for tlda-induced damage.\n  No flag: diagnose only (read-only).\n  --rescue   Compute a rescue plan (dry run).\n  --apply    Execute the rescue plan.\n  --rollback Roll back a previous rescue apply.\n  --cleanup  Clean rescue apply state.',
   publish: 'tlda publish [--target <name>] [doc ...]\n\n  Publish docs to GitHub Pages (+ optionally Fly).\n\n  With no args, publishes all docs in config.published using the "default" target.\n  With --target, uses the named target config (sync server, repo, etc.).\n  With doc names, publishes those and adds them to the list.\n\n  Config (targets in ~/.config/tlda/config.json):\n    targets.<name>.sync     — sync server WebSocket URL\n    targets.<name>.repo     — git remote for gh-pages (null = same repo)\n    targets.<name>.fly      — deploy to Fly (default: false)\n    targets.<name>.basePath — vite base path (default: /tlda/)',
   config:  'tlda config [set <key> <value> | get [key]]\n\n  Manage persistent configuration.\n  Example: tlda config set server http://myhost:5176',
@@ -254,7 +254,6 @@ async function api(method, path, body = null, { timeoutMs = 30000, token = getTo
 
 /**
  * Incremental push: compute local hashes, fetch server hashes, diff, send only changed files.
- * Falls back to full push if the hashes endpoint isn't available.
  * Returns the push API response.
  */
 async function incrementalPush(name, dir, extraBody = {}, { forceMetadata = false } = {}) {
@@ -262,39 +261,36 @@ async function incrementalPush(name, dir, extraBody = {}, { forceMetadata = fals
   const localHashes = collectSourceHashes(dir)
   const localPaths = Object.keys(localHashes)
 
-  // Try to get server hashes
-  let serverHashes = null
+  // Get server hashes. If this fails, the server/API contract is broken; do not
+  // hide it by full-pushing.
+  let serverHashes
   try {
     const data = await api('GET', `/api/projects/${name}/hashes`)
     serverHashes = data.hashes
-  } catch {
-    // Endpoint not available (old server?) — fall back to full push
+  } catch (e) {
+    throw new Error(`could not fetch server hashes for ${name}: ${e.message}`)
+  }
+  if (!serverHashes || typeof serverHashes !== 'object' || Array.isArray(serverHashes)) {
+    throw new Error(`invalid hash response for ${name}`)
   }
 
-  let files, deletedFiles
-  if (serverHashes) {
-    // Diff: find changed/new files
-    const changedPaths = localPaths.filter(p => localHashes[p] !== serverHashes[p])
-    // Find files on server that aren't local
-    deletedFiles = Object.keys(serverHashes).filter(p => !(p in localHashes))
+  // Diff: find changed/new files
+  const changedPaths = localPaths.filter(p => localHashes[p] !== serverHashes[p])
+  // Find files on server that aren't local
+  const deletedFiles = Object.keys(serverHashes).filter(p => !(p in localHashes))
 
-    if (changedPaths.length === 0 && deletedFiles.length === 0 && !forceMetadata) {
-      return { unchanged: true }
-    }
+  if (changedPaths.length === 0 && deletedFiles.length === 0 && !forceMetadata) {
+    return { unchanged: true }
+  }
 
-    files = collectSpecificFiles(dir, changedPaths)
-    const total = localPaths.length
-    const skipped = total - changedPaths.length
-    if (skipped > 0) {
-      console.log(dim(`  ${skipped}/${total} files unchanged, sending ${changedPaths.length} changed`))
-    }
-    if (deletedFiles.length > 0) {
-      console.log(dim(`  ${deletedFiles.length} files deleted on server`))
-    }
-  } else {
-    // Full push fallback
-    files = collectSourceFiles(dir)
-    deletedFiles = undefined
+  const files = collectSpecificFiles(dir, changedPaths)
+  const total = localPaths.length
+  const skipped = total - changedPaths.length
+  if (skipped > 0) {
+    console.log(dim(`  ${skipped}/${total} files unchanged, sending ${changedPaths.length} changed`))
+  }
+  if (deletedFiles.length > 0) {
+    console.log(dim(`  ${deletedFiles.length} files deleted on server`))
   }
 
   return await api('POST', `/api/projects/${name}/push`, {
@@ -2059,13 +2055,13 @@ function agentEnrollArgs(rawArgs) {
 
 async function runFleetSpawn(spawnArgs) {
   if (spawnArgs.includes('--list-models')) {
-    const { listModels } = await import('../bin/lib/spawn/models.mjs')
+    const { listModels } = await import('../agent-launch/models.mjs')
     const daemonConfig = readDaemonConfig(defaultDaemonConfigPath(CONFIG_DIR))
     console.log(JSON.stringify(listModels(withDaemonModelAliases(loadConfig(), daemonConfig)), null, 2))
     return
   }
-  const { spawn } = await import('../bin/lib/spawn/index.mjs')
-  const { newFleetId } = await import('../bin/lib/spawn/identity.mjs')
+  const { spawn } = await import('../agent-launch/index.mjs')
+  const { newFleetId } = await import('../agent-launch/identity.mjs')
   const session = flagFromRaw(spawnArgs, 'session')
   const refresh = hasRawFlag(spawnArgs, 'refresh')
   const fresh = hasRawFlag(spawnArgs, 'fresh')
@@ -2141,7 +2137,11 @@ async function runFleetSpawn(spawnArgs) {
     try {
       result = await spawn(params)
     } catch (e) {
-      if (preallocatedAgentId) await ledger.delete(preallocatedAgentId).catch(() => {})
+      if (preallocatedAgentId) {
+        await ledger.delete(preallocatedAgentId).catch(cleanupError => {
+          console.error(`warning: failed to clean preallocated grant for ${preallocatedAgentId}: ${cleanupError.message}`)
+        })
+      }
       throw e
     }
     if (!preallocatedAgentId || result.fleetId !== preallocatedAgentId) {
@@ -2434,7 +2434,7 @@ Set TLDA_DISABLE_PERMISSION_CLASSIFIER=1 or agentSandbox.disablePermissionsClass
 move must be run on the agent's current daemon address; cross-box moves use SSH/rsync.
 set-create-machine stores the caller's default create machine in fleet prefs.
 The permissions command defaults to waking now; --on-wake stores only the next-wake profile.
-check-ready verifies registry + local tmux/runtime + recent register/my_task evidence.
+check-ready verifies registry + local tmux/runtime + recent login/inbox evidence.
 list reads the server roster by default; --local shows only tmux sessions on this machine.`)
 }
 
@@ -2555,20 +2555,21 @@ async function collectAgentReadiness(query, spawnSync) {
   const row = (table.agents || []).find(a => a.id === agent.id) || null
   const eventsData = await api('GET', `/api/store/events?agent=${encodeURIComponent(agent.id)}&limit=200`)
   const events = Array.isArray(eventsData?.events) ? eventsData.events : []
-  const recentRegister = [...events].reverse().find(e => e.type === 'register')
-  const recentMyTask = [...events].reverse().find(e => {
+  const recentLogin = [...events].reverse().find(e => e.type === 'login' || e.type === 'register')
+  const recentInbox = [...events].reverse().find(e => {
     if (e.type !== 'activity') return false
     const m = parseJsonMaybe(e.metadata) || {}
-    return String(m.tool || e.text || '').includes('my_task')
+    const tool = String(m.tool || e.text || '')
+    return tool.includes('inbox') || tool.includes('my_task')
   })
   const incoming = [...events].reverse().find(e => e.to === agent.id && e.from !== agent.id && ['chat', 'delegate'].includes(e.type))
   const replyAfterIncoming = incoming
     ? events.find(e => e.from === agent.id && e.to !== agent.id && Date.parse(e.timestamp) > Date.parse(incoming.timestamp))
     : null
-  const ok = !agent.dead && hasSession && runtime.ok && !!recentRegister
+  const ok = !agent.dead && hasSession && runtime.ok && !!recentLogin
   return {
     ok, query, agent, tableRow: row, session: sess, hasSession, panes, runtime,
-    recentRegister, recentMyTask, incoming, replyAfterIncoming,
+    recentLogin, recentInbox, incoming, replyAfterIncoming,
   }
 }
 
@@ -2583,8 +2584,8 @@ function printAgentReadiness(r) {
   console.log(`  registry: ${agent.dead ? 'dead' : 'live row'}; status=${row?.status || agent.status || 'unknown'}; machine=${agent.machine_id || 'unknown'}`)
   console.log(`  tmux: ${r.hasSession ? `ok ${r.session} panes=${r.panes.join(',') || 'none'}` : `missing ${r.session}`}`)
   console.log(`  runtime: ${r.runtime.ok ? `ok ${r.runtime.kind} pid=${r.runtime.pid}` : 'missing under tmux pane'}`)
-  console.log(`  register event: ${r.recentRegister ? `${r.recentRegister.timestamp} #${r.recentRegister.id}` : 'missing'}`)
-  console.log(`  recent my_task activity: ${r.recentMyTask ? `${r.recentMyTask.timestamp} #${r.recentMyTask.id}` : 'not observed (my_task is often filtered as infrastructure)'}`)
+  console.log(`  login event: ${r.recentLogin ? `${r.recentLogin.timestamp} #${r.recentLogin.id}` : 'missing'}`)
+  console.log(`  recent inbox activity: ${r.recentInbox ? `${r.recentInbox.timestamp} #${r.recentInbox.id}` : 'not observed (inbox is often filtered as infrastructure)'}`)
   if (r.incoming) {
     const reply = r.replyAfterIncoming ? `${r.replyAfterIncoming.timestamp} #${r.replyAfterIncoming.id}` : 'no later outbound reply observed'
     console.log(`  chat/task roundtrip: incoming #${r.incoming.id}; reply=${reply}`)
@@ -3455,10 +3456,10 @@ async function cmdDoctor() {
 }
 
 async function cmdDoctorYolo() {
-  const { sanitizeSessionName, readConfig, resolveDnsAlias } = await import('../bin/lib/spawn/identity.mjs')
-  const { resolveApi, wsRegister } = await import('../bin/lib/spawn/register.mjs')
-  const { uniqueSessionName, spawnTmux } = await import('../bin/lib/spawn/tmux.mjs')
-  const claude = await import('../bin/lib/spawn/harness/claude.mjs')
+  const { sanitizeSessionName, readConfig, resolveDnsAlias } = await import('../agent-launch/identity.mjs')
+  const { resolveApi, wsReserveShell } = await import('../agent-launch/register.mjs')
+  const { uniqueSessionName, spawnTmux } = await import('../agent-launch/tmux.mjs')
+  const claude = await import('../agent-launch/harness/claude.mjs')
 
   const name = String(getFlag('name', 'yolo') || 'yolo')
   const safeName = sanitizeSessionName(name)
@@ -3502,7 +3503,7 @@ async function cmdDoctorYolo() {
     return
   }
 
-  await wsRegister({
+  await wsReserveShell({
     fleetId,
     name,
     tmuxSession,
@@ -3529,7 +3530,7 @@ async function cmdDoctorYolo() {
   console.log(`  tmux: ${tmuxSession}`)
   console.log(`  cwd: ${cwd}`)
   console.log(`  model: ${model}`)
-  console.log(dim('  The agent is prompted to register with fleet and check inbox.'))
+  console.log(dim('  The agent is prompted to log in to fleet and check inbox.'))
 }
 
 

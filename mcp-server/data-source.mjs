@@ -1,8 +1,8 @@
 /**
  * Data source abstraction for MCP server.
  *
- * When TLDA_SERVER is set: fetches doc assets from the server over HTTP.
- * Otherwise: reads from PROJECT_ROOT/public/docs/ (backward compat).
+ * When a remote server is configured: fetches doc assets from the server over
+ * HTTP. Otherwise: reads from PROJECT_ROOT/server/projects.
  *
  * Provides both sync (from cache/disk) and async (fetch + cache) APIs.
  * Call ensureDoc(docName) at the start of tool handlers to pre-fetch.
@@ -33,6 +33,7 @@ const DEFAULT_TTL = 60_000 // 1min for unknown files
 export function initDataSource(root, server) {
   projectRoot = root
   serverUrl = server || null
+  cache.clear()
 }
 
 export function isRemote() {
@@ -41,33 +42,26 @@ export function isRemote() {
 
 /**
  * Get the local path for a doc file. Returns null if remote-only.
- * Checks both public/docs/ (legacy) and server/projects/{name}/output/.
+ * Resolves files from server/projects/{name}/output/.
  */
 export function localPath(docName, filename) {
   if (!projectRoot) return null
-  // Prefer fresh build output over stale legacy public/docs/. resolveAsset
-  // (shared with the server route) applies the bare→texBase alias for
-  // metadata files like lookup.json, so disk mode resolves the same file the
-  // server serves over HTTP — fixes line→page anchoring on single-machine setups.
+  // resolveAsset (shared with the server route) applies the bare->texBase alias
+  // for metadata files like lookup.json, so disk mode resolves the same file
+  // the server serves over HTTP.
   const projectsDir = path.join(projectRoot, 'server', 'projects')
   const resolved = resolveAsset(projectsDir, docName, filename)
   if (resolved) return resolved
-  const publicPath = path.join(projectRoot, 'public', 'docs', docName, filename)
-  if (fs.existsSync(publicPath)) return publicPath
   return path.join(projectsDir, docName, 'output', filename) // default for new files
 }
 
 /**
  * Get the local doc directory path. Returns null if remote-only.
- * Checks both public/docs/ and server/projects/{name}/output/.
+ * Resolves directories from server/projects/{name}/output/.
  */
 export function localDocDir(docName) {
   if (!projectRoot) return null
-  // Prefer fresh build output over stale legacy public/docs/
   const serverDir = path.join(projectRoot, 'server', 'projects', docName, 'output')
-  if (fs.existsSync(serverDir)) return serverDir
-  const publicDir = path.join(projectRoot, 'public', 'docs', docName)
-  if (fs.existsSync(publicDir)) return publicDir
   return serverDir
 }
 
@@ -118,7 +112,6 @@ export function readManifestSync() {
   try {
     return JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
   } catch {
-    // Fallback: scan server/projects/ for project.json files
     return buildManifestFromProjects()
   }
 }
@@ -128,19 +121,18 @@ export async function readManifest() {
     const cached = getCached('_root', 'manifest.json')
     if (cached !== undefined) return cached
 
+    let res
     try {
-      const res = await fetch(`${serverUrl}/docs/manifest.json`, { headers: authHeaders })
-      if (!res.ok) {
-        // HTTP failed — fall back to scanning projects on disk
-        return buildManifestFromProjects()
-      }
-      const data = await res.json()
-      setCache('_root', 'manifest.json', data)
-      return data
-    } catch {
-      // fetch() itself failed (sandbox, network) — fall back to disk scan
-      return buildManifestFromProjects()
+      res = await fetch(`${serverUrl}/docs/manifest.json`, { headers: authHeaders })
+    } catch (e) {
+      throw new Error(`manifest fetch failed on ${serverUrl}: ${e.message}`)
     }
+    if (!res.ok) {
+      throw new Error(`manifest fetch failed on ${serverUrl}: HTTP ${res.status}`)
+    }
+    const data = await res.json()
+    setCache('_root', 'manifest.json', data)
+    return data
   }
 
   return readManifestSync()
@@ -247,7 +239,6 @@ async function fetchJson(docName, filename) {
 
 /**
  * Build a manifest-like object by scanning server/projects/ for project.json files.
- * Fallback for when public/docs/manifest.json doesn't exist (unified server mode).
  */
 function buildManifestFromProjects() {
   if (!projectRoot) return null

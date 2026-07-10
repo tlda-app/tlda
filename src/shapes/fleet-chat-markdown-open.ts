@@ -183,7 +183,7 @@ export function openMarkdownChipFromTarget(options: OpenMarkdownChipOptions): bo
     return true
   }
 
-  const isMd = /\.md$/i.test(chipUrl || chipPath)
+  const isMd = /\.(?:md|markdown)(?:$|[?#])/i.test(chipUrl || chipPath)
   const fetchUrl = chipUrl || (chipPath ? `/api/read-file?path=${encodeURIComponent(chipPath)}` : '')
   if (!isMd || !fetchUrl) return false
 

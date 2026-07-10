@@ -2,7 +2,7 @@
 // Boots the worktree server isolated (temp DB, test port, supervisors off), then:
 //   1. exercises POST/GET /api/suggestions + the 'suggestions' WS broadcast,
 //      including per-agent replace semantics and multi-agent flattening;
-//   2. spawns bin/todd.mjs the way the supervisor does (TLDA_BOT_NAME +
+//   2. spawns bin/bots/todd.mjs the way the supervisor does (TLDA_BOT_NAME +
 //      TLDA_BOT_PIDFILE env) and asserts it registers under a persisted fleet id
 //      with friendly name "todd" and writes its pidfile.
 import WebSocket from 'ws'
@@ -115,7 +115,7 @@ async function run() {
   await sleep(300)
 
   // 5. Spawn the Todd bot the way the supervisor does.
-  todd = spawn('node', ['bin/todd.mjs'], {
+  todd = spawn('node', ['bin/bots/todd.mjs'], {
     cwd: ROOT,
     env: { ...process.env, HOME: TODD_HOME, TLDA_CONFIG: TODD_CONFIG, TLDA_BOT_NAME: 'todd', TLDA_BOT_PIDFILE: TODD_PID,
            TLDA_BOT_IDFILE: TODD_ID, TLDA_BOT_MACHINE_ID: 'suggestions-test', TLDA_BOT_TMUX_SESSION: 'suggestions-test-todd',

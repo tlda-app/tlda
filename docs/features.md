@@ -276,7 +276,7 @@ Highlights are instrumented. When you draw a highlight, it gets tagged with:
 - TeX file and line number
 - Version info
 
-Agents can read highlights via `read_pen_annotations` and know exactly what source text you highlighted.
+Agents can read highlights via `read_annotations(type: "highlight")` and know exactly what source text you highlighted.
 
 ### Color-intent system — Working
 
@@ -289,7 +289,7 @@ Highlight colors map to semantic intent:
 - **Orange**: comment
 - **Blue**: info
 
-Most useful on iPad with a stylus. Agents can read these via `get_highlight_feedback`.
+Most useful on iPad with a stylus. Agents can read these via `read_annotations(type: "highlight", unaddressed_only: true)`.
 
 ---
 
@@ -358,7 +358,7 @@ What `fleet-spawn` does:
 3. Pre-registers the agent via WebSocket (so it appears in the panel immediately)
 4. Creates a tmux session named `fleet-[name]`
 5. Launches Claude Code inside it with the fleet MCP loaded
-6. After a few seconds, sends keystrokes to accept the channels dialog and tells the agent to call `register()`
+6. Prompts the launched agent to call `login()` so it claims the server-created shell
 
 ### tmux sessions
 
@@ -377,7 +377,7 @@ Terminal cards are designed to surface this automatically in fleet chat, but the
 
 ### Identity model
 
-**Agents**: each agent gets a unique fleet ID (`fleet:<hash>`) and a friendly name. The identity ledger (`mcp-server/identity.mjs`) maps Claude Code session IDs to fleet IDs, so agents can resume across session restarts. When an agent calls `register()` in the fleet MCP, it associates its current session with its fleet ID.
+**Agents**: each spawned agent gets a unique fleet ID (`fleet:<hash>`) and a friendly name. The server creates the shell row before launch. When the agent calls `login()` in the fleet MCP, it claims that server-created shell and attaches its current session metadata.
 
 **Humans**: each human gets an identity via the browser. On first visit, a name picker appears. The name is stored in localStorage and sent to the server via WebSocket on every connection. The server creates a human agent record with `human: true`. Multiple humans can use the same server — each browser has its own identity.
 
@@ -386,7 +386,7 @@ Terminal cards are designed to surface this automatically in fleet chat, but the
 ### Agent lifecycle
 
 1. **Spawn**: `fleet-spawn` creates tmux session + launches Claude Code
-2. **Register**: agent calls `register()` via MCP → appears in agent panel with green dot
+2. **Login**: agent calls `login()` via MCP → claims the pre-created shell and starts heartbeating
 3. **Active**: agent processes tasks, sends/receives chat, heartbeats periodically
 4. **Stale**: no heartbeat for 10+ minutes → amber dot
 5. **Dead**: no heartbeat AND tmux session gone → grey dot, collapsed in panel
@@ -431,16 +431,16 @@ Bottom-left of the screen:
 The typical collaborative flow:
 
 1. You open a document and read/annotate it
-2. An agent monitors the document via `tlda monitor` — a hook-based system that fires after every tool call
+2. An agent monitors the document via `monitor_add(doc)`
 3. When you draw a highlight or drop a note, the monitoring agent gets a chat notification
-4. The agent can read your annotations in detail via `read_pen_annotations` or `get_highlight_feedback`
+4. The agent can read your annotations in detail via `read_annotations`
 5. The agent responds — with a chat message, a reply annotation, a multiple-choice note, or by editing the source file
 6. The document rebuilds automatically, and your annotations stay anchored
 
 ### Feedback paths
 
-- **Lightweight (`tlda monitor`)**: agent gets notified "new annotation on doc X" as a chat message. Quick, automatic, just tells the agent something happened.
-- **Heavyweight (`read_pen_annotations`)**: agent explicitly reads all annotations with full detail — text, source lines, colors, intent. For when the agent needs to process the feedback.
+- **Lightweight (`monitor_add`)**: agent gets notified "new annotation on doc X" as a chat message. Quick, automatic, just tells the agent something happened.
+- **Heavyweight (`read_annotations`)**: agent explicitly reads all annotations with full detail — text, source lines, colors, intent. For when the agent needs to process the feedback.
 
 ### Chat + canvas integration
 
@@ -459,22 +459,18 @@ Agents interact with the canvas through MCP tools. Key tools:
 
 | Tool | What it does | Status |
 |------|-------------|--------|
-| **Notes** (rename from "annotation") | | |
-| `add_note` | Place a math note at a source line (supports multiple-choice) | Working — rename from `add_annotation` |
-| `list_notes` | List all math notes | Working — rename from `list_annotations` |
-| `delete_note` | Delete a note | Working — rename from `delete_annotation` |
-| `suggest` | Post a suggestion card with Accept/Reject buttons | Rethink — unify with `add_note` (always markdown, text or file) |
+| **Notes** | | |
+| `add_note` | Place a math note at a source line (supports multiple-choice) | Working |
+| `read_annotations` | Read notes, highlights, pen strokes, arrows, geo, and text with source mapping | Working |
+| `reply_note` | Reply to an existing note | Working |
+| `delete_annotation` | Delete a note or annotation shape | Working |
 | **Drawing** | | |
 | `draw_highlight` | Highlighter stroke over source lines | Working (partial) — needs word-level reimplementation |
 | `draw_arrow` | Curved arrow connecting two locations | Working |
-| `mark_highlight_addressed` | Desaturate a highlight (marks it handled) | Working |
-| `place_response_bar` | Margin bar next to highlight indicating agent responded | Working |
-| `create_shape` | Generic low-level shape creation | Working |
 | **Feedback reading** | | |
-| `read_annotations` | Read all annotations (notes + drawn shapes) with source mapping | Working |
+| `read_annotations` | Read all annotations, filter by type or unaddressed state | Working |
 | **Navigation** | | |
 | `scroll_to_line` | Scroll viewer to a source line | Working |
-| `flash_location` | Flash a red circle at a source line | Working |
 | `screenshot` | Capture viewer (target: viewport / screen / annotation ref / explicit bounds) | Working |
 | **Understanding** | | |
 | `set_understanding` / `get_understanding` | Line-level reading status | Untested — good idea, needs docs and verification |
@@ -491,10 +487,15 @@ Agents interact with the canvas through MCP tools. Key tools:
 | **Remove** | | |
 | `signal_reload` | Reload SVGs after build | Remove — fold into `push` |
 | `scratch` | Publish scratch file to fleet workspace | Remove — no fleet workspace |
+| `suggest` | Post a standalone suggestion card | Remove — use `.suggest` sections in `chat()` |
+| `mark_highlight_addressed` | Desaturate a highlight | Remove — use note replies / `read_annotations(unaddressed_only)` flow |
+| `place_response_bar` | Margin bar next to highlight | Remove |
+| `create_shape` | Generic low-level shape creation | Remove |
+| `flash_location` | Flash a red circle at a source line | Remove |
 | `doc_revert` | Restore old version | Remove — use local git |
 | `doc_diff` | Source diff between versions | Remove — use local git |
 | `doc_compare` | Side-by-side comparison | Remove — use local git |
-| `wait_for_feedback` | Block until annotation | Remove — use `tlda monitor` |
+| `wait_for_feedback` | Block until annotation | Remove — use `monitor_add` notifications |
 | `reply_annotation` | Reply in thread | Remove — threading removed |
 | `mark_annotation_done` | Mark done | Remove — done state removed |
 
@@ -526,18 +527,9 @@ Agents interact with the canvas through MCP tools. Key tools:
 - `signal_reload` — fold into `push`
 
 ### MCP tools to remove
-- `wait_for_feedback` (replaced by `tlda monitor`)
-- `mark_annotation_done` (done state removed)
-- `reply_annotation` (threading removed)
 - `doc_revert` (use local git)
 - `doc_diff` (use local git)
 - `doc_compare` (use local git)
-- `scratch` (no fleet workspace)
-
-### MCP tools to rename
-- `add_annotation` → `add_note`
-- `list_annotations` → `list_notes`
-- `delete_annotation` → `delete_note`
 
 ### UI to remove or clean up
 - "Hide defs" button (vestigial)

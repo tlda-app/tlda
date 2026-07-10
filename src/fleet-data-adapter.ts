@@ -28,7 +28,6 @@ import {
   hibernateSession as _hibernateSession,
   spawnAgent as _spawnAgent,
   isConnected as _isConnected,
-  getReaperStatus,
   injectOptimisticEvent as _injectOptimisticEvent,
   updateOptimisticEvent as _updateOptimisticEvent,
   removeOptimisticEvent as _removeOptimisticEvent,
@@ -1064,35 +1063,9 @@ export function useFleetConnection(): boolean {
   return connected
 }
 
-// --- Reaper status hook ---
-
-export function useReaperStatus(): any {
-  const [status, setStatus] = useState<any>(getReaperStatus())
-
-  useEffect(() => {
-    let unsub: (() => void) | null = null
-    let cancelled = false
-
-    ensureInit().then(() => {
-      if (cancelled) return
-      setStatus(getReaperStatus())
-      unsub = subscribe('reaper', null, (data: any) => {
-        setStatus(data)
-      })
-    })
-
-    return () => {
-      cancelled = true
-      unsub?.()
-    }
-  }, [])
-
-  return status
-}
-
 // --- Identity hook ---
 
-export function useFleetIdentity(): { id: string | null, name: string | null, needsIdentity: boolean, login: (name: string) => Promise<any>, register: (name: string) => Promise<any> } {
+export function useFleetIdentity(): { id: string | null, name: string | null, needsIdentity: boolean, login: (name: string) => Promise<any>, register: (name: string, options?: { persist?: boolean }) => Promise<any> } {
   const [identity, setIdentity] = useState({ id: getHumanId(), name: getHumanName(), needsIdentity: _needsIdentity() })
 
   useEffect(() => {

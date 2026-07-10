@@ -23,7 +23,6 @@ import { resolveFilePath, uploadFileToServer } from '../shared/chat-file-process
 import { scanMarkdownDeps } from '../shared/markdown-deps.mjs';
 import { extractMarkdownSection } from '../shared/markdown-section.mjs';
 import { normalizeChatDisplayMathDelimiters } from '../shared/chat-math-normalize.mjs';
-import { nameForPhase, phaseFromName } from '../shared/lineage-name.mjs';
 import { formatSpawnModelSummary, validateSpawnModelSelection } from '../shared/spawn-model-validation.mjs';
 import { buildFleetSearchFilters, parseSearchQuery } from '../shared/fleet-search-query.mjs';
 import {
@@ -42,14 +41,14 @@ import {
   recipientAttachmentRef,
 } from '../shared/inbox-reference-materialization.mjs';
 import { getActiveConfigName, loadConfig } from '../shared/config.mjs';
-import { listModels as listSpawnModels } from '../bin/lib/spawn/models.mjs';
+import { listModels as listSpawnModels } from '../agent-launch/models.mjs';
 import {
   defaultDaemonConfigPath,
   readDaemonConfig,
   withDaemonModelAliases,
-} from '../bin/lib/spawn/permission-ledger.mjs';
-import { classifyUserBlame } from '../bin/lib/user-blame-classifier.mjs';
-import { classifyLaunder } from '../bin/lib/launder-classifier.mjs';
+} from '../agent-launch/permission-ledger.mjs';
+import { classifyUserBlame } from '../agent-runtime/user-blame-classifier.mjs';
+import { classifyLaunder } from '../agent-runtime/launder-classifier.mjs';
 import {
   applyNonClaudeRolePack,
   crossLaneBlock,
@@ -382,6 +381,31 @@ async function getSpawnModelCatalog({ maxAgeMs = 60_000 } = {}) {
   return data;
 }
 
+function configuredSpawnProfileNames() {
+  try {
+    const daemonConfig = readDaemonConfig(defaultDaemonConfigPath(CONFIG_DIR));
+    const profiles = daemonConfig?.profiles && typeof daemonConfig.profiles === 'object' && !Array.isArray(daemonConfig.profiles)
+      ? daemonConfig.profiles
+      : {};
+    return Object.keys(profiles).sort();
+  } catch (e) {
+    process.stderr.write(`[fleet] could not read daemon profiles for tool schema: ${e.message}\n`);
+    return [];
+  }
+}
+
+function spawnPermissionDescriptions() {
+  const profiles = configuredSpawnProfileNames();
+  const profileText = profiles.length
+    ? `Configured daemon profiles now: ${profiles.join(', ')}.`
+    : 'No daemon profiles are currently configured.';
+  return {
+    profileNames: profiles,
+    permission: `Configured daemon permission profile. ${profileText} The daemon clamps it to the spawner, project, model, and local box policy.`,
+    permissions: `Configured daemon permission profile/spec. ${profileText} The daemon clamps it to the spawner, project, model, and local box policy.`,
+  };
+}
+
 async function validateSpawnRequest(opts = {}) {
   const model = opts.model;
   const kind = opts.kind;
@@ -393,10 +417,10 @@ async function validateSpawnRequest(opts = {}) {
 }
 
 // Append-only message log (backup). Fleet store writes are handled by
-// individual handlers (chat, delegate, task_done, register) to avoid
+// individual handlers (chat, delegate, task_done, login) to avoid
 // double-writes. logEvent only writes JSONL + fleet store for event
 // types that DON'T have dedicated handlers.
-const _HANDLED_EVENT_TYPES = new Set(['chat', 'delegate', 'task_done', 'register', 'report']);
+const _HANDLED_EVENT_TYPES = new Set(['chat', 'delegate', 'task_done', 'login', 'register', 'report']);
 
 function logEvent(event) {
   const entry = { ...event, timestamp: new Date().toISOString() };
@@ -424,7 +448,7 @@ function logEvent(event) {
 }
 
 // --- Identity ---
-// Simple: $FLEET_ID env var = your identity. No FLEET_ID = new agent (register creates one).
+// Simple: $FLEET_ID env var = your identity. Spawned agents claim it with login().
 // No JSONL scanning, no state file reading, no guessing.
 const ALIVE_THRESHOLD_MS = 10 * 60 * 1000;
 let AGENT_ID = process.env.FLEET_ID || null;
@@ -618,16 +642,6 @@ export function checkChatRender(message, macros = {}) {
   return { validity, style };
 }
 
-// Backward-compatible flat view: validity issues first, then style hints.
-export function lintChatMessage(message, macros = {}) {
-  const { validity, style } = checkChatRender(message, macros);
-  return [...validity, ...style];
-}
-
-export function blockingChatLintIssues(issues = []) {
-  return [];
-}
-
 export function checkUserBlameChatLint(message, recipients = []) {
   const result = classifyUserBlame({
     text: message,
@@ -684,22 +698,6 @@ async function fetchCurrentDocVersion(doc) {
 }
 // Detect Claude session ID at startup. Claude Code maintains a per-PID
 // metadata file at ~/.claude/sessions/<PID>.json that maps the Claude Code
-// process PID to its sessionId. Since the fleet MCP runs as a stdio child
-// of Claude Code, process.ppid is exactly the Claude Code process whose
-// session we belong to — a deterministic lookup, no birthtime guessing,
-// no collisions when multiple agents share a cwd.
-//
-// The previous implementation scanned the project dir for the freshest
-// JSONL by birthtime. That heuristic was wrong when multiple agents
-// shared a cwd (the freshest JSONL might be another agent's, not ours)
-// and was the root cause of the recurring "agent X has my session_id"
-// data corruption.
-//
-// Fallback: if the PID-keyed file is missing for any reason (older
-// Claude Code, races at startup, etc.), fall back to the old birthtime
-// heuristic so we degrade gracefully rather than refuse to start.
-// Detect Claude session ID at startup. Claude Code maintains a per-PID
-// metadata file at ~/.claude/sessions/<PID>.json that maps the Claude Code
 // process PID to its sessionId. The fleet MCP runs as a stdio child of
 // Claude Code, so process.ppid is exactly the Claude Code process whose
 // session we belong to — a deterministic lookup, no birthtime guessing,
@@ -709,7 +707,7 @@ async function fetchCurrentDocVersion(doc) {
 // the recurring "agent X has my session_id" data corruption bug — when
 // multiple agents share a cwd, the freshest birthtime is often another
 // agent's, not ours. If the PID-keyed file isn't available, return null
-// and let register() either pass an explicit session_id or fail loudly.
+// and let login() use an explicit session_id or fail loudly.
 let CLAUDE_SESSION = (function detectSessionAtStartup() {
   try {
     const ppid = process.ppid;
@@ -961,18 +959,6 @@ function isHuman(state, id) {
   return !!(agent?.human);
 }
 
-// Heartbeat-based liveness: agent is alive if last_seen within threshold.
-// Falls back to tmux session check if no heartbeat.
-function agentAlive(agent) {
-  if (!agent) return false;
-  if (agent.last_seen) {
-    return (Date.now() - new Date(agent.last_seen).getTime()) < ALIVE_THRESHOLD_MS;
-  }
-  // No heartbeat — check tmux session
-  if (agent.tmux_session) return tmuxHasSession(agent.tmux_session);
-  return false;
-}
-
 export function classifyTaskAgentHealth(task, agent, options = {}) {
   if (!task || task.synthetic) return null;
   const nowMs = options.nowMs ?? Date.now();
@@ -1146,49 +1132,6 @@ function postMessage(to, from, text, metadata) {
   });
 }
 
-function newMailboxId() {
-  const rand = globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-  return `mailbox:${String(rand).slice(0, 12)}`;
-}
-
-export function startOperationMailbox(kind, meta = {}) {
-  if (!AGENT_ID) return null;
-  return {
-    id: newMailboxId(),
-    kind,
-    ownerId: AGENT_ID,
-    startedAt: Date.now(),
-    meta,
-  };
-}
-
-export function deliverOperationMailboxCompletion(mailbox, status, detail = {}) {
-  if (!mailbox?.ownerId) return;
-  const label = detail.label || detail.name || mailbox.meta?.label || mailbox.meta?.doc || mailbox.kind;
-  const error = detail.error || detail.reason;
-  const text = status === 'completed'
-    ? `**${mailbox.kind} mailbox ${mailbox.id} complete**: ${label}.${detail.message ? `\n\n${detail.message}` : ''}`
-    : `**${mailbox.kind} mailbox ${mailbox.id} failed**: ${label}${error ? ` — ${error}` : ''}.`;
-  postMessage(mailbox.ownerId, 'fleet:tlda', text, {
-    metadata: {
-      type: 'mailbox_complete',
-      mailbox_id: mailbox.id,
-      mailbox_kind: mailbox.kind,
-      status,
-      ...detail,
-    },
-  });
-}
-
-export function operationMailboxStartedResult(mailbox, detail = {}) {
-  return {
-    content: [{
-      type: 'text',
-      text: `${mailbox.kind} mailbox ${mailbox.id} started. Completion will arrive as fleet chat from fleet:tlda.\nmailbox_id: ${mailbox.id}${detail.extra ? `\n${detail.extra}` : ''}`,
-    }],
-  };
-}
-
 async function getUnread(_state, agent) {
   try {
     const data = await sendWS('my-task', { agent, peek: true });
@@ -1198,31 +1141,6 @@ async function getUnread(_state, agent) {
 }
 
 // ---- tmux helpers ----
-
-function tmuxHasSession(sessionName) {
-  try {
-    execSync(`tmux has-session -t ${sessionName} 2>/dev/null`, { timeout: 3000 });
-    return true;
-  } catch { return false; }
-}
-
-function tmuxInterrupt(sessionName) {
-  try {
-    execSync(`tmux send-keys -t ${sessionName} Escape`, { encoding: 'utf8', timeout: 5000 });
-    return { ok: true, result: `interrupted tmux:${sessionName}` };
-  } catch (e) {
-    return { ok: false, error: e.message };
-  }
-}
-
-function tmuxRead(sessionName) {
-  try {
-    const out = execSync(`tmux capture-pane -t ${sessionName} -p -S -200`, { encoding: 'utf8', timeout: 5000 });
-    return { ok: true, text: out };
-  } catch (e) {
-    return { ok: false, error: e.message };
-  }
-}
 
 // Wake a non-Claude fleet agent by typing a nudge into its tmux pane. Those
 // harnesses don't act on Claude's `notifications/claude/channel`, so the adapter
@@ -1267,16 +1185,17 @@ let server = null;
 export const TLDA_INSTRUCTIONS = 'Fleet messages arrive as <channel source="tlda"> tags. When you see one, call inbox() to get full context and respond via chat().';
 
 export function getFleetTools() {
+  const spawnPermissionText = spawnPermissionDescriptions();
   return [
     // ---- Registration & Identity ----
     {
-      name: 'register',
-      description: 'Register this agent. All agents call this at session start.',
+      name: 'login',
+      description: 'Log this agent process into an existing server-created shell. Spawned agents call this at session start.',
       inputSchema: {
         type: 'object',
         properties: {
-          session_id: { type: 'string', description: 'Claude session ID (for JSONL lookup)' },
-          name: { type: 'string', description: 'Agent name' },
+          session_id: { type: 'string', description: 'Agent session ID for JSONL/activity lookup' },
+          agent_id: { type: 'string', description: 'Existing shell id. Defaults to FLEET_ID.' },
         },
       },
     },
@@ -1297,7 +1216,8 @@ export function getFleetTools() {
               model: { type: 'string', description: 'Model alias/id. Call spawn_models() for valid values. Common aliases: opus48/sonnet/haiku for Claude, gpt-5.5 or gpt for Codex, deepseek for Goose deepseek/deepseek-v4-pro.' },
               effort: { type: 'string', description: 'Effort level: low|medium|high|xhigh|max (default: inherit global config)' },
               kind: { type: 'string', description: 'Agent runtime/harness (claude, goose, codex).' },
-              permission: { type: 'string', description: 'Requested permission: read, write, tlda-write, or full. (Internet is always on; there is no network permission to request.)' },
+              permission: { type: 'string', ...(spawnPermissionText.profileNames.length ? { enum: spawnPermissionText.profileNames } : {}), description: spawnPermissionText.permission },
+              permissions: { type: 'string', description: spawnPermissionText.permissions },
             },
 	          },
           description: { type: 'string', description: 'Short human-readable description (5-10 words). Auto-derived from message if omitted.' },
@@ -1554,14 +1474,15 @@ export function getFleetTools() {
           cwd: { type: 'string', description: 'Working directory (fresh mode only).' },
           effort: { type: 'string', description: 'Effort level: low|medium|high|xhigh|max (default: inherit global config).' },
           kind: { type: 'string', description: 'Agent runtime/harness (claude, goose, codex).' },
-          permission: { type: 'string', description: 'Requested permission: read, write, tlda-write, or full. (Internet is always on; there is no network permission to request.)' },
+          permission: { type: 'string', ...(spawnPermissionText.profileNames.length ? { enum: spawnPermissionText.profileNames } : {}), description: spawnPermissionText.permission },
           permissions: {
-            description: 'Requested permission profile/spec. May be a named profile string (full, app-dev, math-projects) or an object such as {profile:"app-dev"}. The daemon clamps it to the spawner, project, model, and local box policy.',
+            type: 'string',
+            description: spawnPermissionText.permissions,
           },
           policy: { type: 'string', description: 'Force an explicit fenced launch at the requested permission; does not raise the permission grant.' },
           iLikeToLiveDangerously: { type: 'boolean', description: 'Explicitly acknowledge a launch with no fence and harness permissions disabled. This permits the launch; it does not force unsafe mode.' },
           mode: { type: 'string', description: 'Harness-specific launch mode projection for claude (e.g. plan, default, auto). Permission remains the durable authority.' },
-          phase: { type: 'string', enum: ['dawn', 'day', 'dusk'], description: 'Phase slot in the lineage. Rejects if slot is occupied. Default: day for fresh agents joining a lineage.' },
+          phase: { type: 'string', enum: ['dawn', 'day', 'dusk'], description: 'Phase slot in the lineage. The server assigns the spawned shell to this phase and makes room if needed.' },
         },
       },
     },
@@ -1607,7 +1528,7 @@ export function getFleetTools() {
           since: { type: 'string', description: 'ISO timestamp or relative shorthand (e.g. "20m", "2h", "1d") — only messages after this time.' },
           until: { type: 'string', description: 'ISO timestamp, relative shorthand, or the literal "now" — only messages before this time.' },
           include_delegations: { type: 'boolean', description: 'Include task delegations (default true).' },
-          types: { type: 'array', items: { type: 'string' }, description: 'Filter to specific event types. Valid values: chat, delegate, task_done, task_update, report, register, lifecycle. Example: ["chat"] returns only chat messages. Omit for all types.' },
+          types: { type: 'array', items: { type: 'string' }, description: 'Filter to specific event types. Valid values: chat, delegate, task_done, task_update, report, login, register, lifecycle. Example: ["chat"] returns only chat messages. Omit for all types.' },
           page_size: { type: 'number', description: 'Max messages per page (default 200). To get the next page, call again with `since` set to the last returned timestamp. Ignored when both since and until are set (bounded calls return full range).' },
           doc: { type: 'string', description: 'Document name — when provided, each message is annotated with the shadow repo version hash active at that time.' },
         },
@@ -1653,7 +1574,7 @@ export function getFleetTools() {
     },
     {
       name: 'interrupt',
-      description: 'Stop an agent via tmux ESC. Sends ESC repeatedly until the agent reaches its prompt (up to 5 attempts, ~12s max). Returns whether the agent was confirmed stopped. Use chat() separately if you need to send a message.',
+      description: 'Stop an agent through its owning daemon. Sends ESC repeatedly until the agent reaches its prompt (up to 5 attempts, ~12s max). Returns whether the agent was confirmed stopped. Use chat() separately if you need to send a message.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -1818,13 +1739,10 @@ export function getFleetTools() {
         required: ['id'],
       },
     },
-    // share tool removed — use `tlda scratch` CLI to create docs and send links in chat
-    // ---- Checkpoint / Rollback REMOVED ----
-    // Use doc_checkout (tldraw-feedback MCP) instead — shadow repo auto-saves on every build.
     // ---- Report Gate ----
     {
       name: 'report',
-      description: 'Submit work for QA review. Required fields depend on task_type. Validates fields, checks QA agents are alive, stores report, kicks qa-haiku. If no QA agents configured, falls back to self-review mode (pass + summary).',
+      description: 'Submit a completed-task report to the task owner. Messaging is not gated on recipient wake state; delivery queues or bounces at the messaging layer.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -2131,270 +2049,45 @@ export async function handleFleetTool(name, args) {
 
   // ==== Registration & Identity ====
 
-  // ---- register ----
-  if (name === 'register') {
-    // FLEET_NAME (set by fleet-spawn) is the clean spawn name — fall back to it
-    // so the agent registers under that, not a name derived from the tmux window.
-    const agentName = args.name || process.env.FLEET_NAME || null;
-
-    // The MCP process is preserved across compactions (it's a stdio child of
-    // Claude Code), and Claude Code does NOT create a new JSONL file on
-    // compaction — the same session UUID and JSONL file are reused for the
-    // lifetime of the MCP. So CLAUDE_SESSION set at startup stays valid; no
-    // post-compaction re-detect is needed. (An earlier version did re-scan
-    // by birthtime here and stomped *other* agents' freshly-created JSONLs
-    // onto this MCP's CLAUDE_SESSION, which then got written into the
-    // wrong agent's record by the register handler. That was the source
-    // of the long-running "activity cards stop working" bug.)
-    if (args.session_id) {
-      CLAUDE_SESSION = args.session_id;
-      // If the passed session_id maps to a different agent than our current AGENT_ID,
-      // override AGENT_ID. This fixes shared-cwd identity collisions where
-      // detectClaudeSession() picked the wrong JSONL at startup.
-      if (AGENT_ID) {
-        let earlyAgents = [];
-        try {
-          earlyAgents = await sendWS('store-agents') || [];
-        } catch (e) {
-          process.stderr.write(`[fleet] register: early agent fetch failed: ${e.message}\n`);
-        }
-        const match = earlyAgents.find(a =>
-          a.id !== AGENT_ID && a.session_id === args.session_id
-        );
-        if (match) {
-          logEvent({ type: 'identity_override', old: AGENT_ID, new: match.id, reason: `session_id ${args.session_id} belongs to ${match.id}, not ${AGENT_ID}` });
-          AGENT_ID = match.id;
-        }
-      }
+  // ---- login ----
+  if (name === 'login') {
+    const shellId = args.agent_id || AGENT_ID || process.env.FLEET_ID || null;
+    if (!shellId) {
+      return { content: [{ type: 'text', text: 'No shell id available. Spawn must provide FLEET_ID, or pass agent_id.' }], isError: true };
     }
+    if (args.session_id) CLAUDE_SESSION = args.session_id;
 
-    // Re-try session detection if it failed at startup (file may not have existed yet)
-    if (!CLAUDE_SESSION && !args.session_id) {
-      try {
-        const ppid = process.ppid;
-        if (ppid && ppid > 1) {
-          const sessionFile = path.join(os.homedir(), '.claude', 'sessions', `${ppid}.json`);
-          if (fs.existsSync(sessionFile)) {
-            const data = JSON.parse(fs.readFileSync(sessionFile, 'utf8'));
-            if (data?.sessionId) {
-              CLAUDE_SESSION = data.sessionId;
-              process.stderr.write(`[fleet] register: session detected on retry: ${CLAUDE_SESSION}\n`);
-            }
-          }
-        }
-      } catch (e) { process.stderr.write(`[fleet] session file read retry failed: ${e.message}\n`); }
-    }
-
-    // Need either a session UUID or a name
-    if (!AGENT_ID && !CLAUDE_SESSION && !agentName) {
-      return { content: [{ type: 'text', text: 'No session ID detected and no name provided. Pass session_id or name for headless agents.' }], isError: true };
-    }
-
-    let agents = [];
-    try {
-      agents = await sendWS('store-agents') || [];
-    } catch (e) {
-      process.stderr.write(`[fleet] register: failed to fetch agents from server: ${e.message}\n`);
-    }
-    // Build a minimal state-like object for compat
-    const state = { agents };
-
-    const claudeSession = args.session_id || CLAUDE_SESSION;
-    if (args.session_id && args.session_id !== CLAUDE_SESSION) {
-      CLAUDE_SESSION = args.session_id;
-    }
-
-    // --- Identity resolution (see fleet-identity.md) ---
-    // $FLEET_ID (set by fleet-spawn) is the primary identity signal.
-    // Fallbacks: session ID → agent name → generate new.
-    let resolvedFleetId = AGENT_ID || null;
-    let identitySource = AGENT_ID ? (process.env.FLEET_ID ? '$FLEET_ID' : 'startup detection') : null;
-
-    if (!resolvedFleetId && claudeSession) {
-      // Look up session in ledger
-      const ledgerAgent = ledger.findBySession(claudeSession);
-      if (ledgerAgent) {
-        // Check if that agent is alive — refuse to steal a live agent's identity
-        const holder = getAgent(state, ledgerAgent.fleet_id);
-        if (holder && holder.last_seen && (Date.now() - new Date(holder.last_seen).getTime()) < ALIVE_THRESHOLD_MS) {
-          logEvent({ type: 'identity_collision_prevented', session: claudeSession, agent: ledgerAgent.fleet_id,
-            reason: `register: session ${claudeSession} maps to ${ledgerAgent.fleet_id} who is alive — skipping` });
-          identitySource = `session ${claudeSession} → ${ledgerAgent.fleet_id} (BLOCKED: agent alive)`;
-        } else {
-          resolvedFleetId = ledgerAgent.fleet_id;
-          identitySource = `ledger session match: ${claudeSession} → ${ledgerAgent.fleet_id}`;
-          logEvent({ type: 'identity_match', agent: resolvedFleetId, reason: `ledger session match for ${claudeSession}` });
-        }
-      }
-    }
-
-    // Also check state file for session match (transition period)
-    if (!resolvedFleetId && claudeSession) {
-      const stateMatch = state.agents.find(a =>
-        a.session_id === claudeSession ||
-        (a.session_ids && a.session_ids.includes(claudeSession))
-      );
-      if (stateMatch) {
-        // Check liveness here too
-        if (stateMatch.last_seen && (Date.now() - new Date(stateMatch.last_seen).getTime()) < ALIVE_THRESHOLD_MS) {
-          logEvent({ type: 'identity_collision_prevented', session: claudeSession, agent: stateMatch.id,
-            reason: `register: session ${claudeSession} maps to ${stateMatch.id} (state) who is alive — skipping` });
-          if (!identitySource) identitySource = `session ${claudeSession} → ${stateMatch.id} (BLOCKED: agent alive)`;
-        } else {
-          resolvedFleetId = stateMatch.id;
-          identitySource = `state session match: ${claudeSession} → ${stateMatch.id}`;
-          logEvent({ type: 'identity_match', agent: resolvedFleetId, reason: `state session match for ${claudeSession}` });
-        }
-      }
-    }
-
-    // Match by name in ledger (headless agents using register(name=...))
-    if (!resolvedFleetId && agentName) {
-      const ledgerAgent = ledger.findByName(agentName);
-      if (ledgerAgent) {
-        resolvedFleetId = ledgerAgent.fleet_id;
-        identitySource = `ledger name match: "${agentName}" → ${ledgerAgent.fleet_id}`;
-      }
-      if (!resolvedFleetId) {
-        const stateMatch = state.agents.find(a => a.friendly_name === agentName);
-        if (stateMatch) {
-          resolvedFleetId = stateMatch.id;
-          identitySource = `state name match: "${agentName}" → ${stateMatch.id}`;
-        }
-      }
-    }
-
-    // Uniqueness check: if resolvedFleetId is held by a different LIVE agent, reject
-    if (resolvedFleetId && AGENT_ID && resolvedFleetId !== AGENT_ID) {
-      const holder = getAgent(state, resolvedFleetId);
-      if (holder && agentAlive(holder)) {
-        return { content: [{ type: 'text', text: `Identity collision: fleet ID ${resolvedFleetId} is held by a live agent. Use adopt() to merge or cleanup() to remove the stale entry.` }], isError: true };
-      }
-    }
-
-    // New agent — create fleet ID (always fleet: prefixed for consistency)
-    if (!resolvedFleetId) {
-      if (claudeSession) {
-        resolvedFleetId = `fleet:${claudeSession.slice(0, 8)}`;
-      } else {
-        resolvedFleetId = `fleet:${crypto.randomUUID().slice(0, 8)}`;
-      }
-      identitySource = identitySource || `new: created ${resolvedFleetId} from ${claudeSession ? 'session ' + claudeSession : 'name ' + agentName}`;
-    }
-
-    // Find or create state entry
-    let entry = state.agents.find(a => a.id === resolvedFleetId);
-    if (!entry) {
-      entry = { id: resolvedFleetId, registered_at: now() };
-      state.agents.push(entry);
-    } else {
-      entry.registered_at = now();
-      // If re-registering an entry that was compacting (same fleet ID),
-      // preserve compacting for one SSE cycle so the dashboard sees the transition
-      if (entry.compacting) {
-        entry._keepCompacting = true;
-      }
-    }
-
-    // Update fields
-    // Prefer FLEET_TMUX_SESSION (set by fleet-spawn) over auto-detection.
-    // Auto-detection via `tmux display-message` breaks in recycled sessions
-    // where the session name belongs to a different agent.
     let detectedTmux = process.env.FLEET_TMUX_SESSION || null;
     if (!detectedTmux && process.env.TMUX) {
       try {
         const tmuxSession = execSync('tmux display-message -p "#{session_name}"', { encoding: 'utf8', timeout: 3000 }).trim();
-        if (tmuxSession.startsWith('fleet-')) {
-          detectedTmux = tmuxSession;
-        }
-      } catch (e) {
-        // Not in tmux — expected for non-fleet agents
+        if (tmuxSession.startsWith('fleet-')) detectedTmux = tmuxSession;
+      } catch {
+        // Tmux auto-detection is optional; login still proceeds without a tmux name.
       }
     }
-    if (detectedTmux) {
-      entry.tmux_session = detectedTmux;
+
+    AGENT_ID = shellId;
+    const cwd = getAgentCwd() || process.env.PWD || null;
+    const labels = [];
+    if (cwd) {
+      const project = path.basename(cwd);
+      if (project && project !== '~') labels.push(project);
     }
-
-    // tmux is metadata, not identity. If two fleet IDs share a tmux session, that's a spawn bug.
-    // Don't silently merge — just store the metadata.
-
-    if (agentName && !entry.friendly_name) entry.friendly_name = agentName;
-    if (claudeSession) {
-      entry.session_id = claudeSession;
-      if (!entry.session_ids) entry.session_ids = [];
-      if (!entry.session_ids.includes(claudeSession)) entry.session_ids.push(claudeSession);
-    }
-
-    entry.last_seen = now();
-    // Compacting state: cleared after registration completes (see below after stale cleanup)
-    delete entry.dead;
-    const _detectedCwd = getAgentCwd();
-    if (_detectedCwd && !entry.cwd) entry.cwd = _detectedCwd;
-    // is_manager removed — no permission gating
-
-    // Labels: preserve existing, add auto-labels
-    const labels = new Set(entry.labels || []);
-    // No auto-labels based on manager status
-    if (entry.cwd) {
-      const project = path.basename(entry.cwd);
-      if (project && project !== '~') labels.add(project);
-    }
-    if (labels.size > 0) entry.labels = [...labels];
-
-    // Name uniqueness is the SERVER's job (single authority — registration-core):
-    // it rotates a colliding requested name to a free one, never errors. Do NOT gate
-    // locally on the stale ledger/state file — that left a freshly-spawned agent stuck
-    // on "respawn the old one or register new?". The server's reply carries the granted
-    // (possibly rotated) name, adopted below.
-
-    // Clear compacting flag unless just inherited from a stale entry.
-    // Inherited compacting persists for one SSE cycle, then the heartbeat clears it.
-    if (!entry._keepCompacting) {
-      delete entry.compacting;
-      delete entry.compacting_since;
-    }
-
-    // Remove legacy top-of-chain singleton
-    delete state.manager;
-
-    // Start keepalive if none running
-    try {
-      execSync('pgrep -f agent-keepalive', { timeout: 3000 });
-    } catch {
-      exec(`${BIN}/agent-keepalive`, { detached: true, stdio: 'ignore' }).unref();
-    }
-
-    // Set this process's fleet identity
-    AGENT_ID = entry.id;
-
-    // Update the identity ledger
-    const cwd = entry.cwd || process.env.PWD || null;
-    ledger.upsertAgent(AGENT_ID, claudeSession, cwd, entry.friendly_name);
-
-    // Register via server WS — wait briefly if WS not yet connected.
-    // machine_id mirrors fleet-daemon's deriveMachineId(): the short
-    // hostname (everything before the first dot). Stable per box, lets
-    // the tlda server route RPCs (interrupt / send-key / capture-pane /
-    // restart-mcp) to the right per-machine fleet-daemon.
     const machineId = process.env.TLDA_MACHINE_ID || os.hostname().split('.')[0];
     const envName = getActiveConfigName(loadConfig());
     const currentHarness = harnessFromEnv();
-    const regBody = {
-      // agent_id (not id): sendWS() stamps a correlation `id` onto every
-      // message, which would clobber a payload `id`. Sending the real fleet
-      // id under agent_id keeps the two separate so register can't create a
-      // phantom row keyed by the random correlation UUID.
-      agent_id: entry.id,
-      name: entry.friendly_name,
-      session_id: entry.session_id,
-      tmux_session: entry.tmux_session,
-      cwd: entry.cwd,
-      labels: entry.labels,
+    const loginBody = {
+      agent_id: shellId,
+      session_id: args.session_id || CLAUDE_SESSION || undefined,
+      tmux_session: detectedTmux || undefined,
+      cwd: cwd || undefined,
+      labels,
       machine_id: machineId,
       env_name: envName,
       metadata: { kind: currentHarness.kind },
     };
-    // Wait up to 2s for WS to connect (it should be fast — localhost)
+
     if (!_channelRWS?.connected) {
       startChannelWS();
       const deadline = Date.now() + 2000;
@@ -2402,68 +2095,27 @@ export async function handleFleetTool(name, args) {
         await new Promise(r => setTimeout(r, 50));
       }
     }
-    const wsSent = sendWS('register', regBody);
-    let serverResult = null;
-    if (wsSent) {
-      serverResult = await wsSent.catch(e => {
-        process.stderr.write(`[fleet] register WS failed: ${e.message}\n`);
-        return { error: e.message };
-      });
-    } else {
-      process.stderr.write(`[fleet] register failed: WS not connected after 2s\n`);
+    const serverResult = await sendWS('login', loginBody)?.catch(e => ({ error: e.message }));
+    if (!serverResult) {
+      return { content: [{ type: 'text', text: 'Login failed: fleet WS not connected after 2s.' }], isError: true };
     }
-    if (serverResult?.error) {
-      return { content: [{ type: 'text', text: `Registration rejected by server: ${serverResult.error}` }], isError: true };
+    if (serverResult.error) {
+      return { content: [{ type: 'text', text: `Login rejected by server: ${serverResult.error}` }], isError: true };
     }
 
-    // Adopt the identity the SERVER granted (single authority): it may have rotated a
-    // colliding name to a free one, so the agent learns its real name from the reply.
-    if (serverResult?.agent?.friendly_name && serverResult.agent.friendly_name !== entry.friendly_name) {
-      entry.friendly_name = serverResult.agent.friendly_name;
-      ledger.upsertAgent(AGENT_ID, claudeSession, cwd, entry.friendly_name);
-    }
-
-    const agentCount = state.agents.length;
-    let msg = `Registered ${entry.id}. ${agentCount} agent(s) registered.`;
-    if (identitySource) {
-      msg += `\nIdentity: ${identitySource}`;
-    }
-    if (entry.friendly_name) {
-      msg += `\nYour name: "${entry.friendly_name}" — other agents and the user know you by this name.`;
-    }
-
-    if (currentHarness.requiresClaudeSession && !CLAUDE_SESSION) {
-      msg += '\n\n⚠️ No session ID detected — activity cards will NOT appear for this agent. Pass session_id to register() to fix.';
-      process.stderr.write(`[fleet] WARNING: agent ${AGENT_ID} registered with no session_id — no activity tracking\n`);
-    }
-
-    msg += '\n\nAfter registering: call inbox() to check for a task. If nothing, just keep working — you\'ll see 📬 when a task or message arrives.';
-    msg += '\nWhen you see 📬 as input, call inbox() — it means you have a new task or message.';
-    msg += '\nChat formatting: dashboard renders markdown (**bold**, `code`, lists, headers) and LaTeX ($inline$, $$display$$). Use them in chat() messages.';
-
-    // Health check: report what's up/down so agent knows communication channels
-    const health = [];
-    try {
-      const tldaRes = await fleetFetch(`${TLDA_SERVER}/api/projects`, { signal: AbortSignal.timeout(2000) });
-      health.push((tldaRes.ok || tldaRes.status === 401) ? 'tlda: ✔' : 'tlda: ✘ (not responding)');
-    } catch {
-      health.push('tlda: ✘ (not reachable right now)');
-    }
-    health.push(_channelRWS?.connected ? 'fleet WS: ✔' : 'fleet WS: ✘ (not connected)');
-    msg += `\n\nHealth: ${health.join(', ')}`;
-    if (health.some(h => h.includes('✘'))) {
-      msg += '\nA channel is down right now. This happens and it is not yours to fix — tell ops and keep working. If tlda is down Skip cannot see fleet chat, so fall back to terminal output until it returns; you will still get 📬 when it is back.';
-    }
-
-    // Start channel WS for direct message injection (replaces tmux send-keys)
-    if (!_channelRWS) {
-      startChannelWS();
-    }
-
+    const agent = serverResult.agent || {};
+    const friendly = agent.friendly_name || shellId;
+    ledger.upsertAgent(shellId, args.session_id || CLAUDE_SESSION, cwd, friendly);
+    const msg = [
+      `Logged in ${shellId}.`,
+      `Your name: "${friendly}" — other agents and the user know you by this name.`,
+      '',
+      'After login: call inbox() to check for a task. If nothing, just keep working — you\'ll see 📬 when a task or message arrives.',
+      'When you see 📬 as input, call inbox() — it means you have a new task or message.',
+      'Chat formatting: dashboard renders markdown (**bold**, `code`, lists, headers) and LaTeX ($inline$, $$display$$). Use them in chat() messages.',
+    ].join('\n');
     return { content: [{ type: 'text', text: msg }] };
   }
-
-  // reclaim_identity removed — tmux-based identity detection handles this automatically
 
   // ==== Task Templates ====
   const TASK_TEMPLATES = {
@@ -2534,7 +2186,7 @@ export async function handleFleetTool(name, args) {
 
   // ---- delegate ----
   if (name === 'delegate') {
-    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Cannot delegate: not registered.' }], isError: true };
+    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Cannot delegate: not logged in. Call login() first.' }], isError: true };
 
     if (args.agent && args.spawn) {
       return { content: [{ type: 'text', text: 'Provide agent or spawn, not both.' }], isError: true };
@@ -2545,7 +2197,7 @@ export async function handleFleetTool(name, args) {
     }
 
     // One name, enforced: on the spawn path the spawn name is the single source
-    // of identity (pre-registration, FLEET_NAME, the register prompt, and the
+    // of identity (shell reservation, FLEET_NAME, the login prompt, and the
     // roster all key off it). A separate `friendly_name` would rename the row to
     // a second string after spawn — the exact desync that produces ghost rows
     // (a never-seen "math-historian" stub beside a live "math historian"). So
@@ -2573,25 +2225,6 @@ export async function handleFleetTool(name, args) {
     const criteria = [...templateCriteria, ...(args.success_criteria || [])];
     const afterRaw = args.after;
     const blockedBy = afterRaw ? (Array.isArray(afterRaw) ? afterRaw : [afterRaw]) : [];
-
-    async function findSpawnedDelegateTarget(agentName, spawnResult, { attempts = 20, delayMs = 250 } = {}) {
-      let spawned = null;
-      for (let i = 0; i < attempts; i++) {
-        try {
-          const agents = await sendWS('store-agents');
-          spawned = agents?.find(a =>
-            (spawnResult?.agent_id && a.id === spawnResult.agent_id) ||
-            a.friendly_name === agentName ||
-            a.id === agentName
-          );
-          if (spawned) break;
-        } catch (e) {
-          process.stderr.write(`[fleet] spawn+delegate roster poll failed: ${e.message}\n`);
-        }
-        await new Promise(r => setTimeout(r, delayMs));
-      }
-      return spawned;
-    }
 
     async function delegateToResolvedAgent(targetAgent, targetSpawnedInfo = null, opts = {}) {
       const laneBlock = await requireInLaneAction(targetAgent, {
@@ -2648,71 +2281,27 @@ export async function handleFleetTool(name, args) {
         if (spawnResult?.ok === false || spawnResult?.error) {
           return { content: [{ type: 'text', text: `spawn failed before delegation: ${spawnResult.error || JSON.stringify(spawnResult)}` }], isError: true };
         }
-        if (spawnResult?.async) {
-          const pendingAgentId = spawnResult.agent_id;
-          if (!pendingAgentId) return { content: [{ type: 'text', text: `spawn started for ${agentName}, but returned no reserved agent id. Not delegating.` }], isError: true };
-          let delegated = null;
-          try {
-            delegated = await delegateToResolvedAgent(pendingAgentId, { agent_id: pendingAgentId, friendly_name: agentName }, { allowPendingAgent: true });
-          } catch (e) {
-            return { content: [{ type: 'text', text: `spawn reserved ${agentName} (${pendingAgentId}), but durable delegation failed: ${e.message}` }], isError: true };
-          }
-          const mailbox = startOperationMailbox('delegate', {
-            agentName,
-            spawn_mailbox_id: spawnResult.mailbox_id,
-            spawn_agent_id: pendingAgentId,
-            task_id: delegated.data.task_id,
-          });
-          if (!mailbox) return { content: [{ type: 'text', text: 'spawn+delegate started spawn, but cannot start delegate mailbox: not registered.' }], isError: true };
-          (async () => {
-            try {
-              const spawned = await findSpawnedDelegateTarget(agentName, spawnResult, { attempts: 300, delayMs: 1000 });
-              if (!spawned?.id) throw new Error(`spawn started for ${agentName}, but the agent did not register within 5m`);
-              if (!spawned.tmux_session) throw new Error(`spawn registered ${agentName} (${spawned.id}), but no tmux session was recorded. Not delegating: a registry row is not a usable agent.`);
-              if (!agentAlive(spawned)) throw new Error(`spawn registered ${agentName} (${spawned.id}), but the agent is not alive/usable yet. Not delegating.`);
-              const assignedName = spawned.friendly_name || agentName;
-              deliverOperationMailboxCompletion(mailbox, 'completed', {
-                task_id: delegated.data.task_id,
-                agent_id: spawned.id,
-                friendly_name: assignedName,
-                spawn_mailbox_id: spawnResult.mailbox_id,
-                spawn_agent_id: pendingAgentId,
-                requested_name: agentName,
-                name_changed: assignedName !== agentName,
-                message: `Spawned ${assignedName} (${spawned.id}) and delegated [${delegated.data.task_id}]: ${description}`,
-              });
-            } catch (e) {
-              deliverOperationMailboxCompletion(mailbox, 'failed', {
-                agentName,
-                spawn_mailbox_id: spawnResult.mailbox_id,
-                spawn_agent_id: pendingAgentId,
-                task_id: delegated.data.task_id,
-                error: e.message,
-                message: `spawn+delegate delegated [${delegated.data.task_id}] to reserved ${pendingAgentId}, but attach failed for ${agentName}: ${e.message}`,
-              });
-            }
-          })();
-          return operationMailboxStartedResult(mailbox, { extra: `spawn mailbox: ${spawnResult.mailbox_id}\nagent: ${agentName}\nagent_id: ${pendingAgentId}\ntask_id: ${delegated.data.task_id}` });
-        }
       } catch (e) {
         const msg = (e.message || '').trim();
         return { content: [{ type: 'text', text: `spawn failed before delegation: ${msg}` }], isError: true };
       }
 
-      const spawned = await findSpawnedDelegateTarget(agentName, spawnResult);
-
-      if (!spawned?.id) {
-        return { content: [{ type: 'text', text: `spawn started for ${agentName}, but the agent did not register within 5s` }], isError: true };
-      }
-      if (!spawned.tmux_session) {
-        return { content: [{ type: 'text', text: `spawn registered ${agentName} (${spawned.id}), but no tmux session was recorded. Not delegating: a registry row is not a usable agent.` }], isError: true };
-      }
-      if (!agentAlive(spawned)) {
-        return { content: [{ type: 'text', text: `spawn registered ${agentName} (${spawned.id}), but the agent is not alive/usable yet. Not delegating.` }], isError: true };
+      const shellAgentId = spawnResult?.agent_id || spawnResult?.agentId || spawnResult?.agent?.id;
+      if (!shellAgentId) {
+        return { content: [{ type: 'text', text: `spawn accepted for ${agentName}, but returned no shell agent id. Not delegating.` }], isError: true };
       }
 
-      agent = spawned.id;
-      spawnedInfo = { agent_id: agent, friendly_name: spawned.friendly_name || agentName };
+      try {
+        const { data } = await delegateToResolvedAgent(shellAgentId, { agent_id: shellAgentId, friendly_name: agentName }, { allowPendingAgent: true });
+        return {
+          content: [{
+            type: 'text',
+            text: `Spawn requested for ${agentName}; delegated [${data.task_id}] to shell ${shellAgentId}: ${description}\nspawn_mailbox_id: ${spawnResult.mailbox_id || '(none)'}\nagent_id: ${shellAgentId}\nfriendly_name: ${agentName}\nSpawn completion or failure will arrive from the server mailbox.`,
+          }],
+        };
+      } catch (e) {
+        return { content: [{ type: 'text', text: `spawn reserved ${agentName} (${shellAgentId}), but durable delegation failed: ${e.message}` }], isError: true };
+      }
     }
 
     try {
@@ -2730,7 +2319,7 @@ export async function handleFleetTool(name, args) {
   // ==== Messaging ====
 
   if (name === 'dismiss_skill') {
-    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Cannot dismiss: not registered.' }], isError: true };
+    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Cannot dismiss: not logged in. Call login() first.' }], isError: true };
     const reason = (args.reason || '').trim();
     if (!reason) return { content: [{ type: 'text', text: 'A reason is required to dismiss a skill. Say why it does not apply — or read the skill instead.' }], isError: true };
     const skills = Array.isArray(args.skills) ? args.skills.filter(Boolean) : null;
@@ -2757,7 +2346,7 @@ export async function handleFleetTool(name, args) {
   }
 
   if (name === 'chat') {
-    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Cannot send chat: not registered.' }], isError: true };
+    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Cannot send chat: not logged in. Call login() first.' }], isError: true };
 
     // Resolve the message body — either an inline `message` string or a
     // `file`+`section` markdown reference (extracted agent-side).
@@ -3042,7 +2631,7 @@ export async function handleFleetTool(name, args) {
   // browser-side fleet chat opens a live TerminalCard mirroring this agent's
   // tmux session.
   if (name === 'request_terminal') {
-    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not registered. Call register() first.' }], isError: true };
+    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not logged in. Call login() first.' }], isError: true };
     const { reason } = args || {};
     try {
       const res = await fleetFetch(`${TLDA_FLEET_SERVER}/api/terminal-card`, {
@@ -3061,16 +2650,9 @@ export async function handleFleetTool(name, args) {
     }
   }
 
-  // ---- stale suggest_action ----
-  // New MCP sessions no longer see a standalone suggest tool. Keep a clear error
-  // for old sessions whose tool list was captured before this removal.
-  if (name === 'suggest') {
-    return { content: [{ type: 'text', text: 'The standalone `suggest` tool has been removed. Send suggestions in `chat()` using a markdown `.suggest` section, e.g. `## Pick one {.suggest}` followed by `- label | hover text | command` list items.' }], isError: true };
-  }
-
   // ---- notify ----
   if (name === 'notify') {
-    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not registered. Call register() first.' }], isError: true };
+    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not logged in. Call login() first.' }], isError: true };
     const action = args?.action || 'raise';
     if (action === 'dismiss' && !args?.id) return { content: [{ type: 'text', text: 'notify dismiss requires `id`.' }], isError: true };
     if (action !== 'dismiss' && !args?.title) return { content: [{ type: 'text', text: 'notify raise requires `title`.' }], isError: true };
@@ -3287,7 +2869,7 @@ export async function handleFleetTool(name, args) {
 
   // ---- report (QA-aware report gate) ----
   if (name === 'report') {
-    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not registered. Call register() first.' }], isError: true };
+    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not logged in. Call login() first.' }], isError: true };
 
     let taskData;
     try {
@@ -3298,22 +2880,24 @@ export async function handleFleetTool(name, args) {
     const task = taskData.task;
     if (!task) return { content: [{ type: 'text', text: 'No active task to report on.' }], isError: true };
 
-    let agents = [];
-    try { agents = await sendWS('store-agents'); } catch (e) { process.stderr.write(`[fleet] store-agents fetch for report failed: ${e.message}\n`); }
-    const state = { agents, tasks: [], messages: [] };
-
-    const agent = getAgent(state, AGENT_ID);
-    const cwd = agent?.cwd || process.env.PWD || null;
+    const cwd = getAgentCwd() || process.env.PWD || null;
 
     // ---- Self-review path ----
     if (args.pass && args.summary) {
-      const friendlyName = agent?.friendly_name || AGENT_ID.slice(0, 8);
+      const friendlyName = process.env.FLEET_NAME || AGENT_ID.slice(0, 8);
 
       const summaryMsg = `**${friendlyName} report: ${task.description}**\n\n${args.summary}`;
-      const to = task.delegated_by || agents.find(a => a.id !== AGENT_ID && agentAlive(a))?.id;
-      if (to) {
-        postMessage(to, AGENT_ID, summaryMsg);
+      const to = task.delegated_by || null;
+      if (!to) {
+        return {
+          content: [{
+            type: 'text',
+            text: 'Report has no task owner: task.delegated_by is empty. Refusing to guess a recipient from agent awake/asleep state.',
+          }],
+          isError: true,
+        };
       }
+      postMessage(to, AGENT_ID, summaryMsg, { metadata: { priority: 'normal', type: 'report' } });
 
       const docName = `report-${task.id}`;
       const reportContent = `# ${task.description}\n\n**Agent:** ${friendlyName}  \n**Status:** tentative  \n**Filed:** ${new Date().toISOString()}\n\n---\n\n${args.summary}`;
@@ -3464,15 +3048,8 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
       result = { ok: false, error: `server capture-pane failed: ${e.message}` };
     }
 
-    // Local tmux is only a fallback for same-machine MCP sessions. It is not fleet
-    // ground truth; remote agents should normally be read through the daemon route.
-    if (!result?.ok && agentEntry.tmux_session && tmuxHasSession(agentEntry.tmux_session)) {
-      result = tmuxRead(agentEntry.tmux_session);
-      targetLabel = `tmux:${agentEntry.tmux_session}`;
-    }
-
     if (!result?.ok) {
-      return { content: [{ type: 'text', text: `Cannot read terminal for ${agentEntry.friendly_name || agentEntry.id}: ${result?.error || 'no tmux session'}. Agent was not marked dead by read_terminal.` }], isError: true };
+      return { content: [{ type: 'text', text: `Cannot read terminal for ${agentEntry.friendly_name || agentEntry.id}: ${result?.error || 'daemon capture route unavailable'}. Agent was not marked dead by read_terminal.` }], isError: true };
     }
     idle = tmuxIsIdle(result.text);
 
@@ -3887,7 +3464,7 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
   // fleet chat from "fleet:tlda" — the agent sees it exactly like a normal
   // chat message between tool calls. No polling, no PostToolUse hook.
   if (name === 'monitor_add') {
-    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not registered.' }], isError: true };
+    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not logged in. Call login() first.' }], isError: true };
     if (!args?.doc) return { content: [{ type: 'text', text: 'Missing doc argument.' }], isError: true };
     try {
       const data = await sendWS('tlda-monitor-add', { agentId: AGENT_ID, doc: args.doc });
@@ -3903,7 +3480,7 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
     }
   }
   if (name === 'monitor_remove') {
-    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not registered.' }], isError: true };
+    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not logged in. Call login() first.' }], isError: true };
     if (!args?.doc) return { content: [{ type: 'text', text: 'Missing doc argument.' }], isError: true };
     try {
       const data = await sendWS('tlda-monitor-remove', { agentId: AGENT_ID, doc: args.doc });
@@ -3915,7 +3492,7 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
     }
   }
   if (name === 'monitor_list') {
-    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not registered.' }], isError: true };
+    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not logged in. Call login() first.' }], isError: true };
     try {
       const data = await sendWS('tlda-monitor-list', { agentId: AGENT_ID });
       if (!data) return { content: [{ type: 'text', text: `tlda backend didn't answer (it may be restarting). Not yours to debug — tell ops if it persists, then retry shortly.` }], isError: true };
@@ -3966,21 +3543,7 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
       return { content: [{ type: 'text', text: isFresh ? 'fresh=true requires name' : 'agent name required' }], isError: true };
     }
 
-    // Phase-slot enforcement: check before spawning
     const phase = args.phase || null;
-    if (phase && isFresh) {
-      try {
-        const agents = await sendWS('store-agents');
-        state.agents = agents;
-        // Find the current holder of this phase slot: its name is the lineage
-        // base with the phase suffix (dawn = bare base).
-        const slotName = nameForPhase(agentName, phase);
-        const lineageAgent = agents.find(a => a.friendly_name === slotName);
-        if (lineageAgent) {
-          return { content: [{ type: 'text', text: `Phase slot "${phase}" in lineage "${agentName}" is occupied by ${lineageAgent.friendly_name || lineageAgent.id}. Use handoff to rotate.` }], isError: true };
-        }
-      } catch {}
-    }
 
     try {
       const modelError = await validateSpawnRequest(args);
@@ -4006,18 +3569,6 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
       });
       if (result?.ok === false || result?.error) {
         return { content: [{ type: 'text', text: `spawn failed: ${result.error || JSON.stringify(result)}` }], isError: true };
-      }
-
-      // Assign lineage/phase after spawn
-      if (phase && isFresh && !result?.async) {
-        try {
-          const result = await sendWS('lineage-assign', { agent: agentName, phase });
-          if (result?.error) {
-            return { content: [{ type: 'text', text: `Spawned but lineage assignment failed: ${result.error}` }], isError: true };
-          }
-        } catch (e) {
-          process.stderr.write(`[fleet] lineage-assign after spawn failed: ${e.message}\n`);
-        }
       }
 
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
@@ -4200,7 +3751,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
 
   // ---- search_logs ----
   if (name === 'search_logs') {
-    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not registered. Call register() first.' }], isError: true };
+    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not logged in. Call login() first.' }], isError: true };
     const rawQuery = args.query;
     if (!rawQuery || rawQuery.length < 2) {
       return { content: [{ type: 'text', text: 'Query must be at least 2 characters.' }], isError: true };
@@ -4844,14 +4395,12 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     }
   }
 
-  // TODO(cluster-jobs): reintroduce cluster job tracking through a factored server-backed tool surface.
-
   // ==== Utilities ====
 
   // ---- wiretap ----
   if (name === 'wiretap') {
     const myId = AGENT_ID;
-    if (!myId) return { content: [{ type: 'text', text: 'Not registered. Call register() first.' }], isError: true };
+    if (!myId) return { content: [{ type: 'text', text: 'Not logged in. Call login() first.' }], isError: true };
 
     if (args.remove) {
       if (typeof args.remove === 'number' || (typeof args.remove === 'string' && !isNaN(args.remove))) {
@@ -5053,7 +4602,8 @@ const WS_REQUEST_IDLE_MS = 45_000;
 /**
  * Send a request over the WS channel and wait for a response.
  * Returns the result on success, throws on error or timeout.
- * If WS is not connected, returns null (caller should fallback to REST).
+ * If WS is not connected, returns null so the caller can fail or use an
+ * explicitly designed alternate route.
  */
 function _sendWSOnce(type, params = {}, opts = {}) {
   if (!_channelRWS?.connected) return null;
@@ -5125,18 +4675,15 @@ function startChannelWS() {
     heartbeatTimeoutMs: 45000,
     log: (s) => process.stderr.write(s + '\n'),
     onOpen: () => {
-      const regBody = {
-        // agent_id (not id): the correlation `id` sendWS() adds would
-        // otherwise overwrite this and register a phantom UUID-keyed row.
+      const loginBody = {
         agent_id: AGENT_ID,
-        name: process.env.FLEET_NAME || undefined,
         tmux_session: _tmuxSession || undefined,
         cwd: process.cwd(),
         machine_id: process.env.TLDA_MACHINE_ID || os.hostname().split('.')[0],
         env_name: getActiveConfigName(loadConfig()),
       };
-      sendWS('register', regBody)?.catch(e => process.stderr.write(`[fleet-channel] re-register failed: ${e.message}\n`));
-      process.stderr.write(`[fleet-channel] re-registered ${AGENT_ID}\n`);
+      sendWS('login', loginBody)?.catch(e => process.stderr.write(`[fleet-channel] re-login failed: ${e.message}\n`));
+      process.stderr.write(`[fleet-channel] re-logged-in ${AGENT_ID}\n`);
       setTimeout(_flushUnread, 500);
     },
     onActivity: () => {

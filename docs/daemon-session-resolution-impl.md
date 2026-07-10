@@ -35,12 +35,12 @@ is only for resume/respawn.
   - Extend persisted records if needed so Codex records can store the canonical
     bare rollout UUID plus path, owner, cwd, and updated timestamp.
   - Preserve the existing `by_fleet_id` index as the durable lookup surface.
-- `bin/lib/spawn/index.mjs`
+- `agent-launch/index.mjs`
   - Replace Codex respawn's `findCodexRollout()` cascade with injected/shared
     `resolveCodexResumeHandle`.
   - Remove Codex `sessionOverride` from respawn.
   - Keep explicit `--session <uuid>` enrollment path separate from respawn.
-- `bin/lib/spawn/resume.mjs`
+- `agent-launch/resume.mjs`
   - Delete or split out the old Codex respawn cascade:
     caller override -> identity store -> agent row ids -> filesystem scan.
   - Keep Claude session helpers and reusable Codex parsing helpers only.

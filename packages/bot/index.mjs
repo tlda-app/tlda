@@ -95,10 +95,10 @@ export function createBot({ name = 'bot', pretty_name = null, labels = ['bot'], 
       log(`connected to ${WS_URL}`);
       reconnectDelay = 500;
       try {
-        const result = await register();
+        const result = await loginFleet();
         fire('open', result);
       } catch (e) {
-        log(`register failed: ${e.message}`);
+        log(`login failed: ${e.message}`);
         ws?.close();
       }
     });
@@ -141,9 +141,8 @@ export function createBot({ name = 'bot', pretty_name = null, labels = ['bot'], 
     if (!isCanonical()) return Promise.reject(new Error(`bot "${key}" is not canonical (assigned ${assignedName || 'none'})`));
     return requestRaw(msg, timeoutMs);
   }
-  async function register() {
-    const payload = {
-      type: 'register',
+  async function loginFleet() {
+    const basePayload = {
       agent_id: id,
       name: key,
       pretty_name,
@@ -156,11 +155,16 @@ export function createBot({ name = 'bot', pretty_name = null, labels = ['bot'], 
     };
     let result;
     try {
-      result = await requestRaw(payload);
+      if (human) {
+        result = await requestRaw({ ...basePayload, type: 'register', human: true });
+      } else {
+        await requestRaw({ ...basePayload, type: 'reserve-shell' });
+        result = await requestRaw({ ...basePayload, type: 'login' });
+      }
     } catch (e) {
       const agent = await confirmRegisteredFromRoster(SERVER, id);
       if (!agent) throw e;
-      log('register reply timed out; confirmed live registration from roster');
+      log('login reply timed out; confirmed live registration from roster');
       result = { ok: true, agent };
     }
     updateAssignedNameFromAgent(result?.agent);

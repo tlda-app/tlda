@@ -19,7 +19,7 @@
 //   }
 // Env overrides: MD_VERSIONS_ENABLED, MD_VERSIONS_DIR, MD_VERSIONS_FOLDERS (comma-sep).
 //
-// Called from bin/todd.mjs's chat-event handler. Fire-and-forget: never throws
+// Called from bin/bots/todd.mjs's chat-event handler. Fire-and-forget: never throws
 // into the caller, serializes git ops, logs noisily.
 import fs from 'fs'
 import path from 'path'

@@ -2,7 +2,7 @@ import { createLiveStore } from './live-store.ts'
 import { canonicalModel, classifyModel, normalizeKind, type Kind } from './harness.ts'
 
 export type LivenessState = 'alive' | 'dead' | 'spawning' | 'wedged' | 'unknown'
-export type SpawnFailureReason = 'launch-failed' | 'register-timeout' | 'policy-denied' | 'name-bounced'
+export type SpawnFailureReason = 'launch-failed' | 'login-timeout' | 'policy-denied' | 'name-bounced'
 
 export interface AgentRecord {
   id: string
@@ -139,53 +139,53 @@ interface DeliveryWait {
 }
 
 export interface SpawnLibrarianOptions {
-  registerDeadlineMs?: number
+  loginDeadlineMs?: number
   wedgedWindowMs?: number
   now?: () => number
   setTimeoutFn?: typeof setTimeout
   clearTimeoutFn?: typeof clearTimeout
   onWedged?: (event: { agent_id: string; deliveredAt: number; liveness?: AgentLivenessEvent }) => void
-  onLateRegister?: (agent: AgentRecord) => void
+  onLateLogin?: (agent: AgentRecord) => void
 }
 
-// TTL for the timed-out-id set: if an agent registers this long after the deadline
+// TTL for the timed-out-id set: if an agent logs in this long after the deadline
 // it's far enough past the spawn context that no notification is useful.
-const LATE_REGISTER_TTL_MS = 5 * 60_000
+const LATE_LOGIN_TTL_MS = 5 * 60_000
 
 export class SpawnLibrarian {
   readonly pendingSpawns = createLiveStore<PendingSpawn>()
-  private readonly registerDeadlineMs: number
+  private readonly loginDeadlineMs: number
   private readonly wedgedWindowMs: number
   private readonly now: () => number
   private readonly setTimer: typeof setTimeout
   private readonly clearTimer: typeof clearTimeout
   private readonly onWedged?: SpawnLibrarianOptions['onWedged']
-  private readonly onLateRegister?: SpawnLibrarianOptions['onLateRegister']
+  private readonly onLateLogin?: SpawnLibrarianOptions['onLateLogin']
   private readonly waiters = new Map<string, PendingWaiter>()
   private readonly liveness = new Map<string, AgentLivenessEvent>()
   private readonly lastActivity = new Map<string, AgentActivityEvent>()
   private readonly pendingDeliveries = new Map<string, DeliveryWait>()
-  // IDs whose awaitRegister fired register-timeout; watched for late arrival.
+  // IDs whose awaitLogin fired login-timeout; watched for late arrival.
   private readonly timedOutIds = new Map<string, number>()
 
   constructor(opts: SpawnLibrarianOptions = {}) {
-    this.registerDeadlineMs = opts.registerDeadlineMs ?? 60_000
+    this.loginDeadlineMs = opts.loginDeadlineMs ?? 60_000
     this.wedgedWindowMs = opts.wedgedWindowMs ?? 90_000
     this.now = opts.now ?? Date.now
     this.setTimer = opts.setTimeoutFn ?? setTimeout
     this.clearTimer = opts.clearTimeoutFn ?? clearTimeout
     this.onWedged = opts.onWedged
-    this.onLateRegister = opts.onLateRegister
+    this.onLateLogin = opts.onLateLogin
   }
 
-  awaitRegister(input: { id: string; name: string; spec?: SpawnSpec }): Promise<SpawnResult> {
+  awaitLogin(input: { id: string; name: string; spec?: SpawnSpec }): Promise<SpawnResult> {
     const startedAt = this.now()
     const pending: PendingSpawn = {
       id: input.id,
       name: input.name,
       spec: input.spec || {},
       startedAt,
-      deadlineAt: startedAt + this.registerDeadlineMs,
+      deadlineAt: startedAt + this.loginDeadlineMs,
     }
     this.pendingSpawns.upsert(pending)
     return new Promise((resolve) => {
@@ -193,13 +193,13 @@ export class SpawnLibrarian {
         this.waiters.delete(input.id)
         this.pendingSpawns.remove(input.id)
         this.timedOutIds.set(input.id, this.now())
-        resolve({ ok: false, reason: 'register-timeout' })
-      }, this.registerDeadlineMs)
+        resolve({ ok: false, reason: 'login-timeout' })
+      }, this.loginDeadlineMs)
       this.waiters.set(input.id, { resolve, timer })
     })
   }
 
-  observeRegister(agent: AgentRecord): void {
+  observeLogin(agent: AgentRecord): void {
     const waiter = this.waiters.get(agent.id)
     if (waiter) {
       this.clearTimer(waiter.timer)
@@ -208,16 +208,16 @@ export class SpawnLibrarian {
       waiter.resolve({ ok: true, agent })
       return
     }
-    // No active waiter — check if this is a late registration after timeout.
+    // No active waiter — check if this is a late login after timeout.
     const timedOutAt = this.timedOutIds.get(agent.id)
     if (timedOutAt !== undefined) {
       this.timedOutIds.delete(agent.id)
-      if (this.now() - timedOutAt < LATE_REGISTER_TTL_MS) {
-        this.onLateRegister?.(agent)
+      if (this.now() - timedOutAt < LATE_LOGIN_TTL_MS) {
+        this.onLateLogin?.(agent)
       }
     }
     // Sweep stale timed-out entries while we're here.
-    const cutoff = this.now() - LATE_REGISTER_TTL_MS
+    const cutoff = this.now() - LATE_LOGIN_TTL_MS
     for (const [id, ts] of this.timedOutIds) {
       if (ts < cutoff) this.timedOutIds.delete(id)
     }
@@ -277,6 +277,7 @@ export class SpawnLibrarian {
     const state = checked?.state || this.liveness.get(agent.id)?.state || (agent.dead ? 'dead' : 'unknown')
     if (state === 'alive') return { action: 'deliver' }
     if (state === 'spawning') return { action: 'queue', reason: 'spawning' }
+    if (state === 'unknown' && opts.serverAlive === true) return { action: 'deliver' }
     if (state === 'unknown') return { action: 'hold', reason: 'unknown' }
     if (state === 'dead') return { action: 'respawn' }
     return {

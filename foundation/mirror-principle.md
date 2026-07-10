@@ -20,7 +20,7 @@ That's the mirror.
 
 **Skip's UI** is the visible interface — the canvas, the panels, the chat shapes, the document viewer, the hover popovers, the drag-drop. It's optimized for natural human operation: voice, touch, glance.
 
-**The agent's UI** is the programmatic interface — the MCP tools (`chat`, `delegate`, `get_thread`, `my_task`), the fleet-spawn behavior, the daemon events, the tmux pane state. It's optimized for natural agent operation: one tool call does what it sounds like, results don't drown context, no half-results that lie about what they contain.
+**The agent's UI** is the programmatic interface — the MCP tools (`chat`, `delegate`, `get_thread`, `inbox`), the fleet-spawn behavior, the daemon events, the tmux pane state. It's optimized for natural agent operation: one tool call does what it sounds like, results don't drown context, no half-results that lie about what they contain.
 
 These are different substrates for different parties — but both are first-class design surfaces. Neither is a side effect of the other.
 

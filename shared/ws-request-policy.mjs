@@ -1,4 +1,4 @@
-export function startWsRequest({ pending, id, type, idleTimeoutMs, deadlineMs, send }) {
+export function startWsRequest({ pending, id, type, idleTimeoutMs, deadlineMs, send, makeDeadlineError, makeSendError }) {
   return new Promise((resolve, reject) => {
     let idleTimer = null
     let deadlineTimer = null
@@ -20,11 +20,17 @@ export function startWsRequest({ pending, id, type, idleTimeoutMs, deadlineMs, s
     resetIdleTimer()
     if (deadlineMs) {
       deadlineTimer = setTimeout(() => {
-        settle(reject, new Error(`WS request deadline exceeded after ${deadlineMs}ms (type=${type})`))
+        const error = typeof makeDeadlineError === 'function'
+          ? makeDeadlineError({ type, deadlineMs })
+          : new Error(`WS request deadline exceeded after ${deadlineMs}ms (type=${type})`)
+        settle(reject, error)
       }, deadlineMs)
     }
     if (!send(id)) {
-      pending.get(id)?.reject(new Error(`WS request send failed (type=${type})`))
+      const error = typeof makeSendError === 'function'
+        ? makeSendError({ type })
+        : new Error(`WS request send failed (type=${type})`)
+      pending.get(id)?.reject(error)
     }
   })
 }
@@ -40,4 +46,10 @@ export function rejectWsRequests(pending, makeError) {
     request.reject(makeError(request))
   }
   pending.clear()
+}
+
+export function rejectMatchingWsRequests(pending, predicate, makeError) {
+  for (const request of pending.values()) {
+    if (predicate(request)) request.reject(makeError(request))
+  }
 }

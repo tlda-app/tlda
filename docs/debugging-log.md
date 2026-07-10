@@ -61,7 +61,7 @@ re-dispatch through PATH (which finds itself). One-line fix in the wrapper.
 
 ## 2026-06-28 — Agents wedging (process alive, stops responding)
 
-**Symptom:** agents show `status: awake` but stop responding — no `my_task` polling,
+**Symptom:** agents show `status: awake` but stop responding — no `inbox()` polling,
 no reply to directed chat. Seen on `ops` (awake, ~34m idle) and `app-tester`
 (hibernated mid-task without reporting its perf results).
 

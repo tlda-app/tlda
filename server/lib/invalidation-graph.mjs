@@ -3,19 +3,11 @@
 // The vetting model is a graph of proof nodes (theorem / lemma / prop / …), each
 // anchored to a source line range, with dependency edges: a pair P "depends on"
 // label L when P's proof \refs/\eqrefs L. If L's source changes, P's vetting
-// rested on an L that is no longer that L — so P is invalidated. That propagates
-// transitively along the edges (the cascade the linear ribbon structurally can't
-// do: edit Lemma B → B stale → Theorem A that uses B stale too).
+// rested on an L that is no longer that L, so P is invalidated. That propagates
+// transitively along the edges.
 //
-// This module is the engine. Given an edit (a source line range), it returns:
-//   - directlyStale: pairs whose OWN statement the edit changed
-//   - cascadeStale:  pairs that depend (transitively) on a directly-changed node
-// Run on a *proposed* edit without committing, it's the dry-run. Change-detection
-// against committed history uses git/the shadow repo elsewhere (build-1); here the
-// edit range is the change, so the engine is pure graph + interval logic.
-//
-// Data source: proof-info.json `pairs[]` (id = label, statementLines, proofLines,
-// dependencies[].label), produced by scripts/compute-proof-pairing.mjs.
+// Data source: proof-info.json `pairs[]` (id = label, statementLines,
+// proofLines, dependencies[].label), produced by scripts/compute-proof-pairing.mjs.
 
 import { readFileSync, readdirSync } from 'fs'
 import { join } from 'path'
@@ -33,9 +25,9 @@ function normRange(range) {
 }
 
 /**
- * Reverse dependency graph: label → [pairId, …] of pairs that DEPEND ON it.
- * (Forward edge is pair → dependency-label; reversing it gives "who breaks when
- * this label changes", which is the direction invalidation flows.)
+ * Reverse dependency graph: label -> [pairId, ...] of pairs that DEPEND ON it.
+ * Forward edge is pair -> dependency-label; reversing it gives "who breaks when
+ * this label changes", which is the direction invalidation flows.
  */
 export function buildReverseGraph(pairs) {
   const reverse = new Map()
@@ -51,10 +43,10 @@ export function buildReverseGraph(pairs) {
 }
 
 /**
- * Entry nodes for an edit: pairs whose STATEMENT source range intersects the
- * edited range. Statement (not proof) because the statement is what others
- * depend on — changing a node's proof invalidates only its own vetting, not its
- * dependents. v1 treats statementLines as main-file-relative (see callers).
+ * Entry nodes for an edit: pairs whose statement source range intersects the
+ * edited range. Statement, not proof, because the statement is what others
+ * depend on. Changing a node's proof invalidates only its own vetting, not its
+ * dependents. v1 treats statementLines as main-file-relative.
  */
 export function entryLabelsForEdit(pairs, fromLine, toLine) {
   const lo = Math.min(fromLine, toLine)
@@ -76,7 +68,7 @@ export function entryLabelsForEdit(pairs, fromLine, toLine) {
  * cycles terminate.
  */
 export function cascade(changedLabels, reverse, pairsById) {
-  const invalidated = new Map() // id → { depth, via }
+  const invalidated = new Map()
   const seen = new Set(changedLabels)
   let frontier = changedLabels.map((label) => ({ label, depth: 0 }))
   while (frontier.length) {
@@ -131,7 +123,7 @@ export function dryRunInvalidation(proofInfo, fromLine, toLine) {
   return { directlyStale, cascadeStale }
 }
 
-/** Find and parse the *-proof-info.json in a project's output dir (or null). */
+/** Find and parse the *-proof-info.json in a project's output dir. */
 export function loadProofInfo(outputDir) {
   let entries
   try { entries = readdirSync(outputDir) } catch { return null }

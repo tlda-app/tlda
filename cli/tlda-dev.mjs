@@ -6,7 +6,7 @@
  * Thin front-end over the main `tlda` CLI: it forwards the command to tlda.mjs
  * (same logic, no duplication) and owns only its own --help.
  *
- * `tlda-dev pw …`, `tlda-dev serve`, `tlda-dev sandbox`, `tlda-dev dev-url`, `tlda-dev deploy`.
+ * `tlda-dev pw …`, `tlda-dev serve`, `tlda-dev dev-url`, `tlda-dev deploy`.
  */
 
 import { spawnSync } from 'child_process'

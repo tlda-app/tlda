@@ -73,7 +73,7 @@ React + TLDraw. `SvgDocument.tsx` (page load/layout/reload), fleet shapes
 places (client `src/shapes/` + server `sync-rooms.mjs`). [VERIFY: shape list]
 
 ### 7. MCP server / fleet tools — `mcp-server/`, fleet-tools
-The tools agents call (chat, spawn, my_task, read_annotations, add_note, …).
+The tools agents call (chat, spawn, inbox, read_annotations, add_note, ...).
 [VERIFY: tool inventory + where each is handled]
 
 ### 8. Spawn system — `bin/fleet-spawn.py` + daemon `rpcSpawn` + server relay

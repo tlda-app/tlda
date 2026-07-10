@@ -14,7 +14,7 @@ import { CanvasClipPanel, syncCanvasClipPanelViewportCamera, type ClipBounds } f
 import { useFleetIdentity } from '../fleet-data-adapter'
 // @ts-ignore — vanilla JS module
 import { getHumanId, getDeviceId, isDeviceReady, whenDeviceReady } from '../fleet/fleet-data.mjs'
-import { getMyAnchorId, isMyFleetShape, FLEET_INTERACTION_SHAPE_SELECTOR, FLEET_SHAPE_TYPES, adoptLegacyFleetShapes, layoutOffset, ensureMyLaneDisjoint } from '../shapes/fleet-utils'
+import { getMyAnchorId, isMyFleetShape, isFleetShapeForOwnerKey, FLEET_INTERACTION_SHAPE_SELECTOR, FLEET_SHAPE_TYPES, adoptLegacyFleetShapes, layoutOffset, ensureMyLaneDisjoint } from '../shapes/fleet-utils'
 import { isDocumentPageShape } from '../shapes/document-pages'
 import { fleetTouchGestureActiveRef, phoneLaneIndexForViewportRefit, postTouchTelemetry, preservePhoneLaneForViewportSettle, setTouchDiagStatus, snapToPhoneLaneIndex, useFleetGestures } from './useFleetGestures'
 import { PhoneLaneArrow } from './PhoneLaneArrow'
@@ -39,7 +39,6 @@ import { FLEET_HUD_RESET_EVENT, FLEET_HUD_TOGGLE_EVENT, setHudEditor } from '../
 import { readFleetHudExpanded, resolveFleetHudToggle, writeFleetHudExpanded } from '../wm/fleet-hud-state'
 import { probe } from '../perf-probe'
 import './FleetHUD.css'
-import { isPhoneViewport } from '../phoneViewport'
 
 declare global {
   interface Window {
@@ -165,18 +164,11 @@ export function repackFleetShapes(editor: Editor, targetBounds?: { x: number; y:
 // HUD. We log both null reasons (kept permanently): they're the signal to look
 // for if the fleet panels ever flash/blank. `fleet-hud` namespace; grep
 // client.log for it.
-function isFleetShapeForOwner(s: any, humanId: string, deviceId: string): boolean {
-  if (!FLEET_SHAPE_TYPES.has(s.type as string)) return false
-  const uid = s.props?.userId
-  const dev = s.props?.deviceId
-  return !!uid && uid === humanId && !!dev && dev === deviceId
-}
-
 function ownerFleetPredicate() {
   if (!isDeviceReady()) return () => false
   const humanId = getHumanId()
   const deviceId = getDeviceId()
-  return (shape: any) => isFleetShapeForOwner(shape, humanId, deviceId)
+  return (shape: any) => isFleetShapeForOwnerKey(shape, humanId, deviceId)
 }
 
 function logFleetBoundsResult(result: FleetBoundsResult): void {
@@ -213,7 +205,6 @@ function isPhoneFleetLayout(editor: Editor): boolean {
   const humanId = getHumanId()
   const deviceId = getDeviceId()
   if (!humanId || !deviceId) return false
-  if (!isPhoneViewport()) return false
   if (!isPhoneStackLayoutForOwner(editor, humanId, deviceId)) return false
   return true
 }
@@ -239,7 +230,7 @@ function getFleetHudDiagnostic(editor: Editor) {
     }
     if (!FLEET_SHAPE_TYPES.has(type)) continue
     fleetShapes.push(s)
-    if (isFleetShapeForOwner(s, humanId, deviceId)) myFleetShapeCount += 1
+    if (isFleetShapeForOwnerKey(s, humanId, deviceId)) myFleetShapeCount += 1
     if (!s.props?.userId || !s.props?.deviceId) orphanFleetShapeCount += 1
     if (
       !!humanId &&
@@ -503,7 +494,7 @@ export function FleetHUD({
     let settleTimer = 0
     const refit = () => {
       frame = null
-      if (!isPhoneViewport()) return
+      if (!isPhoneFleetLayout(mainEditor)) return
       const result = refitPhonePaneStack(mainEditor)
       if (!result.ok) return
       snapToPhoneLaneIndex(mainEditor, result.docLeftPage, phoneLaneIndexForViewportRefit(result.currentIndex))
@@ -566,6 +557,23 @@ export function FleetHUD({
     return true
   }, [activeTopPad, applyHudAnchor, docShapesReady, mainEditor])
 
+  useEffect(() => {
+    if (!identityId || !deviceReady || !docShapesReady || fleetBounds) return
+    let cancelled = false
+    const delays = [0, 80, 240, 600, 1200]
+    const timers = delays.map(delay => window.setTimeout(() => {
+      if (cancelled) return
+      const nextBounds = resetFleetBoundsTracker()
+      if (!nextBounds) return
+      recenterHudForBounds(nextBounds)
+      setFleetBounds(nextBounds)
+    }, delay))
+    return () => {
+      cancelled = true
+      for (const timer of timers) window.clearTimeout(timer)
+    }
+  }, [deviceReady, docShapesReady, fleetBounds, identityId, recenterHudForBounds, resetFleetBoundsTracker])
+
   // Reactively update fleet bounds when shapes change.
   //
   // Position updates: freeze during USER drag (so the auto-zoom panel doesn't
@@ -581,7 +589,7 @@ export function FleetHUD({
       const humanId = getHumanId()
       const deviceId = getDeviceId()
       const isFleetChange = (record: any) =>
-        record.typeName === 'shape' && isFleetShapeForOwner(record, humanId, deviceId)
+        record.typeName === 'shape' && isFleetShapeForOwnerKey(record, humanId, deviceId)
       // Immediate: add/remove always recalculates
       const hasAddition = Object.values(changes.added).some(isFleetChange)
       const hasRemoval = Object.values(changes.removed).some(isFleetChange)

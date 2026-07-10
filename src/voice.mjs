@@ -706,7 +706,9 @@ function speechContext(extra = {}) {
   let standalone = false
   try {
     standalone = !!navigator.standalone || !!window.matchMedia?.('(display-mode: standalone)').matches
-  } catch {}
+  } catch {
+    // Best effort: browser standalone probes can be unavailable during tests.
+  }
   let topLevel = true
   try { topLevel = window.top === window.self } catch { topLevel = false }
   return {

@@ -579,6 +579,18 @@ html[data-theme="dark"] .agent-indicator[data-agent="todd"].agent-stale {
   padding: 2px 4px;
   text-align: right;
 }
+
+/* iOS Safari page-zooms when focusing text controls below 16px. In phone/touch
+   layouts that browser zoom can push fixed recovery controls offscreen. */
+body.phone-mode input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+body.phone-mode textarea,
+body.phone-mode select,
+body.touch-toc-mode input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+body.touch-toc-mode textarea,
+body.touch-toc-mode select {
+  font-size: 16px !important;
+}
+
 .prefs-num-unit {
   font-size: 10px;
   color: rgba(0, 0, 0, 0.5);
@@ -1964,8 +1976,8 @@ body.phone-mode .phone-toc-btn,
 body.touch-toc-mode .phone-toc-btn {
   display: flex;
   position: fixed;
-  top: calc(10px + env(safe-area-inset-top));
-  right: calc(10px + env(safe-area-inset-right));
+  top: calc(10px + env(safe-area-inset-top) + var(--tlda-vv-top, 0px));
+  right: calc(10px + env(safe-area-inset-right) + var(--tlda-vv-right, 0px));
   z-index: var(--tlda-z-top-control);
   width: 44px;
   height: 44px;
@@ -2179,8 +2191,8 @@ html[data-theme="dark"] .phone-toc-modal .toc-diff-hint {
 }
 
 body.phone-mode .phone-hl-btn {
-  bottom: calc(24px + env(safe-area-inset-bottom));
-  right: max(4px, env(safe-area-inset-right));
+  bottom: calc(24px + env(safe-area-inset-bottom) + var(--tlda-vv-bottom, 0px));
+  right: calc(max(4px, env(safe-area-inset-right)) + var(--tlda-vv-right, 0px));
   width: 44px;
   height: 44px;
   opacity: 0.5;
@@ -2193,12 +2205,19 @@ body.touch-toc-mode:not(.phone-mode) .fleet-icon-pill-badge {
   height: 44px;
 }
 
+body.touch-toc-mode:not(.phone-mode) .phone-hl-btn {
+  bottom: calc(16px + env(safe-area-inset-bottom) + var(--tlda-vv-bottom, 0px));
+  right: calc(max(4px, env(safe-area-inset-right)) + var(--tlda-vv-right, 0px));
+}
+
 body.touch-toc-mode:not(.phone-mode) .voice-note-btn {
-  bottom: calc(76px + env(safe-area-inset-bottom));
+  bottom: calc(76px + env(safe-area-inset-bottom) + var(--tlda-vv-bottom, 0px));
+  right: calc(max(4px, env(safe-area-inset-right)) + var(--tlda-vv-right, 0px));
 }
 
 body.touch-toc-mode:not(.phone-mode) .fleet-icon-pill-container {
-  bottom: calc(128px + env(safe-area-inset-bottom));
+  bottom: calc(128px + env(safe-area-inset-bottom) + var(--tlda-vv-bottom, 0px));
+  right: calc(max(4px, env(safe-area-inset-right)) + var(--tlda-vv-right, 0px));
 }
 
 /* Show selected color as subtle ring when inactive */
@@ -2373,7 +2392,7 @@ html[data-theme="dark"] .phone-hl-slot.active {
 body.phone-mode .phone-page-indicator {
   display: block;
   position: fixed;
-  bottom: calc(12px + env(safe-area-inset-bottom));
+  bottom: calc(12px + env(safe-area-inset-bottom) + var(--tlda-vv-bottom, 0px));
   left: 50%;
   transform: translateX(-50%);
   z-index: var(--tlda-z-top-control);
@@ -2453,8 +2472,8 @@ body.warm-mode [data-shape-id] svg {
 
 
 body.phone-mode .voice-note-btn {
-  bottom: calc(76px + env(safe-area-inset-bottom));
-  right: max(4px, env(safe-area-inset-right));
+  bottom: calc(76px + env(safe-area-inset-bottom) + var(--tlda-vv-bottom, 0px));
+  right: calc(max(4px, env(safe-area-inset-right)) + var(--tlda-vv-right, 0px));
   width: 44px;
   height: 44px;
   opacity: 0.5;
@@ -2490,8 +2509,8 @@ html[data-theme="dark"] .voice-note-btn {
 .mic-toggle-btn:hover { opacity: 0.5; }
 
 body.phone-mode .mic-toggle-btn {
-  bottom: calc(128px + env(safe-area-inset-bottom));
-  right: max(4px, env(safe-area-inset-right));
+  bottom: calc(128px + env(safe-area-inset-bottom) + var(--tlda-vv-bottom, 0px));
+  right: calc(max(4px, env(safe-area-inset-right)) + var(--tlda-vv-right, 0px));
   width: 44px;
   height: 44px;
   opacity: 0.5;
@@ -2509,19 +2528,19 @@ html[data-theme="dark"] .mic-toggle-btn {
    (Requires viewport-fit=cover on the viewport meta for env() to be non-zero.) */
 @media (pointer: coarse) and (min-width: 601px) {
   .phone-toc-btn {
-    top: calc(10px + env(safe-area-inset-top));
-    right: calc(10px + env(safe-area-inset-right));
+    top: calc(10px + env(safe-area-inset-top) + var(--tlda-vv-top, 0px));
+    right: calc(10px + env(safe-area-inset-right) + var(--tlda-vv-right, 0px));
   }
   .phone-hl-btn {
-    bottom: calc(16px + env(safe-area-inset-bottom));
-    right: max(4px, env(safe-area-inset-right));
+    bottom: calc(16px + env(safe-area-inset-bottom) + var(--tlda-vv-bottom, 0px));
+    right: calc(max(4px, env(safe-area-inset-right)) + var(--tlda-vv-right, 0px));
   }
   .voice-note-btn {
-    bottom: calc(49px + env(safe-area-inset-bottom));
-    right: max(4px, env(safe-area-inset-right));
+    bottom: calc(49px + env(safe-area-inset-bottom) + var(--tlda-vv-bottom, 0px));
+    right: calc(max(4px, env(safe-area-inset-right)) + var(--tlda-vv-right, 0px));
   }
   .mic-toggle-btn {
-    bottom: calc(82px + env(safe-area-inset-bottom));
-    right: max(4px, env(safe-area-inset-right));
+    bottom: calc(82px + env(safe-area-inset-bottom) + var(--tlda-vv-bottom, 0px));
+    right: calc(max(4px, env(safe-area-inset-right)) + var(--tlda-vv-right, 0px));
   }
 }

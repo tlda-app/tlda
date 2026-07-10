@@ -53,8 +53,11 @@ assertServerCoherence();
 const TLDA_TOKEN = resolveToken();
 const TLDA_AUTH_HEADERS = TLDA_TOKEN ? { 'Authorization': `Bearer ${TLDA_TOKEN}` } : {};
 const TLDA_SERVER = getServerUrl();
-// Separate sync server for shapes/signals (e.g. Fly.io) — falls back to TLDA_SERVER
+// Separate sync server for shapes/signals (e.g. Fly.io); defaults to the active
+// store server when no split-sync override is configured.
 const TLDA_SYNC_SERVER = process.env.TLDA_SYNC_SERVER || TLDA_SERVER;
+const STORE_IS_LOCAL = /^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/.test(TLDA_SERVER);
+const ALLOW_LOCAL_DOC_DISK = !!process.env.TLDA_SYNC_SERVER || STORE_IS_LOCAL;
 const FLEET_ONLY_MCP = process.env.TLDA_MCP_FLEET_ONLY === '1';
 // ---- REST API helpers (shape CRUD via @tldraw/sync rooms) ----
 
@@ -327,22 +330,26 @@ async function checkDocBuildStatus(docName) {
       }
       return { ok: true, pages: info.pages, buildStatus: info.buildStatus };
     }
-    // API returned error — fall back to disk check
-    return checkDocBuildStatusDisk(docName);
+    if (ALLOW_LOCAL_DOC_DISK) return checkDocBuildStatusDisk(docName);
+    return { ok: false, reason: `Document "${docName}" status check failed on ${sUrl}: HTTP ${res.status}` };
   } catch (e) {
-    // No local server — fall back to disk (project.json or manifest)
-    const diskResult = checkDocBuildStatusDisk(docName);
-    if (diskResult.ok) return diskResult;
-    if (e?.cause?.code === 'ECONNREFUSED' || e?.code === 'ECONNREFUSED') {
-      // Disk also failed — if we have a separate sync server, that's fine (doc assets are on disk)
-      if (process.env.TLDA_SYNC_SERVER) return diskResult;
-      return { ok: false, reason: `Server is not running (connection refused on port ${DEFAULT_PORT}). Start it with "tlda server start"` };
+    if (ALLOW_LOCAL_DOC_DISK) {
+      const diskResult = checkDocBuildStatusDisk(docName);
+      if (diskResult.ok) return diskResult;
+      if (e?.cause?.code === 'ECONNREFUSED' || e?.code === 'ECONNREFUSED') {
+        if (process.env.TLDA_SYNC_SERVER) return diskResult;
+        return { ok: false, reason: `Server is not running (connection refused on port ${DEFAULT_PORT}). Start it with "tlda server start"` };
+      }
+      return diskResult;
     }
-    return diskResult;
+    if (e?.cause?.code === 'ECONNREFUSED' || e?.code === 'ECONNREFUSED') {
+      return { ok: false, reason: `Document "${docName}" status check failed: ${sUrl} is unreachable` };
+    }
+    return { ok: false, reason: `Document "${docName}" status check failed on ${sUrl}: ${e.message}` };
   }
 }
 
-/** Disk-based fallback: check project.json directly. */
+/** Local-store status check: read project.json directly when disk mode is allowed. */
 function checkDocBuildStatusDisk(docName) {
   const projDir = path.join(PROJECT_ROOT, 'server', 'projects', docName);
   const projJson = path.join(projDir, 'project.json');
@@ -366,8 +373,7 @@ function checkDocBuildStatusDisk(docName) {
 // it must HTTP from store). Disk mode is preserved for a local store (localhost,
 // same-machine dev) and the deliberate split-sync (TLDA_SYNC_SERVER — the published
 // triage clone reads assets from disk while shapes sync elsewhere).
-const _storeIsLocal = /^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/.test(TLDA_SERVER);
-initDataSource(PROJECT_ROOT, (process.env.TLDA_SYNC_SERVER || _storeIsLocal) ? null : TLDA_SERVER);
+initDataSource(PROJECT_ROOT, ALLOW_LOCAL_DOC_DISK ? null : TLDA_SERVER);
 
 // ---- Lookup.json support ----
 
@@ -1315,7 +1321,7 @@ async function highlightLine(doc, file, line) {
 }
 
 /**
- * Parse a markdown options file into { text, choices } for an `add_annotation`
+ * Parse a markdown options file into { text, choices } for an `add_note`
  * call. Each H2 (`## Label`) becomes a choice; the label is everything after
  * `## ` on that line, and the body (until the next H2 or EOF) becomes that
  * option's preview content. The combined `text` stacks every option header +
@@ -1871,8 +1877,12 @@ if (!FLEET_ONLY_MCP) {
       }
       throw err;
     });
-  } catch {
-    console.error(`Port ${WS_PORT} in use — skipping WebSocket server`);
+  } catch (err) {
+    if (err?.code === 'EADDRINUSE') {
+      console.error(`Port ${WS_PORT} in use — skipping WebSocket server`);
+    } else {
+      throw err;
+    }
   }
 }
 
@@ -1994,28 +2004,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
-      name: 'flash_location',
-      description: 'DEPRECATED — prefer mentioning a label or line number in chat (auto-links to hoverable reference), or use draw_highlight for persistent marks. Flash a temporary red circle at a source location — disruptive, moves the user\'s viewport.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          doc: {
-            type: 'string',
-            description: 'Document name (e.g. "bregman"). If omitted, inferred from file path.',
-          },
-          file: {
-            type: 'string',
-            description: 'Path to the TeX file',
-          },
-          line: {
-            type: 'number',
-            description: 'Line number in the TeX file',
-          },
-        },
-        required: ['file', 'line'],
-      },
-    },
-    {
       name: 'add_note',
       description: 'Add a math note annotation to the document at a specific source line. The note appears in the TLDraw canvas and syncs to all viewers. Supports @label cross-references (e.g. @thm:bias-decomp) — broken refs are reported in the response. For multiple-choice options with long LaTeX content, prefer `options_file` over inline `text`+`choices` — the file format avoids escaping pain and gives the options a durable artifact.',
       inputSchema: {
@@ -2077,7 +2065,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['doc'],
       },
     },
-    // mark_annotation_done removed — done state removed
     {
       name: 'reply_note',
       description: 'Reply to a note by appending text to it. Adds a separator and the reply text below the existing content.',
@@ -2103,8 +2090,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['doc', 'id'],
       },
     },
-    // read_pen_annotations removed — merged into list_annotations
-    // signal_reload removed — folded into push
     {
       name: 'draw_highlight',
       description: 'Draw a highlighter stroke over source lines on the canvas. Creates a visible highlight mark (like a physical highlighter) spanning the given line range.',
@@ -2139,9 +2124,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['doc', 'fromLine', 'toLine'],
       },
     },
-    // mark_highlight_addressed tool definition removed — replaced by reply_note auto-addressing
-    // place_response_bar tool definition removed
-    // get_highlight_feedback tool definition removed — merged into read_annotations (use unaddressed_only param)
     {
       name: 'set_understanding',
       description: 'Set understanding map status for a range of source lines. Used to pre-populate understanding from provenance (e.g. mark author lines as "understood") or to record reading progress.',
@@ -2214,7 +2196,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['doc'],
       },
     },
-    // Old version-serving tools removed — use side-by-side History/compare.
     {
       name: 'build',
       description: 'Trigger a build (LaTeX/markdown compilation) for a tlda document. If a build is already in progress, polls and returns its status instead of triggering a new one. Returns build status including any errors.',
@@ -2226,7 +2207,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['doc'],
       },
     },
-    // build_status tool definition removed — merged into build
     {
       name: 'push',
       description: 'Push source files to a tlda document and optionally trigger a build. Files are read from the local filesystem.',
@@ -2252,8 +2232,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['doc', 'files'],
       },
     },
-    // scratch removed — no fleet workspace
-    // create_shape tool definition removed — too low-level
     {
       name: 'lookup_theorem',
       description: 'Look up any labeled item in a tlda document — theorems, lemmas, equations, sections, figures, etc. Query by number ("4.3", "B.2") or label ("thm:rate-main", "eq:modulus-as-dual", "sec:intro"). Returns label, type, number, page, source line, and title.',
@@ -2321,8 +2299,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['doc'],
       },
     },
-    // suggest tool definition removed — functionality merged into add_note
-    // update_shared_doc removed — use `tlda push` CLI instead
     ...getFleetTools(),
   ],
 }));
@@ -2479,7 +2455,7 @@ function formatStrokeResult(r, docName, prefix, entry, agent) {
 // Tools that need built document pages to work
 const TOOLS_NEEDING_BUILD = new Set([
   'screenshot',
-  'flash_location', 'add_note',
+  'add_note',
   'scroll_to_line', 'read_annotations',
   'draw_highlight', 'draw_arrow',
   'set_understanding', 'get_understanding',
@@ -2627,7 +2603,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (args?.padding != null) signalData.padding = args.padding;
 
     const mailbox = startOperationMailbox('screenshot', { doc: docName, label: `${docName}${labelTag}` });
-    if (!mailbox) return { content: [{ type: 'text', text: 'Screenshot mailbox requires fleet registration. Call register() first.' }], isError: true };
+    if (!mailbox) return { content: [{ type: 'text', text: 'Screenshot mailbox requires fleet login. Call login() first.' }], isError: true };
 
     (async () => {
       try {
@@ -2696,18 +2672,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     return operationMailboxStartedResult(mailbox, { extra: `doc: ${docName}` });
   }
 
-  if (name === 'flash_location') {
-    const { doc, file, line } = args;
-    if (!file || !line) {
-      return { content: [{ type: 'text', text: 'Missing file or line parameter' }], isError: true };
-    }
-    const result = await highlightLine(doc, file, line);
-    if (!result.ok) {
-      return { content: [{ type: 'text', text: result.error }], isError: true };
-    }
-    return { content: [{ type: 'text', text: `Highlighted page ${result.page} at (${result.x.toFixed(0)}, ${result.y.toFixed(0)})` }] };
-  }
-
   if (name === 'add_note') {
     const { doc, line, page: pageNum, color, size, width, height, side, text_anchor, options_file: optionsFile } = args;
     let { text, choices, file } = args;
@@ -2759,7 +2723,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   if (name === 'read_annotations') {
     const { doc } = args;
-    const typeFilter = name === 'get_highlight_feedback' ? ['highlight'] : (args.type || null);
+    const typeFilter = args.type || null;
     const sortOrder = args.sort || 'document';
     const sinceMinutes = args.since || args.since_minutes || null;
     const startLine = args.startLine || null;
@@ -2876,8 +2840,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
   }
 
-  // mark_annotation_done handler removed — done state removed
-
   if (name === 'delete_annotation') {
     const { doc, id } = args;
     if (!doc || !id) return { content: [{ type: 'text', text: 'Missing required parameters: doc, id' }], isError: true };
@@ -2889,8 +2851,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
     }
   }
-
-  // read_pen_annotations handler removed — merged into list_annotations
 
   if (name === 'set_chat_target') {
     const { doc, agent, panel, chatShapeId } = args;
@@ -2924,8 +2884,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const viewUrl = `${getServerUrl()}/?doc=${encodeURIComponent(doc)}&cx=${(-result.x).toFixed(0)}&cy=${(-result.y).toFixed(0)}&cz=1${tokParam}`;
     return { content: [{ type: 'text', text: `Scrolled to line ${line} → page ${result.page} (${result.x.toFixed(0)}, ${result.y.toFixed(0)})\nView: ${viewUrl}` }] };
   }
-
-  // signal_reload handler removed — folded into push
 
   if (name === 'draw_highlight') {
     const { doc, startLine, endLine: endLineArg, color = 'orange', file, text } = args;
@@ -3364,119 +3322,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
   }
 
-  if (name === 'get_highlight_feedback') {
-    const { doc, unaddressed_only, since_minutes } = args;
-    if (!doc) return { content: [{ type: 'text', text: 'Missing required parameter: doc' }], isError: true };
-    try {
-      const data = await serverFetch(`/api/projects/${doc}/highlight-feedback`);
-      let feedback = data.feedback || [];
-      if (unaddressed_only) {
-        feedback = feedback.filter(f => !f.addressed);
-      }
-      if (since_minutes) {
-        const sinceTs = Date.now() - since_minutes * 60 * 1000;
-        feedback = feedback.filter(f => !f.createdAt || f.createdAt >= sinceTs);
-      }
-      if (feedback.length === 0) {
-        return { content: [{ type: 'text', text: `No ${unaddressed_only ? 'unaddressed ' : ''}highlight feedback on ${doc}.` }] };
-      }
-      // Format feedback for agent consumption
-      const ICONS = { approve: '✅', reject: '❌', question: '❓', expand: '💡', comment: '💬', info: '📝' };
-      const lines = feedback.map(f => {
-        const icon = ICONS[f.type] || '📌';
-        const loc = f.sourceLine != null ? ` (line ${f.sourceLine})` : '';
-        const status = f.addressed ? ' [addressed]' : '';
-        const text = f.text.length > 120 ? f.text.substring(0, 117) + '...' : f.text;
-        return `${icon} **${f.type}**${loc}${status}: "${text}" [${f.shapeId}]`;
-      });
-      const summary = `**${feedback.length} highlight feedback item(s) on ${doc}:**\n\n${lines.join('\n')}`;
-      return { content: [{ type: 'text', text: summary }] };
-    } catch (e) {
-      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
-    }
-  }
-
-  if (name === 'mark_highlight_addressed') {
-    const { doc, id } = args;
-    if (!doc || !id) return { content: [{ type: 'text', text: 'Missing required parameters: doc, id' }], isError: true };
-    try {
-      const shapeId = id.startsWith('shape:') ? id : `shape:${id}`;
-      await updateShapeRest(doc, shapeId, {
-        opacity: 0.3,
-        meta: { addressed: true },
-      });
-      return { content: [{ type: 'text', text: `Marked addressed: ${shapeId}` }] };
-    } catch (e) {
-      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
-    }
-  }
-
-  if (name === 'place_response_bar') {
-    const { doc, highlightId, responseId } = args;
-    if (!doc || !highlightId || !responseId) {
-      return { content: [{ type: 'text', text: 'Missing required parameters: doc, highlightId, responseId' }], isError: true };
-    }
-    try {
-      const hlId = highlightId.startsWith('shape:') ? highlightId : `shape:${highlightId}`;
-      const highlight = await fetchShape(doc, hlId);
-      if (!highlight) return { content: [{ type: 'text', text: `Highlight ${hlId} not found` }], isError: true };
-
-      // Get highlight bounds from its segments
-      const bounds = highlight.props?.segments?.[0]?.path
-        ? { x: highlight.x, y: highlight.y, w: 6, h: 60 }
-        : { x: highlight.x, y: highlight.y, w: 6, h: 60 };
-
-      // Compute bar position: right margin, spanning highlight height
-      // Use page width to position in right margin
-      const pageW = getPageWidth(doc);
-      const barX = pageW + 5;
-      const barY = highlight.y;
-      // Estimate height from segments or use a default
-      let barH = 60;
-      if (highlight.props?.segments) {
-        const ys = [];
-        for (const seg of highlight.props.segments) {
-          // Segments are base64 encoded paths — just use shape bounds estimation
-          ys.push(0);
-        }
-        // Rough height from number of segments × line height
-        barH = Math.max(20, highlight.props.segments.length * 16);
-      }
-
-      const shapeId = generateShapeId();
-      const shapeIndex = await getNextShapeIndex(doc);
-      const shape = {
-        id: shapeId,
-        type: 'reading-assist-bar',
-        typeName: 'shape',
-        x: barX,
-        y: barY,
-        rotation: 0,
-        isLocked: false,
-        opacity: 1,
-        index: shapeIndex,
-        props: {
-          w: 6,
-          h: barH,
-          highlightId: hlId,
-          responseId: responseId.startsWith('shape:') ? responseId : `shape:${responseId}`,
-          color: highlight.props?.color || 'yellow',
-        },
-        meta: {
-          createdAt: Date.now(),
-          ...(process.env.FLEET_ID ? { fleet_id: process.env.FLEET_ID } : {}),
-          ...(process.env.FLEET_NAME ? { friendly_name: process.env.FLEET_NAME } : {}),
-        },
-        parentId: 'page:page',
-      };
-
-      await createShapeRest(doc, shape);
-      return { content: [{ type: 'text', text: `Response bar placed: ${shapeId} for highlight ${hlId}` }] };
-    } catch (e) {
-      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
-    }
-  }
-
   if (name === 'doc_version') {
     const doc = args?.doc;
     if (!doc) return { content: [{ type: 'text', text: 'Missing required parameter: doc' }], isError: true };
@@ -3504,8 +3349,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
     }
   }
-
-  // Old version-serving tool handlers removed — use side-by-side History/compare.
 
   if (name === 'build') {
     const { doc } = args;
@@ -3538,7 +3381,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       // Return current status with errors
-      const errData = await serverFetch(`/api/projects/${doc}/build/errors`).catch(() => []);
+      let errData = [];
+      let errorsWarning = '';
+      try {
+        errData = await serverFetch(`/api/projects/${doc}/build/errors`);
+      } catch (e) {
+        errorsWarning = `**Errors**: diagnostics unavailable (${e.message})`;
+        process.stderr.write(`[mcp] build error fetch failed for "${doc}": ${e.message}\n`);
+      }
       const errors = Array.isArray(errData) ? errData : [];
       // Check viewer version vs latest build
       let viewerInfo = '';
@@ -3564,7 +3414,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         triggered,
         `**Phase**: ${status.phase || 'unknown'}`,
         `**Status**: ${status.status || 'unknown'}`,
-        errors.length > 0 ? `**Errors** (${errors.length}):\n${errors.map(e => `  • ${e.message || e}`).join('\n')}` : '**Errors**: none',
+        errorsWarning || (errors.length > 0 ? `**Errors** (${errors.length}):\n${errors.map(e => `  • ${e.message || e}`).join('\n')}` : '**Errors**: none'),
         viewerInfo,
       ].filter(Boolean).join('\n');
       return { content: [{ type: 'text', text: summary }] };
@@ -3648,23 +3498,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
   }
 
-  // scratch handler removed — no fleet workspace
-
-  if (name === 'create_shape') {
-    const { doc, shape } = args;
-    if (!doc || !shape) return { content: [{ type: 'text', text: 'doc and shape are required.' }], isError: true };
-    try {
-      const result = await serverFetch(`/api/projects/${doc}/shapes`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(shape),
-      });
-      return { content: [{ type: 'text', text: `Created ${shape.type} shape on "${doc}". ID: ${result?.id || 'unknown'}` }] };
-    } catch (e) {
-      return { content: [{ type: 'text', text: `tlda server error: ${e.message}` }], isError: true };
-    }
-  }
-
   if (name === 'lookup_theorem') {
     const { doc, query } = args;
     if (!doc || !query) return { content: [{ type: 'text', text: 'doc and query are required.' }], isError: true };
@@ -3681,18 +3514,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       } catch {}
 
       const smPath = path.join(tldaProjectsDir, doc, 'output', `${texBase}-source-map.json`);
-      const mapPath = path.join(tldaProjectsDir, doc, 'output', `${texBase}-theorem-map.json`);
 
       if (fs.existsSync(smPath)) {
         const sm = JSON.parse(fs.readFileSync(smPath, 'utf8'));
         const labels = sm.labels || [];
         entry = labels.find(e => e.label === q || e.number === q);
         if (!entry) entry = labels.find(e => e.label.includes(q) || e.number.includes(q));
-      } else if (fs.existsSync(mapPath)) {
-        // Legacy fallback
-        const mapData = JSON.parse(fs.readFileSync(mapPath, 'utf8'));
-        entry = mapData[q];
-        if (!entry) entry = Object.values(mapData).find(e => e.number === q);
+      } else {
+        return { content: [{ type: 'text', text: `lookup_theorem: source map unavailable for ${doc} (build the doc first).` }], isError: true };
       }
 
       if (!entry) {
@@ -3701,9 +3530,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           const sm = JSON.parse(fs.readFileSync(smPath, 'utf8'));
           const named = (sm.labels || []).filter(e => ['thm','lem','prop','cor','def','ass'].includes(e.type));
           available = named.map(e => `${e.number} (${e.label})`).join(', ');
-        } else if (fs.existsSync(mapPath)) {
-          const mapData = JSON.parse(fs.readFileSync(mapPath, 'utf8'));
-          available = Object.values(mapData).map(e => `${e.number} (${e.label})`).join(', ');
         }
         return { content: [{ type: 'text', text: `No match for "${q}" in ${doc}.${available ? '\nAvailable: ' + available : ''}` }] };
       }

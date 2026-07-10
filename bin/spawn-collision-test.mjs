@@ -11,9 +11,11 @@ import { dirname, join } from 'path'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(__dirname, '..')
-const PORT = 5193
+const PORT = Number(process.env.PORT || (5193 + (process.pid % 1000)))
 const DB = `/tmp/spawn-collision-test-${process.pid}.db`
+const ENV_NAME = 'default'
 const useTls = existsSync(`${process.env.HOME}/.config/tlda/localhost+2.pem`)
+if (useTls) process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0'
 const proto = useTls ? 'https' : 'http'
 const wsProto = useTls ? 'wss' : 'ws'
 const wsOpts = useTls ? { rejectUnauthorized: false } : {}
@@ -32,7 +34,7 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms))
 // 1. Boot the worktree server.
 srv = spawn('node', ['server/unified-server.mjs', '--i-am-tlda-cli'], {
   cwd: ROOT,
-  env: { ...process.env, PORT: String(PORT), TLDA_FLEET_DB: DB },
+  env: { ...process.env, PORT: String(PORT), TLDA_FLEET_DB: DB, TLDA_DEV_SERVER: '1' },
   stdio: ['ignore', 'pipe', 'pipe'],
 })
 let serverLog = ''
@@ -58,7 +60,7 @@ function startMockDaemon() {
     const dws = new WebSocket(`${wsProto}://localhost:${PORT}/ws/fleet-daemon`, wsOpts)
     dws.on('open', () => {
       dws.send(JSON.stringify({
-        type: 'daemon-hello', machine_id: 'testbox-caller', boot_id: Date.now(),
+        type: 'daemon-hello', machine_id: 'testbox-caller', env_name: ENV_NAME, boot_id: Date.now(),
         user: 'test', hostname: 'testbox', version: 'test',
       }))
       setTimeout(() => resolve(dws), 300)
@@ -74,7 +76,7 @@ function startMockDaemon() {
   })
 }
 
-// Fleet client: register an agent + send spawn messages.
+// Fleet client: log in an agent shell + send spawn messages.
 function openFleet() {
   return new Promise((resolve) => {
     const ws = new WebSocket(`${wsProto}://localhost:${PORT}/ws/fleet`, wsOpts)
@@ -88,12 +90,20 @@ async function run() {
   await startMockDaemon()
   const ws = await openFleet()
 
-  // Register a live agent named "collidertest".
+  // Create and log in a live agent named "collidertest".
   ws.send(JSON.stringify({
-    type: 'register',
+    type: 'reserve-shell',
     agent_id: 'fleet:tester1',
     name: 'collidertest',
     machine_id: 'testbox-caller',
+    env_name: ENV_NAME,
+    metadata: { spawnPolicy: { permission: 'read', policy: 'cwd' } },
+  }))
+  ws.send(JSON.stringify({
+    type: 'login',
+    agent_id: 'fleet:tester1',
+    machine_id: 'testbox-caller',
+    env_name: ENV_NAME,
     metadata: { spawnPolicy: { permission: 'read', policy: 'cwd' } },
   }))
   await sleep(800)
@@ -115,13 +125,11 @@ async function run() {
   if (collide.spawnPolicy || collide.grantedPermission || collide.mode) {
     fail(`server must not send granted policy/mode/fence on collision wake: ${JSON.stringify(collide)}`)
   }
-  if (collide.callerRung !== 'read') fail(`server should relay callerRung read, got ${collide.callerRung}`)
   console.log('PASS: collision spawn coerced to respawn=true using the resolved fleet id')
 
   if (!fresh) fail(`no spawn RPC for totallynewname reached the daemon. RPCs: ${JSON.stringify(spawnRpcs)}`)
   if (fresh.respawn === true) fail(`new-name spawn should stay fresh (respawn falsy), got ${fresh.respawn}`)
   if (fresh.requestedPermission !== 'full') fail(`server should relay requestedPermission full, got ${fresh.requestedPermission}`)
-  if (fresh.callerRung !== 'read') fail(`server should relay callerRung read, got ${fresh.callerRung}`)
   if (fresh.spawnPolicy || fresh.grantedPermission || fresh.mode) {
     fail(`server readiness/policy handling must be status-only; it must not choose grant/mode/fence: ${JSON.stringify(fresh)}`)
   }

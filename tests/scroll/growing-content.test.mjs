@@ -21,7 +21,7 @@ import { setup, teardown, getScrollState, scrollToBottom, sendChat,
 
 const suite = new Suite('A6/E1 growing content')
 
-const ctx = await setup({ agentName: process.env.TLDA_TEST_AGENT || 'tlda-ops' })
+const ctx = await setup({})
 
 try {
   await scrollToBottom(ctx)
@@ -31,7 +31,7 @@ try {
     Promise.resolve(expectAtBottom(getScrollState(ctx))))
 
   // Send image (content will grow when image renders)
-  sendChat(ctx, { from: ctx.agentId, to: 'fleet:skip',
+  sendChat(ctx, { from: ctx.agentId,
     message: '![screenshot](/docs/test-playback/source/figs/empty.png)\n\ncaption text below image' })
   await delay(3000) // image load + render + scroll settle
 
@@ -40,7 +40,7 @@ try {
 
   // E1: NOW send a plain text message. If image height change falsely
   // set userScrolledUp, this message won't auto-scroll.
-  sendChat(ctx, { from: ctx.agentId, to: 'fleet:skip',
+  sendChat(ctx, { from: ctx.agentId,
     message: 'follow-up text after image — this MUST auto-scroll' })
   await delay(1500)
 
@@ -50,7 +50,7 @@ try {
   // Rapid content growth: 5 messages with varying height in quick succession
   for (let i = 0; i < 5; i++) {
     const tall = i % 2 === 0
-    sendChat(ctx, { from: ctx.agentId, to: 'fleet:skip',
+    sendChat(ctx, { from: ctx.agentId,
       message: tall
         ? `Tall message ${i}\n\n- bullet one\n- bullet two\n- bullet three\n\n\`\`\`\ncode line\n\`\`\``
         : `Short message ${i}` })
@@ -62,7 +62,7 @@ try {
     Promise.resolve(expectAtBottom(getScrollState(ctx), 200)))
 
   // One more text message to confirm auto-scroll still engaged
-  sendChat(ctx, { from: ctx.agentId, to: 'fleet:skip',
+  sendChat(ctx, { from: ctx.agentId,
     message: 'final verification message' })
   await delay(1500)
 

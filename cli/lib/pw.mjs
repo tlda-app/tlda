@@ -38,6 +38,10 @@ import { createHash } from 'crypto'
 const REPO_ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url))))
 
 const SESSION_BASE = process.env.TLDA_PW_BASE_SESSION || 'shared'
+
+function escapeRegex(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
 const PW_CAPACITY = parsePositiveInt(process.env.TLDA_PW_CAPACITY, 3)
 
 // Agents are deterministically sharded over a bounded session pool. Explicit
@@ -185,7 +189,11 @@ function isDisabled() {
   return existsSync(DISABLE_FILE)
 }
 function disableInfo() {
-  try { return JSON.parse(readFileSync(DISABLE_FILE, 'utf8')) } catch { return {} }
+  try {
+    return JSON.parse(readFileSync(DISABLE_FILE, 'utf8'))
+  } catch (e) {
+    return { by: 'unknown', reason: `corrupt lock metadata: ${e.message}` }
+  }
 }
 function writeDisable(by, reason) {
   try {

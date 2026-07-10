@@ -16,7 +16,7 @@ const PATTERNS = [
   // and the pure-logging case `catch (e) { log.error(...) }` / `console.error(...)`.
   // A body that is ONLY a comment and/or log calls swallows every error — failed
   // migrations, wrong types, network outages — while looking handled. `console.error`
-  // and the app's `log.<lvl>`/`logger.<lvl>` (per CLAUDE.md, how server/fleet code
+  // and the app's `log.<lvl>`/`logger.<lvl>` (per project logging guidance, how server/fleet code
   // logs) are the dominant swallow form, so they count too. A catch that logs and
   // then rethrows/returns/recovers has a non-log statement in its body → not matched.
   //
