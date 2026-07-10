@@ -382,6 +382,31 @@ async function getSpawnModelCatalog({ maxAgeMs = 60_000 } = {}) {
   return data;
 }
 
+function configuredSpawnProfileNames() {
+  try {
+    const daemonConfig = readDaemonConfig(defaultDaemonConfigPath(CONFIG_DIR));
+    const profiles = daemonConfig?.profiles && typeof daemonConfig.profiles === 'object' && !Array.isArray(daemonConfig.profiles)
+      ? daemonConfig.profiles
+      : {};
+    return Object.keys(profiles).sort();
+  } catch (e) {
+    process.stderr.write(`[fleet] could not read daemon profiles for tool schema: ${e.message}\n`);
+    return [];
+  }
+}
+
+function spawnPermissionDescriptions() {
+  const profiles = configuredSpawnProfileNames();
+  const profileText = profiles.length
+    ? `Configured daemon profiles now: ${profiles.join(', ')}.`
+    : 'No daemon profiles are currently configured.';
+  return {
+    profileNames: profiles,
+    permission: `Configured daemon permission profile. ${profileText} The daemon clamps it to the spawner, project, model, and local box policy.`,
+    permissions: `Configured daemon permission profile/spec. ${profileText} The daemon clamps it to the spawner, project, model, and local box policy.`,
+  };
+}
+
 async function validateSpawnRequest(opts = {}) {
   const model = opts.model;
   const kind = opts.kind;
@@ -1267,6 +1292,7 @@ let server = null;
 export const TLDA_INSTRUCTIONS = 'Fleet messages arrive as <channel source="tlda"> tags. When you see one, call inbox() to get full context and respond via chat().';
 
 export function getFleetTools() {
+  const spawnPermissionText = spawnPermissionDescriptions();
   return [
     // ---- Registration & Identity ----
     {
@@ -1297,7 +1323,8 @@ export function getFleetTools() {
               model: { type: 'string', description: 'Model alias/id. Call spawn_models() for valid values. Common aliases: opus48/sonnet/haiku for Claude, gpt-5.5 or gpt for Codex, deepseek for Goose deepseek/deepseek-v4-pro.' },
               effort: { type: 'string', description: 'Effort level: low|medium|high|xhigh|max (default: inherit global config)' },
               kind: { type: 'string', description: 'Agent runtime/harness (claude, goose, codex).' },
-              permission: { type: 'string', description: 'Requested permission: read, write, tlda-write, or full. (Internet is always on; there is no network permission to request.)' },
+              permission: { type: 'string', ...(spawnPermissionText.profileNames.length ? { enum: spawnPermissionText.profileNames } : {}), description: spawnPermissionText.permission },
+              permissions: { type: 'string', description: spawnPermissionText.permissions },
             },
 	          },
           description: { type: 'string', description: 'Short human-readable description (5-10 words). Auto-derived from message if omitted.' },
@@ -1554,9 +1581,10 @@ export function getFleetTools() {
           cwd: { type: 'string', description: 'Working directory (fresh mode only).' },
           effort: { type: 'string', description: 'Effort level: low|medium|high|xhigh|max (default: inherit global config).' },
           kind: { type: 'string', description: 'Agent runtime/harness (claude, goose, codex).' },
-          permission: { type: 'string', description: 'Requested permission: read, write, tlda-write, or full. (Internet is always on; there is no network permission to request.)' },
+          permission: { type: 'string', ...(spawnPermissionText.profileNames.length ? { enum: spawnPermissionText.profileNames } : {}), description: spawnPermissionText.permission },
           permissions: {
-            description: 'Requested permission profile/spec. May be a named profile string (full, app-dev, math-projects) or an object such as {profile:"app-dev"}. The daemon clamps it to the spawner, project, model, and local box policy.',
+            type: 'string',
+            description: spawnPermissionText.permissions,
           },
           policy: { type: 'string', description: 'Force an explicit fenced launch at the requested permission; does not raise the permission grant.' },
           iLikeToLiveDangerously: { type: 'boolean', description: 'Explicitly acknowledge a launch with no fence and harness permissions disabled. This permits the launch; it does not force unsafe mode.' },
