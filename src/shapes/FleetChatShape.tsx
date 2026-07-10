@@ -6484,7 +6484,9 @@ export function FilterOverlay({
     return { value, displayName }
   }, [pillOverKey])
   const pillOver = externalPillOver ?? internalPillOver
-  const externalPane = externalPillOver?.role === 'to' || externalPillOver?.role === 'from' || externalPillOver?.role === 'replace'
+  const externalPane = fleetPillCount === 0 && (
+    externalPillOver?.role === 'to' || externalPillOver?.role === 'from' || externalPillOver?.role === 'replace'
+  )
     ? externalPillOver.role
     : null
 
@@ -6501,6 +6503,9 @@ export function FilterOverlay({
   const lastGroupRef = useRef<{ pane: string; idx: number; rect: DOMRect } | null>(null)
 
   const hoveredGroup = useValue('filter-hovered-group', () => {
+    // Same-editor drags must use the overlay DOM panes: the visible active pane
+    // and committed filter have to come from the same hit test. The external
+    // role is only authoritative when this editor cannot see the pill shape.
     if (externalPane) return { pane: externalPane, idx: -1 }
     if (!pillOver) { lastGroupRef.current = null; return null }
     if (fleetPillCount === 0) { lastGroupRef.current = null; return null }
