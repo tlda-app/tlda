@@ -3453,7 +3453,7 @@ async function cmdDoctor() {
 
 async function cmdDoctorYolo() {
   const { sanitizeSessionName, readConfig, resolveDnsAlias } = await import('../agent-launch/identity.mjs')
-  const { resolveApi, wsRegister } = await import('../agent-launch/register.mjs')
+  const { resolveApi, wsReserveShell } = await import('../agent-launch/register.mjs')
   const { uniqueSessionName, spawnTmux } = await import('../agent-launch/tmux.mjs')
   const claude = await import('../agent-launch/harness/claude.mjs')
 
@@ -3499,7 +3499,7 @@ async function cmdDoctorYolo() {
     return
   }
 
-  await wsRegister({
+  await wsReserveShell({
     fleetId,
     name,
     tmuxSession,
@@ -3526,7 +3526,7 @@ async function cmdDoctorYolo() {
   console.log(`  tmux: ${tmuxSession}`)
   console.log(`  cwd: ${cwd}`)
   console.log(`  model: ${model}`)
-  console.log(dim('  The agent is prompted to register with fleet and check inbox.'))
+  console.log(dim('  The agent is prompted to log in to fleet and check inbox.'))
 }
 
 
