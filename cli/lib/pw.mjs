@@ -38,6 +38,10 @@ import { createHash } from 'crypto'
 const REPO_ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url))))
 
 const SESSION_BASE = process.env.TLDA_PW_BASE_SESSION || 'shared'
+
+function escapeRegex(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
 const PW_CAPACITY = parsePositiveInt(process.env.TLDA_PW_CAPACITY, 3)
 
 // Agents are deterministically sharded over a bounded session pool. Explicit
