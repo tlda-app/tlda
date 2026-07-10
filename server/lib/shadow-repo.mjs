@@ -183,7 +183,11 @@ function readPaperScope(name) {
   const relPath = join(outputDir(name), 'relevant-files.json')
   if (!existsSync(relPath)) return null
   let parsed
-  try { parsed = JSON.parse(readFileSync(relPath, 'utf8')) } catch { return null }
+  try {
+    parsed = JSON.parse(readFileSync(relPath, 'utf8'))
+  } catch (e) {
+    throw new Error(`paper scope is corrupt (${relPath}): ${e.message}`)
+  }
   const files = Array.isArray(parsed?.files) ? parsed.files : []
   const srcDir = sourceDir(name)
   const out = new Set()
