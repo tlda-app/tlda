@@ -20,7 +20,7 @@ import { setup, teardown, getScrollState, getScrollButtonState,
 
 const suite = new Suite('C scroll-to-bottom button')
 
-const ctx = await setup({ agentName: process.env.TLDA_TEST_AGENT || 'tlda-ops' })
+const ctx = await setup({})
 
 try {
   await populateChat(ctx)
@@ -50,7 +50,7 @@ try {
   await suite.run('C3a: at bottom after button click', () =>
     Promise.resolve(expectAtBottom(getScrollState(ctx))))
   // Re-engages auto-scroll: send a message, expect to follow.
-  sendChat(ctx, { from: ctx.agentId, to: 'fleet:skip', message: 'post-click message — should follow' })
+  sendChat(ctx, { from: ctx.agentId, message: 'post-click message — should follow' })
   await delay(1200)
   await suite.run('C3b: auto-scroll re-engaged after click (new msg follows)', () =>
     Promise.resolve(expectAtBottom(getScrollState(ctx))))

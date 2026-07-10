@@ -163,7 +163,7 @@ function systemLoad() {
   }
 }
 
-const ctx = await setup({ agentName: process.env.TLDA_TEST_AGENT || 'tlda-ops' })
+const ctx = await setup({})
 
 try {
   console.log(`[load] ${systemLoad()}`)

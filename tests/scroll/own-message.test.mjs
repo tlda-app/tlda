@@ -16,7 +16,7 @@ import { setup, teardown, getScrollState, scrollToBottom, scrollUp, sendChat, po
 
 const suite = new Suite('F send-own-message')
 
-const ctx = await setup({ agentName: process.env.TLDA_TEST_AGENT || 'tlda-ops' })
+const ctx = await setup({})
 
 try {
   await populateChat(ctx)
@@ -24,7 +24,7 @@ try {
   // F2 first — easier baseline.
   await scrollToBottom(ctx)
   await delay(400)
-  sendChat(ctx, { from: 'fleet:skip', to: ctx.agentId, message: 'sent from-skip while at bottom' })
+  sendChat(ctx, { from: ctx.userId, to: ctx.agentId, message: 'sent from-human while at bottom' })
   await delay(1200)
   await suite.run('F2: send while at bottom → still at bottom', () =>
     Promise.resolve(expectAtBottom(getScrollState(ctx))))
@@ -40,7 +40,7 @@ try {
     await suite.run('F1 setup: scrolled up before send', () =>
       Promise.resolve(expectScrolledUp(before)))
 
-    sendChat(ctx, { from: 'fleet:skip', to: ctx.agentId, message: 'sent from-skip while scrolled up' })
+    sendChat(ctx, { from: ctx.userId, to: ctx.agentId, message: 'sent from-human while scrolled up' })
     await delay(1500)
     const after = getScrollState(ctx)
     await suite.run('F1: send doesn\'t yank to bottom (stays scrolled up)', () =>

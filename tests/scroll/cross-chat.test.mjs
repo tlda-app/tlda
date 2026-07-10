@@ -17,7 +17,7 @@ const suite = new Suite('A8 cross-chat consistency')
 const agentA = process.env.TLDA_TEST_AGENT || 'tlda-ops'
 const agentB = process.env.TLDA_TEST_AGENT_B || 'help-m7'
 
-const ctx = await setup({ agentName: agentA })
+const ctx = await setup({ filter: [[['from', agentA]], [['to', agentA]]] })
 
 try {
   // Create a SECOND fleet-chat shape filtered to agentB
@@ -44,7 +44,7 @@ try {
   if (count >= 2) {
     // Send messages to chat A
     for (let i = 0; i < 5; i++) {
-      sendChat(ctx, { from: ctx.agentId, to: 'fleet:skip',
+      sendChat(ctx, { from: ctx.agentId,
         message: `Chat-A message ${i} — ${Date.now()}` })
       await delay(200)
     }
@@ -54,15 +54,14 @@ try {
     await suite.run('chat A at bottom after messages', () =>
       Promise.resolve(expectAtBottom(stateA)))
 
-    // Send messages to chat B (from agentB's perspective)
-    // We use fleet:skip as to, since the filter is on agentB
+    // Send messages to chat B (from agentB's perspective).
     const dbB = (await import('better-sqlite3')).default
     const db = new dbB(cfg.dbPath, { readonly: true })
     const bAgent = db.prepare('SELECT id FROM agents WHERE friendly_name=?').get(agentB)
     db.close()
     if (bAgent) {
       for (let i = 0; i < 5; i++) {
-        sendChat(ctx, { from: bAgent.id, to: 'fleet:skip',
+        sendChat(ctx, { from: bAgent.id,
           message: `Chat-B message ${i} — ${Date.now()}` })
         await delay(200)
       }
@@ -77,8 +76,8 @@ try {
     }
 
     // Now send to BOTH simultaneously
-    sendChat(ctx, { from: ctx.agentId, to: 'fleet:skip', message: 'simultaneous A' })
-    if (bAgent) sendChat(ctx, { from: bAgent.id, to: 'fleet:skip', message: 'simultaneous B' })
+    sendChat(ctx, { from: ctx.agentId, message: 'simultaneous A' })
+    if (bAgent) sendChat(ctx, { from: bAgent.id, message: 'simultaneous B' })
     await delay(1500)
 
     await suite.run('both chats at bottom after simultaneous send', () => {

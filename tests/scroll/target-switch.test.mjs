@@ -17,7 +17,7 @@ const suite = new Suite('A3 chat-target switch')
 const agentA = process.env.TLDA_TEST_AGENT || 'tlda-ops'
 const agentB = process.env.TLDA_TEST_AGENT_B || 'historian'
 
-const ctx = await setup({ agentName: agentA })
+const ctx = await setup({ filter: [[['from', agentA]], [['to', agentA]]] })
 
 try {
   await populateChat(ctx)

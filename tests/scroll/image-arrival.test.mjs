@@ -14,7 +14,7 @@ import { setup, teardown, getScrollState, scrollToBottom, sendChat,
 
 const suite = new Suite('A2 image arrival')
 
-const ctx = await setup({ agentName: process.env.TLDA_TEST_AGENT || 'tlda-ops' })
+const ctx = await setup({})
 
 try {
   // Pin to bottom first.
@@ -28,14 +28,14 @@ try {
   await suite.run('starts at bottom before image arrives', () =>
     Promise.resolve(expectAtBottom(getScrollState(ctx))))
 
-  sendChat(ctx, { from: ctx.agentId, to: 'fleet:skip', message: imageMd })
+  sendChat(ctx, { from: ctx.agentId, message: imageMd })
   await delay(2500) // allow image fetch + render + scroll-to-bottom to settle
 
   await suite.run('at bottom after image renders (no top-of-image clip)', () =>
     Promise.resolve(expectAtBottom(getScrollState(ctx), 200)))
 
   // Send a second image — bug pattern is intermittent; cover it twice.
-  sendChat(ctx, { from: ctx.agentId, to: 'fleet:skip', message: '![second image](/docs/test-playback/source/figs/empty.png)' })
+  sendChat(ctx, { from: ctx.agentId, message: '![second image](/docs/test-playback/source/figs/empty.png)' })
   await delay(2500)
 
   await suite.run('at bottom after second image', () =>
