@@ -740,7 +740,8 @@ export async function cmdPw(args, repoRoot) {
 
   if (verb === 'acquire') {
     if (!lockWithWait(repoRoot, me)) {
-      console.error('could not take the pw lock — another agent is mid-verb; try again')
+      const lk = lockStatus(repoRoot)
+      console.error(`could not take the pw lock — ${lk ? `${lk.holder} holding (${lk.ageSecs}s)` : 'another agent is mid-verb'}; try again`)
       process.exit(1)
     }
     try {
