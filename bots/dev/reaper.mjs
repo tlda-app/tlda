@@ -140,7 +140,9 @@ export function createDevReaper({ getAgents, tmuxArgs = [], sendMsg = () => {} }
     try {
       const { stdout } = await execFileP('ps', ['-axo', 'pid=,args='], { timeout: 5000, encoding: 'utf8' })
       psOut = stdout
-    } catch { return [] }
+    } catch (e) {
+      throw new Error(`listVites ps failed: ${e.message}`)
+    }
     const vites = []
     for (const line of psOut.split('\n')) {
       const m = line.match(/^\s*(\d+)\s+(.+)$/)
@@ -224,7 +226,9 @@ export function createDevReaper({ getAgents, tmuxArgs = [], sendMsg = () => {} }
     try {
       const { stdout } = await execFileP('ps', ['-axo', 'pid=,ppid=,args='], { timeout: 5000, encoding: 'utf8' })
       psOut = stdout
-    } catch { return [] }
+    } catch (e) {
+      throw new Error(`listPlaywrightBrowsers ps failed: ${e.message}`)
+    }
     const browsers = []
     for (const line of psOut.split('\n')) {
       const m = line.match(/^\s*(\d+)\s+(\d+)\s+(.+)$/)
@@ -482,7 +486,9 @@ export function createDevReaper({ getAgents, tmuxArgs = [], sendMsg = () => {} }
       const result = [...groups.values()]
       result.sort((a, b) => b.totalRss - a.totalRss)
       return result
-    } catch { return [] }
+    } catch (e) {
+      throw new Error(`getMemoryByAgent failed: ${e.message}`)
+    }
   }
   
   // ─── Combined reaper sweep with status broadcast ──────────────────
@@ -526,13 +532,21 @@ export function createDevReaper({ getAgents, tmuxArgs = [], sendMsg = () => {} }
       agentId: viteAgentMap[v.pid]?.agentId || null,
     }))
   
-    const memoryByAgent = await getMemoryByAgent().catch(() => [])
+    let memoryByAgent = []
+    let memoryByAgentError = null
+    try {
+      memoryByAgent = await getMemoryByAgent()
+    } catch (e) {
+      memoryByAgentError = e.message
+      console.error('[dev-reaper] memory attribution failed:', e.message)
+    }
   
     const status = {
         pressure,
         totalMem: os.totalmem(),
         freeMem: os.freemem(),
         memoryByAgent,
+        memoryByAgentError,
         vites: viteSnap,
         browsers: (pwResult.browsers || []).map(b => ({
           ...b,
