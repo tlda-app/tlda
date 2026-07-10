@@ -21,6 +21,10 @@ const FLEET_HUD_DROP_OVERLAY_LAYER_ID = 'fleet-overlay:drop-page-adapter'
 export const FLEET_HUD_VIEWPORT_ID = 'wm:fleet-hud'
 export const FLEET_HUD_Z_BAND = 'hud-overlay'
 export const FLEET_HUD_HIT_POLICY = 'fleet-shapes-catch-layout-gestures'
+const FLEET_HUD_RESIZE_EDGE_PX = 10
+const FLEET_HUD_RESIZE_CORNER_PX = 18
+
+type FleetHudResizeCursor = 'ew-resize' | 'ns-resize' | 'nwse-resize' | 'nesw-resize'
 
 export interface FleetHudLayerInput {
 	panOffset: number
@@ -199,4 +203,108 @@ export function translateFleetHudDropPointWithWM(
 		},
 	})
 	return wm.translate(overlayPagePoint, FLEET_HUD_DROP_OVERLAY_LAYER_ID, FLEET_HUD_DOCUMENT_LAYER_ID)
+}
+
+function fleetHudResizeCursorForPoint(rect: DOMRect, x: number, y: number): FleetHudResizeCursor | null {
+	const nearLeft = x >= rect.left - FLEET_HUD_RESIZE_EDGE_PX && x <= rect.left + FLEET_HUD_RESIZE_EDGE_PX
+	const nearRight = x >= rect.right - FLEET_HUD_RESIZE_EDGE_PX && x <= rect.right + FLEET_HUD_RESIZE_EDGE_PX
+	const nearTop = y >= rect.top - FLEET_HUD_RESIZE_EDGE_PX && y <= rect.top + FLEET_HUD_RESIZE_EDGE_PX
+	const nearBottom = y >= rect.bottom - FLEET_HUD_RESIZE_EDGE_PX && y <= rect.bottom + FLEET_HUD_RESIZE_EDGE_PX
+
+	if (
+		(nearLeft && nearTop && Math.abs(y - rect.top) <= FLEET_HUD_RESIZE_CORNER_PX) ||
+		(nearRight && nearBottom && Math.abs(y - rect.bottom) <= FLEET_HUD_RESIZE_CORNER_PX)
+	) {
+		return 'nwse-resize'
+	}
+	if (
+		(nearRight && nearTop && Math.abs(y - rect.top) <= FLEET_HUD_RESIZE_CORNER_PX) ||
+		(nearLeft && nearBottom && Math.abs(y - rect.bottom) <= FLEET_HUD_RESIZE_CORNER_PX)
+	) {
+		return 'nesw-resize'
+	}
+
+	const withinVerticalEdge = y >= rect.top + FLEET_HUD_RESIZE_EDGE_PX && y <= rect.bottom - FLEET_HUD_RESIZE_EDGE_PX
+	const withinHorizontalEdge = x >= rect.left + FLEET_HUD_RESIZE_EDGE_PX && x <= rect.right - FLEET_HUD_RESIZE_EDGE_PX
+	if ((nearLeft || nearRight) && withinVerticalEdge) return 'ew-resize'
+	if ((nearTop || nearBottom) && withinHorizontalEdge) return 'ns-resize'
+	return null
+}
+
+function findFleetHudResizeShape(root: HTMLElement, x: number, y: number): HTMLElement | null {
+	const shapes = root.querySelectorAll<HTMLElement>('.tl-shape.fleet-drag-mode[data-shape-id]:not(.tl-shape-background)')
+	for (const shape of shapes) {
+		const rect = shape.getBoundingClientRect()
+		if (
+			x >= rect.left - FLEET_HUD_RESIZE_EDGE_PX &&
+			x <= rect.right + FLEET_HUD_RESIZE_EDGE_PX &&
+			y >= rect.top - FLEET_HUD_RESIZE_EDGE_PX &&
+			y <= rect.bottom + FLEET_HUD_RESIZE_EDGE_PX
+		) {
+			return shape
+		}
+	}
+	return null
+}
+
+function setFleetHudResizeCursor(shape: HTMLElement, cursor: FleetHudResizeCursor | null): void {
+	const targets = [
+		shape,
+		...shape.querySelectorAll<HTMLElement>('.tl-html-container, .fleet-shape, .fleet-shape *'),
+	]
+	for (const target of targets) {
+		if (cursor) target.style.setProperty('cursor', cursor, 'important')
+		else target.style.removeProperty('cursor')
+	}
+}
+
+export function installFleetHudResizeCursor(root: HTMLElement): () => void {
+	let lastShape: HTMLElement | null = null
+	let raf = 0
+
+	const clear = () => {
+		if (!lastShape) return
+		setFleetHudResizeCursor(lastShape, null)
+		lastShape = null
+	}
+
+	const update = (clientX: number, clientY: number) => {
+		if (!document.body.classList.contains('fleet-hud-fleet-selected')) {
+			clear()
+			return
+		}
+		const shape = findFleetHudResizeShape(root, clientX, clientY)
+		if (!shape) {
+			clear()
+			return
+		}
+		const cursor = fleetHudResizeCursorForPoint(shape.getBoundingClientRect(), clientX, clientY)
+		if (!cursor) {
+			clear()
+			return
+		}
+		if (lastShape && lastShape !== shape) setFleetHudResizeCursor(lastShape, null)
+		lastShape = shape
+		setFleetHudResizeCursor(shape, cursor)
+	}
+
+	const onMove = (event: PointerEvent | MouseEvent) => {
+		if (!(event.target instanceof Element) || !root.contains(event.target)) {
+			clear()
+			return
+		}
+		cancelAnimationFrame(raf)
+		raf = requestAnimationFrame(() => update(event.clientX, event.clientY))
+	}
+
+	root.addEventListener('pointermove', onMove, true)
+	root.addEventListener('mousemove', onMove, true)
+	root.addEventListener('pointerleave', clear)
+	return () => {
+		cancelAnimationFrame(raf)
+		root.removeEventListener('pointermove', onMove, true)
+		root.removeEventListener('mousemove', onMove, true)
+		root.removeEventListener('pointerleave', clear)
+		clear()
+	}
 }
