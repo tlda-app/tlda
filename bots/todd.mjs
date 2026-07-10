@@ -2338,7 +2338,7 @@ function connect() {
       console.log(`[todd] connected to ${WS_URL}`)
       reconnectDelay = 500 // back fast next time too
       await initializeFleetCursor()
-      await register()
+      await loginFleet()
       writeHeartbeat('ws-open')
       refreshSelfCheckPrefs().catch(e => console.error('[todd] self-check prefs refresh failed:', e.message))
       refreshSelfCheckRoster().catch(e => console.error('[todd] self-check roster refresh failed:', e.message))
@@ -2422,19 +2422,18 @@ function handleWsReply(msg) {
   return true
 }
 
-async function register() {
+async function loginFleet() {
   const payload = {
-    type: 'register',
     agent_id: AGENT_ID,
     name: AGENT_NAME,
     cwd: process.cwd(),
     labels: ['bot', BOT_KEY],
-    human: false,
     machine_id: MACHINE_ID || undefined,
     tmux_session: TMUX_SESSION || undefined,
     metadata: { bot: BOT_KEY, pid: BOT_PID },
   }
-  const result = await sendRequest(payload)
+  await sendRequest({ ...payload, type: 'reserve-shell' })
+  const result = await sendRequest({ ...payload, type: 'login' })
   updateAssignedNameFromAgent(result?.agent)
   if (!isCanonicalBot()) {
     console.log(`[todd] inert: requested "${AGENT_NAME}", assigned "${assignedName || '(none)'}"`)

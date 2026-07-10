@@ -190,7 +190,7 @@ function connect() {
   ws.on('open', () => {
     console.log(`[${BOT_KEY}] connected to ${WS_URL}`)
     reconnectDelay = 500
-    register()
+    loginFleet()
     refreshPrefs().catch(e => console.error(`[${BOT_KEY}] prefs refresh failed:`, e.message))
     refreshRoster().catch(e => console.error(`[${BOT_KEY}] roster refresh failed:`, e.message))
   })
@@ -231,8 +231,10 @@ function wsRequest(type, extra = {}) {
   })
 }
 
-function register() {
-  send({ type: 'register', id: AGENT_ID, name: AGENT_NAME, cwd: process.cwd(), labels: ['bot', BOT_KEY], human: true })
+function loginFleet() {
+  const payload = { agent_id: AGENT_ID, name: AGENT_NAME, cwd: process.cwd(), labels: ['bot', BOT_KEY] }
+  send({ ...payload, type: 'reserve-shell' })
+  send({ ...payload, type: 'login' })
 }
 
 // Per-recipient dedupe so a reconnect-replay or rapid double turn can't double-send.
