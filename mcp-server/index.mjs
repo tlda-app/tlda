@@ -1320,7 +1320,7 @@ async function highlightLine(doc, file, line) {
 }
 
 /**
- * Parse a markdown options file into { text, choices } for an `add_annotation`
+ * Parse a markdown options file into { text, choices } for an `add_note`
  * call. Each H2 (`## Label`) becomes a choice; the label is everything after
  * `## ` on that line, and the body (until the next H2 or EOF) becomes that
  * option's preview content. The combined `text` stacks every option header +
@@ -2056,7 +2056,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['doc'],
       },
     },
-    // mark_annotation_done removed — done state removed
     {
       name: 'reply_note',
       description: 'Reply to a note by appending text to it. Adds a separator and the reply text below the existing content.',
@@ -2082,8 +2081,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['doc', 'id'],
       },
     },
-    // read_pen_annotations removed — merged into list_annotations
-    // signal_reload removed — folded into push
     {
       name: 'draw_highlight',
       description: 'Draw a highlighter stroke over source lines on the canvas. Creates a visible highlight mark (like a physical highlighter) spanning the given line range.',
@@ -2118,9 +2115,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['doc', 'fromLine', 'toLine'],
       },
     },
-    // mark_highlight_addressed tool definition removed — replaced by reply_note auto-addressing
-    // place_response_bar tool definition removed
-    // get_highlight_feedback tool definition removed — merged into read_annotations (use unaddressed_only param)
     {
       name: 'set_understanding',
       description: 'Set understanding map status for a range of source lines. Used to pre-populate understanding from provenance (e.g. mark author lines as "understood") or to record reading progress.',
@@ -2231,8 +2225,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['doc', 'files'],
       },
     },
-    // scratch removed — no fleet workspace
-    // create_shape tool definition removed — too low-level
     {
       name: 'lookup_theorem',
       description: 'Look up any labeled item in a tlda document — theorems, lemmas, equations, sections, figures, etc. Query by number ("4.3", "B.2") or label ("thm:rate-main", "eq:modulus-as-dual", "sec:intro"). Returns label, type, number, page, source line, and title.',
@@ -2726,7 +2718,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   if (name === 'read_annotations') {
     const { doc } = args;
-    const typeFilter = name === 'get_highlight_feedback' ? ['highlight'] : (args.type || null);
+    const typeFilter = args.type || null;
     const sortOrder = args.sort || 'document';
     const sinceMinutes = args.since || args.since_minutes || null;
     const startLine = args.startLine || null;
@@ -2843,8 +2835,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
   }
 
-  // mark_annotation_done handler removed — done state removed
-
   if (name === 'delete_annotation') {
     const { doc, id } = args;
     if (!doc || !id) return { content: [{ type: 'text', text: 'Missing required parameters: doc, id' }], isError: true };
@@ -2856,8 +2846,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
     }
   }
-
-  // read_pen_annotations handler removed — merged into list_annotations
 
   if (name === 'set_chat_target') {
     const { doc, agent, panel, chatShapeId } = args;
@@ -2891,8 +2879,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const viewUrl = `${getServerUrl()}/?doc=${encodeURIComponent(doc)}&cx=${(-result.x).toFixed(0)}&cy=${(-result.y).toFixed(0)}&cz=1${tokParam}`;
     return { content: [{ type: 'text', text: `Scrolled to line ${line} → page ${result.page} (${result.x.toFixed(0)}, ${result.y.toFixed(0)})\nView: ${viewUrl}` }] };
   }
-
-  // signal_reload handler removed — folded into push
 
   if (name === 'draw_highlight') {
     const { doc, startLine, endLine: endLineArg, color = 'orange', file, text } = args;
@@ -3331,119 +3317,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
   }
 
-  if (name === 'get_highlight_feedback') {
-    const { doc, unaddressed_only, since_minutes } = args;
-    if (!doc) return { content: [{ type: 'text', text: 'Missing required parameter: doc' }], isError: true };
-    try {
-      const data = await serverFetch(`/api/projects/${doc}/highlight-feedback`);
-      let feedback = data.feedback || [];
-      if (unaddressed_only) {
-        feedback = feedback.filter(f => !f.addressed);
-      }
-      if (since_minutes) {
-        const sinceTs = Date.now() - since_minutes * 60 * 1000;
-        feedback = feedback.filter(f => !f.createdAt || f.createdAt >= sinceTs);
-      }
-      if (feedback.length === 0) {
-        return { content: [{ type: 'text', text: `No ${unaddressed_only ? 'unaddressed ' : ''}highlight feedback on ${doc}.` }] };
-      }
-      // Format feedback for agent consumption
-      const ICONS = { approve: '✅', reject: '❌', question: '❓', expand: '💡', comment: '💬', info: '📝' };
-      const lines = feedback.map(f => {
-        const icon = ICONS[f.type] || '📌';
-        const loc = f.sourceLine != null ? ` (line ${f.sourceLine})` : '';
-        const status = f.addressed ? ' [addressed]' : '';
-        const text = f.text.length > 120 ? f.text.substring(0, 117) + '...' : f.text;
-        return `${icon} **${f.type}**${loc}${status}: "${text}" [${f.shapeId}]`;
-      });
-      const summary = `**${feedback.length} highlight feedback item(s) on ${doc}:**\n\n${lines.join('\n')}`;
-      return { content: [{ type: 'text', text: summary }] };
-    } catch (e) {
-      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
-    }
-  }
-
-  if (name === 'mark_highlight_addressed') {
-    const { doc, id } = args;
-    if (!doc || !id) return { content: [{ type: 'text', text: 'Missing required parameters: doc, id' }], isError: true };
-    try {
-      const shapeId = id.startsWith('shape:') ? id : `shape:${id}`;
-      await updateShapeRest(doc, shapeId, {
-        opacity: 0.3,
-        meta: { addressed: true },
-      });
-      return { content: [{ type: 'text', text: `Marked addressed: ${shapeId}` }] };
-    } catch (e) {
-      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
-    }
-  }
-
-  if (name === 'place_response_bar') {
-    const { doc, highlightId, responseId } = args;
-    if (!doc || !highlightId || !responseId) {
-      return { content: [{ type: 'text', text: 'Missing required parameters: doc, highlightId, responseId' }], isError: true };
-    }
-    try {
-      const hlId = highlightId.startsWith('shape:') ? highlightId : `shape:${highlightId}`;
-      const highlight = await fetchShape(doc, hlId);
-      if (!highlight) return { content: [{ type: 'text', text: `Highlight ${hlId} not found` }], isError: true };
-
-      // Get highlight bounds from its segments
-      const bounds = highlight.props?.segments?.[0]?.path
-        ? { x: highlight.x, y: highlight.y, w: 6, h: 60 }
-        : { x: highlight.x, y: highlight.y, w: 6, h: 60 };
-
-      // Compute bar position: right margin, spanning highlight height
-      // Use page width to position in right margin
-      const pageW = getPageWidth(doc);
-      const barX = pageW + 5;
-      const barY = highlight.y;
-      // Estimate height from segments or use a default
-      let barH = 60;
-      if (highlight.props?.segments) {
-        const ys = [];
-        for (const seg of highlight.props.segments) {
-          // Segments are base64 encoded paths — just use shape bounds estimation
-          ys.push(0);
-        }
-        // Rough height from number of segments × line height
-        barH = Math.max(20, highlight.props.segments.length * 16);
-      }
-
-      const shapeId = generateShapeId();
-      const shapeIndex = await getNextShapeIndex(doc);
-      const shape = {
-        id: shapeId,
-        type: 'reading-assist-bar',
-        typeName: 'shape',
-        x: barX,
-        y: barY,
-        rotation: 0,
-        isLocked: false,
-        opacity: 1,
-        index: shapeIndex,
-        props: {
-          w: 6,
-          h: barH,
-          highlightId: hlId,
-          responseId: responseId.startsWith('shape:') ? responseId : `shape:${responseId}`,
-          color: highlight.props?.color || 'yellow',
-        },
-        meta: {
-          createdAt: Date.now(),
-          ...(process.env.FLEET_ID ? { fleet_id: process.env.FLEET_ID } : {}),
-          ...(process.env.FLEET_NAME ? { friendly_name: process.env.FLEET_NAME } : {}),
-        },
-        parentId: 'page:page',
-      };
-
-      await createShapeRest(doc, shape);
-      return { content: [{ type: 'text', text: `Response bar placed: ${shapeId} for highlight ${hlId}` }] };
-    } catch (e) {
-      return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
-    }
-  }
-
   if (name === 'doc_version') {
     const doc = args?.doc;
     if (!doc) return { content: [{ type: 'text', text: 'Missing required parameter: doc' }], isError: true };
@@ -3610,23 +3483,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
       }
       return { content: [{ type: 'text', text: `Pushed ${files.length} file(s) to "${doc}".${buildMsg}` }] };
-    } catch (e) {
-      return { content: [{ type: 'text', text: `tlda server error: ${e.message}` }], isError: true };
-    }
-  }
-
-  // scratch handler removed — no fleet workspace
-
-  if (name === 'create_shape') {
-    const { doc, shape } = args;
-    if (!doc || !shape) return { content: [{ type: 'text', text: 'doc and shape are required.' }], isError: true };
-    try {
-      const result = await serverFetch(`/api/projects/${doc}/shapes`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(shape),
-      });
-      return { content: [{ type: 'text', text: `Created ${shape.type} shape on "${doc}". ID: ${result?.id || 'unknown'}` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `tlda server error: ${e.message}` }], isError: true };
     }
