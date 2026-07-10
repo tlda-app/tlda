@@ -195,7 +195,7 @@ function markAgentAlive(agentId, now = Date.now()) {
   _aliveAgents.add(agentId)
   if (!wasAlive) {
     fleetStore?.refreshAgentLiveness?.(agentId)
-    // Recovery: an agent transitioning to alive (register/reconnect) clears its
+    // Recovery: an agent transitioning to alive (login/reconnect) clears its
     // wake breaker so a restored session is nudged again immediately (§4.2).
     _wakeBreaker.delete(agentId)
   }
@@ -1522,8 +1522,8 @@ onGlobalEvent((event) => {
   if (event?.type === 'version-committed') {
     // Auto-spawn a QA watcher agent when new content is committed to the shadow repo.
     // version-committed is the semantic trigger (new prose exists); build-card is UI-level.
-    // The spawn library pre-registers the agent before starting tmux, so findAgent() works
-    // immediately after the spawn RPC resolves — no register hook or name-pattern needed.
+    // The spawn library reserves an agent shell before starting tmux, so findAgent() works
+    // immediately after the spawn RPC resolves — no login hook or name-pattern needed.
     if (fleetStore) {
       const docName = event.name
       const qaName = `qa-${docName}`
