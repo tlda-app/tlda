@@ -21,6 +21,19 @@ import {
 import { codexRolloutBelongsToAgent, codexRolloutHasOwnerEvidence } from '../agent-runtime/resolve-transcript.mjs'
 import { acquireSingletonLock, sessionReaderLockPath } from '../agent-runtime/singleton-lock.mjs'
 
+const DEFAULT_DISPLAY_REPLAY_MAX_BYTES = 256 * 1024
+const CATCHUP_DISPLAY_OUTPUT_TYPES = new Set(['activity', 'context', 'qualification', 'terminalChat', 'nativeTask'])
+
+export function catchupReplayBoundary({ startOffset = 0, liveOffset = 0, thresholdBytes = DEFAULT_DISPLAY_REPLAY_MAX_BYTES } = {}) {
+  if (!Number.isFinite(startOffset) || !Number.isFinite(liveOffset)) return null
+  if (!Number.isFinite(thresholdBytes) || thresholdBytes < 0) return null
+  return liveOffset - startOffset > thresholdBytes ? liveOffset : null
+}
+
+export function shouldSuppressCatchupOutput(output) {
+  return CATCHUP_DISPLAY_OUTPUT_TYPES.has(output?.type)
+}
+
 export function createJsonlIngestor({
   configDir,
   cursorsFile,
@@ -594,7 +607,7 @@ export function createJsonlIngestor({
       }
 
       try {
-        const pwState = startJsonlTail({ agent, jsonlPath, sessionId, harness, startOffset: offset })
+        const pwState = startJsonlTail({ agent, jsonlPath, sessionId, harness, startOffset: offset, liveOffset: stat.size })
         pathWatchers.set(jsonlPath, pwState)
         retainJsonlDirWatcher(jsonlPath)
 
@@ -686,9 +699,11 @@ export function createJsonlIngestor({
     Promise.resolve(entry.watcher.close()).catch(e => log.warn(`chokidar close failed for ${dir}: ${e?.message || e}`))
   }
 
-  function startJsonlTail({ agent, jsonlPath, sessionId, harness, startOffset }) {
+  function startJsonlTail({ agent, jsonlPath, sessionId, harness, startOffset, liveOffset }) {
     const child = startJsonlIngester()
     const watchId = `${sessionId}:${agent.id}:${Date.now()}:${Math.random().toString(36).slice(2)}`
+    const replayThresholdBytes = Number(process.env.TLDA_JSONL_DISPLAY_REPLAY_MAX_BYTES || DEFAULT_DISPLAY_REPLAY_MAX_BYTES)
+    const catchupUntilOffset = catchupReplayBoundary({ startOffset, liveOffset, thresholdBytes: replayThresholdBytes })
     const pw = {
       watchId,
       jsonlPath,
@@ -700,6 +715,11 @@ export function createJsonlIngestor({
       lastSavedOffset: startOffset,
       pendingDeliveries: 0,
       pendingFlushOffset: null,
+      catchupUntilOffset,
+      catchupSuppressed: {},
+    }
+    if (catchupUntilOffset != null) {
+      log.warn(`JSONL display catch-up for ${agent.friendly_name || agent.id}: suppressing backlog display events from offset ${startOffset} to ${catchupUntilOffset}`)
     }
     childWatchers.set(watchId, pw)
     child.send?.({
@@ -793,8 +813,27 @@ export function createJsonlIngestor({
         pw.pendingFlushOffset = msg.offset
         return
       }
+      maybeCompleteDisplayCatchup(pw, msg.offset)
       updateJsonlCursorFromTail(pw, msg.offset)
     }
+  }
+
+  function countCatchupSuppressed(pw, output) {
+    const n = output?.type === 'activity' ? (output.events?.length || 0)
+      : output?.type === 'nativeTask' ? (output.events?.length || 0)
+        : 1
+    pw.catchupSuppressed[output.type] = (pw.catchupSuppressed[output.type] || 0) + n
+  }
+
+  function maybeCompleteDisplayCatchup(pw, offset) {
+    if (pw.catchupUntilOffset == null || offset < pw.catchupUntilOffset) return
+    const summary = Object.entries(pw.catchupSuppressed || {})
+      .filter(([, n]) => n > 0)
+      .map(([type, n]) => `${type}=${n}`)
+      .join(', ')
+    log.warn(`JSONL display catch-up complete for ${path.basename(pw.jsonlPath)} at offset ${offset}${summary ? `; suppressed ${summary}` : ''}`)
+    pw.catchupUntilOffset = null
+    pw.catchupSuppressed = {}
   }
 
   async function handleJsonlBackfillBatch(msg) {
@@ -866,6 +905,10 @@ export function createJsonlIngestor({
     const agentId = pw.primaryAgentId
     let delivered = true
     for (const output of outputs) {
+      if (pw.catchupUntilOffset != null && shouldSuppressCatchupOutput(output)) {
+        countCatchupSuppressed(pw, output)
+        continue
+      }
       if (output.type === 'activity') {
         const activity = output.events || []
         if (activity.length > 0) {
