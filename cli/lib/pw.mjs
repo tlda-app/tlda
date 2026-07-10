@@ -19,6 +19,7 @@
  * Usage:
  *   tlda-dev pw <verb> [args...]   forward a playwright-cli verb to MY tab
  *   tlda-dev pw acquire            open my assigned shared browser + ensure my tab
+ *   tlda-dev pw setup --doc NAME   open an unused doc in the real environment
  *   tlda-dev pw release            close my tab (browser stays up for others)
  *   tlda-dev pw status             session state + my tab + current URL
  *   tlda-dev pw reap               close my assigned shared browser (the reaper)
@@ -34,6 +35,7 @@ import { readFileSync, writeFileSync, existsSync, realpathSync, rmSync, mkdirSyn
 import { homedir } from 'os'
 import { fileURLToPath } from 'url'
 import { createHash } from 'crypto'
+import { getServerUrl } from '../../shared/config.mjs'
 
 const REPO_ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url))))
 
@@ -225,10 +227,6 @@ function pw(args, opts = {}) {
   // cwd PINNED to the canonical workspace so this command targets the ONE shared
   // daemon regardless of where the agent invoked tlda-dev pw from (see PW_CWD).
   return spawnSync(playwrightCliBin(), [`-s=${SESSION}`, ...args], { encoding: 'utf8', cwd: PW_CWD, ...opts })
-}
-
-function escapeRegex(s) {
-  return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
 export function classifyPlaywrightProcessLine(line, session = CANONICAL_SESSION) {
@@ -601,6 +599,23 @@ function rewriteGoto(rest) {
   return out
 }
 
+export function pwSetupUrl(args, serverUrl = getServerUrl()) {
+  let doc = null
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--doc' && args[i + 1]) {
+      doc = args[++i]
+      continue
+    }
+    throw new Error(`setup: unknown or incomplete argument "${args[i]}"`)
+  }
+  if (!doc) throw new Error('setup: --doc NAME is required; choose a document Skip is not using')
+  const url = new URL(serverUrl)
+  url.searchParams.set('doc', doc)
+  url.searchParams.set('pw', '1')
+  url.searchParams.set('name', myTabKey())
+  return url.toString()
+}
+
 // Screenshot guard: a filename with no image extension reads back as raw bytes
 // (the exact footgun that wasted a session). Force a .png. Also absolutize a
 // relative path against the AGENT's cwd — playwright-cli now runs with cwd pinned
@@ -716,6 +731,7 @@ export async function cmdPw(args, repoRoot) {
         'tlda-dev pw — bounded shared browser pool, a private tab per agent',
         '',
         '  tlda-dev pw acquire           open my assigned shared browser + ensure my tab',
+        '  tlda-dev pw setup --doc NAME  real environment, unused doc, default fleet layout',
         '  tlda-dev pw release           close my tab (browser stays up for others)',
         '  tlda-dev pw status            session state + my tab + URL',
         '  tlda-dev pw reap              close my assigned shared browser',
@@ -884,6 +900,13 @@ export async function cmdPw(args, repoRoot) {
       const ev = CENTER_EVALS[region]
       if (!ev) { console.error(`center: unknown region "${region}" (use: doc | chat | fleet)`); code = 2 }
       else code = forward('eval', [ev])
+    } else if (verb === 'setup') {
+      try {
+        code = forward('goto', rewriteGoto([pwSetupUrl(rest)]))
+      } catch (error) {
+        console.error(error.message)
+        code = 2
+      }
     } else if (verb === 'goto') {
       code = forward('goto', rewriteGoto(rest))
     } else if (verb === 'screenshot') {
