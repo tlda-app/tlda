@@ -186,9 +186,6 @@ export async function setup({
     recipientId: `fleet:scrolltest-rcv-${runStamp}`,
   }
 
-  // Read-only DB handle (for loadEvents real-data replay).
-  ctx.db = new Database(cfg.dbPath, { readonly: true })
-
   // Open the fleet WS and register the throwaway human + bots.
   await connectFleet(ctx)
   await delay(500) // let registrations land before the browser logs in
@@ -350,6 +347,11 @@ export function sendChat(ctx, { from, to, message } = {}) {
   return true
 }
 
+function getDb(ctx) {
+  if (!ctx.db) ctx.db = new Database(cfg.dbPath, { readonly: true })
+  return ctx.db
+}
+
 /**
  * Pull `n` real chat events involving `agentId` from fleet.db (read-only),
  * most-recent first then reversed to chronological. Used by the replay test to
@@ -357,7 +359,7 @@ export function sendChat(ctx, { from, to, message } = {}) {
  * (ctx.agentId is a throwaway bot with no history) — e.g. resolve fleet:skip.
  */
 export function loadEvents(ctx, agentId, n = 200) {
-  const rows = ctx.db.prepare(`
+  const rows = getDb(ctx).prepare(`
     SELECT id, type, timestamp, from_id, to_id, text, metadata
     FROM events
     WHERE type='chat' AND (from_id=? OR to_id=?)
@@ -369,7 +371,7 @@ export function loadEvents(ctx, agentId, n = 200) {
 
 /** Resolve a real agent's fleet id from a friendly name (read-only). */
 export function resolveAgentId(ctx, friendlyName) {
-  const a = ctx.db.prepare(`SELECT id FROM agents WHERE friendly_name = ? OR id = ?`).get(friendlyName, friendlyName)
+  const a = getDb(ctx).prepare(`SELECT id FROM agents WHERE friendly_name = ? OR id = ?`).get(friendlyName, friendlyName)
   return a ? a.id : null
 }
 
@@ -385,7 +387,7 @@ export function resolveAgentId(ctx, friendlyName) {
  * previous message (so a replay can preserve burst structure).
  */
 export function listChatDays(ctx, who = 'fleet:skip', limit = 14) {
-  return ctx.db.prepare(`
+  return getDb(ctx).prepare(`
     SELECT substr(timestamp,1,10) d, COUNT(*) c
     FROM events WHERE type='chat' AND (to_id=? OR from_id=?)
     GROUP BY d ORDER BY d DESC LIMIT ?
@@ -393,7 +395,7 @@ export function listChatDays(ctx, who = 'fleet:skip', limit = 14) {
 }
 
 export function loadDay(ctx, { date, who = 'fleet:skip' } = {}) {
-  const rows = ctx.db.prepare(`
+  const rows = getDb(ctx).prepare(`
     SELECT timestamp, from_id, to_id, text
     FROM events
     WHERE type='chat' AND (to_id=? OR from_id=?) AND substr(timestamp,1,10)=?
