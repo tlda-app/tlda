@@ -95,7 +95,7 @@ function globToRegex(glob) {
       out += escapeRegex(ch)
     }
   }
-  return out
+  return `${out}$`
 }
 
 export function pathPatternMatcher(pattern) {
