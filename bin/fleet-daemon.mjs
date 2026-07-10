@@ -14,7 +14,8 @@
  *      containing the file content. The server runs the build.
  *
  * What it does NOT do:
- *   - No SQLite. The server owns the fleet store.
+ *   - No fleet-store SQLite. The server owns the fleet store; the daemon keeps
+ *     only a local outbound delivery outbox for reconnect-safe WS messages.
  *   - No HTTP. Browsers talk to the server, not the daemon.
  *   - No bot/service supervision. The CLI installs those as managed services.
  *
@@ -86,7 +87,9 @@ import {
 import { gooseActivityTick } from './lib/goose-activity.mjs'
 import { parseCodexLine, parseCodexRecord } from './lib/codex-activity.mjs'
 import { truncatePrettyResult } from '../shared/activity-pretty-result.mjs'
-import { persistDeadLetter, replayDeadLetters } from './lib/daemon/dead-letters.mjs'
+import { DaemonOutbox, defaultOutboxPath } from './lib/daemon/outbox.mjs'
+import { DaemonDeliveryRuntime } from './lib/daemon/delivery-runtime.mjs'
+import { DAEMON_OUTBOX_ACK_TYPE } from '../shared/daemon-delivery.mjs'
 import {
   scanFileOwnersSync,
 } from './lib/daemon-jsonl-hot-path.mjs'
@@ -159,7 +162,8 @@ function loadSourceBindings() {
   } catch (e) { log.warn(`corrupt source-bindings file, ignoring: ${e.message}`); return {} }
 }
 const LOG_FILE = path.join(CONFIG_DIR, 'fleet-daemon.log')
-const DEAD_LETTER_FILE = path.join(CONFIG_DIR, 'daemon-dead-letters.jsonl')
+const DAEMON_OUTBOX_FILE = defaultOutboxPath(CONFIG_DIR)
+const LEGACY_DEAD_LETTER_FILE = path.join(CONFIG_DIR, 'daemon-dead-letters.jsonl')
 const PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects')
 
 // ---------- config / machine identity ----------
@@ -2354,21 +2358,13 @@ function pushWatchedFiles(projectName, sourceDir, watchSet, mainFile, extraInput
   sendMsg({ type: 'source-change', project: projectName, files })
 }
 
-const _pendingSourceProjects = new Set()
-
 function flushSourceChanges(projectName) {
   const state = sourceWatchers.get(projectName)
   if (!state) return
   state.debounce = null
 
-  if (!_rws?.connected) {
-    _pendingSourceProjects.add(projectName)
-    return
-  }
-
   const filePaths = [...state.pending]
   state.pending.clear()
-  _pendingSourceProjects.delete(projectName)
 
   const files = []
   const deleted = []
@@ -2470,12 +2466,6 @@ function flushSourceChanges(projectName) {
     ...(deleted.length > 0 && { deletedFiles: deleted }),
     ...(editedBy && { editedBy }),
   })
-}
-
-function flushPendingSourceChanges() {
-  for (const name of _pendingSourceProjects) {
-    flushSourceChanges(name)
-  }
 }
 
 // ---------- Backing file watchers ----------
@@ -4666,24 +4656,37 @@ async function handleRpc(msg) {
 
 // ---------- WS connection ----------
 
-const CRITICAL_MSG_TYPES = new Set(['terminal-dead', 'terminal_attention', 'spawn-startup-failed'])
-let _droppedCount = 0
-let _droppedWarnAt = 0
-function sendMsg(obj) {
-  if (_rws?.send(obj)) return true
-  _droppedCount++
-  if (obj?.type && CRITICAL_MSG_TYPES.has(obj.type)) {
-    if (persistDeadLetter(DEAD_LETTER_FILE, obj, { log })) {
-      log.warn(`WS down — persisted ${obj.type} for ${obj.agent_id || 'unknown'} to dead-letter file`)
+const daemonOutbox = new DaemonOutbox(DAEMON_OUTBOX_FILE)
+migrateLegacyDeadLetters()
+const daemonDelivery = new DaemonDeliveryRuntime({
+  outbox: daemonOutbox,
+  send: message => _rws?.send(message) === true,
+  isConnected: () => _rws?.connected === true,
+  isReady: () => _serverReady === true,
+  log,
+})
+
+function migrateLegacyDeadLetters() {
+  if (!fs.existsSync(LEGACY_DEAD_LETTER_FILE)) return
+  const lines = fs.readFileSync(LEGACY_DEAD_LETTER_FILE, 'utf8').split(/\n/).filter(line => line.trim())
+  let migrated = 0
+  let malformed = 0
+  for (const line of lines) {
+    try {
+      const msg = JSON.parse(line)
+      delete msg.dropped
+      daemonOutbox.enqueue(msg)
+      migrated++
+    } catch {
+      malformed++
     }
   }
-  const now = Date.now()
-  if (now - _droppedWarnAt > 5000) {
-    log.warn(`dropping messages (ws not open); dropped ${_droppedCount} since last warn; sample type=${obj?.type}`)
-    _droppedCount = 0
-    _droppedWarnAt = now
-  }
-  return false
+  fs.rmSync(LEGACY_DEAD_LETTER_FILE, { force: true })
+  log.warn(`migrated legacy daemon dead letters into outbox: migrated=${migrated} malformed=${malformed}`)
+}
+
+function sendMsg(obj) {
+  return daemonDelivery.send(obj)
 }
 
 function sendMsgWithReply(obj, { timeoutMs = 15000 } = {}) {
@@ -4773,6 +4776,13 @@ function handleServerMessage(msg) {
     else pending.resolve(msg.result)
     return
   }
+  if (msg.type === DAEMON_OUTBOX_ACK_TYPE) {
+    const outboxId = msg.outbox_id
+    if (outboxId) {
+      daemonDelivery.handleAck(outboxId)
+    }
+    return
+  }
   if (msg.type === 'daemon-welcome') {
     _serverReady = true
     agents = msg.agents || []
@@ -4781,14 +4791,10 @@ function handleServerMessage(msg) {
     applyDaemonGrants(permissionLedger, daemonSpawnConfig)
     grantOnMintInfill('daemon-welcome')
     log.info(`welcome: ${agents.length} agents, ${projects.length} projects`)
-    const replay = replayDeadLetters(DEAD_LETTER_FILE, message => _rws?.send(message), { log })
-    if (replay.replayed || replay.remaining || replay.malformed) {
-      log.warn(`dead-letter replay: replayed=${replay.replayed} remaining=${replay.remaining} malformed=${replay.malformed}`)
-    }
+    daemonDelivery.noteReady()
     _lastSessionWatcherRosterSig = sessionWatcherRosterSignature(agents)
     void syncSessionWatchers(agents).catch(e => log.error(`syncSessionWatchers failed: ${e.stack || e.message}`))
     syncSourceWatchers(projects)
-    flushPendingSourceChanges()
     // Periodic death detection — O(1) spawns per cycle (one tmux list-sessions).
     if (!_deathCheckInterval) {
       _deathCheckInterval = setInterval(checkAgentLiveness, DEATH_CHECK_MS)

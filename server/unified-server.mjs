@@ -74,6 +74,7 @@ import { trimTerminalSeedBlankRows } from '../shared/terminal-seed.mjs'
 import { daemonSingletonLockPath, inspectSingletonLock } from '../bin/lib/singleton-lock.mjs'
 import { partialSkillReadSummaries, recordPartialSkillReads } from '../shared/partial-skill-reads.mjs'
 import { daemonAddress, describeAgentAddress } from '../shared/agent-move-target.mjs'
+import { DAEMON_OUTBOX_ACK_TYPE, DAEMON_OUTBOX_ID_FIELD } from '../shared/daemon-delivery.mjs'
 import { readBuildInfo } from './lib/build-info.mjs'
 import {
   DELIVERY_CHANNELS,
@@ -3647,7 +3648,15 @@ server.on('upgrade', async (req, socket, head) => {
       ws.on('message', async (raw) => {
         let msg
         try { msg = JSON.parse(raw.toString()) } catch { return }
-        try { await handleDaemonWsMessage(ws, msg) }
+        try {
+          if (isProcessedDaemonOutboxMessage(msg)) {
+            ackDaemonOutboxMessage(ws, msg)
+            return
+          }
+          await handleDaemonWsMessage(ws, msg)
+          markDaemonOutboxMessageProcessed(msg)
+          ackDaemonOutboxMessage(ws, msg)
+        }
         catch (e) { console.error('[daemon-ws] handler error:', e?.message) }
       })
       ws.on('close', () => {
@@ -5738,6 +5747,43 @@ fs.watchFile(QUALIFICATIONS_FILE, { interval: 5000 }, () => {
 const _terminalDedupStmt = fleetStore?.db.prepare(
   `SELECT 1 FROM events WHERE timestamp = ? AND from_id = ? AND to_id = ? AND substr(text, 1, 500) = ? AND type = 'chat' LIMIT 1`
 )
+if (fleetStore?.db) {
+  fleetStore.db.exec(`
+    CREATE TABLE IF NOT EXISTS daemon_outbox_processed (
+      id TEXT PRIMARY KEY,
+      type TEXT NOT NULL,
+      processed_at TEXT NOT NULL
+    )
+  `)
+}
+const _daemonOutboxProcessedGetStmt = fleetStore?.db.prepare(
+  'SELECT 1 FROM daemon_outbox_processed WHERE id = ? LIMIT 1'
+)
+const _daemonOutboxProcessedInsertStmt = fleetStore?.db.prepare(
+  'INSERT OR IGNORE INTO daemon_outbox_processed (id, type, processed_at) VALUES (?, ?, ?)'
+)
+
+function daemonOutboxId(msg) {
+  return msg?.[DAEMON_OUTBOX_ID_FIELD] || null
+}
+
+function isProcessedDaemonOutboxMessage(msg) {
+  const outboxId = daemonOutboxId(msg)
+  if (!outboxId || !_daemonOutboxProcessedGetStmt) return false
+  return !!_daemonOutboxProcessedGetStmt.get(outboxId)
+}
+
+function markDaemonOutboxMessageProcessed(msg) {
+  const outboxId = daemonOutboxId(msg)
+  if (!outboxId || !_daemonOutboxProcessedInsertStmt) return
+  _daemonOutboxProcessedInsertStmt.run(outboxId, msg.type || 'unknown', new Date().toISOString())
+}
+
+function ackDaemonOutboxMessage(ws, msg) {
+  const outboxId = daemonOutboxId(msg)
+  if (!outboxId || ws.readyState !== 1) return
+  ws.send(JSON.stringify({ type: DAEMON_OUTBOX_ACK_TYPE, outbox_id: outboxId }))
+}
 
 function projectsForDaemon() {
   // Returns the project list a daemon needs to watch source dirs for,
@@ -6439,13 +6485,16 @@ async function handleDaemonWsMessage(ws, msg) {
       updateProject(project, { lastSourceMachineId: ws._machineId, lastSourceEnvName: ws._envName, lastSourceMachineAt: Date.now() })
     }
     // Hand off to the same pipeline used by HTTP /api/projects/:name/push.
-    processProjectPush(project, { files, deletedFiles, editedBy }).then(result => {
+    try {
+      const result = await processProjectPush(project, { files, deletedFiles, editedBy })
       if (!result.ok) {
         console.error(`[fleet-daemon] source-change ${project}: ${result.error || 'unknown'}`)
+        throw new Error(result.error || 'source-change failed')
       }
-    }).catch(e => {
+    } catch (e) {
       console.error(`[fleet-daemon] source-change ${project} crashed: ${e.message}`)
-    })
+      throw e
+    }
     return
   }
 
