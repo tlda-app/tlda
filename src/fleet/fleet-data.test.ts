@@ -3,7 +3,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { matchesFleetFilter } from './filter-semantics.mjs'
+import {
+  fleetSearchResultAgentChatFilter,
+  fleetSearchResultTargetAgentLabel,
+  matchesFleetFilter,
+} from './filter-semantics.mjs'
 import { makeEventStore } from './event-store.mjs'
 import { pretty_name_parts, pretty_name_plain_text } from '../../shared/pretty_name.mjs'
 import {
@@ -106,6 +110,47 @@ test('fleet event views match old getEvents().filter(matchesFilter) after every 
   }
 
   for (const { view } of views) view.dispose()
+})
+
+test('search-result chat target uses the non-human agent friendly name, not display text or sender fallback', () => {
+  const namedAgents = [
+    { id: 'fleet:skip', friendly_name: 'skip', status: 'human', human: true, labels: [] },
+    {
+      id: 'fleet:agent',
+      friendly_name: 'release-gpt',
+      pretty_name: [{ kind: 'glyph', glyph: 'R' }, ' release gpt'],
+      status: 'awake',
+      labels: [],
+    },
+  ]
+
+  const humanAuthoredHit = {
+    source: 'fleet',
+    from: 'fleet:skip',
+    to: 'fleet:agent',
+    agentId: 'fleet:agent',
+  }
+  assert.equal(
+    fleetSearchResultTargetAgentLabel(humanAuthoredHit, { agents: namedAgents, humanId: 'fleet:skip' }),
+    'release-gpt'
+  )
+  assert.deepEqual(
+    fleetSearchResultAgentChatFilter(humanAuthoredHit, { agents: namedAgents, humanId: 'fleet:skip' }),
+    [[['from', 'release-gpt']], [['to', 'release-gpt']]]
+  )
+
+  const namelessAgents = [
+    { id: 'fleet:skip', friendly_name: 'skip', status: 'human', human: true, labels: [] },
+    { id: 'fleet:agent', status: 'awake', labels: [] },
+  ]
+  assert.equal(
+    fleetSearchResultTargetAgentLabel(humanAuthoredHit, { agents: namelessAgents, humanId: 'fleet:skip' }),
+    ''
+  )
+  assert.deepEqual(
+    fleetSearchResultAgentChatFilter(humanAuthoredHit, { agents: namelessAgents, humanId: 'fleet:skip' }),
+    []
+  )
 })
 
 test('replaceFleetEvents preserves old store ordering for scrollback prepends', () => {

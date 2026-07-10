@@ -19,7 +19,7 @@ import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import { fleetSearchProps } from '../../shared/shapes/fleet-panel-schema.mjs'
 import { useState, useCallback, useRef, useMemo, useEffect, memo } from 'react'
 import { searchFleet, fetchSharedDocs, useFleetAgents, useFleetTasks } from '../fleet-data-adapter'
-import { buildFleetAgentFilter } from '../fleet/filter-semantics.mjs'
+import { fleetSearchResultAgentChatFilter } from '../fleet/filter-semantics.mjs'
 import katex from 'katex'
 import { getActiveMacros } from '../katexMacros'
 import MarkdownIt from 'markdown-it'
@@ -362,8 +362,8 @@ function FleetSearchInner({ shape }: { shape: any }) {
 
   // Create a real fleet-chat shape on top of this search shape, filtered to the result's agent
   const openChatForResult = useCallback(async (result: any) => {
-    const name = agentName(result.from || result.agentId || '')
-    const filter = buildFleetAgentFilter(name) as [string, string][][]
+    const filter = fleetSearchResultAgentChatFilter(result, { agents }) as [string, string][][]
+    if (!filter.length) return
     const rec = editor.getShape(shape.id) as any
     if (!rec) return
     const newId = await createFleetShape(editor, 'fleet-chat', rec.x, rec.y + CHAT_HEADER_H, {
@@ -374,7 +374,7 @@ function FleetSearchInner({ shape }: { shape: any }) {
     if (!newId) return
     editor.bringToFront([newId as any])
     setChatShapeId(newId)
-  }, [agentName, editor, shape.id])
+  }, [agents, editor, shape.id])
 
   const handleInput = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const val = e.target.value
