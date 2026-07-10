@@ -86,8 +86,12 @@ export function buildFleetLayoutPlanInput({
   // HUD view is unaffected — its camera follows my own shapes' bounds — so this
   // only separates the underlying canvas shapes, which is what keeps a foreign
   // layout from overlapping mine.
-  const { dx } = layoutOffset(myId, myDevice)
-  const dy = laneDy(editor, myId, myDevice)
+  // Phone pane stacks are already scoped by owner and device, and lane
+  // navigation is defined relative to the visible document viewport. The
+  // desktop canvas-spread offsets put the phone panes in another offscreen
+  // lane, so the phone camera snaps to empty space.
+  const { dx } = variant === 'phone' ? { dx: 0 } : layoutOffset(myId, myDevice)
+  const dy = variant === 'phone' ? 0 : laneDy(editor, myId, myDevice)
   anchorX += dx
   anchorY += dy
 
