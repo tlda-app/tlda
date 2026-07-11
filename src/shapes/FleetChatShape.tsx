@@ -460,7 +460,7 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
   // the bottom-left corner stays put when the lightbox grows up + right.
   const paneBottomRef = useRef(0)
   const lightboxedRef = useRef(lightboxed)
-  // Real tmux scrollback shown as one continuous capture when lightboxed.
+  // Real tmux scrollback shown as one continuous capture when pinned.
   const [historyText, setHistoryText] = useState<string | null>(null)
   // Bumped to re-pull the capture (e.g. after sending a command) since the
   // lightbox capture is a snapshot, not the live attach stream.
@@ -468,7 +468,7 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
   const historyContainerRef = useRef<HTMLDivElement>(null)
   const historyTermRef = useRef<Terminal | null>(null)
   const refreshHistory = useCallback(() => {
-    if (!lightboxedRef.current) return
+    if (!pinnedRef.current) return
     setTimeout(() => setHistoryTick(t => t + 1), 400)
     setTimeout(() => setHistoryTick(t => t + 1), 1200)
   }, [])
@@ -496,11 +496,11 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
     }
   }, [])
 
-  // On lightbox open, fetch the agent's real tmux scrollback (capture-pane via
+  // On pin, fetch the agent's real tmux scrollback (capture-pane via
   // the daemon). The live attach stream only carries the current screen, so this
   // is what makes backscroll meaningful. Snapshot — refetched each time you open.
   useEffect(() => {
-    if (!lightboxed) { setHistoryText(null); return }
+    if (!pinned) { setHistoryText(null); return }
     let cancelled = false
     ;(async () => {
       try {
@@ -515,14 +515,14 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
       } catch {}
     })()
     return () => { cancelled = true }
-  }, [lightboxed, agentId, historyTick])
+  }, [pinned, agentId, historyTick])
 
   // Render the scrollback snapshot into a static, full-height xterm stacked above
   // the live screen. The body scrolls through [history][live] natively, so the
   // wheel moves smoothly (no xterm line-stepping), and the live screen stays live.
   useEffect(() => {
     const host = historyContainerRef.current
-    if (!lightboxed || !historyText || !host) {
+    if (!pinned || !historyText || !host) {
       if (historyTermRef.current) { historyTermRef.current.dispose(); historyTermRef.current = null }
       return
     }
@@ -531,7 +531,7 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
     const term = new Terminal({
       cols: gridCols,
       rows,
-      fontSize: 11,
+      fontSize: Math.max(6, 11 * scale),
       fontFamily: TERM_FONT,
       theme: TERM_THEME,
       scrollback: 0,
@@ -548,7 +548,7 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
       if (body) body.scrollTop = body.scrollHeight
     })
     return () => { term.dispose(); historyTermRef.current = null }
-  }, [lightboxed, historyText, gridCols])
+  }, [pinned, historyText, gridCols, scale])
 
   // Create at the PEEK_COLS×PEEK_ROWS fallback, then resize to the agent's real
   // tmux window size when the 'size' message arrives (see the WS handler below).
@@ -598,15 +598,15 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
   // Leaving pinned mode also leaves the lightbox.
   useEffect(() => { if (!pinned) setLightboxed(false) }, [pinned])
 
-  // On lightbox, scroll the body to the bottom so the live (cursor) region of
-  // the terminal is what's visible, not the top of the screen.
+  // On pin, scroll to the bottom so the current terminal screen is initially
+  // visible; the user can then wheel or touch-scroll upward through history.
   useEffect(() => {
-    if (!lightboxed) return
+    if (!pinned) return
     requestAnimationFrame(() => {
       const body = bodyRef.current
       if (body) body.scrollTop = body.scrollHeight
     })
-  }, [lightboxed])
+  }, [pinned, historyText])
 
   // xterm installs its own wheel handler and preventDefault()s it, and its
   // viewport is overflow:hidden — so the wheel never reaches the scroll
@@ -614,7 +614,7 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
   // and scroll the container ourselves, so backscroll works over both the
   // history block and the live screen.
   useEffect(() => {
-    if (!lightboxed) return
+    if (!pinned) return
     const body = bodyRef.current
     if (!body) return
     const onWheel = (e: WheelEvent) => {
@@ -624,7 +624,7 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
     }
     body.addEventListener('wheel', onWheel, { capture: true, passive: false })
     return () => body.removeEventListener('wheel', onWheel, { capture: true } as any)
-  }, [lightboxed, historyText])
+  }, [pinned, historyText])
 
   useEffect(() => {
     if (!agentId) return
@@ -841,7 +841,7 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
         className="fleet-terminal-hover-body"
         style={lightboxed || phoneTopPanel ? undefined : { height, flex: 'none' }}
       >
-        {lightboxed && historyText && (
+        {pinned && historyText && (
           <div ref={historyContainerRef} className="fleet-terminal-hover-history" />
         )}
         {/* Live scaled screen for the hover/pinned peek. In the lightbox we show
@@ -851,7 +851,7 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
         <div
           className="fleet-terminal-hover-scale"
           style={
-            lightboxed && historyText ? { display: 'none' }
+            pinned && historyText ? { display: 'none' }
             : lightboxed ? { transform: `scale(${scale})`, transformOrigin: 'top left' }
             : phoneTopPanel ? { transform: `scale(${scale})`, transformOrigin: 'top left', position: 'absolute', left: 0, top: 0 }
             : { transform: `scale(${scale})`, transformOrigin: 'bottom left', position: 'absolute', left: 0, bottom: 0 }
