@@ -35,7 +35,11 @@ export async function resolveFreshSpawnAvailabilityModels({
   }
 
   try {
-    const capabilities = await sendRpc(route.machine_id, 'spawn-availability', {})
+    // Route to the resolved daemon by its FULL key (machine_id + env_name). Passing
+    // only route.machine_id drops the env — sendRpc then has no env_name and rejects
+    // with "No fleet-daemon connected for <machine>:(unknown)", which surfaced as the
+    // mint UI's "models unavailable" even though the daemon is connected at mini:default.
+    const capabilities = await sendRpc(route.machine_id, 'spawn-availability', { daemon_env_name: route.env_name })
     const flattened = flattenAvailableSpawnModels(capabilities)
     return {
       ok: true,
