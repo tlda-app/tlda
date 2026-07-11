@@ -245,9 +245,9 @@ export function createAgentLauncher({
       const nodeSpawn = spawnImpl || (await import('./index.mjs')).spawn
       const spawnMode = sessionId ? 'session' : (refresh ? 'refresh' : (respawn ? 'respawn' : 'fresh'))
       const preallocatedAgentId = agent_id || ((spawnMode === 'fresh' || spawnMode === 'session') ? newFleetId() : undefined)
-      const mintedThisCall = !agent_id && (spawnMode === 'fresh' || spawnMode === 'session')
+      const shouldWriteLedgerRow = !!preallocatedAgentId && (spawnMode === 'fresh' || spawnMode === 'session')
       const crashLogPath = spawnCrashLogPath({ agentName, agent_id: preallocatedAgentId || agent_id, tmux_session: null })
-      if (mintedThisCall) {
+      if (shouldWriteLedgerRow) {
         await permissionLedger.set(preallocatedAgentId, {
           spawnPolicy: grant.grantedPolicy,
           permissionSet: grant.grantedPermissionSet,
@@ -280,7 +280,7 @@ export function createAgentLauncher({
           identityConfigDir: configDir,
         })
       } catch (e) {
-        if (mintedThisCall) await permissionLedger.delete(preallocatedAgentId).catch(() => {})
+        if (shouldWriteLedgerRow) await permissionLedger.delete(preallocatedAgentId).catch(() => {})
         throw e
       }
       trace('launched', {
@@ -296,7 +296,7 @@ export function createAgentLauncher({
       try {
         await tmux('has-session', '-t', launched.tmuxSession)
       } catch (e) {
-        if (mintedThisCall) await permissionLedger.delete(preallocatedAgentId).catch(() => {})
+        if (shouldWriteLedgerRow) await permissionLedger.delete(preallocatedAgentId).catch(() => {})
         const detail = ((e.stderr || e.message || '').trim().split('\n').filter(Boolean).pop()) || 'tmux session check failed'
         return {
           ok: false,
@@ -307,7 +307,7 @@ export function createAgentLauncher({
         }
       }
       if (launched.harness === 'codex' && !launched.resumeId && !launched.pending) {
-        if (mintedThisCall) await permissionLedger.delete(preallocatedAgentId).catch(() => {})
+        if (shouldWriteLedgerRow) await permissionLedger.delete(preallocatedAgentId).catch(() => {})
         return {
           ok: false,
           name: agentName,

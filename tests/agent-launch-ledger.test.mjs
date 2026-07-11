@@ -83,6 +83,160 @@ test('daemon launcher writes fresh-spawn ledger row before starting seat', async
   }
 })
 
+test('daemon launcher writes a supplied fresh agent id before starting seat', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-agent-launch-preallocated-'))
+  const ledger = createPermissionLedger(path.join(tmp, 'fleet-daemon.db'))
+  try {
+    ledger.setSync('fleet:requester', {
+      spawnPolicy: { name: 'ops', policy: 'unsandboxed' },
+      permissionSet: permissionSet(),
+      source: 'test-requester',
+    })
+
+    const suppliedAgentId = 'fleet:preallocated-fresh'
+    let observedPrelaunchGrant = null
+    const launcher = createAgentLauncher({
+      activeConfigName: 'test',
+      configDir: tmp,
+      loadConfig: () => ({
+        spawnPolicy: { permissionProfiles: { ops: permissionSet() }, defaultProfile: 'ops' },
+      }),
+      log: { info() {}, warn() {}, error() {} },
+      machineId: 'test-machine',
+      permissionLedger: ledger,
+      sendMsg: () => true,
+      getProjects: () => [],
+      tmux: async () => true,
+      startupFailureProbeMs: 1,
+      spawnImpl: async (params) => {
+        observedPrelaunchGrant = ledger.get(params.agentId)
+        return {
+          ok: true,
+          fleetId: params.agentId,
+          tmuxSession: 'fleet-preallocated-ledger',
+          harness: 'codex',
+          model: params.model,
+          pending: true,
+        }
+      },
+    })
+
+    const result = await launcher.handlers.spawn({
+      agent_id: suppliedAgentId,
+      name: 'preallocated-ledger',
+      model: 'gpt-5.5',
+      kind: 'codex',
+      cwd: tmp,
+      requester: { id: 'fleet:requester', name: 'requester' },
+    })
+
+    assert.equal(result.ok, true, JSON.stringify(result))
+    assert.equal(result.agent_id, suppliedAgentId)
+    assert.equal(observedPrelaunchGrant?.id, suppliedAgentId)
+    assert.equal(observedPrelaunchGrant?.source, 'spawn')
+    assert.deepEqual(ledger.get(suppliedAgentId)?.spawnPolicy, { name: 'unsandboxed', policy: 'unsandboxed' })
+  } finally {
+    await ledger.close()
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+test('daemon launcher rolls back a supplied fresh agent ledger row when launch fails', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-agent-launch-preallocated-fail-'))
+  const ledger = createPermissionLedger(path.join(tmp, 'fleet-daemon.db'))
+  try {
+    ledger.setSync('fleet:requester', {
+      spawnPolicy: { name: 'ops', policy: 'unsandboxed' },
+      permissionSet: permissionSet(),
+      source: 'test-requester',
+    })
+
+    const suppliedAgentId = 'fleet:preallocated-failure'
+    let observedPrelaunchGrant = null
+    const launcher = createAgentLauncher({
+      activeConfigName: 'test',
+      configDir: tmp,
+      loadConfig: () => ({
+        spawnPolicy: { permissionProfiles: { ops: permissionSet() }, defaultProfile: 'ops' },
+      }),
+      log: { info() {}, warn() {}, error() {} },
+      machineId: 'test-machine',
+      permissionLedger: ledger,
+      sendMsg: () => true,
+      getProjects: () => [],
+      tmux: async () => true,
+      startupFailureProbeMs: 1,
+      spawnImpl: async (params) => {
+        observedPrelaunchGrant = ledger.get(params.agentId)
+        throw new Error('deliberate launch failure')
+      },
+    })
+
+    const result = await launcher.handlers.spawn({
+      agent_id: suppliedAgentId,
+      name: 'preallocated-failure',
+      model: 'gpt-5.5',
+      kind: 'codex',
+      cwd: tmp,
+      requester: { id: 'fleet:requester', name: 'requester' },
+    })
+
+    assert.equal(result.ok, false, JSON.stringify(result))
+    assert.equal(observedPrelaunchGrant?.id, suppliedAgentId)
+    assert.equal(ledger.get(suppliedAgentId), null)
+  } finally {
+    await ledger.close()
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+test('daemon launcher preserves an existing respawn ledger row when launch fails', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-agent-launch-respawn-fail-'))
+  const ledger = createPermissionLedger(path.join(tmp, 'fleet-daemon.db'))
+  try {
+    const targetAgentId = 'fleet:existing-respawn'
+    ledger.setSync(targetAgentId, {
+      spawnPolicy: { name: 'ops', policy: 'unsandboxed' },
+      permissionSet: permissionSet(),
+      source: 'existing-seat',
+    })
+
+    const launcher = createAgentLauncher({
+      activeConfigName: 'test',
+      configDir: tmp,
+      loadConfig: () => ({
+        spawnPolicy: { permissionProfiles: { ops: permissionSet() }, defaultProfile: 'ops' },
+      }),
+      log: { info() {}, warn() {}, error() {} },
+      machineId: 'test-machine',
+      permissionLedger: ledger,
+      sendMsg: () => true,
+      getProjects: () => [],
+      tmux: async () => true,
+      startupFailureProbeMs: 1,
+      spawnImpl: async () => {
+        throw new Error('deliberate respawn failure')
+      },
+    })
+
+    const result = await launcher.handlers.spawn({
+      agent_id: targetAgentId,
+      name: 'existing-respawn',
+      model: 'gpt-5.5',
+      kind: 'codex',
+      cwd: tmp,
+      respawn: true,
+      requester: { id: targetAgentId, name: 'existing-respawn' },
+    })
+
+    assert.equal(result.ok, false, JSON.stringify(result))
+    assert.equal(ledger.get(targetAgentId)?.source, 'existing-seat')
+  } finally {
+    await ledger.close()
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
 function emptyIntersectionPermissionSet() {
   // The shape a collapsed spawn-policy intersection produces: confers nothing,
   // but is NOT a deliberately-requested `none` (name/projected ≠ none, compiled
