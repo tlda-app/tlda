@@ -12,7 +12,6 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlink
 import { fileURLToPath } from 'url'
 import { homedir, hostname } from 'os'
 import { randomBytes } from 'crypto'
-import { execFileSync } from 'child_process'
 import { collectSourceFiles, collectSourceHashes, collectSpecificFiles } from './lib/source-files.mjs'
 import { collectHtmlArtifactFiles, htmlArtifactMainForSource } from './lib/html-artifact-files.mjs'
 import {
@@ -25,13 +24,6 @@ import { getFunnelUrl, findTailscaleIPv4, selectDevShareBase, selectDocShareBase
 import { scanMarkdownDeps } from '../shared/markdown-deps.mjs'
 import { cmdLogs } from './lib/unified-logs.mjs'
 import { formatSystemStatus } from './lib/system-status.mjs'
-import {
-  DEFAULT_DIRECT_FALLBACK_TIMEOUT_MS,
-  DEFAULT_SUPERVISED_START_TIMEOUT_MS,
-  parseFleetDaemonPids,
-  parseLaunchdPid,
-  runBoundedDaemonStartTransition,
-} from './lib/daemon-supervision-transition.mjs'
 import { resolveAgentQuery } from './lib/agent-resolve.mjs'
 import { parseAgentMoveTarget, describeAgentAddress } from '../shared/agent-move-target.mjs'
 import {
@@ -1223,77 +1215,6 @@ function runningFleetDaemonPid() {
   }
 }
 
-function actualFleetDaemonPids() {
-  try {
-    const out = execFileSync('ps', ['-axo', 'pid=,command='], { encoding: 'utf8' })
-    return parseFleetDaemonPids(out)
-  } catch {
-    return []
-  }
-}
-
-async function launchdDaemonPid(label = FLEET_DAEMON_LABEL) {
-  try {
-    const out = await runLaunchctl(['print', daemonLaunchdTarget(label)])
-    return parseLaunchdPid(out)
-  } catch {
-    return null
-  }
-}
-
-async function waitForFleetDaemonPid({ previousPid = null, timeoutMs = 30_000, supervised = false } = {}) {
-  const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
-    const pid = supervised ? await launchdDaemonPid() : runningFleetDaemonPid()
-    if (pid && pid !== previousPid) return pid
-    await new Promise(r => setTimeout(r, 500))
-  }
-  return null
-}
-
-async function terminateFleetDaemon(pid) {
-  try {
-    process.kill(pid, 'SIGTERM')
-  } catch (e) {
-    if (e?.code !== 'ESRCH') throw e
-  }
-}
-
-async function startDirectFleetDaemonFallback({ previousPid = null, timeoutMs = 30_000 } = {}) {
-  const { spawn: cpSpawn } = await import('child_process')
-  const child = cpSpawn(process.execPath, ['--import', 'tsx', FLEET_DAEMON_SCRIPT], {
-    detached: true,
-    stdio: 'ignore',
-    ...(process.env.TLDA_DAEMON_PROCESS_TITLE ? { argv0: process.env.TLDA_DAEMON_PROCESS_TITLE } : {}),
-    env: {
-      ...process.env,
-      TMUX: undefined,
-      TMUX_PANE: undefined,
-      ...(hasTls && !process.env.NODE_EXTRA_CA_CERTS ? { NODE_EXTRA_CA_CERTS: TLS_CA_PATH } : {}),
-    },
-  })
-  child.unref()
-  return waitForFleetDaemonPid({ previousPid, timeoutMs })
-}
-
-function verifyExactlyOneFleetDaemon(expectedPid) {
-  const pids = actualFleetDaemonPids()
-  if (pids.length !== 1) {
-    throw new Error(`expected exactly one fleet daemon process, found ${pids.length}: ${pids.join(', ') || 'none'}`)
-  }
-  if (expectedPid && pids[0] !== expectedPid) {
-    throw new Error(`fleet daemon pid mismatch: expected ${expectedPid}, found ${pids[0]}`)
-  }
-}
-
-function currentDaemonCodeSha() {
-  try {
-    return execFileSync('git', ['-C', FLEET_DAEMON_MAIN_ROOT, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()
-  } catch {
-    return null
-  }
-}
-
 // Idempotent daemon start — ensure launchd has the singleton job loaded.
 // Used by `tlda server start` to make sure the daemon comes up alongside
 // the server. The daemon dying silently was a recurring source of pain.
@@ -1421,43 +1342,11 @@ async function cmdFleetWatch(sub) {
 
     const existingPid = runningFleetDaemonPid()
     if (existingPid) {
-      const connectedTarget = lastDaemonConnectedTarget()
-      const codeSha = currentDaemonCodeSha()
-      console.log(yellow('Fleet daemon is running outside launchd') + dim(` (pid ${existingPid})`))
-      console.log(yellow('Starting bounded stop/start transition to launchd supervision.'))
-      console.log(dim(`  This is not a no-gap handoff; max target outage is ${DEFAULT_SUPERVISED_START_TIMEOUT_MS + DEFAULT_DIRECT_FALLBACK_TIMEOUT_MS}ms.`))
+      console.log(yellow('Fleet daemon already running outside launchd') + dim(` (pid ${existingPid})`))
       console.log(dim(`  Config target: ${getFleetServerUrl()}`))
+      const connectedTarget = lastDaemonConnectedTarget()
       if (connectedTarget) console.log(dim(`  Last WS target: ${connectedTarget}`))
-      if (codeSha) console.log(dim(`  Code SHA: ${codeSha}`))
       console.log(dim(`  Log: ${FLEET_DAEMON_LOGFILE}`))
-      try {
-        const result = await runBoundedDaemonStartTransition({
-          existingPid,
-          writePlist: () => writeDaemonPlist(),
-          bootstrap: () => bootstrapDaemonPlist(),
-          stopExisting: terminateFleetDaemon,
-          waitSupervised: ({ previousPid, timeoutMs }) => waitForFleetDaemonPid({ previousPid, timeoutMs, supervised: true }),
-          startDirectFallback: ({ previousPid, timeoutMs }) => startDirectFleetDaemonFallback({ previousPid, timeoutMs }),
-          verifyExactlyOne: verifyExactlyOneFleetDaemon,
-          log: ({ maxOutageMs }) => {
-            console.log(dim(`  Bounded transition target max outage: ${maxOutageMs}ms`))
-          },
-        })
-        if (result.fallbackUsed) {
-          console.error(red('Fleet daemon launchd supervision did not come up; direct fallback restored a daemon.'))
-          console.error(dim(`  Fallback pid: ${result.pid}`))
-          console.error(dim(`  This leaves the daemon running, but not supervised. Check log: ${FLEET_DAEMON_LOGFILE}`))
-          process.exit(1)
-        }
-        console.log(green('Fleet daemon launchd job started') + dim(` (pid ${result.pid})`))
-        console.log(dim('  Verified exactly one fleet daemon process.'))
-        console.log(dim(`  Launchd domain: ${daemonLaunchdDomain()}`))
-        console.log(dim(`  Plist: ${FLEET_DAEMON_PLIST}`))
-        console.log(dim(`  Log: ${FLEET_DAEMON_LOGFILE}`))
-      } catch (e) {
-        console.error(red(e?.message || String(e)))
-        process.exit(1)
-      }
       return
     }
 
