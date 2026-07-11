@@ -216,8 +216,20 @@ test('checkpointProjectPartWriteback fails closed when open fd mutates captured 
     assert.equal(result.writeback.message, 'Backing file changed during writeback')
     assert.equal(result.writeback.current.hash, snapshotForContent('fd edit while backup exists\n').hash)
     assert.equal(result.writeback.pending.hash, snapshotForContent('app edit\n').hash)
-    assert.equal(readFileSync(filePath, 'utf8'), 'app edit\n')
-    assert.equal(readFileSync(backupPath, 'utf8'), 'fd edit while backup exists\n')
+    assert.equal(readFileSync(filePath, 'utf8'), 'fd edit while backup exists\n')
+    assert.equal(existsSync(backupPath), false)
+
+    const retry = checkpointProjectPartWriteback({
+      filePath,
+      content: 'app edit\n',
+      part: { metadata: { writeback: { lastCleanSync } } },
+      backupPathFactory: () => backupPath,
+      now: () => '2026-07-05T10:05:01.000Z',
+    })
+    assert.equal(retry.ok, false)
+    assert.equal(retry.status, 'conflict')
+    assert.equal(readFileSync(filePath, 'utf8'), 'fd edit while backup exists\n')
+    assert.equal(existsSync(backupPath), false)
   } finally {
     closeSync(fd)
   }
@@ -327,6 +339,28 @@ test('checkpointProjectPartWriteback fails closed on multiple crash backups with
   assert.match(result.writeback.message, /Multiple writeback backups/)
   assert.equal(result.writeback.pending.hash, snapshotForContent('app edit\n').hash)
   assert.equal(existsSync(filePath), false)
+})
+
+test('checkpointProjectPartWriteback fails closed on temp-only crash debris', () => {
+  const root = mkdtempSync(join(tmpdir(), 'part-writeback-temp-only-'))
+  const filePath = join(root, 'note.md')
+  const tmpPath = join(root, '.note.md.tmp-crashed')
+  writeFileSync(tmpPath, 'interrupted app edit\n')
+  const lastCleanSync = snapshotForContent('clean\n')
+
+  const result = checkpointProjectPartWriteback({
+    filePath,
+    content: 'app edit\n',
+    part: { metadata: { writeback: { lastCleanSync } } },
+    now: () => '2026-07-05T10:07:30.000Z',
+  })
+
+  assert.equal(result.ok, false)
+  assert.equal(result.status, 'failed')
+  assert.equal(result.writeback.message, 'Writeback temp file remained after crash without a recoverable backup')
+  assert.equal(result.writeback.pending.hash, snapshotForContent('app edit\n').hash)
+  assert.equal(existsSync(filePath), false)
+  assert.equal(existsSync(tmpPath), false)
 })
 
 test('checkpointProjectPartWriteback treats stale backup after legitimate delete as deleted', () => {

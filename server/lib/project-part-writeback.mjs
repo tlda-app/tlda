@@ -287,6 +287,7 @@ function installTempIfUnchanged(filePath, tmp, backup, expectedCurrent, beforeIn
 
   const finalCaptured = readFileSnapshot(backup)
   if (!sameSnapshot(finalCaptured, captured)) {
+    restoreMutatedBackupAfterInstall(filePath, backup, tmp)
     rmSync(tmp, { force: true })
     return { ok: false, current: finalCaptured }
   }
@@ -306,6 +307,21 @@ function restoreBackupWithoutClobber(filePath, backup) {
       rmSync(backup, { force: true })
       return false
     }
+    throw e
+  }
+}
+
+function restoreMutatedBackupAfterInstall(filePath, backup, tmp) {
+  const current = readFileSnapshot(filePath)
+  const installed = readFileSnapshot(tmp)
+  if (!sameSnapshot(current, installed)) return false
+  rmSync(filePath, { force: true })
+  try {
+    linkSync(backup, filePath)
+    rmSync(backup, { force: true })
+    return true
+  } catch (e) {
+    if (e?.code === 'EEXIST') return false
     throw e
   }
 }

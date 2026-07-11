@@ -162,6 +162,23 @@ test('sourcePath outside the project fails closed instead of reading server-loca
   assert.match(result.error, /not routed through the project owner/)
 })
 
+test('unresolved project returns non-ready payload without materializing', () => {
+  const result = realizeProjectMarkdownArtifact({
+    project: 'missing-project',
+    markdown: '# Orphan artifact\n',
+    title: 'Orphan artifact',
+    projectsProvider: () => [],
+  })
+
+  assert.equal(result.status, 'not materialized')
+  assert.equal(result.state, 'failed')
+  assert.equal(result.ready, false)
+  assert.equal(result.localPath, null)
+  assert.equal(result.localPathVerified, false)
+  assert.equal(result.recipientRef, null)
+  assert.match(result.error, /No project resolved/)
+})
+
 test('sourcePath sibling-prefix traversal fails closed under the shared containment helper', () => {
   const { projectsDir } = setupProject()
   const siblingDir = join(projectsDir, 'paper', 'source2')
