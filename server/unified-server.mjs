@@ -85,6 +85,8 @@ import {
 } from '../shared/daemon-delivery.mjs'
 import { readBuildInfo } from './lib/build-info.mjs'
 import { ServerDaemonOutbox } from './lib/server-daemon-outbox.mjs'
+import { DaemonAgentEvents } from './lib/daemon-agent-events.mjs'
+import { shouldTerminateForMissedPong, socketCanAcceptMore } from '../shared/fleet-ws-flow.mjs'
 import {
   DELIVERY_CHANNELS,
   INBOX_STATUSES,
@@ -139,6 +141,7 @@ resetStaleBuildStates()
 const fleetStore = new FleetStore(process.env.TLDA_FLEET_DB, { taskDoc: true })
 fleetStore.flushTaskDocs?.()
 const serverDaemonOutbox = new ServerDaemonOutbox(fleetStore.db)
+const daemonAgentEvents = new DaemonAgentEvents(fleetStore.db)
 const serverDaemonOutboxInflight = new Set()
 
 const HOT_OP_WARN_MS = Number(process.env.TLDA_HOT_OP_WARN_MS || 50)
@@ -302,8 +305,10 @@ function trackWs(ws, meta) {
   ws._wsRemotePort = meta.remotePort
   ws._wsConnectedAt = Date.now()
   ws._wsLastInputAt = Date.now()
-  ws._wsAlive = true
-  ws.on('pong', () => { ws._wsAlive = true })
+  // Liveness is client evidence, never an artefact of when the server happened
+  // to run its heartbeat sweep. A stalled event loop can delay a whole sweep.
+  ws._wsLastPongAt = Date.now()
+  ws.on('pong', () => { ws._wsLastPongAt = Date.now() })
   _trackedWs.add(ws)
   if (meta.kind === 'sync') {
     ws.on('message', (raw) => {
@@ -404,15 +409,22 @@ setInterval(reapZombies, REAPER_INTERVAL_MS).unref()
 // the next ping, terminate the socket. TLDraw's ClientWebSocketAdapter
 // reconnects automatically once the close fires.
 const WS_HEARTBEAT_INTERVAL_MS = 30_000
+const WS_HEARTBEAT_LAG_GRACE_MS = Number(process.env.TLDA_WS_HEARTBEAT_LAG_GRACE_MS || 250)
 setInterval(() => {
+  // A delayed sweep is evidence of server-side starvation, not client death.
+  // Preserve existing sockets for one interval and let their next real pong
+  // decide liveness instead of terminating the whole fleet in a catch-up burst.
+  if (lastEventLoopLag.maxMs >= WS_HEARTBEAT_LAG_GRACE_MS) {
+    console.warn(`[heartbeat] skipping sweep during event-loop lag max=${lastEventLoopLag.maxMs.toFixed(1)}ms`)
+    return
+  }
   for (const ws of _trackedWs) {
     if (ws.readyState !== 1) continue
-    if (ws._wsAlive === false) {
+    if (shouldTerminateForMissedPong(ws._wsLastPongAt, Date.now(), WS_HEARTBEAT_INTERVAL_MS)) {
       console.log(`[heartbeat] terminating unresponsive ${ws._wsKind} ws=${ws._wsSessionId} doc=${ws._wsDocName || '-'}`)
       ws.terminate()
       continue
     }
-    ws._wsAlive = false
     ws.ping()
   }
 }, WS_HEARTBEAT_INTERVAL_MS).unref()
@@ -5993,6 +6005,12 @@ function flushServerDaemonOutbox(daemonKey) {
   if (!dws || dws.readyState !== 1) return
   for (const row of serverDaemonOutbox.pendingForDaemon(daemonKey, 100)) {
     if (serverDaemonOutboxInflight.has(row.id)) continue
+    // Do not pile an unbounded replay behind a congested daemon socket. The
+    // durable outbox keeps the remaining ordered rows for the next flush.
+    if (!socketCanAcceptMore(dws)) {
+      setTimeout(() => flushServerDaemonOutbox(daemonKey), 25).unref?.()
+      break
+    }
     try {
       serverDaemonOutbox.markAttempt(row.id)
       dws.send(JSON.stringify(row.payload))
@@ -6085,7 +6103,17 @@ function broadcastDaemonAgentsUpdated() {
   for (const daemonKey of daemonKeys) {
     try {
       const agents = fleetStore.getAgentsByDaemonKey(daemonKey)
-      enqueueDaemonMessage(daemonKey, { type: 'agents-updated', agents }, { dedupeKey: 'agents-updated' })
+      for (const agent of agents) daemonAgentEvents.append(daemonKey, agent)
+      // Connected daemons receive only the mutations recorded since their
+      // cursor; the durable replay stream preserves ordering across a flap.
+      const cursor = daemonConnections.get(daemonKey)?._agentStatusSeq ?? 0
+      const replay = daemonAgentEvents.replay(daemonKey, cursor)
+      if (replay.snapshot) enqueueDaemonMessage(daemonKey, { type: 'agents-updated', agents, agent_status_seq: replay.lastSeq }, { dedupeKey: 'agents-snapshot' })
+      else {
+        for (const event of replay.events) enqueueDaemonMessage(daemonKey, { ...event, type: 'agent-status-event', event_type: event.type })
+        const ws = daemonConnections.get(daemonKey)
+        if (ws) ws._agentStatusSeq = replay.lastSeq
+      }
     } catch (e) {
       console.error(`[fleet-daemon] broadcastDaemonAgentsUpdated failed for ${daemonKey}: ${e.message}`)
     }
@@ -6226,7 +6254,7 @@ async function handleDaemonWsMessage(ws, msg) {
   const { type } = msg
 
   if (type === 'daemon-hello') {
-    const { machine_id, env_name, user, hostname, version, boot_id, install_path } = msg
+    const { machine_id, env_name, user, hostname, version, boot_id, install_path, last_agent_status_seq } = msg
     if (!machine_id || !env_name) return
     const daemonKey = daemonAddress(machine_id, env_name)
     // §4b backstop: a daemon address is owned by ONE daemon install. If another
@@ -6272,6 +6300,7 @@ async function handleDaemonWsMessage(ws, msg) {
     ws._user = user
     ws._hostname = hostname
     ws._version = version
+    ws._agentStatusSeq = Number.isInteger(last_agent_status_seq) ? last_agent_status_seq : 0
     daemonConnections.set(daemonKey, ws)
     notifyDaemonReady(daemonKey) // wake any control-op RPCs waiting to retry across this reconnect
     clearServerDaemonOutboxInflightForDaemon(daemonKey)
@@ -6318,11 +6347,15 @@ async function handleDaemonWsMessage(ws, msg) {
     // watch. Agents are filtered by machine_id; legacy NULL agents will
     // be invisible to daemons until the MCP starts sending machine_id.
     const agentsForMachine = fleetStore?.getAgentsByDaemon(machine_id, env_name) || []
+    for (const agent of agentsForMachine) daemonAgentEvents.append(daemonKey, agent)
+    const agentReplay = daemonAgentEvents.replay(daemonKey, ws._agentStatusSeq)
     try {
       ws.send(JSON.stringify({
         type: 'daemon-welcome',
         server_boot_id: SERVER_BOOT_ID,
-        agents: agentsForMachine,
+        agents: agentReplay.snapshot ? agentsForMachine : [],
+        agent_status_seq: agentReplay.lastSeq,
+        agent_status_events: agentReplay.events,
         projects: projectsForDaemon(),
         activeViewers: [...getActiveViewerProjects()],
       }))

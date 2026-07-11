@@ -14,7 +14,9 @@ export class ResilientWS {
    * @param {() => string}  options.url          — called on each connect (URL may change)
    * @param {string}        options.label        — log prefix (e.g. 'daemon', 'fleet-channel')
    * @param {number}        [options.initialBackoffMs=1000]
-   * @param {number}        [options.maxBackoffMs=3000]
+   * @param {number}        [options.maxBackoffMs=30000]
+   * @param {number}        [options.stableConnectionMs=10000] — reset retry ramp only after this long connected
+   * @param {() => number}  [options.random=Math.random] — injected by tests
    * @param {number}        [options.heartbeatTimeoutMs=0] — 0 = disabled
    * @param {(ws) => void}  [options.onOpen]     — called after connection opens
    * @param {(msg) => void} options.onMessage    — called with parsed JSON message
@@ -26,13 +28,12 @@ export class ResilientWS {
     this._getUrl = options.url
     this._label = options.label
     this._initialBackoff = options.initialBackoffMs ?? 1000
-    // Cap reconnect backoff at 3s. Both consumers (the fleet daemon and the
-    // MCP fleet-channel) are realtime channels: after a stall or restart the
-    // server is back within seconds, so a 30s backoff just leaves the client
-    // dark — dropping agent activity / chat — long after the server recovered,
-    // which agents misread as the server being down. 3s recovers promptly
-    // without hammering a restarting server.
-    this._maxBackoff = options.maxBackoffMs ?? 3_000
+    // A reconnect that opens briefly and immediately drops is still a failed
+    // reconnect.  Keep increasing the delay until a connection has stayed up
+    // long enough to be useful; otherwise every daemon restarts at 1s forever.
+    this._maxBackoff = options.maxBackoffMs ?? 30_000
+    this._stableConnectionMs = options.stableConnectionMs ?? 10_000
+    this._random = options.random ?? Math.random
     this._heartbeatTimeoutMs = options.heartbeatTimeoutMs ?? 0
     this._onOpen = options.onOpen
     this._onMessage = options.onMessage
@@ -44,6 +45,7 @@ export class ResilientWS {
     this._backoff = this._initialBackoff
     this._retryTimer = null
     this._heartbeatTimer = null
+    this._stableTimer = null
     this._closed = false
   }
 
@@ -72,7 +74,11 @@ export class ResilientWS {
 
       ws.on('open', () => {
         this._log(`[${this._label}] connected`)
-        this._backoff = this._initialBackoff
+        if (this._stableTimer) clearTimeout(this._stableTimer)
+        this._stableTimer = setTimeout(() => {
+          this._stableTimer = null
+          this._backoff = this._initialBackoff
+        }, this._stableConnectionMs)
         this._resetHeartbeat()
         this._onActivity?.('open')
         this._onOpen?.(ws)
@@ -138,6 +144,7 @@ export class ResilientWS {
     this._closed = true
     if (this._retryTimer) { clearTimeout(this._retryTimer); this._retryTimer = null }
     if (this._heartbeatTimer) { clearTimeout(this._heartbeatTimer); this._heartbeatTimer = null }
+    if (this._stableTimer) { clearTimeout(this._stableTimer); this._stableTimer = null }
     if (this._ws) { try { this._ws.close() } catch (e) { this._log(`[${this._label}] close error: ${e.message}`) } }
     this._ws = null
   }
@@ -145,13 +152,16 @@ export class ResilientWS {
   _cleanup() {
     this._ws = null
     if (this._heartbeatTimer) { clearTimeout(this._heartbeatTimer); this._heartbeatTimer = null }
+    if (this._stableTimer) { clearTimeout(this._stableTimer); this._stableTimer = null }
     this._onClose?.()
   }
 
   _scheduleRetry() {
     if (this._closed) return
     if (this._retryTimer) return
-    const delay = this._backoff
+    // Full jitter prevents every daemon that observed the same close from
+    // reconnecting on the same millisecond.
+    const delay = Math.floor(this._backoff * (0.5 + this._random() * 0.5))
     this._backoff = Math.min(this._backoff * 2, this._maxBackoff)
     this._log(`[${this._label}] reconnecting in ${delay}ms`)
     this._retryTimer = setTimeout(() => {

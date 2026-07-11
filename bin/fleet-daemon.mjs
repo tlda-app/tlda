@@ -308,6 +308,7 @@ let jsonlIngestor
 let _rws = null  // ResilientWS instance, created at startup
 let _serverReady = false
 let agents = []                   // current agent list (from welcome / updates)
+let agentStatusSeq = 0
 let projects = []                 // current project list
 let _lastSessionWatcherRosterSig = ''
 let terminalRpc
@@ -603,6 +604,9 @@ function connect() {
         version: VERSION,
         boot_id: BOOT_ID,
         install_path: INSTALL_PATH,
+        // A cold daemon has no roster to apply a delta to, so 0 deliberately
+        // requests the exceptional snapshot. Reconnects retain the cursor.
+        last_agent_status_seq: agents.length ? agentStatusSeq : 0,
       })
     },
     onMessage: handleServerMessage,
@@ -628,6 +632,15 @@ function handleServerMessage(msg) {
   if (msg.type === 'daemon-welcome') {
     _serverReady = true
     agents = msg.agents || []
+    agentStatusSeq = msg.agent_status_seq || 0
+    for (const event of msg.agent_status_events || []) {
+      if (event.type === 'agent-upsert') {
+        const index = agents.findIndex(agent => agent.id === event.agent.id)
+        if (index >= 0) agents[index] = event.agent
+        else agents.push(event.agent)
+      }
+      agentStatusSeq = event.seq
+    }
     projects = msg.projects || []
     jsonlIngestor.syncIdentityNames(agents)
     applyDaemonGrants(permissionLedger, daemonSpawnConfig)
@@ -652,6 +665,7 @@ function handleServerMessage(msg) {
   }
   if (msg.type === 'agents-updated') {
     agents = msg.agents || []
+    agentStatusSeq = msg.agent_status_seq || agentStatusSeq
     jsonlIngestor.syncIdentityNames(agents)
     _lastSessionWatcherRosterSig = jsonlIngestor.syncIfRosterChanged({
       agents,
@@ -663,6 +677,16 @@ function handleServerMessage(msg) {
       },
     })
     ackServerDaemonOutboxMessage(msg)
+    return
+  }
+  if (msg.type === 'agent-status-event') {
+    if (msg.seq <= agentStatusSeq) return
+    if (msg.event_type === 'agent-upsert') {
+      const index = agents.findIndex(agent => agent.id === msg.agent.id)
+      if (index >= 0) agents[index] = msg.agent
+      else agents.push(msg.agent)
+    }
+    agentStatusSeq = msg.seq
     return
   }
   if (msg.type === 'projects-updated') {
