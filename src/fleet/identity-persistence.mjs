@@ -12,6 +12,10 @@ export function isUsableIdentityName(name) {
   return !!clean && clean !== 'none' && clean !== 'null' && clean !== 'undefined'
 }
 
+export function shouldAutoAssignTemporaryIdentity({ needsIdentity, id, name }) {
+  return !!needsIdentity && !id && !isUsableIdentityName(name)
+}
+
 export function temporaryIdentityName() {
   const names = [
     'big-bird',
