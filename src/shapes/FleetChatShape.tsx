@@ -3713,6 +3713,38 @@ function FleetChatInner({ shape }: { shape: any }) {
   // Skill-state hover popover (hovering an agent name in chat)
   const [skillHover, setSkillHover] = useState<{ agentId: string; agentName: string; rect: { left: number; bottom: number; top: number } } | null>(null)
   const skillHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Hover panes are transient even when the element that opened them is replaced
+  // before mouseout fires. Dismiss on the next action away from the source/pane,
+  // or whenever the page loses interaction state.
+  useEffect(() => {
+    if (!skillHover) return
+    const dismiss = () => setSkillHover(null)
+    const onPointerDown = (e: PointerEvent) => {
+      const target = e.target as HTMLElement | null
+      if (target?.closest('.fleet-skill-hover-pane')) return
+      const nick = target?.closest<HTMLElement>('.agent-nick[data-agent-id]')
+      if (nick?.dataset.agentId === skillHover.agentId) return
+      dismiss()
+    }
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') dismiss()
+    }
+    const onVisibilityChange = () => {
+      if (document.hidden) dismiss()
+    }
+    document.addEventListener('pointerdown', onPointerDown, { capture: true })
+    document.addEventListener('keydown', onKeyDown, { capture: true })
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    window.addEventListener('blur', dismiss)
+    window.addEventListener('pagehide', dismiss)
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown, { capture: true })
+      document.removeEventListener('keydown', onKeyDown, { capture: true })
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+      window.removeEventListener('blur', dismiss)
+      window.removeEventListener('pagehide', dismiss)
+    }
+  }, [skillHover])
   const lastAttentionTsRef = useRef<string | null>(null)
   // Tracks which chat rows have been expanded (by item key) so the state
   // survives dangerouslySetInnerHTML re-renders.

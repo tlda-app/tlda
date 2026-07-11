@@ -47,7 +47,15 @@ function installListeners() {
     handlers.onCancel?.()
   }
   document.addEventListener('pointercancel', cancelActive, { capture: true })
+  document.addEventListener('lostpointercapture', cancelActive, { capture: true })
+  document.addEventListener('keydown', (e: KeyboardEvent) => {
+    if (e.key === 'Escape') cancelActive()
+  }, { capture: true })
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) cancelActive()
+  })
   window.addEventListener('blur', cancelActive, true)
+  window.addEventListener('pagehide', cancelActive, true)
 }
 
 export const dragCoordinator = {
