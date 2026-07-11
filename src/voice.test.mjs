@@ -1319,6 +1319,14 @@ await setBackend('chrome')
   setPref('radio-subtitles-enabled', true)
   window.location.search = '?doc=bregman'
   location.search = '?doc=bregman'
+  window.innerWidth = 1000
+  const originalQuerySelectorAll = document.querySelectorAll
+  document.querySelectorAll = (selector) => selector === '.svg-page-background, iframe'
+    ? [{
+        tagName: 'DIV',
+        getBoundingClientRect: () => ({ left: 100, right: 900, width: 800, height: 1100 }),
+      }]
+    : []
   const ta = makeTextarea()
   setVoiceTarget(ta, ['frontier'], { 'fleet:frontier': 'frontier' }, null)
 
@@ -1343,6 +1351,7 @@ await setBackend('chrome')
   assert.equal(shown, true, 'active-target incoming chat should render in radio HUD')
   assert.ok(window.__voiceTest.getHudText().includes('radio <- frontier'), 'HUD should show radio source')
   assert.ok(window.__voiceTest.getHudText().includes('Radio line one now'), 'HUD should show cleaned subtitle text')
+  assert.equal(window.__voiceTest.getHudStyle().width, '600px', 'radio HUD should use about 75% of the rendered doc page width')
   assert.ok(!window.__voiceTest.getHudText().includes('hide this'), 'HUD should strip system reminder text')
   assert.ok(!window.__voiceTest.getHudText().includes('https://example.com'), 'HUD should strip raw URLs')
   const live = window.__voiceTest.getRadioSubtitle()
@@ -1371,7 +1380,7 @@ await setBackend('chrome')
       type: 'chat',
       from: 'fleet:frontier',
       to: 'fleet:skip',
-      text: `Frontier says [look here](https://example.com): ${'word '.repeat(80)}`,
+      text: `Frontier says [look here](https://example.com): ${'word '.repeat(180)}`,
     },
     agents,
     'fleet:skip',
@@ -1379,7 +1388,7 @@ await setBackend('chrome')
   assert.equal(longShown, true, 'long active-target chat should render in radio HUD')
   const longStored = window.__voiceTest.getRadioSubtitle()
   assert.ok(longStored.text.startsWith('Frontier says look here: word'), 'radio subtitle should clean markdown without punctuation gaps')
-  assert.ok(longStored.text.length <= 180, 'radio subtitle should keep a bounded excerpt')
+  assert.ok(longStored.text.length <= 700, 'radio subtitle should keep a bounded but readable excerpt')
   assert.ok(longStored.text.endsWith('...'), 'radio subtitle should mark truncated excerpts')
   assert.deepEqual(
     window.__voiceTest.getRadioHistory().map(item => item.text).slice(0, 2),
@@ -1405,6 +1414,7 @@ await setBackend('chrome')
 
   window.location.search = ''
   location.search = ''
+  document.querySelectorAll = originalQuerySelectorAll
   reset()
   console.log('✓ Test 22: radio subtitle is active-target, doc gated, toggleable, and collapses')
 }

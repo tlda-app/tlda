@@ -220,9 +220,10 @@ function postProcessTranscript(text) {
 let _hud = null
 let _recognition = null
 let _recording = false
-const VOICE_HUD_WIDTH = '240px'
+const VOICE_HUD_MIN_WIDTH = 240
+const VOICE_HUD_WIDTH = `${VOICE_HUD_MIN_WIDTH}px`
 const RADIO_HUD_EXPANDED_MS = 4500
-const RADIO_HUD_MAX_CHARS = 180
+const RADIO_HUD_MAX_CHARS = 700
 const RADIO_HUD_HISTORY_LIMIT = 4
 
 // Recording on/off listeners — lets the viewer react when recording starts/stops
@@ -387,6 +388,34 @@ function isDocSurface() {
   } catch {
     return false
   }
+}
+
+function radioHudPageLayout() {
+  if (typeof document === 'undefined') return null
+  const candidates = []
+  for (const el of document.querySelectorAll('.svg-page-background, iframe')) {
+    if (el.tagName === 'IFRAME') {
+      const src = el.getAttribute('src') || ''
+      if (!src.includes('/docs/')) continue
+    }
+    const rect = el.getBoundingClientRect()
+    if (rect.width < 120 || rect.height < 120) continue
+    if (rect.right < 0 || rect.left > window.innerWidth) continue
+    candidates.push(rect)
+  }
+  if (!candidates.length) return null
+  candidates.sort((a, b) => {
+    const aVisible = Math.max(0, Math.min(a.right, window.innerWidth) - Math.max(a.left, 0))
+    const bVisible = Math.max(0, Math.min(b.right, window.innerWidth) - Math.max(b.left, 0))
+    return bVisible - aVisible || b.width - a.width
+  })
+  const page = candidates[0]
+  const maxVisibleWidth = Math.max(VOICE_HUD_MIN_WIDTH, window.innerWidth - 24)
+  const width = Math.max(VOICE_HUD_MIN_WIDTH, Math.min(page.width * 0.75, maxVisibleWidth))
+  const pageCenter = page.left + page.width / 2
+  const half = width / 2
+  const left = Math.max(12 + half, Math.min(window.innerWidth - 12 - half, pageCenter))
+  return { width, left }
 }
 
 function collapseRadioSubtitle() {
@@ -794,6 +823,10 @@ function showHud(text, stateColor) {
   hud.style.display = 'flex'
   hud.style.alignItems = _radioExpanded && _radioSubtitle ? 'stretch' : 'center'
   hud.style.flexDirection = 'column'
+  const radioLayout = _radioExpanded && _radioSubtitle ? radioHudPageLayout() : null
+  hud.style.width = radioLayout ? `${radioLayout.width}px` : VOICE_HUD_WIDTH
+  hud.style.left = radioLayout ? `${radioLayout.left}px` : '50%'
+  hud.style.padding = _radioExpanded && _radioSubtitle ? '7px 12px' : '3px 10px'
   const statusRow = document.createElement('div')
   Object.assign(statusRow.style, {
     display: 'flex',
@@ -824,13 +857,13 @@ function showHud(text, stateColor) {
       overflow: 'hidden',
       display: '-webkit-box',
       WebkitBoxOrient: 'vertical',
-      WebkitLineClamp: '2',
+      WebkitLineClamp: '6',
       whiteSpace: 'normal',
       wordBreak: 'break-word',
       color: 'rgba(255,255,255,0.82)',
-      fontSize: '11px',
-      lineHeight: '1.25',
-      textAlign: 'center',
+      fontSize: '13px',
+      lineHeight: '1.35',
+      textAlign: 'left',
       width: '100%',
     })
     hud.appendChild(line)
@@ -853,7 +886,7 @@ function showHud(text, stateColor) {
           textOverflow: 'ellipsis',
           whiteSpace: 'nowrap',
           color: 'rgba(255,255,255,0.42)',
-          fontSize: '9px',
+          fontSize: '10px',
           lineHeight: '1.2',
           textAlign: 'left',
         })
