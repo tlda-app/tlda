@@ -9,7 +9,7 @@
  */
 
 import { execSync, spawn } from 'child_process'
-import { existsSync, openSync } from 'fs'
+import { existsSync, openSync, symlinkSync, rmSync } from 'fs'
 import { join, dirname, resolve } from 'path'
 import { fileURLToPath } from 'url'
 
@@ -52,9 +52,26 @@ export function ensureWorktree(repoRoot, branch) {
     }
     console.log(`Worktree created: ${worktreeDir}`)
   }
-  if (!existsSync(join(worktreeDir, 'node_modules'))) {
-    console.log('Running npm install...')
-    execSync('npm install --ignore-scripts', { cwd: worktreeDir, stdio: 'inherit' })
+  const wtNodeModules = join(worktreeDir, 'node_modules')
+  if (!existsSync(wtNodeModules)) {
+    // A leftover dangling symlink (main repo node_modules moved/removed) reports
+    // !existsSync but still occupies the path — clear it before relinking. rmSync
+    // with force is a no-op when the path is truly absent.
+    try { rmSync(wtNodeModules, { force: true }) } catch { /* best-effort cleanup: a failed unlink surfaces as a clear symlinkSync EEXIST below */ }
+    const repoNodeModules = join(repoRoot, 'node_modules')
+    if (existsSync(repoNodeModules)) {
+      // Worktrees share the main checkout's package.json + lockfile, so a
+      // per-worktree `npm install` just duplicates the main repo's node_modules
+      // (~600MB each × N worktrees = GBs of identical copies). Symlink it instead:
+      // the vite and playwright binary resolvers already fall back to
+      // repoRoot/node_modules, so the link satisfies them and nothing re-accumulates.
+      // Fall back to a real install only if the main repo itself has no node_modules.
+      console.log(`Symlinking node_modules → ${repoNodeModules}`)
+      symlinkSync(repoNodeModules, wtNodeModules)
+    } else {
+      console.log('Running npm install...')
+      execSync('npm install --ignore-scripts', { cwd: worktreeDir, stdio: 'inherit' })
+    }
   }
   return worktreeDir
 }
