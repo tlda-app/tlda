@@ -10,6 +10,24 @@
 
 set -e
 
+# Point dvisvgm's kpathsea at the active TeX Live texmf tree. Where dvisvgm ships in a
+# separate prefix from TeX Live (e.g. Homebrew on the Mini: Cellar/dvisvgm vs
+# Cellar/texlive), kpathsea self-locates the tree relative to the dvisvgm binary and
+# can't find texmf.cnf / font maps / PS prologues, so DVI→SVG silently produces broken
+# output. Resolve the real paths via kpsewhich and export them. This is a no-op where the
+# env is already correct (e.g. the Fly image, where texlive + dvisvgm are co-located and
+# kpsewhich returns the same tree dvisvgm would self-locate).
+if command -v kpsewhich >/dev/null 2>&1; then
+  _tmfdist="$(kpsewhich -var-value=TEXMFDIST 2>/dev/null || true)"
+  _tmfroot="$(kpsewhich -var-value=TEXMFROOT 2>/dev/null || true)"
+  if [ -n "$_tmfdist" ]; then
+    export TEXMFROOT="${TEXMFROOT:-$_tmfroot}"
+    export TEXMFDIST="${TEXMFDIST:-$_tmfdist}"
+    export TEXMF="${TEXMF:-$_tmfdist}"
+    export TEXMFCNF="${TEXMFCNF:-$_tmfdist/web2c}"
+  fi
+fi
+
 TEX_FILE="$1"
 DOC_NAME="${2:-$(basename "$TEX_FILE" .tex)}"
 DOC_TITLE="${3:-$DOC_NAME}"
