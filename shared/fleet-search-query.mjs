@@ -22,11 +22,13 @@ export function parseSearchQuery(raw) {
 
     if (key && key !== 'role') {
       if (key === 'since' || key === 'after' || key === 'before') continue
-      const normalized = normalizeSearchFilterToken(token)
-      filterParts.push(normalized)
-      if (key === 'from') filters.from = token.slice(5)
-      else if (key === 'to') filters.to = token.slice(3)
-      else if (key === 'agent') filters.agent = token.slice(6)
+      const collected = collectFilterValue(parts, i)
+      i = collected.nextIndex
+      const normalized = normalizeSearchFilterToken(key, collected.valueTokens)
+      filterParts.push(...normalized.filterTokens)
+      if (key === 'from') filters.from = normalized.value
+      else if (key === 'to') filters.to = normalized.value
+      else if (key === 'agent') filters.agent = normalized.value
       continue
     }
 
@@ -122,6 +124,7 @@ export function rankSearchResults(results, query) {
 export function resolveTimeFilter(val) {
   const now = new Date()
   const lower = String(val || '').toLowerCase()
+  if (lower === 'now') return now.toISOString()
   if (lower === 'today') {
     const d = new Date(now); d.setHours(0, 0, 0, 0); return d.toISOString()
   }
@@ -145,7 +148,8 @@ export function resolveTimeFilter(val) {
 }
 
 function splitSearchTokens(raw) {
-  return String(raw || '').match(/"[^"]+"|\S+/g)?.map(t => t.startsWith('"') && t.endsWith('"') ? t.slice(1, -1) : t) ?? []
+  return String(raw || '').match(/"[^"]*"|<>|[()&|!]|[^\s()&|!]+/g)
+    ?.map(t => t.startsWith('"') && t.endsWith('"') ? t.slice(1, -1) : t) ?? []
 }
 
 function filterKey(token) {
@@ -155,10 +159,36 @@ function filterKey(token) {
   return FILTER_KEYS.has(key) ? key : null
 }
 
-function normalizeSearchFilterToken(token) {
-  if (token.startsWith('agent:')) return `involving:${token.slice(6)}`
-  if (token.startsWith('after:')) return `since:${token.slice(6)}`
-  return token
+function collectFilterValue(parts, index) {
+  const token = parts[index]
+  const idx = token.indexOf(':')
+  const rest = token.slice(idx + 1)
+  if (rest) return { valueTokens: [rest], nextIndex: index }
+  if (parts[index + 1] === '(') {
+    const valueTokens = []
+    let depth = 0
+    for (let j = index + 1; j < parts.length; j++) {
+      const part = parts[j]
+      if (part === '(') depth++
+      if (part === ')') depth--
+      valueTokens.push(part)
+      if (depth === 0) return { valueTokens, nextIndex: j }
+    }
+    return { valueTokens, nextIndex: parts.length - 1 }
+  }
+  return { valueTokens: parts[index + 1] ? [parts[index + 1]] : [], nextIndex: parts[index + 1] ? index + 1 : index }
+}
+
+function normalizeSearchFilterToken(key, valueTokens) {
+  const normalizedKey = key === 'agent' ? 'involving' : key === 'after' ? 'since' : key
+  const value = valueTokens.join(' ').trim()
+  if (normalizedKey === 'type') {
+    return { value, filterTokens: [`${normalizedKey}:${value}`] }
+  }
+  return {
+    value,
+    filterTokens: valueTokens.length ? [`${normalizedKey}:`, ...valueTokens] : [`${normalizedKey}:`],
+  }
 }
 
 function isExplicitFleetId(value) {

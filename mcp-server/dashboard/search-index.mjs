@@ -18,6 +18,7 @@ import path from 'path';
 import os from 'os';
 import { createReadStream } from 'fs';
 import { createInterface } from 'readline';
+import { literalFtsQuery } from '../../shared/fts-query.mjs';
 
 const PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
 const LOG_FILE = path.join(os.homedir(), '.claude', 'agent-messages.jsonl');
@@ -1047,9 +1048,7 @@ export class SearchIndex {
   // --- Search ---
 
   search(query, { project, agent, role, limit = 50, since } = {}) {
-    // FTS5 query syntax: wrap in quotes for phrase, or use as-is for term matching
-    // Escape double quotes in the query
-    const ftsQuery = query.replace(/"/g, '""');
+    const ftsQuery = literalFtsQuery(query);
 
     const runQuery = (q) => {
       const clauses = ['entries_fts MATCH ?'];
@@ -1074,13 +1073,7 @@ export class SearchIndex {
     try {
       rows = runQuery(ftsQuery);
     } catch {
-      // If FTS query syntax fails, try wrapping each word in quotes
-      const safeQuery = query.split(/\s+/).map(w => `"${w.replace(/"/g, '""')}"`).join(' ');
-      try {
-        rows = runQuery(safeQuery);
-      } catch {
-        return [];
-      }
+      return [];
     }
 
     return rows.map(r => ({
@@ -1099,7 +1092,7 @@ export class SearchIndex {
   // --- Chat search ---
 
   searchChat(query, { agent, role, limit = 50, context = 3, since } = {}) {
-    const ftsQuery = query.replace(/"/g, '""');
+    const ftsQuery = literalFtsQuery(query);
 
     const runQuery = (q) => {
       const clauses = ['chat_events_fts MATCH ?'];
@@ -1128,12 +1121,7 @@ export class SearchIndex {
     try {
       rows = runQuery(ftsQuery);
     } catch {
-      const safeQuery = query.split(/\s+/).map(w => `"${w.replace(/"/g, '""')}"`).join(' ');
-      try {
-        rows = runQuery(safeQuery);
-      } catch {
-        return [];
-      }
+      return [];
     }
 
     // Gather context messages around each match

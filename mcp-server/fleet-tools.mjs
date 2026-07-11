@@ -1535,7 +1535,7 @@ export function getFleetTools() {
       inputSchema: {
         type: 'object',
         properties: {
-          query: { type: 'string', description: 'Search query (supports FTS5 syntax: AND, OR, "exact phrase", prefix*)' },
+          query: { type: 'string', description: 'Unified search query: literal text terms plus event filters such as from:, to:, agent:, type:, since:, before:. Agent filters use the fleet expression grammar: |, &, !, parens, labels/names/ids, and me.' },
           project: { type: 'string', description: 'Filter to a specific project directory name (e.g. "-Users-skip-work-foo")' },
           agent: { type: 'string', description: 'Filter to a specific agent selector. Uses the same unified fleet search grammar as the browser search box.' },
           role: { type: 'string', description: 'Filter by role: "user" (human messages), "assistant" (agent responses), "chat", "delegate", "task_done"' },
@@ -3802,7 +3802,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     let parsedSearch;
     let searchFilters;
     try {
-      parsedSearch = parseSearchQuery(args.agent ? `agent:${args.agent} ${rawQuery}` : rawQuery);
+      parsedSearch = parseSearchQuery(args.agent ? `agent:(${args.agent}) ${rawQuery}` : rawQuery);
       searchFilters = buildFleetSearchFilters(parsedSearch.filters);
     } catch (e) {
       return { content: [{ type: 'text', text: `Search failed: ${e.message}` }], isError: true };
