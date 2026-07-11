@@ -7,6 +7,10 @@
   position: relative;
 }
 
+.fleet-inbox-shape.phone-inbox-surface {
+  pointer-events: auto;
+}
+
 /* --- Header --- */
 .fleet-inbox-header {
   height: 30px;
@@ -730,6 +734,8 @@
   padding: 7px 10px;
   border-bottom: 1px solid rgba(128, 128, 128, 0.08);
   cursor: pointer;
+  pointer-events: auto;
+  touch-action: manipulation;
   position: sticky;
   top: 0;
   z-index: 2;
@@ -778,6 +784,7 @@
   display: flex;
   position: relative;
   overflow: hidden;
+  pointer-events: auto;
 }
 
 .fleet-inbox-shape.phone-inbox-surface .fleet-inbox-pop-zone,
@@ -957,6 +964,7 @@
   background: rgba(128, 128, 128, 0.025);
   overflow-x: auto;
   scrollbar-width: none;
+  pointer-events: auto;
 }
 
 .fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agents-header::-webkit-scrollbar {
@@ -980,6 +988,7 @@
   color: inherit;
   background: rgba(128, 128, 128, 0.06);
   opacity: 0.62;
+  pointer-events: auto;
   touch-action: manipulation;
 }
 
@@ -997,6 +1006,7 @@
   overscroll-behavior-y: contain;
   scrollbar-width: auto;
   scrollbar-color: rgba(255, 255, 255, 0.28) transparent;
+  pointer-events: auto;
 }
 
 .fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agents::-webkit-scrollbar {
@@ -1021,6 +1031,7 @@
   min-height: 48px;
   padding: 0;
   border-bottom: 1px solid rgba(128, 128, 128, 0.07);
+  pointer-events: auto;
 }
 
 .fleet-inbox-shape.phone-inbox-surface .fleet-inbox-phone-agent.selected {

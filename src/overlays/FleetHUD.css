@@ -266,6 +266,10 @@ body.fleet-hud-open .tl-canvas .fleet-shape {
   visibility: hidden;
   pointer-events: none;
 }
+body.fleet-hud-open .tl-canvas .fleet-inbox-shape.phone-inbox-surface {
+  visibility: visible;
+  pointer-events: auto;
+}
 body.fleet-hud-open .fleet-hud-wrap .tl-canvas .fleet-shape {
   visibility: visible;
   pointer-events: all;

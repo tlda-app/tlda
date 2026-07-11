@@ -27,7 +27,7 @@ import type { Editor, TLShape } from 'tldraw'
 import { log } from '../logger'
 import { FLEET_SHAPE_TYPES, isMyFleetShape } from '../shapes/fleet-utils'
 import { isDocumentPageShape } from '../shapes/document-pages'
-import { phonePaneStackMaxIndex } from '../shapes/phone-pane-stack'
+import { phonePaneCameraXForIndex, phonePaneStackMaxIndex } from '../shapes/phone-pane-stack'
 import {
   MOVE_LOCK_ON,
   PAN_AXIS_DECAY,
@@ -61,11 +61,17 @@ export const fleetTouchGestureActiveRef = { current: false }
 
 export const CORNER_CONTROL_SELECTORS = [
   '.phone-hl-btn',
+  '.phone-hl-slider',
   '.voice-note-btn',
+  '.voice-action-slider',
   '.mic-toggle-btn',
   '.fleet-icon-pill-container',
   '.fleet-icon-pill-badge',
+  '.fleet-layout-slider',
+  '.corner-button-slider',
   '.phone-toc-btn',
+  '.fleet-composer-gutter',
+  '.fleet-inbox-phone-agents-header',
 ] as const
 
 const CORNER_CONTROL_SELECTOR = CORNER_CONTROL_SELECTORS.join(',')
@@ -253,6 +259,22 @@ function shapeHeight(shape: any): number {
 
 function cornerControlAtPoint(clientX: number, clientY: number): Element | null {
   return gestureCornerControlAtPoint(clientX, clientY, CORNER_CONTROL_SELECTOR)
+}
+
+function phonePaneGestureBlockedTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false
+  return !!target.closest([
+    CORNER_CONTROL_SELECTOR,
+    'button',
+    'input',
+    'textarea',
+    'select',
+    '[role="button"]',
+    '[role="slider"]',
+    '.fleet-inbox-agents-row',
+    '.fleet-inbox-phone-agent',
+    '[data-composer-rail-action]',
+  ].join(','))
 }
 
 type FleetHit = {
@@ -704,9 +726,17 @@ export function phoneLaneIndexFromCamera(editor: Editor, docLeftPage: number, ma
   const cam = editor.getCamera()
   const screenW = editor.getViewportScreenBounds().w
   if (!screenW || !Number.isFinite(screenW)) return phoneLaneIndex
-  const cur = (docLeftPage + cam.x) * cam.z
-  const nearest = Math.max(0, Math.min(maxIndex, Math.round(cur / screenW)))
-  if (Math.abs(cur - nearest * screenW) < screenW * 0.2) phoneLaneIndex = nearest
+  let nearest = phoneLaneIndex
+  let nearestDist = Infinity
+  for (let i = 0; i <= maxIndex; i++) {
+    const targetX = phonePaneCameraXForIndex(editor, docLeftPage, i) ?? ((i * screenW) / cam.z - docLeftPage)
+    const dist = Math.abs((cam.x - targetX) * cam.z)
+    if (dist < nearestDist) {
+      nearest = i
+      nearestDist = dist
+    }
+  }
+  if (nearestDist < screenW * 0.2) phoneLaneIndex = nearest
   return phoneLaneIndex
 }
 
@@ -715,7 +745,7 @@ export function snapToPhoneLaneIndex(editor: Editor, docLeftPage: number, index:
   const screenW = editor.getViewportScreenBounds().w
   if (!screenW || !Number.isFinite(screenW)) return
   phoneLaneIndex = Math.max(0, Math.min(phonePaneStackMaxIndex(editor), index))
-  const x = (phoneLaneIndex * screenW) / cam.z - docLeftPage
+  const x = phonePaneCameraXForIndex(editor, docLeftPage, phoneLaneIndex) ?? ((phoneLaneIndex * screenW) / cam.z - docLeftPage)
   editor.setCamera({ ...cam, x }, { animation: { duration: PHONE_LANE_SNAP_DURATION } })
 }
 
@@ -725,7 +755,7 @@ export function snapToCurrentPhoneLaneIndex(editor: Editor, docLeftPage: number,
   if (!screenW || !Number.isFinite(screenW)) return
   const index = phoneLaneIndexFromCamera(editor, docLeftPage)
   phoneLaneIndex = Math.max(0, Math.min(phonePaneStackMaxIndex(editor), index))
-  const x = (phoneLaneIndex * screenW) / cam.z - docLeftPage
+  const x = phonePaneCameraXForIndex(editor, docLeftPage, phoneLaneIndex) ?? ((phoneLaneIndex * screenW) / cam.z - docLeftPage)
   editor.setCamera({ ...cam, x }, { animation: { duration: animationDuration } })
 }
 
@@ -1610,6 +1640,11 @@ export function useFleetGestures(opts: {
         // Pane swap is universal in phone-stack mode. Local row actions only win
         // later if the start point leaves too little room for the big pane arrow
         // to commit in the actual drag direction.
+        if (phonePaneGestureBlockedTarget(e.target) || cornerControlAtPoint(ts[0].clientX, ts[0].clientY)) {
+          state = { kind: 'none' }
+          setPhoneLaneDrag(PHONE_LANE_DRAG_IDLE)
+          return
+        }
         const docLeftPage = getPrimaryDocumentLeft(main)
         if (docLeftPage !== null) {
           const maxPaneIndex = phonePaneStackMaxIndex(main)
