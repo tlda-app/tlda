@@ -380,9 +380,8 @@ function radioAgentMatchesActiveTarget(agentId, agents = []) {
   return candidates.some(v => v && labels.has(String(v).toLowerCase()))
 }
 
-function isPhoneDocSurface() {
+function isDocSurface() {
   if (typeof document === 'undefined') return false
-  if (!document.body?.classList?.contains('phone-mode')) return false
   try {
     return new URLSearchParams(window.location.search).has('doc')
   } catch {
@@ -417,7 +416,8 @@ function showRadioSubtitle(event, agents = []) {
 }
 
 export function maybeShowRadioSubtitleForIncomingChat(event, agents = [], humanId = null) {
-  if (!isPhoneDocSurface()) return false
+  if (!getPref('radio-subtitles-enabled')) return false
+  if (!isDocSurface()) return false
   if (!event || event.type !== 'chat') return false
   if (!humanId || event.to !== humanId) return false
   if (!event.from || event.from === humanId) return false

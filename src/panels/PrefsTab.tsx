@@ -266,6 +266,7 @@ function readAll() {
     voiceBackend: getPref('voice-backend'),
     voiceSubmitWords: getPref('voice-submit-words'),
     voiceSinkShapeTypes: getPref('voice-sink-shape-types'),
+    radioSubtitlesEnabled: getPref('radio-subtitles-enabled'),
     voiceIdleCutoffMs: getPref('voice-idle-cutoff-ms'),
     voicePrerollMs: getPref('voice-preroll-ms'),
     voiceResumeRms: getPref('voice-resume-rms'),
@@ -545,6 +546,13 @@ export function PrefsTab() {
               <option key={backend.value || 'off'} value={backend.value}>{backend.label}</option>
             ))}
           </select>
+        </PrefSubsection>
+
+        <PrefSubsection title="Radio">
+          <label className="prefs-check">
+            <input type="checkbox" checked={prefs.radioSubtitlesEnabled} onChange={e => setPref('radio-subtitles-enabled', e.target.checked)} />
+            <span>Agent subtitles</span>
+          </label>
         </PrefSubsection>
 
         <PrefSubsection title="Submit phrases">

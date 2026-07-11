@@ -1316,7 +1316,7 @@ await setBackend('chrome')
 // ---- Test 22: radio subtitle first slice ----
 {
   reset()
-  bodyClasses.add('phone-mode')
+  setPref('radio-subtitles-enabled', true)
   window.location.search = '?doc=bregman'
   location.search = '?doc=bregman'
   const ta = makeTextarea()
@@ -1355,6 +1355,16 @@ await setBackend('chrome')
   const stored = window.__voiceTest.getRadioSubtitle()
   assert.equal(stored.text, 'Radio line one now', 'last radio subtitle should persist until replaced')
   assert.equal(stored.expanded, false, 'radio subtitle should collapse after the expanded window')
+
+  setPref('radio-subtitles-enabled', false)
+  const disabled = window.__voiceTest.maybeShowRadioSubtitleForIncomingChat(
+    { type: 'chat', from: 'fleet:frontier', to: 'fleet:skip', text: 'hidden while disabled' },
+    agents,
+    'fleet:skip',
+  )
+  assert.equal(disabled, false, 'radio subtitle toggle should suppress active-target incoming chat')
+  assert.equal(window.__voiceTest.getRadioSubtitle().text, 'Radio line one now', 'disabled radio should not replace the current subtitle')
+  setPref('radio-subtitles-enabled', true)
 
   const longShown = window.__voiceTest.maybeShowRadioSubtitleForIncomingChat(
     {
@@ -1395,9 +1405,8 @@ await setBackend('chrome')
 
   window.location.search = ''
   location.search = ''
-  bodyClasses.delete('phone-mode')
   reset()
-  console.log('✓ Test 22: radio subtitle is active-target, phone-doc gated, and collapses')
+  console.log('✓ Test 22: radio subtitle is active-target, doc gated, toggleable, and collapses')
 }
 
 console.log('\nAll voice tests passed.')
