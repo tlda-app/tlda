@@ -642,6 +642,7 @@ function handleServerMessage(msg) {
     gooseSupervisor.startActivityPolling()
     promptPlan.startAutoAcceptSweep()
     jsonlIngestor.startOwnerHarvester()
+    log.info(`daemon-ready pid=${process.pid} server=${SERVER} machine_id=${MACHINE_ID} env_name=${ACTIVE_CONFIG} agents=${agents.length} projects=${projects.length} watchers=started`)
     return
   }
   if (msg.type === 'agents-updated') {

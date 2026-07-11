@@ -8,10 +8,11 @@
  */
 
 import { resolve, basename, dirname, join, delimiter } from 'path'
-import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync, statSync, appendFileSync } from 'fs'
+import { chmodSync, existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync, statSync, appendFileSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { homedir, hostname } from 'os'
 import { randomBytes } from 'crypto'
+import { execFileSync } from 'child_process'
 import { collectSourceFiles, collectSourceHashes, collectSpecificFiles } from './lib/source-files.mjs'
 import { collectHtmlArtifactFiles, htmlArtifactMainForSource } from './lib/html-artifact-files.mjs'
 import {
@@ -24,8 +25,30 @@ import { getFunnelUrl, findTailscaleIPv4, selectDevShareBase, selectDocShareBase
 import { scanMarkdownDeps } from '../shared/markdown-deps.mjs'
 import { cmdLogs } from './lib/unified-logs.mjs'
 import { formatSystemStatus } from './lib/system-status.mjs'
+import {
+  bootstrapLaunchdJob,
+  capcheckPlistContent,
+  launchdDomain,
+  launchdTarget,
+  launchctlCommand,
+  probeLaunchdBootstrapCapability,
+} from './lib/launchd-supervision.mjs'
+import {
+  DEFAULT_DIRECT_FALLBACK_TIMEOUT_MS,
+  DEFAULT_SUPERVISED_START_TIMEOUT_MS,
+  DaemonTransitionFailed,
+  assertTargetEnvironmentDaemon,
+  daemonReadyLogEvidence,
+  isCompleteTargetDaemonReady,
+  parseFleetDaemonPids,
+  parseLaunchdPid,
+  pollTargetDaemonReadiness,
+  runDaemonStartWithSupervisedNoop,
+  runBoundedDaemonStartTransition,
+} from './lib/daemon-supervision-transition.mjs'
 import { resolveAgentQuery } from './lib/agent-resolve.mjs'
 import { parseAgentMoveTarget, describeAgentAddress } from '../shared/agent-move-target.mjs'
+import { daemonSingletonLockPath, inspectSingletonLock } from '../agent-runtime/singleton-lock.mjs'
 import {
   resolveDirectSpawnGrant,
 } from '../server/lib/spawn-policy.mjs'
@@ -876,11 +899,11 @@ function plistEscape(value) {
 }
 
 function daemonLaunchdTarget(label = FLEET_DAEMON_LABEL) {
-  return `${daemonLaunchdDomain()}/${label}`
+  return launchdTarget(label, { uid: process.getuid() })
 }
 
 function daemonLaunchdDomain() {
-  return process.env.TLDA_DAEMON_LAUNCHD_DOMAIN || `user/${process.getuid()}`
+  return launchdDomain({ uid: process.getuid() })
 }
 
 function daemonPathEnv() {
@@ -912,9 +935,7 @@ function daemonEnvironmentPlist({ configDir = null, processTitle = null } = {}) 
 }
 
 function daemonPlistContent({ label = FLEET_DAEMON_LABEL, logFile = FLEET_DAEMON_LOGFILE, configDir = null, cliPath = null, processTitle = null } = {}) {
-  const command = cliPath
-    ? `exec /opt/homebrew/bin/node ${JSON.stringify(cliPath)} daemon run`
-    : 'exec /opt/homebrew/bin/tlda daemon run'
+  const command = `exec /opt/homebrew/bin/node --import tsx ${JSON.stringify(FLEET_DAEMON_SCRIPT)}`
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -959,8 +980,9 @@ async function writeDaemonPlist({ plist = FLEET_DAEMON_PLIST, label = FLEET_DAEM
 
 async function runLaunchctl(args, { ignoreFailure = false } = {}) {
   const { execFileSync } = await import('child_process')
+  const invocation = launchctlCommand(args, { uid: process.getuid() })
   try {
-    return execFileSync('launchctl', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+    return execFileSync(invocation.command, invocation.args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
   } catch (e) {
     if (ignoreFailure) return e.stdout?.toString?.() || ''
     const detail = e.stderr?.toString?.().trim()
@@ -976,12 +998,39 @@ function requireLaunchd() {
 }
 
 async function bootstrapDaemonPlist(plist = FLEET_DAEMON_PLIST, label = FLEET_DAEMON_LABEL) {
-  await runLaunchctl(['bootstrap', daemonLaunchdDomain(), plist], { ignoreFailure: true })
-  await runLaunchctl(['kickstart', daemonLaunchdTarget(label)])
+  await bootstrapLaunchdJob({
+    plist,
+    label,
+    domain: daemonLaunchdDomain(),
+    runLaunchctl,
+  })
 }
 
 async function bootoutDaemonLabel(label = FLEET_DAEMON_LABEL) {
   await runLaunchctl(['bootout', daemonLaunchdTarget(label)], { ignoreFailure: true })
+}
+
+async function probeDaemonLaunchdStartCapability() {
+  const label = `com.tlda.fleet-daemon.capcheck.${process.pid}`
+  const plist = join(CONFIG_DIR, `${label}.plist`)
+  await probeLaunchdBootstrapCapability({
+    label,
+    plist,
+    domain: daemonLaunchdDomain(),
+    runLaunchctl,
+    writeFile: (file, content) => {
+      if (!existsSync(dirname(file))) mkdirSync(dirname(file), { recursive: true })
+      writeFileSync(file, content)
+    },
+    unlinkFile: (file) => {
+      try {
+        if (existsSync(file)) unlinkSync(file)
+      } catch (e) {
+        console.warn(yellow(`Could not remove launchd capability probe plist ${file}: ${e.message}`))
+      }
+    },
+    plistContent: capcheckPlistContent({ label }),
+  })
 }
 
 function shellQuote(value) {
@@ -1215,6 +1264,227 @@ function runningFleetDaemonPid() {
   }
 }
 
+function parseFleetDaemonPidfile() {
+  if (!existsSync(FLEET_DAEMON_PIDFILE)) return null
+  const pid = parseInt(readFileSync(FLEET_DAEMON_PIDFILE, 'utf8').trim(), 10)
+  return Number.isFinite(pid) && pid > 0 ? pid : null
+}
+
+function actualFleetDaemonPids() {
+  try {
+    const out = execFileSync('ps', ['-axo', 'pid=,command='], { encoding: 'utf8' })
+    return parseFleetDaemonPids(out)
+  } catch {
+    return []
+  }
+}
+
+function parentPid(pid) {
+  try {
+    const out = execFileSync('ps', ['-o', 'ppid=', '-p', String(pid)], { encoding: 'utf8' }).trim()
+    const ppid = parseInt(out, 10)
+    return Number.isFinite(ppid) && ppid > 0 ? ppid : null
+  } catch {
+    return null
+  }
+}
+
+function processTreeOwnsPid(ancestorPid, childPid) {
+  if (!ancestorPid || !childPid) return false
+  if (ancestorPid === childPid) return true
+  const seen = new Set()
+  let pid = childPid
+  while (pid && !seen.has(pid)) {
+    seen.add(pid)
+    pid = parentPid(pid)
+    if (pid === ancestorPid) return true
+  }
+  return false
+}
+
+function daemonTargetIdentity(config = loadConfig()) {
+  const server = getFleetServerUrl(config)
+  const envName = getActiveConfigName(config)
+  if (!envName) throw new Error('cannot identify daemon target: active config name is missing')
+  const machineId = config.machineId || hostname().split('.')[0]
+  const lockScope = `${server}#${envName}`
+  const lockPath = daemonSingletonLockPath({ configDir: CONFIG_DIR, origin: lockScope })
+  return { machineId, envName, server, lockScope, lockPath }
+}
+
+async function launchdDaemonPid(label = FLEET_DAEMON_LABEL) {
+  try {
+    const out = await runLaunchctl(['print', daemonLaunchdTarget(label)])
+    return parseLaunchdPid(out)
+  } catch {
+    return null
+  }
+}
+
+async function waitForFleetDaemonPid({ previousPid = null, timeoutMs = 30_000, supervised = false } = {}) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const pid = supervised ? await launchdDaemonPid() : runningFleetDaemonPid()
+    if (pid && pid !== previousPid) return pid
+    await new Promise(r => setTimeout(r, 500))
+  }
+  return null
+}
+
+async function terminateFleetDaemon(pid) {
+  try {
+    process.kill(pid, 'SIGTERM')
+  } catch (e) {
+    if (e?.code !== 'ESRCH') throw e
+  }
+}
+
+async function startDirectFleetDaemonFallback({ previousPid = null, timeoutMs = 30_000 } = {}) {
+  const { spawn: cpSpawn } = await import('child_process')
+  const child = cpSpawn(process.execPath, ['--import', 'tsx', FLEET_DAEMON_SCRIPT], {
+    detached: true,
+    stdio: 'ignore',
+    ...(process.env.TLDA_DAEMON_PROCESS_TITLE ? { argv0: process.env.TLDA_DAEMON_PROCESS_TITLE } : {}),
+    env: {
+      ...process.env,
+      TMUX: undefined,
+      TMUX_PANE: undefined,
+      ...(hasTls && !process.env.NODE_EXTRA_CA_CERTS ? { NODE_EXTRA_CA_CERTS: TLS_CA_PATH } : {}),
+    },
+  })
+  child.unref()
+  const result = await pollTargetDaemonReadiness({
+    previousPid,
+    timeoutMs,
+    getCandidatePid: () => runningFleetDaemonPid(),
+    inspectReadiness: (pid) => inspectTargetFleetDaemonReadiness(pid, { supervised: false }),
+  })
+  return result.ready ? result.pid : null
+}
+
+function targetServerHostPort(serverUrl) {
+  const u = new URL(serverUrl)
+  return {
+    host: u.hostname,
+    port: u.port || (u.protocol === 'http:' ? '80' : '443'),
+  }
+}
+
+function hasEstablishedTcpToTarget(pid, serverUrl) {
+  const { host, port } = targetServerHostPort(serverUrl)
+  try {
+    const out = execFileSync('lsof', ['-P', '-a', '-p', String(pid), '-iTCP', '-sTCP:ESTABLISHED'], { encoding: 'utf8' })
+    return out.split('\n').some(line =>
+      line.includes(`->${host}:${port}`) &&
+      line.includes('(ESTABLISHED)'),
+    )
+  } catch {
+    return false
+  }
+}
+
+function hasDaemonReadyLogMarker(pid, identity) {
+  try {
+    return daemonReadyLogEvidence(readFileSync(FLEET_DAEMON_LOGFILE, 'utf8'), {
+      pid,
+      server: identity.server,
+      machineId: identity.machineId,
+      envName: identity.envName,
+    })
+  } catch {
+    return false
+  }
+}
+
+async function inspectTargetFleetDaemonReadiness(expectedPid, { supervised = false } = {}) {
+  const identity = daemonTargetIdentity()
+  const lockInspection = inspectSingletonLock({ lockPath: identity.lockPath })
+  const launchdPid = supervised ? await launchdDaemonPid() : null
+  const launchdOwnsDaemon = !!(supervised && launchdPid && processTreeOwnsPid(launchdPid, expectedPid))
+  return isCompleteTargetDaemonReady({
+    expectedPid,
+    lockInspection,
+    pidFilePid: parseFleetDaemonPidfile(),
+    launchdPid,
+    launchdOwnsDaemon,
+    observedDaemonPids: actualFleetDaemonPids(),
+    flyWsConnected: hasEstablishedTcpToTarget(expectedPid, identity.server),
+    watcherReady: hasDaemonReadyLogMarker(expectedPid, identity),
+  })
+}
+
+async function waitForSupervisedFleetDaemonReady({ previousPid = null, timeoutMs = DEFAULT_SUPERVISED_START_TIMEOUT_MS } = {}) {
+  const result = await pollTargetDaemonReadiness({
+    previousPid,
+    timeoutMs,
+    getCandidatePid: () => launchdDaemonPid(),
+    inspectReadiness: (pid) => inspectTargetFleetDaemonReadiness(pid, { supervised: true }),
+  })
+  return result.ready ? result.pid : null
+}
+
+async function verifyTargetFleetDaemon(expectedPid, { supervised = false } = {}) {
+  const identity = daemonTargetIdentity()
+  const lockInspection = inspectSingletonLock({ lockPath: identity.lockPath })
+  const launchdPid = supervised ? await launchdDaemonPid() : null
+  const launchdOwnsDaemon = !!(supervised && launchdPid && processTreeOwnsPid(launchdPid, expectedPid))
+  assertTargetEnvironmentDaemon({
+    expectedPid,
+    lockInspection,
+    pidFilePid: parseFleetDaemonPidfile(),
+    launchdPid,
+    launchdOwnsDaemon,
+    observedDaemonPids: actualFleetDaemonPids(),
+  })
+  const readiness = isCompleteTargetDaemonReady({
+    expectedPid,
+    lockInspection,
+    pidFilePid: parseFleetDaemonPidfile(),
+    launchdPid,
+    launchdOwnsDaemon,
+    observedDaemonPids: actualFleetDaemonPids(),
+    flyWsConnected: hasEstablishedTcpToTarget(expectedPid, identity.server),
+    watcherReady: hasDaemonReadyLogMarker(expectedPid, identity),
+  })
+  if (!readiness.ready) throw new Error(readiness.reason)
+  return identity
+}
+
+function currentDaemonCodeSha() {
+  try {
+    return execFileSync('git', ['-C', FLEET_DAEMON_MAIN_ROOT, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()
+  } catch {
+    return null
+  }
+}
+
+function daemonRecoveryCommand() {
+  const envParts = daemonEnvironmentEntries()
+    .map(([key, value]) => `${key}=${shellQuote(value)}`)
+  if (process.env.TLDA_CONFIG) envParts.push(`TLDA_CONFIG=${shellQuote(process.env.TLDA_CONFIG)}`)
+  if (process.env.TLDA_SERVER) envParts.push(`TLDA_SERVER=${shellQuote(process.env.TLDA_SERVER)}`)
+  return `cd ${shellQuote(FLEET_DAEMON_MAIN_ROOT)} && env -u TMUX -u TMUX_PANE ${envParts.join(' ')} ${shellQuote(process.execPath)} --import tsx ${shellQuote(FLEET_DAEMON_SCRIPT)}`
+}
+
+function stageDaemonRecoveryAction({ stoppedPid, supervisedTimeoutMs, fallbackTimeoutMs } = {}) {
+  const recoveryFile = join(CONFIG_DIR, 'fleet-daemon-recovery.sh')
+  const command = daemonRecoveryCommand()
+  const body = `#!/bin/sh
+set -eu
+# Generated by tlda daemon start after a bounded stop/start transition failed.
+# Old daemon pid ${stoppedPid ?? 'unknown'} was already stopped.
+# Supervised wait: ${supervisedTimeoutMs ?? 'unknown'}ms; direct fallback wait: ${fallbackTimeoutMs ?? 'unknown'}ms.
+${command}
+`
+  writeFileSync(recoveryFile, body)
+  try {
+    chmodSync(recoveryFile, 0o700)
+  } catch (e) {
+    console.warn(yellow(`Wrote daemon recovery script but could not mark it executable: ${e.message}`))
+  }
+  return { file: recoveryFile, command: `sh ${shellQuote(recoveryFile)}` }
+}
+
 // Idempotent daemon start — ensure launchd has the singleton job loaded.
 // Used by `tlda server start` to make sure the daemon comes up alongside
 // the server. The daemon dying silently was a recurring source of pain.
@@ -1342,11 +1612,73 @@ async function cmdFleetWatch(sub) {
 
     const existingPid = runningFleetDaemonPid()
     if (existingPid) {
-      console.log(yellow('Fleet daemon already running outside launchd') + dim(` (pid ${existingPid})`))
-      console.log(dim(`  Config target: ${getFleetServerUrl()}`))
       const connectedTarget = lastDaemonConnectedTarget()
+      const codeSha = currentDaemonCodeSha()
+      const identity = daemonTargetIdentity()
+      console.log(yellow('Fleet daemon is running outside launchd') + dim(` (pid ${existingPid})`))
+      console.log(yellow('Starting bounded stop/start transition to launchd supervision.'))
+      console.log(dim('  This is not a no-gap handoff.'))
+      console.log(dim(`  Supervised wait: ${DEFAULT_SUPERVISED_START_TIMEOUT_MS}ms; direct fallback wait: ${DEFAULT_DIRECT_FALLBACK_TIMEOUT_MS}ms.`))
+      console.log(dim('  Healthy means: launchd pid + target lock + pidfile + established target WS + daemon-ready watcher marker.'))
+      console.log(dim('  If both starts fail after the old daemon is stopped, this command exits nonzero and writes a recovery script.'))
+      console.log(dim(`  Config target: ${getFleetServerUrl()}`))
       if (connectedTarget) console.log(dim(`  Last WS target: ${connectedTarget}`))
+      if (codeSha) console.log(dim(`  Code SHA: ${codeSha}`))
+      console.log(dim(`  Target daemon: ${identity.machineId}:${identity.envName}`))
+      console.log(dim(`  Target lock: ${identity.lockPath}`))
       console.log(dim(`  Log: ${FLEET_DAEMON_LOGFILE}`))
+      try {
+        const result = await runDaemonStartWithSupervisedNoop({
+          existingPid,
+          getLaunchdPid: () => launchdDaemonPid(),
+          launchdOwnsExisting: (launchdPid, daemonPid) => processTreeOwnsPid(launchdPid, daemonPid),
+          verifyTargetDaemon: verifyTargetFleetDaemon,
+          runBoundedTransition: () => runBoundedDaemonStartTransition({
+            existingPid,
+            writePlist: async () => {
+              await probeDaemonLaunchdStartCapability()
+              await writeDaemonPlist()
+            },
+            bootstrap: () => bootstrapDaemonPlist(),
+            stopExisting: terminateFleetDaemon,
+            waitSupervised: ({ previousPid, timeoutMs }) => waitForSupervisedFleetDaemonReady({ previousPid, timeoutMs }),
+            startDirectFallback: ({ previousPid, timeoutMs }) => startDirectFleetDaemonFallback({ previousPid, timeoutMs }),
+            verifyTargetDaemon: verifyTargetFleetDaemon,
+            stageRecoveryAction: stageDaemonRecoveryAction,
+            log: ({ supervisedTimeoutMs, fallbackTimeoutMs }) => {
+              console.log(dim(`  Bounded transition wait windows: supervised=${supervisedTimeoutMs}ms fallback=${fallbackTimeoutMs}ms`))
+            },
+          }),
+        })
+        if (result.mode === 'already-supervised') {
+          console.log(green('Fleet daemon launchd job already running') + dim(` (pid ${result.pid})`))
+          console.log(dim(`  Verified target environment readiness for ${identity.machineId}:${identity.envName}.`))
+          return
+        }
+        if (result.fallbackUsed) {
+          console.error(red('Fleet daemon launchd supervision did not come up; direct fallback restored a daemon for the target environment.'))
+          console.error(dim(`  Fallback pid: ${result.pid}`))
+          console.error(dim(`  Target daemon: ${identity.machineId}:${identity.envName}`))
+          console.error(dim(`  Target lock: ${identity.lockPath}`))
+          console.error(dim(`  This leaves the daemon running, but not supervised. Check log: ${FLEET_DAEMON_LOGFILE}`))
+          process.exit(1)
+        }
+        console.log(green('Fleet daemon launchd job started') + dim(` (pid ${result.pid})`))
+        console.log(dim(`  Verified target environment singleton lock for ${identity.machineId}:${identity.envName}.`))
+        console.log(dim(`  Launchd domain: ${daemonLaunchdDomain()}`))
+        console.log(dim(`  Plist: ${FLEET_DAEMON_PLIST}`))
+        console.log(dim(`  Log: ${FLEET_DAEMON_LOGFILE}`))
+      } catch (e) {
+        if (e instanceof DaemonTransitionFailed && e.daemonless) {
+          console.error(red(e.message))
+          console.error(red('Target daemon may now be stopped; automatic supervised and direct fallback startup both failed.'))
+          if (e.recovery?.file) console.error(dim(`  Recovery script: ${e.recovery.file}`))
+          if (e.recovery?.command) console.error(dim(`  Login-shell recovery command: ${e.recovery.command}`))
+          process.exit(1)
+        }
+        console.error(red(e?.message || String(e)))
+        process.exit(1)
+      }
       return
     }
 
