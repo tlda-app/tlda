@@ -574,7 +574,7 @@ async function statusAllPreviews(json) {
 // killed/crashed without a clean stop — that's what accumulates (32GB of
 // fleet.db copies + projects). Skip any dir with today's mtime (active or
 // just-crashed-and-may-restart) — the same safe rule the manual reclaim used.
-function sweepOrphanPreviewDirs() {
+export function sweepOrphanPreviewDirs() {
   const swept = [], kept = []
   const todayStr = new Date().toDateString()
   for (const s of listPreviewStates()) {

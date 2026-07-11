@@ -6,6 +6,7 @@ import {
   isPlaywrightBrowserArgs,
   selectOrphanAgentProcesses,
 } from '../../agent-runtime/daemon-guards.mjs'
+import { sweepOrphanPreviewDirs } from '../../cli/lib/dev-worktree.mjs'
 
 const execFileP = promisify(execFile)
 
@@ -507,6 +508,13 @@ export function createDevReaper({ getAgents, tmuxArgs = [], sendMsg = () => {} }
     const viteResult = await reapVites().catch(e => { console.error('[vite-reaper] sweep failed:', e.message); return { vites: [], killed: [] } })
     const pwResult = await reapPlaywright().catch(e => { console.error('[pw-reaper] sweep failed:', e.message); return { browsers: [], killed: [] } })
     const agentProcessResult = await reapOrphanAgentProcesses().catch(e => { console.error('[agent-reaper] sweep failed:', e.message); return { processes: [], killed: [], failed: [], skippedCount: 0 } })
+    // Preview-dir reaper — reclaim orphaned tlda-dev preview data dirs (dead
+    // process + non-today mtime), so 32GB of fleet.db copies + projects never
+    // re-accumulates from previews that died without a clean `stop`.
+    let previewDirResult
+    try { previewDirResult = sweepOrphanPreviewDirs() }
+    catch (e) { console.error('[preview-dir-reaper] sweep failed:', e.message); previewDirResult = { swept: [], kept: [] } }
+    for (const b of previewDirResult.swept) console.log(`[preview-dir-reaper] swept orphaned preview dir: ${b}`)
     _sweepCount++
 
     const allKills = [...(viteResult.killed || []), ...(pwResult.killed || []), ...(agentProcessResult.killed || [])]
