@@ -617,7 +617,7 @@ function shouldSendWakeNudge(agent, nudgeText) {
 
 async function sendWakeNudge(daemonKey, agent, tmuxSession, nudgeText, phase, logTag = 'wake-nudge') {
   if (!shouldSendWakeNudge(agent, nudgeText)) return
-  await sendRpc(daemonKey, 'send-text', {
+  await sendRpcResilient(daemonKey, 'send-text', {
     tmux_session: tmuxSession,
     text: nudgeText,
     enter: true,
@@ -687,7 +687,7 @@ async function drainTaskWakeQueue() {
       if (!ownerDaemon || ownerDaemon.readyState !== 1) throw new Error(`No fleet-daemon connected for ${daemonKey}`)
       const serverAlive = isAgentAlive(agentId)
       const liveness = serverAlive
-        ? await sendRpc(daemonKey, 'check-alive', { tmux_session: agent.tmux_session })
+        ? await sendRpcResilient(daemonKey, 'check-alive', { tmux_session: agent.tmux_session })
           .then(result => livenessFromCheckAliveResult(agentId, agent.tmux_session, result))
           .catch(e => ({
             type: 'agent-liveness',
@@ -823,7 +823,7 @@ class NoDaemonError extends Error {
   }
 }
 
-function sendRpc(machineId, op, params = {}) {
+function sendRpc(machineId, op, params = {}, opts = {}) {
   let targetMachine = machineId
   let envName = params.daemon_env_name
   if (!envName && typeof machineId === 'string' && machineId.includes(':')) {
@@ -839,7 +839,11 @@ function sendRpc(machineId, op, params = {}) {
     return Promise.reject(new NoDaemonError(targetMachine, envName))
   }
   const id = `rpc-${++_rpcSeq}-${Date.now().toString(36)}`
-  const timeoutMs = op === 'spawn' ? SPAWN_RPC_TIMEOUT_MS : RPC_TIMEOUT_MS
+  // Per-attempt deadline is a caller-passed param (event-based default): control ops
+  // wrapped in sendRpcResilient pass a short per-attempt timeout so a stale-but-"open"
+  // WS is abandoned quickly and retried on the fresh reconnect, rather than blocking
+  // the full 10s each time.
+  const timeoutMs = Number.isFinite(opts.timeoutMs) ? opts.timeoutMs : (op === 'spawn' ? SPAWN_RPC_TIMEOUT_MS : RPC_TIMEOUT_MS)
   const promise = startWsRequest({
     pending: pendingRpcs,
     id,
@@ -884,6 +888,89 @@ function failPendingRpcsForDaemon(machineId, envName, reason = 'daemon disconnec
     entry => entry.machine_id === machineId && entry.env_name === envName,
     () => new Error(reason)
   )
+}
+
+// ── Event-based RPC retry across a transient daemon reconnect ──────────────────
+// Base sendRpc() is deliberately "10s timeout, no retry" — the caller decides. But
+// durable *control* ops (send-text / wake-nudge, check-alive, spawn-availability)
+// should NOT hard-fail while the daemon WS is mid-reconnect (Fly deploy flap, 1006
+// churn, off-launchd restart). Per Skip: the deadline is a caller-passed param with an
+// event-based default — the op queues and completes on the reconnect event. This
+// wrapper waits (event-driven, not a busy-poll) for the daemon to (re)register and
+// retries, bounded by a total deadline. sendRpc() itself is unchanged, so the base RPC
+// path is untouched and spawns keep their own retry loop.
+const RPC_RECONNECT_DEADLINE_MS = 30_000
+const RPC_RESILIENT_ATTEMPT_MS = 5_000
+const daemonReadyWaiters = new Map() // daemonKey -> Set<{ resolve, timer }>
+
+// Called when a daemon (re)registers — wakes anything waiting to retry an RPC to it.
+function notifyDaemonReady(daemonKey) {
+  const set = daemonReadyWaiters.get(daemonKey)
+  if (!set) return
+  daemonReadyWaiters.delete(daemonKey)
+  for (const w of set) { clearTimeout(w.timer); w.resolve() }
+}
+
+// Resolves immediately if a ready WS exists for the key, else when one registers,
+// else rejects at the deadline. Purely event-driven (notifyDaemonReady + a timer).
+function waitForDaemonReady(daemonKey, deadlineMs) {
+  const dws = daemonConnections.get(daemonKey)
+  if (dws && dws.readyState === 1) return Promise.resolve()
+  if (!(deadlineMs > 0)) return Promise.reject(new Error(`daemon ${daemonKey} not connected`))
+  return new Promise((resolve, reject) => {
+    let set = daemonReadyWaiters.get(daemonKey)
+    if (!set) { set = new Set(); daemonReadyWaiters.set(daemonKey, set) }
+    const w = { resolve, timer: null }
+    w.timer = setTimeout(() => {
+      set.delete(w)
+      if (set.size === 0) daemonReadyWaiters.delete(daemonKey)
+      reject(new Error(`daemon ${daemonKey} did not reconnect within ${deadlineMs}ms`))
+    }, deadlineMs)
+    set.add(w)
+  })
+}
+
+function rpcDaemonKey(machineId, params = {}) {
+  if (params.daemon_env_name) return daemonAddress(machineId, params.daemon_env_name)
+  if (typeof machineId === 'string' && machineId.includes(':')) {
+    const [m, e] = machineId.split(':')
+    return daemonAddress(m, e)
+  }
+  return machineId
+}
+
+function isTransientRpcError(err) {
+  if (err?.code === 'NO_DAEMON') return true
+  const m = rpcErrorMessage(err)
+  return /RPC timeout after|daemon disconnected|not connected|did not reconnect/i.test(m)
+}
+
+// Event-based retry across reconnect for idempotent control ops. Retries only on
+// transient (reconnect-class) failures; op-level errors propagate immediately.
+async function sendRpcResilient(machineId, op, params = {}, { totalDeadlineMs = RPC_RECONNECT_DEADLINE_MS, attemptTimeoutMs = RPC_RESILIENT_ATTEMPT_MS } = {}) {
+  const key = rpcDaemonKey(machineId, params)
+  const start = Date.now()
+  let lastErr = null
+  while (true) {
+    const remaining = totalDeadlineMs - (Date.now() - start)
+    if (remaining <= 0) break
+    const dws = daemonConnections.get(key)
+    if (!dws || dws.readyState !== 1) {
+      try { await waitForDaemonReady(key, remaining) } catch (e) { lastErr = e; break }
+    }
+    try {
+      return await sendRpc(machineId, op, params, { timeoutMs: Math.min(attemptTimeoutMs, Math.max(1, totalDeadlineMs - (Date.now() - start))) })
+    } catch (e) {
+      lastErr = e
+      if (!isTransientRpcError(e)) throw e
+      // A stale-but-"open" WS would re-hit the same dead socket; wait for a fresh
+      // ready daemon (the close handler evicts the dead WS, the new hello notifies).
+      const left = totalDeadlineMs - (Date.now() - start)
+      if (left <= 0) break
+      try { await waitForDaemonReady(key, left) } catch (we) { lastErr = we; break }
+    }
+  }
+  throw lastErr || new Error(`RPC ${op} to ${key} failed after ${totalDeadlineMs}ms`)
 }
 
 setShadowMirrorHandler(async ({ name, hash, bundleBase64 }) => {
@@ -2288,7 +2375,8 @@ app.get('/api/fleet/spawn-availability', requireRead, async (req, res) => {
       userId: req.query.user,
       fleetStore,
       daemonConnections,
-      sendRpc,
+      // Resilient: a mint models query shouldn't fail because the daemon WS is mid-reconnect.
+      sendRpc: (machineId, op, params) => sendRpcResilient(machineId, op, params),
       resolveSpawnMachine,
       onDaemonMissing: (machineId, context, detail) => logSpawnDaemonMiss(machineId, context, detail),
     })
@@ -4372,7 +4460,7 @@ async function handleFleetWsMessage(ws, msg) {
         if (!ownerDaemon || ownerDaemon.readyState !== 1) throw new Error(`No fleet-daemon connected for ${daemonKey}`)
         const serverAlive = isAgentAlive(agentId)
         const liveness = serverAlive
-          ? await sendRpc(daemonKey, 'check-alive', { tmux_session: agent.tmux_session })
+          ? await sendRpcResilient(daemonKey, 'check-alive', { tmux_session: agent.tmux_session })
             .then(result => livenessFromCheckAliveResult(agentId, agent.tmux_session, result))
             .catch(e => ({
               type: 'agent-liveness',
@@ -6185,6 +6273,7 @@ async function handleDaemonWsMessage(ws, msg) {
     ws._hostname = hostname
     ws._version = version
     daemonConnections.set(daemonKey, ws)
+    notifyDaemonReady(daemonKey) // wake any control-op RPCs waiting to retry across this reconnect
     clearServerDaemonOutboxInflightForDaemon(daemonKey)
     daemonWelcomeSeenAt.set(daemonKey, Date.now())
     fleetStore?.upsertDaemonRegistration?.({
