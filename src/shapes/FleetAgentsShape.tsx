@@ -544,7 +544,9 @@ function FleetAgentsInner({ shape }: { shape: any }) {
   // Live project list — re-fetches on the server's `projects-updated` event so a
   // newly-created project shows up here without a manual reload.
   const projectList = useFleetProjects()
-  const spawnModelInfo = useAvailableSpawnModels(userId)
+  const parsedSpawn = useMemo(() => parseMintInput(spawnDoc), [spawnDoc])
+  const spawnAvailabilityDoc = parsedSpawn.doc || currentDoc
+  const spawnModelInfo = useAvailableSpawnModels(userId, { doc: spawnAvailabilityDoc })
   const spawnModels = spawnModelInfo.aliases
   const defaultSpawnModel = spawnModelInfo.defaultAlias
   const [catName] = useState(() => CAT_NAMES[Math.floor(Math.random() * CAT_NAMES.length)])
@@ -552,7 +554,6 @@ function FleetAgentsInner({ shape }: { shape: any }) {
   const [spawnFocused, setSpawnFocused] = useState(false)
   const [dropdownIdx, setDropdownIdx] = useState(-1) // -1 = nothing highlighted
   const [dropdownDismissed, setDropdownDismissed] = useState(false)
-  const parsedSpawn = useMemo(() => parseMintInput(spawnDoc), [spawnDoc])
   const selectedModelOptions = useMemo(
     () => spawnModelInfo.models.find(model => model.alias === parsedSpawn.model)?.options || {},
     [spawnModelInfo.models, parsedSpawn.model],

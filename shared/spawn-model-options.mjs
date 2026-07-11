@@ -23,7 +23,7 @@ export function flattenAvailableSpawnModels(capabilities) {
   const preferredDefault = capabilities?.default?.alias || ''
   const defaultAlias = preferredDefault && seen.has(preferredDefault)
     ? preferredDefault
-    : (aliases[0] || '')
+    : ''
 
   return {
     aliases,

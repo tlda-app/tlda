@@ -1,7 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
-import { modelFamily as sharedModelFamily, modelTrustTier as sharedModelTrustTier } from '../../shared/harness.ts'
 
 // Skip's ONE permission vocabulary — the coarse permission NAMES. This is the
 // only permission vocabulary tlda owns; there is NO machine vocabulary
@@ -31,7 +30,6 @@ const REGION_FOR_PERMISSION = {
   full: 'unsandboxed',
 }
 
-export const DEFAULT_AGENT_PERMISSION = 'write'
 export const ROOT_PERMISSION = 'full'
 
 // Interpret an old-vocabulary (permission, region) pair into a four-name rung —
@@ -170,39 +168,6 @@ export function normalizeSpawnPolicy(value, fallback = null) {
   }
 }
 
-// Harness inference. The harness (claude / codex / goose) is plumbing — HOW a
-// model is run — and is used only for the optional `familyCeilings` config knob
-// and harness-only fallbacks. It is NOT what governs the trust ceiling; the
-// MODEL does (see modelTrustTier). goose is a harness, not a trust level.
-export function modelFamily({ model, kind } = {}) {
-  return sharedModelFamily({ model, kind })
-}
-
-// Model trust tiers — keyed on the MODEL identity, NOT the harness (Skip 06-19:
-// "ceiling keyed on the model, not the harness"). The harness decides how a
-// model runs; the model decides how much authority an operator could ever grant
-// it. goose running minimax and goose running deepseek share a harness but sit
-// at different tiers, which the old harness-family lumping got wrong.
-//
-//   full     — closed frontier models we trust fully (claude, gpt/openai):
-//              up to full / unsandboxed.
-//   elevated — trusted-but-bounded open models (minimax): tlda-write (write
-//              across all tlda projects); raisable to full per-agent by the
-//              operator.
-//   narrow   — untrusted open models (deepseek, qwen, kimi, glm) and any
-//              unrecognized model: write only their own cwd project, never
-//              across projects and never machine-level. Safe by construction —
-//              a tlda project is versioned on build, so any bad write recovers.
-//
-// This maps a trust tier to the fence REGION its ceiling covers (cwd / tlda-projects /
-// unsandboxed(**) are the fence's own region vocabulary, not permission levels). It is
-// looked up by tier name, never ordered or compared.
-const MODEL_TIER_REGION = { full: '**', elevated: 'tlda-projects', narrow: 'cwd' }
-
-export function modelTrustTier({ model, kind } = {}) {
-  return sharedModelTrustTier({ model, kind })
-}
-
 // Build a region set: read == write == the zone, spawn open. The one shape used for
 // model ceilings, bare profile-name fallbacks, and the machine (root) spawner set.
 function regionPermissionSet(zone, { name, cwd, project } = {}) {
@@ -272,29 +237,13 @@ export function normalizeRegionPolicy(value, fallback = 'cwd') {
   return { name: fallback, policy: 'cwd' }
 }
 
-// The model's trust ceiling as a REGION SET — one of the sets intersected in
-// resolveSpawnGrant. Keyed on the model's trust tier (Skip 06-19: keyed on the model,
-// not the harness). A per-model override configured in daemon.yaml
-// (spawnPolicy.modelCeilings[model], a profile name) wins over the tier default.
-function modelCeilingPermissionSet(config = {}, { model, kind, cwd, project } = {}) {
-  const configured = model ? (config.spawnPolicy?.modelCeilings || {})[model] : null
-  if (configured) {
-    const profile = configuredPermissionProfile(config, configured)
-    if (profile) return materializePermissionSet(profile, { cwd, project })
-  }
-  let zone
-  if (!model && !kind) {
-    // Invariant (Skip): kind is ALWAYS known. "Neither model nor kind" is a caller
-    // that failed to thread identity through — never a real untrusted agent. The old
-    // code silently clamped that absence to cwd (the fleet-wide folder cage). With no
-    // identity to cap, the ceiling contributes no clamp (∩ ** is identity); the project
-    // profile and spawner still bound the grant. Surfaced loudly, never wedges.
-    process.stderr.write('[spawn-policy] model ceiling requested with neither model nor kind; identity is always known — fix the caller. Applying no model cap.\n')
-    zone = '**'
-  } else {
-    zone = MODEL_TIER_REGION[modelTrustTier({ model, kind })] || 'cwd'
-  }
-  return regionPermissionSet(zone, { name: `model:${zone}`, cwd, project })
+// Optional model cap from the resolved daemon model spec. There is no code-owned
+// trust tier fallback here: absent daemon cap, this operand is identity.
+function modelCeilingPermissionSet(config = {}, { modelCap, cwd, project } = {}) {
+  if (!modelCap) return allMachineSet('model:uncapped')
+  const profile = configuredPermissionProfile(config, modelCap)
+  if (profile) return materializePermissionSet(profile, { cwd, project })
+  return regionPermissionSet(modelCap, { name: `model:${modelCap}`, cwd, project })
 }
 
 // Project-default profiles (Skip 06-19: "reasonable configurations on a
@@ -585,7 +534,7 @@ function isMachineZone(zone) {
 // explicit tlda-projects write ⇒ tlda-write; any other write ⇒ write; read-only
 // ⇒ read; nothing ⇒ none. This is the canonical way to name an INTERSECTED
 // region set (the real fence input) for display and sandbox-region selection.
-function derivedPolicyFromRegionSet(permissions, name, fallback = DEFAULT_AGENT_PERMISSION) {
+function derivedPolicyFromRegionSet(permissions, name, fallback = null) {
   const writeAllow = permissions.operations?.write?.allow || []
   const readAllow = permissions.operations?.read?.allow || []
   const permission = writeAllow.some(isMachineZone)
@@ -604,7 +553,7 @@ function derivedPolicyFromRegionSet(permissions, name, fallback = DEFAULT_AGENT_
 // already carries a `projectedPolicy` computed from its regions at
 // normalization; honor it. Otherwise derive the name from the set's own region
 // zones — no rung ladder, no parallel profile map.
-function policyForPermissionSet(permissions, fallback = DEFAULT_AGENT_PERMISSION) {
+function policyForPermissionSet(permissions, fallback = null) {
   if (permissions.projectedPolicy) return normalizeSpawnPolicy(permissions.projectedPolicy, fallback)
   return derivedPolicyFromRegionSet(permissions, null, fallback)
 }
@@ -703,7 +652,7 @@ export function resolveProjectProfile(config = {}, { doc, project, cwd } = {}) {
   }
   const configured = configuredPermissionProfile(config, name)
   if (configured) {
-    const policy = policyForPermissionSet(configured, DEFAULT_AGENT_PERMISSION)
+    const policy = policyForPermissionSet(configured)
     return { ...policy, name }
   }
   throw new Error(`unknown permission profile "${name}"`)
@@ -773,7 +722,7 @@ function explicitPermissionProfileRequest(config = {}, value, fallback = null) {
   if (!name) return null
   const configured = configuredPermissionProfile(config, name)
   if (configured) {
-    const policy = policyForPermissionSet(configured, fallback || DEFAULT_AGENT_PERMISSION)
+    const policy = policyForPermissionSet(configured, fallback)
     return { ...policy, name, permissionSet: configured }
   }
   throw unknownPermissionProfileError(config, name)
@@ -795,6 +744,7 @@ export function resolveSpawnGrant({
   spawnerPermissionSet: explicitSpawnerPermissionSet,
   model,
   kind,
+  modelCap,
   config = {},
   doc,
   project,
@@ -816,7 +766,7 @@ export function resolveSpawnGrant({
       ? explicitPermissionProfileRequest(config, requestedPermission).permissionSet
       : projectPermissionSet)
 
-  const modelPermissionSet = modelCeilingPermissionSet(config, { model, kind, cwd, project })
+  const modelPermissionSet = modelCeilingPermissionSet(config, { modelCap, cwd, project })
   const spawnerPermissionSet = explicitSpawnerPermissionSet
     ? materializePermissionSet(explicitSpawnerPermissionSet, { cwd, project })
     : allMachineSet() // root/direct fallback; real callers always pass their explicit set

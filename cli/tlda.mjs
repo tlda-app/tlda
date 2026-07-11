@@ -192,7 +192,7 @@ const COMMAND_HELP = {
   bot:     'tlda bot [list|install|uninstall|start|stop|status|log] [name] [--dry-run]\n\n  Manage configured fleet bots as launchd services. The bot process logs in like an agent; the daemon does not start it.',
   system:  'tlda system status\n\n  Show server, daemon, deploy stamp, and fleet runtime identity.',
   daemon:  'tlda daemon [start|stop|status|log|run|install|uninstall]\n\n  Control the per-machine fleet daemon.\n  It watches project source directories and agent session activity,\n  then pushes events to the tlda server over WebSocket.',
-  doctor:  'tlda doctor [--fix]\ntlda doctor yolo [--name yolo] [--model gpt|opus] [--cwd /path] [--no-attach] [--dry-run]\n\n  Run a health check for local tools, server, SPA bundle, daemon, MCP setup,\n  project builds, and doc sync stores.\n\n  --fix  Apply the limited automatic repairs that doctor explicitly offers.\n\n  yolo   Break-glass: locally launch an unfenced in-fleet agent with a real FLEET_ID.\n         Reserves a fleet shell, then starts tmux directly instead of using the\n         fleet/daemon spawn permission gate. Deliberately shallow so it works when\n         the normal spawn path is broken.\n\n         --model picks the harness by alias: gpt -> codex, opus -> claude (default opus).\n         Run in a terminal and it attaches you into the agent session when it comes up\n         (--no-attach to skip). Run non-interactively and it verifies the agent actually\n         logged in and is reachable before reporting success (or errors out and tears\n         down the phantom seat).',
+  doctor:  'tlda doctor [--fix]\ntlda doctor yolo [--name yolo] --model <daemon-alias> [--cwd /path] [--no-attach] [--dry-run]\n\n  Run a health check for local tools, server, SPA bundle, daemon, MCP setup,\n  project builds, and doc sync stores.\n\n  --fix  Apply the limited automatic repairs that doctor explicitly offers.\n\n  yolo   Break-glass: locally launch an unfenced in-fleet agent with a real FLEET_ID.\n         Reserves a fleet shell, then starts tmux directly instead of using the\n         fleet/daemon spawn permission gate. Deliberately shallow so it works when\n         the normal spawn path is broken.\n\n         --model names a configured daemon model alias; the daemon model spec picks the harness.\n         Run in a terminal and it attaches you into the agent session when it comes up\n         (--no-attach to skip). Run non-interactively and it verifies the agent actually\n         logged in and is reachable before reporting success (or errors out and tears\n         down the phantom seat).',
   'repo-doctor': 'tlda doc repo-doctor <project> [--rescue|--apply|--rollback|--cleanup]\n\n  Diagnose a project source repo for tlda-induced damage.\n  No flag: diagnose only (read-only).\n  --rescue   Compute a rescue plan (dry run).\n  --apply    Execute the rescue plan.\n  --rollback Roll back a previous rescue apply.\n  --cleanup  Clean rescue apply state.',
   publish: 'tlda publish [--target <name>] [doc ...]\n\n  Publish docs to GitHub Pages (+ optionally Fly).\n\n  With no args, publishes all docs in config.published using the "default" target.\n  With --target, uses the named target config (sync server, repo, etc.).\n  With doc names, publishes those and adds them to the list.\n\n  Config (targets in ~/.config/tlda/config.json):\n    targets.<name>.sync     — sync server WebSocket URL\n    targets.<name>.repo     — git remote for gh-pages (null = same repo)\n    targets.<name>.fly      — deploy to Fly (default: false)\n    targets.<name>.basePath — vite base path (default: /tlda/)',
   config:  'tlda config [set <key> <value> | get [key]]\n\n  Manage persistent configuration.\n  Example: tlda config set server http://myhost:5176',
@@ -202,7 +202,7 @@ const COMMAND_HELP = {
 const VALUE_FLAGS = new Set([
   'server', 'dir', 'title', 'main', 'debounce', 'token', 'members', 'format',
   'session', 'target', 'timeout', 'id', 'book', 'worktree', 'port', 'browser',
-  'model', 'cwd', 'effort', 'mode', 'kind', 'name',
+  'model', 'cwd', 'effort', 'mode', 'name',
   'agent-id', 'policy', 'permissions', 'machine', 'limit', 'from', 'poll', 'config',
   'label', 'plist',
 ])
@@ -2430,7 +2430,7 @@ async function runFleetSpawn(spawnArgs) {
   const fresh = hasRawFlag(spawnArgs, 'fresh')
   const name = positionalFromRaw(spawnArgs, 0)
   if (!name && !session) {
-    console.error(red('Usage: tlda agent <create|wake> <agent> [--model model] [--kind kind] [--cwd path] [--permissions <profile>] [--i-like-to-live-dangerously]'))
+    console.error(red('Usage: tlda agent <create|wake> <agent> [--model model] [--cwd path] [--permissions <profile>] [--i-like-to-live-dangerously]'))
     process.exit(1)
   }
   // The ONE permission knob is --permissions <profile>, a named profile from
@@ -2441,7 +2441,7 @@ async function runFleetSpawn(spawnArgs) {
   const requestedPermissions = permissionsFromRaw(spawnArgs)
   const cwd = resolve(flagFromRaw(spawnArgs, 'cwd') || process.cwd())
   const model = flagFromRaw(spawnArgs, 'model') || undefined
-  const kind = flagFromRaw(spawnArgs, 'kind') || undefined
+  const kind = undefined
   const acknowledgeNoSecurity = hasRawFlag(spawnArgs, 'i-like-to-live-dangerously')
   let ledger = null
   try {
@@ -2776,7 +2776,7 @@ function usageAgent() {
 
 Usage:
   tlda agent list [--limit N] [--local]
-  tlda agent mint <name> [--model model] [--kind kind] [--cwd path] [--permissions <profile>]
+  tlda agent mint <name> [--model model] [--cwd path] [--permissions <profile>]
   tlda agent enroll --session <uuid> --kind <codex|claude> [name] [--permissions <profile>]
   tlda agent wake <agent> [--permissions <profile>]
   tlda agent move <agent> [name@][box:]env
@@ -3823,7 +3823,8 @@ async function cmdDoctorYolo() {
   const { sanitizeSessionName, readConfig, resolveDnsAlias } = await import('../agent-launch/identity.mjs')
   const { resolveApi, wsReserveShell, findAgent, markAgentDead } = await import('../agent-launch/register.mjs')
   const { uniqueSessionName, spawnTmux, injectCodexPrompt, tmuxArgs } = await import('../agent-launch/tmux.mjs')
-  const { inferHarnessKind } = await import('../agent-launch/models.mjs')
+  const { resolveModelSpec } = await import('../agent-launch/models.mjs')
+  const { readDaemonConfigForCwd, withDaemonModelAliases } = await import('../agent-launch/permission-ledger.mjs')
   const claude = await import('../agent-launch/harness/claude.mjs')
   const codex = await import('../agent-launch/harness/codex.mjs')
 
@@ -3832,21 +3833,21 @@ async function cmdDoctorYolo() {
   const rawFleetId = String(getFlag('id', `fleet:${safeName}`) || `fleet:${safeName}`)
   const fleetId = rawFleetId.startsWith('fleet:') ? rawFleetId : `fleet:${rawFleetId}`
   const cwd = resolve(getFlag('cwd') || process.cwd())
-  const config = readConfig()
+  const config = withDaemonModelAliases(readConfig(), readDaemonConfigForCwd(cwd))
   const api = resolveApi({ config })
   const tmuxSocket = loadConfig().tmuxSocket || null
   const dryRun = hasFlag('dry-run')
   const tmuxSession = dryRun ? `fleet-${safeName}` : await uniqueSessionName(`fleet-${safeName}`, { tmuxSocket })
 
-  // Harness follows the model alias — no --kind. A gpt/codex alias → codex, else
-  // claude. Break-glass stays shallow: we call the harness command-builder directly
+  // Harness follows the daemon model spec. Break-glass stays shallow: we call the harness command-builder directly
   // and reserve a shell; we do NOT route through the deep spawn/fence/lease
   // machinery (that machinery is exactly what might be broken when you reach for
   // this). Unfenced, dead simple — the launch flags below just bypass sandboxing.
-  const modelAlias = String(getFlag('model', 'opus') || 'opus')
-  const kind = inferHarnessKind(null, modelAlias)
+  const modelAlias = String(getFlag('model') || '')
+  const spec = resolveModelSpec(modelAlias, { config })
+  const kind = spec.harness
   const harness = kind === 'codex' ? codex : claude
-  const model = harness.resolveModel(modelAlias, { config })
+  const model = harness.resolveModel(spec.alias, { config })
   const dnsAlias = await resolveDnsAlias(api).catch(() => null)
 
   let cmd

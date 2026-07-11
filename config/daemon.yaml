@@ -1,14 +1,15 @@
 models:
   claude:
+    opus: claude-opus-4-8[1m]
     "*":
       # Strongly recommended default: enables first-class fleet channel
       # notifications. The tmux-only alternative works, but is janky
       # (notably the Enter inconsistency), so do not choose it unless you
       # explicitly accept that tradeoff.
       harness:
-        required: []
-        preferences:
+        required:
           - "--dangerously-load-development-channels server:tlda"
+        preferences: []
         controls: true
   codex:
     gpt: gpt-5.5

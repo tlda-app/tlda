@@ -11,6 +11,9 @@
 // UNTOUCHED.
 //
 // Usage:  node bin/backfill-project-grants.mjs [--apply]   (default: dry-run)
+// --apply writes only rows whose target project-default grant is a strict raise
+// over the current grant. Narrowing broad grants is a separate policy decision,
+// not part of the un-cage repair.
 import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
@@ -52,7 +55,7 @@ function assertLedgerColumns(db) {
 
 const ro = new Database(ledgerPath, { readonly: true })
 assertLedgerColumns(ro)
-const rows = ro.prepare('SELECT id, cwd, session_kind FROM permission_grants').all()
+const rows = ro.prepare('SELECT id, cwd, session_kind, spawn_policy, permission_set FROM permission_grants').all()
 ro.close()
 
 // Act AS the localhost pseudo-agent: seed the daemon-config grants (incl. localhost)
@@ -62,9 +65,69 @@ if (APPLY) applyDaemonGrants(ledger, daemonConfig)  // ensure localhost + config
 const localhost = ledger.get('localhost')
 if (!localhost) throw new Error('localhost pseudo-agent is not granted in the ledger; add `localhost: <profile>` to daemon.yaml grants and restart the daemon')
 
+function parseJson(value, fallback = null) {
+  if (value == null || value === '') return fallback
+  try {
+    return JSON.parse(value)
+  } catch {
+    return fallback
+  }
+}
+
+function zones(set, operation, effect) {
+  return (set?.operations?.[operation]?.[effect] || [])
+    .map((zone) => String(zone || '').trim())
+    .filter(Boolean)
+}
+
+function globRoot(zone) {
+  const raw = String(zone || '').trim()
+  if (raw === '**' || raw === '/' || raw === '/**') return { universal: true, root: raw }
+  const root = raw.endsWith('/**') ? raw.slice(0, -3) : raw
+  return { universal: false, root }
+}
+
+function zoneCovers(covering, covered) {
+  const a = globRoot(covering)
+  const b = globRoot(covered)
+  if (a.universal) return true
+  if (b.universal) return false
+  return a.root === b.root || b.root.startsWith(`${a.root}/`)
+}
+
+function coversAll(coveringZones, coveredZones) {
+  return coveredZones.every((covered) => coveringZones.some((covering) => zoneCovers(covering, covered)))
+}
+
+function sameZones(a, b) {
+  return coversAll(a, b) && coversAll(b, a)
+}
+
+function directionForGrant(currentSet, targetSet) {
+  if (!currentSet || !targetSet) return 'unknown'
+  const checks = []
+  for (const operation of ['read', 'write', 'spawn']) {
+    const currentAllow = zones(currentSet, operation, 'allow')
+    const targetAllow = zones(targetSet, operation, 'allow')
+    const currentDeny = zones(currentSet, operation, 'deny')
+    const targetDeny = zones(targetSet, operation, 'deny')
+    checks.push({
+      same: sameZones(currentAllow, targetAllow) && sameZones(currentDeny, targetDeny),
+      targetAtLeastAsBroad: coversAll(targetAllow, currentAllow) && coversAll(currentDeny, targetDeny),
+      currentAtLeastAsBroad: coversAll(currentAllow, targetAllow) && coversAll(targetDeny, currentDeny),
+    })
+  }
+  if (checks.every((check) => check.same)) return 'same'
+  if (checks.every((check) => check.targetAtLeastAsBroad) && checks.some((check) => !check.same)) return 'raise'
+  if (checks.every((check) => check.currentAtLeastAsBroad) && checks.some((check) => !check.same)) return 'narrow'
+  return 'mixed'
+}
+
 const byProfile = {}
-let considered = 0, changed = 0, skippedNoProject = 0, skippedNoCwd = 0
+const byDirection = { raise: 0, narrow: 0, mixed: 0, same: 0, unknown: 0 }
+let considered = 0, eligible = 0, changed = 0, skippedNoProject = 0, skippedNoCwd = 0
 const sample = []
+const directionSamples = { raise: [], narrow: [], mixed: [], same: [], unknown: [] }
 
 for (const row of rows) {
   considered++
@@ -83,13 +146,30 @@ for (const row of rows) {
   const gp = grant.grantedPolicy
   const wa = grant.grantedPermissionSet?.operations?.write?.allow || []
   const machineWide = wa.some((z) => ['**', 'machine', '/'].includes(z))
+  const currentPermissionSet = parseJson(row.permission_set)
+  const direction = directionForGrant(currentPermissionSet, grant.grantedPermissionSet)
+  byDirection[direction] = (byDirection[direction] || 0) + 1
+  eligible++
   byProfile[projectDefault] = (byProfile[projectDefault] || 0) + 1
-  if (sample.length < 6) sample.push({ id: row.id, cwd: row.cwd, projectDefault, granted: gp?.name, machineWide })
-  if (APPLY) {
+  const item = { id: row.id, cwd: row.cwd, projectDefault, granted: gp?.name, machineWide, direction }
+  if (sample.length < 6) sample.push(item)
+  if (directionSamples[direction]?.length < 6) directionSamples[direction].push(item)
+  if (APPLY && direction === 'raise') {
     ledger.setSync(row.id, { spawnPolicy: gp, permissionSet: grant.grantedPermissionSet, source: 'backfill:project-default' })
+    changed++
   }
-  changed++
 }
 
-console.log(JSON.stringify({ mode: APPLY ? 'APPLY' : 'DRY-RUN', considered, changed, skippedNoProject, skippedNoCwd, byProfile, sample }, null, 2))
+console.log(JSON.stringify({
+  mode: APPLY ? 'APPLY_RAISE_ONLY' : 'DRY-RUN',
+  considered,
+  eligible,
+  changed,
+  skippedNoProject,
+  skippedNoCwd,
+  byProfile,
+  byDirection,
+  sample,
+  directionSamples,
+}, null, 2))
 ledger.close()

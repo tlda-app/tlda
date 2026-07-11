@@ -3,8 +3,9 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
-import { GOOSE_MODELS, GOOSE_VERIFIED, listModels } from './models.mjs'
+import { GOOSE_VERIFIED, listModels } from './models.mjs'
 import { readConfig } from './identity.mjs'
+import { readDaemonConfig, readDaemonConfigForCwd, withDaemonModelAliases } from './permission-ledger.mjs'
 
 const execFileP = promisify(execFile)
 const DEFAULT_TIMEOUT_MS = 2500
@@ -105,25 +106,14 @@ function harnessAvailable(h) {
   return !!(h.binary?.ok && h.authenticated?.ok)
 }
 
-function firstAvailableModel(harness, preferredAlias) {
-  const models = (harness.models || []).filter((model) => model.available !== false && model.verified !== false)
-  return models.find((model) => model.alias === preferredAlias) || models[0] || null
+function resolveContextCwd({ cwd } = {}) {
+  return typeof cwd === 'string' && cwd.trim() ? path.resolve(cwd) : null
 }
 
-function chooseDefault(harnesses) {
-  const claudeModel = harnessAvailable(harnesses.claude) ? firstAvailableModel(harnesses.claude, 'opus') : null
-  if (claudeModel) return { kind: 'claude', model: claudeModel.id, alias: claudeModel.alias }
-  const codexModel = harnessAvailable(harnesses.codex) ? firstAvailableModel(harnesses.codex, 'gpt') : null
-  if (codexModel) return { kind: 'codex', model: codexModel.id, alias: codexModel.alias }
-  const gooseModel = harnessAvailable(harnesses.goose) ? firstAvailableModel(harnesses.goose, 'deepseek') : null
-  if (gooseModel) return { kind: 'goose', model: gooseModel.id, alias: gooseModel.alias }
-  const cursorModel = harnessAvailable(harnesses.cursor) ? firstAvailableModel(harnesses.cursor, 'cursor') : null
-  if (cursorModel) return { kind: 'cursor', model: cursorModel.id, alias: cursorModel.alias }
-  return null
-}
-
-export async function probeSpawnAvailability({ env = process.env, now = new Date(), deps = {} } = {}) {
-  const config = deps.config ?? readConfig()
+export async function probeSpawnAvailability({ cwd = null, env = process.env, now = new Date(), deps = {} } = {}) {
+  const contextCwd = resolveContextCwd({ cwd })
+  const daemonConfig = contextCwd ? readDaemonConfigForCwd(contextCwd) : readDaemonConfig()
+  const config = deps.config ?? withDaemonModelAliases(readConfig(), daemonConfig)
   const runner = {
     run: deps.run || ((command, args, opts = {}) => run(command, args, { ...opts, env })),
   }
@@ -163,23 +153,14 @@ export async function probeSpawnAvailability({ env = process.env, now = new Date
       models: modelRows('goose', config, { cursorAvailable }),
       verified: [...GOOSE_VERIFIED].sort(),
     },
-    cursor: {
-      kind: 'cursor',
-      ...cursor,
-      available: cursorAvailable,
-      models: [{
-        alias: 'cursor',
-        id: GOOSE_MODELS.cursor,
-        available: cursorAvailable,
-        verified: GOOSE_VERIFIED.has(GOOSE_MODELS.cursor),
-      }],
-    },
   }
   return {
     schema: 1,
     machine: os.hostname().split('.')[0],
     generated_at: now.toISOString(),
-    default: chooseDefault(harnesses),
+    context: {
+      cwd: contextCwd,
+    },
     harnesses,
   }
 }

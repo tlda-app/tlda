@@ -1,6 +1,6 @@
 import { SpawnLibrarian } from '../shared/spawn-librarian.ts'
 import { newFleetId, readConfig, resolveDnsAlias, resolveSpawnCwd, sanitizeSessionName } from './identity.mjs'
-import { inferHarnessKind } from './models.mjs'
+import { resolveModelSpec } from './models.mjs'
 import { checkFreshNameAvailable, ensureServer, findAgent, markAgentDead, resolveApi, wsReserveShell } from './register.mjs'
 import { injectClaudePrompt, injectCodexPrompt, sessionHasRuntime, spawnTmux, uniqueSessionName } from './tmux.mjs'
 import { wrapSandboxCmd } from './fence.mjs'
@@ -50,9 +50,8 @@ function metadataOf(agent) {
   return meta && typeof meta === 'object' ? meta : {}
 }
 
-function resolveAgentKind(agent, rawModel, requestedKind) {
-  const meta = metadataOf(agent)
-  return requestedKind || agent?.kind || meta.kind || inferHarnessKind(null, rawModel)
+function resolveLaunchSpec(rawModel, config) {
+  return resolveModelSpec(rawModel, { config })
 }
 
 function assertNativeTools(policy, requestedKind) {
@@ -69,12 +68,13 @@ function traceSpawnDecision(label, detail) {
   process.stderr.write(`[spawn-trace] ${label} ${JSON.stringify(payload)}\n`)
 }
 
-function resolveAdapterModel(adapter, rawModel, config) {
+function resolveAdapterModel(adapter, rawModel, config, modelSpec = null) {
+  const spec = modelSpec || resolveLaunchSpec(rawModel, config)
   if (adapter.resolveModelSelection) {
-    const selection = adapter.resolveModelSelection(rawModel, { config })
-    return { model: selection.model, provider: selection.provider, selection }
+    const selection = adapter.resolveModelSelection(spec.alias, { config })
+    return { model: selection.model, provider: selection.provider, selection, spec }
   }
-  return { model: adapter.resolveModel(rawModel, { config }), provider: null, selection: null }
+  return { model: spec.id, provider: spec.provider || null, selection: null, spec }
 }
 
 function spawnEnv(params = {}) {
@@ -149,7 +149,7 @@ async function buildCommand({ requestedKind, adapter, fleetId, tmuxSession, mode
 }
 
 async function spawnFresh(params) {
-  const { requestedKind, adapter } = params
+  const { requestedKind, adapter, modelSpec } = params
   const deps = params._deps || {}
   const api = (deps.resolveApi || resolveApi)()
   const librarian = deps.createLibrarian
@@ -170,7 +170,7 @@ async function spawnFresh(params) {
     }
     const config = params.config ?? readConfig()
     tmuxSession = await (deps.uniqueSessionName || uniqueSessionName)(`fleet-${sanitizeSessionName(name)}`, { tmuxSocket: params.tmuxSocket })
-    const modelResolved = resolveAdapterModel(adapter, params.model, config)
+    const modelResolved = resolveAdapterModel(adapter, params.model, config, modelSpec)
     model = modelResolved.model
     const dnsAlias = await (deps.resolveDnsAlias || resolveDnsAlias)(api)
     const launchPolicy = resolveLaunchPolicy({
@@ -185,6 +185,7 @@ async function spawnFresh(params) {
       mode: params.mode,
       explicitPolicy: params.explicitPolicy,
       acknowledgeNoSecurity: !!params.acknowledgeNoSecurity,
+      harnessOptions: modelResolved.spec?.harnessOptions || null,
     })
     assertNativeTools(launchPolicy, requestedKind)
     traceSpawnDecision('policy', {
@@ -308,14 +309,15 @@ async function spawnRespawn(params) {
   if (!agent) throw new SpawnError('launch-failed', `No agent '${name}'. Use --fresh to create.`, { name })
   const meta = metadataOf(agent)
   const rawModel = params.model || meta.model
-  const requestedKind = resolveAgentKind(agent, rawModel, params.kind)
+  const config = params.config ?? readConfig()
+  const modelSpec = resolveLaunchSpec(rawModel, config)
+  const requestedKind = modelSpec.harness
   const adapter = ADAPTERS[requestedKind]
   if (!adapter) throw new SpawnError('launch-failed', `unknown spawn harness: ${requestedKind}`, { kind: requestedKind })
   const fleetId = agent.id
   const friendlyName = params.name && !params.name.startsWith('fleet:') ? params.name : (agent.friendly_name || agent.name || fleetId)
   let cwd = resolveSpawnCwd(params.cwd || agent.cwd || process.cwd())
-  const config = params.config ?? readConfig()
-  const modelResolved = resolveAdapterModel(adapter, rawModel, config)
+  const modelResolved = resolveAdapterModel(adapter, rawModel, config, modelSpec)
   const model = modelResolved.model
   const tmuxSession = agent.tmux_session || `fleet-${sanitizeSessionName(friendlyName)}`
   const explicitRelaunch = !!(
@@ -393,6 +395,7 @@ async function spawnRespawn(params) {
     mode: params.mode,
     explicitPolicy: params.explicitPolicy,
     acknowledgeNoSecurity: !!params.acknowledgeNoSecurity,
+    harnessOptions: modelResolved.spec?.harnessOptions || null,
   })
   assertNativeTools(launchPolicy, requestedKind)
   if (requestedKind === 'codex' && resumeId) {
@@ -454,14 +457,15 @@ async function spawnRefresh(params) {
   if (!agent) throw new SpawnError('launch-failed', `No agent '${name}'. Use --fresh to create.`, { name })
   const meta = metadataOf(agent)
   const rawModel = params.model || meta.model
-  const requestedKind = resolveAgentKind(agent, rawModel, params.kind)
+  const config = params.config ?? readConfig()
+  const modelSpec = resolveLaunchSpec(rawModel, config)
+  const requestedKind = modelSpec.harness
   const adapter = ADAPTERS[requestedKind]
   if (!adapter) throw new SpawnError('launch-failed', `unknown spawn harness: ${requestedKind}`, { kind: requestedKind })
   const fleetId = agent.id
   const friendlyName = params.name && !params.name.startsWith('fleet:') ? params.name : (agent.friendly_name || agent.name || fleetId)
   const cwd = resolveSpawnCwd(params.cwd || agent.cwd || process.cwd())
-  const config = params.config ?? readConfig()
-  const modelResolved = resolveAdapterModel(adapter, rawModel, config)
+  const modelResolved = resolveAdapterModel(adapter, rawModel, config, modelSpec)
   const model = modelResolved.model
   const tmuxSession = agent.tmux_session || `fleet-${sanitizeSessionName(friendlyName)}`
   const dnsAlias = await (deps.resolveDnsAlias || resolveDnsAlias)(api)
@@ -477,6 +481,7 @@ async function spawnRefresh(params) {
     mode: params.mode,
     explicitPolicy: params.explicitPolicy,
     acknowledgeNoSecurity: !!params.acknowledgeNoSecurity,
+    harnessOptions: modelResolved.spec?.harnessOptions || null,
   })
   assertNativeTools(launchPolicy, requestedKind)
   await wsReserveShell({
@@ -735,10 +740,12 @@ export async function spawn(params = {}) {
   if (mode === 'respawn') return await spawnRespawn(params)
   if (mode === 'session') return await spawnSession(params)
   if (mode === 'fresh') {
-    const requestedKind = inferHarnessKind(params.kind, params.model)
+    const config = params.config ?? readConfig()
+    const modelSpec = resolveLaunchSpec(params.model, config)
+    const requestedKind = modelSpec.harness
     const adapter = ADAPTERS[requestedKind]
     if (!adapter) throw new SpawnError('launch-failed', `unknown spawn harness: ${requestedKind}`, { kind: requestedKind })
-    return await spawnFresh({ ...params, requestedKind, adapter })
+    return await spawnFresh({ ...params, requestedKind, adapter, modelSpec, config })
   }
   throw new SpawnError('launch-failed', `node spawn supports fresh/refresh/respawn/session, got ${mode}`, { mode })
 }

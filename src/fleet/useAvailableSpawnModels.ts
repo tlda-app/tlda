@@ -24,9 +24,17 @@ export const EMPTY_SPAWN_MODELS: AvailableSpawnModels = {
 
 export async function loadAvailableSpawnModels(
   userId: string,
+  contextOrFetch: { doc?: string | null } | typeof fetch = {},
   fetchFn: typeof fetch = fetch,
 ): Promise<Omit<AvailableSpawnModels, 'loading'>> {
-  const r = await fetchFn(`/api/fleet/spawn-availability?target=fresh-spawn-current&user=${encodeURIComponent(userId)}`)
+  const context = typeof contextOrFetch === 'function' ? {} : contextOrFetch
+  const fetcher = typeof contextOrFetch === 'function' ? contextOrFetch : fetchFn
+  const params = new URLSearchParams({
+    target: 'fresh-spawn-current',
+    user: userId,
+  })
+  if (context.doc) params.set('doc', context.doc)
+  const r = await fetcher(`/api/fleet/spawn-availability?${params.toString()}`)
   if (!r.ok) throw new Error(String(r.status))
   const next = spawnModelsFromCapabilitiesResponse(await r.json())
   return {
@@ -39,8 +47,12 @@ export async function loadAvailableSpawnModels(
   }
 }
 
-export function useAvailableSpawnModels(userId: string | null | undefined): AvailableSpawnModels {
+export function useAvailableSpawnModels(
+  userId: string | null | undefined,
+  context: { doc?: string | null } = {},
+): AvailableSpawnModels {
   const [models, setModels] = useState<AvailableSpawnModels>(EMPTY_SPAWN_MODELS)
+  const doc = context.doc || ''
 
   useEffect(() => {
     if (!userId) {
@@ -50,7 +62,7 @@ export function useAvailableSpawnModels(userId: string | null | undefined): Avai
 
     let cancelled = false
     setModels(prev => ({ ...prev, loading: true, error: null }))
-    loadAvailableSpawnModels(userId)
+    loadAvailableSpawnModels(userId, { doc: doc || null })
       .then(next => {
         if (cancelled) return
         setModels({
@@ -71,7 +83,7 @@ export function useAvailableSpawnModels(userId: string | null | undefined): Avai
         })
       })
     return () => { cancelled = true }
-  }, [userId])
+  }, [userId, doc])
 
   return models
 }

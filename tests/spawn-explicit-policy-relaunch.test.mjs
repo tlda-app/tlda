@@ -23,9 +23,13 @@ const permissionSet = {
   },
 }
 const config = {
-  harnessOptions: {
-    codex: {
-      '*': {
+  modelSpecs: {
+    gpt: {
+      alias: 'gpt',
+      id: 'gpt-5.5',
+      provider: 'codex',
+      harness: 'codex',
+      harnessOptions: {
         required: ['--ask-for-approval', 'never', '--sandbox', 'danger-full-access'],
         preferences: [],
         controls: true,

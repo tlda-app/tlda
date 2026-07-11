@@ -9,28 +9,6 @@ const BUILTIN_POLICY_NAMES = new Set(['read', 'write', 'tlda-write', 'full'])
 const DEFAULT_READ_ROOTS = []
 const DEFAULT_OPTIONS = { network: false, git: 'read', artifacts: true }
 const DEFAULT_TRUSTED_MCP_SERVERS = { tlda: { defaultToolsApprovalMode: 'approve' } }
-// Built-in harness launch options are the visible defaults for fleet-managed
-// harnesses. For Claude, the dev-channel flag is the strongly recommended
-// default: it enables first-class fleet channel notifications. The alternative
-// is tmux-only delivery, which is intentionally kept available but is janky
-// (notably the tmux Enter inconsistency), so do not choose it unless you mean
-// to accept that tradeoff.
-const BUILTIN_HARNESS_OPTIONS = Object.freeze({
-  claude: Object.freeze({
-    '*': Object.freeze({
-      required: Object.freeze([]),
-      preferences: Object.freeze(['--dangerously-load-development-channels server:tlda']),
-      controls: true,
-    }),
-  }),
-  codex: Object.freeze({
-    '*': Object.freeze({
-      required: Object.freeze([]),
-      preferences: Object.freeze([]),
-      controls: true,
-    }),
-  }),
-})
 
 function isYoloFlag(flag) {
   return /--dangerously-skip-permissions\b/.test(flag)
@@ -160,27 +138,19 @@ function normalizeFlagList(value) {
   return value.map(v => String(v || '').trim()).filter(Boolean)
 }
 
-function harnessOptionRow(config = {}, harness, model) {
-  const kind = String(harness || '').trim().toLowerCase()
-  if (!kind) return null
-  const configured = config?.harnessOptions?.[kind]
-  const builtin = BUILTIN_HARNESS_OPTIONS[kind] || {}
-  const builtinRow = builtin?.[model] || builtin?.['*'] || null
-  const configuredRow = configured?.[model] || configured?.['*'] || null
-  const row = configuredRow || builtinRow
-  if (!row) return null
+function normalizeHarnessOptionRow(row) {
+  if (!row || typeof row !== 'object' || Array.isArray(row)) return null
   const required = normalizeFlagList(row.required)
   const preferences = normalizeFlagList(row.preferences)
-  const controls = configuredRow?.controls ?? builtinRow?.controls
   return {
     required,
     preferences,
-    controls: controls !== false && (controls === true || required.length > 0),
+    controls: row.controls !== false && (row.controls === true || required.length > 0),
   }
 }
 
-export function resolveHarnessLaunchOptions({ config = {}, harness, model } = {}) {
-  const row = harnessOptionRow(config, harness, model) || { required: [], preferences: [], controls: false }
+export function resolveHarnessLaunchOptions({ harness, harnessOptions = null } = {}) {
+  const row = normalizeHarnessOptionRow(harnessOptions) || { required: [], preferences: [], controls: false }
   const flags = [...row.required, ...row.preferences]
   const kind = String(harness || '').trim().toLowerCase()
   const hasYolo = flags.some(isYoloFlag)
@@ -453,6 +423,7 @@ export function resolveLaunchPolicy({
   mode,
   explicitPolicy = false,
   acknowledgeNoSecurity = false,
+  harnessOptions: resolvedHarnessOptions = null,
   env = process.env,
 } = {}) {
   // No hardcoded fallback: an un-granted agent has no fabricated policy. The grant
@@ -475,7 +446,7 @@ export function resolveLaunchPolicy({
   const effectivePermissionMode = permissionClassifierDisabled(config, env)
     ? 'bypassPermissions'
     : (permissionMode ?? mode ?? undefined)
-  const harnessOptions = resolveHarnessLaunchOptions({ config, harness, model })
+  const harnessOptions = resolveHarnessLaunchOptions({ harness, harnessOptions: resolvedHarnessOptions })
   // Security comes from the applied grant (a fence) or the harness's own controls.
   // A genuinely wide-open launch (no fence, no controls) must be acknowledged
   // explicitly by the caller — no silent auto-waiver. Whether the classifier is
