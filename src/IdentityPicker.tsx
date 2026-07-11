@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useFleetIdentity } from './fleet-data-adapter'
 import { subscribeCanPresent } from './authToken'
-import { isUsableIdentityName, sanitizeIdentityName, temporaryIdentityName } from './fleet/identity-persistence.mjs'
+import { isUsableIdentityName, sanitizeIdentityName, shouldAutoAssignTemporaryIdentity, temporaryIdentityName } from './fleet/identity-persistence.mjs'
 
 function cleanName(name: string | null) {
   const clean = sanitizeIdentityName(name)
@@ -21,7 +21,7 @@ export function IdentityPicker() {
   }, [id, name, needsIdentity])
 
   useEffect(() => {
-    if (!needsIdentity) return
+    if (!shouldAutoAssignTemporaryIdentity({ needsIdentity, id, name })) return
 
     let cancelled = false
     const params = new URLSearchParams(window.location.search)
@@ -57,7 +57,7 @@ export function IdentityPicker() {
 
     identify()
     return () => { cancelled = true }
-  }, [needsIdentity, login, register])
+  }, [id, name, needsIdentity, login, register])
 
   if (!notice) return null
 
