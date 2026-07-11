@@ -1277,11 +1277,11 @@ export function getFleetTools() {
     // ---- Messaging ----
     {
       name: 'chat',
-      description: 'Send a message — or, with `amend_id`, edit one you already sent. Filter is { to?: string } — a filter EXPRESSION matching agent name/ID/labels: `|` = or, `&` = and, `!` = not, parens group (e.g. "fleet:skip", "awake & reviewers", "mathy & !goose"). A bare name/id sends to that one agent. Omit filter to send to your manager. Format with markdown.\n\nTwo ways to give the message body: (1) `message` — an inline string (filenames in it auto-become clickable chips); or (2) `file` + `section` — render a section of a markdown file as the message. Use the file form for a report or any longer, proofread-worthy message: write it in a file, then chat the section. The referenced section is the message; the rest of the file is your workspace / extended detail.\n\nTo author clickable choice chips with the chat, add a markdown section whose heading has the `.suggest` class, e.g. `## Pick one {.suggest}` followed by list items `- label | optional hover text | optional command`. The section stays visible as normal markdown and also posts chips for the single resolved chat recipient.\n\nPass `amend_id` (the id returned by a previous chat()) to edit that message IN PLACE in Skip\'s view instead of posting a new one — fix a lint issue or revise wording rather than sending a follow-up correction. The original text is kept in the message\'s history. With the file form you can edit the section in the file, then chat the same `file`+`section` with its `amend_id` to re-render the update in place. Amend honestly: an amend is for fixing the SAME message, not slipping in a different one.',
+      description: 'Send a message — or, with `amend_id`, edit one you already sent. `to` is an agent-set expression matching agent name/id/labels: `|` = or, `&` = and, `!` = not, parens group (e.g. "fleet:skip", "awake & reviewers", "mathy & !goose"). A bare name/id sends to that one agent. Omit `to` to send to your manager. Format with markdown.\n\nTwo ways to give the message body: (1) `message` — an inline string (filenames in it auto-become clickable chips); or (2) `file` + `section` — render a section of a markdown file as the message. Use the file form for a report or any longer, proofread-worthy message: write it in a file, then chat the section. The referenced section is the message; the rest of the file is your workspace / extended detail.\n\nTo author clickable choice chips with the chat, add a markdown section whose heading has `.suggest`, e.g. `## Pick one {.suggest}` followed by list items `- label | optional hover text | optional command`. The section stays visible as normal markdown and also posts chips for the single resolved chat recipient.\n\nPass `amend_id` (the id returned by a previous chat()) to edit that message IN PLACE in Skip\'s view instead of posting a new one — fix a lint issue or revise wording rather than sending a follow-up correction. The original text is kept in the message\'s history. With the file form you can edit the section in the file, then chat the same `file`+`section` with its `amend_id` to re-render the update in place. Amend honestly: an amend is for fixing the SAME message, not slipping in a different one.',
       inputSchema: {
         type: 'object',
         properties: {
-          filter: { type: 'object', description: 'Filter object: { to?: string }. A filter expression (`|` or, `&` and, `!` not, parens) over agent names/ids/labels — e.g. "fleet:skip", "awake & reviewers". Required for a new message; ignored when amend_id is set.' },
+          to: { type: 'string', description: 'Agent-set expression over agent names/ids/labels — e.g. "fleet:skip", "skip | guidance", "awake & reviewers". Required for a new message; ignored when amend_id is set.' },
           message: { type: 'string', description: 'Inline message text. Provide this OR (file + section), not both.' },
           file: { type: 'string', description: 'Path to a markdown file (absolute or relative to your cwd). With `section`, the named section is rendered as the message body.' },
           section: { type: 'string', description: 'Pandoc-style section id within `file` (a heading slug, e.g. "the-plan" for "## The plan", or an explicit {#id}). The section runs to the next heading of the same or higher level.' },
@@ -1536,7 +1536,7 @@ export function getFleetTools() {
       inputSchema: {
         type: 'object',
         properties: {
-          query: { type: 'string', description: 'Search query (supports FTS5 syntax: AND, OR, "exact phrase", prefix*)' },
+          query: { type: 'string', description: 'Unified search query: literal text terms plus event filters such as from:, to:, agent:, type:, since:, before:. Agent filters use the fleet expression grammar: |, &, !, parens, labels/names/ids, and me.' },
           project: { type: 'string', description: 'Filter to a specific project directory name (e.g. "-Users-skip-work-foo")' },
           agent: { type: 'string', description: 'Filter to a specific agent selector. Uses the same unified fleet search grammar as the browser search box.' },
           role: { type: 'string', description: 'Filter by role: "user" (human messages), "assistant" (agent responses), "chat", "delegate", "task_done"' },
@@ -2447,15 +2447,17 @@ export async function handleFleetTool(name, args) {
       }
     }
 
-    // Resolve recipients from the filter expression.
-    // `filter.to` is a string like "fleet:skip", "awake & reviewers", or
-    // "mathy & !goose" (| = or, & = and, ! = not, parens group). Parse it once,
-    // then test each agent's label set — no nested arrays, so any agent (incl.
-    // goose-backed) can emit it.
-    if (!args.filter?.to) return { content: [{ type: 'text', text: 'Missing filter.to — specify recipients as an expression, e.g. "fleet:skip" or "awake & reviewers".' }], isError: true };
+    // Resolve recipients from the agent-set expression.
+    // `to` is a string like "fleet:skip", "skip | guidance", or "awake & reviewers".
+    // Parse it once, then test each agent's label set — no event-filter object
+    // and no nested arrays, so any agent (incl. goose-backed) can emit it.
+    if (args.filter) {
+      return { content: [{ type: 'text', text: 'Missing to — chat recipients are now an agent-set string, e.g. to: "fleet:skip" or to: "skip | guidance". Do not wrap it in filter.to.' }], isError: true };
+    }
+    if (!args.to) return { content: [{ type: 'text', text: 'Missing to — specify recipients as an agent-set expression, e.g. "fleet:skip" or "awake & reviewers".' }], isError: true };
     let filterAst;
-    try { filterAst = parseFilter(args.filter.to); } catch (e) { return { content: [{ type: 'text', text: `⚠ Message NOT sent — bad filter "${args.filter.to}": ${e.message}` }], isError: true }; }
-    if (!filterAst) return { content: [{ type: 'text', text: '⚠ Message NOT sent — empty filter.to.' }], isError: true };
+    try { filterAst = parseFilter(args.to); } catch (e) { return { content: [{ type: 'text', text: `⚠ Message NOT sent — bad to expression "${args.to}": ${e.message}` }], isError: true }; }
+    if (!filterAst) return { content: [{ type: 'text', text: '⚠ Message NOT sent — empty to expression.' }], isError: true };
     let recipients = [];
     let agents = [];
     let rosterUnavailable = false;
@@ -2489,7 +2491,7 @@ export async function handleFleetTool(name, args) {
     // A transient roster miss must never block a direct (exact-id) send.
     if (recipients.length === 0) {
       if (rosterUnavailable) return { content: [{ type: 'text', text: "⚠ Message NOT sent — couldn't fetch the agent roster to resolve a label filter (transient). Retry shortly." }], isError: true };
-      return { content: [{ type: 'text', text: `⚠ Message NOT sent — no agent matched "${args.filter.to}". Check the name/label — this is a targeting miss, not a server problem.` }], isError: true };
+      return { content: [{ type: 'text', text: `⚠ Message NOT sent — no agent matched "${args.to}". Check the name/label — this is a targeting miss, not a server problem.` }], isError: true };
     }
     const maxRecipients = args.max_recipients ?? 5;
     if (recipients.length > maxRecipients) {
@@ -2497,7 +2499,7 @@ export async function handleFleetTool(name, args) {
       return { content: [{ type: 'text', text: `Broadcast to ${recipients.length} agents exceeds max_recipients=${maxRecipients}. Matched: ${names.join(', ')}. Pass max_recipients=${recipients.length} to confirm.` }], isError: true };
     }
     if (authoredSuggestions.length && recipients.length !== 1) {
-      return { content: [{ type: 'text', text: '`.suggest` sections currently require exactly one resolved chat recipient. Narrow filter.to to one agent, or send the message without suggestions.' }], isError: true };
+      return { content: [{ type: 'text', text: '`.suggest` sections currently require exactly one resolved chat recipient. Narrow `to` to one agent, or send the message without suggestions.' }], isError: true };
     }
     if (authoredSuggestions.some(s => s.targetId && !recipients.includes(s.targetId))) {
       return { content: [{ type: 'text', text: 'A `.suggest` item has a target that is not one of this chat\'s resolved recipients.' }], isError: true };
@@ -3803,7 +3805,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     let parsedSearch;
     let searchFilters;
     try {
-      parsedSearch = parseSearchQuery(args.agent ? `agent:${args.agent} ${rawQuery}` : rawQuery);
+      parsedSearch = parseSearchQuery(args.agent ? `agent:(${args.agent}) ${rawQuery}` : rawQuery);
       searchFilters = buildFleetSearchFilters(parsedSearch.filters);
     } catch (e) {
       return { content: [{ type: 'text', text: `Search failed: ${e.message}` }], isError: true };

@@ -25,6 +25,7 @@ import os from 'os';
 import { createLiveStore } from '../../shared/live-store.ts';
 import { PSEUDO_LABELS, parseFilter, evalExpr, evalExprDirectional, labelsForAgent } from '../../shared/fleet-labels.mjs';
 import { baseName, nameForPhase, phaseFromName, ALL_PHASES, prettyNameForFriendlyName } from '../../shared/lineage-name.mjs';
+import { literalFtsQuery } from '../../shared/fts-query.mjs';
 import { createTaskDocMaterializer } from './task-doc-materializer.mjs';
 
 // Persistent DB under ~/.config/tlda/ (survives macOS reboots).
@@ -2859,7 +2860,7 @@ export class FleetStore {
   }
 
   searchAll(query, { limit = 50, agent, role, since, before, agentOnly, historyOnly, eventOnly, fromOnly } = {}) {
-    const ftsQuery = query.replace(/"/g, '""');
+    const ftsQuery = literalFtsQuery(query);
     const runQuery = (sql, params) => {
       try { return this.db.prepare(sql).all(...params); } catch { return []; }
     };
