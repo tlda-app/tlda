@@ -660,7 +660,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
     ? `No project '${effectiveDoc(spawnDoc, currentDoc)}'`
     : ''
   const spawnInvalid = projectInvalid || !!spawnError
-  const spawnTooltip = spawnError || spawnValidationError || 'Spawn agent'
+  const spawnTooltip = spawnError || spawnValidationError || 'Mint agent'
   const submitSpawn = useCallback(() => {
     if (!canSubmitSpawn(spawnDoc, projectList, currentDoc)) {
       spawnInputRef.current?.focus()
