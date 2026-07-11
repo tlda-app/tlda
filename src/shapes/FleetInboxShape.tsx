@@ -1186,6 +1186,19 @@ function FleetInboxInner({ shape }: { shape: any }) {
     if (shouldPop) setOpenItemKey(null)
   }, [resetModalPopGesture])
 
+  const handlePhoneHtmlContainerPointerUp = useCallback((e: React.PointerEvent<HTMLElement>) => {
+    if (!isPhoneSurface || activeItem || activeThread) return
+    const target = e.target instanceof Element ? e.target : null
+    if (target?.closest('.fleet-inbox-agents-row, button, input, textarea, select, [role="button"], [data-composer-rail-action]')) return
+    const row = e.currentTarget.querySelector('.fleet-inbox-agents-row')
+    if (!row) return
+    const rect = row.getBoundingClientRect()
+    if (e.clientX < rect.left || e.clientX > rect.right || e.clientY < rect.top || e.clientY > rect.bottom) return
+    e.preventDefault()
+    stopEventPropagation(e)
+    setOpenItemKey('agents')
+  }, [activeItem, activeThread, isPhoneSurface])
+
   const activeTitle = activeThread
     ? activeThread.partnerName
     : activeItem?.kind === 'agents'
@@ -1216,7 +1229,10 @@ function FleetInboxInner({ shape }: { shape: any }) {
   const taskCount = visibleDirectNodes.length + visibleCascadeNodes.length + visibleSpanTasks.length
 
   return (
-    <HTMLContainer style={{ width: w, height: h, pointerEvents: 'all', overflow: 'visible' }}>
+    <HTMLContainer
+      style={{ width: w, height: h, pointerEvents: 'all', overflow: 'visible' }}
+      onPointerUp={handlePhoneHtmlContainerPointerUp}
+    >
       <div
         ref={containerRef}
         className={`fleet-shape fleet-inbox-shape${isPhoneSurface ? ' phone-inbox-surface' : ''}`}
