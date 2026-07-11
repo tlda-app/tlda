@@ -3821,7 +3821,7 @@ async function cmdDoctor() {
 
 async function cmdDoctorYolo() {
   const { sanitizeSessionName, readConfig, resolveDnsAlias } = await import('../agent-launch/identity.mjs')
-  const { resolveApi, wsReserveShell } = await import('../agent-launch/register.mjs')
+  const { resolveApi, wsReserveShell, findAgent, markAgentDead } = await import('../agent-launch/register.mjs')
   const { uniqueSessionName, spawnTmux } = await import('../agent-launch/tmux.mjs')
   const claude = await import('../agent-launch/harness/claude.mjs')
 
@@ -3888,13 +3888,43 @@ async function cmdDoctorYolo() {
   if (!launched) {
     throw new Error(`tmux session ${tmuxSession} already has a live harness runtime`)
   }
-  console.log(green(bold('Break-glass agent launched.')))
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // PROVE THE SEAT IS REACHABLE BEFORE REPORTING SUCCESS. Do NOT print "launched"
+  // just because tmux started — that is exactly how the 2026-07-10 GHOST happened:
+  // an agent whose shell was reserved but never logged in. It could SEND one
+  // message off its raw FLEET_ID, but it had no roster seat, no friendly name in
+  // the agents panel, and was NOT a routable chat recipient ("filter matches no
+  // known agents"). Skip could not talk to it and it tortured him for a stretch.
+  //
+  // A reserved-but-not-logged-in shell carries `metadata.shell === true`; the login
+  // handler clears that flag (unified-server.mjs). So we poll until the flag is
+  // cleared and the row is live = the agent actually completed login and is a real
+  // recipient. If it never logs in, that is a DISASTER, not a success: tear down the
+  // phantom reserved seat and error out loudly. A break-glass tool that says
+  // "launched" about an agent you cannot reach is worse than one that fails.
+  // ──────────────────────────────────────────────────────────────────────────
+  const reachDeadline = Date.now() + 60_000
+  let reachable = null
+  while (Date.now() < reachDeadline) {
+    await new Promise(r => setTimeout(r, 1500))
+    const found = await findAgent(fleetId, { api }).catch(() => null)
+    if (found && !found.dead && !found.metadata?.shell) { reachable = found; break }
+  }
+  if (!reachable) {
+    await markAgentDead(fleetId, { api }).catch(() => {})
+    throw new Error(
+      `Break-glass launch FAILED: ${fleetId} reserved a shell but never logged in within 60s — `
+      + `it is NOT in the roster and cannot be reached (a ghost). Tore down the phantom seat. `
+      + `Inspect tmux '${tmuxSession}' for a stuck dev-channels prompt or a crash, then retry.`)
+  }
+  console.log(green(bold('Break-glass agent launched and verified reachable.')))
   console.log(`  fleet_id: ${fleetId}`)
-  console.log(`  name: ${name}`)
+  console.log(`  name: ${reachable.friendly_name || name}`)
   console.log(`  tmux: ${tmuxSession}`)
   console.log(`  cwd: ${cwd}`)
   console.log(`  model: ${model}`)
-  console.log(dim('  The agent is prompted to log in to fleet and check inbox.'))
+  console.log(dim('  Logged in to fleet, in the roster, and a routable chat recipient.'))
 }
 
 
