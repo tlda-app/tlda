@@ -27,39 +27,12 @@ import { dragCoordinator } from './dragCoordinator'
 import { useIsInViewport, useVisibilityViewportId } from './useIsInViewport'
 import { fleetInteractionFrame, fleetPointerEventPagePoint } from '../wm/fleet-interaction-frame'
 import { useAvailableSpawnModels } from '../fleet/useAvailableSpawnModels'
+import { activeMintToken, applyMintCandidate, parseMintInput } from '../fleet/mint-input'
 
 
 const DEFAULT_W = 340
 const DEFAULT_H = 400
 
-const MODEL_SHORTHANDS: Record<string, string> = {
-  'opus': 'opus', 'opus45': 'opus45', 'opus46': 'opus46', 'opus47': 'opus47', 'opus48': 'opus48',
-  'fable': 'fable', 'fable5': 'fable5', 'sonnet': 'sonnet', 'sonnet5': 'sonnet5', 'haiku': 'haiku',
-  '45': 'opus45', '46': 'opus46', '47': 'opus47', '48': 'opus48',
-  's': 'sonnet', 's5': 'sonnet5', 'h': 'haiku',
-  'o45': 'opus45', 'o46': 'opus46', 'o47': 'opus47', 'o48': 'opus48',
-  'ds': 'deepseek',
-}
-
-const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max']
-const EFFORT_SHORTHANDS: Record<string, string> = {
-  'lo': 'low', 'low': 'low', 'l': 'low',
-  'med': 'medium', 'medium': 'medium', 'm': 'medium',
-  'hi': 'high', 'high': 'high', 'h': 'high',
-  'xhi': 'xhigh', 'xhigh': 'xhigh', 'xh': 'xhigh', 'x': 'xhigh',
-  'max': 'max',
-}
-// Empty-state model picks (shown before you type a model segment): the curated,
-// diverse set we actively test — a few headline Claude families + the goose
-// models teacher-dev runs in the manners-course sweep. Everything else (older
-// versions, untested variants) still completes once you start typing letters,
-// so the full alias list stays reachable; this just keeps the no-prefix list
-// short and representative instead of a wall of Claude aliases. Goose subset
-// confirmed with teacher-dev (the leaderboard set).
-const CURATED_SPAWN_MODELS = [
-  'opus', 'fable', 'sonnet', 'haiku',
-  'deepseek', 'kimi', 'qwen', 'glm', 'minimax', 'mistral',
-]
 const CAT_NAMES = [
   'whiskers', 'mittens', 'shadow', 'luna', 'mochi', 'pepper', 'nugget', 'biscuit',
   'pickles', 'waffles', 'noodle', 'tofu', 'gizmo', 'beans', 'ziggy', 'cleo',
@@ -67,128 +40,71 @@ const CAT_NAMES = [
   'pebble', 'sage', 'jinx', 'kiwi', 'marble', 'rumble',
 ]
 
-function parseSpawnInput(raw: string, models: string[] = []): { doc: string; name: string | undefined; model: string | undefined; effort: string | undefined } {
-  const parts = raw.split(':')
-  const doc = parts[0]
-  if (parts.length === 2) {
-    const model = MODEL_SHORTHANDS[parts[1]] || (models.includes(parts[1]) ? parts[1] : undefined)
-    if (model) return { doc, name: undefined, model, effort: undefined }
-  }
-  const name = parts[1] || undefined
-  const modelRaw = parts[2] || undefined
-  const model = modelRaw ? (MODEL_SHORTHANDS[modelRaw] || modelRaw) : undefined
-  const effortRaw = parts[3] || undefined
-  const effort = effortRaw ? (EFFORT_SHORTHANDS[effortRaw] || undefined) : undefined
-  return { doc, name, model, effort }
-}
-
-// Tab-completable model tokens = the live aliases plus the typing-shorthand keys.
-function completableFrom(models: string[]): string[] {
-  return [...models, ...Object.keys(MODEL_SHORTHANDS)].filter((v, i, a) => a.indexOf(v) === i)
-}
-const ALL_EFFORT_COMPLETABLE = [...EFFORT_LEVELS, ...Object.keys(EFFORT_SHORTHANDS)]
-  .filter((v, i, a) => a.indexOf(v) === i)
-
 function completeSegment(typed: string, candidates: string[]): string {
   if (!typed) return ''
   const match = candidates.find(c => c.startsWith(typed) && c !== typed)
   return match ? match.slice(typed.length) : ''
 }
 
-function getGhostCompletion(input: string, projects: string[], catName: string, defaultDoc: string, models: string[], defaultModel: string): string {
-  // Empty-state default is the doc the user is currently viewing, not the
-  // alphabetically-first project — so an empty field implies "spawn here".
+function getGhostCompletion(input: string, projects: string[], catName: string, defaultDoc: string, models: string[], defaultModel: string, effortLevels: string[]): string {
   const defaults = [defaultDoc || projects[0] || 'doc', catName, defaultModel]
-  if (!input) return defaults.join(':')
-
-  const parts = input.split(':')
-  const lastPart = parts[parts.length - 1]
-  const pos = parts.length // 1-based: 1=project, 2=name, 3=model, 4=effort
-
-  let segCompletion = ''
-  if (!lastPart) {
-    segCompletion = defaults[pos - 1] || ''
-  } else if (pos === 1) {
-    segCompletion = completeSegment(lastPart, projects)
-  } else if (pos === 2) {
-    segCompletion = completeSegment(lastPart, CAT_NAMES)
-  } else if (pos === 3) {
-    segCompletion = completeSegment(lastPart, completableFrom(models))
-  } else if (pos === 4) {
-    segCompletion = completeSegment(lastPart, ALL_EFFORT_COMPLETABLE)
-  }
-
+  if (!input) return defaults.join(' ')
+  const { pos, prefix } = activeMintToken(input)
+  const pool = pos === 1 ? projects : pos === 2 ? CAT_NAMES : pos === 3 ? models : effortLevels
+  const typed = pos === 4 ? prefix.replace(/^effort:/, '') : prefix
+  const completion = completeSegment(typed, pool)
+  if (pos === 4) return completion
   const remaining = defaults.slice(pos)
-  if (remaining.length > 0) {
-    return segCompletion + ':' + remaining.join(':')
-  }
-  return segCompletion
+  return completion + (remaining.length ? ` ${remaining.join(' ')}` : '')
 }
 
-// Staged Tab completion: fill in ONLY the current segment (up to the next colon)
-// and advance to the next one, rather than expanding the whole 4-part spec at
-// once. Returns the string to APPEND to the input. On a non-final segment it
-// ends with ':' so the cursor lands at the start of the next segment; the final
-// (effort) segment has no trailing colon. Returns '' when there's nothing to add
-// (already past the last segment).
-function getStagedTabCompletion(input: string, projects: string[], catName: string, defaultDoc: string, models: string[], defaultModel: string): string {
+// Staged Tab completion fills only the active positional or keyword token.
+// Returns the string to append, including the separating space when advancing
+// to the next positional token.
+function getStagedTabCompletion(input: string, projects: string[], catName: string, defaultDoc: string, models: string[], defaultModel: string, effortLevels: string[]): string {
   const defaults = [defaultDoc || projects[0] || 'doc', catName, defaultModel]
-  const parts = input.split(':')
-  const pos = parts.length // 1-based: 1=project, 2=name, 3=model, 4=effort
-  if (pos > defaults.length) return ''
-  const lastPart = parts[parts.length - 1]
-
-  let segCompletion = ''
-  if (!lastPart) {
-    segCompletion = defaults[pos - 1] || ''
-  } else if (pos === 1) {
-    segCompletion = completeSegment(lastPart, projects)
-  } else if (pos === 2) {
-    segCompletion = completeSegment(lastPart, CAT_NAMES)
-  } else if (pos === 3) {
-    segCompletion = completeSegment(lastPart, completableFrom(models))
-  } else if (pos === 4) {
-    segCompletion = completeSegment(lastPart, ALL_EFFORT_COMPLETABLE)
-  }
-
-  // Advance to the next segment on every segment but the last.
-  return pos < defaults.length ? segCompletion + ':' : segCompletion
+  const { pos, prefix } = activeMintToken(input)
+  const pool = pos === 1 ? projects : pos === 2 ? CAT_NAMES : pos === 3 ? models : effortLevels
+  const typed = pos === 4 ? prefix.replace(/^effort:/, '') : prefix
+  const completion = typed ? completeSegment(typed, pool) : (pos <= 3 ? defaults[pos - 1] || '' : '')
+  return pos < 3 ? `${completion} ` : completion
 }
 
 const SEG_LABELS = ['project', 'name', 'model', 'effort']
 
-// Candidate list for the segment the cursor is currently in (the last colon-part).
+// Candidate list for the token the cursor is currently in.
 // Shows canonical values only (not shorthand aliases) so the dropdown stays readable.
-function getSegmentCandidates(input: string, projects: string[], models: string[], curatedModels: string[]): { pos: number; prefix: string; candidates: string[] } {
-  const parts = input.split(':')
-  const pos = parts.length // 1=project, 2=name, 3=model, 4=effort
-  const prefix = parts[parts.length - 1]
+function getSegmentCandidates(input: string, projects: string[], models: string[], effortLevels: string[]): { pos: number; prefix: string; candidates: string[] } {
+  const { pos, prefix } = activeMintToken(input)
   let pool: string[] = []
   if (pos === 1) pool = projects
   else if (pos === 2) pool = CAT_NAMES
   else if (pos === 3) pool = models
-  else if (pos === 4) pool = EFFORT_LEVELS
-  const lower = prefix.toLowerCase()
-  // Model segment with nothing typed: show the curated/diverse set, not every
-  // alias. Once a prefix is typed, fall through to the full model pool so any
-  // model is still reachable by name.
-  const candidates = prefix
-    ? pool.filter(c => c.toLowerCase().startsWith(lower) && c !== prefix)
-    : (pos === 3 ? curatedModels : pool)
+  else if (pos === 4) pool = effortLevels
+  const typed = pos === 4 ? prefix.replace(/^effort:/, '') : prefix
+  const lower = typed.toLowerCase()
+  const candidates = typed
+    ? pool.filter(c => c.toLowerCase().startsWith(lower) && c !== typed)
+    : pool
   return { pos, prefix, candidates }
 }
 
-// Replace the current (last) segment's typed prefix with the chosen candidate.
-function applyCandidate(input: string, candidate: string): string {
-  const parts = input.split(':')
-  parts[parts.length - 1] = candidate
-  return parts.join(':')
+function moveToSpawnSegment(
+  input: string,
+  pos: number,
+  defaults: [string, string, string],
+): string {
+  const parsed = parseMintInput(input)
+  const positional = [parsed.doc, parsed.name || '', parsed.model || '']
+  for (let i = 0; i < pos - 1 && i < 3; i++) positional[i] ||= defaults[i] || ''
+  if (pos <= 3) return positional.slice(0, pos).join(' ')
+  return `${positional.slice(0, 3).join(' ')} effort:${parsed.effort || ''}`
 }
 
-// The project that will actually be used: the typed first segment, or — when
+// The project that will actually be used: the typed first token, or — when
 // the field is empty — the doc currently being viewed.
 function effectiveDoc(input: string, currentDoc: string): string {
-  return input.split(':')[0] || currentDoc
+  return parseMintInput(input).doc || currentDoc
 }
 
 // True when a project is named but won't resolve to a known project. Used to
@@ -631,23 +547,21 @@ function FleetAgentsInner({ shape }: { shape: any }) {
   const spawnModelInfo = useAvailableSpawnModels(userId)
   const spawnModels = spawnModelInfo.aliases
   const defaultSpawnModel = spawnModelInfo.defaultAlias
-  // Curated empty-state picks, intersected with what's actually available (and
-  // verified) so a removed/renamed alias never shows a dead entry; curated order
-  // preserved.
-  const curatedSpawnModels = useMemo(
-    () => CURATED_SPAWN_MODELS.filter(a => spawnModels.includes(a)),
-    [spawnModels],
-  )
   const [catName] = useState(() => CAT_NAMES[Math.floor(Math.random() * CAT_NAMES.length)])
   const spawnInputRef = useRef<HTMLInputElement>(null)
   const [spawnFocused, setSpawnFocused] = useState(false)
   const [dropdownIdx, setDropdownIdx] = useState(-1) // -1 = nothing highlighted
   const [dropdownDismissed, setDropdownDismissed] = useState(false)
-  const { pos: segPos, candidates: segCandidates } = useMemo(
-    () => getSegmentCandidates(spawnDoc, projectList, spawnModels, curatedSpawnModels),
-    [spawnDoc, projectList, spawnModels, curatedSpawnModels],
+  const parsedSpawn = useMemo(() => parseMintInput(spawnDoc), [spawnDoc])
+  const selectedModelOptions = useMemo(
+    () => spawnModelInfo.models.find(model => model.alias === parsedSpawn.model)?.options || {},
+    [spawnModelInfo.models, parsedSpawn.model],
   )
-  const parsedSpawn = useMemo(() => parseSpawnInput(spawnDoc, spawnModels), [spawnDoc, spawnModels])
+  const effortLevels = selectedModelOptions.effort || []
+  const { pos: segPos, candidates: segCandidates } = useMemo(
+    () => getSegmentCandidates(spawnDoc, projectList, spawnModels, effortLevels),
+    [spawnDoc, projectList, spawnModels, effortLevels],
+  )
   const projectInvalid = useMemo(
     () => projectUnresolvable(spawnDoc, projectList, currentDoc),
     [spawnDoc, projectList, currentDoc],
@@ -709,8 +623,19 @@ function FleetAgentsInner({ shape }: { shape: any }) {
       })
   }, [spawnDoc, projectList, currentDoc, parsedSpawn, defaultSpawnModel])
   const dropdownOpen = spawnFocused && !dropdownDismissed && segCandidates.length > 0
+  const spawnDefaults = useMemo<[string, string, string]>(() => [
+    currentDoc || projectList[0] || '',
+    catName,
+    defaultSpawnModel,
+  ], [currentDoc, projectList, catName, defaultSpawnModel])
+  const chooseSpawnField = useCallback((pos: number) => {
+    setSpawnDoc(current => moveToSpawnSegment(current, pos, spawnDefaults))
+    setDropdownIdx(-1)
+    setDropdownDismissed(false)
+    requestAnimationFrame(() => spawnInputRef.current?.focus())
+  }, [spawnDefaults])
   const acceptCandidate = useCallback((candidate: string) => {
-    setSpawnDoc(applyCandidate(spawnDoc, candidate))
+    setSpawnDoc(applyMintCandidate(spawnDoc, candidate))
     setDropdownIdx(-1)
     setDropdownDismissed(true)
     spawnInputRef.current?.focus()
@@ -927,7 +852,38 @@ function FleetAgentsInner({ shape }: { shape: any }) {
               </span>
             )}
           </span>
-          <span className="fleet-agents-spawn-btns" onPointerDown={(e) => e.stopPropagation()}>
+          <span className={'fleet-agents-spawn-btns' + (spawnFocused ? ' is-open' : '')} onPointerDown={stopEventPropagation}>
+            {spawnFocused && (
+              <div className="fleet-agents-mint-picker" onPointerDown={stopEventPropagation}>
+                <div className="fleet-agents-mint-fields" aria-label="mint agent fields">
+                  {SEG_LABELS.slice(0, effortLevels.length ? 4 : 3).map((label, index) => (
+                    <button
+                      key={label}
+                      type="button"
+                      className={'fleet-agents-mint-field' + (segPos === index + 1 ? ' is-active' : '')}
+                      onMouseDown={(e) => { e.preventDefault(); chooseSpawnField(index + 1) }}
+                    >{label}</button>
+                  ))}
+                </div>
+                <div className="fleet-agents-mint-choices" aria-label={`${SEG_LABELS[segPos - 1] || 'field'} choices`}>
+                  {spawnModelInfo.loading && segPos === 3 ? (
+                    <span className="fleet-agents-mint-empty">asking daemon…</span>
+                  ) : spawnModelInfo.error && segPos === 3 ? (
+                    <span className="fleet-agents-mint-empty">models unavailable</span>
+                  ) : segCandidates.length ? segCandidates.map((candidate) => (
+                    <button
+                      key={candidate}
+                      type="button"
+                      className={'fleet-agents-mint-choice' + (segCandidates[dropdownIdx] === candidate ? ' is-active' : '')}
+                      onMouseEnter={() => setDropdownIdx(segCandidates.indexOf(candidate))}
+                      onMouseDown={(e) => { e.preventDefault(); acceptCandidate(candidate) }}
+                    >{candidate}</button>
+                  )) : (
+                    <span className="fleet-agents-mint-empty">type to narrow</span>
+                  )}
+                </div>
+              </div>
+            )}
             <span className="fleet-agents-spawn-input-wrap">
               <input
                 ref={spawnInputRef}
@@ -942,7 +898,11 @@ function FleetAgentsInner({ shape }: { shape: any }) {
                 name="tlda-fleet-agent-spawn-target"
                 spellCheck={false}
                 onFocus={() => setSpawnFocused(true)}
-                onBlur={() => { setSpawnFocused(false); setDropdownIdx(-1) }}
+                onBlur={(e) => {
+                  if (e.currentTarget.closest('.fleet-agents-spawn-btns')?.contains(e.relatedTarget as Node | null)) return
+                  setSpawnFocused(false)
+                  setDropdownIdx(-1)
+                }}
                 onChange={(e) => { setSpawnDoc(e.target.value); setSpawnError(''); setDropdownIdx(-1); setDropdownDismissed(false) }}
                 onKeyDown={(e) => {
                   e.stopPropagation()
@@ -954,15 +914,18 @@ function FleetAgentsInner({ shape }: { shape: any }) {
                     e.preventDefault()
                     setDropdownIdx(i => Math.max(i - 1, -1))
                   } else if (e.key === 'Escape') {
-                    if (dropdownOpen) { e.preventDefault(); setDropdownDismissed(true); setDropdownIdx(-1) }
+                    e.preventDefault()
+                    setDropdownDismissed(true)
+                    setDropdownIdx(-1)
+                    setSpawnFocused(false)
+                    spawnInputRef.current?.blur()
                   } else if (e.key === 'Tab') {
                     if (dropdownOpen && dropdownIdx >= 0) {
                       e.preventDefault()
                       acceptCandidate(segCandidates[dropdownIdx])
                     } else {
-                      // Staged: complete one segment (to the next colon) per Tab,
-                      // not the whole spec at once.
-                      const seg = getStagedTabCompletion(spawnDoc, projectList, catName, currentDoc, spawnModels, defaultSpawnModel)
+                      // Staged: complete one token per Tab.
+                      const seg = getStagedTabCompletion(spawnDoc, projectList, catName, currentDoc, spawnModels, defaultSpawnModel, effortLevels)
                       if (seg) { e.preventDefault(); setSpawnDoc(spawnDoc + seg); setDropdownDismissed(true) }
                     }
                   } else if (e.key === 'Enter') {
@@ -974,26 +937,13 @@ function FleetAgentsInner({ shape }: { shape: any }) {
                     }
                   }
                 }}
-                placeholder=""
+                placeholder={spawnFocused ? '' : 'mint a new agent'}
               />
-              <span className="fleet-agents-spawn-ghost"><span style={{ visibility: 'hidden' }}>{spawnDoc}</span>{getGhostCompletion(spawnDoc, projectList, catName, currentDoc, spawnModels, defaultSpawnModel)}</span>
+              {spawnFocused && <span className="fleet-agents-spawn-ghost"><span style={{ visibility: 'hidden' }}>{spawnDoc}</span>{getGhostCompletion(spawnDoc, projectList, catName, currentDoc, spawnModels, defaultSpawnModel, effortLevels)}</span>}
               {spawnInvalid && (
                 <span id="fleet-agents-spawn-error" className="fleet-agents-spawn-error" role="alert">
                   {spawnTooltip}
                 </span>
-              )}
-              {dropdownOpen && (
-                <ul className="fleet-agents-spawn-dropdown" onPointerDown={(e) => e.stopPropagation()}>
-                  <li className="fleet-agents-spawn-dropdown-label">{SEG_LABELS[segPos - 1]}</li>
-                  {segCandidates.map((c, i) => (
-                    <li
-                      key={c}
-                      className={'fleet-agents-spawn-dropdown-item' + (i === dropdownIdx ? ' is-active' : '')}
-                      onMouseEnter={() => setDropdownIdx(i)}
-                      onMouseDown={(e) => { e.preventDefault(); acceptCandidate(c) }}
-                    >{c}</li>
-                  ))}
-                </ul>
               )}
             </span>
             <button
