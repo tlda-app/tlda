@@ -7,6 +7,7 @@ import { detectSpawnStartupFailureTranscript } from '../agent-runtime/daemon-gua
 import { probeSpawnAvailability } from './availability.mjs'
 import { newFleetId } from './identity.mjs'
 import { readDaemonConfigForCwd } from './permission-ledger.mjs'
+import { isIntentionalEmptyPermissionSet, permissionSetConfersNothing } from './permissions.mjs'
 
 const execFileP = promisify(execFile)
 
@@ -156,6 +157,15 @@ export function createAgentLauncher({
           throw err
         }
         const spawnerGrant = permissionLedger.grantFor(requester)
+        // DAMNING: this is the daemon-config resolution point. `readDaemonConfigForCwd`
+        // reads daemon.yaml's `profiles`/`grants`/`default`. If that config is EMPTY
+        // (profiles:{} grants:{} default:null — e.g. a stray/uninitialized daemon.yaml),
+        // this resolves to null, resolveSpawnGrant's intersection collapses, and the
+        // agent gets an empty grant → deny-all seatbelt → alive-but-caged. That is the
+        // exact 2026-07-10 failure. Empty daemon config MUST NOT silently resolve to
+        // "cage everyone." The hard refuse below (SPAWN_NO_GRANT) is the backstop that
+        // makes this loud instead of silent — do not remove it, and do not paper over an
+        // empty daemon.yaml by defaulting a permissive grant here.
         const projectDefaultProfile = resolvedCwd ? readDaemonConfigForCwd(resolvedCwd)?.default : null
         const grantConfig = projectDefaultProfile
           ? { ...config, spawnPolicy: { ...(config?.spawnPolicy || {}), projectProfiles: { ...((config?.spawnPolicy || {}).projectProfiles || {}), [resolvedCwd]: projectDefaultProfile } } }
@@ -174,6 +184,41 @@ export function createAgentLauncher({
           project: projectForGrant,
           cwd: resolvedCwd,
         })
+      }
+      // ────────────────────────────────────────────────────────────────────────
+      // INVARIANT — NO AGENT MAY EVER BE SPAWNED WITHOUT A RESOLVED GRANT.
+      //
+      // If the grant resolution above produced a set that confers NOTHING — no
+      // readable and no writable zone — and it was NOT a deliberately-requested
+      // `none`, then no configuration was actually specified for this agent. We
+      // MUST refuse the spawn here, before any ledger row is written and before
+      // the seat is launched. Do not "default a grant"; do not proceed and let
+      // the seatbelt sort it out.
+      //
+      // WHY THIS EXISTS, AND WHY YOU MUST NOT REMOVE OR LOOSEN IT: on 2026-07-10
+      // grant-less spawns were let through. Every agent born that way inherited an
+      // empty-write seatbelt (fence-seatbelt.mjs: empty allowWrite → `deny
+      // file-write* (subpath "/")` = deny ALL writes). The result was a fleet of
+      // agents that were ALIVE — they registered, they answered chat — but were
+      // fully caged: they could not write a file, run a command, or take a single
+      // recovery action. Every recovery agent that night was stillborn this way.
+      // It tortured Skip for hours and looked like "the models are broken" when the
+      // real cause was infra handing out empty grants. An agent that is alive but
+      // cannot act is worse than no agent: it consumes a seat, answers, and does
+      // nothing. Skip's rule, verbatim: "Spawning an agent without any grant at all
+      // is an error." Refuse loudly. A deliberately minimal/read-only profile that
+      // someone actually specified still passes — this only catches the accidental
+      // empty. If you are here to weaken this because a spawn is being refused, the
+      // fix is to specify a real profile/grant, NOT to delete this guard.
+      // ────────────────────────────────────────────────────────────────────────
+      if (permissionSetConfersNothing(grant.grantedPermissionSet)
+        && !isIntentionalEmptyPermissionSet(grant.grantedPermissionSet)) {
+        const err = new Error(
+          `spawn refused: no grant resolved for ${agentName}${agent_id ? ` (${agent_id})` : ''} — `
+          + `the spawn policy produced an empty grant (no readable or writable zone) and none was deliberately requested. `
+          + `Refusing to create an alive-but-caged agent. Specify a real profile/grant for this spawn.`)
+        err.code = 'SPAWN_NO_GRANT'
+        throw err
       }
     } catch (e) {
       return { ok: false, name: agentName, error: `spawn policy resolution failed: ${e.message}` }

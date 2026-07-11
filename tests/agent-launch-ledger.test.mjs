@@ -83,6 +83,78 @@ test('daemon launcher writes fresh-spawn ledger row before starting seat', async
   }
 })
 
+function emptyIntersectionPermissionSet() {
+  // The shape a collapsed spawn-policy intersection produces: confers nothing,
+  // but is NOT a deliberately-requested `none` (name/projected ≠ none, compiled
+  // from an intersection). This is exactly the 2026-07-10 caged-agent grant.
+  return {
+    type: 'permission-set',
+    name: 'grant',
+    operations: {
+      read: { allow: [], deny: [] },
+      write: { allow: [], deny: [] },
+      spawn: { allow: [], deny: [] },
+    },
+    rules: [],
+    projectedPolicy: { name: 'cwd', policy: 'cwd' },
+    compiledFrom: 'intersection',
+  }
+}
+
+test('daemon launcher hard-refuses a spawn whose grant resolves to nothing', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-agent-launch-nogrant-'))
+  const ledger = createPermissionLedger(path.join(tmp, 'fleet-daemon.db'))
+  try {
+    // Spawner itself holds a caged (confers-nothing) grant, so the spawn
+    // intersection collapses to empty — no readable, no writable zone.
+    ledger.setSync('fleet:requester', {
+      spawnPolicy: { name: 'cwd', policy: 'cwd' },
+      permissionSet: emptyIntersectionPermissionSet(),
+      source: 'test-requester',
+    })
+
+    let spawnImplCalled = false
+    const launcher = createAgentLauncher({
+      activeConfigName: 'test',
+      configDir: tmp,
+      loadConfig: () => ({
+        spawnPolicy: {
+          permissionProfiles: { ops: permissionSet() },
+          defaultProfile: 'ops',
+        },
+      }),
+      log: { info() {}, warn() {}, error() {} },
+      machineId: 'test-machine',
+      permissionLedger: ledger,
+      sendMsg: () => true,
+      getProjects: () => [],
+      tmux: async () => true,
+      startupFailureProbeMs: 1,
+      spawnImpl: async (params) => {
+        spawnImplCalled = true
+        return { ok: true, fleetId: params.agentId, tmuxSession: 'x', harness: 'codex', model: params.model, pending: true }
+      },
+    })
+
+    const result = await launcher.handlers.spawn({
+      name: 'caged-victim',
+      model: 'gpt-5.5',
+      kind: 'codex',
+      cwd: tmp,
+      requester: { id: 'fleet:requester', name: 'requester' },
+    })
+
+    assert.equal(result.ok, false, JSON.stringify(result))
+    assert.match(result.error || '', /no grant|spawn refused/i)
+    assert.equal(spawnImplCalled, false, 'must refuse before launching the seat')
+    // No ledger row for the refused agent (refuse happens before any mint/write).
+    assert.equal(ledger.get('fleet:caged-victim'), null)
+  } finally {
+    await ledger.close()
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
 test('session identity recording does not fabricate an empty permission grant', async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-agent-launch-session-ledger-'))
   const ledger = createPermissionLedger(path.join(tmp, 'fleet-daemon.db'))

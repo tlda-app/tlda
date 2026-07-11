@@ -82,7 +82,7 @@ function permissionSetList(value, operation, effect) {
   return Array.isArray(list) ? list : []
 }
 
-function isIntentionalEmptyPermissionSet(value) {
+export function isIntentionalEmptyPermissionSet(value) {
   const projected = value?.projectedPolicy
   const projectedName = typeof projected === 'string'
     ? projected
@@ -90,6 +90,20 @@ function isIntentionalEmptyPermissionSet(value) {
   return String(value?.name || '').trim().toLowerCase() === 'none'
     || String(projectedName || '').trim().toLowerCase() === 'none'
     || value?.compiledFrom === 'empty-permission-set'
+}
+
+// A grant that confers NO access at all — no readable and no writable zone. This is
+// the shape a collapsed spawn-policy intersection produces when nothing was actually
+// specified for the agent (empty daemon profiles/grants, an absent requester grant,
+// a mismatched project). Combined with isIntentionalEmptyPermissionSet (which
+// distinguishes a deliberately-requested `none` from an accidental collapse), this
+// is the single predicate that decides "no grant specified" at the spawn boundary
+// (agent-launch.mjs) AND here in the launch-time lease build. Keep both callers on
+// THIS function — do not fork the definition, or the two checks will drift and a
+// caged agent will slip through one of them.
+export function permissionSetConfersNothing(permissionSet) {
+  return permissionSetList(permissionSet, 'read', 'allow').length === 0
+    && permissionSetList(permissionSet, 'write', 'allow').length === 0
 }
 
 function validateExplicitPermissionSet(value) {
