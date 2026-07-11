@@ -3471,6 +3471,10 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   overflow: auto;
 }
 
+.fleet-chat-shape .fleet-terminal-hover-pane-pinned .fleet-terminal-hover-body {
+  overflow: auto;
+}
+
 /* Full-width field; the prompt and ^C float INSIDE it (terminal-style) rather
    than flanking it, so the input reads as one full-width line. */
 .fleet-chat-shape .fleet-terminal-hover-input-bar {
