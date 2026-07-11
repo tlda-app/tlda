@@ -1,6 +1,12 @@
 # tlda Feature Guide
 
-This document describes what tlda looks like and how you interact with it. It's for new users figuring out the app, and for agents that need to understand what a feature *is* before debugging it.
+> **Historical feature snapshot — not current user or operator guidance.**
+> Status labels below record an earlier observed surface and have not been
+> reverified against the current browser. Use the project README for the current
+> product overview and verify live behavior with `tlda-dev pw`.
+
+This document preserves an earlier inventory of what tlda looked like and how it
+was expected to behave.
 
 Features are tagged with status:
 - **Working** — used regularly, known to work

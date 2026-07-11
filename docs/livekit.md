@@ -1,5 +1,10 @@
 # LiveKit live voice/video
 
+> **Historical MVP record.** This describes the July 3, 2026 landable worktree,
+> not a standing guarantee that every step is deployed unchanged. The product
+> principle remains current: voice/video is entered from the document while
+> reading, not presented as a separate meeting room.
+
 Status: landable MVP worktree, 2026-07-03.
 
 ## Product shape

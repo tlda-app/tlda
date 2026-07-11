@@ -125,7 +125,9 @@ export function getActiveConfigName(config = null) {
  * leftover TLDA_SERVER that points somewhere else means the process refuses to
  * start rather than join a roster nobody else is on.
  *
- * Exception: TLDA_SYNC_SERVER is the deliberate split-sync pattern (read doc
+ * Internal exception: launch harnesses project TLDA_SYNC_SERVER as the
+ * room/signal/shapes transport target. It is not a user-facing config selector;
+ * operators select complete named configs for database/store. (Read doc
  * assets from one origin, sync shapes to another — the published triage clone).
  * When it's set, we don't force TLDA_SERVER to match the active config.
  *
@@ -138,7 +140,7 @@ export function getActiveConfigName(config = null) {
 export function assertServerCoherence(config = null) {
   const envServer = process.env.TLDA_SERVER
   if (!envServer) return
-  if (process.env.TLDA_SYNC_SERVER) return // deliberate split-sync — see docs/live-deploy.md
+  if (process.env.TLDA_SYNC_SERVER) return // internal harness-projected room target — see docs/live-deploy.md
   const resolved = resolveConfig(config)
   const want = resolved.store.http
   const got = _httpForm(envServer)

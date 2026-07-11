@@ -12,17 +12,24 @@ A shared canvas for reading and writing a LaTeX paper — with the people and AI
 
 ## What tlda is for
 
-Here's the failure it's actually built against. You work something out with your agents in chat — the argument, the counterexample, the fix — and it *feels* done, because the conversation reached the end. Then you open the document and it isn't there. Either you never quite had it, or you had it and what got written down is the easier thing that doesn't actually work. Working with agents makes this constant: the talk outruns the paper, and you're left trying to recover, from the history, what was really established and get it *into* the document. tlda puts the document in the same place as the chat that's revising it, the search over everything that's been said, and the team of agents cross-checking each other — so the gap between "we got it" and "it's on the page" is visible, and closable, instead of something you discover three days later.
+You work something out with your agents in chat — an argument, a counterexample,
+a fix — and it feels done because the conversation reached the end. Then you
+open the document and it is not there, or what reached the page is the easier
+version that does not actually work. tlda keeps the mathematical document beside
+the conversation revising it, so the gap between “we got it” and “it is on the
+page” stays visible and can be closed.
 
-Agents are shockingly good at math now — good enough to be real collaborators on a paper. (They're bad at writing. So are most statisticians.) But every tool for actually *working* with them hands the agent the wrong body. Either they live in your **text editor** — the programmer's body, which is not where math gets read and argued over — or they're a general **computer-use** agent walking around a machine clicking on things, which is nobody's body at all. Neither is how math actually gets done.
+The document is the center of the application. It is rendered as pages on a
+shared canvas where human and AI collaborators can read, annotate, discuss, and
+revise the same source-backed object. Agents receive reading position,
+highlights, and notes as structured context; readers see agent messages and work
+alongside the passage they concern. Source-anchored annotations and versioned
+builds keep that collaboration attached to the paper as it changes.
 
-Because how math actually gets done, at least for me, is remote, and it's three things at once: a **Zoom call**, an **Overleaf project**, and a **whiteboard**. tlda collapses those into one canvas and links them, then does the thing the other tools get backwards: instead of shoving the agent into your computer, it renders *your* working environment accessible to *them*. Your paper is right there as pages; your slides, notes, and drafts are right there; your chats with your agents are right there; and everyone on the canvas — you, your collaborators, and your agents — sees the same thing. An agent gets your reading position, your highlights, and your notes as structured data the moment you make them; you see what the agent is doing as it happens. Nobody has to ask "what does this say" about a document you're both looking at. (There's a name for this in the design docs — the *mirror principle*: each side's experience surfaces in the other's view, and where the mirror breaks, collaboration breaks.)
-
-What falls out of that is presence. Agents drop notes where you're looking, and you drop them where they're looking, anchored to the source line. They ask a multiple-choice question you answer in one tap; highlight a passage and see you highlight back. Your Claude writer and your collaborator's Gemini agent are on the *same* canvas and just talk to each other — no report emailed unread, fed to someone else's agent, and passed back while you sit in a meeting going "wait, what's in the doc I sent you?" They're teammates in the room. They do half-assed rewrites of our most careful arguments, but that's collaboration — and that's why we version every build and tag our messages with what we're looking at.
-
-And *writing* is the operative word: tlda is primarily where you write and present math, not just where you review it — click a source line straight to your editor, live rebuild on every save, slides and books and not only papers, drawing annotations over live-computed output. The longer-term shape is a general tool for **talking about math** — papers, slides, courses, live output — all on one canvas, with people and agents present.
-
-And there's a quieter thing it does. A 120-page technical argument — the kind agents now produce fast, and not always well — is overwhelming to *face*, for anyone; the wall isn't "can I do this," it's "I can't bring myself to start." tlda breaks that wall down. Agents share their ideas as markdown files — somewhere between having a paper and not having one, but *localized* — and those land on the canvas — somewhere you can teleport to with your whole team. You're chatting and an agent mentions an equation or a section; a hover shows it to you without opening the whole thing. So even when you can't make yourself read the entire paper, you see it a piece at a time, until a section is *familiar* — and that's enough to actually go work on it. Agents do the thing a good human collaborator does: they get you to buy into work you can do but that feels like too much. (One of this project's own first wins was engaging an esoteric argument I'd bounced off for years — Mendelson's *extending the scope of the small ball method* — by having agents strip out the complication I didn't need. Maybe not faster than doing it by hand. But I did it, which I might not have otherwise.) It's a ramp.
+Voice/video is an optional part of reading together, not a separate meeting
+room. A reader joins from the document when a live conversation is useful; call
+state folds into the same quiet HUD used for reading, and remote video appears
+as a canvas shape. Opening a paper does not add always-on call chrome.
 
 An honest note that's also part of the pitch: tlda was built almost entirely by agents, directed by one statistician who worked as a web developer for a few months 15 years ago and could not have built it by hand. It is itself an artifact of the thing it's for.
 
@@ -46,7 +53,7 @@ To put *your own* local agents to work on the paper there, run this in your pape
 
 ```bash
 brew tap qtm285/tlda && brew install tlda   # if you don't already have the CLI
-TLDA_SERVER=<their-url> tlda config mcp-setup
+TLDA_CONFIG=<host-config-name> tlda config mcp-setup
 ```
 
 Claude Code in that directory now has tlda's tools, pointed at their server.
@@ -68,13 +75,22 @@ Linux / manual: install [Node.js](https://nodejs.org/) (v18+) and a TeX distribu
 Then:
 
 ```bash
-tlda server start                                        # run when it's down and you want to edit
+tlda server start                                        # start the document/fleet server
+tlda daemon start                                        # watch this machine's documents and agents
 tlda doc link my-paper /path/to/paper/paper.tex
 tlda config mcp-setup                                    # (in your paper dir) so agents can work on it
 tlda doc open my-paper                                   # opens it on the canvas — run once
 ```
 
-`tlda server start` runs the server and the **daemon** that watches your documents and agents, in the background — start it whenever it's down; while it's up, everything here works. Link the project from the paper's main file; tlda finds the Git repository that contains it, uses that repo as the source root, and stores the main file relative to that root. That repo-backed path is the default: get a real repository onto the serving machine, then run `link` from the main file in that checkout. If there is no real repository to push, `tlda doc init ...` is the explicit special case: it creates a blank repository first, then `link` can build from it. From there you just edit in your normal editor and the document rebuilds live. `tlda config mcp-setup` gives Claude Code in that directory tlda's tools, so agents can work on the document.
+`tlda server start` starts the server. `tlda daemon start` starts the machine
+bridge that watches source trees and agent sessions and handles machine-local
+RPC. Run exactly one daemon for each environment being watched; two daemons
+watching the same environment is a bug. Link the project from the paper's main
+file; tlda finds the Git repository that contains it, uses that repo as the
+source root, and stores the main file relative to that root. That repo-backed
+path is the default. If there is no real repository to push, `tlda doc init ...`
+is the explicit fresh-start case. From there, edits in your normal editor rebuild
+live. `tlda config mcp-setup` gives agents in that directory tlda's tools.
 
 History is tied to the repository the server can see. If you create a project by uploading files, tlda can render the current pages, but it cannot reconstruct the paper's Git history from those files. `tlda doc link` expects a repository on the serving machine. `tlda doc init ...` creates that named repo slot. Between `init` and `link`, you can populate the slot with real history (`git push`, a Git bundle, or a server-side clone). If you skip that population step, `link` uses the blank repo, which is the explicit fresh-start case.
 
@@ -84,7 +100,9 @@ Run `tlda doctor` to check things and `tlda help` (or `tlda doc`, `tlda agent`, 
 
 That gets you working on your own machine. To reach it from other devices — your iPad, your collaborators, or hosting it for other people — see [Access & security](#access--security).
 
-> Server on one machine, agents on another? Run `tlda daemon start` on the agents' machine and point it at the server with `TLDA_SERVER`. On a single machine you never need this.
+> Server on one machine, agents on another? Select the same named config on the
+> agents' machine and run `tlda daemon start --config <name>` there. The daemon
+> is the bridge to files, sessions, and RPC on that machine.
 
 ---
 
@@ -252,10 +270,12 @@ search_logs("convergence rate")
 5/30, 9:14 AM | [activity] writer | edited proof.tex:412 — tightened the **convergence** bound
 ```
 
-**Pending messages.** `my_task()` shows unread messages from other agents:
+**Pending messages.** A spawned agent calls `login()` once. When it receives a
+📬 wake, `inbox()` returns the full task or message; the wake preview itself may
+be truncated.
 
 ```
-my_task()
+inbox(view: "current-task")
 
 📬 Messages:
 
@@ -307,7 +327,10 @@ prints a shareable URL with your read-only token embedded — anyone with it can
 
 ### Hosting it for others
 
-You can run tlda on a box other people reach — an always-on machine at home, a VPS, a container host — so they just open a URL and join (the "Joining someone's tlda" path above). It's the same as running your own, with two additions: put a **boundary** around it (next section), and point clients at the server's URL rather than `localhost` by setting `TLDA_SERVER` (and `TLDA_FLEET_SERVER`) to that URL.
+You can run tlda on a box other people reach — an always-on machine at home, a
+VPS, or a container host — so they open a URL and join. Put a **boundary** around
+it (next section), define a complete named config for that deployment, and select
+that config on its clients and daemons.
 
 <details>
 <summary>Worked example: a container host behind Tailscale</summary>
@@ -316,7 +339,9 @@ This is roughly how the project's own deployment runs — a container that joins
 
 - Run the server in a container (Node + a TeX distribution for builds; the SPA is served from the same process, so it's one origin — no separate static host).
 - Inside the container, bring up `tailscaled` with an auth key (supplied as a secret), then `tailscale serve` the app over the tailnet's HTTPS. Don't expose a public port.
-- Set `TLDA_FLEET_SERVER` to the container's tailnet name so clients resolve chat/agents to it, and `TLDA_NO_AUTH=1` (the tailnet is the boundary — see below).
+- Give the deployment a named config whose `database` and `store` axes point at
+  the container's tailnet origin; select it with `TLDA_CONFIG` or `--config`.
+  Set `TLDA_NO_AUTH=1` only when the tailnet is the boundary (see below).
 - Mount a volume for the mutable data (`projects/`, `data/`, the fleet database) so it survives redeploys.
 - Put each history-backed paper on that volume as a server-side Git repo/worktree. The simplest setup is a named repo slot:
 
@@ -344,14 +369,23 @@ On `localhost` you need neither — your own machine is the boundary, and with n
 
 ## Configuration
 
-Everything persistent lives in `~/.config/tlda/` — your `config.json` (server URL, tokens, default model for new agents), logs, and linters. Set values with `tlda config set server …` / `tlda config set spawn-mode …`.
+Local configuration, logs, and linters live in `~/.config/tlda/`. Fleet/chat
+state belongs to the active config's remote database; the local `fleet.db` is
+not authoritative.
+
+`config.json` contains a `configs` map. Each named config is a complete
+`{ database, store, licenseKey }` record: `database` selects fleet/chat/agent
+state, while `store` selects document assets and shape sync. `defaultConfig`
+names the normal selection. Use `--config <name>` for one CLI run or
+`TLDA_CONFIG=<name>` for one process; do not edit `defaultConfig` just to test a
+different server and do not manually split the axes with URL environment
+variables.
 
 **Environment variables** override the config file and are how you configure a hosted server:
 
 | Variable | What it does |
 |----------|--------------|
-| `TLDA_SERVER` | The server clients and the daemon talk to (doc assets, builds). Overrides `config.json`. |
-| `TLDA_FLEET_SERVER` | Where clients resolve fleet chat / agents / activity — set this to your server's URL when hosting. |
+| `TLDA_CONFIG` | Select a named complete config for this process. |
 | `TLDA_NO_AUTH=1` | Run the app open (no per-request token). Use only when the server is behind a network boundary. |
 | `TLDA_TOKEN_READ` / `TLDA_TOKEN_RW` | The read / read-write tokens, when token-gating instead of using `config.json`. |
 | `DEEPGRAM_API_KEY` | Enables server-side voice transcription (the [Deepgram](https://deepgram.com/) bridge) for everyone on the server. |

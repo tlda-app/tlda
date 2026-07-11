@@ -362,7 +362,7 @@ function checkDocBuildStatusDisk(docName) {
     }
     return { ok: true, pages: info.pages, buildStatus: info.buildStatus };
   } catch {
-    return { ok: false, reason: `Project "${docName}" not found on server. Run "tlda errors ${docName}" or "tlda build ${docName}" to investigate.` };
+    return { ok: false, reason: `Project "${docName}" not found on server. Run "tlda doc status ${docName}" or "tlda doc errors ${docName}" to investigate.` };
   }
 }
 
@@ -371,7 +371,9 @@ function checkDocBuildStatusDisk(docName) {
 // NOT a raw TLDA_SERVER env — so the asset origin can't diverge from the fleet the
 // agent joined (a spawned remote agent on the Mini has no local output/ to read, so
 // it must HTTP from store). Disk mode is preserved for a local store (localhost,
-// same-machine dev) and the deliberate split-sync (TLDA_SYNC_SERVER — the published
+// same-machine dev) and the internal harness-projected room transport
+// (TLDA_SYNC_SERVER — not a user-facing config selector; named configs remain
+// the public configuration surface for database/store selection). The published
 // triage clone reads assets from disk while shapes sync elsewhere).
 initDataSource(PROJECT_ROOT, ALLOW_LOCAL_DOC_DISK ? null : TLDA_SERVER);
 
@@ -2472,7 +2474,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (docName) {
       const buildCheck = await checkDocBuildStatus(docName);
       if (!buildCheck.ok) {
-        return { content: [{ type: 'text', text: `${buildCheck.reason}. Run "tlda errors ${docName}" or "tlda build ${docName}" to investigate.` }], isError: true };
+        return { content: [{ type: 'text', text: `${buildCheck.reason}. Run "tlda doc status ${docName}" or "tlda doc errors ${docName}" to investigate.` }], isError: true };
       }
     }
   }

@@ -46,7 +46,7 @@ async function awaitBuild(server, name, authHeaders = {}) {
       if (data.status === 'success') {
         console.log(green(`[watch] Build succeeded`) + dim(` (${elapsed}s)`))
       } else {
-        console.error(red(`[watch] Build failed`) + dim(` (${elapsed}s). Run \`tlda errors ${name}\` for details.`))
+        console.error(red(`[watch] Build failed`) + dim(` (${elapsed}s). Run \`tlda doc errors ${name}\` for details.`))
       }
       return
     } catch (e) {

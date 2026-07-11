@@ -1,5 +1,10 @@
 # Current Main Architecture
 
+> **Historical architecture snapshot (June 21–22, 2026).** This records the
+> post-cutover topology observed then; it is evidence, not a live deployment
+> status page. Use `AGENTS.md`, current code, and the active config for present
+> operation.
+
 Scope: `main` after the June 21/22 cutover. This document describes the current
 code paths, not the old `best-version-5176`/`bv5176` architecture.
 

@@ -46,6 +46,17 @@ fly deploy -c fly.live.toml
 - Do not use `Dockerfile.live` with `fly.toml` by hand. Use the full live config:
   `fly deploy -c fly.live.toml`.
 
+## Configuration boundary
+
+Operators select a complete named `{ database, store, licenseKey }` config with
+`--config` or `TLDA_CONFIG`; they do not manually split a deployment into
+independent URL variables.
+
+`TLDA_SYNC_SERVER` still exists as an internal transport value projected by the
+agent launch harnesses. Inside an MCP process it selects the room, signal, and
+shape target. It is not an operator-facing deployment selector and must not be
+used as a substitute for a named config.
+
 ## Before Deploy
 
 ```bash
