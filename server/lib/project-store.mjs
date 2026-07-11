@@ -17,6 +17,7 @@ import {
   recoverProjectPartsManifest as recoverPartsManifestForRoot,
   writeProjectPartsManifest as writePartsManifestForRoot,
 } from './project-parts-scanner.mjs'
+import { resolveContainedPath } from './path-containment.mjs'
 
 let projectsDir = null
 
@@ -240,11 +241,8 @@ export function hashSourceFiles(name) {
  * Write a source file. Returns true if the file was actually changed.
  */
 export function writeSourceFile(name, filePath, content) {
-  const dir = sourceDir(name)
-  const full = join(dir, filePath)
-  // Prevent path traversal
-  if (!full.startsWith(dir)) throw new Error('Invalid file path')
-  const parent = join(full, '..')
+  const full = sourceFilePath(name, filePath)
+  const parent = dirname(full)
   if (!existsSync(parent)) mkdirSync(parent, { recursive: true })
   // Skip write if content is identical
   if (existsSync(full)) {
@@ -260,9 +258,7 @@ export function writeSourceFile(name, filePath, content) {
  * Read a source file. Returns the file content as a string, or null if not found.
  */
 export function readSourceFile(name, filePath) {
-  const dir = sourceDir(name)
-  const full = join(dir, filePath)
-  if (!full.startsWith(dir)) throw new Error('Invalid file path')
+  const full = sourceFilePath(name, filePath)
   if (!existsSync(full)) return null
   return readFileSync(full, 'utf8')
 }
@@ -271,12 +267,14 @@ export function readSourceFile(name, filePath) {
  * Delete a source file. Returns true if the file existed and was removed.
  */
 export function deleteSourceFile(name, filePath) {
-  const dir = sourceDir(name)
-  const full = join(dir, filePath)
-  if (!full.startsWith(dir)) throw new Error('Invalid file path')
+  const full = sourceFilePath(name, filePath)
   if (!existsSync(full)) return false
   unlinkSync(full)
   return true
+}
+
+function sourceFilePath(name, filePath) {
+  return resolveContainedPath(sourceDir(name), filePath)
 }
 
 export function readBuildLog(name) {

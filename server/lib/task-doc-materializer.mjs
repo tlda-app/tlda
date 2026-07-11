@@ -1,12 +1,16 @@
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
-import { dirname, join, resolve, sep } from 'node:path'
+import { mkdirSync, readFileSync, realpathSync } from 'node:fs'
+import { join, resolve, sep } from 'node:path'
 import { homedir } from 'node:os'
 
 import { CONFIG_DIR, loadConfig } from '../../shared/config.mjs'
 import { createProjectPartRecord } from '../../shared/project-parts.mjs'
 import { listProjects } from './project-store.mjs'
-import { upsertProjectPartsManifest } from './project-parts-scanner.mjs'
+import { readProjectPartsManifest, upsertProjectPartsManifest } from './project-parts-scanner.mjs'
+import {
+  checkpointProjectPartWriteback,
+  mergeWritebackMetadata,
+} from './project-part-writeback.mjs'
 
 export const TASK_DOC_FILENAME = 'TASKS.md'
 export const TASK_DOC_KIND = 'task-doc'
@@ -22,6 +26,7 @@ export function createTaskDocMaterializer({
   debounceMs = DEFAULT_TASK_DOC_DEBOUNCE_MS,
   globalDir = resolveTaskDocGlobalDir(),
   projectsProvider = listProjects,
+  writebackOptions = {},
   logger = console,
   git = runGit,
 } = {}) {
@@ -36,7 +41,10 @@ export function createTaskDocMaterializer({
     const changes = pending
     pending = []
     try {
-      materializeTaskDocs({ fleetStore, changes, globalDir, projectsProvider, logger, git })
+      const result = materializeTaskDocs({ fleetStore, changes, globalDir, projectsProvider, writebackOptions, logger, git })
+      if (!result.ok) {
+        logger.warn?.(`[task-doc] ${result.failures.length} writeback(s) did not land`)
+      }
     } catch (e) {
       logger.warn?.(`[task-doc] materialization failed: ${e.message}`)
     } finally {
@@ -69,6 +77,7 @@ export function materializeTaskDocs({
   changes = [],
   globalDir = resolveTaskDocGlobalDir(),
   projectsProvider = listProjects,
+  writebackOptions = {},
   logger = console,
   git = runGit,
 } = {}) {
@@ -76,7 +85,7 @@ export function materializeTaskDocs({
   const agentById = new Map(agents.map(agent => [agent.id, agent]))
   const projects = projectsProvider().map(project => ({
     ...project,
-    taskDocRoot: explicitTaskDocRoot(project),
+    taskDocRoot: explicitTaskDocRoot(project) || (project.sourceDir ? resolve(project.sourceDir) : null),
     resolvedRoot: safeRealpath(project.sourceDir || ''),
   })).filter(project => project.sourceDir || project.taskDocRoot)
   const tasks = (fleetStore.getActiveTasks?.() || [])
@@ -94,30 +103,36 @@ export function materializeTaskDocs({
     }
   }
   const touchedDirs = new Set()
+  const writebacks = []
 
   const projectKeys = new Set([...grouped.projects.keys(), ...changedProjects.keys()])
   for (const projectKey of [...projectKeys].sort()) {
     const rows = grouped.projects.get(projectKey) || []
     const project = grouped.projectMeta.get(projectKey) || changedProjects.get(projectKey)
     if (!project?.taskDocRoot) continue
-    writeTaskDoc({
+    const writeback = writeTaskDoc({
       filePath: join(project.taskDocRoot, TASK_DOC_FILENAME),
+      root: project.taskDocRoot,
       id: TASK_DOC_PROJECT_ID,
       title: `Tasks for ${project.name}`,
       rows,
       heading: `# Tasks for ${project.name}`,
+      writebackOptions,
     })
     writeTaskDocManifest(project.taskDocRoot, {
       id: TASK_DOC_PROJECT_ID,
       title: `Tasks for ${project.name}`,
+      writeback: writeback.writeback,
     })
     touchedDirs.add(project.taskDocRoot)
+    writebacks.push({ ...writeback, root: project.taskDocRoot, scope: 'project', project: project.name })
   }
 
   mkdirSync(globalDir, { recursive: true })
-  writeGlobalTaskDoc(join(globalDir, TASK_DOC_FILENAME), tasks)
-  writeTaskDocManifest(globalDir, { id: TASK_DOC_GLOBAL_ID, title: 'Fleet tasks' })
+  const globalWriteback = writeGlobalTaskDoc(globalDir, tasks, { writebackOptions })
+  writeTaskDocManifest(globalDir, { id: TASK_DOC_GLOBAL_ID, title: 'Fleet tasks', writeback: globalWriteback.writeback })
   touchedDirs.add(globalDir)
+  writebacks.push({ ...globalWriteback, root: globalDir, scope: 'global', project: null })
 
   const commitMessage = describeChanges(changes)
   const actor = actorFromChanges(changes, agentById)
@@ -130,7 +145,12 @@ export function materializeTaskDocs({
     })
   }
 
-  return { tasks, touchedDirs: [...touchedDirs], globalDir }
+  const failures = writebacks.filter(writeback => !writeback.ok)
+  for (const failure of failures) {
+    logger.warn?.(`[task-doc] writeback did not land for ${failure.filePath}: ${failure.writeback?.status || 'failed'} ${failure.writeback?.message || ''}`.trim())
+  }
+
+  return { ok: failures.length === 0, tasks, touchedDirs: [...touchedDirs], globalDir, writebacks, failures }
 }
 
 export function resolveTaskDocGlobalDir(config = loadConfig()) {
@@ -215,7 +235,8 @@ function groupTasksByProject(tasks) {
   return { projects, projectMeta, exceptions }
 }
 
-function writeGlobalTaskDoc(filePath, tasks) {
+function writeGlobalTaskDoc(root, tasks, { writebackOptions = {} } = {}) {
+  const filePath = join(root, TASK_DOC_FILENAME)
   const lines = [
     '---',
     `tlda-id: ${TASK_DOC_GLOBAL_ID}`,
@@ -227,10 +248,13 @@ function writeGlobalTaskDoc(filePath, tasks) {
     ...markdownTable(tasks, { includeProject: true, sort: compareTasksByModified }),
   ]
   if (!tasks.length) lines.push('No active tasks.', '')
-  writeIfChanged(filePath, lines.join('\n'))
+  return writeIfChanged(filePath, lines.join('\n'), {
+    part: () => findExistingPart(root, TASK_DOC_GLOBAL_ID),
+    writebackOptions,
+  })
 }
 
-function writeTaskDoc({ filePath, id, title, rows, heading }) {
+function writeTaskDoc({ filePath, root, id, title, rows, heading, writebackOptions = {} }) {
   const lines = [
     '---',
     `tlda-id: ${id}`,
@@ -242,7 +266,10 @@ function writeTaskDoc({ filePath, id, title, rows, heading }) {
     ...markdownTable(rows),
     '',
   ]
-  writeIfChanged(filePath, lines.join('\n'))
+  return writeIfChanged(filePath, lines.join('\n'), {
+    part: () => findExistingPart(root, id),
+    writebackOptions,
+  })
 }
 
 function markdownTable(rows, { includeProject = false, sort = compareTasksForDoc } = {}) {
@@ -280,14 +307,14 @@ function taskTableRow(task, { includeProject = false } = {}) {
   return `| ${cells.map(tableCell).join(' | ')} |`
 }
 
-function writeTaskDocManifest(root, { id, title }) {
+function writeTaskDocManifest(root, { id, title, writeback = null }) {
   upsertProjectPartsManifest(root, createProjectPartRecord({
     id,
     kind: TASK_DOC_KIND,
     path: TASK_DOC_FILENAME,
     title,
     storage: { type: 'project', path: TASK_DOC_FILENAME },
-    metadata: { managed: true },
+    metadata: mergeWritebackMetadata({ managed: true }, writeback),
   }))
 }
 
@@ -391,11 +418,28 @@ function escapeMarkdown(value) {
   return String(value ?? '').replace(/\|/g, '\\|').trim()
 }
 
-function writeIfChanged(filePath, content) {
-  mkdirSync(dirname(filePath), { recursive: true })
-  if (existsSync(filePath) && readFileSync(filePath, 'utf8') === content) return false
-  writeFileSync(filePath, content)
-  return true
+function findExistingPart(root, id) {
+  return readProjectPartsManifest(root).parts.find(part => part.id === id) || null
+}
+
+function writeIfChanged(filePath, content, { part = null, writebackOptions = {}, maxRetries = 1 } = {}) {
+  let lastResult = null
+  let attempts = 0
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    attempts = attempt + 1
+    const currentPart = typeof part === 'function' ? part() : part
+    const result = checkpointProjectPartWriteback({ filePath, content, part: currentPart, ...writebackOptions })
+    lastResult = result
+    if (result.ok) {
+      return { ok: true, filePath, attempts: attempt + 1, writeback: result.writeback }
+    }
+    if (!canRetryWriteback(result)) break
+  }
+  return { ok: false, filePath, attempts, writeback: lastResult?.writeback || null }
+}
+
+function canRetryWriteback(result) {
+  return result?.status === 'failed'
 }
 
 function runGit(args, cwd) {

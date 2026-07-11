@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, realpathSync } from 'node:fs'
 import { join, resolve, sep } from 'node:path'
 import { randomUUID, createHash } from 'node:crypto'
 import { homedir } from 'node:os'
@@ -11,6 +11,11 @@ import {
   readProjectPartsManifest,
   upsertProjectPartsManifest,
 } from './project-parts-scanner.mjs'
+import {
+  checkpointProjectPartWriteback,
+  mergeWritebackMetadata,
+} from './project-part-writeback.mjs'
+import { resolveContainedPath } from './path-containment.mjs'
 
 export const PROJECT_ARTIFACT_KIND = 'artifact'
 export const PROJECT_ARTIFACT_DIR = 'parts'
@@ -27,26 +32,14 @@ export function realizeProjectMarkdownArtifact({
   git = runGit,
   idFactory = randomUUID,
   now = () => new Date().toISOString(),
+  writebackOptions = {},
   logger = console,
 } = {}) {
-  let source
-  try {
-    source = readMarkdownArtifactSource({ markdown, sourcePath })
-  } catch (e) {
-    return notReadyPayload({
-      status: e.code === 'SOURCE_UNREADABLE' ? 'source unreadable' : 'not materialized',
-      title,
-      sourcePath,
-      provenance,
-      error: e.message,
-    })
-  }
-
   const resolved = resolveArtifactProject({ project, cwd, projectsProvider })
   if (!resolved) {
     return notReadyPayload({
       status: 'not materialized',
-      title: title || source.title,
+      title,
       sourcePath,
       provenance,
       error: 'No project resolved for artifact',
@@ -54,6 +47,18 @@ export function realizeProjectMarkdownArtifact({
   }
 
   const root = projectPartsRoot(resolved.name)
+  let source
+  try {
+    source = readMarkdownArtifactSource({ markdown, sourcePath, allowedRoot: root })
+  } catch (e) {
+    return notReadyPayload({
+      status: e.code === 'SOURCE_UNREADABLE' ? 'source unreadable' : e.code === 'SOURCE_NOT_ROUTED' ? 'owner-missing' : 'not materialized',
+      title,
+      sourcePath,
+      provenance,
+      error: e.message,
+    })
+  }
   mkdirSync(join(root, PROJECT_ARTIFACT_DIR), { recursive: true })
 
   // Re-clicking the same chip/source file should update its existing column,
@@ -74,6 +79,7 @@ export function realizeProjectMarkdownArtifact({
         provenance,
         git,
         now,
+        writebackOptions,
         logger,
       })
     }
@@ -86,15 +92,21 @@ export function realizeProjectMarkdownArtifact({
   const body = stripMarkdownFrontmatter(source.markdown).trimStart()
   const content = artifactMarkdown({ id, title: artifactTitle, body })
 
-  writeFileSync(localPath, content)
+  const writebackResult = checkpointProjectPartWriteback({
+    filePath: localPath,
+    content,
+    now,
+    ...writebackOptions,
+  })
   const manifest = upsertArtifactManifest(root, {
     id,
     path: projectPath,
     title: artifactTitle,
-    sourcePath,
+    sourcePath: source.sourcePath || sourcePath,
     provenance,
     createdAt: now(),
     hash: sha256(content),
+    writeback: writebackResult.writeback,
   })
 
   const actorInfo = normalizeActor(actor)
@@ -105,6 +117,7 @@ export function realizeProjectMarkdownArtifact({
     actor: actorInfo,
     git,
     logger,
+    enabled: writebackResult.ok,
   })
 
   return artifactPayload({
@@ -115,10 +128,12 @@ export function realizeProjectMarkdownArtifact({
     projectPath,
     localPath,
     content,
-    sourcePath,
+    sourcePath: source.sourcePath || sourcePath,
     provenance,
     manifest,
     gitResult,
+    writeback: writebackResult.writeback,
+    writebackOk: writebackResult.ok,
   })
 }
 
@@ -132,6 +147,7 @@ export function writeProjectMarkdownArtifact({
   provenance = {},
   git = runGit,
   now = () => new Date().toISOString(),
+  writebackOptions = {},
   logger = console,
 } = {}) {
   if (!project) throw new Error('Project artifact writeback requires project')
@@ -162,7 +178,13 @@ export function writeProjectMarkdownArtifact({
   const nextTitle = title || parsed.title || existing.title || 'Untitled artifact'
   const body = stripMarkdownFrontmatter(String(markdown)).trimStart()
   const content = artifactMarkdown({ id: existing.id, title: nextTitle, body })
-  writeFileSync(localPath, content)
+  const writebackResult = checkpointProjectPartWriteback({
+    filePath: localPath,
+    content,
+    part: existing,
+    now,
+    ...writebackOptions,
+  })
   const updatedAt = now()
 
   const nextManifest = upsertArtifactManifest(root, {
@@ -177,6 +199,7 @@ export function writeProjectMarkdownArtifact({
     createdAt: existing.metadata?.createdAt || updatedAt,
     updatedAt,
     hash: sha256(content),
+    writeback: writebackResult.writeback,
   })
 
   const actorInfo = normalizeActor(actor)
@@ -188,6 +211,7 @@ export function writeProjectMarkdownArtifact({
     git,
     logger,
     messagePrefix: 'Update markdown artifact',
+    enabled: writebackResult.ok,
   })
 
   return artifactPayload({
@@ -206,6 +230,8 @@ export function writeProjectMarkdownArtifact({
     },
     manifest: nextManifest,
     gitResult,
+    writeback: writebackResult.writeback,
+    writebackOk: writebackResult.ok,
   })
 }
 
@@ -255,13 +281,21 @@ export function resolveProjectCwd(cwd) {
   return gitTopLevel(abs) || abs
 }
 
-function readMarkdownArtifactSource({ markdown, sourcePath }) {
+function readMarkdownArtifactSource({ markdown, sourcePath, allowedRoot = null }) {
   if (markdown != null) {
     const text = String(markdown)
     return { markdown: text, title: titleFromMarkdown(text) }
   }
   if (sourcePath) {
-    const resolved = resolve(expandHome(sourcePath))
+    const attempted = resolve(expandHome(sourcePath))
+    let resolved
+    try {
+      resolved = resolveContainedPath(allowedRoot, expandHome(sourcePath))
+    } catch {
+      const err = new Error(`Source markdown is not routed through the project owner: ${attempted}`)
+      err.code = 'SOURCE_NOT_ROUTED'
+      throw err
+    }
     try {
       const text = readFileSync(resolved, 'utf8')
       return { markdown: text, title: titleFromMarkdown(text), sourcePath: resolved }
@@ -275,20 +309,20 @@ function readMarkdownArtifactSource({ markdown, sourcePath }) {
   throw new Error('Project artifact materialization requires markdown or sourcePath')
 }
 
-function upsertArtifactManifest(root, { id, path, title, sourcePath, provenance, createdAt, updatedAt, hash }) {
+function upsertArtifactManifest(root, { id, path, title, sourcePath, provenance, createdAt, updatedAt, hash, writeback = null }) {
   const part = createProjectPartRecord({
     id,
     kind: PROJECT_ARTIFACT_KIND,
     path,
     title,
     storage: { type: 'project', path },
-    metadata: compactObject({
+    metadata: mergeWritebackMetadata(compactObject({
       sourcePath: sourcePath ? resolve(expandHome(sourcePath)) : null,
       provenance,
       createdAt,
       updatedAt,
       hash,
-    }),
+    }), writeback),
   })
   return upsertProjectPartsManifest(root, part)
 }
@@ -317,17 +351,27 @@ function uniqueArtifactPath(root, id) {
   return normalizeProjectPath(candidate)
 }
 
-function artifactPayload({ id, title, project, projectRoot, projectPath, localPath, content, sourcePath, provenance, manifest, gitResult }) {
-  const readable = isReadableFile(localPath)
+function artifactPayload({ id, title, project, projectRoot, projectPath, localPath, content, sourcePath, provenance, manifest, gitResult, writeback = null, writebackOk = true }) {
+  const readable = writebackOk && isReadableFile(localPath)
+  const ref = artifactRecipientRef({
+    id,
+    title,
+    projectPath,
+    localPath: readable ? localPath : null,
+    hash: sha256(content),
+    sourceAgent: provenance.sourceAgent || provenance.source_agent || null,
+    provenance,
+  })
   return {
     kind: PROJECT_ARTIFACT_KIND,
     title,
     state: readable ? 'available' : 'failed',
-    status: readable ? 'ready' : 'not materialized',
+    status: readable ? 'ready' : writeback?.status || 'not materialized',
     project,
     projectArtifactId: id,
     projectPath,
     localPath: readable ? localPath : null,
+    localPathVerified: readable,
     targetPath: localPath,
     contentType: 'text/markdown',
     hash: sha256(content),
@@ -336,6 +380,8 @@ function artifactPayload({ id, title, project, projectRoot, projectPath, localPa
       ...provenance,
       sourcePath: sourcePath ? resolve(expandHome(sourcePath)) : null,
     }),
+    writeback,
+    error: readable ? null : writeback?.message || 'Artifact writeback did not land',
     render: {
       kind: 'markdown',
       project,
@@ -345,6 +391,7 @@ function artifactPayload({ id, title, project, projectRoot, projectPath, localPa
     git: gitResult,
     manifestPath: join(projectRoot, '.tlda', 'parts.json'),
     ready: readable,
+    recipientRef: readable ? ref : null,
     manifest,
   }
 }
@@ -357,16 +404,35 @@ function notReadyPayload({ status, title, sourcePath, provenance, error }) {
     status,
     projectArtifactId: null,
     localPath: null,
+    localPathVerified: false,
     targetPath: sourcePath ? resolve(expandHome(sourcePath)) : null,
     contentType: 'text/markdown',
     sourceAgent: provenance?.sourceAgent || provenance?.source_agent || null,
     provenance,
     error,
     ready: false,
+    recipientRef: null,
   }
 }
 
-function commitArtifact(root, { projectPath, manifestPath, title, actor, git, logger, messagePrefix = 'Realize markdown artifact' }) {
+function artifactRecipientRef({ id, title, projectPath, localPath, hash, sourceAgent, provenance }) {
+  return {
+    kind: PROJECT_ARTIFACT_KIND,
+    state: 'available',
+    status: 'ready',
+    title,
+    localPath,
+    projectPath,
+    projectArtifactId: id,
+    contentType: 'text/markdown',
+    hash,
+    sourceAgent,
+    provenance,
+  }
+}
+
+function commitArtifact(root, { projectPath, manifestPath, title, actor, git, logger, messagePrefix = 'Realize markdown artifact', enabled = true }) {
+  if (!enabled) return { committed: false, skipped: true, reason: 'writeback-not-landed' }
   if (!isGitRepo(root, git)) return { committed: false, reason: 'not a git repo' }
   try {
     git(['add', projectPath, manifestPath], root)
