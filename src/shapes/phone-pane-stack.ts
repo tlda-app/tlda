@@ -130,6 +130,15 @@ export function phonePaneStackMaxIndex(editor: Editor): number {
   return getPhonePaneStack(editor).length - 1
 }
 
+export function phonePaneCameraXForIndex(editor: Editor, docLeftPage: number, paneIndex: number): number | null {
+  if (paneIndex === PHONE_DOCUMENT_PANE_INDEX) return -docLeftPage
+  const entry = getPhonePaneStack(editor).find(entry => entry.index === paneIndex)
+  if (!entry || entry.kind === 'document' || !entry.shapeId) return null
+  const bounds = editor.getShapePageBounds(entry.shapeId as TLShapeId)
+  const x = bounds?.x ?? null
+  return typeof x === 'number' && Number.isFinite(x) ? -x : null
+}
+
 function isFullScreenPinnedPaneForOwner(editor: Editor, shape: PhonePaneCandidate, userId: string, deviceId: string): boolean {
   return isPhonePinnedPaneForOwner(shape, userId, deviceId) &&
     isFullScreenPhonePane(editor, shape)
