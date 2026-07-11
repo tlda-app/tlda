@@ -89,10 +89,34 @@ class MockSpeechRecognition {
 }
 
 // ---- Mock document ----
-const mockDiv = { textContent: '', style: {}, id: '', appendChild: () => {}, remove: () => {} }
+function makeMockElement() {
+  return {
+    _ownText: '',
+    children: [],
+    style: {},
+    id: '',
+    appendChild(child) {
+      this.children.push(child)
+      return child
+    },
+    remove() {},
+    set textContent(value) {
+      this._ownText = String(value ?? '')
+      this.children = []
+    },
+    get textContent() {
+      return this._ownText + this.children.map(child => child?.textContent || '').join('')
+    },
+  }
+}
+let mockDiv = null
 const bodyClasses = new Set()
 global.document = {
-  createElement: () => mockDiv,
+  createElement: () => {
+    const el = makeMockElement()
+    if (!mockDiv) mockDiv = el
+    return el
+  },
   body: {
     appendChild: () => {},
     classList: {
@@ -1289,4 +1313,110 @@ await setBackend('chrome')
   console.log('✓ Test 21: server-inserted fly URL survives dictation; spoken "fly" is still corrected')
 }
 
-console.log('\nAll 24 tests passed.')
+// ---- Test 22: radio subtitle first slice ----
+{
+  reset()
+  setPref('radio-subtitles-enabled', true)
+  window.location.search = '?doc=bregman'
+  location.search = '?doc=bregman'
+  window.innerWidth = 1000
+  const originalQuerySelectorAll = document.querySelectorAll
+  document.querySelectorAll = (selector) => selector === '.svg-page-background, iframe'
+    ? [{
+        tagName: 'DIV',
+        getBoundingClientRect: () => ({ left: 100, right: 900, width: 800, height: 1100 }),
+      }]
+    : []
+  const ta = makeTextarea()
+  setVoiceTarget(ta, ['frontier'], { 'fleet:frontier': 'frontier' }, null)
+
+  const agents = [{ id: 'fleet:frontier', friendly_name: 'frontier' }]
+  const unrelated = window.__voiceTest.maybeShowRadioSubtitleForIncomingChat(
+    { type: 'chat', from: 'fleet:someone-else', to: 'fleet:skip', text: 'wrong channel' },
+    [{ id: 'fleet:someone-else', friendly_name: 'someone-else' }],
+    'fleet:skip',
+  )
+  assert.equal(unrelated, false, 'unrelated incoming chat should not render in radio HUD')
+
+  const shown = window.__voiceTest.maybeShowRadioSubtitleForIncomingChat(
+    {
+      type: 'chat',
+      from: 'fleet:frontier',
+      to: 'fleet:skip',
+      text: '<system-reminder>hide this</system-reminder>**Radio** line [one](https://example.com) `now` https://example.com/noise',
+    },
+    agents,
+    'fleet:skip',
+  )
+  assert.equal(shown, true, 'active-target incoming chat should render in radio HUD')
+  assert.ok(window.__voiceTest.getHudText().includes('radio <- frontier'), 'HUD should show radio source')
+  assert.ok(window.__voiceTest.getHudText().includes('Radio line one now'), 'HUD should show cleaned subtitle text')
+  assert.equal(window.__voiceTest.getHudStyle().width, '600px', 'radio HUD should use about 75% of the rendered doc page width')
+  assert.ok(!window.__voiceTest.getHudText().includes('hide this'), 'HUD should strip system reminder text')
+  assert.ok(!window.__voiceTest.getHudText().includes('https://example.com'), 'HUD should strip raw URLs')
+  const live = window.__voiceTest.getRadioSubtitle()
+  assert.equal(live.from, 'fleet:frontier', 'radio subtitle should store source')
+  assert.equal(live.label, 'frontier', 'radio subtitle should store display label')
+  assert.equal(live.text, 'Radio line one now', 'radio subtitle should store cleaned text')
+  assert.equal(live.expanded, true, 'radio subtitle should be expanded immediately after an incoming chat')
+
+  tick(4500)
+  const stored = window.__voiceTest.getRadioSubtitle()
+  assert.equal(stored.text, 'Radio line one now', 'last radio subtitle should persist until replaced')
+  assert.equal(stored.expanded, false, 'radio subtitle should collapse after the expanded window')
+
+  setPref('radio-subtitles-enabled', false)
+  const disabled = window.__voiceTest.maybeShowRadioSubtitleForIncomingChat(
+    { type: 'chat', from: 'fleet:frontier', to: 'fleet:skip', text: 'hidden while disabled' },
+    agents,
+    'fleet:skip',
+  )
+  assert.equal(disabled, false, 'radio subtitle toggle should suppress active-target incoming chat')
+  assert.equal(window.__voiceTest.getRadioSubtitle().text, 'Radio line one now', 'disabled radio should not replace the current subtitle')
+  setPref('radio-subtitles-enabled', true)
+
+  const longShown = window.__voiceTest.maybeShowRadioSubtitleForIncomingChat(
+    {
+      type: 'chat',
+      from: 'fleet:frontier',
+      to: 'fleet:skip',
+      text: `Frontier says [look here](https://example.com): ${'word '.repeat(180)}`,
+    },
+    agents,
+    'fleet:skip',
+  )
+  assert.equal(longShown, true, 'long active-target chat should render in radio HUD')
+  const longStored = window.__voiceTest.getRadioSubtitle()
+  assert.ok(longStored.text.startsWith('Frontier says look here: word'), 'radio subtitle should clean markdown without punctuation gaps')
+  assert.ok(longStored.text.length <= 700, 'radio subtitle should keep a bounded but readable excerpt')
+  assert.ok(longStored.text.endsWith('...'), 'radio subtitle should mark truncated excerpts')
+  assert.deepEqual(
+    window.__voiceTest.getRadioHistory().map(item => item.text).slice(0, 2),
+    [longStored.text, 'Radio line one now'],
+    'radio history should keep newest messages first',
+  )
+
+  for (const text of ['trace alpha', 'trace beta', 'trace gamma']) {
+    window.__voiceTest.maybeShowRadioSubtitleForIncomingChat(
+      { type: 'chat', from: 'fleet:frontier', to: 'fleet:skip', text },
+      agents,
+      'fleet:skip',
+    )
+  }
+  const history = window.__voiceTest.getRadioHistory()
+  assert.equal(history.length, 4, 'radio history should stay bounded')
+  assert.deepEqual(
+    history.map(item => item.text),
+    ['trace gamma', 'trace beta', 'trace alpha', longStored.text],
+    'radio history should keep a short receding trace',
+  )
+  assert.ok(window.__voiceTest.getHudText().includes('frontier: trace beta'), 'HUD should include previous radio events while expanded')
+
+  window.location.search = ''
+  location.search = ''
+  document.querySelectorAll = originalQuerySelectorAll
+  reset()
+  console.log('✓ Test 22: radio subtitle is active-target, doc gated, toggleable, and collapses')
+}
+
+console.log('\nAll voice tests passed.')

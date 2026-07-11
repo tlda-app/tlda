@@ -26,6 +26,7 @@ const DEFAULTS = {
   'voice-backend': '' as string,
   'voice-submit-words': 'send, send it, sent' as string,
   'voice-sink-shape-types': 'fleet-agents' as string,
+  'radio-subtitles-enabled': true as boolean,
   // Voice→Deepgram conservation feel (sent to the bridge on connect). Idle cutoff
   // = ms of no speech before the upstream session is torn down (stays warm across
   // a thinking pause, closes an abandoned one). Pre-roll = ms of audio buffered

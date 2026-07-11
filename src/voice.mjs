@@ -220,7 +220,11 @@ function postProcessTranscript(text) {
 let _hud = null
 let _recognition = null
 let _recording = false
-const VOICE_HUD_WIDTH = '240px'
+const VOICE_HUD_MIN_WIDTH = 240
+const VOICE_HUD_WIDTH = `${VOICE_HUD_MIN_WIDTH}px`
+const RADIO_HUD_EXPANDED_MS = 4500
+const RADIO_HUD_MAX_CHARS = 700
+const RADIO_HUD_HISTORY_LIMIT = 4
 
 // Recording on/off listeners — lets the viewer react when recording starts/stops
 // (e.g. to re-aim the dictation target at the currently-selected note).
@@ -320,6 +324,135 @@ const DOUBLE_TAP_MS = 350
 const _micChannel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('fleet-voice-mic') : null
 
 // --- HUD ---
+
+let _radioSubtitle = null
+let _radioHistory = []
+let _radioExpanded = false
+let _radioCollapseTimer = null
+
+function cleanRadioSubtitleText(text) {
+  const cleaned = String(text || '')
+    .replace(/<(?:task-notification|system-reminder|local-command-caveat|command-name|command-message|command-args|local-command-stdout)[^>]*>[\s\S]*?<\/(?:task-notification|system-reminder|local-command-caveat|command-name|command-args|local-command-stdout)>/g, '')
+    .replace(/!\[([^\]]*)\]\([^)]+\)/g, '$1')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/\*([^*]+)\*/g, '$1')
+    .replace(/\bhttps?:\/\/\S+/g, '')
+    .replace(/\s+/g, ' ')
+    .replace(/\s+([:;,.!?])/g, '$1')
+    .trim()
+  if (cleaned.length <= RADIO_HUD_MAX_CHARS) return cleaned
+  const prefix = cleaned.slice(0, RADIO_HUD_MAX_CHARS - 3).replace(/\s+\S*$/, '')
+  return `${prefix || cleaned.slice(0, RADIO_HUD_MAX_CHARS - 3)}...`
+}
+
+function labelForRadioAgent(agentId, agents = []) {
+  const agent = agents.find(a => a.id === agentId || a.friendly_name === agentId)
+  return agent?.friendly_name || agent?.name || String(agentId || '').replace(/^fleet:/, '') || 'agent'
+}
+
+function activeRadioTargetLabels() {
+  const labels = new Set()
+  const targets = activeSendTargets()
+  const names = activeAgentNames()
+  for (const target of targets) {
+    if (!target) continue
+    labels.add(String(target).toLowerCase())
+    const display = names[target]
+    if (display) labels.add(String(display).toLowerCase())
+  }
+  return labels
+}
+
+function radioAgentMatchesActiveTarget(agentId, agents = []) {
+  if (!agentId) return false
+  const labels = activeRadioTargetLabels()
+  if (labels.size === 0) return false
+  const agent = agents.find(a => a.id === agentId || a.friendly_name === agentId)
+  const candidates = [
+    agentId,
+    String(agentId).replace(/^fleet:/, ''),
+    agent?.id,
+    agent?.friendly_name,
+    agent?.name,
+    agent?.pretty_name,
+  ]
+  return candidates.some(v => v && labels.has(String(v).toLowerCase()))
+}
+
+function isDocSurface() {
+  if (typeof document === 'undefined') return false
+  try {
+    return new URLSearchParams(window.location.search).has('doc')
+  } catch {
+    return false
+  }
+}
+
+function radioHudPageLayout() {
+  if (typeof document === 'undefined') return null
+  const candidates = []
+  for (const el of document.querySelectorAll('.svg-page-background, iframe')) {
+    if (el.tagName === 'IFRAME') {
+      const src = el.getAttribute('src') || ''
+      if (!src.includes('/docs/')) continue
+    }
+    const rect = el.getBoundingClientRect()
+    if (rect.width < 120 || rect.height < 120) continue
+    if (rect.right < 0 || rect.left > window.innerWidth) continue
+    candidates.push(rect)
+  }
+  if (!candidates.length) return null
+  candidates.sort((a, b) => {
+    const aVisible = Math.max(0, Math.min(a.right, window.innerWidth) - Math.max(a.left, 0))
+    const bVisible = Math.max(0, Math.min(b.right, window.innerWidth) - Math.max(b.left, 0))
+    return bVisible - aVisible || b.width - a.width
+  })
+  const page = candidates[0]
+  const maxVisibleWidth = Math.max(VOICE_HUD_MIN_WIDTH, window.innerWidth - 24)
+  const width = Math.max(VOICE_HUD_MIN_WIDTH, Math.min(page.width * 0.75, maxVisibleWidth))
+  const pageCenter = page.left + page.width / 2
+  const half = width / 2
+  const left = Math.max(12 + half, Math.min(window.innerWidth - 12 - half, pageCenter))
+  return { width, left }
+}
+
+function collapseRadioSubtitle() {
+  _radioExpanded = false
+  if (_recording) showRecordingHud()
+  else if (_callState) showHud('', '#7ab8a0')
+  else hideHud()
+}
+
+function showRadioSubtitle(event, agents = []) {
+  const text = cleanRadioSubtitleText(event?.text)
+  if (!text) return false
+  const from = event.from || event.agent || ''
+  const entry = {
+    from,
+    label: labelForRadioAgent(from, agents),
+    text,
+    timestamp: event.timestamp || new Date().toISOString(),
+  }
+  _radioSubtitle = entry
+  _radioHistory = [entry, ..._radioHistory].slice(0, RADIO_HUD_HISTORY_LIMIT)
+  _radioExpanded = true
+  clearTimeout(_radioCollapseTimer)
+  showHud(`radio <- ${_radioSubtitle.label}`, '#7ab8a0')
+  _radioCollapseTimer = setTimeout(collapseRadioSubtitle, RADIO_HUD_EXPANDED_MS)
+  return true
+}
+
+export function maybeShowRadioSubtitleForIncomingChat(event, agents = [], humanId = null) {
+  if (!getPref('radio-subtitles-enabled')) return false
+  if (!isDocSurface()) return false
+  if (!event || event.type !== 'chat') return false
+  if (!humanId || event.to !== humanId) return false
+  if (!event.from || event.from === humanId) return false
+  if (!radioAgentMatchesActiveTarget(event.from, agents)) return false
+  return showRadioSubtitle(event, agents)
+}
 
 function hexToRgba(hex, alpha) {
   const r = parseInt(hex.slice(1, 3), 16)
@@ -683,21 +816,85 @@ function showHud(text, stateColor) {
   const hud = ensureHud()
   positionHud(hud)
   clearTimeout(_fadeTimer)
-  // Build HUD content with health dot + text
+  // Build HUD content with health dot + text. Radio subtitle, when active, is
+  // a second line in the same quiet plaque rather than a separate chat panel.
   const dot = ensureHealthDot()
   hud.textContent = ''
   hud.style.display = 'flex'
-  hud.style.alignItems = 'center'
-  hud.appendChild(dot)
+  hud.style.alignItems = _radioExpanded && _radioSubtitle ? 'stretch' : 'center'
+  hud.style.flexDirection = 'column'
+  const radioLayout = _radioExpanded && _radioSubtitle ? radioHudPageLayout() : null
+  hud.style.width = radioLayout ? `${radioLayout.width}px` : VOICE_HUD_WIDTH
+  hud.style.left = radioLayout ? `${radioLayout.left}px` : '50%'
+  hud.style.padding = _radioExpanded && _radioSubtitle ? '7px 12px' : '3px 10px'
+  const statusRow = document.createElement('div')
+  Object.assign(statusRow.style, {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    minWidth: '0',
+    overflow: 'hidden',
+    width: '100%',
+  })
+  statusRow.appendChild(dot)
   const span = document.createElement('span')
   span.textContent = text
   Object.assign(span.style, {
     minWidth: '0',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
   })
-  hud.appendChild(span)
-  appendCallSegment(hud)
+  statusRow.appendChild(span)
+  appendCallSegment(statusRow)
+  hud.appendChild(statusRow)
+  if (_radioExpanded && _radioSubtitle) {
+    const line = document.createElement('div')
+    line.textContent = _radioSubtitle.text
+    Object.assign(line.style, {
+      marginTop: '2px',
+      minWidth: '0',
+      overflow: 'hidden',
+      display: '-webkit-box',
+      WebkitBoxOrient: 'vertical',
+      WebkitLineClamp: '6',
+      whiteSpace: 'normal',
+      wordBreak: 'break-word',
+      color: 'rgba(255,255,255,0.82)',
+      fontSize: '13px',
+      lineHeight: '1.35',
+      textAlign: 'left',
+      width: '100%',
+    })
+    hud.appendChild(line)
+    const prior = _radioHistory.slice(1)
+    if (prior.length) {
+      const trace = document.createElement('div')
+      Object.assign(trace.style, {
+        marginTop: '3px',
+        width: '100%',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '1px',
+      })
+      for (const item of prior) {
+        const row = document.createElement('div')
+        row.textContent = `${item.label}: ${item.text}`
+        Object.assign(row.style, {
+          minWidth: '0',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+          color: 'rgba(255,255,255,0.42)',
+          fontSize: '10px',
+          lineHeight: '1.2',
+          textAlign: 'left',
+        })
+        trace.appendChild(row)
+      }
+      hud.appendChild(trace)
+    }
+  }
   hud.style.color = activeAgentColor() || stateColor || 'rgba(255,255,255,0.7)'
   requestAnimationFrame(() => { hud.style.opacity = '1' })
 }
@@ -2177,10 +2374,10 @@ if (typeof window !== 'undefined') {
   window.__voiceTest = {
     fakeRecord: (ta) => { _recording = true; _state = 'edit'; _backend = 'deepgram'; _voiceDumping = false; resetDeepgramTextState(); if (ta) _activeTextarea = ta; },
     fakeStop: () => { _recording = false; stopVoiceLivenessWatchdog(); stopDeepgramMic(); resetDeepgramTextState(); },
-    switchTarget: (ta) => setVoiceTarget(ta, {
-      getSendTargets: () => [],
-      getAgentNames: () => ({}),
-      getAgentColor: () => null,
+    switchTarget: (ta, sendTargets = [], agentNames = {}, agentColor = null) => setVoiceTarget(ta, {
+      getSendTargets: () => sendTargets,
+      getAgentNames: () => agentNames,
+      getAgentColor: () => agentColor,
       sendVoice: () => {},
     }),
     getState: () => ({ recording: _recording, backend: _backend, state: _state, connected: _deepgramConnected, hasMic: !!_deepgramStream, left: _left, interim: _interim, dumping: _voiceDumping, hasTextarea: !!_activeTextarea }),
@@ -2193,6 +2390,9 @@ if (typeof window !== 'undefined') {
     getHudText: () => _hud?.textContent || '',
     getHudStyle: () => _hud?.style || null,
     getHudWidth: () => VOICE_HUD_WIDTH,
+    getRadioSubtitle: () => _radioSubtitle ? { ..._radioSubtitle, expanded: _radioExpanded } : null,
+    getRadioHistory: () => _radioHistory.map(item => ({ ...item })),
+    maybeShowRadioSubtitleForIncomingChat,
     fakeDeepgramConnected: () => {
       _recording = true
       _backend = 'deepgram'
