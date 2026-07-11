@@ -78,6 +78,7 @@ import { partialSkillReadSummaries, recordPartialSkillReads } from '../shared/pa
 import { daemonAddress, describeAgentAddress } from '../shared/agent-move-target.mjs'
 import {
   DAEMON_OUTBOX_ACK_TYPE,
+  DAEMON_OUTBOX_ERROR_TYPE,
   DAEMON_OUTBOX_ID_FIELD,
   SERVER_DAEMON_OUTBOX_ACK_TYPE,
 } from '../shared/daemon-delivery.mjs'
@@ -3650,7 +3651,10 @@ server.on('upgrade', async (req, socket, head) => {
           markDaemonOutboxMessageProcessed(msg)
           ackDaemonOutboxMessage(ws, msg)
         }
-        catch (e) { console.error('[daemon-ws] handler error:', e?.message) }
+        catch (e) {
+          console.error('[daemon-ws] handler error:', e?.message)
+          errorDaemonOutboxMessage(ws, msg, e)
+        }
       })
       ws.on('close', () => {
         if (ws._daemonKey && daemonConnections.get(ws._daemonKey) === ws) {
@@ -5813,6 +5817,17 @@ function ackDaemonOutboxMessage(ws, msg) {
   ws.send(JSON.stringify({ type: DAEMON_OUTBOX_ACK_TYPE, outbox_id: outboxId }))
 }
 
+function errorDaemonOutboxMessage(ws, msg, error) {
+  const outboxId = daemonOutboxId(msg)
+  if (!outboxId || ws.readyState !== 1) return
+  ws.send(JSON.stringify({
+    type: DAEMON_OUTBOX_ERROR_TYPE,
+    outbox_id: outboxId,
+    error: String(error?.message || error || 'delivery failed'),
+    permanent: error?.permanent !== false,
+  }))
+}
+
 function enqueueDaemonMessage(daemonKey, message, { dedupeKey = null } = {}) {
   const id = serverDaemonOutbox.enqueue(daemonKey, message, { dedupeKey })
   flushServerDaemonOutbox(daemonKey)
@@ -6560,7 +6575,10 @@ async function handleDaemonWsMessage(ws, msg) {
       const result = await processProjectPush(project, { files, deletedFiles, editedBy })
       if (!result.ok) {
         console.error(`[fleet-daemon] source-change ${project}: ${result.error || 'unknown'}`)
-        throw new Error(result.error || 'source-change failed')
+        const err = new Error(result.error || 'source-change failed')
+        err.status = result.status || 500
+        err.permanent = err.status >= 400 && err.status < 500 && err.status !== 409
+        throw err
       }
     } catch (e) {
       console.error(`[fleet-daemon] source-change ${project} crashed: ${e.message}`)

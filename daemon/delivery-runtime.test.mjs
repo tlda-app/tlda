@@ -11,6 +11,11 @@ function tempOutbox() {
   return new DaemonOutbox(path.join(dir, 'outbox.sqlite'))
 }
 
+function tempOutboxWithOptions(options) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-daemon-delivery-'))
+  return new DaemonOutbox(path.join(dir, 'outbox.sqlite'), options)
+}
+
 test('durable messages enqueue offline and flush after ready', () => {
   const sent = []
   let connected = false
@@ -58,6 +63,102 @@ test('durable in-flight rows replay after reconnect until acked', () => {
   runtime.flushDurable()
   assert.equal(sent.length, 2, 'ready/reconnect clears in-flight and replays unacked row')
   runtime.handleAck(sent[1].__daemon_outbox_id)
+  assert.equal(outbox.count(), 0)
+  runtime.dispose()
+  outbox.close()
+})
+
+test('server-rejected source-change dead-letters after bounded Project not found failures', () => {
+  const sent = []
+  const warnings = []
+  const outbox = tempOutboxWithOptions({ maxAttempts: 3 })
+  const runtime = new DaemonDeliveryRuntime({
+    outbox,
+    send: msg => { sent.push(msg); return true },
+    isConnected: () => true,
+    isReady: () => true,
+    log: { warn: msg => warnings.push(msg) },
+  })
+
+  runtime.send({ type: 'source-change', project: 'missing-doc', files: [] })
+  const id = outbox.pending()[0].id
+
+  for (let i = 1; i <= 3; i++) {
+    runtime.flushDurable()
+    assert.equal(sent.length, i)
+    runtime.handleError(id, 'Project not found')
+    runtime.dispose()
+  }
+
+  assert.equal(outbox.count(), 1, 'dead-letter keeps the original row')
+  assert.equal(outbox.pendingCount(), 0)
+  assert.equal(outbox.deadLetterCount(), 1)
+  const row = outbox.get(id)
+  assert.equal(row.type, 'source-change')
+  assert.equal(row.payload.project, 'missing-doc')
+  assert.equal(row.attempts, 3)
+  assert.equal(row.lastError, 'Project not found')
+  assert.equal(row.deadLetterReason, 'Project not found')
+  assert.ok(warnings.some(msg => msg.includes('dead-lettered after 3 attempts')))
+  runtime.dispose()
+  outbox.close()
+})
+
+test('recoverable durable send failure retries and succeeds without dead-lettering', () => {
+  const sent = []
+  let sendOpen = false
+  const outbox = tempOutboxWithOptions({ maxAttempts: 1 })
+  const runtime = new DaemonDeliveryRuntime({
+    outbox,
+    send: msg => {
+      if (!sendOpen) return false
+      sent.push(msg)
+      return true
+    },
+    isConnected: () => true,
+    isReady: () => true,
+  })
+
+  runtime.send({ type: 'source-change', project: 'doc', files: [] })
+  const id = outbox.pending()[0].id
+
+  runtime.flushDurable()
+  assert.equal(outbox.pendingCount(), 1)
+  assert.equal(outbox.deadLetterCount(), 0, 'local send failures are transient')
+  assert.equal(outbox.get(id).lastError, 'websocket not open')
+
+  sendOpen = true
+  runtime.flushDurable()
+  assert.equal(sent.length, 1)
+  runtime.handleAck(id)
+  assert.equal(outbox.count(), 0)
+  runtime.dispose()
+  outbox.close()
+})
+
+test('transient server delivery errors record last_error but still retry and ack', () => {
+  const sent = []
+  const outbox = tempOutboxWithOptions({ maxAttempts: 1 })
+  const runtime = new DaemonDeliveryRuntime({
+    outbox,
+    send: msg => { sent.push(msg); return true },
+    isConnected: () => true,
+    isReady: () => true,
+  })
+
+  runtime.send({ type: 'source-change', project: 'doc', files: [] })
+  const id = outbox.pending()[0].id
+
+  runtime.flushDurable()
+  runtime.handleError(id, 'temporary store unavailable', { permanent: false })
+  runtime.dispose()
+  assert.equal(outbox.pendingCount(), 1)
+  assert.equal(outbox.deadLetterCount(), 0)
+  assert.equal(outbox.get(id).lastError, 'temporary store unavailable')
+
+  runtime.flushDurable()
+  assert.equal(sent.length, 2)
+  runtime.handleAck(id)
   assert.equal(outbox.count(), 0)
   runtime.dispose()
   outbox.close()

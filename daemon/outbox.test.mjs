@@ -52,3 +52,32 @@ test('survives process restart', () => {
     outbox.close()
   }
 })
+
+test('dead-letter preserves the row while removing it from pending retries', () => {
+  let tick = 0
+  const outbox = new DaemonOutbox(tempDb(), { clock: () => `2026-07-10T00:00:0${tick++}.000Z`, maxAttempts: 2 })
+  outbox.enqueue({ type: 'source-change', project: 'missing-doc', files: [] }, { id: 'stale-source' })
+
+  outbox.markAttempt('stale-source')
+  assert.deepEqual(outbox.markError('stale-source', 'Project not found'), {
+    deadLettered: false,
+    attempts: 1,
+    error: 'Project not found',
+  })
+  outbox.markAttempt('stale-source')
+  assert.deepEqual(outbox.markError('stale-source', 'Project not found'), {
+    deadLettered: true,
+    attempts: 2,
+    error: 'Project not found',
+  })
+
+  assert.equal(outbox.count(), 1, 'dead-lettered row is retained as evidence')
+  assert.equal(outbox.pendingCount(), 0)
+  assert.equal(outbox.deadLetterCount(), 1)
+  assert.deepEqual(outbox.pending(), [])
+  const row = outbox.get('stale-source')
+  assert.equal(row.lastError, 'Project not found')
+  assert.equal(row.deadLetterReason, 'Project not found')
+  assert.ok(row.deadLetteredAt)
+  outbox.close()
+})

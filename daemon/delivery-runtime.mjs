@@ -64,6 +64,17 @@ export class DaemonDeliveryRuntime {
     this.scheduleFlush()
   }
 
+  handleError(outboxId, error, { permanent = true } = {}) {
+    if (!outboxId) return
+    const result = this.outbox.markError(outboxId, error || 'delivery failed', { deadLetterEligible: permanent })
+    this.inflight.delete(outboxId)
+    if (result?.deadLettered) {
+      this.log?.warn?.(`daemon durable message dead-lettered after ${result.attempts} attempts: ${result.error}`)
+      return
+    }
+    this.scheduleFlush()
+  }
+
   noteReady() {
     this.inflight.clear()
     this.ephemeralQueues.clear()
@@ -88,7 +99,7 @@ export class DaemonDeliveryRuntime {
         this.outbox.markAttempt(row.id)
         if (!this.trySend(row.payload)) {
           this.inflight.delete(row.id)
-          this.outbox.markError(row.id, 'websocket not open')
+          this.outbox.markTransientError(row.id, 'websocket not open')
           break
         }
       }

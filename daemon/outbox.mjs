@@ -4,6 +4,7 @@ import { randomUUID } from 'crypto'
 import { DAEMON_OUTBOX_ID_FIELD } from '../shared/daemon-delivery.mjs'
 
 export const OUTBOX_ID_FIELD = DAEMON_OUTBOX_ID_FIELD
+export const DEFAULT_MAX_ATTEMPTS = 5
 
 function nowIso() {
   return new Date().toISOString()
@@ -23,13 +24,16 @@ function parseRow(row) {
     createdAt: row.created_at,
     lastAttemptAt: row.last_attempt_at,
     lastError: row.last_error,
+    deadLetteredAt: row.dead_lettered_at,
+    deadLetterReason: row.dead_letter_reason,
   }
 }
 
 export class DaemonOutbox {
-  constructor(dbPath, { clock = nowIso } = {}) {
+  constructor(dbPath, { clock = nowIso, maxAttempts = DEFAULT_MAX_ATTEMPTS } = {}) {
     this.dbPath = dbPath
     this.clock = clock
+    this.maxAttempts = maxAttempts
     this.db = new Database(dbPath)
     this.db.pragma('journal_mode = WAL')
     this.db.pragma('busy_timeout = 5000')
@@ -41,11 +45,16 @@ export class DaemonOutbox {
         attempts INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
         last_attempt_at TEXT,
-        last_error TEXT
+        last_error TEXT,
+        dead_lettered_at TEXT,
+        dead_letter_reason TEXT
       );
       CREATE INDEX IF NOT EXISTS daemon_outbox_pending_idx
-        ON daemon_outbox(created_at, id);
+        ON daemon_outbox(created_at, id)
+        WHERE dead_lettered_at IS NULL;
     `)
+    this.ensureColumn('daemon_outbox', 'dead_lettered_at', 'TEXT')
+    this.ensureColumn('daemon_outbox', 'dead_letter_reason', 'TEXT')
     this.insertStmt = this.db.prepare(`
       INSERT OR IGNORE INTO daemon_outbox
         (id, type, payload_json, attempts, created_at, last_attempt_at, last_error)
@@ -54,6 +63,7 @@ export class DaemonOutbox {
     `)
     this.listStmt = this.db.prepare(`
       SELECT * FROM daemon_outbox
+      WHERE dead_lettered_at IS NULL
       ORDER BY created_at ASC, id ASC
       LIMIT ?
     `)
@@ -70,7 +80,24 @@ export class DaemonOutbox {
       SET last_error = ?
       WHERE id = ?
     `)
+    this.deadLetterStmt = this.db.prepare(`
+      UPDATE daemon_outbox
+      SET last_error = ?,
+          dead_lettered_at = ?,
+          dead_letter_reason = ?
+      WHERE id = ?
+    `)
     this.countStmt = this.db.prepare('SELECT count(*) AS count FROM daemon_outbox')
+    this.pendingCountStmt = this.db.prepare('SELECT count(*) AS count FROM daemon_outbox WHERE dead_lettered_at IS NULL')
+    this.deadLetterCountStmt = this.db.prepare('SELECT count(*) AS count FROM daemon_outbox WHERE dead_lettered_at IS NOT NULL')
+    this.getStmt = this.db.prepare('SELECT * FROM daemon_outbox WHERE id = ?')
+  }
+
+  ensureColumn(table, name, type) {
+    const cols = this.db.prepare(`PRAGMA table_info(${table})`).all()
+    if (!cols.some(col => col.name === name)) {
+      this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${type}`)
+    }
   }
 
   enqueue(message, { id = null } = {}) {
@@ -93,8 +120,30 @@ export class DaemonOutbox {
     this.markAttemptStmt.run(this.clock(), id)
   }
 
-  markError(id, error) {
-    this.markErrorStmt.run(String(error?.message || error || 'send failed'), id)
+  markError(id, error, { deadLetterEligible = true } = {}) {
+    const message = String(error?.message || error || 'send failed')
+    this.markErrorStmt.run(message, id)
+    const row = this.get(id)
+    if (deadLetterEligible && row && row.attempts >= this.maxAttempts) {
+      this.deadLetter(id, message)
+      return { deadLettered: true, attempts: row.attempts, error: message }
+    }
+    return { deadLettered: false, attempts: row?.attempts || 0, error: message }
+  }
+
+  markTransientError(id, error) {
+    const message = String(error?.message || error || 'send failed')
+    this.markErrorStmt.run(message, id)
+    return { deadLettered: false, attempts: this.get(id)?.attempts || 0, error: message }
+  }
+
+  deadLetter(id, reason) {
+    const message = String(reason?.message || reason || 'delivery failed')
+    this.deadLetterStmt.run(message, this.clock(), message, id)
+  }
+
+  get(id) {
+    return parseRow(this.getStmt.get(id))
   }
 
   ack(id) {
@@ -103,6 +152,14 @@ export class DaemonOutbox {
 
   count() {
     return this.countStmt.get().count
+  }
+
+  pendingCount() {
+    return this.pendingCountStmt.get().count
+  }
+
+  deadLetterCount() {
+    return this.deadLetterCountStmt.get().count
   }
 
   close() {

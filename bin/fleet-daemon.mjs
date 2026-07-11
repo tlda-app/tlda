@@ -72,6 +72,7 @@ import {
 } from '../agent-runtime/status-classifier.mjs'
 import {
   DAEMON_OUTBOX_ACK_TYPE,
+  DAEMON_OUTBOX_ERROR_TYPE,
   SERVER_DAEMON_OUTBOX_ACK_TYPE,
   SERVER_DAEMON_OUTBOX_ID_FIELD,
 } from '../shared/daemon-delivery.mjs'
@@ -618,6 +619,10 @@ function handleServerMessage(msg) {
   if (machineRpc.handleReply(msg)) return
   if (msg.type === DAEMON_OUTBOX_ACK_TYPE) {
     if (msg.outbox_id) daemonDelivery.handleAck(msg.outbox_id)
+    return
+  }
+  if (msg.type === DAEMON_OUTBOX_ERROR_TYPE) {
+    if (msg.outbox_id) daemonDelivery.handleError(msg.outbox_id, msg.error || 'delivery failed', { permanent: msg.permanent !== false })
     return
   }
   if (msg.type === 'daemon-welcome') {
