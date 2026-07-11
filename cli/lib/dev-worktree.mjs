@@ -31,7 +31,7 @@
  */
 
 import { spawn, spawnSync, execFileSync } from 'child_process'
-import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, openSync, cpSync, rmSync, readdirSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, openSync, cpSync, rmSync, readdirSync, statSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 import { X509Certificate } from 'crypto'
@@ -569,6 +569,26 @@ async function statusAllPreviews(json) {
   if (orphans.length) printOrphanHint(orphans)
 }
 
+// Sweep orphaned preview STATE DIRS. A clean `stop` already rm's the dir
+// (stopPreview), so a surviving dir whose process is dead means the preview was
+// killed/crashed without a clean stop — that's what accumulates (32GB of
+// fleet.db copies + projects). Skip any dir with today's mtime (active or
+// just-crashed-and-may-restart) — the same safe rule the manual reclaim used.
+function sweepOrphanPreviewDirs() {
+  const swept = [], kept = []
+  const todayStr = new Date().toDateString()
+  for (const s of listPreviewStates()) {
+    if (s.pid) { kept.push({ branch: s.key, reason: 'running' }); continue }
+    const dir = stateDir(s.key)
+    let mtime
+    try { mtime = statSync(dir).mtime } catch { continue }
+    if (mtime.toDateString() === todayStr) { kept.push({ branch: s.key, reason: 'today-mtime' }); continue }
+    try { rmSync(dir, { recursive: true, force: true }); swept.push(s.key) }
+    catch (e) { kept.push({ branch: s.key, reason: `rm-failed: ${e.message}` }) }
+  }
+  return { swept, kept }
+}
+
 function reapOrphanPreviews(json) {
   const orphans = orphanPreviewListeners()
   const reaped = []
@@ -579,16 +599,24 @@ function reapOrphanPreviews(json) {
       reaped.push(o)
     } catch { /* already gone */ }
   }
+  // Also sweep orphaned preview data dirs (dead process, non-today mtime).
+  const dirs = sweepOrphanPreviewDirs()
   if (json) {
-    console.log(JSON.stringify({ reaped, skipped: orphans.filter(o => !reaped.includes(o)) }, null, 2))
+    console.log(JSON.stringify({
+      reaped,
+      skipped: orphans.filter(o => !reaped.includes(o)),
+      sweptDirs: dirs.swept,
+      keptDirs: dirs.kept,
+    }, null, 2))
     return
   }
-  if (!orphans.length) {
-    console.log('no orphan preview listeners found')
+  if (!orphans.length && !dirs.swept.length) {
+    console.log('no orphan preview listeners or dirs found')
     return
   }
   for (const o of reaped) console.log(`reaped orphan preview listener pid ${o.pid} on :${o.port}`)
   for (const o of orphans.filter(o => !reaped.includes(o))) {
     console.log(`left listener pid ${o.pid} ${o.command} on :${o.port} (not a node preview process)`)
   }
+  for (const b of dirs.swept) console.log(`swept orphaned preview dir: ${b}`)
 }
