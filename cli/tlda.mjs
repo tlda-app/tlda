@@ -192,7 +192,7 @@ const COMMAND_HELP = {
   bot:     'tlda bot [list|install|uninstall|start|stop|status|log] [name] [--dry-run]\n\n  Manage configured fleet bots as launchd services. The bot process logs in like an agent; the daemon does not start it.',
   system:  'tlda system status\n\n  Show server, daemon, deploy stamp, and fleet runtime identity.',
   daemon:  'tlda daemon [start|stop|status|log|run|install|uninstall]\n\n  Control the per-machine fleet daemon.\n  It watches project source directories and agent session activity,\n  then pushes events to the tlda server over WebSocket.',
-  doctor:  'tlda doctor [--fix]\ntlda doctor yolo [--name yolo] [--model opus] [--cwd /path] [--dry-run]\n\n  Run a health check for local tools, server, SPA bundle, daemon, MCP setup,\n  project builds, and doc sync stores.\n\n  --fix  Apply the limited automatic repairs that doctor explicitly offers.\n\n  yolo   Break-glass: locally launch an unfenced in-fleet Claude agent with a real FLEET_ID.\n         This path reserves a fleet shell, then starts tmux directly instead of using the\n         fleet/daemon spawn permission gate.',
+  doctor:  'tlda doctor [--fix]\ntlda doctor yolo [--name yolo] [--model gpt|opus] [--cwd /path] [--no-attach] [--dry-run]\n\n  Run a health check for local tools, server, SPA bundle, daemon, MCP setup,\n  project builds, and doc sync stores.\n\n  --fix  Apply the limited automatic repairs that doctor explicitly offers.\n\n  yolo   Break-glass: locally launch an unfenced in-fleet agent with a real FLEET_ID.\n         Reserves a fleet shell, then starts tmux directly instead of using the\n         fleet/daemon spawn permission gate. Deliberately shallow so it works when\n         the normal spawn path is broken.\n\n         --model picks the harness by alias: gpt -> codex, opus -> claude (default opus).\n         Run in a terminal and it attaches you into the agent session when it comes up\n         (--no-attach to skip). Run non-interactively and it verifies the agent actually\n         logged in and is reachable before reporting success (or errors out and tears\n         down the phantom seat).',
   'repo-doctor': 'tlda doc repo-doctor <project> [--rescue|--apply|--rollback|--cleanup]\n\n  Diagnose a project source repo for tlda-induced damage.\n  No flag: diagnose only (read-only).\n  --rescue   Compute a rescue plan (dry run).\n  --apply    Execute the rescue plan.\n  --rollback Roll back a previous rescue apply.\n  --cleanup  Clean rescue apply state.',
   publish: 'tlda publish [--target <name>] [doc ...]\n\n  Publish docs to GitHub Pages (+ optionally Fly).\n\n  With no args, publishes all docs in config.published using the "default" target.\n  With --target, uses the named target config (sync server, repo, etc.).\n  With doc names, publishes those and adds them to the list.\n\n  Config (targets in ~/.config/tlda/config.json):\n    targets.<name>.sync     — sync server WebSocket URL\n    targets.<name>.repo     — git remote for gh-pages (null = same repo)\n    targets.<name>.fly      — deploy to Fly (default: false)\n    targets.<name>.basePath — vite base path (default: /tlda/)',
   config:  'tlda config [set <key> <value> | get [key]]\n\n  Manage persistent configuration.\n  Example: tlda config set server http://myhost:5176',
@@ -3822,8 +3822,10 @@ async function cmdDoctor() {
 async function cmdDoctorYolo() {
   const { sanitizeSessionName, readConfig, resolveDnsAlias } = await import('../agent-launch/identity.mjs')
   const { resolveApi, wsReserveShell, findAgent, markAgentDead } = await import('../agent-launch/register.mjs')
-  const { uniqueSessionName, spawnTmux } = await import('../agent-launch/tmux.mjs')
+  const { uniqueSessionName, spawnTmux, injectCodexPrompt, tmuxArgs } = await import('../agent-launch/tmux.mjs')
+  const { inferHarnessKind } = await import('../agent-launch/models.mjs')
   const claude = await import('../agent-launch/harness/claude.mjs')
+  const codex = await import('../agent-launch/harness/codex.mjs')
 
   const name = String(getFlag('name', 'yolo') || 'yolo')
   const safeName = sanitizeSessionName(name)
@@ -3835,30 +3837,37 @@ async function cmdDoctorYolo() {
   const tmuxSocket = loadConfig().tmuxSocket || null
   const dryRun = hasFlag('dry-run')
   const tmuxSession = dryRun ? `fleet-${safeName}` : await uniqueSessionName(`fleet-${safeName}`, { tmuxSocket })
-  const model = claude.resolveModel(getFlag('model', 'opus'), { config })
+
+  // Harness follows the model alias — no --kind. A gpt/codex alias → codex, else
+  // claude. Break-glass stays shallow: we call the harness command-builder directly
+  // and reserve a shell; we do NOT route through the deep spawn/fence/lease
+  // machinery (that machinery is exactly what might be broken when you reach for
+  // this). Unfenced, dead simple — the launch flags below just bypass sandboxing.
+  const modelAlias = String(getFlag('model', 'opus') || 'opus')
+  const kind = inferHarnessKind(null, modelAlias)
+  const harness = kind === 'codex' ? codex : claude
+  const model = harness.resolveModel(modelAlias, { config })
   const dnsAlias = await resolveDnsAlias(api).catch(() => null)
-  const harnessOptions = {
-    required: ['--dangerously-load-development-channels server:tlda'],
-    preferences: ['--dangerously-skip-permissions'],
-    controls: false,
+
+  let cmd
+  if (kind === 'codex') {
+    codex.ensureProjectTrusted(cwd)
+    cmd = codex.buildCmd({
+      fleetId, tmuxSession, model, name, cwd, api, dnsAlias, config,
+      harnessOptions: { required: ['--dangerously-bypass-approvals-and-sandbox'], preferences: [], controls: false },
+    })
+  } else {
+    cmd = claude.buildCmd({
+      fleetId, tmuxSession, model, mode: 'bypassPermissions', name, api, dnsAlias, includePrompt: true, config,
+      harnessOptions: { required: ['--dangerously-load-development-channels server:tlda'], preferences: ['--dangerously-skip-permissions'], controls: false },
+    })
   }
-  const cmd = claude.buildCmd({
-    fleetId,
-    tmuxSession,
-    model,
-    mode: 'bypassPermissions',
-    name,
-    api,
-    dnsAlias,
-    includePrompt: true,
-    config,
-    harnessOptions,
-  })
 
   if (dryRun) {
     console.log('tlda doctor yolo dry run')
     console.log(`  fleet_id: ${fleetId}`)
     console.log(`  name: ${name}`)
+    console.log(`  kind: ${kind}`)
     console.log(`  tmux: ${tmuxSession}`)
     console.log(`  cwd: ${cwd}`)
     console.log(`  model: ${model}`)
@@ -3875,7 +3884,7 @@ async function cmdDoctorYolo() {
     model,
     refresh: true,
     shell: true,
-    kind: 'claude',
+    kind,
     metadata: {
       breakGlass: true,
       yolo: true,
@@ -3884,18 +3893,38 @@ async function cmdDoctorYolo() {
     },
     api,
   })
-  const launched = await spawnTmux(tmuxSession, cwd, cmd, { autoDismiss: true, tmuxSocket })
+  const launched = await spawnTmux(tmuxSession, cwd, cmd, {
+    autoDismiss: kind === 'claude',
+    sendKeys: kind === 'codex',
+    tmuxSocket,
+  })
   if (!launched) {
     throw new Error(`tmux session ${tmuxSession} already has a live harness runtime`)
   }
+  // Claude embeds its kickoff prompt in the command; codex is launched bare and gets
+  // its login/kickoff prompt injected into the session afterward.
+  if (kind === 'codex') {
+    await injectCodexPrompt(tmuxSession, codex.kickoffPrompt(name), { tmuxSocket })
+  }
+
+  // Interactive terminal → drop the operator straight into the agent's session, the
+  // way spawn used to. You watch it log in live, so there is no false "launched" — a
+  // stuck prompt or crash is right in front of you. (--no-attach opts out.)
+  if (process.stdout.isTTY && !hasFlag('no-attach')) {
+    const { spawnSync } = await import('node:child_process')
+    console.log(dim(`Attaching to ${tmuxSession} (detach with Ctrl-b d)…`))
+    spawnSync('tmux', tmuxArgs(tmuxSocket, 'attach', '-t', tmuxSession), { stdio: 'inherit' })
+    return
+  }
 
   // ──────────────────────────────────────────────────────────────────────────
-  // PROVE THE SEAT IS REACHABLE BEFORE REPORTING SUCCESS. Do NOT print "launched"
-  // just because tmux started — that is exactly how the 2026-07-10 GHOST happened:
-  // an agent whose shell was reserved but never logged in. It could SEND one
-  // message off its raw FLEET_ID, but it had no roster seat, no friendly name in
-  // the agents panel, and was NOT a routable chat recipient ("filter matches no
-  // known agents"). Skip could not talk to it and it tortured him for a stretch.
+  // Non-interactive caller (an agent, a script) can't attach, so PROVE THE SEAT IS
+  // REACHABLE BEFORE REPORTING SUCCESS. Do NOT print "launched" just because tmux
+  // started — that is exactly how the 2026-07-10 GHOST happened: an agent whose
+  // shell was reserved but never logged in. It could SEND one message off its raw
+  // FLEET_ID, but it had no roster seat, no friendly name in the agents panel, and
+  // was NOT a routable chat recipient ("filter matches no known agents"). Skip could
+  // not talk to it and it tortured him for a stretch.
   //
   // A reserved-but-not-logged-in shell carries `metadata.shell === true`; the login
   // handler clears that flag (unified-server.mjs). So we poll until the flag is
@@ -3916,11 +3945,12 @@ async function cmdDoctorYolo() {
     throw new Error(
       `Break-glass launch FAILED: ${fleetId} reserved a shell but never logged in within 60s — `
       + `it is NOT in the roster and cannot be reached (a ghost). Tore down the phantom seat. `
-      + `Inspect tmux '${tmuxSession}' for a stuck dev-channels prompt or a crash, then retry.`)
+      + `Inspect tmux '${tmuxSession}' for a stuck prompt or a crash, then retry.`)
   }
   console.log(green(bold('Break-glass agent launched and verified reachable.')))
   console.log(`  fleet_id: ${fleetId}`)
   console.log(`  name: ${reachable.friendly_name || name}`)
+  console.log(`  kind: ${kind}`)
   console.log(`  tmux: ${tmuxSession}`)
   console.log(`  cwd: ${cwd}`)
   console.log(`  model: ${model}`)
