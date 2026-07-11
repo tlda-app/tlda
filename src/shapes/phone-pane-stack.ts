@@ -13,6 +13,8 @@ export type PhonePaneStackEntry =
   | { kind: 'inbox'; index: 1; shapeId?: string }
   | { kind: 'pinned'; index: number; shapeId: string; type: string }
 
+export type PhonePaneCamera = { x: number; y: number; z: number }
+
 type PhonePaneCandidate = {
   id?: unknown
   type?: string
@@ -137,6 +139,26 @@ export function phonePaneCameraXForIndex(editor: Editor, docLeftPage: number, pa
   const bounds = editor.getShapePageBounds(entry.shapeId as TLShapeId)
   const x = bounds?.x ?? null
   return typeof x === 'number' && Number.isFinite(x) ? -x : null
+}
+
+export function phonePaneCameraForIndex(editor: Editor, docLeftPage: number, paneIndex: number): PhonePaneCamera | null {
+  if (paneIndex === PHONE_DOCUMENT_PANE_INDEX) {
+    const pages = editor.getCurrentPageShapes().filter(isDocumentPageShape)
+    if (pages.length === 0) return null
+    const first = pages
+      .map(page => ({ page, bounds: editor.getShapePageBounds(page.id) }))
+      .filter((entry): entry is { page: TLShape; bounds: NonNullable<ReturnType<Editor['getShapePageBounds']>> } => !!entry.bounds)
+      .sort((a, b) => a.bounds.y - b.bounds.y)[0]
+    const vp = editor.getViewportScreenBounds()
+    if (!first || !(vp.w > 0) || !(first.bounds.w > 0)) return { ...editor.getCamera(), x: -docLeftPage }
+    return { x: -first.bounds.x, y: -first.bounds.y, z: vp.w / first.bounds.w }
+  }
+  const entry = getPhonePaneStack(editor).find(entry => entry.index === paneIndex)
+  if (!entry || entry.kind === 'document' || !entry.shapeId) return null
+  const bounds = editor.getShapePageBounds(entry.shapeId as TLShapeId)
+  const vp = editor.getViewportScreenBounds()
+  if (!bounds || !(vp.w > 0) || !(bounds.w > 0)) return null
+  return { x: -bounds.x, y: -bounds.y, z: vp.w / bounds.w }
 }
 
 function isFullScreenPinnedPaneForOwner(editor: Editor, shape: PhonePaneCandidate, userId: string, deviceId: string): boolean {
