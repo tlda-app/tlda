@@ -1892,6 +1892,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   const [filterOpen, setFilterOpen] = useState(false)
   const [filterOpenByPill, setFilterOpenByPill] = useState(false)
   const [isPhoneSurface, setIsPhoneSurface] = useState(isPhoneSurfaceNow)
+  const isPhoneLaneSurface = isPhoneSurface && isPhonePinnedPaneShape(mainEd, shape)
   const phoneDeleteGestureRef = useRef<PhonePaneDeleteGesture | null>(null)
 
   useEffect(() => {
@@ -5784,7 +5785,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     >
       <div
         ref={shapeContainerRef}
-        className="fleet-shape fleet-chat-shape"
+        className={`fleet-shape fleet-chat-shape${isPhoneLaneSurface ? ' phone-lane-surface' : ''}`}
         style={{
           ...fleetStyleVars,
           width: '100%',

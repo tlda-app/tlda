@@ -1235,7 +1235,7 @@ function FleetInboxInner({ shape }: { shape: any }) {
     >
       <div
         ref={containerRef}
-        className={`fleet-shape fleet-inbox-shape${isPhoneSurface ? ' phone-inbox-surface' : ''}`}
+        className={`fleet-shape fleet-inbox-shape${isPhoneSurface ? ' phone-inbox-surface phone-lane-surface' : ''}`}
         data-phone-open-thread={activeThread ? 'true' : undefined}
         style={{
           width: '100%',
