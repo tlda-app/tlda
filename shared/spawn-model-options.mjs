@@ -2,6 +2,7 @@ export function flattenAvailableSpawnModels(capabilities) {
   const harnesses = capabilities?.harnesses || {}
   const aliases = []
   const seen = new Set()
+  const models = []
 
   for (const harness of Object.values(harnesses)) {
     if (!harness?.available) continue
@@ -11,6 +12,11 @@ export function flattenAvailableSpawnModels(capabilities) {
       if (seen.has(model.alias)) continue
       seen.add(model.alias)
       aliases.push(model.alias)
+      models.push({
+        alias: model.alias,
+        kind: harness.kind || null,
+        options: model.options && typeof model.options === 'object' ? model.options : {},
+      })
     }
   }
 
@@ -21,6 +27,7 @@ export function flattenAvailableSpawnModels(capabilities) {
 
   return {
     aliases,
+    models,
     defaultAlias,
     machine: capabilities?.machine || null,
     generated_at: capabilities?.generated_at || null,
@@ -31,6 +38,7 @@ export function spawnModelsFromCapabilitiesResponse(data) {
   if (!data?.ok || !data.capabilities) {
     return {
       aliases: [],
+      models: [],
       defaultAlias: '',
       machine: data?.machine_id || null,
       route: data?.route || null,

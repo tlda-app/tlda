@@ -4,6 +4,7 @@ import { spawnModelsFromCapabilitiesResponse } from '../../shared/spawn-model-op
 
 export type AvailableSpawnModels = {
   aliases: string[]
+  models: Array<{ alias: string; kind: string | null; options: Record<string, string[]> }>
   defaultAlias: string
   machine: string | null
   route: string | null
@@ -13,6 +14,7 @@ export type AvailableSpawnModels = {
 
 export const EMPTY_SPAWN_MODELS: AvailableSpawnModels = {
   aliases: [],
+  models: [],
   defaultAlias: '',
   machine: null,
   route: null,
@@ -29,6 +31,7 @@ export async function loadAvailableSpawnModels(
   const next = spawnModelsFromCapabilitiesResponse(await r.json())
   return {
     aliases: next.aliases,
+    models: next.models,
     defaultAlias: next.defaultAlias,
     machine: next.machine,
     route: next.route,
@@ -52,6 +55,7 @@ export function useAvailableSpawnModels(userId: string | null | undefined): Avai
         if (cancelled) return
         setModels({
           aliases: next.aliases,
+          models: next.models,
           defaultAlias: next.defaultAlias,
           machine: next.machine,
           route: next.route,

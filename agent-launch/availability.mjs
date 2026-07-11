@@ -9,6 +9,7 @@ import { readConfig } from './identity.mjs'
 const execFileP = promisify(execFile)
 const DEFAULT_TIMEOUT_MS = 2500
 const CURSOR_AGENT_COMMAND = path.join(os.homedir(), '.local/bin/cursor-agent')
+const CLAUDE_EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max']
 
 function okResult(extra = {}) {
   return { ok: true, ...extra }
@@ -94,6 +95,9 @@ function modelRows(kind, config, { cursorAvailable = true } = {}) {
       verified: model.verified,
       provider: model.provider,
       tags: model.tags,
+      options: kind === 'claude'
+        ? { effort: CLAUDE_EFFORT_LEVELS }
+        : {},
     }))
 }
 

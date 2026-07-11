@@ -1667,6 +1667,8 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   opacity: 0.4;
   flex-shrink: 0;
   transition: opacity 0.2s;
+  position: relative;
+  overflow: visible;
 }
 .fleet-agents-shape:hover .fleet-agents-footer {
   opacity: 0.7;
@@ -2089,6 +2091,92 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   min-width: 0;
   max-width: 50%;
   margin-left: 10px;
+}
+.fleet-agents-shape .fleet-agents-spawn-btns.is-open {
+  position: absolute;
+  z-index: 20;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  max-width: none;
+  height: 20px;
+  margin-left: 0;
+  padding: 0 6px 0 8px;
+  box-sizing: border-box;
+  background: var(--surface);
+}
+.fleet-agents-shape .fleet-agents-mint-picker {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 20px;
+  height: 154px;
+  display: grid;
+  grid-template-columns: minmax(72px, 30%) 1fr;
+  overflow: hidden;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  box-shadow: 0 -4px 12px var(--shadow-lg, rgba(0,0,0,0.3));
+  opacity: 1;
+}
+.fleet-agents-shape .fleet-agents-mint-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  border-right: 1px solid rgba(128,128,128,0.12);
+}
+.fleet-agents-shape .fleet-agents-mint-field,
+.fleet-agents-shape .fleet-agents-mint-choice {
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.fleet-agents-shape .fleet-agents-mint-field {
+  min-height: 26px;
+  padding: 4px 7px;
+  opacity: 0.5;
+}
+.fleet-agents-shape .fleet-agents-mint-field.is-active {
+  background: var(--glass-4);
+  color: var(--text-bright);
+  opacity: 1;
+}
+.fleet-agents-shape .fleet-agents-mint-choices {
+  display: flex;
+  align-content: flex-start;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 3px;
+  padding: 6px;
+  overflow-y: auto;
+}
+.fleet-agents-shape .fleet-agents-mint-choice {
+  min-height: 24px;
+  padding: 4px 7px;
+  background: rgba(128,128,128,0.06);
+  opacity: 0.7;
+}
+.fleet-agents-shape .fleet-agents-mint-choice:hover,
+.fleet-agents-shape .fleet-agents-mint-choice.is-active {
+  background: var(--glass-4);
+  color: var(--text-bright);
+  opacity: 1;
+}
+.fleet-agents-shape .fleet-agents-mint-empty {
+  padding: 5px 7px;
+  color: var(--text-dim);
+  opacity: 0.65;
+}
+@media (pointer: coarse) {
+  .fleet-agents-shape .fleet-agents-mint-field,
+  .fleet-agents-shape .fleet-agents-mint-choice {
+    min-height: 44px;
+  }
 }
 .fleet-agents-shape .fleet-agents-spawn-input-wrap {
   position: relative;
