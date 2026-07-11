@@ -34,11 +34,30 @@ export function defaultFleetLayoutChatFilters({
   const topAgents = [
     ...recentChatAgents,
     ...deduped.filter((a: any) => !recentIds.has(a.id || a.friendly_name)),
-  ].slice(0, panelCount)
+  ]
+
+  const usedFilters = new Set<string>()
+  let nextAgent = 0
 
   return Array.from({ length: panelCount }, (_, i) => {
-    if (existingChatFilters[i]) return existingChatFilters[i]!
-    const name = topAgents[i]?.friendly_name as string | undefined
-    return name ? [[['from', name]], [['to', name]]] : []
+    const existing = existingChatFilters[i]
+    if (existing?.length) {
+      const key = JSON.stringify(existing)
+      if (!usedFilters.has(key)) {
+        usedFilters.add(key)
+        return existing
+      }
+    }
+
+    while (nextAgent < topAgents.length) {
+      const name = topAgents[nextAgent++]?.friendly_name as string | undefined
+      if (!name) continue
+      const filter: FleetChatFilter = [[['from', name]], [['to', name]]]
+      const key = JSON.stringify(filter)
+      if (usedFilters.has(key)) continue
+      usedFilters.add(key)
+      return filter
+    }
+    return []
   })
 }
