@@ -1215,6 +1215,35 @@ function runningFleetDaemonPid() {
   }
 }
 
+async function launchdDaemonPid(label = FLEET_DAEMON_LABEL) {
+  try {
+    const out = await runLaunchctl(['print', daemonLaunchdTarget(label)])
+    const pidLine = out.split('\n').find(line => line.trim().startsWith('pid ='))
+    const pid = pidLine ? parseInt(pidLine.split('=')[1], 10) : null
+    return Number.isFinite(pid) && pid > 0 ? pid : null
+  } catch {
+    return null
+  }
+}
+
+async function waitForFleetDaemonPid({ previousPid = null, timeoutMs = 30_000 } = {}) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const pid = runningFleetDaemonPid()
+    if (pid && pid !== previousPid) return pid
+    await new Promise(r => setTimeout(r, 500))
+  }
+  return null
+}
+
+async function terminateOutsideFleetDaemon(pid) {
+  try {
+    process.kill(pid, 'SIGTERM')
+  } catch (e) {
+    if (e?.code !== 'ESRCH') throw e
+  }
+}
+
 // Idempotent daemon start — ensure launchd has the singleton job loaded.
 // Used by `tlda server start` to make sure the daemon comes up alongside
 // the server. The daemon dying silently was a recurring source of pain.
@@ -1223,7 +1252,19 @@ async function ensureFleetDaemonRunning() {
   if (!existsSync(FLEET_DAEMON_SCRIPT)) return // not installed; silently skip
   const pid = runningFleetDaemonPid()
   if (pid) {
-    console.log(yellow('Fleet daemon already running outside launchd') + dim(` (pid ${pid})`))
+    await writeDaemonPlist()
+    await bootstrapDaemonPlist()
+    if (await launchdDaemonPid() === pid) {
+      console.log(green('Fleet daemon launchd job already running') + dim(` (pid ${pid})`))
+      return
+    }
+    await terminateOutsideFleetDaemon(pid)
+    const supervisedPid = await waitForFleetDaemonPid({ previousPid: pid })
+    if (supervisedPid) {
+      console.log(green('Fleet daemon launchd job took over') + dim(` (pid ${supervisedPid})`))
+      return
+    }
+    console.log(yellow('Fleet daemon supervision was bootstrapped, but takeover is still pending') + dim(` (old pid ${pid})`))
     return
   }
   await writeDaemonPlist()
@@ -1342,10 +1383,28 @@ async function cmdFleetWatch(sub) {
 
     const existingPid = runningFleetDaemonPid()
     if (existingPid) {
-      console.log(yellow('Fleet daemon already running outside launchd') + dim(` (pid ${existingPid})`))
-      console.log(dim(`  Config target: ${getFleetServerUrl()}`))
-      const connectedTarget = lastDaemonConnectedTarget()
-      if (connectedTarget) console.log(dim(`  Last WS target: ${connectedTarget}`))
+      await writeDaemonPlist()
+      await bootstrapDaemonPlist()
+      const launchdPid = await launchdDaemonPid()
+      if (launchdPid === existingPid) {
+        console.log(green('Fleet daemon launchd job already running') + dim(` (pid ${existingPid})`))
+        console.log(dim(`  Config target: ${getFleetServerUrl()}`))
+        const connectedTarget = lastDaemonConnectedTarget()
+        if (connectedTarget) console.log(dim(`  Last WS target: ${connectedTarget}`))
+        console.log(dim(`  Plist: ${FLEET_DAEMON_PLIST}`))
+        console.log(dim(`  Log: ${FLEET_DAEMON_LOGFILE}`))
+        return
+      }
+      console.log(yellow('Fleet daemon running outside launchd') + dim(` (pid ${existingPid}); transitioning to supervised ${daemonLaunchdTarget()}`))
+      await terminateOutsideFleetDaemon(existingPid)
+      const supervisedPid = await waitForFleetDaemonPid({ previousPid: existingPid })
+      if (!supervisedPid) {
+        console.error(red('Fleet daemon supervision did not take over within 30000ms'))
+        console.error(dim(`Check log: ${FLEET_DAEMON_LOGFILE}`))
+        process.exit(1)
+      }
+      console.log(green('Fleet daemon launchd job took over') + dim(` (pid ${supervisedPid})`))
+      console.log(dim(`  Plist: ${FLEET_DAEMON_PLIST}`))
       console.log(dim(`  Log: ${FLEET_DAEMON_LOGFILE}`))
       return
     }
