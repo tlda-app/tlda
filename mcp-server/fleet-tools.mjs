@@ -47,7 +47,6 @@ import {
   readDaemonConfig,
   withDaemonModelAliases,
 } from '../agent-launch/permission-ledger.mjs';
-import { classifyUserBlame } from '../agent-runtime/user-blame-classifier.mjs';
 import { classifyLaunder } from '../agent-runtime/launder-classifier.mjs';
 import {
   applyNonClaudeRolePack,
@@ -640,20 +639,6 @@ export function checkChatRender(message, macros = {}) {
     }
   }
   return { validity, style };
-}
-
-export function checkUserBlameChatLint(message, recipients = []) {
-  const result = classifyUserBlame({
-    text: message,
-    context: { toSkip: recipients.includes('fleet:skip') },
-  });
-  return result.decision === 'flag' ? [result] : [];
-}
-
-export function formatUserBlameChatWarning(result, eventId = null) {
-  const target = eventId != null ? `chat({ amend_id: ${eventId}, message: "…" })` : 'chat({ amend_id: <id>, message: "…" })';
-  const span = result.features?.matchedSpan || 'matched wording';
-  return `⚠ **User-blame wording (${result.reasonCode}) — Skip may read this as blaming him or lecturing his own system back to him.** Matched: \`${span}\`. Fix it in place with \`${target}\` (edits the message Skip is reading, no new message).`;
 }
 
 export function checkLaunderChatLint(message, recipients = [], { paperContext = false } = {}) {
@@ -2638,10 +2623,6 @@ export async function handleFleetTool(name, args) {
     if (renderIssues.length > 0) {
       const target = lastEventId != null ? `chat({ amend_id: ${lastEventId}, message: "…" })` : 'chat({ amend_id: <id>, message: "…" })';
       warning += `\n\n⚠ **Won't render properly (${renderIssues.length} issue${renderIssues.length > 1 ? 's' : ''}) — Skip will see broken output.** Fix it in place with \`${target}\` (edits the message Skip is reading, no new message):\n${renderIssues.map(l => `- ${l}`).join('\n')}`;
-    }
-    const userBlameIssues = checkUserBlameChatLint(message, sent);
-    if (userBlameIssues.length > 0) {
-      warning += `\n\n${userBlameIssues.map(issue => formatUserBlameChatWarning(issue, lastEventId)).join('\n')}`;
     }
     const launderIssues = checkLaunderChatLint(message, sent, { paperContext: Object.keys(macros).length > 0 });
     if (launderIssues.length > 0) {
