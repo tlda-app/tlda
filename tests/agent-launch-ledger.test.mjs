@@ -82,3 +82,22 @@ test('daemon launcher writes fresh-spawn ledger row before starting seat', async
     fs.rmSync(tmp, { recursive: true, force: true })
   }
 })
+
+test('session identity recording does not fabricate an empty permission grant', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-agent-launch-session-ledger-'))
+  const ledger = createPermissionLedger(path.join(tmp, 'fleet-daemon.db'))
+  try {
+    const result = ledger.setSessionSync('fleet:no-grant-yet', {
+      sessionId: 'session-without-grant',
+      sessionKind: 'codex',
+      cwd: tmp,
+      friendlyName: 'no-grant-yet',
+    })
+
+    assert.equal(result, null)
+    assert.equal(ledger.get('fleet:no-grant-yet'), null)
+  } finally {
+    await ledger.close()
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})

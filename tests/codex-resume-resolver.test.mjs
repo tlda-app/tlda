@@ -24,6 +24,7 @@ test('codex resume resolver reads daemon ledger session identity', async () => {
     const rolloutPath = path.join(tmp, `rollout-2026-07-10T12-00-00-${rolloutId}.jsonl`)
     fs.writeFileSync(rolloutPath, '{}\n')
 
+    ledger.setSync('fleet:test-resume', { spawnPolicy: { name: 'unsandboxed', policy: 'unsandboxed' } })
     ledger.setSessionSync('fleet:test-resume', {
       sessionId: rolloutId,
       sessionKind: 'codex',
@@ -53,6 +54,7 @@ test('codex resume resolver rejects non-bare ledger resume ids', async () => {
     const rolloutPath = path.join(tmp, `rollout-2026-07-10T12-00-00-${rolloutId}.jsonl`)
     fs.writeFileSync(rolloutPath, '{}\n')
 
+    ledger.setSync('fleet:test-bad-resume', { spawnPolicy: { name: 'unsandboxed', policy: 'unsandboxed' } })
     ledger.setSessionSync('fleet:test-bad-resume', {
       sessionId: path.basename(rolloutPath, '.jsonl'),
       sessionKind: 'codex',
