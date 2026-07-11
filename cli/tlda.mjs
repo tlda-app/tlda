@@ -2139,7 +2139,7 @@ function cmdCompletions() {
   const daemonSubs = DAEMON_COMMANDS.map(([name]) => `'${name}'`).join(' ')
   const botSubs = BOT_COMMANDS.map(([name]) => `'${name}'`).join(' ')
   const agentSubs = [
-    'list', 'create', 'wake', 'move', 'set-create-machine',
+    'list', 'mint', 'wake', 'move', 'set-mint-machine',
     'check-ready', 'attach', 'hibernate', 'dismiss', 'permission', 'permissions',
   ].map(s => `'${s}'`).join(' ')
   const configSubs = ['set', 'get', 'setup', 'mcp-setup', 'auth'].map(s => `'${s}'`).join(' ')
@@ -2389,12 +2389,12 @@ async function attachToAgent(name) {
   process.exit(result.status ?? 0)
 }
 
-// `create` makes a FRESH agent only. Adopting an already-running external session
+// `mint` makes a FRESH agent only. Adopting an already-running external session
 // is a separate verb (`enroll`) so the two are never confused (Skip: "the create
 // command now is overloaded, to both create fresh agents and enroll extant agents").
-function agentCreateArgs(rawArgs) {
+function agentMintArgs(rawArgs) {
   if (flagFromRaw(rawArgs, 'session')) {
-    console.error(red('`tlda agent create` makes a FRESH agent. To adopt an existing session, use:\n  tlda agent enroll --session <uuid> --kind <codex|claude> [name]'))
+    console.error(red('`tlda agent mint` makes a FRESH agent. To adopt an existing session, use:\n  tlda agent enroll --session <uuid> --kind <codex|claude> [name]'))
     process.exit(1)
   }
   return hasRawFlag(rawArgs, 'fresh') ? rawArgs : ['--fresh', ...rawArgs]
@@ -2776,11 +2776,11 @@ function usageAgent() {
 
 Usage:
   tlda agent list [--limit N] [--local]
-  tlda agent create <name> [--model model] [--kind kind] [--cwd path] [--permissions <profile>]
+  tlda agent mint <name> [--model model] [--kind kind] [--cwd path] [--permissions <profile>]
   tlda agent enroll --session <uuid> --kind <codex|claude> [name] [--permissions <profile>]
   tlda agent wake <agent> [--permissions <profile>]
   tlda agent move <agent> [name@][box:]env
-  tlda agent set-create-machine <agent-or-user> <machine>
+  tlda agent set-mint-machine <agent-or-user> <machine>
   tlda agent check-ready <agent> [--timeout seconds]
   tlda agent attach <agent>
   tlda agent hibernate <agent>
@@ -2790,13 +2790,13 @@ Usage:
 Permission profiles (from daemon.yaml):
 ${daemonProfileHelpBlock()}
 
-create starts a FRESH agent; enroll adopts an already-running external session (kind
+mint starts a FRESH agent; enroll adopts an already-running external session (kind
 required); wake brings back an existing hibernating agent. All are local-operator gated
 by machine access, and write the child grant to the daemon ledger.
 --permissions names one of the profiles above; no --permissions flag = unfenced.
-Set TLDA_DISABLE_PERMISSION_CLASSIFIER=1 or agentSandbox.disablePermissionsClassifier=true only as a create/wake-time break-glass to launch Claude with --dangerously-skip-permissions.
+Set TLDA_DISABLE_PERMISSION_CLASSIFIER=1 or agentSandbox.disablePermissionsClassifier=true only as a mint/wake-time break-glass to launch Claude with --dangerously-skip-permissions.
 move must be run on the agent's current daemon address; cross-box moves use SSH/rsync.
-set-create-machine stores the caller's default create machine in fleet prefs.
+set-mint-machine stores the caller's default mint machine in fleet prefs.
 The permissions command defaults to waking now; --on-wake stores only the next-wake profile.
 check-ready verifies registry + local tmux/runtime + recent login/inbox evidence.
 list reads the server roster by default; --local shows only tmux sessions on this machine.`)
@@ -3090,11 +3090,11 @@ async function cmdAgentSetSpawnMachine() {
   const userQuery = getPositional(1)
   const machineId = getPositional(2) || getFlag('machine')
   if (hasFlag('help')) {
-    console.log(`Usage: tlda agent set-create-machine <agent-or-user> <machine>\n\nStores fleet_prefs.${SPAWN_MACHINE_PREF_KEY} for that fleet identity. New agents created by that identity route to this daemon machine.`)
+    console.log(`Usage: tlda agent set-mint-machine <agent-or-user> <machine>\n\nStores fleet_prefs.${SPAWN_MACHINE_PREF_KEY} for that fleet identity. New agents minted by that identity route to this daemon machine.`)
     return
   }
   if (!userQuery || !machineId) {
-    console.error('Usage: tlda agent set-create-machine <agent-or-user> <machine>')
+    console.error('Usage: tlda agent set-mint-machine <agent-or-user> <machine>')
     process.exit(1)
   }
   await assertNotAgentContext()
@@ -3285,25 +3285,25 @@ async function cmdAgentPermissions() {
 
 async function cmdAgent() {
   const sub = getPositional(0)
-  if (!sub || (hasFlag('help') && sub !== 'permissions' && sub !== 'move' && sub !== 'set-create-machine')) {
+  if (!sub || (hasFlag('help') && sub !== 'permissions' && sub !== 'move' && sub !== 'set-mint-machine')) {
     usageAgent()
     return
   }
   switch (sub) {
     case 'list':
     case 'ls':        await listFleetAgents(); break
-    case 'create':    await runFleetSpawn(agentCreateArgs(process.argv.slice(4))); break
+    case 'mint':      await runFleetSpawn(agentMintArgs(process.argv.slice(4))); break
     case 'enroll':    await runFleetSpawn(agentEnrollArgs(process.argv.slice(4))); break
     case 'wake':      await runFleetSpawn(process.argv.slice(4)); break
     case 'move':      await cmdAgentMove(); break
-    case 'set-create-machine': await cmdAgentSetSpawnMachine(); break
+    case 'set-mint-machine': await cmdAgentSetSpawnMachine(); break
     case 'check-ready': await cmdAgentCheckReady(); break
     case 'attach':    await attachToAgent(getPositional(1)); break
     case 'hibernate': await hibernateAgent(getPositional(1)); break
     case 'dismiss':   await dismissAgent(getPositional(1)); break
     case 'permissions': await cmdAgentPermissions(); break
     default:
-      console.error('Usage: tlda agent <list|create|enroll|wake|move|set-create-machine|check-ready|attach|hibernate|dismiss|permissions> [name]')
+      console.error('Usage: tlda agent <list|mint|enroll|wake|move|set-mint-machine|check-ready|attach|hibernate|dismiss|permissions> [name]')
       process.exit(1)
   }
 }
