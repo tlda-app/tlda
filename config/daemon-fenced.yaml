@@ -12,6 +12,10 @@ models:
           - "--dangerously-skip-permissions"
         controls: true
   codex:
+    gpt: gpt-5.5
+    sol: gpt-5.6-sol
+    luna: gpt-5.6-luna
+    terra: gpt-5.6-terra
     "*":
       harness:
         required: []

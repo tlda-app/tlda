@@ -11,6 +11,10 @@ models:
           - "--dangerously-load-development-channels server:tlda"
         controls: true
   codex:
+    gpt: gpt-5.5
+    sol: gpt-5.6-sol
+    luna: gpt-5.6-luna
+    terra: gpt-5.6-terra
     "*":
       harness:
         # Codex's own sandbox is off; containment is the fence (from the grant) or a
