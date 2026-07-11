@@ -96,6 +96,7 @@ import { createHarnessRuntime } from '../daemon/harness-runtime.mjs'
 import { createShadowMirror } from '../daemon/shadow-mirror.mjs'
 import { DaemonDeliveryRuntime } from '../daemon/delivery-runtime.mjs'
 import { DaemonOutbox, defaultOutboxPath } from '../daemon/outbox.mjs'
+import { reconcileDaemonRoster } from '../daemon/roster-reconcile.mjs'
 import { createAgentLauncher } from '../agent-launch/agent-launch.mjs'
 import {
   applyDaemonGrants,
@@ -619,6 +620,20 @@ function connect() {
   _rws.connect()
 }
 
+function reconcileRoster(reason) {
+  _lastSessionWatcherRosterSig = reconcileDaemonRoster({
+    agents,
+    signature: _lastSessionWatcherRosterSig,
+    reason,
+    syncIdentityNames: roster => jsonlIngestor.syncIdentityNames(roster),
+    syncIfRosterChanged: options => jsonlIngestor.syncIfRosterChanged(options),
+    onChanged: () => {
+      grantOnMintInfill(reason)
+      void agentLiveness.reportHostedSessions(reason)
+    },
+  })
+}
+
 function handleServerMessage(msg) {
   if (machineRpc.handleReply(msg)) return
   if (msg.type === DAEMON_OUTBOX_ACK_TYPE) {
@@ -642,17 +657,13 @@ function handleServerMessage(msg) {
       agentStatusSeq = event.seq
     }
     projects = msg.projects || []
-    jsonlIngestor.syncIdentityNames(agents)
+    reconcileRoster('daemon-welcome')
     applyDaemonGrants(permissionLedger, daemonSpawnConfig)
-    grantOnMintInfill('daemon-welcome')
     log.info(`welcome: ${agents.length} agents, ${projects.length} projects`)
     daemonDelivery.noteReady()
-    _lastSessionWatcherRosterSig = jsonlIngestor.rosterSignature(agents)
-    void jsonlIngestor.sync(agents).catch(e => log.error(`syncSessionWatchers failed: ${e.stack || e.message}`))
     sourceSync.sync(projects)
     sourceSync.flushPending()
     agentLiveness.start()
-    void agentLiveness.reportHostedSessions('daemon-welcome')
     // Fast status state machine — pulls panes only for agents armed by recent
     // activity, so it's bounded to the few agents actually working (1-3s status,
     // accurate turn edges) without a fleet-wide sweep.
@@ -666,16 +677,7 @@ function handleServerMessage(msg) {
   if (msg.type === 'agents-updated') {
     agents = msg.agents || []
     agentStatusSeq = msg.agent_status_seq || agentStatusSeq
-    jsonlIngestor.syncIdentityNames(agents)
-    _lastSessionWatcherRosterSig = jsonlIngestor.syncIfRosterChanged({
-      agents,
-      signature: _lastSessionWatcherRosterSig,
-      reason: 'agents-updated',
-      onChanged: () => {
-        grantOnMintInfill('agents-updated')
-        void agentLiveness.reportHostedSessions('agents-updated')
-      },
-    })
+    reconcileRoster('agents-updated')
     ackServerDaemonOutboxMessage(msg)
     return
   }
@@ -687,6 +689,7 @@ function handleServerMessage(msg) {
       else agents.push(msg.agent)
     }
     agentStatusSeq = msg.seq
+    reconcileRoster('agent-status-event')
     return
   }
   if (msg.type === 'projects-updated') {
