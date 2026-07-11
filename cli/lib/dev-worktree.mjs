@@ -244,6 +244,8 @@ export function resolveReachableHost() {
 
 // ---- throwaway config pointing the SPA back at the reachable host ----
 
+function previewConfigDir(branch) { return join(stateDir(branch), 'config') }
+
 function writePreviewConfig(branch, base, { realFleet = false } = {}) {
   const cfg = loadConfig()
   cfg.configs = cfg.configs || {}
@@ -256,16 +258,15 @@ function writePreviewConfig(branch, base, { realFleet = false } = {}) {
     store: base,      // shapes + doc assets → the preview server itself
     licenseKey: donor?.licenseKey ?? '',
   }
-  // NEVER touch defaultConfig — additive only, so the coherence guard stays quiet.
-  saveConfig(cfg)
+  // Preview servers get an isolated copy. Writing the shared config would both
+  // corrupt the real daemon's authority surface and violate the app-dev fence.
+  const dir = previewConfigDir(branch)
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, 'config.json'), JSON.stringify(cfg, null, 2))
 }
 
 function removePreviewConfig(branch) {
-  const cfg = loadConfig()
-  if (cfg.configs && cfg.configs[configName(branch)]) {
-    delete cfg.configs[configName(branch)]
-    saveConfig(cfg)
-  }
+  rmSync(previewConfigDir(branch), { recursive: true, force: true })
 }
 
 // ---- QR ----
@@ -405,6 +406,7 @@ export async function cmdServeWorktree(args) {
     env: {
       HOST: '0.0.0.0',
       TLDA_CONFIG: configName(branch),
+      TLDA_CONFIG_DIR: previewConfigDir(branch),
       TLDA_DEV_SERVER: '1',          // no daemon supervisor / hibernate; isolated
       PROJECTS_DIR: projectsDir(branch),
       TLDA_FLEET_DB: fleetDb(branch),
