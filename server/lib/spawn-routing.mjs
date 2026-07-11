@@ -19,6 +19,15 @@ function connectedDaemonAddresses(daemonConnections) {
     .map(ws => ({ machine_id: ws._machineId, env_name: ws._envName, key: daemonKey(ws._machineId, ws._envName) }))
 }
 
+// The sole connected daemon, or null when there are 0 or (ambiguously) >1. Used as the
+// fallback for reviving an address-less seat: a hibernated agent whose machine_id/env_name
+// were never persisted used to be un-revivable ("no daemon address configured"); if exactly
+// one daemon is connected, that's unambiguously where it should come back.
+function soleConnectedDaemon(daemonConnections) {
+  const daemons = connectedDaemonAddresses(daemonConnections)
+  return daemons.length === 1 ? daemons[0] : null
+}
+
 function getConfiguredSpawnMachine(fleetStore, identity) {
   if (!identity?.id || !fleetStore?.getFleetPref) return null
   const value = fleetStore.getFleetPref(identity.id, SPAWN_MACHINE_PREF_KEY)
@@ -99,8 +108,25 @@ function documentedDefaultMachine(identity, daemonConnections) {
 
 export function resolveSpawnMachine({ caller, targetAgent, fresh, respawn, refresh, fleetStore, daemonConnections, onDaemonMissing }) {
   if ((respawn || refresh) && targetAgent) {
+    const label = `target ${targetAgent.id || targetAgent.friendly_name || 'agent'}`
+    if (targetAgent.machine_id && targetAgent.env_name) {
+      return {
+        ...requireConnected(targetAgent.machine_id, daemonConnections, label, onDaemonMissing, targetAgent.env_name),
+        source: 'target-agent-machine',
+      }
+    }
+    // Address-less seat (no recorded machine_id/env_name) — revive it on the sole
+    // connected daemon rather than failing "no daemon address configured".
+    const sole = soleConnectedDaemon(daemonConnections)
+    if (sole) {
+      return {
+        ...requireConnected(sole.machine_id, daemonConnections, `${label} (no recorded address → sole daemon)`, onDaemonMissing, sole.env_name),
+        source: 'target-agent-machine-defaulted',
+      }
+    }
+    // 0 or ambiguous >1 daemons — keep the original loud failure (can't guess).
     return {
-      ...requireConnected(targetAgent.machine_id, daemonConnections, `target ${targetAgent.id || targetAgent.friendly_name || 'agent'}`, onDaemonMissing, targetAgent.env_name),
+      ...requireConnected(targetAgent.machine_id, daemonConnections, label, onDaemonMissing, targetAgent.env_name),
       source: 'target-agent-machine',
     }
   }
@@ -109,8 +135,22 @@ export function resolveSpawnMachine({ caller, targetAgent, fresh, respawn, refre
   }
 
   if (fresh && targetAgent) {
+    const label = `route anchor ${targetAgent.id || targetAgent.friendly_name || 'agent'}`
+    if (targetAgent.machine_id && targetAgent.env_name) {
+      return {
+        ...requireConnected(targetAgent.machine_id, daemonConnections, label, onDaemonMissing, targetAgent.env_name),
+        source: 'route-agent-machine',
+      }
+    }
+    const sole = soleConnectedDaemon(daemonConnections)
+    if (sole) {
+      return {
+        ...requireConnected(sole.machine_id, daemonConnections, `${label} (no recorded address → sole daemon)`, onDaemonMissing, sole.env_name),
+        source: 'route-agent-machine-defaulted',
+      }
+    }
     return {
-      ...requireConnected(targetAgent.machine_id, daemonConnections, `route anchor ${targetAgent.id || targetAgent.friendly_name || 'agent'}`, onDaemonMissing, targetAgent.env_name),
+      ...requireConnected(targetAgent.machine_id, daemonConnections, label, onDaemonMissing, targetAgent.env_name),
       source: 'route-agent-machine',
     }
   }
