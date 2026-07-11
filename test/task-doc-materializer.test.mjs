@@ -71,13 +71,17 @@ test('materializeTaskDocs writes project and global markdown tables and attribut
   assert.deepEqual(new Set(result.touchedDirs), new Set([projectRoot, globalRoot]))
   const projectDoc = readFileSync(join(projectRoot, TASK_DOC_FILENAME), 'utf8')
   assert.match(projectDoc, /tlda-kind: task-doc/)
-  assert.match(projectDoc, /\| id \| subject \| owner \| status \| created \| last-modified \| blockers \| links \|/)
-  assert.match(projectDoc, /\| task-1 \| Build single-machine Unified Task Document \| fleet:worker \| pending \| 2026-07-05 10:00 UTC \| 2026-07-05 10:15 UTC \|  \| criteria<br>cwd:/)
+  assert.match(projectDoc, /\| subject \| assigned to \| delegator \| status \| created \| updated \| blockers \| details \|/)
+  assert.match(projectDoc, /title="task-1">Build single-machine Unified Task Document<\/span>/)
+  assert.match(projectDoc, /title="fleet:worker">worker<\/span> \| <span class="task-doc-agent" title="fleet:frontier">frontier<\/span>/)
+  assert.match(projectDoc, /datetime="2026-07-05T10:00:00\.000Z"/)
+  assert.match(projectDoc, /datetime="2026-07-05T10:15:00\.000Z"/)
+  assert.match(projectDoc, />success criteria<\/span>/)
 
   const globalDoc = readFileSync(join(globalRoot, TASK_DOC_FILENAME), 'utf8')
   assert.doesNotMatch(globalDoc, /^## /m)
-  assert.match(globalDoc, /\| project \| id \| subject \| owner \| status \| created \| last-modified \| blockers \| links \|/)
-  assert.match(globalDoc, /\| paper \| task-1 \| Build single-machine Unified Task Document \| fleet:worker \| pending \| 2026-07-05 10:00 UTC \| 2026-07-05 10:15 UTC \|  \| criteria<br>cwd:/)
+  assert.match(globalDoc, /\| project \| subject \| assigned to \| delegator \| status \| created \| updated \| blockers \| details \|/)
+  assert.match(globalDoc, /\| paper \| <span class="task-doc-task-subject" title="task-1">Build single-machine Unified Task Document<\/span>/)
 
   assert.equal(git(['log', '-1', '--format=%an <%ae>'], projectRoot), 'worker <fleet:worker>')
   assert.match(git(['log', '-1', '--format=%s'], projectRoot), /task-doc: delegate/)
@@ -124,7 +128,7 @@ test('materializeTaskDocs empties a changed project doc when its last task close
 
   const projectDoc = readFileSync(join(projectRoot, TASK_DOC_FILENAME), 'utf8')
   assert.match(projectDoc, /# Tasks for paper/)
-  assert.match(projectDoc, /\| id \| subject \| owner \| status \| created \| last-modified \| blockers \| links \|/)
+  assert.match(projectDoc, /\| subject \| assigned to \| delegator \| status \| created \| updated \| blockers \| details \|/)
   assert.doesNotMatch(projectDoc, /task-closed/)
 })
 
