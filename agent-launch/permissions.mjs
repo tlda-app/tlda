@@ -1,6 +1,7 @@
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
+import { harnessStateWriteRoots } from './harness-state-roots.mjs'
 import { repoRoot } from './identity.mjs'
 
 const SANDBOX_POLICIES = new Set(['no-dev', 'cwd', 'tlda-projects', 'unsandboxed'])
@@ -41,6 +42,12 @@ const PLAYWRIGHT_CACHE_ROOT = path.join(os.homedir(), 'Library/Caches/ms-playwri
 const CHROME_FOR_TESTING_CRASHPAD_ROOT = path.join(os.homedir(), 'Library/Application Support/Google/Chrome for Testing/Crashpad')
 const TLDA_PW_RUNTIME_ROOT = '/tmp/tlda-pw-runtime'
 const TLDA_FENCE_TMP_ROOT = '/tmp/tlda-fence-env'
+const REGION_FOR_BUILTIN_POLICY = Object.freeze({
+  read: 'cwd',
+  write: 'cwd',
+  'tlda-write': 'tlda-projects',
+  full: 'unsandboxed',
+})
 
 function expandUser(value) {
   const str = String(value || '')
@@ -68,6 +75,40 @@ function resolvePermissionZone(value, workspace) {
   const expanded = expandUser(raw)
   if (path.isAbsolute(expanded)) return expanded
   return path.join(workspace, expanded)
+}
+
+function permissionSetList(value, operation, effect) {
+  const list = value?.operations?.[operation]?.[effect]
+  return Array.isArray(list) ? list : []
+}
+
+function isIntentionalEmptyPermissionSet(value) {
+  const projected = value?.projectedPolicy
+  const projectedName = typeof projected === 'string'
+    ? projected
+    : (projected && typeof projected === 'object' ? (projected.permission || projected.policy || projected.name) : '')
+  return String(value?.name || '').trim().toLowerCase() === 'none'
+    || String(projectedName || '').trim().toLowerCase() === 'none'
+    || value?.compiledFrom === 'empty-permission-set'
+}
+
+function validateExplicitPermissionSet(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return
+  if (!value.operations || typeof value.operations !== 'object' || Array.isArray(value.operations)) {
+    throw new Error('explicit permissionSet must contain operations')
+  }
+  for (const operation of ['read', 'write', 'spawn']) {
+    const row = value.operations[operation]
+    if (row == null) continue
+    if (typeof row !== 'object' || Array.isArray(row)) {
+      throw new Error(`explicit permissionSet operations.${operation} must be an object`)
+    }
+    for (const effect of ['allow', 'deny']) {
+      if (row[effect] != null && !Array.isArray(row[effect])) {
+        throw new Error(`explicit permissionSet operations.${operation}.${effect} must be an array`)
+      }
+    }
+  }
 }
 
 function deepMerge(base, override) {
@@ -287,15 +328,17 @@ function regionScope(spawnPolicy) {
     : (spawnPolicy && typeof spawnPolicy === 'object' ? spawnPolicy.policy : '')
   const s = String(raw || '').trim().toLowerCase()
   if (SANDBOX_POLICIES.has(s)) return s
+  if (BUILTIN_POLICY_NAMES.has(s)) return REGION_FOR_BUILTIN_POLICY[s]
   if (s === 'machine' || s === '**' || s === '/' || s === 'unsandboxed') return 'unsandboxed'
-  return 'cwd'
+  throw new Error(`unknown agentSandbox policy "${raw}"`)
 }
 
-export function resolveLeasePolicy({ spawnPolicy, permissionSet = null, harness, model, cwd, config = {} } = {}) {
+export function resolveLeasePolicy({ spawnPolicy, permissionSet = null, harness, model, cwd, config = {}, env = process.env } = {}) {
   if (!spawnPolicy) return { policyName: null, devTools: true, leasePolicy: null }
   const policyName = regionScope(spawnPolicy)
   if (!SANDBOX_POLICIES.has(policyName)) throw new Error(`agentSandbox policy "${policyName}" is not valid`)
   const explicitPermissionSet = permissionSet && typeof permissionSet === 'object' && !Array.isArray(permissionSet)
+  if (explicitPermissionSet) validateExplicitPermissionSet(permissionSet)
   if (policyName === 'unsandboxed' && !explicitPermissionSet) return { policyName, devTools: true, leasePolicy: null }
   if (policyName === 'no-dev') return { policyName, devTools: false, leasePolicy: null }
 
@@ -324,11 +367,14 @@ export function resolveLeasePolicy({ spawnPolicy, permissionSet = null, harness,
   const networkOff = (explicitPermissionSet && permissionSet.network === false)
     || (spawnPolicy && typeof spawnPolicy === 'object' && spawnPolicy.network === false)
   const grantsWrite = explicitPermissionSet
-    ? (permissionSet.operations?.write?.allow || []).length > 0
+    ? permissionSetList(permissionSet, 'write', 'allow').length > 0
     : (policyName === 'cwd' || policyName === 'tlda-projects')
   const grantsAnything = explicitPermissionSet
-    ? grantsWrite || (permissionSet.operations?.read?.allow || []).length > 0
+    ? grantsWrite || permissionSetList(permissionSet, 'read', 'allow').length > 0
     : true
+  if (explicitPermissionSet && !grantsAnything && !isIntentionalEmptyPermissionSet(permissionSet)) {
+    throw new Error(`explicit permissionSet "${permissionSet.name || '(unnamed)'}" grants no read/write zones`)
+  }
   if (grantsWrite && !explicitPermissionSet) {
     writeRoots = [
       ...writeRoots,
@@ -339,6 +385,7 @@ export function resolveLeasePolicy({ spawnPolicy, permissionSet = null, harness,
       TLDA_FENCE_TMP_ROOT,
     ]
   }
+  writeRoots = [...writeRoots, ...harnessStateWriteRoots(env)]
   if (grantsWrite) writeRoots = [...writeRoots, ...gitMetadataRoots(workspace)]
   if (grantsAnything && !networkOff) options.network = true
   const explicitReadRoots = explicitPermissionSet ? resolvedPermissionZones(permissionSet, 'read', 'allow', workspace) : []
@@ -403,7 +450,7 @@ export function resolveLaunchPolicy({
   // is a policy to apply, apply it.
   const useFence = !!requestedPolicy
   const leaseResolution = useFence
-    ? resolveLeasePolicy({ spawnPolicy: requestedPolicy, permissionSet, harness, model, cwd, config })
+    ? resolveLeasePolicy({ spawnPolicy: requestedPolicy, permissionSet, harness, model, cwd, config, env })
     : { policyName: null, devTools: true, leasePolicy: null }
   // Permission mode is NOT derived from the grant or a permission level. The flag the
   // operator wants (--dangerously-skip-permissions, --permission-mode plan, …) is

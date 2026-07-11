@@ -695,14 +695,7 @@ export class PermissionLedger {
     if (!sessionId && !sessionKind && !sessionPath && !cwd && !friendlyName) return this.get(key)
     const existing = this.get(key)
     if (!existing) {
-      const policy = normalizeRegionPolicy('none')
-      this._upsert.run(
-        key,
-        JSON.stringify(policy),
-        JSON.stringify(emptyPermissionSet({ name: policy.name, projectedPolicy: policy })),
-        nowIso(),
-        'daemon-ledger:session-autocreate',
-      )
+      return null
     }
     this.db.prepare(`
       UPDATE permission_grants SET

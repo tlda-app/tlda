@@ -3,6 +3,7 @@ import os from 'os'
 import path from 'path'
 import { randomUUID } from 'crypto'
 import { execFileSync } from 'child_process'
+import { harnessStateWriteRoots } from './harness-state-roots.mjs'
 import { stripRunner } from './permissions.mjs'
 
 const FENCE_TEMP_ROOTS = [
@@ -190,12 +191,13 @@ function apiNeedsLocalOutbound(dnsAlias) {
     || /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(addr)
 }
 
-export function fenceSettings(policy, { api, dnsAlias } = {}) {
+export function fenceSettings(policy, { api, dnsAlias, env = process.env } = {}) {
   const emptyPermission = policy.empty === true
   const allowRead = uniqueSorted([...(policy.read_roots || []), ...(emptyPermission ? [] : FENCE_AGENT_READ_ROOTS)].map(expandPathPattern))
   const broadWriteRoots = policy.explicit_permission_set ? [] : FENCE_BROAD_WRITE_ROOTS
   const allowWrite = uniqueSorted([
     ...(policy.write_roots || []),
+    ...harnessStateWriteRoots(env),
     ...(emptyPermission ? [] : FENCE_AGENT_WRITE_ROOTS),
     ...(emptyPermission ? [] : broadWriteRoots),
   ].map(expandPathPattern))
