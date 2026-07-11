@@ -64,7 +64,7 @@ export class DaemonDeliveryRuntime {
     this.scheduleFlush()
   }
 
-  handleError(outboxId, error, { permanent = true } = {}) {
+  handleError(outboxId, error, { permanent = false } = {}) {
     if (!outboxId) return
     const result = this.outbox.markError(outboxId, error || 'delivery failed', { deadLetterEligible: permanent })
     this.inflight.delete(outboxId)

@@ -68,7 +68,7 @@ test('durable in-flight rows replay after reconnect until acked', () => {
   outbox.close()
 })
 
-test('server-rejected source-change dead-letters after bounded Project not found failures', () => {
+test('404 Project not found source-change dead-letters after bounded permanent failures', () => {
   const sent = []
   const warnings = []
   const outbox = tempOutboxWithOptions({ maxAttempts: 3 })
@@ -86,7 +86,7 @@ test('server-rejected source-change dead-letters after bounded Project not found
   for (let i = 1; i <= 3; i++) {
     runtime.flushDurable()
     assert.equal(sent.length, i)
-    runtime.handleError(id, 'Project not found')
+    runtime.handleError(id, 'Project not found', { permanent: true })
     runtime.dispose()
   }
 
@@ -136,7 +136,7 @@ test('recoverable durable send failure retries and succeeds without dead-letteri
   outbox.close()
 })
 
-test('transient server delivery errors record last_error but still retry and ack', () => {
+test('generic 500 server delivery errors record last_error but still retry and ack', () => {
   const sent = []
   const outbox = tempOutboxWithOptions({ maxAttempts: 1 })
   const runtime = new DaemonDeliveryRuntime({
@@ -150,16 +150,41 @@ test('transient server delivery errors record last_error but still retry and ack
   const id = outbox.pending()[0].id
 
   runtime.flushDurable()
-  runtime.handleError(id, 'temporary store unavailable', { permanent: false })
+  runtime.handleError(id, 'Internal Server Error')
   runtime.dispose()
   assert.equal(outbox.pendingCount(), 1)
   assert.equal(outbox.deadLetterCount(), 0)
-  assert.equal(outbox.get(id).lastError, 'temporary store unavailable')
+  assert.equal(outbox.get(id).lastError, 'Internal Server Error')
 
   runtime.flushDurable()
   assert.equal(sent.length, 2)
   runtime.handleAck(id)
   assert.equal(outbox.count(), 0)
+  runtime.dispose()
+  outbox.close()
+})
+
+test('late server error for unknown outbox id is a harmless no-op', () => {
+  const outbox = tempOutboxWithOptions({ maxAttempts: 1 })
+  const runtime = new DaemonDeliveryRuntime({
+    outbox,
+    send: () => true,
+    isConnected: () => true,
+    isReady: () => true,
+  })
+
+  runtime.send({ type: 'source-change', project: 'doc', files: [] })
+  const id = outbox.pending()[0].id
+  runtime.flushDurable()
+  runtime.handleAck(id)
+  assert.equal(outbox.count(), 0)
+
+  runtime.handleError(id, 'late Project not found', { permanent: true })
+  runtime.handleError('unknown-outbox-id', 'late Internal Server Error')
+
+  assert.equal(outbox.count(), 0)
+  assert.equal(outbox.pendingCount(), 0)
+  assert.equal(outbox.deadLetterCount(), 0)
   runtime.dispose()
   outbox.close()
 })

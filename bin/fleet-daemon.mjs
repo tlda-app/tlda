@@ -622,7 +622,7 @@ function handleServerMessage(msg) {
     return
   }
   if (msg.type === DAEMON_OUTBOX_ERROR_TYPE) {
-    if (msg.outbox_id) daemonDelivery.handleError(msg.outbox_id, msg.error || 'delivery failed', { permanent: msg.permanent !== false })
+    if (msg.outbox_id) daemonDelivery.handleError(msg.outbox_id, msg.error || 'delivery failed', { permanent: msg.permanent === true })
     return
   }
   if (msg.type === 'daemon-welcome') {

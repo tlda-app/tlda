@@ -5824,7 +5824,7 @@ function errorDaemonOutboxMessage(ws, msg, error) {
     type: DAEMON_OUTBOX_ERROR_TYPE,
     outbox_id: outboxId,
     error: String(error?.message || error || 'delivery failed'),
-    permanent: error?.permanent !== false,
+    permanent: error?.permanent === true,
   }))
 }
 
