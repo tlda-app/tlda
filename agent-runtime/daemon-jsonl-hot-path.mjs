@@ -75,6 +75,14 @@ export function createOncePerKeyGate() {
 const REGISTERED_OWNER_RE = /Registered fleet:([A-Za-z0-9_-]+)/g
 const REGISTERED_ID_RE = /Registered (fleet:[A-Za-z0-9_-]+)/g
 const NAME_RE = /Your name: "([^"]+)"/
+// FIRST-REGISTERED-WINS owner match. A genuine fleet id is 8 hex chars (newFleetId);
+// the agent's OWN login handshake ("Registered fleet:<id>") is the FIRST such line in
+// its rollout, emitted before it does anything. Every later `Registered fleet:` is the
+// agent QUOTING another agent's log while working — a log-reader (esp. ops) accumulates
+// dozens and used to get cross-attributed onto ALL of them, hijacking their ledger
+// session pointers. Hex-only also rejects quoted junk (fleet:<id>, fleet:reconA). Not
+// global: we take the first match per scan and stop.
+const REGISTERED_HEX_OWNER_RE = /Registered fleet:([0-9a-f]{8})\b/
 
 export function extractOwnersFromText(text) {
   const owners = new Set()
@@ -143,7 +151,6 @@ export function extractIdentityFromRecord(record) {
 // scanned range plus the byte offset scanned to (EOF). This is the one read that
 // classifies a session; after it, the caller caches `owners` and never re-reads.
 export function scanFileOwnersSync(filePath, { fromOffset = 0, chunkSize = 64 * 1024 } = {}) {
-  const owners = new Set()
   let fd
   let offset = fromOffset
   try {
@@ -157,13 +164,18 @@ export function scanFileOwnersSync(filePath, { fromOffset = 0, chunkSize = 64 * 
       if (bytesRead <= 0) break
       offset += bytesRead
       const text = carry + buf.toString('utf8', 0, bytesRead)
-      for (const o of extractOwnersFromText(text)) owners.add(o)
+      // FIRST-REGISTERED-WINS: the owner is the FIRST genuine `Registered fleet:<hex>`
+      // (the login handshake, emitted before the agent reads anything). Return it and
+      // stop — every later marker is the agent quoting another agent's log. This is
+      // what makes re-classification idempotent and stops log-reader cross-attribution.
+      const m = REGISTERED_HEX_OWNER_RE.exec(text)
+      if (m) return { owners: ['fleet:' + m[1]], endOffset: offset }
       carry = text.slice(-64)
     }
   } finally {
     if (fd != null) fs.closeSync(fd)
   }
-  return { owners: [...owners], endOffset: offset }
+  return { owners: [], endOffset: offset }
 }
 
 export function scanFileIdentitySync(filePath, { fromOffset = 0, chunkSize = 64 * 1024 } = {}) {
@@ -171,7 +183,12 @@ export function scanFileIdentitySync(filePath, { fromOffset = 0, chunkSize = 64 
   let offset = fromOffset
   let carry = ''
   let best = null
-  const owners = new Set()
+  // FIRST-REGISTERED-WINS: a single genuine owner (first `Registered fleet:<hex>`),
+  // NOT a set of every id mentioned. Per-record fleet ids (from extractIdentityFromRecord)
+  // are NOT added to owners — they come from tool I/O too (a log-reader's grep of another
+  // agent's registration line). We still parse records for the name/cwd identity, which the
+  // caller only applies when its fleet_id equals the resolved owner.
+  let owner = null
   try {
     fd = fs.openSync(filePath, 'r')
     const buf = Buffer.allocUnsafe(chunkSize)
@@ -180,23 +197,20 @@ export function scanFileIdentitySync(filePath, { fromOffset = 0, chunkSize = 64 
       if (bytesRead <= 0) break
       offset += bytesRead
       const text = carry + buf.toString('utf8', 0, bytesRead)
-      for (const owner of extractOwnersFromText(text)) owners.add(owner)
+      if (!owner) {
+        const m = REGISTERED_HEX_OWNER_RE.exec(text)
+        if (m) owner = 'fleet:' + m[1]
+      }
       for (const line of text.split('\n')) {
         if (!line.includes('Registered fleet:') && !line.includes('"cwd"')) continue
         try {
           const rec = JSON.parse(line)
           const identity = extractIdentityFromRecord(rec)
-          if (identity) {
-            best = { ...(best || {}), ...identity }
-            if (identity.fleet_id) owners.add(identity.fleet_id)
-          }
+          if (identity) best = { ...(best || {}), ...identity }
         } catch (e) {
           if (!(e instanceof SyntaxError)) throw e
           const identity = extractIdentityFromText(line)
-          if (identity) {
-            best = { ...(best || {}), ...identity }
-            if (identity.fleet_id) owners.add(identity.fleet_id)
-          }
+          if (identity) best = { ...(best || {}), ...identity }
         }
       }
       carry = text.slice(-1024)
@@ -204,7 +218,7 @@ export function scanFileIdentitySync(filePath, { fromOffset = 0, chunkSize = 64 
   } finally {
     if (fd != null) fs.closeSync(fd)
   }
-  return { identity: best, owners: [...owners], endOffset: offset }
+  return { identity: best, owners: owner ? [owner] : [], endOffset: offset }
 }
 
 // Read just the FIRST line of a file without loading the whole thing. Codex

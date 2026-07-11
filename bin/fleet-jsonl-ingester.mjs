@@ -13,7 +13,6 @@ import { parseCodexRecord } from '../agent-runtime/codex-activity.mjs'
 import {
   decideSessionBackfill,
   extractIdentityFromRecord,
-  extractOwnersFromText,
   scanFileIdentitySync,
 } from '../agent-runtime/daemon-jsonl-hot-path.mjs'
 import {
@@ -151,12 +150,27 @@ export async function runSearchBackfillJob(job) {
     harness_kind: job.harnessKind || null,
     jsonl_path: job.jsonlPath,
   }
+  let ownerPushed = false
   await readJsonlLines(job.jsonlPath, async (parsed, line) => {
     const identity = extractIdentityFromRecord(parsed)
-    if (identity) identities.push({ ...identityBase, ...identity })
-    else if (line.includes('Registered fleet:')) {
-      const owners = extractOwnersFromText(line)
-      for (const owner of owners) identities.push({ ...identityBase, fleet_id: owner })
+    if (identity) {
+      // FIRST-REGISTERED-WINS: only the first genuine hex `Registered fleet:<id>` line
+      // supplies the session's fleet_id (the login handshake). Later ones are the agent
+      // quoting other agents' logs — keep any cwd/name but strip the polluted fleet_id,
+      // else a log-reader writes its session id onto every agent it ever grepped.
+      if (identity.fleet_id && !ownerPushed && /Registered fleet:[0-9a-f]{8}\b/.test(line)) {
+        identities.push({ ...identityBase, ...identity })
+        ownerPushed = true
+      } else {
+        const { fleet_id, ...rest } = identity
+        if (Object.keys(rest).length) identities.push({ ...identityBase, ...rest })
+      }
+    } else if (!ownerPushed && line.includes('Registered fleet:')) {
+      const m = /Registered fleet:([0-9a-f]{8})\b/.exec(line)
+      if (m) {
+        identities.push({ ...identityBase, fleet_id: 'fleet:' + m[1] })
+        ownerPushed = true
+      }
     }
     const searchEntries = searchEntriesFromRecord(job.agentId, job.sessionId, parsed)
     for (const entry of searchEntries) entries.push(entry)
