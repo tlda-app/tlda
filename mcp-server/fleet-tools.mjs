@@ -60,6 +60,7 @@ import { harnessFromEnv } from './lib/harness-adapters.mjs';
 import WebSocket from 'ws';
 import { ResilientWS } from '../shared/resilient-ws.mjs';
 import { rejectWsRequests, resetWsRequestIdleTimers, startWsRequest } from '../shared/ws-request-policy.mjs';
+import { WsReconnectBuffer } from '../shared/ws-reconnect-buffer.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BIN = path.join(__dirname, 'bin');
@@ -2561,7 +2562,7 @@ export async function handleFleetTool(name, args) {
     let lastEventId = null;
     const priority = parsePriorityPhrase(resolvedMessage) || 'normal';
     for (const to of recipients) {
-      const chatBody = { message: resolvedMessage, to, from: AGENT_ID, metadata: { priority } };
+      const chatBody = { message: resolvedMessage, to, from: AGENT_ID, metadata: { priority }, _tempId: `${AGENT_ID}:mcp-chat:${crypto.randomUUID()}` };
       if (inlineAttachments.length) chatBody.inline_attachments = inlineAttachments;
       if (refAttachments.length) chatBody.attachments = refAttachments;
       if (docContext) chatBody.context = docContext;
@@ -4624,6 +4625,8 @@ let _channelRWS = null;  // ResilientWS instance
 // Request/response over WS — pending callbacks keyed by correlation ID
 const _wsPending = new Map();
 const WS_REQUEST_IDLE_MS = 45_000;
+const _reconnectBuffer = new WsReconnectBuffer({ isConnected: () => !!_channelRWS?.connected });
+
 /**
  * Send a request over the WS channel and wait for a response.
  * Returns the result on success, throws on error or timeout.
@@ -4645,22 +4648,23 @@ function _sendWSOnce(type, params = {}, opts = {}) {
   });
 }
 
-// Retry transient disconnects before reporting the server as down. The common
-// false "server down" is a momentary !connected window while ResilientWS
-// reconnects — it fails instantly, not because of a real outage — so we retry
-// that fast not-connected case a few times (~2s total) to ride through the
-// reconnect. A genuine in-flight idle timeout is NOT retried; it surfaces as an
-// explicit timeout. Contract preserved: resolves with data when up, returns null
-// only when still not connected after the retries.
+// Buffer transient disconnects before reporting the server as down. If a tool
+// call starts while ResilientWS is between close→reopen, keep the request in
+// this process and put it on the wire as soon as the reconnect opens. This is
+// deliberately lighter than the daemon's SQLite outbox: MCP losslessness only
+// needs to cover a live tool call's brief reconnect window, bounded by the
+// request deadline/idle timeout.
 async function sendWS(type, params = {}, opts = {}) {
-  const MAX_ATTEMPTS = 4;
-  const RETRY_DELAY_MS = 700;
-  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+  const startedAt = Date.now();
+  const deadlineMs = opts.deadlineMs ?? opts.idleTimeoutMs ?? WS_REQUEST_IDLE_MS;
+  while (Date.now() - startedAt < deadlineMs) {
     const result = _sendWSOnce(type, params, opts);
-    if (result !== null) return await result; // connected — await the response
-    if (attempt < MAX_ATTEMPTS - 1) await new Promise(r => setTimeout(r, RETRY_DELAY_MS));
+    if (result !== null) return await result;
+    const remaining = Math.max(0, deadlineMs - (Date.now() - startedAt));
+    const connected = await _reconnectBuffer.waitForConnection(Math.min(remaining, 5_000));
+    if (!connected && !_channelRWS?.connected) break;
   }
-  return null; // still not connected after retries — genuinely down
+  return null;
 }
 
 async function _flushUnread() {
@@ -4700,6 +4704,7 @@ function startChannelWS() {
     heartbeatTimeoutMs: 45000,
     log: (s) => process.stderr.write(s + '\n'),
     onOpen: () => {
+      _reconnectBuffer.resolveConnected();
       const loginBody = {
         agent_id: AGENT_ID,
         tmux_session: _tmuxSession || undefined,

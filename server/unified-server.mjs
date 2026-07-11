@@ -29,6 +29,7 @@ import { createServer as createHttpsServer } from 'https'
 import { createSecureContext } from 'tls'
 import { WebSocketServer } from 'ws'
 import { spawn, spawn as cpSpawn } from 'child_process'
+import { monitorEventLoopDelay, performance } from 'node:perf_hooks'
 // Runtime guard: warn on execSync in server process (tmux commands still use it)
 // TODO: migrate tmux commands to async exec, then ban execSync entirely
 import path from 'path'
@@ -139,6 +140,42 @@ const fleetStore = new FleetStore(process.env.TLDA_FLEET_DB, { taskDoc: true })
 fleetStore.flushTaskDocs?.()
 const serverDaemonOutbox = new ServerDaemonOutbox(fleetStore.db)
 const serverDaemonOutboxInflight = new Set()
+
+const HOT_OP_WARN_MS = Number(process.env.TLDA_HOT_OP_WARN_MS || 50)
+const eventLoopDelay = monitorEventLoopDelay({ resolution: 20 })
+eventLoopDelay.enable()
+let lastEventLoopLag = { maxMs: 0, meanMs: 0, at: Date.now() }
+setInterval(() => {
+  lastEventLoopLag = {
+    maxMs: Number(eventLoopDelay.max) / 1e6,
+    meanMs: Number(eventLoopDelay.mean) / 1e6,
+    at: Date.now(),
+  }
+  if (lastEventLoopLag.maxMs >= HOT_OP_WARN_MS) {
+    console.warn(`[event-loop-lag] max=${lastEventLoopLag.maxMs.toFixed(1)}ms mean=${lastEventLoopLag.meanMs.toFixed(1)}ms`)
+  }
+  eventLoopDelay.reset()
+}, 1000).unref()
+
+async function measureHotOp(label, details, fn) {
+  const start = performance.now()
+  try {
+    return await fn()
+  } finally {
+    const ms = performance.now() - start
+    if (ms >= HOT_OP_WARN_MS) {
+      const suffix = details ? ` ${details}` : ''
+      console.warn(`[hot-op] ${label} ${ms.toFixed(1)}ms${suffix} lag_max=${lastEventLoopLag.maxMs.toFixed(1)}ms lag_mean=${lastEventLoopLag.meanMs.toFixed(1)}ms`)
+    }
+  }
+}
+
+function logWsClose(kind, ws, code, reason) {
+  if (code === 1006 || lastEventLoopLag.maxMs >= HOT_OP_WARN_MS) {
+    const identity = ws?._daemonKey || ws?._tldaAgentId || ws?._agentFilter || ws?._connId || 'unknown'
+    console.warn(`[ws-close] kind=${kind} code=${code} identity=${identity} reason=${reason || ''} lag_max=${lastEventLoopLag.maxMs.toFixed(1)}ms lag_mean=${lastEventLoopLag.meanMs.toFixed(1)}ms`)
+  }
+}
 
 // Name provenance: stamp each event/result row with the friendly name its
 // sender/recipient ACTUALLY held at the row's timestamp (via name_history),
@@ -3656,7 +3693,8 @@ server.on('upgrade', async (req, socket, head) => {
           errorDaemonOutboxMessage(ws, msg, e)
         }
       })
-      ws.on('close', () => {
+      ws.on('close', (code, reason) => {
+        logWsClose('daemon', ws, code, reason?.toString?.() || '')
         if (ws._daemonKey && daemonConnections.get(ws._daemonKey) === ws) {
           daemonConnections.delete(ws._daemonKey)
           fleetStore?.markDaemonDisconnected?.(ws._daemonKey)
@@ -3728,7 +3766,8 @@ server.on('upgrade', async (req, socket, head) => {
           handleFleetWsMessage(ws, msg)
         } catch {}
       })
-      ws.on('close', () => {
+      ws.on('close', (code, reason) => {
+        logWsClose('fleet', ws, code, reason?.toString?.() || '')
         wsFleetClients.delete(ws)
         // Unsubscribe the agent from all tlda-feedback watches so stale
         // subscriptions don't accumulate across MCP respawns.
@@ -4134,7 +4173,12 @@ async function handleFleetWsMessage(ws, msg) {
 
   // ---- jsonl-index: daemon pushes JSONL text entries for unified search ----
   if (type === 'jsonl-index') {
-    try { fleetStore.insertSessionEntries(msg.entries || []) } catch (e) { console.error(`[jsonl-index] Failed to index ${(msg.entries || []).length} entries — search gaps possible:`, e.message); error(e.message); return }
+    const entries = msg.entries || []
+    try {
+      await measureHotOp('fleet-ws jsonl-index', `entries=${entries.length}`, () => fleetStore.insertSessionEntries(entries))
+    } catch (e) {
+      console.error(`[jsonl-index] Failed to index ${entries.length} entries — search gaps possible:`, e.message); error(e.message); return
+    }
     reply({ ok: true })
     return
   }
@@ -4382,9 +4426,14 @@ async function handleFleetWsMessage(ws, msg) {
         }
         await sendWakeNudge(daemonKey, agent, spawnResult?.tmux_session || agent.tmux_session, nudgeText, 'post-respawn')
         const wakeTs = new Date().toISOString()
-        fleetStore.db.prepare(
-          'INSERT INTO events (type, timestamp, from_id, to_id, text, metadata) VALUES (?, ?, ?, ?, ?, ?)'
-        ).run('lifecycle', wakeTs, agentId, agentId, 'agent woken', null)
+        await measureHotOp('fleet-ws lifecycle wake insert', `agent=${agentId}`, () => fleetStore._insertEventRecord({
+          type: 'lifecycle',
+          timestamp: wakeTs,
+          from: agentId,
+          to: agentId,
+          text: 'agent woken',
+          unread: false,
+        }, { notify: false }))
       } catch (e) {
         console.warn(`[respawn] failed for ${agentId}: ${e.message}`)
         // Convergent, visible signal on the roster (not just a chat) so a failed
@@ -4473,10 +4522,16 @@ async function handleFleetWsMessage(ws, msg) {
       ...(source ? { source } : {}),
       ...(inline_attachments ? { inline_attachments } : {}),
     }
-    const result = fleetStore.db.prepare(
-      'INSERT INTO events (type, timestamp, from_id, to_id, text, metadata) VALUES (?, ?, ?, ?, ?, ?)'
-    ).run('amend', ts, from, orig.to, text, JSON.stringify(meta))
-    const amendId = Number(result.lastInsertRowid)
+    const inserted = await measureHotOp('fleet-ws amend event insert', `from=${from} to=${orig.to}`, () => fleetStore._insertEventRecord({
+      type: 'amend',
+      timestamp: ts,
+      from,
+      to: orig.to,
+      text,
+      metadata: meta,
+      unread: false,
+    }, { notify: false }))
+    const amendId = Number(inserted.id)
     reply({ ok: true, event_id: orig.id, amend_id: amendId })
     // Broadcast the amend event; the client folds it into the original message.
     broadcastEvent('fleet-event', {
@@ -4597,12 +4652,16 @@ async function handleFleetWsMessage(ws, msg) {
       if (recipientAgent && !recipientAgent.human && materializableAttachments.length) {
         combinedMetadata = initializeRecipientRefs(combinedMetadata, to, materializableAttachments, { sourceAgent: from })
       }
-      const metaStr = Object.keys(combinedMetadata).length ? JSON.stringify(combinedMetadata) : null
-      const result = fleetStore.db.prepare(
-        'INSERT INTO events (type, timestamp, from_id, to_id, text, metadata) VALUES (?, ?, ?, ?, ?, ?)'
-      ).run('chat', ts, from, to, text, metaStr)
-      const eventId = Number(result.lastInsertRowid)
-      fleetStore.db.prepare('INSERT OR IGNORE INTO unread (event_id, to_id, read) VALUES (?, ?, 0)').run(eventId, to)
+      const inserted = await measureHotOp('fleet-ws chat event insert', `from=${from} to=${to} bytes=${text.length}`, () => fleetStore._insertEventRecord({
+        type: 'chat',
+        timestamp: ts,
+        from,
+        to,
+        text,
+        metadata: Object.keys(combinedMetadata).length ? combinedMetadata : null,
+        unread: true,
+      }, { notify: false }))
+      const eventId = Number(inserted.id)
       eventIds.push(eventId)
       receipts.push({
         recipient: to,
@@ -6317,7 +6376,7 @@ async function handleDaemonWsMessage(ws, msg) {
     if (!fleetStore) return
     const entries = msg.entries || []
     try {
-      fleetStore.insertSessionEntries(entries)
+      await measureHotOp('daemon-ws jsonl-index', `entries=${entries.length}`, () => fleetStore.insertSessionEntries(entries))
       if (msg.id) ws.send(JSON.stringify({ id: msg.id, result: { ok: true } }))
     } catch (e) {
       console.error(`[jsonl-index] Failed to index ${entries.length} entries — search gaps possible:`, e.message)
