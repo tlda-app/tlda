@@ -27,7 +27,7 @@ import type { Editor, TLShape } from 'tldraw'
 import { log } from '../logger'
 import { FLEET_SHAPE_TYPES, isMyFleetShape } from '../shapes/fleet-utils'
 import { isDocumentPageShape } from '../shapes/document-pages'
-import { phonePaneCameraXForIndex, phonePaneStackMaxIndex } from '../shapes/phone-pane-stack'
+import { phonePaneCameraForIndex, phonePaneCameraXForIndex, phonePaneStackMaxIndex } from '../shapes/phone-pane-stack'
 import {
   MOVE_LOCK_ON,
   PAN_AXIS_DECAY,
@@ -745,8 +745,9 @@ export function snapToPhoneLaneIndex(editor: Editor, docLeftPage: number, index:
   const screenW = editor.getViewportScreenBounds().w
   if (!screenW || !Number.isFinite(screenW)) return
   phoneLaneIndex = Math.max(0, Math.min(phonePaneStackMaxIndex(editor), index))
+  const target = phonePaneCameraForIndex(editor, docLeftPage, phoneLaneIndex)
   const x = phonePaneCameraXForIndex(editor, docLeftPage, phoneLaneIndex) ?? ((phoneLaneIndex * screenW) / cam.z - docLeftPage)
-  editor.setCamera({ ...cam, x }, { animation: { duration: PHONE_LANE_SNAP_DURATION } })
+  editor.setCamera(target ?? { ...cam, x }, { animation: { duration: PHONE_LANE_SNAP_DURATION } })
 }
 
 export function snapToCurrentPhoneLaneIndex(editor: Editor, docLeftPage: number, animationDuration = PHONE_LANE_SNAP_DURATION) {
@@ -755,8 +756,9 @@ export function snapToCurrentPhoneLaneIndex(editor: Editor, docLeftPage: number,
   if (!screenW || !Number.isFinite(screenW)) return
   const index = phoneLaneIndexFromCamera(editor, docLeftPage)
   phoneLaneIndex = Math.max(0, Math.min(phonePaneStackMaxIndex(editor), index))
+  const target = phonePaneCameraForIndex(editor, docLeftPage, phoneLaneIndex)
   const x = phonePaneCameraXForIndex(editor, docLeftPage, phoneLaneIndex) ?? ((phoneLaneIndex * screenW) / cam.z - docLeftPage)
-  editor.setCamera({ ...cam, x }, { animation: { duration: animationDuration } })
+  editor.setCamera(target ?? { ...cam, x }, { animation: { duration: animationDuration } })
 }
 
 // dir +1 pulls toward higher pane indices, -1 toward the document pane. A pane
