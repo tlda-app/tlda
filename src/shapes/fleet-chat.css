@@ -2231,6 +2231,31 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   line-height: 14px;
 }
 
+.fleet-search-query-readout {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+  max-height: 34px;
+  overflow: hidden;
+}
+
+.fleet-search-query-chip {
+  display: inline-block;
+  max-width: 100%;
+  padding: 0 4px;
+  border-radius: 2px;
+  background: rgba(128, 128, 128, 0.08);
+  color: inherit;
+  font-size: 8px;
+  font-weight: 400;
+  line-height: 14px;
+  opacity: 0.58;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .fleet-search-section-header {
   padding: 4px 10px 2px;
   font-size: 9px;

@@ -1,8 +1,8 @@
 /**
  * FleetSearchShape — tldraw canvas shape for searching fleet chat history.
  *
- * Supports inline keyword filters: from:name, agent:name, before:date, after:date
- * Boolean logic: AND, OR, parentheses, "quoted phrases" — passed through to FTS5.
+ * Supports the fleet query language: literal text plus event filters such as
+ * from:, to:, agent:, type:, since:, before:, and grouped agent-set expressions.
  * Click a result to expand and show surrounding context inline.
  */
 import {
@@ -197,6 +197,30 @@ function makeChatCtx(agents: any[], tasks: any[]) {
 }
 
 const CHAT_HEADER_H = 30
+
+function searchQueryReadout(query: string) {
+  const trimmed = query.trim()
+  if (!trimmed) return []
+  const parsed = parseSearchQuery(trimmed)
+  const filters = parsed.filters
+  const chips: string[] = []
+  const structured: string[] = []
+  if (parsed.query) chips.push(`text:${parsed.query}`)
+  if (filters.filterExpression) structured.push(filters.filterExpression)
+  else {
+    if (filters.from) structured.push(`from:${filters.from}`)
+    if (filters.to) structured.push(`to:${filters.to}`)
+    if (filters.agent) structured.push(`agent:${filters.agent}`)
+  }
+  if (filters.type && !structured.includes(`type:${filters.type}`)) structured.push(`type:${filters.type}`)
+  if (filters.role) structured.push(`role:${filters.role}`)
+  if (filters.since) structured.push(`since:${filters.since}`)
+  if (filters.after) structured.push(`after:${filters.after}`)
+  if (filters.before) structured.push(`before:${filters.before}`)
+  if (!parsed.query && filters.naturalAgentQuery) structured.push(`agent:${filters.naturalAgentQuery}`)
+  if (structured.length > 0) chips.push(`filters:${structured.join(' ')}`)
+  return chips
+}
 
 export class FleetSearchShapeUtil extends BaseBoxShapeUtil<any> {
   static override type = 'fleet-search' as const
@@ -409,6 +433,13 @@ function FleetSearchInner({ shape }: { shape: any }) {
       return {}
     }
   }, [query])
+  const queryReadout = useMemo<string[]>(() => {
+    try {
+      return searchQueryReadout(query)
+    } catch {
+      return []
+    }
+  }, [query])
 
   return (
     <HTMLContainer
@@ -472,7 +503,7 @@ function FleetSearchInner({ shape }: { shape: any }) {
           <input
             ref={inputRef}
             type="text"
-            placeholder="Search… (from:skip agent:apps before:1d)"
+            placeholder="Search... (agent:(skip | guidance) from:me)"
             value={query}
             onChange={handleInput}
             onKeyDown={handleKeyDown}
@@ -490,6 +521,11 @@ function FleetSearchInner({ shape }: { shape: any }) {
               fontFamily: 'inherit',
             }}
           />
+          {queryReadout.length > 0 && (
+            <div className="fleet-search-query-readout" aria-label="Parsed search query">
+              {queryReadout.map((chip, i) => <span key={`${chip}-${i}`} className="fleet-search-query-chip">{chip}</span>)}
+            </div>
+          )}
           {/* Active filter indicators */}
           {(activeFilters.from || activeFilters.to || activeFilters.agent || activeFilters.before || activeFilters.after || activeFilters.since || activeFilters.type) && (
             <div style={{ display: 'flex', gap: 4, marginTop: 3, flexWrap: 'wrap' }}>
