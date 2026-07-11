@@ -155,6 +155,21 @@ export class FleetStore {
     });
   }
 
+  _wBatchAwait(ops) {
+    const id = ++this._writeSeq;
+    return new Promise((resolve, reject) => {
+      this._writeWaiters.set(id, { resolve, reject });
+      this._worker.postMessage({
+        id,
+        kind: 'batch',
+        ops: ops.map(op => ({
+          sql: typeof op.stmtOrSql === 'string' ? op.stmtOrSql : op.stmtOrSql.source,
+          params: op.params || [],
+        })),
+      });
+    });
+  }
+
   _createTables() {
     this.db.exec(`
       -- Core event table: every share() writes one row here
@@ -984,7 +999,7 @@ export class FleetStore {
    * @param {boolean} [event.unread] - If true, creates an unread entry for the recipient
    * @returns {Object} The inserted event with its ID
    */
-  async share(event) {
+  async _insertEventRecord(event, { notify = true } = {}) {
     const ts = event.timestamp || new Date().toISOString();
     const meta = event.metadata ? JSON.stringify(event.metadata) : null;
 
@@ -1053,11 +1068,17 @@ export class FleetStore {
     }
 
     // Notify listeners (SSE broadcast)
-    for (const fn of this._listeners) {
-      try { fn(inserted); } catch {}
+    if (notify) {
+      for (const fn of this._listeners) {
+        try { fn(inserted); } catch {}
+      }
     }
 
     return inserted;
+  }
+
+  async share(event) {
+    return this._insertEventRecord(event, { notify: true });
   }
 
   // ---- Convenience write methods (all call share() internally) ----
@@ -2712,19 +2733,21 @@ export class FleetStore {
 
   // ---- Session entry indexing (JSONL text for unified search) ----
 
-  insertSessionEntries(entries) {
-    if (!entries?.length) return;
-    const stmt = this.db.prepare(`
+  async insertSessionEntries(entries) {
+    if (!entries?.length) return { inserted: 0 };
+    const sql = `
       INSERT OR IGNORE INTO session_entries (agent_id, session_id, role, timestamp, text)
       VALUES (?, ?, ?, ?, ?)
-    `);
-    this.db.transaction(() => {
-      for (const e of entries) {
-        if (!e.timestamp) continue;
-        const text = e.text?.length > 5000 ? e.text.slice(0, 5000) : e.text;
-        stmt.run(e.agent_id, e.session_id, e.role, e.timestamp, text);
-      }
-    })();
+    `;
+    const ops = [];
+    for (const e of entries) {
+      if (!e.timestamp) continue;
+      const text = e.text?.length > 5000 ? e.text.slice(0, 5000) : e.text;
+      ops.push({ stmtOrSql: sql, params: [e.agent_id, e.session_id, e.role, e.timestamp, text] });
+    }
+    if (!ops.length) return { inserted: 0 };
+    const results = await this._wBatchAwait(ops);
+    return { inserted: results.reduce((sum, r) => sum + (r.changes || 0), 0) };
   }
 
   async backfillSessionEntries(projectsDir) {
@@ -2753,10 +2776,10 @@ export class FleetStore {
       }
     }
 
-    const stmt = this.db.prepare(`
+    const insertSessionSql = `
       INSERT OR IGNORE INTO session_entries (agent_id, session_id, role, timestamp, text)
       VALUES (?, ?, ?, ?, ?)
-    `);
+    `;
     let totalIndexed = 0;
     for (const { filePath, sessionId } of allFiles) {
       const agentId = agentMap[sessionId] || 'unknown';
@@ -2778,12 +2801,10 @@ export class FleetStore {
         entries.push({ agentId, sessionId, role: parsed.type, timestamp: ts, text });
       }
       if (entries.length > 0) {
-        this.db.transaction(() => {
-          for (const e of entries) {
-            const t = e.text.length > 5000 ? e.text.slice(0, 5000) : e.text;
-            stmt.run(e.agentId, e.sessionId, e.role, e.timestamp, t);
-          }
-        })();
+        await this._wBatchAwait(entries.map(e => {
+          const t = e.text.length > 5000 ? e.text.slice(0, 5000) : e.text;
+          return { stmtOrSql: insertSessionSql, params: [e.agentId, e.sessionId, e.role, e.timestamp, t] };
+        }));
         totalIndexed++;
       }
       await new Promise(r => setImmediate(r));
