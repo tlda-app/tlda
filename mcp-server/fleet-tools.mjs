@@ -1764,6 +1764,29 @@ export function getFleetTools() {
     },
     // ---- Report Gate ----
     {
+      name: 'subscribe',
+      description: 'Create one persisted server-side notification subscription. Immediate delivery is supported for the current fleet message grammar; batch(spec) and hold are stored but not yet enforced.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Required fleet event query. Unsupported document/annotation terms fail loudly.' },
+          notification_policy: { type: 'string', description: 'Required: immediate, batch(spec), or hold.' },
+          target: { type: 'string', description: 'Target agent to configure. Defaults to this agent; cross-target use requires delegator authority.' },
+        },
+        required: ['query', 'notification_policy'],
+      },
+    },
+    {
+      name: 'subscriptions',
+      description: 'List persisted notification subscriptions for a target agent. Defaults to this agent; cross-target inspection requires delegator authority.',
+      inputSchema: { type: 'object', properties: { target: { type: 'string' } } },
+    },
+    {
+      name: 'unsubscribe',
+      description: 'Remove one persisted notification subscription by id. Server-side authority checks apply.',
+      inputSchema: { type: 'object', properties: { subscription_id: { type: 'number' } }, required: ['subscription_id'] },
+    },
+    {
       name: 'report',
       description: 'Submit a completed-task report to the task owner. Messaging is not gated on recipient wake state; delivery queues or bounces at the messaging layer.',
       inputSchema: {
@@ -1772,6 +1795,7 @@ export function getFleetTools() {
           pass: { type: 'boolean', description: 'Legacy self-review mode: set true if self-review passed. Only used when QA is not configured.' },
           summary: { type: 'string', description: 'Structured report summary. Required when close=true.' },
           close: { type: 'boolean', description: 'Close the current task after posting the report. Replaces task_done().' },
+          reason: { type: 'string', description: 'Optional durable task-close reason, e.g. done, rejected, invalid, or never_should_have_existed.' },
           verified: { type: 'boolean', description: 'Confirm you verified every success criterion before close=true.' },
           approval_id: { type: 'integer', description: 'Event ID of a human approval message. Required when the task requires approval and close=true.' },
           operation_id: { type: 'string', description: 'Optional stable idempotency key for retrying the same report/close operation.' },
@@ -1791,7 +1815,7 @@ export function getFleetTools() {
         },
       },
     },
-  ];
+  ].filter(tool => !['delete_task', 'pin_ref', 'spawn', 'wiretap', 'monitor_add', 'monitor_remove', 'monitor_list'].includes(tool.name));
 }
 
 export function formatRecipientStatusSummary(recipients = [], agents = [], receipts = []) {
@@ -2074,6 +2098,18 @@ export async function handleFleetTool(name, args) {
   reportStatus('tool_call', name);
 
   try {
+  const retiredTools = {
+    delete_task: 'delete_task is retired from the normal MCP interface. Close with report({ summary: "...", close: true, verified: true, reason?: "invalid" }) so the durable task record remains.',
+    pin_ref: 'pin_ref is retired from the normal MCP interface.',
+    spawn: 'spawn is retired from the normal MCP interface. Use delegate with a fresh/spawn target when agent creation is part of a task.',
+    wiretap: 'wiretap is retired from the normal MCP interface. Use subscribe(), subscriptions(), and unsubscribe().',
+    monitor_add: 'monitor_add is retired from the normal MCP interface. Use subscribe({ query: "doc:<name>", notification_policy: "immediate" }).',
+    monitor_remove: 'monitor_remove is retired from the normal MCP interface. Use subscriptions() and unsubscribe({ subscription_id }).',
+    monitor_list: 'monitor_list is retired from the normal MCP interface. Use subscriptions().',
+  };
+  if (retiredTools[name]) {
+    return { content: [{ type: 'text', text: retiredTools[name] }], isError: true };
+  }
 
   // ==== Registration & Identity ====
 
@@ -2876,6 +2912,7 @@ export async function handleFleetTool(name, args) {
           task_id: task.id,
           summary: args.summary,
           close: closeRequested,
+          reason: args.reason || undefined,
           approval_id: args.approval_id || undefined,
           operation_id: operationId,
         }, { operationId });
@@ -4379,6 +4416,40 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
   }
 
   // ==== Utilities ====
+
+  if (name === 'subscribe') {
+    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not logged in. Call login() first.' }], isError: true };
+    try {
+      const data = await sendWS('subscribe', { caller: AGENT_ID, target: args.target || AGENT_ID, query: args.query, notification_policy: args.notification_policy });
+      if (data?.error) return { content: [{ type: 'text', text: `subscribe failed: ${data.error}` }], isError: true };
+      return { content: [{ type: 'text', text: `Subscribed #${data.subscription_id} for ${data.owner}: ${data.query} (${data.notification_policy}).` }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `subscribe failed: ${e.message}` }], isError: true };
+    }
+  }
+
+  if (name === 'subscriptions') {
+    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not logged in. Call login() first.' }], isError: true };
+    try {
+      const rows = await sendWS('subscriptions', { caller: AGENT_ID, target: args.target || AGENT_ID });
+      if (rows?.error) return { content: [{ type: 'text', text: `subscriptions failed: ${rows.error}` }], isError: true };
+      if (!rows.length) return { content: [{ type: 'text', text: 'No subscriptions.' }] };
+      return { content: [{ type: 'text', text: rows.map(r => `#${r.subscription_id} ${r.owner}: ${r.query} (${r.notification_policy})`).join('\n') }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `subscriptions failed: ${e.message}` }], isError: true };
+    }
+  }
+
+  if (name === 'unsubscribe') {
+    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not logged in. Call login() first.' }], isError: true };
+    try {
+      const data = await sendWS('unsubscribe', { caller: AGENT_ID, subscription_id: args.subscription_id });
+      if (data?.error) return { content: [{ type: 'text', text: `unsubscribe failed: ${data.error}` }], isError: true };
+      return { content: [{ type: 'text', text: `Unsubscribed #${data.subscription_id}.` }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `unsubscribe failed: ${e.message}` }], isError: true };
+    }
+  }
 
   // ---- wiretap ----
   if (name === 'wiretap') {

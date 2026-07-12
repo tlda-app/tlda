@@ -147,10 +147,11 @@ export function matchFilter(filter, labels) {
  * The role prefixes `to:`/`from:` replace the old `[role, label]` DNF tuples:
  * `to:skip & from:math` is the string form of `[[["to","skip"],["from","math"]]]`.
  */
-export function evalExprDirectional(ast, { fromLabels = [], toLabels = [] } = {}) {
+export function evalExprDirectional(ast, { fromLabels = [], toLabels = [], subscriberLabels = [] } = {}) {
   if (!ast) return true
   const from = fromLabels instanceof Set ? fromLabels : new Set(fromLabels)
   const to = toLabels instanceof Set ? toLabels : new Set(toLabels)
+  const subscriber = subscriberLabels instanceof Set ? subscriberLabels : new Set(subscriberLabels)
   const testLeaf = (tok) => {
     if (tok.startsWith('to:')) return to.has(tok.slice(3))
     if (tok.startsWith('from:')) return from.has(tok.slice(5))
@@ -158,8 +159,11 @@ export function evalExprDirectional(ast, { fromLabels = [], toLabels = [] } = {}
   }
   const agentExpr = (n, labels) => {
     switch (n.t) {
-      case 'lit': return labels.has(n.v)
+      case 'lit': return n.v === 'my_labels'
+        ? (subscriber.size > 0 && [...subscriber].some(label => labels.has(label)))
+        : labels.has(n.v)
       case 'me': return labels.has('me')
+      case 'my_labels': return subscriber.size > 0 && [...subscriber].some(label => labels.has(label))
       case 'not': return !agentExpr(n.x, labels)
       case 'and': return agentExpr(n.l, labels) && agentExpr(n.r, labels)
       case 'or': return agentExpr(n.l, labels) || agentExpr(n.r, labels)

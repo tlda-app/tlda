@@ -4408,6 +4408,15 @@ async function handleFleetWsMessage(ws, msg) {
     }
     try {
       fleetStore.upsertAgent(agent)
+      if (isShellReservation && !agent.human) {
+        fleetStore.ensureDefaultSubscription?.(agent.id)
+      }
+      for (const row of fleetStore.getSubscriptionsByOwner?.(agent.id) || []) {
+        const docMatch = String(row.query || '').match(/^doc:([^\s]+)$/i)
+        if (row.adapter === 'document_monitor' && docMatch) {
+          tldaFeedback.subscribe(row.owner, docMatch[1], deliverTldaFeedbackChat)
+        }
+      }
     } catch (e) {
       if (e.message?.includes('already taken')) {
         error(e.message)
@@ -5328,7 +5337,7 @@ async function handleFleetWsMessage(ws, msg) {
   }
 
   if (type === 'report-close') {
-    const { agent: rawAgent, task_id, summary, close, approval_id, operation_id } = msg
+    const { agent: rawAgent, task_id, summary, close, reason, approval_id, operation_id } = msg
     if (!rawAgent) { error('missing agent'); return }
     if (!summary) { error('missing summary'); return }
     if (!operation_id) { error('missing operation_id'); return }
@@ -5376,12 +5385,15 @@ async function handleFleetWsMessage(ws, msg) {
     }
 
     if (close && !closeEventId) {
+      const closeReason = reason || 'done'
       task.status = 'done'
       task.completed_at = new Date().toISOString()
+      task.metadata = { ...(task.metadata || {}), close_reason: closeReason }
       fleetStore.upsertTask(task)
       const insertedClose = await fleetStore.taskDone?.(agent, task.id, task.description, {
         client_operation_id: operation_id,
         report_event_id: reportEventId,
+        close_reason: closeReason,
       })
       closeEventId = insertedClose?.id || null
     }
@@ -5941,7 +5953,85 @@ async function handleFleetWsMessage(ws, msg) {
     return
   }
 
-  // ---- wiretap-add ----
+  // ---- subscription rows ----
+  if (type === 'subscribe') {
+    const { caller: callerQuery, target: targetQuery, query, notification_policy: policy } = msg
+    if (!callerQuery || !query || !policy) { error('missing caller, query, or notification_policy'); return }
+    const caller = fleetStore.findAgent?.(callerQuery)
+    const target = fleetStore.findAgent?.(targetQuery || callerQuery)
+    if (!caller || !target) { error('caller or target not found'); return }
+    if (caller.id !== target.id && !fleetStore.isDelegatorForAgent?.(caller.id, target.id)) {
+      error('not authorized to configure subscriptions for that target'); return
+    }
+    if (policy !== 'immediate' && policy !== 'hold' && !/^batch\(.+\)$/.test(policy)) {
+      error('notification_policy must be immediate, hold, or batch(spec)'); return
+    }
+    const docMatch = query.match(/^doc:([^\s]+)$/i)
+    if (!docMatch && (/\b(doc|event|type|since|after|before|agent):/i.test(query) || /\bto:me\b/i.test(query))) {
+      error('unsupported subscription query term: stage-1 supports directional fleet labels or a single doc:<name> query'); return
+    }
+    if (!docMatch) {
+      try { parseFilter(query) } catch (e) { error(`bad subscription query: ${e.message}`); return }
+    }
+    // Stage 1 persists every requested policy, but the existing fanout path is
+    // immediate-only. Until batch/hold schedulers exist, supported matches
+    // still enter the same server notification path.
+    let adapter = 'wiretap'
+    let adapterId = null
+    try {
+      if (docMatch) {
+        adapter = 'document_monitor'
+        tldaFeedback.subscribe(target.id, docMatch[1], deliverTldaFeedbackChat)
+      } else {
+        const tap = fleetStore.addWiretap(target.id, query, null)
+        adapterId = tap.id
+      }
+    } catch (e) { error(`subscription adapter failed: ${e.message}`); return }
+    const subscription = fleetStore.addSubscription({ owner: target.id, query, notificationPolicy: policy, createdBy: caller.id, adapter, adapterId })
+    reply(subscription)
+    return
+  }
+
+  if (type === 'subscriptions') {
+    const { caller: callerQuery, target: targetQuery } = msg
+    if (!callerQuery) { error('missing caller'); return }
+    const caller = fleetStore.findAgent?.(callerQuery)
+    const target = fleetStore.findAgent?.(targetQuery || callerQuery)
+    if (!caller || !target) { error('caller or target not found'); return }
+    if (caller.id !== target.id && !fleetStore.isDelegatorForAgent?.(caller.id, target.id)) {
+      error('not authorized to inspect subscriptions for that target'); return
+    }
+    const rows = fleetStore.getSubscriptionsByOwner(target.id)
+    for (const row of rows) {
+      if (row.adapter === 'document_monitor') {
+        const docMatch = String(row.query || '').match(/^doc:([^\s]+)$/i)
+        if (docMatch) tldaFeedback.subscribe(row.owner, docMatch[1], deliverTldaFeedbackChat)
+      }
+    }
+    reply(rows)
+    return
+  }
+
+  if (type === 'unsubscribe') {
+    const { caller: callerQuery, subscription_id: subscriptionId } = msg
+    if (!callerQuery || !subscriptionId) { error('missing caller or subscription_id'); return }
+    const caller = fleetStore.findAgent?.(callerQuery)
+    const subscription = fleetStore.getSubscription(subscriptionId)
+    if (!caller || !subscription) { error('caller or subscription not found'); return }
+    if (caller.id !== subscription.owner && !fleetStore.isDelegatorForAgent?.(caller.id, subscription.owner)) {
+      error('not authorized to remove that subscription'); return
+    }
+    if (subscription.adapter === 'wiretap' && subscription.adapter_id) fleetStore.removeWiretap(subscription.adapter_id)
+    if (subscription.adapter === 'document_monitor') {
+      const docMatch = String(subscription.query || '').match(/^doc:([^\s]+)$/i)
+      if (docMatch) tldaFeedback.unsubscribe(subscription.owner, docMatch[1])
+    }
+    fleetStore.removeSubscription(subscription.subscription_id)
+    reply({ ok: true, subscription_id: subscription.subscription_id })
+    return
+  }
+
+  // ---- wiretap-add (internal adapter) ----
   if (type === 'wiretap-add') {
     const { agent, filter, types } = msg
     if (!agent || !filter) { error('missing agent or filter'); return }
