@@ -28,7 +28,7 @@ export const ForkTransport = {
     child.on('message', onMessage)
     child.on('error', onError)
     child.on('exit', onExit)
-    child.send({ t: 'build', name: job.name, priorityPages: job.priorityPages, projectsDir: job.projectsDir })
+    child.send({ t: 'build', name: job.name, kind: job.kind, priorityPages: job.priorityPages, projectsDir: job.projectsDir })
 
     return {
       cancel() { child.kill('SIGTERM') },

@@ -115,6 +115,7 @@ const _directReporter = {
 }
 let _reporter = _directReporter
 export function setBuildReporter(r) { _reporter = r || _directReporter }
+export function getBuildReporter() { return _reporter }
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PROJECT_ROOT = join(__dirname, '..', '..')

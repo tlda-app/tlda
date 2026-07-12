@@ -11,11 +11,12 @@ export function createBuildQueue({
   const _pending = new Map()  // name -> latest queued rebuild behind the in-flight build
   let _activeCount = 0
 
-  async function dispatchBuild(name, { priorityPages } = {}) {
+  async function dispatchBuild(name, { priorityPages, kind = 'build' } = {}) {
     if (_inFlight.has(name)) {
       return new Promise((resolve) => {
-        const pending = _pending.get(name) || { name, priorityPages: null, waiters: [] }
+        const pending = _pending.get(name) || { name, priorityPages: null, kind, waiters: [] }
         pending.priorityPages = priorityPages || null
+        pending.kind = kind
         pending.waiters.push(resolve)
         _pending.set(name, pending)
       })
@@ -25,12 +26,13 @@ export function createBuildQueue({
       return new Promise((resolve) => {
         const queued = _queued.get(name)
         queued.priorityPages = priorityPages || null
+        queued.kind = kind
         queued.waiters.push(resolve)
       })
     }
 
     return new Promise((resolve) => {
-      _enqueue({ name, priorityPages, waiters: [resolve] })
+      _enqueue({ name, priorityPages, kind, waiters: [resolve] })
     })
   }
 
@@ -57,11 +59,17 @@ export function createBuildQueue({
   }
 
   function _runWorker(job) {
-    const { name, priorityPages } = job
-    function relay(msg) { relayMessage?.(name, msg) }
+    const { name, priorityPages, kind } = job
+    let relays = Promise.resolve()
+    function relay(msg) {
+      // IPC preserves message order; serialize server effects as well so a
+      // sentinel write completes before the reload that follows it.
+      relays = relays.then(() => relayMessage?.(name, msg)).catch((e) => logError(name, e))
+    }
     function onError(e) { logError(name, e) }
 
-    function onExit(_code) {
+    async function onExit(_code) {
+      await relays
       _activeCount = Math.max(0, _activeCount - 1)
       _inFlight.delete(name)
 
@@ -79,7 +87,7 @@ export function createBuildQueue({
 
     _activeCount++
     const handle = transport.start(
-      { name, priorityPages, projectsDir: getProjectsDir(), priority: buildPriority },
+      { name, priorityPages, kind, projectsDir: getProjectsDir(), priority: buildPriority },
       { onMessage: relay, onError, onExit },
     )
     _inFlight.set(name, { handle, waiters: job.waiters })

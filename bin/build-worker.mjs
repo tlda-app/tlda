@@ -8,7 +8,9 @@
 // server process where the live rooms actually are. See setBuildReporter.
 
 import { runBuild, setBuildReporter } from '../server/lib/build-runner.mjs'
-import { initProjectStore } from '../server/lib/project-store.mjs'
+import { initProjectStore, readProject } from '../server/lib/project-store.mjs'
+import { buildMarkdown, buildHtml, buildSlides } from '../server/lib/format-builders.mjs'
+import { buildProjectPartsView } from '../server/lib/project-parts-build.mjs'
 import { setPriority, constants as osConstants } from 'node:os'
 
 const BUILD_PRIORITY = Number(process.env.TLDA_BUILD_PRIORITY ?? 10)
@@ -41,7 +43,13 @@ process.on('message', async (msg) => {
     // same projects dir the server uses, or path resolution (sourceDir/outputDir)
     // would be null.
     if (msg.projectsDir) initProjectStore(msg.projectsDir)
-    await runBuild(msg.name, { priorityPages: msg.priorityPages })
+    if (msg.kind === 'parts') {
+      await buildProjectPartsView(msg.name)
+    } else {
+      const builder = { markdown: buildMarkdown, html: buildHtml, slides: buildSlides }[readProject(msg.name)?.format]
+      if (builder) await builder(msg.name)
+      else await runBuild(msg.name, { priorityPages: msg.priorityPages })
+    }
     process.send?.({ t: 'done', ok: true })
     process.exit(0)
   } catch (e) {

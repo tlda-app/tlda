@@ -58,21 +58,23 @@ export function createDispatcher(transport) {
 }
 
 export function createDispatcherWithOptions(transport, options = {}) {
+  const sinks = options.sinks || SINKS
   const queue = createBuildQueue({
     transport,
     getProjectsDir,
     relayMessage(name, msg) {
       if (msg?.t === 'report') {
-        try { SINKS[msg.m]?.(...(msg.a || [])) }
-        catch (e) {
+        return Promise.resolve()
+          .then(() => sinks[msg.m]?.(...(msg.a || [])))
+          .catch((e) => {
           // One side-effect failure must not hide worker exit/completion from waiters.
           console.error(`[build-dispatch] relay ${msg.m} for ${name} failed: ${e.message}`)
-        }
+          })
       }
     },
   }, options)
 
-  async function dispatchBuild(name, { priorityPages } = {}) {
+  async function dispatchBuild(name, { priorityPages, kind = 'build' } = {}) {
     // Resolve the camera/viewport priority HERE (the worker has no live rooms),
     // so the worker never needs a round-trip back for it.
     if (!priorityPages || priorityPages.length === 0) {
@@ -82,7 +84,7 @@ export function createDispatcherWithOptions(transport, options = {}) {
       } catch { priorityPages = priorityPages || undefined } // no viewport signal yet → no priority
     }
 
-    return queue.dispatchBuild(name, { priorityPages })
+    return queue.dispatchBuild(name, { priorityPages, kind })
   }
 
   return { ...queue, dispatchBuild }

@@ -32,7 +32,6 @@ import { outlineForRegion, regionFromSpan, structuralLeaves } from '../lib/outli
 import { buildModel, assertRoundTrip } from '../lib/outline/model.mjs'
 import { findTextNearSourceLine, sourceTextSpanToPdfSpans } from '../lib/synctex-query.mjs'
 import { compareHighlightFeedbackBySource, highlightFeedbackFromShape } from '../lib/highlight-feedback.mjs'
-import { buildMarkdown, buildHtml, buildSlides } from '../lib/format-builders.mjs'
 import { realizeProjectMarkdownArtifact, writeProjectMarkdownArtifact } from '../lib/project-artifact-materializer.mjs'
 import { TASK_DOC_FILENAME, TASK_DOC_PROJECT_ID, materializeTaskDocs } from '../lib/task-doc-materializer.mjs'
 import { markdownColumnFileForSource, listProjectPartColumns, pageInfoFromDocumentColumns } from '../lib/document-columns.mjs'
@@ -207,13 +206,13 @@ router.post('/:name/parts', requireRw, async (req, res) => {
     }
     const project = readProject(req.params.name)
     if (project?.format === 'markdown') {
-      await buildMarkdown(req.params.name)
+      await dispatchBuild(req.params.name)
     } else if (!FORMATS_WITH_OWN_PAGE_INFO.has(project?.format)) {
       // svg/png/diff and any other format with no page-info.json of its own —
       // write the parts-only manifest and tell open viewers to reload.
       // (html/slides own page-info.json via their own build pipeline; wiring
       // parts into those is a separate, unstarted piece.)
-      writePartsPageInfo(req.params.name)
+      await dispatchBuild(req.params.name, { kind: 'parts' })
     }
     emitGlobalEvent('project-changed', { name: req.params.name })
     res.json({ ok: true, ...result, outputFile: markdownColumnFileForSource(result.projectPath) })
@@ -255,9 +254,9 @@ router.post('/:name/task-doc/refresh', requireRw, async (req, res) => {
     })
     const touched = result.touchedDirs?.includes(projectPartsRoot(req.params.name)) || false
     if (project.format === 'markdown') {
-      await buildMarkdown(req.params.name)
+      await dispatchBuild(req.params.name)
     } else if (!FORMATS_WITH_OWN_PAGE_INFO.has(project.format)) {
-      writePartsPageInfo(req.params.name)
+      await dispatchBuild(req.params.name, { kind: 'parts' })
     }
     emitGlobalEvent('project-changed', { name: req.params.name })
     res.json({
@@ -298,24 +297,12 @@ router.delete('/:name/parts/:id', requireRw, async (req, res) => {
     parts: manifest.parts.filter(p => p.id !== req.params.id),
   })
   if (project.format === 'markdown') {
-    await buildMarkdown(req.params.name)
+    await dispatchBuild(req.params.name)
   } else if (!FORMATS_WITH_OWN_PAGE_INFO.has(project.format)) {
-    writePartsPageInfo(req.params.name)
+    await dispatchBuild(req.params.name, { kind: 'parts' })
   }
   res.json({ ok: true, deleted: req.params.id })
 })
-
-// Regenerate the parts-only page-info manifest for a non-markdown project
-// and tell any open viewers to reload — the same signal:reload path that
-// already drives live updates for markdown-format projects.
-function writePartsPageInfo(name) {
-  const columns = listProjectPartColumns(name)
-  const pageInfo = pageInfoFromDocumentColumns(name, columns, { forceGroup: true })
-  const outDir = getOutputDir(name)
-  mkdirSync(outDir, { recursive: true })
-  writeFileSync(join(outDir, 'page-info.json'), JSON.stringify(pageInfo, null, 2))
-  broadcastSignal(`doc-${name}`, 'signal:reload', { parts: pageInfo.length, timestamp: Date.now() })
-}
 
 // Write back a project-owned markdown artifact part.
 router.put('/:name/parts/:partId/markdown', requireRw, async (req, res) => {
@@ -330,10 +317,10 @@ router.put('/:name/parts/:partId/markdown', requireRw, async (req, res) => {
     })
     const project = readProject(req.params.name)
     if (project?.format === 'markdown') {
-      await buildMarkdown(req.params.name)
+      await dispatchBuild(req.params.name)
       emitGlobalEvent('project-changed', { name: req.params.name })
     } else if (!FORMATS_WITH_OWN_PAGE_INFO.has(project?.format)) {
-      writePartsPageInfo(req.params.name)
+      await dispatchBuild(req.params.name, { kind: 'parts' })
       emitGlobalEvent('project-changed', { name: req.params.name })
     }
     res.json({ ok: true, ...result })
@@ -674,8 +661,7 @@ export async function processProjectPush(name, body) {
 
   if (decision.eager) {
     // Non-SVG formats: kick off build async, return immediately.
-    const builder = { markdown: buildMarkdown, html: buildHtml, slides: buildSlides }[project.format]
-    builder(name).then(() => {
+    dispatchBuild(name).then(() => {
       if (projectPartsChanged) broadcastProjectPartsChanged(name, changedPartFiles)
       const updated = readProject(name)
       if (updated?.buildStatus === 'success') {
@@ -728,9 +714,9 @@ function refreshMaterializedPartsFromChangedSources(name, project, changedPushFi
 
 async function rebuildProjectPartsView(name, project) {
   if (project?.format === 'markdown') {
-    await buildMarkdown(name)
+    await dispatchBuild(name)
   } else if (!FORMATS_WITH_OWN_PAGE_INFO.has(project?.format)) {
-    writePartsPageInfo(name)
+    await dispatchBuild(name, { kind: 'parts' })
   }
 }
 
@@ -807,13 +793,7 @@ router.post('/:name/build', requireRw, async (req, res) => {
   res.json({ ok: true, building: true, clean })
 
   try {
-    const builders = { markdown: buildMarkdown, html: buildHtml, slides: buildSlides }
-    const builder = builders[project.format]
-    if (builder) {
-      await builder(req.params.name)
-    } else {
-      await dispatchBuild(req.params.name, { priorityPages })
-    }
+    await dispatchBuild(req.params.name, { priorityPages })
   } catch (e) {
     console.error(`[api] Build failed for ${req.params.name}: ${e.message}`)
   }

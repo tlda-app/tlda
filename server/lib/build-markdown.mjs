@@ -14,10 +14,9 @@ import markdownItAnchor from 'markdown-it-anchor'
 import katex from 'katex'
 import { readFileSync, writeFileSync, mkdirSync, cpSync, existsSync, readdirSync } from 'fs'
 import { join, basename, dirname } from 'path'
-import { updateProject, readProject, listProjects, aggregateBookToc, sourceDir as getSourceDir, outputDir as getOutputDir, readProjectPartsManifest } from './project-store.mjs'
+import { readProject, listProjects, aggregateBookToc, sourceDir as getSourceDir, outputDir as getOutputDir, readProjectPartsManifest } from './project-store.mjs'
 import { listDocumentColumns, pageInfoFromDocumentColumns } from './document-columns.mjs'
-import { broadcastSignal } from './sync-rooms.mjs'
-import { writeSentinel } from './sentinel.mjs'
+import { getBuildReporter } from './build-runner.mjs'
 
 const FRONTMATTER_RE = /^---[ \t]*\r?\n[\s\S]*?\r?\n---[ \t]*(?:\r?\n|$)/
 
@@ -799,6 +798,7 @@ ${taskDocAssets.script}
 // ---- Main build function ----
 
 export async function buildMarkdownDocument(name, addLog = console.log) {
+  const reporter = getBuildReporter()
   const srcDir = getSourceDir(name)
   const outDir = getOutputDir(name)
 
@@ -814,7 +814,7 @@ export async function buildMarkdownDocument(name, addLog = console.log) {
     source = readFileSync(srcFile, 'utf8')
   } catch (e) {
     addLog(`[markdown] Error reading source: ${e.message}`)
-    updateProject(name, { buildStatus: 'error' })
+    reporter.updateProject(name, { buildStatus: 'error' })
     return
   }
 
@@ -893,13 +893,13 @@ export async function buildMarkdownDocument(name, addLog = console.log) {
   writeFileSync(join(outDir, 'toc.json'), JSON.stringify(toc, null, 2))
 
   const buildReadyAt = Date.now()
-  updateProject(name, { buildStatus: 'success', pages: pageInfo.length, lastBuild: new Date(buildReadyAt).toISOString() })
-  await writeSentinel(`doc-${name}`, {
+  reporter.updateProject(name, { buildStatus: 'success', pages: pageInfo.length, lastBuild: new Date(buildReadyAt).toISOString() })
+  await reporter.writeSentinel(`doc-${name}`, {
     commitHash: `markdown-${buildReadyAt}`,
     timestamp: buildReadyAt,
     buildReadyAt,
   })
-  broadcastSignal(`doc-${name}`, 'signal:reload', { pages: pageInfo.length, timestamp: buildReadyAt })
+  reporter.broadcastSignal(`doc-${name}`, 'signal:reload', { pages: pageInfo.length, timestamp: buildReadyAt })
 
   // Re-aggregate any book that contains this doc as a member
   for (const proj of listProjects()) {
