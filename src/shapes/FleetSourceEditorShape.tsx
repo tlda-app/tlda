@@ -20,6 +20,7 @@ import { vim, getCM, Vim, CodeMirror as CM5 } from '@replit/codemirror-vim'
 import { latex } from 'codemirror-lang-latex'
 import { DocContext } from '../PanelContext'
 import { STORE_HTTP } from '../activeConfig'
+import { htmlSourceLineAnchorAtCanvasY, type HtmlSourceLineAnchor } from '../htmlSourceAnchors'
 import { PDF_HEIGHT, PDF_WIDTH } from '../layoutConstants'
 import { subscribePref } from '../preferences'
 import { readabilityStyleVars } from '../readabilityProfile'
@@ -192,6 +193,14 @@ type SourceAnchor = {
   source: 'synctex' | 'html-page'
 }
 
+type TrackedSourceAnchor = {
+  file: string
+  line: number | null
+  page: number
+  source?: 'synctex' | 'html-page'
+  anchored: boolean
+}
+
 function sourceSplitForAnchor(lookup: LookupData | null, anchor: SourceAnchor): SourceSplit | null {
   if (!lookup || !anchor.page) return null
   const rows: Array<{ file: string; line: number; y: number }> = []
@@ -321,10 +330,10 @@ function sourceAnchorForViewport(mainEditor: any, lookup: LookupData | null) {
     const dist = Math.abs(entry.y - pdfY)
     if (!bestLine || dist < bestLine.dist) bestLine = { ...parsed, dist }
   }
-  return bestLine ? { file: bestLine.file, line: bestLine.line, page: pageNum, source: 'synctex' as const } : null
+  return bestLine ? { file: bestLine.file, line: bestLine.line, page: pageNum, source: 'synctex' as const, anchored: true } : null
 }
 
-function htmlSourceAnchorForViewport(mainEditor: any): SourceAnchor | null {
+function htmlSourceAnchorForViewport(mainEditor: any): HtmlSourceLineAnchor | null {
   if (!mainEditor) return null
   const viewport = mainEditor.getViewportPageBounds?.()
   if (!viewport) return null
@@ -352,8 +361,8 @@ function htmlSourceAnchorForViewport(mainEditor: any): SourceAnchor | null {
     const score = Math.hypot(centerX - clampedX, centerY - clampedY)
     if (!bestPage || score < bestPage.score) bestPage = { shape, bounds, score }
   }
-  const sourceFile = normalizeFile(bestPage?.shape?.props?.source)
-  return sourceFile ? { file: sourceFile, line: 1, page: 0, source: 'html-page' } : null
+  if (!bestPage) return null
+  return htmlSourceLineAnchorAtCanvasY(bestPage.shape, bestPage.bounds, centerY)
 }
 
 function centerDocumentOnSourceLine(mainEditor: any, lookup: LookupData | null, file: string, line: number) {
@@ -429,7 +438,9 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
     file: normalizeFile(shape.props.file),
     line: Math.max(1, Number(shape.props.line || 1)),
     page: 0,
-  }))
+    anchored: true,
+  } as TrackedSourceAnchor))
+  const trackedAnchorRef = useRef(trackedAnchor)
   const [vimMode, setVimModeState] = useState('normal')
   const [status, setStatus] = useState<'loading' | 'ready' | 'dirty' | 'syncing' | 'synced' | 'error'>('loading')
   const [statusText, setStatusText] = useState('Loading source...')
@@ -455,6 +466,7 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
   const voiceApplyingRef = useRef(false)
   const voiceUpdateRef = useRef<((text: string) => void) | null>(null)
   const voiceStopRef = useRef<(() => void) | null>(null)
+  const queueWriteRef = useRef<((text: string) => void) | null>(null)
 
   if (!voiceUpdateRef.current) {
     voiceUpdateRef.current = (text: string) => {
@@ -498,6 +510,7 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
   }, [])
 
   useEffect(() => { statusRef.current = status }, [status])
+  useEffect(() => { trackedAnchorRef.current = trackedAnchor }, [trackedAnchor])
   useEffect(() => { vimModeRef.current = vimMode }, [vimMode])
   useEffect(() => { conflictFilesRef.current = conflictFiles }, [conflictFiles])
   useEffect(() => {
@@ -697,9 +710,16 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
       const mainEditor = (typeof window !== 'undefined' && (window as any).__tldraw_editor__) || editor
       const next = sourceAnchorForViewport(mainEditor, lookup) || htmlSourceAnchorForViewport(mainEditor)
       if (!next) return
-      setSourceSplit(next.source === 'synctex' ? sourceSplitForAnchor(lookup, next) : null)
+      setSourceSplit(next.source === 'synctex' && next.anchored ? sourceSplitForAnchor(lookup, next) : null)
       setTrackedAnchor(prev => {
-        if (prev.file === next.file && Math.abs(prev.line - next.line) < SOURCE_TRACK_LINE_THRESHOLD) return prev
+        if (prev.file === next.file && prev.line === next.line && prev.anchored === next.anchored) return prev
+        if (
+          next.anchored &&
+          prev.anchored &&
+          prev.file === next.file &&
+          prev.line != null &&
+          Math.abs(prev.line - next.line) < SOURCE_TRACK_LINE_THRESHOLD
+        ) return prev
         return next
       })
     }
@@ -766,11 +786,18 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
     return payload
   }
 
+  const trackedAnchorStatusText = (sourceWindow: { targetLine: number }) => {
+    const anchor = trackedAnchorRef.current
+    if (!anchor.anchored || anchor.line == null) return 'Unanchored'
+    const pageText = anchor.page ? ` p${anchor.page}` : ''
+    return `${lineStatusText(file, sourceWindow)}${pageText}`
+  }
+
   const writeSource = async (nextFullText: string, seq: number) => {
     if (!doc?.docName || !file) return
     if (nextFullText === savedTextRef.current) {
       setStatus('ready')
-      setStatusText(lineStatusText(file, sourceWindowRef.current))
+      setStatusText(trackedAnchorStatusText(sourceWindowRef.current))
       return
     }
     setStatus('syncing')
@@ -802,6 +829,7 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
       void writeSource(text, seq)
     }, WRITE_DEBOUNCE_MS)
   }
+  queueWriteRef.current = queueWrite
 
   const queueSecondaryWrite = (sourceFile: string, text: string) => {
     secondarySaveSeqRef.current += 1
@@ -911,13 +939,13 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
 	              const currentText = update.state.doc.toString()
 	              fullSourceRef.current = currentText
               setSourceHasConflictMarkers(hasConflictMarkers(currentText))
-              if (currentText === savedTextRef.current) {
-                if (writeTimerRef.current) window.clearTimeout(writeTimerRef.current)
-                writeTimerRef.current = null
-                setStatus('ready')
-                setStatusText(lineStatusText(file, sourceWindowRef.current))
-                return
-              }
+	              if (currentText === savedTextRef.current) {
+	                if (writeTimerRef.current) window.clearTimeout(writeTimerRef.current)
+	                writeTimerRef.current = null
+	                setStatus('ready')
+	                setStatusText(trackedAnchorStatusText(sourceWindowRef.current))
+	                return
+	              }
               if (conflictFilesRef.current.includes(normalizeFile(file))) {
                 if (writeTimerRef.current) window.clearTimeout(writeTimerRef.current)
                 writeTimerRef.current = null
@@ -958,12 +986,12 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
           CM5.on(cm, 'vim-mode-change', (e: any) => setVimModeState(e.mode || 'normal'))
           Vim.defineEx('write', 'w', () => {
             const current = cmViewRef.current?.state.doc.toString()
-            if (current !== undefined) queueWrite(current)
+            if (current !== undefined) queueWriteRef.current?.(current)
           })
         }
 	        setStatus('ready')
-	        const pageText = trackedAnchor.page ? ` p${trackedAnchor.page}` : ''
-	        setStatusText(`${lineStatusText(file, sourceWindow)}${pageText}`)
+	        setStatusText(trackedAnchorStatusText(sourceWindow))
+	        if (!trackedAnchor.anchored || trackedAnchor.line == null) return
 	        try {
 	          const targetLine = Math.max(1, Math.min(sourceWindow.targetLine, view.state.doc.lines))
 	          const line = view.state.doc.line(targetLine)
@@ -1005,8 +1033,8 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
 	    if (!view || !fullSourceRef.current || statusRef.current === 'dirty' || statusRef.current === 'syncing') return
     const sourceWindow = sourceWindowForText(fullSourceRef.current, trackedAnchor.line || shape.props.line || 1)
     sourceWindowRef.current = sourceWindow
-    const pageText = trackedAnchor.page ? ` p${trackedAnchor.page}` : ''
-    setStatusText(`${lineStatusText(file, sourceWindow)}${pageText}`)
+    setStatusText(trackedAnchorStatusText(sourceWindow))
+    if (!trackedAnchor.anchored || trackedAnchor.line == null) return
     try {
       const targetLine = Math.max(1, Math.min(sourceWindow.targetLine, view.state.doc.lines))
       const line = view.state.doc.line(targetLine)
@@ -1018,7 +1046,7 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
     } catch {
       clearCursorLaser()
     }
-	  }, [file, shape.props.line, trackedAnchor.line, trackedAnchor.page])
+	  }, [file, shape.props.line, trackedAnchor.line, trackedAnchor.page, trackedAnchor.anchored])
 
   useEffect(() => {
     const nextFile = normalizeFile(trackedAnchor.file)
@@ -1049,7 +1077,7 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
     if (!lineDelta) return
     const entry = centerDocumentOnSourceLine(mainEditor, lookupRef.current, file, currentLine + lineDelta)
     if (!entry) return
-    setTrackedAnchor({ file: entry.file, line: entry.line, page: entry.page })
+    setTrackedAnchor({ file: entry.file, line: entry.line, page: entry.page, source: 'synctex', anchored: true })
   }
   const currentFileConflicted = conflictFiles.includes(normalizeFile(file))
   const canResolveConflict = currentFileConflicted && !sourceHasConflictMarkers && status !== 'syncing'
