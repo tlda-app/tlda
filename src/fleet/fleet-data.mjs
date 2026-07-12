@@ -53,6 +53,7 @@ let _tasks = []
 let _items = []
 let _nextAgentsCursor = null
 let _agentsPageLoading = null
+let _nextTasksCursor = null
 // One id-keyed ordered buffer — the SINGLE source for chat + activity, fed by
 // two sources (live WS + DB history). upsert() dedups by id, binds the
 // optimistic tempId→dbId handoff, and caps memory as one contiguous ordered
@@ -873,11 +874,11 @@ export function connect() {
       const eventType = msg.event
       const data = msg.data
 
-      // Incremental agent/task state — only changed/removed agents on the wire.
+      // Incremental fleet state — changed/removed agents and bounded task deltas.
       if (eventType === 'agents-delta') {
         _lastAgentsDeltaAt = Date.now()
-        applyAgentDelta(data.changed, data.removed)
-        updateTasks(data.tasks || [])
+        applyAgentDelta(data.changed || [], data.removed || [])
+        applyTaskDelta(data.task_delta)
         applyFleetEphemeral(data)
         return
       }
@@ -982,14 +983,15 @@ export async function init() {
   // /api/state here: it is a whole-roster diagnostic endpoint.
   const [agentsRes, tasksRes, historyRes] = await Promise.all([
     fetch(`${FLEET}/api/agents?limit=100`).then(r => r.json()).catch(e => { console.warn('[fleet-data] agents fetch failed:', e.message); return {} }),
-    fetch(`${FLEET}/api/store/tasks`).then(r => r.json()).catch(e => { console.warn('[fleet-data] tasks fetch failed:', e.message); return [] }),
+    fetch(`${FLEET}/api/tasks?limit=100`).then(r => r.json()).catch(e => { console.warn('[fleet-data] tasks fetch failed:', e.message); return {} }),
     fetch(`${FLEET}/api/chat/history?limit=${HISTORY_PAGE}`).then(r => r.json()).catch(e => { console.warn('[fleet-data] history fetch failed:', e.message); return { events: [] } }),
   ])
 
   // Populate agents + tasks
   _nextAgentsCursor = agentsRes.nextCursor || null
   updateAgents(agentsRes.agents || [])
-  updateTasks(tasksRes || [])
+  _nextTasksCursor = tasksRes.nextCursor || null
+  updateTasks(tasksRes.tasks || [])
 
   // Populate chat events and notify subscribers
   // One path: ingest everything (matching the live stream); the render whitelist
@@ -1064,6 +1066,34 @@ function applyFleetEphemeral(src) {
 function updateTasks(tasks) {
   _tasks = tasks
   notify('tasks', { type: 'tasks', tasks })
+}
+
+function applyTaskDelta(delta) {
+  if (!delta) return
+  if (delta.overflow) {
+    fetch(`${FLEET}/api/tasks?limit=100`)
+      .then(r => r.json())
+      .then(data => {
+        _nextTasksCursor = data.nextCursor || null
+        updateTasks(data.tasks || [])
+      })
+      .catch(e => console.warn('[fleet-data] task refresh failed:', e.message))
+    return
+  }
+  const changed = Array.isArray(delta.changed) ? delta.changed : []
+  const removed = Array.isArray(delta.removed) ? delta.removed : []
+  if (!(changed.length || removed.length)) return
+  const byId = new Map(_tasks.map(t => [t.id, t]))
+  for (const id of removed) byId.delete(id)
+  for (const task of changed) {
+    if (!task?.id) continue
+    if (task.status === 'done' || task.status === 'retracted') byId.delete(task.id)
+    else byId.set(task.id, task)
+  }
+  _tasks = [...byId.values()].sort((a, b) =>
+    (Date.parse(b.delegated_at || '') || 0) - (Date.parse(a.delegated_at || '') || 0)
+  )
+  notify('tasks', { type: 'tasks', tasks: _tasks })
 }
 
 // --- Converters ---

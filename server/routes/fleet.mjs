@@ -220,13 +220,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     const requested = Number.parseInt(req.query.limit, 10)
     const limit = Number.isFinite(requested) ? Math.max(1, Math.min(requested, 200)) : 100
     try {
-      if (typeof fleetStore.getAliveAgentsPage === 'function') {
-        res.json(fleetStore.getAliveAgentsPage({ limit, cursor: req.query.cursor || null }))
-        return
-      }
-      // Test doubles and older in-memory stores expose only the maintained
-      // live view.  Keep their response bounded too.
-      res.json({ agents: fleetStore.getAliveAgents().slice(0, limit), nextCursor: null })
+      res.json(fleetStore.getAliveAgentsPage({ limit, cursor: req.query.cursor || null }))
     } catch (e) { res.status(500).json({ error: e.message }) }
   })
 
@@ -255,7 +249,19 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     if (!fleetStore) { res.status(503).json({ error: 'Fleet store not available' }); return }
     try {
       const active = req.query.active !== 'false'
-      res.json(active ? fleetStore.getActiveTasks() : fleetStore.getAllTasks?.() || fleetStore.getActiveTasks())
+      res.json(active ? fleetStore.getActiveTasks() : fleetStore.getAllTasks())
+    } catch (e) { res.status(500).json({ error: e.message }) }
+  })
+
+  // --- GET /api/tasks?limit=100&cursor=<opaque> ---
+  // Automatic browser surfaces use this bounded first page plus task_delta. The
+  // unbounded /api/store/tasks endpoint remains explicit tooling/history.
+  router.get('/api/tasks', (req, res) => {
+    if (!fleetStore) { res.status(503).json({ error: 'Fleet store not available' }); return }
+    const requested = Number.parseInt(req.query.limit, 10)
+    const limit = Number.isFinite(requested) ? Math.max(1, Math.min(requested, 200)) : 100
+    try {
+      res.json(fleetStore.getActiveTasksPage({ limit, cursor: req.query.cursor || null }))
     } catch (e) { res.status(500).json({ error: e.message }) }
   })
 

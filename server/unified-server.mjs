@@ -1193,7 +1193,7 @@ const spawnLibrarian = new SpawnLibrarian({
     // (consumed by the per-agent status line), NOT as a chat message. Posting it
     // to chat spammed every idle recipient of a broadcast/fan-out delivery. (Skip 6/27)
     broadcastEvent('agent-wedged', metadata)
-    broadcastState()
+    broadcastState(agent)
   },
   onLateLogin: (agent) => {
     const label = agent.friendly_name || agent.id
@@ -1205,7 +1205,7 @@ const spawnLibrarian = new SpawnLibrarian({
       text: `**Late login**: \`${label}\` logged in after the spawn deadline — it is now available.`,
       metadata,
     })
-    broadcastState()
+    broadcastState(agent)
   },
 })
 const mailboxLibrarian = new MailboxLibrarian({
@@ -1328,57 +1328,57 @@ function getWouldHibernate() {
   return result
 }
 
-// Last-broadcast agent snapshot: agentId → JSON string. Lets broadcastState
-// emit only the agents that actually changed instead of the whole list, so a
-// single status flip is O(1) on the wire rather than O(all agents). The full
-// list still goes to each client once, on connect (see the /ws/fleet handler).
+// Pending targeted agent deltas for broadcastState(). A live-state tick must
+// never rescan the full live roster; callers that know which agent changed pass
+// that agent/id, and no-arg calls only publish bounded ephemeral maps.
+const _pendingBroadcastAgentIds = new Set()
 const _lastAgentJson = new Map()
+
+function _queueBroadcastAgents(agentUpdates = null) {
+  if (!agentUpdates) return
+  const updates = Array.isArray(agentUpdates) ? agentUpdates : [agentUpdates]
+  for (const item of updates) {
+    const id = typeof item === 'string' ? item : item?.id
+    if (id) _pendingBroadcastAgentIds.add(id)
+  }
+}
+
+function _agentWithEphemeralState(agent) {
+  if (!agent) return null
+  if (_thinkingState.has(agent.id)) return { ...agent, status: 'thinking' }
+  if (_compactingState.has(agent.id)) return { ...agent, status: 'compacting' }
+  return agent
+}
 
 function _broadcastStateNow() {
   if (!fleetStore) return
-  // Live churn is ALIVE-only — we never re-diff the full ~1300-row roster on
-  // every state change. Dead agents are delivered once via initState and stay
-  // in the client as static, un-polled filter/chat targets (the panel hides
-  // them client-side: FleetAgentsShape `if (a.dead) continue`). A dying agent
-  // gets ONE final dead-flagged delta below, then drops out of the churn
-  // forever — it is NOT `removed` (that would delete it from the client and
-  // make it impossible to chat with / resurrect).
-  const aliveAgents = fleetStore.getAliveAgents().map(a => {
-    if (_thinkingState.has(a.id)) return { ...a, status: 'thinking' }
-    if (_compactingState.has(a.id)) return { ...a, status: 'compacting' }
-    return a
-  })
-  // Diff against the last broadcast: only changed/new agents go on the wire.
+  const pendingIds = [..._pendingBroadcastAgentIds]
+  _pendingBroadcastAgentIds.clear()
+
   const changed = []
-  const seen = new Set()
-  for (const a of aliveAgents) {
-    seen.add(a.id)
+  const removed = []
+  for (const id of pendingIds) {
+    const a = _agentWithEphemeralState(fleetStore.getAgent(id))
+    if (!a) {
+      if (_lastAgentJson.has(id)) {
+        _lastAgentJson.delete(id)
+        removed.push(id)
+      }
+      continue
+    }
     const json = JSON.stringify(a)
     if (_lastAgentJson.get(a.id) !== json) {
       changed.push(a)
       _lastAgentJson.set(a.id, json)
     }
   }
-  // An agent that left the alive set since the last broadcast either DIED
-  // (send one final dead-flagged update so the panel drops it but the client
-  // keeps it as a target) or was DELETED from the DB (truly `removed`). Either
-  // way, stop churning it.
-  const removed = []
-  for (const id of _lastAgentJson.keys()) {
-    if (seen.has(id)) continue
-    _lastAgentJson.delete(id)
-    const rec = fleetStore.getAgent(id)
-    if (rec && rec.dead) changed.push(rec)
-    else if (!rec) removed.push(id)
-  }
-  // tasks + ephemeral maps (thinking/compacting/context) are bounded by the
-  // active agent set, so they stay small — send them whole each time.
+
   broadcastFleet({
     event: 'agents-delta',
     data: {
       changed,
       removed,
-      tasks: fleetStore.getActiveTasks(),
+      task_delta: fleetStore.consumeTaskChanges?.() || { changed: [], removed: [], overflow: false },
       thinking: Object.fromEntries(_thinkingState),
       compacting: Object.fromEntries(_compactingState),
       context: Object.fromEntries(_contextState),
@@ -1386,12 +1386,11 @@ function _broadcastStateNow() {
   })
 }
 
-// Debounced entry point: ~12 call sites fire broadcastState() and on boot a
-// burst hits it 15+ times in a row, each doing a getAllAgents()+getActiveTasks()
-// pass. Coalesce rapid calls into one run per 50ms — the agent-delta diff means
-// no change is missed, and a 50ms delay on status updates is imperceptible.
+// Debounced entry point for bounded fleet state. No-arg calls only push bounded
+// ephemeral maps; pass an agent/id when the caller knows a concrete row changed.
 let _broadcastTimer = null
-function broadcastState() {
+function broadcastState(agentUpdates = null) {
+  _queueBroadcastAgents(agentUpdates)
   if (_broadcastTimer) return
   _broadcastTimer = setTimeout(() => { _broadcastTimer = null; _broadcastStateNow() }, 50)
 }
@@ -1471,7 +1470,7 @@ async function resolveSpawnTarget(name, respawn, { fresh = false, requested = {}
       text: 'spawn', metadata: { tool: 'spawn', synthetic: true }, unread: false,
     })
     fleetStore._bustAgentsCache?.()
-    broadcastState()
+    broadcastState(existing)
   } catch (e) {
     console.error(`[spawn] synthetic activity failed for ${existing.id}: ${e.message}`)
   }
@@ -1492,7 +1491,7 @@ function assignSpawnPhase(agentQuery, phase) {
   const lineage = fleetStore.getOrCreateLineage(lineageName)
   fleetStore.makeRoomForPhase(lineage.id, phase)
   fleetStore.assignPhase(agent.id, lineage.id, phase)
-  broadcastState()
+  broadcastState(agent)
   return { agent: agent.id, lineage: lineage.id, lineage_name: lineage.friendly_name, phase }
 }
 
@@ -3351,7 +3350,7 @@ app.post('/api/interrupt', requireRead, async (req, res) => {
       const interruptEvent = { type: 'interrupt', from: SERVER_OWNER_ID, to: agent.id, text: `Interrupted ${agent.friendly_name || agent.id}` }
       await fleetStore.share(interruptEvent)
     }
-    broadcastState()
+    broadcastState(agent)
     res.json({ ok: true, agent: agent.friendly_name || agent.id, ...result })
   } catch (e) { res.status(500).json({ error: e.message }) }
 })
@@ -3390,7 +3389,7 @@ app.post('/api/kill-session', requireRead, async (req, res) => {
     markAgentNotAlive(agent.id)
     const killEvent = { type: 'kill-session', from: SERVER_OWNER_ID, to: agent.id, text: `Killed ${agent.friendly_name || agent.id}` }
     await fleetStore.share(killEvent)
-    broadcastState()
+    broadcastState(agent.id)
     res.json({ ok: true, agent: agent.friendly_name || agent.id, ...result })
   } catch (e) { res.status(500).json({ error: e.message }) }
 })
@@ -3418,7 +3417,7 @@ app.post('/api/plan-mode-respond', requireRead, async (req, res) => {
       } catch (e) { console.warn(`[server] failed to update plan approval event: ${e.message}`) }
       pendingPlanApprovals.delete(agent.id)
     }
-    broadcastState()
+    broadcastState(agent.id)
     res.json(result || { ok: true })
   } catch (e) { res.status(500).json({ error: e.message }) }
 })
@@ -4612,11 +4611,11 @@ async function handleFleetWsMessage(ws, msg) {
         } catch (e) { console.error(`[lineage] auto-assign failed for ${agentId}: ${e.message}`) }
       }
     }
-    broadcastState()
+    const storedAgent = fleetStore.getAgent?.(agentId) || agent
+    broadcastState(storedAgent)
     // If the agent has a machine_id, push the updated agent list to that
     // machine's daemon so it can start watching the new JSONL.
     if (agent.machine_id) broadcastDaemonAgentsUpdated(agent)
-    const storedAgent = fleetStore.getAgent?.(agentId) || agent
     reply({
       ok: true,
       agent: storedAgent,
@@ -4681,7 +4680,7 @@ async function handleFleetWsMessage(ws, msg) {
         ts: now,
       })
       spawnLibrarian.observeLogin(fleetStore.getAgent?.(agent_id) || agent)
-      broadcastState()
+      broadcastState(storedAgent)
       if (agent.machine_id) broadcastDaemonAgentsUpdated(storedAgent)
       return
     }
@@ -4698,7 +4697,7 @@ async function handleFleetWsMessage(ws, msg) {
     const agent = fleetStore._hydrateAgent(nameRows[0])
     fleetStore.upsertAgent({ ...agent, last_seen: new Date().toISOString() })
     ws._tldaHumanId = agent.id
-    broadcastState()
+    broadcastState(agent.id)
     reply({ id: agent.id, name: agent.friendly_name, human: !!agent.human })
     return
   }
@@ -5492,7 +5491,7 @@ async function handleFleetWsMessage(ws, msg) {
         fleetStore.updateAgentMeta?.(agent.id, { inPlanMode: true, planModeType: keyword })
         console.log(`[outline-keyword] forced plan mode on ${agent.friendly_name || r} (keyword: ${keyword})`)
       }
-      broadcastState()
+      broadcastState(recipients)
     }
     return
   }
@@ -5604,7 +5603,7 @@ async function handleFleetWsMessage(ws, msg) {
         nextAction: 'retry-on-reconnect',
       })
     }
-    broadcastState()
+    broadcastState(resolved.id)
     reply({ ok: true, task_id: taskId, trace_id: traceId })
     requestWake(resolved.id, delegateWakeText(description, resolved.id), from, traceId)
     return
@@ -5864,7 +5863,7 @@ async function handleFleetWsMessage(ws, msg) {
         if (e.message?.includes('already taken')) { error(e.message); return }
         throw e
       }
-      broadcastState()
+      broadcastState(agentData.id)
     }
     reply({ ok: true })
     return

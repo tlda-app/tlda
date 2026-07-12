@@ -27,11 +27,31 @@ test('fleet agent login replies before fanout side effects', () => {
 
   const replyAt = agentLoginBlock.indexOf('reply({ ok: true')
   assert.notEqual(replyAt, -1)
-  for (const sideEffect of ['fleetStore.share', 'broadcastState()', 'broadcastDaemonAgentsUpdated']) {
+  for (const sideEffect of ['fleetStore.share', 'broadcastState(storedAgent)', 'broadcastDaemonAgentsUpdated']) {
     const sideEffectAt = agentLoginBlock.indexOf(sideEffect)
     assert.notEqual(sideEffectAt, -1)
     assert.ok(replyAt < sideEffectAt, `${sideEffect} must not run before the login reply`)
   }
+})
+
+test('fleet agents-delta hot path is targeted and taskless by default', () => {
+  const broadcastStart = serverSource.indexOf('function _broadcastStateNow()')
+  assert.notEqual(broadcastStart, -1)
+  const broadcastEnd = serverSource.indexOf('function mintFleetId()', broadcastStart)
+  assert.notEqual(broadcastEnd, -1)
+  const broadcastBlock = serverSource.slice(broadcastStart, broadcastEnd)
+
+  assert.match(broadcastBlock, /const pendingIds = \[\.\.\._pendingBroadcastAgentIds\]/)
+  assert.equal(broadcastBlock.includes('getAliveAgents()'), false)
+  assert.equal(broadcastBlock.includes('getActiveTasks()'), false)
+  assert.match(broadcastBlock, /task_delta: fleetStore\.consumeTaskChanges/)
+  assert.equal(broadcastBlock.includes('tasks: fleetStore.getActiveTasks()'), false)
+
+  const deltaStart = clientSource.indexOf("if (eventType === 'agents-delta')")
+  assert.notEqual(deltaStart, -1)
+  const deltaBlock = clientSource.slice(deltaStart, deltaStart + 500)
+  assert.match(deltaBlock, /applyTaskDelta\(data\.task_delta\)/)
+  assert.equal(deltaBlock.includes('updateTasks(data.tasks || [])'), false)
 })
 
 test('fleet socket negotiates permessage-deflate while client loads roster by page', () => {

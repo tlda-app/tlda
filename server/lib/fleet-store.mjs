@@ -939,6 +939,13 @@ export class FleetStore {
     this._getActiveTasksByAgentLimited = this.db.prepare("SELECT * FROM tasks WHERE agent = ? AND status NOT IN ('done', 'retracted') ORDER BY delegated_at DESC LIMIT ?");
     this._getActiveTaskCountByAgent = this.db.prepare("SELECT COUNT(*) as c FROM tasks WHERE agent = ? AND status NOT IN ('done', 'retracted')");
     this._getAllActiveTasks = this.db.prepare("SELECT * FROM tasks WHERE status NOT IN ('done', 'retracted') ORDER BY delegated_at DESC");
+    this._getActiveTasksPage = this.db.prepare(`
+      SELECT * FROM tasks
+      WHERE status NOT IN ('done', 'retracted')
+        AND (delegated_at < @delegatedAt OR (delegated_at = @delegatedAt AND id < @id))
+      ORDER BY delegated_at DESC, id DESC
+      LIMIT @limit
+    `);
     this._getAllTasks = this.db.prepare('SELECT * FROM tasks ORDER BY delegated_at DESC');
     this._deleteTask = this.db.prepare('DELETE FROM tasks WHERE id = ?');
     this._getDelegateEventForTask = this.db.prepare(`
@@ -1214,6 +1221,9 @@ export class FleetStore {
       { key: 'fleet-roster:alive', compare: compareAgentsForRoster }
     );
     this._reloadAgentRegistry();
+    this._taskChanges = [];
+    this._taskChangesOverflow = false;
+    this._maxQueuedTaskChanges = 1000;
   }
 
   _reloadAgentRegistry() {
@@ -2233,6 +2243,7 @@ export class FleetStore {
       task.metadata ? JSON.stringify(task.metadata) : null
     );
     this._queueTaskDocChange({ type: 'update', task, actor: task.agent });
+    this._queueTaskDelta({ type: 'upsert', task: this.getTask(task.id) });
   }
 
   getTask(id) {
@@ -2289,6 +2300,30 @@ export class FleetStore {
     return this._getAllActiveTasks.all().map(r => this._hydrateTask(r));
   }
 
+  getActiveTasksPage({ limit = 100, cursor = null } = {}) {
+    const size = Math.max(1, Math.min(Number(limit) || 100, 200));
+    let boundary = { delegatedAt: '9999-12-31T23:59:59.999Z', id: '\uffff' };
+    if (cursor) {
+      try {
+        const decoded = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'));
+        if (typeof decoded.delegatedAt !== 'string' || typeof decoded.id !== 'string') throw new Error('bad cursor');
+        boundary = decoded;
+      } catch {
+        const error = new Error('invalid tasks cursor');
+        error.code = 'INVALID_CURSOR';
+        throw error;
+      }
+    }
+    const rows = this._getActiveTasksPage.all({ ...boundary, limit: size + 1 });
+    const hasMore = rows.length > size;
+    const tasks = rows.slice(0, size).map(r => this._hydrateTask(r));
+    const tail = tasks[tasks.length - 1];
+    const nextCursor = hasMore && tail
+      ? Buffer.from(JSON.stringify({ delegatedAt: tail.delegated_at || '', id: tail.id })).toString('base64url')
+      : null;
+    return { tasks, nextCursor };
+  }
+
   getAllTasks() {
     return this._getAllTasks.all().map(r => this._hydrateTask(r));
   }
@@ -2297,6 +2332,30 @@ export class FleetStore {
     const task = this.getTask(id);
     this._deleteTask.run(id);
     this._queueTaskDocChange({ type: 'delete', task, taskId: id, actor: task?.agent });
+    this._queueTaskDelta({ type: 'remove', taskId: id });
+  }
+
+  _queueTaskDelta(change) {
+    if (!change || !this._taskChanges) return;
+    if (this._taskChanges.length >= this._maxQueuedTaskChanges) {
+      this._taskChangesOverflow = true;
+      return;
+    }
+    this._taskChanges.push(change);
+  }
+
+  consumeTaskChanges() {
+    const changes = this._taskChanges || [];
+    const overflow = !!this._taskChangesOverflow;
+    this._taskChanges = [];
+    this._taskChangesOverflow = false;
+    const changed = [];
+    const removed = [];
+    for (const change of changes) {
+      if (change.type === 'remove') removed.push(change.taskId);
+      else if (change.type === 'upsert' && change.task) changed.push(change.task);
+    }
+    return { changed, removed, overflow };
   }
 
   getTaskDeliveryState(taskOrId, { recipientExposed = false } = {}) {
