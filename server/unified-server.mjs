@@ -113,6 +113,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const fleetWsLog = createBackendLogger('fleet-ws')
 const notificationAttemptLog = createBackendLogger('notification-attempts')
 const terminalBridgeLog = createBackendLogger('terminal-bridge')
+const syncSignalLog = createBackendLogger('sync-signals')
 
 const serverIsolation = resolveServerIsolation({ env: process.env, scriptPath: fileURLToPath(import.meta.url) })
 if (serverIsolation.refuseReason) {
@@ -138,7 +139,7 @@ const PROJECTS_DIR = process.env.PROJECTS_DIR || join(__dirname, 'projects')
 
 // Initialize stores
 initProjectStore(PROJECTS_DIR)
-initSyncRooms(PROJECTS_DIR)
+initSyncRooms(PROJECTS_DIR, { onSignalFailure: reportSyncSignalFailure })
 resetStaleBuildStates()
 
 // Fleet store (SQLite-backed agent registry + chat).
@@ -1769,6 +1770,34 @@ async function reportFleetIncident({ severity = 'warning', component, operation,
     })
   }
   return event
+}
+
+async function reportSyncSignalFailure(failure) {
+  syncSignalLog.warn(failure, 'sync signal delivery failed')
+  try {
+    await reportFleetIncident({
+      severity: 'warning',
+      component: 'sync-signals',
+      operation: failure.operation,
+      actors: {
+        docName: failure.docName,
+        sessionId: failure.sessionId || null,
+      },
+      impact: `Transient sync signal ${failure.key || 'unknown'} failed during ${failure.operation || 'unknown operation'}.`,
+      evidence: {
+        key: failure.key || null,
+        docName: failure.docName || null,
+        sessionId: failure.sessionId || null,
+        timestamp: failure.timestamp || null,
+      },
+      error: failure.error || null,
+    })
+  } catch (err) {
+    syncSignalLog.error({
+      failure,
+      reportingError: err?.stack || err?.message || String(err),
+    }, 'sync signal incident reporting failed')
+  }
 }
 
 const notificationAttempts = createNotificationAttemptRecorder({
