@@ -2086,7 +2086,7 @@ export async function handleFleetTool(name, args) {
     }
     const serverResult = await sendWS('login', loginBody)?.catch(e => ({ error: e.message }));
     if (!serverResult) {
-      return { content: [{ type: 'text', text: 'Login failed: fleet WS not connected after 2s.' }], isError: true };
+      return { content: [{ type: 'text', text: 'Login failed: fleet WS did not connect before the request deadline.' }], isError: true };
     }
     if (serverResult.error) {
       return { content: [{ type: 'text', text: `Login rejected by server: ${serverResult.error}` }], isError: true };
@@ -4460,7 +4460,7 @@ async function sendWS(type, params = {}, opts = {}) {
     if (result !== null) return await result;
     const remaining = Math.max(0, deadlineMs - (Date.now() - startedAt));
     const connected = await _reconnectBuffer.waitForConnection(Math.min(remaining, 5_000));
-    if (!connected && !_channelRWS?.connected) break;
+    if (!connected && !_channelRWS?.connected && Date.now() - startedAt >= deadlineMs) break;
   }
   return null;
 }

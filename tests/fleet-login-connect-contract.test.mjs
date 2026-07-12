@@ -4,6 +4,7 @@ import test from 'node:test'
 
 const serverSource = fs.readFileSync(new URL('../server/unified-server.mjs', import.meta.url), 'utf8')
 const clientSource = fs.readFileSync(new URL('../src/fleet/fleet-data.mjs', import.meta.url), 'utf8')
+const mcpFleetSource = fs.readFileSync(new URL('../mcp-server/fleet-tools.mjs', import.meta.url), 'utf8')
 
 test('fleet socket connect has no roster or task init frame ahead of login replies', () => {
   const connectStart = serverSource.indexOf("if (url.pathname === '/ws/fleet')")
@@ -50,6 +51,19 @@ test('fleet client buffers reconnect sends and does not bulk-reject pending requ
   const closeBlock = clientSource.slice(closeStart, closeStart + 600)
   assert.equal(closeBlock.includes('rejectWsRequests'), false)
   assert.match(closeBlock, /resetWsRequestIdleTimers\(_wsCallbacks\)/)
+})
+
+test('fleet MCP sendWS waits through reconnect-buffer chunks until the request deadline', () => {
+  const sendStart = mcpFleetSource.indexOf('async function sendWS')
+  assert.notEqual(sendStart, -1)
+  const sendBlock = mcpFleetSource.slice(sendStart, sendStart + 900)
+
+  assert.match(sendBlock, /deadlineMs = opts\.deadlineMs \?\? opts\.idleTimeoutMs \?\? WS_REQUEST_IDLE_MS/)
+  assert.match(sendBlock, /waitForConnection\(Math\.min\(remaining, 5_000\)\)/)
+  assert.equal(sendBlock.includes('if (!connected && !_channelRWS?.connected) break;'), false)
+  assert.match(sendBlock, /Date\.now\(\) - startedAt >= deadlineMs\) break/)
+
+  assert.equal(mcpFleetSource.includes('Login failed: fleet WS not connected after 2s.'), false)
 })
 
 test('daemon RPC close handling has reconnect grace before pending request rejection', () => {
