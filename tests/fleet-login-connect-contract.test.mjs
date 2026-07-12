@@ -86,6 +86,21 @@ test('fleet MCP sendWS waits through reconnect-buffer chunks until the request d
   assert.equal(mcpFleetSource.includes('Login failed: fleet WS not connected after 2s.'), false)
 })
 
+test('fleet MCP chat result is transport-only, with no HTTP visibility probe', () => {
+  const chatStart = mcpFleetSource.indexOf("if (name === 'chat')")
+  assert.notEqual(chatStart, -1)
+  const terminalStart = mcpFleetSource.indexOf('// ---- request_terminal ----', chatStart)
+  assert.notEqual(terminalStart, -1)
+  const chatBlock = mcpFleetSource.slice(chatStart, terminalStart)
+
+  assert.equal(chatBlock.includes('/api/health'), false)
+  assert.equal(chatBlock.includes('/api/projects'), false)
+  assert.equal(chatBlock.includes('tlda is down'), false)
+  assert.equal(chatBlock.includes('Skip cannot see'), false)
+  assert.equal(chatBlock.includes('server may be down'), false)
+  assert.match(chatBlock, /Queued for durable delivery; no server ACK yet/)
+})
+
 test('daemon RPC close handling has reconnect grace before pending request rejection', () => {
   assert.match(serverSource, /const DAEMON_RPC_RECONNECT_GRACE_MS = Number/)
   assert.match(serverSource, /const pendingRpcFailureTimers = new Map\(\)/)

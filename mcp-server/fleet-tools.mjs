@@ -2542,7 +2542,7 @@ export async function handleFleetTool(name, args) {
       }
     }
 
-    if (sent.length === 0) return { content: [{ type: 'text', text: `⚠ Send failed — fleet server may be down. No messages delivered. Failed: ${failed.join(', ')}` }], isError: true };
+    if (sent.length === 0) return { content: [{ type: 'text', text: `⚠ Send failed — no recipient send was accepted or queued. Failed: ${failed.join(', ')}` }], isError: true };
 
     let warning = '';
     let suggestionNotice = '';
@@ -2553,22 +2553,6 @@ export async function handleFleetTool(name, args) {
       } catch (e) {
         warning += `\n\n⚠ **Suggestion chips were not posted:** ${e.message}`;
       }
-    }
-
-    // Check if tlda is up — if not, Skip can't see the message even though it was delivered.
-    // Use the cheap health endpoint, not /api/projects: listing projects is a heavier app
-    // route and can produce a false "tlda is down" warning during load/startup.
-    let tldaDown = false;
-    try {
-      const tldaRes = await fleetFetch(`${TLDA_SERVER}/api/health`, { signal: AbortSignal.timeout(2000) });
-      // 401 means tlda is up but auth is required — that's fine, server is running
-      if (!tldaRes.ok && tldaRes.status !== 401) tldaDown = true;
-    } catch {
-      tldaDown = true;
-    }
-
-    if (tldaDown) {
-      warning += '\n\n⚠ **tlda is down — Skip cannot see this message.** Use terminal output to communicate until tlda is back up.';
     }
 
     const brokenFiles = inlineAttachments.filter(a => a.broken).map(a => a.path);
