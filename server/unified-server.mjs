@@ -106,8 +106,12 @@ import {
   setRecipientAttachmentState,
 } from '../shared/inbox-reference-materialization.mjs'
 import { realizeProjectMarkdownArtifact } from './lib/project-artifact-materializer.mjs'
+import { createBackendLogger } from './lib/observability/logger.mjs'
+import { createNotificationAttemptRecorder } from './lib/notification-attempts.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
+const fleetWsLog = createBackendLogger('fleet-ws')
+const notificationAttemptLog = createBackendLogger('notification-attempts')
 
 const serverIsolation = resolveServerIsolation({ env: process.env, scriptPath: fileURLToPath(import.meta.url) })
 if (serverIsolation.refuseReason) {
@@ -1015,6 +1019,91 @@ function broadcastEvent(type, data) {
   broadcastFleet({ event: type, data })
 }
 
+function compactObject(obj = {}) {
+  const out = {}
+  for (const [key, value] of Object.entries(obj)) {
+    if (value !== undefined && value !== null) out[key] = value
+  }
+  return out
+}
+
+function describeFleetWsPeer(ws) {
+  const parts = []
+  if (ws?._tldaAgentId) parts.push(`agent=${ws._tldaAgentId}`)
+  if (ws?._tldaHumanId) parts.push(`human=${ws._tldaHumanId}`)
+  if (ws?._agentFilter) parts.push(`filter=${ws._agentFilter}`)
+  if (ws?._connId) parts.push(`conn=${ws._connId}`)
+  return parts.length ? parts.join(' ') : 'anonymous fleet ws'
+}
+
+async function surfaceFleetWsError(ws, msg, err) {
+  try {
+    const type = msg?.type || 'unparsed'
+    const requestId = msg?.id || null
+    const peer = describeFleetWsPeer(ws)
+    const message = err instanceof Error ? err.message : String(err)
+    const stack = err instanceof Error && err.stack ? err.stack : message
+    let rpcReplyFailure = null
+
+    if (requestId && !msg?._fleetReplied && ws?.readyState === 1) {
+      try {
+        ws.send(JSON.stringify({ id: requestId, error: { message } }))
+        msg._fleetReplied = true
+      } catch (sendErr) {
+        rpcReplyFailure = sendErr?.stack || sendErr?.message || String(sendErr)
+      }
+    }
+
+    const fullStack = rpcReplyFailure
+      ? `${stack}\n\nRPC error reply failed:\n${rpcReplyFailure}`
+      : stack
+    fleetWsLog.error({ peer, type, requestId, stack: fullStack }, 'fleet WS message failed')
+
+    if (!fleetStore) return
+    const text = [
+      '**Fleet runtime error**',
+      `peer: \`${peer}\``,
+      `message type: \`${type}\`${requestId ? `, request: \`${requestId}\`` : ''}`,
+      '',
+      '```',
+      fullStack.slice(0, 4000),
+      '```',
+    ].join('\n')
+    const event = await fleetStore.chat('fleet:tlda', SERVER_OWNER_ID, text, {
+      type: 'fleet_runtime_error',
+      wsPeer: peer,
+      messageType: type,
+      requestId,
+    })
+    if (event) {
+      broadcastEvent('fleet-event', {
+        type: 'chat',
+        from: 'fleet:tlda',
+        to: SERVER_OWNER_ID,
+        id: event.id,
+        text,
+        event_id: event.id,
+        metadata: event.metadata || null,
+      })
+    }
+  } catch (reportErr) {
+    fleetWsLog.error({
+      originalError: err?.stack || err?.message || String(err),
+      reportingError: reportErr?.stack || reportErr?.message || String(reportErr),
+    }, 'fleet WS error reporting failed')
+  }
+}
+
+async function handleFleetWsFrame(ws, raw) {
+  let msg = null
+  try {
+    msg = JSON.parse(raw.toString())
+    await handleFleetWsMessage(ws, msg)
+  } catch (err) {
+    await surfaceFleetWsError(ws, msg, err)
+  }
+}
+
 function hasOpenFleetSocketForAgent(agentId, exceptWs = null) {
   for (const client of wsFleetClients) {
     if (client !== exceptWs && client._tldaAgentId === agentId && client.readyState === 1) return true
@@ -1645,6 +1734,47 @@ function deliverTldaFeedbackChat({ from, to, text, metadata }) {
     })
     .catch(e => console.error(`[fleet-feedback] delivery failed: ${e.message}`))
 }
+
+async function reportFleetIncident({ severity = 'warning', component, operation, actors, impact, evidence, error }) {
+  const text = [
+    `**Fleet incident: ${component || 'unknown'}/${operation || 'unknown'}**`,
+    '',
+    `Severity: \`${severity}\``,
+    `Impact: ${impact || 'unknown'}`,
+    '',
+    '```json',
+    JSON.stringify(compactObject({ actors, evidence, error }), null, 2).slice(0, 3000),
+    '```',
+  ].join('\n')
+  const event = await fleetStore.chat('fleet:tlda', SERVER_OWNER_ID, text, {
+    type: 'fleet_incident',
+    severity,
+    component,
+    operation,
+    actors,
+    impact,
+    evidence,
+    error,
+  })
+  if (event) {
+    broadcastEvent('fleet-event', {
+      type: 'chat',
+      from: 'fleet:tlda',
+      to: SERVER_OWNER_ID,
+      id: event.id,
+      text,
+      event_id: event.id,
+      metadata: event.metadata || null,
+    })
+  }
+  return event
+}
+
+const notificationAttempts = createNotificationAttemptRecorder({
+  fleetStore,
+  logger: notificationAttemptLog,
+  reportIncident: reportFleetIncident,
+})
 
 // When a project is created or its sourceDir changes, push the new
 // project list to all connected fleet-daemons so they can start
@@ -3889,10 +4019,7 @@ server.on('upgrade', async (req, socket, head) => {
       }
 
       ws.on('message', (raw) => {
-        try {
-          const msg = JSON.parse(raw.toString())
-          handleFleetWsMessage(ws, msg)
-        } catch {}
+        handleFleetWsFrame(ws, raw)
       })
       ws.on('close', (code, reason) => {
         logWsClose('fleet', ws, code, reason?.toString?.() || '')
@@ -3986,7 +4113,10 @@ server.on('upgrade', async (req, socket, head) => {
 async function handleFleetWsMessage(ws, msg) {
   const { id, type } = msg
   const reply = (result) => {
-    if (id) ws.send(JSON.stringify({ id, result }))
+    if (id) {
+      ws.send(JSON.stringify({ id, result }))
+      msg._fleetReplied = true
+    }
   }
   const error = (err) => {
     if (!id) return
@@ -4000,12 +4130,28 @@ async function handleFleetWsMessage(ws, msg) {
           ...(err.payload ? { payload: err.payload } : {}),
         },
       }))
+      msg._fleetReplied = true
     } else {
       ws.send(JSON.stringify({ id, error: err }))
+      msg._fleetReplied = true
     }
   }
 
   if (!fleetStore) { error('fleet store unavailable'); return }
+
+  if (type === 'notification-attempt') {
+    const actor = ws._tldaAgentId || ws._tldaHumanId || msg.agentId || null
+    const result = await notificationAttempts.record({
+      ...msg.attempt,
+      agentId: msg.attempt?.agentId || actor,
+      evidence: {
+        ...(msg.attempt?.evidence || {}),
+        reportingPeer: describeFleetWsPeer(ws),
+      },
+    })
+    reply(result)
+    return
+  }
 
   // ---- Timer countdown widget (timer-set / timer-fire / timer-cancel) ----
   // Bridges the `timer` event the viewer renders as a live ticking bubble. Used
@@ -4801,6 +4947,24 @@ async function handleFleetWsMessage(ws, msg) {
         wokeRecipient: deliveryDecision.wokeRecipient,
         notifyBy: deliveryDecision.notifyBy,
       })
+      if (recipientAgent && !recipientAgent.human && deliveryChannel === 'channel' && !hasOpenFleetSocketForAgent(to)) {
+        await notificationAttempts.record({
+          agentId: to,
+          reason: 'chat',
+          sourceEventId: eventId,
+          priority: basePriority,
+          intendedSurface: 'channel',
+          policy: deliveryDecision.delivery === 'batched' ? 'batched' : inboxStatus,
+          outcome: 'deferred',
+          evidence: {
+            inboxStatus,
+            delivery: deliveryDecision.delivery,
+            activeChannelSocket: false,
+          },
+          nextAction: deliveryDecision.notifyBy ? 'retry-at' : 'retry-on-reconnect',
+          nextAttemptAt: deliveryDecision.notifyBy || null,
+        })
+      }
       // Echo _tempId on the broadcast so a client whose WS reply was lost during
       // a hiccup can still bind this echo to its orphaned optimistic entry
       // (the reply, not the DB row, is what normally carries _tempId).
@@ -4962,12 +5126,32 @@ async function handleFleetWsMessage(ws, msg) {
     }
     fleetStore.upsertTask(task)
     const fromAgent = from ? fleetStore.findAgent(from) : null
-    await fleetStore.delegate?.(from, resolved.id, taskId, description, {
+    const delegateEvent = await fleetStore.delegate?.(from, resolved.id, taskId, description, {
       fromLabel: fromAgent?.friendly_name || from || '',
       toLabel: resolved.friendly_name || resolved.id,
       criteria: success_criteria || [],
       message: taskMsg || '',
     })
+    const targetAgent = fleetStore.getAgent?.(resolved.id)
+    const deliveryChannel = normalizeDeliveryChannel(targetAgent?.metadata?.deliveryChannel)
+    if (targetAgent && !targetAgent.human && deliveryChannel === 'channel' && !hasOpenFleetSocketForAgent(resolved.id)) {
+      const inboxStatus = normalizeInboxStatus(targetAgent?.metadata?.inboxStatus)
+      await notificationAttempts.record({
+        agentId: resolved.id,
+        reason: 'delegate',
+        sourceEventId: delegateEvent?.id || null,
+        sourceTaskId: taskId,
+        priority: 'urgent',
+        intendedSurface: 'channel',
+        policy: inboxStatus,
+        outcome: 'deferred',
+        evidence: {
+          inboxStatus,
+          activeChannelSocket: false,
+        },
+        nextAction: 'retry-on-reconnect',
+      })
+    }
     broadcastState()
     reply({ ok: true, task_id: taskId })
     requestWake(resolved.id, delegateWakeText(description, resolved.id), from)

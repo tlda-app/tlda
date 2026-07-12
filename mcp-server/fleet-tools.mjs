@@ -4651,20 +4651,24 @@ async function sendWS(type, params = {}, opts = {}) {
 
 async function _flushUnread() {
   if (!AGENT_ID || !_channelRWS?.connected) return;
+  let sourceEventId = null;
+  let notificationError = null;
   try {
     const data = await sendWS('my-task', { agent: AGENT_ID, peek: true });
     if (!data) return;
     const msgs = (data.messages || []).filter(m => !m.read);
     const task = data.task;
     if (msgs.length === 0 && !task) return;
+    sourceEventId = msgs[0]?.id || msgs[0]?.event_id || null;
     const lines = [];
     const label = _inboxStatus[0].toUpperCase() + _inboxStatus.slice(1);
     if (task) lines.push(`📬 ${label}: pending task: ${(task.description || '').slice(0, 80)}`);
     if (msgs.length > 0) lines.push(`📬 ${label}: ${msgs.length} unread item(s). ${inboxCallText('triage')}`);
     const content = lines.join('\n');
+    let delivered = false;
     if (harnessFromEnv().channelNudge) {
       const sess = process.env.FLEET_TMUX_SESSION;
-      if (sess) tmuxSendText(sess, content);
+      if (sess) delivered = tmuxSendText(sess, content) || delivered;
     }
     await Promise.race([
       server.notification({
@@ -4673,7 +4677,43 @@ async function _flushUnread() {
       }),
       new Promise((_, reject) => setTimeout(() => reject(new Error('notification timeout')), 1000)),
     ]);
-  } catch {}
+    delivered = true;
+    await reportNotificationAttempt({
+      agentId: AGENT_ID,
+      reason: task ? 'task' : 'chat',
+      sourceEventId,
+      sourceTaskId: task?.id || null,
+      priority: 'normal',
+      intendedSurface: harnessFromEnv().channelNudge ? 'tmux' : 'channel',
+      policy: _inboxStatus === 'available' ? 'immediate' : _inboxStatus,
+      outcome: 'delivered',
+      evidence: {
+        eventType: 'flush',
+        unreadCount: msgs.length,
+        hasTask: !!task,
+        deliveryPath: harnessFromEnv().channelNudge ? 'tmux-or-channel' : 'channel',
+      },
+      nextAction: 'none',
+    });
+  } catch (e) {
+    notificationError = e;
+    process.stderr.write(`[fleet-channel] unread flush notification failed: ${e.message}\n`);
+    await reportNotificationAttempt({
+      agentId: AGENT_ID,
+      reason: 'chat',
+      sourceEventId,
+      priority: 'normal',
+      intendedSurface: harnessFromEnv().channelNudge ? 'tmux' : 'channel',
+      policy: _inboxStatus === 'available' ? 'immediate' : _inboxStatus,
+      outcome: 'send-failed',
+      evidence: {
+        eventType: 'flush',
+        error: notificationError.message,
+        stack: notificationError.stack,
+      },
+      nextAction: 'retry-on-reconnect',
+    });
+  }
 }
 
 function startChannelWS() {
@@ -4741,6 +4781,20 @@ function formatStatusSummary({ eventType, fromLabel, docHint = '', preview = '',
   const kind = eventType === 'delegate' ? 'task' : eventType === 'task_done' ? 'update' : 'message';
   const label = _inboxStatus[0].toUpperCase() + _inboxStatus.slice(1);
   return `📬 ${label} ${kind}${source}: ${preview}${truncNote}\n${inboxCallText(eventType === 'chat' ? 'read and respond' : 'see it')}${reminder}`;
+}
+
+async function reportNotificationAttempt(attempt) {
+  try {
+    const result = await sendWS('notification-attempt', { attempt }, { deadlineMs: 5000 });
+    if (!result) {
+      process.stderr.write(`[fleet-channel] failed to report notification attempt for ${attempt.agentId} (${attempt.outcome})\n`);
+      return false;
+    }
+    return true;
+  } catch (e) {
+    process.stderr.write(`[fleet-channel] failed to report notification attempt for ${attempt.agentId} (${attempt.outcome}): ${e.message}\n`);
+    return false;
+  }
 }
 
 async function handleChannelMessage(msg) {
@@ -4842,6 +4896,7 @@ async function handleChannelMessage(msg) {
   handleChannelMessage._lastTs = now;
 
   let delivered = false;
+  let notificationError = null;
   // Harness adapter decides whether Claude-channel delivery needs a tmux nudge.
   // Do this before the Claude notification: Codex/Goose may not support that
   // notification method, and some clients can leave the notification pending.
@@ -4871,8 +4926,29 @@ async function handleChannelMessage(msg) {
     delivered = true;
     process.stderr.write(`[fleet-channel] Delivered ${eventType} from ${fromId} via channel (event ${data.id})\n`);
   } catch (e) {
+    notificationError = e;
     process.stderr.write(`[fleet-channel] notification failed: ${e.message}\n`);
   }
+
+  await reportNotificationAttempt({
+    agentId: AGENT_ID,
+    reason: eventType,
+    sourceEventId: data.id || data.event_id || null,
+    sourceTaskId: data.task_id || data.taskId || null,
+    priority: data.metadata?.priority || 'normal',
+    intendedSurface: harnessFromEnv().channelNudge ? 'tmux' : 'channel',
+    policy: _inboxStatus === 'available' ? 'immediate' : _inboxStatus,
+    attemptedAt: new Date(now).toISOString(),
+    outcome: delivered ? 'delivered' : 'send-failed',
+    evidence: {
+      from: fromId,
+      eventType,
+      deliveryPath: harnessFromEnv().channelNudge ? 'tmux-or-channel' : 'channel',
+      error: notificationError?.message || null,
+      stack: notificationError?.stack || null,
+    },
+    nextAction: delivered ? 'none' : 'retry-on-reconnect',
+  });
 
   if (delivered) {
     // Mark as delivered so dupes are suppressed
