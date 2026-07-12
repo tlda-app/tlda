@@ -5327,6 +5327,79 @@ async function handleFleetWsMessage(ws, msg) {
     return
   }
 
+  if (type === 'report-close') {
+    const { agent: rawAgent, task_id, summary, close, approval_id, operation_id } = msg
+    if (!rawAgent) { error('missing agent'); return }
+    if (!summary) { error('missing summary'); return }
+    if (!operation_id) { error('missing operation_id'); return }
+    const agent = fleetStore.findAgent?.(rawAgent)?.id || rawAgent
+    const task = task_id
+      ? fleetStore.getTask?.(task_id)
+      : fleetStore.getTaskByAgent?.(agent)
+    if (!task) { error('no active task'); return }
+    if (close && task.metadata?.requires_approval) {
+      if (!approval_id) { error('This task requires approval. Pass approval_id (event ID of a human approval message).'); return }
+      const evt = fleetStore.getEventById(approval_id)
+      if (!evt) { error(`approval_id ${approval_id} not found`); return }
+      const fromAgent = (evt.from_id || evt.from) ? fleetStore.getAgent(evt.from_id || evt.from) : null
+      if (!fromAgent?.human) { error(`approval_id ${approval_id} is not from a human`); return }
+    }
+
+    const previous = fleetStore.getReportCloseOperationResult?.(operation_id)
+    let reportEventId = previous?.reportEventId || null
+    let chatEventId = previous?.chatEventId || null
+    let closeEventId = previous?.closeEventId || null
+
+    if (!reportEventId) {
+      const insertedReport = await fleetStore.report?.(agent, task.id, summary, {
+        client_operation_id: operation_id,
+        close_requested: !!close,
+      })
+      reportEventId = insertedReport?.id || null
+    }
+
+    if (!chatEventId && task.delegated_by) {
+      const sender = fleetStore.getAgent?.(agent)
+      const senderName = sender?.friendly_name || agent
+      const insertedChat = await fleetStore.chat?.(
+        agent,
+        task.delegated_by,
+        `**${senderName} report: ${task.description}**\n\n${summary}`,
+        {
+          client_operation_id: operation_id,
+          type: 'report',
+          report_event_id: reportEventId,
+          priority: 'normal',
+        },
+      )
+      chatEventId = insertedChat?.id || null
+    }
+
+    if (close && !closeEventId) {
+      task.status = 'done'
+      task.completed_at = new Date().toISOString()
+      fleetStore.upsertTask(task)
+      const insertedClose = await fleetStore.taskDone?.(agent, task.id, task.description, {
+        client_operation_id: operation_id,
+        report_event_id: reportEventId,
+      })
+      closeEventId = insertedClose?.id || null
+    }
+
+    broadcastState()
+    reply({
+      ok: true,
+      task_id: task.id,
+      report_event_id: reportEventId,
+      chat_event_id: chatEventId,
+      close_event_id: closeEventId,
+      event_id: closeEventId || reportEventId,
+      event_ids: [reportEventId, chatEventId, closeEventId].filter(id => id != null),
+      operation_id,
+    })
+    return
+  }
+
   if (type === 'delete-task') {
     const { task_id } = msg
     if (!task_id) { error('missing task_id'); return }

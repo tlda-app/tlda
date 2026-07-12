@@ -1095,6 +1095,28 @@ export class FleetStore {
     }
   }
 
+  getReportCloseOperationResult(operationId) {
+    if (!operationId) return null
+    const rows = this.db.prepare(`
+      SELECT id, type, task_id
+      FROM events
+      WHERE type IN ('report', 'chat', 'task_done')
+        AND json_extract(metadata, '$.client_operation_id') = ?
+      ORDER BY id
+    `).all(operationId)
+    if (!rows.length) return null
+    const report = rows.find(row => row.type === 'report') || null
+    const chat = rows.find(row => row.type === 'chat') || null
+    const close = rows.find(row => row.type === 'task_done') || null
+    return {
+      reportEventId: report ? Number(report.id) : null,
+      chatEventId: chat ? Number(chat.id) : null,
+      closeEventId: close ? Number(close.id) : null,
+      taskId: close?.task_id || report?.task_id || null,
+      eventIds: rows.map(row => Number(row.id)),
+    }
+  }
+
   async share(event) {
     return this._insertEventRecord(event, { notify: true });
   }

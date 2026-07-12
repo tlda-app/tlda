@@ -1357,22 +1357,6 @@ export function getFleetTools() {
       inputSchema: { type: 'object', properties: {} },
     },
     {
-      name: 'task_done',
-      description: 'Mark a task done. If the task has success_criteria, you must pass verified=true confirming you checked each one. If the task has requires_approval, you must pass approval_id — the event ID of a Skip message approving the work.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          agent: { type: 'string', description: 'Agent identifier (session UUID, name, or friendly name). Omit to mark own task done.' },
-          verified: { type: 'boolean', description: 'Confirm you have verified all success criteria. Required when task has criteria.' },
-          rejected: { type: 'boolean', description: ' reject instead of accept. Bounces task back to pending.' },
-          feedback: { type: 'string', description: ' feedback when rejecting a task.' },
-          report: { type: 'string', description: 'Summary of what was done. Linted before accepting — no plans, no stream-of-consciousness, no raw LaTeX.' },
-          overrides: { type: 'array', items: { type: 'string' }, description: 'Lint violation IDs to suppress (e.g. ["proofs-prove:main.tex:L42"]). Use sparingly.' },
-          approval_id: { type: 'integer', description: 'Event ID of a message from Skip approving this work. Required when the task has requires_approval set.' },
-        },
-      },
-    },
-    {
       name: 'delete_task',
       description: 'Delete a task permanently. Pass task_id. Any agent can delete any task.',
       inputSchema: {
@@ -1786,7 +1770,12 @@ export function getFleetTools() {
         type: 'object',
         properties: {
           pass: { type: 'boolean', description: 'Legacy self-review mode: set true if self-review passed. Only used when QA is not configured.' },
-          summary: { type: 'string', description: 'Legacy self-review mode: structured summary. Required when pass=true. Also used as summary field in QA reports.' },
+          summary: { type: 'string', description: 'Structured report summary. Required when close=true.' },
+          close: { type: 'boolean', description: 'Close the current task after posting the report. Replaces task_done().' },
+          verified: { type: 'boolean', description: 'Confirm you verified every success criterion before close=true.' },
+          approval_id: { type: 'integer', description: 'Event ID of a human approval message. Required when the task requires approval and close=true.' },
+          operation_id: { type: 'string', description: 'Optional stable idempotency key for retrying the same report/close operation.' },
+          overrides: { type: 'array', items: { type: 'string' }, description: 'Advisory report-lint violation IDs to suppress. Does not affect close semantics.' },
           task_type: { type: 'string', enum: ['app', 'math'], description: 'Task type — determines required fields.' },
           worktree_branch: { type: 'string', description: 'App: git branch name from worktree.' },
           dev_port: { type: 'number', description: 'App: port the vite dev server ran on.' },
@@ -2830,70 +2819,13 @@ export async function handleFleetTool(name, args) {
 
   // ---- task_done ----
   if (name === 'task_done') {
-    let agent = args.agent || AGENT_ID;
-    if (!agent) return { content: [{ type: 'text', text: 'No agent specified and not registered.' }], isError: true };
-
-    // Check task exists via server
-    let taskRes;
-    try {
-      taskRes = await sendWS('my-task', { agent, peek: true });
-    } catch (e) {
-      return { content: [{ type: 'text', text: `tlda backend not answering — tell ops if it persists. (${e.message})` }], isError: true };
-    }
-    const task = taskRes.task;
-    if (!task) return { content: [{ type: 'text', text: `No active task for ${agent}.` }] };
-
-    // Success criteria gate (own task only)
-    if (agent === AGENT_ID && task.success_criteria?.length && !args.verified) {
-      const criteria = task.success_criteria.map((c, i) => `${i + 1}. ${c}`).join('\n');
-      return { content: [{ type: 'text', text: `This task has success criteria you must verify before marking done:\n\n${criteria}\n\nHave you verified each of these? Call task_done(verified: true) to confirm.` }] };
-    }
-
-    // Approval gate: task requires a human-approved message ID
-    if (task.metadata?.requires_approval && !args.rejected) {
-      if (!args.approval_id) {
-        return { content: [{ type: 'text', text: `This task requires Skip's approval to close. Get approval in chat, then call task_done(approval_id: <id>) with the message ID shown in brackets (e.g. id:332656).` }] };
-      }
-    }
-
-    // Task close hinges on Skip's approval + success-criteria ONLY — never the
-    // filesystem. The old report/lint gates ran `git diff HEAD` over the whole
-    // working tree and blocked the close on ANY uncommitted edit — including
-    // files the agent doesn't own on a shared tree — which deadlocked agents
-    // (it wedged WM by blocking on files outside the agent's control). Lint of
-    // the report TEXT is still useful, so it is surfaced as a non-blocking
-    // advisory below rather than blocking the close, and it no longer reads the
-    // git diff at all.
-    let _lintOverrides = [];
-    let _lintAdvisory = '';
-    if (agent === AGENT_ID) {
-      const reportText = args.report || args.description || null;
-      _lintOverrides = Array.isArray(args.overrides) ? args.overrides : [];
-      const violations = lintReport(reportText, null, _lintOverrides);
-      if (violations.length > 0) {
-        _lintAdvisory = `\n\n⚠️ Report-text notes (advisory — did not block close):\n${formatLintViolations(violations)}`;
-      }
-    }
-
-    // Complete via server
-    try {
-      const doneBody = { agent, task_id: task.id, lint_overrides: _lintOverrides.length > 0 ? _lintOverrides : undefined, approval_id: args.approval_id || undefined };
-      const data = await sendWS('task-done', doneBody);
-      rememberOriginatedEvents(data);
-      if (!data.ok) return { content: [{ type: 'text', text: `task_done failed: ${JSON.stringify(data)}` }], isError: true };
-
-      let msg = `Marked ${agent} task done: ${task.description}.`;
-      if (_lintOverrides.length > 0) {
-        msg += `\n\nNote: ${_lintOverrides.length} lint override(s) were used: ${_lintOverrides.join(', ')}`;
-      }
-      msg += _lintAdvisory;
-      if (agent === AGENT_ID) {
-        msg += '\n\nKeep working or use timer() — you\'ll see 📬 when the next task arrives.';
-      }
-      return { content: [{ type: 'text', text: msg }] };
-    } catch (e) {
-      return { content: [{ type: 'text', text: `task_done failed (tlda backend not answering — tell ops if it persists): ${e.message}` }], isError: true };
-    }
+    return {
+      content: [{
+        type: 'text',
+        text: 'task_done is retired from the normal MCP interface. Post evidence and close with report({ summary: "...", close: true, verified: true, approval_id?: <id> }).',
+      }],
+      isError: true,
+    };
   }
 
   // ---- report (QA-aware report gate) ----
@@ -2911,27 +2843,47 @@ export async function handleFleetTool(name, args) {
 
     const cwd = getAgentCwd() || process.env.PWD || null;
 
-    // ---- Self-review path ----
-    if (args.pass && args.summary) {
+    // ---- Durable report / close path ----
+    if (args.summary) {
+      const closeRequested = args.close === true || args.pass === true;
+      if (closeRequested && task.success_criteria?.length && !args.verified) {
+        const criteria = task.success_criteria.map((c, i) => `${i + 1}. ${c}`).join('\n');
+        return { content: [{ type: 'text', text: `This task has success criteria you must verify before closing:\n\n${criteria}\n\nHave you verified each of these? Call report({ summary: "...", close: true, verified: true }) to confirm.` }] };
+      }
+      if (closeRequested && task.metadata?.requires_approval && !args.approval_id) {
+        return { content: [{ type: 'text', text: `This task requires Skip's approval to close. Get approval in chat, then call report({ summary: "...", close: true, verified: true, approval_id: <id> }) with the message ID shown in brackets (e.g. id:332656).` }] };
+      }
+
+      const _lintOverrides = Array.isArray(args.overrides) ? args.overrides : [];
+      const violations = lintReport(args.summary, null, _lintOverrides);
+      const lintAdvisory = violations.length > 0
+        ? `\n\n⚠️ Report-text notes (advisory — did not block ${closeRequested ? 'close' : 'report'}):\n${formatLintViolations(violations)}`
+        : '';
+      const summaryHash = crypto.createHash('sha256').update(String(args.summary)).digest('hex').slice(0, 16);
+      const operationId = args.operation_id || `${AGENT_ID}:mcp-report:${task.id}:${closeRequested ? 'close' : 'report'}:${summaryHash}`;
       const friendlyName = process.env.FLEET_NAME || AGENT_ID.slice(0, 8);
 
-      const summaryMsg = `**${friendlyName} report: ${task.description}**\n\n${args.summary}`;
-      const to = task.delegated_by || null;
-      if (!to) {
-        return {
-          content: [{
-            type: 'text',
-            text: 'Report has no task owner: task.delegated_by is empty. Refusing to guess a recipient from agent awake/asleep state.',
-          }],
-          isError: true,
-        };
-      }
-      postMessage(to, AGENT_ID, summaryMsg, { metadata: { priority: 'normal', type: 'report' } });
-
       const docName = `report-${task.id}`;
-      const reportContent = `# ${task.description}\n\n**Agent:** ${friendlyName}  \n**Status:** tentative  \n**Filed:** ${new Date().toISOString()}\n\n---\n\n${args.summary}`;
+      const reportStatus = closeRequested ? 'closed' : 'reported';
+      const reportContent = `# ${task.description}\n\n**Agent:** ${friendlyName}  \n**Status:** ${reportStatus}  \n**Filed:** ${new Date().toISOString()}\n\n---\n\n${args.summary}`;
       const mainFile = `${docName}.md`;
       let tldaMsg = '';
+
+      let data;
+      try {
+        data = await sendDurableFleet('report-close', {
+          agent: AGENT_ID,
+          task_id: task.id,
+          summary: args.summary,
+          close: closeRequested,
+          approval_id: args.approval_id || undefined,
+          operation_id: operationId,
+        }, { operationId });
+        rememberOriginatedEvents(data);
+      } catch (e) {
+        return { content: [{ type: 'text', text: `report failed: ${e.message}` }], isError: true };
+      }
+
       try {
         const check = await tldaFetch(docName);
         if (check.status === 404) {
@@ -2948,23 +2900,23 @@ export async function handleFleetTool(name, args) {
             session: CLAUDE_SESSION,
           },
         });
-        tldaMsg = `\n📄 Report pushed to tlda as **${docName}** [tentative]`;
-        logEvent({ type: 'report_share', agent: AGENT_ID, doc: docName, task_id: task.id, status: 'tentative' });
+        tldaMsg = `\n📄 Report pushed to tlda as **${docName}** [${reportStatus}]`;
+        logEvent({ type: 'report_share', agent: AGENT_ID, doc: docName, task_id: task.id, status: reportStatus });
       } catch (e) {
         tldaMsg = `\n⚠ tlda unavailable (${e.message}) — report posted to chat only.`;
       }
 
-      try {
-        await sendWS('task-done', { agent: AGENT_ID, task_id: task.id, skip_qa: true });
-      } catch (e) {
-        process.stderr.write(`[fleet] report task_done failed: ${e.message}\n`);
-      }
-      logEvent({ type: 'task_done', agent: AGENT_ID, task_id: task.id, description: task.description });
+      if (closeRequested) logEvent({ type: 'task_done', agent: AGENT_ID, task_id: task.id, description: task.description });
       logEvent({ type: 'report', agent: AGENT_ID, task_id: task.id, summary: args.summary });
 
-      let msg = `Report accepted. Marked task done: ${task.description}.`;
+      let msg = data?.queued
+        ? `Report queued durably for ${task.description}. Operation: ${data.operation_id || operationId}.`
+        : closeRequested
+          ? `Report accepted. Closed task: ${task.description}.`
+          : `Report accepted for task: ${task.description}.`;
       msg += tldaMsg;
-      msg += '\n\nKeep working or use timer() — you\'ll see 📬 when the next task arrives.';
+      msg += lintAdvisory;
+      if (closeRequested) msg += '\n\nKeep working or use timer() — you\'ll see 📬 when the next task arrives.';
       return { content: [{ type: 'text', text: msg }] };
     }
 
@@ -3027,7 +2979,8 @@ If your task involves UI changes, you MUST:
 Do NOT report "looks good" without reading and describing the screenshots.
 
 If you find issues: fix them now, then call \`report()\` again.
-If it's clean: call \`report(pass=true, summary="...")\` with a structured summary including screenshot verification.`;
+If it's clean and the task should close: call \`report(summary="...", close=true, verified=true)\` with a structured summary including screenshot verification.
+If it should remain open: call \`report(summary="...")\` with the current evidence and remaining work.`;
 
     return { content: [{ type: 'text', text: reviewPrompt }] };
   }
