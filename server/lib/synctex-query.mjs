@@ -699,19 +699,28 @@ export async function getSourceContext(projectName, page, startX, startY, endX, 
 
 /** Strip tex commands to get approximate plain text. */
 export function rankSourceSpanCandidates({ sourceLine, fragmentTexts, highlightText, lineRecords, hitRange }) {
-  const query = normalizeRenderedText(fragmentTexts.join(' ') || highlightText || '')
+  const fullHighlightQuery = normalizeRenderedText(highlightText || '')
+  const queries = [...new Set([
+    normalizeRenderedText(fragmentTexts.join(' ')),
+    fullHighlightQuery,
+  ].filter(Boolean))]
+  const query = queries[0] || ''
   if (!query) return { candidates: [], confidence: 0, ambiguous: true }
 
   const stripped = stripTex(sourceLine)
   const rawCandidates = []
 
-  const fuzzy = fuzzySubstringMatch(stripped, fragmentTexts.join(' ') || highlightText || '')
-  if (fuzzy) {
-    const sourceSpan = mapStrippedToSource(sourceLine, fuzzy.start, fuzzy.end)
-    if (sourceSpan) rawCandidates.push(sourceSpan)
+  for (const q of queries) {
+    const fuzzy = fuzzySubstringMatch(stripped, q)
+    if (fuzzy) {
+      const sourceSpan = mapStrippedToSource(sourceLine, fuzzy.start, fuzzy.end)
+      if (sourceSpan) rawCandidates.push(sourceSpan)
+    }
   }
 
-  for (const span of tokenWindowCandidates(sourceLine, query)) rawCandidates.push(span)
+  for (const q of queries) {
+    for (const span of tokenWindowCandidates(sourceLine, q)) rawCandidates.push(span)
+  }
 
   const seen = new Set()
   const candidates = []
@@ -725,11 +734,12 @@ export function rankSourceSpanCandidates({ sourceLine, fragmentTexts, highlightT
 
     const candidateText = sourceLine.slice(start, end)
     const renderedCandidate = normalizeRenderedText(stripTex(candidateText))
-    const textScore = similarityScore(renderedCandidate, query)
-    const edgeScore = edgeWordScore(renderedCandidate, query)
+    const textScore = Math.max(...queries.map(q => similarityScore(renderedCandidate, q)))
+    const edgeScore = Math.max(...queries.map(q => edgeWordScore(renderedCandidate, q)))
     const geomScore = geometryScore(sourceLine.length, start, end, lineRecords, hitRange)
     const continuityScore = lineRecords?.length ? 1 : 0.5
-    const score = clamp01(textScore * 0.55 + edgeScore * 0.2 + geomScore * 0.2 + continuityScore * 0.05)
+    const fullHighlightBonus = fullHighlightQuery && renderedCandidate === fullHighlightQuery ? 0.08 : 0
+    const score = clamp01(textScore * 0.55 + edgeScore * 0.2 + geomScore * 0.2 + continuityScore * 0.05 + fullHighlightBonus)
 
     candidates.push({
       line: 0,
@@ -744,13 +754,19 @@ export function rankSourceSpanCandidates({ sourceLine, fragmentTexts, highlightT
   candidates.sort((a, b) => b.score - a.score || (a.end - a.start) - (b.end - b.start))
   const top = candidates.slice(0, 5)
   const best = top[0]
-  const second = top[1]
+  const second = best ? top.find(c => spanOverlapRatio(best, c) < 0.8) : undefined
   const gap = best && second ? best.score - second.score : best ? best.score : 0
   const confidence = best ? clamp01(best.score * 0.75 + Math.min(0.25, gap)) : 0
-  const ambiguous = !best || best.score < 0.55 || (second && gap < 0.08)
+  const ambiguous = !best || best.score < 0.55 || (!!second && gap < 0.08)
 
   for (const c of top) c.confidence = confidence
   return { candidates: top, confidence, ambiguous }
+}
+
+function spanOverlapRatio(a, b) {
+  const overlap = Math.max(0, Math.min(a.end, b.end) - Math.max(a.start, b.start))
+  const smaller = Math.max(1, Math.min(a.end - a.start, b.end - b.start))
+  return overlap / smaller
 }
 
 function tokenWindowCandidates(sourceLine, query) {
