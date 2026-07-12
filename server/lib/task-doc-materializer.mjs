@@ -79,6 +79,8 @@ export function materializeTaskDocs({
   projectsProvider = listProjects,
   writebackOptions = {},
   projectNames = null,
+  globalProjectNames = [],
+  writeGlobal = true,
   useProjectPartsRoot = false,
   logger = console,
   git = runGit,
@@ -86,14 +88,15 @@ export function materializeTaskDocs({
   const projectNameSet = projectNames == null
     ? null
     : new Set((Array.isArray(projectNames) ? projectNames : [projectNames]).map(name => String(name)).filter(Boolean))
+  const globalProjectNameSet = new Set((Array.isArray(globalProjectNames) ? globalProjectNames : [globalProjectNames]).map(name => String(name)).filter(Boolean))
   const agents = Array.isArray(fleetStore.getAllAgents?.()) ? fleetStore.getAllAgents() : []
   const agentById = new Map(agents.map(agent => [agent.id, agent]))
   const projects = projectsProvider().map(project => ({
     ...project,
     taskDocRoot:
       explicitTaskDocRoot(project) ||
-      (project.sourceDir ? resolve(project.sourceDir) : null) ||
-      (useProjectPartsRoot ? safeProjectPartsRoot(project.name) : null),
+      (useProjectPartsRoot ? safeProjectPartsRoot(project.name) : null) ||
+      (project.sourceDir ? resolve(project.sourceDir) : null),
     resolvedRoot: safeRealpath(project.sourceDir || ''),
   })).filter(project =>
     (project.sourceDir || project.taskDocRoot) &&
@@ -127,7 +130,7 @@ export function materializeTaskDocs({
     }
   }
   for (const projectKey of [...projectKeys].sort()) {
-    const rows = grouped.projects.get(projectKey) || []
+    const rows = globalProjectNameSet.has(projectKey) ? tasks : (grouped.projects.get(projectKey) || [])
     const project = grouped.projectMeta.get(projectKey) || changedProjects.get(projectKey) || projectMetaByName.get(projectKey)
     if (!project?.taskDocRoot) continue
     const writeback = writeTaskDoc({
@@ -148,11 +151,13 @@ export function materializeTaskDocs({
     writebacks.push({ ...writeback, root: project.taskDocRoot, scope: 'project', project: project.name })
   }
 
-  mkdirSync(globalDir, { recursive: true })
-  const globalWriteback = writeGlobalTaskDoc(globalDir, tasks, { writebackOptions })
-  writeTaskDocManifest(globalDir, { id: TASK_DOC_GLOBAL_ID, title: 'Fleet tasks', writeback: globalWriteback.writeback })
-  touchedDirs.add(globalDir)
-  writebacks.push({ ...globalWriteback, root: globalDir, scope: 'global', project: null })
+  if (writeGlobal) {
+    mkdirSync(globalDir, { recursive: true })
+    const globalWriteback = writeGlobalTaskDoc(globalDir, tasks, { writebackOptions })
+    writeTaskDocManifest(globalDir, { id: TASK_DOC_GLOBAL_ID, title: 'Fleet tasks', writeback: globalWriteback.writeback })
+    touchedDirs.add(globalDir)
+    writebacks.push({ ...globalWriteback, root: globalDir, scope: 'global', project: null })
+  }
 
   const commitMessage = describeChanges(changes)
   const actor = actorFromChanges(changes, agentById)

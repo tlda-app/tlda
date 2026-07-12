@@ -69,7 +69,7 @@ test('project task-doc refresh writes a first-class project part', () => {
     projectPartsRoot('phi'),
   ].sort())
 
-  const taskDoc = fs.readFileSync(path.join(source, TASK_DOC_FILENAME), 'utf8')
+  const taskDoc = fs.readFileSync(path.join(projectPartsRoot('phi'), TASK_DOC_FILENAME), 'utf8')
   assert.match(taskDoc, /tlda-kind: task-doc/)
   assert.match(taskDoc, /# Tasks for phi/)
   assert.match(taskDoc, /Make the task document tryable/)
@@ -110,7 +110,7 @@ test('project task-doc refresh creates an empty managed part for tryability', ()
     git: () => '',
   })
 
-  const taskDoc = fs.readFileSync(path.join(source, TASK_DOC_FILENAME), 'utf8')
+  const taskDoc = fs.readFileSync(path.join(projectPartsRoot('empty-project'), TASK_DOC_FILENAME), 'utf8')
   assert.match(taskDoc, /# Tasks for empty-project/)
   assert.match(taskDoc, /\| subject \| assigned to \| delegator \| status \| created \| updated \| blockers \| details \|/)
 
@@ -150,6 +150,50 @@ test('project task-doc refresh endpoint exposes the task doc as a document part'
     assert.equal(payload.part.outputFile, 'TASKS.html')
 
     const parts = await fetch(`http://127.0.0.1:${port}/api/projects/route-project/parts`)
+    assert.equal(parts.status, 200)
+    const pageInfo = await parts.json()
+    assert.equal(pageInfo.length, 1)
+    assert.equal(pageInfo[0].file, 'TASKS.html')
+    assert.equal(pageInfo[0].metadata.kind, 'task-doc')
+  } finally {
+    await new Promise(resolve => server.close(resolve))
+  }
+})
+
+test('status task-doc refresh exposes global active tasks as a document part', async () => {
+  setupProject('status')
+  const app = express()
+  app.use(express.json())
+  app.locals.fleetStore = fleetStore({
+    agents: [{ id: 'agent-3', friendly_name: 'global owner' }],
+    tasks: [{
+      id: 'task-3',
+      agent: 'agent-3',
+      delegated_by: 'agent-3',
+      description: 'Track every active task',
+      status: 'pending',
+      delegated_at: '2026-07-10T20:00:00.000Z',
+    }],
+  })
+  app.use('/api/projects', projectRoutes)
+
+  const server = http.createServer(app)
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  const { port } = server.address()
+  try {
+    const refresh = await fetch(`http://127.0.0.1:${port}/api/projects/status/task-doc/refresh`, {
+      method: 'POST',
+    })
+    assert.equal(refresh.status, 200)
+    const payload = await refresh.json()
+    assert.equal(payload.ok, true)
+    assert.equal(payload.taskCount, 1)
+    assert.equal(payload.part.kind, 'task-doc')
+
+    const taskDoc = fs.readFileSync(path.join(projectPartsRoot('status'), TASK_DOC_FILENAME), 'utf8')
+    assert.match(taskDoc, /Track every active task/)
+
+    const parts = await fetch(`http://127.0.0.1:${port}/api/projects/status/parts`)
     assert.equal(parts.status, 200)
     const pageInfo = await parts.json()
     assert.equal(pageInfo.length, 1)

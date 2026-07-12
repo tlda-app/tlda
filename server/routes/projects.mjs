@@ -248,7 +248,9 @@ router.post('/:name/task-doc/refresh', requireRw, async (req, res) => {
     const result = materializeTaskDocs({
       fleetStore: sourceFleetStore,
       projectNames: [req.params.name],
+      globalProjectNames: req.params.name === 'status' ? [req.params.name] : [],
       useProjectPartsRoot: true,
+      writeGlobal: false,
       changes: [{ type: 'refresh', description: `refresh task doc for ${req.params.name}` }],
     })
     const touched = result.touchedDirs?.includes(projectPartsRoot(req.params.name)) || false
@@ -262,7 +264,9 @@ router.post('/:name/task-doc/refresh', requireRw, async (req, res) => {
       ok: true,
       project: req.params.name,
       touched,
-      taskCount: result.tasks.filter(task => task.projectName === req.params.name).length,
+      taskCount: req.params.name === 'status'
+        ? result.tasks.length
+        : result.tasks.filter(task => task.projectName === req.params.name).length,
       part: {
         id: TASK_DOC_PROJECT_ID,
         kind: 'task-doc',
