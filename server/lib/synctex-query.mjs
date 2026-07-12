@@ -415,11 +415,10 @@ export async function getSourceFromPath(projectName, page, points, highlightText
     const isHit = hitLines.has(lineNum)
     const entry = { line: lineNum, content: allLines[i], highlighted: isHit }
 
-    // Column estimation: synctex gives LINE but not column.
-    // Use tspan-anchored matching if fragment data is available.
     if (isHit) {
-      entry.hlStart = 0
-      entry.hlEnd = allLines[i].length
+      // Synctex gives a trustworthy line, not a trustworthy column span.
+      // Leave the span absent until the tspan ranker proves it.
+      entry.ambiguous = true
     }
 
     lines.push(entry)
@@ -463,8 +462,6 @@ export async function getSourceFromPath(projectName, page, points, highlightText
         hitRange: hitLines.get(entry.line),
       })
       if (ranked.candidates.length > 0) {
-        delete entry.hlStart
-        delete entry.hlEnd
         entry.candidates = ranked.candidates.map(c => ({ ...c, line: entry.line }))
         entry.confidence = ranked.confidence
         entry.ambiguous = ranked.ambiguous
