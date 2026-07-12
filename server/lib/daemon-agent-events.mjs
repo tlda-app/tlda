@@ -6,7 +6,9 @@ export class DaemonAgentEvents {
     db.exec(`CREATE TABLE IF NOT EXISTS daemon_agent_events (
       seq INTEGER PRIMARY KEY AUTOINCREMENT, daemon_key TEXT NOT NULL,
       agent_id TEXT NOT NULL, payload_json TEXT NOT NULL, created_at TEXT NOT NULL
-    ); CREATE INDEX IF NOT EXISTS daemon_agent_events_replay_idx ON daemon_agent_events(daemon_key, seq);`)
+    );
+    CREATE INDEX IF NOT EXISTS daemon_agent_events_replay_idx ON daemon_agent_events(daemon_key, seq);
+    CREATE INDEX IF NOT EXISTS daemon_agent_events_latest_idx ON daemon_agent_events(daemon_key, agent_id, seq DESC);`)
     this.latest = db.prepare('SELECT payload_json FROM daemon_agent_events WHERE daemon_key = ? AND agent_id = ? ORDER BY seq DESC LIMIT 1')
     this.insert = db.prepare('INSERT INTO daemon_agent_events (daemon_key, agent_id, payload_json, created_at) VALUES (?, ?, ?, ?)')
     this.after = db.prepare('SELECT seq, payload_json FROM daemon_agent_events WHERE daemon_key = ? AND seq > ? ORDER BY seq ASC LIMIT ?')

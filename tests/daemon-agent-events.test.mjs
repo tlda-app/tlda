@@ -24,3 +24,20 @@ test('replays ordered deltas and snapshots only for an expired cursor', () => {
   assert.equal(events.replay('air:live', -1).snapshot, true)
   db.close()
 })
+
+test('latest lookup uses daemon and agent index', () => {
+  const db = makeStore()
+  const events = new DaemonAgentEvents(db)
+  const plan = db.prepare(`
+    EXPLAIN QUERY PLAN
+    SELECT payload_json
+    FROM daemon_agent_events
+    WHERE daemon_key = ? AND agent_id = ?
+    ORDER BY seq DESC
+    LIMIT 1
+  `).all('mini:default', 'fleet:agent')
+  const detail = plan.map(row => row.detail).join('\n')
+  assert.match(detail, /daemon_agent_events_latest_idx/)
+  assert.doesNotMatch(detail, /SCAN daemon_agent_events/)
+  db.close()
+})
