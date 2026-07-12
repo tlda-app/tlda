@@ -112,6 +112,7 @@ import { createNotificationAttemptRecorder } from './lib/notification-attempts.m
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const fleetWsLog = createBackendLogger('fleet-ws')
 const notificationAttemptLog = createBackendLogger('notification-attempts')
+const terminalBridgeLog = createBackendLogger('terminal-bridge')
 
 const serverIsolation = resolveServerIsolation({ env: process.env, scriptPath: fileURLToPath(import.meta.url) })
 if (serverIsolation.refuseReason) {
@@ -3703,6 +3704,64 @@ const terminalWatchers = new Map() // agentId -> Set<ws>
 // be told the size on connect.
 const terminalSizes = new Map() // agentId -> { cols, rows }
 
+function terminalAgentContext(agent) {
+  return compactObject({
+    agentId: agent?.id,
+    label: agent?.friendly_name || agent?.id,
+    tmuxSession: agent?.tmux_session,
+    machineId: agent?.machine_id,
+    envName: agent?.env_name,
+  })
+}
+
+function sendTerminalFrame(ws, frame, { agentId, operation }) {
+  if (ws?.readyState !== 1) return false
+  try {
+    ws.send(JSON.stringify(frame))
+    return true
+  } catch (err) {
+    terminalBridgeLog.warn({
+      agentId,
+      operation,
+      error: err?.stack || err?.message || String(err),
+    }, 'terminal browser frame send failed')
+    return false
+  }
+}
+
+async function reportTerminalBridgeIncident({ operation, agent, error, browserNotified = false, evidence = {} }) {
+  const context = terminalAgentContext(agent)
+  const errText = error?.stack || error?.message || String(error)
+  terminalBridgeLog.warn({
+    operation,
+    ...context,
+    browserNotified,
+    error: errText,
+    evidence,
+  }, 'terminal bridge operation failed')
+  try {
+    await reportFleetIncident({
+      severity: 'warning',
+      component: 'terminal-bridge',
+      operation,
+      actors: context,
+      impact: `Terminal ${operation} failed for ${context.label || context.agentId || 'unknown agent'}.`,
+      evidence: {
+        ...evidence,
+        browserNotified,
+      },
+      error: errText,
+    })
+  } catch (reportErr) {
+    terminalBridgeLog.error({
+      operation,
+      ...context,
+      originalError: errText,
+      reportingError: reportErr?.stack || reportErr?.message || String(reportErr),
+    }, 'terminal bridge incident reporting failed')
+  }
+}
+
 function fanOutTerminalSize(agentId, cols, rows) {
   terminalSizes.set(agentId, { cols, rows })
   const set = terminalWatchers.get(agentId)
@@ -3890,7 +3949,19 @@ server.on('upgrade', async (req, socket, head) => {
             await sendRpc(agentDaemonAddress(agent), 'terminal-resize', {
               tmux_session: agent.tmux_session, cols: msg.cols, rows: msg.rows,
             })
-          } catch {}
+          } catch (e) {
+            const browserNotified = sendTerminalFrame(ws, {
+              type: 'error',
+              message: `terminal resize failed: ${e.message}`,
+            }, { agentId: agent.id, operation: 'terminal-resize' })
+            await reportTerminalBridgeIncident({
+              operation: 'terminal-resize',
+              agent,
+              error: e,
+              browserNotified,
+              evidence: { cols: msg.cols, rows: msg.rows },
+            })
+          }
         }
       })
 
@@ -3905,7 +3976,14 @@ server.on('upgrade', async (req, socket, head) => {
             await sendRpc(agentDaemonAddress(agent), 'stop-terminal-watch', {
               tmux_session: agent.tmux_session,
             })
-          } catch {}
+          } catch (e) {
+            await reportTerminalBridgeIncident({
+              operation: 'stop-terminal-watch',
+              agent,
+              error: e,
+              evidence: { remainingWatchers: 0 },
+            })
+          }
         }
       }
       ws.on('close', cleanup)
