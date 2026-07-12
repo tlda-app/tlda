@@ -23,6 +23,7 @@ if (!process.argv.includes('--i-am-tlda-cli')) {
   process.exit(1)
 }
 
+import './lib/observability/otel-node.mjs'
 import express from 'express'
 import { createServer } from 'http'
 import { createServer as createHttpsServer } from 'https'
@@ -2413,6 +2414,34 @@ app.get('/api/auth/me', (req, res) => {
 // gets forwarded here automatically. See project guidance on client logging.
 const CLIENT_LOG_FILE = join(homedir(), '.config', 'tlda', 'client.log')
 const CLIENT_PROFILE_FILE = join(homedir(), '.config', 'tlda', 'client-profile.jsonl')
+const LIVE_PERF_MAX_SAMPLES = 250
+const livePerfSamples = []
+const livePerfByDoc = new Map()
+
+function recordLivePerfEntry(entry) {
+  const data = entry?.data && typeof entry.data === 'object' ? entry.data : {}
+  const docName = data.document?.name || data.doc || null
+  const sample = {
+    ts: entry.ts || new Date().toISOString(),
+    sessionId: data.sessionId || null,
+    doc: docName,
+    reason: data.reason || null,
+    data,
+  }
+  livePerfSamples.push(sample)
+  if (livePerfSamples.length > LIVE_PERF_MAX_SAMPLES) {
+    livePerfSamples.splice(0, livePerfSamples.length - LIVE_PERF_MAX_SAMPLES)
+  }
+  if (docName) {
+    const docSamples = livePerfByDoc.get(docName) || []
+    docSamples.push(sample)
+    if (docSamples.length > LIVE_PERF_MAX_SAMPLES) {
+      docSamples.splice(0, docSamples.length - LIVE_PERF_MAX_SAMPLES)
+    }
+    livePerfByDoc.set(docName, docSamples)
+  }
+}
+
 function appendClientLogEntry(entry) {
   const obj = {
     ts: entry.ts || new Date().toISOString(),
@@ -2441,6 +2470,7 @@ app.post('/api/log', (req, res) => {
       ...(e.data !== undefined ? { data: e.data } : {}),
       ...(e.session ? { session: e.session } : {}),
     }
+    if (obj.ns === 'live-perf') recordLivePerfEntry(obj)
     lines.push(JSON.stringify(obj))
   }
   if (lines.length) {
@@ -2449,6 +2479,26 @@ app.post('/api/log', (req, res) => {
     })
   }
   res.json({ ok: true, n: lines.length })
+})
+
+app.get('/api/diagnostics/live-perf', requireRead, (req, res) => {
+  const doc = typeof req.query.doc === 'string' && req.query.doc ? req.query.doc : null
+  const limitRaw = Number(req.query.limit || 50)
+  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(250, Math.trunc(limitRaw))) : 50
+  const source = doc ? (livePerfByDoc.get(doc) || []) : livePerfSamples
+  const samples = source.slice(-limit)
+  const docs = {}
+  for (const sample of livePerfSamples) {
+    const key = sample.doc || 'unknown'
+    docs[key] = (docs[key] || 0) + 1
+  }
+  res.json({
+    ok: true,
+    count: samples.length,
+    retained: livePerfSamples.length,
+    docs,
+    samples,
+  })
 })
 
 app.post('/api/client-profile', (req, res) => {
