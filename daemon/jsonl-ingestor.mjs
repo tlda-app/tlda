@@ -203,6 +203,7 @@ export function createJsonlIngestor({
       if (msg?.type === 'owners') {
         recordSessionOwners(msg.sessionId, msg.owners, {
           jsonlPath: msg.jsonlPath,
+          harnessKind: msg.harnessKind || 'claude',
           identity: msg.identity,
         })
       } else if (msg?.type === 'harvest-complete') {

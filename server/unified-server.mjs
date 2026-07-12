@@ -70,7 +70,7 @@ import { normalizeRegionPolicy } from './lib/spawn-policy.mjs'
 import { buildRuntimeStatus } from './lib/runtime-status.mjs'
 import { resolveSpawnMachine, SPAWN_MACHINE_PREF_KEY } from './lib/spawn-routing.mjs'
 import { resolveFreshSpawnAvailabilityModels } from './lib/spawn-availability-models.mjs'
-import { decideTaskRenudges, wakeBreakerBackoffMs } from './lib/task-renudge.mjs'
+import { decideTaskRenudges, isWakeBreakerOpen, wakeBreakerBackoffMs } from './lib/task-renudge.mjs'
 import { rejectMatchingWsRequests, startWsRequest } from '../shared/ws-request-policy.mjs'
 import { isPlanModeResponse, planModeResponseKey } from './lib/plan-mode-response.mjs'
 import { SpawnBounceError, SpawnLibrarian, resolveSpawnCollision } from '../shared/spawn-librarian.ts'
@@ -4913,6 +4913,18 @@ async function handleFleetWsMessage(ws, msg) {
   function requestWake(agentId, nudgeText = null, asker = null, traceId = null) {
     const agent = fleetStore.getAgent?.(agentId)
     if (!agent || agent.dead || agent.human) return
+    if (isWakeBreakerOpen(_wakeBreaker, agentId, Date.now())) {
+      if (traceId) {
+        controlPlaneTraces.append({
+          trace_id: traceId,
+          component: 'server',
+          operation: 'wake.request',
+          status: 'breaker-open',
+          detail: { agent: agentId },
+        })
+      }
+      return
+    }
     const prev = _wakeQueue.get(agentId)
     _wakeQueue.set(agentId, {
       nudgeText: nudgeText || prev?.nudgeText || null,
@@ -5072,6 +5084,11 @@ async function handleFleetWsMessage(ws, msg) {
           unread: false,
         }, { notify: false }))
       } catch (e) {
+        const b = _wakeBreaker.get(agentId) || { fails: 0 }
+        b.fails += 1
+        b.lastError = e.message
+        b.nextTs = Date.now() + wakeBreakerBackoffMs(b.fails, WAKE_BREAKER_BASE_MS, WAKE_BREAKER_CAP_MS)
+        _wakeBreaker.set(agentId, b)
         if (traceId) {
           controlPlaneTraces.append({
             trace_id: traceId,
@@ -5082,7 +5099,7 @@ async function handleFleetWsMessage(ws, msg) {
             error: e.message,
           })
         }
-        console.warn(`[respawn] failed for ${agentId}: ${e.message}`)
+        console.warn(`[respawn] failed for ${agentId} (fails=${b.fails}, backoff until ${new Date(b.nextTs).toISOString()}): ${e.message}`)
         // Convergent, visible signal on the roster (not just a chat) so a failed
         // wake shows up in the UI, not invisibly.
         broadcastEvent('agent-wedged', { agentId, reason: `wake failed: ${e.message}`, ts: new Date().toISOString() })

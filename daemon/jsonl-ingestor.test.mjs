@@ -1,10 +1,15 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import {
   catchupReplayBoundary,
   shouldSuppressCatchupOutput,
 } from './jsonl-ingestor.mjs'
+import { scanFileIdentitySync, scanFileOwnersSync } from '../agent-runtime/daemon-jsonl-hot-path.mjs'
 import { tailLedgerSessionInput } from '../agent-runtime/ledger-session-tail.mjs'
+import { listSessionsByRecency } from '../bin/fleet-owner-harvester.mjs'
 
 test('large JSONL tail gaps enter display catch-up mode', () => {
   assert.equal(catchupReplayBoundary({
@@ -66,4 +71,65 @@ test('codex tail ledger input keys by watcher owner, not JSONL content identity'
   assert.equal(input.session_id, rolloutId)
   assert.equal(input.fleet_id, 'fleet:watcher-owner')
   assert.equal(input.friendly_name, 'stale-content-owner')
+})
+
+test('daemon identity scanner recognizes current Codex login wording', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-login-scan-'))
+  const file = path.join(tmp, 'rollout-2026-07-12T05-25-19-11111111-2222-4333-8444-555555555555.jsonl')
+  try {
+    fs.writeFileSync(file, [
+      JSON.stringify({ type: 'session_meta', payload: { cwd: '/tmp/tlda-login-scan' } }),
+      JSON.stringify({
+        timestamp: '2026-07-12T09:25:28.559Z',
+        type: 'event_msg',
+        payload: {
+          type: 'mcp_tool_call_end',
+          invocation: { server: 'tlda', tool: 'login' },
+          result: {
+            Ok: {
+              content: [{
+                type: 'text',
+                text: 'Logged in fleet:dd28f37d.\nYour name: "agent-88m8" — other agents and the user know you by this name.',
+              }],
+            },
+          },
+        },
+      }),
+    ].join('\n') + '\n')
+
+    assert.deepEqual(scanFileOwnersSync(file).owners, ['fleet:dd28f37d'])
+    assert.deepEqual(scanFileIdentitySync(file).identity, {
+      cwd: '/tmp/tlda-login-scan',
+      fleet_id: 'fleet:dd28f37d',
+      friendly_name: 'agent-88m8',
+    })
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+test('owner harvester lists nested Codex rollout JSONLs', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-harvest-roots-'))
+  const claudeRoot = path.join(tmp, '.claude', 'projects', '-Users-skip-work-tlda')
+  const codexRoot = path.join(tmp, '.codex', 'sessions', '2026', '07', '12')
+  try {
+    fs.mkdirSync(claudeRoot, { recursive: true })
+    fs.mkdirSync(codexRoot, { recursive: true })
+    const claudeFile = path.join(claudeRoot, 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee.jsonl')
+    const codexFile = path.join(codexRoot, 'rollout-2026-07-12T05-25-19-11111111-2222-4333-8444-555555555555.jsonl')
+    fs.writeFileSync(claudeFile, '{}\n')
+    fs.writeFileSync(codexFile, '{}\n')
+
+    const sessions = listSessionsByRecency([
+      path.join(tmp, '.claude', 'projects'),
+      path.join(tmp, '.codex', 'sessions'),
+    ])
+    const files = sessions.map(item => item.filePath).sort()
+
+    assert.deepEqual(files, [claudeFile, codexFile].sort())
+    assert.equal(sessions.find(item => item.filePath === claudeFile)?.harnessKind, 'claude')
+    assert.equal(sessions.find(item => item.filePath === codexFile)?.harnessKind, 'codex')
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
 })

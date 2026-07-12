@@ -13,28 +13,42 @@ import os from 'os'
 import path from 'path'
 import { scanFileIdentitySync } from '../agent-runtime/daemon-jsonl-hot-path.mjs'
 
-const PROJECTS_DIR = process.env.TLDA_HARVEST_DIR || path.join(os.homedir(), '.claude', 'projects')
+const HARVEST_DIRS = process.env.TLDA_HARVEST_DIR
+  ? [process.env.TLDA_HARVEST_DIR]
+  : [
+      path.join(os.homedir(), '.claude', 'projects'),
+      path.join(os.homedir(), '.codex', 'sessions'),
+    ]
 
 // Drop our own scheduling priority; the harvest is strictly background work.
 // Best-effort: setPriority can be denied by the OS; harvesting proceeds either way.
 try { os.setPriority(process.pid, 10) } catch { /* priority is advisory, ignore */ }
 
 // List every session file with its mtime, most-recent first.
-export function listSessionsByRecency(dir = PROJECTS_DIR) {
+export function listSessionsByRecency(dirs = HARVEST_DIRS) {
   const out = []
-  let dirs
-  try { dirs = fs.readdirSync(dir) } catch { return out }
-  for (const d of dirs) {
-    const dirPath = path.join(dir, d)
-    let files
-    try { files = fs.readdirSync(dirPath) } catch { continue }
-    for (const file of files) {
-      if (!file.endsWith('.jsonl')) continue
-      const filePath = path.join(dirPath, file)
-      let mtimeMs = 0
-      try { mtimeMs = fs.statSync(filePath).mtimeMs } catch { continue }
-      out.push({ sessionId: file.slice(0, -6), filePath, mtimeMs })
+  for (const dir of Array.isArray(dirs) ? dirs : [dirs]) {
+    const walk = (current) => {
+      let entries
+      try { entries = fs.readdirSync(current, { withFileTypes: true }) } catch { return }
+      for (const entry of entries) {
+        const filePath = path.join(current, entry.name)
+        if (entry.isDirectory()) {
+          walk(filePath)
+          continue
+        }
+        if (!entry.name.endsWith('.jsonl')) continue
+        let mtimeMs = 0
+        try { mtimeMs = fs.statSync(filePath).mtimeMs } catch { continue }
+        out.push({
+          sessionId: entry.name.slice(0, -6),
+          filePath,
+          mtimeMs,
+          harnessKind: filePath.includes('/.codex/sessions/') ? 'codex' : 'claude',
+        })
+      }
     }
+    walk(dir)
   }
   out.sort((a, b) => b.mtimeMs - a.mtimeMs) // recent -> old
   return out
@@ -52,6 +66,7 @@ async function main() {
         type: 'owners',
         sessionId: item.sessionId,
         jsonlPath: item.filePath,
+        harnessKind: item.harnessKind,
         owners,
         identity,
         endOffset,

@@ -63,8 +63,10 @@ export function createOncePerKeyGate() {
 }
 
 // A session JSONL contains one (or, if something rotated through it, several)
-// `Registered fleet:<id>` lines — the fingerprint the daemon uses to learn which
-// agent owns a session. Extract every fleet id mentioned that way.
+// login lines — the fingerprint the daemon uses to learn which agent owns a
+// session. Older Claude transcripts say `Registered fleet:<id>`; current Codex
+// MCP login output says `Logged in fleet:<id>`. Extract every fleet id mentioned
+// that way.
 // Match ONLY the characters a real fleet id can contain — the union of both
 // minters: hex from newFleetId() and sanitizeSessionName()'s `[A-Za-z0-9_-]`.
 // A blacklist char class (anything-but-punctuation) captured markdown/template
@@ -72,23 +74,23 @@ export function createOncePerKeyGate() {
 // writing `fleet:<id>\`` / `fleet:reconA\`` into the identity store. A whitelist
 // stops at the first invalid char, so `fleet:<id>` yields no match (rejected) and
 // a stray trailing backtick is dropped.
-const REGISTERED_OWNER_RE = /Registered fleet:([A-Za-z0-9_-]+)/g
-const REGISTERED_ID_RE = /Registered (fleet:[A-Za-z0-9_-]+)/g
+const LOGIN_OWNER_RE = /(?:Registered|Logged in) fleet:([A-Za-z0-9_-]+)/g
+const LOGIN_ID_RE = /(?:Registered|Logged in) (fleet:[A-Za-z0-9_-]+)/g
 const NAME_RE = /Your name: "([^"]+)"/
-// FIRST-REGISTERED-WINS owner match. A genuine fleet id is 8 hex chars (newFleetId);
-// the agent's OWN login handshake ("Registered fleet:<id>") is the FIRST such line in
-// its rollout, emitted before it does anything. Every later `Registered fleet:` is the
+// FIRST-LOGIN-WINS owner match. A genuine fleet id is 8 hex chars (newFleetId);
+// the agent's OWN login handshake is the FIRST such line in its rollout, emitted
+// before it does anything. Every later login marker is the
 // agent QUOTING another agent's log while working — a log-reader (esp. ops) accumulates
 // dozens and used to get cross-attributed onto ALL of them, hijacking their ledger
 // session pointers. Hex-only also rejects quoted junk (fleet:<id>, fleet:reconA). Not
 // global: we take the first match per scan and stop.
-const REGISTERED_HEX_OWNER_RE = /Registered fleet:([0-9a-f]{8})\b/
+const LOGIN_HEX_OWNER_RE = /(?:Registered|Logged in) fleet:([0-9a-f]{8})\b/
 
 export function extractOwnersFromText(text) {
   const owners = new Set()
-  REGISTERED_OWNER_RE.lastIndex = 0
+  LOGIN_OWNER_RE.lastIndex = 0
   let m
-  while ((m = REGISTERED_OWNER_RE.exec(text)) !== null) owners.add('fleet:' + m[1])
+  while ((m = LOGIN_OWNER_RE.exec(text)) !== null) owners.add('fleet:' + m[1])
   return [...owners]
 }
 
@@ -117,8 +119,8 @@ function textPartsFromValue(value) {
 }
 
 export function extractIdentityFromText(text) {
-  REGISTERED_ID_RE.lastIndex = 0
-  const m = REGISTERED_ID_RE.exec(text || '')
+  LOGIN_ID_RE.lastIndex = 0
+  const m = LOGIN_ID_RE.exec(text || '')
   if (!m) return null
   return {
     fleet_id: m[1],
@@ -164,11 +166,11 @@ export function scanFileOwnersSync(filePath, { fromOffset = 0, chunkSize = 64 * 
       if (bytesRead <= 0) break
       offset += bytesRead
       const text = carry + buf.toString('utf8', 0, bytesRead)
-      // FIRST-REGISTERED-WINS: the owner is the FIRST genuine `Registered fleet:<hex>`
+      // FIRST-LOGIN-WINS: the owner is the FIRST genuine login fleet id
       // (the login handshake, emitted before the agent reads anything). Return it and
       // stop — every later marker is the agent quoting another agent's log. This is
       // what makes re-classification idempotent and stops log-reader cross-attribution.
-      const m = REGISTERED_HEX_OWNER_RE.exec(text)
+      const m = LOGIN_HEX_OWNER_RE.exec(text)
       if (m) return { owners: ['fleet:' + m[1]], endOffset: offset }
       carry = text.slice(-64)
     }
@@ -183,7 +185,7 @@ export function scanFileIdentitySync(filePath, { fromOffset = 0, chunkSize = 64 
   let offset = fromOffset
   let carry = ''
   let best = null
-  // FIRST-REGISTERED-WINS: a single genuine owner (first `Registered fleet:<hex>`),
+  // FIRST-LOGIN-WINS: a single genuine owner (first login fleet id),
   // NOT a set of every id mentioned. Per-record fleet ids (from extractIdentityFromRecord)
   // are NOT added to owners — they come from tool I/O too (a log-reader's grep of another
   // agent's registration line). We still parse records for the name/cwd identity, which the
@@ -198,11 +200,11 @@ export function scanFileIdentitySync(filePath, { fromOffset = 0, chunkSize = 64 
       offset += bytesRead
       const text = carry + buf.toString('utf8', 0, bytesRead)
       if (!owner) {
-        const m = REGISTERED_HEX_OWNER_RE.exec(text)
+        const m = LOGIN_HEX_OWNER_RE.exec(text)
         if (m) owner = 'fleet:' + m[1]
       }
       for (const line of text.split('\n')) {
-        if (!line.includes('Registered fleet:') && !line.includes('"cwd"')) continue
+        if (!line.includes('Registered fleet:') && !line.includes('Logged in fleet:') && !line.includes('"cwd"')) continue
         try {
           const rec = JSON.parse(line)
           const identity = extractIdentityFromRecord(rec)
