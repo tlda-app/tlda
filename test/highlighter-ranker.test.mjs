@@ -46,3 +46,36 @@ test('rankSourceSpanCandidates uses full highlight text when fragments are spars
   assert.ok(result.confidence >= 0.45)
   assert.equal(result.candidates[0].text, 'ut perspiciatis unde omnis iste natus error sit voluptatem')
 })
+
+test('rankSourceSpanCandidates resolves spans contained in longer rendered highlights', () => {
+  const sourceLine = 'Sed ut perspiciatis unde omnis iste natus error sit voluptatem accusantium'
+  const result = rankSourceSpanCandidates({
+    sourceLine,
+    fragmentTexts: ['erspiciatis unde omnis iste natus error sit voluptatem accusantium doloremque'],
+    highlightText: 'erspiciatis unde omnis iste natus error sit voluptatem accusantium doloremque rem aperiam eaque ipsa quae ab illo inventore veritatis et quasi architecto',
+    lineRecords: [{ x: 30 }, { x: 120 }, { x: 210 }, { x: 300 }],
+    hitRange: { minX: 45, maxX: 360 },
+  })
+
+  assert.equal(result.ambiguous, false)
+  assert.ok(result.confidence >= 0.45)
+  assert.equal(result.candidates[0].text, 'perspiciatis unde omnis iste natus error sit voluptatem accusantium')
+})
+
+test('rankSourceSpanCandidates resolves browser-fragmented SVG text', () => {
+  const sourceLine = 'Sed ut perspiciatis unde omnis iste natus error sit voluptatem accusantium'
+  const result = rankSourceSpanCandidates({
+    sourceLine,
+    fragmentTexts: [
+      'erspiciatis', 'unde', 'omnis', 'iste', 'natus', 'error', 'sit',
+      'v', 'oluptatem', 'accusan', 'tium', 'doloremque',
+    ],
+    highlightText: 'erspiciatis unde omnis iste natus error sit voluptatem accusantium doloremque rem aperiam, eaque ipsa quae ab illo inventore veritatis et quasi architecto',
+    lineRecords: [{ x: 30 }, { x: 120 }, { x: 210 }, { x: 300 }],
+    hitRange: { minX: 39, maxX: 408 },
+  })
+
+  assert.equal(result.ambiguous, false)
+  assert.ok(result.confidence >= 0.55)
+  assert.equal(result.candidates[0].text, 'Sed ut perspiciatis unde omnis iste natus error sit voluptatem accusantium')
+})

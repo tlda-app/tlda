@@ -735,11 +735,15 @@ export function rankSourceSpanCandidates({ sourceLine, fragmentTexts, highlightT
     const candidateText = sourceLine.slice(start, end)
     const renderedCandidate = normalizeRenderedText(stripTex(candidateText))
     const textScore = Math.max(...queries.map(q => similarityScore(renderedCandidate, q)))
+    const containmentScore = fullHighlightQuery
+      ? highlightContainmentScore(renderedCandidate, fullHighlightQuery)
+      : 0
     const edgeScore = Math.max(...queries.map(q => edgeWordScore(renderedCandidate, q)))
     const geomScore = geometryScore(sourceLine.length, start, end, lineRecords, hitRange)
     const continuityScore = lineRecords?.length ? 1 : 0.5
     const fullHighlightBonus = fullHighlightQuery && renderedCandidate === fullHighlightQuery ? 0.08 : 0
-    const score = clamp01(textScore * 0.55 + edgeScore * 0.2 + geomScore * 0.2 + continuityScore * 0.05 + fullHighlightBonus)
+    const semanticScore = Math.max(textScore, containmentScore)
+    const score = clamp01(semanticScore * 0.55 + edgeScore * 0.2 + geomScore * 0.2 + continuityScore * 0.05 + fullHighlightBonus)
 
     candidates.push({
       line: 0,
@@ -757,7 +761,7 @@ export function rankSourceSpanCandidates({ sourceLine, fragmentTexts, highlightT
   const second = best ? top.find(c => spanOverlapRatio(best, c) < 0.8) : undefined
   const gap = best && second ? best.score - second.score : best ? best.score : 0
   const confidence = best ? clamp01(best.score * 0.75 + Math.min(0.25, gap)) : 0
-  const ambiguous = !best || best.score < 0.55 || (!!second && gap < 0.08)
+  const ambiguous = !best || confidence < 0.55 || (!!second && gap < 0.08)
 
   for (const c of top) c.confidence = confidence
   return { candidates: top, confidence, ambiguous }
@@ -824,6 +828,33 @@ function similarityScore(a, b) {
   const dice = (2 * overlap) / (aTokens.length + bTokens.length)
   const seq = orderedTokenScore(aTokens, bTokens)
   return clamp01(dice * 0.7 + seq * 0.3)
+}
+
+function highlightContainmentScore(candidate, highlight) {
+  const candidateTokens = candidate.split(/\s+/).filter(Boolean)
+  const highlightTokens = highlight.split(/\s+/).filter(Boolean)
+  if (candidateTokens.length === 0 || highlightTokens.length === 0) return 0
+
+  const candidateInHighlight = orderedCoverage(candidateTokens, highlightTokens)
+  const highlightInCandidate = orderedCoverage(highlightTokens, candidateTokens)
+  const coverage = Math.max(candidateInHighlight, highlightInCandidate)
+  if (coverage < 0.65) return 0
+
+  const lengthBalance = Math.min(candidateTokens.length, highlightTokens.length) / Math.max(candidateTokens.length, highlightTokens.length)
+  return clamp01(coverage * 0.85 + lengthBalance * 0.15)
+}
+
+function orderedCoverage(needleTokens, haystackTokens) {
+  let i = 0
+  let matched = 0
+  for (const t of needleTokens) {
+    while (i < haystackTokens.length && haystackTokens[i] !== t) i++
+    if (i < haystackTokens.length) {
+      matched++
+      i++
+    }
+  }
+  return matched / Math.max(needleTokens.length, 1)
 }
 
 function orderedTokenScore(aTokens, bTokens) {
