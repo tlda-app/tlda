@@ -678,6 +678,21 @@
   opacity: 0.62;
   margin-top: 10px;
 }
+/* The expanded detail is the inbox's recovery/reading surface — a user must be
+   able to select and copy its text (e.g. a note transcript) instead of resorting
+   to a screenshot. tldraw sets user-select:none on .tl-container * (every element
+   explicitly, so inheritance loses), so the reading text needs an explicit
+   override — and so does every child, because the body is rendered markdown/math.
+   Scoped to the detail view; the compact list rows keep their swipe gestures. */
+.fleet-inbox-detail-heading,
+.fleet-inbox-detail-meta,
+.fleet-inbox-detail-copy,
+.fleet-inbox-detail-body,
+.fleet-inbox-detail-body * {
+  -webkit-user-select: text !important;
+  user-select: text !important;
+  cursor: text;
+}
 .fleet-inbox-detail-approve {
   margin-top: 14px;
   background: none;
