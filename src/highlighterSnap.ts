@@ -678,6 +678,7 @@ export async function findSourceLinesFromBounds(
       },
       width: (s.props as any).w,
       height: (s.props as any).h,
+      page: ((s.props as any).pageIndex ?? 0) + 1,
     }))
 
   // Decode the highlight path and convert to PDF coords
