@@ -1357,17 +1357,6 @@ export function getFleetTools() {
       inputSchema: { type: 'object', properties: {} },
     },
     {
-      name: 'delete_task',
-      description: 'Delete a task permanently. Pass task_id. Any agent can delete any task.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          task_id: { type: 'string', description: 'Task ID to delete.' },
-        },
-        required: ['task_id'],
-      },
-    },
-    {
       name: 'read_terminal',
       description: 'Read an agent\'s tmux terminal pane. Returns the visible output. Pass agent name or ID.',
       inputSchema: {
@@ -1434,34 +1423,6 @@ export function getFleetTools() {
         required: ['channel'],
       },
     },
-    // ---- tlda document feedback (push channel) ----
-    {
-      name: 'monitor_add',
-      description: 'Subscribe to push notifications for new annotations on a tlda document. When Skip draws a note, highlight, or sends a ping on the doc, you will receive a fleet chat message from "fleet:tlda" between tool calls — same delivery path as normal chat. Idempotent. Persists for the lifetime of this session (cleared on MCP reconnect or tlda server restart).',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          doc: { type: 'string', description: 'Document name (e.g. "bregman", "survival-draft"). No need to call from a specific cwd.' },
-        },
-        required: ['doc'],
-      },
-    },
-    {
-      name: 'monitor_remove',
-      description: 'Unsubscribe from feedback notifications for a tlda document. Idempotent — no error if not subscribed.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          doc: { type: 'string', description: 'Document name to stop monitoring.' },
-        },
-        required: ['doc'],
-      },
-    },
-    {
-      name: 'monitor_list',
-      description: 'List tlda documents this agent is currently subscribed to for feedback notifications.',
-      inputSchema: { type: 'object', properties: {} },
-    },
     // ---- Agent Lifecycle ----
     {
       name: 'name_agent',
@@ -1482,30 +1443,6 @@ export function getFleetTools() {
         type: 'object',
         properties: {
           verified_only: { type: 'boolean', description: 'Only show verified tool-calling models. Default false.' },
-        },
-      },
-    },
-    {
-      name: 'spawn',
-      description: 'Spawn or respawn a fleet agent via the server-authorized spawn path. Default: respawn existing agent (resume session). Pass fresh=true to create a new agent. Supports lineage: set phase to join/create a lineage (auto-created from the agent name on first spawn).',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          agent: { type: 'string', description: 'Agent name to respawn (default behavior).' },
-          fresh: { type: 'boolean', description: 'Create a fresh agent instead of respawning.' },
-          name: { type: 'string', description: 'Name for the new agent (fresh mode only).' },
-          model: { type: 'string', description: 'Configured daemon model alias. Call spawn_models() for valid values.' },
-          cwd: { type: 'string', description: 'Working directory (fresh mode only).' },
-          effort: { type: 'string', description: 'Effort level: low|medium|high|xhigh|max (default: inherit global config).' },
-          permission: { type: 'string', ...(spawnPermissionText.profileNames.length ? { enum: spawnPermissionText.profileNames } : {}), description: spawnPermissionText.permission },
-          permissions: {
-            type: 'string',
-            description: spawnPermissionText.permissions,
-          },
-          policy: { type: 'string', description: 'Force an explicit fenced launch at the requested permission; does not raise the permission grant.' },
-          iLikeToLiveDangerously: { type: 'boolean', description: 'Explicitly acknowledge a launch with no fence and harness permissions disabled. This permits the launch; it does not force unsafe mode.' },
-          mode: { type: 'string', description: 'Harness-specific launch mode projection for claude (e.g. plan, default, auto). Permission remains the durable authority.' },
-          phase: { type: 'string', enum: ['dawn', 'day', 'dusk'], description: 'Phase slot in the lineage. The server assigns the spawned shell to this phase and makes room if needed.' },
         },
       },
     },
@@ -1562,26 +1499,6 @@ export function getFleetTools() {
       description: 'Get pinned reference material — conversation excerpts, files, and other artifacts marked as authoritative. Check this when starting a new task or when you need to understand what the human has approved.',
       inputSchema: { type: 'object', properties: {} },
     },
-    {
-      name: 'pin_ref',
-      description: 'Pin a reference — mark something as authoritative source material. Use this when you find approved content in the logs (user said "perfect", "that\'s it", etc.) or when the user tells you something is the reference. Types: "file" (a file path), "conversation" (a log excerpt), "snippet" (inline text).',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          type: { type: 'string', description: '"file", "conversation", or "snippet"' },
-          label: { type: 'string', description: 'Short description of what this reference is' },
-          path: { type: 'string', description: 'File path (for type=file)' },
-          project: { type: 'string', description: 'Project dir (for type=conversation)' },
-          sessionId: { type: 'string', description: 'Session UUID (for type=conversation)' },
-          line: { type: 'number', description: 'Center line number (for type=conversation)' },
-          startLine: { type: 'number', description: 'Start line (for type=conversation)' },
-          endLine: { type: 'number', description: 'End line (for type=conversation)' },
-          content: { type: 'string', description: 'Text content (for type=snippet)' },
-          note: { type: 'string', description: 'Optional note about why this is authoritative' },
-        },
-        required: ['type', 'label'],
-      },
-    },
     // ---- Labels & Interrupts ----
     {
       name: 'label_agent',
@@ -1636,19 +1553,6 @@ export function getFleetTools() {
         type: 'object',
         properties: {
           user: { type: 'string', description: 'User fleet ID (default: server owner)' },
-        },
-      },
-    },
-    // ---- Wiretap ----
-    {
-      name: 'wiretap',
-      description: 'Listen in on messages matching a filter. You get CC\'d on matching messages. Call with no args to list. Filter is a STRING EXPRESSION — the same grammar as chat/fleet_table (`|` or, `&` and, `!` not, parens) — with directional `to:`/`from:` leaf prefixes: "to:skip & from:math" fires on a message TO skip FROM math. A bare label (no prefix) matches EITHER side (a message involving that agent). Labels match agent name/ID/labels. Optional types filter restricts to specific event types (e.g. ["chat"] for chat only, skipping activity cards).',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          filter: { type: 'string', description: 'Filter expression with to:/from: leaf prefixes. E.g. "to:skip & from:math", "to:apps | from:ops", "from:goose & !chat-noise".' },
-          types: { type: 'array', items: { type: 'string' }, description: 'Event types to listen for. E.g. ["chat"] for chat only, ["chat","delegate"] for chat + delegations. Omit for all types.' },
-          remove: { description: 'true to remove all wiretaps, or a wiretap ID to remove one.' },
         },
       },
     },
@@ -1815,7 +1719,7 @@ export function getFleetTools() {
         },
       },
     },
-  ].filter(tool => !['delete_task', 'pin_ref', 'spawn', 'wiretap', 'monitor_add', 'monitor_remove', 'monitor_list'].includes(tool.name));
+  ];
 }
 
 export function formatRecipientStatusSummary(recipients = [], agents = [], receipts = []) {
@@ -2098,18 +2002,6 @@ export async function handleFleetTool(name, args) {
   reportStatus('tool_call', name);
 
   try {
-  const retiredTools = {
-    delete_task: 'delete_task is retired from the normal MCP interface. Close with report({ summary: "...", close: true, verified: true, reason?: "invalid" }) so the durable task record remains.',
-    pin_ref: 'pin_ref is retired from the normal MCP interface.',
-    spawn: 'spawn is retired from the normal MCP interface. Use delegate with a fresh/spawn target when agent creation is part of a task.',
-    wiretap: 'wiretap is retired from the normal MCP interface. Use subscribe(), subscriptions(), and unsubscribe().',
-    monitor_add: 'monitor_add is retired from the normal MCP interface. Use subscribe({ query: "doc:<name>", notification_policy: "immediate" }).',
-    monitor_remove: 'monitor_remove is retired from the normal MCP interface. Use subscriptions() and unsubscribe({ subscription_id }).',
-    monitor_list: 'monitor_list is retired from the normal MCP interface. Use subscriptions().',
-  };
-  if (retiredTools[name]) {
-    return { content: [{ type: 'text', text: retiredTools[name] }], isError: true };
-  }
 
   // ==== Registration & Identity ====
 
@@ -2840,30 +2732,6 @@ export async function handleFleetTool(name, args) {
     return { content: [{ type: 'text', text: text + nudge }] };
   }
 
-  // ---- delete_task ----
-  if (name === 'delete_task') {
-    const { task_id } = args;
-    if (!task_id) return { content: [{ type: 'text', text: 'missing task_id' }], isError: true };
-    try {
-      const res = await sendWS('delete-task', { task_id });
-      if (!res?.ok) return { content: [{ type: 'text', text: `Delete failed: ${res?.error || 'unknown'}` }], isError: true };
-      return { content: [{ type: 'text', text: `Deleted task ${task_id}.` }] };
-    } catch (e) {
-      return { content: [{ type: 'text', text: `tlda backend not answering — tell ops if it persists. (${e.message})` }], isError: true };
-    }
-  }
-
-  // ---- task_done ----
-  if (name === 'task_done') {
-    return {
-      content: [{
-        type: 'text',
-        text: 'task_done is retired from the normal MCP interface. Post evidence and close with report({ summary: "...", close: true, verified: true, approval_id?: <id> }).',
-      }],
-      isError: true,
-    };
-  }
-
   // ---- report (QA-aware report gate) ----
   if (name === 'report') {
     if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not logged in. Call login() first.' }], isError: true };
@@ -3481,50 +3349,6 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
     }
   }
 
-  // ---- tlda monitor_add / monitor_remove / monitor_list ----
-  // Subscribe/unsubscribe for doc feedback notifications. Delivery is via
-  // fleet chat from "fleet:tlda" — the agent sees it exactly like a normal
-  // chat message between tool calls. No polling, no PostToolUse hook.
-  if (name === 'monitor_add') {
-    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not logged in. Call login() first.' }], isError: true };
-    if (!args?.doc) return { content: [{ type: 'text', text: 'Missing doc argument.' }], isError: true };
-    try {
-      const data = await sendWS('tlda-monitor-add', { agentId: AGENT_ID, doc: args.doc });
-      if (!data) return { content: [{ type: 'text', text: `tlda backend didn't answer (it may be restarting). Not yours to debug — tell ops if it persists, then retry shortly.` }], isError: true };
-      const subs = Array.isArray(data.subscriptions) ? data.subscriptions : [];
-      // Remember the most recent doc this agent is watching so chat() can
-      // stamp outgoing messages with a docContext (doc + version) without
-      // requiring a separate set_doc tool.
-      _currentDoc = args.doc;
-      return { content: [{ type: 'text', text: `Monitoring "${args.doc}". Current subscriptions: ${subs.join(', ') || '(none)'}.\n\nFeedback will arrive as chat from fleet:tlda between tool calls.` }] };
-    } catch (e) {
-      return { content: [{ type: 'text', text: `monitor_add failed: ${e.message}` }], isError: true };
-    }
-  }
-  if (name === 'monitor_remove') {
-    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not logged in. Call login() first.' }], isError: true };
-    if (!args?.doc) return { content: [{ type: 'text', text: 'Missing doc argument.' }], isError: true };
-    try {
-      const data = await sendWS('tlda-monitor-remove', { agentId: AGENT_ID, doc: args.doc });
-      if (!data) return { content: [{ type: 'text', text: `tlda backend didn't answer (it may be restarting). Not yours to debug — tell ops if it persists, then retry shortly.` }], isError: true };
-      const subs = Array.isArray(data.subscriptions) ? data.subscriptions : [];
-      return { content: [{ type: 'text', text: `Stopped monitoring "${args.doc}". Remaining subscriptions: ${subs.join(', ') || '(none)'}.` }] };
-    } catch (e) {
-      return { content: [{ type: 'text', text: `monitor_remove failed: ${e.message}` }], isError: true };
-    }
-  }
-  if (name === 'monitor_list') {
-    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not logged in. Call login() first.' }], isError: true };
-    try {
-      const data = await sendWS('tlda-monitor-list', { agentId: AGENT_ID });
-      if (!data) return { content: [{ type: 'text', text: `tlda backend didn't answer (it may be restarting). Not yours to debug — tell ops if it persists, then retry shortly.` }], isError: true };
-      const subs = Array.isArray(data.subscriptions) ? data.subscriptions : [];
-      return { content: [{ type: 'text', text: subs.length ? `Monitoring: ${subs.join(', ')}` : 'Not monitoring any documents.' }] };
-    } catch (e) {
-      return { content: [{ type: 'text', text: `monitor_list failed: ${e.message}` }], isError: true };
-    }
-  }
-
   // ==== Agent Lifecycle ====
 
   // ---- name_agent ----
@@ -3552,53 +3376,6 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
     }
   }
 
-  // ---- spawn (respawn or fresh) ----
-  if (name === 'spawn') {
-    const guard = requireManager();
-    if (guard) return { content: [{ type: 'text', text: guard }], isError: true };
-
-    const isFresh = !!args.fresh;
-    const isRefresh = !!args.refresh;
-    const agentName = isFresh ? args.name : args.agent;
-    if (!agentName) {
-      return { content: [{ type: 'text', text: isFresh ? 'fresh=true requires name' : 'agent name required' }], isError: true };
-    }
-
-    const phase = args.phase || null;
-
-    try {
-      const modelError = await validateSpawnRequest(args);
-      if (modelError) return { content: [{ type: 'text', text: modelError }], isError: true };
-
-      const isRespawn = !isFresh && !isRefresh;
-      const result = await sendWS('spawn', {
-        fresh: isFresh,
-        respawn: isRespawn,
-        refresh: isRefresh,
-        agent: args.agent,
-        name: args.name,
-        model: args.model,
-        effort: args.effort,
-        cwd: args.cwd,
-        mode: args.mode,
-        permission: args.permission,
-        requestedPermissions: args.permissions,
-        policy: args.policy,
-        iLikeToLiveDangerously: !!args.iLikeToLiveDangerously,
-        phase: phase && isFresh ? phase : undefined,
-      });
-      if (result?.ok === false || result?.error) {
-        return { content: [{ type: 'text', text: `spawn failed: ${result.error || JSON.stringify(result)}` }], isError: true };
-      }
-
-      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
-    } catch (e) {
-      const msg = (e.message || '').trim();
-      return { content: [{ type: 'text', text: `spawn failed: ${msg}` }], isError: true };
-    }
-  }
-
-
   // ---- get_refs ----
   if (name === 'get_refs') {
     const refsFile = `${os.homedir()}/.claude/references.json`;
@@ -3618,34 +3395,6 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       return parts.join('\n  ');
     });
     return { content: [{ type: 'text', text: `${refs.length} reference(s):\n\n${lines.join('\n\n')}` }] };
-  }
-
-  // ---- pin_ref ----
-  if (name === 'pin_ref') {
-    const refsFile = `${os.homedir()}/.claude/references.json`;
-    let refs = [];
-    try { refs = JSON.parse(fs.readFileSync(refsFile, 'utf8')); } catch (e) {
-      if (e.code !== 'ENOENT') process.stderr.write(`[fleet] refs file read failed: ${e.message}\n`);
-    }
-    const ref = {
-      id: 'ref-' + Date.now().toString(36),
-      type: args.type,
-      label: args.label,
-      note: args.note || '',
-      path: args.path,
-      project: args.project,
-      sessionId: args.sessionId,
-      line: args.line,
-      startLine: args.startLine,
-      endLine: args.endLine,
-      content: args.content,
-      created: now(),
-      pinned_by: AGENT_ID || 'unknown',
-    };
-    refs.push(ref);
-    fs.writeFileSync(refsFile, JSON.stringify(refs, null, 2));
-    logEvent({ type: 'pin_ref', from: AGENT_ID || 'unknown', ref_type: args.type, label: args.label });
-    return { content: [{ type: 'text', text: `Pinned: [${args.type}] ${args.label}` }] };
   }
 
   // ==== Search & History ====
@@ -4449,41 +4198,6 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     } catch (e) {
       return { content: [{ type: 'text', text: `unsubscribe failed: ${e.message}` }], isError: true };
     }
-  }
-
-  // ---- wiretap ----
-  if (name === 'wiretap') {
-    const myId = AGENT_ID;
-    if (!myId) return { content: [{ type: 'text', text: 'Not logged in. Call login() first.' }], isError: true };
-
-    if (args.remove) {
-      if (typeof args.remove === 'number' || (typeof args.remove === 'string' && !isNaN(args.remove))) {
-        // Remove specific wiretap by ID. Field is `tap_id`, not `id`: sendWS()
-        // stamps a correlation `id` onto every RPC, which would clobber `id`.
-        await sendWS('wiretap-remove', { tap_id: args.remove });
-        return { content: [{ type: 'text', text: `Removed wiretap #${args.remove}.` }] };
-      }
-      // Remove all wiretaps for this agent
-      const existing = await sendWS('wiretap-list', { agent: myId });
-      for (const tap of existing) {
-        await sendWS('wiretap-remove', { tap_id: tap.id });
-      }
-      return { content: [{ type: 'text', text: `Removed ${existing.length} wiretap(s).` }] };
-    }
-
-    // List existing wiretaps if no filter specified
-    if (!args.filter) {
-      const taps = await sendWS('wiretap-list', { agent: myId });
-      if (taps.length === 0) return { content: [{ type: 'text', text: 'No active wiretaps.' }] };
-      const lines = taps.map(t => `#${t.id}: ${t.filter}${t.types ? ` [types: ${t.types.join(', ')}]` : ''}`);
-      return { content: [{ type: 'text', text: `Active wiretaps:\n${lines.join('\n')}` }] };
-    }
-
-    const body = { agent: myId, filter: args.filter }
-    if (args.types && args.types.length > 0) body.types = args.types
-    const tap = await sendWS('wiretap-add', body);
-    const typesStr = args.types ? ` Types: ${args.types.join(', ')}` : ''
-    return { content: [{ type: 'text', text: `Wiretap #${tap.id} active. Filter: ${args.filter}${typesStr}` }] };
   }
 
   // ---- timer (non-blocking) ----
