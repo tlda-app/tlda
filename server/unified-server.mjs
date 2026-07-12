@@ -4952,6 +4952,14 @@ async function handleFleetWsMessage(ws, msg) {
       reply({ ok: true, event_ids: prev.eventIds, recipients: prev.recipients, receipts: prev.receipts || [], _tempId: msg._tempId })
       return
     }
+    if (msg._tempId) {
+      const prev = fleetStore.getChatTempIdResult?.(msg._tempId)
+      if (prev) {
+        _chatTempIds.set(msg._tempId, { ...prev, ts: Date.now() })
+        reply({ ok: true, event_ids: prev.eventIds, recipients: prev.recipients, receipts: prev.receipts || [], _tempId: msg._tempId })
+        return
+      }
+    }
     const resolveSingle = (id) => {
       if (id === SERVER_OWNER_NAME) return SERVER_OWNER_ID
       const a = fleetStore?.findAgent(id); return a ? a.id : null

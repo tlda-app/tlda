@@ -1078,6 +1078,23 @@ export class FleetStore {
     return inserted;
   }
 
+  getChatTempIdResult(tempId) {
+    if (!tempId) return null
+    const rows = this.db.prepare(`
+      SELECT id, to_id
+      FROM events
+      WHERE type = 'chat'
+        AND json_extract(metadata, '$.client_temp_id') = ?
+      ORDER BY id
+    `).all(tempId)
+    if (!rows.length) return null
+    return {
+      eventIds: rows.map(row => Number(row.id)),
+      recipients: rows.map(row => row.to_id).filter(Boolean),
+      receipts: [],
+    }
+  }
+
   async share(event) {
     return this._insertEventRecord(event, { notify: true });
   }

@@ -19,6 +19,8 @@ globalThis.window = {
     licenseKey: '',
   },
 }
+globalThis.location = globalThis.window.location
+globalThis.BroadcastChannel = undefined
 globalThis.localStorage = {
   getItem() { return null },
   setItem() {},

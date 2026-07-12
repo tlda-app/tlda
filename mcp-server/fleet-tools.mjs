@@ -3,11 +3,13 @@
  * Exports: getFleetTools(), handleFleetTool(), initFleet()
  */
 import { execSync, execFileSync, exec } from 'child_process';
+import crypto from 'node:crypto';
 import fs from 'fs';
 import http from 'http';
 import os from 'os';
 import path from 'path';
 import katex from 'katex';
+import Database from 'better-sqlite3';
 import { fileURLToPath } from 'url';
 // SearchIndex (search-index.sqlite) replaced by server-side fleet-search WS operation.
 // FleetStore import removed — MCP server is a REST client, no direct DB access
@@ -60,6 +62,7 @@ import WebSocket from 'ws';
 import { ResilientWS } from '../shared/resilient-ws.mjs';
 import { rejectWsRequests, resetWsRequestIdleTimers, startWsRequest } from '../shared/ws-request-policy.mjs';
 import { WsReconnectBuffer } from '../shared/ws-reconnect-buffer.mjs';
+import { FleetTransportOutbox, isRetryableTransportError } from './lib/fleet-transport-outbox.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BIN = path.join(__dirname, 'bin');
@@ -347,6 +350,18 @@ const TLDA_WS_SERVER = TLDA_SERVER.replace(/^http/, 'ws');
 const TLDA_FLEET_SERVER = getFleetServerUrl();
 const TLDA_FLEET_WS_SERVER = TLDA_FLEET_SERVER.replace(/^http/, 'ws');
 const _tldaToken = getRwToken();
+let _fleetTransportDb = null;
+let _fleetTransportOutbox = null;
+let _fleetTransportFlushTimer = null;
+let _fleetTransportFlushInFlight = null;
+
+function getFleetTransportOutbox() {
+  if (_fleetTransportOutbox) return _fleetTransportOutbox;
+  fs.mkdirSync(CONFIG_DIR, { recursive: true });
+  _fleetTransportDb = new Database(path.join(CONFIG_DIR, 'mcp-fleet-transport.sqlite'));
+  _fleetTransportOutbox = new FleetTransportOutbox(_fleetTransportDb);
+  return _fleetTransportOutbox;
+}
 
 async function tldaFetch(apiPath, opts = {}) {
   const data = await _sharedFetch(`/api/projects/${apiPath}`, {
@@ -2126,6 +2141,9 @@ export async function handleFleetTool(name, args) {
     if (serverResult.error) {
       return { content: [{ type: 'text', text: `Login rejected by server: ${serverResult.error}` }], isError: true };
     }
+    await flushFleetTransport({ limit: 100 }).catch(e => {
+      process.stderr.write(`[fleet-transport] login flush failed: ${e.message}\n`);
+    });
 
     const agent = serverResult.agent || {};
     const friendly = agent.friendly_name || shellId;
@@ -2261,10 +2279,7 @@ export async function handleFleetTool(name, args) {
 
       const delegateBody = { from: AGENT_ID, agent: targetAgent, description, message: routedMessage, success_criteria: criteria.length ? criteria : undefined, blocked_by: blockedBy.length ? blockedBy : undefined, requires_approval: args.requires_approval || undefined, allow_pending_agent: opts.allowPendingAgent || undefined };
       const data = await sendWS('delegate', delegateBody);
-      if (data.event_id) {
-        _originatedEventIds.add(data.event_id);
-        setTimeout(() => _originatedEventIds.delete(data.event_id), ORIGINATED_TTL_MS);
-      }
+      rememberOriginatedEvents(data);
       if (!data.ok) throw new Error(`Delegate failed: ${JSON.stringify(data)}`);
 
       // Set friendly name if provided (two-call form only; spawn form already has the name set)
@@ -2549,6 +2564,7 @@ export async function handleFleetTool(name, args) {
     const sent = [];
     const failed = [];
     const receipts = [];
+    const queued = [];
     let lastEventId = null;
     const priority = parsePriorityPhrase(resolvedMessage) || 'normal';
     for (const to of recipients) {
@@ -2559,8 +2575,11 @@ export async function handleFleetTool(name, args) {
       if (preambleRef) chatBody.preambleRef = preambleRef;
       if (source) chatBody.source = source;
       try {
-        const data = await sendWS('chat', chatBody);
-        if (data?.ok) {
+        const data = await sendDurableFleet('chat', chatBody, { operationId: chatBody._tempId });
+        if (data?.queued) {
+          sent.push(to);
+          queued.push({ to, operationId: data.operation_id || chatBody._tempId });
+        } else if (data?.ok) {
           sent.push(to);
           if (data.event_ids?.length) lastEventId = data.event_ids[0];
           if (Array.isArray(data.receipts)) receipts.push(...data.receipts);
@@ -2575,7 +2594,7 @@ export async function handleFleetTool(name, args) {
 
     let warning = '';
     let suggestionNotice = '';
-    if (authoredSuggestions.length) {
+    if (authoredSuggestions.length && lastEventId != null) {
       try {
         const count = await postChatAuthoredSuggestions(authoredSuggestions, sent, { messageId: lastEventId });
         suggestionNotice = ` Posted ${count} suggestion chip(s).`;
@@ -2622,6 +2641,12 @@ export async function handleFleetTool(name, args) {
     // STYLE: quiet, optional — never a gate.
     if (styleHints.length > 0) {
       warning += `\n\nStyle (optional): ${styleHints.join(' ')}`;
+    }
+    if (queued.length) {
+      warning += `\n\nQueued for durable delivery; no server ACK yet:\n${queued.map(q => `- ${q.to}: ${q.operationId}`).join('\n')}`;
+      if (authoredSuggestions.length) {
+        warning += '\nSuggestion chips were not posted yet because the chat message has not received a server id.';
+      }
     }
 
     const amendHint = lastEventId != null ? ` (message id ${lastEventId} — chat({ amend_id: ${lastEventId} }) to edit it in place)` : '';
@@ -2854,10 +2879,7 @@ export async function handleFleetTool(name, args) {
     try {
       const doneBody = { agent, task_id: task.id, lint_overrides: _lintOverrides.length > 0 ? _lintOverrides : undefined, approval_id: args.approval_id || undefined };
       const data = await sendWS('task-done', doneBody);
-      if (data.event_id) {
-        _originatedEventIds.add(data.event_id);
-        setTimeout(() => _originatedEventIds.delete(data.event_id), ORIGINATED_TTL_MS);
-      }
+      rememberOriginatedEvents(data);
       if (!data.ok) return { content: [{ type: 'text', text: `task_done failed: ${JSON.stringify(data)}` }], isError: true };
 
       let msg = `Marked ${agent} task done: ${task.description}.`;
@@ -4601,6 +4623,15 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
 // Dedup: track event IDs we originated so we don't re-notify on the broadcast echo
 const _originatedEventIds = new Set();
 const ORIGINATED_TTL_MS = 30000;
+function rememberOriginatedEvents(result) {
+  const ids = [];
+  if (result?.event_id != null) ids.push(result.event_id);
+  if (Array.isArray(result?.event_ids)) ids.push(...result.event_ids);
+  for (const id of ids) {
+    _originatedEventIds.add(id);
+    setTimeout(() => _originatedEventIds.delete(id), ORIGINATED_TTL_MS);
+  }
+}
 
 let _channelRWS = null;  // ResilientWS instance
 
@@ -4647,6 +4678,88 @@ async function sendWS(type, params = {}, opts = {}) {
     if (!connected && !_channelRWS?.connected) break;
   }
   return null;
+}
+
+function currentTransportSessionId() {
+  return CLAUDE_SESSION || process.env.CLAUDE_SESSION || null;
+}
+
+function scheduleFleetTransportFlush(delayMs = 1000) {
+  if (_fleetTransportFlushTimer) return;
+  _fleetTransportFlushTimer = setTimeout(() => {
+    _fleetTransportFlushTimer = null;
+    flushFleetTransport({ limit: 50 }).catch(e => {
+      process.stderr.write(`[fleet-transport] scheduled flush failed: ${e.message}\n`);
+    });
+  }, Math.max(0, delayMs));
+}
+
+async function flushFleetTransport({ operationId = null, limit = 50 } = {}) {
+  if (!AGENT_ID) return null;
+  if (_fleetTransportFlushInFlight && !operationId) return _fleetTransportFlushInFlight;
+
+  const run = async () => {
+    const outbox = getFleetTransportOutbox();
+    const rows = outbox.dueRows({
+      agentId: AGENT_ID,
+      sessionId: currentTransportSessionId(),
+      operationId,
+      limit,
+    });
+    let targetResult = null;
+    for (const row of rows) {
+      outbox.markAttempt(row.operationId);
+      try {
+        const result = await sendWS(row.type, row.params, { deadlineMs: 5000 });
+        if (result) {
+          outbox.markAccepted(row.operationId, result);
+          if (!operationId || row.operationId === operationId) targetResult = result;
+        } else {
+          const updated = outbox.markFailure(row.operationId, new Error('fleet WS send returned no result'), { retryable: true });
+          if (updated?.status === 'retrying') scheduleFleetTransportFlush(1000);
+        }
+      } catch (e) {
+        const retryable = isRetryableTransportError(e);
+        const updated = outbox.markFailure(row.operationId, e, { retryable });
+        if (retryable && updated?.status === 'retrying') scheduleFleetTransportFlush(1000);
+        if (!retryable && operationId && row.operationId === operationId) throw e;
+      }
+    }
+    return targetResult;
+  };
+
+  if (operationId) return run();
+  _fleetTransportFlushInFlight = run().finally(() => {
+    _fleetTransportFlushInFlight = null;
+  });
+  return _fleetTransportFlushInFlight;
+}
+
+async function sendDurableFleet(type, params = {}, opts = {}) {
+  if (!AGENT_ID) throw new Error(`cannot send durable ${type}: not logged in`);
+  const outbox = getFleetTransportOutbox();
+  const operationId = opts.operationId || params?._tempId || `${AGENT_ID}:mcp-${type}:${crypto.randomUUID()}`;
+  const row = outbox.enqueue({
+    operationId,
+    agentId: AGENT_ID,
+    sessionId: currentTransportSessionId(),
+    type,
+    params,
+    mode: 'durable',
+  });
+  if (row.status === 'accepted') return row.result || { ok: true, operation_id: operationId };
+  if (row.status === 'failed' || row.status === 'dead') {
+    throw new Error(row.lastError || `durable ${type} ${row.status}`);
+  }
+
+  const result = await flushFleetTransport({ operationId });
+  const latest = outbox.get(operationId);
+  if (latest?.status === 'accepted') return latest.result || result || { ok: true, operation_id: operationId };
+  if (latest?.status === 'failed' || latest?.status === 'dead') {
+    throw new Error(latest.lastError || `durable ${type} ${latest.status}`);
+  }
+  scheduleFleetTransportFlush(1000);
+  return { ok: true, queued: true, operation_id: operationId };
 }
 
 async function _flushUnread() {
@@ -4729,12 +4842,15 @@ function startChannelWS() {
       _reconnectBuffer.resolveConnected();
       const loginBody = {
         agent_id: AGENT_ID,
+        session_id: currentTransportSessionId() || undefined,
         tmux_session: _tmuxSession || undefined,
-        cwd: process.cwd(),
+        cwd: getAgentCwd() || process.cwd(),
         machine_id: process.env.TLDA_MACHINE_ID || os.hostname().split('.')[0],
         env_name: getActiveConfigName(loadConfig()),
       };
-      sendWS('login', loginBody)?.catch(e => process.stderr.write(`[fleet-channel] re-login failed: ${e.message}\n`));
+      sendWS('login', loginBody)
+        ?.then(() => flushFleetTransport({ limit: 100 }))
+        ?.catch(e => process.stderr.write(`[fleet-channel] re-login/flush failed: ${e.message}\n`));
       process.stderr.write(`[fleet-channel] re-logged-in ${AGENT_ID}\n`);
       setTimeout(_flushUnread, 500);
     },
@@ -4751,10 +4867,7 @@ function startChannelWS() {
           reject(err);
         }
         else {
-          if (msg.result?.event_id) {
-            _originatedEventIds.add(msg.result.event_id);
-            setTimeout(() => _originatedEventIds.delete(msg.result.event_id), ORIGINATED_TTL_MS);
-          }
+          rememberOriginatedEvents(msg.result);
           resolve(msg.result);
         }
         return;
