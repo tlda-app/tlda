@@ -45,6 +45,7 @@ import {
   pollTargetDaemonReadiness,
   runDaemonStartWithSupervisedNoop,
   runBoundedDaemonStartTransition,
+  terminatePidAndWait,
 } from './lib/daemon-supervision-transition.mjs'
 import { resolveAgentQuery } from './lib/agent-resolve.mjs'
 import { parseAgentMoveTarget, describeAgentAddress } from '../shared/agent-move-target.mjs'
@@ -1342,11 +1343,12 @@ async function waitForFleetDaemonPid({ previousPid = null, timeoutMs = 30_000, s
 }
 
 async function terminateFleetDaemon(pid) {
-  try {
-    process.kill(pid, 'SIGTERM')
-  } catch (e) {
-    if (e?.code !== 'ESRCH') throw e
-  }
+  const identity = daemonTargetIdentity()
+  await terminatePidAndWait({
+    pid,
+    timeoutMs: 10_000,
+    inspectLock: () => inspectSingletonLock({ lockPath: identity.lockPath }),
+  })
 }
 
 async function startDirectFleetDaemonFallback({ previousPid = null, timeoutMs = 30_000 } = {}) {
@@ -1545,7 +1547,9 @@ async function cmdFleetWatch(sub) {
 
   if (sub === 'stop') {
     requireLaunchd()
+    const existingPid = runningFleetDaemonPid()
     await bootoutDaemonLabel()
+    if (existingPid) await terminateFleetDaemon(existingPid)
     console.log(green('Fleet daemon launchd job stopped.'))
     return
   }
@@ -4544,13 +4548,13 @@ async function main() {
     }
     switch (command) {
       case 'server': await cmdServer(); break
-      case 'system': await ensureServer(); await cmdSystem(); break
+      case 'system': await cmdSystem(); break
       case 'scratch': await ensureServer(); await cmdScratch(); break
       case 'book':   await ensureServer(); await cmdBook(); break
       case 'push':   await ensureServer(); await cmdPush(); break
       case 'link':   await ensureServer(); await cmdLink(); break
       case 'init':   await cmdInit(); break
-      case 'daemon': await ensureServer(); await cmdWatch(); break
+      case 'daemon': await cmdWatch(); break
       case 'bot': await cmdBot(); break
       case 'open':   await ensureServer(); await cmdOpen(); break
       case 'share':  await cmdShare(); break

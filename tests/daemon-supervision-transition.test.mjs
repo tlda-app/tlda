@@ -11,6 +11,7 @@ import {
   pollTargetDaemonReadiness,
   runDaemonStartWithSupervisedNoop,
   runBoundedDaemonStartTransition,
+  terminatePidAndWait,
 } from '../cli/lib/daemon-supervision-transition.mjs'
 
 test('parseLaunchdPid reads launchctl pid lines', () => {
@@ -114,6 +115,47 @@ test('readiness polling waits through launchd pid before readiness and then succ
   })
   assert.deepEqual(result, { pid: 22500, ready: true })
   assert.equal(poll, 3)
+})
+
+test('terminatePidAndWait waits for process exit and daemon lock release', async () => {
+  const calls = []
+  let alive = true
+  let lockHeld = true
+  const result = await terminatePidAndWait({
+    pid: 22470,
+    timeoutMs: 1000,
+    pollMs: 1,
+    killPid: (pid, signal) => calls.push(`kill:${pid}:${signal}`),
+    isPidAlive: () => {
+      calls.push('alive?')
+      if (calls.filter(call => call === 'alive?').length >= 3) alive = false
+      return alive
+    },
+    inspectLock: () => {
+      calls.push('lock?')
+      if (!alive) lockHeld = false
+      return lockHeld ? { held: true, holder: { pid: 22470 } } : { held: false, holder: { pid: 22470 } }
+    },
+    sleep: async () => {},
+  })
+  assert.equal(result, true)
+  assert.equal(calls[0], 'kill:22470:SIGTERM')
+  assert.equal(calls.filter(call => call === 'alive?').length, 3)
+})
+
+test('terminatePidAndWait fails while the old daemon still holds the singleton lock', async () => {
+  await assert.rejects(
+    terminatePidAndWait({
+      pid: 22470,
+      timeoutMs: 5,
+      pollMs: 1,
+      killPid: () => {},
+      isPidAlive: () => true,
+      inspectLock: () => ({ held: true, holder: { pid: 22470 } }),
+      sleep: async () => {},
+    }),
+    /still alive and holding target daemon lock/,
+  )
 })
 
 test('readiness timeout routes to fallback when launchd pid appears but readiness never arrives', async () => {

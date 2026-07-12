@@ -102,6 +102,49 @@ export function daemonReadyLogEvidence(logText, { pid, server, machineId, envNam
   return false
 }
 
+export async function terminatePidAndWait({
+  pid,
+  timeoutMs = 10_000,
+  pollMs = 100,
+  signal = 'SIGTERM',
+  killPid = (targetPid, targetSignal) => process.kill(targetPid, targetSignal),
+  isPidAlive = (targetPid) => {
+    try {
+      process.kill(targetPid, 0)
+      return true
+    } catch (e) {
+      if (e?.code === 'ESRCH') return false
+      throw e
+    }
+  },
+  inspectLock = () => ({ held: false, holder: {} }),
+  sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms)),
+} = {}) {
+  if (!Number.isFinite(pid) || pid <= 0) {
+    throw new Error(`daemon termination needs a positive pid, got ${pid}`)
+  }
+
+  try {
+    killPid(pid, signal)
+  } catch (e) {
+    if (e?.code !== 'ESRCH') throw e
+  }
+
+  const deadline = Date.now() + timeoutMs
+  let lastReason = 'process still alive'
+  while (Date.now() < deadline) {
+    const alive = isPidAlive(pid)
+    const lock = inspectLock()
+    const heldByPid = !!(lock?.held && lock?.holder?.pid === pid)
+    if (!alive && !heldByPid) return true
+    if (alive && heldByPid) lastReason = `pid ${pid} still alive and holding target daemon lock`
+    else if (alive) lastReason = `pid ${pid} still alive`
+    else lastReason = `pid ${pid} exited but target daemon lock is still held by that pid`
+    await sleep(pollMs)
+  }
+  throw new Error(`timed out waiting for daemon pid ${pid} to stop: ${lastReason}`)
+}
+
 export async function pollTargetDaemonReadiness({
   previousPid = null,
   timeoutMs = DEFAULT_SUPERVISED_START_TIMEOUT_MS,
