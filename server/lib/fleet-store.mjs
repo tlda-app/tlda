@@ -33,6 +33,7 @@ import { createTaskDocMaterializer } from './task-doc-materializer.mjs';
 // Excluded from Spotlight via a .metadata_never_index file next to the DB.
 const DB_PATH = path.join(os.homedir(), '.config', 'tlda', 'fleet.db');
 const FLEET_DIR = path.join(os.homedir(), '.fleet');
+const WIRETAP_EVENT_TYPES = new Set(['chat', 'delegate', 'task_done']);
 
 function compareAgentsForRoster(a, b) {
   const ts = (x) => x ? new Date(x).getTime() || 0 : 0;
@@ -1098,8 +1099,10 @@ export class FleetStore {
       read: false,
     };
 
-    // Resolve wiretaps for ALL event types (not just chat)
-    if (inserted.from_id && inserted.to_id) {
+    // Wiretap subscriptions are user-visible message notifications. Activity
+    // and delivery bookkeeping are high-volume telemetry; routing them through
+    // every subscriber creates notification storms and event-loop lag.
+    if (WIRETAP_EVENT_TYPES.has(inserted.type) && inserted.from_id && inserted.to_id) {
       const wiretapAgents = this.resolveWiretaps(inserted.from_id, inserted.to_id, inserted.type)
       if (wiretapAgents.length > 0) {
         // metadata can arrive as an unparsed JSON string (e.g. daemon_warning

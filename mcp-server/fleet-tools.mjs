@@ -4699,7 +4699,7 @@ async function handleChannelMessage(msg) {
   // Dashboard WS sends { event: 'fleet-event', data: {...} } or state updates
   const eventType = msg.event === 'fleet-event' ? (msg.data?.type || '') : '';
   if (!eventType) return;
-  if (!['chat', 'delegate', 'task_done', 'activity'].includes(eventType)) return;
+  if (!['chat', 'delegate', 'task_done'].includes(eventType)) return;
 
   const data = msg.data || {};
 
