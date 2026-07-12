@@ -15,6 +15,9 @@ export function flattenAvailableSpawnModels(capabilities) {
       models.push({
         alias: model.alias,
         kind: harness.kind || null,
+        group: model.group || harness.kind || null,
+        level: typeof model.level === 'number' ? model.level : null,
+        description: typeof model.description === 'string' ? model.description : '',
         options: model.options && typeof model.options === 'object' ? model.options : {},
       })
     }
@@ -27,7 +30,7 @@ export function flattenAvailableSpawnModels(capabilities) {
 
   return {
     aliases,
-    models,
+    models: models.sort((a, b) => String(a.group || '').localeCompare(String(b.group || '')) || (a.level ?? 0) - (b.level ?? 0) || a.alias.localeCompare(b.alias)),
     defaultAlias,
     machine: capabilities?.machine || null,
     generated_at: capabilities?.generated_at || null,

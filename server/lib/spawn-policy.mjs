@@ -1,4 +1,3 @@
-import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 
@@ -16,151 +15,39 @@ import { basename, join, resolve } from 'node:path'
 // own sandbox API value, mapped at the fleet-spawn boundary, not here.
 const PERMISSION_NAMES = new Set(['none', 'read', 'write', 'tlda-write', 'full'])
 
-// The fence directory-region each coarse name maps to. These region names
-// (cwd / tlda-projects / unsandboxed) are the FENCE's own vocabulary for
-// directory scopes — not a second permission vocabulary — and follow the name.
-// This is a flat label→region dictionary, NOT an ordered ladder: nothing here
-// ranks or compares names. It exists only so normalizeSpawnPolicy can emit a
-// coherent `.policy` field once policyForPermissionSet has named the region set.
-const REGION_FOR_PERMISSION = {
-  none: 'cwd',
-  read: 'cwd',
-  write: 'cwd',
-  'tlda-write': 'tlda-projects',
-  full: 'unsandboxed',
-}
-
 export const ROOT_PERMISSION = 'full'
 
-// Interpret an old-vocabulary (permission, region) pair into a four-name rung —
-// the ONE place legacy machine words are read. This is for PERSISTED data and
-// the operator's fence.json (which may still hold old words); it is NOT a
-// user-facing alias. The region disambiguates the legacy write / tlda-write
-// split (both were `workspace-write`). `workspace-write-no-net` → write: net is
-// now always on, so old no-net rows correctly gain net. Returns a rung or null.
-// Removable once every live agent and fence.json use the current names.
-function legacyRung(permission, region) {
-  const raw = String(permission ?? '').trim().toLowerCase()
-  if (PERMISSION_NAMES.has(raw)) return raw // already a coarse permission name
-  const reg = region == null ? null : String(region).trim().toLowerCase()
-  if (raw === 'read-only') return 'read'
-  if (raw === 'full-access') return 'full'
-  if (raw === 'workspace-write' || raw === 'workspace-write+net' || raw === 'workspace-write-no-net') {
-    return reg === 'tlda-projects' ? 'tlda-write' : 'write'
-  }
-  return null
-}
-
-// The named fence configurations are the BUILT-IN DEFAULTS. The operator
-// owns them and may override or add to them in the fence config file
-// (~/.config/tlda/fence.json, key "policies"; or $TLDA_FENCE_CONFIG). That FILE
-// is the source of truth — this map is only the fallback when it is absent, so
-// behavior with no file is identical to before.
-const BUILTIN_SPAWN_POLICY_OPTIONS = {
-  read: { permission: 'read', policy: 'cwd', category: 'write-scope' },
-  write: { permission: 'write', policy: 'cwd', category: 'write-scope' },
-  'tlda-write': { permission: 'tlda-write', policy: 'tlda-projects', category: 'write-scope' },
-  full: { permission: 'full', policy: 'unsandboxed', category: 'write-scope' },
-}
-
-function loadFenceConfigPolicies() {
-  const path = process.env.TLDA_FENCE_CONFIG || join(homedir(), '.config', 'tlda', 'fence.json')
-  let text
-  try {
-    text = readFileSync(path, 'utf8')
-  } catch (err) {
-    if (err.code === 'ENOENT') return {} // absent → built-in defaults, the normal case
-    // Present but unreadable is a real misconfiguration; surface it, don't bury it.
-    process.stderr.write(`[spawn-policy] cannot read fence config ${path}: ${err.message}\n`)
-    return {}
-  }
-  let parsed
-  try {
-    parsed = JSON.parse(text)
-  } catch (err) {
-    process.stderr.write(`[spawn-policy] fence config ${path} is not valid JSON: ${err.message}\n`)
-    return {}
-  }
-  const policies = parsed && typeof parsed === 'object' ? parsed.policies : null
-  return policies && typeof policies === 'object' && !Array.isArray(policies) ? policies : {}
-}
-
-function buildSpawnPolicyOptions() {
-  const merged = {}
-  for (const [name, def] of Object.entries(BUILTIN_SPAWN_POLICY_OPTIONS)) merged[name] = { ...def }
-  // Valid fence region names — the values REGION_FOR_PERMISSION can produce plus
-  // the regions the fence's own sandbox resolver (permissions.mjs SANDBOX_POLICIES)
-  // accepts as write-scope policies. 'no-dev' is a valid sandbox policy but not
-  // a write-scope region, so it is excluded here.
-  const VALID_REGIONS = new Set(['cwd', 'tlda-projects', 'unsandboxed'])
-  for (const [name, def] of Object.entries(loadFenceConfigPolicies())) {
-    if (!def || typeof def !== 'object' || Array.isArray(def)) continue
-    // The operator's fence.json may still describe a policy in OLD vocabulary
-    // (permission `full-access`, writeScope `unsandboxed`). Normalize it to a
-    // four-name rung so a stale config can't reintroduce machine vocabulary.
-    const cap = legacyRung(def.permission, def.policy ?? def.writeScope)
-      || (PERMISSION_NAMES.has(name) ? name : merged[name]?.permission)
-    if (!cap || !PERMISSION_NAMES.has(cap)) continue
-    // Use the operator's configured region when it is a recognized fence region,
-    // falling back to the name-derived default. This fixes the "config thrown
-    // out" bug where every policy was force-derived from REGION_FOR_PERMISSION[cap]
-    // regardless of what the operator wrote in fence.json.
-    const operatorRegion = (def.policy ?? def.writeScope ?? '')
-    const region = VALID_REGIONS.has(operatorRegion) ? operatorRegion : REGION_FOR_PERMISSION[cap]
-    merged[name] = { permission: cap, policy: region, category: 'write-scope' }
-  }
-  return merged
-}
-
-export const SPAWN_POLICY_OPTIONS = buildSpawnPolicyOptions()
-
-export function resolveSpawnPolicyOption(value) {
-  if (value == null || value === '') return null
-  const raw = String(value).trim().toLowerCase()
-  if (SPAWN_POLICY_OPTIONS[raw]) return { name: raw, ...SPAWN_POLICY_OPTIONS[raw] }
-  return null
-}
-
-export function normalizePermission(value, fallback = null) {
+export function normalizePermission(value) {
   if (value == null || value === '') {
-    if (fallback == null) return null
-    return normalizePermission(fallback)
+    throw new Error('spawn permission is required')
   }
   const raw = String(value).trim().toLowerCase()
-  const cap = resolveSpawnPolicyOption(raw)?.permission || legacyRung(raw, null) || raw
-  if (!PERMISSION_NAMES.has(cap)) {
+  if (!PERMISSION_NAMES.has(raw)) {
     throw new Error(`unknown spawn permission "${value}"`)
   }
-  return cap
+  return raw
 }
 
-// Normalize any input into a coherent spawn policy. The region is DERIVED from
-// the coarse name (REGION_FOR_PERMISSION), so the result is always coherent — a
-// custom fence.json option may override the region, but the built-in names never
-// disagree with their region. `network:false` (the only modifier) is carried
-// through when explicitly present; otherwise net is on.
-export function normalizeSpawnPolicy(value, fallback = null) {
+// Spawn policy is a resolved daemon-config object. The code validates it but does
+// not infer a region from a permission name.
+export function normalizeSpawnPolicy(value) {
   if (value == null || value === '') {
-    if (fallback == null) return null
-    return normalizeSpawnPolicy(fallback)
+    throw new Error('spawn policy is required')
   }
 
   if (typeof value === 'string') {
-    const option = resolveSpawnPolicyOption(value)
-    if (option) return { name: option.name, permission: option.permission, policy: option.policy, category: 'write-scope' }
-    const permission = normalizePermission(value)
-    return { name: permission, permission, policy: REGION_FOR_PERMISSION[permission], category: 'write-scope' }
+    throw new Error('spawn policy must include a configured permission and region')
   }
 
   if (typeof value !== 'object' || Array.isArray(value)) {
     throw new Error(`unknown spawn policy "${value}"`)
   }
 
-  const option = value.name ? resolveSpawnPolicyOption(value.name) : null
-  const permission = normalizePermission(value.permission || option?.permission)
-  const policy = String(option?.policy || REGION_FOR_PERMISSION[permission] || '').trim().toLowerCase()
+  const permission = normalizePermission(value.permission)
+  const policy = String(value.policy || '').trim().toLowerCase()
+  if (!policy) throw new Error('spawn policy region is required')
   return {
-    name: option?.name || permission,
+    name: value.name || permission,
     permission,
     policy,
     category: 'write-scope',
@@ -205,36 +92,31 @@ export function regionPolicyFromSet(set) {
   return { name: policy, policy }
 }
 
-// Coerce any stored/legacy grant blob (or a bare string) into a region policy
-// { name, policy } where policy is a fence region. Reads the `policy` region straight
-// off new region-only blobs; maps legacy level words (from grants stored before the
-// strip, or an operator string) to their region for compatibility. No level survives
-// in the output.
+// Stored grants use only current fence region names. Older permission vocabulary
+// must be migrated before startup; it is not interpreted at runtime.
 const REGION_SCOPES = new Set(['cwd', 'tlda-projects', 'unsandboxed', 'no-dev'])
-const LEGACY_LEVEL_REGION = {
-  machine: 'unsandboxed', '**': 'unsandboxed', full: 'unsandboxed', 'full-access': 'unsandboxed',
-  'tlda-write': 'tlda-projects', write: 'cwd', 'workspace-write': 'cwd', read: 'cwd', 'read-only': 'cwd', none: 'cwd',
-}
 function regionOf(raw) {
   const s = String(raw || '').trim().toLowerCase()
   if (REGION_SCOPES.has(s)) return s
-  return LEGACY_LEVEL_REGION[s] || null
+  return null
 }
-export function normalizeRegionPolicy(value, fallback = 'cwd') {
-  if (value == null || value === '') return { name: fallback, policy: regionOf(fallback) || 'cwd' }
+export function normalizeRegionPolicy(value) {
+  if (value == null || value === '') throw new Error('spawn policy region is required')
   if (typeof value === 'string') {
-    const policy = regionOf(value) || 'cwd'
+    const policy = regionOf(value)
+    if (!policy) throw new Error(`unknown spawn policy region "${value}"`)
     return { name: value.trim().toLowerCase(), policy }
   }
   if (typeof value === 'object' && !Array.isArray(value)) {
-    const policy = regionOf(value.policy) || regionOf(value.permission) || regionOf(fallback) || 'cwd'
+    const policy = regionOf(value.policy)
+    if (!policy) throw new Error('spawn policy region is required')
     return {
       name: value.name || policy,
       policy,
       ...(value.network === false ? { network: false } : {}),
     }
   }
-  return { name: fallback, policy: 'cwd' }
+  throw new Error(`unknown spawn policy region "${value}"`)
 }
 
 // Optional model cap from the resolved daemon model spec. There is no code-owned
@@ -395,13 +277,14 @@ export function permissionSetFromPolicy(policyValue, { name, cwd, project } = {}
   }
 }
 
-export function emptyPermissionSet({ name = 'none', projectedPolicy = 'none' } = {}) {
+export function emptyPermissionSet({ name = 'none', projectedPolicy } = {}) {
+  if (!projectedPolicy) throw new Error('empty permission set requires a resolved spawn policy')
   return {
     type: 'permission-set',
     name,
     operations: emptyPermissionOperations(),
     rules: [],
-    projectedPolicy: normalizeSpawnPolicy(projectedPolicy, 'none'),
+    projectedPolicy: normalizeSpawnPolicy(projectedPolicy),
     compiledFrom: 'empty-permission-set',
   }
 }
@@ -534,7 +417,7 @@ function isMachineZone(zone) {
 // explicit tlda-projects write ⇒ tlda-write; any other write ⇒ write; read-only
 // ⇒ read; nothing ⇒ none. This is the canonical way to name an INTERSECTED
 // region set (the real fence input) for display and sandbox-region selection.
-function derivedPolicyFromRegionSet(permissions, name, fallback = null) {
+function derivedPolicyFromRegionSet(permissions, name) {
   const writeAllow = permissions.operations?.write?.allow || []
   const readAllow = permissions.operations?.read?.allow || []
   const permission = writeAllow.some(isMachineZone)
@@ -546,16 +429,17 @@ function derivedPolicyFromRegionSet(permissions, name, fallback = null) {
         : readAllow.length
           ? 'read'
           : 'none'
-  return { ...normalizeSpawnPolicy(permission, fallback), ...(name ? { name } : {}) }
+  const region = regionPolicyFromSet(permissions)
+  return { name: name || permission, permission, policy: region.policy, category: 'write-scope' }
 }
 
 // Name a permission set as a coarse policy. A daemon.yaml (or builtin) profile
 // already carries a `projectedPolicy` computed from its regions at
 // normalization; honor it. Otherwise derive the name from the set's own region
 // zones — no rung ladder, no parallel profile map.
-function policyForPermissionSet(permissions, fallback = null) {
-  if (permissions.projectedPolicy) return normalizeSpawnPolicy(permissions.projectedPolicy, fallback)
-  return derivedPolicyFromRegionSet(permissions, null, fallback)
+function policyForPermissionSet(permissions) {
+  if (permissions.projectedPolicy) return normalizeRegionPolicy(permissions.projectedPolicy)
+  return derivedPolicyFromRegionSet(permissions, null)
 }
 
 function normalizedPath(value) {
@@ -767,9 +651,8 @@ export function resolveSpawnGrant({
       : projectPermissionSet)
 
   const modelPermissionSet = modelCeilingPermissionSet(config, { modelCap, cwd, project })
-  const spawnerPermissionSet = explicitSpawnerPermissionSet
-    ? materializePermissionSet(explicitSpawnerPermissionSet, { cwd, project })
-    : allMachineSet() // root/direct fallback; real callers always pass their explicit set
+  if (!explicitSpawnerPermissionSet) throw new Error('spawner permission set is required from the daemon ledger')
+  const spawnerPermissionSet = materializePermissionSet(explicitSpawnerPermissionSet, { cwd, project })
 
   const grantedPermissionSet = intersectPermissionSets([
     materializePermissionSet(requestedPermissionSet, { cwd, project }),
@@ -784,8 +667,5 @@ export function resolveSpawnGrant({
 }
 
 export function resolveDirectSpawnGrant(options = {}) {
-  return resolveSpawnGrant({
-    ...options,
-    spawnerPermissionSet: options.spawnerPermissionSet || allMachineSet('root'),
-  })
+  return resolveSpawnGrant(options)
 }

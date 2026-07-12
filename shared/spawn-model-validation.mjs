@@ -5,6 +5,10 @@ export function normalizeSpawnModelCatalog(catalog) {
       alias: String(m?.alias || '').trim(),
       id: String(m?.id || '').trim(),
       kind: String(m?.kind || '').trim().toLowerCase(),
+      group: String(m?.group || m?.kind || '').trim(),
+      level: typeof m?.level === 'number' ? m.level : null,
+      description: typeof m?.description === 'string' ? m.description : '',
+      options: m?.options && typeof m.options === 'object' ? m.options : {},
       available: m?.available !== false,
       verified: m?.verified !== false,
     }))
@@ -18,11 +22,12 @@ export function groupSpawnModels(catalog, { verifiedOnly = false, kind = null } 
     if (!model.available) continue
     if (verifiedOnly && !model.verified) continue
     if (wantedKind && model.kind !== wantedKind) continue
-    if (!grouped.has(model.kind)) grouped.set(model.kind, [])
-    grouped.get(model.kind).push(model)
+    const group = model.group || model.kind
+    if (!grouped.has(group)) grouped.set(group, [])
+    grouped.get(group).push(model)
   }
   for (const entries of grouped.values()) {
-    entries.sort((a, b) => a.alias.localeCompare(b.alias))
+    entries.sort((a, b) => (a.level ?? 0) - (b.level ?? 0) || a.alias.localeCompare(b.alias))
   }
   return grouped
 }

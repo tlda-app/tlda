@@ -3,14 +3,13 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
-import { GOOSE_VERIFIED, listModels } from './models.mjs'
+import { listModels } from './models.mjs'
 import { readConfig } from './identity.mjs'
 import { readDaemonConfig, readDaemonConfigForCwd, withDaemonModelAliases } from './permission-ledger.mjs'
 
 const execFileP = promisify(execFile)
 const DEFAULT_TIMEOUT_MS = 2500
 const CURSOR_AGENT_COMMAND = path.join(os.homedir(), '.local/bin/cursor-agent')
-const CLAUDE_EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max']
 
 function okResult(extra = {}) {
   return { ok: true, ...extra }
@@ -95,10 +94,11 @@ function modelRows(kind, config, { cursorAvailable = true } = {}) {
       available: model.available !== false && (kind !== 'goose' || (model.verified !== false && (!model.id.startsWith('cursor-agent/') || cursorAvailable))),
       verified: model.verified,
       provider: model.provider,
+      group: model.group,
+      level: model.level,
+      description: model.description,
       tags: model.tags,
-      options: kind === 'claude'
-        ? { effort: CLAUDE_EFFORT_LEVELS }
-        : {},
+      options: model.options || {},
     }))
 }
 
@@ -151,13 +151,13 @@ export async function probeSpawnAvailability({ cwd = null, env = process.env, no
       authenticated: gooseAuth,
       available: !!(goosePath && gooseAuth.ok),
       models: modelRows('goose', config, { cursorAvailable }),
-      verified: [...GOOSE_VERIFIED].sort(),
     },
   }
   return {
     schema: 1,
     machine: os.hostname().split('.')[0],
     generated_at: now.toISOString(),
+    default: config.defaultAlias ? { alias: config.defaultAlias } : (config.modelCatalog?.default ? { alias: config.modelCatalog.default } : null),
     context: {
       cwd: contextCwd,
     },

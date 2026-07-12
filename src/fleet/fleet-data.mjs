@@ -551,8 +551,9 @@ export function respawnAgent(id) {
   return wsSend({ type: 'spawn', agent: id, respawn: true })
 }
 
-export function spawnAgent(model, doc, name, effort) {
-  return wsSend({ type: 'spawn', fresh: true, model, ...(doc ? { doc } : {}), ...(name ? { name } : {}), ...(effort ? { effort } : {}) })
+export function spawnAgent(model, doc, name, options = {}) {
+  const modelOptions = options && typeof options === 'object' && !Array.isArray(options) ? options : {}
+  return wsSend({ type: 'spawn', fresh: true, model, ...(doc ? { doc } : {}), ...(name ? { name } : {}), ...modelOptions })
 }
 
 export function renameAgent(id, name) {

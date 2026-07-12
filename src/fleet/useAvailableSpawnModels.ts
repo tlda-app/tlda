@@ -2,9 +2,21 @@ import { useEffect, useState } from 'react'
 // @ts-ignore — shared vanilla module used by server + frontend; lives in shared/ so the live image ships it.
 import { spawnModelsFromCapabilitiesResponse } from '../../shared/spawn-model-options.mjs'
 
+export type SpawnModelOptionSpec = {
+  default: string
+  values: Record<string, { options?: Record<string, SpawnModelOptionSpec> }>
+}
+
 export type AvailableSpawnModels = {
   aliases: string[]
-  models: Array<{ alias: string; kind: string | null; options: Record<string, string[]> }>
+  models: Array<{
+    alias: string
+    kind: string | null
+    group?: string | null
+    level?: number | null
+    description?: string
+    options: Record<string, SpawnModelOptionSpec>
+  }>
   defaultAlias: string
   machine: string | null
   route: string | null

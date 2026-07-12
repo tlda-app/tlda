@@ -110,45 +110,7 @@ export function createHarnessRuntime({ tmuxArgs = [], log }) {
   }
 
   async function resolveAgentKind(agent) {
-    const stored = agent?.metadata?.kind
-    if (!agent?.tmux_session) return (stored && harnessAdapters[stored]) ? stored : 'claude'
-    let paneOut = ''
-    try {
-      ;({ stdout: paneOut } = await execFileP('tmux',
-        [...TMUX_ARGS, 'list-panes', '-t', agent.tmux_session, '-F', '#{pane_pid}'],
-        { timeout: 3000, encoding: 'utf8' }))
-    } catch { return (stored && harnessAdapters[stored]) ? stored : 'claude' }
-    const panePids = paneOut.trim().split('\n').filter(Boolean)
-    if (!panePids.length) return (stored && harnessAdapters[stored]) ? stored : 'claude'
-    let psOut = ''
-    try {
-      ;({ stdout: psOut } = await execFileP('ps', ['-eo', 'pid,ppid,args'], { timeout: 5000, encoding: 'utf8' }))
-    } catch { return (stored && harnessAdapters[stored]) ? stored : 'claude' }
-    const childrenByPpid = new Map()
-    const argsByPid = new Map()
-    for (const line of psOut.split('\n')) {
-      const m = line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/)
-      if (!m) continue
-      const [, pid, ppid, args] = m
-      if (!childrenByPpid.has(ppid)) childrenByPpid.set(ppid, [])
-      childrenByPpid.get(ppid).push(pid)
-      argsByPid.set(pid, args)
-    }
-    const stack = [...panePids]
-    const seen = new Set()
-    while (stack.length) {
-      const pid = stack.pop()
-      if (seen.has(pid)) continue
-      seen.add(pid)
-      const args = argsByPid.get(pid)
-      if (args) {
-        if (harnessAdapters.codex.processRe.test(args)) return 'codex'
-        if (harnessAdapters.goose.processRe.test(args)) return 'goose'
-        if (harnessAdapters.claude.processRe.test(args)) return 'claude'
-      }
-      for (const child of (childrenByPpid.get(pid) || [])) stack.push(child)
-    }
-    return (stored && harnessAdapters[stored]) ? stored : 'claude'
+    return harnessForAgent(agent).kind
   }
 
   return {

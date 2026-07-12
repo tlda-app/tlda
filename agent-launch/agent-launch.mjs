@@ -98,7 +98,6 @@ export function createAgentLauncher({
     mode,
     requestedPermission,
     requestedPermissions,
-    policy,
     acknowledgeNoSecurity,
     callerRung,
     requester,
@@ -179,11 +178,9 @@ export function createAgentLauncher({
           ? { ...spawnConfig, spawnPolicy: { ...(spawnConfig?.spawnPolicy || {}), projectProfiles: { ...((spawnConfig?.spawnPolicy || {}).projectProfiles || {}), [resolvedCwd]: projectDefaultProfile } } }
           : spawnConfig
         grant = resolveSpawnGrant({
-          requestedPermission: requestedPermission || (policy != null ? 'write' : undefined),
+          requestedPermission,
           requestedPermissions,
-          callerRung,
           requester,
-          spawnerPolicy: spawnerGrant?.spawnPolicy,
           spawnerPermissionSet: spawnerGrant?.permissionSet,
           model: launchModel,
           kind: launchKind,
@@ -240,7 +237,6 @@ export function createAgentLauncher({
       requestedModel: model || null,
       launchModel: launchModel || null,
       requestedPermission: requestedPermission || null,
-      requestedPolicy: policy || null,
       hasRequestedPermissions: !!requestedPermissions,
       grantedPermission: grant.grantedPermission || null,
       grantedPolicy: grant.grantedPolicy || null,
@@ -282,7 +278,7 @@ export function createAgentLauncher({
           permissionMode: mode,
           spawnPolicy: grant.grantedPolicy,
           permissionSet: grant.grantedPermissionSet,
-          explicitPolicy: policy != null,
+          explicitPolicy: requestedPermission != null || requestedPermissions != null,
           acknowledgeNoSecurity: !!acknowledgeNoSecurity,
           machineId,
           tmuxSocket,

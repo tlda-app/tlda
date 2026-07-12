@@ -202,9 +202,19 @@ const COMMAND_HELP = {
 const VALUE_FLAGS = new Set([
   'server', 'dir', 'title', 'main', 'debounce', 'token', 'members', 'format',
   'session', 'target', 'timeout', 'id', 'book', 'worktree', 'port', 'browser',
-  'model', 'cwd', 'effort', 'mode', 'name',
+  'model', 'cwd', 'effort', 'mode', 'name', 'kind',
   'agent-id', 'policy', 'permissions', 'machine', 'limit', 'from', 'poll', 'config',
   'label', 'plist',
+])
+
+const SPAWN_BOOLEAN_FLAGS = new Set([
+  'fresh', 'refresh', 'enroll', 'i-like-to-live-dangerously', 'list-models',
+])
+
+const SPAWN_NON_MODEL_OPTION_FLAGS = new Set([
+  'agent-id', 'config', 'cwd', 'enroll', 'fresh', 'i-like-to-live-dangerously',
+  'kind', 'list-models', 'machine', 'mode', 'model', 'name', 'permissions',
+  'policy', 'refresh', 'server', 'session',
 ])
 
 function getFlag(name, defaultVal = null) {
@@ -2140,7 +2150,7 @@ function cmdCompletions() {
   const botSubs = BOT_COMMANDS.map(([name]) => `'${name}'`).join(' ')
   const agentSubs = [
     'list', 'mint', 'wake', 'move', 'set-mint-machine',
-    'check-ready', 'attach', 'hibernate', 'dismiss', 'permission', 'permissions',
+    'check-ready', 'attach', 'hibernate', 'dismiss', 'permission', 'permissions', 'models',
   ].map(s => `'${s}'`).join(' ')
   const configSubs = ['set', 'get', 'setup', 'mcp-setup', 'auth'].map(s => `'${s}'`).join(' ')
 
@@ -2152,6 +2162,103 @@ _tlda_projects() {
   local -a projects
   projects=(\${(f)"$(tlda doc list 2>/dev/null | sed 's/^ *//' | cut -d: -f1)"})
   _describe 'project' projects
+}
+
+_tlda_spawn_model_aliases() {
+  local -a models
+  models=(\${(f)"$(tlda agent models --json 2>/dev/null | node -e '
+let s=\"\"; process.stdin.on(\"data\", d => s += d); process.stdin.on(\"end\", () => {
+  try {
+    const c = JSON.parse(s || \"{}\");
+    for (const m of c.models || []) console.log(String(m.alias) + \":\" + String(m.description || m.id || m.alias));
+  } catch { /* completion probe failed: emit no model candidates */ }
+})')"})
+  _describe 'model' models
+}
+
+_tlda_spawn_model_arg() {
+  local i
+  for (( i = 1; i < \${#words}; i++ )); do
+    if [[ \${words[$i]} == "--model" ]]; then
+      echo \${words[$((i+1))]}
+      return
+    fi
+  done
+}
+
+_tlda_spawn_option_flags() {
+  local model="$(_tlda_spawn_model_arg)"
+  [[ -z "$model" ]] && return
+  local -a opts
+  opts=(\${(f)"$(tlda agent models --json 2>/dev/null | MODEL="$model" TLDA_COMP_WORDS="\${(pj:\n:)words}" node -e '
+let s=\"\"; process.stdin.on(\"data\", d => s += d); process.stdin.on(\"end\", () => {
+  try {
+    const c = JSON.parse(s || \"{}\");
+    const m = (c.models || []).find(x => x.alias === process.env.MODEL);
+    const words = (process.env.TLDA_COMP_WORDS || \"\").split(\"\\n\").filter(Boolean);
+    const kwargs = {};
+    for (let i = 0; i < words.length - 1; i++) if (words[i].startsWith(\"--\")) kwargs[words[i].slice(2)] = words[i + 1];
+    const active = {};
+    function visit(options) {
+      for (const [name, spec] of Object.entries(options || {})) {
+        active[name] = spec;
+        const value = kwargs[name] || spec.default;
+        const child = spec.values?.[value]?.options;
+        if (child) visit(child);
+      }
+    }
+    visit(m?.options || {});
+    for (const name of Object.keys(active)) console.log(\"--\" + name + \":\" + name);
+  } catch { /* completion probe failed: emit no option flags */ }
+})')"})
+  _describe 'model option' opts
+}
+
+_tlda_spawn_option_values() {
+  local flag="\${words[$((CURRENT-1))]#--}"
+  local model="$(_tlda_spawn_model_arg)"
+  [[ -z "$model" || -z "$flag" ]] && return
+  local -a vals
+  vals=(\${(f)"$(tlda agent models --json 2>/dev/null | MODEL="$model" OPT="$flag" TLDA_COMP_WORDS="\${(pj:\n:)words}" node -e '
+let s=\"\"; process.stdin.on(\"data\", d => s += d); process.stdin.on(\"end\", () => {
+  try {
+    const c = JSON.parse(s || \"{}\");
+    const m = (c.models || []).find(x => x.alias === process.env.MODEL);
+    const words = (process.env.TLDA_COMP_WORDS || \"\").split(\"\\n\").filter(Boolean);
+    const kwargs = {};
+    for (let i = 0; i < words.length - 1; i++) if (words[i].startsWith(\"--\")) kwargs[words[i].slice(2)] = words[i + 1];
+    const active = {};
+    function visit(options) {
+      for (const [name, spec] of Object.entries(options || {})) {
+        active[name] = spec;
+        const value = kwargs[name] || spec.default;
+        const child = spec.values?.[value]?.options;
+        if (child) visit(child);
+      }
+    }
+    visit(m?.options || {});
+    const opt = active[process.env.OPT];
+    for (const value of Object.keys(opt?.values || {})) console.log(value + (value === opt.default ? \":default\" : \"\"));
+  } catch { /* completion probe failed: emit no option values */ }
+})')"})
+  _describe "$flag" vals
+}
+
+_tlda_agent_spawn_args() {
+  if [[ \${words[$((CURRENT-1))]} == "--model" ]]; then
+    _tlda_spawn_model_aliases
+    return
+  fi
+  if [[ \${words[$((CURRENT-1))]} == --* ]]; then
+    _tlda_spawn_option_values
+    return
+  fi
+  if [[ \${words[$CURRENT]} == --* ]]; then
+    local -a base=(--model --cwd --permissions --permission)
+    _describe 'option' base
+    _tlda_spawn_option_flags
+    return
+  fi
 }
 
 _tlda() {
@@ -2193,8 +2300,16 @@ ${commandEntries}
           _describe 'subcommand' subs
           ;;
         agent)
-          local -a subs=(${agentSubs})
-          _describe 'subcommand' subs
+          if (( CURRENT == 2 )); then
+            local -a subs=(${agentSubs})
+            _describe 'subcommand' subs
+          else
+            case $words[2] in
+              mint|wake|enroll)
+                _tlda_agent_spawn_args
+                ;;
+            esac
+          fi
           ;;
         config)
           local -a subs=(${configSubs})
@@ -2428,7 +2543,7 @@ async function runFleetSpawn(spawnArgs) {
   const session = flagFromRaw(spawnArgs, 'session')
   const refresh = hasRawFlag(spawnArgs, 'refresh')
   const fresh = hasRawFlag(spawnArgs, 'fresh')
-  const name = positionalFromRaw(spawnArgs, 0)
+  const name = spawnPositionalFromRaw(spawnArgs, 0)
   if (!name && !session) {
     console.error(red('Usage: tlda agent <create|wake> <agent> [--model model] [--cwd path] [--permissions <profile>] [--i-like-to-live-dangerously]'))
     process.exit(1)
@@ -2446,6 +2561,7 @@ async function runFleetSpawn(spawnArgs) {
   let ledger = null
   try {
     const daemonConfig = readDaemonConfig(defaultDaemonConfigPath(CONFIG_DIR))
+    const modelOptions = collectSpawnModelOptionsFromRaw(spawnArgs)
     // A named --permissions profile must be one the operator actually configured
     // in daemon.yaml. Unknown profile → loud error listing the real ones, never a
     // silent fallback.
@@ -2458,13 +2574,14 @@ async function runFleetSpawn(spawnArgs) {
     ledger = createPermissionLedger(permissionLedgerPathFromDaemonConfig(daemonConfig, CONFIG_DIR))
     applyDaemonGrants(ledger, daemonConfig)
     const config = withDaemonModelAliases(loadConfig(), daemonConfig)
-    applyGrandfatherInfill(ledger, { fleetDbPath: join(CONFIG_DIR, 'fleet.db'), config })
+    const localGrant = ledger.grantFor({ id: 'localhost' })
     const grant = resolveDirectSpawnGrant({
       requestedPermissions,
       model,
       kind,
       config,
       cwd,
+      spawnerPermissionSet: localGrant.permissionSet,
     })
     const spawnMode = session ? 'session' : (refresh ? 'refresh' : (fresh ? 'fresh' : 'respawn'))
     const suppliedAgentId = flagFromRaw(spawnArgs, 'agent-id') || undefined
@@ -2485,6 +2602,7 @@ async function runFleetSpawn(spawnArgs) {
       config,
       cwd,
       effort: flagFromRaw(spawnArgs, 'effort') || undefined,
+      modelOptions,
       permissionMode: flagFromRaw(spawnArgs, 'mode') || undefined,
       requestedPermission: grant.grantedPermission,
       requestedPermissions,
@@ -2546,6 +2664,42 @@ function flagFromRaw(rawArgs, name) {
 
 function hasRawFlag(rawArgs, name) {
   return rawArgs.includes(`--${name}`)
+}
+
+function spawnFlagTakesValue(name) {
+  return !SPAWN_BOOLEAN_FLAGS.has(name)
+}
+
+export function collectSpawnModelOptionsFromRaw(rawArgs) {
+  const modelOptions = {}
+  for (let i = 0; i < rawArgs.length; i++) {
+    const arg = rawArgs[i]
+    if (!arg.startsWith('--')) continue
+    const name = arg.slice(2)
+    if (!spawnFlagTakesValue(name)) continue
+    const next = rawArgs[i + 1]
+    const value = !next || next.startsWith('--') ? '' : next
+    if (!SPAWN_NON_MODEL_OPTION_FLAGS.has(name)) modelOptions[name] = value
+    if (value !== '') i++
+  }
+  return modelOptions
+}
+
+export function spawnPositionalFromRaw(rawArgs, index = 0) {
+  let pos = 0
+  for (let i = 0; i < rawArgs.length; i++) {
+    const a = rawArgs[i]
+    if (a.startsWith('--')) {
+      if (spawnFlagTakesValue(a.slice(2))) {
+        const next = rawArgs[i + 1]
+        if (next && !next.startsWith('--')) i++
+      }
+      continue
+    }
+    if (pos === index) return a
+    pos++
+  }
+  return null
 }
 
 function positionalFromRaw(rawArgs, index = 0) {
@@ -2794,7 +2948,7 @@ mint starts a FRESH agent; enroll adopts an already-running external session (ki
 required); wake brings back an existing hibernating agent. All are local-operator gated
 by machine access, and write the child grant to the daemon ledger.
 --permissions names one of the profiles above; no --permissions flag = unfenced.
-Set TLDA_DISABLE_PERMISSION_CLASSIFIER=1 or agentSandbox.disablePermissionsClassifier=true only as a mint/wake-time break-glass to launch Claude with --dangerously-skip-permissions.
+Set TLDA_DISABLE_PERMISSION_CLASSIFIER=1 only as a mint/wake-time break-glass to launch Claude with --dangerously-skip-permissions.
 move must be run on the agent's current daemon address; cross-box moves use SSH/rsync.
 set-mint-machine stores the caller's default mint machine in fleet prefs.
 The permissions command defaults to waking now; --on-wake stores only the next-wake profile.
@@ -3041,7 +3195,8 @@ function findCodexRolloutFiles(agent) {
 
 function moveArtifactsForAgent(agent) {
   const meta = normalizeAgentMetadata(agent.metadata)
-  const kind = meta.kind || 'claude'
+  const kind = meta.kind
+  if (!kind) throw new Error(`Agent ${agent.id} has no recorded harness kind; refusing to infer move artifacts`)
   if (kind === 'goose') {
     throw new Error('goose agent move is not implemented yet; goose session state is SQLite/data-dir based and needs a harness-specific exporter')
   }
@@ -3157,12 +3312,13 @@ async function cmdAgentMove() {
   })
 
   const meta = normalizeAgentMetadata(agent.metadata)
+  if (!meta.kind) throw new Error(`Agent ${agent.id} has no recorded harness kind; refusing to infer a wake command`)
   if (hasFlag('dry-run')) {
     console.log(`[dry-run] would move ${agent.friendly_name || agent.id} (${agent.id}) ${describeAgentAddress(sourceMachine, sourceEnv)} -> ${describeAgentAddress(targetMachine, targetEnv)}`)
     console.log(`  mode: ${sameBox ? 'same-box env relock' : 'cross-box rsync move'}`)
     if (artifacts.length) console.log(`  artifacts: ${artifacts.map(a => a.rel).join(', ')}`)
     console.log(`  hibernate: ${hibernateNameForAgent(agent, agentQuery)}`)
-    console.log(`  wake kind: ${meta.kind || 'claude'}`)
+    console.log(`  wake kind: ${meta.kind}`)
     console.log(`  wake config: ${targetEnv}`)
     return
   }
@@ -3283,6 +3439,29 @@ async function cmdAgentPermissions() {
   console.log(`Wake locally with: ${agentWakeSuggestion([spawnName, '--permissions', profileArg])}`)
 }
 
+async function cmdAgentModels() {
+  const { listModels } = await import('../agent-launch/models.mjs')
+  const daemonConfig = readDaemonConfig()
+  const catalog = listModels(withDaemonModelAliases(loadConfig(), daemonConfig))
+  if (hasFlag('json')) {
+    console.log(JSON.stringify(catalog, null, 2))
+    return
+  }
+  const groups = new Map()
+  for (const model of catalog.models || []) {
+    const group = model.group || model.kind || 'models'
+    if (!groups.has(group)) groups.set(group, [])
+    groups.get(group).push(model)
+  }
+  for (const [group, models] of [...groups.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+    const items = models
+      .sort((a, b) => (a.level ?? 0) - (b.level ?? 0) || a.alias.localeCompare(b.alias))
+      .map(model => model.alias === model.id ? model.alias : `${model.alias} -> ${model.id}`)
+    console.log(`${group}: ${items.join(', ')}`)
+  }
+  if (catalog.defaultAlias) console.log(`default: ${catalog.defaultAlias}`)
+}
+
 async function cmdAgent() {
   const sub = getPositional(0)
   if (!sub || (hasFlag('help') && sub !== 'permissions' && sub !== 'move' && sub !== 'set-mint-machine')) {
@@ -3302,8 +3481,9 @@ async function cmdAgent() {
     case 'hibernate': await hibernateAgent(getPositional(1)); break
     case 'dismiss':   await dismissAgent(getPositional(1)); break
     case 'permissions': await cmdAgentPermissions(); break
+    case 'models': await cmdAgentModels(); break
     default:
-      console.error('Usage: tlda agent <list|mint|enroll|wake|move|set-mint-machine|check-ready|attach|hibernate|dismiss|permissions> [name]')
+      console.error('Usage: tlda agent <list|mint|enroll|wake|move|set-mint-machine|check-ready|attach|hibernate|dismiss|permissions|models> [name]')
       process.exit(1)
   }
 }
@@ -4416,4 +4596,6 @@ Options: --server <url> · --dir <path> · --title "…" · --main file.tex`)
   }
 }
 
-main()
+if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
+  main()
+}

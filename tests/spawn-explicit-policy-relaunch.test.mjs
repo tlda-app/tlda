@@ -36,9 +36,6 @@ const config = {
       },
     },
   },
-  agentSandbox: {
-    runner: { command: '/usr/bin/env', args: ['zsh', '-lc', '{cmd}'] },
-  },
 }
 
 try {

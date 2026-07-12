@@ -1,28 +1,71 @@
 models:
-  claude:
-    opus: claude-opus-4-8[1m]
-    "*":
-      # Strongly recommended default: enables first-class fleet channel
-      # notifications. The tmux-only alternative works, but is janky
-      # (notably the Enter inconsistency), so do not choose it unless you
-      # explicitly accept that tradeoff.
+  default: terra
+  values:
+    opus:
+      id: opus
       harness:
+        kind: claude
+        # Strongly recommended default: enables first-class fleet channel
+        # notifications. The tmux-only alternative works, but is janky
+        # (notably the Enter inconsistency), so do not choose it unless you
+        # explicitly accept that tradeoff.
         required:
           - "--dangerously-load-development-channels server:tlda"
         preferences:
           - "--dangerously-skip-permissions"
         controls: true
-  codex:
-    gpt: gpt-5.5
-    sol: gpt-5.6-sol
-    luna: gpt-5.6-luna
-    terra: gpt-5.6-terra
-    "*":
+      group: claude
+      level: 4
+      description: Claude Opus
+      options: {}
+    gpt:
+      id: gpt-5.5
       harness:
+        kind: codex
         required: []
         preferences:
           - "--dangerously-bypass-approvals-and-sandbox"
         controls: true
+      group: codex
+      level: 1
+      description: Codex GPT
+      options: {}
+    sol:
+      id: gpt-5.6-sol
+      harness:
+        kind: codex
+        required: []
+        preferences:
+          - "--dangerously-bypass-approvals-and-sandbox"
+        controls: true
+      group: codex
+      level: 2
+      description: Codex Sol
+      options: {}
+    luna:
+      id: gpt-5.6-luna
+      harness:
+        kind: codex
+        required: []
+        preferences:
+          - "--dangerously-bypass-approvals-and-sandbox"
+        controls: true
+      group: codex
+      level: 3
+      description: Codex Luna
+      options: {}
+    terra:
+      id: gpt-5.6-terra
+      harness:
+        kind: codex
+        required: []
+        preferences:
+          - "--dangerously-bypass-approvals-and-sandbox"
+        controls: true
+      group: codex
+      level: 4
+      description: Codex Terra
+      options: {}
 
 servers: {}
 regions:

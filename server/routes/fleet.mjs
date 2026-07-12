@@ -449,6 +449,18 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   // For respawn: { agent: "fleet:xxx" or "name", respawn: true }
   router.post('/api/spawn', async (req, res) => {
     const { name, model, doc, cwd, agent, respawn, fresh, permission, spawnPermission, permissions, requestedPermissions, mode, effort, iLikeToLiveDangerously } = req.body || {}
+    const spawnReservedKeys = new Set([
+      'name', 'model', 'doc', 'cwd', 'agent', 'respawn', 'fresh', 'permission',
+      'spawnPermission', 'permissions', 'requestedPermissions', 'mode', 'effort',
+      'iLikeToLiveDangerously', 'modelOptions',
+    ])
+    const modelOptions = {
+      ...(req.body?.modelOptions && typeof req.body.modelOptions === 'object' && !Array.isArray(req.body.modelOptions) ? req.body.modelOptions : {}),
+      ...(effort ? { effort } : {}),
+    }
+    for (const [key, value] of Object.entries(req.body || {})) {
+      if (!spawnReservedKeys.has(key) && value != null && value !== '') modelOptions[key] = value
+    }
     // HTTP auth currently proves only bearer-token level, not which fleet agent or
     // human browser session made the request. Spawning is authority-sensitive, so
     // fail closed here instead of treating all HTTP callers as the server owner.
@@ -508,6 +520,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       const result = await sendRpc(route.machine_id, 'spawn', {
         name: resolved.name || undefined,
         model: model || undefined,
+        modelOptions,
         doc: doc || undefined,
         cwd: cwd || undefined,
         effort: effort || undefined,

@@ -35,8 +35,8 @@ export function resolveModelSelection(model, options = {}) {
   return resolveGooseModelSelection(model, options)
 }
 
-export function warnModel(model) {
-  if (gooseModelVerified(model)) return null
+export function warnModel(model, options = {}) {
+  if (gooseModelVerified(model, options)) return null
   return `Warning: '${model}' is not on the verified tool-calling list; it may narrate tool-calls as text instead of invoking them.`
 }
 

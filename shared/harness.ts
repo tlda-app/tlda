@@ -57,8 +57,8 @@ export function isKind(value: unknown): value is Kind {
   return typeof value === 'string' && value in HARNESS
 }
 
-export function normalizeKind(value: unknown, fallback: Kind = 'claude'): Kind {
+export function normalizeKind(value: unknown): Kind {
   const kind = normalize(value)
   if (isKind(kind)) return kind
-  return fallback
+  throw new Error(`Unknown harness kind: ${String(value)}`)
 }

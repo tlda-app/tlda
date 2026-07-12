@@ -27,22 +27,21 @@ function isNoneGrant(value) {
   return String(s).trim().toLowerCase() === 'none'
 }
 
-function normalizeLedgerGrant(value, fallback = 'none') {
+function normalizeLedgerGrant(value) {
   if (!value) {
-    const policy = normalizeRegionPolicy(fallback)
-    return { spawnPolicy: policy, permissionSet: emptyPermissionSet({ name: policy.name, projectedPolicy: policy }) }
+    throw new PermissionLedgerError('SPAWN_PERMISSION_LEDGER_MISSING_GRANT', 'permission ledger grant is required')
   }
   const rawPermissionSet = value.permissionSet || value.permissions || null
   if (rawPermissionSet) {
     // The region set IS the grant; its region scope is read off value.spawnPolicy (new
     // region blob or a legacy level blob) or derived from the set itself.
     const spawnPolicy = value.spawnPolicy
-      ? normalizeRegionPolicy(value.spawnPolicy, fallback)
+      ? normalizeRegionPolicy(value.spawnPolicy)
       : regionPolicyFromSet(rawPermissionSet)
-    return { spawnPolicy, permissionSet: withStoredSpawnDefault(rawPermissionSet, spawnPolicy) }
+    return { spawnPolicy, permissionSet: rawPermissionSet }
   }
   const raw = value.spawnPolicy || value.policy || value.permission || value
-  const spawnPolicy = normalizeRegionPolicy(raw, fallback)
+  const spawnPolicy = normalizeRegionPolicy(raw)
   return {
     spawnPolicy,
     permissionSet: isNoneGrant(raw)
@@ -226,122 +225,109 @@ function normalizeLegacyLedgerAgents(parsed) {
   return agents
 }
 
-function looksLikeDaemonModelRow(value) {
-  return !!value
-    && typeof value === 'object'
-    && !Array.isArray(value)
-    && (
-      value.id != null
-      || value.provider_model != null
-      || value.providerModel != null
-      || value.cap != null
-      || value.permission != null
-      || value.spawnPolicy != null
-      || value.model_cap != null
-      || value.harness != null
-      || value.launch != null
-      || value.required_flags != null
-      || value.requiredFlags != null
-      || value.preferences != null
-    )
+function normalizeChoiceOptions(options = {}, context = 'options') {
+  const source = options && typeof options === 'object' && !Array.isArray(options) ? options : {}
+  const out = {}
+  for (const [name, spec] of Object.entries(source)) {
+    const key = String(name || '').trim()
+    if (!key) continue
+    if (!spec || typeof spec !== 'object' || Array.isArray(spec)) {
+      throw new Error(`${context}.${key} must be an object with default and values`)
+    }
+    const values = spec.values && typeof spec.values === 'object' && !Array.isArray(spec.values)
+      ? spec.values
+      : null
+    if (!values) throw new Error(`${context}.${key}.values must be an object`)
+    const valueKeys = Object.keys(values).map(v => String(v).trim()).filter(Boolean)
+    if (!valueKeys.length) throw new Error(`${context}.${key}.values must not be empty`)
+    const defaultValue = String(spec.default || '').trim()
+    if (!defaultValue) throw new Error(`${context}.${key}.default is required`)
+    if (!Object.prototype.hasOwnProperty.call(values, defaultValue)) {
+      throw new Error(`${context}.${key}.default "${defaultValue}" is not in values`)
+    }
+    out[key] = {
+      default: defaultValue,
+      values: Object.fromEntries(Object.entries(values).map(([valueName, valueSpec]) => {
+        const valueKey = String(valueName || '').trim()
+        if (!valueKey) return null
+        const row = valueSpec && typeof valueSpec === 'object' && !Array.isArray(valueSpec) ? valueSpec : {}
+        return [valueKey, {
+          ...(row.description ? { description: String(row.description) } : {}),
+          ...(row.options ? { options: normalizeChoiceOptions(row.options, `${context}.${key}.values.${valueKey}.options`) } : {}),
+        }]
+      }).filter(Boolean)),
+    }
+  }
+  return out
 }
 
 function normalizeDaemonModelRows(models = {}) {
   const aliases = {}
   const harnessOptions = {}
   const modelSpecs = {}
-  function mergeHarnessOptions(harness, alias, row) {
-    const normalized = normalizeHarnessOptions(row)
-    const key = String(harness || '').trim().toLowerCase()
-    if (!key) return
-    harnessOptions[key] ||= {}
-    if (alias) harnessOptions[key][alias] = normalized
-    if (row?.id || row?.provider_model || row?.providerModel) {
-      harnessOptions[key][row.id || row.provider_model || row.providerModel] = normalized
-    }
-    return normalized
-  }
+  let defaultModel = null
   function addModelSpec(alias, provider, value, defaults = {}) {
     const row = typeof value === 'string' ? { id: value } : (value || {})
     if (!row || typeof row !== 'object' || Array.isArray(row)) return
     const key = String(alias || '').trim()
     if (!key || key === '*') return
-    const explicitProvider = String(row.provider || row.provider_name || provider || '').trim().toLowerCase()
-    const harness = String(row.kind || row.harness?.kind || row.harness_kind || row.launch?.kind || row.provider || defaults.harness || explicitProvider || '').trim().toLowerCase()
+    const explicitProvider = String(row.provider || row.provider_name || defaults.provider || provider || '').trim().toLowerCase()
+    const harness = String(row.kind || row.harness?.kind || row.harness_kind || row.launch?.kind || defaults.harness || '').trim().toLowerCase()
     if (!harness) throw new Error(`daemon model "${key}" must specify a harness/provider`)
     const id = row.id || row.provider_model || row.providerModel || (typeof value === 'string' ? value : null)
     if (!id) throw new Error(`daemon model "${key}" must specify an id/provider_model`)
     const cap = row.cap || row.permission || row.spawnPolicy || row.model_cap || null
     const ownHarnessOptions = normalizeHarnessOptions(row)
-    const inheritedHarnessOptions = defaults.harnessOptions || { required: [], preferences: [], controls: false }
+    const inheritedHarnessOptions = defaults.harnessOptions || { required: [], preferences: [], controls: false, options: {} }
+    const group = String(row.group || defaults.group || explicitProvider || harness).trim()
+    const level = row.level == null ? null : Number(row.level)
+    if (row.level != null && !Number.isFinite(level)) throw new Error(`daemon model "${key}" level must be numeric`)
     modelSpecs[key] = {
       alias: key,
       id: String(id),
       provider: explicitProvider || harness,
       harness,
+      group,
+      ...(level == null ? {} : { level }),
+      ...(typeof row.description === 'string' ? { description: row.description } : {}),
+      options: normalizeChoiceOptions(row.options, `models.values.${key}.options`),
       ...(Array.isArray(row.tags) ? { tags: row.tags } : {}),
+      ...(typeof row.available === 'boolean' ? { available: row.available } : {}),
+      ...(typeof row.verified === 'boolean' ? { verified: row.verified } : {}),
       ...(cap ? { cap } : {}),
-      harnessOptions: (ownHarnessOptions.required.length || ownHarnessOptions.preferences.length || ownHarnessOptions.controls)
+      harnessOptions: (ownHarnessOptions.required.length || ownHarnessOptions.preferences.length || ownHarnessOptions.controls || Object.keys(ownHarnessOptions.options).length)
         ? ownHarnessOptions
         : inheritedHarnessOptions,
     }
-    aliases[explicitProvider || harness] ||= {}
-    aliases[explicitProvider || harness][key] = {
+    const providerKey = explicitProvider || harness
+    aliases[providerKey] ||= {}
+    aliases[providerKey][key] = {
       id: String(id),
       ...(row.provider_alias ? { provider_alias: row.provider_alias } : {}),
       ...(Array.isArray(row.tags) ? { tags: row.tags } : {}),
     }
   }
-  for (const [key, value] of Object.entries(models || {})) {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) continue
-    if (!looksLikeDaemonModelRow(value)) {
-      const providerAliases = {}
-      const wildcardOptions = value['*'] && typeof value['*'] === 'object' && !Array.isArray(value['*'])
-        ? mergeHarnessOptions(key, '*', value['*'])
-        : { required: [], preferences: [], controls: false }
-      for (const [alias, entry] of Object.entries(value)) {
-        if (alias === '*') continue
-        if (typeof entry === 'string') {
-          providerAliases[alias] = entry
-          addModelSpec(alias, key, entry, { harness: key, harnessOptions: wildcardOptions })
-          continue
-        }
-        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue
-        mergeHarnessOptions(key, alias, entry)
-        const cap = entry.cap || entry.permission || entry.spawnPolicy || entry.model_cap
-        const id = entry.id || entry.provider_model || entry.providerModel
-        if (id) providerAliases[alias] = {
-          id,
-          ...(entry.provider_alias ? { provider_alias: entry.provider_alias } : {}),
-          ...(Array.isArray(entry.tags) ? { tags: entry.tags } : {}),
-        }
-        addModelSpec(alias, key, entry, { harness: key, harnessOptions: wildcardOptions })
-      }
-      if (Object.keys(providerAliases).length) aliases[key] = providerAliases
-      continue
+  const canonical = models
+    && typeof models === 'object'
+    && !Array.isArray(models)
+    && models.values
+    && typeof models.values === 'object'
+    && !Array.isArray(models.values)
+  if (canonical) {
+    defaultModel = String(models.default || '').trim() || null
+    if (!defaultModel) throw new Error('models.default is required when models.values is configured')
+    for (const [alias, entry] of Object.entries(models.values)) {
+      addModelSpec(alias, null, entry, {})
     }
-    const provider = String(value.provider || value.provider_name || value.harness || '').trim().toLowerCase()
-    const id = value.id || value.provider_model || value.providerModel || key
-    if (!provider) throw new Error(`daemon model "${key}" must specify provider/harness`)
-    aliases[provider] ||= {}
-    aliases[provider][key] = {
-      id,
-      ...(value.provider_alias ? { provider_alias: value.provider_alias } : {}),
-      ...(Array.isArray(value.tags) ? { tags: value.tags } : {}),
+    if (defaultModel && !modelSpecs[defaultModel]) {
+      throw new Error(`models.default "${defaultModel}" is not in models.values`)
     }
-    const cap = value.cap || value.permission || value.spawnPolicy || value.model_cap
-    const options = mergeHarnessOptions(provider, key, value)
-    modelSpecs[key] = {
-      alias: key,
-      id: String(id),
-      provider,
-      harness: provider,
-      ...(Array.isArray(value.tags) ? { tags: value.tags } : {}),
-      ...(cap ? { cap } : {}),
-      harnessOptions: options,
-    }
+    return { aliases, harnessOptions, modelSpecs, defaultModel }
   }
-  return { aliases, harnessOptions, modelSpecs }
+  if (Object.keys(models || {}).length) {
+    throw new Error('daemon models must use { default, values }')
+  }
+  return { aliases, harnessOptions, modelSpecs, defaultModel }
 }
 
 function stringList(value, label) {
@@ -354,33 +340,24 @@ function stringList(value, label) {
 function normalizeHarnessOptions(row = {}) {
   const source = row.harness || row.launch || row
   if (!source || typeof source !== 'object' || Array.isArray(source)) {
-    return { required: [], preferences: [], controls: false }
+    return { required: [], preferences: [], controls: false, options: {} }
   }
   const required = stringList(source.required || source.required_flags || source.requiredFlags, 'harness required flags')
   const preferences = stringList(source.preferences || source.preference_flags || source.preferenceFlags, 'harness preference flags')
   const controls = source.controls === false
     ? false
     : (source.controls === true || required.length > 0)
+  const options = source.options == null
+    ? {}
+    : Object.fromEntries(Object.entries(source.options).map(([name, values]) => [
+      String(name).trim(),
+      stringList(values, `harness option "${name}"`),
+    ]).filter(([name, values]) => name && values.length))
   return {
     required,
     preferences,
     controls,
-  }
-}
-
-function withStoredSpawnDefault(permissionSet, policy) {
-  if (!permissionSet || policy.permission === 'none') return permissionSet
-  if (permissionSet.operations?.spawn) return permissionSet
-  return {
-    ...permissionSet,
-    operations: {
-      ...permissionSet.operations,
-      spawn: { allow: ['**'], deny: [] },
-    },
-    rules: [
-      ...(permissionSet.rules || []),
-      { operation: 'spawn', effect: 'allow', zone: '**', line: null },
-    ],
+    options,
   }
 }
 
@@ -447,7 +424,6 @@ export function resolveGrandfatherGrant(agent, { config = {}, projects = [] } = 
   const project = projectForAgent(agent, projects)
   const metadata = agent.metadata || {}
   return resolveSpawnGrant({
-    spawnerPolicy: 'full',
     spawnerPermissionSet: allPermissionSet('grandfather-root-bound'),
     model: metadata.model || undefined,
     kind: metadata.kind || undefined,
@@ -602,7 +578,7 @@ export class PermissionLedger {
   rowFor(id, { spawnPolicy, permissionSet, source = 'spawn' } = {}) {
     const key = String(id || '').trim()
     if (!key) throw new Error('cannot persist daemon permission grant without fleet id')
-    const policy = normalizeRegionPolicy(spawnPolicy, 'cwd')
+    const policy = normalizeRegionPolicy(spawnPolicy)
     return {
       id: key,
       spawnPolicy: policy,
@@ -817,7 +793,7 @@ export function withDaemonModelAliases(config = {}, daemonConfig = {}) {
     ? daemonConfig.profiles
     : {}
   if (!Object.keys(daemonModels).length && !Object.keys(daemonProfiles).length) return config || {}
-  const { aliases, harnessOptions, modelSpecs } = normalizeDaemonModelRows(daemonModels)
+  const { aliases, harnessOptions, modelSpecs, defaultModel } = normalizeDaemonModelRows(daemonModels)
   const nextSpawnPolicy = {
     ...((config || {}).spawnPolicy || {}),
     ...(Object.keys(daemonProfiles).length ? {
@@ -832,6 +808,7 @@ export function withDaemonModelAliases(config = {}, daemonConfig = {}) {
   return {
     ...(config || {}),
     ...(Object.keys(modelSpecs).length ? { modelSpecs } : {}),
+    ...(Object.keys(modelSpecs).length ? { modelCatalog: { default: defaultModel, values: modelSpecs } } : {}),
     ...(Object.keys(aliases).length ? { models: aliases } : {}),
     ...(Object.keys(harnessOptions).length ? { harnessOptions } : {}),
     spawnPolicy: nextSpawnPolicy,
@@ -887,15 +864,15 @@ export function applyGrandfatherInfill(ledger, { agents = [], config = {}, proje
   return { considered: eligible.length, written, skippedExisting }
 }
 
-export function defaultPermissionLedgerPath(configDir = path.join(os.homedir(), '.config', 'tlda')) {
+export function defaultPermissionLedgerPath(configDir = process.env.TLDA_DAEMON_CONFIG_DIR || path.join(os.homedir(), '.config', 'tlda')) {
   return path.join(configDir, 'fleet-daemon.db')
 }
 
-export function defaultDaemonConfigPath(configDir = path.join(os.homedir(), '.config', 'tlda')) {
+export function defaultDaemonConfigPath(configDir = process.env.TLDA_DAEMON_CONFIG_DIR || path.join(os.homedir(), '.config', 'tlda')) {
   return path.join(configDir, 'daemon.yaml')
 }
 
-export function permissionLedgerPathFromDaemonConfig(daemonConfig = {}, configDir = path.join(os.homedir(), '.config', 'tlda')) {
+export function permissionLedgerPathFromDaemonConfig(daemonConfig = {}, configDir = process.env.TLDA_DAEMON_CONFIG_DIR || path.join(os.homedir(), '.config', 'tlda')) {
   return defaultPermissionLedgerPath(configDir)
 }
 

@@ -5,7 +5,6 @@ import { harnessStateWriteRoots } from './harness-state-roots.mjs'
 import { repoRoot } from './identity.mjs'
 
 const SANDBOX_POLICIES = new Set(['no-dev', 'cwd', 'tlda-projects', 'unsandboxed'])
-const BUILTIN_POLICY_NAMES = new Set(['read', 'write', 'tlda-write', 'full'])
 const DEFAULT_READ_ROOTS = []
 const DEFAULT_OPTIONS = { network: false, git: 'read', artifacts: true }
 const DEFAULT_TRUSTED_MCP_SERVERS = { tlda: { defaultToolsApprovalMode: 'approve' } }
@@ -20,12 +19,6 @@ const PLAYWRIGHT_CACHE_ROOT = path.join(os.homedir(), 'Library/Caches/ms-playwri
 const CHROME_FOR_TESTING_CRASHPAD_ROOT = path.join(os.homedir(), 'Library/Application Support/Google/Chrome for Testing/Crashpad')
 const TLDA_PW_RUNTIME_ROOT = '/tmp/tlda-pw-runtime'
 const TLDA_FENCE_TMP_ROOT = '/tmp/tlda-fence-env'
-const REGION_FOR_BUILTIN_POLICY = Object.freeze({
-  read: 'cwd',
-  write: 'cwd',
-  'tlda-write': 'tlda-projects',
-  full: 'unsandboxed',
-})
 
 function expandUser(value) {
   const str = String(value || '')
@@ -114,13 +107,6 @@ function deepMerge(base, override) {
   return out
 }
 
-function sandboxConfig(config = {}) {
-  const cfg = config.agentSandbox
-  if (cfg == null) return {}
-  if (typeof cfg !== 'object' || Array.isArray(cfg)) throw new Error('agentSandbox must be an object')
-  return cfg
-}
-
 function truthyEnv(value) {
   if (value == null || value === '') return false
   return !['0', 'false', 'off', 'no'].includes(String(value).trim().toLowerCase())
@@ -128,7 +114,6 @@ function truthyEnv(value) {
 
 function permissionClassifierDisabled(config = {}, env = process.env) {
   return truthyEnv(env.TLDA_DISABLE_PERMISSION_CLASSIFIER)
-    || sandboxConfig(config).disablePermissionsClassifier === true
 }
 
 function normalizeFlagList(value) {
@@ -180,27 +165,17 @@ export function assertLaunchHasSecurity({ leasePolicy, harnessOptions, acknowled
   throw new Error(`refusing to launch ${harness || 'agent'} with no security. This is the no-fence/no-harness-controls case; are you fucking sure? Pass --i-like-to-live-dangerously to acknowledge a wide-open launch.`)
 }
 
-function runnerFromConfig(cfg) {
-  const runner = cfg.runner
-  if (runner && typeof runner === 'object' && !Array.isArray(runner)) {
-    if (!runner.command || typeof runner.command !== 'string') throw new Error('agentSandbox.runner.command is required')
-    if (runner.args != null && !Array.isArray(runner.args)) throw new Error('agentSandbox.runner.args must be an array')
-    return runner
-  }
-  // Default runner: the in-repo permissive seatbelt (allow-all except secrets +
-  // scoped writes), NOT the old Go `fence` binary, which over-restricted — no `ps`,
-  // no `~/.fly`, no git worktrees — the 2026-07-02 reason the fence was disabled.
-  // It reads the lease from the `--settings` file (keeps the big JSON off the
-  // command line, under the tmux length cap).
+function defaultRunner() {
+  // The runner is implementation mechanics, not daemon config: there is one
+  // supported seatbelt wrapper unless product requirements add another.
   const seatbelt = path.join(repoRoot(), 'bin', 'fence-seatbelt.mjs')
   if (!fs.existsSync(seatbelt)) throw new Error(`required seatbelt runner is missing: ${seatbelt}`)
   return { command: seatbelt, args: ['--settings', '{settings_file}', '--', 'zsh', '-lc', '{cmd}'] }
 }
 
-function configPathList(cfg, key, fallback = []) {
-  let raw = cfg[key] ?? fallback
-  if (typeof raw === 'string') raw = [raw]
-  if (!Array.isArray(raw)) throw new Error(`agentSandbox.${key} must be a string or array`)
+function configPathList(value = []) {
+  const raw = typeof value === 'string' ? [value] : value
+  if (!Array.isArray(raw)) throw new Error('configured path list must be a string or array')
   return raw.filter((p) => typeof p === 'string' && p).map(abs)
 }
 
@@ -263,14 +238,6 @@ function projectSourceDirs(config = {}) {
   } catch {
     // Project-root discovery is best effort; explicit cwd policy still applies.
   }
-  const cfg = sandboxConfig(config)
-  let extra = cfg.extraProjectWriteRoots || []
-  if (typeof extra === 'string') extra = [extra]
-  if (Array.isArray(extra)) {
-    for (const p of extra) {
-      if (typeof p === 'string' && fs.existsSync(abs(p))) roots.push(abs(p))
-    }
-  }
   return [...new Set(roots)].sort()
 }
 
@@ -307,20 +274,18 @@ function resolvedPermissionZones(permissionSet, operation, effect, workspace) {
 // The fence REGION scope from a grant blob (or a bare region string). The grant now
 // carries only its region (`policy`), never a permission level.
 function regionScope(spawnPolicy) {
-  const raw = typeof spawnPolicy === 'string'
-    ? spawnPolicy
-    : (spawnPolicy && typeof spawnPolicy === 'object' ? spawnPolicy.policy : '')
+  if (!spawnPolicy || typeof spawnPolicy !== 'object' || Array.isArray(spawnPolicy)) {
+    throw new Error('resolved daemon spawn policy is required')
+  }
+  const raw = spawnPolicy.policy
   const s = String(raw || '').trim().toLowerCase()
   if (SANDBOX_POLICIES.has(s)) return s
-  if (BUILTIN_POLICY_NAMES.has(s)) return REGION_FOR_BUILTIN_POLICY[s]
-  if (s === 'machine' || s === '**' || s === '/' || s === 'unsandboxed') return 'unsandboxed'
-  throw new Error(`unknown agentSandbox policy "${raw}"`)
+  throw new Error(`unknown sandbox policy "${raw}"`)
 }
 
 export function resolveLeasePolicy({ spawnPolicy, permissionSet = null, harness, model, cwd, config = {}, env = process.env } = {}) {
-  if (!spawnPolicy) return { policyName: null, devTools: true, leasePolicy: null }
   const policyName = regionScope(spawnPolicy)
-  if (!SANDBOX_POLICIES.has(policyName)) throw new Error(`agentSandbox policy "${policyName}" is not valid`)
+  if (!SANDBOX_POLICIES.has(policyName)) throw new Error(`sandbox policy "${policyName}" is not valid`)
   const explicitPermissionSet = permissionSet && typeof permissionSet === 'object' && !Array.isArray(permissionSet)
   if (explicitPermissionSet) validateExplicitPermissionSet(permissionSet)
   if (policyName === 'unsandboxed' && !explicitPermissionSet) return { policyName, devTools: true, leasePolicy: null }
@@ -341,9 +306,7 @@ export function resolveLeasePolicy({ spawnPolicy, permissionSet = null, harness,
     writeRoots = roots
   }
 
-  const cfg = sandboxConfig(config)
-  const policyOptions = cfg.policyOptions && typeof cfg.policyOptions === 'object' ? cfg.policyOptions : {}
-  const options = deepMerge(DEFAULT_OPTIONS, policyOptions[policyName] || {})
+  const options = { ...DEFAULT_OPTIONS }
   // Read/write come straight off the region set (explicit grant) or the region (bare
   // policy) — no permission level. Any write-bearing grant gets git metadata; a
   // bare-policy write grant also gets the dev caches so a fenced job is never trapped.
@@ -376,12 +339,12 @@ export function resolveLeasePolicy({ spawnPolicy, permissionSet = null, harness,
   const readRoots = [...new Set([
     ...(explicitPermissionSet ? [] : [workspace]),
     ...(grantsAnything ? [PLAYWRIGHT_CACHE_ROOT, CHROME_FOR_TESTING_CRASHPAD_ROOT] : []),
-    ...(grantsAnything ? configPathList(cfg, 'readRoots', DEFAULT_READ_ROOTS) : []),
+    ...(grantsAnything ? configPathList(DEFAULT_READ_ROOTS) : []),
     ...explicitReadRoots,
     ...writeRoots,
   ].map(absOrPattern))].sort()
   writeRoots = [...new Set(writeRoots.map(absOrPattern))].sort()
-  const trusted = deepMerge(DEFAULT_TRUSTED_MCP_SERVERS, cfg.trustedMcpServers || {})
+  const trusted = deepMerge(DEFAULT_TRUSTED_MCP_SERVERS, {})
   return {
     policyName,
     devTools: true,
@@ -406,7 +369,7 @@ export function resolveLeasePolicy({ spawnPolicy, permissionSet = null, harness,
       broad_write: writeRoots.includes('**') || writeRoots.includes('/'),
       machine_write: writeRoots.includes('**') || writeRoots.includes('/'),
       trusted_mcp_servers: trusted,
-      runner: runnerFromConfig(cfg),
+      runner: defaultRunner(),
     },
   }
 }
@@ -429,7 +392,8 @@ export function resolveLaunchPolicy({
   // No hardcoded fallback: an un-granted agent has no fabricated policy. The grant
   // (already the intersection of project ∩ spawner ∩ model-ceiling region sets) is
   // passed in as spawnPolicy (its region scope) + permissionSet (its zones).
-  const requestedPolicy = spawnPolicy || requestedPermission || null
+  if (!spawnPolicy) throw new Error('resolved daemon spawn policy is required')
+  const requestedPolicy = spawnPolicy
   // Apply the specified policy. No opt-in gate, no global off-switch, no silent
   // waiver — the agent's grant IS the fence, and it is enforced as written. If there
   // is a policy to apply, apply it.
