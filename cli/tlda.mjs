@@ -4434,11 +4434,31 @@ async function inferProjectName() {
 
 // --- Ensure server is running ---
 
-async function ensureServer() {
+export function isLocalServerUrl(serverUrl) {
   try {
-    const res = await fetch(`${getServer()}/health`, { signal: AbortSignal.timeout(3000) })
-    if (res.ok) return
-  } catch {}
+    const host = new URL(serverUrl).hostname.toLowerCase()
+    return host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '0.0.0.0'
+  } catch {
+    return false
+  }
+}
+
+async function serverHealthOk(serverUrl, { timeoutMs = 3000 } = {}) {
+  for (const path of ['/health', '/api/health']) {
+    try {
+      const res = await fetch(`${serverUrl}${path}`, { signal: AbortSignal.timeout(timeoutMs) })
+      if (res.ok) return true
+    } catch {
+      // Expected probe miss: try the alternate health endpoint.
+    }
+  }
+  return false
+}
+
+async function ensureServer() {
+  const server = getServer()
+  if (!isLocalServerUrl(server)) return
+  if (await serverHealthOk(server)) return
 
   // Check if something is on the port (could be busy with a build)
   const port = getPort()
