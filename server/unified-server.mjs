@@ -165,12 +165,14 @@ const HOT_OP_WARN_MS = Number(process.env.TLDA_HOT_OP_WARN_MS || 50)
 const eventLoopDelay = monitorEventLoopDelay({ resolution: 20 })
 eventLoopDelay.enable()
 let lastEventLoopLag = { maxMs: 0, meanMs: 0, at: Date.now() }
+let lastHeartbeatLagAt = 0
 setInterval(() => {
   lastEventLoopLag = {
     maxMs: Number(eventLoopDelay.max) / 1e6,
     meanMs: Number(eventLoopDelay.mean) / 1e6,
     at: Date.now(),
   }
+  if (lastEventLoopLag.maxMs >= WS_HEARTBEAT_LAG_GRACE_MS) lastHeartbeatLagAt = lastEventLoopLag.at
   if (lastEventLoopLag.maxMs >= HOT_OP_WARN_MS) {
     console.warn(`[event-loop-lag] max=${lastEventLoopLag.maxMs.toFixed(1)}ms mean=${lastEventLoopLag.meanMs.toFixed(1)}ms`)
   }
@@ -426,13 +428,20 @@ setInterval(reapZombies, REAPER_INTERVAL_MS).unref()
 // the next ping, terminate the socket. TLDraw's ClientWebSocketAdapter
 // reconnects automatically once the close fires.
 const WS_HEARTBEAT_INTERVAL_MS = 30_000
-const WS_HEARTBEAT_LAG_GRACE_MS = Number(process.env.TLDA_WS_HEARTBEAT_LAG_GRACE_MS || 5000)
+const WS_HEARTBEAT_LAG_GRACE_MS = Number(process.env.TLDA_WS_HEARTBEAT_LAG_GRACE_MS || 1000)
+const WS_HEARTBEAT_LAG_COOLDOWN_MS = Number(process.env.TLDA_WS_HEARTBEAT_LAG_COOLDOWN_MS || WS_HEARTBEAT_INTERVAL_MS * 2)
 setInterval(() => {
   // A delayed sweep is evidence of server-side starvation, not client death.
   // Preserve existing sockets for one interval and let their next real pong
   // decide liveness instead of terminating the whole fleet in a catch-up burst.
-  if (shouldSkipHeartbeatSweepForLag(lastEventLoopLag.maxMs, WS_HEARTBEAT_LAG_GRACE_MS)) {
-    console.warn(`[heartbeat] skipping sweep during event-loop lag max=${lastEventLoopLag.maxMs.toFixed(1)}ms`)
+  if (shouldSkipHeartbeatSweepForLag(
+    lastEventLoopLag.maxMs,
+    WS_HEARTBEAT_LAG_GRACE_MS,
+    lastHeartbeatLagAt,
+    Date.now(),
+    WS_HEARTBEAT_LAG_COOLDOWN_MS,
+  )) {
+    console.warn(`[heartbeat] skipping sweep during/recent event-loop lag max=${lastEventLoopLag.maxMs.toFixed(1)}ms`)
     return
   }
   for (const ws of _trackedWs) {

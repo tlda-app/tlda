@@ -13,8 +13,15 @@ test('lagged-but-alive pong is not terminated until strictly after two intervals
 
 test('heartbeat sweep tolerates ordinary Fly event-loop lag', () => {
   assert.equal(shouldSkipHeartbeatSweepForLag(750), false)
-  assert.equal(shouldSkipHeartbeatSweepForLag(4999), false)
-  assert.equal(shouldSkipHeartbeatSweepForLag(5000), true)
+  assert.equal(shouldSkipHeartbeatSweepForLag(999), false)
+  assert.equal(shouldSkipHeartbeatSweepForLag(1000), true)
+  assert.equal(shouldSkipHeartbeatSweepForLag(4700), true)
+})
+
+test('heartbeat sweep skips briefly after a lag spike', () => {
+  const now = 1_000_000
+  assert.equal(shouldSkipHeartbeatSweepForLag(0, 1000, now - 59_000, now, 60_000), true)
+  assert.equal(shouldSkipHeartbeatSweepForLag(0, 1000, now - 61_000, now, 60_000), false)
 })
 
 test('backpressure defers queued sends until the socket buffer drains', () => {
