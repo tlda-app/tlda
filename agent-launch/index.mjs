@@ -1,6 +1,6 @@
 import { SpawnLibrarian } from '../shared/spawn-librarian.ts'
 import { newFleetId, readConfig, resolveDnsAlias, resolveSpawnCwd, sanitizeSessionName } from './identity.mjs'
-import { resolveModelSpec } from './models.mjs'
+import { normalizeSpawnModelKwargs } from './models.mjs'
 import { checkFreshNameAvailable, ensureServer, findAgent, markAgentDead, resolveApi, wsReserveShell } from './register.mjs'
 import { injectClaudePrompt, injectCodexPrompt, sessionHasRuntime, spawnTmux, uniqueSessionName } from './tmux.mjs'
 import { wrapSandboxCmd } from './fence.mjs'
@@ -50,8 +50,29 @@ function metadataOf(agent) {
   return meta && typeof meta === 'object' ? meta : {}
 }
 
-function resolveLaunchSpec(rawModel, config) {
-  return resolveModelSpec(rawModel, { config })
+function modelKwargs(params = {}, extra = {}) {
+  return {
+    ...(params.modelOptions && typeof params.modelOptions === 'object' && !Array.isArray(params.modelOptions) ? params.modelOptions : {}),
+    ...(params.effort ? { effort: params.effort } : {}),
+    ...extra,
+  }
+}
+
+function applyNormalizedOptions(params = {}, modelSpec = {}) {
+  if (!params.effort && modelSpec.normalizedOptions?.effort) params.effort = modelSpec.normalizedOptions.effort
+  params.modelOptions = {
+    ...(params.modelOptions && typeof params.modelOptions === 'object' && !Array.isArray(params.modelOptions) ? params.modelOptions : {}),
+    ...(modelSpec.normalizedOptions || {}),
+  }
+}
+
+function resolveLaunchSpec(rawModel, config, kwargs = {}) {
+  const normalized = normalizeSpawnModelKwargs({ ...kwargs, model: rawModel }, { config })
+  return {
+    ...normalized.spec,
+    normalizedOptions: normalized.options,
+    normalizedModelRequest: normalized,
+  }
 }
 
 function assertNativeTools(policy, requestedKind) {
@@ -310,7 +331,8 @@ async function spawnRespawn(params) {
   const meta = metadataOf(agent)
   const rawModel = params.model || meta.model
   const config = params.config ?? readConfig()
-  const modelSpec = resolveLaunchSpec(rawModel, config)
+  const modelSpec = resolveLaunchSpec(rawModel, config, modelKwargs(params, meta.effort ? { effort: params.effort || meta.effort } : {}))
+  applyNormalizedOptions(params, modelSpec)
   const requestedKind = modelSpec.harness
   const adapter = ADAPTERS[requestedKind]
   if (!adapter) throw new SpawnError('launch-failed', `unknown spawn harness: ${requestedKind}`, { kind: requestedKind })
@@ -458,7 +480,8 @@ async function spawnRefresh(params) {
   const meta = metadataOf(agent)
   const rawModel = params.model || meta.model
   const config = params.config ?? readConfig()
-  const modelSpec = resolveLaunchSpec(rawModel, config)
+  const modelSpec = resolveLaunchSpec(rawModel, config, modelKwargs(params, meta.effort ? { effort: params.effort || meta.effort } : {}))
+  applyNormalizedOptions(params, modelSpec)
   const requestedKind = modelSpec.harness
   const adapter = ADAPTERS[requestedKind]
   if (!adapter) throw new SpawnError('launch-failed', `unknown spawn harness: ${requestedKind}`, { kind: requestedKind })
@@ -741,7 +764,8 @@ export async function spawn(params = {}) {
   if (mode === 'session') return await spawnSession(params)
   if (mode === 'fresh') {
     const config = params.config ?? readConfig()
-    const modelSpec = resolveLaunchSpec(params.model, config)
+    const modelSpec = resolveLaunchSpec(params.model, config, modelKwargs(params))
+    applyNormalizedOptions(params, modelSpec)
     const requestedKind = modelSpec.harness
     const adapter = ADAPTERS[requestedKind]
     if (!adapter) throw new SpawnError('launch-failed', `unknown spawn harness: ${requestedKind}`, { kind: requestedKind })

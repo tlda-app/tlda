@@ -319,7 +319,7 @@ export function wrapSandboxCmd(cmd, policy, opts = {}) {
   if (!policy) return cmd
   const runner = policy.runner || {}
   const command = runner.command
-  if (!command) throw new Error('agentSandbox.runner.command is required')
+  if (!command) throw new Error('sandbox runner command is required')
   const env = ensureFenceEnv()
   env.TLDA_SANDBOX_PROFILE = policy.policy
   env.TLDA_SANDBOX_POLICY = policy.policy

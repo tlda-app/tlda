@@ -1489,6 +1489,20 @@ async function performSpawnRelay(caller, msg) {
     iLikeToLiveDangerously, phase, mailboxTarget,
   } = msg || {}
   const requestedSession = session || sessionId || session_id || null
+  const spawnReservedKeys = new Set([
+    'type', 'name', 'agent', 'model', 'doc', 'cwd', 'respawn', 'fresh', 'refresh',
+    'effort', 'mode', 'permission', 'spawnPermission', 'permissions',
+    'requestedPermissions', 'policy', 'session', 'sessionId', 'session_id',
+    'enroll', 'routeAgent', 'iLikeToLiveDangerously', 'phase', 'mailboxTarget',
+    'modelOptions',
+  ])
+  const modelOptions = {
+    ...(msg?.modelOptions && typeof msg.modelOptions === 'object' && !Array.isArray(msg.modelOptions) ? msg.modelOptions : {}),
+    ...(effort ? { effort } : {}),
+  }
+  for (const [key, value] of Object.entries(msg || {})) {
+    if (!spawnReservedKeys.has(key) && value != null && value !== '') modelOptions[key] = value
+  }
   const sessionMode = !!requestedSession
   if (refresh) {
     throw new Error('refresh is disabled through MCP spawn; recover the original resume handle before respawning')
@@ -1566,6 +1580,7 @@ async function performSpawnRelay(caller, msg) {
     pretty_name: pendingAgentId ? prettyNameForFriendlyName(spawnName) : undefined,
     name: resolved.name || undefined,
     model: model || undefined,
+    modelOptions,
     doc: doc || undefined,
     cwd: cwd || undefined,
     session_id: requestedSession || undefined,

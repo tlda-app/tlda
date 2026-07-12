@@ -75,14 +75,26 @@ test('codex cwd lease includes harness state dirs even when grant has no repo wr
   }
 })
 
-test('builtin policy names map to fence regions instead of silently downgrading to cwd', () => {
+test('lease policy requires daemon-resolved region objects', () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-fence-policy-map-'))
   try {
     const cwd = path.join(tmp, 'repo')
     fs.mkdirSync(cwd)
     const env = testEnv(tmp)
+    assert.throws(
+      () => resolveLeasePolicy({
+        spawnPolicy: 'full',
+        harness: 'codex',
+        model: 'gpt-5',
+        cwd,
+        config: {},
+        env,
+      }),
+      /resolved daemon spawn policy is required/,
+    )
+
     const full = resolveLeasePolicy({
-      spawnPolicy: 'full',
+      spawnPolicy: { name: 'ops', policy: 'unsandboxed' },
       harness: 'codex',
       model: 'gpt-5',
       cwd,
@@ -90,18 +102,18 @@ test('builtin policy names map to fence regions instead of silently downgrading 
       env,
     })
     assert.equal(full.policyName, 'unsandboxed')
-    assert.equal(full.leasePolicy, null, 'full maps to the unsandboxed region without manufacturing a cwd lease')
+    assert.equal(full.leasePolicy, null, 'unsandboxed region does not manufacture a cwd lease')
 
     assert.throws(
       () => resolveLeasePolicy({
-        spawnPolicy: 'app-dev',
+        spawnPolicy: { name: 'app-dev', policy: 'app-dev' },
         harness: 'codex',
         model: 'gpt-5',
         cwd,
         config: {},
         env,
       }),
-      /unknown agentSandbox policy "app-dev"/,
+      /unknown sandbox policy "app-dev"/,
     )
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true })

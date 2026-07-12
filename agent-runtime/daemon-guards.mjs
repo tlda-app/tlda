@@ -1,7 +1,5 @@
 import { readFileSync, unlinkSync } from 'node:fs'
 
-const warnedMissingKinds = new Set()
-
 // JSONL-watch debounce decision. The trailing debounce (clearTimeout + fresh
 // timer on every fs.watch fire) defers the read until writes quiesce — so during
 // a continuous sub-debounce write burst the read never fires and chat activity
@@ -17,11 +15,7 @@ export function harnessKindForAgent(agent, log = console) {
   const kind = agent?.metadata?.kind
   if (kind) return kind
   const agentLabel = agent?.friendly_name || agent?.id || '<unknown>'
-  if (!warnedMissingKinds.has(agentLabel)) {
-    warnedMissingKinds.add(agentLabel)
-    log?.warn?.(`agent ${agentLabel} has no metadata.kind; defaulting to claude`)
-  }
-  return 'claude'
+  throw new Error(`agent ${agentLabel} has no metadata.kind; refusing to infer a harness`)
 }
 
 export function unlinkPidfileIfOwnPid(pidFile, pid = process.pid) {

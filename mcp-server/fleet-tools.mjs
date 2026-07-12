@@ -43,7 +43,7 @@ import {
   recipientAttachmentRef,
 } from '../shared/inbox-reference-materialization.mjs';
 import { getActiveConfigName, loadConfig } from '../shared/config.mjs';
-import { listModels as listSpawnModels } from '../agent-launch/models.mjs';
+import { listModels as listSpawnModels, normalizeSpawnModelKwargs } from '../agent-launch/models.mjs';
 import {
   defaultDaemonConfigPath,
   readDaemonConfig,
@@ -427,7 +427,34 @@ async function validateSpawnRequest(opts = {}) {
   const catalog = await getSpawnModelCatalog();
   const result = validateSpawnModelSelection({ model, kind }, catalog);
   if (!result.ok) return result.error;
+  const daemonConfig = readDaemonConfig();
+  const config = withDaemonModelAliases(loadConfig(), daemonConfig);
+  const reserved = new Set([
+    'agent', 'fresh', 'refresh', 'respawn', 'name', 'model', 'cwd', 'permission',
+    'permissions', 'policy', 'iLikeToLiveDangerously', 'mode', 'phase', 'kind',
+  ]);
+  const kwargs = { ...(opts.modelOptions && typeof opts.modelOptions === 'object' && !Array.isArray(opts.modelOptions) ? opts.modelOptions : {}) };
+  for (const [key, value] of Object.entries(opts)) {
+    if (!reserved.has(key) && value != null && value !== '') kwargs[key] = value;
+  }
+  try {
+    normalizeSpawnModelKwargs({ model, ...kwargs }, { config });
+  } catch (e) {
+    return e.message || String(e);
+  }
   return null;
+}
+
+function spawnModelOptionsFromArgs(opts = {}) {
+  const reserved = new Set([
+    'agent', 'fresh', 'refresh', 'respawn', 'name', 'model', 'cwd', 'permission',
+    'permissions', 'policy', 'iLikeToLiveDangerously', 'mode', 'phase', 'kind',
+  ]);
+  const out = { ...(opts.modelOptions && typeof opts.modelOptions === 'object' && !Array.isArray(opts.modelOptions) ? opts.modelOptions : {}) };
+  for (const [key, value] of Object.entries(opts)) {
+    if (!reserved.has(key) && value != null && value !== '') out[key] = value;
+  }
+  return out;
 }
 
 // Append-only message log (backup). Fleet store writes are handled by
@@ -2223,6 +2250,7 @@ export async function handleFleetTool(name, args) {
           fresh: true,
           name: agentName,
           model: spawnOpts.model,
+          modelOptions: spawnModelOptionsFromArgs(spawnOpts),
           effort: spawnOpts.effort,
           cwd: agentCwd,
           permission: spawnOpts.permission,
@@ -3369,7 +3397,7 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       const text = formatSpawnModelSummary(catalog, {
         verifiedOnly: !!args.verified_only,
       });
-      const defaultModel = catalog?.default ? `\nDefault: ${catalog.default}` : '';
+      const defaultModel = catalog?.defaultAlias ? `\nDefault: ${catalog.defaultAlias}` : '';
       return { content: [{ type: 'text', text: `${text}${defaultModel}` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `spawn_models failed: ${e.message}` }], isError: true };

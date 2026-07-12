@@ -46,12 +46,45 @@ function completeSegment(typed: string, candidates: string[]): string {
   return match ? match.slice(typed.length) : ''
 }
 
-function getGhostCompletion(input: string, projects: string[], catName: string, defaultDoc: string, models: string[], defaultModel: string, effortLevels: string[]): string {
+type SpawnOptionSpec = { default: string; values: Record<string, { options?: Record<string, SpawnOptionSpec> }> }
+type SpawnOptionSpecs = Record<string, SpawnOptionSpec>
+
+function activeSpawnOptions(base: SpawnOptionSpecs, selected: Record<string, string | undefined>): SpawnOptionSpecs {
+  const out: SpawnOptionSpecs = {}
+  const visit = (options: SpawnOptionSpecs) => {
+    for (const [name, spec] of Object.entries(options || {})) {
+      out[name] = spec
+      const value = selected[name] || spec.default
+      const child = spec.values?.[value]?.options
+      if (child) visit(child)
+    }
+  }
+  visit(base)
+  return out
+}
+
+function optionCandidates(prefix: string, optionSpecs: SpawnOptionSpecs): string[] {
+  const colon = prefix.indexOf(':')
+  if (colon < 0) {
+    const lower = prefix.toLowerCase()
+    return Object.keys(optionSpecs)
+      .filter(name => !prefix || name.toLowerCase().startsWith(lower))
+      .map(name => `${name}:`)
+  }
+  const key = prefix.slice(0, colon)
+  const typed = prefix.slice(colon + 1)
+  const values = Object.keys(optionSpecs[key]?.values || {})
+  const lower = typed.toLowerCase()
+  return values
+    .filter(value => !typed || value.toLowerCase().startsWith(lower))
+}
+
+function getGhostCompletion(input: string, projects: string[], catName: string, defaultDoc: string, models: string[], defaultModel: string, optionSpecs: SpawnOptionSpecs): string {
   const defaults = [defaultDoc || projects[0] || 'doc', catName, defaultModel]
   if (!input) return defaults.join(' ')
   const { pos, prefix } = activeMintToken(input)
-  const pool = pos === 1 ? projects : pos === 2 ? CAT_NAMES : pos === 3 ? models : effortLevels
-  const typed = pos === 4 ? prefix.replace(/^effort:/, '') : prefix
+  const pool = pos === 1 ? projects : pos === 2 ? CAT_NAMES : pos === 3 ? models : optionCandidates(prefix, optionSpecs)
+  const typed = pos === 4 ? (prefix.includes(':') ? prefix.slice(prefix.indexOf(':') + 1) : prefix) : prefix
   const completion = completeSegment(typed, pool)
   if (pos === 4) return completion
   const remaining = defaults.slice(pos)
@@ -61,27 +94,27 @@ function getGhostCompletion(input: string, projects: string[], catName: string, 
 // Staged Tab completion fills only the active positional or keyword token.
 // Returns the string to append, including the separating space when advancing
 // to the next positional token.
-function getStagedTabCompletion(input: string, projects: string[], catName: string, defaultDoc: string, models: string[], defaultModel: string, effortLevels: string[]): string {
+function getStagedTabCompletion(input: string, projects: string[], catName: string, defaultDoc: string, models: string[], defaultModel: string, optionSpecs: SpawnOptionSpecs): string {
   const defaults = [defaultDoc || projects[0] || 'doc', catName, defaultModel]
   const { pos, prefix } = activeMintToken(input)
-  const pool = pos === 1 ? projects : pos === 2 ? CAT_NAMES : pos === 3 ? models : effortLevels
-  const typed = pos === 4 ? prefix.replace(/^effort:/, '') : prefix
+  const pool = pos === 1 ? projects : pos === 2 ? CAT_NAMES : pos === 3 ? models : optionCandidates(prefix, optionSpecs)
+  const typed = pos === 4 ? (prefix.includes(':') ? prefix.slice(prefix.indexOf(':') + 1) : prefix) : prefix
   const completion = typed ? completeSegment(typed, pool) : (pos <= 3 ? defaults[pos - 1] || '' : '')
   return pos < 3 ? `${completion} ` : completion
 }
 
-const SEG_LABELS = ['project', 'name', 'model', 'effort']
+const SEG_LABELS = ['project', 'name', 'model', 'option']
 
 // Candidate list for the token the cursor is currently in.
 // Shows canonical values only (not shorthand aliases) so the dropdown stays readable.
-function getSegmentCandidates(input: string, projects: string[], models: string[], effortLevels: string[]): { pos: number; prefix: string; candidates: string[] } {
+function getSegmentCandidates(input: string, projects: string[], models: string[], optionSpecs: SpawnOptionSpecs): { pos: number; prefix: string; candidates: string[] } {
   const { pos, prefix } = activeMintToken(input)
   let pool: string[] = []
   if (pos === 1) pool = projects
   else if (pos === 2) pool = CAT_NAMES
   else if (pos === 3) pool = models
-  else if (pos === 4) pool = effortLevels
-  const typed = pos === 4 ? prefix.replace(/^effort:/, '') : prefix
+  else if (pos === 4) pool = optionCandidates(prefix, optionSpecs)
+  const typed = pos === 4 ? (prefix.includes(':') ? prefix.slice(prefix.indexOf(':') + 1) : prefix) : prefix
   const lower = typed.toLowerCase()
   const candidates = typed
     ? pool.filter(c => c.toLowerCase().startsWith(lower) && c !== typed)
@@ -98,7 +131,8 @@ function moveToSpawnSegment(
   const positional = [parsed.doc, parsed.name || '', parsed.model || '']
   for (let i = 0; i < pos - 1 && i < 3; i++) positional[i] ||= defaults[i] || ''
   if (pos <= 3) return positional.slice(0, pos).join(' ')
-  return `${positional.slice(0, 3).join(' ')} effort:${parsed.effort || ''}`
+  const [optionName, optionValue] = Object.entries(parsed.options)[0] || ['effort', '']
+  return `${positional.slice(0, 3).join(' ')} ${optionName}:${optionValue || ''}`
 }
 
 // The project that will actually be used: the typed first token, or — when
@@ -165,6 +199,7 @@ interface OptimisticAgent {
   doc?: string
   name?: string        // friendly_name the real agent will register with
   effort?: string
+  modelOptions?: Record<string, string>
   startedAt: number    // Date.now() at submit
   status: 'spawning' | 'error'
   errorMessage?: string
@@ -202,19 +237,13 @@ function formatModel(model: string | null | undefined): string {
 // Surface the agent's permission / fence in the panel (topic-1: permission
 // discoverable in the agent panel). Derived from metadata.spawnPolicy, which the
 // server stamps at spawn (the resolved permission + filesystem policy).
-// Skip's four names are the only permission labels shown in the UI. Net is
-// always on, so there is no "nonet" permission to surface. Legacy machine words
-// (still in pre-rename agents' metadata until they respawn) map to the four names.
+// Permission labels are current daemon-config vocabulary. Old rows are invalid
+// data, not a display-time compatibility format.
 const PERMISSION_LABELS: Record<string, string> = {
   read: 'read',
   write: 'write',
   'tlda-write': 'tlda-write',
   full: 'full',
-  'read-only': 'read',
-  'workspace-write': 'write',
-  'workspace-write+net': 'write',
-  'workspace-write-no-net': 'write',
-  'full-access': 'full',
 }
 const POLICY_LABELS: Record<string, string> = {
   cwd: 'own project',
@@ -555,13 +584,16 @@ function FleetAgentsInner({ shape }: { shape: any }) {
   const [dropdownIdx, setDropdownIdx] = useState(-1) // -1 = nothing highlighted
   const [dropdownDismissed, setDropdownDismissed] = useState(false)
   const selectedModelOptions = useMemo(
-    () => spawnModelInfo.models.find(model => model.alias === parsedSpawn.model)?.options || {},
-    [spawnModelInfo.models, parsedSpawn.model],
+    () => spawnModelInfo.models.find(model => model.alias === (parsedSpawn.model || defaultSpawnModel))?.options || {},
+    [spawnModelInfo.models, parsedSpawn.model, defaultSpawnModel],
   )
-  const effortLevels = selectedModelOptions.effort || []
+  const activeOptionSpecs = useMemo(
+    () => activeSpawnOptions(selectedModelOptions, parsedSpawn.options || {}),
+    [selectedModelOptions, parsedSpawn.options],
+  )
   const { pos: segPos, candidates: segCandidates } = useMemo(
-    () => getSegmentCandidates(spawnDoc, projectList, spawnModels, effortLevels),
-    [spawnDoc, projectList, spawnModels, effortLevels],
+    () => getSegmentCandidates(spawnDoc, projectList, spawnModels, activeOptionSpecs),
+    [spawnDoc, projectList, spawnModels, activeOptionSpecs],
   )
   const projectInvalid = useMemo(
     () => projectUnresolvable(spawnDoc, projectList, currentDoc),
@@ -581,7 +613,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
       spawnInputRef.current?.focus()
       return
     }
-    const { doc, name, model, effort } = parsedSpawn
+    const { doc, name, model, options } = parsedSpawn
     setSpawnError('')
 
     // Add optimistic card immediately — the real agent will reconcile it away.
@@ -592,7 +624,8 @@ function FleetAgentsInner({ shape }: { shape: any }) {
       model: effectiveModel,
       doc: doc || currentDoc || undefined,
       name: name || undefined,
-      effort: effort || undefined,
+      effort: options.effort || undefined,
+      modelOptions: options,
       startedAt: Date.now(),
       status: 'spawning',
       // Snapshot current IDs for model-only reconciliation (a new agent with the
@@ -608,7 +641,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
     }, 30_000)
     optimisticTimeouts.current.set(optimisticId, safeTid)
 
-    spawnAgent(effectiveModel || undefined, doc || currentDoc || undefined, name, effort)
+    spawnAgent(effectiveModel || undefined, doc || currentDoc || undefined, name, options)
       .catch((e: any) => {
         const message = String(e?.message || e || 'Spawn failed')
         setSpawnError(message)
@@ -808,7 +841,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
                       optimisticTimeouts.current.delete(item.opt.optimisticId)
                     }, 30_000)
                     optimisticTimeouts.current.set(item.opt.optimisticId, safeTid)
-                    spawnAgent(item.opt.model || undefined, item.opt.doc, item.opt.name, item.opt.effort)
+                    spawnAgent(item.opt.model || undefined, item.opt.doc, item.opt.name, item.opt.modelOptions || (item.opt.effort ? { effort: item.opt.effort } : {}))
                       .catch((e: any) => {
                         const msg = String(e?.message || e || 'Spawn failed')
                         const ex = optimisticTimeouts.current.get(item.opt.optimisticId)
@@ -857,7 +890,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
             {spawnFocused && (
               <div className="fleet-agents-mint-picker" onPointerDown={stopEventPropagation}>
                 <div className="fleet-agents-mint-fields" aria-label="mint agent fields">
-                  {SEG_LABELS.slice(0, effortLevels.length ? 4 : 3).map((label, index) => (
+                  {SEG_LABELS.slice(0, Object.keys(activeOptionSpecs).length ? 4 : 3).map((label, index) => (
                     <button
                       key={label}
                       type="button"
@@ -926,7 +959,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
                       acceptCandidate(segCandidates[dropdownIdx])
                     } else {
                       // Staged: complete one token per Tab.
-                      const seg = getStagedTabCompletion(spawnDoc, projectList, catName, currentDoc, spawnModels, defaultSpawnModel, effortLevels)
+                      const seg = getStagedTabCompletion(spawnDoc, projectList, catName, currentDoc, spawnModels, defaultSpawnModel, activeOptionSpecs)
                       if (seg) { e.preventDefault(); setSpawnDoc(spawnDoc + seg); setDropdownDismissed(true) }
                     }
                   } else if (e.key === 'Enter') {
@@ -940,7 +973,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
                 }}
                 placeholder={spawnFocused ? '' : 'mint a new agent'}
               />
-              {spawnFocused && <span className="fleet-agents-spawn-ghost"><span style={{ visibility: 'hidden' }}>{spawnDoc}</span>{getGhostCompletion(spawnDoc, projectList, catName, currentDoc, spawnModels, defaultSpawnModel, effortLevels)}</span>}
+              {spawnFocused && <span className="fleet-agents-spawn-ghost"><span style={{ visibility: 'hidden' }}>{spawnDoc}</span>{getGhostCompletion(spawnDoc, projectList, catName, currentDoc, spawnModels, defaultSpawnModel, activeOptionSpecs)}</span>}
               {spawnInvalid && (
                 <span id="fleet-agents-spawn-error" className="fleet-agents-spawn-error" role="alert">
                   {spawnTooltip}
