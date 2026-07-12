@@ -10,14 +10,50 @@ import { sweepOrphanPreviewDirs } from '../../cli/lib/dev-worktree.mjs'
 
 const execFileP = promisify(execFile)
 
+function formatPercent(value) {
+  return Number.isFinite(value) ? `${Math.round(value * 100)}%` : 'unknown'
+}
+
+function formatBytes(value) {
+  if (!Number.isFinite(value)) return 'unknown'
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
+  let n = value
+  let i = 0
+  while (n >= 1024 && i < units.length - 1) {
+    n /= 1024
+    i++
+  }
+  return `${n.toFixed(i === 0 ? 0 : 1)} ${units[i]}`
+}
+
+function cpuPressureSnapshot() {
+  const cpuCount = os.cpus()?.length || 1
+  const loadAverage = os.loadavg?.()[0]
+  return {
+    cpuCount,
+    loadAverage,
+    cpuPressure: Number.isFinite(loadAverage) ? Math.min(1, loadAverage / cpuCount) : null,
+  }
+}
+
 export function formatReaperMarkdownReport(status = {}) {
   if (!status || status.error) return '## Dev Reaper\n\nNo reaper status is available yet.'
-  const pct = Number.isFinite(status.pressure) ? Math.round(status.pressure * 100) : null
+  const usedMem = Number.isFinite(status.totalMem) && Number.isFinite(status.freeMem)
+    ? Math.max(0, status.totalMem - status.freeMem)
+    : null
   const lines = [
     '## Dev Reaper',
     '',
-    'Memory pressure: ' + (pct === null ? 'unknown' : pct + '%'),
     'Sweep: #' + (status.sweepCount ?? '-'),
+    '',
+    '### Machine Pressure',
+    '',
+    '| Resource | Pressure | Detail |',
+    '| --- | ---: | --- |',
+    '| Memory | ' + formatPercent(status.pressure) + ' | ' + formatBytes(usedMem) + ' used / ' + formatBytes(status.totalMem) + ' total |',
+    '| CPU | ' + formatPercent(status.cpuPressure) + ' | 1m load ' + (Number.isFinite(status.loadAverage) ? status.loadAverage.toFixed(2) : 'unknown') + ' / ' + (status.cpuCount ?? 'unknown') + ' cores |',
+    '',
+    '### Reaper Surface',
     '',
     '| Kind | Count | Notes |',
     '| --- | ---: | --- |',
@@ -523,6 +559,7 @@ export function createDevReaper({ getAgents, tmuxArgs = [], sendMsg = () => {} }
 
     const now = Date.now()
     const pressure = getMemoryPressure()
+    const cpu = cpuPressureSnapshot()
 
     // Attribute processes to agents (in parallel for speed)
     const viteAttrs = await Promise.all((viteResult.vites || []).map(async v => {
@@ -557,6 +594,7 @@ export function createDevReaper({ getAgents, tmuxArgs = [], sendMsg = () => {} }
 
     const status = {
         pressure,
+        ...cpu,
         totalMem: os.totalmem(),
         freeMem: os.freemem(),
         memoryByAgent,

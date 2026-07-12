@@ -32,7 +32,7 @@
 import { spawnSync } from 'child_process'
 import { join, dirname, resolve, isAbsolute } from 'path'
 import { readFileSync, writeFileSync, existsSync, realpathSync, rmSync, mkdirSync } from 'fs'
-import { homedir } from 'os'
+import { freemem, homedir, totalmem } from 'os'
 import { fileURLToPath } from 'url'
 import { createHash } from 'crypto'
 import { getServerUrl } from '../../shared/config.mjs'
@@ -45,6 +45,8 @@ function escapeRegex(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 const PW_CAPACITY = parsePositiveInt(process.env.TLDA_PW_CAPACITY, 3)
+const PW_MAX_TABS_PER_SESSION = parsePositiveInt(process.env.TLDA_PW_MAX_TABS_PER_SESSION, 6)
+const PW_BLOCK_OPEN_PRESSURE = parsePressure(process.env.TLDA_PW_BLOCK_OPEN_PRESSURE, 0.9)
 
 // Agents are deterministically sharded over a bounded session pool. Explicit
 // TLDA_PW_SESSION remains available for isolated/manual testing.
@@ -55,6 +57,46 @@ const ALLOW_ISOLATED_SESSION = process.env.TLDA_PW_ALLOW_ISOLATED_SESSION === '1
 function parsePositiveInt(value, fallback) {
   const n = Number(value)
   return Number.isInteger(n) && n > 0 ? n : fallback
+}
+
+function parsePressure(value, fallback) {
+  const n = Number(value)
+  return Number.isFinite(n) && n > 0 && n < 1 ? n : fallback
+}
+
+function memoryPressure() {
+  const total = totalmem()
+  if (!total) return null
+  return 1 - freemem() / total
+}
+
+function formatPressure(value) {
+  return Number.isFinite(value) ? `${Math.round(value * 100)}%` : 'unknown'
+}
+
+export function pwCanCreateTab({ tabCount, maxTabs = PW_MAX_TABS_PER_SESSION, pressure = null, pressureLimit = PW_BLOCK_OPEN_PRESSURE } = {}) {
+  if (Number.isFinite(pressure) && pressure >= pressureLimit) {
+    return {
+      ok: false,
+      reason: `memory pressure ${formatPressure(pressure)} >= ${formatPressure(pressureLimit)}`,
+    }
+  }
+  if (Number.isFinite(tabCount) && tabCount >= maxTabs) {
+    return {
+      ok: false,
+      reason: `session tab cap reached (${tabCount}/${maxTabs})`,
+    }
+  }
+  return { ok: true }
+}
+
+function assertCanCreateBrowserLoad({ tabCount = null, action = 'create browser load' } = {}) {
+  const decision = pwCanCreateTab({ tabCount, pressure: memoryPressure() })
+  if (decision.ok) return
+  throw new Error(
+    `refusing to ${action}: ${decision.reason}. ` +
+    'Run `tlda-dev pw status`, release/reap unused tabs, or wait for the Mini to recover.'
+  )
 }
 
 function sessionForSlot(slot) {
@@ -463,6 +505,7 @@ function openArgs(repoRoot) {
 
 function ensureOpen(repoRoot) {
   if (sessionOpen()) return false
+  assertCanCreateBrowserLoad({ action: `open pooled browser for session "${SESSION}"` })
   // If the playwright-cli binary can't even be resolved, `open` will "fail" for a
   // reason that has nothing to do with a zombie profile lock — and the recover
   // path below would then pkill the LIVE pooled browser out from under everyone
@@ -566,6 +609,7 @@ function selectMyTab() {
       // way window.open was; it becomes the current tab, so stamp my marker into
       // its title exactly as the parked-window-reuse path above does. The confirm
       // loop below re-selects by marker if tab-new's focus lagged.
+      assertCanCreateBrowserLoad({ tabCount: tabs.length, action: `create another tab in session "${SESSION}"` })
       pw(['tab-new'], { stdio: 'ignore' })
       claimCurrentWindow()
     }
@@ -792,17 +836,21 @@ export async function cmdPw(args, repoRoot) {
   if (verb === 'status') {
     const lk = lockStatus(repoRoot)
     const open = sessionOpen()
+    const pressure = memoryPressure()
     if (isDisabled()) {
       const info = disableInfo()
       console.log(`DISABLED: playwright is LOCKED by ${info.by || 'Skip'}${info.reason ? ` — "${info.reason}"` : ''} (unlock: tlda-dev pw unlock)`)
     }
     console.log(`pool:    ${PW_CAPACITY} session${PW_CAPACITY === 1 ? '' : 's'} (${managedPoolSessions().join(', ')}); mine "${SESSION}"`)
+    console.log(`limits:  ${PW_MAX_TABS_PER_SESSION} tab cap/session; open blocked at ${formatPressure(PW_BLOCK_OPEN_PRESSURE)} memory pressure`)
+    console.log(`memory:  ${formatPressure(pressure)} pressure${Number.isFinite(pressure) && pressure >= PW_BLOCK_OPEN_PRESSURE ? ' (OPEN BLOCKED)' : ''}`)
     console.log(`lock:    ${formatLockStatus(lk)}`)
     console.log(`browser: ${open ? 'up' : 'down'} (session "${SESSION}")`)
     if (open) {
       const tabs = listTabs()
       const mine = tabs.find(isMine)
-      console.log(`tabs:    ${tabs.length} open${mine ? ` (mine: #${mine.index})` : ' (none mine yet)'}`)
+      const tabDecision = pwCanCreateTab({ tabCount: tabs.length, pressure })
+      console.log(`tabs:    ${tabs.length} open${mine ? ` (mine: #${mine.index})` : ' (none mine yet)'}${tabDecision.ok ? '' : ` (${tabDecision.reason})`}`)
       if (mine) console.log(`url:     ${mine.url}`)
     }
     return
