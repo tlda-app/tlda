@@ -2554,10 +2554,12 @@ export async function handleFleetTool(name, args) {
       }
     }
 
-    // Check if tlda is up — if not, Skip can't see the message even though it was delivered
+    // Check if tlda is up — if not, Skip can't see the message even though it was delivered.
+    // Use the cheap health endpoint, not /api/projects: listing projects is a heavier app
+    // route and can produce a false "tlda is down" warning during load/startup.
     let tldaDown = false;
     try {
-      const tldaRes = await fleetFetch(`${TLDA_SERVER}/api/projects`, { signal: AbortSignal.timeout(2000) });
+      const tldaRes = await fleetFetch(`${TLDA_SERVER}/api/health`, { signal: AbortSignal.timeout(2000) });
       // 401 means tlda is up but auth is required — that's fine, server is running
       if (!tldaRes.ok && tldaRes.status !== 401) tldaDown = true;
     } catch {
