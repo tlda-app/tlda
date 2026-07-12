@@ -561,9 +561,14 @@ export function createDevReaper({ getAgents, tmuxArgs = [], sendMsg = () => {} }
           const hasTabs = listLeases().some(other => other.kind === 'playwright-tab' && other.metadata?.session === meta.session && !other.expired)
           if (hasTabs) continue
           await execFileP('tlda-dev', ['pw', 'reap'], { timeout: 20_000, env: { ...process.env, TLDA_PW_SESSION: meta.session } })
-        } else if (lease.kind === 'preview-server' && Number.isInteger(meta.pid)) {
-          process.kill(meta.pid, 'SIGTERM')
-          if (Number.isInteger(meta.daemon_pid)) process.kill(meta.daemon_pid, 'SIGTERM')
+        } else if (lease.kind === 'preview-server' && (Number.isInteger(meta.pid) || Number.isInteger(meta.daemon_pid))) {
+          for (const pid of [meta.pid, meta.daemon_pid]) {
+            if (!Number.isInteger(pid)) continue
+            try { process.kill(pid, 'SIGTERM') }
+            catch (e) {
+              if (e?.code !== 'ESRCH') throw e
+            }
+          }
         } else continue
         releaseLease(lease.resource_id)
         leaseActions.push({ kind: lease.kind, resource_id: lease.resource_id, action: lease.kind === 'playwright-tab' ? 'parked' : 'killed' })
