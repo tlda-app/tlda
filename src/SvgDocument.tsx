@@ -1333,6 +1333,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
           // Set global document info for synctex anchoring
           setCurrentDocumentInfo({
             name: document.name,
+            format: document.format,
             pages: document.pages.map(p => ({
               bounds: { x: p.bounds.x, y: p.bounds.y, width: p.bounds.width, height: p.bounds.height },
               width: p.width,

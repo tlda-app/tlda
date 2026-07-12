@@ -1,6 +1,6 @@
-import { htmlIframeElements } from './shapes/HtmlPageShape'
+import { htmlIframeElements } from './htmlIframeRegistry'
 import type { SourceLocation } from './sourceLocation'
-import { normalizeSourceFile, unanchoredSourceLocation } from './sourceLocation'
+import { normalizeSourceFile, type SourceLocationReason } from './sourceLocation'
 
 export type HtmlSourceLineAnchor =
   | (Extract<SourceLocation, { anchored: true }> & {
@@ -13,6 +13,14 @@ export type HtmlSourceLineAnchor =
       shapeId: string
     })
 
+function unanchoredHtmlAnchor(
+  reason: SourceLocationReason,
+  file: string,
+  shapeId: string,
+): Exclude<HtmlSourceLineAnchor, { anchored: true }> {
+  return { anchored: false, reason, file, page: 0, shapeId }
+}
+
 function boundsValue(bounds: any, key: 'x' | 'y' | 'w' | 'h') {
   if (!bounds) return 0
   if (key === 'x') return Number(bounds.x ?? bounds.minX ?? 0)
@@ -21,11 +29,10 @@ function boundsValue(bounds: any, key: 'x' | 'y' | 'w' | 'h') {
   return Number(bounds.h ?? bounds.height ?? 0)
 }
 
-export function htmlSourceLineAnchorAtCanvasY(
+function htmlAnchorContext(
   shape: { id: string; props?: { h?: number; source?: string } },
   bounds: any,
-  canvasY: number,
-): HtmlSourceLineAnchor | null {
+) {
   const file = normalizeSourceFile(shape?.props?.source || '')
   if (!file) return null
 
@@ -33,18 +40,33 @@ export function htmlSourceLineAnchorAtCanvasY(
   const iframe = htmlIframeElements.get(shapeId)
   const doc = iframe?.contentDocument
   if (!iframe || !doc) {
-    return { ...unanchoredSourceLocation('missing-iframe'), file, page: 0, shapeId }
+    return {
+      ok: false as const,
+      anchor: unanchoredHtmlAnchor('missing-iframe', file, shapeId),
+    }
   }
 
   const pageY = boundsValue(bounds, 'y')
   const pageH = boundsValue(bounds, 'h') || Number(shape?.props?.h || 0)
   const iframeH = iframe.clientHeight || pageH
-  const localY = Math.max(0, Math.min(canvasY - pageY, pageH))
-  const iframeY = iframeH && pageH ? localY * (iframeH / pageH) : localY
   const scrollY = iframe.contentWindow?.scrollY || doc.documentElement.scrollTop || doc.body.scrollTop || 0
-  const targetY = iframeY + scrollY
+  return { ok: true as const, file, shapeId, iframe, doc, pageY, pageH, iframeH, scrollY }
+}
 
-  const anchors = Array.from(doc.querySelectorAll<HTMLElement>('[id^="line-"]'))
+export function htmlSourceLineAnchorAtCanvasY(
+  shape: { id: string; props?: { h?: number; source?: string } },
+  bounds: any,
+  canvasY: number,
+): HtmlSourceLineAnchor | null {
+  const context = htmlAnchorContext(shape, bounds)
+  if (!context) return null
+  if (!context.ok) return context.anchor
+
+  const localY = Math.max(0, Math.min(canvasY - context.pageY, context.pageH))
+  const iframeY = context.iframeH && context.pageH ? localY * (context.iframeH / context.pageH) : localY
+  const targetY = iframeY + context.scrollY
+
+  const anchors = Array.from(context.doc.querySelectorAll<HTMLElement>('[id^="line-"]'))
     .map((el) => {
       const match = el.id.match(/^line-(\d+)$/)
       const line = match ? Number(match[1]) : NaN
@@ -55,7 +77,7 @@ export function htmlSourceLineAnchorAtCanvasY(
     .sort((a, b) => a.top - b.top)
 
   if (!anchors.length) {
-    return { ...unanchoredSourceLocation('missing-line-anchor'), file, page: 0, shapeId }
+    return unanchoredHtmlAnchor('missing-line-anchor', context.file, context.shapeId)
   }
 
   let best = anchors[0]
@@ -63,5 +85,35 @@ export function htmlSourceLineAnchorAtCanvasY(
     if (anchor.top > targetY) break
     best = anchor
   }
-  return { anchored: true, file, line: best.line, page: 0, shapeId }
+  return { anchored: true, file: context.file, line: best.line, page: 0, shapeId: context.shapeId }
+}
+
+export function htmlSourceLineCanvasPosition(
+  shape: { id: string; props?: { h?: number; source?: string } },
+  bounds: any,
+  line: number,
+): (Extract<HtmlSourceLineAnchor, { anchored: true }> & { canvasY: number }) | Exclude<HtmlSourceLineAnchor, { anchored: true }> | null {
+  const context = htmlAnchorContext(shape, bounds)
+  if (!context) return null
+  if (!context.ok) return context.anchor
+
+  const sourceLine = Math.max(1, Math.floor(Number(line)))
+  if (!Number.isFinite(sourceLine)) {
+    return unanchoredHtmlAnchor('unresolved', context.file, context.shapeId)
+  }
+
+  const el = context.doc.getElementById(`line-${sourceLine}`) as HTMLElement | null
+  if (!el) {
+    return unanchoredHtmlAnchor('missing-line-anchor', context.file, context.shapeId)
+  }
+
+  const localY = (el.offsetTop - context.scrollY) * (context.pageH / (context.iframeH || context.pageH || 1))
+  return {
+    anchored: true,
+    file: context.file,
+    line: sourceLine,
+    page: 0,
+    shapeId: context.shapeId,
+    canvasY: context.pageY + localY,
+  }
 }

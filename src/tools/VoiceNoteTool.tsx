@@ -6,9 +6,9 @@
  * recording. Live transcript streams into the shape via getTranscript().
  * On tap: the shape is committed in place. On ESC: shape is deleted if empty.
  */
-import { StateNode, createShapeId, type TLShapeId, type JsonObject } from 'tldraw'
+import { StateNode, createShapeId, type TLShapeId, type TLShapePartial, type JsonObject } from 'tldraw'
 import { currentDocumentInfo } from '../svgDocumentLoader'
-import { getSourceAnchor, canvasToPdf, type SourceAnchor } from '../synctexAnchor'
+import { annotationSourceAnchorAtCanvasPoint, type AnnotationSourceAnchor } from '../annotationSourceAnchor'
 import { getTranscript, resetTranscript, setVoiceAccumulator } from '../voice.mjs'
 import { log } from '../logger'
 import { getPref } from '../preferences'
@@ -106,29 +106,26 @@ export class VoiceNoteTool extends StateNode {
     // so the user can immediately read and edit what was recorded
     editor.updateShape({
       id,
-      type: 'math-note' as any,
+      type: 'math-note',
       x: point.x - NOTE_W / 2,
       y: point.y - 10,
       props: { text: transcript, collapsed: false },
       meta: { voiceNote: true, rawTranscript: transcript } as Partial<JsonObject>,
-    })
+    } as unknown as TLShapePartial)
 
-    // Async: resolve synctex anchor and attach it
+    // Async: resolve source anchor and attach it
     if (currentDocumentInfo) {
-      const pdfPos = canvasToPdf(point.x, point.y, currentDocumentInfo.pages)
-      if (pdfPos) {
-        getSourceAnchor(currentDocumentInfo.name, pdfPos.page, pdfPos.x, pdfPos.y)
-          .then((sourceAnchor: SourceAnchor | null) => {
-            if (sourceAnchor) {
-              editor.updateShape({
-                id,
-                type: 'math-note' as any,
-                meta: { voiceNote: true, rawTranscript: transcript, sourceAnchor } as any,
-              })
-            }
-          })
-          .catch(e => console.warn('[voice-note] update shape failed:', e.message))
-      }
+      annotationSourceAnchorAtCanvasPoint(editor, currentDocumentInfo, point.x, point.y)
+        .then((sourceAnchor: AnnotationSourceAnchor | null) => {
+          if (sourceAnchor) {
+            editor.updateShape({
+              id,
+              type: 'math-note',
+              meta: { voiceNote: true, rawTranscript: transcript, sourceAnchor } as Partial<JsonObject>,
+            } as unknown as TLShapePartial)
+          }
+        })
+        .catch(e => console.warn('[voice-note] update shape failed:', e.message))
     }
 
     let base = transcript

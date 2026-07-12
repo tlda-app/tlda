@@ -7,6 +7,7 @@ import type { PageTextData } from '../TextSelectionLayer'
 // Global document info for synctex anchoring
 export let currentDocumentInfo: {
   name: string
+  format?: SvgDocument['format']
   pages: Array<{ bounds: { x: number, y: number, width: number, height: number }, width: number, height: number }>
 } | null = null
 

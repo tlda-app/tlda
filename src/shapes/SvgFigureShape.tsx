@@ -7,7 +7,7 @@ import {
   stopEventPropagation,
 } from 'tldraw'
 import { useEffect, useRef, useState, useCallback } from 'react'
-import { htmlIframeElements } from './HtmlPageShape'
+import { htmlIframeElements } from '../htmlIframeRegistry'
 
 // Module-level SVG content cache
 const svgCache = new Map<string, string>()

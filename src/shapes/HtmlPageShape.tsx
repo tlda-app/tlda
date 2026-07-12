@@ -13,6 +13,7 @@ import type { Editor, TLPageId, TLShape, TLShapeId } from 'tldraw'
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { appendToken } from '../authToken'
 import { htmlPageUrlMatchesTargetFile } from '../html-page-navigation-helpers'
+import { htmlIframeElements } from '../htmlIframeRegistry'
 import {
   installHtmlNavigationHistory,
   recordHtmlNavigationEnd,
@@ -42,9 +43,6 @@ export const htmlHeadingPositions = new Map<string, Record<string, number>>()
 export function getHtmlHeadingY(shapeId: string, anchor: string): number | undefined {
   return htmlHeadingPositions.get(shapeId)?.[anchor]
 }
-
-// Iframe element refs, keyed by shape ID (for SvgFigureShape to send transform messages)
-export const htmlIframeElements = new Map<string, HTMLIFrameElement>()
 
 /** Clean up global maps for a deleted shape. Call from store listener on shape removal. */
 export function cleanupHtmlShapeData(shapeId: string) {
