@@ -32,6 +32,7 @@ import {
   parseLookupLineKey,
   sourceLineToEditorCanvas,
 } from '../synctexAnchor'
+import { shouldReuseTrackedSourceAnchor } from '../sourceCursorTracking'
 import { getVimMode, subscribeVimMode } from '../vimMode'
 import { clearVoiceAccumulator, notifyAccumulatorCursorMoved, setVoiceAccumulator } from '../voice.mjs'
 import { beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
@@ -200,6 +201,10 @@ type TrackedSourceAnchor = {
   page: number
   source?: 'synctex' | 'html-page'
   anchored: boolean
+}
+
+function canShowSourceCursorLaser(anchor: TrackedSourceAnchor | null | undefined) {
+  return anchor?.source === 'synctex' && anchor.anchored && anchor.line != null
 }
 
 function sourceSplitForAnchor(lookup: LookupData | null, anchor: SourceAnchor): SourceSplit | null {
@@ -621,6 +626,11 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
 
   const updateCursorLaserFromView = (view: EditorView) => {
     try {
+      if (!canShowSourceCursorLaser(trackedAnchorRef.current)) {
+        cursorLaserSeqRef.current += 1
+        clearCursorLaser()
+        return
+      }
       const seq = cursorLaserSeqRef.current + 1
       cursorLaserSeqRef.current = seq
       const docLine = view.state.doc.lineAt(view.state.selection.main.head)
@@ -715,15 +725,9 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
       setSourceSplit(next.source === 'synctex' && next.anchored ? sourceSplitForAnchor(lookup, next) : null)
       setTrackedAnchor(prev => {
         const nextLine = next.anchored ? next.line : null
-        if (prev.file === next.file && prev.line === nextLine && prev.anchored === next.anchored) return prev
-        if (
-          next.anchored &&
-          prev.anchored &&
-          prev.file === next.file &&
-          prev.line != null &&
-          Math.abs(prev.line - next.line) < SOURCE_TRACK_LINE_THRESHOLD
-        ) return prev
-        return { file: next.file, line: nextLine, page: next.page, source: next.source, anchored: next.anchored }
+        const resolved = { file: next.file, line: nextLine, source: next.source, anchored: next.anchored }
+        if (shouldReuseTrackedSourceAnchor(prev, resolved, SOURCE_TRACK_LINE_THRESHOLD)) return prev
+        return { ...resolved, page: next.page }
       })
     }
     const interval = window.setInterval(track, SOURCE_TRACK_INTERVAL_MS)
@@ -994,7 +998,10 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
         }
 	        setStatus('ready')
 	        setStatusText(trackedAnchorStatusText(sourceWindow))
-	        if (!trackedAnchor.anchored || trackedAnchor.line == null) return
+	        if (!canShowSourceCursorLaser(trackedAnchor)) {
+	          clearCursorLaser()
+	          return
+	        }
 	        try {
 	          const targetLine = Math.max(1, Math.min(sourceWindow.targetLine, view.state.doc.lines))
 	          const line = view.state.doc.line(targetLine)
@@ -1037,7 +1044,10 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
     const sourceWindow = sourceWindowForText(fullSourceRef.current, trackedAnchor.line || shape.props.line || 1)
     sourceWindowRef.current = sourceWindow
     setStatusText(trackedAnchorStatusText(sourceWindow))
-    if (!trackedAnchor.anchored || trackedAnchor.line == null) return
+    if (!canShowSourceCursorLaser(trackedAnchor)) {
+      clearCursorLaser()
+      return
+    }
     try {
       const targetLine = Math.max(1, Math.min(sourceWindow.targetLine, view.state.doc.lines))
       const line = view.state.doc.line(targetLine)
@@ -1049,7 +1059,7 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
     } catch {
       clearCursorLaser()
     }
-	  }, [file, shape.props.line, trackedAnchor.line, trackedAnchor.page, trackedAnchor.anchored])
+	  }, [file, shape.props.line, trackedAnchor.line, trackedAnchor.page, trackedAnchor.anchored, trackedAnchor.source])
 
   useEffect(() => {
     const nextFile = normalizeFile(trackedAnchor.file)
