@@ -3,14 +3,15 @@ import { isFleetShapeForOwnerKey, isMyFleetShape } from './fleet-ownership'
 import { isDocumentPageShape } from './document-pages'
 import { fleetPanelDefaultProps } from './fleet-panel-registry'
 import { dispatchFleetHudReset, markMainEditorHistoryStoppingPoint } from '../wm/editor-host-bridge'
-export { PHONE_DOCUMENT_PANE_INDEX, PHONE_INBOX_PANE_INDEX, phonePaneX } from './phone-pane-geometry'
-import { PHONE_DOCUMENT_PANE_INDEX, PHONE_INBOX_PANE_INDEX, phonePaneX } from './phone-pane-geometry'
+export { PHONE_CHAT_PANE_INDEX, PHONE_DOCUMENT_PANE_INDEX, PHONE_INBOX_PANE_INDEX, phonePaneX } from './phone-pane-geometry'
+import { PHONE_CHAT_PANE_INDEX, PHONE_DOCUMENT_PANE_INDEX, PHONE_INBOX_PANE_INDEX, phonePaneX } from './phone-pane-geometry'
 // @ts-ignore — vanilla JS module
 import { getDeviceId, getHumanId, isDeviceReady } from '../fleet/fleet-data.mjs'
 
 export type PhonePaneStackEntry =
   | { kind: 'document'; index: 0 }
-  | { kind: 'inbox'; index: 1; shapeId?: string }
+  | { kind: 'chat'; index: 1; shapeId?: string }
+  | { kind: 'inbox'; index: 2; shapeId?: string }
   | { kind: 'pinned'; index: number; shapeId: string; type: string }
 
 export type PhonePaneCamera = { x: number; y: number; z: number }
@@ -103,13 +104,21 @@ export function isPhonePinnedPaneShape(editor: Editor, shape: TLShape | PhonePan
     if (!isPhoneMarkdownPaneForOwner(pane, userId, deviceId)) return false
   } else if (!isMyFleetShape(pane) || pane.type !== 'fleet-chat') {
     return false
+  } else if (isDefaultPhoneChatShape(pane)) {
+    return false
   }
   return isFullScreenPhonePane(editor, pane)
+}
+
+function isDefaultPhoneChatShape(shape: PhonePaneCandidate): boolean {
+  return shape.type === 'fleet-chat' && String(shape.id || '').startsWith('shape:fleet-chat-0-')
 }
 
 export function getPhonePaneStack(editor: Editor): PhonePaneStackEntry[] {
   const entries: PhonePaneStackEntry[] = [{ kind: 'document', index: PHONE_DOCUMENT_PANE_INDEX }]
   const shapes = editor.getCurrentPageShapes() as PhonePaneCandidate[]
+  const chat = shapes.find(shape => isMyFleetShape(shape) && shape.type === 'fleet-chat' && isDefaultPhoneChatShape(shape) && isFullScreenPhonePane(editor, shape))
+  entries.push({ kind: 'chat', index: PHONE_CHAT_PANE_INDEX, shapeId: chat?.id as string | undefined })
   const inbox = shapes.find(shape => isMyFleetShape(shape) && shape.type === 'fleet-inbox' && isFullScreenPhonePane(editor, shape))
   entries.push({ kind: 'inbox', index: PHONE_INBOX_PANE_INDEX, shapeId: inbox?.id as string | undefined })
 
@@ -179,7 +188,7 @@ function isTemporaryMarkdownPane(shape: PhonePaneCandidate): boolean {
 
 function isPhonePinnedPaneForOwner(shape: PhonePaneCandidate, userId: string, deviceId: string): boolean {
   return (
-    (isFleetShapeForOwnerKey(shape, userId, deviceId) && shape.type === 'fleet-chat') ||
+    (isFleetShapeForOwnerKey(shape, userId, deviceId) && shape.type === 'fleet-chat' && !isDefaultPhoneChatShape(shape)) ||
     isPhoneMarkdownPaneForOwner(shape, userId, deviceId)
   )
 }
@@ -480,12 +489,25 @@ export function refitPhonePaneStack(editor: Editor): PhonePaneStackRefitResult {
   const dx = 0
   const y = inbox.y || 0
   const markdownY = phonePaneY(editor, y)
+  const chat = shapes.find(shape =>
+    isFleetShapeForOwnerKey(shape, userId, deviceId) &&
+    shape.type === 'fleet-chat' &&
+    isDefaultPhoneChatShape(shape)
+  )
   const pinned = shapes
     .filter(shape => isFullScreenPinnedPaneForOwner(editor, shape, userId, deviceId))
     .sort((a, b) => ((b.x || 0) - (a.x || 0)) || String(a.id).localeCompare(String(b.id)))
   const maxIndex = PHONE_INBOX_PANE_INDEX + pinned.length
 
   const paneUpdates: PhonePaneShapeUpdate[] = [
+    ...(chat?.id && chat.type ? [{
+      id: chat.id as TLShapeId,
+      type: chat.type,
+      x: phonePaneX(docLeft, PHONE_CHAT_PANE_INDEX, screenW, dx),
+      y,
+      props: { ...(chat.props || {}), w: screenW, h: screenH, userId, deviceId },
+      isLocked: true,
+    }] : []),
     {
       id: inbox.id as TLShapeId,
       type: inbox.type,

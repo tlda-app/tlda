@@ -1,6 +1,6 @@
 import type { FleetChatFilter } from './fleet-layout-seeding'
 import { fleetPanelDefaultProps, type FleetPanelType } from './fleet-panel-registry'
-import { PHONE_INBOX_PANE_INDEX, phonePaneX } from './phone-pane-geometry'
+import { PHONE_CHAT_PANE_INDEX, PHONE_INBOX_PANE_INDEX, phonePaneX } from './phone-pane-geometry'
 
 export type FleetLayoutVariant = 'phone' | '3-col' | '2x2' | 'big-chat' | 'both-margins' | 'touch'
 
@@ -83,19 +83,24 @@ export function planFleetLayoutShapes(input: FleetLayoutPlanInput): FleetLayoutP
     filters: [filter1, filter2, filter3, filter4],
   } = input
 
-  // Phone layout: a horizontal pane stack anchored by the document.
-  // Phase 1 creates the fixed inbox pane immediately left of the document and
-  // leaves pinned task panes to later phases. PhoneHandTool/useFleetGestures
-  // page across the document, inbox, and any existing full-screen pinned panes.
+  // Phone layout: three full-screen snap lanes anchored by the document:
+  // inbox/agents, chat, document. Extra pinned task panes continue leftward.
   if (variant === 'phone') {
     if (!phoneTarget) return { shapes: [], dispatchHudReset: false }
 
     const screenW = Math.round(viewport.w)
     const screenH = Math.round(viewport.h)
+    const chatX = phonePaneX(phoneTarget.pageX, PHONE_CHAT_PANE_INDEX, screenW, dx)
     const inboxX = phonePaneX(phoneTarget.pageX, PHONE_INBOX_PANE_INDEX, screenW, dx)
     return {
       dispatchHudReset: true,
       shapes: [
+        panelShape('fleet-chat', {
+          id: makeSlotId('chat-0'),
+          x: chatX, y: anchorY,
+          isLocked: true,
+          props: { w: screenW, h: screenH, filter: filter1 },
+        }, myId, myDevice),
         panelShape('fleet-inbox', {
           id: makeSlotId('inbox'),
           x: inboxX, y: anchorY,
