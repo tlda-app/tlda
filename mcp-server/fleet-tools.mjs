@@ -1905,12 +1905,18 @@ function pushInboxEntries(lines, rows, fmt) {
   });
 }
 
-export function formatInboxText({ mode, task, tasks, messages, now = Date.now() }) {
+export function formatInboxText({ mode, task, tasks, messages, counts = null, now = Date.now() }) {
   const activeTasks = normalizeInboxTasks({ task, tasks });
   const taskBlocks = inboxTaskBlocks(activeTasks);
   const lines = [];
   const count = messages.length;
   lines.push(`**INBOX MODE:** ${mode}`);
+  if (counts?.tasks_truncated || counts?.messages_truncated) {
+    const parts = [];
+    if (counts.tasks_truncated) parts.push(`${activeTasks.length}/${counts.tasks} active tasks shown`);
+    if (counts.messages_truncated) parts.push(`${messages.length}/${counts.messages} unread messages shown`);
+    lines.push(`Page-limited: ${parts.join('; ')}.`);
+  }
 
   if (mode === 'default') {
     const nowRows = messages.filter(m => inboxDefaultBucket(m, now) === 'now');
@@ -3304,6 +3310,38 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
     return { text: resolved, images: chipImages }
   }
 
+  async function resolveInboxChipTokens(text, metadata) {
+    if (!text || !text.includes('«')) return { text, images: [] }
+    let resolved = text
+    const chipImages = []
+    for (const match of [...text.matchAll(/«(.+?)»/g)]) {
+      const inner = match[1]
+      const colonIdx = inner.indexOf(':')
+      if (colonIdx < 0) continue
+      const type = inner.slice(0, colonIdx)
+      if (type === 'annotation' || type === 'highlight') {
+        const attachments = metadata?.attachments || []
+        const refData = attachments.find(a => a.token === match[0])
+        if (refData) {
+          const formatted = formatAnnotationRef(refData)
+          if (formatted) resolved = resolved.replace(match[0], '\n' + formatted + '\n')
+          continue
+        }
+      }
+      resolved = resolved.replace(match[0], `${match[0]} [reference not pre-materialized]`)
+    }
+    return { text: resolved, images: chipImages }
+  }
+
+  async function resolveInboxImages(text) {
+    if (!text) return { text, images: [] }
+    const cleaned = text.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (full, alt, url) => {
+      const label = alt ? `image: ${alt}` : 'image'
+      return `[${label} not pre-materialized: ${url}]`
+    })
+    return { text: cleaned, images: [] }
+  }
+
   // ---- inbox ----
   if (name === 'inbox') {
     if (!AGENT_ID) return { content: [{ type: 'text', text: 'No session ID detected.' }], isError: true };
@@ -3318,30 +3356,11 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
     if (!data) return { content: [{ type: 'text', text: `tlda backend didn't answer (it may be restarting). Not yours to debug — tell ops if it persists, then retry shortly.` }], isError: true };
 
     const messages = await Promise.all((data.messages || []).map(m => resolveInboxMessage(m, {
-      resolveChipTokens,
+      resolveChipTokens: resolveInboxChipTokens,
       resolveTheoremRefs,
-      resolveImages,
+      resolveImages: resolveInboxImages,
     })));
-    const text = formatInboxText({ mode: view, task: data.task || null, tasks: data.tasks || null, messages });
-    const allImages = messages.flatMap(m => m.images || []);
-    if (allImages.length > 0) {
-      const fs = await import('fs');
-      const contentBlocks = [{ type: 'text', text }];
-      for (const img of allImages) {
-        try {
-          const data = fs.readFileSync(img.path);
-          contentBlocks.push({
-            type: 'image',
-            data: data.toString('base64'),
-            mimeType: img.mimeType,
-          });
-        } catch (e) {
-          // Best effort: keep the text inbox usable if one attachment is gone.
-          console.error(`[fleet] failed to attach inbox image ${img.path}: ${e.message}`);
-        }
-      }
-      return { content: contentBlocks };
-    }
+    const text = formatInboxText({ mode: view, task: data.task || null, tasks: data.tasks || null, messages, counts: data.counts || null });
     return { content: [{ type: 'text', text }] };
   }
 

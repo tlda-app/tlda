@@ -1192,6 +1192,8 @@ const _viewingContext = new Map()   // agentId → { doc, page, sourceLine, ... 
 let _lastReaperStatus = null       // latest reaper snapshot from daemon
 const _daemonWarnDedup = new Map() // project → { eventId, count, lastSeen, baseText }
 const DAEMON_WARN_DEDUP_MS = 5 * 60 * 1000
+const MY_TASK_TASK_LIMIT = 20
+const MY_TASK_UNREAD_LIMIT = 50
 
 // daemon address → ts when the CURRENT uninterrupted daemon connection began. Reset on
 // every daemon-hello (i.e. every reconnect). Agent activity events arrive over the
@@ -1995,6 +1997,28 @@ function patchRecipientAttachmentState(eventId, recipientId, attachmentId, recor
   ))
 }
 
+function notifyRecipientMaterialization({ eventId, recipientId, attachment, record }) {
+  const state = record?.state
+  if (!recipientId || !eventId || !state) return
+  const title = attachment?.name || record?.title || `attachment ${attachment?.id ?? ''}`.trim()
+  const location = record.localPath || record.projectPath || record.projectArtifactId || null
+  const text = state === 'available'
+    ? `Attachment materialized for message ${eventId}: ${title}${location ? `\n${location}` : ''}`
+    : `Attachment materialization failed for message ${eventId}: ${title}${record.error ? `\n${record.error}` : ''}`
+  deliverTldaFeedbackChat({
+    from: 'tlda-materializer',
+    to: recipientId,
+    text,
+    metadata: {
+      source: 'materialization',
+      source_event_id: eventId,
+      attachment_id: attachment?.id != null ? String(attachment.id) : null,
+      state,
+      priority: state === 'failed' ? 'important' : 'normal',
+    },
+  })
+}
+
 function isMarkdownAttachment(attachment = {}, result = {}) {
   const mime = String(attachment.mimeType || attachment.contentType || result.contentType || '').toLowerCase()
   if (mime === 'text/markdown' || mime === 'text/x-markdown') return true
@@ -2043,22 +2067,26 @@ async function materializeProjectMarkdownAttachment({ eventId, recipient, source
 async function materializeRecipientAttachment({ eventId, recipientId, sourceAgent, attachment }) {
   const recipient = fleetStore.getAgent?.(recipientId)
   if (!recipient || recipient.human) return
-  const fail = (error) => patchRecipientAttachmentState(eventId, recipientId, attachment.id, {
-    kind: 'attachment',
-    state: 'failed',
-    status: 'failed',
-    title: attachment.name || null,
-    contentType: attachment.mimeType || null,
-    hash: attachment.sha256 || null,
-    sourceAgent: sourceAgent || 'unknown',
-    provenance: {
-      eventId,
-      attachmentId: String(attachment.id),
-      url: attachment.url || null,
-    },
-    error,
-    updated_at: new Date().toISOString(),
-  })
+  const fail = (error) => {
+    const record = {
+      kind: 'attachment',
+      state: 'failed',
+      status: 'failed',
+      title: attachment.name || null,
+      contentType: attachment.mimeType || null,
+      hash: attachment.sha256 || null,
+      sourceAgent: sourceAgent || 'unknown',
+      provenance: {
+        eventId,
+        attachmentId: String(attachment.id),
+        url: attachment.url || null,
+      },
+      error,
+      updated_at: new Date().toISOString(),
+    }
+    patchRecipientAttachmentState(eventId, recipientId, attachment.id, record)
+    notifyRecipientMaterialization({ eventId, recipientId, attachment, record })
+  }
   const route = resolveRpc('materialize-attachment', recipient)
   if (route.via === 'none') {
     fail(route.error)
@@ -2087,7 +2115,7 @@ async function materializeRecipientAttachment({ eventId, recipientId, sourceAgen
         error: e.message || String(e),
       }
     }
-    patchRecipientAttachmentState(eventId, recipientId, attachment.id, {
+    const record = {
       kind: 'attachment',
       state: 'available',
       status: 'ready',
@@ -2112,7 +2140,9 @@ async function materializeRecipientAttachment({ eventId, recipientId, sourceAgen
       size: result.size,
       sha256: result.sha256,
       materialized_at: new Date().toISOString(),
-    })
+    }
+    patchRecipientAttachmentState(eventId, recipientId, attachment.id, record)
+    notifyRecipientMaterialization({ eventId, recipientId, attachment, record })
   } catch (e) {
     fail(e.message || String(e))
   }
@@ -2124,7 +2154,7 @@ function queueRecipientMaterialization({ eventId, recipientId, sourceAgent, atta
     setImmediate(() => {
       materializeRecipientAttachment({ eventId, recipientId, sourceAgent, attachment })
         .catch(e => {
-          patchRecipientAttachmentState(eventId, recipientId, attachment.id, {
+          const record = {
             kind: 'attachment',
             state: 'failed',
             status: 'failed',
@@ -2139,7 +2169,9 @@ function queueRecipientMaterialization({ eventId, recipientId, sourceAgent, atta
             },
             error: e.message || String(e),
             updated_at: new Date().toISOString(),
-          })
+          }
+          patchRecipientAttachmentState(eventId, recipientId, attachment.id, record)
+          notifyRecipientMaterialization({ eventId, recipientId, attachment, record })
         })
     })
   }
@@ -5694,20 +5726,34 @@ async function handleFleetWsMessage(ws, msg) {
     const agentId = msg.agent
     if (!agentId) { error('missing agent'); return }
     fleetStore.updateHeartbeat(agentId)
-    const tasks = fleetStore.getActiveTasksByAgent?.(agentId) || []
+    const tasks = fleetStore.getActiveTasksByAgentLimited?.(agentId, MY_TASK_TASK_LIMIT) || fleetStore.getActiveTasksByAgent?.(agentId)?.slice(0, MY_TASK_TASK_LIMIT) || []
+    const taskCount = fleetStore.getActiveTaskCountByAgent?.(agentId) ?? tasks.length
     const task = tasks[0] || fleetStore.getTaskByAgent?.(agentId) || null
-    const unread = fleetStore.getUnread?.(agentId) || []
+    const unread = fleetStore.getUnreadLimited?.(agentId, MY_TASK_UNREAD_LIMIT) || fleetStore.getUnread?.(agentId)?.slice(0, MY_TASK_UNREAD_LIMIT) || []
+    const unreadCount = fleetStore.getUnreadCount?.(agentId) ?? unread.length
     // peek=true: caller just wants to see unread (e.g., the channel-WS
     // flush-on-reconnect path that displays a count). Don't mark read in
     // that case — the actual inbox() call from the agent will do the
     // marking. Without this, peek silently consumes the unread queue and
     // the subsequent inbox() returns nothing.
     if (unread.length && !msg.peek) {
-      const readIds = fleetStore.markRead?.(agentId) || []
+      const readIds = fleetStore.markEventsRead?.(agentId, unread.map(m => m.id)) || []
       if (readIds.length) broadcastEvent('read-receipt', { event_ids: readIds, agent: agentId })
     }
     broadcastState()
-    reply({ task, tasks: tasks.length ? tasks : (task ? [task] : []), messages: unread })
+    reply({
+      task,
+      tasks: tasks.length ? tasks : (task ? [task] : []),
+      messages: unread,
+      counts: {
+        tasks: taskCount,
+        messages: unreadCount,
+        task_limit: MY_TASK_TASK_LIMIT,
+        message_limit: MY_TASK_UNREAD_LIMIT,
+        tasks_truncated: taskCount > tasks.length,
+        messages_truncated: unreadCount > unread.length,
+      },
+    })
     return
   }
 

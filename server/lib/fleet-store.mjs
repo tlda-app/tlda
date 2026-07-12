@@ -798,6 +798,14 @@ export class FleetStore {
       ORDER BY e.timestamp ASC
     `);
 
+    this._getUnreadLimited = this.db.prepare(`
+      SELECT ${this._EVTE} FROM events e
+      JOIN unread u ON u.event_id = e.id
+      WHERE u.to_id = ? AND u.read = 0
+      ORDER BY e.timestamp ASC
+      LIMIT ?
+    `);
+
     this._getUnreadCount = this.db.prepare(`
       SELECT COUNT(*) as c FROM unread WHERE to_id = ? AND read = 0
     `);
@@ -928,6 +936,8 @@ export class FleetStore {
     this._getTask = this.db.prepare('SELECT * FROM tasks WHERE id = ?');
     this._getTaskByAgent = this.db.prepare("SELECT * FROM tasks WHERE agent = ? AND status NOT IN ('done', 'retracted') ORDER BY delegated_at DESC LIMIT 1");
     this._getActiveTasksByAgent = this.db.prepare("SELECT * FROM tasks WHERE agent = ? AND status NOT IN ('done', 'retracted') ORDER BY delegated_at DESC");
+    this._getActiveTasksByAgentLimited = this.db.prepare("SELECT * FROM tasks WHERE agent = ? AND status NOT IN ('done', 'retracted') ORDER BY delegated_at DESC LIMIT ?");
+    this._getActiveTaskCountByAgent = this.db.prepare("SELECT COUNT(*) as c FROM tasks WHERE agent = ? AND status NOT IN ('done', 'retracted')");
     this._getAllActiveTasks = this.db.prepare("SELECT * FROM tasks WHERE status NOT IN ('done', 'retracted') ORDER BY delegated_at DESC");
     this._getAllTasks = this.db.prepare('SELECT * FROM tasks ORDER BY delegated_at DESC');
     this._deleteTask = this.db.prepare('DELETE FROM tasks WHERE id = ?');
@@ -2255,6 +2265,21 @@ export class FleetStore {
     });
   }
 
+  getActiveTasksByAgentLimited(agentId, limit = 20) {
+    const n = Math.max(1, Math.min(Number.parseInt(String(limit), 10) || 20, 100));
+    const rows = this._getActiveTasksByAgentLimited.all(agentId, n).map(r => this._hydrateTask(r));
+    return rows.sort((a, b) => {
+      const an = a.metadata?.native ? 1 : 0;
+      const bn = b.metadata?.native ? 1 : 0;
+      if (an !== bn) return bn - an;
+      return (Date.parse(b.delegated_at || '') || 0) - (Date.parse(a.delegated_at || '') || 0);
+    });
+  }
+
+  getActiveTaskCountByAgent(agentId) {
+    return this._getActiveTaskCountByAgent.get(agentId).c;
+  }
+
   isDelegatorForAgent(delegatorId, agentId) {
     if (!delegatorId || !agentId) return false;
     return this.getActiveTasksByAgent(agentId).some(task => task.delegated_by === delegatorId);
@@ -2596,6 +2621,11 @@ export class FleetStore {
     return this._query(this._getUnread, agentId);
   }
 
+  getUnreadLimited(agentId, limit = 50) {
+    const n = Math.max(1, Math.min(Number.parseInt(String(limit), 10) || 50, 200));
+    return this._query(this._getUnreadLimited, agentId, n);
+  }
+
   getUnreadCount(agentId) {
     return this._getUnreadCount.get(agentId).c;
   }
@@ -2633,6 +2663,22 @@ export class FleetStore {
     const ids = this.db.prepare(`SELECT event_id FROM unread WHERE to_id = ? AND read = 0`).all(agentId).map(r => r.event_id);
     this._markRead.run(agentId);
     return ids;
+  }
+
+  markEventsRead(agentId, eventIds = []) {
+    const ids = [...new Set((eventIds || []).map(id => Number(id)).filter(Number.isFinite))];
+    if (!ids.length) return [];
+    const markOne = this.db.transaction((rows) => {
+      const marked = [];
+      for (const eventId of rows) {
+        const before = this._getUnreadForEvent.get(eventId, agentId);
+        if (!before || before.read) continue;
+        this._markEventRead.run(eventId, agentId);
+        marked.push(eventId);
+      }
+      return marked;
+    });
+    return markOne(ids);
   }
 
   // Mark a single event as read for one recipient. Used by terminal-card

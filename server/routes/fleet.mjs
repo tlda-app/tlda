@@ -32,6 +32,8 @@ const SERVER_OWNER_HOST = os.hostname()
 const UPLOAD_DIR = process.env.TLDA_UPLOAD_DIR ||
   path.join(os.homedir(), '.config', 'tlda', 'uploads')
 const RESOLVED_UPLOAD_DIR = path.resolve(UPLOAD_DIR)
+const MY_TASK_TASK_LIMIT = 20
+const MY_TASK_UNREAD_LIMIT = 50
 
 // Minimal multipart/form-data parser for the single-file case used by browser
 // drag-and-drop. Returns { filename, contentType, content } for the first
@@ -262,16 +264,30 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     const agentId = req.query.agent
     if (!agentId) { res.status(400).send('missing "agent" param'); return }
     if (fleetStore) fleetStore.updateHeartbeat(agentId)
-    const tasks = fleetStore?.getActiveTasksByAgent?.(agentId) || []
+    const tasks = fleetStore?.getActiveTasksByAgentLimited?.(agentId, MY_TASK_TASK_LIMIT) || fleetStore?.getActiveTasksByAgent?.(agentId)?.slice(0, MY_TASK_TASK_LIMIT) || []
+    const taskCount = fleetStore?.getActiveTaskCountByAgent?.(agentId) ?? tasks.length
     const task = tasks[0] || fleetStore?.getTaskByAgent(agentId) || null
-    const unread = fleetStore?.getUnread(agentId) || []
+    const unread = fleetStore?.getUnreadLimited?.(agentId, MY_TASK_UNREAD_LIMIT) || fleetStore?.getUnread(agentId)?.slice(0, MY_TASK_UNREAD_LIMIT) || []
+    const unreadCount = fleetStore?.getUnreadCount?.(agentId) ?? unread.length
     const peek = req.query.peek === 'true'
     if (fleetStore && unread.length && !peek) {
-      const readIds = fleetStore.markRead(agentId)
+      const readIds = fleetStore.markEventsRead?.(agentId, unread.map(m => m.id)) || []
       if (readIds.length) broadcastEvent('read-receipt', { event_ids: readIds, agent: agentId })
     }
     if (!peek) broadcastState()
-    res.json({ task, tasks: tasks.length ? tasks : (task ? [task] : []), messages: unread })
+    res.json({
+      task,
+      tasks: tasks.length ? tasks : (task ? [task] : []),
+      messages: unread,
+      counts: {
+        tasks: taskCount,
+        messages: unreadCount,
+        task_limit: MY_TASK_TASK_LIMIT,
+        message_limit: MY_TASK_UNREAD_LIMIT,
+        tasks_truncated: taskCount > tasks.length,
+        messages_truncated: unreadCount > unread.length,
+      },
+    })
   })
 
   // --- GET /api/chat/history ---
