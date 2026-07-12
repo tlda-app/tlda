@@ -2635,7 +2635,7 @@ app.get('/api/usage-status', requireRead, (req, res) => {
 app.post('/api/reaper/kill', requireRead, async (req, res) => {
   const { pid } = req.body
   if (!pid) return res.status(400).json({ error: 'missing pid' })
-  const machineId = LOCAL_DAEMON_ADDRESS
+  const machineId = _lastReaperStatus?.daemon_key || LOCAL_DAEMON_ADDRESS
   try {
     const result = await sendRpc(machineId, 'reaper-kill', { pid })
     res.json(result || { ok: true })
@@ -2645,7 +2645,7 @@ app.post('/api/reaper/kill', requireRead, async (req, res) => {
 })
 
 app.post('/api/reaper/sweep', requireRead, async (req, res) => {
-  const machineId = LOCAL_DAEMON_ADDRESS
+  const machineId = _lastReaperStatus?.daemon_key || LOCAL_DAEMON_ADDRESS
   try {
     const result = await sendRpc(machineId, 'reaper-sweep', {})
     res.json(result || { ok: true })
@@ -7457,7 +7457,10 @@ async function handleDaemonWsMessage(ws, msg) {
   }
 
   if (type === 'reaper-status') {
-    _lastReaperStatus = msg.data || msg
+    _lastReaperStatus = {
+      ...(msg.data || msg),
+      daemon_key: ws._daemonKey || msg.daemon_key || msg.data?.daemon_key || null,
+    }
     broadcastEvent('reaper-status', _lastReaperStatus)
     return
   }
