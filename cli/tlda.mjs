@@ -8,7 +8,7 @@
  */
 
 import { resolve, basename, dirname, join, delimiter } from 'path'
-import { chmodSync, existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync, statSync, appendFileSync } from 'fs'
+import { chmodSync, existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync, statSync, appendFileSync, realpathSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { homedir, hostname } from 'os'
 import { randomBytes } from 'crypto'
@@ -4596,6 +4596,16 @@ Options: --server <url> · --dir <path> · --title "…" · --main file.tex`)
   }
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
+function isCliEntrypoint() {
+  if (!process.argv[1]) return false
+  const thisFile = fileURLToPath(import.meta.url)
+  try {
+    return realpathSync(thisFile) === realpathSync(resolve(process.argv[1]))
+  } catch {
+    return thisFile === resolve(process.argv[1])
+  }
+}
+
+if (isCliEntrypoint()) {
   main()
 }
