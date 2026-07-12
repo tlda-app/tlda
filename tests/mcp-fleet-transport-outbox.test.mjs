@@ -4,24 +4,25 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import Database from 'better-sqlite3'
-import { FleetTransportOutbox, isRetryableTransportError } from '../mcp-server/lib/fleet-transport-outbox.mjs'
+import { FleetTransportOutbox, isRetryableTransportError } from '../shared/fleet-transport-outbox.mjs'
 
 function tempDb() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-mcp-fleet-transport-'))
   return new Database(path.join(dir, 'outbox.sqlite'))
 }
 
-test('durable MCP operations are persisted by agent and session in FIFO order', () => {
+test('durable MCP operations are persisted by agent in FIFO order', () => {
   let tick = 0
   const db = tempDb()
   const outbox = new FleetTransportOutbox(db, { clock: () => `2026-07-12T00:00:0${tick++}.000Z` })
 
   outbox.enqueue({ operationId: 'op-1', agentId: 'fleet:a', sessionId: 's1', type: 'chat', params: { message: 'one' } })
   outbox.enqueue({ operationId: 'op-2', agentId: 'fleet:a', sessionId: 's1', type: 'chat', params: { message: 'two' } })
-  outbox.enqueue({ operationId: 'op-other-session', agentId: 'fleet:a', sessionId: 's2', type: 'chat', params: { message: 'hidden' } })
+  outbox.enqueue({ operationId: 'op-new-session', agentId: 'fleet:a', sessionId: 's2', type: 'chat', params: { message: 'three' } })
+  outbox.enqueue({ operationId: 'op-other-agent', agentId: 'fleet:b', sessionId: 's1', type: 'chat', params: { message: 'hidden' } })
 
   const rows = outbox.dueRows({ agentId: 'fleet:a', sessionId: 's1' })
-  assert.deepEqual(rows.map(row => row.operationId), ['op-1', 'op-2'])
+  assert.deepEqual(rows.map(row => row.operationId), ['op-1', 'op-2', 'op-new-session'])
   assert.deepEqual(rows[0].params, { message: 'one' })
   db.close()
 })
@@ -82,6 +83,26 @@ test('server validation failures are failed, not retried', () => {
   assert.equal(row.status, 'failed')
   assert.equal(outbox.countByStatus('failed'), 1)
   assert.deepEqual(outbox.dueRows({ agentId: 'fleet:a', sessionId: 's1' }), [])
+  db.close()
+})
+
+test('stale inflight operations are recovered for retry by agent', () => {
+  const db = tempDb()
+  const outbox = new FleetTransportOutbox(db)
+
+  outbox.enqueue({ operationId: 'stale-op', agentId: 'fleet:a', sessionId: 'old-session', type: 'chat', params: { message: 'send me' } })
+  outbox.enqueue({ operationId: 'other-agent-op', agentId: 'fleet:b', sessionId: 'old-session', type: 'chat', params: { message: 'not mine' } })
+  outbox.markAttempt('stale-op')
+  outbox.markAttempt('other-agent-op')
+
+  assert.equal(outbox.countByStatus('inflight'), 2)
+  assert.equal(outbox.recoverInflight({ agentId: 'fleet:a' }), 1)
+
+  const rows = outbox.dueRows({ agentId: 'fleet:a', sessionId: 'new-session' })
+  assert.deepEqual(rows.map(row => row.operationId), ['stale-op'])
+  assert.equal(rows[0].status, 'retrying')
+  assert.match(rows[0].lastError, /MCP process restarted/)
+  assert.equal(outbox.get('other-agent-op').status, 'inflight')
   db.close()
 })
 

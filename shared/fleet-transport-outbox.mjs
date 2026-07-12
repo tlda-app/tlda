@@ -81,7 +81,6 @@ export class FleetTransportOutbox {
       SELECT * FROM mcp_fleet_outbox
       WHERE operation_id = ?
         AND agent_id = ?
-        AND (session_id = ? OR (session_id IS NULL AND ? IS NULL))
         AND status IN ('pending', 'retrying')
         AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
       LIMIT 1
@@ -89,7 +88,6 @@ export class FleetTransportOutbox {
     this.pendingDueStmt = this.db.prepare(`
       SELECT * FROM mcp_fleet_outbox
       WHERE agent_id = ?
-        AND (session_id = ? OR (session_id IS NULL AND ? IS NULL))
         AND status IN ('pending', 'retrying')
         AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
       ORDER BY created_at ASC, operation_id ASC
@@ -129,6 +127,15 @@ export class FleetTransportOutbox {
           updated_at = ?
       WHERE operation_id = ?
     `)
+    this.recoverInflightStmt = this.db.prepare(`
+      UPDATE mcp_fleet_outbox
+      SET status = 'retrying',
+          last_error = ?,
+          next_attempt_at = ?,
+          updated_at = ?
+      WHERE agent_id = ?
+        AND status = 'inflight'
+    `)
     this.countStatusStmt = this.db.prepare('SELECT count(*) AS count FROM mcp_fleet_outbox WHERE status = ?')
   }
 
@@ -157,10 +164,10 @@ export class FleetTransportOutbox {
     if (!agentId) return []
     const now = this.clock()
     if (operationId) {
-      const row = this.pendingExactStmt.get(operationId, agentId, sessionId || null, sessionId || null, now)
+      const row = this.pendingExactStmt.get(operationId, agentId, now)
       return row ? [parseRow(row)] : []
     }
-    return this.pendingDueStmt.all(agentId, sessionId || null, sessionId || null, now, limit).map(parseRow)
+    return this.pendingDueStmt.all(agentId, now, limit).map(parseRow)
   }
 
   markAttempt(operationId) {
@@ -187,6 +194,12 @@ export class FleetTransportOutbox {
     const next = new Date(Date.now() + delayMs).toISOString()
     this.markRetryStmt.run(message, next, this.clock(), operationId)
     return this.get(operationId)
+  }
+
+  recoverInflight({ agentId, reason = 'MCP process restarted before transport ACK' } = {}) {
+    if (!agentId) return 0
+    const now = this.clock()
+    return this.recoverInflightStmt.run(reason, now, now, agentId).changes
   }
 
   countByStatus(status) {

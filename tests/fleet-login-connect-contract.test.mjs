@@ -82,6 +82,7 @@ test('fleet MCP sendWS waits through reconnect-buffer chunks until the request d
   assert.match(sendBlock, /waitForConnection\(Math\.min\(remaining, 5_000\)\)/)
   assert.equal(sendBlock.includes('if (!connected && !_channelRWS?.connected) break;'), false)
   assert.match(sendBlock, /Date\.now\(\) - startedAt >= deadlineMs\) break/)
+  assert.match(sendBlock, /fleet WS request was not accepted before deadline/)
 
   assert.equal(mcpFleetSource.includes('Login failed: fleet WS not connected after 2s.'), false)
 })
@@ -99,6 +100,22 @@ test('fleet MCP chat result is transport-only, with no HTTP visibility probe', (
   assert.equal(chatBlock.includes('Skip cannot see'), false)
   assert.equal(chatBlock.includes('server may be down'), false)
   assert.match(chatBlock, /Queued for durable delivery; no server ACK yet/)
+})
+
+test('fleet MCP transport errors do not invent backend or visibility probes', () => {
+  const forbidden = [
+    'tlda backend not answering',
+    "backend didn't answer",
+    'tell ops if it persists',
+    'server may be down',
+    'Skip cannot see',
+    'tlda is down',
+  ]
+  for (const phrase of forbidden) {
+    assert.equal(mcpFleetSource.includes(phrase), false, `forbidden transport wording: ${phrase}`)
+  }
+  assert.match(mcpFleetSource, /Fleet transport failed before ACK/)
+  assert.match(mcpFleetSource, /failed before transport ACK/)
 })
 
 test('daemon RPC close handling has reconnect grace before pending request rejection', () => {

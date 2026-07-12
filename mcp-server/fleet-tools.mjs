@@ -62,7 +62,7 @@ import WebSocket from 'ws';
 import { ResilientWS } from '../shared/resilient-ws.mjs';
 import { rejectWsRequests, resetWsRequestIdleTimers, startWsRequest } from '../shared/ws-request-policy.mjs';
 import { WsReconnectBuffer } from '../shared/ws-reconnect-buffer.mjs';
-import { FleetTransportOutbox, isRetryableTransportError } from './lib/fleet-transport-outbox.mjs';
+import { FleetTransportOutbox, isRetryableTransportError } from '../shared/fleet-transport-outbox.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BIN = path.join(__dirname, 'bin');
@@ -354,6 +354,7 @@ let _fleetTransportDb = null;
 let _fleetTransportOutbox = null;
 let _fleetTransportFlushTimer = null;
 let _fleetTransportFlushInFlight = null;
+const _fleetTransportRecoveredAgents = new Set();
 
 function getFleetTransportOutbox() {
   if (_fleetTransportOutbox) return _fleetTransportOutbox;
@@ -484,7 +485,8 @@ function logEvent(event) {
       agentId: entry.agent || null,
       metadata: entry,
     };
-    sendWS('fleet-event', { event_data: eventData });
+    sendWS('fleet-event', { event_data: eventData })
+      .catch(e => process.stderr.write(`[fleet-transport] transient fleet-event send failed before ACK: ${e.message}\n`));
   }
 }
 
@@ -2297,7 +2299,7 @@ export async function handleFleetTool(name, args) {
       }
       return { content: [{ type: 'text', text: `Delegated to ${agent} [${data.task_id}]: ${description}` }] };
     } catch (e) {
-      return { content: [{ type: 'text', text: `Delegate failed (tlda backend not answering — tell ops if it persists): ${e.message}` }], isError: true };
+      return { content: [{ type: 'text', text: `Delegate failed before transport ACK: ${e.message}` }], isError: true };
     }
   }
 
@@ -2326,7 +2328,7 @@ export async function handleFleetTool(name, args) {
       const names = data.dismissed.map(d => d.skill).join(', ');
       return { content: [{ type: 'text', text: `Dismissed ${names}. The block is lifted; you can proceed. (Logged for Skip with your reason.)` }] };
     } catch (e) {
-      return { content: [{ type: 'text', text: `Dismiss failed (tlda backend not answering — tell ops if it persists): ${e.message}` }], isError: true };
+      return { content: [{ type: 'text', text: `Dismiss failed: ${e.message}` }], isError: true };
     }
   }
 
@@ -2665,7 +2667,7 @@ export async function handleFleetTool(name, args) {
       if (agents.error) return { content: [{ type: 'text', text: `task_list failed: ${agents.error}` }], isError: true };
       if (active.error) return { content: [{ type: 'text', text: `task_list failed: ${active.error}` }], isError: true };
     } catch (e) {
-      return { content: [{ type: 'text', text: `task_list failed (tlda backend not answering — tell ops if it persists): ${e.message}` }], isError: true };
+      return { content: [{ type: 'text', text: `task_list failed before transport ACK: ${e.message}` }], isError: true };
     }
 
     let text = '';
@@ -2761,7 +2763,7 @@ export async function handleFleetTool(name, args) {
     try {
       taskData = await sendWS('my-task', { agent: AGENT_ID, peek: true });
     } catch (e) {
-      return { content: [{ type: 'text', text: `tlda backend not answering — tell ops if it persists. (${e.message})` }], isError: true };
+      return { content: [{ type: 'text', text: `Fleet transport failed before ACK. Active task lookup was not completed: ${e.message}` }], isError: true };
     }
     const task = taskData.task;
     if (!task) return { content: [{ type: 'text', text: 'No active task to report on.' }], isError: true };
@@ -2923,7 +2925,7 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       agents = await sendWS('store-agents');
       if (!agents || agents.error) return { content: [{ type: 'text', text: `task_check failed: ${agents?.error || 'no response'}` }], isError: true };
     } catch (e) {
-      return { content: [{ type: 'text', text: `task_check failed (tlda backend not answering — tell ops if it persists): ${e.message}` }], isError: true };
+      return { content: [{ type: 'text', text: `task_check failed before transport ACK: ${e.message}` }], isError: true };
     }
 
     const agentEntry = agents.find(a =>
@@ -3338,9 +3340,8 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
     try {
       data = await sendWS('my-task', { agent: AGENT_ID, peek: !!args?.peek });
     } catch (e) {
-      return { content: [{ type: 'text', text: `tlda backend didn't answer (it may be restarting). Not yours to debug — tell ops if it persists, then retry shortly. (${e.message})` }], isError: true };
+      return { content: [{ type: 'text', text: `Fleet transport failed before ACK. This read was not completed: ${e.message}` }], isError: true };
     }
-    if (!data) return { content: [{ type: 'text', text: `tlda backend didn't answer (it may be restarting). Not yours to debug — tell ops if it persists, then retry shortly.` }], isError: true };
 
     const messages = await Promise.all((data.messages || []).map(m => resolveInboxMessage(m, {
       resolveChipTokens: resolveInboxChipTokens,
@@ -4088,7 +4089,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       if (data.error) return { content: [{ type: 'text', text: `Label failed: ${data.error}` }], isError: true };
       return { content: [{ type: 'text', text: `Labels for ${data.agent}: ${(data.labels || []).join(', ') || '(none)'}` }] };
     } catch (e) {
-      return { content: [{ type: 'text', text: `Label failed (tlda backend not answering — tell ops if it persists): ${e.message}` }], isError: true };
+      return { content: [{ type: 'text', text: `Label failed before transport ACK: ${e.message}` }], isError: true };
     }
   }
 
@@ -4103,7 +4104,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       const status = data.stopped ? 'confirmed stopped' : `not confirmed after ${data.attempts} attempts`;
       return { content: [{ type: 'text', text: `${data.agent || agent}: ${status}.` }] };
     } catch (e) {
-      return { content: [{ type: 'text', text: `Interrupt failed (tlda backend not answering — tell ops if it persists): ${e.message}` }], isError: true };
+      return { content: [{ type: 'text', text: `Interrupt failed before transport ACK: ${e.message}` }], isError: true };
     }
   }
 
@@ -4184,7 +4185,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       const colHead = `${'agent'.padEnd(wn)}  ${'status'.padEnd(ws)}  ${'seen'.padStart(wsa)}  ${'inbox'.padEnd(wi)}  ${'delivery'.padEnd(wc)}  ${'model'.padEnd(wm)}  ${'activity'.padEnd(14)}  cwd`;
       return { content: [{ type: 'text', text: `${header}${scope}${summaryText}\n\n${colHead}\n${lines.join('\n')}` }] };
     } catch (e) {
-      return { content: [{ type: 'text', text: `fleet_table failed (tlda backend not answering — tell ops if it persists): ${e.message}` }], isError: true };
+      return { content: [{ type: 'text', text: `fleet_table failed before transport ACK: ${e.message}` }], isError: true };
     }
   }
 
@@ -4241,7 +4242,8 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     const fireAt = new Date(Date.now() + seconds * 1000).toISOString();
 
     // Store timer-set event immediately for dashboard countdown display
-    sendWS('timer-set', { agent: AGENT_ID, message, fire_at: fireAt });
+    sendWS('timer-set', { agent: AGENT_ID, message, fire_at: fireAt })
+      .catch(e => process.stderr.write(`[fleet-transport] transient timer-set send failed before ACK: ${e.message}\n`));
 
     // Fire after delay: deliver via channel notification + store fired event in DB
     setTimeout(async () => {
@@ -4255,7 +4257,8 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
         process.stderr.write(`[fleet] timer channel delivery failed: ${e.message}\n`);
       }
       // Also record in DB for chat history
-      sendWS('timer-fire', { agent: AGENT_ID, message: `⏰ ${message}` });
+      sendWS('timer-fire', { agent: AGENT_ID, message: `⏰ ${message}` })
+        .catch(e => process.stderr.write(`[fleet-transport] transient timer-fire send failed before ACK: ${e.message}\n`));
     }, seconds * 1000);
 
     return { content: [{ type: 'text', text: `Timer set: ${seconds}s → "${message}". You'll get ⏰ when it fires.` }] };
@@ -4414,9 +4417,10 @@ const _reconnectBuffer = new WsReconnectBuffer({ isConnected: () => !!_channelRW
 
 /**
  * Send a request over the WS channel and wait for a response.
- * Returns the result on success, throws on error or timeout.
- * If WS is not connected, returns null so the caller can fail or use an
- * explicitly designed alternate route.
+ * Returns the server ACK result on success and throws on error or timeout.
+ * Callers that need durability must use sendDurableFleet(), which persists the
+ * operation before this transport attempt and turns retryable failures into a
+ * queued transport state.
  */
 function _sendWSOnce(type, params = {}, opts = {}) {
   if (!_channelRWS?.connected) return null;
@@ -4449,7 +4453,7 @@ async function sendWS(type, params = {}, opts = {}) {
     const connected = await _reconnectBuffer.waitForConnection(Math.min(remaining, 5_000));
     if (!connected && !_channelRWS?.connected && Date.now() - startedAt >= deadlineMs) break;
   }
-  return null;
+  throw new Error(`fleet WS request was not accepted before deadline after ${deadlineMs}ms (type=${type})`);
 }
 
 function currentTransportSessionId() {
@@ -4472,6 +4476,10 @@ async function flushFleetTransport({ operationId = null, limit = 50, deadlineMs 
 
   const run = async () => {
     const outbox = getFleetTransportOutbox();
+    if (!_fleetTransportRecoveredAgents.has(AGENT_ID)) {
+      outbox.recoverInflight({ agentId: AGENT_ID });
+      _fleetTransportRecoveredAgents.add(AGENT_ID);
+    }
     const rows = outbox.dueRows({
       agentId: AGENT_ID,
       sessionId: currentTransportSessionId(),
@@ -4680,10 +4688,6 @@ function formatStatusSummary({ eventType, fromLabel, docHint = '', preview = '',
 async function reportNotificationAttempt(attempt) {
   try {
     const result = await sendWS('notification-attempt', { attempt }, { deadlineMs: 5000 });
-    if (!result) {
-      process.stderr.write(`[fleet-channel] failed to report notification attempt for ${attempt.agentId} (${attempt.outcome})\n`);
-      return false;
-    }
     return true;
   } catch (e) {
     process.stderr.write(`[fleet-channel] failed to report notification attempt for ${attempt.agentId} (${attempt.outcome}): ${e.message}\n`);
