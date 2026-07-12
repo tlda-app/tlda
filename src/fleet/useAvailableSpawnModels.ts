@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { DATABASE_HTTP } from '../activeConfig'
 // @ts-ignore — shared vanilla module used by server + frontend; lives in shared/ so the live image ships it.
 import { spawnModelsFromCapabilitiesResponse } from '../../shared/spawn-model-options.mjs'
 
@@ -46,7 +47,7 @@ export async function loadAvailableSpawnModels(
     user: userId,
   })
   if (context.doc) params.set('doc', context.doc)
-  const r = await fetcher(`/api/fleet/spawn-availability?${params.toString()}`)
+  const r = await fetcher(`${DATABASE_HTTP}/api/fleet/spawn-availability?${params.toString()}`)
   if (!r.ok) throw new Error(String(r.status))
   const next = spawnModelsFromCapabilitiesResponse(await r.json())
   return {
