@@ -2765,6 +2765,8 @@ const PW_WARN_MS = parseInt(process.env.PW_REAP_WARN_MS, 10) || 13 * 60 * 1000
 const PW_PARK_MS = parseInt(process.env.PW_REAP_PARK_MS, 10) || 15 * 60 * 1000
 const PW_REAP_INTERVAL_MS = parseInt(process.env.PW_REAP_INTERVAL_MS, 10) || 60_000
 const PW_REAP_SESSION = process.env.PW_REAP_SESSION || 'shared'
+const PW_REAP_CAPACITY = Math.max(1, parseInt(process.env.TLDA_PW_CAPACITY || '', 10) || 3)
+const pwPoolSessions = () => Array.from({ length: PW_REAP_CAPACITY }, (_, i) => i === 0 ? PW_REAP_SESSION : `${PW_REAP_SESSION}-${i + 1}`)
 const PW_TOUCH_DIR = path.join(CONFIG_DIR, 'pw-touch')
 const _pwWarned = new Set()       // keys warned this idle stretch
 const _pwFirstSeen = new Map()    // key → first time we saw it (fallback if no touch file)
@@ -2774,19 +2776,19 @@ const _pwFirstSeen = new Map()    // key → first time we saw it (fallback if n
 // a closed session makes playwright-cli try to launch a browser, which collides
 // with any orphaned Chrome on the profile and fails. When closed there's no pool
 // to reap anyway, so we just no-op.
-async function pwSessionOpen() {
+async function pwSessionOpen(session) {
   try {
     const out = (await execFileP('playwright-cli', ['list'], { timeout: 5000 })).stdout || ''
-    const m = out.match(new RegExp(`- ${PW_REAP_SESSION}:\\s*\\n\\s*- status: (\\w+)`, 'm'))
+    const m = out.match(new RegExp(`- ${session}:\\s*\\n\\s*- status: (\\w+)`, 'm'))
     return !!m && m[1] === 'open'
   } catch { return false }
 }
 
-async function pwSharedWindows() {
+async function pwSharedWindows(session) {
   // Windows in the shared session carrying a pwtab marker. Caller gates on
   // pwSessionOpen(), so a throw here is a real error worth surfacing.
   let out
-  try { out = (await execFileP('playwright-cli', [`-s=${PW_REAP_SESSION}`, 'tab-list'], { timeout: 5000 })).stdout || '' }
+  try { out = (await execFileP('playwright-cli', [`-s=${session}`, 'tab-list'], { timeout: 5000 })).stdout || '' }
   catch (e) { console.error(`[pw-reap] tab-list failed: ${String(e.message).split('\n')[0]}`); return [] }
   const wins = []
   for (const line of out.split('\n')) {
@@ -2811,11 +2813,12 @@ async function pwIsAwake(agentId) {
 }
 
 async function reapPwWindows() {
-  if (!(await pwSessionOpen())) return // browser down → nothing to reap, don't trigger a launch
-  const wins = await pwSharedWindows()
-  const now = Date.now()
-  const seen = new Set()
-  for (const w of wins) {
+  for (const session of pwPoolSessions()) {
+    if (!(await pwSessionOpen(session))) continue // browser down → nothing to reap, don't trigger a launch
+    const wins = await pwSharedWindows(session)
+    const now = Date.now()
+    const seen = new Set()
+    for (const w of wins) {
     seen.add(w.key)
     const touch = pwReadTouch(w.key)
     let lastTs = touch?.ts
@@ -2829,7 +2832,7 @@ async function reapPwWindows() {
     const idle = now - lastTs
     if (idle >= PW_PARK_MS) {
       try {
-        await execFileP('tlda-dev', ['pw', 'release'], { env: { ...process.env, TLDA_PW_AS: touch?.id || w.key, TLDA_PW_SESSION: PW_REAP_SESSION }, timeout: 20000 })
+        await execFileP('tlda-dev', ['pw', 'release'], { env: { ...process.env, TLDA_PW_AS: touch?.id || w.key, TLDA_PW_SESSION: session }, timeout: 20000 })
         console.log(`[pw-reap] parked idle window key=${w.key} idle=${Math.round(idle / 60000)}m`)
       } catch (e) { console.error(`[pw-reap] park failed key=${w.key}: ${e.message}`) }
       _pwWarned.delete(w.key); _pwFirstSeen.delete(w.key)
@@ -2842,9 +2845,10 @@ async function reapPwWindows() {
       }
       // hibernating/dead → no warning; parked silently at the 15 min mark
     }
+    }
+    for (const k of [..._pwWarned]) if (!seen.has(k)) _pwWarned.delete(k)
+    for (const k of [..._pwFirstSeen.keys()]) if (!seen.has(k)) _pwFirstSeen.delete(k)
   }
-  for (const k of [..._pwWarned]) if (!seen.has(k)) _pwWarned.delete(k)
-  for (const k of [..._pwFirstSeen.keys()]) if (!seen.has(k)) _pwFirstSeen.delete(k)
 }
 
 setInterval(() => { reapPwWindows().catch(e => console.error('[pw-reap]', e.message)) }, PW_REAP_INTERVAL_MS)

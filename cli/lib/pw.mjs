@@ -36,6 +36,7 @@ import { freemem, homedir, totalmem } from 'os'
 import { fileURLToPath } from 'url'
 import { createHash } from 'crypto'
 import { getServerUrl } from '../../shared/config.mjs'
+import { acquireLease, releaseLease, releaseLeases } from './resource-leases.mjs'
 
 const REPO_ROOT = dirname(dirname(dirname(fileURLToPath(import.meta.url))))
 
@@ -191,6 +192,17 @@ function myTabKey() {
 function myMarker() {
   return `pwtab=${myTabKey()}`
 }
+function sessionLeaseId(session = SESSION) { return `playwright-session:${session}` }
+function tabLeaseId(session = SESSION, key = myTabKey()) { return `playwright-tab:${session}:${key}` }
+function leaseOwner() { return { id: who(), type: process.env.FLEET_ID ? 'agent' : 'human' } }
+function renewSessionLease() {
+  const procs = listSessionProcesses(SESSION)
+  const browser = procs.find(p => p.kind === 'browser')
+  acquireLease({ kind: 'playwright-session', resource_id: sessionLeaseId(), owner: { id: 'tlda-dev', type: 'system' }, metadata: { cwd: AGENT_CWD, session: SESSION, pid: browser?.pid || null, process_pids: procs.map(p => p.pid) }, policy: { ttl_ms: 20 * 60_000, idle_policy: 'expire-after-all-tabs-parked' } })
+}
+function renewTabLease(tab = null) {
+  acquireLease({ kind: 'playwright-tab', resource_id: tabLeaseId(), owner: leaseOwner(), metadata: { cwd: AGENT_CWD, worktree: AGENT_CWD, session: SESSION, tab }, policy: { ttl_ms: 15 * 60_000, idle_policy: 'warn-then-park' } })
+}
 
 // Per-agent last-touch files so eliza's idle reaper can tell how long an agent's
 // window has sat unused. Each verb refreshes it; release/park removes it. The
@@ -202,10 +214,12 @@ function touchMine() {
   try {
     mkdirSync(TOUCH_DIR, { recursive: true })
     writeFileSync(touchFile(), JSON.stringify({ id: who(), key: myTabKey(), session: SESSION, ts: Date.now() }))
+    renewTabLease()
   } catch (e) { console.error(`pw: WARN last-touch stamp failed: ${e.message}`) }
 }
 function clearTouch() {
   try { rmSync(touchFile(), { force: true }) } catch (e) { console.error(`pw: WARN clearing last-touch failed: ${e.message}`) }
+  releaseLease(tabLeaseId())
 }
 
 function lockScript(repoRoot) {
@@ -504,7 +518,7 @@ function openArgs(repoRoot) {
 }
 
 function ensureOpen(repoRoot) {
-  if (sessionOpen()) return false
+  if (sessionOpen()) { renewSessionLease(); return false }
   assertCanCreateBrowserLoad({ action: `open pooled browser for session "${SESSION}"` })
   // If the playwright-cli binary can't even be resolved, `open` will "fail" for a
   // reason that has nothing to do with a zombie profile lock — and the recover
@@ -519,11 +533,12 @@ function ensureOpen(repoRoot) {
     )
   }
   ensureNoRaisePatch()
-  if (pw(openArgs(repoRoot), { stdio: 'inherit' }).status === 0) return true
+  if (pw(openArgs(repoRoot), { stdio: 'inherit' }).status === 0) { renewSessionLease(); return true }
   recoverStaleSharedBrowser()
   if (pw(openArgs(repoRoot), { stdio: 'inherit' }).status !== 0) {
     throw new Error('failed to open pooled browser (even after clearing a stale profile lock)')
   }
+  renewSessionLease()
   return true
 }
 
@@ -619,7 +634,7 @@ function selectMyTab() {
   for (let i = 0; i < 8; i++) {
     const cur = listTabs().find(isMine)
     if (!cur) return null
-    if (cur.current) return cur.index // confirmed: my page is the current one
+    if (cur.current) { renewTabLease(cur.index); return cur.index } // confirmed: my page is the current one
     pw(['tab-select', String(cur.index)], { stdio: 'ignore' })
     spawnSync('sleep', ['0.15'])
   }
@@ -906,6 +921,7 @@ export async function cmdPw(args, repoRoot) {
     if (!sessionOpen()) console.log('browser already down')
     else { pw(['close'], { stdio: 'inherit' }); console.log('browser reaped') }
     const killed = reapSessionProcesses(SESSION)
+    releaseLeases(lease => lease.metadata?.session === SESSION)
     if (killed.length) console.log(`killed ${killed.length} playwright ${SESSION} process(es)`)
     // Reaping frees the lock regardless of holder.
     spawnSync('bash', [lockScript(repoRoot), 'steal', `reaper:${me}`], { encoding: 'utf8', env: lockEnv(repoRoot) })
