@@ -192,6 +192,12 @@ export class FleetStore {
       CREATE INDEX IF NOT EXISTS idx_events_to ON events(to_id, timestamp DESC);
       CREATE INDEX IF NOT EXISTS idx_events_task ON events(task_id);
       CREATE INDEX IF NOT EXISTS idx_events_agent ON events(agent_id, timestamp DESC);
+      CREATE INDEX IF NOT EXISTS idx_events_chat_client_temp_id
+        ON events(json_extract(metadata, '$.client_temp_id'), id)
+        WHERE type = 'chat';
+      CREATE INDEX IF NOT EXISTS idx_events_operation_id
+        ON events(json_extract(metadata, '$.client_operation_id'), type, id)
+        WHERE type IN ('report', 'chat', 'task_done');
       CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
         text,
         content='events',
