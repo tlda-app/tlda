@@ -50,6 +50,10 @@ test('daemon launcher writes fresh-spawn ledger row before starting seat', async
       getProjects: () => [],
       tmux: async () => true,
       startupFailureProbeMs: 1,
+      liveCodexSessionIdentityResolver: async () => ({
+        sessionId: '11111111-2222-4333-8444-555555555555',
+        jsonlPath: path.join(tmp, 'rollout-11111111-2222-4333-8444-555555555555.jsonl'),
+      }),
       spawnImpl: async (params) => {
         observedPrelaunchGrant = ledger.get(params.agentId)
         return {
@@ -76,7 +80,11 @@ test('daemon launcher writes fresh-spawn ledger row before starting seat', async
     assert.equal(observedPrelaunchGrant?.id, result.agent_id)
     assert.equal(observedPrelaunchGrant?.source, 'spawn')
     assert.deepEqual(observedPrelaunchGrant?.spawnPolicy, { name: 'unsandboxed', policy: 'unsandboxed' })
-    assert.deepEqual(ledger.get(result.agent_id)?.spawnPolicy, { name: 'unsandboxed', policy: 'unsandboxed' })
+    const row = ledger.get(result.agent_id)
+    assert.deepEqual(row?.spawnPolicy, { name: 'unsandboxed', policy: 'unsandboxed' })
+    assert.equal(row?.sessionId, '11111111-2222-4333-8444-555555555555')
+    assert.equal(row?.sessionKind, 'codex')
+    assert.equal(result.resume_id, '11111111-2222-4333-8444-555555555555')
   } finally {
     await ledger.close()
     fs.rmSync(tmp, { recursive: true, force: true })
@@ -108,6 +116,10 @@ test('daemon launcher writes a supplied fresh agent id before starting seat', as
       getProjects: () => [],
       tmux: async () => true,
       startupFailureProbeMs: 1,
+      liveCodexSessionIdentityResolver: async () => ({
+        sessionId: '22222222-2222-4333-8444-555555555555',
+        jsonlPath: path.join(tmp, 'rollout-22222222-2222-4333-8444-555555555555.jsonl'),
+      }),
       spawnImpl: async (params) => {
         observedPrelaunchGrant = ledger.get(params.agentId)
         return {
@@ -134,7 +146,10 @@ test('daemon launcher writes a supplied fresh agent id before starting seat', as
     assert.equal(result.agent_id, suppliedAgentId)
     assert.equal(observedPrelaunchGrant?.id, suppliedAgentId)
     assert.equal(observedPrelaunchGrant?.source, 'spawn')
-    assert.deepEqual(ledger.get(suppliedAgentId)?.spawnPolicy, { name: 'unsandboxed', policy: 'unsandboxed' })
+    const row = ledger.get(suppliedAgentId)
+    assert.deepEqual(row?.spawnPolicy, { name: 'unsandboxed', policy: 'unsandboxed' })
+    assert.equal(row?.sessionId, '22222222-2222-4333-8444-555555555555')
+    assert.equal(result.resume_id, '22222222-2222-4333-8444-555555555555')
   } finally {
     await ledger.close()
     fs.rmSync(tmp, { recursive: true, force: true })

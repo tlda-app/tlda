@@ -4,6 +4,8 @@ import path from 'path'
 import { promisify } from 'util'
 import { resolveSpawnGrant } from '../server/lib/spawn-policy.mjs'
 import { detectSpawnStartupFailureTranscript } from '../agent-runtime/daemon-guards.mjs'
+import { ledgerSessionId } from '../agent-runtime/ledger-session-tail.mjs'
+import { resolveTranscript } from '../agent-runtime/resolve-transcript.mjs'
 import { probeSpawnAvailability } from './availability.mjs'
 import { newFleetId } from './identity.mjs'
 import { readDaemonConfigForCwd, withDaemonModelAliases } from './permission-ledger.mjs'
@@ -21,6 +23,87 @@ function readFileTail(file, max = 6000) {
   }
 }
 
+function codexRuntimeRe() {
+  return /(?:^|\s|[/\\])codex(?:\.exe)?(?:\s|$)/
+}
+
+async function findCodexRuntimePid(tmuxSession, { tmuxArgs = [], tmuxSocket = null } = {}) {
+  if (!tmuxSession) return null
+  const args = tmuxSocket ? ['-S', tmuxSocket] : tmuxArgs
+  let paneOut = ''
+  try {
+    ;({ stdout: paneOut } = await execFileP('tmux',
+      [...args, 'list-panes', '-t', tmuxSession, '-F', '#{pane_pid}'],
+      { timeout: 3000, encoding: 'utf8' }))
+  } catch {
+    return null
+  }
+  const panePids = paneOut.trim().split('\n').filter(Boolean)
+  if (!panePids.length) return null
+
+  let psOut = ''
+  try {
+    ;({ stdout: psOut } = await execFileP('ps', ['-eo', 'pid,ppid,args'], {
+      timeout: 5000,
+      encoding: 'utf8',
+    }))
+  } catch {
+    return null
+  }
+
+  const childrenByPpid = new Map()
+  const runtimePids = new Set()
+  for (const line of psOut.split('\n')) {
+    const m = line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/)
+    if (!m) continue
+    const [, pid, ppid, argsText] = m
+    if (!childrenByPpid.has(ppid)) childrenByPpid.set(ppid, [])
+    childrenByPpid.get(ppid).push(pid)
+    if (codexRuntimeRe().test(argsText)) runtimePids.add(pid)
+  }
+
+  const stack = [...panePids]
+  const seen = new Set()
+  while (stack.length) {
+    const pid = stack.pop()
+    if (seen.has(pid)) continue
+    seen.add(pid)
+    if (runtimePids.has(pid)) return pid
+    for (const child of (childrenByPpid.get(pid) || [])) stack.push(child)
+  }
+  return null
+}
+
+export async function resolveLiveCodexSessionIdentity({
+  agent,
+  tmuxSession,
+  tmuxArgs = [],
+  tmuxSocket = null,
+  now = Date.now,
+} = {}) {
+  const pid = await findCodexRuntimePid(tmuxSession, { tmuxArgs, tmuxSocket })
+  if (!pid) return null
+  const launchTs = Date.parse(agent?.registered_at || '') || (now() - 60_000)
+  const jsonlPath = await resolveTranscript({ pid, kind: 'codex', agent, launchTs })
+  const sessionId = ledgerSessionId({ harness_kind: 'codex', jsonl_path: jsonlPath })
+  if (!sessionId) return null
+  return { sessionId, jsonlPath }
+}
+
+async function waitForLiveCodexSessionIdentity(resolveIdentity, args, {
+  timeoutMs = Number(process.env.TLDA_SPAWN_RESUME_ID_TIMEOUT_MS || 10_000),
+  intervalMs = 250,
+} = {}) {
+  const deadline = Date.now() + timeoutMs
+  let last = null
+  while (Date.now() <= deadline) {
+    last = await resolveIdentity(args)
+    if (last?.sessionId) return last
+    await new Promise(resolve => setTimeout(resolve, intervalMs))
+  }
+  return last
+}
+
 export function createAgentLauncher({
   activeConfigName,
   configDir,
@@ -34,6 +117,7 @@ export function createAgentLauncher({
   tmuxArgs = [],
   tmuxSocket = null,
   spawnImpl = null,
+  liveCodexSessionIdentityResolver = resolveLiveCodexSessionIdentity,
   startupFailureProbeMs = Number(process.env.TLDA_SPAWN_STARTUP_FAILURE_PROBE_MS || 2500),
 }) {
   const activeSpawns = new Map()
@@ -322,6 +406,40 @@ export function createAgentLauncher({
           code: 'missing-resume-handle',
           error: 'spawn launcher returned a codex session without a durable resume handle',
         }
+      }
+      if (launched.harness === 'codex' && !launched.resumeId) {
+        const identity = await waitForLiveCodexSessionIdentity(liveCodexSessionIdentityResolver, {
+          agent: {
+            id: launched.fleetId,
+            friendly_name: agentName,
+            cwd: resolvedCwd,
+            registered_at: new Date().toISOString(),
+          },
+          tmuxSession: launched.tmuxSession,
+          tmuxArgs,
+          tmuxSocket,
+        })
+        if (!identity?.sessionId) {
+          if (shouldWriteLedgerRow) await permissionLedger.delete(preallocatedAgentId).catch(() => {})
+          return {
+            ok: false,
+            name: agentName,
+            agent_id: launched.fleetId,
+            tmux_session: launched.tmuxSession,
+            code: 'identity-ingestion-pending',
+            reason: 'identity-ingestion-pending',
+            retry_after_ms: 1000,
+            error: `spawn launched ${agentName}, but the daemon could not bind its live Codex rollout yet; retry once session identity ingestion catches up`,
+          }
+        }
+        permissionLedger.setSessionSync(launched.fleetId, {
+          sessionId: identity.sessionId,
+          sessionKind: 'codex',
+          sessionPath: identity.jsonlPath,
+          cwd: resolvedCwd,
+          friendlyName: agentName,
+        })
+        launched.resumeId = identity.sessionId
       }
       if (!preallocatedAgentId || launched.fleetId !== preallocatedAgentId) {
         await permissionLedger.set(launched.fleetId, {

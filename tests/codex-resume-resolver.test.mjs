@@ -74,3 +74,49 @@ test('codex resume resolver rejects non-bare ledger resume ids', async () => {
     fs.rmSync(tmp, { recursive: true, force: true })
   }
 })
+
+test('codex resume resolver backfills a missing daemon-ledger session identity from rollout files', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-codex-resume-backfill-'))
+  const ledger = createPermissionLedger(path.join(tmp, 'ledger.db'))
+  try {
+    const rolloutId = '33333333-2222-4333-8444-555555555555'
+    const sessionsBase = path.join(tmp, 'sessions')
+    const rolloutDir = path.join(sessionsBase, '2026', '07', '12')
+    fs.mkdirSync(rolloutDir, { recursive: true })
+    const rolloutPath = path.join(rolloutDir, `rollout-2026-07-12T18-26-43-${rolloutId}.jsonl`)
+    fs.writeFileSync(rolloutPath, [
+      JSON.stringify({
+        type: 'session_meta',
+        payload: {
+          id: rolloutId,
+          cwd: '/tmp/tlda-resume-test',
+          timestamp: '2026-07-12T22:26:43.000Z',
+        },
+      }),
+      JSON.stringify({
+        payload: {
+          type: 'mcp_tool_call_end',
+          invocation: { server: 'tlda', tool: 'login' },
+          result: [{ type: 'text', text: 'Logged in fleet:test-resume.\nYour name: "test-resume"' }],
+        },
+      }),
+      '',
+    ].join('\n'))
+
+    ledger.setSync('fleet:test-resume', { spawnPolicy: { name: 'unsandboxed', policy: 'unsandboxed' } })
+
+    const resolved = await resolveCodexResumeHandle(makeAgent(), { permissionLedger: ledger, sessionsBase })
+
+    assert.equal(resolved.ok, true)
+    assert.equal(resolved.resumeId, rolloutId)
+    assert.equal(resolved.jsonlPath, rolloutPath)
+    assert.equal(resolved.source, 'daemon-ledger-backfill')
+    const row = ledger.get('fleet:test-resume')
+    assert.equal(row?.sessionId, rolloutId)
+    assert.equal(row?.sessionKind, 'codex')
+    assert.equal(row?.sessionPath, rolloutPath)
+  } finally {
+    await ledger.close()
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})

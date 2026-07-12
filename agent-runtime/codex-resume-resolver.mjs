@@ -1,5 +1,6 @@
 import fs from 'fs'
 import { createPermissionLedger } from '../agent-launch/permission-ledger.mjs'
+import { findCodexRollout } from '../agent-launch/resume.mjs'
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 export function isBareCodexResumeId(value) {
@@ -46,6 +47,21 @@ function success(agent, rec, source) {
   }
 }
 
+function canUseRecoveredRollout(handle) {
+  return handle?.rolloutId && isBareCodexResumeId(handle.rolloutId)
+}
+
+function persistRecoveredRollout(ledger, agent, handle) {
+  if (!ledger?.setSessionSync || !agent?.id || !canUseRecoveredRollout(handle)) return null
+  return ledger.setSessionSync(agent.id, {
+    sessionId: handle.rolloutId,
+    sessionKind: 'codex',
+    sessionPath: handle.jsonlPath,
+    cwd: handle.cwd,
+    friendlyName: agent.friendly_name || agent.name || null,
+  })
+}
+
 function openLedger(options = {}) {
   if (options.permissionLedger) return { ledger: options.permissionLedger, close: async () => {} }
   const ledger = createPermissionLedger(options.permissionLedgerPath)
@@ -57,7 +73,20 @@ export async function resolveCodexResumeHandleFromLedger(agent, options = {}) {
   const { ledger, close } = openLedger(options)
   try {
     const rec = ledger.get(agent.id)
-    if (!rec?.sessionId) return cachedIdentityMiss(agent, options)
+    if (!rec?.sessionId) {
+      const recovered = findCodexRollout(agent, { sessionsBase: options.sessionsBase })
+      if (canUseRecoveredRollout(recovered)) {
+        const stored = persistRecoveredRollout(ledger, agent, recovered)
+        if (stored?.sessionId) {
+          return success(agent, {
+            session_id: recovered.rolloutId,
+            jsonl_path: recovered.jsonlPath,
+            cwd: recovered.cwd,
+          }, options.source || 'daemon-ledger-backfill')
+        }
+      }
+      return cachedIdentityMiss(agent, options)
+    }
     if (rec.sessionKind && rec.sessionKind !== 'codex') {
       return typedMiss(agent, 'missing-resume-handle', 'invalid-uuid', {
         retry_after_ms: options.retryAfterMs,
