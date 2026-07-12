@@ -77,6 +77,38 @@ test('build dispatcher waits for a coalesced rebuild requested during an active 
   assert.equal(secondResolved, true)
 })
 
+test('build dispatcher keeps build and parts jobs distinct for the same project', async () => {
+  const transport = fakeTransport()
+  const dispatcher = createBuildQueue({ transport, getProjectsDir: () => '/tmp/tlda-projects-test' }, { maxConcurrency: 1 })
+
+  const first = dispatcher.dispatchBuild('doc', { kind: 'build' })
+  let buildResolved = false
+  first.then(() => { buildResolved = true })
+  const parts = dispatcher.dispatchBuild('doc', { kind: 'parts' })
+  const secondBuild = dispatcher.dispatchBuild('doc', { kind: 'build' })
+
+  assert.equal(transport.started.length, 1)
+  assert.equal(transport.started[0].job.kind, 'build')
+
+  transport.started[0].handlers.onExit(0)
+  await tick()
+
+  assert.equal(buildResolved, false)
+  assert.equal(transport.started.length, 2)
+  assert.equal(transport.started[1].job.kind, 'parts')
+
+  transport.started[1].handlers.onExit(0)
+  await tick()
+
+  assert.equal(transport.started.length, 3)
+  assert.equal(transport.started[2].job.kind, 'build')
+
+  transport.started[2].handlers.onExit(0)
+  await first
+  await parts
+  await secondBuild
+})
+
 test('build dispatcher resolves pending waiters when a build is killed', async () => {
   const transport = fakeTransport()
   const dispatcher = createBuildQueue({ transport, getProjectsDir: () => '/tmp/tlda-projects-test' }, { maxConcurrency: 1 })
