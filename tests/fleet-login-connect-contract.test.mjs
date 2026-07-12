@@ -16,6 +16,21 @@ test('fleet socket connect has no roster or task init frame ahead of login repli
   assert.match(connectBlock, /ws\.on\('message', \(raw\) =>/)
 })
 
+test('task doc startup materialization is deferred off module initialization', () => {
+  const storeStart = serverSource.indexOf('const fleetStore = new FleetStore')
+  assert.notEqual(storeStart, -1)
+  const loopMonitorStart = serverSource.indexOf('const HOT_OP_WARN_MS', storeStart)
+  assert.notEqual(loopMonitorStart, -1)
+  const startupBlock = serverSource.slice(storeStart, loopMonitorStart)
+
+  assert.match(startupBlock, /TLDA_TASK_DOC_STARTUP_FLUSH_DELAY_MS/)
+  assert.match(startupBlock, /function scheduleStartupTaskDocFlush\(\)/)
+  assert.match(startupBlock, /setTimeout\(\(\) => \{/)
+  assert.match(startupBlock, /fleetStore\.flushTaskDocs\?\.\(\)/)
+  assert.match(startupBlock, /scheduleStartupTaskDocFlush\(\)/)
+  assert.equal(startupBlock.includes('\nfleetStore.flushTaskDocs?.()\n'), false)
+})
+
 test('fleet agent login replies before fanout side effects', () => {
   const loginStart = serverSource.indexOf("if (type === 'login') {")
   assert.notEqual(loginStart, -1)

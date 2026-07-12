@@ -156,10 +156,20 @@ resetStaleBuildStates()
 // TLDA_FLEET_DB overrides the default path — used by integration tests
 // to isolate from the live /tmp/fleet.db.
 const fleetStore = new FleetStore(process.env.TLDA_FLEET_DB, { taskDoc: true })
-fleetStore.flushTaskDocs?.()
 const serverDaemonOutbox = new ServerDaemonOutbox(fleetStore.db)
 const daemonAgentEvents = new DaemonAgentEvents(fleetStore.db)
 const serverDaemonOutboxInflight = new Map()
+
+const TASK_DOC_STARTUP_FLUSH_DELAY_MS = Number(process.env.TLDA_TASK_DOC_STARTUP_FLUSH_DELAY_MS || 10_000)
+function scheduleStartupTaskDocFlush() {
+  if (TASK_DOC_STARTUP_FLUSH_DELAY_MS < 0) return
+  setTimeout(() => {
+    Promise.resolve(fleetStore.flushTaskDocs?.()).catch(e => {
+      console.warn(`[task-doc] startup flush failed: ${e.message}`)
+    })
+  }, TASK_DOC_STARTUP_FLUSH_DELAY_MS).unref?.()
+}
+scheduleStartupTaskDocFlush()
 
 const HOT_OP_WARN_MS = Number(process.env.TLDA_HOT_OP_WARN_MS || 50)
 const eventLoopDelay = monitorEventLoopDelay({ resolution: 20 })
