@@ -1,4 +1,4 @@
-import { rejectWsRequests, startWsRequest } from '../shared/ws-request-policy.mjs'
+import { rejectWsRequests, startWsRequest } from '../shared/fleet-transport.mjs'
 
 export function createMachineRpc({ sendMsg, getPid = () => process.pid }) {
   if (typeof sendMsg !== 'function') throw new Error('createMachineRpc requires sendMsg')

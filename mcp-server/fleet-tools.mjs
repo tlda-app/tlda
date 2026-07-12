@@ -59,10 +59,15 @@ import { baseMacros } from '../shared/katex-base-macros.mjs';
 import { normalizeRefNumber as _normalizeRefNumber, refTypeForName as _refTypeForName, buildTheoremRefRegex as _buildTheoremRefRegex } from '../shared/doc-refs.mjs';
 import { harnessFromEnv } from './lib/harness-adapters.mjs';
 import WebSocket from 'ws';
-import { ResilientWS } from '../shared/resilient-ws.mjs';
-import { rejectWsRequests, resetWsRequestIdleTimers, startWsRequest } from '../shared/ws-request-policy.mjs';
-import { WsReconnectBuffer } from '../shared/ws-reconnect-buffer.mjs';
-import { FleetTransportOutbox, isRetryableTransportError } from '../shared/fleet-transport-outbox.mjs';
+import {
+  FleetTransportOutbox,
+  isRetryableTransportError,
+  rejectWsRequests,
+  resetWsRequestIdleTimers,
+  ResilientWS,
+  startWsRequest,
+  WsReconnectBuffer,
+} from '../shared/fleet-transport.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BIN = path.join(__dirname, 'bin');
@@ -2642,19 +2647,12 @@ export async function handleFleetTool(name, args) {
       priority: args.priority || undefined,
     };
     try {
-      const res = await fleetFetch(`${TLDA_FLEET_SERVER}/api/items`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(action === 'dismiss'
-          ? { action: 'dismiss', id: args.id, userId: args.userId }
-          : { action: 'raise', userId: args.userId, item }),
-        signal: AbortSignal.timeout(3000),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) return { content: [{ type: 'text', text: `notify failed: ${data.error || res.statusText}` }], isError: true };
-      return { content: [{ type: 'text', text: action === 'dismiss' ? `Dismissed item ${args.id}.` : `Raised ${item.kind} item ${item.id}.` }] };
+      const data = await sendWS('notify', action === 'dismiss'
+        ? { action: 'dismiss', id: args.id, userId: args.userId }
+        : { action: 'raise', userId: args.userId, item }, { deadlineMs: 3000 });
+      return { content: [{ type: 'text', text: action === 'dismiss' ? `Dismissed item ${args.id}.` : `Raised ${data.item?.kind || item.kind} item ${data.item?.id || item.id}.` }] };
     } catch (e) {
-      return { content: [{ type: 'text', text: `notify failed: ${e.message}` }], isError: true };
+      return { content: [{ type: 'text', text: `notify failed before transport ACK: ${e.message}` }], isError: true };
     }
   }
 

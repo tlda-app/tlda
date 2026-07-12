@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { WebSocketServer } from 'ws'
-import { ResilientWS } from '../shared/resilient-ws.mjs'
+import { ResilientWS } from '../shared/fleet-transport.mjs'
 
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms))
 

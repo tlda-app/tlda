@@ -52,7 +52,7 @@
  */
 
 import { WebSocket } from 'ws'
-import { ResilientWS } from '../shared/resilient-ws.mjs'
+import { ResilientWS } from '../shared/fleet-transport.mjs'
 import fs from 'fs'
 import path from 'path'
 import os from 'os'

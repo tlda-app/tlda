@@ -3,6 +3,7 @@ import os from 'os'
 import path from 'path'
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { DaemonOutbox, OUTBOX_ID_FIELD } from './outbox.mjs'
 
 function tempDb() {
@@ -80,4 +81,10 @@ test('dead-letter preserves the row while removing it from pending retries', () 
   assert.equal(row.deadLetterReason, 'Project not found')
   assert.ok(row.deadLetteredAt)
   outbox.close()
+})
+
+test('daemon outbox uses the shared fleet transport primitive', () => {
+  const source = readFileSync(new URL('./outbox.mjs', import.meta.url), 'utf8')
+  assert.match(source, /from '..\/shared\/fleet-transport\.mjs'/)
+  assert.match(source, /new SqliteTransportOutbox/)
 })

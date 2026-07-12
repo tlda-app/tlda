@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
+import { readFileSync } from 'node:fs'
 import Database from 'better-sqlite3'
 import { SERVER_DAEMON_OUTBOX_ID_FIELD } from '../shared/daemon-delivery.mjs'
 import { ServerDaemonOutbox } from '../server/lib/server-daemon-outbox.mjs'
@@ -56,4 +57,10 @@ test('dedupe key keeps only the newest state snapshot', () => {
   assert.equal(rows[0].id, 'new')
   assert.deepEqual(rows[0].payload.projects, [{ name: 'new' }])
   db.close()
+})
+
+test('server daemon outbox uses the shared fleet transport primitive', () => {
+  const source = readFileSync(new URL('../server/lib/server-daemon-outbox.mjs', import.meta.url), 'utf8')
+  assert.match(source, /from '..\/..\/shared\/fleet-transport\.mjs'/)
+  assert.match(source, /new SqliteTransportOutbox/)
 })

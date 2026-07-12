@@ -71,7 +71,7 @@ import { buildRuntimeStatus } from './lib/runtime-status.mjs'
 import { resolveSpawnMachine, SPAWN_MACHINE_PREF_KEY } from './lib/spawn-routing.mjs'
 import { resolveFreshSpawnAvailabilityModels } from './lib/spawn-availability-models.mjs'
 import { decideTaskRenudges, isWakeBreakerOpen, wakeBreakerBackoffMs } from './lib/task-renudge.mjs'
-import { rejectMatchingWsRequests, startWsRequest } from '../shared/ws-request-policy.mjs'
+import { rejectMatchingWsRequests, startWsRequest } from '../shared/fleet-transport.mjs'
 import { isPlanModeResponse, planModeResponseKey } from './lib/plan-mode-response.mjs'
 import { SpawnBounceError, SpawnLibrarian, resolveSpawnCollision } from '../shared/spawn-librarian.ts'
 import { MailboxLibrarian } from '../shared/mailbox-librarian.ts'
@@ -4434,6 +4434,22 @@ async function handleFleetWsMessage(ws, msg) {
       },
     })
     reply(result)
+    return
+  }
+
+  if (type === 'notify') {
+    try {
+      if (msg.action === 'dismiss') {
+        if (!msg.id) throw new Error('notify dismiss requires id')
+        dismissItem(msg.userId, msg.id)
+        reply({ ok: true, action: 'dismiss', id: msg.id })
+      } else {
+        const item = raiseItem(msg.userId, msg.item)
+        reply({ ok: true, action: 'raise', item })
+      }
+    } catch (e) {
+      error(e)
+    }
     return
   }
 

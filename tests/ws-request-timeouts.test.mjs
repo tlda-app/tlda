@@ -1,7 +1,6 @@
 import { WebSocketServer } from 'ws'
 import crypto from 'crypto'
-import { ResilientWS } from '../shared/resilient-ws.mjs'
-import { rejectWsRequests, resetWsRequestIdleTimers, startWsRequest } from '../shared/ws-request-policy.mjs'
+import { ResilientWS, rejectWsRequests, resetWsRequestIdleTimers, startWsRequest } from '../shared/fleet-transport.mjs'
 
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms))
 const pending = new Map()

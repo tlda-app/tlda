@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import Database from 'better-sqlite3'
-import { FleetTransportOutbox, isRetryableTransportError } from '../shared/fleet-transport-outbox.mjs'
+import { FleetTransportOutbox, isRetryableTransportError } from '../shared/fleet-transport.mjs'
 
 function tempDb() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-mcp-fleet-transport-'))

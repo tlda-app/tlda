@@ -2,9 +2,7 @@ import assert from 'node:assert/strict'
 import crypto from 'node:crypto'
 import test from 'node:test'
 import { WebSocketServer } from 'ws'
-import { ResilientWS } from '../shared/resilient-ws.mjs'
-import { startWsRequest } from '../shared/ws-request-policy.mjs'
-import { WsReconnectBuffer } from '../shared/ws-reconnect-buffer.mjs'
+import { ResilientWS, startWsRequest, WsReconnectBuffer } from '../shared/fleet-transport.mjs'
 
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms))
 
