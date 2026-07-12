@@ -3164,6 +3164,9 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
 
   function resolveTheoremRefs(text, doc, version) {
     if (!text || !doc) return text
+    _REF_REGEX.lastIndex = 0
+    if (!_REF_REGEX.test(text)) return text
+    _REF_REGEX.lastIndex = 0
     const index = loadRefIndex(doc)
     if (!index) return text
 
