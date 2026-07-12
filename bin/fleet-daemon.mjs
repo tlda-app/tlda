@@ -110,8 +110,9 @@ import {
 import { acquireSingletonLock, daemonSingletonLockPath } from '../agent-runtime/singleton-lock.mjs'
 const log = createLogger('daemon')
 // CONFIG_DIR holds config.json, cursors, PID and log files. Defaults to
-// ~/.config/tlda. TLDA_DAEMON_CONFIG_DIR lets the E2E test start a second
-// daemon in parallel without clobbering the live daemon's PID file.
+// ~/.config/tlda. TLDA_DAEMON_CONFIG_DIR plus PROJECTS_DIR lets tests/dev rigs
+// start a second daemon without clobbering the live daemon's PID file or JSONL
+// tails.
 const CONFIG_DIR = process.env.TLDA_DAEMON_CONFIG_DIR || _SHARED_CONFIG_DIR
 const CURSORS_FILE = path.join(CONFIG_DIR, 'daemon-cursors.json')
 const PID_FILE = path.join(CONFIG_DIR, 'fleet-daemon.pid')
@@ -125,7 +126,7 @@ applyDaemonGrants(permissionLedger, daemonSpawnConfig)
 const LOG_FILE = path.join(CONFIG_DIR, 'fleet-daemon.log')
 const DAEMON_OUTBOX_FILE = defaultOutboxPath(CONFIG_DIR)
 const LEGACY_DEAD_LETTER_FILE = path.join(CONFIG_DIR, 'daemon-dead-letters.jsonl')
-const PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects')
+const PROJECTS_DIR = process.env.PROJECTS_DIR || path.join(os.homedir(), '.claude', 'projects')
 
 // ---------- config / machine identity ----------
 

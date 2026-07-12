@@ -50,7 +50,7 @@ import { readDaemonConfig, readDaemonConfigForCwd, withDaemonModelAliases } from
 import { labelsForAgent, parseFilter, parseMessageFilter, evalExpr } from '../shared/fleet-labels.mjs'
 import { parseAgentSelector as parseUnifiedAgentSelector } from '../shared/unified-filter-grammar.mjs'
 import { phaseFromName, baseName, PHASES, prettyNameForFriendlyName } from '../shared/lineage-name.mjs'
-import { daemonHelloDecision } from '../shared/daemon-identity.mjs'
+import { daemonHelloDecision, resolveMainDaemonScript } from '../shared/daemon-identity.mjs'
 import { resolveServerIsolation } from '../shared/server-identity.mjs'
 import { initProjectStore, listProjects, readProject, updateProject, getProjectsDir, readProjectPartsManifest } from './lib/project-store.mjs'
 import { resumeOverleafPollers } from './lib/overleaf-sync.mjs'
@@ -480,8 +480,7 @@ function daemonLockFile() {
 }
 const DAEMON_SCRIPT = (() => {
   const d = dirname(fileURLToPath(import.meta.url))
-  const m = d.match(/^(.+?)\/\.claude\/worktrees\//)
-  return m ? join(m[1], 'bin', 'fleet-daemon.mjs') : join(d, '..', 'bin', 'fleet-daemon.mjs')
+  return resolveMainDaemonScript(fileURLToPath(import.meta.url)) || join(d, '..', 'bin', 'fleet-daemon.mjs')
 })()
 // Crash-loop guard: if the daemon dies fast >= MAX_RAPID_RESPAWNS times in a
 // row, give up until manual intervention. The supervisor would otherwise
