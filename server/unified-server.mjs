@@ -249,6 +249,10 @@ const _aliveSince = new Map()               // agent_id -> first ms in current a
 
 function isAgentAlive(agentId) { return _aliveAgents.has(agentId) }
 
+function isReservedShellAgent(agent) {
+  return !!agent?.metadata?.shell
+}
+
 function markAgentAlive(agentId, now = Date.now()) {
   const wasAlive = _aliveAgents.has(agentId)
   if (!wasAlive || !_aliveSince.has(agentId)) _aliveSince.set(agentId, now)
@@ -1500,7 +1504,7 @@ function spawnMailboxCompletionText(entry, status, detail) {
   if (status === 'completed') {
     const agentPart = detail.agentId ? ` (${detail.agentId})` : ''
     const policyPart = detail.grantedPermission ? ` Permission: \`${detail.grantedPermission}\`.` : ''
-    return `**Spawn mailbox ${entry.id} complete**: \`${label}\`${agentPart} is logged in and usable.${policyPart}`
+    return `**Spawn mailbox ${entry.id} complete**: \`${label}\`${agentPart} has logged in and is ready for inbox pickup.${policyPart}`
   }
   return `**Spawn mailbox ${entry.id} failed**: \`${label}\` — ${detail.error || detail.reason || 'spawn failed'}.`
 }
@@ -4928,6 +4932,26 @@ async function handleFleetWsMessage(ws, msg) {
   function requestWake(agentId, nudgeText = null, asker = null, traceId = null) {
     const agent = fleetStore.getAgent?.(agentId)
     if (!agent || agent.dead || agent.human) return
+    if (isReservedShellAgent(agent)) {
+      spawnLibrarian.observeLiveness({
+        type: 'agent-liveness',
+        agent_id: agentId,
+        tmux_session: agent.tmux_session,
+        state: 'spawning',
+        reason: 'reserved shell has not logged in yet',
+        ts: new Date().toISOString(),
+      })
+      if (traceId) {
+        controlPlaneTraces.append({
+          trace_id: traceId,
+          component: 'server',
+          operation: 'wake.request',
+          status: 'pending-shell',
+          detail: { agent: agentId },
+        })
+      }
+      return
+    }
     if (isWakeBreakerOpen(_wakeBreaker, agentId, Date.now())) {
       if (traceId) {
         controlPlaneTraces.append({

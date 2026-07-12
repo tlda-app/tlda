@@ -135,3 +135,26 @@ test('daemon RPC close handling has reconnect grace before pending request rejec
   assert.match(notifyBlock, /pendingRpcFailureTimers\.get\(daemonKey\)/)
   assert.match(notifyBlock, /clearTimeout\(pendingFailure\)/)
 })
+
+test('pending spawn shell rows are not treated as wakeable hibernating agents', () => {
+  const wakeStart = serverSource.indexOf('function requestWake(agentId')
+  assert.notEqual(wakeStart, -1)
+  const wakeBlock = serverSource.slice(wakeStart, wakeStart + 1_500)
+
+  const shellGuardAt = wakeBlock.indexOf('isReservedShellAgent(agent)')
+  const queueAt = wakeBlock.indexOf('_wakeQueue.set')
+  assert.notEqual(shellGuardAt, -1)
+  assert.notEqual(queueAt, -1)
+  assert.ok(shellGuardAt < queueAt, 'reserved shells must be filtered before wake queueing')
+  assert.match(wakeBlock, /status: 'pending-shell'/)
+  assert.match(wakeBlock, /state: 'spawning'/)
+})
+
+test('spawn mailbox completion does not collapse login into usability', () => {
+  const completionStart = serverSource.indexOf('function spawnMailboxCompletionText')
+  assert.notEqual(completionStart, -1)
+  const completionBlock = serverSource.slice(completionStart, completionStart + 900)
+
+  assert.equal(completionBlock.includes('logged in and usable'), false)
+  assert.match(completionBlock, /has logged in and is ready for inbox pickup/)
+})
