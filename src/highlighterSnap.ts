@@ -952,7 +952,8 @@ function showSourceContextCard(
   header.style.alignItems = 'center'
 
   const headerLabel = document.createElement('span')
-  headerLabel.textContent = headerText
+  const approximate = highlighted.some(sl => sl.approximate === true || sl.exact === false)
+  headerLabel.textContent = approximate ? `${headerText} (best guess - not exact)` : headerText
   header.appendChild(headerLabel)
 
   // "Open in editor" button

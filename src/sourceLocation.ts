@@ -30,12 +30,30 @@ export type SourceLineMeta = SourceLocation & {
   hlStart?: number
   hlEnd?: number
   confidence?: number
+  exact?: boolean
+  approximate?: boolean
+  resolver?: string
   /**
    * Span-level ambiguity only. `reason: 'ambiguous'` means the line is not
    * trustworthy; `ambiguous` on an anchored value means the line is trustworthy
    * but columns are not.
    */
   ambiguous?: boolean
+}
+
+type SourceLineInput = {
+  file?: string
+  line?: number | string
+  reason?: unknown
+  content?: unknown
+  highlighted?: unknown
+  hlStart?: number | string | null
+  hlEnd?: number | string | null
+  confidence?: number | string | null
+  exact?: unknown
+  approximate?: unknown
+  resolver?: unknown
+  ambiguous?: unknown
 }
 
 export function normalizeSourceFile(file: string, fallback = '') {
@@ -67,7 +85,7 @@ export function unanchoredSourceLocation(reason: SourceLocationReason): SourceLo
 }
 
 export function sourceLineMetaFromRankerLine(
-  line: any,
+  line: SourceLineInput | null | undefined,
   fallbackFile = '',
 ): SourceLineMeta {
   const location = anchoredSourceLocation(line?.file || fallbackFile, Number(line?.line))
@@ -82,6 +100,10 @@ export function sourceLineMetaFromRankerLine(
     }
   }
   if (line?.confidence != null && Number.isFinite(Number(line.confidence))) meta.confidence = Number(line.confidence)
+  if (line?.exact === true) meta.exact = true
+  if (line?.exact === false) meta.exact = false
+  if (line?.approximate === true) meta.approximate = true
+  if (typeof line?.resolver === 'string' && line.resolver) meta.resolver = line.resolver
   if (line?.ambiguous === true) meta.ambiguous = true
   if (!meta.anchored) {
     delete meta.content
@@ -89,6 +111,9 @@ export function sourceLineMetaFromRankerLine(
     delete meta.hlStart
     delete meta.hlEnd
     delete meta.ambiguous
+    delete meta.exact
+    delete meta.approximate
+    delete meta.resolver
   } else if (meta.ambiguous) {
     delete meta.hlStart
     delete meta.hlEnd

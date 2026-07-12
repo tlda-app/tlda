@@ -78,3 +78,56 @@ test('ranker adapter drops span ambiguity when no source line is anchored', () =
   })
   assert.equal('ambiguous' in line, false)
 })
+
+test('ranker adapter preserves exact word-synctex provenance on anchored lines', () => {
+  const line = sourceLineMetaFromRankerLine({
+    file: 'paper.tex',
+    line: 8,
+    content: 'Exact prose token.',
+    highlighted: true,
+    hlStart: 6,
+    hlEnd: 11,
+    exact: true,
+    approximate: false,
+    resolver: 'word-synctex',
+  })
+
+  assert.deepEqual(line, {
+    anchored: true,
+    file: 'paper.tex',
+    line: 8,
+    content: 'Exact prose token.',
+    highlighted: true,
+    hlStart: 6,
+    hlEnd: 11,
+    exact: true,
+    resolver: 'word-synctex',
+  })
+})
+
+test('ranker adapter preserves approximate fallback provenance without treating columns as exact', () => {
+  const line = sourceLineMetaFromRankerLine({
+    file: 'paper.tex',
+    line: 13,
+    content: '$E = mc^2$',
+    highlighted: true,
+    hlStart: 0,
+    hlEnd: 10,
+    exact: false,
+    approximate: true,
+    resolver: 'ranker',
+  })
+
+  assert.deepEqual(line, {
+    anchored: true,
+    file: 'paper.tex',
+    line: 13,
+    content: '$E = mc^2$',
+    highlighted: true,
+    hlStart: 0,
+    hlEnd: 10,
+    exact: false,
+    approximate: true,
+    resolver: 'ranker',
+  })
+})

@@ -63,6 +63,7 @@ import { commitSnapshot, currentVersion, initShadowFromProjectRepo, createShadow
 import { appendBuildEntry } from './changelog.mjs'
 import { emitBuildComplete } from './webhooks.mjs'
 import { clearSynctexCache } from './synctex-query.mjs'
+import { generateWordSynctexSourceTree } from './word-synctex.mjs'
 
 // --- Side-effect reporter ----------------------------------------------------
 // Everything in the build that reaches the live server — client broadcasts
@@ -886,6 +887,58 @@ async function extractSynctex(ctx) {
     return true
   } catch (e) {
     addLog(`Synctex extraction failed (non-fatal): ${e.message}`)
+    return false
+  }
+}
+
+/** Extra highlighter index: compile a generated one-word-per-source-line tree. */
+async function extractWordSynctex(ctx) {
+  const { texBase, mainFile, srcDir, buildDir, outDir, addLog, run } = ctx
+  const wordSrcDir = join(buildDir, 'word-synctex-source')
+  const wordBuildDir = join(buildDir, 'word-synctex-build')
+  mkdirSync(wordBuildDir, { recursive: true })
+
+  try {
+    const wordMap = generateWordSynctexSourceTree(srcDir, mainFile, wordSrcDir)
+    const mapPath = join(wordBuildDir, `${texBase}-word-map.json`)
+    writeFileSync(mapPath, JSON.stringify(wordMap))
+
+    const fmtBase = `${texBase}-fmt`
+    const fmtPath = join(buildDir, `${fmtBase}.fmt`)
+    const useFormat = existsSync(fmtPath)
+    if (useFormat) cpSync(fmtPath, join(wordBuildDir, `${fmtBase}.fmt`))
+
+    const texDir = join(wordSrcDir, dirname(mainFile))
+    const env = {
+      ...process.env,
+      TEXMFOUTPUT: wordBuildDir,
+      TEXINPUTS: `${wordBuildDir}:${texDir}:${wordSrcDir}:${srcDir}:`,
+    }
+    const cmd = useFormat
+      ? `pdflatex --output-format=dvi -synctex=1 -interaction=nonstopmode ` +
+        `-output-directory="${wordBuildDir}" -fmt="${fmtBase}" "${texBase}.tex"`
+      : `pdflatex --output-format=dvi -synctex=1 -interaction=nonstopmode ` +
+        `-output-directory="${wordBuildDir}" "${texBase}.tex"`
+
+    try { await run(cmd, { cwd: texDir, timeout: 120000, env }) } catch (e) {
+      addLog(`Word synctex compile exited with warnings (continuing): ${e.message.split('\n')[0]}`)
+    }
+    try { await run(cmd, { cwd: texDir, timeout: 120000, env }) } catch (e) {
+      addLog(`Word synctex second pass exited with warnings (continuing): ${e.message.split('\n')[0]}`)
+    }
+
+    const synctexPath = join(wordBuildDir, `${texBase}.synctex.gz`)
+    if (!existsSync(synctexPath)) {
+      addLog('Word synctex unavailable: no synctex.gz produced')
+      return false
+    }
+
+    publishFile(mapPath, join(outDir, `${texBase}-word-map.json`))
+    publishFile(synctexPath, join(outDir, `${texBase}-word.synctex.gz`))
+    addLog(`Word synctex${useFormat ? ' (fmt)' : ''}: ${wordMap.lineMap.length} generated source lines`)
+    return true
+  } catch (e) {
+    addLog(`Word synctex failed (non-fatal): ${e.message}`)
     return false
   }
 }
@@ -1804,6 +1857,7 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
       await extractMacros(tCtx)
       status.phase = 'extracting'
       const hasSynctex = await extractSynctex(tCtx)
+      if (hasSynctex) await extractWordSynctex(tCtx)
       if (hasSynctex) await computeProofPairing(tCtx)
       await generateTheoremMap(tCtx)
       await generateSourceMap(tCtx)

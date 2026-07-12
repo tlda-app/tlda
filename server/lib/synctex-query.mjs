@@ -11,7 +11,7 @@ import { createReadStream } from 'fs'
 import { createGunzip } from 'zlib'
 import { createInterface } from 'readline'
 import { dirname, basename, join, resolve } from 'path'
-import { sourceDir, getProjectsDir, readProject, readSourceFile } from './project-store.mjs'
+import { sourceDir, outputDir, getProjectsDir, readProject, readSourceFile } from './project-store.mjs'
 
 function realResolve(...args) {
   const p = resolve(...args)
@@ -36,8 +36,9 @@ const cache = new Map()
  * primary texBase. The cache is keyed by (project, texBase) so multiple
  * targets coexist.
  */
-export async function loadSynctex(projectName, texBase) {
-  const key = `${projectName}:${texBase || ''}`
+export async function loadSynctex(projectName, texBase, opts = {}) {
+  const variant = opts.variant || ''
+  const key = `${projectName}:${texBase || ''}:${variant}`
   if (cache.has(key)) return cache.get(key)
 
   const srcDir = sourceDir(projectName)
@@ -46,15 +47,19 @@ export async function loadSynctex(projectName, texBase) {
   const synctexDir = (mainFileDir && mainFileDir !== '.') ? join(srcDir, mainFileDir) : srcDir
 
   let synctexFile
-  if (texBase) {
+  let synctexPath
+  if (variant === 'word') {
+    if (!texBase) return null
+    synctexPath = join(outputDir(projectName), `${texBase}-word.synctex.gz`)
+  } else if (texBase) {
     synctexFile = `${texBase}.synctex.gz`
   } else {
     const files = existsSync(synctexDir) ? readdirSync(synctexDir) : []
     synctexFile = files.find(f => f.endsWith('.synctex.gz'))
   }
-  if (!synctexFile) return null
+  if (!synctexPath && !synctexFile) return null
 
-  const synctexPath = join(synctexDir, synctexFile)
+  synctexPath ||= join(synctexDir, synctexFile)
   if (!existsSync(synctexPath)) return null
 
   const inputMap = new Map()
@@ -175,6 +180,149 @@ export async function loadSynctex(projectName, texBase) {
 export function clearSynctexCache(projectName) {
   for (const key of [...cache.keys()]) {
     if (key.startsWith(`${projectName}:`)) cache.delete(key)
+  }
+}
+
+function readWordMap(projectName, texBase) {
+  if (!texBase) return null
+  const p = join(outputDir(projectName), `${texBase}-word-map.json`)
+  if (!existsSync(p)) return null
+  try { return JSON.parse(readFileSync(p, 'utf8')) } catch { return null }
+}
+
+function wordInputRelFile(filePath) {
+  const marker = `${join('word-synctex-source')}/`
+  const normalized = filePath.replaceAll('\\', '/')
+  const idx = normalized.lastIndexOf(marker)
+  if (idx >= 0) return normalized.slice(idx + marker.length)
+  return basename(filePath)
+}
+
+function densifyPathPoints(points, maxStep = 2) {
+  if (!Array.isArray(points) || points.length < 2) return points || []
+  const out = []
+  for (let i = 0; i < points.length - 1; i++) {
+    const a = points[i]
+    const b = points[i + 1]
+    out.push(a)
+    const dx = b.x - a.x
+    const dy = b.y - a.y
+    const steps = Math.max(1, Math.ceil(Math.hypot(dx, dy) / maxStep))
+    for (let j = 1; j < steps; j++) {
+      const t = j / steps
+      out.push({ x: a.x + dx * t, y: a.y + dy * t })
+    }
+  }
+  out.push(points[points.length - 1])
+  return out
+}
+
+function collectPointHits(pageRecords, points) {
+  const hitRecords = new Set()
+  for (const pt of densifyPathPoints(points)) {
+    let pointHit = false
+    for (const r of pageRecords) {
+      const top = r.y - (r.h || 0)
+      const bottom = r.y + (r.d || 0)
+      const left = r.x
+      const right = r.x + (r.w || 0)
+      if (pt.x >= left && pt.x <= right && pt.y >= top && pt.y <= bottom) {
+        hitRecords.add(r)
+        pointHit = true
+      }
+    }
+    if (!pointHit) {
+      let bestDist = Infinity
+      let best = null
+      for (const r of pageRecords) {
+        const yDist = Math.abs(r.y - pt.y)
+        if (yDist > 6) continue
+        const dist = yDist + Math.abs(r.x - pt.x) * 0.1
+        if (dist < bestDist) { bestDist = dist; best = r }
+      }
+      if (best) hitRecords.add(best)
+    }
+  }
+  return hitRecords
+}
+
+async function getSourceFromWordPath(projectName, page, points, target = '') {
+  const project = readProject(projectName)
+  const texBase = target || (project?.mainFile || 'main.tex').replace(/\.tex$/i, '').split('/').pop()
+  const wordMap = readWordMap(projectName, texBase)
+  if (!wordMap?.lineMap?.length) return null
+
+  const data = await loadSynctex(projectName, texBase, { variant: 'word' })
+  if (!data || points.length === 0) return null
+
+  const mapByGenerated = new Map()
+  for (const row of wordMap.lineMap) {
+    mapByGenerated.set(`${row.file}:${row.generatedLine}`, row)
+  }
+
+  const sourceFileIds = new Set()
+  const relByInputId = new Map()
+  for (const [id, filePath] of data.inputMap) {
+    if (!filePath.endsWith('.tex')) continue
+    const rel = wordInputRelFile(filePath)
+    sourceFileIds.add(id)
+    relByInputId.set(id, rel)
+  }
+
+  const pageRecords = data.records.filter(r => r.page === page && sourceFileIds.has(r.inputId))
+  if (pageRecords.length === 0) return null
+
+  const hitRows = []
+  for (const r of collectPointHits(pageRecords, points)) {
+    const rel = relByInputId.get(r.inputId)
+    const mapped = rel ? mapByGenerated.get(`${rel}:${r.line}`) : null
+    if (mapped && !mapped.structural && !mapped.unsafe) hitRows.push(mapped)
+  }
+  if (hitRows.length === 0) return null
+
+  const byFile = new Map()
+  for (const row of hitRows) {
+    if (!byFile.has(row.file)) byFile.set(row.file, [])
+    byFile.get(row.file).push(row)
+  }
+  const [file, rows] = [...byFile.entries()].sort((a, b) => b[1].length - a[1].length)[0]
+  rows.sort((a, b) => a.line - b.line || a.startCol - b.startCol)
+
+  const sourceContent = readSourceFile(projectName, file)
+  if (!sourceContent) return null
+  const allLines = sourceContent.split('\n')
+  const hitByLine = new Map()
+
+  for (const row of rows) {
+    const cur = hitByLine.get(row.line) || { start: Infinity, end: -Infinity }
+    cur.start = Math.min(cur.start, row.startCol)
+    cur.end = Math.max(cur.end, row.endCol)
+    hitByLine.set(row.line, cur)
+  }
+
+  const hitLineNums = [...hitByLine.keys()].sort((a, b) => a - b)
+  const from = Math.max(1, hitLineNums[0] - 5)
+  const to = Math.min(allLines.length, hitLineNums[hitLineNums.length - 1] + 5)
+  const lines = []
+  for (let line = from; line <= to; line++) {
+    const hit = hitByLine.get(line)
+    const entry = { line, content: allLines[line - 1], file }
+    if (hit) {
+      entry.highlighted = true
+      entry.hlStart = hit.start
+      entry.hlEnd = hit.end
+      entry.exact = true
+      entry.resolver = 'word-synctex'
+    }
+    lines.push(entry)
+  }
+
+  return {
+    file,
+    startLine: hitLineNums[0],
+    endLine: hitLineNums[hitLineNums.length - 1],
+    lines,
+    resolver: 'word-synctex',
   }
 }
 
@@ -300,6 +448,9 @@ export async function sourceTextSpanToPdfSpans(projectName, file, sourceLines, s
  * @param {string} [highlightText] - SVG-extracted text for fuzzy validation
  */
 export async function getSourceFromPath(projectName, page, points, highlightText = '', fragments = [], target = '') {
+  const wordResult = await getSourceFromWordPath(projectName, page, points, target)
+  if (wordResult) return wordResult
+
   const data = await loadSynctex(projectName, target || undefined)
   if (!data || points.length === 0) return null
 
@@ -419,6 +570,9 @@ export async function getSourceFromPath(projectName, page, points, highlightText
       // Synctex gives a trustworthy line, not a trustworthy column span.
       // Leave the span absent until the tspan ranker proves it.
       entry.ambiguous = true
+      entry.exact = false
+      entry.approximate = true
+      entry.resolver = 'ranker'
     }
 
     lines.push(entry)
@@ -482,7 +636,7 @@ export async function getSourceFromPath(projectName, page, points, highlightText
     }
   } catch {}
 
-  return { file: relFile, startLine, endLine, lines }
+  return { file: relFile, startLine, endLine, lines, resolver: 'ranker', exact: false, approximate: true }
 }
 
 /**
