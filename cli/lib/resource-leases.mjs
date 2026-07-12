@@ -43,10 +43,11 @@ function withStoreLock(file, mutate, { timeoutMs = 30_000 } = {}) {
       // A crashed writer must not wedge the authority forever. The token carries
       // its local pid, so reclaim only a demonstrably dead holder.
       try {
-        const holder = Number(readFileSync(lock, 'utf8').split(':', 1)[0])
+        const lockedBy = readFileSync(lock, 'utf8')
+        const holder = Number(lockedBy.split(':', 1)[0])
         if (Number.isInteger(holder) && holder > 0) {
           try { process.kill(holder, 0) } catch (livenessError) {
-            if (livenessError?.code === 'ESRCH') unlinkSync(lock)
+            if (livenessError?.code === 'ESRCH' && readFileSync(lock, 'utf8') === lockedBy) unlinkSync(lock)
           }
         }
       } catch (readError) {
