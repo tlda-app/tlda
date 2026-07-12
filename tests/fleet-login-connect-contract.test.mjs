@@ -26,7 +26,7 @@ test('fleet agent login replies before fanout side effects', () => {
 
   const replyAt = agentLoginBlock.indexOf('reply({ ok: true')
   assert.notEqual(replyAt, -1)
-  for (const sideEffect of ['fleetStore.share', 'broadcastState()', 'broadcastDaemonAgentsUpdated()']) {
+  for (const sideEffect of ['fleetStore.share', 'broadcastState()', 'broadcastDaemonAgentsUpdated']) {
     const sideEffectAt = agentLoginBlock.indexOf(sideEffect)
     assert.notEqual(sideEffectAt, -1)
     assert.ok(replyAt < sideEffectAt, `${sideEffect} must not run before the login reply`)

@@ -4615,7 +4615,7 @@ async function handleFleetWsMessage(ws, msg) {
     broadcastState()
     // If the agent has a machine_id, push the updated agent list to that
     // machine's daemon so it can start watching the new JSONL.
-    if (agent.machine_id) broadcastDaemonAgentsUpdated()
+    if (agent.machine_id) broadcastDaemonAgentsUpdated(agent)
     const storedAgent = fleetStore.getAgent?.(agentId) || agent
     reply({
       ok: true,
@@ -4682,7 +4682,7 @@ async function handleFleetWsMessage(ws, msg) {
       })
       spawnLibrarian.observeLogin(fleetStore.getAgent?.(agent_id) || agent)
       broadcastState()
-      if (agent.machine_id) broadcastDaemonAgentsUpdated()
+      if (agent.machine_id) broadcastDaemonAgentsUpdated(storedAgent)
       return
     }
 
@@ -6967,15 +6967,22 @@ function daemonProjectPartSourceWatchFiles(project) {
   }
 }
 
-function broadcastDaemonAgentsUpdated() {
-  const daemonKeys = knownDaemonKeys()
+function broadcastDaemonAgentsUpdated(agentUpdates = null) {
+  const updates = agentUpdates
+    ? (Array.isArray(agentUpdates) ? agentUpdates : [agentUpdates]).filter(Boolean)
+    : null
+  const daemonKeys = updates
+    ? [...new Set(updates.map(a => a.daemon_key || (a.machine_id && a.env_name ? daemonAddress(a.machine_id, a.env_name) : null)).filter(Boolean))]
+    : knownDaemonKeys()
   if (!fleetStore || daemonKeys.length === 0) {
     if (!fleetStore) console.warn('[fleet-daemon] broadcastDaemonAgentsUpdated: no fleetStore')
     return
   }
   for (const daemonKey of daemonKeys) {
     try {
-      const agents = fleetStore.getAgentsByDaemonKey(daemonKey)
+      const agents = updates
+        ? updates.filter(a => (a.daemon_key || (a.machine_id && a.env_name ? daemonAddress(a.machine_id, a.env_name) : null)) === daemonKey)
+        : fleetStore.getAgentsByDaemonKey(daemonKey)
       for (const agent of agents) daemonAgentEvents.append(daemonKey, agent)
       // Connected daemons receive only the mutations recorded since their
       // cursor; the durable replay stream preserves ordering across a flap.
@@ -7334,7 +7341,7 @@ async function handleDaemonWsMessage(ws, msg) {
     if (cwd && !agent.cwd) agent.cwd = cwd
     fleetStore.upsertAgent(agent)
     console.log(`[fleet-daemon] reconciled session for ${agent_id}: primary=${session_id} (${ids.length} known)`)
-    broadcastDaemonAgentsUpdated()
+    broadcastDaemonAgentsUpdated(agent)
     return
   }
 
