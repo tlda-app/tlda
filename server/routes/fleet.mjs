@@ -69,6 +69,49 @@ function extractFirstFilePart(body, boundary) {
   return null
 }
 
+// Decide-and-persist for POST /api/upload. Given the fully-buffered request body
+// plus its headers, either returns an { error, status } to reject, or writes the
+// file and returns { value } (the JSON body the route sends). Exported so the
+// zero-byte guard is unit-testable without mounting the whole fleet router.
+//
+// The guard exists because a client disconnect mid-upload (or an empty Blob)
+// yields an empty body; the old handler wrote a 0-byte file and answered 200
+// with a valid-looking URL, which the browser then draws as a permanent broken
+// image (confirmed live: 200 · image/png · content-length 0).
+export function persistUpload({ body, contentType = '', xFilename = null, uploadDir }) {
+  let origName = xFilename
+  if (String(contentType).startsWith('multipart/form-data')) {
+    const m = String(contentType).match(/boundary="?([^";]+)"?/)
+    if (!m) return { error: 'multipart boundary missing', status: 400 }
+    const part = extractFirstFilePart(body, m[1])
+    if (!part) return { error: 'no file part in multipart body', status: 400 }
+    body = part.content
+    if (!origName && part.filename) origName = part.filename
+  }
+
+  // Never persist an empty upload — the bytes never arrived.
+  if (!body || body.length === 0) return { error: 'empty upload — no file bytes received', status: 422 }
+
+  let name
+  if (origName) {
+    name = `${Date.now()}-${origName}`
+  } else {
+    let ext = 'png'
+    if (body[0] === 0xFF && body[1] === 0xD8) ext = 'jpg'
+    else if (body[0] === 0x47 && body[1] === 0x49) ext = 'gif'
+    else if (body[0] === 0x52 && body[1] === 0x49) ext = 'webp'
+    else if (body[0] === 0x3C) {
+      const head = body.slice(0, 256).toString('utf8')
+      if (head.includes('<svg') || (head.includes('<?xml') && head.includes('svg'))) ext = 'svg'
+    }
+    name = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`
+  }
+  fs.mkdirSync(uploadDir, { recursive: true })
+  const filePath = path.join(uploadDir, name)
+  fs.writeFileSync(filePath, body)
+  return { value: { name, path: filePath, url: `/api/file?path=${encodeURIComponent(filePath)}` } }
+}
+
 function formatNameCollisions(collisions = []) {
   return collisions.map(c => {
     if (c.kind === 'pseudo_label') return `${c.name} is a reserved routing label`
@@ -737,43 +780,34 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   router.post('/api/upload', (req, res) => {
     fs.mkdirSync(UPLOAD_DIR, { recursive: true })
     const chunks = []
+    // A client disconnect mid-upload (Skip's frequent frontend disconnects) must
+    // never persist a truncated/empty file. Without these handlers `end` could
+    // still fire with a partial buffer, and the write-below would store a 0-byte
+    // file and answer 200 with a valid-looking URL — the browser then draws a
+    // broken image forever. Guard the aborted/error paths so we neither write nor
+    // double-respond.
+    let settled = false
+    const fail = (code, error) => {
+      if (settled) return
+      settled = true
+      res.status(code).json({ error })
+    }
+    req.on('aborted', () => fail(400, 'upload aborted before completion'))
+    req.on('error', (e) => fail(400, `upload stream error: ${e.message}`))
     req.on('data', chunk => chunks.push(chunk))
     req.on('end', () => {
+      if (settled) return
       try {
-        let body = Buffer.concat(chunks)
-        let origName = req.headers['x-filename']
-          ? decodeURIComponent(req.headers['x-filename'])
-          : null
-
-        // Multipart path: extract the first file part's filename + content.
-        const ct = req.headers['content-type'] || ''
-        if (ct.startsWith('multipart/form-data')) {
-          const m = ct.match(/boundary="?([^";]+)"?/)
-          if (!m) { res.status(400).json({ error: 'multipart boundary missing' }); return }
-          const part = extractFirstFilePart(body, m[1])
-          if (!part) { res.status(400).json({ error: 'no file part in multipart body' }); return }
-          body = part.content
-          if (!origName && part.filename) origName = part.filename
-        }
-
-        let name
-        if (origName) {
-          name = `${Date.now()}-${origName}`
-        } else {
-          let ext = 'png'
-          if (body[0] === 0xFF && body[1] === 0xD8) ext = 'jpg'
-          else if (body[0] === 0x47 && body[1] === 0x49) ext = 'gif'
-          else if (body[0] === 0x52 && body[1] === 0x49) ext = 'webp'
-          else if (body[0] === 0x3C) {
-            const head = body.slice(0, 256).toString('utf8')
-            if (head.includes('<svg') || (head.includes('<?xml') && head.includes('svg'))) ext = 'svg'
-          }
-          name = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`
-        }
-        const filePath = path.join(UPLOAD_DIR, name)
-        fs.writeFileSync(filePath, body)
-        res.json({ name, path: filePath, url: `/api/file?path=${encodeURIComponent(filePath)}` })
-      } catch (e) { res.status(500).json({ error: e.message }) }
+        const result = persistUpload({
+          body: Buffer.concat(chunks),
+          contentType: req.headers['content-type'] || '',
+          xFilename: req.headers['x-filename'] ? decodeURIComponent(req.headers['x-filename']) : null,
+          uploadDir: UPLOAD_DIR,
+        })
+        if (result.error) { fail(result.status, result.error); return }
+        settled = true
+        res.json(result.value)
+      } catch (e) { fail(500, e.message) }
     })
   })
 
