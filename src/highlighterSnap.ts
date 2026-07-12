@@ -108,6 +108,9 @@ export interface SourceLine {
   highlighted?: boolean
   hlStart?: number  // start column of highlighted substring
   hlEnd?: number    // end column of highlighted substring
+  candidates?: Array<{ line: number; start: number; end: number; score: number; confidence: number; text: string }>
+  confidence?: number
+  ambiguous?: boolean
 }
 
 /**
@@ -590,6 +593,53 @@ function float16(bits: number): number {
   return sign ? -v : v
 }
 
+function samplePathForSynctex(
+  points: Array<{ x: number; y: number }>,
+  fragments: Array<{ text: string; w: number }> = [],
+): Array<{ x: number; y: number }> {
+  if (points.length <= 1) return points
+
+  let total = 0
+  for (let i = 1; i < points.length; i++) {
+    total += Math.hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y)
+  }
+  if (total === 0) return [points[0]]
+
+  const charWidths = fragments
+    .map(f => f.text?.length ? f.w / f.text.length : 0)
+    .filter(w => Number.isFinite(w) && w > 0)
+    .sort((a, b) => a - b)
+  const medianCharWidth = charWidths.length > 0
+    ? charWidths[Math.floor(charWidths.length / 2)]
+    : 5
+  const step = Math.max(0.75, medianCharWidth / 2)
+  const sampled: Array<{ x: number; y: number }> = [points[0]]
+
+  let nextAt = step
+  let walked = 0
+  for (let i = 1; i < points.length; i++) {
+    const a = points[i - 1]
+    const b = points[i]
+    const len = Math.hypot(b.x - a.x, b.y - a.y)
+    if (len === 0) continue
+
+    while (walked + len >= nextAt) {
+      const t = (nextAt - walked) / len
+      sampled.push({
+        x: a.x + (b.x - a.x) * t,
+        y: a.y + (b.y - a.y) * t,
+      })
+      nextAt += step
+    }
+    walked += len
+  }
+
+  const last = points[points.length - 1]
+  const prev = sampled[sampled.length - 1]
+  if (!prev || Math.hypot(last.x - prev.x, last.y - prev.y) > 0.5) sampled.push(last)
+  return sampled
+}
+
 /**
  * Find source text for a highlight by tracing its path through synctex records.
  * Decodes the highlight path, converts points to PDF coords, sends to server.
@@ -655,9 +705,7 @@ export async function findSourceLinesFromBounds(
     }
   }
 
-  // Sample path to ~20 points max for the query
-  const sampled = pathPoints.length <= 20 ? pathPoints
-    : pathPoints.filter((_, i) => i % Math.ceil(pathPoints.length / 20) === 0)
+  const sampled = samplePathForSynctex(pathPoints, fragments)
 
   const serverUrl = serverBase()
   try {
@@ -681,6 +729,9 @@ export async function findSourceLinesFromBounds(
       if (l.highlighted) sl.highlighted = true
       if (l.hlStart != null) sl.hlStart = l.hlStart
       if (l.hlEnd != null) sl.hlEnd = l.hlEnd
+      if (l.candidates) sl.candidates = l.candidates
+      if (l.confidence != null) sl.confidence = l.confidence
+      if (l.ambiguous) sl.ambiguous = true
       if (data.file) sl.file = data.file
       return sl
     })
