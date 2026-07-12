@@ -1206,6 +1206,49 @@ function voiceHasRoute() {
   return !_voiceDumping && (!!_activeTextarea || !!_accumulator || activeSendTargets().length > 0)
 }
 
+export function getVoiceRuntimeSummary(now = Date.now()) {
+  return {
+    backend: _backend,
+    recording: _recording,
+    state: _state,
+    healthLabel: _voiceHealthLabel || null,
+    liveness: voiceLivenessStatus(now),
+    hasRoute: voiceHasRoute(),
+    targetLabel: targetLabel(),
+    voiceDumping: _voiceDumping,
+    hasTextarea: !!_activeTextarea,
+    hasAccumulator: !!_accumulator,
+    activeSendTargetCount: activeSendTargets().length,
+    generation: _generation,
+    editStopped: _editStopped,
+    deepgram: {
+      connected: _deepgramConnected,
+      available: _deepgramAvailable,
+      wsReadyState: _deepgramWs?.readyState ?? null,
+      wsBufferedAmount: _deepgramWs?.bufferedAmount ?? null,
+      hasMicStream: !!_deepgramStream,
+      audioContextState: _deepgramContext?.state ?? null,
+      upstreamPaused: _dgUpstreamPaused,
+      lastMicFrameAgoMs: _lastMicFrameTime ? now - _lastMicFrameTime : null,
+      lastAudioChunkAgoMs: _lastAudioChunkTime ? now - _lastAudioChunkTime : null,
+    },
+    chrome: {
+      recognizerActive: !!_recognition,
+      speechRecognitionAvailable: !!SpeechRecognition,
+    },
+    whisper: {
+      connected: _whisperConnected,
+      available: _whisperAvailable,
+      wsReadyState: _whisperWs?.readyState ?? null,
+      wsBufferedAmount: _whisperWs?.bufferedAmount ?? null,
+      lastMessageAgoMs: _lastWhisperMessageTime ? now - _lastWhisperMessageTime : null,
+    },
+    lastResultAgoMs: _lastResultTime ? now - _lastResultTime : null,
+    recentLogCount: _voiceLogs.length,
+    documentHidden: typeof document !== 'undefined' ? document.hidden : null,
+  }
+}
+
 // Pure decision for the upstream lifecycle (unit-tested). `paused` = we've already
 // told the bridge to stop. Returns the action to take this tick.
 //   'resume' → send {start}, stream      'pause' → send {stop}, stop streaming

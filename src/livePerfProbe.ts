@@ -2,6 +2,8 @@ import type { Editor } from 'tldraw'
 import type { SvgDocument } from './svgDocumentLoader'
 import { onCLS, onFCP, onINP, onLCP, onTTFB } from 'web-vitals/attribution'
 import type { MetricWithAttribution } from 'web-vitals/attribution'
+import { getFleetRuntimeSummary } from './fleet/fleet-data.mjs'
+import { getVoiceRuntimeSummary } from './voice.mjs'
 
 type LivePerfProbeHandle = {
   sample: (reason?: string) => void
@@ -84,6 +86,21 @@ function collectDomSummary() {
     htmlPageNodes: document.querySelectorAll('[data-shape-type="html-page"]').length,
     iframes: document.querySelectorAll('iframe').length,
     fleetDocviews: document.querySelectorAll('.fleet-docview [data-viewport-id]').length,
+    fleetShapes: document.querySelectorAll('.fleet-chat-shape, .fleet-inbox-shape, .fleet-agents-shape, .fleet-status-shape').length,
+    fleetChatShapes: document.querySelectorAll('.fleet-chat-shape').length,
+    fleetInboxShapes: document.querySelectorAll('.fleet-inbox-shape').length,
+    fleetAgentRows: document.querySelectorAll('.fleet-agents-row, .fleet-phone-agent, .fleet-inbox-phone-agent').length,
+    fleetChatLines: document.querySelectorAll('.fleet-chat-shape .chat-line, .fleet-chat-shape [data-chat-line]').length,
+    fleetActivityCards: document.querySelectorAll('.activity-card, .fleet-activity-card, [data-activity-card]').length,
+    textareas: document.querySelectorAll('textarea').length,
+  }
+}
+
+function safeCollect<T>(fn: () => T): T | { error: string } {
+  try {
+    return fn()
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : String(err) }
   }
 }
 
@@ -158,6 +175,7 @@ export function installLivePerfProbe(editor: Editor, documentInfo: SvgDocument, 
 
   const sample = (reason = 'periodic') => {
     if (stopped) return
+    const now = Date.now()
     const records = Object.values(editor.store.allRecords()) as any[]
     const shapes = records.filter(record => record?.typeName === 'shape')
     const shapeTypes = countBy(shapes.map(shape => String(shape.type || 'unknown')))
@@ -179,6 +197,13 @@ export function installLivePerfProbe(editor: Editor, documentInfo: SvgDocument, 
       },
       htmlPages: summarizeHtmlPages(shapes),
       dom: collectDomSummary(),
+      page: {
+        visibilityState: document.visibilityState,
+        hidden: document.hidden,
+        focused: document.hasFocus(),
+      },
+      fleet: safeCollect(() => getFleetRuntimeSummary(now)),
+      voice: safeCollect(() => getVoiceRuntimeSummary(now)),
       memory: memory ? {
         usedJSHeapSize: memory.usedJSHeapSize,
         totalJSHeapSize: memory.totalJSHeapSize,

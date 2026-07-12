@@ -633,6 +633,13 @@ let _reconnectDelay = 1000
 let _connected = false
 let _disconnectedAt = 0
 let _heartbeatInterval = null
+let _lastWsOpenAt = 0
+let _lastWsCloseAt = 0
+let _lastWsActivityAt = 0
+let _lastWsMessageAt = 0
+let _lastFleetEventAt = 0
+let _lastFleetEventId = 0
+let _lastAgentsDeltaAt = 0
 
 /** Returns true if the WS is currently connected */
 export function isConnected() { return _connected }
@@ -640,12 +647,39 @@ export function isConnected() { return _connected }
 /** Returns ms since disconnect, or 0 if connected */
 export function disconnectedFor() { return _connected ? 0 : (_disconnectedAt ? Date.now() - _disconnectedAt : 0) }
 
+export function getFleetRuntimeSummary(now = Date.now()) {
+  return {
+    connected: _connected,
+    disconnectedForMs: disconnectedFor(),
+    wsReadyState: _ws?.readyState ?? null,
+    pendingRpcCount: _wsCallbacks.size,
+    reconnectDelayMs: _reconnectDelay,
+    lastWsOpenAgoMs: _lastWsOpenAt ? now - _lastWsOpenAt : null,
+    lastWsCloseAgoMs: _lastWsCloseAt ? now - _lastWsCloseAt : null,
+    lastWsActivityAgoMs: _lastWsActivityAt ? now - _lastWsActivityAt : null,
+    lastWsMessageAgoMs: _lastWsMessageAt ? now - _lastWsMessageAt : null,
+    lastFleetEventAgoMs: _lastFleetEventAt ? now - _lastFleetEventAt : null,
+    lastFleetEventId: _lastFleetEventId || null,
+    lastEventId: _lastEventId || null,
+    lastAgentsDeltaAgoMs: _lastAgentsDeltaAt ? now - _lastAgentsDeltaAt : null,
+    agentCount: _agents.length,
+    taskCount: _tasks.length,
+    itemCount: _items.length,
+    eventCount: _store.all().length,
+    pendingEventUpdateCount: _pendingEventUpdates.size,
+    loadingAgentPage: !!_agentsPageLoading,
+    hasNextAgentsPage: !!_nextAgentsCursor,
+    liveTailPinned: isLiveTailPinned(),
+  }
+}
+
 // WS request/response: pending callbacks keyed by message ID
 let _wsReqId = 0
 const _wsCallbacks = new Map()
 const WS_REQUEST_IDLE_MS = 45_000
 
 function markWsActivity() {
+  _lastWsActivityAt = Date.now()
   resetWsRequestIdleTimers(_wsCallbacks)
 }
 
@@ -698,6 +732,7 @@ export function connect() {
   _ws = new WebSocket(wsUrl)
 
   _ws.onopen = () => {
+    _lastWsOpenAt = Date.now()
     markWsActivity()
     _reconnectDelay = 1000
     _connected = true
@@ -775,6 +810,7 @@ export function connect() {
   }
 
   _ws.onclose = (ev) => {
+    _lastWsCloseAt = Date.now()
     rejectWsRequests(_wsCallbacks, ({ type }) => new Error(`WS connection closed (type=${type})`))
     _ws = null
     _connected = false
@@ -791,6 +827,7 @@ export function connect() {
     try {
       markWsActivity()
       const msg = JSON.parse(e.data)
+      _lastWsMessageAt = Date.now()
 
       // Handle request/response messages (replies to wsSend)
       if (msg.id && (msg.result !== undefined || msg.error !== undefined)) {
@@ -823,6 +860,7 @@ export function connect() {
 
       // Incremental agent/task state — only changed/removed agents on the wire.
       if (eventType === 'agents-delta') {
+        _lastAgentsDeltaAt = Date.now()
         applyAgentDelta(data.changed, data.removed)
         updateTasks(data.tasks || [])
         applyFleetEphemeral(data)
@@ -830,7 +868,9 @@ export function connect() {
       }
 
       if (eventType === 'fleet-event') {
+        _lastFleetEventAt = Date.now()
         if (!data || !data.type) return
+        if (data.id) _lastFleetEventId = data.id
         if (data.type === 'open-doc' && data.url) {
           notify('open-doc', data)
           return
