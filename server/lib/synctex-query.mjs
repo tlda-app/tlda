@@ -698,7 +698,7 @@ export async function getSourceContext(projectName, page, startX, startY, endX, 
 }
 
 /** Strip tex commands to get approximate plain text. */
-function rankSourceSpanCandidates({ sourceLine, fragmentTexts, highlightText, lineRecords, hitRange }) {
+export function rankSourceSpanCandidates({ sourceLine, fragmentTexts, highlightText, lineRecords, hitRange }) {
   const query = normalizeRenderedText(fragmentTexts.join(' ') || highlightText || '')
   if (!query) return { candidates: [], confidence: 0, ambiguous: true }
 
@@ -907,35 +907,52 @@ function fuzzySubstringMatch(text, query) {
 
 /** Map a position in stripped text back to position in original source. */
 function mapStrippedToSource(source, strippedStart, strippedEnd) {
-  const stripped = stripTex(source)
-  // Build character map: stripped index → source index
-  // This is approximate — we re-strip and align
-  let si = 0 // source index
-  let di = 0 // stripped index
-  const strippedChars = stripTex(source)
+  const { text, map } = stripTexWithSourceMap(source)
+  const start = Math.max(0, Math.min(strippedStart, text.length - 1))
+  const end = Math.max(start + 1, Math.min(strippedEnd, text.length))
+  if (map.length === 0 || start >= map.length) return null
 
-  // Simple approach: find the stripped substring, then search for it in source
-  const matchedText = stripped.slice(strippedStart, strippedEnd)
-  // Find this text in the source (allowing tex commands interspersed)
-  const pattern = matchedText.split('').map(c =>
-    c === ' ' ? '\\s+(?:\\\\[a-zA-Z]+(?:\\{[^}]*\\})?\\s*)*' : escapeRegex(c)
-  ).join('(?:\\\\[a-zA-Z]+(?:\\{[^}]*\\})?)*\\s*')
-
-  try {
-    const re = new RegExp(pattern, 'i')
-    const m = source.match(re)
-    if (m) {
-      return { start: m.index, end: m.index + m[0].length }
-    }
-  } catch {
-    // Regex too complex — fall back to proportional mapping
-  }
-
-  // Proportional fallback
-  const ratio = source.length / Math.max(1, stripped.length)
-  return { start: Math.round(strippedStart * ratio), end: Math.round(strippedEnd * ratio) }
+  const sourceStart = map[start]
+  const sourceEnd = map[Math.min(end - 1, map.length - 1)] + 1
+  if (sourceEnd <= sourceStart) return null
+  return { start: sourceStart, end: sourceEnd }
 }
 
-function escapeRegex(s) {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+function stripTexWithSourceMap(source) {
+  let text = ''
+  const map = []
+
+  const push = (ch, idx) => {
+    if (/\s/.test(ch)) {
+      if (text.length === 0 || text.endsWith(' ')) return
+      text += ' '
+      map.push(idx)
+      return
+    }
+    text += ch
+    map.push(idx)
+  }
+
+  for (let i = 0; i < source.length; i++) {
+    const ch = source[i]
+    if (ch === '\\') {
+      i++
+      while (i < source.length && /[a-zA-Z]/.test(source[i])) i++
+      i--
+      continue
+    }
+    if (/[{}$^_~]/.test(ch)) continue
+    push(ch, i)
+  }
+
+  while (text.startsWith(' ')) {
+    text = text.slice(1)
+    map.shift()
+  }
+  while (text.endsWith(' ')) {
+    text = text.slice(0, -1)
+    map.pop()
+  }
+
+  return { text, map }
 }

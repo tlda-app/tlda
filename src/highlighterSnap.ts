@@ -393,22 +393,35 @@ async function handleOutlineSelection(
   log.info('outline-hl', 'handleOutlineSelection enter', { docName, sourceLines: sourceLines.length })
   if (!docName) { log.warn('outline-hl', 'no docName'); return }
 
-  // Prefer entries with resolved word columns; fall back to all lines.
-  const withCols = sourceLines.filter(l => l.highlighted && l.hlStart != null && l.hlEnd != null)
-  const span = (withCols.length ? withCols : sourceLines.filter(l => l.highlighted))
+  // Outline extraction must be word-precise. Falling back to whole source lines
+  // would turn an ambiguous ranker result into a fabricated source span.
+  const span = sourceLines.filter(l =>
+    l.highlighted &&
+    !l.ambiguous &&
+    l.hlStart != null &&
+    l.hlEnd != null &&
+    l.hlEnd > l.hlStart
+  )
     .slice()
     .sort((a, b) => a.line - b.line)
-  const ordered = span.length ? span : sourceLines.slice().sort((a, b) => a.line - b.line)
-  if (ordered.length === 0) { log.warn('outline-hl', 'no source span resolved', { sourceLines: sourceLines.length }); return }
+  if (span.length === 0) {
+    log.warn('outline-hl', 'no precise source span resolved', {
+      sourceLines: sourceLines.length,
+      ambiguous: sourceLines.some(l => l.highlighted && l.ambiguous),
+      withCandidates: sourceLines.some(l => l.highlighted && (l.candidates?.length || 0) > 0),
+    })
+    return
+  }
 
+  const ordered = span
   const first = ordered[0]
   const last = ordered[ordered.length - 1]
   const startLine = first.line
-  const startCol = first.hlStart ?? 0
+  const startCol = first.hlStart
   const endLine = last.line
-  const endCol = last.hlEnd ?? last.content.length
+  const endCol = last.hlEnd
   const file = ordered.find(l => l.file)?.file
-  log.info('outline-hl', 'span computed', { file, startLine, startCol, endLine, endCol, withCols: withCols.length })
+  log.info('outline-hl', 'span computed', { file, startLine, startCol, endLine, endCol })
 
   const serverUrl = serverBase()
   const qs = new URLSearchParams({
