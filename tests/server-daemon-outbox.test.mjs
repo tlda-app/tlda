@@ -64,3 +64,11 @@ test('server daemon outbox uses the shared fleet transport primitive', () => {
   assert.match(source, /from '..\/..\/shared\/fleet-transport\.mjs'/)
   assert.match(source, /new SqliteTransportOutbox/)
 })
+
+test('daemon disconnect cleanup does not query pending outbox rows', () => {
+  const source = readFileSync(new URL('../server/unified-server.mjs', import.meta.url), 'utf8')
+  const match = source.match(/function clearServerDaemonOutboxInflightForDaemon\(daemonKey\) \{([\s\S]*?)\n\}/)
+  assert.ok(match)
+  assert.doesNotMatch(match[1], /pendingForDaemon/)
+  assert.match(match[1], /serverDaemonOutboxInflight/)
+})

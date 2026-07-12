@@ -159,7 +159,7 @@ const fleetStore = new FleetStore(process.env.TLDA_FLEET_DB, { taskDoc: true })
 fleetStore.flushTaskDocs?.()
 const serverDaemonOutbox = new ServerDaemonOutbox(fleetStore.db)
 const daemonAgentEvents = new DaemonAgentEvents(fleetStore.db)
-const serverDaemonOutboxInflight = new Set()
+const serverDaemonOutboxInflight = new Map()
 
 const HOT_OP_WARN_MS = Number(process.env.TLDA_HOT_OP_WARN_MS || 50)
 const eventLoopDelay = monitorEventLoopDelay({ resolution: 20 })
@@ -6926,7 +6926,7 @@ function flushServerDaemonOutbox(daemonKey) {
     try {
       serverDaemonOutbox.markAttempt(row.id)
       dws.send(JSON.stringify(row.payload))
-      serverDaemonOutboxInflight.add(row.id)
+      serverDaemonOutboxInflight.set(row.id, daemonKey)
     } catch (e) {
       serverDaemonOutbox.markError(row.id, e)
       serverDaemonOutboxInflight.delete(row.id)
@@ -6937,8 +6937,8 @@ function flushServerDaemonOutbox(daemonKey) {
 }
 
 function clearServerDaemonOutboxInflightForDaemon(daemonKey) {
-  for (const row of serverDaemonOutbox.pendingForDaemon(daemonKey, 1000)) {
-    serverDaemonOutboxInflight.delete(row.id)
+  for (const [outboxId, inflightDaemonKey] of serverDaemonOutboxInflight) {
+    if (inflightDaemonKey === daemonKey) serverDaemonOutboxInflight.delete(outboxId)
   }
 }
 
