@@ -358,6 +358,19 @@ export class FleetStore {
 
       CREATE INDEX IF NOT EXISTS idx_wiretaps_agent ON wiretaps(agent_id);
 
+      CREATE TABLE IF NOT EXISTS subscriptions (
+        subscription_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        owner TEXT NOT NULL,
+        query TEXT NOT NULL,
+        notification_policy TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        adapter TEXT NOT NULL,
+        adapter_id INTEGER
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_subscriptions_owner ON subscriptions(owner);
+
       -- Shared document metadata
       CREATE TABLE IF NOT EXISTS shared_docs (
         doc TEXT PRIMARY KEY,            -- document name (e.g. "fleet-data-design")
@@ -939,6 +952,10 @@ export class FleetStore {
     this._getWiretapsByAgent = this.db.prepare('SELECT * FROM wiretaps WHERE agent_id = ?');
     this._deleteWiretap = this.db.prepare('DELETE FROM wiretaps WHERE id = ?');
     this._deleteWiretapsByAgent = this.db.prepare('DELETE FROM wiretaps WHERE agent_id = ?');
+    this._addSubscription = this.db.prepare(`INSERT INTO subscriptions (owner, query, notification_policy, created_at, created_by, adapter, adapter_id) VALUES (?, ?, ?, ?, ?, ?, ?)`);
+    this._getSubscriptionsByOwner = this.db.prepare('SELECT * FROM subscriptions WHERE owner = ? ORDER BY subscription_id DESC');
+    this._getSubscription = this.db.prepare('SELECT * FROM subscriptions WHERE subscription_id = ?');
+    this._deleteSubscription = this.db.prepare('DELETE FROM subscriptions WHERE subscription_id = ?');
 
     // Event queries for chat history
     const E = this._EVT;
@@ -1076,6 +1093,45 @@ export class FleetStore {
     }
 
     return inserted;
+  }
+
+  getChatTempIdResult(tempId) {
+    if (!tempId) return null
+    const rows = this.db.prepare(`
+      SELECT id, to_id
+      FROM events
+      WHERE type = 'chat'
+        AND json_extract(metadata, '$.client_temp_id') = ?
+      ORDER BY id
+    `).all(tempId)
+    if (!rows.length) return null
+    return {
+      eventIds: rows.map(row => Number(row.id)),
+      recipients: rows.map(row => row.to_id).filter(Boolean),
+      receipts: [],
+    }
+  }
+
+  getReportCloseOperationResult(operationId) {
+    if (!operationId) return null
+    const rows = this.db.prepare(`
+      SELECT id, type, task_id
+      FROM events
+      WHERE type IN ('report', 'chat', 'task_done')
+        AND json_extract(metadata, '$.client_operation_id') = ?
+      ORDER BY id
+    `).all(operationId)
+    if (!rows.length) return null
+    const report = rows.find(row => row.type === 'report') || null
+    const chat = rows.find(row => row.type === 'chat') || null
+    const close = rows.find(row => row.type === 'task_done') || null
+    return {
+      reportEventId: report ? Number(report.id) : null,
+      chatEventId: chat ? Number(chat.id) : null,
+      closeEventId: close ? Number(close.id) : null,
+      taskId: close?.task_id || report?.task_id || null,
+      eventIds: rows.map(row => Number(row.id)),
+    }
   }
 
   async share(event) {
@@ -2349,6 +2405,31 @@ export class FleetStore {
     this._wiretapCache = null;
   }
 
+  addSubscription({ owner, query, notificationPolicy, createdBy, adapter, adapterId = null }) {
+    const info = this._addSubscription.run(owner, query, notificationPolicy, new Date().toISOString(), createdBy, adapter, adapterId);
+    return this.getSubscription(info.lastInsertRowid);
+  }
+
+  getSubscription(subscriptionId) {
+    return this._getSubscription.get(subscriptionId) || null;
+  }
+
+  getSubscriptionsByOwner(owner) {
+    return this._getSubscriptionsByOwner.all(owner);
+  }
+
+  ensureDefaultSubscription(agentId) {
+    const query = 'to:my_labels';
+    const existing = this._getSubscriptionsByOwner.all(agentId).find(row => row.query === query);
+    if (existing) return existing;
+    const tap = this.addWiretap(agentId, query, null);
+    return this.addSubscription({ owner: agentId, query, notificationPolicy: 'immediate', createdBy: agentId, adapter: 'wiretap', adapterId: tap.id });
+  }
+
+  removeSubscription(subscriptionId) {
+    return this._deleteSubscription.run(subscriptionId).changes > 0;
+  }
+
   // Resolve wiretap matches: given a sender and recipient, return agent IDs that should be CC'd
   // Filter is a string expression with directional `to:`/`from:` prefixes:
   // "to:skip & from:math" fires on a message TO skip FROM math.
@@ -2370,7 +2451,8 @@ export class FleetStore {
       if (tap.types && tap.types.length > 0 && eventType && !tap.types.includes(eventType)) continue;
       if (!tap._ast) continue; // unparseable filter (logged at hydrate) — never match-all
       // Directional expression: matches per to:/from: leaf semantics.
-      const matches = evalExprDirectional(tap._ast, { fromLabels: senderLabels, toLabels: recipientLabels });
+      const subscriberLabels = this._agentLabelsById(tap.agent_id);
+      const matches = evalExprDirectional(tap._ast, { fromLabels: senderLabels, toLabels: recipientLabels, subscriberLabels });
       if (matches) matched.add(tap.agent_id);
     }
     return [...matched];

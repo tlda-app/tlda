@@ -859,12 +859,13 @@ function FleetInboxInner({ shape }: { shape: any }) {
       return shapes
         .map((s: any) => {
           const anchor = s.meta?.sourceAnchor
+          const anchoredAnchor = anchor?.anchored !== false && Number.isFinite(Number(anchor?.line)) ? anchor : null
           return {
             id: s.id,
             text: String(s.props?.text || ''),
             preview: previewText(s.props?.text || ''),
-            file: (anchor?.file as string) || '',
-            line: (anchor?.line as number) ?? null,
+            file: (anchoredAnchor?.file as string) || '',
+            line: (anchoredAnchor?.line as number) ?? null,
             color: (s.props?.color as string) || '',
             createdAt: typeof s.meta?.createdAt === 'number' ? s.meta.createdAt : 0,
             _y: typeof s.y === 'number' ? s.y : 0,

@@ -9,9 +9,9 @@
  * The cluster anchor comes from the first shape's position — where you started writing.
  */
 
-import type { Editor, TLShape } from 'tldraw'
+import type { Editor, JsonObject, TLShape } from 'tldraw'
 import { currentDocumentInfo } from './svgDocumentLoader'
-import { getSourceAnchor, canvasToPdf, type SourceAnchor } from './synctexAnchor'
+import { annotationSourceAnchorAtCanvasPoint, type AnnotationSourceAnchor } from './annotationSourceAnchor'
 
 const CLUSTER_GAP = 5000 // ms — shapes within this window share an anchor
 
@@ -23,7 +23,7 @@ const ANCHORABLE_TYPES = new Set(['draw', 'highlight', 'arrow', 'geo', 'text', '
 const SYSTEM_PREFIXES = ['build-error-', 'diff-', 'proof-', 'hist-']
 
 interface ActiveCluster {
-  anchor: SourceAnchor
+  anchor: AnnotationSourceAnchor
   anchorCanvasX: number
   anchorCanvasY: number
   clusterId: string
@@ -38,6 +38,11 @@ function isSystemShape(shapeId: string): boolean {
   // TLDraw shape IDs have a 'shape:' prefix
   const id = shapeId.startsWith('shape:') ? shapeId.slice(6) : shapeId
   return SYSTEM_PREFIXES.some(p => id.startsWith(p))
+}
+
+function annotationAnchorLabel(anchor: AnnotationSourceAnchor): string {
+  if (anchor.anchored === false) return anchor.reason
+  return `${anchor.file}:${anchor.line}`
 }
 
 /** Determine which page (1-indexed) a shape falls on by its y coordinate. */
@@ -86,7 +91,7 @@ export async function anchorShape(
       type: shape.type,
       meta: {
         ...shape.meta,
-        sourceAnchor: activeCluster.anchor as any,
+        sourceAnchor: activeCluster.anchor as unknown as JsonObject,
         clusterId: activeCluster.clusterId,
         anchorCanvasX: activeCluster.anchorCanvasX,
         anchorCanvasY: activeCluster.anchorCanvasY,
@@ -96,10 +101,7 @@ export async function anchorShape(
   }
 
   // New cluster — look up source anchor for this position
-  const pdfPos = canvasToPdf(shape.x, shape.y, doc.pages)
-  if (!pdfPos) return
-
-  const anchor = await getSourceAnchor(doc.name, pdfPos.page, pdfPos.x, pdfPos.y)
+  const anchor = await annotationSourceAnchorAtCanvasPoint(editor, doc, shape.x, shape.y)
   if (!anchor) return
 
   const clusterId = `cluster-${++clusterCounter}-${now}`
@@ -121,12 +123,12 @@ export async function anchorShape(
     type: shape.type,
     meta: {
       ...shape.meta,
-      sourceAnchor: anchor as any,
+      sourceAnchor: anchor as unknown as JsonObject,
       clusterId,
       anchorCanvasX: shape.x,
       anchorCanvasY: shape.y,
     },
   })
 
-  console.log(`[Anchor] New cluster ${clusterId} at ${anchor.file}:${anchor.line}`)
+  console.log(`[Anchor] New cluster ${clusterId} at ${annotationAnchorLabel(anchor)}`)
 }

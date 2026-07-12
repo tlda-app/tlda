@@ -27,6 +27,8 @@ import { fleetInteractionFrame, fleetPointerEventPagePoint } from './wm/fleet-in
 import type { TargetInfo } from './loaders/types'
 import { getViewerId } from './useYjsSync'
 import { log } from './logger'
+import type { SourceLineMeta } from './sourceLocation'
+import { anchoredSourceLocation, sourceLineMetaFromRankerLine } from './sourceLocation'
 
 // Word-space heuristic matching svg-text.mjs: gap > 0.1 * fontSize → space
 const SPACE_THRESHOLD = 0.1
@@ -101,13 +103,18 @@ export interface GlowRect {
 }
 
 /** A resolved source line, stored in highlight meta. */
-export interface SourceLine {
-  line: number
-  content: string
-  file?: string
-  highlighted?: boolean
-  hlStart?: number  // start column of highlighted substring
-  hlEnd?: number    // end column of highlighted substring
+export type SourceLine = SourceLineMeta
+
+type AnchoredSourceLine = SourceLine & { anchored: true; content: string }
+
+function anchoredSourceLines(sourceLines: SourceLine[]): AnchoredSourceLine[] {
+  return sourceLines.filter((line: any): line is AnchoredSourceLine => (
+    line?.anchored === true &&
+    Number.isFinite(Number(line?.line)) &&
+    typeof line?.content === 'string' &&
+    typeof line?.file === 'string' &&
+    line.file.length > 0
+  ))
 }
 
 /**
@@ -390,22 +397,36 @@ async function handleOutlineSelection(
   log.info('outline-hl', 'handleOutlineSelection enter', { docName, sourceLines: sourceLines.length })
   if (!docName) { log.warn('outline-hl', 'no docName'); return }
 
-  // Prefer entries with resolved word columns; fall back to all lines.
-  const withCols = sourceLines.filter(l => l.highlighted && l.hlStart != null && l.hlEnd != null)
-  const span = (withCols.length ? withCols : sourceLines.filter(l => l.highlighted))
+  // Outline extraction must be word-precise. Falling back to whole source lines
+  // would turn an ambiguous ranker result into a fabricated source span.
+  const anchoredLines = anchoredSourceLines(sourceLines)
+  const span = anchoredLines.filter(l =>
+    l.highlighted &&
+    !l.ambiguous &&
+    l.hlStart != null &&
+    l.hlEnd != null &&
+    l.hlEnd > l.hlStart
+  )
     .slice()
     .sort((a, b) => a.line - b.line)
-  const ordered = span.length ? span : sourceLines.slice().sort((a, b) => a.line - b.line)
-  if (ordered.length === 0) { log.warn('outline-hl', 'no source span resolved', { sourceLines: sourceLines.length }); return }
+  if (span.length === 0) {
+    log.warn('outline-hl', 'no precise source span resolved', {
+      sourceLines: sourceLines.length,
+      ambiguous: sourceLines.some(l => l.highlighted && l.ambiguous),
+      withCandidates: sourceLines.some(l => l.highlighted && (((l as any).candidates?.length || 0) > 0)),
+    })
+    return
+  }
 
+  const ordered = span
   const first = ordered[0]
   const last = ordered[ordered.length - 1]
   const startLine = first.line
-  const startCol = first.hlStart ?? 0
+  const startCol = first.hlStart
   const endLine = last.line
-  const endCol = last.hlEnd ?? last.content.length
+  const endCol = last.hlEnd
   const file = ordered.find(l => l.file)?.file
-  log.info('outline-hl', 'span computed', { file, startLine, startCol, endLine, endCol, withCols: withCols.length })
+  log.info('outline-hl', 'span computed', { file, startLine, startCol, endLine, endCol })
 
   const serverUrl = serverBase()
   const qs = new URLSearchParams({
@@ -456,6 +477,7 @@ async function handleOutlineSelection(
   // anchorLocked tells anchorShape to respect the source anchor we set here
   // (the selected span) instead of re-anchoring by the note's drop position.
   const id = createShapeId()
+  const sourceAnchor = anchoredSourceLocation(file || first.file, startLine)
   try {
     editor.createShape({
       id,
@@ -466,7 +488,7 @@ async function handleOutlineSelection(
         createdAt: Date.now(),
         authorId: getViewerId(),
         anchorLocked: true,
-        sourceAnchor: { file: file || '', line: startLine, column: startCol, content: first.content },
+        ...(sourceAnchor ? { sourceAnchor } : {}),
         // Handle for the token-ops tools: outline_open(doc, slug) / outline_apply.
         ...(slug ? { outlineSlug: slug } : {}),
       },
@@ -590,6 +612,53 @@ function float16(bits: number): number {
   return sign ? -v : v
 }
 
+function samplePathForSynctex(
+  points: Array<{ x: number; y: number }>,
+  fragments: Array<{ text: string; w: number }> = [],
+): Array<{ x: number; y: number }> {
+  if (points.length <= 1) return points
+
+  let total = 0
+  for (let i = 1; i < points.length; i++) {
+    total += Math.hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y)
+  }
+  if (total === 0) return [points[0]]
+
+  const charWidths = fragments
+    .map(f => f.text?.length ? f.w / f.text.length : 0)
+    .filter(w => Number.isFinite(w) && w > 0)
+    .sort((a, b) => a - b)
+  const medianCharWidth = charWidths.length > 0
+    ? charWidths[Math.floor(charWidths.length / 2)]
+    : 5
+  const step = Math.max(0.75, medianCharWidth / 2)
+  const sampled: Array<{ x: number; y: number }> = [points[0]]
+
+  let nextAt = step
+  let walked = 0
+  for (let i = 1; i < points.length; i++) {
+    const a = points[i - 1]
+    const b = points[i]
+    const len = Math.hypot(b.x - a.x, b.y - a.y)
+    if (len === 0) continue
+
+    while (walked + len >= nextAt) {
+      const t = (nextAt - walked) / len
+      sampled.push({
+        x: a.x + (b.x - a.x) * t,
+        y: a.y + (b.y - a.y) * t,
+      })
+      nextAt += step
+    }
+    walked += len
+  }
+
+  const last = points[points.length - 1]
+  const prev = sampled[sampled.length - 1]
+  if (!prev || Math.hypot(last.x - prev.x, last.y - prev.y) > 0.5) sampled.push(last)
+  return sampled
+}
+
 /**
  * Find source text for a highlight by tracing its path through synctex records.
  * Decodes the highlight path, converts points to PDF coords, sends to server.
@@ -615,6 +684,7 @@ export async function findSourceLinesFromBounds(
       },
       width: (s.props as any).w,
       height: (s.props as any).h,
+      page: ((s.props as any).pageIndex ?? 0) + 1,
     }))
 
   // Decode the highlight path and convert to PDF coords
@@ -655,9 +725,7 @@ export async function findSourceLinesFromBounds(
     }
   }
 
-  // Sample path to ~20 points max for the query
-  const sampled = pathPoints.length <= 20 ? pathPoints
-    : pathPoints.filter((_, i) => i % Math.ceil(pathPoints.length / 20) === 0)
+  const sampled = samplePathForSynctex(pathPoints, fragments)
 
   const serverUrl = serverBase()
   try {
@@ -676,14 +744,7 @@ export async function findSourceLinesFromBounds(
     const data = await resp.json()
     if (!data?.lines) return []
 
-    return data.lines.map((l: any) => {
-      const sl: SourceLine = { line: l.line, content: l.content }
-      if (l.highlighted) sl.highlighted = true
-      if (l.hlStart != null) sl.hlStart = l.hlStart
-      if (l.hlEnd != null) sl.hlEnd = l.hlEnd
-      if (data.file) sl.file = data.file
-      return sl
-    })
+    return data.lines.map((l: any) => sourceLineMetaFromRankerLine({ ...l, file: l.file || data.file }, data.file))
   } catch (e) {
     console.warn('[highlighter-snap] synctex query failed:', e)
     return []
@@ -861,7 +922,8 @@ function showSourceContextCard(
   persistent = false,
   shapeId?: string,
 ): HTMLElement | null {
-  if (sourceLines.length === 0) return null
+  const displayLines = anchoredSourceLines(sourceLines)
+  if (displayLines.length === 0) return null
 
   // Remove any existing card before showing a new one
   document.querySelectorAll('.hl-source-card').forEach(el => el.remove())
@@ -874,9 +936,9 @@ function showSourceContextCard(
   card.className = 'hl-source-card'
 
   // Header: file + line range
-  const highlighted = sourceLines.filter(sl => sl.highlighted === true)
-  const first = highlighted.length > 0 ? highlighted[0] : sourceLines[0]
-  const last = highlighted.length > 0 ? highlighted[highlighted.length - 1] : sourceLines[sourceLines.length - 1]
+  const highlighted = displayLines.filter(sl => sl.highlighted === true)
+  const first = highlighted.length > 0 ? highlighted[0] : displayLines[0]
+  const last = highlighted.length > 0 ? highlighted[highlighted.length - 1] : displayLines[displayLines.length - 1]
   const file = first.file || ''
   const lineRange = first.line === last.line
     ? `L${first.line}`
@@ -965,8 +1027,8 @@ function showSourceContextCard(
   body.className = 'hl-source-card-body'
 
   // Build full passage from ALL lines (highlighted + context)
-  const passage = sourceLines.map(l => l.content).join(' ')
-  const hlLines = highlighted.length > 0 ? highlighted : sourceLines
+  const passage = displayLines.map(l => l.content).join(' ')
+  const hlLines = highlighted.length > 0 ? highlighted : displayLines
 
   // Check if any line has substring highlights (hlStart/hlEnd)
   const hasSubstring = hlLines.some(l => l.hlStart != null && l.hlEnd != null)
@@ -975,7 +1037,7 @@ function showSourceContextCard(
     // Collect per-line highlight ranges mapped to passage offsets
     const hlRanges: Array<{ start: number; end: number }> = []
     let offset = 0
-    for (const l of sourceLines) {
+    for (const l of displayLines) {
       if (l.hlStart != null && l.hlEnd != null && l.hlEnd > l.hlStart) {
         hlRanges.push({ start: offset + l.hlStart, end: offset + l.hlEnd })
       }
@@ -1162,13 +1224,8 @@ export function showSourceContextCardForShape(editor: Editor, shapeId: string): 
   if (!shape || (shape.type as string) !== 'highlight') return null
 
   const meta = shape.meta as any
-  let sourceLines: SourceLine[] = meta?.sourceLines
-  // Fallback: if no sourceLines, create one from highlightText
-  if (!sourceLines || sourceLines.length === 0) {
-    const hlText = meta?.highlightText || meta?.highlightedText
-    if (!hlText) return null
-    sourceLines = [{ line: 0, content: hlText, highlighted: true }]
-  }
+  const sourceLines: SourceLine[] = meta?.sourceLines
+  if (!sourceLines || sourceLines.length === 0) return null
 
   const bounds = editor.getShapePageBounds(shapeId as any)
   if (!bounds) return null

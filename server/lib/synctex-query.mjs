@@ -321,17 +321,19 @@ export async function getSourceFromPath(projectName, page, points, highlightText
   // Bounding box: x to x+w horizontally, y-h to y+d vertically.
   const hitRecords = new Set()
   for (const pt of points) {
+    const pointHits = []
     for (const r of pageRecords) {
       const top = r.y - (r.h || 0)
       const bottom = r.y + (r.d || 0)
       const left = r.x
       const right = r.x + (r.w || 0)
       if (pt.x >= left && pt.x <= right && pt.y >= top && pt.y <= bottom) {
-        hitRecords.add(r)
+        pointHits.push(r)
       }
     }
+    for (const r of pointHits) hitRecords.add(r)
     // Fallback: if no box contains this point, use nearest within ~6pt vertically
-    if (hitRecords.size === 0) {
+    if (pointHits.length === 0) {
       let bestDist = Infinity
       let best = null
       for (const r of pageRecords) {
@@ -413,11 +415,10 @@ export async function getSourceFromPath(projectName, page, points, highlightText
     const isHit = hitLines.has(lineNum)
     const entry = { line: lineNum, content: allLines[i], highlighted: isHit }
 
-    // Column estimation: synctex gives LINE but not column.
-    // Use tspan-anchored matching if fragment data is available.
     if (isHit) {
-      entry.hlStart = 0
-      entry.hlEnd = allLines[i].length
+      // Synctex gives a trustworthy line, not a trustworthy column span.
+      // Leave the span absent until the tspan ranker proves it.
+      entry.ambiguous = true
     }
 
     lines.push(entry)
@@ -453,10 +454,21 @@ export async function getSourceFromPath(projectName, page, points, highlightText
       if (!frags || frags.length === 0) continue
 
       const src = entry.content
-      const result = anchorMatch(src, frags)
-      if (result) {
-        entry.hlStart = result.start
-        entry.hlEnd = result.end
+      const ranked = rankSourceSpanCandidates({
+        sourceLine: src,
+        fragmentTexts: frags,
+        highlightText,
+        lineRecords: allRecordsByLine.get(entry.line) || [],
+        hitRange: hitLines.get(entry.line),
+      })
+      if (ranked.candidates.length > 0) {
+        entry.candidates = ranked.candidates.map(c => ({ ...c, line: entry.line }))
+        entry.confidence = ranked.confidence
+        entry.ambiguous = ranked.ambiguous
+        if (!ranked.ambiguous && ranked.confidence >= 0.45) {
+          entry.hlStart = ranked.candidates[0].start
+          entry.hlEnd = ranked.candidates[0].end
+        }
       }
     }
   }
@@ -683,91 +695,211 @@ export async function getSourceContext(projectName, page, startX, startY, endX, 
 }
 
 /** Strip tex commands to get approximate plain text. */
-/**
- * Anchor matching: find where rendered text fragments appear in a source line.
- *
- * Fragments are individual rendered words/characters from the SVG (in order).
- * Some match the source literally (plain text), some don't (TeX expansions).
- * The first and last matched fragments bracket the highlighted region.
- * Unmatched fragments (TeX commands that expanded) are between the anchors.
- *
- * For edge cases where no fragments match at all (all TeX/math), returns null
- * and the caller falls back to full-line highlighting.
- */
-function anchorMatch(sourceLine, fragmentTexts) {
-  let firstAnchorPos = -1
-  let lastAnchorEnd = -1
-  let searchFrom = 0
+export function rankSourceSpanCandidates({ sourceLine, fragmentTexts, highlightText, lineRecords, hitRange }) {
+  const fullHighlightQuery = normalizeRenderedText(highlightText || '')
+  const queries = [...new Set([
+    normalizeRenderedText(fragmentTexts.join(' ')),
+    fullHighlightQuery,
+  ].filter(Boolean))]
+  const query = queries[0] || ''
+  if (!query) return { candidates: [], confidence: 0, ambiguous: true }
 
-  for (const frag of fragmentTexts) {
-    if (frag.length === 0) continue
-    // Search for this fragment literally in the source, starting from searchFrom
-    const idx = sourceLine.indexOf(frag, searchFrom)
-    if (idx >= 0) {
-      if (firstAnchorPos < 0) firstAnchorPos = idx
-      lastAnchorEnd = idx + frag.length
-      searchFrom = idx + frag.length
-    }
-    // If not found, try single characters (math variables like x, y, z)
-    else if (frag.length === 1) {
-      const idx2 = sourceLine.indexOf(frag, searchFrom)
-      if (idx2 >= 0) {
-        if (firstAnchorPos < 0) firstAnchorPos = idx2
-        lastAnchorEnd = idx2 + 1
-        searchFrom = idx2 + 1
-      }
+  const stripped = stripTex(sourceLine)
+  const rawCandidates = []
+
+  for (const q of queries) {
+    const fuzzy = fuzzySubstringMatch(stripped, q)
+    if (fuzzy) {
+      const sourceSpan = mapStrippedToSource(sourceLine, fuzzy.start, fuzzy.end)
+      if (sourceSpan) rawCandidates.push(sourceSpan)
     }
   }
 
-  if (firstAnchorPos < 0) return null // no anchors found
-
-  // Expand to include TeX commands at the boundaries
-  // Walk backward from firstAnchorPos to include preceding command
-  let start = firstAnchorPos
-  if (start > 0) {
-    // If there are unmatched fragments before the first anchor,
-    // walk back to include the TeX command that produced them
-    let i = start - 1
-    // Skip whitespace
-    while (i >= 0 && sourceLine[i] === ' ') i--
-    // If we hit a }, walk back to the matching { and the \command before it
-    if (i >= 0 && sourceLine[i] === '}') {
-      let depth = 1
-      i--
-      while (i >= 0 && depth > 0) {
-        if (sourceLine[i] === '}') depth++
-        if (sourceLine[i] === '{') depth--
-        i--
-      }
-      // Now walk back past the \command
-      while (i >= 0 && sourceLine[i] !== '\\' && sourceLine[i] !== ' ' && sourceLine[i] !== '$') i--
-      if (i >= 0 && sourceLine[i] === '\\') start = i
-      else if (i >= 0 && sourceLine[i] === '$') start = i
-    }
+  for (const q of queries) {
+    for (const span of tokenWindowCandidates(sourceLine, q)) rawCandidates.push(span)
   }
 
-  // Walk forward from lastAnchorEnd to include trailing command
-  let end = lastAnchorEnd
-  if (end < sourceLine.length) {
-    let i = end
-    while (i < sourceLine.length && sourceLine[i] === ' ') i++
-    if (i < sourceLine.length && sourceLine[i] === '\\') {
-      // Walk forward past the command and its argument
-      while (i < sourceLine.length && sourceLine[i] !== ' ' && sourceLine[i] !== '{') i++
-      if (i < sourceLine.length && sourceLine[i] === '{') {
-        let depth = 1
-        i++
-        while (i < sourceLine.length && depth > 0) {
-          if (sourceLine[i] === '{') depth++
-          if (sourceLine[i] === '}') depth--
-          i++
-        }
-      }
-      end = i
-    }
+  const seen = new Set()
+  const candidates = []
+  for (const span of rawCandidates) {
+    const start = Math.max(0, Math.min(sourceLine.length, span.start))
+    const end = Math.max(start, Math.min(sourceLine.length, span.end))
+    if (end <= start) continue
+    const key = `${start}:${end}`
+    if (seen.has(key)) continue
+    seen.add(key)
+
+    const candidateText = sourceLine.slice(start, end)
+    const renderedCandidate = normalizeRenderedText(stripTex(candidateText))
+    const textScore = Math.max(...queries.map(q => similarityScore(renderedCandidate, q)))
+    const containmentScore = fullHighlightQuery
+      ? highlightContainmentScore(renderedCandidate, fullHighlightQuery)
+      : 0
+    const edgeScore = Math.max(...queries.map(q => edgeWordScore(renderedCandidate, q)))
+    const geomScore = geometryScore(sourceLine.length, start, end, lineRecords, hitRange)
+    const continuityScore = lineRecords?.length ? 1 : 0.5
+    const fullHighlightBonus = fullHighlightQuery && renderedCandidate === fullHighlightQuery ? 0.08 : 0
+    const semanticScore = Math.max(textScore, containmentScore)
+    const score = clamp01(semanticScore * 0.55 + edgeScore * 0.2 + geomScore * 0.2 + continuityScore * 0.05 + fullHighlightBonus)
+
+    candidates.push({
+      line: 0,
+      start,
+      end,
+      score,
+      confidence: score,
+      text: candidateText,
+    })
   }
 
-  return { start, end }
+  candidates.sort((a, b) => b.score - a.score || (a.end - a.start) - (b.end - b.start))
+  const top = candidates.slice(0, 5)
+  const best = top[0]
+  const second = best ? top.find(c => spanOverlapRatio(best, c) < 0.8) : undefined
+  const gap = best && second ? best.score - second.score : best ? best.score : 0
+  const confidence = best ? clamp01(best.score * 0.75 + Math.min(0.25, gap)) : 0
+  const ambiguous = !best || confidence < 0.55 || (!!second && gap < 0.08)
+
+  for (const c of top) c.confidence = confidence
+  return { candidates: top, confidence, ambiguous }
+}
+
+function spanOverlapRatio(a, b) {
+  const overlap = Math.max(0, Math.min(a.end, b.end) - Math.max(a.start, b.start))
+  const smaller = Math.max(1, Math.min(a.end - a.start, b.end - b.start))
+  return overlap / smaller
+}
+
+function tokenWindowCandidates(sourceLine, query) {
+  const stripped = stripTex(sourceLine)
+  const tokens = []
+  const re = /[A-Za-z0-9]+/g
+  let match
+  while ((match = re.exec(stripped))) {
+    tokens.push({ text: match[0].toLowerCase(), start: match.index, end: match.index + match[0].length })
+  }
+  if (tokens.length === 0) return []
+
+  const queryTokens = normalizeRenderedText(query).split(/\s+/).filter(Boolean)
+  const targetLen = Math.max(1, queryTokens.length)
+  const spans = []
+  for (let i = 0; i < tokens.length; i++) {
+    for (const width of [targetLen - 1, targetLen, targetLen + 1, targetLen + 2]) {
+      if (width <= 0) continue
+      const j = i + width - 1
+      if (j >= tokens.length) continue
+      const strippedStart = tokens[i].start
+      const strippedEnd = tokens[j].end
+      const mapped = mapStrippedToSource(sourceLine, strippedStart, strippedEnd)
+      if (mapped) spans.push(mapped)
+    }
+  }
+  return spans
+}
+
+function normalizeRenderedText(text) {
+  return (text || '')
+    .replace(/[ﬁﬂ]/g, m => m === 'ﬁ' ? 'fi' : 'fl')
+    .replace(/[“”]/g, '"')
+    .replace(/[‘’]/g, "'")
+    .replace(/[^A-Za-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase()
+}
+
+function similarityScore(a, b) {
+  const aTokens = a.split(/\s+/).filter(Boolean)
+  const bTokens = b.split(/\s+/).filter(Boolean)
+  if (aTokens.length === 0 || bTokens.length === 0) return 0
+  const counts = new Map()
+  for (const t of aTokens) counts.set(t, (counts.get(t) || 0) + 1)
+  let overlap = 0
+  for (const t of bTokens) {
+    const n = counts.get(t) || 0
+    if (n > 0) {
+      overlap++
+      counts.set(t, n - 1)
+    }
+  }
+  const dice = (2 * overlap) / (aTokens.length + bTokens.length)
+  const seq = orderedTokenScore(aTokens, bTokens)
+  return clamp01(dice * 0.7 + seq * 0.3)
+}
+
+function highlightContainmentScore(candidate, highlight) {
+  const candidateTokens = candidate.split(/\s+/).filter(Boolean)
+  const highlightTokens = highlight.split(/\s+/).filter(Boolean)
+  if (candidateTokens.length === 0 || highlightTokens.length === 0) return 0
+
+  const candidateInHighlight = orderedCoverage(candidateTokens, highlightTokens)
+  const highlightInCandidate = orderedCoverage(highlightTokens, candidateTokens)
+  const coverage = Math.max(candidateInHighlight, highlightInCandidate)
+  if (coverage < 0.65) return 0
+
+  const lengthBalance = Math.min(candidateTokens.length, highlightTokens.length) / Math.max(candidateTokens.length, highlightTokens.length)
+  return clamp01(coverage * 0.85 + lengthBalance * 0.15)
+}
+
+function orderedCoverage(needleTokens, haystackTokens) {
+  let i = 0
+  let matched = 0
+  for (const t of needleTokens) {
+    while (i < haystackTokens.length && haystackTokens[i] !== t) i++
+    if (i < haystackTokens.length) {
+      matched++
+      i++
+    }
+  }
+  return matched / Math.max(needleTokens.length, 1)
+}
+
+function orderedTokenScore(aTokens, bTokens) {
+  let i = 0
+  let matched = 0
+  for (const t of bTokens) {
+    while (i < aTokens.length && aTokens[i] !== t) i++
+    if (i < aTokens.length) {
+      matched++
+      i++
+    }
+  }
+  return matched / Math.max(aTokens.length, bTokens.length, 1)
+}
+
+function edgeWordScore(candidate, query) {
+  const c = candidate.split(/\s+/).filter(Boolean)
+  const q = query.split(/\s+/).filter(Boolean)
+  if (c.length === 0 || q.length === 0) return 0
+  let score = 0
+  if (c[0] === q[0]) score += 0.5
+  else if (c[0]?.startsWith(q[0]) || q[0]?.startsWith(c[0])) score += 0.25
+  const cLast = c[c.length - 1]
+  const qLast = q[q.length - 1]
+  if (cLast === qLast) score += 0.5
+  else if (cLast?.startsWith(qLast) || qLast?.startsWith(cLast)) score += 0.25
+  return score
+}
+
+function geometryScore(sourceLen, start, end, lineRecords, hitRange) {
+  if (!lineRecords?.length || !hitRange || sourceLen <= 0) return 0.5
+  const sorted = [...lineRecords].sort((a, b) => a.x - b.x)
+  const lineMin = sorted[0].x
+  const lineMax = sorted[sorted.length - 1].x
+  const lineWidth = lineMax - lineMin
+  if (lineWidth <= 0) return 0.5
+
+  const expectedStart = lineMin + (start / sourceLen) * lineWidth
+  const expectedEnd = lineMin + (end / sourceLen) * lineWidth
+  const actualStart = Math.max(lineMin, hitRange.minX)
+  const actualEnd = Math.min(lineMax, hitRange.maxX)
+  const startErr = Math.abs(expectedStart - actualStart) / lineWidth
+  const endErr = Math.abs(expectedEnd - actualEnd) / lineWidth
+  return clamp01(1 - (startErr + endErr))
+}
+
+function clamp01(n) {
+  return Math.max(0, Math.min(1, Number.isFinite(n) ? n : 0))
 }
 
 function stripTex(tex) {
@@ -819,35 +951,52 @@ function fuzzySubstringMatch(text, query) {
 
 /** Map a position in stripped text back to position in original source. */
 function mapStrippedToSource(source, strippedStart, strippedEnd) {
-  const stripped = stripTex(source)
-  // Build character map: stripped index → source index
-  // This is approximate — we re-strip and align
-  let si = 0 // source index
-  let di = 0 // stripped index
-  const strippedChars = stripTex(source)
+  const { text, map } = stripTexWithSourceMap(source)
+  const start = Math.max(0, Math.min(strippedStart, text.length - 1))
+  const end = Math.max(start + 1, Math.min(strippedEnd, text.length))
+  if (map.length === 0 || start >= map.length) return null
 
-  // Simple approach: find the stripped substring, then search for it in source
-  const matchedText = stripped.slice(strippedStart, strippedEnd)
-  // Find this text in the source (allowing tex commands interspersed)
-  const pattern = matchedText.split('').map(c =>
-    c === ' ' ? '\\s+(?:\\\\[a-zA-Z]+(?:\\{[^}]*\\})?\\s*)*' : escapeRegex(c)
-  ).join('(?:\\\\[a-zA-Z]+(?:\\{[^}]*\\})?)*\\s*')
-
-  try {
-    const re = new RegExp(pattern, 'i')
-    const m = source.match(re)
-    if (m) {
-      return { start: m.index, end: m.index + m[0].length }
-    }
-  } catch {
-    // Regex too complex — fall back to proportional mapping
-  }
-
-  // Proportional fallback
-  const ratio = source.length / Math.max(1, stripped.length)
-  return { start: Math.round(strippedStart * ratio), end: Math.round(strippedEnd * ratio) }
+  const sourceStart = map[start]
+  const sourceEnd = map[Math.min(end - 1, map.length - 1)] + 1
+  if (sourceEnd <= sourceStart) return null
+  return { start: sourceStart, end: sourceEnd }
 }
 
-function escapeRegex(s) {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+function stripTexWithSourceMap(source) {
+  let text = ''
+  const map = []
+
+  const push = (ch, idx) => {
+    if (/\s/.test(ch)) {
+      if (text.length === 0 || text.endsWith(' ')) return
+      text += ' '
+      map.push(idx)
+      return
+    }
+    text += ch
+    map.push(idx)
+  }
+
+  for (let i = 0; i < source.length; i++) {
+    const ch = source[i]
+    if (ch === '\\') {
+      i++
+      while (i < source.length && /[a-zA-Z]/.test(source[i])) i++
+      i--
+      continue
+    }
+    if (/[{}$^_~]/.test(ch)) continue
+    push(ch, i)
+  }
+
+  while (text.startsWith(' ')) {
+    text = text.slice(1)
+    map.shift()
+  }
+  while (text.endsWith(' ')) {
+    text = text.slice(0, -1)
+    map.pop()
+  }
+
+  return { text, map }
 }

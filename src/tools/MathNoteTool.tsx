@@ -1,10 +1,15 @@
 import { StateNode, createShapeId, DefaultColorStyle, type JsonObject } from 'tldraw'
 import { currentDocumentInfo } from '../svgDocumentLoader'
-import { getSourceAnchor, canvasToPdf, type SourceAnchor } from '../synctexAnchor'
+import { annotationSourceAnchorAtCanvasPoint, type AnnotationSourceAnchor } from '../annotationSourceAnchor'
 import { NOTE_COLORS } from '../shapes/MathNoteShape'
 
 const NOTE_W = 200
 const NOTE_H = 50
+
+function annotationAnchorLabel(anchor: AnnotationSourceAnchor): string {
+  if (anchor.anchored === false) return anchor.reason
+  return `${anchor.file}:${anchor.line}`
+}
 
 export class MathNoteTool extends StateNode {
   static override id = 'math-note'
@@ -60,17 +65,9 @@ export class MathNoteTool extends StateNode {
     const id = createShapeId()
 
     // Try to get source anchor for this position
-    let sourceAnchor: SourceAnchor | null = null
+    let sourceAnchor: AnnotationSourceAnchor | null = null
     if (currentDocumentInfo) {
-      const pdfPos = canvasToPdf(point.x, point.y, currentDocumentInfo.pages)
-      if (pdfPos) {
-        sourceAnchor = await getSourceAnchor(
-          currentDocumentInfo.name,
-          pdfPos.page,
-          pdfPos.x,
-          pdfPos.y
-        )
-      }
+      sourceAnchor = await annotationSourceAnchorAtCanvasPoint(editor, currentDocumentInfo, point.x, point.y)
     }
 
     editor.createShape({
@@ -89,7 +86,7 @@ export class MathNoteTool extends StateNode {
 
     // Log anchor for debugging
     if (sourceAnchor) {
-      console.log(`[SyncTeX] Note anchored to ${sourceAnchor.file}:${sourceAnchor.line}`)
+      console.log(`[Anchor] Note anchored to ${annotationAnchorLabel(sourceAnchor)}`)
     }
 
     editor.setEditingShape(id)

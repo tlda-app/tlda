@@ -23,6 +23,7 @@ if (!process.argv.includes('--i-am-tlda-cli')) {
   process.exit(1)
 }
 
+import './lib/observability/otel-node.mjs'
 import express from 'express'
 import { createServer } from 'http'
 import { createServer as createHttpsServer } from 'https'
@@ -106,8 +107,23 @@ import {
   setRecipientAttachmentState,
 } from '../shared/inbox-reference-materialization.mjs'
 import { realizeProjectMarkdownArtifact } from './lib/project-artifact-materializer.mjs'
+import { createBackendLogger } from './lib/observability/logger.mjs'
+import {
+  createControlPlaneTraceStore,
+  createTraceId,
+  renderControlPlaneTraceMarkdown,
+  traceIdFromFleetEvent,
+} from './lib/observability/control-plane-trace.mjs'
+import { createNotificationAttemptRecorder } from './lib/notification-attempts.mjs'
+import { daemonEventFailureIncident } from './lib/daemon-event-failures.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
+const fleetWsLog = createBackendLogger('fleet-ws')
+const notificationAttemptLog = createBackendLogger('notification-attempts')
+const terminalBridgeLog = createBackendLogger('terminal-bridge')
+const syncSignalLog = createBackendLogger('sync-signals')
+const daemonEventLog = createBackendLogger('daemon-events')
+const controlPlaneTraces = createControlPlaneTraceStore()
 
 const serverIsolation = resolveServerIsolation({ env: process.env, scriptPath: fileURLToPath(import.meta.url) })
 if (serverIsolation.refuseReason) {
@@ -133,7 +149,7 @@ const PROJECTS_DIR = process.env.PROJECTS_DIR || join(__dirname, 'projects')
 
 // Initialize stores
 initProjectStore(PROJECTS_DIR)
-initSyncRooms(PROJECTS_DIR)
+initSyncRooms(PROJECTS_DIR, { onSignalFailure: reportSyncSignalFailure })
 resetStaleBuildStates()
 
 // Fleet store (SQLite-backed agent registry + chat).
@@ -1012,7 +1028,107 @@ function broadcastFleet(msg) {
   }
 }
 function broadcastEvent(type, data) {
+  const traceId = traceIdFromFleetEvent(data)
+  if (traceId) {
+    controlPlaneTraces.append({
+      trace_id: traceId,
+      component: 'server',
+      operation: `broadcast.${type}`,
+      status: 'queued',
+      detail: {
+        event_type: data?.type,
+        event_id: data?.id || data?.event_id,
+        from: data?.from_id || data?.from,
+        to: data?.to_id || data?.to,
+      },
+    })
+  }
   broadcastFleet({ event: type, data })
+}
+
+function compactObject(obj = {}) {
+  const out = {}
+  for (const [key, value] of Object.entries(obj)) {
+    if (value !== undefined && value !== null) out[key] = value
+  }
+  return out
+}
+
+function describeFleetWsPeer(ws) {
+  const parts = []
+  if (ws?._tldaAgentId) parts.push(`agent=${ws._tldaAgentId}`)
+  if (ws?._tldaHumanId) parts.push(`human=${ws._tldaHumanId}`)
+  if (ws?._agentFilter) parts.push(`filter=${ws._agentFilter}`)
+  if (ws?._connId) parts.push(`conn=${ws._connId}`)
+  return parts.length ? parts.join(' ') : 'anonymous fleet ws'
+}
+
+async function surfaceFleetWsError(ws, msg, err) {
+  try {
+    const type = msg?.type || 'unparsed'
+    const requestId = msg?.id || null
+    const peer = describeFleetWsPeer(ws)
+    const message = err instanceof Error ? err.message : String(err)
+    const stack = err instanceof Error && err.stack ? err.stack : message
+    let rpcReplyFailure = null
+
+    if (requestId && !msg?._fleetReplied && ws?.readyState === 1) {
+      try {
+        ws.send(JSON.stringify({ id: requestId, error: { message } }))
+        msg._fleetReplied = true
+      } catch (sendErr) {
+        rpcReplyFailure = sendErr?.stack || sendErr?.message || String(sendErr)
+      }
+    }
+
+    const fullStack = rpcReplyFailure
+      ? `${stack}\n\nRPC error reply failed:\n${rpcReplyFailure}`
+      : stack
+    fleetWsLog.error({ peer, type, requestId, stack: fullStack }, 'fleet WS message failed')
+
+    if (!fleetStore) return
+    const text = [
+      '**Fleet runtime error**',
+      `peer: \`${peer}\``,
+      `message type: \`${type}\`${requestId ? `, request: \`${requestId}\`` : ''}`,
+      '',
+      '```',
+      fullStack.slice(0, 4000),
+      '```',
+    ].join('\n')
+    const event = await fleetStore.chat('fleet:tlda', SERVER_OWNER_ID, text, {
+      type: 'fleet_runtime_error',
+      wsPeer: peer,
+      messageType: type,
+      requestId,
+    })
+    if (event) {
+      broadcastEvent('fleet-event', {
+        type: 'chat',
+        from: 'fleet:tlda',
+        to: SERVER_OWNER_ID,
+        id: event.id,
+        text,
+        event_id: event.id,
+        metadata: event.metadata || null,
+      })
+    }
+  } catch (reportErr) {
+    fleetWsLog.error({
+      originalError: err?.stack || err?.message || String(err),
+      reportingError: reportErr?.stack || reportErr?.message || String(reportErr),
+    }, 'fleet WS error reporting failed')
+  }
+}
+
+async function handleFleetWsFrame(ws, raw) {
+  let msg = null
+  try {
+    msg = JSON.parse(raw.toString())
+    await handleFleetWsMessage(ws, msg)
+  } catch (err) {
+    await surfaceFleetWsError(ws, msg, err)
+  }
 }
 
 function hasOpenFleetSocketForAgent(agentId, exceptWs = null) {
@@ -1661,6 +1777,88 @@ function deliverTldaFeedbackChat({ from, to, text, metadata }) {
     .catch(e => console.error(`[fleet-feedback] delivery failed: ${e.message}`))
 }
 
+async function reportFleetIncident({ severity = 'warning', component, operation, actors, impact, evidence, error }) {
+  const text = [
+    `**Fleet incident: ${component || 'unknown'}/${operation || 'unknown'}**`,
+    '',
+    `Severity: \`${severity}\``,
+    `Impact: ${impact || 'unknown'}`,
+    '',
+    '```json',
+    JSON.stringify(compactObject({ actors, evidence, error }), null, 2).slice(0, 3000),
+    '```',
+  ].join('\n')
+  const event = await fleetStore.chat('fleet:tlda', SERVER_OWNER_ID, text, {
+    type: 'fleet_incident',
+    severity,
+    component,
+    operation,
+    actors,
+    impact,
+    evidence,
+    error,
+  })
+  if (event) {
+    broadcastEvent('fleet-event', {
+      type: 'chat',
+      from: 'fleet:tlda',
+      to: SERVER_OWNER_ID,
+      id: event.id,
+      text,
+      event_id: event.id,
+      metadata: event.metadata || null,
+    })
+  }
+  return event
+}
+
+async function reportSyncSignalFailure(failure) {
+  syncSignalLog.warn(failure, 'sync signal delivery failed')
+  try {
+    await reportFleetIncident({
+      severity: 'warning',
+      component: 'sync-signals',
+      operation: failure.operation,
+      actors: {
+        docName: failure.docName,
+        sessionId: failure.sessionId || null,
+      },
+      impact: `Transient sync signal ${failure.key || 'unknown'} failed during ${failure.operation || 'unknown operation'}.`,
+      evidence: {
+        key: failure.key || null,
+        docName: failure.docName || null,
+        sessionId: failure.sessionId || null,
+        timestamp: failure.timestamp || null,
+      },
+      error: failure.error || null,
+    })
+  } catch (err) {
+    syncSignalLog.error({
+      failure,
+      reportingError: err?.stack || err?.message || String(err),
+    }, 'sync signal incident reporting failed')
+  }
+}
+
+async function reportDaemonEventFailure(msg, operation, error) {
+  const incident = daemonEventFailureIncident(msg, operation, error)
+  daemonEventLog.warn({ incident }, 'daemon event delivery failed')
+  try {
+    await reportFleetIncident(incident)
+  } catch (err) {
+    daemonEventLog.error({
+      incident,
+      reportingError: err?.stack || err?.message || String(err),
+    }, 'daemon event incident reporting failed')
+  }
+}
+
+const notificationAttempts = createNotificationAttemptRecorder({
+  fleetStore,
+  logger: notificationAttemptLog,
+  reportIncident: reportFleetIncident,
+})
+
 // When a project is created or its sourceDir changes, push the new
 // project list to all connected fleet-daemons so they can start
 // watching its source files, and tell browsers to refresh their project
@@ -2253,6 +2451,34 @@ app.get('/api/auth/me', (req, res) => {
 // gets forwarded here automatically. See project guidance on client logging.
 const CLIENT_LOG_FILE = join(homedir(), '.config', 'tlda', 'client.log')
 const CLIENT_PROFILE_FILE = join(homedir(), '.config', 'tlda', 'client-profile.jsonl')
+const LIVE_PERF_MAX_SAMPLES = 250
+const livePerfSamples = []
+const livePerfByDoc = new Map()
+
+function recordLivePerfEntry(entry) {
+  const data = entry?.data && typeof entry.data === 'object' ? entry.data : {}
+  const docName = data.document?.name || data.doc || null
+  const sample = {
+    ts: entry.ts || new Date().toISOString(),
+    sessionId: data.sessionId || null,
+    doc: docName,
+    reason: data.reason || null,
+    data,
+  }
+  livePerfSamples.push(sample)
+  if (livePerfSamples.length > LIVE_PERF_MAX_SAMPLES) {
+    livePerfSamples.splice(0, livePerfSamples.length - LIVE_PERF_MAX_SAMPLES)
+  }
+  if (docName) {
+    const docSamples = livePerfByDoc.get(docName) || []
+    docSamples.push(sample)
+    if (docSamples.length > LIVE_PERF_MAX_SAMPLES) {
+      docSamples.splice(0, docSamples.length - LIVE_PERF_MAX_SAMPLES)
+    }
+    livePerfByDoc.set(docName, docSamples)
+  }
+}
+
 function appendClientLogEntry(entry) {
   const obj = {
     ts: entry.ts || new Date().toISOString(),
@@ -2281,6 +2507,7 @@ app.post('/api/log', (req, res) => {
       ...(e.data !== undefined ? { data: e.data } : {}),
       ...(e.session ? { session: e.session } : {}),
     }
+    if (obj.ns === 'live-perf') recordLivePerfEntry(obj)
     lines.push(JSON.stringify(obj))
   }
   if (lines.length) {
@@ -2289,6 +2516,40 @@ app.post('/api/log', (req, res) => {
     })
   }
   res.json({ ok: true, n: lines.length })
+})
+
+app.get('/api/diagnostics/live-perf', requireRead, (req, res) => {
+  const doc = typeof req.query.doc === 'string' && req.query.doc ? req.query.doc : null
+  const limitRaw = Number(req.query.limit || 50)
+  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(250, Math.trunc(limitRaw))) : 50
+  const source = doc ? (livePerfByDoc.get(doc) || []) : livePerfSamples
+  const samples = source.slice(-limit)
+  const docs = {}
+  for (const sample of livePerfSamples) {
+    const key = sample.doc || 'unknown'
+    docs[key] = (docs[key] || 0) + 1
+  }
+  res.json({
+    ok: true,
+    count: samples.length,
+    retained: livePerfSamples.length,
+    docs,
+    samples,
+  })
+})
+
+app.get('/api/diagnostics/control-plane-traces', requireRead, (req, res) => {
+  const traceId = typeof req.query.trace_id === 'string' && req.query.trace_id ? req.query.trace_id : null
+  const limitRaw = Number(req.query.limit || 50)
+  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(250, Math.trunc(limitRaw))) : 50
+  res.json(controlPlaneTraces.snapshot({ traceId, limit }))
+})
+
+app.get('/api/diagnostics/control-plane-traces.md', requireRead, (req, res) => {
+  const traceId = typeof req.query.trace_id === 'string' && req.query.trace_id ? req.query.trace_id : null
+  const limitRaw = Number(req.query.limit || 50)
+  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(250, Math.trunc(limitRaw))) : 50
+  res.type('text/markdown').send(renderControlPlaneTraceMarkdown(controlPlaneTraces.snapshot({ traceId, limit })))
 })
 
 app.post('/api/client-profile', (req, res) => {
@@ -3588,6 +3849,64 @@ const terminalWatchers = new Map() // agentId -> Set<ws>
 // be told the size on connect.
 const terminalSizes = new Map() // agentId -> { cols, rows }
 
+function terminalAgentContext(agent) {
+  return compactObject({
+    agentId: agent?.id,
+    label: agent?.friendly_name || agent?.id,
+    tmuxSession: agent?.tmux_session,
+    machineId: agent?.machine_id,
+    envName: agent?.env_name,
+  })
+}
+
+function sendTerminalFrame(ws, frame, { agentId, operation }) {
+  if (ws?.readyState !== 1) return false
+  try {
+    ws.send(JSON.stringify(frame))
+    return true
+  } catch (err) {
+    terminalBridgeLog.warn({
+      agentId,
+      operation,
+      error: err?.stack || err?.message || String(err),
+    }, 'terminal browser frame send failed')
+    return false
+  }
+}
+
+async function reportTerminalBridgeIncident({ operation, agent, error, browserNotified = false, evidence = {} }) {
+  const context = terminalAgentContext(agent)
+  const errText = error?.stack || error?.message || String(error)
+  terminalBridgeLog.warn({
+    operation,
+    ...context,
+    browserNotified,
+    error: errText,
+    evidence,
+  }, 'terminal bridge operation failed')
+  try {
+    await reportFleetIncident({
+      severity: 'warning',
+      component: 'terminal-bridge',
+      operation,
+      actors: context,
+      impact: `Terminal ${operation} failed for ${context.label || context.agentId || 'unknown agent'}.`,
+      evidence: {
+        ...evidence,
+        browserNotified,
+      },
+      error: errText,
+    })
+  } catch (reportErr) {
+    terminalBridgeLog.error({
+      operation,
+      ...context,
+      originalError: errText,
+      reportingError: reportErr?.stack || reportErr?.message || String(reportErr),
+    }, 'terminal bridge incident reporting failed')
+  }
+}
+
 function fanOutTerminalSize(agentId, cols, rows) {
   terminalSizes.set(agentId, { cols, rows })
   const set = terminalWatchers.get(agentId)
@@ -3775,7 +4094,19 @@ server.on('upgrade', async (req, socket, head) => {
             await sendRpc(agentDaemonAddress(agent), 'terminal-resize', {
               tmux_session: agent.tmux_session, cols: msg.cols, rows: msg.rows,
             })
-          } catch {}
+          } catch (e) {
+            const browserNotified = sendTerminalFrame(ws, {
+              type: 'error',
+              message: `terminal resize failed: ${e.message}`,
+            }, { agentId: agent.id, operation: 'terminal-resize' })
+            await reportTerminalBridgeIncident({
+              operation: 'terminal-resize',
+              agent,
+              error: e,
+              browserNotified,
+              evidence: { cols: msg.cols, rows: msg.rows },
+            })
+          }
         }
       })
 
@@ -3790,7 +4121,14 @@ server.on('upgrade', async (req, socket, head) => {
             await sendRpc(agentDaemonAddress(agent), 'stop-terminal-watch', {
               tmux_session: agent.tmux_session,
             })
-          } catch {}
+          } catch (e) {
+            await reportTerminalBridgeIncident({
+              operation: 'stop-terminal-watch',
+              agent,
+              error: e,
+              evidence: { remainingWatchers: 0 },
+            })
+          }
         }
       }
       ws.on('close', cleanup)
@@ -3904,10 +4242,7 @@ server.on('upgrade', async (req, socket, head) => {
       }
 
       ws.on('message', (raw) => {
-        try {
-          const msg = JSON.parse(raw.toString())
-          handleFleetWsMessage(ws, msg)
-        } catch {}
+        handleFleetWsFrame(ws, raw)
       })
       ws.on('close', (code, reason) => {
         logWsClose('fleet', ws, code, reason?.toString?.() || '')
@@ -4001,7 +4336,10 @@ server.on('upgrade', async (req, socket, head) => {
 async function handleFleetWsMessage(ws, msg) {
   const { id, type } = msg
   const reply = (result) => {
-    if (id) ws.send(JSON.stringify({ id, result }))
+    if (id) {
+      ws.send(JSON.stringify({ id, result }))
+      msg._fleetReplied = true
+    }
   }
   const error = (err) => {
     if (!id) return
@@ -4015,12 +4353,28 @@ async function handleFleetWsMessage(ws, msg) {
           ...(err.payload ? { payload: err.payload } : {}),
         },
       }))
+      msg._fleetReplied = true
     } else {
       ws.send(JSON.stringify({ id, error: err }))
+      msg._fleetReplied = true
     }
   }
 
   if (!fleetStore) { error('fleet store unavailable'); return }
+
+  if (type === 'notification-attempt') {
+    const actor = ws._tldaAgentId || ws._tldaHumanId || msg.agentId || null
+    const result = await notificationAttempts.record({
+      ...msg.attempt,
+      agentId: msg.attempt?.agentId || actor,
+      evidence: {
+        ...(msg.attempt?.evidence || {}),
+        reportingPeer: describeFleetWsPeer(ws),
+      },
+    })
+    reply(result)
+    return
+  }
 
   // ---- Timer countdown widget (timer-set / timer-fire / timer-cancel) ----
   // Bridges the `timer` event the viewer renders as a live ticking bubble. Used
@@ -4155,6 +4509,15 @@ async function handleFleetWsMessage(ws, msg) {
     }
     try {
       fleetStore.upsertAgent(agent)
+      if (isShellReservation && !agent.human) {
+        fleetStore.ensureDefaultSubscription?.(agent.id)
+      }
+      for (const row of fleetStore.getSubscriptionsByOwner?.(agent.id) || []) {
+        const docMatch = String(row.query || '').match(/^doc:([^\s]+)$/i)
+        if (row.adapter === 'document_monitor' && docMatch) {
+          tldaFeedback.subscribe(row.owner, docMatch[1], deliverTldaFeedbackChat)
+        }
+      }
     } catch (e) {
       if (e.message?.includes('already taken')) {
         error(e.message)
@@ -4485,14 +4848,24 @@ async function handleFleetWsMessage(ws, msg) {
   // Per-agent throttle so a repeatedly-failing wake doesn't spam Skip's chat.
   const _wakeFailWarned = new Map() // agentId → last-warned ms
   const WAKE_FAIL_WARN_MS = 5 * 60 * 1000
-  function requestWake(agentId, nudgeText = null, asker = null) {
+  function requestWake(agentId, nudgeText = null, asker = null, traceId = null) {
     const agent = fleetStore.getAgent?.(agentId)
     if (!agent || agent.dead || agent.human) return
     const prev = _wakeQueue.get(agentId)
     _wakeQueue.set(agentId, {
       nudgeText: nudgeText || prev?.nudgeText || null,
       asker: asker || prev?.asker || null,
+      traceId: traceId || prev?.traceId || null,
     })
+    if (traceId) {
+      controlPlaneTraces.append({
+        trace_id: traceId,
+        component: 'server',
+        operation: 'wake.request',
+        status: 'queued',
+        detail: { agent: agentId, asker },
+      })
+    }
     if (!_wakeDraining) drainWakeQueue()
   }
 
@@ -4503,12 +4876,44 @@ async function handleFleetWsMessage(ws, msg) {
       _wakeQueue.delete(agentId)
       const nudgeText = wakeEntry?.nudgeText || null
       const asker = wakeEntry?.asker || null
+      const traceId = wakeEntry?.traceId || null
       const agent = fleetStore.getAgent?.(agentId)
-      if (!agent || agent.dead || agent.human) continue
+      if (!agent || agent.dead || agent.human) {
+        if (traceId) {
+          controlPlaneTraces.append({
+            trace_id: traceId,
+            component: 'server',
+            operation: 'wake.skip',
+            status: 'ignored',
+            detail: { agent: agentId, reason: !agent ? 'missing-agent' : agent.dead ? 'dead' : 'human' },
+          })
+        }
+        continue
+      }
       const daemonKeys = [...daemonConnections.keys()]
-      if (daemonKeys.length === 0) continue
+      if (daemonKeys.length === 0) {
+        if (traceId) {
+          controlPlaneTraces.append({
+            trace_id: traceId,
+            component: 'server',
+            operation: 'wake.defer',
+            status: 'no-daemon',
+            detail: { agent: agentId },
+          })
+        }
+        continue
+      }
       const daemonKey = agent.machine_id && agent.env_name ? agentDaemonAddress(agent) : daemonKeys[0]
       try {
+        if (traceId) {
+          controlPlaneTraces.append({
+            trace_id: traceId,
+            component: 'server',
+            operation: 'wake.route',
+            status: 'started',
+            detail: { agent: agentId, daemon: daemonKey },
+          })
+        }
         const machineId = agent.machine_id
         if (!machineId) throw new Error(`agent ${agent.friendly_name || agentId} has no machine_id; cannot route wake/respawn`)
         const ownerDaemon = daemonConnections.get(daemonKey)
@@ -4535,12 +4940,30 @@ async function handleFleetWsMessage(ws, msg) {
             }
         spawnLibrarian.observeLiveness({ ...liveness, agent_id: liveness.agent_id || agentId })
         const decision = spawnLibrarian.decideWake(agent, { ...liveness, agent_id: liveness.agent_id || agentId }, { serverAlive })
+        if (traceId) {
+          controlPlaneTraces.append({
+            trace_id: traceId,
+            component: 'server',
+            operation: 'wake.decision',
+            status: decision.action,
+            detail: { agent: agentId, liveness: liveness.state },
+          })
+        }
         if (decision.action === 'deliver') {
           await sendWakeNudge(daemonKey, agent, agent.tmux_session, nudgeText, 'deliver')
+          if (traceId) {
+            controlPlaneTraces.append({
+              trace_id: traceId,
+              component: 'server',
+              operation: 'wake.nudge',
+              status: 'sent',
+              detail: { agent: agentId, mode: 'deliver' },
+            })
+          }
           continue
         }
         if (decision.action === 'queue') {
-          setTimeout(() => requestWake(agentId, nudgeText, asker), 2000).unref?.()
+          setTimeout(() => requestWake(agentId, nudgeText, asker, traceId), 2000).unref?.()
           continue
         }
         if (decision.action === 'hold') continue
@@ -4568,6 +4991,15 @@ async function handleFleetWsMessage(ws, msg) {
           throw new Error(spawnResult?.error || spawnResult?.reason || 'daemon returned ok:false with no reason')
         }
         await sendWakeNudge(daemonKey, agent, spawnResult?.tmux_session || agent.tmux_session, nudgeText, 'post-respawn')
+        if (traceId) {
+          controlPlaneTraces.append({
+            trace_id: traceId,
+            component: 'server',
+            operation: 'wake.respawn',
+            status: 'sent',
+            detail: { agent: agentId, daemon: daemonKey },
+          })
+        }
         const wakeTs = new Date().toISOString()
         await measureHotOp('fleet-ws lifecycle wake insert', `agent=${agentId}`, () => fleetStore._insertEventRecord({
           type: 'lifecycle',
@@ -4578,6 +5010,16 @@ async function handleFleetWsMessage(ws, msg) {
           unread: false,
         }, { notify: false }))
       } catch (e) {
+        if (traceId) {
+          controlPlaneTraces.append({
+            trace_id: traceId,
+            component: 'server',
+            operation: 'wake.error',
+            status: 'failed',
+            detail: { agent: agentId },
+            error: e.message,
+          })
+        }
         console.warn(`[respawn] failed for ${agentId}: ${e.message}`)
         // Convergent, visible signal on the roster (not just a chat) so a failed
         // wake shows up in the UI, not invisibly.
@@ -4692,12 +5134,42 @@ async function handleFleetWsMessage(ws, msg) {
   if (type === 'chat') {
     const { message: text, to: rawTo, from: rawFrom, metadata, inline_attachments, attachments, cc, context, preambleRef, source } = msg
     if (!rawTo || !text) { error('missing to or message'); return }
+    const traceId = metadata?.trace_id || msg.trace_id || (msg._tempId ? `chat:${msg._tempId}` : createTraceId('chat'))
+    controlPlaneTraces.append({
+      trace_id: traceId,
+      component: 'server',
+      operation: 'chat.ingress',
+      status: 'received',
+      detail: { from: rawFrom, to: rawTo, temp_id: msg._tempId },
+    })
     // Idempotency: if the client retries with the same _tempId, return the
     // previously inserted event IDs instead of creating duplicates.
     if (msg._tempId && _chatTempIds.has(msg._tempId)) {
       const prev = _chatTempIds.get(msg._tempId)
-      reply({ ok: true, event_ids: prev.eventIds, recipients: prev.recipients, receipts: prev.receipts || [], _tempId: msg._tempId })
+      controlPlaneTraces.append({
+        trace_id: traceId,
+        component: 'server',
+        operation: 'chat.idempotency',
+        status: 'memory-hit',
+        detail: { temp_id: msg._tempId, event_ids: prev.eventIds },
+      })
+      reply({ ok: true, event_ids: prev.eventIds, recipients: prev.recipients, receipts: prev.receipts || [], _tempId: msg._tempId, trace_id: traceId })
       return
+    }
+    if (msg._tempId) {
+      const prev = fleetStore.getChatTempIdResult?.(msg._tempId)
+      if (prev) {
+        _chatTempIds.set(msg._tempId, { ...prev, ts: Date.now() })
+        controlPlaneTraces.append({
+          trace_id: traceId,
+          component: 'server',
+          operation: 'chat.idempotency',
+          status: 'db-hit',
+          detail: { temp_id: msg._tempId, event_ids: prev.eventIds },
+        })
+        reply({ ok: true, event_ids: prev.eventIds, recipients: prev.recipients, receipts: prev.receipts || [], _tempId: msg._tempId, trace_id: traceId })
+        return
+      }
     }
     const resolveSingle = (id) => {
       if (id === SERVER_OWNER_NAME) return SERVER_OWNER_ID
@@ -4765,6 +5237,13 @@ async function handleFleetWsMessage(ws, msg) {
     const receipts = []
     const wakeRequests = []
     const basePriority = normalizeMessagePriority(metadata?.priority || parsePriorityPhrase(text) || (from === SERVER_OWNER_ID ? 'urgent' : 'normal'))
+    controlPlaneTraces.append({
+      trace_id: traceId,
+      component: 'server',
+      operation: 'chat.resolve',
+      status: 'matched',
+      detail: { from, to: rawTo, recipients },
+    })
     for (const to of recipients) {
       // Resolve wiretaps per recipient — tap labels are matched against this `to`.
       const wiretapRecipients = fleetStore.resolveWiretaps(from, to, 'chat')
@@ -4777,6 +5256,7 @@ async function handleFleetWsMessage(ws, msg) {
       let combinedMetadata = {
         ...(metadata || {}),
         priority: basePriority,
+        trace_id: traceId,
         inbox_delivery: deliveryDecision.delivery,
         inbox_status: inboxStatus,
         delivery_channel: deliveryChannel,
@@ -4805,6 +5285,13 @@ async function handleFleetWsMessage(ws, msg) {
         unread: true,
       }, { notify: false }))
       const eventId = Number(inserted.id)
+      controlPlaneTraces.append({
+        trace_id: traceId,
+        component: 'fleet-store',
+        operation: 'chat.insert',
+        status: 'stored',
+        detail: { event_id: eventId, from, to },
+      })
       eventIds.push(eventId)
       receipts.push({
         recipient: to,
@@ -4816,12 +5303,30 @@ async function handleFleetWsMessage(ws, msg) {
         wokeRecipient: deliveryDecision.wokeRecipient,
         notifyBy: deliveryDecision.notifyBy,
       })
+      if (recipientAgent && !recipientAgent.human && deliveryChannel === 'channel' && !hasOpenFleetSocketForAgent(to)) {
+        await notificationAttempts.record({
+          agentId: to,
+          reason: 'chat',
+          sourceEventId: eventId,
+          priority: basePriority,
+          intendedSurface: 'channel',
+          policy: deliveryDecision.delivery === 'batched' ? 'batched' : inboxStatus,
+          outcome: 'deferred',
+          evidence: {
+            inboxStatus,
+            delivery: deliveryDecision.delivery,
+            activeChannelSocket: false,
+          },
+          nextAction: deliveryDecision.notifyBy ? 'retry-at' : 'retry-on-reconnect',
+          nextAttemptAt: deliveryDecision.notifyBy || null,
+        })
+      }
       // Echo _tempId on the broadcast so a client whose WS reply was lost during
       // a hiccup can still bind this echo to its orphaned optimistic entry
       // (the reply, not the DB row, is what normally carries _tempId).
       insertedEvents.push({ id: eventId, type: 'chat', timestamp: ts, from_id: from, to_id: to, text, metadata: Object.keys(combinedMetadata).length ? combinedMetadata : null, materializableAttachments, ...(msg._tempId ? { _tempId: msg._tempId } : {}) })
       if (deliveryDecision.delivery === 'notified') {
-        wakeRequests.push({ to, text: chatWakeText(text, to), asker: from })
+        wakeRequests.push({ to, text: chatWakeText(text, to), asker: from, traceId })
       } else if (deliveryDecision.delivery === 'batched' && deliveryDecision.notifyBy) {
         const delay = Math.max(0, Date.parse(deliveryDecision.notifyBy) - Date.now())
         setTimeout(() => {
@@ -4833,7 +5338,7 @@ async function handleFleetWsMessage(ws, msg) {
               event: 'batched message ready',
               preview: previewForWake(text),
               action: 'read and respond',
-            }), from)
+            }), from, traceId)
           }
         }, delay)
       }
@@ -4841,7 +5346,7 @@ async function handleFleetWsMessage(ws, msg) {
     // Cache _tempId for idempotent retries
     if (msg._tempId) _chatTempIds.set(msg._tempId, { eventIds, recipients, receipts, ts: Date.now() })
     // Reply FIRST so the client can reconcile optimistic events before broadcasts arrive.
-    reply({ ok: true, event_ids: eventIds, recipients, receipts, _tempId: msg._tempId || null })
+    reply({ ok: true, event_ids: eventIds, recipients, receipts, _tempId: msg._tempId || null, trace_id: traceId })
     for (const ev of insertedEvents) {
       const { materializableAttachments: _materializableAttachments, ...broadcastEv } = ev
       broadcastEvent('fleet-event', broadcastEv)
@@ -4859,7 +5364,7 @@ async function handleFleetWsMessage(ws, msg) {
       const recipient = fleetStore.getAgent?.(to)
       if (recipient && !recipient.human) spawnLibrarian.observeDelivery(to, deliveredAt)
     }
-    for (const wake of wakeRequests) requestWake(wake.to, wake.text, wake.asker)
+    for (const wake of wakeRequests) requestWake(wake.to, wake.text, wake.asker, wake.traceId)
 
     // Plan mode approval routing: if Skip sends an affirmative/negative and
     // there's a pending plan approval for the targeted agent (or any agent),
@@ -4953,6 +5458,14 @@ async function handleFleetWsMessage(ws, msg) {
   if (type === 'delegate') {
     const { agent: agentQuery, description, message: taskMsg, success_criteria, blocked_by, from, requires_approval, allow_pending_agent } = msg
     if (!agentQuery || !description) { error('missing agent or description'); return }
+    const traceId = msg.trace_id || createTraceId('delegate')
+    controlPlaneTraces.append({
+      trace_id: traceId,
+      component: 'server',
+      operation: 'delegate.ingress',
+      status: 'received',
+      detail: { from, agent: agentQuery },
+    })
     const resolved = fleetStore.findAgent(agentQuery) || (
       allow_pending_agent && typeof agentQuery === 'string' && agentQuery.startsWith('fleet:')
         ? { id: agentQuery, friendly_name: null }
@@ -4962,6 +5475,7 @@ async function handleFleetWsMessage(ws, msg) {
     const taskId = `${resolved.id.slice(0, 10)}-${Date.now().toString(36)}`
     const now = new Date().toISOString()
     const metadata = {
+      trace_id: traceId,
       ...(requires_approval ? { requires_approval: true } : {}),
       ...(allow_pending_agent && !fleetStore.findAgent(agentQuery) ? { pending_spawn_delegate: true } : {}),
     }
@@ -4977,15 +5491,43 @@ async function handleFleetWsMessage(ws, msg) {
     }
     fleetStore.upsertTask(task)
     const fromAgent = from ? fleetStore.findAgent(from) : null
-    await fleetStore.delegate?.(from, resolved.id, taskId, description, {
+    const delegateEvent = await fleetStore.delegate?.(from, resolved.id, taskId, description, {
+      trace_id: traceId,
       fromLabel: fromAgent?.friendly_name || from || '',
       toLabel: resolved.friendly_name || resolved.id,
       criteria: success_criteria || [],
       message: taskMsg || '',
     })
+    controlPlaneTraces.append({
+      trace_id: traceId,
+      component: 'fleet-store',
+      operation: 'delegate.insert',
+      status: 'stored',
+      detail: { task_id: taskId, event_id: delegateEvent?.id, from, to: resolved.id },
+    })
+    const targetAgent = fleetStore.getAgent?.(resolved.id)
+    const deliveryChannel = normalizeDeliveryChannel(targetAgent?.metadata?.deliveryChannel)
+    if (targetAgent && !targetAgent.human && deliveryChannel === 'channel' && !hasOpenFleetSocketForAgent(resolved.id)) {
+      const inboxStatus = normalizeInboxStatus(targetAgent?.metadata?.inboxStatus)
+      await notificationAttempts.record({
+        agentId: resolved.id,
+        reason: 'delegate',
+        sourceEventId: delegateEvent?.id || null,
+        sourceTaskId: taskId,
+        priority: 'urgent',
+        intendedSurface: 'channel',
+        policy: inboxStatus,
+        outcome: 'deferred',
+        evidence: {
+          inboxStatus,
+          activeChannelSocket: false,
+        },
+        nextAction: 'retry-on-reconnect',
+      })
+    }
     broadcastState()
-    reply({ ok: true, task_id: taskId })
-    requestWake(resolved.id, delegateWakeText(description, resolved.id), from)
+    reply({ ok: true, task_id: taskId, trace_id: traceId })
+    requestWake(resolved.id, delegateWakeText(description, resolved.id), from, traceId)
     return
   }
 
@@ -5025,6 +5567,123 @@ async function handleFleetWsMessage(ws, msg) {
     eventId = inserted?.id || null
     broadcastState()
     reply({ ok: true, task_id: task.id, event_id: eventId })
+    return
+  }
+
+  if (type === 'report-close') {
+    const { agent: rawAgent, task_id, summary, close, reason, approval_id, operation_id } = msg
+    if (!rawAgent) { error('missing agent'); return }
+    if (!summary) { error('missing summary'); return }
+    if (!operation_id) { error('missing operation_id'); return }
+    const traceId = msg.trace_id || `report:${operation_id}`
+    controlPlaneTraces.append({
+      trace_id: traceId,
+      component: 'server',
+      operation: 'report.ingress',
+      status: 'received',
+      detail: { agent: rawAgent, task_id, operation_id, close: !!close },
+    })
+    const agent = fleetStore.findAgent?.(rawAgent)?.id || rawAgent
+    const task = task_id
+      ? fleetStore.getTask?.(task_id)
+      : fleetStore.getTaskByAgent?.(agent)
+    if (!task) { error('no active task'); return }
+    if (close && task.metadata?.requires_approval) {
+      if (!approval_id) { error('This task requires approval. Pass approval_id (event ID of a human approval message).'); return }
+      const evt = fleetStore.getEventById(approval_id)
+      if (!evt) { error(`approval_id ${approval_id} not found`); return }
+      const fromAgent = (evt.from_id || evt.from) ? fleetStore.getAgent(evt.from_id || evt.from) : null
+      if (!fromAgent?.human) { error(`approval_id ${approval_id} is not from a human`); return }
+    }
+
+    const previous = fleetStore.getReportCloseOperationResult?.(operation_id)
+    let reportEventId = previous?.reportEventId || null
+    let chatEventId = previous?.chatEventId || null
+    let closeEventId = previous?.closeEventId || null
+
+    if (!reportEventId) {
+      const insertedReport = await fleetStore.report?.(agent, task.id, summary, {
+        trace_id: traceId,
+        client_operation_id: operation_id,
+        close_requested: !!close,
+      })
+      reportEventId = insertedReport?.id || null
+      controlPlaneTraces.append({
+        trace_id: traceId,
+        component: 'fleet-store',
+        operation: 'report.insert',
+        status: 'stored',
+        detail: { event_id: reportEventId, task_id: task.id, agent },
+      })
+    } else {
+      controlPlaneTraces.append({
+        trace_id: traceId,
+        component: 'server',
+        operation: 'report.idempotency',
+        status: 'hit',
+        detail: { event_id: reportEventId, operation_id },
+      })
+    }
+
+    if (!chatEventId && task.delegated_by) {
+      const sender = fleetStore.getAgent?.(agent)
+      const senderName = sender?.friendly_name || agent
+      const insertedChat = await fleetStore.chat?.(
+        agent,
+        task.delegated_by,
+        `**${senderName} report: ${task.description}**\n\n${summary}`,
+        {
+          trace_id: traceId,
+          client_operation_id: operation_id,
+          type: 'report',
+          report_event_id: reportEventId,
+          priority: 'normal',
+        },
+      )
+      chatEventId = insertedChat?.id || null
+      controlPlaneTraces.append({
+        trace_id: traceId,
+        component: 'fleet-store',
+        operation: 'report.chat.insert',
+        status: 'stored',
+        detail: { event_id: chatEventId, from: agent, to: task.delegated_by },
+      })
+    }
+
+    if (close && !closeEventId) {
+      const closeReason = reason || 'done'
+      task.status = 'done'
+      task.completed_at = new Date().toISOString()
+      task.metadata = { ...(task.metadata || {}), close_reason: closeReason }
+      fleetStore.upsertTask(task)
+      const insertedClose = await fleetStore.taskDone?.(agent, task.id, task.description, {
+        trace_id: traceId,
+        client_operation_id: operation_id,
+        report_event_id: reportEventId,
+        close_reason: closeReason,
+      })
+      closeEventId = insertedClose?.id || null
+      controlPlaneTraces.append({
+        trace_id: traceId,
+        component: 'fleet-store',
+        operation: 'report.close.insert',
+        status: 'stored',
+        detail: { event_id: closeEventId, task_id: task.id, reason: closeReason },
+      })
+    }
+
+    broadcastState()
+    reply({
+      ok: true,
+      task_id: task.id,
+      report_event_id: reportEventId,
+      chat_event_id: chatEventId,
+      close_event_id: closeEventId,
+      event_id: closeEventId || reportEventId,
+      event_ids: [reportEventId, chatEventId, closeEventId].filter(id => id != null),
+      operation_id,
+      trace_id: traceId,
+    })
     return
   }
 
@@ -5569,7 +6228,85 @@ async function handleFleetWsMessage(ws, msg) {
     return
   }
 
-  // ---- wiretap-add ----
+  // ---- subscription rows ----
+  if (type === 'subscribe') {
+    const { caller: callerQuery, target: targetQuery, query, notification_policy: policy } = msg
+    if (!callerQuery || !query || !policy) { error('missing caller, query, or notification_policy'); return }
+    const caller = fleetStore.findAgent?.(callerQuery)
+    const target = fleetStore.findAgent?.(targetQuery || callerQuery)
+    if (!caller || !target) { error('caller or target not found'); return }
+    if (caller.id !== target.id && !fleetStore.isDelegatorForAgent?.(caller.id, target.id)) {
+      error('not authorized to configure subscriptions for that target'); return
+    }
+    if (policy !== 'immediate' && policy !== 'hold' && !/^batch\(.+\)$/.test(policy)) {
+      error('notification_policy must be immediate, hold, or batch(spec)'); return
+    }
+    const docMatch = query.match(/^doc:([^\s]+)$/i)
+    if (!docMatch && (/\b(doc|event|type|since|after|before|agent):/i.test(query) || /\bto:me\b/i.test(query))) {
+      error('unsupported subscription query term: stage-1 supports directional fleet labels or a single doc:<name> query'); return
+    }
+    if (!docMatch) {
+      try { parseFilter(query) } catch (e) { error(`bad subscription query: ${e.message}`); return }
+    }
+    // Stage 1 persists every requested policy, but the existing fanout path is
+    // immediate-only. Until batch/hold schedulers exist, supported matches
+    // still enter the same server notification path.
+    let adapter = 'wiretap'
+    let adapterId = null
+    try {
+      if (docMatch) {
+        adapter = 'document_monitor'
+        tldaFeedback.subscribe(target.id, docMatch[1], deliverTldaFeedbackChat)
+      } else {
+        const tap = fleetStore.addWiretap(target.id, query, null)
+        adapterId = tap.id
+      }
+    } catch (e) { error(`subscription adapter failed: ${e.message}`); return }
+    const subscription = fleetStore.addSubscription({ owner: target.id, query, notificationPolicy: policy, createdBy: caller.id, adapter, adapterId })
+    reply(subscription)
+    return
+  }
+
+  if (type === 'subscriptions') {
+    const { caller: callerQuery, target: targetQuery } = msg
+    if (!callerQuery) { error('missing caller'); return }
+    const caller = fleetStore.findAgent?.(callerQuery)
+    const target = fleetStore.findAgent?.(targetQuery || callerQuery)
+    if (!caller || !target) { error('caller or target not found'); return }
+    if (caller.id !== target.id && !fleetStore.isDelegatorForAgent?.(caller.id, target.id)) {
+      error('not authorized to inspect subscriptions for that target'); return
+    }
+    const rows = fleetStore.getSubscriptionsByOwner(target.id)
+    for (const row of rows) {
+      if (row.adapter === 'document_monitor') {
+        const docMatch = String(row.query || '').match(/^doc:([^\s]+)$/i)
+        if (docMatch) tldaFeedback.subscribe(row.owner, docMatch[1], deliverTldaFeedbackChat)
+      }
+    }
+    reply(rows)
+    return
+  }
+
+  if (type === 'unsubscribe') {
+    const { caller: callerQuery, subscription_id: subscriptionId } = msg
+    if (!callerQuery || !subscriptionId) { error('missing caller or subscription_id'); return }
+    const caller = fleetStore.findAgent?.(callerQuery)
+    const subscription = fleetStore.getSubscription(subscriptionId)
+    if (!caller || !subscription) { error('caller or subscription not found'); return }
+    if (caller.id !== subscription.owner && !fleetStore.isDelegatorForAgent?.(caller.id, subscription.owner)) {
+      error('not authorized to remove that subscription'); return
+    }
+    if (subscription.adapter === 'wiretap' && subscription.adapter_id) fleetStore.removeWiretap(subscription.adapter_id)
+    if (subscription.adapter === 'document_monitor') {
+      const docMatch = String(subscription.query || '').match(/^doc:([^\s]+)$/i)
+      if (docMatch) tldaFeedback.unsubscribe(subscription.owner, docMatch[1])
+    }
+    fleetStore.removeSubscription(subscription.subscription_id)
+    reply({ ok: true, subscription_id: subscription.subscription_id })
+    return
+  }
+
+  // ---- wiretap-add (internal adapter) ----
   if (type === 'wiretap-add') {
     const { agent, filter, types } = msg
     if (!agent || !filter) { error('missing agent or filter'); return }
@@ -6525,7 +7262,8 @@ async function handleDaemonWsMessage(ws, msg) {
         timestamp: ts || new Date().toISOString(),
       })
     } catch (e) {
-      console.error(`[fleet-daemon] activity write: ${e.message}`)
+      await reportDaemonEventFailure(msg, 'activity-write', e)
+      throw e
     }
     checkQualifications(agent_id, tool, arg, input)
     return
@@ -6574,7 +7312,8 @@ async function handleDaemonWsMessage(ws, msg) {
         timestamp: ts,
       })
     } catch (e) {
-      console.error(`[fleet-daemon] terminal-chat write: ${e.message}`)
+      await reportDaemonEventFailure(msg, 'terminal-chat-write', e)
+      throw e
     }
     return
   }

@@ -6,9 +6,8 @@ import {
 } from 'tldraw'
 import type { TLShapePartial, Editor, TLShape, TLShapeId } from 'tldraw'
 import { getSvgText, setSvgText, svgViewBoxStore, anchorIndex, setChangeHighlights, dismissAllChanges, getPageUrl, setPageRenderHash, setBuiltPageCount } from './stores'
-import { resolvAnchor, pdfToCanvas, type SourceAnchor } from './synctexAnchor'
 import { extractTextFromSvgAsync, type PageTextData } from './TextSelectionLayer'
-import { currentDocumentInfo, setCurrentDocumentInfo, createSvgDocumentLayout, createHtmlDocumentFromPageInfo, type SvgDocument } from './svgDocumentLoader'
+import { setCurrentDocumentInfo, createSvgDocumentLayout, createHtmlDocumentFromPageInfo, type SvgDocument } from './svgDocumentLoader'
 import { createSvgShapes, createHtmlShapes, createSlidesShapes, createImageShapes } from './loaders/createShapes'
 import { anchorShape } from './anchorCluster'
 import { snapHighlighterToText, restoreHighlightsFromShapes, showSourceContextCardForShape } from './highlighterSnap'
@@ -21,6 +20,8 @@ import { diffWords, extractFlatWords } from './wordDiff'
 import { setupDiffOverlays, setupDiffHoverEffect, setupDiffReviewEffect } from './diffHelpers'
 import { getViewerId } from './useYjsSync'
 import { htmlPageReloadUrl } from './html-page-navigation-helpers'
+import { htmlIframeElements } from './htmlIframeRegistry'
+import { resolveAnnotationSourceAnchor, type AnnotationSourceAnchor } from './annotationSourceAnchor'
 import {
   getVisibilityMode, subscribeVisibility,
   isDraft, subscribeDrafts, addDraft, getDraftHovering, subscribeDraftHovering, isDraftMode,
@@ -34,14 +35,20 @@ export type ReloadResult = {
   remapResult?: { failed: number; total: number }
 }
 
+type AnnotationMeta = {
+  sourceAnchor?: AnnotationSourceAnchor
+  clusterId?: string
+  anchorCanvasX?: number
+  anchorCanvasY?: number
+}
+
 /**
  * Remap annotations with source anchors to their new positions
  * Called after document SVGs are loaded/updated
  */
 export async function remapAnnotations(
   editor: Editor,
-  docName: string,
-  pages: Array<{ bounds: { x: number, y: number, width: number, height: number }, width: number, height: number }>
+  document: SvgDocument,
 ): Promise<{ failed: number; total: number }> {
   const allShapes = editor.getCurrentPageShapes()
 
@@ -49,13 +56,13 @@ export async function remapAnnotations(
   // they have their own remap path (remapUnderstandingLines).
   const anchored = allShapes.filter(shape => {
     if ((shape.type as string) === 'understanding-line') return false
-    const meta = shape.meta as { sourceAnchor?: SourceAnchor }
-    return meta?.sourceAnchor?.file && meta?.sourceAnchor?.line
+    const meta = shape.meta as { sourceAnchor?: AnnotationSourceAnchor }
+    return !!meta?.sourceAnchor && meta.sourceAnchor.anchored !== false
   })
 
   if (anchored.length === 0) return { failed: 0, total: 0 }
 
-  console.log(`[SyncTeX] Remapping ${anchored.length} anchored annotations...`)
+  console.log(`[Anchor] Remapping ${anchored.length} anchored annotations...`)
 
   // Group by clusterId — clustered shapes move as a unit (same delta),
   // solo shapes (math notes) position directly from the anchor.
@@ -63,7 +70,7 @@ export async function remapAnnotations(
   const solo: TLShape[] = []
 
   for (const shape of anchored) {
-    const cid = (shape.meta as any).clusterId as string | undefined
+    const cid = (shape.meta as AnnotationMeta).clusterId
     if (cid) {
       if (!clusters.has(cid)) clusters.set(cid, [])
       clusters.get(cid)!.push(shape)
@@ -78,14 +85,24 @@ export async function remapAnnotations(
   // Synctex x varies between builds (nearby-line fallback, display-math offsets), causing
   // horizontal drift that is confusing and not meaningful for note placement.
   for (const shape of solo) {
-    const anchor = (shape.meta as any).sourceAnchor as SourceAnchor
+    const anchor = (shape.meta as AnnotationMeta).sourceAnchor
+    if (!anchor) continue
     try {
-      const pdfPos = await resolvAnchor(docName, anchor)
-      if (!pdfPos) continue
-      const canvasPos = pdfToCanvas(pdfPos.page, pdfPos.x, pdfPos.y, pages)
-      if (!canvasPos) continue
+      const resolved = await resolveAnnotationSourceAnchor(editor, document, anchor)
+      if (!resolved) continue
+      if (!resolved.anchored) {
+        updates.push({
+          id: shape.id,
+          type: shape.type,
+          meta: {
+            ...shape.meta,
+            sourceAnchor: resolved,
+          },
+        })
+        continue
+      }
 
-      const newY = canvasPos.y - 100
+      const newY = resolved.canvasY - 100
       const dy = Math.abs(shape.y - newY)
       if (dy > 1) {
         updates.push({
@@ -96,26 +113,39 @@ export async function remapAnnotations(
         })
       }
     } catch (e) {
-      console.warn(`[SyncTeX] Error resolving anchor:`, e)
+      console.warn(`[Anchor] Error resolving anchor:`, e)
     }
   }
 
   // Clustered shapes: resolve anchor once, compute delta, apply to all
   for (const [cid, shapes] of clusters) {
-    const anchor = (shapes[0].meta as any).sourceAnchor as SourceAnchor
-    const oldAnchorX = (shapes[0].meta as any).anchorCanvasX as number
-    const oldAnchorY = (shapes[0].meta as any).anchorCanvasY as number
+    const firstMeta = shapes[0].meta as AnnotationMeta
+    const anchor = firstMeta.sourceAnchor
+    const oldAnchorX = firstMeta.anchorCanvasX
+    const oldAnchorY = firstMeta.anchorCanvasY
 
+    if (!anchor) continue
     if (oldAnchorX == null || oldAnchorY == null) continue
 
     try {
-      const pdfPos = await resolvAnchor(docName, anchor)
-      if (!pdfPos) continue
-      const canvasPos = pdfToCanvas(pdfPos.page, pdfPos.x, pdfPos.y, pages)
-      if (!canvasPos) continue
+      const resolved = await resolveAnnotationSourceAnchor(editor, document, anchor)
+      if (!resolved) continue
+      if (!resolved.anchored) {
+        for (const shape of shapes) {
+          updates.push({
+            id: shape.id,
+            type: shape.type,
+            meta: {
+              ...shape.meta,
+              sourceAnchor: resolved,
+            },
+          })
+        }
+        continue
+      }
 
-      const deltaX = canvasPos.x - oldAnchorX
-      const deltaY = canvasPos.y - oldAnchorY
+      const deltaX = resolved.canvasX == null ? 0 : resolved.canvasX - oldAnchorX
+      const deltaY = resolved.canvasY - oldAnchorY
 
       if (Math.abs(deltaX) < 1 && Math.abs(deltaY) < 1) continue
 
@@ -127,20 +157,20 @@ export async function remapAnnotations(
           y: shape.y + deltaY,
           meta: {
             ...shape.meta,
-            anchorCanvasX: canvasPos.x,
-            anchorCanvasY: canvasPos.y,
+            anchorCanvasX: resolved.canvasX ?? oldAnchorX,
+            anchorCanvasY: resolved.canvasY,
           },
         })
       }
 
-      console.log(`[SyncTeX] Cluster ${cid}: ${shapes.length} shapes moved by (${deltaX.toFixed(1)}, ${deltaY.toFixed(1)})`)
+      console.log(`[Anchor] Cluster ${cid}: ${shapes.length} shapes moved by (${deltaX.toFixed(1)}, ${deltaY.toFixed(1)})`)
     } catch (e) {
-      console.warn(`[SyncTeX] Error resolving cluster anchor:`, e)
+      console.warn(`[Anchor] Error resolving cluster anchor:`, e)
     }
   }
 
   if (updates.length > 0) {
-    console.log(`[SyncTeX] Applying ${updates.length} position updates`)
+    console.log(`[Anchor] Applying ${updates.length} position updates`)
     editor.updateShapes(updates)
   }
 
@@ -318,6 +348,7 @@ type HtmlPageShapeRecord = {
     url?: string
     w?: number
     h?: number
+    source?: string
   }
 }
 
@@ -331,6 +362,23 @@ function putHtmlPageShapeRecord(editor: Editor, shape: HtmlPageShapeRecord) {
   // tldraw's Editor type is compiled against its built-in shape union, while
   // this app registers html-page at runtime. Keep the cast at that API boundary.
   editor.store.put([shape as unknown as Parameters<Editor['store']['put']>[0][number]])
+}
+
+function waitForHtmlPageReload(shapeId: string): Promise<void> | null {
+  const iframe = htmlIframeElements.get(shapeId)
+  if (!iframe) return null
+  return new Promise(resolve => {
+    let done = false
+    const finish = () => {
+      if (done) return
+      done = true
+      clearTimeout(timer)
+      iframe.removeEventListener('load', finish)
+      resolve()
+    }
+    const timer = setTimeout(finish, 1500)
+    iframe.addEventListener('load', finish, { once: true })
+  })
 }
 
 async function reloadHtmlPages(editor: Editor, document: SvgDocument): Promise<ReloadResult> {
@@ -351,6 +399,7 @@ async function reloadHtmlPages(editor: Editor, document: SvgDocument): Promise<R
   }
 
   const pageShapeIds = new Set(document.pages.map(page => page.shapeId))
+  const reloads: Promise<void>[] = []
   let refreshed = 0
   const records: unknown[] = editor.store.allRecords()
   for (const record of records) {
@@ -360,6 +409,8 @@ async function reloadHtmlPages(editor: Editor, document: SvgDocument): Promise<R
     const currentUrl = shape.props.url
     if (!currentUrl) continue
 
+    const reload = waitForHtmlPageReload(shape.id)
+    if (reload) reloads.push(reload)
     putHtmlPageShapeRecord(editor, {
       ...shape,
       props: {
@@ -371,7 +422,9 @@ async function reloadHtmlPages(editor: Editor, document: SvgDocument): Promise<R
   }
 
   console.log(`[Reload] Refreshed ${refreshed} html-page iframe(s)`)
-  return { failedPages: [] }
+  if (reloads.length > 0) await Promise.allSettled(reloads)
+  const remapResult = await remapAnnotations(editor, document)
+  return { failedPages: [], remapResult }
 }
 
 /**
@@ -453,6 +506,7 @@ export async function reloadPages(
           // Keep the synctex/anchoring snapshot in step with the new page set.
           setCurrentDocumentInfo({
             name: document.name,
+            format: document.format,
             pages: document.pages.map(p => ({
               bounds: { x: p.bounds.x, y: p.bounds.y, width: p.bounds.width, height: p.bounds.height },
               width: p.width,
@@ -615,9 +669,7 @@ export async function reloadPages(
   // After a full reload, remap annotations and ribbon shapes
   let remapResult: { failed: number; total: number } | undefined
   if (!pageNumbers) {
-    if (currentDocumentInfo) {
-      remapResult = await remapAnnotations(editor, currentDocumentInfo.name, currentDocumentInfo.pages)
-    }
+    remapResult = await remapAnnotations(editor, document)
     // Phase 2: clear stale synctex cache and reposition understanding-line shapes.
     // (diff/png formats already returned early above, so no format check needed)
     clearLineYIndexCache(document.name)

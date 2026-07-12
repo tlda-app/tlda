@@ -83,6 +83,7 @@ const customShapeSchemas = {
       w: T.number,
       h: T.number,
       url: T.string,
+      source: T.optional(T.string),
     },
     migrations: createMigrationSequence({
       sequenceId: 'com.tldraw.shape.html-page',
@@ -422,15 +423,20 @@ export function listActiveRooms() {
 /** @type {string} */
 let projectsDir = ''
 
+/** @type {((failure: object) => void | Promise<void>) | null} */
+let signalFailureReporter = null
+
 /** @type {Map<string, Set<(event: object) => void>>} */
 const changeListeners = new Map()
 
 /**
  * Initialize the sync rooms module with the projects directory.
  * @param {string} dir - Path to server/projects/ directory
+ * @param {{ onSignalFailure?: (failure: object) => void | Promise<void> }} options
  */
-export function initSyncRooms(dir) {
+export function initSyncRooms(dir, options = {}) {
   projectsDir = dir
+  signalFailureReporter = typeof options.onSignalFailure === 'function' ? options.onSignalFailure : null
 }
 
 /**
@@ -869,6 +875,25 @@ const signalCache = new Map()
 /** @type {Map<string, Set<(signal: object) => void>>} */
 const signalListeners = new Map()
 
+function describeSignalError(err) {
+  return err?.stack || err?.message || String(err)
+}
+
+function reportSignalFailure(failure) {
+  const enriched = {
+    timestamp: Date.now(),
+    ...failure,
+    error: describeSignalError(failure.error),
+  }
+  if (!signalFailureReporter) {
+    console.warn('[sync-signal] failure:', JSON.stringify(enriched))
+    return
+  }
+  Promise.resolve(signalFailureReporter(enriched)).catch((err) => {
+    console.error('[sync-signal] failure reporter failed:', describeSignalError(err))
+  })
+}
+
 /**
  * Broadcast a custom message to all connected sessions in a room.
  * Also caches the signal for replay to reconnecting clients.
@@ -887,7 +912,16 @@ export function broadcastSignal(docName, key, data) {
   const listeners = signalListeners.get(docName)
   if (listeners) {
     for (const cb of listeners) {
-      try { cb(message) } catch {}
+      try {
+        cb(message)
+      } catch (err) {
+        reportSignalFailure({
+          operation: 'listener',
+          docName,
+          key,
+          error: err,
+        })
+      }
     }
   }
 
@@ -895,7 +929,17 @@ export function broadcastSignal(docName, key, data) {
   if (!room) return
   for (const session of room.getSessions()) {
     if (session.isConnected) {
-      room.sendCustomMessage(session.sessionId, message)
+      try {
+        room.sendCustomMessage(session.sessionId, message)
+      } catch (err) {
+        reportSignalFailure({
+          operation: 'broadcast-send',
+          docName,
+          key,
+          sessionId: session.sessionId,
+          error: err,
+        })
+      }
     }
   }
 }
@@ -940,7 +984,15 @@ export function replayCachedSignals(docName, sessionId) {
     if (cached && (now - (cached.timestamp || 0)) < maxAge) {
       try {
         room.sendCustomMessage(sessionId, cached)
-      } catch {}
+      } catch (err) {
+        reportSignalFailure({
+          operation: 'replay-send',
+          docName,
+          key,
+          sessionId,
+          error: err,
+        })
+      }
     }
   }
 }

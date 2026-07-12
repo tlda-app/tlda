@@ -129,7 +129,11 @@ export function formatActivity(events, agents = []) {
  */
 export function formatAnnotationRef(refData) {
   if (!refData) return null
-  const { type, label, color, file, sourceLines } = refData
+  const { type, label, color } = refData
+  const sourceLines = Array.isArray(refData.sourceLines)
+    ? refData.sourceLines.filter(sl => sl?.anchored !== false && Number.isFinite(Number(sl?.line)))
+    : []
+  const file = refData.file || sourceLines.find(sl => sl.file)?.file
 
   // Unresolved highlight — calibration failed, show SVG-extracted text
   if (refData.unresolved) {
@@ -174,7 +178,7 @@ export function formatAnnotationRef(refData) {
   let out = `[${type || 'annotation'}] ${color || ''}${locationRef}`.trimEnd()
 
   // Build passage: context lines with highlighted portions wrapped in ⟦⟧.
-  if (sourceLines && sourceLines.length > 0) {
+  if (sourceLines.length > 0) {
     const passageLines = sourceLines.map(sl => {
       if (!sl.highlighted) return sl.content
       if (sl.hlStart != null && sl.hlEnd != null && sl.hlEnd > sl.hlStart) {

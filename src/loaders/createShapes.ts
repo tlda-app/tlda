@@ -6,6 +6,10 @@
 import type { Editor, TLPageId, TLShapeId } from 'tldraw'
 import type { SvgDocument } from './types'
 
+function htmlPageSourceProp(source: SvgDocument['pages'][number]['source']) {
+  return source?.type === 'project-source' ? source.file || '' : ''
+}
+
 type HtmlPageShape = {
   id: TLShapeId
   type: 'html-page'
@@ -14,7 +18,7 @@ type HtmlPageShape = {
   x: number
   y: number
   isLocked?: boolean
-  props: { w: number; h: number; url?: string }
+  props: { w: number; h: number; url?: string; source?: string }
 } & Record<string, unknown>
 
 function isHtmlPageShape(shape: unknown): shape is HtmlPageShape {
@@ -28,7 +32,7 @@ type HtmlPageShapePartial = {
   x: number
   y: number
   isLocked: boolean
-  props: { w: number; h: number; url: string }
+  props: { w: number; h: number; url: string; source?: string }
 }
 
 function createHtmlPageShape(editor: Editor, shape: HtmlPageShapePartial) {
@@ -194,6 +198,7 @@ export function createHtmlShapes(
   for (const page of document.pages) {
     const targetPageId = page.tldrawPageId ? pageIdMap.get(page.tldrawPageId) : defaultPageId
     const existing = editor.getShape(page.shapeId) as HtmlPageShape | undefined
+    const source = htmlPageSourceProp(page.source)
     if (!existing) {
       createHtmlPageShape(editor, {
         id: page.shapeId,
@@ -206,6 +211,7 @@ export function createHtmlShapes(
           w: page.bounds.w,
           h: page.bounds.h,
           url: page.src,
+          source,
         },
       })
       changed = true
@@ -218,7 +224,8 @@ export function createHtmlShapes(
       existing.isLocked === true &&
       existing.props?.w === page.bounds.w &&
       existing.props?.h === page.bounds.h &&
-      existing.props?.url === page.src
+      existing.props?.url === page.src &&
+      (existing.props?.source || '') === source
     ) continue
     putHtmlPageShape(editor, {
       ...existing,
@@ -231,6 +238,7 @@ export function createHtmlShapes(
         w: page.bounds.w,
         h: page.bounds.h,
         url: page.src,
+        source,
       },
     })
     changed = true

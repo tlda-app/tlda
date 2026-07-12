@@ -14,6 +14,7 @@ import {
 import type { TLComponents, Editor, TLShapeId } from 'tldraw'
 import 'tldraw/tldraw.css'
 import { probe } from './perf-probe'
+import { installLivePerfProbe } from './livePerfProbe'
 import { MathNoteShapeUtil, setMathNoteEntryMode } from './shapes/MathNoteShape'
 import { TocDropTargetShapeUtil } from './shapes/TocDropTargetShape'
 // noteThreading removed — no tabs
@@ -1216,6 +1217,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
           // Expose editor for debugging/puppeteer access
           (window as unknown as { __tldraw_editor__: Editor }).__tldraw_editor__ = editor
           editorRef.current = editor
+          installLivePerfProbe(editor, document, roomId)
           setEditorMounted(v => v + 1)
           probe.record('startup', 'startup-tldraw-mount', performance.now() - _pageLoadStart, {
             shapeCount: editor.getCurrentPageShapes().length,
@@ -1333,6 +1335,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
           // Set global document info for synctex anchoring
           setCurrentDocumentInfo({
             name: document.name,
+            format: document.format,
             pages: document.pages.map(p => ({
               bounds: { x: p.bounds.x, y: p.bounds.y, width: p.bounds.width, height: p.bounds.height },
               width: p.width,

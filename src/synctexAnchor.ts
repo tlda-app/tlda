@@ -210,7 +210,7 @@ export async function resolvAnchor(
 export function canvasToPdf(
   canvasX: number,
   canvasY: number,
-  pages: Array<{ bounds: { x: number, y: number, width: number, height: number }, width: number, height: number }>
+  pages: Array<{ bounds: { x: number, y: number, width: number, height: number }, width: number, height: number, page?: number }>
 ): { page: number, x: number, y: number } | null {
   for (let i = 0; i < pages.length; i++) {
     const page = pages[i]
@@ -230,7 +230,7 @@ export function canvasToPdf(
       const pdfX = localX / scaleX - SYNCTEX_VIEWBOX_OFFSET
       const pdfY = localY / scaleY - SYNCTEX_VIEWBOX_OFFSET
 
-      return { page: i + 1, x: pdfX, y: pdfY }
+      return { page: page.page ?? i + 1, x: pdfX, y: pdfY }
     }
   }
   return null

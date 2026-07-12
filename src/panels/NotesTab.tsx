@@ -285,7 +285,8 @@ export function NotesTab() {
   function renderRemoteNote(note: RemoteNote) {
     const text = (note.props.text as string) || ''
     const color = (note.props.color as string) || 'yellow'
-    const anchor = note.meta?.sourceAnchor as { line?: number } | undefined
+    const anchor = note.meta?.sourceAnchor as { anchored?: boolean; line?: number } | undefined
+    const anchorLine = anchor?.anchored !== false ? anchor?.line : null
     const noteDone = note.props.done === true
     const cleanText = text.replace(/\$\$[\s\S]*?\$\$/g, '[math]').replace(/\$[^$]*\$/g, '[math]').trim()
 
@@ -310,7 +311,7 @@ export function NotesTab() {
         </div>
         <div className="note-meta" style={{ display: 'flex', gap: '6px', paddingLeft: '9px' }}>
           <span className="note-doc-badge">{note.docName}</span>
-          {anchor?.line && <span>L{anchor.line}</span>}
+          {anchorLine && <span>L{anchorLine}</span>}
         </div>
       </div>
     )
