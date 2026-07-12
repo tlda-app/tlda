@@ -87,7 +87,7 @@ import {
 import { readBuildInfo } from './lib/build-info.mjs'
 import { ServerDaemonOutbox } from './lib/server-daemon-outbox.mjs'
 import { DaemonAgentEvents } from './lib/daemon-agent-events.mjs'
-import { shouldTerminateForMissedPong, socketCanAcceptMore } from '../shared/fleet-ws-flow.mjs'
+import { shouldSkipHeartbeatSweepForLag, shouldTerminateForMissedPong, socketCanAcceptMore } from '../shared/fleet-ws-flow.mjs'
 import {
   DELIVERY_CHANNELS,
   INBOX_STATUSES,
@@ -410,12 +410,12 @@ setInterval(reapZombies, REAPER_INTERVAL_MS).unref()
 // the next ping, terminate the socket. TLDraw's ClientWebSocketAdapter
 // reconnects automatically once the close fires.
 const WS_HEARTBEAT_INTERVAL_MS = 30_000
-const WS_HEARTBEAT_LAG_GRACE_MS = Number(process.env.TLDA_WS_HEARTBEAT_LAG_GRACE_MS || 250)
+const WS_HEARTBEAT_LAG_GRACE_MS = Number(process.env.TLDA_WS_HEARTBEAT_LAG_GRACE_MS || 5000)
 setInterval(() => {
   // A delayed sweep is evidence of server-side starvation, not client death.
   // Preserve existing sockets for one interval and let their next real pong
   // decide liveness instead of terminating the whole fleet in a catch-up burst.
-  if (lastEventLoopLag.maxMs >= WS_HEARTBEAT_LAG_GRACE_MS) {
+  if (shouldSkipHeartbeatSweepForLag(lastEventLoopLag.maxMs, WS_HEARTBEAT_LAG_GRACE_MS)) {
     console.warn(`[heartbeat] skipping sweep during event-loop lag max=${lastEventLoopLag.maxMs.toFixed(1)}ms`)
     return
   }
