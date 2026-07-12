@@ -1,23 +1,17 @@
 import { htmlIframeElements } from './shapes/HtmlPageShape'
+import type { SourceLocation } from './sourceLocation'
+import { normalizeSourceFile, unanchoredSourceLocation } from './sourceLocation'
 
 export type HtmlSourceLineAnchor =
-  | {
-      anchored: true
-      source: 'html-page'
-      file: string
-      line: number
+  | (Extract<SourceLocation, { anchored: true }> & {
       page: 0
       shapeId: string
-    }
-  | {
-      anchored: false
-      source: 'html-page'
+    })
+  | (Extract<SourceLocation, { anchored: false }> & {
       file: string
-      line: null
       page: 0
       shapeId: string
-      reason: 'missing-iframe' | 'missing-line-anchor'
-    }
+    })
 
 function boundsValue(bounds: any, key: 'x' | 'y' | 'w' | 'h') {
   if (!bounds) return 0
@@ -32,14 +26,14 @@ export function htmlSourceLineAnchorAtCanvasY(
   bounds: any,
   canvasY: number,
 ): HtmlSourceLineAnchor | null {
-  const file = String(shape?.props?.source || '').replace(/^\.\//, '')
+  const file = normalizeSourceFile(shape?.props?.source || '')
   if (!file) return null
 
   const shapeId = String(shape.id)
   const iframe = htmlIframeElements.get(shapeId)
   const doc = iframe?.contentDocument
   if (!iframe || !doc) {
-    return { anchored: false, source: 'html-page', file, line: null, page: 0, shapeId, reason: 'missing-iframe' }
+    return { ...unanchoredSourceLocation('missing-iframe'), file, page: 0, shapeId }
   }
 
   const pageY = boundsValue(bounds, 'y')
@@ -61,7 +55,7 @@ export function htmlSourceLineAnchorAtCanvasY(
     .sort((a, b) => a.top - b.top)
 
   if (!anchors.length) {
-    return { anchored: false, source: 'html-page', file, line: null, page: 0, shapeId, reason: 'missing-line-anchor' }
+    return { ...unanchoredSourceLocation('missing-line-anchor'), file, page: 0, shapeId }
   }
 
   let best = anchors[0]
@@ -69,5 +63,5 @@ export function htmlSourceLineAnchorAtCanvasY(
     if (anchor.top > targetY) break
     best = anchor
   }
-  return { anchored: true, source: 'html-page', file, line: best.line, page: 0, shapeId }
+  return { anchored: true, file, line: best.line, page: 0, shapeId }
 }

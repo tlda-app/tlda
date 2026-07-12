@@ -1,5 +1,6 @@
 import { createShapeId } from 'tldraw'
 import type { Editor, TLShapeId } from 'tldraw'
+import { anchoredSourceLocation, normalizeSourceFile, unanchoredSourceLocation } from './sourceLocation'
 
 type HtmlSelectionRect = {
   offsetLeft: number
@@ -44,7 +45,7 @@ type HtmlPageShapeLike = {
   parentId?: string
   x: number
   y: number
-  props: { w: number }
+  props: { w: number; source?: string }
 }
 
 const RECENT_SELECTION_MS = 2 * 60 * 1000
@@ -152,6 +153,13 @@ export function applyHtmlSelectionToHighlight(editor: Editor, highlightId: TLSha
   if (!best) return false
 
   const { selection, htmlShape } = best
+  const sourceFile = normalizeSourceFile(htmlShape.props.source || '')
+  const sourceAnchor = selection.line && sourceFile
+    ? anchoredSourceLocation(sourceFile, selection.line) || unanchoredSourceLocation('unresolved')
+    : unanchoredSourceLocation(selection.line ? 'unresolved' : 'missing-line-anchor')
+  const sourceLines = sourceAnchor.anchored
+    ? [{ ...sourceAnchor, content: selection.text, highlighted: true }]
+    : [sourceAnchor]
   const lines = selection.text.split(/\r?\n/).map(line => line.trim()).filter(Boolean)
   const shareCardId = createShapeId()
   const shareCardH = estimateShareCardHeight(selection.text)
@@ -180,10 +188,8 @@ export function applyHtmlSelectionToHighlight(editor: Editor, highlightId: TLSha
       createdAt: Date.now(),
       copiedFromShapeId: highlight.id,
       highlightText: selection.text,
-      sourceLines: selection.line
-        ? [{ line: selection.line, content: selection.text, highlighted: true }]
-        : undefined,
-      sourceAnchor: selection.line ? { line: selection.line } : undefined,
+      sourceLines,
+      sourceAnchor,
       htmlPageShapeId: htmlShape.id,
       shareKind: 'highlight-text',
     },
@@ -197,10 +203,8 @@ export function applyHtmlSelectionToHighlight(editor: Editor, highlightId: TLSha
       highlightText: selection.text,
       highlightedText: selection.text,
       highlightLines: lines.length > 0 ? lines : [selection.text],
-      sourceLines: selection.line
-        ? [{ line: selection.line, content: selection.text, highlighted: true }]
-        : undefined,
-      sourceAnchor: selection.line ? { line: selection.line } : undefined,
+      sourceLines,
+      sourceAnchor,
       htmlPageShapeId: htmlShape.id,
       shareCardId,
     },

@@ -191,6 +191,7 @@ type SourceAnchor = {
   line: number
   page: number
   source: 'synctex' | 'html-page'
+  anchored: true
 }
 
 type TrackedSourceAnchor = {
@@ -286,7 +287,7 @@ function viewportValue(viewport: any, key: 'minX' | 'minY' | 'maxX' | 'maxY' | '
   return Number(viewport.height ?? viewport.h ?? ((viewport.maxY ?? 0) - (viewport.minY ?? 0)))
 }
 
-function sourceAnchorForViewport(mainEditor: any, lookup: LookupData | null) {
+function sourceAnchorForViewport(mainEditor: any, lookup: LookupData | null): SourceAnchor | null {
   if (!mainEditor || !lookup) return null
   const viewport = mainEditor.getViewportPageBounds?.()
   if (!viewport) return null
@@ -333,7 +334,7 @@ function sourceAnchorForViewport(mainEditor: any, lookup: LookupData | null) {
   return bestLine ? { file: bestLine.file, line: bestLine.line, page: pageNum, source: 'synctex' as const, anchored: true } : null
 }
 
-function htmlSourceAnchorForViewport(mainEditor: any): HtmlSourceLineAnchor | null {
+function htmlSourceAnchorForViewport(mainEditor: any): (HtmlSourceLineAnchor & { source: 'html-page' }) | null {
   if (!mainEditor) return null
   const viewport = mainEditor.getViewportPageBounds?.()
   if (!viewport) return null
@@ -362,7 +363,8 @@ function htmlSourceAnchorForViewport(mainEditor: any): HtmlSourceLineAnchor | nu
     if (!bestPage || score < bestPage.score) bestPage = { shape, bounds, score }
   }
   if (!bestPage) return null
-  return htmlSourceLineAnchorAtCanvasY(bestPage.shape, bestPage.bounds, centerY)
+  const anchor = htmlSourceLineAnchorAtCanvasY(bestPage.shape, bestPage.bounds, centerY)
+  return anchor ? { ...anchor, source: 'html-page' as const } : null
 }
 
 function centerDocumentOnSourceLine(mainEditor: any, lookup: LookupData | null, file: string, line: number) {
@@ -712,7 +714,8 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
       if (!next) return
       setSourceSplit(next.source === 'synctex' && next.anchored ? sourceSplitForAnchor(lookup, next) : null)
       setTrackedAnchor(prev => {
-        if (prev.file === next.file && prev.line === next.line && prev.anchored === next.anchored) return prev
+        const nextLine = next.anchored ? next.line : null
+        if (prev.file === next.file && prev.line === nextLine && prev.anchored === next.anchored) return prev
         if (
           next.anchored &&
           prev.anchored &&
@@ -720,7 +723,7 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
           prev.line != null &&
           Math.abs(prev.line - next.line) < SOURCE_TRACK_LINE_THRESHOLD
         ) return prev
-        return next
+        return { file: next.file, line: nextLine, page: next.page, source: next.source, anchored: next.anchored }
       })
     }
     const interval = window.setInterval(track, SOURCE_TRACK_INTERVAL_MS)

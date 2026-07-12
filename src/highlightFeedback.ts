@@ -16,6 +16,7 @@
  */
 
 import type { Editor } from 'tldraw'
+import type { SourceLineMeta } from './sourceLocation'
 import { HIGHLIGHT_TO_STATUS } from './shapes/UnderstandingLineShape'
 
 export interface HighlightFeedback {
@@ -102,13 +103,16 @@ export function createFeedbackFromHighlight(editor: Editor, shapeId: string): Hi
 
   const text = meta?.highlightText || ''
   const highlightLines = meta?.highlightLines || []
-  const sourceLines = meta?.sourceLines as Array<{ line: number; content: string; file?: string }> | undefined
+  const sourceLines = meta?.sourceLines as SourceLineMeta[] | undefined
 
   if (!text) return null
 
   // Derive line range and page from sourceLines
-  const firstLine = sourceLines?.[0]?.line ?? null
-  const lastLine = sourceLines?.[sourceLines.length - 1]?.line ?? null
+  const anchoredLines = sourceLines?.filter((line: any): line is SourceLineMeta & { line: number } => (
+    line?.anchored !== false && Number.isFinite(Number(line?.line))
+  )) ?? []
+  const firstLine = anchoredLines[0]?.line ?? null
+  const lastLine = anchoredLines[anchoredLines.length - 1]?.line ?? null
 
   return {
     type,

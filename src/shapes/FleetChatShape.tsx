@@ -1356,8 +1356,9 @@ function buildRefAttachments(text: string, _editor: any): Array<{
     // sourceLines: [{line, content, file, highlighted, hlStart?, hlEnd?}]
     // hlStart/hlEnd are character offsets within the line for precise column ranges.
     const sourceLines: any[] = meta?.sourceLines || []
-    const highlighted = sourceLines.filter((sl: any) => sl.highlighted === true)
-    const firstLine = highlighted.length > 0 ? highlighted[0] : sourceLines[0]
+    const anchoredLines = sourceLines.filter((sl: any) => sl?.anchored !== false && Number.isFinite(Number(sl?.line)))
+    const highlighted = anchoredLines.filter((sl: any) => sl.highlighted === true)
+    const firstLine = highlighted.length > 0 ? highlighted[0] : anchoredLines[0]
 
     const attachment: any = {
       token,
@@ -2943,9 +2944,11 @@ function FleetChatInner({ shape }: { shape: any }) {
           const refBounds = shapeEditor.getShapePageBounds(refShape.id)
           const meta = (highlight?.meta || srcShape.meta) as any
           const srcLineArr: any[] = meta?.sourceLines || []
-          const hlSrcLines = srcLineArr.filter((sl: any) => sl.highlighted)
-          const firstSrcLine = hlSrcLines.length > 0 ? hlSrcLines[0] : srcLineArr[0]
+          const anchoredSrcLines = srcLineArr.filter((sl: any) => sl?.anchored !== false && Number.isFinite(Number(sl?.line)))
+          const hlSrcLines = anchoredSrcLines.filter((sl: any) => sl.highlighted)
+          const firstSrcLine = hlSrcLines.length > 0 ? hlSrcLines[0] : anchoredSrcLines[0]
           const anchor = meta?.sourceAnchor  // fallback for old shapes
+          const anchoredAnchor = anchor?.anchored !== false && Number.isFinite(Number(anchor?.line)) ? anchor : null
           ref = {
             type: typePrefix || 'annotation',
             label: display,
@@ -2955,8 +2958,8 @@ function FleetChatInner({ shape }: { shape: any }) {
             shapeId: embeddedShapeId,
             highlightShapeId: highlight?.id,
             screenshotRef: refBounds ? `tlda-screenshot:page:page:${refBounds.x.toFixed(0)},${refBounds.y.toFixed(0)},${refBounds.w.toFixed(0)},${refBounds.h.toFixed(0)}` : undefined,
-            file: firstSrcLine?.file || anchor?.file,
-            lineno: firstSrcLine?.line || anchor?.line,
+            file: firstSrcLine?.file || anchoredAnchor?.file,
+            lineno: firstSrcLine?.line || anchoredAnchor?.line,
           }
         }
       }
