@@ -318,6 +318,7 @@ type HtmlPageShapeRecord = {
     url?: string
     w?: number
     h?: number
+    source?: string
   }
 }
 

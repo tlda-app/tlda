@@ -14,6 +14,11 @@ export interface HtmlPageEntry {
   group?: string
   groupIndex?: number
   tabLabel?: string
+  source?: {
+    type?: string
+    format?: string
+    file?: string
+  }
 }
 
 const tabSpacing = 24  // horizontal gap between side-by-side tabs
@@ -60,6 +65,7 @@ export function createHtmlDocumentFromPageInfo(
         height: info.height,
         tldrawPageId: tlPageId,
         tldrawPageName: pageName,
+        source: info.source,
       })
       tldrawPageIdx++
       i++
@@ -82,6 +88,7 @@ export function createHtmlDocumentFromPageInfo(
           height: gp.height,
           tldrawPageId: tlPageId,
           tldrawPageName: groupId,
+          source: gp.source,
         })
         left += gp.width + tabSpacing
         i++

@@ -27,6 +27,11 @@ export interface SvgPage {
   targetBasePath?: string  // per-page basePath for multi-target docs
   pageInTarget?: number    // 1-based page number within the target
   targetName?: string      // which target this page belongs to
+  source?: {
+    type?: string
+    format?: string
+    file?: string
+  }
 }
 
 export interface SlideInfo {

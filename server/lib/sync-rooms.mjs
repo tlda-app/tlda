@@ -83,6 +83,7 @@ const customShapeSchemas = {
       w: T.number,
       h: T.number,
       url: T.string,
+      source: T.optional(T.string),
     },
     migrations: createMigrationSequence({
       sequenceId: 'com.tldraw.shape.html-page',

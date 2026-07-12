@@ -185,7 +185,14 @@ type SourceSplit = {
   afterLine: number
 }
 
-function sourceSplitForAnchor(lookup: LookupData | null, anchor: { file: string; line: number; page: number }): SourceSplit | null {
+type SourceAnchor = {
+  file: string
+  line: number
+  page: number
+  source: 'synctex' | 'html-page'
+}
+
+function sourceSplitForAnchor(lookup: LookupData | null, anchor: SourceAnchor): SourceSplit | null {
   if (!lookup || !anchor.page) return null
   const rows: Array<{ file: string; line: number; y: number }> = []
   for (const [key, entry] of Object.entries(lookup.lines || {})) {
@@ -314,7 +321,39 @@ function sourceAnchorForViewport(mainEditor: any, lookup: LookupData | null) {
     const dist = Math.abs(entry.y - pdfY)
     if (!bestLine || dist < bestLine.dist) bestLine = { ...parsed, dist }
   }
-  return bestLine ? { file: bestLine.file, line: bestLine.line, page: pageNum } : null
+  return bestLine ? { file: bestLine.file, line: bestLine.line, page: pageNum, source: 'synctex' as const } : null
+}
+
+function htmlSourceAnchorForViewport(mainEditor: any): SourceAnchor | null {
+  if (!mainEditor) return null
+  const viewport = mainEditor.getViewportPageBounds?.()
+  if (!viewport) return null
+  const minX = viewportValue(viewport, 'minX')
+  const minY = viewportValue(viewport, 'minY')
+  const maxX = viewportValue(viewport, 'maxX')
+  const maxY = viewportValue(viewport, 'maxY')
+  const centerX = minX + viewportValue(viewport, 'width') / 2
+  const centerY = minY + viewportValue(viewport, 'height') / 2
+  const pageShapes = (mainEditor.getCurrentPageShapes?.() || [])
+    .filter((s: any) => s?.type === 'html-page' && typeof s?.props?.source === 'string' && s.props.source)
+
+  let bestPage: { shape: any; bounds: any; score: number } | null = null
+  for (const shape of pageShapes) {
+    const bounds = mainEditor.getShapePageBounds?.(shape.id)
+    const x = boundsValue(bounds, 'x')
+    const y = boundsValue(bounds, 'y')
+    const w = boundsValue(bounds, 'w')
+    const h = boundsValue(bounds, 'h')
+    if (!w || !h) continue
+    const intersects = x + w > minX && x < maxX && y + h > minY && y < maxY
+    if (!intersects) continue
+    const clampedX = Math.max(x, Math.min(centerX, x + w))
+    const clampedY = Math.max(y, Math.min(centerY, y + h))
+    const score = Math.hypot(centerX - clampedX, centerY - clampedY)
+    if (!bestPage || score < bestPage.score) bestPage = { shape, bounds, score }
+  }
+  const sourceFile = normalizeFile(bestPage?.shape?.props?.source)
+  return sourceFile ? { file: sourceFile, line: 1, page: 0, source: 'html-page' } : null
 }
 
 function centerDocumentOnSourceLine(mainEditor: any, lookup: LookupData | null, file: string, line: number) {
@@ -656,9 +695,9 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
     const track = () => {
       if (cancelled || statusRef.current === 'dirty' || statusRef.current === 'syncing') return
       const mainEditor = (typeof window !== 'undefined' && (window as any).__tldraw_editor__) || editor
-      const next = sourceAnchorForViewport(mainEditor, lookup)
+      const next = sourceAnchorForViewport(mainEditor, lookup) || htmlSourceAnchorForViewport(mainEditor)
       if (!next) return
-      setSourceSplit(sourceSplitForAnchor(lookup, next))
+      setSourceSplit(next.source === 'synctex' ? sourceSplitForAnchor(lookup, next) : null)
       setTrackedAnchor(prev => {
         if (prev.file === next.file && Math.abs(prev.line - next.line) < SOURCE_TRACK_LINE_THRESHOLD) return prev
         return next

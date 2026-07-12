@@ -76,7 +76,7 @@ type HtmlPageShapeRecord = {
   x: number
   y: number
   parentId?: TLPageId
-  props: { w: number; h: number; url?: string }
+  props: { w: number; h: number; url?: string; source?: string }
   meta?: Record<string, unknown>
 }
 
@@ -286,10 +286,11 @@ export class HtmlPageShapeUtil extends BaseBoxShapeUtil<any> {
     w: T.number,
     h: T.number,
     url: T.string,
+    source: T.optional(T.string),
   }
 
   getDefaultProps() {
-    return { w: 800, h: 1000, url: '' }
+    return { w: 800, h: 1000, url: '', source: '' }
   }
 
   override canEdit = () => false
