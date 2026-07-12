@@ -50,6 +50,8 @@ export function getFleetHttpBase() { return FLEET }
 let _agents = []
 let _tasks = []
 let _items = []
+let _nextAgentsCursor = null
+let _agentsPageLoading = null
 // One id-keyed ordered buffer — the SINGLE source for chat + activity, fed by
 // two sources (live WS + DB history). upsert() dedups by id, binds the
 // optimistic tempId→dbId handoff, and caps memory as one contiguous ordered
@@ -210,6 +212,26 @@ export function getEvents() { return _store.all() }
 export function getActivity(agentId) { return _store.all().filter(e => e._activity && e.agent === agentId) }
 export function getHumanId() { return _humanId }
 export function getHumanName() { return _humanName }
+
+// Fetch the next bounded live-agent page only when a list view reaches it.
+// Dead agents are intentionally not hydrated into the browser roster.
+export function loadNextAgentsPage() {
+  if (!_nextAgentsCursor || _agentsPageLoading) return _agentsPageLoading || Promise.resolve(false)
+  const cursor = _nextAgentsCursor
+  _agentsPageLoading = fetch(`${FLEET}/api/agents?limit=100&cursor=${encodeURIComponent(cursor)}`)
+    .then(r => {
+      if (!r.ok) throw new Error(`agent page failed: ${r.status}`)
+      return r.json()
+    })
+    .then(data => {
+      _nextAgentsCursor = data.nextCursor || null
+      applyAgentDelta(data.agents || [], [])
+      return true
+    })
+    .catch(e => { console.warn('[fleet-data] agent page fetch failed:', e.message); return false })
+    .finally(() => { _agentsPageLoading = null })
+  return _agentsPageLoading
+}
 
 if (typeof window !== 'undefined') {
   window.__tldaFleetIdentity = () => ({
@@ -714,7 +736,8 @@ export function connect() {
       _identifyPending = true
       notify('identity', { type: 'identity', id: null, name: null, needsIdentity: true })
     }
-    // State (agents/tasks) is pushed by the server on WS connect — no need to re-fetch.
+    // Roster/task lists are loaded independently; the socket stays clear for
+    // request replies and incremental deltas.
     // Catch up on missed chat events
     if (_lastEventId > 0) {
       const reconnectTimer = probe.start('reconnect', 'reconnect-backfill')
@@ -791,14 +814,6 @@ export function connect() {
             cb.reject(err)
           } else cb.resolve(msg.result)
         }
-        return
-      }
-
-      // Full-state snapshot (sent once on connect) — no event field
-      if (msg.agents && !msg.event) {
-        updateAgents(msg.agents || [])
-        updateTasks(msg.tasks || [])
-        applyFleetEphemeral(msg)
         return
       }
 
@@ -908,15 +923,18 @@ export async function init() {
   // FLEET/FLEET_WS come straight from the injected active config — no resolution
   // step needed before the fetches below.
 
-  // Fetch initial state + history in parallel.
-  const [stateRes, historyRes] = await Promise.all([
-    fetch(`${FLEET}/api/state`).then(r => r.json()).catch(e => { console.warn('[fleet-data] state fetch failed:', e.message); return {} }),
+  // Each browser list starts with a bounded live-agent page.  Do not use
+  // /api/state here: it is a whole-roster diagnostic endpoint.
+  const [agentsRes, tasksRes, historyRes] = await Promise.all([
+    fetch(`${FLEET}/api/agents?limit=100`).then(r => r.json()).catch(e => { console.warn('[fleet-data] agents fetch failed:', e.message); return {} }),
+    fetch(`${FLEET}/api/store/tasks`).then(r => r.json()).catch(e => { console.warn('[fleet-data] tasks fetch failed:', e.message); return [] }),
     fetch(`${FLEET}/api/chat/history?limit=${HISTORY_PAGE}`).then(r => r.json()).catch(e => { console.warn('[fleet-data] history fetch failed:', e.message); return { events: [] } }),
   ])
 
   // Populate agents + tasks
-  updateAgents(stateRes.agents || [])
-  updateTasks(stateRes.tasks || [])
+  _nextAgentsCursor = agentsRes.nextCursor || null
+  updateAgents(agentsRes.agents || [])
+  updateTasks(tasksRes || [])
 
   // Populate chat events and notify subscribers
   // One path: ingest everything (matching the live stream); the render whitelist

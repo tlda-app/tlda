@@ -890,6 +890,13 @@ export class FleetStore {
     // Live-only roster (the agents panel never shows dead agents). Indexed by
     // idx_agents_alive(dead, last_seen DESC) → returns ~tens of rows, not ~1300.
     this._getAliveAgents = this.db.prepare(`SELECT ${AGENT_SELECT} ${AGENT_JOIN} WHERE agents.dead = 0 ORDER BY agents.last_seen DESC`);
+    this._getAliveAgentsPage = this.db.prepare(`
+      SELECT ${AGENT_SELECT} ${AGENT_JOIN}
+      WHERE agents.dead = 0
+        AND (agents.last_seen < @lastSeen OR (agents.last_seen = @lastSeen AND agents.id < @id))
+      ORDER BY agents.last_seen DESC, agents.id DESC
+      LIMIT @limit
+    `);
     // id→friendly_name only — for labeling chat history without hydrating all
     // ~1300 agents (parsing labels/metadata/session JSON per row).
     this._getAgentNames = this.db.prepare(`SELECT id, friendly_name FROM agents`);
@@ -1698,6 +1705,30 @@ export class FleetStore {
     // broadcastState). Serve the maintained alive view instead of re-querying
     // and re-hydrating the full live set under churn.
     return this._aliveAgentRosterView?.list || [];
+  }
+
+  getAliveAgentsPage({ limit = 100, cursor = null } = {}) {
+    const size = Math.max(1, Math.min(Number(limit) || 100, 200));
+    let boundary = { lastSeen: '9999-12-31T23:59:59.999Z', id: '\uffff' };
+    if (cursor) {
+      try {
+        const decoded = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'));
+        if (typeof decoded.lastSeen !== 'string' || typeof decoded.id !== 'string') throw new Error('bad cursor');
+        boundary = decoded;
+      } catch {
+        const error = new Error('invalid agents cursor');
+        error.code = 'INVALID_CURSOR';
+        throw error;
+      }
+    }
+    const rows = this._getAliveAgentsPage.all({ ...boundary, limit: size + 1 });
+    const hasMore = rows.length > size;
+    const page = rows.slice(0, size).map(row => this._hydrateAgent(row));
+    const tail = page[page.length - 1];
+    const nextCursor = hasMore && tail
+      ? Buffer.from(JSON.stringify({ lastSeen: tail.last_seen, id: tail.id })).toString('base64url')
+      : null;
+    return { agents: page, nextCursor };
   }
 
   removeAgent(id) {

@@ -3832,7 +3832,13 @@ if (useTls) {
 }
 
 const syncWss = new WebSocketServer({ noServer: true })
-const fleetWss = new WebSocketServer({ noServer: true })
+// Fleet traffic crosses the Wi-Fi/tailnet path as well as local links. Keep
+// small RPC replies cheap and compress larger incremental events when the
+// client negotiates permessage-deflate.
+const fleetWss = new WebSocketServer({
+  noServer: true,
+  perMessageDeflate: { threshold: 1024 },
+})
 const daemonWss = new WebSocketServer({ noServer: true })
 const terminalWss = new WebSocketServer({ noServer: true })
 const voiceWss = new WebSocketServer({ noServer: true })
@@ -4221,24 +4227,11 @@ server.on('upgrade', async (req, socket, head) => {
         remotePort,
       })
 
-      // Browser fleet clients need the full connect snapshot to seed the agents
-      // panel and task list. Agent/MCP clients connect with ?agent=... and only
-      // use this socket for RPC replies + targeted fleet-event notifications;
-      // sending the full roster/task snapshot there is a multi-MB startup tax
-      // that can delay ordinary inbox/chat/delegate requests.
-      if (fleetStore && !agentFilter) {
-        const initState = {
-          // Full roster incl. dead. Panel filters dead client-side, but the
-          // client needs dead agents present to chat them + show "resurrect?".
-          agents: fleetStore.getAllAgents(),
-          tasks: fleetStore.getActiveTasks(),
-          thinking: Object.fromEntries(_thinkingState),
-          compacting: Object.fromEntries(_compactingState),
-          context: Object.fromEntries(_contextState),
-          connId: ws._connId,
-        }
-        ws.send(JSON.stringify(initState))
-      }
+      // Never send roster/task lists on connect.  A browser may immediately
+      // send login; putting a multi-megabyte snapshot ahead of its reply made
+      // identity establishment timeout on slow links.  List views fetch their
+      // own bounded pages over HTTP, while this socket carries RPC replies and
+      // incremental deltas for every client type.
 
       ws.on('message', (raw) => {
         handleFleetWsFrame(ws, raw)
