@@ -160,6 +160,16 @@ test('active task and session startup queries use boot-path indexes', () => {
     `).all().map(row => row.detail).join('\n')
     assert.match(sessionPlan, /idx_session_entries_session/)
     assert.doesNotMatch(sessionPlan, /USE TEMP B-TREE/)
+
+    const prettyNameBackfillPlan = store.db.prepare(`
+      EXPLAIN QUERY PLAN
+      SELECT id, friendly_name FROM agents
+      WHERE friendly_name IS NOT NULL
+        AND friendly_name != ''
+        AND (pretty_name IS NULL OR pretty_name = '')
+    `).all().map(row => row.detail).join('\n')
+    assert.match(prettyNameBackfillPlan, /idx_agents_missing_pretty_name/)
+    assert.doesNotMatch(prettyNameBackfillPlan, /SCAN agents/)
   } finally {
     cleanup(store, dbPath)
   }

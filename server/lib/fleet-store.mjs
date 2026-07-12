@@ -482,6 +482,13 @@ export class FleetStore {
       this.db.exec("ALTER TABLE agents ADD COLUMN pretty_name TEXT");
     }
     this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_agents_missing_pretty_name
+      ON agents(friendly_name)
+      WHERE friendly_name IS NOT NULL
+        AND friendly_name != ''
+        AND (pretty_name IS NULL OR pretty_name = '')
+    `);
+    this.db.exec(`
       UPDATE agents
       SET daemon_key = machine_id || ':' || env_name
       WHERE daemon_key IS NULL
