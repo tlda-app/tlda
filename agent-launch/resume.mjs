@@ -261,7 +261,17 @@ function codexRolloutMatchesAgentLaunch(agent, sessionMeta) {
   const launchTs = Date.parse(agent.registered_at || '')
   const rolloutTs = Date.parse(sessionMeta.timestamp || '')
   if (!Number.isFinite(launchTs) || !Number.isFinite(rolloutTs)) return false
-  return rolloutTs >= launchTs - 5_000 && rolloutTs <= launchTs + 60_000
+  return codexRolloutLaunchDistanceMs(agent, sessionMeta) != null
+}
+
+function codexRolloutLaunchDistanceMs(agent, sessionMeta) {
+  if (!agent?.cwd || !sessionMeta?.cwd || agent.cwd !== sessionMeta.cwd) return null
+  const launchTs = Date.parse(agent.registered_at || '')
+  const rolloutTs = Date.parse(sessionMeta.timestamp || '')
+  if (!Number.isFinite(launchTs) || !Number.isFinite(rolloutTs)) return null
+  const delta = rolloutTs - launchTs
+  if (delta < -5_000 || delta > 10 * 60_000) return null
+  return Math.abs(delta)
 }
 
 export function scanCodexRolloutIdentity(fpath) {
@@ -396,11 +406,17 @@ export function findCodexRollout(agent, options = {}) {
     if (ownId === fleetId) {
       candidates.push({ rolloutId, fpath, mtime: st.mtimeMs, sessionMeta })
     } else if (ownId == null && codexRolloutMatchesAgentLaunch(agent, sessionMeta)) {
-      ownerlessLaunchCandidates.push({ rolloutId, fpath, mtime: st.mtimeMs, sessionMeta })
+      ownerlessLaunchCandidates.push({
+        rolloutId,
+        fpath,
+        mtime: st.mtimeMs,
+        launchDistance: codexRolloutLaunchDistanceMs(agent, sessionMeta),
+        sessionMeta,
+      })
     }
   }
   candidates.sort((a, b) => b.mtime - a.mtime)
-  ownerlessLaunchCandidates.sort((a, b) => b.mtime - a.mtime)
+  ownerlessLaunchCandidates.sort((a, b) => (a.launchDistance - b.launchDistance) || (b.mtime - a.mtime))
   const best = candidates[0] || ownerlessLaunchCandidates[0]
   return best ? { kind: 'codex', rolloutId: best.rolloutId, jsonlPath: best.fpath, cwd: best.sessionMeta.cwd, sessionMeta: best.sessionMeta } : null
 }

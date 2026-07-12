@@ -120,3 +120,53 @@ test('codex resume resolver backfills a missing daemon-ledger session identity f
     fs.rmSync(tmp, { recursive: true, force: true })
   }
 })
+
+test('codex resume resolver backfills ownerless rollout by closest launch timestamp', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-codex-resume-ownerless-'))
+  const ledger = createPermissionLedger(path.join(tmp, 'ledger.db'))
+  try {
+    const sessionsBase = path.join(tmp, 'sessions')
+    const rolloutDir = path.join(sessionsBase, '2026', '06', '28')
+    fs.mkdirSync(rolloutDir, { recursive: true })
+    const closerId = '44444444-2222-4333-8444-555555555555'
+    const fartherId = '55555555-2222-4333-8444-555555555555'
+    const closerPath = path.join(rolloutDir, `rollout-2026-06-28T23-22-25-${closerId}.jsonl`)
+    const fartherPath = path.join(rolloutDir, `rollout-2026-06-28T23-25-47-${fartherId}.jsonl`)
+    fs.writeFileSync(closerPath, [
+      JSON.stringify({
+        type: 'session_meta',
+        payload: {
+          id: closerId,
+          cwd: '/tmp/tlda-resume-test',
+          timestamp: '2026-07-10T12:02:25.000Z',
+        },
+      }),
+      '',
+    ].join('\n'))
+    fs.writeFileSync(fartherPath, [
+      JSON.stringify({
+        type: 'session_meta',
+        payload: {
+          id: fartherId,
+          cwd: '/tmp/tlda-resume-test',
+          timestamp: '2026-07-10T12:05:47.000Z',
+        },
+      }),
+      '',
+    ].join('\n'))
+
+    ledger.setSync('fleet:test-resume', { spawnPolicy: { name: 'unsandboxed', policy: 'unsandboxed' } })
+
+    const resolved = await resolveCodexResumeHandle(makeAgent(), { permissionLedger: ledger, sessionsBase })
+
+    assert.equal(resolved.ok, true)
+    assert.equal(resolved.resumeId, closerId)
+    assert.equal(resolved.jsonlPath, closerPath)
+    assert.equal(resolved.source, 'daemon-ledger-backfill')
+    const row = ledger.get('fleet:test-resume')
+    assert.equal(row?.sessionId, closerId)
+  } finally {
+    await ledger.close()
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
