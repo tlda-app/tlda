@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import test from 'node:test'
 
 const serverSource = fs.readFileSync(new URL('../server/unified-server.mjs', import.meta.url), 'utf8')
+const fleetStoreSource = fs.readFileSync(new URL('../server/lib/fleet-store.mjs', import.meta.url), 'utf8')
 const clientSource = fs.readFileSync(new URL('../src/fleet/fleet-data.mjs', import.meta.url), 'utf8')
 const mcpFleetSource = fs.readFileSync(new URL('../mcp-server/fleet-tools.mjs', import.meta.url), 'utf8')
 
@@ -23,12 +24,30 @@ test('task doc startup materialization is deferred off module initialization', (
   assert.notEqual(loopMonitorStart, -1)
   const startupBlock = serverSource.slice(storeStart, loopMonitorStart)
 
-  assert.match(startupBlock, /TLDA_TASK_DOC_STARTUP_FLUSH_DELAY_MS/)
+  assert.match(startupBlock, /TLDA_TASK_DOC_STARTUP_FLUSH_DELAY_MS \?\? -1/)
   assert.match(startupBlock, /function scheduleStartupTaskDocFlush\(\)/)
+  assert.match(startupBlock, /if \(TASK_DOC_STARTUP_FLUSH_DELAY_MS < 0\) return/)
   assert.match(startupBlock, /setTimeout\(\(\) => \{/)
   assert.match(startupBlock, /fleetStore\.flushTaskDocs\?\.\(\)/)
   assert.match(startupBlock, /scheduleStartupTaskDocFlush\(\)/)
   assert.equal(startupBlock.includes('\nfleetStore.flushTaskDocs?.()\n'), false)
+})
+
+test('session entry search backfill is delayed and avoids all-session startup scan', () => {
+  assert.equal(fleetStoreSource.includes('SELECT DISTINCT session_id FROM session_entries'), false)
+  assert.match(fleetStoreSource, /SELECT 1 FROM session_entries WHERE session_id = \? LIMIT 1/)
+  assert.match(serverSource, /TLDA_SESSION_BACKFILL_STARTUP_DELAY_MS \|\| 60_000/)
+
+  const scheduleStart = serverSource.indexOf('function scheduleSessionEntryBackfill()')
+  assert.notEqual(scheduleStart, -1)
+  const ownerStart = serverSource.indexOf('// Ensure server owner exists', scheduleStart)
+  assert.notEqual(ownerStart, -1)
+  const scheduleBlock = serverSource.slice(scheduleStart, ownerStart)
+
+  assert.match(scheduleBlock, /setTimeout\(\(\) => \{/)
+  assert.match(scheduleBlock, /fleetStore\.backfillSessionEntries/)
+  assert.match(scheduleBlock, /SESSION_BACKFILL_STARTUP_DELAY_MS/)
+  assert.match(scheduleBlock, /scheduleSessionEntryBackfill\(\)/)
 })
 
 test('fleet agent login replies before fanout side effects', () => {

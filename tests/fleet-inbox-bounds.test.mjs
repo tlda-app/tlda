@@ -156,8 +156,8 @@ test('active task and session startup queries use boot-path indexes', () => {
 
     const sessionPlan = store.db.prepare(`
       EXPLAIN QUERY PLAN
-      SELECT DISTINCT session_id FROM session_entries
-    `).all().map(row => row.detail).join('\n')
+      SELECT 1 FROM session_entries WHERE session_id = ? LIMIT 1
+    `).all('session-1').map(row => row.detail).join('\n')
     assert.match(sessionPlan, /idx_session_entries_session/)
     assert.doesNotMatch(sessionPlan, /USE TEMP B-TREE/)
 

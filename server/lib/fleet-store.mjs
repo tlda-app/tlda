@@ -965,6 +965,7 @@ export class FleetStore {
     `);
     this._getAllTasks = this.db.prepare('SELECT * FROM tasks ORDER BY delegated_at DESC');
     this._deleteTask = this.db.prepare('DELETE FROM tasks WHERE id = ?');
+    this._hasSessionEntries = this.db.prepare('SELECT 1 FROM session_entries WHERE session_id = ? LIMIT 1');
     this._getDelegateEventForTask = this.db.prepare(`
       SELECT ${this._EVT} FROM events WHERE task_id = ? AND type = 'delegate' ORDER BY id DESC LIMIT 1
     `);
@@ -2989,9 +2990,6 @@ export class FleetStore {
   }
 
   async backfillSessionEntries(projectsDir) {
-    const indexed = new Set(
-      this.db.prepare('SELECT DISTINCT session_id FROM session_entries').all().map(r => r.session_id)
-    );
     let dirs;
     try { dirs = fs.readdirSync(projectsDir); } catch { return { indexed: 0, skipped: 0 }; }
 
@@ -3002,6 +3000,7 @@ export class FleetStore {
     }
 
     const allFiles = [];
+    let skipped = 0;
     for (const dir of dirs) {
       const dirPath = path.join(projectsDir, dir);
       let files;
@@ -3009,7 +3008,10 @@ export class FleetStore {
       for (const file of files) {
         if (!file.endsWith('.jsonl')) continue;
         const sessionId = file.slice(0, -6);
-        if (indexed.has(sessionId)) continue;
+        if (this._hasSessionEntries.get(sessionId)) {
+          skipped++;
+          continue;
+        }
         allFiles.push({ filePath: path.join(dirPath, file), sessionId });
       }
     }
@@ -3047,7 +3049,7 @@ export class FleetStore {
       }
       await new Promise(r => setImmediate(r));
     }
-    return { indexed: totalIndexed, skipped: allFiles.length - totalIndexed };
+    return { indexed: totalIndexed, skipped: skipped + allFiles.length - totalIndexed };
   }
 
   // Unified search across fleet events (events_fts) and session JSONL text (session_entries_fts).

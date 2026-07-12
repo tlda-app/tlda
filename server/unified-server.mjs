@@ -160,7 +160,7 @@ const serverDaemonOutbox = new ServerDaemonOutbox(fleetStore.db)
 const daemonAgentEvents = new DaemonAgentEvents(fleetStore.db)
 const serverDaemonOutboxInflight = new Map()
 
-const TASK_DOC_STARTUP_FLUSH_DELAY_MS = Number(process.env.TLDA_TASK_DOC_STARTUP_FLUSH_DELAY_MS || 10_000)
+const TASK_DOC_STARTUP_FLUSH_DELAY_MS = Number(process.env.TLDA_TASK_DOC_STARTUP_FLUSH_DELAY_MS ?? -1)
 function scheduleStartupTaskDocFlush() {
   if (TASK_DOC_STARTUP_FLUSH_DELAY_MS < 0) return
   setTimeout(() => {
@@ -170,6 +170,8 @@ function scheduleStartupTaskDocFlush() {
   }, TASK_DOC_STARTUP_FLUSH_DELAY_MS).unref?.()
 }
 scheduleStartupTaskDocFlush()
+
+const SESSION_BACKFILL_STARTUP_DELAY_MS = Number(process.env.TLDA_SESSION_BACKFILL_STARTUP_DELAY_MS || 60_000)
 
 const HOT_OP_WARN_MS = Number(process.env.TLDA_HOT_OP_WARN_MS || 50)
 const eventLoopDelay = monitorEventLoopDelay({ resolution: 20 })
@@ -1787,13 +1789,17 @@ if (fleetStore) {
   fleetStore.onEvent?.((event) => broadcastEvent('fleet-event', event))
 }
 
-// Backfill session_entries from JSONL files (async, non-blocking).
-if (fleetStore) {
+// Backfill session_entries from JSONL files as delayed background work.
+function scheduleSessionEntryBackfill() {
+  if (!fleetStore || SESSION_BACKFILL_STARTUP_DELAY_MS < 0) return
   const CLAUDE_PROJECTS = join(os.homedir(), '.claude', 'projects')
-  fleetStore.backfillSessionEntries(CLAUDE_PROJECTS).then(({ indexed, skipped }) => {
-    if (indexed > 0) console.log(`[fleet-store] search backfill: indexed ${indexed} sessions (${skipped} already indexed)`)
-  }).catch(e => console.error('[fleet-store] search backfill failed:', e.message))
+  setTimeout(() => {
+    fleetStore.backfillSessionEntries(CLAUDE_PROJECTS).then(({ indexed, skipped }) => {
+      if (indexed > 0) console.log(`[fleet-store] search backfill: indexed ${indexed} sessions (${skipped} already indexed)`)
+    }).catch(e => console.error('[fleet-store] search backfill failed:', e.message))
+  }, SESSION_BACKFILL_STARTUP_DELAY_MS).unref?.()
 }
+scheduleSessionEntryBackfill()
 
 // Ensure server owner exists as a human agent in the DB on startup
 if (fleetStore) {
