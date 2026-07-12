@@ -31,6 +31,7 @@ import { dispatchBuild } from '../lib/build-dispatch.mjs'
 import { outlineForRegion, regionFromSpan, structuralLeaves } from '../lib/outline/outline.mjs'
 import { buildModel, assertRoundTrip } from '../lib/outline/model.mjs'
 import { findTextNearSourceLine, sourceTextSpanToPdfSpans } from '../lib/synctex-query.mjs'
+import { compareHighlightFeedbackBySource, highlightFeedbackFromShape } from '../lib/highlight-feedback.mjs'
 import { buildMarkdown, buildHtml, buildSlides } from '../lib/format-builders.mjs'
 import { realizeProjectMarkdownArtifact, writeProjectMarkdownArtifact } from '../lib/project-artifact-materializer.mjs'
 import { TASK_DOC_FILENAME, TASK_DOC_PROJECT_ID, materializeTaskDocs } from '../lib/task-doc-materializer.mjs'
@@ -1030,43 +1031,15 @@ router.get('/:name/signal/:key', requireRead, (req, res) => {
 })
 
 // GET /:name/highlight-feedback — structured feedback from highlight shapes
-// Maps highlight colors to semantic types (approve/reject/question/expand/comment/info)
-const HIGHLIGHT_THEMES = {
-  'light-green': { type: 'approve', label: 'Good, keep this' },
-  'green':       { type: 'approve', label: 'Good, keep this' },
-  'light-red':   { type: 'reject', label: 'Fix this' },
-  'red':         { type: 'reject', label: 'Fix this' },
-  'yellow':      { type: 'question', label: 'Question / unsure' },
-  'light-violet': { type: 'expand', label: 'Develop further' },
-  'violet':      { type: 'expand', label: 'Develop further' },
-  'orange':      { type: 'comment', label: 'General comment' },
-  'light-blue':  { type: 'info', label: 'Note / reference' },
-  'blue':        { type: 'info', label: 'Note / reference' },
-}
 router.get('/:name/highlight-feedback', requireRead, async (req, res) => {
   const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Not found' })
 
   const records = await getRoomRecords(syncRoomName(req.params.name), 'highlight')
   const feedback = records
-    .filter(shape => shape.meta?.highlightText)
-    .map(shape => {
-      const color = shape.props?.color || 'yellow'
-      const theme = HIGHLIGHT_THEMES[color] || { type: 'comment', label: 'General comment' }
-      return {
-        type: theme.type,
-        label: theme.label,
-        color,
-        shapeId: shape.id,
-        text: shape.meta.highlightText || '',
-        highlightLines: shape.meta.highlightLines || [],
-        sourceLine: shape.meta.sourceLine ?? null,
-        addressed: shape.meta.addressed === true,
-        createdAt: shape.meta.createdAt ?? null,
-        opacity: shape.opacity ?? 1,
-      }
-    })
-    .sort((a, b) => (a.sourceLine || 0) - (b.sourceLine || 0))
+    .map(highlightFeedbackFromShape)
+    .filter(Boolean)
+    .sort(compareHighlightFeedbackBySource)
 
   res.json({ doc: req.params.name, feedback })
 })
