@@ -2625,15 +2625,6 @@ export async function handleFleetTool(name, args) {
     }
 
     const amendHint = lastEventId != null ? ` (message id ${lastEventId} — chat({ amend_id: ${lastEventId} }) to edit it in place)` : '';
-    if (!agents.length || sent.some(id => !agents.some(a => a.id === id))) {
-      try {
-        agents = (await sendWS('store-agents')) || agents;
-      } catch (e) {
-        // Best-effort enrichment only: the chat already delivered; keep the
-        // id-only send receipt rather than turning a sent message into failure.
-        console.error(`[fleet] recipient mode lookup after chat send failed: ${e.message}`);
-      }
-    }
     const sentSummary = formatRecipientStatusSummary(sent, agents, receipts);
     const deliveryText = receipts.length
       ? `.\n${sentSummary.split(', ').join('\n')}`
