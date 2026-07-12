@@ -2630,6 +2630,10 @@ async function runFleetSpawn(spawnArgs) {
       }
       throw e
     }
+    const boundResume = await bindLifecycleCodexResumeIdentity(result, { ledger, cwd, name })
+    if (result?.harness === 'codex' && result.fleetId && result.tmuxSession && !boundResume.bound) {
+        console.error(red(`warning: launched ${name || result.fleetId}, but could not bind a Codex resume identity yet; wake may fail until daemon session ingestion catches up`))
+    }
     if (!preallocatedAgentId || result.fleetId !== preallocatedAgentId) {
       await ledger.set(result.fleetId, {
         spawnPolicy: grant.grantedPolicy,
@@ -2656,6 +2660,44 @@ async function runFleetSpawn(spawnArgs) {
   } finally {
     if (ledger) await ledger.close()
   }
+}
+
+export async function bindLifecycleCodexResumeIdentity(result, {
+  ledger,
+  cwd,
+  name,
+  resolveIdentity = null,
+  timeoutMs = Number(process.env.TLDA_SPAWN_RESUME_ID_TIMEOUT_MS || 10000),
+  intervalMs = 250,
+} = {}) {
+  if (!result?.fleetId || !result.tmuxSession || result.harness !== 'codex' || result.resumeId) {
+    return { bound: false, skipped: true }
+  }
+  const resolver = resolveIdentity || (await import('../agent-launch/agent-launch.mjs')).resolveLiveCodexSessionIdentity
+  const deadline = Date.now() + timeoutMs
+  let identity = null
+  while (Date.now() <= deadline) {
+    identity = await resolver({
+      agent: {
+        id: result.fleetId,
+        friendly_name: name || result.name || result.fleetId,
+        cwd,
+      },
+      tmuxSession: result.tmuxSession,
+    })
+    if (identity?.sessionId) break
+    await new Promise(resolve => setTimeout(resolve, intervalMs))
+  }
+  if (!identity?.sessionId) return { bound: false, identity }
+  ledger.setSessionSync(result.fleetId, {
+    sessionId: identity.sessionId,
+    sessionKind: 'codex',
+    sessionPath: identity.jsonlPath,
+    cwd,
+    friendlyName: name || result.name || result.fleetId,
+  })
+  result.resumeId = identity.sessionId
+  return { bound: true, identity }
 }
 
 function flagFromRaw(rawArgs, name) {
