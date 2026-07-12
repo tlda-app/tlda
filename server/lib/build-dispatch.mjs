@@ -8,6 +8,7 @@ import { updateProject, getProjectsDir } from './project-store.mjs'
 import { writeSentinel } from './sentinel.mjs'
 import { loadConfig } from '../../shared/config.mjs'
 import { makeTransport } from './build-transport.mjs'
+import { createBuildQueue } from './build-queue.mjs'
 
 // The real server-side side-effect functions, keyed the way the worker reports
 // them. A build that runs in the worker calls these here, in the server process.
@@ -53,13 +54,24 @@ const SINKS = { broadcastSignal, putShape, patchShape, writeSentinel, emitGlobal
  * the module-level exports which bind the configured transport at load time.
  */
 export function createDispatcher(transport) {
-  const _inFlight = new Map() // name -> transport handle { cancel() }
-  const _pending = new Map()  // name -> latest priorityPages waiting behind the in-flight build
+  return createDispatcherWithOptions(transport)
+}
 
-  /**
-   * Dispatch a build for `name`. Resolves when the build (and any build that
-   * coalesced behind it) completes. The heavy work runs via the configured transport.
-   */
+export function createDispatcherWithOptions(transport, options = {}) {
+  const queue = createBuildQueue({
+    transport,
+    getProjectsDir,
+    relayMessage(name, msg) {
+      if (msg?.t === 'report') {
+        try { SINKS[msg.m]?.(...(msg.a || [])) }
+        catch (e) {
+          // One side-effect failure must not hide worker exit/completion from waiters.
+          console.error(`[build-dispatch] relay ${msg.m} for ${name} failed: ${e.message}`)
+        }
+      }
+    },
+  }, options)
+
   async function dispatchBuild(name, { priorityPages } = {}) {
     // Resolve the camera/viewport priority HERE (the worker has no live rooms),
     // so the worker never needs a round-trip back for it.
@@ -70,67 +82,17 @@ export function createDispatcher(transport) {
       } catch { priorityPages = priorityPages || undefined } // no viewport signal yet → no priority
     }
 
-    // Coalesce: a build is already running for this doc — record the latest
-    // priority pages and let the in-flight build's completion drain it.
-    if (_inFlight.has(name)) {
-      _pending.set(name, priorityPages || null)
-      return
-    }
-    return _runWorker(name, priorityPages)
+    return queue.dispatchBuild(name, { priorityPages })
   }
 
-  function _runWorker(name, priorityPages) {
-    return new Promise((resolve) => {
-      function relay(msg) {
-        if (msg?.t === 'report') {
-          try { SINKS[msg.m]?.(...(msg.a || [])) }
-          catch (e) { console.error(`[build-dispatch] relay ${msg.m} for ${name} failed: ${e.message}`) }
-        }
-      }
-
-      function logErr(e) {
-        console.error(`[build-dispatch] worker error for ${name}: ${e.message}`)
-      }
-
-      function drainCoalesced(_code) {
-        _inFlight.delete(name)
-        resolve()
-        // Drain a coalesced rebuild, if one queued up while this ran.
-        if (_pending.has(name)) {
-          const pp = _pending.get(name)
-          _pending.delete(name)
-          _runWorker(name, pp)
-        }
-      }
-
-      const handle = transport.start(
-        { name, priorityPages, projectsDir: getProjectsDir() },
-        { onMessage: relay, onError: logErr, onExit: drainCoalesced }
-      )
-      _inFlight.set(name, handle)
-    })
-  }
-
-  /** Cancel the in-flight build for a doc — killing the worker kills its children. */
-  function killBuild(name) {
-    const handle = _inFlight.get(name)
-    if (handle) handle.cancel()
-    _pending.delete(name)
-  }
-
-  /** Kill every in-flight build worker (server shutdown). */
-  function killAllDispatchedBuilds() {
-    for (const handle of _inFlight.values()) handle.cancel()
-    _inFlight.clear()
-    _pending.clear()
-  }
-
-  function isBuilding(name) { return _inFlight.has(name) }
-
-  return { dispatchBuild, killBuild, killAllDispatchedBuilds, isBuilding }
+  return { ...queue, dispatchBuild }
 }
 
 // Select the transport once at server start — no per-call branching.
-const _default = createDispatcher(makeTransport(loadConfig()))
+const _config = loadConfig()
+const _default = createDispatcherWithOptions(makeTransport(_config), {
+  maxConcurrency: _config.buildMaxConcurrency ?? _config.build?.maxConcurrency,
+  priority: _config.buildPriority ?? _config.build?.priority,
+})
 
 export const { dispatchBuild, killBuild, killAllDispatchedBuilds, isBuilding } = _default

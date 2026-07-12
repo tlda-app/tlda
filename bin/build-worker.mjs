@@ -9,6 +9,19 @@
 
 import { runBuild, setBuildReporter } from '../server/lib/build-runner.mjs'
 import { initProjectStore } from '../server/lib/project-store.mjs'
+import { setPriority, constants as osConstants } from 'node:os'
+
+const BUILD_PRIORITY = Number(process.env.TLDA_BUILD_PRIORITY ?? 10)
+if (Number.isFinite(BUILD_PRIORITY)) {
+  try {
+    const low = osConstants.priority.PRIORITY_LOW
+    const belowNormal = osConstants.priority.PRIORITY_BELOW_NORMAL
+    setPriority(Math.min(low, Math.max(belowNormal, BUILD_PRIORITY)))
+  } catch (e) {
+    // Priority lowering is best-effort; the worker must still run when the OS denies it.
+    console.warn(`[build-worker] failed to lower priority: ${e.message}`)
+  }
+}
 
 // Route every side-effect back to the parent. Ordered IPC (process.send) keeps
 // the sentinel-then-reload ordering the pipeline relies on.

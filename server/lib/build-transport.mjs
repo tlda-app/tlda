@@ -14,7 +14,10 @@ export const ForkTransport = {
   start(job, { onMessage, onError, onExit }) {
     let child
     try {
-      child = fork(WORKER, [], { stdio: ['ignore', 'inherit', 'inherit', 'ipc'] })
+      child = fork(WORKER, [], {
+        stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
+        env: { ...process.env, TLDA_BUILD_PRIORITY: String(job.priority ?? 10) },
+      })
     } catch (e) {
       console.error(`[build-dispatch] failed to fork worker for ${job.name}: ${e.message}`)
       // Defer so start() returns before onExit fires — keeps _inFlight ordering safe.
