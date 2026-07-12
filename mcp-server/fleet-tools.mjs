@@ -2035,6 +2035,7 @@ export async function handleFleetTool(name, args) {
   reportStatus('tool_call', name);
 
   try {
+    await flushFleetTransportOpportunistically(name);
 
   // ==== Registration & Identity ====
 
@@ -4481,7 +4482,7 @@ function scheduleFleetTransportFlush(delayMs = 1000) {
   }, Math.max(0, delayMs));
 }
 
-async function flushFleetTransport({ operationId = null, limit = 50 } = {}) {
+async function flushFleetTransport({ operationId = null, limit = 50, deadlineMs = 5000 } = {}) {
   if (!AGENT_ID) return null;
   if (_fleetTransportFlushInFlight && !operationId) return _fleetTransportFlushInFlight;
 
@@ -4497,7 +4498,7 @@ async function flushFleetTransport({ operationId = null, limit = 50 } = {}) {
     for (const row of rows) {
       outbox.markAttempt(row.operationId);
       try {
-        const result = await sendWS(row.type, row.params, { deadlineMs: 5000 });
+        const result = await sendWS(row.type, row.params, { deadlineMs });
         if (result) {
           outbox.markAccepted(row.operationId, result);
           if (!operationId || row.operationId === operationId) targetResult = result;
@@ -4547,6 +4548,15 @@ async function sendDurableFleet(type, params = {}, opts = {}) {
   }
   scheduleFleetTransportFlush(1000);
   return { ok: true, queued: true, operation_id: operationId };
+}
+
+async function flushFleetTransportOpportunistically(toolName) {
+  if (!AGENT_ID || toolName === 'login') return;
+  try {
+    await flushFleetTransport({ limit: 20, deadlineMs: 1500 });
+  } catch (e) {
+    process.stderr.write(`[fleet-transport] opportunistic flush before ${toolName} failed: ${e.message}\n`);
+  }
 }
 
 async function _flushUnread() {
