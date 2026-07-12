@@ -15,6 +15,24 @@ test('fleet socket connect has no roster or task init frame ahead of login repli
   assert.match(connectBlock, /ws\.on\('message', \(raw\) =>/)
 })
 
+test('fleet agent login replies before fanout side effects', () => {
+  const loginStart = serverSource.indexOf("if (type === 'login') {")
+  assert.notEqual(loginStart, -1)
+  const agentLoginStart = serverSource.indexOf('if (agent_id) {', loginStart)
+  assert.notEqual(agentLoginStart, -1)
+  const nameLoginStart = serverSource.indexOf('if (!name || typeof name', agentLoginStart)
+  assert.notEqual(nameLoginStart, -1)
+  const agentLoginBlock = serverSource.slice(agentLoginStart, nameLoginStart)
+
+  const replyAt = agentLoginBlock.indexOf('reply({ ok: true')
+  assert.notEqual(replyAt, -1)
+  for (const sideEffect of ['fleetStore.share', 'broadcastState()', 'broadcastDaemonAgentsUpdated()']) {
+    const sideEffectAt = agentLoginBlock.indexOf(sideEffect)
+    assert.notEqual(sideEffectAt, -1)
+    assert.ok(replyAt < sideEffectAt, `${sideEffect} must not run before the login reply`)
+  }
+})
+
 test('fleet socket negotiates permessage-deflate while client loads roster by page', () => {
   assert.match(serverSource, /const fleetWss = new WebSocketServer\(\{[\s\S]*perMessageDeflate: \{ threshold: 1024 \}/)
   assert.match(clientSource, /\/api\/agents\?limit=100/)

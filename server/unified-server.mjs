@@ -4668,6 +4668,8 @@ async function handleFleetWsMessage(ws, msg) {
         agent.session_ids = [...(agent.session_ids || []), session_id].slice(-10)
       }
       fleetStore.upsertAgent(agent)
+      const storedAgent = fleetStore.getAgent?.(agent_id) || agent
+      reply({ ok: true, agent: storedAgent, assigned_name: storedAgent.friendly_name || null })
       fleetStore.share?.({ type: 'login', agent_id, from: agent_id, to: agent_id, text: `${agent.friendly_name || agent_id} logged in` })
       markAgentAlive(agent_id)
       touchActivity(agent_id)
@@ -4681,8 +4683,6 @@ async function handleFleetWsMessage(ws, msg) {
       spawnLibrarian.observeLogin(fleetStore.getAgent?.(agent_id) || agent)
       broadcastState()
       if (agent.machine_id) broadcastDaemonAgentsUpdated()
-      const storedAgent = fleetStore.getAgent?.(agent_id) || agent
-      reply({ ok: true, agent: storedAgent, assigned_name: storedAgent.friendly_name || null })
       return
     }
 
