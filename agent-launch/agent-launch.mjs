@@ -6,7 +6,8 @@ import { resolveSpawnGrant } from '../server/lib/spawn-policy.mjs'
 import { detectSpawnStartupFailureTranscript } from '../agent-runtime/daemon-guards.mjs'
 import { probeSpawnAvailability } from './availability.mjs'
 import { newFleetId } from './identity.mjs'
-import { readDaemonConfigForCwd } from './permission-ledger.mjs'
+import { readDaemonConfigForCwd, withDaemonModelAliases } from './permission-ledger.mjs'
+import { resolveModelSpec } from './models.mjs'
 import { isIntentionalEmptyPermissionSet, permissionSetConfersNothing } from './permissions.mjs'
 
 const execFileP = promisify(execFile)
@@ -106,7 +107,8 @@ export function createAgentLauncher({
     const sessionId = session || session_id
     const agentName = name || (sessionId ? `session-${String(sessionId).slice(0, 8)}` : `agent-${Date.now().toString(36).slice(-4)}`)
     let launchModel = model
-    let launchKind = kind
+    let launchKind = null
+    let launchModelSpec = null
     if (activeSpawns.has(agentName)) {
       const age = Date.now() - activeSpawns.get(agentName)
       if (age < 90_000) {
@@ -143,7 +145,13 @@ export function createAgentLauncher({
     let spawnConfig
     try {
       const config = loadConfig()
-      spawnConfig = config
+      const daemonConfig = readDaemonConfigForCwd(resolvedCwd)
+      spawnConfig = withDaemonModelAliases(config, daemonConfig)
+      if (model || (!respawn && !refresh)) {
+        launchModelSpec = resolveModelSpec(model, { config: spawnConfig })
+        launchModel = launchModelSpec.id
+        launchKind = launchModelSpec.harness
+      }
       if (respawn) {
         const own = agent_id ? permissionLedger.get(agent_id) : null
         if (!own) {
@@ -166,10 +174,10 @@ export function createAgentLauncher({
         // "cage everyone." The hard refuse below (SPAWN_NO_GRANT) is the backstop that
         // makes this loud instead of silent — do not remove it, and do not paper over an
         // empty daemon.yaml by defaulting a permissive grant here.
-        const projectDefaultProfile = resolvedCwd ? readDaemonConfigForCwd(resolvedCwd)?.default : null
+        const projectDefaultProfile = daemonConfig?.default || null
         const grantConfig = projectDefaultProfile
-          ? { ...config, spawnPolicy: { ...(config?.spawnPolicy || {}), projectProfiles: { ...((config?.spawnPolicy || {}).projectProfiles || {}), [resolvedCwd]: projectDefaultProfile } } }
-          : config
+          ? { ...spawnConfig, spawnPolicy: { ...(spawnConfig?.spawnPolicy || {}), projectProfiles: { ...((spawnConfig?.spawnPolicy || {}).projectProfiles || {}), [resolvedCwd]: projectDefaultProfile } } }
+          : spawnConfig
         grant = resolveSpawnGrant({
           requestedPermission: requestedPermission || (policy != null ? 'write' : undefined),
           requestedPermissions,
@@ -179,6 +187,7 @@ export function createAgentLauncher({
           spawnerPermissionSet: spawnerGrant?.permissionSet,
           model: launchModel,
           kind: launchKind,
+          modelCap: launchModelSpec?.cap || null,
           config: grantConfig,
           doc,
           project: projectForGrant,
@@ -262,6 +271,7 @@ export function createAgentLauncher({
           name: agentName,
           model: launchModel,
           kind: launchKind,
+          modelSpec: launchModelSpec,
           config: spawnConfig,
           activeConfigName,
           permissionLedger,
@@ -373,7 +383,7 @@ export function createAgentLauncher({
   return {
     handlers: {
       spawn,
-      'spawn-availability': () => probeSpawnAvailability(),
+      'spawn-availability': (params = {}) => probeSpawnAvailability({ cwd: params?.cwd || null }),
     },
     probeSpawnStartupFailure,
   }

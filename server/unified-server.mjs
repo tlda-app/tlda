@@ -45,6 +45,7 @@ import { DEFAULT_PORT, getActiveConfigName, getFleetServerUrl, hasTls, loadConfi
 import { normalizeUsageStatus } from '../shared/usage-status.mjs'
 import { BARE_METADATA, resolveAsset } from '../shared/doc-assets.mjs'
 import { listModels as listSpawnModels } from '../agent-launch/models.mjs'
+import { readDaemonConfig, readDaemonConfigForCwd, withDaemonModelAliases } from '../agent-launch/permission-ledger.mjs'
 import { labelsForAgent, parseFilter, parseMessageFilter, evalExpr } from '../shared/fleet-labels.mjs'
 import { parseAgentSelector as parseUnifiedAgentSelector } from '../shared/unified-filter-grammar.mjs'
 import { phaseFromName, baseName, PHASES, prettyNameForFriendlyName } from '../shared/lineage-name.mjs'
@@ -1368,7 +1369,7 @@ function deliverSpawnMailboxCompletion(entry, status, detail) {
 async function performSpawnRelay(caller, msg) {
   if (!caller?.id) throw new Error('spawn caller identity is required')
   const {
-    name, agent, model, doc, cwd, respawn, fresh, refresh, effort, kind, mode,
+    name, agent, model, doc, cwd, respawn, fresh, refresh, effort, mode,
     permission, spawnPermission, permissions, requestedPermissions, policy, session, sessionId, session_id, enroll, routeAgent,
     iLikeToLiveDangerously, phase, mailboxTarget,
   } = msg || {}
@@ -1399,8 +1400,7 @@ async function performSpawnRelay(caller, msg) {
   if (refresh && !refreshTarget) refreshTarget = fleetStore?.findAgent(spawnName)
   if (!sessionMode && (shouldRespawn || refresh) && !routeTarget) routeTarget = fleetStore?.findAgent(spawnName) || null
   if (!sessionMode && (shouldRespawn || refresh) && !routeTarget) throw new Error(`spawn target not found: ${spawnName}`)
-  const spawnKind = kind || refreshTarget?.metadata?.kind
-  const requestedSpec = { model, kind: spawnKind, project: doc }
+  const requestedSpec = { model, project: doc }
   const requestedPermission = permission || spawnPermission || null
   const storedRespawnPermissions = (!sessionMode && !fresh && routeTarget?.metadata)
     ? (routeTarget.metadata.requestedPermissions || routeTarget.metadata.permissionProfile || routeTarget.metadata.spawnPolicy || null)
@@ -1451,7 +1451,6 @@ async function performSpawnRelay(caller, msg) {
     pretty_name: pendingAgentId ? prettyNameForFriendlyName(spawnName) : undefined,
     name: resolved.name || undefined,
     model: model || undefined,
-    kind: spawnKind || undefined,
     doc: doc || undefined,
     cwd: cwd || undefined,
     session_id: requestedSession || undefined,
@@ -2377,14 +2376,41 @@ app.get('/api/fleet/viewing', requireRead, (req, res) => {
 // Spawn model list for the spawn UI's autocomplete + validation. Single source
 // of truth is agent-launch/models.mjs, so the UI never drifts from what spawn
 // actually accepts. Shape: { default, models:[{alias,id,verified,kind}], verified:[id…] }.
+function queryString(value) {
+  return typeof value === 'string' && value.trim() ? value.trim() : null
+}
+
+function resolveSpawnModelContext({ doc, cwd } = {}) {
+  const directCwd = queryString(cwd)
+  if (directCwd) return { doc: queryString(doc), cwd: directCwd, error: null }
+  const docName = queryString(doc)
+  if (!docName) return { doc: null, cwd: null, error: null }
+  const project = readProject(docName)
+  if (!project) return { doc: docName, cwd: null, error: `no project '${docName}'` }
+  return { doc: docName, cwd: project.sourceDir || null, error: null }
+}
+
 app.get('/api/fleet/models', requireRead, (req, res) => {
-  res.json(listSpawnModels())
+  const context = resolveSpawnModelContext({ doc: req.query.doc, cwd: req.query.cwd })
+  if (context.error) {
+    res.status(404).json({ error: context.error })
+    return
+  }
+  const daemonConfig = context.cwd ? readDaemonConfigForCwd(context.cwd) : readDaemonConfig()
+  res.json(listSpawnModels(withDaemonModelAliases(loadConfig(), daemonConfig)))
 })
 
 app.get('/api/fleet/spawn-availability', requireRead, async (req, res) => {
+  const context = resolveSpawnModelContext({ doc: req.query.doc, cwd: req.query.cwd })
+  if (context.error) {
+    res.status(404).json({ schema: 1, ok: false, error: context.error, aliases: [], defaultAlias: '' })
+    return
+  }
   if (req.query.target === 'fresh-spawn-current') {
     const result = await resolveFreshSpawnAvailabilityModels({
       userId: req.query.user,
+      doc: context.doc,
+      cwd: context.cwd,
       fleetStore,
       daemonConnections,
       // Resilient: a mint models query shouldn't fail because the daemon WS is mid-reconnect.
@@ -2400,7 +2426,9 @@ app.get('/api/fleet/spawn-availability', requireRead, async (req, res) => {
   const results = {}
   await Promise.all(machines.map(async (machineId) => {
     try {
-      results[machineId] = await sendRpc(machineId, 'spawn-availability', {})
+      results[machineId] = await sendRpc(machineId, 'spawn-availability', {
+        ...(context.cwd ? { cwd: context.cwd } : {}),
+      })
     } catch (e) {
       results[machineId] = { ok: false, error: e.message || String(e) }
     }

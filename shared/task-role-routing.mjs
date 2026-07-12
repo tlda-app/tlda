@@ -80,16 +80,6 @@ export function inferTaskRole({ template, description, message, successCriteria 
   return null;
 }
 
-export function inferHarnessKind({ kind, model } = {}) {
-  const requested = String(kind || '').toLowerCase();
-  if (['claude', 'codex', 'goose'].includes(requested)) return requested;
-
-  const selected = String(model || '').toLowerCase();
-  if (/^(gpt|o[0-9]|codex)\b/.test(selected) || selected.includes('gpt-5.5')) return 'codex';
-  if (selected.includes('/') || selected.startsWith('deepseek') || selected.startsWith('kimi') || selected.startsWith('qwen') || selected.startsWith('glm') || selected.startsWith('minimax') || selected.startsWith('mistral')) return 'goose';
-  return null;
-}
-
 export function isNonClaudeHarness(kind) {
   return kind === 'codex' || kind === 'goose';
 }

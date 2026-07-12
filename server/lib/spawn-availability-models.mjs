@@ -2,6 +2,8 @@ import { flattenAvailableSpawnModels } from '../../shared/spawn-model-options.mj
 
 export async function resolveFreshSpawnAvailabilityModels({
   userId,
+  cwd = null,
+  doc = null,
   fleetStore,
   daemonConnections,
   sendRpc,
@@ -39,12 +41,19 @@ export async function resolveFreshSpawnAvailabilityModels({
     // only route.machine_id drops the env — sendRpc then has no env_name and rejects
     // with "No fleet-daemon connected for <machine>:(unknown)", which surfaced as the
     // mint UI's "models unavailable" even though the daemon is connected at mini:default.
-    const capabilities = await sendRpc(route.machine_id, 'spawn-availability', { daemon_env_name: route.env_name })
+    const capabilities = await sendRpc(route.machine_id, 'spawn-availability', {
+      daemon_env_name: route.env_name,
+      ...(cwd ? { cwd } : {}),
+    })
     const flattened = flattenAvailableSpawnModels(capabilities)
     return {
       ok: true,
       machine_id: route.machine_id,
       route: route.source || null,
+      context: {
+        doc: doc || null,
+        cwd: cwd || null,
+      },
       capabilities,
       aliases: flattened.aliases,
       defaultAlias: flattened.defaultAlias,

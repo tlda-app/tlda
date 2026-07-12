@@ -1,6 +1,4 @@
 import { createLiveStore } from './live-store.ts'
-import { canonicalModel, classifyModel, normalizeKind, type Kind } from './harness.ts'
-
 export type LivenessState = 'alive' | 'dead' | 'spawning' | 'wedged' | 'unknown'
 export type SpawnFailureReason = 'launch-failed' | 'login-timeout' | 'policy-denied' | 'name-bounced'
 
@@ -294,15 +292,9 @@ export function specMismatch(
   opts: { projectForCwd?: (cwd?: string | null) => string | null } = {}
 ): boolean {
   const meta = (agent.metadata || {}) as Record<string, unknown>
-  const requestedModel = requested.model ? canonicalModel(requested.model, requested.kind) : null
-  const existingModel = meta.model ? canonicalModel(meta.model as string, meta.kind as string | undefined) : null
+  const requestedModel = requested.model ? String(requested.model).trim() : null
+  const existingModel = meta.model ? String(meta.model).trim() : null
   if (requestedModel && existingModel && requestedModel !== existingModel) return true
-
-  const requestedKind = requested.kind
-    ? normalizeKind(requested.kind, classifyModel({ model: requested.model }).family as Kind)
-    : null
-  const existingKind = meta.kind ? normalizeKind(meta.kind as string, classifyModel({ model: meta.model }).family as Kind) : null
-  if (requestedKind && existingKind && requestedKind !== existingKind) return true
 
   const requestedProject = requested.project || null
   const existingProject = opts.projectForCwd?.(agent.cwd) || null

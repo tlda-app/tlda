@@ -51,7 +51,6 @@ import { classifyLaunder } from '../agent-runtime/launder-classifier.mjs';
 import {
   applyNonClaudeRolePack,
   crossLaneBlock,
-  inferHarnessKind,
 } from '../shared/task-role-routing.mjs';
 import { parseFilter, parseMessageFilter, evalExpr } from '../shared/fleet-labels.mjs';
 import { baseMacros } from '../shared/katex-base-macros.mjs';
@@ -1241,9 +1240,8 @@ export function getFleetTools() {
             properties: {
               name: { type: 'string', description: 'Agent name (auto-generated if omitted)' },
               cwd: { type: 'string', description: 'Working directory (inherits from caller if omitted)' },
-              model: { type: 'string', description: 'Model alias/id. Call spawn_models() for valid values. Common aliases: opus48/sonnet/haiku for Claude, gpt-5.5 or gpt for Codex, deepseek for Goose deepseek/deepseek-v4-pro.' },
+              model: { type: 'string', description: 'Configured daemon model alias. Call spawn_models() for valid values.' },
               effort: { type: 'string', description: 'Effort level: low|medium|high|xhigh|max (default: inherit global config)' },
-              kind: { type: 'string', description: 'Agent runtime/harness (claude, goose, codex).' },
               permission: { type: 'string', ...(spawnPermissionText.profileNames.length ? { enum: spawnPermissionText.profileNames } : {}), description: spawnPermissionText.permission },
               permissions: { type: 'string', description: spawnPermissionText.permissions },
             },
@@ -1480,11 +1478,10 @@ export function getFleetTools() {
     },
     {
       name: 'spawn_models',
-      description: 'List valid fleet spawn model aliases grouped by harness/kind. Use before spawn/delegate when choosing a model; aliases include Claude (opus48, sonnet, haiku), Codex (gpt-5.5, gpt), and Goose/OpenRouter (deepseek -> deepseek/deepseek-v4-pro).',
+      description: 'List configured daemon fleet spawn model aliases grouped by their daemon-declared harness.',
       inputSchema: {
         type: 'object',
         properties: {
-          kind: { type: 'string', description: 'Optional harness filter: claude, codex, or goose.' },
           verified_only: { type: 'boolean', description: 'Only show verified tool-calling models. Default false.' },
         },
       },
@@ -1498,10 +1495,9 @@ export function getFleetTools() {
           agent: { type: 'string', description: 'Agent name to respawn (default behavior).' },
           fresh: { type: 'boolean', description: 'Create a fresh agent instead of respawning.' },
           name: { type: 'string', description: 'Name for the new agent (fresh mode only).' },
-          model: { type: 'string', description: 'Model alias/id. Call spawn_models() for valid values. Common aliases: opus48/sonnet/haiku for Claude, gpt-5.5 or gpt for Codex, deepseek for Goose deepseek/deepseek-v4-pro.' },
+          model: { type: 'string', description: 'Configured daemon model alias. Call spawn_models() for valid values.' },
           cwd: { type: 'string', description: 'Working directory (fresh mode only).' },
           effort: { type: 'string', description: 'Effort level: low|medium|high|xhigh|max (default: inherit global config).' },
-          kind: { type: 'string', description: 'Agent runtime/harness (claude, goose, codex).' },
           permission: { type: 'string', ...(spawnPermissionText.profileNames.length ? { enum: spawnPermissionText.profileNames } : {}), description: spawnPermissionText.permission },
           permissions: {
             type: 'string',
@@ -2159,18 +2155,13 @@ export async function handleFleetTool(name, args) {
   };
 
   async function harnessKindForDelegateTarget(agent, spawnOpts) {
-    const fromSpawn = inferHarnessKind(spawnOpts || {});
-    if (fromSpawn) return fromSpawn;
     if (!agent) return null;
     try {
       const agents = await sendWS('store-agents');
       const target = Array.isArray(agents)
         ? agents.find(a => a.id === agent || a.friendly_name === agent)
         : null;
-      return inferHarnessKind({
-        kind: target?.metadata?.kind,
-        model: target?.metadata?.model || target?.model,
-      });
+      return target?.metadata?.kind || null;
     } catch (e) {
       process.stderr.write(`[fleet] could not resolve delegate target harness: ${e.message}\n`);
       return null;
@@ -2301,7 +2292,6 @@ export async function handleFleetTool(name, args) {
           name: agentName,
           model: spawnOpts.model,
           effort: spawnOpts.effort,
-          kind: spawnOpts.kind,
           cwd: agentCwd,
           permission: spawnOpts.permission,
           requestedPermissions: spawnOpts.permissions,
@@ -3548,7 +3538,6 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
       const catalog = await getSpawnModelCatalog({ maxAgeMs: 0 });
       const text = formatSpawnModelSummary(catalog, {
         verifiedOnly: !!args.verified_only,
-        kind: args.kind || null,
       });
       const defaultModel = catalog?.default ? `\nDefault: ${catalog.default}` : '';
       return { content: [{ type: 'text', text: `${text}${defaultModel}` }] };
@@ -3583,7 +3572,6 @@ If it's clean: call \`report(pass=true, summary="...")\` with a structured summa
         agent: args.agent,
         name: args.name,
         model: args.model,
-        kind: args.kind,
         effort: args.effort,
         cwd: args.cwd,
         mode: args.mode,

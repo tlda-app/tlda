@@ -7,7 +7,6 @@ import { getActiveConfigName, getFleetServerUrl } from '../shared/config.mjs'
 import { tldaFetch } from '../shared/http-client.mjs'
 import { resolveCodexResumeHandle } from '../bin/lib/codex-resume-resolver.mjs'
 import { findClaudeSession, isRespawnIdentityCaughtUp } from '../bin/lib/spawn/resume.mjs'
-import { inferHarnessKind } from '../bin/lib/spawn/models.mjs'
 
 const DEFAULT_CONFIG_DIR = path.join(os.homedir(), '.config', 'tlda')
 
@@ -68,11 +67,7 @@ function normalizeAgent(row) {
 }
 
 function resolveKind(agent) {
-  try {
-    return agent.kind || inferHarnessKind(null, agent.model || agent.metadata?.model || null)
-  } catch {
-    return agent.kind || null
-  }
+  return agent.kind || null
 }
 
 function fileExists(file) {

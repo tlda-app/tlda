@@ -52,11 +52,10 @@ export function validateSpawnModelSelection({ model, kind } = {}, catalog) {
   const rawKind = String(kind || '').trim().toLowerCase()
   const normalized = normalizeSpawnModelCatalog(catalog)
 
-  if (rawKind && !normalized.some((m) => m.kind === rawKind)) {
-    const kinds = [...new Set(normalized.map((m) => m.kind))].sort()
+  if (rawKind) {
     return {
       ok: false,
-      error: `Unknown spawn kind "${kind}". Valid kinds: ${kinds.join(', ')}.`,
+      error: 'Spawn kind is not a caller option. Choose a configured daemon model alias; the daemon model spec decides the harness.',
     }
   }
 
@@ -64,36 +63,12 @@ export function validateSpawnModelSelection({ model, kind } = {}, catalog) {
 
   const matches = normalized.filter((m) => (m.alias === rawModel || m.id === rawModel) && m.available)
   if (matches.length === 0) {
-    if (rawModel.includes('/')) {
-      if (!rawKind || rawKind === 'goose') {
-        return { ok: true, model: { alias: rawModel, id: rawModel, kind: 'goose', verified: false, raw: true } }
-      }
-      return {
-        ok: false,
-        error: [
-          `Raw vendor/model id "${model}" can only run through kind "goose"; kind "${kind}" was requested.`,
-          formatSpawnModelSummary({ models: normalized }, { verifiedOnly: true, kind: rawKind }),
-        ].filter(Boolean).join('\n'),
-      }
-    }
     return {
       ok: false,
       error: [
         `Unknown spawn model "${model}".`,
         'Use spawn_models() to list valid aliases.',
         formatSpawnModelSummary({ models: normalized }, { verifiedOnly: true }),
-      ].filter(Boolean).join('\n'),
-    }
-  }
-
-  if (rawKind && !matches.some((m) => m.kind === rawKind)) {
-    const actual = [...new Set(matches.map((m) => m.kind))].sort().join(', ')
-    return {
-      ok: false,
-      error: [
-        `Spawn model "${model}" belongs to ${actual}, but kind "${kind}" was requested.`,
-        `Use kind "${matches[0].kind}" with model "${matches[0].alias}", or choose a ${rawKind} model from spawn_models().`,
-        formatSpawnModelSummary({ models: normalized }, { verifiedOnly: true, kind: rawKind }),
       ].filter(Boolean).join('\n'),
     }
   }

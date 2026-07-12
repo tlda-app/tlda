@@ -246,20 +246,10 @@ function looksLikeDaemonModelRow(value) {
     )
 }
 
-function daemonModelProvider(alias, row) {
-  const provider = String(row.provider || row.provider_name || '').trim().toLowerCase()
-  if (provider) return provider
-  const id = String(row.id || row.provider_model || row.providerModel || alias || '')
-  if (id.startsWith('claude-')) return 'claude'
-  if (/^gpt/i.test(id)) return 'codex'
-  if (id.startsWith('cursor-agent/')) return 'cursor-agent'
-  return 'openrouter'
-}
-
 function normalizeDaemonModelRows(models = {}) {
   const aliases = {}
-  const modelCeilings = {}
   const harnessOptions = {}
+  const modelSpecs = {}
   function mergeHarnessOptions(harness, alias, row) {
     const normalized = normalizeHarnessOptions(row)
     const key = String(harness || '').trim().toLowerCase()
@@ -269,14 +259,51 @@ function normalizeDaemonModelRows(models = {}) {
     if (row?.id || row?.provider_model || row?.providerModel) {
       harnessOptions[key][row.id || row.provider_model || row.providerModel] = normalized
     }
+    return normalized
+  }
+  function addModelSpec(alias, provider, value, defaults = {}) {
+    const row = typeof value === 'string' ? { id: value } : (value || {})
+    if (!row || typeof row !== 'object' || Array.isArray(row)) return
+    const key = String(alias || '').trim()
+    if (!key || key === '*') return
+    const explicitProvider = String(row.provider || row.provider_name || provider || '').trim().toLowerCase()
+    const harness = String(row.kind || row.harness?.kind || row.harness_kind || row.launch?.kind || row.provider || defaults.harness || explicitProvider || '').trim().toLowerCase()
+    if (!harness) throw new Error(`daemon model "${key}" must specify a harness/provider`)
+    const id = row.id || row.provider_model || row.providerModel || (typeof value === 'string' ? value : null)
+    if (!id) throw new Error(`daemon model "${key}" must specify an id/provider_model`)
+    const cap = row.cap || row.permission || row.spawnPolicy || row.model_cap || null
+    const ownHarnessOptions = normalizeHarnessOptions(row)
+    const inheritedHarnessOptions = defaults.harnessOptions || { required: [], preferences: [], controls: false }
+    modelSpecs[key] = {
+      alias: key,
+      id: String(id),
+      provider: explicitProvider || harness,
+      harness,
+      ...(Array.isArray(row.tags) ? { tags: row.tags } : {}),
+      ...(cap ? { cap } : {}),
+      harnessOptions: (ownHarnessOptions.required.length || ownHarnessOptions.preferences.length || ownHarnessOptions.controls)
+        ? ownHarnessOptions
+        : inheritedHarnessOptions,
+    }
+    aliases[explicitProvider || harness] ||= {}
+    aliases[explicitProvider || harness][key] = {
+      id: String(id),
+      ...(row.provider_alias ? { provider_alias: row.provider_alias } : {}),
+      ...(Array.isArray(row.tags) ? { tags: row.tags } : {}),
+    }
   }
   for (const [key, value] of Object.entries(models || {})) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) continue
     if (!looksLikeDaemonModelRow(value)) {
       const providerAliases = {}
+      const wildcardOptions = value['*'] && typeof value['*'] === 'object' && !Array.isArray(value['*'])
+        ? mergeHarnessOptions(key, '*', value['*'])
+        : { required: [], preferences: [], controls: false }
       for (const [alias, entry] of Object.entries(value)) {
+        if (alias === '*') continue
         if (typeof entry === 'string') {
           providerAliases[alias] = entry
+          addModelSpec(alias, key, entry, { harness: key, harnessOptions: wildcardOptions })
           continue
         }
         if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue
@@ -288,16 +315,14 @@ function normalizeDaemonModelRows(models = {}) {
           ...(entry.provider_alias ? { provider_alias: entry.provider_alias } : {}),
           ...(Array.isArray(entry.tags) ? { tags: entry.tags } : {}),
         }
-        if (cap) {
-          modelCeilings[alias] = cap
-          if (id) modelCeilings[id] = cap
-        }
+        addModelSpec(alias, key, entry, { harness: key, harnessOptions: wildcardOptions })
       }
       if (Object.keys(providerAliases).length) aliases[key] = providerAliases
       continue
     }
-    const provider = daemonModelProvider(key, value)
+    const provider = String(value.provider || value.provider_name || value.harness || '').trim().toLowerCase()
     const id = value.id || value.provider_model || value.providerModel || key
+    if (!provider) throw new Error(`daemon model "${key}" must specify provider/harness`)
     aliases[provider] ||= {}
     aliases[provider][key] = {
       id,
@@ -305,13 +330,18 @@ function normalizeDaemonModelRows(models = {}) {
       ...(Array.isArray(value.tags) ? { tags: value.tags } : {}),
     }
     const cap = value.cap || value.permission || value.spawnPolicy || value.model_cap
-    if (cap) {
-      modelCeilings[key] = cap
-      if (id) modelCeilings[id] = cap
+    const options = mergeHarnessOptions(provider, key, value)
+    modelSpecs[key] = {
+      alias: key,
+      id: String(id),
+      provider,
+      harness: provider,
+      ...(Array.isArray(value.tags) ? { tags: value.tags } : {}),
+      ...(cap ? { cap } : {}),
+      harnessOptions: options,
     }
-    mergeHarnessOptions(provider, key, value)
   }
-  return { aliases, modelCeilings, harnessOptions }
+  return { aliases, harnessOptions, modelSpecs }
 }
 
 function stringList(value, label) {
@@ -787,7 +817,7 @@ export function withDaemonModelAliases(config = {}, daemonConfig = {}) {
     ? daemonConfig.profiles
     : {}
   if (!Object.keys(daemonModels).length && !Object.keys(daemonProfiles).length) return config || {}
-  const { aliases, modelCeilings, harnessOptions } = normalizeDaemonModelRows(daemonModels)
+  const { aliases, harnessOptions, modelSpecs } = normalizeDaemonModelRows(daemonModels)
   const nextSpawnPolicy = {
     ...((config || {}).spawnPolicy || {}),
     ...(Object.keys(daemonProfiles).length ? {
@@ -798,15 +828,10 @@ export function withDaemonModelAliases(config = {}, daemonConfig = {}) {
       fenceEnabled: true,
       defaultProfile: daemonConfig.default || null,
     } : {}),
-    ...(Object.keys(modelCeilings).length ? {
-      modelCeilings: {
-        ...(((config || {}).spawnPolicy || {}).modelCeilings || {}),
-        ...modelCeilings,
-      },
-    } : {}),
   }
   return {
     ...(config || {}),
+    ...(Object.keys(modelSpecs).length ? { modelSpecs } : {}),
     ...(Object.keys(aliases).length ? { models: aliases } : {}),
     ...(Object.keys(harnessOptions).length ? { harnessOptions } : {}),
     spawnPolicy: nextSpawnPolicy,
