@@ -7,6 +7,7 @@ import {
   selectOrphanAgentProcesses,
 } from '../../agent-runtime/daemon-guards.mjs'
 import { sweepOrphanPreviewDirs } from '../../cli/lib/dev-worktree.mjs'
+import { expiredLeases, formatLeaseMarkdownTable, listLeases, releaseLease, renewLease } from '../../cli/lib/resource-leases.mjs'
 
 const execFileP = promisify(execFile)
 
@@ -61,6 +62,11 @@ export function formatReaperMarkdownReport(status = {}) {
     '| Playwright browsers | ' + (status.browsers?.length ?? 0) + ' | ' + (status.browsers?.filter(b => !b.controllerAlive).length ?? 0) + ' orphan candidates |',
     '| Agent processes | ' + (status.agentProcesses?.length ?? 0) + ' | ' + (status.agentProcessSkippedCount ?? 0) + ' skipped as protected/recent |',
   ]
+  lines.push('', formatLeaseMarkdownTable(status.leases || []))
+  if (status.unleased?.length) {
+    lines.push('', '### Unleased / Legacy Resources', '', '| Kind | PID | Detail |', '| --- | ---: | --- |')
+    for (const item of status.unleased) lines.push(`| ${item.kind} | ${item.pid ?? '—'} | ${item.detail || 'not represented by tlda-dev lease authority'} |`)
+  }
   if (status.lastKills?.length) {
     lines.push('', '### Recent Kills', '', '| PID | Kind | Agent | Reason |', '| ---: | --- | --- | --- |')
     for (const kill of status.lastKills.slice(-10).reverse()) {
@@ -541,6 +547,30 @@ export function createDevReaper({ getAgents, tmuxArgs = [], sendMsg = () => {} }
   const MAX_RECENT_KILLS = 10
 
   async function reaperSweep() {
+    // Lease expiry is authoritative and ordered: park tabs, then close an empty
+    // pooled session, then kill an expired preview. Heuristic scans below still
+    // classify legacy processes explicitly rather than pretending they are leased.
+    const due = expiredLeases()
+    const leaseActions = []
+    for (const lease of due) {
+      const meta = lease.metadata || {}
+      try {
+        if (lease.kind === 'playwright-tab') {
+          await execFileP('tlda-dev', ['pw', 'release'], { timeout: 20_000, env: { ...process.env, TLDA_PW_AS: lease.owner?.id || '', TLDA_PW_SESSION: meta.session } })
+        } else if (lease.kind === 'playwright-session') {
+          const hasTabs = listLeases().some(other => other.kind === 'playwright-tab' && other.metadata?.session === meta.session && !other.expired)
+          if (hasTabs) continue
+          await execFileP('tlda-dev', ['pw', 'reap'], { timeout: 20_000, env: { ...process.env, TLDA_PW_SESSION: meta.session } })
+        } else if (lease.kind === 'preview-server' && Number.isInteger(meta.pid)) {
+          process.kill(meta.pid, 'SIGTERM')
+        } else continue
+        releaseLease(lease.resource_id)
+        leaseActions.push({ kind: lease.kind, resource_id: lease.resource_id, action: lease.kind === 'playwright-tab' ? 'parked' : 'killed' })
+      } catch (error) {
+        // Keep the lease for the next sweep; one dead CLI/process must not block other expiry cleanup.
+        console.error(`[lease-reaper] ${lease.resource_id} cleanup failed: ${error.message}`)
+      }
+    }
     const viteResult = await reapVites().catch(e => { console.error('[vite-reaper] sweep failed:', e.message); return { vites: [], killed: [] } })
     const pwResult = await reapPlaywright().catch(e => { console.error('[pw-reaper] sweep failed:', e.message); return { browsers: [], killed: [] } })
     const agentProcessResult = await reapOrphanAgentProcesses().catch(e => { console.error('[agent-reaper] sweep failed:', e.message); return { processes: [], killed: [], failed: [], skippedCount: 0 } })
@@ -592,6 +622,19 @@ export function createDevReaper({ getAgents, tmuxArgs = [], sendMsg = () => {} }
       console.error('[dev-reaper] memory attribution failed:', e.message)
     }
 
+    // The reaper is also the renewer for long-lived server/session leases.
+    // Tabs deliberately renew only through their owner's wrapper activity.
+    for (const lease of listLeases().filter(l => !l.expired && l.kind !== 'playwright-tab')) {
+      const pid = lease.metadata?.pid
+      const alive = Number.isInteger(pid) && (() => { try { process.kill(pid, 0); return true } catch { return false } })()
+      if (alive) renewLease(lease.resource_id)
+    }
+    const leases = listLeases()
+    const leasedPids = new Set(leases.map(l => l.metadata?.pid).filter(Number.isInteger))
+    const unleased = [
+      ...(viteResult.vites || []).filter(v => !leasedPids.has(v.pid)).map(v => ({ kind: 'vite/legacy', pid: v.pid, detail: `ports ${v.ports.join(',')}` })),
+      ...(pwResult.browsers || []).filter(b => !leasedPids.has(b.pid)).map(b => ({ kind: 'playwright/legacy', pid: b.pid, detail: 'not represented by lease authority' })),
+    ]
     const status = {
         pressure,
         ...cpu,
@@ -609,6 +652,9 @@ export function createDevReaper({ getAgents, tmuxArgs = [], sendMsg = () => {} }
         agentProcessFailures: agentProcessResult.failed || [],
         agentProcessSkippedCount: agentProcessResult.skippedCount || 0,
         lastKills: _recentKills.slice(),
+        leases,
+        unleased,
+        leaseActions,
         thresholds: { viteMs: VITE_IDLE_THRESHOLD_MS, pwMs: PW_IDLE_THRESHOLD_MS, agentProcessMs: AGENT_PROCESS_ORPHAN_MS },
         scaledThresholds: { viteMs: pressureScaledTimeout(VITE_IDLE_THRESHOLD_MS), pwMs: pressureScaledTimeout(PW_IDLE_THRESHOLD_MS), agentProcessMs: AGENT_PROCESS_ORPHAN_MS },
         sweepCount: _sweepCount,

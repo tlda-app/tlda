@@ -39,6 +39,7 @@ import { hasTls, loadConfig, saveConfig, CONFIG_DIR } from '../../shared/config.
 import { resolveRepoRoot, findFreePort } from './dev-vite.mjs'
 import { spawnDetachedServer } from './server-start.mjs'
 import { findTailscaleIPv4 } from './share-url.mjs'
+import { acquireLease, releaseLease, listLeases } from './resource-leases.mjs'
 
 const BASE_DIR = join(homedir(), '.config', 'tlda', 'dev-worktree')
 const TLS_CERT = join(CONFIG_DIR, 'localhost+2.pem')
@@ -105,6 +106,7 @@ function daemonLogFile(branch) { return join(stateDir(branch), 'daemon.log') }
 // connects to the sandbox server.)
 function daemonConfigDir(branch) { return join(stateDir(branch), 'daemon-cfg') }
 function manifestFile(branch) { return join(stateDir(branch), 'manifest.json') }
+function previewLeaseId(branch) { return `preview-server:${sanitize(branch)}` }
 function projectsDir(branch) { return join(stateDir(branch), 'projects') }
 function fleetDb(branch) { return join(stateDir(branch), 'fleet.db') }
 function configName(branch) { return `dev-preview/${sanitize(branch)}` }
@@ -483,6 +485,12 @@ export async function cmdServeWorktree(args) {
     projectsDir: projectsDir(branch), fleetDb: fleetDb(branch),
   }
   writeFileSync(manifestFile(branch), JSON.stringify(manifest, null, 2))
+  acquireLease({
+    kind: 'preview-server', resource_id: previewLeaseId(branch),
+    owner: { id: process.env.FLEET_ID || process.env.USER || 'local', type: process.env.FLEET_ID ? 'agent' : 'human' },
+    metadata: { pid, ports: [port], cwd: process.cwd(), worktree: worktreeDir, branch, base, daemon_pid: daemonPid },
+    policy: { ttl_ms: 30 * 60_000, idle_policy: 'expire-kill-preview' },
+  })
   // `tlda-dev dev-url` reads <cwd>/.dev-url — keep it the reachable, tokenless URL.
   try { writeFileSync(join(worktreeDir, '.dev-url'), url) } catch { /* non-fatal */ }
 
@@ -519,6 +527,7 @@ function stopPreview(branch, json) {
     if (Number.isInteger(dpid)) { try { process.kill(dpid) } catch { /* gone */ } }
   }
   removePreviewConfig(branch)
+  releaseLease(previewLeaseId(branch))
   for (const f of [pidFile(branch), manifestFile(branch)]) if (existsSync(f)) unlinkSync(f)
   // Drop the isolated projects + fleet DB so a stopped preview leaves nothing behind.
   try { rmSync(stateDir(branch), { recursive: true, force: true }) } catch { /* best effort */ }
@@ -552,8 +561,9 @@ async function statusPreview(branch, json, flags = new Set()) {
 async function statusAllPreviews(json) {
   const states = listPreviewStates()
   const orphans = orphanPreviewListeners(states)
+  const leases = listLeases().filter(l => l.kind === 'preview-server')
   if (json) {
-    console.log(JSON.stringify({ previews: states, orphanListeners: orphans }, null, 2))
+    console.log(JSON.stringify({ previews: states, leases, orphanListeners: orphans }, null, 2))
     return
   }
   if (!states.length) {
@@ -568,6 +578,7 @@ async function statusAllPreviews(json) {
       console.log(`    log: ${s.log}`)
     }
   }
+  if (leases.length) console.log(`leased previews: ${leases.length}`)
   if (orphans.length) printOrphanHint(orphans)
 }
 
