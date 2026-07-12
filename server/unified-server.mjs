@@ -604,6 +604,8 @@ const pendingRpcs = new Map()
 let _rpcSeq = 0
 const RPC_TIMEOUT_MS = 10_000
 const SPAWN_RPC_TIMEOUT_MS = 120_000
+const DAEMON_RPC_RECONNECT_GRACE_MS = Number(process.env.TLDA_DAEMON_RPC_RECONNECT_GRACE_MS || 15_000)
+const pendingRpcFailureTimers = new Map()
 
 // ---------- Plan mode approval tracking ----------
 //
@@ -848,8 +850,9 @@ function matchApprovalResponse(text) {
  * Error. If no daemon is connected for `machineId`, rejects synchronously
  * with a `NoDaemonError` so callers can return 503 immediately.
  *
- * Per spec: 10s timeout, no retry. If the WS drops mid-RPC the pending
- * entry is rejected with a `daemon disconnected` error.
+ * Per spec: timeout, no automatic replay. If the WS drops mid-RPC the pending
+ * entry survives a short reconnect grace, then rejects if the daemon does not
+ * come back before either that grace or the request's own deadline.
  */
 class NoDaemonError extends Error {
   constructor(machineId, envName) {
@@ -860,7 +863,7 @@ class NoDaemonError extends Error {
   }
 }
 
-function sendRpc(machineId, op, params = {}, opts = {}) {
+async function sendRpc(machineId, op, params = {}, opts = {}) {
   let targetMachine = machineId
   let envName = params.daemon_env_name
   if (!envName && typeof machineId === 'string' && machineId.includes(':')) {
@@ -870,7 +873,17 @@ function sendRpc(machineId, op, params = {}, opts = {}) {
   }
   if (!machineId || !envName) return Promise.reject(new NoDaemonError(machineId || '(unknown)', envName || '(unknown)'))
   const key = daemonAddress(targetMachine, envName)
-  const dws = daemonConnections.get(key)
+  let dws = daemonConnections.get(key)
+  if (!dws || dws.readyState !== 1) {
+    if (op === 'spawn' && daemonWelcomeSeenAt.has(key) && opts.waitForReconnect !== false) {
+      try {
+        await waitForDaemonReady(key, DAEMON_RPC_RECONNECT_GRACE_MS)
+        dws = daemonConnections.get(key)
+      } catch {
+        // Reconnect grace expired; fall through to the normal NoDaemonError path.
+      }
+    }
+  }
   if (!dws || dws.readyState !== 1) {
     if (op === 'spawn') logSpawnDaemonMiss(key, 'sendRpc(spawn)', { hasWs: !!dws, readyState: dws?.readyState ?? 'missing', route: params.spawnRoute || 'unknown' })
     return Promise.reject(new NoDaemonError(targetMachine, envName))
@@ -918,13 +931,23 @@ function logSpawnDaemonMiss(machineId, context, detail = {}) {
 }
 
 // When a daemon WS drops, fail any in-flight RPCs that targeted it. The
-// HTTP caller decides whether to retry.
+// HTTP caller decides whether to retry. A short grace prevents one heartbeat
+// flap from synchronously rejecting every in-flight request for that daemon.
 function failPendingRpcsForDaemon(machineId, envName, reason = 'daemon disconnected') {
-  rejectMatchingWsRequests(
-    pendingRpcs,
-    entry => entry.machine_id === machineId && entry.env_name === envName,
-    () => new Error(reason)
-  )
+  const key = daemonAddress(machineId, envName)
+  if (pendingRpcFailureTimers.has(key)) return
+  const timer = setTimeout(() => {
+    pendingRpcFailureTimers.delete(key)
+    const dws = daemonConnections.get(key)
+    if (dws && dws.readyState === 1) return
+    rejectMatchingWsRequests(
+      pendingRpcs,
+      entry => entry.machine_id === machineId && entry.env_name === envName,
+      () => new Error(reason)
+    )
+  }, DAEMON_RPC_RECONNECT_GRACE_MS)
+  timer.unref?.()
+  pendingRpcFailureTimers.set(key, timer)
 }
 
 // ── Event-based RPC retry across a transient daemon reconnect ──────────────────
@@ -934,14 +957,20 @@ function failPendingRpcsForDaemon(machineId, envName, reason = 'daemon disconnec
 // churn, off-launchd restart). Per Skip: the deadline is a caller-passed param with an
 // event-based default — the op queues and completes on the reconnect event. This
 // wrapper waits (event-driven, not a busy-poll) for the daemon to (re)register and
-// retries, bounded by a total deadline. sendRpc() itself is unchanged, so the base RPC
-// path is untouched and spawns keep their own retry loop.
+// retries, bounded by a total deadline. sendRpc() itself still does not replay a
+// request after it has been sent; fresh spawn calls only wait for a daemon that is
+// already inside the reconnect grace before their first send.
 const RPC_RECONNECT_DEADLINE_MS = 30_000
 const RPC_RESILIENT_ATTEMPT_MS = 5_000
 const daemonReadyWaiters = new Map() // daemonKey -> Set<{ resolve, timer }>
 
 // Called when a daemon (re)registers — wakes anything waiting to retry an RPC to it.
 function notifyDaemonReady(daemonKey) {
+  const pendingFailure = pendingRpcFailureTimers.get(daemonKey)
+  if (pendingFailure) {
+    clearTimeout(pendingFailure)
+    pendingRpcFailureTimers.delete(daemonKey)
+  }
   const set = daemonReadyWaiters.get(daemonKey)
   if (!set) return
   daemonReadyWaiters.delete(daemonKey)

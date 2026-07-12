@@ -109,13 +109,13 @@ export class ResilientWS {
 
       ws.on('close', (code, reason) => {
         this._log(`[${this._label}] closed (${code} ${reason || ''})`)
-        this._cleanup()
+        this._cleanup(ws)
         this._scheduleRetry()
       })
 
       ws.on('error', (e) => {
         this._log(`[${this._label}] error: ${e.message}`)
-        this._cleanup()
+        this._cleanup(ws)
         this._scheduleRetry()
       })
     } catch (e) {
@@ -135,8 +135,9 @@ export class ResilientWS {
    */
   reconnect() {
     if (this._closed) return
-    if (this._ws) { try { this._ws.close() } catch (e) { this._log(`[${this._label}] close error: ${e.message}`) } }
-    this._cleanup()
+    const ws = this._ws
+    if (ws) { try { ws.close() } catch (e) { this._log(`[${this._label}] close error: ${e.message}`) } }
+    this._cleanup(ws)
     this._scheduleRetry()
   }
 
@@ -149,7 +150,8 @@ export class ResilientWS {
     this._ws = null
   }
 
-  _cleanup() {
+  _cleanup(ws = this._ws) {
+    if (ws && this._ws !== ws) return
     this._ws = null
     if (this._heartbeatTimer) { clearTimeout(this._heartbeatTimer); this._heartbeatTimer = null }
     if (this._stableTimer) { clearTimeout(this._stableTimer); this._stableTimer = null }
@@ -175,8 +177,9 @@ export class ResilientWS {
     if (this._heartbeatTimer) clearTimeout(this._heartbeatTimer)
     this._heartbeatTimer = setTimeout(() => {
       this._log(`[${this._label}] no heartbeat in ${this._heartbeatTimeoutMs}ms — reconnecting`)
-      if (this._ws) { try { this._ws.close() } catch (e) { this._log(`[${this._label}] close error: ${e.message}`) } }
-      this._cleanup()
+      const ws = this._ws
+      if (ws) { try { ws.close() } catch (e) { this._log(`[${this._label}] close error: ${e.message}`) } }
+      this._cleanup(ws)
       this._scheduleRetry()
     }, this._heartbeatTimeoutMs)
   }

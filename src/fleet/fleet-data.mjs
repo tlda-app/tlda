@@ -31,7 +31,8 @@ import { log } from '../logger'
 import { probe } from '../perf-probe'
 import { DATABASE_HTTP, DATABASE_WS } from '../activeConfig'
 import { isUsableIdentityName, sanitizeIdentityName, storedIdentityLoginFailureAction } from './identity-persistence.mjs'
-import { rejectWsRequests, resetWsRequestIdleTimers, startWsRequest } from '../../shared/ws-request-policy.mjs'
+import { resetWsRequestIdleTimers, startWsRequest } from '../../shared/ws-request-policy.mjs'
+import { WsReconnectBuffer } from '../../shared/ws-reconnect-buffer.mjs'
 import { maybeShowRadioSubtitleForIncomingChat } from '../voice.mjs'
 
 // The global fleet/event store (chat, agents, activity, tasks) = the active
@@ -677,6 +678,9 @@ export function getFleetRuntimeSummary(now = Date.now()) {
 let _wsReqId = 0
 const _wsCallbacks = new Map()
 const WS_REQUEST_IDLE_MS = 45_000
+const _wsReconnectBuffer = new WsReconnectBuffer({
+  isConnected: () => !!_ws && _ws.readyState === 1,
+})
 
 function markWsActivity() {
   _lastWsActivityAt = Date.now()
@@ -708,8 +712,18 @@ export function sendViewingContext(context) {
   }
 }
 
-function wsSend(msg, { idleTimeoutMs = WS_REQUEST_IDLE_MS, deadlineMs } = {}) {
-  if (!_ws || _ws.readyState !== 1) return Promise.reject(new Error('not connected'))
+async function wsSend(msg, { idleTimeoutMs = WS_REQUEST_IDLE_MS, deadlineMs } = {}) {
+  const startedAt = Date.now()
+  const connectionDeadlineMs = deadlineMs ?? idleTimeoutMs
+  while (!_ws || _ws.readyState !== 1) {
+    const elapsed = Date.now() - startedAt
+    const remaining = connectionDeadlineMs - elapsed
+    if (remaining <= 0) throw new Error(`not connected after ${connectionDeadlineMs}ms (type=${msg.type})`)
+    const connected = await _wsReconnectBuffer.waitForConnection(Math.min(remaining, 1000))
+    if (!connected && (!_ws || _ws.readyState !== 1) && Date.now() - startedAt >= connectionDeadlineMs) {
+      throw new Error(`not connected after ${connectionDeadlineMs}ms (type=${msg.type})`)
+    }
+  }
   const id = ++_wsReqId
   return startWsRequest({
     pending: _wsCallbacks,
@@ -734,6 +748,7 @@ export function connect() {
   _ws.onopen = () => {
     _lastWsOpenAt = Date.now()
     markWsActivity()
+    _wsReconnectBuffer.resolveConnected()
     _reconnectDelay = 1000
     _connected = true
     notify('connection', { type: 'connection', connected: true })
@@ -811,7 +826,7 @@ export function connect() {
 
   _ws.onclose = (ev) => {
     _lastWsCloseAt = Date.now()
-    rejectWsRequests(_wsCallbacks, ({ type }) => new Error(`WS connection closed (type=${type})`))
+    resetWsRequestIdleTimers(_wsCallbacks)
     _ws = null
     _connected = false
     _disconnectedAt = _disconnectedAt || Date.now()
