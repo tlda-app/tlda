@@ -15,6 +15,7 @@ import {
   getUnreadCountsForHuman,
   getHumanId,
   getHumanName,
+  loadNextAgentsPage,
   needsIdentity as _needsIdentity,
   login as _login,
   registerHuman as _registerHuman,
@@ -179,6 +180,8 @@ export function useFleetAgents(frameId?: string): any[] {
 
   return agents
 }
+
+export { loadNextAgentsPage }
 
 export function useFleetChatAgents(frameId?: string): any[] {
   const [agents, setAgents] = useState<any[]>([])

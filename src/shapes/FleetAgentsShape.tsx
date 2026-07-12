@@ -18,7 +18,7 @@ import {
 import { fleetAgentsProps } from '../../shared/shapes/fleet-panel-schema.mjs'
 import { useState, useCallback, useMemo, useRef, useEffect, memo, forwardRef } from 'react'
 import { Virtuoso } from 'react-virtuoso'
-import { useFleetAgents, useFleetTasks, useFleetUnreadCounts, useFleetContext, useFleetProjects, useFleetIdentity, searchFleet, hibernateSession, spawnAgent } from '../fleet-data-adapter'
+import { useFleetAgents, useFleetTasks, useFleetUnreadCounts, useFleetContext, useFleetProjects, useFleetIdentity, searchFleet, hibernateSession, spawnAgent, loadNextAgentsPage } from '../fleet-data-adapter'
 import { dropPillOnTarget } from './FleetPillShape'
 import { agentDisplayLabel, agentExactName, beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
@@ -822,6 +822,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
             components={FLEET_AGENTS_VIRTUOSO_COMPONENTS}
             style={{ flex: 1, minHeight: 0 }}
             overscan={240}
+            endReached={() => { void loadNextAgentsPage() }}
             itemContent={(_, item) => (
               item.type === 'optimistic' ? (
                 <OptimisticAgentRow

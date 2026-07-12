@@ -209,6 +209,25 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     catch (e) { res.status(500).json({ error: e.message }) }
   })
 
+  // --- GET /api/agents?limit=100&cursor=<opaque> ---
+  // The browser agents panel is deliberately live-only.  Historical/dead
+  // agents remain available through the existing targeted lookup/search
+  // operations; they must never turn connection setup into a roster dump.
+  router.get('/api/agents', (req, res) => {
+    if (!fleetStore) { res.status(503).json({ error: 'Fleet store not available' }); return }
+    const requested = Number.parseInt(req.query.limit, 10)
+    const limit = Number.isFinite(requested) ? Math.max(1, Math.min(requested, 200)) : 100
+    try {
+      if (typeof fleetStore.getAliveAgentsPage === 'function') {
+        res.json(fleetStore.getAliveAgentsPage({ limit, cursor: req.query.cursor || null }))
+        return
+      }
+      // Test doubles and older in-memory stores expose only the maintained
+      // live view.  Keep their response bounded too.
+      res.json({ agents: fleetStore.getAliveAgents().slice(0, limit), nextCursor: null })
+    } catch (e) { res.status(500).json({ error: e.message }) }
+  })
+
   // --- GET /api/check-name?name=foo[&exclude=fleet:abc]
   // Pre-flight collision check for fleet-spawn fresh(). Returns
   // { ok: true } or { ok: false, collisions: [...] }. The same check
