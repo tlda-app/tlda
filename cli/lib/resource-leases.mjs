@@ -1,5 +1,5 @@
 /** Local resource authority for tlda-dev previews and Playwright. */
-import { mkdirSync, existsSync, readFileSync, renameSync, writeFileSync } from 'fs'
+import { mkdirSync, existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'fs'
 import { dirname, join } from 'path'
 import { homedir } from 'os'
 
@@ -23,6 +23,49 @@ function writeStore(file, store) {
   renameSync(tmp, file)
 }
 
+function waitMs(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+}
+
+// Atomic rename protects readers from partial JSON; this lock protects writers
+// from lost read-modify-write updates across concurrently running agents.
+function withStoreLock(file, mutate, { timeoutMs = 30_000 } = {}) {
+  const lock = `${file}.lock`
+  const token = `${process.pid}:${Date.now()}:${Math.random()}`
+  mkdirSync(dirname(file), { recursive: true })
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    try {
+      writeFileSync(lock, token, { flag: 'wx' })
+      break
+    } catch (error) {
+      if (error?.code !== 'EEXIST') throw error
+      // A crashed writer must not wedge the authority forever. The token carries
+      // its local pid, so reclaim only a demonstrably dead holder.
+      try {
+        const holder = Number(readFileSync(lock, 'utf8').split(':', 1)[0])
+        if (Number.isInteger(holder) && holder > 0) {
+          try { process.kill(holder, 0) } catch (livenessError) {
+            if (livenessError?.code === 'ESRCH') unlinkSync(lock)
+          }
+        }
+      } catch (readError) {
+        if (readError?.code !== 'ENOENT') throw readError
+      }
+      if (Date.now() >= deadline) throw new Error(`timed out waiting for resource lease lock: ${lock}`)
+      waitMs(10)
+    }
+  }
+  try {
+    return mutate()
+  } finally {
+    // Only the lock holder may remove it; a failed ownership check leaves a loud
+    // lock behind rather than deleting another process's authority boundary.
+    if (readFileSync(lock, 'utf8') !== token) throw new Error(`resource lease lock ownership lost: ${lock}`)
+    unlinkSync(lock)
+  }
+}
+
 function policyWithExpiry(policy, now) {
   const ttlMs = Number(policy?.ttl_ms)
   if (!Number.isFinite(ttlMs) || ttlMs <= 0) throw new Error('lease policy.ttl_ms must be a positive number')
@@ -31,53 +74,61 @@ function policyWithExpiry(policy, now) {
 
 export function acquireLease(input, { file = DEFAULT_LEASE_FILE, now = Date.now() } = {}) {
   if (!input?.kind || !input?.resource_id) throw new Error('lease kind and resource_id are required')
-  const store = readStore(file)
-  const stamp = new Date(now).toISOString()
-  const policy = policyWithExpiry(input.policy, now)
-  const existing = store.leases.findIndex(l => l.resource_id === input.resource_id)
-  const lease = {
-    ...(existing >= 0 ? store.leases[existing] : {}),
-    ...input,
-    policy,
-    created_at: existing >= 0 ? store.leases[existing].created_at : stamp,
-    last_renewed: stamp,
-    expires_at: policy.expires_at,
-  }
-  if (existing >= 0) store.leases[existing] = lease
-  else store.leases.push(lease)
-  writeStore(file, store)
-  return lease
+  return withStoreLock(file, () => {
+    const store = readStore(file)
+    const stamp = new Date(now).toISOString()
+    const policy = policyWithExpiry(input.policy, now)
+    const existing = store.leases.findIndex(l => l.resource_id === input.resource_id)
+    const lease = {
+      ...(existing >= 0 ? store.leases[existing] : {}),
+      ...input,
+      policy,
+      created_at: existing >= 0 ? store.leases[existing].created_at : stamp,
+      last_renewed: stamp,
+      expires_at: policy.expires_at,
+    }
+    if (existing >= 0) store.leases[existing] = lease
+    else store.leases.push(lease)
+    writeStore(file, store)
+    return lease
+  })
 }
 
 export function renewLease(resourceId, updates = {}, options = {}) {
   const { file = DEFAULT_LEASE_FILE, now = Date.now() } = options
-  const store = readStore(file)
-  const index = store.leases.findIndex(l => l.resource_id === resourceId)
-  if (index < 0) throw new Error(`unknown resource lease: ${resourceId}`)
-  const current = store.leases[index]
-  const policy = policyWithExpiry({ ...current.policy, ...updates.policy }, now)
-  const next = { ...current, ...updates, policy, last_renewed: new Date(now).toISOString(), expires_at: policy.expires_at }
-  store.leases[index] = next
-  writeStore(file, store)
-  return next
+  return withStoreLock(file, () => {
+    const store = readStore(file)
+    const index = store.leases.findIndex(l => l.resource_id === resourceId)
+    if (index < 0) throw new Error(`unknown resource lease: ${resourceId}`)
+    const current = store.leases[index]
+    const policy = policyWithExpiry({ ...current.policy, ...updates.policy }, now)
+    const next = { ...current, ...updates, policy, last_renewed: new Date(now).toISOString(), expires_at: policy.expires_at }
+    store.leases[index] = next
+    writeStore(file, store)
+    return next
+  })
 }
 
 export function releaseLease(resourceId, { file = DEFAULT_LEASE_FILE } = {}) {
-  const store = readStore(file)
-  const before = store.leases.length
-  store.leases = store.leases.filter(l => l.resource_id !== resourceId)
-  if (store.leases.length !== before) writeStore(file, store)
-  return before !== store.leases.length
+  return withStoreLock(file, () => {
+    const store = readStore(file)
+    const before = store.leases.length
+    store.leases = store.leases.filter(l => l.resource_id !== resourceId)
+    if (store.leases.length !== before) writeStore(file, store)
+    return before !== store.leases.length
+  })
 }
 
 export function releaseLeases(predicate, { file = DEFAULT_LEASE_FILE } = {}) {
-  const store = readStore(file)
-  const released = store.leases.filter(predicate)
-  if (released.length) {
-    store.leases = store.leases.filter(l => !predicate(l))
-    writeStore(file, store)
-  }
-  return released
+  return withStoreLock(file, () => {
+    const store = readStore(file)
+    const released = store.leases.filter(predicate)
+    if (released.length) {
+      store.leases = store.leases.filter(l => !predicate(l))
+      writeStore(file, store)
+    }
+    return released
+  })
 }
 
 export function listLeases({ file = DEFAULT_LEASE_FILE, now = Date.now() } = {}) {

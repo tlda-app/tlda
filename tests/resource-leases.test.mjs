@@ -3,10 +3,13 @@ import { mkdtempSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import test from 'node:test'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { acquireLease, renewLease, releaseLease, expiredLeases, formatLeaseMarkdownTable, listLeases } from '../cli/lib/resource-leases.mjs'
 
 function fixture() { return { file: join(mkdtempSync(join(tmpdir(), 'tlda-lease-')), 'leases.json'), now: 1_000 } }
 function lease(kind, resource_id) { return { kind, resource_id, owner: { id: 'fleet:test' }, metadata: { session: 'shared', tab: 2, pid: 42, ports: [5190], worktree: '/tmp/wt' }, policy: { ttl_ms: 500 } } }
+const execFileP = promisify(execFile)
 
 test('acquire renew release keeps lease lifecycle and metadata', () => {
   const { file, now } = fixture()
@@ -33,4 +36,14 @@ test('markdown status shows resource and pressure-ready lease fields', () => {
   const report = formatLeaseMarkdownTable(listLeases({ file, now: 1_100 }))
   assert.match(report, /\| Kind \| Resource \| Owner \| Location \| Runtime \| Expires \| State \|/)
   assert.match(report, /playwright-tab.*fleet:test.*tab 2.*active/)
+})
+
+test('concurrent agents retain every lease record', async () => {
+  const { file } = fixture()
+  const moduleUrl = new URL('../cli/lib/resource-leases.mjs', import.meta.url).href
+  const worker = `import { acquireLease } from ${JSON.stringify(moduleUrl)}; acquireLease({ kind: 'playwright-tab', resource_id: process.env.RESOURCE_ID, owner: { id: process.env.RESOURCE_ID }, metadata: { session: 'shared' }, policy: { ttl_ms: 60000 } }, { file: process.env.LEASE_FILE })`
+  await Promise.all(Array.from({ length: 24 }, (_, i) => execFileP(process.execPath, ['--input-type=module', '--eval', worker], {
+    env: { ...process.env, LEASE_FILE: file, RESOURCE_ID: `tab:shared:${i}` },
+  })))
+  assert.equal(listLeases({ file }).length, 24)
 })

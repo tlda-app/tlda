@@ -563,6 +563,7 @@ export function createDevReaper({ getAgents, tmuxArgs = [], sendMsg = () => {} }
           await execFileP('tlda-dev', ['pw', 'reap'], { timeout: 20_000, env: { ...process.env, TLDA_PW_SESSION: meta.session } })
         } else if (lease.kind === 'preview-server' && Number.isInteger(meta.pid)) {
           process.kill(meta.pid, 'SIGTERM')
+          if (Number.isInteger(meta.daemon_pid)) process.kill(meta.daemon_pid, 'SIGTERM')
         } else continue
         releaseLease(lease.resource_id)
         leaseActions.push({ kind: lease.kind, resource_id: lease.resource_id, action: lease.kind === 'playwright-tab' ? 'parked' : 'killed' })
