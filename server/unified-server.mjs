@@ -7019,15 +7019,18 @@ function broadcastDaemonAgentsUpdated(agentUpdates = null) {
   }
   for (const daemonKey of daemonKeys) {
     try {
-      const agents = updates
+      let agents = updates
         ? updates.filter(a => (a.daemon_key || (a.machine_id && a.env_name ? daemonAddress(a.machine_id, a.env_name) : null)) === daemonKey)
         : fleetStore.getAgentsByDaemonKey(daemonKey)
       for (const agent of agents) daemonAgentEvents.append(daemonKey, agent)
       // Connected daemons receive only the mutations recorded since their
       // cursor; the durable replay stream preserves ordering across a flap.
       const cursor = daemonConnections.get(daemonKey)?._agentStatusSeq ?? 0
-      const replay = daemonAgentEvents.replay(daemonKey, cursor)
-      if (replay.snapshot) enqueueDaemonMessage(daemonKey, { type: 'agents-updated', agents, agent_status_seq: replay.lastSeq }, { dedupeKey: 'agents-snapshot' })
+      const replay = daemonAgentEvents.replay(daemonKey, cursor, { snapshotOverLimit: !updates })
+      if (replay.snapshot) {
+        agents = fleetStore.getAgentsByDaemonKey(daemonKey)
+        enqueueDaemonMessage(daemonKey, { type: 'agents-updated', agents, agent_status_seq: replay.lastSeq }, { dedupeKey: 'agents-snapshot' })
+      }
       else {
         for (const event of replay.events) enqueueDaemonMessage(daemonKey, { ...event, type: 'agent-status-event', event_type: event.type })
         const ws = daemonConnections.get(daemonKey)

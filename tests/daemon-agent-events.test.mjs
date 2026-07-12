@@ -41,3 +41,21 @@ test('latest lookup uses daemon and agent index', () => {
   assert.doesNotMatch(detail, /SCAN daemon_agent_events/)
   db.close()
 })
+
+test('large replay gaps return a snapshot cursor instead of a large event batch', () => {
+  const db = makeStore()
+  const events = new DaemonAgentEvents(db)
+  for (let i = 0; i < 5; i++) {
+    events.append('air:live', { id: `agent-${i}`, state: 'idle' })
+  }
+
+  const replay = events.replay('air:live', 1, { limit: 2 })
+  assert.equal(replay.snapshot, true)
+  assert.equal(replay.lastSeq, 5)
+  assert.deepEqual(replay.events, [])
+
+  const forcedDelta = events.replay('air:live', 1, { limit: 2, snapshotOverLimit: false })
+  assert.equal(forcedDelta.snapshot, false)
+  assert.deepEqual(forcedDelta.events.map(e => e.seq), [2, 3])
+  db.close()
+})

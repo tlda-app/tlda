@@ -131,3 +131,36 @@ test('task changes are consumed as deltas for live broadcasts', () => {
     cleanup(store, dbPath)
   }
 })
+
+test('active task and session startup queries use boot-path indexes', () => {
+  const { store, dbPath } = tempStore()
+  try {
+    const activeTasksPlan = store.db.prepare(`
+      EXPLAIN QUERY PLAN
+      SELECT * FROM tasks
+      WHERE status NOT IN ('done', 'retracted')
+      ORDER BY delegated_at DESC
+    `).all().map(row => row.detail).join('\n')
+    assert.match(activeTasksPlan, /idx_tasks_active_live/)
+    assert.doesNotMatch(activeTasksPlan, /USE TEMP B-TREE/)
+
+    const agentTasksPlan = store.db.prepare(`
+      EXPLAIN QUERY PLAN
+      SELECT * FROM tasks
+      WHERE agent = ? AND status NOT IN ('done', 'retracted')
+      ORDER BY delegated_at DESC
+      LIMIT ?
+    `).all('fleet:recipient', 20).map(row => row.detail).join('\n')
+    assert.match(agentTasksPlan, /idx_tasks_agent_active_live/)
+    assert.doesNotMatch(agentTasksPlan, /USE TEMP B-TREE/)
+
+    const sessionPlan = store.db.prepare(`
+      EXPLAIN QUERY PLAN
+      SELECT DISTINCT session_id FROM session_entries
+    `).all().map(row => row.detail).join('\n')
+    assert.match(sessionPlan, /idx_session_entries_session/)
+    assert.doesNotMatch(sessionPlan, /USE TEMP B-TREE/)
+  } finally {
+    cleanup(store, dbPath)
+  }
+})

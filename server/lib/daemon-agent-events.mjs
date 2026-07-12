@@ -20,9 +20,10 @@ export class DaemonAgentEvents {
     if (prior === payload) return null
     return this.insert.run(daemonKey, agent.id, payload, new Date().toISOString()).lastInsertRowid
   }
-  replay(daemonKey, lastSeq, limit = 1000) {
+  replay(daemonKey, lastSeq, { limit = 200, snapshotOverLimit = true } = {}) {
     const { first, last } = this.bounds.get(daemonKey)
     if (!Number.isInteger(lastSeq) || lastSeq < 0 || (first != null && lastSeq < first - 1)) return { snapshot: true, lastSeq: Number(last || 0), events: [] }
+    if (snapshotOverLimit && last != null && Number(last) - lastSeq > limit) return { snapshot: true, lastSeq: Number(last), events: [] }
     const rows = this.after.all(daemonKey, lastSeq, limit)
     return { snapshot: false, lastSeq: Number(rows.at(-1)?.seq || lastSeq), events: rows.map(r => ({ seq: Number(r.seq), ...JSON.parse(r.payload_json) })) }
   }
