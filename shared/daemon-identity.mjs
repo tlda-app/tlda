@@ -13,17 +13,44 @@
 //      newcomer unless it's the same install restarting. Two distinct installs
 //      can never share one machine_id, no matter how the rig is misconfigured.
 
+import { fileURLToPath } from 'node:url'
+
+import { resolveRepoIdentity } from './repo-identity.mjs'
+
 // A daemon script path that lives inside a git worktree — main-tree daemons run
-// from <repo>/bin, worktree daemons from <repo>/.worktrees/<name>/bin or
-// ~/.claude/worktrees/<name>/...
+// from <repo>/bin, worktree daemons from <repo>/.worktrees/<name>/bin,
+// ~/.claude/worktrees/<name>/..., or a sibling linked checkout.
 export function isWorktreePath(p) {
   if (!p) return false
   return /\/\.worktrees\//.test(p) || /\/\.claude\/worktrees\//.test(p)
 }
 
+function isDaemonWorktree(scriptPath, resolveIdentity = resolveRepoIdentity) {
+  if (isWorktreePath(scriptPath)) return true
+  try {
+    return !!resolveIdentity(scriptPath).isWorktree
+  } catch {
+    return false
+  }
+}
+
+export function resolveMainDaemonScript(scriptPath, resolveIdentity = resolveRepoIdentity) {
+  try {
+    const identity = resolveIdentity(scriptPath)
+    if (identity.isWorktree && identity.mainCheckoutPath) {
+      return fileURLToPath(new URL('bin/fleet-daemon.mjs', `file://${identity.mainCheckoutPath}/`))
+    }
+  } catch {
+    // Fall through to the path-only fallback below.
+  }
+  const match = String(scriptPath || '').match(/^(.+?)\/(?:\.claude\/worktrees|\.worktrees)\//)
+  if (match) return `${match[1]}/bin/fleet-daemon.mjs`
+  return null
+}
+
 // Decide whether a daemon may start, and whether it is properly isolated.
 // Inputs are plain values so this is fully testable without process/env state.
-//   env:        { TLDA_DAEMON_CONFIG_DIR?, TLDA_SERVER? }
+//   env:        { TLDA_DAEMON_CONFIG_DIR?, PROJECTS_DIR?, TLDA_SERVER? }
 //   scriptPath: the daemon's own resolved script path (import.meta path)
 //   configuredServer: active config's canonical fleet server, when known
 //   targetServer: server this daemon will connect to, when known
@@ -31,13 +58,14 @@ export function isWorktreePath(p) {
 // string when the daemon must abort with a loud error, or null when it's safe.
 //
 // A daemon is "isolated" from the live fleet when EITHER signal is present:
-//   - TLDA_DAEMON_CONFIG_DIR — its own config dir (own machine_id), or
+//   - TLDA_DAEMON_CONFIG_DIR + PROJECTS_DIR — its own config and JSONL roots, or
 //   - TLDA_SERVER            — its own server target, but only when it differs
 //     from the canonical configured server or is the explicit dev-daemon target.
 // The leak is a WORKTREE daemon with NEITHER: it falls through to live Fly with
 // the shared machine_id ("air") and evicts the real daemon. That one is refused.
-export function resolveDaemonIsolation({ env = {}, scriptPath = '', configuredServer = null, targetServer = null } = {}) {
+export function resolveDaemonIsolation({ env = {}, scriptPath = '', configuredServer = null, targetServer = null, resolveIdentity = resolveRepoIdentity } = {}) {
   const usingCustomConfigDir = !!env.TLDA_DAEMON_CONFIG_DIR
+  const usingCustomProjectsDir = !!env.PROJECTS_DIR
   const norm = (u) => u ? String(u).replace(/\/+$/, '') : null
   const explicitServer = !!env.TLDA_SERVER
   const serverIsolated = explicitServer && (
@@ -45,22 +73,38 @@ export function resolveDaemonIsolation({ env = {}, scriptPath = '', configuredSe
     norm(targetServer || env.TLDA_SERVER) !== norm(configuredServer) ||
     !!env.TLDA_DEV_DAEMON
   )
-  const isolated = usingCustomConfigDir || serverIsolated
+  const customDataIsolated = usingCustomConfigDir && usingCustomProjectsDir
+  const isolated = customDataIsolated || serverIsolated
+  const worktree = isDaemonWorktree(scriptPath, resolveIdentity)
 
-  if (isWorktreePath(scriptPath) && !isolated) {
+  if (usingCustomConfigDir && !usingCustomProjectsDir) {
     return {
       usingCustomConfigDir,
+      usingCustomProjectsDir,
+      isolated,
+      refuseReason:
+        'This daemon has TLDA_DAEMON_CONFIG_DIR but no PROJECTS_DIR. A custom ' +
+        'daemon config dir must also use an isolated JSONL projects directory; ' +
+        'otherwise it can bypass the singleton lock while tailing the live ' +
+        'agent sessions.',
+    }
+  }
+
+  if (worktree && !isolated) {
+    return {
+      usingCustomConfigDir,
+      usingCustomProjectsDir,
       isolated,
       refuseReason:
         'This daemon is running from a git worktree (' + scriptPath + ') with no ' +
         'isolation signal. A worktree/dev-rig daemon must not join the live fleet ' +
         'as the shared machine_id (it would evict the real daemon). Set ' +
-        'TLDA_DAEMON_CONFIG_DIR (own config + machine_id) or TLDA_SERVER (own ' +
-        'server target) to isolate it.',
+        'TLDA_DAEMON_CONFIG_DIR plus PROJECTS_DIR (own config + JSONLs) or ' +
+        'TLDA_SERVER (own server target) to isolate it.',
     }
   }
 
-  return { usingCustomConfigDir, isolated, refuseReason: null }
+  return { usingCustomConfigDir, usingCustomProjectsDir, isolated, refuseReason: null }
 }
 
 // Server-side backstop for the daemon-hello handler. Given the currently-held

@@ -225,6 +225,8 @@ export function createJsonlIngestor({
   const searchBackfillPendingBySession = new Set()
   const priorSessionBackfillPending = new Set()
   const priorSessionBackfillComplete = new Set()
+  let _syncSessionWatchersRunning = false
+  let _syncSessionWatchersPending = null
 
   function startJsonlIngester() {
     if (_jsonlIngester) return _jsonlIngester
@@ -433,6 +435,24 @@ export function createJsonlIngestor({
 
 
   async function syncSessionWatchers(agentList) {
+    if (_syncSessionWatchersRunning) {
+      _syncSessionWatchersPending = agentList
+      return
+    }
+    _syncSessionWatchersRunning = true
+    try {
+      await syncSessionWatchersOnce(agentList)
+    } finally {
+      _syncSessionWatchersRunning = false
+      if (_syncSessionWatchersPending) {
+        const pending = _syncSessionWatchersPending
+        _syncSessionWatchersPending = null
+        await syncSessionWatchers(pending)
+      }
+    }
+  }
+
+  async function syncSessionWatchersOnce(agentList) {
     let liveSessions = new Set()
     try {
       const r = await listSessions()

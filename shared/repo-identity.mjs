@@ -54,9 +54,11 @@ export function resolveRepoIdentity(path = process.cwd(), { git = defaultGit } =
   const commonDir = absPath(checkoutPath, git(['rev-parse', '--git-common-dir'], checkoutPath))
   const mainGitDir = resolve(checkoutPath, '.git')
   const isWorktree = commonDir !== mainGitDir || isWorktreeCheckoutPath(checkoutPath)
+  const mainCheckoutPath = commonDir.endsWith('/.git') ? dirname(commonDir) : checkoutPath
 
   return {
     checkoutPath,
+    mainCheckoutPath,
     gitSha,
     ref,
     branch,
