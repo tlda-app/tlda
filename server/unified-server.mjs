@@ -108,12 +108,14 @@ import {
 import { realizeProjectMarkdownArtifact } from './lib/project-artifact-materializer.mjs'
 import { createBackendLogger } from './lib/observability/logger.mjs'
 import { createNotificationAttemptRecorder } from './lib/notification-attempts.mjs'
+import { daemonEventFailureIncident } from './lib/daemon-event-failures.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const fleetWsLog = createBackendLogger('fleet-ws')
 const notificationAttemptLog = createBackendLogger('notification-attempts')
 const terminalBridgeLog = createBackendLogger('terminal-bridge')
 const syncSignalLog = createBackendLogger('sync-signals')
+const daemonEventLog = createBackendLogger('daemon-events')
 
 const serverIsolation = resolveServerIsolation({ env: process.env, scriptPath: fileURLToPath(import.meta.url) })
 if (serverIsolation.refuseReason) {
@@ -1797,6 +1799,19 @@ async function reportSyncSignalFailure(failure) {
       failure,
       reportingError: err?.stack || err?.message || String(err),
     }, 'sync signal incident reporting failed')
+  }
+}
+
+async function reportDaemonEventFailure(msg, operation, error) {
+  const incident = daemonEventFailureIncident(msg, operation, error)
+  daemonEventLog.warn({ incident }, 'daemon event delivery failed')
+  try {
+    await reportFleetIncident(incident)
+  } catch (err) {
+    daemonEventLog.error({
+      incident,
+      reportingError: err?.stack || err?.message || String(err),
+    }, 'daemon event incident reporting failed')
   }
 }
 
@@ -6801,7 +6816,8 @@ async function handleDaemonWsMessage(ws, msg) {
         timestamp: ts || new Date().toISOString(),
       })
     } catch (e) {
-      console.error(`[fleet-daemon] activity write: ${e.message}`)
+      await reportDaemonEventFailure(msg, 'activity-write', e)
+      throw e
     }
     checkQualifications(agent_id, tool, arg, input)
     return
@@ -6850,7 +6866,8 @@ async function handleDaemonWsMessage(ws, msg) {
         timestamp: ts,
       })
     } catch (e) {
-      console.error(`[fleet-daemon] terminal-chat write: ${e.message}`)
+      await reportDaemonEventFailure(msg, 'terminal-chat-write', e)
+      throw e
     }
     return
   }
