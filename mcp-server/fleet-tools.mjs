@@ -2785,8 +2785,6 @@ export async function handleFleetTool(name, args) {
       const friendlyName = process.env.FLEET_NAME || AGENT_ID.slice(0, 8);
 
       const docName = `report-${task.id}`;
-      const reportStatus = closeRequested ? 'closed' : 'reported';
-      const reportContent = `# ${task.description}\n\n**Agent:** ${friendlyName}  \n**Status:** ${reportStatus}  \n**Filed:** ${new Date().toISOString()}\n\n---\n\n${args.summary}`;
       const mainFile = `${docName}.md`;
       let tldaMsg = '';
 
@@ -2805,6 +2803,10 @@ export async function handleFleetTool(name, args) {
       } catch (e) {
         return { content: [{ type: 'text', text: `report failed: ${e.message}` }], isError: true };
       }
+
+      const closeCompleted = closeRequested && Boolean(data?.close_event_id);
+      const reportStatus = closeCompleted ? 'closed' : 'reported';
+      const reportContent = `# ${task.description}\n\n**Agent:** ${friendlyName}  \n**Status:** ${reportStatus}  \n**Filed:** ${new Date().toISOString()}\n\n---\n\n${args.summary}`;
 
       try {
         const check = await tldaFetch(docName);
@@ -2828,17 +2830,19 @@ export async function handleFleetTool(name, args) {
         tldaMsg = `\n⚠ tlda unavailable (${e.message}) — report posted to chat only.`;
       }
 
-      if (closeRequested) logEvent({ type: 'task_done', agent: AGENT_ID, task_id: task.id, description: task.description });
+      if (closeCompleted) logEvent({ type: 'task_done', agent: AGENT_ID, task_id: task.id, description: task.description });
       logEvent({ type: 'report', agent: AGENT_ID, task_id: task.id, summary: args.summary });
 
       let msg = data?.queued
         ? `Report queued durably for ${task.description}. Operation: ${data.operation_id || operationId}.`
-        : closeRequested
+        : closeCompleted
           ? `Report accepted. Closed task: ${task.description}.`
+          : closeRequested
+            ? `Report accepted; task remains open: ${data?.close_guard_message || 'the close request was not accepted.'}`
           : `Report accepted for task: ${task.description}.`;
       msg += tldaMsg;
       msg += lintAdvisory;
-      if (closeRequested) msg += '\n\nKeep working or use timer() — you\'ll see 📬 when the next task arrives.';
+      if (closeCompleted) msg += '\n\nKeep working or use timer() — you\'ll see 📬 when the next task arrives.';
       return { content: [{ type: 'text', text: msg }] };
     }
 

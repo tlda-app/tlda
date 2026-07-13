@@ -71,6 +71,7 @@ import { buildRuntimeStatus } from './lib/runtime-status.mjs'
 import { resolveSpawnMachine, SPAWN_MACHINE_PREF_KEY } from './lib/spawn-routing.mjs'
 import { resolveFreshSpawnAvailabilityModels } from './lib/spawn-availability-models.mjs'
 import { decideTaskRenudges, isWakeBreakerOpen, wakeBreakerBackoffMs } from './lib/task-renudge.mjs'
+import { decideReportClose } from '../bots/todd/report-close-guard.mjs'
 import { rejectMatchingWsRequests, startWsRequest } from '../shared/fleet-transport.mjs'
 import { isPlanModeResponse, planModeResponseKey } from './lib/plan-mode-response.mjs'
 import { SpawnBounceError, SpawnLibrarian, resolveSpawnCollision } from '../shared/spawn-librarian.ts'
@@ -5833,6 +5834,7 @@ async function handleFleetWsMessage(ws, msg) {
       ? fleetStore.getTask?.(task_id)
       : fleetStore.getTaskByAgent?.(agent)
     if (!task) { error('no active task'); return }
+    const closeDecision = close ? decideReportClose(summary) : { allowClose: true }
     if (close && task.metadata?.requires_approval) {
       if (!approval_id) { error('This task requires approval. Pass approval_id (event ID of a human approval message).'); return }
       const evt = fleetStore.getEventById(approval_id)
@@ -5895,7 +5897,7 @@ async function handleFleetWsMessage(ws, msg) {
       })
     }
 
-    if (close && !closeEventId) {
+    if (close && closeDecision.allowClose && !closeEventId) {
       const closeReason = reason || 'done'
       task.status = 'done'
       task.completed_at = new Date().toISOString()
@@ -5924,6 +5926,9 @@ async function handleFleetWsMessage(ws, msg) {
       report_event_id: reportEventId,
       chat_event_id: chatEventId,
       close_event_id: closeEventId,
+      close_rejected: !!close && !closeDecision.allowClose,
+      close_guard_reason: closeDecision.reason,
+      close_guard_message: closeDecision.message || null,
       event_id: closeEventId || reportEventId,
       event_ids: [reportEventId, chatEventId, closeEventId].filter(id => id != null),
       operation_id,

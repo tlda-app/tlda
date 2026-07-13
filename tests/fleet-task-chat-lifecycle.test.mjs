@@ -147,11 +147,12 @@ test('fleet WS report-close is operation-id idempotent and close marks task done
 
   assertOrder(reportBlock, [
     "if (!operation_id) { error('missing operation_id'); return }",
+    'const closeDecision = close ? decideReportClose(summary) : { allowClose: true }',
     'const previous = fleetStore.getReportCloseOperationResult?.(operation_id)',
     'let reportEventId = previous?.reportEventId || null',
     'if (!reportEventId) {',
     'if (!chatEventId && task.delegated_by) {',
-    'if (close && !closeEventId) {',
+    'if (close && closeDecision.allowClose && !closeEventId) {',
     "task.status = 'done'",
     'fleetStore.upsertTask(task)',
     'const insertedClose = await fleetStore.taskDone',
