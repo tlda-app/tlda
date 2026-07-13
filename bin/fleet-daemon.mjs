@@ -16,7 +16,6 @@
  * What it does NOT do:
  *   - No SQLite. The server owns the fleet store.
  *   - No HTTP. Browsers talk to the server, not the daemon.
- *   - No bot/service supervision. The CLI installs those as managed services.
  *
  * Lifecycle:
  *   - Reads ~/.config/tlda/config.json for { server, tokenRw, machineId }.
@@ -60,7 +59,7 @@ import { fileURLToPath } from 'url'
 import {
   loadConfig as _loadSharedConfig, saveConfig as _saveSharedConfig,
   getServerUrl, getFleetServerUrl, getRwToken, DEFAULT_PORT, hasTls,
-  CONFIG_DIR as _SHARED_CONFIG_DIR,
+  CONFIG_DIR as _SHARED_CONFIG_DIR, TLS_CA_PATH,
   getActiveConfigName, assertServerCoherence,
 } from '../shared/config.mjs'
 const VERSION = '0.1.1'
@@ -94,6 +93,7 @@ import { createAgentLiveness } from '../daemon/agent-liveness.mjs'
 import { ACTIVITY_NOISE } from '../shared/activity-tool-classification.mjs'
 import { createHarnessRuntime } from '../daemon/harness-runtime.mjs'
 import { createShadowMirror } from '../daemon/shadow-mirror.mjs'
+import { createBotSupervisor } from '../daemon/bot-supervisor.mjs'
 import { DaemonDeliveryRuntime } from '../daemon/delivery-runtime.mjs'
 import { DaemonOutbox, defaultOutboxPath } from '../daemon/outbox.mjs'
 import { reconcileDaemonRoster } from '../daemon/roster-reconcile.mjs'
@@ -406,6 +406,17 @@ const localArtifacts = createLocalArtifacts({
 const shadowMirror = createShadowMirror({
   getSourceDir: project => sourceSync.getSourceDir(project),
   log,
+})
+
+const botSupervisor = createBotSupervisor({
+  config,
+  configDir: CONFIG_DIR,
+  rootDir: process.cwd(),
+  machineId: MACHINE_ID,
+  tmuxArgs: TMUX_ARGS,
+  log,
+  tlsCaPath: hasTls ? TLS_CA_PATH : null,
+  tldaConfig: ACTIVE_CONFIG,
 })
 
 // ---------- terminal RPC facades ----------
@@ -798,6 +809,7 @@ try { fs.writeFileSync(PID_FILE, String(process.pid)) } catch (e) { log.warn(`fa
 function shutdown(signal) {
   // Log WHY we're dying so the next post-mortem isn't a scavenger hunt.
   log.info(`shutdown via ${signal || 'unknown'} signal; saving cursors and exiting`)
+  botSupervisor.stop()
   jsonlIngestor.shutdown()
   teardownWatchers({ jsonl: false })
   unlinkPidfileIfOwnPid(PID_FILE, process.pid)
@@ -850,6 +862,7 @@ log.info(`  boot_id     = ${BOOT_ID}`)
 log.info(`  user        = ${USER}@${HOSTNAME}`)
 startHeartbeat()
 devReaper.start()
+botSupervisor.start()
 connect()
 watchConfigDrift()
 
