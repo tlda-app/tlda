@@ -11,7 +11,7 @@
  * This replaces the old copy-store approach (separate editor + bidirectional sync).
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type WheelEvent as ReactWheelEvent } from 'react'
-import { TldrawViewport, Vec, stopEventPropagation } from 'tldraw'
+import { TldrawViewport, Vec, stopEventPropagation, useValue } from 'tldraw'
 import type { Editor, TLAnyShapeUtilConstructor, TLStateNodeConstructor, TLShape, TLViewportId } from 'tldraw'
 import {
   canvasClipSurfaceCamera,
@@ -160,6 +160,15 @@ export function CanvasClipPanel({
   const canvasRef = useRef<HTMLDivElement>(null)
   const generatedViewportId = useMemo(() => `clip-panel-${Math.random().toString(36).slice(2, 9)}`, [])
   const viewportId = externalViewportId ?? generatedViewportId
+  const mainCamera = useValue('canvas-clip-main-camera', () => mainEditor.getCamera(), [mainEditor])
+  const wmViewportCamera = useCallback(() => {
+    if (!wmSurface) return null
+    // Full-viewport WM panels already sit in the document's screen frame. The
+    // fork viewport must use the main camera, or the WM overlay transform is
+    // applied on top of main pan and the interactive HUD copy drifts offscreen.
+    if (fullViewport) return mainCamera
+    return canvasClipSurfaceCamera(wmSurface, false)
+  }, [fullViewport, mainCamera, wmSurface])
 
   useEffect(() => {
     const shouldRouteWheel = (fullViewport && lockCamera) || readOnly
@@ -235,14 +244,14 @@ export function CanvasClipPanel({
     }
     const setCamera = (camera: { x: number; y: number; z: number }) => {
       setCanvasClipSurfaceCamera(wmSurface, camera)
-      syncViewportCamera(canvasClipSurfaceCamera(wmSurface, fullViewport))
+      syncViewportCamera(wmViewportCamera() ?? camera)
     }
     wmSurfaceRegistry.set(viewportId, { surface: wmSurface, setCamera, syncViewportCamera, syncCoordinateCamera })
     return () => {
       const registered = wmSurfaceRegistry.get(viewportId)
       if (registered?.surface === wmSurface) wmSurfaceRegistry.delete(viewportId)
     }
-  }, [mainEditor, viewportId, wmSurface, fullViewport])
+  }, [mainEditor, viewportId, wmSurface, fullViewport, wmViewportCamera])
 
   // Expose the main editor to consumers via onEditorMount.
   // With the fork viewport there is no separate overlay editor — consumers
@@ -262,7 +271,7 @@ export function CanvasClipPanel({
   const [interactiveCamera, setInteractiveCamera] = useState<{ x: number; y: number; z: number } | null>(null)
   const plannedCamera = (() => {
     const next = (() => {
-      if (wmSurface) return canvasClipSurfaceCamera(wmSurface, fullViewport)
+      if (wmSurface) return wmViewportCamera() ?? { x: 0, y: 0, z: 1 }
       if (!bounds) return { x: 0, y: 0, z: 1 }
       return createCanvasClipPanelPlan({
         bounds, panelWidth, viewportHeight: window.innerHeight,
