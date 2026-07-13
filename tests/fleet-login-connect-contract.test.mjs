@@ -33,6 +33,32 @@ test('task doc startup materialization is deferred off module initialization', (
   assert.equal(startupBlock.includes('\nfleetStore.flushTaskDocs?.()\n'), false)
 })
 
+test('startup qualification, task renudge, and runtime status avoid full roster hydration', () => {
+  const qualificationStart = serverSource.indexOf('function qualLoadReadsFromDb()')
+  assert.notEqual(qualificationStart, -1)
+  const qualificationEnd = serverSource.indexOf('let _latexProjectDirs', qualificationStart)
+  assert.notEqual(qualificationEnd, -1)
+  const qualificationBlock = serverSource.slice(qualificationStart, qualificationEnd)
+  assert.equal(qualificationBlock.includes('getAllAgents()'), false)
+  assert.match(qualificationBlock, /getAllSkillReadsByAgent/)
+
+  const renudgeStart = serverSource.indexOf('function runTaskRenudgeSweep()')
+  assert.notEqual(renudgeStart, -1)
+  const renudgeEnd = serverSource.indexOf('if (TASK_RENUDGE_SWEEP_MS > 0)', renudgeStart)
+  assert.notEqual(renudgeEnd, -1)
+  const renudgeBlock = serverSource.slice(renudgeStart, renudgeEnd)
+  assert.equal(renudgeBlock.includes('getAllAgents()'), false)
+  assert.match(renudgeBlock, /getAgentsByIds/)
+
+  const runtimeStart = serverSource.indexOf("app.get('/api/runtime-status'")
+  assert.notEqual(runtimeStart, -1)
+  const runtimeEnd = serverSource.indexOf('// ---------- Education enforcement ----------', runtimeStart)
+  assert.notEqual(runtimeEnd, -1)
+  const runtimeBlock = serverSource.slice(runtimeStart, runtimeEnd)
+  assert.equal(runtimeBlock.includes('getAllAgents()'), false)
+  assert.match(runtimeBlock, /getAgentSummary/)
+})
+
 test('session entry search backfill is delayed and avoids all-session startup scan', () => {
   assert.equal(fleetStoreSource.includes('SELECT DISTINCT session_id FROM session_entries'), false)
   assert.match(fleetStoreSource, /SELECT 1 FROM session_entries WHERE session_id = \? LIMIT 1/)

@@ -1613,6 +1613,32 @@ export class FleetStore {
     return this._agentRosterView?.list || [];
   }
 
+  getAgentSummary() {
+    const totals = this.db.prepare(`
+      SELECT
+        COUNT(*) AS total,
+        SUM(CASE WHEN dead = 0 THEN 1 ELSE 0 END) AS live,
+        SUM(CASE WHEN dead = 1 THEN 1 ELSE 0 END) AS dead
+      FROM agents
+    `).get() || {};
+    const byMachine = {};
+    for (const row of this.db.prepare(`
+      SELECT COALESCE(machine_id, '(none)') AS machine_id, COUNT(*) AS count
+      FROM agents
+      WHERE dead = 0
+      GROUP BY COALESCE(machine_id, '(none)')
+    `).all()) {
+      byMachine[row.machine_id] = row.count;
+    }
+    return {
+      total: totals.total || 0,
+      live: totals.live || 0,
+      dead: totals.dead || 0,
+      byMachine,
+      agents: [],
+    };
+  }
+
   // Plain { id: friendly_name } map for labeling chat history. The hot
   // chat-history callers only need display names, so this avoids pulling and
   // hydrating the full ~1300-row roster (the remaining `agents ORDER BY
@@ -1755,6 +1781,18 @@ export class FleetStore {
     // broadcastState). Serve the maintained alive view instead of re-querying
     // and re-hydrating the full live set under churn.
     return this._aliveAgentRosterView?.list || [];
+  }
+
+  getAgentsByIds(ids = []) {
+    const unique = [...new Set((ids || []).filter(Boolean).map(String))];
+    if (!unique.length) return [];
+    const placeholders = unique.map(() => '?').join(', ');
+    const rows = this.db.prepare(`
+      SELECT agents.*, lineages.friendly_name AS lineage_name
+      FROM agents LEFT JOIN lineages ON lineages.id = agents.lineage_id
+      WHERE agents.id IN (${placeholders})
+    `).all(...unique);
+    return rows.map(row => this._hydrateAgent(row));
   }
 
   getAliveAgentsPage({ limit = 100, cursor = null } = {}) {

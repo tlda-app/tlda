@@ -229,3 +229,38 @@ test('skill-read hydration does not force agent registry hydration', () => {
     cleanup(reloaded, dbPath)
   }
 })
+
+test('targeted agent reads and summaries do not force registry hydration', () => {
+  const { store, dbPath } = tempStore()
+  try {
+    for (let i = 0; i < 3; i++) {
+      store.upsertAgent({
+        id: `fleet:agent-${i}`,
+        friendly_name: `agent-${i}`,
+        labels: [],
+        last_seen: `2026-07-12T00:00:0${i}.000Z`,
+        dead: i === 2,
+        machine_id: i === 0 ? 'mini' : 'air',
+      })
+    }
+  } finally {
+    store.close()
+  }
+
+  const reloaded = new FleetStore(dbPath)
+  try {
+    assert.equal(reloaded._agentRegistryLoaded, false)
+    assert.deepEqual(reloaded.getAgentsByIds(['fleet:agent-1']).map(a => a.id), ['fleet:agent-1'])
+    assert.equal(reloaded._agentRegistryLoaded, false)
+
+    const summary = reloaded.getAgentSummary()
+    assert.equal(summary.total, 3)
+    assert.equal(summary.live, 2)
+    assert.equal(summary.dead, 1)
+    assert.deepEqual(summary.byMachine, { air: 1, mini: 1 })
+    assert.deepEqual(summary.agents, [])
+    assert.equal(reloaded._agentRegistryLoaded, false)
+  } finally {
+    cleanup(reloaded, dbPath)
+  }
+})

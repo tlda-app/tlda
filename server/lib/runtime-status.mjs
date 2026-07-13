@@ -83,6 +83,7 @@ export function buildRuntimeStatus({
   daemonConnections = new Map(),
   resolveIdentity = maybeIdentity,
   buildInfo = readBuildInfo(),
+  fleetSummary = null,
   agents = [],
   localHostname = hostname(),
 } = {}) {
@@ -104,6 +105,6 @@ export function buildRuntimeStatus({
       dirty: buildInfo.dirty ?? null,
       builtAt: buildInfo.builtAt || null,
     } : { unavailable: true, reason: 'server/build-info.json not found' },
-    fleet: summarizeAgents(agents),
+    fleet: fleetSummary || summarizeAgents(agents),
   }
 }

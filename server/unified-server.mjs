@@ -836,9 +836,10 @@ function runTaskRenudgeSweep() {
   if (!fleetStore) return
   const tasks = fleetStore.getActiveTasks?.() || []
   const taskStates = tasks.map(task => fleetStore.getTaskDeliveryState?.(task)).filter(Boolean)
+  const agentIds = taskStates.map(state => state?.task?.agent).filter(Boolean)
   const nudges = decideTaskRenudges({
     taskStates,
-    agents: fleetStore.getAllAgents?.() || [],
+    agents: fleetStore.getAgentsByIds?.(agentIds) || [],
     now: Date.now(),
     lastRenudged: _taskRenudged,
     renudgeIntervalMs: TASK_RENUDGE_INTERVAL_MS,
@@ -2840,7 +2841,7 @@ app.get('/api/runtime-status', requireRead, (_req, res) => {
     fleetDbPath: process.env.TLDA_FLEET_DB || null,
     fleetStore,
     daemonConnections,
-    agents: fleetStore.getAllAgents(),
+    fleetSummary: fleetStore.getAgentSummary?.(),
     localHostname: hostname(),
   }))
 })
