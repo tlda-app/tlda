@@ -274,7 +274,14 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     if (!fleetStore) { res.status(503).json({ error: 'Fleet store not available' }); return }
     const rawIds = Array.isArray(req.query.ids) ? req.query.ids.join(',') : (req.query.ids || '')
     const ids = [...new Set(String(rawIds).split(',').map(s => s.trim()).filter(Boolean))].slice(0, 200)
-    try { res.json({ agents: fleetStore.getAgentsByIds?.(ids) || [] }) }
+    const name = typeof req.query.name === 'string' ? req.query.name.trim() : ''
+    if (name && ids.length) { res.status(400).json({ error: 'provide ids or name, not both' }); return }
+    try {
+      const agents = name
+        ? [fleetStore.findAgent(name)].filter(Boolean)
+        : (fleetStore.getAgentsByIds?.(ids) || [])
+      res.json({ agents })
+    }
     catch (e) { res.status(500).json({ error: e.message }) }
   })
 

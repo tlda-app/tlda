@@ -154,6 +154,21 @@ test('legacy full-store dump endpoints do not perform unbounded reads', () => {
   assert.equal(storeTasksWsBlock.includes('getAllTasks'), false)
 })
 
+test('agent-launch lookup uses the bounded targeted agent endpoint', () => {
+  const registerSource = fs.readFileSync(new URL('../agent-launch/register.mjs', import.meta.url), 'utf8')
+  const findAgentStart = registerSource.indexOf('export async function findAgent')
+  assert.notEqual(findAgentStart, -1)
+  const findAgentBlock = registerSource.slice(findAgentStart, findAgentStart + 700)
+  assert.match(findAgentBlock, /\/api\/agents\/lookup\?\$\{params\}/)
+  assert.equal(findAgentBlock.includes('/api/store/agents'), false)
+
+  const lookupStart = fleetRoutesSource.indexOf("router.get('/api/agents/lookup'")
+  assert.notEqual(lookupStart, -1)
+  const lookupBlock = fleetRoutesSource.slice(lookupStart, lookupStart + 1000)
+  assert.match(lookupBlock, /provide ids or name, not both/)
+  assert.match(lookupBlock, /fleetStore\.findAgent\(name\)/)
+})
+
 test('daemon reconnect welcome replays bounded agent events without full roster hydration', () => {
   const helperStart = serverSource.indexOf('function daemonAgentReplayForWelcome')
   assert.notEqual(helperStart, -1)

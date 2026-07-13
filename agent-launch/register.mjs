@@ -120,12 +120,11 @@ export async function checkFreshNameAvailable(name, { api = resolveApi(), server
 
 export async function findAgent(name, { api = resolveApi() } = {}) {
   if (!name) return null
-  const agents = await apiJson('/api/store/agents', { api })
-  if (name.startsWith('fleet:')) return agents.find((a) => a.id === name) || null
-  const matches = agents.filter((a) => a.friendly_name === name && !a.dead)
-  if (!matches.length) return null
-  matches.sort((a, b) => Number(b.last_seen || b.last_active || 0) - Number(a.last_seen || a.last_active || 0))
-  return matches[0]
+  const params = name.startsWith('fleet:')
+    ? `ids=${encodeURIComponent(name)}`
+    : `name=${encodeURIComponent(name)}`
+  const { agents = [] } = await apiJson(`/api/agents/lookup?${params}`, { api })
+  return agents[0] || null
 }
 
 export async function markAgentDead(fleetId, { api = resolveApi(), timeoutMs = 5000 } = {}) {
