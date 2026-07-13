@@ -22,6 +22,7 @@
  *   tlda-dev pw setup --doc NAME   open an unused doc in the real environment
  *   tlda-dev pw release            close my tab (browser stays up for others)
  *   tlda-dev pw status             session state + my tab + current URL
+ *   tlda-dev pw sweep              park stale/error tabs in my assigned browser
  *   tlda-dev pw reap               close my assigned shared browser (the reaper)
  *   tlda-dev pw center <region>    center the camera on doc | chat | fleet
  *
@@ -31,7 +32,7 @@
 
 import { spawnSync } from 'child_process'
 import { join, dirname, resolve, isAbsolute } from 'path'
-import { readFileSync, writeFileSync, existsSync, realpathSync, rmSync, mkdirSync } from 'fs'
+import { readFileSync, writeFileSync, existsSync, realpathSync, rmSync, mkdirSync, readdirSync } from 'fs'
 import { freemem, homedir, totalmem } from 'os'
 import { fileURLToPath } from 'url'
 import { createHash } from 'crypto'
@@ -48,6 +49,7 @@ function escapeRegex(value) {
 const PW_CAPACITY = parsePositiveInt(process.env.TLDA_PW_CAPACITY, 3)
 const PW_MAX_TABS_PER_SESSION = parsePositiveInt(process.env.TLDA_PW_MAX_TABS_PER_SESSION, 6)
 const PW_BLOCK_OPEN_PRESSURE = parsePressure(process.env.TLDA_PW_BLOCK_OPEN_PRESSURE, 0.9)
+const PW_STALE_TAB_MS = parsePositiveInt(process.env.TLDA_PW_STALE_TAB_MS, 15 * 60_000)
 
 // Agents are deterministically sharded over a bounded session pool. Explicit
 // TLDA_PW_SESSION remains available for isolated/manual testing.
@@ -220,6 +222,32 @@ function touchMine() {
 function clearTouch() {
   try { rmSync(touchFile(), { force: true }) } catch (e) { console.error(`pw: WARN clearing last-touch failed: ${e.message}`) }
   releaseLease(tabLeaseId())
+}
+
+function clearTouchKey(key) {
+  if (!key) return
+  try { rmSync(join(TOUCH_DIR, `${key}.json`), { force: true }) } catch (e) {
+    // Best-effort advisory cleanup; do not block reclaiming the browser tab.
+    console.error(`pw: WARN clearing stale touch failed: ${e.message}`)
+  }
+  releaseLease(tabLeaseId(SESSION, key))
+}
+
+function readTouchRecords() {
+  const records = new Map()
+  let files = []
+  try { files = readdirSync(TOUCH_DIR) } catch { return records }
+  for (const file of files) {
+    if (!file.endsWith('.json')) continue
+    try {
+      const record = JSON.parse(readFileSync(join(TOUCH_DIR, file), 'utf8'))
+      if (record?.key) records.set(record.key, record)
+    } catch {
+      // Corrupt touch files are treated as absent. They are advisory liveness
+      // hints, not authority for preserving a tab.
+    }
+  }
+  return records
 }
 
 function lockScript(repoRoot) {
@@ -550,6 +578,51 @@ function freeParkedWindow(tabs) {
   return tabs.find(t => /^about:blank/i.test(t.url || '') && !/pwtab=/.test(t.title || ''))
 }
 
+function isFreeParkedWindow(t) {
+  return /^about:blank/i.test(t.url || '') && !/pwtab=/.test(t.title || '')
+}
+
+function tabMarkerKey(t) {
+  const titleMatch = String(t.title || '').match(/pwtab=([^&\s]+)/)
+  if (titleMatch) return titleMatch[1]
+  try {
+    const u = new URL(t.url)
+    return u.searchParams.get('pwtab') || null
+  } catch {
+    return null
+  }
+}
+
+function tabReclaimReason(tab, touches, { now = Date.now(), maxIdleMs = PW_STALE_TAB_MS, aggressive = false } = {}) {
+  if (isMine(tab) || isFreeParkedWindow(tab)) return null
+  const key = tabMarkerKey(tab)
+  if (key) {
+    const touch = touches.get(key)
+    const age = touch?.ts ? now - touch.ts : Infinity
+    if (!touch) return `no touch record for ${key}`
+    if (age > maxIdleMs) return `idle ${Math.round(age / 60000)}m for ${key}`
+  }
+  if (aggressive && /^chrome-error:\/\//i.test(tab.url || '')) return 'chrome-error tab under pressure'
+  return null
+}
+
+function reclaimTabs({ maxIdleMs = PW_STALE_TAB_MS, aggressive = false } = {}) {
+  if (!sessionOpen()) return []
+  const touches = readTouchRecords()
+  const tabs = listTabs()
+  const reclaimed = []
+  for (const tab of tabs) {
+    const reason = tabReclaimReason(tab, touches, { maxIdleMs, aggressive })
+    if (!reason) continue
+    const key = tabMarkerKey(tab)
+    pw(['tab-select', String(tab.index)], { stdio: 'ignore' })
+    pw(['goto', 'about:blank'], { stdio: 'ignore' })
+    clearTouchKey(key)
+    reclaimed.push({ index: tab.index, key, reason })
+  }
+  return reclaimed
+}
+
 // Claim the daemon's CURRENT page as mine by stamping the marker into its title
 // (same-origin about:blank → settable). Lets isMine find it before first goto.
 function claimCurrentWindow() {
@@ -604,7 +677,7 @@ function stableTabs(retries = 5) {
 // caller must NOT forward on null — see the forwarded-verb path).
 function selectMyTab() {
   touchMine() // refresh idle clock — every verb runs through here
-  const tabs = stableTabs()
+  let tabs = stableTabs()
   let mine = tabs.find(isMine)
   if (!mine) {
     // Never spawn off an empty list. stableTabs() returns [] only when the
@@ -612,7 +685,20 @@ function selectMyTab() {
     // daemon stayed wedged past its budget. Reading that as "pool exhausted" is
     // exactly what spawned the stray. Fail clean; the agent retries when idle.
     if (tabs.length === 0) return null
-    const free = freeParkedWindow(tabs)
+    let free = freeParkedWindow(tabs)
+    if (!free) {
+      const pressure = memoryPressure()
+      const atLimit = tabs.length >= PW_MAX_TABS_PER_SESSION
+      const underPressure = Number.isFinite(pressure) && pressure >= PW_BLOCK_OPEN_PRESSURE
+      if (atLimit || underPressure) {
+        const reclaimed = reclaimTabs({ aggressive: underPressure })
+        if (reclaimed.length) {
+          console.error(`pw: reclaimed ${reclaimed.length} stale/error tab(s) before creating new browser load`)
+          tabs = stableTabs()
+          free = freeParkedWindow(tabs)
+        }
+      }
+    }
     if (free) {
       // Reuse a parked window from the pool — no window.open, so NO raise. This
       // is the common path once the fleet has warmed up: agents recycle windows
@@ -793,6 +879,7 @@ export async function cmdPw(args, repoRoot) {
         '  tlda-dev pw setup --doc NAME  real environment, unused doc, default fleet layout',
         '  tlda-dev pw release           close my tab (browser stays up for others)',
         '  tlda-dev pw status            session state + my tab + URL',
+        '  tlda-dev pw sweep             park stale/error tabs in my assigned browser',
         '  tlda-dev pw reap              close my assigned shared browser',
         '  tlda-dev pw center <region>   center camera on: doc | chat | fleet',
         '  tlda-dev pw console [level]   print console messages; supports --lines N',
@@ -836,7 +923,7 @@ export async function cmdPw(args, repoRoot) {
     process.exit(3)
   }
 
-  if (!['status', 'reap', 'help', '--help', 'lock', 'unlock'].includes(verb)) {
+  if (!['status', 'reap', 'sweep', 'help', '--help', 'lock', 'unlock'].includes(verb)) {
     enforceCanonicalSession()
   }
 
@@ -858,15 +945,37 @@ export async function cmdPw(args, repoRoot) {
     }
     console.log(`pool:    ${PW_CAPACITY} session${PW_CAPACITY === 1 ? '' : 's'} (${managedPoolSessions().join(', ')}); mine "${SESSION}"`)
     console.log(`limits:  ${PW_MAX_TABS_PER_SESSION} tab cap/session; open blocked at ${formatPressure(PW_BLOCK_OPEN_PRESSURE)} memory pressure`)
-    console.log(`memory:  ${formatPressure(pressure)} pressure${Number.isFinite(pressure) && pressure >= PW_BLOCK_OPEN_PRESSURE ? ' (OPEN BLOCKED)' : ''}`)
+    console.log(`memory:  ${formatPressure(pressure)} pressure${Number.isFinite(pressure) && pressure >= PW_BLOCK_OPEN_PRESSURE ? ' (new load blocked)' : ''}`)
     console.log(`lock:    ${formatLockStatus(lk)}`)
     console.log(`browser: ${open ? 'up' : 'down'} (session "${SESSION}")`)
     if (open) {
       const tabs = listTabs()
       const mine = tabs.find(isMine)
+      const parked = tabs.filter(isFreeParkedWindow)
       const tabDecision = pwCanCreateTab({ tabCount: tabs.length, pressure })
-      console.log(`tabs:    ${tabs.length} open${mine ? ` (mine: #${mine.index})` : ' (none mine yet)'}${tabDecision.ok ? '' : ` (${tabDecision.reason})`}`)
+      const reuse = parked.length ? `; ${parked.length} parked reusable` : ''
+      console.log(`tabs:    ${tabs.length} open${mine ? ` (mine: #${mine.index})` : ' (none mine yet)'}${reuse}${tabDecision.ok ? '' : ` (new load blocked: ${tabDecision.reason})`}`)
       if (mine) console.log(`url:     ${mine.url}`)
+    }
+    return
+  }
+
+  if (verb === 'sweep') {
+    if (!sessionOpen()) { console.log('browser already down'); return }
+    if (!lockWithWait(repoRoot, me)) {
+      const lk = lockStatus(repoRoot)
+      console.error(`lock busy on session "${SESSION}" — ${lk ? `${formatLockStatus(lk)} holding` : 'another agent'}; sweep skipped`)
+      process.exit(1)
+    }
+    try {
+      const reclaimed = reclaimTabs({ aggressive: true })
+      if (!reclaimed.length) console.log('no stale/error tabs to park')
+      else {
+        console.log(`parked ${reclaimed.length} stale/error tab(s):`)
+        for (const item of reclaimed) console.log(`  #${item.index}${item.key ? ` ${item.key}` : ''} — ${item.reason}`)
+      }
+    } finally {
+      unlock(repoRoot, me)
     }
     return
   }
