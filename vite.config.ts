@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import { execSync } from 'child_process'
 import { createReadStream, existsSync, readFileSync } from 'fs'
 import { homedir } from 'os'
 import { join, resolve } from 'path'
@@ -84,6 +85,44 @@ const activeConfigPlugin = {
 function localTlsHttps() {
   if (!hasLocalTls) return {}
   return { https: { cert: readFileSync(tlsCert, 'utf8'), key: readFileSync(tlsKey, 'utf8') } }
+}
+
+function readAppBuildInfo() {
+  try {
+    const raw = readFileSync(resolve('server/build-info.json'), 'utf8')
+    const info = JSON.parse(raw)
+    const sha = typeof info.gitSha === 'string' && info.gitSha
+      ? info.gitSha
+      : typeof info.sha === 'string' && info.sha
+        ? info.sha
+        : null
+    if (!sha) return null
+    return {
+      gitSha: sha,
+      sha,
+      ref: typeof info.ref === 'string' ? info.ref : null,
+      branch: typeof info.branch === 'string' ? info.branch : null,
+      dirty: Boolean(info.dirty),
+      builtAt: typeof info.builtAt === 'string' ? info.builtAt : null,
+    }
+  } catch {
+    try {
+      const git = (args: string) => execSync(`git ${args}`, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+      const sha = git('rev-parse HEAD')
+      const branch = git('rev-parse --abbrev-ref HEAD')
+      const dirty = git('status --porcelain').length > 0
+      return {
+        gitSha: sha,
+        sha,
+        ref: branch && branch !== 'HEAD' ? branch : `detached:${sha.slice(0, 12)}`,
+        branch: branch && branch !== 'HEAD' ? branch : null,
+        dirty,
+        builtAt: new Date().toISOString(),
+      }
+    } catch {
+      return null
+    }
+  }
 }
 
 // Dev-only plugin: serve local filesystem images for math notes
@@ -192,6 +231,7 @@ return {
   define: {
     USE_SERVER: false,
     SYNCTEX_SERVER: JSON.stringify(''),
+    __TLDA_APP_BUILD_INFO__: JSON.stringify(readAppBuildInfo()),
   },
   optimizeDeps: {
     exclude: ['pdfjs-dist'],

@@ -2350,6 +2350,7 @@ app.get('/health', (req, res) => {
 })
 
 app.get('/api/build-info', (_req, res) => {
+  res.set('Cache-Control', 'no-store')
   const result = readBuildInfo(join(__dirname, 'build-info.json'))
   if (!result.ok) {
     res.status(result.status).json({

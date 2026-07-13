@@ -34,6 +34,7 @@ import { isUsableIdentityName, sanitizeIdentityName, storedIdentityLoginFailureA
 import { resetWsRequestIdleTimers, startWsRequest } from '../../shared/ws-request-policy.mjs'
 import { WsReconnectBuffer } from '../../shared/ws-reconnect-buffer.mjs'
 import { maybeShowRadioSubtitleForIncomingChat } from '../voice.mjs'
+import { checkAppShellFreshness } from '../appShellFreshness'
 
 // The global fleet/event store (chat, agents, activity, tasks) = the active
 // config's DATABASE, read directly from the server-injected config. No fetch, no
@@ -816,6 +817,7 @@ export function connect() {
     _reconnectDelay = 1000
     _connected = true
     notify('connection', { type: 'connection', connected: true })
+    void checkAppShellFreshness('fleet-ws-open')
     // Log in if we have a requested or stored identity. The URL is explicit for
     // this tab and must beat stale browser storage.
     const storedName = readUrlIdentity() || readStoredIdentity()

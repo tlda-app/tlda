@@ -4,6 +4,7 @@ import { onCLS, onFCP, onINP, onLCP, onTTFB } from 'web-vitals/attribution'
 import type { MetricWithAttribution } from 'web-vitals/attribution'
 import { getFleetRuntimeSummary } from './fleet/fleet-data.mjs'
 import { getVoiceRuntimeSummary } from './voice.mjs'
+import { getAppShellFreshnessSummary } from './appShellFreshness'
 
 type LivePerfProbeHandle = {
   recordEvent: (type: string, detail?: Record<string, unknown>) => void
@@ -318,6 +319,7 @@ export function installLivePerfProbe(
     network: {
       online: navigator.onLine,
     },
+    appShell: safeCollect(getAppShellFreshnessSummary),
   })
 
   const pushEvent = (event: LivePerfEvent) => {

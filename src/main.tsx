@@ -4,6 +4,7 @@ import './index.css'
 import './frame-probe'  // perf-probe frame timing (inactive unless ?perf=1)
 import App from './App.tsx'
 import { isPhoneViewport } from './phoneViewport'
+import { installAppShellFreshnessProbe } from './appShellFreshness'
 
 // High-res display compensation: macOS "More Space" gives huge CSS viewports
 // where CSS pixels are physically tiny (retina display + lots of CSS px = small UI).
@@ -69,6 +70,8 @@ function getDefaultFleetLayoutPreset() {
     } catch { /* localStorage may be unavailable */ }
   }
 }
+
+installAppShellFreshnessProbe()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
