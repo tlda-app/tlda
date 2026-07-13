@@ -57,5 +57,6 @@ test('large replay gaps return a snapshot cursor instead of a large event batch'
   const forcedDelta = events.replay('air:live', 1, { limit: 2, snapshotOverLimit: false })
   assert.equal(forcedDelta.snapshot, false)
   assert.deepEqual(forcedDelta.events.map(e => e.seq), [2, 3])
+  assert.equal(forcedDelta.hasMore, true)
   db.close()
 })

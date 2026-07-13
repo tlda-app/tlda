@@ -6985,6 +6985,7 @@ const _daemonOutboxProcessedGetStmt = fleetStore?.db.prepare(
 const _daemonOutboxProcessedInsertStmt = fleetStore?.db.prepare(
   'INSERT OR IGNORE INTO daemon_outbox_processed (id, type, processed_at) VALUES (?, ?, ?)'
 )
+const DAEMON_AGENT_REPLAY_BATCH = Number(process.env.TLDA_DAEMON_AGENT_REPLAY_BATCH || 200)
 
 function daemonOutboxId(msg) {
   return msg?.[DAEMON_OUTBOX_ID_FIELD] || null
@@ -7177,6 +7178,46 @@ function broadcastDaemonActiveViewers() {
   const viewers = [...getActiveViewerProjects()]
   for (const daemonKey of daemonKeys) {
     enqueueDaemonMessage(daemonKey, { type: 'active-viewers', projects: viewers }, { dedupeKey: 'active-viewers' })
+  }
+}
+
+function daemonAgentReplayForWelcome(daemonKey, lastSeq) {
+  const cursor = Number.isInteger(lastSeq) ? lastSeq : 0
+  if (cursor <= 0) {
+    const agents = fleetStore?.getAgentsByDaemonKey(daemonKey) || []
+    for (const agent of agents) daemonAgentEvents.append(daemonKey, agent)
+    const replay = daemonAgentEvents.replay(daemonKey, 0, { limit: DAEMON_AGENT_REPLAY_BATCH })
+    return { ...replay, agents, reset: true }
+  }
+  const replay = daemonAgentEvents.replay(daemonKey, cursor, {
+    limit: DAEMON_AGENT_REPLAY_BATCH,
+    snapshotOverLimit: false,
+  })
+  return { ...replay, agents: [], reset: false }
+}
+
+function sendDaemonAgentReplayContinuation(daemonKey, afterSeq) {
+  const ws = daemonConnections.get(daemonKey)
+  if (!ws || ws.readyState !== 1) return
+  const replay = daemonAgentEvents.replay(daemonKey, afterSeq, {
+    limit: DAEMON_AGENT_REPLAY_BATCH,
+    snapshotOverLimit: false,
+  })
+  if (replay.events.length === 0) return
+  try {
+    ws.send(JSON.stringify({
+      type: 'agent-status-events',
+      agent_status_seq: replay.lastSeq,
+      agent_status_events: replay.events,
+      agent_status_has_more: replay.hasMore,
+    }))
+    ws._agentStatusSeq = replay.lastSeq
+  } catch (e) {
+    console.warn(`[fleet-daemon] agent replay continuation failed for ${daemonKey}: ${e.message}`)
+    return
+  }
+  if (replay.hasMore) {
+    setImmediate(() => sendDaemonAgentReplayContinuation(daemonKey, replay.lastSeq))
   }
 }
 
@@ -7375,8 +7416,10 @@ async function handleDaemonWsMessage(ws, msg) {
     // The browser-side watcher set is server-held; the daemon comes back
     // empty after a restart so we re-fire start-terminal-watch.
     if (fleetStore) {
-      const onMachine = fleetStore.getAgentsByDaemon(machine_id, env_name)
-      for (const a of onMachine) {
+      const watchedAgentIds = [...terminalWatchers.keys()]
+      const watchedAgents = watchedAgentIds.length > 0 ? fleetStore.getAgentsByIds(watchedAgentIds) : []
+      for (const a of watchedAgents) {
+        if ((a.daemon_key || (a.machine_id && a.env_name ? daemonAddress(a.machine_id, a.env_name) : null)) !== daemonKey) continue
         if (a.tmux_session && terminalWatchers.has(a.id)) {
           sendRpc(daemonKey, 'start-terminal-watch', {
             agent_id: a.id, tmux_session: a.tmux_session, poll_ms: 500,
@@ -7388,19 +7431,22 @@ async function handleDaemonWsMessage(ws, msg) {
     // Send daemon-welcome with agents + projects this machine should
     // watch. Agents are filtered by machine_id; legacy NULL agents will
     // be invisible to daemons until the MCP starts sending machine_id.
-    const agentsForMachine = fleetStore?.getAgentsByDaemon(machine_id, env_name) || []
-    for (const agent of agentsForMachine) daemonAgentEvents.append(daemonKey, agent)
-    const agentReplay = daemonAgentEvents.replay(daemonKey, ws._agentStatusSeq)
+    const agentReplay = daemonAgentReplayForWelcome(daemonKey, ws._agentStatusSeq)
     try {
       ws.send(JSON.stringify({
         type: 'daemon-welcome',
         server_boot_id: SERVER_BOOT_ID,
-        agents: agentReplay.snapshot ? agentsForMachine : [],
+        agents: agentReplay.snapshot ? agentReplay.agents : [],
+        agent_status_reset: agentReplay.reset,
         agent_status_seq: agentReplay.lastSeq,
         agent_status_events: agentReplay.events,
+        agent_status_has_more: agentReplay.hasMore,
         projects: projectsForDaemon(),
         activeViewers: [...getActiveViewerProjects()],
       }))
+      if (agentReplay.hasMore) {
+        setImmediate(() => sendDaemonAgentReplayContinuation(daemonKey, agentReplay.lastSeq))
+      }
     } catch (e) {
       console.error(`[fleet-daemon] welcome send failed: ${e.message}`)
     }

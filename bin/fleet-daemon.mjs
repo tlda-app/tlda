@@ -638,6 +638,18 @@ function reconcileRoster(reason) {
   })
 }
 
+function applyAgentStatusEvents(events = []) {
+  for (const event of events) {
+    if (event.seq <= agentStatusSeq) continue
+    if (event.type === 'agent-upsert') {
+      const index = agents.findIndex(agent => agent.id === event.agent.id)
+      if (index >= 0) agents[index] = event.agent
+      else agents.push(event.agent)
+    }
+    agentStatusSeq = event.seq
+  }
+}
+
 function handleServerMessage(msg) {
   if (machineRpc.handleReply(msg)) return
   if (msg.type === DAEMON_OUTBOX_ACK_TYPE) {
@@ -650,16 +662,9 @@ function handleServerMessage(msg) {
   }
   if (msg.type === 'daemon-welcome') {
     _serverReady = true
-    agents = msg.agents || []
-    agentStatusSeq = msg.agent_status_seq || 0
-    for (const event of msg.agent_status_events || []) {
-      if (event.type === 'agent-upsert') {
-        const index = agents.findIndex(agent => agent.id === event.agent.id)
-        if (index >= 0) agents[index] = event.agent
-        else agents.push(event.agent)
-      }
-      agentStatusSeq = event.seq
-    }
+    if (msg.agent_status_reset) agents = msg.agents || []
+    applyAgentStatusEvents(msg.agent_status_events || [])
+    agentStatusSeq = Math.max(agentStatusSeq, msg.agent_status_seq || 0)
     projects = msg.projects || []
     reconcileRoster('daemon-welcome')
     applyDaemonGrants(permissionLedger, daemonSpawnConfig)
@@ -676,6 +681,12 @@ function handleServerMessage(msg) {
     promptPlan.startAutoAcceptSweep()
     jsonlIngestor.startOwnerHarvester()
     log.info(`daemon-ready pid=${process.pid} server=${SERVER} machine_id=${MACHINE_ID} env_name=${ACTIVE_CONFIG} agents=${agents.length} projects=${projects.length} watchers=started`)
+    return
+  }
+  if (msg.type === 'agent-status-events') {
+    applyAgentStatusEvents(msg.agent_status_events || [])
+    agentStatusSeq = Math.max(agentStatusSeq, msg.agent_status_seq || agentStatusSeq)
+    reconcileRoster('agent-status-events')
     return
   }
   if (msg.type === 'agents-updated') {

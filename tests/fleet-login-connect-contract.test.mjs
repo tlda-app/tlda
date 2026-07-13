@@ -8,6 +8,7 @@ const fleetStoreSource = fs.readFileSync(new URL('../server/lib/fleet-store.mjs'
 const clientSource = fs.readFileSync(new URL('../src/fleet/fleet-data.mjs', import.meta.url), 'utf8')
 const mcpFleetSource = fs.readFileSync(new URL('../mcp-server/fleet-tools.mjs', import.meta.url), 'utf8')
 const terminalShapeSource = fs.readFileSync(new URL('../src/shapes/TerminalShape.tsx', import.meta.url), 'utf8')
+const daemonSource = fs.readFileSync(new URL('../bin/fleet-daemon.mjs', import.meta.url), 'utf8')
 
 test('fleet socket connect has no roster or task init frame ahead of login replies', () => {
   const connectStart = serverSource.indexOf("if (url.pathname === '/ws/fleet')")
@@ -151,6 +152,57 @@ test('legacy full-store dump endpoints do not perform unbounded reads', () => {
   assert.match(storeTasksWsBlock, /getActiveTasksPage/)
   assert.equal(storeTasksWsBlock.includes('getActiveTasks()'), false)
   assert.equal(storeTasksWsBlock.includes('getAllTasks'), false)
+})
+
+test('daemon reconnect welcome replays bounded agent events without full roster hydration', () => {
+  const helperStart = serverSource.indexOf('function daemonAgentReplayForWelcome')
+  assert.notEqual(helperStart, -1)
+  const helperEnd = serverSource.indexOf('function sendDaemonAgentReplayContinuation', helperStart)
+  assert.notEqual(helperEnd, -1)
+  const helperBlock = serverSource.slice(helperStart, helperEnd)
+
+  assert.match(helperBlock, /if \(cursor <= 0\) \{/)
+  assert.match(helperBlock, /getAgentsByDaemonKey\(daemonKey\)/)
+  const reconnectBranch = helperBlock.slice(helperBlock.indexOf('snapshotOverLimit: false'))
+  assert.equal(reconnectBranch.includes('getAgentsByDaemon'), false)
+  assert.equal(reconnectBranch.includes('getAgentsByDaemonKey'), false)
+  assert.match(reconnectBranch, /reset: false/)
+
+  const terminalResumeStart = serverSource.indexOf('// Resume any active terminal watches for agents on this machine.')
+  assert.notEqual(terminalResumeStart, -1)
+  const terminalResumeEnd = serverSource.indexOf('// Send daemon-welcome', terminalResumeStart)
+  assert.notEqual(terminalResumeEnd, -1)
+  const terminalResumeBlock = serverSource.slice(terminalResumeStart, terminalResumeEnd)
+  assert.match(terminalResumeBlock, /getAgentsByIds\(watchedAgentIds\)/)
+  assert.equal(terminalResumeBlock.includes('getAgentsByDaemon('), false)
+
+  const welcomeStart = serverSource.indexOf("if (type === 'daemon-hello') {")
+  assert.notEqual(welcomeStart, -1)
+  const welcomeEnd = serverSource.indexOf('// Send persisted backing file watch list to daemon.', welcomeStart)
+  assert.notEqual(welcomeEnd, -1)
+  const welcomeBlock = serverSource.slice(welcomeStart, welcomeEnd)
+  assert.match(welcomeBlock, /daemonAgentReplayForWelcome\(daemonKey, ws\._agentStatusSeq\)/)
+  assert.match(welcomeBlock, /agent_status_has_more/)
+  assert.equal(welcomeBlock.includes('getAgentsByDaemon(machine_id, env_name)'), false)
+})
+
+test('daemon delta welcome preserves existing roster before applying replay events', () => {
+  const welcomeStart = daemonSource.indexOf("if (msg.type === 'daemon-welcome')")
+  assert.notEqual(welcomeStart, -1)
+  const welcomeEnd = daemonSource.indexOf("if (msg.type === 'agent-status-events')", welcomeStart)
+  assert.notEqual(welcomeEnd, -1)
+  const welcomeBlock = daemonSource.slice(welcomeStart, welcomeEnd)
+
+  assert.match(welcomeBlock, /if \(msg\.agent_status_reset\) agents = msg\.agents \|\| \[\]/)
+  assert.match(welcomeBlock, /applyAgentStatusEvents\(msg\.agent_status_events \|\| \[\]\)/)
+  assert.match(welcomeBlock, /Math\.max\(agentStatusSeq, msg\.agent_status_seq \|\| 0\)/)
+  assert.equal(welcomeBlock.includes('\n    agents = msg.agents || []'), false)
+
+  const eventBatchStart = daemonSource.indexOf("if (msg.type === 'agent-status-events')")
+  assert.notEqual(eventBatchStart, -1)
+  const eventBatchBlock = daemonSource.slice(eventBatchStart, eventBatchStart + 350)
+  assert.match(eventBatchBlock, /applyAgentStatusEvents\(msg\.agent_status_events \|\| \[\]\)/)
+  assert.match(eventBatchBlock, /reconcileRoster\('agent-status-events'\)/)
 })
 
 test('fleet client buffers reconnect sends and does not bulk-reject pending requests on close', () => {
