@@ -114,6 +114,10 @@ import {
   renderControlPlaneTraceMarkdown,
   traceIdFromFleetEvent,
 } from './lib/observability/control-plane-trace.mjs'
+import {
+  buildTelemetryStatusSnapshot,
+  renderTelemetryStatusMarkdown,
+} from './lib/observability/telemetry-status.mjs'
 import { createNotificationAttemptRecorder } from './lib/notification-attempts.mjs'
 import { daemonEventFailureIncident } from './lib/daemon-event-failures.mjs'
 import { boundActivityMetadata, boundActivityPayload } from '../shared/activity-payload-bounds.mjs'
@@ -2734,6 +2738,25 @@ app.get('/api/diagnostics/live-perf', requireRead, (req, res) => {
       events: serverEvents,
     },
   })
+})
+
+function telemetryStatusSnapshotFromLiveBuffers() {
+  return buildTelemetryStatusSnapshot({
+    livePerfSamples,
+    livePerfRetained: livePerfSamples.length,
+    serverPerfEvents,
+    serverPerfRetained: serverPerfEvents.length,
+    eventLoopLag: lastEventLoopLag,
+    ws: wsSummary(),
+  })
+}
+
+app.get('/api/diagnostics/telemetry-status', requireRead, (req, res) => {
+  res.json(telemetryStatusSnapshotFromLiveBuffers())
+})
+
+app.get('/api/diagnostics/telemetry-status.md', requireRead, (req, res) => {
+  res.type('text/markdown').send(renderTelemetryStatusMarkdown(telemetryStatusSnapshotFromLiveBuffers()))
 })
 
 app.get('/api/diagnostics/control-plane-traces', requireRead, (req, res) => {
