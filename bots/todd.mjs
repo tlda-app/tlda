@@ -30,6 +30,7 @@ import { labelsForAgent } from '../shared/fleet-labels.mjs'
 import { startWsRequest } from '../shared/ws-request-policy.mjs'
 import { commitMdShare } from '../bin/md-share-commit.mjs'
 import { decideTaskKicks, formatTaskKickMessage } from './todd/kicks.mjs'
+import { buildFleetActivityReport, parseFleetActivityCommand } from './todd/activity-report.mjs'
 import { decideLooseEndNudge, LOOSE_END_COOLDOWN_MS } from './todd/loose-ends.mjs'
 import { GLOBAL_ACTIVITY_RULES } from './todd/global-activity-rules.mjs'
 import { DispositionScheduler } from './self-check/scheduler.mjs'
@@ -1637,6 +1638,74 @@ async function getTasks() {
   return normalizeTaskList(await getJson('/api/tasks?limit=200'))
 }
 
+async function fetchFleetActivityReportSources(now = Date.now()) {
+  const since = new Date(now - 15 * 60_000).toISOString()
+  const results = await Promise.allSettled([
+    getJson('/api/agents/summary'),
+    getJson('/api/agents?limit=200'),
+    getJson('/api/fleet-roster-truth?limit=200'),
+    getJson('/api/tasks?limit=200'),
+    getJson(`/api/store/events?since=${encodeURIComponent(since)}&limit=5000`),
+    getJson('/api/diagnostics/telemetry-status'),
+  ])
+  const value = (index, fallback) => results[index].status === 'fulfilled' ? results[index].value : fallback
+  const omitted = results
+    .map((result, index) => result.status === 'rejected' ? `${ACTIVITY_REPORT_SOURCE_NAMES[index]}: ${result.reason?.message || result.reason}` : null)
+    .filter(Boolean)
+  return {
+    summary: value(0, null),
+    agents: normalizeAgentList(value(1, { agents: [] })),
+    rosterTruth: value(2, null),
+    tasks: normalizeTaskList(value(3, { tasks: [] })),
+    events: value(4, { events: [] })?.events || [],
+    telemetryStatus: value(5, null),
+    omitted,
+  }
+}
+
+const ACTIVITY_REPORT_SOURCE_NAMES = [
+  '/api/agents/summary',
+  '/api/agents?limit=200',
+  '/api/fleet-roster-truth?limit=200',
+  '/api/tasks?limit=200',
+  '/api/store/events',
+  '/api/diagnostics/telemetry-status',
+]
+
+async function handleFleetActivityReportCommand(text, { direct = false } = {}) {
+  const command = parseFleetActivityCommand(text, { verb: VERB, direct })
+  if (!command) return false
+  try {
+    const now = Date.now()
+    const sources = await fetchFleetActivityReportSources(now)
+    const report = buildFleetActivityReport({
+      now,
+      agents: sources.agents,
+      tasks: sources.tasks,
+      events: sources.events,
+      telemetryStatus: sources.telemetryStatus,
+      rosterTruth: sources.rosterTruth,
+      mode: command.mode,
+      toddConfig: {
+        quietMs: TASK_KICK_QUIET_MS,
+        kickIntervalMs: TASK_KICK_INTERVAL_MS,
+        maxTaskAgeMs: TASK_KICK_MAX_TASK_AGE_MS,
+        lastKicked: taskKickLastSent,
+        lastRealActivityMs,
+        skipLive: skipLiveAgentSet(),
+      },
+    })
+    const sourceCaveat = sources.omitted.length
+      ? `\n\n_Source caveat: ${sources.omitted.join('; ')}_`
+      : ''
+    sendChat(OWNER_ID, `${report.markdown}${sourceCaveat}`)
+  } catch (e) {
+    console.error('[todd] activity report failed:', e.message)
+    sendChat(OWNER_ID, `I couldn't build the fleet activity report: ${e.message}`)
+  }
+  return true
+}
+
 async function findAgentManager(agentId) {
   try {
     const tasks = await getTasks()
@@ -2595,6 +2664,12 @@ async function handleMessage(msg) {
       if (!nameMatch) return false
       const before = prefix.slice(0, nameMatch.index)
       return !/(?:the|an?|of|use|using)\s*$/i.test(before)
+    }
+
+    if (from_id === OWNER_ID) {
+      const directToTodd = to_id === AGENT_ID
+      const activityAddressed = directToTodd || addressedBefore(/\b(?:activity|graph|is\s+the\s+fleet\s+moving)\b/i)
+      if (activityAddressed && await handleFleetActivityReportCommand(text, { direct: directToTodd })) return
     }
 
     // Todd cancel — abort any pending countdown/scheduled action. Accept
