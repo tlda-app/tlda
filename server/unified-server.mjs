@@ -79,15 +79,10 @@ import { trimTerminalSeedBlankRows } from '../shared/terminal-seed.mjs'
 import { daemonSingletonLockPath, inspectSingletonLock } from '../agent-runtime/singleton-lock.mjs'
 import { partialSkillReadSummaries, recordPartialSkillReads } from '../shared/partial-skill-reads.mjs'
 import { daemonAddress, describeAgentAddress } from '../shared/agent-move-target.mjs'
-import {
-  DAEMON_OUTBOX_ACK_TYPE,
-  DAEMON_OUTBOX_ERROR_TYPE,
-  DAEMON_OUTBOX_ID_FIELD,
-  SERVER_DAEMON_OUTBOX_ACK_TYPE,
-} from '../shared/daemon-delivery.mjs'
 import { readBuildInfo } from './lib/build-info.mjs'
 import { ServerDaemonOutbox } from './lib/server-daemon-outbox.mjs'
 import { DaemonAgentEvents } from './lib/daemon-agent-events.mjs'
+import { createDaemonWsControlPlane } from './lib/daemon-ws-control-plane.mjs'
 import { clearTrustedHeartbeatProbes, shouldSkipHeartbeatSweepForLag, shouldTerminateForMissedPong, socketCanAcceptMore } from '../shared/fleet-ws-flow.mjs'
 import {
   DELIVERY_CHANNELS,
@@ -4377,23 +4372,9 @@ server.on('upgrade', async (req, socket, head) => {
       ws.on('message', async (raw) => {
         let msg
         try { msg = JSON.parse(raw.toString()) } catch { return }
-        try {
-          if (msg?.type === SERVER_DAEMON_OUTBOX_ACK_TYPE) {
-            ackServerDaemonOutboxMessage(msg)
-            return
-          }
-          if (isProcessedDaemonOutboxMessage(msg)) {
-            ackDaemonOutboxMessage(ws, msg)
-            return
-          }
-          await handleDaemonWsMessage(ws, msg)
-          markDaemonOutboxMessageProcessed(msg)
-          ackDaemonOutboxMessage(ws, msg)
-        }
-        catch (e) {
-          console.error('[daemon-ws] handler error:', e?.message)
-          errorDaemonOutboxMessage(ws, msg, e)
-        }
+        await handleDaemonOutboxEnvelope(ws, msg, handleDaemonWsMessage, {
+          onHandlerError: e => console.error('[daemon-ws] handler error:', e?.message),
+        })
       })
       ws.on('close', (code, reason) => {
         logWsClose('daemon', ws, code, reason?.toString?.() || '')
@@ -7012,81 +6993,19 @@ const _daemonOutboxProcessedInsertStmt = fleetStore?.db.prepare(
 )
 const DAEMON_AGENT_REPLAY_BATCH = Number(process.env.TLDA_DAEMON_AGENT_REPLAY_BATCH || 200)
 
-function daemonOutboxId(msg) {
-  return msg?.[DAEMON_OUTBOX_ID_FIELD] || null
-}
-
-function isProcessedDaemonOutboxMessage(msg) {
-  const outboxId = daemonOutboxId(msg)
-  if (!outboxId || !_daemonOutboxProcessedGetStmt) return false
-  return !!_daemonOutboxProcessedGetStmt.get(outboxId)
-}
-
-function markDaemonOutboxMessageProcessed(msg) {
-  const outboxId = daemonOutboxId(msg)
-  if (!outboxId || !_daemonOutboxProcessedInsertStmt) return
-  _daemonOutboxProcessedInsertStmt.run(outboxId, msg.type || 'unknown', new Date().toISOString())
-}
-
-function ackDaemonOutboxMessage(ws, msg) {
-  const outboxId = daemonOutboxId(msg)
-  if (!outboxId || ws.readyState !== 1) return
-  ws.send(JSON.stringify({ type: DAEMON_OUTBOX_ACK_TYPE, outbox_id: outboxId }))
-}
-
-function errorDaemonOutboxMessage(ws, msg, error) {
-  const outboxId = daemonOutboxId(msg)
-  if (!outboxId || ws.readyState !== 1) return
-  ws.send(JSON.stringify({
-    type: DAEMON_OUTBOX_ERROR_TYPE,
-    outbox_id: outboxId,
-    error: String(error?.message || error || 'delivery failed'),
-    permanent: error?.permanent === true,
-  }))
-}
-
-function enqueueDaemonMessage(daemonKey, message, { dedupeKey = null } = {}) {
-  const id = serverDaemonOutbox.enqueue(daemonKey, message, { dedupeKey })
-  flushServerDaemonOutbox(daemonKey)
-  return id
-}
-
-function ackServerDaemonOutboxMessage(msg) {
-  const outboxId = msg?.outbox_id
-  if (!outboxId) return
-  serverDaemonOutbox.ack(outboxId)
-  serverDaemonOutboxInflight.delete(outboxId)
-}
-
-function flushServerDaemonOutbox(daemonKey) {
-  const dws = daemonConnections.get(daemonKey)
-  if (!dws || dws.readyState !== 1) return
-  for (const row of serverDaemonOutbox.pendingForDaemon(daemonKey, 100)) {
-    if (serverDaemonOutboxInflight.has(row.id)) continue
-    // Do not pile an unbounded replay behind a congested daemon socket. The
-    // durable outbox keeps the remaining ordered rows for the next flush.
-    if (!socketCanAcceptMore(dws)) {
-      setTimeout(() => flushServerDaemonOutbox(daemonKey), 25).unref?.()
-      break
-    }
-    try {
-      serverDaemonOutbox.markAttempt(row.id)
-      dws.send(JSON.stringify(row.payload))
-      serverDaemonOutboxInflight.set(row.id, daemonKey)
-    } catch (e) {
-      serverDaemonOutbox.markError(row.id, e)
-      serverDaemonOutboxInflight.delete(row.id)
-      console.warn(`[server-daemon-outbox] send failed for ${daemonKey}:${row.type}: ${e.message}`)
-      break
-    }
-  }
-}
-
-function clearServerDaemonOutboxInflightForDaemon(daemonKey) {
-  for (const [outboxId, inflightDaemonKey] of serverDaemonOutboxInflight) {
-    if (inflightDaemonKey === daemonKey) serverDaemonOutboxInflight.delete(outboxId)
-  }
-}
+const {
+  handleDaemonOutboxEnvelope,
+  enqueueDaemonMessage,
+  flushServerDaemonOutbox,
+  clearServerDaemonOutboxInflightForDaemon,
+} = createDaemonWsControlPlane({
+  daemonConnections,
+  serverDaemonOutbox,
+  serverDaemonOutboxInflight,
+  daemonOutboxProcessedGetStmt: _daemonOutboxProcessedGetStmt,
+  daemonOutboxProcessedInsertStmt: _daemonOutboxProcessedInsertStmt,
+  socketCanAcceptMore,
+})
 
 function knownDaemonKeys() {
   const keys = new Set([...daemonConnections.keys()])
