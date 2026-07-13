@@ -1734,7 +1734,7 @@ export function getFleetTools() {
           summary: { type: 'string', description: 'Structured report summary. Required when close=true.' },
           close: { type: 'boolean', description: 'Close the current task after posting the report. Replaces task_done().' },
           reason: { type: 'string', description: 'Optional durable task-close reason, e.g. done, canceled, superseded, rejected, or never_should_have_existed.' },
-          verified: { type: 'boolean', description: 'Confirm you verified every success criterion before close=true.' },
+          verified: { type: 'boolean', description: 'Optional assertion that you verified the claims in this report.' },
           approval_id: { type: 'integer', description: 'Event ID of a human approval message. Required when the task requires approval and close=true.' },
           operation_id: { type: 'string', description: 'Optional stable idempotency key for retrying the same report/close operation.' },
           overrides: { type: 'array', items: { type: 'string' }, description: 'Advisory report-lint violation IDs to suppress. Does not affect close semantics.' },
@@ -2772,7 +2772,7 @@ export async function handleFleetTool(name, args) {
     if (args.summary) {
       const closeRequested = args.close === true || args.pass === true;
       if (closeRequested && task.metadata?.requires_approval && !args.approval_id) {
-        return { content: [{ type: 'text', text: `This task requires Skip's approval to close. Get approval in chat, then call report({ summary: "...", close: true, verified: true, approval_id: <id> }) with the message ID shown in brackets (e.g. id:332656).` }] };
+        return { content: [{ type: 'text', text: `This task requires Skip's approval to close. Get approval in chat, then call report({ summary: "...", close: true, approval_id: <id> }) with the message ID shown in brackets (e.g. id:332656).` }] };
       }
 
       const _lintOverrides = Array.isArray(args.overrides) ? args.overrides : [];
