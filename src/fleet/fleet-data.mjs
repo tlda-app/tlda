@@ -679,6 +679,7 @@ function summarizeActivityLatency(now) {
     .map(e => {
       const latency = e._activityLatency || {}
       const jsonlMs = isoMs(latency.jsonlTs || e.timestamp)
+      const daemonReceivedMs = finiteMs(latency.daemonReceivedAtMs)
       const daemonSentMs = finiteMs(latency.daemonSentAtMs)
       const serverReceivedMs = finiteMs(latency.serverReceivedAtMs)
       const serverBroadcastQueuedMs = finiteMs(latency.serverBroadcastQueuedAtMs)
@@ -689,7 +690,8 @@ function summarizeActivityLatency(now) {
         tool: e._toolName || e.text || null,
         jsonlTs: latency.jsonlTs || e.timestamp || null,
         browserReceivedAgoMs: browserReceivedMs ? now - browserReceivedMs : null,
-        jsonlToDaemonMs: latencyDelta(daemonSentMs, jsonlMs),
+        jsonlToDaemonMs: latencyDelta(daemonReceivedMs || daemonSentMs, jsonlMs),
+        daemonQueueMs: latencyDelta(daemonSentMs, daemonReceivedMs),
         daemonToServerMs: latencyDelta(serverReceivedMs, daemonSentMs),
         serverToBrowserMs: latencyDelta(browserReceivedMs, serverBroadcastQueuedMs || serverReceivedMs),
         jsonlToBrowserMs: latencyDelta(browserReceivedMs, jsonlMs),
@@ -699,6 +701,7 @@ function summarizeActivityLatency(now) {
     recent: rows,
     summary: {
       jsonlToDaemon: summarizeValues(rows.map(row => row.jsonlToDaemonMs)),
+      daemonQueue: summarizeValues(rows.map(row => row.daemonQueueMs)),
       daemonToServer: summarizeValues(rows.map(row => row.daemonToServerMs)),
       serverToBrowser: summarizeValues(rows.map(row => row.serverToBrowserMs)),
       jsonlToBrowser: summarizeValues(rows.map(row => row.jsonlToBrowserMs)),

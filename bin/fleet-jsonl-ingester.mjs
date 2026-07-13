@@ -350,7 +350,15 @@ function sendNext(w) {
 }
 
 function enqueueRecord(w, record) {
+  const daemonReceivedAtMs = Date.now()
   const outputs = extractRecordOutputsWithState(w, record, w.nativeTaskState)
+  for (const output of outputs) {
+    if (output.type !== 'activity') continue
+    for (const event of output.events || []) {
+      event.daemonReceivedAtMs = daemonReceivedAtMs
+      event.daemonReceivedAt = new Date(daemonReceivedAtMs).toISOString()
+    }
+  }
   if (outputs.length === 0) return
   w.queue.push({ seq: ++w.nextSeq, outputs })
   sendNext(w)

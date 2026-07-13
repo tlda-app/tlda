@@ -1328,6 +1328,12 @@ const MY_TASK_UNREAD_LIMIT = 50
 // staleness clears within seconds; getWouldHibernate just waits out the reconnect grace.
 const _daemonConnectedSince = new Map()
 
+function finiteMessageMs(value) {
+  if (value == null || value === '') return null
+  const n = Number(value)
+  return Number.isFinite(n) ? n : null
+}
+
 const HIBERNATE_IDLE_MS = 20 * 60 * 1000
 const LIVENESS_RECONNECT_GRACE_MS = 120_000
 
@@ -7558,7 +7564,20 @@ async function handleDaemonWsMessage(ws, msg) {
   if (type === 'activity-event') {
     if (!fleetStore) return
     const serverReceivedAtMs = Date.now()
-    const { agent_id, tool, arg, input, ts, usage, prettyResult, origTool, daemon_sent_at, daemon_sent_at_ms } = msg
+    const {
+      agent_id,
+      tool,
+      arg,
+      input,
+      ts,
+      usage,
+      prettyResult,
+      origTool,
+      daemon_received_at,
+      daemon_received_at_ms,
+      daemon_sent_at,
+      daemon_sent_at_ms,
+    } = msg
     if (!agent_id) return
     touchActivity(agent_id)
     if (tool === '_usage') return // usage stats don't need DB storage
@@ -7566,8 +7585,10 @@ async function handleDaemonWsMessage(ws, msg) {
       const serverBroadcastQueuedAtMs = Date.now()
       const activityLatency = {
         jsonlTs: ts || null,
+        daemonReceivedAt: daemon_received_at || null,
+        daemonReceivedAtMs: finiteMessageMs(daemon_received_at_ms),
         daemonSentAt: daemon_sent_at || null,
-        daemonSentAtMs: Number.isFinite(Number(daemon_sent_at_ms)) ? Number(daemon_sent_at_ms) : null,
+        daemonSentAtMs: finiteMessageMs(daemon_sent_at_ms),
         serverReceivedAt: new Date(serverReceivedAtMs).toISOString(),
         serverReceivedAtMs,
         serverBroadcastQueuedAt: new Date(serverBroadcastQueuedAtMs).toISOString(),

@@ -144,6 +144,7 @@ function collectVisibleActivityLatency() {
     .slice(-40)
     .map(card => {
       const jsonlMs = isoMs(card.dataset.jsonlTs || card.dataset.ts)
+      const daemonReceivedMs = finiteMs(card.dataset.daemonReceivedAtMs)
       const daemonSentMs = finiteMs(card.dataset.daemonSentAtMs)
       const serverReceivedMs = finiteMs(card.dataset.serverReceivedAtMs)
       const serverBroadcastQueuedMs = finiteMs(card.dataset.serverBroadcastQueuedAtMs)
@@ -155,7 +156,8 @@ function collectVisibleActivityLatency() {
         id: card.dataset.msgId || null,
         agent: card.dataset.agent || null,
         jsonlTs: card.dataset.jsonlTs || card.dataset.ts || null,
-        jsonlToDaemonMs: deltaMs(daemonSentMs, jsonlMs),
+        jsonlToDaemonMs: deltaMs(daemonReceivedMs || daemonSentMs, jsonlMs),
+        daemonQueueMs: deltaMs(daemonSentMs, daemonReceivedMs),
         daemonToServerMs: deltaMs(serverReceivedMs, daemonSentMs),
         serverToBrowserMs: deltaMs(browserReceivedMs, serverBroadcastQueuedMs || serverReceivedMs),
         browserToRenderMs: deltaMs(renderedMs, browserReceivedMs),
@@ -167,6 +169,7 @@ function collectVisibleActivityLatency() {
     recent: cards.slice(-12),
     summary: {
       jsonlToDaemon: summarizeLatencyValues(cards.map(card => card.jsonlToDaemonMs)),
+      daemonQueue: summarizeLatencyValues(cards.map(card => card.daemonQueueMs)),
       daemonToServer: summarizeLatencyValues(cards.map(card => card.daemonToServerMs)),
       serverToBrowser: summarizeLatencyValues(cards.map(card => card.serverToBrowserMs)),
       browserToRender: summarizeLatencyValues(cards.map(card => card.browserToRenderMs)),

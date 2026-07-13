@@ -325,6 +325,18 @@ const harnessRuntime = createHarnessRuntime({
 // ---------- activity event buffer ----------
 
 function bufferActivity(agentId, evts) {
+  const daemonReceivedAtMs = Date.now()
+  const stampedEvents = evts.map(evt => {
+    const existing = evt?.daemonReceivedAtMs == null || evt.daemonReceivedAtMs === ''
+      ? null
+      : Number(evt.daemonReceivedAtMs)
+    if (Number.isFinite(existing)) return evt
+    return {
+      ...evt,
+      daemonReceivedAt: new Date(daemonReceivedAtMs).toISOString(),
+      daemonReceivedAtMs,
+    }
+  })
   // A JSONL line is a per-turn heartbeat. Warm the liveness cache keyed by
   // tmux_session so rpcCheckAlive / wake read "alive" from observed activity,
   // without a fleet-wide background demotion sweep.
@@ -332,7 +344,7 @@ function bufferActivity(agentId, evts) {
   // Any buffered activity (claude/codex JSONL or goose sqlite) is a reason to
   // watch this agent's pane frequently — arm it for the status state machine.
   agentStatus.armAgent(agentId)
-  return sendActivityEvents(agentId, evts, sendMsg)
+  return sendActivityEvents(agentId, stampedEvents, sendMsg)
 }
 
 // grant-on-mint: ensure every agent THIS daemon hosts has a permission-ledger

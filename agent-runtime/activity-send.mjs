@@ -1,5 +1,9 @@
 export function activityEventMessage(agentId, evt) {
   const daemonSentAtMs = Date.now()
+  const daemonReceivedAtMs = evt.daemonReceivedAtMs == null || evt.daemonReceivedAtMs === ''
+    ? null
+    : Number(evt.daemonReceivedAtMs)
+  const finiteDaemonReceivedAtMs = Number.isFinite(daemonReceivedAtMs) ? daemonReceivedAtMs : null
   return {
     type: 'activity-event',
     agent_id: agentId,
@@ -7,6 +11,8 @@ export function activityEventMessage(agentId, evt) {
     arg: evt.arg || '',
     input: evt.input || null,
     ts: evt.ts,
+    daemon_received_at: evt.daemonReceivedAt || (finiteDaemonReceivedAtMs != null ? new Date(finiteDaemonReceivedAtMs).toISOString() : null),
+    daemon_received_at_ms: finiteDaemonReceivedAtMs,
     daemon_sent_at: new Date(daemonSentAtMs).toISOString(),
     daemon_sent_at_ms: daemonSentAtMs,
     ...(evt.usage ? { usage: evt.usage } : {}),

@@ -883,6 +883,7 @@ export function renderActivityGroup(group, ctx) {
   const latency = m._activityLatency || {}
   const latencyAttrs = [
     ['data-jsonl-ts', latency.jsonlTs || group[0].timestamp || ''],
+    ['data-daemon-received-at-ms', latency.daemonReceivedAtMs],
     ['data-daemon-sent-at-ms', latency.daemonSentAtMs],
     ['data-server-received-at-ms', latency.serverReceivedAtMs],
     ['data-server-broadcast-queued-at-ms', latency.serverBroadcastQueuedAtMs],

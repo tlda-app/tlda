@@ -54,6 +54,7 @@ test('activity cards carry latency timestamp attributes for visible telemetry', 
     _toolArg: 'npm test',
     _activityLatency: {
       jsonlTs: '2026-07-13T12:00:00.000Z',
+      daemonReceivedAtMs: 1783944000050,
       daemonSentAtMs: 1783944000100,
       serverReceivedAtMs: 1783944000200,
       serverBroadcastQueuedAtMs: 1783944000210,
@@ -64,6 +65,7 @@ test('activity cards carry latency timestamp attributes for visible telemetry', 
 
   assert.match(html, /data-msg-id="42"/)
   assert.match(html, /data-jsonl-ts="2026-07-13T12:00:00.000Z"/)
+  assert.match(html, /data-daemon-received-at-ms="1783944000050"/)
   assert.match(html, /data-daemon-sent-at-ms="1783944000100"/)
   assert.match(html, /data-server-received-at-ms="1783944000200"/)
   assert.match(html, /data-server-broadcast-queued-at-ms="1783944000210"/)
