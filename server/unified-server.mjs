@@ -65,7 +65,8 @@ import { injectBridge, injectSlidesBridge, injectChapterTitle } from './lib/html
 import { FleetStore } from './lib/fleet-store.mjs'
 import { applyNativeTaskEvents } from './lib/native-task-wrapper.mjs'
 import { resolveMachine } from './lib/tailscale-peers.mjs'
-import { createFleetRouter } from './routes/fleet.mjs'
+import { createFleetRouter, RESOLVED_UPLOAD_DIR } from './routes/fleet.mjs'
+import { copyAttachmentsToUploadDir } from './lib/chat-attachment-store.mjs'
 import { normalizeRegionPolicy } from './lib/spawn-policy.mjs'
 import { buildRuntimeStatus } from './lib/runtime-status.mjs'
 import { resolveSpawnMachine, SPAWN_MACHINE_PREF_KEY } from './lib/spawn-routing.mjs'
@@ -5449,23 +5450,11 @@ async function handleFleetWsMessage(ws, msg) {
     // Resolve CC (still single-string list)
     let ccResolved = cc && cc.length ? cc.map(resolveSingle).filter(Boolean) : null
     if (ccResolved && ccResolved.length === 0) ccResolved = null
-    // Copy attachments to server-accessible path (once for all recipients)
-    let processedAttachments = attachments
-    if (attachments && attachments.length) {
-      const UPLOAD_DIR = path.join(import.meta.dirname || '.', 'uploads')
-      processedAttachments = attachments.map(a => {
-        if (a.path && fs.existsSync(a.path)) {
-          try {
-            fs.mkdirSync(UPLOAD_DIR, { recursive: true })
-            const name = `${Date.now()}-${path.basename(a.path)}`
-            const dest = path.join(UPLOAD_DIR, name)
-            fs.copyFileSync(a.path, dest)
-            return { ...a, path: dest, originalPath: a.path }
-          } catch { /* keep original */ }
-        }
-        return a
-      })
-    }
+    // Copy attachments into the persistent upload dir (once for all recipients),
+    // the SAME dir /api/upload uses (RESOLVED_UPLOAD_DIR honors TLDA_UPLOAD_DIR).
+    // Previously this wrote to an ephemeral container path that Fly wiped on every
+    // redeploy, 404-ing the materialized attachment URLs afterward.
+    const processedAttachments = copyAttachmentsToUploadDir(attachments, RESOLVED_UPLOAD_DIR)
     const senderAgent = fleetStore.getAgent?.(from)
     const chatReminder = senderAgent?.metadata?.chatReminder || undefined
     // Stamp the human sender's physical machine onto the message context so any

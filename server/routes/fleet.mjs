@@ -32,7 +32,12 @@ const SERVER_OWNER_HOST = os.hostname()
 
 const UPLOAD_DIR = process.env.TLDA_UPLOAD_DIR ||
   path.join(os.homedir(), '.config', 'tlda', 'uploads')
-const RESOLVED_UPLOAD_DIR = path.resolve(UPLOAD_DIR)
+// The single source of truth for where uploaded/copied attachments live. On Fly
+// this resolves to the persistent volume (TLDA_UPLOAD_DIR=/app/server/persist/uploads),
+// so files survive redeploys. Exported so the chat-send attachment-copy path in
+// unified-server.mjs writes to the SAME dir as /api/upload instead of an ephemeral
+// container path that Fly wipes on every deploy.
+export const RESOLVED_UPLOAD_DIR = path.resolve(UPLOAD_DIR)
 const MY_TASK_TASK_LIMIT = 20
 const MY_TASK_UNREAD_LIMIT = 50
 
