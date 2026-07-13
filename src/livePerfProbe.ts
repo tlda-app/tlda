@@ -35,7 +35,9 @@ type ShapeRecordLike = {
   x?: number
   y?: number
   props?: {
+    filter?: unknown
     h?: number
+    trafficMode?: string
     w?: number
   }
 }
@@ -169,6 +171,25 @@ function collectVisibleActivityLatency() {
       browserToRender: summarizeLatencyValues(cards.map(card => card.browserToRenderMs)),
       jsonlToRender: summarizeLatencyValues(cards.map(card => card.jsonlToRenderMs)),
     },
+  }
+}
+
+function summarizeFleetChatShapes(shapes: ShapeRecordLike[]) {
+  const chatShapes = shapes.filter(shape => shape?.typeName === 'shape' && shape?.type === 'fleet-chat')
+  const trafficModes = countBy(chatShapes.map(shape => String(shape.props?.trafficMode || 'normal')))
+  const filterKinds = countBy(chatShapes.map(shape => {
+    const filter = shape.props?.filter
+    if (!Array.isArray(filter) || filter.length === 0) return 'all'
+    if (filter.some((clause: unknown) =>
+      Array.isArray(clause) && clause.some((term: unknown) => Array.isArray(term) && term[0] === 'dm')
+    )) return 'dm'
+    return 'custom'
+  }))
+  return {
+    count: chatShapes.length,
+    trafficModes,
+    filterKinds,
+    filteredCount: chatShapes.filter(shape => Array.isArray(shape.props?.filter) && shape.props.filter.length > 0).length,
   }
 }
 
@@ -353,6 +374,7 @@ export function installLivePerfProbe(
         camera: { x: camera.x, y: camera.y, z: camera.z },
       },
       htmlPages: summarizeHtmlPages(shapes),
+      fleetChatShapes: summarizeFleetChatShapes(shapes),
       dom: collectDomSummary(),
       page: {
         visibilityState: document.visibilityState,
