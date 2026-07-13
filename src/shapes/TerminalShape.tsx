@@ -98,7 +98,7 @@ function useAgents(): Agent[] {
     let cancelled = false
     async function load() {
       try {
-        const res = await fetch(`/api/state`)
+        const res = await fetch(`/api/agents?limit=100`)
         if (!res.ok) return
         const data = await res.json()
         const list: Agent[] = data.agents || []

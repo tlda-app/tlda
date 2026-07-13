@@ -124,6 +124,32 @@ const terminalBridgeLog = createBackendLogger('terminal-bridge')
 const syncSignalLog = createBackendLogger('sync-signals')
 const daemonEventLog = createBackendLogger('daemon-events')
 const controlPlaneTraces = createControlPlaneTraceStore()
+const SERVER_PERF_MAX_EVENTS = Number(process.env.TLDA_SERVER_PERF_MAX_EVENTS || 500)
+const serverPerfEvents = []
+
+function wsSummary() {
+  const byKind = {}
+  for (const ws of _trackedWs) {
+    const kind = ws?._wsKind || 'unknown'
+    byKind[kind] = (byKind[kind] || 0) + 1
+  }
+  return { total: _trackedWs.size, byKind }
+}
+
+function recordServerPerfEvent(type, detail = {}) {
+  const event = {
+    ts: new Date().toISOString(),
+    t: performance.now(),
+    type,
+    detail,
+    eventLoopLag: lastEventLoopLag,
+    ws: wsSummary(),
+  }
+  serverPerfEvents.push(event)
+  if (serverPerfEvents.length > SERVER_PERF_MAX_EVENTS) {
+    serverPerfEvents.splice(0, serverPerfEvents.length - SERVER_PERF_MAX_EVENTS)
+  }
+}
 
 const serverIsolation = resolveServerIsolation({ env: process.env, scriptPath: fileURLToPath(import.meta.url) })
 if (serverIsolation.refuseReason) {
@@ -187,6 +213,10 @@ setInterval(() => {
   if (lastEventLoopLag.maxMs >= WS_HEARTBEAT_LAG_GRACE_MS) lastHeartbeatLagAt = lastEventLoopLag.at
   if (lastEventLoopLag.maxMs >= HOT_OP_WARN_MS) {
     console.warn(`[event-loop-lag] max=${lastEventLoopLag.maxMs.toFixed(1)}ms mean=${lastEventLoopLag.meanMs.toFixed(1)}ms`)
+    recordServerPerfEvent('event-loop-lag', {
+      maxMs: lastEventLoopLag.maxMs,
+      meanMs: lastEventLoopLag.meanMs,
+    })
   }
   eventLoopDelay.reset()
 }, 1000).unref()
@@ -200,6 +230,7 @@ async function measureHotOp(label, details, fn) {
     if (ms >= HOT_OP_WARN_MS) {
       const suffix = details ? ` ${details}` : ''
       console.warn(`[hot-op] ${label} ${ms.toFixed(1)}ms${suffix} lag_max=${lastEventLoopLag.maxMs.toFixed(1)}ms lag_mean=${lastEventLoopLag.meanMs.toFixed(1)}ms`)
+      recordServerPerfEvent('hot-op', { label, details, durationMs: ms })
     }
   }
 }
@@ -208,6 +239,7 @@ function logWsClose(kind, ws, code, reason) {
   if (code === 1006 || lastEventLoopLag.maxMs >= HOT_OP_WARN_MS) {
     const identity = ws?._daemonKey || ws?._tldaAgentId || ws?._agentFilter || ws?._connId || 'unknown'
     console.warn(`[ws-close] kind=${kind} code=${code} identity=${identity} reason=${reason || ''} lag_max=${lastEventLoopLag.maxMs.toFixed(1)}ms lag_mean=${lastEventLoopLag.meanMs.toFixed(1)}ms`)
+    recordServerPerfEvent('ws-close', { kind, code, identity, reason: reason || '' })
   }
 }
 
@@ -344,6 +376,12 @@ function trackWs(ws, meta) {
   // to run its heartbeat sweep. A stalled event loop can delay a whole sweep.
   ws._wsLastPongAt = Date.now()
   ws._wsLastPingAt = 0
+  recordServerPerfEvent('ws-open', {
+    kind: ws._wsKind,
+    doc: ws._wsDocName,
+    sessionId: ws._wsSessionId,
+    remoteAddr: ws._wsRemoteAddr,
+  })
   ws.on('pong', () => { ws._wsLastPongAt = Date.now() })
   _trackedWs.add(ws)
   if (meta.kind === 'sync') {
@@ -355,6 +393,12 @@ function trackWs(ws, meta) {
     ws.on('message', () => { ws._wsLastInputAt = Date.now() })
   }
   const cleanup = () => {
+    recordServerPerfEvent('ws-cleanup', {
+      kind: ws._wsKind,
+      doc: ws._wsDocName,
+      sessionId: ws._wsSessionId,
+      connectedForMs: Date.now() - ws._wsConnectedAt,
+    })
     _trackedWs.delete(ws)
     if (ws._wsKind === 'sync') _recomputeActiveViewers()
   }
@@ -466,12 +510,24 @@ setInterval(() => {
     if (sweepDelayMs >= WS_HEARTBEAT_LAG_GRACE_MS) lastHeartbeatLagAt = now
     clearTrustedHeartbeatProbes(_trackedWs)
     console.warn(`[heartbeat] skipping sweep during/recent event-loop lag max=${lastEventLoopLag.maxMs.toFixed(1)}ms delay=${sweepDelayMs.toFixed(1)}ms`)
+    recordServerPerfEvent('heartbeat-skip-lag', {
+      lagMaxMs: lastEventLoopLag.maxMs,
+      sweepDelayMs,
+      cooldownMs: WS_HEARTBEAT_LAG_COOLDOWN_MS,
+    })
     return
   }
   for (const ws of _trackedWs) {
     if (ws.readyState !== 1) continue
     if (shouldTerminateForMissedPong(ws._wsLastPongAt, ws._wsLastPingAt, now, WS_HEARTBEAT_INTERVAL_MS)) {
       console.log(`[heartbeat] terminating unresponsive ${ws._wsKind} ws=${ws._wsSessionId} doc=${ws._wsDocName || '-'}`)
+      recordServerPerfEvent('heartbeat-terminate', {
+        kind: ws._wsKind,
+        doc: ws._wsDocName,
+        sessionId: ws._wsSessionId,
+        lastPongAgoMs: ws._wsLastPongAt ? now - ws._wsLastPongAt : null,
+        lastPingAgoMs: ws._wsLastPingAt ? now - ws._wsLastPingAt : null,
+      })
       ws.terminate()
       continue
     }
@@ -2510,16 +2566,15 @@ app.get('/health/services', async (req, res) => {
     sync: { ok: true },
   }
 
-  // Check fleet server (uses /api/state — fleet has no /health endpoint)
+  // Check fleet server without loading the full roster.
   try {
     const ctrl = new AbortController()
     const timer = setTimeout(() => ctrl.abort(), 2000)
-    const r = await fetch(`${FLEET_URL}/api/state`, { signal: ctrl.signal })
+    const r = await fetch(`${FLEET_URL}/api/agents/summary`, { signal: ctrl.signal })
     clearTimeout(timer)
     if (r.ok) {
       const data = await r.json()
-      const agents = (data.agents || []).filter(a => !a.dead && !a.human).length
-      services.fleet = { ok: true, agents }
+      services.fleet = { ok: true, agents: data.live ?? data.total ?? 0 }
     } else {
       services.fleet = { ok: false, error: `HTTP ${r.status}` }
     }

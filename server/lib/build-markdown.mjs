@@ -597,11 +597,27 @@ function taskDocRenderLayerAssets(enabled) {
     }
   }
 
-  async function loadAgentNames() {
+  function collectFleetIds(state) {
+    const ids = new Set()
+    for (const column of ['id', 'owner', 'assigned to', 'delegator']) {
+      const idx = state.columns.indexOf(column)
+      if (idx < 0) continue
+      for (const row of state.rows) {
+        const raw = row.cells[idx]?.dataset.rawValue || ''
+        if (/^fleet:[A-Za-z0-9_.:-]+$/.test(raw)) ids.add(raw)
+      }
+    }
+    return [...ids].slice(0, 200)
+  }
+
+  async function loadAgentNames(state) {
+    const ids = collectFleetIds(state)
+    if (!ids.length) return { exactNames: new Map(), prefixNames: new Map() }
     try {
-      const res = await fetch('/api/store/agents')
+      const res = await fetch('/api/agents/lookup?ids=' + encodeURIComponent(ids.join(',')))
       if (!res.ok) return { exactNames: new Map(), prefixNames: new Map() }
-      const agents = await res.json()
+      const data = await res.json()
+      const agents = data.agents || []
       const exactNames = new Map()
       const prefixNames = new Map()
       for (const agent of agents) {
@@ -645,7 +661,7 @@ function taskDocRenderLayerAssets(enabled) {
     addSorting(table, state)
     addEmptyRow(table, state)
     update(table, state)
-    loadAgentNames().then(names => prettyPrintFleetIds(table, state, names))
+    loadAgentNames(state).then(names => prettyPrintFleetIds(table, state, names))
   }
 
   function wrapTable(table) {

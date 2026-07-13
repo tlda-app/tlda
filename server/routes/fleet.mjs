@@ -162,9 +162,20 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   // --- GET /api/state ---
   router.get('/api/state', (req, res) => {
     if (fleetStore) fleetStore.updateHeartbeat(SERVER_OWNER_ID)
-    const agents = fleetStore ? fleetStore.getAllAgents() : []
-    const tasks = fleetStore ? fleetStore.getActiveTasks() : []
-    res.json({ agents, tasks })
+    const agentsPage = fleetStore?.getAliveAgentsPage?.({ limit: 100 }) || { agents: [], nextCursor: null }
+    const tasksPage = fleetStore?.getActiveTasksPage?.({ limit: 100 }) || { tasks: [], nextCursor: null }
+    res.json({
+      agents: agentsPage.agents || [],
+      tasks: tasksPage.tasks || [],
+      counts: {
+        agents: fleetStore?.getAgentSummary?.() || null,
+        tasks: fleetStore?.getActiveTaskCount?.() ?? (tasksPage.tasks || []).length,
+      },
+      cursors: {
+        agents: agentsPage.nextCursor || null,
+        tasks: tasksPage.nextCursor || null,
+      },
+    })
   })
 
   // --- GET /api/human ---
@@ -251,6 +262,20 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   router.get('/api/store/agents', (req, res) => {
     if (!fleetStore) { res.status(503).json({ error: 'Fleet store not available' }); return }
     try { res.json(fleetStore.getAllAgents()) }
+    catch (e) { res.status(500).json({ error: e.message }) }
+  })
+
+  router.get('/api/agents/summary', (req, res) => {
+    if (!fleetStore) { res.status(503).json({ error: 'Fleet store not available' }); return }
+    try { res.json(fleetStore.getAgentSummary?.() || { total: 0, live: 0, dead: 0, byMachine: {} }) }
+    catch (e) { res.status(500).json({ error: e.message }) }
+  })
+
+  router.get('/api/agents/lookup', (req, res) => {
+    if (!fleetStore) { res.status(503).json({ error: 'Fleet store not available' }); return }
+    const rawIds = Array.isArray(req.query.ids) ? req.query.ids.join(',') : (req.query.ids || '')
+    const ids = [...new Set(String(rawIds).split(',').map(s => s.trim()).filter(Boolean))].slice(0, 200)
+    try { res.json({ agents: fleetStore.getAgentsByIds?.(ids) || [] }) }
     catch (e) { res.status(500).json({ error: e.message }) }
   })
 

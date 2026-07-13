@@ -229,7 +229,10 @@ test('status task-doc refresh uses a bounded task page instead of the full activ
       return 150
     },
     getAllAgents() {
-      return [{ id: 'agent-3', friendly_name: 'global owner' }]
+      throw new Error('status refresh should not read the full agent list')
+    },
+    getAgentsByIds(ids) {
+      return ids.includes('agent-3') ? [{ id: 'agent-3', friendly_name: 'global owner' }] : []
     },
   }
   app.use('/api/projects', projectRoutes)

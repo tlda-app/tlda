@@ -92,7 +92,19 @@ export function materializeTaskDocs({
     ? null
     : new Set((Array.isArray(projectNames) ? projectNames : [projectNames]).map(name => String(name)).filter(Boolean))
   const globalProjectNameSet = new Set((Array.isArray(globalProjectNames) ? globalProjectNames : [globalProjectNames]).map(name => String(name)).filter(Boolean))
-  const agents = Array.isArray(fleetStore.getAllAgents?.()) ? fleetStore.getAllAgents() : []
+  const rawTasks = Array.isArray(taskRows) ? taskRows : (fleetStore.getActiveTasks?.() || [])
+  const agentIds = new Set()
+  for (const task of rawTasks) {
+    if (task?.agent) agentIds.add(task.agent)
+    if (task?.delegated_by) agentIds.add(task.delegated_by)
+  }
+  for (const change of changes) {
+    if (change?.task?.agent) agentIds.add(change.task.agent)
+    if (change?.task?.delegated_by) agentIds.add(change.task.delegated_by)
+  }
+  const agents = typeof fleetStore.getAgentsByIds === 'function'
+    ? fleetStore.getAgentsByIds([...agentIds])
+    : (Array.isArray(fleetStore.getAllAgents?.()) ? fleetStore.getAllAgents() : [])
   const agentById = new Map(agents.map(agent => [agent.id, agent]))
   const projects = projectsProvider().map(project => ({
     ...project,
@@ -109,7 +121,6 @@ export function materializeTaskDocs({
     name: project.name,
     taskDocRoot: project.taskDocRoot,
   }]))
-  const rawTasks = Array.isArray(taskRows) ? taskRows : (fleetStore.getActiveTasks?.() || [])
   const totalTasks = Number.isFinite(taskTotal) ? taskTotal : rawTasks.length
   const tasks = rawTasks
     .filter(task => !task.synthetic && isCurrentTask(task))

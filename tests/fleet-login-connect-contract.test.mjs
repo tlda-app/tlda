@@ -6,6 +6,7 @@ const serverSource = fs.readFileSync(new URL('../server/unified-server.mjs', imp
 const fleetStoreSource = fs.readFileSync(new URL('../server/lib/fleet-store.mjs', import.meta.url), 'utf8')
 const clientSource = fs.readFileSync(new URL('../src/fleet/fleet-data.mjs', import.meta.url), 'utf8')
 const mcpFleetSource = fs.readFileSync(new URL('../mcp-server/fleet-tools.mjs', import.meta.url), 'utf8')
+const terminalShapeSource = fs.readFileSync(new URL('../src/shapes/TerminalShape.tsx', import.meta.url), 'utf8')
 
 test('fleet socket connect has no roster or task init frame ahead of login replies', () => {
   const connectStart = serverSource.indexOf("if (url.pathname === '/ws/fleet')")
@@ -119,6 +120,8 @@ test('fleet socket negotiates permessage-deflate while client loads roster by pa
   assert.match(clientSource, /\/api\/agents\?limit=100/)
   assert.match(clientSource, /loadNextAgentsPage/)
   assert.equal(clientSource.includes('fetch(`${FLEET}/api/state`)'), false)
+  assert.match(terminalShapeSource, /\/api\/agents\?limit=100/)
+  assert.equal(terminalShapeSource.includes('/api/state'), false)
 })
 
 test('fleet client buffers reconnect sends and does not bulk-reject pending requests on close', () => {
