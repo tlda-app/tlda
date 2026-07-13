@@ -123,7 +123,7 @@ function collectDomSummary() {
     fleetInboxShapes: document.querySelectorAll('.fleet-inbox-shape').length,
     fleetAgentRows: document.querySelectorAll('.fleet-agents-row, .fleet-phone-agent, .fleet-inbox-phone-agent').length,
     fleetChatLines: document.querySelectorAll('.fleet-chat-shape .chat-line, .fleet-chat-shape [data-chat-line]').length,
-    fleetActivityCards: document.querySelectorAll('.activity-card, .fleet-activity-card, [data-activity-card]').length,
+    fleetActivityCards: document.querySelectorAll('.chat-activity-card, .activity-card, .fleet-activity-card, [data-activity-card]').length,
     textareas: document.querySelectorAll('textarea').length,
   }
 }
