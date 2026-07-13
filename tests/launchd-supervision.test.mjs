@@ -19,14 +19,32 @@ test('launchdDomain defaults to gui uid and preserves override', () => {
   assert.equal(launchdDomain({ uid: 501, override: 'user/501' }), 'user/501')
 })
 
-test('launchctlCommand runs gui-domain launchctl through asuser for agent shells', () => {
+test('launchctlCommand runs same-user gui-domain launchctl directly', () => {
   assert.deepEqual(
-    launchctlCommand(['bootstrap', 'gui/501', '/tmp/fleet.plist'], { uid: 501 }),
+    launchctlCommand(['bootstrap', 'gui/501', '/tmp/fleet.plist'], { uid: 501, currentUid: 501 }),
+    { command: 'launchctl', args: ['bootstrap', 'gui/501', '/tmp/fleet.plist'] },
+  )
+  assert.deepEqual(
+    launchctlCommand(['kickstart', 'gui/501/com.tlda.fleet-daemon'], { uid: 501, currentUid: 501 }),
+    { command: 'launchctl', args: ['kickstart', 'gui/501/com.tlda.fleet-daemon'] },
+  )
+})
+
+test('launchctlCommand runs different-user gui-domain launchctl through asuser', () => {
+  assert.deepEqual(
+    launchctlCommand(['bootstrap', 'gui/501', '/tmp/fleet.plist'], { uid: 501, currentUid: 502 }),
     { command: 'launchctl', args: ['asuser', '501', 'launchctl', 'bootstrap', 'gui/501', '/tmp/fleet.plist'] },
   )
   assert.deepEqual(
-    launchctlCommand(['kickstart', 'gui/501/com.tlda.fleet-daemon'], { uid: 501 }),
+    launchctlCommand(['kickstart', 'gui/501/com.tlda.fleet-daemon'], { uid: 501, currentUid: 502 }),
     { command: 'launchctl', args: ['asuser', '501', 'launchctl', 'kickstart', 'gui/501/com.tlda.fleet-daemon'] },
+  )
+})
+
+test('launchctlCommand prints gui-domain launchd state directly', () => {
+  assert.deepEqual(
+    launchctlCommand(['print', 'gui/501/com.tlda.fleet-daemon'], { uid: 501, currentUid: 502 }),
+    { command: 'launchctl', args: ['print', 'gui/501/com.tlda.fleet-daemon'] },
   )
 })
 

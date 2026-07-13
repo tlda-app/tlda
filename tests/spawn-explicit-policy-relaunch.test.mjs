@@ -5,6 +5,7 @@ import path from 'node:path'
 import { spawn } from '../agent-launch/index.mjs'
 
 const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-explicit-relaunch-'))
+const tmpClaudeProjects = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-reused-seat-claude-'))
 const agent = {
   id: 'fleet:explicit-relaunch',
   friendly_name: 'explicit-relaunch',
@@ -35,6 +36,17 @@ const config = {
         controls: true,
       },
     },
+    claude: {
+      alias: 'claude',
+      id: 'claude-sonnet',
+      provider: 'claude',
+      harness: 'claude',
+      harnessOptions: {
+        required: ['--dangerously-load-development-channels', 'server:tlda'],
+        preferences: [],
+        controls: true,
+      },
+    },
   },
 }
 
@@ -58,6 +70,42 @@ try {
   })
   assert.equal(alreadyAlive.alreadyAlive, true)
   assert.equal(spawned, false, 'ordinary wake should keep a live runtime')
+
+  const reusedSeat = {
+    ...agent,
+    id: 'fleet:reused-seat',
+    friendly_name: 'reused-seat',
+    tmux_session: 'fleet-reused-seat',
+    session_id: '22222222-2222-4333-8444-555555555555',
+    session_ids: ['22222222-2222-4333-8444-555555555555'],
+    metadata: {
+      kind: 'claude',
+      model: 'gpt',
+    },
+  }
+  const claudeJsonl = path.join(tmpClaudeProjects, '-tmp-tlda-resume-test', `${reusedSeat.session_id}.jsonl`)
+  fs.mkdirSync(path.dirname(claudeJsonl), { recursive: true })
+  fs.writeFileSync(claudeJsonl, '{}\n')
+  let codexResolverCalled = false
+  const reusedWake = await spawn({
+    spawnMode: 'respawn',
+    name: reusedSeat.id,
+    config,
+    claudeProjectsBase: tmpClaudeProjects,
+    _deps: {
+      resolveApi: () => 'http://127.0.0.1:5176',
+      ensureServer: async () => true,
+      findAgent: async () => reusedSeat,
+      sessionHasRuntime: async () => true,
+      resolveCodexResumeHandle: async () => {
+        codexResolverCalled = true
+        return { ok: false }
+      },
+    },
+  })
+  assert.equal(reusedWake.harness, 'claude')
+  assert.equal(codexResolverCalled, false, 'recorded current harness must beat stale model alias')
+  assert.equal(reusedWake.alreadyAlive, true)
 
   let spawnCall = null
   const relaunched = await spawn({
@@ -127,6 +175,7 @@ try {
   )
 } finally {
   fs.rmSync(cwd, { recursive: true, force: true })
+  fs.rmSync(tmpClaudeProjects, { recursive: true, force: true })
 }
 
 console.log('spawn explicit-policy relaunch ok')

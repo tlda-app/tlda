@@ -87,7 +87,11 @@ function defaultModelForHarness(config = {}, harness = '') {
 }
 
 function modelForRespawn(params, meta, config) {
-  if (params.model || meta.model) return params.model || meta.model
+  if (params.model) return params.model
+  if (meta.kind && meta.model) {
+    const recorded = resolveLaunchSpec(meta.model, config)
+    if (recorded.harness === meta.kind) return meta.model
+  }
   if (!meta.kind) return null
   const model = defaultModelForHarness(config, meta.kind)
   if (!model) {
@@ -376,6 +380,7 @@ async function spawnRespawn(params) {
   const identityOptions = {
     identityConfigDir: params.identityConfigDir,
     identityFilePath: params.identityFilePath,
+    projectsBase: params.claudeProjectsBase,
     sessionsBase: params.codexSessionsBase,
   }
   if (requestedKind === 'claude') {

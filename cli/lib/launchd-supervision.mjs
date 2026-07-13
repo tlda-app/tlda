@@ -6,9 +6,10 @@ export function launchdTarget(label, opts = {}) {
   return `${launchdDomain(opts)}/${label}`
 }
 
-export function launchctlCommand(args, { uid = process.getuid?.() } = {}) {
+export function launchctlCommand(args, { uid = process.getuid?.(), currentUid = process.getuid?.() } = {}) {
+  const verb = args?.[0]
   const domainOrTarget = args?.[1] || ''
-  if (uid != null && String(domainOrTarget).startsWith(`gui/${uid}`)) {
+  if (uid != null && uid !== currentUid && verb !== 'print' && String(domainOrTarget).startsWith(`gui/${uid}`)) {
     return {
       command: 'launchctl',
       args: ['asuser', String(uid), 'launchctl', ...args],
