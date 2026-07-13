@@ -1727,13 +1727,14 @@ export function getFleetTools() {
     },
     {
       name: 'report',
-      description: 'Submit a completed-task report to the task owner. Messaging is not gated on recipient wake state; delivery queues or bounces at the messaging layer.',
+      description: 'Submit a completed-task report. Defaults to the current task; pass task_id to report or close another task assigned to you, delegated by you, or authorized by human ownership. Messaging is not gated on recipient wake state; delivery queues or bounces at the messaging layer.',
       inputSchema: {
         type: 'object',
         properties: {
+          task_id: { type: 'string', description: 'Optional exact task ID to report or close. Defaults to your current active task.' },
           pass: { type: 'boolean', description: 'Legacy self-review mode: set true if self-review passed. Only used when QA is not configured.' },
           summary: { type: 'string', description: 'Structured report summary. Required when close=true.' },
-          close: { type: 'boolean', description: 'Close the current task after posting the report. Replaces task_done().' },
+          close: { type: 'boolean', description: 'Close the selected task after posting the report. Replaces task_done().' },
           reason: { type: 'string', description: 'Optional durable task-close reason, e.g. done, canceled, superseded, rejected, or never_should_have_existed.' },
           verified: { type: 'boolean', description: 'Optional assertion that you verified the claims in this report.' },
           approval_id: { type: 'integer', description: 'Event ID of a human approval message. Required when the task requires approval and close=true.' },
@@ -2766,21 +2767,27 @@ export async function handleFleetTool(name, args) {
   if (name === 'report') {
     if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not logged in. Call login() first.' }], isError: true };
 
-    let taskData;
-    try {
-      taskData = await sendWS('my-task', { agent: AGENT_ID, peek: true });
-    } catch (e) {
-      return { content: [{ type: 'text', text: `Fleet transport failed before ACK. Active task lookup was not completed: ${e.message}` }], isError: true };
+    const targetTaskId = typeof args.task_id === 'string' ? args.task_id.trim() : '';
+    let task = null;
+    if (!targetTaskId) {
+      let taskData;
+      try {
+        taskData = await sendWS('my-task', { agent: AGENT_ID, peek: true });
+      } catch (e) {
+        return { content: [{ type: 'text', text: `Fleet transport failed before ACK. Active task lookup was not completed: ${e.message}` }], isError: true };
+      }
+      task = taskData.task;
+      if (!task) return { content: [{ type: 'text', text: 'No active task to report on.' }], isError: true };
+    } else if (!args.summary) {
+      return { content: [{ type: 'text', text: 'Pass summary when reporting on a task_id.' }], isError: true };
     }
-    const task = taskData.task;
-    if (!task) return { content: [{ type: 'text', text: 'No active task to report on.' }], isError: true };
 
     const cwd = getAgentCwd() || process.env.PWD || null;
 
     // ---- Durable report / close path ----
     if (args.summary) {
       const closeRequested = args.close === true || args.pass === true;
-      if (closeRequested && task.metadata?.requires_approval && !args.approval_id) {
+      if (closeRequested && !targetTaskId && task.metadata?.requires_approval && !args.approval_id) {
         return { content: [{ type: 'text', text: `This task requires Skip's approval to close. Get approval in chat, then call report({ summary: "...", close: true, approval_id: <id> }) with the message ID shown in brackets (e.g. id:332656).` }] };
       }
 
@@ -2790,10 +2797,11 @@ export async function handleFleetTool(name, args) {
         ? `\n\n⚠️ Report-text notes (advisory — did not block ${closeRequested ? 'close' : 'report'}):\n${formatLintViolations(violations)}`
         : '';
       const summaryHash = crypto.createHash('sha256').update(String(args.summary)).digest('hex').slice(0, 16);
-      const operationId = args.operation_id || `${AGENT_ID}:mcp-report:${task.id}:${closeRequested ? 'close' : 'report'}:${summaryHash}`;
+      const reportTaskId = targetTaskId || task.id;
+      const operationId = args.operation_id || `${AGENT_ID}:mcp-report:${reportTaskId}:${closeRequested ? 'close' : 'report'}:${summaryHash}`;
       const friendlyName = process.env.FLEET_NAME || AGENT_ID.slice(0, 8);
 
-      const docName = `report-${task.id}`;
+      const docName = `report-${reportTaskId}`;
       const mainFile = `${docName}.md`;
       let tldaMsg = '';
 
@@ -2801,7 +2809,7 @@ export async function handleFleetTool(name, args) {
       try {
         data = await sendDurableFleet('report-close', {
           agent: AGENT_ID,
-          task_id: task.id,
+          task_id: reportTaskId,
           summary: args.summary,
           close: closeRequested,
           reason: args.reason || undefined,
@@ -2813,17 +2821,15 @@ export async function handleFleetTool(name, args) {
         return { content: [{ type: 'text', text: `report failed: ${e.message}` }], isError: true };
       }
 
+      const taskDescription = data?.task_description || task?.description || reportTaskId;
       const closeCompleted = closeRequested && Boolean(data?.close_event_id);
       const reportStatus = closeCompleted ? 'closed' : 'reported';
-      const reportContent = `# ${task.description}\n\n**Agent:** ${friendlyName}  \n**Status:** ${reportStatus}  \n**Filed:** ${new Date().toISOString()}\n\n---\n\n${args.summary}`;
+      const reportContent = `# ${taskDescription}\n\n**Agent:** ${friendlyName}  \n**Status:** ${reportStatus}  \n**Filed:** ${new Date().toISOString()}\n\n---\n\n${args.summary}`;
 
       try {
         const check = await tldaFetch(docName);
         if (check.status === 404) {
-          await tldaFetch('', {
-            method: 'POST',
-            body: { name: docName, title: task.description, format: 'markdown', mainFile },
-          });
+          await tldaFetch('', { method: 'POST', body: { name: docName, title: taskDescription, format: 'markdown', mainFile } });
         }
         await tldaFetch(docName + '/push', {
           method: 'POST',
@@ -2834,28 +2840,28 @@ export async function handleFleetTool(name, args) {
           },
         });
         tldaMsg = `\n📄 Report pushed to tlda as **${docName}** [${reportStatus}]`;
-        logEvent({ type: 'report_share', agent: AGENT_ID, doc: docName, task_id: task.id, status: reportStatus });
+        logEvent({ type: 'report_share', agent: AGENT_ID, doc: docName, task_id: reportTaskId, status: reportStatus });
       } catch (e) {
         tldaMsg = `\n⚠ tlda unavailable (${e.message}) — report posted to chat only.`;
       }
 
-      if (closeCompleted) logEvent({ type: 'task_done', agent: AGENT_ID, task_id: task.id, description: task.description });
-      logEvent({ type: 'report', agent: AGENT_ID, task_id: task.id, summary: args.summary });
+      if (closeCompleted) logEvent({ type: 'task_done', agent: AGENT_ID, task_id: reportTaskId, description: taskDescription });
+      logEvent({ type: 'report', agent: AGENT_ID, task_id: reportTaskId, summary: args.summary });
 
       let msg = data?.queued
-        ? `Report queued durably for ${task.description}. Operation: ${data.operation_id || operationId}.`
+        ? `Report queued durably for ${taskDescription}. Operation: ${data.operation_id || operationId}.`
         : closeCompleted
-          ? `Report accepted. Closed task: ${task.description}.`
+          ? `Report accepted. Closed task: ${taskDescription}.`
           : closeRequested
             ? `Report accepted; task remains open: ${data?.close_guard_message || 'the close request was not accepted.'}`
-          : `Report accepted for task: ${task.description}.`;
+          : `Report accepted for task: ${taskDescription}.`;
       msg += tldaMsg;
       msg += lintAdvisory;
       if (closeCompleted) msg += '\n\nKeep working or use timer() — you\'ll see 📬 when the next task arrives.';
       return { content: [{ type: 'text', text: msg }] };
-    }
+  }
 
-    // --- First call: gather diff and return review prompt ---
+  // --- First call: gather diff and return review prompt ---
     let diff = '';
     if (cwd) {
       try {

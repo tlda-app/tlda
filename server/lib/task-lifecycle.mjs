@@ -28,3 +28,10 @@ export async function completeTaskLifecycle({
     eventId: event?.id || null,
   }
 }
+
+export function canReportTask({ caller, task }) {
+  if (!caller?.id || !task?.id) return false
+  // A human is the fleet owner. Agents may report/close their own tasks or tasks
+  // they delegated; broader manager hierarchies need an explicit relation.
+  return !!caller.human || task.agent === caller.id || task.delegated_by === caller.id
+}

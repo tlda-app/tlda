@@ -72,7 +72,7 @@ import { buildRuntimeStatus } from './lib/runtime-status.mjs'
 import { resolveSpawnMachine, SPAWN_MACHINE_PREF_KEY } from './lib/spawn-routing.mjs'
 import { resolveFreshSpawnAvailabilityModels } from './lib/spawn-availability-models.mjs'
 import { decideTaskRenudges, isWakeBreakerOpen, wakeBreakerBackoffMs } from './lib/task-renudge.mjs'
-import { completeTaskLifecycle } from './lib/task-lifecycle.mjs'
+import { canReportTask, completeTaskLifecycle } from './lib/task-lifecycle.mjs'
 import { decideReportClose } from '../bots/todd/report-close-guard.mjs'
 import { rejectMatchingWsRequests, startWsRequest } from '../shared/fleet-transport.mjs'
 import { isPlanModeResponse, planModeResponseKey } from './lib/plan-mode-response.mjs'
@@ -5840,11 +5840,15 @@ async function handleFleetWsMessage(ws, msg) {
       status: 'received',
       detail: { agent: rawAgent, task_id, operation_id, close: !!close },
     })
-    const agent = fleetStore.findAgent?.(rawAgent)?.id || rawAgent
+    const caller = fleetStore.findAgent?.(rawAgent)
+    const agent = caller?.id || rawAgent
     const task = task_id
       ? fleetStore.getTask?.(task_id)
       : fleetStore.getTaskByAgent?.(agent)
     if (!task) { error('no active task'); return }
+    if (task_id && !canReportTask({ caller: caller || { id: agent }, task })) {
+      error('not authorized to report on this task; only its assignee, delegator, or a human may do so'); return
+    }
     const closeDecision = close ? decideReportClose(summary) : { allowClose: true }
     if (close && task.metadata?.requires_approval) {
       if (!approval_id) { error('This task requires approval. Pass approval_id (event ID of a human approval message).'); return }
@@ -5910,17 +5914,21 @@ async function handleFleetWsMessage(ws, msg) {
 
     if (close && closeDecision.allowClose && !closeEventId) {
       const closeReason = reason || 'done'
-      task.status = 'done'
-      task.completed_at = new Date().toISOString()
-      task.metadata = { ...(task.metadata || {}), close_reason: closeReason }
-      fleetStore.upsertTask(task)
-      const insertedClose = await fleetStore.taskDone?.(agent, task.id, task.description, {
-        trace_id: traceId,
-        client_operation_id: operation_id,
-        report_event_id: reportEventId,
-        close_reason: closeReason,
+      const { eventId } = await completeTaskLifecycle({
+        fleetStore,
+        agentId: agent,
+        task,
+        description: task.description,
+        taskMetadataPatch: { close_reason: closeReason, closed_by: agent },
+        eventMetadata: {
+          trace_id: traceId,
+          client_operation_id: operation_id,
+          report_event_id: reportEventId,
+          close_reason: closeReason,
+          closed_by: agent,
+        },
       })
-      closeEventId = insertedClose?.id || null
+      closeEventId = eventId || null
       controlPlaneTraces.append({
         trace_id: traceId,
         component: 'fleet-store',
@@ -5934,6 +5942,7 @@ async function handleFleetWsMessage(ws, msg) {
     reply({
       ok: true,
       task_id: task.id,
+      task_description: task.description,
       report_event_id: reportEventId,
       chat_event_id: chatEventId,
       close_event_id: closeEventId,

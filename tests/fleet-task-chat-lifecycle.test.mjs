@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { FleetStore } from '../server/lib/fleet-store.mjs'
-import { completeTaskLifecycle } from '../server/lib/task-lifecycle.mjs'
+import { canReportTask, completeTaskLifecycle } from '../server/lib/task-lifecycle.mjs'
 
 const serverSource = fs.readFileSync(new URL('../server/unified-server.mjs', import.meta.url), 'utf8')
 const fleetRouteSource = fs.readFileSync(new URL('../server/routes/fleet.mjs', import.meta.url), 'utf8')
@@ -201,13 +201,14 @@ test('fleet WS report-close is operation-id idempotent and close marks task done
     'if (!reportEventId) {',
     'if (!chatEventId && task.delegated_by) {',
     'if (close && closeDecision.allowClose && !closeEventId) {',
-    "task.status = 'done'",
-    'fleetStore.upsertTask(task)',
-    'const insertedClose = await fleetStore.taskDone',
+    'const { eventId } = await completeTaskLifecycle({',
+    'taskMetadataPatch: { close_reason: closeReason, closed_by: agent }',
+    'eventMetadata: {',
+    'closeEventId = eventId || null',
     'broadcastState()',
     'reply({',
   ])
-  assert.match(reportBlock, /task\.metadata = \{ \.\.\.\(task\.metadata \|\| \{\}\), close_reason: closeReason \}/)
+  assert.match(reportBlock, /task_description: task\.description/)
 
   const { store, dbPath } = tempStore('fleet-report-close-lifecycle')
   try {
@@ -296,6 +297,61 @@ test('task completion lifecycle helper marks done and emits the task_done event 
   }
 })
 
+test('target-task report authority allows assignee, delegator, or human', () => {
+  const { store, dbPath } = tempStore('target-task-lifecycle')
+  try {
+    const manager = { id: 'fleet:manager', friendly_name: 'manager', human: false }
+    const worker = { id: 'fleet:worker', friendly_name: 'worker', human: false }
+    const stranger = { id: 'fleet:stranger', friendly_name: 'stranger', human: false }
+    const human = { id: 'fleet:skip', friendly_name: 'skip', human: true }
+    store.upsertAgent(manager)
+    store.upsertAgent(worker)
+    store.upsertAgent(stranger)
+    store.upsertAgent(human)
+    store.upsertTask({
+      id: 'task-target-report-1', agent: worker.id, description: 'stale work',
+      delegated_by: manager.id, delegated_at: '2026-07-13T10:00:00.000Z', status: 'pending',
+    })
+    const task = store.getTask('task-target-report-1')
+    assert.equal(canReportTask({ caller: worker, task }), true)
+    assert.equal(canReportTask({ caller: manager, task }), true)
+    assert.equal(canReportTask({ caller: human, task }), true)
+    assert.equal(canReportTask({ caller: stranger, task }), false)
+  } finally {
+    cleanup(store, dbPath)
+  }
+})
+
+test('report accepts task_id and server authorizes target task reporting', () => {
+  const serverReportBlock = sourceBlock("if (type === 'report-close') {", "if (type === 'delete-task') {")
+  assertOrder(serverReportBlock, [
+    'const caller = fleetStore.findAgent?.(rawAgent)',
+    'const task = task_id',
+    'if (task_id && !canReportTask({ caller: caller || { id: agent }, task }))',
+    'const closeDecision = close ? decideReportClose(summary)',
+    'const previous = fleetStore.getReportCloseOperationResult?.(operation_id)',
+    'await completeTaskLifecycle({',
+    'task_description: task.description',
+  ])
+  assert.match(serverReportBlock, /only its assignee, delegator, or a human may do so/)
+  assert.equal(serverSource.includes("if (type === 'close-target-task') {"), false)
+
+  const reportSchemaStart = mcpSource.indexOf("name: 'report'")
+  const reportSchemaEnd = mcpSource.indexOf("];\n}", reportSchemaStart)
+  const reportSchema = mcpSource.slice(reportSchemaStart, reportSchemaEnd)
+  assert.match(reportSchema, /task_id: \{ type: 'string'/)
+  assert.equal(mcpSource.includes("name: 'close_target_task'"), false)
+
+  const mcpReportBlock = sourceBlockFrom(mcpSource, "if (name === 'report') {", '// ---- read_terminal')
+  assertOrder(mcpReportBlock, [
+    'const targetTaskId = typeof args.task_id',
+    'const reportTaskId = targetTaskId || task.id',
+    "sendDurableFleet('report-close'",
+    'task_id: reportTaskId',
+  ])
+  assert.equal(mcpReportBlock.includes("sendDurableFleet('close-target-task'"), false)
+})
+
 test('task-done callers route their final completion transition through the lifecycle helper', () => {
   const wsTaskDoneBlock = sourceBlock("if (type === 'task-done') {", "if (type === 'report-close') {")
   assertOrder(wsTaskDoneBlock, [
@@ -326,7 +382,7 @@ test('report close does not hard-block on success criteria but still requires ap
   assert.equal(mcpReportBlock.includes('success criteria you must verify before closing'), false)
   assertOrder(mcpReportBlock, [
     'const closeRequested = args.close === true || args.pass === true',
-    'if (closeRequested && task.metadata?.requires_approval && !args.approval_id)',
+    'if (closeRequested && !targetTaskId && task.metadata?.requires_approval && !args.approval_id)',
     'sendDurableFleet',
     'reason: args.reason || undefined',
   ])
@@ -334,8 +390,8 @@ test('report close does not hard-block on success criteria but still requires ap
   const serverReportBlock = sourceBlock("if (type === 'report-close') {", "if (type === 'delete-task') {")
   assertOrder(serverReportBlock, [
     "const closeReason = reason || 'done'",
-    "task.status = 'done'",
-    'task.metadata = { ...(task.metadata || {}), close_reason: closeReason }',
+    'const { eventId } = await completeTaskLifecycle({',
+    'taskMetadataPatch: { close_reason: closeReason, closed_by: agent }',
     'close_reason: closeReason',
   ])
 
