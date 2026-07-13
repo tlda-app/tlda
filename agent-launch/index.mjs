@@ -75,6 +75,17 @@ function resolveLaunchSpec(rawModel, config, kwargs = {}) {
   }
 }
 
+function defaultModelForHarness(config = {}, harness = '') {
+  const target = String(harness || '').trim().toLowerCase()
+  if (!target) return null
+  const values = config?.modelCatalog?.values && typeof config.modelCatalog.values === 'object'
+    ? config.modelCatalog.values
+    : config?.modelSpecs
+  if (!values || typeof values !== 'object') return null
+  const found = Object.values(values).find(spec => String(spec?.harness || spec?.kind || '').trim().toLowerCase() === target)
+  return found?.alias || found?.name || null
+}
+
 function assertNativeTools(policy, requestedKind) {
   if (!policy.devTools && (requestedKind === 'claude' || requestedKind === 'codex')) {
     throw new SpawnError('launch-failed', `${requestedKind} cannot satisfy sandbox policy "${policy.policyName}" without native developer tools`, { policyName: policy.policyName })
@@ -329,8 +340,8 @@ async function spawnRespawn(params) {
   const agent = await (deps.findAgent || findAgent)(name, { api })
   if (!agent) throw new SpawnError('launch-failed', `No agent '${name}'. Use --fresh to create.`, { name })
   const meta = metadataOf(agent)
-  const rawModel = params.model || meta.model
   const config = params.config ?? readConfig()
+  const rawModel = params.model || meta.model || defaultModelForHarness(config, meta.kind)
   const modelSpec = resolveLaunchSpec(rawModel, config, modelKwargs(params, meta.effort ? { effort: params.effort || meta.effort } : {}))
   applyNormalizedOptions(params, modelSpec)
   const requestedKind = modelSpec.harness

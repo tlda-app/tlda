@@ -462,6 +462,8 @@ export class PermissionLedger {
       );
       CREATE INDEX IF NOT EXISTS idx_permission_grants_updated_at
         ON permission_grants(updated_at);
+      CREATE INDEX IF NOT EXISTS idx_permission_grants_friendly_name
+        ON permission_grants(friendly_name, last_seen);
     `)
     for (const ddl of [
       'ALTER TABLE permission_grants ADD COLUMN friendly_name TEXT',
@@ -488,6 +490,14 @@ export class PermissionLedger {
         friendly_name, session_id, session_kind, session_path, cwd, last_seen
       FROM permission_grants
       WHERE id = ?
+    `)
+    this._findByFriendlyName = this.db.prepare(`
+      SELECT id, spawn_policy, permission_set, updated_at, source,
+        friendly_name, session_id, session_kind, session_path, cwd, last_seen
+      FROM permission_grants
+      WHERE friendly_name = ?
+      ORDER BY COALESCE(last_seen, updated_at) DESC
+      LIMIT 1
     `)
     this._upsert = this.db.prepare(`
       INSERT INTO permission_grants (id, spawn_policy, permission_set, updated_at, source)
@@ -543,6 +553,16 @@ export class PermissionLedger {
     const key = String(id || '').trim()
     if (!key) return null
     const row = this._get.get(key)
+    return this.parseRow(row)
+  }
+
+  findByFriendlyName(name) {
+    const key = String(name || '').trim()
+    if (!key) return null
+    return this.parseRow(this._findByFriendlyName.get(key))
+  }
+
+  parseRow(row) {
     if (!row) return null
     const parsed = {
       spawnPolicy: JSON.parse(row.spawn_policy),

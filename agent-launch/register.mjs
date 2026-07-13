@@ -7,7 +7,8 @@ import tls from 'tls'
 import { WebSocket } from 'ws'
 import { getFleetServerUrl, loadConfig } from '../shared/config.mjs'
 import { prettyNameForFriendlyName } from '../shared/lineage-name.mjs'
-import { readConfig } from './identity.mjs'
+import { readConfig, sanitizeSessionName } from './identity.mjs'
+import { createPermissionLedger } from './permission-ledger.mjs'
 
 const MKCERT_CA = path.join(os.homedir(), 'Library/Application Support/mkcert/rootCA.pem')
 const TLDA_LOCAL_CERT = path.join(os.homedir(), '.config', 'tlda', 'localhost+2.pem')
@@ -120,11 +121,38 @@ export async function checkFreshNameAvailable(name, { api = resolveApi(), server
 
 export async function findAgent(name, { api = resolveApi() } = {}) {
   if (!name) return null
-  const params = name.startsWith('fleet:')
-    ? `ids=${encodeURIComponent(name)}`
-    : `name=${encodeURIComponent(name)}`
-  const { agents = [] } = await apiJson(`/api/agents/lookup?${params}`, { api })
-  return agents[0] || null
+  const local = findLocalAgent(name)
+  if (local) return local
+  throw new Error(`local wake ledger has no record for "${name}"; this owning-box ledger integrity failure must be repaired before wake`)
+}
+
+export function findLocalAgent(name, { ledger = null } = {}) {
+  const query = String(name || '').trim()
+  if (!query) return null
+  const ownedLedger = ledger ? null : createPermissionLedger()
+  const source = ledger || ownedLedger
+  try {
+    const rec = query.startsWith('fleet:')
+      ? source.get(query)
+      : source.findByFriendlyName?.(query)
+    if (!rec) return null
+    const friendlyName = rec.friendlyName || (!query.startsWith('fleet:') ? query : null)
+    return {
+      id: rec.id,
+      friendly_name: friendlyName,
+      name: friendlyName,
+      tmux_session: friendlyName ? `fleet-${sanitizeSessionName(friendlyName)}` : null,
+      session_id: rec.sessionId,
+      session_ids: rec.sessionId ? [rec.sessionId] : [],
+      cwd: rec.cwd || undefined,
+      dead: false,
+      metadata: {
+        ...(rec.sessionKind ? { kind: rec.sessionKind } : {}),
+      },
+    }
+  } finally {
+    ownedLedger?.close?.()
+  }
 }
 
 export async function markAgentDead(fleetId, { api = resolveApi(), timeoutMs = 5000 } = {}) {
