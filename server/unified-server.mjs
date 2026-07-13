@@ -73,6 +73,7 @@ import { resolveSpawnMachine, SPAWN_MACHINE_PREF_KEY } from './lib/spawn-routing
 import { resolveFreshSpawnAvailabilityModels } from './lib/spawn-availability-models.mjs'
 import { decideTaskRenudges, isWakeBreakerOpen, wakeBreakerBackoffMs } from './lib/task-renudge.mjs'
 import { canReportTask, completeTaskLifecycle } from './lib/task-lifecycle.mjs'
+import { livenessFromCheckAliveResult, runWakeRouteLifecycle, shouldSendWakeNudge } from './lib/wake-route-lifecycle.mjs'
 import { decideReportClose } from '../bots/todd/report-close-guard.mjs'
 import { rejectMatchingWsRequests, startWsRequest } from '../shared/fleet-transport.mjs'
 import { isPlanModeResponse, planModeResponseKey } from './lib/plan-mode-response.mjs'
@@ -726,20 +727,6 @@ const WAKE_BREAKER_BASE_MS = TASK_RENUDGE_INTERVAL_MS // 5 min, first backoff st
 const WAKE_BREAKER_CAP_MS = Number(process.env.TLDA_WAKE_BREAKER_CAP_MS || 2 * 60 * 60_000) // 2h ceiling (also a slow self-heal probe)
 let _taskWakeDraining = false
 
-function terminalNudgeKind(agent) {
-  const kind = agent?.metadata?.kind || agent?.kind
-  return kind === 'codex' || kind === 'goose'
-}
-
-function deliveryChannelFor(agent) {
-  return normalizeDeliveryChannel(agent?.metadata?.deliveryChannel)
-}
-
-function shouldSendWakeNudge(agent, nudgeText) {
-  if (!nudgeText || !agent?.tmux_session) return false
-  return deliveryChannelFor(agent) === 'tmux' || terminalNudgeKind(agent)
-}
-
 async function sendWakeNudge(daemonKey, agent, tmuxSession, nudgeText, phase, logTag = 'wake-nudge') {
   if (!shouldSendWakeNudge(agent, nudgeText)) return
   await sendRpcResilient(daemonKey, 'send-text', {
@@ -748,28 +735,6 @@ async function sendWakeNudge(daemonKey, agent, tmuxSession, nudgeText, phase, lo
     enter: true,
     enter_delay_ms: agent?.metadata?.kind === 'codex' ? 400 : 0,
   })
-}
-
-function livenessFromCheckAliveResult(agentId, tmuxSession, result) {
-  if (result?.state) return { ...result, agent_id: result.agent_id || agentId, tmux_session: result.tmux_session || tmuxSession }
-  if (typeof result?.alive === 'boolean') {
-    return {
-      type: 'agent-liveness',
-      agent_id: agentId,
-      tmux_session: tmuxSession,
-      state: result.alive ? 'alive' : 'dead',
-      reason: result.alive ? undefined : 'daemon check-alive: tmux session absent',
-      ts: new Date().toISOString(),
-    }
-  }
-  return {
-    type: 'agent-liveness',
-    agent_id: agentId,
-    tmux_session: tmuxSession,
-    state: 'unknown',
-    reason: 'daemon check-alive returned no liveness state',
-    ts: new Date().toISOString(),
-  }
 }
 
 function requestTaskWake(agentId, nudgeText = null, keys = []) {
@@ -5183,117 +5148,38 @@ async function handleFleetWsMessage(ws, msg) {
       }
       const daemonKey = agent.machine_id && agent.env_name ? agentDaemonAddress(agent) : daemonKeys[0]
       try {
-        if (traceId) {
-          await recordWakeAttempt({ agentId, traceId, ...source, outcome: 'attempted', reason: 'daemon-route-selected', evidence: { daemon: daemonKey } })
-          controlPlaneTraces.append({
-            trace_id: traceId,
-            component: 'server',
-            operation: 'wake.route',
-            status: 'started',
-            detail: { agent: agentId, daemon: daemonKey },
-          })
-        }
-        const machineId = agent.machine_id
-        if (!machineId) throw new Error(`agent ${agent.friendly_name || agentId} has no machine_id; cannot route wake/respawn`)
-        const ownerDaemon = daemonConnections.get(daemonKey)
-        if (!ownerDaemon || ownerDaemon.readyState !== 1) throw new Error(`No fleet-daemon connected for ${daemonKey}`)
-        const serverAlive = isAgentAlive(agentId)
-        const liveness = serverAlive
-          ? await sendRpcResilient(daemonKey, 'check-alive', { tmux_session: agent.tmux_session })
-            .then(result => livenessFromCheckAliveResult(agentId, agent.tmux_session, result))
-            .catch(e => ({
-              type: 'agent-liveness',
-              agent_id: agentId,
-              tmux_session: agent.tmux_session,
-              state: 'unknown',
-              reason: e.message,
-              ts: new Date().toISOString(),
-            }))
-          : {
-              type: 'agent-liveness',
-              agent_id: agentId,
-              tmux_session: agent.tmux_session,
-              state: 'unknown',
-              reason: 'server liveness says hibernating',
-              ts: new Date().toISOString(),
-            }
-        spawnLibrarian.observeLiveness({ ...liveness, agent_id: liveness.agent_id || agentId })
-        if (traceId) await recordWakeAttempt({ agentId, traceId, ...source, outcome: liveness.state === 'unknown' ? 'deferred' : 'attempted', reason: 'check-alive', nextAction: liveness.state === 'unknown' ? 'classify-liveness' : 'none', evidence: { liveness: liveness.state, livenessReason: liveness.reason || null } })
-        const decision = spawnLibrarian.decideWake(agent, { ...liveness, agent_id: liveness.agent_id || agentId }, { serverAlive })
-        if (traceId) {
-          await recordWakeAttempt({ agentId, traceId, ...source, outcome: decision.action === 'hold' || decision.action === 'queue' ? 'deferred' : 'attempted', reason: `spawn-librarian:${decision.action}`, nextAction: decision.action === 'queue' ? 'retry' : decision.action === 'hold' ? 'escalate' : 'none', evidence: { liveness: liveness.state } })
-          controlPlaneTraces.append({
-            trace_id: traceId,
-            component: 'server',
-            operation: 'wake.decision',
-            status: decision.action,
-            detail: { agent: agentId, liveness: liveness.state },
-          })
-        }
-        if (decision.action === 'deliver') {
-          await sendWakeNudge(daemonKey, agent, agent.tmux_session, nudgeText, 'deliver')
-          if (traceId) {
-            await recordWakeAttempt({ agentId, traceId, ...source, outcome: 'delivered', reason: 'send-text-ok', evidence: { daemon: daemonKey, phase: 'deliver' } })
-            awaitWakeAcknowledgment({ agentId, traceId, source, asker })
-            controlPlaneTraces.append({
-              trace_id: traceId,
-              component: 'server',
-              operation: 'wake.nudge',
-              status: 'sent',
-              detail: { agent: agentId, mode: 'deliver' },
-            })
-          }
-          continue
-        }
-        if (decision.action === 'queue') {
-          setTimeout(() => requestWake(agentId, nudgeText, asker, traceId, source), 2000).unref?.()
-          continue
-        }
-        if (decision.action === 'hold') continue
-        if (decision.action === 'surface') {
-          // Convergent state via the event (per-agent status line), not a chat message. (Skip 6/27)
-          broadcastEvent('agent-wedged', { agentId, reason: decision.message, ts: new Date().toISOString() })
-          continue
-        }
-        console.log(`[respawn] waking ${agent.friendly_name || agentId} (${agentId})`)
-        // Wake by IDENTITY, not name. requestWake already resolved the exact
-        // fleet-id we mean (the Map is keyed by id, getAgent fetched that row);
-        // passing agent.friendly_name here would throw that away and force a
-        // name re-grep in fleet-spawn that could land on a different namesake.
-        // agentId is a `fleet:` id, which fleet-spawn resumes directly. This is
-        // the chat-wake entry point — the one that fires when Skip chats a
-        // hibernating agent — so identity must be carried here above all.
-        // Wake carries NO privilege check (hibernation is transparent) — pass no
-      // requester; the daemon resumes the agent with its own privileges. agent_id
-      // lets the daemon find that agent's own grant.
-      const spawnResult = await sendRpc(daemonKey, 'spawn', { name: agentId, agent_id: agentId, respawn: true })
-        if (!spawnResult?.ok) {
-          // A returned {ok:false} used to be dropped on the floor: no wake, no
-          // signal, and (worse) a false "agent woken" event below. Convert it to
-          // the surfaced path (catch → chat the asker + agent-wedged). Never silent.
-          throw new Error(spawnResult?.error || spawnResult?.reason || 'daemon returned ok:false with no reason')
-        }
-        await sendWakeNudge(daemonKey, agent, spawnResult?.tmux_session || agent.tmux_session, nudgeText, 'post-respawn')
-        if (traceId) {
-          await recordWakeAttempt({ agentId, traceId, ...source, outcome: 'delivered', reason: 'spawn-and-send-text-ok', evidence: { daemon: daemonKey, phase: 'respawn' } })
-          awaitWakeAcknowledgment({ agentId, traceId, source, asker })
-          controlPlaneTraces.append({
-            trace_id: traceId,
-            component: 'server',
-            operation: 'wake.respawn',
-            status: 'sent',
-            detail: { agent: agentId, daemon: daemonKey },
-          })
-        }
-        const wakeTs = new Date().toISOString()
-        await measureHotOp('fleet-ws lifecycle wake insert', `agent=${agentId}`, () => fleetStore._insertEventRecord({
-          type: 'lifecycle',
-          timestamp: wakeTs,
-          from: agentId,
-          to: agentId,
-          text: 'agent woken',
-          unread: false,
-        }, { notify: false }))
+        const result = await runWakeRouteLifecycle({
+          agentId,
+          agent,
+          daemonKey,
+          ownerDaemon: daemonConnections.get(daemonKey),
+          nudgeText,
+          asker,
+          traceId,
+          source,
+          isAgentAlive,
+          sendRpcResilient,
+          sendRpc,
+          spawnLibrarian,
+          recordWakeAttempt,
+          appendControlTrace: (event) => controlPlaneTraces.append(event),
+          sendWakeNudge,
+          awaitWakeAcknowledgment,
+          queueRetry: () => setTimeout(() => requestWake(agentId, nudgeText, asker, traceId, source), 2000).unref?.(),
+          broadcastEvent,
+          insertWakeLifecycleEvent: async () => {
+            const wakeTs = new Date().toISOString()
+            await measureHotOp('fleet-ws lifecycle wake insert', `agent=${agentId}`, () => fleetStore._insertEventRecord({
+              type: 'lifecycle',
+              timestamp: wakeTs,
+              from: agentId,
+              to: agentId,
+              text: 'agent woken',
+              unread: false,
+            }, { notify: false }))
+          },
+        })
+        if (result.action === 'respawned') console.log(`[respawn] woke ${agent.friendly_name || agentId} (${agentId})`)
       } catch (e) {
         const b = _wakeBreaker.get(agentId) || { fails: 0 }
         b.fails += 1
