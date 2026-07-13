@@ -62,7 +62,7 @@ const OWNER_ID = 'fleet:skip'
 const DECISIONS_LOG = path.join(CONFIG_DIR, `${BOT_KEY}-decisions.jsonl`)
 const TASK_KICK_INTERVAL_MS = parseInt(process.env.TODD_TASK_KICK_INTERVAL_MS || '', 10) || 15 * 60_000
 const TASK_KICK_QUIET_MS = parseInt(process.env.TODD_TASK_KICK_QUIET_MS || '', 10) || 5 * 60_000
-const TASK_KICK_MAX_TASK_AGE_MS = parseInt(process.env.TODD_TASK_KICK_MAX_TASK_AGE_MS || '', 10) || 12 * 60 * 60_000
+const TASK_KICK_MAX_TASK_AGE_MS = parseInt(process.env.TODD_TASK_KICK_MAX_TASK_AGE_MS || '', 10) || 2 * 60 * 60_000
 const TASK_KICK_POLL_MS = parseInt(process.env.TODD_TASK_KICK_POLL_MS || '', 10) || 60_000
 const SELF_CHECK_PREFS_POLL_MS = 20_000
 const SELF_CHECK_COUNTDOWN_SEC = parseInt(process.env.TODD_SELF_CHECK_COUNTDOWN_SEC || process.env.DISPO_COUNTDOWN_SEC || '', 10) || 30
@@ -178,8 +178,7 @@ async function refreshSelfCheckPrefs() {
 }
 
 async function refreshSelfCheckRoster() {
-  const data = await getJson('/api/store/agents')
-  selfCheckWiring.updateRoster(Array.isArray(data) ? data : (data?.agents || []))
+  selfCheckWiring.updateRoster(await getAgents())
 }
 
 const SELF_CHECK_TARGET_RE = /^\s*(?:poke|kick|check|nudge)\s+(.+?)\s*$/i
@@ -1259,8 +1258,7 @@ function stripPhase(name) {
 // Returns "topic-Nb" for briefings, "topic-N" for pickups/managers.
 async function nextAgentName(baseTopic, suffix) {
   try {
-    const agents = await getJson('/api/store/agents')
-    const list = Array.isArray(agents) ? agents : (agents.agents || [])
+    const list = await getAgents()
     const names = list.map(a => a.friendly_name || '')
     let maxN = 0
     const re = new RegExp(`^${baseTopic.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-(\\d+)`, 'i')
@@ -1276,8 +1274,7 @@ async function nextAgentName(baseTopic, suffix) {
 }
 
 function resolveAgentId(nameOrId) {
-  return getJson('/api/store/agents').then(agents => {
-    const list = Array.isArray(agents) ? agents : (agents.agents || [])
+  return getAgents().then(list => {
     // Shared label universe: id, friendly_name, explicit labels, pseudo
     // and lineage tags — matches the chat router's resolution.
     const agent = list.find(a => labelsForAgent(a).includes(nameOrId))
@@ -1616,10 +1613,33 @@ function getJson(urlPath) {
   })
 }
 
+function normalizeAgentList(data) {
+  return Array.isArray(data) ? data : (data?.agents || [])
+}
+
+async function getAgents() {
+  const data = await getJson('/api/fleet-table?limit=500')
+  return normalizeAgentList(data)
+}
+
+async function lookupAgents(ids) {
+  const wanted = [...new Set((Array.isArray(ids) ? ids : [ids]).filter(Boolean))]
+  if (!wanted.length) return []
+  const data = await getJson(`/api/agents/lookup?ids=${encodeURIComponent(wanted.join(','))}`)
+  return normalizeAgentList(data)
+}
+
+function normalizeTaskList(data) {
+  return Array.isArray(data) ? data : (data?.tasks || [])
+}
+
+async function getTasks() {
+  return normalizeTaskList(await getJson('/api/tasks?limit=200'))
+}
+
 async function findAgentManager(agentId) {
   try {
-    const data = await getJson('/api/store/tasks')
-    const tasks = Array.isArray(data) ? data : (data.tasks || [])
+    const tasks = await getTasks()
     const activeTask = tasks.find(t => t.agent === agentId && t.status === 'pending' && t.delegated_by)
     return activeTask?.delegated_by || null
   } catch (e) {
@@ -1629,25 +1649,22 @@ async function findAgentManager(agentId) {
 }
 
 function resolveAgentName(agentId) {
-  return getJson('/api/store/agents').then(agents => {
-    const agent = (Array.isArray(agents) ? agents : (agents.agents || []))
-      .find(a => a.id === agentId || a.friendly_name === agentId)
+  return lookupAgents(agentId).then(agents => {
+    const agent = agents.find(a => a.id === agentId || a.friendly_name === agentId)
     return agent?.friendly_name || agentId
   })
 }
 
 function resolveAgentCwd(agentId) {
-  return getJson('/api/store/agents').then(agents => {
-    const agent = (Array.isArray(agents) ? agents : (agents.agents || []))
-      .find(a => a.id === agentId || a.friendly_name === agentId)
+  return lookupAgents(agentId).then(agents => {
+    const agent = agents.find(a => a.id === agentId || a.friendly_name === agentId)
     return agent?.cwd || null
   })
 }
 
 function resolveAgentSpawnSpec(agentId) {
-  return getJson('/api/store/agents').then(agents => {
-    const agent = (Array.isArray(agents) ? agents : (agents.agents || []))
-      .find(a => a.id === agentId || a.friendly_name === agentId)
+  return lookupAgents(agentId).then(agents => {
+    const agent = agents.find(a => a.id === agentId || a.friendly_name === agentId)
     const metadata = typeof agent?.metadata === 'string'
       ? (() => { try { return JSON.parse(agent.metadata) } catch { return {} } })()
       : (agent?.metadata || {})
@@ -1680,12 +1697,12 @@ async function taskKickSweep() {
   if (!isCanonicalBot()) return
   writeHeartbeat('task-kick-sweep')
   const [tasksRaw, agentsRaw, timersRaw] = await Promise.all([
-    getJson('/api/store/tasks'),
-    getJson('/api/store/agents'),
+    getTasks(),
+    getAgents(),
     getJson('/api/store/events?type=timer&limit=500'),
   ])
-  const tasks = Array.isArray(tasksRaw) ? tasksRaw : (tasksRaw?.tasks || [])
-  const agents = Array.isArray(agentsRaw) ? agentsRaw : (agentsRaw?.agents || [])
+  const tasks = normalizeTaskList(tasksRaw)
+  const agents = normalizeAgentList(agentsRaw)
   const activeTimerAgents = activeTimerAgentSet(timersRaw?.events || [], agents, Date.now())
   selfCheckWiring.updateRoster(agents)
   // Keep the bot roster fresh so the activity handler can exclude bot-chats.
@@ -1956,8 +1973,7 @@ function isDeicticDisinheritTarget(raw = '') {
 }
 
 async function activeTaskForAgent(agentId, agentName) {
-  const data = await getJson('/api/store/tasks')
-  const tasks = Array.isArray(data) ? data : (data?.tasks || [])
+  const tasks = await getTasks()
   return tasks.find(t =>
     (t.agent === agentId || t.agent === agentName) &&
     t.status !== 'done'
@@ -2806,8 +2822,7 @@ function pwReadTouch(key) {
 
 async function pwIsAwake(agentId) {
   if (!agentId) return false
-  const data = await getJson('/api/store/agents')
-  const list = Array.isArray(data) ? data : (data.agents || [])
+  const list = await lookupAgents(agentId)
   const a = list.find(x => x.id === agentId)
   return !!a && !a.dead
 }
