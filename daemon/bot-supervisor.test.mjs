@@ -21,6 +21,8 @@ function supervisorFixture({ bots, configDir = mkdtempSync(join(tmpdir(), 'tlda-
     machineId: 'mini',
     pathEnv: '/bin:/usr/bin',
     tldaConfig: 'default',
+    tldaServer: 'https://fleet.example.test',
+    tldaSyncServer: 'https://sync.example.test',
     tlsCaPath: '/tmp/rootCA.pem',
     execFileP: run,
     log: { info() {}, error() {} },
@@ -52,6 +54,8 @@ test('daemon bot supervisor starts configured local bot in tmux with bot environ
   assert.match(command, /TLDA_BOT_MACHINE_ID='mini'/)
   assert.match(command, /TLDA_BOT_TMUX_SESSION='fleet-bot-todd'/)
   assert.match(command, /TLDA_CONFIG='default'/)
+  assert.match(command, /TLDA_SERVER='https:\/\/fleet\.example\.test'/)
+  assert.match(command, /TLDA_SYNC_SERVER='https:\/\/sync\.example\.test'/)
   assert.match(command, /NODE_EXTRA_CA_CERTS='\/tmp\/rootCA\.pem'/)
   assert.match(command, /'\/repo\/bin\/bots\/todd\.mjs'/)
 })
@@ -73,6 +77,25 @@ test('daemon bot supervisor does not restart healthy bot session', async () => {
   assert.equal(results[0][1].started, false)
   assert.equal(results[0][1].reason, 'healthy')
   assert.deepEqual(calls, [['tmux', ['has-session', '-t', 'fleet-bot-todd']]])
+})
+
+test('daemon bot supervisor treats pid-only bot as healthy when heartbeat file is absent', async () => {
+  const configDir = mkdtempSync(join(tmpdir(), 'tlda-bot-supervisor-'))
+  const paths = botRuntimePaths('teacher', { configDir })
+  mkdirSync(configDir, { recursive: true })
+  writeFileSync(paths.pidFile, String(process.pid))
+  const { calls, supervisor } = supervisorFixture({
+    configDir,
+    bots: [{ name: 'teacher', script: '/repo/teacher-bot.mjs' }],
+    responses: [{ stdout: '', stderr: '' }],
+  })
+
+  const results = await supervisor.ensureAll('pid-only-check')
+
+  assert.equal(results[0][1].started, false)
+  assert.equal(results[0][1].reason, 'healthy')
+  assert.equal(results[0][1].health.hasHeartbeat, false)
+  assert.deepEqual(calls, [['tmux', ['has-session', '-t', 'fleet-bot-teacher']]])
 })
 
 test('daemon bot supervisor replaces stale existing tmux bot session', async () => {

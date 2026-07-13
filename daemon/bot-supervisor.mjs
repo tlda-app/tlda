@@ -50,6 +50,8 @@ function botEnvironmentEntries(bot, paths, {
   pathEnv = process.env.PATH || '/usr/bin:/bin:/usr/sbin:/sbin',
   tlsCaPath,
   tldaConfig,
+  tldaServer,
+  tldaSyncServer,
 } = {}) {
   const entries = [
     ['PATH', pathEnv],
@@ -62,6 +64,8 @@ function botEnvironmentEntries(bot, paths, {
   ]
   if (tlsCaPath) entries.push(['NODE_EXTRA_CA_CERTS', tlsCaPath])
   if (tldaConfig) entries.push(['TLDA_CONFIG', tldaConfig])
+  if (tldaServer) entries.push(['TLDA_SERVER', tldaServer])
+  if (tldaSyncServer) entries.push(['TLDA_SYNC_SERVER', tldaSyncServer])
   for (const [key, value] of Object.entries(bot.env || {})) entries.push([key, String(value)])
   return entries
 }
@@ -100,17 +104,31 @@ function heartbeatAgeMs(heartbeatFile, now = Date.now()) {
   }
 }
 
+function heartbeatExists(heartbeatFile) {
+  try {
+    statSync(heartbeatFile)
+    return true
+  } catch {
+    return false
+  }
+}
+
 export function botHealth(name, opts = {}) {
   const paths = botRuntimePaths(name, opts)
   const pid = readPid(paths.pidFile)
   const heartbeatAge = heartbeatAgeMs(paths.heartbeatFile)
+  const hasHeartbeat = heartbeatExists(paths.heartbeatFile)
+  const heartbeatFresh = hasHeartbeat && heartbeatAge <= (opts.heartbeatStaleMs || HEARTBEAT_STALE_MS)
+  const processAlive = processExists(pid)
   return {
     name,
     paths,
     pid,
-    processAlive: processExists(pid),
+    processAlive,
+    hasHeartbeat,
     heartbeatAgeMs: heartbeatAge,
-    heartbeatFresh: heartbeatAge <= (opts.heartbeatStaleMs || HEARTBEAT_STALE_MS),
+    heartbeatFresh,
+    healthy: processAlive && (!hasHeartbeat || heartbeatFresh),
   }
 }
 
@@ -124,6 +142,8 @@ export function createBotSupervisor({
   pathEnv = process.env.PATH || '/usr/bin:/bin:/usr/sbin:/sbin',
   tlsCaPath,
   tldaConfig = process.env.TLDA_CONFIG,
+  tldaServer,
+  tldaSyncServer,
   pollMs = DEFAULT_POLL_MS,
   execFileP: run = execFileP,
 } = {}) {
@@ -153,7 +173,7 @@ export function createBotSupervisor({
 
   function botCommand(bot, paths) {
     const script = resolveBotScript(bot.script, { rootDir })
-    const envPrefix = botCommandEnvironment(bot, paths, { machineId, pathEnv, tlsCaPath, tldaConfig })
+    const envPrefix = botCommandEnvironment(bot, paths, { machineId, pathEnv, tlsCaPath, tldaConfig, tldaServer, tldaSyncServer })
     return `exec env ${envPrefix} ${shellQuote(process.execPath)} ${shellQuote(script)} >> ${shellQuote(paths.logFile)} 2>&1`
   }
 
@@ -162,7 +182,7 @@ export function createBotSupervisor({
     mkdirSync(dirname(paths.logFile), { recursive: true })
     const sessionLive = await tmuxSessionExists(paths.tmuxSession)
     const health = botHealth(bot.name, { configDir })
-    if (sessionLive && health.processAlive && health.heartbeatFresh) return { started: false, reason: 'healthy', health }
+    if (sessionLive && health.healthy) return { started: false, reason: 'healthy', health }
     if (sessionLive) {
       try {
         await tmux('kill-session', '-t', paths.tmuxSession)

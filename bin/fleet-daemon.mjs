@@ -417,6 +417,8 @@ const botSupervisor = createBotSupervisor({
   log,
   tlsCaPath: hasTls ? TLS_CA_PATH : null,
   tldaConfig: ACTIVE_CONFIG,
+  tldaServer: SERVER,
+  tldaSyncServer: SERVER,
 })
 
 // ---------- terminal RPC facades ----------
