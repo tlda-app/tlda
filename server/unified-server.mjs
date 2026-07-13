@@ -120,7 +120,7 @@ import {
 } from './lib/observability/telemetry-status.mjs'
 import { createNotificationAttemptRecorder } from './lib/notification-attempts.mjs'
 import { daemonEventFailureIncident } from './lib/daemon-event-failures.mjs'
-import { boundActivityMetadata, boundActivityPayload } from '../shared/activity-payload-bounds.mjs'
+import { buildDaemonActivityRecord } from './lib/daemon-activity-ingest.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const fleetWsLog = createBackendLogger('fleet-ws')
@@ -1331,12 +1331,6 @@ const MY_TASK_UNREAD_LIMIT = 50
 // backfills the gap on reconnect (its cursor only advances on delivered bytes), so the
 // staleness clears within seconds; getWouldHibernate just waits out the reconnect grace.
 const _daemonConnectedSince = new Map()
-
-function finiteMessageMs(value) {
-  if (value == null || value === '') return null
-  const n = Number(value)
-  return Number.isFinite(n) ? n : null
-}
 
 const HIBERNATE_IDLE_MS = 20 * 60 * 1000
 const LIVENESS_RECONNECT_GRACE_MS = 120_000
@@ -7587,48 +7581,14 @@ async function handleDaemonWsMessage(ws, msg) {
   if (type === 'activity-event') {
     if (!fleetStore) return
     const serverReceivedAtMs = Date.now()
-    const {
-      agent_id,
-      tool,
-      arg,
-      input,
-      ts,
-      usage,
-      prettyResult,
-      origTool,
-      daemon_received_at,
-      daemon_received_at_ms,
-      daemon_sent_at,
-      daemon_sent_at_ms,
-    } = msg
+    const { agent_id, tool, arg, input } = msg
     if (!agent_id) return
     touchActivity(agent_id)
     if (tool === '_usage') return // usage stats don't need DB storage
     try {
       const serverBroadcastQueuedAtMs = Date.now()
-      const activityLatency = {
-        jsonlTs: ts || null,
-        daemonReceivedAt: daemon_received_at || null,
-        daemonReceivedAtMs: finiteMessageMs(daemon_received_at_ms),
-        daemonSentAt: daemon_sent_at || null,
-        daemonSentAtMs: finiteMessageMs(daemon_sent_at_ms),
-        serverReceivedAt: new Date(serverReceivedAtMs).toISOString(),
-        serverReceivedAtMs,
-        serverBroadcastQueuedAt: new Date(serverBroadcastQueuedAtMs).toISOString(),
-        serverBroadcastQueuedAtMs,
-      }
-      const activityText = tool === '_text'
-        ? boundActivityPayload(arg || '')
-        : (tool || '')
-      await measureHotOp('daemon-ws activity event insert', `agent=${agent_id} tool=${tool || ''}`, () => fleetStore.share({
-        type: 'activity',
-        from: agent_id,
-        to: agent_id,
-        text: activityText,
-        metadata: boundActivityMetadata({ tool, arg, input, usage, prettyResult, origTool, activityLatency }),
-        unread: false,
-        timestamp: ts || new Date().toISOString(),
-      }))
+      const activity = buildDaemonActivityRecord(msg, { serverReceivedAtMs, serverBroadcastQueuedAtMs })
+      await measureHotOp('daemon-ws activity event insert', `agent=${agent_id} tool=${tool || ''}`, () => fleetStore.share(activity))
     } catch (e) {
       await reportDaemonEventFailure(msg, 'activity-write', e)
       throw e
