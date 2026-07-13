@@ -36,6 +36,9 @@ test('wiretap subscriptions do not CC high-volume activity telemetry', async () 
       text: 'ordinary message',
     })
     assert.deepEqual(chat.metadata.wiretap_cc, ['fleet:watcher'])
+    const watcherInbox = store.getUnread('fleet:watcher')
+    assert.deepEqual(watcherInbox.map(event => event.id), [chat.id])
+    assert.equal(watcherInbox[0].text, 'ordinary message')
 
     const activity = await store.share({
       type: 'activity',

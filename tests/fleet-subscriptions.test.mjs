@@ -6,16 +6,16 @@ import path from 'node:path';
 import { FleetStore } from '../server/lib/fleet-store.mjs';
 import { evalExprDirectional, parseFilter } from '../shared/fleet-labels.mjs';
 
-test('default subscription matches the owner identity and current labels lazily', () => {
-  const ast = parseFilter('to:my_labels');
+test('default subscription matches only the owner identity', () => {
+  const ast = parseFilter('to:fleet:worker');
   assert.equal(evalExprDirectional(ast, {
-    toLabels: ['fleet:worker'],
+    toLabels: ['fleet:worker', 'awake'],
     subscriberLabels: ['fleet:worker', 'reviewers'],
   }), true);
   assert.equal(evalExprDirectional(ast, {
-    toLabels: ['reviewers'],
+    toLabels: ['reviewers', 'awake'],
     subscriberLabels: ['fleet:worker', 'reviewers'],
-  }), true);
+  }), false);
   assert.equal(evalExprDirectional(ast, {
     toLabels: ['other-agent'],
     subscriberLabels: ['fleet:worker', 'reviewers'],
@@ -37,7 +37,7 @@ function cleanup(store, dbPath) {
   }
 }
 
-test('default subscription is persisted once as to:my_labels', () => {
+test('default subscription is persisted once as the owner address', () => {
   const { store, dbPath } = tempStore();
   try {
     store.upsertAgent({ id: 'fleet:worker', friendly_name: 'worker', labels: ['reviewers'], status: 'awake' });
@@ -45,9 +45,43 @@ test('default subscription is persisted once as to:my_labels', () => {
     const second = store.ensureDefaultSubscription('fleet:worker');
     assert.equal(first.subscription_id, second.subscription_id);
     assert.equal(first.owner, 'fleet:worker');
-    assert.equal(first.query, 'to:my_labels');
+    assert.equal(first.query, 'to:fleet:worker');
     assert.equal(first.notification_policy, 'immediate');
     assert.equal(store.getSubscriptionsByOwner('fleet:worker').length, 1);
+  } finally {
+    cleanup(store, dbPath);
+  }
+});
+
+test('default subscription does not wiretap unrelated awake recipients', async () => {
+  const { store, dbPath } = tempStore();
+  try {
+    store.upsertAgent({ id: 'fleet:sender', friendly_name: 'sender', status: 'awake' });
+    store.upsertAgent({ id: 'fleet:recipient', friendly_name: 'recipient', status: 'awake' });
+    store.upsertAgent({ id: 'fleet:worker', friendly_name: 'worker', status: 'awake' });
+    store.ensureDefaultSubscription('fleet:worker');
+
+    const event = await store.share({ type: 'chat', from: 'fleet:sender', to: 'fleet:recipient', text: 'unrelated' });
+
+    assert.equal(event.metadata?.wiretap_cc, undefined);
+    assert.deepEqual(store.getUnread('fleet:worker'), []);
+  } finally {
+    cleanup(store, dbPath);
+  }
+});
+
+test('default subscription upgrades the legacy broad wiretap on login', () => {
+  const { store, dbPath } = tempStore();
+  try {
+    store.upsertAgent({ id: 'fleet:worker', friendly_name: 'worker', labels: ['reviewers'], status: 'awake' });
+    const legacyTap = store.addWiretap('fleet:worker', 'to:my_labels', null);
+    const legacy = store.addSubscription({ owner: 'fleet:worker', query: 'to:my_labels', notificationPolicy: 'immediate', createdBy: 'fleet:worker', adapter: 'wiretap', adapterId: legacyTap.id });
+
+    const upgraded = store.ensureDefaultSubscription('fleet:worker');
+
+    assert.equal(upgraded.subscription_id, legacy.subscription_id);
+    assert.equal(upgraded.query, 'to:fleet:worker');
+    assert.equal(store.getWiretapsByAgent('fleet:worker')[0].filter, 'to:fleet:worker');
   } finally {
     cleanup(store, dbPath);
   }

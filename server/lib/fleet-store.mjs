@@ -1003,6 +1003,8 @@ export class FleetStore {
     this._getSubscriptionsByOwner = this.db.prepare('SELECT * FROM subscriptions WHERE owner = ? ORDER BY subscription_id DESC');
     this._getSubscription = this.db.prepare('SELECT * FROM subscriptions WHERE subscription_id = ?');
     this._deleteSubscription = this.db.prepare('DELETE FROM subscriptions WHERE subscription_id = ?');
+    this._updateSubscriptionQuery = this.db.prepare('UPDATE subscriptions SET query = ?, adapter_id = ? WHERE subscription_id = ?');
+    this._updateWiretapFilter = this.db.prepare('UPDATE wiretaps SET filter = ? WHERE id = ?');
 
     // Event queries for chat history
     const E = this._EVT;
@@ -1066,7 +1068,20 @@ export class FleetStore {
    */
   async _insertEventRecord(event, { notify = true } = {}) {
     const ts = event.timestamp || new Date().toISOString();
-    const meta = event.metadata ? JSON.stringify(event.metadata) : null;
+    let metadata = event.metadata || null;
+
+    // Resolve wiretap recipients before writing the event so the persisted
+    // record, its unread mailbox rows, and the broadcast payload agree.
+    if (WIRETAP_EVENT_TYPES.has(event.type) && event.from && event.to) {
+      if (typeof metadata === 'string') {
+        try { metadata = JSON.parse(metadata) } catch { metadata = {} }
+      }
+      if (!metadata || typeof metadata !== 'object') metadata = {};
+      const resolved = this.resolveWiretaps(event.from, event.to, event.type);
+      const wiretapCc = [...new Set([...(metadata.wiretap_cc || []), ...resolved])];
+      if (wiretapCc.length) metadata = { ...metadata, wiretap_cc: wiretapCc };
+    }
+    const meta = metadata ? JSON.stringify(metadata) : null;
 
     // The events INSERT runs on the writer worker: a slow FTS merge here never
     // freezes the main event loop. We await it because we need the real row id.
@@ -1092,13 +1107,13 @@ export class FleetStore {
     // Track unread before returning so callers that immediately retract can
     // operate on a real mailbox row instead of racing the writer worker.
     if (event.unread !== false && event.to && (event.type === 'chat' || event.type === 'delegate')) {
-      await this._wAwait(this._insertUnread, [eventId, event.to]);
-      // Also mark unread for CC recipients
-      const cc = event.metadata?.cc;
-      if (cc && Array.isArray(cc)) {
-        for (const ccId of cc) {
-          await this._wAwait(this._insertUnread, [eventId, ccId]);
-        }
+      // Direct, explicit-CC, and wiretap recipients must all have the same
+      // durable inbox path. Channel notifications are only previews.
+      const unreadRecipients = new Set([event.to]);
+      for (const recipient of metadata?.cc || []) unreadRecipients.add(recipient);
+      for (const recipient of metadata?.wiretap_cc || []) unreadRecipients.add(recipient);
+      for (const recipient of unreadRecipients) {
+        await this._wAwait(this._insertUnread, [eventId, recipient]);
       }
     }
 
@@ -1109,30 +1124,11 @@ export class FleetStore {
       from_id: event.from || null,
       to_id: event.to || null,
       text: event.text || null,
-      metadata: event.metadata || null,
+      metadata,
       task_id: event.taskId || null,
       agent_id: event.agentId || null,
       read: false,
     };
-
-    // Wiretap subscriptions are user-visible message notifications. Activity
-    // and delivery bookkeeping are high-volume telemetry; routing them through
-    // every subscriber creates notification storms and event-loop lag.
-    if (WIRETAP_EVENT_TYPES.has(inserted.type) && inserted.from_id && inserted.to_id) {
-      const wiretapAgents = this.resolveWiretaps(inserted.from_id, inserted.to_id, inserted.type)
-      if (wiretapAgents.length > 0) {
-        // metadata can arrive as an unparsed JSON string (e.g. daemon_warning
-        // events); setting a property on a string primitive throws. Coerce to a
-        // plain object first.
-        let meta = inserted.metadata
-        if (typeof meta === 'string') {
-          try { meta = JSON.parse(meta) } catch { meta = {} }
-        }
-        if (!meta || typeof meta !== 'object') meta = {}
-        meta.wiretap_cc = wiretapAgents
-        inserted.metadata = meta
-      }
-    }
 
     // Notify listeners (SSE broadcast)
     if (notify) {
@@ -2653,9 +2649,26 @@ export class FleetStore {
   }
 
   ensureDefaultSubscription(agentId) {
-    const query = 'to:my_labels';
-    const existing = this._getSubscriptionsByOwner.all(agentId).find(row => row.query === query);
+    // A default subscription is the agent's own address, not every label it
+    // currently has. In particular, status labels such as `awake` are shared
+    // by most agents and turned the old `to:my_labels` default into a wiretap
+    // for unrelated traffic.
+    const query = `to:${agentId}`;
+    const subscriptions = this._getSubscriptionsByOwner.all(agentId);
+    const existing = subscriptions.find(row => row.query === query);
     if (existing) return existing;
+    const legacy = subscriptions.find(row => row.query === 'to:my_labels' && row.adapter === 'wiretap' && row.created_by === agentId);
+    if (legacy) {
+      let adapterId = legacy.adapter_id;
+      if (adapterId) {
+        this._updateWiretapFilter.run(JSON.stringify(query), adapterId);
+        this._wiretapCache = null;
+      } else {
+        adapterId = this.addWiretap(agentId, query, null).id;
+      }
+      this._updateSubscriptionQuery.run(query, adapterId, legacy.subscription_id);
+      return this.getSubscription(legacy.subscription_id);
+    }
     const tap = this.addWiretap(agentId, query, null);
     return this.addSubscription({ owner: agentId, query, notificationPolicy: 'immediate', createdBy: agentId, adapter: 'wiretap', adapterId: tap.id });
   }
