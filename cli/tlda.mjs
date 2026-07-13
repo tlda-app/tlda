@@ -2670,7 +2670,16 @@ export async function bindLifecycleCodexResumeIdentity(result, {
   timeoutMs = Number(process.env.TLDA_SPAWN_RESUME_ID_TIMEOUT_MS || 10000),
   intervalMs = 250,
 } = {}) {
-  if (!result?.fleetId || !result.tmuxSession || result.harness !== 'codex' || result.resumeId) {
+  if (result?.fleetId && result.tmuxSession && result.harness === 'codex' && result.resumeId) {
+    ledger?.setSessionSync?.(result.fleetId, {
+      sessionId: result.resumeId,
+      sessionKind: 'codex',
+      cwd,
+      friendlyName: name || result.name || result.fleetId,
+    })
+    return { bound: true, existing: true }
+  }
+  if (!result?.fleetId || !result.tmuxSession || result.harness !== 'codex') {
     return { bound: false, skipped: true }
   }
   const resolver = resolveIdentity || (await import('../agent-launch/agent-launch.mjs')).resolveLiveCodexSessionIdentity

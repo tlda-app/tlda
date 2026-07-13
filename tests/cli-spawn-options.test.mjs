@@ -68,3 +68,35 @@ test('CLI lifecycle codex spawn binds resume identity into existing ledger row',
     },
   }])
 })
+
+test('CLI lifecycle codex wake treats existing resume id as bound', async () => {
+  const result = {
+    harness: 'codex',
+    fleetId: 'fleet:test-cli-existing-bind',
+    tmuxSession: 'fleet-test-cli-existing-bind',
+    name: 'test-cli-existing-bind',
+    resumeId: '22222222-2222-4333-8444-555555555555',
+  }
+  const writes = []
+  const resolved = await bindLifecycleCodexResumeIdentity(result, {
+    cwd: '/tmp/tlda-cli-existing-bind',
+    name: 'test-cli-existing-bind',
+    ledger: {
+      setSessionSync(id, row) {
+        writes.push({ id, row })
+      },
+    },
+  })
+
+  assert.equal(resolved.bound, true)
+  assert.equal(resolved.existing, true)
+  assert.deepEqual(writes, [{
+    id: 'fleet:test-cli-existing-bind',
+    row: {
+      sessionId: '22222222-2222-4333-8444-555555555555',
+      sessionKind: 'codex',
+      cwd: '/tmp/tlda-cli-existing-bind',
+      friendlyName: 'test-cli-existing-bind',
+    },
+  }])
+})
