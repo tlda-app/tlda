@@ -116,6 +116,7 @@ import {
 } from './lib/observability/control-plane-trace.mjs'
 import { createNotificationAttemptRecorder } from './lib/notification-attempts.mjs'
 import { daemonEventFailureIncident } from './lib/daemon-event-failures.mjs'
+import { boundActivityMetadata, boundActivityPayload } from '../shared/activity-payload-bounds.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const fleetWsLog = createBackendLogger('fleet-ws')
@@ -7563,31 +7564,27 @@ async function handleDaemonWsMessage(ws, msg) {
     if (tool === '_usage') return // usage stats don't need DB storage
     try {
       const serverBroadcastQueuedAtMs = Date.now()
-      await fleetStore.share({
+      const activityLatency = {
+        jsonlTs: ts || null,
+        daemonSentAt: daemon_sent_at || null,
+        daemonSentAtMs: Number.isFinite(Number(daemon_sent_at_ms)) ? Number(daemon_sent_at_ms) : null,
+        serverReceivedAt: new Date(serverReceivedAtMs).toISOString(),
+        serverReceivedAtMs,
+        serverBroadcastQueuedAt: new Date(serverBroadcastQueuedAtMs).toISOString(),
+        serverBroadcastQueuedAtMs,
+      }
+      const activityText = tool === '_text'
+        ? boundActivityPayload(arg || '')
+        : (tool || '')
+      await measureHotOp('daemon-ws activity event insert', `agent=${agent_id} tool=${tool || ''}`, () => fleetStore.share({
         type: 'activity',
         from: agent_id,
         to: agent_id,
-        text: tool === '_text' ? (arg || '') : (tool || ''),
-        metadata: {
-          tool: tool || '',
-          arg: arg || '',
-          input: input || null,
-          activityLatency: {
-            jsonlTs: ts || null,
-            daemonSentAt: daemon_sent_at || null,
-            daemonSentAtMs: Number.isFinite(Number(daemon_sent_at_ms)) ? Number(daemon_sent_at_ms) : null,
-            serverReceivedAt: new Date(serverReceivedAtMs).toISOString(),
-            serverReceivedAtMs,
-            serverBroadcastQueuedAt: new Date(serverBroadcastQueuedAtMs).toISOString(),
-            serverBroadcastQueuedAtMs,
-          },
-          ...(usage ? { usage } : {}),
-          ...(prettyResult ? { prettyResult } : {}),
-          ...(origTool ? { origTool } : {}),
-        },
+        text: activityText,
+        metadata: boundActivityMetadata({ tool, arg, input, usage, prettyResult, origTool, activityLatency }),
         unread: false,
         timestamp: ts || new Date().toISOString(),
-      })
+      }))
     } catch (e) {
       await reportDaemonEventFailure(msg, 'activity-write', e)
       throw e
