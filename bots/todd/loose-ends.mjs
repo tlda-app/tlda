@@ -1,6 +1,6 @@
 export const LOOSE_END_COOLDOWN_MS = 2 * 60 * 1000
 
-export const LOOSE_END_REPORT_MSG = `Loose-end check: identify the next unresolved action you can do yourself. If responsibility remains, keep the task open and continue or assign that action; if the responsibility is over, mark or clear the task done. If your message says "needs X", "unless X", "not verified", "not deployed", or "condition", either do X now, assign it, or state the true authority boundary.`
+export const LOOSE_END_REPORT_MSG = `Loose-end check: identify the next unresolved action you can do yourself. If responsibility remains, keep the task open and continue or assign that action; if the responsibility is over, close it with \`report({ close: true, summary })\` (the current mechanism; \`task_done\` is retired). If your message says "needs X", "unless X", "not verified", "not deployed", or "condition", either do X now, assign it, or state the true authority boundary.`
 
 export const LOOSE_END_PROCESS_MSG = `Process check: Skip is having to pull the next step out of you. Stop reporting direction-finding. Continue until you have one of: worked proof/fix, concrete failure mode, concrete edit/proposal, or true authority boundary.`
 
