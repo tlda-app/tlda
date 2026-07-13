@@ -88,7 +88,7 @@ import {
 import { readBuildInfo } from './lib/build-info.mjs'
 import { ServerDaemonOutbox } from './lib/server-daemon-outbox.mjs'
 import { DaemonAgentEvents } from './lib/daemon-agent-events.mjs'
-import { shouldSkipHeartbeatSweepForLag, shouldTerminateForMissedPong, socketCanAcceptMore } from '../shared/fleet-ws-flow.mjs'
+import { clearTrustedHeartbeatProbes, shouldSkipHeartbeatSweepForLag, shouldTerminateForMissedPong, socketCanAcceptMore } from '../shared/fleet-ws-flow.mjs'
 import {
   DELIVERY_CHANNELS,
   INBOX_STATUSES,
@@ -343,6 +343,7 @@ function trackWs(ws, meta) {
   // Liveness is client evidence, never an artefact of when the server happened
   // to run its heartbeat sweep. A stalled event loop can delay a whole sweep.
   ws._wsLastPongAt = Date.now()
+  ws._wsLastPingAt = 0
   ws.on('pong', () => { ws._wsLastPongAt = Date.now() })
   _trackedWs.add(ws)
   if (meta.kind === 'sync') {
@@ -446,27 +447,35 @@ setInterval(reapZombies, REAPER_INTERVAL_MS).unref()
 const WS_HEARTBEAT_INTERVAL_MS = 30_000
 const WS_HEARTBEAT_LAG_GRACE_MS = Number(process.env.TLDA_WS_HEARTBEAT_LAG_GRACE_MS || 1000)
 const WS_HEARTBEAT_LAG_COOLDOWN_MS = Number(process.env.TLDA_WS_HEARTBEAT_LAG_COOLDOWN_MS || WS_HEARTBEAT_INTERVAL_MS * 2)
+let nextHeartbeatSweepDueAt = Date.now() + WS_HEARTBEAT_INTERVAL_MS
 setInterval(() => {
+  const now = Date.now()
+  const sweepDelayMs = Math.max(0, now - nextHeartbeatSweepDueAt)
+  nextHeartbeatSweepDueAt = now + WS_HEARTBEAT_INTERVAL_MS
   // A delayed sweep is evidence of server-side starvation, not client death.
-  // Preserve existing sockets for one interval and let their next real pong
-  // decide liveness instead of terminating the whole fleet in a catch-up burst.
+  // Preserve existing sockets and require a fresh trusted ping before any
+  // later termination, instead of killing the whole fleet in a catch-up burst.
   if (shouldSkipHeartbeatSweepForLag(
     lastEventLoopLag.maxMs,
     WS_HEARTBEAT_LAG_GRACE_MS,
     lastHeartbeatLagAt,
-    Date.now(),
+    now,
     WS_HEARTBEAT_LAG_COOLDOWN_MS,
+    sweepDelayMs,
   )) {
-    console.warn(`[heartbeat] skipping sweep during/recent event-loop lag max=${lastEventLoopLag.maxMs.toFixed(1)}ms`)
+    if (sweepDelayMs >= WS_HEARTBEAT_LAG_GRACE_MS) lastHeartbeatLagAt = now
+    clearTrustedHeartbeatProbes(_trackedWs)
+    console.warn(`[heartbeat] skipping sweep during/recent event-loop lag max=${lastEventLoopLag.maxMs.toFixed(1)}ms delay=${sweepDelayMs.toFixed(1)}ms`)
     return
   }
   for (const ws of _trackedWs) {
     if (ws.readyState !== 1) continue
-    if (shouldTerminateForMissedPong(ws._wsLastPongAt, Date.now(), WS_HEARTBEAT_INTERVAL_MS)) {
+    if (shouldTerminateForMissedPong(ws._wsLastPongAt, ws._wsLastPingAt, now, WS_HEARTBEAT_INTERVAL_MS)) {
       console.log(`[heartbeat] terminating unresponsive ${ws._wsKind} ws=${ws._wsSessionId} doc=${ws._wsDocName || '-'}`)
       ws.terminate()
       continue
     }
+    ws._wsLastPingAt = now
     ws.ping()
   }
 }, WS_HEARTBEAT_INTERVAL_MS).unref()
