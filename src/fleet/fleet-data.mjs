@@ -643,6 +643,68 @@ let _lastFleetEventAt = 0
 let _lastFleetEventId = 0
 let _lastAgentsDeltaAt = 0
 
+function finiteMs(value) {
+  const n = Number(value)
+  return Number.isFinite(n) && n > 0 ? n : null
+}
+
+function isoMs(value) {
+  if (!value) return null
+  const n = Date.parse(value)
+  return Number.isFinite(n) ? n : null
+}
+
+function latencyDelta(later, earlier) {
+  return Number.isFinite(later) && Number.isFinite(earlier) ? Math.max(0, later - earlier) : null
+}
+
+function summarizeValues(values) {
+  const sorted = values.filter(Number.isFinite).sort((a, b) => a - b)
+  if (!sorted.length) return null
+  const pick = p => sorted[Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * p))]
+  return {
+    count: sorted.length,
+    minMs: sorted[0],
+    p50Ms: pick(0.5),
+    p95Ms: pick(0.95),
+    maxMs: sorted[sorted.length - 1],
+  }
+}
+
+function summarizeActivityLatency(now) {
+  const rows = _store.all()
+    .filter(e => e?._activity && e._activityLatency)
+    .slice(-25)
+    .map(e => {
+      const latency = e._activityLatency || {}
+      const jsonlMs = isoMs(latency.jsonlTs || e.timestamp)
+      const daemonSentMs = finiteMs(latency.daemonSentAtMs)
+      const serverReceivedMs = finiteMs(latency.serverReceivedAtMs)
+      const serverBroadcastQueuedMs = finiteMs(latency.serverBroadcastQueuedAtMs)
+      const browserReceivedMs = finiteMs(latency.browserReceivedAtMs)
+      return {
+        id: e._dbId ?? null,
+        agent: e.from || e.agent || null,
+        tool: e._toolName || e.text || null,
+        jsonlTs: latency.jsonlTs || e.timestamp || null,
+        browserReceivedAgoMs: browserReceivedMs ? now - browserReceivedMs : null,
+        jsonlToDaemonMs: latencyDelta(daemonSentMs, jsonlMs),
+        daemonToServerMs: latencyDelta(serverReceivedMs, daemonSentMs),
+        serverToBrowserMs: latencyDelta(browserReceivedMs, serverBroadcastQueuedMs || serverReceivedMs),
+        jsonlToBrowserMs: latencyDelta(browserReceivedMs, jsonlMs),
+      }
+    })
+  return {
+    recent: rows,
+    summary: {
+      jsonlToDaemon: summarizeValues(rows.map(row => row.jsonlToDaemonMs)),
+      daemonToServer: summarizeValues(rows.map(row => row.daemonToServerMs)),
+      serverToBrowser: summarizeValues(rows.map(row => row.serverToBrowserMs)),
+      jsonlToBrowser: summarizeValues(rows.map(row => row.jsonlToBrowserMs)),
+    },
+  }
+}
+
 /** Returns true if the WS is currently connected */
 export function isConnected() { return _connected }
 
@@ -672,6 +734,7 @@ export function getFleetRuntimeSummary(now = Date.now()) {
     loadingAgentPage: !!_agentsPageLoading,
     hasNextAgentsPage: !!_nextAgentsCursor,
     liveTailPinned: isLiveTailPinned(),
+    activityLatency: summarizeActivityLatency(now),
   }
 }
 
@@ -896,6 +959,14 @@ export function connect() {
         // it rebinds the pending entry instead of appending a duplicate. All by
         // id — no content matching.
         const converted = convertChatEvent(data)
+        if (converted?._activityLatency) {
+          const browserReceivedAtMs = Date.now()
+          converted._activityLatency = {
+            ...converted._activityLatency,
+            browserReceivedAt: new Date(browserReceivedAtMs).toISOString(),
+            browserReceivedAtMs,
+          }
+        }
         const result = liveUpsert(converted)
         const { event, isNew } = result
         // Drain any event-updates that arrived before this event (e.g. a late
@@ -1176,6 +1247,7 @@ export function convertChatEvent(e) {
   } else if (type === 'activity') {
     const tool = e.metadata?.tool || e.text
     msg._activity = true
+    msg._activityLatency = e.metadata?.activityLatency || null
     msg._toolName = tool === '_text' ? null : (tool === '_prettyResult' ? (e.metadata?.origTool || tool) : tool)
     msg._isText = tool === '_text'
     msg._text = tool === '_text' ? (e.metadata?.arg || e.text) : null

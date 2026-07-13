@@ -880,7 +880,19 @@ export function renderActivityGroup(group, ctx) {
     </div>`
   }).join('')
 
-  return `<div class="chat-activity-card will-fold" data-agent="${esc(m.from)}" data-ts="${esc(group[0].timestamp || '')}" data-msg-id="${esc(String(m._dbId || ''))}">
+  const latency = m._activityLatency || {}
+  const latencyAttrs = [
+    ['data-jsonl-ts', latency.jsonlTs || group[0].timestamp || ''],
+    ['data-daemon-sent-at-ms', latency.daemonSentAtMs],
+    ['data-server-received-at-ms', latency.serverReceivedAtMs],
+    ['data-server-broadcast-queued-at-ms', latency.serverBroadcastQueuedAtMs],
+    ['data-browser-received-at-ms', latency.browserReceivedAtMs],
+    ['data-browser-render-queued-at-ms', latency.browserRenderQueuedAtMs],
+  ]
+    .filter(([, value]) => value != null && value !== '')
+    .map(([name, value]) => ` ${name}="${esc(String(value))}"`)
+    .join('')
+  return `<div class="chat-activity-card will-fold" data-agent="${esc(m.from)}" data-ts="${esc(group[0].timestamp || '')}" data-msg-id="${esc(String(m._dbId || ''))}"${latencyAttrs}>
     <div class="drag-handle" title="Drag"></div>
     <div class="activity-header">
       <span class="activity-agent ${fromCls}">${esc(nick)}</span>

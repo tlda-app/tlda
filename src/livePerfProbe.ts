@@ -107,6 +107,71 @@ function summarizeHtmlPages(shapes: ShapeRecordLike[]) {
   }
 }
 
+function finiteMs(value: string | undefined) {
+  if (!value) return null
+  const n = Number(value)
+  return Number.isFinite(n) && n > 0 ? n : null
+}
+
+function isoMs(value: string | undefined) {
+  if (!value) return null
+  const n = Date.parse(value)
+  return Number.isFinite(n) ? n : null
+}
+
+function deltaMs(later: number | null, earlier: number | null) {
+  return later != null && earlier != null ? Math.max(0, later - earlier) : null
+}
+
+function summarizeLatencyValues(values: Array<number | null>) {
+  const sorted = values.filter((value): value is number => Number.isFinite(value)).sort((a, b) => a - b)
+  if (!sorted.length) return null
+  const pick = (p: number) => sorted[Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * p))]
+  return {
+    count: sorted.length,
+    minMs: sorted[0],
+    p50Ms: pick(0.5),
+    p95Ms: pick(0.95),
+    maxMs: sorted[sorted.length - 1],
+  }
+}
+
+function collectVisibleActivityLatency() {
+  const cards = Array.from(document.querySelectorAll<HTMLElement>('.chat-activity-card, [data-activity-card]'))
+    .slice(-40)
+    .map(card => {
+      const jsonlMs = isoMs(card.dataset.jsonlTs || card.dataset.ts)
+      const daemonSentMs = finiteMs(card.dataset.daemonSentAtMs)
+      const serverReceivedMs = finiteMs(card.dataset.serverReceivedAtMs)
+      const serverBroadcastQueuedMs = finiteMs(card.dataset.serverBroadcastQueuedAtMs)
+      const browserReceivedMs = finiteMs(card.dataset.browserReceivedAtMs)
+      const browserRenderQueuedMs = finiteMs(card.dataset.browserRenderQueuedAtMs)
+      const browserMountedMs = finiteMs(card.dataset.browserMountedAtMs)
+      const renderedMs = browserMountedMs || browserRenderQueuedMs
+      return {
+        id: card.dataset.msgId || null,
+        agent: card.dataset.agent || null,
+        jsonlTs: card.dataset.jsonlTs || card.dataset.ts || null,
+        jsonlToDaemonMs: deltaMs(daemonSentMs, jsonlMs),
+        daemonToServerMs: deltaMs(serverReceivedMs, daemonSentMs),
+        serverToBrowserMs: deltaMs(browserReceivedMs, serverBroadcastQueuedMs || serverReceivedMs),
+        browserToRenderMs: deltaMs(renderedMs, browserReceivedMs),
+        jsonlToRenderMs: deltaMs(renderedMs, jsonlMs),
+      }
+    })
+  return {
+    count: cards.length,
+    recent: cards.slice(-12),
+    summary: {
+      jsonlToDaemon: summarizeLatencyValues(cards.map(card => card.jsonlToDaemonMs)),
+      daemonToServer: summarizeLatencyValues(cards.map(card => card.daemonToServerMs)),
+      serverToBrowser: summarizeLatencyValues(cards.map(card => card.serverToBrowserMs)),
+      browserToRender: summarizeLatencyValues(cards.map(card => card.browserToRenderMs)),
+      jsonlToRender: summarizeLatencyValues(cards.map(card => card.jsonlToRenderMs)),
+    },
+  }
+}
+
 function isShapeRecordLike(record: unknown): record is ShapeRecordLike {
   return !!record && typeof record === 'object' && (record as { typeName?: unknown }).typeName === 'shape'
 }
@@ -124,6 +189,7 @@ function collectDomSummary() {
     fleetAgentRows: document.querySelectorAll('.fleet-agents-row, .fleet-phone-agent, .fleet-inbox-phone-agent').length,
     fleetChatLines: document.querySelectorAll('.fleet-chat-shape .chat-line, .fleet-chat-shape [data-chat-line]').length,
     fleetActivityCards: document.querySelectorAll('.chat-activity-card, .activity-card, .fleet-activity-card, [data-activity-card]').length,
+    visibleActivityLatency: collectVisibleActivityLatency(),
     textareas: document.querySelectorAll('textarea').length,
   }
 }

@@ -7555,17 +7555,35 @@ async function handleDaemonWsMessage(ws, msg) {
 
   if (type === 'activity-event') {
     if (!fleetStore) return
-    const { agent_id, tool, arg, input, ts, usage, prettyResult, origTool } = msg
+    const serverReceivedAtMs = Date.now()
+    const { agent_id, tool, arg, input, ts, usage, prettyResult, origTool, daemon_sent_at, daemon_sent_at_ms } = msg
     if (!agent_id) return
     touchActivity(agent_id)
     if (tool === '_usage') return // usage stats don't need DB storage
     try {
+      const serverBroadcastQueuedAtMs = Date.now()
       await fleetStore.share({
         type: 'activity',
         from: agent_id,
         to: agent_id,
         text: tool === '_text' ? (arg || '') : (tool || ''),
-        metadata: { tool: tool || '', arg: arg || '', input: input || null, ...(usage ? { usage } : {}), ...(prettyResult ? { prettyResult } : {}), ...(origTool ? { origTool } : {}) },
+        metadata: {
+          tool: tool || '',
+          arg: arg || '',
+          input: input || null,
+          activityLatency: {
+            jsonlTs: ts || null,
+            daemonSentAt: daemon_sent_at || null,
+            daemonSentAtMs: Number.isFinite(Number(daemon_sent_at_ms)) ? Number(daemon_sent_at_ms) : null,
+            serverReceivedAt: new Date(serverReceivedAtMs).toISOString(),
+            serverReceivedAtMs,
+            serverBroadcastQueuedAt: new Date(serverBroadcastQueuedAtMs).toISOString(),
+            serverBroadcastQueuedAtMs,
+          },
+          ...(usage ? { usage } : {}),
+          ...(prettyResult ? { prettyResult } : {}),
+          ...(origTool ? { origTool } : {}),
+        },
         unread: false,
         timestamp: ts || new Date().toISOString(),
       })

@@ -1,4 +1,5 @@
 export function activityEventMessage(agentId, evt) {
+  const daemonSentAtMs = Date.now()
   return {
     type: 'activity-event',
     agent_id: agentId,
@@ -6,6 +7,8 @@ export function activityEventMessage(agentId, evt) {
     arg: evt.arg || '',
     input: evt.input || null,
     ts: evt.ts,
+    daemon_sent_at: new Date(daemonSentAtMs).toISOString(),
+    daemon_sent_at_ms: daemonSentAtMs,
     ...(evt.usage ? { usage: evt.usage } : {}),
     ...(evt.prettyResult ? { prettyResult: evt.prettyResult } : {}),
     ...(evt.origTool ? { origTool: evt.origTool } : {}),

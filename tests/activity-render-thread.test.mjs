@@ -44,3 +44,29 @@ test('get_thread pretty result renders activity rows with existing activity styl
   assert.match(html, /code-block-lang">bash</)
   assert.doesNotMatch(html, /pretty-msg-body">\s*<p>\[activity #633181\]/)
 })
+
+test('activity cards carry latency timestamp attributes for visible telemetry', () => {
+  const html = renderActivityGroup([{
+    from: 'fleet:latency',
+    timestamp: '2026-07-13T12:00:00.000Z',
+    _dbId: 42,
+    _toolName: 'Bash',
+    _toolArg: 'npm test',
+    _activityLatency: {
+      jsonlTs: '2026-07-13T12:00:00.000Z',
+      daemonSentAtMs: 1783944000100,
+      serverReceivedAtMs: 1783944000200,
+      serverBroadcastQueuedAtMs: 1783944000210,
+      browserReceivedAtMs: 1783944000300,
+      browserRenderQueuedAtMs: 1783944000315,
+    },
+  }], ctx)
+
+  assert.match(html, /data-msg-id="42"/)
+  assert.match(html, /data-jsonl-ts="2026-07-13T12:00:00.000Z"/)
+  assert.match(html, /data-daemon-sent-at-ms="1783944000100"/)
+  assert.match(html, /data-server-received-at-ms="1783944000200"/)
+  assert.match(html, /data-server-broadcast-queued-at-ms="1783944000210"/)
+  assert.match(html, /data-browser-received-at-ms="1783944000300"/)
+  assert.match(html, /data-browser-render-queued-at-ms="1783944000315"/)
+})

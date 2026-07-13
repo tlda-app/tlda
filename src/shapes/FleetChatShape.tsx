@@ -1849,6 +1849,12 @@ const ChatMessageRow = memo(function ChatMessageRow({
     const t0 = probe.isEnabled('chat') ? performance.now() : 0
     const el = divRef.current
     if (!el) return
+    const mountedAtMs = Date.now()
+    el.querySelectorAll<HTMLElement>('.chat-activity-card').forEach(card => {
+      if (!card.dataset.browserMountedAtMs) {
+        card.dataset.browserMountedAtMs = String(mountedAtMs)
+      }
+    })
     const expanded = expandedRowsRef.current
     if (expanded.has(itemKey)) {
       const moreRows = el.querySelector('.pretty-more-rows') as HTMLElement | null
@@ -2681,6 +2687,14 @@ function FleetChatInner({ shape }: { shape: any }) {
       const cached = !!html
       if (!html) {
         recordChatRenderProbe('activity-render', key, { groupSize })
+        const browserRenderQueuedAtMs = Date.now()
+        for (const activity of activityGroup) {
+          activity._activityLatency = {
+            ...(activity._activityLatency || {}),
+            browserRenderQueuedAt: new Date(browserRenderQueuedAtMs).toISOString(),
+            browserRenderQueuedAtMs,
+          }
+        }
         html = `<div class="chat-activity-inline-wrap">${renderActivityGroup(activityGroup, renderCtx)}</div>`
         activityGroupCache.current.set(cacheKey, html)
         capRenderCache(activityGroupCache.current, activityGroupCacheLimit)
