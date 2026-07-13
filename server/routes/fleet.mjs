@@ -17,6 +17,7 @@ import { parseFilter, evalExpr, labelsForAgent } from '../../shared/fleet-labels
 import { resolveSpawnMachine } from '../lib/spawn-routing.mjs'
 import { summarizeFleetRosterTruth } from '../lib/fleet-roster-truth.mjs'
 import { daemonAddress, describeAgentAddress } from '../../shared/agent-move-target.mjs'
+import { completeTaskLifecycle } from '../lib/task-lifecycle.mjs'
 
 // Server owner — the human running this server process. Browser users
 // log in via the WS 'login' message or register via 'register'.
@@ -533,7 +534,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   })
 
   // --- POST /api/tasks/done ---
-  router.post('/api/tasks/done', (req, res) => {
+  router.post('/api/tasks/done', async (req, res) => {
     const { agent: rawAgent, task_id, skip_qa } = req.body || {}
     if (!rawAgent) { res.status(400).send('missing "agent"'); return }
     const agent = fleetStore?.findAgent(rawAgent)?.id || rawAgent
@@ -548,9 +549,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
         if (qaStatus?.status === 'pending') { res.status(403).json({ ok: false, error: `Waiting for QA sign-off` }); return }
       }
     }
-    task.status = 'done'
-    task.completed_at = new Date().toISOString()
-    if (fleetStore) { fleetStore.upsertTask(task); fleetStore.taskDone?.(agent, task.id, task.description) }
+    await completeTaskLifecycle({ fleetStore, agentId: agent, task })
     broadcastState()
     res.json({ ok: true, task_id: task.id })
   })

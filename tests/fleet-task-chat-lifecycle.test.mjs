@@ -4,8 +4,10 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { FleetStore } from '../server/lib/fleet-store.mjs'
+import { completeTaskLifecycle } from '../server/lib/task-lifecycle.mjs'
 
 const serverSource = fs.readFileSync(new URL('../server/unified-server.mjs', import.meta.url), 'utf8')
+const fleetRouteSource = fs.readFileSync(new URL('../server/routes/fleet.mjs', import.meta.url), 'utf8')
 const mcpSource = fs.readFileSync(new URL('../mcp-server/fleet-tools.mjs', import.meta.url), 'utf8')
 
 function tempStore(prefix = 'fleet-task-chat-lifecycle') {
@@ -210,6 +212,66 @@ test('fleet WS report-close is operation-id idempotent and close marks task done
   } finally {
     cleanup(store, dbPath)
   }
+})
+
+test('task completion lifecycle helper marks done and emits the task_done event once', async () => {
+  const { store, dbPath } = tempStore('task-completion-lifecycle-helper')
+  try {
+    store.upsertTask({
+      id: 'task-complete-1',
+      agent: 'fleet:worker',
+      description: 'complete lifecycle helper',
+      message: 'complete lifecycle helper',
+      delegated_by: 'fleet:mend',
+      delegated_at: '2026-07-12T23:02:00.000Z',
+      status: 'pending',
+      metadata: { trace_id: 'complete:test' },
+    })
+
+    const original = store.getTask('task-complete-1')
+    const result = await completeTaskLifecycle({
+      fleetStore: store,
+      agentId: 'fleet:worker',
+      task: original,
+      completedAt: '2026-07-12T23:03:00.000Z',
+      eventMetadata: { trace_id: 'complete:test', source: 'unit' },
+    })
+
+    assert.equal(result.event.type, 'task_done')
+    assert.equal(result.event.task_id, 'task-complete-1')
+    assert.equal(result.event.metadata.trace_id, 'complete:test')
+    const completed = store.getTask('task-complete-1')
+    assert.equal(completed.status, 'done')
+    assert.equal(completed.completed_at, '2026-07-12T23:03:00.000Z')
+    assert.deepEqual(completed.metadata, { trace_id: 'complete:test' })
+    assert.equal(store.getActiveTaskCountByAgent('fleet:worker'), 0)
+  } finally {
+    cleanup(store, dbPath)
+  }
+})
+
+test('task-done callers route their final completion transition through the lifecycle helper', () => {
+  const wsTaskDoneBlock = sourceBlock("if (type === 'task-done') {", "if (type === 'report-close') {")
+  assertOrder(wsTaskDoneBlock, [
+    "if (task.metadata?.requires_approval)",
+    'const { eventId } = await completeTaskLifecycle({ fleetStore, agentId: agent, task })',
+    'broadcastState()',
+    'reply({ ok: true, task_id: task.id, event_id: eventId })',
+  ])
+  assert.equal(wsTaskDoneBlock.includes("task.status = 'done'"), false)
+  assert.equal(wsTaskDoneBlock.includes('fleetStore.upsertTask(task)'), false)
+  assert.equal(wsTaskDoneBlock.includes('fleetStore.taskDone?.(agent'), false)
+
+  const restDoneBlock = sourceBlockFrom(fleetRouteSource, "router.post('/api/tasks/done'", "  // --- POST /api/tasks/delete ---")
+  assertOrder(restDoneBlock, [
+    "if (!skip_qa && fleetStore)",
+    'await completeTaskLifecycle({ fleetStore, agentId: agent, task })',
+    'broadcastState()',
+    'res.json({ ok: true, task_id: task.id })',
+  ])
+  assert.equal(restDoneBlock.includes("task.status = 'done'"), false)
+  assert.equal(restDoneBlock.includes('fleetStore.upsertTask(task)'), false)
+  assert.equal(restDoneBlock.includes('fleetStore.taskDone?.(agent'), false)
 })
 
 test('report close does not hard-block on success criteria but still requires approval gates', async () => {

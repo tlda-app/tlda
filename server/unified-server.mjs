@@ -71,6 +71,7 @@ import { buildRuntimeStatus } from './lib/runtime-status.mjs'
 import { resolveSpawnMachine, SPAWN_MACHINE_PREF_KEY } from './lib/spawn-routing.mjs'
 import { resolveFreshSpawnAvailabilityModels } from './lib/spawn-availability-models.mjs'
 import { decideTaskRenudges, isWakeBreakerOpen, wakeBreakerBackoffMs } from './lib/task-renudge.mjs'
+import { completeTaskLifecycle } from './lib/task-lifecycle.mjs'
 import { decideReportClose } from '../bots/todd/report-close-guard.mjs'
 import { rejectMatchingWsRequests, startWsRequest } from '../shared/fleet-transport.mjs'
 import { isPlanModeResponse, planModeResponseKey } from './lib/plan-mode-response.mjs'
@@ -5805,12 +5806,7 @@ async function handleFleetWsMessage(ws, msg) {
         }
       }
     }
-    task.status = 'done'
-    task.completed_at = new Date().toISOString()
-    let eventId = null
-    fleetStore.upsertTask(task)
-    const inserted = fleetStore.taskDone?.(agent, task.id, task.description)
-    eventId = inserted?.id || null
+    const { eventId } = await completeTaskLifecycle({ fleetStore, agentId: agent, task })
     broadcastState()
     reply({ ok: true, task_id: task.id, event_id: eventId })
     return
