@@ -33,9 +33,11 @@ function setupProject(name, project = {}) {
   return { root, dir, source: path.join(dir, 'source') }
 }
 
-function fleetStore({ tasks = [], agents = [] } = {}) {
+function fleetStore({ tasks = [], agents = [], activeTasksPage = null, activeTaskCount = null } = {}) {
   return {
     getActiveTasks: () => tasks,
+    ...(activeTasksPage ? { getActiveTasksPage: () => activeTasksPage } : {}),
+    ...(Number.isFinite(activeTaskCount) ? { getActiveTaskCount: () => activeTaskCount } : {}),
     getAllAgents: () => agents,
   }
 }
@@ -199,6 +201,55 @@ test('status task-doc refresh exposes global active tasks as a document part', a
     assert.equal(pageInfo.length, 1)
     assert.equal(pageInfo[0].file, 'TASKS.html')
     assert.equal(pageInfo[0].metadata.kind, 'task-doc')
+  } finally {
+    await new Promise(resolve => server.close(resolve))
+  }
+})
+
+test('status task-doc refresh uses a bounded task page instead of the full active list', async () => {
+  setupProject('status')
+  const app = express()
+  app.use(express.json())
+  const visibleTasks = Array.from({ length: 100 }, (_, i) => ({
+    id: `task-visible-${i}`,
+    agent: 'agent-3',
+    delegated_by: 'agent-3',
+    description: `Visible task ${i}`,
+    status: 'pending',
+    delegated_at: `2026-07-10T20:${String(i % 60).padStart(2, '0')}:00.000Z`,
+  }))
+  app.locals.fleetStore = {
+    getActiveTasks() {
+      throw new Error('status refresh should not read the unbounded active task list')
+    },
+    getActiveTasksPage() {
+      return { tasks: visibleTasks, nextCursor: 'next-page' }
+    },
+    getActiveTaskCount() {
+      return 150
+    },
+    getAllAgents() {
+      return [{ id: 'agent-3', friendly_name: 'global owner' }]
+    },
+  }
+  app.use('/api/projects', projectRoutes)
+
+  const server = http.createServer(app)
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  const { port } = server.address()
+  try {
+    const refresh = await fetch(`http://127.0.0.1:${port}/api/projects/status/task-doc/refresh`, {
+      method: 'POST',
+    })
+    assert.equal(refresh.status, 200)
+    const payload = await refresh.json()
+    assert.equal(payload.taskCount, 150)
+
+    const taskDoc = fs.readFileSync(path.join(projectPartsRoot('status'), TASK_DOC_FILENAME), 'utf8')
+    assert.match(taskDoc, /Showing the 100 most recently delegated active tasks of 150 total\./)
+    assert.match(taskDoc, /Visible task 0/)
+    assert.match(taskDoc, /Visible task 99/)
+    assert.equal(taskDoc.match(/Visible task/g)?.length, 100)
   } finally {
     await new Promise(resolve => server.close(resolve))
   }

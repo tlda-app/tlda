@@ -33,7 +33,7 @@ import { buildModel, assertRoundTrip } from '../lib/outline/model.mjs'
 import { findTextNearSourceLine, sourceTextSpanToPdfSpans } from '../lib/synctex-query.mjs'
 import { compareHighlightFeedbackBySource, highlightFeedbackFromShape } from '../lib/highlight-feedback.mjs'
 import { realizeProjectMarkdownArtifact, writeProjectMarkdownArtifact } from '../lib/project-artifact-materializer.mjs'
-import { TASK_DOC_FILENAME, TASK_DOC_PROJECT_ID, materializeTaskDocs } from '../lib/task-doc-materializer.mjs'
+import { TASK_DOC_FILENAME, TASK_DOC_PROJECT_ID, STATUS_TASK_DOC_ROW_LIMIT, materializeTaskDocs } from '../lib/task-doc-materializer.mjs'
 import { markdownColumnFileForSource, listProjectPartColumns, pageInfoFromDocumentColumns } from '../lib/document-columns.mjs'
 import { shouldBuildOnPush } from '../lib/build-decision.mjs'
 import historyRoutes from './history.mjs'
@@ -63,22 +63,40 @@ async function fetchJson(url) {
   return res.json()
 }
 
-async function taskDocFleetSource(localFleetStore) {
+async function taskDocFleetSource(localFleetStore, { boundedTasksLimit = null } = {}) {
   const fleetServer = getFleetServerUrl()
   const storeServer = getServerUrl()
   if (sameOrigin(fleetServer, storeServer)) return localFleetStore
 
-  const [agents, tasks] = await Promise.all([
+  const tasksUrl = Number.isFinite(boundedTasksLimit)
+    ? new URL(`/api/tasks?limit=${boundedTasksLimit}`, fleetServer).toString()
+    : new URL('/api/store/tasks', fleetServer).toString()
+  const [agents, taskPayload] = await Promise.all([
     fetchJson(new URL('/api/store/agents', fleetServer).toString()),
-    fetchJson(new URL('/api/store/tasks', fleetServer).toString()),
+    fetchJson(tasksUrl),
   ])
+  const tasks = Number.isFinite(boundedTasksLimit)
+    ? (Array.isArray(taskPayload?.tasks) ? taskPayload.tasks : [])
+    : (Array.isArray(taskPayload) ? taskPayload : [])
+  const taskTotal = Number.isFinite(taskPayload?.total) ? taskPayload.total : tasks.length
+  const nextCursor = taskPayload?.nextCursor || null
   return {
     getAllAgents() {
       return Array.isArray(agents) ? agents : []
     },
     getActiveTasks() {
-      return Array.isArray(tasks) ? tasks : []
+      return tasks
     },
+    ...(Number.isFinite(boundedTasksLimit)
+      ? {
+          getActiveTasksPage() {
+            return { tasks, nextCursor }
+          },
+          getActiveTaskCount() {
+            return taskTotal
+          },
+        }
+      : {}),
   }
 }
 
@@ -243,11 +261,22 @@ router.post('/:name/task-doc/refresh', requireRw, async (req, res) => {
   if (!fleetStore) return res.status(503).json({ ok: false, error: 'Fleet store not available' })
 
   try {
-    const sourceFleetStore = await taskDocFleetSource(fleetStore)
+    const isStatusDoc = req.params.name === 'status'
+    const sourceFleetStore = await taskDocFleetSource(fleetStore, {
+      boundedTasksLimit: isStatusDoc ? STATUS_TASK_DOC_ROW_LIMIT : null,
+    })
+    const page = isStatusDoc && typeof sourceFleetStore.getActiveTasksPage === 'function'
+      ? sourceFleetStore.getActiveTasksPage({ limit: STATUS_TASK_DOC_ROW_LIMIT })
+      : null
+    const taskTotal = isStatusDoc && typeof sourceFleetStore.getActiveTaskCount === 'function'
+      ? sourceFleetStore.getActiveTaskCount()
+      : null
     const result = materializeTaskDocs({
       fleetStore: sourceFleetStore,
       projectNames: [req.params.name],
-      globalProjectNames: req.params.name === 'status' ? [req.params.name] : [],
+      globalProjectNames: isStatusDoc ? [req.params.name] : [],
+      taskRows: page?.tasks || null,
+      taskTotal,
       useProjectPartsRoot: true,
       writeGlobal: false,
       changes: [{ type: 'refresh', description: `refresh task doc for ${req.params.name}` }],
@@ -263,8 +292,8 @@ router.post('/:name/task-doc/refresh', requireRw, async (req, res) => {
       ok: true,
       project: req.params.name,
       touched,
-      taskCount: req.params.name === 'status'
-        ? result.tasks.length
+      taskCount: isStatusDoc
+        ? result.taskTotal
         : result.tasks.filter(task => task.projectName === req.params.name).length,
       part: {
         id: TASK_DOC_PROJECT_ID,

@@ -17,6 +17,7 @@ export const TASK_DOC_KIND = 'task-doc'
 export const TASK_DOC_PROJECT_ID = '11111111-1111-4111-8111-111111111111'
 export const TASK_DOC_GLOBAL_ID = '22222222-2222-4222-8222-222222222222'
 export const DEFAULT_TASK_DOC_DEBOUNCE_MS = 1500
+export const STATUS_TASK_DOC_ROW_LIMIT = 100
 
 const STATUS_ORDER = ['blocked', 'pending', 'working', 'idle']
 const DEFAULT_GLOBAL_DIR = join(CONFIG_DIR, 'fleet-task-doc')
@@ -82,6 +83,8 @@ export function materializeTaskDocs({
   globalProjectNames = [],
   writeGlobal = true,
   useProjectPartsRoot = false,
+  taskRows = null,
+  taskTotal = null,
   logger = console,
   git = runGit,
 } = {}) {
@@ -106,7 +109,9 @@ export function materializeTaskDocs({
     name: project.name,
     taskDocRoot: project.taskDocRoot,
   }]))
-  const tasks = (fleetStore.getActiveTasks?.() || [])
+  const rawTasks = Array.isArray(taskRows) ? taskRows : (fleetStore.getActiveTasks?.() || [])
+  const totalTasks = Number.isFinite(taskTotal) ? taskTotal : rawTasks.length
+  const tasks = rawTasks
     .filter(task => !task.synthetic && isCurrentTask(task))
     .sort(compareTasksChronologically)
     .map(task => enrichTask(task, agentById, projects))
@@ -133,6 +138,7 @@ export function materializeTaskDocs({
     const rows = globalProjectNameSet.has(projectKey) ? tasks : (grouped.projects.get(projectKey) || [])
     const project = grouped.projectMeta.get(projectKey) || changedProjects.get(projectKey) || projectMetaByName.get(projectKey)
     if (!project?.taskDocRoot) continue
+    const isGlobalProjectDoc = globalProjectNameSet.has(projectKey)
     const writeback = writeTaskDoc({
       filePath: join(project.taskDocRoot, TASK_DOC_FILENAME),
       root: project.taskDocRoot,
@@ -140,6 +146,8 @@ export function materializeTaskDocs({
       title: `Tasks for ${project.name}`,
       rows,
       heading: `# Tasks for ${project.name}`,
+      rowLimit: isGlobalProjectDoc ? rows.length : null,
+      rowTotal: isGlobalProjectDoc ? totalTasks : null,
       writebackOptions,
     })
     writeTaskDocManifest(project.taskDocRoot, {
@@ -175,7 +183,7 @@ export function materializeTaskDocs({
     logger.warn?.(`[task-doc] writeback did not land for ${failure.filePath}: ${failure.writeback?.status || 'failed'} ${failure.writeback?.message || ''}`.trim())
   }
 
-  return { ok: failures.length === 0, tasks, touchedDirs: [...touchedDirs], globalDir, writebacks, failures }
+  return { ok: failures.length === 0, tasks, taskTotal: totalTasks, touchedDirs: [...touchedDirs], globalDir, writebacks, failures }
 }
 
 export function resolveTaskDocGlobalDir(config = loadConfig()) {
@@ -288,7 +296,10 @@ function writeGlobalTaskDoc(root, tasks, { writebackOptions = {} } = {}) {
   })
 }
 
-function writeTaskDoc({ filePath, root, id, title, rows, heading, writebackOptions = {} }) {
+function writeTaskDoc({ filePath, root, id, title, rows, heading, rowLimit = null, rowTotal = null, writebackOptions = {} }) {
+  const boundedNote = Number.isFinite(rowLimit) && Number.isFinite(rowTotal) && rowTotal > rowLimit
+    ? [`Showing the ${rowLimit} most recently delegated active tasks of ${rowTotal} total.`, '']
+    : []
   const lines = [
     '---',
     `tlda-id: ${id}`,
@@ -297,6 +308,7 @@ function writeTaskDoc({ filePath, root, id, title, rows, heading, writebackOptio
     '',
     heading || `# ${title}`,
     '',
+    ...boundedNote,
     ...markdownTable(rows),
     '',
   ]

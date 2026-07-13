@@ -956,6 +956,7 @@ export class FleetStore {
     this._getActiveTasksByAgentLimited = this.db.prepare("SELECT * FROM tasks WHERE agent = ? AND status NOT IN ('done', 'retracted') ORDER BY delegated_at DESC LIMIT ?");
     this._getActiveTaskCountByAgent = this.db.prepare("SELECT COUNT(*) as c FROM tasks WHERE agent = ? AND status NOT IN ('done', 'retracted')");
     this._getAllActiveTasks = this.db.prepare("SELECT * FROM tasks WHERE status NOT IN ('done', 'retracted') ORDER BY delegated_at DESC");
+    this._getActiveTaskCount = this.db.prepare("SELECT COUNT(*) as c FROM tasks WHERE status NOT IN ('done', 'retracted')");
     this._getActiveTasksPage = this.db.prepare(`
       SELECT * FROM tasks
       WHERE status NOT IN ('done', 'retracted')
@@ -2318,6 +2319,10 @@ export class FleetStore {
 
   getActiveTasks() {
     return this._getAllActiveTasks.all().map(r => this._hydrateTask(r));
+  }
+
+  getActiveTaskCount() {
+    return this._getActiveTaskCount.get().c;
   }
 
   getActiveTasksPage({ limit = 100, cursor = null } = {}) {

@@ -304,7 +304,11 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     const requested = Number.parseInt(req.query.limit, 10)
     const limit = Number.isFinite(requested) ? Math.max(1, Math.min(requested, 200)) : 100
     try {
-      res.json(fleetStore.getActiveTasksPage({ limit, cursor: req.query.cursor || null }))
+      const page = fleetStore.getActiveTasksPage({ limit, cursor: req.query.cursor || null })
+      res.json({
+        ...page,
+        total: fleetStore.getActiveTaskCount?.() ?? page.tasks.length,
+      })
     } catch (e) { res.status(500).json({ error: e.message }) }
   })
 
