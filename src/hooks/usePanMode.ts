@@ -196,9 +196,12 @@ export function usePanMode(editorRef: RefObject<Editor | null>) {
       }
     }
 
-    // Prevent browser back/forward navigation from aux buttons on mouseup
+    // Prevent browser back/forward navigation from aux buttons. Browsers perform
+    // that navigation on auxclick, not mouseup, so both events must be claimed.
     const preventNav = (e: MouseEvent) => {
-      if (e.button === 3 || e.button === 4) e.preventDefault()
+      if (e.button !== 3 && e.button !== 4) return
+      e.preventDefault()
+      e.stopPropagation()
     }
 
     const handleMouseMove = (e: MouseEvent) => {
@@ -235,11 +238,13 @@ export function usePanMode(editorRef: RefObject<Editor | null>) {
 
     window.addEventListener('mousedown', handleMouseDown, { capture: true })
     window.addEventListener('mouseup', preventNav, { capture: true })
+    window.addEventListener('auxclick', preventNav, { capture: true })
     window.addEventListener('mousemove', handleMouseMove, { passive: true })
 
     return () => {
       window.removeEventListener('mousedown', handleMouseDown, { capture: true })
       window.removeEventListener('mouseup', preventNav, { capture: true })
+      window.removeEventListener('auxclick', preventNav, { capture: true })
       window.removeEventListener('mousemove', handleMouseMove)
       stopEdgeRaf()
       setPanMode(false)
