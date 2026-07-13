@@ -27,12 +27,16 @@ function rel(file) {
   return path.relative(repoRoot, file)
 }
 
-test('production fleet code imports transport internals only through shared/fleet-transport', () => {
+test('production fleet code imports transport internals only through shared transport boundaries', () => {
+  const allowedBoundaries = new Set([
+    'shared/fleet-transport.mjs',
+    'shared/fleet-browser-transport.mjs',
+  ])
   const offenders = []
   for (const root of productionRoots) {
     for (const file of walk(path.join(repoRoot, root))) {
       const relative = rel(file)
-      if (relative === 'shared/fleet-transport.mjs') continue
+      if (allowedBoundaries.has(relative)) continue
       if (directTransportModules.some(mod => relative === `shared/${mod}.mjs`)) continue
       const source = fs.readFileSync(file, 'utf8')
       for (const mod of directTransportModules) {
