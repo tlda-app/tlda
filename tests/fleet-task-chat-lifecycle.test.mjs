@@ -103,7 +103,7 @@ test('fleet WS delegate creates the task row and unread event before wake side e
     'await notificationAttempts.record',
     'broadcastState(resolved.id)',
     'delegate_event_id: delegateEvent?.id || null',
-    'requestWake(resolved.id, delegateWakeText(description, resolved.id), from, traceId)',
+    "requestWake(resolved.id, delegateWakeText(description, resolved.id), from, traceId, { sourceEventId: delegateEvent?.id || null, sourceTaskId: taskId, priority: 'urgent' })",
   ])
   assert.match(delegateBlock, /status: blocked_by\?\.length \? 'blocked' : 'pending'/)
   assert.match(delegateBlock, /pending_spawn_delegate: true/)
@@ -166,7 +166,7 @@ test('fleet WS delegate recovers duplicate operation ids before creating a secon
     'client_operation_id: operation_id',
     'fleetStore.upsertTask(task)',
     'const delegateEvent = await fleetStore.delegate',
-    'requestWake(resolved.id, delegateWakeText(description, resolved.id), from, traceId)',
+    "requestWake(resolved.id, delegateWakeText(description, resolved.id), from, traceId, { sourceEventId: delegateEvent?.id || null, sourceTaskId: taskId, priority: 'urgent' })",
   ])
   const normalReply = delegateBlock.slice(delegateBlock.indexOf('delegate_event_id: delegateEvent?.id || null'))
   assertOrder(normalReply, [
