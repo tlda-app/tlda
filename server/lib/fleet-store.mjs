@@ -112,6 +112,7 @@ export class FleetStore {
     this._prepareStatements();
     this._initAgentRegistry();
     this._wiretapCache = null;
+    this._upgradeLegacyDefaultSubscriptions();
     this._backfillNameHistory();
     this._listeners = []; // SSE broadcast callbacks
     this._taskDocMaterializer = options.taskDoc === true && process.env.TLDA_TASK_DOC_DISABLE !== '1'
@@ -2646,6 +2647,32 @@ export class FleetStore {
 
   getSubscriptionsByOwner(owner) {
     return this._getSubscriptionsByOwner.all(owner);
+  }
+
+  _upgradeLegacyDefaultSubscriptions() {
+    const legacyRows = this.db.prepare(`
+      SELECT subscription_id, owner, adapter_id
+      FROM subscriptions
+      WHERE query = 'to:my_labels'
+        AND adapter = 'wiretap'
+        AND created_by = owner
+    `).all();
+    let upgraded = 0;
+    for (const row of legacyRows) {
+      const query = `to:${row.owner}`;
+      let adapterId = row.adapter_id;
+      if (adapterId) {
+        this._updateWiretapFilter.run(JSON.stringify(query), adapterId);
+      } else {
+        adapterId = this.addWiretap(row.owner, query, null).id;
+      }
+      this._updateSubscriptionQuery.run(query, adapterId, row.subscription_id);
+      upgraded++;
+    }
+    if (upgraded) {
+      this._wiretapCache = null;
+      console.log(`[fleet-store] upgraded ${upgraded} legacy default subscription(s)`);
+    }
   }
 
   ensureDefaultSubscription(agentId) {

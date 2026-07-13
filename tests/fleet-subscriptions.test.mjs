@@ -86,3 +86,33 @@ test('default subscription upgrades the legacy broad wiretap on login', () => {
     cleanup(store, dbPath);
   }
 });
+
+test('store startup upgrades existing legacy default subscriptions', async () => {
+  const { store, dbPath } = tempStore();
+  try {
+    store.upsertAgent({ id: 'fleet:sender', friendly_name: 'sender', status: 'awake' });
+    store.upsertAgent({ id: 'fleet:recipient', friendly_name: 'recipient', status: 'awake' });
+    store.upsertAgent({ id: 'fleet:worker', friendly_name: 'worker', labels: ['reviewers'], status: 'awake' });
+    const legacyTap = store.addWiretap('fleet:worker', 'to:my_labels', null);
+    store.addSubscription({ owner: 'fleet:worker', query: 'to:my_labels', notificationPolicy: 'immediate', createdBy: 'fleet:worker', adapter: 'wiretap', adapterId: legacyTap.id });
+    store.close();
+
+    const reopened = new FleetStore(dbPath);
+    try {
+      const [subscription] = reopened.getSubscriptionsByOwner('fleet:worker');
+      assert.equal(subscription.query, 'to:fleet:worker');
+      assert.equal(reopened.getWiretapsByAgent('fleet:worker')[0].filter, 'to:fleet:worker');
+
+      const event = await reopened.share({ type: 'chat', from: 'fleet:sender', to: 'fleet:recipient', text: 'unrelated after startup' });
+
+      assert.equal(event.metadata?.wiretap_cc, undefined);
+      assert.deepEqual(reopened.getUnread('fleet:worker'), []);
+    } finally {
+      reopened.close();
+    }
+  } finally {
+    for (const file of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) {
+      try { fs.unlinkSync(file) } catch { /* best-effort cleanup */ }
+    }
+  }
+});
