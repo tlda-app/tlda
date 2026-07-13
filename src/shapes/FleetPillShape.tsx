@@ -31,6 +31,7 @@ import {
   type FleetChatShapeRecord,
   type FleetFilterIntentEditor,
 } from './fleet-filter-intent-telemetry'
+import { editorOwningFleetShape } from './fleet-pill-drop-target'
 
 const PILL_W = 70
 const PILL_H = 18
@@ -320,7 +321,7 @@ export async function dropPillOnTarget(
   // CanvasClipPanel (HUD) whose readOnly mode locks new shapes.
   const mainEditor = (window as any).__tldraw_editor__ as Editor | undefined
   const createEditor = mainEditor || editor
-  const targetPagePoint = mainEditor && mainEditor !== editor
+  const createPagePoint = mainEditor && mainEditor !== editor
     ? translateFleetHudDropPointWithWM(getEditorWMCore(mainEditor), editor, mainEditor, pagePoint)
     : pagePoint
   // Isolate this drop as its own undo step. A pill drop creates a chat (or note,
@@ -329,10 +330,12 @@ export async function dropPillOnTarget(
   // the user did just before (e.g. a move/resize), and one undo wrongly reverses
   // that prior operation. Mark before any of the drop's mutations.
   createEditor.markHistoryStoppingPoint?.()
-  // The caller passes pagePoint in its own editor's page frame. When a HUD or
-  // panel editor calls this but we create/hit-test in the main editor, translate
-  // through screen space first; raw panel page coordinates drift with pan/zoom.
-  const hitEditor = mainEditor || editor
+  // Fleet interactions are local to the editor that owns the fleet shapes. A
+  // HUD chat lives in the HUD editor, so hit-testing and filter updates must
+  // stay in the caller's page frame. Only empty-canvas creation uses the main
+  // editor and its translated point.
+  const hitEditor = editor
+  const targetPagePoint = pagePoint
   // Find fleet-chat under the drop point manually — getShapeAtPoint skips locked shapes
   // Cast to any: custom fleet shape types aren't in tldraw's built-in type union
   const allChats = hitEditor.getCurrentPageShapes().filter(s => (s.type as string) === 'fleet-chat') as any[]
@@ -367,7 +370,10 @@ export async function dropPillOnTarget(
   // never committed). Applying by the preview's own shapeId fixes both the chat
   // and inbox overlay drops. (Not for content pills — those go to the composer.)
   if (!content && filterDropPreview.shapeId && filterDropPreview.activePaneRole) {
-    const targetChat = createEditor.getShape(filterDropPreview.shapeId as any) as any
+    const previewEditor = editorOwningFleetShape(editor, createEditor, filterDropPreview.shapeId)
+    // The base Editor generic only exposes built-in TLDraw shapes; this ID is
+    // guarded by the fleet-chat preview owner immediately below.
+    const targetChat = previewEditor.getShape(filterDropPreview.shapeId as TLShapeId) as unknown as FleetChatShapeRecord | undefined
     const preview = filterDropPreview.activePaneRole === 'replace'
       ? filterDropPreview.replacePreview
       : filterDropPreview.activePaneRole === 'to'
@@ -379,7 +385,7 @@ export async function dropPillOnTarget(
         target: { shapeId: targetChat.id, type: 'fleet-chat' },
         surface: 'fleet-chat-filter-overlay',
       })
-      applyFilterPreviewWithIntent(createEditor as unknown as FleetFilterIntentEditor, targetChat as FleetChatShapeRecord, preview, intent)
+      applyFilterPreviewWithIntent(previewEditor as unknown as FleetFilterIntentEditor, targetChat, preview, intent)
       chatInsertBus.dispatchEvent(new CustomEvent('filter-applied', { detail: { chatId: targetChat.id } }))
       return
     }
@@ -427,7 +433,7 @@ export async function dropPillOnTarget(
           target: { shapeId: hitShape.id, type: 'fleet-chat' },
           surface: 'fleet-chat-filter-overlay',
         })
-        applyFilterPreviewWithIntent(createEditor as unknown as FleetFilterIntentEditor, hitShape as FleetChatShapeRecord, preview, intent)
+        applyFilterPreviewWithIntent(hitEditor as unknown as FleetFilterIntentEditor, hitShape as FleetChatShapeRecord, preview, intent)
 
         chatInsertBus.dispatchEvent(new CustomEvent('filter-applied', {
           detail: { chatId: hitShape.id },
@@ -465,7 +471,7 @@ export async function dropPillOnTarget(
           const res = await fetch(fetchUrl)
           if (res.ok) markdown = await res.text()
         }
-        await createTemporaryMarkdownColumn(createEditor, targetPagePoint, title, markdown, {
+        await createTemporaryMarkdownColumn(createEditor, createPagePoint, title, markdown, {
           ...(sourceAgent ? { authorId: sourceAgent, fromAgent: sourceAgent } : {}),
           ...(filePath ? { sharedDocPath: filePath, sharedDoc: true } : {}),
         })
@@ -492,8 +498,8 @@ export async function dropPillOnTarget(
           createEditor.createShape({
             id: createShapeId(),
             type: 'math-note' as any,
-            x: targetPagePoint.x - 5,
-            y: targetPagePoint.y - 5,
+            x: createPagePoint.x - 5,
+            y: createPagePoint.y - 5,
             isLocked: false,
             props: {
               w: 300,
@@ -520,8 +526,8 @@ export async function dropPillOnTarget(
           createEditor.createShape({
             id: createShapeId(),
             type: 'math-note' as any,
-            x: targetPagePoint.x - 5,
-            y: targetPagePoint.y - 5,
+            x: createPagePoint.x - 5,
+            y: createPagePoint.y - 5,
             isLocked: false,
             props: {
               w: 300,
@@ -553,8 +559,8 @@ export async function dropPillOnTarget(
     createEditor.createShape({
       id: createShapeId(),
       type: 'math-note' as any,
-      x: targetPagePoint.x - 5,
-      y: targetPagePoint.y - 5,
+      x: createPagePoint.x - 5,
+      y: createPagePoint.y - 5,
       isLocked: false,
       props: {
         w: 200,
@@ -566,7 +572,7 @@ export async function dropPillOnTarget(
       },
     })
   } else if (!content && (!hitShape || (hitShape as any).type !== 'fleet-agents')) {
-    await createFleetShape(createEditor, 'fleet-chat', targetPagePoint.x, targetPagePoint.y, {
+    await createFleetShape(createEditor, 'fleet-chat', createPagePoint.x, createPagePoint.y, {
       w: CHAT_W,
       h: CHAT_H,
       filter: [[['to', value]], [['from', value]]],
