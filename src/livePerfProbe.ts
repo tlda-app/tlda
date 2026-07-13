@@ -55,9 +55,11 @@ function livePerfEnabled() {
   if (typeof window === 'undefined') return false
   const params = new URLSearchParams(window.location.search)
   const urlPerf = params.get('perf') || ''
-  const storedPerf = localStorage.getItem('tlda-perf') || ''
+  let storedPerf = ''
+  try { storedPerf = localStorage.getItem('tlda-perf') || '' } catch { storedPerf = '' }
   const values = [urlPerf, storedPerf]
-  return values.some(value => value === '1' || value === 'true' || value.split(',').map(v => v.trim()).includes('live'))
+  if (values.some(value => value === '0' || value === 'false' || value.split(',').map(v => v.trim()).includes('off'))) return false
+  return true
 }
 
 function countBy<T extends string>(values: T[]) {
