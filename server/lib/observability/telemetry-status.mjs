@@ -4,6 +4,19 @@ const AFFECTED_SAMPLE_LIMIT = 5
 const EVENT_LOOP_ATTENTION_MS = 1000
 const ACTIVITY_LATENCY_ATTENTION_P95_MS = 5000
 const ACTIVITY_LATENCY_ATTENTION_MAX_MS = 30000
+const UI_INTENT_TIMEOUT_MS = 1500
+const UI_INTENT_SAMPLE_LIMIT = 10
+
+const UI_INTENT_EXPECTED_TERMINAL_FAILURES = new Set(['no-target'])
+const UI_INTENT_PHASE_RANK = {
+  'intent-start': 0,
+  'valid-target': 1,
+  drop: 2,
+  'mutation-request': 3,
+  'mutation-commit': 4,
+  'render-confirmed': 5,
+  failure: 6,
+}
 
 function parseTime(value) {
   const ms = Date.parse(value || '')
@@ -71,6 +84,119 @@ function summarizeLatency(samples) {
     p50Ms: percentile(values.p50Ms, 0.5),
     p95Ms: percentile(values.p95Ms, 0.95),
     maxMs: percentile(values.maxMs, 1),
+  }
+}
+
+function collectUiIntentEvents(samples, nowMs, recentWindowMs) {
+  const events = []
+  for (const sample of samples) {
+    for (const event of sample?.data?.events || []) {
+      if (event?.type !== 'ui-intent') continue
+      const ts = event.ts || sample.ts
+      const tsMs = parseTime(ts)
+      if (tsMs == null || nowMs - tsMs > recentWindowMs) continue
+      const detail = event.detail && typeof event.detail === 'object' ? event.detail : {}
+      if (!detail.intentId || !detail.action || !detail.phase) continue
+      events.push({
+        ts,
+        tsMs,
+        doc: sample.doc || sample?.data?.document?.name || null,
+        sessionId: sample.sessionId || sample?.data?.sessionId || null,
+        detail,
+      })
+    }
+  }
+  return events.sort((a, b) => a.tsMs - b.tsMs)
+}
+
+function summarizeUiIntentTransactions(samples, nowMs, recentWindowMs) {
+  const byIntent = new Map()
+  for (const event of collectUiIntentEvents(samples, nowMs, recentWindowMs)) {
+    const intentId = String(event.detail.intentId)
+    let tx = byIntent.get(intentId)
+    if (!tx) {
+      tx = {
+        intentId,
+        action: String(event.detail.action),
+        surface: event.detail.surface || null,
+        target: event.detail.target || null,
+        doc: event.doc,
+        sessionId: event.sessionId,
+        firstTs: event.ts,
+        firstMs: event.tsMs,
+        lastTs: event.ts,
+        lastMs: event.tsMs,
+        phases: {},
+        lastPhase: null,
+        failureReason: null,
+      }
+      byIntent.set(intentId, tx)
+    }
+    tx.lastTs = event.ts
+    tx.lastMs = event.tsMs
+    tx.surface = event.detail.surface || tx.surface
+    tx.target = event.detail.target || tx.target
+    tx.lastPhase = String(event.detail.phase)
+    tx.phases[tx.lastPhase] = (tx.phases[tx.lastPhase] || 0) + 1
+    if (event.detail.failureReason) tx.failureReason = String(event.detail.failureReason)
+  }
+
+  const transactions = [...byIntent.values()]
+    .sort((a, b) => b.lastMs - a.lastMs)
+    .map(tx => {
+      const phaseNames = Object.keys(tx.phases)
+      const has = phase => !!tx.phases[phase]
+      const elapsedMs = Math.max(0, nowMs - tx.firstMs)
+      const lastAgeMs = Math.max(0, nowMs - tx.lastMs)
+      let status = 'ok'
+      let reason = null
+      if (has('failure')) {
+        status = UI_INTENT_EXPECTED_TERMINAL_FAILURES.has(tx.failureReason) ? 'ok' : 'attention'
+        reason = tx.failureReason
+      } else if (has('drop') && (!has('mutation-request') || !has('mutation-commit')) && lastAgeMs >= UI_INTENT_TIMEOUT_MS) {
+        status = 'attention'
+        reason = 'no-mutation-commit'
+      } else if (has('mutation-commit') && !has('render-confirmed') && lastAgeMs >= UI_INTENT_TIMEOUT_MS) {
+        status = 'attention'
+        reason = 'missing-render-confirmation'
+      }
+      return {
+        intentId: tx.intentId,
+        action: tx.action,
+        surface: tx.surface,
+        target: tx.target,
+        doc: tx.doc,
+        sessionId: tx.sessionId,
+        status,
+        reason,
+        phases: phaseNames.sort((a, b) => (UI_INTENT_PHASE_RANK[a] ?? 99) - (UI_INTENT_PHASE_RANK[b] ?? 99)),
+        lastPhase: tx.lastPhase,
+        elapsedMs,
+        lastAgeMs,
+        startedAt: tx.firstTs,
+        lastAt: tx.lastTs,
+      }
+    })
+
+  if (!transactions.length) {
+    return {
+      status: 'unknown',
+      retained: 0,
+      okCount: 0,
+      attentionCount: 0,
+      recent: [],
+      attention: [],
+      reason: 'no structured UI intent telemetry retained',
+    }
+  }
+  const attention = transactions.filter(tx => tx.status === 'attention').slice(0, UI_INTENT_SAMPLE_LIMIT)
+  return {
+    status: attention.length ? 'attention' : 'ok',
+    retained: transactions.length,
+    okCount: transactions.filter(tx => tx.status === 'ok').length,
+    attentionCount: attention.length,
+    recent: transactions.slice(0, UI_INTENT_SAMPLE_LIMIT),
+    attention,
   }
 }
 
@@ -247,7 +373,7 @@ function statusFromLatency(activityLatency) {
     : 'ok'
 }
 
-function summarizeRoutes({ sync, fleet, activityLatency, server }) {
+function summarizeRoutes({ sync, fleet, activityLatency, server, uiIntentTransactions }) {
   return {
     browserFleetWs: {
       status: fleet.status,
@@ -277,6 +403,12 @@ function summarizeRoutes({ sync, fleet, activityLatency, server }) {
       status: 'unknown',
       reason: 'no structured subscription telemetry input',
     },
+    uiIntentTransactions: {
+      status: uiIntentTransactions.status,
+      retained: uiIntentTransactions.retained,
+      attentionCount: uiIntentTransactions.attentionCount,
+      reason: uiIntentTransactions.reason || null,
+    },
   }
 }
 
@@ -298,7 +430,7 @@ function severityRank(severity) {
   return 2
 }
 
-function buildAttention({ appShell, sync, fleet, activityLatency, server, recentClientDisconnects }) {
+function buildAttention({ appShell, sync, fleet, activityLatency, server, recentClientDisconnects, uiIntentTransactions }) {
   const items = []
 
   if (appShell.status === 'attention') {
@@ -397,6 +529,25 @@ function buildAttention({ appShell, sync, fleet, activityLatency, server, recent
     }))
   }
 
+  for (const tx of uiIntentTransactions.attention || []) {
+    items.push(attentionItem({
+      area: 'intent-transactions',
+      severity: 'warning',
+      since: tx.startedAt,
+      summary: `${tx.action} recognized target but did not reach commit/render in ${fmtMs(tx.elapsedMs)}`,
+      evidence: {
+        intentId: tx.intentId,
+        action: tx.action,
+        surface: tx.surface,
+        target: tx.target,
+        lastPhase: tx.lastPhase,
+        elapsedMs: tx.elapsedMs,
+        failureReason: tx.reason,
+      },
+      nextLookup: '/api/diagnostics/live-perf',
+    }))
+  }
+
   return items
     .sort((a, b) => severityRank(a.severity) - severityRank(b.severity) || (parseTime(b.since) || 0) - (parseTime(a.since) || 0))
     .slice(0, ATTENTION_LIMIT)
@@ -420,6 +571,7 @@ export function buildTelemetryStatusSnapshot({
   const fleet = summarizeFleet(latest, ws)
   const voice = summarizeVoice(latest)
   const activityLatency = summarizeLatency(latest)
+  const uiIntentTransactions = summarizeUiIntentTransactions(livePerfSamples, nowMs, recentWindowMs)
   const server = summarizeServer(serverPerfEvents, eventLoopLag, ws)
   const recentClientDisconnects = recentEvents(livePerfSamples, ['network-offline', 'pagehide'], 10)
   const freshness = summarizeFreshness({
@@ -431,9 +583,9 @@ export function buildTelemetryStatusSnapshot({
     eventLoopLag,
     nowMs,
   })
-  const routes = summarizeRoutes({ sync, fleet, activityLatency, server })
-  const attention = buildAttention({ appShell, sync, fleet, activityLatency, server, recentClientDisconnects })
-  const sections = [browser, appShell, sync, fleet, voice, server, routes.activityLatency]
+  const routes = summarizeRoutes({ sync, fleet, activityLatency, server, uiIntentTransactions })
+  const attention = buildAttention({ appShell, sync, fleet, activityLatency, server, recentClientDisconnects, uiIntentTransactions })
+  const sections = [browser, appShell, sync, fleet, voice, server, routes.activityLatency, uiIntentTransactions]
   const status = attention.length || sections.some(section => section.status === 'attention') ? 'attention'
     : sections.some(section => section.status === 'stale') ? 'stale'
       : sections.some(section => section.status === 'unknown') ? 'unknown'
@@ -463,6 +615,7 @@ export function buildTelemetryStatusSnapshot({
     fleet,
     voice,
     activityLatency,
+    uiIntentTransactions,
     server,
     recentClientDisconnects,
   }
@@ -539,6 +692,11 @@ export function renderTelemetryStatusMarkdown(snapshot) {
         status: snapshot.routes?.subscriptionNotifications?.status || 'unknown',
         detail: snapshot.routes?.subscriptionNotifications?.reason || 'unknown',
       },
+      {
+        area: 'UI intent transactions',
+        status: snapshot.routes?.uiIntentTransactions?.status || 'unknown',
+        detail: `${snapshot.routes?.uiIntentTransactions?.retained ?? 0} retained; ${snapshot.routes?.uiIntentTransactions?.attentionCount ?? 0} attention${snapshot.routes?.uiIntentTransactions?.reason ? `; ${snapshot.routes.uiIntentTransactions.reason}` : ''}`,
+      },
     ]),
     '',
     '## Areas',
@@ -580,6 +738,11 @@ export function renderTelemetryStatusMarkdown(snapshot) {
         area: 'Voice',
         status: snapshot.voice.status,
         detail: `backend ${fmtCountMap(snapshot.voice.backend)}; recording ${fmtCountMap(snapshot.voice.recording)}; liveness ${fmtCountMap(snapshot.voice.liveness)}`,
+      },
+      {
+        area: 'Intent transactions',
+        status: snapshot.uiIntentTransactions.status,
+        detail: `${snapshot.uiIntentTransactions.retained} retained; ${snapshot.uiIntentTransactions.attentionCount} attention`,
       },
       {
         area: 'Recent disconnects',

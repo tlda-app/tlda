@@ -78,6 +78,7 @@ import { openChatMarkdownColumn, openMarkdownChipFromTarget as openMarkdownChipF
 import { subscribeFleetChatInputDropPreview } from './fleet-chat-drop-target'
 import { consumeBulletContexts, subscribeBulletContext, getBulletContexts } from '../stores/bulletContextStore'
 import { getPref, subscribePref } from '../preferences'
+import { beginUiIntent, hashUiIntentState } from '../uiIntentTelemetry'
 import { DATABASE_HTTP } from '../activeConfig'
 import { deletePhonePinnedChatPane, isPhonePinnedPaneShape } from './phone-pane-stack'
 import {
@@ -6640,11 +6641,38 @@ export function FilterOverlay({
   useLayoutEffect(() => {
     if (pillOver) {
       const replacePreview: [string, string][][] = [[['to', pillOver.value]], [['from', pillOver.value]]]
+      const activePaneRole = (hoveredGroup?.pane as 'to' | 'from' | 'replace' | null) ?? null
+      const activePreview = activePaneRole === 'replace'
+        ? replacePreview
+        : activePaneRole === 'to'
+          ? toPreview
+          : activePaneRole === 'from'
+            ? fromPreview
+            : null
+      const intentKey = activePaneRole && activePreview
+        ? `${shapeId}:${activePaneRole}:${pillOver.value}:${hashUiIntentState(activePreview)}`
+        : null
       filterDropPreview.shapeId = shapeId
       filterDropPreview.toPreview = toPreview
       filterDropPreview.fromPreview = fromPreview
       filterDropPreview.replacePreview = replacePreview
-      filterDropPreview.activePaneRole = (hoveredGroup?.pane as any) ?? null
+      filterDropPreview.activePaneRole = activePaneRole
+      if (intentKey && activePreview && filterDropPreview.intentKey !== intentKey) {
+        const tx = beginUiIntent('fleet-chat-filter-drop', {
+          surface: 'fleet-chat-filter-overlay',
+          input: { kind: 'pill' },
+        })
+        tx.validTarget({
+          target: { shapeId, type: 'fleet-chat' },
+          preview: {
+            role: activePaneRole,
+            filterHash: hashUiIntentState(activePreview),
+            clauseCount: activePreview.length,
+          },
+        })
+        filterDropPreview.intent = tx
+        filterDropPreview.intentKey = intentKey
+      }
     } else if (filterDropPreview.shapeId === shapeId) {
       // Only clear if WE are the current owner. If another chat has taken
       // ownership in the interim (multiple FilterOverlays mounted), leave its
@@ -6657,6 +6685,8 @@ export function FilterOverlay({
       filterDropPreview.fromPreview = null
       filterDropPreview.replacePreview = null
       filterDropPreview.activePaneRole = null
+      filterDropPreview.intent = null
+      filterDropPreview.intentKey = null
     }
     return () => {
       // Same ownership guard for unmount/re-run cleanup. The cleanup function
@@ -6668,6 +6698,8 @@ export function FilterOverlay({
         filterDropPreview.fromPreview = null
         filterDropPreview.replacePreview = null
         filterDropPreview.activePaneRole = null
+        filterDropPreview.intent = null
+        filterDropPreview.intentKey = null
       }
     }
   }, [pillOver, toPreview, fromPreview, hoveredGroup, shapeId])

@@ -25,6 +25,12 @@ import {
 } from '../wm/markdown-surface'
 import { sendCanvasPageShapesToBack } from './document-pages'
 import { createFleetShape, FLEET_SHAPE_TYPES } from './fleet-utils'
+import { type UiIntentTransaction } from '../uiIntentTelemetry'
+import {
+  applyFilterPreviewWithIntent,
+  type FleetChatShapeRecord,
+  type FleetFilterIntentEditor,
+} from './fleet-filter-intent-telemetry'
 
 const PILL_W = 70
 const PILL_H = 18
@@ -70,6 +76,8 @@ export const filterDropPreview = {
   fromPreview: null as [string, string][][] | null,
   replacePreview: null as [string, string][][] | null,
   activePaneRole: null as 'to' | 'from' | 'replace' | null,
+  intent: null as UiIntentTransaction | null,
+  intentKey: null as string | null,
 }
 
 function encodeUtf8Base64(text: string): string {
@@ -366,10 +374,12 @@ export async function dropPillOnTarget(
         ? filterDropPreview.toPreview
         : filterDropPreview.fromPreview
     if (targetChat && targetChat.type === 'fleet-chat' && preview) {
-      const wasLocked = targetChat.isLocked
-      if (wasLocked) createEditor.updateShape({ id: targetChat.id, type: 'fleet-chat' as any, isLocked: false })
-      createEditor.updateShape({ id: targetChat.id, type: 'fleet-chat' as any, props: { filter: preview } })
-      if (wasLocked) createEditor.updateShape({ id: targetChat.id, type: 'fleet-chat' as any, isLocked: true })
+      const intent = filterDropPreview.intent
+      intent?.drop({
+        target: { shapeId: targetChat.id, type: 'fleet-chat' },
+        surface: 'fleet-chat-filter-overlay',
+      })
+      applyFilterPreviewWithIntent(createEditor as unknown as FleetFilterIntentEditor, targetChat as FleetChatShapeRecord, preview, intent)
       chatInsertBus.dispatchEvent(new CustomEvent('filter-applied', { detail: { chatId: targetChat.id } }))
       return
     }
@@ -412,14 +422,12 @@ export async function dropPillOnTarget(
           ? filterDropPreview.toPreview
           : filterDropPreview.fromPreview
       if (preview) {
-        const wasLocked = hitShape.isLocked
-        if (wasLocked) createEditor.updateShape({ id: hitShape.id, type: 'fleet-chat' as any, isLocked: false })
-        createEditor.updateShape({
-          id: hitShape.id,
-          type: 'fleet-chat' as any,
-          props: { filter: preview },
+        const intent = filterDropPreview.intent
+        intent?.drop({
+          target: { shapeId: hitShape.id, type: 'fleet-chat' },
+          surface: 'fleet-chat-filter-overlay',
         })
-        if (wasLocked) createEditor.updateShape({ id: hitShape.id, type: 'fleet-chat' as any, isLocked: true })
+        applyFilterPreviewWithIntent(createEditor as unknown as FleetFilterIntentEditor, hitShape as FleetChatShapeRecord, preview, intent)
 
         chatInsertBus.dispatchEvent(new CustomEvent('filter-applied', {
           detail: { chatId: hitShape.id },
