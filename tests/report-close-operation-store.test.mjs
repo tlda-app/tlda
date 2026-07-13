@@ -71,3 +71,49 @@ test('report-close operation recovery exposes partial report-only progress', asy
     cleanup(store, dbPath)
   }
 })
+
+test('delegate operation result is recoverable from persisted event metadata', async () => {
+  const { store, dbPath } = tempStore()
+  try {
+    const operationId = 'fleet:agent:mcp-delegate:abc123'
+    const event = await store.delegate('fleet:agent', 'fleet:worker', 'task-delegate-1', 'delegate work', {
+      client_operation_id: operationId,
+    })
+
+    const result = store.getDelegateOperationResult(operationId)
+    assert.deepEqual(result, {
+      delegateEventId: event.id,
+      taskId: 'task-delegate-1',
+      eventIds: [event.id],
+    })
+    assert.equal(store.getDelegateOperationResult('missing'), null)
+  } finally {
+    cleanup(store, dbPath)
+  }
+})
+
+test('delegate operation recovery exposes task-only progress before event insert', async () => {
+  const { store, dbPath } = tempStore()
+  try {
+    const operationId = 'fleet:agent:mcp-delegate:def456'
+    store.upsertTask({
+      id: 'task-delegate-2',
+      agent: 'fleet:worker',
+      description: 'delegate work',
+      message: 'delegate work',
+      delegated_by: 'fleet:agent',
+      delegated_at: '2026-07-13T00:00:00.000Z',
+      status: 'pending',
+      metadata: { client_operation_id: operationId },
+    })
+
+    const result = store.getDelegateOperationResult(operationId)
+    assert.deepEqual(result, {
+      delegateEventId: null,
+      taskId: 'task-delegate-2',
+      eventIds: [],
+    })
+  } finally {
+    cleanup(store, dbPath)
+  }
+})

@@ -199,6 +199,9 @@ export class FleetStore {
       CREATE INDEX IF NOT EXISTS idx_events_operation_id
         ON events(json_extract(metadata, '$.client_operation_id'), type, id)
         WHERE type IN ('report', 'chat', 'task_done');
+      CREATE INDEX IF NOT EXISTS idx_events_delegate_operation_id
+        ON events(json_extract(metadata, '$.client_operation_id'), id)
+        WHERE type = 'delegate';
       CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
         text,
         content='events',
@@ -1177,6 +1180,31 @@ export class FleetStore {
       closeEventId: close ? Number(close.id) : null,
       taskId: close?.task_id || report?.task_id || null,
       eventIds: rows.map(row => Number(row.id)),
+    }
+  }
+
+  getDelegateOperationResult(operationId) {
+    if (!operationId) return null
+    const events = this.db.prepare(`
+      SELECT id, task_id
+      FROM events
+      WHERE type = 'delegate'
+        AND json_extract(metadata, '$.client_operation_id') = ?
+      ORDER BY id
+    `).all(operationId)
+    const task = this.db.prepare(`
+      SELECT id
+      FROM tasks
+      WHERE json_extract(metadata, '$.client_operation_id') = ?
+      ORDER BY delegated_at DESC
+      LIMIT 1
+    `).get(operationId)
+    if (!events.length && !task) return null
+    const event = events[0] || null
+    return {
+      delegateEventId: event ? Number(event.id) : null,
+      taskId: event?.task_id || task?.id || null,
+      eventIds: events.map(row => Number(row.id)),
     }
   }
 

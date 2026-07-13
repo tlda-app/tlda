@@ -87,3 +87,25 @@ test('report close operation lookup uses the metadata expression index', () => {
     }
   }
 })
+
+test('delegate operation lookup uses the delegate operation index', () => {
+  const { store, dbPath } = tempStore()
+  try {
+    const plan = store.db.prepare(`
+      EXPLAIN QUERY PLAN
+      SELECT id, task_id
+      FROM events
+      WHERE type = 'delegate'
+        AND json_extract(metadata, '$.client_operation_id') = ?
+      ORDER BY id
+    `).all('fleet:sender:delegate:test-1')
+    const detail = plan.map(row => row.detail).join('\n')
+    assert.match(detail, /idx_events_delegate_operation_id/)
+    assert.doesNotMatch(detail, /SCAN events/)
+  } finally {
+    store.close()
+    for (const file of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) {
+      try { fs.unlinkSync(file) } catch { /* best-effort cleanup */ }
+    }
+  }
+})

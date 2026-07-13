@@ -5703,15 +5703,28 @@ async function handleFleetWsMessage(ws, msg) {
   }
 
   if (type === 'delegate') {
-    const { agent: agentQuery, description, message: taskMsg, success_criteria, blocked_by, from, requires_approval, allow_pending_agent } = msg
+    const { agent: agentQuery, description, message: taskMsg, success_criteria, blocked_by, from, requires_approval, allow_pending_agent, operation_id } = msg
     if (!agentQuery || !description) { error('missing agent or description'); return }
-    const traceId = msg.trace_id || createTraceId('delegate')
+    const previous = operation_id ? fleetStore.getDelegateOperationResult?.(operation_id) : null
+    if (previous?.delegateEventId) {
+      reply({
+        ok: true,
+        task_id: previous.taskId,
+        delegate_event_id: previous.delegateEventId,
+        event_id: previous.delegateEventId,
+        event_ids: previous.eventIds,
+        operation_id,
+        idempotent: true,
+      })
+      return
+    }
+    const traceId = msg.trace_id || (operation_id ? `delegate:${operation_id}` : createTraceId('delegate'))
     controlPlaneTraces.append({
       trace_id: traceId,
       component: 'server',
       operation: 'delegate.ingress',
       status: 'received',
-      detail: { from, agent: agentQuery },
+      detail: { from, agent: agentQuery, operation_id: operation_id || null },
     })
     const resolved = fleetStore.findAgent(agentQuery) || (
       allow_pending_agent && typeof agentQuery === 'string' && agentQuery.startsWith('fleet:')
@@ -5719,10 +5732,11 @@ async function handleFleetWsMessage(ws, msg) {
         : null
     )
     if (!resolved) { error(`agent not found: ${agentQuery}`); return }
-    const taskId = `${resolved.id.slice(0, 10)}-${Date.now().toString(36)}`
+    const taskId = previous?.taskId || `${resolved.id.slice(0, 10)}-${Date.now().toString(36)}`
     const now = new Date().toISOString()
     const metadata = {
       trace_id: traceId,
+      ...(operation_id ? { client_operation_id: operation_id } : {}),
       ...(requires_approval ? { requires_approval: true } : {}),
       ...(allow_pending_agent && !fleetStore.findAgent(agentQuery) ? { pending_spawn_delegate: true } : {}),
     }
@@ -5740,6 +5754,7 @@ async function handleFleetWsMessage(ws, msg) {
     const fromAgent = from ? fleetStore.findAgent(from) : null
     const delegateEvent = await fleetStore.delegate?.(from, resolved.id, taskId, description, {
       trace_id: traceId,
+      ...(operation_id ? { client_operation_id: operation_id } : {}),
       fromLabel: fromAgent?.friendly_name || from || '',
       toLabel: resolved.friendly_name || resolved.id,
       criteria: success_criteria || [],
@@ -5773,7 +5788,15 @@ async function handleFleetWsMessage(ws, msg) {
       })
     }
     broadcastState(resolved.id)
-    reply({ ok: true, task_id: taskId, trace_id: traceId })
+    reply({
+      ok: true,
+      task_id: taskId,
+      delegate_event_id: delegateEvent?.id || null,
+      event_id: delegateEvent?.id || null,
+      event_ids: [delegateEvent?.id].filter(id => id != null),
+      operation_id: operation_id || null,
+      trace_id: traceId,
+    })
     requestWake(resolved.id, delegateWakeText(description, resolved.id), from, traceId)
     return
   }

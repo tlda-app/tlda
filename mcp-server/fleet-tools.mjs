@@ -1302,6 +1302,7 @@ export function getFleetTools() {
           success_criteria: { type: 'array', items: { type: 'string' }, description: 'Verifiable success criteria. Agent must verify each before marking done.' },
           template: { type: 'string', description: 'Task template name (e.g. "math-edit"). Auto-populates success_criteria; explicit criteria are appended.' },
           requires_approval: { type: 'boolean', description: 'If true, task_done requires an approval_id — the event ID of a message from Skip approving the work. Agent cannot close without it.' },
+          operation_id: { type: 'string', description: 'Optional stable idempotency key for retrying the same delegate operation.' },
         },
         required: ['message'],
       },
@@ -2235,10 +2236,12 @@ export async function handleFleetTool(name, args) {
         harnessKind,
       });
 
-      const delegateBody = { from: AGENT_ID, agent: targetAgent, description, message: routedMessage, success_criteria: criteria.length ? criteria : undefined, blocked_by: blockedBy.length ? blockedBy : undefined, requires_approval: args.requires_approval || undefined, allow_pending_agent: opts.allowPendingAgent || undefined };
-      const data = await sendWS('delegate', delegateBody);
+      const operationId = args.operation_id || `${AGENT_ID}:mcp-delegate:${crypto.randomUUID()}`;
+      const delegateBody = { from: AGENT_ID, agent: targetAgent, description, message: routedMessage, success_criteria: criteria.length ? criteria : undefined, blocked_by: blockedBy.length ? blockedBy : undefined, requires_approval: args.requires_approval || undefined, allow_pending_agent: opts.allowPendingAgent || undefined, operation_id: operationId };
+      const data = await sendDurableFleet('delegate', delegateBody, { operationId });
       rememberOriginatedEvents(data);
       if (!data.ok) throw new Error(`Delegate failed: ${JSON.stringify(data)}`);
+      if (data.queued && !data.task_id) return { data, spawnedInfo: targetSpawnedInfo, queued: true, operationId };
 
       // Set friendly name if provided (two-call form only; spawn form already has the name set)
       if (args.friendly_name) {
@@ -2284,7 +2287,10 @@ export async function handleFleetTool(name, args) {
       }
 
       try {
-        const { data } = await delegateToResolvedAgent(shellAgentId, { agent_id: shellAgentId, friendly_name: agentName }, { allowPendingAgent: true });
+        const { data, queued, operationId } = await delegateToResolvedAgent(shellAgentId, { agent_id: shellAgentId, friendly_name: agentName }, { allowPendingAgent: true });
+        if (queued) {
+          return { content: [{ type: 'text', text: `Spawn requested for ${agentName}; delegation queued durably for shell ${shellAgentId}: ${description}\noperation_id: ${data.operation_id || operationId}\nspawn_mailbox_id: ${spawnResult.mailbox_id || '(none)'}\nagent_id: ${shellAgentId}\nfriendly_name: ${agentName}\nSpawn completion or failure will arrive from the server mailbox.` }] };
+        }
         return {
           content: [{
             type: 'text',
@@ -2297,7 +2303,10 @@ export async function handleFleetTool(name, args) {
     }
 
     try {
-      const { data } = await delegateToResolvedAgent(agent, spawnedInfo);
+      const { data, queued, operationId } = await delegateToResolvedAgent(agent, spawnedInfo);
+      if (queued) {
+        return { content: [{ type: 'text', text: `Delegate queued durably for ${agent}: ${description}\noperation_id: ${data.operation_id || operationId}` }] };
+      }
 
       if (spawnedInfo) {
         return { content: [{ type: 'text', text: `Spawned ${spawnedInfo.friendly_name} (${spawnedInfo.agent_id}) and delegated [${data.task_id}]: ${description}\nagent_id: ${spawnedInfo.agent_id}\nfriendly_name: ${spawnedInfo.friendly_name}` }] };

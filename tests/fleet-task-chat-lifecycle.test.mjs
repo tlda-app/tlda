@@ -97,15 +97,17 @@ test('fleet WS delegate creates the task row and unread event before wake side e
   const delegateBlock = sourceBlock("if (type === 'delegate') {", "if (type === 'task-done') {")
 
   assertOrder(delegateBlock, [
+    'const previous = operation_id ? fleetStore.getDelegateOperationResult',
     'fleetStore.upsertTask(task)',
     'const delegateEvent = await fleetStore.delegate',
     'await notificationAttempts.record',
     'broadcastState(resolved.id)',
-    'reply({ ok: true, task_id: taskId, trace_id: traceId })',
+    'delegate_event_id: delegateEvent?.id || null',
     'requestWake(resolved.id, delegateWakeText(description, resolved.id), from, traceId)',
   ])
   assert.match(delegateBlock, /status: blocked_by\?\.length \? 'blocked' : 'pending'/)
   assert.match(delegateBlock, /pending_spawn_delegate: true/)
+  assert.match(delegateBlock, /client_operation_id: operation_id/)
 
   const { store, dbPath } = tempStore('fleet-delegate-lifecycle')
   try {
@@ -125,6 +127,7 @@ test('fleet WS delegate creates the task row and unread event before wake side e
     store.upsertTask(task)
     const event = await store.delegate('fleet:mend', 'fleet:worker', task.id, task.description, {
       trace_id: 'delegate:test',
+      client_operation_id: 'delegate:operation:test',
       criteria: task.success_criteria,
       message: task.message,
     })
@@ -139,9 +142,52 @@ test('fleet WS delegate creates the task row and unread event before wake side e
     assert.equal(delivery.event.id, event.id)
     assert.equal(delivery.unreadPending, true)
     assert.equal(delivery.exposed, false)
+    const recovered = store.getDelegateOperationResult('delegate:operation:test')
+    assert.deepEqual(recovered, {
+      delegateEventId: event.id,
+      taskId: task.id,
+      eventIds: [event.id],
+    })
   } finally {
     cleanup(store, dbPath)
   }
+})
+
+test('fleet WS delegate recovers duplicate operation ids before creating a second task', () => {
+  const delegateBlock = sourceBlock("if (type === 'delegate') {", "if (type === 'task-done') {")
+
+  assertOrder(delegateBlock, [
+    'const previous = operation_id ? fleetStore.getDelegateOperationResult',
+    'if (previous?.delegateEventId) {',
+    'idempotent: true',
+    'const taskId = previous?.taskId || `${resolved.id.slice(0, 10)}-${Date.now().toString(36)}`',
+  ])
+  assertOrder(delegateBlock, [
+    'client_operation_id: operation_id',
+    'fleetStore.upsertTask(task)',
+    'const delegateEvent = await fleetStore.delegate',
+    'requestWake(resolved.id, delegateWakeText(description, resolved.id), from, traceId)',
+  ])
+  const normalReply = delegateBlock.slice(delegateBlock.indexOf('delegate_event_id: delegateEvent?.id || null'))
+  assertOrder(normalReply, [
+    'delegate_event_id: delegateEvent?.id || null',
+    'event_ids: [delegateEvent?.id].filter(id => id != null)',
+    'operation_id: operation_id || null',
+    'trace_id: traceId',
+  ])
+})
+
+test('MCP delegate uses durable fleet transport with an operation id', () => {
+  const mcpDelegateBlock = sourceBlockFrom(mcpSource, "if (name === 'delegate') {", '  // ==== Messaging ====')
+
+  assert.ok(mcpSource.includes("operation_id: { type: 'string', description: 'Optional stable idempotency key for retrying the same delegate operation.' }"))
+  assertOrder(mcpDelegateBlock, [
+    'const operationId = args.operation_id',
+    'operation_id: operationId',
+    "const data = await sendDurableFleet('delegate', delegateBody, { operationId })",
+    'rememberOriginatedEvents(data)',
+  ])
+  assert.equal(mcpDelegateBlock.includes("await sendWS('delegate', delegateBody)"), false)
 })
 
 test('fleet WS report-close is operation-id idempotent and close marks task done once', async () => {
