@@ -6,6 +6,7 @@ import test from 'node:test'
 import { FleetStore } from '../server/lib/fleet-store.mjs'
 
 const serverSource = fs.readFileSync(new URL('../server/unified-server.mjs', import.meta.url), 'utf8')
+const mcpSource = fs.readFileSync(new URL('../mcp-server/fleet-tools.mjs', import.meta.url), 'utf8')
 
 function tempStore(prefix = 'fleet-task-chat-lifecycle') {
   const dbPath = path.join(os.tmpdir(), `${prefix}-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.db`)
@@ -23,11 +24,15 @@ function cleanup(store, dbPath) {
 }
 
 function sourceBlock(marker, nextMarker) {
-  const start = serverSource.indexOf(marker)
+  return sourceBlockFrom(serverSource, marker, nextMarker)
+}
+
+function sourceBlockFrom(source, marker, nextMarker) {
+  const start = source.indexOf(marker)
   assert.notEqual(start, -1, `missing source marker: ${marker}`)
-  const end = nextMarker ? serverSource.indexOf(nextMarker, start + marker.length) : -1
+  const end = nextMarker ? source.indexOf(nextMarker, start + marker.length) : -1
   assert.notEqual(end, -1, `missing next marker after ${marker}: ${nextMarker}`)
-  return serverSource.slice(start, end)
+  return source.slice(start, end)
 }
 
 function assertOrder(source, labels) {
@@ -201,6 +206,68 @@ test('fleet WS report-close is operation-id idempotent and close marks task done
     assert.equal(closed.status, 'done')
     assert.equal(closed.metadata.close_reason, 'done')
     assert.equal(store.getActiveTaskCountByAgent('fleet:worker'), 0)
+  } finally {
+    cleanup(store, dbPath)
+  }
+})
+
+test('report close does not hard-block on success criteria but still requires approval gates', async () => {
+  const mcpReportBlock = sourceBlockFrom(mcpSource, "if (name === 'report') {", '// --- First call: gather diff and return review prompt ---')
+  assert.equal(mcpReportBlock.includes('task.success_criteria?.length && !args.verified'), false)
+  assert.equal(mcpReportBlock.includes('success criteria you must verify before closing'), false)
+  assertOrder(mcpReportBlock, [
+    'const closeRequested = args.close === true || args.pass === true',
+    'if (closeRequested && task.metadata?.requires_approval && !args.approval_id)',
+    'sendDurableFleet',
+    'reason: args.reason || undefined',
+  ])
+
+  const serverReportBlock = sourceBlock("if (type === 'report-close') {", "if (type === 'delete-task') {")
+  assertOrder(serverReportBlock, [
+    "const closeReason = reason || 'done'",
+    "task.status = 'done'",
+    'task.metadata = { ...(task.metadata || {}), close_reason: closeReason }',
+    'close_reason: closeReason',
+  ])
+
+  const { store, dbPath } = tempStore('fleet-canceled-close-lifecycle')
+  try {
+    const operationId = 'fleet:worker:mcp-report:task-canceled-1:close:test'
+    store.upsertTask({
+      id: 'task-canceled-1',
+      agent: 'fleet:worker',
+      description: 'canceled audit',
+      message: 'canceled audit',
+      delegated_by: 'fleet:mend',
+      delegated_at: '2026-07-12T23:03:00.000Z',
+      status: 'pending',
+      success_criteria: ['audit subscription routes'],
+    })
+
+    const report = await store.report('fleet:worker', 'task-canceled-1', 'normal close report without verified flag', {
+      client_operation_id: operationId,
+      close_requested: true,
+    })
+    const task = store.getTask('task-canceled-1')
+    const closeReason = 'canceled'
+    task.status = 'done'
+    task.completed_at = '2026-07-12T23:04:00.000Z'
+    task.metadata = { ...(task.metadata || {}), close_reason: closeReason }
+    store.upsertTask(task)
+    const close = await store.taskDone('fleet:worker', 'task-canceled-1', 'canceled audit', {
+      client_operation_id: operationId,
+      report_event_id: report.id,
+      close_reason: closeReason,
+    })
+
+    const closed = store.getTask('task-canceled-1')
+    assert.equal(closed.status, 'done')
+    assert.deepEqual(closed.success_criteria, ['audit subscription routes'])
+    assert.equal(closed.metadata.close_reason, 'canceled')
+    assert.equal(store.getActiveTaskCountByAgent('fleet:worker'), 0)
+    const recovered = store.getReportCloseOperationResult(operationId)
+    assert.equal(recovered.reportEventId, report.id)
+    assert.equal(recovered.closeEventId, close.id)
   } finally {
     cleanup(store, dbPath)
   }

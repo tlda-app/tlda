@@ -1733,7 +1733,7 @@ export function getFleetTools() {
           pass: { type: 'boolean', description: 'Legacy self-review mode: set true if self-review passed. Only used when QA is not configured.' },
           summary: { type: 'string', description: 'Structured report summary. Required when close=true.' },
           close: { type: 'boolean', description: 'Close the current task after posting the report. Replaces task_done().' },
-          reason: { type: 'string', description: 'Optional durable task-close reason, e.g. done, rejected, invalid, or never_should_have_existed.' },
+          reason: { type: 'string', description: 'Optional durable task-close reason, e.g. done, canceled, superseded, rejected, or never_should_have_existed.' },
           verified: { type: 'boolean', description: 'Confirm you verified every success criterion before close=true.' },
           approval_id: { type: 'integer', description: 'Event ID of a human approval message. Required when the task requires approval and close=true.' },
           operation_id: { type: 'string', description: 'Optional stable idempotency key for retrying the same report/close operation.' },
@@ -2771,10 +2771,6 @@ export async function handleFleetTool(name, args) {
     // ---- Durable report / close path ----
     if (args.summary) {
       const closeRequested = args.close === true || args.pass === true;
-      if (closeRequested && task.success_criteria?.length && !args.verified) {
-        const criteria = task.success_criteria.map((c, i) => `${i + 1}. ${c}`).join('\n');
-        return { content: [{ type: 'text', text: `This task has success criteria you must verify before closing:\n\n${criteria}\n\nHave you verified each of these? Call report({ summary: "...", close: true, verified: true }) to confirm.` }] };
-      }
       if (closeRequested && task.metadata?.requires_approval && !args.approval_id) {
         return { content: [{ type: 'text', text: `This task requires Skip's approval to close. Get approval in chat, then call report({ summary: "...", close: true, verified: true, approval_id: <id> }) with the message ID shown in brackets (e.g. id:332656).` }] };
       }
