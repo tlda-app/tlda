@@ -206,6 +206,11 @@ test('daemon delta welcome preserves existing roster before applying replay even
 })
 
 test('fleet client buffers reconnect sends and does not bulk-reject pending requests on close', () => {
+  assert.match(clientSource, /from ['"]\.\.\/\.\.\/shared\/fleet-browser-transport\.mjs['"]/)
+  assert.equal(clientSource.includes('../../shared/fleet-transport.mjs'), false)
+  assert.equal(clientSource.includes('../../shared/ws-request-policy.mjs'), false)
+  assert.equal(clientSource.includes('../../shared/ws-reconnect-buffer.mjs'), false)
+  assert.equal(clientSource.includes('ResilientWS'), false)
   assert.match(clientSource, /new WsReconnectBuffer\(\{[\s\S]*isConnected: \(\) => !!_ws && _ws\.readyState === 1/)
   assert.match(clientSource, /_wsReconnectBuffer\.resolveConnected\(\)/)
   assert.match(clientSource, /await _wsReconnectBuffer\.waitForConnection/)
