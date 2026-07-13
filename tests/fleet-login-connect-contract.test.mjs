@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import test from 'node:test'
 
 const serverSource = fs.readFileSync(new URL('../server/unified-server.mjs', import.meta.url), 'utf8')
+const fleetRoutesSource = fs.readFileSync(new URL('../server/routes/fleet.mjs', import.meta.url), 'utf8')
 const fleetStoreSource = fs.readFileSync(new URL('../server/lib/fleet-store.mjs', import.meta.url), 'utf8')
 const clientSource = fs.readFileSync(new URL('../src/fleet/fleet-data.mjs', import.meta.url), 'utf8')
 const mcpFleetSource = fs.readFileSync(new URL('../mcp-server/fleet-tools.mjs', import.meta.url), 'utf8')
@@ -122,6 +123,34 @@ test('fleet socket negotiates permessage-deflate while client loads roster by pa
   assert.equal(clientSource.includes('fetch(`${FLEET}/api/state`)'), false)
   assert.match(terminalShapeSource, /\/api\/agents\?limit=100/)
   assert.equal(terminalShapeSource.includes('/api/state'), false)
+})
+
+test('legacy full-store dump endpoints do not perform unbounded reads', () => {
+  const storeAgentsStart = fleetRoutesSource.indexOf("router.get('/api/store/agents'")
+  assert.notEqual(storeAgentsStart, -1)
+  const storeAgentsBlock = fleetRoutesSource.slice(storeAgentsStart, storeAgentsStart + 300)
+  assert.match(storeAgentsBlock, /Full agent store dumps are disabled/)
+  assert.equal(storeAgentsBlock.includes('getAllAgents()'), false)
+
+  const storeTasksStart = fleetRoutesSource.indexOf("router.get('/api/store/tasks'")
+  assert.notEqual(storeTasksStart, -1)
+  const storeTasksBlock = fleetRoutesSource.slice(storeTasksStart, storeTasksStart + 300)
+  assert.match(storeTasksBlock, /Full task store dumps are disabled/)
+  assert.equal(storeTasksBlock.includes('getActiveTasks()'), false)
+  assert.equal(storeTasksBlock.includes('getAllTasks'), false)
+
+  const storeAgentsAllStart = serverSource.indexOf("if (type === 'store-agents-all')")
+  assert.notEqual(storeAgentsAllStart, -1)
+  const storeAgentsAllBlock = serverSource.slice(storeAgentsAllStart, storeAgentsAllStart + 300)
+  assert.match(storeAgentsAllBlock, /Full agent store dumps are disabled/)
+  assert.equal(storeAgentsAllBlock.includes('getAllAgents()'), false)
+
+  const storeTasksWsStart = serverSource.indexOf("if (type === 'store-tasks')")
+  assert.notEqual(storeTasksWsStart, -1)
+  const storeTasksWsBlock = serverSource.slice(storeTasksWsStart, storeTasksWsStart + 500)
+  assert.match(storeTasksWsBlock, /getActiveTasksPage/)
+  assert.equal(storeTasksWsBlock.includes('getActiveTasks()'), false)
+  assert.equal(storeTasksWsBlock.includes('getAllTasks'), false)
 })
 
 test('fleet client buffers reconnect sends and does not bulk-reject pending requests on close', () => {

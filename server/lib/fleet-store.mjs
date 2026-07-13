@@ -867,6 +867,7 @@ export class FleetStore {
     this._getAgent = this.db.prepare(`SELECT ${AGENT_SELECT} ${AGENT_JOIN} WHERE agents.id = ?`);
     this._getAgentsByDaemonKey = this.db.prepare(`SELECT ${AGENT_SELECT} ${AGENT_JOIN} WHERE agents.daemon_key = ? AND agents.dead = 0`);
     this._getAgentByName = this.db.prepare(`SELECT ${AGENT_SELECT} ${AGENT_JOIN} WHERE agents.friendly_name = ?`);
+    this._getLiveAgentsByFriendlyName = this.db.prepare(`SELECT ${AGENT_SELECT} ${AGENT_JOIN} WHERE agents.dead = 0 AND agents.friendly_name = ?`);
     this._upsertDaemonRegistration = this.db.prepare(`
       INSERT INTO daemon_registry (daemon_key, machine_id, env_name, install_path, user, hostname, version, boot_id, status, connected_at, disconnected_at, last_seen, metadata)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -1793,6 +1794,11 @@ export class FleetStore {
       WHERE agents.id IN (${placeholders})
     `).all(...unique);
     return rows.map(row => this._hydrateAgent(row));
+  }
+
+  getLiveAgentsByFriendlyName(friendlyName) {
+    if (!friendlyName) return [];
+    return this._getLiveAgentsByFriendlyName.all(String(friendlyName)).map(row => this._hydrateAgent(row));
   }
 
   getAliveAgentsPage({ limit = 100, cursor = null } = {}) {

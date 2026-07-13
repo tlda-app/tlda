@@ -576,7 +576,10 @@ function ackServerDaemonOutboxMessage(msg) {
 }
 
 function teardownWatchers({ jsonl = true } = {}) {
-  if (jsonl) jsonlIngestor.teardown()
+  if (jsonl) {
+    jsonlIngestor.teardown()
+    _lastSessionWatcherRosterSig = ''
+  }
   // Source watchers survive WS disconnects — they detect file changes
   // independently and queue them for the next connected window.
   terminalRpc.stopAllTerminalWatches()

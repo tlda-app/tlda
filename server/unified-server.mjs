@@ -709,8 +709,10 @@ setInterval(() => {
 
 const TASK_RENUDGE_SWEEP_MS = Number(process.env.TLDA_TASK_RENUDGE_SWEEP_MS || 60_000)
 const TASK_RENUDGE_INTERVAL_MS = Number(process.env.TLDA_TASK_RENUDGE_INTERVAL_MS || 5 * 60_000)
+const TASK_RENUDGE_SWEEP_LIMIT = 100
 const _taskRenudged = new Map()
 const _taskWakeQueue = new Map()
+let _taskRenudgeCursor = null
 
 // Per-agent wake circuit breaker. Consecutive terminal wake failures (a session
 // that can't be resolved → endless `launch-failed`) put an agent into exponential
@@ -890,7 +892,9 @@ function taskDelegateWakeText(description, agentId) {
 
 function runTaskRenudgeSweep() {
   if (!fleetStore) return
-  const tasks = fleetStore.getActiveTasks?.() || []
+  const page = fleetStore.getActiveTasksPage?.({ limit: TASK_RENUDGE_SWEEP_LIMIT, cursor: _taskRenudgeCursor }) || { tasks: [], nextCursor: null }
+  const tasks = page.tasks || []
+  _taskRenudgeCursor = page.nextCursor || null
   const taskStates = tasks.map(task => fleetStore.getTaskDeliveryState?.(task)).filter(Boolean)
   const agentIds = taskStates.map(state => state?.task?.agent).filter(Boolean)
   const nudges = decideTaskRenudges({
@@ -2324,6 +2328,22 @@ app.use((req, res, next) => {
   next()
 })
 
+app.use((req, res, next) => {
+  const start = performance.now()
+  res.on('finish', () => {
+    const durationMs = performance.now() - start
+    if (res.statusCode >= 500 || durationMs >= 1000) {
+      recordServerPerfEvent(res.statusCode >= 500 ? 'http-error' : 'http-slow', {
+        method: req.method,
+        path: req.originalUrl || req.url,
+        statusCode: res.statusCode,
+        durationMs,
+      })
+    }
+  })
+  next()
+})
+
 // Health
 app.get('/health', (req, res) => {
   res.json({ ok: true, uptime: process.uptime(), pid: process.pid })
@@ -2675,8 +2695,18 @@ app.get('/api/diagnostics/live-perf', requireRead, (req, res) => {
   const doc = typeof req.query.doc === 'string' && req.query.doc ? req.query.doc : null
   const limitRaw = Number(req.query.limit || 50)
   const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(250, Math.trunc(limitRaw))) : 50
+  const sinceMs = typeof req.query.since === 'string' && req.query.since
+    ? Date.parse(req.query.since)
+    : NaN
   const source = doc ? (livePerfByDoc.get(doc) || []) : livePerfSamples
-  const samples = source.slice(-limit)
+  const filteredSamples = Number.isFinite(sinceMs)
+    ? source.filter(sample => Date.parse(sample.ts) >= sinceMs)
+    : source
+  const samples = filteredSamples.slice(-limit)
+  const serverEvents = (Number.isFinite(sinceMs)
+    ? serverPerfEvents.filter(event => Date.parse(event.ts) >= sinceMs)
+    : serverPerfEvents
+  ).slice(-limit)
   const docs = {}
   for (const sample of livePerfSamples) {
     const key = sample.doc || 'unknown'
@@ -2688,6 +2718,13 @@ app.get('/api/diagnostics/live-perf', requireRead, (req, res) => {
     retained: livePerfSamples.length,
     docs,
     samples,
+    server: {
+      count: serverEvents.length,
+      retained: serverPerfEvents.length,
+      eventLoopLag: lastEventLoopLag,
+      ws: wsSummary(),
+      events: serverEvents,
+    },
   })
 })
 
@@ -4608,7 +4645,7 @@ async function handleFleetWsMessage(ws, msg) {
     if (willSetName) {
       const incomingLabels = Array.isArray(labels) ? labels : []
       if (incomingLabels.includes('bot') && incomingLabels.includes(requestedName)) {
-        for (const holder of fleetStore.getAllAgents?.() || []) {
+        for (const holder of fleetStore.getLiveAgentsByFriendlyName?.(requestedName) || []) {
           if (holder.id === agentId || holder.dead || holder.friendly_name !== requestedName || holder.tmux_session) continue
           const holderLabels = Array.isArray(holder.labels) ? holder.labels : []
           if (!holderLabels.includes('bot') || !holderLabels.includes(requestedName)) continue
@@ -4824,7 +4861,7 @@ async function handleFleetWsMessage(ws, msg) {
   // Full roster INCLUDING dead agents — history tooling (get_thread,
   // search_logs) must keep dead agents addressable by name.
   if (type === 'store-agents-all') {
-    reply(fleetStore.getAllAgents())
+    error('Full agent store dumps are disabled; use resolve-agent, paged agents, or search.')
     return
   }
 
@@ -4834,8 +4871,11 @@ async function handleFleetWsMessage(ws, msg) {
   }
 
   if (type === 'store-tasks') {
-    const active = msg.active !== false
-    reply(active ? fleetStore.getActiveTasks() : fleetStore.getAllTasks?.() || [])
+    if (msg.active === false) {
+      error('Full task store dumps are disabled; use paged tasks or search.')
+      return
+    }
+    reply(fleetStore.getActiveTasksPage?.({ limit: 100 })?.tasks || [])
     return
   }
 

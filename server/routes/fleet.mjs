@@ -260,9 +260,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
 
   // --- GET /api/store/agents ---
   router.get('/api/store/agents', (req, res) => {
-    if (!fleetStore) { res.status(503).json({ error: 'Fleet store not available' }); return }
-    try { res.json(fleetStore.getAllAgents()) }
-    catch (e) { res.status(500).json({ error: e.message }) }
+    res.status(410).json({ error: 'Full agent store dumps are disabled; use /api/agents, /api/agents/lookup, or search.' })
   })
 
   router.get('/api/agents/summary', (req, res) => {
@@ -314,11 +312,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
 
   // --- GET /api/store/tasks ---
   router.get('/api/store/tasks', (req, res) => {
-    if (!fleetStore) { res.status(503).json({ error: 'Fleet store not available' }); return }
-    try {
-      const active = req.query.active !== 'false'
-      res.json(active ? fleetStore.getActiveTasks() : fleetStore.getAllTasks())
-    } catch (e) { res.status(500).json({ error: e.message }) }
+    res.status(410).json({ error: 'Full task store dumps are disabled; use /api/tasks or search.' })
   })
 
   // --- GET /api/tasks?limit=100&cursor=<opaque> ---
@@ -405,7 +399,9 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       if (!fleetStore) { res.json({ totals: { awake: 0, hibernating: 0, dead: 0, total: 0 }, agents: [], shown: 0, matched: 0 }); return }
       const now = Date.now()
       // Agent roster only — humans are not fleet agents (excluded from the view).
-      const roster = fleetStore.getAllAgents().filter(a => !a.human)
+      const limit = Math.max(1, Math.min(parseInt(req.query.limit) || 50, 500))
+      const page = fleetStore.getAliveAgentsPage?.({ limit }) || { agents: [] }
+      const roster = (page.agents || []).filter(a => !a.human)
 
       // Whole-fleet totals (independent of the filter) — the at-a-glance load.
       // Optional filter expression from the query (e.g. "awake & reviewers").
@@ -421,9 +417,17 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       const rank = (a) => (a.dead ? 2 : a.status === 'awake' ? 0 : 1)
       matched.sort((x, y) => rank(x) - rank(y) || (new Date(y.last_seen || 0) - new Date(x.last_seen || 0)))
 
-      const limit = Math.max(1, Math.min(parseInt(req.query.limit) || 50, 500))
       const summary = summarizeFleetRosterTruth({ roster, matched, limit, now })
-      res.json({ totals: summary.totals, summary: summary.summary, agents: summary.agents, shown: summary.shown, matched: summary.matched })
+      res.json({
+        totals: summary.totals,
+        wholeFleet: fleetStore.getAgentSummary?.() || null,
+        summary: summary.summary,
+        agents: summary.agents,
+        shown: summary.shown,
+        matched: summary.matched,
+        nextCursor: page.nextCursor || null,
+        page_limited: true,
+      })
     } catch (e) { res.status(500).json({ error: e.message }) }
   })
 
@@ -434,7 +438,9 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
         return
       }
       const now = Date.now()
-      const roster = fleetStore.getAllAgents().filter(a => !a.human)
+      const limit = Math.max(1, Math.min(parseInt(req.query.limit) || 50, 500))
+      const page = fleetStore.getAliveAgentsPage?.({ limit }) || { agents: [] }
+      const roster = (page.agents || []).filter(a => !a.human)
       let filterAst = null
       if (req.query.filter) {
         try { filterAst = parseFilter(req.query.filter) } catch (e) { res.status(400).json({ error: `bad filter: ${e.message}` }); return }
@@ -442,7 +448,6 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       const matched = roster.filter(a => evalExpr(filterAst, labelsForAgent(a)))
       const rank = (a) => (a.dead ? 2 : a.status === 'awake' ? 0 : 1)
       matched.sort((x, y) => rank(x) - rank(y) || (new Date(y.last_seen || 0) - new Date(x.last_seen || 0)))
-      const limit = Math.max(1, Math.min(parseInt(req.query.limit) || 50, 500))
       const machineSessions = {}
       const machineIds = [...(daemonConnections?.keys?.() || [])]
       await Promise.all(machineIds.map(async machineId => {
@@ -453,7 +458,13 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
           machineSessions[machineId] = []
         }
       }))
-      res.json(summarizeFleetRosterTruth({ roster, matched, limit, machineSessions, now }))
+      const summary = summarizeFleetRosterTruth({ roster, matched, limit, machineSessions, now })
+      res.json({
+        ...summary,
+        wholeFleet: fleetStore.getAgentSummary?.() || null,
+        nextCursor: page.nextCursor || null,
+        page_limited: true,
+      })
     } catch (e) { res.status(500).json({ error: e.message }) }
   })
 

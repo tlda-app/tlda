@@ -1217,7 +1217,12 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
           // Expose editor for debugging/puppeteer access
           (window as unknown as { __tldraw_editor__: Editor }).__tldraw_editor__ = editor
           editorRef.current = editor
-          installLivePerfProbe(editor, document, roomId)
+          installLivePerfProbe(editor, document, roomId, {
+            getSyncStatus: () => ({
+              status: storeWithStatus.status,
+              connectionStatus: 'connectionStatus' in storeWithStatus ? storeWithStatus.connectionStatus : null,
+            }),
+          })
           setEditorMounted(v => v + 1)
           probe.record('startup', 'startup-tldraw-mount', performance.now() - _pageLoadStart, {
             shapeCount: editor.getCurrentPageShapes().length,

@@ -6,6 +6,7 @@ import { getFleetRuntimeSummary } from './fleet/fleet-data.mjs'
 import { getVoiceRuntimeSummary } from './voice.mjs'
 
 type LivePerfProbeHandle = {
+  recordEvent: (type: string, detail?: Record<string, unknown>) => void
   sample: (reason?: string) => void
   stop: () => void
 }
@@ -16,6 +17,29 @@ type BrowserMemory = {
   jsHeapSizeLimit: number
 }
 
+type LivePerfProbeOptions = {
+  getSyncStatus?: () => Record<string, unknown>
+}
+
+type LivePerfEvent = {
+  ts: string
+  t: number
+  type: string
+  detail?: Record<string, unknown>
+}
+
+type ShapeRecordLike = {
+  typeName?: string
+  type?: string
+  parentId?: string
+  x?: number
+  y?: number
+  props?: {
+    h?: number
+    w?: number
+  }
+}
+
 declare global {
   interface Window {
     __livePerfProbe?: LivePerfProbeHandle
@@ -24,6 +48,8 @@ declare global {
 
 const SAMPLE_INTERVAL_MS = 10_000
 const LIVE_PERF_VERSION = 1
+const MAX_EVENT_BUFFER = 80
+const MAX_LONGTASK_EVENTS = 60
 
 function livePerfEnabled() {
   if (typeof window === 'undefined') return false
@@ -40,7 +66,7 @@ function countBy<T extends string>(values: T[]) {
   return out
 }
 
-function summarizeHtmlPages(shapes: any[]) {
+function summarizeHtmlPages(shapes: ShapeRecordLike[]) {
   const htmlPages = shapes.filter(shape => shape?.typeName === 'shape' && shape?.type === 'html-page')
   const byPage = countBy(htmlPages.map(shape => String(shape.parentId || 'unknown')))
   const heights = htmlPages
@@ -77,6 +103,10 @@ function summarizeHtmlPages(shapes: any[]) {
     maxGap: gaps[gaps.length - 1] ?? null,
     negativeGapCount: gaps.filter(gap => gap < 0).length,
   }
+}
+
+function isShapeRecordLike(record: unknown): record is ShapeRecordLike {
+  return !!record && typeof record === 'object' && (record as { typeName?: unknown }).typeName === 'shape'
 }
 
 function collectDomSummary() {
@@ -147,12 +177,37 @@ function postWebVital(metric: MetricWithAttribution, context: () => Record<strin
   })
 }
 
-export function installLivePerfProbe(editor: Editor, documentInfo: SvgDocument, roomId: string): LivePerfProbeHandle | null {
+function collectNavigationTiming() {
+  const nav = performance.getEntriesByType?.('navigation')?.[0] as PerformanceNavigationTiming | undefined
+  if (!nav) return null
+  return {
+    type: nav.type,
+    startTime: nav.startTime,
+    domInteractive: nav.domInteractive,
+    domContentLoadedEventEnd: nav.domContentLoadedEventEnd,
+    loadEventEnd: nav.loadEventEnd,
+    responseStart: nav.responseStart,
+    responseEnd: nav.responseEnd,
+    transferSize: nav.transferSize,
+    encodedBodySize: nav.encodedBodySize,
+    decodedBodySize: nav.decodedBodySize,
+  }
+}
+
+export function installLivePerfProbe(
+  editor: Editor,
+  documentInfo: SvgDocument,
+  roomId: string,
+  options: LivePerfProbeOptions = {},
+): LivePerfProbeHandle | null {
   if (!livePerfEnabled()) return null
 
   const sessionId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
   const startedAt = Date.now()
   let stopped = false
+  let longTaskEventCount = 0
+  let lastSyncStatusJson = ''
+  const events: LivePerfEvent[] = []
 
   const baseContext = () => ({
     sessionId,
@@ -171,13 +226,47 @@ export function installLivePerfProbe(editor: Editor, documentInfo: SvgDocument, 
       manifestPages: documentInfo.pages.length,
       targets: documentInfo.targets?.map(target => ({ name: target.name, pages: target.pages })) || [],
     },
+    network: {
+      online: navigator.onLine,
+    },
   })
+
+  const pushEvent = (event: LivePerfEvent) => {
+    events.push(event)
+    if (events.length > MAX_EVENT_BUFFER) events.splice(0, events.length - MAX_EVENT_BUFFER)
+  }
+
+  const recordEvent = (type: string, detail?: Record<string, unknown>) => {
+    if (stopped) return
+    const event = {
+      ts: new Date().toISOString(),
+      t: performance.now(),
+      type,
+      detail,
+    }
+    pushEvent(event)
+    postLivePerf({
+      version: LIVE_PERF_VERSION,
+      source: 'client-event',
+      event,
+      events: [...events],
+      ...baseContext(),
+      page: {
+        visibilityState: document.visibilityState,
+        hidden: document.hidden,
+        focused: document.hasFocus(),
+        readyState: document.readyState,
+      },
+      sync: options.getSyncStatus ? safeCollect(options.getSyncStatus) : undefined,
+      voice: safeCollect(() => getVoiceRuntimeSummary(Date.now())),
+    })
+  }
 
   const sample = (reason = 'periodic') => {
     if (stopped) return
     const now = Date.now()
-    const records = Object.values(editor.store.allRecords()) as any[]
-    const shapes = records.filter(record => record?.typeName === 'shape')
+    const records = Object.values(editor.store.allRecords()) as unknown[]
+    const shapes = records.filter(isShapeRecordLike)
     const shapeTypes = countBy(shapes.map(shape => String(shape.type || 'unknown')))
     const camera = editor.getCamera()
     const memory = (performance as Performance & { memory?: BrowserMemory }).memory
@@ -201,7 +290,11 @@ export function installLivePerfProbe(editor: Editor, documentInfo: SvgDocument, 
         visibilityState: document.visibilityState,
         hidden: document.hidden,
         focused: document.hasFocus(),
+        readyState: document.readyState,
       },
+      navigation: collectNavigationTiming(),
+      events: [...events],
+      sync: options.getSyncStatus ? safeCollect(options.getSyncStatus) : undefined,
       fleet: safeCollect(() => getFleetRuntimeSummary(now)),
       voice: safeCollect(() => getVoiceRuntimeSummary(now)),
       memory: memory ? {
@@ -214,21 +307,74 @@ export function installLivePerfProbe(editor: Editor, documentInfo: SvgDocument, 
   }
 
   const interval = window.setInterval(() => sample(), SAMPLE_INTERVAL_MS)
+  const syncStatusInterval = window.setInterval(() => {
+    if (!options.getSyncStatus || stopped) return
+    const status = safeCollect(options.getSyncStatus)
+    const json = JSON.stringify(status)
+    if (json === lastSyncStatusJson) return
+    lastSyncStatusJson = json
+    recordEvent('sync-status', { status })
+  }, 1000)
   window.setTimeout(() => sample('mount'), 0)
+  window.setTimeout(() => recordEvent('probe-start', {
+    readyState: document.readyState,
+    navigation: collectNavigationTiming(),
+  }), 0)
   const reportVital = (metric: MetricWithAttribution) => postWebVital(metric, baseContext)
   onCLS(reportVital, { reportAllChanges: true })
   onFCP(reportVital)
   onINP(reportVital, { reportAllChanges: true })
   onLCP(reportVital, { reportAllChanges: true })
   onTTFB(reportVital)
-  const onPageHide = () => sample('pagehide')
+  const onOnline = () => recordEvent('network-online', { online: navigator.onLine })
+  const onOffline = () => recordEvent('network-offline', { online: navigator.onLine })
+  const onVisibilityChange = () => recordEvent('visibilitychange', {
+    visibilityState: document.visibilityState,
+    hidden: document.hidden,
+  })
+  const onLoad = () => recordEvent('window-load', { navigation: collectNavigationTiming() })
+  const onPageShow = (ev: PageTransitionEvent) => recordEvent('pageshow', { persisted: ev.persisted })
+  const onPageHide = (ev?: PageTransitionEvent) => {
+    recordEvent('pagehide', { persisted: ev?.persisted })
+    sample('pagehide')
+  }
+  window.addEventListener('online', onOnline)
+  window.addEventListener('offline', onOffline)
+  document.addEventListener('visibilitychange', onVisibilityChange)
+  window.addEventListener('load', onLoad)
+  window.addEventListener('pageshow', onPageShow)
   window.addEventListener('pagehide', onPageHide)
+  let longTaskObserver: PerformanceObserver | null = null
+  try {
+    longTaskObserver = new PerformanceObserver(list => {
+      for (const entry of list.getEntries()) {
+        if (longTaskEventCount >= MAX_LONGTASK_EVENTS) return
+        longTaskEventCount += 1
+        recordEvent('main-thread-longtask', {
+          name: entry.name,
+          startTime: entry.startTime,
+          duration: entry.duration,
+        })
+      }
+    })
+    longTaskObserver.observe({ entryTypes: ['longtask'] })
+  } catch {
+    longTaskObserver = null
+  }
 
   const handle = {
+    recordEvent,
     sample,
     stop() {
       stopped = true
       window.clearInterval(interval)
+      window.clearInterval(syncStatusInterval)
+      longTaskObserver?.disconnect()
+      window.removeEventListener('online', onOnline)
+      window.removeEventListener('offline', onOffline)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+      window.removeEventListener('load', onLoad)
+      window.removeEventListener('pageshow', onPageShow)
       window.removeEventListener('pagehide', onPageHide)
     },
   }
