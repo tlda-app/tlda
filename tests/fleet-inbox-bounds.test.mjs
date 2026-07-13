@@ -203,3 +203,29 @@ test('agent registry is not fully hydrated on startup or liveness oracle install
     cleanup(reloaded, dbPath)
   }
 })
+
+test('skill-read hydration does not force agent registry hydration', () => {
+  const { store, dbPath } = tempStore()
+  try {
+    store.upsertAgent({
+      id: 'fleet:agent-1',
+      friendly_name: 'agent-1',
+      labels: [],
+      last_seen: '2026-07-12T00:00:00.000Z',
+      dead: false,
+    })
+    store.addSkillRead('fleet:agent-1', 'skill:systematic-debugging')
+  } finally {
+    store.close()
+  }
+
+  const reloaded = new FleetStore(dbPath)
+  try {
+    assert.equal(reloaded._agentRegistryLoaded, false)
+    const readsByAgent = reloaded.getAllSkillReadsByAgent()
+    assert.deepEqual([...readsByAgent.get('fleet:agent-1')], ['skill:systematic-debugging'])
+    assert.equal(reloaded._agentRegistryLoaded, false)
+  } finally {
+    cleanup(reloaded, dbPath)
+  }
+})

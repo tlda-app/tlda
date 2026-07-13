@@ -6687,10 +6687,9 @@ function qualTrackPartialSkillReads(agentId, command) {
 function qualLoadReadsFromDb() {
   if (!fleetStore) return
   try {
-    const agents = fleetStore.getAllAgents()
-    for (const agent of agents) {
-      const reads = fleetStore.getSkillReads(agent.id)
-      if (reads.size > 0) _qualAgentReads.set(agent.id, reads)
+    const readsByAgent = fleetStore.getAllSkillReadsByAgent?.() || new Map()
+    for (const [agentId, reads] of readsByAgent) {
+      if (reads.size > 0) _qualAgentReads.set(agentId, reads)
     }
   } catch {}
 }

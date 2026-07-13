@@ -3421,6 +3421,16 @@ export class FleetStore {
     );
   }
 
+  getAllSkillReadsByAgent() {
+    const reads = new Map();
+    const rows = this.db.prepare('SELECT agent_id, skill_key FROM skill_reads ORDER BY agent_id').all();
+    for (const row of rows) {
+      if (!reads.has(row.agent_id)) reads.set(row.agent_id, new Set());
+      reads.get(row.agent_id).add(row.skill_key);
+    }
+    return reads;
+  }
+
   // Store (or replace) a drill report card for an agent.
   addDrillCard(agentId, drillId, { gradient = null, pass = null, card = {} } = {}) {
     this.db.prepare(
