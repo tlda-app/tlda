@@ -49,6 +49,11 @@ test('telemetry status derives browser, sync, fleet, voice, and server summaries
 
   assert.equal(snapshot.schema.name, 'tlda.telemetry.status')
   assert.equal(snapshot.source.kind, 'derived-view')
+  assert.equal(snapshot.freshness.sourceInputs.livePerf.latestAgeMs, 30000)
+  assert.equal(snapshot.freshness.sourceInputs.serverPerf.latestAgeMs, 20000)
+  assert.equal(snapshot.routes.browserFleetWs.status, 'ok')
+  assert.equal(snapshot.routes.syncWs.status, 'ok')
+  assert.equal(snapshot.routes.subscriptionNotifications.status, 'unknown')
   assert.equal(snapshot.browser.recentSessionCount, 1)
   assert.equal(snapshot.browser.docs['telemetry-proof'], 1)
   assert.deepEqual(snapshot.appShell.counts, { current: 1 })
@@ -60,6 +65,76 @@ test('telemetry status derives browser, sync, fleet, voice, and server summaries
   assert.deepEqual(snapshot.voice.backend, { deepgram: 1 })
   assert.equal(snapshot.server.recentDisconnects.length, 1)
   assert.equal(snapshot.recentClientDisconnects.length, 1)
+})
+
+test('telemetry status derives bounded attention, freshness, and route health', () => {
+  const now = new Date('2026-07-12T22:45:00.000Z')
+  const snapshot = buildTelemetryStatusSnapshot({
+    now,
+    livePerfSamples: [
+      {
+        ts: '2026-07-12T22:44:00.000Z',
+        sessionId: 'session-stale',
+        doc: 'status',
+        reason: 'periodic',
+        data: {
+          sessionId: 'session-stale',
+          href: 'https://example.test/?doc=status',
+          document: { name: 'status', format: 'markdown' },
+          appShell: { status: 'stale', loadedSha: 'oldsha', latestSha: 'newsha' },
+          sync: { status: 'synced-remote', connectionStatus: 'online' },
+          fleet: { connected: false, disconnectedForMs: 35000, pendingRpcCount: 2 },
+          dom: {
+            visibleActivityLatency: {
+              summary: {
+                jsonlToRender: { p50Ms: 1200, p95Ms: 6000, maxMs: 45000 },
+              },
+            },
+          },
+          events: [
+            { ts: '2026-07-12T22:43:59.000Z', type: 'pagehide', detail: { persisted: false } },
+          ],
+        },
+      },
+    ],
+    serverPerfEvents: [
+      {
+        ts: '2026-07-12T22:44:15.000Z',
+        type: 'heartbeat-terminate',
+        detail: { kind: 'fleet' },
+      },
+      {
+        ts: '2026-07-12T22:44:20.000Z',
+        type: 'heartbeat-skip-lag',
+        detail: { sweepDelayMs: 1500 },
+      },
+    ],
+    eventLoopLag: { maxMs: 1500, meanMs: 75, at: Date.parse('2026-07-12T22:44:50.000Z') },
+    ws: { total: 4, byKind: { fleet: 2, sync: 1, daemon: 1 } },
+  })
+
+  assert.equal(snapshot.status, 'attention')
+  assert.equal(snapshot.freshness.sourceInputs.livePerf.retained, 1)
+  assert.equal(snapshot.freshness.sourceInputs.livePerf.latestAgeMs, 60000)
+  assert.equal(snapshot.freshness.sourceInputs.serverPerf.latestAgeMs, 40000)
+  assert.equal(snapshot.freshness.sourceInputs.eventLoopLag.latestAgeMs, 10000)
+  assert.equal(snapshot.routes.browserFleetWs.status, 'attention')
+  assert.equal(snapshot.routes.activityLatency.status, 'attention')
+  assert.equal(snapshot.routes.daemonWs.status, 'ok')
+  assert.deepEqual(snapshot.routes.subscriptionNotifications, {
+    status: 'unknown',
+    reason: 'no structured subscription telemetry input',
+  })
+
+  const byArea = Object.fromEntries(snapshot.attention.map(item => [item.area, item]))
+  assert.equal(byArea['app-shell'].severity, 'warning')
+  assert.equal(byArea['app-shell'].evidence.affectedSessions[0].sessionId, 'session-stale')
+  assert.equal(byArea['browser-fleet-ws'].severity, 'critical')
+  assert.equal(byArea['activity-latency'].status, 'attention')
+  assert.equal(byArea['event-loop'].summary, 'Event loop lag max 1500 ms, mean 75 ms')
+  assert.equal(byArea['server-ws-disconnects'].severity, 'critical')
+  assert.equal(byArea['browser-disconnects'].evidence.recent.length, 1)
+  assert.ok(snapshot.attention.length <= 10)
 })
 
 test('telemetry status markdown is a generated view, not stored state', () => {
@@ -74,6 +149,11 @@ test('telemetry status markdown is a generated view, not stored state', () => {
   const markdown = renderTelemetryStatusMarkdown(snapshot)
   assert.match(markdown, /^# Telemetry status/m)
   assert.match(markdown, /generated view over structured telemetry/)
+  assert.match(markdown, /## Attention/)
+  assert.match(markdown, /No attention items/)
+  assert.ok(markdown.indexOf('## Attention') < markdown.indexOf('| Browser sessions |'))
+  assert.ok(markdown.indexOf('## Routes') < markdown.indexOf('## Areas'))
+  assert.match(markdown, /\| Subscription notifications \| unknown \| no structured subscription telemetry input \|/)
   assert.match(markdown, /\| Browser sessions \|/)
   assert.match(markdown, /No browser telemetry samples retained/)
 })
