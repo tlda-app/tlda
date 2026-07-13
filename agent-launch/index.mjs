@@ -86,6 +86,16 @@ function defaultModelForHarness(config = {}, harness = '') {
   return found?.alias || found?.name || null
 }
 
+function modelForRespawn(params, meta, config) {
+  if (params.model || meta.model) return params.model || meta.model
+  if (!meta.kind) return null
+  const model = defaultModelForHarness(config, meta.kind)
+  if (!model) {
+    throw new SpawnError('launch-failed', `no configured model alias for recorded ${meta.kind} wake; repair daemon model config or pass --model`, { kind: meta.kind })
+  }
+  return model
+}
+
 function assertNativeTools(policy, requestedKind) {
   if (!policy.devTools && (requestedKind === 'claude' || requestedKind === 'codex')) {
     throw new SpawnError('launch-failed', `${requestedKind} cannot satisfy sandbox policy "${policy.policyName}" without native developer tools`, { policyName: policy.policyName })
@@ -341,7 +351,7 @@ async function spawnRespawn(params) {
   if (!agent) throw new SpawnError('launch-failed', `No agent '${name}'. Use --fresh to create.`, { name })
   const meta = metadataOf(agent)
   const config = params.config ?? readConfig()
-  const rawModel = params.model || meta.model || defaultModelForHarness(config, meta.kind)
+  const rawModel = modelForRespawn(params, meta, config)
   const modelSpec = resolveLaunchSpec(rawModel, config, modelKwargs(params, meta.effort ? { effort: params.effort || meta.effort } : {}))
   applyNormalizedOptions(params, modelSpec)
   const requestedKind = modelSpec.harness

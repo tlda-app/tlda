@@ -4,6 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 
+import Database from 'better-sqlite3'
 import { createAgentLauncher } from '../agent-launch/agent-launch.mjs'
 import { createPermissionLedger } from '../agent-launch/permission-ledger.mjs'
 
@@ -248,6 +249,39 @@ test('daemon launcher preserves an existing respawn ledger row when launch fails
     assert.equal(ledger.get(targetAgentId)?.source, 'existing-seat')
   } finally {
     await ledger.close()
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+test('permission ledger opens and upgrades pre-session-column schema', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-agent-launch-ledger-upgrade-'))
+  const dbFile = path.join(tmp, 'fleet-daemon.db')
+  try {
+    const db = new Database(dbFile)
+    db.exec(`
+      CREATE TABLE permission_grants (
+        id TEXT PRIMARY KEY,
+        spawn_policy TEXT NOT NULL,
+        permission_set TEXT,
+        updated_at TEXT NOT NULL,
+        source TEXT NOT NULL
+      );
+      CREATE TABLE ledger_meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+    `)
+    db.close()
+
+    const ledger = createPermissionLedger(dbFile)
+    try {
+      assert.equal(ledger.get('fleet:missing'), null)
+      assert.equal(ledger.findByFriendlyName('mend'), null)
+    } finally {
+      await ledger.close()
+    }
+  } finally {
     fs.rmSync(tmp, { recursive: true, force: true })
   }
 })

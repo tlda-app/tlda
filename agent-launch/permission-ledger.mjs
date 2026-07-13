@@ -462,8 +462,6 @@ export class PermissionLedger {
       );
       CREATE INDEX IF NOT EXISTS idx_permission_grants_updated_at
         ON permission_grants(updated_at);
-      CREATE INDEX IF NOT EXISTS idx_permission_grants_friendly_name
-        ON permission_grants(friendly_name, last_seen);
     `)
     for (const ddl of [
       'ALTER TABLE permission_grants ADD COLUMN friendly_name TEXT',
@@ -477,6 +475,10 @@ export class PermissionLedger {
         if (!String(e?.message || '').includes('duplicate column name')) throw e
       }
     }
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_permission_grants_friendly_name
+        ON permission_grants(friendly_name, last_seen);
+    `)
     this._metaGet = this.db.prepare('SELECT value FROM ledger_meta WHERE key = ?')
     this._metaSet = this.db.prepare(`
       INSERT INTO ledger_meta (key, value, updated_at)

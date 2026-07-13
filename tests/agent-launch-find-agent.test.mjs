@@ -42,6 +42,8 @@ test('findLocalAgent resolves same-box seats from the daemon ledger', async () =
     assert.equal(byName.id, 'fleet:mend')
     assert.equal(byName.tmux_session, 'fleet-mend')
     assert.equal(byName.metadata.kind, 'codex')
+    assert.deepEqual(byName.metadata.spawnPolicy, { name: 'ops', policy: 'unsandboxed' })
+    assert.deepEqual(byName.metadata.permissionSet, permissionSet())
 
     const byId = findLocalAgent('fleet:mend', { ledger })
     assert.equal(byId.id, 'fleet:mend')

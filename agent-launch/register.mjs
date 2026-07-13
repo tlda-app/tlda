@@ -147,6 +147,8 @@ export function findLocalAgent(name, { ledger = null } = {}) {
       cwd: rec.cwd || undefined,
       dead: false,
       metadata: {
+        ...(rec.spawnPolicy ? { spawnPolicy: rec.spawnPolicy } : {}),
+        ...(rec.permissionSet ? { permissionSet: rec.permissionSet } : {}),
         ...(rec.sessionKind ? { kind: rec.sessionKind } : {}),
       },
     }
