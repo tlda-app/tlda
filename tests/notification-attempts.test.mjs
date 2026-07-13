@@ -50,6 +50,19 @@ test('notification recorder persists delivered attempts without incident', async
   assert.equal(logs[0].payload.event, 'notification_attempt')
 })
 
+test('notification recorder persists the correlated wake trace id', async () => {
+  const { recorder, shared } = recorderHarness()
+  const result = await recorder.record({
+    agentId: 'fleet:chief', traceId: 'delegate:wake-proof', sourceEventId: 42,
+    sourceTaskId: 'wake-task', outcome: 'acknowledged', reason: 'inbox-acknowledgment',
+  })
+  assert.equal(result.ok, true)
+  assert.equal(shared[0].metadata.traceId, 'delegate:wake-proof')
+  assert.equal(shared[0].metadata.trace_id, 'delegate:wake-proof')
+  assert.equal(shared[0].metadata.sourceEventId, 42)
+  assert.equal(shared[0].metadata.sourceTaskId, 'wake-task')
+})
+
 test('notification recorder reports failed attempts as incidents', async () => {
   const { recorder, shared, incidents } = recorderHarness()
 

@@ -15,6 +15,7 @@ function normalizeAttempt(raw = {}) {
     reason: raw.reason || 'manual',
     sourceEventId: raw.sourceEventId ?? null,
     sourceTaskId: raw.sourceTaskId ?? null,
+    traceId: raw.traceId || raw.trace_id || null,
     priority: raw.priority || 'normal',
     intendedSurface: raw.intendedSurface || 'channel',
     policy: raw.policy || 'immediate',
@@ -43,7 +44,7 @@ export function createNotificationAttemptRecorder({ fleetStore, logger, reportIn
         from: 'fleet:tlda',
         to: attempt.agentId,
         text: `notification ${attempt.outcome} for ${attempt.agentId}`,
-        metadata: attempt,
+        metadata: { ...attempt, ...(attempt.traceId ? { trace_id: attempt.traceId } : {}) },
         unread: false,
       })
 

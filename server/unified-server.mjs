@@ -5062,7 +5062,33 @@ async function handleFleetWsMessage(ws, msg) {
   // Per-agent throttle so a repeatedly-failing wake doesn't spam Skip's chat.
   const _wakeFailWarned = new Map() // agentId → last-warned ms
   const WAKE_FAIL_WARN_MS = 5 * 60 * 1000
-  function requestWake(agentId, nudgeText = null, asker = null, traceId = null) {
+  const WAKE_ACK_DEADLINE_MS = Number(process.env.TLDA_WAKE_ACK_DEADLINE_MS || 60_000)
+  const _pendingWakeAcks = new Map()
+  function awaitWakeAcknowledgment({ agentId, traceId, source = {}, asker = null }) {
+    if (!traceId || source.priority !== 'urgent' || _pendingWakeAcks.has(traceId)) return
+    const timer = setTimeout(async () => {
+      const pending = _pendingWakeAcks.get(traceId)
+      if (!pending) return
+      _pendingWakeAcks.delete(traceId)
+      await recordWakeAttempt({ agentId, traceId, ...source, outcome: 'send-failed', reason: 'ack-timeout', nextAction: 'surface-to-asker', evidence: { deadlineMs: WAKE_ACK_DEADLINE_MS } })
+      broadcastEvent('agent-wedged', { agentId, reason: 'urgent wake was delivered but not acknowledged before deadline', ts: new Date().toISOString() })
+      if (asker) deliverTldaFeedbackChat({ from: 'fleet:tlda', to: asker, text: `⚠️ **Urgent wake timed out** for \`${agentId}\`; delivery was attempted but no inbox acknowledgment arrived.`, metadata: { type: 'wake_ack_timeout', trace_id: traceId, agentId } })
+    }, WAKE_ACK_DEADLINE_MS)
+    timer.unref?.()
+    _pendingWakeAcks.set(traceId, { agentId, timer })
+  }
+  function acknowledgeWakeTrace(traceId, agentId) {
+    const pending = _pendingWakeAcks.get(traceId)
+    if (!pending || pending.agentId !== agentId) return false
+    clearTimeout(pending.timer)
+    _pendingWakeAcks.delete(traceId)
+    return true
+  }
+  async function recordWakeAttempt({ agentId, traceId, sourceEventId = null, sourceTaskId = null, priority = 'urgent', intendedSurface = 'tmux', outcome, reason, nextAction = 'none', evidence = {} }) {
+    return notificationAttempts.record({ agentId, traceId, sourceEventId, sourceTaskId, priority, intendedSurface, policy: 'wake', outcome, nextAction, evidence: { reason, ...evidence } })
+  }
+
+  function requestWake(agentId, nudgeText = null, asker = null, traceId = null, source = {}) {
     const agent = fleetStore.getAgent?.(agentId)
     if (!agent || agent.dead || agent.human) return
     if (isReservedShellAgent(agent)) {
@@ -5075,6 +5101,7 @@ async function handleFleetWsMessage(ws, msg) {
         ts: new Date().toISOString(),
       })
       if (traceId) {
+        void recordWakeAttempt({ agentId, traceId, ...source, outcome: 'deferred', reason: 'reserved-shell', nextAction: 'await-login' })
         controlPlaneTraces.append({
           trace_id: traceId,
           component: 'server',
@@ -5087,6 +5114,7 @@ async function handleFleetWsMessage(ws, msg) {
     }
     if (isWakeBreakerOpen(_wakeBreaker, agentId, Date.now())) {
       if (traceId) {
+        void recordWakeAttempt({ agentId, traceId, ...source, outcome: 'deferred', reason: 'wake-breaker-open', nextAction: 'retry-after-backoff' })
         controlPlaneTraces.append({
           trace_id: traceId,
           component: 'server',
@@ -5102,8 +5130,10 @@ async function handleFleetWsMessage(ws, msg) {
       nudgeText: nudgeText || prev?.nudgeText || null,
       asker: asker || prev?.asker || null,
       traceId: traceId || prev?.traceId || null,
+      source: Object.keys(source || {}).length ? source : (prev?.source || {}),
     })
     if (traceId) {
+      void recordWakeAttempt({ agentId, traceId, ...source, outcome: 'queued', reason: 'wake-requested', nextAction: 'drain-wake-queue' })
       controlPlaneTraces.append({
         trace_id: traceId,
         component: 'server',
@@ -5123,6 +5153,7 @@ async function handleFleetWsMessage(ws, msg) {
       const nudgeText = wakeEntry?.nudgeText || null
       const asker = wakeEntry?.asker || null
       const traceId = wakeEntry?.traceId || null
+      const source = wakeEntry?.source || {}
       const agent = fleetStore.getAgent?.(agentId)
       if (!agent || agent.dead || agent.human) {
         if (traceId) {
@@ -5139,6 +5170,7 @@ async function handleFleetWsMessage(ws, msg) {
       const daemonKeys = [...daemonConnections.keys()]
       if (daemonKeys.length === 0) {
         if (traceId) {
+          await recordWakeAttempt({ agentId, traceId, ...source, outcome: 'no-route', reason: 'no-daemon-connected', nextAction: 'retry-on-daemon-reconnect' })
           controlPlaneTraces.append({
             trace_id: traceId,
             component: 'server',
@@ -5152,6 +5184,7 @@ async function handleFleetWsMessage(ws, msg) {
       const daemonKey = agent.machine_id && agent.env_name ? agentDaemonAddress(agent) : daemonKeys[0]
       try {
         if (traceId) {
+          await recordWakeAttempt({ agentId, traceId, ...source, outcome: 'attempted', reason: 'daemon-route-selected', evidence: { daemon: daemonKey } })
           controlPlaneTraces.append({
             trace_id: traceId,
             component: 'server',
@@ -5185,8 +5218,10 @@ async function handleFleetWsMessage(ws, msg) {
               ts: new Date().toISOString(),
             }
         spawnLibrarian.observeLiveness({ ...liveness, agent_id: liveness.agent_id || agentId })
+        if (traceId) await recordWakeAttempt({ agentId, traceId, ...source, outcome: liveness.state === 'unknown' ? 'deferred' : 'attempted', reason: 'check-alive', nextAction: liveness.state === 'unknown' ? 'classify-liveness' : 'none', evidence: { liveness: liveness.state, livenessReason: liveness.reason || null } })
         const decision = spawnLibrarian.decideWake(agent, { ...liveness, agent_id: liveness.agent_id || agentId }, { serverAlive })
         if (traceId) {
+          await recordWakeAttempt({ agentId, traceId, ...source, outcome: decision.action === 'hold' || decision.action === 'queue' ? 'deferred' : 'attempted', reason: `spawn-librarian:${decision.action}`, nextAction: decision.action === 'queue' ? 'retry' : decision.action === 'hold' ? 'escalate' : 'none', evidence: { liveness: liveness.state } })
           controlPlaneTraces.append({
             trace_id: traceId,
             component: 'server',
@@ -5198,6 +5233,8 @@ async function handleFleetWsMessage(ws, msg) {
         if (decision.action === 'deliver') {
           await sendWakeNudge(daemonKey, agent, agent.tmux_session, nudgeText, 'deliver')
           if (traceId) {
+            await recordWakeAttempt({ agentId, traceId, ...source, outcome: 'delivered', reason: 'send-text-ok', evidence: { daemon: daemonKey, phase: 'deliver' } })
+            awaitWakeAcknowledgment({ agentId, traceId, source, asker })
             controlPlaneTraces.append({
               trace_id: traceId,
               component: 'server',
@@ -5209,7 +5246,7 @@ async function handleFleetWsMessage(ws, msg) {
           continue
         }
         if (decision.action === 'queue') {
-          setTimeout(() => requestWake(agentId, nudgeText, asker, traceId), 2000).unref?.()
+          setTimeout(() => requestWake(agentId, nudgeText, asker, traceId, source), 2000).unref?.()
           continue
         }
         if (decision.action === 'hold') continue
@@ -5238,6 +5275,8 @@ async function handleFleetWsMessage(ws, msg) {
         }
         await sendWakeNudge(daemonKey, agent, spawnResult?.tmux_session || agent.tmux_session, nudgeText, 'post-respawn')
         if (traceId) {
+          await recordWakeAttempt({ agentId, traceId, ...source, outcome: 'delivered', reason: 'spawn-and-send-text-ok', evidence: { daemon: daemonKey, phase: 'respawn' } })
+          awaitWakeAcknowledgment({ agentId, traceId, source, asker })
           controlPlaneTraces.append({
             trace_id: traceId,
             component: 'server',
@@ -5262,6 +5301,7 @@ async function handleFleetWsMessage(ws, msg) {
         b.nextTs = Date.now() + wakeBreakerBackoffMs(b.fails, WAKE_BREAKER_BASE_MS, WAKE_BREAKER_CAP_MS)
         _wakeBreaker.set(agentId, b)
         if (traceId) {
+          await recordWakeAttempt({ agentId, traceId, ...source, outcome: 'send-failed', reason: 'wake-error', nextAction: 'surface-to-asker', evidence: { error: e.message } })
           controlPlaneTraces.append({
             trace_id: traceId,
             component: 'server',
@@ -5565,7 +5605,7 @@ async function handleFleetWsMessage(ws, msg) {
       // (the reply, not the DB row, is what normally carries _tempId).
       insertedEvents.push({ id: eventId, type: 'chat', timestamp: ts, from_id: from, to_id: to, text, metadata: Object.keys(combinedMetadata).length ? combinedMetadata : null, materializableAttachments, ...(msg._tempId ? { _tempId: msg._tempId } : {}) })
       if (deliveryDecision.delivery === 'notified') {
-        wakeRequests.push({ to, text: chatWakeText(text, to), asker: from, traceId })
+        wakeRequests.push({ to, text: chatWakeText(text, to), asker: from, traceId, source: { sourceEventId: eventId, priority: basePriority } })
       } else if (deliveryDecision.delivery === 'batched' && deliveryDecision.notifyBy) {
         const delay = Math.max(0, Date.parse(deliveryDecision.notifyBy) - Date.now())
         setTimeout(() => {
@@ -5577,7 +5617,7 @@ async function handleFleetWsMessage(ws, msg) {
               event: 'batched message ready',
               preview: previewForWake(text),
               action: 'read and respond',
-            }), from, traceId)
+            }), from, traceId, { sourceEventId: eventId, priority: basePriority })
           }
         }, delay)
       }
@@ -5603,7 +5643,7 @@ async function handleFleetWsMessage(ws, msg) {
       const recipient = fleetStore.getAgent?.(to)
       if (recipient && !recipient.human) spawnLibrarian.observeDelivery(to, deliveredAt)
     }
-    for (const wake of wakeRequests) requestWake(wake.to, wake.text, wake.asker, wake.traceId)
+    for (const wake of wakeRequests) requestWake(wake.to, wake.text, wake.asker, wake.traceId, wake.source)
 
     // Plan mode approval routing: if Skip sends an affirmative/negative and
     // there's a pending plan approval for the targeted agent (or any agent),
@@ -5789,7 +5829,7 @@ async function handleFleetWsMessage(ws, msg) {
       operation_id: operation_id || null,
       trace_id: traceId,
     })
-    requestWake(resolved.id, delegateWakeText(description, resolved.id), from, traceId)
+    requestWake(resolved.id, delegateWakeText(description, resolved.id), from, traceId, { sourceEventId: delegateEvent?.id || null, sourceTaskId: taskId, priority: 'urgent' })
     return
   }
 
@@ -5984,6 +6024,27 @@ async function handleFleetWsMessage(ws, msg) {
     // the subsequent inbox() returns nothing.
     if (unread.length && !msg.peek) {
       const readIds = fleetStore.markEventsRead?.(agentId, unread.map(m => m.id)) || []
+      // A successful inbox read is the durable acknowledgement for a wake.
+      // Preserve the originating event/task/trace so operators can distinguish
+      // "nudge sent" from "agent actually received the work" after a restart.
+      for (const message of unread) {
+        const traceId = traceIdFromFleetEvent(message)
+        if (!traceId) continue
+        acknowledgeWakeTrace(traceId, agentId)
+        await notificationAttempts.record({
+          agentId,
+          traceId,
+          reason: 'inbox-acknowledgment',
+          sourceEventId: message.id,
+          sourceTaskId: message.task_id || message.metadata?.task_id || null,
+          priority: message.metadata?.priority || (message.type === 'delegate' ? 'urgent' : 'normal'),
+          intendedSurface: message.metadata?.delivery_channel || 'channel',
+          policy: 'wake',
+          outcome: 'acknowledged',
+          evidence: { readEventId: message.id },
+          nextAction: 'none',
+        })
+      }
       if (readIds.length) broadcastEvent('read-receipt', { event_ids: readIds, agent: agentId })
     }
     broadcastState()
