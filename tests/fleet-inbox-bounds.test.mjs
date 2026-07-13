@@ -174,3 +174,32 @@ test('active task and session startup queries use boot-path indexes', () => {
     cleanup(store, dbPath)
   }
 })
+
+test('agent registry is not fully hydrated on startup or liveness oracle install', () => {
+  const { store, dbPath } = tempStore()
+  try {
+    for (let i = 0; i < 3; i++) {
+      store.upsertAgent({
+        id: `fleet:agent-${i}`,
+        friendly_name: `agent-${i}`,
+        labels: [],
+        last_seen: `2026-07-12T00:00:0${i}.000Z`,
+        dead: false,
+      })
+    }
+  } finally {
+    store.close()
+  }
+
+  const reloaded = new FleetStore(dbPath)
+  try {
+    assert.equal(reloaded._agentRegistryLoaded, false)
+    reloaded.setLivenessOracle(() => false)
+    assert.equal(reloaded._agentRegistryLoaded, false)
+
+    assert.equal(reloaded.getAllAgents().length, 3)
+    assert.equal(reloaded._agentRegistryLoaded, true)
+  } finally {
+    cleanup(reloaded, dbPath)
+  }
+})

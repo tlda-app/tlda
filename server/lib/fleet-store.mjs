@@ -1241,10 +1241,15 @@ export class FleetStore {
       () => true,
       { key: 'fleet-roster:alive', compare: compareAgentsForRoster }
     );
-    this._reloadAgentRegistry();
+    this._agentRegistryLoaded = false;
     this._taskChanges = [];
     this._taskChangesOverflow = false;
     this._maxQueuedTaskChanges = 1000;
+  }
+
+  _ensureAgentRegistryLoaded() {
+    if (this._agentRegistryLoaded) return;
+    this._reloadAgentRegistry();
   }
 
   _reloadAgentRegistry() {
@@ -1267,6 +1272,7 @@ export class FleetStore {
         if (!aliveIds.has(a.id)) s.remove(a.id);
       }
     });
+    this._agentRegistryLoaded = true;
   }
 
   _syncAgentRegistry(id) {
@@ -1287,6 +1293,7 @@ export class FleetStore {
   }
 
   resolveChatRecipients(filterAst, { from = null, filter = '' } = {}) {
+    this._ensureAgentRegistryLoaded();
     const literal = astLiteral(filterAst);
     if (literal) {
       const found = new Map();
@@ -1598,6 +1605,7 @@ export class FleetStore {
   }
 
   getAllAgents() {
+    this._ensureAgentRegistryLoaded();
     // Maintained roster view. Startup/reconciliation may reload the registry
     // from SQLite, but hot callers (store-agents, fleet-table, WS init,
     // broadcastState paths) should never rebuild the whole roster from SQL.
@@ -1742,6 +1750,7 @@ export class FleetStore {
   }
 
   getAliveAgents() {
+    this._ensureAgentRegistryLoaded();
     // Highest-frequency roster read (store-agents / agents panel /
     // broadcastState). Serve the maintained alive view instead of re-querying
     // and re-hydrating the full live set under churn.
@@ -1847,7 +1856,6 @@ export class FleetStore {
   setLivenessOracle(fn) {
     this._isLiveOracle = fn;
     this._bustAgentsCache();
-    this._reloadAgentRegistry();
   }
 
   refreshAgentLiveness(id) {
