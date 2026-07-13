@@ -49,6 +49,7 @@ export function getFleetHttpBase() { return FLEET }
 
 // --- Stores ---
 let _agents = []
+let _agentTotals = { awake: 0, hibernating: 0, total: 0 }
 let _tasks = []
 let _items = []
 let _nextAgentsCursor = null
@@ -208,6 +209,7 @@ export { resolveFilter }
 
 // --- Read API ---
 export function getAgents() { return _agents }
+export function getAgentTotals() { return _agentTotals }
 export function getTasks() { return _tasks }
 export function getItems() { return _items }
 export function getEvents() { return _store.all() }
@@ -227,6 +229,7 @@ export function loadNextAgentsPage() {
     })
     .then(data => {
       _nextAgentsCursor = data.nextCursor || null
+      if (data.totals) _agentTotals = data.totals
       applyAgentDelta(data.agents || [], [])
       return true
     })
@@ -944,7 +947,7 @@ export function connect() {
       // Incremental fleet state — changed/removed agents and bounded task deltas.
       if (eventType === 'agents-delta') {
         _lastAgentsDeltaAt = Date.now()
-        applyAgentDelta(data.changed || [], data.removed || [])
+        applyAgentDelta(data.changed || [], data.removed || [], data.agentTotals)
         applyTaskDelta(data.task_delta)
         applyFleetEphemeral(data)
         return
@@ -1064,6 +1067,7 @@ export async function init() {
 
   // Populate agents + tasks
   _nextAgentsCursor = agentsRes.nextCursor || null
+  if (agentsRes.totals) _agentTotals = agentsRes.totals
   updateAgents(agentsRes.agents || [])
   _nextTasksCursor = tasksRes.nextCursor || null
   updateTasks(tasksRes.tasks || [])
@@ -1109,8 +1113,12 @@ function updateAgents(agents) {
 
 // Merge an incremental agent delta into the current list, then notify with the
 // full merged list (same contract subscribers already rely on for 'agents').
-function applyAgentDelta(changed, removed) {
-  if (!(changed?.length || removed?.length)) return
+function applyAgentDelta(changed, removed, totals = null) {
+  if (totals) _agentTotals = totals
+  if (!(changed?.length || removed?.length)) {
+    if (totals) notify('agents', { type: 'agents', agents: _agents })
+    return
+  }
   upsertFleetAgents(changed || [])
   removeFleetAgents(removed || [])
   const byId = new Map(_agents.map(a => [a.id, a]))

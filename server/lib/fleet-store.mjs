@@ -1853,6 +1853,20 @@ export class FleetStore {
     return { agents: page, nextCursor };
   }
 
+  // The agents panel materializes this roster in pages, but its footer is an
+  // aggregate over the whole non-dead roster.  Keep that distinction explicit:
+  // callers must not derive footer counts from a page or virtualized rows.
+  getAliveAgentCounts() {
+    this._ensureAgentRegistryLoaded();
+    const totals = { awake: 0, hibernating: 0, total: 0 };
+    for (const agent of this._aliveAgentRosterView.list) {
+      totals.total += 1;
+      if (agent.status === 'awake') totals.awake += 1;
+      else totals.hibernating += 1;
+    }
+    return totals;
+  }
+
   removeAgent(id) {
     this._deleteAgent.run(id);
     this._bustAgentsCache();

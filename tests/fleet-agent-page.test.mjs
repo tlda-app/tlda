@@ -46,3 +46,25 @@ test('live-agent page rejects malformed cursors', () => {
     cleanup(store, dbPath)
   }
 })
+
+test('full roster counts do not change with the requested page', () => {
+  const { store, dbPath } = tempStore()
+  try {
+    store.setLivenessOracle(id => id === 'fleet:awake')
+    store.upsertAgent({ id: 'fleet:awake', friendly_name: 'awake', last_seen: '2026-07-12T12:00:03.000Z' })
+    store.upsertAgent({ id: 'fleet:hibernating-a', friendly_name: 'hibernating-a', last_seen: '2026-07-12T12:00:02.000Z' })
+    store.upsertAgent({ id: 'fleet:hibernating-b', friendly_name: 'hibernating-b', last_seen: '2026-07-12T12:00:01.000Z' })
+
+    const first = store.getAliveAgentsPage({ limit: 1 })
+    const beforeScroll = store.getAliveAgentCounts()
+    const second = store.getAliveAgentsPage({ limit: 1, cursor: first.nextCursor })
+    const afterScroll = store.getAliveAgentCounts()
+
+    assert.equal(first.agents.length, 1)
+    assert.equal(second.agents.length, 1)
+    assert.deepEqual(beforeScroll, { awake: 1, hibernating: 2, total: 3 })
+    assert.deepEqual(afterScroll, beforeScroll)
+  } finally {
+    cleanup(store, dbPath)
+  }
+})

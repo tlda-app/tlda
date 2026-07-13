@@ -1467,6 +1467,9 @@ function _broadcastStateNow() {
     data: {
       changed,
       removed,
+      // Footer totals cover the full non-dead roster, not only the bounded
+      // client page receiving this delta.
+      ...(pendingIds.length ? { agentTotals: fleetStore.getAliveAgentCounts() } : {}),
       task_delta: fleetStore.consumeTaskChanges?.() || { changed: [], removed: [], overflow: false },
       thinking: Object.fromEntries(_thinkingState),
       compacting: Object.fromEntries(_compactingState),

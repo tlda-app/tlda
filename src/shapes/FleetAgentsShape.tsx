@@ -18,7 +18,7 @@ import {
 import { fleetAgentsProps } from '../../shared/shapes/fleet-panel-schema.mjs'
 import { useState, useCallback, useMemo, useRef, useEffect, memo, forwardRef } from 'react'
 import { Virtuoso } from 'react-virtuoso'
-import { useFleetAgents, useFleetTasks, useFleetUnreadCounts, useFleetContext, useFleetProjects, useFleetIdentity, searchFleet, hibernateSession, spawnAgent, loadNextAgentsPage } from '../fleet-data-adapter'
+import { useFleetAgents, useFleetAgentTotals, useFleetTasks, useFleetUnreadCounts, useFleetContext, useFleetProjects, useFleetIdentity, searchFleet, hibernateSession, spawnAgent, loadNextAgentsPage } from '../fleet-data-adapter'
 import { dropPillOnTarget } from './FleetPillShape'
 import { agentDisplayLabel, agentExactName, beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
@@ -514,6 +514,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
 
   const frameId = shape.parentId as string | undefined
   const agents = useFleetAgents(frameId)
+  const agentTotals = useFleetAgentTotals(frameId)
   const tasks = useFleetTasks(frameId)
   const { startDrag } = usePillDrag()
   const [expandedId, setExpandedId] = useState<string | null>(null)
@@ -735,8 +736,14 @@ function FleetAgentsInner({ shape }: { shape: any }) {
     return list
   }, [agents, sortKey, sortAsc])
 
-  const hibernatingCount = useMemo(() => sortedAgents.filter(a => agentCategory(a) === 'hibernating').length, [sortedAgents])
-  const awakeCount = sortedAgents.length - hibernatingCount
+  // Playback has its own fixed roster; live panels use server-provided totals
+  // that remain stable as virtualized pages materialize.
+  const playbackCounts = useMemo(() => ({
+    hibernating: sortedAgents.filter(a => agentCategory(a) === 'hibernating').length,
+    awake: sortedAgents.filter(a => agentCategory(a) === 'awake').length,
+  }), [sortedAgents])
+  const hibernatingCount = frameId?.startsWith('shape:') ? playbackCounts.hibernating : agentTotals.hibernating
+  const awakeCount = frameId?.startsWith('shape:') ? playbackCounts.awake : agentTotals.awake
 
   // Fetch last messages for visible agents
   const lastMessages = useLastMessages(sortedAgents)

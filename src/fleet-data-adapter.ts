@@ -10,6 +10,7 @@ import {
   init,
   subscribe,
   getAgents,
+  getAgentTotals,
   getTasks,
   getItems,
   getUnreadCountsForHuman,
@@ -179,6 +180,24 @@ export function useFleetAgents(frameId?: string): any[] {
   }, [frameId])
 
   return agents
+}
+
+export function useFleetAgentTotals(frameId?: string): { awake: number; hibernating: number; total: number } {
+  const [totals, setTotals] = useState(getAgentTotals)
+
+  useEffect(() => {
+    if (frameId?.startsWith('shape:')) return
+    let cancelled = false
+    void ensureInit().then(() => {
+      if (cancelled) return
+      setTotals(getAgentTotals())
+    })
+    return subscribe('agents', null, () => {
+      if (!cancelled) setTotals(getAgentTotals())
+    })
+  }, [frameId])
+
+  return totals
 }
 
 export { loadNextAgentsPage }
