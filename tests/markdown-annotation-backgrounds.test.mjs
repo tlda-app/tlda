@@ -24,18 +24,32 @@ function assertDeclaration(css, selector, property, value) {
   assert.equal(cssDeclaration(css, selector, property), value)
 }
 
+function between(source, start, end) {
+  const startIndex = source.indexOf(start)
+  assert.notEqual(startIndex, -1, `missing start marker: ${start}`)
+  const endIndex = source.indexOf(end, startIndex + start.length)
+  assert.notEqual(endIndex, -1, `missing end marker after ${start}: ${end}`)
+  return source.slice(startIndex, endIndex)
+}
+
 test('temporary markdown html-page surfaces do not paint a hardcoded page background', () => {
   const source = read('src/shapes/HtmlPageShape.tsx')
+  const iframeStyle = between(source, '<iframe', 'scrolling="no"')
   assert.equal(source.includes('temporaryMarkdownBackground'), false)
   assert.equal(source.includes('#ffffff'), false)
   assert.equal(source.includes('#111318'), false)
-  assert.match(source, /background:\s*'transparent'/)
+  assert.match(iframeStyle, /background:\s*'transparent'/)
 })
 
 test('rendered markdown documents explicitly keep the iframe document transparent', () => {
   const source = read('server/lib/build-markdown.mjs')
-  assert.match(source, /html,\s*body\s*\{\s*background:\s*transparent;\s*\}/)
-  assert.doesNotMatch(source, /body\s*\{[^}]*background:\s*#fff/i)
+  const renderMarkdownColumnHtml = between(
+    source,
+    'export function renderMarkdownColumnHtml',
+    '// ---- Main build function ----',
+  )
+  assert.match(renderMarkdownColumnHtml, /html,\s*body\s*\{\s*background:\s*transparent;\s*\}/)
+  assert.doesNotMatch(renderMarkdownColumnHtml, /body\s*\{[^}]*background:\s*#fff/i)
 })
 
 test('annotation viewer stays opaque and uses the canvas background variable', () => {
@@ -67,9 +81,9 @@ test('canvas theme sources publish the same variable annotation viewer consumes'
   const themesCss = read('src/themes.css')
   const documentPanelCss = read('src/DocumentPanel.css')
 
-  assert.match(appCss, /--tlda-canvas-background:\s*#fff;/)
-  assert.match(appCss, /\.tl-theme__dark\s*\{[\s\S]*--tlda-canvas-background:\s*#0f0f1a;/)
-  assert.match(themesCss, /body\.fog-dark-mode,[\s\S]*body\.fog-dark-mode \.tl-theme__dark\s*\{[\s\S]*--tlda-canvas-background:\s*#1a2024;/)
-  assert.match(themesCss, /body\.fog-light-mode,[\s\S]*body\.fog-light-mode \.tl-theme__dark\s*\{[\s\S]*--tlda-canvas-background:\s*#d2dfe3;/)
-  assert.match(documentPanelCss, /body\.warm-mode,[\s\S]*body\.warm-mode \.tl-theme__dark\s*\{[\s\S]*--tlda-canvas-background:\s*#f5f0e8;/)
+  assertDeclaration(appCss, ':root', '--tlda-canvas-background', '#fff')
+  assertDeclaration(appCss, '.tl-theme__dark', '--tlda-canvas-background', '#0f0f1a')
+  assertDeclaration(themesCss, 'body.fog-dark-mode,\nbody.fog-dark-mode .tl-theme__dark', '--tlda-canvas-background', '#1a2024')
+  assertDeclaration(themesCss, 'body.fog-light-mode,\nbody.fog-light-mode .tl-theme__dark', '--tlda-canvas-background', '#d2dfe3')
+  assertDeclaration(documentPanelCss, 'body.warm-mode,\nbody.warm-mode .tl-theme__dark', '--tlda-canvas-background', '#f5f0e8')
 })
