@@ -1,5 +1,10 @@
 /* Fog Dark — desaturated cool gray, teal undertone */
 
+body.fog-dark-mode,
+body.fog-dark-mode .tl-theme__dark {
+  --tlda-canvas-background: #1a2024;
+}
+
 body.fog-dark-mode .tl-background {
   background-color: #1a2024 !important;
 }
@@ -146,6 +151,11 @@ body.fog-dark-mode .book-tab--active {
 /* ------------------------------------------------------------------ */
 /* Fog Light — blue-teal mist, unified surfaces                      */
 /* ------------------------------------------------------------------ */
+
+body.fog-light-mode,
+body.fog-light-mode .tl-theme__dark {
+  --tlda-canvas-background: #d2dfe3;
+}
 
 body.fog-light-mode .tl-background {
   background-color: #d2dfe3 !important;

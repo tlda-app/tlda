@@ -359,7 +359,6 @@ function HtmlPageComponent({ shape }: { shape: any }) {
   const phoneCamera = useValue('html-phone-camera', () =>
     editor.getCamera(), [editor])
   const iframeActive = isTextSelectTool || isInteracting || isBrowseTool
-  const temporaryMarkdownBackground = isDark ? '#111318' : '#ffffff'
   const isPhoneTemporaryMarkdownPane =
     isTemporaryMarkdownColumn &&
     !!shape.meta?.phonePaneOwner &&
@@ -1015,7 +1014,6 @@ function HtmlPageComponent({ shape }: { shape: any }) {
         width: shape.props.w,
         height: shape.props.h,
         position: 'relative',
-        background: isTemporaryMarkdownColumn ? temporaryMarkdownBackground : undefined,
         pointerEvents: iframeActive ? 'auto' : 'none',
       }}
       >
@@ -1024,7 +1022,6 @@ function HtmlPageComponent({ shape }: { shape: any }) {
           width: '100%',
           height: '100%',
           overflow: 'hidden',
-          background: isTemporaryMarkdownColumn ? temporaryMarkdownBackground : undefined,
           pointerEvents: iframePointerActive ? 'auto' : 'none',
         }}>
           {isNearViewport && urlWithParams ? (
@@ -1035,7 +1032,7 @@ function HtmlPageComponent({ shape }: { shape: any }) {
                 width: '100%',
                 height: '100%',
                 border: 'none',
-                background: isTemporaryMarkdownColumn ? temporaryMarkdownBackground : undefined,
+                background: 'transparent',
                 pointerEvents: iframePointerActive ? 'auto' : 'none',
                 display: 'block',
                 opacity: 1,

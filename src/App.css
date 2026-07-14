@@ -13,6 +13,11 @@
   --tlda-z-top-control: 11000;
   --tlda-z-top-control-popover: 11001;
   --tlda-z-modal: 12000;
+  --tlda-canvas-background: #fff;
+}
+
+.tl-theme__dark {
+  --tlda-canvas-background: #0f0f1a;
 }
 
 /* Pan mode: override cursor to grab when active */
@@ -23,10 +28,10 @@ body.tlda-pan-mode * {
 
 /* Canvas background */
 .tl-background {
-  background-color: white !important;
+  background-color: var(--tlda-canvas-background) !important;
 }
 .tl-theme__dark .tl-background {
-  background-color: #0f0f1a !important;
+  background-color: var(--tlda-canvas-background) !important;
 }
 
 /* Ribbon lane — subtle base strip, theme-adaptive */

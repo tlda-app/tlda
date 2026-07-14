@@ -2424,6 +2424,11 @@ body.warm-mode .tl-container {
   background: #f5f0e8 !important;
 }
 
+body.warm-mode,
+body.warm-mode .tl-theme__dark {
+  --tlda-canvas-background: #f5f0e8;
+}
+
 body.warm-mode .tl-background {
   background: #f5f0e8 !important;
 }
