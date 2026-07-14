@@ -1356,7 +1356,7 @@ export function FleetHUD({
     mainCamera: mainEditor.getCamera(),
     baseCamera: livePhonePanOffset === null ? hudBaseCameraRef.current : mainEditor.getCamera(),
   })
-  const renderHudCameraAnchor = readHudCameraAnchor()
+  let renderHudCameraAnchor = readHudCameraAnchor()
   if (!renderHudCameraAnchor) return null
 
   if (renderHudCameraAnchor !== null) {
@@ -1386,6 +1386,7 @@ export function FleetHUD({
           topPad: activeTopPad,
         })
         applyHudAnchor(anchor, { syncViewport: false })
+        renderHudCameraAnchor = readHudCameraAnchor()
         ignoreSavedAnchorRef.current = true
         userPannedRef.current = false
       }
@@ -1396,6 +1397,10 @@ export function FleetHUD({
     userId: getHumanId(),
     deviceId: deviceReady ? getDeviceId() : '',
   })
+  // Rendering the HUD updates the WM overlay layer above. Keep the registered
+  // fork viewport and its HTML layer on that same camera so hit testing follows
+  // the visible HUD after default-anchor/self-heal corrections.
+  syncCanvasClipPanelViewportCamera(viewportId, overlayLayer.camera)
   const params = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null
   const exposeForTest = params?.has('pw') || params?.has('wmFlowGate')
   if (import.meta.env.DEV || exposeForTest || (typeof navigator !== 'undefined' && navigator.webdriver)) {
