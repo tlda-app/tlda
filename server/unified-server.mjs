@@ -5897,7 +5897,6 @@ async function handleFleetWsMessage(ws, msg) {
   if (type === 'my-task') {
     const agentId = msg.agent
     if (!agentId) { error('missing agent'); return }
-    fleetStore.updateHeartbeat(agentId)
     const tasks = fleetStore.getActiveTasksByAgentLimited?.(agentId, MY_TASK_TASK_LIMIT) || fleetStore.getActiveTasksByAgent?.(agentId)?.slice(0, MY_TASK_TASK_LIMIT) || []
     const taskCount = fleetStore.getActiveTaskCountByAgent?.(agentId) ?? tasks.length
     const task = tasks[0] || fleetStore.getTaskByAgent?.(agentId) || null
@@ -5909,7 +5908,7 @@ async function handleFleetWsMessage(ws, msg) {
     // marking. Without this, peek silently consumes the unread queue and
     // the subsequent inbox() returns nothing.
     if (unread.length && !msg.peek) {
-      const readIds = fleetStore.markEventsRead?.(agentId, unread.map(m => m.id)) || []
+      const readIds = await fleetStore.acknowledgeInboxRead(agentId, unread.map(m => m.id))
       // A successful inbox read is the durable acknowledgement for a wake.
       // Preserve the originating event/task/trace so operators can distinguish
       // "nudge sent" from "agent actually received the work" after a restart.
@@ -5932,6 +5931,8 @@ async function handleFleetWsMessage(ws, msg) {
         })
       }
       if (readIds.length) broadcastEvent('read-receipt', { event_ids: readIds, agent: agentId })
+    } else {
+      await fleetStore.acknowledgeInboxRead(agentId)
     }
     broadcastState()
     reply({

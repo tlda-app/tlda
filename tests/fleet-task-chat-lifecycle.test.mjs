@@ -442,11 +442,10 @@ test('fleet WS my-task exposes active tasks and unread without consuming peeked 
   const myTaskBlock = sourceBlock("if (type === 'my-task') {", "if (type === 'inbox-status') {")
 
   assertOrder(myTaskBlock, [
-    'fleetStore.updateHeartbeat(agentId)',
     'const tasks = fleetStore.getActiveTasksByAgentLimited',
     'const unread = fleetStore.getUnreadLimited',
     'if (unread.length && !msg.peek) {',
-    'const readIds = fleetStore.markEventsRead?.(agentId, unread.map(m => m.id)) || []',
+    'const readIds = await fleetStore.acknowledgeInboxRead(agentId, unread.map(m => m.id))',
     "broadcastEvent('read-receipt', { event_ids: readIds, agent: agentId })",
     'broadcastState()',
     'reply({',

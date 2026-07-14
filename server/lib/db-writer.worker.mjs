@@ -43,6 +43,15 @@ function one(sql, params) {
 parentPort.on('message', (msg) => {
   const { id, kind } = msg
   try {
+    if (kind === 'test-hold-write') {
+      if (!workerData.testWriterBarrier) throw new Error('test writer barrier is disabled')
+      db.exec('BEGIN IMMEDIATE')
+      parentPort.postMessage({ id, phase: 'locked' })
+      Atomics.wait(new Int32Array(msg.signal), 0, 0, 10_000)
+      db.exec('COMMIT')
+      parentPort.postMessage({ id, result: {} })
+      return
+    }
     let result
     if (kind === 'run') {
       result = one(msg.sql, msg.params)

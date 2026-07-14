@@ -128,9 +128,17 @@ export class FleetStore {
     // those too is a flagged follow-up.)
     this._writeSeq = 0;
     this._writeWaiters = new Map();
-    this._worker = new Worker(new URL('./db-writer.worker.mjs', import.meta.url), { workerData: { dbPath } });
+    this._testWriterBarriers = new Map();
+    this._testWriterBarrierEnabled = options.testWriterBarrier === true;
+    this._worker = new Worker(new URL('./db-writer.worker.mjs', import.meta.url), {
+      workerData: { dbPath, testWriterBarrier: this._testWriterBarrierEnabled },
+    });
     this._worker.on('message', (m) => {
       if (m && m.ready) return;
+      if (m?.phase === 'locked') {
+        this._testWriterBarriers.get(m.id)?.locked.resolve();
+        return;
+      }
       if (m.id == null) { if (m.error) console.error('[db-writer] fire-and-forget failed:', m.error, m.sql); return; }
       const w = this._writeWaiters.get(m.id);
       if (!w) return;
@@ -171,6 +179,31 @@ export class FleetStore {
         })),
       });
     });
+  }
+
+  // Test-only deterministic barrier: hold the worker's write transaction so
+  // tests can prove that a main-connection acknowledgement contends while the
+  // worker-backed acknowledgement queues behind the same writer.
+  holdWriterLockForTest() {
+    if (!this._testWriterBarrierEnabled) throw new Error('writer barrier is disabled');
+    const id = ++this._writeSeq;
+    const signal = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
+    let resolveLocked;
+    const locked = new Promise(resolve => { resolveLocked = resolve; });
+    const done = new Promise((resolve, reject) => {
+      this._writeWaiters.set(id, { resolve, reject });
+    });
+    this._testWriterBarriers.set(id, { locked: { resolve: resolveLocked } });
+    done.finally(() => this._testWriterBarriers.delete(id));
+    this._worker.postMessage({ id, kind: 'test-hold-write', signal: signal.buffer });
+    return {
+      locked,
+      done,
+      release() {
+        Atomics.store(signal, 0, 1);
+        Atomics.notify(signal, 0);
+      },
+    };
   }
 
   _createTables() {
@@ -2897,6 +2930,22 @@ export class FleetStore {
       return marked;
     });
     return markOne(ids);
+  }
+
+  // Inbox acknowledgement is on the request path while activity/chat writes
+  // are already flowing through the writer worker. Keep its heartbeat and
+  // read-receipt updates on that same single writer: a main-connection
+  // transaction here can otherwise race the worker and expose SQLITE_BUSY to
+  // the inbox caller.
+  async acknowledgeInboxRead(agentId, eventIds = []) {
+    const ids = [...new Set((eventIds || []).map(id => Number(id)).filter(Number.isFinite))];
+    const ops = [{ stmtOrSql: this._updateAgentLastSeen, params: [new Date().toISOString(), agentId] }];
+    for (const eventId of ids) {
+      ops.push({ stmtOrSql: this._markEventRead, params: [eventId, agentId] });
+    }
+    const results = await this._wBatchAwait(ops);
+    this._syncAgentRegistry(agentId);
+    return ids.filter((_, index) => results[index + 1]?.changes > 0);
   }
 
   // Mark a single event as read for one recipient. Used by terminal-card

@@ -5,12 +5,12 @@ import os from 'node:os'
 import path from 'node:path'
 import { FleetStore } from '../server/lib/fleet-store.mjs'
 
-function tempStore() {
+function tempStore(options = {}) {
   const dbPath = path.join(os.tmpdir(), `fleet-inbox-bounds-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.db`)
   for (const file of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) {
     try { fs.unlinkSync(file) } catch { /* best-effort temp cleanup */ }
   }
-  return { store: new FleetStore(dbPath), dbPath }
+  return { store: new FleetStore(dbPath, options), dbPath }
 }
 
 function cleanup(store, dbPath) {
@@ -41,6 +41,45 @@ test('bounded inbox reads mark only the returned unread page', async () => {
     assert.deepEqual(marked, page.map(e => e.id))
     assert.equal(store.getUnreadCount('fleet:recipient'), 3)
     assert.deepEqual(store.getUnread('fleet:recipient').map(e => e.text), ['message 2', 'message 3', 'message 4'])
+  } finally {
+    cleanup(store, dbPath)
+  }
+})
+
+test('worker-backed inbox acknowledgements queue behind a deterministic writer lock', async () => {
+  const { store, dbPath } = tempStore({ testWriterBarrier: true })
+  try {
+    const recipient = 'fleet:recipient'
+    const oldPathEvent = await store.share({ type: 'chat', from: 'fleet:sender', to: recipient, text: 'old path' })
+    const oldBarrier = store.holdWriterLockForTest()
+    await oldBarrier.locked
+    assert.equal(store.db.pragma('busy_timeout', { simple: true }), 5000)
+    assert.throws(
+      () => store.markEventsRead(recipient, [oldPathEvent.id]),
+      error => error?.code === 'SQLITE_BUSY',
+      'the former main-connection ACK must surface SQLITE_BUSY while the worker transaction is held',
+    )
+    oldBarrier.release()
+    await oldBarrier.done
+
+    const queuedEvent = await store.share({ type: 'chat', from: 'fleet:sender', to: recipient, text: 'worker path' })
+    const workerBarrier = store.holdWriterLockForTest()
+    await workerBarrier.locked
+    let settled = false
+    const completionOrder = []
+    const acknowledgement = store.acknowledgeInboxRead(recipient, [queuedEvent.id]).then(ids => {
+      settled = true
+      completionOrder.push('acknowledgement')
+      return ids
+    })
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(settled, false, 'worker-backed ACK must remain queued while the writer transaction is held')
+    workerBarrier.release()
+    await workerBarrier.done
+    completionOrder.push('release')
+    assert.deepEqual(await acknowledgement, [queuedEvent.id])
+    assert.deepEqual(completionOrder, ['release', 'acknowledgement'])
+    assert.deepEqual(store.getUnread(recipient).map(event => event.id), [oldPathEvent.id])
   } finally {
     cleanup(store, dbPath)
   }
