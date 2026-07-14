@@ -452,6 +452,11 @@ export class PermissionLedger {
         session_id TEXT,
         session_kind TEXT,
         session_path TEXT,
+        tmux_session TEXT,
+        model TEXT,
+        machine_id TEXT,
+        env_name TEXT,
+        daemon_key TEXT,
         cwd TEXT,
         last_seen TEXT
       );
@@ -468,6 +473,11 @@ export class PermissionLedger {
       'ALTER TABLE permission_grants ADD COLUMN session_id TEXT',
       'ALTER TABLE permission_grants ADD COLUMN session_kind TEXT',
       'ALTER TABLE permission_grants ADD COLUMN session_path TEXT',
+      'ALTER TABLE permission_grants ADD COLUMN tmux_session TEXT',
+      'ALTER TABLE permission_grants ADD COLUMN model TEXT',
+      'ALTER TABLE permission_grants ADD COLUMN machine_id TEXT',
+      'ALTER TABLE permission_grants ADD COLUMN env_name TEXT',
+      'ALTER TABLE permission_grants ADD COLUMN daemon_key TEXT',
       'ALTER TABLE permission_grants ADD COLUMN cwd TEXT',
       'ALTER TABLE permission_grants ADD COLUMN last_seen TEXT',
     ]) {
@@ -489,13 +499,15 @@ export class PermissionLedger {
     `)
     this._get = this.db.prepare(`
       SELECT id, spawn_policy, permission_set, updated_at, source,
-        friendly_name, session_id, session_kind, session_path, cwd, last_seen
+        friendly_name, session_id, session_kind, session_path, tmux_session, model,
+        machine_id, env_name, daemon_key, cwd, last_seen
       FROM permission_grants
       WHERE id = ?
     `)
     this._findByFriendlyName = this.db.prepare(`
       SELECT id, spawn_policy, permission_set, updated_at, source,
-        friendly_name, session_id, session_kind, session_path, cwd, last_seen
+        friendly_name, session_id, session_kind, session_path, tmux_session, model,
+        machine_id, env_name, daemon_key, cwd, last_seen
       FROM permission_grants
       WHERE friendly_name = ?
       ORDER BY COALESCE(last_seen, updated_at) DESC
@@ -581,6 +593,11 @@ export class PermissionLedger {
       sessionId: row.session_id || null,
       sessionKind: row.session_kind || null,
       sessionPath: row.session_path || null,
+      tmuxSession: row.tmux_session || null,
+      model: row.model || null,
+      machineId: row.machine_id || null,
+      envName: row.env_name || null,
+      daemonKey: row.daemon_key || null,
       cwd: row.cwd || null,
       lastSeen: row.last_seen || null,
     }
@@ -714,23 +731,51 @@ export class PermissionLedger {
     sessionId,
     sessionKind,
     sessionPath,
+    tmuxSession,
+    model,
+    machineId,
+    envName,
+    daemonKey,
     cwd,
     friendlyName,
     lastSeen = nowIso(),
   } = {}) {
     const key = String(id || '').trim()
     if (!key) throw new Error('cannot persist daemon session identity without fleet id')
-    if (!sessionId && !sessionKind && !sessionPath && !cwd && !friendlyName) return this.get(key)
+    if (!sessionId && !sessionKind && !sessionPath && !tmuxSession && !model && !machineId && !envName && !daemonKey && !cwd && !friendlyName) return this.get(key)
     const existing = this.get(key)
     if (!existing) {
       return null
     }
+    const incoming = {
+      sessionId,
+      sessionKind,
+      sessionPath,
+      tmuxSession,
+      model,
+      machineId,
+      envName,
+      daemonKey,
+      cwd,
+    }
+    for (const [field, value] of Object.entries(incoming)) {
+      const normalized = value == null || value === '' ? null : String(value)
+      const current = existing[field] == null || existing[field] === '' ? null : String(existing[field])
+      if (normalized && current && normalized !== current) {
+        throw new Error(`daemon ledger identity conflict for ${key}: ${field} existing=${current} incoming=${normalized}`)
+      }
+    }
     this.db.prepare(`
       UPDATE permission_grants SET
-        session_id = COALESCE(?, session_id),
-        session_kind = COALESCE(?, session_kind),
-        session_path = COALESCE(?, session_path),
-        cwd = COALESCE(?, cwd),
+        session_id = COALESCE(session_id, ?),
+        session_kind = COALESCE(session_kind, ?),
+        session_path = COALESCE(session_path, ?),
+        tmux_session = COALESCE(tmux_session, ?),
+        model = COALESCE(model, ?),
+        machine_id = COALESCE(machine_id, ?),
+        env_name = COALESCE(env_name, ?),
+        daemon_key = COALESCE(daemon_key, ?),
+        cwd = COALESCE(cwd, ?),
         friendly_name = COALESCE(?, friendly_name),
         last_seen = ?
       WHERE id = ?
@@ -738,6 +783,11 @@ export class PermissionLedger {
       sessionId || null,
       sessionKind || null,
       sessionPath || null,
+      tmuxSession || null,
+      model || null,
+      machineId || null,
+      envName || null,
+      daemonKey || null,
       cwd || null,
       friendlyName || null,
       lastSeen,

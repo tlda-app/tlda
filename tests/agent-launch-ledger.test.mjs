@@ -54,6 +54,7 @@ test('daemon launcher writes fresh-spawn ledger row before starting seat', async
       liveCodexSessionIdentityResolver: async () => ({
         sessionId: '11111111-2222-4333-8444-555555555555',
         jsonlPath: path.join(tmp, 'rollout-11111111-2222-4333-8444-555555555555.jsonl'),
+        model: 'gpt-5.5',
       }),
       spawnImpl: async (params) => {
         observedPrelaunchGrant = ledger.get(params.agentId)
@@ -85,6 +86,11 @@ test('daemon launcher writes fresh-spawn ledger row before starting seat', async
     assert.deepEqual(row?.spawnPolicy, { name: 'unsandboxed', policy: 'unsandboxed' })
     assert.equal(row?.sessionId, '11111111-2222-4333-8444-555555555555')
     assert.equal(row?.sessionKind, 'codex')
+    assert.equal(row?.tmuxSession, 'fleet-fresh-ledger')
+    assert.equal(row?.model, 'gpt-5.5')
+    assert.equal(row?.machineId, 'test-machine')
+    assert.equal(row?.envName, 'test')
+    assert.equal(row?.daemonKey, 'test-machine:test')
     assert.equal(result.resume_id, '11111111-2222-4333-8444-555555555555')
   } finally {
     await ledger.close()
@@ -120,6 +126,7 @@ test('daemon launcher writes a supplied fresh agent id before starting seat', as
       liveCodexSessionIdentityResolver: async () => ({
         sessionId: '22222222-2222-4333-8444-555555555555',
         jsonlPath: path.join(tmp, 'rollout-22222222-2222-4333-8444-555555555555.jsonl'),
+        model: 'gpt-5.5',
       }),
       spawnImpl: async (params) => {
         observedPrelaunchGrant = ledger.get(params.agentId)
@@ -150,6 +157,8 @@ test('daemon launcher writes a supplied fresh agent id before starting seat', as
     const row = ledger.get(suppliedAgentId)
     assert.deepEqual(row?.spawnPolicy, { name: 'unsandboxed', policy: 'unsandboxed' })
     assert.equal(row?.sessionId, '22222222-2222-4333-8444-555555555555')
+    assert.equal(row?.tmuxSession, 'fleet-preallocated-ledger')
+    assert.equal(row?.model, 'gpt-5.5')
     assert.equal(result.resume_id, '22222222-2222-4333-8444-555555555555')
   } finally {
     await ledger.close()
@@ -371,6 +380,45 @@ test('session identity recording does not fabricate an empty permission grant', 
 
     assert.equal(result, null)
     assert.equal(ledger.get('fleet:no-grant-yet'), null)
+  } finally {
+    await ledger.close()
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+test('daemon ledger session identity is validate-equal after first write', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-agent-launch-session-conflict-'))
+  const ledger = createPermissionLedger(path.join(tmp, 'fleet-daemon.db'))
+  try {
+    ledger.setSync('fleet:seat-owner', {
+      spawnPolicy: { name: 'ops', policy: 'unsandboxed' },
+      permissionSet: permissionSet(),
+      source: 'test',
+    })
+    ledger.setSessionSync('fleet:seat-owner', {
+      sessionId: '33333333-2222-4333-8444-555555555555',
+      sessionKind: 'codex',
+      sessionPath: '/tmp/rollout-33333333-2222-4333-8444-555555555555.jsonl',
+      tmuxSession: 'fleet-seat-owner',
+      model: 'gpt-5.5',
+      machineId: 'mini',
+      envName: 'fly',
+      daemonKey: 'mini:fly',
+      cwd: tmp,
+      friendlyName: 'seat-owner',
+    })
+
+    assert.throws(() => ledger.setSessionSync('fleet:seat-owner', {
+      sessionId: '33333333-2222-4333-8444-555555555555',
+      sessionKind: 'codex',
+      sessionPath: '/tmp/rollout-33333333-2222-4333-8444-555555555555.jsonl',
+      tmuxSession: 'fleet-liveness',
+      model: 'gpt-5.5',
+      machineId: 'mini',
+      envName: 'fly',
+      daemonKey: 'mini:fly',
+      cwd: tmp,
+    }), /daemon ledger identity conflict.*tmuxSession/)
   } finally {
     await ledger.close()
     fs.rmSync(tmp, { recursive: true, force: true })

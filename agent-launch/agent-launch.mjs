@@ -23,6 +23,36 @@ function readFileTail(file, max = 6000) {
   }
 }
 
+function readCodexRolloutModel(jsonlPath, maxLines = 200) {
+  if (!jsonlPath) return null
+  let text
+  try {
+    text = fs.readFileSync(jsonlPath, 'utf8')
+  } catch {
+    return null
+  }
+  let seen = 0
+  for (const line of text.split(/\r?\n/)) {
+    if (!line) continue
+    seen += 1
+    let entry
+    try {
+      entry = JSON.parse(line)
+    } catch {
+      continue
+    }
+    const model = entry?.payload?.model
+      || entry?.model
+      || entry?.message?.model
+      || entry?.payload?.message?.model
+      || entry?.response?.model
+      || entry?.payload?.response?.model
+    if (typeof model === 'string' && model.trim()) return model.trim()
+    if (seen >= maxLines) break
+  }
+  return null
+}
+
 function codexRuntimeRe() {
   return /(?:^|\s|[/\\])codex(?:\.exe)?(?:\s|$)/
 }
@@ -87,7 +117,8 @@ export async function resolveLiveCodexSessionIdentity({
   const jsonlPath = await resolveTranscript({ pid, kind: 'codex', agent, launchTs })
   const sessionId = ledgerSessionId({ harness_kind: 'codex', jsonl_path: jsonlPath })
   if (!sessionId) return null
-  return { sessionId, jsonlPath }
+  const model = readCodexRolloutModel(jsonlPath)
+  return { sessionId, jsonlPath, model }
 }
 
 async function waitForLiveCodexSessionIdentity(resolveIdentity, args, {
@@ -98,7 +129,7 @@ async function waitForLiveCodexSessionIdentity(resolveIdentity, args, {
   let last = null
   while (Date.now() <= deadline) {
     last = await resolveIdentity(args)
-    if (last?.sessionId) return last
+    if (last?.sessionId && last?.model) return last
     await new Promise(resolve => setTimeout(resolve, intervalMs))
   }
   return last
@@ -436,6 +467,11 @@ export function createAgentLauncher({
           sessionId: identity.sessionId,
           sessionKind: 'codex',
           sessionPath: identity.jsonlPath,
+          tmuxSession: launched.tmuxSession,
+          model: identity.model,
+          machineId,
+          envName: activeConfigName,
+          daemonKey: `${machineId}:${activeConfigName}`,
           cwd: resolvedCwd,
           friendlyName: agentName,
         })

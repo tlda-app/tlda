@@ -51,6 +51,7 @@ test('CLI lifecycle codex spawn binds resume identity into existing ledger row',
       return {
         sessionId: '11111111-2222-4333-8444-555555555555',
         jsonlPath: '/tmp/rollout-11111111-2222-4333-8444-555555555555.jsonl',
+        model: 'gpt-5.5',
       }
     },
   })
@@ -63,6 +64,8 @@ test('CLI lifecycle codex spawn binds resume identity into existing ledger row',
       sessionId: '11111111-2222-4333-8444-555555555555',
       sessionKind: 'codex',
       sessionPath: '/tmp/rollout-11111111-2222-4333-8444-555555555555.jsonl',
+      tmuxSession: 'fleet-test-cli-bind',
+      model: 'gpt-5.5',
       cwd: '/tmp/tlda-cli-bind',
       friendlyName: 'test-cli-bind',
     },
@@ -90,13 +93,5 @@ test('CLI lifecycle codex wake treats existing resume id as bound', async () => 
 
   assert.equal(resolved.bound, true)
   assert.equal(resolved.existing, true)
-  assert.deepEqual(writes, [{
-    id: 'fleet:test-cli-existing-bind',
-    row: {
-      sessionId: '22222222-2222-4333-8444-555555555555',
-      sessionKind: 'codex',
-      cwd: '/tmp/tlda-cli-existing-bind',
-      friendlyName: 'test-cli-existing-bind',
-    },
-  }])
+  assert.deepEqual(writes, [])
 })

@@ -212,6 +212,11 @@ export function createJsonlIngestor({
         sessionId,
         sessionKind: input.harness_kind,
         sessionPath: input.jsonl_path,
+        tmuxSession: input.tmux_session,
+        model: input.model,
+        machineId: input.machine_id,
+        envName: input.env_name,
+        daemonKey: input.daemon_key,
         cwd: input.cwd,
         friendlyName: input.friendly_name,
       })

@@ -2671,12 +2671,6 @@ export async function bindLifecycleCodexResumeIdentity(result, {
   intervalMs = 250,
 } = {}) {
   if (result?.fleetId && result.tmuxSession && result.harness === 'codex' && result.resumeId) {
-    ledger?.setSessionSync?.(result.fleetId, {
-      sessionId: result.resumeId,
-      sessionKind: 'codex',
-      cwd,
-      friendlyName: name || result.name || result.fleetId,
-    })
     return { bound: true, existing: true }
   }
   if (!result?.fleetId || !result.tmuxSession || result.harness !== 'codex') {
@@ -2694,14 +2688,16 @@ export async function bindLifecycleCodexResumeIdentity(result, {
       },
       tmuxSession: result.tmuxSession,
     })
-    if (identity?.sessionId) break
+    if (identity?.sessionId && identity?.model) break
     await new Promise(resolve => setTimeout(resolve, intervalMs))
   }
-  if (!identity?.sessionId) return { bound: false, identity }
+  if (!identity?.sessionId || !identity?.model) return { bound: false, identity }
   ledger.setSessionSync(result.fleetId, {
     sessionId: identity.sessionId,
     sessionKind: 'codex',
     sessionPath: identity.jsonlPath,
+    tmuxSession: result.tmuxSession,
+    model: identity.model,
     cwd,
     friendlyName: name || result.name || result.fleetId,
   })
