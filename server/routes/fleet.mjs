@@ -154,6 +154,19 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     }
   }
 
+  function currentSeatOrHttpError(res, agent) {
+    const seat = agent?.id ? fleetStore?.getCurrentAgentSeat?.(agent.id) : null
+    if (!seat) {
+      res.status(409).json({ error: 'agent has no current durable seat' })
+      return null
+    }
+    if (!seat.daemon_key || !seat.tmux_session) {
+      res.status(409).json({ error: 'current durable seat is missing daemon or tmux endpoint' })
+      return null
+    }
+    return seat
+  }
+
   const router = Router()
 
   // --- CORS ---
@@ -767,11 +780,17 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     const { agent: agentQuery, lines } = req.body || {}
     const agent = fleetStore?.findAgent(agentQuery)
     if (!agent) { res.status(404).json({ error: 'agent not found' }); return }
-    if (!agent.tmux_session) { res.status(400).json({ error: 'no tmux session' }); return }
-    const result = await rpcAgent(res, agent, 'capture-pane', {
-      tmux_session: agent.tmux_session, lines: lines || 50,
-    })
-    if (result !== null) res.json(result)
+    const seat = currentSeatOrHttpError(res, agent)
+    if (!seat) return
+    try {
+      const result = await sendRpc(seat.daemon_key, 'capture-pane', {
+        agent_id: agent.id, session_id: seat.session_id, tmux_session: seat.tmux_session, lines: lines || 50,
+      })
+      res.json(result)
+    } catch (e) {
+      const code = e.code === 'NO_DAEMON' ? 503 : 502
+      res.status(code).json({ ok: false, error: e.message })
+    }
   })
 
   // --- POST /api/plan-mode-toggle ---
@@ -783,10 +802,8 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     const { agent: agentQuery } = req.body || {}
     const agent = fleetStore?.findAgent(agentQuery)
     if (!agent) { res.status(404).json({ error: 'agent not found' }); return }
-    if (!agent.tmux_session) { res.status(400).json({ error: 'no tmux session' }); return }
-
-    const route = resolveRpc('capture-pane', agent)
-    if (route.via === 'none') { res.status(503).json({ ok: false, error: route.error }); return }
+    const seat = currentSeatOrHttpError(res, agent)
+    if (!seat) return
 
     const parseCCMode = (pane) => {
       if (/plan mode on/i.test(pane)) return 'plan'
@@ -797,7 +814,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
 
     try {
       // Capture current mode
-      const cap1 = await sendRpc(route.machine_id, 'capture-pane', { tmux_session: agent.tmux_session, lines: 5 })
+      const cap1 = await sendRpc(seat.daemon_key, 'capture-pane', { agent_id: agent.id, session_id: seat.session_id, tmux_session: seat.tmux_session, lines: 5 })
       const currentMode = parseCCMode(cap1?.content || '')
 
       // Toggle: if in plan mode exit to default (1 BTab); otherwise enter plan mode.
@@ -805,13 +822,13 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       const btabs = currentMode === 'plan' ? 1 : currentMode === 'acceptEdits' ? 1 : 2
 
       for (let i = 0; i < btabs; i++) {
-        await sendRpc(route.machine_id, 'send-key', { tmux_session: agent.tmux_session, key: 'BTab' })
+        await sendRpc(seat.daemon_key, 'send-key', { agent_id: agent.id, session_id: seat.session_id, tmux_session: seat.tmux_session, key: 'BTab' })
         if (i < btabs - 1) await new Promise(r => setTimeout(r, 150))
       }
 
       // Confirm final mode
       if (btabs > 0) await new Promise(r => setTimeout(r, 300))
-      const cap2 = await sendRpc(route.machine_id, 'capture-pane', { tmux_session: agent.tmux_session, lines: 5 })
+      const cap2 = await sendRpc(seat.daemon_key, 'capture-pane', { agent_id: agent.id, session_id: seat.session_id, tmux_session: seat.tmux_session, lines: 5 })
       const finalMode = parseCCMode(cap2?.content || '')
 
       // Store permission mode in agent metadata so UI can show persistent badge

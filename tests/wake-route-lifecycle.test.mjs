@@ -46,6 +46,12 @@ function harness({ agent = baseAgent(), serverAlive = true, checkAlive = { alive
       return runWakeRouteLifecycle({
         agentId: agent.id,
         agent,
+        seat: {
+          agent_id: agent.id,
+          session_id: 'session-worker',
+          daemon_key: DAEMON,
+          tmux_session: agent.tmux_session,
+        },
         daemonKey: DAEMON,
         ownerDaemon: { readyState: 1 },
         nudgeText: 'Call inbox() to see it.',
@@ -160,10 +166,9 @@ test('wake route fails loudly when no tmux session can be nudged after a respawn
 
   await assert.rejects(
     () => h.run(),
-    /local wake ledger has no record/
+    /no current durable seat/
   )
   assert.equal(h.lifecycle.length, 0)
-  assert.equal(h.attempts.at(-1).reason, 'spawn-librarian:respawn')
 })
 
 test('wake route fails loudly for a missing or wrong daemon route', async () => {
@@ -175,11 +180,11 @@ test('wake route fails loudly for a missing or wrong daemon route', async () => 
   assert.equal(h.attempts.at(-1).reason, 'daemon-route-selected')
 })
 
-test('wake route fails loudly when the agent has no recorded machine id', async () => {
-  const h = harness({ agent: baseAgent({ machine_id: null }) })
+test('wake route fails loudly when the agent has no current durable seat', async () => {
+  const h = harness()
   await assert.rejects(
-    () => h.run(),
-    /has no machine_id; cannot route wake\/respawn/
+    () => h.run({ seat: null }),
+    /no current durable seat/
   )
   assert.equal(h.attempts.at(-1).reason, 'daemon-route-selected')
 })

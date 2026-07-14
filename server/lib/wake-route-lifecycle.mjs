@@ -39,6 +39,7 @@ export function livenessFromCheckAliveResult(agentId, tmuxSession, result) {
 export async function runWakeRouteLifecycle({
   agentId,
   agent,
+  seat = null,
   daemonKey,
   ownerDaemon,
   nudgeText = null,
@@ -68,18 +69,17 @@ export async function runWakeRouteLifecycle({
     })
   }
 
-  const machineId = agent.machine_id
-  if (!machineId) throw new Error(`agent ${agent.friendly_name || agentId} has no machine_id; cannot route wake/respawn`)
+  if (!seat?.daemon_key || !seat?.tmux_session) throw new Error(`agent ${agent.friendly_name || agentId} has no current durable seat; cannot route wake/respawn`)
   if (!ownerDaemon || ownerDaemon.readyState !== 1) throw new Error(`No fleet-daemon connected for ${daemonKey}`)
 
   const serverAlive = isAgentAlive(agentId)
   const liveness = serverAlive
-    ? await sendRpcResilient(daemonKey, 'check-alive', { tmux_session: agent.tmux_session })
-      .then(result => livenessFromCheckAliveResult(agentId, agent.tmux_session, result))
+    ? await sendRpcResilient(daemonKey, 'check-alive', { agent_id: agentId, session_id: seat.session_id, tmux_session: seat.tmux_session })
+      .then(result => livenessFromCheckAliveResult(agentId, seat.tmux_session, result))
       .catch(e => ({
         type: 'agent-liveness',
         agent_id: agentId,
-        tmux_session: agent.tmux_session,
+        tmux_session: seat.tmux_session,
         state: 'unknown',
         reason: e.message,
         ts: new Date().toISOString(),
@@ -87,7 +87,7 @@ export async function runWakeRouteLifecycle({
     : {
         type: 'agent-liveness',
         agent_id: agentId,
-        tmux_session: agent.tmux_session,
+        tmux_session: seat.tmux_session,
         state: 'unknown',
         reason: 'server liveness says hibernating',
         ts: new Date().toISOString(),
@@ -126,7 +126,7 @@ export async function runWakeRouteLifecycle({
   }
 
   if (decision.action === 'deliver') {
-    await sendWakeNudge(daemonKey, agent, agent.tmux_session, nudgeText, 'deliver')
+    await sendWakeNudge(daemonKey, agent, seat.tmux_session, nudgeText, 'deliver', 'wake-route', seat.session_id)
     if (traceId) {
       await recordWakeAttempt({ agentId, traceId, ...source, outcome: 'delivered', reason: 'send-text-ok', evidence: { daemon: daemonKey, phase: 'deliver' } })
       awaitWakeAcknowledgment({ agentId, traceId, source, asker })
@@ -155,7 +155,8 @@ export async function runWakeRouteLifecycle({
   if (!spawnResult?.ok) {
     throw new Error(spawnResult?.error || spawnResult?.reason || 'daemon returned ok:false with no reason')
   }
-  await sendWakeNudge(daemonKey, agent, spawnResult?.tmux_session || agent.tmux_session, nudgeText, 'post-respawn')
+  if (!spawnResult?.tmux_session) throw new Error(`respawn for ${agentId} did not return a tmux session`)
+  await sendWakeNudge(daemonKey, agent, spawnResult.tmux_session, nudgeText, 'post-respawn')
   if (traceId) {
     await recordWakeAttempt({ agentId, traceId, ...source, outcome: 'delivered', reason: 'spawn-and-send-text-ok', evidence: { daemon: daemonKey, phase: 'respawn' } })
     awaitWakeAcknowledgment({ agentId, traceId, source, asker })

@@ -475,6 +475,20 @@ export function createAgentLauncher({
           cwd: resolvedCwd,
           friendlyName: agentName,
         })
+        sendMsg({
+          type: 'agent-seat',
+          agent_id: launched.fleetId,
+          session_id: identity.sessionId,
+          resume_id: identity.sessionId,
+          kind: 'codex',
+          model: identity.model,
+          cwd: resolvedCwd,
+          machine_id: machineId,
+          env_name: activeConfigName,
+          daemon_key: `${machineId}:${activeConfigName}`,
+          tmux_session: launched.tmuxSession,
+          created_source: 'spawn-runtime',
+        })
         launched.resumeId = identity.sessionId
       }
       if (!preallocatedAgentId || launched.fleetId !== preallocatedAgentId) {

@@ -513,6 +513,18 @@ terminalRpc = createTerminalRpc({
   onPlanModeSeen: promptPlan.scheduleCheckForPlanModePrompt,
   onPlanModeGone: promptPlan.clearPlanMode,
   hasPlanMode: promptPlan.hasPlanMode,
+  validateTmuxOwner: ({ agentId, sessionId, tmuxSession }) => {
+    const row = permissionLedger.get(agentId)
+    if (!row) throw new Error(`tmux endpoint ownership rejected: no daemon ledger row for ${agentId}`)
+    if (sessionId && row.sessionId && row.sessionId !== sessionId) {
+      throw new Error(`tmux endpoint ownership rejected for ${agentId}: session ${sessionId} does not match ${row.sessionId}`)
+    }
+    if (!row.tmuxSession) throw new Error(`tmux endpoint ownership rejected: no tmux session recorded for ${agentId}`)
+    if (row.tmuxSession !== tmuxSession) {
+      throw new Error(`tmux endpoint ownership rejected for ${agentId}: tmux ${tmuxSession} does not match ${row.tmuxSession}`)
+    }
+    return true
+  },
 })
 
 gooseSupervisor = createGooseSupervisor({
