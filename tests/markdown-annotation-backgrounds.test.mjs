@@ -6,6 +6,24 @@ function read(path) {
   return readFileSync(new URL(`../${path}`, import.meta.url), 'utf8')
 }
 
+function cssBlock(css, selector) {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+')
+  const match = css.match(new RegExp(`${escaped}\\s*\\{([^}]*)\\}`))
+  assert.ok(match, `missing CSS block for ${selector}`)
+  return match[1]
+}
+
+function cssDeclaration(css, selector, property) {
+  const block = cssBlock(css, selector)
+  const match = block.match(new RegExp(`(?:^|;)\\s*${property}\\s*:\\s*([^;]+)`))
+  assert.ok(match, `missing ${property} declaration in ${selector}`)
+  return match[1].trim()
+}
+
+function assertDeclaration(css, selector, property, value) {
+  assert.equal(cssDeclaration(css, selector, property), value)
+}
+
 test('temporary markdown html-page surfaces do not paint a hardcoded page background', () => {
   const source = read('src/shapes/HtmlPageShape.tsx')
   assert.equal(source.includes('temporaryMarkdownBackground'), false)
@@ -22,11 +40,26 @@ test('rendered markdown documents explicitly keep the iframe document transparen
 
 test('annotation viewer stays opaque and uses the canvas background variable', () => {
   const css = read('src/overlays/AnnotationViewer.css')
-  assert.match(css, /annotation-viewer--pinned,[\s\S]*annotation-viewer--navigated,[\s\S]*annotation-viewer--phone-pane\s*\{[\s\S]*opacity:\s*1;/)
-  assert.match(css, /\.annotation-viewer\s*\{[\s\S]*background:\s*var\(--tlda-canvas-background/)
-  assert.match(css, /\.annotation-viewer-canvas\s*\{[\s\S]*background:\s*var\(--tlda-canvas-background/)
-  assert.match(css, /\.annotation-viewer-clip\s*\{[\s\S]*background:\s*var\(--tlda-canvas-background/)
-  assert.match(css, /\.annotation-viewer \.clip-panel,[\s\S]*\.annotation-viewer \.clip-panel-canvas\s*\{[\s\S]*background:\s*var\(--tlda-canvas-background/)
+  const canvasBackground = 'var(--tlda-canvas-background, var(--color-background, var(--tl-color-background, #f8fafb)))'
+  const darkCanvasBackground = 'var(--tlda-canvas-background, var(--color-background, var(--tl-color-background, #0f0f1a)))'
+
+  assertDeclaration(css, '.annotation-viewer--hovering', 'opacity', '1')
+  assertDeclaration(css, '.annotation-viewer--pinned,\n.annotation-viewer--navigated,\n.annotation-viewer--phone-pane', 'opacity', '1')
+  assertDeclaration(css, '.annotation-viewer', 'background', canvasBackground)
+  assertDeclaration(css, '.tl-theme__dark .annotation-viewer', 'background', darkCanvasBackground)
+  assertDeclaration(css, '.annotation-viewer-canvas', 'background', canvasBackground)
+  assertDeclaration(css, '.annotation-viewer-clip', 'background', canvasBackground)
+  assertDeclaration(css, '.annotation-viewer .clip-panel,\n.annotation-viewer .clip-panel-canvas', 'background', canvasBackground)
+  assertDeclaration(css, '.tl-theme__dark .annotation-viewer .clip-panel,\n.tl-theme__dark .annotation-viewer .clip-panel-canvas', 'background', darkCanvasBackground)
+})
+
+test('annotation viewer CSS is loaded after the generic clip panel CSS it overrides', () => {
+  const source = read('src/overlays/AnnotationViewer.tsx')
+  const clipPanelImport = source.indexOf("import { CanvasClipPanel")
+  const annotationCssImport = source.indexOf("import './AnnotationViewer.css'")
+  assert.notEqual(clipPanelImport, -1)
+  assert.notEqual(annotationCssImport, -1)
+  assert.ok(clipPanelImport < annotationCssImport)
 })
 
 test('canvas theme sources publish the same variable annotation viewer consumes', () => {

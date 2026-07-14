@@ -16,7 +16,7 @@
 }
 
 .annotation-viewer--hovering {
-  opacity: 0.95;
+  opacity: 1;
   cursor: pointer;
 }
 
