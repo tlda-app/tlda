@@ -82,42 +82,6 @@ event; serve `getAllAgents`/`getAliveAgents`/counts from it; pull the full table
 only for history. Prove reads stop hitting SQL under churn (before/after query
 counts).
 
-## 5. Agent count is irrelevant — no path materializes the full set
-
-**Invariant (sharpens #4):** the number of agents — alive OR dead — must never
-affect performance. Agent count is just a distinct-value count of a DB column;
-SQLite serves "live agents, ordered by last_seen, limited N" in microseconds via
-`idx_agents_alive` regardless of total rows. **No code path may materialize or
-serialize the full agent set** — not on connect, not per-event, not as an
-in-memory "all agents" list. Every access is a bounded / indexed / paginated
-query. (Facebook does not reap dead accounts to stay fast; it never loads all
-users. Same here — records/events may need bounding; the *agent count* never does.)
-
-**Why this extends #4:** #4 says "event-maintained in-memory roster, not
-re-scanned." But an in-memory structure whose job is *hold every agent* is itself
-the smell — it cannot scale by definition, and it is exactly what got serialized
-into the 11 MB connect payload. The fix is not "keep the list in memory instead of
-re-scanning" — it is **don't hold the whole list at all**; query bounded slices
-from the DB, which already has the indexes.
-
-**How it bit (2026-07-12):** browser `/ws/fleet` connect serialized
-`getAllAgents()` — **4,225 agents incl. ~4,000 dead** — into an **11 MB first WS
-frame**, head-of-line-blocking the login response → 8s login timeouts on slow
-links (phone/iPad). Fixed by mend (`fix/fleet-login-roster-dump`): zero
-connect-time list, bounded live-agent page API fetched on demand.
-
-**Remaining full-incl-dead enumerators to convert** (to bounded/indexed):
-`store-agents-all` (`unified-server.mjs:4657` — history name-resolution should be
-an indexed name *lookup*, not a whole-set enumeration), skill-reads load
-(`:6525`), `reconstructState` (`fleet-store.mjs:3121`), and the in-memory
-`_agentRosterView.list` itself. The alive-only indexed queries already exist
-(`_getAliveAgents`, `idx_agents_alive`) — hot callers just don't use them.
-
-**Done when:** agent count (dead or alive) provably does not appear in any
-hot-path cost — no full materialization/serialization anywhere, bounded queries
-only, and a test asserts connect-payload + per-event cost are O(1) in total agent
-count.
-
 ## Meta
 
 These were "on to-do lists, reported, told they'd be fixed" — and recurred. The
