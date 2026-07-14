@@ -125,19 +125,19 @@ function cleanup(store, dbPath) {
   }
 }
 
-test('wake route records daemon, check-alive, decision, send-text, and ack for an awake tmux agent', async () => {
+test('wake route does nothing after confirming the runtime is already awake', async () => {
   const h = harness()
   const result = await h.run()
 
-  assert.equal(result.action, 'delivered')
+  assert.equal(result.action, 'already-awake')
   assert.deepEqual(h.rpc.map(call => call.op), ['check-alive'])
-  assert.deepEqual(h.nudges.map(nudge => [nudge.tmuxSession, nudge.phase]), [['fleet-worker', 'deliver']])
-  assert.equal(h.acks.length, 1)
+  assert.deepEqual(h.nudges, [])
+  assert.equal(h.acks.length, 0)
   assert.deepEqual(h.attempts.map(a => a.reason), [
     'daemon-route-selected',
     'check-alive',
     'spawn-librarian:deliver',
-    'send-text-ok',
+    'already-awake',
   ])
   assert.ok(h.attempts.every(a => a.traceId === 'delegate:wake-route-test'))
   assert.ok(h.attempts.every(a => a.sourceEventId === 42))

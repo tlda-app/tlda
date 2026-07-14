@@ -127,19 +127,17 @@ export async function runWakeRouteLifecycle({
   }
 
   if (decision.action === 'deliver') {
-    await sendWakeNudge(daemonKey, agent, seat.tmux_session, nudgeText, 'deliver', 'wake-route', seat.session_id)
     if (traceId) {
-      await recordWakeAttempt({ agentId, traceId, ...source, outcome: 'delivered', reason: 'send-text-ok', evidence: { daemon: daemonKey, phase: 'deliver' } })
-      awaitWakeAcknowledgment({ agentId, traceId, source, asker })
+      await recordWakeAttempt({ agentId, traceId, ...source, outcome: 'delivered', reason: 'already-awake', evidence: { daemon: daemonKey } })
       appendControlTrace({
         trace_id: traceId,
         component: 'server',
-        operation: 'wake.nudge',
-        status: 'sent',
-        detail: { agent: agentId, mode: 'deliver' },
+        operation: 'wake.noop',
+        status: 'already-awake',
+        detail: { agent: agentId },
       })
     }
-    return { action: 'delivered', liveness, decision }
+    return { action: 'already-awake', liveness, decision }
   }
 
   if (decision.action === 'queue') {
