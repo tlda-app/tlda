@@ -722,14 +722,18 @@ function handleServerMessage(msg) {
     return
   }
   if (msg.type === 'agent-status-event') {
-    if (msg.seq <= agentStatusSeq) return
-    if (msg.event_type === 'agent-upsert') {
-      const index = agents.findIndex(agent => agent.id === msg.agent.id)
-      if (index >= 0) agents[index] = msg.agent
-      else agents.push(msg.agent)
+    if (msg.seq > agentStatusSeq) {
+      if (msg.event_type === 'agent-upsert') {
+        const index = agents.findIndex(agent => agent.id === msg.agent.id)
+        if (index >= 0) agents[index] = msg.agent
+        else agents.push(msg.agent)
+      }
+      agentStatusSeq = msg.seq
+      reconcileRoster('agent-status-event')
     }
-    agentStatusSeq = msg.seq
-    reconcileRoster('agent-status-event')
+    // Deltas use the same durable server-to-daemon outbox as snapshots. ACK
+    // even an already-applied delta so a reconnect cannot leave it inflight.
+    ackServerDaemonOutboxMessage(msg)
     return
   }
   if (msg.type === 'projects-updated') {

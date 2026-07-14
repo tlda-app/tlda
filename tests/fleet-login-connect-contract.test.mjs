@@ -220,6 +220,16 @@ test('daemon delta welcome preserves existing roster before applying replay even
   assert.match(eventBatchBlock, /reconcileRoster\('agent-status-events'\)/)
 })
 
+test('Codex login registers the harness-provided thread id and daemon ACKs roster deltas', () => {
+  assert.match(mcpFleetSource, /process\.env\.CODEX_THREAD_ID/)
+
+  const deltaStart = daemonSource.indexOf("if (msg.type === 'agent-status-event')")
+  assert.notEqual(deltaStart, -1)
+  const deltaBlock = daemonSource.slice(deltaStart, deltaStart + 700)
+  assert.match(deltaBlock, /ackServerDaemonOutboxMessage\(msg\)/)
+  assert.match(deltaBlock, /msg\.seq > agentStatusSeq/)
+})
+
 test('fleet client buffers reconnect sends and does not bulk-reject pending requests on close', () => {
   assert.match(clientSource, /from ['"]\.\.\/\.\.\/shared\/fleet-browser-transport\.mjs['"]/)
   assert.equal(clientSource.includes('../../shared/fleet-transport.mjs'), false)

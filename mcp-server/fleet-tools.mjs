@@ -744,6 +744,11 @@ async function fetchCurrentDocVersion(doc) {
 // and let login() use an explicit session_id or fail loudly.
 let CLAUDE_SESSION = (function detectSessionAtStartup() {
   try {
+    // Codex gives its rollout/thread identifier to the MCP process directly.
+    // Register it so the daemon's roster delta changes when the spawned
+    // process claims its shell; otherwise a Codex shell remains indistinct
+    // from its pre-launch reservation.
+    if (process.env.CODEX_THREAD_ID) return process.env.CODEX_THREAD_ID;
     const ppid = process.ppid;
     if (!ppid || ppid <= 1) return null;
     const sessionFile = path.join(os.homedir(), '.claude', 'sessions', `${ppid}.json`);
