@@ -85,6 +85,32 @@ function saveAnchorOffsets(editor: Editor, panOffset: number, cameraY: number) {
   }
 }
 
+const MIN_USABLE_HUD_WIDTH = 320
+
+function viewportPinnedHudAnchor(bounds: ClipBounds, topPad: number) {
+  return {
+    panOffset: -bounds.x,
+    cameraY: topPad - bounds.y,
+  }
+}
+
+function isHudHorizontallyUsable(bounds: ClipBounds, panOffset: number, phoneLayout: boolean) {
+  const projectedLeft = bounds.x + panOffset
+  const projectedRight = projectedLeft + bounds.w
+  if (phoneLayout) return projectedRight > 0 && projectedLeft < window.innerWidth
+  if (bounds.w <= window.innerWidth) {
+    return projectedLeft >= 0 && projectedRight <= window.innerWidth
+  }
+  const usableWidth = Math.min(window.innerWidth, MIN_USABLE_HUD_WIDTH)
+  return projectedRight >= usableWidth && projectedLeft <= window.innerWidth - usableWidth
+}
+
+function clampHudAnchorToUsableViewport(anchor: FleetHudAnchor, bounds: ClipBounds, topPad: number, phoneLayout: boolean) {
+  return isHudHorizontallyUsable(bounds, anchor.panOffset, phoneLayout)
+    ? anchor
+    : viewportPinnedHudAnchor(bounds, topPad)
+}
+
 /** Mutable flag: true when the HUD overlay is expanded. Read by
  *  getShapeVisibility on the main editor to hide fleet shapes from
  *  hit-testing (they're rendered by the overlay instead). */
@@ -545,13 +571,13 @@ export function FleetHUD({
     if (!isFinite(minPageX)) return false
     const docLeftScreen = projectFleetHudDocumentLeftWithWM(hudWm, mainEditor, minPageX)
     const off = layoutOffset(getHumanId(), getDeviceId())
-    const anchor = computeFleetHudDefaultAnchor({
+    const anchor = clampHudAnchorToUsableViewport(computeFleetHudDefaultAnchor({
       bounds,
       docPageLeft: minPageX,
       docLeftScreen,
       layoutDx: off.dx,
       topPad: activeTopPad,
-    })
+    }), bounds, activeTopPad, isPhoneFleetLayout(mainEditor))
     applyHudAnchor(anchor, { syncViewport: false })
     userPannedRef.current = false
     return true
@@ -1309,13 +1335,13 @@ export function FleetHUD({
     // compensation here — cameraY below derives from fleetBounds.y (this layout's
     // actual top), so the HUD pins my layout to TOP_PAD regardless of its lane.
     const off = layoutOffset(getHumanId(), getDeviceId())
-    const anchor = computeFleetHudDefaultAnchor({
+    const anchor = clampHudAnchorToUsableViewport(computeFleetHudDefaultAnchor({
       bounds: activeFleetBounds,
       docPageLeft: minPageX,
       docLeftScreen,
       layoutDx: off.dx,
       topPad: activeTopPad,
-    })
+    }), activeFleetBounds, activeTopPad, phoneLayout)
     applyHudAnchor(anchor, { syncViewport: false })
     // This is a *derived default*, not a user-chosen position. Do NOT persist it:
     // a saved anchor may simply be unsynced (large multi-machine rooms deliver it
@@ -1362,12 +1388,8 @@ export function FleetHUD({
   if (renderHudCameraAnchor !== null) {
     const projectedTop = activeFleetBounds.y + renderHudCameraAnchor.cameraY
     const projectedBottom = projectedTop + activeFleetBounds.h
-    const projectedLeft = activeFleetBounds.x + renderHudCameraAnchor.panOffset
-    const projectedRight = projectedLeft + activeFleetBounds.w
     const verticallyVisible = projectedBottom > 0 && projectedTop < window.innerHeight
-    const horizontallyVisible = phoneLayout
-      ? projectedRight > 0 && projectedLeft < window.innerWidth
-      : projectedLeft >= 0 && projectedRight <= window.innerWidth
+    const horizontallyVisible = isHudHorizontallyUsable(activeFleetBounds, renderHudCameraAnchor.panOffset, phoneLayout)
     if (!userPannedRef.current && (!verticallyVisible || !horizontallyVisible)) {
       const docShapes = mainEditor.getCurrentPageShapes().filter(isDocumentPageShape)
       let minPageX = Infinity
@@ -1378,13 +1400,13 @@ export function FleetHUD({
       if (isFinite(minPageX)) {
         const docLeftScreen = projectFleetHudDocumentLeftWithWM(hudWm, mainEditor, minPageX)
         const off = layoutOffset(getHumanId(), getDeviceId())
-        const anchor = computeFleetHudDefaultAnchor({
+        const anchor = clampHudAnchorToUsableViewport(computeFleetHudDefaultAnchor({
           bounds: activeFleetBounds,
           docPageLeft: minPageX,
           docLeftScreen,
           layoutDx: off.dx,
           topPad: activeTopPad,
-        })
+        }), activeFleetBounds, activeTopPad, phoneLayout)
         applyHudAnchor(anchor, { syncViewport: false })
         renderHudCameraAnchor = readHudCameraAnchor()
         ignoreSavedAnchorRef.current = true
