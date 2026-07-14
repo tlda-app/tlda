@@ -10,7 +10,7 @@ export function deliveryChannelFor(agent) {
 }
 
 export function shouldSendWakeNudge(agent, nudgeText) {
-  if (!nudgeText || !agent?.tmux_session) return false
+  if (!nudgeText) return false
   return deliveryChannelFor(agent) === 'tmux' || terminalNudgeKind(agent)
 }
 

@@ -178,7 +178,7 @@ test('wake terminal eligibility distinguishes channel delivery from valid tmux n
   assert.equal(shouldSendWakeNudge(baseAgent({ metadata: { kind: 'claude', deliveryChannel: 'channel' } }), 'wake'), false)
   assert.equal(shouldSendWakeNudge(baseAgent({ metadata: { kind: 'claude', deliveryChannel: 'tmux' } }), 'wake'), true)
   assert.equal(shouldSendWakeNudge(baseAgent({ metadata: { kind: 'codex', deliveryChannel: 'channel' } }), 'wake'), true)
-  assert.equal(shouldSendWakeNudge(baseAgent({ tmux_session: null }), 'wake'), false)
+  assert.equal(shouldSendWakeNudge(baseAgent({ tmux_session: null }), 'wake'), true)
 })
 
 test('wake route fails loudly when no tmux session can be nudged after a respawn', async () => {
