@@ -468,14 +468,24 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
   const [historyTick, setHistoryTick] = useState(0)
   const historyContainerRef = useRef<HTMLDivElement>(null)
   const historyTermRef = useRef<Terminal | null>(null)
+  const historyRefreshTimerRef = useRef<number | null>(null)
   const refreshHistory = useCallback(() => {
     if (!pinnedRef.current) return
-    setTimeout(() => setHistoryTick(t => t + 1), 400)
-    setTimeout(() => setHistoryTick(t => t + 1), 1200)
+    // The capture is the authoritative full-scrollback projection. Coalesce live
+    // terminal frames before refreshing it so a busy terminal does not issue one
+    // capture request per frame.
+    if (historyRefreshTimerRef.current) return
+    historyRefreshTimerRef.current = window.setTimeout(() => {
+      historyRefreshTimerRef.current = null
+      if (pinnedRef.current) setHistoryTick(t => t + 1)
+    }, 400)
   }, [])
 
   useEffect(() => { pinnedRef.current = pinned }, [pinned])
   useEffect(() => { lightboxedRef.current = lightboxed }, [lightboxed])
+  useEffect(() => () => {
+    if (historyRefreshTimerRef.current) window.clearTimeout(historyRefreshTimerRef.current)
+  }, [])
 
   useEffect(() => {
     const update = () => {
@@ -693,6 +703,10 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
             pendingOutput.push(msg)
             if (fallbackFlushed) writeOutput(msg)
           }
+          // While pinned, the visible body is the capture-pane projection rather
+          // than this live screen. A terminal frame means that projection must be
+          // refreshed; refreshHistory coalesces bursts onto the same capture path.
+          refreshHistory()
         } else if (msg.type === 'error') {
           setStatus('error')
         }
