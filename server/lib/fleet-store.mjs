@@ -336,6 +336,36 @@ export class FleetStore {
         resume_id TEXT                -- durable harness resume handle (codex rollout id, claude session id, ...)
       );
 
+      CREATE TABLE IF NOT EXISTS agent_seats (
+        agent_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        resume_id TEXT,
+        kind TEXT NOT NULL,
+        model TEXT NOT NULL,
+        cwd TEXT NOT NULL,
+        machine_id TEXT NOT NULL,
+        env_name TEXT NOT NULL,
+        daemon_key TEXT NOT NULL,
+        tmux_session TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        created_source TEXT,
+        created_by_event_id INTEGER,
+        PRIMARY KEY (agent_id, session_id)
+      );
+
+      CREATE TABLE IF NOT EXISTS agent_current_seats (
+        agent_id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        daemon_key TEXT NOT NULL,
+        tmux_session TEXT NOT NULL,
+        activated_at TEXT NOT NULL,
+        activated_by_event_id INTEGER,
+        transition_reason TEXT,
+        predecessor_session_id TEXT,
+        UNIQUE (daemon_key, tmux_session),
+        FOREIGN KEY (agent_id, session_id) REFERENCES agent_seats(agent_id, session_id)
+      );
+
       -- Daemon registry: durable record of scoped daemon identities. This is
       -- the authority for "which daemon is allowed to do which job"; websocket
       -- connections are just the current live transport for a registry row.
@@ -549,6 +579,36 @@ export class FleetStore {
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_agents_machine_env ON agents(machine_id, env_name)");
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_agents_daemon_key ON agents(daemon_key)");
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_daemon_registry_status ON daemon_registry(status, machine_id, env_name)");
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS agent_seats (
+        agent_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        resume_id TEXT,
+        kind TEXT NOT NULL,
+        model TEXT NOT NULL,
+        cwd TEXT NOT NULL,
+        machine_id TEXT NOT NULL,
+        env_name TEXT NOT NULL,
+        daemon_key TEXT NOT NULL,
+        tmux_session TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        created_source TEXT,
+        created_by_event_id INTEGER,
+        PRIMARY KEY (agent_id, session_id)
+      );
+      CREATE TABLE IF NOT EXISTS agent_current_seats (
+        agent_id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        daemon_key TEXT NOT NULL,
+        tmux_session TEXT NOT NULL,
+        activated_at TEXT NOT NULL,
+        activated_by_event_id INTEGER,
+        transition_reason TEXT,
+        predecessor_session_id TEXT,
+        UNIQUE (daemon_key, tmux_session),
+        FOREIGN KEY (agent_id, session_id) REFERENCES agent_seats(agent_id, session_id)
+      );
+    `);
 
     const taskCols = this.db.prepare("PRAGMA table_info(tasks)").all();
     if (!taskCols.some(c => c.name === 'updated_at')) {
@@ -905,6 +965,34 @@ export class FleetStore {
     this._getAgentsByDaemonKey = this.db.prepare(`SELECT ${AGENT_SELECT} ${AGENT_JOIN} WHERE agents.daemon_key = ? AND agents.dead = 0`);
     this._getAgentByName = this.db.prepare(`SELECT ${AGENT_SELECT} ${AGENT_JOIN} WHERE agents.friendly_name = ?`);
     this._getLiveAgentsByFriendlyName = this.db.prepare(`SELECT ${AGENT_SELECT} ${AGENT_JOIN} WHERE agents.dead = 0 AND agents.friendly_name = ?`);
+    this._getAgentSeat = this.db.prepare('SELECT * FROM agent_seats WHERE agent_id = ? AND session_id = ?');
+    this._getCurrentAgentSeat = this.db.prepare(`
+      SELECT s.*, c.activated_at, c.activated_by_event_id, c.transition_reason, c.predecessor_session_id
+      FROM agent_current_seats c
+      JOIN agent_seats s ON s.agent_id = c.agent_id AND s.session_id = c.session_id
+      WHERE c.agent_id = ?
+    `);
+    this._getCurrentEndpointOwner = this.db.prepare('SELECT * FROM agent_current_seats WHERE daemon_key = ? AND tmux_session = ?');
+    this._insertAgentSeat = this.db.prepare(`
+      INSERT INTO agent_seats (
+        agent_id, session_id, resume_id, kind, model, cwd, machine_id, env_name,
+        daemon_key, tmux_session, created_at, created_source, created_by_event_id
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    this._insertCurrentAgentSeat = this.db.prepare(`
+      INSERT INTO agent_current_seats (
+        agent_id, session_id, daemon_key, tmux_session, activated_at,
+        activated_by_event_id, transition_reason, predecessor_session_id
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    this._updateCurrentAgentSeat = this.db.prepare(`
+      UPDATE agent_current_seats
+      SET session_id = ?, daemon_key = ?, tmux_session = ?, activated_at = ?,
+          activated_by_event_id = ?, transition_reason = ?, predecessor_session_id = ?
+      WHERE agent_id = ?
+    `);
     this._upsertDaemonRegistration = this.db.prepare(`
       INSERT INTO daemon_registry (daemon_key, machine_id, env_name, install_path, user, hostname, version, boot_id, status, connected_at, disconnected_at, last_seen, metadata)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -1374,6 +1462,148 @@ export class FleetStore {
   }
 
   // ---- Agent state management ----
+
+  _normalizeSeat(seat) {
+    const normalized = {
+      agent_id: seat?.agent_id || seat?.agentId || null,
+      session_id: seat?.session_id || seat?.sessionId || null,
+      resume_id: seat?.resume_id || seat?.resumeId || null,
+      kind: seat?.kind || null,
+      model: seat?.model || null,
+      cwd: seat?.cwd || null,
+      machine_id: seat?.machine_id || seat?.machineId || null,
+      env_name: seat?.env_name || seat?.envName || null,
+      daemon_key: seat?.daemon_key || seat?.daemonKey || (
+        (seat?.machine_id || seat?.machineId) && (seat?.env_name || seat?.envName)
+          ? `${seat.machine_id || seat.machineId}:${seat.env_name || seat.envName}`
+          : null
+      ),
+      tmux_session: seat?.tmux_session || seat?.tmuxSession || null,
+      created_source: seat?.created_source || seat?.createdSource || null,
+      created_by_event_id: seat?.created_by_event_id || seat?.createdByEventId || null,
+    };
+    const missing = ['agent_id', 'session_id', 'kind', 'model', 'cwd', 'machine_id', 'env_name', 'daemon_key', 'tmux_session']
+      .filter(key => !normalized[key]);
+    if (missing.length) throw new Error(`agent seat missing ${missing.join(', ')}`);
+    for (const key of Object.keys(normalized)) {
+      if (normalized[key] != null && key !== 'created_by_event_id') normalized[key] = String(normalized[key]);
+    }
+    return normalized;
+  }
+
+  _seatIdentityConflict(existing, incoming) {
+    for (const key of ['resume_id', 'kind', 'model', 'cwd', 'machine_id', 'env_name', 'daemon_key', 'tmux_session']) {
+      const left = existing[key] == null ? null : String(existing[key]);
+      const right = incoming[key] == null ? null : String(incoming[key]);
+      if (left !== right) return `${key}: existing=${left} incoming=${right}`;
+    }
+    return null;
+  }
+
+  insertAgentSeat(seat, { now = new Date().toISOString() } = {}) {
+    const normalized = this._normalizeSeat(seat);
+    const existing = this._getAgentSeat.get(normalized.agent_id, normalized.session_id);
+    if (existing) {
+      const conflict = this._seatIdentityConflict(existing, normalized);
+      if (conflict) throw new Error(`seat identity conflict for ${normalized.agent_id}/${normalized.session_id}: ${conflict}`);
+      return existing;
+    }
+    this._insertAgentSeat.run(
+      normalized.agent_id,
+      normalized.session_id,
+      normalized.resume_id,
+      normalized.kind,
+      normalized.model,
+      normalized.cwd,
+      normalized.machine_id,
+      normalized.env_name,
+      normalized.daemon_key,
+      normalized.tmux_session,
+      now,
+      normalized.created_source,
+      normalized.created_by_event_id,
+    );
+    return this._getAgentSeat.get(normalized.agent_id, normalized.session_id);
+  }
+
+  getCurrentAgentSeat(agentId) {
+    return this._getCurrentAgentSeat.get(agentId) || null;
+  }
+
+  activateAgentSeat({
+    agentId,
+    sessionId,
+    predecessorSessionId = null,
+    reason = null,
+    activatedByEventId = null,
+    now = new Date().toISOString(),
+  } = {}) {
+    if (!agentId || !sessionId) throw new Error('activateAgentSeat requires agentId and sessionId');
+    const seat = this._getAgentSeat.get(agentId, sessionId);
+    if (!seat) throw new Error(`cannot activate missing agent seat ${agentId}/${sessionId}`);
+    const current = this.getCurrentAgentSeat(agentId);
+    if (!current && predecessorSessionId != null) {
+      throw new Error(`current seat predecessor mismatch for ${agentId}: no current seat, predecessor=${predecessorSessionId}`);
+    }
+    if (current && current.session_id !== predecessorSessionId) {
+      throw new Error(`current seat predecessor mismatch for ${agentId}: current=${current.session_id} predecessor=${predecessorSessionId}`);
+    }
+    const endpointOwner = this._getCurrentEndpointOwner.get(seat.daemon_key, seat.tmux_session);
+    if (endpointOwner && endpointOwner.agent_id !== agentId) {
+      throw new Error(`current tmux endpoint ${seat.daemon_key}/${seat.tmux_session} already belongs to ${endpointOwner.agent_id}`);
+    }
+    try {
+      if (current) {
+        this._updateCurrentAgentSeat.run(
+          seat.session_id,
+          seat.daemon_key,
+          seat.tmux_session,
+          now,
+          activatedByEventId,
+          reason,
+          predecessorSessionId,
+          agentId,
+        );
+      } else {
+        this._insertCurrentAgentSeat.run(
+          agentId,
+          seat.session_id,
+          seat.daemon_key,
+          seat.tmux_session,
+          now,
+          activatedByEventId,
+          reason,
+          predecessorSessionId,
+        );
+      }
+    } catch (e) {
+      if (e.code === 'SQLITE_CONSTRAINT_UNIQUE' || e.message?.includes('UNIQUE constraint failed')) {
+        const owner = this._getCurrentEndpointOwner.get(seat.daemon_key, seat.tmux_session);
+        throw new Error(`current tmux endpoint ${seat.daemon_key}/${seat.tmux_session} already belongs to ${owner?.agent_id || 'another agent'}`);
+      }
+      throw e;
+    }
+    return this.getCurrentAgentSeat(agentId);
+  }
+
+  validateCurrentAgentSeat(agentId, fields = {}) {
+    const seat = this.getCurrentAgentSeat(agentId);
+    if (!seat) throw new Error(`agent ${agentId} has no current durable seat`);
+    const incoming = { ...fields };
+    for (const [key, value] of Object.entries(incoming)) {
+      if (value == null) continue;
+      const seatKey = key === 'agentId' ? 'agent_id'
+        : key === 'sessionId' ? 'session_id'
+        : key === 'tmuxSession' ? 'tmux_session'
+        : key === 'daemonKey' ? 'daemon_key'
+        : key;
+      if (seat[seatKey] == null) throw new Error(`seat identity conflict for ${agentId}: ${seatKey}: existing=null incoming=${value}`);
+      if (String(seat[seatKey]) !== String(value)) {
+        throw new Error(`seat identity conflict for ${agentId}: ${seatKey}: existing=${seat[seatKey]} incoming=${value}`);
+      }
+    }
+    return seat;
+  }
 
   upsertAgent(agent) {
     try {
