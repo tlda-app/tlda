@@ -710,7 +710,7 @@ const pendingRpcFailureTimers = new Map()
 // track the pending approval so Skip's voice response can be routed back
 // as a keystroke to the correct agent's tmux pane.
 //
-// keyed by agent_id → { tmux_session, machine_id, planText, lastHash, eventId }
+// keyed by agent_id -> { agent_id, eventId }
 const pendingPlanApprovals = new Map()
 
 // Chat idempotency cache: _tempId → { eventIds, recipients, receipts, ts }
@@ -1389,7 +1389,8 @@ function getWouldHibernate() {
     // of connection — just enough settle time for that drain to land. Require
     // the daemon to have been connected for the reconnect grace (~2min, well
     // over the actual drain) before trusting a "no recent activity" reading.
-    const daemonKey = agent.machine_id && agent.env_name ? agentDaemonAddress(agent) : null
+    const seat = fleetStore?.getCurrentAgentSeat?.(agentId)
+    const daemonKey = seat?.daemon_key || null
     if (daemonKey) {
       const connectedSince = _daemonConnectedSince.get(daemonKey)
       if (!connectedSince || (now - connectedSince) < LIVENESS_RECONNECT_GRACE_MS) continue
@@ -2210,6 +2211,15 @@ function resolveRpc(op, agent) {
 
 function agentDaemonAddress(agent) {
   return daemonAddress(agent?.machine_id, agent?.env_name)
+}
+
+function currentSeatOrError(agent) {
+  const seat = agent?.id ? fleetStore?.getCurrentAgentSeat?.(agent.id) : null
+  if (!seat) return { error: 'agent has no current durable seat' }
+  if (!seat.daemon_key || !seat.tmux_session || !seat.session_id) {
+    return { error: 'current durable seat is missing daemon, session, or tmux endpoint' }
+  }
+  return { seat }
 }
 
 function patchEventMetadata(eventId, updater) {
@@ -5708,9 +5718,13 @@ async function handleFleetWsMessage(ws, msg) {
           const [aid, a] = [...pendingPlanApprovals.entries()][0]
           approval = a; pendingPlanApprovals.delete(aid)
         }
-        if (approval?.tmux_session && approval?.machine_id && approval?.env_name) {
-          sendRpc(daemonAddress(approval.machine_id, approval.env_name), 'send-text', {
-            tmux_session: approval.tmux_session,
+        if (approval?.agent_id) {
+          const agent = fleetStore.findAgent?.(approval.agent_id)
+          const { seat } = currentSeatOrError(agent)
+          if (seat) sendRpc(seat.daemon_key, 'send-text', {
+            agent_id: approval.agent_id,
+            session_id: seat.session_id,
+            tmux_session: seat.tmux_session,
             text: key,
             enter: false,
           }).catch(e => console.error(`[plan-approval] keystroke failed: ${e.message}`))
@@ -5723,16 +5737,21 @@ async function handleFleetWsMessage(ws, msg) {
       const keyword = planKeywordMatch[2].toLowerCase()
       for (const r of recipients) {
         const agent = fleetStore.findAgent(r)
-        if (!agent?.tmux_session || !agent.machine_id || !agent.env_name) continue
-        sendRpc(agentDaemonAddress(agent), 'send-text', {
-          tmux_session: agent.tmux_session,
+        const { seat } = currentSeatOrError(agent)
+        if (!seat) continue
+        sendRpc(seat.daemon_key, 'send-text', {
+          agent_id: agent.id,
+          session_id: seat.session_id,
+          tmux_session: seat.tmux_session,
           text: '/plan',
           enter: true,
         }).catch(e => console.error(`[outline-keyword] plan mode failed for ${r}: ${e.message}`))
         if (keyword === 'outline') {
           setTimeout(() => {
-            sendRpc(agentDaemonAddress(agent), 'send-text', {
-              tmux_session: agent.tmux_session,
+            sendRpc(seat.daemon_key, 'send-text', {
+              agent_id: agent.id,
+              session_id: seat.session_id,
+              tmux_session: seat.tmux_session,
               text: 'Invoke the outline-before-writing skill now. Write your outline in the plan file, then share the plan file path in chat so it appears as a tappable note.',
               enter: true,
             }).catch(e => console.error(`[outline-keyword] skill nudge failed for ${r}: ${e.message}`))
@@ -6140,9 +6159,8 @@ async function handleFleetWsMessage(ws, msg) {
       return
     }
     if (channel === 'tmux') {
-      if (!row.tmux_session) { error('agent has no tmux session'); return }
-      const route = resolveRpc('send-text', row)
-      if (route.via === 'none') { error(route.error); return }
+      const { seat, error: seatError } = currentSeatOrError(row)
+      if (!seat) { error(seatError); return }
     }
     fleetStore.updateAgentMeta?.(row.id, { deliveryChannel: channel })
     broadcastState()
@@ -6415,11 +6433,10 @@ async function handleFleetWsMessage(ws, msg) {
     const { agent: agentQuery } = msg
     const agent = fleetStore.findAgent(agentQuery)
     if (!agent) { error('agent not found'); return }
-    if (!agent.tmux_session) { error('no tmux session'); return }
-    const route = resolveRpc('kill-session', agent)
-    if (route.via === 'none') { error(route.error); return }
+    const { seat, error: seatError } = currentSeatOrError(agent)
+    if (!seat) { error(seatError); return }
     try {
-      const result = await sendRpc(route.machine_id, 'kill-session', { agent_id: agent.id, tmux_session: agent.tmux_session })
+      const result = await sendRpc(seat.daemon_key, 'kill-session', { agent_id: agent.id, session_id: seat.session_id, tmux_session: seat.tmux_session })
       markAgentNotAlive(agent.id)
       const killEvent = { type: 'kill-session', from: SERVER_OWNER_ID, to: agent.id, text: `Killed ${agent.friendly_name || agent.id}` }
       await fleetStore.share(killEvent)
@@ -6434,11 +6451,10 @@ async function handleFleetWsMessage(ws, msg) {
     const { agent: agentQuery } = msg
     const agent = fleetStore.findAgent(agentQuery)
     if (!agent) { error('agent not found'); return }
-    if (!agent.tmux_session) { error('no tmux session'); return }
-    const route = resolveRpc('kill-session', agent)
-    if (route.via === 'none') { error(route.error); return }
+    const { seat, error: seatError } = currentSeatOrError(agent)
+    if (!seat) { error(seatError); return }
     try {
-      const result = await sendRpc(route.machine_id, 'kill-session', { agent_id: agent.id, tmux_session: agent.tmux_session })
+      const result = await sendRpc(seat.daemon_key, 'kill-session', { agent_id: agent.id, session_id: seat.session_id, tmux_session: seat.tmux_session })
       markAgentNotAlive(agent.id)
       broadcastState()
       reply({ ok: true, agent: agent.friendly_name || agent.id, ...result })
@@ -6451,11 +6467,10 @@ async function handleFleetWsMessage(ws, msg) {
     const { agent: agentQuery } = msg
     const agent = fleetStore.findAgent(agentQuery)
     if (!agent) { error('agent not found'); return }
-    if (!agent.tmux_session) { error('no tmux session'); return }
-    const route = resolveRpc('interrupt', agent)
-    if (route.via === 'none') { error(route.error); return }
+    const { seat, error: seatError } = currentSeatOrError(agent)
+    if (!seat) { error(seatError); return }
     try {
-      const result = await sendRpc(route.machine_id, 'interrupt', { agent_id: agent.id, tmux_session: agent.tmux_session })
+      const result = await sendRpc(seat.daemon_key, 'interrupt', { agent_id: agent.id, session_id: seat.session_id, tmux_session: seat.tmux_session })
       reply({ ok: true, agent: agent.friendly_name || agent.id, ...result })
     } catch (e) { error(e.message) }
     return
@@ -6473,11 +6488,10 @@ async function handleFleetWsMessage(ws, msg) {
     const { agent: agentQuery, key } = msg
     const agent = fleetStore.findAgent(agentQuery)
     if (!agent) { error('agent not found'); return }
-    if (!agent.tmux_session) { error('no tmux session'); return }
-    const route = resolveRpc('send-key', agent)
-    if (route.via === 'none') { error(route.error); return }
+    const { seat, error: seatError } = currentSeatOrError(agent)
+    if (!seat) { error(seatError); return }
     try {
-      const result = await sendRpc(route.machine_id, 'send-key', { tmux_session: agent.tmux_session, key })
+      const result = await sendRpc(seat.daemon_key, 'send-key', { agent_id: agent.id, session_id: seat.session_id, tmux_session: seat.tmux_session, key })
       reply(result)
     } catch (e) { error(e.message) }
     return
@@ -6488,11 +6502,10 @@ async function handleFleetWsMessage(ws, msg) {
     const { agent: agentQuery, text, enter } = msg
     const agent = fleetStore.findAgent(agentQuery)
     if (!agent) { error('agent not found'); return }
-    if (!agent.tmux_session) { error('no tmux session'); return }
-    const route = resolveRpc('send-text', agent)
-    if (route.via === 'none') { error(route.error); return }
+    const { seat, error: seatError } = currentSeatOrError(agent)
+    if (!seat) { error(seatError); return }
     try {
-      const result = await sendRpc(route.machine_id, 'send-text', { tmux_session: agent.tmux_session, text, enter: enter !== false })
+      const result = await sendRpc(seat.daemon_key, 'send-text', { agent_id: agent.id, session_id: seat.session_id, tmux_session: seat.tmux_session, text, enter: enter !== false })
       reply(result)
     } catch (e) { error(e.message) }
     return
@@ -6503,11 +6516,10 @@ async function handleFleetWsMessage(ws, msg) {
     const { agent: agentQuery, lines } = msg
     const agent = fleetStore.findAgent(agentQuery)
     if (!agent) { error('agent not found'); return }
-    if (!agent.tmux_session) { error('no tmux session'); return }
-    const route = resolveRpc('capture-pane', agent)
-    if (route.via === 'none') { error(route.error); return }
+    const { seat, error: seatError } = currentSeatOrError(agent)
+    if (!seat) { error(seatError); return }
     try {
-      const result = await sendRpc(route.machine_id, 'capture-pane', { tmux_session: agent.tmux_session, lines: lines || 50 })
+      const result = await sendRpc(seat.daemon_key, 'capture-pane', { agent_id: agent.id, session_id: seat.session_id, tmux_session: seat.tmux_session, lines: lines || 50 })
       reply(result)
     } catch (e) { error(e.message) }
     return
@@ -6518,12 +6530,11 @@ async function handleFleetWsMessage(ws, msg) {
     const { agent: agentQuery } = msg
     const agent = fleetStore.findAgent(agentQuery)
     if (!agent) { error('agent not found'); return }
-    if (!agent.tmux_session) { reply(livenessFromCheckAliveResult(agent.id, null, { alive: false })); return }
-    const route = resolveRpc('check-alive', agent)
-    if (route.via === 'none') { error(route.error); return }
+    const { seat, error: seatError } = currentSeatOrError(agent)
+    if (!seat) { error(seatError); return }
     try {
-      const result = await sendRpc(route.machine_id, 'check-alive', { tmux_session: agent.tmux_session })
-      reply(livenessFromCheckAliveResult(agent.id, agent.tmux_session, result))
+      const result = await sendRpc(seat.daemon_key, 'check-alive', { agent_id: agent.id, session_id: seat.session_id, tmux_session: seat.tmux_session })
+      reply(livenessFromCheckAliveResult(agent.id, seat.tmux_session, result))
     } catch (e) { error(e.message) }
     return
   }
@@ -6533,12 +6544,11 @@ async function handleFleetWsMessage(ws, msg) {
     const { agent: agentQuery, response } = msg
     const agent = fleetStore.findAgent(agentQuery)
     if (!agent) { error('agent not found'); return }
-    if (!agent.tmux_session) { error('no tmux session'); return }
     if (!isPlanModeResponse(response)) { error('response must be approve, supervised, or reject'); return }
-    const route = resolveRpc('send-text', agent)
-    if (route.via === 'none') { error(route.error); return }
+    const { seat, error: seatError } = currentSeatOrError(agent)
+    if (!seat) { error(seatError); return }
     try {
-      let result = await sendRpc(route.machine_id, 'send-text', { tmux_session: agent.tmux_session, text: planModeResponseKey(response), enter: false })
+      let result = await sendRpc(seat.daemon_key, 'send-text', { agent_id: agent.id, session_id: seat.session_id, tmux_session: seat.tmux_session, text: planModeResponseKey(response), enter: false })
       fleetStore.updateAgentMeta?.(agent.id, { permission_mode: null, inPlanMode: false, planModeType: null })
       // Persist response on the plan_approval event
       const pending = pendingPlanApprovals.get(agent.id)
@@ -6562,24 +6572,23 @@ async function handleFleetWsMessage(ws, msg) {
     const { agent: agentQuery } = msg
     const agent = fleetStore.findAgent(agentQuery)
     if (!agent) { error('agent not found'); return }
-    if (!agent.tmux_session) { error('no tmux session'); return }
-    const route = resolveRpc('capture-pane', agent)
-    if (route.via === 'none') { error(route.error); return }
+    const { seat, error: seatError } = currentSeatOrError(agent)
+    if (!seat) { error(seatError); return }
     try {
       const parseCCMode = (pane) => {
         if (/plan mode on/i.test(pane)) return 'plan'
         if (/accept edits on/i.test(pane)) return 'acceptEdits'
         return 'default'
       }
-      const cap1 = await sendRpc(route.machine_id, 'capture-pane', { tmux_session: agent.tmux_session, lines: 5 })
+      const cap1 = await sendRpc(seat.daemon_key, 'capture-pane', { agent_id: agent.id, session_id: seat.session_id, tmux_session: seat.tmux_session, lines: 5 })
       const currentMode = parseCCMode(cap1?.content || '')
       const btabs = currentMode === 'plan' ? 1 : currentMode === 'acceptEdits' ? 1 : 2
       for (let i = 0; i < btabs; i++) {
-        await sendRpc(route.machine_id, 'send-key', { tmux_session: agent.tmux_session, key: 'BTab' })
+        await sendRpc(seat.daemon_key, 'send-key', { agent_id: agent.id, session_id: seat.session_id, tmux_session: seat.tmux_session, key: 'BTab' })
         if (i < btabs - 1) await new Promise(r => setTimeout(r, 150))
       }
       if (btabs > 0) await new Promise(r => setTimeout(r, 300))
-      const cap2 = await sendRpc(route.machine_id, 'capture-pane', { tmux_session: agent.tmux_session, lines: 5 })
+      const cap2 = await sendRpc(seat.daemon_key, 'capture-pane', { agent_id: agent.id, session_id: seat.session_id, tmux_session: seat.tmux_session, lines: 5 })
       const finalMode = parseCCMode(cap2?.content || '')
       fleetStore.updateAgentMeta?.(agent.id, { permission_mode: finalMode === 'default' ? null : finalMode })
       broadcastState()
@@ -6606,18 +6615,18 @@ async function handleFleetWsMessage(ws, msg) {
     if (!rawFrom) { error('missing from'); return }
     const agent = fleetStore.findAgent(rawFrom)
     if (!agent) { error(`Agent not found: "${rawFrom}"`); return }
-    if (!agent.tmux_session) { error('agent has no tmux_session'); return }
-    if (!agent.machine_id || !agent.env_name) { error('agent has no daemon address'); return }
+    const { seat, error: seatError } = currentSeatOrError(agent)
+    if (!seat) { error(seatError); return }
     const label = agent.friendly_name || agent.id.slice(0, 12)
     const text = reason ? `${label}: ${reason}` : `${label}: terminal requested`
     const event = fleetStore.share?.({
       type: 'terminal_card', from: agent.id, to: SERVER_OWNER_ID, text,
-      metadata: JSON.stringify({ reason: reason || null, agentId: agent.id, agentLabel: label }),
+      metadata: JSON.stringify({ reason: reason || null, agentId: agent.id, agentLabel: label, session_id: seat.session_id, tmux_session: seat.tmux_session }),
     })
     broadcastEvent('fleet-event', {
       type: 'terminal_card', from: agent.id, to: SERVER_OWNER_ID,
       id: event?.id, event_id: event?.id, text,
-      metadata: { reason: reason || null, agentId: agent.id, agentLabel: label },
+      metadata: { reason: reason || null, agentId: agent.id, agentLabel: label, session_id: seat.session_id, tmux_session: seat.tmux_session },
     })
     reply({ ok: true, event_id: event?.id })
     return
@@ -7858,21 +7867,18 @@ async function handleDaemonWsMessage(ws, msg) {
     if (!agent_id || !plan_text) return
     try {
       const agent = fleetStore.findAgent(agent_id)
-      const machine_id = agent?.machine_id
-      const env_name = agent?.env_name
+      const seat = agent ? fleetStore.getCurrentAgentSeat?.(agent.id) : null
       const event = await fleetStore.share({
         type: 'plan_approval',
         from: agent_id,
         to: SERVER_OWNER_ID,
         text: plan_text,
-        metadata: { tmux_session: tmux_session || null, machine_id, env_name },
+        metadata: { session_id: seat?.session_id || null, tmux_session: seat?.tmux_session || tmux_session || null, daemon_key: seat?.daemon_key || null },
         unread: true,
         timestamp: new Date().toISOString(),
       })
       pendingPlanApprovals.set(agent_id, {
-        tmux_session: tmux_session || agent?.tmux_session,
-        machine_id,
-        env_name,
+        agent_id,
         eventId: event?.id,
       })
       const existing = fleetStore.getAgent(agent_id)
@@ -8199,12 +8205,12 @@ server.listen(PORT, HOST, () => {
     const wouldHib = getWouldHibernate()
     for (const agentId of Object.keys(wouldHib)) {
       const agent = fleetStore.getAgent(agentId)
-      if (!agent || !agent.tmux_session) continue
-      const route = resolveRpc('kill-session', agent)
-      if (route.via === 'none') continue
+      if (!agent) continue
+      const { seat } = currentSeatOrError(agent)
+      if (!seat) continue
       console.log(`[hibernate] auto-hibernating ${agent.friendly_name || agent.id} (idle ${wouldHib[agentId]}s)`)
       try {
-        await sendRpc(route.machine_id, 'kill-session', { agent_id: agent.id, tmux_session: agent.tmux_session })
+        await sendRpc(seat.daemon_key, 'kill-session', { agent_id: agent.id, session_id: seat.session_id, tmux_session: seat.tmux_session })
         markAgentNotAlive(agent.id)
       } catch (e) {
         console.error(`[hibernate] failed to hibernate ${agent.friendly_name || agent.id}: ${e.message}`)

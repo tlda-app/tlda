@@ -160,8 +160,8 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       res.status(409).json({ error: 'agent has no current durable seat' })
       return null
     }
-    if (!seat.daemon_key || !seat.tmux_session) {
-      res.status(409).json({ error: 'current durable seat is missing daemon or tmux endpoint' })
+    if (!seat.daemon_key || !seat.tmux_session || !seat.session_id) {
+      res.status(409).json({ error: 'current durable seat is missing daemon, session, or tmux endpoint' })
       return null
     }
     return seat
@@ -1098,14 +1098,8 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     if (!rawFrom) { res.status(400).json({ error: 'missing "from"' }); return }
     const agent = fleetStore?.findAgent(rawFrom)
     if (!agent) { res.status(404).json({ error: `Agent not found: "${rawFrom}"` }); return }
-    if (!agent.tmux_session) {
-      res.status(400).json({ error: 'agent has no tmux_session — cannot attach terminal' })
-      return
-    }
-    if (!agent.machine_id) {
-      res.status(400).json({ error: 'agent has no machine_id — fleet daemon not registered' })
-      return
-    }
+    const seat = currentSeatOrHttpError(res, agent)
+    if (!seat) return
     const label = agent.friendly_name || agent.id.slice(0, 12)
     const text = reason ? `${label}: ${reason}` : `${label}: terminal requested`
     const event = await fleetStore?.share({
@@ -1117,6 +1111,8 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
         reason: reason || null,
         agentId: agent.id,
         agentLabel: label,
+        session_id: seat.session_id,
+        tmux_session: seat.tmux_session,
       }),
     })
     broadcastEvent('fleet-event', {
@@ -1126,7 +1122,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       id: event?.id,
       event_id: event?.id,
       text,
-      metadata: { reason: reason || null, agentId: agent.id, agentLabel: label },
+      metadata: { reason: reason || null, agentId: agent.id, agentLabel: label, session_id: seat.session_id, tmux_session: seat.tmux_session },
     })
     res.json({ ok: true, event_id: event?.id })
   })
