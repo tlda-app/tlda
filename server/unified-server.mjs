@@ -74,6 +74,7 @@ import { resolveFreshSpawnAvailabilityModels } from './lib/spawn-availability-mo
 import { decideTaskRenudges, isWakeBreakerOpen, wakeBreakerBackoffMs } from './lib/task-renudge.mjs'
 import { canReportTask, completeTaskLifecycle } from './lib/task-lifecycle.mjs'
 import { livenessFromCheckAliveResult, runWakeRouteLifecycle, shouldSendWakeNudge } from './lib/wake-route-lifecycle.mjs'
+import { recordAgentBindingEvent } from './lib/agent-binding-events.mjs'
 import { decideReportClose } from '../bots/todd/report-close-guard.mjs'
 import { rejectMatchingWsRequests, startWsRequest } from '../shared/fleet-transport.mjs'
 import { isPlanModeResponse, planModeResponseKey } from './lib/plan-mode-response.mjs'
@@ -7747,26 +7748,10 @@ async function handleDaemonWsMessage(ws, msg) {
     const sessionId = msg.session_id || msg.sessionId
     if (!agentId || !sessionId) return
     try {
-      fleetStore.insertAgentSeat({
-        agent_id: agentId,
-        session_id: sessionId,
-        resume_id: msg.resume_id || msg.resumeId || sessionId,
-        kind: msg.kind,
-        model: msg.model,
-        cwd: msg.cwd,
-        machine_id: msg.machine_id || ws._machineId,
-        env_name: msg.env_name || ws._envName,
-        daemon_key: msg.daemon_key || ws._daemonKey,
-        tmux_session: msg.tmux_session || msg.tmuxSession,
-        created_source: msg.created_source || 'daemon-runtime',
-        created_by_event_id: msg.created_by_event_id || null,
-      })
-      fleetStore.activateAgentSeat({
-        agentId,
-        sessionId,
-        predecessorSessionId: msg.predecessor_session_id || null,
-        reason: msg.transition_reason || 'runtime-seat',
-        activatedByEventId: msg.activated_by_event_id || null,
+      recordAgentBindingEvent(fleetStore, msg, {
+        machineId: ws._machineId,
+        envName: ws._envName,
+        daemonKey: ws._daemonKey,
       })
       broadcastState()
     } catch (e) {

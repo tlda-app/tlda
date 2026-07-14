@@ -35,33 +35,38 @@ function seat(overrides = {}) {
   }
 }
 
-test('agent seat insert is validate-equal, not identity upsert', () => {
+test('agent identity insert is validate-equal and cannot replace session or model', () => {
   const ctx = tmpStore()
   try {
     const first = ctx.store.insertAgentSeat(seat())
     assert.equal(first.agent_id, 'fleet:66660cc3')
-    assert.equal(first.tmux_session, 'fleet-icantevengetafuckinglist')
-
     const same = ctx.store.insertAgentSeat(seat())
     assert.equal(same.session_id, first.session_id)
 
     assert.throws(
-      () => ctx.store.insertAgentSeat(seat({ tmux_session: 'fleet-liveness' })),
-      /seat identity conflict.*tmux_session/,
+      () => ctx.store.insertAgentSeat(seat({ session_id: 'different-session' })),
+      /seat identity conflict.*session_id/,
+    )
+    assert.throws(
+      () => ctx.store.insertAgentSeat(seat({ model: 'different-model' })),
+      /seat identity conflict.*model/,
     )
   } finally {
     closeStore(ctx)
   }
 })
 
-test('current seat activation requires explicit predecessor and enforces tmux endpoint uniqueness', () => {
+test('runtime binding updates the route for the same identity and enforces endpoint uniqueness', () => {
   const ctx = tmpStore()
   try {
     ctx.store.insertAgentSeat(seat())
     const current = ctx.store.activateAgentSeat({
       agentId: 'fleet:66660cc3',
       sessionId: '019f6034-0000-4000-8000-000000000000',
-      predecessorSessionId: null,
+      machineId: 'mini',
+      envName: 'fly',
+      daemonKey: 'mini:fly',
+      tmuxSession: 'fleet-icantevengetafuckinglist',
       reason: 'fresh-create',
     })
     assert.equal(current.session_id, '019f6034-0000-4000-8000-000000000000')
@@ -76,7 +81,10 @@ test('current seat activation requires explicit predecessor and enforces tmux en
     ctx.store.activateAgentSeat({
       agentId: 'fleet:9c06d1ba',
       sessionId: '019f9999-0000-4000-8000-000000000000',
-      predecessorSessionId: null,
+      machineId: 'mini',
+      envName: 'fly',
+      daemonKey: 'mini:fly',
+      tmuxSession: 'fleet-liveness',
       reason: 'fresh-create',
     })
 
@@ -90,7 +98,10 @@ test('current seat activation requires explicit predecessor and enforces tmux en
       () => ctx.store.activateAgentSeat({
         agentId: 'fleet:other',
         sessionId: '019faaaa-0000-4000-8000-000000000000',
-        predecessorSessionId: null,
+        machineId: 'mini',
+        envName: 'fly',
+        daemonKey: 'mini:fly',
+        tmuxSession: 'fleet-icantevengetafuckinglist',
         reason: 'fresh-create',
       }),
       /current tmux endpoint.*already belongs to fleet:66660cc3/,
@@ -100,39 +111,42 @@ test('current seat activation requires explicit predecessor and enforces tmux en
   }
 })
 
-test('current seat transitions are checked by predecessor session', () => {
+test('runtime binding cannot replace an agent identity session', () => {
   const ctx = tmpStore()
   try {
     ctx.store.insertAgentSeat(seat())
     ctx.store.activateAgentSeat({
       agentId: 'fleet:66660cc3',
       sessionId: '019f6034-0000-4000-8000-000000000000',
-      predecessorSessionId: null,
+      machineId: 'mini',
+      envName: 'fly',
+      daemonKey: 'mini:fly',
+      tmuxSession: 'fleet-icantevengetafuckinglist',
       reason: 'fresh-create',
     })
-    ctx.store.insertAgentSeat(seat({
-      session_id: '019fbbbb-0000-4000-8000-000000000000',
-      resume_id: '019fbbbb-0000-4000-8000-000000000000',
-      tmux_session: 'fleet-icantevengetafuckinglist-v2',
-    }))
-
     assert.throws(
       () => ctx.store.activateAgentSeat({
         agentId: 'fleet:66660cc3',
         sessionId: '019fbbbb-0000-4000-8000-000000000000',
-        predecessorSessionId: 'wrong-session',
-        reason: 'rotate',
+        machineId: 'mini',
+        envName: 'fly',
+        daemonKey: 'mini:fly',
+        tmuxSession: 'fleet-icantevengetafuckinglist-v2',
+        reason: 'wake',
       }),
-      /current seat predecessor mismatch/,
+      /seat identity conflict.*session_id/,
     )
-
     const updated = ctx.store.activateAgentSeat({
       agentId: 'fleet:66660cc3',
-      sessionId: '019fbbbb-0000-4000-8000-000000000000',
-      predecessorSessionId: '019f6034-0000-4000-8000-000000000000',
-      reason: 'rotate',
+      sessionId: '019f6034-0000-4000-8000-000000000000',
+      machineId: 'mini',
+      envName: 'fly',
+      daemonKey: 'mini:fly',
+      tmuxSession: 'fleet-icantevengetafuckinglist-v2',
+      reason: 'wake',
     })
-    assert.equal(updated.session_id, '019fbbbb-0000-4000-8000-000000000000')
+    assert.equal(updated.session_id, '019f6034-0000-4000-8000-000000000000')
+    assert.equal(updated.tmux_session, 'fleet-icantevengetafuckinglist-v2')
   } finally {
     closeStore(ctx)
   }
@@ -145,7 +159,10 @@ test('seat validation catches exact id-X tmux-Y corruption', () => {
     ctx.store.activateAgentSeat({
       agentId: 'fleet:66660cc3',
       sessionId: '019f6034-0000-4000-8000-000000000000',
-      predecessorSessionId: null,
+      machineId: 'mini',
+      envName: 'fly',
+      daemonKey: 'mini:fly',
+      tmuxSession: 'fleet-icantevengetafuckinglist',
       reason: 'fresh-create',
     })
 
