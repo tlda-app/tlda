@@ -732,9 +732,7 @@ function selectMyTab() {
 // ---- verb rewriting ----
 
 // Keep my tab markable: inject pwtab=<key> (and pw=1) into http(s) goto URLs so
-// the tab stays identifiable after the agent navigates. Also set name=<key> so
-// the app's identity bootstrap does not reuse stale browser storage from a
-// previously parked tab. Non-http URLs untouched.
+// the tab stays identifiable after the agent navigates. Non-http URLs untouched.
 function rewriteGoto(rest) {
   const i = rest.findIndex(a => /^https?:\/\//i.test(a))
   if (i === -1 || !URL.canParse(rest[i])) return rest // malformed URL → forward as-is
@@ -742,7 +740,6 @@ function rewriteGoto(rest) {
   const u = new URL(out[i])
   if (!u.searchParams.has('pwtab')) u.searchParams.set('pwtab', myTabKey())
   if (!u.searchParams.has('pw')) u.searchParams.set('pw', '1')
-  if (!u.searchParams.has('name')) u.searchParams.set('name', myTabKey())
   out[i] = u.toString()
   return out
 }
