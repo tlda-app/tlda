@@ -52,6 +52,35 @@ function serializePrettyName(value) {
   return JSON.stringify(value);
 }
 
+const PROTECTED_AGENT_UPSERT_FIELDS = [
+  'tmux_session',
+  'session_id',
+  'session_ids',
+  'cwd',
+  'machine_id',
+  'env_name',
+  'daemon_key',
+  'resume_id',
+];
+
+function protectedAgentFieldValue(agent, field) {
+  if (field === 'session_ids') return Array.isArray(agent?.session_ids) ? agent.session_ids : [];
+  return agent?.[field] ?? null;
+}
+
+function protectedAgentFieldProvided(agent, field) {
+  if (!agent || !(field in agent)) return false;
+  if (field === 'session_ids') return Array.isArray(agent.session_ids);
+  return agent[field] != null && agent[field] !== '';
+}
+
+function sameProtectedAgentField(a, b, field) {
+  if (field === 'session_ids') {
+    return JSON.stringify(protectedAgentFieldValue(a, field)) === JSON.stringify(protectedAgentFieldValue(b, field));
+  }
+  return String(protectedAgentFieldValue(a, field) ?? '') === String(protectedAgentFieldValue(b, field) ?? '');
+}
+
 function parsePrettyName(value) {
   if (value == null || value === '') return null;
   if (typeof value !== 'string') return value;
@@ -1595,8 +1624,19 @@ export class FleetStore {
     return seat;
   }
 
-  upsertAgent(agent) {
+  upsertAgent(agent, { allowProtectedAgentFields = false } = {}) {
     try {
+      if (!allowProtectedAgentFields) {
+        const existing = agent?.id ? this.getAgent(agent.id) : null;
+        const forbidden = [];
+        for (const field of PROTECTED_AGENT_UPSERT_FIELDS) {
+          if (!protectedAgentFieldProvided(agent, field)) continue;
+          if (!existing || !sameProtectedAgentField(existing, agent, field)) forbidden.push(field);
+        }
+        if (forbidden.length) {
+          throw new Error(`generic upsertAgent cannot write protected identity/runtime route field(s): ${forbidden.join(', ')}`);
+        }
+      }
       // An agent must not hold a label equal to a live agent's friendly_name —
       // DNF chat routing treats friendly_names and labels equivalently, so a
       // colliding label shadows the named agent and breaks filter-by-label.

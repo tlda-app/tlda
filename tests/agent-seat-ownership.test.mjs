@@ -183,3 +183,55 @@ test('seat validation catches exact id-X tmux-Y corruption', () => {
     closeStore(ctx)
   }
 })
+
+test('generic agent upsert cannot create or mutate protected identity and route fields', () => {
+  const ctx = tmpStore()
+  try {
+    assert.throws(
+      () => ctx.store.upsertAgent({
+        id: 'fleet:new-generic',
+        friendly_name: 'new-generic',
+        session_id: 'generic-session',
+      }),
+      /generic upsertAgent cannot write protected.*session_id/,
+    )
+
+    ctx.store.upsertAgent({
+      id: 'fleet:protected',
+      friendly_name: 'protected',
+      tmux_session: 'tmux-original',
+      session_id: 'session-original',
+      session_ids: ['session-original'],
+      cwd: '/Users/skip/work/tlda',
+      machine_id: 'mini',
+      env_name: 'fly',
+      daemon_key: 'mini:fly',
+      resume_id: 'resume-original',
+    }, { allowProtectedAgentFields: true })
+
+    const unchanged = ctx.store.getAgent('fleet:protected')
+    unchanged.labels = ['reviewed']
+    ctx.store.upsertAgent(unchanged)
+    assert.deepEqual(ctx.store.getAgent('fleet:protected').labels, ['reviewed'])
+
+    for (const [field, value] of [
+      ['tmux_session', 'tmux-hijack'],
+      ['session_id', 'session-hijack'],
+      ['session_ids', ['session-original', 'session-hijack']],
+      ['session_ids', []],
+      ['cwd', '/tmp/hijack'],
+      ['machine_id', 'air'],
+      ['env_name', 'local'],
+      ['daemon_key', 'air:local'],
+      ['resume_id', 'resume-hijack'],
+    ]) {
+      assert.throws(
+        () => ctx.store.upsertAgent({ ...ctx.store.getAgent('fleet:protected'), [field]: value }),
+        new RegExp(`generic upsertAgent cannot write protected.*${field}`),
+        `${field} must not be generic-upsert mutable`,
+      )
+    }
+  } finally {
+    closeStore(ctx)
+  }
+})

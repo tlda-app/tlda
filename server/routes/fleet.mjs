@@ -1001,60 +1001,11 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   })
 
   // --- POST /api/agents/move-daemon ---
-  // Operator path for explicit daemon-address moves. The CLI does the local,
-  // machine-specific context export/import; this endpoint is the registry
-  // authority for switching the durable fleet identity to a new daemon lane.
+  // Runtime route changes must be recorded by the durable seat binding path.
+  // Do not let an operator/API edit the legacy agent row into becoming route
+  // authority again.
   router.post('/api/agents/move-daemon', async (req, res) => {
-    if (!fleetStore) { res.status(503).json({ error: 'no fleet store' }); return }
-    const { agent: agentQuery, machine_id: targetMachine, env_name: targetEnv, expected_from: expectedFrom, expected_env: expectedEnv, check_only: checkOnly } = req.body || {}
-    if (!agentQuery || !targetMachine || !targetEnv) {
-      res.status(400).json({ error: 'agent, machine_id, and env_name are required' })
-      return
-    }
-    const agent = fleetStore.findAgent(agentQuery)
-    if (!agent) { res.status(404).json({ error: `agent not found: ${agentQuery}` }); return }
-    if (agent.dead) { res.status(400).json({ error: `agent ${agent.id} is marked dead` }); return }
-    if (expectedFrom && agent.machine_id !== expectedFrom) {
-      res.status(409).json({
-        error: `agent ${agent.id} belongs to ${agent.machine_id || 'unknown'}, not ${expectedFrom}`,
-        agent: agent.id,
-        current_machine_id: agent.machine_id || null,
-      })
-      return
-    }
-    if (expectedEnv && agent.env_name !== expectedEnv) {
-      res.status(409).json({
-        error: `agent ${agent.id} belongs to ${describeAgentAddress(agent.machine_id, agent.env_name)}, not ${describeAgentAddress(expectedFrom || agent.machine_id, expectedEnv)}`,
-        agent: agent.id,
-        current_machine_id: agent.machine_id || null,
-        current_env_name: agent.env_name || null,
-      })
-      return
-    }
-    const targetDaemon = daemonAddress(targetMachine, targetEnv)
-    const dws = daemonConnections?.get?.(targetDaemon)
-    if (!dws || dws.readyState !== 1) {
-      res.status(503).json({ error: `no fleet-daemon connected for ${targetDaemon}` })
-      return
-    }
-    if (checkOnly) {
-      res.json({ ok: true, agent: agent.id, from: agent.machine_id || null, from_env: agent.env_name || null, to: targetMachine, to_env: targetEnv, check_only: true })
-      return
-    }
-    const fromMachine = agent.machine_id || null
-    const fromEnv = agent.env_name || null
-    fleetStore.upsertAgent({ ...agent, machine_id: targetMachine, env_name: targetEnv, last_seen: new Date().toISOString() })
-    const event = await fleetStore.share?.({
-      type: 'lifecycle',
-      from: SERVER_OWNER_ID,
-      to: agent.id,
-      agentId: agent.id,
-      text: `agent moved ${describeAgentAddress(fromMachine, fromEnv)} -> ${describeAgentAddress(targetMachine, targetEnv)}`,
-      metadata: { from_machine_id: fromMachine, from_env_name: fromEnv, to_machine_id: targetMachine, to_env_name: targetEnv },
-    })
-    broadcastDaemonAgentsUpdated?.()
-    broadcastState()
-    res.json({ ok: true, agent: agent.id, from: fromMachine, from_env: fromEnv, to: targetMachine, to_env: targetEnv, event_id: event?.id || null })
+    res.status(410).json({ error: 'agent daemon route is not editable; use the durable seat binding event path' })
   })
 
   // --- POST /api/agent-status ---

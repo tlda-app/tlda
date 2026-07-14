@@ -103,3 +103,35 @@ test('terminal card paths require the current durable seat identity tuple', () =
   assert.doesNotMatch(httpBlock, /agent\.tmux_session/)
   assert.doesNotMatch(httpBlock, /agent\.machine_id/)
 })
+
+test('generic agent edit surfaces cannot mutate identity or runtime route fields', () => {
+  const unified = readFileSync(new URL('../server/unified-server.mjs', import.meta.url), 'utf8')
+  const updateBlock = wsHandlerBlock(unified, 'update-agent')
+  assert.match(updateBlock, /protectedAgentEditFields\(agentData\)/)
+  assert.match(updateBlock, /Cannot edit immutable identity\/runtime route fields/)
+  assert.ok(updateBlock.indexOf('protectedAgentEditFields(agentData)') < updateBlock.indexOf('fleetStore.upsertAgent(agentData)'))
+
+  for (const field of [
+    'session_id',
+    'session_ids',
+    'resume_id',
+    'kind',
+    'model',
+    'cwd',
+    'machine_id',
+    'env_name',
+    'daemon_key',
+    'tmux_session',
+  ]) {
+    assert.match(unified, new RegExp(`'${field}'`), `${field} must be protected from generic updates`)
+  }
+
+  const routeSource = readFileSync(new URL('../server/routes/fleet.mjs', import.meta.url), 'utf8')
+  const moveStart = routeSource.indexOf("router.post('/api/agents/move-daemon'")
+  assert.notEqual(moveStart, -1, 'missing move-daemon route')
+  const moveEnd = routeSource.indexOf("\n  // --- POST /api/agent-status", moveStart)
+  const moveBlock = routeSource.slice(moveStart, moveEnd)
+  assert.match(moveBlock, /status\(410\)/)
+  assert.match(moveBlock, /durable seat binding event path/)
+  assert.doesNotMatch(moveBlock, /upsertAgent/)
+})

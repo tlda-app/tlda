@@ -1778,19 +1778,9 @@ async function performSpawnRelay(caller, msg) {
         }
       }
       let agentRecord = ready?.agent || result?.agent || (result?.agent_id ? fleetStore.findAgent(result.agent_id) : null) || (targetAgentId ? fleetStore.findAgent(targetAgentId) : null)
-      if (agentRecord?.id && (result?.resume_id || result?.tmux_session || route.env_name)) {
-        const patchedAgent = {
-          ...agentRecord,
-          tmux_session: result?.tmux_session || agentRecord.tmux_session,
-          resume_id: result?.resume_id || agentRecord.resume_id,
-          machine_id: route.machine_id,
-          env_name: route.env_name,
-          daemon_key: daemonAddress(route.machine_id, route.env_name),
-        }
-        fleetStore.upsertAgent(patchedAgent)
-        agentRecord = fleetStore.getAgent?.(agentRecord.id) || patchedAgent
-        if (ready?.agent?.id === agentRecord.id) ready.agent = agentRecord
-      }
+      // Runtime route authority is the durable agent-seat binding path. Do not
+      // patch legacy route columns from the spawn result; doing so lets generic
+      // spawn completion bypass the current-seat binding.
       let lineage = null
       if (phase && agentRecord?.id) {
         try {
@@ -2220,6 +2210,24 @@ function currentSeatOrError(agent) {
     return { error: 'current durable seat is missing daemon, session, or tmux endpoint' }
   }
   return { seat }
+}
+
+const PROTECTED_AGENT_EDIT_FIELDS = new Set([
+  'agent_id',
+  'session_id',
+  'session_ids',
+  'resume_id',
+  'kind',
+  'model',
+  'cwd',
+  'machine_id',
+  'env_name',
+  'daemon_key',
+  'tmux_session',
+])
+
+function protectedAgentEditFields(agentData = {}) {
+  return Object.keys(agentData).filter(key => PROTECTED_AGENT_EDIT_FIELDS.has(key))
 }
 
 function patchEventMetadata(eventId, updater) {
@@ -4805,10 +4813,10 @@ async function handleFleetWsMessage(ws, msg) {
       id: agentId,
       friendly_name: assignedName || null,
       pretty_name: pretty_name ?? existing?.pretty_name ?? null,
-      tmux_session: tmux_session || existing?.tmux_session || null,
-      session_id: session_id || existing?.session_id || null,
+      tmux_session: existing?.tmux_session || null,
+      session_id: existing?.session_id || null,
       session_ids: existing?.session_ids || [],
-      cwd: cwd || existing?.cwd || null,
+      cwd: existing?.cwd || null,
       labels: labels || existing?.labels || [],
       registered_at: existing?.registered_at || now,
       last_seen: now,
@@ -4818,10 +4826,10 @@ async function handleFleetWsMessage(ws, msg) {
       metadata: (metadata || existing?.metadata || kind)
         ? { ...(existing?.metadata || {}), ...(metadata || {}), ...(kind ? { kind } : {}) }
         : null,
-      machine_id: machine_id || existing?.machine_id || null,
-      env_name: env_name || existing?.env_name || null,
-      daemon_key: (machine_id && env_name) ? daemonAddress(machine_id, env_name) : existing?.daemon_key || null,
-      resume_id: resume_id || existing?.resume_id || null,
+      machine_id: existing?.machine_id || null,
+      env_name: existing?.env_name || null,
+      daemon_key: existing?.daemon_key || null,
+      resume_id: existing?.resume_id || null,
     }
     // Persist spawnPolicy ATOMICALLY as a coherent region blob. The shallow metadata
     // merge above is what let partial spawnPolicy writes corrupt the blob across
@@ -4844,9 +4852,8 @@ async function handleFleetWsMessage(ws, msg) {
       // omitting it would leave the old shell:true intact through the merge.
       agent.metadata = { ...agent.metadata, shell: null }
     }
-    if (session_id && !agent.session_ids.includes(session_id)) {
-      agent.session_ids = [...(agent.session_ids || []), session_id].slice(-10)
-    }
+    // session_id/session_ids are minted by the durable seat binding path, not
+    // by generic registration.
     try {
       fleetStore.upsertAgent(agent)
       if (isShellReservation && !agent.human) {
@@ -4919,10 +4926,10 @@ async function handleFleetWsMessage(ws, msg) {
       const now = new Date().toISOString()
       const agent = {
         ...existing,
-        tmux_session: tmux_session || existing.tmux_session || null,
-        session_id: session_id || existing.session_id || null,
+        tmux_session: existing.tmux_session || null,
+        session_id: existing.session_id || null,
         session_ids: existing.session_ids || [],
-        cwd: cwd || existing.cwd || null,
+        cwd: existing.cwd || null,
         labels: labels || existing.labels || [],
         last_seen: now,
         dead: false,
@@ -4931,10 +4938,10 @@ async function handleFleetWsMessage(ws, msg) {
         metadata: (metadata || existing.metadata || kind)
           ? { ...(existing.metadata || {}), ...(metadata || {}), ...(kind ? { kind } : {}) }
           : null,
-        machine_id: machine_id || existing.machine_id || null,
-        env_name: env_name || existing.env_name || null,
-        daemon_key: (machine_id && env_name) ? daemonAddress(machine_id, env_name) : existing.daemon_key || null,
-        resume_id: resume_id || existing.resume_id || null,
+        machine_id: existing.machine_id || null,
+        env_name: existing.env_name || null,
+        daemon_key: existing.daemon_key || null,
+        resume_id: existing.resume_id || null,
       }
       if (agent.metadata?.spawnPolicy) {
         agent.metadata = { ...agent.metadata, spawnPolicy: normalizeRegionPolicy(agent.metadata.spawnPolicy) }
@@ -4942,9 +4949,8 @@ async function handleFleetWsMessage(ws, msg) {
       if (agent.metadata?.shell) {
         agent.metadata = { ...agent.metadata, shell: null }
       }
-      if (session_id && !agent.session_ids.includes(session_id)) {
-        agent.session_ids = [...(agent.session_ids || []), session_id].slice(-10)
-      }
+      // session_id/session_ids are minted by the durable seat binding path, not
+      // by generic login.
       fleetStore.upsertAgent(agent)
       const storedAgent = fleetStore.getAgent?.(agent_id) || agent
       reply({ ok: true, agent: storedAgent, assigned_name: storedAgent.friendly_name || null })
@@ -6171,6 +6177,11 @@ async function handleFleetWsMessage(ws, msg) {
   if (type === 'update-agent') {
     const { agent: agentData } = msg
     if (agentData?.id) {
+      const forbidden = protectedAgentEditFields(agentData)
+      if (forbidden.length) {
+        error(`Cannot edit immutable identity/runtime route fields with update-agent: ${forbidden.join(', ')}`)
+        return
+      }
       if (agentData.friendly_name) {
         const cols = fleetStore.checkNameAvailable([agentData.friendly_name], { excludeId: agentData.id, asFriendlyName: true })
         if (cols.length) {
@@ -7628,24 +7639,14 @@ async function handleDaemonWsMessage(ws, msg) {
 
   if (type === 'agent-session-observed') {
     // The daemon observed an alive agent's true live Claude session (from the
-    // PID-keyed ~/.claude/sessions file) and it wasn't the registered primary.
-    // Persist it: make it the primary session_id and merge into session_ids so
-    // JSONL→agent attribution self-heals and survives restarts. This is the
-    // automated form of the manual re-map that fixes dead activity cards.
+    // PID-keyed ~/.claude/sessions file). Session identity is now owned by the
+    // durable agent-seat binding path; this observation is diagnostic only and
+    // must not mutate the legacy agent row.
     const { agent_id, session_id, cwd } = msg
     if (!fleetStore || !agent_id || !session_id) return
     const agent = fleetStore.getAgent(agent_id)
     if (!agent) return
-    const ids = Array.isArray(agent.session_ids) ? [...agent.session_ids] : []
-    const alreadyListed = ids.includes(session_id)
-    if (!alreadyListed) ids.push(session_id)
-    if (agent.session_id === session_id && alreadyListed) return // already current
-    agent.session_id = session_id
-    agent.session_ids = ids
-    if (cwd && !agent.cwd) agent.cwd = cwd
-    fleetStore.upsertAgent(agent)
-    console.log(`[fleet-daemon] reconciled session for ${agent_id}: primary=${session_id} (${ids.length} known)`)
-    broadcastDaemonAgentsUpdated(agent)
+    console.log(`[fleet-daemon] observed session for ${agent_id}: ${session_id}${cwd ? ` cwd=${cwd}` : ''}; route identity is updated only by agent-seat binding`)
     return
   }
 
