@@ -197,6 +197,15 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     })
   })
 
+  router.get('/api/agent-seat', (req, res) => {
+    const query = req.query.agent || req.query.id
+    const agent = fleetStore?.findAgent(query)
+    if (!agent) { res.status(404).json({ ok: false, error: 'agent not found' }); return }
+    const seat = fleetStore?.getCurrentAgentSeat?.(agent.id)
+    if (!seat) { res.status(404).json({ ok: false, error: 'agent has no current durable seat' }); return }
+    res.json({ ok: true, seat })
+  })
+
   // --- GET /api/human ---
   // Returns the server owner's identity. Used by MCP agents and CLI tools
   // to know who the "local human" is. Browser users log in via WS 'login'.

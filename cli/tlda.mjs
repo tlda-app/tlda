@@ -3100,8 +3100,8 @@ async function cmdAgentCheckReady() {
   process.exit(final.ok ? 0 : 1)
 }
 
-async function collectAgentReadiness(query, spawnSync) {
-  const state = await api('GET', '/api/state')
+export async function collectAgentReadiness(query, spawnSync, apiGet = api) {
+  const state = await apiGet('GET', '/api/state')
   const agents = Array.isArray(state?.agents) ? state.agents : []
   let agent = null
   try {
@@ -3112,7 +3112,19 @@ async function collectAgentReadiness(query, spawnSync) {
   if (!agent) return { ok: false, query, error: 'agent not found' }
   const meta = normalizeAgentMetadata(agent.metadata)
   const expectedKind = meta.kind || null
-  const sess = agent.tmux_session || agentSessionName(agent.friendly_name || query)
+  let seat = null
+  try {
+    const data = await apiGet('GET', `/api/agent-seat?agent=${encodeURIComponent(agent.id)}`)
+    seat = data?.seat || null
+  } catch (e) {
+    return { ok: false, query, agent, error: `current durable seat missing: ${e.message}` }
+  }
+  if (!seat?.tmux_session) return { ok: false, query, agent, seat, error: 'current durable seat has no tmux session' }
+  if (seat.agent_id && seat.agent_id !== agent.id) return { ok: false, query, agent, seat, error: `current durable seat owner mismatch: ${seat.agent_id} != ${agent.id}` }
+  if (agent.tmux_session && agent.tmux_session !== seat.tmux_session) {
+    return { ok: false, query, agent, seat, error: `registry/current-seat tmux mismatch: registry=${agent.tmux_session} seat=${seat.tmux_session}` }
+  }
+  const sess = seat.tmux_session
   const hasSession = spawnSync('tmux', [...tmuxBase(), 'has-session', '-t', sess], { stdio: 'ignore' }).status === 0
   let panes = []
   if (hasSession) {
@@ -3120,9 +3132,9 @@ async function collectAgentReadiness(query, spawnSync) {
     if (r.status === 0) panes = r.stdout.trim().split(/\s+/).filter(Boolean)
   }
   const runtime = hasSession ? processTreeHasRuntime(spawnSync, panes, expectedKind) : { ok: false, kind: null, pid: null }
-  const table = await api('GET', `/api/fleet-table?filter=${encodeURIComponent(agent.id)}&limit=5`)
+  const table = await apiGet('GET', `/api/fleet-table?filter=${encodeURIComponent(agent.id)}&limit=5`)
   const row = (table.agents || []).find(a => a.id === agent.id) || null
-  const eventsData = await api('GET', `/api/store/events?agent=${encodeURIComponent(agent.id)}&limit=200`)
+  const eventsData = await apiGet('GET', `/api/store/events?agent=${encodeURIComponent(agent.id)}&limit=200`)
   const events = Array.isArray(eventsData?.events) ? eventsData.events : []
   const recentLogin = [...events].reverse().find(e => e.type === 'login' || e.type === 'register')
   const recentInbox = [...events].reverse().find(e => {
@@ -3137,7 +3149,7 @@ async function collectAgentReadiness(query, spawnSync) {
     : null
   const ok = !agent.dead && hasSession && runtime.ok && !!recentLogin
   return {
-    ok, query, agent, tableRow: row, session: sess, hasSession, panes, runtime,
+    ok, query, agent, seat, tableRow: row, session: sess, hasSession, panes, runtime,
     recentLogin, recentInbox, incoming, replyAfterIncoming,
   }
 }
@@ -3151,6 +3163,7 @@ function printAgentReadiness(r) {
   const row = r.tableRow
   console.log(`spawn readiness for ${agent.friendly_name || agent.id} (${agent.id})`)
   console.log(`  registry: ${agent.dead ? 'dead' : 'live row'}; status=${row?.status || agent.status || 'unknown'}; machine=${agent.machine_id || 'unknown'}`)
+  console.log(`  current seat: ${r.seat ? `${r.seat.session_id || 'no-session'} @ ${r.seat.daemon_key || 'no-daemon'}` : 'missing'}`)
   console.log(`  tmux: ${r.hasSession ? `ok ${r.session} panes=${r.panes.join(',') || 'none'}` : `missing ${r.session}`}`)
   console.log(`  runtime: ${r.runtime.ok ? `ok ${r.runtime.kind} pid=${r.runtime.pid}` : 'missing under tmux pane'}`)
   console.log(`  login event: ${r.recentLogin ? `${r.recentLogin.timestamp} #${r.recentLogin.id}` : 'missing'}`)

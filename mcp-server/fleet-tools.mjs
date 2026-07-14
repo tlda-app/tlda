@@ -2060,6 +2060,13 @@ export async function handleFleetTool(name, args) {
     if (!shellId) {
       return { content: [{ type: 'text', text: 'No shell id available. Spawn must provide FLEET_ID, or pass agent_id.' }], isError: true };
     }
+    const boundFleetId = process.env.FLEET_ID || null;
+    if (boundFleetId && shellId !== boundFleetId) {
+      return { content: [{ type: 'text', text: `Login rejected: requested ${shellId} but this process is bound to ${boundFleetId}.` }], isError: true };
+    }
+    if (AGENT_ID && shellId !== AGENT_ID) {
+      return { content: [{ type: 'text', text: `Login rejected: session already bound to ${AGENT_ID}, cannot relogin as ${shellId}.` }], isError: true };
+    }
     if (args.session_id) CLAUDE_SESSION = args.session_id;
 
     let detectedTmux = process.env.FLEET_TMUX_SESSION || null;
