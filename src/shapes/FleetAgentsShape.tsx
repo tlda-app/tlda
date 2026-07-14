@@ -20,7 +20,6 @@ import { useState, useCallback, useMemo, useRef, useEffect, memo, forwardRef } f
 import { Virtuoso } from 'react-virtuoso'
 import { useFleetAgents, useFleetAgentTotals, useFleetTasks, useFleetUnreadCounts, useFleetContext, useFleetProjects, useFleetIdentity, searchFleet, hibernateSession, spawnAgent, loadNextAgentsPage } from '../fleet-data-adapter'
 import { dropPillOnTarget } from './FleetPillShape'
-import { completePillDrag } from './fleet-pill-gesture'
 import { agentDisplayLabel, agentExactName, beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import { PrettyName } from './PrettyName'
@@ -350,7 +349,6 @@ export function usePillDrag() {
     value: string,
     displayName: string,
     color: string,
-    onTap?: () => void,
   ) => {
     stopEventPropagation(e)
     e.preventDefault()
@@ -416,7 +414,7 @@ export function usePillDrag() {
       (ev: PointerEvent) => {
         const drag = dragRef.current
         dragRef.current = null
-        if (!completePillDrag(drag, onTap) || !drag?.pillId) return
+        if (!drag || !drag.started || !drag.pillId) return
 
         const pagePos = fleetPointerEventPagePoint(editor, frame, ev)
         dropPillOnTarget(editor, drag.pillId as any, drag.value, pagePos)
