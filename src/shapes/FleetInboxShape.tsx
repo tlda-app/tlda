@@ -1609,7 +1609,14 @@ function AgentPanelRow({
     >
       <div
         className="fleet-inbox-phone-agent-name-zone fleet-inbox-pill"
-        onPointerDown={(e) => onStartDrag(e, 'agent', agent.name, agent.display, '#7a9ec8')}
+        onPointerDown={(e) => onStartDrag(
+          e,
+          'agent',
+          agent.name,
+          agent.display,
+          '#7a9ec8',
+          () => onSelect(agent),
+        )}
       >
         <span className="fleet-inbox-phone-agent-name">{agent.display}</span>
       </div>
@@ -1680,7 +1687,14 @@ function useWheelScroll(ref: { current: HTMLDivElement | null }, innerSelector?:
   }, [ref, innerSelector])
 }
 
-type StartDrag = (e: React.PointerEvent, pillType: 'agent' | 'label', value: string, displayName: string, color: string) => void
+type StartDrag = (
+  e: React.PointerEvent,
+  pillType: 'agent' | 'label',
+  value: string,
+  displayName: string,
+  color: string,
+  onTap?: () => void,
+) => void
 
 // --- Row components — one per kind, shared by both the grouped and the
 // interleaved renderers so the two views can't visually drift. ---
