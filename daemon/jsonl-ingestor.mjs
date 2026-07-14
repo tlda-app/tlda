@@ -13,9 +13,21 @@ import {
 } from '../agent-runtime/daemon-guards.mjs'
 import { codexRolloutBelongsToAgent, codexRolloutHasOwnerEvidence } from '../agent-runtime/resolve-transcript.mjs'
 import { acquireSingletonLock, sessionReaderLockPath } from '../agent-runtime/singleton-lock.mjs'
+import {
+  ACTIVITY_HEALTH_BOUNDARIES,
+  ACTIVITY_HEALTH_OK,
+  ACTIVITY_HEALTH_UNAVAILABLE,
+  ACTIVITY_HEALTH_UNKNOWN,
+} from '../shared/activity-health.mjs'
 
 const DEFAULT_DISPLAY_REPLAY_MAX_BYTES = 256 * 1024
 const CATCHUP_DISPLAY_OUTPUT_TYPES = new Set(['activity', 'context', 'qualification', 'terminalChat', 'nativeTask'])
+const JSONL_RUNTIME_FAILURE_BOUNDARIES = {
+  'start-failed': ACTIVITY_HEALTH_BOUNDARIES.WATCH_START_FAILED,
+  error: ACTIVITY_HEALTH_BOUNDARIES.WATCH_RUNTIME_ERROR,
+  'ack-failed': ACTIVITY_HEALTH_BOUNDARIES.WATCH_ACK_FAILED,
+  'delivery-failed': ACTIVITY_HEALTH_BOUNDARIES.WATCH_DELIVERY_FAILED,
+}
 
 export function catchupReplayBoundary({ startOffset = 0, liveOffset = 0, thresholdBytes = DEFAULT_DISPLAY_REPLAY_MAX_BYTES } = {}) {
   if (!Number.isFinite(startOffset) || !Number.isFinite(liveOffset)) return null
@@ -25,6 +37,128 @@ export function catchupReplayBoundary({ startOffset = 0, liveOffset = 0, thresho
 
 export function shouldSuppressCatchupOutput(output) {
   return CATCHUP_DISPLAY_OUTPUT_TYPES.has(output?.type)
+}
+
+export function jsonlRuntimeFailureActivityHealth(pw, kind, detail = {}) {
+  const boundary = JSONL_RUNTIME_FAILURE_BOUNDARIES[kind]
+  if (!boundary) throw new Error(`unknown JSONL runtime failure kind: ${kind}`)
+  const fallbackReason = detail.error || detail.reason || `${kind} for ${pw?.jsonlPath ? path.basename(pw.jsonlPath) : 'unknown jsonl'}`
+  return {
+    state: ACTIVITY_HEALTH_UNAVAILABLE,
+    boundary,
+    reason: detail.error || fallbackReason,
+    sessionId: pw?.sessionId || null,
+    jsonlPath: pw?.jsonlPath || null,
+  }
+}
+
+export function createJsonlIngesterMessageHandler({
+  log,
+  childWatchers,
+  cursors,
+  scheduleCursorSave,
+  refreshIngestionCaughtUp,
+  handleJsonlBackfillBatch,
+  handleJsonlBackfillSessionComplete,
+  handleJsonlBackfillJobDone,
+  retireJsonlTail,
+  processJsonlChildOutputs,
+  sendJsonlIngesterMessage,
+  maybeCompleteDisplayCatchup,
+  updateJsonlCursorFromTail,
+}) {
+  return function handleJsonlIngesterMessage(msg) {
+    if (msg?.type === 'ready') {
+      log.info('JSONL ingester child ready')
+      return
+    }
+    if (msg?.type === 'job-batch') {
+      void handleJsonlBackfillBatch(msg)
+      return
+    }
+    if (msg?.type === 'job-session-complete') {
+      handleJsonlBackfillSessionComplete(msg)
+      return
+    }
+    if (msg?.type === 'job-complete' || msg?.type === 'job-failed') {
+      handleJsonlBackfillJobDone(msg)
+      return
+    }
+    const pw = msg?.watchId ? childWatchers.get(msg.watchId) : null
+    if (msg?.type === 'warn') {
+      log.warn(`${msg.warning || 'JSONL ingester warning'}${msg.jsonlPath ? ` for ${path.basename(msg.jsonlPath)}` : ''}`)
+      return
+    }
+    if (!pw) return
+    if (msg.type === 'started') return
+    if (msg.type === 'start-failed') {
+      if (!pw.stopped) {
+        log.warn(`tail-file start failed for ${path.basename(pw.jsonlPath)}: ${msg.error || 'unknown error'}`)
+        retireJsonlTail(pw, `start failed for ${path.basename(pw.jsonlPath)}`, {
+          healthKind: 'start-failed',
+          healthDetail: { error: msg.error || 'unknown error' },
+        })
+      }
+      return
+    }
+    if (msg.type === 'error') {
+      log.warn(`JSONL ingester error for ${path.basename(pw.jsonlPath)}: ${msg.error || 'unknown error'}`)
+      retireJsonlTail(pw, `ingester error for ${path.basename(pw.jsonlPath)}`, {
+        healthKind: 'error',
+        healthDetail: { error: msg.error || 'unknown error' },
+      })
+      return
+    }
+    if (msg.type === 'renamed' || msg.type === 'truncated') {
+      const entry = cursors[pw.sessionId] || (cursors[pw.sessionId] = {})
+      entry.offset = 0
+      scheduleCursorSave()
+      refreshIngestionCaughtUp()
+      return
+    }
+    if (msg.type === 'batch') {
+      pw.pendingDeliveries += 1
+      const delivered = processJsonlChildOutputs(pw, msg.outputs || [])
+      pw.pendingDeliveries -= 1
+      pw.lastDeliveryOk = delivered
+      try {
+        sendJsonlIngesterMessage({ type: 'ack', watchId: pw.watchId, seq: msg.seq, ok: delivered })
+      } catch (e) {
+        // Child IPC failed; retire this watcher so a later sync can recreate it.
+        log.warn(`JSONL ingester ack failed for ${path.basename(pw.jsonlPath)}: ${e?.message || e}`)
+        retireJsonlTail(pw, `ack failed for ${path.basename(pw.jsonlPath)}`, {
+          healthKind: 'ack-failed',
+          healthDetail: { error: e?.message || String(e) },
+        })
+        return
+      }
+      if (!delivered) {
+        retireJsonlTail(pw, `delivery failed for ${path.basename(pw.jsonlPath)}`, {
+          healthKind: 'delivery-failed',
+          healthDetail: { reason: 'activity delivery failed' },
+        })
+        return
+      }
+      if (pw.pendingDeliveries === 0 && pw.pendingFlushOffset != null) {
+        const offset = pw.pendingFlushOffset
+        pw.pendingFlushOffset = null
+        updateJsonlCursorFromTail(pw, offset)
+      }
+      return
+    }
+    if (msg.type === 'flush') {
+      if (!pw.lastDeliveryOk) {
+        log.warn(`not advancing cursor for ${path.basename(pw.jsonlPath)}; activity delivery failed`)
+        return
+      }
+      if (pw.pendingDeliveries > 0) {
+        pw.pendingFlushOffset = msg.offset
+        return
+      }
+      maybeCompleteDisplayCatchup(pw, msg.offset)
+      updateJsonlCursorFromTail(pw, msg.offset)
+    }
+  }
 }
 
 export function createJsonlIngestor({
@@ -310,6 +444,23 @@ export function createJsonlIngestor({
   // Per-agent warnings already fired: agentId → Set of "editPath:requiredPath" to avoid spam
   const _agentWarned = new Map()
 
+  function sendActivityHealth(agent, patch) {
+    const agentId = typeof agent === 'string' ? agent : agent?.id
+    if (!agentId) return
+    sendMsg({
+      type: 'activity-health',
+      agent_id: agentId,
+      state: patch.state,
+      boundary: patch.boundary,
+      reason: patch.reason || null,
+      ts: patch.ts || new Date().toISOString(),
+      last_known_good_at: patch.lastKnownGoodAt || null,
+      last_activity_at: patch.lastActivityAt || null,
+      session_id: patch.sessionId || null,
+      jsonl_path: patch.jsonlPath || null,
+    })
+  }
+
   function loadQualifications() {
     try {
       if (!fs.existsSync(QUALIFICATIONS_FILE)) return
@@ -467,7 +618,14 @@ export function createJsonlIngestor({
 
     for (const agent of agentList) {
       if (agent.dead) continue
-      if (!agent.tmux_session || !liveSessions.has(agent.tmux_session)) continue
+      if (!agent.tmux_session || !liveSessions.has(agent.tmux_session)) {
+        sendActivityHealth(agent, {
+          state: ACTIVITY_HEALTH_UNAVAILABLE,
+          boundary: ACTIVITY_HEALTH_BOUNDARIES.NO_TMUX,
+          reason: agent.tmux_session ? `tmux session ${agent.tmux_session} is not live` : 'agent has no tmux_session',
+        })
+        continue
+      }
       let harness
       try {
         const kind = await selectAgentKind(agent)
@@ -475,6 +633,11 @@ export function createJsonlIngestor({
         if (!adapter) throw new Error(`unknown harness kind "${kind}" for ${agent?.friendly_name || agent?.id}`)
         harness = adapter.activity
       } catch (e) {
+        sendActivityHealth(agent, {
+          state: ACTIVITY_HEALTH_UNKNOWN,
+          boundary: ACTIVITY_HEALTH_BOUNDARIES.NO_HARNESS_KIND,
+          reason: e.message,
+        })
         log.error(`activity harness selection failed: ${e.message}`)
         continue
       }
@@ -498,7 +661,14 @@ export function createJsonlIngestor({
       let bestMtime = 0
       if (harness.resolveJsonl) {
         jsonlPath = await harness.resolveJsonl(agent)
-        if (!jsonlPath) continue
+        if (!jsonlPath) {
+          sendActivityHealth(agent, {
+            state: ACTIVITY_HEALTH_UNAVAILABLE,
+            boundary: ACTIVITY_HEALTH_BOUNDARIES.RESOLVE_JSONL_NULL,
+            reason: `${harness.kind} JSONL resolver returned no path`,
+          })
+          continue
+        }
       } else {
         if (!harness.usesClaudeSessionIds) continue
         for (const sid of candidateIds) {
@@ -537,7 +707,14 @@ export function createJsonlIngestor({
           }
         }
       }
-      if (!jsonlPath) continue
+      if (!jsonlPath) {
+        sendActivityHealth(agent, {
+          state: ACTIVITY_HEALTH_UNAVAILABLE,
+          boundary: ACTIVITY_HEALTH_BOUNDARIES.RESOLVE_JSONL_NULL,
+          reason: `${harness.kind} JSONL path not found for registered sessions`,
+        })
+        continue
+      }
 
       activePaths.add(jsonlPath)
       agentPaths.set(agent.id, jsonlPath)
@@ -585,10 +762,25 @@ export function createJsonlIngestor({
               terminalChat: !!harness.terminalChat,
               backfillSearch: !!harness.backfillSearch,
             })
+            sendActivityHealth(agent, {
+              state: ACTIVITY_HEALTH_OK,
+              boundary: ACTIVITY_HEALTH_BOUNDARIES.WATCH_ATTACHED,
+              reason: `${harness.kind} watcher updated`,
+              lastKnownGoodAt: new Date().toISOString(),
+              sessionId: fileSessionId,
+              jsonlPath,
+            })
           } catch (e) {
             // Retire this broken tail; other JSONL watchers must keep flowing.
             log.warn(`JSONL ingester update failed for ${path.basename(jsonlPath)}: ${e?.message || e}`)
             retireJsonlTail(pw, `ingester update failed for ${path.basename(jsonlPath)}`)
+            sendActivityHealth(agent, {
+              state: ACTIVITY_HEALTH_UNAVAILABLE,
+              boundary: ACTIVITY_HEALTH_BOUNDARIES.WATCH_UPDATE_FAILED,
+              reason: e?.message || String(e),
+              sessionId: fileSessionId,
+              jsonlPath,
+            })
           }
           continue
         }
@@ -597,7 +789,16 @@ export function createJsonlIngestor({
       // First time watching this JSONL — initialize cursor.
       const sessionId = path.basename(jsonlPath, '.jsonl')
       let stat
-      try { stat = fs.statSync(jsonlPath) } catch { continue }
+      try { stat = fs.statSync(jsonlPath) } catch (e) {
+        sendActivityHealth(agent, {
+          state: ACTIVITY_HEALTH_UNAVAILABLE,
+          boundary: ACTIVITY_HEALTH_BOUNDARIES.WATCH_STAT_FAILED,
+          reason: e?.message || String(e),
+          sessionId,
+          jsonlPath,
+        })
+        continue
+      }
       const inode = stat.ino
       const stored = cursors[sessionId]
       let offset
@@ -644,11 +845,26 @@ export function createJsonlIngestor({
         const pwState = startJsonlTail({ agent, jsonlPath, sessionId, harness, startOffset: offset, liveOffset: stat.size })
         pathWatchers.set(jsonlPath, pwState)
         retainJsonlDirWatcher(jsonlPath)
+        sendActivityHealth(agent, {
+          state: ACTIVITY_HEALTH_OK,
+          boundary: ACTIVITY_HEALTH_BOUNDARIES.WATCH_ATTACHED,
+          reason: `${harness.kind} watcher attached`,
+          lastKnownGoodAt: new Date().toISOString(),
+          sessionId,
+          jsonlPath,
+        })
 
         log.info(`watching ${harness.kind} JSONL for ${agent.friendly_name || agent.id}: ${path.basename(jsonlPath)} @ offset=${offset}`)
       } catch (e) {
         // One failed watcher should not prevent other agents from being watched.
         log.error(`watcher creation failed for ${jsonlPath}: ${e.message}`)
+        sendActivityHealth(agent, {
+          state: ACTIVITY_HEALTH_UNAVAILABLE,
+          boundary: ACTIVITY_HEALTH_BOUNDARIES.WATCH_CREATE_FAILED,
+          reason: e?.message || String(e),
+          sessionId,
+          jsonlPath,
+        })
       }
     }
 
@@ -659,7 +875,9 @@ export function createJsonlIngestor({
         pathWatchers.delete(p)
         releaseJsonlDirWatcher(p)
         for (const [aid, watchedPath] of agentPaths) {
-          if (watchedPath === p) agentPaths.delete(aid)
+          if (watchedPath === p) {
+            agentPaths.delete(aid)
+          }
         }
       }
     }
@@ -771,86 +989,21 @@ export function createJsonlIngestor({
     return pw
   }
 
-  function handleJsonlIngesterMessage(msg) {
-    if (msg?.type === 'ready') {
-      log.info('JSONL ingester child ready')
-      return
-    }
-    if (msg?.type === 'job-batch') {
-      void handleJsonlBackfillBatch(msg)
-      return
-    }
-    if (msg?.type === 'job-session-complete') {
-      handleJsonlBackfillSessionComplete(msg)
-      return
-    }
-    if (msg?.type === 'job-complete' || msg?.type === 'job-failed') {
-      handleJsonlBackfillJobDone(msg)
-      return
-    }
-    const pw = msg?.watchId ? childWatchers.get(msg.watchId) : null
-    if (msg?.type === 'warn') {
-      log.warn(`${msg.warning || 'JSONL ingester warning'}${msg.jsonlPath ? ` for ${path.basename(msg.jsonlPath)}` : ''}`)
-      return
-    }
-    if (!pw) return
-    if (msg.type === 'started') return
-    if (msg.type === 'start-failed') {
-      if (!pw.stopped) {
-        log.warn(`tail-file start failed for ${path.basename(pw.jsonlPath)}: ${msg.error || 'unknown error'}`)
-        retireJsonlTail(pw, `start failed for ${path.basename(pw.jsonlPath)}`)
-      }
-      return
-    }
-    if (msg.type === 'error') {
-      log.warn(`JSONL ingester error for ${path.basename(pw.jsonlPath)}: ${msg.error || 'unknown error'}`)
-      retireJsonlTail(pw, `ingester error for ${path.basename(pw.jsonlPath)}`)
-      return
-    }
-    if (msg.type === 'renamed' || msg.type === 'truncated') {
-      const entry = cursors[pw.sessionId] || (cursors[pw.sessionId] = {})
-      entry.offset = 0
-      scheduleCursorSave()
-      refreshIngestionCaughtUp()
-      return
-    }
-    if (msg.type === 'batch') {
-      pw.pendingDeliveries += 1
-      const delivered = processJsonlChildOutputs(pw, msg.outputs || [])
-      pw.pendingDeliveries -= 1
-      pw.lastDeliveryOk = delivered
-      try {
-        _jsonlIngester?.send?.({ type: 'ack', watchId: pw.watchId, seq: msg.seq, ok: delivered })
-      } catch (e) {
-        // Child IPC failed; retire this watcher so a later sync can recreate it.
-        log.warn(`JSONL ingester ack failed for ${path.basename(pw.jsonlPath)}: ${e?.message || e}`)
-        retireJsonlTail(pw, `ack failed for ${path.basename(pw.jsonlPath)}`)
-        return
-      }
-      if (!delivered) {
-        retireJsonlTail(pw, `delivery failed for ${path.basename(pw.jsonlPath)}`)
-        return
-      }
-      if (pw.pendingDeliveries === 0 && pw.pendingFlushOffset != null) {
-        const offset = pw.pendingFlushOffset
-        pw.pendingFlushOffset = null
-        updateJsonlCursorFromTail(pw, offset)
-      }
-      return
-    }
-    if (msg.type === 'flush') {
-      if (!pw.lastDeliveryOk) {
-        log.warn(`not advancing cursor for ${path.basename(pw.jsonlPath)}; activity delivery failed`)
-        return
-      }
-      if (pw.pendingDeliveries > 0) {
-        pw.pendingFlushOffset = msg.offset
-        return
-      }
-      maybeCompleteDisplayCatchup(pw, msg.offset)
-      updateJsonlCursorFromTail(pw, msg.offset)
-    }
-  }
+  const handleJsonlIngesterMessage = createJsonlIngesterMessageHandler({
+    log,
+    childWatchers,
+    cursors,
+    scheduleCursorSave,
+    refreshIngestionCaughtUp,
+    handleJsonlBackfillBatch,
+    handleJsonlBackfillSessionComplete,
+    handleJsonlBackfillJobDone,
+    retireJsonlTail,
+    processJsonlChildOutputs,
+    sendJsonlIngesterMessage: (msg) => _jsonlIngester?.send?.(msg),
+    maybeCompleteDisplayCatchup,
+    updateJsonlCursorFromTail,
+  })
 
   function countCatchupSuppressed(pw, output) {
     const n = output?.type === 'activity' ? (output.events?.length || 0)
@@ -990,8 +1143,11 @@ export function createJsonlIngestor({
     return delivered
   }
 
-  function retireJsonlTail(pw, reason) {
+  function retireJsonlTail(pw, reason, options = {}) {
     if (!pw) return
+    if (options.healthKind) {
+      sendActivityHealth(pw.primaryAgentId, jsonlRuntimeFailureActivityHealth(pw, options.healthKind, options.healthDetail))
+    }
     if (pathWatchers.get(pw.jsonlPath) === pw) {
       pathWatchers.delete(pw.jsonlPath)
       releaseJsonlDirWatcher(pw.jsonlPath)

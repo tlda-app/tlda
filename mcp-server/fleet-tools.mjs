@@ -27,6 +27,7 @@ import { extractMarkdownSection } from '../shared/markdown-section.mjs';
 import { normalizeChatDisplayMathDelimiters } from '../shared/chat-math-normalize.mjs';
 import { formatSpawnModelSummary, validateSpawnModelSelection } from '../shared/spawn-model-validation.mjs';
 import { buildFleetSearchFilters, parseSearchQuery } from '../shared/fleet-search-query.mjs';
+import { formatActivityHealthStatus } from '../shared/activity-health.mjs';
 import {
   INBOX_STATUSES,
   INBOX_VIEWS,
@@ -4189,7 +4190,8 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       const fmt = (a) => {
         const seen = a.last_seen_ago_s == null ? 'never' : a.last_seen_ago_s < 90 ? `${a.last_seen_ago_s}s` : a.last_seen_ago_s < 5400 ? `${Math.round(a.last_seen_ago_s / 60)}m` : `${Math.round(a.last_seen_ago_s / 3600)}h`;
         const act = a.activity ? `${a.activity}${a.tool ? `:${a.tool}` : ''}` : '';
-        return { name: a.name, status: a.status, seen, inbox: a.inbox_status || '', delivery: a.delivery_channel || '', model: a.model || '', cwd: a.cwd || '', act };
+        const health = formatActivityHealthStatus(a.activity_health, { idleText: act });
+        return { name: a.name, status: a.status, seen, inbox: a.inbox_status || '', delivery: a.delivery_channel || '', model: a.model || '', cwd: a.cwd || '', act: health || act };
       };
       const f = rows.map(fmt);
       const w = (k) => Math.max(k.length, ...f.map(r => String(r[k]).length));

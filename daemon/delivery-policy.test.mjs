@@ -9,7 +9,7 @@ import {
 } from './delivery-policy.mjs'
 
 test('classifies durable daemon events', () => {
-  for (const type of ['source-change', 'activity-event', 'terminal-chat', 'terminal-dead', 'spawn-startup-failed', 'agent-status', 'jsonl-index']) {
+  for (const type of ['source-change', 'activity-event', 'activity-health', 'terminal-chat', 'terminal-dead', 'spawn-startup-failed', 'agent-status', 'jsonl-index']) {
     assert.equal(daemonDeliveryPolicy({ type }), DELIVERY_DURABLE_FIFO, type)
   }
 })

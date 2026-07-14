@@ -28,6 +28,7 @@ import { useIsInViewport, useVisibilityViewportId } from './useIsInViewport'
 import { fleetInteractionFrame, fleetPointerEventPagePoint } from '../wm/fleet-interaction-frame'
 import { useAvailableSpawnModels } from '../fleet/useAvailableSpawnModels'
 import { activeMintToken, applyMintCandidate, parseMintInput } from '../fleet/mint-input'
+import { activityHealthForProjection, formatActivityHealthStatus } from '../../shared/activity-health.mjs'
 
 
 const DEFAULT_W = 340
@@ -277,6 +278,10 @@ function formatRelativeTime(ts: number | undefined): string {
   if (delta < 3600_000) return `${Math.floor(delta / 60_000)}m`
   if (delta < 86400_000) return `${Math.floor(delta / 3600_000)}h`
   return `${Math.floor(delta / 86400_000)}d`
+}
+
+function formatAgentActivityHealth(meta: any): string {
+  return formatActivityHealthStatus(activityHealthForProjection(meta || {}), { idleText: '' })
 }
 
 // --- Shape definition ---
@@ -1118,10 +1123,11 @@ function AgentRow({
   const modelStr = formatModel(meta.model)
   const effortStr = formatEffort(meta.effort, meta.kind)
   const capStr = formatPermission(meta)
+  const activityHealthStr = formatAgentActivityHealth(meta)
   const machineStr = agent.machine_id || ''
   const taskTitle = taskDesc
   // Desktop hover summary (touch users get the same via tap-to-expand).
-  const hoverTitle = [name, machineStr && `machine: ${machineStr}`, modelStr && `model: ${modelStr}`, ago && `seen ${ago}`]
+  const hoverTitle = [name, machineStr && `machine: ${machineStr}`, modelStr && `model: ${modelStr}`, activityHealthStr && `activity ${activityHealthStr}`, ago && `seen ${ago}`]
     .filter(Boolean)
     .join('  ·  ')
 
@@ -1172,6 +1178,7 @@ function AgentRow({
         </span>
 
         <span className="fleet-agents-col-task" title={taskTitle}>
+          {activityHealthStr && <span className="fleet-agents-health">{activityHealthStr}</span>}
           <span>{taskDesc ? taskDesc.substring(0, 50) : ''}</span>
         </span>
 
@@ -1199,6 +1206,7 @@ function AgentRow({
             {modelStr && <span className="fleet-agents-detail-model">{modelStr}</span>}
             {effortStr && <span className="fleet-agents-detail-effort">{effortStr}</span>}
             {capStr && <span className="fleet-agents-detail-cap" title="permission / fence">{capStr}</span>}
+            {activityHealthStr && <span className="fleet-agents-detail-health" title="activity health">{activityHealthStr}</span>}
             {ago && <span className="fleet-agents-detail-seen">seen {ago}</span>}
           </div>
           <div className="fleet-agents-detail-current">

@@ -1763,6 +1763,16 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   border-radius: 2px;
   padding: 0 4px;
 }
+.fleet-agents-shape .fleet-agents-detail-health,
+.fleet-agents-shape .fleet-agents-health {
+  flex-shrink: 0;
+  opacity: 0.7;
+  color: #d79a62;
+  background: rgba(215, 154, 98, 0.12);
+  border-radius: 2px;
+  padding: 0 4px;
+  white-space: nowrap;
+}
 .fleet-agents-shape .fleet-agents-detail-seen {
   flex-shrink: 0;
   opacity: 0.45;

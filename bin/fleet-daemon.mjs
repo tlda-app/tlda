@@ -67,6 +67,10 @@ import { createLogger } from '../shared/logger.mjs'
 import { resolveDaemonIsolation } from '../shared/daemon-identity.mjs'
 import { sendActivityEvents } from '../agent-runtime/activity-send.mjs'
 import {
+  ACTIVITY_HEALTH_BOUNDARIES,
+  ACTIVITY_HEALTH_OK,
+} from '../shared/activity-health.mjs'
+import {
   THINKING_SPINNER_RE, INTERRUPT_HINT_RE, THINKING_SCAN_LINES,
 } from '../agent-runtime/status-classifier.mjs'
 import {
@@ -344,6 +348,16 @@ function bufferActivity(agentId, evts) {
   // Any buffered activity (claude/codex JSONL or goose sqlite) is a reason to
   // watch this agent's pane frequently — arm it for the status state machine.
   agentStatus.armAgent(agentId)
+  sendMsg({
+    type: 'activity-health',
+    agent_id: agentId,
+    state: ACTIVITY_HEALTH_OK,
+    boundary: ACTIVITY_HEALTH_BOUNDARIES.LAST_ACTIVITY,
+    reason: 'activity extracted from harness stream',
+    ts: new Date(daemonReceivedAtMs).toISOString(),
+    last_known_good_at: new Date(daemonReceivedAtMs).toISOString(),
+    last_activity_at: new Date(daemonReceivedAtMs).toISOString(),
+  })
   return sendActivityEvents(agentId, stampedEvents, sendMsg)
 }
 

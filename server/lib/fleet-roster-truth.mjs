@@ -1,3 +1,5 @@
+import { activityHealthForProjection } from '../../shared/activity-health.mjs'
+
 function agentName(agent) {
   return agent.friendly_name || agent.name || agent.id
 }
@@ -28,6 +30,7 @@ function rowForAgent(agent, now = Date.now()) {
     tmux_session: agent.tmux_session || null,
     activity: act?.state || null,
     tool: act?.tool || null,
+    activity_health: activityHealthForProjection(agent.metadata || {}),
   }
 }
 

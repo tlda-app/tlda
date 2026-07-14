@@ -1962,6 +1962,33 @@ export class FleetStore {
     this._syncAgentRegistry(id);
   }
 
+  updateAgentActivityHealth(id, health) {
+    const row = this._getAgent.get(id);
+    if (!row) return null;
+    let metadata;
+    try { metadata = row.metadata ? JSON.parse(row.metadata) : {}; } catch (e) { console.warn(`[fleet-store] corrupt metadata JSON for agent ${id}, resetting: ${e.message}`); metadata = {}; }
+    if (typeof metadata !== 'object' || metadata === null) metadata = {};
+    const previous = metadata.activityHealth || null;
+    metadata.activityHealth = health;
+    this.db.prepare('UPDATE agents SET metadata = ? WHERE id = ?')
+      .run(JSON.stringify(metadata), id);
+    this._syncAgentRegistry(id);
+    return { agent: this.getAgent(id), previous };
+  }
+
+  updateAgentActivityHealthIncidents(id, incidents) {
+    const row = this._getAgent.get(id);
+    if (!row) return null;
+    let metadata;
+    try { metadata = row.metadata ? JSON.parse(row.metadata) : {}; } catch (e) { console.warn(`[fleet-store] corrupt metadata JSON for agent ${id}, resetting: ${e.message}`); metadata = {}; }
+    if (typeof metadata !== 'object' || metadata === null) metadata = {};
+    metadata.activityHealthIncidents = incidents && typeof incidents === 'object' ? incidents : {};
+    this.db.prepare('UPDATE agents SET metadata = ? WHERE id = ?')
+      .run(JSON.stringify(metadata), id);
+    this._syncAgentRegistry(id);
+    return this.getAgent(id);
+  }
+
   // Liveness oracle: optional function (agentId) => boolean.
   // Installed by the server. Returns true if the server currently believes the
   // agent is live, based on login, activity, thinking/status, and explicit wake

@@ -120,6 +120,16 @@ import {
 import { createNotificationAttemptRecorder } from './lib/notification-attempts.mjs'
 import { daemonEventFailureIncident } from './lib/daemon-event-failures.mjs'
 import { buildDaemonActivityRecord } from './lib/daemon-activity-ingest.mjs'
+import {
+  ACTIVITY_HEALTH_BOUNDARIES,
+  ACTIVITY_HEALTH_OK,
+  ACTIVITY_HEALTH_UNAVAILABLE,
+  activityHealthIncidentPayload,
+  activityHealthKey,
+  activityHealthIncidentDecision,
+  isActivityHealthOk,
+  normalizeActivityHealth,
+} from '../shared/activity-health.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const fleetWsLog = createBackendLogger('fleet-ws')
@@ -1909,6 +1919,123 @@ async function reportFleetIncident({ severity = 'warning', component, operation,
     })
   }
   return event
+}
+
+async function reportFleetIncidentClear({ key, agent, health, incident }) {
+  if (!fleetStore || !key) return null
+  const text = [
+    `**Fleet incident cleared: activity-health/${incident?.boundary || health?.boundary || 'unknown'}**`,
+    '',
+    `Agent: \`${agent?.friendly_name || agent?.id || 'unknown'}\``,
+    `Recovered at: \`${health?.ts || new Date().toISOString()}\``,
+    '',
+    '```json',
+    JSON.stringify(compactObject({
+      key,
+      previous: incident || null,
+      recovery: health || null,
+    }), null, 2).slice(0, 3000),
+    '```',
+  ].join('\n')
+  const event = await fleetStore.chat('fleet:tlda', SERVER_OWNER_ID, text, {
+    type: 'fleet_incident_clear',
+    component: 'activity-health',
+    operation: incident?.boundary || health?.boundary || 'unknown',
+    key,
+    agent_id: agent?.id || null,
+    cleared_at: health?.ts || new Date().toISOString(),
+    previous_event_id: incident?.eventId || null,
+  })
+  if (event) {
+    broadcastEvent('fleet-event', {
+      type: 'chat',
+      from: 'fleet:tlda',
+      to: SERVER_OWNER_ID,
+      id: event.id,
+      text,
+      event_id: event.id,
+      metadata: event.metadata || null,
+    })
+  }
+  return event
+}
+
+async function reconcileActivityHealthIncident(agent, health) {
+  if (!fleetStore || !agent || !health) return agent
+  const fresh = fleetStore.getAgent?.(agent.id) || agent
+  const metadata = fresh.metadata || {}
+  const incidents = { ...(metadata.activityHealthIncidents || {}) }
+  const now = new Date()
+  const decision = activityHealthIncidentDecision(incidents, agent, health)
+
+  if (isActivityHealthOk(health)) {
+    let updatedAgent = fresh
+    for (const key of decision.clearKeys) {
+      const incident = incidents[key]
+      incidents[key] = { ...incident, clearedAt: health.ts || now.toISOString(), clearBoundary: health.boundary || null }
+      updatedAgent = fleetStore.updateAgentActivityHealthIncidents?.(agent.id, incidents) || updatedAgent
+      await reportFleetIncidentClear({ key, agent, health, incident })
+    }
+    return updatedAgent
+  } else {
+    const key = activityHealthKey(agent.id, health.boundary)
+    if (decision.raise) {
+      incidents[key] = {
+        key,
+        eventId: null,
+        boundary: health.boundary || null,
+        state: health.state || null,
+        raisedAt: health.ts || now.toISOString(),
+        clearedAt: null,
+        pending: true,
+      }
+      let updatedAgent = fleetStore.updateAgentActivityHealthIncidents?.(agent.id, incidents) || fresh
+      const payload = activityHealthIncidentPayload(agent, health, now)
+      const event = await reportFleetIncident(payload)
+      const latest = fleetStore.getAgent?.(agent.id) || updatedAgent
+      const latestIncidents = { ...(latest.metadata?.activityHealthIncidents || {}) }
+      if (latestIncidents[key] && !latestIncidents[key].clearedAt) {
+        latestIncidents[key] = {
+          ...latestIncidents[key],
+          eventId: event?.id || null,
+          pending: false,
+        }
+        updatedAgent = fleetStore.updateAgentActivityHealthIncidents?.(agent.id, latestIncidents) || updatedAgent
+      }
+      return updatedAgent
+    }
+  }
+
+  return fresh
+}
+
+async function updateAgentActivityHealth(agentId, patch) {
+  if (!fleetStore || !agentId) return null
+  const existing = fleetStore.getAgent?.(agentId)
+  if (!existing) return null
+  const previousHealth = existing.metadata?.activityHealth || null
+  const health = normalizeActivityHealth({
+    state: patch.state,
+    boundary: patch.boundary,
+    reason: patch.reason,
+    ts: patch.ts,
+    lastKnownGoodAt: patch.lastKnownGoodAt || previousHealth?.lastKnownGoodAt || null,
+    lastActivityAt: patch.lastActivityAt || previousHealth?.lastActivityAt || null,
+    sessionId: patch.sessionId || null,
+    jsonlPath: patch.jsonlPath || null,
+  })
+  const updated = fleetStore.updateAgentActivityHealth?.(agentId, health)?.agent || fleetStore.getAgent?.(agentId)
+  const withIncidentState = await reconcileActivityHealthIncident(updated, health)
+  broadcastState(withIncidentState?.id || agentId)
+  return withIncidentState
+}
+
+async function updateDaemonActivityTransportHealth(daemonKey, patch) {
+  if (!fleetStore || !daemonKey) return
+  const agents = fleetStore.getAgentsByDaemonKey?.(daemonKey) || []
+  for (const agent of agents) {
+    await updateAgentActivityHealth(agent.id, patch)
+  }
 }
 
 async function reportSyncSignalFailure(failure) {
@@ -4357,6 +4484,12 @@ server.on('upgrade', async (req, socket, head) => {
           // cannot make every working agent on that machine vanish.
           failPendingRpcsForDaemon(ws._machineId, ws._envName, 'daemon disconnected')
           clearServerDaemonOutboxInflightForDaemon(ws._daemonKey)
+          updateDaemonActivityTransportHealth(ws._daemonKey, {
+            state: ACTIVITY_HEALTH_UNAVAILABLE,
+            boundary: ACTIVITY_HEALTH_BOUNDARIES.TRANSPORT_DISCONNECTED,
+            reason: 'daemon websocket closed',
+            ts: new Date().toISOString(),
+          }).catch(e => console.error(`[activity-health] daemon disconnect update failed: ${e.message}`))
           broadcastState()
           console.log(`[fleet-daemon] disconnected: daemon=${ws._daemonKey}`)
         }
@@ -4367,6 +4500,12 @@ server.on('upgrade', async (req, socket, head) => {
           fleetStore?.markDaemonDisconnected?.(ws._daemonKey)
           failPendingRpcsForDaemon(ws._machineId, ws._envName, 'daemon ws error')
           clearServerDaemonOutboxInflightForDaemon(ws._daemonKey)
+          updateDaemonActivityTransportHealth(ws._daemonKey, {
+            state: ACTIVITY_HEALTH_UNAVAILABLE,
+            boundary: ACTIVITY_HEALTH_BOUNDARIES.TRANSPORT_DISCONNECTED,
+            reason: 'daemon websocket error',
+            ts: new Date().toISOString(),
+          }).catch(e => console.error(`[activity-health] daemon error update failed: ${e.message}`))
           broadcastState()
         }
       })
@@ -7326,6 +7465,13 @@ async function handleDaemonWsMessage(ws, msg) {
     // until the feed has been up a full idle window, so a flap can't cause a
     // stale-_lastActivityAt false hibernate.
     _daemonConnectedSince.set(daemonKey, Date.now())
+    await updateDaemonActivityTransportHealth(daemonKey, {
+      state: ACTIVITY_HEALTH_OK,
+      boundary: ACTIVITY_HEALTH_BOUNDARIES.TRANSPORT_CONNECTED,
+      reason: 'daemon websocket connected',
+      ts: new Date().toISOString(),
+      lastKnownGoodAt: new Date().toISOString(),
+    })
     if (daemonKey === LOCAL_DAEMON_ADDRESS) noteDaemonHealthyConnect()
     console.log(`[fleet-daemon] connected: daemon=${daemonKey} user=${user}@${hostname} v=${version} boot_id=${boot_id}`)
 
@@ -7467,6 +7613,22 @@ async function handleDaemonWsMessage(ws, msg) {
     fleetStore.upsertAgent(agent)
     console.log(`[fleet-daemon] reconciled session for ${agent_id}: primary=${session_id} (${ids.length} known)`)
     broadcastDaemonAgentsUpdated(agent)
+    return
+  }
+
+  if (type === 'activity-health') {
+    const { agent_id } = msg
+    if (!agent_id) return
+    await updateAgentActivityHealth(agent_id, {
+      state: msg.state,
+      boundary: msg.boundary,
+      reason: msg.reason,
+      ts: msg.ts,
+      lastKnownGoodAt: msg.last_known_good_at || null,
+      lastActivityAt: msg.last_activity_at || null,
+      sessionId: msg.session_id || null,
+      jsonlPath: msg.jsonl_path || null,
+    })
     return
   }
 
