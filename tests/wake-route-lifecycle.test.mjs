@@ -33,6 +33,12 @@ function harness({ agent = baseAgent(), serverAlive = true, checkAlive = { alive
   const wedged = []
   const lifecycle = []
   const librarian = new SpawnLibrarian()
+  let currentSeat = {
+    agent_id: agent.id,
+    session_id: 'session-worker',
+    daemon_key: DAEMON,
+    tmux_session: agent.tmux_session,
+  }
   return {
     agent,
     attempts,
@@ -46,12 +52,7 @@ function harness({ agent = baseAgent(), serverAlive = true, checkAlive = { alive
       return runWakeRouteLifecycle({
         agentId: agent.id,
         agent,
-        seat: {
-          agent_id: agent.id,
-          session_id: 'session-worker',
-          daemon_key: DAEMON,
-          tmux_session: agent.tmux_session,
-        },
+        seat: currentSeat,
         daemonKey: DAEMON,
         ownerDaemon: { readyState: 1 },
         nudgeText: 'Call inbox() to see it.',
@@ -66,6 +67,13 @@ function harness({ agent = baseAgent(), serverAlive = true, checkAlive = { alive
         },
         async sendRpc(machineId, op, params) {
           rpc.push({ kind: 'direct', machineId, op, params })
+          if (spawnResult?.ok) {
+            currentSeat = {
+              ...currentSeat,
+              daemon_key: 'mac-air:tlda',
+              tmux_session: 'fleet-worker-bound',
+            }
+          }
           return spawnResult
         },
         spawnLibrarian: librarian,
@@ -76,9 +84,12 @@ function harness({ agent = baseAgent(), serverAlive = true, checkAlive = { alive
         appendControlTrace(event) {
           controls.push(event)
         },
-        async sendWakeNudge(daemonKey, wakeAgent, tmuxSession, text, phase) {
+        async sendWakeNudge(daemonKey, wakeAgent, tmuxSession, text, phase, logTag, sessionId) {
           if (!shouldSendWakeNudge(wakeAgent, text)) return
-          nudges.push({ daemonKey, tmuxSession, text, phase })
+          nudges.push({ daemonKey, tmuxSession, text, phase, logTag, sessionId })
+        },
+        getCurrentSeat() {
+          return currentSeat
         },
         awaitWakeAcknowledgment(input) {
           acks.push(input)
@@ -140,7 +151,10 @@ test('wake route records respawn and post-respawn terminal nudge for a server-hi
   assert.equal(result.action, 'respawned')
   assert.deepEqual(h.rpc.map(call => call.op), ['spawn'])
   assert.deepEqual(h.rpc[0].params, { name: 'fleet:worker', agent_id: 'fleet:worker', respawn: true })
-  assert.deepEqual(h.nudges.map(nudge => [nudge.tmuxSession, nudge.phase]), [['fleet-worker-respawned', 'post-respawn']])
+  assert.deepEqual(
+    h.nudges.map(nudge => [nudge.daemonKey, nudge.tmuxSession, nudge.phase, nudge.sessionId]),
+    [['mac-air:tlda', 'fleet-worker-bound', 'post-respawn', 'session-worker']],
+  )
   assert.deepEqual(h.lifecycle, [{ agentId: 'fleet:worker' }])
   assert.deepEqual(h.attempts.map(a => a.reason), [
     'daemon-route-selected',
@@ -148,6 +162,16 @@ test('wake route records respawn and post-respawn terminal nudge for a server-hi
     'spawn-librarian:respawn',
     'spawn-and-send-text-ok',
   ])
+})
+
+test('wake route refuses a successful respawn that did not establish an authoritative binding', async () => {
+  const h = harness({ serverAlive: false })
+  await assert.rejects(
+    () => h.run({ getCurrentSeat: () => null }),
+    /did not establish a current durable binding/,
+  )
+  assert.equal(h.nudges.length, 0)
+  assert.equal(h.lifecycle.length, 0)
 })
 
 test('wake terminal eligibility distinguishes channel delivery from valid tmux nudges', async () => {

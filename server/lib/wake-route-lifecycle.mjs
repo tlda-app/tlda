@@ -53,6 +53,7 @@ export async function runWakeRouteLifecycle({
   recordWakeAttempt,
   appendControlTrace = () => {},
   sendWakeNudge,
+  getCurrentSeat,
   awaitWakeAcknowledgment = () => {},
   queueRetry = () => {},
   broadcastEvent = () => {},
@@ -155,17 +156,28 @@ export async function runWakeRouteLifecycle({
   if (!spawnResult?.ok) {
     throw new Error(spawnResult?.error || spawnResult?.reason || 'daemon returned ok:false with no reason')
   }
-  if (!spawnResult?.tmux_session) throw new Error(`respawn for ${agentId} did not return a tmux session`)
-  await sendWakeNudge(daemonKey, agent, spawnResult.tmux_session, nudgeText, 'post-respawn')
+  const nextSeat = getCurrentSeat?.(agentId)
+  if (!nextSeat?.daemon_key || !nextSeat?.tmux_session || !nextSeat?.session_id) {
+    throw new Error(`respawn for ${agentId} did not establish a current durable binding`)
+  }
+  await sendWakeNudge(
+    nextSeat.daemon_key,
+    agent,
+    nextSeat.tmux_session,
+    nudgeText,
+    'post-respawn',
+    'wake-route',
+    nextSeat.session_id,
+  )
   if (traceId) {
-    await recordWakeAttempt({ agentId, traceId, ...source, outcome: 'delivered', reason: 'spawn-and-send-text-ok', evidence: { daemon: daemonKey, phase: 'respawn' } })
+    await recordWakeAttempt({ agentId, traceId, ...source, outcome: 'delivered', reason: 'spawn-and-send-text-ok', evidence: { daemon: nextSeat.daemon_key, phase: 'respawn' } })
     awaitWakeAcknowledgment({ agentId, traceId, source, asker })
     appendControlTrace({
       trace_id: traceId,
       component: 'server',
       operation: 'wake.respawn',
       status: 'sent',
-      detail: { agent: agentId, daemon: daemonKey },
+      detail: { agent: agentId, daemon: nextSeat.daemon_key },
     })
   }
   await insertWakeLifecycleEvent({ agentId })

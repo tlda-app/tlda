@@ -5326,6 +5326,7 @@ async function handleFleetWsMessage(ws, msg) {
           recordWakeAttempt,
           appendControlTrace: (event) => controlPlaneTraces.append(event),
           sendWakeNudge,
+          getCurrentSeat: (id) => fleetStore.getCurrentAgentSeat(id),
           awaitWakeAcknowledgment,
           queueRetry: () => setTimeout(() => requestWake(agentId, nudgeText, asker, traceId, source), 2000).unref?.(),
           broadcastEvent,
