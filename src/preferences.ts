@@ -12,6 +12,16 @@ import type { CurveHandles } from './curveEditor.ts'
 import { DEFAULT_CURVE } from './curveEditor.ts'
 import { DEFAULT_READABILITY_PROFILES, type ReadabilityProfiles } from './readabilityDefaults.ts'
 
+export const DEFAULT_RADIO_SUBTITLE_DWELL_SEC = 15
+export const MIN_RADIO_SUBTITLE_DWELL_SEC = 3
+export const MAX_RADIO_SUBTITLE_DWELL_SEC = 120
+
+export function normalizeRadioSubtitleDwellSec(value: unknown): number {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return DEFAULT_RADIO_SUBTITLE_DWELL_SEC
+  return Math.min(MAX_RADIO_SUBTITLE_DWELL_SEC, Math.max(MIN_RADIO_SUBTITLE_DWELL_SEC, parsed))
+}
+
 const DEFAULTS = {
   'docview-sources': ['ref'] as string[],
   'voice-note-color': 'yellow' as string,
@@ -27,6 +37,7 @@ const DEFAULTS = {
   'voice-submit-words': 'send, send it, sent' as string,
   'voice-sink-shape-types': 'fleet-agents' as string,
   'radio-subtitles-enabled': true as boolean,
+  'radio-subtitle-dwell-sec': DEFAULT_RADIO_SUBTITLE_DWELL_SEC as number,
   // Voice→Deepgram conservation feel (sent to the bridge on connect). Idle cutoff
   // = ms of no speech before the upstream session is torn down (stays warm across
   // a thinking pause, closes an abandoned one). Pre-roll = ms of audio buffered

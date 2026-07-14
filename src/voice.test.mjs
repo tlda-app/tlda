@@ -1317,6 +1317,7 @@ await setBackend('chrome')
 {
   reset()
   setPref('radio-subtitles-enabled', true)
+  setPref('radio-subtitle-dwell-sec', 9)
   window.location.search = '?doc=bregman'
   location.search = '?doc=bregman'
   window.innerWidth = 1000
@@ -1360,7 +1361,9 @@ await setBackend('chrome')
   assert.equal(live.text, 'Radio line one now', 'radio subtitle should store cleaned text')
   assert.equal(live.expanded, true, 'radio subtitle should be expanded immediately after an incoming chat')
 
-  tick(4500)
+  tick(8999)
+  assert.equal(window.__voiceTest.getRadioSubtitle().expanded, true, 'radio subtitle should remain expanded until its configured dwell expires')
+  tick(1)
   const stored = window.__voiceTest.getRadioSubtitle()
   assert.equal(stored.text, 'Radio line one now', 'last radio subtitle should persist until replaced')
   assert.equal(stored.expanded, false, 'radio subtitle should collapse after the expanded window')
@@ -1412,9 +1415,43 @@ await setBackend('chrome')
   )
   assert.ok(window.__voiceTest.getHudText().includes('frontier: trace beta'), 'HUD should include previous radio events while expanded')
 
+  setPref('radio-subtitle-dwell-sec', 1)
+  window.__voiceTest.maybeShowRadioSubtitleForIncomingChat(
+    { type: 'chat', from: 'fleet:frontier', to: 'fleet:skip', text: 'minimum dwell' },
+    agents,
+    'fleet:skip',
+  )
+  tick(2999)
+  assert.equal(window.__voiceTest.getRadioSubtitle().expanded, true, 'radio subtitle dwell should enforce the readable minimum')
+  tick(1)
+  assert.equal(window.__voiceTest.getRadioSubtitle().expanded, false, 'radio subtitle should collapse when the bounded minimum expires')
+
+  setPref('radio-subtitle-dwell-sec', Infinity)
+  window.__voiceTest.maybeShowRadioSubtitleForIncomingChat(
+    { type: 'chat', from: 'fleet:frontier', to: 'fleet:skip', text: 'invalid dwell' },
+    agents,
+    'fleet:skip',
+  )
+  tick(14999)
+  assert.equal(window.__voiceTest.getRadioSubtitle().expanded, true, 'non-finite persisted dwell should use the readable default')
+  tick(1)
+  assert.equal(window.__voiceTest.getRadioSubtitle().expanded, false, 'non-finite persisted dwell should expire at the readable default')
+
+  setPref('radio-subtitle-dwell-sec', 1e20)
+  window.__voiceTest.maybeShowRadioSubtitleForIncomingChat(
+    { type: 'chat', from: 'fleet:frontier', to: 'fleet:skip', text: 'oversized dwell' },
+    agents,
+    'fleet:skip',
+  )
+  tick(119999)
+  assert.equal(window.__voiceTest.getRadioSubtitle().expanded, true, 'oversized persisted dwell should remain visible until the sane maximum')
+  tick(1)
+  assert.equal(window.__voiceTest.getRadioSubtitle().expanded, false, 'oversized persisted dwell should expire at the sane maximum')
+
   window.location.search = ''
   location.search = ''
   document.querySelectorAll = originalQuerySelectorAll
+  setPref('radio-subtitle-dwell-sec', 15)
   reset()
   console.log('✓ Test 22: radio subtitle is active-target, doc gated, toggleable, and collapses')
 }

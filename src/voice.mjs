@@ -12,7 +12,7 @@
 
 import { appendToken } from './authToken.ts'
 import { log } from './logger.ts'
-import { getPref, subscribePref, whenPrefsLoaded } from './preferences.ts'
+import { getPref, normalizeRadioSubtitleDwellSec, subscribePref, whenPrefsLoaded } from './preferences.ts'
 
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
 const _isSafari = !navigator.userAgent.includes('Chrome') && navigator.userAgent.includes('Safari')
@@ -222,7 +222,6 @@ let _recognition = null
 let _recording = false
 const VOICE_HUD_MIN_WIDTH = 240
 const VOICE_HUD_WIDTH = `${VOICE_HUD_MIN_WIDTH}px`
-const RADIO_HUD_EXPANDED_MS = 4500
 const RADIO_HUD_MAX_CHARS = 700
 const RADIO_HUD_HISTORY_LIMIT = 4
 
@@ -440,7 +439,8 @@ function showRadioSubtitle(event, agents = []) {
   _radioExpanded = true
   clearTimeout(_radioCollapseTimer)
   showHud(`radio <- ${_radioSubtitle.label}`, '#7ab8a0')
-  _radioCollapseTimer = setTimeout(collapseRadioSubtitle, RADIO_HUD_EXPANDED_MS)
+  const dwellSec = normalizeRadioSubtitleDwellSec(getPref('radio-subtitle-dwell-sec'))
+  _radioCollapseTimer = setTimeout(collapseRadioSubtitle, dwellSec * 1000)
   return true
 }
 

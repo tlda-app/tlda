@@ -1,5 +1,12 @@
 import { useState, useCallback, useEffect, type ReactNode } from 'react'
-import { getPref, setPref, subscribePref } from '../preferences'
+import {
+  MAX_RADIO_SUBTITLE_DWELL_SEC,
+  MIN_RADIO_SUBTITLE_DWELL_SEC,
+  getPref,
+  normalizeRadioSubtitleDwellSec,
+  setPref,
+  subscribePref,
+} from '../preferences'
 import { setBackend as setVoiceBackend } from '../voice.mjs'
 import { NOTE_COLORS } from '../shapes/MathNoteShape'
 import { CurveEditor } from '../components/CurveEditor'
@@ -267,6 +274,7 @@ function readAll() {
     voiceSubmitWords: getPref('voice-submit-words'),
     voiceSinkShapeTypes: getPref('voice-sink-shape-types'),
     radioSubtitlesEnabled: getPref('radio-subtitles-enabled'),
+    radioSubtitleDwellSec: normalizeRadioSubtitleDwellSec(getPref('radio-subtitle-dwell-sec')),
     voiceIdleCutoffMs: getPref('voice-idle-cutoff-ms'),
     voicePrerollMs: getPref('voice-preroll-ms'),
     voiceResumeRms: getPref('voice-resume-rms'),
@@ -553,6 +561,20 @@ export function PrefsTab() {
             <input type="checkbox" checked={prefs.radioSubtitlesEnabled} onChange={e => setPref('radio-subtitles-enabled', e.target.checked)} />
             <span>Agent subtitles</span>
           </label>
+          <div className="prefs-num-row">
+            <label className="prefs-num-label" htmlFor="radio-subtitle-dwell">Card dwell</label>
+            <input
+              id="radio-subtitle-dwell"
+              type="number"
+              min={MIN_RADIO_SUBTITLE_DWELL_SEC}
+              max={MAX_RADIO_SUBTITLE_DWELL_SEC}
+              step={1}
+              value={prefs.radioSubtitleDwellSec}
+              onChange={e => setPref('radio-subtitle-dwell-sec', normalizeRadioSubtitleDwellSec(e.target.value))}
+              className="prefs-num"
+            />
+            <span className="prefs-num-unit">sec</span>
+          </div>
         </PrefSubsection>
 
         <PrefSubsection title="Submit phrases">
