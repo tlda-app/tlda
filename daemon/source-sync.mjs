@@ -132,6 +132,21 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
     return rel.split(path.sep).join('/')
   }
 
+  // Build output records authoring files as absolute paths. The daemon, on the
+  // other hand, keeps its watch set and source-change payloads relative to the
+  // project source root. Leaving those absolute entries untouched makes
+  // sourceWatcherPaths join them onto sourceDir and the markdown part is never
+  // watched. Normalize at the boundary so a project part such as
+  // scratch/report.md is watched and uploaded under that same project path.
+  function normalizeWatchSet(sourceDir, watchFiles) {
+    const normalized = new Set()
+    for (const file of watchFiles || []) {
+      const rel = sourceRel(sourceDir, file)
+      if (rel) normalized.add(rel)
+    }
+    return normalized
+  }
+
   function closeWatcher(watcher, label) {
     if (!watcher) return
     try {
@@ -234,11 +249,12 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
       // Bootstrap watchSet (no .fls yet) must include the main's \input deps, not
       // just the main, so the initial connect push contains dependencies before
       // the first build produces a .fls.
-      const watchSet = new Set(
-        hasFlsWatchList ? p.watchFiles
-          : isMarkdown && p.mainFile ? scanMarkdownInputs(sourceDir, p.mainFile)
+      const watchSet = hasFlsWatchList
+        ? normalizeWatchSet(sourceDir, p.watchFiles)
+        : new Set(
+          isMarkdown && p.mainFile ? scanMarkdownInputs(sourceDir, p.mainFile)
           : p.mainFile ? scanTexInputs(sourceDir, p.mainFile, p.extraInputCommands || []) : []
-      )
+        )
 
       if (sourceWatchers.has(p.name)) {
         const existing = sourceWatchers.get(p.name)
