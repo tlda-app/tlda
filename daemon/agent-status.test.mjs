@@ -25,3 +25,31 @@ test('a vanished process pane transitions from awake to hibernating', async () =
     ts: messages.at(-1).ts,
   })
 })
+
+test('the status watcher keeps observing idle processes until they hibernate', async () => {
+  const agent = { id: 'fleet:test', tmux_session: 'fleet-test' }
+  let tick
+  let captures = 0
+  const status = createAgentStatus({
+    sendMsg() {},
+    getAgents: () => [agent],
+    harnessForAgent: () => ({ kind: 'codex' }),
+    isConnected: () => true,
+    armLingerMs: 0,
+    capturePane: async () => {
+      captures += 1
+      return { stdout: 'idle prompt' }
+    },
+    setIntervalFn: callback => {
+      tick = callback
+      return { unref() {} }
+    },
+  })
+
+  status.start()
+  await tick()
+  await tick()
+
+  assert.equal(captures, 2)
+  assert.equal(status.isArmed(agent.id), true)
+})

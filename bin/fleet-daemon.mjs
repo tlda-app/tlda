@@ -741,12 +741,14 @@ function handleServerMessage(msg) {
     applyAgentStatusEvents(msg.agent_status_events || [])
     agentStatusSeq = Math.max(agentStatusSeq, msg.agent_status_seq || agentStatusSeq)
     reconcileRoster('agent-status-events')
+    agentStatus.start()
     return
   }
   if (msg.type === 'agents-updated') {
     agents = msg.agents || []
     agentStatusSeq = msg.agent_status_seq || agentStatusSeq
     reconcileRoster('agents-updated')
+    agentStatus.start()
     ackServerDaemonOutboxMessage(msg)
     return
   }
@@ -759,6 +761,7 @@ function handleServerMessage(msg) {
       }
       agentStatusSeq = msg.seq
       reconcileRoster('agent-status-event')
+      agentStatus.start()
     }
     // Deltas use the same durable server-to-daemon outbox as snapshots. ACK
     // even an already-applied delta so a reconnect cannot leave it inflight.

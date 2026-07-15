@@ -3,7 +3,6 @@ import { promisify } from 'util'
 import {
   classifyPane,
   decideThinkingEdge,
-  shouldDisarm,
   THINKING_SCAN_LINES,
 } from '../agent-runtime/status-classifier.mjs'
 
@@ -16,8 +15,8 @@ export function createAgentStatus({
   harnessForAgent,
   isConnected,
   statusScanMs = parseInt(process.env.TLDA_STATUS_SCAN_MS, 10) || 5000,
-  armLingerMs = parseInt(process.env.TLDA_STATUS_ARM_LINGER_MS, 10) || 8000,
   idleConfirmScans = 2,
+  setIntervalFn = setInterval,
   capturePane = (tmuxSession) => execFileP('tmux',
     [...(tmuxArgs || []), 'capture-pane', '-t', tmuxSession, '-p', '-S', `-${THINKING_SCAN_LINES}`],
     { timeout: 3000, encoding: 'utf8' }),
@@ -96,6 +95,7 @@ export function createAgentStatus({
       const effectiveThinking = emitThinkingEdge(agent.id, false)
       const effectiveCompacting = emitCompactingEdge(agent.id, false)
       if (!effectiveThinking && !effectiveCompacting) emitAgentStatus(agent.id, 'hibernating')
+      disarmAgent(agent.id)
       return { busy: false }
     }
 
@@ -145,15 +145,17 @@ export function createAgentStatus({
       try { ({ busy } = await scanAgentPaneStatus(agent)) } catch { busy = false }
       if (busy) {
         armedSince.set(agentId, now)
-      } else if (shouldDisarm(now, armedSince.get(agentId) || 0, busy, armLingerMs)) {
-        disarmAgent(agentId)
       }
     }
   }
 
   function start() {
+    for (const agent of getAgents()) {
+      if (!agent?.dead && !agent?.human && !agent?.hibernating && agent?.tmux_session) armAgent(agent.id)
+    }
     if (statusScanInterval) return
-    statusScanInterval = setInterval(scanArmedStatus, statusScanMs)
+    statusScanInterval = setIntervalFn(scanArmedStatus, statusScanMs)
+    statusScanInterval?.unref?.()
   }
 
   return {
