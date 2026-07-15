@@ -5,6 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import {
   catchupReplayBoundary,
+  recordSessionOwnersInCache,
   sessionIdentitySeatEvent,
   shouldSuppressCatchupOutput,
 } from './jsonl-ingestor.mjs'
@@ -26,6 +27,37 @@ test('small JSONL tail gaps replay normally', () => {
     liveOffset: 300,
     thresholdBytes: 500,
   }), null)
+})
+
+test('historical owner harvesting classifies sessions without replacing current ledger identity', () => {
+  const cursors = {}
+  let identityWrites = 0
+  const changed = recordSessionOwnersInCache({
+    cursors,
+    sessionId: 'historical-session',
+    owners: ['fleet:active-owner'],
+    persistIdentity: false,
+    recordIdentity: () => {
+      identityWrites++
+      throw new Error('daemon ledger identity conflict: current-session vs historical-session')
+    },
+  })
+
+  assert.equal(changed, true)
+  assert.equal(identityWrites, 0)
+  assert.deepEqual(cursors['historical-session'], {
+    owners: ['fleet:active-owner'],
+    classified: true,
+  })
+
+  assert.throws(() => recordSessionOwnersInCache({
+    cursors: {},
+    sessionId: 'current-session',
+    owners: ['fleet:active-owner'],
+    recordIdentity: () => {
+      throw new Error('genuine current identity conflict')
+    },
+  }), /genuine current identity conflict/)
 })
 
 test('display catch-up suppresses chat/activity but preserves indexing and identity', () => {

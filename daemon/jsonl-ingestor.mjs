@@ -39,6 +39,31 @@ export function shouldSuppressCatchupOutput(output) {
   return CATCHUP_DISPLAY_OUTPUT_TYPES.has(output?.type)
 }
 
+// Historical owner classification answers "which fleet ids appear in this
+// file?" It is not a claim that every historical file is the owner's current
+// immutable session. Only live/current identity observations may write through
+// to the permission ledger.
+export function recordSessionOwnersInCache({
+  cursors,
+  sessionId,
+  owners,
+  persistIdentity = true,
+  recordIdentity = () => {},
+  identityInput = owner => ({ fleet_id: owner }),
+}) {
+  if (!sessionId) return false
+  const entry = cursors[sessionId] || (cursors[sessionId] = {})
+  const prev = entry.owners || []
+  const merged = owners && owners.length ? [...new Set([...prev, ...owners])] : prev
+  const changed = !entry.classified || merged.length !== prev.length
+  entry.owners = merged
+  entry.classified = true
+  if (persistIdentity) {
+    for (const owner of merged) recordIdentity(identityInput(owner))
+  }
+  return changed
+}
+
 export function jsonlRuntimeFailureActivityHealth(pw, kind, detail = {}) {
   const boundary = JSONL_RUNTIME_FAILURE_BOUNDARIES[kind]
   if (!boundary) throw new Error(`unknown JSONL runtime failure kind: ${kind}`)
@@ -295,26 +320,24 @@ export function createJsonlIngestor({
   // that session file. Populated the one time we read the file. Once a session is
   // classified, "which sessions does agent X own?" is a cache lookup, never a re-scan
   // of every JSONL. This is the daemon's single writer of cursor state.
-  function recordSessionOwners(sessionId, owners, { jsonlPath = null, harnessKind = 'claude', identity = null } = {}) {
-    if (!sessionId) return
-    const entry = cursors[sessionId] || (cursors[sessionId] = {})
-    const prev = entry.owners || []
+  function recordSessionOwners(sessionId, owners, { jsonlPath = null, harnessKind = 'claude', identity = null, persistIdentity = true } = {}) {
     // classified=true means we've fully read the file and `owners` is authoritative
     // (empty owners on a fully-read file is a valid answer: "nobody registered here").
-    const merged = owners && owners.length ? [...new Set([...prev, ...owners])] : prev
-    const changed = !entry.classified || merged.length !== prev.length
-    entry.owners = merged
-    entry.classified = true
-    for (const owner of merged) {
-      recordSessionIdentity({
+    const changed = recordSessionOwnersInCache({
+      cursors,
+      sessionId,
+      owners,
+      persistIdentity,
+      recordIdentity: recordSessionIdentity,
+      identityInput: owner => ({
         session_id: sessionId,
         harness_kind: harnessKind,
         jsonl_path: jsonlPath,
         fleet_id: owner,
         ...(identity?.fleet_id === owner ? identity : {}),
         classified: true,
-      })
-    }
+      }),
+    })
     if (changed) scheduleCursorSave()
   }
 
@@ -323,7 +346,7 @@ export function createJsonlIngestor({
     if (entry?.classified) return entry.owners || []
     try {
       const scanned = scanFileOwnersSync(jsonlPath)
-      recordSessionOwners(sessionId, scanned.owners, { jsonlPath })
+      recordSessionOwners(sessionId, scanned.owners, { jsonlPath, persistIdentity: false })
       return scanned.owners || []
     } catch {
       return []
@@ -378,6 +401,7 @@ export function createJsonlIngestor({
           jsonlPath: msg.jsonlPath,
           harnessKind: msg.harnessKind || 'claude',
           identity: msg.identity,
+          persistIdentity: false,
         })
       } else if (msg?.type === 'harvest-complete') {
         log.info(`owner harvest complete: ${msg.count} session(s) classified`)
