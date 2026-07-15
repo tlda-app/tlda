@@ -2896,8 +2896,22 @@ async function hibernateAgent(name) {
     console.error('Usage: tlda agent hibernate <name>')
     process.exit(1)
   }
-  const res = await hibernateLocalAgent(name)
-  process.exit(res.status)
+  await ensureServer()
+  const state = await api('GET', '/api/state')
+  const agents = Array.isArray(state?.agents) ? state.agents : []
+  const agent = resolveAgentQuery(agents, name)
+  if (!agent) {
+    console.error(`No agent found for "${name}".`)
+    process.exit(1)
+  }
+  try {
+    await api('POST', '/api/kill-session', { agent: agent.id })
+    const label = agent.friendly_name || agent.id
+    console.log(`Hibernated ${label} — its thread is intact; \`tlda agent wake ${label}\` brings it back locally.`)
+  } catch (e) {
+    console.error(`Failed to hibernate ${agent.friendly_name || agent.id}: ${e?.message || e}`)
+    process.exit(1)
+  }
 }
 
 async function hibernateLocalAgent(name, { allowMissing = false } = {}) {
