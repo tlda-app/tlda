@@ -20,6 +20,7 @@ export class LocalAgentLedger {
     this.file = file
     fs.mkdirSync(path.dirname(file), { recursive: true })
     this.db = new Database(file)
+    this.db.pragma('busy_timeout = 5000')
     this.db.pragma('journal_mode = WAL')
     this.db.pragma('synchronous = NORMAL')
     this.db.pragma('foreign_keys = ON')

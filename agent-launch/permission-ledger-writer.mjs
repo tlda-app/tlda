@@ -6,6 +6,7 @@ import Database from 'better-sqlite3'
 function openDb(dbPath) {
   fs.mkdirSync(path.dirname(dbPath), { recursive: true })
   const db = new Database(dbPath)
+  db.pragma('busy_timeout = 5000')
   db.pragma('journal_mode = WAL')
   db.pragma('synchronous = NORMAL')
   db.exec(`

@@ -41,6 +41,7 @@ test('shared fresh mint launches locally without a server id and persists its re
         uniqueSessionName: async () => 'fleet-offline-test',
         resolveDnsAlias: async () => null,
         spawnTmux: async (_tmux, _cwd, cmd) => { command = cmd; return true },
+        injectCodexPrompt: async () => true,
       },
     })
     assert.match(result.localAgentId, /^local:/)
