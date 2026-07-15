@@ -5,6 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import {
   catchupReplayBoundary,
+  sessionIdentitySeatEvent,
   shouldSuppressCatchupOutput,
 } from './jsonl-ingestor.mjs'
 import { scanFileIdentitySync, scanFileOwnersSync } from '../agent-runtime/daemon-jsonl-hot-path.mjs'
@@ -71,6 +72,43 @@ test('codex tail ledger input keys by watcher owner, not JSONL content identity'
   assert.equal(input.session_id, rolloutId)
   assert.equal(input.fleet_id, 'fleet:watcher-owner')
   assert.equal(input.friendly_name, 'stale-content-owner')
+})
+
+test('session identity emits seat binding event only from complete runtime tuple', () => {
+  const event = sessionIdentitySeatEvent({
+    fleet_id: 'fleet:watcher-owner',
+    session_id: 'rollout-2026-07-10T12-00-00-11111111-2222-4333-8444-555555555555',
+    harness_kind: 'codex',
+    model: 'gpt-5.5',
+    cwd: '/Users/skip/work/tlda',
+    tmux_session: 'fleet-watcher-owner',
+  }, {
+    machineId: 'mini',
+    envName: 'fly',
+  })
+
+  assert.deepEqual(event, {
+    type: 'agent-seat',
+    agent_id: 'fleet:watcher-owner',
+    session_id: '11111111-2222-4333-8444-555555555555',
+    resume_id: '11111111-2222-4333-8444-555555555555',
+    kind: 'codex',
+    model: 'gpt-5.5',
+    cwd: '/Users/skip/work/tlda',
+    machine_id: 'mini',
+    env_name: 'fly',
+    daemon_key: 'mini:fly',
+    tmux_session: 'fleet-watcher-owner',
+    created_source: 'daemon-session-observed',
+  })
+
+  assert.equal(sessionIdentitySeatEvent({
+    fleet_id: 'fleet:watcher-owner',
+    session_id: '11111111-2222-4333-8444-555555555555',
+    harness_kind: 'codex',
+    model: 'gpt-5.5',
+    cwd: '/Users/skip/work/tlda',
+  }, { machineId: 'mini', envName: 'fly' }), null)
 })
 
 test('daemon identity scanner recognizes current Codex login wording', () => {

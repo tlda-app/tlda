@@ -395,6 +395,9 @@ jsonlIngestor = createJsonlIngestor({
   permissionLedger,
   bufferActivity,
   extractActivityEvents: harnessRuntime.extractActivityEvents,
+  machineId: MACHINE_ID,
+  envName: ACTIVE_CONFIG,
+  daemonKey: `${MACHINE_ID}:${ACTIVE_CONFIG}`,
 })
 
 // ---------- source watching ----------
