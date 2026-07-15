@@ -66,6 +66,7 @@ export function ensureProjectTrusted(cwd, configFile = CODEX_CONFIG_FILE) {
 
 export function buildCmd({
   fleetId,
+  localAgentId,
   tmuxSession,
   model,
   name,
@@ -78,14 +79,15 @@ export function buildCmd({
   harnessOptions = {},
 } = {}) {
   const processEnv = [
-    `FLEET_ID=${sq(fleetId)}`,
+    ...(fleetId ? [`FLEET_ID=${sq(fleetId)}`] : []),
+    ...(localAgentId ? [`FLEET_LOCAL_ID=${sq(localAgentId)}`] : []),
     `FLEET_TMUX_SESSION=${sq(tmuxSession)}`,
     'FLEET_HARNESS=codex',
     'TLDA_MCP_FLEET_ONLY=1',
   ]
   // Fresh spawn names can still be tentative before server confirm/rename;
   // GIT_AUTHOR_EMAIL carries the stable fleet id for authoritative attribution.
-  processEnv.push(...gitAuthorEnv(fleetId, name).map(v => sqEnv(v)))
+  processEnv.push(...gitAuthorEnv(fleetId || localAgentId, name).map(v => sqEnv(v)))
   if (name) processEnv.push(`FLEET_NAME=${sq(name)}`)
   if (env.TLDA_MACHINE_ID) processEnv.push(`TLDA_MACHINE_ID=${sq(env.TLDA_MACHINE_ID)}`)
   const dnsAliasPreload = dnsAlias ? dnsAliasPreloadPath() : null
@@ -96,7 +98,8 @@ export function buildCmd({
   }
   const parts = [...processEnv, 'codex', '--no-alt-screen']
   if (resumeId) parts.push(`resume ${sq(resumeId)}`)
-  parts.push(cenv('FLEET_ID', fleetId))
+  if (fleetId) parts.push(cenv('FLEET_ID', fleetId))
+  if (localAgentId) parts.push(cenv('FLEET_LOCAL_ID', localAgentId))
   if (name) parts.push(cenv('FLEET_NAME', name))
   parts.push(cenv('FLEET_HARNESS', 'codex'))
   parts.push(cenv('FLEET_TMUX_SESSION', tmuxSession))

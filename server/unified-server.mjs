@@ -4757,13 +4757,13 @@ async function handleFleetWsMessage(ws, msg) {
     return
   }
 
-  if (type === 'register' || type === 'reserve-shell') {
+  if (type === 'register' || type === 'reserve-shell' || type === 'mint-shell') {
     // Prefer agent_id over id: the MCP's sendWS() stamps a correlation `id`
     // onto every message, so the real fleet id arrives as agent_id. Falling
     // back to id keeps direct WS callers that send id=fleet_id working. Reading
     // the bare `id` first here was the root cause of phantom UUID-keyed rows.
-    const { agent_id, id: msgId, name, pretty_name, tmux_session, cwd, labels, manager, session_id, resume_id, metadata, machine_id, env_name, kind } = msg
-    const isShellReservation = type === 'reserve-shell'
+    const { agent_id, id: msgId, local_agent_id, name, pretty_name, tmux_session, cwd, labels, manager, session_id, resume_id, metadata, machine_id, env_name, kind } = msg
+    const isShellReservation = type === 'reserve-shell' || type === 'mint-shell'
     if (type === 'register' && !msg.human) {
       error('register is only for human browser sessions; agents must use reserve-shell before startup and login after startup')
       return
@@ -4772,7 +4772,22 @@ async function handleFleetWsMessage(ws, msg) {
       error('reserve-shell is only for agent spawn shells')
       return
     }
-    const agentId = agent_id || msgId
+    let agentId = agent_id || (type === 'mint-shell' ? null : msgId)
+    if (type === 'mint-shell') {
+      if (!local_agent_id) { error('mint-shell requires local_agent_id'); return }
+      const daemonKey = msg.daemon_key || (machine_id && env_name ? `${machine_id}:${env_name}` : null)
+      if (!daemonKey) { error('mint-shell requires daemon identity'); return }
+      const existingBinding = fleetStore.getDaemonAgentBinding?.(daemonKey, local_agent_id)
+      agentId = existingBinding?.agent_id || mintFleetId()
+      if (!existingBinding) {
+        try {
+          fleetStore.bindDaemonAgent({ daemonKey, localAgentId: local_agent_id, agentId })
+        } catch (e) {
+          error(e)
+          return
+        }
+      }
+    }
     if (!agentId) { error('missing id'); return }
     // Duplicate clients are allowed to coexist. Closing an existing socket here
     // is unsafe because fleet clients such as Todd auto-reconnect on close; two
@@ -4905,6 +4920,8 @@ async function handleFleetWsMessage(ws, msg) {
     reply({
       ok: true,
       agent: storedAgent,
+      ...(local_agent_id ? { local_agent_id } : {}),
+      server_agent_id: storedAgent.id,
       assigned_name: storedAgent.friendly_name || null,
       requested_name: requestedName,
       name_changed: !!(requestedName && storedAgent.friendly_name && requestedName !== storedAgent.friendly_name),

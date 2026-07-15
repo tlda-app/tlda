@@ -4064,93 +4064,43 @@ async function cmdDoctor() {
 }
 
 async function cmdDoctorYolo() {
-  const { sanitizeSessionName, readConfig, resolveDnsAlias } = await import('../agent-launch/identity.mjs')
-  const { resolveApi, wsReserveShell, findAgent, markAgentDead } = await import('../agent-launch/register.mjs')
-  const { uniqueSessionName, spawnTmux, injectCodexPrompt, tmuxArgs } = await import('../agent-launch/tmux.mjs')
-  const { resolveModelSpec } = await import('../agent-launch/models.mjs')
-  const { readDaemonConfigForCwd, withDaemonModelAliases } = await import('../agent-launch/permission-ledger.mjs')
-  const claude = await import('../agent-launch/harness/claude.mjs')
-  const codex = await import('../agent-launch/harness/codex.mjs')
-
-  const name = String(getFlag('name', 'yolo') || 'yolo')
-  const safeName = sanitizeSessionName(name)
-  const rawFleetId = String(getFlag('id', `fleet:${safeName}`) || `fleet:${safeName}`)
-  const fleetId = rawFleetId.startsWith('fleet:') ? rawFleetId : `fleet:${rawFleetId}`
-  const cwd = resolve(getFlag('cwd') || process.cwd())
-  const config = withDaemonModelAliases(readConfig(), readDaemonConfigForCwd(cwd))
-  const api = resolveApi({ config })
-  const tmuxSocket = loadConfig().tmuxSocket || null
-  const dryRun = hasFlag('dry-run')
-  const tmuxSession = dryRun ? `fleet-${safeName}` : await uniqueSessionName(`fleet-${safeName}`, { tmuxSocket })
-
-  // Harness follows the daemon model spec. Break-glass stays shallow: we call the harness command-builder directly
-  // and reserve a shell; we do NOT route through the deep spawn/fence/lease
-  // machinery (that machinery is exactly what might be broken when you reach for
-  // this). Unfenced, dead simple — the launch flags below just bypass sandboxing.
-  const modelAlias = String(getFlag('model') || '')
-  const spec = resolveModelSpec(modelAlias, { config })
-  const kind = spec.harness
-  const harness = kind === 'codex' ? codex : claude
-  const model = harness.resolveModel(spec.alias, { config })
-  const dnsAlias = await resolveDnsAlias(api).catch(() => null)
-
-  let cmd
-  if (kind === 'codex') {
-    codex.ensureProjectTrusted(cwd)
-    cmd = codex.buildCmd({
-      fleetId, tmuxSession, model, name, cwd, api, dnsAlias, config,
-      harnessOptions: { required: ['--dangerously-bypass-approvals-and-sandbox'], preferences: [], controls: false },
-    })
-  } else {
-    cmd = claude.buildCmd({
-      fleetId, tmuxSession, model, mode: 'bypassPermissions', name, api, dnsAlias, includePrompt: true, config,
-      harnessOptions: { required: ['--dangerously-load-development-channels server:tlda'], preferences: ['--dangerously-skip-permissions'], controls: false },
-    })
-  }
-
-  if (dryRun) {
-    console.log('tlda doctor yolo dry run')
-    console.log(`  fleet_id: ${fleetId}`)
-    console.log(`  name: ${name}`)
-    console.log(`  kind: ${kind}`)
-    console.log(`  tmux: ${tmuxSession}`)
-    console.log(`  cwd: ${cwd}`)
-    console.log(`  model: ${model}`)
-    console.log(`  api: ${api}`)
-    console.log(`  command: ${cmd}`)
+  if (hasFlag('help')) {
+    console.log(COMMAND_HELP.doctor)
     return
   }
 
-  await wsReserveShell({
-    fleetId,
+  const { spawn } = await import('../agent-launch/index.mjs')
+  const { apiJson, markAgentDead, resolveApi } = await import('../agent-launch/register.mjs')
+  const { tmuxArgs } = await import('../agent-launch/tmux.mjs')
+
+  const name = String(getFlag('name', 'yolo') || 'yolo')
+  const cwd = resolve(getFlag('cwd') || process.cwd())
+  const tmuxSocket = loadConfig().tmuxSocket || null
+  const dryRun = hasFlag('dry-run')
+  const modelAlias = String(getFlag('model') || '')
+  const api = resolveApi()
+
+  if (dryRun) {
+    console.log('tlda doctor yolo dry run')
+    console.log(`  name: ${name}`)
+    console.log(`  cwd: ${cwd}`)
+    console.log(`  model: ${modelAlias}`)
+    console.log('  path: shared local mint (break-glass profile)')
+    return
+  }
+
+  const launched = await spawn({
+    spawnMode: 'fresh',
     name,
-    tmuxSession,
     cwd,
-    model,
-    refresh: true,
-    shell: true,
-    kind,
-    metadata: {
-      breakGlass: true,
-      yolo: true,
-      launchPath: 'tlda doctor yolo',
-      spawnGateBypassed: true,
-    },
-    api,
-  })
-  const launched = await spawnTmux(tmuxSession, cwd, cmd, {
-    autoDismiss: kind === 'claude',
-    sendKeys: kind === 'codex',
+    model: modelAlias,
+    agentId: getFlag('id') || undefined,
+    breakGlass: true,
+    acknowledgeNoSecurity: true,
+    explicitPolicy: true,
     tmuxSocket,
   })
-  if (!launched) {
-    throw new Error(`tmux session ${tmuxSession} already has a live harness runtime`)
-  }
-  // Claude embeds its kickoff prompt in the command; codex is launched bare and gets
-  // its login/kickoff prompt injected into the session afterward.
-  if (kind === 'codex') {
-    await injectCodexPrompt(tmuxSession, codex.kickoffPrompt(name), { tmuxSocket })
-  }
+  const { localAgentId, fleetId, tmuxSession, harness: kind, model } = launched
 
   // Interactive terminal → drop the operator straight into the agent's session, the
   // way spawn used to. You watch it log in live, so there is no false "launched" — a
@@ -4159,6 +4109,17 @@ async function cmdDoctorYolo() {
     const { spawnSync } = await import('node:child_process')
     console.log(dim(`Attaching to ${tmuxSession} (detach with Ctrl-b d)…`))
     spawnSync('tmux', tmuxArgs(tmuxSocket, 'attach', '-t', tmuxSession), { stdio: 'inherit' })
+    return
+  }
+
+  if (launched.registrationDeferred) {
+    console.log(green(bold('Break-glass agent launched and verified locally usable.')))
+    console.log(`  local_agent_id: ${localAgentId}`)
+    console.log(`  kind: ${kind}`)
+    console.log(`  tmux: ${tmuxSession}`)
+    console.log(`  cwd: ${cwd}`)
+    console.log(`  model: ${model}`)
+    console.log(dim('  Server binding is deferred; the agent will request its one-time binding when connectivity returns.'))
     return
   }
 
@@ -4182,18 +4143,21 @@ async function cmdDoctorYolo() {
   let reachable = null
   while (Date.now() < reachDeadline) {
     await new Promise(r => setTimeout(r, 1500))
-    const found = await findAgent(fleetId, { api }).catch(() => null)
+    const found = await apiJson(`/api/agents/lookup?ids=${encodeURIComponent(fleetId)}`, { api })
+      .then(result => result.agents?.[0] || null)
+      .catch(() => null)
     if (found && !found.dead && !found.metadata?.shell) { reachable = found; break }
   }
   if (!reachable) {
     await markAgentDead(fleetId, { api }).catch(() => {})
     throw new Error(
-      `Break-glass launch FAILED: ${fleetId} reserved a shell but never logged in within 60s — `
-      + `it is NOT in the roster and cannot be reached (a ghost). Tore down the phantom seat. `
+      `Break-glass launch FAILED: ${fleetId} was minted but never logged in within 60s — `
+      + `it is NOT a reachable fleet recipient. `
       + `Inspect tmux '${tmuxSession}' for a stuck prompt or a crash, then retry.`)
   }
   console.log(green(bold('Break-glass agent launched and verified reachable.')))
   console.log(`  fleet_id: ${fleetId}`)
+  console.log(`  local_agent_id: ${localAgentId}`)
   console.log(`  name: ${reachable.friendly_name || name}`)
   console.log(`  kind: ${kind}`)
   console.log(`  tmux: ${tmuxSession}`)

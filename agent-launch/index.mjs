@@ -1,7 +1,8 @@
 import { SpawnLibrarian } from '../shared/spawn-librarian.ts'
-import { newFleetId, readConfig, resolveDnsAlias, resolveSpawnCwd, sanitizeSessionName } from './identity.mjs'
+import { newLocalAgentId, readConfig, resolveDnsAlias, resolveSpawnCwd, sanitizeSessionName } from './identity.mjs'
+import { createLocalAgentLedger } from './local-agent-ledger.mjs'
 import { normalizeSpawnModelKwargs } from './models.mjs'
-import { checkFreshNameAvailable, ensureServer, findAgent, markAgentDead, resolveApi, wsReserveShell } from './register.mjs'
+import { checkFreshNameAvailable, ensureServer, findAgent, markAgentDead, resolveApi, wsMintShell, wsReserveShell } from './register.mjs'
 import { injectClaudePrompt, injectCodexPrompt, sessionHasRuntime, spawnTmux, uniqueSessionName } from './tmux.mjs'
 import { wrapSandboxCmd } from './fence.mjs'
 import { resolveLaunchPolicy, sandboxMetadata } from './permissions.mjs'
@@ -130,7 +131,7 @@ function spawnEnv(params = {}) {
   return env
 }
 
-async function buildCommand({ requestedKind, adapter, fleetId, tmuxSession, model, modelProvider = null, name, cwd, effort, permissionMode, spawnPolicy, api, dnsAlias, resumeId = null, includePrompt = true, leasePolicy = null, enforceFence = false, harnessOptions = {}, config = undefined, env = process.env }) {
+async function buildCommand({ requestedKind, adapter, fleetId, localAgentId, tmuxSession, model, modelProvider = null, name, cwd, effort, permissionMode, spawnPolicy, api, dnsAlias, resumeId = null, includePrompt = true, leasePolicy = null, enforceFence = false, harnessOptions = {}, config = undefined, env = process.env }) {
   let cmd
   let sendKeys = false
   if (requestedKind === 'codex') {
@@ -140,6 +141,7 @@ async function buildCommand({ requestedKind, adapter, fleetId, tmuxSession, mode
     // does the containment. The code just passes args + harness config + fence.
     cmd = codex.buildCmd({
       fleetId,
+      localAgentId,
       tmuxSession,
       model,
       modelProvider,
@@ -156,6 +158,7 @@ async function buildCommand({ requestedKind, adapter, fleetId, tmuxSession, mode
   } else {
     cmd = adapter.buildCmd({
       fleetId,
+      localAgentId,
       tmuxSession,
       model,
       modelProvider,
@@ -202,7 +205,11 @@ async function spawnFresh(params) {
     ? deps.createLibrarian({ loginDeadlineMs: params.loginDeadlineMs || 60_000 })
     : new SpawnLibrarian({ loginDeadlineMs: params.loginDeadlineMs || 60_000 })
   const name = params.name || `agent-${Date.now().toString(36).slice(-4)}`
-  const fleetId = params.agentId || params.agent_id || newFleetId()
+  let fleetId = params.agentId || params.agent_id || null
+  const ownedLocalLedger = params.localAgentLedger ? null : createLocalAgentLedger(params.localAgentLedgerPath)
+  const localAgentLedger = params.localAgentLedger || ownedLocalLedger
+  const existingBoundLocal = fleetId ? localAgentLedger.get(fleetId) : null
+  const localAgentId = params.localAgentId || params.local_agent_id || existingBoundLocal?.localAgentId || newLocalAgentId()
   const cwd = resolveSpawnCwd(params.cwd)
   let tmuxSession = null
   let model = null
@@ -219,8 +226,19 @@ async function spawnFresh(params) {
     const modelResolved = resolveAdapterModel(adapter, params.model, config, modelSpec)
     model = modelResolved.model
     const dnsAlias = await (deps.resolveDnsAlias || resolveDnsAlias)(api)
+    const configuredHarnessOptions = params.breakGlass
+      ? {
+          required: requestedKind === 'codex'
+            ? ['--dangerously-bypass-approvals-and-sandbox']
+            : requestedKind === 'claude'
+              ? ['--dangerously-load-development-channels server:tlda']
+              : [],
+          preferences: requestedKind === 'claude' ? ['--dangerously-skip-permissions'] : [],
+          controls: false,
+        }
+      : (modelResolved.spec?.harnessOptions || null)
     const launchPolicy = resolveLaunchPolicy({
-      spawnPolicy: params.spawnPolicy,
+      spawnPolicy: params.spawnPolicy || (params.breakGlass ? { name: 'break-glass', policy: 'unsandboxed' } : undefined),
       permissionSet: params.permissionSet,
       requestedPermission: params.requestedPermission,
       harness: requestedKind,
@@ -231,7 +249,7 @@ async function spawnFresh(params) {
       mode: params.mode,
       explicitPolicy: params.explicitPolicy,
       acknowledgeNoSecurity: !!params.acknowledgeNoSecurity,
-      harnessOptions: modelResolved.spec?.harnessOptions || null,
+      harnessOptions: configuredHarnessOptions,
     })
     assertNativeTools(launchPolicy, requestedKind)
     traceSpawnDecision('policy', {
@@ -255,10 +273,35 @@ async function spawnFresh(params) {
       leaseWriteRoots: launchPolicy.leasePolicy?.write_roots || [],
       spawnPolicy: launchPolicy.spawnPolicy || null,
     })
+    localAgentLedger.create({
+      localAgentId,
+      serverAgentId: fleetId,
+      friendlyName: name,
+      harness: requestedKind,
+      model,
+      tmuxName: tmuxSession,
+      cwd,
+      permissionProfile: launchPolicy.spawnPolicy?.permission || params.requestedPermission || (params.breakGlass ? 'break-glass' : null),
+    })
     if (serverUp) {
-      await (deps.checkFreshNameAvailable || checkFreshNameAvailable)(name, { api, serverUp })
-      await (deps.wsReserveShell || wsReserveShell)({
-        fleetId,
+      await (deps.checkFreshNameAvailable || checkFreshNameAvailable)(name, { api, serverUp, excludeId: fleetId })
+      const reserve = fleetId
+        ? await (deps.wsReserveShell || wsReserveShell)({
+            fleetId,
+            localAgentId,
+            name,
+            tmuxSession,
+            cwd,
+            model,
+            effort: params.effort,
+            kind: requestedKind,
+            spawnPermission: launchPolicy.spawnPolicy?.permission || params.requestedPermission,
+            metadata: sandboxMetadata(launchPolicy.spawnPolicy, launchPolicy.leasePolicy),
+            machineId: params.machineId,
+            api,
+          })
+        : await (deps.wsMintShell || wsMintShell)({
+            localAgentId,
         name,
         tmuxSession,
         cwd,
@@ -270,6 +313,9 @@ async function spawnFresh(params) {
         machineId: params.machineId,
         api,
       })
+      fleetId = fleetId || reserve?.server_agent_id || reserve?.agent?.id || null
+      if (!fleetId) throw new Error('server mint returned no server agent id')
+      localAgentLedger.bind(localAgentId, fleetId, { friendlyName: reserve?.assigned_name || name })
       shellRegistered = true
       librarian.observeLiveness({
         type: 'agent-liveness',
@@ -283,6 +329,7 @@ async function spawnFresh(params) {
       requestedKind,
       adapter,
       fleetId,
+      localAgentId,
       tmuxSession,
       model,
       modelProvider: modelResolved.provider,
@@ -328,13 +375,14 @@ async function spawnFresh(params) {
       }
     }
     if (!serverUp) {
-      return { ok: true, fleetId, tmuxSession, harness: requestedKind, model, registrationDeferred: true }
+      return { ok: true, localAgentId, fleetId: null, tmuxSession, harness: requestedKind, model, registrationDeferred: true }
     }
     let resumeId = null
-    return { ok: true, pending: true, fleetId, tmuxSession, harness: requestedKind, model, resumeId }
+    return { ok: true, pending: true, localAgentId, fleetId, tmuxSession, harness: requestedKind, model, resumeId }
   } catch (e) {
     const err = toSpawnError(e, e?.message?.includes('not available') ? 'name-bounced' : 'launch-failed', { fleetId, tmuxSession, model })
-    librarian.failPending(fleetId, err.reason || 'launch-failed')
+    librarian.failPending(fleetId || localAgentId, err.reason || 'launch-failed')
+    localAgentLedger.delete(localAgentId)
     if (serverUp && shellRegistered) {
       try {
         await (deps.markAgentDead || markAgentDead)(fleetId, { api })
@@ -343,13 +391,16 @@ async function spawnFresh(params) {
       }
     }
     throw err
+  } finally {
+    ownedLocalLedger?.close()
   }
 }
 
 async function spawnRespawn(params) {
   const deps = params._deps || {}
   const api = (deps.resolveApi || resolveApi)()
-  await (deps.ensureServer || ensureServer)({ api })
+  let serverUp = false
+  try { serverUp = await (deps.ensureServer || ensureServer)({ api }) } catch { serverUp = false }
   const name = params.name || params.agentId || params.agent_id
   const agent = await (deps.findAgent || findAgent)(name, { api })
   if (!agent) throw new SpawnError('launch-failed', `No agent '${name}'. Use --fresh to create.`, { name })
@@ -430,7 +481,7 @@ async function spawnRespawn(params) {
   const resumeId = adapter.resumeId?.(handle)
   if (handle?.cwd) cwd = resolveSpawnCwd(handle.cwd)
   if (requestedKind === 'claude' && resumeId) stripSyntheticTail(resumeId)
-  const dnsAlias = await (deps.resolveDnsAlias || resolveDnsAlias)(api)
+  const dnsAlias = await (deps.resolveDnsAlias || resolveDnsAlias)(api).catch(() => null)
   const launchPolicy = resolveLaunchPolicy({
     spawnPolicy: params.spawnPolicy || meta.spawnPolicy,
     permissionSet: params.permissionSet || meta.permissionSet,
@@ -446,7 +497,7 @@ async function spawnRespawn(params) {
     harnessOptions: modelResolved.spec?.harnessOptions || null,
   })
   assertNativeTools(launchPolicy, requestedKind)
-  if (requestedKind === 'codex' && resumeId) {
+  if (serverUp && requestedKind === 'codex' && resumeId) {
     await (deps.wsReserveShell || wsReserveShell)({
       fleetId,
       name: friendlyName,

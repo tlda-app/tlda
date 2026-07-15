@@ -23,6 +23,10 @@ export function newFleetId() {
   return `fleet:${randomUUID().replace(/-/g, '').slice(0, 8)}`
 }
 
+export function newLocalAgentId() {
+  return `local:${randomUUID()}`
+}
+
 export function gitAuthorEnv(fleetId, friendlyName) {
   if (!fleetId) return []
   const env = [`GIT_AUTHOR_EMAIL=${fleetId}@fleet.local`]

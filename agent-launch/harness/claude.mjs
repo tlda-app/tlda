@@ -33,6 +33,7 @@ export function resolveModelSelection(model, options = {}) {
 
 export function buildCmd({
   fleetId,
+  localAgentId,
   tmuxSession,
   model,
   effort,
@@ -49,13 +50,14 @@ export function buildCmd({
     ? harnessOptions
     : resolveHarnessLaunchOptions({ config, harness: 'claude', model })
   const parts = [
-    `FLEET_ID=${sq(fleetId)}`,
+    ...(fleetId ? [`FLEET_ID=${sq(fleetId)}`] : []),
+    ...(localAgentId ? [`FLEET_LOCAL_ID=${sq(localAgentId)}`] : []),
     `FLEET_TMUX_SESSION=${sq(tmuxSession)}`,
     'FLEET_HARNESS=claude',
   ]
   // Fresh spawn names can still be tentative before server confirm/rename;
   // GIT_AUTHOR_EMAIL carries the stable fleet id for authoritative attribution.
-  parts.push(...gitAuthorEnv(fleetId, name).map(v => sqEnv(v)))
+  parts.push(...gitAuthorEnv(fleetId || localAgentId, name).map(v => sqEnv(v)))
   const readableLocalCert = path.join(process.env.HOME || '', '.config', 'tlda', 'localhost+2.pem')
   if (fs.existsSync(readableLocalCert)) {
     const fenceCert = path.join(FENCE_TMP_ROOT, 'localhost-ca.crt')

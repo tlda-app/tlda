@@ -7,8 +7,9 @@ import tls from 'tls'
 import { WebSocket } from 'ws'
 import { getFleetServerUrl, loadConfig } from '../shared/config.mjs'
 import { prettyNameForFriendlyName } from '../shared/lineage-name.mjs'
-import { readConfig, sanitizeSessionName } from './identity.mjs'
+import { activeConfigName, readConfig, sanitizeSessionName } from './identity.mjs'
 import { createPermissionLedger } from './permission-ledger.mjs'
+import { createLocalAgentLedger } from './local-agent-ledger.mjs'
 
 const MKCERT_CA = path.join(os.homedir(), 'Library/Application Support/mkcert/rootCA.pem')
 const TLDA_LOCAL_CERT = path.join(os.homedir(), '.config', 'tlda', 'localhost+2.pem')
@@ -102,9 +103,10 @@ export async function ensureServer({ api = resolveApi() } = {}) {
   }
 }
 
-export async function checkFreshNameAvailable(name, { api = resolveApi(), serverUp = true } = {}) {
+export async function checkFreshNameAvailable(name, { api = resolveApi(), serverUp = true, excludeId = null } = {}) {
   if (!serverUp || !name || name.startsWith('fleet:')) return
-  const data = await apiJson(`/api/check-name?name=${encodeURIComponent(name)}`, { api })
+  const exclude = excludeId ? `&exclude=${encodeURIComponent(excludeId)}` : ''
+  const data = await apiJson(`/api/check-name?name=${encodeURIComponent(name)}${exclude}`, { api })
   const collisions = data.collisions || []
   if (!collisions.length) return
   const kinds = new Map()
@@ -129,6 +131,32 @@ export async function findAgent(name, { api = resolveApi() } = {}) {
 export function findLocalAgent(name, { ledger = null } = {}) {
   const query = String(name || '').trim()
   if (!query) return null
+  const ownedLocalLedger = ledger ? null : createLocalAgentLedger()
+  const localSource = ledger?.get?.(query)?.localAgentId ? ledger : ownedLocalLedger
+  const local = query.startsWith('local:') || query.startsWith('fleet:')
+    ? localSource?.get?.(query)
+    : localSource?.findByFriendlyName?.(query)
+  if (local) {
+    ownedLocalLedger?.close?.()
+    return {
+      id: local.serverAgentId || local.localAgentId,
+      local_agent_id: local.localAgentId,
+      server_agent_id: local.serverAgentId,
+      friendly_name: local.friendlyName,
+      name: local.friendlyName,
+      tmux_session: local.process?.tmuxName || null,
+      session_id: local.conversation?.sessionId || null,
+      session_ids: local.conversation?.sessionId ? [local.conversation.sessionId] : [],
+      cwd: local.process?.cwd || undefined,
+      dead: false,
+      metadata: {
+        kind: local.conversation?.harness || undefined,
+        model: local.conversation?.model || undefined,
+        permissionProfile: local.process?.permissionProfile || undefined,
+      },
+    }
+  }
+  ownedLocalLedger?.close?.()
   const ownedLedger = ledger ? null : createPermissionLedger()
   const source = ledger || ownedLedger
   try {
@@ -168,6 +196,7 @@ export async function markAgentDead(fleetId, { api = resolveApi(), timeoutMs = 5
 
 async function wsIdentityMessage(type, {
   fleetId,
+  localAgentId,
   name,
   tmuxSession,
   cwd,
@@ -180,11 +209,13 @@ async function wsIdentityMessage(type, {
   metadata,
   shell = false,
   machineId,
+  envName,
   api = resolveApi(),
 } = {}) {
-  const wsUrl = `${wsForm(api)}/ws/fleet?agent=${encodeURIComponent(fleetId)}`
+  const wsPeer = fleetId || localAgentId || 'unbound-local-agent'
+  const wsUrl = `${wsForm(api)}/ws/fleet?agent=${encodeURIComponent(wsPeer)}`
   const ws = new WebSocket(wsUrl, tlsOptionsForApi(api))
-  const requestId = `${type}:${fleetId}:${Date.now()}:${Math.random().toString(36).slice(2)}`
+  const requestId = `${type}:${wsPeer}:${Date.now()}:${Math.random().toString(36).slice(2)}`
   const opened = new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`registration timed out connecting to ${wsUrl}`)), 5000)
     ws.once('open', () => {
@@ -201,7 +232,8 @@ async function wsIdentityMessage(type, {
   const msg = {
     type,
     id: requestId,
-    agent_id: fleetId,
+    ...(fleetId ? { agent_id: fleetId } : {}),
+    ...(localAgentId ? { local_agent_id: localAgentId } : {}),
     name,
     pretty_name: prettyNameForFriendlyName(name),
     tmux_session: tmuxSession,
@@ -211,6 +243,11 @@ async function wsIdentityMessage(type, {
   if (shell) msg.shell = true
   const resolvedMachineId = machineId || process.env.TLDA_MACHINE_ID || cfg.machineId
   if (resolvedMachineId) msg.machine_id = resolvedMachineId
+  const resolvedEnvName = envName || activeConfigName(cfg)
+  if (resolvedEnvName) {
+    msg.env_name = resolvedEnvName
+    if (resolvedMachineId) msg.daemon_key = `${resolvedMachineId}:${resolvedEnvName}`
+  }
   if (sessionId) msg.session_id = sessionId
   const meta = { ...(metadata || {}) }
   if (model) meta.model = model
@@ -251,4 +288,8 @@ async function wsIdentityMessage(type, {
 
 export async function wsReserveShell(options = {}) {
   return wsIdentityMessage('reserve-shell', { ...options, shell: true })
+}
+
+export async function wsMintShell(options = {}) {
+  return wsIdentityMessage('mint-shell', { ...options, shell: true })
 }

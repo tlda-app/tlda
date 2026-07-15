@@ -42,6 +42,7 @@ export function warnModel(model, options = {}) {
 
 export function buildCmd({
   fleetId,
+  localAgentId,
   tmuxSession,
   model,
   name,
@@ -54,7 +55,7 @@ export function buildCmd({
 } = {}) {
   const recipe = path.join(repoRoot(), 'recipes', 'fleet-deepseek.yaml')
   const sandboxConfig = path.join(path.dirname(recipe), 'goose-sandbox')
-  const stateDir = path.join(GOOSE_STATE_ROOT, String(fleetId).replace(/:/g, '-'))
+  const stateDir = path.join(GOOSE_STATE_ROOT, String(fleetId || localAgentId).replace(/:/g, '-'))
   const cacheDir = path.join(stateDir, 'cache')
   const stateHome = path.join(stateDir, 'state')
   fs.mkdirSync(path.join(stateDir, 'data'), { recursive: true })
@@ -62,7 +63,8 @@ export function buildCmd({
   fs.mkdirSync(stateHome, { recursive: true })
   const { provider, model: providerModel } = providerForModel(model, modelProvider)
   const parts = [
-    `FLEET_ID=${sq(fleetId)}`,
+    ...(fleetId ? [`FLEET_ID=${sq(fleetId)}`] : []),
+    ...(localAgentId ? [`FLEET_LOCAL_ID=${sq(localAgentId)}`] : []),
     `FLEET_TMUX_SESSION=${sq(tmuxSession)}`,
     'FLEET_HARNESS=goose',
     `TLDA_SERVER=${sq(api)}`,
@@ -70,7 +72,7 @@ export function buildCmd({
   ]
   // Fresh spawn names can still be tentative before server confirm/rename;
   // GIT_AUTHOR_EMAIL carries the stable fleet id for authoritative attribution.
-  parts.push(...gitAuthorEnv(fleetId, name).map(v => sqEnv(v)))
+  parts.push(...gitAuthorEnv(fleetId || localAgentId, name).map(v => sqEnv(v)))
   if (env.TLDA_MACHINE_ID) parts.push(`TLDA_MACHINE_ID=${sq(env.TLDA_MACHINE_ID)}`)
   const configName = activeConfigName(config, env)
   if (configName) parts.push(`TLDA_CONFIG=${sq(configName)}`)

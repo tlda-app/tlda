@@ -9,6 +9,7 @@ import { resolveTranscript } from '../agent-runtime/resolve-transcript.mjs'
 import { probeSpawnAvailability } from './availability.mjs'
 import { newFleetId } from './identity.mjs'
 import { readDaemonConfigForCwd, withDaemonModelAliases } from './permission-ledger.mjs'
+import { createLocalAgentLedger } from './local-agent-ledger.mjs'
 import { resolveModelSpec } from './models.mjs'
 import { isIntentionalEmptyPermissionSet, permissionSetConfersNothing } from './permissions.mjs'
 
@@ -189,6 +190,16 @@ export function createAgentLauncher({
       cwd,
       friendlyName: agentName,
     })
+    const localLedger = createLocalAgentLedger(path.join(configDir, 'fleet-daemon.db'))
+    try {
+      const local = localLedger.get(fleetId)
+      if (local) {
+        localLedger.updateConversation(local.localAgentId, { sessionId, harness, model })
+        localLedger.updateProcess(local.localAgentId, { tmuxName: tmuxSession, cwd })
+      }
+    } finally {
+      localLedger.close()
+    }
     sendMsg({
       type: 'agent-seat',
       agent_id: fleetId,

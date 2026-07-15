@@ -154,12 +154,13 @@ test('legacy full-store dump endpoints do not perform unbounded reads', () => {
   assert.equal(storeTasksWsBlock.includes('getAllTasks'), false)
 })
 
-test('agent-launch lookup uses the bounded targeted agent endpoint', () => {
+test('agent-launch wake lookup uses the owning daemon ledger and never scans server state', () => {
   const registerSource = fs.readFileSync(new URL('../agent-launch/register.mjs', import.meta.url), 'utf8')
   const findAgentStart = registerSource.indexOf('export async function findAgent')
   assert.notEqual(findAgentStart, -1)
   const findAgentBlock = registerSource.slice(findAgentStart, findAgentStart + 700)
-  assert.match(findAgentBlock, /\/api\/agents\/lookup\?\$\{params\}/)
+  assert.match(findAgentBlock, /findLocalAgent\(name\)/)
+  assert.match(findAgentBlock, /local wake ledger has no record/)
   assert.equal(findAgentBlock.includes('/api/store/agents'), false)
 
   const lookupStart = fleetRoutesSource.indexOf("router.get('/api/agents/lookup'")
