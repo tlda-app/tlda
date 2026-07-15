@@ -18,6 +18,7 @@ import { resolveSpawnMachine } from '../lib/spawn-routing.mjs'
 import { summarizeFleetRosterTruth } from '../lib/fleet-roster-truth.mjs'
 import { daemonAddress, describeAgentAddress } from '../../shared/agent-move-target.mjs'
 import { completeTaskLifecycle } from '../lib/task-lifecycle.mjs'
+import { recordAgentBindingEvent } from '../lib/agent-binding-events.mjs'
 
 // Server owner — the human running this server process. Browser users
 // log in via the WS 'login' message or register via 'register'.
@@ -204,6 +205,28 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     const seat = fleetStore?.getCurrentAgentSeat?.(agent.id)
     if (!seat) { res.status(404).json({ ok: false, error: 'agent has no current durable seat' }); return }
     res.json({ ok: true, seat })
+  })
+
+  router.post('/api/agent-seat', (req, res) => {
+    if (!fleetStore) { res.status(503).json({ ok: false, error: 'Fleet store not available' }); return }
+    const body = req.body || {}
+    const agentId = body.agent_id || body.agentId
+    const agent = fleetStore.findAgent(agentId)
+    if (!agent) { res.status(404).json({ ok: false, error: 'agent not found' }); return }
+    const machineId = body.machine_id || body.machineId || null
+    const envName = body.env_name || body.envName || null
+    const daemonKey = body.daemon_key || body.daemonKey || (machineId && envName ? `${machineId}:${envName}` : null)
+    try {
+      const seat = recordAgentBindingEvent(fleetStore, { ...body, agent_id: agent.id, daemon_key: daemonKey }, {
+        machineId,
+        envName,
+        daemonKey,
+      })
+      broadcastState()
+      res.json({ ok: true, seat })
+    } catch (e) {
+      res.status(409).json({ ok: false, error: e.message })
+    }
   })
 
   // --- GET /api/human ---
