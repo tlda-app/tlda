@@ -17,6 +17,12 @@ function closeStore({ dir, store }) {
   fs.rmSync(dir, { recursive: true, force: true })
 }
 
+function reopenStore(ctx) {
+  ctx.store.close?.()
+  ctx.store = new FleetStore(path.join(ctx.dir, 'fleet.db'), { taskDoc: false })
+  return ctx.store
+}
+
 function seat(overrides = {}) {
   return {
     agent_id: 'fleet:66660cc3',
@@ -179,6 +185,41 @@ test('seat validation catches exact id-X tmux-Y corruption', () => {
       tmux_session: 'fleet-icantevengetafuckinglist',
     })
     assert.equal(ok.agent_id, 'fleet:66660cc3')
+  } finally {
+    closeStore(ctx)
+  }
+})
+
+test('startup backfills current seat for complete legacy live agent route rows', () => {
+  const ctx = tmpStore()
+  try {
+    ctx.store.upsertAgent({
+      id: 'fleet:2d20ff53',
+      friendly_name: 'recovery-chief-sol',
+      tmux_session: 'fleet-recovery-chief-sol',
+      session_id: '019f6273-aaf1-7733-870b-516820696860',
+      session_ids: ['019f6273-aaf1-7733-870b-516820696860'],
+      cwd: '/Users/skip/work/tlda',
+      machine_id: 'mini',
+      env_name: 'default',
+      daemon_key: 'mini:default',
+      resume_id: '019f6273-aaf1-7733-870b-516820696860',
+      metadata: { kind: 'codex', model: 'gpt-5.5' },
+      dead: false,
+      human: false,
+    }, { allowProtectedAgentFields: true })
+    assert.equal(ctx.store.getCurrentAgentSeat('fleet:2d20ff53'), null)
+
+    reopenStore(ctx)
+    const current = ctx.store.getCurrentAgentSeat('fleet:2d20ff53')
+    assert.equal(current.session_id, '019f6273-aaf1-7733-870b-516820696860')
+    assert.equal(current.tmux_session, 'fleet-recovery-chief-sol')
+    assert.equal(current.machine_id, 'mini')
+    assert.equal(current.env_name, 'default')
+    assert.equal(current.daemon_key, 'mini:default')
+    assert.equal(current.kind, 'codex')
+    assert.equal(current.model, 'gpt-5.5')
+    assert.equal(current.transition_reason, 'legacy-agent-route-backfill')
   } finally {
     closeStore(ctx)
   }

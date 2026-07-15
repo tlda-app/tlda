@@ -636,6 +636,71 @@ export class FleetStore {
         FOREIGN KEY (agent_id, session_id) REFERENCES agent_seats(agent_id, session_id)
       );
     `);
+    const now = new Date().toISOString();
+    this.db.prepare(`
+      INSERT OR IGNORE INTO agent_seats (
+        agent_id, session_id, resume_id, kind, model, cwd,
+        created_at, created_source, created_by_event_id
+      )
+      SELECT
+        id,
+        session_id,
+        COALESCE(resume_id, session_id),
+        json_extract(metadata, '$.kind'),
+        json_extract(metadata, '$.model'),
+        cwd,
+        ?,
+        'legacy-agent-route-backfill',
+        NULL
+      FROM agents
+      WHERE dead = 0
+        AND human = 0
+        AND session_id IS NOT NULL AND session_id != ''
+        AND tmux_session IS NOT NULL AND tmux_session != ''
+        AND machine_id IS NOT NULL AND machine_id != ''
+        AND env_name IS NOT NULL AND env_name != ''
+        AND daemon_key IS NOT NULL AND daemon_key != ''
+        AND cwd IS NOT NULL AND cwd != ''
+        AND json_extract(metadata, '$.kind') IS NOT NULL AND json_extract(metadata, '$.kind') != ''
+        AND json_extract(metadata, '$.model') IS NOT NULL AND json_extract(metadata, '$.model') != ''
+        AND NOT EXISTS (
+          SELECT 1 FROM agent_current_seats c WHERE c.agent_id = agents.id
+        )
+    `).run(now);
+    this.db.prepare(`
+      INSERT OR IGNORE INTO agent_current_seats (
+        agent_id, session_id, machine_id, env_name, daemon_key, tmux_session,
+        activated_at, activated_by_event_id, transition_reason
+      )
+      SELECT
+        a.id,
+        a.session_id,
+        a.machine_id,
+        a.env_name,
+        a.daemon_key,
+        a.tmux_session,
+        ?,
+        NULL,
+        'legacy-agent-route-backfill'
+      FROM agents a
+      JOIN agent_seats s ON s.agent_id = a.id AND s.session_id = a.session_id
+      WHERE a.dead = 0
+        AND a.human = 0
+        AND a.session_id IS NOT NULL AND a.session_id != ''
+        AND a.tmux_session IS NOT NULL AND a.tmux_session != ''
+        AND a.machine_id IS NOT NULL AND a.machine_id != ''
+        AND a.env_name IS NOT NULL AND a.env_name != ''
+        AND a.daemon_key IS NOT NULL AND a.daemon_key != ''
+        AND NOT EXISTS (
+          SELECT 1 FROM agent_current_seats c WHERE c.agent_id = a.id
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM agent_current_seats c
+          WHERE c.daemon_key = a.daemon_key
+            AND c.tmux_session = a.tmux_session
+            AND c.agent_id != a.id
+        )
+    `).run(now);
 
     const taskCols = this.db.prepare("PRAGMA table_info(tasks)").all();
     if (!taskCols.some(c => c.name === 'updated_at')) {
