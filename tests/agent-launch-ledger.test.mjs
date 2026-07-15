@@ -386,6 +386,77 @@ test('session identity recording does not fabricate an empty permission grant', 
   }
 })
 
+test('daemon launcher emits current binding when respawn finds runtime already alive', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-agent-launch-already-live-'))
+  const ledger = createPermissionLedger(path.join(tmp, 'fleet-daemon.db'))
+  try {
+    ledger.setSync('fleet:seat-owner', {
+      spawnPolicy: { name: 'ops', policy: 'unsandboxed' },
+      permissionSet: permissionSet(),
+      source: 'test',
+    })
+    ledger.setSessionSync('fleet:seat-owner', {
+      sessionId: '44444444-2222-4333-8444-555555555555',
+      sessionKind: 'codex',
+      sessionPath: '/tmp/rollout-44444444-2222-4333-8444-555555555555.jsonl',
+      tmuxSession: 'fleet-seat-owner',
+      model: 'gpt-5.5',
+      machineId: 'mini',
+      envName: 'fly',
+      daemonKey: 'mini:fly',
+      cwd: tmp,
+      friendlyName: 'seat-owner',
+    })
+    const messages = []
+    const launcher = createAgentLauncher({
+      activeConfigName: 'fly',
+      configDir: tmp,
+      loadConfig: () => ({ spawnPolicy: { permissionProfiles: { ops: permissionSet() }, defaultProfile: 'ops' } }),
+      log: { info() {}, warn() {}, error() {} },
+      machineId: 'mini',
+      permissionLedger: ledger,
+      sendMsg: msg => { messages.push(msg); return true },
+      getProjects: () => [],
+      tmux: async () => true,
+      startupFailureProbeMs: 1,
+      spawnImpl: async () => ({
+        ok: true,
+        fleetId: 'fleet:seat-owner',
+        tmuxSession: 'fleet-seat-owner',
+        harness: 'codex',
+        model: 'gpt-5.5',
+        alreadyAlive: true,
+      }),
+    })
+
+    const result = await launcher.handlers.spawn({
+      name: 'seat-owner',
+      agent_id: 'fleet:seat-owner',
+      respawn: true,
+    })
+
+    assert.equal(result.ok, true, JSON.stringify(result))
+    const binding = messages.find(m => m.type === 'agent-seat')
+    assert.deepEqual(binding, {
+      type: 'agent-seat',
+      agent_id: 'fleet:seat-owner',
+      session_id: '44444444-2222-4333-8444-555555555555',
+      resume_id: '44444444-2222-4333-8444-555555555555',
+      kind: 'codex',
+      model: 'gpt-5.5',
+      cwd: tmp,
+      machine_id: 'mini',
+      env_name: 'fly',
+      daemon_key: 'mini:fly',
+      tmux_session: 'fleet-seat-owner',
+      created_source: 'spawn-runtime-already-live',
+    })
+  } finally {
+    await ledger.close()
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
 test('daemon ledger session identity is validate-equal after first write', async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-agent-launch-session-conflict-'))
   const ledger = createPermissionLedger(path.join(tmp, 'fleet-daemon.db'))

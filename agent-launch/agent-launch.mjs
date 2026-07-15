@@ -164,6 +164,48 @@ export function createAgentLauncher({
     return path.join(spawnCrashLogDir, `${base}.log`)
   }
 
+  function emitAgentSeatBinding({
+    fleetId,
+    sessionId,
+    resumeId = sessionId,
+    harness,
+    model,
+    cwd,
+    tmuxSession,
+    agentName,
+    source,
+  }) {
+    if (!fleetId || !sessionId || !harness || !model || !cwd || !tmuxSession) return false
+    const daemonKey = `${machineId}:${activeConfigName}`
+    permissionLedger.setSessionSync(fleetId, {
+      sessionId,
+      sessionKind: harness,
+      sessionPath: null,
+      tmuxSession,
+      model,
+      machineId,
+      envName: activeConfigName,
+      daemonKey,
+      cwd,
+      friendlyName: agentName,
+    })
+    sendMsg({
+      type: 'agent-seat',
+      agent_id: fleetId,
+      session_id: sessionId,
+      resume_id: resumeId || sessionId,
+      kind: harness,
+      model,
+      cwd,
+      machine_id: machineId,
+      env_name: activeConfigName,
+      daemon_key: daemonKey,
+      tmux_session: tmuxSession,
+      created_source: source,
+    })
+    return true
+  }
+
   async function probeSpawnStartupFailure({ agentName, agent_id, tmux_session, harness, model, respawn, crash_log_path }) {
     if (!agent_id || !tmux_session) return null
     const dedupKey = `${agent_id}:${tmux_session}`
@@ -427,7 +469,8 @@ export function createAgentLauncher({
           error: `spawn launcher returned but tmux session is not usable: ${detail}`,
         }
       }
-      if (launched.harness === 'codex' && !launched.resumeId && !launched.pending) {
+      const launchedLedgerRow = launched.fleetId ? permissionLedger.get(launched.fleetId) : null
+      if (launched.harness === 'codex' && !launched.resumeId && !launched.pending && !launchedLedgerRow?.sessionId) {
         if (shouldWriteLedgerRow) await permissionLedger.delete(preallocatedAgentId).catch(() => {})
         return {
           ok: false,
@@ -438,7 +481,8 @@ export function createAgentLauncher({
           error: 'spawn launcher returned a codex session without a durable resume handle',
         }
       }
-      if (launched.harness === 'codex' && !launched.resumeId) {
+      let emittedSeatBinding = false
+      if (launched.harness === 'codex' && !launched.resumeId && !launchedLedgerRow?.sessionId) {
         const identity = await waitForLiveCodexSessionIdentity(liveCodexSessionIdentityResolver, {
           agent: {
             id: launched.fleetId,
@@ -463,33 +507,31 @@ export function createAgentLauncher({
             error: `spawn launched ${agentName}, but the daemon could not bind its live Codex rollout yet; retry once session identity ingestion catches up`,
           }
         }
-        permissionLedger.setSessionSync(launched.fleetId, {
+        emittedSeatBinding = emitAgentSeatBinding({
+          fleetId: launched.fleetId,
           sessionId: identity.sessionId,
-          sessionKind: 'codex',
-          sessionPath: identity.jsonlPath,
+          harness: 'codex',
+          model: identity.model,
+          cwd: resolvedCwd,
           tmuxSession: launched.tmuxSession,
-          model: identity.model,
-          machineId,
-          envName: activeConfigName,
-          daemonKey: `${machineId}:${activeConfigName}`,
-          cwd: resolvedCwd,
-          friendlyName: agentName,
-        })
-        sendMsg({
-          type: 'agent-seat',
-          agent_id: launched.fleetId,
-          session_id: identity.sessionId,
-          resume_id: identity.sessionId,
-          kind: 'codex',
-          model: identity.model,
-          cwd: resolvedCwd,
-          machine_id: machineId,
-          env_name: activeConfigName,
-          daemon_key: `${machineId}:${activeConfigName}`,
-          tmux_session: launched.tmuxSession,
-          created_source: 'spawn-runtime',
+          agentName,
+          source: 'spawn-runtime',
         })
         launched.resumeId = identity.sessionId
+      }
+      const ledgerRow = launched.fleetId ? permissionLedger.get(launched.fleetId) : null
+      if (!emittedSeatBinding) {
+        emitAgentSeatBinding({
+          fleetId: launched.fleetId,
+          sessionId: launched.resumeId || ledgerRow?.sessionId || sessionId || null,
+          resumeId: launched.resumeId || ledgerRow?.sessionId || sessionId || null,
+          harness: launched.harness || ledgerRow?.sessionKind || launchKind,
+          model: launched.model || ledgerRow?.model || launchModel,
+          cwd: resolvedCwd || ledgerRow?.cwd || null,
+          tmuxSession: launched.tmuxSession || ledgerRow?.tmuxSession || null,
+          agentName,
+          source: launched.alreadyAlive ? 'spawn-runtime-already-live' : 'spawn-runtime',
+        })
       }
       if (!preallocatedAgentId || launched.fleetId !== preallocatedAgentId) {
         await permissionLedger.set(launched.fleetId, {
