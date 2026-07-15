@@ -541,6 +541,14 @@ export class PermissionLedger {
       ORDER BY COALESCE(last_seen, updated_at) DESC
       LIMIT 1
     `)
+    this._list = this.db.prepare(`
+      SELECT id, spawn_policy, permission_set, updated_at, source,
+        friendly_name, session_id, session_kind, session_path, tmux_session, model,
+        machine_id, env_name, daemon_key, cwd, last_seen
+      FROM permission_grants
+      WHERE tmux_session IS NOT NULL
+      ORDER BY id
+    `)
     this._upsert = this.db.prepare(`
       INSERT INTO permission_grants (id, spawn_policy, permission_set, updated_at, source)
       VALUES (?, ?, ?, ?, ?)
@@ -602,6 +610,10 @@ export class PermissionLedger {
     const key = String(name || '').trim()
     if (!key) return null
     return this.parseRow(this._findByFriendlyName.get(key))
+  }
+
+  listProcessBindings() {
+    return this._list.all().map(row => this.parseRow(row))
   }
 
   parseRow(row) {

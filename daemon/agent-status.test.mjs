@@ -53,3 +53,26 @@ test('the status watcher keeps observing idle processes until they hibernate', a
   assert.equal(captures, 2)
   assert.equal(status.isArmed(agent.id), true)
 })
+
+test('status observation uses daemon process bindings without a server roster', async () => {
+  const binding = { id: 'fleet:ledger', tmux_session: 'fleet-ledger', metadata: { kind: 'codex' } }
+  let tick
+  const emitted = []
+  const status = createAgentStatus({
+    sendMsg: message => emitted.push(message),
+    getAgents: () => [binding],
+    harnessForAgent: agent => ({ kind: agent.metadata.kind }),
+    isConnected: () => true,
+    capturePane: async () => { throw new Error('process absent') },
+    setIntervalFn: callback => {
+      tick = callback
+      return { unref() {} }
+    },
+  })
+
+  status.start()
+  await tick()
+
+  assert.equal(emitted.at(-1).agentId, binding.id)
+  assert.equal(emitted.at(-1).state, 'hibernating')
+})

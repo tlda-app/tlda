@@ -473,7 +473,13 @@ async function rpcKick({ agent_id }) {
 const agentStatus = createAgentStatus({
   tmuxArgs: TMUX_ARGS,
   sendMsg,
-  getAgents: () => agents,
+  getAgents: () => permissionLedger.listProcessBindings().map(row => ({
+    id: row.id,
+    friendly_name: row.friendlyName,
+    tmux_session: row.tmuxSession,
+    runtimeKind: row.sessionKind,
+    metadata: { kind: row.sessionKind, model: row.model },
+  })),
   harnessForAgent: harnessRuntime.harnessForAgent,
   isConnected: () => _serverReady && _rws?.connected,
 })
