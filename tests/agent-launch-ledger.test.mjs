@@ -98,6 +98,102 @@ test('daemon launcher writes fresh-spawn ledger row before starting seat', async
   }
 })
 
+test('daemon launcher derives and persists a remote requester grant before cross-box spawn', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-agent-launch-remote-ledger-'))
+  const priorConfigDir = process.env.TLDA_DAEMON_CONFIG_DIR
+  process.env.TLDA_DAEMON_CONFIG_DIR = tmp
+  fs.writeFileSync(path.join(tmp, 'daemon.yaml'), `
+regions:
+  project: [${JSON.stringify(tmp)}]
+  machine: ['**']
+profiles:
+  app-dev:
+    read: { allow: [project] }
+    write: { allow: [project] }
+  ops:
+    read: { allow: [machine] }
+    write: { allow: [machine] }
+models:
+  default: gpt
+  values:
+    gpt: { id: gpt-5.5, provider: codex, kind: codex }
+remoteGrants:
+  "source-box:default":
+    "fleet:remote-parent":
+      ops: app-dev
+default: app-dev
+`)
+  const ledger = createPermissionLedger(path.join(tmp, 'fleet-daemon.db'))
+  try {
+    const launcher = createAgentLauncher({
+      activeConfigName: 'test',
+      configDir: tmp,
+      loadConfig: () => ({}),
+      log: { info() {}, warn() {}, error() {} },
+      machineId: 'destination-box',
+      permissionLedger: ledger,
+      sendMsg: () => true,
+      getProjects: () => [],
+      tmux: async () => true,
+      startupFailureProbeMs: 1,
+      liveCodexSessionIdentityResolver: async () => ({
+        sessionId: '21111111-2222-4333-8444-555555555555',
+        jsonlPath: path.join(tmp, 'rollout-21111111-2222-4333-8444-555555555555.jsonl'),
+        model: 'gpt-5.5',
+      }),
+      spawnImpl: async (params) => ({
+        ok: true,
+        fleetId: params.agentId,
+        tmuxSession: 'fleet-remote-child',
+        harness: 'codex',
+        model: params.model,
+        pending: true,
+      }),
+    })
+
+    const result = await launcher.handlers.spawn({
+      name: 'remote-child',
+      model: 'gpt',
+      kind: 'codex',
+      cwd: tmp,
+      requestedPermission: 'app-dev',
+      requester: {
+        id: 'fleet:remote-parent',
+        daemonId: 'source-box:default',
+        permissionClass: 'ops',
+      },
+    })
+
+    assert.equal(result.ok, true, JSON.stringify(result))
+    const parent = ledger.get('fleet:remote-parent')
+    assert.equal(parent.source, 'remote:source-box:default:ops')
+    assert.equal(parent.permissionSet.permissionClass, 'app-dev')
+    const child = ledger.get(result.agent_id)
+    assert.equal(child.source, 'spawn')
+    assert.equal(child.permissionSet.permissionClass, 'app-dev')
+
+    const clamped = await launcher.handlers.spawn({
+      name: 'remote-child-clamped',
+      model: 'gpt',
+      kind: 'codex',
+      cwd: tmp,
+      requestedPermission: 'ops',
+      requester: {
+        id: 'fleet:remote-parent',
+        daemonId: 'source-box:default',
+        permissionClass: 'ops',
+      },
+    })
+    assert.equal(clamped.ok, true, JSON.stringify(clamped))
+    assert.equal(ledger.get(clamped.agent_id).permissionSet.permissionClass, 'app-dev')
+  } finally {
+    if (priorConfigDir == null) delete process.env.TLDA_DAEMON_CONFIG_DIR
+    else process.env.TLDA_DAEMON_CONFIG_DIR = priorConfigDir
+    await ledger.close()
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
 test('daemon launcher writes a supplied fresh agent id before starting seat', async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-agent-launch-preallocated-'))
   const ledger = createPermissionLedger(path.join(tmp, 'fleet-daemon.db'))

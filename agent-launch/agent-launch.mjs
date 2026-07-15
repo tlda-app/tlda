@@ -2,18 +2,29 @@ import { execFile } from 'child_process'
 import fs from 'fs'
 import path from 'path'
 import { promisify } from 'util'
-import { resolveSpawnGrant } from '../server/lib/spawn-policy.mjs'
+import { permissionSetLte, resolveSpawnGrant } from '../server/lib/spawn-policy.mjs'
 import { detectSpawnStartupFailureTranscript } from '../agent-runtime/daemon-guards.mjs'
 import { ledgerSessionId } from '../agent-runtime/ledger-session-tail.mjs'
 import { resolveTranscript } from '../agent-runtime/resolve-transcript.mjs'
 import { probeSpawnAvailability } from './availability.mjs'
 import { newFleetId } from './identity.mjs'
-import { readDaemonConfigForCwd, withDaemonModelAliases } from './permission-ledger.mjs'
+import { readDaemonConfigForCwd, resolveRemoteDaemonGrant, withDaemonModelAliases } from './permission-ledger.mjs'
 import { createLocalAgentLedger } from './local-agent-ledger.mjs'
 import { resolveModelSpec } from './models.mjs'
 import { isIntentionalEmptyPermissionSet, permissionSetConfersNothing } from './permissions.mjs'
 
 const execFileP = promisify(execFile)
+
+function exactPermissionClass(permissionSet, daemonConfig = {}, preferred = null) {
+  const profiles = daemonConfig.profiles || {}
+  const candidates = preferred && profiles[preferred]
+    ? [[preferred, profiles[preferred]], ...Object.entries(profiles).filter(([name]) => name !== preferred)]
+    : Object.entries(profiles)
+  for (const [name, profile] of candidates) {
+    if (permissionSetLte(permissionSet, profile) && permissionSetLte(profile, permissionSet)) return name
+  }
+  return null
+}
 
 function readFileTail(file, max = 6000) {
   try {
@@ -331,7 +342,16 @@ export function createAgentLauncher({
           err.code = 'SPAWN_PERMISSION_NO_REQUESTER'
           throw err
         }
-        const spawnerGrant = permissionLedger.grantFor(requester)
+        let spawnerGrant = permissionLedger.get(requester.id)
+        if (!spawnerGrant) {
+          const remoteGrant = resolveRemoteDaemonGrant(daemonConfig, requester)
+          if (remoteGrant) {
+            remoteGrant.permissionSet.permissionClass = remoteGrant.localProfile
+            permissionLedger.setSync(requester.id, remoteGrant)
+            spawnerGrant = permissionLedger.get(requester.id)
+          }
+        }
+        if (!spawnerGrant) spawnerGrant = permissionLedger.grantFor(requester)
         // DAMNING: this is the daemon-config resolution point. `readDaemonConfigForCwd`
         // reads daemon.yaml's `profiles`/`grants`/`default`. If that config is EMPTY
         // (profiles:{} grants:{} default:null — e.g. a stray/uninitialized daemon.yaml),
@@ -358,6 +378,17 @@ export function createAgentLauncher({
           project: projectForGrant,
           cwd: resolvedCwd,
         })
+        const preferredPermissionClass = String(
+          requestedPermission
+          || (typeof requestedPermissions === 'string' ? requestedPermissions : '')
+          || daemonConfig.default
+          || '',
+        ).trim()
+        const permissionClass = exactPermissionClass(grant.grantedPermissionSet, daemonConfig, preferredPermissionClass)
+        if (permissionClass) {
+          grant.grantedPermission = permissionClass
+          grant.grantedPermissionSet.permissionClass = permissionClass
+        }
       }
       // ────────────────────────────────────────────────────────────────────────
       // INVARIANT — NO AGENT MAY EVER BE SPAWNED WITHOUT A RESOLVED GRANT.
@@ -449,6 +480,7 @@ export function createAgentLauncher({
           explicitPolicy: requestedPermission != null || requestedPermissions != null,
           acknowledgeNoSecurity: !!acknowledgeNoSecurity,
           machineId,
+          permissionClass: grant.grantedPermission || grant.grantedPermissionSet?.permissionClass || null,
           tmuxSocket,
           crashLogPath,
           identityConfigDir: configDir,

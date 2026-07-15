@@ -4623,7 +4623,8 @@ async function main() {
       case 'restart-mcp': await restartMcpAgents(process.argv.slice(3)); break // dev-only; surfaced via `tlda-dev restart-mcp`
       case 'dev-url': await cmdDevUrl(); break
       case 'deploy': await cmdDeploy(); break
-      case 'doctor': await cmdDoctor(); break
+      case 'doctor':
+      case 'dr': await cmdDoctor(); break
       case 'completions': cmdCompletions(); break
       case 'init-shadow': await cmdInitShadow(); break
       case 'repo-doctor': await cmdRepoDoctor(); break

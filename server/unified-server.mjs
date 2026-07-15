@@ -1710,6 +1710,8 @@ async function performSpawnRelay(caller, msg) {
       name: caller.friendly_name || caller.name || undefined,
       human: !!caller.human,
       spawnPolicy: caller.metadata?.spawnPolicy || undefined,
+      daemonId: caller.daemon_key || caller.metadata?.daemon_key || undefined,
+      permissionClass: caller.metadata?.spawnPolicy?.permission || caller.metadata?.permissionClass || undefined,
     },
     spawnRoute: route.source,
     daemon_env_name: route.env_name,
