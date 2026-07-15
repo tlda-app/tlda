@@ -4070,6 +4070,8 @@ async function cmdDoctorYolo() {
   }
 
   const { spawn } = await import('../agent-launch/index.mjs')
+  const { readConfig } = await import('../agent-launch/identity.mjs')
+  const { readDaemonConfigForCwd, withDaemonModelAliases } = await import('../agent-launch/permission-ledger.mjs')
   const { apiJson, markAgentDead, resolveApi } = await import('../agent-launch/register.mjs')
   const { tmuxArgs } = await import('../agent-launch/tmux.mjs')
 
@@ -4078,6 +4080,7 @@ async function cmdDoctorYolo() {
   const tmuxSocket = loadConfig().tmuxSocket || null
   const dryRun = hasFlag('dry-run')
   const modelAlias = String(getFlag('model') || '')
+  const config = withDaemonModelAliases(readConfig(), readDaemonConfigForCwd(cwd))
   const api = resolveApi()
 
   if (dryRun) {
@@ -4099,6 +4102,7 @@ async function cmdDoctorYolo() {
     acknowledgeNoSecurity: true,
     explicitPolicy: true,
     tmuxSocket,
+    config,
   })
   const { localAgentId, fleetId, tmuxSession, harness: kind, model } = launched
 
