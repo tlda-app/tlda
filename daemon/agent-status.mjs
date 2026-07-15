@@ -11,6 +11,7 @@ const execFileP = promisify(execFile)
 export function createAgentStatus({
   tmuxArgs,
   sendMsg,
+  log,
   getAgents,
   harnessForAgent,
   isConnected,
@@ -50,6 +51,7 @@ export function createAgentStatus({
     if (!agentId || !state) return
     if (prevAgentStatus.get(agentId) === state) return
     prevAgentStatus.set(agentId, state)
+    log?.info?.(`agent status transition: agent=${agentId} state=${state}`)
     sendMsg({ type: 'agent-status', agentId, state, tool, ts: new Date().toISOString() })
   }
 
@@ -150,9 +152,15 @@ export function createAgentStatus({
   }
 
   function start() {
+    let armed = 0
     for (const agent of getAgents()) {
-      if (!agent?.dead && !agent?.human && !agent?.hibernating && agent?.tmux_session) armAgent(agent.id)
+      if (!agent?.dead && !agent?.human && !agent?.hibernating && agent?.tmux_session) {
+        armAgent(agent.id)
+        armed += 1
+      }
     }
+    log?.info?.(`agent status watcher sync: armed=${armed}`)
+    void scanArmedStatus()
     if (statusScanInterval) return
     statusScanInterval = setIntervalFn(scanArmedStatus, statusScanMs)
     statusScanInterval?.unref?.()

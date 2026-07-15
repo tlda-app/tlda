@@ -50,7 +50,7 @@ test('the status watcher keeps observing idle processes until they hibernate', a
   await tick()
   await tick()
 
-  assert.equal(captures, 2)
+  assert.equal(captures, 3)
   assert.equal(status.isArmed(agent.id), true)
 })
 

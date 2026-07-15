@@ -473,6 +473,7 @@ async function rpcKick({ agent_id }) {
 const agentStatus = createAgentStatus({
   tmuxArgs: TMUX_ARGS,
   sendMsg,
+  log,
   getAgents: () => permissionLedger.listProcessBindings().map(row => ({
     id: row.id,
     friendly_name: row.friendlyName,
