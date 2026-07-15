@@ -200,6 +200,26 @@ export class LocalAgentLedger {
     const existing = this.get(localAgentId)
     if (existing) {
       if (serverAgentId) this.bind(localAgentId, serverAgentId, { friendlyName, now })
+      this.db.prepare(`
+        UPDATE local_agents SET friendly_name = COALESCE(?, friendly_name)
+        WHERE local_agent_id = ?
+      `).run(value(friendlyName), existing.localAgentId)
+      this.db.prepare(`
+        INSERT INTO local_agent_conversations (local_agent_id, session_id, harness, model)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(local_agent_id) DO UPDATE SET
+          session_id = COALESCE(excluded.session_id, session_id),
+          harness = COALESCE(excluded.harness, harness),
+          model = COALESCE(excluded.model, model)
+      `).run(existing.localAgentId, value(sessionId), value(harness), value(model))
+      this.db.prepare(`
+        INSERT INTO local_agent_process_recipes (local_agent_id, tmux_name, cwd, permission_profile)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(local_agent_id) DO UPDATE SET
+          tmux_name = COALESCE(excluded.tmux_name, tmux_name),
+          cwd = COALESCE(excluded.cwd, cwd),
+          permission_profile = COALESCE(excluded.permission_profile, permission_profile)
+      `).run(existing.localAgentId, value(tmuxName), value(cwd), value(permissionProfile))
       return this.get(localAgentId)
     }
     return this._create({

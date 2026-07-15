@@ -281,7 +281,7 @@ async function spawnFresh(params) {
       model,
       tmuxName: tmuxSession,
       cwd,
-      permissionProfile: launchPolicy.spawnPolicy?.permission || params.requestedPermission || (params.breakGlass ? 'break-glass' : null),
+      permissionProfile: params.permissionProfile || params.requestedPermission || (params.breakGlass ? 'break-glass' : null),
     })
     if (serverUp) {
       await (deps.checkFreshNameAvailable || checkFreshNameAvailable)(name, { api, serverUp, excludeId: fleetId })

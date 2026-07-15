@@ -2556,8 +2556,8 @@ async function runFleetSpawn(spawnArgs) {
   // daemon.yaml (Skip: "in terms of the CLI, I just want my fucking profiles").
   // Naming a profile IS the fence request; no flag = unfenced. There is no
   // --policy and no rung flag.
-  const permissionArg = flagFromRaw(spawnArgs, 'permissions') || undefined
-  const requestedPermissions = permissionsFromRaw(spawnArgs)
+  let permissionArg = flagFromRaw(spawnArgs, 'permissions') || undefined
+  let requestedPermissions = permissionsFromRaw(spawnArgs)
   const cwd = resolve(flagFromRaw(spawnArgs, 'cwd') || process.cwd())
   const model = flagFromRaw(spawnArgs, 'model') || undefined
   const kind = undefined
@@ -2565,6 +2565,17 @@ async function runFleetSpawn(spawnArgs) {
   let ledger = null
   try {
     const daemonConfig = readDaemonConfig(defaultDaemonConfigPath(CONFIG_DIR))
+    if (!permissionArg && !fresh && !session) {
+      const { createLocalAgentLedger } = await import('../agent-launch/local-agent-ledger.mjs')
+      const localLedger = createLocalAgentLedger()
+      try {
+        const stored = localLedger.get(name) || localLedger.findByFriendlyName(name)
+        permissionArg = stored?.process?.permissionProfile || undefined
+        if (permissionArg) requestedPermissions = permissionArg
+      } finally {
+        localLedger.close()
+      }
+    }
     const modelOptions = collectSpawnModelOptionsFromRaw(spawnArgs)
     // A named --permissions profile must be one the operator actually configured
     // in daemon.yaml. Unknown profile → loud error listing the real ones, never a
@@ -2608,6 +2619,7 @@ async function runFleetSpawn(spawnArgs) {
       effort: flagFromRaw(spawnArgs, 'effort') || undefined,
       modelOptions,
       permissionMode: flagFromRaw(spawnArgs, 'mode') || undefined,
+      permissionProfile: permissionArg,
       requestedPermission: grant.grantedPermission,
       requestedPermissions,
       spawnPolicy: grant.grantedPolicy,

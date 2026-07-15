@@ -63,6 +63,31 @@ test('shared fresh mint launches locally without a server id and persists its re
   }
 })
 
+test('an existing local identity receives the complete wake recipe', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-local-recipe-'))
+  const ledger = createLocalAgentLedger(path.join(dir, 'fleet-daemon.db'))
+  try {
+    ledger.create({ localAgentId: 'local:recipe', serverAgentId: 'fleet:recipe' })
+    ledger.create({
+      localAgentId: 'local:recipe',
+      serverAgentId: 'fleet:recipe',
+      friendlyName: 'recipe-agent',
+      harness: 'codex',
+      model: 'gpt-5.5',
+      tmuxName: 'fleet-recipe-agent',
+      cwd: dir,
+      permissionProfile: 'app-dev',
+    })
+    const stored = ledger.findByFriendlyName('recipe-agent')
+    assert.equal(stored.process.permissionProfile, 'app-dev')
+    assert.equal(stored.process.tmuxName, 'fleet-recipe-agent')
+    assert.equal(stored.conversation.harness, 'codex')
+  } finally {
+    ledger.close()
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('server daemon binding is immutable and idempotent', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-server-binding-'))
   const store = new FleetStore(path.join(dir, 'fleet.db'), { taskDoc: false })
