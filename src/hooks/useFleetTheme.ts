@@ -2,7 +2,7 @@
  * useFleetTheme — restores theme on mount before DarkModeToggle renders (no flash).
  *
  * Two orthogonal axes:
- *   family  — 'fog' | 'warm' | null (default tldraw)
+ *   family  — 'fog' | 'warm' | 'lilac' | null (default tldraw)
  *   scheme  — 'dark' | 'light' | 'system'
  *
  * Body class is derived from family + resolved dark/light at runtime.
@@ -11,7 +11,7 @@
 
 import { useEffect } from 'react'
 
-export type ThemeFamily = 'fog' | 'warm' | null
+export type ThemeFamily = 'fog' | 'warm' | 'lilac' | null
 export type ColorScheme = 'dark' | 'light' | 'system'
 
 export const FAMILY_KEY = 'tlda-theme-family'
@@ -20,9 +20,10 @@ export const SCHEME_KEY = 'tlda-color-scheme'
 const FAMILY_BODY_CLASS: Record<string, { dark: string | null; light: string | null }> = {
   fog:  { dark: 'fog-dark-mode',  light: 'fog-light-mode' },
   warm: { dark: null,             light: 'warm-mode' },
+  lilac: { dark: 'lilac-dark-mode', light: 'lilac-light-mode' },
 }
 
-const ALL_BODY_CLASSES = ['fog-dark-mode', 'fog-light-mode', 'warm-mode']
+const ALL_BODY_CLASSES = ['fog-dark-mode', 'fog-light-mode', 'warm-mode', 'lilac-dark-mode', 'lilac-light-mode']
 
 function migrate() {
   if (localStorage.getItem(FAMILY_KEY) !== null) return
@@ -41,7 +42,7 @@ function migrate() {
 export function getStoredFamily(): ThemeFamily {
   migrate()
   const v = localStorage.getItem(FAMILY_KEY)
-  if (v === 'fog' || v === 'warm') return v
+  if (v === 'fog' || v === 'warm' || v === 'lilac') return v
   return null
 }
 
