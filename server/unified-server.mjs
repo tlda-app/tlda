@@ -7600,6 +7600,17 @@ async function handleDaemonWsMessage(ws, msg) {
   // From here on, the daemon must be identified.
   if (!ws._machineId) return
 
+  if (type === 'agent-status') {
+    const { agentId, state, tool, ts } = msg
+    if (!agentId || !state || !fleetStore) return
+    fleetStore.updateAgentStatus?.(agentId, state, tool, ts)
+    if (state === 'hibernating') markAgentNotAlive(agentId)
+    else markAgentAlive(agentId)
+    broadcastEvent('agent-status', { agent: agentId, state, tool, ts })
+    broadcastState()
+    return
+  }
+
   if (type === 'agent-liveness') {
     const { agent_id, state, tmux_session, pid, reason, ts } = msg
     if (Array.isArray(msg.agent_ids) || Array.isArray(msg.checked_agent_ids)) {
