@@ -47,6 +47,7 @@ import {
 import { appendToken } from '../authToken'
 import { labelsForAgent } from '../../shared/fleet-labels.mjs'
 import { useFleetChatAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useFleetStatusTargets, useFleetFilterHasMatchingAgent, useSuggestions, clearGroup, sendMessage, loadBefore, resolveFleetAgentLabelIds, injectOptimisticEvent, updateOptimisticEvent, removeOptimisticEvent } from '../fleet-data-adapter'
+import { isTerminalAvailableForAgent, mergeVisibleChatEvents } from '../fleet/fleet-chat-visibility.mjs'
 import type { Suggestion } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
 import { agentDisplayLabel, agentExactName, beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
@@ -1991,7 +1992,12 @@ function FleetChatInner({ shape }: { shape: any }) {
   const chatEventBufferKey = dnfFilter && resolvedFilterIdKey
     ? `filter:${filterKey}:ids:${resolvedFilterIdKey}`
     : null
-  const liveEvents = useFleetEvents(eventDisplayChoice.filter, frameId, chatEventBufferKey)
+  const bufferedEvents = useFleetEvents(eventDisplayChoice.filter, frameId, chatEventBufferKey)
+  const globalLiveEvents = useFleetEvents(eventDisplayChoice.filter, frameId, null)
+  const liveEvents = useMemo(
+    () => mergeVisibleChatEvents(bufferedEvents, globalLiveEvents),
+    [bufferedEvents, globalLiveEvents],
+  )
   const tasks = useFleetTasks(frameId)
   const thinkingAgents = useFleetThinking(dnfFilter, frameId)
   const compactingAgents = useFleetCompacting(dnfFilter, frameId)
@@ -4892,7 +4898,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   }, [agentRouteName])
 
   const isTerminalReadyAgent = useCallback((agent: any) => {
-    return !!agent?.tmux_session && !agent?.dead && !agent?.hibernating && agent?.status !== 'hibernating'
+    return isTerminalAvailableForAgent(agent)
   }, [])
 
   const terminalHoverAgents = useMemo(() => {
