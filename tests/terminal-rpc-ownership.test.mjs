@@ -135,3 +135,16 @@ test('generic agent edit surfaces cannot mutate identity or runtime route fields
   assert.match(moveBlock, /durable seat binding event path/)
   assert.doesNotMatch(moveBlock, /upsertAgent/)
 })
+
+test('fresh shell reservation does not generic-upsert an empty session history', () => {
+  const unified = readFileSync(new URL('../server/unified-server.mjs', import.meta.url), 'utf8')
+  const start = unified.indexOf("if (type === 'register' || type === 'reserve-shell')")
+  const end = unified.indexOf("\n  // Login has two forms:", start)
+  assert.notEqual(start, -1, 'missing registration handler')
+  assert.notEqual(end, -1, 'missing registration handler endpoint')
+  const registerBlock = unified.slice(start, end)
+
+  assert.match(registerBlock, /session_ids: existing\?\.session_ids,/)
+  assert.doesNotMatch(registerBlock, /session_ids: existing\?\.session_ids \|\| \[\]/)
+  assert.match(registerBlock, /session_id\/session_ids are minted by the durable seat binding path/)
+})

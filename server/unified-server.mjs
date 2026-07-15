@@ -4815,7 +4815,7 @@ async function handleFleetWsMessage(ws, msg) {
       pretty_name: pretty_name ?? existing?.pretty_name ?? null,
       tmux_session: existing?.tmux_session || null,
       session_id: existing?.session_id || null,
-      session_ids: existing?.session_ids || [],
+      session_ids: existing?.session_ids,
       cwd: existing?.cwd || null,
       labels: labels || existing?.labels || [],
       registered_at: existing?.registered_at || now,
