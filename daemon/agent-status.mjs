@@ -18,8 +18,10 @@ export function createAgentStatus({
   statusScanMs = parseInt(process.env.TLDA_STATUS_SCAN_MS, 10) || 5000,
   armLingerMs = parseInt(process.env.TLDA_STATUS_ARM_LINGER_MS, 10) || 8000,
   idleConfirmScans = 2,
+  capturePane = (tmuxSession) => execFileP('tmux',
+    [...(tmuxArgs || []), 'capture-pane', '-t', tmuxSession, '-p', '-S', `-${THINKING_SCAN_LINES}`],
+    { timeout: 3000, encoding: 'utf8' }),
 }) {
-  const TMUX_ARGS = tmuxArgs || []
   let statusScanInterval = null
   const armedSince = new Map()
   const idleScans = new Map()
@@ -88,14 +90,12 @@ export function createAgentStatus({
   async function scanAgentPaneStatus(agent) {
     let pane
     try {
-      const { stdout } = await execFileP('tmux',
-        [...TMUX_ARGS, 'capture-pane', '-t', agent.tmux_session, '-p', '-S', `-${THINKING_SCAN_LINES}`],
-        { timeout: 3000, encoding: 'utf8' })
+      const { stdout } = await capturePane(agent.tmux_session)
       pane = stdout
     } catch {
       const effectiveThinking = emitThinkingEdge(agent.id, false)
       const effectiveCompacting = emitCompactingEdge(agent.id, false)
-      if (!effectiveThinking && !effectiveCompacting) emitAgentStatus(agent.id, 'idle')
+      if (!effectiveThinking && !effectiveCompacting) emitAgentStatus(agent.id, 'hibernating')
       return { busy: false }
     }
 

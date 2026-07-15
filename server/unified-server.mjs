@@ -6260,7 +6260,10 @@ async function handleFleetWsMessage(ws, msg) {
     const { agentId, state, tool, ts } = msg
     if (agentId && state && fleetStore) {
       fleetStore.updateAgentStatus?.(agentId, state, tool, ts)
+      if (state === 'hibernating') markAgentNotAlive(agentId)
+      else markAgentAlive(agentId)
       broadcastEvent('agent-status', { agent: agentId, state, tool, ts })
+      broadcastState()
     }
     reply({ ok: true })
     return
