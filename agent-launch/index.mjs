@@ -226,7 +226,8 @@ async function spawnFresh(params) {
     const modelResolved = resolveAdapterModel(adapter, params.model, config, modelSpec)
     model = modelResolved.model
     const dnsAlias = await (deps.resolveDnsAlias || resolveDnsAlias)(api)
-    const configuredHarnessOptions = params.breakGlass
+    const bypassHarnessSandbox = params.breakGlass || params.permissionProfile === 'ops'
+    const configuredHarnessOptions = bypassHarnessSandbox
       ? {
           required: requestedKind === 'codex'
             ? ['--dangerously-bypass-approvals-and-sandbox']

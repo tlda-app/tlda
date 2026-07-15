@@ -1,4 +1,4 @@
-export const DEFAULT_SUPERVISED_START_TIMEOUT_MS = 30_000
+export const DEFAULT_SUPERVISED_START_TIMEOUT_MS = 120_000
 export const DEFAULT_DIRECT_FALLBACK_TIMEOUT_MS = 30_000
 
 export class DaemonTransitionFailed extends Error {
