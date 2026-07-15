@@ -144,7 +144,53 @@ test('fresh shell reservation does not generic-upsert an empty session history',
   assert.notEqual(end, -1, 'missing registration handler endpoint')
   const registerBlock = unified.slice(start, end)
 
-  assert.match(registerBlock, /session_ids: existing\?\.session_ids,/)
+  assert.match(registerBlock, /session_ids: null,/)
   assert.doesNotMatch(registerBlock, /session_ids: existing\?\.session_ids \|\| \[\]/)
   assert.match(registerBlock, /session_id\/session_ids are minted by the durable seat binding path/)
+})
+
+test('register and login generic upserts do not carry protected runtime route fields', () => {
+  const unified = readFileSync(new URL('../server/unified-server.mjs', import.meta.url), 'utf8')
+  const registerStart = unified.indexOf("if (type === 'register' || type === 'reserve-shell')")
+  const registerEnd = unified.indexOf("\n  // Login has two forms:", registerStart)
+  const loginStart = unified.indexOf("if (type === 'login')", registerEnd)
+  const loginEnd = unified.indexOf('\n    if (!name || typeof name', loginStart)
+  assert.notEqual(registerStart, -1, 'missing registration handler')
+  assert.notEqual(registerEnd, -1, 'missing registration handler endpoint')
+  assert.notEqual(loginStart, -1, 'missing login handler')
+  assert.notEqual(loginEnd, -1, 'missing agent login branch endpoint')
+
+  for (const block of [unified.slice(registerStart, registerEnd), unified.slice(loginStart, loginEnd)]) {
+    for (const field of ['tmux_session', 'session_id', 'session_ids', 'cwd', 'machine_id', 'env_name', 'daemon_key', 'resume_id']) {
+      assert.match(block, new RegExp(`${field}: null,`), `${field} must not be carried through generic upsert`)
+    }
+  }
+})
+
+test('shell reservation websocket message separates request id from fleet agent id', () => {
+  const register = readFileSync(new URL('../agent-launch/register.mjs', import.meta.url), 'utf8')
+  assert.match(register, /const requestId = `\$\{type\}:\$\{fleetId\}:/)
+  assert.match(register, /id: requestId,/)
+  assert.match(register, /agent_id: fleetId,/)
+  assert.doesNotMatch(register, /^\s+id: fleetId,$/m)
+  assert.match(register, /data\.id !== requestId/)
+})
+
+test('doctor yolo break-glass is available through the dr alias', () => {
+  const cli = readFileSync(new URL('../cli/tlda.mjs', import.meta.url), 'utf8')
+  const switchStart = cli.indexOf('switch (command)')
+  const switchEnd = cli.indexOf('\n      default:', switchStart)
+  assert.notEqual(switchStart, -1, 'missing top-level command switch')
+  assert.notEqual(switchEnd, -1, 'missing top-level command switch default')
+  const switchBlock = cli.slice(switchStart, switchEnd)
+
+  assert.match(switchBlock, /case 'doctor':\s*case 'dr': await cmdDoctor\(\); break/)
+
+  const yoloStart = cli.indexOf('async function cmdDoctorYolo()')
+  const yoloEnd = cli.indexOf('\n  const { sanitizeSessionName', yoloStart)
+  assert.notEqual(yoloStart, -1, 'missing doctor yolo handler')
+  assert.notEqual(yoloEnd, -1, 'missing doctor yolo import boundary')
+  const yoloPreamble = cli.slice(yoloStart, yoloEnd)
+  assert.match(yoloPreamble, /if \(hasFlag\('help'\)\)/, 'yolo help must be local')
+  assert.match(yoloPreamble, /COMMAND_HELP\.doctor/, 'yolo help should reuse doctor help text')
 })

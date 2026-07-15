@@ -184,6 +184,7 @@ async function wsIdentityMessage(type, {
 } = {}) {
   const wsUrl = `${wsForm(api)}/ws/fleet?agent=${encodeURIComponent(fleetId)}`
   const ws = new WebSocket(wsUrl, tlsOptionsForApi(api))
+  const requestId = `${type}:${fleetId}:${Date.now()}:${Math.random().toString(36).slice(2)}`
   const opened = new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`registration timed out connecting to ${wsUrl}`)), 5000)
     ws.once('open', () => {
@@ -199,7 +200,8 @@ async function wsIdentityMessage(type, {
   const cfg = readConfig()
   const msg = {
     type,
-    id: fleetId,
+    id: requestId,
+    agent_id: fleetId,
     name,
     pretty_name: prettyNameForFriendlyName(name),
     tmux_session: tmuxSession,
@@ -219,17 +221,25 @@ async function wsIdentityMessage(type, {
   }
   if (Object.keys(meta).length) msg.metadata = meta
   const reply = new Promise((resolve, reject) => {
-    const timer = setTimeout(() => resolve({ ok: true, timeout: true }), 5000)
-    ws.once('message', (raw) => {
-      clearTimeout(timer)
+    const timer = setTimeout(() => {
+      ws.off('message', onMessage)
+      reject(new Error(`${type} timed out waiting for shell reservation ack from ${wsUrl}`))
+    }, 5000)
+    const onMessage = (raw) => {
       try {
         const data = JSON.parse(raw.toString())
+        if (data.id !== requestId) return
+        clearTimeout(timer)
+        ws.off('message', onMessage)
         if (data.error) reject(new Error(data.error.message || data.error))
         else resolve(data.result || { ok: true })
       } catch {
+        clearTimeout(timer)
+        ws.off('message', onMessage)
         resolve({ ok: true })
       }
-    })
+    }
+    ws.on('message', onMessage)
   })
   ws.send(JSON.stringify(msg))
   try {

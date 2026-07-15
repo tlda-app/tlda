@@ -170,6 +170,8 @@ export async function dismissDevchannels(session, { timeoutMs = 60_000, tmuxSock
 export async function injectCodexPrompt(session, prompt, { timeoutMs = 60_000, tmuxSocket = process.env.TMUX_SOCKET || null } = {}) {
   const deadline = Date.now() + timeoutMs
   const promptMarker = prompt.slice(0, Math.min(prompt.length, 48))
+  let promptReadySince = null
+  const codexMcpSettleMs = 3500
   while (Date.now() < deadline) {
     try {
       const { stdout } = await tmux(tmuxSocket, 'capture-pane', '-t', session, '-p')
@@ -178,8 +180,21 @@ export async function injectCodexPrompt(session, prompt, { timeoutMs = 60_000, t
         await new Promise((resolve) => setTimeout(resolve, 1000))
         continue
       }
+      if (stdout.includes('MCP startup interrupted')) {
+        return false
+      }
       const promptReady = stdout.split('\n').some((line) => line.trimStart().startsWith('›'))
       const busy = ['Working', 'Transmuting', 'Thinking'].some((marker) => stdout.includes(marker))
+      const mcpStarting = stdout.includes('Starting MCP servers')
+      if (promptReady && !busy && !mcpStarting && promptReadySince == null) {
+        promptReadySince = Date.now()
+      } else if (!promptReady || busy || mcpStarting) {
+        promptReadySince = null
+      }
+      if (promptReadySince != null && Date.now() - promptReadySince < codexMcpSettleMs) {
+        await new Promise((resolve) => setTimeout(resolve, 500))
+        continue
+      }
       if (promptReady && !busy) {
         await tmux(tmuxSocket, 'send-keys', '-t', session, 'Escape')
         await new Promise((resolve) => setTimeout(resolve, 200))
