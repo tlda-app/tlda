@@ -6,6 +6,10 @@ Source pointers:
   14:04:14 EDT, message `1349001` (full canon).
 - Fleet chat `stabilizer` → `permissions-canon-reader`, 2026-07-16
   14:05:34 EDT (acceptance).
+- Fleet chat Skip correction, 2026-07-16, message `1350116` (printer
+  authority).
+- Fleet chat chief correction, 2026-07-16, message `1350129` (printer
+  authority).
 - Local transcription: `scratch/skip-permissions-canon.md`.
 
 This contract resolves the canon's open local intersection question. It does
@@ -49,8 +53,9 @@ synonymous request/grant fields are forbidden.
 
 ## Human- and agent-visible output
 
-Printing permission detail is optional. If printed, it must name a complete
-real object using Skip's vocabulary:
+Printing permission detail is optional and observational. The printer may omit
+the line when it cannot produce one of the legal coherent forms below. If
+printed, it must name a complete real object using Skip's vocabulary:
 
 - a configured profile name, for example `permissions: wd`;
 - an honest intersection of configured profile names, for example
@@ -62,6 +67,10 @@ Forbidden output includes `scope`, `CWD scope`, `fenced (cwd)`, `unfenced`,
 `full access`, `unmatched`, `anonymous CWD`, and any other agent-minted label
 that does not completely identify the configured profile, real intersection,
 or separate read/write regions.
+
+Printer, formatter, and logging code must never validate, reject, mutate, or
+gate a grant or runtime launch. Semantic invalidity and refusal are decided by
+resolution and enforcement upstream, independently of display.
 
 ## Required invariants
 
