@@ -66,6 +66,7 @@ const VERSION = '0.1.1'
 import { createLogger } from '../shared/logger.mjs'
 import { resolveDaemonIsolation } from '../shared/daemon-identity.mjs'
 import { sendActivityEvents } from '../agent-runtime/activity-send.mjs'
+import { createActivityDeliveryCounters, ACTIVITY_DELIVERY_STAGES } from '../shared/activity-delivery-counters.mjs'
 import {
   ACTIVITY_HEALTH_BOUNDARIES,
   ACTIVITY_HEALTH_OK,
@@ -318,6 +319,7 @@ let agentStatusSeq = 0
 let projects = []                 // current project list
 let _lastSessionWatcherRosterSig = ''
 let terminalRpc
+let activityDeliveryMetricsTimer = null
 
 const TERMINAL_SIZE_POLL_MS = parseInt(process.env.TLDA_TERMINAL_SIZE_POLL_MS, 10) || 5000
 
@@ -326,10 +328,42 @@ const harnessRuntime = createHarnessRuntime({
   log,
 })
 
+const daemonActivityDeliveryCounters = createActivityDeliveryCounters({
+  origin: 'daemon',
+  onChange: () => scheduleActivityDeliveryMetrics(),
+})
+
+function scheduleActivityDeliveryMetrics() {
+  if (activityDeliveryMetricsTimer) return
+  activityDeliveryMetricsTimer = setTimeout(() => {
+    activityDeliveryMetricsTimer = null
+    sendActivityDeliveryMetrics('counter-change')
+  }, 1000)
+  activityDeliveryMetricsTimer?.unref?.()
+}
+
+function sendActivityDeliveryMetrics(reason = 'snapshot') {
+  if (!_rws?.connected) return false
+  return _rws.send({
+    type: 'activity-delivery-metrics',
+    reason,
+    machine_id: MACHINE_ID,
+    env_name: ACTIVE_CONFIG,
+    boot_id: BOOT_ID,
+    metrics: daemonActivityDeliveryCounters.snapshot(),
+  })
+}
+
 // ---------- activity event buffer ----------
 
 function bufferActivity(agentId, evts) {
   const daemonReceivedAtMs = Date.now()
+  daemonActivityDeliveryCounters.record(
+    ACTIVITY_DELIVERY_STAGES.JSONL_EXTRACTED,
+    { type: 'activity-event' },
+    evts.length,
+    { agent: agentId }
+  )
   const stampedEvents = evts.map(evt => {
     const existing = evt?.daemonReceivedAtMs == null || evt.daemonReceivedAtMs === ''
       ? null
@@ -598,6 +632,7 @@ const daemonDelivery = new DaemonDeliveryRuntime({
   isConnected: () => _rws?.connected === true,
   isReady: () => _serverReady === true,
   log,
+  activityDeliveryCounters: daemonActivityDeliveryCounters,
 })
 
 function migrateLegacyDeadLetters() {
@@ -731,6 +766,7 @@ function handleServerMessage(msg) {
     applyDaemonGrants(permissionLedger, daemonSpawnConfig)
     log.info(`welcome: ${agents.length} agents, ${projects.length} projects`)
     daemonDelivery.noteReady()
+    sendActivityDeliveryMetrics('daemon-welcome')
     sourceSync.sync(projects)
     sourceSync.flushPending()
     agentLiveness.start()

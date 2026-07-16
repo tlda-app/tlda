@@ -122,6 +122,7 @@ import {
 import { createNotificationAttemptRecorder } from './lib/notification-attempts.mjs'
 import { daemonEventFailureIncident } from './lib/daemon-event-failures.mjs'
 import { buildDaemonActivityRecord } from './lib/daemon-activity-ingest.mjs'
+import { createActivityDeliveryCounters, ACTIVITY_DELIVERY_STAGES } from '../shared/activity-delivery-counters.mjs'
 import {
   ACTIVITY_HEALTH_BOUNDARIES,
   ACTIVITY_HEALTH_OK,
@@ -140,6 +141,8 @@ const terminalBridgeLog = createBackendLogger('terminal-bridge')
 const syncSignalLog = createBackendLogger('sync-signals')
 const daemonEventLog = createBackendLogger('daemon-events')
 const controlPlaneTraces = createControlPlaneTraceStore()
+const serverActivityDeliveryCounters = createActivityDeliveryCounters({ origin: 'server' })
+const daemonActivityDeliverySnapshots = new Map()
 const SERVER_PERF_MAX_EVENTS = Number(process.env.TLDA_SERVER_PERF_MAX_EVENTS || 500)
 const serverPerfEvents = []
 
@@ -164,6 +167,16 @@ function recordServerPerfEvent(type, detail = {}) {
   serverPerfEvents.push(event)
   if (serverPerfEvents.length > SERVER_PERF_MAX_EVENTS) {
     serverPerfEvents.splice(0, serverPerfEvents.length - SERVER_PERF_MAX_EVENTS)
+  }
+}
+
+function activityDeliverySnapshot() {
+  return {
+    server: serverActivityDeliveryCounters.snapshot(),
+    daemons: [...daemonActivityDeliverySnapshots.entries()].map(([daemonKey, snapshot]) => ({
+      daemonKey,
+      ...snapshot,
+    })),
   }
 }
 
@@ -1137,6 +1150,13 @@ function broadcastFleet(msg) {
   }
 }
 function broadcastEvent(type, data) {
+  if (type === 'fleet-event' && data?.type === 'activity') {
+    serverActivityDeliveryCounters.record(ACTIVITY_DELIVERY_STAGES.SERVER_BROADCAST, data, 1, {
+      type: 'activity',
+      agent: data.from_id || data.from || data.agent || null,
+      tool: data.metadata?.tool || data.text || null,
+    })
+  }
   const traceId = traceIdFromFleetEvent(data)
   if (traceId) {
     controlPlaneTraces.append({
@@ -2829,6 +2849,7 @@ app.get('/api/diagnostics/live-perf', requireRead, (req, res) => {
       ws: wsSummary(),
       events: serverEvents,
     },
+    activityDelivery: activityDeliverySnapshot(),
   })
 })
 
@@ -4491,6 +4512,7 @@ server.on('upgrade', async (req, socket, head) => {
         logWsClose('daemon', ws, code, reason?.toString?.() || '')
         if (ws._daemonKey && daemonConnections.get(ws._daemonKey) === ws) {
           daemonConnections.delete(ws._daemonKey)
+          daemonActivityDeliverySnapshots.delete(ws._daemonKey)
           fleetStore?.markDaemonDisconnected?.(ws._daemonKey)
           // The daemon is gone; process-level visibility is unknown, not false.
           // Preserve prior liveness so a server/Fly redeploy or daemon restart
@@ -4510,6 +4532,7 @@ server.on('upgrade', async (req, socket, head) => {
       ws.on('error', () => {
         if (ws._daemonKey && daemonConnections.get(ws._daemonKey) === ws) {
           daemonConnections.delete(ws._daemonKey)
+          daemonActivityDeliverySnapshots.delete(ws._daemonKey)
           fleetStore?.markDaemonDisconnected?.(ws._daemonKey)
           failPendingRpcsForDaemon(ws._machineId, ws._envName, 'daemon ws error')
           clearServerDaemonOutboxInflightForDaemon(ws._daemonKey)
@@ -7436,6 +7459,22 @@ async function setSentinelSyncError(projectName, syncError) {
 async function handleDaemonWsMessage(ws, msg) {
   const { type } = msg
 
+  if (type === 'activity-delivery-metrics') {
+    const daemonKey = ws._daemonKey || (
+      msg.machine_id && msg.env_name ? daemonAddress(msg.machine_id, msg.env_name) : null
+    )
+    if (!daemonKey) return
+    daemonActivityDeliverySnapshots.set(daemonKey, {
+      ts: new Date().toISOString(),
+      reason: msg.reason || null,
+      machine_id: msg.machine_id || ws._machineId || null,
+      env_name: msg.env_name || ws._envName || null,
+      boot_id: msg.boot_id || ws._bootId || null,
+      metrics: msg.metrics || null,
+    })
+    return
+  }
+
   if (type === 'daemon-hello') {
     const { machine_id, env_name, user, hostname, version, boot_id, install_path, last_agent_status_seq } = msg
     if (!machine_id || !env_name) return
@@ -7682,6 +7721,11 @@ async function handleDaemonWsMessage(ws, msg) {
     const serverReceivedAtMs = Date.now()
     const { agent_id, tool, arg, input } = msg
     if (!agent_id) return
+    serverActivityDeliveryCounters.record(ACTIVITY_DELIVERY_STAGES.SERVER_ACCEPTED, msg, 1, {
+      type: 'activity-event',
+      agent: agent_id,
+      tool,
+    })
     touchActivity(agent_id)
     if (tool === '_usage') return // usage stats don't need DB storage
     try {

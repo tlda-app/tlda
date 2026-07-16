@@ -32,6 +32,7 @@ import { probe } from '../perf-probe'
 import { DATABASE_HTTP, DATABASE_WS } from '../activeConfig'
 import { isUsableIdentityName, sanitizeIdentityName, storedIdentityLoginFailureAction } from './identity-persistence.mjs'
 import { resetWsRequestIdleTimers, startWsRequest, WsReconnectBuffer } from '../../shared/fleet-browser-transport.mjs'
+import { createActivityDeliveryCounters, ACTIVITY_DELIVERY_STAGES } from '../../shared/activity-delivery-counters.mjs'
 import { maybeShowRadioSubtitleForIncomingChat } from '../voice.mjs'
 import { checkAppShellFreshness } from '../appShellFreshness'
 
@@ -645,6 +646,7 @@ let _lastWsMessageAt = 0
 let _lastFleetEventAt = 0
 let _lastFleetEventId = 0
 let _lastAgentsDeltaAt = 0
+const browserActivityDeliveryCounters = createActivityDeliveryCounters({ origin: 'browser' })
 
 function finiteMs(value) {
   const n = Number(value)
@@ -741,7 +743,17 @@ export function getFleetRuntimeSummary(now = Date.now()) {
     hasNextAgentsPage: !!_nextAgentsCursor,
     liveTailPinned: isLiveTailPinned(),
     activityLatency: summarizeActivityLatency(now),
+    activityDelivery: browserActivityDeliveryCounters.snapshot(),
   }
+}
+
+export function recordBrowserActivityRendered(stage, activityGroup = [], count = 1) {
+  const first = Array.isArray(activityGroup) ? activityGroup[0] : null
+  browserActivityDeliveryCounters.record(stage, { type: 'activity' }, count, {
+    type: 'activity',
+    agent: first?.from || first?.agent || null,
+    tool: first?._toolName || first?.text || null,
+  })
 }
 
 // WS request/response: pending callbacks keyed by message ID
@@ -910,9 +922,12 @@ export function connect() {
   _ws.onerror = () => {}
 
   _ws.onmessage = (e) => {
+    let msg = null
+    let eventType = null
+    let data = null
     try {
       markWsActivity()
-      const msg = JSON.parse(e.data)
+      msg = JSON.parse(e.data)
       _lastWsMessageAt = Date.now()
 
       // Handle request/response messages (replies to wsSend)
@@ -941,8 +956,8 @@ export function connect() {
       }
 
       // Event-typed messages
-      const eventType = msg.event
-      const data = msg.data
+      eventType = msg.event
+      data = msg.data
 
       // Incremental fleet state — changed/removed agents and bounded task deltas.
       if (eventType === 'agents-delta') {
@@ -966,6 +981,13 @@ export function connect() {
         // it rebinds the pending entry instead of appending a duplicate. All by
         // id — no content matching.
         const converted = convertChatEvent(data)
+        if (data.type === 'activity') {
+          browserActivityDeliveryCounters.record(ACTIVITY_DELIVERY_STAGES.BROWSER_CONVERTED, data, 1, {
+            type: 'activity',
+            agent: data.from_id || data.from || data.agent || null,
+            tool: data.metadata?.tool || data.text || null,
+          })
+        }
         if (converted?._activityLatency) {
           const browserReceivedAtMs = Date.now()
           converted._activityLatency = {
@@ -1044,7 +1066,22 @@ export function connect() {
       } else if (eventType === 'heartbeat') {
         // ignore — keep-alive
       }
-    } catch {}
+    } catch (err) {
+      browserActivityDeliveryCounters.record(ACTIVITY_DELIVERY_STAGES.BROWSER_ERRORS, data || msg || { type: eventType || 'ws-message' }, 1, {
+        type: data?.type || eventType || msg?.type || 'ws-message',
+        agent: data?.from_id || data?.from || data?.agent || null,
+        tool: data?.metadata?.tool || data?.text || null,
+        error: err instanceof Error ? err.message : String(err),
+      })
+      log.error('fleet-data', 'fleet websocket message handler failed', {
+        eventType,
+        messageType: msg?.type || null,
+        dataType: data?.type || null,
+        eventId: data?.id || null,
+        rawLength: typeof e.data === 'string' ? e.data.length : null,
+        error: err instanceof Error ? err.stack || err.message : String(err),
+      })
+    }
   }
 }
 

@@ -30,7 +30,7 @@ import { highlightSyntax, langFromFilePath, renderMarkdown as renderMarkdownUtil
 // @ts-ignore — vanilla JS module
 import { initVoice, setVoiceTarget, clearVoiceTarget, resetTranscript, restartRecording, toggleRecording, sendCurrentText, isRecording } from '../voice.mjs'
 // @ts-ignore — vanilla JS module
-import { getHumanId, getHumanName, getDeviceId, isDeviceReady, updateEventById, sendViewingContext, setViewingEnrichFn, getFleetWsBase, setFleetEventsLiveTailPinned, clearFleetEventsLiveTailPinned } from '../fleet/fleet-data.mjs'
+import { getHumanId, getHumanName, getDeviceId, isDeviceReady, updateEventById, sendViewingContext, setViewingEnrichFn, getFleetWsBase, setFleetEventsLiveTailPinned, clearFleetEventsLiveTailPinned, recordBrowserActivityRendered } from '../fleet/fleet-data.mjs'
 // @ts-ignore — vanilla JS module
 import { installChatImageRetry } from '../fleet/chat-image-retry.mjs'
 // @ts-ignore — vanilla JS module
@@ -45,6 +45,7 @@ import {
 } from '../fleet/filter-semantics.mjs'
 import { appendToken } from '../authToken'
 import { labelsForAgent } from '../../shared/fleet-labels.mjs'
+import { ACTIVITY_DELIVERY_STAGES } from '../../shared/activity-delivery-counters.mjs'
 import { useFleetAgents, useFleetChatAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useFleetStatusTargets, useFleetFilterHasMatchingAgent, useSuggestions, clearGroup, sendMessage, loadBefore, resolveFleetAgentLabelIds, injectOptimisticEvent, updateOptimisticEvent, removeOptimisticEvent } from '../fleet-data-adapter'
 import { isTerminalAvailableForAgent, mergeVisibleChatEvents } from '../fleet/fleet-chat-visibility.mjs'
 import type { Suggestion } from '../fleet-data-adapter'
@@ -1779,6 +1780,11 @@ const ChatMessageRow = memo(function ChatMessageRow({
     el.querySelectorAll<HTMLElement>('.chat-activity-card').forEach(card => {
       if (!card.dataset.browserMountedAtMs) {
         card.dataset.browserMountedAtMs = String(mountedAtMs)
+        recordBrowserActivityRendered(ACTIVITY_DELIVERY_STAGES.BROWSER_RENDERED, [{
+          from: card.dataset.agent,
+          _dbId: card.dataset.msgId,
+          timestamp: card.dataset.ts,
+        }], 1)
       }
     })
     const expanded = expandedRowsRef.current

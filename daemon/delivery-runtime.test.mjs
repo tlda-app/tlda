@@ -5,6 +5,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { DaemonOutbox } from './outbox.mjs'
 import { DaemonDeliveryRuntime } from './delivery-runtime.mjs'
+import { createActivityDeliveryCounters, ACTIVITY_DELIVERY_STAGES } from '../shared/activity-delivery-counters.mjs'
 
 function tempOutbox() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-daemon-delivery-'))
@@ -40,6 +41,31 @@ test('durable messages enqueue offline and flush after ready', () => {
   assert.equal(outbox.count(), 1, 'message remains pending until ack')
   runtime.handleAck(sent[0].__daemon_outbox_id)
   assert.equal(outbox.count(), 0)
+  runtime.dispose()
+  outbox.close()
+})
+
+test('activity delivery counters record durable queued sent and acked by type', () => {
+  const sent = []
+  const outbox = tempOutbox()
+  const counters = createActivityDeliveryCounters({ origin: 'daemon' })
+  const runtime = new DaemonDeliveryRuntime({
+    outbox,
+    send: msg => { sent.push(msg); return true },
+    isConnected: () => true,
+    isReady: () => true,
+    activityDeliveryCounters: counters,
+  })
+
+  runtime.send({ type: 'activity-event', agent_id: 'fleet:a', tool: 'Bash', ts: '2026-07-16T12:00:00.000Z' })
+  runtime.flushDurable()
+  runtime.handleAck(sent[0].__daemon_outbox_id)
+
+  const snapshot = counters.snapshot()
+  assert.equal(snapshot.byStage[ACTIVITY_DELIVERY_STAGES.DAEMON_QUEUED].byType['activity-event'], 1)
+  assert.equal(snapshot.byStage[ACTIVITY_DELIVERY_STAGES.DAEMON_SENT].byType['activity-event'], 1)
+  assert.equal(snapshot.byStage[ACTIVITY_DELIVERY_STAGES.DAEMON_ACKED].byType['activity-event'], 1)
+  assert.equal(snapshot.recent.at(-1).stage, ACTIVITY_DELIVERY_STAGES.DAEMON_ACKED)
   runtime.dispose()
   outbox.close()
 })

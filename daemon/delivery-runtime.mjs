@@ -14,6 +14,7 @@ export class DaemonDeliveryRuntime {
     isReady,
     log = null,
     ephemeralQueueLimit = 200,
+    activityDeliveryCounters = null,
   }) {
     this.outbox = outbox
     this.sendDirect = send
@@ -27,6 +28,7 @@ export class DaemonDeliveryRuntime {
     this.flushRunning = false
     this.droppedCount = 0
     this.droppedWarnAt = 0
+    this.activityDeliveryCounters = activityDeliveryCounters
   }
 
   send(message) {
@@ -34,6 +36,7 @@ export class DaemonDeliveryRuntime {
 
     if (policy === DELIVERY_DURABLE_FIFO) {
       this.outbox.enqueue(message)
+      this.recordActivityDelivery('daemonQueued', message)
       this.scheduleFlush()
       return true
     }
@@ -59,6 +62,8 @@ export class DaemonDeliveryRuntime {
 
   handleAck(outboxId) {
     if (!outboxId) return
+    const row = this.outbox.get(outboxId)
+    this.recordActivityDelivery('daemonAcked', row?.payload || { type: row?.type || 'unknown' })
     this.outbox.ack(outboxId)
     this.inflight.delete(outboxId)
     this.scheduleFlush()
@@ -102,6 +107,7 @@ export class DaemonDeliveryRuntime {
           this.outbox.markTransientError(row.id, 'websocket not open')
           break
         }
+        this.recordActivityDelivery('daemonSent', row.payload)
       }
     } finally {
       this.flushRunning = false
@@ -159,5 +165,12 @@ export class DaemonDeliveryRuntime {
       this.droppedCount = 0
       this.droppedWarnAt = now
     }
+  }
+
+  recordActivityDelivery(stage, message) {
+    this.activityDeliveryCounters?.record?.(stage, message, 1, {
+      agent: message?.agent_id || message?.agentId || null,
+      tool: message?.tool || null,
+    })
   }
 }
