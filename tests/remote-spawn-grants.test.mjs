@@ -38,6 +38,13 @@ test('spawn entry surfaces use one request spelling and no source-class mapping'
   assert.doesNotMatch(http, /permissionClass/)
   assert.doesNotMatch(http, /permission_class/)
 
+  const wsRelay = fs.readFileSync(new URL('../server/unified-server.mjs', import.meta.url), 'utf8')
+  const relayBody = wsRelay.slice(wsRelay.indexOf('async function performSpawnRelay'), wsRelay.indexOf('function registerRuntime'))
+  assert.match(relayBody, /normalizeSpawnRelayInput\(msg\)/)
+  assert.match(relayBody, /permissionRequest: permissionRequest \|\| undefined/)
+  assert.doesNotMatch(relayBody, /policy: policy \|\| undefined/)
+  assert.doesNotMatch(relayBody, /permissionRequest, policy/)
+
   const tools = fs.readFileSync(new URL('../mcp-server/fleet-tools.mjs', import.meta.url), 'utf8')
   assert.match(tools, /permissionRequest: spawnOpts\.permissionRequest/)
   assert.doesNotMatch(tools, /requestedPermissions: spawnOpts/)

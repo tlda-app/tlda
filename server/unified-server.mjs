@@ -70,6 +70,7 @@ import { copyAttachmentsToUploadDir } from './lib/chat-attachment-store.mjs'
 import { normalizeRegionPolicy } from './lib/spawn-policy.mjs'
 import { buildRuntimeStatus } from './lib/runtime-status.mjs'
 import { resolveSpawnMachine, SPAWN_MACHINE_PREF_KEY } from './lib/spawn-routing.mjs'
+import { normalizeSpawnRelayInput } from './lib/spawn-relay-input.mjs'
 import { resolveFreshSpawnAvailabilityModels } from './lib/spawn-availability-models.mjs'
 import { decideTaskRenudges, isWakeBreakerOpen, wakeBreakerBackoffMs } from './lib/task-renudge.mjs'
 import { canReportTask, completeTaskLifecycle } from './lib/task-lifecycle.mjs'
@@ -1599,23 +1600,9 @@ async function performSpawnRelay(caller, msg) {
   if (!caller?.id) throw new Error('spawn caller identity is required')
   const {
     name, agent, model, doc, cwd, respawn, fresh, refresh, effort, mode,
-    permissionRequest, policy, session, sessionId, session_id, enroll, routeAgent,
-    iLikeToLiveDangerously, phase, mailboxTarget,
-  } = msg || {}
-  const requestedSession = session || sessionId || session_id || null
-  const spawnReservedKeys = new Set([
-    'type', 'name', 'agent', 'model', 'doc', 'cwd', 'respawn', 'fresh', 'refresh',
-    'effort', 'mode', 'permissionRequest', 'policy', 'session', 'sessionId', 'session_id',
-    'enroll', 'routeAgent', 'iLikeToLiveDangerously', 'phase', 'mailboxTarget',
-    'modelOptions',
-  ])
-  const modelOptions = {
-    ...(msg?.modelOptions && typeof msg.modelOptions === 'object' && !Array.isArray(msg.modelOptions) ? msg.modelOptions : {}),
-    ...(effort ? { effort } : {}),
-  }
-  for (const [key, value] of Object.entries(msg || {})) {
-    if (!spawnReservedKeys.has(key) && value != null && value !== '') modelOptions[key] = value
-  }
+    permissionRequest, session, sessionId, session_id, enroll, routeAgent,
+    iLikeToLiveDangerously, phase, mailboxTarget, requestedSession, modelOptions,
+  } = normalizeSpawnRelayInput(msg)
   const sessionMode = !!requestedSession
   if (refresh) {
     throw new Error('refresh is disabled through MCP spawn; recover the original resume handle before respawning')
@@ -1696,7 +1683,6 @@ async function performSpawnRelay(caller, msg) {
     effort: effort || undefined,
     mode: mode || undefined,
     permissionRequest: permissionRequest || undefined,
-    policy: policy || undefined,
     acknowledgeNoSecurity: !!iLikeToLiveDangerously,
     requester: {
       id: caller.id,
