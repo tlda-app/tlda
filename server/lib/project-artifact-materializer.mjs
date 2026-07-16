@@ -449,7 +449,8 @@ function commitArtifact(root, { projectPath, manifestPath, title, actor, git, lo
       projectPath,
       manifestPath,
     ], root)
-    return { committed: true, message, author: `${actor.name} <${actor.email}>` }
+    const hash = git(['rev-parse', 'HEAD'], root)
+    return { committed: true, hash, version: hash, message, author: `${actor.name} <${actor.email}>` }
   } catch (e) {
     logger.warn?.(`[project-artifact] git writeback skipped in ${root}: ${e.message}`)
     return { committed: false, reason: e.message }

@@ -2269,6 +2269,20 @@ function notifyRecipientMaterialization({ eventId, recipientId, attachment, reco
   })
 }
 
+function projectArtifactRecordFields(projectArtifact) {
+  if (!projectArtifact) return {}
+  return {
+    projectPath: projectArtifact.projectPath || null,
+    projectArtifactId: projectArtifact.projectArtifactId || null,
+    projectArtifactVersion: projectArtifact.git?.hash || projectArtifact.git?.version || null,
+    projectArtifactHash: projectArtifact.hash || null,
+    projectArtifactStatus: projectArtifact.status || projectArtifact.state || null,
+    ...(projectArtifact.project ? { project: projectArtifact.project } : {}),
+    ...(projectArtifact.render ? { render: projectArtifact.render } : {}),
+    ...(projectArtifact.error ? { projectArtifactError: projectArtifact.error } : {}),
+  }
+}
+
 function isMarkdownAttachment(attachment = {}, result = {}) {
   const mime = String(attachment.mimeType || attachment.contentType || result.contentType || '').toLowerCase()
   if (mime === 'text/markdown' || mime === 'text/x-markdown') return true
@@ -2317,21 +2331,34 @@ async function materializeProjectMarkdownAttachment({ eventId, recipient, source
 async function materializeRecipientAttachment({ eventId, recipientId, sourceAgent, attachment }) {
   const recipient = fleetStore.getAgent?.(recipientId)
   if (!recipient || recipient.human) return
+  let projectArtifact = null
+  try {
+    projectArtifact = await materializeProjectMarkdownAttachment({ eventId, recipient, sourceAgent, attachment })
+  } catch (e) {
+    projectArtifact = {
+      state: 'failed',
+      status: 'failed',
+      projectArtifactId: null,
+      error: e.message || String(e),
+    }
+  }
   const fail = (error) => {
     const record = {
       kind: 'attachment',
-      state: 'failed',
-      status: 'failed',
+      state: projectArtifact?.state === 'available' ? 'available' : 'failed',
+      status: projectArtifact?.state === 'available' ? 'ready' : 'failed',
       title: attachment.name || null,
       contentType: attachment.mimeType || null,
-      hash: attachment.sha256 || null,
+      hash: projectArtifact?.hash || attachment.sha256 || null,
       sourceAgent: sourceAgent || 'unknown',
       provenance: {
         eventId,
         attachmentId: String(attachment.id),
         url: attachment.url || null,
       },
-      error,
+      ...projectArtifactRecordFields(projectArtifact),
+      error: projectArtifact?.state === 'available' ? null : error,
+      daemonMaterializationError: error,
       updated_at: new Date().toISOString(),
     }
     patchRecipientAttachmentState(eventId, recipientId, attachment.id, record)
@@ -2354,33 +2381,15 @@ async function materializeRecipientAttachment({ eventId, recipientId, sourceAgen
       size: attachment.size,
       sha256: attachment.sha256,
     })
-    let projectArtifact = null
-    try {
-      projectArtifact = await materializeProjectMarkdownAttachment({ eventId, recipient, sourceAgent, attachment })
-    } catch (e) {
-      projectArtifact = {
-        state: 'failed',
-        status: 'failed',
-        projectArtifactId: null,
-        error: e.message || String(e),
-      }
-    }
     const record = {
       kind: 'attachment',
       state: 'available',
       status: 'ready',
       title: attachment.name || null,
       localPath: result.localPath || result.path,
-      projectPath: projectArtifact?.projectPath || null,
-      projectArtifactId: projectArtifact?.projectArtifactId || null,
-      ...(projectArtifact ? {
-        projectArtifactStatus: projectArtifact.status || projectArtifact.state || null,
-        ...(projectArtifact.project ? { project: projectArtifact.project } : {}),
-        ...(projectArtifact.render ? { render: projectArtifact.render } : {}),
-        ...(projectArtifact.error ? { projectArtifactError: projectArtifact.error } : {}),
-      } : {}),
+      ...projectArtifactRecordFields(projectArtifact),
       contentType: attachment.mimeType || null,
-      hash: result.hash || result.sha256,
+      hash: projectArtifact?.hash || result.hash || result.sha256,
       sourceAgent: sourceAgent || 'unknown',
       provenance: {
         eventId,

@@ -13,7 +13,8 @@
 // Write API: sendMessage, respawnAgent, renameAgent, etc.
 // Writes go to server → DB → SSE → subscriber. One path.
 
-import { toolContentDetail } from './activity-render.mjs'
+import { convertChatEvent } from './convert-chat-event.mjs'
+export { convertChatEvent } from './convert-chat-event.mjs'
 import { matchesFleetFilter, resolveFleetFilter } from './filter-semantics.mjs'
 import { makeEventStore } from './event-store.mjs'
 import {
@@ -1214,127 +1215,6 @@ function applyTaskDelta(delta) {
     (Date.parse(b.delegated_at || '') || 0) - (Date.parse(a.delegated_at || '') || 0)
   )
   notify('tasks', { type: 'tasks', tasks: _tasks })
-}
-
-// --- Converters ---
-
-export function convertChatEvent(e) {
-  // metadata may be a JSON string (from DB) or an object (from SSE)
-  if (typeof e.metadata === 'string') {
-    try { e.metadata = JSON.parse(e.metadata) } catch { e.metadata = null }
-  }
-  const type = e.event_type || e.type
-  const msg = {
-    type,
-    from: e.from_id || e.from,
-    to: e.to_id || e.to,
-    text: e.text,
-    timestamp: e.timestamp,
-    read: e.read !== undefined ? e.read : false,
-    _dbId: e.id,
-  }
-  const tempId = e._tempId || e.metadata?.client_temp_id
-  if (tempId) msg._tempId = tempId
-  if (type === 'delegate') {
-    msg._evType = 'delegate'
-    msg._description = e.text || ''
-    msg._taskId = e.metadata?.taskId || e.task_id || ''
-    msg._fromLabel = e.metadata?.fromLabel || ''
-    msg._toLabel = e.metadata?.toLabel || ''
-    msg._criteria = e.metadata?.criteria || []
-    if (e.metadata?.message) msg._message = e.metadata.message
-  } else if (type === 'task_done') {
-    msg._evType = 'task_done'
-    msg._description = e.text || ''
-    msg._taskId = e.metadata?.taskId || e.task_id || ''
-    msg._agent = e.agent_id || e.from || ''
-  } else if (type === 'terminal_attention') {
-    msg._evType = 'terminal_attention'
-    msg._reason = e.metadata?.reason || ''
-    msg._agentLabel = e.metadata?.agentLabel || ''
-    msg._snippet = e.metadata?.snippet || ''
-    msg._promptResponse = e.metadata?.approvedAt ? 'approved' : e.metadata?.rejectedAt ? 'rejected' : ''
-  } else if (type === 'plan_approval') {
-    msg._evType = 'plan_approval'
-    msg._agentId = e.metadata?.agentId || ''
-    msg._agentLabel = e.metadata?.agentLabel || ''
-    msg._planText = e.text || e.metadata?.planText || ''
-    msg._tmuxSession = e.metadata?.tmux_session || ''
-    msg._machineId = e.metadata?.machine_id || ''
-    msg._planResponse = e.metadata?.rejectedAt ? 'rejected' : e.metadata?.approvedAt ? (e.metadata?.mode === 'supervised' ? 'supervised' : 'approved') : ''
-  } else if (type === 'terminal_card') {
-    msg._evType = 'terminal_card'
-    msg._reason = e.metadata?.reason || ''
-    msg._agentLabel = e.metadata?.agentLabel || ''
-  } else if (type === 'terminal_user' || type === 'terminal_assistant') {
-    msg._evType = type
-    msg._source = e.source || 'terminal'
-  } else if (type === 'timer') {
-    const tmsg = e.metadata?.message || (e.text || '').replace(/^[⏱⏰]\s*/, '')
-    if (e.metadata?.state === 'cancelled') {
-      // Cancelled in the grace window — show a struck "cancelled" line, not hidden.
-      msg._timerCancelled = true
-      msg._timerMessage = tmsg
-    } else if (e.metadata?.pending) {
-      msg._timerCountdown = true
-      msg._timerUntil = e.metadata.fire_at
-      msg._timerMessage = tmsg
-      msg._timerRemaining = Math.max(0, Math.ceil((new Date(e.metadata.fire_at) - Date.now()) / 1000))
-    } else if (e.metadata?.state === 'fired') {
-      // Fired — keep it as a terminal line so the timer stays in the log
-      // showing it ran. A timer is a chat event; it shouldn't vanish on fire.
-      msg._timerFired = true
-      msg._timerMessage = tmsg
-    } else {
-      // Expired with no terminal state recorded — legacy/dim line.
-      msg._timer = true
-    }
-  } else if (type === 'compacting') {
-    msg._compacting = true
-    // from may come from agent field in live events
-    if (!msg.from && e.agent) msg.from = e.agent
-  } else if (type === 'activity') {
-    const tool = e.metadata?.tool || e.text
-    msg._activity = true
-    msg._activityLatency = e.metadata?.activityLatency || null
-    msg._toolName = tool === '_text' ? null : (tool === '_prettyResult' ? (e.metadata?.origTool || tool) : tool)
-    msg._isText = tool === '_text'
-    msg._text = tool === '_text' ? (e.metadata?.arg || e.text) : null
-    msg._toolArg = e.metadata?.arg || ''
-    msg._toolInput = e.metadata?.input || null
-    msg._toolDetail = e.metadata?.input ? toolContentDetail(tool === '_text' ? null : tool, e.metadata.input) : null
-    msg._prettyResult = e.metadata?.prettyResult || null
-    msg.agent = msg.from
-    if (msg._isText) msg.text = e.metadata?.arg || e.text
-  }
-  if (e.metadata?.inline_attachments) {
-    msg._inlineAttachments = e.metadata.inline_attachments
-  }
-  if (e.metadata?.attachments) {
-    msg.attachments = e.metadata.attachments
-  }
-  // File-section provenance: a message whose body was baked from a file section
-  // carries metadata.source = { file, section }. Carry it onto the msg so the
-  // chat renderer can draw the "from <file> §<section>" chip. (convertChatEvent
-  // otherwise only cherry-picks specific metadata keys onto msg.)
-  if (e.metadata?.source) {
-    msg.metadata = { ...(msg.metadata || {}), source: e.metadata.source }
-  }
-  // Reference-event amend: carry metadata.amends so the chat shape can fold this
-  // amend event into its original message's version stepper (it never renders
-  // standalone). The amend's own text/source ride along normally.
-  if (e.metadata?.amends != null) {
-    msg.metadata = { ...(msg.metadata || {}), amends: e.metadata.amends }
-  }
-  if (e.metadata?.context?.bullets) {
-    msg._bullets = e.metadata.context.bullets
-  }
-  // Carry the sender's preamble reference so the chat shape renders this message's
-  // math with the sender's macros (its preambleRef.doc), not the viewer's.
-  if (e.metadata?.preambleRef) {
-    msg.metadata = { ...(msg.metadata || {}), preambleRef: e.metadata.preambleRef }
-  }
-  return msg
 }
 
 // --- Chat history helpers ---

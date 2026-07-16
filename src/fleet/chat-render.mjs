@@ -69,6 +69,31 @@ function chipifyMarkdownApiFileLinks(html) {
 // chipification of quoted URLs. Plain <code> is selectable and copyable.)
 function linkifyCodeUrls(html) { return html }
 
+function recipientAttachmentProjectRef(message, idx) {
+  const recipientId = message?.to
+  const ref = recipientId
+    ? message?.metadata?.recipient_refs?.[recipientId]?.attachments?.[String(idx)]
+    : null
+  if (!ref || ref.state !== 'available' || !ref.projectArtifactId || !ref.projectArtifactVersion) return null
+  const project = ref.project || ref.render?.project
+  if (!project) return null
+  const version = String(ref.projectArtifactVersion)
+  return {
+    project,
+    id: String(ref.projectArtifactId),
+    path: ref.projectPath || null,
+    version,
+    shortVersion: version.slice(0, 7),
+    hash: ref.projectArtifactHash || ref.hash || null,
+    url: `/api/projects/${encodeURIComponent(project)}/parts/${encodeURIComponent(String(ref.projectArtifactId))}/markdown?version=${encodeURIComponent(version)}`,
+  }
+}
+
+function projectVersionChipHtml(projectRef) {
+  if (!projectRef) return ''
+  return `<span class="ref-chip-version" title="project version ${esc(projectRef.version)}">@${esc(projectRef.shortVersion)}</span>`
+}
+
 export function timeShort(ts) {
   if (!ts) return ''
   const d = new Date(ts)
@@ -458,8 +483,15 @@ export function renderChatLine(m, ctx) {
       }
       const ext = (att.path || att.name || '').split('.').pop()?.toLowerCase() || ''
       const icon = ext === 'pdf' ? '📕' : ext === 'md' ? '📄' : '📎'
-      const urlAttr = fileUrl ? ` data-url="${fileUrl}"` : ''
-      return `<span class="ref-chip ref-chip-doc" data-path="${filePath}"${urlAttr} draggable="true"><span class="ref-chip-doc-icon">${icon}</span>${name}</span>`
+      const projectRef = recipientAttachmentProjectRef(m, idx)
+      const url = projectRef?.url || fileUrl
+      const urlAttr = url ? ` data-url="${esc(url)}"` : ''
+      const projectAttrs = projectRef
+        ? ` data-project="${esc(projectRef.project)}" data-project-artifact-id="${esc(projectRef.id)}" data-project-version="${esc(projectRef.version)}"${projectRef.hash ? ` data-project-hash="${esc(projectRef.hash)}"` : ''}`
+        : ''
+      const pathAttr = ` data-path="${esc(projectRef?.path || att.path || '')}"`
+      const titleAttr = projectRef ? ` title="Project version ${esc(projectRef.version)} for this message"` : ''
+      return `<span class="ref-chip ref-chip-doc"${pathAttr}${urlAttr}${projectAttrs}${titleAttr} draggable="true"><span class="ref-chip-doc-icon">${icon}</span>${name}${projectVersionChipHtml(projectRef)}</span>`
     }
     return `<span class="ref-chip"><span class="ref-chip-doc-icon">📎</span>att:${idx}</span>`
   })

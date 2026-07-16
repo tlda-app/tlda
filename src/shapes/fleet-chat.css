@@ -2624,6 +2624,12 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   line-height: 1;
   flex: 0 0 auto;
 }
+.fleet-chat-shape .ref-chip-version {
+  margin-left: 4px;
+  opacity: 0.62;
+  font-size: 0.86em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
 .fleet-chat-shape .ref-chip-doc-title {
   overflow: hidden;
   text-overflow: ellipsis;

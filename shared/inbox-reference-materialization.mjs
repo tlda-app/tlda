@@ -106,7 +106,9 @@ export function recipientAttachmentRef(metadata, recipientId, attachmentId) {
 
 export function formatRecipientAttachmentRef(ref) {
   if (!ref) return ''
-  if (ref.state === 'available' && (ref.localPath || ref.path)) return ref.localPath || ref.path
+  if (ref.state === 'available' && (ref.localPath || ref.path || ref.projectPath || ref.projectArtifactId)) {
+    return ref.localPath || ref.path || ref.projectPath || ref.projectArtifactId
+  }
   if (ref.state === 'pending') return `materializing on this machine...`
   if (ref.state === 'failed') return `materialization failed${ref.error ? `: ${ref.error}` : ''}`
   if (ref.state === 'skipped') return `materialization skipped${ref.reason ? `: ${ref.reason}` : ''}`

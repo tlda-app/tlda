@@ -17,6 +17,7 @@
  */
 
 import { Router } from 'express'
+import { execFileSync } from 'child_process'
 import { existsSync, readFileSync, readdirSync, mkdirSync, statSync, writeFileSync, rmSync, unlinkSync } from 'fs'
 import { join, dirname, resolve } from 'path'
 import { requireRead, requireRw } from '../lib/auth.mjs'
@@ -331,6 +332,45 @@ router.delete('/:name/parts/:id', requireRw, async (req, res) => {
     await dispatchBuild(req.params.name, { kind: 'parts' })
   }
   res.json({ ok: true, deleted: req.params.id })
+})
+
+// Read a project-owned markdown artifact part. With ?version=<git hash>, reads
+// the immutable bytes from that project source repo version instead of the
+// current overwritten file.
+router.get('/:name/parts/:partId/markdown', requireRead, (req, res) => {
+  try {
+    const project = readProject(req.params.name)
+    if (!project) return res.status(404).json({ ok: false, error: 'Project not found' })
+    const root = projectPartsRoot(req.params.name)
+    const manifest = readProjectPartsManifest(req.params.name)
+    const part = manifest.parts.find(p => p.id === req.params.partId)
+    if (!part) return res.status(404).json({ ok: false, error: 'Part not found' })
+    const targetPath = String(part.path || part.storage?.path || '')
+    if (!targetPath || targetPath.startsWith('/') || targetPath.split('/').includes('..')) {
+      return res.status(400).json({ ok: false, error: 'Project part has invalid path' })
+    }
+
+    const version = typeof req.query.version === 'string' ? req.query.version.trim() : ''
+    let markdown
+    if (version) {
+      if (!/^[0-9a-f]{7,40}$/i.test(version)) {
+        return res.status(400).json({ ok: false, error: 'Invalid project part version' })
+      }
+      markdown = execFileSync('git', ['show', `${version}:${targetPath}`], {
+        cwd: root,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      })
+    } else {
+      markdown = readFileSync(join(root, targetPath), 'utf8')
+    }
+
+    res.type('text/markdown').send(markdown)
+  } catch (e) {
+    const message = e?.message || String(e)
+    const status = /not found|exists on disk|Path .* does not exist/i.test(message) ? 404 : 500
+    res.status(status).json({ ok: false, error: message })
+  }
 })
 
 // Write back a project-owned markdown artifact part.
