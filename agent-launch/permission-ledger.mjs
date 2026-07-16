@@ -9,7 +9,7 @@ import {
   emptyPermissionSet,
   resolveSpawnGrant,
   normalizeRegionPolicy,
-  regionPolicyFromSet,
+  regionScopeFromSet,
 } from '../server/lib/spawn-policy.mjs'
 
 function nowIso() {
@@ -33,19 +33,29 @@ function normalizeLedgerGrant(value) {
   }
   const rawPermissionSet = value.permissionSet || value.permissions || null
   if (rawPermissionSet) {
-    // The region set IS the grant; its region scope is read off value.spawnPolicy (new
-    // region blob or a legacy level blob) or derived from the set itself.
-    const spawnPolicy = value.spawnPolicy
+    const profileName = String(value.permissionProfile || rawPermissionSet.name || '').trim()
+    const scope = value.spawnPolicy
       ? normalizeRegionPolicy(value.spawnPolicy)
-      : regionPolicyFromSet(rawPermissionSet)
-    return { spawnPolicy, permissionSet: rawPermissionSet }
+      : { policy: regionScopeFromSet(rawPermissionSet) }
+    const spawnPolicy = {
+      policy: scope.policy,
+      ...(scope.network === false ? { network: false } : {}),
+    }
+    return {
+      spawnPolicy,
+      permissionSet: {
+        ...rawPermissionSet,
+        ...(profileName ? { name: profileName } : {}),
+        projectedPolicy: spawnPolicy,
+      },
+    }
   }
   const raw = value.spawnPolicy || value.policy || value.permission || value
   const spawnPolicy = normalizeRegionPolicy(raw)
   return {
     spawnPolicy,
     permissionSet: isNoneGrant(raw)
-      ? emptyPermissionSet({ name: spawnPolicy.name, projectedPolicy: spawnPolicy })
+      ? emptyPermissionSet({ name: 'none', projectedPolicy: { ...spawnPolicy, permission: 'none' } })
       : null,
   }
 }
@@ -78,9 +88,9 @@ function validateDaemonDefault(config = {}) {
 
 function normalizeDaemonConfig(parsed, { validateDefault = true } = {}) {
   const root = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
-  const allowed = new Set(['regions', 'profiles', 'grants', 'remoteGrants', 'models', 'servers', 'default'])
+  const allowed = new Set(['regions', 'profiles', 'grants', 'models', 'servers', 'default'])
   const extra = Object.keys(root).filter(key => !allowed.has(key))
-  if (extra.length) throw new Error(`daemon config supports only regions, profiles, grants, remoteGrants, models, servers, default; unknown key(s): ${extra.join(', ')}`)
+  if (extra.length) throw new Error(`daemon config supports only regions, profiles, grants, models, servers, default; unknown key(s): ${extra.join(', ')}`)
   const models = root.models && typeof root.models === 'object' && !Array.isArray(root.models)
     ? root.models
     : {}
@@ -89,7 +99,6 @@ function normalizeDaemonConfig(parsed, { validateDefault = true } = {}) {
   const grants = root.grants && typeof root.grants === 'object' && !Array.isArray(root.grants)
     ? root.grants
     : {}
-  const remoteGrants = normalizeRemoteGrants(root.remoteGrants)
   const servers = root.servers && typeof root.servers === 'object' && !Array.isArray(root.servers)
     ? root.servers
     : {}
@@ -98,37 +107,11 @@ function normalizeDaemonConfig(parsed, { validateDefault = true } = {}) {
     regions,
     profiles,
     grants,
-    remoteGrants,
     models,
     servers,
     ...(defaultProfile ? { default: defaultProfile } : {}),
   }
   return validateDefault ? validateDaemonDefault(config) : config
-}
-
-function normalizeRemoteGrants(value) {
-  if (value == null) return {}
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error('daemon remoteGrants must be an object keyed by source daemon id')
-  }
-  const out = {}
-  for (const [daemonId, agentRules] of Object.entries(value)) {
-    if (!agentRules || typeof agentRules !== 'object' || Array.isArray(agentRules)) {
-      throw new Error(`daemon remoteGrants.${daemonId} must be an object keyed by agent id or "*"`)
-    }
-    out[daemonId] = {}
-    for (const [agentId, classRules] of Object.entries(agentRules)) {
-      if (!classRules || typeof classRules !== 'object' || Array.isArray(classRules)) {
-        throw new Error(`daemon remoteGrants.${daemonId}.${agentId} must map source classes to local profiles`)
-      }
-      out[daemonId][agentId] = Object.fromEntries(Object.entries(classRules).map(([sourceClass, localProfile]) => {
-        const target = String(localProfile || '').trim()
-        if (!target) throw new Error(`daemon remoteGrants.${daemonId}.${agentId}.${sourceClass} must name a local profile`)
-        return [String(sourceClass || '').trim(), target]
-      }))
-    }
-  }
-  return out
 }
 
 // Deep-merge helper for the base ⊕ project-override join (project values win).
@@ -662,7 +645,7 @@ export class PermissionLedger {
       id: key,
       spawnPolicy: policy,
       permissionSet: permissionSet || (isNoneGrant(spawnPolicy)
-        ? emptyPermissionSet({ name: policy.name, projectedPolicy: policy })
+        ? emptyPermissionSet({ name: 'none', projectedPolicy: { ...policy, permission: 'none' } })
         : null),
       updatedAt: nowIso(),
       source,
@@ -939,7 +922,7 @@ export function applyDaemonGrants(ledger, daemonConfig = {}) {
     const profileName = typeof value === 'string' ? value.trim().toLowerCase() : null
     const source = profileName ? profiles[profileName] : value
     if (!source) throw new Error(`daemon grant for ${id} references unknown profile "${value}"`)
-    const grant = normalizeLedgerGrant(profileName ? { permissionSet: source } : source)
+    const grant = normalizeLedgerGrant(profileName ? { permissionProfile: profileName, permissionSet: source } : source)
     ledger.setSync(id, {
       spawnPolicy: grant.spawnPolicy,
       permissionSet: grant.permissionSet,
@@ -948,30 +931,6 @@ export function applyDaemonGrants(ledger, daemonConfig = {}) {
     written++
   }
   return { written }
-}
-
-export function resolveRemoteDaemonGrant(daemonConfig = {}, requester = {}) {
-  const id = String(requester.id || '').trim()
-  const daemonId = String(requester.daemonId || requester.daemon_id || '').trim()
-  const permissionClass = String(requester.permissionClass || requester.permission_class || '').trim()
-  if (!id || !daemonId || !permissionClass) return null
-  const daemonRules = daemonConfig.remoteGrants?.[daemonId]
-  if (!daemonRules) return null
-  const classRules = daemonRules[id] || daemonRules['*']
-  if (!classRules) return null
-  const localProfile = classRules[permissionClass] || classRules['*']
-  if (!localProfile) return null
-  const permissionSet = daemonConfig.profiles?.[localProfile]
-  if (!permissionSet) {
-    throw new Error(`remote grant ${daemonId}/${id}/${permissionClass} references unknown local profile "${localProfile}"`)
-  }
-  const grant = normalizeLedgerGrant({ permissionSet })
-  return {
-    spawnPolicy: grant.spawnPolicy,
-    permissionSet: grant.permissionSet,
-    localProfile,
-    source: `remote:${daemonId}:${permissionClass}`,
-  }
 }
 
 // Fill a missing permission-ledger grant for every eligible agent in `agents`
@@ -991,8 +950,8 @@ export function applyGrandfatherInfill(ledger, { agents = [], config = {}, proje
     }
     const grant = resolveGrandfatherGrant(agent, { config, projects })
     ledger.setSync(agent.id, {
-      spawnPolicy: grant.grantedPolicy,
-      permissionSet: grant.grantedPermissionSet,
+      spawnPolicy: grant.spawnPolicy,
+      permissionSet: grant.permissionSet,
       source: 'grandfather:fleet-db-cutover',
     })
     written++

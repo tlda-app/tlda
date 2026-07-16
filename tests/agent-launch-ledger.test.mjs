@@ -18,7 +18,7 @@ function permissionSet() {
       spawn: { allow: [], deny: [] },
     },
     rules: [],
-    projectedPolicy: { name: 'ops', policy: 'unsandboxed' },
+    projectedPolicy: { policy: 'unsandboxed' },
   }
 }
 
@@ -27,7 +27,7 @@ test('daemon launcher writes fresh-spawn ledger row before starting seat', async
   const ledger = createPermissionLedger(path.join(tmp, 'fleet-daemon.db'))
   try {
     ledger.setSync('fleet:requester', {
-      spawnPolicy: { name: 'ops', policy: 'unsandboxed' },
+      spawnPolicy: { policy: 'unsandboxed' },
       permissionSet: permissionSet(),
       source: 'test-requester',
     })
@@ -81,9 +81,9 @@ test('daemon launcher writes fresh-spawn ledger row before starting seat', async
     assert.ok(result.agent_id?.startsWith('fleet:'), 'fresh spawn should preallocate a fleet id')
     assert.equal(observedPrelaunchGrant?.id, result.agent_id)
     assert.equal(observedPrelaunchGrant?.source, 'spawn')
-    assert.deepEqual(observedPrelaunchGrant?.spawnPolicy, { name: 'unsandboxed', policy: 'unsandboxed' })
+    assert.deepEqual(observedPrelaunchGrant?.spawnPolicy, { policy: 'unsandboxed' })
     const row = ledger.get(result.agent_id)
-    assert.deepEqual(row?.spawnPolicy, { name: 'unsandboxed', policy: 'unsandboxed' })
+    assert.deepEqual(row?.spawnPolicy, { policy: 'unsandboxed' })
     assert.equal(row?.sessionId, '11111111-2222-4333-8444-555555555555')
     assert.equal(row?.sessionKind, 'codex')
     assert.equal(row?.tmuxSession, 'fleet-fresh-ledger')
@@ -98,7 +98,7 @@ test('daemon launcher writes fresh-spawn ledger row before starting seat', async
   }
 })
 
-test('daemon launcher derives and persists a remote requester grant before cross-box spawn', async () => {
+test('daemon launcher refuses cross-box spawn without a local requester grant', async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-agent-launch-remote-ledger-'))
   const priorConfigDir = process.env.TLDA_DAEMON_CONFIG_DIR
   process.env.TLDA_DAEMON_CONFIG_DIR = tmp
@@ -117,15 +117,10 @@ models:
   default: gpt
   values:
     gpt: { id: gpt-5.5, provider: codex, kind: codex }
-remoteGrants:
-  "source-box:default":
-    "fleet:remote-parent":
-      ops: app-dev
 default: app-dev
 `)
   const ledger = createPermissionLedger(path.join(tmp, 'fleet-daemon.db'))
   try {
-    const observedSpawnProfiles = new Map()
     const launcher = createAgentLauncher({
       activeConfigName: 'test',
       configDir: tmp,
@@ -142,17 +137,7 @@ default: app-dev
         jsonlPath: path.join(tmp, 'rollout-21111111-2222-4333-8444-555555555555.jsonl'),
         model: 'gpt-5.5',
       }),
-      spawnImpl: async (params) => {
-        observedSpawnProfiles.set(params.name, params.permissionProfile)
-        return {
-          ok: true,
-          fleetId: params.agentId,
-          tmuxSession: 'fleet-remote-child',
-          harness: 'codex',
-          model: params.model,
-          pending: true,
-        }
-      },
+      spawnImpl: async () => { throw new Error('spawn should not run without local requester grant') },
     })
 
     const result = await launcher.handlers.spawn({
@@ -164,34 +149,12 @@ default: app-dev
       requester: {
         id: 'fleet:remote-parent',
         daemonId: 'source-box:default',
-        permissionClass: 'ops',
       },
     })
 
-    assert.equal(result.ok, true, JSON.stringify(result))
-    const parent = ledger.get('fleet:remote-parent')
-    assert.equal(parent.source, 'remote:source-box:default:ops')
-    assert.equal(parent.permissionSet.permissionClass, 'app-dev')
-    const child = ledger.get(result.agent_id)
-    assert.equal(child.source, 'spawn')
-    assert.equal(child.permissionSet.permissionClass, 'app-dev')
-    assert.equal(observedSpawnProfiles.get('remote-child'), 'app-dev')
-
-    const clamped = await launcher.handlers.spawn({
-      name: 'remote-child-clamped',
-      model: 'gpt',
-      kind: 'codex',
-      cwd: tmp,
-      permissionRequest: 'ops',
-      requester: {
-        id: 'fleet:remote-parent',
-        daemonId: 'source-box:default',
-        permissionClass: 'ops',
-      },
-    })
-    assert.equal(clamped.ok, true, JSON.stringify(clamped))
-    assert.equal(ledger.get(clamped.agent_id).permissionSet.permissionClass, 'app-dev')
-    assert.equal(observedSpawnProfiles.get('remote-child-clamped'), 'app-dev')
+    assert.equal(result.ok, false)
+    assert.match(result.error, /has no daemon permission ledger entry/)
+    assert.equal(ledger.get('fleet:remote-parent'), null)
   } finally {
     if (priorConfigDir == null) delete process.env.TLDA_DAEMON_CONFIG_DIR
     else process.env.TLDA_DAEMON_CONFIG_DIR = priorConfigDir
@@ -205,7 +168,7 @@ test('daemon launcher writes a supplied fresh agent id before starting seat', as
   const ledger = createPermissionLedger(path.join(tmp, 'fleet-daemon.db'))
   try {
     ledger.setSync('fleet:requester', {
-      spawnPolicy: { name: 'ops', policy: 'unsandboxed' },
+      spawnPolicy: { policy: 'unsandboxed' },
       permissionSet: permissionSet(),
       source: 'test-requester',
     })
@@ -257,7 +220,7 @@ test('daemon launcher writes a supplied fresh agent id before starting seat', as
     assert.equal(observedPrelaunchGrant?.id, suppliedAgentId)
     assert.equal(observedPrelaunchGrant?.source, 'spawn')
     const row = ledger.get(suppliedAgentId)
-    assert.deepEqual(row?.spawnPolicy, { name: 'unsandboxed', policy: 'unsandboxed' })
+    assert.deepEqual(row?.spawnPolicy, { policy: 'unsandboxed' })
     assert.equal(row?.sessionId, '22222222-2222-4333-8444-555555555555')
     assert.equal(row?.tmuxSession, 'fleet-preallocated-ledger')
     assert.equal(row?.model, 'gpt-5.5')
