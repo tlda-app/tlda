@@ -51,13 +51,11 @@ function metadataOf(agent) {
   return meta && typeof meta === 'object' ? meta : {}
 }
 
-function configuredPermissionProfileName(config = {}, ...names) {
+function configuredPermissionProfileName(config = {}, name) {
+  const key = String(name || '').trim()
+  if (!key) return null
   const profiles = config?.spawnPolicy?.permissionProfiles || {}
-  for (const name of names) {
-    const key = String(name || '').trim()
-    if (key && Object.prototype.hasOwnProperty.call(profiles, key)) return key
-  }
-  return null
+  return Object.prototype.hasOwnProperty.call(profiles, key) ? key : null
 }
 
 function modelKwargs(params = {}, extra = {}) {
@@ -291,12 +289,7 @@ async function spawnFresh(params) {
       model,
       tmuxName: tmuxSession,
       cwd,
-      permissionProfile: configuredPermissionProfileName(
-        config,
-        params.permissionProfile,
-        params.permissionClass,
-        params.requestedPermission,
-      ),
+      permissionProfile: configuredPermissionProfileName(config, params.permissionProfile),
     })
     if (serverUp) {
       await (deps.checkFreshNameAvailable || checkFreshNameAvailable)(name, { api, serverUp, excludeId: fleetId })

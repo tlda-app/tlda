@@ -8,20 +8,6 @@ import { spawn } from '../agent-launch/index.mjs'
 import { createLocalAgentLedger } from '../agent-launch/local-agent-ledger.mjs'
 import { FleetStore } from '../server/lib/fleet-store.mjs'
 
-function permissionSet(name = 'app-dev') {
-  return {
-    type: 'permission-set',
-    name,
-    operations: {
-      read: { allow: ['**'], deny: [] },
-      write: { allow: ['**'], deny: [] },
-      spawn: { allow: [], deny: [] },
-    },
-    rules: [],
-    projectedPolicy: { name, policy: 'unsandboxed' },
-  }
-}
-
 const config = {
   modelSpecs: {
     gpt: {
@@ -30,11 +16,6 @@ const config = {
       provider: 'codex',
       harness: 'codex',
       harnessOptions: { required: [], preferences: [], controls: false },
-    },
-  },
-  spawnPolicy: {
-    permissionProfiles: {
-      'app-dev': permissionSet('app-dev'),
     },
   },
 }
@@ -77,41 +58,6 @@ test('shared fresh mint launches locally without a server id and persists its re
       assert.equal(stored.process.cwd, dir)
       assert.equal(stored.conversation.harness, 'codex')
       assert.equal(stored.process.permissionProfile, null)
-    } finally { ledger.close() }
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-test('fresh mint persists a configured profile carried by requestedPermission', async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-offline-requested-profile-'))
-  const ledgerFile = path.join(dir, 'fleet-daemon.db')
-  try {
-    const result = await spawn({
-      spawnMode: 'fresh',
-      name: 'offline-requested-profile-test',
-      model: 'gpt',
-      config,
-      cwd: dir,
-      requestedPermission: 'app-dev',
-      spawnPolicy: { name: 'app-dev', policy: 'unsandboxed' },
-      permissionSet: permissionSet('app-dev'),
-      explicitPolicy: true,
-      localAgentLedgerPath: ledgerFile,
-      _deps: {
-        resolveApi: () => 'https://unavailable.example',
-        ensureServer: async () => false,
-        uniqueSessionName: async () => 'fleet-offline-requested-profile-test',
-        resolveDnsAlias: async () => null,
-        spawnTmux: async () => true,
-        injectCodexPrompt: async () => true,
-      },
-    })
-
-    const ledger = createLocalAgentLedger(ledgerFile)
-    try {
-      const stored = ledger.get(result.localAgentId)
-      assert.equal(stored.process.permissionProfile, 'app-dev')
     } finally { ledger.close() }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })

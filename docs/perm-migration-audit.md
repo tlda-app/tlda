@@ -28,19 +28,15 @@ Current wake path:
 - `agent-launch/local-agent-ledger.mjs`: durable local wake recipe stores `permission_profile`.
 - `agent-launch/permission-ledger.mjs`: active durable grants are in `fleet-daemon.db.permission_grants`.
 
-Code still capable of emitting old names or profile requests:
+Code still capable of emitting old names:
 
-- `cli/tlda.mjs`: CLI spawn/wake reads `--permissions` into `permissionArg`, reuses stored `process.permissionProfile` on wake, validates that name against `daemon.yaml`, and passes it as both `permissionProfile` and `requestedPermissions`.
-- `server/routes/fleet.mjs`, `server/unified-server.mjs`, and `mcp-server/fleet-tools.mjs`: fleet HTTP, WS, and delegate-spawn paths pass profile requests as `requestedPermission` / `requestedPermissions`; they do not pass `permissionProfile`.
-- `agent-launch/agent-launch.mjs`: the daemon launcher resolves requested permissions to an exact configured permission class and forwards it to node spawn as `permissionClass`, not `permissionProfile`.
-- `agent-launch/index.mjs`: fresh spawn previously persisted `permissionProfile: params.permissionProfile || params.requestedPermission || (params.breakGlass ? 'break-glass' : null)`. When no explicit profile was supplied, `params.requestedPermission` could be a derived policy/scope name rather than a daemon profile.
+- `agent-launch/index.mjs`: fresh spawn persisted `permissionProfile: params.permissionProfile || params.requestedPermission || (params.breakGlass ? 'break-glass' : null)`. When no explicit profile was supplied, `params.requestedPermission` can be a derived policy/scope name rather than a daemon profile.
 - `agent-launch/local-agent-ledger.mjs`: legacy backfill imported `JSON.parse(row.spawn_policy)?.name` into `permission_profile`, preserving old names from legacy `permission_grants`.
 
 Prepared code diffs on this branch, not merged:
 
-- In `agent-launch/index.mjs`, local recipe storage now persists the first configured profile name found in `params.permissionProfile`, `params.permissionClass`, or `params.requestedPermission`; it does not persist unconfigured legacy names like `break-glass`, `cwd`, or `unsandboxed`.
+- In `agent-launch/index.mjs`, local recipe storage now persists only explicit configured profile names in `permission_profile`; it does not fall back to `params.requestedPermission` or `break-glass`.
 - In `agent-launch/local-agent-ledger.mjs`, legacy backfill now maps old `spawn_policy.name` values through the migration map before writing `permission_profile`.
-- Unknown profile names in legacy backfill deliberately pass through unchanged. The migration only rewrites known old names and current profile names; an unknown value should remain visible and fail loudly at wake validation rather than being silently guessed into a grant.
 
 ## Ledger Classification
 
