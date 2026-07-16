@@ -2,7 +2,7 @@ import { execFile } from 'child_process'
 import fs from 'fs'
 import path from 'path'
 import { promisify } from 'util'
-import { exactConfiguredPermissionProfile, resolveSpawnGrant } from '../server/lib/spawn-policy.mjs'
+import { resolveSpawnGrant } from '../server/lib/spawn-policy.mjs'
 import { detectSpawnStartupFailureTranscript } from '../agent-runtime/daemon-guards.mjs'
 import { ledgerSessionId } from '../agent-runtime/ledger-session-tail.mjs'
 import { resolveTranscript } from '../agent-runtime/resolve-transcript.mjs'
@@ -357,13 +357,7 @@ export function createAgentLauncher({
           project: projectForGrant,
           cwd: resolvedCwd,
         })
-        const preferredPermissionClass = String(
-          typeof permissionRequest === 'string' ? permissionRequest : ''
-          || daemonConfig.default
-          || '',
-        ).trim()
         const permissionProfile = grant.permissionProfile
-          || exactConfiguredPermissionProfile(grant.permissionSet, spawnConfig, preferredPermissionClass)
         if (permissionProfile) {
           grant.permissionProfile = permissionProfile
           grant.permissionSet.projectedPolicy = {

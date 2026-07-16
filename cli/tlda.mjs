@@ -51,7 +51,6 @@ import { resolveAgentQuery } from './lib/agent-resolve.mjs'
 import { parseAgentMoveTarget, describeAgentAddress } from '../shared/agent-move-target.mjs'
 import { daemonSingletonLockPath, inspectSingletonLock } from '../agent-runtime/singleton-lock.mjs'
 import {
-  exactConfiguredPermissionProfile,
   resolveDirectSpawnGrant,
 } from '../server/lib/spawn-policy.mjs'
 import { SPAWN_MACHINE_PREF_KEY } from '../server/lib/spawn-routing.mjs'
@@ -2621,7 +2620,6 @@ export async function runFleetSpawn(spawnArgs, {
           spawnerPermissionSet: ledger.grantFor({ id: 'localhost' }).permissionSet,
         })
     const grantedProfile = grant.permissionProfile
-      || exactConfiguredPermissionProfile(grant.permissionSet, config, permissionArg)
     const suppliedAgentId = flagFromRaw(spawnArgs, 'agent-id') || undefined
     const preallocatedAgentId = suppliedAgentId || ((spawnMode === 'fresh' || spawnMode === 'session') ? newFleetId() : undefined)
     if (preallocatedAgentId) {
@@ -2739,10 +2737,13 @@ function durableWakeGrant(ledger, { agentId, name } = {}) {
   if (!rec?.spawnPolicy || !rec?.permissionSet) {
     throw new Error(`wake refused: durable grant missing for "${name || agentId || '(unknown)'}"`)
   }
+  if (!rec.permissionProfile) {
+    throw new Error(`wake refused: durable permission profile missing for "${name || agentId || '(unknown)'}"; run the permission-profile backfill migration`)
+  }
   return {
     spawnPolicy: rec.spawnPolicy,
     permissionSet: rec.permissionSet,
-    permissionProfile: rec.permissionProfile || null,
+    permissionProfile: rec.permissionProfile,
   }
 }
 
