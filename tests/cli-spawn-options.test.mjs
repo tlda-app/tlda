@@ -163,19 +163,24 @@ function seedWakeRecipe(dbPath, { profile = 'ops' } = {}) {
   }
 }
 
-function seedPermissionLedger(dbPath) {
+function seedPermissionLedger(dbPath, {
+  localhostProfile = 'wd',
+  localhostSet = permissionSet('wd', ['/tmp/tlda-recipe-cwd/**']),
+  recipeProfile = 'ops',
+  recipeSet = permissionSet('ops', ['**']),
+} = {}) {
   const ledger = createPermissionLedger(dbPath)
   try {
     ledger.setSync('localhost', {
       spawnPolicy: { policy: 'cwd' },
-      permissionProfile: 'wd',
-      permissionSet: permissionSet('wd', ['/tmp/tlda-recipe-cwd/**']),
+      permissionProfile: localhostProfile,
+      permissionSet: localhostSet,
       source: 'test',
     })
     ledger.setSync('fleet:recipe', {
       spawnPolicy: { policy: 'unsandboxed' },
-      permissionProfile: 'ops',
-      permissionSet: permissionSet('ops', ['**']),
+      permissionProfile: recipeProfile,
+      permissionSet: recipeSet,
       source: 'test',
     })
   } finally {
@@ -187,6 +192,20 @@ function rawPermissionGrantRow(dbPath, id) {
   const db = new Database(dbPath)
   try {
     return db.prepare('SELECT * FROM permission_grants WHERE id = ?').get(id)
+  } finally {
+    db.close()
+  }
+}
+
+function dbRows(dbPath) {
+  const db = new Database(dbPath)
+  try {
+    return {
+      localAgents: db.prepare('SELECT * FROM local_agents ORDER BY local_agent_id').all(),
+      conversations: db.prepare('SELECT * FROM local_agent_conversations ORDER BY local_agent_id').all(),
+      recipes: db.prepare('SELECT * FROM local_agent_process_recipes ORDER BY local_agent_id').all(),
+      grants: db.prepare('SELECT * FROM permission_grants ORDER BY id').all(),
+    }
   } finally {
     db.close()
   }
@@ -283,6 +302,95 @@ test('wake honors explicit permissions and persists the clamped resolved grant',
       localLedger.close()
     }
   } finally {
+    fs.rmSync(configDir, { recursive: true, force: true })
+  }
+})
+
+test('wake honors explicit permissions and persists the unclamped resolved profile', async () => {
+  const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-wake-explicit-unclamped-'))
+  const dbPath = path.join(configDir, 'fleet-daemon.db')
+  const spawnCalls = []
+  try {
+    writeDaemonConfig(configDir)
+    seedWakeRecipe(dbPath, { profile: 'ops' })
+    seedPermissionLedger(dbPath, {
+      localhostProfile: 'ops',
+      localhostSet: permissionSet('ops', ['**']),
+    })
+
+    await runFleetSpawn(['recipe', '--permissions', 'wd'], {
+      configDir,
+      localAgentLedgerPath: dbPath,
+      loadConfigImpl: () => ({}),
+      spawnImpl: async (params) => {
+        spawnCalls.push(params)
+        return {
+          fleetId: 'fleet:recipe',
+          tmuxSession: 'fleet-recipe',
+          harness: 'codex',
+          model: 'gpt-5.5',
+          resumeId: '33333333-2222-4333-8444-555555555555',
+        }
+      },
+    })
+
+    assert.equal(spawnCalls.length, 1)
+    assert.equal(spawnCalls[0].permissionProfile, 'wd')
+    assert.equal(spawnCalls[0].spawnPolicy.policy, 'cwd')
+    assert.equal(spawnCalls[0].permissionRequest, 'wd')
+    assert.equal(spawnCalls[0].explicitPolicy, true)
+
+    const permissionLedger = createPermissionLedger(dbPath)
+    const localLedger = createLocalAgentLedger(dbPath)
+    try {
+      const grant = permissionLedger.get('fleet:recipe')
+      assert.equal(grant.permissionProfile, 'wd')
+      assert.equal(grant.spawnPolicy.policy, 'cwd')
+      assert.equal(localLedger.get('fleet:recipe').process.permissionProfile, 'wd')
+    } finally {
+      permissionLedger.close()
+      localLedger.close()
+    }
+  } finally {
+    fs.rmSync(configDir, { recursive: true, force: true })
+  }
+})
+
+test('wake refuses explicit permissions clamped to anonymous grant with zero DB delta and no runtime', async () => {
+  const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-wake-explicit-anonymous-clamp-'))
+  const dbPath = path.join(configDir, 'fleet-daemon.db')
+  const spawnCalls = []
+  const errors = []
+  const priorExitCode = process.exitCode
+  const priorError = console.error
+  try {
+    writeDaemonConfig(configDir)
+    seedWakeRecipe(dbPath, { profile: 'ops' })
+    seedPermissionLedger(dbPath, {
+      localhostProfile: null,
+      localhostSet: permissionSet('anonymous-cwd', ['/tmp/tlda-recipe-cwd/**']),
+    })
+    const before = dbRows(dbPath)
+    console.error = (...args) => { errors.push(args.join(' ')) }
+    process.exitCode = undefined
+
+    await runFleetSpawn(['recipe', '--permissions', 'math'], {
+      configDir,
+      localAgentLedgerPath: dbPath,
+      loadConfigImpl: () => ({}),
+      spawnImpl: async () => {
+        spawnCalls.push(true)
+        throw new Error('runtime must not start for anonymous explicit clamp')
+      },
+    })
+
+    assert.equal(process.exitCode, 1)
+    assert.equal(spawnCalls.length, 0)
+    assert.match(errors.join('\n'), /anonymous clamped grant|anonymous grant/)
+    assert.deepEqual(dbRows(dbPath), before)
+  } finally {
+    console.error = priorError
+    process.exitCode = priorExitCode
     fs.rmSync(configDir, { recursive: true, force: true })
   }
 })

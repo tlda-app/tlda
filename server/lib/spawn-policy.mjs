@@ -604,6 +604,7 @@ export function isOperator(caller, { serverOwnerId } = {}) {
 export function resolveSpawnGrant({
   permissionRequest,
   spawnerPermissionSet: explicitSpawnerPermissionSet,
+  spawnerPermissionProfile = null,
   model,
   kind,
   modelCap,
@@ -623,22 +624,39 @@ export function resolveSpawnGrant({
   const projectPermissionSet = !explicitPermissions
     ? permissionSetForProfileName(resolveProjectProfileName(config, { doc, project, cwd }), { cwd, project, config })
     : null
-  const requestedSet = explicitPermissions?.permissionSet
-    || projectPermissionSet
+  const requestedProfile = explicitPermissions?.name
+    || (!explicitPermissions ? resolveProjectProfileName(config, { doc, project, cwd }) : null)
+  const requestedSet = materializePermissionSet(
+    explicitPermissions?.permissionSet || projectPermissionSet,
+    { cwd, project },
+  )
 
+  const modelPermissionProfile = firstConfiguredProfile(config, modelCap)
   const modelPermissionSet = modelCeilingPermissionSet(config, { modelCap, cwd, project })
   if (!explicitSpawnerPermissionSet) throw new Error('spawner permission set is required from the daemon ledger')
   const spawnerPermissionSet = materializePermissionSet(explicitSpawnerPermissionSet, { cwd, project })
+  const configuredSpawnerProfile = firstConfiguredProfile(config, spawnerPermissionProfile)
 
   const permissionSet = intersectPermissionSets([
-    materializePermissionSet(requestedSet, { cwd, project }),
+    requestedSet,
     modelPermissionSet,
     spawnerPermissionSet,
   ], { name: 'grant' })
-  const requestedProfile = explicitPermissions?.name
-    || (projectPermissionSet ? resolveProjectProfileName(config, { doc, project, cwd }) : null)
-  const permissionProfile = exactConfiguredPermissionProfile(permissionSet, config, requestedProfile)
-  // The stored policy carries the configured profile identity plus the fence scope.
+  const permissionProfile = permissionRequest
+    ? resolvedExplicitPermissionProfileForGrant({
+        requestedProfile,
+        requestedSet,
+        modelPermissionProfile,
+        modelPermissionSet,
+        spawnerPermissionProfile: configuredSpawnerProfile,
+        spawnerPermissionSet,
+        permissionSet,
+        config,
+        cwd,
+        project,
+      })
+    : exactConfiguredPermissionProfile(permissionSet, config, requestedProfile)
+  // The grant carries the configured profile identity separately from the fence scope.
   const spawnPolicy = {
     policy: regionScopeFromSet(permissionSet),
   }
@@ -648,4 +666,54 @@ export function resolveSpawnGrant({
 
 export function resolveDirectSpawnGrant(options = {}) {
   return resolveSpawnGrant(options)
+}
+
+function profileSet(config, name, { cwd, project } = {}) {
+  return materializePermissionSet(configuredPermissionProfile(config, name), { cwd, project })
+}
+
+function samePermissionSet(left, right) {
+  return !!(left && right && permissionSetLte(left, right) && permissionSetLte(right, left))
+}
+
+function strictlyClamps(clampSet, baseSet) {
+  return !!(clampSet && baseSet && permissionSetLte(clampSet, baseSet) && !permissionSetLte(baseSet, clampSet))
+}
+
+function resolvedExplicitPermissionProfileForGrant({
+  requestedProfile,
+  requestedSet,
+  modelPermissionProfile,
+  modelPermissionSet,
+  spawnerPermissionProfile,
+  spawnerPermissionSet,
+  permissionSet,
+  config,
+  cwd,
+  project,
+} = {}) {
+  let chosenProfile = firstConfiguredProfile(config, requestedProfile)
+  let chosenSet = chosenProfile ? profileSet(config, chosenProfile, { cwd, project }) : null
+
+  const modelProfileSet = modelPermissionProfile ? profileSet(config, modelPermissionProfile, { cwd, project }) : null
+  const spawnerProfileSet = spawnerPermissionProfile ? profileSet(config, spawnerPermissionProfile, { cwd, project }) : null
+
+  if (modelPermissionProfile && strictlyClamps(modelProfileSet || modelPermissionSet, chosenSet || requestedSet)) {
+    chosenProfile = modelPermissionProfile
+    chosenSet = modelProfileSet || modelPermissionSet
+  }
+  if (spawnerPermissionProfile && strictlyClamps(spawnerProfileSet || spawnerPermissionSet, chosenSet || requestedSet)) {
+    chosenProfile = spawnerPermissionProfile
+    chosenSet = spawnerProfileSet || spawnerPermissionSet
+  }
+
+  if (!chosenProfile) {
+    throw new Error('explicit permission request resolved to an anonymous grant; refusing to persist without a configured permission profile')
+  }
+
+  if (chosenSet && !samePermissionSet(permissionSet, chosenSet)) {
+    throw new Error(`explicit permission request for "${requestedProfile || '(unknown)'}" resolved to an anonymous clamped grant; refusing to persist without a configured permission profile`)
+  }
+
+  return chosenProfile
 }

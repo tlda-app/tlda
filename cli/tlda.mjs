@@ -2609,6 +2609,7 @@ export async function runFleetSpawn(spawnArgs, {
     ledger = createPermissionLedger(permissionLedgerPathFromDaemonConfig(daemonConfig, configDir))
     applyDaemonGrants(ledger, daemonConfig)
     const config = withDaemonModelAliases(loadConfigImpl(), daemonConfig)
+    const localhostGrant = ledger.grantFor({ id: 'localhost' })
     const grant = (spawnMode === 'respawn' && !explicitPermissionArg)
       ? durableWakeGrant(ledger, { agentId: wakeAgentId, name })
       : resolveDirectSpawnGrant({
@@ -2617,7 +2618,8 @@ export async function runFleetSpawn(spawnArgs, {
           kind,
           config,
           cwd,
-          spawnerPermissionSet: ledger.grantFor({ id: 'localhost' }).permissionSet,
+          spawnerPermissionSet: localhostGrant.permissionSet,
+          spawnerPermissionProfile: localhostGrant.permissionProfile,
         })
     const grantedProfile = grant.permissionProfile
     const suppliedAgentId = flagFromRaw(spawnArgs, 'agent-id') || undefined

@@ -162,3 +162,34 @@ test('a daemon profile without projectedPolicy derives its region from its confi
   assert.deepEqual(grant.spawnPolicy, { policy: 'cwd' })
   assert.equal(grant.permissionProfile, 'workspace')
 })
+
+test('non-explicit spawn grant preserves prior post-intersection profile inference', () => {
+  const wd = {
+    type: 'permission-set',
+    name: 'wd',
+    operations: {
+      read: { allow: ['/tmp/work/**'], deny: [] },
+      write: { allow: ['/tmp/work/**'], deny: [] },
+      spawn: { allow: ['**'], deny: [] },
+    },
+    rules: [],
+  }
+  const ops = {
+    type: 'permission-set',
+    name: 'ops',
+    operations: {
+      read: { allow: ['**'], deny: [] },
+      write: { allow: ['**'], deny: [] },
+      spawn: { allow: ['**'], deny: [] },
+    },
+    rules: [],
+  }
+  const grant = resolveSpawnGrant({
+    config: { spawnPolicy: { permissionProfiles: { wd, ops }, defaultProfile: 'wd' } },
+    spawnerPermissionSet: ops,
+    spawnerPermissionProfile: 'ops',
+    cwd: '/tmp/work',
+  })
+  assert.deepEqual(grant.spawnPolicy, { policy: 'cwd' })
+  assert.equal(grant.permissionProfile, 'wd')
+})

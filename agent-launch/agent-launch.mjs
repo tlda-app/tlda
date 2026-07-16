@@ -349,6 +349,7 @@ export function createAgentLauncher({
           permissionRequest,
           requester,
           spawnerPermissionSet: spawnerGrant?.permissionSet,
+          spawnerPermissionProfile: spawnerGrant?.permissionProfile,
           model: launchModel,
           kind: launchKind,
           modelCap: launchModelSpec?.cap || null,
