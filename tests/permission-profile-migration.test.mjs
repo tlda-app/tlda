@@ -81,18 +81,23 @@ test('permission profile migration classifies all amended census categories', ()
   const { report, updates } = analyzeRows(rows, ctx)
   assert.equal(report.total, 11)
   assert.equal(report.wouldUpdate, 2)
+  assert.equal(report.wouldRegenerate, 2)
   assert.equal(report.uniqueSetResolved, 1)
   assert.equal(report.recipeDisambiguated, 1)
+  assert.equal(report.recipeRegenerated, 2)
   assert.equal(report.missingRecipe, 2)
   assert.equal(report.malformedJunkIdentity, 1)
   assert.equal(report.unconfiguredRecipeProfile, 1)
-  assert.equal(report.setProfileConflict, 3)
+  assert.equal(report.setProfileConflict, 1)
   assert.equal(report.stillAmbiguous, 1)
   assert.equal(report.alreadySet, 1)
-  assert.deepEqual(updates, [
-    { id: 'fleet:unique', permissionProfile: 'ops' },
-    { id: 'fleet:recipe', permissionProfile: 'app' },
+  assert.deepEqual(updates.map((entry) => [entry.id, entry.action, entry.permissionProfile]), [
+    ['fleet:unique', 'fill-profile', 'ops'],
+    ['fleet:recipe', 'fill-profile', 'app'],
+    ['fleet:recipeconflict', 'regenerate-from-recipe', 'ops'],
+    ['fleet:uniqueconflict', 'regenerate-from-recipe', 'app'],
   ])
+  assert.equal(updates.find((entry) => entry.id === 'fleet:recipeconflict').source, 'migration:permission-profile-backfill-20260716')
   assert.equal(report.rows.find((entry) => entry.id === 'fleet:${suffix}`').category, 'malformed/junk identity')
 })
 
@@ -168,6 +173,14 @@ function createLedger(dbPath) {
     'test',
     '/work/app',
   )
+  insert.run(
+    'fleet:recipe-regen',
+    JSON.stringify({ policy: 'unsandboxed' }),
+    JSON.stringify(permissionSet({ writeAllow: ['**'] })),
+    '2026-07-16T00:00:00.000Z',
+    'test',
+    '/work/app',
+  )
   db.prepare('INSERT INTO local_agents VALUES (?, ?, ?, ?, ?)').run(
     'local:00000000-0000-0000-0000-000000000010',
     'fleet:recipe-fill',
@@ -178,6 +191,19 @@ function createLedger(dbPath) {
   db.prepare('INSERT INTO local_agent_process_recipes VALUES (?, ?, ?, ?)').run(
     'local:00000000-0000-0000-0000-000000000010',
     'recipe-fill',
+    '/work/app',
+    'app',
+  )
+  db.prepare('INSERT INTO local_agents VALUES (?, ?, ?, ?, ?)').run(
+    'local:00000000-0000-0000-0000-000000000011',
+    'fleet:recipe-regen',
+    'recipe-regen',
+    '2026-07-16T00:00:00.000Z',
+    '2026-07-16T00:00:00.000Z',
+  )
+  db.prepare('INSERT INTO local_agent_process_recipes VALUES (?, ?, ?, ?)').run(
+    'local:00000000-0000-0000-0000-000000000011',
+    'recipe-regen',
     '/work/app',
     'app',
   )
@@ -193,25 +219,31 @@ test('permission profile migration apply is backed up and idempotent', () => {
     createLedger(dbPath)
     const rosterJsonPath = path.join(dir, 'fleet-table.json')
     fs.writeFileSync(rosterJsonPath, JSON.stringify({
-      agents: [
-        { id: 'fleet:recipe-fill', name: 'recipe-fill', status: 'awake', cwd: '/work/app', machine_id: 'mini', daemon_key: 'mini:default' },
-      ],
-    }))
+	    agents: [
+	      { id: 'fleet:recipe-fill', name: 'recipe-fill', status: 'awake', cwd: '/work/app', machine_id: 'mini', daemon_key: 'mini:default' },
+	      { id: 'fleet:recipe-regen', name: 'recipe-regen', status: 'awake', cwd: '/work/app', machine_id: 'mini', daemon_key: 'mini:default' },
+	    ],
+	  }))
 
     const dryRun = runMigration({ configDir: dir, dbPath, rosterJsonPath })
     assert.equal(dryRun.mode, 'dry-run')
     assert.equal(dryRun.report.wouldUpdate, 2)
+    assert.equal(dryRun.report.wouldRegenerate, 1)
     assert.equal(dryRun.report.uniqueSetResolved, 1)
     assert.equal(dryRun.report.recipeDisambiguated, 1)
+    assert.equal(dryRun.report.recipeRegenerated, 1)
     assert.equal(dryRun.report.missingRecipe, 1)
     assert.equal(dryRun.report.rows.find((entry) => entry.id === 'fleet:recipe-fill').evidence.roster.status, 'awake')
+    assert.equal(dryRun.report.rows.find((entry) => entry.id === 'fleet:recipe-regen').plan.source, 'migration:permission-profile-backfill-20260716')
 
     const applied = runMigration({ apply: true, configDir: dir, dbPath, backupDir })
     assert.equal(applied.mode, 'apply')
-    assert.equal(applied.apply.updated, 2)
+    assert.equal(applied.apply.planned, 3)
+    assert.equal(applied.apply.updated, 3)
     assert.equal(applied.apply.quickCheck, 'ok')
     assert.equal(applied.apply.postApplyDryRun.wouldUpdate, 0)
-    assert.equal(applied.apply.postApplyDryRun.alreadySet, 2)
+    assert.equal(applied.apply.postApplyDryRun.wouldRegenerate, 0)
+    assert.equal(applied.apply.postApplyDryRun.alreadySet, 3)
     assert.ok(applied.backups.some((entry) => entry.source === dbPath && entry.bytes > 0))
     assert.ok(applied.revertProcedure.some((line) => line.includes(JSON.stringify(dbPath))))
 
@@ -220,6 +252,10 @@ test('permission profile migration apply is backed up and idempotent', () => {
       assert.equal(db.prepare('SELECT permission_profile FROM permission_grants WHERE id = ?').pluck().get('fleet:needs-fill'), 'ops')
       assert.equal(db.prepare('SELECT permission_profile FROM permission_grants WHERE id = ?').pluck().get('fleet:no-match'), null)
       assert.equal(db.prepare('SELECT permission_profile FROM permission_grants WHERE id = ?').pluck().get('fleet:recipe-fill'), 'app')
+      assert.equal(db.prepare('SELECT permission_profile FROM permission_grants WHERE id = ?').pluck().get('fleet:recipe-regen'), 'app')
+      assert.equal(db.prepare('SELECT source FROM permission_grants WHERE id = ?').pluck().get('fleet:recipe-regen'), 'migration:permission-profile-backfill-20260716')
+      assert.deepEqual(JSON.parse(db.prepare('SELECT spawn_policy FROM permission_grants WHERE id = ?').pluck().get('fleet:recipe-regen')), { policy: 'cwd' })
+      assert.deepEqual(JSON.parse(db.prepare('SELECT permission_set FROM permission_grants WHERE id = ?').pluck().get('fleet:recipe-regen')).operations.write.allow, ['/work/app/**'])
     } finally {
       db.close()
     }

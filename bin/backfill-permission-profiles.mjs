@@ -11,22 +11,22 @@ import {
   readDaemonConfigForCwd,
   withDaemonModelAliases,
 } from '../agent-launch/permission-ledger.mjs'
-import { permissionSetLte } from '../server/lib/spawn-policy.mjs'
+import { permissionSetLte, regionScopeFromSet } from '../server/lib/spawn-policy.mjs'
 
 const __filename = fileURLToPath(import.meta.url)
+const MIGRATION_SOURCE = 'migration:permission-profile-backfill-20260716'
 
 function usage() {
   return `Usage: node bin/backfill-permission-profiles.mjs [--apply] [--config-dir DIR] [--db PATH] [--roster-db PATH] [--roster-json PATH] [--backup-dir DIR] [--json]
 
-Dry-run is the default. It opens the ledger read-only and reports how many NULL
-permission_profile rows can be filled by exactly one configured-profile match or
-by the immutable local-agent recipe whose configured profile exactly equals the
-grant's stored permission set.
+Dry-run is the default. It opens the ledger read-only and reports a complete
+plan: NULL permission_profile rows that can be filled, conflicts that can be
+regenerated from their immutable local-agent recipe, and quarantined junk rows.
 
 Apply mode, when separately authorized, first copies db/wal/shm files to
 BACKUP-DIR, then fills only rows classified as unique-set resolved or
-recipe-disambiguated. It is idempotent: a post-apply dry-run should report no
-would-update rows.
+recipe-disambiguated and regenerates only rows classified as recipe-regenerated.
+It is idempotent: a post-apply dry-run should report no planned writes.
 `
 }
 
@@ -143,6 +143,7 @@ function emptyReport() {
     alreadySet: [],
     uniqueSetResolved: [],
     recipeDisambiguated: [],
+    recipeRegenerated: [],
     missingRecipe: [],
     malformedJunkIdentity: [],
     unconfiguredRecipeProfile: [],
@@ -152,9 +153,11 @@ function emptyReport() {
   return {
     total: 0,
     wouldUpdate: 0,
+    wouldRegenerate: 0,
     alreadySet: 0,
     uniqueSetResolved: 0,
     recipeDisambiguated: 0,
+    recipeRegenerated: 0,
     missingRecipe: 0,
     malformedJunkIdentity: 0,
     unconfiguredRecipeProfile: 0,
@@ -162,6 +165,7 @@ function emptyReport() {
     stillAmbiguous: 0,
     samples,
     rows: [],
+    plan: [],
   }
 }
 
@@ -368,14 +372,32 @@ function validIdentity(id) {
 function categoryInfo(category) {
   return {
     'already-set': { key: 'alreadySet', update: false },
-    'unique-set resolved': { key: 'uniqueSetResolved', update: true },
-    'recipe-disambiguated': { key: 'recipeDisambiguated', update: true },
+    'unique-set resolved': { key: 'uniqueSetResolved', action: 'fill' },
+    'recipe-disambiguated': { key: 'recipeDisambiguated', action: 'fill' },
+    'recipe-regenerated': { key: 'recipeRegenerated', action: 'regenerate' },
     'missing recipe': { key: 'missingRecipe', update: false },
     'malformed/junk identity': { key: 'malformedJunkIdentity', update: false },
     'unconfigured recipe profile': { key: 'unconfiguredRecipeProfile', update: false },
     'set/profile conflict': { key: 'setProfileConflict', update: false },
     'still ambiguous': { key: 'stillAmbiguous', update: false },
   }[category]
+}
+
+function cloneJson(value) {
+  return value == null ? null : JSON.parse(JSON.stringify(value))
+}
+
+function migrationPlan({ action, id, permissionProfile, permissionSet, spawnPolicy }) {
+  const concretePermissionSet = cloneJson(permissionSet)
+  const concreteSpawnPolicy = cloneJson(spawnPolicy || { policy: regionScopeFromSet(concretePermissionSet) })
+  return {
+    action,
+    id,
+    permissionProfile,
+    permissionSet: concretePermissionSet,
+    spawnPolicy: concreteSpawnPolicy,
+    source: MIGRATION_SOURCE,
+  }
 }
 
 function durableGrantEvidence(row, localRecipes, rosterRow) {
@@ -423,8 +445,10 @@ function classifyRow(row, context) {
     category: null,
     permissionProfile: null,
     reason: null,
+    plan: null,
     evidence: durableGrantEvidence(row, localRecipes, rosterRow),
   }
+  const currentSpawnPolicy = tryParseJson(row.spawn_policy)
 
   if (current) {
     if (matches.includes(current)) {
@@ -453,20 +477,68 @@ function classifyRow(row, context) {
     }
 
     if (!permissionSet || !(permissionSetLte(permissionSet, configuredProfile) && permissionSetLte(configuredProfile, permissionSet))) {
-      return { ...item, category: 'set/profile conflict', permissionProfile: recipeProfile, reason: 'recipe permission_profile does not exactly equal the stored permission_set' }
+      return {
+        ...item,
+        category: 'recipe-regenerated',
+        permissionProfile: recipeProfile,
+        reason: 'recipe permission_profile is configured; regenerate grant from the current configured projection with migration provenance',
+        plan: migrationPlan({
+          action: 'regenerate-from-recipe',
+          id: row.id,
+          permissionProfile: recipeProfile,
+          permissionSet: configuredProfile,
+          spawnPolicy: null,
+        }),
+      }
     }
 
     if (matches.length === 1) {
-      return { ...item, category: 'unique-set resolved', permissionProfile: matches[0], reason: 'stored permission_set equals exactly one configured profile and the durable recipe agrees' }
+      return {
+        ...item,
+        category: 'unique-set resolved',
+        permissionProfile: matches[0],
+        reason: 'stored permission_set equals exactly one configured profile and the durable recipe agrees',
+        plan: migrationPlan({
+          action: 'fill-profile',
+          id: row.id,
+          permissionProfile: matches[0],
+          permissionSet,
+          spawnPolicy: currentSpawnPolicy,
+        }),
+      }
     }
     if (matches.includes(recipeProfile)) {
-      return { ...item, category: 'recipe-disambiguated', permissionProfile: recipeProfile, reason: 'immutable recipe profile is configured and exactly equals the stored permission_set' }
+      return {
+        ...item,
+        category: 'recipe-disambiguated',
+        permissionProfile: recipeProfile,
+        reason: 'immutable recipe profile is configured and exactly equals the stored permission_set',
+        plan: migrationPlan({
+          action: 'fill-profile',
+          id: row.id,
+          permissionProfile: recipeProfile,
+          permissionSet,
+          spawnPolicy: currentSpawnPolicy,
+        }),
+      }
     }
     return { ...item, category: 'still ambiguous', permissionProfile: recipeProfile, reason: 'recipe profile equals the stored set but does not resolve configured profile ambiguity' }
   }
 
   if (matches.length === 1) {
-    return { ...item, category: 'unique-set resolved', permissionProfile: matches[0], reason: 'stored permission_set equals exactly one configured profile' }
+    return {
+      ...item,
+      category: 'unique-set resolved',
+      permissionProfile: matches[0],
+      reason: 'stored permission_set equals exactly one configured profile',
+      plan: migrationPlan({
+        action: 'fill-profile',
+        id: row.id,
+        permissionProfile: matches[0],
+        permissionSet,
+        spawnPolicy: currentSpawnPolicy,
+      }),
+    }
   }
 
   return { ...item, category: 'missing recipe', reason: 'legitimate identity has no durable local-agent recipe keyed by local_agent_id/server_agent_id' }
@@ -482,9 +554,14 @@ export function analyzeRows(rows, context) {
     report[info.key]++
     report.rows.push(item)
     addSample(report.samples, info.key, item)
-    if (info.update) {
+    if (info.action === 'fill') {
       report.wouldUpdate++
-      updates.push({ id: row.id, permissionProfile: item.permissionProfile })
+      updates.push(item.plan)
+      report.plan.push(item.plan)
+    } else if (info.action === 'regenerate') {
+      report.wouldRegenerate++
+      updates.push(item.plan)
+      report.plan.push(item.plan)
     }
   }
   return { report, updates }
@@ -556,16 +633,41 @@ export function runMigration({
         backupRequiredForApply: ['db', 'wal', 'shm'],
         applyVerification: [
           'PRAGMA quick_check returns ok',
-          'updated row count equals dry-run wouldUpdate count',
-          'post-apply dry-run reports wouldUpdate=0',
+          'updated row count equals dry-run wouldUpdate + wouldRegenerate count',
+          'post-apply dry-run reports wouldUpdate=0 and wouldRegenerate=0',
         ],
         revertProcedure: ['Apply mode prints exact backup paths and copy commands.'],
       }
     }
 
-    const update = db.prepare('UPDATE permission_grants SET permission_profile = ? WHERE id = ? AND (permission_profile IS NULL OR permission_profile = ?)')
+    const fill = db.prepare('UPDATE permission_grants SET permission_profile = ? WHERE id = ? AND (permission_profile IS NULL OR permission_profile = ?)')
+    const regenerate = db.prepare(`
+      UPDATE permission_grants
+      SET permission_profile = ?,
+        permission_set = ?,
+        spawn_policy = ?,
+        source = ?,
+        updated_at = ?
+      WHERE id = ? AND (permission_profile IS NULL OR permission_profile = ?)
+    `)
+    const appliedAt = new Date().toISOString()
+    let appliedWrites = 0
     const tx = db.transaction(() => {
-      for (const row of updates) update.run(row.permissionProfile, row.id, '')
+      for (const row of updates) {
+        if (row.action === 'fill-profile') {
+          appliedWrites += fill.run(row.permissionProfile, row.id, '').changes
+        } else if (row.action === 'regenerate-from-recipe') {
+          appliedWrites += regenerate.run(
+            row.permissionProfile,
+            JSON.stringify(row.permissionSet),
+            JSON.stringify(row.spawnPolicy),
+            row.source,
+            appliedAt,
+            row.id,
+            '',
+          ).changes
+        }
+      }
     })
     tx()
     const quickCheck = db.prepare('PRAGMA quick_check').pluck().get()
@@ -573,7 +675,8 @@ export function runMigration({
     const { report: postApplyDryRun } = analyzeRows(afterRows, context)
     applyResult = {
       addedColumn,
-      updated: updates.length,
+      planned: updates.length,
+      updated: appliedWrites,
       quickCheck,
       postApplyDryRun,
     }
