@@ -30,6 +30,8 @@ function context() {
   return {
     daemonYaml: '/tmp/unused-daemon.yaml',
     baseConfig: { spawnPolicy: { permissionProfiles: profiles } },
+    recipeIndex: { byGrantId: new Map() },
+    rosterIndex: { byId: new Map() },
   }
 }
 
@@ -42,23 +44,56 @@ function row(id, { profile = null, set = null, cwd = '/work/app' } = {}) {
   }
 }
 
-test('permission profile migration classifies exact, ambiguous, unresolved, and conflicting rows', () => {
+function withRecipe(ctx, id, recipe) {
+  const next = {
+    ...ctx,
+    recipeIndex: { byGrantId: new Map(ctx.recipeIndex.byGrantId) },
+  }
+  next.recipeIndex.byGrantId.set(id, [recipe])
+  return next
+}
+
+test('permission profile migration classifies all amended census categories', () => {
+  let ctx = context()
+  ctx = withRecipe(ctx, 'fleet:recipe', { localAgentId: 'local:00000000-0000-0000-0000-000000000001', serverAgentId: 'fleet:recipe', permissionProfile: 'app' })
+  ctx = withRecipe(ctx, 'fleet:missingprofile', { localAgentId: 'local:00000000-0000-0000-0000-000000000002', serverAgentId: 'fleet:missingprofile', permissionProfile: null })
+  ctx = withRecipe(ctx, 'fleet:unconfigured', { localAgentId: 'local:00000000-0000-0000-0000-000000000003', serverAgentId: 'fleet:unconfigured', permissionProfile: 'wd' })
+  ctx = withRecipe(ctx, 'fleet:recipeconflict', { localAgentId: 'local:00000000-0000-0000-0000-000000000004', serverAgentId: 'fleet:recipeconflict', permissionProfile: 'ops' })
+  ctx = withRecipe(ctx, 'fleet:uniqueconflict', { localAgentId: 'local:00000000-0000-0000-0000-000000000007', serverAgentId: 'fleet:uniqueconflict', permissionProfile: 'app' })
+  ctx.recipeIndex.byGrantId.set('fleet:stillambiguous', [
+    { localAgentId: 'local:00000000-0000-0000-0000-000000000005', serverAgentId: 'fleet:stillambiguous', permissionProfile: 'app' },
+    { localAgentId: 'local:00000000-0000-0000-0000-000000000006', serverAgentId: 'fleet:stillambiguous', permissionProfile: 'duplicate' },
+  ])
   const rows = [
-    row('fleet:resolved', { set: permissionSet({ writeAllow: ['**'] }) }),
-    row('fleet:ambiguous', { set: permissionSet({ writeAllow: ['/work/app/**'] }) }),
-    row('fleet:unresolved', { set: permissionSet({ writeAllow: ['/other/**'] }) }),
+    row('fleet:unique', { set: permissionSet({ writeAllow: ['**'] }) }),
+    row('fleet:recipe', { set: permissionSet({ writeAllow: ['/work/app/**'] }) }),
+    row('fleet:missing', { set: permissionSet({ writeAllow: ['/work/app/**'] }) }),
+    row('fleet:${suffix}`', { set: permissionSet({ writeAllow: ['**'] }) }),
+    row('fleet:unconfigured', { set: permissionSet({ writeAllow: ['/work/app/**'] }) }),
+    row('fleet:recipeconflict', { set: permissionSet({ writeAllow: ['/work/app/**'] }) }),
+    row('fleet:uniqueconflict', { set: permissionSet({ writeAllow: ['**'] }) }),
+    row('fleet:stillambiguous', { set: permissionSet({ writeAllow: ['/work/app/**'] }) }),
+    row('fleet:missingprofile', { set: permissionSet({ writeAllow: ['/work/app/**'] }) }),
     row('fleet:already', { profile: 'ops', set: permissionSet({ writeAllow: ['**'] }) }),
     row('fleet:conflict', { profile: 'app', set: permissionSet({ writeAllow: ['**'] }) }),
   ]
 
-  const { report, updates } = analyzeRows(rows, context())
-  assert.equal(report.total, 5)
-  assert.equal(report.resolved, 1)
-  assert.equal(report.ambiguous, 1)
-  assert.equal(report.unresolved, 1)
+  const { report, updates } = analyzeRows(rows, ctx)
+  assert.equal(report.total, 11)
+  assert.equal(report.wouldUpdate, 2)
+  assert.equal(report.uniqueSetResolved, 1)
+  assert.equal(report.recipeDisambiguated, 1)
+  assert.equal(report.missingRecipe, 2)
+  assert.equal(report.malformedJunkIdentity, 1)
+  assert.equal(report.unconfiguredRecipeProfile, 1)
+  assert.equal(report.setProfileConflict, 3)
+  assert.equal(report.stillAmbiguous, 1)
   assert.equal(report.alreadySet, 1)
-  assert.equal(report.conflicting, 1)
-  assert.deepEqual(updates, [{ id: 'fleet:resolved', permissionProfile: 'ops' }])
+  assert.deepEqual(updates, [
+    { id: 'fleet:unique', permissionProfile: 'ops' },
+    { id: 'fleet:recipe', permissionProfile: 'app' },
+  ])
+  assert.equal(report.rows.find((entry) => entry.id === 'fleet:${suffix}`').category, 'malformed/junk identity')
 })
 
 function writeConfig(dir) {
@@ -71,6 +106,9 @@ regions:
     - "**"
 profiles:
   app:
+    read: { allow: [app] }
+    write: { allow: [app] }
+  duplicate:
     read: { allow: [app] }
     write: { allow: [app] }
   ops:
@@ -90,7 +128,20 @@ function createLedger(dbPath) {
       updated_at TEXT NOT NULL,
       source TEXT NOT NULL,
       cwd TEXT
-    )
+    );
+    CREATE TABLE local_agents (
+      local_agent_id TEXT PRIMARY KEY,
+      server_agent_id TEXT UNIQUE,
+      friendly_name TEXT,
+      created_at TEXT NOT NULL,
+      bound_at TEXT
+    );
+    CREATE TABLE local_agent_process_recipes (
+      local_agent_id TEXT PRIMARY KEY,
+      tmux_name TEXT,
+      cwd TEXT,
+      permission_profile TEXT
+    );
   `)
   const insert = db.prepare('INSERT INTO permission_grants VALUES (?, ?, ?, ?, ?, ?)')
   insert.run(
@@ -109,6 +160,27 @@ function createLedger(dbPath) {
     'test',
     '/work/app',
   )
+  insert.run(
+    'fleet:recipe-fill',
+    JSON.stringify({ policy: 'cwd' }),
+    JSON.stringify(permissionSet({ writeAllow: ['/work/app/**'] })),
+    '2026-07-16T00:00:00.000Z',
+    'test',
+    '/work/app',
+  )
+  db.prepare('INSERT INTO local_agents VALUES (?, ?, ?, ?, ?)').run(
+    'local:00000000-0000-0000-0000-000000000010',
+    'fleet:recipe-fill',
+    'recipe-fill',
+    '2026-07-16T00:00:00.000Z',
+    '2026-07-16T00:00:00.000Z',
+  )
+  db.prepare('INSERT INTO local_agent_process_recipes VALUES (?, ?, ?, ?)').run(
+    'local:00000000-0000-0000-0000-000000000010',
+    'recipe-fill',
+    '/work/app',
+    'app',
+  )
   db.close()
 }
 
@@ -119,18 +191,27 @@ test('permission profile migration apply is backed up and idempotent', () => {
   try {
     writeConfig(dir)
     createLedger(dbPath)
+    const rosterJsonPath = path.join(dir, 'fleet-table.json')
+    fs.writeFileSync(rosterJsonPath, JSON.stringify({
+      agents: [
+        { id: 'fleet:recipe-fill', name: 'recipe-fill', status: 'awake', cwd: '/work/app', machine_id: 'mini', daemon_key: 'mini:default' },
+      ],
+    }))
 
-    const dryRun = runMigration({ configDir: dir, dbPath })
+    const dryRun = runMigration({ configDir: dir, dbPath, rosterJsonPath })
     assert.equal(dryRun.mode, 'dry-run')
-    assert.equal(dryRun.report.resolved, 1)
-    assert.equal(dryRun.report.unresolved, 1)
+    assert.equal(dryRun.report.wouldUpdate, 2)
+    assert.equal(dryRun.report.uniqueSetResolved, 1)
+    assert.equal(dryRun.report.recipeDisambiguated, 1)
+    assert.equal(dryRun.report.missingRecipe, 1)
+    assert.equal(dryRun.report.rows.find((entry) => entry.id === 'fleet:recipe-fill').evidence.roster.status, 'awake')
 
     const applied = runMigration({ apply: true, configDir: dir, dbPath, backupDir })
     assert.equal(applied.mode, 'apply')
-    assert.equal(applied.apply.updated, 1)
+    assert.equal(applied.apply.updated, 2)
     assert.equal(applied.apply.quickCheck, 'ok')
-    assert.equal(applied.apply.postApplyDryRun.resolved, 0)
-    assert.equal(applied.apply.postApplyDryRun.alreadySet, 1)
+    assert.equal(applied.apply.postApplyDryRun.wouldUpdate, 0)
+    assert.equal(applied.apply.postApplyDryRun.alreadySet, 2)
     assert.ok(applied.backups.some((entry) => entry.source === dbPath && entry.bytes > 0))
     assert.ok(applied.revertProcedure.some((line) => line.includes(JSON.stringify(dbPath))))
 
@@ -138,6 +219,7 @@ test('permission profile migration apply is backed up and idempotent', () => {
     try {
       assert.equal(db.prepare('SELECT permission_profile FROM permission_grants WHERE id = ?').pluck().get('fleet:needs-fill'), 'ops')
       assert.equal(db.prepare('SELECT permission_profile FROM permission_grants WHERE id = ?').pluck().get('fleet:no-match'), null)
+      assert.equal(db.prepare('SELECT permission_profile FROM permission_grants WHERE id = ?').pluck().get('fleet:recipe-fill'), 'app')
     } finally {
       db.close()
     }
