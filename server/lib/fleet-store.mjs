@@ -27,6 +27,7 @@ import { PSEUDO_LABELS, parseFilter, evalExpr, evalExprDirectional, labelsForAge
 import { baseName, nameForPhase, phaseFromName, ALL_PHASES, prettyNameForFriendlyName } from '../../shared/lineage-name.mjs';
 import { literalFtsQuery } from '../../shared/fts-query.mjs';
 import { createTaskDocMaterializer } from './task-doc-materializer.mjs';
+import { projectAgentRuntimeStatus } from './agent-runtime-status.mjs';
 
 // Persistent DB under ~/.config/tlda/ (survives macOS reboots).
 // Previously /tmp/fleet.db which got wiped on reboot — lost all agents/state.
@@ -2014,7 +2015,10 @@ export class FleetStore {
       const n = new Date(v).getTime();
       return Number.isFinite(n) ? n : 0;
     };
-    const awake = (r) => (this._isLiveOracle ? !!this._isLiveOracle(r.id) : false);
+    const awake = (r) => {
+      if (this._runtimeStatusProvider) return this._runtimeStatusProvider(r)?.status === 'awake';
+      return this._isLiveOracle ? !!this._isLiveOracle(r.id) : false;
+    };
     return rows.slice().sort((a, b) => {
       const liveDelta = (awake(b) ? 1 : 0) - (awake(a) ? 1 : 0);
       if (liveDelta !== 0) return liveDelta;
@@ -2359,6 +2363,11 @@ export class FleetStore {
   // transient.
   setLivenessOracle(fn) {
     this._isLiveOracle = fn;
+    this._bustAgentsCache();
+  }
+
+  setRuntimeStatusProvider(fn) {
+    this._runtimeStatusProvider = fn;
     this._bustAgentsCache();
   }
 
@@ -2714,25 +2723,7 @@ export class FleetStore {
   _hydrateAgent(row) {
     const lastActive = row.last_active || null
     const metadata = row.metadata ? JSON.parse(row.metadata) : null
-    const isAwake = !row.dead && !row.human && this._isLiveOracle
-      ? !!this._isLiveOracle(row.id)
-      : false
-    let status
-    if (row.dead) {
-      status = 'dead'
-    } else if (row.human) {
-      const seenAgo = row.last_seen ? Date.now() - new Date(row.last_seen).getTime() : Infinity
-      status = seenAgo < 90_000 ? 'human' : 'human-away'
-    } else if (metadata?.shell) {
-      // A reserved identity with no live process yet — a "shell" created at
-      // spawn time so the agent is addressable (dead=0, in the not-dead registry)
-      // before it inhabits. It is NOT awake; the agent's own login clears the
-      // shell flag (the claim) and flips it to awake.
-      status = 'shell'
-    } else {
-      status = isAwake ? 'awake' : 'hibernating'
-    }
-    return {
+    const baseAgent = {
       ...row,
       session_ids: row.session_ids ? JSON.parse(row.session_ids) : [],
       labels: row.labels ? JSON.parse(row.labels) : [],
@@ -2742,11 +2733,20 @@ export class FleetStore {
       metadata,
       pretty_name: parsePrettyName(row.pretty_name),
       last_active: lastActive,
-      status,
       lineage_id: row.lineage_id || null,
       // No `phase` field — phase is encoded in friendly_name and parsed on the
       // client. lineage_name (the base) is still exposed for lineage search.
       lineage_name: row.lineage_name || null,
+    }
+    const runtimeStatus = this._runtimeStatusProvider
+      ? this._runtimeStatusProvider(baseAgent)
+      : projectAgentRuntimeStatus(baseAgent, this._isLiveOracle?.(row.id)
+        ? { liveness: 'alive', liveness_source: 'legacy-liveness-oracle', liveness_at_ms: Date.now(), liveness_at: new Date().toISOString() }
+        : null)
+    return {
+      ...baseAgent,
+      status: runtimeStatus.status,
+      runtime_status: runtimeStatus,
     };
   }
 

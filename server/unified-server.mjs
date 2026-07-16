@@ -69,6 +69,7 @@ import { createFleetRouter, RESOLVED_UPLOAD_DIR } from './routes/fleet.mjs'
 import { copyAttachmentsToUploadDir } from './lib/chat-attachment-store.mjs'
 import { normalizeRegionPolicy } from './lib/spawn-policy.mjs'
 import { buildRuntimeStatus } from './lib/runtime-status.mjs'
+import { createAgentRuntimeStatusStore, POSITIVE_LIVENESS_TTL_MS } from './lib/agent-runtime-status.mjs'
 import { resolveSpawnMachine, SPAWN_MACHINE_PREF_KEY } from './lib/spawn-routing.mjs'
 import { normalizeSpawnRelayInput } from './lib/spawn-relay-input.mjs'
 import { resolveFreshSpawnAvailabilityModels } from './lib/spawn-availability-models.mjs'
@@ -311,25 +312,48 @@ const agentFleetConnections = new Map()     // agent_id -> latest /ws/fleet conn
 const daemonConnections = new Map()         // machine_id:env_name -> ws
 const daemonWelcomeSeenAt = new Map()       // machine_id:env_name -> last successful hello setup
 
-// "Server currently believes this agent is live" — flat set keyed by agent_id.
-// Populated by login, agent activity, thinking/status events, and explicit wake
-// probes. The fleet store reads this via an installed oracle when computing each
-// agent's awake/hibernating status. Daemon disconnect/reconnect windows are not
-// proof of hibernation: after a deploy or local restart, stale "awake" is safer
-// than hiding every working agent on the machine.
+// Runtime status truth. Positive process evidence expires after three missed
+// hosted-session refresh intervals (90s); explicit dead/wedged evidence wins
+// immediately. Durable seats are route identity, not liveness proof.
 const _aliveAgents = new Set()              // Set<agent_id>
 const _aliveSince = new Map()               // agent_id -> first ms in current alive run
+const _runtimeExpiryTimers = new Map()
 
-function isAgentAlive(agentId) { return _aliveAgents.has(agentId) }
+const runtimeStatusStore = createAgentRuntimeStatusStore({
+  ttlMs: POSITIVE_LIVENESS_TTL_MS,
+  getSeat: agentId => fleetStore?.getCurrentAgentSeat?.(agentId) || null,
+  isDaemonConnected: daemonKey => !!daemonKey && daemonConnections.get(daemonKey)?.readyState === 1,
+  onChange: agentId => {
+    fleetStore?.refreshAgentLiveness?.(agentId)
+    if (typeof broadcastState === 'function') broadcastState(agentId)
+  },
+})
+
+function isAgentAlive(agentId) { return runtimeStatusStore.isAwake(agentId) }
+
+function scheduleRuntimeExpiry(agentId) {
+  if (!agentId) return
+  const previous = _runtimeExpiryTimers.get(agentId)
+  if (previous) clearTimeout(previous)
+  const timer = setTimeout(() => {
+    _runtimeExpiryTimers.delete(agentId)
+    fleetStore?.refreshAgentLiveness?.(agentId)
+    broadcastState(agentId)
+  }, POSITIVE_LIVENESS_TTL_MS + 50)
+  timer?.unref?.()
+  _runtimeExpiryTimers.set(agentId, timer)
+}
 
 function isReservedShellAgent(agent) {
   return !!agent?.metadata?.shell
 }
 
-function markAgentAlive(agentId, now = Date.now()) {
+function markAgentAlive(agentId, now = Date.now(), detail = {}) {
   const wasAlive = _aliveAgents.has(agentId)
   if (!wasAlive || !_aliveSince.has(agentId)) _aliveSince.set(agentId, now)
   _aliveAgents.add(agentId)
+  runtimeStatusStore.markAlive(agentId, detail.source || 'server-positive-evidence', { ...detail, atMs: now })
+  scheduleRuntimeExpiry(agentId)
   if (!wasAlive) {
     fleetStore?.refreshAgentLiveness?.(agentId)
     // Recovery: an agent transitioning to alive (login/reconnect) clears its
@@ -338,15 +362,33 @@ function markAgentAlive(agentId, now = Date.now()) {
   }
 }
 
-function markAgentNotAlive(agentId) {
+function markAgentNotAlive(agentId, detail = {}) {
   const wasAlive = _aliveAgents.has(agentId)
   _aliveAgents.delete(agentId)
   _aliveSince.delete(agentId)
+  const timer = _runtimeExpiryTimers.get(agentId)
+  if (timer) clearTimeout(timer)
+  _runtimeExpiryTimers.delete(agentId)
+  if (detail.unknown) runtimeStatusStore.markUnknown(agentId, detail.source || 'runtime-unknown', detail)
+  else runtimeStatusStore.markNotAlive(agentId, detail.source || 'runtime-negative-evidence', detail)
   clearEphemeralState(agentId)
   if (wasAlive) fleetStore?.refreshAgentLiveness?.(agentId)
 }
 
+function refreshRuntimeRoutesForDaemon(daemonKey) {
+  if (!daemonKey || !fleetStore?.getAllAgents) return
+  const affected = []
+  for (const agent of fleetStore.getAllAgents()) {
+    if (agent?.dead || agent?.human) continue
+    const seat = fleetStore.getCurrentAgentSeat?.(agent.id)
+    if (seat?.daemon_key === daemonKey) affected.push(agent.id)
+  }
+  for (const id of affected) fleetStore.refreshAgentLiveness?.(id)
+  if (affected.length) broadcastState(affected)
+}
+
 if (fleetStore?.setLivenessOracle) fleetStore.setLivenessOracle(isAgentAlive)
+if (fleetStore?.setRuntimeStatusProvider) fleetStore.setRuntimeStatusProvider(agent => runtimeStatusStore.project(agent))
 
 // ─── Process reaper — zombie WebSocket detection ────────────────────
 // Agents leave wakes of playwright chromium windows pointed at our
@@ -3669,7 +3711,7 @@ app.post('/api/kill-session', requireRead, async (req, res) => {
   if (!seat) return
   try {
     const result = await sendRpc(seat.daemon_key, 'kill-session', { agent_id: agent.id, session_id: seat.session_id, tmux_session: seat.tmux_session })
-    markAgentNotAlive(agent.id)
+    markAgentNotAlive(agent.id, { source: 'http-kill-session', reason: 'operator killed session' })
     const killEvent = { type: 'kill-session', from: SERVER_OWNER_ID, to: agent.id, text: `Killed ${agent.friendly_name || agent.id}` }
     await fleetStore.share(killEvent)
     broadcastState(agent.id)
@@ -4523,6 +4565,7 @@ server.on('upgrade', async (req, socket, head) => {
           daemonConnections.delete(ws._daemonKey)
           daemonActivityDeliverySnapshots.delete(ws._daemonKey)
           fleetStore?.markDaemonDisconnected?.(ws._daemonKey)
+          refreshRuntimeRoutesForDaemon(ws._daemonKey)
           // The daemon is gone; process-level visibility is unknown, not false.
           // Preserve prior liveness so a server/Fly redeploy or daemon restart
           // cannot make every working agent on that machine vanish.
@@ -4543,6 +4586,7 @@ server.on('upgrade', async (req, socket, head) => {
           daemonConnections.delete(ws._daemonKey)
           daemonActivityDeliverySnapshots.delete(ws._daemonKey)
           fleetStore?.markDaemonDisconnected?.(ws._daemonKey)
+          refreshRuntimeRoutesForDaemon(ws._daemonKey)
           failPendingRpcsForDaemon(ws._machineId, ws._envName, 'daemon ws error')
           clearServerDaemonOutboxInflightForDaemon(ws._daemonKey)
           updateDaemonActivityTransportHealth(ws._daemonKey, {
@@ -4984,7 +5028,7 @@ async function handleFleetWsMessage(ws, msg) {
       const storedAgent = fleetStore.getAgent?.(agent_id) || agent
       reply({ ok: true, agent: storedAgent, assigned_name: storedAgent.friendly_name || null })
       fleetStore.share?.({ type: 'login', agent_id, from: agent_id, to: agent_id, text: `${agent.friendly_name || agent_id} logged in` })
-      markAgentAlive(agent_id)
+      markAgentAlive(agent_id, Date.now(), { source: 'agent-login', tmux_session: agent.tmux_session })
       touchActivity(agent_id)
       spawnLibrarian.observeLiveness({
         type: 'agent-liveness',
@@ -6270,8 +6314,9 @@ async function handleFleetWsMessage(ws, msg) {
     const { agentId, state, tool, ts } = msg
     if (agentId && state && fleetStore) {
       fleetStore.updateAgentStatus?.(agentId, state, tool, ts)
-      if (state === 'hibernating') markAgentNotAlive(agentId)
-      else markAgentAlive(agentId)
+      runtimeStatusStore.updateActivity(agentId, state, { tool, atMs: Date.parse(ts) || Date.now() })
+      if (state === 'hibernating') markAgentNotAlive(agentId, { source: 'agent-status', unknown: true, reason: 'pane status reported hibernating' })
+      else markAgentAlive(agentId, Date.parse(ts) || Date.now(), { source: 'agent-status', tool })
       broadcastEvent('agent-status', { agent: agentId, state, tool, ts })
       broadcastState()
     }
@@ -6480,7 +6525,7 @@ async function handleFleetWsMessage(ws, msg) {
     if (!seat) { error(seatError); return }
     try {
       const result = await sendRpc(seat.daemon_key, 'kill-session', { agent_id: agent.id, session_id: seat.session_id, tmux_session: seat.tmux_session })
-      markAgentNotAlive(agent.id)
+      markAgentNotAlive(agent.id, { source: 'ws-kill-session', reason: 'operator killed session' })
       const killEvent = { type: 'kill-session', from: SERVER_OWNER_ID, to: agent.id, text: `Killed ${agent.friendly_name || agent.id}` }
       await fleetStore.share(killEvent)
       broadcastState()
@@ -6498,7 +6543,7 @@ async function handleFleetWsMessage(ws, msg) {
     if (!seat) { error(seatError); return }
     try {
       const result = await sendRpc(seat.daemon_key, 'kill-session', { agent_id: agent.id, session_id: seat.session_id, tmux_session: seat.tmux_session })
-      markAgentNotAlive(agent.id)
+      markAgentNotAlive(agent.id, { source: 'ws-hibernate-session', reason: 'operator hibernated session' })
       broadcastState()
       reply({ ok: true, agent: agent.friendly_name || agent.id, ...result })
     } catch (e) { error(e.message) }
@@ -7533,6 +7578,7 @@ async function handleDaemonWsMessage(ws, msg) {
     ws._version = version
     ws._agentStatusSeq = Number.isInteger(last_agent_status_seq) ? last_agent_status_seq : 0
     daemonConnections.set(daemonKey, ws)
+    refreshRuntimeRoutesForDaemon(daemonKey)
     notifyDaemonReady(daemonKey) // wake any control-op RPCs waiting to retry across this reconnect
     clearServerDaemonOutboxInflightForDaemon(daemonKey)
     daemonWelcomeSeenAt.set(daemonKey, Date.now())
@@ -7630,8 +7676,9 @@ async function handleDaemonWsMessage(ws, msg) {
     const { agentId, state, tool, ts } = msg
     if (!agentId || !state || !fleetStore) return
     fleetStore.updateAgentStatus?.(agentId, state, tool, ts)
-    if (state === 'hibernating') markAgentNotAlive(agentId)
-    else markAgentAlive(agentId)
+    runtimeStatusStore.updateActivity(agentId, state, { tool, atMs: Date.parse(ts) || Date.now() })
+    if (state === 'hibernating') markAgentNotAlive(agentId, { source: 'daemon-agent-status', unknown: true, reason: 'pane status reported hibernating' })
+    else markAgentAlive(agentId, Date.parse(ts) || Date.now(), { source: 'daemon-agent-status', tool })
     broadcastEvent('agent-status', { agent: agentId, state, tool, ts })
     broadcastState()
     return
@@ -7661,9 +7708,17 @@ async function handleDaemonWsMessage(ws, msg) {
           // Liveness = "the tmux process still exists", NOT "the agent did work".
           // markAgentAlive is idempotent for _aliveSince; real activity is recorded
           // by agent-activity / agent-thinking / chat, not by this liveness ping.
-          markAgentAlive(id)
+          markAgentAlive(id, Date.parse(batchTs) || Date.now(), {
+            source: 'daemon-hosted-session-refresh',
+            reason,
+            tmux_session: agent?.tmux_session || null,
+          })
         } else {
-          markAgentNotAlive(id)
+          markAgentNotAlive(id, {
+            source: 'daemon-hosted-session-refresh',
+            reason: 'daemon liveness batch: not alive',
+            tmux_session: agent?.tmux_session || null,
+          })
         }
       }
       broadcastState()
@@ -7675,9 +7730,20 @@ async function handleDaemonWsMessage(ws, msg) {
       // Liveness ≠ activity (see the batch handler above): this is a 30s "process
       // exists" ping, not real work, so it must not reset the idle clock. Real
       // activity is recorded by agent-activity / agent-thinking / chat.
-      markAgentAlive(agent_id)
+      markAgentAlive(agent_id, Date.parse(ts) || Date.now(), {
+        source: 'daemon-agent-liveness',
+        reason,
+        tmux_session,
+        pid,
+      })
     } else if (state === 'dead' || state === 'wedged') {
-      markAgentNotAlive(agent_id)
+      markAgentNotAlive(agent_id, {
+        source: 'daemon-agent-liveness',
+        state,
+        reason,
+        tmux_session,
+        pid,
+      })
     }
     broadcastState()
     return
@@ -7687,7 +7753,7 @@ async function handleDaemonWsMessage(ws, msg) {
     const { agent_id, jsonl_offset, ts } = msg
     if (!agent_id || typeof jsonl_offset !== 'number') return
     spawnLibrarian.observeActivity({ type, agent_id, jsonl_offset, ts })
-    markAgentAlive(agent_id)
+    markAgentAlive(agent_id, Date.parse(ts) || Date.now(), { source: 'agent-activity' })
     touchActivity(agent_id)
     if (fleetStore?.updateHeartbeat) {
       fleetStore.updateHeartbeat(agent_id)
@@ -7811,7 +7877,7 @@ async function handleDaemonWsMessage(ws, msg) {
   if (type === 'terminal-dead') {
     if (msg.agent_id) {
       fanOutTerminalDead(msg.agent_id)
-      markAgentNotAlive(msg.agent_id)
+      markAgentNotAlive(msg.agent_id, { source: 'terminal-dead', reason: 'terminal watch ended dead' })
       broadcastState()
     }
     return
@@ -7856,7 +7922,7 @@ async function handleDaemonWsMessage(ws, msg) {
       snippet: snippet || null,
     }
     try {
-      markAgentNotAlive(agent_id)
+      markAgentNotAlive(agent_id, { source: 'spawn-startup-failed', reason: reason || code || 'startup failed' })
       // A shell that never booted (never claimed) must be marked dead so it
       // leaves the not-dead registry — otherwise the reserved identity
       // lingers as a phantom addressable agent that will never inhabit.
@@ -8276,7 +8342,7 @@ server.listen(PORT, HOST, () => {
       console.log(`[hibernate] auto-hibernating ${agent.friendly_name || agent.id} (idle ${wouldHib[agentId]}s)`)
       try {
         await sendRpc(seat.daemon_key, 'kill-session', { agent_id: agent.id, session_id: seat.session_id, tmux_session: seat.tmux_session })
-        markAgentNotAlive(agent.id)
+        markAgentNotAlive(agent.id, { source: 'auto-hibernate', reason: `idle ${wouldHib[agentId]}s` })
       } catch (e) {
         console.error(`[hibernate] failed to hibernate ${agent.friendly_name || agent.id}: ${e.message}`)
       }

@@ -1,5 +1,13 @@
-export function createAgentLiveness({ getAgents, listSessions, sendMsg, log } = {}) {
+export function createAgentLiveness({
+  getAgents,
+  listSessions,
+  sendMsg,
+  log,
+  livenessRefreshMs = parseInt(process.env.TLDA_AGENT_LIVENESS_REFRESH_MS, 10) || 30_000,
+  setIntervalFn = setInterval,
+} = {}) {
   const alivenessCache = new Map()
+  let refreshInterval = null
 
   function clearTransientMissingState() {
     alivenessCache.clear()
@@ -52,9 +60,12 @@ export function createAgentLiveness({ getAgents, listSessions, sendMsg, log } = 
   }
 
   function start() {
-    // Fleet-wide hibernation sweeps are intentionally disabled. Wake decisions
-    // use server state plus explicit daemon RPC failures instead of silently
-    // demoting agents from a background probe.
+    void reportHostedSessions('periodic-hosted-session-refresh')
+    if (refreshInterval) return
+    refreshInterval = setIntervalFn(() => {
+      void reportHostedSessions('periodic-hosted-session-refresh')
+    }, livenessRefreshMs)
+    refreshInterval?.unref?.()
   }
 
   return {
