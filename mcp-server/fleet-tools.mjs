@@ -422,8 +422,7 @@ function spawnPermissionDescriptions() {
     : 'No daemon profiles are currently configured.';
   return {
     profileNames: profiles,
-    permission: `Configured daemon permission profile. ${profileText} The daemon clamps it to the spawner, project, model, and local box policy.`,
-    permissions: `Configured daemon permission profile/spec. ${profileText} The daemon clamps it to the spawner, project, model, and local box policy.`,
+    permissionRequest: `Configured daemon permission profile/spec. ${profileText} The daemon clamps it to the spawner, project, model, and local box policy.`,
   };
 }
 
@@ -1297,8 +1296,7 @@ export function getFleetTools() {
               cwd: { type: 'string', description: 'Working directory (inherits from caller if omitted)' },
               model: { type: 'string', description: 'Configured daemon model alias. Call spawn_models() for valid values.' },
               effort: { type: 'string', description: 'Effort level: low|medium|high|xhigh|max (default: inherit global config)' },
-              permission: { type: 'string', ...(spawnPermissionText.profileNames.length ? { enum: spawnPermissionText.profileNames } : {}), description: spawnPermissionText.permission },
-              permissions: { type: 'string', description: spawnPermissionText.permissions },
+              permissionRequest: { type: 'string', ...(spawnPermissionText.profileNames.length ? { enum: spawnPermissionText.profileNames } : {}), description: spawnPermissionText.permissionRequest },
             },
 	          },
           description: { type: 'string', description: 'Short human-readable description (5-10 words). Auto-derived from message if omitted.' },
@@ -2318,8 +2316,7 @@ export async function handleFleetTool(name, args) {
           modelOptions: spawnModelOptionsFromArgs(spawnOpts),
           effort: spawnOpts.effort,
           cwd: agentCwd,
-          permission: spawnOpts.permission,
-          requestedPermissions: spawnOpts.permissions,
+          permissionRequest: spawnOpts.permissionRequest,
         });
         if (spawnResult?.ok === false || spawnResult?.error) {
           return { content: [{ type: 'text', text: `spawn failed before delegation: ${spawnResult.error || JSON.stringify(spawnResult)}` }], isError: true };

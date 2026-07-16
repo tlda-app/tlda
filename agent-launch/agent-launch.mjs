@@ -2,7 +2,7 @@ import { execFile } from 'child_process'
 import fs from 'fs'
 import path from 'path'
 import { promisify } from 'util'
-import { permissionSetLte, resolveSpawnGrant } from '../server/lib/spawn-policy.mjs'
+import { exactConfiguredPermissionProfile, resolveSpawnGrant } from '../server/lib/spawn-policy.mjs'
 import { detectSpawnStartupFailureTranscript } from '../agent-runtime/daemon-guards.mjs'
 import { ledgerSessionId } from '../agent-runtime/ledger-session-tail.mjs'
 import { resolveTranscript } from '../agent-runtime/resolve-transcript.mjs'
@@ -14,17 +14,6 @@ import { resolveModelSpec } from './models.mjs'
 import { isIntentionalEmptyPermissionSet, permissionSetConfersNothing } from './permissions.mjs'
 
 const execFileP = promisify(execFile)
-
-function exactPermissionClass(permissionSet, daemonConfig = {}, preferred = null) {
-  const profiles = daemonConfig.profiles || {}
-  const candidates = preferred && profiles[preferred]
-    ? [[preferred, profiles[preferred]], ...Object.entries(profiles).filter(([name]) => name !== preferred)]
-    : Object.entries(profiles)
-  for (const [name, profile] of candidates) {
-    if (permissionSetLte(permissionSet, profile) && permissionSetLte(profile, permissionSet)) return name
-  }
-  return null
-}
 
 function readFileTail(file, max = 6000) {
   try {
@@ -275,8 +264,7 @@ export function createAgentLauncher({
     enroll,
     effort,
     mode,
-    requestedPermission,
-    requestedPermissions,
+    permissionRequest,
     acknowledgeNoSecurity,
     callerRung,
     requester,
@@ -366,8 +354,7 @@ export function createAgentLauncher({
           ? { ...spawnConfig, spawnPolicy: { ...(spawnConfig?.spawnPolicy || {}), projectProfiles: { ...((spawnConfig?.spawnPolicy || {}).projectProfiles || {}), [resolvedCwd]: projectDefaultProfile } } }
           : spawnConfig
         grant = resolveSpawnGrant({
-          requestedPermission,
-          requestedPermissions,
+          permissionRequest,
           requester,
           spawnerPermissionSet: spawnerGrant?.permissionSet,
           model: launchModel,
@@ -379,12 +366,11 @@ export function createAgentLauncher({
           cwd: resolvedCwd,
         })
         const preferredPermissionClass = String(
-          requestedPermission
-          || (typeof requestedPermissions === 'string' ? requestedPermissions : '')
+          typeof permissionRequest === 'string' ? permissionRequest : ''
           || daemonConfig.default
           || '',
         ).trim()
-        const permissionClass = exactPermissionClass(grant.grantedPermissionSet, daemonConfig, preferredPermissionClass)
+        const permissionClass = exactConfiguredPermissionProfile(grant.grantedPermissionSet, spawnConfig, preferredPermissionClass)
         if (permissionClass) {
           grant.grantedPermission = permissionClass
           grant.grantedPermissionSet.permissionClass = permissionClass
@@ -435,8 +421,7 @@ export function createAgentLauncher({
       launchKind: launchKind || null,
       requestedModel: model || null,
       launchModel: launchModel || null,
-      requestedPermission: requestedPermission || null,
-      hasRequestedPermissions: !!requestedPermissions,
+      permissionRequest: permissionRequest || null,
       grantedPermission: grant.grantedPermission || null,
       grantedPolicy: grant.grantedPolicy || null,
       hasGrantedPermissionSet: !!grant.grantedPermissionSet,
@@ -477,10 +462,10 @@ export function createAgentLauncher({
           permissionMode: mode,
           spawnPolicy: grant.grantedPolicy,
           permissionSet: grant.grantedPermissionSet,
-          explicitPolicy: requestedPermission != null || requestedPermissions != null,
+          explicitPolicy: permissionRequest != null,
           acknowledgeNoSecurity: !!acknowledgeNoSecurity,
           machineId,
-          permissionClass: grant.grantedPermission || grant.grantedPermissionSet?.permissionClass || null,
+          permissionProfile: grant.grantedPermission || grant.grantedPermissionSet?.permissionClass || null,
           tmuxSocket,
           crashLogPath,
           identityConfigDir: configDir,
@@ -603,7 +588,6 @@ export function createAgentLauncher({
         spawnerPermission: grant.spawnerPermission,
         projectPermission: grant.projectPermission,
         modelPermission: grant.modelPermission,
-        requestedPermissionSet: grant.requestedPermissionSet,
         grantedPermissionSet: grant.grantedPermissionSet,
         spawnPolicy: grant.grantedPolicy,
         grantedPermission: grant.grantedPermission,

@@ -51,6 +51,7 @@ import { resolveAgentQuery } from './lib/agent-resolve.mjs'
 import { parseAgentMoveTarget, describeAgentAddress } from '../shared/agent-move-target.mjs'
 import { daemonSingletonLockPath, inspectSingletonLock } from '../agent-runtime/singleton-lock.mjs'
 import {
+  exactConfiguredPermissionProfile,
   resolveDirectSpawnGrant,
 } from '../server/lib/spawn-policy.mjs'
 import { SPAWN_MACHINE_PREF_KEY } from '../server/lib/spawn-routing.mjs'
@@ -2557,7 +2558,7 @@ async function runFleetSpawn(spawnArgs) {
   // Naming a profile IS the fence request; no flag = unfenced. There is no
   // --policy and no rung flag.
   let permissionArg = flagFromRaw(spawnArgs, 'permissions') || undefined
-  let requestedPermissions = permissionsFromRaw(spawnArgs)
+  let permissionRequest = permissionsFromRaw(spawnArgs)
   const cwd = resolve(flagFromRaw(spawnArgs, 'cwd') || process.cwd())
   const model = flagFromRaw(spawnArgs, 'model') || undefined
   const kind = undefined
@@ -2571,7 +2572,7 @@ async function runFleetSpawn(spawnArgs) {
       try {
         const stored = localLedger.get(name) || localLedger.findByFriendlyName(name)
         permissionArg = stored?.process?.permissionProfile || undefined
-        if (permissionArg) requestedPermissions = permissionArg
+        if (permissionArg) permissionRequest = permissionArg
       } finally {
         localLedger.close()
       }
@@ -2591,13 +2592,15 @@ async function runFleetSpawn(spawnArgs) {
     const config = withDaemonModelAliases(loadConfig(), daemonConfig)
     const localGrant = ledger.grantFor({ id: 'localhost' })
     const grant = resolveDirectSpawnGrant({
-      requestedPermissions,
+      permissionRequest,
       model,
       kind,
       config,
       cwd,
       spawnerPermissionSet: localGrant.permissionSet,
     })
+    const grantedProfile = exactConfiguredPermissionProfile(grant.grantedPermissionSet, config, permissionRequest)
+    if (grantedProfile) grant.grantedPermissionSet.permissionClass = grantedProfile
     const spawnMode = session ? 'session' : (refresh ? 'refresh' : (fresh ? 'fresh' : 'respawn'))
     const suppliedAgentId = flagFromRaw(spawnArgs, 'agent-id') || undefined
     const preallocatedAgentId = suppliedAgentId || ((spawnMode === 'fresh' || spawnMode === 'session') ? newFleetId() : undefined)
@@ -2619,9 +2622,8 @@ async function runFleetSpawn(spawnArgs) {
       effort: flagFromRaw(spawnArgs, 'effort') || undefined,
       modelOptions,
       permissionMode: flagFromRaw(spawnArgs, 'mode') || undefined,
-      permissionProfile: permissionArg,
-      requestedPermission: grant.grantedPermission,
-      requestedPermissions,
+      permissionRequest,
+      permissionProfile: grantedProfile,
       spawnPolicy: grant.grantedPolicy,
       permissionSet: grant.grantedPermissionSet,
       permissionLedger: ledger,
@@ -2660,7 +2662,7 @@ async function runFleetSpawn(spawnArgs) {
     // was named via --permissions (the only thing that arms the fence). This mirrors
     // the real launch decision (permissions.mjs useFence).
     if (params.explicitPolicy) {
-      const profile = permissionArg || grant?.grantedPolicy?.name || 'scoped'
+      const profile = grantedProfile || grant?.grantedPolicy?.name || 'scoped'
       const scope = grant?.grantedPolicy?.policy || 'scoped'
       console.log(`  permissions: ${profile} — fenced (${scope})`)
     } else {
@@ -3440,7 +3442,7 @@ async function cmdAgentPermissions() {
     await ensureServer()
     const agent = await findSingleAgent(agentQuery)
     const meta = normalizeAgentMetadata(agent.metadata)
-    const stored = meta.requestedPermissions || meta.permissionProfile || meta.spawnPolicy || null
+    const stored = meta.permissionRequest || meta.permissionProfile || meta.spawnPolicy || null
     const storedText = stored ? (typeof stored === 'string' ? stored : JSON.stringify(stored)) : 'none'
     const policy = meta.spawnPolicy || null
     console.log(`${agent.friendly_name || agent.id} (${agent.id})`)
@@ -3489,7 +3491,7 @@ async function cmdAgentPermissions() {
   if (hasFlag('dry-run')) {
     console.log(`[dry-run] would set ${agentQuery} permissions to ${description}`)
     console.log('  1. look up existing agent identity')
-    console.log('  2. update metadata.requestedPermissions / metadata.spawnPolicy')
+    console.log('  2. update metadata.permissionRequest / metadata.spawnPolicy')
     console.log(wakeNow
       ? `  3. run locally: ${agentWakeSuggestion([agentQuery, '--permissions', profileArg])}`
       : '  3. leave the change for the next wake')
@@ -3501,7 +3503,7 @@ async function cmdAgentPermissions() {
   const spawnName = spawnNameForAgent(agent, agentQuery)
   await api('POST', '/api/set-metadata', {
     agent: agent.id,
-    requestedPermissions: profileArg,
+    permissionRequest: profileArg,
     permissionProfile: profileArg,
     spawnPolicy: nextSpawnPolicy,
     spawnPolicyChangedBy: 'tlda-agent-permissions-cli',

@@ -83,4 +83,24 @@ test('server spawn relay forwards identity, source daemon, and source class with
   const source = fs.readFileSync(new URL('../server/unified-server.mjs', import.meta.url), 'utf8')
   assert.match(source, /daemonId: caller\.daemon_key \|\| caller\.metadata\?\.daemon_key/)
   assert.match(source, /permissionClass: caller\.metadata\?\.spawnPolicy\?\.permission \|\| caller\.metadata\?\.permissionClass/)
+  assert.match(source, /permissionRequest: permissionRequest \|\| undefined/)
+  assert.doesNotMatch(source, /requestedPermissions: permissionRequest/)
+  assert.doesNotMatch(source, /requestedPermission: /)
+})
+
+test('spawn entry surfaces use one request spelling and persist only the resolved grant', () => {
+  const http = fs.readFileSync(new URL('../server/routes/fleet.mjs', import.meta.url), 'utf8')
+  assert.match(http, /permissionRequest: permissionRequest \|\| undefined/)
+  assert.doesNotMatch(http, /requestedPermissions: permissionRequest/)
+  assert.doesNotMatch(http, /requestedPermission: /)
+
+  const tools = fs.readFileSync(new URL('../mcp-server/fleet-tools.mjs', import.meta.url), 'utf8')
+  assert.match(tools, /permissionRequest: spawnOpts\.permissionRequest/)
+  assert.doesNotMatch(tools, /requestedPermissions: spawnOpts/)
+  assert.doesNotMatch(tools, /permission: spawnOpts\.permission/)
+
+  const launcher = fs.readFileSync(new URL('../agent-launch/agent-launch.mjs', import.meta.url), 'utf8')
+  assert.match(launcher, /permissionRequest,\n\s+acknowledgeNoSecurity/)
+  assert.match(launcher, /permissionProfile: grant\.grantedPermission \|\| grant\.grantedPermissionSet\?\.permissionClass \|\| null/)
+  assert.doesNotMatch(launcher, /permissionClass: grant\.grantedPermission/)
 })

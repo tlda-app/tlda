@@ -154,7 +154,7 @@ test('a daemon profile without projectedPolicy derives its region from its confi
     rules: [],
   }
   const grant = resolveSpawnGrant({
-    requestedPermissions: 'workspace',
+    permissionRequest: 'workspace',
     config: { spawnPolicy: { permissionProfiles: { workspace: profile } } },
     spawnerPermissionSet: spawner,
     cwd: '/tmp/work',

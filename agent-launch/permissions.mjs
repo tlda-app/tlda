@@ -377,7 +377,6 @@ export function resolveLeasePolicy({ spawnPolicy, permissionSet = null, harness,
 export function resolveLaunchPolicy({
   spawnPolicy,
   permissionSet = null,
-  requestedPermission,
   harness,
   model,
   cwd,

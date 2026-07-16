@@ -488,6 +488,17 @@ function firstConfiguredProfile(config = {}, ...values) {
   return null
 }
 
+export function exactConfiguredPermissionProfile(permissionSet, config = {}, preferred = null) {
+  const profiles = configuredPermissionProfiles(config)
+  const candidates = preferred && profiles[preferred]
+    ? [[preferred, profiles[preferred]], ...Object.entries(profiles).filter(([name]) => name !== preferred)]
+    : Object.entries(profiles)
+  for (const [name, profile] of candidates) {
+    if (permissionSetLte(permissionSet, profile) && permissionSetLte(profile, permissionSet)) return name
+  }
+  return null
+}
+
 function configuredProjectProfileName(config = {}, projectProfiles = {}, keys = []) {
   for (const key of keys) {
     if (!key) continue
@@ -623,8 +634,7 @@ export function isOperator(caller, { serverOwnerId } = {}) {
 
 
 export function resolveSpawnGrant({
-  requestedPermission,
-  requestedPermissions,
+  permissionRequest,
   spawnerPermissionSet: explicitSpawnerPermissionSet,
   model,
   kind,
@@ -639,23 +649,21 @@ export function resolveSpawnGrant({
   // allow/deny path set IS the fence; nothing ranks or labels it.
   // An explicit --permissions request: a named daemon profile (its region set) or an
   // inline permission set. Absent → the project's default profile.
-  const explicitPermissions = requestedPermissions
-    ? explicitPermissionProfileRequest(config, requestedPermissions)
+  const explicitPermissions = permissionRequest
+    ? explicitPermissionProfileRequest(config, permissionRequest)
     : null
-  const projectPermissionSet = (!explicitPermissions && !requestedPermission)
+  const projectPermissionSet = !explicitPermissions
     ? permissionSetForProfileName(resolveProjectProfileName(config, { doc, project, cwd }), { cwd, project, config })
     : null
-  const requestedPermissionSet = explicitPermissions?.permissionSet
-    || (requestedPermission
-      ? explicitPermissionProfileRequest(config, requestedPermission).permissionSet
-      : projectPermissionSet)
+  const requestedSet = explicitPermissions?.permissionSet
+    || projectPermissionSet
 
   const modelPermissionSet = modelCeilingPermissionSet(config, { modelCap, cwd, project })
   if (!explicitSpawnerPermissionSet) throw new Error('spawner permission set is required from the daemon ledger')
   const spawnerPermissionSet = materializePermissionSet(explicitSpawnerPermissionSet, { cwd, project })
 
   const grantedPermissionSet = intersectPermissionSets([
-    materializePermissionSet(requestedPermissionSet, { cwd, project }),
+    materializePermissionSet(requestedSet, { cwd, project }),
     modelPermissionSet,
     spawnerPermissionSet,
   ], { name: 'grant' })

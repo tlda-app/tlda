@@ -631,10 +631,9 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   // doc: project name — daemon resolves to sourceDir for the cwd
   // For respawn: { agent: "fleet:xxx" or "name", respawn: true }
   router.post('/api/spawn', async (req, res) => {
-    const { name, model, doc, cwd, agent, respawn, fresh, permission, spawnPermission, permissions, requestedPermissions, mode, effort, iLikeToLiveDangerously } = req.body || {}
+    const { name, model, doc, cwd, agent, respawn, fresh, permissionRequest, mode, effort, iLikeToLiveDangerously } = req.body || {}
     const spawnReservedKeys = new Set([
-      'name', 'model', 'doc', 'cwd', 'agent', 'respawn', 'fresh', 'permission',
-      'spawnPermission', 'permissions', 'requestedPermissions', 'mode', 'effort',
+      'name', 'model', 'doc', 'cwd', 'agent', 'respawn', 'fresh', 'permissionRequest', 'mode', 'effort',
       'iLikeToLiveDangerously', 'modelOptions',
     ])
     const modelOptions = {
@@ -692,8 +691,6 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
         fleetStore,
         daemonConnections,
       })
-      const requestedPermission = permission || spawnPermission || null
-      const permissionRequest = permissions || requestedPermissions || null
       const resolved = resolveSpawnTarget
         ? await resolveSpawnTarget(spawnName, !!respawn, {
             fresh: !!fresh,
@@ -708,8 +705,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
         cwd: cwd || undefined,
         effort: effort || undefined,
         mode: mode || undefined,
-        requestedPermission: requestedPermission || undefined,
-        requestedPermissions: permissionRequest || undefined,
+        permissionRequest: permissionRequest || undefined,
         acknowledgeNoSecurity: !!iLikeToLiveDangerously,
         requester: {
           id: caller.id,

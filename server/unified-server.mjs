@@ -1599,14 +1599,13 @@ async function performSpawnRelay(caller, msg) {
   if (!caller?.id) throw new Error('spawn caller identity is required')
   const {
     name, agent, model, doc, cwd, respawn, fresh, refresh, effort, mode,
-    permission, spawnPermission, permissions, requestedPermissions, policy, session, sessionId, session_id, enroll, routeAgent,
+    permissionRequest, policy, session, sessionId, session_id, enroll, routeAgent,
     iLikeToLiveDangerously, phase, mailboxTarget,
   } = msg || {}
   const requestedSession = session || sessionId || session_id || null
   const spawnReservedKeys = new Set([
     'type', 'name', 'agent', 'model', 'doc', 'cwd', 'respawn', 'fresh', 'refresh',
-    'effort', 'mode', 'permission', 'spawnPermission', 'permissions',
-    'requestedPermissions', 'policy', 'session', 'sessionId', 'session_id',
+    'effort', 'mode', 'permissionRequest', 'policy', 'session', 'sessionId', 'session_id',
     'enroll', 'routeAgent', 'iLikeToLiveDangerously', 'phase', 'mailboxTarget',
     'modelOptions',
   ])
@@ -1644,11 +1643,6 @@ async function performSpawnRelay(caller, msg) {
   if (!sessionMode && (shouldRespawn || refresh) && !routeTarget) routeTarget = fleetStore?.findAgent(spawnName) || null
   if (!sessionMode && (shouldRespawn || refresh) && !routeTarget) throw new Error(`spawn target not found: ${spawnName}`)
   const requestedSpec = { model, project: doc }
-  const requestedPermission = permission || spawnPermission || null
-  const storedRespawnPermissions = (!sessionMode && !fresh && routeTarget?.metadata)
-    ? (routeTarget.metadata.requestedPermissions || routeTarget.metadata.permissionProfile || routeTarget.metadata.spawnPolicy || null)
-    : null
-  const permissionRequest = permissions || requestedPermissions || storedRespawnPermissions || null
   const route = resolveSpawnMachine({
     caller,
     targetAgent: routeTarget,
@@ -1701,8 +1695,7 @@ async function performSpawnRelay(caller, msg) {
     enroll: !!enroll || undefined,
     effort: effort || undefined,
     mode: mode || undefined,
-    requestedPermission: requestedPermission || undefined,
-    requestedPermissions: permissionRequest || undefined,
+    permissionRequest: permissionRequest || undefined,
     policy: policy || undefined,
     acknowledgeNoSecurity: !!iLikeToLiveDangerously,
     requester: {

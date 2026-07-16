@@ -51,6 +51,12 @@ function metadataOf(agent) {
   return meta && typeof meta === 'object' ? meta : {}
 }
 
+function configuredPermissionProfileName(config = {}, name) {
+  const profiles = config?.spawnPolicy?.permissionProfiles || {}
+  const key = String(name || '').trim()
+  return key && Object.prototype.hasOwnProperty.call(profiles, key) ? key : null
+}
+
 function modelKwargs(params = {}, extra = {}) {
   return {
     ...(params.modelOptions && typeof params.modelOptions === 'object' && !Array.isArray(params.modelOptions) ? params.modelOptions : {}),
@@ -241,7 +247,6 @@ async function spawnFresh(params) {
     const launchPolicy = resolveLaunchPolicy({
       spawnPolicy: params.spawnPolicy || (params.breakGlass ? { name: 'break-glass', policy: 'unsandboxed' } : undefined),
       permissionSet: params.permissionSet,
-      requestedPermission: params.requestedPermission,
       harness: requestedKind,
       model,
       cwd,
@@ -260,7 +265,7 @@ async function spawnFresh(params) {
       model,
       modelProvider: modelResolved.provider,
       cwd,
-      requestedPermission: params.requestedPermission || null,
+      permissionRequest: params.permissionRequest || null,
       requestedSpawnPolicy: params.spawnPolicy || null,
       explicitPolicy: !!params.explicitPolicy,
       policyName: launchPolicy.policyName,
@@ -282,7 +287,7 @@ async function spawnFresh(params) {
       model,
       tmuxName: tmuxSession,
       cwd,
-      permissionProfile: params.permissionProfile || params.requestedPermission || (params.breakGlass ? 'break-glass' : null),
+      permissionProfile: configuredPermissionProfileName(config, params.permissionProfile),
     })
     if (serverUp) {
       await (deps.checkFreshNameAvailable || checkFreshNameAvailable)(name, { api, serverUp, excludeId: fleetId })
@@ -296,7 +301,7 @@ async function spawnFresh(params) {
             model,
             effort: params.effort,
             kind: requestedKind,
-            spawnPermission: params.permissionClass || launchPolicy.spawnPolicy?.permission || params.requestedPermission,
+            spawnPermission: params.permissionProfile || launchPolicy.spawnPolicy?.permission,
             metadata: sandboxMetadata(launchPolicy.spawnPolicy, launchPolicy.leasePolicy),
             machineId: params.machineId,
             api,
@@ -309,7 +314,7 @@ async function spawnFresh(params) {
         model,
         effort: params.effort,
         kind: requestedKind,
-        spawnPermission: params.permissionClass || launchPolicy.spawnPolicy?.permission || params.requestedPermission,
+        spawnPermission: params.permissionProfile || launchPolicy.spawnPolicy?.permission,
         metadata: sandboxMetadata(launchPolicy.spawnPolicy, launchPolicy.leasePolicy),
         machineId: params.machineId,
         api,
@@ -421,9 +426,8 @@ async function spawnRespawn(params) {
   const tmuxSession = agent.tmux_session || `fleet-${sanitizeSessionName(friendlyName)}`
   const explicitRelaunch = !!(
     params.explicitPolicy ||
-    params.requestedPermission ||
-    params.permissionSet ||
-    params.requestedPermissions
+    params.permissionRequest ||
+    params.permissionSet
   )
   if (!explicitRelaunch && await (deps.sessionHasRuntime || sessionHasRuntime)(tmuxSession, { tmuxSocket: params.tmuxSocket })) {
     return { ok: true, fleetId, tmuxSession, harness: requestedKind, model, alreadyAlive: true }
@@ -486,7 +490,6 @@ async function spawnRespawn(params) {
   const launchPolicy = resolveLaunchPolicy({
     spawnPolicy: params.spawnPolicy || meta.spawnPolicy,
     permissionSet: params.permissionSet || meta.permissionSet,
-    requestedPermission: params.requestedPermission,
     harness: requestedKind,
     model,
     cwd,
@@ -573,7 +576,6 @@ async function spawnRefresh(params) {
   const launchPolicy = resolveLaunchPolicy({
     spawnPolicy: params.spawnPolicy || meta.spawnPolicy,
     permissionSet: params.permissionSet || meta.permissionSet,
-    requestedPermission: params.requestedPermission,
     harness: requestedKind,
     model,
     cwd,
@@ -593,7 +595,7 @@ async function spawnRefresh(params) {
     model,
     effort: params.effort || meta.effort,
     kind: requestedKind,
-    spawnPermission: params.permissionClass || launchPolicy.spawnPolicy?.permission || params.requestedPermission,
+    spawnPermission: params.permissionProfile || launchPolicy.spawnPolicy?.permission,
     metadata: sandboxMetadata(launchPolicy.spawnPolicy, launchPolicy.leasePolicy),
     machineId: params.machineId,
     api,
@@ -699,7 +701,6 @@ async function spawnCodexSession(params, { api, sessionId, codexPath, deps = {} 
   const launchPolicy = resolveLaunchPolicy({
     spawnPolicy: params.spawnPolicy,
     permissionSet: params.permissionSet,
-    requestedPermission: params.requestedPermission,
     harness: 'codex',
     model,
     cwd,
@@ -719,7 +720,7 @@ async function spawnCodexSession(params, { api, sessionId, codexPath, deps = {} 
     effort: params.effort,
     kind: 'codex',
     sessionId,
-    spawnPermission: params.permissionClass || launchPolicy.spawnPolicy?.permission || params.requestedPermission,
+    spawnPermission: params.permissionProfile || launchPolicy.spawnPolicy?.permission,
     metadata: sandboxMetadata(launchPolicy.spawnPolicy, launchPolicy.leasePolicy),
     machineId: params.machineId,
     api,
@@ -782,7 +783,6 @@ async function spawnClaudeSession(params, { api, sessionId, identity, deps = {} 
   const launchPolicy = resolveLaunchPolicy({
     spawnPolicy: params.spawnPolicy,
     permissionSet: params.permissionSet,
-    requestedPermission: params.requestedPermission,
     harness: 'claude',
     model,
     cwd,
@@ -802,7 +802,7 @@ async function spawnClaudeSession(params, { api, sessionId, identity, deps = {} 
     effort: params.effort,
     kind: 'claude',
     sessionId,
-    spawnPermission: params.permissionClass || launchPolicy.spawnPolicy?.permission || params.requestedPermission,
+    spawnPermission: params.permissionProfile || launchPolicy.spawnPolicy?.permission,
     metadata: sandboxMetadata(launchPolicy.spawnPolicy, launchPolicy.leasePolicy),
     machineId: params.machineId,
     api,

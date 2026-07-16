@@ -125,6 +125,7 @@ default: app-dev
 `)
   const ledger = createPermissionLedger(path.join(tmp, 'fleet-daemon.db'))
   try {
+    const observedSpawnProfiles = new Map()
     const launcher = createAgentLauncher({
       activeConfigName: 'test',
       configDir: tmp,
@@ -141,14 +142,17 @@ default: app-dev
         jsonlPath: path.join(tmp, 'rollout-21111111-2222-4333-8444-555555555555.jsonl'),
         model: 'gpt-5.5',
       }),
-      spawnImpl: async (params) => ({
-        ok: true,
-        fleetId: params.agentId,
-        tmuxSession: 'fleet-remote-child',
-        harness: 'codex',
-        model: params.model,
-        pending: true,
-      }),
+      spawnImpl: async (params) => {
+        observedSpawnProfiles.set(params.name, params.permissionProfile)
+        return {
+          ok: true,
+          fleetId: params.agentId,
+          tmuxSession: 'fleet-remote-child',
+          harness: 'codex',
+          model: params.model,
+          pending: true,
+        }
+      },
     })
 
     const result = await launcher.handlers.spawn({
@@ -156,7 +160,7 @@ default: app-dev
       model: 'gpt',
       kind: 'codex',
       cwd: tmp,
-      requestedPermission: 'app-dev',
+      permissionRequest: 'app-dev',
       requester: {
         id: 'fleet:remote-parent',
         daemonId: 'source-box:default',
@@ -171,13 +175,14 @@ default: app-dev
     const child = ledger.get(result.agent_id)
     assert.equal(child.source, 'spawn')
     assert.equal(child.permissionSet.permissionClass, 'app-dev')
+    assert.equal(observedSpawnProfiles.get('remote-child'), 'app-dev')
 
     const clamped = await launcher.handlers.spawn({
       name: 'remote-child-clamped',
       model: 'gpt',
       kind: 'codex',
       cwd: tmp,
-      requestedPermission: 'ops',
+      permissionRequest: 'ops',
       requester: {
         id: 'fleet:remote-parent',
         daemonId: 'source-box:default',
@@ -186,6 +191,7 @@ default: app-dev
     })
     assert.equal(clamped.ok, true, JSON.stringify(clamped))
     assert.equal(ledger.get(clamped.agent_id).permissionSet.permissionClass, 'app-dev')
+    assert.equal(observedSpawnProfiles.get('remote-child-clamped'), 'app-dev')
   } finally {
     if (priorConfigDir == null) delete process.env.TLDA_DAEMON_CONFIG_DIR
     else process.env.TLDA_DAEMON_CONFIG_DIR = priorConfigDir
