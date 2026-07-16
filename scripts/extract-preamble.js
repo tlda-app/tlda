@@ -62,6 +62,25 @@ function matchBracket(str, openIdx) {
   return -1
 }
 
+function skipSpace(str, idx) {
+  while (str[idx] === ' ' || str[idx] === '\n' || str[idx] === '\t' || str[idx] === '\r') idx++
+  return idx
+}
+
+function extractMacroNameArg(str, startIdx) {
+  const p = skipSpace(str, startIdx)
+  if (str[p] === '{') {
+    const brace = extractBraceContent(str, p)
+    if (!brace) return null
+    return { name: brace.content.trim(), endIdx: brace.endIdx }
+  }
+  if (str[p] !== '\\') return null
+  let q = p + 1
+  while (/[A-Za-z@]/.test(str[q])) q++
+  if (q === p + 1 && q < str.length) q++
+  return { name: str.slice(p, q), endIdx: q - 1 }
+}
+
 // KaTeX has no concept of LaTeX's optional \newcommand argument
 // (\newcommand{\x}[n][default]{body}). It treats any macro whose body contains
 // #1 as taking a MANDATORY argument, so bare \E / \P / \Var error in chat/notes
@@ -84,6 +103,11 @@ function collapseOptionalArg(body, def) {
 // Extract KaTeX-compatible macros from already-expanded preamble text.
 export function extractMacros(preamble) {
   const macros = {}
+  const nativeDelimiterMacros = new Set([
+    '\\lfloor', '\\rfloor', '\\lceil', '\\rceil',
+    '\\lvert', '\\rvert', '\\lVert', '\\rVert',
+    '\\langle', '\\rangle',
+  ])
 
   // Find all \newcommand definitions.
   let idx = 0
@@ -153,21 +177,26 @@ export function extractMacros(preamble) {
     opIdx = bodyBrace.endIdx
   }
 
-  // Match \DeclarePairedDelimiter{\name}{left}{right} → a KaTeX 1-arg macro
+  // Match \DeclarePairedDelimiter\name{left}{right} and
+  // \DeclarePairedDelimiter{\name}{left}{right} → a KaTeX 1-arg macro
   // "left #1 right" (KaTeX has no \DeclarePairedDelimiter, so these were missing
   // entirely, e.g. \abs, \norm). Brace-aware on all three arguments.
   let pdIdx = 0
   const PD = '\\DeclarePairedDelimiter'
   while ((pdIdx = preamble.indexOf(PD, pdIdx)) !== -1) {
     let p = pdIdx + PD.length
+    if (/[A-Za-z@]/.test(preamble[p] || '')) { pdIdx += PD.length; continue }
     if (preamble[p] === '*') p++
-    const nameBrace = extractBraceContent(preamble, p)        // {\name}
-    if (!nameBrace) { pdIdx += PD.length; continue }
-    const left = extractBraceContent(preamble, nameBrace.endIdx + 1)   // {left}
+    const nameArg = extractMacroNameArg(preamble, p)          // \name or {\name}
+    if (!nameArg) { pdIdx += PD.length; continue }
+    const left = extractBraceContent(preamble, nameArg.endIdx + 1)     // {left}
     if (!left) { pdIdx += PD.length; continue }
     const right = extractBraceContent(preamble, left.endIdx + 1)       // {right}
     if (!right) { pdIdx += PD.length; continue }
-    macros[nameBrace.content.trim()] = `${left.content} #1 ${right.content}`
+    const name = nameArg.name.trim()
+    if (!nativeDelimiterMacros.has(name)) {
+      macros[name] = `${left.content} #1 ${right.content}`
+    }
     pdIdx = right.endIdx
   }
 
