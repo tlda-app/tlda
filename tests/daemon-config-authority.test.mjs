@@ -128,7 +128,7 @@ test('policy normalizers reject legacy and missing defaults', () => {
   assert.throws(() => normalizeSpawnPolicy('write'), /must include a configured permission and region/)
   assert.throws(() => normalizeRegionPolicy('full-access'), /unknown spawn policy region/)
   assert.throws(() => normalizeRegionPolicy('workspace-write'), /unknown spawn policy region/)
-  assert.deepEqual(normalizeRegionPolicy({ name: 'ops', policy: 'unsandboxed' }), { name: 'ops', policy: 'unsandboxed' })
+  assert.deepEqual(normalizeRegionPolicy({ name: 'ops', policy: 'unsandboxed' }), { policy: 'unsandboxed' })
 })
 
 test('a daemon profile without projectedPolicy derives its region from its configured zones', () => {
@@ -159,5 +159,7 @@ test('a daemon profile without projectedPolicy derives its region from its confi
     spawnerPermissionSet: spawner,
     cwd: '/tmp/work',
   })
-  assert.deepEqual(grant.grantedPolicy, { name: 'cwd', policy: 'cwd' })
+  assert.deepEqual(grant.spawnPolicy, { policy: 'cwd' })
+  assert.equal(grant.permissionProfile, 'workspace')
+  assert.equal(grant.permissionSet.name, 'workspace')
 })

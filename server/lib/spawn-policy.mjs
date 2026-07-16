@@ -6,7 +6,7 @@ import { basename, join, resolve } from 'node:path'
 // (workspace-*, *-no-net, full-access) on any tlda surface. These names are a
 // COARSE LABEL for a region set, not a rank ladder: the real authority is the
 // region-set intersection (intersectPermissionSets); the name is derived FROM
-// the region set (policyForPermissionSet) for display and for the sandbox-region
+// the region set for display and for the sandbox-region
 // selection downstream. The filesystem REGION each name maps to is PART OF THE
 // NAME (tlda-write = write across all tlda projects), not a second axis. "no-net"
 // is not a name — net is always on (Skip: "literally every type of agent should
@@ -82,14 +82,13 @@ function allMachineSet(name = 'machine') {
 // tlda-projects; anything else (bounded write, read-only, or empty) ⇒ cwd. This is
 // the only thing derived from the region set, and it's a region scope for the lease,
 // never a rank.
-export function regionPolicyFromSet(set) {
+export function regionScopeFromSet(set) {
   const writeAllow = set.operations?.write?.allow || []
-  const policy = writeAllow.some(isMachineZone)
+  return writeAllow.some(isMachineZone)
     ? 'unsandboxed'
     : writeAllow.some((z) => String(z).trim() === 'tlda-projects')
       ? 'tlda-projects'
       : 'cwd'
-  return { name: policy, policy }
 }
 
 // Stored grants use only current fence region names. Older permission vocabulary
@@ -105,13 +104,12 @@ export function normalizeRegionPolicy(value) {
   if (typeof value === 'string') {
     const policy = regionOf(value)
     if (!policy) throw new Error(`unknown spawn policy region "${value}"`)
-    return { name: value.trim().toLowerCase(), policy }
+    return { policy }
   }
   if (typeof value === 'object' && !Array.isArray(value)) {
     const policy = regionOf(value.policy)
     if (!policy) throw new Error('spawn policy region is required')
     return {
-      name: value.name || policy,
       policy,
       ...(value.network === false ? { network: false } : {}),
     }
@@ -412,36 +410,6 @@ function isMachineZone(zone) {
   return raw === '**' || raw === '/' || raw === '/**'
 }
 
-// Derive the coarse permission NAME from a region set's operation zones — no
-// rank ladder, just region inspection. A machine-covering write ⇒ full; an
-// explicit tlda-projects write ⇒ tlda-write; any other write ⇒ write; read-only
-// ⇒ read; nothing ⇒ none. This is the canonical way to name an INTERSECTED
-// region set (the real fence input) for display and sandbox-region selection.
-function derivedPolicyFromRegionSet(permissions, name) {
-  const writeAllow = permissions.operations?.write?.allow || []
-  const readAllow = permissions.operations?.read?.allow || []
-  const permission = writeAllow.some(isMachineZone)
-    ? 'full'
-    : writeAllow.some((zone) => String(zone).trim() === 'tlda-projects')
-      ? 'tlda-write'
-      : writeAllow.length
-        ? 'write'
-        : readAllow.length
-          ? 'read'
-          : 'none'
-  const region = regionPolicyFromSet(permissions)
-  return { name: name || permission, permission, policy: region.policy, category: 'write-scope' }
-}
-
-// Name a permission set as a coarse policy. A daemon.yaml (or builtin) profile
-// already carries a `projectedPolicy` computed from its regions at
-// normalization; honor it. Otherwise derive the name from the set's own region
-// zones — no rung ladder, no parallel profile map.
-function policyForPermissionSet(permissions) {
-  if (permissions.projectedPolicy) return normalizeRegionPolicy(permissions.projectedPolicy)
-  return derivedPolicyFromRegionSet(permissions, null)
-}
-
 function normalizedPath(value) {
   if (!value || typeof value !== 'string') return null
   try {
@@ -547,7 +515,7 @@ export function resolveProjectProfile(config = {}, { doc, project, cwd } = {}) {
   }
   const configured = configuredPermissionProfile(config, name)
   if (configured) {
-    const policy = policyForPermissionSet(configured)
+    const policy = { name, policy: regionScopeFromSet(configured) }
     return { ...policy, name }
   }
   throw new Error(`unknown permission profile "${name}"`)
@@ -617,8 +585,8 @@ function explicitPermissionProfileRequest(config = {}, value, fallback = null) {
   if (!name) return null
   const configured = configuredPermissionProfile(config, name)
   if (configured) {
-    const policy = policyForPermissionSet(configured, fallback)
-    return { ...policy, name, permissionSet: configured }
+    const policy = { name, policy: regionScopeFromSet(configured) }
+    return { ...policy, permissionSet: configured }
   }
   throw unknownPermissionProfileError(config, name)
 }
@@ -662,16 +630,21 @@ export function resolveSpawnGrant({
   if (!explicitSpawnerPermissionSet) throw new Error('spawner permission set is required from the daemon ledger')
   const spawnerPermissionSet = materializePermissionSet(explicitSpawnerPermissionSet, { cwd, project })
 
-  const grantedPermissionSet = intersectPermissionSets([
+  const permissionSet = intersectPermissionSets([
     materializePermissionSet(requestedSet, { cwd, project }),
     modelPermissionSet,
     spawnerPermissionSet,
   ], { name: 'grant' })
-  // The stored policy is just the region scope the fence needs, read off the set.
-  const grantedPolicy = regionPolicyFromSet(grantedPermissionSet)
-  grantedPermissionSet.name = grantedPolicy.name
-  grantedPermissionSet.projectedPolicy = grantedPolicy
-  return { grantedPolicy, grantedPermissionSet, grantedPermissions: grantedPermissionSet }
+  const requestedProfile = explicitPermissions?.name
+    || (projectPermissionSet ? resolveProjectProfileName(config, { doc, project, cwd }) : null)
+  const permissionProfile = exactConfiguredPermissionProfile(permissionSet, config, requestedProfile)
+  // The stored policy carries the configured profile identity plus the fence scope.
+  const spawnPolicy = {
+    policy: regionScopeFromSet(permissionSet),
+  }
+  permissionSet.name = permissionProfile || 'grant'
+  permissionSet.projectedPolicy = spawnPolicy
+  return { spawnPolicy, permissionSet, permissionProfile }
 }
 
 export function resolveDirectSpawnGrant(options = {}) {
