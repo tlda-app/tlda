@@ -648,6 +648,7 @@ let _lastFleetEventAt = 0
 let _lastFleetEventId = 0
 let _lastAgentsDeltaAt = 0
 const browserActivityDeliveryCounters = createActivityDeliveryCounters({ origin: 'browser' })
+const _browserRenderedActivityIds = new Set()
 
 function finiteMs(value) {
   const n = Number(value)
@@ -749,8 +750,27 @@ export function getFleetRuntimeSummary(now = Date.now()) {
 }
 
 export function recordBrowserActivityRendered(stage, activityGroup = [], count = 1) {
-  const first = Array.isArray(activityGroup) ? activityGroup[0] : null
-  browserActivityDeliveryCounters.record(stage, { type: 'activity' }, count, {
+  const group = Array.isArray(activityGroup) ? activityGroup : []
+  let amount = count
+  let first = group[0] || null
+  if (stage === ACTIVITY_DELIVERY_STAGES.BROWSER_RENDERED) {
+    const newEvents = []
+    for (const activity of group) {
+      const id = activity?._dbId ?? activity?.id ?? null
+      if (id == null) {
+        newEvents.push(activity)
+        continue
+      }
+      const key = String(id)
+      if (_browserRenderedActivityIds.has(key)) continue
+      _browserRenderedActivityIds.add(key)
+      newEvents.push(activity)
+    }
+    if (newEvents.length === 0) return
+    amount = newEvents.length
+    first = newEvents[0]
+  }
+  browserActivityDeliveryCounters.record(stage, { type: 'activity' }, amount, {
     type: 'activity',
     agent: first?.from || first?.agent || null,
     tool: first?._toolName || first?.text || null,

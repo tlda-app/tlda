@@ -26,7 +26,12 @@ globalThis.localStorage = {
   setItem() {},
 }
 
-const { convertChatEvent } = await import('../src/fleet/fleet-data.mjs')
+const {
+  convertChatEvent,
+  getFleetRuntimeSummary,
+  recordBrowserActivityRendered,
+} = await import('../src/fleet/fleet-data.mjs')
+const { ACTIVITY_DELIVERY_STAGES } = await import('../shared/activity-delivery-counters.mjs')
 
 function strandedOptimisticStore() {
   const store = makeEventStore()
@@ -80,4 +85,18 @@ test('history replay metadata preserves client_temp_id and binds the optimistic 
   assert.equal(event._dbId, 9002)
   assert.equal(event._tempId, undefined)
   assert.equal(event._failed, undefined)
+})
+
+test('browser rendered activity counter counts event ids once across multiple chat surfaces', () => {
+  const before = getFleetRuntimeSummary().activityDelivery.byStage.browserRendered?.total || 0
+  const group = [
+    { _dbId: 'render-once-a', from: 'fleet:agent', text: 'tool-a' },
+    { _dbId: 'render-once-b', from: 'fleet:agent', text: 'tool-b' },
+  ]
+
+  recordBrowserActivityRendered(ACTIVITY_DELIVERY_STAGES.BROWSER_RENDERED, group, group.length)
+  recordBrowserActivityRendered(ACTIVITY_DELIVERY_STAGES.BROWSER_RENDERED, group, group.length)
+
+  const after = getFleetRuntimeSummary().activityDelivery.byStage.browserRendered?.total || 0
+  assert.equal(after - before, 2)
 })

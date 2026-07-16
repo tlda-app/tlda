@@ -293,6 +293,38 @@ test('buffered chat snapshots apply the active filter to broad history rows', ()
   view.dispose()
 })
 
+test('buffered chat view is the single authoritative source for live tail plus scrollback', () => {
+  resetFleetEventStoreForTest()
+
+  const filter = [[['dm', 'alpha']]]
+  const view = viewFleetEvents(filter, {
+    key: 'buffer-authoritative-alpha',
+    bufferKey: 'chat:authoritative-alpha',
+    matchesFilter: (f: unknown, event: FleetEvent) => visible(event, f),
+  })
+
+  upsertFleetEvent(eventAt(52, 'fleet:alpha', 'fleet:skip', 52))
+  assert.deepEqual(ids(view.get()), [52])
+
+  const added = upsertFleetEventsForBuffer('chat:authoritative-alpha', [
+    eventAt(50, 'fleet:skip', 'fleet:alpha', 50),
+    eventAt(51, 'fleet:alpha', 'fleet:skip', 51),
+    eventAt(52, 'fleet:alpha', 'fleet:skip', 52),
+  ])
+
+  assert.equal(added, 2)
+  assert.deepEqual(ids(view.get()), [50, 51, 52])
+  assert.deepEqual(ids(getFilteredFleetEvents(filter, {
+    bufferKey: 'chat:authoritative-alpha',
+    matchesFilter: (f: unknown, event: FleetEvent) => visible(event, f),
+  })), [50, 51, 52])
+
+  upsertFleetEvent(eventAt(53, 'fleet:alpha', 'fleet:skip', 53))
+  assert.deepEqual(ids(view.get()), [50, 51, 52, 53])
+
+  view.dispose()
+})
+
 test('chat buffers trim only when that chat is pinned at bottom', () => {
   resetFleetEventStoreForTest([
     eventAt(40, 'fleet:alpha', 'fleet:skip', 40),

@@ -47,7 +47,7 @@ import { appendToken } from '../authToken'
 import { labelsForAgent } from '../../shared/fleet-labels.mjs'
 import { ACTIVITY_DELIVERY_STAGES } from '../../shared/activity-delivery-counters.mjs'
 import { useFleetAgents, useFleetChatAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useFleetStatusTargets, useFleetFilterHasMatchingAgent, useSuggestions, clearGroup, sendMessage, loadBefore, resolveFleetAgentLabelIds, injectOptimisticEvent, updateOptimisticEvent, removeOptimisticEvent } from '../fleet-data-adapter'
-import { isTerminalAvailableForAgent, mergeVisibleChatEvents } from '../fleet/fleet-chat-visibility.mjs'
+import { isTerminalAvailableForAgent } from '../fleet/fleet-chat-visibility.mjs'
 import type { Suggestion } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
 import { agentDisplayLabel, agentExactName, beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
@@ -1870,12 +1870,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   const chatEventBufferKey = dnfFilter && resolvedFilterIdKey
     ? `filter:${filterKey}:ids:${resolvedFilterIdKey}`
     : null
-  const bufferedEvents = useFleetEvents(dnfFilter, frameId, chatEventBufferKey)
-  const globalLiveEvents = useFleetEvents(dnfFilter, frameId, null)
-  const liveEvents = useMemo(
-    () => mergeVisibleChatEvents(bufferedEvents, globalLiveEvents),
-    [bufferedEvents, globalLiveEvents],
-  )
+  const liveEvents = useFleetEvents(dnfFilter, frameId, chatEventBufferKey)
   const tasks = useFleetTasks(frameId)
   const thinkingAgents = useFleetThinking(dnfFilter, frameId)
   const compactingAgents = useFleetCompacting(dnfFilter, frameId)
