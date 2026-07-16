@@ -40,6 +40,7 @@ test('CLI lifecycle codex spawn binds resume identity into existing ledger row',
     name: 'test-cli-bind',
   }
   const writes = []
+  const apiCalls = []
   const resolved = await bindLifecycleCodexResumeIdentity(result, {
     cwd: '/tmp/tlda-cli-bind',
     name: 'test-cli-bind',
@@ -62,6 +63,10 @@ test('CLI lifecycle codex spawn binds resume identity into existing ledger row',
         model: 'gpt-5.5',
       }
     },
+    api: async (method, url, body) => {
+      apiCalls.push({ method, url, body })
+      return { ok: true }
+    },
   })
 
   assert.equal(resolved.bound, true)
@@ -78,6 +83,30 @@ test('CLI lifecycle codex spawn binds resume identity into existing ledger row',
       friendlyName: 'test-cli-bind',
     },
   }])
+  assert.equal(apiCalls.length, 1)
+  assert.equal(apiCalls[0].method, 'POST')
+  assert.equal(apiCalls[0].url, '/api/agent-seat')
+  assert.deepEqual({
+    agent_id: apiCalls[0].body.agent_id,
+    session_id: apiCalls[0].body.session_id,
+    resume_id: apiCalls[0].body.resume_id,
+    kind: apiCalls[0].body.kind,
+    model: apiCalls[0].body.model,
+    cwd: apiCalls[0].body.cwd,
+    tmux_session: apiCalls[0].body.tmux_session,
+    created_source: apiCalls[0].body.created_source,
+    transition_reason: apiCalls[0].body.transition_reason,
+  }, {
+    agent_id: 'fleet:test-cli-bind',
+    session_id: '11111111-2222-4333-8444-555555555555',
+    resume_id: '11111111-2222-4333-8444-555555555555',
+    kind: 'codex',
+    model: 'gpt-5.5',
+    cwd: '/tmp/tlda-cli-bind',
+    tmux_session: 'fleet-test-cli-bind',
+    created_source: 'agent-lifecycle-cli',
+    transition_reason: 'agent-lifecycle-cli',
+  })
 })
 
 test('CLI lifecycle codex wake treats existing resume id as bound', async () => {
@@ -86,9 +115,11 @@ test('CLI lifecycle codex wake treats existing resume id as bound', async () => 
     fleetId: 'fleet:test-cli-existing-bind',
     tmuxSession: 'fleet-test-cli-existing-bind',
     name: 'test-cli-existing-bind',
+    model: 'gpt-5.5',
     resumeId: '22222222-2222-4333-8444-555555555555',
   }
   const writes = []
+  const apiCalls = []
   const resolved = await bindLifecycleCodexResumeIdentity(result, {
     cwd: '/tmp/tlda-cli-existing-bind',
     name: 'test-cli-existing-bind',
@@ -97,11 +128,93 @@ test('CLI lifecycle codex wake treats existing resume id as bound', async () => 
         writes.push({ id, row })
       },
     },
+    api: async (method, url, body) => {
+      apiCalls.push({ method, url, body })
+      return { ok: true }
+    },
   })
 
   assert.equal(resolved.bound, true)
   assert.equal(resolved.existing, true)
   assert.deepEqual(writes, [])
+  assert.equal(apiCalls.length, 1)
+  assert.equal(apiCalls[0].method, 'POST')
+  assert.equal(apiCalls[0].url, '/api/agent-seat')
+  assert.deepEqual({
+    agent_id: apiCalls[0].body.agent_id,
+    session_id: apiCalls[0].body.session_id,
+    resume_id: apiCalls[0].body.resume_id,
+    kind: apiCalls[0].body.kind,
+    model: apiCalls[0].body.model,
+    cwd: apiCalls[0].body.cwd,
+    tmux_session: apiCalls[0].body.tmux_session,
+    created_source: apiCalls[0].body.created_source,
+    transition_reason: apiCalls[0].body.transition_reason,
+  }, {
+    agent_id: 'fleet:test-cli-existing-bind',
+    session_id: '22222222-2222-4333-8444-555555555555',
+    resume_id: '22222222-2222-4333-8444-555555555555',
+    kind: 'codex',
+    model: 'gpt-5.5',
+    cwd: '/tmp/tlda-cli-existing-bind',
+    tmux_session: 'fleet-test-cli-existing-bind',
+    created_source: 'agent-lifecycle-cli',
+    transition_reason: 'agent-lifecycle-cli',
+  })
+})
+
+test('CLI lifecycle claude wake posts the current durable seat from its resume id', async () => {
+  const result = {
+    harness: 'claude',
+    fleetId: 'fleet:test-cli-claude-bind',
+    tmuxSession: 'fleet-test-cli-claude-bind',
+    name: 'test-cli-claude-bind',
+    model: 'claude-sonnet-4',
+    resumeId: '33333333-2222-4333-8444-555555555555',
+  }
+  const writes = []
+  const apiCalls = []
+  const resolved = await bindLifecycleCodexResumeIdentity(result, {
+    cwd: '/tmp/tlda-cli-claude-bind',
+    name: 'test-cli-claude-bind',
+    ledger: {
+      setSessionSync(id, row) {
+        writes.push({ id, row })
+      },
+    },
+    api: async (method, url, body) => {
+      apiCalls.push({ method, url, body })
+      return { ok: true }
+    },
+  })
+
+  assert.equal(resolved.bound, true)
+  assert.equal(resolved.existing, true)
+  assert.deepEqual(writes, [])
+  assert.equal(apiCalls.length, 1)
+  assert.equal(apiCalls[0].method, 'POST')
+  assert.equal(apiCalls[0].url, '/api/agent-seat')
+  assert.deepEqual({
+    agent_id: apiCalls[0].body.agent_id,
+    session_id: apiCalls[0].body.session_id,
+    resume_id: apiCalls[0].body.resume_id,
+    kind: apiCalls[0].body.kind,
+    model: apiCalls[0].body.model,
+    cwd: apiCalls[0].body.cwd,
+    tmux_session: apiCalls[0].body.tmux_session,
+    created_source: apiCalls[0].body.created_source,
+    transition_reason: apiCalls[0].body.transition_reason,
+  }, {
+    agent_id: 'fleet:test-cli-claude-bind',
+    session_id: '33333333-2222-4333-8444-555555555555',
+    resume_id: '33333333-2222-4333-8444-555555555555',
+    kind: 'claude',
+    model: 'claude-sonnet-4',
+    cwd: '/tmp/tlda-cli-claude-bind',
+    tmux_session: 'fleet-test-cli-claude-bind',
+    created_source: 'agent-lifecycle-cli',
+    transition_reason: 'agent-lifecycle-cli',
+  })
 })
 
 function permissionSet(name, writeAllow) {
@@ -215,6 +328,7 @@ test('wake without explicit flags uses durable grant directly without caller cla
   const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-wake-direct-grant-'))
   const dbPath = path.join(configDir, 'fleet-daemon.db')
   const spawnCalls = []
+  const apiCalls = []
   try {
     writeDaemonConfig(configDir)
     seedWakeRecipe(dbPath, { profile: 'ops' })
@@ -235,9 +349,17 @@ test('wake without explicit flags uses durable grant directly without caller cla
           resumeId: '11111111-2222-4333-8444-555555555555',
         }
       },
+      apiImpl: async (method, url, body) => {
+        apiCalls.push({ method, url, body })
+        return { ok: true }
+      },
     })
 
     assert.equal(spawnCalls.length, 1)
+    assert.equal(apiCalls.length, 1)
+    assert.equal(apiCalls[0].url, '/api/agent-seat')
+    assert.equal(apiCalls[0].body.kind, 'codex')
+    assert.equal(apiCalls[0].body.session_id, '11111111-2222-4333-8444-555555555555')
     assert.equal(spawnCalls[0].cwd, '/tmp/tlda-recipe-cwd')
     assert.equal(spawnCalls[0].permissionProfile, 'ops')
     assert.equal(spawnCalls[0].spawnPolicy.policy, 'unsandboxed')
@@ -263,6 +385,7 @@ test('wake honors explicit permissions and persists the clamped resolved grant',
   const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-wake-explicit-clamp-'))
   const dbPath = path.join(configDir, 'fleet-daemon.db')
   const spawnCalls = []
+  const apiCalls = []
   try {
     writeDaemonConfig(configDir)
     seedWakeRecipe(dbPath, { profile: 'ops' })
@@ -282,9 +405,17 @@ test('wake honors explicit permissions and persists the clamped resolved grant',
           resumeId: '22222222-2222-4333-8444-555555555555',
         }
       },
+      apiImpl: async (method, url, body) => {
+        apiCalls.push({ method, url, body })
+        return { ok: true }
+      },
     })
 
     assert.equal(spawnCalls.length, 1)
+    assert.equal(apiCalls.length, 1)
+    assert.equal(apiCalls[0].url, '/api/agent-seat')
+    assert.equal(apiCalls[0].body.kind, 'codex')
+    assert.equal(apiCalls[0].body.session_id, '22222222-2222-4333-8444-555555555555')
     assert.equal(spawnCalls[0].permissionProfile, 'wd')
     assert.equal(spawnCalls[0].spawnPolicy.policy, 'cwd')
     assert.equal(spawnCalls[0].permissionRequest, 'math')
@@ -310,6 +441,7 @@ test('wake honors explicit permissions and persists the unclamped resolved profi
   const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-wake-explicit-unclamped-'))
   const dbPath = path.join(configDir, 'fleet-daemon.db')
   const spawnCalls = []
+  const apiCalls = []
   try {
     writeDaemonConfig(configDir)
     seedWakeRecipe(dbPath, { profile: 'ops' })
@@ -332,9 +464,17 @@ test('wake honors explicit permissions and persists the unclamped resolved profi
           resumeId: '33333333-2222-4333-8444-555555555555',
         }
       },
+      apiImpl: async (method, url, body) => {
+        apiCalls.push({ method, url, body })
+        return { ok: true }
+      },
     })
 
     assert.equal(spawnCalls.length, 1)
+    assert.equal(apiCalls.length, 1)
+    assert.equal(apiCalls[0].url, '/api/agent-seat')
+    assert.equal(apiCalls[0].body.kind, 'codex')
+    assert.equal(apiCalls[0].body.session_id, '33333333-2222-4333-8444-555555555555')
     assert.equal(spawnCalls[0].permissionProfile, 'wd')
     assert.equal(spawnCalls[0].spawnPolicy.policy, 'cwd')
     assert.equal(spawnCalls[0].permissionRequest, 'wd')

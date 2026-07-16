@@ -2540,6 +2540,7 @@ export async function runFleetSpawn(spawnArgs, {
   configDir = CONFIG_DIR,
   loadConfigImpl = loadConfig,
   localAgentLedgerPath = null,
+  apiImpl = api,
 } = {}) {
   if (spawnArgs.includes('--list-models')) {
     const { listModels } = await import('../agent-launch/models.mjs')
@@ -2665,7 +2666,7 @@ export async function runFleetSpawn(spawnArgs, {
       }
       throw e
     }
-    const boundResume = await bindLifecycleCodexResumeIdentity(result, { ledger, cwd, name })
+    const boundResume = await bindLifecycleCodexResumeIdentity(result, { ledger, cwd, name, api: apiImpl })
     if (result?.harness === 'codex' && result.fleetId && result.tmuxSession && !boundResume.bound) {
         console.error(red(`warning: launched ${name || result.fleetId}, but could not bind a Codex resume identity yet; wake may fail until daemon session ingestion catches up`))
     }
@@ -2753,11 +2754,13 @@ export async function bindLifecycleCodexResumeIdentity(result, {
   ledger,
   cwd,
   name,
+  api = null,
   resolveIdentity = null,
   timeoutMs = Number(process.env.TLDA_SPAWN_RESUME_ID_TIMEOUT_MS || 10000),
   intervalMs = 250,
 } = {}) {
-  if (result?.fleetId && result.tmuxSession && result.harness === 'codex' && result.resumeId) {
+  if (result?.fleetId && result.tmuxSession && result.resumeId) {
+    await postLifecycleSeatBinding(result, { api, cwd, name, sessionId: result.resumeId })
     return { bound: true, existing: true }
   }
   if (!result?.fleetId || !result.tmuxSession || result.harness !== 'codex') {
@@ -2788,8 +2791,37 @@ export async function bindLifecycleCodexResumeIdentity(result, {
     cwd,
     friendlyName: name || result.name || result.fleetId,
   })
+  await postLifecycleSeatBinding(result, { api, cwd, name, sessionId: identity.sessionId, model: identity.model, kind: 'codex' })
   result.resumeId = identity.sessionId
   return { bound: true, identity }
+}
+
+async function postLifecycleSeatBinding(result, {
+  api = null,
+  cwd,
+  name,
+  sessionId,
+  model = result?.model,
+  kind = result?.harness,
+} = {}) {
+  if (!api) return
+  const machineId = localMachineId()
+  const envName = getActiveConfigName(loadConfig())
+  const daemonKey = `${machineId}:${envName}`
+  await api('POST', '/api/agent-seat', {
+    agent_id: result.fleetId,
+    session_id: sessionId,
+    resume_id: sessionId,
+    kind,
+    model,
+    cwd,
+    machine_id: machineId,
+    env_name: envName,
+    daemon_key: daemonKey,
+    tmux_session: result.tmuxSession,
+    created_source: 'agent-lifecycle-cli',
+    transition_reason: 'agent-lifecycle-cli',
+  })
 }
 
 function flagFromRaw(rawArgs, name) {
