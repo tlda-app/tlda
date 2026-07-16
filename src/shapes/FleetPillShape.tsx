@@ -31,6 +31,7 @@ import {
   type FleetChatShapeRecord,
   type FleetFilterIntentEditor,
 } from './fleet-filter-intent-telemetry'
+import { filterPreviewForDropRole, inferFleetFilterDropRole } from './fleet-filter-drop-preview'
 import { editorOwningFleetShape } from './fleet-pill-drop-target'
 
 const PILL_W = 70
@@ -369,16 +370,14 @@ export async function dropPillOnTarget(
   // fires for it: the drop found no chat and no-op'd (preview showed, filter
   // never committed). Applying by the preview's own shapeId fixes both the chat
   // and inbox overlay drops. (Not for content pills — those go to the composer.)
-  if (!content && filterDropPreview.shapeId && filterDropPreview.activePaneRole) {
+  if (!content && filterDropPreview.shapeId) {
     const previewEditor = editorOwningFleetShape(editor, createEditor, filterDropPreview.shapeId)
     // The base Editor generic only exposes built-in TLDraw shapes; this ID is
     // guarded by the fleet-chat preview owner immediately below.
     const targetChat = previewEditor.getShape(filterDropPreview.shapeId as TLShapeId) as unknown as FleetChatShapeRecord | undefined
-    const preview = filterDropPreview.activePaneRole === 'replace'
-      ? filterDropPreview.replacePreview
-      : filterDropPreview.activePaneRole === 'to'
-        ? filterDropPreview.toPreview
-        : filterDropPreview.fromPreview
+    const role = filterDropPreview.activePaneRole ||
+      inferFleetFilterDropRole(previewEditor === editor ? previewEditor.getShapePageBounds(filterDropPreview.shapeId as TLShapeId) : null, pagePoint)
+    const preview = filterPreviewForDropRole(filterDropPreview, role)
     if (targetChat && targetChat.type === 'fleet-chat' && preview) {
       const intent = filterDropPreview.intent
       intent?.drop({
@@ -421,12 +420,10 @@ export async function dropPillOnTarget(
 
     // Agent/label pill → modify filter
     // If the filter overlay is open and has a preview, use its computed filter
-    if (filterDropPreview.shapeId === hitShape.id && filterDropPreview.activePaneRole) {
-      const preview = filterDropPreview.activePaneRole === 'replace'
-        ? filterDropPreview.replacePreview
-        : filterDropPreview.activePaneRole === 'to'
-          ? filterDropPreview.toPreview
-          : filterDropPreview.fromPreview
+    if (filterDropPreview.shapeId === hitShape.id) {
+      const role = filterDropPreview.activePaneRole ||
+        inferFleetFilterDropRole(hitEditor.getShapePageBounds(hitShape.id), targetPagePoint)
+      const preview = filterPreviewForDropRole(filterDropPreview, role)
       if (preview) {
         const intent = filterDropPreview.intent
         intent?.drop({

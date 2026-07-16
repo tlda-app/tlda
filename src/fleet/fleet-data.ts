@@ -244,8 +244,15 @@ export function getFilteredFleetEvents(
   filter: FleetEventFilter | null,
   opts: { matchesFilter: FleetEventMatcher; bufferKey?: string | null }
 ): readonly FleetEvent[] {
-  if (!opts.bufferKey) return eventStore.all().filter((event) => opts.matchesFilter(filter, event))
-  return eventBuffer(opts.bufferKey, filter, opts.matchesFilter).store.all()
+  if (!opts.bufferKey) {
+    return eventStore.all()
+      .filter((event) => opts.matchesFilter(filter, event))
+      .sort(compareFleetEvents)
+  }
+  return eventBuffer(opts.bufferKey, filter, opts.matchesFilter)
+    .store.all()
+    .filter((event) => opts.matchesFilter(filter, event))
+    .sort(compareFleetEvents)
 }
 
 export function viewFleetEvents(

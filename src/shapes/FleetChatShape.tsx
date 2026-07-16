@@ -37,7 +37,6 @@ import { installChatImageRetry } from '../fleet/chat-image-retry.mjs'
 import {
   buildFleetAgentFilter,
   buildFleetDmFilter,
-  chooseFleetEventDisplayFilter,
   classifyFleetComposerTrafficMode,
   filterForFleetComposerTrafficMode,
   matchesFleetFilter,
@@ -1963,27 +1962,6 @@ function FleetChatInner({ shape }: { shape: any }) {
   const frameId = shape.parentId as string | undefined
   const agents = useFleetChatAgents(frameId)
   const agentById = useMemo(() => new Map(agents.map((agent: any) => [agent.id, agent])), [agents])
-  const lastResolvableDisplayFilterRef = useRef<[string, string][][] | null>(null)
-  const eventDisplayChoice = useMemo(() => {
-    if (!dnfFilter || dnfFilter.length === 0) {
-      lastResolvableDisplayFilterRef.current = null
-      return { filter: dnfFilter, unresolved: false }
-    }
-    const choice = chooseFleetEventDisplayFilter(dnfFilter, lastResolvableDisplayFilterRef.current, {
-      agents,
-      humanId: getHumanId(),
-      humanName: getHumanName(),
-    }) as { filter: [string, string][][] | null, unresolved: boolean }
-    if (!choice.unresolved) {
-      lastResolvableDisplayFilterRef.current = dnfFilter
-    }
-    return choice
-  }, [dnfFilter, filterKey, agents])
-  useEffect(() => {
-    if (eventDisplayChoice.unresolved) {
-      log.warn('chat', 'filter resolved to no fleet ids; preserving previous display filter', { filter: dnfFilter })
-    }
-  }, [filterKey, eventDisplayChoice.unresolved])
   const { statusTargetIds, hibernatingAgents } = useFleetStatusTargets(dnfFilter, frameId)
   const resolvedFilterIdKey = useMemo(() => {
     if (!dnfFilter || dnfFilter.length === 0) return ''
@@ -1992,8 +1970,8 @@ function FleetChatInner({ shape }: { shape: any }) {
   const chatEventBufferKey = dnfFilter && resolvedFilterIdKey
     ? `filter:${filterKey}:ids:${resolvedFilterIdKey}`
     : null
-  const bufferedEvents = useFleetEvents(eventDisplayChoice.filter, frameId, chatEventBufferKey)
-  const globalLiveEvents = useFleetEvents(eventDisplayChoice.filter, frameId, null)
+  const bufferedEvents = useFleetEvents(dnfFilter, frameId, chatEventBufferKey)
+  const globalLiveEvents = useFleetEvents(dnfFilter, frameId, null)
   const liveEvents = useMemo(
     () => mergeVisibleChatEvents(bufferedEvents, globalLiveEvents),
     [bufferedEvents, globalLiveEvents],

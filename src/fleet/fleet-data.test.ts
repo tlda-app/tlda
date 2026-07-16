@@ -265,6 +265,34 @@ test('buffered chat history is isolated per chat view', () => {
   betaView.dispose()
 })
 
+test('buffered chat snapshots apply the active filter to broad history rows', () => {
+  resetFleetEventStoreForTest([
+    eventAt(50, 'fleet:alpha', 'fleet:skip', 50),
+    eventAt(51, 'fleet:beta', 'fleet:skip', 51),
+  ])
+
+  const fromAlphaFilter = [[['from', 'alpha']]]
+  const opts = {
+    matchesFilter: (f: unknown, event: FleetEvent) => visible(event, f),
+    bufferKey: 'chat:from-alpha',
+  }
+
+  const view = viewFleetEvents(fromAlphaFilter, {
+    ...opts,
+    key: 'buffer-from-alpha',
+  })
+
+  upsertFleetEventsForBuffer('chat:from-alpha', [
+    eventAt(48, 'fleet:skip', 'fleet:alpha', 48),
+    eventAt(49, 'fleet:alpha', 'fleet:skip', 49),
+  ])
+
+  assert.deepEqual(ids(view.get()), [49, 50])
+  assert.deepEqual(ids(getFilteredFleetEvents(fromAlphaFilter, opts)), [49, 50])
+
+  view.dispose()
+})
+
 test('chat buffers trim only when that chat is pinned at bottom', () => {
   resetFleetEventStoreForTest([
     eventAt(40, 'fleet:alpha', 'fleet:skip', 40),
