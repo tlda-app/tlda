@@ -86,65 +86,6 @@ export class LocalAgentLedger {
       this._insertRecipe.run(row.localAgentId, row.tmuxName, row.cwd, row.permissionProfile)
       return this.get(row.localAgentId)
     })
-    this.backfillLegacyPermissionGrants()
-  }
-
-  backfillLegacyPermissionGrants({ now = new Date().toISOString() } = {}) {
-    const hasLegacy = this.db.prepare(`
-      SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'permission_grants'
-    `).get()
-    if (!hasLegacy) return { imported: 0, quarantined: 0 }
-    const columns = new Set(this.db.prepare('PRAGMA table_info(permission_grants)').all().map(row => row.name))
-    const legacyColumn = (name) => columns.has(name) ? name : `NULL AS ${name}`
-    const rows = this.db.prepare(`
-      SELECT id, ${legacyColumn('friendly_name')}, ${legacyColumn('session_id')},
-             ${legacyColumn('session_kind')}, ${legacyColumn('tmux_session')},
-             ${legacyColumn('model')}, ${legacyColumn('cwd')}, ${legacyColumn('spawn_policy')}
-      FROM permission_grants
-    `).all()
-    let imported = 0
-    let quarantined = 0
-    const migrate = this.db.transaction(() => {
-      for (const row of rows) {
-        if (!row.id || !String(row.id).startsWith('fleet:')) {
-          this.db.prepare(`
-            INSERT INTO local_agent_migration_issues (legacy_id, reason, observed_at)
-            VALUES (?, ?, ?)
-            ON CONFLICT(legacy_id) DO UPDATE SET reason = excluded.reason, observed_at = excluded.observed_at
-          `).run(String(row.id || '(missing)'), 'legacy permission row has no unambiguous server agent id', now)
-          quarantined++
-          continue
-        }
-        if (this._getServer.get(row.id)) continue
-        let permissionProfile = null
-        try {
-          permissionProfile = JSON.parse(row.spawn_policy || 'null')?.name || null
-        } catch (error) {
-          this.db.prepare(`
-            INSERT INTO local_agent_migration_issues (legacy_id, reason, observed_at)
-            VALUES (?, ?, ?)
-            ON CONFLICT(legacy_id) DO UPDATE SET reason = excluded.reason, observed_at = excluded.observed_at
-          `).run(String(row.id), `legacy spawn_policy is invalid JSON: ${error.message}`, now)
-          quarantined++
-          continue
-        }
-        this._create({
-          localAgentId: newLocalAgentId(),
-          serverAgentId: row.id,
-          friendlyName: row.friendly_name || null,
-          sessionId: row.session_id || null,
-          harness: row.session_kind || null,
-          model: row.model || null,
-          tmuxName: row.tmux_session || null,
-          cwd: row.cwd || null,
-          permissionProfile,
-          now,
-        })
-        imported++
-      }
-    })
-    migrate()
-    return { imported, quarantined }
   }
 
   get(identifier) {

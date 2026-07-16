@@ -56,7 +56,7 @@ test('conversation and process remain keyed by local identity after binding', wi
   assert.equal(agent.process.tmuxName, 't2')
 }))
 
-test('legacy daemon rows are backfilled only when server identity is unambiguous', () => {
+test('legacy daemon rows do not mint local wake recipes', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-local-agent-migration-'))
   const file = path.join(dir, 'fleet-daemon.db')
   const db = new Database(file)
@@ -75,17 +75,37 @@ test('legacy daemon rows are backfilled only when server identity is unambiguous
   db.close()
   const ledger = createLocalAgentLedger(file)
   try {
-    const migrated = ledger.get('fleet:legacy')
-    assert.match(migrated.localAgentId, /^local:/)
-    assert.equal(migrated.conversation.sessionId, 'session-old')
-    assert.equal(migrated.process.permissionProfile, 'wd')
-    const issue = ledger.db.prepare('SELECT reason FROM local_agent_migration_issues WHERE legacy_id = ?').get('ambiguous')
-    assert.match(issue.reason, /no unambiguous server agent id/)
-    const corrupt = ledger.db.prepare('SELECT reason FROM local_agent_migration_issues WHERE legacy_id = ?').get('fleet:corrupt')
-    assert.match(corrupt.reason, /invalid JSON/)
+    assert.equal(ledger.get('fleet:legacy'), null)
+    assert.equal(ledger.findByFriendlyName('legacy'), null)
     assert.equal(ledger.get('fleet:corrupt'), null)
+    assert.equal(ledger.db.prepare('SELECT COUNT(*) AS n FROM local_agent_migration_issues').get().n, 0)
+    assert.equal(ledger.db.prepare('SELECT COUNT(*) AS n FROM local_agents').get().n, 0)
   } finally {
     ledger.close()
     fs.rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('current durable recipe rows still resolve by server id and friendly name', withLedger((ledger) => {
+  ledger.create({
+    localAgentId: 'local:current',
+    serverAgentId: 'fleet:current',
+    friendlyName: 'current-agent',
+    sessionId: 'session-current',
+    harness: 'codex',
+    model: 'gpt-5.5',
+    tmuxName: 'fleet-current-agent',
+    cwd: '/tmp/current',
+    permissionProfile: 'app-dev',
+  })
+
+  const byServer = ledger.get('fleet:current')
+  assert.equal(byServer.localAgentId, 'local:current')
+  assert.equal(byServer.process.permissionProfile, 'app-dev')
+  assert.equal(byServer.process.tmuxName, 'fleet-current-agent')
+  assert.equal(byServer.conversation.harness, 'codex')
+
+  const byName = ledger.findByFriendlyName('current-agent')
+  assert.equal(byName.serverAgentId, 'fleet:current')
+  assert.equal(byName.process.permissionProfile, 'app-dev')
+}))
