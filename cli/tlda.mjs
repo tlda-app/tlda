@@ -193,7 +193,7 @@ const COMMAND_HELP = {
   bot:     'tlda bot [list|install|uninstall|start|stop|status|log] [name] [--dry-run]\n\n  Manage configured fleet bots as launchd services. The bot process logs in like an agent; the daemon does not start it.',
   system:  'tlda system status\n\n  Show server, daemon, deploy stamp, and fleet runtime identity.',
   daemon:  'tlda daemon [start|stop|status|log|run|install|uninstall]\n\n  Control the per-machine fleet daemon.\n  It watches project source directories and agent session activity,\n  then pushes events to the tlda server over WebSocket.',
-  doctor:  'tlda doctor [--fix]\ntlda doctor yolo [--name yolo] --model <daemon-alias> [--cwd /path] [--no-attach] [--dry-run]\n\n  Run a health check for local tools, server, SPA bundle, daemon, MCP setup,\n  project builds, and doc sync stores.\n\n  --fix  Apply the limited automatic repairs that doctor explicitly offers.\n\n  yolo   Break-glass: locally launch an unfenced in-fleet agent with a real FLEET_ID.\n         Reserves a fleet shell, then starts tmux directly instead of using the\n         fleet/daemon spawn permission gate. Deliberately shallow so it works when\n         the normal spawn path is broken.\n\n         --model names a configured daemon model alias; the daemon model spec picks the harness.\n         Run in a terminal and it attaches you into the agent session when it comes up\n         (--no-attach to skip). Run non-interactively and it verifies the agent actually\n         logged in and is reachable before reporting success (or errors out and tears\n         down the phantom seat).',
+  doctor:  'tlda doctor [--fix]\ntlda doctor yolo [--name yolo] --model <daemon-alias> [--cwd /path] [--no-attach] [--dry-run]\n\n  Run a health check for local tools, server, SPA bundle, daemon, MCP setup,\n  project builds, and doc sync stores.\n\n  --fix  Apply the limited automatic repairs that doctor explicitly offers.\n\n  yolo   Break-glass: locally launch an in-fleet agent with a real FLEET_ID outside\n         the normal daemon spawn grant path. Reserves a fleet shell, then starts tmux\n         directly. Deliberately shallow so it works when the normal spawn path is broken.\n\n         --model names a configured daemon model alias; the daemon model spec picks the harness.\n         Run in a terminal and it attaches you into the agent session when it comes up\n         (--no-attach to skip). Run non-interactively and it verifies the agent actually\n         logged in and is reachable before reporting success (or errors out and tears\n         down the phantom seat).',
   'repo-doctor': 'tlda doc repo-doctor <project> [--rescue|--apply|--rollback|--cleanup]\n\n  Diagnose a project source repo for tlda-induced damage.\n  No flag: diagnose only (read-only).\n  --rescue   Compute a rescue plan (dry run).\n  --apply    Execute the rescue plan.\n  --rollback Roll back a previous rescue apply.\n  --cleanup  Clean rescue apply state.',
   publish: 'tlda publish [--target <name>] [doc ...]\n\n  Publish docs to GitHub Pages (+ optionally Fly).\n\n  With no args, publishes all docs in config.published using the "default" target.\n  With --target, uses the named target config (sync server, repo, etc.).\n  With doc names, publishes those and adds them to the list.\n\n  Config (targets in ~/.config/tlda/config.json):\n    targets.<name>.sync     — sync server WebSocket URL\n    targets.<name>.repo     — git remote for gh-pages (null = same repo)\n    targets.<name>.fly      — deploy to Fly (default: false)\n    targets.<name>.basePath — vite base path (default: /tlda/)',
   config:  'tlda config [set <key> <value> | get [key]]\n\n  Manage persistent configuration.\n  Example: tlda config set server http://myhost:5176',
@@ -2561,8 +2561,8 @@ export async function runFleetSpawn(spawnArgs, {
   }
   // The ONE permission knob is --permissions <profile>, a named profile from
   // daemon.yaml (Skip: "in terms of the CLI, I just want my fucking profiles").
-  // Naming a profile IS the fence request; no flag = unfenced. There is no
-  // --policy and no rung flag.
+  // Naming a profile asks for that configured profile. Without --permissions,
+  // fresh spawns use the configured default and wake restores the durable grant.
   const spawnMode = session ? 'session' : (refresh ? 'refresh' : (fresh ? 'fresh' : 'respawn'))
   const explicitPermissionArg = flagFromRaw(spawnArgs, 'permissions') || undefined
   const explicitCwd = hasRawFlag(spawnArgs, 'cwd')
@@ -2623,12 +2623,14 @@ export async function runFleetSpawn(spawnArgs, {
           spawnerPermissionProfile: localhostGrant.permissionProfile,
         })
     const grantedProfile = grant.permissionProfile
+    const permissionLine = permissionTransparencyLine(grant)
     const suppliedAgentId = flagFromRaw(spawnArgs, 'agent-id') || undefined
     const preallocatedAgentId = suppliedAgentId || ((spawnMode === 'fresh' || spawnMode === 'session') ? newFleetId() : undefined)
     if (preallocatedAgentId) {
       await ledger.set(preallocatedAgentId, {
         spawnPolicy: grant.spawnPolicy,
         permissionProfile: grantedProfile,
+        permissionIntersection: grant.permissionIntersection,
         permissionSet: grant.permissionSet,
         source: 'agent-lifecycle-cli',
       })
@@ -2646,6 +2648,7 @@ export async function runFleetSpawn(spawnArgs, {
       permissionMode: flagFromRaw(spawnArgs, 'mode') || undefined,
       permissionRequest: explicitPermissionArg ? permissionRequest : undefined,
       permissionProfile: grantedProfile,
+      permissionIntersection: grant.permissionIntersection,
       spawnPolicy: grant.spawnPolicy,
       permissionSet: grant.permissionSet,
       permissionLedger: ledger,
@@ -2675,6 +2678,7 @@ export async function runFleetSpawn(spawnArgs, {
       await ledger.set(result.fleetId, {
         spawnPolicy: grant.spawnPolicy,
         permissionProfile: grantedProfile,
+        permissionIntersection: grant.permissionIntersection,
         permissionSet: grant.permissionSet,
         source: 'agent-lifecycle-cli',
       })
@@ -2690,17 +2694,7 @@ export async function runFleetSpawn(spawnArgs, {
     }
     const action = params.enroll ? 'Enrolled' : (params.spawnMode === 'fresh' || params.spawnMode === 'session' ? 'Created' : 'Woke')
     console.log(`${action} ${result.tmuxSession} (${result.fleetId}) in ${params.cwd || process.cwd()}`)
-    // Transparency: state plainly what permissions the agent got and why, so no one
-    // has to guess from a name or a cwd. Fencing is opt-in — it is on iff a profile
-    // was named via --permissions (the only thing that arms the fence). This mirrors
-    // the real launch decision (permissions.mjs useFence).
-    if (params.explicitPolicy) {
-      const profile = grantedProfile || 'unmatched'
-      const scope = grant?.spawnPolicy?.policy || 'scoped'
-      console.log(`  permissions: ${profile} — fenced (${scope})`)
-    } else {
-      console.log(`  permissions: unfenced — no --permissions profile named (full access)`)
-    }
+    if (permissionLine) console.log(permissionLine)
   } catch (e) {
     console.error(red(e?.message || String(e)))
     process.exitCode = 1
@@ -2740,14 +2734,50 @@ function durableWakeGrant(ledger, { agentId, name } = {}) {
   if (!rec?.spawnPolicy || !rec?.permissionSet) {
     throw new Error(`wake refused: durable grant missing for "${name || agentId || '(unknown)'}"`)
   }
-  if (!rec.permissionProfile) {
-    throw new Error(`wake refused: durable permission profile missing for "${name || agentId || '(unknown)'}"; run the permission-profile backfill migration`)
+  if (!rec.permissionProfile && !rec.permissionIntersection) {
+    throw new Error(`wake refused: durable permission grant identity missing for "${name || agentId || '(unknown)'}"; run the permission-profile backfill migration`)
   }
   return {
     spawnPolicy: rec.spawnPolicy,
     permissionSet: rec.permissionSet,
     permissionProfile: rec.permissionProfile,
+    permissionIntersection: rec.permissionIntersection,
   }
+}
+
+export function permissionTransparencyLine(grant = {}) {
+  if (typeof grant.permissionProfile === 'string' && grant.permissionProfile.trim()) {
+    return `  permissions: ${grant.permissionProfile.trim()}`
+  }
+  const intersectionProfiles = grant.permissionIntersection?.profiles
+  if (Array.isArray(intersectionProfiles) && intersectionProfiles.length) {
+    const names = intersectionProfiles.map((name) => String(name || '').trim()).filter(Boolean)
+    if (names.length === intersectionProfiles.length && names.length >= 2) return `  permissions: ${names.join(' intersection ')}`
+  }
+  const regions = permissionSetRegionSummary(grant.permissionSet)
+  if (regions) return `  permissions: ${regions}`
+  return null
+}
+
+function permissionSetRegionSummary(permissionSet) {
+  const operations = permissionSet?.operations
+  if (!operations || typeof operations !== 'object') return null
+  return [
+    `read regions: ${permissionOperationRegions(operations.read)}`,
+    `write regions: ${permissionOperationRegions(operations.write)}`,
+  ].join('; ')
+}
+
+function permissionOperationRegions(operation = {}) {
+  return [
+    `allow ${formatPermissionRegionList(operation.allow)}`,
+    `deny ${formatPermissionRegionList(operation.deny)}`,
+  ].join(', ')
+}
+
+function formatPermissionRegionList(value) {
+  const regions = Array.isArray(value) ? value.map((item) => String(item)).sort() : []
+  return `[${regions.join(', ')}]`
 }
 
 export async function bindLifecycleCodexResumeIdentity(result, {
@@ -3060,7 +3090,7 @@ async function dismissAgent(name) {
 
 // The profile list in help is DERIVED from daemon.yaml — never hardcoded — so it
 // can't drift from the real config. Each profile's human description is the inert
-// `description:` field in the YAML (falls back to the derived region if absent).
+// `description:` field in the YAML.
 // One place defines names and descriptions: the config.
 function daemonProfileHelpBlock() {
   let profiles = {}
@@ -3075,8 +3105,8 @@ function daemonProfileHelpBlock() {
   const width = Math.max(...names.map((n) => n.length))
   return names
     .map((n) => {
-      const desc = profiles[n]?.description || `${profiles[n]?.projectedPolicy?.policy || 'scoped'} scope`
-      return `  ${n.padEnd(width)}  ${desc}`
+      const desc = profiles[n]?.description
+      return desc ? `  ${n.padEnd(width)}  ${desc}` : `  ${n}`
     })
     .join('\n')
 }
@@ -3117,7 +3147,7 @@ ${daemonProfileHelpBlock()}
 mint starts a FRESH agent; enroll adopts an already-running external session (kind
 required); wake brings back an existing hibernating agent. All are local-operator gated
 by machine access, and write the child grant to the daemon ledger.
---permissions names one of the profiles above; no --permissions flag = unfenced.
+--permissions names one of the profiles above; without it, fresh uses the configured default and wake restores the durable grant.
 Set TLDA_DISABLE_PERMISSION_CLASSIFIER=1 only as a mint/wake-time break-glass to launch Claude with --dangerously-skip-permissions.
 move must be run on the agent's current daemon address; cross-box moves use SSH/rsync.
 set-mint-machine stores the caller's default mint machine in fleet prefs.

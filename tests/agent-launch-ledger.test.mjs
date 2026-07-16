@@ -22,6 +22,20 @@ function permissionSet() {
   }
 }
 
+function regionPermissionSet(name, allow) {
+  return {
+    type: 'permission-set',
+    name,
+    operations: {
+      read: { allow, deny: [] },
+      write: { allow, deny: [] },
+      spawn: { allow: [], deny: [] },
+    },
+    rules: [],
+    projectedPolicy: { policy: 'cwd' },
+  }
+}
+
 test('daemon launcher writes fresh-spawn ledger row before starting seat', async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-agent-launch-ledger-'))
   const ledger = createPermissionLedger(path.join(tmp, 'fleet-daemon.db'))
@@ -92,6 +106,146 @@ test('daemon launcher writes fresh-spawn ledger row before starting seat', async
     assert.equal(row?.envName, 'test')
     assert.equal(row?.daemonKey, 'test-machine:test')
     assert.equal(result.resume_id, '11111111-2222-4333-8444-555555555555')
+  } finally {
+    await ledger.close()
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+test('daemon launcher carries structured permission intersections through preallocation, spawn params, and return', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-agent-launch-intersection-'))
+  const ledger = createPermissionLedger(path.join(tmp, 'fleet-daemon.db'))
+  try {
+    const shared = path.join(tmp, 'shared')
+    const alpha = regionPermissionSet('alpha', [path.join(tmp, 'alpha'), shared])
+    const beta = regionPermissionSet('beta', [path.join(tmp, 'beta'), shared])
+    ledger.setSync('fleet:requester', {
+      spawnPolicy: { policy: 'cwd' },
+      permissionProfile: 'beta',
+      permissionSet: beta,
+      source: 'test-requester',
+    })
+
+    let observedPrelaunchGrant = null
+    let observedSpawnParams = null
+    const launcher = createAgentLauncher({
+      activeConfigName: 'test',
+      configDir: tmp,
+      loadConfig: () => ({
+        spawnPolicy: {
+          permissionProfiles: { alpha, beta },
+          defaultProfile: 'alpha',
+        },
+      }),
+      log: { info() {}, warn() {}, error() {} },
+      machineId: 'test-machine',
+      permissionLedger: ledger,
+      sendMsg: () => true,
+      getProjects: () => [],
+      tmux: async () => true,
+      startupFailureProbeMs: 1,
+      liveCodexSessionIdentityResolver: async () => ({
+        sessionId: '31111111-2222-4333-8444-555555555555',
+        jsonlPath: path.join(tmp, 'rollout-31111111-2222-4333-8444-555555555555.jsonl'),
+        model: 'gpt-5.5',
+      }),
+      spawnImpl: async (params) => {
+        observedSpawnParams = params
+        observedPrelaunchGrant = ledger.get(params.agentId)
+        return {
+          ok: true,
+          fleetId: params.agentId,
+          tmuxSession: 'fleet-intersection-ledger',
+          harness: 'codex',
+          model: params.model,
+          pending: true,
+        }
+      },
+    })
+
+    const result = await launcher.handlers.spawn({
+      name: 'intersection-ledger',
+      model: 'gpt-5.5',
+      kind: 'codex',
+      cwd: tmp,
+      permissionRequest: 'alpha',
+      requester: { id: 'fleet:requester', name: 'requester' },
+    })
+
+    assert.equal(result.ok, true, JSON.stringify(result))
+    assert.deepEqual(observedPrelaunchGrant?.permissionIntersection?.profiles, ['alpha', 'beta'])
+    assert.deepEqual(observedSpawnParams?.permissionIntersection?.profiles, ['alpha', 'beta'])
+    assert.deepEqual(result.permissionIntersection?.profiles, ['alpha', 'beta'])
+    assert.equal(result.permissionProfile, null)
+    const row = ledger.get(result.agent_id)
+    assert.deepEqual(row?.permissionIntersection?.profiles, ['alpha', 'beta'])
+    assert.equal(row?.permissionProfile, null)
+  } finally {
+    await ledger.close()
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+test('daemon launcher fallback grant writer preserves structured permission intersections', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-agent-launch-intersection-fallback-'))
+  const ledger = createPermissionLedger(path.join(tmp, 'fleet-daemon.db'))
+  try {
+    const shared = path.join(tmp, 'shared')
+    const alpha = regionPermissionSet('alpha', [path.join(tmp, 'alpha'), shared])
+    const beta = regionPermissionSet('beta', [path.join(tmp, 'beta'), shared])
+    ledger.setSync('fleet:requester', {
+      spawnPolicy: { policy: 'cwd' },
+      permissionProfile: 'beta',
+      permissionSet: beta,
+      source: 'test-requester',
+    })
+
+    const launcher = createAgentLauncher({
+      activeConfigName: 'test',
+      configDir: tmp,
+      loadConfig: () => ({
+        spawnPolicy: {
+          permissionProfiles: { alpha, beta },
+          defaultProfile: 'alpha',
+        },
+      }),
+      log: { info() {}, warn() {}, error() {} },
+      machineId: 'test-machine',
+      permissionLedger: ledger,
+      sendMsg: () => true,
+      getProjects: () => [],
+      tmux: async () => true,
+      startupFailureProbeMs: 1,
+      liveCodexSessionIdentityResolver: async () => ({
+        sessionId: '41111111-2222-4333-8444-555555555555',
+        jsonlPath: path.join(tmp, 'rollout-41111111-2222-4333-8444-555555555555.jsonl'),
+        model: 'gpt-5.5',
+      }),
+      spawnImpl: async (params) => ({
+        ok: true,
+        fleetId: 'fleet:fallback-intersection',
+        tmuxSession: 'fleet-fallback-intersection',
+        harness: 'codex',
+        model: params.model,
+        pending: true,
+      }),
+    })
+
+    const result = await launcher.handlers.spawn({
+      name: 'fallback-intersection',
+      model: 'gpt-5.5',
+      kind: 'codex',
+      cwd: tmp,
+      refresh: true,
+      permissionRequest: 'alpha',
+      requester: { id: 'fleet:requester', name: 'requester' },
+    })
+
+    assert.equal(result.ok, true, JSON.stringify(result))
+    assert.equal(result.agent_id, 'fleet:fallback-intersection')
+    const row = ledger.get('fleet:fallback-intersection')
+    assert.deepEqual(row?.permissionIntersection?.profiles, ['alpha', 'beta'])
+    assert.equal(row?.permissionProfile, null)
   } finally {
     await ledger.close()
     fs.rmSync(tmp, { recursive: true, force: true })
@@ -321,6 +475,155 @@ test('daemon launcher preserves an existing respawn ledger row when launch fails
 
     assert.equal(result.ok, false, JSON.stringify(result))
     assert.equal(ledger.get(targetAgentId)?.source, 'existing-seat')
+  } finally {
+    await ledger.close()
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+test('daemon respawn restores persisted configured-profile grant identity into params, trace, and result', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-agent-launch-respawn-profile-'))
+  const ledger = createPermissionLedger(path.join(tmp, 'fleet-daemon.db'))
+  try {
+    const targetAgentId = 'fleet:respawn-profile'
+    ledger.setSync(targetAgentId, {
+      spawnPolicy: { name: 'ops', policy: 'unsandboxed' },
+      permissionProfile: 'ops',
+      permissionSet: permissionSet(),
+      source: 'frozen-ledger',
+    })
+    const traces = []
+    let observedSpawnParams = null
+    const launcher = createAgentLauncher({
+      activeConfigName: 'test',
+      configDir: tmp,
+      loadConfig: () => ({ spawnPolicy: { permissionProfiles: { ops: permissionSet() }, defaultProfile: 'ops' } }),
+      log: {
+        info(message) {
+          if (String(message).startsWith('[spawn-trace] ')) traces.push(message)
+        },
+        warn() {},
+        error() {},
+      },
+      machineId: 'test-machine',
+      permissionLedger: ledger,
+      sendMsg: () => true,
+      getProjects: () => [],
+      tmux: async () => true,
+      startupFailureProbeMs: 1,
+      liveCodexSessionIdentityResolver: async () => ({
+        sessionId: '51111111-2222-4333-8444-555555555555',
+        jsonlPath: path.join(tmp, 'rollout-51111111-2222-4333-8444-555555555555.jsonl'),
+        model: 'gpt-5.5',
+      }),
+      spawnImpl: async (params) => {
+        observedSpawnParams = params
+        return {
+          ok: true,
+          fleetId: targetAgentId,
+          tmuxSession: 'fleet-respawn-profile',
+          harness: 'codex',
+          model: 'gpt-5.5',
+          pending: true,
+        }
+      },
+    })
+
+    const result = await launcher.handlers.spawn({
+      agent_id: targetAgentId,
+      name: 'respawn-profile',
+      respawn: true,
+    })
+
+    assert.equal(result.ok, true, JSON.stringify(result))
+    assert.equal(observedSpawnParams?.permissionProfile, 'ops')
+    assert.equal(observedSpawnParams?.permissionIntersection ?? null, null)
+    assert.equal(result.permissionProfile, 'ops')
+    assert.equal(result.permissionIntersection ?? null, null)
+    assert.equal(ledger.get(targetAgentId)?.permissionProfile, 'ops')
+    const traceText = traces.join('\n')
+    assert.match(traceText, /"permissionProfile":"ops"/)
+    assert.doesNotMatch(traceText, /"permissionIntersection":\{/)
+  } finally {
+    await ledger.close()
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+test('daemon respawn restores persisted structured-intersection grant identity into params, trace, and result', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-agent-launch-respawn-intersection-'))
+  const ledger = createPermissionLedger(path.join(tmp, 'fleet-daemon.db'))
+  try {
+    const targetAgentId = 'fleet:respawn-intersection'
+    const shared = path.join(tmp, 'shared')
+    const intersection = {
+      type: 'permission-intersection',
+      profiles: ['alpha', 'beta'],
+      permissionSet: regionPermissionSet('grant', [shared]),
+      provenance: {
+        requestedProfile: 'alpha',
+        modelPermissionProfile: null,
+        spawnerPermissionProfile: 'beta',
+      },
+    }
+    ledger.setSync(targetAgentId, {
+      spawnPolicy: { name: 'grant', policy: 'cwd' },
+      permissionIntersection: intersection,
+      permissionSet: intersection.permissionSet,
+      source: 'frozen-ledger',
+    })
+    const traces = []
+    let observedSpawnParams = null
+    const launcher = createAgentLauncher({
+      activeConfigName: 'test',
+      configDir: tmp,
+      loadConfig: () => ({ spawnPolicy: { permissionProfiles: {}, defaultProfile: null } }),
+      log: {
+        info(message) {
+          if (String(message).startsWith('[spawn-trace] ')) traces.push(message)
+        },
+        warn() {},
+        error() {},
+      },
+      machineId: 'test-machine',
+      permissionLedger: ledger,
+      sendMsg: () => true,
+      getProjects: () => [],
+      tmux: async () => true,
+      startupFailureProbeMs: 1,
+      liveCodexSessionIdentityResolver: async () => ({
+        sessionId: '61111111-2222-4333-8444-555555555555',
+        jsonlPath: path.join(tmp, 'rollout-61111111-2222-4333-8444-555555555555.jsonl'),
+        model: 'gpt-5.5',
+      }),
+      spawnImpl: async (params) => {
+        observedSpawnParams = params
+        return {
+          ok: true,
+          fleetId: targetAgentId,
+          tmuxSession: 'fleet-respawn-intersection',
+          harness: 'codex',
+          model: 'gpt-5.5',
+          pending: true,
+        }
+      },
+    })
+
+    const result = await launcher.handlers.spawn({
+      agent_id: targetAgentId,
+      name: 'respawn-intersection',
+      respawn: true,
+    })
+
+    assert.equal(result.ok, true, JSON.stringify(result))
+    assert.equal(observedSpawnParams?.permissionProfile ?? null, null)
+    assert.deepEqual(observedSpawnParams?.permissionIntersection?.profiles, ['alpha', 'beta'])
+    assert.equal(result.permissionProfile ?? null, null)
+    assert.deepEqual(result.permissionIntersection?.profiles, ['alpha', 'beta'])
+    assert.deepEqual(ledger.get(targetAgentId)?.permissionIntersection?.profiles, ['alpha', 'beta'])
+    const traceText = traces.join('\n')
+    assert.match(traceText, /"permissionIntersection":\{"type":"permission-intersection","profiles":\["alpha","beta"\]/)
+    assert.match(traceText, /"permissionProfile":null/)
   } finally {
     await ledger.close()
     fs.rmSync(tmp, { recursive: true, force: true })

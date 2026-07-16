@@ -8,6 +8,7 @@ import Database from 'better-sqlite3'
 import {
   bindLifecycleCodexResumeIdentity,
   collectSpawnModelOptionsFromRaw,
+  permissionTransparencyLine,
   resolveWakeRecipeFields,
   runFleetSpawn,
   spawnPositionalFromRaw,
@@ -239,6 +240,12 @@ regions:
     - "**"
   recipe:
     - "/tmp/tlda-recipe-cwd/**"
+  alpha_only:
+    - "/tmp/tlda-recipe-cwd/alpha/**"
+  beta_only:
+    - "/tmp/tlda-recipe-cwd/beta/**"
+  shared:
+    - "/tmp/tlda-recipe-cwd/shared/**"
 profiles:
   ops:
     read:
@@ -255,6 +262,17 @@ profiles:
       allow: [recipe]
     write:
       allow: [recipe]
+  alpha:
+    read:
+      allow: [alpha_only, shared]
+    write:
+      allow: [alpha_only, shared]
+  beta:
+    read:
+      allow: [beta_only, shared]
+    write:
+      allow: [beta_only, shared]
+default: alpha
 `)
 }
 
@@ -329,11 +347,14 @@ test('wake without explicit flags uses durable grant directly without caller cla
   const dbPath = path.join(configDir, 'fleet-daemon.db')
   const spawnCalls = []
   const apiCalls = []
+  const logs = []
+  const priorLog = console.log
   try {
     writeDaemonConfig(configDir)
     seedWakeRecipe(dbPath, { profile: 'ops' })
     seedPermissionLedger(dbPath)
     const beforeGrantRow = rawPermissionGrantRow(dbPath, 'fleet:recipe')
+    console.log = (...args) => { logs.push(args.join(' ')) }
 
     await runFleetSpawn(['recipe'], {
       configDir,
@@ -365,6 +386,7 @@ test('wake without explicit flags uses durable grant directly without caller cla
     assert.equal(spawnCalls[0].spawnPolicy.policy, 'unsandboxed')
     assert.equal(spawnCalls[0].permissionRequest, undefined)
     assert.equal(spawnCalls[0].explicitPolicy, false)
+    assert.equal(logs.find((line) => line.startsWith('  permissions:')), '  permissions: ops')
 
     const permissionLedger = createPermissionLedger(dbPath)
     const localLedger = createLocalAgentLedger(dbPath)
@@ -377,6 +399,170 @@ test('wake without explicit flags uses durable grant directly without caller cla
       localLedger.close()
     }
   } finally {
+    console.log = priorLog
+    fs.rmSync(configDir, { recursive: true, force: true })
+  }
+})
+
+test('permission transparency prints only contract-legal forms', () => {
+  assert.equal(
+    permissionTransparencyLine({ permissionProfile: 'wd' }),
+    '  permissions: wd',
+  )
+  assert.equal(
+    permissionTransparencyLine({
+      permissionSet: {
+        operations: {
+          read: { allow: ['/project/src/**'], deny: ['/project/src/.env'] },
+          write: { allow: ['/project/src/output/**'], deny: [] },
+        },
+      },
+    }),
+    '  permissions: read regions: allow [/project/src/**], deny [/project/src/.env]; write regions: allow [/project/src/output/**], deny []',
+  )
+  assert.equal(permissionTransparencyLine({}), null)
+  assert.equal(permissionTransparencyLine({ permissionIntersection: { profiles: ['alpha'] } }), null)
+})
+
+test('permission transparency narration never emits forbidden vocabulary', () => {
+  const samples = [
+    permissionTransparencyLine({ permissionProfile: 'wd' }),
+    permissionTransparencyLine({ permissionIntersection: { profiles: ['alpha', 'beta'] } }),
+    permissionTransparencyLine({
+      permissionSet: {
+        operations: {
+          read: { allow: ['/project/src/**'], deny: [] },
+          write: { allow: ['/project/src/output/**'], deny: [] },
+        },
+      },
+    }),
+  ].filter(Boolean)
+  const forbidden = [
+    /\bscope\b/i,
+    /\bfenced\b/i,
+    /\bunfenced\b/i,
+    /full access/i,
+    /\bunmatched\b/i,
+    /anonymous CWD/i,
+  ]
+  for (const sample of samples) {
+    for (const pattern of forbidden) assert.doesNotMatch(sample, pattern)
+  }
+})
+
+test('wake narration prints real resolver-produced structured intersections', async () => {
+  const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-wake-intersection-grant-'))
+  const dbPath = path.join(configDir, 'fleet-daemon.db')
+  const spawnCalls = []
+  const logs = []
+  const priorLog = console.log
+  try {
+    writeDaemonConfig(configDir)
+    seedWakeRecipe(dbPath, { profile: 'ops' })
+    seedPermissionLedger(dbPath, {
+      localhostProfile: 'beta',
+      localhostSet: permissionSet('beta', ['/tmp/tlda-recipe-cwd/beta/**', '/tmp/tlda-recipe-cwd/shared/**']),
+    })
+    console.log = (...args) => { logs.push(args.join(' ')) }
+
+    await runFleetSpawn(['recipe', '--permissions', 'alpha'], {
+      configDir,
+      localAgentLedgerPath: dbPath,
+      loadConfigImpl: () => ({}),
+      spawnImpl: async (params) => {
+        spawnCalls.push(params)
+        return {
+          fleetId: 'fleet:recipe',
+          tmuxSession: 'fleet-recipe',
+          harness: 'codex',
+          model: 'gpt-5.5',
+          resumeId: '44444444-2222-4333-8444-555555555555',
+        }
+      },
+      apiImpl: async () => ({ ok: true }),
+    })
+
+    assert.equal(spawnCalls.length, 1)
+    assert.deepEqual(spawnCalls[0].permissionIntersection.profiles, ['alpha', 'beta'])
+    assert.equal(logs.find((line) => line.startsWith('  permissions:')), '  permissions: alpha intersection beta')
+
+    const permissionLedger = createPermissionLedger(dbPath)
+    try {
+      const grant = permissionLedger.get('fleet:recipe')
+      assert.deepEqual(grant.permissionIntersection.profiles, ['alpha', 'beta'])
+      assert.equal(grant.permissionProfile, null)
+    } finally {
+      permissionLedger.close()
+    }
+
+    logs.length = 0
+    spawnCalls.length = 0
+    await runFleetSpawn(['recipe'], {
+      configDir,
+      localAgentLedgerPath: dbPath,
+      loadConfigImpl: () => ({}),
+      spawnImpl: async (params) => {
+        spawnCalls.push(params)
+        return {
+          fleetId: 'fleet:recipe',
+          tmuxSession: 'fleet-recipe',
+          harness: 'codex',
+          model: 'gpt-5.5',
+          resumeId: '44444444-3333-4333-8444-555555555555',
+        }
+      },
+      apiImpl: async () => ({ ok: true }),
+    })
+    assert.equal(spawnCalls.length, 1)
+    assert.deepEqual(spawnCalls[0].permissionIntersection.profiles, ['alpha', 'beta'])
+    assert.equal(spawnCalls[0].permissionRequest, undefined)
+    assert.equal(logs.find((line) => line.startsWith('  permissions:')), '  permissions: alpha intersection beta')
+  } finally {
+    console.log = priorLog
+    fs.rmSync(configDir, { recursive: true, force: true })
+  }
+})
+
+test('fresh spawn narration prints complete read and write regions when grant has no profile identity', async () => {
+  const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-fresh-region-grant-'))
+  const dbPath = path.join(configDir, 'fleet-daemon.db')
+  const spawnCalls = []
+  const logs = []
+  const priorLog = console.log
+  try {
+    writeDaemonConfig(configDir)
+    seedPermissionLedger(dbPath, {
+      localhostProfile: null,
+      localhostSet: permissionSet('shared-only', ['/tmp/tlda-recipe-cwd/shared/**']),
+    })
+    console.log = (...args) => { logs.push(args.join(' ')) }
+
+    await runFleetSpawn(['--fresh', 'region-grant'], {
+      configDir,
+      localAgentLedgerPath: dbPath,
+      loadConfigImpl: () => ({
+        spawnPolicy: {
+          defaultProfile: 'alpha',
+        },
+      }),
+      spawnImpl: async (params) => {
+        spawnCalls.push(params)
+        return {
+          fleetId: 'fleet:region-grant',
+          tmuxSession: 'fleet-region-grant',
+          harness: 'codex',
+          model: 'gpt-5.5',
+          resumeId: '55555555-2222-4333-8444-555555555555',
+        }
+      },
+      apiImpl: async () => ({ ok: true }),
+    })
+
+    assert.equal(spawnCalls.length, 1)
+    assert.equal(spawnCalls[0].permissionProfile, null)
+    assert.equal(logs.find((line) => line.startsWith('  permissions:')), '  permissions: read regions: allow [/tmp/tlda-recipe-cwd/shared/**], deny []; write regions: allow [/tmp/tlda-recipe-cwd/shared/**], deny []')
+  } finally {
+    console.log = priorLog
     fs.rmSync(configDir, { recursive: true, force: true })
   }
 })

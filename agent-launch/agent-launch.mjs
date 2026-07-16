@@ -323,7 +323,13 @@ export function createAgentLauncher({
         if (!own) {
           throw new Error(`wake refused: seat ${agent_id || '(no id)'} has no ledger entry — a real agent must have a seat; refusing to resume with a fabricated grant`)
         }
-        grant = { spawnPolicy: own.spawnPolicy, permissionSet: own.permissionSet, grantPreserved: true }
+        grant = {
+          spawnPolicy: own.spawnPolicy,
+          permissionSet: own.permissionSet,
+          permissionProfile: own.permissionProfile,
+          permissionIntersection: own.permissionIntersection,
+          grantPreserved: true,
+        }
       } else {
         if (!requester?.id) {
           const err = new Error('spawn refused: daemon RPC requester identity is required')
@@ -413,6 +419,7 @@ export function createAgentLauncher({
       launchModel: launchModel || null,
       permissionRequest: permissionRequest || null,
       permissionProfile: grant.permissionProfile || null,
+      permissionIntersection: grant.permissionIntersection || null,
       spawnPolicy: grant.spawnPolicy || null,
       hasPermissionSet: !!grant.permissionSet,
       cwd: resolvedCwd || null,
@@ -430,6 +437,7 @@ export function createAgentLauncher({
         await permissionLedger.set(preallocatedAgentId, {
           spawnPolicy: grant.spawnPolicy,
           permissionProfile: grant.permissionProfile,
+          permissionIntersection: grant.permissionIntersection,
           permissionSet: grant.permissionSet,
           source: 'spawn',
         })
@@ -453,11 +461,11 @@ export function createAgentLauncher({
           permissionMode: mode,
           spawnPolicy: grant.spawnPolicy,
           permissionProfile: grant.permissionProfile,
+          permissionIntersection: grant.permissionIntersection,
           permissionSet: grant.permissionSet,
           explicitPolicy: permissionRequest != null,
           acknowledgeNoSecurity: !!acknowledgeNoSecurity,
           machineId,
-          permissionProfile: grant.permissionProfile || null,
           tmuxSocket,
           crashLogPath,
           identityConfigDir: configDir,
@@ -475,6 +483,7 @@ export function createAgentLauncher({
         model: launched.model,
         spawnPolicy: grant.spawnPolicy || null,
         permissionProfile: grant.permissionProfile || null,
+        permissionIntersection: grant.permissionIntersection || null,
       })
       try {
         await tmux('has-session', '-t', launched.tmuxSession)
@@ -556,6 +565,8 @@ export function createAgentLauncher({
       if (!preallocatedAgentId || launched.fleetId !== preallocatedAgentId) {
         await permissionLedger.set(launched.fleetId, {
           spawnPolicy: grant.spawnPolicy,
+          permissionProfile: grant.permissionProfile,
+          permissionIntersection: grant.permissionIntersection,
           permissionSet: grant.permissionSet,
           source: 'spawn',
         })
@@ -583,6 +594,7 @@ export function createAgentLauncher({
         permissionSet: grant.permissionSet,
         spawnPolicy: grant.spawnPolicy,
         permissionProfile: grant.permissionProfile,
+        permissionIntersection: grant.permissionIntersection,
       }
     } catch (e) {
       const detail = typeof e?.message === 'string' ? e.message : (e?.message ? JSON.stringify(e.message) : String(e))

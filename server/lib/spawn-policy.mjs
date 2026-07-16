@@ -642,8 +642,8 @@ export function resolveSpawnGrant({
     modelPermissionSet,
     spawnerPermissionSet,
   ], { name: 'grant' })
-  const permissionProfile = permissionRequest
-    ? resolvedExplicitPermissionProfileForGrant({
+  const resolvedGrantIdentity = permissionRequest
+    ? resolvedExplicitPermissionGrantIdentity({
         requestedProfile,
         requestedSet,
         modelPermissionProfile,
@@ -656,12 +656,21 @@ export function resolveSpawnGrant({
         project,
       })
     : exactConfiguredPermissionProfile(permissionSet, config, requestedProfile)
+  const permissionProfile = typeof resolvedGrantIdentity === 'string' ? resolvedGrantIdentity : null
+  const permissionIntersection = resolvedGrantIdentity?.type === 'permission-intersection'
+    ? resolvedGrantIdentity
+    : null
   // The grant carries the configured profile identity separately from the fence scope.
   const spawnPolicy = {
     policy: regionScopeFromSet(permissionSet),
   }
   permissionSet.projectedPolicy = spawnPolicy
-  return { spawnPolicy, permissionSet, permissionProfile }
+  return {
+    spawnPolicy,
+    permissionSet,
+    permissionProfile,
+    ...(permissionIntersection ? { permissionIntersection } : {}),
+  }
 }
 
 export function resolveDirectSpawnGrant(options = {}) {
@@ -680,7 +689,7 @@ function strictlyClamps(clampSet, baseSet) {
   return !!(clampSet && baseSet && permissionSetLte(clampSet, baseSet) && !permissionSetLte(baseSet, clampSet))
 }
 
-function resolvedExplicitPermissionProfileForGrant({
+function resolvedExplicitPermissionGrantIdentity({
   requestedProfile,
   requestedSet,
   modelPermissionProfile,
@@ -711,9 +720,42 @@ function resolvedExplicitPermissionProfileForGrant({
     throw new Error('explicit permission request resolved to an anonymous grant; refusing to persist without a configured permission profile')
   }
 
-  if (chosenSet && !samePermissionSet(permissionSet, chosenSet)) {
-    throw new Error(`explicit permission request for "${requestedProfile || '(unknown)'}" resolved to an anonymous clamped grant; refusing to persist without a configured permission profile`)
+  if (chosenSet && samePermissionSet(permissionSet, chosenSet)) {
+    return chosenProfile
   }
 
-  return chosenProfile
+  const intersection = structuredPermissionIntersection({
+    requestedProfile,
+    modelPermissionProfile,
+    spawnerPermissionProfile,
+    permissionSet,
+  })
+  if (intersection) return intersection
+
+  throw new Error(`explicit permission request for "${requestedProfile || '(unknown)'}" resolved to an anonymous clamped grant; refusing to persist without a configured permission profile`)
+}
+
+function structuredPermissionIntersection({
+  requestedProfile,
+  modelPermissionProfile,
+  spawnerPermissionProfile,
+  permissionSet,
+} = {}) {
+  const profiles = [
+    requestedProfile,
+    modelPermissionProfile,
+    spawnerPermissionProfile,
+  ].map((name) => String(name || '').trim()).filter(Boolean)
+  const uniqueProfiles = [...new Set(profiles)]
+  if (uniqueProfiles.length < 2) return null
+  return {
+    type: 'permission-intersection',
+    profiles: uniqueProfiles,
+    permissionSet,
+    provenance: {
+      requestedProfile: requestedProfile || null,
+      modelPermissionProfile: modelPermissionProfile || null,
+      spawnerPermissionProfile: spawnerPermissionProfile || null,
+    },
+  }
 }
