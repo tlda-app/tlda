@@ -38,6 +38,7 @@ import { normalizePrettyResult } from '../shared/activity-pretty-result.mjs'
 // shows honestly rather than as a wrong guess).
 const NATIVE_NAME_MAP = {
   // verified (observed in rollouts):
+  exec: 'Bash',
   exec_command: 'Bash',        // Codex's shell — also how it edits files (cat/sed), so Bash covers edits too
   update_plan: 'TodoWrite',    // Codex's step-plan tool ≈ Claude's todo/plan tool
   // documented Codex native tools (map when first observed to confirm exact name):
@@ -48,6 +49,12 @@ const NATIVE_NAME_MAP = {
   web_search: 'WebSearch',
   view_image: 'Read',
 }
+
+const TOOL_OUTPUT_TYPES = new Set([
+  'function_call_output',
+  'custom_tool_call_output',
+  'tool_search_output',
+])
 
 // Map (name, namespace) → the flat tool name extractActivityEvents keys on.
 // Fleet MCP tools carry namespace 'mcp__tlda'; flattening to 'mcp__tlda__<name>'
@@ -60,6 +67,61 @@ export function normalizeToolName(name, namespace) {
   return NATIVE_NAME_MAP[name] || name
 }
 
+function parseJsonObject(value) {
+  if (!value) return {}
+  if (typeof value === 'object' && !Array.isArray(value)) return value
+  if (typeof value !== 'string') return {}
+  try {
+    const parsed = JSON.parse(value)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : { _raw: value }
+  } catch {
+    return { _raw: value }
+  }
+}
+
+function compactValue(value) {
+  if (value == null) return ''
+  if (typeof value === 'string') return value.replace(/\s+/g, ' ').trim().slice(0, 180)
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+  if (Array.isArray(value)) return `[${value.length}]`
+  if (typeof value === 'object') return JSON.stringify(value).slice(0, 180)
+  return ''
+}
+
+function addGenericArgSummary(input) {
+  if (!input || typeof input !== 'object') return {}
+  if (
+    input._raw || input.file_path || input.path || input.command || input.pattern ||
+    input.message || input.query || input.description || input.reason ||
+    input.agent || input.doc || input.ref || input.text
+  ) return input
+
+  const parts = []
+  for (const [key, value] of Object.entries(input)) {
+    if (key === 'internal_chat_message_metadata_passthrough') continue
+    const rendered = compactValue(value)
+    if (!rendered) continue
+    parts.push(`${key}=${rendered}`)
+    if (parts.join(' ').length > 180) break
+  }
+  return parts.length ? { ...input, _raw: parts.join(' ').slice(0, 180) } : input
+}
+
+function normalizedToolUseEvent({ name, namespace, input, callId, ts }) {
+  const normalizedName = normalizeToolName(name, namespace)
+  const aliased = aliasNativeArgs(name, parseJsonObject(input))
+  return {
+    type: 'assistant',
+    timestamp: ts,
+    blocks: [{
+      type: 'tool_use',
+      name: normalizedName || 'codex_tool',
+      input: addGenericArgSummary(aliased),
+      id: callId,
+    }],
+  }
+}
+
 // Codex native tools name their primary argument differently from Claude's
 // built-ins. Alias them onto the keys extractActivityEvents reads
 // (file_path / path / command / pattern / …) so the activity card shows a
@@ -68,6 +130,7 @@ export function normalizeToolName(name, namespace) {
 export function aliasNativeArgs(name, input) {
   if (!input || typeof input !== 'object') return input
   switch (name) {
+    case 'exec':
     case 'exec_command':
     case 'shell':
     case 'local_shell':
@@ -75,6 +138,17 @@ export function aliasNativeArgs(name, input) {
       if (input.cmd != null && input.command == null) {
         return { ...input, command: Array.isArray(input.cmd) ? input.cmd.join(' ') : input.cmd }
       }
+      if (input._raw != null && input.command == null) return { ...input, command: input._raw }
+      if (input.command == null) {
+        const keys = Object.keys(input).filter(k => k !== 'internal_chat_message_metadata_passthrough')
+        if (keys.length === 1 && input[keys[0]] === false) return { ...input, command: keys[0] }
+      }
+      return input
+    case 'write_stdin':
+      if (input.chars != null && input.text == null) return { ...input, text: input.chars }
+      return input
+    case 'tool_search':
+      if (input.query != null) return input
       return input
     default:
       return input
@@ -168,28 +242,25 @@ export function parseCodexRecord(o) {
 
   if (o.type === 'response_item') {
     if (p.type === 'function_call') {
-      let input = {}
-      try { input = p.arguments ? JSON.parse(p.arguments) : {} } catch { input = {} }
+      let input = parseJsonObject(p.arguments)
       // apply_patch can also surface as a function_call in some Codex builds —
       // route it through the same Edit mapping as the custom_tool_call form.
       if (p.name === 'apply_patch' && !p.namespace) {
         return applyPatchEvent(input.input || input.patch || input.arguments || '', p.call_id, ts)
       }
-      const name = normalizeToolName(p.name, p.namespace)
-      input = aliasNativeArgs(p.name, input)
-      return { type: 'assistant', timestamp: ts, blocks: [{ type: 'tool_use', name, input, id: p.call_id }] }
+      return normalizedToolUseEvent({ name: p.name, namespace: p.namespace, input, callId: p.call_id, ts })
     }
     if (p.type === 'custom_tool_call') {
       if (p.name === 'apply_patch') {
         const ev = applyPatchEvent(typeof p.input === 'string' ? p.input : '', p.call_id, ts)
         if (ev) return ev
       }
-      // unknown custom tool — surface it by (mapped) name so it's at least visible
-      const name = NATIVE_NAME_MAP[p.name] || p.name
-      const input = typeof p.input === 'string' ? { _raw: p.input } : (p.input || {})
-      return { type: 'assistant', timestamp: ts, blocks: [{ type: 'tool_use', name, input, id: p.call_id }] }
+      return normalizedToolUseEvent({ name: p.name, input: p.input, callId: p.call_id, ts })
     }
-    if (p.type === 'function_call_output' || p.type === 'custom_tool_call_output') {
+    if (p.type === 'tool_search_call') {
+      return normalizedToolUseEvent({ name: 'tool_search', input: p.arguments || {}, callId: p.call_id, ts })
+    }
+    if (TOOL_OUTPUT_TYPES.has(p.type)) {
       // output is a string (may carry a "Wall time:\n…Output:\n" preamble).
       const rawText = typeof p.output === 'string' ? p.output
         : (p.output && typeof p.output.content === 'string' ? p.output.content : '')
@@ -207,6 +278,9 @@ export function parseCodexRecord(o) {
       // are scaffolding, not agent activity — skip. Real user input arrives as
       // the event_msg 'user_message' below.
       return null
+    }
+    if (typeof p.name === 'string' || p.call_id) {
+      return normalizedToolUseEvent({ name: p.name || p.type, namespace: p.namespace, input: p.arguments || p.input || {}, callId: p.call_id, ts })
     }
     return null
   }

@@ -89,7 +89,7 @@ export function createActivityExtractor({ now = () => Date.now() } = {}) {
           const arg = input.file_path || input.path ||
             input.command || input.cat || input.pattern || input.message ||
             input.query || input.description || input.reason ||
-            input.agent || input.doc || input.ref || input.text || ''
+            input.agent || input.doc || input.ref || input.text || input._raw || ''
           const evt = { tool: humanName, arg, ts: ev.timestamp, id: block.id }
           if (Object.keys(input).length > 0) evt.input = input
           // Attach result for pretty-printed tools
