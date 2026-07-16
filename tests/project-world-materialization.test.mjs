@@ -10,7 +10,7 @@ import express from 'express'
 import { initProjectStore } from '../server/lib/project-store.mjs'
 import { realizeProjectMarkdownArtifact, writeProjectMarkdownArtifact } from '../server/lib/project-artifact-materializer.mjs'
 import { formatRecipientAttachmentRef } from '../shared/inbox-reference-materialization.mjs'
-import { renderChatLine } from '../src/fleet/chat-render.mjs'
+import { chatLineAttachmentRenderSignature, renderChatLine } from '../src/fleet/chat-render.mjs'
 import { convertChatEvent } from '../src/fleet/convert-chat-event.mjs'
 import projectRoutes from '../server/routes/projects.mjs'
 
@@ -137,6 +137,92 @@ test('normal fleet chat file chip identifies the exact project artifact version'
   assert.match(html, /data-project-artifact-id="artifact-1"/)
   assert.match(html, new RegExp(`data-project-version="${version}"`))
   assert.match(html, /data-url="\/api\/projects\/world\/parts\/artifact-1\/markdown\?version=abcdef1234567890abcdef1234567890abcdef12"/)
+})
+
+test('current daemon-address failures still render available project-versioned chips', () => {
+  const cases = [
+    { messageId: 1349838, version: '1349838134983813498381349838134983813498' },
+    { messageId: 1350001, version: '1350001135000113500011350001135000113500' },
+  ]
+
+  for (const { messageId, version } of cases) {
+    const uploadOnlyMsg = convertChatEvent({
+      id: messageId,
+      type: 'chat',
+      from_id: 'fleet:skip',
+      to_id: 'fleet:recipient',
+      timestamp: '2026-07-16T18:29:00.000Z',
+      text: '{{att:0}}',
+      metadata: {
+        inline_attachments: [{
+          id: 0,
+          type: 'file',
+          name: 'AGENTS.md',
+          path: '/uploads/AGENTS.md',
+          url: '/api/file?path=%2Fuploads%2FAGENTS.md',
+          mimeType: 'text/markdown',
+        }],
+      },
+    })
+    const msg = convertChatEvent({
+      id: messageId,
+      type: 'chat',
+      from_id: 'fleet:skip',
+      to_id: 'fleet:recipient',
+      timestamp: '2026-07-16T18:29:00.000Z',
+      text: '{{att:0}}',
+      metadata: {
+        inline_attachments: [{
+          id: 0,
+          type: 'file',
+          name: 'AGENTS.md',
+          path: '/uploads/AGENTS.md',
+          url: '/api/file?path=%2Fuploads%2FAGENTS.md',
+          mimeType: 'text/markdown',
+        }],
+        recipient_refs: {
+          'fleet:recipient': {
+            attachments: {
+              '0': {
+                kind: 'attachment',
+                state: 'available',
+                status: 'ready',
+                project: 'world',
+                projectPath: 'parts/current-production-agents.md',
+                projectArtifactId: 'artifact-current',
+                projectArtifactVersion: version,
+                projectArtifactHash: version,
+                daemonMaterializationError: 'agent has no daemon address (op=materialize-attachment)',
+              },
+            },
+          },
+        },
+      },
+    })
+    assert.notEqual(
+      chatLineAttachmentRenderSignature(uploadOnlyMsg),
+      chatLineAttachmentRenderSignature(msg),
+      'recipient_refs event-update must invalidate the cached upload-chip render',
+    )
+
+    const html = renderChatLine(msg, {
+      agentLabel: id => id,
+      getNickClass: () => '',
+      isHumanId: id => id === 'fleet:skip',
+      getAgents: () => [],
+      getTasks: () => [],
+      renderMarkdown: s => s,
+    })
+
+    assert.match(html, new RegExp(`data-msg-id="${messageId}"`))
+    assert.match(html, /AGENTS\.md/)
+    assert.match(html, new RegExp(`@${String(messageId).slice(0, 7)}`))
+    assert.match(html, /data-project="world"/)
+    assert.match(html, /data-project-artifact-id="artifact-current"/)
+    assert.match(html, new RegExp(`data-project-version="${version}"`))
+    assert.match(html, /data-path="parts\/current-production-agents\.md"/)
+    assert.match(html, new RegExp(`data-url="/api/projects/world/parts/artifact-current/markdown\\?version=${version}"`))
+  }
 })
 
 test('project artifact markdown route recovers earlier bytes by message version after overwrite', async () => {

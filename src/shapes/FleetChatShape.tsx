@@ -22,7 +22,7 @@ import { probe } from '../perf-probe'
 import { isPhoneViewport } from '../phoneViewport'
 
 // @ts-ignore — vanilla JS module
-import { renderChatLine, resolveInlineAttachments, esc } from '../fleet/chat-render.mjs'
+import { renderChatLine, resolveInlineAttachments, esc, chatLineAttachmentRenderSignature } from '../fleet/chat-render.mjs'
 // @ts-ignore — vanilla JS module
 import { renderActivityGroup, scheduleTimeLabel } from '../fleet/activity-render.mjs'
 // @ts-ignore — vanilla JS module
@@ -2558,6 +2558,7 @@ function FleetChatInner({ shape }: { shape: any }) {
           senderPreambleDoc || '',
           lineMacros === preambleMacros ? 'viewer' : senderPreambleDoc || 'sender',
           JSON.stringify(renderM.metadata?.source || null),
+          chatLineAttachmentRenderSignature(renderM),
         ].join('::')
         let html = msgLineCache.current.get(cacheKey)
         const t0 = probe.isEnabled('chat') ? performance.now() : 0

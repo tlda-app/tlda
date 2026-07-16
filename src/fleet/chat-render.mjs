@@ -94,6 +94,14 @@ function projectVersionChipHtml(projectRef) {
   return `<span class="ref-chip-version" title="project version ${esc(projectRef.version)}">@${esc(projectRef.shortVersion)}</span>`
 }
 
+export function chatLineAttachmentRenderSignature(message) {
+  return JSON.stringify({
+    inlineAttachments: message?._inlineAttachments || null,
+    attachments: message?.attachments || null,
+    recipientRefs: message?.metadata?.recipient_refs || null,
+  })
+}
+
 export function timeShort(ts) {
   if (!ts) return ''
   const d = new Date(ts)
