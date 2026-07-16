@@ -2536,14 +2536,20 @@ function agentEnrollArgs(rawArgs) {
   return hasRawFlag(rawArgs, 'enroll') ? rawArgs : ['--enroll', ...rawArgs]
 }
 
-async function runFleetSpawn(spawnArgs) {
+export async function runFleetSpawn(spawnArgs, {
+  spawnImpl = null,
+  configDir = CONFIG_DIR,
+  loadConfigImpl = loadConfig,
+  localAgentLedgerPath = null,
+} = {}) {
   if (spawnArgs.includes('--list-models')) {
     const { listModels } = await import('../agent-launch/models.mjs')
     const daemonConfig = readDaemonConfig(defaultDaemonConfigPath(CONFIG_DIR))
     console.log(JSON.stringify(listModels(withDaemonModelAliases(loadConfig(), daemonConfig)), null, 2))
     return
   }
-  const { spawn } = await import('../agent-launch/index.mjs')
+  const { spawn: defaultSpawn } = await import('../agent-launch/index.mjs')
+  const spawn = spawnImpl || defaultSpawn
   const { newFleetId } = await import('../agent-launch/identity.mjs')
   const session = flagFromRaw(spawnArgs, 'session')
   const refresh = hasRawFlag(spawnArgs, 'refresh')
@@ -2557,22 +2563,36 @@ async function runFleetSpawn(spawnArgs) {
   // daemon.yaml (Skip: "in terms of the CLI, I just want my fucking profiles").
   // Naming a profile IS the fence request; no flag = unfenced. There is no
   // --policy and no rung flag.
-  let permissionArg = flagFromRaw(spawnArgs, 'permissions') || undefined
-  let permissionRequest = permissionsFromRaw(spawnArgs)
-  const cwd = resolve(flagFromRaw(spawnArgs, 'cwd') || process.cwd())
+  const spawnMode = session ? 'session' : (refresh ? 'refresh' : (fresh ? 'fresh' : 'respawn'))
+  const explicitPermissionArg = flagFromRaw(spawnArgs, 'permissions') || undefined
+  const explicitCwd = hasRawFlag(spawnArgs, 'cwd')
+  let permissionArg = explicitPermissionArg
+  let permissionRequest = explicitPermissionArg ? permissionsFromRaw(spawnArgs) : undefined
+  let cwd = resolve(flagFromRaw(spawnArgs, 'cwd') || process.cwd())
+  let wakeLocalAgentId = null
+  let wakeAgentId = null
   const model = flagFromRaw(spawnArgs, 'model') || undefined
   const kind = undefined
   const acknowledgeNoSecurity = hasRawFlag(spawnArgs, 'i-like-to-live-dangerously')
   let ledger = null
   try {
-    const daemonConfig = readDaemonConfig(defaultDaemonConfigPath(CONFIG_DIR))
-    if (!permissionArg && !fresh && !session) {
+    const daemonConfig = readDaemonConfig(defaultDaemonConfigPath(configDir))
+    if (spawnMode === 'respawn') {
       const { createLocalAgentLedger } = await import('../agent-launch/local-agent-ledger.mjs')
-      const localLedger = createLocalAgentLedger()
+      const localLedger = createLocalAgentLedger(localAgentLedgerPath || undefined)
       try {
         const stored = localLedger.get(name) || localLedger.findByFriendlyName(name)
-        permissionArg = stored?.process?.permissionProfile || undefined
-        if (permissionArg) permissionRequest = permissionArg
+        const restored = resolveWakeRecipeFields({
+          name,
+          stored,
+          explicitCwd,
+          explicitPermissionArg,
+        })
+        cwd = restored.cwd
+        wakeLocalAgentId = restored.localAgentId
+        wakeAgentId = restored.agentId
+        permissionArg = restored.permissionArg
+        permissionRequest = restored.permissionRequest
       } finally {
         localLedger.close()
       }
@@ -2581,27 +2601,30 @@ async function runFleetSpawn(spawnArgs) {
     // A named --permissions profile must be one the operator actually configured
     // in daemon.yaml. Unknown profile → loud error listing the real ones, never a
     // silent fallback.
-    if (permissionArg) {
+    if (explicitPermissionArg) {
       const known = Object.keys(daemonConfig?.profiles || {})
-      if (!known.includes(permissionArg)) {
-        throw new Error(`unknown permission profile "${permissionArg}". Profiles (daemon.yaml): ${known.join(', ') || '(none configured)'}`)
+      if (!known.includes(explicitPermissionArg)) {
+        throw new Error(`unknown permission profile "${explicitPermissionArg}". Profiles (daemon.yaml): ${known.join(', ') || '(none configured)'}`)
       }
     }
-    ledger = createPermissionLedger(permissionLedgerPathFromDaemonConfig(daemonConfig, CONFIG_DIR))
+    ledger = createPermissionLedger(permissionLedgerPathFromDaemonConfig(daemonConfig, configDir))
     applyDaemonGrants(ledger, daemonConfig)
-    const config = withDaemonModelAliases(loadConfig(), daemonConfig)
-    const localGrant = ledger.grantFor({ id: 'localhost' })
-    const grant = resolveDirectSpawnGrant({
-      permissionRequest,
-      model,
-      kind,
-      config,
-      cwd,
-      spawnerPermissionSet: localGrant.permissionSet,
-    })
-    const grantedProfile = exactConfiguredPermissionProfile(grant.grantedPermissionSet, config, permissionRequest)
+    const config = withDaemonModelAliases(loadConfigImpl(), daemonConfig)
+    const grant = (spawnMode === 'respawn' && !explicitPermissionArg)
+      ? durableWakeGrant(ledger, { agentId: wakeAgentId, name })
+      : resolveDirectSpawnGrant({
+          permissionRequest,
+          model,
+          kind,
+          config,
+          cwd,
+          spawnerPermissionSet: ledger.grantFor({ id: 'localhost' }).permissionSet,
+        })
+    const grantedProfile = exactConfiguredPermissionProfile(grant.grantedPermissionSet, config, permissionArg)
+      || grant.grantedPermission
+      || grant.grantedPermissionSet?.permissionClass
+      || permissionArg
     if (grantedProfile) grant.grantedPermissionSet.permissionClass = grantedProfile
-    const spawnMode = session ? 'session' : (refresh ? 'refresh' : (fresh ? 'fresh' : 'respawn'))
     const suppliedAgentId = flagFromRaw(spawnArgs, 'agent-id') || undefined
     const preallocatedAgentId = suppliedAgentId || ((spawnMode === 'fresh' || spawnMode === 'session') ? newFleetId() : undefined)
     if (preallocatedAgentId) {
@@ -2622,12 +2645,12 @@ async function runFleetSpawn(spawnArgs) {
       effort: flagFromRaw(spawnArgs, 'effort') || undefined,
       modelOptions,
       permissionMode: flagFromRaw(spawnArgs, 'mode') || undefined,
-      permissionRequest,
+      permissionRequest: explicitPermissionArg ? permissionRequest : undefined,
       permissionProfile: grantedProfile,
       spawnPolicy: grant.grantedPolicy,
       permissionSet: grant.grantedPermissionSet,
       permissionLedger: ledger,
-      explicitPolicy: !!permissionArg,
+      explicitPolicy: !!explicitPermissionArg,
       acknowledgeNoSecurity,
       enforceFence: true,
       sessionId: session || undefined,
@@ -2655,6 +2678,15 @@ async function runFleetSpawn(spawnArgs) {
         source: 'agent-lifecycle-cli',
       })
     }
+    if (spawnMode === 'respawn' && wakeLocalAgentId && grantedProfile) {
+      const { createLocalAgentLedger } = await import('../agent-launch/local-agent-ledger.mjs')
+      const localLedger = createLocalAgentLedger(localAgentLedgerPath || undefined)
+      try {
+        localLedger.updateProcess(wakeLocalAgentId, { cwd, permissionProfile: grantedProfile })
+      } finally {
+        localLedger.close()
+      }
+    }
     const action = params.enroll ? 'Enrolled' : (params.spawnMode === 'fresh' || params.spawnMode === 'session' ? 'Created' : 'Woke')
     console.log(`${action} ${result.tmuxSession} (${result.fleetId}) in ${params.cwd || process.cwd()}`)
     // Transparency: state plainly what permissions the agent got and why, so no one
@@ -2673,6 +2705,45 @@ async function runFleetSpawn(spawnArgs) {
     process.exitCode = 1
   } finally {
     if (ledger) await ledger.close()
+  }
+}
+
+export function resolveWakeRecipeFields({
+  name,
+  stored,
+  explicitCwd = false,
+  explicitPermissionArg = undefined,
+} = {}) {
+  const label = name || stored?.friendlyName || stored?.serverAgentId || stored?.localAgentId || '(unknown)'
+  if (explicitCwd) {
+    throw new Error(`wake refused: --cwd is not valid for wake; wake restores the durable recipe cwd for "${label}"`)
+  }
+  if (!stored) {
+    throw new Error(`wake refused: local durable recipe missing for "${label}"`)
+  }
+  if (!stored.process?.cwd) {
+    throw new Error(`wake refused: local durable recipe for "${label}" has no cwd`)
+  }
+  const permissionArg = explicitPermissionArg || stored.process.permissionProfile || undefined
+  return {
+    cwd: resolve(stored.process.cwd),
+    localAgentId: stored.localAgentId,
+    agentId: stored.serverAgentId || stored.localAgentId,
+    permissionArg,
+    permissionRequest: explicitPermissionArg || undefined,
+  }
+}
+
+function durableWakeGrant(ledger, { agentId, name } = {}) {
+  const rec = ledger.get(agentId)
+  if (!rec?.spawnPolicy || !rec?.permissionSet) {
+    throw new Error(`wake refused: durable grant missing for "${name || agentId || '(unknown)'}"`)
+  }
+  return {
+    grantedPolicy: rec.spawnPolicy,
+    grantedPermissionSet: rec.permissionSet,
+    grantedPermissions: rec.permissionSet,
+    grantedPermission: rec.permissionSet?.permissionClass || rec.spawnPolicy?.name || null,
   }
 }
 

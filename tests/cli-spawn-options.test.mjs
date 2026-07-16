@@ -1,11 +1,18 @@
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import test from 'node:test'
 
 import {
   bindLifecycleCodexResumeIdentity,
   collectSpawnModelOptionsFromRaw,
+  resolveWakeRecipeFields,
+  runFleetSpawn,
   spawnPositionalFromRaw,
 } from '../cli/tlda.mjs'
+import { createLocalAgentLedger } from '../agent-launch/local-agent-ledger.mjs'
+import { createPermissionLedger } from '../agent-launch/permission-ledger.mjs'
 
 test('CLI spawn forwards recursive model option flags as modelOptions', () => {
   const args = [
@@ -94,4 +101,189 @@ test('CLI lifecycle codex wake treats existing resume id as bound', async () => 
   assert.equal(resolved.bound, true)
   assert.equal(resolved.existing, true)
   assert.deepEqual(writes, [])
+})
+
+function permissionSet(name, writeAllow) {
+  return {
+    type: 'permission-set',
+    name,
+    operations: {
+      read: { allow: writeAllow, deny: [] },
+      write: { allow: writeAllow, deny: [] },
+      spawn: { allow: ['**'], deny: [] },
+    },
+    rules: [],
+    projectedPolicy: { name, policy: writeAllow.includes('**') ? 'unsandboxed' : 'cwd' },
+    permissionClass: name,
+  }
+}
+
+function writeDaemonConfig(configDir) {
+  fs.mkdirSync(configDir, { recursive: true })
+  fs.writeFileSync(path.join(configDir, 'daemon.yaml'), `
+regions:
+  all:
+    - "**"
+  recipe:
+    - "/tmp/tlda-recipe-cwd/**"
+profiles:
+  ops:
+    read:
+      allow: [all]
+    write:
+      allow: [all]
+  math:
+    read:
+      allow: [all]
+    write:
+      allow: [all]
+  wd:
+    read:
+      allow: [recipe]
+    write:
+      allow: [recipe]
+`)
+}
+
+function seedWakeRecipe(dbPath, { profile = 'ops' } = {}) {
+  const localLedger = createLocalAgentLedger(dbPath)
+  try {
+    localLedger.create({
+      localAgentId: 'local:recipe',
+      serverAgentId: 'fleet:recipe',
+      friendlyName: 'recipe',
+      harness: 'codex',
+      model: 'gpt-5.5',
+      tmuxName: 'fleet-recipe',
+      cwd: '/tmp/tlda-recipe-cwd',
+      permissionProfile: profile,
+    })
+  } finally {
+    localLedger.close()
+  }
+}
+
+function seedPermissionLedger(dbPath) {
+  const ledger = createPermissionLedger(dbPath)
+  try {
+    ledger.setSync('localhost', {
+      spawnPolicy: { name: 'wd', policy: 'cwd' },
+      permissionSet: permissionSet('wd', ['/tmp/tlda-recipe-cwd/**']),
+      source: 'test',
+    })
+    ledger.setSync('fleet:recipe', {
+      spawnPolicy: { name: 'ops', policy: 'unsandboxed' },
+      permissionSet: permissionSet('ops', ['**']),
+      source: 'test',
+    })
+  } finally {
+    ledger.close()
+  }
+}
+
+test('wake without explicit flags uses durable grant directly without caller clamp', async () => {
+  const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-wake-direct-grant-'))
+  const dbPath = path.join(configDir, 'fleet-daemon.db')
+  const spawnCalls = []
+  try {
+    writeDaemonConfig(configDir)
+    seedWakeRecipe(dbPath, { profile: 'ops' })
+    seedPermissionLedger(dbPath)
+
+    await runFleetSpawn(['recipe'], {
+      configDir,
+      localAgentLedgerPath: dbPath,
+      loadConfigImpl: () => ({}),
+      spawnImpl: async (params) => {
+        spawnCalls.push(params)
+        return {
+          fleetId: 'fleet:recipe',
+          tmuxSession: 'fleet-recipe',
+          harness: 'codex',
+          model: 'gpt-5.5',
+          resumeId: '11111111-2222-4333-8444-555555555555',
+        }
+      },
+    })
+
+    assert.equal(spawnCalls.length, 1)
+    assert.equal(spawnCalls[0].cwd, '/tmp/tlda-recipe-cwd')
+    assert.equal(spawnCalls[0].permissionProfile, 'ops')
+    assert.equal(spawnCalls[0].spawnPolicy.name, 'ops')
+    assert.equal(spawnCalls[0].permissionSet.permissionClass, 'ops')
+    assert.equal(spawnCalls[0].permissionRequest, undefined)
+    assert.equal(spawnCalls[0].explicitPolicy, false)
+
+    const permissionLedger = createPermissionLedger(dbPath)
+    const localLedger = createLocalAgentLedger(dbPath)
+    try {
+      assert.equal(permissionLedger.get('fleet:recipe').permissionSet.permissionClass, 'ops')
+      assert.equal(localLedger.get('fleet:recipe').process.permissionProfile, 'ops')
+    } finally {
+      permissionLedger.close()
+      localLedger.close()
+    }
+  } finally {
+    fs.rmSync(configDir, { recursive: true, force: true })
+  }
+})
+
+test('wake honors explicit permissions and persists the clamped resolved grant', async () => {
+  const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-wake-explicit-clamp-'))
+  const dbPath = path.join(configDir, 'fleet-daemon.db')
+  const spawnCalls = []
+  try {
+    writeDaemonConfig(configDir)
+    seedWakeRecipe(dbPath, { profile: 'ops' })
+    seedPermissionLedger(dbPath)
+
+    await runFleetSpawn(['recipe', '--permissions', 'math'], {
+      configDir,
+      localAgentLedgerPath: dbPath,
+      loadConfigImpl: () => ({}),
+      spawnImpl: async (params) => {
+        spawnCalls.push(params)
+        return {
+          fleetId: 'fleet:recipe',
+          tmuxSession: 'fleet-recipe',
+          harness: 'codex',
+          model: 'gpt-5.5',
+          resumeId: '22222222-2222-4333-8444-555555555555',
+        }
+      },
+    })
+
+    assert.equal(spawnCalls.length, 1)
+    assert.equal(spawnCalls[0].permissionProfile, 'wd')
+    assert.equal(spawnCalls[0].spawnPolicy.name, 'cwd')
+    assert.equal(spawnCalls[0].permissionSet.permissionClass, 'wd')
+    assert.equal(spawnCalls[0].permissionRequest, 'math')
+    assert.equal(spawnCalls[0].explicitPolicy, true)
+
+    const permissionLedger = createPermissionLedger(dbPath)
+    const localLedger = createLocalAgentLedger(dbPath)
+    try {
+      assert.equal(permissionLedger.get('fleet:recipe').permissionSet.permissionClass, 'wd')
+      assert.equal(localLedger.get('fleet:recipe').process.permissionProfile, 'wd')
+    } finally {
+      permissionLedger.close()
+      localLedger.close()
+    }
+  } finally {
+    fs.rmSync(configDir, { recursive: true, force: true })
+  }
+})
+
+test('wake refuses explicit cwd because wake is not move', () => {
+  const stored = {
+    localAgentId: 'local:recipe',
+    process: {
+      cwd: '/tmp/tlda-recipe-cwd',
+      permissionProfile: 'wd',
+    },
+  }
+  assert.throws(
+    () => resolveWakeRecipeFields({ name: 'recipe', stored, explicitCwd: true }),
+    /--cwd is not valid for wake/,
+  )
 })
