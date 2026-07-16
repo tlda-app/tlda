@@ -420,7 +420,10 @@ async function spawnRespawn(params) {
   if (!adapter) throw new SpawnError('launch-failed', `unknown spawn harness: ${requestedKind}`, { kind: requestedKind })
   const fleetId = agent.id
   const friendlyName = params.name && !params.name.startsWith('fleet:') ? params.name : (agent.friendly_name || agent.name || fleetId)
-  let cwd = resolveSpawnCwd(params.cwd || agent.cwd || process.cwd())
+  if (!agent.cwd) {
+    throw new SpawnError('launch-failed', `Cannot wake ${friendlyName} (${fleetId}): durable recipe has no cwd`, { fleetId })
+  }
+  const cwd = resolveSpawnCwd(agent.cwd)
   const modelResolved = resolveAdapterModel(adapter, rawModel, config, modelSpec)
   const model = modelResolved.model
   const tmuxSession = agent.tmux_session || `fleet-${sanitizeSessionName(friendlyName)}`
@@ -484,7 +487,6 @@ async function spawnRespawn(params) {
     throw new SpawnError('launch-failed', `Session resolution failed for ${friendlyName} (${fleetId}): could not locate the existing ${requestedKind} rollout. This is a session-tracking fault in the resolver, not a lost session.`, { fleetId })
   }
   const resumeId = adapter.resumeId?.(handle)
-  if (handle?.cwd) cwd = resolveSpawnCwd(handle.cwd)
   if (requestedKind === 'claude' && resumeId) stripSyntheticTail(resumeId)
   const dnsAlias = await (deps.resolveDnsAlias || resolveDnsAlias)(api).catch(() => null)
   const launchPolicy = resolveLaunchPolicy({

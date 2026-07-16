@@ -5,6 +5,8 @@ import path from 'node:path'
 import { spawn } from '../agent-launch/index.mjs'
 
 const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-explicit-relaunch-'))
+const callerCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-caller-cwd-'))
+const resumeCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-resume-cwd-'))
 const tmpClaudeProjects = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-reused-seat-claude-'))
 const agent = {
   id: 'fleet:explicit-relaunch',
@@ -113,6 +115,7 @@ try {
     name: 'explicit-relaunch',
     model: 'gpt-5.5',
     config,
+    cwd: callerCwd,
     spawnPolicy: { name: 'ops', policy: 'unsandboxed' },
     permissionSet,
     explicitPolicy: true,
@@ -125,7 +128,7 @@ try {
         ok: true,
         resumeId: '019f-test-resume',
         jsonlPath: path.join(cwd, 'rollout.jsonl'),
-        cwd,
+        cwd: resumeCwd,
         source: 'test',
       }),
       resolveDnsAlias: async () => null,
@@ -140,6 +143,7 @@ try {
 
   assert.equal(relaunched.alreadyAlive, undefined)
   assert.equal(spawnCall?.session, 'fleet-explicit-relaunch')
+  assert.equal(spawnCall?.dir, cwd, 'wake must restore the durable recipe cwd, not caller or resume-handle cwd')
   assert.equal(spawnCall?.options?.killExisting, true, 'explicit permission wake must replace the stale runtime')
   assert.match(spawnCall.cmd, /--ask-for-approval\s+never/)
   assert.match(spawnCall.cmd, /--sandbox\s+danger-full-access/)
@@ -175,6 +179,8 @@ try {
   )
 } finally {
   fs.rmSync(cwd, { recursive: true, force: true })
+  fs.rmSync(callerCwd, { recursive: true, force: true })
+  fs.rmSync(resumeCwd, { recursive: true, force: true })
   fs.rmSync(tmpClaudeProjects, { recursive: true, force: true })
 }
 
