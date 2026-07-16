@@ -1574,7 +1574,7 @@ function spawnMailboxCompletionText(entry, status, detail) {
   const label = detail.label || detail.agentId || entry.meta?.name || 'spawn'
   if (status === 'completed') {
     const agentPart = detail.agentId ? ` (${detail.agentId})` : ''
-    const policyPart = detail.grantedPermission ? ` Permission: \`${detail.grantedPermission}\`.` : ''
+    const policyPart = detail.permissionProfile ? ` Permission: \`${detail.permissionProfile}\`.` : ''
     return `**Spawn mailbox ${entry.id} complete**: \`${label}\`${agentPart} has logged in and is ready for inbox pickup.${policyPart}`
   }
   return `**Spawn mailbox ${entry.id} failed**: \`${label}\` — ${detail.error || detail.reason || 'spawn failed'}.`
@@ -1704,7 +1704,6 @@ async function performSpawnRelay(caller, msg) {
       human: !!caller.human,
       spawnPolicy: caller.metadata?.spawnPolicy || undefined,
       daemonId: caller.daemon_key || caller.metadata?.daemon_key || undefined,
-      permissionClass: caller.metadata?.spawnPolicy?.permission || caller.metadata?.permissionClass || undefined,
     },
     spawnRoute: route.source,
     daemon_env_name: route.env_name,
@@ -1798,7 +1797,7 @@ async function performSpawnRelay(caller, msg) {
         requested_name: requestedName,
         name_changed: result?.name_changed ?? (assignedName !== requestedName),
         spawnPolicy,
-        grantedPermission: result?.grantedPermission || spawnPolicy?.permission,
+        permissionProfile: result?.permissionProfile || null,
         spawnerPermission: result?.spawnerPermission,
         projectPermission: result?.projectPermission,
         modelPermission: result?.modelPermission,

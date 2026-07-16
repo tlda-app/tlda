@@ -245,9 +245,7 @@ export function sandboxMetadata(spawnPolicy, leasePolicy = null) {
   if (!spawnPolicy) return {}
   return {
     spawnPolicy: {
-      ...(spawnPolicy.permission ? { permission: spawnPolicy.permission } : {}),
       ...(spawnPolicy.policy ? { policy: spawnPolicy.policy } : {}),
-      ...(spawnPolicy.name ? { name: spawnPolicy.name } : {}),
     },
     ...(leasePolicy?.permission_set ? { permissionSet: leasePolicy.permission_set } : {}),
     ...(leasePolicy ? { sandbox: stripRunner(leasePolicy) } : {}),

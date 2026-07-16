@@ -122,15 +122,15 @@ async function run() {
 
   if (!collide) fail(`no spawn RPC for fleet:tester1 reached the daemon. RPCs: ${JSON.stringify(spawnRpcs)}`)
   if (collide.respawn !== true) fail(`collision spawn should coerce respawn=true, got ${collide.respawn}`)
-  if (collide.spawnPolicy || collide.grantedPermission || collide.mode) {
+  if (collide.spawnPolicy || collide.permissionProfile || collide.mode) {
     fail(`server must not send granted policy/mode/fence on collision wake: ${JSON.stringify(collide)}`)
   }
   console.log('PASS: collision spawn coerced to respawn=true using the resolved fleet id')
 
   if (!fresh) fail(`no spawn RPC for totallynewname reached the daemon. RPCs: ${JSON.stringify(spawnRpcs)}`)
   if (fresh.respawn === true) fail(`new-name spawn should stay fresh (respawn falsy), got ${fresh.respawn}`)
-  if (fresh.requestedPermission !== 'full') fail(`server should relay requestedPermission full, got ${fresh.requestedPermission}`)
-  if (fresh.spawnPolicy || fresh.grantedPermission || fresh.mode) {
+  if (fresh.permissionRequest !== 'full') fail(`server should relay permissionRequest full, got ${fresh.permissionRequest}`)
+  if (fresh.spawnPolicy || fresh.permissionProfile || fresh.mode) {
     fail(`server readiness/policy handling must be status-only; it must not choose grant/mode/fence: ${JSON.stringify(fresh)}`)
   }
   console.log('PASS: new-name spawn stayed fresh (respawn falsy)')

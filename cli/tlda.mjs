@@ -2620,17 +2620,14 @@ export async function runFleetSpawn(spawnArgs, {
           cwd,
           spawnerPermissionSet: ledger.grantFor({ id: 'localhost' }).permissionSet,
         })
-    const grantedProfile = exactConfiguredPermissionProfile(grant.grantedPermissionSet, config, permissionArg)
-      || grant.grantedPermission
-      || grant.grantedPermissionSet?.permissionClass
-      || permissionArg
-    if (grantedProfile) grant.grantedPermissionSet.permissionClass = grantedProfile
+    const grantedProfile = grant.permissionProfile
+      || exactConfiguredPermissionProfile(grant.permissionSet, config, permissionArg)
     const suppliedAgentId = flagFromRaw(spawnArgs, 'agent-id') || undefined
     const preallocatedAgentId = suppliedAgentId || ((spawnMode === 'fresh' || spawnMode === 'session') ? newFleetId() : undefined)
     if (preallocatedAgentId) {
       await ledger.set(preallocatedAgentId, {
-        spawnPolicy: grant.grantedPolicy,
-        permissionSet: grant.grantedPermissionSet,
+        spawnPolicy: grant.spawnPolicy,
+        permissionSet: grant.permissionSet,
         source: 'agent-lifecycle-cli',
       })
     }
@@ -2647,8 +2644,8 @@ export async function runFleetSpawn(spawnArgs, {
       permissionMode: flagFromRaw(spawnArgs, 'mode') || undefined,
       permissionRequest: explicitPermissionArg ? permissionRequest : undefined,
       permissionProfile: grantedProfile,
-      spawnPolicy: grant.grantedPolicy,
-      permissionSet: grant.grantedPermissionSet,
+      spawnPolicy: grant.spawnPolicy,
+      permissionSet: grant.permissionSet,
       permissionLedger: ledger,
       explicitPolicy: !!explicitPermissionArg,
       acknowledgeNoSecurity,
@@ -2671,10 +2668,11 @@ export async function runFleetSpawn(spawnArgs, {
     if (result?.harness === 'codex' && result.fleetId && result.tmuxSession && !boundResume.bound) {
         console.error(red(`warning: launched ${name || result.fleetId}, but could not bind a Codex resume identity yet; wake may fail until daemon session ingestion catches up`))
     }
-    if (!preallocatedAgentId || result.fleetId !== preallocatedAgentId) {
+    const shouldPersistGrant = params.spawnMode !== 'respawn' || params.explicitPolicy
+    if (shouldPersistGrant && (!preallocatedAgentId || result.fleetId !== preallocatedAgentId)) {
       await ledger.set(result.fleetId, {
-        spawnPolicy: grant.grantedPolicy,
-        permissionSet: grant.grantedPermissionSet,
+        spawnPolicy: grant.spawnPolicy,
+        permissionSet: grant.permissionSet,
         source: 'agent-lifecycle-cli',
       })
     }
@@ -2694,8 +2692,8 @@ export async function runFleetSpawn(spawnArgs, {
     // was named via --permissions (the only thing that arms the fence). This mirrors
     // the real launch decision (permissions.mjs useFence).
     if (params.explicitPolicy) {
-      const profile = grantedProfile || grant?.grantedPolicy?.name || 'scoped'
-      const scope = grant?.grantedPolicy?.policy || 'scoped'
+      const profile = grantedProfile || 'unmatched'
+      const scope = grant?.spawnPolicy?.policy || 'scoped'
       console.log(`  permissions: ${profile} — fenced (${scope})`)
     } else {
       console.log(`  permissions: unfenced — no --permissions profile named (full access)`)
@@ -2740,10 +2738,9 @@ function durableWakeGrant(ledger, { agentId, name } = {}) {
     throw new Error(`wake refused: durable grant missing for "${name || agentId || '(unknown)'}"`)
   }
   return {
-    grantedPolicy: rec.spawnPolicy,
-    grantedPermissionSet: rec.permissionSet,
-    grantedPermissions: rec.permissionSet,
-    grantedPermission: rec.permissionSet?.permissionClass || rec.spawnPolicy?.name || null,
+    spawnPolicy: rec.spawnPolicy,
+    permissionSet: rec.permissionSet,
+    permissionProfile: rec.permissionSet?.name || null,
   }
 }
 
@@ -3517,7 +3514,7 @@ async function cmdAgentPermissions() {
     const storedText = stored ? (typeof stored === 'string' ? stored : JSON.stringify(stored)) : 'none'
     const policy = meta.spawnPolicy || null
     console.log(`${agent.friendly_name || agent.id} (${agent.id})`)
-    console.log(`  permission profile: ${meta.permissionProfile || (policy?.name || 'none')}`)
+    console.log(`  permission profile: ${meta.permissionProfile || 'none'}`)
     console.log(`  requested permissions: ${storedText}`)
     console.log(`  spawn policy: ${policy ? `${policy.name || 'custom'} (${policy.policy || 'unknown'} / ${policy.permission || 'unknown'})` : 'none'}`)
     return

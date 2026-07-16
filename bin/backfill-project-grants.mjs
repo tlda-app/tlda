@@ -143,19 +143,19 @@ for (const row of rows) {
     config: grantConfig,
     cwd: row.cwd,
   })
-  const gp = grant.grantedPolicy
-  const wa = grant.grantedPermissionSet?.operations?.write?.allow || []
+  const gp = grant.spawnPolicy
+  const wa = grant.permissionSet?.operations?.write?.allow || []
   const machineWide = wa.some((z) => ['**', 'machine', '/'].includes(z))
   const currentPermissionSet = parseJson(row.permission_set)
-  const direction = directionForGrant(currentPermissionSet, grant.grantedPermissionSet)
+  const direction = directionForGrant(currentPermissionSet, grant.permissionSet)
   byDirection[direction] = (byDirection[direction] || 0) + 1
   eligible++
   byProfile[projectDefault] = (byProfile[projectDefault] || 0) + 1
-  const item = { id: row.id, cwd: row.cwd, projectDefault, granted: gp?.name, machineWide, direction }
+  const item = { id: row.id, cwd: row.cwd, projectDefault, permissionProfile: grant.permissionProfile || null, machineWide, direction }
   if (sample.length < 6) sample.push(item)
   if (directionSamples[direction]?.length < 6) directionSamples[direction].push(item)
   if (APPLY && direction === 'raise') {
-    ledger.setSync(row.id, { spawnPolicy: gp, permissionSet: grant.grantedPermissionSet, source: 'backfill:project-default' })
+    ledger.setSync(row.id, { spawnPolicy: gp, permissionSet: grant.permissionSet, source: 'backfill:project-default' })
     changed++
   }
 }
