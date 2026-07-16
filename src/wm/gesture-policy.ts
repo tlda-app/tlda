@@ -12,9 +12,6 @@ export const PAN_LOCK_INITIAL = 8    // px of (decayed) travel before the lock e
 export const PAN_BREAK_RATIO = 1.6   // off-axis must out-travel the locked axis by this to flip it
 export const PAN_OFFAXIS_DAMP = 0.12 // residual off-axis fraction while locked (0 would be a hard lock)
 export const PAN_AXIS_DECAY = 0.8    // per-move decay of the axis accumulators (recent-motion weighting)
-export const PHONE_LANE_LOCK = 16
-export const PHONE_LANE_AXIS_RATIO = 1.2
-export const PHONE_LANE_SNAP_DURATION = 160
 export const RESIZE_AXIS_LOCK_INITIAL = 12
 export const RESIZE_AXIS_BREAK_RATIO = 1.6
 export const RESIZE_AXIS_OFFAXIS_DAMP = 0.12
@@ -87,49 +84,4 @@ export function nearestLaneDocLeftScreen<TLane extends string>(
 	return stops.reduce((best, stop) =>
     Math.abs(stop.docLeftScreen - docLeftScreen) < Math.abs(best.docLeftScreen - docLeftScreen) ? stop : best,
   )
-}
-
-export function phoneLaneDragDecision(dx: number, dy: number): 'abort' | 'pending' | 'dragging' {
-  if (Math.abs(dy) >= PHONE_LANE_LOCK && Math.abs(dy) > Math.abs(dx)) return 'abort'
-  if (Math.abs(dx) < PHONE_LANE_LOCK || Math.abs(dx) < Math.abs(dy) * PHONE_LANE_AXIS_RATIO) return 'pending'
-  return 'dragging'
-}
-
-export function phoneLaneSweepCanFit(startX: number, viewportW: number, dir: number, commit: number): boolean {
-  if (dir < 0) return startX >= commit
-  if (dir > 0) return viewportW - startX >= commit
-  return false
-}
-
-export function phoneItemStackPushCanStart(startX: number, viewportW: number, paneCommit: number): boolean {
-  if (viewportW <= 0) return false
-  return !phoneLaneSweepCanFit(startX, viewportW, -1, paneCommit)
-}
-
-export type PhoneStackGestureKind = 'pane' | 'item-push' | 'stack-pop'
-export type PhoneStackGestureDecision = 'abort' | 'pending' | 'dragging'
-
-export function phoneStackPopCommitPx(paneCommit: number): number {
-  return Math.min(paneCommit, 88)
-}
-
-export function phoneStackGestureDecision(kind: PhoneStackGestureKind, dx: number, dy: number): PhoneStackGestureDecision {
-  if (kind === 'pane' || kind === 'item-push') return phoneLaneDragDecision(dx, dy)
-  if (dy > 0 && Math.abs(dy) >= PHONE_LANE_LOCK) return 'abort'
-  if (Math.abs(dx) >= PHONE_LANE_LOCK && Math.abs(dx) > Math.abs(dy)) return 'abort'
-  const up = -dy
-  if (up < PHONE_LANE_LOCK || up < Math.abs(dx) * PHONE_LANE_AXIS_RATIO) return 'pending'
-  return 'dragging'
-}
-
-export function phoneStackGestureProgress(kind: PhoneStackGestureKind, dx: number, dy: number, commit: number): number {
-  if (commit <= 0) return 0
-  const distance = kind === 'stack-pop'
-    ? Math.max(0, -dy)
-    : Math.max(0, -dx)
-  return Math.min(1, distance / commit)
-}
-
-export function phoneStackGestureCommits(kind: PhoneStackGestureKind, dx: number, dy: number, commit: number): boolean {
-  return phoneStackGestureProgress(kind, dx, dy, commit) >= 1
 }

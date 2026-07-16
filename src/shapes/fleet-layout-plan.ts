@@ -1,8 +1,7 @@
 import type { FleetChatFilter } from './fleet-layout-seeding'
 import { fleetPanelDefaultProps, type FleetPanelType } from './fleet-panel-registry'
-import { PHONE_CHAT_PANE_INDEX, PHONE_INBOX_PANE_INDEX, phonePaneX } from './phone-pane-geometry'
 
-export type FleetLayoutVariant = 'phone' | '3-col' | '2x2' | 'big-chat' | 'both-margins' | 'touch'
+export type FleetLayoutVariant = '3-col' | '2x2' | 'big-chat' | 'both-margins'
 
 export type FleetLayoutShapePlan = {
   id: string
@@ -36,7 +35,6 @@ export type FleetLayoutPlanInput = {
   rightChatH: number
   docviewH: number
   viewport: { w: number; h: number }
-  phoneTarget: { pageX: number } | null
   makeSlotId: (slot: string) => string
   filters: [
     FleetChatFilter,
@@ -77,54 +75,9 @@ export function planFleetLayoutShapes(input: FleetLayoutPlanInput): FleetLayoutP
     searchH,
     rightChatH,
     docviewH,
-    viewport,
-    phoneTarget,
     makeSlotId,
     filters: [filter1, filter2, filter3, filter4],
   } = input
-
-  // Phone layout: three full-screen snap lanes anchored by the document:
-  // inbox/agents, chat, document. Extra pinned task panes continue leftward.
-  if (variant === 'phone') {
-    if (!phoneTarget) return { shapes: [], dispatchHudReset: false }
-
-    const screenW = Math.round(viewport.w)
-    const screenH = Math.round(viewport.h)
-    const chatX = phonePaneX(phoneTarget.pageX, PHONE_CHAT_PANE_INDEX, screenW, dx)
-    const inboxX = phonePaneX(phoneTarget.pageX, PHONE_INBOX_PANE_INDEX, screenW, dx)
-    return {
-      dispatchHudReset: true,
-      shapes: [
-        panelShape('fleet-chat', {
-          id: makeSlotId('chat-0'),
-          x: chatX, y: anchorY,
-          isLocked: true,
-          props: { w: screenW, h: screenH, filter: filter1 },
-        }, myId, myDevice),
-        panelShape('fleet-inbox', {
-          id: makeSlotId('inbox'),
-          x: inboxX, y: anchorY,
-          isLocked: true,
-          props: { w: screenW, h: screenH },
-        }, myId, myDevice),
-      ],
-    }
-  }
-
-  // Touch layout: a single container (inbox strip + nested chat), one column.
-  // The container auto-creates its own fleet-chat child, so no other shapes.
-  if (variant === 'touch') {
-    const touchW = chatW3
-    return {
-      dispatchHudReset: false,
-      shapes: [panelShape('fleet-touch-inbox', {
-        id: makeSlotId('touch-inbox'),
-        x: anchorX + leftW + gap, y: anchorY,
-        isLocked: false,
-        props: { w: touchW, h: totalH },
-      }, myId, myDevice)],
-    }
-  }
 
   const shapes: FleetLayoutShapePlan[] = [
     panelShape('fleet-inbox', {

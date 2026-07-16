@@ -22,19 +22,6 @@ import {
 import { useIsInViewport } from './useIsInViewport'
 import { PDF_HEIGHT } from '../layoutConstants'
 import { clearHtmlTextSelection, recordHtmlTextSelection } from '../htmlSelection'
-import { PHONE_INBOX_PANE_INDEX, deletePhonePinnedChatPane } from './phone-pane-stack'
-import {
-  phoneLaneCommitPx,
-  setPhoneGestureCandidate,
-  setPhoneGestureProgress,
-  snapToPhoneLaneIndex,
-} from '../overlays/useFleetGestures'
-import {
-  phoneStackGestureCommits,
-  phoneStackGestureDecision,
-  phoneStackGestureProgress,
-  phoneStackPopCommitPx,
-} from '../wm'
 
 // Heading Y positions reported by bridge scripts, keyed by shape ID
 export const htmlHeadingPositions = new Map<string, Record<string, number>>()
@@ -324,15 +311,7 @@ function HtmlPageComponent({ shape }: { shape: any }) {
   const editor = useEditor()
   const isDark = useValue('isDarkMode', () => editor.user.getIsDarkMode(), [editor])
   const iframeRef = useRef<HTMLIFrameElement>(null)
-  const phonePopStripRef = useRef<HTMLDivElement>(null)
   const docLinkHoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const phonePopGestureRef = useRef<{
-    pointerId: number
-    mode: 'pending' | 'dragging'
-    x0: number
-    y0: number
-    maxUp: number
-  } | null>(null)
 
   // Register iframe ref for SvgFigureShape to send transform messages
   useEffect(() => {
@@ -354,161 +333,8 @@ function HtmlPageComponent({ shape }: { shape: any }) {
     editor.getCurrentToolId() === 'text-select', [editor])
   const isBrowseTool = useValue('browse-tool', () =>
     editor.getCurrentToolId() === 'select', [editor])
-  const phoneViewportBounds = useValue('html-phone-viewport-bounds', () =>
-    editor.getViewportPageBounds(), [editor])
-  const phoneCamera = useValue('html-phone-camera', () =>
-    editor.getCamera(), [editor])
   const iframeActive = isTextSelectTool || isInteracting || isBrowseTool
-  const isPhoneTemporaryMarkdownPane =
-    isTemporaryMarkdownColumn &&
-    !!shape.meta?.phonePaneOwner &&
-    typeof document !== 'undefined' &&
-    document.body.classList.contains('phone-mode')
-  const iframePointerActive = iframeActive && !isPhoneTemporaryMarkdownPane
-  const phonePopStripHeight = isPhoneTemporaryMarkdownPane
-    ? Math.max(84, 84 / Math.max(phoneCamera.z || 1, 0.01))
-    : 84
-  const phonePopStripTop = isPhoneTemporaryMarkdownPane
-    ? Math.max(
-        0,
-        Math.min(
-          Math.max(0, shape.props.h - phonePopStripHeight),
-          phoneViewportBounds.maxY - shape.y - phonePopStripHeight
-        )
-      )
-    : 0
-
-  const resetPhonePopGesture = useCallback(() => {
-    phonePopGestureRef.current = null
-    setPhoneGestureProgress('up', 0, phoneStackPopCommitPx(phoneLaneCommitPx()), 'stack-pop')
-  }, [])
-
-  const handlePhonePanePointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    if (!isPhoneTemporaryMarkdownPane) return
-    if (!e.isPrimary) return
-    if (e.pointerType === 'mouse' && e.button !== 0) return
-    setPhoneGestureCandidate('up', phoneStackPopCommitPx(phoneLaneCommitPx()), 'stack-pop')
-    phonePopGestureRef.current = {
-      pointerId: e.pointerId,
-      mode: 'pending',
-      x0: e.clientX,
-      y0: e.clientY,
-      maxUp: 0,
-    }
-    e.preventDefault()
-    stopEventPropagation(e)
-    try { e.currentTarget.setPointerCapture(e.pointerId) } catch {
-      // Best effort: synthetic/offscreen pointer events may not be capturable.
-    }
-  }, [isPhoneTemporaryMarkdownPane])
-
-  const handlePhonePanePointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    const gesture = phonePopGestureRef.current
-    if (!gesture || gesture.pointerId !== e.pointerId) return
-    const dx = e.clientX - gesture.x0
-    const dy = e.clientY - gesture.y0
-    gesture.maxUp = Math.max(gesture.maxUp, -dy)
-    const commit = phoneStackPopCommitPx(phoneLaneCommitPx())
-    const decision = gesture.mode === 'pending' ? phoneStackGestureDecision('stack-pop', dx, dy) : 'dragging'
-    if (decision === 'abort') {
-      resetPhonePopGesture()
-      return
-    }
-    if (dy <= 0 || decision === 'dragging') {
-      e.preventDefault()
-      stopEventPropagation(e)
-    }
-    setPhoneGestureProgress('up', phoneStackGestureProgress('stack-pop', dx, dy, commit), commit, 'stack-pop')
-    if (gesture.mode === 'pending' && decision === 'dragging') gesture.mode = 'dragging'
-  }, [resetPhonePopGesture])
-
-  const handlePhonePanePointerEnd = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    const gesture = phonePopGestureRef.current
-    if (!gesture || gesture.pointerId !== e.pointerId) return
-    const shouldCommit = gesture.mode === 'dragging' && phoneStackGestureCommits('stack-pop', 0, -gesture.maxUp, phoneStackPopCommitPx(phoneLaneCommitPx()))
-    e.preventDefault()
-    stopEventPropagation(e)
-    resetPhonePopGesture()
-    if (!shouldCommit) return
-    const returnIndex = isPhoneTemporaryMarkdownPane ? PHONE_INBOX_PANE_INDEX : undefined
-    const result = deletePhonePinnedChatPane(editor, shape)
-    if (!result.ok) {
-      console.warn('[phone-pane-stack] pop-markdown failed', result)
-      return
-    }
-    snapToPhoneLaneIndex(editor, result.docLeftPage, returnIndex ?? result.targetIndex)
-  }, [editor, isPhoneTemporaryMarkdownPane, resetPhonePopGesture, shape])
-
-  useEffect(() => {
-    if (!isPhoneTemporaryMarkdownPane) return
-    const el = phonePopStripRef.current
-    if (!el) return
-
-    const begin = (e: PointerEvent) => {
-      if (!e.isPrimary) return
-      if (e.pointerType === 'mouse' && e.button !== 0) return
-      setPhoneGestureCandidate('up', phoneStackPopCommitPx(phoneLaneCommitPx()), 'stack-pop')
-      phonePopGestureRef.current = {
-        pointerId: e.pointerId,
-        mode: 'pending',
-        x0: e.clientX,
-        y0: e.clientY,
-        maxUp: 0,
-      }
-      e.preventDefault()
-      e.stopPropagation()
-      try { el.setPointerCapture(e.pointerId) } catch {
-        // Synthetic/offscreen pointer events may not be capturable.
-      }
-    }
-
-    const move = (e: PointerEvent) => {
-      const gesture = phonePopGestureRef.current
-      if (!gesture || gesture.pointerId !== e.pointerId) return
-      const dx = e.clientX - gesture.x0
-      const dy = e.clientY - gesture.y0
-      gesture.maxUp = Math.max(gesture.maxUp, -dy)
-      const commit = phoneStackPopCommitPx(phoneLaneCommitPx())
-      const decision = gesture.mode === 'pending' ? phoneStackGestureDecision('stack-pop', dx, dy) : 'dragging'
-      if (decision === 'abort') {
-        resetPhonePopGesture()
-        return
-      }
-      if (dy <= 0 || decision === 'dragging') {
-        e.preventDefault()
-        e.stopPropagation()
-      }
-      setPhoneGestureProgress('up', phoneStackGestureProgress('stack-pop', dx, dy, commit), commit, 'stack-pop')
-      if (gesture.mode === 'pending' && decision === 'dragging') gesture.mode = 'dragging'
-    }
-
-    const end = (e: PointerEvent) => {
-      const gesture = phonePopGestureRef.current
-      if (!gesture || gesture.pointerId !== e.pointerId) return
-      const shouldCommit = gesture.mode === 'dragging' && phoneStackGestureCommits('stack-pop', 0, -gesture.maxUp, phoneStackPopCommitPx(phoneLaneCommitPx()))
-      e.preventDefault()
-      e.stopPropagation()
-      resetPhonePopGesture()
-      if (!shouldCommit) return
-      const result = deletePhonePinnedChatPane(editor, shape)
-      if (!result.ok) {
-        console.warn('[phone-pane-stack] pop-markdown failed', result)
-        return
-      }
-      snapToPhoneLaneIndex(editor, result.docLeftPage, PHONE_INBOX_PANE_INDEX)
-    }
-
-    el.addEventListener('pointerdown', begin)
-    el.addEventListener('pointermove', move)
-    el.addEventListener('pointerup', end)
-    el.addEventListener('pointercancel', resetPhonePopGesture)
-    return () => {
-      el.removeEventListener('pointerdown', begin)
-      el.removeEventListener('pointermove', move)
-      el.removeEventListener('pointerup', end)
-      el.removeEventListener('pointercancel', resetPhonePopGesture)
-    }
-  }, [editor, isPhoneTemporaryMarkdownPane, resetPhonePopGesture, shape])
+  const iframePointerActive = iframeActive
 
   // Viewport gating: only render iframe when near viewport.
   // Slides are laid out horizontally, so check both X and Y axes.
@@ -1065,25 +891,6 @@ function HtmlPageComponent({ shape }: { shape: any }) {
             pointerEvents: 'auto',
             zIndex: 1,
           }} />
-        )}
-        {isPhoneTemporaryMarkdownPane && (
-          <div
-            ref={phonePopStripRef}
-            style={{
-              position: 'absolute',
-              left: 0,
-              right: 0,
-              top: phonePopStripTop,
-              height: phonePopStripHeight,
-              pointerEvents: 'auto',
-              touchAction: 'none',
-              zIndex: 3,
-            }}
-            onPointerDown={handlePhonePanePointerDown}
-            onPointerMove={handlePhonePanePointerMove}
-            onPointerUp={handlePhonePanePointerEnd}
-            onPointerCancel={resetPhonePopGesture}
-          />
         )}
         {/* Slides: edge tap zones for fragment stepping (work from any tool) */}
         {isSlide && !iframeActive && (

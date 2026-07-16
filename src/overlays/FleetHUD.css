@@ -99,9 +99,7 @@ body.fleet-hud-open .fleet-hud-wrap {
 .fleet-hud-wrap .clip-panel-fullvp .tl-shape[data-shape-type="fleet-docview"],
 .fleet-hud-wrap .clip-panel-fullvp .tl-shape[data-shape-type="fleet-docview"] *,
 .fleet-hud-wrap .clip-panel-fullvp .tl-shape[data-shape-type="fleet-source-editor"],
-.fleet-hud-wrap .clip-panel-fullvp .tl-shape[data-shape-type="fleet-source-editor"] *,
-.fleet-hud-wrap .clip-panel-fullvp .tl-shape[data-shape-type="fleet-touch-inbox"],
-.fleet-hud-wrap .clip-panel-fullvp .tl-shape[data-shape-type="fleet-touch-inbox"] * {
+.fleet-hud-wrap .clip-panel-fullvp .tl-shape[data-shape-type="fleet-source-editor"] * {
   pointer-events: auto !important;
 }
 /* In layout/drag mode (fleet-drag-mode on the shape), disable pointer-events
@@ -152,9 +150,7 @@ body.fleet-hud-open .fleet-hud-wrap {
 .fleet-hud-wrap.tool-passes-through:not(.hud-layout-active) .clip-panel-fullvp .tl-shape[data-shape-type="fleet-docview"],
 .fleet-hud-wrap.tool-passes-through:not(.hud-layout-active) .clip-panel-fullvp .tl-shape[data-shape-type="fleet-docview"] *,
 .fleet-hud-wrap.tool-passes-through:not(.hud-layout-active) .clip-panel-fullvp .tl-shape[data-shape-type="fleet-source-editor"],
-.fleet-hud-wrap.tool-passes-through:not(.hud-layout-active) .clip-panel-fullvp .tl-shape[data-shape-type="fleet-source-editor"] *,
-.fleet-hud-wrap.tool-passes-through:not(.hud-layout-active) .clip-panel-fullvp .tl-shape[data-shape-type="fleet-touch-inbox"],
-.fleet-hud-wrap.tool-passes-through:not(.hud-layout-active) .clip-panel-fullvp .tl-shape[data-shape-type="fleet-touch-inbox"] * {
+.fleet-hud-wrap.tool-passes-through:not(.hud-layout-active) .clip-panel-fullvp .tl-shape[data-shape-type="fleet-source-editor"] * {
   pointer-events: none !important;
 }
 
@@ -265,15 +261,6 @@ body.fleet-hud-open .fleet-hud-wrap {
 body.fleet-hud-open .tl-canvas .fleet-shape {
   visibility: hidden;
   pointer-events: none;
-}
-body.fleet-hud-open .tl-canvas .fleet-inbox-shape.phone-inbox-surface {
-  visibility: visible;
-  pointer-events: auto;
-}
-body.fleet-hud-open .tl-canvas .fleet-shape.phone-lane-surface,
-body.fleet-hud-open .tl-canvas .fleet-shape.phone-lane-surface * {
-  visibility: visible;
-  pointer-events: auto;
 }
 body.fleet-hud-open .fleet-hud-wrap .tl-canvas .fleet-shape {
   visibility: visible;

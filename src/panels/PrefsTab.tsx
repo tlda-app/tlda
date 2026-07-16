@@ -41,7 +41,6 @@ const FLEET_SHAPE_OPTIONS = [
   ['fleet-docview', 'Doc view'],
   ['fleet-source-editor', 'Source editor'],
   ['fleet-inbox', 'Inbox'],
-  ['fleet-touch-inbox', 'Touch inbox'],
   ['fleet-notifications', 'Notifications'],
 ] as const
 

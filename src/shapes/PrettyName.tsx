@@ -1,5 +1,8 @@
+import React from 'react'
 // @ts-ignore — vanilla JS module
 import { pretty_name_parts } from '../../shared/pretty_name.mjs'
+
+void React
 
 type PrettyGlyphId = 'day' | 'dusk' | 'night' | 'zombie' | string
 

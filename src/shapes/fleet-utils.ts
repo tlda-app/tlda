@@ -20,12 +20,10 @@ import {
 import {
   buildFleetLayoutPlanInput,
   getDocumentPageBounds,
-  getPhoneLayoutTarget,
 } from './fleet-layout-context'
 import { laneDy, layoutOffset } from './fleet-layout-geometry'
 import { planFleetLayoutShapes, type FleetLayoutVariant } from './fleet-layout-plan'
 import type { FleetChatFilter } from './fleet-layout-seeding'
-import { isPhoneStackLayoutForOwner } from './phone-pane-stack'
 
 export {
   FLEET_INTERACTION_SHAPE_SELECTOR,
@@ -49,9 +47,7 @@ export {
   buildFleetLayoutPlanInput,
   fleetLayoutPanelCount,
   getDocumentPageBounds,
-  getPhoneLayoutTarget,
   type DocumentPageBounds,
-  type PhoneLayoutTarget,
 } from './fleet-layout-context'
 export { ensureMyLaneDisjoint, laneDy, layoutOffset } from './fleet-layout-geometry'
 export { planFleetLayoutShapes, type FleetLayoutPlan, type FleetLayoutShapePlan, type FleetLayoutVariant } from './fleet-layout-plan'
@@ -268,7 +264,6 @@ export type FleetLayoutCreateReason =
   | 'device-missing'
   | 'layout-in-flight'
   | 'document-bounds-missing'
-  | 'phone-target-missing'
   | 'no-owned-shapes-created'
 
 export type FleetLayoutCreateResult = {
@@ -287,19 +282,6 @@ export type FleetLayoutCreateResult = {
  *  TLDraw's ID factory; the layout planner only asks for slot IDs. */
 function layoutSlotId(userId: string, deviceId: string, slot: string) {
   return createShapeId(`fleet-${slot}-${userId.replace('fleet:', '')}-${deviceId}`) as unknown as string
-}
-
-function currentFleetOwnerKey(): { myId: string; myDevice: string } {
-  let myId = getHumanId() || ''
-  let myDevice = getDeviceId() || ''
-  if (!myId && typeof localStorage !== 'undefined') {
-    const stored = localStorage.getItem('tlda-identity') || ''
-    if (stored) myId = stored.startsWith('fleet:') ? stored : `fleet:${stored}`
-  }
-  if (!myDevice && typeof localStorage !== 'undefined') {
-    myDevice = localStorage.getItem('tlda-device-id') || ''
-  }
-  return { myId, myDevice }
 }
 
 export async function createFleetLayout(editor: Editor, agents: any[], variant: FleetLayoutVariant = '3-col'): Promise<boolean> {
@@ -321,60 +303,6 @@ export async function createFleetLayoutDetailed(editor: Editor, agents: any[], v
   } finally {
     _layoutInFlight = false
   }
-}
-
-export function isPhoneFleetLayoutForCurrentDevice(editor: Editor): boolean {
-  const { myId, myDevice } = currentFleetOwnerKey()
-  if (!myId || !myDevice) return false
-  return isPhoneStackLayoutForOwner(editor, myId, myDevice)
-}
-
-export function reflowPhoneFleetLayout(editor: Editor): boolean {
-  const { myId, myDevice } = currentFleetOwnerKey()
-  if (!myId || !myDevice) return false
-  if (!isPhoneFleetLayoutForCurrentDevice(editor)) return false
-  const docBounds = getDocumentPageBounds(editor)
-  if (!docBounds) return false
-  const editorVp = editor.getViewportScreenBounds()
-  const vv = typeof window !== 'undefined' ? window.visualViewport : null
-  const viewport = {
-    ...editorVp,
-    w: Math.round(Number(vv?.width || window.innerWidth || editorVp.w)),
-    h: Math.round(Number(vv?.height || window.innerHeight || editorVp.h)),
-  }
-  const phoneTarget = getPhoneLayoutTarget(editor, docBounds.pageShapes, viewport)
-  if (!phoneTarget) return false
-  const existing = editor.getCurrentPageShapes().filter(s => isFleetShapeForOwnerKey(s, myId, myDevice))
-  const existingChatFilters = existing
-    .filter(s => (s.type as string) === 'fleet-chat')
-    .map(s => (s as any).props?.filter as FleetChatFilter | undefined)
-  const plan = planFleetLayoutShapes(buildFleetLayoutPlanInput({
-    editor,
-    agents: [],
-    variant: 'phone',
-    myId,
-    myDevice,
-    docBounds,
-    phoneTarget,
-    existingChatFilters,
-    makeSlotId: slot => layoutSlotId(myId, myDevice, slot),
-    viewport,
-  }))
-  const updates = plan.shapes
-    .filter(s => editor.getShape(s.id as any))
-    .map(s => ({ id: s.id, type: s.type, x: s.x, y: s.y, isLocked: s.isLocked, props: s.props }))
-  if (updates.length === 0) return false
-  editor.run(() => {
-    for (const update of updates) {
-      const existing = editor.getShape(update.id as any) as any
-      if (!existing) continue
-      const wasLocked = !!existing.isLocked
-      if (wasLocked) editor.updateShape({ id: update.id as any, type: update.type, isLocked: false } as any)
-      editor.updateShape(update as any)
-      if (wasLocked && update.isLocked) editor.updateShape({ id: update.id as any, type: update.type, isLocked: true } as any)
-    }
-  }, { history: 'ignore' })
-  return true
 }
 
 function makeFleetLayoutResult(
@@ -417,13 +345,6 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
   const existingChatFilters = existing
     .filter(s => (s.type as string) === 'fleet-chat')
     .map(s => (s as any).props?.filter as FleetChatFilter | undefined)
-  const vp = editor.getViewportScreenBounds()
-  const phoneTarget = variant === 'phone' ? getPhoneLayoutTarget(editor, docBounds.pageShapes, vp) : null
-  if (variant === 'phone' && !phoneTarget) {
-    console.warn('[FleetLayout] Refusing to create phone layout before document page bounds are usable')
-    return makeFleetLayoutResult(editor, variant, 'phone-target-missing', myId, myDevice)
-  }
-
   editor.run(() => {
     if (existing.length > 0) forceDeleteShapes(editor, existing.map(s => s.id as string))
 
@@ -447,7 +368,6 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
       myId,
       myDevice,
       docBounds,
-      phoneTarget,
       existingChatFilters,
       makeSlotId: slot => layoutSlotId(myId, myDevice, slot),
     }))

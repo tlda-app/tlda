@@ -22,13 +22,20 @@ import { useFleetAgents, useFleetAgentTotals, useFleetTasks, useFleetUnreadCount
 import { dropPillOnTarget } from './FleetPillShape'
 import { agentDisplayLabel, agentExactName, beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
-import { PrettyName } from './PrettyName'
 import { dragCoordinator } from './dragCoordinator'
 import { useIsInViewport, useVisibilityViewportId } from './useIsInViewport'
 import { fleetInteractionFrame, fleetPointerEventPagePoint } from '../wm/fleet-interaction-frame'
 import { useAvailableSpawnModels } from '../fleet/useAvailableSpawnModels'
 import { activeMintToken, applyMintCandidate, parseMintInput } from '../fleet/mint-input'
-import { activityHealthForProjection, formatActivityHealthStatus } from '../../shared/activity-health.mjs'
+import {
+  FleetAgentDirectoryRow,
+  fleetAgentCategory,
+  fleetAgentLabelColor,
+  formatFleetAgentModel,
+  formatFleetAgentRelativeTime,
+  getFleetAgentNickColor,
+  toFleetAgentDirectoryRow,
+} from './FleetAgentDirectoryRow'
 
 
 const DEFAULT_W = 340
@@ -165,29 +172,6 @@ function canSubmitSpawn(input: string, projects: string[], currentDoc: string): 
   return !doc || projects.includes(doc)
 }
 
-// --- Nick color system (shared with FleetChatShape) ---
-const NICK_COLORS = ['#7a9ec8', '#9370db', '#c8956a', '#6aafb0', '#b87a95', '#c8b060']
-const nickMap = new Map<string, string>()
-let nickIdx = 0
-
-function getNickColor(id: string, isManager?: boolean): string {
-  if (isManager) return '#7ab8a0'
-  if (!id) return NICK_COLORS[0]
-  if (!nickMap.has(id)) {
-    nickMap.set(id, NICK_COLORS[nickIdx % NICK_COLORS.length])
-    nickIdx++
-  }
-  return nickMap.get(id)!
-}
-
-// --- Label colors (matches dashboard hash) ---
-const LABEL_COLORS = ['#9370db', '#7ab8a0', '#c8b060', '#7a9ec8', '#c8956a', '#6aafb0', '#b87a95', '#8bc87a']
-function labelColor(name: string): string {
-  let h = 0
-  for (let i = 0; i < name.length; i++) h = ((h << 5) - h + name.charCodeAt(i)) | 0
-  return LABEL_COLORS[Math.abs(h) % LABEL_COLORS.length]
-}
-
 type SortKey = 'active' | 'name' | 'status'
 
 // --- Optimistic spawn card ---
@@ -219,70 +203,8 @@ const FleetAgentsScroller = forwardRef<HTMLDivElement, React.HTMLAttributes<HTML
 )
 const FLEET_AGENTS_VIRTUOSO_COMPONENTS = { Scroller: FleetAgentsScroller }
 
-function agentCategory(agent: any): 'awake' | 'hibernating' {
-  if (agent.status === 'human') return 'awake'
-  if (agent.status === 'human-away') return 'hibernating'
-  return agent.status === 'awake' ? 'awake' : 'hibernating'
-}
-
-// Display a model by Skip's convention: no decimals, no dashes, no provider
-// prefix. claude-opus-4-8 -> opus48, gpt-5.5 -> gpt55, deepseek/deepseek-v4-pro
-// -> deepseekv4pro, minimax/minimax-m3 -> minimaxm3.
-function formatModel(model: string | null | undefined): string {
-  if (!model) return ''
-  let s = model.includes('/') ? model.split('/').pop()! : model
-  s = s.replace(/^claude-/, '')
-  return s.replace(/[.\-]/g, '')
-}
-
-// Surface the agent's permission / fence in the panel (topic-1: permission
-// discoverable in the agent panel). Derived from metadata.spawnPolicy, which the
-// server stamps at spawn (the resolved permission + filesystem policy).
-// Permission labels are current daemon-config vocabulary. Old rows are invalid
-// data, not a display-time compatibility format.
-const PERMISSION_LABELS: Record<string, string> = {
-  read: 'read',
-  write: 'write',
-  'tlda-write': 'tlda-write',
-  full: 'full',
-}
-const POLICY_LABELS: Record<string, string> = {
-  cwd: 'own project',
-  'tlda-projects': 'all projects',
-  unsandboxed: 'machine',
-}
-function formatPermission(meta: any): string {
-  const sp = meta?.spawnPolicy
-  if (!sp) return ''
-  const cap = typeof sp === 'string' ? sp : sp.permission
-  const policy = typeof sp === 'object' ? sp.policy : null
-  if (!cap) return ''
-  const capLabel = PERMISSION_LABELS[cap] || cap
-  const policyLabel = policy ? (POLICY_LABELS[policy] || policy) : ''
-  return policyLabel ? `${capLabel} · ${policyLabel}` : capLabel
-}
-
-function formatEffort(effort: string | null | undefined, kind: string | null | undefined): string {
-  if (!effort || kind !== 'claude') return ''
-  return `${effort} effort`
-}
-
-
 // agentDisplayLabel imported from ./fleet-utils — single source of truth so the
 // panel and the chat target chip can't drift.
-
-function formatRelativeTime(ts: number | undefined): string {
-  if (!ts) return ''
-  const delta = Date.now() - ts
-  if (delta < 60_000) return 'now'
-  if (delta < 3600_000) return `${Math.floor(delta / 60_000)}m`
-  if (delta < 86400_000) return `${Math.floor(delta / 3600_000)}h`
-  return `${Math.floor(delta / 86400_000)}d`
-}
-
-function formatAgentActivityHealth(meta: any): string {
-  return formatActivityHealthStatus(activityHealthForProjection(meta || {}), { idleText: '' })
-}
 
 // --- Shape definition ---
 
@@ -547,9 +469,9 @@ function FleetAgentsInner({ shape }: { shape: any }) {
           // Name-based: the real agent registers with the same friendly_name
           if (opt.name) return a.friendly_name === opt.name
           // Model-based fallback: a NEW agent (not in existingIds at spawn time)
-          // with a matching model alias. Uses formatModel to normalise
+          // with a matching model alias. Uses formatFleetAgentModel to normalise
           // 'claude-opus-4-8' → 'opus48' so the comparison works across formats.
-          return !existingSet.has(a.id) && formatModel(a.metadata?.model) === formatModel(opt.model)
+          return !existingSet.has(a.id) && formatFleetAgentModel(a.metadata?.model) === formatFleetAgentModel(opt.model)
         })
         if (matched) {
           const tid = optimisticTimeouts.current.get(opt.optimisticId)
@@ -713,7 +635,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
       if (a.dead) continue
       const ts = a.last_active ? new Date(a.last_active).getTime() : 0
       // The band IS the displayed time bucket — same value the row shows.
-      const band = formatRelativeTime(ts)
+      const band = formatFleetAgentRelativeTime(ts)
       liveIds.add(a.id)
       const prev = bandStateRef.current.get(a.id)
       if (!prev || prev.band !== band) bandStateRef.current.set(a.id, { band, enteredAt: now })
@@ -727,8 +649,8 @@ function FleetAgentsInner({ shape }: { shape: any }) {
       if (sortKey === 'name') return dir * agentDisplayLabel(a, agents).localeCompare(agentDisplayLabel(b, agents))
       if (sortKey === 'status') {
         const order: Record<string, number> = { awake: 0, hibernating: 1 }
-        const ca = order[agentCategory(a)] ?? 2
-        const cb = order[agentCategory(b)] ?? 2
+        const ca = order[fleetAgentCategory(a)] ?? 2
+        const cb = order[fleetAgentCategory(b)] ?? 2
         return dir * (ca - cb) || b._ts - a._ts
       }
       // "Active": stable sort keyed on the displayed time bucket. Different
@@ -744,8 +666,8 @@ function FleetAgentsInner({ shape }: { shape: any }) {
   // Playback has its own fixed roster; live panels use server-provided totals
   // that remain stable as virtualized pages materialize.
   const playbackCounts = useMemo(() => ({
-    hibernating: sortedAgents.filter(a => agentCategory(a) === 'hibernating').length,
-    awake: sortedAgents.filter(a => agentCategory(a) === 'awake').length,
+    hibernating: sortedAgents.filter(a => fleetAgentCategory(a) === 'hibernating').length,
+    awake: sortedAgents.filter(a => fleetAgentCategory(a) === 'awake').length,
   }), [sortedAgents])
   const hibernatingCount = frameId?.startsWith('shape:') ? playbackCounts.hibernating : agentTotals.hibernating
   const awakeCount = frameId?.startsWith('shape:') ? playbackCounts.awake : agentTotals.awake
@@ -866,18 +788,25 @@ function FleetAgentsInner({ shape }: { shape: any }) {
                   }}
                 />
               ) : (
-                <AgentRow
-                  agent={item.agent}
-                  allAgents={agents}
-                  tasks={getTasksForAgent(item.agent.id)}
-                  unreadCount={unreadCounts[item.agent.id] || 0}
-                  contextPct={contextPercent.get(item.agent.id)}
-                  dimmed={agentCategory(item.agent) === 'hibernating'}
-                  expanded={expandedId === item.agent.id}
-                  lastMessage={lastMessages[agentExactName(item.agent)] || ''}
-                  onToggleExpand={() => setExpandedId(expandedId === item.agent.id ? null : item.agent.id)}
-                  onStartDrag={startDrag}
-                />
+                (() => {
+                  const agentTasks = getTasksForAgent(item.agent.id)
+                  const taskText = agentTasks[0]?.title || agentTasks[0]?.description || ''
+                  return (
+                    <FleetAgentDirectoryRow
+                      row={toFleetAgentDirectoryRow(item.agent)}
+                      taskDesc={taskText}
+                      taskTitle={taskText}
+                      unreadCount={unreadCounts[item.agent.id] || 0}
+                      contextPct={contextPercent.get(item.agent.id)}
+                      expanded={expandedId === item.agent.id}
+                      lastMessage={lastMessages[agentExactName(item.agent)] || ''}
+                      onToggleExpand={() => setExpandedId(expandedId === item.agent.id ? null : item.agent.id)}
+                      onHibernate={() => hibernateSession(item.agent.id)}
+                      onAgentPointerDown={(e, row) => { e.stopPropagation(); startDrag(e, 'agent', row.exactName, row.displayName, row.color) }}
+                      onLabelPointerDown={(e, label) => startDrag(e, 'label', label, label, fleetAgentLabelColor(label))}
+                    />
+                  )
+                })()
               )
             )}
           />
@@ -888,13 +817,13 @@ function FleetAgentsInner({ shape }: { shape: any }) {
           <span>
             <span
               style={{ cursor: 'grab' }}
-              onPointerDown={(e) => { e.stopPropagation(); startDrag(e, 'label', 'awake', 'awake', labelColor('awake')) }}
+              onPointerDown={(e) => { e.stopPropagation(); startDrag(e, 'label', 'awake', 'awake', fleetAgentLabelColor('awake')) }}
             >{awakeCount} awake</span>
             {hibernatingCount > 0 && (
               <span style={{ marginLeft: 6 }}>·{' '}
                 <span
                   style={{ cursor: 'grab' }}
-                  onPointerDown={(e) => { e.stopPropagation(); startDrag(e, 'label', 'hibernating', 'hibernating', labelColor('hibernating')) }}
+                  onPointerDown={(e) => { e.stopPropagation(); startDrag(e, 'label', 'hibernating', 'hibernating', fleetAgentLabelColor('hibernating')) }}
                 >{hibernatingCount} hibernating</span>
               </span>
             )}
@@ -1017,7 +946,7 @@ const FleetAgentsComponent = memo(function FleetAgentsComponent({ shape }: { sha
   return <FleetAgentsInner shape={shape} />
 }, (prev, next) => prev.shape.props === next.shape.props)
 
-// Ghost row shown while a spawn is in flight. Matches AgentRow column layout
+// Ghost row shown while a spawn is in flight. Matches the directory row column layout
 // but is visually dimmed and shows a small spinning indicator instead of a name.
 // In error state, hovering reveals dismiss (×) and retry controls.
 function OptimisticAgentRow({
@@ -1038,8 +967,8 @@ function OptimisticAgentRow({
   // it will register with — so the filter carries over once it inhabits. Only a
   // named, non-errored card is a valid drag source.
   const canDrag = !isError && !!opt.name
-  const dragColor = getNickColor(opt.name || opt.optimisticId, false)
-  const modelStr = formatModel(opt.model)
+  const dragColor = getFleetAgentNickColor(opt.name || opt.optimisticId, false)
+  const modelStr = formatFleetAgentModel(opt.model)
   const [hovered, setHovered] = useState(false)
   const showActions = isError && hovered
   return (
@@ -1086,146 +1015,6 @@ function OptimisticAgentRow({
         </span>
         <span className="fleet-agents-col-labels" />
       </div>
-    </div>
-  )
-}
-
-function AgentRow({
-  agent,
-  allAgents,
-  tasks,
-  dimmed,
-  unreadCount,
-  contextPct,
-  expanded,
-  lastMessage,
-  onToggleExpand,
-  onStartDrag,
-}: {
-  agent: any
-  allAgents: any[]
-  tasks: any[]
-  dimmed?: boolean
-  unreadCount: number
-  contextPct?: number
-  expanded: boolean
-  lastMessage: string
-  onToggleExpand: () => void
-  onStartDrag: (e: React.PointerEvent, pillType: 'agent' | 'label', value: string, displayName: string, color: string) => void
-}) {
-  const firstTask = tasks[0]
-  const taskDesc = firstTask?.title || firstTask?.description || ''
-  const name = agentDisplayLabel(agent, allAgents)
-  const color = getNickColor(agent.id, agent.is_manager)
-  const labels: string[] = agent.labels || []
-  const ago = formatRelativeTime(agent._ts)
-  const meta = agent.metadata || {}
-  const modelStr = formatModel(meta.model)
-  const effortStr = formatEffort(meta.effort, meta.kind)
-  const capStr = formatPermission(meta)
-  const activityHealthStr = formatAgentActivityHealth(meta)
-  const machineStr = agent.machine_id || ''
-  const taskTitle = taskDesc
-  // Desktop hover summary (touch users get the same via tap-to-expand).
-  const hoverTitle = [name, machineStr && `machine: ${machineStr}`, modelStr && `model: ${modelStr}`, activityHealthStr && `activity ${activityHealthStr}`, ago && `seen ${ago}`]
-    .filter(Boolean)
-    .join('  ·  ')
-
-  const secsAgo = agent._ts ? (Date.now() - agent._ts) / 1000 : Infinity
-  const nameOpacity = secsAgo < 120 ? 1.0 : secsAgo < 600 ? 0.85 : 0.65
-
-  return (
-    <div className={`fleet-agents-row${dimmed ? ' dimmed' : ''}${expanded ? ' expanded' : ''}`}>
-      {/* Line 1: compact row */}
-      <div
-        className="fleet-agents-row-main"
-        onPointerDown={(e) => stopEventPropagation(e)}
-        onPointerUp={(e) => {
-          e.stopPropagation()
-          onToggleExpand()
-        }}
-      >
-        <span className={`fleet-agents-unread-dot${unreadCount > 0 ? ' active' : ''}`} />
-
-        {/* Hibernate button — shown on hover, kills session but keeps agent in panel */}
-        <span
-          className="fleet-agents-kill-btn"
-          onPointerDown={(e) => e.stopPropagation()}
-          onPointerUp={(e) => { e.stopPropagation(); hibernateSession(agent.id) }}
-          title="Hibernate agent"
-        >
-          ×
-        </span>
-
-        {/* Agent name: pretty_name display, exact friendly_name payload. */}
-        <span
-          className="fleet-agents-col-name fleet-agents-pill"
-          style={{ color, opacity: nameOpacity, display: 'flex', alignItems: 'center' }}
-          title={hoverTitle}
-          onPointerDown={(e) => { e.stopPropagation(); onStartDrag(e, 'agent', agent.friendly_name || name, name, color) }}
-        >
-          {/* Fixed-width leading-glyph slot so the first text character aligns. */}
-          <PrettyName prettyName={agent.pretty_name ?? agent.friendly_name} slotWidth={15} />
-        </span>
-
-        <span className="fleet-agents-col-seen">{ago}</span>
-
-        <span
-          className="fleet-agents-col-ctx"
-          style={contextPct != null ? { color: contextPct <= 15 ? '#e57373' : contextPct <= 30 ? '#ffb74d' : '#81c784' } : undefined}
-        >
-          {contextPct != null ? `${contextPct}%` : ''}
-        </span>
-
-        <span className="fleet-agents-col-task" title={taskTitle}>
-          {activityHealthStr && <span className="fleet-agents-health">{activityHealthStr}</span>}
-          <span>{taskDesc ? taskDesc.substring(0, 50) : ''}</span>
-        </span>
-
-        {/* Labels — draggable chips */}
-        <span className="fleet-agents-col-labels" onPointerDown={(e) => e.stopPropagation()}>
-          {labels.map((label: string) => (
-            <span
-              key={label}
-              className="fleet-agents-label-chip"
-              style={{ background: labelColor(label) }}
-              onPointerDown={(e) => onStartDrag(e, 'label', label, label, labelColor(label))}
-            >
-              {label}
-            </span>
-          ))}
-        </span>
-      </div>
-
-      {/* Expanded detail: meta line (machine · model · effort · cap · seen),
-          current task in full, remaining tasks, last message */}
-      {expanded && (
-        <div className="fleet-agents-row-detail" onPointerDown={(e) => stopEventPropagation(e)}>
-          <div className="fleet-agents-detail-meta">
-            {machineStr && <span className="fleet-agents-detail-machine" title="machine">{machineStr}</span>}
-            {modelStr && <span className="fleet-agents-detail-model">{modelStr}</span>}
-            {effortStr && <span className="fleet-agents-detail-effort">{effortStr}</span>}
-            {capStr && <span className="fleet-agents-detail-cap" title="permission / fence">{capStr}</span>}
-            {activityHealthStr && <span className="fleet-agents-detail-health" title="activity health">{activityHealthStr}</span>}
-            {ago && <span className="fleet-agents-detail-seen">seen {ago}</span>}
-          </div>
-          <div className="fleet-agents-detail-current">
-            {tasks.length === 0
-              ? '(no task)'
-              : tasks[0].title || tasks[0].description || '(untitled task)'}
-          </div>
-          {tasks.slice(1).map((t: any, i: number) => (
-            <div key={t.id || i} className="fleet-agents-detail-task">
-              {t.title || t.description || '(untitled task)'}
-            </div>
-          ))}
-          {lastMessage && (
-            <div className="fleet-agents-detail-message">
-              "{lastMessage.length > 80 ? lastMessage.substring(0, 80) + '…' : lastMessage}"
-            </div>
-          )}
-        </div>
-      )}
     </div>
   )
 }

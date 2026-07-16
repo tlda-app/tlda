@@ -23,7 +23,6 @@ export const fleetAgentsProps = ownedPanelProps
 export const fleetSearchProps = ownedPanelProps
 export const fleetInboxProps = ownedPanelProps
 export const fleetNotificationsProps = ownedPanelProps
-export const fleetTouchInboxProps = ownedPanelProps
 
 export const fleetDocviewProps = {
   ...ownedPanelProps,

@@ -3,7 +3,6 @@ import { createRoot } from 'react-dom/client'
 import './index.css'
 import './frame-probe'  // perf-probe frame timing (inactive unless ?perf=1)
 import App from './App.tsx'
-import { isPhoneViewport } from './phoneViewport'
 import { installAppShellFreshnessProbe } from './appShellFreshness'
 
 // High-res display compensation: macOS "More Space" gives huge CSS viewports
@@ -40,11 +39,6 @@ import { installAppShellFreshnessProbe } from './appShellFreshness'
 }
 
 const DEFAULT_FLEET_LAYOUT_PRESET = '3-col'
-const PHONE_FLEET_LAYOUT_PRESET = 'phone'
-
-function getDefaultFleetLayoutPreset() {
-  return isPhoneViewport() ? PHONE_FLEET_LAYOUT_PRESET : DEFAULT_FLEET_LAYOUT_PRESET
-}
 
 // Automated browsers (playwright, etc.) get a forced dark theme, camera-link
 // OFF, and a surface-appropriate default fleet layout when none was requested.
@@ -60,7 +54,7 @@ function getDefaultFleetLayoutPreset() {
   const isAuto = (navigator as any).webdriver || url.searchParams.get('pw') === '1'
   const cameraLinkOverride = url.searchParams.get('cameraLink')
   if (isAuto && !url.searchParams.get('fleetLayout')) {
-    url.searchParams.set('fleetLayout', getDefaultFleetLayoutPreset())
+    url.searchParams.set('fleetLayout', DEFAULT_FLEET_LAYOUT_PRESET)
     window.history.replaceState(window.history.state, '', url)
   }
   if (isAuto && cameraLinkOverride !== '1') {

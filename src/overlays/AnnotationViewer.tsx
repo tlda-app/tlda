@@ -22,23 +22,9 @@ import type {
 } from '../wm/managed-surfaces'
 import { isDocumentPageShape, sendCanvasPageShapesToBack } from '../shapes/document-pages'
 import { isMyFleetShape } from '../shapes/fleet-utils'
-import {
-  PHONE_LANE_DRAG_IDLE,
-  phoneLaneCommitPx,
-  setPhoneGestureCandidate,
-  setPhoneGestureProgress,
-  setPhoneLaneDrag,
-} from './useFleetGestures'
-import {
-  phoneLaneDragDecision,
-  phoneStackGestureCommits,
-  phoneStackGestureDecision,
-  phoneStackGestureProgress,
-  phoneStackPopCommitPx,
-} from '../wm'
 import './AnnotationViewer.css'
 
-type ViewerState = 'hovering' | 'pinned' | 'navigated' | 'phone-pane'
+type ViewerState = 'hovering' | 'pinned' | 'navigated'
 
 const RETURN_HUD_RIGHT = 'calc(10px + env(safe-area-inset-right))'
 const RETURN_HUD_MARGIN = 10
@@ -65,16 +51,6 @@ interface ViewerData {
   useFullBounds?: boolean
   pinned?: boolean
   bulletIdx?: number
-}
-
-type PhoneViewerEscapeGesture = {
-  pointerId: number
-  mode: 'pending' | 'dragging'
-  x0: number
-  y0: number
-  lastDx: number
-  lastDy: number
-  action: 'right' | 'up' | null
 }
 
 function suppressFleetHudCameraTracking(durationMs = 700) {
@@ -120,7 +96,6 @@ export function AnnotationViewer({
   const prevViewStackRef = useRef<ViewSnapshot[]>([])
   const dismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const clickStartRef = useRef<{ x: number; y: number } | null>(null)
-  const phoneEscapeGestureRef = useRef<PhoneViewerEscapeGesture | null>(null)
 
   // Listen for show/hide events from FleetChatShape
   useEffect(() => {
@@ -308,7 +283,7 @@ export function AnnotationViewer({
     if (!data || !targetBounds) return
     if (isPhoneViewportSurface()) {
       setSize(phoneViewerSize())
-      setState('phone-pane')
+      setState('pinned')
       return
     }
     const cam = mainEditor.getCamera()
@@ -396,96 +371,6 @@ export function AnnotationViewer({
     closeViewer()
   }, [closeViewer])
 
-  const resetPhoneEscapeGesture = useCallback(() => {
-    phoneEscapeGestureRef.current = null
-    setPhoneLaneDrag(PHONE_LANE_DRAG_IDLE)
-  }, [])
-
-  const handlePhoneEscapePointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    if (!isPhoneViewportSurface() || !e.isPrimary) return
-    if (e.pointerType === 'mouse' && e.button !== 0) return
-    phoneEscapeGestureRef.current = {
-      pointerId: e.pointerId,
-      mode: 'pending',
-      x0: e.clientX,
-      y0: e.clientY,
-      lastDx: 0,
-      lastDy: 0,
-      action: null,
-    }
-    try { e.currentTarget.setPointerCapture?.(e.pointerId) } catch {
-      // Synthetic/cancelled pointers may not be capturable.
-    }
-    stopEventPropagation(e)
-  }, [])
-
-  const handlePhoneEscapePointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    const gesture = phoneEscapeGestureRef.current
-    if (!gesture || gesture.pointerId !== e.pointerId) return
-    const dx = e.clientX - gesture.x0
-    const dy = e.clientY - gesture.y0
-    gesture.lastDx = dx
-    gesture.lastDy = dy
-
-    if (gesture.mode === 'pending') {
-      if (dx > 0) {
-        const decision = phoneLaneDragDecision(dx, dy)
-        if (decision === 'abort') {
-          resetPhoneEscapeGesture()
-          return
-        }
-        if (decision === 'pending') return
-        gesture.mode = 'dragging'
-        gesture.action = 'right'
-        setPhoneGestureCandidate(-1, phoneLaneCommitPx(), 'pane', { x: gesture.x0, y: gesture.y0 })
-      } else if (dy < 0) {
-        const decision = phoneStackGestureDecision('stack-pop', dx, dy)
-        if (decision === 'abort') {
-          resetPhoneEscapeGesture()
-          return
-        }
-        if (decision === 'pending') return
-        gesture.mode = 'dragging'
-        gesture.action = 'up'
-        setPhoneGestureCandidate('up', phoneStackPopCommitPx(phoneLaneCommitPx()), 'stack-pop', { x: gesture.x0, y: gesture.y0 })
-      } else {
-        return
-      }
-    }
-
-    e.preventDefault()
-    stopEventPropagation(e)
-    if (gesture.action === 'right') {
-      const commit = phoneLaneCommitPx()
-      setPhoneGestureProgress(-1, Math.min(1, Math.max(0, dx) / commit), commit, 'pane', { x: gesture.x0, y: gesture.y0 })
-    } else if (gesture.action === 'up') {
-      const commit = phoneStackPopCommitPx(phoneLaneCommitPx())
-      setPhoneGestureProgress('up', phoneStackGestureProgress('stack-pop', dx, dy, commit), commit, 'stack-pop', { x: gesture.x0, y: gesture.y0 })
-    }
-  }, [resetPhoneEscapeGesture])
-
-  const handlePhoneEscapePointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    const gesture = phoneEscapeGestureRef.current
-    if (!gesture || gesture.pointerId !== e.pointerId) {
-      stopEventPropagation(e)
-      return
-    }
-    const commit = gesture.action === 'up'
-      ? phoneStackPopCommitPx(phoneLaneCommitPx())
-      : phoneLaneCommitPx()
-    const shouldClose = gesture.mode === 'dragging' && (
-      gesture.action === 'right'
-        ? Math.max(0, gesture.lastDx) >= commit
-        : gesture.action === 'up'
-          ? phoneStackGestureCommits('stack-pop', gesture.lastDx, gesture.lastDy, commit)
-          : false
-    )
-    e.preventDefault()
-    stopEventPropagation(e)
-    resetPhoneEscapeGesture()
-    if (shouldClose) closeViewer()
-  }, [closeViewer, resetPhoneEscapeGesture])
-
   // Resize drag
   const resizeRef = useRef<{ startX: number; startY: number; startW: number; startH: number } | null>(null)
   const handleResizeStart = useCallback((e: React.PointerEvent) => {
@@ -540,8 +425,7 @@ export function AnnotationViewer({
     return Math.max(8, Math.min(top, window.innerHeight - RETURN_HUD_SIZE - 8))
   }
 
-  const isPhonePane = state === 'phone-pane'
-  const isPinnedOrNav = state === 'pinned' || state === 'navigated' || isPhonePane
+  const isPinnedOrNav = state === 'pinned' || state === 'navigated'
   const backArrowPath = (
     <path d="M238 125 H12 M80 12 L12 125 L80 238" fill="none" stroke="currentColor"
       strokeWidth="48" strokeLinecap="square" strokeLinejoin="miter" />
@@ -623,19 +507,15 @@ export function AnnotationViewer({
         }
       }}
       onPointerDownCapture={(e) => {
-        handlePhoneEscapePointerDown(e)
         stopEventPropagation(e)
       }}
       onPointerMoveCapture={(e) => {
-        handlePhoneEscapePointerMove(e)
         stopEventPropagation(e)
       }}
       onPointerUpCapture={(e) => {
-        handlePhoneEscapePointerUp(e)
         stopEventPropagation(e)
       }}
       onPointerCancelCapture={(e) => {
-        resetPhoneEscapeGesture()
         stopEventPropagation(e)
       }}
       onWheel={stopEventPropagation}
@@ -665,7 +545,6 @@ export function AnnotationViewer({
             className="annotation-viewer-nav-btn annotation-viewer-nav-left"
             onPointerDown={stopEventPropagation}
             onClick={state === 'pinned' ? handleGo : handleBack}
-            style={isPhonePane ? { display: 'none' } : undefined}
           >
             <svg width="250" height="250" viewBox="0 0 250 250">
               {state === 'pinned' ? (

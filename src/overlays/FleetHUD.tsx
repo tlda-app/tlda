@@ -16,11 +16,9 @@ import { useFleetIdentity } from '../fleet-data-adapter'
 import { getHumanId, getDeviceId, isDeviceReady, whenDeviceReady } from '../fleet/fleet-data.mjs'
 import { getMyAnchorId, isMyFleetShape, isFleetShapeForOwnerKey, FLEET_INTERACTION_SHAPE_SELECTOR, FLEET_SHAPE_TYPES, adoptLegacyFleetShapes, layoutOffset, ensureMyLaneDisjoint } from '../shapes/fleet-utils'
 import { isDocumentPageShape } from '../shapes/document-pages'
-import { fleetTouchGestureActiveRef, phoneLaneIndexForViewportRefit, postTouchTelemetry, preservePhoneLaneForViewportSettle, setTouchDiagStatus, snapToPhoneLaneIndex, useFleetGestures } from './useFleetGestures'
-import { PhoneLaneArrow } from './PhoneLaneArrow'
+import { fleetTouchGestureActiveRef, postTouchTelemetry, setTouchDiagStatus, useFleetGestures } from './useFleetGestures'
 import { shouldRenderLockedFleetViewportShape } from './fleet-viewport-predicate'
 import { SuggestionTip } from '../shapes/FleetChatShape'
-import { getPrimaryPhoneDocumentLeft, isPhoneStackLayoutForOwner, refitPhonePaneStack } from '../shapes/phone-pane-stack'
 import { log } from '../logger'
 import { computeFleetBoundsFromShapes, createFleetBoundsTracker, type FleetBoundsResult } from './fleet-bounds'
 import { computeFleetHudDefaultAnchor } from './fleet-hud-anchor'
@@ -199,14 +197,6 @@ function getFleetBounds(editor: Editor): ClipBounds | null {
   )
   logFleetBoundsResult(result)
   return result.bounds
-}
-
-function isPhoneFleetLayout(editor: Editor): boolean {
-  const humanId = getHumanId()
-  const deviceId = getDeviceId()
-  if (!humanId || !deviceId) return false
-  if (!isPhoneStackLayoutForOwner(editor, humanId, deviceId)) return false
-  return true
 }
 
 function getFleetHudDiagnostic(editor: Editor) {
@@ -484,54 +474,7 @@ export function FleetHUD({
       applyHudAnchor({ panOffset: anchor.meta.panOffset, cameraY: anchor.meta.cameraY }, { syncViewport: false })
     }
   }
-  const phoneLayout = isPhoneFleetLayout(mainEditor)
-  const PHONE_TOP_PAD = -20
-  const activeTopPad = phoneLayout ? PHONE_TOP_PAD : TOP_PAD
-
-  useEffect(() => {
-    if (!docShapesReady) return
-    let frame: number | null = null
-    let settleTimer = 0
-    const refit = () => {
-      frame = null
-      if (!isPhoneFleetLayout(mainEditor)) return
-      const result = refitPhonePaneStack(mainEditor)
-      if (!result.ok) return
-      snapToPhoneLaneIndex(mainEditor, result.docLeftPage, phoneLaneIndexForViewportRefit(result.currentIndex))
-      setFleetBounds(getFleetBounds(mainEditor))
-    }
-    const schedule = () => {
-      if (frame !== null) return
-      frame = requestAnimationFrame(refit)
-    }
-    const scheduleSettledPasses = () => {
-      schedule()
-      for (const delay of [80, 180, 360, 700]) window.setTimeout(schedule, delay)
-    }
-    const handleOrientationChange = () => {
-      const docLeft = getPrimaryPhoneDocumentLeft(mainEditor)
-      if (docLeft !== null) {
-        const preserve = preservePhoneLaneForViewportSettle(mainEditor, docLeft)
-        const w = window as Window & { __tldaPhoneCameraSettlingUntil?: number }
-        w.__tldaPhoneCameraSettlingUntil = Math.max(Number(w.__tldaPhoneCameraSettlingUntil || 0), preserve.until)
-        if (settleTimer) window.clearTimeout(settleTimer)
-        settleTimer = window.setTimeout(() => {
-          if (Number(w.__tldaPhoneCameraSettlingUntil || 0) <= Date.now()) w.__tldaPhoneCameraSettlingUntil = 0
-        }, 950)
-      }
-      scheduleSettledPasses()
-    }
-    window.addEventListener('resize', schedule)
-    window.addEventListener('orientationchange', handleOrientationChange)
-    window.visualViewport?.addEventListener('resize', schedule)
-    return () => {
-      if (frame !== null) cancelAnimationFrame(frame)
-      if (settleTimer) window.clearTimeout(settleTimer)
-      window.removeEventListener('resize', schedule)
-      window.removeEventListener('orientationchange', handleOrientationChange)
-      window.visualViewport?.removeEventListener('resize', schedule)
-    }
-  }, [docShapesReady, mainEditor])
+  const activeTopPad = TOP_PAD
 
   const recenterHudForBounds = useCallback((bounds: ClipBounds | null): boolean => {
     if (!bounds || !docShapesReady) return false
@@ -711,66 +654,6 @@ export function FleetHUD({
     return unsub
   }, [mainEditor, docShapesReady])
 
-  useEffect(() => {
-    if (!identityId || !deviceReady || !docShapesReady) return
-    let lastSig = ''
-    let raf = 0
-    let settleTimer = 0
-    const apply = () => {
-      raf = 0
-      const vp = mainEditor.getViewportScreenBounds()
-      const vv = window.visualViewport
-      const screenW = Number(vv?.width || window.innerWidth || vp.w)
-      const screenH = Number(vv?.height || window.innerHeight || vp.h)
-      const sig = `${Math.round(screenW)}x${Math.round(screenH)}`
-      if (sig === lastSig) return
-      lastSig = sig
-      if (!isPhoneFleetLayout(mainEditor)) return
-      const result = refitPhonePaneStack(mainEditor)
-      if (!result.ok) return
-      const changed = result.updatedIds.length > 0
-      snapToPhoneLaneIndex(mainEditor, result.docLeftPage, phoneLaneIndexForViewportRefit(result.currentIndex))
-      if (changed) {
-        hudAnchorRef.current = null
-        hudBaseCameraRef.current = mainEditor.getCamera()
-        const bounds = resetFleetBoundsTracker()
-        setFleetBounds(bounds)
-      }
-    }
-    const schedule = () => {
-      if (raf) return
-      raf = requestAnimationFrame(apply)
-    }
-    const scheduleSettledPasses = () => {
-      schedule()
-      for (const delay of [80, 180, 360, 700]) window.setTimeout(schedule, delay)
-    }
-    const handleOrientationChange = () => {
-      const docLeft = getPrimaryPhoneDocumentLeft(mainEditor)
-      if (docLeft !== null) {
-        const preserve = preservePhoneLaneForViewportSettle(mainEditor, docLeft)
-        const w = window as Window & { __tldaPhoneCameraSettlingUntil?: number }
-        w.__tldaPhoneCameraSettlingUntil = Math.max(Number(w.__tldaPhoneCameraSettlingUntil || 0), preserve.until)
-        if (settleTimer) window.clearTimeout(settleTimer)
-        settleTimer = window.setTimeout(() => {
-          if (Number(w.__tldaPhoneCameraSettlingUntil || 0) <= Date.now()) w.__tldaPhoneCameraSettlingUntil = 0
-        }, 950)
-      }
-      scheduleSettledPasses()
-    }
-    schedule()
-    window.addEventListener('resize', schedule)
-    window.addEventListener('orientationchange', handleOrientationChange)
-    window.visualViewport?.addEventListener('resize', schedule)
-    return () => {
-      if (raf) cancelAnimationFrame(raf)
-      if (settleTimer) window.clearTimeout(settleTimer)
-      window.removeEventListener('resize', schedule)
-      window.removeEventListener('orientationchange', handleOrientationChange)
-      window.visualViewport?.removeEventListener('resize', schedule)
-    }
-  }, [deviceReady, docShapesReady, identityId, mainEditor, resetFleetBoundsTracker])
-
   // In the copy-store HUD, opening the HUD hides fleet shapes in the main
   // editor because CanvasClipPanel renders separate copies. The fork viewport
   // HUD renders the same editor/store, so that global visibility switch would
@@ -850,7 +733,6 @@ export function FleetHUD({
     }
     const readinessWindow = window as Window & {
       __tldaCameraRestoredAt?: number
-      __tldaPhoneCameraSettlingUntil?: number
     }
     let cameraRestored = !!readinessWindow.__tldaCameraRestoredAt
     const onCameraRestored = () => { cameraRestored = true }
@@ -869,65 +751,31 @@ export function FleetHUD({
     const updateFromCamera = (cam: { x: number; y: number; z: number }) => {
       if (cam.x === lastCam.x && cam.z === lastCam.z) return
 
-      const phoneSettlingUntil = Number(readinessWindow.__tldaPhoneCameraSettlingUntil || 0)
       const suppressCameraTrackingUntil = Number(readinessWindow.__tldaFleetHudSuppressCameraTrackingUntil || 0)
       const suppressCameraTracking = suppressCameraTrackingUntil > Date.now()
-      if (!cameraRestored || (phoneSettlingUntil && Date.now() < phoneSettlingUntil)) {
-        // Wait for camera restore / phone startup fit, then treat later
-        // same-zoom camera changes as deliberate pan.
+      if (!cameraRestored) {
+        // Wait for camera restore, then treat later same-zoom camera changes as deliberate pan.
       } else if (hudAnchorRef.current !== null) {
         const t0 = probe.isEnabled('hud') ? performance.now() : 0
-        if (isPhoneFleetLayout(mainEditor)) {
-          const latestBounds = readMaintainedFleetBounds() || fleetBounds
-          const docShapes = mainEditor.getCurrentPageShapes().filter(isDocumentPageShape)
-          let minPageX = Infinity
-          for (const s of docShapes) {
-            const b = mainEditor.getShapePageBounds(s.id)
-            if (b && b.x < minPageX) minPageX = b.x
+        if (cam.z !== lastCam.z) {
+          const currentAnchor = readHudCameraAnchor()
+          if (currentAnchor) {
+            hudAnchorRef.current = currentAnchor
+            hudBaseCameraRef.current = cam
           }
-          if (latestBounds && isFinite(minPageX)) {
-            const docLeftScreen = mainEditor.pageToScreen({ x: minPageX, y: 0 }).x
-            const off = layoutOffset(getHumanId(), getDeviceId())
-            const phoneAnchor = computeFleetHudDefaultAnchor({
-              bounds: latestBounds,
-              docPageLeft: minPageX,
-              docLeftScreen,
-              layoutDx: off.dx,
-              topPad: activeTopPad,
-            })
-            hudAnchorRef.current = {
-              panOffset: phoneAnchor.panOffset,
-              cameraY: hudAnchorRef.current.cameraY,
-            }
-            configureFleetHudOverlayLayer(hudWm, {
-              panOffset: phoneAnchor.panOffset,
-              cameraY: hudAnchorRef.current.cameraY,
-              mainCamera: cam,
-              baseCamera: cam,
-            })
-            syncViewportIfChanged(readFleetHudOverlayLayer(hudWm).camera)
-          }
-        } else {
-          if (cam.z !== lastCam.z) {
-            const currentAnchor = readHudCameraAnchor()
-            if (currentAnchor) {
-              hudAnchorRef.current = currentAnchor
-              hudBaseCameraRef.current = cam
-            }
-          }
-          configureFleetHudOverlayLayer(hudWm, {
-            panOffset: hudAnchorRef.current.panOffset,
-            cameraY: hudAnchorRef.current.cameraY,
-            mainCamera: cam,
-            baseCamera: hudBaseCameraRef.current,
-          })
-          syncViewportIfChanged(readFleetHudOverlayLayer(hudWm).camera)
-          const hudCameraAnchor = readHudCameraAnchor()
-          if (hudCameraAnchor && cam.z === lastCam.z && !suppressCameraTracking) {
-            userPannedRef.current = true
-            ignoreSavedAnchorRef.current = false
-            saveAnchorOffsets(mainEditor, hudCameraAnchor.panOffset, hudCameraAnchor.cameraY)
-          }
+        }
+        configureFleetHudOverlayLayer(hudWm, {
+          panOffset: hudAnchorRef.current.panOffset,
+          cameraY: hudAnchorRef.current.cameraY,
+          mainCamera: cam,
+          baseCamera: hudBaseCameraRef.current,
+        })
+        syncViewportIfChanged(readFleetHudOverlayLayer(hudWm).camera)
+        const hudCameraAnchor = readHudCameraAnchor()
+        if (hudCameraAnchor && cam.z === lastCam.z && !suppressCameraTracking) {
+          userPannedRef.current = true
+          ignoreSavedAnchorRef.current = false
+          saveAnchorOffsets(mainEditor, hudCameraAnchor.panOffset, hudCameraAnchor.cameraY)
         }
         if (probe.isEnabled('hud')) {
           probe.record('hud', 'hud-pan-camera-change', performance.now() - t0, { dx: cam.x - lastCam.x })
@@ -1325,36 +1173,13 @@ export function FleetHUD({
     // it up and replaces this provisional value.
   }
 
-  const livePhonePanOffset = (() => {
-    if (!phoneLayout || !docShapesReady) return null
-    const docShapes = mainEditor.getCurrentPageShapes().filter(isDocumentPageShape)
-    if (docShapes.length === 0) return null
-    let minPageX = Infinity
-    for (const s of docShapes) {
-      const b = mainEditor.getShapePageBounds(s.id)
-      if (b && b.x < minPageX) minPageX = b.x
-    }
-    if (!isFinite(minPageX)) return null
-    const docLeftScreen = mainEditor.pageToScreen({ x: minPageX, y: 0 }).x
-    const off = layoutOffset(getHumanId(), getDeviceId())
-    return computeFleetHudDefaultAnchor({
-      bounds: activeFleetBounds,
-      docPageLeft: minPageX,
-      docLeftScreen,
-      layoutDx: off.dx,
-      topPad: activeTopPad,
-    }).panOffset
-  })()
   const baseAnchor = hudAnchorRef.current
   if (!baseAnchor) return null
-  const renderAnchor = livePhonePanOffset === null
-    ? baseAnchor
-    : { panOffset: livePhonePanOffset, cameraY: baseAnchor.cameraY }
   configureFleetHudOverlayLayer(hudWm, {
-    panOffset: renderAnchor.panOffset,
-    cameraY: renderAnchor.cameraY,
+    panOffset: baseAnchor.panOffset,
+    cameraY: baseAnchor.cameraY,
     mainCamera: mainEditor.getCamera(),
-    baseCamera: livePhonePanOffset === null ? hudBaseCameraRef.current : mainEditor.getCamera(),
+    baseCamera: hudBaseCameraRef.current,
   })
   const renderHudCameraAnchor = readHudCameraAnchor()
   if (!renderHudCameraAnchor) return null
@@ -1365,9 +1190,7 @@ export function FleetHUD({
     const projectedLeft = activeFleetBounds.x + renderHudCameraAnchor.panOffset
     const projectedRight = projectedLeft + activeFleetBounds.w
     const verticallyVisible = projectedBottom > 0 && projectedTop < window.innerHeight
-    const horizontallyVisible = phoneLayout
-      ? projectedRight > 0 && projectedLeft < window.innerWidth
-      : projectedLeft >= 0 && projectedRight <= window.innerWidth
+    const horizontallyVisible = projectedLeft >= 0 && projectedRight <= window.innerWidth
     if (!userPannedRef.current && (!verticallyVisible || !horizontallyVisible)) {
       const docShapes = mainEditor.getCurrentPageShapes().filter(isDocumentPageShape)
       let minPageX = Infinity
@@ -1433,7 +1256,6 @@ export function FleetHUD({
         />
         <SuggestionTip />
       </div>
-      <PhoneLaneArrow />
     </>
   )
 }

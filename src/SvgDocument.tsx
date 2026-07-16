@@ -34,7 +34,6 @@ import { FleetPillShapeUtil } from './shapes/FleetPillShape'
 import { FleetSearchShapeUtil } from './shapes/FleetSearchShape'
 import { FleetInboxShapeUtil } from './shapes/FleetInboxShape'
 import { FleetNotificationsShapeUtil } from './shapes/FleetNotificationsShape'
-import { FleetTouchInboxShapeUtil } from './shapes/FleetTouchInboxShape'
 import { FleetSourceEditorShapeUtil } from './shapes/FleetSourceEditorShape'
 import { getMyAnchorId, isMyFleetShape, FLEET_SHAPE_TYPES } from './shapes/fleet-utils'
 import { dispatchFleetHudReset } from './wm/editor-host-bridge'
@@ -52,7 +51,7 @@ import { HighlighterSlider } from './shapes/HighlighterSliderShape'
 import { ToolNameHud } from './overlays/ToolNameHud'
 import { getSvgViewBox, setNavigateToAnchor, setOnSourceClick, anchorIndex, setChangeHighlights, dismissAllChanges, changedPages } from './stores'
 import { BrowseTool } from './tools/BrowseTool/BrowseTool'
-import { PhoneHandTool } from './tools/PhoneHandTool'
+import { SoftAxisHandTool } from './tools/SoftAxisHandTool'
 import { MathNoteTool } from './tools/MathNoteTool'
 import { VoiceNoteTool } from './tools/VoiceNoteTool'
 import { TextSelectTool } from './tools/TextSelectTool'
@@ -129,8 +128,6 @@ import { ShadowHistoryOverlay } from './overlays/ShadowHistoryOverlay'
 import { PlaybackPill } from './pills/PlaybackPill'
 import { SlidesNavigator } from './SlidesNavigator'
 import { isPhoneViewport } from './phoneViewport'
-import { getPrimaryPhoneDocumentLeft, PHONE_INBOX_PANE_INDEX } from './shapes/phone-pane-stack'
-import { snapToPhoneLaneIndex } from './overlays/useFleetGestures'
 
 // Shape sync server = the active config's STORE (ws); tldraw license = the active
 // config's licenseKey. Both come from the server-injected config (activeConfig).
@@ -909,19 +906,16 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     )
     // Wrap every custom shape util with an error boundary so a single broken shape
     // renders an error placeholder instead of crashing the entire app.
-    const customUtils = [MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil, TocDropTargetShapeUtil, ReadingAssistBarShapeUtil, UnderstandingLineShapeUtil, TimelineOverlayShapeUtil, ZoomableImageShapeUtil, FleetChatShapeUtil, FleetAgentsShapeUtil, FleetPillShapeUtil, FleetSearchShapeUtil, FleetInboxShapeUtil, FleetNotificationsShapeUtil, FleetTouchInboxShapeUtil, FleetSourceEditorShapeUtil, FleetDocViewShapeUtil, FleetVideoShapeUtil, DocClipShapeUtil, InlineDocShapeUtil, DocVersionShapeUtil, DocViewerStateShapeUtil, ClusterShapeUtil, TerminalShapeUtil, TaskInboxShapeUtil, PlaybackFrameShapeUtil, OutlineShapeUtil, GraphNodeShapeUtil, GraphExplainShapeUtil, UsageMeterShapeUtil]
+    const customUtils = [MathNoteShapeUtil, HtmlPageShapeUtil, SvgPageShapeUtil, SvgFigureShapeUtil, TocDropTargetShapeUtil, ReadingAssistBarShapeUtil, UnderstandingLineShapeUtil, TimelineOverlayShapeUtil, ZoomableImageShapeUtil, FleetChatShapeUtil, FleetAgentsShapeUtil, FleetPillShapeUtil, FleetSearchShapeUtil, FleetInboxShapeUtil, FleetNotificationsShapeUtil, FleetSourceEditorShapeUtil, FleetDocViewShapeUtil, FleetVideoShapeUtil, DocClipShapeUtil, InlineDocShapeUtil, DocVersionShapeUtil, DocViewerStateShapeUtil, ClusterShapeUtil, TerminalShapeUtil, TaskInboxShapeUtil, PlaybackFrameShapeUtil, OutlineShapeUtil, GraphNodeShapeUtil, GraphExplainShapeUtil, UsageMeterShapeUtil]
     const all = [...utils, ...customUtils.map(u => withShapeErrorBoundary(u))];
     (window as any).__tldraw_shape_utils__ = all
     return all
   }, [])
   const bindingUtils = useMemo(() => [...defaultBindingUtils], [])
   const isPhone = isPhoneViewport()
-  const isPhoneLayoutRequested = typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('fleetLayout') === 'phone'
-  const usePhoneLaneNavigation = isPhone || isPhoneLayoutRequested
   const tools = useMemo(() => [
-    BrowseTool, MathNoteTool, VoiceNoteTool, TextSelectTool, FleetChatTool, FleetAgentsTool, FleetSearchTool, FleetInboxTool, ClusterTool, UsageMeterTool, PlaybackTool, TerminalTool, TaskInboxTool, RibbonEraserTool, RibbonHighlightTool,
-    ...(usePhoneLaneNavigation ? [PhoneHandTool] : []),
-  ], [usePhoneLaneNavigation])
+    BrowseTool, SoftAxisHandTool, MathNoteTool, VoiceNoteTool, TextSelectTool, FleetChatTool, FleetAgentsTool, FleetSearchTool, FleetInboxTool, ClusterTool, UsageMeterTool, PlaybackTool, TerminalTool, TaskInboxTool, RibbonEraserTool, RibbonHighlightTool,
+  ], [])
 
   // --- @tldraw/sync: shape CRDT sync ---
   const syncUri = useMemo(
@@ -1487,11 +1481,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
                     const z = vp.width / b.width
                     editor.setCamera({ x: -b.minX, y: -b.minY, z })
                   }
-                  readinessWindow.__tldaPhoneCameraSettlingUntil = Date.now() + 700
                   const markPhoneCameraReady = () => {
-                    const docLeft = getPrimaryPhoneDocumentLeft(editor)
-                    if (docLeft !== null) snapToPhoneLaneIndex(editor, docLeft, PHONE_INBOX_PANE_INDEX)
-                    readinessWindow.__tldaPhoneCameraSettlingUntil = 0
                     readinessWindow.__tldaPhoneCameraReadyAt = Date.now()
                     window.dispatchEvent(new Event('phone-camera-ready'))
                   }
@@ -1503,12 +1493,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
                   }, 500)
                 }
               }
-              if (usePhoneLaneNavigation) {
-                // Phone pane stack: always start in phone-hand so lane navigation
-                // works whenever the phone layout is active, including desktop
-                // browsers opened explicitly with fleetLayout=phone.
-                editor.setCurrentTool('phone-hand')
-              } else if (session?.tool) {
+              if (session?.tool) {
                 try { editor.setCurrentTool(session.tool) } catch { /* tool may not exist */ }
               } else {
                 const home = getHomeTool(getFormatConfig(document.format))
@@ -1601,24 +1586,6 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
             c.addEventListener('pointerdown', () => {
               if (changedPages.size > 0) dismissAllChanges()
             })
-          }
-
-          // Axis-lock two-finger scroll: snap to vertical or horizontal
-          // when the gesture is approximately aligned (3:1 ratio).
-          // Intercept at editor.dispatch since @use-gesture binds wheel internally.
-          const origDispatch = editor.dispatch.bind(editor)
-          const AXIS_RATIO = 2
-          editor.dispatch = (info: any) => {
-            if ((info.type === 'wheel' || info.type === 'pinch') && info.delta) {
-              const ax = Math.abs(info.delta.x)
-              const ay = Math.abs(info.delta.y)
-              if (ay > ax * AXIS_RATIO && ax > 0.3) {
-                info = { ...info, delta: { ...info.delta, x: 0 } }
-              } else if (ax > ay * AXIS_RATIO && ay > 0.3) {
-                info = { ...info, delta: { ...info.delta, y: 0 } }
-              }
-            }
-            return origDispatch(info)
           }
         }}
         components={components}

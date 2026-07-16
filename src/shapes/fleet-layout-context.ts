@@ -12,11 +12,10 @@ export type DocumentPageBounds = {
   maxRight: number
 }
 
-export type PhoneLayoutTarget = { x: number; y: number; w: number; h: number; pageX: number }
 export type FleetLayoutViewportBounds = { x: number; y: number; w: number; h: number }
 
 export function fleetLayoutPanelCount(variant: string): number {
-  return variant === '2x2' ? 4 : (variant === 'big-chat' || variant === 'phone') ? 1 : 2
+  return variant === '2x2' ? 4 : variant === 'big-chat' ? 1 : 2
 }
 
 export function buildFleetLayoutPlanInput({
@@ -26,7 +25,6 @@ export function buildFleetLayoutPlanInput({
   myId,
   myDevice,
   docBounds,
-  phoneTarget,
   existingChatFilters,
   makeSlotId,
   viewport,
@@ -37,7 +35,6 @@ export function buildFleetLayoutPlanInput({
   myId: string
   myDevice: string
   docBounds: DocumentPageBounds
-  phoneTarget: PhoneLayoutTarget | null
   existingChatFilters: Array<FleetChatFilter | undefined>
   makeSlotId: (slot: string) => string
   viewport?: FleetLayoutViewportBounds
@@ -86,12 +83,8 @@ export function buildFleetLayoutPlanInput({
   // HUD view is unaffected — its camera follows my own shapes' bounds — so this
   // only separates the underlying canvas shapes, which is what keeps a foreign
   // layout from overlapping mine.
-  // Phone pane stacks are already scoped by owner and device, and lane
-  // navigation is defined relative to the visible document viewport. The
-  // desktop canvas-spread offsets put the phone panes in another offscreen
-  // lane, so the phone camera snaps to empty space.
-  const { dx } = variant === 'phone' ? { dx: 0 } : layoutOffset(myId, myDevice)
-  const dy = variant === 'phone' ? 0 : laneDy(editor, myId, myDevice)
+  const { dx } = layoutOffset(myId, myDevice)
+  const dy = laneDy(editor, myId, myDevice)
   anchorX += dx
   anchorY += dy
 
@@ -113,7 +106,6 @@ export function buildFleetLayoutPlanInput({
     rightChatH,
     docviewH,
     viewport: vp,
-    phoneTarget,
     makeSlotId,
     filters: [filter1, filter2, filter3, filter4],
   }
@@ -163,39 +155,4 @@ function getCurrentVisibleDocumentPlaceBounds(editor: Editor): DocumentPageBound
     minTop: bounds.y,
     maxRight: bounds.x + bounds.w,
   }
-}
-
-export function getPhoneLayoutTarget(
-  editor: Editor,
-  pageShapes: any[],
-  vp: FleetLayoutViewportBounds,
-): PhoneLayoutTarget | null {
-  let target: PhoneLayoutTarget | null = null
-  let bestArea = -1
-  const sortedPages = [...pageShapes].sort((a: any, b: any) => (a.y ?? 0) - (b.y ?? 0))
-  for (const ps of sortedPages) {
-    const pb = editor.getShapePageBounds(ps.id)
-    if (!pb) continue
-    const tl = editor.pageToScreen({ x: pb.x, y: pb.y })
-    const br = editor.pageToScreen({ x: pb.x + pb.w, y: pb.y + pb.h })
-    const pageRect = {
-      x: Math.min(tl.x, br.x),
-      y: Math.min(tl.y, br.y),
-      w: Math.abs(br.x - tl.x),
-      h: Math.abs(br.y - tl.y),
-      pageX: pb.x,
-    }
-    const clipped = {
-      x: Math.max(pageRect.x, vp.x),
-      y: Math.max(pageRect.y, vp.y),
-      w: Math.max(0, Math.min(pageRect.x + pageRect.w, vp.x + vp.w) - Math.max(pageRect.x, vp.x)),
-      h: Math.max(0, Math.min(pageRect.y + pageRect.h, vp.y + vp.h) - Math.max(pageRect.y, vp.y)),
-    }
-    const area = clipped.w * clipped.h
-    if (area > bestArea) {
-      bestArea = area
-      target = pageRect
-    }
-  }
-  return target
 }

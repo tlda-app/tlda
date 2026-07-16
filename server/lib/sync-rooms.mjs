@@ -25,7 +25,6 @@ import {
   fleetNotificationsProps,
   fleetSearchProps,
   fleetSourceEditorProps,
-  fleetTouchInboxProps,
 } from '../../shared/shapes/fleet-panel-schema.mjs'
 import { SIGNAL_REPLAY_WINDOWS } from '../../shared/signals.ts'
 
@@ -224,13 +223,6 @@ const customShapeSchemas = {
     props: fleetNotificationsProps,
     migrations: createMigrationSequence({
       sequenceId: 'com.tldraw.shape.fleet-notifications',
-      sequence: [],
-    }),
-  },
-  'fleet-touch-inbox': {
-    props: fleetTouchInboxProps,
-    migrations: createMigrationSequence({
-      sequenceId: 'com.tldraw.shape.fleet-touch-inbox',
       sequence: [],
     }),
   },

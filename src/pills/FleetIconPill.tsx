@@ -18,8 +18,6 @@ import { stopEventPropagation, useUniqueSafeId } from 'tldraw'
 import type { Editor } from 'tldraw'
 import { currentFleetAgents, useAwakeFleetAgentCount, useFleetIdentity } from '../fleet-data-adapter'
 import { createFleetLayoutDetailed, type FleetLayoutCreateResult, type FleetLayoutVariant } from '../shapes/fleet-utils'
-import { getPrimaryPhoneDocumentLeft, PHONE_INBOX_PANE_INDEX } from '../shapes/phone-pane-stack'
-import { snapToPhoneLaneIndex } from '../overlays/useFleetGestures'
 import { dispatchFleetHudReset, dispatchFleetHudToggle } from '../wm/editor-host-bridge'
 import { isFleetHudHidden, writeFleetHudExpanded } from '../wm/fleet-hud-state'
 import { log } from '../logger'
@@ -42,15 +40,9 @@ const DRAG_THRESHOLD = 6   // px before drag activates
 const ITEM_W = 44          // px width of each preset tile
 const ITEM_GAP = 4         // px between tiles
 
-// 'touch' preset removed: the fleet-touch-inbox shape's click-to-filter never
-// landed (the filter write no-ops in the HUD overlay) and the shape is being
-// retired for the normal-inbox evolution. The shape code/schema stay for the
-// inbox-evolve dead-code cut; this just makes the broken layout unreachable.
-type LayoutId = Exclude<FleetLayoutVariant, 'touch'>
+type LayoutId = FleetLayoutVariant
 type LayoutSource = 'badge-drag-release' | 'fan-preset' | 'url-auto'
-// Order is "outside in": phone/pane layout first, then the desktop layouts.
 const LAYOUT_PRESETS: { id: LayoutId; title: string }[] = [
-  { id: 'phone', title: 'Phone reset: inbox | document' },
   { id: '3-col', title: 'Three-column: agents + search | chat | chat + docview' },
   { id: '2x2', title: '2×2: agents + search | four chats' },
   { id: 'big-chat', title: 'Big chat: large chat over source editor' },
@@ -139,16 +131,6 @@ function LayoutIcon({ id, size = 20 }: { id: LayoutId; size?: number }) {
         {docEl()}
       </>
     ),
-    'phone': (
-      // A phone silhouette for the phone/pane layout, with speaker slit and home indicator.
-      <>
-        <rect x={s*0.3} y={s*0.03} width={s*0.4} height={s*0.94} rx={s*0.09} stroke="currentColor" strokeWidth={0.7} fill="none" />
-        <line x1={s*0.44} y1={s*0.105} x2={s*0.56} y2={s*0.105} stroke="currentColor" strokeWidth={0.7} strokeLinecap="round" />
-        <rect x={s*0.36} y={s*0.17} width={s*0.28} height={s*0.15} rx={r} fill={ap} />
-        <rect x={s*0.36} y={s*0.34} width={s*0.28} height={s*0.5} rx={r} fill={ch} />
-        <line x1={s*0.43} y1={s*0.915} x2={s*0.57} y2={s*0.915} stroke="currentColor" strokeWidth={0.9} strokeLinecap="round" />
-      </>
-    ),
   }
 
   return (
@@ -183,14 +165,6 @@ function logLayoutTelemetry(msg: string, data: Record<string, any>) {
   log.warn('fleet-layout', msg, data)
 }
 
-function getPhoneCameraSettlingDelay() {
-  if (typeof window === 'undefined') return 0
-  const readinessWindow = window as Window & { __tldaPhoneCameraSettlingUntil?: number }
-  const until = Number(readinessWindow.__tldaPhoneCameraSettlingUntil || 0)
-  if (!Number.isFinite(until)) return 0
-  return Math.max(0, until - Date.now())
-}
-
 function cleanUrlName(name: string | null) {
   const clean = sanitizeIdentityName(name)
   return isUsableIdentityName(clean) ? clean : ''
@@ -216,7 +190,6 @@ function applyFleetLayoutPreset({
 }) {
   const deadline = Date.now() + 5000
   let rafId: number | null = null
-  let timeoutId: ReturnType<typeof setTimeout> | null = null
   let unsub: (() => void) | null = null
   let completed = false
   let lastResult: FleetLayoutCreateResult | null = null
@@ -231,55 +204,10 @@ function applyFleetLayoutPreset({
   const cleanup = () => {
     if (rafId !== null) cancelAnimationFrame(rafId)
     rafId = null
-    if (timeoutId !== null) clearTimeout(timeoutId)
-    timeoutId = null
     unsub?.()
     unsub = null
   }
-  const fitPhonePageInViewport = () => {
-    const pageShapes = mainEditor.getCurrentPageShapes().filter(s => (s.type as string) === 'svg-page')
-    if (pageShapes.length === 0) return false
-    const first = pageShapes.sort((a, b) => (a as any).y - (b as any).y)[0]
-    const b = mainEditor.getShapePageBounds(first.id)
-    if (!b) return false
-    const el = window.document.querySelector(`[data-shape-id="${first.id}"]:not(.tl-shape-background)`)
-    const svg = el?.querySelector('svg')
-    const vp = mainEditor.getViewportScreenBounds()
-    if (svg?.viewBox?.baseVal?.width) {
-      const vb = svg.viewBox.baseVal
-      const texts = svg.querySelectorAll('text')
-      let minX = Infinity
-      let maxX = -Infinity
-      for (const t of texts) {
-        if (t.closest('defs')) continue
-        const x = parseFloat(t.getAttribute('x') || '0')
-        const len = (t as SVGTextContentElement).getComputedTextLength?.() || 0
-        if (x < minX) minX = x
-        if (x + len > maxX) maxX = x + len
-      }
-      if (minX < maxX) {
-        const sx = b.width / vb.width
-        const colMinX = b.minX + minX * sx
-        const colW = (maxX - minX) * sx
-        mainEditor.setCamera({ x: -colMinX, y: -b.minY, z: vp.width / colW })
-        return true
-      }
-    }
-    mainEditor.setCamera({ x: -b.minX, y: -b.minY, z: vp.width / b.width })
-    return true
-  }
   const applyWhenReady = async () => {
-    if (presetId === 'phone') {
-      const delay = getPhoneCameraSettlingDelay()
-      if (delay > 0) {
-        if (timeoutId !== null) return
-        timeoutId = setTimeout(() => {
-          timeoutId = null
-          applyWhenReady()
-        }, Math.min(delay + 50, 1000))
-        return
-      }
-    }
     // createFleetLayoutDetailed is async (awaits whenDeviceReady before stamping
     // ownership) — must await so `created` is the boolean result, not a Promise.
     const result = await createFleetLayoutDetailed(mainEditor, agents, presetId)
@@ -293,11 +221,6 @@ function applyFleetLayoutPreset({
         onShown?.()
       }
       requestAnimationFrame(() => {
-        if (presetId === 'phone') {
-          fitPhonePageInViewport()
-          const docLeft = getPrimaryPhoneDocumentLeft(mainEditor)
-          if (docLeft !== null) snapToPhoneLaneIndex(mainEditor, docLeft, PHONE_INBOX_PANE_INDEX)
-        }
         dispatchFleetHudReset()
       })
       return

@@ -58,7 +58,7 @@ test('annotation viewer stays opaque and uses the canvas background variable', (
   const darkCanvasBackground = 'var(--tlda-canvas-background, var(--color-background, var(--tl-color-background, #0f0f1a)))'
 
   assertDeclaration(css, '.annotation-viewer--hovering', 'opacity', '1')
-  assertDeclaration(css, '.annotation-viewer--pinned,\n.annotation-viewer--navigated,\n.annotation-viewer--phone-pane', 'opacity', '1')
+  assertDeclaration(css, '.annotation-viewer--pinned,\n.annotation-viewer--navigated', 'opacity', '1')
   assertDeclaration(css, '.annotation-viewer', 'background', canvasBackground)
   assertDeclaration(css, '.tl-theme__dark .annotation-viewer', 'background', darkCanvasBackground)
   assertDeclaration(css, '.annotation-viewer-canvas', 'background', canvasBackground)

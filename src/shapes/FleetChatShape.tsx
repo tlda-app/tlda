@@ -45,7 +45,7 @@ import {
 } from '../fleet/filter-semantics.mjs'
 import { appendToken } from '../authToken'
 import { labelsForAgent } from '../../shared/fleet-labels.mjs'
-import { useFleetChatAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useFleetStatusTargets, useFleetFilterHasMatchingAgent, useSuggestions, clearGroup, sendMessage, loadBefore, resolveFleetAgentLabelIds, injectOptimisticEvent, updateOptimisticEvent, removeOptimisticEvent } from '../fleet-data-adapter'
+import { useFleetAgents, useFleetChatAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useFleetStatusTargets, useFleetFilterHasMatchingAgent, useSuggestions, clearGroup, sendMessage, loadBefore, resolveFleetAgentLabelIds, injectOptimisticEvent, updateOptimisticEvent, removeOptimisticEvent } from '../fleet-data-adapter'
 import { isTerminalAvailableForAgent, mergeVisibleChatEvents } from '../fleet/fleet-chat-visibility.mjs'
 import type { Suggestion } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
@@ -80,22 +80,12 @@ import { consumeBulletContexts, subscribeBulletContext, getBulletContexts } from
 import { getPref, subscribePref } from '../preferences'
 import { beginUiIntent, hashUiIntentState } from '../uiIntentTelemetry'
 import { DATABASE_HTTP } from '../activeConfig'
-import { deletePhonePinnedChatPane, isPhonePinnedPaneShape } from './phone-pane-stack'
 import {
-  PHONE_LANE_DRAG_IDLE,
-  phoneLaneCommitPx,
-  rememberPhoneLanePortraitWidth,
-  setPhoneGestureCandidate,
-  setPhoneGestureProgress,
-  setPhoneLaneDrag,
-  snapToPhoneLaneIndex,
-} from '../overlays/useFleetGestures'
-import {
-  phoneStackGestureCommits,
-  phoneStackGestureDecision,
-  phoneStackGestureProgress,
-  phoneStackPopCommitPx as phoneStackPopCommitPxForPane,
-} from '../wm'
+  FleetAgentDirectoryList,
+  getFleetAgentDirectoryRows,
+  sortFleetAgentDirectoryRows,
+} from './FleetAgentDirectoryRow'
+import { fleetAgentFilterChoiceUpdate } from './fleet-agent-filter-choices'
 import './fleet-chat.css'
 
 const DEFAULT_W = 400
@@ -103,15 +93,6 @@ const DEFAULT_H = 600
 const FLEET_API = DATABASE_HTTP
 type ChatTrafficMode = 'normal' | 'quiet'
 type ComposerTrafficFilterMode = 'dm-quiet' | 'dm' | 'agent' | 'custom'
-type PhonePaneDeleteGesture = {
-  pointerId: number
-  touchId?: number
-  mode: 'pending' | 'dragging'
-  x0: number
-  y0: number
-  lastDy: number
-  maxUp: number
-}
 type FleetChatRenderCounter = {
   active?: boolean
   renderCount?: number
@@ -174,21 +155,6 @@ function recordFleetChatRender(shape: any) {
     t: typeof performance !== 'undefined' ? performance.now() : Date.now(),
     shapeId: shape?.id,
   })
-}
-
-function isPhoneSurfaceNow(): boolean {
-  if (typeof window === 'undefined') return false
-  return new URLSearchParams(window.location.search).get('fleetLayout') === 'phone' ||
-    document.body.classList.contains('phone-mode') ||
-    isPhoneViewport()
-}
-
-function isAtScrollBottom(el: HTMLElement, epsilon = 8): boolean {
-  return el.scrollTop + el.clientHeight >= el.scrollHeight - epsilon
-}
-
-function phoneStackPopCommitPx(): number {
-  return phoneStackPopCommitPxForPane(phoneLaneCommitPx())
 }
 
 function isFleetPillRecord(record: any): boolean {
@@ -390,15 +356,6 @@ type TerminalOutputFrame = {
   encoding?: string
 }
 
-function phoneTerminalViewportFrame() {
-  if (typeof window === 'undefined') return { active: false, width: 0, height: 0 }
-  if (!isPhoneViewport()) return { active: false, width: 0, height: 0 }
-  const visual = window.visualViewport
-  const width = Math.round(visual?.width || window.innerWidth || 0)
-  const height = Math.round((visual?.height || window.innerHeight || 0) * 0.5)
-  return { active: true, width, height }
-}
-
 // Hover mode: read-only snapshot that resets on each server push.
 // Pinned mode: stays open, shows input bar for sending commands, resizable.
 function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter, onMouseLeave }: {
@@ -444,7 +401,6 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
   const [height, setHeight] = useState(210)
   const [lightboxed, setLightboxed] = useState(false)
   const [scale, setScale] = useState(1)
-  const [phoneFrame, setPhoneFrame] = useState(phoneTerminalViewportFrame)
   // The peek renders a fixed grid sized to the agent's REAL tmux window width
   // (reported by the daemon via a 'size' message), then CSS-scales it to fit the
   // panel. PEEK_COLS/ROWS are only the fallback until the first 'size' arrives —
@@ -476,26 +432,6 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
 
   useEffect(() => { pinnedRef.current = pinned }, [pinned])
   useEffect(() => { lightboxedRef.current = lightboxed }, [lightboxed])
-
-  useEffect(() => {
-    const update = () => {
-      const next = phoneTerminalViewportFrame()
-      setPhoneFrame(prev => (
-        prev.active === next.active && prev.width === next.width && prev.height === next.height
-          ? prev
-          : next
-      ))
-    }
-    update()
-    window.addEventListener('resize', update)
-    window.addEventListener('orientationchange', update)
-    window.visualViewport?.addEventListener('resize', update)
-    return () => {
-      window.removeEventListener('resize', update)
-      window.removeEventListener('orientationchange', update)
-      window.visualViewport?.removeEventListener('resize', update)
-    }
-  }, [])
 
   // On lightbox open, fetch the agent's real tmux scrollback (capture-pane via
   // the daemon). The live attach stream only carries the current screen, so this
@@ -781,8 +717,6 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
     )
   }
 
-  const phoneTopPanel = phoneFrame.active && !lightboxed
-
   return createPortal((
     // Carrier provides the .fleet-chat-shape scoped CSS + custom properties the
     // pane styles depend on (it's portaled out of the real chat shape). display:
@@ -793,8 +727,8 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
       className={`fleet-terminal-hover-pane${pinned ? ' fleet-terminal-hover-pane-pinned' : ''}${lightboxed ? ' fleet-terminal-hover-pane-lightboxed' : ''}`}
       style={{
         position: 'fixed',
-        left: phoneTopPanel ? 0 : anchor?.left ?? 0,
-        visibility: phoneTopPanel || anchor ? 'visible' : 'hidden',
+        left: anchor?.left ?? 0,
+        visibility: anchor ? 'visible' : 'hidden',
         ...(lightboxed
           // Grow UP + RIGHT from the pinned pane's bottom-left, which stays put.
           // Width comes from the lightbox CSS (min(840px,92vw)); height is fixed.
@@ -806,19 +740,11 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
           // Peek/pinned: top-anchored to the input's bottom edge at the chat's
           // width. Height is auto, so pinning ADDS the input bar below and the
           // terminal you saw on hover stays in place (pane grows downward).
-          : phoneTopPanel
-            ? {
-                top: 0,
-                width: phoneFrame.width || '100vw',
-                height: phoneFrame.height || '50vh',
-                right: 'auto',
-                bottom: 'auto',
-              }
-            : {
-                top: anchor?.top ?? 0,
-                width: anchor?.width ?? 0,
-                right: 'auto',
-              }),
+          : {
+              top: anchor?.top ?? 0,
+              width: anchor?.width ?? 0,
+              right: 'auto',
+            }),
       }}
       onMouseEnter={onMouseEnter}
       onMouseLeave={pinned ? undefined : onMouseLeave}
@@ -840,7 +766,7 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
       <div
         ref={bodyRef}
         className="fleet-terminal-hover-body"
-        style={lightboxed || phoneTopPanel ? undefined : { height, flex: 'none' }}
+        style={lightboxed ? undefined : { height, flex: 'none' }}
       >
         {lightboxed && historyText && (
           <div ref={historyContainerRef} className="fleet-terminal-hover-history" />
@@ -854,7 +780,6 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
           style={
             lightboxed && historyText ? { display: 'none' }
             : lightboxed ? { transform: `scale(${scale})`, transformOrigin: 'top left' }
-            : phoneTopPanel ? { transform: `scale(${scale})`, transformOrigin: 'top left', position: 'absolute', left: 0, top: 0 }
             : { transform: `scale(${scale})`, transformOrigin: 'bottom left', position: 'absolute', left: 0, bottom: 0 }
           }
         >
@@ -924,7 +849,7 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
           </button>
         </div>
       )}
-      {pinned && !phoneTopPanel && (
+      {pinned && (
         <div
           className="fleet-terminal-hover-resize-handle"
           onPointerDown={handleResizePointerDown}
@@ -1887,9 +1812,6 @@ const ChatMessageRow = memo(function ChatMessageRow({
 function FleetChatInner({ shape }: { shape: any }) {
   recordFleetChatRender(shape)
   const editor = useEditor()
-  const mainEd = (typeof window !== 'undefined'
-    ? (window as Window & { __tldraw_editor__?: Editor }).__tldraw_editor__
-    : undefined) || editor
   const viewportId = useVisibilityViewportId()
   const doc = useContext(DocContext)
   const panel = useContext(PanelContext)
@@ -1899,34 +1821,6 @@ function FleetChatInner({ shape }: { shape: any }) {
   void useValue('editing', () => editor.getEditingShapeId() === shape.id, [editor, shape.id])
   const [filterOpen, setFilterOpen] = useState(false)
   const [filterOpenByPill, setFilterOpenByPill] = useState(false)
-  const [isPhoneSurface, setIsPhoneSurface] = useState(isPhoneSurfaceNow)
-  const isPhoneLaneSurface = isPhoneSurface && isPhonePinnedPaneShape(mainEd, shape)
-  const phoneDeleteGestureRef = useRef<PhonePaneDeleteGesture | null>(null)
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return
-    const media = window.matchMedia?.('(max-width: 600px), (max-height: 600px)')
-    const update = () => setIsPhoneSurface(isPhoneSurfaceNow())
-    update()
-    media?.addEventListener?.('change', update)
-    window.addEventListener('resize', update)
-    window.addEventListener('orientationchange', update)
-    window.visualViewport?.addEventListener('resize', update)
-    const observer = new MutationObserver(update)
-    observer.observe(document.body, { attributes: true, attributeFilter: ['class'] })
-    return () => {
-      media?.removeEventListener?.('change', update)
-      window.removeEventListener('resize', update)
-      window.removeEventListener('orientationchange', update)
-      window.visualViewport?.removeEventListener('resize', update)
-      observer.disconnect()
-    }
-  }, [])
-
-  const resetPhoneDeleteGesture = useCallback(() => {
-    phoneDeleteGestureRef.current = null
-    setPhoneLaneDrag(PHONE_LANE_DRAG_IDLE)
-  }, [])
 
   // Keep a ref to the current filter so the rename effect can read it without a stale closure
   const filterRef = useRef(filter)
@@ -2205,195 +2099,6 @@ function FleetChatInner({ shape }: { shape: any }) {
     [],
   )
   const inputRef = useRef<HTMLInputElement>(null)
-
-  useEffect(() => {
-    const logEl = chatLogEl
-    const el = shapeContainerRef.current
-    if (!logEl || !el) return
-
-    const isPinnedPhoneChatPane = () =>
-      isPhoneSurface &&
-      isPhonePinnedPaneShape(mainEd, shape)
-
-    const canStartDeleteGesture = (target: EventTarget | null) => {
-      if (!isPinnedPhoneChatPane()) return false
-      if (!(target instanceof Element)) return true
-      if (target.closest('textarea, input, button, select, [contenteditable="true"], .fleet-filter-overlay')) return false
-      const logTarget = target.closest('.fleet-chat-log')
-      return !logTarget || isAtScrollBottom(logEl)
-    }
-
-    const onPointerDown = (e: PointerEvent) => {
-      if (!e.isPrimary) return
-      if (e.pointerType === 'mouse' && e.button !== 0) return
-      if (phoneDeleteGestureRef.current?.touchId != null) return
-      if (!canStartDeleteGesture(e.target)) return
-      rememberPhoneLanePortraitWidth(mainEd)
-      const commit = phoneStackPopCommitPx()
-      setPhoneGestureCandidate('up', commit, 'stack-pop')
-      phoneDeleteGestureRef.current = {
-        pointerId: e.pointerId,
-        mode: 'pending',
-        x0: e.clientX,
-        y0: e.clientY,
-        lastDy: 0,
-        maxUp: 0,
-      }
-      try { el.setPointerCapture?.(e.pointerId) } catch {
-        // Synthetic/offscreen pointer events may not be capturable; move/up still dispatch to this listener.
-      }
-    }
-
-    const beginTouchDeleteGesture = (touch: Touch, target: EventTarget | null) => {
-      if (!canStartDeleteGesture(target)) return false
-      rememberPhoneLanePortraitWidth(mainEd)
-      setPhoneGestureCandidate('up', phoneStackPopCommitPx(), 'stack-pop')
-      phoneDeleteGestureRef.current = {
-        pointerId: -1,
-        touchId: touch.identifier,
-        mode: 'pending',
-        x0: touch.clientX,
-        y0: touch.clientY,
-        lastDy: 0,
-        maxUp: 0,
-      }
-      return true
-    }
-
-    const updateDeleteGesture = (x: number, y: number, event: { preventDefault: () => void }) => {
-      const gesture = phoneDeleteGestureRef.current
-      if (!gesture) return false
-      const dx = x - gesture.x0
-      const dy = y - gesture.y0
-      gesture.lastDy = dy
-      gesture.maxUp = Math.max(gesture.maxUp, -dy)
-      const commit = phoneStackPopCommitPx()
-      const decision = gesture.mode === 'pending' ? phoneStackGestureDecision('stack-pop', dx, dy) : 'dragging'
-      if (decision === 'abort') {
-        resetPhoneDeleteGesture()
-        return false
-      }
-      if (dy <= 0 || decision === 'dragging') event.preventDefault()
-      setPhoneGestureProgress('up', phoneStackGestureProgress('stack-pop', dx, dy, commit), commit, 'stack-pop')
-      if (gesture.mode === 'pending') {
-        if (decision === 'pending') return true
-        gesture.mode = 'dragging'
-      }
-
-      setPhoneGestureProgress('up', phoneStackGestureProgress('stack-pop', dx, dy, commit), commit, 'stack-pop')
-      return true
-    }
-
-    const finishDeleteGesture = () => {
-      const gesture = phoneDeleteGestureRef.current
-      if (!gesture) return
-      const shouldCommit = gesture.mode === 'dragging' && phoneStackGestureCommits('stack-pop', 0, -gesture.maxUp, phoneStackPopCommitPx())
-      resetPhoneDeleteGesture()
-      if (!shouldCommit) return
-      const result = deletePhonePinnedChatPane(mainEd, shape)
-      if (!result.ok) {
-        console.warn('[phone-pane-stack] delete-pinned-pane failed', result)
-        return
-      }
-      snapToPhoneLaneIndex(mainEd, result.docLeftPage, result.targetIndex)
-    }
-
-    const onPointerMove = (e: PointerEvent) => {
-      const gesture = phoneDeleteGestureRef.current
-      if (!gesture || gesture.pointerId !== e.pointerId) return
-      const dx = e.clientX - gesture.x0
-      const dy = e.clientY - gesture.y0
-      gesture.lastDy = dy
-      gesture.maxUp = Math.max(gesture.maxUp, -dy)
-      const commit = phoneStackPopCommitPx()
-      const decision = gesture.mode === 'pending' ? phoneStackGestureDecision('stack-pop', dx, dy) : 'dragging'
-      if (decision === 'abort') {
-        resetPhoneDeleteGesture()
-        return
-      }
-      if (dy <= 0 || decision === 'dragging') {
-        e.preventDefault()
-        stopEventPropagation(e)
-      }
-      setPhoneGestureProgress('up', phoneStackGestureProgress('stack-pop', dx, dy, commit), commit, 'stack-pop')
-      if (gesture.mode === 'pending') {
-        if (decision === 'pending') return
-        gesture.mode = 'dragging'
-      }
-
-      setPhoneGestureProgress('up', phoneStackGestureProgress('stack-pop', dx, dy, commit), commit, 'stack-pop')
-    }
-
-    const onPointerEnd = (e: PointerEvent) => {
-      const gesture = phoneDeleteGestureRef.current
-      if (!gesture || gesture.pointerId !== e.pointerId) return
-      const shouldCommit = gesture.mode === 'dragging' && phoneStackGestureCommits('stack-pop', 0, -gesture.maxUp, phoneStackPopCommitPx())
-      e.preventDefault()
-      stopEventPropagation(e)
-      resetPhoneDeleteGesture()
-      if (!shouldCommit) return
-      const result = deletePhonePinnedChatPane(mainEd, shape)
-      if (!result.ok) {
-        console.warn('[phone-pane-stack] delete-pinned-pane failed', result)
-        return
-      }
-      snapToPhoneLaneIndex(mainEd, result.docLeftPage, result.targetIndex)
-    }
-
-    const onPointerCancel = (e: PointerEvent) => {
-      const gesture = phoneDeleteGestureRef.current
-      if (!gesture || gesture.pointerId !== e.pointerId) return
-      resetPhoneDeleteGesture()
-    }
-
-    const onTouchStart = (e: TouchEvent) => {
-      if (e.touches.length !== 1) return
-      beginTouchDeleteGesture(e.touches[0], e.target)
-    }
-
-    const onTouchMove = (e: TouchEvent) => {
-      const gesture = phoneDeleteGestureRef.current
-      if (!gesture || gesture.touchId == null) return
-      const touch = Array.from(e.touches).find(t => t.identifier === gesture.touchId)
-      if (!touch) return
-      updateDeleteGesture(touch.clientX, touch.clientY, e)
-    }
-
-    const onTouchEnd = (e: TouchEvent) => {
-      const gesture = phoneDeleteGestureRef.current
-      if (!gesture || gesture.touchId == null) return
-      const ended = Array.from(e.changedTouches).some(t => t.identifier === gesture.touchId)
-      if (!ended) return
-      e.preventDefault()
-      finishDeleteGesture()
-    }
-
-    const onTouchCancel = (e: TouchEvent) => {
-      const gesture = phoneDeleteGestureRef.current
-      if (!gesture || gesture.touchId == null) return
-      const ended = Array.from(e.changedTouches).some(t => t.identifier === gesture.touchId)
-      if (ended) resetPhoneDeleteGesture()
-    }
-
-    el.addEventListener('pointerdown', onPointerDown)
-    el.addEventListener('pointermove', onPointerMove)
-    el.addEventListener('pointerup', onPointerEnd)
-    el.addEventListener('pointercancel', onPointerCancel)
-    el.addEventListener('touchstart', onTouchStart, { passive: false })
-    el.addEventListener('touchmove', onTouchMove, { passive: false })
-    el.addEventListener('touchend', onTouchEnd, { passive: false })
-    el.addEventListener('touchcancel', onTouchCancel, { passive: false })
-    return () => {
-      el.removeEventListener('pointerdown', onPointerDown)
-      el.removeEventListener('pointermove', onPointerMove)
-      el.removeEventListener('pointerup', onPointerEnd)
-      el.removeEventListener('pointercancel', onPointerCancel)
-      el.removeEventListener('touchstart', onTouchStart)
-      el.removeEventListener('touchmove', onTouchMove)
-      el.removeEventListener('touchend', onTouchEnd)
-      el.removeEventListener('touchcancel', onTouchCancel)
-    }
-  }, [chatLogEl, isPhoneSurface, mainEd, resetPhoneDeleteGesture, shape])
 
   // Reactive map of image asset ID → src URL (populated from tldraw store).
   // Image chips use tldraw asset IDs for persistence — assets survive page reload.
@@ -5192,16 +4897,6 @@ function FleetChatInner({ shape }: { shape: any }) {
     return () => { cancelled = true }
   }, [chatLogEl, filterKey, loadBeforeAgentsKey, hasChatMessages, chatEventBufferKey])
 
-  useEffect(() => {
-    if (!chatLogEl || !hasChatMessages) return
-    if (!isPhoneSurface || !isPhonePinnedPaneShape(mainEd, shape)) return
-    userScrolledUpRef.current = false
-    isAtBottomRef.current = true
-    setAtBottom(true)
-    setFleetEventsLiveTailPinned(shape.id, true, chatEventBufferKey)
-    settleToTail('phone-pinned-open', { force: true, resumeFollow: true })
-  }, [chatLogEl, hasChatMessages, isPhoneSurface, mainEd, shape.id, filterKey, chatEventBufferKey, settleToTail])
-
   // --- Chat log drag → ghost pill ---
   // Uses native capture-phase listeners because tldraw intercepts React events
   const DRAG_THRESHOLD = 5
@@ -5787,7 +5482,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     >
       <div
         ref={shapeContainerRef}
-        className={`fleet-shape fleet-chat-shape${isPhoneLaneSurface ? ' phone-lane-surface' : ''}`}
+        className="fleet-shape fleet-chat-shape"
         style={{
           ...fleetStyleVars,
           width: '100%',
@@ -6458,6 +6153,11 @@ export function FilterOverlay({
     }
     updateChatProps({ filter: nextFilter, trafficMode: 'normal' })
   }, [activeAgentLabel, humanLabel, updateChatProps])
+  const applyChoice = useCallback((label: string, mode: 'dm' | 'agent') => {
+    updateChatProps(fleetAgentFilterChoiceUpdate(humanLabel, label, mode))
+  }, [humanLabel, updateChatProps])
+  const choiceAgents = useFleetAgents()
+  const filterRows = useMemo(() => sortFleetAgentDirectoryRows(getFleetAgentDirectoryRows(choiceAgents)), [choiceAgents])
 
   useEffect(() => {
     function handlePointerUp(e: PointerEvent) {
@@ -6494,7 +6194,7 @@ export function FilterOverlay({
     }
     document.addEventListener('pointerup', handlePointerUp, { capture: true })
     return () => document.removeEventListener('pointerup', handlePointerUp, { capture: true })
-  }, [shapeId, editor, onClose, applyPreset, updateChatProps])
+  }, [shapeId, editor, onClose, applyPreset, applyChoice, updateChatProps])
 
   // Detect pill hovering over the shape — show two-pane drop preview
   const fleetPillCount = useFleetPillCount(editor)
@@ -6836,6 +6536,19 @@ export function FilterOverlay({
               </div>
             </>
           )}
+          <div className="fleet-filter-choices fleet-agents-body">
+            <FleetAgentDirectoryList
+              rows={filterRows}
+              onAgentPointerUp={(e, agentRow) => {
+                e.stopPropagation()
+                applyChoice(agentRow.exactName, 'dm')
+              }}
+              onLabelPointerUp={(e, label) => {
+                e.stopPropagation()
+                applyChoice(label, 'agent')
+              }}
+            />
+          </div>
         </>
       )}
     </div>

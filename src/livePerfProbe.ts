@@ -211,7 +211,7 @@ function collectDomSummary() {
     fleetShapes: document.querySelectorAll('.fleet-chat-shape, .fleet-inbox-shape, .fleet-agents-shape, .fleet-status-shape').length,
     fleetChatShapes: document.querySelectorAll('.fleet-chat-shape').length,
     fleetInboxShapes: document.querySelectorAll('.fleet-inbox-shape').length,
-    fleetAgentRows: document.querySelectorAll('.fleet-agents-row, .fleet-phone-agent, .fleet-inbox-phone-agent').length,
+    fleetAgentRows: document.querySelectorAll('.fleet-agents-row, .fleet-phone-agent').length,
     fleetChatLines: document.querySelectorAll('.fleet-chat-shape .chat-line, .fleet-chat-shape [data-chat-line]').length,
     fleetActivityCards: document.querySelectorAll('.chat-activity-card, .activity-card, .fleet-activity-card, [data-activity-card]').length,
     visibleActivityLatency: collectVisibleActivityLatency(),

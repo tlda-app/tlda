@@ -13,8 +13,6 @@ import { NotesTab } from './panels/NotesTab'
 import { PrefsTab } from './panels/PrefsTab'
 import { CornerButtonSlider, pickCornerSliderIndex } from './CornerButtonSlider'
 import { isPhoneViewport } from './phoneViewport'
-import { phoneLaneIndexForViewportRefit, preservePhoneLaneForViewportSettle, snapToPhoneLaneIndex } from './overlays/useFleetGestures'
-import { getPrimaryPhoneDocumentLeft, refitPhonePaneStack } from './shapes/phone-pane-stack'
 
 import './DocumentPanel.css'
 
@@ -251,8 +249,8 @@ function activateHlSlot(editor: Editor, idx: number) {
     editor.setCurrentTool('select')
   } else if (slot.id === 'draw') {
     editor.setCurrentTool('draw')
-  } else if (slot.id === 'phone-hand') {
-    editor.setCurrentTool('phone-hand')
+  } else if (slot.id === 'hand') {
+    editor.setCurrentTool('hand')
   } else {
     editor.setStyleForNextShapes(DefaultColorStyle, slot.id)
     editor.setCurrentTool('highlight')
@@ -265,14 +263,9 @@ function activateHlSlot(editor: Editor, idx: number) {
 
 import { HL_SLOTS, TLDRAW_ICON_BASE, hlMaskUrl, type HlSlot } from './highlighterSlots'
 
-// Phone-only slots = the shared highlighter slots plus the phone-hand (navigation)
-// tool as the rightmost slot. The phone-hand tool is registered only on phone, so
-// it must NOT go in the shared HL_SLOTS (that would add a broken slot to the
-// desktop HighlighterSliderShape). Selecting it returns you to lane navigation —
-// the escape hatch so picking the highlighter never strands you off phone-hand.
 const PHONE_HL_SLOTS: HlSlot[] = [
   ...HL_SLOTS,
-  { id: 'phone-hand', color: '#888', label: 'move', svgIcon: `${TLDRAW_ICON_BASE}#tool-hand` },
+  { id: 'hand', color: '#888', label: 'move', svgIcon: `${TLDRAW_ICON_BASE}#tool-hand` },
 ]
 
 function PhoneHighlighterButton() {
@@ -319,8 +312,7 @@ function PhoneHighlighterButton() {
       // Switch to highlight with current color
       activateSlot(colorIdx)
     } else {
-      // Switch back to phone-hand (axis-locked scroll)
-      editor.setCurrentTool('phone-hand')
+      editor.setCurrentTool('hand')
     }
   }, [editor, mode, colorIdx, activateSlot])
 
@@ -601,67 +593,12 @@ function PhonePageIndicator() {
 }
 
 export function PhoneOverlay() {
-  const editor = useEditor()
   const doc = useContext(DocContext)
   const [menuOpen, setMenuOpen] = useState(false)
   const [tab, setTab] = useState<Tab>('toc')
   const isPhone = usePhoneSizedViewport()
   const showButtonToc = doc?.format === 'slides' || isPhone || IS_TOUCH_DEVICE
   useVisualViewportControlAnchor(showButtonToc)
-  const phoneViewportSig = useValue(
-    'phone-overlay-viewport',
-    () => {
-      const vp = editor.getViewportScreenBounds()
-      return `${Math.round(vp.w)}x${Math.round(vp.h)}`
-    },
-    [editor],
-  )
-
-  useEffect(() => {
-    if (!isPhone) return
-    let raf = 0
-    let settleTimer = 0
-    const apply = () => {
-      raf = 0
-      const result = refitPhonePaneStack(editor)
-      if (!result.ok) return
-      snapToPhoneLaneIndex(editor, result.docLeftPage, phoneLaneIndexForViewportRefit(result.currentIndex))
-      if (result.updatedIds.length > 0) window.dispatchEvent(new CustomEvent('fleet-phone-layout-reflowed'))
-    }
-    const schedule = () => {
-      if (raf) cancelAnimationFrame(raf)
-      raf = requestAnimationFrame(apply)
-    }
-    const scheduleSettledPasses = () => {
-      schedule()
-      for (const delay of [80, 180, 360, 700]) window.setTimeout(schedule, delay)
-    }
-    const handleOrientationChange = () => {
-      const docLeft = getPrimaryPhoneDocumentLeft(editor)
-      if (docLeft !== null) {
-        const preserve = preservePhoneLaneForViewportSettle(editor, docLeft)
-        const w = window as Window & { __tldaPhoneCameraSettlingUntil?: number }
-        w.__tldaPhoneCameraSettlingUntil = Math.max(Number(w.__tldaPhoneCameraSettlingUntil || 0), preserve.until)
-        if (settleTimer) window.clearTimeout(settleTimer)
-        settleTimer = window.setTimeout(() => {
-          if (Number(w.__tldaPhoneCameraSettlingUntil || 0) <= Date.now()) w.__tldaPhoneCameraSettlingUntil = 0
-        }, 950)
-      }
-      scheduleSettledPasses()
-    }
-    schedule()
-    window.addEventListener('resize', schedule)
-    window.addEventListener('orientationchange', handleOrientationChange)
-    window.visualViewport?.addEventListener('resize', schedule)
-    return () => {
-      if (raf) cancelAnimationFrame(raf)
-      if (settleTimer) window.clearTimeout(settleTimer)
-      window.removeEventListener('resize', schedule)
-      window.removeEventListener('orientationchange', handleOrientationChange)
-      window.visualViewport?.removeEventListener('resize', schedule)
-    }
-  }, [editor, isPhone, phoneViewportSig])
-
   useEffect(() => {
     if (!isPhone) return
     // Show toolbar when menu is open
