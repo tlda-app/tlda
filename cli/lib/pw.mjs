@@ -33,7 +33,7 @@
 import { spawnSync } from 'child_process'
 import { join, dirname, resolve, isAbsolute } from 'path'
 import { readFileSync, writeFileSync, existsSync, realpathSync, rmSync, mkdirSync, readdirSync } from 'fs'
-import { freemem, homedir, totalmem } from 'os'
+import { homedir, platform, totalmem } from 'os'
 import { fileURLToPath } from 'url'
 import { createHash } from 'crypto'
 import { getServerUrl } from '../../shared/config.mjs'
@@ -67,10 +67,34 @@ function parsePressure(value, fallback) {
   return Number.isFinite(n) && n > 0 && n < 1 ? n : fallback
 }
 
-function memoryPressure() {
-  const total = totalmem()
-  if (!total) return null
-  return 1 - freemem() / total
+function parseVmStatPageCount(output, label) {
+  const match = String(output).match(new RegExp(`${escapeRegex(label)}:\\s+([0-9,.]+)\\.?`))
+  if (!match) return null
+  const pages = Number(match[1].replace(/[,.]/g, ''))
+  return Number.isFinite(pages) ? pages : null
+}
+
+export function parseDarwinAvailableMemoryBytes(vmStatOutput) {
+  const pageSizeMatch = String(vmStatOutput).match(/page size of\s+([0-9,]+)\s+bytes/i)
+  const pageSize = pageSizeMatch ? Number(pageSizeMatch[1].replace(/,/g, '')) : null
+  const free = parseVmStatPageCount(vmStatOutput, 'Pages free')
+  const inactive = parseVmStatPageCount(vmStatOutput, 'Pages inactive')
+  const speculative = parseVmStatPageCount(vmStatOutput, 'Pages speculative')
+  if (![pageSize, free, inactive, speculative].every(Number.isFinite)) return null
+  return pageSize * (free + inactive + speculative)
+}
+
+function darwinAvailableMemoryBytes() {
+  const result = spawnSync('vm_stat', [], { encoding: 'utf8' })
+  if (result.error || result.status !== 0) return null
+  return parseDarwinAvailableMemoryBytes(result.stdout)
+}
+
+export function memoryPressure({ platformName = platform(), total = totalmem(), vmStatOutput = null } = {}) {
+  if (platformName !== 'darwin' || !total) return null
+  const available = vmStatOutput === null ? darwinAvailableMemoryBytes() : parseDarwinAvailableMemoryBytes(vmStatOutput)
+  if (!Number.isFinite(available)) return null
+  return Math.max(0, Math.min(1, 1 - available / total))
 }
 
 function formatPressure(value) {
