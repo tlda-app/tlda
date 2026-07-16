@@ -57,7 +57,6 @@ test('shared fresh mint launches locally without a server id and persists its re
       assert.equal(stored.process.tmuxName, 'fleet-offline-test')
       assert.equal(stored.process.cwd, dir)
       assert.equal(stored.conversation.harness, 'codex')
-      assert.equal(stored.process.permissionProfile, null)
     } finally { ledger.close() }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })

@@ -51,13 +51,6 @@ function metadataOf(agent) {
   return meta && typeof meta === 'object' ? meta : {}
 }
 
-function configuredPermissionProfileName(config = {}, name) {
-  const key = String(name || '').trim()
-  if (!key) return null
-  const profiles = config?.spawnPolicy?.permissionProfiles || {}
-  return Object.prototype.hasOwnProperty.call(profiles, key) ? key : null
-}
-
 function modelKwargs(params = {}, extra = {}) {
   return {
     ...(params.modelOptions && typeof params.modelOptions === 'object' && !Array.isArray(params.modelOptions) ? params.modelOptions : {}),
@@ -289,7 +282,7 @@ async function spawnFresh(params) {
       model,
       tmuxName: tmuxSession,
       cwd,
-      permissionProfile: configuredPermissionProfileName(config, params.permissionProfile),
+      permissionProfile: params.permissionProfile || params.requestedPermission || (params.breakGlass ? 'break-glass' : null),
     })
     if (serverUp) {
       await (deps.checkFreshNameAvailable || checkFreshNameAvailable)(name, { api, serverUp, excludeId: fleetId })

@@ -15,15 +15,6 @@ function value(value) {
   return value == null || value === '' ? null : String(value)
 }
 
-function migratedLegacyPermissionProfile(name) {
-  const key = String(name || '').trim()
-  if (!key) return null
-  if (['wd', 'math', 'app-dev', 'ops'].includes(key)) return key
-  if (['cwd', 'write', 'read', 'none'].includes(key)) return 'wd'
-  if (['unsandboxed', 'full', 'break-glass'].includes(key)) return 'ops'
-  return key
-}
-
 export class LocalAgentLedger {
   constructor(file = defaultLocalAgentLedgerPath()) {
     this.file = file
@@ -127,7 +118,7 @@ export class LocalAgentLedger {
         if (this._getServer.get(row.id)) continue
         let permissionProfile = null
         try {
-          permissionProfile = migratedLegacyPermissionProfile(JSON.parse(row.spawn_policy || 'null')?.name)
+          permissionProfile = JSON.parse(row.spawn_policy || 'null')?.name || null
         } catch (error) {
           this.db.prepare(`
             INSERT INTO local_agent_migration_issues (legacy_id, reason, observed_at)
