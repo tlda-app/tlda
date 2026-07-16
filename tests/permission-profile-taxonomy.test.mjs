@@ -36,6 +36,16 @@ const forbidden = [
   /projectedPolicy\s*:\s*\{\s*name\s*:/,
 ]
 
+const forbiddenLine = [
+  {
+    pattern: /\bpermissionSet\s*\?\.\s*name\b|\bpermissionSet\s*\.\s*name\b/,
+    allow: [
+      /materializedFrom: permissionSet\.name \|\| permissionSet\.materializedFrom/,
+      /explicit permissionSet "\$\{permissionSet\.name \|\| '\(unnamed\)'\}"/,
+    ],
+  },
+]
+
 test('production code has one permission-profile taxonomy', () => {
   const failures = []
   for (const dir of PRODUCTION_DIRS) {
@@ -43,6 +53,15 @@ test('production code has one permission-profile taxonomy', () => {
       const source = fs.readFileSync(file, 'utf8')
       for (const pattern of forbidden) {
         if (pattern.test(source)) failures.push(`${path.relative(ROOT, file)} :: ${pattern}`)
+      }
+      const lines = source.split(/\r?\n/)
+      for (let index = 0; index < lines.length; index++) {
+        const line = lines[index]
+        for (const rule of forbiddenLine) {
+          if (rule.pattern.test(line) && !rule.allow.some((allowed) => allowed.test(line))) {
+            failures.push(`${path.relative(ROOT, file)}:${index + 1} :: ${rule.pattern}`)
+          }
+        }
       }
     }
   }

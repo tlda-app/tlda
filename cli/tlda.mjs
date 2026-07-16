@@ -2627,6 +2627,7 @@ export async function runFleetSpawn(spawnArgs, {
     if (preallocatedAgentId) {
       await ledger.set(preallocatedAgentId, {
         spawnPolicy: grant.spawnPolicy,
+        permissionProfile: grantedProfile,
         permissionSet: grant.permissionSet,
         source: 'agent-lifecycle-cli',
       })
@@ -2672,6 +2673,7 @@ export async function runFleetSpawn(spawnArgs, {
     if (shouldPersistGrant && (!preallocatedAgentId || result.fleetId !== preallocatedAgentId)) {
       await ledger.set(result.fleetId, {
         spawnPolicy: grant.spawnPolicy,
+        permissionProfile: grantedProfile,
         permissionSet: grant.permissionSet,
         source: 'agent-lifecycle-cli',
       })
@@ -2740,7 +2742,7 @@ function durableWakeGrant(ledger, { agentId, name } = {}) {
   return {
     spawnPolicy: rec.spawnPolicy,
     permissionSet: rec.permissionSet,
-    permissionProfile: rec.permissionSet?.name || null,
+    permissionProfile: rec.permissionProfile || null,
   }
 }
 

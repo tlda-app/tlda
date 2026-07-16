@@ -161,5 +161,4 @@ test('a daemon profile without projectedPolicy derives its region from its confi
   })
   assert.deepEqual(grant.spawnPolicy, { policy: 'cwd' })
   assert.equal(grant.permissionProfile, 'workspace')
-  assert.equal(grant.permissionSet.name, 'workspace')
 })

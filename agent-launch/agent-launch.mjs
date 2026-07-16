@@ -366,7 +366,6 @@ export function createAgentLauncher({
           || exactConfiguredPermissionProfile(grant.permissionSet, spawnConfig, preferredPermissionClass)
         if (permissionProfile) {
           grant.permissionProfile = permissionProfile
-          grant.permissionSet.name = permissionProfile
           grant.permissionSet.projectedPolicy = {
             policy: grant.spawnPolicy.policy,
           }
@@ -435,6 +434,7 @@ export function createAgentLauncher({
       if (shouldWriteLedgerRow) {
         await permissionLedger.set(preallocatedAgentId, {
           spawnPolicy: grant.spawnPolicy,
+          permissionProfile: grant.permissionProfile,
           permissionSet: grant.permissionSet,
           source: 'spawn',
         })
@@ -457,6 +457,7 @@ export function createAgentLauncher({
           effort,
           permissionMode: mode,
           spawnPolicy: grant.spawnPolicy,
+          permissionProfile: grant.permissionProfile,
           permissionSet: grant.permissionSet,
           explicitPolicy: permissionRequest != null,
           acknowledgeNoSecurity: !!acknowledgeNoSecurity,

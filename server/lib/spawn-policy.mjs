@@ -642,7 +642,6 @@ export function resolveSpawnGrant({
   const spawnPolicy = {
     policy: regionScopeFromSet(permissionSet),
   }
-  permissionSet.name = permissionProfile || 'grant'
   permissionSet.projectedPolicy = spawnPolicy
   return { spawnPolicy, permissionSet, permissionProfile }
 }

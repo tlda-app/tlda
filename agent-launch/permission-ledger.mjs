@@ -33,7 +33,7 @@ function normalizeLedgerGrant(value) {
   }
   const rawPermissionSet = value.permissionSet || value.permissions || null
   if (rawPermissionSet) {
-    const profileName = String(value.permissionProfile || rawPermissionSet.name || '').trim()
+    const profileName = String(value.permissionProfile || '').trim()
     const scope = value.spawnPolicy
       ? normalizeRegionPolicy(value.spawnPolicy)
       : { policy: regionScopeFromSet(rawPermissionSet) }
@@ -43,9 +43,9 @@ function normalizeLedgerGrant(value) {
     }
     return {
       spawnPolicy,
+      permissionProfile: profileName || null,
       permissionSet: {
         ...rawPermissionSet,
-        ...(profileName ? { name: profileName } : {}),
         projectedPolicy: spawnPolicy,
       },
     }
@@ -54,6 +54,7 @@ function normalizeLedgerGrant(value) {
   const spawnPolicy = normalizeRegionPolicy(raw)
   return {
     spawnPolicy,
+    permissionProfile: null,
     permissionSet: isNoneGrant(raw)
       ? emptyPermissionSet({ name: 'none', projectedPolicy: { ...spawnPolicy, permission: 'none' } })
       : null,
@@ -456,6 +457,7 @@ export class PermissionLedger {
       CREATE TABLE IF NOT EXISTS permission_grants (
         id TEXT PRIMARY KEY,
         spawn_policy TEXT NOT NULL,
+        permission_profile TEXT,
         permission_set TEXT,
         updated_at TEXT NOT NULL,
         source TEXT NOT NULL,
@@ -481,6 +483,7 @@ export class PermissionLedger {
     `)
     for (const ddl of [
       'ALTER TABLE permission_grants ADD COLUMN friendly_name TEXT',
+      'ALTER TABLE permission_grants ADD COLUMN permission_profile TEXT',
       'ALTER TABLE permission_grants ADD COLUMN session_id TEXT',
       'ALTER TABLE permission_grants ADD COLUMN session_kind TEXT',
       'ALTER TABLE permission_grants ADD COLUMN session_path TEXT',
@@ -509,14 +512,14 @@ export class PermissionLedger {
         updated_at = excluded.updated_at
     `)
     this._get = this.db.prepare(`
-      SELECT id, spawn_policy, permission_set, updated_at, source,
+      SELECT id, spawn_policy, permission_profile, permission_set, updated_at, source,
         friendly_name, session_id, session_kind, session_path, tmux_session, model,
         machine_id, env_name, daemon_key, cwd, last_seen
       FROM permission_grants
       WHERE id = ?
     `)
     this._findByFriendlyName = this.db.prepare(`
-      SELECT id, spawn_policy, permission_set, updated_at, source,
+      SELECT id, spawn_policy, permission_profile, permission_set, updated_at, source,
         friendly_name, session_id, session_kind, session_path, tmux_session, model,
         machine_id, env_name, daemon_key, cwd, last_seen
       FROM permission_grants
@@ -525,7 +528,7 @@ export class PermissionLedger {
       LIMIT 1
     `)
     this._list = this.db.prepare(`
-      SELECT id, spawn_policy, permission_set, updated_at, source,
+      SELECT id, spawn_policy, permission_profile, permission_set, updated_at, source,
         friendly_name, session_id, session_kind, session_path, tmux_session, model,
         machine_id, env_name, daemon_key, cwd, last_seen
       FROM permission_grants
@@ -533,10 +536,11 @@ export class PermissionLedger {
       ORDER BY id
     `)
     this._upsert = this.db.prepare(`
-      INSERT INTO permission_grants (id, spawn_policy, permission_set, updated_at, source)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO permission_grants (id, spawn_policy, permission_profile, permission_set, updated_at, source)
+      VALUES (?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         spawn_policy = excluded.spawn_policy,
+        permission_profile = excluded.permission_profile,
         permission_set = excluded.permission_set,
         updated_at = excluded.updated_at,
         source = excluded.source
@@ -603,12 +607,14 @@ export class PermissionLedger {
     if (!row) return null
     const parsed = {
       spawnPolicy: JSON.parse(row.spawn_policy),
+      permissionProfile: row.permission_profile || null,
       ...(row.permission_set ? { permissionSet: JSON.parse(row.permission_set) } : {}),
     }
     const grant = normalizeLedgerGrant(parsed)
     return {
       id: row.id,
       spawnPolicy: grant.spawnPolicy,
+      permissionProfile: grant.permissionProfile,
       permissionSet: grant.permissionSet,
       updatedAt: row.updated_at,
       source: row.source || 'ledger',
@@ -637,13 +643,14 @@ export class PermissionLedger {
     )
   }
 
-  rowFor(id, { spawnPolicy, permissionSet, source = 'spawn' } = {}) {
+  rowFor(id, { spawnPolicy, permissionProfile = null, permissionSet, source = 'spawn' } = {}) {
     const key = String(id || '').trim()
     if (!key) throw new Error('cannot persist daemon permission grant without fleet id')
     const policy = normalizeRegionPolicy(spawnPolicy)
     return {
       id: key,
       spawnPolicy: policy,
+      permissionProfile: permissionProfile || null,
       permissionSet: permissionSet || (isNoneGrant(spawnPolicy)
         ? emptyPermissionSet({ name: 'none', projectedPolicy: { ...policy, permission: 'none' } })
         : null),
@@ -703,6 +710,7 @@ export class PermissionLedger {
         const row = this._get.get(expected.id)
         return !!row
           && row.spawn_policy === expected.spawnPolicy
+          && row.permission_profile === expected.permissionProfile
           && row.permission_set === expected.permissionSet
           && row.updated_at === expected.updatedAt
           && row.source === expected.source
@@ -720,6 +728,7 @@ export class PermissionLedger {
       row: {
         id: row.id,
         spawnPolicy: JSON.stringify(row.spawnPolicy),
+        permissionProfile: row.permissionProfile,
         permissionSet: row.permissionSet ? JSON.stringify(row.permissionSet) : null,
         updatedAt: row.updatedAt,
         source: row.source,
@@ -743,6 +752,7 @@ export class PermissionLedger {
     this._upsert.run(
       row.id,
       JSON.stringify(row.spawnPolicy),
+      row.permissionProfile,
       row.permissionSet ? JSON.stringify(row.permissionSet) : null,
       row.updatedAt,
       row.source,
@@ -925,6 +935,7 @@ export function applyDaemonGrants(ledger, daemonConfig = {}) {
     const grant = normalizeLedgerGrant(profileName ? { permissionProfile: profileName, permissionSet: source } : source)
     ledger.setSync(id, {
       spawnPolicy: grant.spawnPolicy,
+      permissionProfile: profileName,
       permissionSet: grant.permissionSet,
       source: 'daemon.yaml:grants',
     })
@@ -951,6 +962,7 @@ export function applyGrandfatherInfill(ledger, { agents = [], config = {}, proje
     const grant = resolveGrandfatherGrant(agent, { config, projects })
     ledger.setSync(agent.id, {
       spawnPolicy: grant.spawnPolicy,
+      permissionProfile: grant.permissionProfile,
       permissionSet: grant.permissionSet,
       source: 'grandfather:fleet-db-cutover',
     })

@@ -167,12 +167,14 @@ function seedPermissionLedger(dbPath) {
   const ledger = createPermissionLedger(dbPath)
   try {
     ledger.setSync('localhost', {
-      spawnPolicy: { name: 'wd', policy: 'cwd' },
+      spawnPolicy: { policy: 'cwd' },
+      permissionProfile: 'wd',
       permissionSet: permissionSet('wd', ['/tmp/tlda-recipe-cwd/**']),
       source: 'test',
     })
     ledger.setSync('fleet:recipe', {
-      spawnPolicy: { name: 'ops', policy: 'unsandboxed' },
+      spawnPolicy: { policy: 'unsandboxed' },
+      permissionProfile: 'ops',
       permissionSet: permissionSet('ops', ['**']),
       source: 'test',
     })
@@ -220,7 +222,6 @@ test('wake without explicit flags uses durable grant directly without caller cla
     assert.equal(spawnCalls[0].cwd, '/tmp/tlda-recipe-cwd')
     assert.equal(spawnCalls[0].permissionProfile, 'ops')
     assert.equal(spawnCalls[0].spawnPolicy.policy, 'unsandboxed')
-    assert.equal(spawnCalls[0].permissionSet.name, 'ops')
     assert.equal(spawnCalls[0].permissionRequest, undefined)
     assert.equal(spawnCalls[0].explicitPolicy, false)
 
@@ -228,7 +229,7 @@ test('wake without explicit flags uses durable grant directly without caller cla
     const localLedger = createLocalAgentLedger(dbPath)
     try {
       assert.deepEqual(rawPermissionGrantRow(dbPath, 'fleet:recipe'), beforeGrantRow)
-      assert.equal(permissionLedger.get('fleet:recipe').permissionSet.name, 'ops')
+      assert.equal(permissionLedger.get('fleet:recipe').permissionProfile, 'ops')
       assert.equal(localLedger.get('fleet:recipe').process.permissionProfile, 'ops')
     } finally {
       permissionLedger.close()
@@ -267,7 +268,6 @@ test('wake honors explicit permissions and persists the clamped resolved grant',
     assert.equal(spawnCalls.length, 1)
     assert.equal(spawnCalls[0].permissionProfile, 'wd')
     assert.equal(spawnCalls[0].spawnPolicy.policy, 'cwd')
-    assert.equal(spawnCalls[0].permissionSet.name, 'wd')
     assert.equal(spawnCalls[0].permissionRequest, 'math')
     assert.equal(spawnCalls[0].explicitPolicy, true)
 
@@ -275,8 +275,8 @@ test('wake honors explicit permissions and persists the clamped resolved grant',
     const localLedger = createLocalAgentLedger(dbPath)
     try {
       const grant = permissionLedger.get('fleet:recipe')
+      assert.equal(grant.permissionProfile, 'wd')
       assert.equal(grant.spawnPolicy.policy, 'cwd')
-      assert.equal(grant.permissionSet.name, 'wd')
       assert.equal(localLedger.get('fleet:recipe').process.permissionProfile, 'wd')
     } finally {
       permissionLedger.close()

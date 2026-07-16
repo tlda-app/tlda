@@ -155,7 +155,7 @@ for (const row of rows) {
   if (sample.length < 6) sample.push(item)
   if (directionSamples[direction]?.length < 6) directionSamples[direction].push(item)
   if (APPLY && direction === 'raise') {
-    ledger.setSync(row.id, { spawnPolicy: gp, permissionSet: grant.permissionSet, source: 'backfill:project-default' })
+    ledger.setSync(row.id, { spawnPolicy: gp, permissionProfile: grant.permissionProfile, permissionSet: grant.permissionSet, source: 'backfill:project-default' })
     changed++
   }
 }
