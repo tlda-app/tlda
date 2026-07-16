@@ -1,3 +1,5 @@
+import { runtimeStatusName } from '../../shared/fleet-runtime-status.mjs'
+
 const DEFAULT_RENUDGE_INTERVAL_MS = 5 * 60 * 1000
 
 function timeOf(value) {
@@ -57,7 +59,7 @@ export function decideTaskRenudges({
 
     const agent = agentById.get(task.agent)
     if (!agent || agent.dead || agent.human) continue
-    const status = String(agent.status || '').toLowerCase()
+    const status = String(runtimeStatusName(agent) || '').toLowerCase()
     if (status === 'dead' || status === 'shell') continue
     // Skip agents whose wake breaker is open (consecutive wake failures →
     // exponential backoff). Prevents the endless futile respawns of agents whose

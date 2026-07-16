@@ -1,4 +1,5 @@
 export const POSITIVE_LIVENESS_TTL_MS = 90_000
+export const HUMAN_HEARTBEAT_TTL_MS = POSITIVE_LIVENESS_TTL_MS
 
 export const RUNTIME_STATUS = Object.freeze({
   AWAKE: 'awake',
@@ -175,12 +176,13 @@ export function projectAgentRuntimeStatus(agent, evidence = null, {
 
   if (agent.human) {
     const seenAgo = agent.last_seen ? nowMs - new Date(agent.last_seen).getTime() : Infinity
+    const recent = seenAgo < HUMAN_HEARTBEAT_TTL_MS
     return runtimeProjection({
-      status: seenAgo < 90_000 ? RUNTIME_STATUS.HUMAN : RUNTIME_STATUS.HUMAN_AWAY,
+      status: recent ? RUNTIME_STATUS.HUMAN : RUNTIME_STATUS.HUMAN_AWAY,
       activity: baseEvidence.activity,
       route,
       evidence: baseEvidence,
-      reason: seenAgo < 90_000 ? 'human-recent-heartbeat' : 'human-heartbeat-stale',
+      reason: recent ? 'human-recent-heartbeat' : 'human-heartbeat-stale',
       nowMs,
     })
   }

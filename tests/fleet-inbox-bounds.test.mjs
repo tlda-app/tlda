@@ -233,7 +233,7 @@ test('agent registry is not fully hydrated on startup or liveness oracle install
   const reloaded = new FleetStore(dbPath)
   try {
     assert.equal(reloaded._agentRegistryLoaded, false)
-    reloaded.setLivenessOracle(() => false)
+    reloaded.setRuntimeStatusProvider(() => ({ status: 'hibernating' }))
     assert.equal(reloaded._agentRegistryLoaded, false)
 
     assert.equal(reloaded.getAllAgents().length, 3)
@@ -280,7 +280,7 @@ test('targeted agent reads and summaries do not force registry hydration', () =>
         last_seen: `2026-07-12T00:00:0${i}.000Z`,
         dead: i === 2,
         machine_id: i === 0 ? 'mini' : 'air',
-      })
+      }, { allowProtectedAgentFields: true })
     }
   } finally {
     store.close()

@@ -226,7 +226,7 @@ test('wake route surfaces wedged decision instead of silently deferring', async 
 test('old lineage name resolution ignores a dead chief row before wake routing', () => {
   const { store, dbPath } = tempStore('wake-route-chief-lineage')
   try {
-    store.setLivenessOracle((id) => id === 'fleet:chief-live')
+    store.setRuntimeStatusProvider(agent => ({ status: agent.id === 'fleet:chief-live' ? 'awake' : 'hibernating' }))
     store.upsertAgent({
       id: 'fleet:chief-old',
       friendly_name: 'chief',

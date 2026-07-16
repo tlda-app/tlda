@@ -3270,9 +3270,9 @@ export async function collectAgentReadiness(query, spawnSync, apiGet = api) {
   }
   if (!seat?.tmux_session) return { ok: false, query, agent, seat, error: 'current durable seat has no tmux session' }
   if (seat.agent_id && seat.agent_id !== agent.id) return { ok: false, query, agent, seat, error: `current durable seat owner mismatch: ${seat.agent_id} != ${agent.id}` }
-  if (agent.tmux_session && agent.tmux_session !== seat.tmux_session) {
-    return { ok: false, query, agent, seat, error: `registry/current-seat tmux mismatch: registry=${agent.tmux_session} seat=${seat.tmux_session}` }
-  }
+  const registrySeatMismatch = agent.tmux_session && agent.tmux_session !== seat.tmux_session
+    ? `registry/current-seat tmux mismatch: registry=${agent.tmux_session} seat=${seat.tmux_session}`
+    : null
   const sess = seat.tmux_session
   const hasSession = spawnSync('tmux', [...tmuxBase(), 'has-session', '-t', sess], { stdio: 'ignore' }).status === 0
   let panes = []
@@ -3299,7 +3299,7 @@ export async function collectAgentReadiness(query, spawnSync, apiGet = api) {
   const ok = !agent.dead && hasSession && runtime.ok && !!recentLogin
   return {
     ok, query, agent, seat, tableRow: row, session: sess, hasSession, panes, runtime,
-    recentLogin, recentInbox, incoming, replyAfterIncoming,
+    recentLogin, recentInbox, incoming, replyAfterIncoming, warning: registrySeatMismatch,
   }
 }
 
@@ -3311,6 +3311,7 @@ function printAgentReadiness(r) {
   const agent = r.agent
   const row = r.tableRow
   console.log(`spawn readiness for ${agent.friendly_name || agent.id} (${agent.id})`)
+  if (r.warning) console.log(`  warning: ${r.warning}`)
   console.log(`  registry: ${agent.dead ? 'dead' : 'live row'}; status=${row?.status || agent.status || 'unknown'}; machine=${agent.machine_id || 'unknown'}`)
   console.log(`  current seat: ${r.seat ? `${r.seat.session_id || 'no-session'} @ ${r.seat.daemon_key || 'no-daemon'}` : 'missing'}`)
   console.log(`  tmux: ${r.hasSession ? `ok ${r.session} panes=${r.panes.join(',') || 'none'}` : `missing ${r.session}`}`)

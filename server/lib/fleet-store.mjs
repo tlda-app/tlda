@@ -26,6 +26,7 @@ import { createLiveStore } from '../../shared/live-store.ts';
 import { PSEUDO_LABELS, parseFilter, evalExpr, evalExprDirectional, labelsForAgent } from '../../shared/fleet-labels.mjs';
 import { baseName, nameForPhase, phaseFromName, ALL_PHASES, prettyNameForFriendlyName } from '../../shared/lineage-name.mjs';
 import { literalFtsQuery } from '../../shared/fts-query.mjs';
+import { isRuntimeAwake } from '../../shared/fleet-runtime-status.mjs';
 import { createTaskDocMaterializer } from './task-doc-materializer.mjs';
 import { projectAgentRuntimeStatus } from './agent-runtime-status.mjs';
 
@@ -2001,8 +2002,8 @@ export class FleetStore {
   }
 
   // Among non-dead rows that share a friendly name, pick the live-holder-wins /
-  // most-recently-active one (Skip's spec G.22 / F.16). An actually-live holder
-  // (daemon liveness oracle) beats a hibernating one; within a liveness tier the
+  // most-recently-active one (Skip's spec G.22 / F.16). An actually-awake holder
+  // (runtime projection) beats a hibernating one; within a liveness tier the
   // most recent last_seen wins; last_active and finally row order break further
   // ties. This is the S1 resolver: wake reaches the live agent by liveness, not
   // by an arbitrary name-grep. Deterministic and total — never throws (the old
@@ -2016,8 +2017,7 @@ export class FleetStore {
       return Number.isFinite(n) ? n : 0;
     };
     const awake = (r) => {
-      if (this._runtimeStatusProvider) return this._runtimeStatusProvider(r)?.status === 'awake';
-      return this._isLiveOracle ? !!this._isLiveOracle(r.id) : false;
+      return this._runtimeStatusProvider ? isRuntimeAwake({ ...r, runtime_status: this._runtimeStatusProvider(r) }) : false;
     };
     return rows.slice().sort((a, b) => {
       const liveDelta = (awake(b) ? 1 : 0) - (awake(a) ? 1 : 0);
@@ -2256,7 +2256,7 @@ export class FleetStore {
     const totals = { awake: 0, hibernating: 0, total: 0 };
     for (const agent of this._aliveAgentRosterView.list) {
       totals.total += 1;
-      if (agent.status === 'awake') totals.awake += 1;
+      if (isRuntimeAwake(agent)) totals.awake += 1;
       else totals.hibernating += 1;
     }
     return totals;
@@ -2352,18 +2352,6 @@ export class FleetStore {
       .run(JSON.stringify(metadata), id);
     this._syncAgentRegistry(id);
     return this.getAgent(id);
-  }
-
-  // Liveness oracle: optional function (agentId) => boolean.
-  // Installed by the server. Returns true if the server currently believes the
-  // agent is live, based on login, activity, thinking/status, and explicit wake
-  // probes.
-  // No oracle installed → no agent reports awake (all hibernating). The
-  // server installs the oracle during normal boot, so this is only a cold-start
-  // transient.
-  setLivenessOracle(fn) {
-    this._isLiveOracle = fn;
-    this._bustAgentsCache();
   }
 
   setRuntimeStatusProvider(fn) {
@@ -2740,9 +2728,7 @@ export class FleetStore {
     }
     const runtimeStatus = this._runtimeStatusProvider
       ? this._runtimeStatusProvider(baseAgent)
-      : projectAgentRuntimeStatus(baseAgent, this._isLiveOracle?.(row.id)
-        ? { liveness: 'alive', liveness_source: 'legacy-liveness-oracle', liveness_at_ms: Date.now(), liveness_at: new Date().toISOString() }
-        : null)
+      : projectAgentRuntimeStatus(baseAgent, null)
     return {
       ...baseAgent,
       status: runtimeStatus.status,

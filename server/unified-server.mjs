@@ -387,7 +387,6 @@ function refreshRuntimeRoutesForDaemon(daemonKey) {
   if (affected.length) broadcastState(affected)
 }
 
-if (fleetStore?.setLivenessOracle) fleetStore.setLivenessOracle(isAgentAlive)
 if (fleetStore?.setRuntimeStatusProvider) fleetStore.setRuntimeStatusProvider(agent => runtimeStatusStore.project(agent))
 
 // ─── Process reaper — zombie WebSocket detection ────────────────────

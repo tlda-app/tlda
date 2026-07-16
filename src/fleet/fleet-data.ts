@@ -1,6 +1,8 @@
 import type { LiveStore, LiveView } from '../../shared/live-store.ts'
 import { createLiveStore } from '../../shared/live-store.ts'
 import { labelsForAgent } from '../../shared/fleet-labels.mjs'
+// @ts-ignore - shared JS module
+import { isRuntimeAwake } from '../../shared/fleet-runtime-status.mjs'
 
 export type FleetEvent = Record<string, unknown> & {
   id: string
@@ -29,6 +31,7 @@ export type FleetAgent = Record<string, unknown> & {
   friendly_name?: string
   pretty_name?: string | Array<string | { kind: 'glyph'; id?: string; glyph?: string }>
   status?: string
+  runtime_status?: { status?: string }
   labels?: string[]
   dead?: boolean
 }
@@ -38,7 +41,7 @@ export type FleetAgentFilter = [string, string][][] | null
 let agentStore: LiveStore<FleetAgent> = createLiveStore<FleetAgent>()
 let agentLabelIndex = agentStore.index<string>('labels', (agent) => labelsForAgent(agent))
 let awakeAgentIndex = agentStore.index<boolean>('awake-agent', (agent) =>
-  !agent.dead && !agent.human && agent.status === 'awake'
+  !agent.dead && !agent.human && isRuntimeAwake(agent)
 )
 
 function keyOfEvent(event: Record<string, unknown>): string {
@@ -335,14 +338,15 @@ function filterLabels(filter: FleetAgentFilter): Set<string> {
 function agentIdsForLabel(label: string, opts: { status?: string } = {}): Set<string> {
   const ids = new Set<string>()
   if (!label) return ids
-  if (label.startsWith('fleet:') && (!opts.status || agentStore.get(label)?.status === opts.status)) {
+  const direct = agentStore.get(label)
+  if (label.startsWith('fleet:') && (!opts.status || (direct && (direct.runtime_status?.status || direct.status) === opts.status))) {
     ids.add(label)
   }
   const bucket = agentLabelIndex.get(label)
   const hasLiveHolder = bucket.some((agent) => !agent.dead)
   for (const agent of bucket) {
     if (agent.dead && hasLiveHolder) continue
-    if (opts.status && agent.status !== opts.status) continue
+    if (opts.status && ((agent.runtime_status?.status || agent.status) !== opts.status)) continue
     ids.add(agent.id)
   }
   return ids
@@ -410,7 +414,7 @@ export function resetFleetAgentStoreForTest(agents: readonly Record<string, unkn
   agentStore = createLiveStore<FleetAgent>()
   agentLabelIndex = agentStore.index<string>('labels', (agent) => labelsForAgent(agent))
   awakeAgentIndex = agentStore.index<boolean>('awake-agent', (agent) =>
-    !agent.dead && !agent.human && agent.status === 'awake'
+    !agent.dead && !agent.human && isRuntimeAwake(agent)
   )
   replaceFleetAgents(agents)
 }

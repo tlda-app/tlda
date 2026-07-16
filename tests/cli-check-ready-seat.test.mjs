@@ -15,11 +15,14 @@ function stateAgent(overrides = {}) {
   }
 }
 
-test('check-ready fails closed on registry/current-seat tmux mismatch', async () => {
+test('check-ready treats registry/current-seat tmux mismatch as diagnostic only', async () => {
   let tmuxCalled = false
-  const result = await collectAgentReadiness('fleet:66660cc3', () => {
+  const result = await collectAgentReadiness('fleet:66660cc3', (cmd, args) => {
     tmuxCalled = true
-    return { status: 1, stdout: '' }
+    if (cmd === 'tmux' && args.includes('has-session')) return { status: 0, stdout: '' }
+    if (cmd === 'tmux' && args.includes('list-panes')) return { status: 0, stdout: '123\n' }
+    if (cmd === 'ps') return { status: 0, stdout: '123 1 codex -m gpt-5.5\n' }
+    return { status: 0, stdout: '123\n' }
   }, async (_method, url) => {
     if (url === '/api/state') return { agents: [stateAgent()] }
     if (url.startsWith('/api/agent-seat')) {
@@ -32,12 +35,16 @@ test('check-ready fails closed on registry/current-seat tmux mismatch', async ()
         },
       }
     }
+    if (url.startsWith('/api/fleet-table')) return { agents: [{ id: 'fleet:66660cc3', status: 'awake' }] }
+    if (url.startsWith('/api/store/events')) {
+      return { events: [{ id: 1, type: 'login', timestamp: new Date().toISOString(), from: 'fleet:66660cc3' }] }
+    }
     throw new Error(`unexpected API call ${url}`)
   })
 
-  assert.equal(result.ok, false)
-  assert.match(result.error, /registry\/current-seat tmux mismatch/)
-  assert.equal(tmuxCalled, false)
+  assert.equal(result.ok, true)
+  assert.match(result.warning, /registry\/current-seat tmux mismatch/)
+  assert.equal(tmuxCalled, true)
 })
 
 test('check-ready uses current durable seat tmux for runtime proof', async () => {

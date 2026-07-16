@@ -1,5 +1,7 @@
 import { activityHealthForProjection, formatActivityHealthStatus } from '../../shared/activity-health.mjs'
 // @ts-ignore - vanilla JS module
+import { runtimeStatusName } from '../../shared/fleet-runtime-status.mjs'
+// @ts-ignore - vanilla JS module
 import { pretty_name_plain_text } from '../../shared/pretty_name.mjs'
 
 const NICK_COLORS = ['#7a9ec8', '#9370db', '#c8956a', '#6aafb0', '#b87a95', '#c8b060']
@@ -25,9 +27,10 @@ export function fleetAgentLabelColor(name: string): string {
 }
 
 export function fleetAgentCategory(agent: any): 'awake' | 'hibernating' {
-  if (agent.status === 'human') return 'awake'
-  if (agent.status === 'human-away') return 'hibernating'
-  return agent.status === 'awake' ? 'awake' : 'hibernating'
+  const status = runtimeStatusName(agent)
+  if (status === 'human') return 'awake'
+  if (status === 'human-away') return 'hibernating'
+  return status === 'awake' ? 'awake' : 'hibernating'
 }
 
 export function formatFleetAgentModel(model: string | null | undefined): string {

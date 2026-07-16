@@ -14,6 +14,7 @@ import path from 'path'
 import os from 'os'
 import { DEFAULT_PORT, loadConfig, resolveConfig } from '../../shared/config.mjs'
 import { parseFilter, evalExpr, labelsForAgent } from '../../shared/fleet-labels.mjs'
+import { isRuntimeAwake } from '../../shared/fleet-runtime-status.mjs'
 import { resolveSpawnMachine } from '../lib/spawn-routing.mjs'
 import { summarizeFleetRosterTruth } from '../lib/fleet-roster-truth.mjs'
 import { daemonAddress, describeAgentAddress } from '../../shared/agent-move-target.mjs'
@@ -450,7 +451,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   // --- GET /api/fleet-table ---
   // Passive fleet roster for agents (replaces the old roll-call blob). Reads the
   // hydrated agent registry — the SAME source as the agents panel and the `awake`
-  // pseudo-label (liveness via the installed oracle) — so it wakes no one and
+  // pseudo-label (runtime projection from server evidence) — so it wakes no one and
   // costs a cached registry read. Returns whole-fleet totals plus a
   // DNF-filterable, capped slice of rows.
   //   ?filter=<json DNF>  scope rows (e.g. [[["awake"]]], a label, a name)
@@ -475,7 +476,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       const matched = roster.filter(a => evalExpr(filterAst, fleetTableLabelsForAgent(a)))
 
       // Awake first, then most-recently-seen.
-      const rank = (a) => (a.dead ? 2 : a.status === 'awake' ? 0 : 1)
+      const rank = (a) => (a.dead ? 2 : isRuntimeAwake(a) ? 0 : 1)
       matched.sort((x, y) => rank(x) - rank(y) || (new Date(y.last_seen || 0) - new Date(x.last_seen || 0)))
 
       const summary = summarizeFleetRosterTruth({ roster, matched, limit, now })
@@ -507,7 +508,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
         try { filterAst = parseFilter(req.query.filter) } catch (e) { res.status(400).json({ error: `bad filter: ${e.message}` }); return }
       }
       const matched = roster.filter(a => evalExpr(filterAst, labelsForAgent(a)))
-      const rank = (a) => (a.dead ? 2 : a.status === 'awake' ? 0 : 1)
+      const rank = (a) => (a.dead ? 2 : isRuntimeAwake(a) ? 0 : 1)
       matched.sort((x, y) => rank(x) - rank(y) || (new Date(y.last_seen || 0) - new Date(x.last_seen || 0)))
       const machineSessions = {}
       const machineIds = [...(daemonConnections?.keys?.() || [])]

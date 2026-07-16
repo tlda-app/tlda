@@ -1,4 +1,5 @@
 import { activityHealthForProjection } from '../../shared/activity-health.mjs'
+import { isRuntimeAwake, runtimeStatusName } from '../../shared/fleet-runtime-status.mjs'
 
 function agentName(agent) {
   return agent.friendly_name || agent.name || agent.id
@@ -17,7 +18,7 @@ function rowForAgent(agent, now = Date.now()) {
   return {
     id: agent.id,
     name: agentName(agent),
-    status: agent.dead ? 'dead' : agent.status,
+    status: agent.dead ? 'dead' : runtimeStatusName(agent),
     last_seen_ago_s: lastSeenMs == null ? null : Math.round(lastSeenMs / 1000),
     cwd: agent.cwd || null,
     model: agent.metadata?.model || null,
@@ -38,7 +39,7 @@ export function fleetRosterTotals(roster) {
   const totals = { awake: 0, hibernating: 0, dead: 0, total: roster.length }
   for (const agent of roster) {
     if (agent.dead) totals.dead++
-    else if (agent.status === 'awake') totals.awake++
+    else if (isRuntimeAwake(agent)) totals.awake++
     else totals.hibernating++
   }
   return totals
@@ -96,7 +97,7 @@ export function summarizeFleetRosterTruth({
     const e = entry(agentDaemonKey(agent))
     e.registry.total++
     if (agent.dead) e.registry.dead++
-    else if (agent.status === 'awake') e.registry.awake++
+    else if (isRuntimeAwake(agent)) e.registry.awake++
     else e.registry.hibernating++
   }
 
@@ -118,14 +119,14 @@ export function summarizeFleetRosterTruth({
     e.panes.fleet = sessions.length
     for (const session of sessions) {
       const matches = activeBySession.get(`${machineId}\u0000${session}`) || []
-      const hasAwakeMatch = matches.some(a => a.status === 'awake')
+      const hasAwakeMatch = matches.some(a => isRuntimeAwake(a))
       if (!hasAwakeMatch) {
         e.panes.stale++
         if (e.stale_panes.length < 25) {
           e.stale_panes.push({
             tmux_session: session,
             reason: matches.length ? 'registered but not awake' : 'no active registry row',
-            agents: matches.map(a => ({ id: a.id, name: agentName(a), status: a.status })),
+            agents: matches.map(a => ({ id: a.id, name: agentName(a), status: runtimeStatusName(a) })),
           })
         }
       }
@@ -138,7 +139,7 @@ export function summarizeFleetRosterTruth({
           e.registry_without_pane_rows.push({
             id: agent.id,
             name: agentName(agent),
-            status: agent.status,
+            status: runtimeStatusName(agent),
             daemon_key: agentDaemonKey(agent),
             tmux_session: agent.tmux_session,
           })

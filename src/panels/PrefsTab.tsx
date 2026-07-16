@@ -15,6 +15,8 @@ import { useFleetAgents, useFleetIdentity } from '../fleet-data-adapter'
 // @ts-ignore — vanilla JS module
 import { getDeviceId } from '../fleet/fleet-data.mjs'
 import { agentDisplayLabel } from '../shapes/fleet-utils'
+// @ts-ignore - vanilla JS module
+import { runtimeStatusName } from '../../shared/fleet-runtime-status.mjs'
 import { useAvailableSpawnModels } from '../fleet/useAvailableSpawnModels'
 import {
   DEFAULT_READABILITY_PROFILE,
@@ -71,7 +73,7 @@ function labelsFor(agent: any): string[] {
 }
 
 function isRunningBot(agent: any): boolean {
-  const status = agent?.status
+  const status = runtimeStatusName(agent)
   return !agent?.dead && labelsFor(agent).includes('bot') && status !== 'dead' && status !== 'hibernating' && status !== 'human-away'
 }
 

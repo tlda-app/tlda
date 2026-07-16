@@ -4599,7 +4599,7 @@ function FleetChatInner({ shape }: { shape: any }) {
           found: !!agent,
           tmux: agent?.tmux_session || null,
           dead: agent?.dead ?? null,
-          hibernating: agent?.hibernating ?? (agent?.status === 'hibernating'),
+          hibernating: agent?.hibernating ?? ((agent?.runtime_status?.status || agent?.status) === 'hibernating'),
           terminalReady: isTerminalReadyAgent(agent),
         })),
       })
