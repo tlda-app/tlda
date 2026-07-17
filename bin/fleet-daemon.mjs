@@ -103,6 +103,7 @@ import { DaemonDeliveryRuntime } from '../daemon/delivery-runtime.mjs'
 import { DaemonOutbox, defaultOutboxPath } from '../daemon/outbox.mjs'
 import { reconcileDaemonRoster } from '../daemon/roster-reconcile.mjs'
 import { createAgentLauncher } from '../agent-launch/agent-launch.mjs'
+import { findCodexRollout } from '../agent-launch/resume.mjs'
 import {
   applyDaemonGrants,
   applyGrandfatherInfill,
@@ -600,6 +601,23 @@ const agentLauncher = createAgentLauncher({
   tmux,
   tmuxArgs: TMUX_ARGS,
   tmuxSocket: TMUX_SOCKET,
+  // A pending codex launch has no durable resume identity until its rollout
+  // file exists on disk. Resolve it here, at spawn time, so the daemon ledger
+  // row carries session_id before anything tries to wake/route this seat —
+  // otherwise every later wake fails with "missing daemon-ledger resume
+  // identity" even though the rollout exists.
+  liveCodexSessionIdentityResolver: async ({ fleetId, cwd, launchStartedAt }) => {
+    const agent = { id: fleetId, cwd, registered_at: launchStartedAt }
+    const deadline = Date.now() + 20_000
+    for (;;) {
+      const found = findCodexRollout(agent, {})
+      if (found?.rolloutId) {
+        return { sessionId: found.rolloutId, jsonlPath: found.jsonlPath, model: found.sessionMeta?.model || null }
+      }
+      if (Date.now() >= deadline) return null
+      await new Promise(r => setTimeout(r, 500))
+    }
+  },
 })
 
 const machineRpc = createMachineRpc({

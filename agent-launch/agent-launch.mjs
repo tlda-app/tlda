@@ -36,6 +36,7 @@ export function createAgentLauncher({
   tmuxSocket = null,
   spawnImpl = null,
   startupFailureProbeMs = Number(process.env.TLDA_SPAWN_STARTUP_FAILURE_PROBE_MS || 2500),
+  liveCodexSessionIdentityResolver = null,
 }) {
   const activeSpawns = new Map()
   const reportedStartupFailures = new Set()
@@ -337,6 +338,7 @@ export function createAgentLauncher({
         })
       }
       let launched
+      const launchStartedAt = new Date().toISOString()
       try {
         launched = await nodeSpawn({
           spawnMode,
@@ -412,13 +414,41 @@ export function createAgentLauncher({
           ownership_retained: !terminated,
         }
       }
+      // A codex launch that returns pending has no durable resume identity yet;
+      // the ledger row would stay sessionId-less and every later wake would fail
+      // with "missing daemon-ledger resume identity". Resolve the live session
+      // identity now and persist it before the spawn returns.
+      let liveIdentity = null
+      if (
+        launched.harness === 'codex' &&
+        !launched.resumeId &&
+        liveCodexSessionIdentityResolver &&
+        !permissionLedger.get(launched.fleetId)?.sessionId
+      ) {
+        try {
+          liveIdentity = await liveCodexSessionIdentityResolver({
+            fleetId: launched.fleetId,
+            agentName,
+            tmuxSession: launched.tmuxSession,
+            cwd: resolvedCwd,
+            model: launched.model,
+            launchStartedAt,
+          })
+        } catch (e) {
+          log.warn(`live codex session identity resolution failed for ${agentName}: ${e.message}`)
+        }
+        if (!liveIdentity?.sessionId) {
+          log.warn(`codex spawn ${agentName} (${launched.fleetId}) has no resolved session identity yet; ledger row left pending for ingestion`)
+        }
+      }
       const ledgerRow = launched.fleetId ? permissionLedger.get(launched.fleetId) : null
+      const durableSessionId = launched.resumeId || liveIdentity?.sessionId || ledgerRow?.sessionId || sessionId || null
       emitAgentSeatBinding({
         fleetId: launched.fleetId,
-        sessionId: launched.resumeId || ledgerRow?.sessionId || sessionId || null,
-        resumeId: launched.resumeId || ledgerRow?.sessionId || sessionId || null,
+        sessionId: durableSessionId,
+        resumeId: durableSessionId,
         harness: launched.harness || ledgerRow?.sessionKind || launchKind,
-        model: launched.model || ledgerRow?.model || launchModel,
+        model: launched.model || liveIdentity?.model || ledgerRow?.model || launchModel,
         cwd: resolvedCwd || ledgerRow?.cwd || null,
         tmuxSession: launched.tmuxSession || ledgerRow?.tmuxSession || null,
         agentName,
@@ -447,7 +477,7 @@ export function createAgentLauncher({
         name: launched.name || agentName,
         agent_id: launched.fleetId,
         tmux_session: launched.tmuxSession,
-        resume_id: launched.resumeId,
+        resume_id: launched.resumeId || liveIdentity?.sessionId || null,
         pending: !!launched.pending,
         enrolled: launched.enrolled,
         spawnerPermission: grant.spawnerPermission,
