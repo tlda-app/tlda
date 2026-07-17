@@ -108,7 +108,15 @@ export async function runWakeRouteLifecycle({
     })
   }
 
-  const decision = spawnLibrarian.decideWake(agent, { ...liveness, agent_id: liveness.agent_id || agentId }, { serverAlive })
+  const lifecycleDecisionState = serverAlive ? 'alive' : 'unknown'
+  const decision = spawnLibrarian.decideWake(agent, {
+    type: 'agent-liveness',
+    agent_id: agentId,
+    tmux_session: seat.tmux_session,
+    state: lifecycleDecisionState,
+    reason: serverAlive ? 'server lifecycle projection awake' : 'no current positive lifecycle evidence',
+    ts: new Date().toISOString(),
+  }, { serverAlive })
   if (traceId) {
     await recordWakeAttempt({
       agentId,
@@ -130,7 +138,7 @@ export async function runWakeRouteLifecycle({
 
   if (decision.action === 'deliver') {
     if (traceId) {
-      await recordWakeAttempt({ agentId, traceId, ...source, outcome: 'delivered', reason: 'already-awake', evidence: { daemon: daemonKey } })
+      await recordWakeAttempt({ agentId, traceId, ...source, outcome: 'attempted', reason: 'already-awake', nextAction: 'await-render-or-refusal', evidence: { daemon: daemonKey } })
       appendControlTrace({
         trace_id: traceId,
         component: 'server',
@@ -148,7 +156,6 @@ export async function runWakeRouteLifecycle({
   }
   if (decision.action === 'hold') return { action: 'held', liveness, decision }
   if (decision.action === 'surface') {
-    broadcastEvent('agent-wedged', { agentId, reason: decision.message, ts: new Date().toISOString() })
     return { action: 'surfaced', liveness, decision }
   }
 
@@ -170,8 +177,7 @@ export async function runWakeRouteLifecycle({
     nextSeat.session_id,
   )
   if (traceId) {
-    await recordWakeAttempt({ agentId, traceId, ...source, outcome: 'delivered', reason: 'spawn-and-send-text-ok', evidence: { daemon: nextSeat.daemon_key, phase: 'respawn' } })
-    awaitWakeAcknowledgment({ agentId, traceId, source, asker })
+    await recordWakeAttempt({ agentId, traceId, ...source, outcome: 'attempted', reason: 'spawn-and-send-text-ok', nextAction: 'await-render-or-refusal', evidence: { daemon: nextSeat.daemon_key, phase: 'respawn' } })
     appendControlTrace({
       trace_id: traceId,
       component: 'server',

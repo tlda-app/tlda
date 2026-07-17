@@ -27,14 +27,14 @@ function recorderHarness() {
   return { recorder, shared, incidents, logs }
 }
 
-test('notification recorder persists delivered attempts without incident', async () => {
+test('notification recorder persists attempted notifications without incident', async () => {
   const { recorder, shared, incidents, logs } = recorderHarness()
 
   const result = await recorder.record({
     agentId: 'fleet:agent-one',
     reason: 'chat',
     sourceEventId: 42,
-    outcome: 'delivered',
+    outcome: 'attempted',
     evidence: { deliveryPath: 'channel' },
   })
 
@@ -44,7 +44,7 @@ test('notification recorder persists delivered attempts without incident', async
   assert.equal(shared[0].type, 'notification_attempt')
   assert.equal(shared[0].to, 'fleet:agent-one')
   assert.equal(shared[0].unread, false)
-  assert.equal(shared[0].metadata.outcome, 'delivered')
+  assert.equal(shared[0].metadata.outcome, 'attempted')
   assert.equal(shared[0].metadata.sourceEventId, 42)
   assert.equal(incidents.length, 0)
   assert.equal(logs[0].payload.event, 'notification_attempt')
@@ -91,7 +91,7 @@ test('notification recorder requires an agent id', async () => {
   const { recorder } = recorderHarness()
 
   await assert.rejects(
-    () => recorder.record({ outcome: 'delivered' }),
+    () => recorder.record({ outcome: 'attempted' }),
     /requires agentId/
   )
 })
