@@ -103,8 +103,8 @@ html.mousemove .fleet-shape:not(.fleet-chat-shape):not(.fleet-search-shape):hove
   opacity: 1;
   transition: opacity 2s;
 }
-/* Filter overlay covers the chat log, so the :has(:hover) selector above won't fire — show buttons explicitly */
-.fleet-shape:has(.fleet-filter-overlay) .fleet-btn-group {
+/* Filter mode replaces the chat body, so the :has(:hover) selector above won't fire — show buttons explicitly */
+.fleet-shape:has(.fleet-filter-mode) .fleet-btn-group {
   opacity: 1;
   transition: none;
 }
@@ -140,7 +140,7 @@ body.phone-mode .fleet-chat-shape .fleet-btn-group .fleet-filter-btn svg {
   height: 20px;
 }
 body.phone-mode .fleet-chat-shape .fleet-btn-group .fleet-filter-btn:active,
-body.phone-mode .fleet-chat-shape:has(.fleet-filter-overlay) .fleet-btn-group .fleet-filter-btn {
+body.phone-mode .fleet-chat-shape:has(.fleet-filter-mode) .fleet-btn-group .fleet-filter-btn {
   opacity: 1;
 }
 
@@ -180,20 +180,28 @@ body.phone-mode .fleet-chat-shape:has(.fleet-filter-overlay) .fleet-btn-group .f
   opacity: 0.35;
 }
 
-/* --- Filter editor overlay --- */
-.fleet-chat-shape .fleet-filter-overlay,
-.fleet-inbox-shape .fleet-filter-overlay {
-  position: absolute;
-  inset: 0;
+/* --- Filter mode --- */
+.fleet-chat-shape .fleet-filter-mode,
+.fleet-inbox-shape .fleet-filter-mode {
+  position: relative;
   z-index: 15;
   padding: 12px;
   background: var(--bg, #0f0f1a);
   border-radius: 8px;
   display: flex;
   flex-direction: column;
+  flex: 1;
+  min-height: 0;
 }
-.fleet-chat-shape .fleet-filter-overlay-header,
-.fleet-inbox-shape .fleet-filter-overlay-header {
+.fleet-inbox-shape .fleet-filter-mode-overlay {
+  position: absolute;
+  inset: 0;
+}
+.fleet-chat-body-filtering > .fleet-chat-log {
+  display: none !important;
+}
+.fleet-chat-shape .fleet-filter-mode-header,
+.fleet-inbox-shape .fleet-filter-mode-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -424,11 +432,30 @@ body.phone-mode .fleet-chat-shape:has(.fleet-filter-overlay) .fleet-btn-group .f
   opacity: 0.6;
 }
 .fleet-chat-shape .fleet-filter-choices {
+  display: flex;
+  flex-direction: column;
   margin-top: 8px;
   padding-top: 6px;
   border-top: 1px solid rgba(128, 128, 128, 0.1);
-  overflow: auto;
+  overflow: hidden;
   min-height: 0;
+}
+.fleet-chat-shape .fleet-filter-choices .fleet-agents-row-main {
+  height: 28px;
+  padding: 0 4px;
+}
+.fleet-chat-shape .fleet-filter-choices .fleet-agents-kill-btn,
+.fleet-chat-shape .fleet-filter-choices .fleet-agents-col-ctx,
+.fleet-chat-shape .fleet-filter-choices .fleet-agents-col-task,
+.fleet-chat-shape .fleet-filter-choices .fleet-agents-col-labels {
+  display: none;
+}
+.fleet-chat-shape .fleet-filter-choices .fleet-agents-col-name {
+  flex: 1;
+  width: auto;
+}
+.fleet-chat-shape .fleet-filter-choices .fleet-agents-col-seen {
+  width: 46px;
 }
 
 /* Light theme overrides */

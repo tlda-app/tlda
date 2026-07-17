@@ -1,7 +1,7 @@
 import type { FleetChatFilter } from './fleet-layout-seeding'
 import { fleetPanelDefaultProps, type FleetPanelType } from './fleet-panel-registry'
 
-export type FleetLayoutVariant = '3-col' | '2x2' | 'big-chat' | 'both-margins'
+export type FleetLayoutVariant = 'single-chat' | '3-col' | '2x2' | 'big-chat' | 'both-margins'
 
 export type FleetLayoutShapePlan = {
   id: string
@@ -78,6 +78,21 @@ export function planFleetLayoutShapes(input: FleetLayoutPlanInput): FleetLayoutP
     makeSlotId,
     filters: [filter1, filter2, filter3, filter4],
   } = input
+
+  if (variant === 'single-chat') {
+    return {
+      shapes: [
+        panelShape('fleet-chat', {
+          id: makeSlotId('chat-0'),
+          x: anchorX,
+          y: anchorY,
+          isLocked: false,
+          props: { w: input.viewport.w, h: input.viewport.h, filter: filter1 },
+        }, myId, myDevice),
+      ],
+      dispatchHudReset: false,
+    }
+  }
 
   const shapes: FleetLayoutShapePlan[] = [
     panelShape('fleet-inbox', {

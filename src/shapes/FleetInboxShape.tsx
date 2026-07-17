@@ -32,7 +32,7 @@ import { onReloadSignal } from '../useYjsSync'
 import { invalidationFromRanges } from '../invalidationGraph'
 import type { DirectNode, CascadeNode } from '../invalidationGraph'
 import { CascadeGraph } from './CascadeGraph'
-import { FilterOverlay } from './FleetChatShape'
+import { FleetChatFilterMode } from './FleetChatShape'
 import katex from 'katex'
 import { getActiveMacros } from '../katexMacros'
 import MarkdownIt from 'markdown-it'
@@ -861,7 +861,7 @@ function FleetInboxInner({ shape }: { shape: any }) {
         <FleetPanelButtonGroup editor={editor} shape={shape} />
 
         {filterOpen && filterTargetChat && (
-          <FilterOverlay
+          <FleetChatFilterMode
             filter={filterTargetChat.props?.filter || []}
             shapeId={filterTargetChat.id}
             editor={mainEd}
@@ -869,6 +869,7 @@ function FleetInboxInner({ shape }: { shape: any }) {
             externalPillOver={pillOver}
             agents={agents}
             sendTargets={[]}
+            surface="overlay"
           />
         )}
 

@@ -38,14 +38,10 @@ import { installAppShellFreshnessProbe } from './appShellFreshness'
   })
 }
 
-const DEFAULT_FLEET_LAYOUT_PRESET = '3-col'
-
 // Automated browsers (playwright, etc.) get a forced dark theme, camera-link
-// OFF, and a surface-appropriate default fleet layout when none was requested.
-// Avoids three concrete failure modes:
+// OFF. Avoids two concrete failure modes:
 //   1. White-themed playwright windows flash on the user's screen at night
 //   2. The agent's pan/zoom hijacks the human's view via the camera-link sync
-//   3. Agents test against stale localStorage fleet layouts instead of real usage
 // Detection: navigator.webdriver OR ?pw=1 in the URL. playwright-mcp sets
 // --disable-features=AutomationControlled which hides the webdriver flag, so
 // the URL param is the reliable signal; agents must add &pw=1 to their URLs.
@@ -53,10 +49,6 @@ const DEFAULT_FLEET_LAYOUT_PRESET = '3-col'
   const url = new URL(window.location.href)
   const isAuto = (navigator as any).webdriver || url.searchParams.get('pw') === '1'
   const cameraLinkOverride = url.searchParams.get('cameraLink')
-  if (isAuto && !url.searchParams.get('fleetLayout')) {
-    url.searchParams.set('fleetLayout', DEFAULT_FLEET_LAYOUT_PRESET)
-    window.history.replaceState(window.history.state, '', url)
-  }
   if (isAuto && cameraLinkOverride !== '1') {
     try {
       localStorage.setItem('tlda-theme', 'fog-dark')

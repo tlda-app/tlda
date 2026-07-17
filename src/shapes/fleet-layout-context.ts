@@ -15,7 +15,7 @@ export type DocumentPageBounds = {
 export type FleetLayoutViewportBounds = { x: number; y: number; w: number; h: number }
 
 export function fleetLayoutPanelCount(variant: string): number {
-  return variant === '2x2' ? 4 : variant === 'big-chat' ? 1 : 2
+  return variant === '2x2' ? 4 : variant === 'big-chat' || variant === 'single-chat' ? 1 : 2
 }
 
 export function buildFleetLayoutPlanInput({
@@ -69,7 +69,8 @@ export function buildFleetLayoutPlanInput({
   // Everything is laid out relative to the document edges — never relative to
   // the HUD position, which is a separate offset (the anchor shape).
   const leftContentW =
-    variant === 'big-chat' ? leftW + gap + Math.round(chatW3 * 2)
+    variant === 'single-chat' ? Math.round(vp.w)
+    : variant === 'big-chat' ? leftW + gap + Math.round(chatW3 * 2)
     : variant === 'both-margins' ? leftW + gap + Math.round(chatW3 * 1.5)
     : leftW + gap + rightW
 

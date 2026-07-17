@@ -17,12 +17,14 @@ import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react'
 import { stopEventPropagation, useUniqueSafeId } from 'tldraw'
 import type { Editor } from 'tldraw'
 import { currentFleetAgents, useAwakeFleetAgentCount, useFleetIdentity } from '../fleet-data-adapter'
-import { createFleetLayoutDetailed, type FleetLayoutCreateResult, type FleetLayoutVariant } from '../shapes/fleet-utils'
+import { getDeviceId } from '../fleet/fleet-data.mjs'
+import { createFleetLayoutDetailed, getDocumentPageBounds, isFleetShapeForOwnerKey, type FleetLayoutCreateResult, type FleetLayoutVariant } from '../shapes/fleet-utils'
 import { dispatchFleetHudReset, dispatchFleetHudToggle } from '../wm/editor-host-bridge'
 import { isFleetHudHidden, writeFleetHudExpanded } from '../wm/fleet-hud-state'
 import { log } from '../logger'
 import { isUsableIdentityName, sanitizeIdentityName } from '../fleet/identity-persistence.mjs'
 import { CornerButtonSlider, pickCornerSliderIndex } from '../CornerButtonSlider'
+import { isPhoneFleetDefaultViewport, selectAutoFleetDefaultLayout } from './fleet-phone-default'
 import './FleetIconPill.css'
 
 // Basestar hull paths (drawn in a flipped coord system: translate(0,960) scale(1,-1)).
@@ -41,8 +43,9 @@ const ITEM_W = 44          // px width of each preset tile
 const ITEM_GAP = 4         // px between tiles
 
 type LayoutId = FleetLayoutVariant
-type LayoutSource = 'badge-drag-release' | 'fan-preset' | 'url-auto'
+type LayoutSource = 'badge-drag-release' | 'fan-preset' | 'url-auto' | 'phone-default'
 const LAYOUT_PRESETS: { id: LayoutId; title: string }[] = [
+  { id: 'single-chat', title: 'Chat: single full-screen chat' },
   { id: '3-col', title: 'Three-column: agents + search | chat | chat + docview' },
   { id: '2x2', title: '2×2: agents + search | four chats' },
   { id: 'big-chat', title: 'Big chat: large chat over source editor' },
@@ -87,6 +90,12 @@ function LayoutIcon({ id, size = 20 }: { id: LayoutId; size?: number }) {
   )
 
   const layouts: Record<LayoutId, React.JSX.Element> = {
+    'single-chat': (
+      <>
+        <rect x={s*0.08} y={s*0.05} width={s*0.7} height={s*0.9} rx={r} fill={ch} />
+        {docEl()}
+      </>
+    ),
     '3-col': (
       // [agents/search] [chat] [chat+docview] | DOC
       <>
@@ -150,6 +159,14 @@ function isTouchLayoutControl() {
     window.matchMedia?.('(pointer: coarse)').matches ||
     navigator.maxTouchPoints > 0 ||
     new URLSearchParams(window.location.search).has('forcetouch')
+}
+
+function currentViewportSize() {
+  const vv = window.visualViewport
+  return {
+    width: vv?.width || window.innerWidth || screen.width,
+    height: vv?.height || window.innerHeight || screen.height,
+  }
 }
 
 function stopControlEvent(e: React.SyntheticEvent | Event) {
@@ -299,29 +316,88 @@ export function FleetIconPill({ mainEditor }: FleetIconPillProps) {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
     const requested = params.get('fleetLayout') as LayoutId | null
-    if (!requested) return
-    const idx = LAYOUT_PRESETS.findIndex(p => p.id === requested)
-    if (idx < 0) return
+    if (requested) {
+      const idx = LAYOUT_PRESETS.findIndex(p => p.id === requested)
+      if (idx < 0) return
 
-    const requestedName = cleanUrlName(params.get('name'))
-    if (requestedName && identity.name !== requestedName) {
-      if (!identity.id && !identity.needsIdentity) return
-      if (identifyingForUrlRef.current === requestedName) return
-      identifyingForUrlRef.current = requestedName
-      identity.login(requestedName)
-        .catch(() => identity.register(requestedName))
-        .finally(() => {
-          if (identifyingForUrlRef.current === requestedName) identifyingForUrlRef.current = null
-        })
+      const requestedName = cleanUrlName(params.get('name'))
+      if (requestedName && identity.name !== requestedName) {
+        if (!identity.id && !identity.needsIdentity) return
+        if (identifyingForUrlRef.current === requestedName) return
+        identifyingForUrlRef.current = requestedName
+        identity.login(requestedName)
+          .catch(() => identity.register(requestedName))
+          .finally(() => {
+            if (identifyingForUrlRef.current === requestedName) identifyingForUrlRef.current = null
+          })
+        return
+      }
+
+      if (!identity.id) return
+      const applyKey = `${requested}|${identity.id}`
+      if (autoLayoutAppliedRef.current === applyKey) return
+      autoLayoutAppliedRef.current = applyKey
+      applyPreset(idx, 'url-auto')
       return
     }
 
     if (!identity.id) return
-    const applyKey = `${requested}|${identity.id}`
-    if (autoLayoutAppliedRef.current === applyKey) return
-    autoLayoutAppliedRef.current = applyKey
-    applyPreset(idx, 'url-auto')
-  }, [applyPreset, identity.id, identity.name, identity.login, identity.register])
+    const userId = identity.id
+
+    let cancelled = false
+    let rafId: number | null = null
+    let unsub: (() => void) | null = null
+
+    const tryApplyVacuumDefault = () => {
+      if (cancelled) return
+      const viewport = currentViewportSize()
+      const deviceId = getDeviceId()
+      if (!deviceId) return
+      const ownerDeviceId = deviceId
+      const ownedFleetShapeCount = mainEditor.getCurrentPageShapes().filter((shape: any) =>
+        isFleetShapeForOwnerKey(shape, userId, ownerDeviceId),
+      ).length
+      const defaultLayout = selectAutoFleetDefaultLayout({
+        explicitLayout: false,
+        automatedSession: navigator.webdriver || new URLSearchParams(window.location.search).get('pw') === '1',
+        phoneViewport: isPhoneFleetDefaultViewport({
+          ...viewport,
+          pointerCoarse: window.matchMedia?.('(pointer: coarse)').matches || false,
+          maxTouchPoints: navigator.maxTouchPoints || 0,
+        }),
+        ownedFleetShapeCount,
+      })
+      if (!defaultLayout) return
+      if (!getDocumentPageBounds(mainEditor)) return
+      const applyKey = `${defaultLayout}|${userId}|${ownerDeviceId}|vacuum`
+      if (autoLayoutAppliedRef.current === applyKey) return
+      const idx = LAYOUT_PRESETS.findIndex(p => p.id === defaultLayout)
+      if (idx < 0) return
+      autoLayoutAppliedRef.current = applyKey
+      applyPreset(idx, 'phone-default')
+    }
+
+    const schedule = () => {
+      if (rafId !== null) cancelAnimationFrame(rafId)
+      rafId = requestAnimationFrame(() => {
+        rafId = null
+        tryApplyVacuumDefault()
+      })
+    }
+
+    schedule()
+    unsub = mainEditor.store.listen(schedule, { source: 'all', scope: 'document' })
+    window.visualViewport?.addEventListener('resize', schedule)
+    window.addEventListener('resize', schedule)
+
+    return () => {
+      cancelled = true
+      if (rafId !== null) cancelAnimationFrame(rafId)
+      unsub?.()
+      window.visualViewport?.removeEventListener('resize', schedule)
+      window.removeEventListener('resize', schedule)
+    }
+  }, [applyPreset, identity.id, identity.name, identity.needsIdentity, identity.login, identity.register, mainEditor])
 
   const layoutSliderOptions = useMemo(() => LAYOUT_PRESETS.map(preset => ({
     id: preset.id,

@@ -48,6 +48,45 @@ test('2x2 layout plan creates four chats and no docview', () => {
   ])
 })
 
+test('single-chat plan creates exactly one full-screen chat', () => {
+  const plan = planFleetLayoutShapes(baseInput({
+    variant: 'single-chat',
+    viewport: { w: 390, h: 844 },
+  }))
+  assert.equal(plan.shapes.length, 1)
+  assert.equal(plan.shapes[0].type, 'fleet-chat')
+  assert.equal(plan.shapes[0].props.w, 390)
+  assert.equal(plan.shapes[0].props.h, 844)
+  assert.deepEqual(plan.shapes[0].props.filter, [[['from', 'alpha']]])
+})
+
+test('single-chat plan creates exactly one full-screen chat in landscape phone viewport', () => {
+  const plan = planFleetLayoutShapes(baseInput({
+    variant: 'single-chat',
+    viewport: { w: 844, h: 390 },
+  }))
+  assert.equal(plan.shapes.length, 1)
+  assert.equal(plan.shapes[0].type, 'fleet-chat')
+  assert.equal(plan.shapes[0].props.w, 844)
+  assert.equal(plan.shapes[0].props.h, 390)
+  assert.deepEqual(plan.shapes[0].props.filter, [[['from', 'alpha']]])
+})
+
+test('3-col plan preserves ordinary multi-shape layout on phone-sized viewports', () => {
+  const plan = planFleetLayoutShapes(baseInput({
+    variant: '3-col',
+    viewport: { w: 390, h: 844 },
+  }))
+  assert.deepEqual(plan.shapes.map(s => s.type), [
+    'fleet-inbox',
+    'fleet-agents',
+    'fleet-search',
+    'fleet-chat',
+    'fleet-chat',
+    'fleet-docview',
+  ])
+})
+
 test('both-margins layout plan preserves docview/source editor defaults', () => {
   const plan = planFleetLayoutShapes(baseInput({ variant: 'both-margins' }))
   const docview = plan.shapes.find(s => s.type === 'fleet-docview')!

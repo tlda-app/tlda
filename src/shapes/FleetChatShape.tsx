@@ -4222,7 +4222,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   }, [agents])
 
   // Detect pill drag hovering over this chat — returns stable string to avoid flicker
-  // Only agent/label pills trigger filter overlay, not content pills (msg, code, etc.)
+  // Only agent/label pills trigger filter mode, not content pills (msg, code, etc.)
   const fleetPillCount = useFleetPillCount(editor)
   const pillOverKey = useValue('pill-over', () => {
     if (fleetPillCount === 0) return ''
@@ -4251,7 +4251,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     return { role, value, displayName }
   }, [pillOverKey])
 
-  // Auto-open filter overlay when pill hovers over this chat
+  // Auto-open filter mode when pill hovers over this chat
   useEffect(() => {
     if (pillOver && !filterOpen) {
       setFilterOpenByPill(true)
@@ -5518,23 +5518,28 @@ function FleetChatInner({ shape }: { shape: any }) {
           </button>
         </FleetPanelButtonGroup>
 
-        {/* Filter editor — full overlay showing DNF expression */}
-        {filterOpen && (
-          <FilterOverlay
-            filter={filter}
-            shapeId={shape.id}
-            editor={editor}
-            onClose={() => setFilterOpen(false)}
-            externalPillOver={pillOver}
-            agents={agents}
-            sendTargets={sendTargets}
-          />
-        )}
+        <div
+          className={filterOpen ? 'fleet-chat-body fleet-chat-body-filtering' : 'fleet-chat-body'}
+          style={{ flex: 1, minHeight: 0, position: 'relative', display: 'flex', flexDirection: 'column' }}
+        >
+          {/* Filter mode is the chat shape's alternate body, not a separate overlay/panel. */}
+          {filterOpen && (
+            <FleetChatFilterMode
+              filter={filter}
+              shapeId={shape.id}
+              editor={editor}
+              onClose={() => setFilterOpen(false)}
+              externalPillOver={pillOver}
+              agents={agents}
+              sendTargets={sendTargets}
+            />
+          )}
 
-        {/* Messages — Virtuoso owns the scroll container and all virtualized
-            item measurement, including the status/suggestions trailing row. */}
-        <div style={{ flex: 1, minHeight: 0, position: 'relative', display: 'flex', flexDirection: 'column' }}>
-          <Virtuoso
+          {!filterOpen && (
+            <>
+              {/* Messages — Virtuoso owns the scroll container and all virtualized
+                  item measurement, including the status/suggestions trailing row. */}
+              <Virtuoso
             ref={virtuosoRef}
             data={allItems}
             firstItemIndex={firstItemIndex}
@@ -5631,27 +5636,29 @@ function FleetChatInner({ shape }: { shape: any }) {
             components={{
               Scroller: ChatLogScroller,
             }}
-          />
-          {chatMessages.length === 0 && (
-            <div
-              style={{
-                position: 'absolute',
-                inset: 0,
-                display: 'flex',
-                justifyContent: 'center',
-                alignItems: 'flex-start',
-                padding: '20px 8px',
-                pointerEvents: 'none',
-                opacity: isImpossibleFilter ? 0.6 : 0.3,
-                textAlign: 'center',
-                fontSize: 10,
-                color: isImpossibleFilter ? 'var(--red, #e55)' : undefined,
-              }}
-            >
-              {isImpossibleFilter
-                ? '⚠ Filter matches no known agents'
-                : filter.length > 0 ? 'No messages' : 'No filter set'}
-            </div>
+              />
+              {chatMessages.length === 0 && (
+                <div
+                  style={{
+                    position: 'absolute',
+                    inset: 0,
+                    display: 'flex',
+                    justifyContent: 'center',
+                    alignItems: 'flex-start',
+                    padding: '20px 8px',
+                    pointerEvents: 'none',
+                    opacity: isImpossibleFilter ? 0.6 : 0.3,
+                    textAlign: 'center',
+                    fontSize: 10,
+                    color: isImpossibleFilter ? 'var(--red, #e55)' : undefined,
+                  }}
+                >
+                  {isImpossibleFilter
+                    ? '⚠ Filter matches no known agents'
+                    : filter.length > 0 ? 'No messages' : 'No filter set'}
+                </div>
+              )}
+            </>
           )}
         </div>
 
@@ -5672,6 +5679,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         })()}
 
         {/* Input — outside scroll container, flex sibling with flexShrink:0 */}
+        {!filterOpen && (
         <div
           ref={inputAreaRef}
           className={`fleet-chat-input-area${shapeDropActive ? ' fleet-chat-input-drop-active' : ''}`}
@@ -5962,6 +5970,7 @@ function FleetChatInner({ shape }: { shape: any }) {
             />
           </div>
         </div>
+        )}
 
       </div>
     </HTMLContainer>
@@ -6057,7 +6066,7 @@ function SendHint({
   )
 }
 
-/** Filter overlay — uses native click listeners to bypass tldraw event interception */
+/** Filter mode — uses native click listeners to bypass tldraw event interception */
 /** Simplify a DNF expression: dedup within groups, dedup identical groups, absorption */
 function simplifyDnf(dnf: [string, string][][]): [string, string][][] {
   // Dedup within each AND group
@@ -6102,7 +6111,7 @@ function buildFilterPreview(
   return simplifyDnf([...filter, [newTerm]])
 }
 
-export function FilterOverlay({
+export function FleetChatFilterMode({
   filter,
   shapeId,
   editor,
@@ -6110,6 +6119,7 @@ export function FilterOverlay({
   externalPillOver,
   agents,
   sendTargets,
+  surface = 'body',
 }: {
   filter: [string, string][][]
   shapeId: any
@@ -6118,9 +6128,10 @@ export function FilterOverlay({
   externalPillOver?: { role: string; value: string; displayName: string } | null
   agents: any[]
   sendTargets: string[]
+  surface?: 'body' | 'overlay'
 }) {
   // Native pointerup delegation on document capture — bypasses tldraw and works on touch.
-  const overlayRef = useRef<HTMLDivElement>(null)
+  const filterModeRef = useRef<HTMLDivElement>(null)
   const viewportId = useVisibilityViewportId()
   const filterRef = useRef(filter)
   filterRef.current = filter
@@ -6165,8 +6176,8 @@ export function FilterOverlay({
   useEffect(() => {
     function handlePointerUp(e: PointerEvent) {
       const target = e.target as HTMLElement
-      const overlay = overlayRef.current
-      if (!overlay || !overlay.contains(target)) return
+      const filterMode = filterModeRef.current
+      if (!filterMode || !filterMode.contains(target)) return
 
       const preset = target.closest('.fleet-filter-preset') as HTMLElement | null
       if (preset) {
@@ -6241,7 +6252,7 @@ export function FilterOverlay({
   const lastGroupRef = useRef<{ pane: string; idx: number; rect: DOMRect } | null>(null)
 
   const hoveredGroup = useValue('filter-hovered-group', () => {
-    // Same-editor drags must use the overlay DOM panes: the visible active pane
+    // Same-editor drags must use the filter-mode DOM panes: the visible active pane
     // and committed filter have to come from the same hit test. The external
     // role is only authoritative when this editor cannot see the pill shape.
     if (externalPane) return { pane: externalPane, idx: -1 }
@@ -6362,7 +6373,7 @@ export function FilterOverlay({
       }
     } else if (filterDropPreview.shapeId === shapeId) {
       // Only clear if WE are the current owner. If another chat has taken
-      // ownership in the interim (multiple FilterOverlays mounted), leave its
+      // ownership in the interim (multiple FleetChatFilterMode components mounted), leave its
       // state alone — otherwise this effect re-running on Chat A would wipe
       // the preview Chat B just published, and the next pointerup on B would
       // see a null shapeId and silently fall through to the position-based
@@ -6476,7 +6487,11 @@ export function FilterOverlay({
   }
 
   return (
-    <div ref={overlayRef} className="fleet-filter-overlay" onPointerDown={stopEventPropagation}>
+    <div
+      ref={filterModeRef}
+      className={surface === 'overlay' ? 'fleet-filter-mode fleet-filter-mode-overlay' : 'fleet-filter-mode'}
+      onPointerDown={stopEventPropagation}
+    >
       {pillOver ? (
         /* Drop preview: left third = only/to+from, right side stacks to/from */
         <div className="fleet-filter-drop-panes">
@@ -6519,7 +6534,7 @@ export function FilterOverlay({
       ) : (
         /* Normal edit mode */
         <>
-          <div className="fleet-filter-overlay-header">
+          <div className="fleet-filter-mode-header">
             <span style={{ fontSize: 9, opacity: 0.5, textTransform: 'uppercase', letterSpacing: 0.5 }}>Filter</span>
             <span className="fleet-filter-presets">
               <button className="fleet-filter-preset" data-preset="all" title="Show all chat traffic">All</button>
@@ -6539,18 +6554,20 @@ export function FilterOverlay({
               </div>
             </>
           )}
-          <div className="fleet-filter-choices fleet-agents-body">
-            <FleetAgentDirectoryList
-              rows={filterRows}
-              onAgentPointerUp={(e, agentRow) => {
-                e.stopPropagation()
-                applyChoice(agentRow.exactName, 'dm')
-              }}
-              onLabelPointerUp={(e, label) => {
-                e.stopPropagation()
-                applyChoice(label, 'agent')
-              }}
-            />
+          <div className="fleet-filter-choices fleet-agents-shape">
+            <div className="fleet-agents-body">
+              <FleetAgentDirectoryList
+                rows={filterRows}
+                onAgentPointerUp={(e, agentRow) => {
+                  e.stopPropagation()
+                  applyChoice(agentRow.exactName, 'dm')
+                }}
+                onLabelPointerUp={(e, label) => {
+                  e.stopPropagation()
+                  applyChoice(label, 'agent')
+                }}
+              />
+            </div>
           </div>
         </>
       )}
