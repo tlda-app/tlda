@@ -112,7 +112,8 @@ function scanClaudeJsonlIdentity(fpath) {
     for (const line of fs.readFileSync(fpath, 'utf8').split(/\n/)) {
       if (fleetId && cwd) break
       let parsed = null
-      if ((cwd == null && line.includes('"cwd"')) || line.includes('Registered fleet:')) {
+      const hasLoginText = line.includes('Registered fleet:') || line.includes('Logged in fleet:')
+      if ((cwd == null && line.includes('"cwd"')) || hasLoginText) {
         try {
           parsed = JSON.parse(line)
         } catch {
@@ -120,22 +121,25 @@ function scanClaudeJsonlIdentity(fpath) {
         }
       }
       if (cwd == null && parsed?.cwd && fs.existsSync(parsed.cwd)) cwd = parsed.cwd
-      if (fleetId != null || !line.includes('Registered fleet:')) continue
+      if (fleetId != null || !hasLoginText) continue
       if (!parsed) continue
       const result = parsed.toolUseResult
       if (!result) continue
       const items = Array.isArray(result) ? result : [result]
       for (const item of items) {
         const text = item && typeof item === 'object' ? (item.text || '') : String(item)
-        const m = REGISTER_RE.exec(text)
+        const m = LOGIN_RE.exec(text)
         if (!m) continue
         fleetId = m[1]
         agentName = NAME_RE.exec(text)?.[1] || null
         break
       }
     }
-  } catch {
-    // Corrupt or racing JSONL files are skipped; other resume handles may exist.
+  } catch (e) {
+    // Only I/O on a corrupt/racing JSONL is skippable. A coding error here
+    // silently blinded every claude wake for a week (REGISTER_RE ReferenceError
+    // swallowed by a bare catch, 7/10–7/17) — never swallow those again.
+    if (!(e && (e.code || e instanceof SyntaxError))) throw e
   }
   return { fleetId, agentName, cwd }
 }
