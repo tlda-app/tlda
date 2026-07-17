@@ -4472,26 +4472,8 @@ ${hasTls ? `        <key>NODE_EXTRA_CA_CERTS</key>\n        <string>${TLS_CA_PAT
   }
 
   if (sub === 'status') {
-    try {
-      const res = await fetch(`${getServer()}/health`, { signal: AbortSignal.timeout(3000) })
-      const data = await res.json()
-      const pid = data.pid ? `, pid ${data.pid}` : ''
-      console.log(green(`Server running`) + dim(` (uptime: ${Math.floor(data.uptime)}s${pid})`))
-    } catch {
-      // /health didn't answer in 3s. That is NOT proof the server is down — a
-      // blocked event loop (slow query) times out the same way a dead process
-      // does. If the port is still held the process IS alive; reporting "not
-      // running" here is exactly what makes callers (agents, fleet-spawn) try
-      // to restart a live server, which flaps fleet chat. Only report down when
-      // nothing holds the port.
-      let held = ''
-      try { held = execSync(`lsof -ti:${port} -sTCP:LISTEN`, { stdio: 'pipe' }).toString().trim() } catch { held = '' } // lsof exits non-zero when nothing is listening → port not held
-      if (held) {
-        console.log(yellow('Server running') + dim(` but not responding (event loop busy, pid ${held.split('\n')[0]})`))
-      } else {
-        console.log(red('Server not running.'))
-      }
-    }
+    const status = await resolveServerStatus({ serverUrl: getServer(), port })
+    console.log(formatServerStatus(status))
     return
   }
 
@@ -4624,6 +4606,66 @@ export function isLocalServerUrl(serverUrl) {
   } catch {
     return false
   }
+}
+
+export async function resolveServerStatus({
+  serverUrl,
+  port = getPort(),
+  fetchImpl = fetch,
+  execSyncImpl = null,
+  timeoutMs = 3000,
+} = {}) {
+  const local = isLocalServerUrl(serverUrl)
+  try {
+    const res = await fetchImpl(`${serverUrl}/health`, { signal: AbortSignal.timeout(timeoutMs) })
+    if (res.ok) {
+      const data = await res.json()
+      return {
+        status: 'running',
+        serverUrl,
+        local,
+        uptime: Number.isFinite(data.uptime) ? Math.floor(data.uptime) : null,
+        pid: data.pid || null,
+      }
+    }
+  } catch {
+    // Probe miss: classify below according to the resolved URL's scope.
+  }
+
+  if (!local) {
+    return { status: 'not-responding', serverUrl, local }
+  }
+
+  // /health didn't answer. For a local server URL only, a held local port means
+  // the process is still alive but slow or wedged; do not restart-stampede it.
+  let held = ''
+  try {
+    const exec = execSyncImpl || (await import('child_process')).execSync
+    held = exec(`lsof -ti:${port} -sTCP:LISTEN`, { stdio: 'pipe' }).toString().trim()
+  } catch {
+    held = ''
+  }
+  const pid = held ? held.split('\n')[0] : null
+  return pid
+    ? { status: 'local-listener-not-responding', serverUrl, local, pid }
+    : { status: 'not-running', serverUrl, local }
+}
+
+export function formatServerStatus(status) {
+  if (status.status === 'running') {
+    const details = []
+    if (status.uptime !== null) details.push(`uptime: ${status.uptime}s`)
+    if (status.pid) details.push(status.local ? `pid ${status.pid}` : `remote/container pid ${status.pid}`)
+    const suffix = details.length ? dim(` (${details.join(', ')})`) : ''
+    return green(`Server running at ${status.serverUrl}`) + suffix
+  }
+  if (status.status === 'local-listener-not-responding') {
+    return yellow(`Server running at ${status.serverUrl}`) + dim(` but not responding (event loop busy, pid ${status.pid})`)
+  }
+  if (status.status === 'not-responding') {
+    return red(`Server not responding at ${status.serverUrl}.`)
+  }
+  return red(`Server not running at ${status.serverUrl}.`)
 }
 
 async function serverHealthOk(serverUrl, { timeoutMs = 3000 } = {}) {
