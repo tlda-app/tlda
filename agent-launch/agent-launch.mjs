@@ -4,8 +4,6 @@ import path from 'path'
 import { promisify } from 'util'
 import { resolveSpawnGrant } from '../server/lib/spawn-policy.mjs'
 import { detectSpawnStartupFailureTranscript } from '../agent-runtime/daemon-guards.mjs'
-import { ledgerSessionId } from '../agent-runtime/ledger-session-tail.mjs'
-import { resolveTranscript } from '../agent-runtime/resolve-transcript.mjs'
 import { probeSpawnAvailability } from './availability.mjs'
 import { newFleetId } from './identity.mjs'
 import { readDaemonConfigForCwd, withDaemonModelAliases } from './permission-ledger.mjs'
@@ -24,118 +22,6 @@ function readFileTail(file, max = 6000) {
   }
 }
 
-function readCodexRolloutModel(jsonlPath, maxLines = 200) {
-  if (!jsonlPath) return null
-  let text
-  try {
-    text = fs.readFileSync(jsonlPath, 'utf8')
-  } catch {
-    return null
-  }
-  let seen = 0
-  for (const line of text.split(/\r?\n/)) {
-    if (!line) continue
-    seen += 1
-    let entry
-    try {
-      entry = JSON.parse(line)
-    } catch {
-      continue
-    }
-    const model = entry?.payload?.model
-      || entry?.model
-      || entry?.message?.model
-      || entry?.payload?.message?.model
-      || entry?.response?.model
-      || entry?.payload?.response?.model
-    if (typeof model === 'string' && model.trim()) return model.trim()
-    if (seen >= maxLines) break
-  }
-  return null
-}
-
-function codexRuntimeRe() {
-  return /(?:^|\s|[/\\])codex(?:\.exe)?(?:\s|$)/
-}
-
-async function findCodexRuntimePid(tmuxSession, { tmuxArgs = [], tmuxSocket = null } = {}) {
-  if (!tmuxSession) return null
-  const args = tmuxSocket ? ['-S', tmuxSocket] : tmuxArgs
-  let paneOut = ''
-  try {
-    ;({ stdout: paneOut } = await execFileP('tmux',
-      [...args, 'list-panes', '-t', tmuxSession, '-F', '#{pane_pid}'],
-      { timeout: 3000, encoding: 'utf8' }))
-  } catch {
-    return null
-  }
-  const panePids = paneOut.trim().split('\n').filter(Boolean)
-  if (!panePids.length) return null
-
-  let psOut = ''
-  try {
-    ;({ stdout: psOut } = await execFileP('ps', ['-eo', 'pid,ppid,args'], {
-      timeout: 5000,
-      encoding: 'utf8',
-    }))
-  } catch {
-    return null
-  }
-
-  const childrenByPpid = new Map()
-  const runtimePids = new Set()
-  for (const line of psOut.split('\n')) {
-    const m = line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/)
-    if (!m) continue
-    const [, pid, ppid, argsText] = m
-    if (!childrenByPpid.has(ppid)) childrenByPpid.set(ppid, [])
-    childrenByPpid.get(ppid).push(pid)
-    if (codexRuntimeRe().test(argsText)) runtimePids.add(pid)
-  }
-
-  const stack = [...panePids]
-  const seen = new Set()
-  while (stack.length) {
-    const pid = stack.pop()
-    if (seen.has(pid)) continue
-    seen.add(pid)
-    if (runtimePids.has(pid)) return pid
-    for (const child of (childrenByPpid.get(pid) || [])) stack.push(child)
-  }
-  return null
-}
-
-export async function resolveLiveCodexSessionIdentity({
-  agent,
-  tmuxSession,
-  tmuxArgs = [],
-  tmuxSocket = null,
-  now = Date.now,
-} = {}) {
-  const pid = await findCodexRuntimePid(tmuxSession, { tmuxArgs, tmuxSocket })
-  if (!pid) return null
-  const launchTs = Date.parse(agent?.registered_at || '') || (now() - 60_000)
-  const jsonlPath = await resolveTranscript({ pid, kind: 'codex', agent, launchTs })
-  const sessionId = ledgerSessionId({ harness_kind: 'codex', jsonl_path: jsonlPath })
-  if (!sessionId) return null
-  const model = readCodexRolloutModel(jsonlPath)
-  return { sessionId, jsonlPath, model }
-}
-
-async function waitForLiveCodexSessionIdentity(resolveIdentity, args, {
-  timeoutMs = Number(process.env.TLDA_SPAWN_RESUME_ID_TIMEOUT_MS || 10_000),
-  intervalMs = 250,
-} = {}) {
-  const deadline = Date.now() + timeoutMs
-  let last = null
-  while (Date.now() <= deadline) {
-    last = await resolveIdentity(args)
-    if (last?.sessionId && last?.model) return last
-    await new Promise(resolve => setTimeout(resolve, intervalMs))
-  }
-  return last
-}
-
 export function createAgentLauncher({
   activeConfigName,
   configDir,
@@ -149,7 +35,6 @@ export function createAgentLauncher({
   tmuxArgs = [],
   tmuxSocket = null,
   spawnImpl = null,
-  liveCodexSessionIdentityResolver = resolveLiveCodexSessionIdentity,
   startupFailureProbeMs = Number(process.env.TLDA_SPAWN_STARTUP_FAILURE_PROBE_MS || 2500),
 }) {
   const activeSpawns = new Map()
@@ -163,6 +48,21 @@ export function createAgentLauncher({
   function spawnCrashLogPath({ agentName, agent_id, tmux_session }) {
     const base = String(agent_id || agentName || tmux_session || 'unknown').replace(/[^A-Za-z0-9_.:-]/g, '_')
     return path.join(spawnCrashLogDir, `${base}.log`)
+  }
+
+  async function terminateExactLaunch(tmuxSession) {
+    if (!tmuxSession) return true
+    try {
+      await tmux('kill-session', '-t', tmuxSession)
+      return true
+    } catch {
+      try {
+        await tmux('has-session', '-t', tmuxSession)
+        return false
+      } catch {
+        return true
+      }
+    }
   }
 
   function emitAgentSeatBinding({
@@ -276,19 +176,13 @@ export function createAgentLauncher({
     let launchKind = null
     let launchModelSpec = null
     if (activeSpawns.has(agentName)) {
-      const age = Date.now() - activeSpawns.get(agentName)
-      if (age < 90_000) {
-        log.info(`spawn deduped: ${agentName} already spawning (${Math.round(age / 1000)}s ago)`)
-        return {
-          ok: false,
-          name: agentName,
-          deduped: true,
-          age_ms: age,
-          retry_after_ms: Math.max(0, 90_000 - age),
-          error: `${agentName} is already spawning; no new terminal/session has been verified yet`,
-        }
+      log.info(`spawn deduped: ${agentName} already has an in-flight launch`)
+      return {
+        ok: false,
+        name: agentName,
+        deduped: true,
+        error: `${agentName} already has an in-flight launch`,
       }
-      activeSpawns.delete(agentName)
     }
     let resolvedCwd = cwd
     if (!resolvedCwd && doc) {
@@ -488,80 +382,48 @@ export function createAgentLauncher({
       try {
         await tmux('has-session', '-t', launched.tmuxSession)
       } catch (e) {
-        if (shouldWriteLedgerRow) await permissionLedger.delete(preallocatedAgentId).catch(() => {})
+        const terminated = await terminateExactLaunch(launched.tmuxSession)
+        if (terminated && shouldWriteLedgerRow) await permissionLedger.delete(preallocatedAgentId).catch(() => {})
         const detail = ((e.stderr || e.message || '').trim().split('\n').filter(Boolean).pop()) || 'tmux session check failed'
         return {
           ok: false,
           name: agentName,
           agent_id: launched.fleetId,
           tmux_session: launched.tmuxSession,
-          error: `spawn launcher returned but tmux session is not usable: ${detail}`,
+          error: terminated
+            ? `spawn launcher returned but tmux session is not usable: ${detail}`
+            : `spawn launcher returned but tmux session could not be verified; ownership retained because ${launched.tmuxSession} is still live: ${detail}`,
+          ownership_retained: !terminated,
         }
       }
       const launchedLedgerRow = launched.fleetId ? permissionLedger.get(launched.fleetId) : null
       if (launched.harness === 'codex' && !launched.resumeId && !launched.pending && !launchedLedgerRow?.sessionId) {
-        if (shouldWriteLedgerRow) await permissionLedger.delete(preallocatedAgentId).catch(() => {})
+        const terminated = await terminateExactLaunch(launched.tmuxSession)
+        if (terminated && shouldWriteLedgerRow) await permissionLedger.delete(preallocatedAgentId).catch(() => {})
         return {
           ok: false,
           name: agentName,
           agent_id: launched.fleetId,
           tmux_session: launched.tmuxSession,
           code: 'missing-resume-handle',
-          error: 'spawn launcher returned a codex session without a durable resume handle',
+          error: terminated
+            ? 'spawn launcher returned a codex session without a durable resume handle; exact process terminated'
+            : 'spawn launcher returned a codex session without a durable resume handle; ownership retained because exact process could not be terminated',
+          ownership_retained: !terminated,
         }
-      }
-      let emittedSeatBinding = false
-      if (launched.harness === 'codex' && !launched.resumeId && !launchedLedgerRow?.sessionId) {
-        const identity = await waitForLiveCodexSessionIdentity(liveCodexSessionIdentityResolver, {
-          agent: {
-            id: launched.fleetId,
-            friendly_name: agentName,
-            cwd: resolvedCwd,
-            registered_at: new Date().toISOString(),
-          },
-          tmuxSession: launched.tmuxSession,
-          tmuxArgs,
-          tmuxSocket,
-        })
-        if (!identity?.sessionId) {
-          if (shouldWriteLedgerRow) await permissionLedger.delete(preallocatedAgentId).catch(() => {})
-          return {
-            ok: false,
-            name: agentName,
-            agent_id: launched.fleetId,
-            tmux_session: launched.tmuxSession,
-            code: 'identity-ingestion-pending',
-            reason: 'identity-ingestion-pending',
-            retry_after_ms: 1000,
-            error: `spawn launched ${agentName}, but the daemon could not bind its live Codex rollout yet; retry once session identity ingestion catches up`,
-          }
-        }
-        emittedSeatBinding = emitAgentSeatBinding({
-          fleetId: launched.fleetId,
-          sessionId: identity.sessionId,
-          harness: 'codex',
-          model: identity.model,
-          cwd: resolvedCwd,
-          tmuxSession: launched.tmuxSession,
-          agentName,
-          source: 'spawn-runtime',
-        })
-        launched.resumeId = identity.sessionId
       }
       const ledgerRow = launched.fleetId ? permissionLedger.get(launched.fleetId) : null
-      if (!emittedSeatBinding) {
-        emitAgentSeatBinding({
-          fleetId: launched.fleetId,
-          sessionId: launched.resumeId || ledgerRow?.sessionId || sessionId || null,
-          resumeId: launched.resumeId || ledgerRow?.sessionId || sessionId || null,
-          harness: launched.harness || ledgerRow?.sessionKind || launchKind,
-          model: launched.model || ledgerRow?.model || launchModel,
-          cwd: resolvedCwd || ledgerRow?.cwd || null,
-          tmuxSession: launched.tmuxSession || ledgerRow?.tmuxSession || null,
-          agentName,
-          source: launched.alreadyAlive ? 'spawn-runtime-already-live' : 'spawn-runtime',
-        })
-      }
+      emitAgentSeatBinding({
+        fleetId: launched.fleetId,
+        sessionId: launched.resumeId || ledgerRow?.sessionId || sessionId || null,
+        resumeId: launched.resumeId || ledgerRow?.sessionId || sessionId || null,
+        harness: launched.harness || ledgerRow?.sessionKind || launchKind,
+        model: launched.model || ledgerRow?.model || launchModel,
+        cwd: resolvedCwd || ledgerRow?.cwd || null,
+        tmuxSession: launched.tmuxSession || ledgerRow?.tmuxSession || null,
+        agentName,
+        source: launched.alreadyAlive ? 'spawn-runtime-already-live' : 'spawn-runtime',
+      })
       if (!preallocatedAgentId || launched.fleetId !== preallocatedAgentId) {
         await permissionLedger.set(launched.fleetId, {
           spawnPolicy: grant.spawnPolicy,

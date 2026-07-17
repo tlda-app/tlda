@@ -2797,7 +2797,7 @@ export async function bindLifecycleCodexResumeIdentity(result, {
   if (!result?.fleetId || !result.tmuxSession || result.harness !== 'codex') {
     return { bound: false, skipped: true }
   }
-  const resolver = resolveIdentity || (await import('../agent-launch/agent-launch.mjs')).resolveLiveCodexSessionIdentity
+  const resolver = resolveIdentity || (await import('../agent-launch/harness/codex.mjs')).resolveLiveSessionIdentity
   const deadline = Date.now() + timeoutMs
   let identity = null
   while (Date.now() <= deadline) {

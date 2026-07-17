@@ -1744,7 +1744,6 @@ async function performSpawnRelay(caller, msg) {
       phase: phase || null,
     },
   })
-  const mailboxDeadlineAt = mailbox.deadlineAt || (Date.now() + 5 * 60_000)
   const readiness = pendingAgentId
     ? spawnLibrarian.awaitLogin({ id: pendingAgentId, name: spawnName, spec: requestedSpec })
     : null
@@ -1779,16 +1778,7 @@ async function performSpawnRelay(caller, msg) {
     try {
       let result
       try {
-        for (;;) {
-          result = await sendRpc(machineId, 'spawn', spawnRequest)
-          const pendingIdentity = result?.ok === false &&
-            (result.reason === 'identity-ingestion-pending' || result.code === 'identity-ingestion-pending')
-          if (!pendingIdentity) break
-          const remaining = mailboxDeadlineAt - Date.now()
-          if (remaining <= 0) break
-          const waitMs = Math.min(Math.max(Number(result.retry_after_ms || 1000), 250), 5000, remaining)
-          await new Promise(r => setTimeout(r, waitMs))
-        }
+        result = await sendRpc(machineId, 'spawn', spawnRequest)
         if (pendingAgentId && result?.ok === false) {
           spawnLibrarian.failPending(pendingAgentId, result.code || result.reason || 'launch-failed')
         }
@@ -5042,6 +5032,21 @@ async function handleFleetWsMessage(ws, msg) {
       // session_id/session_ids are minted by the durable seat binding path, not
       // by generic login.
       fleetStore.upsertAgent(agent)
+      if (session_id) {
+        recordAgentBindingEvent(fleetStore, {
+          agent_id,
+          session_id,
+          resume_id: resume_id || session_id,
+          kind: kind || metadata?.kind || existing.metadata?.kind || null,
+          model: metadata?.model || existing.metadata?.model || null,
+          cwd: cwd || existing.cwd || null,
+          machine_id: machine_id || existing.machine_id || null,
+          env_name: env_name || existing.env_name || null,
+          daemon_key: (machine_id && env_name) ? `${machine_id}:${env_name}` : existing.daemon_key || null,
+          tmux_session: tmux_session || existing.tmux_session || null,
+          created_source: 'authoritative-login',
+        })
+      }
       const storedAgent = fleetStore.getAgent?.(agent_id) || agent
       reply({ ok: true, agent: storedAgent, assigned_name: storedAgent.friendly_name || null })
       fleetStore.share?.({ type: 'login', agent_id, from: agent_id, to: agent_id, text: `${agent.friendly_name || agent_id} logged in` })

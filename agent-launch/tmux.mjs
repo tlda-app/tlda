@@ -93,6 +93,21 @@ export async function sessionHasRuntime(session, { tmuxSocket = process.env.TMUX
   return false
 }
 
+export async function terminateTmuxSession(session, { tmuxSocket = process.env.TMUX_SOCKET || null } = {}) {
+  if (!session) return true
+  try {
+    await tmux(tmuxSocket, 'kill-session', '-t', session)
+    return true
+  } catch {
+    try {
+      await tmux(tmuxSocket, 'has-session', '-t', session)
+      return false
+    } catch {
+      return true
+    }
+  }
+}
+
 export async function spawnTmux(session, cwd, cmd, { autoDismiss = true, sendKeys = false, tmuxSocket = process.env.TMUX_SOCKET || null, crashLogPath = null, killExisting = false } = {}) {
   const launchViaShell = sendKeys || !!crashLogPath
   try {

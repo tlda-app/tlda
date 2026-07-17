@@ -36,6 +36,8 @@ export function resolveRepoIdentity(path = process.cwd(), { git = defaultGit } =
     branch = null
   }
 
+  const checkoutBranch = branch
+
   // Report the canonical branch (main) when the deployed commit IS main's tip. A live deploy
   // is built from a transient staging worktree (a throwaway branch or a detached HEAD), but
   // "everything runs from main", so build-info should name main rather than the worktree's
@@ -62,6 +64,7 @@ export function resolveRepoIdentity(path = process.cwd(), { git = defaultGit } =
     gitSha,
     ref,
     branch,
+    checkoutBranch,
     dirty: status.length > 0,
     isWorktree,
   }

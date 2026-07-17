@@ -3,7 +3,7 @@ import { newLocalAgentId, readConfig, resolveDnsAlias, resolveSpawnCwd, sanitize
 import { createLocalAgentLedger } from './local-agent-ledger.mjs'
 import { normalizeSpawnModelKwargs } from './models.mjs'
 import { checkFreshNameAvailable, ensureServer, findAgent, markAgentDead, resolveApi, wsMintShell, wsReserveShell } from './register.mjs'
-import { injectClaudePrompt, injectCodexPrompt, sessionHasRuntime, spawnTmux, uniqueSessionName } from './tmux.mjs'
+import { injectClaudePrompt, injectCodexPrompt, sessionHasRuntime, spawnTmux, terminateTmuxSession, uniqueSessionName } from './tmux.mjs'
 import { wrapSandboxCmd } from './fence.mjs'
 import { resolveLaunchPolicy, sandboxMetadata } from './permissions.mjs'
 import { resolveCodexResumeHandle } from '../agent-runtime/codex-resume-resolver.mjs'
@@ -221,6 +221,7 @@ async function spawnFresh(params) {
   let model = null
   let shellRegistered = false
   let serverUp = false
+  let runtimeLaunched = false
   try {
     try {
       serverUp = await (deps.ensureServer || ensureServer)({ api })
@@ -374,6 +375,7 @@ async function spawnFresh(params) {
       librarian.failPending(fleetId, 'launch-failed')
       throw new SpawnError('launch-failed', `tmux session ${tmuxSession} already has a live harness runtime`, { tmuxSession })
     }
+    runtimeLaunched = true
     if (requestedKind === 'codex') {
       const injected = await (deps.injectCodexPrompt || injectCodexPrompt)(tmuxSession, codex.kickoffPrompt(name), { tmuxSocket: params.tmuxSocket })
       if (!injected) {
@@ -388,8 +390,17 @@ async function spawnFresh(params) {
   } catch (e) {
     const err = toSpawnError(e, e?.message?.includes('not available') ? 'name-bounced' : 'launch-failed', { fleetId, tmuxSession, model })
     librarian.failPending(fleetId || localAgentId, err.reason || 'launch-failed')
-    localAgentLedger.delete(localAgentId)
-    if (serverUp && shellRegistered) {
+    let terminated = !runtimeLaunched
+    if (runtimeLaunched) {
+      try {
+        terminated = await (deps.terminateTmuxSession || terminateTmuxSession)(tmuxSession, { tmuxSocket: params.tmuxSocket })
+      } catch {
+        terminated = false
+      }
+    }
+    if (terminated) localAgentLedger.delete(localAgentId)
+    else err.detail = { ...(err.detail || {}), ownershipRetained: true, fleetId, tmuxSession }
+    if (terminated && serverUp && shellRegistered) {
       try {
         await (deps.markAgentDead || markAgentDead)(fleetId, { api })
       } catch (markErr) {

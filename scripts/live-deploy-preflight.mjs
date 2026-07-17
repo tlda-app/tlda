@@ -44,6 +44,11 @@ export function runLiveDeployPreflight({
   if (!identity.gitSha) {
     throw new Error('live deploy preflight failed: could not resolve committed HEAD')
   }
+  if (identity.checkoutBranch !== 'main' || identity.isWorktree) {
+    throw new Error(
+      `live deploy preflight failed: deploy directly from the main checkout on branch main; got ${identity.checkoutBranch || 'detached HEAD'} at ${identity.checkoutPath}`,
+    )
+  }
   if (identity.dirty) {
     throw new Error(
       `live deploy preflight failed: ${identity.checkoutPath} has uncommitted changes; commit or stash before deploying live`,

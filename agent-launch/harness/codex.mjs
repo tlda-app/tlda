@@ -1,12 +1,74 @@
 import fs from 'fs'
+import { execFile } from 'child_process'
 import os from 'os'
 import path from 'path'
+import { promisify } from 'util'
+import { ledgerSessionId } from '../../agent-runtime/ledger-session-tail.mjs'
+import { resolveTranscript } from '../../agent-runtime/resolve-transcript.mjs'
 import { activeConfigName, gitAuthorEnv, readConfig } from '../identity.mjs'
 import { resolveCodexModel, resolveCodexModelSelection } from '../models.mjs'
 import { loginPrompt } from './claude.mjs'
 import { dnsAliasPreloadPath } from './dns-alias-preload.mjs'
 
 const CODEX_CONFIG_FILE = path.join(os.homedir(), '.codex', 'config.toml')
+const execFileP = promisify(execFile)
+
+export async function resolveLiveSessionIdentity({ agent, tmuxSession, tmuxArgs = [], tmuxSocket = null, now = Date.now } = {}) {
+  if (!tmuxSession) return null
+  const tmuxPrefix = tmuxSocket ? ['-S', tmuxSocket] : tmuxArgs
+  let paneOut
+  try {
+    ;({ stdout: paneOut } = await execFileP('tmux', [...tmuxPrefix, 'list-panes', '-t', tmuxSession, '-F', '#{pane_pid}'], { timeout: 3000, encoding: 'utf8' }))
+  } catch {
+    return null
+  }
+  const panePids = paneOut.trim().split('\n').filter(Boolean)
+  if (!panePids.length) return null
+  let psOut
+  try {
+    ;({ stdout: psOut } = await execFileP('ps', ['-eo', 'pid,ppid,args'], { timeout: 5000, encoding: 'utf8' }))
+  } catch {
+    return null
+  }
+  const children = new Map()
+  const runtimes = new Set()
+  for (const line of psOut.split('\n')) {
+    const match = line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/)
+    if (!match) continue
+    const [, pid, ppid, args] = match
+    if (!children.has(ppid)) children.set(ppid, [])
+    children.get(ppid).push(pid)
+    if (/(?:^|\s|[/\\])codex(?:\.exe)?(?:\s|$)/.test(args)) runtimes.add(pid)
+  }
+  const stack = [...panePids]
+  const seen = new Set()
+  let pid = null
+  while (stack.length) {
+    const candidate = stack.pop()
+    if (seen.has(candidate)) continue
+    seen.add(candidate)
+    if (runtimes.has(candidate)) { pid = candidate; break }
+    stack.push(...(children.get(candidate) || []))
+  }
+  if (!pid) return null
+  const launchTs = Date.parse(agent?.registered_at || '') || (now() - 60_000)
+  const jsonlPath = await resolveTranscript({ pid, kind: 'codex', agent, launchTs })
+  const sessionId = ledgerSessionId({ harness_kind: 'codex', jsonl_path: jsonlPath })
+  if (!sessionId) return null
+  let model = null
+  try {
+    for (const line of fs.readFileSync(jsonlPath, 'utf8').split(/\r?\n/).slice(0, 200)) {
+      if (!line) continue
+      let entry
+      try { entry = JSON.parse(line) } catch { continue }
+      const value = entry?.payload?.model || entry?.model || entry?.message?.model || entry?.payload?.message?.model || entry?.response?.model || entry?.payload?.response?.model
+      if (typeof value === 'string' && value.trim()) { model = value.trim(); break }
+    }
+  } catch {
+    return { sessionId, jsonlPath, model: null }
+  }
+  return { sessionId, jsonlPath, model }
+}
 
 function sq(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`
