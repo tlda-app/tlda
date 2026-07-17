@@ -6,16 +6,16 @@ test('server runtime status records daemon pane status separately from liveness'
   const source = fs.readFileSync(new URL('../server/unified-server.mjs', import.meta.url), 'utf8')
   const daemonHandler = source.indexOf('async function handleDaemonWsMessage')
   const start = source.indexOf("if (type === 'agent-status')", daemonHandler)
-  const end = source.indexOf("if (type === 'agent-lifecycle')", start)
+  const end = source.indexOf("if (type === 'agent-liveness')", start)
   const handler = source.slice(start, end)
 
   assert.ok(daemonHandler >= 0 && start > daemonHandler && end > start)
   assert.match(handler, /runtimeStatusStore\.updateActivity\(agentId, state/)
-  assert.doesNotMatch(handler, /markAgentAlive\(/)
-  assert.doesNotMatch(handler, /markAgentNotAlive\(/)
+  assert.match(handler, /state === 'hibernating'\) markAgentNotAlive\(agentId, \{ source: 'daemon-agent-status', unknown: true/)
+  assert.match(handler, /else markAgentAlive\(agentId, Date\.parse\(ts\) \|\| Date\.now\(\), \{ source: 'daemon-agent-status'/)
 })
 
-test('server runtime status does not consume daemon liveness as lifecycle truth', () => {
+test('server runtime status records explicit daemon liveness negatives immediately', () => {
   const source = fs.readFileSync(new URL('../server/unified-server.mjs', import.meta.url), 'utf8')
   const daemonHandler = source.indexOf('async function handleDaemonWsMessage')
   const start = source.indexOf("if (type === 'agent-liveness')", daemonHandler)
@@ -23,20 +23,20 @@ test('server runtime status does not consume daemon liveness as lifecycle truth'
   const handler = source.slice(start, end)
 
   assert.ok(daemonHandler >= 0 && start > daemonHandler && end > start)
-  assert.doesNotMatch(handler, /markAgentAlive\(/)
-  assert.doesNotMatch(handler, /markAgentNotAlive\(/)
+  assert.match(handler, /state === 'dead' \|\| state === 'wedged'/)
+  assert.match(handler, /markAgentNotAlive\(agent_id, \{\s*source: 'daemon-agent-liveness'/)
 })
 
-test('server runtime status records explicit check-alive replies as unknown diagnostics', () => {
+test('server runtime status records explicit check-alive replies before consumers use them', () => {
   const source = fs.readFileSync(new URL('../server/unified-server.mjs', import.meta.url), 'utf8')
   const recorderStart = source.indexOf('function recordExplicitCheckAliveLiveness')
   const recorderEnd = source.indexOf('function refreshRuntimeRoutesForDaemon', recorderStart)
   const recorder = source.slice(recorderStart, recorderEnd)
 
   assert.ok(recorderStart >= 0 && recorderEnd > recorderStart)
-  assert.match(recorder, /runtimeStatusStore\.markUnknown\(agentId, 'daemon-check-alive'/)
-  assert.doesNotMatch(recorder, /markAgentAlive\(/)
-  assert.doesNotMatch(recorder, /markAgentNotAlive\(/)
+  assert.match(recorder, /markAgentAlive\(agentId, atMs, detail\)/)
+  assert.match(recorder, /markAgentNotAlive\(agentId, detail\)/)
+  assert.match(recorder, /markAgentNotAlive\(agentId, \{ \.\.\.detail, unknown: true \}\)/)
 
   const taskRenudgeStart = source.indexOf('async function drainTaskWakeQueue')
   const taskRenudgeEnd = source.indexOf('const decision = spawnLibrarian.decideWake', taskRenudgeStart)
@@ -48,20 +48,4 @@ test('server runtime status records explicit check-alive replies as unknown diag
   const checkAlive = source.slice(checkAliveStart, checkAliveEnd)
   assert.match(checkAlive, /const liveness = livenessFromCheckAliveResult/)
   assert.match(checkAlive, /recordExplicitCheckAliveLiveness\(liveness\)\s+reply\(liveness\)/)
-})
-
-test('server runtime status consumes only daemon agent-lifecycle as runtime authority', () => {
-  const source = fs.readFileSync(new URL('../server/unified-server.mjs', import.meta.url), 'utf8')
-  const daemonHandler = source.indexOf('async function handleDaemonWsMessage')
-  const start = source.indexOf("if (type === 'agent-lifecycle')", daemonHandler)
-  const end = source.indexOf("if (type === 'agent-liveness')", start)
-  const handler = source.slice(start, end)
-
-  assert.ok(daemonHandler >= 0 && start > daemonHandler && end > start)
-  assert.match(handler, /lifecycleMatchesCurrentSeat\(event\)/)
-  assert.match(handler, /event\.state === 'runtime-alive' && match\.ok/)
-  assert.match(handler, /markAgentAlive\(event\.agent_id, atMs, detail\)/)
-  assert.match(handler, /completeSpawnMailboxesFromLifecycle\(event\)/)
-  assert.match(handler, /event\.state === 'runtime-exited' && match\.ok/)
-  assert.match(handler, /markAgentNotAlive\(event\.agent_id/)
 })

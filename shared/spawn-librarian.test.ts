@@ -113,13 +113,13 @@ describe('spawn librarian login readiness', () => {
     assert.equal((await wait).ok, true)
   })
 
-  it('leaves a launch unresolved when it never logs in', async () => {
+  it('returns login-timeout for a launch that never logs in and does not duplicate', async () => {
     const librarian = new SpawnLibrarian({ loginDeadlineMs: 5 })
-    librarian.awaitLogin({ id: 'fleet:never', name: 'never' })
-    await new Promise((resolve) => setTimeout(resolve, 15))
-    assert.equal(librarian.pendingSpawns.has('fleet:never'), true)
+    const wait = librarian.awaitLogin({ id: 'fleet:never', name: 'never' })
+    assert.deepEqual(await wait, { ok: false, reason: 'login-timeout' })
+    assert.equal(librarian.pendingSpawns.has('fleet:never'), false)
     librarian.observeLogin({ id: 'fleet:other', friendly_name: 'never' })
-    assert.equal(librarian.pendingSpawns.size, 1)
+    assert.equal(librarian.pendingSpawns.size, 0)
   })
 })
 
@@ -159,7 +159,7 @@ describe('spawn librarian liveness routing', () => {
     )
   })
 
-  it('does not let daemon check-alive dead override server-alive lifecycle state', () => {
+  it('respawns when daemon check-alive reports the tmux session absent', () => {
     const librarian = new SpawnLibrarian()
     const agent = { id: 'fleet:a', friendly_name: 'a' }
     assert.deepEqual(
@@ -168,7 +168,7 @@ describe('spawn librarian liveness routing', () => {
         { agent_id: agent.id, tmux_session: 'fleet-a', state: 'dead', reason: 'tmux gone' },
         { serverAlive: true }
       ),
-      { action: 'deliver' }
+      { action: 'respawn' }
     )
   })
 
@@ -180,11 +180,32 @@ describe('spawn librarian liveness routing', () => {
   })
 })
 
-describe('spawn librarian activity routing', () => {
-  it('keeps activity as activity rather than delivery confirmation', () => {
-    const librarian = new SpawnLibrarian()
+describe('spawn librarian wedged join', () => {
+  it('surfaces wedged when a delivered chat has no later agent-activity advance', async () => {
+    const wedged: string[] = []
+    const librarian = new SpawnLibrarian({
+      wedgedWindowMs: 5,
+      onWedged: (event) => wedged.push(event.agent_id),
+    })
     librarian.observeLiveness({ agent_id: 'fleet:w', tmux_session: 'fleet-w', state: 'alive' })
-    librarian.observeActivity({ agent_id: 'fleet:w', jsonl_offset: 2, ts: new Date(Date.now() + 1).toISOString() })
+    librarian.observeDelivery('fleet:w', Date.now())
+    await new Promise((resolve) => setTimeout(resolve, 15))
+    assert.deepEqual(wedged, ['fleet:w'])
+    assert.equal(librarian.livenessState('fleet:w'), 'wedged')
+  })
+
+  it('clears the pending delivery when agent-activity advances', async () => {
+    const wedged: string[] = []
+    const librarian = new SpawnLibrarian({
+      wedgedWindowMs: 15,
+      onWedged: (event) => wedged.push(event.agent_id),
+    })
+    const deliveredAt = Date.now()
+    librarian.observeLiveness({ agent_id: 'fleet:w', tmux_session: 'fleet-w', state: 'alive' })
+    librarian.observeDelivery('fleet:w', deliveredAt)
+    librarian.observeActivity({ agent_id: 'fleet:w', jsonl_offset: 2, ts: new Date(deliveredAt + 1).toISOString() })
+    await new Promise((resolve) => setTimeout(resolve, 25))
+    assert.deepEqual(wedged, [])
     assert.equal(librarian.livenessState('fleet:w'), 'alive')
   })
 })

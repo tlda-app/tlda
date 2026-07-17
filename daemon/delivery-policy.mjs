@@ -8,7 +8,6 @@ const DURABLE_TYPES = new Set([
   'activity-health',
   'agent-compacting',
   'agent-context',
-  'agent-lifecycle',
   'agent-status',
   'agent-thinking',
   'daemon-warning',
@@ -19,6 +18,7 @@ const DURABLE_TYPES = new Set([
   'source-change',
   'spawn-startup-failed',
   'terminal-chat',
+  'terminal-dead',
   'terminal_attention',
 ])
 

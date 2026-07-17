@@ -144,8 +144,6 @@ test('wake route does nothing after confirming the runtime is already awake', as
     'spawn-librarian:deliver',
     'already-awake',
   ])
-  assert.equal(h.attempts.at(-1).outcome, 'attempted')
-  assert.equal(h.attempts.at(-1).nextAction, 'await-render-or-refusal')
   assert.ok(h.attempts.every(a => a.traceId === 'delegate:wake-route-test'))
   assert.ok(h.attempts.every(a => a.sourceEventId === 42))
   assert.ok(h.attempts.every(a => a.sourceTaskId === 'task:wake-route'))
@@ -169,8 +167,6 @@ test('wake route records respawn and post-respawn terminal nudge for a server-hi
     'spawn-librarian:respawn',
     'spawn-and-send-text-ok',
   ])
-  assert.equal(h.attempts.at(-1).outcome, 'attempted')
-  assert.equal(h.attempts.at(-1).nextAction, 'await-render-or-refusal')
 })
 
 test('wake route refuses a successful respawn that did not establish an authoritative binding', async () => {
@@ -222,17 +218,18 @@ test('wake route fails loudly when the agent has no current durable seat', async
   assert.equal(h.attempts.at(-1).reason, 'daemon-route-selected')
 })
 
-test('wake route does not let check-alive wedged override lifecycle-awake state', async () => {
-  const h = harness({ checkAlive: { state: 'wedged', reason: 'no agent-activity advance after notification attempt' } })
+test('wake route surfaces wedged decision instead of silently deferring', async () => {
+  const h = harness({ checkAlive: { state: 'wedged', reason: 'delivered chat produced no agent-activity advance' } })
   const result = await h.run()
 
   assert.deepEqual(h.runtimeLiveness.map(l => l.state), ['wedged'])
-  assert.equal(result.action, 'already-awake')
-  assert.deepEqual(h.wedged, [])
-  assert.equal(h.attempts.at(-1).reason, 'already-awake')
+  assert.equal(result.action, 'surfaced')
+  assert.deepEqual(h.wedged.map(event => event.type), ['agent-wedged'])
+  assert.match(h.wedged[0].payload.reason, /agent-activity/)
+  assert.equal(h.attempts.at(-1).reason, 'spawn-librarian:surface')
 })
 
-test('wake route records check-alive diagnostics without consuming them as lifecycle truth', async () => {
+test('wake route writes explicit check-alive liveness before consuming the decision', async () => {
   const h = harness({ checkAlive: { alive: false, reason: 'tmux absent' } })
   const result = await h.run()
 
@@ -240,9 +237,9 @@ test('wake route records check-alive diagnostics without consuming them as lifec
   assert.equal(h.runtimeLiveness[0].state, 'dead')
   assert.equal(h.runtimeLiveness[0].agent_id, 'fleet:worker')
   assert.equal(h.runtimeLiveness[0].tmux_session, 'fleet-worker')
-  assert.equal(result.action, 'already-awake')
+  assert.equal(result.action, 'respawned')
   assert.equal(
-    h.attempts.findIndex(a => a.reason === 'check-alive') < h.attempts.findIndex(a => a.reason === 'spawn-librarian:deliver'),
+    h.attempts.findIndex(a => a.reason === 'check-alive') < h.attempts.findIndex(a => a.reason === 'spawn-librarian:respawn'),
     true,
   )
 })

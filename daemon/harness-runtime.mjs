@@ -9,7 +9,6 @@ const execFileP = promisify(execFile)
 
 export function createHarnessRuntime({ tmuxArgs = [], log }) {
   const TMUX_ARGS = tmuxArgs || []
-  const lifecycleByTuple = new Map()
 
   async function findRuntimePidForAgent(agent, kind) {
     const adapter = harnessAdapters[kind]
@@ -114,78 +113,11 @@ export function createHarnessRuntime({ tmuxArgs = [], log }) {
     return harnessForAgent(agent).kind
   }
 
-  function lifecycleTuple(agent) {
-    return [
-      agent?.id || '',
-      agent?.session_id || agent?.sessionId || '',
-      agent?.tmux_session || agent?.tmuxSession || '',
-    ].join('\u0000')
-  }
-
-  async function observeRuntimeLifecycle(agent, {
-    machineId,
-    envName,
-    daemonKey,
-    reason = 'runtime-scan',
-    sendMsg,
-  } = {}) {
-    if (!agent?.id) return null
-    const observedAt = new Date().toISOString()
-    const tuple = lifecycleTuple(agent)
-    const base = {
-      type: 'agent-lifecycle',
-      agent_id: agent.id,
-      session_id: agent.session_id || agent.sessionId || null,
-      tmux_session: agent.tmux_session || agent.tmuxSession || null,
-      machine_id: machineId || agent.machine_id || null,
-      env_name: envName || agent.env_name || null,
-      daemon_key: daemonKey || agent.daemon_key || null,
-      harness: null,
-      state: 'unroutable',
-      pid: null,
-      previous_pid: lifecycleByTuple.get(tuple)?.pid || null,
-      observed_at: observedAt,
-      reason,
-    }
-
-    if (!base.session_id || !base.tmux_session || !base.machine_id || !base.env_name || !base.daemon_key) {
-      const event = { ...base, reason: 'incomplete-seat-tuple' }
-      lifecycleByTuple.set(tuple, { state: event.state, pid: null })
-      sendMsg?.(event)
-      return event
-    }
-
-    let harness
-    try {
-      harness = harnessForAgent(agent)
-    } catch (e) {
-      const event = { ...base, reason: e.message || 'unknown-harness' }
-      lifecycleByTuple.set(tuple, { state: event.state, pid: null })
-      sendMsg?.(event)
-      return event
-    }
-
-    const pid = await findRuntimePidForAgent(agent, harness.kind)
-    const previous = lifecycleByTuple.get(tuple) || null
-    const event = {
-      ...base,
-      harness: harness.kind,
-      pid: pid ? Number(pid) : null,
-      previous_pid: previous?.pid || null,
-      state: pid ? 'runtime-alive' : previous?.pid ? 'runtime-exited' : 'unroutable',
-      reason: pid ? reason : previous?.pid ? 'runtime-pid-missing' : 'runtime-not-observed',
-    }
-    lifecycleByTuple.set(tuple, { state: event.state, pid: event.pid })
-    sendMsg?.(event)
-    return event
-  }
-
   return {
     extractActivityEvents,
     findRuntimePidForAgent,
     harnessAdapters,
     harnessForAgent,
-    observeRuntimeLifecycle,
     resolveAgentKind,
   }
 }

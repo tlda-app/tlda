@@ -4631,10 +4631,10 @@ async function _flushUnread() {
     if (task) lines.push(`📬 ${label}: pending task: ${(task.description || '').slice(0, 80)}`);
     if (msgs.length > 0) lines.push(`📬 ${label}: ${msgs.length} unread item(s). ${inboxCallText('triage')}`);
     const content = lines.join('\n');
-    let attempted = false;
+    let delivered = false;
     if (harnessFromEnv().channelNudge) {
       const sess = process.env.FLEET_TMUX_SESSION;
-      if (sess) attempted = tmuxSendText(sess, content) || attempted;
+      if (sess) delivered = tmuxSendText(sess, content) || delivered;
     }
     await Promise.race([
       server.notification({
@@ -4643,7 +4643,7 @@ async function _flushUnread() {
       }),
       new Promise((_, reject) => setTimeout(() => reject(new Error('notification timeout')), 1000)),
     ]);
-    attempted = true;
+    delivered = true;
     await reportNotificationAttempt({
       agentId: AGENT_ID,
       reason: task ? 'task' : 'chat',
@@ -4652,14 +4652,14 @@ async function _flushUnread() {
       priority: 'normal',
       intendedSurface: harnessFromEnv().channelNudge ? 'tmux' : 'channel',
       policy: _inboxStatus === 'available' ? 'immediate' : _inboxStatus,
-      outcome: 'attempted',
+      outcome: 'delivered',
       evidence: {
         eventType: 'flush',
         unreadCount: msgs.length,
         hasTask: !!task,
         deliveryPath: harnessFromEnv().channelNudge ? 'tmux-or-channel' : 'channel',
       },
-      nextAction: 'await-render-or-refusal',
+      nextAction: 'none',
     });
   } catch (e) {
     notificationError = e;
@@ -4734,8 +4734,8 @@ function startChannelWS() {
   _channelRWS.connect();
 }
 
-// Dedup channel notifications by event DB id — prevents duplicate local attempts.
-const _attemptedChannelIds = new Set();
+// Dedup channel notifications by event DB id — prevents double delivery
+const _deliveredChannelIds = new Set();
 const CHANNEL_DEDUP_TTL_MS = 60000;
 
 function inboxCallText(action = 'see it') {
@@ -4775,8 +4775,8 @@ async function handleChannelMessage(msg) {
     return;
   }
 
-  // Dedup: skip if we already attempted a channel notification for this event.
-  if (data.id && _attemptedChannelIds.has(data.id)) {
+  // Dedup: skip if we already delivered a channel notification for this event
+  if (data.id && _deliveredChannelIds.has(data.id)) {
     return;
   }
 
@@ -4857,7 +4857,7 @@ async function handleChannelMessage(msg) {
   handleChannelMessage._lastContent = content;
   handleChannelMessage._lastTs = now;
 
-  let attempted = false;
+  let delivered = false;
   let notificationError = null;
   // Harness adapter decides whether Claude-channel delivery needs a tmux nudge.
   // Do this before the Claude notification: Codex/Goose may not support that
@@ -4865,7 +4865,7 @@ async function handleChannelMessage(msg) {
   if (isDirectTarget && harnessFromEnv().channelNudge) {
     const sess = process.env.FLEET_TMUX_SESSION;
     if (sess) {
-      attempted = tmuxSendText(sess, content) || attempted;
+      delivered = tmuxSendText(sess, content) || delivered;
     } else {
       process.stderr.write('[fleet-channel] no FLEET_TMUX_SESSION for harness nudge\n');
     }
@@ -4885,8 +4885,8 @@ async function handleChannelMessage(msg) {
       }),
       new Promise((_, reject) => setTimeout(() => reject(new Error('notification timeout')), 1000)),
     ]);
-    attempted = true;
-    process.stderr.write(`[fleet-channel] Attempted ${eventType} notification from ${fromId} via channel (event ${data.id})\n`);
+    delivered = true;
+    process.stderr.write(`[fleet-channel] Delivered ${eventType} from ${fromId} via channel (event ${data.id})\n`);
   } catch (e) {
     notificationError = e;
     process.stderr.write(`[fleet-channel] notification failed: ${e.message}\n`);
@@ -4901,7 +4901,7 @@ async function handleChannelMessage(msg) {
     intendedSurface: harnessFromEnv().channelNudge ? 'tmux' : 'channel',
     policy: _inboxStatus === 'available' ? 'immediate' : _inboxStatus,
     attemptedAt: new Date(now).toISOString(),
-    outcome: attempted ? 'attempted' : 'unresolved',
+    outcome: delivered ? 'delivered' : 'send-failed',
     evidence: {
       from: fromId,
       eventType,
@@ -4909,14 +4909,14 @@ async function handleChannelMessage(msg) {
       error: notificationError?.message || null,
       stack: notificationError?.stack || null,
     },
-    nextAction: attempted ? 'await-render-or-refusal' : 'retry-on-reconnect',
+    nextAction: delivered ? 'none' : 'retry-on-reconnect',
   });
 
-  if (attempted) {
-    // Mark as attempted so dupes are suppressed.
+  if (delivered) {
+    // Mark as delivered so dupes are suppressed
     if (data.id) {
-      _attemptedChannelIds.add(data.id);
-      setTimeout(() => _attemptedChannelIds.delete(data.id), CHANNEL_DEDUP_TTL_MS);
+      _deliveredChannelIds.add(data.id);
+      setTimeout(() => _deliveredChannelIds.delete(data.id), CHANNEL_DEDUP_TTL_MS);
     }
     // Clear signal file so PostToolUse hook doesn't re-surface this message
     try {
