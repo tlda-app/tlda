@@ -10,7 +10,7 @@ function agent(id, extra = {}) {
   return {
     id,
     friendly_name: extra.friendly_name || id.replace(/^fleet:/, ''),
-    status: 'awake',
+    runtime_status: { status: 'awake' },
     dead: false,
     human: false,
     last_seen: isoAgo(60_000),
@@ -73,7 +73,7 @@ test('active quiet task satisfying Todd kick rules is toddWillKick', () => {
 test('hibernating active task with no route evidence needs human attention', () => {
   const report = buildFleetActivityReport({
     now,
-    agents: [agent('fleet:lost', { friendly_name: 'lost-worker', status: 'hibernating' })],
+    agents: [agent('fleet:lost', { friendly_name: 'lost-worker', runtime_status: { status: 'hibernating' } })],
     tasks: [task('task-lost', 'fleet:lost', 20 * 60_000, { description: 'recover lane' })],
     events: [],
     rosterTruth: { agents: [] },

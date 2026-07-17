@@ -4,6 +4,7 @@ import os from 'os'
 import path from 'path'
 
 import { getActiveConfigName, getFleetServerUrl } from '../shared/config.mjs'
+import { runtimeStatusName } from '../shared/fleet-runtime-status.mjs'
 import { tldaFetch } from '../shared/http-client.mjs'
 import { resolveCodexResumeHandle } from '../bin/lib/codex-resume-resolver.mjs'
 import { findClaudeSession, isRespawnIdentityCaughtUp } from '../bin/lib/spawn/resume.mjs'
@@ -87,12 +88,13 @@ function missingBaseFields(agent, kind) {
 }
 
 function rowSummary(agent) {
+  const status = runtimeStatusName(agent)
   return {
     id: agent.id,
     name: agent.friendly_name || agent.name || null,
     human: !!agent.human,
-    dead: !!agent.dead || agent.status === 'dead',
-    status: agent.status || null,
+    dead: !!agent.dead || status === 'dead',
+    status,
     machine_id: agent.machine_id || null,
     kind: agent.kind || null,
     model: agent.model || agent.metadata?.model || null,
@@ -105,10 +107,11 @@ function rowSummary(agent) {
 }
 
 function inScope(agent, scope) {
+  const status = runtimeStatusName(agent)
   if (agent.human) return false
   if (scope === 'all') return true
-  if (scope === 'all-active') return !agent.dead && agent.status !== 'dead'
-  return agent.status === 'hibernating'
+  if (scope === 'all-active') return !agent.dead && status !== 'dead'
+  return status === 'hibernating'
 }
 
 async function auditAgent(agent, options) {
@@ -128,7 +131,7 @@ async function auditAgent(agent, options) {
   if (agent.human) {
     return { ...base, category: 'human', reason: 'human row is not respawned as an agent' }
   }
-  if (agent.dead || agent.status === 'dead') {
+  if (agent.dead || runtimeStatusName(agent) === 'dead') {
     return { ...base, category: 'dead', reason: 'dead row is not an active hibernating respawn target' }
   }
   if (!kind) {
@@ -248,9 +251,9 @@ function summarize({ allAgents, audited, results, options }) {
       authoritative_rows: allAgents.length,
       humans: allAgents.filter(a => a.human).length,
       non_human_agents: nonHuman.length,
-      awake: nonHuman.filter(a => a.status === 'awake').length,
-      hibernating: nonHuman.filter(a => a.status === 'hibernating').length,
-      dead: nonHuman.filter(a => a.status === 'dead' || a.dead).length,
+      awake: nonHuman.filter(a => runtimeStatusName(a) === 'awake').length,
+      hibernating: nonHuman.filter(a => runtimeStatusName(a) === 'hibernating').length,
+      dead: nonHuman.filter(a => runtimeStatusName(a) === 'dead' || a.dead).length,
       audited: audited.length,
       fully_spawnable: results.filter(r => r.ok).length,
       lost_or_unresolvable_pointer: results.filter(r => r.category === 'unresolvable-pointer').length,

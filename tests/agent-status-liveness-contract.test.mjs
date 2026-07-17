@@ -26,3 +26,26 @@ test('server runtime status records explicit daemon liveness negatives immediate
   assert.match(handler, /state === 'dead' \|\| state === 'wedged'/)
   assert.match(handler, /markAgentNotAlive\(agent_id, \{\s*source: 'daemon-agent-liveness'/)
 })
+
+test('server runtime status records explicit check-alive replies before consumers use them', () => {
+  const source = fs.readFileSync(new URL('../server/unified-server.mjs', import.meta.url), 'utf8')
+  const recorderStart = source.indexOf('function recordExplicitCheckAliveLiveness')
+  const recorderEnd = source.indexOf('function refreshRuntimeRoutesForDaemon', recorderStart)
+  const recorder = source.slice(recorderStart, recorderEnd)
+
+  assert.ok(recorderStart >= 0 && recorderEnd > recorderStart)
+  assert.match(recorder, /markAgentAlive\(agentId, atMs, detail\)/)
+  assert.match(recorder, /markAgentNotAlive\(agentId, detail\)/)
+  assert.match(recorder, /markAgentNotAlive\(agentId, \{ \.\.\.detail, unknown: true \}\)/)
+
+  const taskRenudgeStart = source.indexOf('async function drainTaskWakeQueue')
+  const taskRenudgeEnd = source.indexOf('const decision = spawnLibrarian.decideWake', taskRenudgeStart)
+  const taskRenudge = source.slice(taskRenudgeStart, taskRenudgeEnd)
+  assert.match(taskRenudge, /recordExplicitCheckAliveLiveness\(\{ \.\.\.liveness, agent_id: liveness\.agent_id \|\| agentId \}\)/)
+
+  const checkAliveStart = source.indexOf("if (type === 'check-alive')")
+  const checkAliveEnd = source.indexOf("if (type === 'plan-mode-respond')", checkAliveStart)
+  const checkAlive = source.slice(checkAliveStart, checkAliveEnd)
+  assert.match(checkAlive, /const liveness = livenessFromCheckAliveResult/)
+  assert.match(checkAlive, /recordExplicitCheckAliveLiveness\(liveness\)\s+reply\(liveness\)/)
+})

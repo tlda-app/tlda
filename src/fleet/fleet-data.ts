@@ -30,7 +30,6 @@ export type FleetAgent = Record<string, unknown> & {
   id: string
   friendly_name?: string
   pretty_name?: string | Array<string | { kind: 'glyph'; id?: string; glyph?: string }>
-  status?: string
   runtime_status?: { status?: string }
   labels?: string[]
   dead?: boolean
@@ -339,14 +338,14 @@ function agentIdsForLabel(label: string, opts: { status?: string } = {}): Set<st
   const ids = new Set<string>()
   if (!label) return ids
   const direct = agentStore.get(label)
-  if (label.startsWith('fleet:') && (!opts.status || (direct && (direct.runtime_status?.status || direct.status) === opts.status))) {
+  if (label.startsWith('fleet:') && (!opts.status || (direct && direct.runtime_status?.status === opts.status))) {
     ids.add(label)
   }
   const bucket = agentLabelIndex.get(label)
   const hasLiveHolder = bucket.some((agent) => !agent.dead)
   for (const agent of bucket) {
     if (agent.dead && hasLiveHolder) continue
-    if (opts.status && ((agent.runtime_status?.status || agent.status) !== opts.status)) continue
+    if (opts.status && agent.runtime_status?.status !== opts.status) continue
     ids.add(agent.id)
   }
   return ids

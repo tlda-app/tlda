@@ -45,6 +45,7 @@ import {
 } from '../fleet/filter-semantics.mjs'
 import { appendToken } from '../authToken'
 import { labelsForAgent } from '../../shared/fleet-labels.mjs'
+import { runtimeStatusName } from '../../shared/fleet-runtime-status.mjs'
 import { ACTIVITY_DELIVERY_STAGES } from '../../shared/activity-delivery-counters.mjs'
 import { useFleetAgents, useFleetChatAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useFleetStatusTargets, useFleetFilterHasMatchingAgent, useSuggestions, clearGroup, sendMessage, loadBefore, resolveFleetAgentLabelIds, injectOptimisticEvent, updateOptimisticEvent, removeOptimisticEvent } from '../fleet-data-adapter'
 import { isTerminalAvailableForAgent } from '../fleet/fleet-chat-visibility.mjs'
@@ -4599,7 +4600,7 @@ function FleetChatInner({ shape }: { shape: any }) {
           found: !!agent,
           tmux: agent?.tmux_session || null,
           dead: agent?.dead ?? null,
-          hibernating: agent?.hibernating ?? ((agent?.runtime_status?.status || agent?.status) === 'hibernating'),
+          hibernating: runtimeStatusName(agent) === 'hibernating',
           terminalReady: isTerminalReadyAgent(agent),
         })),
       })

@@ -3,6 +3,7 @@ import { promisify } from 'util'
 import { THINKING_SCAN_LINES } from '../agent-runtime/status-classifier.mjs'
 import { gooseActivityTick } from '../agent-runtime/goose-activity.mjs'
 import { maybeKickGoose, resolveGooseStatus } from '../agent-runtime/goose-kick.mjs'
+import { isObservableDaemonProcessBinding } from '../agent-runtime/daemon-process-binding.mjs'
 
 const execFileP = promisify(execFile)
 
@@ -36,7 +37,7 @@ export function createGooseSupervisor({
 
   async function kickSweep(candidateAgents) {
     for (const agent of candidateAgents) {
-      if (agent.hibernating) continue
+      if (!isObservableDaemonProcessBinding(agent)) continue
       if (harnessForAgent(agent).kind !== 'goose') continue
       try {
         const { stdout: pane } = await execFileP('tmux',

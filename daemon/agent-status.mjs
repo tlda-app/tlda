@@ -5,6 +5,7 @@ import {
   decideThinkingEdge,
   THINKING_SCAN_LINES,
 } from '../agent-runtime/status-classifier.mjs'
+import { isObservableDaemonProcessBinding } from '../agent-runtime/daemon-process-binding.mjs'
 
 const execFileP = promisify(execFile)
 
@@ -43,7 +44,7 @@ export function createAgentStatus({
     if (!tmux_session) return
     for (const agent of getAgents()) {
       if (agent.tmux_session !== tmux_session) continue
-      if (!agent.dead && !agent.human && !agent.hibernating) armAgent(agent.id)
+      if (isObservableDaemonProcessBinding(agent)) armAgent(agent.id)
     }
   }
 
@@ -139,7 +140,7 @@ export function createAgentStatus({
     const now = Date.now()
     for (const agentId of [...armedSince.keys()]) {
       const agent = getAgents().find(a => a.id === agentId)
-      if (!agent || agent.dead || agent.human || agent.hibernating || !agent.tmux_session) {
+      if (!isObservableDaemonProcessBinding(agent)) {
         disarmAgent(agentId)
         continue
       }
@@ -154,7 +155,7 @@ export function createAgentStatus({
   function start() {
     let armed = 0
     for (const agent of getAgents()) {
-      if (!agent?.dead && !agent?.human && !agent?.hibernating && agent?.tmux_session) {
+      if (isObservableDaemonProcessBinding(agent)) {
         armAgent(agent.id)
         armed += 1
       }

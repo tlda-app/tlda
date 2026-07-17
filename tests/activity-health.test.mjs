@@ -58,7 +58,7 @@ test('FleetStore persists activity health in agent metadata', () => {
     tmux_session: 'fleet-agent',
     dead: false,
     metadata: { model: 'gpt-5.5' },
-  })
+  }, { allowProtectedAgentFields: true })
 
   const health = normalizeActivityHealth({
     state: ACTIVITY_HEALTH_UNAVAILABLE,
@@ -86,7 +86,7 @@ test('fleet roster truth includes activity health for status-line projection', (
     roster: [{
       id: 'fleet:agent',
       friendly_name: 'agent',
-      status: 'awake',
+      runtime_status: { status: 'awake' },
       dead: false,
       human: false,
       metadata: { activityHealth: health },

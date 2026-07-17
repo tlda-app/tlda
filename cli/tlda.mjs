@@ -49,6 +49,7 @@ import {
 } from './lib/daemon-supervision-transition.mjs'
 import { resolveAgentQuery } from './lib/agent-resolve.mjs'
 import { parseAgentMoveTarget, describeAgentAddress } from '../shared/agent-move-target.mjs'
+import { runtimeStatusName } from '../shared/fleet-runtime-status.mjs'
 import { daemonSingletonLockPath, inspectSingletonLock } from '../agent-runtime/singleton-lock.mjs'
 import {
   resolveDirectSpawnGrant,
@@ -3002,7 +3003,11 @@ async function listFleetAgents() {
   const sortedGroups = [...groups.entries()].sort(([a], [b]) => a.localeCompare(b))
   for (const [machine, group] of sortedGroups) {
     const rows = group.rows
-    rows.sort((a, b) => (statusRank[a.status] ?? 3) - (statusRank[b.status] ?? 3) || (a.name || a.id).localeCompare(b.name || b.id))
+    const rowStatus = (row) => {
+      const { status: projectedStatus } = row
+      return runtimeStatusName({ ...row, runtime_status: row.runtime_status || { status: projectedStatus } })
+    }
+    rows.sort((a, b) => (statusRank[rowStatus(a)] ?? 3) - (statusRank[rowStatus(b)] ?? 3) || (a.name || a.id).localeCompare(b.name || b.id))
     const truth = group.truth
     const suffix = truth
       ? ` — ${truth.registry.awake} awake, ${truth.registry.hibernating} hibernating, ${truth.registry.dead} dead; ${truth.panes.fleet} panes, ${truth.panes.stale} stale`
@@ -3017,7 +3022,7 @@ async function listFleetAgents() {
     }
     console.log(`  ${padRight('status', 12)} ${padRight('agent', 24)} ${padRight('session', 28)} ${padRight('seen', 8)} cwd`)
     for (const a of rows) {
-      const status = a.status || 'unknown'
+      const status = rowStatus(a) || 'unknown'
       const name = a.name || a.id
       const session = a.tmux_session || '-'
       const seen = formatAge(a.last_seen_ago_s)
@@ -3312,7 +3317,7 @@ function printAgentReadiness(r) {
   const row = r.tableRow
   console.log(`spawn readiness for ${agent.friendly_name || agent.id} (${agent.id})`)
   if (r.warning) console.log(`  warning: ${r.warning}`)
-  console.log(`  registry: ${agent.dead ? 'dead' : 'live row'}; status=${row?.status || agent.status || 'unknown'}; machine=${agent.machine_id || 'unknown'}`)
+  console.log(`  registry: ${agent.dead ? 'dead' : 'live row'}; status=${row?.status || runtimeStatusName(agent) || 'unknown'}; machine=${agent.machine_id || 'unknown'}`)
   console.log(`  current seat: ${r.seat ? `${r.seat.session_id || 'no-session'} @ ${r.seat.daemon_key || 'no-daemon'}` : 'missing'}`)
   console.log(`  tmux: ${r.hasSession ? `ok ${r.session} panes=${r.panes.join(',') || 'none'}` : `missing ${r.session}`}`)
   console.log(`  runtime: ${r.runtime.ok ? `ok ${r.runtime.kind} pid=${r.runtime.pid}` : 'missing under tmux pane'}`)
@@ -3334,7 +3339,7 @@ async function findAgentForPermission(agentQuery) {
   if (!agent) {
     throw new Error(`No existing agent found for "${agentQuery}". Use an existing fleet id or friendly name.`)
   }
-  if (agent.status === 'dead') {
+  if (runtimeStatusName(agent) === 'dead') {
     throw new Error(`Agent ${agent.id} is marked dead; refusing to create an impostor identity.`)
   }
   const localMachine = loadConfig().machineId

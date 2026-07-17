@@ -5,7 +5,7 @@ import { decideTaskKicks } from '../bots/todd/kicks.mjs'
 
 const agent = {
   id: 'fleet:worker',
-  status: 'awake',
+  runtime_status: { status: 'awake' },
   dead: false,
   human: false,
 }

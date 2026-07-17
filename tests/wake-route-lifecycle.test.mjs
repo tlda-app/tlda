@@ -32,6 +32,7 @@ function harness({ agent = baseAgent(), serverAlive = true, checkAlive = { alive
   const acks = []
   const wedged = []
   const lifecycle = []
+  const runtimeLiveness = []
   const librarian = new SpawnLibrarian()
   let currentSeat = {
     agent_id: agent.id,
@@ -48,6 +49,7 @@ function harness({ agent = baseAgent(), serverAlive = true, checkAlive = { alive
     acks,
     wedged,
     lifecycle,
+    runtimeLiveness,
     async run(extra = {}) {
       return runWakeRouteLifecycle({
         agentId: agent.id,
@@ -87,6 +89,9 @@ function harness({ agent = baseAgent(), serverAlive = true, checkAlive = { alive
         async sendWakeNudge(daemonKey, wakeAgent, tmuxSession, text, phase, logTag, sessionId) {
           if (!shouldSendWakeNudge(wakeAgent, text)) return
           nudges.push({ daemonKey, tmuxSession, text, phase, logTag, sessionId })
+        },
+        recordRuntimeLiveness(liveness) {
+          runtimeLiveness.push(liveness)
         },
         getCurrentSeat() {
           return currentSeat
@@ -217,10 +222,26 @@ test('wake route surfaces wedged decision instead of silently deferring', async 
   const h = harness({ checkAlive: { state: 'wedged', reason: 'delivered chat produced no agent-activity advance' } })
   const result = await h.run()
 
+  assert.deepEqual(h.runtimeLiveness.map(l => l.state), ['wedged'])
   assert.equal(result.action, 'surfaced')
   assert.deepEqual(h.wedged.map(event => event.type), ['agent-wedged'])
   assert.match(h.wedged[0].payload.reason, /agent-activity/)
   assert.equal(h.attempts.at(-1).reason, 'spawn-librarian:surface')
+})
+
+test('wake route writes explicit check-alive liveness before consuming the decision', async () => {
+  const h = harness({ checkAlive: { alive: false, reason: 'tmux absent' } })
+  const result = await h.run()
+
+  assert.equal(h.runtimeLiveness.length, 1)
+  assert.equal(h.runtimeLiveness[0].state, 'dead')
+  assert.equal(h.runtimeLiveness[0].agent_id, 'fleet:worker')
+  assert.equal(h.runtimeLiveness[0].tmux_session, 'fleet-worker')
+  assert.equal(result.action, 'respawned')
+  assert.equal(
+    h.attempts.findIndex(a => a.reason === 'check-alive') < h.attempts.findIndex(a => a.reason === 'spawn-librarian:respawn'),
+    true,
+  )
 })
 
 test('old lineage name resolution ignores a dead chief row before wake routing', () => {

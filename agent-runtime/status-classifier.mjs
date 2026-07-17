@@ -8,6 +8,7 @@
 // daemon owns the per-agent state maps and supplies `now`.
 
 import { resolveGooseStatus } from './goose-kick.mjs'
+import { isObservableDaemonProcessBinding } from './daemon-process-binding.mjs'
 
 // claude / codex spinner + chrome. Skip: "they all have the same spinner
 // behavior, just a different regex" — so the per-harness difference lives ONLY
@@ -88,6 +89,6 @@ export function shouldDisarm(now, armedAt, busy, lingerMs) {
 // same event-armed boundary as thinking/compacting. A previously surfaced prompt
 // keeps the session eligible long enough to clear or update that prompt.
 export function shouldPromptSweepAgent(agent, { armed = false, surfaced = false } = {}) {
-  if (!agent || agent.dead || agent.human || agent.hibernating || !agent.tmux_session) return false
+  if (!isObservableDaemonProcessBinding(agent)) return false
   return !!armed || !!surfaced
 }

@@ -89,7 +89,6 @@ interface Agent {
   friendly_name: string
   tmux_session?: string
   runtime_status?: { status?: string; route_state?: string | null }
-  status?: string
   dead?: boolean
 }
 
@@ -105,7 +104,7 @@ function useAgents(): Agent[] {
         const data = await res.json()
         const list: Agent[] = data.agents || []
         if (!cancelled) {
-          setAgents(list.filter(a => !a.dead && (a.runtime_status?.status || a.status) === 'awake' && (!a.runtime_status?.route_state || a.runtime_status.route_state === 'routable')))
+          setAgents(list.filter(a => !a.dead && a.runtime_status?.status === 'awake' && (!a.runtime_status?.route_state || a.runtime_status.route_state === 'routable')))
         }
       } catch {}
     }

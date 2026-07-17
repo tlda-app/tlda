@@ -1,4 +1,5 @@
 import { decideTaskKicks } from './kicks.mjs'
+import { runtimeStatusName } from '../../shared/fleet-runtime-status.mjs'
 
 const DEFAULT_LOOKBACK_MS = 15 * 60_000
 const DEFAULT_RECENT_MS = 5 * 60_000
@@ -74,12 +75,13 @@ export function buildFleetActivityReport({
 
   const rows = []
   for (const task of activeTasks) {
-    const agent = agentById.get(task.agent) || { id: task.agent, status: 'unknown' }
+    const agent = agentById.get(task.agent) || { id: task.agent, runtime_status: { status: 'unknown' } }
+    const agentStatus = String(runtimeStatusName(agent) || 'unknown').toLowerCase()
     const stats = activity.byAgent.get(task.agent) || emptyActivityStats()
     const kick = kickByAgent.get(task.agent)
     const waiting = taskLooksWaiting(task) || activeTimerAgents.has(task.agent)
     const noRoute = !hasRouteEvidence(agent, rosterRoute)
-    const deadish = agent.dead || ['dead', 'hibernating'].includes(String(agent.status || '').toLowerCase())
+    const deadish = agent.dead || ['dead', 'hibernating'].includes(agentStatus)
     let state = 'quiet'
     let todd = 'no kick'
     let reason = ''
@@ -98,9 +100,9 @@ export function buildFleetActivityReport({
     } else if (stats.lastProgressMs >= recentCutoff || stats.lastActivityMs >= recentCutoff) {
       state = 'moving'
       reason = stats.lastProgressMs >= recentCutoff ? 'recent progress' : 'recent activity'
-    } else if (agent.status && String(agent.status).toLowerCase() !== 'awake') {
+    } else if (agentStatus !== 'awake') {
       state = 'quiet'
-      reason = String(agent.status)
+      reason = agentStatus
     }
 
     rows.push({
@@ -118,7 +120,7 @@ export function buildFleetActivityReport({
   for (const [agentId, stats] of activity.byAgent) {
     if (rows.some(row => row.agent.id === agentId)) continue
     if (stats.lastProgressMs >= recentCutoff || stats.lastActivityMs >= recentCutoff) {
-      const agent = agentById.get(agentId) || { id: agentId, status: 'unknown' }
+      const agent = agentById.get(agentId) || { id: agentId, runtime_status: { status: 'unknown' } }
       rows.push({
         agent,
         task: null,
@@ -257,7 +259,7 @@ function normalizeAgents(input) {
     ...agent,
     id: agent.id || agent.agent_id,
     friendly_name: agent.friendly_name || agent.name || agent.lineage_name || null,
-    status: agent.status || (agent.dead ? 'dead' : 'unknown'),
+    status: runtimeStatusName(agent) || (agent.dead ? 'dead' : 'unknown'),
     last_seen: agent.last_seen || agent.lastSeen || agent.lastSeenAt || null,
   }))
 }

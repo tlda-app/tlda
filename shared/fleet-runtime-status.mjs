@@ -2,7 +2,7 @@ export function runtimeStatusForAgent(agent) {
   const runtime = agent?.runtime_status
   if (runtime && typeof runtime === 'object') return runtime
   return {
-    status: agent?.status || (agent?.dead ? 'dead' : 'hibernating'),
+    status: agent?.dead ? 'dead' : agent?.human ? 'human' : 'hibernating',
     route_state: agent?.route_state || null,
     route_reason: agent?.route_reason || null,
     activity: agent?.activity || 'unknown',

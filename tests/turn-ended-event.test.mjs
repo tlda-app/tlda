@@ -14,7 +14,7 @@ for (const f of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) { try { fs.unlinkSyn
 
 const store = new FleetStore(dbPath)
 const AGENT = 'fleet:test-worker'
-store.upsertAgent({ id: AGENT, friendly_name: 'test-worker', human: false, status: 'awake' })
+store.upsertAgent({ id: AGENT, friendly_name: 'test-worker', human: false })
 
 // Mirror server/unified-server.mjs: fleetStore.onEvent → broadcastEvent('fleet-event', e)
 const broadcasts = []
@@ -55,7 +55,7 @@ const rows = store.queryAgentEvents({ agent: AGENT, limit: 50 }).filter(e => e.t
 ok(rows.length === 1, 'turn_ended row persisted + queryable via queryAgentEvents')
 
 // 4. Human/bot agents do not get turns.
-store.upsertAgent({ id: 'fleet:skip', friendly_name: 'skip', human: true, status: 'awake' })
+store.upsertAgent({ id: 'fleet:skip', friendly_name: 'skip', human: true })
 await onThinking('fleet:skip', true)
 await onThinking('fleet:skip', false)
 ok(broadcasts.filter(e => e.type === 'turn_ended' && e.agent_id === 'fleet:skip').length === 0, 'human agent emits no turn_ended')

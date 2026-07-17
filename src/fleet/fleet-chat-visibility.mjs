@@ -4,5 +4,5 @@ import { isRuntimeHibernating, isTerminalRoutable, runtimeStatusName } from '../
 // longer server roster truth, so requiring it hides valid awake terminals.
 export function isTerminalAvailableForAgent(agent) {
   const status = runtimeStatusName(agent)
-  return !!agent?.id && !agent?.dead && !agent?.hibernating && status !== 'shell' && !isRuntimeHibernating(agent) && isTerminalRoutable(agent)
+  return !!agent?.id && !agent?.dead && status !== 'shell' && !isRuntimeHibernating(agent) && isTerminalRoutable(agent)
 }

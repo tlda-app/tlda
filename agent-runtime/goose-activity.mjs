@@ -16,6 +16,7 @@ import { gooseDb, gooseSessionId } from './goose-kick.mjs'
 import { parseApplyPatchFiles } from './codex-activity.mjs'
 import { normalizePrettyResult, truncatePrettyResult } from '../shared/activity-pretty-result.mjs'
 import { humanToolName, isPrettyPrintTool, toolBaseName } from '../shared/activity-tool-classification.mjs'
+import { isObservableDaemonProcessBinding } from './daemon-process-binding.mjs'
 
 const pendingPrettyPrint = new Map()
 
@@ -153,7 +154,7 @@ export function gooseActivityTick(agents, deps) {
   if (!db) return
   for (const agent of agents) {
     const kind = agent?.metadata?.kind
-    if (!agent || kind !== 'goose' || agent.hibernating) continue
+    if (!agent || kind !== 'goose' || !isObservableDaemonProcessBinding(agent)) continue
     const sid = gooseSessionId(agent.id, log)
     if (!sid) continue
     try {

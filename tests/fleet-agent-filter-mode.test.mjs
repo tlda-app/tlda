@@ -13,10 +13,10 @@ import {
 import { fleetAgentFilterChoiceUpdate } from '../src/shapes/fleet-agent-filter-choices.ts'
 
 const roster = [
-  { id: 'fleet:id-only', status: 'awake', labels: ['reviewers'], last_seen: '2026-07-16T12:00:00.000Z' },
-  { id: 'fleet:skip', status: 'human', human: true, labels: ['owner'], last_seen: '2026-07-16T12:00:00.000Z' },
-  { id: '7.0', status: 'awake', labels: ['junk-id'], last_seen: '2026-07-16T12:00:00.000Z' },
-  { id: 'fleet:dead', friendly_name: 'dead', status: 'dead', dead: true, labels: ['hidden'], last_seen: '2026-07-16T12:00:00.000Z' },
+  { id: 'fleet:id-only', runtime_status: { status: 'awake' }, labels: ['reviewers'], last_seen: '2026-07-16T12:00:00.000Z' },
+  { id: 'fleet:skip', runtime_status: { status: 'human' }, human: true, labels: ['owner'], last_seen: '2026-07-16T12:00:00.000Z' },
+  { id: '7.0', runtime_status: { status: 'awake' }, labels: ['junk-id'], last_seen: '2026-07-16T12:00:00.000Z' },
+  { id: 'fleet:dead', friendly_name: 'dead', runtime_status: { status: 'dead' }, dead: true, labels: ['hidden'], last_seen: '2026-07-16T12:00:00.000Z' },
 ]
 
 test('filter mode uses the agents-directory row model without friendly_name-only filtering', () => {

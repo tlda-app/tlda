@@ -58,6 +58,7 @@ export async function runWakeRouteLifecycle({
   queueRetry = () => {},
   broadcastEvent = () => {},
   insertWakeLifecycleEvent = async () => {},
+  recordRuntimeLiveness = () => {},
 }) {
   if (traceId) {
     await recordWakeAttempt({ agentId, traceId, ...source, outcome: 'attempted', reason: 'daemon-route-selected', evidence: { daemon: daemonKey } })
@@ -94,6 +95,7 @@ export async function runWakeRouteLifecycle({
         ts: new Date().toISOString(),
       }
   spawnLibrarian.observeLiveness({ ...liveness, agent_id: liveness.agent_id || agentId })
+  recordRuntimeLiveness({ ...liveness, agent_id: liveness.agent_id || agentId })
   if (traceId) {
     await recordWakeAttempt({
       agentId,

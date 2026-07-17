@@ -1,4 +1,5 @@
 import { labelsForAgent, evalExprDirectional } from '../../shared/fleet-labels.mjs'
+import { runtimeStatusName } from '../../shared/fleet-runtime-status.mjs'
 
 // The set of labels a participant (an event's from/to/agent id) answers to.
 // Label expansion has a single source of truth — `labelsForAgent` in
@@ -9,7 +10,7 @@ function labelSetForParticipant(agentId, { agents = [], humanId = null, humanNam
   if (!agentId) return new Set()
   let agent = agents.find(a => a.id === agentId)
   if (!agent && humanId && agentId === humanId) {
-    agent = { id: humanId, friendly_name: humanName || 'user', status: 'human', labels: [] }
+    agent = { id: humanId, friendly_name: humanName || 'user', runtime_status: { status: 'human' }, labels: [] }
   }
   return new Set(agent ? labelsForAgent(agent) : [agentId])
 }
@@ -95,7 +96,7 @@ export function resolveFleetFilter(filter, { agents = [], humanId = null, humanN
   const ids = new Set()
   const allAgents = [...agents]
   if (humanId && !allAgents.some(a => a.id === humanId)) {
-    allAgents.push({ id: humanId, friendly_name: humanName || 'user', status: 'human', labels: [] })
+    allAgents.push({ id: humanId, friendly_name: humanName || 'user', runtime_status: { status: 'human' }, labels: [] })
   }
   const labels = new Set()
   for (const clause of filter) {
@@ -151,7 +152,8 @@ function isHumanAgentId(id, { agents = [], humanId = null } = {}) {
   if (!id) return false
   if (humanId && id === humanId) return true
   const agent = findAgentById(agents, id)
-  return !!agent?.human || agent?.status === 'human' || agent?.status === 'human-away'
+  const status = runtimeStatusName(agent)
+  return !!agent?.human || status === 'human' || status === 'human-away'
 }
 
 function nonHumanAgentById(id, context = {}) {

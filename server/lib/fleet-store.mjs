@@ -2731,7 +2731,6 @@ export class FleetStore {
       : projectAgentRuntimeStatus(baseAgent, null)
     return {
       ...baseAgent,
-      status: runtimeStatus.status,
       runtime_status: runtimeStatus,
     };
   }

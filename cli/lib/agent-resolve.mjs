@@ -1,5 +1,7 @@
+import { runtimeStatusName } from '../../shared/fleet-runtime-status.mjs'
+
 function isDeadAgent(agent) {
-  return agent?.status === 'dead' || agent?.dead === true
+  return runtimeStatusName(agent) === 'dead' || agent?.dead === true
 }
 
 function oneLiveMatch(matches, query, label) {

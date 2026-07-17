@@ -1,3 +1,5 @@
+import { runtimeStatusName } from '../../shared/fleet-runtime-status.mjs'
+
 // `lastKicked` maps task key → either a bare timestamp (legacy) or
 // `{ ts, sig }`. `sig` is the agent/task state at the last kick; we use it to
 // stop re-kicking a blocker that hasn't changed state. `skipLive` is an optional
@@ -31,7 +33,7 @@ export function decideTaskKicks({
     if (!['pending', 'working', 'idle'].includes(task.status)) continue
     const agent = agentById.get(task.agent)
     if (!agent || agent.dead || agent.human) continue
-    const status = String(agent.status || '').toLowerCase()
+    const status = String(runtimeStatusName(agent) || '').toLowerCase()
     if (status === 'dead') continue
 
     // Skip-live beats the nudge — Todd doesn't manage an agent Skip is working
@@ -61,7 +63,7 @@ export function decideTaskKicks({
     // with nothing new). When the agent acts or the task changes, the signature
     // changes and a kick is allowed again. [Skip 6/19]
     const realActivity = lastRealActivityMs ? (lastRealActivityMs.get(agent.id) || 0) : 0
-    const sig = `${task.status}|${agent.status || ''}|${realActivity}`
+    const sig = `${task.status}|${runtimeStatusName(agent) || ''}|${realActivity}`
     if (lastSigOf(prev) !== null && sig === lastSigOf(prev)) continue
 
     kicks.push({

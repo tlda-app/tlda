@@ -42,10 +42,10 @@ type TestEvent = {
 }
 
 const agents = [
-  { id: 'fleet:skip', friendly_name: 'skip', status: 'human', labels: [] },
-  { id: 'fleet:alpha', friendly_name: 'alpha', status: 'alive', labels: ['math'] },
-  { id: 'fleet:beta', friendly_name: 'beta', status: 'alive', labels: ['apps'] },
-  { id: 'fleet:gamma', friendly_name: 'gamma', status: 'alive', labels: ['math', 'apps'] },
+  { id: 'fleet:skip', friendly_name: 'skip', runtime_status: { status: 'human' }, labels: [] },
+  { id: 'fleet:alpha', friendly_name: 'alpha', runtime_status: { status: 'alive' }, labels: ['math'] },
+  { id: 'fleet:beta', friendly_name: 'beta', runtime_status: { status: 'alive' }, labels: ['apps'] },
+  { id: 'fleet:gamma', friendly_name: 'gamma', runtime_status: { status: 'alive' }, labels: ['math', 'apps'] },
 ]
 
 const context = { agents, humanId: 'fleet:skip', humanName: 'skip' }
@@ -114,12 +114,12 @@ test('fleet event views match old getEvents().filter(matchesFilter) after every 
 
 test('search-result chat target uses the non-human agent friendly name, not display text or sender fallback', () => {
   const namedAgents = [
-    { id: 'fleet:skip', friendly_name: 'skip', status: 'human', human: true, labels: [] },
+    { id: 'fleet:skip', friendly_name: 'skip', runtime_status: { status: 'human' }, human: true, labels: [] },
     {
       id: 'fleet:agent',
       friendly_name: 'release-gpt',
       pretty_name: [{ kind: 'glyph', glyph: 'R' }, ' release gpt'],
-      status: 'awake',
+      runtime_status: { status: 'awake' },
       labels: [],
     },
   ]
@@ -140,8 +140,8 @@ test('search-result chat target uses the non-human agent friendly name, not disp
   )
 
   const namelessAgents = [
-    { id: 'fleet:skip', friendly_name: 'skip', status: 'human', human: true, labels: [] },
-    { id: 'fleet:agent', status: 'awake', labels: [] },
+    { id: 'fleet:skip', friendly_name: 'skip', runtime_status: { status: 'human' }, human: true, labels: [] },
+    { id: 'fleet:agent', runtime_status: { status: 'awake' }, labels: [] },
   ]
   assert.equal(
     fleetSearchResultTargetAgentLabel(humanAuthoredHit, { agents: namelessAgents, humanId: 'fleet:skip' }),
@@ -359,9 +359,9 @@ test('chat buffers trim only when that chat is pinned at bottom', () => {
 
 test('fleet agent indexed resolver matches live/dead filter semantics', () => {
   resetFleetAgentStoreForTest([
-    { id: 'fleet:old-chief', friendly_name: 'chief', status: 'hibernating', dead: true, labels: [] },
-    { id: 'fleet:chief', friendly_name: 'chief', status: 'awake', dead: false, labels: [] },
-    { id: 'fleet:chat-render-fix', friendly_name: 'chat-render-fix', status: 'hibernating', dead: false, labels: [] },
+    { id: 'fleet:old-chief', friendly_name: 'chief', runtime_status: { status: 'hibernating' }, dead: true, labels: [] },
+    { id: 'fleet:chief', friendly_name: 'chief', runtime_status: { status: 'awake' }, dead: false, labels: [] },
+    { id: 'fleet:chat-render-fix', friendly_name: 'chat-render-fix', runtime_status: { status: 'hibernating' }, dead: false, labels: [] },
   ])
 
   assert.deepEqual(
@@ -377,7 +377,7 @@ test('fleet agent indexed resolver matches live/dead filter semantics', () => {
     ['fleet:chat-render-fix']
   )
 
-  upsertFleetAgents([{ id: 'fleet:chief', friendly_name: 'chief', status: 'dead', dead: true, labels: [] }])
+  upsertFleetAgents([{ id: 'fleet:chief', friendly_name: 'chief', runtime_status: { status: 'dead' }, dead: true, labels: [] }])
 
   assert.deepEqual(
     [...getResolvedFleetAgentIds([[['from', 'chief']], [['to', 'chief']]])].sort(),
@@ -389,15 +389,15 @@ test('fleet agent indexed resolver matches live/dead filter semantics', () => {
 test('replaceFleetAgents and deltas maintain the label index without roster scans', () => {
   resetFleetAgentStoreForTest()
   replaceFleetAgents([
-    { id: 'fleet:alpha', friendly_name: 'alpha', status: 'awake', labels: ['math'] },
-    { id: 'fleet:beta', friendly_name: 'beta', status: 'hibernating', labels: ['math'] },
+    { id: 'fleet:alpha', friendly_name: 'alpha', runtime_status: { status: 'awake' }, labels: ['math'] },
+    { id: 'fleet:beta', friendly_name: 'beta', runtime_status: { status: 'hibernating' }, labels: ['math'] },
   ])
   assert.deepEqual(
     [...getResolvedFleetAgentIds([[['from', 'math']]], { status: 'hibernating' })],
     ['fleet:beta']
   )
 
-  upsertFleetAgents([{ id: 'fleet:alpha', friendly_name: 'alpha', status: 'hibernating', labels: ['math'] }])
+  upsertFleetAgents([{ id: 'fleet:alpha', friendly_name: 'alpha', runtime_status: { status: 'hibernating' }, labels: ['math'] }])
   assert.deepEqual(
     [...getResolvedFleetAgentIds([[['from', 'math']]], { status: 'hibernating' })].sort(),
     ['fleet:alpha', 'fleet:beta']
@@ -407,9 +407,9 @@ test('replaceFleetAgents and deltas maintain the label index without roster scan
 
 test('fleet agent label resolver uses the maintained label index', () => {
   resetFleetAgentStoreForTest([
-    { id: 'fleet:old-chief', friendly_name: 'chief', status: 'dead', dead: true, labels: [] },
-    { id: 'fleet:chief', friendly_name: 'chief', status: 'awake', dead: false, labels: [] },
-    { id: 'fleet:helper', friendly_name: 'helper', status: 'awake', labels: ['math'] },
+    { id: 'fleet:old-chief', friendly_name: 'chief', runtime_status: { status: 'dead' }, dead: true, labels: [] },
+    { id: 'fleet:chief', friendly_name: 'chief', runtime_status: { status: 'awake' }, dead: false, labels: [] },
+    { id: 'fleet:helper', friendly_name: 'helper', runtime_status: { status: 'awake' }, labels: ['math'] },
   ])
 
   assert.deepEqual(getResolvedFleetAgentIdsForLabel('chief'), ['fleet:chief'])
@@ -422,7 +422,7 @@ test('fleet agent label resolver uses the maintained label index', () => {
 
 test('pretty_name labels do not resolve as stripped behavior names', () => {
   resetFleetAgentStoreForTest([
-    { id: 'fleet:chief-day', friendly_name: 'chief:day', pretty_name: 'chief:day', status: 'awake', dead: false, labels: [] },
+    { id: 'fleet:chief-day', friendly_name: 'chief:day', pretty_name: 'chief:day', runtime_status: { status: 'awake' }, dead: false, labels: [] },
   ])
 
   assert.deepEqual(pretty_name_parts(null), [])
@@ -450,8 +450,8 @@ test('pretty_name supports convention-owned glyph rules without changing friendl
 
 test('fleet filter possible check is stable across unrelated agent churn', () => {
   resetFleetAgentStoreForTest([
-    { id: 'fleet:chief', friendly_name: 'chief', status: 'awake', labels: [] },
-    { id: 'fleet:helper', friendly_name: 'helper', status: 'awake', labels: ['math'] },
+    { id: 'fleet:chief', friendly_name: 'chief', runtime_status: { status: 'awake' }, labels: [] },
+    { id: 'fleet:helper', friendly_name: 'helper', runtime_status: { status: 'awake' }, labels: ['math'] },
   ])
 
   const chiefFilter: [string, string][][] = [[['dm', 'chief']]]
@@ -460,11 +460,11 @@ test('fleet filter possible check is stable across unrelated agent churn', () =>
   assert.equal(fleetFilterHasMatchingAgent(chiefFilter, { id: 'fleet:skip', name: 'skip' }), true)
   assert.equal(fleetFilterHasMatchingAgent(missingFilter, { id: 'fleet:skip', name: 'skip' }), false)
 
-  upsertFleetAgents([{ id: 'fleet:unrelated', friendly_name: 'unrelated', status: 'hibernating', labels: ['other'] }])
+  upsertFleetAgents([{ id: 'fleet:unrelated', friendly_name: 'unrelated', runtime_status: { status: 'hibernating' }, labels: ['other'] }])
   assert.equal(fleetFilterHasMatchingAgent(chiefFilter, { id: 'fleet:skip', name: 'skip' }), true)
   assert.equal(fleetFilterHasMatchingAgent(missingFilter, { id: 'fleet:skip', name: 'skip' }), false)
 
-  upsertFleetAgents([{ id: 'fleet:missing', friendly_name: 'missing', status: 'awake', labels: [] }])
+  upsertFleetAgents([{ id: 'fleet:missing', friendly_name: 'missing', runtime_status: { status: 'awake' }, labels: [] }])
   assert.equal(fleetFilterHasMatchingAgent(missingFilter, { id: 'fleet:skip', name: 'skip' }), true)
 
   resetFleetAgentStoreForTest()
@@ -472,21 +472,21 @@ test('fleet filter possible check is stable across unrelated agent churn', () =>
 
 test('awake fleet agent count is a maintained derived index', () => {
   resetFleetAgentStoreForTest([
-    { id: 'fleet:skip', friendly_name: 'skip', status: 'awake', human: true, labels: [] },
-    { id: 'fleet:alpha', friendly_name: 'alpha', status: 'awake', labels: [] },
-    { id: 'fleet:beta', friendly_name: 'beta', status: 'hibernating', labels: [] },
-    { id: 'fleet:gamma', friendly_name: 'gamma', status: 'dead', dead: true, labels: [] },
+    { id: 'fleet:skip', friendly_name: 'skip', runtime_status: { status: 'awake' }, human: true, labels: [] },
+    { id: 'fleet:alpha', friendly_name: 'alpha', runtime_status: { status: 'awake' }, labels: [] },
+    { id: 'fleet:beta', friendly_name: 'beta', runtime_status: { status: 'hibernating' }, labels: [] },
+    { id: 'fleet:gamma', friendly_name: 'gamma', runtime_status: { status: 'dead' }, dead: true, labels: [] },
   ])
 
   assert.equal(getAwakeFleetAgentCount(), 1)
 
-  upsertFleetAgents([{ id: 'fleet:unrelated', friendly_name: 'unrelated', status: 'hibernating', labels: [] }])
+  upsertFleetAgents([{ id: 'fleet:unrelated', friendly_name: 'unrelated', runtime_status: { status: 'hibernating' }, labels: [] }])
   assert.equal(getAwakeFleetAgentCount(), 1)
 
-  upsertFleetAgents([{ id: 'fleet:beta', friendly_name: 'beta', status: 'awake', labels: [] }])
+  upsertFleetAgents([{ id: 'fleet:beta', friendly_name: 'beta', runtime_status: { status: 'awake' }, labels: [] }])
   assert.equal(getAwakeFleetAgentCount(), 2)
 
-  upsertFleetAgents([{ id: 'fleet:alpha', friendly_name: 'alpha', status: 'dead', dead: true, labels: [] }])
+  upsertFleetAgents([{ id: 'fleet:alpha', friendly_name: 'alpha', runtime_status: { status: 'dead' }, dead: true, labels: [] }])
   assert.equal(getAwakeFleetAgentCount(), 1)
 
   resetFleetAgentStoreForTest()

@@ -56,6 +56,7 @@ import {
   crossLaneBlock,
 } from '../shared/task-role-routing.mjs';
 import { parseFilter, parseMessageFilter, evalExpr } from '../shared/fleet-labels.mjs';
+import { runtimeStatusName } from '../shared/fleet-runtime-status.mjs';
 import { baseMacros } from '../shared/katex-base-macros.mjs';
 import { normalizeRefNumber as _normalizeRefNumber, refTypeForName as _refTypeForName, buildTheoremRefRegex as _buildTheoremRefRegex } from '../shared/doc-refs.mjs';
 import { harnessFromEnv } from './lib/harness-adapters.mjs';
@@ -1017,7 +1018,7 @@ export function classifyTaskAgentHealth(task, agent, options = {}) {
   }
 
   const name = agent.friendly_name || agent.id || task.agent;
-  const status = String(agent.status || '').toLowerCase();
+  const status = String(runtimeStatusName(agent) || '').toLowerCase();
   if (agent.dead || status === 'dead') {
     return {
       level: 'error',
@@ -1070,6 +1071,12 @@ export function classifyTaskAgentHealth(task, agent, options = {}) {
     code: 'healthy',
     text: `ok${Number.isFinite(lastSeenMs) ? `; heartbeat ${Math.max(0, Math.round((nowMs - lastSeenMs) / 60000))}m ago` : ''}`,
   };
+}
+
+export function agentSetLabelsForChat(agent) {
+  const status = runtimeStatusName(agent);
+  const virtualLabels = status === 'awake' ? ['awake'] : status === 'hibernating' ? ['hibernating'] : [];
+  return [...(agent?.labels || []), ...virtualLabels, agent?.friendly_name, agent?.id].filter(Boolean);
 }
 
 export const TASK_HEALTH_ACTIONABLE_MAX_AGE_MS = 12 * 60 * 60 * 1000;
@@ -2478,8 +2485,7 @@ export async function handleFleetTool(name, args) {
         } else {
           for (const a of agents) {
             if (a.id === AGENT_ID) continue;
-            const virtualLabels = a.status === 'awake' ? ['awake'] : a.status === 'hibernating' ? ['hibernating'] : [];
-            const labels = [...(a.labels || []), ...virtualLabels, a.friendly_name, a.id].filter(Boolean);
+            const labels = agentSetLabelsForChat(a);
             if (evalExpr(filterAst, labels)) {
               recipients.push(a.id);
             }

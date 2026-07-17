@@ -15,9 +15,9 @@
  * dependency-free.
  *
  * Inputs are *hydrated* agent objects (fleet-store `_hydrateAgent`): they carry
- * `status` (awake|hibernating|human|human-away|dead), parsed `labels`,
- * `friendly_name`, `id`, `lineage_name`, and `phase`. The client receives the
- * same shape over /api/state and the WS push.
+ * `runtime_status.status` (awake|hibernating|human|human-away|dead), parsed
+ * `labels`, `friendly_name`, `id`, `lineage_name`, and `phase`. The client
+ * receives the same shape over /api/state and the WS push.
  */
 
 /**
@@ -52,7 +52,7 @@ export function labelsForAgent(agent) {
   if (!agent) return []
   const out = [
     ...(agent.labels || []),
-    ...statusLabels(agent.status),
+    ...statusLabels(agent.runtime_status?.status),
     agent.friendly_name,
     agent.id,
   ]

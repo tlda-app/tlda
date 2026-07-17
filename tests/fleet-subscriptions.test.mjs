@@ -40,7 +40,7 @@ function cleanup(store, dbPath) {
 test('default subscription is persisted once as the owner address', () => {
   const { store, dbPath } = tempStore();
   try {
-    store.upsertAgent({ id: 'fleet:worker', friendly_name: 'worker', labels: ['reviewers'], status: 'awake' });
+    store.upsertAgent({ id: 'fleet:worker', friendly_name: 'worker', labels: ['reviewers'] });
     const first = store.ensureDefaultSubscription('fleet:worker');
     const second = store.ensureDefaultSubscription('fleet:worker');
     assert.equal(first.subscription_id, second.subscription_id);
@@ -56,9 +56,9 @@ test('default subscription is persisted once as the owner address', () => {
 test('default subscription does not wiretap unrelated awake recipients', async () => {
   const { store, dbPath } = tempStore();
   try {
-    store.upsertAgent({ id: 'fleet:sender', friendly_name: 'sender', status: 'awake' });
-    store.upsertAgent({ id: 'fleet:recipient', friendly_name: 'recipient', status: 'awake' });
-    store.upsertAgent({ id: 'fleet:worker', friendly_name: 'worker', status: 'awake' });
+    store.upsertAgent({ id: 'fleet:sender', friendly_name: 'sender' });
+    store.upsertAgent({ id: 'fleet:recipient', friendly_name: 'recipient' });
+    store.upsertAgent({ id: 'fleet:worker', friendly_name: 'worker' });
     store.ensureDefaultSubscription('fleet:worker');
 
     const event = await store.share({ type: 'chat', from: 'fleet:sender', to: 'fleet:recipient', text: 'unrelated' });
@@ -73,7 +73,7 @@ test('default subscription does not wiretap unrelated awake recipients', async (
 test('default subscription upgrades the legacy broad wiretap on login', () => {
   const { store, dbPath } = tempStore();
   try {
-    store.upsertAgent({ id: 'fleet:worker', friendly_name: 'worker', labels: ['reviewers'], status: 'awake' });
+    store.upsertAgent({ id: 'fleet:worker', friendly_name: 'worker', labels: ['reviewers'] });
     const legacyTap = store.addWiretap('fleet:worker', 'to:my_labels', null);
     const legacy = store.addSubscription({ owner: 'fleet:worker', query: 'to:my_labels', notificationPolicy: 'immediate', createdBy: 'fleet:worker', adapter: 'wiretap', adapterId: legacyTap.id });
 
@@ -90,9 +90,9 @@ test('default subscription upgrades the legacy broad wiretap on login', () => {
 test('store startup upgrades existing legacy default subscriptions', async () => {
   const { store, dbPath } = tempStore();
   try {
-    store.upsertAgent({ id: 'fleet:sender', friendly_name: 'sender', status: 'awake' });
-    store.upsertAgent({ id: 'fleet:recipient', friendly_name: 'recipient', status: 'awake' });
-    store.upsertAgent({ id: 'fleet:worker', friendly_name: 'worker', labels: ['reviewers'], status: 'awake' });
+    store.upsertAgent({ id: 'fleet:sender', friendly_name: 'sender' });
+    store.upsertAgent({ id: 'fleet:recipient', friendly_name: 'recipient' });
+    store.upsertAgent({ id: 'fleet:worker', friendly_name: 'worker', labels: ['reviewers'] });
     const legacyTap = store.addWiretap('fleet:worker', 'to:my_labels', null);
     store.addSubscription({ owner: 'fleet:worker', query: 'to:my_labels', notificationPolicy: 'immediate', createdBy: 'fleet:worker', adapter: 'wiretap', adapterId: legacyTap.id });
     store.close();

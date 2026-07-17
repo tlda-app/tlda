@@ -505,7 +505,7 @@ export function useFleetStatusTargets(dnfFilter?: [string, string][][] | null, f
       ? [...((resolveFleetFilter as any)(filter, { agents: playbackAgents, humanId: getHumanId(), humanName: getHumanName() }) as Set<string>)]
       : getResolvedFleetAgentIds(filter)
     const hibernatingIds: readonly string[] = playbackAgents
-      ? targetIds.filter((id) => playbackAgents.some((agent: any) => agent.id === id && (agent.runtime_status?.status || agent.status) === 'hibernating'))
+      ? targetIds.filter((id) => playbackAgents.some((agent: any) => agent.id === id && agent.runtime_status?.status === 'hibernating'))
       : getResolvedFleetAgentIds(filter, { status: 'hibernating' })
     const key = `${filterKey}\n${statusTargetKey(targetIds, hibernatingIds)}`
     const cached = snapshotRef.current
@@ -603,7 +603,7 @@ export function useAwakeFleetAgentCount(frameId?: string): number {
 
   const computeSnapshot = useCallback((): number => {
     const playback = frameId && frameId.startsWith('shape:') ? getPlaybackData(frameId) : null
-    if (playback) return getPlaybackAgents(playback).filter((agent: any) => !agent.dead && !agent.human && (agent.runtime_status?.status || agent.status) === 'awake').length
+    if (playback) return getPlaybackAgents(playback).filter((agent: any) => !agent.dead && !agent.human && agent.runtime_status?.status === 'awake').length
     const value = getAwakeFleetAgentCount()
     const key = String(value)
     const cached = snapshotRef.current

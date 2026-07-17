@@ -375,6 +375,23 @@ function markAgentNotAlive(agentId, detail = {}) {
   if (wasAlive) fleetStore?.refreshAgentLiveness?.(agentId)
 }
 
+function recordExplicitCheckAliveLiveness(liveness) {
+  const agentId = liveness?.agent_id
+  if (!agentId) return
+  const atMs = Date.parse(liveness.ts) || Date.now()
+  const detail = {
+    source: 'daemon-check-alive',
+    state: liveness.state,
+    reason: liveness.reason,
+    tmux_session: liveness.tmux_session,
+    pid: liveness.pid,
+    atMs,
+  }
+  if (liveness.state === 'alive') markAgentAlive(agentId, atMs, detail)
+  else if (liveness.state === 'dead' || liveness.state === 'wedged') markAgentNotAlive(agentId, detail)
+  else markAgentNotAlive(agentId, { ...detail, unknown: true })
+}
+
 function refreshRuntimeRoutesForDaemon(daemonKey) {
   if (!daemonKey || !fleetStore?.getAllAgents) return
   const affected = []
@@ -866,6 +883,7 @@ async function drainTaskWakeQueue() {
             ts: new Date().toISOString(),
           }
       spawnLibrarian.observeLiveness({ ...liveness, agent_id: liveness.agent_id || agentId })
+      recordExplicitCheckAliveLiveness({ ...liveness, agent_id: liveness.agent_id || agentId })
       const decision = spawnLibrarian.decideWake(agent, { ...liveness, agent_id: liveness.agent_id || agentId }, { serverAlive })
       if (decision.action === 'deliver') {
         await sendWakeNudge(daemonKey, agent, seat.tmux_session, nudgeText, 'deliver', 'task-renudge', seat.session_id)
@@ -5415,6 +5433,7 @@ async function handleFleetWsMessage(ws, msg) {
           appendControlTrace: (event) => controlPlaneTraces.append(event),
           sendWakeNudge,
           getCurrentSeat: (id) => fleetStore.getCurrentAgentSeat(id),
+          recordRuntimeLiveness: recordExplicitCheckAliveLiveness,
           awaitWakeAcknowledgment,
           queueRetry: () => setTimeout(() => requestWake(agentId, nudgeText, asker, traceId, source), 2000).unref?.(),
           broadcastEvent,
@@ -6621,7 +6640,9 @@ async function handleFleetWsMessage(ws, msg) {
     if (!seat) { error(seatError); return }
     try {
       const result = await sendRpc(seat.daemon_key, 'check-alive', { agent_id: agent.id, session_id: seat.session_id, tmux_session: seat.tmux_session })
-      reply(livenessFromCheckAliveResult(agent.id, seat.tmux_session, result))
+      const liveness = livenessFromCheckAliveResult(agent.id, seat.tmux_session, result)
+      recordExplicitCheckAliveLiveness(liveness)
+      reply(liveness)
     } catch (e) { error(e.message) }
     return
   }
