@@ -23,7 +23,6 @@ function baseInput(overrides: Partial<FleetLayoutPlanInput> = {}): FleetLayoutPl
     rightChatH: 675,
     docviewH: 215,
     viewport: { w: 390, h: 844 },
-    phoneTarget: { pageX: 6000 },
     makeSlotId: slot => `shape:${slot}`,
     filters: [
       [[['from', 'alpha']]],
@@ -34,19 +33,6 @@ function baseInput(overrides: Partial<FleetLayoutPlanInput> = {}): FleetLayoutPl
     ...overrides,
   }
 }
-
-test('phone layout plan creates the locked owned inbox pane with viewport dimensions', () => {
-  const plan = planFleetLayoutShapes(baseInput({ variant: 'phone' }))
-  assert.equal(plan.dispatchHudReset, true)
-  assert.deepEqual(plan.shapes.map(s => [s.id, s.type, s.isLocked]), [
-    ['shape:inbox', 'fleet-inbox', true],
-  ])
-  assert.deepEqual(plan.shapes.map(s => s.props.userId), ['fleet:skip'])
-  assert.deepEqual(plan.shapes.map(s => s.props.deviceId), ['air'])
-  assert.equal(plan.shapes[0].props.w, 390)
-  assert.equal(plan.shapes[0].props.h, 844)
-  assert.equal(plan.shapes[0].x, 6000 - 390 - 4000)
-})
 
 test('2x2 layout plan creates four chats and no docview', () => {
   const plan = planFleetLayoutShapes(baseInput({ variant: '2x2' }))

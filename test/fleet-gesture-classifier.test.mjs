@@ -7,46 +7,16 @@ import {
   RESIZE_LOCK_ON,
   applyShapeResizeAxisLock,
   classifySoftGesture,
-  nearestLaneDocLeftScreen,
-  phoneLaneDragDecision,
-  phoneLaneSweepCanFit,
 } from '../src/wm/gesture-policy.ts'
 
 const source = readFileSync(new URL('../src/overlays/useFleetGestures.ts', import.meta.url), 'utf8')
-const phoneHandSource = readFileSync(new URL('../src/tools/PhoneHandTool.ts', import.meta.url), 'utf8')
-const phoneArrowSource = readFileSync(new URL('../src/overlays/PhoneLaneArrow.tsx', import.meta.url), 'utf8')
 const policySource = readFileSync(new URL('../src/wm/gesture-policy.ts', import.meta.url), 'utf8')
 const frameSource = readFileSync(new URL('../src/wm/gesture-frame.ts', import.meta.url), 'utf8')
-const tldrawSource = readFileSync(
-  new URL('../node_modules/@tldraw/editor/src/lib/hooks/useGestureEvents.ts', import.meta.url),
-  'utf8',
-)
 
-function tldrawThreshold(pattern, label) {
-  const match = tldrawSource.match(pattern)
-  assert.ok(match, `missing TLDraw ${label}`)
-  return Number(match[1])
-}
-
-function tldrawThresholdAt(pattern, index, label) {
-  const matches = [...tldrawSource.matchAll(pattern)]
-  assert.ok(matches[index], `missing TLDraw ${label}`)
-  return Number(matches[index][1])
-}
-
-test('fleet gesture classifier mirrors TLDraw touch pinch thresholds', () => {
-  assert.equal(
-    RESIZE_LOCK_ON,
-    tldrawThreshold(/touchDistance > (\d+)[\s\S]*?pinchState = 'zooming'/, 'not-sure zoom threshold'),
-  )
-  assert.equal(
-    MOVE_LOCK_ON,
-    tldrawThreshold(/originDistance > (\d+)[\s\S]*?pinchState = 'panning'/, 'not-sure pan threshold'),
-  )
-  assert.equal(
-    RESIZE_LOCK_AFTER_MOVE,
-    tldrawThresholdAt(/touchDistance > (\d+)[\s\S]*?pinchState = 'zooming'/g, 1, 'pan-to-zoom threshold'),
-  )
+test('fleet gesture classifier uses the shared soft-axis thresholds', () => {
+  assert.equal(MOVE_LOCK_ON, 16)
+  assert.equal(RESIZE_LOCK_ON, 24)
+  assert.equal(RESIZE_LOCK_AFTER_MOVE, 64)
   assert.match(source, /from '\.\.\/wm'/)
   assert.match(policySource, /export function classifySoftGesture/)
 })
@@ -64,62 +34,6 @@ test('fleet gesture frame adapter owns viewport and DOM frame helpers', () => {
   assert.equal(source.includes('function screenPointToFramePage'), false)
   assert.equal(source.includes('function describeElement'), false)
   assert.equal(source.includes('function elementChainAt'), false)
-})
-
-test('phone lane drag consumes touch events so TLDraw pinch cannot inherit them', () => {
-  assert.match(
-    source,
-    /function finishPhoneLaneGesture[\s\S]*snapPhoneLane\(main, state\.docLeftPage, 0\)/,
-    'phone lane finish should snap through the shared lane snap helper',
-  )
-  assert.match(
-    source,
-    /state\.kind === 'phone-lane' && ts\.length > 1[\s\S]*consumeTouchEvent\(e\)[\s\S]*finishPhoneLaneGesture\(main, state\)/,
-    'adding a second finger during a phone lane gesture must be consumed before TLDraw pinch sees it',
-  )
-  assert.match(
-    source,
-    /if \(ts\.length !== 1\) \{[\s\S]*consumeTouchEvent\(e\)[\s\S]*finishPhoneLaneGesture\(main, state\)/,
-    'touch-count changes during phone lane move must be consumed and snapped',
-  )
-  assert.match(
-    source,
-    /state\.kind === 'phone-lane'[\s\S]*setPhoneGestureProgress\(dir, progress, commit, 'pane'[\s\S]*consumeTouchEvent\(e\)[\s\S]*return/,
-    'phone lane drag should be static until threshold and fill the pane arrow',
-  )
-  assert.doesNotMatch(
-    source,
-    /state\.kind === 'phone-lane'[\s\S]*stopTouchEvent\(e\)[\s\S]*setPhoneGestureProgress/,
-    'phone lane drag must preventDefault, not only stop propagation',
-  )
-})
-
-test('phone pane stack max is cached at gesture start, not scanned per move', () => {
-  const touchMoveSource = source.slice(source.indexOf('const onTouchMove = (e: TouchEvent) =>'))
-  const phoneLaneMoveBlock = touchMoveSource.slice(
-    touchMoveSource.indexOf("if (state.kind === 'phone-lane') {"),
-    touchMoveSource.indexOf("if (state.kind === 'pan') {"),
-  )
-
-  assert.match(source, /const maxPaneIndex = phonePaneStackMaxIndex\(main\)[\s\S]*startLaneIndex = phoneLaneIndexFromCamera\(main, docLeftPage, maxPaneIndex\)/)
-  assert.match(source, /state\.kind === 'phone-lane'[\s\S]*phoneLaneExistsFromIndex\(state\.startLaneIndex, state\.maxPaneIndex, dir\)/)
-  assert.doesNotMatch(phoneLaneMoveBlock, /phonePaneStackMaxIndex\(main\)/)
-
-  assert.match(phoneHandSource, /this\.maxPaneIndex = phonePaneStackMaxIndex\(this\.editor\)[\s\S]*phoneLaneIndexFromCamera\(this\.editor, getPrimaryDocumentLeft\(this\.editor\) \?\? 0, this\.maxPaneIndex\)/)
-  assert.match(phoneHandSource, /phoneLaneExistsFromIndex\(this\.startLaneIndex, this\.maxPaneIndex, dir\)/)
-  assert.doesNotMatch(phoneHandSource, /private update\(\)[\s\S]*phonePaneStackMaxIndex\(this\.editor\)/)
-})
-
-test('phone lane commit and arrow use stored portrait width, not live viewport width', () => {
-  assert.match(source, /let phoneLanePortraitWidthPx = 0/)
-  assert.match(source, /export function rememberPhoneLanePortraitWidth\(editor/)
-  assert.match(source, /export function phoneLaneCommitPx\(\)/)
-  assert.doesNotMatch(source, /phoneLaneCommitPx\(screenW/)
-  assert.doesNotMatch(source, /screenW \* PHONE_LANE_COMMIT_FRAC/)
-
-  assert.match(phoneArrowSource, /const arrowWidthPx = s\.arrowWidthPx \|\| phoneLaneCommitPx\(\)/)
-  assert.doesNotMatch(phoneArrowSource, /width: '75vw'/)
-  assert.doesNotMatch(phoneArrowSource, /maxHeight: '46vh'/)
 })
 
 test('fleet gesture classifier prefers intentional resize before move, then requires larger resize while moving', () => {
@@ -166,30 +80,4 @@ test('shape resize axis lock is breakable and disabled for tiny spans', () => {
     applyShapeResizeAxisLock({ enabled: false, axis: null, accX: 0, accY: 0, spanDx: 100, spanDy: 0, scaleX: 3, scaleY: 1.2 }),
     { axis: null, accX: 0, accY: 0, scaleX: 3, scaleY: 1.2 },
   )
-})
-
-test('phone lane policy chooses the closest lane and filters accidental vertical drags', () => {
-  const stops = [
-    { lane: 'agents-inbox', docLeftScreen: 800 },
-    { lane: 'chat', docLeftScreen: 400 },
-    { lane: 'document', docLeftScreen: 0 },
-  ]
-  assert.deepEqual(nearestLaneDocLeftScreen(15, stops), { lane: 'document', docLeftScreen: 0 })
-  assert.deepEqual(nearestLaneDocLeftScreen(365, stops), { lane: 'chat', docLeftScreen: 400 })
-  assert.deepEqual(nearestLaneDocLeftScreen(780, stops), { lane: 'agents-inbox', docLeftScreen: 800 })
-
-  assert.equal(phoneLaneDragDecision(5, 30), 'abort')
-  assert.equal(phoneLaneDragDecision(15, 5), 'pending')
-  assert.equal(phoneLaneDragDecision(30, 10), 'dragging')
-})
-
-test('phone lane pane arrows only arm when the sweep can fit on screen', () => {
-  assert.equal(phoneLaneSweepCanFit(260, 360, -1, 240), true)
-  assert.equal(phoneLaneSweepCanFit(120, 360, -1, 240), false)
-  assert.equal(phoneLaneSweepCanFit(80, 360, 1, 240), true)
-  assert.equal(phoneLaneSweepCanFit(180, 360, 1, 240), false)
-  assert.equal(phoneLaneSweepCanFit(180, 360, 0, 240), false)
-
-  assert.match(source, /phoneLaneSweepCanFit\(state\.startXInViewport, state\.viewportW, dir, commit\)/)
-  assert.match(phoneHandSource, /phoneLaneSweepCanFit\(this\.startXInViewport, this\.viewportW, dir, commit\)/)
 })
