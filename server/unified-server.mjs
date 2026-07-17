@@ -379,26 +379,31 @@ function recordExplicitCheckAliveLiveness(liveness) {
   const agentId = liveness?.agent_id
   if (!agentId) return
   const atMs = Date.parse(liveness.ts) || Date.now()
-  const detail = {
+  runtimeStatusStore.markUnknown(agentId, 'daemon-check-alive', {
     source: 'daemon-check-alive',
     state: liveness.state,
     reason: liveness.reason,
     tmux_session: liveness.tmux_session,
     pid: liveness.pid,
     atMs,
-  }
-  if (liveness.state === 'alive') markAgentAlive(agentId, atMs, detail)
-  else if (liveness.state === 'dead' || liveness.state === 'wedged') markAgentNotAlive(agentId, detail)
-  else markAgentNotAlive(agentId, { ...detail, unknown: true })
+  })
 }
 
-function refreshRuntimeRoutesForDaemon(daemonKey) {
+function refreshRuntimeRoutesForDaemon(daemonKey, reason = null) {
   if (!daemonKey || !fleetStore?.getAllAgents) return
   const affected = []
   for (const agent of fleetStore.getAllAgents()) {
     if (agent?.dead || agent?.human) continue
     const seat = fleetStore.getCurrentAgentSeat?.(agent.id)
     if (seat?.daemon_key === daemonKey) affected.push(agent.id)
+  }
+  if (reason === 'daemon-disconnected') {
+    for (const id of affected) {
+      runtimeStatusStore.markUnknown(id, 'agent-lifecycle', {
+        reason: 'daemon-disconnected',
+        daemon_key: daemonKey,
+      })
+    }
   }
   for (const id of affected) fleetStore.refreshAgentLiveness?.(id)
   if (affected.length) broadcastState(affected)
@@ -884,7 +889,14 @@ async function drainTaskWakeQueue() {
           }
       spawnLibrarian.observeLiveness({ ...liveness, agent_id: liveness.agent_id || agentId })
       recordExplicitCheckAliveLiveness({ ...liveness, agent_id: liveness.agent_id || agentId })
-      const decision = spawnLibrarian.decideWake(agent, { ...liveness, agent_id: liveness.agent_id || agentId }, { serverAlive })
+      const decision = spawnLibrarian.decideWake(agent, {
+        type: 'agent-liveness',
+        agent_id: agentId,
+        tmux_session: seat.tmux_session,
+        state: serverAlive ? 'alive' : 'unknown',
+        reason: serverAlive ? 'server lifecycle projection awake' : 'no current positive lifecycle evidence',
+        ts: new Date().toISOString(),
+      }, { serverAlive })
       if (decision.action === 'deliver') {
         await sendWakeNudge(daemonKey, agent, seat.tmux_session, nudgeText, 'deliver', 'task-renudge', seat.session_id)
         onTaskWakeSuccess(agentId, taskKeys)
@@ -896,7 +908,7 @@ async function drainTaskWakeQueue() {
       }
       if (decision.action === 'hold') continue
       if (decision.action === 'surface') {
-        broadcastEvent('agent-wedged', { agentId, reason: decision.message, ts: new Date().toISOString() })
+        broadcastEvent('wake-unresolved', { agentId, reason: decision.message, ts: new Date().toISOString() })
         continue
       }
       // Wake carries NO privilege check (hibernation is transparent) — pass no
@@ -904,7 +916,7 @@ async function drainTaskWakeQueue() {
       // lets the daemon find that agent's own grant.
       const spawnResult = await sendRpc(daemonKey, 'spawn', { name: agentId, agent_id: agentId, respawn: true })
       if (!spawnResult?.ok) {
-        // Don't drop a failed re-nudge silently — surface via the catch (agent-wedged).
+        // Don't drop a failed re-nudge silently — surface via the catch.
         throw new Error(spawnResult?.error || spawnResult?.reason || 'daemon returned ok:false with no reason')
       }
       const nextSeat = fleetStore?.getCurrentAgentSeat?.(agentId)
@@ -922,7 +934,7 @@ async function drainTaskWakeQueue() {
       b.nextTs = Date.now() + wakeBreakerBackoffMs(b.fails, WAKE_BREAKER_BASE_MS, WAKE_BREAKER_CAP_MS)
       _wakeBreaker.set(agentId, b)
       console.warn(`[task-renudge] failed for ${agentId} (fails=${b.fails}, backoff until ${new Date(b.nextTs).toISOString()}): ${e.message}`)
-      broadcastEvent('agent-wedged', {
+      broadcastEvent('wake-failed', {
         agentId,
         reason: `task re-nudge failed: ${e.message}`,
         ts: new Date().toISOString(),
@@ -1329,35 +1341,6 @@ function hasOpenFleetSocketForAgent(agentId, exceptWs = null) {
 const spawnLibrarian = new SpawnLibrarian({
   loginDeadlineMs: Number(process.env.TLDA_SPAWN_LOGIN_DEADLINE_MS || 60_000),
   wedgedWindowMs: Number(process.env.TLDA_WEDGED_JOIN_MS || 90_000),
-  onWedged: ({ agent_id, liveness }) => {
-    const agent = fleetStore?.getAgent?.(agent_id)
-    const label = agent?.friendly_name || agent_id
-    const metadata = {
-      type: 'agent_wedged',
-      agentId: agent_id,
-      agentLabel: label,
-      tmux_session: liveness?.tmux_session || agent?.tmux_session || null,
-      reason: liveness?.reason || 'delivered chat produced no agent-activity advance',
-      ts: new Date().toISOString(),
-    }
-    // Wedged is convergent agent state — surface it via the agent-wedged event
-    // (consumed by the per-agent status line), NOT as a chat message. Posting it
-    // to chat spammed every idle recipient of a broadcast/fan-out delivery. (Skip 6/27)
-    broadcastEvent('agent-wedged', metadata)
-    broadcastState(agent)
-  },
-  onLateLogin: (agent) => {
-    const label = agent.friendly_name || agent.id
-    const metadata = { type: 'spawn_late_login', agentId: agent.id, agentLabel: label, ts: new Date().toISOString() }
-    broadcastEvent('spawn-late-login', metadata)
-    deliverTldaFeedbackChat({
-      from: 'fleet:tlda',
-      to: SERVER_OWNER_ID,
-      text: `**Late login**: \`${label}\` logged in after the spawn deadline — it is now available.`,
-      metadata,
-    })
-    broadcastState(agent)
-  },
 })
 const mailboxLibrarian = new MailboxLibrarian({
   onExpire: (entry) => {
@@ -1675,6 +1658,44 @@ function deliverSpawnMailboxCompletion(entry, status, detail) {
   })
 }
 
+function lifecycleMatchesCurrentSeat(event) {
+  if (!event?.agent_id || !fleetStore?.getCurrentAgentSeat) return { ok: false, reason: 'missing-agent-or-seat-store' }
+  const seat = fleetStore.getCurrentAgentSeat(event.agent_id)
+  if (!seat) return { ok: false, reason: 'current-seat-missing' }
+  if (seat.session_id !== event.session_id) return { ok: false, reason: 'session-mismatch', seat }
+  if (seat.tmux_session !== event.tmux_session) return { ok: false, reason: 'tmux-mismatch', seat }
+  if (seat.daemon_key !== event.daemon_key) return { ok: false, reason: 'daemon-mismatch', seat }
+  return { ok: true, seat }
+}
+
+function completeSpawnMailboxesFromLifecycle(event) {
+  if (event?.state !== 'runtime-alive') return
+  const match = lifecycleMatchesCurrentSeat(event)
+  if (!match.ok) return
+  for (const entry of mailboxLibrarian.entries.all()) {
+    if (entry.kind !== 'spawn' || entry.status !== 'pending') continue
+    if (entry.meta?.agentId !== event.agent_id) continue
+    const agent = fleetStore?.getAgent?.(event.agent_id)
+    const completion = {
+      agentId: event.agent_id,
+      label: agent?.friendly_name || entry.meta?.name || event.agent_id,
+      assigned_name: agent?.friendly_name || entry.meta?.name || event.agent_id,
+      requested_name: entry.meta?.name || agent?.friendly_name || event.agent_id,
+      lifecycle: {
+        state: event.state,
+        reason: event.reason || null,
+        session_id: event.session_id,
+        tmux_session: event.tmux_session,
+        daemon_key: event.daemon_key,
+        pid: event.pid || null,
+        observed_at: event.observed_at || null,
+      },
+    }
+    const settled = mailboxLibrarian.complete(entry.id, completion)
+    if (settled) deliverSpawnMailboxCompletion(settled, 'completed', completion)
+  }
+}
+
 async function performSpawnRelay(caller, msg) {
   if (!caller?.id) throw new Error('spawn caller identity is required')
   const {
@@ -1733,7 +1754,7 @@ async function performSpawnRelay(caller, msg) {
   const mailbox = mailboxLibrarian.start({
     kind: 'spawn',
     ownerId: caller.id,
-    timeoutMs: Number(process.env.TLDA_SPAWN_MAILBOX_DEADLINE_MS || 5 * 60_000),
+    timeoutMs: 0,
     meta: {
       name: spawnName,
       agentId: targetAgentId,
@@ -1744,9 +1765,6 @@ async function performSpawnRelay(caller, msg) {
       phase: phase || null,
     },
   })
-  const readiness = pendingAgentId
-    ? spawnLibrarian.awaitLogin({ id: pendingAgentId, name: spawnName, spec: requestedSpec })
-    : null
   const spawnRequest = {
     agent_id: targetAgentId,
     friendly_name: pendingAgentId ? spawnName : undefined,
@@ -1800,14 +1818,7 @@ async function performSpawnRelay(caller, msg) {
         if (shell?.metadata?.shell) {
           result = { ok: true, pending: true, agent: shell }
         } else {
-          spawnLibrarian.failPending(pendingAgentId, 'login-timeout')
-          const failed = {
-            ok: false,
-            reason: 'login-timeout',
-            error: `spawn started for ${spawnName}, but no reserved shell row exists for ${pendingAgentId}`,
-          }
-          const settled = mailboxLibrarian.fail(mailbox.id, failed.error, failed)
-          if (settled) deliverSpawnMailboxCompletion(settled, 'failed', failed)
+          console.warn(`[spawn] pending without reserved shell row for ${pendingAgentId}; leaving mailbox ${mailbox.id} unresolved until lifecycle authority reports`)
           return
         }
       }
@@ -1817,16 +1828,7 @@ async function performSpawnRelay(caller, msg) {
         if (settled) deliverSpawnMailboxCompletion(settled, 'failed', { ...result, error: result.error || result.reason || 'launch-failed' })
         return
       }
-      let ready = null
-      if (readiness) {
-        ready = await readiness
-        if (!ready.ok) {
-          const settled = mailboxLibrarian.fail(mailbox.id, ready.reason, ready)
-          if (settled) deliverSpawnMailboxCompletion(settled, 'failed', { ...ready, error: ready.reason })
-          return
-        }
-      }
-      let agentRecord = ready?.agent || result?.agent || (result?.agent_id ? fleetStore.findAgent(result.agent_id) : null) || (targetAgentId ? fleetStore.findAgent(targetAgentId) : null)
+      let agentRecord = result?.agent || (result?.agent_id ? fleetStore.findAgent(result.agent_id) : null) || (targetAgentId ? fleetStore.findAgent(targetAgentId) : null)
       // Runtime route authority is the durable agent-seat binding path. Do not
       // patch legacy route columns from the spawn result; doing so lets generic
       // spawn completion bypass the current-seat binding.
@@ -1844,22 +1846,29 @@ async function performSpawnRelay(caller, msg) {
       const spawnPolicy = result?.spawnPolicy || registeredPolicy
       const assignedName = agentRecord?.friendly_name || result?.assigned_name || result?.name || spawnName
       const requestedName = result?.requested_name || spawnName
-      const completion = {
-        ...result,
-        agentId: agentRecord?.id || result?.agent_id || targetAgentId || null,
-        label: assignedName,
-        assigned_name: assignedName,
-        requested_name: requestedName,
-        name_changed: result?.name_changed ?? (assignedName !== requestedName),
-        spawnPolicy,
-        permissionProfile: result?.permissionProfile || null,
-        spawnerPermission: result?.spawnerPermission,
-        projectPermission: result?.projectPermission,
-        modelPermission: result?.modelPermission,
-        lineage,
+      const agentId = agentRecord?.id || result?.agent_id || targetAgentId || null
+      if (agentId) {
+        const current = mailboxLibrarian.get(mailbox.id)
+        if (current?.status === 'pending') {
+          mailboxLibrarian.entries.upsert({
+            ...current,
+            meta: {
+              ...(current.meta || {}),
+              agentId,
+              label: assignedName,
+              assigned_name: assignedName,
+              requested_name: requestedName,
+              name_changed: result?.name_changed ?? (assignedName !== requestedName),
+              spawnPolicy,
+              permissionProfile: result?.permissionProfile || null,
+              spawnerPermission: result?.spawnerPermission,
+              projectPermission: result?.projectPermission,
+              modelPermission: result?.modelPermission,
+              lineage,
+            },
+          })
+        }
       }
-      const settled = mailboxLibrarian.complete(mailbox.id, completion)
-      if (settled) deliverSpawnMailboxCompletion(settled, 'completed', completion)
       broadcastState()
     } catch (e) {
       if (pendingAgentId) spawnLibrarian.failPending(pendingAgentId, 'launch-failed')
@@ -4572,10 +4581,7 @@ server.on('upgrade', async (req, socket, head) => {
           daemonConnections.delete(ws._daemonKey)
           daemonActivityDeliverySnapshots.delete(ws._daemonKey)
           fleetStore?.markDaemonDisconnected?.(ws._daemonKey)
-          refreshRuntimeRoutesForDaemon(ws._daemonKey)
-          // The daemon is gone; process-level visibility is unknown, not false.
-          // Preserve prior liveness so a server/Fly redeploy or daemon restart
-          // cannot make every working agent on that machine vanish.
+          refreshRuntimeRoutesForDaemon(ws._daemonKey, 'daemon-disconnected')
           failPendingRpcsForDaemon(ws._machineId, ws._envName, 'daemon disconnected')
           clearServerDaemonOutboxInflightForDaemon(ws._daemonKey)
           updateDaemonActivityTransportHealth(ws._daemonKey, {
@@ -4593,7 +4599,7 @@ server.on('upgrade', async (req, socket, head) => {
           daemonConnections.delete(ws._daemonKey)
           daemonActivityDeliverySnapshots.delete(ws._daemonKey)
           fleetStore?.markDaemonDisconnected?.(ws._daemonKey)
-          refreshRuntimeRoutesForDaemon(ws._daemonKey)
+          refreshRuntimeRoutesForDaemon(ws._daemonKey, 'daemon-disconnected')
           failPendingRpcsForDaemon(ws._machineId, ws._envName, 'daemon ws error')
           clearServerDaemonOutboxInflightForDaemon(ws._daemonKey)
           updateDaemonActivityTransportHealth(ws._daemonKey, {
@@ -5050,16 +5056,7 @@ async function handleFleetWsMessage(ws, msg) {
       const storedAgent = fleetStore.getAgent?.(agent_id) || agent
       reply({ ok: true, agent: storedAgent, assigned_name: storedAgent.friendly_name || null })
       fleetStore.share?.({ type: 'login', agent_id, from: agent_id, to: agent_id, text: `${agent.friendly_name || agent_id} logged in` })
-      markAgentAlive(agent_id, Date.now(), { source: 'agent-login', tmux_session: agent.tmux_session })
       touchActivity(agent_id)
-      spawnLibrarian.observeLiveness({
-        type: 'agent-liveness',
-        agent_id,
-        tmux_session: agent.tmux_session,
-        state: 'alive',
-        ts: now,
-      })
-      spawnLibrarian.observeLogin(fleetStore.getAgent?.(agent_id) || agent)
       broadcastState(storedAgent)
       if (agent.machine_id) broadcastDaemonAgentsUpdated(storedAgent)
       return
@@ -5295,17 +5292,10 @@ async function handleFleetWsMessage(ws, msg) {
   const WAKE_ACK_DEADLINE_MS = Number(process.env.TLDA_WAKE_ACK_DEADLINE_MS || 60_000)
   const _pendingWakeAcks = new Map()
   function awaitWakeAcknowledgment({ agentId, traceId, source = {}, asker = null }) {
-    if (!traceId || source.priority !== 'urgent' || _pendingWakeAcks.has(traceId)) return
-    const timer = setTimeout(async () => {
-      const pending = _pendingWakeAcks.get(traceId)
-      if (!pending) return
-      _pendingWakeAcks.delete(traceId)
-      await recordWakeAttempt({ agentId, traceId, ...source, outcome: 'send-failed', reason: 'ack-timeout', nextAction: 'surface-to-asker', evidence: { deadlineMs: WAKE_ACK_DEADLINE_MS } })
-      broadcastEvent('agent-wedged', { agentId, reason: 'urgent wake was delivered but not acknowledged before deadline', ts: new Date().toISOString() })
-      if (asker) deliverTldaFeedbackChat({ from: 'fleet:tlda', to: asker, text: `⚠️ **Urgent wake timed out** for \`${agentId}\`; delivery was attempted but no inbox acknowledgment arrived.`, metadata: { type: 'wake_ack_timeout', trace_id: traceId, agentId } })
-    }, WAKE_ACK_DEADLINE_MS)
-    timer.unref?.()
-    _pendingWakeAcks.set(traceId, { agentId, timer })
+    void agentId
+    void traceId
+    void source
+    void asker
   }
   function acknowledgeWakeTrace(traceId, agentId) {
     const pending = _pendingWakeAcks.get(traceId)
@@ -5475,7 +5465,7 @@ async function handleFleetWsMessage(ws, msg) {
         console.warn(`[respawn] failed for ${agentId} (fails=${b.fails}, backoff until ${new Date(b.nextTs).toISOString()}): ${e.message}`)
         // Convergent, visible signal on the roster (not just a chat) so a failed
         // wake shows up in the UI, not invisibly.
-        broadcastEvent('agent-wedged', { agentId, reason: `wake failed: ${e.message}`, ts: new Date().toISOString() })
+        broadcastEvent('wake-failed', { agentId, reason: `wake failed: ${e.message}`, ts: new Date().toISOString() })
         // Surface the failure to WHOEVER ASKED (Skip's rule) — the agent/human who
         // chatted or delegated — falling back to the server owner for wakes with no
         // identifiable asker (internal retries). Throttled per-agent so a stuck wake
@@ -5798,11 +5788,6 @@ async function handleFleetWsMessage(ws, msg) {
           attachments: _materializableAttachments,
         })
       }
-    }
-    const deliveredAt = Date.parse(ts) || Date.now()
-    for (const to of recipients) {
-      const recipient = fleetStore.getAgent?.(to)
-      if (recipient && !recipient.human) spawnLibrarian.observeDelivery(to, deliveredAt)
     }
     for (const wake of wakeRequests) requestWake(wake.to, wake.text, wake.asker, wake.traceId, wake.source)
 
@@ -6338,8 +6323,6 @@ async function handleFleetWsMessage(ws, msg) {
     if (agentId && state && fleetStore) {
       fleetStore.updateAgentStatus?.(agentId, state, tool, ts)
       runtimeStatusStore.updateActivity(agentId, state, { tool, atMs: Date.parse(ts) || Date.now() })
-      if (state === 'hibernating') markAgentNotAlive(agentId, { source: 'agent-status', unknown: true, reason: 'pane status reported hibernating' })
-      else markAgentAlive(agentId, Date.parse(ts) || Date.now(), { source: 'agent-status', tool })
       broadcastEvent('agent-status', { agent: agentId, state, tool, ts })
       broadcastState()
     }
@@ -7702,9 +7685,41 @@ async function handleDaemonWsMessage(ws, msg) {
     if (!agentId || !state || !fleetStore) return
     fleetStore.updateAgentStatus?.(agentId, state, tool, ts)
     runtimeStatusStore.updateActivity(agentId, state, { tool, atMs: Date.parse(ts) || Date.now() })
-    if (state === 'hibernating') markAgentNotAlive(agentId, { source: 'daemon-agent-status', unknown: true, reason: 'pane status reported hibernating' })
-    else markAgentAlive(agentId, Date.parse(ts) || Date.now(), { source: 'daemon-agent-status', tool })
     broadcastEvent('agent-status', { agent: agentId, state, tool, ts })
+    broadcastState()
+    return
+  }
+
+  if (type === 'agent-lifecycle') {
+    const event = {
+      ...msg,
+      agent_id: msg.agent_id || msg.agentId,
+      session_id: msg.session_id || msg.sessionId || null,
+      tmux_session: msg.tmux_session || msg.tmuxSession || null,
+      daemon_key: msg.daemon_key || ws._daemonKey || daemonAddress(ws._machineId, ws._envName),
+    }
+    if (!event.agent_id || !event.state) return
+    const atMs = Date.parse(event.observed_at || event.ts) || Date.now()
+    const match = lifecycleMatchesCurrentSeat(event)
+    const detail = {
+      source: 'agent-lifecycle',
+      state: event.state,
+      reason: match.ok ? event.reason : match.reason,
+      session_id: event.session_id,
+      tmux_session: event.tmux_session,
+      daemon_key: event.daemon_key,
+      harness: event.harness || null,
+      pid: event.pid || null,
+      atMs,
+    }
+    if (event.state === 'runtime-alive' && match.ok) {
+      markAgentAlive(event.agent_id, atMs, detail)
+      completeSpawnMailboxesFromLifecycle(event)
+    } else if (event.state === 'runtime-exited' && match.ok) {
+      markAgentNotAlive(event.agent_id, { ...detail, reason: event.reason || 'runtime-exited' })
+    } else {
+      markAgentNotAlive(event.agent_id, { ...detail, unknown: true })
+    }
     broadcastState()
     return
   }
@@ -7729,47 +7744,12 @@ async function handleDaemonWsMessage(ws, msg) {
           reason: batchState === 'dead' ? 'daemon liveness batch: not alive' : undefined,
           ts: batchTs,
         })
-        if (batchState === 'alive') {
-          // Liveness = "the tmux process still exists", NOT "the agent did work".
-          // markAgentAlive is idempotent for _aliveSince; real activity is recorded
-          // by agent-activity / agent-thinking / chat, not by this liveness ping.
-          markAgentAlive(id, Date.parse(batchTs) || Date.now(), {
-            source: 'daemon-hosted-session-refresh',
-            reason,
-            tmux_session: agent?.tmux_session || null,
-          })
-        } else {
-          markAgentNotAlive(id, {
-            source: 'daemon-hosted-session-refresh',
-            reason: 'daemon liveness batch: not alive',
-            tmux_session: agent?.tmux_session || null,
-          })
-        }
       }
       broadcastState()
       return
     }
     if (!agent_id || !state) return
     spawnLibrarian.observeLiveness({ type, agent_id, state, tmux_session, pid, reason, ts })
-    if (state === 'alive') {
-      // Liveness ≠ activity (see the batch handler above): this is a 30s "process
-      // exists" ping, not real work, so it must not reset the idle clock. Real
-      // activity is recorded by agent-activity / agent-thinking / chat.
-      markAgentAlive(agent_id, Date.parse(ts) || Date.now(), {
-        source: 'daemon-agent-liveness',
-        reason,
-        tmux_session,
-        pid,
-      })
-    } else if (state === 'dead' || state === 'wedged') {
-      markAgentNotAlive(agent_id, {
-        source: 'daemon-agent-liveness',
-        state,
-        reason,
-        tmux_session,
-        pid,
-      })
-    }
     broadcastState()
     return
   }
@@ -7778,7 +7758,6 @@ async function handleDaemonWsMessage(ws, msg) {
     const { agent_id, jsonl_offset, ts } = msg
     if (!agent_id || typeof jsonl_offset !== 'number') return
     spawnLibrarian.observeActivity({ type, agent_id, jsonl_offset, ts })
-    markAgentAlive(agent_id, Date.parse(ts) || Date.now(), { source: 'agent-activity' })
     touchActivity(agent_id)
     if (fleetStore?.updateHeartbeat) {
       fleetStore.updateHeartbeat(agent_id)
@@ -7902,7 +7881,6 @@ async function handleDaemonWsMessage(ws, msg) {
   if (type === 'terminal-dead') {
     if (msg.agent_id) {
       fanOutTerminalDead(msg.agent_id)
-      markAgentNotAlive(msg.agent_id, { source: 'terminal-dead', reason: 'terminal watch ended dead' })
       broadcastState()
     }
     return

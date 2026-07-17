@@ -509,16 +509,40 @@ const agentStatus = createAgentStatus({
   tmuxArgs: TMUX_ARGS,
   sendMsg,
   log,
-  getAgents: () => permissionLedger.listProcessBindings().map(row => ({
-    id: row.id,
-    friendly_name: row.friendlyName,
-    tmux_session: row.tmuxSession,
-    runtimeKind: row.sessionKind,
-    metadata: { kind: row.sessionKind, model: row.model },
-  })),
+  getAgents: () => ledgerRuntimeAgents(),
   harnessForAgent: harnessRuntime.harnessForAgent,
   isConnected: () => _serverReady && _rws?.connected,
 })
+
+function ledgerRuntimeAgents() {
+  return permissionLedger.listProcessBindings().map(row => ({
+    id: row.id,
+    friendly_name: row.friendlyName,
+    session_id: row.sessionId,
+    tmux_session: row.tmuxSession,
+    machine_id: MACHINE_ID,
+    env_name: ACTIVE_CONFIG,
+    daemon_key: `${MACHINE_ID}:${ACTIVE_CONFIG}`,
+    runtimeKind: row.sessionKind,
+    metadata: { kind: row.sessionKind, model: row.model },
+  }))
+}
+
+async function reportRuntimeLifecycle(reason) {
+  for (const agent of ledgerRuntimeAgents()) {
+    try {
+      await harnessRuntime.observeRuntimeLifecycle(agent, {
+        machineId: MACHINE_ID,
+        envName: ACTIVE_CONFIG,
+        daemonKey: `${MACHINE_ID}:${ACTIVE_CONFIG}`,
+        reason,
+        sendMsg,
+      })
+    } catch (e) {
+      log.error(`runtime lifecycle report failed for ${agent.id}: ${e.message}`)
+    }
+  }
+}
 
 let gooseSupervisor
 const agentLiveness = createAgentLiveness({
@@ -788,6 +812,7 @@ function handleServerMessage(msg) {
     sourceSync.sync(projects)
     sourceSync.flushPending()
     agentLiveness.start()
+    void reportRuntimeLifecycle('daemon-welcome')
     // Fast status state machine — pulls panes only for agents armed by recent
     // activity, so it's bounded to the few agents actually working (1-3s status,
     // accurate turn edges) without a fleet-wide sweep.
@@ -802,6 +827,7 @@ function handleServerMessage(msg) {
     applyAgentStatusEvents(msg.agent_status_events || [])
     agentStatusSeq = Math.max(agentStatusSeq, msg.agent_status_seq || agentStatusSeq)
     reconcileRoster('agent-status-events')
+    void reportRuntimeLifecycle('agent-status-events')
     agentStatus.start()
     return
   }
@@ -809,6 +835,7 @@ function handleServerMessage(msg) {
     agents = msg.agents || []
     agentStatusSeq = msg.agent_status_seq || agentStatusSeq
     reconcileRoster('agents-updated')
+    void reportRuntimeLifecycle('agents-updated')
     agentStatus.start()
     ackServerDaemonOutboxMessage(msg)
     return
@@ -822,6 +849,7 @@ function handleServerMessage(msg) {
       }
       agentStatusSeq = msg.seq
       reconcileRoster('agent-status-event')
+      void reportRuntimeLifecycle('agent-status-event')
       agentStatus.start()
     }
     // Deltas use the same durable server-to-daemon outbox as snapshots. ACK

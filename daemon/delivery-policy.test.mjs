@@ -9,7 +9,7 @@ import {
 } from './delivery-policy.mjs'
 
 test('classifies durable daemon events', () => {
-  for (const type of ['source-change', 'activity-event', 'activity-health', 'terminal-chat', 'terminal-dead', 'spawn-startup-failed', 'agent-status', 'jsonl-index']) {
+  for (const type of ['source-change', 'activity-event', 'activity-health', 'terminal-chat', 'spawn-startup-failed', 'agent-status', 'agent-lifecycle', 'jsonl-index']) {
     assert.equal(daemonDeliveryPolicy({ type }), DELIVERY_DURABLE_FIFO, type)
   }
 })
@@ -17,6 +17,7 @@ test('classifies durable daemon events', () => {
 test('classifies terminal stream telemetry as ephemeral ordered data', () => {
   assert.equal(daemonDeliveryPolicy({ type: 'terminal-data' }), DELIVERY_EPHEMERAL_FIFO)
   assert.equal(daemonDeliveryPolicy({ type: 'terminal-size' }), DELIVERY_LATEST_WINS)
+  assert.equal(daemonDeliveryPolicy({ type: 'terminal-dead' }), DELIVERY_DIRECT)
 })
 
 test('keeps correlated request response messages direct', () => {
