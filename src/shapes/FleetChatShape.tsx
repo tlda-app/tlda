@@ -1868,9 +1868,10 @@ function FleetChatInner({ shape }: { shape: any }) {
     if (!dnfFilter || dnfFilter.length === 0) return ''
     return [...(statusTargetIds || [])].sort().join(',')
   }, [filterKey, statusTargetIds])
-  const chatEventBufferKey = dnfFilter && resolvedFilterIdKey
-    ? `filter:${filterKey}:ids:${resolvedFilterIdKey}`
-    : null
+  // The chat owns its streamed event buffer. Roster/status projections may
+  // choose history targets, but they never create, replace, or remove the live
+  // chat view.
+  const chatEventBufferKey = dnfFilter ? `chat:${shape.id}` : null
   const liveEvents = useFleetEvents(dnfFilter, frameId, chatEventBufferKey)
   const tasks = useFleetTasks(frameId)
   const thinkingAgents = useFleetThinking(dnfFilter, frameId)
