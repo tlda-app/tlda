@@ -22,6 +22,10 @@ coordination, process attribution, and rollout accounting.
 - Earlier heavy-process grants on 2026-07-16, including the 10:31 EDT
   grant/release protocol window around message `1346649`, establish the
   fleet-wide heavy-slot convention.
+- `chiefplz` message `1353528`: binding process rules from the 2b rejection.
+- `permission-status-reviewer` rejection message `1353467` and Stabilizer
+  accountability message `1353524`: source anchors for the 2b consumer-scan
+  and durable-evidence rules.
 
 ## RC Serializer
 
@@ -66,6 +70,27 @@ ports that looked like a Vite preview was actually the long-running `fable`
 MCP server (`/Users/skip/work/tlda/mcp-server/index.mjs`) with a different
 parent and cwd. Port-number heuristics were insufficient and nearly led to
 the wrong process being treated as cleanup residue.
+
+## Consumer Authority Migrations
+
+Consumer-authority migrations require a repo-wide read scan across all
+production, tool, and script consumers. Checking only the enumerated user-facing
+surfaces is insufficient.
+
+This rule follows the 2b status-authority rejection on 2026-07-16: the
+migration missed the MCP server's top-level reads, which would have silently
+broken `chat(to:"awake & ...")` addressing if the independent review had not
+caught it.
+
+## Durable Review Evidence
+
+Acceptance evidence must remain durable and reviewer-accessible until the
+consuming independent review completes. A server-visible artifact or tracked
+file is acceptable. Verification followed by deletion is not evidence delivery.
+
+This rule follows the 2b rejection in which a passing six-case rig wrote
+evidence under `/tmp`, then the run's own cleanup removed it before the
+reviewer could inspect it.
 
 ## Permission Rollout Accounting
 
