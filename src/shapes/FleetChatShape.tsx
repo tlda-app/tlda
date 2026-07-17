@@ -47,7 +47,7 @@ import { appendToken } from '../authToken'
 import { labelsForAgent } from '../../shared/fleet-labels.mjs'
 import { runtimeStatusName } from '../../shared/fleet-runtime-status.mjs'
 import { ACTIVITY_DELIVERY_STAGES } from '../../shared/activity-delivery-counters.mjs'
-import { useFleetAgents, useFleetChatAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useFleetStatusTargets, useSuggestions, clearGroup, sendMessage, loadBefore, resolveFleetAgentLabelIds, injectOptimisticEvent, updateOptimisticEvent, removeOptimisticEvent } from '../fleet-data-adapter'
+import { useFleetAgents, useFleetChatAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useFleetStatusTargets, useFleetFilterHasMatchingAgent, useSuggestions, clearGroup, sendMessage, loadBefore, resolveFleetAgentLabelIds, injectOptimisticEvent, updateOptimisticEvent, removeOptimisticEvent } from '../fleet-data-adapter'
 import { isTerminalAvailableForAgent } from '../fleet/fleet-chat-visibility.mjs'
 import type { Suggestion } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
@@ -1864,7 +1864,13 @@ function FleetChatInner({ shape }: { shape: any }) {
   const agents = useFleetChatAgents(frameId)
   const agentById = useMemo(() => new Map(agents.map((agent: any) => [agent.id, agent])), [agents])
   const { statusTargetIds, hibernatingAgents } = useFleetStatusTargets(dnfFilter, frameId)
-  const chatEventBufferKey = dnfFilter ? `filter:${filterKey}` : null
+  const resolvedFilterIdKey = useMemo(() => {
+    if (!dnfFilter || dnfFilter.length === 0) return ''
+    return [...(statusTargetIds || [])].sort().join(',')
+  }, [filterKey, statusTargetIds])
+  const chatEventBufferKey = dnfFilter && resolvedFilterIdKey
+    ? `filter:${filterKey}:ids:${resolvedFilterIdKey}`
+    : null
   const liveEvents = useFleetEvents(dnfFilter, frameId, chatEventBufferKey)
   const tasks = useFleetTasks(frameId)
   const thinkingAgents = useFleetThinking(dnfFilter, frameId)
@@ -2026,11 +2032,23 @@ function FleetChatInner({ shape }: { shape: any }) {
   const historyLoadedRef = useRef<string | null>(null)
   useEffect(() => {
     if (!dnfFilter || dnfFilter.length === 0) return
-    const loadKey = `${filterKey}:${chatEventBufferKey || ''}`
+    if (!resolvedFilterIdKey) {
+      // Filter set but resolved to nothing. Once agents are loaded this is a
+      // genuine no-match; surface it (no silent fallback). Before agents load the
+      // memo re-runs and this effect re-fires when the id-set appears.
+      if (agents.length > 0) {
+        log.warn('chat', 'filter resolved to no fleet ids; no history will load', { filter: dnfFilter })
+      }
+      return
+    }
+    const ids = resolvedFilterIdKey.split(',')
+    const loadKey = `${filterKey}:${resolvedFilterIdKey}:${chatEventBufferKey || ''}`
     if (historyLoadedRef.current === loadKey) return
     historyLoadedRef.current = loadKey
-    loadBefore([], new Date().toISOString(), 200, {
-      filter: dnfFilter,
+    // loadBefore folds scrollback into this chat's named buffer (deduping by id)
+    // and returns the count of genuinely-new rows. No local olderEvents list —
+    // the history just appears in `events` via the store view.
+    loadBefore(ids, new Date().toISOString(), 200, {
       bufferKey: chatEventBufferKey,
       onBeforeNotify: (added: number) => {
         setFirstItemIndex(index => Math.max(0, index - added))
@@ -2050,7 +2068,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       })
     })
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filterKey, chatEventBufferKey])
+  }, [resolvedFilterIdKey, filterKey, chatEventBufferKey])
 
 
   const chatLogRef = useRef<HTMLDivElement>(null)
@@ -4761,11 +4779,18 @@ function FleetChatInner({ shape }: { shape: any }) {
 
   // (Terminal auto-pin on permission prompts removed — chat cards handle this now)
 
+  // Detect impossible filter: filter is set but no AND group can match any known agent
+  const filterHasMatchingAgent = useFleetFilterHasMatchingAgent(dnfFilter, frameId)
+  const isImpossibleFilter = filter.length > 0 && !filterHasMatchingAgent
+
   // Resolve the filter to the fleet-id set for history paging — same resolver
   // as the initial load and the live display. null = no filter (unfiltered
   // view loads global history); [] = filtered but nothing resolved yet (don't
   // fall back to global history inside a filtered view).
-  const loadBeforeAgents = useMemo<string[] | null>(() => (dnfFilter ? [] : null), [filterKey])
+  const loadBeforeAgents = useMemo<string[] | null>(
+    () => (dnfFilter ? [...(statusTargetIds || [])] : null),
+    [filterKey, statusTargetIds]
+  )
 
   // Infinite scroll — load older messages
   const loadingMore = useRef(false)
@@ -4778,12 +4803,13 @@ function FleetChatInner({ shape }: { shape: any }) {
   )
   const loadOlderHistory = useCallback(async () => {
     if (loadingMore.current || chatMessages.length === 0) return
+    // Filtered view that hasn't resolved to any id yet — don't page in global history.
+    if (loadBeforeAgents !== null && loadBeforeAgents.length === 0) return
     loadingMore.current = true
     const oldestTs = chatMessages[0]?.timestamp
     if (oldestTs) {
       try {
-        await loadBefore([], oldestTs, 50, {
-          filter: dnfFilter,
+        await loadBefore(loadBeforeAgents || [], oldestTs, 50, {
           bufferKey: chatEventBufferKey,
           onBeforeNotify: (added: number) => {
             setFirstItemIndex(index => Math.max(0, index - added))
@@ -4844,7 +4870,9 @@ function FleetChatInner({ shape }: { shape: any }) {
   // Virtuoso never reaches the top sentinel and the user can't get more messages.
   useEffect(() => {
     const el = chatLogEl
-    if (!el || loadingMore.current || !hasChatMessages || loadBeforeAgents === null) return
+    // Auto-load only for a resolved filtered view (a specific id set) — not for
+    // the unfiltered view (null) and not while a filter is still unresolved ([]).
+    if (!el || loadingMore.current || !hasChatMessages || !loadBeforeAgents || loadBeforeAgents.length === 0) return
     let cancelled = false
     const fillUnderfullInitialView = async () => {
       while (!cancelled && el.scrollHeight <= el.clientHeight) {
@@ -4855,13 +4883,12 @@ function FleetChatInner({ shape }: { shape: any }) {
         if (!oldestTs) return
         loadingMore.current = true
         try {
-          const added = await loadBefore([], oldestTs, 50, {
-            filter: dnfFilter,
+          const added = await loadBefore(loadBeforeAgents, oldestTs, 50, {
             bufferKey: chatEventBufferKey,
             onBeforeNotify: (added: number) => {
               setFirstItemIndex(index => Math.max(0, index - added))
             },
-          }) as number
+          })
           if (added <= 0) return
           await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
         } finally {
@@ -5620,12 +5647,15 @@ function FleetChatInner({ shape }: { shape: any }) {
                     alignItems: 'flex-start',
                     padding: '20px 8px',
                     pointerEvents: 'none',
-                    opacity: 0.3,
+                    opacity: isImpossibleFilter ? 0.6 : 0.3,
                     textAlign: 'center',
                     fontSize: 10,
+                    color: isImpossibleFilter ? 'var(--red, #e55)' : undefined,
                   }}
                 >
-                  {filter.length > 0 ? 'No messages' : 'No filter set'}
+                  {isImpossibleFilter
+                    ? '⚠ Filter matches no known agents'
+                    : filter.length > 0 ? 'No messages' : 'No filter set'}
                 </div>
               )}
             </>

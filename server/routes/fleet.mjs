@@ -426,16 +426,11 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
 
   // --- GET /api/chat/history ---
   router.get('/api/chat/history', (req, res) => {
-    const limit = Math.max(1, parseInt(req.query.limit || '50'))
+    const limit = Math.min(parseInt(req.query.limit || '50'), 1000)
     const before = req.query.before || null
     // ?agents=a&agents=b (array) or ?agents=a (string) → normalize to array
     const rawAgents = req.query.agents
     const agents = Array.isArray(rawAgents) ? rawAgents : (rawAgents ? [rawAgents] : [])
-    let filter = null
-    if (req.query.filter) {
-      try { filter = JSON.parse(req.query.filter) }
-      catch { res.status(400).json({ error: 'invalid chat filter' }); return }
-    }
     try {
       if (!fleetStore) {
         res.json({ events: [], hasMore: false, nextCursor: null })
@@ -444,7 +439,6 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       res.json(fleetStore.buildChatHistoryResponse({
         before,
         agents,
-        filter,
         limit,
         serverOwnerId: SERVER_OWNER_ID,
         serverOwnerName: SERVER_OWNER_NAME,
