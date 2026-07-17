@@ -14,6 +14,15 @@ export function convertChatEvent(e) {
     timestamp: e.timestamp,
     read: e.read !== undefined ? e.read : false,
     _dbId: e.id,
+    fromName: e.fromName || null,
+    fromNameNow: e.fromNameNow || null,
+    toName: e.toName || null,
+    toNameNow: e.toNameNow || null,
+    agentName: e.agentName || null,
+    agentNameNow: e.agentNameNow || null,
+    _fromLabels: Array.isArray(e.fromLabels) ? e.fromLabels : [],
+    _toLabels: Array.isArray(e.toLabels) ? e.toLabels : [],
+    _agentLabels: Array.isArray(e.agentLabels) ? e.agentLabels : [],
   }
   const tempId = e._tempId || e.metadata?.client_temp_id
   if (tempId) msg._tempId = tempId

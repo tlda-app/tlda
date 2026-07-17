@@ -1260,11 +1260,12 @@ export async function fetchHistory(agentIds = [], limit = 200) {
 export async function loadBefore(agentIds = [], beforeTs, count = 100, opts = {}) {
   let res
   if (_ws && _ws.readyState === 1) {
-    const msg = { type: 'load-history', agents: agentIds || [], before: beforeTs, limit: count }
+    const msg = { type: 'load-history', agents: agentIds || [], filter: opts.filter || null, before: beforeTs, limit: count }
     res = await wsSend(msg)
   } else {
     const agentParams = (agentIds || []).map(id => `&agents=${encodeURIComponent(id)}`).join('')
-    res = await fetch(`${FLEET}/api/chat/history?limit=${count}&before=${encodeURIComponent(beforeTs)}${agentParams}`).then(r => r.json())
+    const filterParam = opts.filter ? `&filter=${encodeURIComponent(JSON.stringify(opts.filter))}` : ''
+    res = await fetch(`${FLEET}/api/chat/history?limit=${count}&before=${encodeURIComponent(beforeTs)}${agentParams}${filterParam}`).then(r => r.json())
   }
 
   const events = (res.events || [])

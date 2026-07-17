@@ -285,18 +285,25 @@ function stampNames(rows) {
     const ts = r.timestamp
     if (r.from) {
       r.fromName = fleetStore.nameAt(r.from, ts)
-      const cur = fleetStore.getAgent(r.from)?.friendly_name ?? null
+      const fromAgent = fleetStore.getAgent(r.from)
+      const cur = fromAgent?.friendly_name ?? null
       if (cur !== r.fromName) r.fromNameNow = cur
+      r.fromLabels = [...new Set([...(fromAgent?.labels || []), r.fromName, cur, r.from].filter(Boolean))]
     }
     if (r.to) {
       r.toName = fleetStore.nameAt(r.to, ts)
-      const cur = fleetStore.getAgent(r.to)?.friendly_name ?? null
+      const toAgent = fleetStore.getAgent(r.to)
+      const cur = toAgent?.friendly_name ?? null
       if (cur !== r.toName) r.toNameNow = cur
+      r.toLabels = [...new Set([...(toAgent?.labels || []), r.toName, cur, r.to].filter(Boolean))]
     }
-    if (r.agentId) {
-      r.agentName = fleetStore.nameAt(r.agentId, ts)
-      const cur = fleetStore.getAgent(r.agentId)?.friendly_name ?? null
+    const agentId = r.agentId || r.agent_id || r.agent
+    if (agentId) {
+      r.agentName = fleetStore.nameAt(agentId, ts)
+      const agent = fleetStore.getAgent(agentId)
+      const cur = agent?.friendly_name ?? null
       if (cur !== r.agentName) r.agentNameNow = cur
+      r.agentLabels = [...new Set([...(agent?.labels || []), r.agentName, cur, agentId].filter(Boolean))]
     }
   }
   return rows
@@ -1209,6 +1216,7 @@ function broadcastFleet(msg) {
   }
 }
 function broadcastEvent(type, data) {
+  if (type === 'fleet-event') stampNames([data])
   if (type === 'fleet-event' && data?.type === 'activity') {
     serverActivityDeliveryCounters.record(ACTIVITY_DELIVERY_STAGES.SERVER_BROADCAST, data, 1, {
       type: 'activity',
@@ -5882,13 +5890,15 @@ async function handleFleetWsMessage(ws, msg) {
   }
 
   if (type === 'load-history') {
-    const limit = Math.min(parseInt(msg.limit || '50'), 1000)
+    const limit = Math.max(1, parseInt(msg.limit || '50'))
     const before = msg.before || null
     const agents = Array.isArray(msg.agents) ? msg.agents : []
+    const filter = Array.isArray(msg.filter) ? msg.filter : null
     try {
-      const { events: resolved, hasMore } = fleetStore.buildChatHistoryResponse({
+      const { events: resolved, hasMore, nextCursor } = fleetStore.buildChatHistoryResponse({
         before,
         agents,
+        filter,
         limit,
         serverOwnerId: SERVER_OWNER_ID,
         serverOwnerName: SERVER_OWNER_NAME,
@@ -5897,7 +5907,7 @@ async function handleFleetWsMessage(ws, msg) {
       // sender/recipient held AT send time, plus `*NameNow` when since rotated.
       // The client nick prefers these over the current-name fallback.
       stampNames(resolved)
-      reply({ events: resolved, hasMore })
+      reply({ events: resolved, hasMore, nextCursor })
     } catch (e) {
       error(e.message)
     }

@@ -3411,20 +3411,63 @@ export class FleetStore {
     return rows;
   }
 
-  buildChatHistoryResponse({ before = null, agents = [], limit = 50, serverOwnerId = null, serverOwnerName = null } = {}) {
-    const cap = Math.min(parseInt(limit) || 50, 1000);
-    let events = this.queryChatHistory({
-      before,
-      agents: Array.isArray(agents) ? agents : [],
-      limit: cap + 1,
-    }).map(e => ({ ...e, event_type: e.type, from: e.from, to: e.to, agent: e.agent_id }));
-
-    const hasMore = events.length > cap;
-    if (hasMore) events.shift();
-    events = events.filter(e => {
-      const t = e.text || '';
-      return !t.startsWith('<channel') && !t.startsWith('<task-notification') && !t.startsWith('<system-reminder');
-    });
+  buildChatHistoryResponse({ before = null, agents = [], filter = null, limit = 50, serverOwnerId = null, serverOwnerName = null } = {}) {
+    const cap = Math.max(1, parseInt(limit) || 50);
+    const identityLabelSet = (id, timestamp) => {
+      if (!id) return new Set();
+      const agent = this.getAgent(id);
+      return new Set([...(agent?.labels || []), this.nameAt(id, timestamp), agent?.friendly_name, id].filter(Boolean));
+    };
+    const matches = e => {
+      if (!Array.isArray(filter) || filter.length === 0) return true;
+      if (e.from === 'system' && !e.to) return true;
+      const from = e.from || e.agent_id;
+      const to = e.to || null;
+      const agent = e.agent_id || null;
+      const fromLabels = identityLabelSet(from, e.timestamp);
+      const toLabels = identityLabelSet(to, e.timestamp);
+      const agentLabels = identityLabelSet(agent, e.timestamp);
+      const isHuman = (labels, id) => id === serverOwnerId || labels.has(serverOwnerId) || labels.has(serverOwnerName);
+      const termMatches = term => {
+        const role = Array.isArray(term) ? term[0] : null;
+        const label = Array.isArray(term) ? term[1] : term;
+        if (!label) return false;
+        if (role === 'from') return fromLabels.has(label);
+        if (role === 'to') return toLabels.has(label) || agentLabels.has(label);
+        if (role === 'dm') {
+          if (e.type === 'activity') return fromLabels.has(label) || agentLabels.has(label);
+          const fromTarget = fromLabels.has(label);
+          const toTarget = toLabels.has(label) || agentLabels.has(label);
+          return (isHuman(fromLabels, from) && toTarget) ||
+            (fromTarget && isHuman(toLabels, to)) ||
+            (fromTarget && !to);
+        }
+        return fromLabels.has(label) || toLabels.has(label) || agentLabels.has(label);
+      };
+      return filter.some(clause => Array.isArray(clause) && clause.every(termMatches));
+    };
+    const hidden = e => {
+      const text = e.text || '';
+      return text.startsWith('<channel') || text.startsWith('<task-notification') || text.startsWith('<system-reminder');
+    };
+    const requestedAgents = Array.isArray(filter) && filter.length > 0 ? [] : (Array.isArray(agents) ? agents : []);
+    const newestFirst = [];
+    let scanBefore = before;
+    let exhausted = false;
+    while (newestFirst.length <= cap && !exhausted) {
+      const page = this.queryChatHistory({ before: scanBefore, agents: requestedAgents, limit: cap + 1 })
+        .map(e => ({ ...e, event_type: e.type, from: e.from, to: e.to, agent: e.agent_id }));
+      exhausted = page.length < cap + 1;
+      if (page.length === 0) break;
+      for (let i = page.length - 1; i >= 0; i--) {
+        const event = page[i];
+        if (!hidden(event) && matches(event)) newestFirst.push(event);
+        if (newestFirst.length > cap) break;
+      }
+      scanBefore = page[0].timestamp;
+    }
+    const hasMore = newestFirst.length > cap;
+    const events = newestFirst.slice(0, cap).reverse();
 
     const agentMap = { ...this.getAgentNameMap() };
     if (serverOwnerId || serverOwnerName) {
@@ -3443,12 +3486,28 @@ export class FleetStore {
       }
     }
 
-    const resolved = events.map(e => ({
-      ...e,
-      read: !unreadIds.has(e.id),
-      fromLabel: agentMap[e.from] || (e.from ? e.from.substring(0, 8) : ''),
-      toLabel: agentMap[e.to] || agentMap[e.agent] || (e.to ? e.to.substring(0, 8) : ''),
-    }));
+    const identityLabels = id => {
+      if (!id) return [];
+      const agent = this.getAgent(id);
+      return [...new Set([...(agent?.labels || []), agent?.friendly_name, id].filter(Boolean))];
+    };
+    const resolved = events.map(e => {
+      const fromName = this.nameAt(e.from, e.timestamp);
+      const toName = this.nameAt(e.to, e.timestamp);
+      const agentName = this.nameAt(e.agent, e.timestamp);
+      return {
+        ...e,
+        read: !unreadIds.has(e.id),
+        fromLabel: agentMap[e.from] || (e.from ? e.from.substring(0, 8) : ''),
+        toLabel: agentMap[e.to] || agentMap[e.agent] || (e.to ? e.to.substring(0, 8) : ''),
+        fromName,
+        toName,
+        agentName,
+        fromLabels: [...new Set([...identityLabels(e.from), fromName].filter(Boolean))],
+        toLabels: [...new Set([...identityLabels(e.to), toName].filter(Boolean))],
+        agentLabels: [...new Set([...identityLabels(e.agent), agentName].filter(Boolean))],
+      };
+    });
     const nextCursor = hasMore && events.length > 0 ? events[0].timestamp : null;
     return { events: resolved, hasMore, nextCursor };
   }

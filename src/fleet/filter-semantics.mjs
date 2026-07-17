@@ -19,6 +19,17 @@ function agentMatchesLabel(agentId, label, context = {}) {
   return labelSetForParticipant(agentId, context).has(label)
 }
 
+function eventLabelsForParticipant(event, agentId, side, context = {}) {
+  const labels = labelSetForParticipant(agentId, context)
+  const projected = side === 'from' ? event?._fromLabels : side === 'to' ? event?._toLabels : event?._agentLabels
+  for (const label of projected || []) if (label) labels.add(label)
+  const keys = side === 'from'
+    ? ['fromName', 'fromNameNow', 'agentName', 'agentNameNow']
+    : ['toName', 'toNameNow', 'agentName', 'agentNameNow']
+  for (const key of keys) if (event?.[key]) labels.add(event[key])
+  return labels
+}
+
 function isHumanParticipant(agentId, context) {
   return agentMatchesLabel(agentId, context.humanId, context) ||
     (context.humanName ? agentMatchesLabel(agentId, context.humanName, context) : false)
@@ -33,15 +44,17 @@ function isDmWithTarget(event, targetLabel, context) {
     // must let it through, scoped strictly to the target's own activity. Other
     // agents' activity stays excluded from a DM filter.
     const actor = event.from || event.from_id || event.agent || event.agent_id || null
-    return agentMatchesLabel(actor, targetLabel, context)
+    return eventLabelsForParticipant(event, actor, 'from', context).has(targetLabel) ||
+      eventLabelsForParticipant(event, actor, 'agent', context).has(targetLabel)
   }
   const from = event.from || event.from_id || event.agent
   const to = event.to || event.to_id || null
   const agent = event.agent || event.agent_id || null
   const fromHuman = isHumanParticipant(from, context)
   const toHuman = isHumanParticipant(to, context)
-  const fromTarget = agentMatchesLabel(from, targetLabel, context)
-  const toTarget = agentMatchesLabel(to, targetLabel, context) || agentMatchesLabel(agent, targetLabel, context)
+  const fromTarget = eventLabelsForParticipant(event, from, 'from', context).has(targetLabel)
+  const toTarget = eventLabelsForParticipant(event, to, 'to', context).has(targetLabel) ||
+    eventLabelsForParticipant(event, agent, 'agent', context).has(targetLabel)
 
   if (fromHuman && toTarget) return true
   if (fromTarget && toHuman) return true
@@ -67,8 +80,8 @@ export function matchesFleetFilter(filter, event, context = {}) {
   if (!event) return true  // broadcast (e.g. read-receipt refresh)
   if (!filter || filter.length === 0) return true
   if ((event.from_id === 'system' || event.from === 'system') && !event.to) return true
-  const fromLabels = labelSetForParticipant(event.from || event.agent, context)
-  const toLabels = labelSetForParticipant(event.to || event.agent, context)
+  const fromLabels = eventLabelsForParticipant(event, event.from || event.agent, 'from', context)
+  const toLabels = eventLabelsForParticipant(event, event.to || event.agent, 'to', context)
   const dirCtx = { fromLabels, toLabels }
   const matchTerm = (term) => {
     if (Array.isArray(term)) {
