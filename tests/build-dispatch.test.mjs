@@ -178,6 +178,38 @@ test('dispatcher waits for an async sentinel relay before completing a build', a
   assert.deepEqual(order, ['sentinel', 'reload'])
 })
 
+test('dispatcher acknowledges worker RPC after the server sink completes', async () => {
+  const transport = fakeTransport()
+  let releaseSink
+  const sinkDone = new Promise(resolve => { releaseSink = resolve })
+  const replies = []
+  const dispatcher = createDispatcherWithOptions(transport, {
+    sinks: {
+      writeSentinel: async () => {
+        await sinkDone
+        return { skipped: false }
+      },
+    },
+  })
+
+  let completed = false
+  const build = dispatcher.dispatchBuild('doc').then(() => { completed = true })
+  const { handlers } = transport.started[0]
+  handlers.onMessage(
+    { t: 'rpc', id: 42, m: 'writeSentinel', a: ['doc-doc', { commitHash: 'abc' }] },
+    { send: msg => replies.push(msg) },
+  )
+  handlers.onExit(0)
+  await tick()
+  assert.equal(completed, false)
+  assert.deepEqual(replies, [])
+
+  releaseSink()
+  await build
+  assert.equal(completed, true)
+  assert.deepEqual(replies, [{ t: 'rpc-result', id: 42, ok: true, result: { skipped: false } }])
+})
+
 test('project request handlers schedule builds instead of importing non-SVG builders', () => {
   const source = readFileSync(resolve('server/routes/projects.mjs'), 'utf8')
   assert.doesNotMatch(source, /from ['"]\.\.\/lib\/format-builders\.mjs['"]/)

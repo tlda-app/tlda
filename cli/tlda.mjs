@@ -275,6 +275,16 @@ const red    = (s) => isTTY ? `\x1b[31m${s}\x1b[0m` : s
 const bold  = (s) => isTTY ? `\x1b[1m${s}\x1b[0m` : s
 const cyan  = (s) => isTTY ? `\x1b[36m${s}\x1b[0m` : s
 
+function printPushBuildStatus(result, unchangedMessage = 'No changes detected.') {
+  if (result.unchanged) {
+    console.log(dim(unchangedMessage))
+  } else if (result.building) {
+    console.log(green('Build triggered.'))
+  } else {
+    console.log(green('Source pushed; viewer rebuilds on demand.'))
+  }
+}
+
 // --- HTTP helpers ---
 
 async function api(method, path, body = null, { timeoutMs = 30000, token = getToken() } = {}) {
@@ -687,11 +697,7 @@ async function cmdPush() {
     sourceDir: dir,
     ...(session && { session, sessionAt: Date.now() }),
   }, { forceMetadata: !!session })
-  if (result.unchanged) {
-    console.log(dim('No changes detected (use `tlda build` to force a rebuild).'))
-  } else {
-    console.log(green('Build triggered.'))
-  }
+  printPushBuildStatus(result, 'No changes detected (use `tlda build` to force a rebuild).')
 
   // Auto-join book group from .tlda-book config in source dir
   const bookConfigPath = join(dir, '.tlda-book')

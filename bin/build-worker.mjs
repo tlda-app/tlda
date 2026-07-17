@@ -25,18 +25,44 @@ if (Number.isFinite(BUILD_PRIORITY)) {
   }
 }
 
-// Route every side-effect back to the parent. Ordered IPC (process.send) keeps
-// the sentinel-then-reload ordering the pipeline relies on.
+let nextRpcId = 1
+const pendingRpc = new Map()
+
+function sendReport(method, args) {
+  process.send?.({ t: 'report', m: method, a: args })
+}
+
+function callParent(method, args) {
+  if (!process.send) return Promise.reject(new Error(`build worker IPC unavailable for ${method}`))
+  const id = nextRpcId++
+  return new Promise((resolve, reject) => {
+    pendingRpc.set(id, { resolve, reject })
+    process.send({ t: 'rpc', id, m: method, a: args })
+  })
+}
+
+// Route side-effects back to the parent. Chatty/progress effects are queued
+// reports. Finalizer-critical effects return acknowledged RPC promises so the
+// build can own completion across the worker/server boundary.
 setBuildReporter({
-  broadcastSignal: (room, signal, payload) => process.send?.({ t: 'report', m: 'broadcastSignal', a: [room, signal, payload] }),
-  putShape:        (docName, shape)        => process.send?.({ t: 'report', m: 'putShape',        a: [docName, shape] }),
-  patchShape:      (docName, shapeId, propsPatch) => process.send?.({ t: 'report', m: 'patchShape', a: [docName, shapeId, propsPatch] }),
-  writeSentinel:   (docName, propsPatch)   => process.send?.({ t: 'report', m: 'writeSentinel',   a: [docName, propsPatch] }),
-  emitGlobalEvent: (type, payload)         => process.send?.({ t: 'report', m: 'emitGlobalEvent', a: [type, payload] }),
-  updateProject:   (name, patch)           => process.send?.({ t: 'report', m: 'updateProject',   a: [name, patch] }),
+  broadcastSignal: (room, signal, payload) => sendReport('broadcastSignal', [room, signal, payload]),
+  putShape:        (docName, shape)        => sendReport('putShape',        [docName, shape]),
+  patchShape:      (docName, shapeId, propsPatch) => sendReport('patchShape', [docName, shapeId, propsPatch]),
+  writeSentinel:   (docName, propsPatch)   => callParent('writeSentinel',   [docName, propsPatch]),
+  emitGlobalEvent: (type, payload)         => sendReport('emitGlobalEvent', [type, payload]),
+  updateProject:   (name, patch)           => sendReport('updateProject',   [name, patch]),
+  mirrorShadow:    (name, hash)            => callParent('mirrorShadow',    [name, hash]),
 })
 
 process.on('message', async (msg) => {
+  if (msg?.t === 'rpc-result') {
+    const pending = pendingRpc.get(msg.id)
+    if (!pending) return
+    pendingRpc.delete(msg.id)
+    if (msg.ok) pending.resolve(msg.result)
+    else pending.reject(new Error(msg.error || 'worker RPC failed'))
+    return
+  }
   if (msg?.t !== 'build') return
   try {
     // This process has its own project-store module instance — point it at the

@@ -25,7 +25,7 @@ export const ForkTransport = {
       return { cancel() {} }
     }
 
-    child.on('message', onMessage)
+    child.on('message', msg => onMessage(msg, { send: payload => child.send(payload) }))
     child.on('error', onError)
     child.on('exit', onExit)
     child.send({ t: 'build', name: job.name, kind: job.kind, priorityPages: job.priorityPages, projectsDir: job.projectsDir })

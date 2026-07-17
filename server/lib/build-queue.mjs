@@ -72,10 +72,21 @@ export function createBuildQueue({
     const { name, priorityPages, kind } = job
     const key = jobKey(name, kind)
     let relays = Promise.resolve()
-    function relay(msg) {
+    function relay(msg, channel) {
       // IPC preserves message order; serialize server effects as well so a
       // sentinel write completes before the reload that follows it.
-      relays = relays.then(() => relayMessage?.(name, msg)).catch((e) => logError(name, e))
+      relays = relays.then(async () => {
+        if (msg?.t === 'rpc') {
+          try {
+            const result = await relayMessage?.(name, msg)
+            channel?.send?.({ t: 'rpc-result', id: msg.id, ok: true, result })
+          } catch (e) {
+            channel?.send?.({ t: 'rpc-result', id: msg.id, ok: false, error: e?.message || String(e) })
+          }
+          return
+        }
+        await relayMessage?.(name, msg)
+      }).catch((e) => logError(name, e))
     }
     function onError(e) { logError(name, e) }
 

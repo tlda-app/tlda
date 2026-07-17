@@ -9,6 +9,7 @@ import { writeSentinel } from './sentinel.mjs'
 import { loadConfig } from '../../shared/config.mjs'
 import { makeTransport } from './build-transport.mjs'
 import { createBuildQueue } from './build-queue.mjs'
+import { mirrorShadow } from './build-runner.mjs'
 
 // The real server-side side-effect functions, keyed the way the worker reports
 // them. A build that runs in the worker calls these here, in the server process.
@@ -46,7 +47,7 @@ async function patchShape(docName, shapeId, propsPatch) {
   }
 }
 
-const SINKS = { broadcastSignal, putShape, patchShape, writeSentinel, emitGlobalEvent, updateProject }
+const SINKS = { broadcastSignal, putShape, patchShape, writeSentinel, emitGlobalEvent, updateProject, mirrorShadow }
 
 /**
  * Create a bound dispatcher instance. Transport is injected so the coalescing
@@ -70,6 +71,11 @@ export function createDispatcherWithOptions(transport, options = {}) {
           // One side-effect failure must not hide worker exit/completion from waiters.
           console.error(`[build-dispatch] relay ${msg.m} for ${name} failed: ${e.message}`)
           })
+      }
+      if (msg?.t === 'rpc') {
+        const sink = sinks[msg.m]
+        if (!sink) throw new Error(`unknown build worker RPC: ${msg.m}`)
+        return Promise.resolve().then(() => sink(...(msg.a || [])))
       }
     },
   }, options)

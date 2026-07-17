@@ -112,6 +112,7 @@ const _directReporter = {
   },
   emitGlobalEvent: (type, payload) => emitGlobalEvent(type, payload),
   updateProject: (name, patch) => updateProject(name, patch),
+  mirrorShadow: (name, hash) => mirrorShadow(name, hash),
 }
 let _reporter = _directReporter
 export function setBuildReporter(r) { _reporter = r || _directReporter }
@@ -126,6 +127,14 @@ let mirrorShadowSnapshot = null
 
 export function setShadowMirrorHandler(handler) {
   mirrorShadowSnapshot = typeof handler === 'function' ? handler : null
+}
+
+export async function mirrorShadow(name, hash) {
+  if (!mirrorShadowSnapshot) {
+    throw new Error('no daemon mirror handler registered')
+  }
+  const bundleBase64 = await createShadowBundleBase64(name, hash)
+  return mirrorShadowSnapshot({ name, hash, bundleBase64 })
 }
 
 function convertScratchMarkdown(srcDir, addLog) {
@@ -1667,6 +1676,132 @@ export function emitDocArrived(name) {
   } catch {}
 }
 
+async function finalizeBuildVersion({
+  name,
+  ctx,
+  projDir,
+  expectedPages,
+  svgsReadyAt,
+  buildErrSnapshot,
+  buildWarnSnapshot,
+  sourceVersion,
+  lastBuildSuccess,
+}) {
+  const result = await commitSnapshot(name)
+  if (!result) {
+    const current = await currentVersion(name)
+    if (current?.hash) {
+      await updateDocVersionSentinel(name, current.hash, svgsReadyAt, buildErrSnapshot, buildWarnSnapshot, sourceVersion)
+    }
+    return { hash: current?.hash || null, committed: false }
+  }
+
+  await updateDocVersionSentinel(name, result.hash, svgsReadyAt, buildErrSnapshot, buildWarnSnapshot, sourceVersion)
+  recordGitSnapshot(name, { commitHash: result.hash, commitMessage: result.message || `Build at ${new Date().toISOString()}`, pages: expectedPages ?? 0 })
+  _reporter.emitGlobalEvent('version-committed', { name, hash: result.hash, timestamp: result.timestamp })
+
+  const hash7 = result.hash.slice(0, 7)
+  try {
+    const mirrorResult = await _reporter.mirrorShadow(name, result.hash)
+    _reporter.updateProject(name, { lastMirrorSuccess: new Date().toISOString(), lastMirrorFailure: null })
+    await _reporter.writeSentinel(`doc-${name}`, { timestamp: Date.now(), syncErrorJson: '' })
+    console.log(`[mirror] ${name}@${hash7} ok via daemon ${mirrorResult?.machine_id || 'unknown'} -> ${mirrorResult?.sourceDir || 'source repo'}`)
+  } catch (mirrorErr) {
+    console.error(`[mirror] ${name}@${hash7} failed: ${mirrorErr.message}`)
+    ctx.addLog(`mirror to working copy failed (non-fatal): ${mirrorErr.message}`)
+    _reporter.updateProject(name, { lastMirrorFailure: { at: new Date().toISOString(), hash: result.hash, message: mirrorErr.message } })
+    await _reporter.writeSentinel(`doc-${name}`, {
+      timestamp: Date.now(),
+      sourceVersion,
+      syncErrorJson: JSON.stringify([{ kind: 'sync-error', message: `Mirror failed: ${mirrorErr.message}` }]),
+    })
+    const lastMirrorSuccessForFailure = readProject(name)?.lastMirrorSuccess || null
+    const buildFiles = readBuildFilesForEvent(name, projDir)
+    _reporter.emitGlobalEvent('build-card', {
+      name,
+      hash: hash7,
+      summary: null,
+      lintFindings: [],
+      mirrorFailed: mirrorErr.message,
+      lastMirrorSuccess: lastMirrorSuccessForFailure,
+      buildFiles,
+      editedBy: resolveEditedBy(name),
+    })
+  }
+
+  try {
+    const shadowDir = join(projDir, 'shadow-repo')
+    const { stdout: diffOutput } = await _execAsync(
+      `git diff HEAD~1 HEAD -- "*.tex" 2>/dev/null || true`,
+      { cwd: shadowDir, encoding: 'utf8', timeout: 10000 }
+    )
+    if (diffOutput.trim()) {
+      const summary = summarizeDiff(diffOutput, name)
+      console.log(`[build:${name}] Change summary: ${summary ? summary.split('\n').length + ' lines' : 'null'}`)
+      if (summary) {
+        _reporter.broadcastSignal(`doc-${name}`, 'signal:build-summary', {
+          hash: hash7,
+          summary,
+          timestamp: Date.now(),
+        })
+      }
+      const lintFindings = []
+      try {
+        const lintersDir = join(homedir(), '.config', 'tlda', 'linters')
+        if (existsSync(lintersDir)) {
+          const scripts = readdirSync(lintersDir).filter(f => !f.startsWith('.'))
+          for (const script of scripts) {
+            const scriptPath = join(lintersDir, script)
+            try {
+              const output = await new Promise((resolve, reject) => {
+                const child = spawn(process.execPath, [scriptPath], {
+                  env: { ...process.env, TLDA_SRCDIR: shadowDir },
+                  stdio: ['pipe', 'pipe', 'inherit'],
+                })
+                const chunks = []
+                child.stdout.on('data', d => chunks.push(d))
+                child.stdin.write(diffOutput)
+                child.stdin.end()
+                child.on('close', () => resolve(Buffer.concat(chunks).toString('utf8').trim()))
+                child.on('error', reject)
+              })
+              if (output) {
+                lintFindings.push({ source: script, text: output })
+                console.log(`[build:${name}] Lint (${script}): ${output.split('\n')[0]}`)
+              }
+            } catch (scriptErr) {
+              console.error(`[build:${name}] Lint script ${script} failed:`, scriptErr.message)
+            }
+          }
+        }
+      } catch (lintErr) {
+        console.error(`[build:${name}] BYOL lint failed:`, lintErr.message)
+      }
+      if (summary || lintFindings.length > 0) {
+        const buildFiles = readBuildFilesForEvent(name, projDir)
+        _reporter.emitGlobalEvent('build-card', {
+          name,
+          hash: hash7,
+          summary: summary || null,
+          lintFindings,
+          buildFiles,
+          lastBuildSuccess,
+          editedBy: resolveEditedBy(name),
+        })
+        if (lintFindings.length > 0) {
+          signalBuildStatus(name, null, lintFindings.map(f => ({
+            message: f.text, file: null, line: null, category: 'lint',
+          })))
+        }
+      }
+    } else {
+      console.log(`[build:${name}] No tex diff between shadow commits`)
+    }
+  } catch (diffErr) { console.error(`[build:${name}] Change summary failed:`, diffErr.message) }
+
+  return { hash: result.hash, committed: true }
+}
+
 // ─── Orchestrator ────────────────────────────────────────────────────────────
 
 export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
@@ -1904,24 +2039,22 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
       )
     }
 
-    // Send the reload signal once, after all targets finish.
+    // Publish the build once all targets finish.
     const svgsReadyAt = Date.now()
     // Snapshot the current build errors/warnings to persist in the sentinel.
     const { errors: buildErrSnapshot, warnings: buildWarnSnapshot } = extractBuildErrors(name)
-    signalReload(name, null)
 
     // Total pages across all targets — what the viewer reports as project.pages.
     const expectedPages = totalPages
 
-    // Finalize. `targets` always reflects the current target set so the
+    // Store the target shape before finalization. `targets` always reflects the
     // viewer doesn't have to special-case single-target — it just renders
     // a one-element list.
     const lastBuildSuccess = readProject(name)?.lastBuildSuccess || null
     _reporter.updateProject(name, {
       pages: expectedPages,
-      buildStatus: 'success',
+      buildStatus: 'finalizing',
       lastBuild: new Date().toISOString(),
-      lastBuildSuccess: new Date().toISOString(),
       targets: targetMeta.map(t => ({ texBase: t.texBase, mainFile: t.mainFile, pages: t.expectedPages })),
     })
     clearSynctexCache(name)
@@ -1943,11 +2076,6 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
       ctx.addLog(`Changelog failed (non-fatal): ${e.message}`)
     }
 
-    const totalElapsed = elapsed()
-    ctx.addLog(`Build complete in ${totalElapsed}s`)
-    signalBuildProgress(name, 'done', `${totalElapsed}s`)
-    emitBuildComplete(name, { status: 'success', elapsed: totalElapsed, pages: expectedPages ?? 0, errors: [] })
-
     // Bootstrap: if the project's working copy is a git repo AND the shadow
     // doesn't have real history yet, seed the shadow by filtering the
     // working-copy git to paper-scope. Folds into the normal back-and-forth
@@ -1958,150 +2086,38 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
       ctx.addLog(`shadow bootstrap from project repo skipped (non-fatal): ${e.message}`)
     })
 
-    // Commit source snapshot to shadow repo (non-blocking)
-    commitSnapshot(name).then(async result => {
-      if (!result) {
-        // Rebuilds with unchanged source do not create a new shadow commit, but
-        // the published SVGs did become ready again. Keep the Yjs sentinel's
-        // buildReadyAt in sync so reconnecting viewers do not show an old build
-        // timestamp beside fresh project/build state.
-        const current = await currentVersion(name)
-        if (current?.hash) {
-          updateDocVersionSentinel(name, current.hash, svgsReadyAt, buildErrSnapshot, buildWarnSnapshot, sourceVersion).catch(e => {
-            ctx.addLog(`doc-version sentinel update failed (non-fatal): ${e.message}`)
-          })
-        }
-        return
-      }
-      if (result) {
-        // Update doc-version sentinel with shadow hash (the build's version identity)
-        // plus the build's errors/warnings (persistent, convergent).
-        updateDocVersionSentinel(name, result.hash, svgsReadyAt, buildErrSnapshot, buildWarnSnapshot, sourceVersion).catch(e => {
-          ctx.addLog(`doc-version sentinel update failed (non-fatal): ${e.message}`)
-        })
-        recordGitSnapshot(name, { commitHash: result.hash, commitMessage: result.message || `Build at ${new Date().toISOString()}`, pages: expectedPages ?? 0 })
-        _reporter.emitGlobalEvent('version-committed', { name, hash: result.hash, timestamp: result.timestamp })
-        // Mirror: send the committed shadow snapshot to the daemon that owns the
-        // paper working copy and import it there as refs only. The server-local
-        // shadow-repo path is not a transport in the multi-machine deployment.
-        const hash7 = result.hash.slice(0, 7)
-        try {
-          if (!mirrorShadowSnapshot) {
-            throw new Error('no daemon mirror handler registered')
-          }
-          const bundleBase64 = await createShadowBundleBase64(name, result.hash)
-          const mirrorResult = await mirrorShadowSnapshot({ name, hash: result.hash, bundleBase64 })
-          _reporter.updateProject(name, { lastMirrorSuccess: new Date().toISOString(), lastMirrorFailure: null })
-          _reporter.writeSentinel(`doc-${name}`, { timestamp: Date.now(), syncErrorJson: '' }).catch(e => {
-            ctx.addLog(`sync-error clear failed (non-fatal): ${e.message}`)
-          })
-          console.log(`[mirror] ${name}@${hash7} ok via daemon ${mirrorResult?.machine_id || 'unknown'} → ${mirrorResult?.sourceDir || 'source repo'}`)
-        } catch (mirrorErr) {
-          console.error(`[mirror] ${name}@${hash7} failed: ${mirrorErr.message}`)
-          ctx.addLog(`mirror to working copy failed (non-fatal): ${mirrorErr.message}`)
-          _reporter.updateProject(name, { lastMirrorFailure: { at: new Date().toISOString(), hash: result.hash, message: mirrorErr.message } })
-          _reporter.writeSentinel(`doc-${name}`, {
-            timestamp: Date.now(),
-            sourceVersion,
-            syncErrorJson: JSON.stringify([{ kind: 'sync-error', message: `Mirror failed: ${mirrorErr.message}` }]),
-          }).catch(e => {
-            ctx.addLog(`sync-error sentinel update failed (non-fatal): ${e.message}`)
-          })
-          // Include lastMirrorSuccess so the failure handler can narrow the responsible-agent
-          // window to edits that happened after the last clean mirror.
-          const lastMirrorSuccess = readProject(name)?.lastMirrorSuccess || null
-          // Include build file list so the handler matches edits to actual build files.
-          const buildFiles = readBuildFilesForEvent(name, projDir)
-          _reporter.emitGlobalEvent('build-card', {
-            name,
-            hash: result.hash.slice(0, 7),
-            summary: null,
-            lintFindings: [],
-            mirrorFailed: mirrorErr.message,
-            lastMirrorSuccess,
-            buildFiles,
-            editedBy: resolveEditedBy(name),
-          })
-        }
-        // Build change summary: diff against previous shadow commit
-        try {
-          const shadowDir = join(projDir, 'shadow-repo')
-          const { stdout: diffOutput } = await _execAsync(
-            `git diff HEAD~1 HEAD -- "*.tex" 2>/dev/null || true`,
-            { cwd: shadowDir, encoding: 'utf8', timeout: 10000 }
-          )
-          if (diffOutput.trim()) {
-            const summary = summarizeDiff(diffOutput, name)
-            console.log(`[build:${name}] Change summary: ${summary ? summary.split('\n').length + ' lines' : 'null'}`)
-            // Broadcast viewer signal regardless of lint
-            if (summary) {
-              _reporter.broadcastSignal(`doc-${name}`, 'signal:build-summary', {
-                hash: result.hash.slice(0, 7),
-                summary,
-                timestamp: Date.now(),
-              })
-            }
-            // BYOL linters: collect all findings, then emit ONE build-card event.
-            const lintFindings = []
-            try {
-              const lintersDir = join(homedir(), '.config', 'tlda', 'linters')
-              if (existsSync(lintersDir)) {
-                const scripts = readdirSync(lintersDir).filter(f => !f.startsWith('.'))
-                for (const script of scripts) {
-                  const scriptPath = join(lintersDir, script)
-                  try {
-                    const output = await new Promise((resolve, reject) => {
-                      const child = spawn(process.execPath, [scriptPath], {
-                        env: { ...process.env, TLDA_SRCDIR: shadowDir },
-                        stdio: ['pipe', 'pipe', 'inherit'],
-                      })
-                      const chunks = []
-                      child.stdout.on('data', d => chunks.push(d))
-                      child.stdin.write(diffOutput)
-                      child.stdin.end()
-                      child.on('close', () => resolve(Buffer.concat(chunks).toString('utf8').trim()))
-                      child.on('error', reject)
-                    })
-                    if (output) {
-                      lintFindings.push({ source: script, text: output })
-                      console.log(`[build:${name}] Lint (${script}): ${output.split('\n')[0]}`)
-                    }
-                  } catch (scriptErr) {
-                    console.error(`[build:${name}] Lint script ${script} failed:`, scriptErr.message)
-                  }
-                }
-              }
-            } catch (lintErr) {
-              console.error(`[build:${name}] BYOL lint failed:`, lintErr.message)
-            }
-            // Emit single build-card event (aggregates summary + all lint findings)
-            if (summary || lintFindings.length > 0) {
-              const buildFiles = readBuildFilesForEvent(name, projDir)
-              _reporter.emitGlobalEvent('build-card', {
-                name,
-                hash: result.hash.slice(0, 7),
-                summary: summary || null,
-                lintFindings,
-                buildFiles,
-                lastBuildSuccess,
-                editedBy: resolveEditedBy(name),
-              })
-              // Surface lint findings as warnings on the build pill too, alongside
-              // tex/remap warnings (re-broadcast preserves the existing tex warnings).
-              if (lintFindings.length > 0) {
-                signalBuildStatus(name, null, lintFindings.map(f => ({
-                  message: f.text, file: null, line: null, category: 'lint',
-                })))
-              }
-            }
-          } else {
-            console.log(`[build:${name}] No tex diff between shadow commits`)
-          }
-        } catch (diffErr) { console.error(`[build:${name}] Change summary failed:`, diffErr.message) }
-      }
-    }).catch(e => {
-      ctx.addLog(`shadow-repo commit failed (non-fatal): ${e.message}`)
+    try {
+      await finalizeBuildVersion({
+        name,
+        ctx,
+        projDir,
+        expectedPages,
+        svgsReadyAt,
+        buildErrSnapshot,
+        buildWarnSnapshot,
+        sourceVersion,
+        lastBuildSuccess,
+      })
+    } catch (e) {
+      ctx.addLog(`build publish/finalize failed: ${e.message}`)
+      _reporter.updateProject(name, { buildStatus: 'finalize-failed' })
+      signalBuildProgress(name, 'failed', `publish failed: ${e.message}`)
+      emitBuildComplete(name, { status: 'failed', elapsed: elapsed(), pages: expectedPages ?? 0, errors: [e.message] })
+      throw e
+    }
+
+    signalReload(name, null)
+
+    _reporter.updateProject(name, {
+      buildStatus: 'success',
+      lastBuild: new Date().toISOString(),
+      lastBuildSuccess: new Date().toISOString(),
     })
+
+    const totalElapsed = elapsed()
+    ctx.addLog(`Build complete in ${totalElapsed}s`)
+    signalBuildProgress(name, 'done', `${totalElapsed}s`)
+    emitBuildComplete(name, { status: 'success', elapsed: totalElapsed, pages: expectedPages ?? 0, errors: [] })
 
     status.building = false
     status.phase = 'done'
@@ -2248,7 +2264,8 @@ function signalReload(name, pages) {
 
 /**
  * Update the doc-version sentinel shape in the Yjs room with the current
- * source git commit hash. Fire-and-forget — call without await.
+ * source git commit hash. Build finalization awaits this: the sentinel is
+ * viewer-visible version state, not a best-effort side effect.
  */
 async function updateDocVersionSentinel(name, shadowHash, buildReadyAt, errors, warnings, sourceVersion) {
   const commitHash = shadowHash || 'unknown'
