@@ -122,16 +122,18 @@ const consecutive = (xs) => xs.every((x, i) => i === 0 || x === xs[i - 1] + 1)
   check('scrollback evicted newest ids leave the key map', !s.get('db:6') && !s.get('db:8') && s.get('db:5'))
 }
 
-// --- 11. Live arrival after a history-shift starts a fresh tail window, no split ---
+// --- 11. Live arrival after a history-shift keeps one capped chronological window ---
 {
   const s = makeEventStore({ maxEvents: 5 })
   s.upsertMany([event(4), event(5), event(6), event(7), event(8)])
   s.upsertMany([event(1), event(2), event(3)], { evict: 'newest' })
   s.upsert(event(9))
-  check('live after scrollback does not make an old+live split', ids(s).join() === '9')
+  check('live after scrollback trims oldest into one chronological window', ids(s).join() === '2,3,4,5,9')
+  check('live after scrollback evicted oldest id leaves the key map', !s.get('db:1') && s.get('db:2') && s.get('db:9'))
   s.upsert(event(10))
   s.upsert(event(11))
-  check('new live tail grows contiguously', ids(s).join() === '9,10,11')
+  check('new live tail keeps capped chronological window', ids(s).join() === '4,5,9,10,11')
+  check('new live tail evicts oldest ids only', !s.get('db:2') && !s.get('db:3') && s.get('db:4') && s.get('db:11'))
 }
 
 console.log(`\n${pass} passed, ${fail} failed`)

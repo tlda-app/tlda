@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-import { isPidfileHolderCurrent } from '../bin/lib/singleton-lock.mjs'
+import { isPidfileHolderCurrent } from '../agent-runtime/singleton-lock.mjs'
 
 test('pidfile fallback rejects stale holder from a previous boot', () => {
   const holder = {

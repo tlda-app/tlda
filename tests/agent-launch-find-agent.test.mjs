@@ -17,7 +17,7 @@ function permissionSet() {
       spawn: { allow: [], deny: [] },
     },
     rules: [],
-    projectedPolicy: { name: 'ops', policy: 'unsandboxed' },
+    projectedPolicy: { policy: 'unsandboxed' },
   }
 }
 
@@ -27,6 +27,7 @@ test('findLocalAgent resolves same-box seats from the daemon ledger', async () =
   try {
     ledger.setSync('fleet:mend', {
       spawnPolicy: { name: 'ops', policy: 'unsandboxed' },
+      permissionProfile: 'ops',
       permissionSet: permissionSet(),
       source: 'test',
     })
@@ -42,7 +43,8 @@ test('findLocalAgent resolves same-box seats from the daemon ledger', async () =
     assert.equal(byName.id, 'fleet:mend')
     assert.equal(byName.tmux_session, 'fleet-mend')
     assert.equal(byName.metadata.kind, 'codex')
-    assert.deepEqual(byName.metadata.spawnPolicy, { name: 'ops', policy: 'unsandboxed' })
+    assert.deepEqual(ledger.get('fleet:mend').permissionProfile, 'ops')
+    assert.deepEqual(byName.metadata.spawnPolicy, { policy: 'unsandboxed' })
     assert.deepEqual(byName.metadata.permissionSet, permissionSet())
 
     const byId = findLocalAgent('fleet:mend', { ledger })

@@ -8,8 +8,24 @@
  */
 
 import { execSync } from 'child_process'
+import test from 'node:test'
 import { setup, teardown, getScrollState, sendChat, pwEval, pwResult, Suite, delay } from '../harness.mjs'
 
+const previewPort = parseInt(process.env.TLDA_TEST_PORT || '5179')
+const previewPrereq = `requires worktree preview server on :${previewPort} - start with tlda-dev serve`
+
+function hasWorktreePreviewServer() {
+  try {
+    execSync(`curl -skf -o /dev/null --max-time 2 https://localhost:${previewPort}/`, { stdio: 'ignore' })
+    return true
+  } catch {
+    return false
+  }
+}
+
+if (!hasWorktreePreviewServer()) {
+  test('idle chat render count', { skip: previewPrereq }, () => {})
+} else {
 const suite = new Suite('idle chat render count')
 
 function getBestLogExpression() {
@@ -203,3 +219,4 @@ try {
 
 const r = suite.summary()
 process.exit(r.failed > 0 ? 1 : 0)
+}

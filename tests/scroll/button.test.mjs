@@ -13,11 +13,28 @@
  *   C4 — wheel-scrolling back to bottom (Magic Mouse) hides it again
  */
 
+import { execSync } from 'child_process'
+import test from 'node:test'
 import { setup, teardown, getScrollState, getScrollButtonState,
          scrollToBottom, scrollUp, pw, pwEval, sendChat, populateChat,
          expectAtBottom, expectScrolledUp, expectButtonVisible, expectButtonHidden,
          Suite, delay } from '../harness.mjs'
 
+const previewPort = parseInt(process.env.TLDA_TEST_PORT || '5179')
+const previewPrereq = `requires worktree preview server on :${previewPort} - start with tlda-dev serve`
+
+function hasWorktreePreviewServer() {
+  try {
+    execSync(`curl -skf -o /dev/null --max-time 2 https://localhost:${previewPort}/`, { stdio: 'ignore' })
+    return true
+  } catch {
+    return false
+  }
+}
+
+if (!hasWorktreePreviewServer()) {
+  test('C scroll-to-bottom button', { skip: previewPrereq }, () => {})
+} else {
 const suite = new Suite('C scroll-to-bottom button')
 
 const ctx = await setup({})
@@ -73,3 +90,4 @@ try {
 
 const r = suite.summary()
 process.exit(r.failed > 0 ? 1 : 0)
+}
