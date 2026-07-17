@@ -23,7 +23,7 @@ coordination, process attribution, and rollout accounting.
   grant/release protocol window around message `1346649`, establish the
   fleet-wide heavy-slot convention.
 - `chiefplz` message `1353528`: binding process rules from the 2b rejection.
-- `permission-status-reviewer` rejection message `1353467` and Stabilizer
+- `status-truth-reviewer` rejection message `1353467` and Stabilizer
   accountability message `1353524`: source anchors for the 2b consumer-scan
   and durable-evidence rules.
 
