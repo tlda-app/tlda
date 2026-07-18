@@ -610,9 +610,9 @@ const agentLauncher = createAgentLauncher({
   // row carries session_id before anything tries to wake/route this seat —
   // otherwise every later wake fails with "missing daemon-ledger resume
   // identity" even though the rollout exists.
-  liveCodexSessionIdentityResolver: async ({ fleetId, cwd, launchStartedAt }) => {
-    const agent = { id: fleetId, cwd, registered_at: launchStartedAt }
-    const found = findCodexRollout(agent, {})
+  liveCodexSessionIdentityResolver: async ({ fleetId, sessionId, cwd, launchStartedAt }) => {
+    const agent = { id: fleetId, session_id: sessionId || null, cwd, registered_at: launchStartedAt }
+    const found = findCodexRollout(agent, sessionId ? { sessionOverride: sessionId } : {})
     if (found?.rolloutId) {
       return { sessionId: found.rolloutId, jsonlPath: found.jsonlPath, model: found.sessionMeta?.model || null }
     }
@@ -621,7 +621,7 @@ const agentLauncher = createAgentLauncher({
   // Transparent parallel of the codex resolver above — the ONLY difference is
   // where each harness records its newborn session: codex writes a rollout
   // file; claude writes a PID-keyed record in ~/.claude/sessions/<pid>.json.
-  liveClaudeSessionIdentityResolver: async ({ tmuxSession }) => {
+  liveClaudeSessionIdentityResolver: async ({ tmuxSession, sessionId }) => {
     const sessionsDir = path.join(os.homedir(), '.claude', 'sessions')
     let panePid
     try {
@@ -646,7 +646,7 @@ const agentLauncher = createAgentLauncher({
       if (!fs.existsSync(f)) continue
       try {
         const rec = JSON.parse(fs.readFileSync(f, 'utf8'))
-        if (rec?.sessionId) {
+        if (rec?.sessionId && (!sessionId || rec.sessionId === sessionId)) {
           const projectHash = String(rec.cwd || '').replace(/[/.]/g, '-')
           const jsonlPath = path.join(os.homedir(), '.claude', 'projects', projectHash, `${rec.sessionId}.jsonl`)
           return { sessionId: rec.sessionId, jsonlPath, model: null }

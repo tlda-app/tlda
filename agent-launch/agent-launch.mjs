@@ -84,6 +84,7 @@ export function createAgentLauncher({
   function emitAgentSeatBinding({
     fleetId,
     sessionId,
+    sessionPath,
     resumeId = sessionId,
     harness,
     model,
@@ -97,7 +98,7 @@ export function createAgentLauncher({
     permissionLedger.setSessionSync(fleetId, {
       sessionId,
       sessionKind: harness,
-      sessionPath: null,
+      sessionPath,
       tmuxSession,
       model,
       machineId,
@@ -442,14 +443,16 @@ export function createAgentLauncher({
       }
       const liveIdentityResolver = liveIdentityResolvers[launched.harness] || null
       let liveIdentity = null
+      const preResolutionLedgerRow = launched.fleetId ? permissionLedger.get(launched.fleetId) : null
+      const existingDurableSessionId = launched.resumeId || preResolutionLedgerRow?.sessionId || sessionId || null
       if (
         liveIdentityResolver &&
-        !launched.resumeId &&
-        !permissionLedger.get(launched.fleetId)?.sessionId
+        (!existingDurableSessionId || !preResolutionLedgerRow?.sessionPath)
       ) {
         try {
           liveIdentity = await resolveLiveSessionIdentity(liveIdentityResolver, {
             fleetId: launched.fleetId,
+            sessionId: existingDurableSessionId,
             agentName,
             tmuxSession: launched.tmuxSession,
             cwd: resolvedCwd,
@@ -465,9 +468,11 @@ export function createAgentLauncher({
       }
       const ledgerRow = launched.fleetId ? permissionLedger.get(launched.fleetId) : null
       const durableSessionId = launched.resumeId || liveIdentity?.sessionId || ledgerRow?.sessionId || sessionId || null
+      const durableSessionPath = liveIdentity?.jsonlPath || ledgerRow?.sessionPath || null
       emitAgentSeatBinding({
         fleetId: launched.fleetId,
         sessionId: durableSessionId,
+        sessionPath: durableSessionPath,
         resumeId: durableSessionId,
         harness: launched.harness || ledgerRow?.sessionKind || launchKind,
         model: launched.model || liveIdentity?.model || ledgerRow?.model || launchModel,

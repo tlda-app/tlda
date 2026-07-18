@@ -1825,9 +1825,13 @@ export async function resolveInboxMessage(message, resolvers) {
   const recipientId = message.to || AGENT_ID;
   const attachmentResolvedText = chipResolvedText.replace(/\{\{att:(\d+)\}\}/g, (token, idx) => {
     const ref = recipientAttachmentRef(message.metadata, recipientId, idx);
+    const att = message.metadata?.inline_attachments?.[+idx];
+    // Materialization state is delivery metadata, never authored message text.
+    // Until a usable local/project path exists, preserve the sender's filename;
+    // the separate materializer notification carries pending/failure detail.
+    if (ref && ref.state !== 'available') return att?.name || token;
     const rendered = formatRecipientAttachmentRef(ref);
     if (rendered) return rendered;
-    const att = message.metadata?.inline_attachments?.[+idx];
     if (att?.url) return `${att.name || `attachment ${idx}`}: ${att.url}`;
     return token;
   });

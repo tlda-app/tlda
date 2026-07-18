@@ -2428,12 +2428,12 @@ async function materializeRecipientAttachment({ eventId, recipientId, sourceAgen
     }
     return { attachment, record }
   }
-  const route = resolveRpc('materialize-attachment', recipient)
-  if (route.via === 'none') {
-    return fail(route.error)
+  const current = currentSeatOrError(recipient)
+  if (current.error) {
+    return fail(`${current.error} (op=materialize-attachment)`)
   }
   try {
-    const result = await sendRpc(route.machine_id, 'materialize-attachment', {
+    const result = await sendRpc(current.seat.daemon_key, 'materialize-attachment', {
       event_id: eventId,
       attachment_id: attachment.id,
       source_agent: sourceAgent || 'unknown',

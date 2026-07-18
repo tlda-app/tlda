@@ -864,19 +864,43 @@ test('daemon ledger session identity is validate-equal after first write', async
   }
 })
 
-async function runLiveIdentityPolicyCase({ harness, identities, timeoutMs = 1_000 }) {
+async function runLiveIdentityPolicyCase({ harness, identities, timeoutMs = 1_000, existingSessionId = null }) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), `tlda-agent-launch-${harness}-identity-policy-`))
   const ledger = createPermissionLedger(path.join(tmp, 'fleet-daemon.db'))
   let now = 0
   const sleeps = []
   let calls = 0
-  const resolver = async () => identities[Math.min(calls++, identities.length - 1)]
+  const resolverInputs = []
+  const resolver = async input => {
+    resolverInputs.push(input)
+    return identities[Math.min(calls++, identities.length - 1)]
+  }
   try {
     ledger.setSync('fleet:requester', {
       spawnPolicy: { policy: 'unsandboxed' },
       permissionSet: permissionSet(),
       source: 'test-requester',
     })
+    const agentId = `fleet:${harness}-identity-policy`
+    if (existingSessionId) {
+      ledger.setSync(agentId, {
+        spawnPolicy: { policy: 'unsandboxed' },
+        permissionSet: permissionSet(),
+        source: 'test-existing-seat',
+      })
+      ledger.setSessionSync(agentId, {
+        sessionId: existingSessionId,
+        sessionKind: harness,
+        sessionPath: null,
+        tmuxSession: `fleet-${harness}-identity-policy`,
+        model: harness === 'codex' ? 'gpt-5.5' : 'claude-opus-4-6',
+        machineId: 'test-machine',
+        envName: 'test',
+        daemonKey: 'test-machine:test',
+        cwd: tmp,
+        friendlyName: `${harness}-identity-policy`,
+      })
+    }
     const launcher = createAgentLauncher({
       activeConfigName: 'test',
       configDir: tmp,
@@ -909,13 +933,14 @@ async function runLiveIdentityPolicyCase({ harness, identities, timeoutMs = 1_00
       }),
     })
     const result = await launcher.handlers.spawn({
+      agent_id: existingSessionId ? agentId : undefined,
       name: `${harness}-identity-policy`,
       model: harness === 'codex' ? 'gpt-5.5' : 'opus',
       kind: harness,
       cwd: tmp,
       requester: { id: 'fleet:requester', name: 'requester' },
     })
-    return { calls, sleeps, result, row: ledger.get(result.agent_id) }
+    return { calls, resolverInputs, sleeps, result, row: ledger.get(result.agent_id) }
   } finally {
     await ledger.close()
     fs.rmSync(tmp, { recursive: true, force: true })
@@ -928,7 +953,7 @@ test('Codex and Claude live identity resolution share retry and persistence beha
   for (const harness of ['codex', 'claude']) {
     outcomes.push(await runLiveIdentityPolicyCase({
       harness,
-      identities: [null, null, { sessionId, model: null }],
+      identities: [null, null, { sessionId, jsonlPath: `/tmp/${harness}-${sessionId}.jsonl`, model: null }],
     }))
   }
 
@@ -938,6 +963,27 @@ test('Codex and Claude live identity resolution share retry and persistence beha
     assert.deepEqual(outcome.sleeps, [500, 500])
     assert.equal(outcome.result.resume_id, sessionId)
     assert.equal(outcome.row?.sessionId, sessionId)
+    assert.match(outcome.row?.sessionPath || '', /\.jsonl$/)
+  }
+})
+
+test('Codex and Claude fill a missing session path without changing durable identity', async () => {
+  const sessionId = '66666666-2222-4333-8444-555555555555'
+  for (const harness of ['codex', 'claude']) {
+    const sessionPath = `/tmp/${harness}-${sessionId}.jsonl`
+    const outcome = await runLiveIdentityPolicyCase({
+      harness,
+      existingSessionId: sessionId,
+      identities: [{ sessionId, jsonlPath: sessionPath, model: null }],
+    })
+
+    assert.equal(outcome.result.ok, true, JSON.stringify(outcome.result))
+    assert.equal(outcome.calls, 1)
+    assert.deepEqual(outcome.sleeps, [])
+    assert.equal(outcome.row?.sessionId, sessionId)
+    assert.equal(outcome.row?.sessionPath, sessionPath)
+    assert.equal(outcome.row?.daemonKey, 'test-machine:test')
+    assert.equal(outcome.resolverInputs[0]?.sessionId, sessionId)
   }
 })
 

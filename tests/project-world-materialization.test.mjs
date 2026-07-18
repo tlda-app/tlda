@@ -275,10 +275,12 @@ test('server materializes project markdown before daemon-local attachment routin
   const block = source.slice(fnStart, fnEnd)
 
   const projectAt = block.indexOf('materializeProjectMarkdownAttachment')
-  const routeAt = block.indexOf("resolveRpc('materialize-attachment', recipient)")
+  const routeAt = block.indexOf('currentSeatOrError(recipient)')
   assert.notEqual(projectAt, -1)
   assert.notEqual(routeAt, -1)
   assert.ok(projectAt < routeAt, 'project artifact realization must not depend on daemon-local materialization')
+  assert.match(block, /sendRpc\(current\.seat\.daemon_key, 'materialize-attachment'/)
+  assert.doesNotMatch(block, /resolveRpc\('materialize-attachment'/)
   assert.match(block, /state: projectArtifact\?\.state === 'available' \? 'available' : 'failed'/)
   assert.match(block, /daemonMaterializationError: error/)
   assert.match(block, /if \(record\.state === 'available'\)[\s\S]*notifyRecipientMaterializationSuccess/)

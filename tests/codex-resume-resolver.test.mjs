@@ -5,6 +5,7 @@ import path from 'node:path'
 import test from 'node:test'
 
 import { createPermissionLedger } from '../agent-launch/permission-ledger.mjs'
+import { findCodexRollout } from '../agent-launch/resume.mjs'
 import { resolveCodexResumeHandle } from '../agent-runtime/codex-resume-resolver.mjs'
 
 function makeAgent(id = 'fleet:test-resume') {
@@ -15,6 +16,29 @@ function makeAgent(id = 'fleet:test-resume') {
     registered_at: '2026-07-10T12:00:00.000Z',
   }
 }
+
+test('exact Codex rollout lookup never substitutes another available rollout', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-codex-exact-rollout-'))
+  try {
+    const exactId = '10111111-2222-4333-8444-555555555555'
+    const otherId = '20222222-2222-4333-8444-555555555555'
+    const rolloutDir = path.join(tmp, '2026', '07', '18')
+    fs.mkdirSync(rolloutDir, { recursive: true })
+    fs.writeFileSync(path.join(rolloutDir, `rollout-2026-07-18T10-00-00-${otherId}.jsonl`), [
+      JSON.stringify({ type: 'session_meta', payload: { id: otherId, cwd: '/tmp/tlda-resume-test' } }),
+      '',
+    ].join('\n'))
+
+    const resolved = findCodexRollout(makeAgent(), {
+      sessionsBase: tmp,
+      sessionOverride: exactId,
+    })
+
+    assert.equal(resolved, null)
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
 
 test('codex resume resolver reads daemon ledger session identity', async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-codex-resume-'))
