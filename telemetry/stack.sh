@@ -13,29 +13,6 @@ GRAFANA_DATA_DIR="$STACK_DIR/grafana-data"
 GRAFANA_LOG_DIR="$STACK_DIR/grafana-logs"
 GRAFANA_PLUGIN_DIR="$STACK_DIR/grafana-plugins"
 
-GRAFANA_VERSION="${GRAFANA_VERSION:-11.5.2}"
-PROMETHEUS_VERSION="${PROMETHEUS_VERSION:-2.55.1}"
-GRAFANA_PORT="${GRAFANA_PORT:-3031}"
-PROMETHEUS_PORT="${PROMETHEUS_PORT:-9099}"
-GRAFANA_ADMIN_USER="${GRAFANA_ADMIN_USER:-admin}"
-GRAFANA_ADMIN_PASSWORD="${GRAFANA_ADMIN_PASSWORD:-admin}"
-INFINITY_PLUGIN_ID="${INFINITY_PLUGIN_ID:-yesoreyeram-infinity-datasource}"
-
-PROM_URL="http://127.0.0.1:${PROMETHEUS_PORT}"
-PROM_OTLP_ENDPOINT="${PROM_URL}/api/v1/otlp/v1/metrics"
-GRAFANA_HOST="${GRAFANA_HOST:-0.0.0.0}"
-GRAFANA_PUBLIC_HOST="${GRAFANA_PUBLIC_HOST:-davids-mac-mini.cormorant-matrix.ts.net}"
-GRAFANA_CERT_FILE="${GRAFANA_CERT_FILE:-$STACK_DIR/certs/${GRAFANA_PUBLIC_HOST}.crt}"
-GRAFANA_CERT_KEY="${GRAFANA_CERT_KEY:-$STACK_DIR/certs/${GRAFANA_PUBLIC_HOST}.key}"
-GRAFANA_PROTOCOL="${GRAFANA_PROTOCOL:-http}"
-if [[ "$GRAFANA_PROTOCOL" == "http" && -f "$GRAFANA_CERT_FILE" && -f "$GRAFANA_CERT_KEY" ]]; then
-  GRAFANA_PROTOCOL=https
-fi
-TLDA_FLEET_URL="${TLDA_FLEET_URL:-https://tlda-fly.cormorant-matrix.ts.net}"
-GRAFANA_URL="${GRAFANA_PROTOCOL}://${GRAFANA_PUBLIC_HOST}:${GRAFANA_PORT}/d/tlda-live-agent-activity/live-agent-activity"
-
-mkdir -p "$BIN_DIR" "$RUN_DIR" "$LOG_DIR" "$RENDER_DIR" "$PROM_DATA_DIR" "$GRAFANA_DATA_DIR" "$GRAFANA_LOG_DIR" "$GRAFANA_PLUGIN_DIR"
-
 die() {
   echo "telemetry stack: $*" >&2
   exit 1
@@ -44,6 +21,70 @@ die() {
 have() {
   command -v "$1" >/dev/null 2>&1
 }
+
+# Current Tailscale IPv4 addresses for this machine (normally exactly one).
+# Used both to resolve an unset GRAFANA_HOST and to validate an explicit one.
+tailscale_ipv4_addrs() {
+  have tailscale || die "tailscale CLI not found; cannot resolve/validate a tailnet-only bind address. Bring Tailscale up."
+  tailscale ip -4 2>/dev/null
+}
+
+# Binds only to this machine's current Tailscale interface address — never a
+# wildcard, never a stale hardcoded IP. Fails closed (refuses to start) rather
+# than silently falling back to something broader if Tailscale isn't up. An
+# explicit GRAFANA_HOST override is still validated against the machine's
+# actual current Tailscale addresses — it is NOT a free-form escape hatch.
+resolve_tailscale_bind_host() {
+  local addrs
+  addrs="$(tailscale_ipv4_addrs)"
+  [[ -n "$addrs" ]] || die "no current Tailscale IPv4 address; refusing to bind to a wildcard/LAN address. Bring Tailscale up."
+  if [[ -n "${GRAFANA_HOST:-}" ]]; then
+    if ! grep -qxF "$GRAFANA_HOST" <<<"$addrs"; then
+      die "GRAFANA_HOST=$GRAFANA_HOST is not one of this machine's current Tailscale IPv4 addresses ($addrs) — refusing a wildcard/LAN/stale bind. Unset GRAFANA_HOST to auto-resolve, or set it to one of the addresses above."
+    fi
+    echo "$GRAFANA_HOST"
+    return 0
+  fi
+  tail -1 <<<"$addrs"
+}
+
+# Fails closed if GRAFANA_ADMIN_PASSWORD is missing or the literal default.
+# Only called from the start path — status/stop/footprint never need it.
+require_admin_secret() {
+  if [[ -z "${GRAFANA_ADMIN_PASSWORD:-}" || "${GRAFANA_ADMIN_PASSWORD:-}" == "admin" ]]; then
+    die "GRAFANA_ADMIN_PASSWORD must be set to a non-default secret (e.g. \`GRAFANA_ADMIN_PASSWORD=\$(openssl rand -base64 24)\`) — refusing to start with a missing or default admin password."
+  fi
+}
+
+GRAFANA_VERSION="${GRAFANA_VERSION:-11.5.2}"
+GRAFANA_ARCHIVE_SHA256_DEFAULT="8ee7710c7446afb29cf7f6ac7f5de7fb0aeb7ce91141d4c9410d16ed5872739b"
+GRAFANA_ARCHIVE_SHA256="${GRAFANA_ARCHIVE_SHA256:-$GRAFANA_ARCHIVE_SHA256_DEFAULT}"
+PROMETHEUS_VERSION="${PROMETHEUS_VERSION:-2.55.1}"
+GRAFANA_PORT="${GRAFANA_PORT:-3031}"
+PROMETHEUS_PORT="${PROMETHEUS_PORT:-9099}"
+GRAFANA_ADMIN_USER="${GRAFANA_ADMIN_USER:-admin}"
+GRAFANA_ADMIN_PASSWORD="${GRAFANA_ADMIN_PASSWORD:-}"
+INFINITY_PLUGIN_ID="${INFINITY_PLUGIN_ID:-yesoreyeram-infinity-datasource}"
+
+PROM_URL="http://127.0.0.1:${PROMETHEUS_PORT}"
+PROM_OTLP_ENDPOINT="${PROM_URL}/api/v1/otlp/v1/metrics"
+# GRAFANA_HOST is resolved/validated lazily by start_grafana(), not here —
+# status/stop/footprint must stay usable without Tailscale being reachable.
+GRAFANA_PUBLIC_HOST="${GRAFANA_PUBLIC_HOST:-davids-mac-mini.cormorant-matrix.ts.net}"
+GRAFANA_CERT_FILE="${GRAFANA_CERT_FILE:-$STACK_DIR/certs/${GRAFANA_PUBLIC_HOST}.crt}"
+GRAFANA_CERT_KEY="${GRAFANA_CERT_KEY:-$STACK_DIR/certs/${GRAFANA_PUBLIC_HOST}.key}"
+GRAFANA_PROTOCOL="${GRAFANA_PROTOCOL:-http}"
+if [[ "$GRAFANA_PROTOCOL" == "http" && -f "$GRAFANA_CERT_FILE" && -f "$GRAFANA_CERT_KEY" ]]; then
+  GRAFANA_PROTOCOL=https
+fi
+# Anonymous access policy is deliberately left unresolved here — no default.
+# Callers must pass GF_AUTH_ANONYMOUS_ENABLED/GF_AUTH_ANONYMOUS_ORG_ROLE
+# explicitly (see start_grafana); this is a product/policy decision, not an
+# ops default this script should bake in.
+TLDA_FLEET_URL="${TLDA_FLEET_URL:-https://tlda-fly.cormorant-matrix.ts.net}"
+GRAFANA_URL="${GRAFANA_PROTOCOL}://${GRAFANA_PUBLIC_HOST}:${GRAFANA_PORT}/d/tlda-live-agent-activity/live-agent-activity"
+
+mkdir -p "$BIN_DIR" "$RUN_DIR" "$LOG_DIR" "$RENDER_DIR" "$PROM_DATA_DIR" "$GRAFANA_DATA_DIR" "$GRAFANA_LOG_DIR" "$GRAFANA_PLUGIN_DIR"
 
 main_checkout_root() {
   local common
@@ -119,6 +160,7 @@ download_and_unpack() {
   local version="$2"
   local url="$3"
   local target="$4"
+  local expected_sha256="${5:-}"
   local marker="$target/.version"
   if [[ -x "$target/bin/$name" && -f "$marker" && "$(cat "$marker")" == "$version" ]]; then
     return 0
@@ -129,6 +171,16 @@ download_and_unpack() {
   local archive="$STACK_DIR/${name}-${version}.tar.gz"
   echo "downloading $name $version"
   curl -fL "$url" -o "$archive"
+  if [[ -n "$expected_sha256" ]]; then
+    have shasum || die "shasum is required to verify $name download integrity"
+    local actual_sha256
+    actual_sha256="$(shasum -a 256 "$archive" | awk '{print $1}')"
+    if [[ "$actual_sha256" != "$expected_sha256" ]]; then
+      rm -f "$archive"
+      die "$name $version checksum mismatch: expected $expected_sha256, got $actual_sha256 — refusing to unpack a download that doesn't match the pinned checksum"
+    fi
+    echo "$name $version checksum verified: $actual_sha256"
+  fi
   tar -xzf "$archive" -C "$target.tmp" --strip-components=1
   mv "$target.tmp" "$target"
   echo "$version" > "$marker"
@@ -160,11 +212,21 @@ download() {
   have curl || die "curl is required"
   have tar || die "tar is required"
 
+  # The committed version→checksum pairing is immutable unless the caller
+  # explicitly acknowledges a change to EITHER value — not just the version.
+  # Setting GRAFANA_ARCHIVE_SHA256 alone (with GRAFANA_VERSION left at the
+  # pinned default) must not silently become the new verification authority.
+  if [[ "$GRAFANA_VERSION" != "11.5.2" || "$GRAFANA_ARCHIVE_SHA256" != "$GRAFANA_ARCHIVE_SHA256_DEFAULT" ]]; then
+    if [[ -z "${GRAFANA_ARCHIVE_SHA256_OVERRIDE_ACK:-}" ]]; then
+      die "GRAFANA_VERSION and/or GRAFANA_ARCHIVE_SHA256 differ from the committed pinned pair (11.5.2 / $GRAFANA_ARCHIVE_SHA256_DEFAULT) — set GRAFANA_ARCHIVE_SHA256_OVERRIDE_ACK=1 to confirm you independently verified the new checksum against Grafana's own release .sha256 file."
+    fi
+  fi
   download_and_unpack \
     grafana \
     "$GRAFANA_VERSION" \
     "https://dl.grafana.com/oss/release/grafana-${GRAFANA_VERSION}.darwin-arm64.tar.gz" \
-    "$BIN_DIR/grafana"
+    "$BIN_DIR/grafana" \
+    "$GRAFANA_ARCHIVE_SHA256"
 
   if [[ ! -d "$GRAFANA_PLUGIN_DIR/$INFINITY_PLUGIN_ID" ]]; then
     echo "installing Grafana plugin $INFINITY_PLUGIN_ID"
@@ -225,24 +287,48 @@ start_grafana() {
   local bin
   bin="$(grafana_bin)"
   [[ -x "$bin" ]] || die "grafana binary missing; run $0 download"
+
+  # Start-only prerequisites — resolved/validated here, not at script load,
+  # so status/stop/footprint stay usable without a Tailscale connection or an
+  # admin secret on hand.
+  require_admin_secret
+  GRAFANA_HOST="$(resolve_tailscale_bind_host)"
+
+  # Anonymous access is a policy decision this script deliberately does not
+  # make: if the caller never set GF_AUTH_ANONYMOUS_ENABLED at all, it is not
+  # passed to Grafana and Grafana's own built-in default (disabled) applies —
+  # this is a real absence of a choice, not a baked "false". If a caller does
+  # opt in, anonymous Admin is never allowed — anonymous sessions may only
+  # ever be Viewer.
+  if [[ "${GF_AUTH_ANONYMOUS_ENABLED:-false}" == "true" && "${GF_AUTH_ANONYMOUS_ORG_ROLE:-Viewer}" == "Admin" ]]; then
+    die "GF_AUTH_ANONYMOUS_ORG_ROLE=Admin is not allowed with anonymous access enabled — anonymous sessions may only be Viewer. Require login for Admin/Editor access instead."
+  fi
+
   : > "$LOG_DIR/grafana.log"
-  GF_PATHS_DATA="$GRAFANA_DATA_DIR" \
-    GF_PATHS_LOGS="$GRAFANA_LOG_DIR" \
-    GF_PATHS_PLUGINS="$GRAFANA_PLUGIN_DIR" \
-    GF_PATHS_PROVISIONING="$RENDER_DIR/grafana/provisioning" \
-    GF_SERVER_HTTP_ADDR="$GRAFANA_HOST" \
-    GF_SERVER_HTTP_PORT="$GRAFANA_PORT" \
-    GF_SERVER_PROTOCOL="$GRAFANA_PROTOCOL" \
-    GF_SERVER_CERT_FILE="$GRAFANA_CERT_FILE" \
-    GF_SERVER_CERT_KEY="$GRAFANA_CERT_KEY" \
-    GF_SECURITY_ADMIN_USER="$GRAFANA_ADMIN_USER" \
-    GF_SECURITY_ADMIN_PASSWORD="$GRAFANA_ADMIN_PASSWORD" \
-    GF_AUTH_ANONYMOUS_ENABLED=true \
-    GF_AUTH_ANONYMOUS_ORG_ROLE=Admin \
-    GF_USERS_DEFAULT_THEME=light \
+  (
+    export GF_PATHS_DATA="$GRAFANA_DATA_DIR"
+    export GF_PATHS_LOGS="$GRAFANA_LOG_DIR"
+    export GF_PATHS_PLUGINS="$GRAFANA_PLUGIN_DIR"
+    export GF_PATHS_PROVISIONING="$RENDER_DIR/grafana/provisioning"
+    export GF_SERVER_HTTP_ADDR="$GRAFANA_HOST"
+    export GF_SERVER_HTTP_PORT="$GRAFANA_PORT"
+    export GF_SERVER_PROTOCOL="$GRAFANA_PROTOCOL"
+    export GF_SERVER_CERT_FILE="$GRAFANA_CERT_FILE"
+    export GF_SERVER_CERT_KEY="$GRAFANA_CERT_KEY"
+    export GF_SECURITY_ADMIN_USER="$GRAFANA_ADMIN_USER"
+    export GF_SECURITY_ADMIN_PASSWORD="$GRAFANA_ADMIN_PASSWORD"
+    export GF_USERS_DEFAULT_THEME=light
+    if [[ -n "${GF_AUTH_ANONYMOUS_ENABLED+x}" ]]; then
+      export GF_AUTH_ANONYMOUS_ENABLED
+      export GF_AUTH_ANONYMOUS_ORG_ROLE="${GF_AUTH_ANONYMOUS_ORG_ROLE:-Viewer}"
+    fi
     spawn_detached "$RUN_DIR/grafana.pid" "$LOG_DIR/grafana.log" "$bin" server \
       --homepath "$BIN_DIR/grafana"
-  wait_http "${GRAFANA_PROTOCOL}://127.0.0.1:${GRAFANA_PORT}/api/health" "grafana"
+  )
+  # Grafana is bound to the Tailscale-only address, not 0.0.0.0, so it does
+  # NOT listen on loopback — the readiness probe must hit the same address
+  # it's actually listening on.
+  wait_http "${GRAFANA_PROTOCOL}://${GRAFANA_HOST}:${GRAFANA_PORT}/api/health" "grafana"
   pid_file_alive "$RUN_DIR/grafana.pid" || die "grafana exited after readiness; see $LOG_DIR/grafana.log"
 }
 
@@ -263,7 +349,34 @@ sandbox_url() {
   node -e "const s=JSON.parse(process.argv[1]||'{}'); const row=Array.isArray(s)?s.find(x=>x.branch==='telemetry-dash'&&x.alive):s; console.log(row?.base || row?.url?.replace(/[/?#].*/, '') || '')" "$status"
 }
 
+# mkdir is atomic on every filesystem we run on (unlike flock, which isn't
+# reliably available/portable on macOS bash). One serialized start at a time;
+# stale locks (owning pid no longer alive) are reclaimed automatically.
+START_LOCK_DIR="$RUN_DIR/start.lock"
+acquire_start_lock() {
+  local attempt
+  for attempt in 1 2; do
+    if mkdir "$START_LOCK_DIR" 2>/dev/null; then
+      echo "$$" > "$START_LOCK_DIR/pid"
+      trap release_start_lock EXIT
+      return 0
+    fi
+    local owner
+    owner="$(cat "$START_LOCK_DIR/pid" 2>/dev/null || true)"
+    if [[ -n "$owner" ]] && ! pid_alive "$owner"; then
+      echo "reclaiming stale start lock held by dead pid $owner"
+      rm -rf "$START_LOCK_DIR"
+      continue
+    fi
+    die "another stack.sh start is already in progress (lock held by pid ${owner:-unknown} at $START_LOCK_DIR) — refusing a concurrent build"
+  done
+}
+release_start_lock() {
+  rm -rf "$START_LOCK_DIR"
+}
+
 start() {
+  acquire_start_lock
   download
   render_configs
   start_grafana
@@ -272,6 +385,8 @@ start() {
   echo "Fleet data: $TLDA_FLEET_URL"
   echo
   echo "Stop with:  $0 stop"
+  release_start_lock
+  trap - EXIT
 }
 
 stop_pid_file() {
@@ -332,15 +447,20 @@ footprint() {
   done
 }
 
-case "${1:-status}" in
-  download) download ;;
-  start) start ;;
-  stop) stop ;;
-  restart) stop; start ;;
-  status) status ;;
-  footprint) footprint ;;
-  *)
-    cat >&2 <<EOF
+# Only dispatch a subcommand when executed directly (./stack.sh ...), not
+# when sourced (e.g. `source telemetry/stack.sh` from a test harness) — lets
+# tests reuse the real functions above without triggering CLI behavior or
+# this script's own directory setup being re-run as a side effect of import.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  case "${1:-status}" in
+    download) download ;;
+    start) start ;;
+    stop) stop ;;
+    restart) stop; start ;;
+    status) status ;;
+    footprint) footprint ;;
+    *)
+      cat >&2 <<EOF
 Usage: $0 <download|start|stop|restart|status|footprint>
 
 Environment overrides:
@@ -349,6 +469,7 @@ Environment overrides:
   GRAFANA_PORT=$GRAFANA_PORT
   PROMETHEUS_PORT=$PROMETHEUS_PORT
 EOF
-    exit 2
-    ;;
-esac
+      exit 2
+      ;;
+  esac
+fi
