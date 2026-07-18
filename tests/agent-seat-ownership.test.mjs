@@ -225,6 +225,29 @@ test('startup backfills current seat for complete legacy live agent route rows',
   }
 })
 
+test('daemon roster ignores a legacy route without a current durable seat', () => {
+  const ctx = tmpStore()
+  try {
+    ctx.store.upsertAgent({
+      id: 'fleet:legacy-bot',
+      friendly_name: 'legacy-bot',
+      tmux_session: 'fleet-bot-legacy',
+      cwd: '/Users/skip/work/tlda',
+      machine_id: 'mini',
+      env_name: 'default',
+      daemon_key: 'mini:default',
+      metadata: { bot: 'legacy-bot' },
+      dead: false,
+      human: false,
+    }, { allowProtectedAgentFields: true })
+
+    assert.equal(ctx.store.getCurrentAgentSeat('fleet:legacy-bot'), null)
+    assert.deepEqual(ctx.store.getAgentsByDaemonKey('mini:default'), [])
+  } finally {
+    closeStore(ctx)
+  }
+})
+
 test('generic agent upsert cannot create or mutate protected identity and route fields', () => {
   const ctx = tmpStore()
   try {
