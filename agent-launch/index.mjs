@@ -3,7 +3,7 @@ import { newLocalAgentId, readConfig, resolveDnsAlias, resolveSpawnCwd, sanitize
 import { createLocalAgentLedger } from './local-agent-ledger.mjs'
 import { normalizeSpawnModelKwargs } from './models.mjs'
 import { checkFreshNameAvailable, ensureServer, findAgent, markAgentDead, resolveApi, wsMintShell, wsReserveShell } from './register.mjs'
-import { injectClaudePrompt, injectCodexPrompt, sessionHasRuntime, spawnTmux, terminateTmuxSession, uniqueSessionName } from './tmux.mjs'
+import { injectClaudePrompt, injectCodexPrompt, sessionHasRuntime, sessionRuntimeState, spawnTmux, terminateTmuxSession, uniqueSessionName } from './tmux.mjs'
 import { wrapSandboxCmd } from './fence.mjs'
 import { resolveLaunchPolicy, sandboxMetadata } from './permissions.mjs'
 import { resolveCodexResumeHandle } from '../agent-runtime/codex-resume-resolver.mjs'
@@ -449,8 +449,28 @@ async function spawnRespawn(params) {
     params.explicitPolicy ||
     params.permissionRequest
   )
-  if (!explicitRelaunch && await (deps.sessionHasRuntime || sessionHasRuntime)(tmuxSession, { tmuxSocket: params.tmuxSocket })) {
-    return { ok: true, fleetId, tmuxSession, harness: requestedKind, model, alreadyAlive: true }
+  if (!explicitRelaunch) {
+    const runtimeState = deps.sessionRuntimeState
+      ? await deps.sessionRuntimeState(tmuxSession, { tmuxSocket: params.tmuxSocket })
+      : deps.sessionHasRuntime
+        ? { runtime: await deps.sessionHasRuntime(tmuxSession, { tmuxSocket: params.tmuxSocket }), mcp: true }
+        : await sessionRuntimeState(tmuxSession, { tmuxSocket: params.tmuxSocket })
+    if (runtimeState.runtime) {
+      const shellPending = !!meta.shell
+      if (requestedKind === 'codex' && (!runtimeState.mcp || shellPending)) {
+        return {
+          ok: true,
+          pending: true,
+          runtimePresent: true,
+          reason: !runtimeState.mcp ? 'mcp-not-ready' : 'login-not-ready',
+          fleetId,
+          tmuxSession,
+          harness: requestedKind,
+          model,
+        }
+      }
+      return { ok: true, fleetId, tmuxSession, harness: requestedKind, model, alreadyAlive: true }
+    }
   }
   let handle = null
   const identityOptions = {

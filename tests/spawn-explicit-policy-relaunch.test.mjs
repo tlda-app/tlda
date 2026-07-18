@@ -73,6 +73,23 @@ try {
   assert.equal(alreadyAlive.alreadyAlive, true)
   assert.equal(spawned, false, 'ordinary wake should keep a live runtime')
 
+  const pendingMcp = await spawn({
+    spawnMode: 'respawn',
+    name: 'explicit-relaunch',
+    model: 'gpt-5.5',
+    config,
+    _deps: {
+      resolveApi: () => 'http://127.0.0.1:5176',
+      ensureServer: async () => true,
+      findAgent: async () => ({ ...agent, metadata: { ...agent.metadata, shell: true } }),
+      sessionRuntimeState: async () => ({ runtime: true, mcp: false }),
+    },
+  })
+  assert.equal(pendingMcp.pending, true)
+  assert.equal(pendingMcp.runtimePresent, true)
+  assert.equal(pendingMcp.reason, 'mcp-not-ready')
+  assert.equal(pendingMcp.alreadyAlive, undefined, 'MCP-less Codex must not classify as usable/already alive')
+
   const reusedSeat = {
     ...agent,
     id: 'fleet:reused-seat',

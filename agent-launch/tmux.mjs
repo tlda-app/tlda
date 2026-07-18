@@ -40,14 +40,6 @@ async function pasteLiteral(session, text, { tmuxSocket = process.env.TMUX_SOCKE
   await tmux(tmuxSocket, 'paste-buffer', '-dp', '-b', buffer, '-t', session)
 }
 
-async function sendLiteral(session, text, { tmuxSocket = process.env.TMUX_SOCKET || null } = {}) {
-  const chunkSize = 800
-  for (let offset = 0; offset < text.length; offset += chunkSize) {
-    await tmux(tmuxSocket, 'send-keys', '-t', session, '-l', text.slice(offset, offset + chunkSize))
-    await new Promise((resolve) => setTimeout(resolve, 25))
-  }
-}
-
 export async function uniqueSessionName(base, { tmuxSocket = process.env.TMUX_SOCKET || null } = {}) {
   let session = base
   let n = 2
@@ -61,36 +53,58 @@ export async function uniqueSessionName(base, { tmuxSocket = process.env.TMUX_SO
   }
 }
 
-export async function sessionHasRuntime(session, { tmuxSocket = process.env.TMUX_SOCKET || null } = {}) {
+export function runtimeStateFromProcessList(panePids, psText) {
+  const children = new Map()
+  const argsByPid = new Map()
+  for (const line of psText.split('\n')) {
+    const m = line.match(/^\s*(\d+)\s+(\d+)\s+(.+)$/)
+    if (!m) continue
+    const [, pid, ppid, args] = m
+    if (!children.has(ppid)) children.set(ppid, [])
+    children.get(ppid).push(pid)
+    argsByPid.set(pid, args)
+  }
+  const stack = [...panePids]
+  const seen = new Set()
+  while (stack.length) {
+    const pid = stack.pop()
+    if (seen.has(pid)) continue
+    seen.add(pid)
+    const args = argsByPid.get(pid) || ''
+    if (/(?:^|\s|[/\\])(claude|codex|goose)(?:\.exe)?(?:\s|$)/.test(args)) {
+      const descendants = [...(children.get(pid) || [])]
+      const descendantSeen = new Set()
+      let mcp = false
+      while (descendants.length) {
+        const child = descendants.pop()
+        if (descendantSeen.has(child)) continue
+        descendantSeen.add(child)
+        const childArgs = argsByPid.get(child) || ''
+        if (/mcp-server[/\\](?:index|fleet-server)\.mjs|(?:^|[/\\])tlda-mcp(?:\s|$)/.test(childArgs)) mcp = true
+        descendants.push(...(children.get(child) || []))
+      }
+      return { runtime: true, mcp }
+    }
+    stack.push(...(children.get(pid) || []))
+  }
+  return { runtime: false, mcp: false }
+}
+
+export async function sessionRuntimeState(session, { tmuxSocket = process.env.TMUX_SOCKET || null } = {}) {
   try {
     const panes = await tmux(tmuxSocket, 'list-panes', '-t', session, '-F', '#{pane_pid}')
     const panePids = panes.stdout.trim().split(/\s+/).filter(Boolean)
-    if (!panePids.length) return false
+    if (!panePids.length) return { runtime: false, mcp: false }
     const ps = await execFileP('ps', ['-eo', 'pid,ppid,args'], { timeout: 5000, encoding: 'utf8' })
-    const children = new Map()
-    const argsByPid = new Map()
-    for (const line of ps.stdout.split('\n')) {
-      const m = line.match(/^\s*(\d+)\s+(\d+)\s+(.+)$/)
-      if (!m) continue
-      const [, pid, ppid, args] = m
-      if (!children.has(ppid)) children.set(ppid, [])
-      children.get(ppid).push(pid)
-      argsByPid.set(pid, args)
-    }
-    const stack = [...panePids]
-    const seen = new Set()
-    while (stack.length) {
-      const pid = stack.pop()
-      if (seen.has(pid)) continue
-      seen.add(pid)
-      const args = argsByPid.get(pid) || ''
-      if (/(?:^|\s|[/\\])(claude|codex|goose)(?:\.exe)?(?:\s|$)/.test(args)) return true
-      stack.push(...(children.get(pid) || []))
-    }
+    return runtimeStateFromProcessList(panePids, ps.stdout)
   } catch {
     // Missing tmux sessions or ps failures mean no confirmed runtime.
   }
-  return false
+  return { runtime: false, mcp: false }
+}
+
+export async function sessionHasRuntime(session, options = {}) {
+  return (await sessionRuntimeState(session, options)).runtime
 }
 
 export async function terminateTmuxSession(session, { tmuxSocket = process.env.TMUX_SOCKET || null } = {}) {
@@ -182,51 +196,48 @@ export async function dismissDevchannels(session, { timeoutMs = 60_000, tmuxSock
   return false
 }
 
-export async function injectCodexPrompt(session, prompt, { timeoutMs = 60_000, tmuxSocket = process.env.TMUX_SOCKET || null } = {}) {
+export async function injectCodexPrompt(session, prompt, {
+  timeoutMs = 60_000,
+  tmuxSocket = process.env.TMUX_SOCKET || null,
+  tmuxExec = tmux,
+  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+} = {}) {
   const deadline = Date.now() + timeoutMs
   const promptMarker = prompt.slice(0, Math.min(prompt.length, 48))
-  let promptReadySince = null
-  const codexMcpSettleMs = 3500
   while (Date.now() < deadline) {
     try {
-      const { stdout } = await tmux(tmuxSocket, 'capture-pane', '-t', session, '-p')
+      const { stdout } = await tmuxExec(tmuxSocket, 'capture-pane', '-t', session, '-p')
       if (stdout.includes('Do you trust the contents of this directory?')) {
-        await tmux(tmuxSocket, 'send-keys', '-t', session, 'Enter')
-        await new Promise((resolve) => setTimeout(resolve, 1000))
+        await tmuxExec(tmuxSocket, 'send-keys', '-t', session, 'Enter')
+        await sleep(1000)
         continue
       }
-      if (stdout.includes('MCP startup interrupted')) {
+      if (stdout.includes('MCP startup interrupted') || stdout.includes('MCP startup cancelled')) {
         return false
       }
       const promptReady = stdout.split('\n').some((line) => line.trimStart().startsWith('›'))
-      const busy = ['Working', 'Transmuting', 'Thinking'].some((marker) => stdout.includes(marker))
+      const busy = ['Working', 'Transmuting', 'Thinking', 'esc to interrupt', 'ESC to interrupt'].some((marker) => stdout.includes(marker))
       const mcpStarting = stdout.includes('Starting MCP servers')
-      if (promptReady && !busy && !mcpStarting && promptReadySince == null) {
-        promptReadySince = Date.now()
-      } else if (!promptReady || busy || mcpStarting) {
-        promptReadySince = null
-      }
-      if (promptReadySince != null && Date.now() - promptReadySince < codexMcpSettleMs) {
-        await new Promise((resolve) => setTimeout(resolve, 500))
-        continue
-      }
-      if (promptReady && !busy) {
-        await tmux(tmuxSocket, 'send-keys', '-t', session, 'Escape')
-        await new Promise((resolve) => setTimeout(resolve, 200))
-        await tmux(tmuxSocket, 'send-keys', '-t', session, 'C-u')
-        await new Promise((resolve) => setTimeout(resolve, 200))
-        await sendLiteral(session, prompt, { tmuxSocket })
-        await new Promise((resolve) => setTimeout(resolve, 500))
-        const pasted = await tmux(tmuxSocket, 'capture-pane', '-t', session, '-p').catch(() => ({ stdout: '' }))
+      if (promptReady && !busy && !mcpStarting) {
+        // Escape cancels Codex MCP startup even after the prompt first appears.
+        // A directly observed ready prompt is cleared with C-u; Escape is never a startup action.
+        await tmuxExec(tmuxSocket, 'send-keys', '-t', session, 'C-u')
+        await sleep(200)
+        for (let offset = 0; offset < prompt.length; offset += 800) {
+          await tmuxExec(tmuxSocket, 'send-keys', '-t', session, '-l', prompt.slice(offset, offset + 800))
+          await sleep(25)
+        }
+        await sleep(500)
+        const pasted = await tmuxExec(tmuxSocket, 'capture-pane', '-t', session, '-p').catch(() => ({ stdout: '' }))
         if (!pasted.stdout.includes(promptMarker)) continue
-        await tmux(tmuxSocket, 'send-keys', '-t', session, 'Enter')
-        await new Promise((resolve) => setTimeout(resolve, 1000))
+        await tmuxExec(tmuxSocket, 'send-keys', '-t', session, 'Enter')
+        await sleep(1000)
         return true
       }
     } catch {
       // Prompt polling tolerates transient tmux capture failures until timeout.
     }
-    await new Promise((resolve) => setTimeout(resolve, 1000))
+    await sleep(1000)
   }
   return false
 }
