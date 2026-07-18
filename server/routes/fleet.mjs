@@ -137,7 +137,7 @@ function fleetTableLabelsForAgent(agent) {
   return labels
 }
 
-export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, clearEphemeralState, suppressEchoFor, sendRpc, resolveRpc, daemonConnections, resolveSpawnTarget, broadcastDaemonAgentsUpdated, enqueueDaemonMessage, agentSeatBindingObligations, hasOpenFleetSocketForAgent = () => false }) {
+export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, clearEphemeralState, suppressEchoFor, sendRpc, resolveRpc, daemonConnections, resolveSpawnTarget, broadcastDaemonAgentsUpdated, hasOpenFleetSocketForAgent = () => false }) {
   // Helper: route an agent op through the daemon, or 503 cleanly. The
   // op-name is whatever the daemon's rpc dispatcher expects (kebab-case
   // matches the spec: 'send-key', 'capture-pane', etc.).
@@ -229,41 +229,6 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     } catch (e) {
       res.status(409).json({ ok: false, error: e.message })
     }
-  })
-
-  router.post('/api/agent-seat-binding-obligation', (req, res) => {
-    const body = req.body || {}
-    const required = ['agent_id', 'daemon_key', 'tmux_session', 'cwd', 'kind', 'model', 'friendly_name']
-    const missing = required.filter(key => !body[key])
-    if (missing.length || body.process_owned_only !== true) {
-      res.status(400).json({ ok: false, error: `invalid exact binding obligation: missing ${missing.join(', ') || 'process_owned_only=true'}` })
-      return
-    }
-    const agent = fleetStore?.findAgent(body.agent_id)
-    if (!agent) { res.status(404).json({ ok: false, error: 'agent not found' }); return }
-    const obligation = agentSeatBindingObligations.put({ ...body, agent_id: agent.id })
-    enqueueDaemonMessage(obligation.daemon_key, {
-      type: 'agent-seat-binding-obligation',
-      ...obligation,
-    }, { dedupeKey: `agent-seat-binding:${obligation.obligation_id}` })
-    res.status(202).json({ ok: true, pending: true, obligation })
-  })
-
-  router.post('/api/agent-seat-binding-obligation/:id/retire', (req, res) => {
-    const obligation = agentSeatBindingObligations.get(req.params.id)
-    const body = req.body || {}
-    if (!obligation) { res.status(404).json({ ok: false, error: 'binding obligation not found' }); return }
-    if (body.agent_id !== obligation.agent_id || body.daemon_key !== obligation.daemon_key) {
-      res.status(409).json({ ok: false, error: 'binding obligation retirement identity mismatch' })
-      return
-    }
-    fleetStore.markDead(obligation.agent_id)
-    clearEphemeralState?.(obligation.agent_id)
-    const agent = fleetStore.findAgent(obligation.agent_id)
-    const retired = agent?.dead === 1 && !fleetStore.getCurrentAgentSeat?.(obligation.agent_id)
-    if (!retired) { res.status(409).json({ ok: false, retired: false, error: 'agent reservation is not fully retired' }); return }
-    broadcastState()
-    res.json({ ok: true, retired: true })
   })
 
   // --- GET /api/human ---

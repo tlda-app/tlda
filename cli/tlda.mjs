@@ -2695,20 +2695,6 @@ export async function runFleetSpawn(spawnArgs, {
       throw e
     }
     if ((spawnMode === 'fresh' || spawnMode === 'session') && !boundResume.bound) {
-      if (boundResume.reason === 'exact-identity-pending') {
-        try {
-          await createLifecycleSeatBindingObligation(result, {
-            api: apiImpl,
-            cwd,
-            name,
-          })
-        } catch (error) {
-          if (error?.status && error.status < 500) {
-            await cleanupFailedBindingImpl(result, { api: apiImpl, localAgentLedgerPath })
-          }
-          throw error
-        }
-      }
       console.log(`Spawn pending durable seat binding for ${result.fleetId}; completion will follow the durable binding event`)
       return
     }
@@ -2746,35 +2732,6 @@ export async function runFleetSpawn(spawnArgs, {
   } finally {
     if (ledger) await ledger.close()
   }
-}
-
-export async function createLifecycleSeatBindingObligation(result, {
-  api,
-  cwd,
-  name,
-} = {}) {
-  if (!api || !result?.fleetId || !result.tmuxSession || !['codex', 'claude'].includes(result.harness)) {
-    throw new Error('fresh/session pending requires an exact durable seat-binding obligation')
-  }
-  const machineId = localMachineId()
-  const envName = getActiveConfigName(loadConfig())
-  const response = await api('POST', '/api/agent-seat-binding-obligation', {
-    agent_id: result.fleetId,
-    local_agent_id: result.localAgentId || null,
-    daemon_key: `${machineId}:${envName}`,
-    machine_id: machineId,
-    env_name: envName,
-    tmux_session: result.tmuxSession,
-    cwd,
-    kind: result.harness,
-    model: result.model,
-    friendly_name: name || result.name || result.fleetId,
-    process_owned_only: true,
-  })
-  if (!response?.ok || !response?.obligation?.obligation_id) {
-    throw new Error(`durable seat-binding obligation was not accepted for ${result.fleetId}`)
-  }
-  return response.obligation
 }
 
 export function resolveWakeRecipeFields({
