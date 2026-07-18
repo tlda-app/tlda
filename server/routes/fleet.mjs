@@ -20,6 +20,7 @@ import { summarizeFleetRosterTruth } from '../lib/fleet-roster-truth.mjs'
 import { daemonAddress, describeAgentAddress } from '../../shared/agent-move-target.mjs'
 import { completeTaskLifecycle } from '../lib/task-lifecycle.mjs'
 import { recordAgentBindingEvent } from '../lib/agent-binding-events.mjs'
+import { projectActivityEventsPage, projectAgentActivityPage } from '../lib/activity-dashboard-projection.mjs'
 
 // Server owner — the human running this server process. Browser users
 // log in via the WS 'login' message or register via 'register'.
@@ -290,7 +291,8 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
         events = fleetStore.getEventsSince(afterId, limit)
       }
       const lastId = fleetStore.getLastEventId()
-      res.json({ events, lastId, total })
+      const page = { events, lastId, total }
+      res.json(req.query.view === 'activity-dashboard' ? projectActivityEventsPage(page) : page)
     } catch (e) {
       res.status(500).json({ error: e.message })
     }
@@ -353,10 +355,11 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     const requested = Number.parseInt(req.query.limit, 10)
     const limit = Number.isFinite(requested) ? Math.max(1, Math.min(requested, 200)) : 100
     try {
-      res.json({
+      const page = {
         ...fleetStore.getAliveAgentsPage({ limit, cursor: req.query.cursor || null }),
         totals: fleetStore.getAliveAgentCounts(),
-      })
+      }
+      res.json(req.query.view === 'activity-dashboard' ? projectAgentActivityPage(page) : page)
     } catch (e) { res.status(500).json({ error: e.message }) }
   })
 

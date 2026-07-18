@@ -2926,16 +2926,7 @@ app.get('/api/diagnostics/telemetry-status.md', requireRead, (req, res) => {
 })
 
 app.get('/api/diagnostics/voice-pipeline', requireRead, (req, res) => {
-  const bridgeLog = join(homedir(), '.config', 'tlda', 'deepgram-sdk-bridge.log')
-  let bridgeLines = []
-  try {
-    // The bridge log is an existing source of truth. Read a bounded tail only;
-    // this diagnostic view never starts, stops, or mutates the voice pipeline.
-    bridgeLines = readFileSync(bridgeLog, 'utf8').split('\n').slice(-500)
-  } catch (error) {
-    if (error?.code !== 'ENOENT') console.warn(`[voice-pipeline] bridge log read failed: ${error.message}`)
-  }
-  res.json(buildVoicePipelineSnapshot({ bridgeLines, livePerfSamples }))
+  res.json(buildVoicePipelineSnapshot({ livePerfSamples }))
 })
 
 app.get('/api/diagnostics/control-plane-traces', requireRead, (req, res) => {
