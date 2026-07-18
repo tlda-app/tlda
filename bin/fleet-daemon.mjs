@@ -521,8 +521,31 @@ const agentStatus = createAgentStatus({
 })
 
 let gooseSupervisor
+// The server roster rows no longer carry tmux_session (durable-seat migration
+// blanked the legacy field), so a liveness reporter keyed on the roster checks
+// almost nobody: idle-but-alive agents fall off the 90s positive-liveness TTL
+// and the whole fleet projects hibernating after every daemon restart
+// (7/17 incident). This daemon's OWN permission ledger holds the real
+// seat→tmux bindings — fill the gap from there.
+function livenessAgents() {
+  const bindingByAgent = new Map()
+  try {
+    for (const row of permissionLedger.listProcessBindings()) {
+      if (row?.id && row.tmuxSession) bindingByAgent.set(row.id, row.tmuxSession)
+    }
+  } catch (e) {
+    // best-effort enrichment: a failed ledger read must not kill the liveness
+    // loop — agents with roster tmux_session still get refreshed without it
+    log.warn(`liveness binding read failed: ${e.message}`)
+  }
+  return (agents || []).map(agent => (
+    agent && !agent.tmux_session && bindingByAgent.has(agent.id)
+      ? { ...agent, tmux_session: bindingByAgent.get(agent.id) }
+      : agent
+  ))
+}
 const agentLiveness = createAgentLiveness({
-  getAgents: () => agents,
+  getAgents: livenessAgents,
   listSessions: () => terminalRpc.listSessions(),
   sendMsg,
   log,
