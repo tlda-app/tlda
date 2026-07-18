@@ -370,7 +370,7 @@ export function createAgentLauncher({
         if (shouldWriteLedgerRow) await permissionLedger.delete(preallocatedAgentId).catch(() => {})
         throw e
       }
-      trace('launched', {
+      trace(launched.alreadyAlive ? 'already-alive' : 'launched', {
         agentName,
         agent_id: launched.fleetId,
         tmux_session: launched.tmuxSession,
