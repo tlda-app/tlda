@@ -281,5 +281,6 @@ test('server materializes project markdown before daemon-local attachment routin
   assert.ok(projectAt < routeAt, 'project artifact realization must not depend on daemon-local materialization')
   assert.match(block, /state: projectArtifact\?\.state === 'available' \? 'available' : 'failed'/)
   assert.match(block, /daemonMaterializationError: error/)
+  assert.match(block, /if \(record\.state === 'available'\)[\s\S]*notifyRecipientMaterializationSuccess/)
   assert.match(source, /projectArtifactVersion: projectArtifact\.git\?\.hash/)
 })

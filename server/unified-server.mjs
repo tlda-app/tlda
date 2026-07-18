@@ -109,6 +109,7 @@ import {
   setRecipientAttachmentState,
 } from '../shared/inbox-reference-materialization.mjs'
 import { realizeProjectMarkdownArtifact } from './lib/project-artifact-materializer.mjs'
+import { formatMaterializationFailureNotification } from './lib/materialization-notifications.mjs'
 import { createBackendLogger } from './lib/observability/logger.mjs'
 import {
   createControlPlaneTraceStore,
@@ -2291,14 +2292,28 @@ function patchRecipientAttachmentState(eventId, recipientId, attachmentId, recor
   ))
 }
 
-function notifyRecipientMaterialization({ eventId, recipientId, attachment, record }) {
+function notifyRecipientMaterializationSuccess({ eventId, recipientId, attachment, record }) {
   const state = record?.state
-  if (!recipientId || !eventId || !state) return
+  if (!recipientId || !eventId || state !== 'available') return
   const title = attachment?.name || record?.title || `attachment ${attachment?.id ?? ''}`.trim()
   const location = record.localPath || record.projectPath || record.projectArtifactId || null
-  const text = state === 'available'
-    ? `Attachment materialized for message ${eventId}: ${title}${location ? `\n${location}` : ''}`
-    : `Attachment materialization failed for message ${eventId}: ${title}${record.error ? `\n${record.error}` : ''}`
+  deliverTldaFeedbackChat({
+    from: 'tlda-materializer',
+    to: recipientId,
+    text: `Attachment materialized for message ${eventId}: ${title}${location ? `\n${location}` : ''}`,
+    metadata: {
+      source: 'materialization',
+      source_event_id: eventId,
+      attachment_id: attachment?.id != null ? String(attachment.id) : null,
+      state,
+      priority: 'normal',
+    },
+  })
+}
+
+function notifyRecipientMaterializationFailures({ eventId, recipientId, failures }) {
+  const text = formatMaterializationFailureNotification({ eventId, failures })
+  if (!recipientId || !eventId || !text) return
   deliverTldaFeedbackChat({
     from: 'tlda-materializer',
     to: recipientId,
@@ -2306,9 +2321,10 @@ function notifyRecipientMaterialization({ eventId, recipientId, attachment, reco
     metadata: {
       source: 'materialization',
       source_event_id: eventId,
-      attachment_id: attachment?.id != null ? String(attachment.id) : null,
-      state,
-      priority: state === 'failed' ? 'important' : 'normal',
+      attachment_id: null,
+      failed_attachment_ids: failures.map(({ attachment }) => String(attachment.id)),
+      state: 'failed',
+      priority: 'important',
     },
   })
 }
@@ -2406,12 +2422,15 @@ async function materializeRecipientAttachment({ eventId, recipientId, sourceAgen
       updated_at: new Date().toISOString(),
     }
     patchRecipientAttachmentState(eventId, recipientId, attachment.id, record)
-    notifyRecipientMaterialization({ eventId, recipientId, attachment, record })
+    if (record.state === 'available') {
+      notifyRecipientMaterializationSuccess({ eventId, recipientId, attachment, record })
+      return null
+    }
+    return { attachment, record }
   }
   const route = resolveRpc('materialize-attachment', recipient)
   if (route.via === 'none') {
-    fail(route.error)
-    return
+    return fail(route.error)
   }
   try {
     const result = await sendRpc(route.machine_id, 'materialize-attachment', {
@@ -2445,16 +2464,18 @@ async function materializeRecipientAttachment({ eventId, recipientId, sourceAgen
       materialized_at: new Date().toISOString(),
     }
     patchRecipientAttachmentState(eventId, recipientId, attachment.id, record)
-    notifyRecipientMaterialization({ eventId, recipientId, attachment, record })
+    notifyRecipientMaterializationSuccess({ eventId, recipientId, attachment, record })
+    return null
   } catch (e) {
-    fail(e.message || String(e))
+    return fail(e.message || String(e))
   }
 }
 
 function queueRecipientMaterialization({ eventId, recipientId, sourceAgent, attachments }) {
-  for (const attachment of attachments || []) {
-    if (!isMaterializableAttachment(attachment)) continue
-    setImmediate(() => {
+  const materializable = (attachments || []).filter(isMaterializableAttachment)
+  if (materializable.length === 0) return
+  setImmediate(() => {
+    Promise.all(materializable.map(attachment => (
       materializeRecipientAttachment({ eventId, recipientId, sourceAgent, attachment })
         .catch(e => {
           const record = {
@@ -2474,10 +2495,15 @@ function queueRecipientMaterialization({ eventId, recipientId, sourceAgent, atta
             updated_at: new Date().toISOString(),
           }
           patchRecipientAttachmentState(eventId, recipientId, attachment.id, record)
-          notifyRecipientMaterialization({ eventId, recipientId, attachment, record })
+          return { attachment, record }
         })
+    ))).then(results => {
+      const failures = results.filter(Boolean)
+      notifyRecipientMaterializationFailures({ eventId, recipientId, failures })
+    }).catch(e => {
+      console.error(`[materialization] batch notification failed for message ${eventId}: ${e.message}`)
     })
-  }
+  })
 }
 
 // Auth
