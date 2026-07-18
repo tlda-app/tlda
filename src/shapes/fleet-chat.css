@@ -36,6 +36,48 @@
   border: 1px solid rgba(128, 128, 128, 0.1);
 }
 
+.fleet-chat-shape .fleet-unread-agent-rail {
+  position: absolute;
+  top: 24px;
+  left: 4px;
+  z-index: 12;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-height: calc(100% - 72px);
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.fleet-chat-shape .fleet-unread-agent-rail-item {
+  pointer-events: all;
+  min-width: 18px;
+  max-width: 64px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 4px;
+  border: 1px solid currentColor;
+  background: none;
+  font-family: 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 9px;
+  line-height: 17px;
+  opacity: 0.1;
+  transition: opacity 0.3s;
+  cursor: grab;
+  touch-action: none;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.fleet-chat-shape .fleet-unread-agent-rail-item:hover {
+  opacity: 0.6;
+}
+
+.fleet-chat-shape .fleet-unread-agent-rail-item:active {
+  cursor: grabbing;
+  opacity: 0.8;
+}
+
 
 /* Lift fleet shapes above doc/canvas content (notes, pages, drawings) — but
    ONLY in the main canvas. TLDraw writes an inline `z-index` on each shape's

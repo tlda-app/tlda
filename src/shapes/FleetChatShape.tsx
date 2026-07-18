@@ -47,11 +47,12 @@ import { appendToken } from '../authToken'
 import { labelsForAgent } from '../../shared/fleet-labels.mjs'
 import { runtimeStatusName } from '../../shared/fleet-runtime-status.mjs'
 import { ACTIVITY_DELIVERY_STAGES } from '../../shared/activity-delivery-counters.mjs'
-import { useFleetAgents, useFleetChatAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useFleetStatusTargets, useFleetFilterHasMatchingAgent, useSuggestions, clearGroup, sendMessage, loadBefore, resolveFleetAgentLabelIds, injectOptimisticEvent, updateOptimisticEvent, removeOptimisticEvent } from '../fleet-data-adapter'
+import { useFleetAgents, useFleetChatAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useFleetStatusTargets, useFleetFilterHasMatchingAgent, useFleetUnreadCounts, useSuggestions, clearGroup, sendMessage, loadBefore, resolveFleetAgentLabelIds, injectOptimisticEvent, updateOptimisticEvent, removeOptimisticEvent } from '../fleet-data-adapter'
 import { isTerminalAvailableForAgent } from '../fleet/fleet-chat-visibility.mjs'
 import type { Suggestion } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
-import { agentDisplayLabel, agentExactName, beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
+import { agentDisplayLabel, agentExactName, beginNativeSnapDrag, endNativeSnapDrag, isFleetShapeForOwnerKey } from './fleet-utils'
+import { usePillDrag } from './FleetAgentsShape'
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import { ChatComposer } from './ChatComposer'
 import { PrettyName } from './PrettyName'
@@ -88,6 +89,7 @@ import {
   sortFleetAgentDirectoryRows,
 } from './FleetAgentDirectoryRow'
 import { fleetAgentFilterChoiceUpdate } from './fleet-agent-filter-choices'
+import { getUnreadAgentRailRows, isOnlyOwnedChat } from './fleet-unread-agent-rail'
 import './fleet-chat.css'
 
 const DEFAULT_W = 400
@@ -1828,6 +1830,16 @@ function FleetChatInner({ shape }: { shape: any }) {
   void useValue('editing', () => editor.getEditingShapeId() === shape.id, [editor, shape.id])
   const [filterOpen, setFilterOpen] = useState(false)
   const [filterOpenByPill, setFilterOpenByPill] = useState(false)
+  const showUnreadAgentRail = useValue('show-unread-agent-rail', () => {
+    if (filterOpen) return false
+    const userId = getHumanId()
+    const deviceId = getDeviceId()
+    if (!userId || !deviceId) return false
+    const ownedFleetShapes = editor.getCurrentPageShapes().filter((candidate: any) =>
+      isFleetShapeForOwnerKey(candidate, userId, deviceId),
+    )
+    return isOnlyOwnedChat(ownedFleetShapes, shape.id)
+  }, [editor, filterOpen, shape.id])
 
   // Keep a ref to the current filter so the rename effect can read it without a stale closure
   const filterRef = useRef(filter)
@@ -5538,6 +5550,7 @@ function FleetChatInner({ shape }: { shape: any }) {
 
           {!filterOpen && (
             <>
+              {showUnreadAgentRail && <FleetUnreadAgentRail />}
               {/* Messages — Virtuoso owns the scroll container and all virtualized
                   item measurement, including the status/suggestions trailing row. */}
               <Virtuoso
@@ -6064,6 +6077,30 @@ function SendHint({
     <span className="fleet-chat-send-hint" style={{ display: 'inline-flex', alignItems: 'center', gap: 0 }}>
       {enterPrefix}→&nbsp;{targets}
     </span>
+  )
+}
+
+function FleetUnreadAgentRail() {
+  const agents = useFleetAgents()
+  const unreadCounts = useFleetUnreadCounts()
+  const { startDrag } = usePillDrag()
+  const unreadRows = useMemo(() => getUnreadAgentRailRows(agents, unreadCounts), [agents, unreadCounts])
+
+  if (unreadRows.length === 0) return null
+  return (
+    <div className="fleet-unread-agent-rail" aria-label="Unread conversations">
+      {unreadRows.map((row) => (
+        <div
+          key={row.id || row.exactName}
+          className="fleet-unread-agent-rail-item"
+          title={row.displayName}
+          style={{ color: row.color }}
+          onPointerDown={(event) => startDrag(event, 'agent', row.exactName, row.displayName, row.color)}
+        >
+          <PrettyName prettyName={row.prettyName} slotWidth={5} />
+        </div>
+      ))}
+    </div>
   )
 }
 
