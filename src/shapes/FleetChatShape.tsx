@@ -57,6 +57,7 @@ import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import { ChatComposer } from './ChatComposer'
 import { PrettyName } from './PrettyName'
 import { dragCoordinator } from './dragCoordinator'
+import { cancelDragBeforeRelease } from './fleet-pill-lifecycle'
 import { DocContext, PanelContext } from '../PanelContext'
 import { getPageRenderHash, getBuiltPageCount } from '../stores'
 import { loadLookup, type LookupData } from '../synctexLookup'
@@ -5441,8 +5442,8 @@ function FleetChatInner({ shape }: { shape: any }) {
 
     return () => {
       document.removeEventListener('pointerdown', onPointerDown, { capture: true })
-      // Release coordinator if this component unmounts during a drag
-      if (dragRef.current) dragCoordinator.release()
+      // Delete any in-flight pill before releasing its coordinator handlers.
+      if (dragRef.current) cancelDragBeforeRelease(cancelDrag, () => dragCoordinator.release())
     }
   }, [chatLogEl, editor, viewportId, openMarkdownChipFromTarget])
 

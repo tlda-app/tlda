@@ -33,6 +33,7 @@ import {
 } from './fleet-filter-intent-telemetry'
 import { filterPreviewForDropRole, inferFleetFilterDropRole } from './fleet-filter-drop-preview'
 import { editorOwningFleetShape } from './fleet-pill-drop-target'
+import { finishFleetPillTranslation } from './fleet-pill-lifecycle'
 
 const PILL_W = 70
 const PILL_H = 18
@@ -701,21 +702,14 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
       dropPoint.x -= CHAT_W / 2
       dropPoint.y -= CHAT_H / 2
     }
-    // Restore snap mode
-    if (_snapState.prevSnapMode !== undefined) {
-      this.editor.user.updateUserPreferences({ isSnapMode: _snapState.prevSnapMode })
-    }
-    _snapState.active = false
-    _snapState.expanded = false
-    _snapState.prevSnapMode = undefined
-    _snapState.deltaX = 0
-    _snapState.deltaY = 0
-    _snapState.lines = []
-
     dropPillOnTarget(editor, pill.id, pill.props.value, dropPoint)
+    finishFleetPillTranslation(editor, pill.id, _snapState)
+  }
 
-    // Ephemeral: delete after drop
-    editor.deleteShapes([pill.id])
+  override onTranslateCancel = (_initial: TLShape, current: TLShape) => {
+    // TLDraw calls this hook before bailing to the translation history mark.
+    // Delete after that rollback so it cannot restore the canceled pill.
+    finishFleetPillTranslation(this.editor, current.id, _snapState, { deferDelete: true })
   }
 
   component(shape: any) {
