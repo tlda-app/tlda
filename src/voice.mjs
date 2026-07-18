@@ -661,7 +661,7 @@ function voiceLivenessStatus(now = Date.now()) {
 }
 
 function liveLivenessLabel() {
-  if (_backend === 'deepgram') return _deepgramConnected ? 'mic live; waiting for speech' : 'waiting for recognizer'
+  if (_backend === 'deepgram') return deepgramHealthLabel()
   if (_backend === 'whisper-stream') return 'mic live; waiting for speech'
   return 'mic live'
 }
@@ -770,7 +770,7 @@ function dgStartMsg() {
 // tab (Skip's principle). The mic stays live throughout — only the upstream
 // routing toggles, so resume is instant.
 function reconcileUpstream() {
-  if (!_deepgramWs || _deepgramWs.readyState !== WebSocket.OPEN || !_deepgramConnected || _backend !== 'deepgram') return
+  if (!_deepgramWs || _deepgramWs.readyState !== WebSocket.OPEN || !_deepgramRelayConnected || _backend !== 'deepgram') return
   const action = upstreamAction({
     recording: _recording,
     routed: voiceHasRoute(),
@@ -789,7 +789,7 @@ function reconcileUpstream() {
 }
 
 function sendDeepgramAudioChunk(data) {
-  if (!_deepgramWs || !_deepgramConnected || !_recording) return false
+  if (_backend !== 'deepgram' || !_deepgramWs || _deepgramWs.readyState !== WebSocket.OPEN || !_deepgramRelayConnected || !_recording) return false
   reconcileUpstream()
   if (_dgUpstreamPaused) return false   // routed-to-nowhere / backgrounded — don't stream (don't bill)
   try {
@@ -799,16 +799,11 @@ function sendDeepgramAudioChunk(data) {
     return false
   }
   _lastAudioChunkTime = Date.now()
-  hideDontSpeak()
-  if (_voiceHealthLabel === 'starting voice' || _voiceHealthLabel === 'connecting to recognizer' || _voiceHealthLabel === 'recognizer connected') {
-    _voiceHealthLabel = 'mic live; waiting for speech'
-    showRecordingHud()
-  }
   return true
 }
 
 function finalizeDeepgramBridge() {
-  if (!_deepgramWs || !_deepgramConnected) return
+  if (!_deepgramWs || !deepgramRecognizerConnected()) return
   try { _deepgramWs.send(JSON.stringify({ type: 'finalize' })) } catch {}
 }
 
@@ -999,7 +994,8 @@ function voiceStatusLabel() {
   if (label === 'restarting voice') return 'reconnecting'
   if (label === 'starting voice' || label === 'connecting to recognizer') return 'reconnecting'
   if (label === 'recognizer connected') return 'mic live'
-  if (label.startsWith('mic live') || label === 'waiting for recognizer') return 'mic live'
+  if (label === 'waiting for recognizer' || label.startsWith('recognizer idle') || label.startsWith('recognizer unavailable')) return 'reconnecting'
+  if (label.startsWith('mic live')) return 'mic live'
   return label || 'mic live'
 }
 
@@ -1069,7 +1065,7 @@ export function setVoiceTarget(textarea, targetHandle) {
     // Without this, the old recognition session keeps running with a stale
     // generation and onresult discards everything, making voice appear dead.
     wasRecording = _recording
-    vlog('setVoiceTarget: switching chat', { wasRecording, backend: _backend, wsOpen: _deepgramConnected, hasMic: !!_deepgramStream })
+    vlog('setVoiceTarget: switching chat', { wasRecording, backend: _backend, wsOpen: _deepgramRelayConnected, hasMic: !!_deepgramStream })
     if (_backend === 'whisper-stream') flushWhisperBridge()
     if (_backend === 'deepgram') resetDeepgramTextState()
     hardResetVoice({ keepDeepgramMic: true })
@@ -1222,7 +1218,10 @@ export function getVoiceRuntimeSummary(now = Date.now()) {
     generation: _generation,
     editStopped: _editStopped,
     deepgram: {
-      connected: _deepgramConnected,
+      relayConnected: _deepgramRelayConnected,
+      recognizerStatus: currentDeepgramRecognizerStatus(),
+      recognizerConnected: deepgramRecognizerConnected(),
+      commonState: deepgramCommonState(now),
       available: _deepgramAvailable,
       wsReadyState: _deepgramWs?.readyState ?? null,
       wsBufferedAmount: _deepgramWs?.bufferedAmount ?? null,
@@ -1858,7 +1857,10 @@ function disconnectWhisperBridge() {
 // No echo/doubling — Deepgram manages interim vs final results cleanly.
 
 let _deepgramWs = null
-let _deepgramConnected = false
+let _deepgramRelayConnected = false
+let _deepgramRecognizerStatus = null // authoritative connected|idle|error from the bridge
+let _deepgramRecognizerRelay = null  // relay socket that delivered the status
+let _deepgramHardFailure = null      // explicit local nonrecoverable evidence only
 let _dgUpstreamPaused = false   // we've told the bridge to `stop` (routed-to-nowhere or tab backgrounded); not streaming
 let _deepgramStream = null      // MediaStream from getUserMedia
 let _deepgramContext = null      // AudioContext
@@ -1877,6 +1879,44 @@ let _dgIgnoredSubmittedText = null // normalized utterance submitted before wait
 let _dgLastFinalNorm = ''        // last committed final; used to drop duplicate stale finals
 let _dgLastFinalAt = 0           // timestamp for same-final echo suppression
 const DEEPGRAM_REPEAT_ECHO_WINDOW_MS = 1200
+
+function currentDeepgramRecognizerStatus() {
+  return _deepgramRelayConnected && _deepgramRecognizerRelay === _deepgramWs
+    ? _deepgramRecognizerStatus
+    : null
+}
+
+function deepgramRecognizerConnected() {
+  return currentDeepgramRecognizerStatus() === 'connected'
+}
+
+function deepgramCommonState(now = Date.now()) {
+  if (!_recording || _backend !== 'deepgram') return 'inactive'
+  if (_deepgramHardFailure) return 'failed'
+  if (!_deepgramRelayConnected) {
+    return _deepgramWs?.readyState === WebSocket.CONNECTING ? 'starting' : 'recovering'
+  }
+  const status = currentDeepgramRecognizerStatus()
+  if (status === 'connected') return voiceLivenessStatus(now) === 'live' ? 'usable' : 'recovering'
+  if (status === 'idle' || status === 'error') return 'recovering'
+  return 'starting'
+}
+
+function deepgramHealthLabel(now = Date.now()) {
+  if (_deepgramHardFailure) return _deepgramHardFailure
+  if (!_deepgramRelayConnected) {
+    return _deepgramWs?.readyState === WebSocket.CONNECTING
+      ? 'connecting to recognizer'
+      : 'connection lost; reconnecting'
+  }
+  const status = currentDeepgramRecognizerStatus()
+  if (status === 'connected') {
+    return voiceLivenessStatus(now) === 'live' ? 'mic live; waiting for speech' : 'no mic input'
+  }
+  if (status === 'idle') return 'recognizer idle; recovering'
+  if (status === 'error') return 'recognizer unavailable; recovering'
+  return 'waiting for recognizer'
+}
 
 function _dgTrickleFlush() {
   clearTimeout(_dgTrickleTimer)
@@ -2007,7 +2047,7 @@ function _dgTrickleStep() {
   }
 }
 
-function onDeepgramMessage(event) {
+function onDeepgramMessage(event, relay = _deepgramWs) {
   if (!_recording || _backend !== 'deepgram') {
     try {
       const m = JSON.parse(event.data)
@@ -2020,6 +2060,17 @@ function onDeepgramMessage(event) {
 
     if (msg.type === 'status') {
       console.log('voice: deepgram status:', msg.status)
+      if (relay !== _deepgramWs || !_deepgramRelayConnected) return
+      if (msg.status !== 'connected' && msg.status !== 'idle' && msg.status !== 'error') return
+      _deepgramRecognizerStatus = msg.status
+      _deepgramRecognizerRelay = relay
+      if (msg.status === 'connected') {
+        hideDontSpeak()
+      } else {
+        showDontSpeak(msg.status === 'idle' ? 'recognizer idle; recovering' : 'recognizer unavailable; recovering')
+      }
+      _voiceHealthLabel = deepgramHealthLabel()
+      showRecordingHud()
       return
     }
 
@@ -2167,19 +2218,21 @@ function connectDeepgramBridge() {
   try {
     _voiceHealthLabel = 'connecting to recognizer'
     if (_recording) showRecordingHud()
-    _deepgramWs = new WebSocket(deepgramBridgeUrl())
-    _deepgramWs.onopen = () => {
-      _deepgramConnected = true
-      hideDontSpeak()
-      _voiceHealthLabel = 'recognizer connected'
+    const relay = new WebSocket(deepgramBridgeUrl())
+    _deepgramWs = relay
+    relay.onopen = () => {
+      if (_deepgramWs !== relay) return
+      _deepgramRelayConnected = true
+      _voiceHealthLabel = deepgramHealthLabel()
       showRecordingHud()
       vlog('bridge WS open')
       _dgUpstreamPaused = false   // fresh bridge session starts streaming
-      _deepgramWs.send(dgStartMsg())
+      relay.send(dgStartMsg())
     }
-    _deepgramWs.onmessage = onDeepgramMessage
-    _deepgramWs.onclose = () => {
-      _deepgramConnected = false
+    relay.onmessage = (event) => onDeepgramMessage(event, relay)
+    relay.onclose = () => {
+      if (_deepgramWs !== relay) return
+      _deepgramRelayConnected = false
       _deepgramWs = null
       vlog('bridge WS closed', { recording: _recording })
       showDontSpeak('connection lost; reconnecting')
@@ -2188,7 +2241,7 @@ function connectDeepgramBridge() {
         setTimeout(connectDeepgramBridge, 1000)
       }
     }
-    _deepgramWs.onerror = (err) => { vlog('bridge WS error', { message: err?.message || 'unknown' }) }
+    relay.onerror = (err) => { vlog('bridge WS error', { message: err?.message || 'unknown' }) }
   } catch {
     _deepgramWs = null
   }
@@ -2197,14 +2250,14 @@ function connectDeepgramBridge() {
 function disconnectDeepgramBridge() {
   stopDeepgramMic()
   if (_deepgramWs) {
-    if (_deepgramConnected) {
+    if (_deepgramRelayConnected) {
       try { _deepgramWs.send(JSON.stringify({ type: 'stop' })) } catch {}
     }
     _deepgramWs.onclose = null
     _deepgramWs.close()
     _deepgramWs = null
-    _deepgramConnected = false
   }
+  _deepgramRelayConnected = false
 }
 
 // What the audio heartbeat should do, decided ONLY from the AudioContext state.
@@ -2227,8 +2280,11 @@ async function startDeepgramMic() {
     _deepgramStream = await navigator.mediaDevices.getUserMedia({
       audio: { channelCount: 1, sampleRate: 16000, echoCancellation: true, noiseSuppression: true }
     })
+    _deepgramHardFailure = null
   } catch (err) {
     console.error('voice: deepgram mic access failed', err)
+    _deepgramHardFailure = 'mic unavailable; check permissions'
+    _voiceHealthLabel = _deepgramHardFailure
     showHud('mic denied — check permissions', '#c87070')
     fadeHud(5000)
     return
@@ -2263,6 +2319,8 @@ async function startDeepgramMic() {
     await _deepgramContext.audioWorklet.addModule(`${import.meta.env.BASE_URL}deepgram-capture-worklet.js`)
   } catch (err) {
     vlog('audioWorklet.addModule failed', { err: err?.message })
+    _deepgramHardFailure = 'mic unavailable; tap to retry'
+    _voiceHealthLabel = _deepgramHardFailure
     showHud('mic init failed — tap to retry', '#c87070')
     fadeHud(5000)
     stopDeepgramMic()
@@ -2278,7 +2336,7 @@ async function startDeepgramMic() {
     sendDeepgramAudioChunk(e.data)
   }
   source.connect(_deepgramWorklet)
-  _voiceHealthLabel = _deepgramConnected ? 'mic live; waiting for speech' : 'mic live; waiting for recognizer'
+  _voiceHealthLabel = deepgramHealthLabel()
   if (_recording) showRecordingHud()
 
   _lastAudioChunkTime = 0
@@ -2288,7 +2346,7 @@ async function startDeepgramMic() {
     const ctxState = _deepgramContext?.state
     vlog('audio heartbeat', {
       lastChunkMs: ago,
-      wsOpen: _deepgramConnected,
+      wsOpen: _deepgramRelayConnected,
       hasMic: !!_deepgramStream,
       audioCtxState: ctxState,
     })
@@ -2423,7 +2481,7 @@ if (typeof window !== 'undefined') {
       getAgentColor: () => agentColor,
       sendVoice: () => {},
     }),
-    getState: () => ({ recording: _recording, backend: _backend, state: _state, connected: _deepgramConnected, hasMic: !!_deepgramStream, left: _left, interim: _interim, dumping: _voiceDumping, hasTextarea: !!_activeTextarea }),
+    getState: () => ({ recording: _recording, backend: _backend, state: _state, relayConnected: _deepgramRelayConnected, recognizerStatus: currentDeepgramRecognizerStatus(), recognizerConnected: deepgramRecognizerConnected(), commonState: deepgramCommonState(), hasMic: !!_deepgramStream, left: _left, interim: _interim, dumping: _voiceDumping, hasTextarea: !!_activeTextarea }),
     injectTranscript: (text, isFinal) => onDeepgramMessage({ data: JSON.stringify({ type: 'transcript', text, is_final: isFinal, speech_final: false }) }),
     afterSend: () => afterSend(),
     getTrickle: () => ({ words: _dgTrickleWords.slice(), shown: _dgTrickleShown, hasTimer: _dgTrickleTimer !== null }),
@@ -2439,9 +2497,21 @@ if (typeof window !== 'undefined') {
     fakeDeepgramConnected: () => {
       _recording = true
       _backend = 'deepgram'
-      _deepgramConnected = true
+      _deepgramHardFailure = null
+      _deepgramRelayConnected = true
       _deepgramWs = { readyState: 1, send: () => {}, close: () => {}, onclose: null }
+      onDeepgramMessage({ data: JSON.stringify({ type: 'status', status: 'connected' }) }, _deepgramWs)
     },
+    fakeDeepgramRelay: () => {
+      _recording = true
+      _backend = 'deepgram'
+      _deepgramHardFailure = null
+      _deepgramRelayConnected = true
+      _deepgramWs = { readyState: 1, send: () => {}, close: () => {}, onclose: null }
+      return _deepgramWs
+    },
+    setBackend: (backend) => { _backend = backend },
+    setDeepgramRelayReadyState: (readyState) => { if (_deepgramWs) _deepgramWs.readyState = readyState },
     simulateDeepgramAudioFrame: (data = new Int16Array([1]).buffer) => sendDeepgramAudioChunk(data),
     micWatchdogAction: (ctxState) => micWatchdogAction(ctxState),
     upstreamAction: (s) => upstreamAction(s),
@@ -2450,6 +2520,8 @@ if (typeof window !== 'undefined') {
     whisperLiveness: (messageAgo, wsReadyState, connected, timeoutMs) => whisperLiveness(messageAgo, wsReadyState, connected, timeoutMs),
     serviceUnavailableMessage: (isIOS) => serviceUnavailableMessage(isIOS),
     injectDeepgramMessage: (message) => onDeepgramMessage({ data: JSON.stringify(message) }),
+    injectDeepgramMessageFrom: (relay, message) => onDeepgramMessage({ data: JSON.stringify(message) }, relay),
+    getDeepgramFacts: () => ({ relayConnected: _deepgramRelayConnected, recognizerStatus: currentDeepgramRecognizerStatus(), recognizerConnected: deepgramRecognizerConnected(), commonState: deepgramCommonState() }),
     dotAudioStale: () => dotAudioStale(),
     getHealthLabel: () => _voiceHealthLabel,
     getLastChromeMissingnessMarker: () => _lastChromeMissingnessMarker,
@@ -2495,7 +2567,7 @@ function startRecording() {
     connectDeepgramBridge()
     startDeepgramMic()
     // Ensure Deepgram session is started (may have been stopped by hardResetVoice)
-    if (_deepgramWs && _deepgramConnected) {
+    if (_deepgramWs && _deepgramRelayConnected) {
       try { _deepgramWs.send(dgStartMsg()) } catch { /* WS race; onopen re-sends start */ }
     }
   } else if (_backend === 'whisper-stream') {
@@ -2547,7 +2619,7 @@ function stopRecording() {
   // Deepgram: stop mic capture and close session
   if (_backend === 'deepgram') {
     stopDeepgramMic()
-    if (_deepgramWs && _deepgramConnected) {
+    if (_deepgramWs && _deepgramRelayConnected) {
       try { _deepgramWs.send(JSON.stringify({ type: 'stop' })) } catch {}
     }
   }
@@ -2584,7 +2656,7 @@ async function hardResetVoice({ keepDeepgramMic = false } = {}) {
   if (_backend === 'deepgram' && keepDeepgramMic) {
     // Lightweight reset for chat switch — keep the warm bridge/mic and drop
     // trailing transcripts from the old utterance until Deepgram ends it.
-    vlog('hardReset/dg: keeping mic warm', { wsOpen: _deepgramConnected, hasMic: !!_deepgramStream })
+    vlog('hardReset/dg: keeping mic warm', { wsOpen: _deepgramRelayConnected, hasMic: !!_deepgramStream })
   } else {
     disconnectDeepgramBridge()
   }
@@ -2818,7 +2890,7 @@ export async function initVoice() {
           _deepgramContext.resume().catch(e => console.warn('[voice] AudioContext resume failed:', e.message))
         }
         // Ensure bridge WS is up
-        if (!_deepgramConnected) {
+        if (!_deepgramRelayConnected) {
           vlog('visibilitychange: bridge disconnected — reconnecting')
           connectDeepgramBridge()
         }

@@ -141,7 +141,9 @@ class MockBroadcastChannel {
 }
 global.BroadcastChannel = MockBroadcastChannel
 class MockWebSocket {
+  static CONNECTING = 0
   static OPEN = 1
+  static CLOSED = 3
   constructor() {
     this.readyState = MockWebSocket.OPEN
     setTimeout(() => this.onopen?.(), 0)
@@ -973,6 +975,45 @@ await setBackend('chrome')
   console.log('✓ Test 11a: phone voice HUD is top anchored')
 }
 
+// ---- Test 11b: relay transport and recognizer usability are separate facts ----
+{
+  reset()
+  const relay = window.__voiceTest.fakeDeepgramRelay()
+  assert.deepEqual(window.__voiceTest.getDeepgramFacts(), {
+    relayConnected: true,
+    recognizerStatus: null,
+    recognizerConnected: false,
+    commonState: 'starting',
+  }, 'relay open alone must not establish recognizer usability')
+
+  window.__voiceTest.injectDeepgramMessage({ type: 'status', status: 'idle' })
+  assert.equal(window.__voiceTest.getDeepgramFacts().commonState, 'recovering', 'idle recognizer remains recovery-eligible')
+  assert.equal(window.__voiceTest.getVoiceStatusLabel(), 'reconnecting', 'idle recognizer must not claim mic live')
+  assert.equal(window.__voiceTest.simulateDeepgramAudioFrame(), true, 'PCM must remain available as bridge recovery input')
+  assert.equal(window.__voiceTest.getDeepgramFacts().recognizerConnected, false, 'PCM transport must not fabricate recognizer usability')
+
+  window.__voiceTest.injectDeepgramMessage({ type: 'status', status: 'connected' })
+  assert.equal(window.__voiceTest.getDeepgramFacts().recognizerConnected, true, 'current structured connected establishes usability')
+
+  window.__voiceTest.injectDeepgramMessage({ type: 'status', status: 'error' })
+  assert.equal(window.__voiceTest.getDeepgramFacts().commonState, 'recovering', 'bridge error is recoverable, not terminal failure')
+  assert.equal(window.__voiceTest.simulateDeepgramAudioFrame(), true, 'error recovery still receives PCM')
+
+  window.__voiceTest.setBackend('chrome')
+  assert.equal(window.__voiceTest.simulateDeepgramAudioFrame(), false, 'stale worklet PCM is rejected after backend switch')
+  window.__voiceTest.setBackend('deepgram')
+  window.__voiceTest.setDeepgramRelayReadyState(MockWebSocket.CLOSED)
+  assert.equal(window.__voiceTest.simulateDeepgramAudioFrame(), false, 'PCM is rejected when the owned relay socket is not open')
+
+  const staleRelay = relay
+  window.__voiceTest.fakeDeepgramRelay()
+  window.__voiceTest.injectDeepgramMessageFrom(staleRelay, { type: 'status', status: 'connected' })
+  assert.equal(window.__voiceTest.getDeepgramFacts().recognizerConnected, false, 'stale relay status cannot authorize current usability')
+  window.__voiceTest.fakeStop()
+  reset()
+  console.log('✓ Test 11b: relay and recognizer facts remain separate through recovery')
+}
+
 // ---- Test 12: mic watchdog never tears down a live (running) context ----
 // Root-cause regression for the intermittent cut-outs / false "stop talking".
 // The old heartbeat restarted the whole mic pipeline whenever audio chunks paused
@@ -1251,7 +1292,7 @@ await setBackend('chrome')
 
   await setBackend('deepgram')
   window.__voiceTest.dotAudioStale()
-  assert.equal(window.__voiceTest.getHealthLabel(), 'waiting for recognizer', 'Deepgram disconnected stale label remains recognizer-specific')
+  assert.equal(window.__voiceTest.getHealthLabel(), 'mic unavailable; tap to retry', 'explicit Deepgram mic initialization failure remains honest')
 
   window.__voiceTest.fakeStop()
   reset()

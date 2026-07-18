@@ -5,10 +5,14 @@ import { buildVoicePipelineSnapshot } from '../server/lib/observability/voice-pi
 test('voice pipeline snapshot projects structured browser health only', () => {
   const snapshot = buildVoicePipelineSnapshot({
     now: Date.parse('2026-07-18T04:00:00Z'),
-    livePerfSamples: [{ ts: '2026-07-18T03:59:50Z', data: { voice: { backend: 'deepgram', recording: true, liveness: 'no-input', healthLabel: 'connection lost', deepgram: { connected: false, hasMicStream: true, lastMicFrameAgoMs: 120, lastAudioChunkAgoMs: 5000 } } } }],
+    livePerfSamples: [{ ts: '2026-07-18T03:59:50Z', data: { voice: { backend: 'deepgram', recording: true, liveness: 'no-input', healthLabel: 'connection lost', deepgram: { relayConnected: true, recognizerStatus: 'error', recognizerConnected: false, commonState: 'recovering', hasMicStream: true, lastMicFrameAgoMs: 120, lastAudioChunkAgoMs: 5000 } } } }],
   })
 
   assert.equal(snapshot.latest_browser.health, 'connection lost')
+  assert.equal(snapshot.latest_browser.relay_connected, true)
+  assert.equal(snapshot.latest_browser.recognizer_status, 'error')
+  assert.equal(snapshot.latest_browser.recognizer_connected, false)
+  assert.equal(snapshot.latest_browser.common_state, 'recovering')
   assert.equal(snapshot.source.read_only, true)
   assert.equal('counts' in snapshot, false)
   assert.equal('last_failure' in snapshot, false)

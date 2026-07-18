@@ -19,7 +19,9 @@
           { "selector": "recording", "text": "Listening", "type": "string" },
           { "selector": "liveness", "text": "Input", "type": "string" },
           { "selector": "health", "text": "Health", "type": "string" },
-          { "selector": "deepgram_connected", "text": "Deepgram connected", "type": "string" },
+          { "selector": "relay_connected", "text": "Relay connected", "type": "string" },
+          { "selector": "recognizer_status", "text": "Recognizer", "type": "string" },
+          { "selector": "common_state", "text": "Voice state", "type": "string" },
           { "selector": "mic_stream", "text": "Browser mic", "type": "string" },
           { "selector": "last_mic_frame_ms", "text": "Mic frame age (ms)", "type": "number" },
           { "selector": "last_audio_chunk_ms", "text": "Bridge send age (ms)", "type": "number" }
