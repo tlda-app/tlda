@@ -1,5 +1,9 @@
 import fs from 'fs'
+import { execFile } from 'child_process'
 import path from 'path'
+import { promisify } from 'util'
+import { resolveTranscript } from '../../agent-runtime/resolve-transcript.mjs'
+import { ledgerSessionId } from '../../agent-runtime/ledger-session-tail.mjs'
 import { activeConfigName, gitAuthorEnv, readConfig } from '../identity.mjs'
 import { resolveClaudeModel, resolveClaudeModelSelection } from '../models.mjs'
 import { resolveHarnessLaunchOptions } from '../permissions.mjs'
@@ -7,6 +11,7 @@ import { dnsAliasPreloadPath } from './dns-alias-preload.mjs'
 
 const LOGIN_PROMPT = 'Call login() with the fleet MCP server. Then call inbox() to check for a pending task.'
 const FENCE_TMP_ROOT = '/tmp/tlda-fence-env'
+const execFileP = promisify(execFile)
 
 function sq(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`
@@ -110,6 +115,63 @@ function sqEnv(entry) {
 
 export function resumeId(handle) {
   return handle?.sessionId || null
+}
+
+export async function resolveLiveSessionIdentity({ agent, tmuxSession, tmuxArgs = [], tmuxSocket = null, now = Date.now, processOwnedOnly = false, _deps = {} } = {}) {
+  const run = _deps.execFile || execFileP
+  const resolve = _deps.resolveTranscript || resolveTranscript
+  const read = _deps.readFileSync || fs.readFileSync
+  if (!tmuxSession) return null
+  const prefix = tmuxSocket ? ['-S', tmuxSocket] : tmuxArgs
+  let paneOut
+  try {
+    ;({ stdout: paneOut } = await run('tmux', [...prefix, 'list-panes', '-t', tmuxSession, '-F', '#{pane_pid}'], { timeout: 3000, encoding: 'utf8' }))
+  } catch { return null }
+  const panePids = paneOut.trim().split('\n').filter(Boolean)
+  if (!panePids.length) return null
+  let psOut
+  try {
+    ;({ stdout: psOut } = await run('ps', ['-eo', 'pid,ppid,args'], { timeout: 5000, encoding: 'utf8' }))
+  } catch { return null }
+  const children = new Map()
+  const runtimes = new Set()
+  for (const line of psOut.split('\n')) {
+    const match = line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/)
+    if (!match) continue
+    const [, pid, ppid, args] = match
+    if (!children.has(ppid)) children.set(ppid, [])
+    children.get(ppid).push(pid)
+    if (/(?:^|\s|[/\\])claude(?:\.exe)?(?:\s|$)/.test(args)) runtimes.add(pid)
+  }
+  const stack = [...panePids]
+  const seen = new Set()
+  const ownedRuntimes = []
+  while (stack.length) {
+    const candidate = stack.pop()
+    if (seen.has(candidate)) continue
+    seen.add(candidate)
+    if (runtimes.has(candidate)) ownedRuntimes.push(candidate)
+    stack.push(...(children.get(candidate) || []))
+  }
+  if (ownedRuntimes.length !== 1) return null
+  const pid = ownedRuntimes[0]
+  const launchTs = Date.parse(agent?.registered_at || '') || (now() - 60_000)
+  const jsonlPath = await resolve({ pid, kind: 'claude', agent, launchTs, processOwnedOnly })
+  if (!jsonlPath) return null
+  const sessionId = ledgerSessionId({ harness_kind: 'claude', jsonl_path: jsonlPath }) || path.basename(jsonlPath, '.jsonl')
+  let model = null
+  let cwd = agent?.cwd || null
+  try {
+    for (const line of read(jsonlPath, 'utf8').split(/\r?\n/).slice(0, 200)) {
+      if (!line) continue
+      let entry
+      try { entry = JSON.parse(line) } catch { continue }
+      if (!cwd && typeof entry.cwd === 'string') cwd = entry.cwd
+      const value = entry?.model || entry?.message?.model || entry?.payload?.model
+      if (typeof value === 'string' && value.trim()) { model = value.trim(); break }
+    }
+  } catch { return { sessionId, jsonlPath, model: null, cwd } }
+  return { sessionId, jsonlPath, model, cwd }
 }
 
 export function kickoffPrompt(name) {

@@ -169,6 +169,55 @@ test('CLI lifecycle codex wake treats existing resume id as bound', async () => 
   })
 })
 
+test('CLI lifecycle Claude spawn binds exact process-owned identity through canonical seam', async () => {
+  const result = {
+    harness: 'claude',
+    fleetId: 'fleet:test-cli-claude-bind',
+    tmuxSession: 'fleet-test-cli-claude-bind',
+    name: 'test-cli-claude-bind',
+    model: 'claude-sonnet',
+  }
+  const writes = []
+  const apiCalls = []
+  const resolved = await bindLifecycleCodexResumeIdentity(result, {
+    cwd: '/tmp/tlda-cli-claude-bind',
+    name: result.name,
+    timeoutMs: 0,
+    intervalMs: 0,
+    ledger: { setSessionSync(id, row) { writes.push({ id, row }) } },
+    resolveIdentity: async ({ agent, tmuxSession, processOwnedOnly }) => {
+      assert.equal(agent.id, result.fleetId)
+      assert.equal(tmuxSession, result.tmuxSession)
+      assert.equal(processOwnedOnly, true)
+      return {
+        sessionId: '33333333-3333-4333-8333-333333333333',
+        jsonlPath: '/tmp/claude-33333333-3333-4333-8333-333333333333.jsonl',
+        model: result.model,
+      }
+    },
+    api: async (method, url, body) => { apiCalls.push({ method, url, body }); return { ok: true } },
+  })
+  assert.equal(resolved.bound, true)
+  assert.equal(result.resumeId, '33333333-3333-4333-8333-333333333333')
+  assert.equal(writes[0].row.sessionKind, 'claude')
+  assert.equal(writes[0].row.sessionPath, '/tmp/claude-33333333-3333-4333-8333-333333333333.jsonl')
+  assert.equal(apiCalls[0].body.kind, 'claude')
+  assert.equal(apiCalls[0].body.session_id, result.resumeId)
+})
+
+test('CLI lifecycle Claude spawn stays pending without Created when exact identity is absent', async () => {
+  const result = { harness: 'claude', fleetId: 'fleet:test-cli-claude-pending', tmuxSession: 'fleet-test-cli-claude-pending' }
+  const resolved = await bindLifecycleCodexResumeIdentity(result, {
+    cwd: '/tmp/tlda-cli-claude-pending', name: result.fleetId,
+    timeoutMs: 0, intervalMs: 0,
+    resolveIdentity: async ({ processOwnedOnly }) => { assert.equal(processOwnedOnly, true); return null },
+    api: async () => { throw new Error('must not create seat while identity is pending') },
+  })
+  assert.equal(resolved.bound, false)
+  assert.equal(resolved.pending, true)
+  assert.equal(result.resumeId, undefined)
+})
+
 test('CLI lifecycle claude wake posts the current durable seat from its resume id', async () => {
   const result = {
     harness: 'claude',

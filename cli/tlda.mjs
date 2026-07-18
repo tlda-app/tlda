@@ -2827,10 +2827,10 @@ export async function bindLifecycleCodexResumeIdentity(result, {
   if (result?.fleetId && result.tmuxSession && result.resumeId) {
     return await postLifecycleSeatBinding(result, { api, cwd, name, sessionId: result.resumeId, existing: true, requireReadback })
   }
-  if (!result?.fleetId || !result.tmuxSession || result.harness !== 'codex') {
+  if (!result?.fleetId || !result.tmuxSession || !['codex', 'claude'].includes(result.harness)) {
     return { bound: false, skipped: true }
   }
-  const resolver = resolveIdentity || (await import('../agent-launch/harness/codex.mjs')).resolveLiveSessionIdentity
+  const resolver = resolveIdentity || (await import(`../agent-launch/harness/${result.harness}.mjs`)).resolveLiveSessionIdentity
   const deadline = Date.now() + timeoutMs
   let identity = null
   while (Date.now() <= deadline) {
@@ -2841,7 +2841,7 @@ export async function bindLifecycleCodexResumeIdentity(result, {
         cwd,
       },
       tmuxSession: result.tmuxSession,
-      processOwnedOnly: true,
+        processOwnedOnly: true,
     })
     if (identity?.sessionId && identity?.model) break
     await new Promise(resolve => setTimeout(resolve, intervalMs))
@@ -2857,7 +2857,7 @@ export async function bindLifecycleCodexResumeIdentity(result, {
     sessionId: identity.sessionId,
     sessionPath: identity.jsonlPath,
     model: identity.model,
-    kind: 'codex',
+    kind: result.harness,
     requireReadback,
   })
   if (!binding.bound) return { ...binding, identity }
