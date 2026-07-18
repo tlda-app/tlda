@@ -1064,7 +1064,14 @@ export class FleetStore {
     const AGENT_SELECT = 'agents.*, lineages.friendly_name AS lineage_name';
     const AGENT_JOIN = 'FROM agents LEFT JOIN lineages ON lineages.id = agents.lineage_id';
     this._getAgent = this.db.prepare(`SELECT ${AGENT_SELECT} ${AGENT_JOIN} WHERE agents.id = ?`);
-    this._getAgentsByDaemonKey = this.db.prepare(`SELECT ${AGENT_SELECT} ${AGENT_JOIN} WHERE agents.daemon_key = ? AND agents.dead = 0`);
+    // A daemon's agents are the ones whose CURRENT DURABLE SEAT lives on that
+    // daemon — agent_current_seats is the seat authority. The legacy
+    // agents.daemon_key column was blanked for most rows by the durable-seat
+    // migration (7/17: daemon-welcome delivered agents=1, so no JSONL watchers
+    // armed, no activity cards, no liveness for anyone); it is kept in the
+    // filter only for rows that never got a seat (bots) and should be deleted
+    // once the seat backfill covers them.
+    this._getAgentsByDaemonKey = this.db.prepare(`SELECT ${AGENT_SELECT} ${AGENT_JOIN} WHERE agents.dead = 0 AND (agents.daemon_key = @daemonKey OR agents.id IN (SELECT agent_id FROM agent_current_seats WHERE daemon_key = @daemonKey))`);
     this._getAgentByName = this.db.prepare(`SELECT ${AGENT_SELECT} ${AGENT_JOIN} WHERE agents.friendly_name = ?`);
     this._getLiveAgentsByFriendlyName = this.db.prepare(`SELECT ${AGENT_SELECT} ${AGENT_JOIN} WHERE agents.dead = 0 AND agents.friendly_name = ?`);
     this._getAgentSeat = this.db.prepare('SELECT * FROM agent_seats WHERE agent_id = ?');
@@ -1797,7 +1804,7 @@ export class FleetStore {
 
   getAgentsByDaemonKey(daemonKey) {
     if (!daemonKey) return [];
-    return this._getAgentsByDaemonKey.all(daemonKey).map(r => this._hydrateAgent(r));
+    return this._getAgentsByDaemonKey.all({ daemonKey }).map(r => this._hydrateAgent(r));
   }
 
   upsertDaemonRegistration(daemon) {

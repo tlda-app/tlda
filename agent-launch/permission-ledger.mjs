@@ -808,16 +808,19 @@ export class PermissionLedger {
     if (!existing) {
       return null
     }
+    // Identity is the seat tuple. `model` and `cwd` are metadata, not
+    // identity: a model ALIAS vs its resolved name ('fable' vs
+    // 'claude-fable-5') bounced every wake of a healthy seat, and a worktree
+    // cwd vs the repo root rejected legitimate worktree logins (both 7/17).
+    // They still persist fill-null-only below; they just cannot conflict.
     const incoming = {
       sessionId,
       sessionKind,
       sessionPath,
       tmuxSession,
-      model,
       machineId,
       envName,
       daemonKey,
-      cwd,
     }
     for (const [field, value] of Object.entries(incoming)) {
       const normalized = value == null || value === '' ? null : String(value)
