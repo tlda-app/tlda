@@ -208,7 +208,7 @@ global.AudioWorkletNode = class AudioWorkletNode {
 }
 
 // ---- Import module ----
-const { initVoice, setVoiceTarget: registerVoiceTarget, setVoiceAccumulator, clearVoiceAccumulator, toggleRecording, isRecording, getGeneration, enterVoiceSink, setBackend, resetTranscript, sendCurrentText } = await import('./voice.mjs')
+const { initVoice, setVoiceTarget: registerVoiceTarget, setVoiceAccumulator, clearVoiceAccumulator, toggleRecording, isRecording, getSpeechEpoch, enterVoiceSink, setBackend, resetTranscript, sendCurrentText } = await import('./voice.mjs')
 const { setPref, loadPrefs } = await import('./preferences.ts')
 await loadPrefs('voice-test')
 setPref('voice-backend', 'chrome')
@@ -228,16 +228,18 @@ function makeTextarea() {
     dispatchEvent(event) {
       event.target = this
       event.currentTarget = this
-      for (const fn of listeners.get(event.type) || []) fn(event)
+      const entries = listeners.get(event.type) || []
+      for (const entry of entries.filter(entry => entry.capture)) entry.fn(event)
+      for (const entry of entries.filter(entry => !entry.capture)) entry.fn(event)
       return !event.defaultPrevented
     },
-    addEventListener(type, fn) {
+    addEventListener(type, fn, capture = false) {
       if (!listeners.has(type)) listeners.set(type, [])
-      listeners.get(type).push(fn)
+      listeners.get(type).push({ fn, capture: capture === true })
     },
-    removeEventListener(type, fn) {
+    removeEventListener(type, fn, capture = false) {
       const list = listeners.get(type) || []
-      const i = list.indexOf(fn)
+      const i = list.findIndex(entry => entry.fn === fn && entry.capture === (capture === true))
       if (i !== -1) list.splice(i, 1)
     },
   }
@@ -449,7 +451,7 @@ function reset() {
   // we must grab the reference first to simulate a late callback from
   // the old session.
   const oldRec = mockRec
-  const genBefore = getGeneration()
+  const genBefore = getSpeechEpoch()
 
   // Speak a phrase then say "send"
   oldRec.onresult({
@@ -457,11 +459,11 @@ function reset() {
     results: [{ isFinal: true, 0: { transcript: 'hello world send' } }]
   })
   assert.equal(sentText, 'hello world', 'send keyword should trigger send')
-  const genAfter = getGeneration()
+  const genAfter = getSpeechEpoch()
   assert.ok(genAfter > genBefore, 'generation should have been bumped on send')
 
   // Now simulate a stale in-flight result arriving from the OLD session.
-  // oldRec still has the old myGeneration snapshot in its closure, so its
+  // oldRec still has the old myEpoch snapshot in its closure, so its
   // onresult should be discarded even though recording is still active.
   ta.value = ''
   oldRec.onresult({
@@ -482,6 +484,7 @@ function reset() {
   attachComposerEnter(ta, sendFn)
   setVoiceTarget(ta, ['fleet:abc'], { 'fleet:abc': 'agent' }, sendFn)
   window.__voiceTest.fakeRecord(ta)
+  const firstMagicEpoch = window.__voiceTest.getState().speechEpoch
 
   // Interim may contain the magic word, but Deepgram must only submit on final.
   window.__voiceTest.injectTranscript('hello world send', false)
@@ -489,6 +492,7 @@ function reset() {
 
   window.__voiceTest.injectTranscript('hello world send', true)
   assert.deepEqual(sent, ['hello world'], 'final magic word should press Enter once with cleaned text')
+  assert.equal(window.__voiceTest.getState().speechEpoch, firstMagicEpoch + 1, 'magic Enter crosses the shared boundary exactly once')
 
   // Racing duplicate results from the same Deepgram utterance are ignored until
   // Deepgram says the utterance ended. Duplicate finals can arrive without a
@@ -504,6 +508,7 @@ function reset() {
   assert.deepEqual(sent, ['hello world'], 'new interim magic word still should not send')
   window.__voiceTest.injectTranscript('second message send', true)
   assert.deepEqual(sent, ['hello world', 'second message'], 'new utterance should submit even without prior utterance_end')
+  assert.equal(window.__voiceTest.getState().speechEpoch, firstMagicEpoch + 2, 'each magic send advances exactly one epoch')
 
   window.__voiceTest.fakeStop()
   reset()
@@ -545,8 +550,10 @@ function reset() {
   })
   window.__voiceTest.fakeRecord(ta)
   ta.value = 'manual voice control'
+  const directEpoch = window.__voiceTest.getState().speechEpoch
 
   sendCurrentText()
+  assert.equal(window.__voiceTest.getState().speechEpoch, directEpoch + 1, 'direct voice control advances its boundary exactly once')
 
   assert.deepEqual(sent, [
     { targets: ['fleet:panel-target', 'fleet:inbox-target'], text: 'manual voice control' },
@@ -556,6 +563,22 @@ function reset() {
   window.__voiceTest.fakeStop()
   reset()
   console.log('✓ Test 8.0b: Direct voice send control uses active composer targets')
+}
+
+// ---- Test 8.0f: Accumulator magic send uses the same boundary exactly once ----
+{
+  const sent = []
+  setVoiceAccumulator(() => {}, text => sent.push(text), () => {}, 'note')
+  window.__voiceTest.fakeRecord()
+  const accumulatorEpoch = window.__voiceTest.getState().speechEpoch
+  window.__voiceTest.injectTranscript('note thought send', false)
+  window.__voiceTest.injectTranscript('note thought send', true)
+  assert.deepEqual(sent, ['note thought'])
+  assert.equal(window.__voiceTest.getState().speechEpoch, accumulatorEpoch + 1, 'accumulator magic send advances exactly one epoch')
+  clearVoiceAccumulator()
+  window.__voiceTest.fakeStop()
+  reset()
+  console.log('✓ Test 8.0f: accumulator magic send uses one speech boundary')
 }
 
 // ---- Test 8.0c: Plain composer Enter uses its own targets ----
@@ -642,8 +665,9 @@ function reset() {
   window.__voiceTest.injectTranscript('the old message tail', false)
   ta.value = 'the old message tail'
 
-  window.__voiceTest.afterSend()
+  const enterEpoch = window.__voiceTest.getState().speechEpoch
   ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true }))
+  assert.equal(window.__voiceTest.getState().speechEpoch, enterEpoch + 1, 'physical Enter crosses the shared boundary exactly once')
   resetTranscript('the old message tail')
 
   assert.deepEqual(sent, ['the old message tail'], 'Enter should send and clear the composer')
@@ -897,8 +921,8 @@ await setBackend('chrome')
 }
 
 // ---- Test 10: Generation bump in onend respawns fresh session (chat-switch regression) ----
-// Regression: after "left chat" command, _generation is bumped before onend fires.
-// onend must call _setupRecognition() so the new session has an updated myGeneration
+// Regression: after "left chat" command, _speechEpoch is bumped before onend fires.
+// onend must call _setupRecognition() so the new session has an updated myEpoch
 // snapshot — otherwise every onresult is discarded and voice appears dead.
 {
   const ta = makeTextarea()
@@ -918,15 +942,15 @@ await setBackend('chrome')
   //
   // Simpler: manually bump generation to mimic send/chat-switch, then call
   // mockRec.onend() to simulate the stop() completing.
-  const genBefore = getGeneration()
+  const genBefore = getSpeechEpoch()
 
   // Fire onend as if stop() completed after a generation bump.
   // The onend handler should detect the stale generation and call _setupRecognition().
   // We simulate the generation bump that happens in setVoiceTarget (target switch).
   const ta2 = makeTextarea()
   setVoiceTarget(ta2, ['fleet:abc'], { 'fleet:abc': 'agent' }, sendFn)
-  // setVoiceTarget bumped _generation; now simulate the old session's onend firing
-  const genAfterSwitch = getGeneration()
+  // setVoiceTarget bumped _speechEpoch; now simulate the old session's onend firing
+  const genAfterSwitch = getSpeechEpoch()
   assert.ok(genAfterSwitch > genBefore, 'generation bumped on target switch')
 
   tick(300)
@@ -996,6 +1020,7 @@ await setBackend('chrome')
   assert.equal(window.__voiceTest.simulateDeepgramAudioFrame(), true, 'PCM must remain available as bridge recovery input')
   assert.equal(window.__voiceTest.getDeepgramFacts().recognizerConnected, false, 'PCM transport must not fabricate recognizer usability')
 
+  window.__voiceTest.injectDeepgramMessage({ type: 'epoch_ready' })
   window.__voiceTest.injectDeepgramMessage({ type: 'status', status: 'connected' })
   assert.equal(window.__voiceTest.getDeepgramFacts().recognizerConnected, true, 'current structured connected establishes usability')
 
@@ -1572,6 +1597,34 @@ await setBackend('chrome')
   setPref('radio-subtitle-dwell-sec', 15)
   reset()
   console.log('✓ Test 22: radio subtitle is active-target, doc gated, toggleable, and collapses')
+}
+
+// Speech epoch: the shared send boundary advances once, stale producer output
+// cannot enter the next composer, and Deepgram recovery preserves intent while
+// pausing PCM until current-epoch readiness.
+{
+  window.__voiceTest.fakeDeepgramConnected()
+  const relay = window.__voiceTest.fakeDeepgramRelay()
+  const sent = []
+  relay.send = (value) => sent.push(value)
+  const before = window.__voiceTest.getState().speechEpoch
+  window.__voiceTest.afterSend()
+  const current = window.__voiceTest.getState().speechEpoch
+  assert.equal(current, before + 1, 'the common send boundary advances exactly one epoch')
+  assert.ok(sent.some(value => typeof value === 'string' && JSON.parse(value).type === 'speech_epoch'), 'Deepgram receives the new epoch before later PCM')
+
+  window.__voiceTest.injectDeepgramMessage({ type: 'epoch_loss', epoch: current, queuedBytes: 4, reason: 'connect-failed' })
+  assert.equal(window.__voiceTest.getState().recording, true, 'epoch loss preserves durable recording intent')
+  assert.equal(window.__voiceTest.getState().pcmPaused, true, 'PCM pauses during same-epoch recovery')
+  assert.equal(window.__voiceTest.simulateDeepgramAudioFrame(), false, 'unowned PCM is rejected while recovery is pending')
+  window.__voiceTest.injectDeepgramMessage({ type: 'epoch_ready', epoch: current - 1 })
+  assert.equal(window.__voiceTest.getState().pcmPaused, true, 'stale readiness cannot resume PCM')
+  window.__voiceTest.injectDeepgramMessage({ type: 'epoch_ready', epoch: current })
+  assert.equal(window.__voiceTest.getState().pcmPaused, false, 'current readiness resumes PCM')
+  window.__voiceTest.injectDeepgramMessage({ type: 'status', status: 'connected', epoch: current })
+  window.__voiceTest.injectDeepgramMessage({ type: 'status', status: 'error', epoch: current - 1 })
+  assert.equal(window.__voiceTest.getState().recognizerStatus, 'connected', 'stale upstream status cannot mutate the current epoch')
+  console.log('✓ Test 23: speech epoch boundary and intent-preserving Deepgram recovery')
 }
 
 console.log('\nAll voice tests passed.')

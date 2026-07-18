@@ -300,7 +300,7 @@ const CHROME_MIN_MISSINGNESS_MARKER_MS = 100
 // startRecording, setVoiceTarget). Each _setupRecognition() snapshots the
 // current value; onresult discards callbacks from an older generation.
 // Prevents stale in-flight results from writing to the textarea after a send.
-let _generation = 0
+let _speechEpoch = 0
 
 // Active chat target
 let _activeTextarea = null
@@ -789,6 +789,7 @@ function reconcileUpstream() {
 }
 
 function sendDeepgramAudioChunk(data) {
+  if (_deepgramPcmPaused) return false
   if (_backend !== 'deepgram' || !_deepgramWs || _deepgramWs.readyState !== WebSocket.OPEN || !_deepgramRelayConnected || !_recording) return false
   reconcileUpstream()
   if (_dgUpstreamPaused) return false   // routed-to-nowhere / backgrounded — don't stream (don't bill)
@@ -1028,7 +1029,7 @@ function enterEdit() {
   // so text the user just edited doesn't get overwritten.
   // Show amber glow so user knows voice is suppressed.
   if (_backend === 'whisper-stream') {
-    whisperLog(`enterEdit — flushing, gen=${_generation}`)
+    whisperLog(`enterEdit — flushing, gen=${_speechEpoch}`)
     flushWhisperBridge()
     setTextareaGlow(GLOW_AMBER)
   }
@@ -1037,7 +1038,7 @@ function enterEdit() {
     setTextareaGlow(GLOW_AMBER)
   }
   _state = 'edit'
-  _generation++
+  _speechEpoch++
   _left = _interim = _right = ''
   if (_recording && _recognition) {
     _editStopped = true
@@ -1074,11 +1075,11 @@ export function setVoiceTarget(textarea, targetHandle) {
     if (_inputListeners && _activeTextarea) {
       _activeTextarea.removeEventListener('input', _inputListeners.input)
       _activeTextarea.removeEventListener('click', _inputListeners.click)
-      _activeTextarea.removeEventListener('keydown', _inputListeners.keydown)
+      _activeTextarea.removeEventListener('keydown', _inputListeners.keydown, true)
       _inputListeners = null
     }
     _state = 'edit'
-    _generation++
+    _speechEpoch++
     _left = _interim = _right = ''
     if (textarea) {
       const onEdit = () => { if (!_filling) enterEdit() }
@@ -1100,7 +1101,7 @@ export function setVoiceTarget(textarea, targetHandle) {
       }
       textarea.addEventListener('input', onEdit)
       textarea.addEventListener('click', onEdit)
-      textarea.addEventListener('keydown', onKeydown)
+      textarea.addEventListener('keydown', onKeydown, true)
       _inputListeners = { input: onEdit, click: onEdit, keydown: onKeydown }
     }
   }
@@ -1162,7 +1163,7 @@ export function setVoiceAccumulator(onUpdate, onSend, onStop, label) {
   }
   _activeTextarea = null
   _state = 'edit'
-  _generation++
+  _speechEpoch++
   _left = _interim = _right = ''
   _accumulator = { onUpdate, onSend: onSend || null, onStop: onStop || null, label: label || 'note' }
   if (wasRecording) startRecording()
@@ -1215,7 +1216,7 @@ export function getVoiceRuntimeSummary(now = Date.now()) {
     hasTextarea: !!_activeTextarea,
     hasAccumulator: !!_accumulator,
     activeSendTargetCount: activeSendTargets().length,
-    generation: _generation,
+    generation: _speechEpoch,
     editStopped: _editStopped,
     deepgram: {
       relayConnected: _deepgramRelayConnected,
@@ -1448,8 +1449,8 @@ function insertChromeMissingnessMarker(dropStartedAt, restartedAt = Date.now()) 
   fillTextarea(_left + _right)
 }
 
-function startChromeAfterUnexpectedStop(myGeneration, dropStartedAt) {
-  if (!_recording || _backend !== 'chrome') return
+function startChromeAfterUnexpectedStop(myEpoch, dropStartedAt) {
+  if (!_recording || _backend !== 'chrome' || _speechEpoch !== myEpoch) return
   if (_chromeUnexpectedRestartFailures >= CHROME_UNEXPECTED_RESTART_LIMIT) {
     stopRecording()
     showHud('mic failed — tap to resume', '#c87070')
@@ -1457,7 +1458,7 @@ function startChromeAfterUnexpectedStop(myGeneration, dropStartedAt) {
     return
   }
   _chromeUnexpectedRestartFailures++
-  if (_generation === myGeneration) _setupRecognition()
+  if (_speechEpoch === myEpoch) _setupRecognition()
   try {
     showVoiceRestarting('speech recognition onend')
     _recognition.start()
@@ -1470,15 +1471,16 @@ function startChromeAfterUnexpectedStop(myGeneration, dropStartedAt) {
       fadeHud(5000)
       return
     }
+    const retryOwner = _recognition
     setTimeout(() => {
-      if (!_recording || _backend !== 'chrome') return
+      if (!_recording || _backend !== 'chrome' || _speechEpoch !== myEpoch || _recognition !== retryOwner) return
       try {
         showVoiceRestarting('speech recognition invalid-state retry')
         _recognition.start()
         insertChromeMissingnessMarker(dropStartedAt)
         markVoiceRestarted()
       } catch {
-        startChromeAfterUnexpectedStop(myGeneration, dropStartedAt)
+        startChromeAfterUnexpectedStop(myEpoch, dropStartedAt)
       }
     }, 100)
   }
@@ -1488,18 +1490,24 @@ function startChromeAfterUnexpectedStop(myGeneration, dropStartedAt) {
 
 function _setupRecognition() {
   // Snapshot the generation at setup time. Any onresult that arrives after
-  // _generation has been bumped (send, chat-switch, target-change, start) is
+  // _speechEpoch has been bumped (send, chat-switch, target-change, start) is
   // from a stale session and will be discarded before touching the textarea.
-  const myGeneration = _generation
+  const myEpoch = _speechEpoch
 
   _recognition = new SpeechRecognition()
+  const myRecognition = _recognition
+  const ownerIsCurrent = () => _speechEpoch === myEpoch && _recognition === myRecognition
+  const ownedTimeout = (callback, delay) => setTimeout(() => {
+    if (!ownerIsCurrent()) return
+    callback()
+  }, delay)
   _recognition.continuous = true
   _recognition.interimResults = true
   _recognition.lang = 'en-US'
 
   _recognition.onresult = (e) => {
     // Discard results from a stale session (generation bumped since setup).
-    if (_generation !== myGeneration) return
+    if (_speechEpoch !== myEpoch || _recognition !== myRecognition) return
 
     _lastResultTime = Date.now()
     _chromeUnexpectedRestartFailures = 0
@@ -1546,7 +1554,7 @@ function _setupRecognition() {
           showHud('→ other chat', '#9370db')
           fadeHud(1500)
           _state = 'edit'
-          _generation++
+          _speechEpoch++
           _left = _interim = _right = ''
           // Force a fresh session so cumulative results from the previous
           // chat can't leak into the new chat's textarea.
@@ -1569,6 +1577,7 @@ function _setupRecognition() {
   }
 
   _recognition.onerror = (e) => {
+    if (_speechEpoch !== myEpoch || _recognition !== myRecognition) return
     if (e.error === 'no-speech') return
     if (e.error === 'aborted') return
     console.warn('voice: speech recognition error', e.error)
@@ -1584,7 +1593,7 @@ function _setupRecognition() {
         _audioCaptureRetries++
         const retryDelay = 500 * Math.pow(2, _audioCaptureRetries - 1)
         showHud(`mic busy — retrying (${_audioCaptureRetries}/3)…`, '#c8956a')
-        setTimeout(() => {
+        ownedTimeout(() => {
           if (!_recording) return
           _setupRecognition()
           try {
@@ -1609,7 +1618,7 @@ function _setupRecognition() {
       showHud('requesting mic…', '#c8956a')
       navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
         stream.getTracks().forEach(t => t.stop())
-        if (!_recording) return
+        if (!_recording || !ownerIsCurrent()) return
         _setupRecognition()
         try {
           showVoiceRestarting('permission retry')
@@ -1623,6 +1632,7 @@ function _setupRecognition() {
           fadeHud(5000)
         }
       }).catch(() => {
+        if (!ownerIsCurrent()) return
         stopRecording()
         showHud('mic denied — check permissions', '#c87070')
         fadeHud(5000)
@@ -1631,7 +1641,7 @@ function _setupRecognition() {
     }
     if (_recording && e.error === 'network') {
       showHud('mic error — retrying…', '#c8956a')
-      setTimeout(() => {
+      ownedTimeout(() => {
         if (!_recording) return
         _setupRecognition()
         try {
@@ -1656,7 +1666,7 @@ function _setupRecognition() {
         navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
           stream.getTracks().forEach(t => t.stop())
           logSpeechContext('browser voice mic probe passed', { retry: _serviceUnavailableRetries })
-          if (!_recording) return
+          if (!_recording || !ownerIsCurrent()) return
           _setupRecognition()
           try {
             showHud('mic allowed — retrying Browser voice…', '#c8956a')
@@ -1673,6 +1683,7 @@ function _setupRecognition() {
             fadeHud(8000)
           }
         }).catch((err) => {
+          if (!ownerIsCurrent()) return
           logSpeechContext('browser voice mic probe failed', { retry: _serviceUnavailableRetries, error: err?.name || String(err) })
           stopRecording()
           showHud(serviceUnavailableMessage(_isIOS), '#c87070')
@@ -1692,6 +1703,7 @@ function _setupRecognition() {
   }
 
   _recognition.onend = () => {
+    if (_recognition !== myRecognition) return
     if (_recording) {
       const unexpectedStop = !_editStopped
       const dropStartedAt = Date.now()
@@ -1702,15 +1714,15 @@ function _setupRecognition() {
       }
       _editStopped = false  // new session starting — ready for speech again
       if (unexpectedStop) {
-        startChromeAfterUnexpectedStop(myGeneration, dropStartedAt)
+        startChromeAfterUnexpectedStop(myEpoch, dropStartedAt)
         return
       }
       // If generation was bumped since this session was set up (e.g. chat-switch
-      // or send keyword called _generation++ before our stop() triggered onend),
+      // or send keyword called _speechEpoch++ before our stop() triggered onend),
       // create a new SpeechRecognition object so its onresult closure captures
-      // the current _generation. Without this, the restarted session would still
-      // have the old myGeneration snapshot and discard every result it receives.
-      if (_generation !== myGeneration) {
+      // the current _speechEpoch. Without this, the restarted session would still
+      // have the old myEpoch snapshot and discard every result it receives.
+      if (_speechEpoch !== myEpoch) {
         _setupRecognition()
       }
       try {
@@ -1719,8 +1731,10 @@ function _setupRecognition() {
         markVoiceRestarted()
       } catch (err) {
         if (err.name !== 'InvalidStateError') throw err
+        const retryOwner = _recognition
+        const retryEpoch = _speechEpoch
         setTimeout(() => {
-          if (!_recording) return
+          if (!_recording || _speechEpoch !== retryEpoch || _recognition !== retryOwner) return
           showVoiceRestarting('speech recognition invalid-state retry')
           _recognition.start()
           markVoiceRestarted()
@@ -1791,7 +1805,7 @@ function onWhisperMessage(event) {
         showHud('→ other chat', '#9370db')
         fadeHud(1500)
         _state = 'edit'
-        _generation++
+        _speechEpoch++
         _left = _interim = _right = ''
         flushWhisperBridge()
         setTimeout(() => { if (_recording) showRecordingHud() }, 1600)
@@ -1863,6 +1877,9 @@ let _deepgramRelayConnected = false
 let _deepgramRecognizerStatus = null // authoritative connected|idle|error from the bridge
 let _deepgramRecognizerRelay = null  // relay socket that delivered the status
 let _deepgramHardFailure = null      // explicit local nonrecoverable evidence only
+let _deepgramPcmPaused = false
+let _deepgramRecoveringEpoch = null
+let _deepgramReadyEpoch = null
 let _dgUpstreamPaused = false   // we've told the bridge to `stop` (routed-to-nowhere or tab backgrounded); not streaming
 let _deepgramStream = null      // MediaStream from getUserMedia
 let _deepgramContext = null      // AudioContext
@@ -1875,6 +1892,7 @@ let _audioHeartbeatInterval = null  // periodic interval that logs audio-flow he
 let _dgTrickleWords = []         // words currently being trickled in
 let _dgTrickleShown = 0          // how many trickle words are visible
 let _dgTrickleTimer = null       // setTimeout id for next trickle step
+let _dgTrickleEpoch = 0
 let _dgTrickleDelay = 40         // ms between words (adjusted per burst)
 let _dgIgnoreUntilUtteranceEnd = false // true after voice-send; drops trailing old-utterance results
 let _dgIgnoredSubmittedText = null // normalized utterance submitted before waiting for utterance_end
@@ -2007,7 +2025,10 @@ function pressEnterOnActiveTextarea() {
 
 function submitTextareaViaMagicWord(cleanText, submittedText) {
   replaceTextareaValue(cleanText)
+  _filling = true
   pressEnterOnActiveTextarea()
+  _filling = false
+  afterSend()
   if (_backend === 'deepgram') resetDeepgramTextState({ ignoreUntilUtteranceEnd: true, submittedText })
 }
 
@@ -2037,15 +2058,22 @@ function handleSendMagicWord(leftTrimmed) {
   return true
 }
 
-function _dgTrickleStep() {
+function scheduleDgTrickle(epoch) {
+  const timer = setTimeout(() => _dgTrickleStep(timer, epoch), _dgTrickleDelay)
+  _dgTrickleTimer = timer
+}
+
+function _dgTrickleStep(timer, epoch) {
+  if (_dgTrickleTimer !== timer) return
   _dgTrickleTimer = null
+  if (epoch !== _speechEpoch) return
   if (_dgTrickleShown >= _dgTrickleWords.length) return
   _dgTrickleShown++
   _interim = postProcessTranscript(_dgTrickleWords.slice(0, _dgTrickleShown).join(' '))
   const display = _left + (_interim ? ' ' + _interim : '') + _right
   fillTextarea(display)
   if (_dgTrickleShown < _dgTrickleWords.length) {
-    _dgTrickleTimer = setTimeout(_dgTrickleStep, _dgTrickleDelay)
+    scheduleDgTrickle(epoch)
   }
 }
 
@@ -2060,10 +2088,48 @@ function onDeepgramMessage(event, relay = _deepgramWs) {
   try {
     const msg = JSON.parse(event.data)
 
+    if (msg.type === 'epoch_ready') {
+      if (relay !== _deepgramWs || msg.epoch !== _speechEpoch) return
+      _deepgramRecoveringEpoch = null
+      _deepgramReadyEpoch = msg.epoch
+      _deepgramPcmPaused = false
+      _deepgramRecognizerStatus = 'connected'
+      _deepgramRecognizerRelay = relay
+      hideDontSpeak()
+      showRecordingHud()
+      return
+    }
+
+    if (msg.type === 'epoch_loss' || msg.type === 'epoch_error') {
+      if (relay !== _deepgramWs) return
+      if (msg.type === 'epoch_loss' && msg.epoch !== _speechEpoch) {
+        showDontSpeak('speech lost before send')
+        return
+      }
+      if (msg.epoch !== _speechEpoch) return
+      _deepgramPcmPaused = true
+      _deepgramRecoveringEpoch = msg.epoch
+      _deepgramRecognizerStatus = 'error'
+      _deepgramRecognizerRelay = relay
+      showDontSpeak(msg.type === 'epoch_loss' ? 'speech lost; recognizer recovering' : 'recognizer unavailable; recovering')
+      if (msg.type === 'epoch_loss') {
+        try {
+          relay.send(JSON.stringify({ ...JSON.parse(dgStartMsg()), epoch: msg.epoch }))
+        } catch (err) {
+          console.warn('voice: same-epoch recovery start failed', err)
+        }
+      }
+      return
+    }
+
+    if ((msg.type === 'transcript' || msg.type === 'speech_started' || msg.type === 'utterance_end') && msg.epoch !== _speechEpoch) return
+
     if (msg.type === 'status') {
       console.log('voice: deepgram status:', msg.status)
       if (relay !== _deepgramWs || !_deepgramRelayConnected) return
+      if (msg.epoch !== _speechEpoch) return
       if (msg.status !== 'connected' && msg.status !== 'idle' && msg.status !== 'error') return
+      if (msg.status === 'connected' && _deepgramReadyEpoch !== _speechEpoch) return
       _deepgramRecognizerStatus = msg.status
       _deepgramRecognizerRelay = relay
       if (msg.status === 'connected') {
@@ -2169,7 +2235,8 @@ function onDeepgramMessage(event, relay = _deepgramWs) {
         const display = _left + (_interim ? ' ' + _interim : '') + _right
         fillTextarea(display)
         if (_dgTrickleShown < newWords.length && !_dgTrickleTimer) {
-          _dgTrickleTimer = setTimeout(_dgTrickleStep, _dgTrickleDelay)
+          _dgTrickleEpoch = _speechEpoch
+          scheduleDgTrickle(_speechEpoch)
         }
       } else {
         _interim = postProcessTranscript(newWords.slice(0, _dgTrickleShown).join(' '))
@@ -2190,7 +2257,7 @@ function onDeepgramMessage(event, relay = _deepgramWs) {
         showHud('→ other chat', '#9370db')
         fadeHud(1500)
         _state = 'edit'
-        _generation++
+        _speechEpoch++
         _left = _interim = _right = ''
         resetDeepgramTextState({ ignoreUntilUtteranceEnd: true })
         setTimeout(() => { if (_recording) showRecordingHud() }, 1600)
@@ -2258,6 +2325,7 @@ function connectDeepgramBridge(generation) {
       showRecordingHud()
       vlog('bridge WS open')
       _dgUpstreamPaused = false   // fresh bridge session starts streaming
+      relay.send(JSON.stringify({ type: 'speech_epoch', epoch: _speechEpoch }))
       relay.send(dgStartMsg())
     }
     relay.onmessage = (event) => onDeepgramMessage(event, relay)
@@ -2458,6 +2526,8 @@ function stopDeepgramMic() {
 // next message. Resets text buffers and handles recognition restart.
 // One function, called from all send paths — no parallel implementations.
 function afterSend() {
+  const submittedText = currentSubmittedVoiceText()
+  _speechEpoch++
   _state = 'edit'
   _left = _interim = _right = ''
   if (_backend === 'whisper-stream') {
@@ -2465,8 +2535,20 @@ function afterSend() {
     return
   }
   if (_backend === 'deepgram') {
-    const submittedText = currentSubmittedVoiceText()
     finalizeDeepgramBridge()
+    if (_deepgramWs?.readyState === WebSocket.OPEN) {
+      _deepgramPcmPaused = false
+      _deepgramReadyEpoch = null
+      _deepgramRecognizerStatus = null
+      try {
+        _deepgramWs.send(JSON.stringify({ type: 'speech_epoch', epoch: _speechEpoch }))
+      } catch (err) {
+        _deepgramPcmPaused = true
+        _deepgramRecoveringEpoch = _speechEpoch
+        console.warn('voice: speech epoch control failed', err)
+        showDontSpeak('recognizer unavailable; recovering')
+      }
+    }
     if (normalizeDeepgramText(submittedText)) resetDeepgramTextState({ ignoreUntilUtteranceEnd: true, submittedText })
     else resetDeepgramTextState({ preserveUtteranceGuard: true })
     return
@@ -2476,11 +2558,15 @@ function afterSend() {
     // Safari: webkitSpeechRecognition is unreliable after stop/start; full reset needed.
     hardResetVoice().then(() => startRecording())
   } else {
-    // Chrome: keep recognition running — no restart gap, no warmup delay.
-    // _editStopped gates the next 100ms to drop any in-flight finals from the
-    // old message; after that the next word starts a fresh message naturally.
+    // Chrome recognition instances are epoch-owned. Retire this instance; its
+    // onend handler creates a fresh instance whose callbacks capture the new
+    // generation before recognition resumes.
     _editStopped = true
-    setTimeout(() => { _editStopped = false }, 100)
+    try {
+      _recognition?.stop()
+    } catch (err) {
+      console.warn('voice: epoch recognition retirement failed', err)
+    }
   }
 }
 
@@ -2513,8 +2599,8 @@ if (typeof window !== 'undefined') {
       getAgentColor: () => agentColor,
       sendVoice: () => {},
     }),
-    getState: () => ({ recording: _recording, backend: _backend, state: _state, relayConnected: _deepgramRelayConnected, recognizerStatus: currentDeepgramRecognizerStatus(), recognizerConnected: deepgramRecognizerConnected(), commonState: deepgramCommonState(), hasMic: !!_deepgramStream, left: _left, interim: _interim, dumping: _voiceDumping, hasTextarea: !!_activeTextarea }),
-    injectTranscript: (text, isFinal) => onDeepgramMessage({ data: JSON.stringify({ type: 'transcript', text, is_final: isFinal, speech_final: false }) }),
+    getState: () => ({ recording: _recording, backend: _backend, state: _state, speechEpoch: _speechEpoch, pcmPaused: _deepgramPcmPaused, recoveringEpoch: _deepgramRecoveringEpoch, relayConnected: _deepgramRelayConnected, recognizerStatus: currentDeepgramRecognizerStatus(), recognizerConnected: deepgramRecognizerConnected(), commonState: deepgramCommonState(), hasMic: !!_deepgramStream, left: _left, interim: _interim, dumping: _voiceDumping, hasTextarea: !!_activeTextarea }),
+    injectTranscript: (text, isFinal) => onDeepgramMessage({ data: JSON.stringify({ type: 'transcript', text, is_final: isFinal, speech_final: false, epoch: _speechEpoch }) }),
     afterSend: () => afterSend(),
     getTrickle: () => ({ words: _dgTrickleWords.slice(), shown: _dgTrickleShown, hasTimer: _dgTrickleTimer !== null }),
     showDontSpeak: () => showDontSpeak(),
@@ -2551,8 +2637,8 @@ if (typeof window !== 'undefined') {
     chromeLiveness: (resultAgo, hasActiveSession, editStopped, deadTimeoutMs) => chromeLiveness(resultAgo, hasActiveSession, editStopped, deadTimeoutMs),
     whisperLiveness: (messageAgo, wsReadyState, connected, timeoutMs) => whisperLiveness(messageAgo, wsReadyState, connected, timeoutMs),
     serviceUnavailableMessage: (isIOS) => serviceUnavailableMessage(isIOS),
-    injectDeepgramMessage: (message) => onDeepgramMessage({ data: JSON.stringify(message) }),
-    injectDeepgramMessageFrom: (relay, message) => onDeepgramMessage({ data: JSON.stringify(message) }, relay),
+    injectDeepgramMessage: (message) => onDeepgramMessage({ data: JSON.stringify({ epoch: _speechEpoch, ...message }) }),
+    injectDeepgramMessageFrom: (relay, message) => onDeepgramMessage({ data: JSON.stringify({ epoch: _speechEpoch, ...message }) }, relay),
     getDeepgramFacts: () => ({ relayConnected: _deepgramRelayConnected, recognizerStatus: currentDeepgramRecognizerStatus(), recognizerConnected: deepgramRecognizerConnected(), commonState: deepgramCommonState() }),
     startDeepgramRelayTest: () => {
       disconnectDeepgramBridge()
@@ -2595,7 +2681,7 @@ function startRecording() {
   _dgUpstreamPaused = false   // fresh recording — upstream is active until routing/tab says otherwise
   emitRecordingChange()
   _state = 'edit'
-  _generation++
+  _speechEpoch++
   _left = _interim = _right = ''
   _lastResultTime = 0
   _lastWhisperMessageTime = 0
@@ -2736,7 +2822,10 @@ async function hardResetVoice({ keepDeepgramMic = false } = {}) {
 }
 
 function sendCurrentText() {
-  if (_recording) stopRecording()
+  if (_recording) {
+    afterSend()
+    stopRecording()
+  }
 
   const ta = _activeTextarea
   if (!ta) {
@@ -3006,7 +3095,7 @@ export function setMathMode(on) {
   if (_recording) showRecordingHud()
 }
 export function isMathMode() { return _mathMode }
-export function getGeneration() { return _generation }
+export function getSpeechEpoch() { return _speechEpoch }
 export function getBackend() { return _backend }
 export function isWhisperAvailable() { return _whisperAvailable }
 export async function setBackend(be) {
@@ -3054,7 +3143,7 @@ export async function setBackend(be) {
 /** @param {string | null | undefined} submittedText */
 export function resetTranscript(submittedText = undefined) {
   _state = 'edit'
-  _generation++
+  _speechEpoch++
   _left = _interim = _right = ''
   if (_backend === 'deepgram') {
     if (submittedText != null) resetDeepgramTextState({ ignoreUntilUtteranceEnd: true, submittedText })

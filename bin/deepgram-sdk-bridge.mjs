@@ -7,6 +7,7 @@
 //   node bin/deepgram-sdk-bridge.mjs [--port 8180] [--key DEEPGRAM_API_KEY]
 
 import { DeepgramClient } from '@deepgram/sdk'
+import { acceptsSpeechEpoch, createEpochTransition, enqueueEpochPcm, readyEpochTransition } from './deepgram-epoch-state.mjs'
 import { WebSocketServer, WebSocket } from 'ws'
 import { createServer as createHttpsServer } from 'https'
 import { readFileSync, existsSync } from 'fs'
@@ -194,6 +195,63 @@ wss.on('connection', (browserWs) => {
   let resumeRms = RESUME_RMS_THRESHOLD
   let prerollMaxBytes = PREROLL_MAX_BYTES
   let clientVoiceParams = {}    // per-connection Deepgram recognition overrides (endpointing, utterance_end_ms)
+  let activeEpoch = null
+  let epochTransition = null
+  let connectionAttemptId = 0
+
+  function closeConnection(connection, context) {
+    try {
+      connection.close()
+    } catch (err) {
+      console.warn(`[deepgram-sdk-bridge] ${context} close failed:`, err.message)
+    }
+  }
+
+  function epochQueueMaxBytes() {
+    return 16000 * 2 * Number(listenOptions(clientVoiceParams).connectionTimeoutInSeconds || 10)
+  }
+
+  function emitEpochLoss(transition, reason, rejectedBytes = 0) {
+    if (!transition || transition.lossEmitted) return
+    transition.lossEmitted = true
+    sendToBrowser(browserWs, {
+      type: 'epoch_loss', epoch: transition.epoch, queuedBytes: transition.pcmBytes,
+      rejectedBytes, reason,
+    })
+  }
+
+  function retireEpoch(reason) {
+    if (epochTransition?.pcmBytes > 0) emitEpochLoss(epochTransition, reason)
+    epochTransition = null
+    clearInterval(keepAliveInterval)
+    keepAliveInterval = null
+    clearInterval(idleTimer)
+    idleTimer = null
+    const old = dg
+    connectionAttemptId++
+    dg = null
+    connecting = null
+    if (old) {
+      try {
+        sendDeepgramJson(old, { type: 'CloseStream' })
+      } catch (err) {
+        console.warn('[deepgram-sdk-bridge] retire CloseStream failed:', err.message)
+      }
+      closeConnection(old, 'retired epoch')
+    }
+  }
+
+  function revokeConnectionAttempt(context) {
+    connectionAttemptId++
+    connecting = null
+    clearInterval(keepAliveInterval)
+    keepAliveInterval = null
+    clearInterval(idleTimer)
+    idleTimer = null
+    const revoked = dg
+    dg = null
+    if (revoked) closeConnection(revoked, context)
+  }
 
   function applyClientParams(msg) {
     if (Number.isFinite(msg?.idleMs) && msg.idleMs > 0) idleMs = msg.idleMs
@@ -227,14 +285,29 @@ wss.on('connection', (browserWs) => {
     return true
   }
 
-  function attachDeepgramConnection(connection) {
+  function attachDeepgramConnection(connection, epoch, attemptId) {
     dg = connection
 
     connection.on('open', () => {
+      if (connection !== dg || epoch !== activeEpoch || attemptId !== connectionAttemptId) {
+        closeConnection(connection, 'stale open')
+        return
+      }
       console.log('[deepgram-sdk-bridge] connected to Deepgram')
       reconnectFailures = 0
       lastSpeechAt = Date.now()
-      sendToBrowser(browserWs, { type: 'status', status: 'connected', implementation: 'sdk' })
+      const readyResult = readyEpochTransition(epochTransition, epoch, attemptId, frame => sendDeepgramAudio(connection, frame))
+      if (readyResult !== 'stale') {
+        const transition = epochTransition
+        if (readyResult === 'failed') {
+          emitEpochLoss(transition, 'queue-drain-failed')
+          transition.state = 'recovering'
+          sendToBrowser(browserWs, { type: 'epoch_error', epoch, reason: 'queue-drain-failed' })
+          return
+        }
+        sendToBrowser(browserWs, { type: 'epoch_ready', epoch })
+      }
+      sendToBrowser(browserWs, { type: 'status', status: 'connected', implementation: 'sdk', epoch })
       keepAliveInterval = setInterval(() => {
         try { sendDeepgramJson(dg, { type: 'KeepAlive' }) } catch {}
       }, 3000)
@@ -249,6 +322,7 @@ wss.on('connection', (browserWs) => {
     })
 
     connection.on('message', (msg) => {
+      if (connection !== dg || epoch !== activeEpoch || attemptId !== connectionAttemptId) return
       if (msg.type === 'Results') {
         const alt = msg.channel?.alternatives?.[0]
         if (!alt || !alt.transcript) return
@@ -264,6 +338,7 @@ wss.on('connection', (browserWs) => {
           speech_final: msg.speech_final || false,
           from_finalize: msg.from_finalize || false,
           timestamp: Date.now(),
+          epoch,
         })
         return
       }
@@ -271,12 +346,12 @@ wss.on('connection', (browserWs) => {
       if (msg.type === 'SpeechStarted') {
         lastSpeechAt = Date.now()
         console.log('[deepgram-sdk-bridge] speech started')
-        sendToBrowser(browserWs, { type: 'speech_started', timestamp: Date.now() })
+        sendToBrowser(browserWs, { type: 'speech_started', timestamp: Date.now(), epoch })
         return
       }
 
       if (msg.type === 'UtteranceEnd') {
-        sendToBrowser(browserWs, { type: 'utterance_end', timestamp: Date.now() })
+        sendToBrowser(browserWs, { type: 'utterance_end', timestamp: Date.now(), epoch })
         return
       }
 
@@ -286,11 +361,12 @@ wss.on('connection', (browserWs) => {
     })
 
     connection.on('close', (event) => {
+      if (connection !== dg || epoch !== activeEpoch || attemptId !== connectionAttemptId) return
       clearInterval(keepAliveInterval)
       keepAliveInterval = null
       clearInterval(idleTimer)
       idleTimer = null
-      dg = null
+      if (dg === connection) dg = null
       connecting = null
       if (manuallyClosed || idleClosed) return
       // Unexpected drop — INCLUDING Deepgram's own no-audio/timeout close. Do NOT
@@ -305,13 +381,15 @@ wss.on('connection', (browserWs) => {
     })
 
     connection.on('error', (err) => {
+      if (connection !== dg || epoch !== activeEpoch || attemptId !== connectionAttemptId) return
       console.error('[deepgram-sdk-bridge] Deepgram error:', err.message)
-      sendToBrowser(browserWs, { type: 'status', status: 'error', error: err.message, implementation: 'sdk' })
+      sendToBrowser(browserWs, { type: 'status', status: 'error', error: err.message, implementation: 'sdk', epoch, attemptId })
     })
   }
 
-  async function connectDeepgram() {
+  async function connectDeepgram(epoch = activeEpoch) {
     if (dg || connecting) return connecting
+    const attemptId = ++connectionAttemptId
     // STORM GUARD — reconnects only happen here (driven by real audio or an
     // explicit `start`), never on a self-scheduled timer. After a failure/drop we
     // back off exponentially, so a session Deepgram keeps closing (its no-audio
@@ -325,15 +403,25 @@ wss.on('connection', (browserWs) => {
     manuallyClosed = false
     connecting = (async () => {
       const connection = await client.listen.v1.connect(listenOptions(clientVoiceParams))
-      attachDeepgramConnection(connection)
+      if (epoch !== activeEpoch || attemptId !== connectionAttemptId) {
+        closeConnection(connection, 'stale connect')
+        return null
+      }
+      attachDeepgramConnection(connection, epoch, attemptId)
       connection.connect()
       await connection.waitForOpen()
       return connection
     })().catch(err => {
-      connecting = null
+      if (attemptId === connectionAttemptId) connecting = null
       reconnectFailures++
       console.error('[deepgram-sdk-bridge] connect failed:', err.message)
-      try { browserWs.send(JSON.stringify({ type: 'status', status: 'error', error: err.message, implementation: 'sdk' })) } catch {}
+      if (epoch === activeEpoch && attemptId === connectionAttemptId) {
+        if (epochTransition) emitEpochLoss(epochTransition, 'connect-failed')
+        sendToBrowser(browserWs, { type: 'epoch_error', epoch, reason: 'connect-failed' })
+      }
+      if (epoch === activeEpoch && attemptId === connectionAttemptId) {
+        sendToBrowser(browserWs, { type: 'status', status: 'error', error: err.message, implementation: 'sdk', epoch, attemptId })
+      }
       return null
     })
     return connecting
@@ -346,7 +434,7 @@ wss.on('connection', (browserWs) => {
     console.log(`[deepgram-sdk-bridge] idle cutoff — no speech for ${IDLE_CUTOFF_MS}ms, closing upstream`)
     idleClosed = true
     disconnectDeepgram()
-    sendToBrowser(browserWs, { type: 'status', status: 'idle', implementation: 'sdk' })
+    sendToBrowser(browserWs, { type: 'status', status: 'idle', implementation: 'sdk', epoch: activeEpoch, attemptId: connectionAttemptId })
   }
 
   function disconnectDeepgram() {
@@ -364,13 +452,25 @@ wss.on('connection', (browserWs) => {
 
   browserWs.on('message', (data, isBinary) => {
     if (isBinary) {
+      const frame = Buffer.from(data)
+      if (epochTransition?.state === 'connecting') {
+        const maxBytes = epochQueueMaxBytes()
+        if (!enqueueEpochPcm(epochTransition, frame, maxBytes)) {
+          revokeConnectionAttempt('overflowed epoch')
+          emitEpochLoss(epochTransition, 'queue-overflow', frame.length)
+          epochTransition.state = 'recovering'
+          sendToBrowser(browserWs, { type: 'epoch_error', epoch: epochTransition.epoch, reason: 'queue-overflow' })
+          return
+        }
+        return
+      }
+      if (epochTransition?.state === 'recovering') return
       // After an idle cutoff the upstream is closed. A continuously-streaming
       // client must NOT instantly reconnect (that defeats the cutoff and was the
       // storm). Resume ONLY when the audio actually contains sound (RMS), not on a
       // silent-but-live mic. Buffer silence as pre-roll so the first words after
       // the pause aren't clipped through the reconnect.
       if (idleClosed) {
-        const frame = Buffer.from(data)
         if (rmsOfPcm(frame) < resumeRms) { pushPreroll(frame); return }
         // Real speech → resume. Treat like user intent: clear the gate + backoff.
         console.log('[deepgram-sdk-bridge] resume — speech after idle, reconnecting upstream')
@@ -404,14 +504,30 @@ wss.on('connection', (browserWs) => {
 
     try {
       const msg = JSON.parse(data.toString())
-      if (msg.type === 'start') {
+      if (msg.type === 'speech_epoch') {
+        if (!acceptsSpeechEpoch(activeEpoch, msg.epoch)) {
+          sendToBrowser(browserWs, { type: 'epoch_error', epoch: msg.epoch, reason: 'non-monotone-epoch' })
+          return
+        }
+        retireEpoch('superseded')
+        activeEpoch = msg.epoch
+        preroll = []; prerollBytes = 0
+        epochTransition = createEpochTransition(activeEpoch, connectionAttemptId + 1)
+        manuallyClosed = false
+        reconnectFailures = 0
+        connectDeepgram(activeEpoch)
+      } else if (msg.type === 'start') {
         // Explicit user intent (voice ON / resume after idle): clear the idle
         // gate and reset the backoff so we connect immediately. Pick up any
         // client-tuned conservation params (Skip's Preferences).
         applyClientParams(msg)
         idleClosed = false
         reconnectFailures = 0
-        connectDeepgram()
+        if (Number.isSafeInteger(msg.epoch) && msg.epoch === activeEpoch) {
+          retireEpoch('recovery')
+          epochTransition = createEpochTransition(activeEpoch, connectionAttemptId + 1)
+        }
+        connectDeepgram(activeEpoch)
       } else if (msg.type === 'finalize' || msg.type === 'flush') {
         try { sendDeepgramJson(dg, { type: 'Finalize' }) } catch {}
       } else if (msg.type === 'stop') {
