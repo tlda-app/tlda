@@ -438,10 +438,16 @@ async function spawnRespawn(params) {
   const modelResolved = resolveAdapterModel(adapter, rawModel, config, modelSpec)
   const model = modelResolved.model
   const tmuxSession = agent.tmux_session || `fleet-${sanitizeSessionName(friendlyName)}`
+  // Explicit relaunch means the CALLER asked to relaunch with a permission
+  // change (explicitPolicy / permissionRequest). The resolved grant
+  // (params.permissionSet) is attached to EVERY wake, so treating it as
+  // explicit made every wake skip the already-alive guard and kill the live
+  // process (killExisting) — the "thing that kills agents" that restarted
+  // Skip's working agents mid-turn all night on 7/17. A non-explicit wake of
+  // a live session must always return alreadyAlive and touch nothing.
   const explicitRelaunch = !!(
     params.explicitPolicy ||
-    params.permissionRequest ||
-    params.permissionSet
+    params.permissionRequest
   )
   if (!explicitRelaunch && await (deps.sessionHasRuntime || sessionHasRuntime)(tmuxSession, { tmuxSocket: params.tmuxSocket })) {
     return { ok: true, fleetId, tmuxSession, harness: requestedKind, model, alreadyAlive: true }
