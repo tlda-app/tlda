@@ -64,6 +64,7 @@ import { appendBuildEntry } from './changelog.mjs'
 import { emitBuildComplete } from './webhooks.mjs'
 import { clearSynctexCache } from './synctex-query.mjs'
 import { generateWordSynctexSourceTree } from './word-synctex.mjs'
+import { bibliographyRunReason } from './build-bibliography-decision.mjs'
 
 // --- Side-effect reporter ----------------------------------------------------
 // Everything in the build that reaches the live server — client broadcasts
@@ -572,15 +573,18 @@ async function compileLaTeX(ctx) {
     addLog(`pdflatex exited with warnings (continuing): ${e.message.split('\n')[0]}`)
   }
 
-  // Check if bibliography processing is needed (missing .bbl or undefined citations)
+  // Check if bibliography processing is needed. Biblatex can explicitly request
+  // Biber even when a cached .bbl keeps citations defined.
   const bblPath = join(buildDir, `${texBase}.bbl`)
   const bcfPath = join(buildDir, `${texBase}.bcf`)
   const logPath = join(buildDir, `${texBase}.log`)
   if (existsSync(logPath)) {
     const logText = readFileSync(logPath, 'utf8')
-    const hasBrokenCites = !existsSync(bblPath) ||
-      (logText.includes('Citation') && logText.includes('undefined'))
-    if (hasBrokenCites) {
+    const bibliographyReason = bibliographyRunReason({
+      hasBbl: existsSync(bblPath),
+      logText,
+    })
+    if (bibliographyReason) {
       const useBiblatex = existsSync(bcfPath)
       const bibCmd = useBiblatex
         ? `biber --output-directory="${buildDir}" "${texBase}"`
