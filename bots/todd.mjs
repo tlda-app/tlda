@@ -31,6 +31,7 @@ import { startWsRequest } from '../shared/ws-request-policy.mjs'
 import { commitMdShare } from '../bin/md-share-commit.mjs'
 import { decideTaskKicks, formatTaskKickMessage } from './todd/kicks.mjs'
 import { buildFleetActivityReport, parseFleetActivityCommand } from './todd/activity-report.mjs'
+import { dueHibernations, formatDuration, normalizedPolicies, parseHibernationCommand } from './todd/hibernation.mjs'
 import { decideLooseEndNudge, LOOSE_END_COOLDOWN_MS } from './todd/loose-ends.mjs'
 import { GLOBAL_ACTIVITY_RULES } from './todd/global-activity-rules.mjs'
 import { DispositionScheduler } from './self-check/scheduler.mjs'
@@ -73,6 +74,8 @@ const PREF_SELF_CHECK_ENABLED_KEY = 'todd-self-check-auto-enabled'
 const PREF_SELF_CHECK_COUNTDOWN_KEY = 'todd-self-check-countdown-sec'
 const PREF_BOT_SELF_CHECK_ENABLED_KEY = 'bot-self-check-enabled'
 const PREF_BOT_SELF_CHECK_COUNTDOWN_KEY = 'bot-self-check-countdown-sec'
+const PREF_HIBERNATION_POLICIES_KEY = 'todd-hibernation-policies'
+const HIBERNATION_POLL_MS = parseInt(process.env.TODD_HIBERNATION_POLL_MS || '', 10) || 15_000
 const taskKickLastSent = new Map()
 const looseEndLastSent = new Map()
 let lastFleetEventId = 0
@@ -155,6 +158,8 @@ const selfCheckScheduler = new DispositionScheduler({
   log: (event, agentId, detail) => logDecision(agentId || AGENT_ID, `self-check:${event}`, detail || 'turn-end-self-check', {}, null),
 })
 let selfCheckAutoEnabled = SELF_CHECK_AUTO_ENABLED
+let hibernationPolicies = {}
+const hibernationInFlight = new Set()
 selfCheckWiring = createDispositionWiring({
   scheduler: selfCheckScheduler,
   ownerId: OWNER_ID,
@@ -176,6 +181,122 @@ async function refreshSelfCheckPrefs() {
   const perBotCountdown = prefs[PREF_BOT_SELF_CHECK_COUNTDOWN_KEY]?.[AGENT_ID]
   const sec = Number(perBotCountdown ?? prefs[PREF_SELF_CHECK_COUNTDOWN_KEY])
   if (Number.isFinite(sec) && sec > 0) selfCheckScheduler.setCountdownMs(sec * 1000)
+}
+
+async function refreshHibernationPolicies() {
+  const pref = await getJson(`/api/fleet/prefs/${encodeURIComponent(PREF_HIBERNATION_POLICIES_KEY)}?user=${encodeURIComponent(OWNER_ID)}`)
+  hibernationPolicies = normalizedPolicies(pref?.value)
+}
+
+async function persistHibernationPolicies(next) {
+  const policies = normalizedPolicies(next)
+  const result = await postJson(`/api/fleet/prefs/${encodeURIComponent(PREF_HIBERNATION_POLICIES_KEY)}`, {
+    user: OWNER_ID,
+    value: policies,
+  })
+  if (result?.error || result?.ok !== true) throw new Error(result?.error || 'preference write failed')
+  hibernationPolicies = policies
+}
+
+async function resolveHibernationTarget(query) {
+  const needle = String(query || '').trim().toLowerCase()
+  const roster = await getAgents()
+  const matches = roster.filter(agent => {
+    if (agent.dead || agent.human || agent.id === AGENT_ID || agent.labels?.includes('bot')) return false
+    return labelsForAgent(agent).some(label => String(label).toLowerCase() === needle)
+  })
+  const ids = [...new Set(matches.map(agent => agent.id))]
+  if (ids.length !== 1) return { error: ids.length ? `Ambiguous agent “${query}”; no policy changed.` : `Couldn't find an agent matching “${query}”; no policy changed.` }
+  return { agent: matches.find(agent => agent.id === ids[0]) }
+}
+
+async function showHibernationPolicies() {
+  const entries = Object.entries(hibernationPolicies)
+  if (!entries.length) {
+    await sendPersistedChat(OWNER_ID, 'Todd hibernation is off for every agent. No agent has an automatic hibernation policy.')
+    return
+  }
+  const roster = await getAgents()
+  const names = new Map(roster.map(agent => [agent.id, agent.friendly_name || agent.name || agent.id]))
+  const lines = entries.sort(([a], [b]) => a.localeCompare(b)).map(([agentId, policy]) =>
+    `- **${names.get(agentId) || agentId}**: ${policy.enabled ? `on after ${formatDuration(policy.idleSeconds)} idle` : 'off'}`)
+  await sendPersistedChat(OWNER_ID, `Todd hibernation policies:\n\n${lines.join('\n')}`)
+}
+
+async function handleHibernationCommand(text, { direct = false } = {}) {
+  const command = parseHibernationCommand(text, { verb: VERB, direct })
+  if (!command) return false
+  if (command.action === 'show') {
+    await showHibernationPolicies()
+    return true
+  }
+  if (command.action === 'invalid-duration') {
+    await sendPersistedChat(OWNER_ID, 'The idle time must be a positive whole number of seconds, minutes, or hours. No policy changed.')
+    return true
+  }
+  const resolved = await resolveHibernationTarget(command.target)
+  if (!resolved.agent) {
+    await sendPersistedChat(OWNER_ID, resolved.error)
+    return true
+  }
+  const agent = resolved.agent
+  const label = agent.friendly_name || agent.name || agent.id
+  if (command.action === 'disable') {
+    await persistHibernationPolicies({
+      ...hibernationPolicies,
+      [agent.id]: { enabled: false, idleSeconds: hibernationPolicies[agent.id]?.idleSeconds || 1200 },
+    })
+    await sendPersistedChat(OWNER_ID, `Automatic hibernation is off for **${label}**.`)
+    return true
+  }
+  await persistHibernationPolicies({
+    ...hibernationPolicies,
+    [agent.id]: { enabled: true, idleSeconds: command.idleSeconds },
+  })
+  await sendPersistedChat(OWNER_ID, `Automatic hibernation is on for **${label}** after ${formatDuration(command.idleSeconds)} idle.`)
+  return true
+}
+
+async function sendPersistedChat(to, message) {
+  if (!isCanonicalBot()) throw new Error('non-canonical bot cannot send chat')
+  return sendRequest({ type: 'chat', from: AGENT_ID, to, message, _tempId: `${BOT_KEY}:${randomUUID()}` })
+}
+
+async function hibernateDueAgent({ agentId, idleSeconds, thresholdSeconds }) {
+  hibernationInFlight.add(agentId)
+  const idleText = formatDuration(idleSeconds)
+  try {
+    // The server acknowledges persistence before Todd requests the lifecycle
+    // action. This chat event is the human-visible telemetry record.
+    await sendPersistedChat(agentId, `I'm going to hibernate you because you've been idle for ${idleText} (your setting is ${formatDuration(thresholdSeconds)}).`)
+    await sendRequest({ type: 'hibernate-session', agent: agentId })
+    logDecision(agentId, 'hibernate', 'trusted-idle-threshold', { idleSeconds, thresholdSeconds }, '')
+  } catch (error) {
+    const correction = `I announced a hibernation for **${agentId}**, but it did not happen: ${error.message}. The agent remains unconfirmed; I will not report that action as completed.`
+    const correctionResults = await Promise.allSettled([
+      sendPersistedChat(agentId, correction),
+      sendPersistedChat(OWNER_ID, correction),
+    ])
+    const correctionDeliveryErrors = correctionResults
+      .map((result, index) => result.status === 'rejected' ? `${index === 0 ? agentId : OWNER_ID}: ${result.reason?.message || result.reason}` : null)
+      .filter(Boolean)
+    if (correctionDeliveryErrors.length) console.error(`[todd] hibernation correction delivery failed: ${correctionDeliveryErrors.join('; ')}`)
+    logDecision(agentId, 'hibernate-failed', 'trusted-idle-threshold', {
+      idleSeconds,
+      thresholdSeconds,
+      error: error.message,
+      correctionDeliveryErrors,
+    }, '')
+  } finally {
+    hibernationInFlight.delete(agentId)
+  }
+}
+
+async function hibernationSweep() {
+  if (!isCanonicalBot() || !Object.keys(hibernationPolicies).length) return
+  const facts = await getJson('/api/fleet/trusted-idle')
+  const due = dueHibernations(hibernationPolicies, facts?.idleSecondsByAgent, hibernationInFlight)
+  await Promise.all(due.map(hibernateDueAgent))
 }
 
 async function refreshSelfCheckRoster() {
@@ -2430,6 +2551,7 @@ function connect() {
       await loginFleet()
       writeHeartbeat('ws-open')
       refreshSelfCheckPrefs().catch(e => console.error('[todd] self-check prefs refresh failed:', e.message))
+      refreshHibernationPolicies().catch(e => console.error('[todd] hibernation prefs refresh failed:', e.message))
       refreshSelfCheckRoster().catch(e => console.error('[todd] self-check roster refresh failed:', e.message))
       if (isCanonicalBot()) {
         catchUpFleetEvents().catch(e => console.error('[todd] event catch-up failed:', e.message))
@@ -2670,6 +2792,7 @@ async function handleMessage(msg) {
       const directToTodd = to_id === AGENT_ID
       const activityAddressed = directToTodd || addressedBefore(/\b(?:activity|graph|is\s+the\s+fleet\s+moving)\b/i)
       if (activityAddressed && await handleFleetActivityReportCommand(text, { direct: directToTodd })) return
+      if (await handleHibernationCommand(text, { direct: directToTodd })) return
     }
 
     // Todd cancel — abort any pending countdown/scheduled action. Accept
@@ -2963,8 +3086,12 @@ setInterval(() => {
 }, TASK_KICK_POLL_MS)
 setInterval(() => {
   refreshSelfCheckPrefs().catch(e => console.error('[todd] self-check prefs refresh failed:', e.message))
+  refreshHibernationPolicies().catch(e => console.error('[todd] hibernation prefs refresh failed:', e.message))
   refreshSelfCheckRoster().catch(e => console.error('[todd] self-check roster refresh failed:', e.message))
 }, SELF_CHECK_PREFS_POLL_MS)
+setInterval(() => {
+  hibernationSweep().catch(e => console.error('[todd] hibernation sweep failed:', e.message))
+}, HIBERNATION_POLL_MS)
 
 // Keep alive
 process.on('SIGINT', () => {

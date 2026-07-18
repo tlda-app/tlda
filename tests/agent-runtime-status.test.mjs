@@ -90,3 +90,25 @@ test('runtime status store reports route state from exact current seat', () => {
   now += 91_000
   assert.equal(store.project({ id: 'fleet:a', dead: false, human: false, metadata: {} }).status, 'hibernating')
 })
+
+test('canonical runtime evidence tracks one continuous alive interval', () => {
+  let now = 1_000
+  const store = createAgentRuntimeStatusStore({ now: () => now, ttlMs: 90_000 })
+  store.markAlive('fleet:a', 'first')
+  assert.equal(store.evidenceFor('fleet:a').alive_since_ms, 1_000)
+
+  now = 60_000
+  store.markAlive('fleet:a', 'refresh')
+  assert.equal(store.evidenceFor('fleet:a').alive_since_ms, 1_000)
+
+  store.markAlive('fleet:a', 'older-backfill', { atMs: 30_000 })
+  assert.equal(store.evidenceFor('fleet:a').alive_since_ms, 1_000)
+  assert.equal(store.evidenceFor('fleet:a').liveness_at_ms, 60_000)
+
+  store.markNotAlive('fleet:a', 'hibernate')
+  assert.equal(store.evidenceFor('fleet:a').alive_since_ms, null)
+
+  now = 70_000
+  store.markAlive('fleet:a', 'wake')
+  assert.equal(store.evidenceFor('fleet:a').alive_since_ms, 70_000)
+})

@@ -56,12 +56,21 @@ export function createAgentRuntimeStatusStore({
   }
 
   function markAlive(agentId, source, detail = {}) {
+    const atMs = Number.isFinite(detail.atMs) ? detail.atMs : now()
+    const previous = evidenceFor(agentId)
+    const previousAliveAt = Number(previous?.liveness_at_ms)
+    const continuouslyAlive = previous?.liveness === LIVENESS.ALIVE
+      && Number.isFinite(previousAliveAt)
+      && (atMs <= previousAliveAt || (atMs - previousAliveAt) <= ttlMs)
+    const livenessAtMs = continuouslyAlive ? Math.max(atMs, previousAliveAt) : atMs
     return update(agentId, {
       liveness: LIVENESS.ALIVE,
       liveness_source: source,
       liveness_reason: detail.reason || null,
-      liveness_at_ms: Number.isFinite(detail.atMs) ? detail.atMs : now(),
-      liveness_at: new Date(Number.isFinite(detail.atMs) ? detail.atMs : now()).toISOString(),
+      liveness_at_ms: livenessAtMs,
+      liveness_at: new Date(livenessAtMs).toISOString(),
+      alive_since_ms: continuouslyAlive ? (previous.alive_since_ms || previousAliveAt) : atMs,
+      alive_since: new Date(continuouslyAlive ? (previous.alive_since_ms || previousAliveAt) : atMs).toISOString(),
       tmux_session: detail.tmux_session || detail.tmuxSession || null,
       pid: detail.pid || null,
     })
@@ -75,6 +84,8 @@ export function createAgentRuntimeStatusStore({
       liveness_reason: detail.reason || null,
       liveness_at_ms: Number.isFinite(detail.atMs) ? detail.atMs : now(),
       liveness_at: new Date(Number.isFinite(detail.atMs) ? detail.atMs : now()).toISOString(),
+      alive_since_ms: null,
+      alive_since: null,
       tmux_session: detail.tmux_session || detail.tmuxSession || null,
       pid: detail.pid || null,
     })
@@ -87,6 +98,8 @@ export function createAgentRuntimeStatusStore({
       liveness_reason: detail.reason || null,
       liveness_at_ms: Number.isFinite(detail.atMs) ? detail.atMs : now(),
       liveness_at: new Date(Number.isFinite(detail.atMs) ? detail.atMs : now()).toISOString(),
+      alive_since_ms: null,
+      alive_since: null,
       tmux_session: detail.tmux_session || detail.tmuxSession || null,
       pid: detail.pid || null,
     })

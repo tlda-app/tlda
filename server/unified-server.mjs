@@ -1389,10 +1389,9 @@ const MY_TASK_UNREAD_LIMIT = 50
 // daemon WS, so if that WS flapped, an agent's activity wasn't delivered LIVE and its
 // _lastActivityAt was briefly stale — making an active agent *look* idle. The daemon
 // backfills the gap on reconnect (its cursor only advances on delivered bytes), so the
-// staleness clears within seconds; getWouldHibernate just waits out the reconnect grace.
+// staleness clears within seconds; getTrustedIdleSeconds waits out the reconnect grace.
 const _daemonConnectedSince = new Map()
 
-const HIBERNATE_IDLE_MS = 20 * 60 * 1000
 const LIVENESS_RECONNECT_GRACE_MS = 120_000
 
 function touchActivity(agentId) {
@@ -1431,35 +1430,31 @@ function emitTurnEnded(agentId, startedAtMs) {
   })).catch(e => console.error('[turn_ended] emit failed:', e.message))
 }
 
-function getWouldHibernate() {
+// Read-only authoritative idle fact for lifecycle-policy consumers such as Todd.
+// This function never changes agent state and never applies a policy threshold.
+// The returned duration is capped by continuous observed liveness, so a newly
+// rediscovered seat cannot inherit an older idle clock and immediately qualify.
+function getTrustedIdleSeconds() {
   const now = Date.now()
   const result = {}
-  for (const agentId of _aliveAgents) {
-    // A dead/removed row can linger in this in-memory set until the next explicit
-    // state update. Such a ghost
-    // would otherwise be hibernated on its ancient _lastActivityAt — and since
-    // lineage twins share a tmux_session, that kill-session would take down the
-    // LIVE agent occupying the session. Skip anything not currently alive.
-    const agent = fleetStore?.getAgent(agentId)
-    if (!agent || agent.dead) continue
+  for (const agent of fleetStore?.getAllAgents?.() || []) {
+    if (!agent || agent.dead || agent.human || agent.metadata?.shell) continue
+    const agentId = agent.id
+    const runtime = runtimeStatusStore.project(agent)
+    if (runtime.status !== 'awake') continue
     if (_thinkingState.has(agentId)) continue
     if (_compactingState.has(agentId)) continue
-    // An "idle for 20 minutes" reading is only meaningful after this specific
-    // agent has been continuously observed alive for the same window. Without
-    // this, a freshly rediscovered agent can inherit stale _lastActivityAt and
-    // get killed almost immediately.
-    const aliveSince = _aliveSince.get(agentId)
-    if (!aliveSince || (now - aliveSince) < HIBERNATE_IDLE_MS) continue
+    const aliveSince = Number(runtimeStatusStore.evidenceFor(agentId)?.alive_since_ms)
+    if (!Number.isFinite(aliveSince)) continue
     // Idle baseline = last REAL activity, or — if we've recorded none this
     // server-run (e.g. the agent was already idle before the last restart) —
-    // the start of its current alive run. aliveSince is set once by
-    // markAgentAlive and is not bumped by passive roster/status reads, so it's
-    // a true floor for "has done nothing".
+    // the start of its current alive run. aliveSince comes from the canonical
+    // runtime evidence and is not bumped by passive roster/status reads, so it
+    // is a true floor for "has done nothing".
     // Without this, every deploy would leave pre-existing idle agents
     // permanently un-hibernatable (no lastActive → skipped forever).
     const lastActive = _lastActivityAt.get(agentId) || aliveSince
-    const idleMs = now - lastActive
-    if (idleMs < HIBERNATE_IDLE_MS) continue
+    const idleMs = Math.min(now - lastActive, now - aliveSince)
     // Gap-aware idle: don't hibernate on a reading the activity feed couldn't
     // back up. But the daemon BACKFILLS on reconnect — its cursor is a
     // high-water mark of *delivered* bytes, so activity during a WS outage isn't
@@ -1469,13 +1464,12 @@ function getWouldHibernate() {
     // of connection — just enough settle time for that drain to land. Require
     // the daemon to have been connected for the reconnect grace (~2min, well
     // over the actual drain) before trusting a "no recent activity" reading.
-    const seat = fleetStore?.getCurrentAgentSeat?.(agentId)
-    const daemonKey = seat?.daemon_key || null
+    const daemonKey = runtime.route?.daemon_key || null
     if (daemonKey) {
       const connectedSince = _daemonConnectedSince.get(daemonKey)
       if (!connectedSince || (now - connectedSince) < LIVENESS_RECONNECT_GRACE_MS) continue
     }
-    result[agentId] = Math.round(idleMs / 1000)
+    result[agentId] = Math.floor(idleMs / 1000)
   }
   return result
 }
@@ -3109,6 +3103,13 @@ app.get('/api/fleet/prefs', requireRead, (req, res) => {
   if (!userId || typeof userId !== 'string') return res.status(400).json({ error: 'Missing ?user= param' })
   if (!fleetStore) return res.status(503).json({ error: 'fleet store unavailable' })
   res.json(fleetStore.getAllFleetPrefs(userId))
+})
+
+// Todd owns hibernation policy; the server owns only this read-only liveness
+// fact. Keeping the boundary explicit prevents a bot from deriving idleness
+// from roster labels or becoming a second status publisher.
+app.get('/api/fleet/trusted-idle', requireRead, (_req, res) => {
+  res.json({ idleSecondsByAgent: getTrustedIdleSeconds() })
 })
 
 app.get('/api/fleet/prefs/:key', requireRead, (req, res) => {
@@ -7628,9 +7629,8 @@ async function handleDaemonWsMessage(ws, msg) {
       console.error(`[fleet-daemon] routability invariant failed after welcome setup: daemon=${daemonKey}`)
     }
     // Reset the activity-feed uptime clock: this (re)connect starts a fresh
-    // continuous window. getWouldHibernate won't hibernate agents on this machine
-    // until the feed has been up a full idle window, so a flap can't cause a
-    // stale-_lastActivityAt false hibernate.
+    // continuous window. getTrustedIdleSeconds withholds the idle fact until
+    // the feed has settled, so a flap cannot create a stale-idle action.
     _daemonConnectedSince.set(daemonKey, Date.now())
     await updateDaemonActivityTransportHealth(daemonKey, {
       state: ACTIVITY_HEALTH_OK,
