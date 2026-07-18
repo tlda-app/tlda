@@ -889,6 +889,90 @@ test('fresh Codex identity absence remains pending without success, submission, 
   assert.equal(submissions, 0)
 })
 
+test('fresh exact-identity pending durably submits obligation before returning without Created', async () => {
+  const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-fresh-binding-obligation-'))
+  const dbPath = path.join(configDir, 'fleet-daemon.db')
+  const calls = []
+  const logs = []
+  const priorLog = console.log
+  const priorTimeout = process.env.TLDA_SPAWN_RESUME_ID_TIMEOUT_MS
+  const priorExitCode = process.exitCode
+  try {
+    writeDaemonConfig(configDir)
+    seedPermissionLedger(dbPath)
+    console.log = (...args) => logs.push(args.join(' '))
+    process.exitCode = undefined
+    process.env.TLDA_SPAWN_RESUME_ID_TIMEOUT_MS = '0'
+    await runFleetSpawn(['--fresh', 'durable-pending'], {
+      configDir,
+      localAgentLedgerPath: dbPath,
+      loadConfigImpl: () => ({}),
+      spawnImpl: async () => ({
+        fleetId: 'fleet:durable-pending',
+        tmuxSession: 'fleet-durable-pending',
+        harness: 'codex',
+        model: 'gpt-5.6-sol',
+        resumeId: null,
+      }),
+      apiImpl: async (method, route, body) => {
+        calls.push({ method, route, body })
+        return { ok: true, pending: true, obligation: { obligation_id: 'obligation-1' } }
+      },
+    })
+    assert.equal(process.exitCode, undefined)
+    assert.equal(calls.length, 1)
+    assert.equal(calls[0].route, '/api/agent-seat-binding-obligation')
+    assert.equal(calls[0].body.agent_id, 'fleet:durable-pending')
+    assert.equal(calls[0].body.tmux_session, 'fleet-durable-pending')
+    assert.equal(calls[0].body.process_owned_only, true)
+    assert.match(logs.join('\n'), /pending durable seat binding/)
+    assert.doesNotMatch(logs.join('\n'), /^Created /m)
+  } finally {
+    console.log = priorLog
+    process.exitCode = priorExitCode
+    if (priorTimeout == null) delete process.env.TLDA_SPAWN_RESUME_ID_TIMEOUT_MS
+    else process.env.TLDA_SPAWN_RESUME_ID_TIMEOUT_MS = priorTimeout
+    fs.rmSync(configDir, { recursive: true, force: true })
+  }
+})
+
+test('fresh Claude exact-identity pending uses the same durable process-owned obligation', async () => {
+  const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-fresh-claude-obligation-'))
+  const dbPath = path.join(configDir, 'fleet-daemon.db')
+  const calls = []
+  const priorTimeout = process.env.TLDA_SPAWN_RESUME_ID_TIMEOUT_MS
+  const priorExitCode = process.exitCode
+  try {
+    writeDaemonConfig(configDir)
+    seedPermissionLedger(dbPath)
+    process.exitCode = undefined
+    process.env.TLDA_SPAWN_RESUME_ID_TIMEOUT_MS = '0'
+    await runFleetSpawn(['--fresh', 'claude-durable-pending'], {
+      configDir,
+      localAgentLedgerPath: dbPath,
+      loadConfigImpl: () => ({}),
+      spawnImpl: async () => ({
+        fleetId: 'fleet:claude-durable-pending', localAgentId: 'local:claude-durable-pending',
+        tmuxSession: 'fleet-claude-durable-pending', harness: 'claude', model: 'claude-opus-4-6', resumeId: null,
+      }),
+      apiImpl: async (method, route, body) => {
+        calls.push({ method, route, body })
+        return { ok: true, pending: true, obligation: { obligation_id: 'claude-obligation-1' } }
+      },
+    })
+    assert.equal(process.exitCode, undefined)
+    assert.equal(calls[0].route, '/api/agent-seat-binding-obligation')
+    assert.equal(calls[0].body.kind, 'claude')
+    assert.equal(calls[0].body.local_agent_id, 'local:claude-durable-pending')
+    assert.equal(calls[0].body.process_owned_only, true)
+  } finally {
+    process.exitCode = priorExitCode
+    if (priorTimeout == null) delete process.env.TLDA_SPAWN_RESUME_ID_TIMEOUT_MS
+    else process.env.TLDA_SPAWN_RESUME_ID_TIMEOUT_MS = priorTimeout
+    fs.rmSync(configDir, { recursive: true, force: true })
+  }
+})
+
 test('terminal binding cleanup deletes the exact local recipe and retires its reservation', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-terminal-binding-cleanup-'))
   const dbPath = path.join(dir, 'fleet-daemon.db')
