@@ -190,6 +190,9 @@ Object.defineProperty(global, 'navigator', {
         getAudioTracks: () => [{ stop: () => {}, onended: null }],
       }),
     },
+    permissions: {
+      query: async () => ({ state: 'prompt' }),
+    },
   },
   configurable: true,
 })
@@ -1625,6 +1628,73 @@ await setBackend('chrome')
   window.__voiceTest.injectDeepgramMessage({ type: 'status', status: 'error', epoch: current - 1 })
   assert.equal(window.__voiceTest.getState().recognizerStatus, 'connected', 'stale upstream status cannot mutate the current epoch')
   console.log('✓ Test 23: speech epoch boundary and intent-preserving Deepgram recovery')
+}
+
+// Mic failure labels come from the actual permission fact plus the originating
+// capture/recognizer error; runtime failure alone is never permission authority.
+{
+  const classify = window.__voiceTest.classifyMicFailure
+  const failure = name => Object.assign(new Error(name), { name })
+
+  navigator.permissions.query = async () => ({ state: 'denied' })
+  assert.equal((await classify(failure('NotFoundError'))).kind, 'denied', 'exact denied permission is authoritative')
+
+  navigator.permissions.query = async () => ({ state: 'prompt' })
+  assert.equal((await classify(failure('NotFoundError'))).kind, 'not-found', 'missing hardware is not denial')
+  assert.equal((await classify(failure('NotReadableError'))).label, 'microphone unavailable or busy')
+  assert.equal((await classify(failure('AbortError'))).label, 'microphone unavailable or busy')
+  assert.equal((await classify(failure('InvalidStateError'), 'recognition-start')).kind, 'recognition-unavailable')
+
+  navigator.permissions.query = async () => { throw Object.assign(new Error('unsupported'), { name: 'NotSupportedError' }) }
+  const unknown = await classify(failure('UnknownError'))
+  assert.equal(unknown.kind, 'unavailable', 'query failure does not fabricate denial')
+  assert.equal(unknown.permissionError, 'NotSupportedError', 'query failure remains diagnostic')
+  assert.equal(unknown.errorName, 'UnknownError', 'original capture error remains diagnostic')
+  console.log('✓ Test 24: mic failure classification preserves permission and source authority')
+}
+
+// A Deepgram failure classification that resolves after its mic-start attempt
+// was stopped must not paint the HUD or persist a hard health failure.
+{
+  let resolvePermission
+  navigator.permissions.query = () => new Promise(resolve => { resolvePermission = resolve })
+  navigator.mediaDevices.getUserMedia = async () => { throw Object.assign(new Error('missing'), { name: 'NotFoundError' }) }
+  const hudBefore = window.__voiceTest.getHudText()
+  const healthBefore = window.__voiceTest.getHealthLabel()
+  const pending = window.__voiceTest.startDeepgramMicTest()
+  await Promise.resolve()
+  await Promise.resolve()
+  window.__voiceTest.stopDeepgramMicTest()
+  resolvePermission({ state: 'prompt' })
+  await pending
+  assert.equal(window.__voiceTest.getHudText(), hudBefore, 'stale Deepgram failure must not publish HUD')
+  assert.equal(window.__voiceTest.getHealthLabel(), healthBefore, 'stale Deepgram failure must not persist health')
+  console.log('✓ Test 25: stale Deepgram mic failure publishes nothing')
+}
+
+// The Chrome permission probe has the same publication boundary: if recording
+// stops while classification is pending, the old recognition owner is silent.
+{
+  reset()
+  await setBackend('chrome')
+  const ta = makeTextarea()
+  setVoiceTarget(ta, [], {})
+  let resolvePermission
+  navigator.permissions.query = () => new Promise(resolve => { resolvePermission = resolve })
+  navigator.mediaDevices.getUserMedia = async () => { throw Object.assign(new Error('busy'), { name: 'NotReadableError' }) }
+  toggleRecording()
+  tick(300)
+  mockRec.onerror({ error: 'not-allowed' })
+  await Promise.resolve()
+  await Promise.resolve()
+  toggleRecording()
+  const hudAfterStop = window.__voiceTest.getHudText()
+  resolvePermission({ state: 'denied' })
+  await Promise.resolve()
+  await Promise.resolve()
+  assert.equal(window.__voiceTest.getHudText(), hudAfterStop, 'stale Chrome classification must not publish HUD')
+  assert.ok(!isRecording(), 'stale Chrome classification must not revive recording')
+  console.log('✓ Test 26: stale Chrome mic failure publishes nothing')
 }
 
 console.log('\nAll voice tests passed.')

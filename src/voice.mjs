@@ -41,6 +41,33 @@ function serviceUnavailableMessage(isIOS) {
     : 'Browser voice service refused'
 }
 
+async function classifyMicFailure(err, source = 'capture') {
+  let permissionState = null
+  let permissionError = null
+  try {
+    const permissions = navigator.permissions
+    if (!permissions?.query) throw new Error('Permissions API unavailable')
+    permissionState = (await permissions.query({ name: 'microphone' }))?.state || null
+  } catch (permissionErr) {
+    permissionError = permissionErr?.name || String(permissionErr)
+  }
+
+  const errorName = err?.name || 'UnknownError'
+  if (permissionState === 'denied') {
+    return { kind: 'denied', label: 'mic denied — check permissions', errorName, permissionState, permissionError }
+  }
+  if (source === 'recognition-start') {
+    return { kind: 'recognition-unavailable', label: 'Browser voice unavailable — retry failed', errorName, permissionState, permissionError }
+  }
+  if (errorName === 'NotFoundError') {
+    return { kind: 'not-found', label: 'no microphone found', errorName, permissionState, permissionError }
+  }
+  if (errorName === 'NotReadableError' || errorName === 'AbortError') {
+    return { kind: 'unavailable', label: 'microphone unavailable or busy', errorName, permissionState, permissionError }
+  }
+  return { kind: 'unavailable', label: 'microphone unavailable', errorName, permissionState, permissionError }
+}
+
 // --- Backend selection ---
 const WHISPER_BRIDGE_URL = location.protocol === 'https:' ? 'wss://127.0.0.1:8179' : 'ws://127.0.0.1:8179'
 
@@ -1616,7 +1643,7 @@ function _setupRecognition() {
     }
     if (e.error === 'not-allowed') {
       showHud('requesting mic…', '#c8956a')
-      navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+      navigator.mediaDevices.getUserMedia({ audio: true }).then(async stream => {
         stream.getTracks().forEach(t => t.stop())
         if (!_recording || !ownerIsCurrent()) return
         _setupRecognition()
@@ -1627,14 +1654,17 @@ function _setupRecognition() {
           showRecordingHud()
         } catch (err) {
           console.warn('voice: not-allowed retry failed', err)
+          const failure = await classifyMicFailure(err, 'recognition-start')
+          if (!_recording || !ownerIsCurrent()) return
           stopRecording()
-          showHud('mic denied — check permissions', '#c87070')
+          showHud(failure.label, '#c87070')
           fadeHud(5000)
         }
-      }).catch(() => {
-        if (!ownerIsCurrent()) return
+      }).catch(async err => {
+        const failure = await classifyMicFailure(err)
+        if (!_recording || !ownerIsCurrent()) return
         stopRecording()
-        showHud('mic denied — check permissions', '#c87070')
+        showHud(failure.label, '#c87070')
         fadeHud(5000)
       })
       return
@@ -1877,6 +1907,7 @@ let _deepgramRelayConnected = false
 let _deepgramRecognizerStatus = null // authoritative connected|idle|error from the bridge
 let _deepgramRecognizerRelay = null  // relay socket that delivered the status
 let _deepgramHardFailure = null      // explicit local nonrecoverable evidence only
+let _deepgramMicAttempt = 0          // exact owner of async mic-start publication
 let _deepgramPcmPaused = false
 let _deepgramRecoveringEpoch = null
 let _deepgramReadyEpoch = null
@@ -2376,6 +2407,8 @@ function micWatchdogAction(ctxState) {
 async function startDeepgramMic() {
   if (_deepgramStream) return
 
+  const micAttempt = ++_deepgramMicAttempt
+
   try {
     _deepgramStream = await navigator.mediaDevices.getUserMedia({
       audio: { channelCount: 1, sampleRate: 16000, echoCancellation: true, noiseSuppression: true }
@@ -2383,9 +2416,11 @@ async function startDeepgramMic() {
     _deepgramHardFailure = null
   } catch (err) {
     console.error('voice: deepgram mic access failed', err)
-    _deepgramHardFailure = 'mic unavailable; check permissions'
+    const failure = await classifyMicFailure(err)
+    if (micAttempt !== _deepgramMicAttempt) return
+    _deepgramHardFailure = failure.label
     _voiceHealthLabel = _deepgramHardFailure
-    showHud('mic denied — check permissions', '#c87070')
+    showHud(failure.label, '#c87070')
     fadeHud(5000)
     return
   }
@@ -2503,6 +2538,7 @@ async function startDeepgramMic() {
 }
 
 function stopDeepgramMic() {
+  _deepgramMicAttempt++
   clearInterval(_audioHeartbeatInterval)
   _audioHeartbeatInterval = null
   if (_deepgramWorklet) {
@@ -2637,6 +2673,9 @@ if (typeof window !== 'undefined') {
     chromeLiveness: (resultAgo, hasActiveSession, editStopped, deadTimeoutMs) => chromeLiveness(resultAgo, hasActiveSession, editStopped, deadTimeoutMs),
     whisperLiveness: (messageAgo, wsReadyState, connected, timeoutMs) => whisperLiveness(messageAgo, wsReadyState, connected, timeoutMs),
     serviceUnavailableMessage: (isIOS) => serviceUnavailableMessage(isIOS),
+    classifyMicFailure: (err, source) => classifyMicFailure(err, source),
+    startDeepgramMicTest: () => startDeepgramMic(),
+    stopDeepgramMicTest: () => stopDeepgramMic(),
     injectDeepgramMessage: (message) => onDeepgramMessage({ data: JSON.stringify({ epoch: _speechEpoch, ...message }) }),
     injectDeepgramMessageFrom: (relay, message) => onDeepgramMessage({ data: JSON.stringify({ epoch: _speechEpoch, ...message }) }, relay),
     getDeepgramFacts: () => ({ relayConnected: _deepgramRelayConnected, recognizerStatus: currentDeepgramRecognizerStatus(), recognizerConnected: deepgramRecognizerConnected(), commonState: deepgramCommonState() }),
