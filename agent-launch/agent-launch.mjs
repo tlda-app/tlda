@@ -37,6 +37,7 @@ export function createAgentLauncher({
   spawnImpl = null,
   startupFailureProbeMs = Number(process.env.TLDA_SPAWN_STARTUP_FAILURE_PROBE_MS || 2500),
   liveCodexSessionIdentityResolver = null,
+  liveClaudeSessionIdentityResolver = null,
 }) {
   const activeSpawns = new Map()
   const reportedStartupFailures = new Set()
@@ -414,19 +415,26 @@ export function createAgentLauncher({
           ownership_retained: !terminated,
         }
       }
-      // A codex launch that returns pending has no durable resume identity yet;
-      // the ledger row would stay sessionId-less and every later wake would fail
-      // with "missing daemon-ledger resume identity". Resolve the live session
-      // identity now and persist it before the spawn returns.
+      // A launch without a durable resume identity leaves the ledger row
+      // sessionId-less: every later wake fails with "missing daemon-ledger
+      // resume identity", and no JSONL watcher arms (no activity cards).
+      // Resolve the live session identity now — per harness, transparently
+      // parallel (the resolvers differ ONLY in where each harness records its
+      // session; everything else here is shared) — and persist it before the
+      // spawn returns.
+      const liveIdentityResolvers = {
+        codex: liveCodexSessionIdentityResolver,
+        claude: liveClaudeSessionIdentityResolver,
+      }
+      const liveIdentityResolver = liveIdentityResolvers[launched.harness] || null
       let liveIdentity = null
       if (
-        launched.harness === 'codex' &&
+        liveIdentityResolver &&
         !launched.resumeId &&
-        liveCodexSessionIdentityResolver &&
         !permissionLedger.get(launched.fleetId)?.sessionId
       ) {
         try {
-          liveIdentity = await liveCodexSessionIdentityResolver({
+          liveIdentity = await liveIdentityResolver({
             fleetId: launched.fleetId,
             agentName,
             tmuxSession: launched.tmuxSession,
@@ -435,10 +443,10 @@ export function createAgentLauncher({
             launchStartedAt,
           })
         } catch (e) {
-          log.warn(`live codex session identity resolution failed for ${agentName}: ${e.message}`)
+          log.warn(`live ${launched.harness} session identity resolution failed for ${agentName}: ${e.message}`)
         }
         if (!liveIdentity?.sessionId) {
-          log.warn(`codex spawn ${agentName} (${launched.fleetId}) has no resolved session identity yet; ledger row left pending for ingestion`)
+          log.warn(`${launched.harness} spawn ${agentName} (${launched.fleetId}) has no resolved session identity yet; ledger row left pending for ingestion`)
         }
       }
       const ledgerRow = launched.fleetId ? permissionLedger.get(launched.fleetId) : null

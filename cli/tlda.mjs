@@ -2741,9 +2741,12 @@ function durableWakeGrant(ledger, { agentId, name } = {}) {
   if (!rec?.spawnPolicy || !rec?.permissionSet) {
     throw new Error(`wake refused: durable grant missing for "${name || agentId || '(unknown)'}"`)
   }
-  if (!rec.permissionProfile && !rec.permissionIntersection) {
-    throw new Error(`wake refused: durable permission grant identity missing for "${name || agentId || '(unknown)'}"; run the permission-profile backfill migration`)
-  }
+  // spawnPolicy + permissionSet ARE the durable authority; profile /
+  // intersection is transparency metadata. Refusing to wake a real seat over
+  // a missing metadata label (and pointing at a "backfill migration" that
+  // does not exist) kept legitimately-granted pre-profile-era seats dead —
+  // including the four killed on 7/18 that Skip ordered restored. A missing
+  // label surfaces as "legacy grant" in the transparency line instead.
   return {
     spawnPolicy: rec.spawnPolicy,
     permissionSet: rec.permissionSet,

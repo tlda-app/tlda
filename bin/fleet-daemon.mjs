@@ -55,6 +55,7 @@ import { ResilientWS } from '../shared/fleet-transport.mjs'
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
+import { execSync } from 'child_process'
 import { fileURLToPath } from 'url'
 import {
   loadConfig as _loadSharedConfig, saveConfig as _saveSharedConfig,
@@ -617,6 +618,54 @@ const agentLauncher = createAgentLauncher({
       if (found?.rolloutId) {
         return { sessionId: found.rolloutId, jsonlPath: found.jsonlPath, model: found.sessionMeta?.model || null }
       }
+      if (Date.now() >= deadline) return null
+      await new Promise(r => setTimeout(r, 500))
+    }
+  },
+  // Transparent parallel of the codex resolver above — the ONLY difference is
+  // where each harness records its newborn session: codex writes a rollout
+  // file; claude writes a PID-keyed record in ~/.claude/sessions/<pid>.json.
+  // Same poll window, same return shape, same null-on-miss honesty.
+  liveClaudeSessionIdentityResolver: async ({ tmuxSession }) => {
+    const sessionsDir = path.join(os.homedir(), '.claude', 'sessions')
+    const deadline = Date.now() + 20_000
+    for (;;) {
+      const found = await (async () => {
+        let panePid
+        try {
+          const r = await tmux('list-panes', '-t', tmuxSession, '-F', '#{pane_pid}')
+          panePid = parseInt(String(r?.stdout ?? r ?? '').trim().split('\n')[0], 10)
+        } catch {
+          return null // pane not up yet; keep polling
+        }
+        if (!Number.isFinite(panePid)) return null
+        const pids = [panePid]
+        for (const pid of pids) {
+          try {
+            const kids = execSync(`pgrep -P ${pid} || true`, { encoding: 'utf8' }).trim()
+            for (const k of kids.split('\n').filter(Boolean)) pids.push(parseInt(k, 10))
+          } catch {
+            // descendant listing is best-effort; a missing branch just narrows the search
+          }
+          if (pids.length > 32) break
+        }
+        for (const pid of pids) {
+          const f = path.join(sessionsDir, `${pid}.json`)
+          if (!fs.existsSync(f)) continue
+          try {
+            const rec = JSON.parse(fs.readFileSync(f, 'utf8'))
+            if (rec?.sessionId) {
+              const projectHash = String(rec.cwd || '').replace(/[/.]/g, '-')
+              const jsonlPath = path.join(os.homedir(), '.claude', 'projects', projectHash, `${rec.sessionId}.jsonl`)
+              return { sessionId: rec.sessionId, jsonlPath, model: null }
+            }
+          } catch {
+            // racing a partial write; next poll re-reads
+          }
+        }
+        return null
+      })()
+      if (found) return found
       if (Date.now() >= deadline) return null
       await new Promise(r => setTimeout(r, 500))
     }
