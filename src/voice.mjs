@@ -2250,7 +2250,7 @@ function connectDeepgramBridge(generation) {
       if (_deepgramWs !== relay || !deepgramRelayAuthorityIsCurrent(generation)) {
         if (_deepgramWs === relay) _deepgramWs = null
         relay.onclose = null
-        try { relay.close() } catch {}
+        relay.close()
         return
       }
       _deepgramRelayConnected = true
