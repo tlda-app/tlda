@@ -521,31 +521,11 @@ const agentStatus = createAgentStatus({
 })
 
 let gooseSupervisor
-// The server roster rows no longer carry tmux_session (durable-seat migration
-// blanked the legacy field), so a liveness reporter keyed on the roster checks
-// almost nobody: idle-but-alive agents fall off the 90s positive-liveness TTL
-// and the whole fleet projects hibernating after every daemon restart
-// (7/17 incident). This daemon's OWN permission ledger holds the real
-// seat→tmux bindings — fill the gap from there.
-function livenessAgents() {
-  const bindingByAgent = new Map()
-  try {
-    for (const row of permissionLedger.listProcessBindings()) {
-      if (row?.id && row.tmuxSession) bindingByAgent.set(row.id, row.tmuxSession)
-    }
-  } catch (e) {
-    // best-effort enrichment: a failed ledger read must not kill the liveness
-    // loop — agents with roster tmux_session still get refreshed without it
-    log.warn(`liveness binding read failed: ${e.message}`)
-  }
-  return (agents || []).map(agent => (
-    agent && !agent.tmux_session && bindingByAgent.has(agent.id)
-      ? { ...agent, tmux_session: bindingByAgent.get(agent.id) }
-      : agent
-  ))
-}
+// Roster rows are enriched with ledger bindings at the reconcileRoster choke
+// point (enrichRosterFromLedgerBindings), so the liveness reporter reads the
+// same truth as every other consumer — no per-consumer enrichment forks.
 const agentLiveness = createAgentLiveness({
-  getAgents: livenessAgents,
+  getAgents: () => agents,
   listSessions: () => terminalRpc.listSessions(),
   sendMsg,
   log,
@@ -761,7 +741,39 @@ function connect() {
   _rws.connect()
 }
 
+// The durable-seat migration blanked tmux_session/session_id on server roster
+// rows, but every daemon consumer (JSONL watcher sync → activity cards,
+// hosted-session liveness, status) still keys on those fields — the 7/17
+// everything-looks-dead incident. This daemon's own permission ledger holds
+// the real seat bindings for this machine; fill the blanks once, here, at the
+// roster choke point, so every consumer sees the same enriched truth.
+// Fill-null-only: a roster row that carries its own binding is never
+// overwritten.
+function enrichRosterFromLedgerBindings() {
+  let bindings
+  try {
+    bindings = permissionLedger.listProcessBindings()
+  } catch (e) {
+    // best-effort enrichment: consumers still work for rows that kept their
+    // own binding fields; a failed ledger read must not block roster sync
+    log.warn(`roster binding enrichment failed: ${e.message}`)
+    return
+  }
+  const byAgent = new Map()
+  for (const row of bindings) {
+    if (row?.id) byAgent.set(row.id, row)
+  }
+  for (const agent of agents) {
+    const row = agent && byAgent.get(agent.id)
+    if (!row) continue
+    if (!agent.tmux_session && row.tmuxSession) agent.tmux_session = row.tmuxSession
+    if (!agent.session_id && row.sessionId) agent.session_id = row.sessionId
+    if (!agent.cwd && row.cwd) agent.cwd = row.cwd
+  }
+}
+
 function reconcileRoster(reason) {
+  enrichRosterFromLedgerBindings()
   _lastSessionWatcherRosterSig = reconcileDaemonRoster({
     agents,
     signature: _lastSessionWatcherRosterSig,

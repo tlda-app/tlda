@@ -2,7 +2,11 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import test from 'node:test'
 
-test('server runtime status records daemon pane status separately from liveness', () => {
+test('pane-status classification is display-only and never publishes liveness', () => {
+  // Skip's 7/18 directive: the pane classifier and the daemon's process
+  // observation both published the seat-alive fact and fought over it.
+  // The duplicate publisher is DELETED, not refereed: agent-status updates
+  // display state only; liveness truth comes from agent-liveness/login.
   const source = fs.readFileSync(new URL('../server/unified-server.mjs', import.meta.url), 'utf8')
   const daemonHandler = source.indexOf('async function handleDaemonWsMessage')
   const start = source.indexOf("if (type === 'agent-status')", daemonHandler)
@@ -11,8 +15,8 @@ test('server runtime status records daemon pane status separately from liveness'
 
   assert.ok(daemonHandler >= 0 && start > daemonHandler && end > start)
   assert.match(handler, /runtimeStatusStore\.updateActivity\(agentId, state/)
-  assert.match(handler, /state === 'hibernating'\) markAgentNotAlive\(agentId, \{ source: 'daemon-agent-status', unknown: true/)
-  assert.match(handler, /else markAgentAlive\(agentId, Date\.parse\(ts\) \|\| Date\.now\(\), \{ source: 'daemon-agent-status'/)
+  assert.doesNotMatch(handler, /markAgentNotAlive/)
+  assert.doesNotMatch(handler, /markAgentAlive/)
 })
 
 test('server runtime status records explicit daemon liveness negatives immediately', () => {

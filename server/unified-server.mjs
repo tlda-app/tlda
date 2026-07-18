@@ -6337,9 +6337,13 @@ async function handleFleetWsMessage(ws, msg) {
     const { agentId, state, tool, ts } = msg
     if (agentId && state && fleetStore) {
       fleetStore.updateAgentStatus?.(agentId, state, tool, ts)
+      // Pane-status classification is a DISPLAY feed (thinking/idle/...), not a
+      // liveness authority. It used to also publish alive/not-alive and fought
+      // the daemon's process-observation liveness for the same fact — the
+      // 7/17 classifier-vs-liveness flapping. Skip's order: delete the
+      // duplicate publisher, don't referee it. Liveness truth comes from
+      // agent-liveness (process observation) and login only.
       runtimeStatusStore.updateActivity(agentId, state, { tool, atMs: Date.parse(ts) || Date.now() })
-      if (state === 'hibernating') markAgentNotAlive(agentId, { source: 'agent-status', unknown: true, reason: 'pane status reported hibernating' })
-      else markAgentAlive(agentId, Date.parse(ts) || Date.now(), { source: 'agent-status', tool })
       broadcastEvent('agent-status', { agent: agentId, state, tool, ts })
       broadcastState()
     }
@@ -7701,9 +7705,9 @@ async function handleDaemonWsMessage(ws, msg) {
     const { agentId, state, tool, ts } = msg
     if (!agentId || !state || !fleetStore) return
     fleetStore.updateAgentStatus?.(agentId, state, tool, ts)
+    // Display feed only — no liveness publishing (see the identical rule on
+    // the WS agent-status handler above).
     runtimeStatusStore.updateActivity(agentId, state, { tool, atMs: Date.parse(ts) || Date.now() })
-    if (state === 'hibernating') markAgentNotAlive(agentId, { source: 'daemon-agent-status', unknown: true, reason: 'pane status reported hibernating' })
-    else markAgentAlive(agentId, Date.parse(ts) || Date.now(), { source: 'daemon-agent-status', tool })
     broadcastEvent('agent-status', { agent: agentId, state, tool, ts })
     broadcastState()
     return
