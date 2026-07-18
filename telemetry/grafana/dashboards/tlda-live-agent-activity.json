@@ -1,0 +1,208 @@
+{
+  "annotations": { "list": [] },
+  "editable": false,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": true,
+  "panels": [
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tlda-fleet-json" },
+      "description": "Current browser-side voice state from the existing live-perf namespace. This is the first visible surface because voice failure attribution is the priority.",
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "gridPos": { "h": 4, "w": 24, "x": 0, "y": 0 },
+      "id": 10,
+      "options": { "cellHeight": "sm", "showHeader": true },
+      "targets": [{
+        "columns": [
+          { "selector": "backend", "text": "Backend", "type": "string" },
+          { "selector": "recording", "text": "Listening", "type": "string" },
+          { "selector": "liveness", "text": "Input", "type": "string" },
+          { "selector": "health", "text": "Health", "type": "string" },
+          { "selector": "deepgram_connected", "text": "Deepgram connected", "type": "string" },
+          { "selector": "mic_stream", "text": "Browser mic", "type": "string" },
+          { "selector": "last_mic_frame_ms", "text": "Mic frame age (ms)", "type": "number" },
+          { "selector": "last_audio_chunk_ms", "text": "Bridge send age (ms)", "type": "number" }
+        ],
+        "format": "table", "parser": "backend", "refId": "A", "root_selector": "latest_browser", "source": "url", "type": "json",
+        "url": "__TLDA_FLEET_URL__/api/diagnostics/voice-pipeline",
+        "url_options": { "method": "GET", "params": [], "headers": [], "body_type": "raw", "body_content_type": "application/json" }
+      }],
+      "title": "Voice pipeline health",
+      "type": "table"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tlda-fleet-json" },
+      "description": "Bounded counts from existing Deepgram bridge log events. No session or lifecycle mutation.",
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "gridPos": { "h": 4, "w": 12, "x": 0, "y": 4 },
+      "id": 11,
+      "options": { "cellHeight": "sm", "showHeader": true },
+      "targets": [{
+        "columns": [
+          { "selector": "browser_connects", "text": "Browser connects", "type": "number" },
+          { "selector": "browser_drops", "text": "Browser drops", "type": "number" },
+          { "selector": "deepgram_connects", "text": "Deepgram connects", "type": "number" },
+          { "selector": "deepgram_drops", "text": "Deepgram drops", "type": "number" },
+          { "selector": "bridge_drops", "text": "Bridge drops", "type": "number" },
+          { "selector": "stalls", "text": "Stalls", "type": "number" }
+        ],
+        "format": "table", "parser": "backend", "refId": "A", "root_selector": "counts", "source": "url", "type": "json",
+        "url": "__TLDA_FLEET_URL__/api/diagnostics/voice-pipeline",
+        "url_options": { "method": "GET", "params": [], "headers": [], "body_type": "raw", "body_content_type": "application/json" }
+      }],
+      "title": "Voice connects, drops, and stalls",
+      "type": "table"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tlda-fleet-json" },
+      "description": "The most recent failure is attributed to browser capture, our bridge, or Deepgram upstream from existing log facts.",
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "gridPos": { "h": 4, "w": 12, "x": 12, "y": 4 },
+      "id": 12,
+      "options": { "cellHeight": "sm", "showHeader": true },
+      "targets": [{
+        "columns": [
+          { "selector": "timestamp", "text": "When", "type": "timestamp" },
+          { "selector": "layer", "text": "Failed layer", "type": "string" },
+          { "selector": "kind", "text": "Event", "type": "string" },
+          { "selector": "detail", "text": "Evidence", "type": "string" }
+        ],
+        "format": "table", "parser": "backend", "refId": "A", "root_selector": "last_failure", "source": "url", "type": "json",
+        "url": "__TLDA_FLEET_URL__/api/diagnostics/voice-pipeline",
+        "url_options": { "method": "GET", "params": [], "headers": [], "body_type": "raw", "body_content_type": "application/json" }
+      }],
+      "title": "Last voice failure attribution",
+      "type": "table"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tlda-fleet-json" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 8 },
+      "id": 1,
+      "options": { "colorMode": "value", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" },
+      "targets": [{
+        "columns": [{ "selector": "awake", "text": "Agents working now", "type": "number" }],
+        "format": "table", "parser": "backend", "refId": "A", "root_selector": "totals", "source": "url", "type": "json",
+        "url": "__TLDA_FLEET_URL__/api/agents?limit=200",
+        "url_options": { "method": "GET", "params": [], "headers": [], "body_type": "raw", "body_content_type": "application/json" }
+      }],
+      "title": "Agents working now",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tlda-fleet-json" },
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] } },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 8 },
+      "id": 2,
+      "options": { "colorMode": "value", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" },
+      "targets": [{
+        "columns": [{ "selector": "hibernating", "text": "Agents resting", "type": "number" }],
+        "format": "table", "parser": "backend", "refId": "A", "root_selector": "totals", "source": "url", "type": "json",
+        "url": "__TLDA_FLEET_URL__/api/agents?limit=200",
+        "url_options": { "method": "GET", "params": [], "headers": [], "body_type": "raw", "body_content_type": "application/json" }
+      }],
+      "title": "Agents resting",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tlda-fleet-json" },
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] } },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 8 },
+      "id": 3,
+      "options": { "colorMode": "value", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" },
+      "targets": [{
+        "columns": [{ "selector": "total", "text": "Agents shown", "type": "number" }],
+        "format": "table", "parser": "backend", "refId": "A", "root_selector": "totals", "source": "url", "type": "json",
+        "url": "__TLDA_FLEET_URL__/api/agents?limit=200",
+        "url_options": { "method": "GET", "params": [], "headers": [], "body_type": "raw", "body_content_type": "application/json" }
+      }],
+      "title": "Current agents",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tlda-fleet-json" },
+      "description": "Empty means the bounded 200-row roster contains every current agent. A value means another page exists and this view says so rather than hiding the limit.",
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 8 },
+      "id": 4,
+      "options": { "colorMode": "none", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "value_and_name" },
+      "targets": [{
+        "columns": [{ "selector": "nextCursor", "text": "More roster pages", "type": "string" }],
+        "format": "table", "parser": "backend", "refId": "A", "root_selector": "", "source": "url", "type": "json",
+        "url": "__TLDA_FLEET_URL__/api/agents?limit=200",
+        "url_options": { "method": "GET", "params": [], "headers": [], "body_type": "raw", "body_content_type": "application/json" }
+      }],
+      "title": "Roster pagination",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tlda-fleet-json" },
+      "description": "The current bounded roster projection from Fly. Status and activity are server-authoritative projections of existing daemon evidence.",
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "gridPos": { "h": 13, "w": 24, "x": 0, "y": 12 },
+      "id": 5,
+      "options": { "cellHeight": "sm", "showHeader": true, "sortBy": [{ "desc": false, "displayName": "Name" }] },
+      "targets": [{
+        "columns": [
+          { "selector": "friendly_name", "text": "Name", "type": "string" },
+          { "selector": "runtime_status.status", "text": "State", "type": "string" },
+          { "selector": "runtime_status.activity", "text": "Activity", "type": "string" },
+          { "selector": "runtime_status.evidence.activity_tool", "text": "Using", "type": "string" },
+          { "selector": "runtime_status.updated_at", "text": "Updated", "type": "timestamp" },
+          { "selector": "runtime_status.route_state", "text": "Reachable", "type": "string" }
+        ],
+        "format": "table", "parser": "backend", "refId": "A", "root_selector": "agents", "source": "url", "type": "json",
+        "url": "__TLDA_FLEET_URL__/api/agents?limit=200",
+        "url_options": { "method": "GET", "params": [], "headers": [], "body_type": "raw", "body_content_type": "application/json" }
+      }],
+      "title": "Every current agent",
+      "type": "table"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tlda-fleet-json" },
+      "description": "Latest 250 persisted activity events, fetched through the existing ordered `before` cursor. The window is bounded and refreshes every five seconds.",
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "gridPos": { "h": 13, "w": 24, "x": 0, "y": 25 },
+      "id": 6,
+      "options": { "cellHeight": "sm", "showHeader": true, "sortBy": [{ "desc": true, "displayName": "When" }] },
+      "targets": [{
+        "columns": [
+          { "selector": "timestamp", "text": "When", "type": "timestamp" },
+          { "selector": "from", "text": "Agent", "type": "string" },
+          { "selector": "metadata.tool", "text": "Activity", "type": "string" },
+          { "selector": "text", "text": "Detail", "type": "string" },
+          { "selector": "id", "text": "Event", "type": "number" }
+        ],
+        "format": "table", "parser": "backend", "refId": "A", "root_selector": "events", "source": "url", "type": "json",
+        "url": "__TLDA_FLEET_URL__/api/store/events?type=activity&before=9007199254740991&limit=250",
+        "url_options": { "method": "GET", "params": [], "headers": [], "body_type": "raw", "body_content_type": "application/json" }
+      }],
+      "title": "Live activity",
+      "type": "table"
+    }
+  ],
+  "refresh": "5s",
+  "schemaVersion": 40,
+  "tags": ["tlda", "fleet", "live"],
+  "templating": { "list": [] },
+  "time": { "from": "now-15m", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Live agent activity",
+  "uid": "tlda-live-agent-activity",
+  "version": 1,
+  "weekStart": ""
+}

@@ -120,6 +120,7 @@ import {
   buildTelemetryStatusSnapshot,
   renderTelemetryStatusMarkdown,
 } from './lib/observability/telemetry-status.mjs'
+import { buildVoicePipelineSnapshot } from './lib/observability/voice-pipeline.mjs'
 import { createNotificationAttemptRecorder } from './lib/notification-attempts.mjs'
 import { daemonEventFailureIncident } from './lib/daemon-event-failures.mjs'
 import { buildDaemonActivityRecord } from './lib/daemon-activity-ingest.mjs'
@@ -2922,6 +2923,19 @@ app.get('/api/diagnostics/telemetry-status', requireRead, (req, res) => {
 
 app.get('/api/diagnostics/telemetry-status.md', requireRead, (req, res) => {
   res.type('text/markdown').send(renderTelemetryStatusMarkdown(telemetryStatusSnapshotFromLiveBuffers()))
+})
+
+app.get('/api/diagnostics/voice-pipeline', requireRead, (req, res) => {
+  const bridgeLog = join(homedir(), '.config', 'tlda', 'deepgram-sdk-bridge.log')
+  let bridgeLines = []
+  try {
+    // The bridge log is an existing source of truth. Read a bounded tail only;
+    // this diagnostic view never starts, stops, or mutates the voice pipeline.
+    bridgeLines = readFileSync(bridgeLog, 'utf8').split('\n').slice(-500)
+  } catch (error) {
+    if (error?.code !== 'ENOENT') console.warn(`[voice-pipeline] bridge log read failed: ${error.message}`)
+  }
+  res.json(buildVoicePipelineSnapshot({ bridgeLines, livePerfSamples }))
 })
 
 app.get('/api/diagnostics/control-plane-traces', requireRead, (req, res) => {

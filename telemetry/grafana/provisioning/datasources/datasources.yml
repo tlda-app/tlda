@@ -1,0 +1,12 @@
+apiVersion: 1
+
+datasources:
+  - name: tlda-fleet-json
+    uid: tlda-fleet-json
+    type: yesoreyeram-infinity-datasource
+    access: proxy
+    isDefault: true
+    jsonData:
+      allowedHosts:
+        - __TLDA_FLEET_URL__
+    editable: false

@@ -58,6 +58,7 @@ public/assets/
 
 # Working directories
 .worktrees/
+telemetry/.stack/
 .claude/
 .agents/
 .playwright-cli/
