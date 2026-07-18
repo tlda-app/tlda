@@ -1163,7 +1163,7 @@ export class FleetStore {
     // ~1300 agents (parsing labels/metadata/session JSON per row).
     this._getAgentNames = this.db.prepare(`SELECT id, friendly_name FROM agents`);
     this._deleteAgent = this.db.prepare('DELETE FROM agents WHERE id = ?');
-    this._updateAgentLastSeen = this.db.prepare('UPDATE agents SET last_seen = ?, dead = 0 WHERE id = ?');
+    this._updateAgentLastSeen = this.db.prepare('UPDATE agents SET last_seen = ? WHERE id = ?');
     this._markAgentDead = this.db.prepare('UPDATE agents SET dead = 1 WHERE id = ?');
 
     // Task queries
