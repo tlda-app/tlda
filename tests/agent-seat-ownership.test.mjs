@@ -117,6 +117,52 @@ test('runtime binding updates the route for the same identity and enforces endpo
   }
 })
 
+test('daemon roster projects current durable seat fields over legacy agent route fields', () => {
+  const ctx = tmpStore()
+  try {
+    ctx.store.upsertAgent({
+      id: 'fleet:66660cc3',
+      friendly_name: 'seat-projection-test',
+      tmux_session: 'legacy-tmux',
+      session_id: 'legacy-session',
+      session_ids: ['legacy-session'],
+      cwd: '/legacy/cwd',
+      machine_id: 'legacy-machine',
+      env_name: 'legacy-env',
+      daemon_key: 'legacy-machine:legacy-env',
+      resume_id: 'legacy-resume',
+      dead: false,
+      human: false,
+    }, { allowProtectedAgentFields: true })
+    ctx.store.insertAgentSeat(seat())
+    ctx.store.activateAgentSeat({
+      agentId: 'fleet:66660cc3',
+      sessionId: '019f6034-0000-4000-8000-000000000000',
+      machineId: 'mini',
+      envName: 'fly',
+      daemonKey: 'mini:fly',
+      tmuxSession: 'fleet-icantevengetafuckinglist',
+      reason: 'fresh-create',
+    })
+
+    const [agent] = ctx.store.getAgentsByDaemonKey('mini:fly')
+    assert.equal(agent.tmux_session, 'fleet-icantevengetafuckinglist')
+    assert.equal(agent.session_id, '019f6034-0000-4000-8000-000000000000')
+    assert.equal(agent.cwd, '/Users/skip/work/tlda')
+    assert.equal(agent.machine_id, 'mini')
+    assert.equal(agent.env_name, 'fly')
+    assert.equal(agent.daemon_key, 'mini:fly')
+    assert.equal(agent.resume_id, '019f6034-0000-4000-8000-000000000000')
+
+    const projected = ctx.store.projectAgentCurrentSeat(ctx.store.getAgent('fleet:66660cc3'))
+    assert.equal(projected.tmux_session, agent.tmux_session)
+    assert.equal(projected.session_id, agent.session_id)
+    assert.equal(projected.cwd, agent.cwd)
+  } finally {
+    closeStore(ctx)
+  }
+})
+
 test('runtime binding cannot replace an agent identity session', () => {
   const ctx = tmpStore()
   try {

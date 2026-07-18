@@ -1799,7 +1799,24 @@ export class FleetStore {
 
   getAgentsByDaemonKey(daemonKey) {
     if (!daemonKey) return [];
-    return this._getAgentsByDaemonKey.all({ daemonKey }).map(r => this._hydrateAgent(r));
+    return this._getAgentsByDaemonKey.all({ daemonKey })
+      .map(r => this.projectAgentCurrentSeat(this._hydrateAgent(r)));
+  }
+
+  projectAgentCurrentSeat(agent) {
+    if (!agent?.id) return agent;
+    const seat = this.getCurrentAgentSeat(agent.id);
+    if (!seat) return agent;
+    return {
+      ...agent,
+      tmux_session: seat.tmux_session,
+      session_id: seat.session_id,
+      cwd: seat.cwd,
+      machine_id: seat.machine_id,
+      env_name: seat.env_name,
+      daemon_key: seat.daemon_key,
+      resume_id: seat.resume_id,
+    };
   }
 
   upsertDaemonRegistration(daemon) {

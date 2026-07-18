@@ -5013,9 +5013,9 @@ async function handleFleetWsMessage(ws, msg) {
     }
     const storedAgent = fleetStore.getAgent?.(agentId) || agent
     broadcastState(storedAgent)
-    // If the agent has a machine_id, push the updated agent list to that
-    // machine's daemon so it can start watching the new JSONL.
-    if (agent.machine_id) broadcastDaemonAgentsUpdated(agent)
+    // Push through the current-seat projection; seatless reservations have no
+    // daemon route and therefore produce no update.
+    broadcastDaemonAgentsUpdated(storedAgent)
     reply({
       ok: true,
       agent: storedAgent,
@@ -5082,7 +5082,7 @@ async function handleFleetWsMessage(ws, msg) {
       })
       spawnLibrarian.observeLogin(fleetStore.getAgent?.(agent_id) || agent)
       broadcastState(storedAgent)
-      if (agent.machine_id) broadcastDaemonAgentsUpdated(storedAgent)
+      broadcastDaemonAgentsUpdated(storedAgent)
       return
     }
 
@@ -7356,7 +7356,9 @@ function daemonProjectPartSourceWatchFiles(project) {
 
 function broadcastDaemonAgentsUpdated(agentUpdates = null) {
   const updates = agentUpdates
-    ? (Array.isArray(agentUpdates) ? agentUpdates : [agentUpdates]).filter(Boolean)
+    ? (Array.isArray(agentUpdates) ? agentUpdates : [agentUpdates])
+      .filter(Boolean)
+      .map(agent => fleetStore?.projectAgentCurrentSeat?.(agent) || agent)
     : null
   const daemonKeys = updates
     ? [...new Set(updates.map(a => a.daemon_key || (a.machine_id && a.env_name ? daemonAddress(a.machine_id, a.env_name) : null)).filter(Boolean))]
