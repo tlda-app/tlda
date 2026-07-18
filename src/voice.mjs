@@ -1857,6 +1857,8 @@ function disconnectWhisperBridge() {
 // No echo/doubling — Deepgram manages interim vs final results cleanly.
 
 let _deepgramWs = null
+let _deepgramReconnectTimer = null
+let _deepgramRelayGeneration = 0
 let _deepgramRelayConnected = false
 let _deepgramRecognizerStatus = null // authoritative connected|idle|error from the bridge
 let _deepgramRecognizerRelay = null  // relay socket that delivered the status
@@ -2208,7 +2210,31 @@ function onDeepgramMessage(event, relay = _deepgramWs) {
   }
 }
 
-function connectDeepgramBridge() {
+function deepgramRelayAuthorityIsCurrent(generation) {
+  return generation === _deepgramRelayGeneration && _recording && _backend === 'deepgram'
+}
+
+function invalidateDeepgramRelayAuthority() {
+  _deepgramRelayGeneration++
+  if (_deepgramReconnectTimer !== null) {
+    clearTimeout(_deepgramReconnectTimer)
+    _deepgramReconnectTimer = null
+  }
+}
+
+function scheduleDeepgramReconnect(generation) {
+  if (_deepgramReconnectTimer !== null || !deepgramRelayAuthorityIsCurrent(generation)) return
+  const timer = setTimeout(() => {
+    if (_deepgramReconnectTimer !== timer) return
+    _deepgramReconnectTimer = null
+    if (!deepgramRelayAuthorityIsCurrent(generation)) return
+    connectDeepgramBridge(generation)
+  }, 1000)
+  _deepgramReconnectTimer = timer
+}
+
+function connectDeepgramBridge(generation) {
+  if (!deepgramRelayAuthorityIsCurrent(generation)) return
   if (_deepgramWs && _deepgramWs.readyState === WebSocket.OPEN) return
   if (_deepgramWs) {
     _deepgramWs.onclose = null
@@ -2221,7 +2247,12 @@ function connectDeepgramBridge() {
     const relay = new WebSocket(deepgramBridgeUrl())
     _deepgramWs = relay
     relay.onopen = () => {
-      if (_deepgramWs !== relay) return
+      if (_deepgramWs !== relay || !deepgramRelayAuthorityIsCurrent(generation)) {
+        if (_deepgramWs === relay) _deepgramWs = null
+        relay.onclose = null
+        try { relay.close() } catch {}
+        return
+      }
       _deepgramRelayConnected = true
       _voiceHealthLabel = deepgramHealthLabel()
       showRecordingHud()
@@ -2236,9 +2267,9 @@ function connectDeepgramBridge() {
       _deepgramWs = null
       vlog('bridge WS closed', { recording: _recording })
       showDontSpeak('connection lost; reconnecting')
-      if (_recording && _backend === 'deepgram') {
+      if (deepgramRelayAuthorityIsCurrent(generation)) {
         vlog('bridge auto-reconnect in 1s')
-        setTimeout(connectDeepgramBridge, 1000)
+        scheduleDeepgramReconnect(generation)
       }
     }
     relay.onerror = (err) => { vlog('bridge WS error', { message: err?.message || 'unknown' }) }
@@ -2248,6 +2279,7 @@ function connectDeepgramBridge() {
 }
 
 function disconnectDeepgramBridge() {
+  invalidateDeepgramRelayAuthority()
   stopDeepgramMic()
   if (_deepgramWs) {
     if (_deepgramRelayConnected) {
@@ -2522,6 +2554,22 @@ if (typeof window !== 'undefined') {
     injectDeepgramMessage: (message) => onDeepgramMessage({ data: JSON.stringify(message) }),
     injectDeepgramMessageFrom: (relay, message) => onDeepgramMessage({ data: JSON.stringify(message) }, relay),
     getDeepgramFacts: () => ({ relayConnected: _deepgramRelayConnected, recognizerStatus: currentDeepgramRecognizerStatus(), recognizerConnected: deepgramRecognizerConnected(), commonState: deepgramCommonState() }),
+    startDeepgramRelayTest: () => {
+      disconnectDeepgramBridge()
+      _recording = true
+      _backend = 'deepgram'
+      connectDeepgramBridge(_deepgramRelayGeneration)
+      return _deepgramWs
+    },
+    stopDeepgramRelayTest: () => stopRecording(),
+    switchBackendTest: (backend) => setBackend(backend),
+    getDeepgramReconnectFacts: () => ({
+      generation: _deepgramRelayGeneration,
+      hasTimer: _deepgramReconnectTimer !== null,
+      hasRelay: _deepgramWs !== null,
+      recording: _recording,
+      backend: _backend,
+    }),
     dotAudioStale: () => dotAudioStale(),
     getHealthLabel: () => _voiceHealthLabel,
     getLastChromeMissingnessMarker: () => _lastChromeMissingnessMarker,
@@ -2564,7 +2612,7 @@ function startRecording() {
   _serviceUnavailableRetries = 0
 
   if (_backend === 'deepgram') {
-    connectDeepgramBridge()
+    connectDeepgramBridge(_deepgramRelayGeneration)
     startDeepgramMic()
     // Ensure Deepgram session is started (may have been stopped by hardResetVoice)
     if (_deepgramWs && _deepgramRelayConnected) {
@@ -2601,7 +2649,10 @@ function startRecording() {
 }
 
 function stopRecording() {
-  if (!_recording) return
+  if (!_recording) {
+    if (_backend === 'deepgram') disconnectDeepgramBridge()
+    return
+  }
   _recording = false
   emitRecordingChange()
 
@@ -2618,10 +2669,7 @@ function stopRecording() {
 
   // Deepgram: stop mic capture and close session
   if (_backend === 'deepgram') {
-    stopDeepgramMic()
-    if (_deepgramWs && _deepgramRelayConnected) {
-      try { _deepgramWs.send(JSON.stringify({ type: 'stop' })) } catch {}
-    }
+    disconnectDeepgramBridge()
   }
 
   // Notify accumulator that recording stopped (caller can reset cursor anchor etc.)
@@ -2892,7 +2940,7 @@ export async function initVoice() {
         // Ensure bridge WS is up
         if (!_deepgramRelayConnected) {
           vlog('visibilitychange: bridge disconnected — reconnecting')
-          connectDeepgramBridge()
+          connectDeepgramBridge(_deepgramRelayGeneration)
         }
         // Foreground again → restore upstream (reconcileUpstream sends `start`).
         reconcileUpstream()
@@ -2967,6 +3015,7 @@ export async function setBackend(be) {
   // Explicit "off": no backend enabled. Stop any recording and go silent.
   if (be === '' || be === 'none') {
     if (_recording) stopRecording()
+    else if (_backend === 'deepgram') disconnectDeepgramBridge()
     _backend = 'none'
     showHud('voice: off', '#9370db')
     fadeHud(2000)
@@ -2996,6 +3045,7 @@ export async function setBackend(be) {
   }
   const wasRecording = _recording
   if (wasRecording) stopRecording()
+  else if (_backend === 'deepgram') disconnectDeepgramBridge()
   _backend = be
   if (wasRecording) startRecording()
   showHud(`voice: ${be === 'deepgram' ? 'deepgram-sdk' : be}`, '#9370db')

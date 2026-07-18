@@ -140,15 +140,18 @@ class MockBroadcastChannel {
   postMessage() {}
 }
 global.BroadcastChannel = MockBroadcastChannel
+const mockWebSockets = []
 class MockWebSocket {
   static CONNECTING = 0
   static OPEN = 1
   static CLOSED = 3
   constructor() {
     this.readyState = MockWebSocket.OPEN
+    this.sent = []
+    mockWebSockets.push(this)
     setTimeout(() => this.onopen?.(), 0)
   }
-  send() {}
+  send(data) { this.sent.push(data) }
   close() { this.readyState = 3; this.onclose?.() }
 }
 global.WebSocket = MockWebSocket
@@ -270,6 +273,7 @@ function reset() {
   startCount = 0
   mockRecs.length = 0
   throwInvalidStateStarts = 0
+  mockWebSockets.length = 0
 }
 
 // ---- Liveness helpers: backend-specific indicator decisions ----
@@ -1012,6 +1016,79 @@ await setBackend('chrome')
   window.__voiceTest.fakeStop()
   reset()
   console.log('✓ Test 11b: relay and recognizer facts remain separate through recovery')
+}
+
+// ---- Test 11c: stale Deepgram reconnect work cannot resurrect stopped/switched voice ----
+{
+  reset()
+  const currentRelay = window.__voiceTest.startDeepgramRelayTest()
+  tick(0)
+  assert.equal(currentRelay.sent.length > 0, true, 'current relay open sends start')
+  currentRelay.close()
+  assert.equal(window.__voiceTest.getDeepgramReconnectFacts().hasTimer, true, 'current close schedules one tracked reconnect')
+  currentRelay.onclose?.()
+  assert.equal(timers.filter(t => t.fireAt === clock + 1000).length, 1, 'repeated close cannot schedule parallel reconnects')
+  tick(1000)
+  tick(0)
+  assert.equal(mockWebSockets.length, 2, 'current intent-on generation reconnects exactly once')
+  assert.equal(mockWebSockets[1].sent.length > 0, true, 'current replacement relay sends start')
+
+  reset()
+  const stoppedRelay = window.__voiceTest.startDeepgramRelayTest()
+  tick(0)
+  stoppedRelay.close()
+  const stoppedTimerCallback = timers.find(t => t.fireAt === clock + 1000)?.fn
+  assert.ok(stoppedTimerCallback, 'stop race captures the queued reconnect callback')
+  window.__voiceTest.stopDeepgramRelayTest()
+  stoppedTimerCallback()
+  const stoppedFacts = window.__voiceTest.getDeepgramReconnectFacts()
+  assert.equal(stoppedFacts.hasTimer, false, 'intent off clears the tracked reconnect timer')
+  assert.equal(stoppedFacts.hasRelay, false, 'intent off leaves no relay')
+  assert.equal(stoppedFacts.recording, false, 'intent off remains authoritative')
+  assert.equal(mockWebSockets.length, 1, 'stale timer cannot create a relay after stop')
+
+  reset()
+  const switchedRelay = window.__voiceTest.startDeepgramRelayTest()
+  tick(0)
+  switchedRelay.close()
+  const switchedTimerCallback = timers.find(t => t.fireAt === clock + 1000)?.fn
+  await window.__voiceTest.switchBackendTest('chrome')
+  switchedTimerCallback()
+  assert.equal(mockWebSockets.length, 1, 'stale timer cannot create a relay after backend switch')
+  assert.equal(window.__voiceTest.getDeepgramReconnectFacts().backend, 'chrome', 'backend switch remains authoritative')
+
+  reset()
+  const lateOpenRelay = window.__voiceTest.startDeepgramRelayTest()
+  window.__voiceTest.stopDeepgramRelayTest()
+  tick(0)
+  assert.equal(lateOpenRelay.sent.length, 0, 'stale onopen after stop closes without sending start')
+  assert.equal(lateOpenRelay.readyState, MockWebSocket.CLOSED, 'stale onopen socket is closed')
+
+  reset()
+  const switchedLateOpenRelay = window.__voiceTest.startDeepgramRelayTest()
+  await window.__voiceTest.switchBackendTest('chrome')
+  tick(0)
+  assert.equal(switchedLateOpenRelay.sent.length, 0, 'stale onopen after backend switch sends no start')
+  assert.equal(switchedLateOpenRelay.readyState, MockWebSocket.CLOSED, 'backend switch closes the stale opening socket')
+
+  reset()
+  const oldRelay = window.__voiceTest.startDeepgramRelayTest()
+  tick(0)
+  oldRelay.close()
+  const oldTimer = timers.find(t => t.fireAt === clock + 1000)
+  window.__voiceTest.stopDeepgramRelayTest()
+  const newerRelay = window.__voiceTest.startDeepgramRelayTest()
+  tick(0)
+  newerRelay.close()
+  assert.equal(window.__voiceTest.getDeepgramReconnectFacts().hasTimer, true, 'new generation owns its reconnect timer')
+  oldTimer.fn()
+  assert.equal(window.__voiceTest.getDeepgramReconnectFacts().hasTimer, true, 'stale callback cannot clear a newer owned timer')
+  tick(1000)
+  tick(0)
+  assert.equal(mockWebSockets.length, 3, 'newer owned timer still performs exactly one reconnect')
+  window.__voiceTest.stopDeepgramRelayTest()
+  reset()
+  console.log('✓ Test 11c: relay generation prevents stale reconnect resurrection')
 }
 
 // ---- Test 12: mic watchdog never tears down a live (running) context ----
