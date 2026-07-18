@@ -22,16 +22,17 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
   // Source files we care about for tlda projects. Kept in sync with
   // cli/lib/source-files.mjs's allowlist (extensions only — the cli
   // helper does more, but the daemon stays standalone).
-  const SOURCE_EXTS = new Set(['.tex', '.bib', '.sty', '.cls', '.bst', '.md', '.qmd', '.html', '.css', '.js', '.svg', '.png', '.jpg', '.jpeg', '.pdf', '.json', '.yml', '.yaml'])
+  const SOURCE_EXTS = new Set(['.tex', '.bib', '.sty', '.cls', '.bst', '.md', '.qmd', '.html', '.css', '.js', '.svg', '.png', '.jpg', '.jpeg', '.pdf', '.eps', '.json', '.yml', '.yaml'])
   const JUNK_PATTERNS = [/^\.#/, /\.swp$/, /~$/, /\.tmp$/, /\.lock$/]
 
   // Bootstrap input scanner — regex-scan .tex files for \input-like commands
   // to discover dependencies before the first successful build produces a .fls.
-  const DEFAULT_INPUT_COMMANDS = ['input', 'include', 'inputscratch', 'addbibresource', 'bibliography', 'usepackage']
+  const DEFAULT_INPUT_COMMANDS = ['input', 'include', 'inputscratch', 'addbibresource', 'bibliography', 'usepackage', 'includegraphics']
+  const GRAPHICS_EXTENSIONS = ['.pdf', '.svg', '.png', '.jpg', '.jpeg', '.eps']
 
   function scanTexInputs(sourceDir, mainFile, extraCommands = []) {
     const commands = [...DEFAULT_INPUT_COMMANDS, ...extraCommands]
-    const pattern = new RegExp(`\\\\(?:${commands.join('|')})\\{([^}]+)\\}`, 'g')
+    const pattern = new RegExp(`\\\\(${commands.join('|')})(?:\\[[^\\]]*\\])?\\{([^}]+)\\}`, 'g')
     const seen = new Set()
     const result = new Set()
 
@@ -51,9 +52,9 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
       let content
       try { content = fs.readFileSync(full, 'utf8') } catch { return }
       for (const m of content.matchAll(pattern)) {
-        const raw = m[1].trim()
+        const cmd = `\\${m[1]}`
+        const raw = m[2].trim()
         if (!raw) continue
-        const cmd = m[0].split('{')[0]
         // \usepackage and \bibliography accept comma-separated lists
         const refs = (cmd === '\\usepackage' || cmd === '\\bibliography')
           ? raw.split(',').map(s => s.trim()).filter(Boolean)
@@ -63,6 +64,17 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
             if (!ref.endsWith('.sty')) ref += '.sty'
           } else if (cmd === '\\bibliography' || cmd === '\\addbibresource') {
             if (!ref.endsWith('.bib')) ref += '.bib'
+          } else if (cmd === '\\includegraphics') {
+            const ext = path.extname(ref).toLowerCase()
+            const candidates = ext ? [ref] : GRAPHICS_EXTENSIONS.map(suffix => ref + suffix)
+            if (ext === '.pdf') candidates.push(ref.slice(0, -ext.length) + '.svg')
+            const dir = path.dirname(relPath)
+            for (const candidate of candidates) {
+              const resolved = path.normalize(path.join(dir, candidate))
+              if (resolved.startsWith('..') || path.isAbsolute(resolved)) continue
+              if (fs.existsSync(path.join(sourceDir, resolved))) result.add(resolved)
+            }
+            continue
           } else if (!path.extname(ref)) {
             ref += '.tex'
           }
@@ -249,12 +261,13 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
       // Bootstrap watchSet (no .fls yet) must include the main's \input deps, not
       // just the main, so the initial connect push contains dependencies before
       // the first build produces a .fls.
+      const declaredWatchSet = new Set(
+        isMarkdown && p.mainFile ? scanMarkdownInputs(sourceDir, p.mainFile)
+        : p.mainFile ? scanTexInputs(sourceDir, p.mainFile, p.extraInputCommands || []) : []
+      )
       const watchSet = hasFlsWatchList
-        ? normalizeWatchSet(sourceDir, p.watchFiles)
-        : new Set(
-          isMarkdown && p.mainFile ? scanMarkdownInputs(sourceDir, p.mainFile)
-          : p.mainFile ? scanTexInputs(sourceDir, p.mainFile, p.extraInputCommands || []) : []
-        )
+        ? new Set([...normalizeWatchSet(sourceDir, p.watchFiles), ...declaredWatchSet])
+        : declaredWatchSet
 
       if (sourceWatchers.has(p.name)) {
         const existing = sourceWatchers.get(p.name)
@@ -262,12 +275,16 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
           closeSourceState(existing)
           sourceWatchers.delete(p.name)
         } else {
+          const newlyWatched = new Set([...watchSet].filter(rel => !existing.watchSet.has(rel)))
           existing.watchSet = watchSet
           existing.mainFile = p.mainFile
           existing.extraInputCommands = p.extraInputCommands || []
           existing.isMarkdown = isMarkdown
           const nextWatcherKey = sourceWatcherKey(existing)
           if (!existing.watcher || existing.watcherKey !== nextWatcherKey) startSourceWatcher(existing, 'resync')
+          if (newlyWatched.size > 0) {
+            pushWatchedFiles(p.name, sourceDir, newlyWatched, null, p.extraInputCommands, isMarkdown)
+          }
           continue
         }
       }
