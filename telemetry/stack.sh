@@ -82,7 +82,10 @@ fi
 # explicitly (see start_grafana); this is a product/policy decision, not an
 # ops default this script should bake in.
 TLDA_FLEET_URL="${TLDA_FLEET_URL:-https://tlda-fly.cormorant-matrix.ts.net}"
-GRAFANA_URL="${GRAFANA_PROTOCOL}://${GRAFANA_PUBLIC_HOST}:${GRAFANA_PORT}/d/tlda-live-agent-activity/live-agent-activity"
+refresh_grafana_url() {
+  GRAFANA_URL="${GRAFANA_PROTOCOL}://${GRAFANA_PUBLIC_HOST}:${GRAFANA_PORT}/d/tlda-live-agent-activity/live-agent-activity"
+}
+refresh_grafana_url
 
 mkdir -p "$BIN_DIR" "$RUN_DIR" "$LOG_DIR" "$RENDER_DIR" "$PROM_DATA_DIR" "$GRAFANA_DATA_DIR" "$GRAFANA_LOG_DIR" "$GRAFANA_PLUGIN_DIR"
 
@@ -134,6 +137,53 @@ wait_http() {
     sleep 1
   done
   die "$label did not answer at $url"
+}
+
+validate_grafana_cert() {
+  [[ -s "$GRAFANA_CERT_FILE" ]] || die "Tailscale certificate was not written to $GRAFANA_CERT_FILE"
+  [[ -s "$GRAFANA_CERT_KEY" ]] || die "Tailscale certificate key was not written to $GRAFANA_CERT_KEY"
+  have openssl || die "openssl is required to validate the Grafana TLS certificate"
+  openssl x509 -in "$GRAFANA_CERT_FILE" -noout >/dev/null 2>&1 || die "invalid Grafana TLS certificate at $GRAFANA_CERT_FILE"
+  openssl pkey -in "$GRAFANA_CERT_KEY" -noout >/dev/null 2>&1 || die "invalid Grafana TLS key at $GRAFANA_CERT_KEY"
+
+  local cert_pub key_pub
+  cert_pub="$(openssl x509 -in "$GRAFANA_CERT_FILE" -pubkey -noout 2>/dev/null)"
+  key_pub="$(openssl pkey -in "$GRAFANA_CERT_KEY" -pubout 2>/dev/null)"
+  [[ -n "$cert_pub" && "$cert_pub" == "$key_pub" ]] || die "Grafana TLS certificate and key do not match"
+  openssl x509 -in "$GRAFANA_CERT_FILE" -text -noout 2>/dev/null | awk -v host="$GRAFANA_PUBLIC_HOST" '
+    /X509v3 Subject Alternative Name:/ { in_san = 1; next }
+    in_san && /X509v3/ { exit found ? 0 : 1 }
+    in_san {
+      count = split($0, entries, ",")
+      for (i = 1; i <= count; i++) {
+        value = entries[i]
+        sub(/^[[:space:]]+/, "", value)
+        sub(/[[:space:]]+$/, "", value)
+        if (value == "DNS:" host) found = 1
+      }
+    }
+    END { exit found ? 0 : 1 }
+  ' || die "Grafana TLS certificate does not have an exact DNS SAN for $GRAFANA_PUBLIC_HOST"
+}
+
+prepare_grafana_protocol() {
+  case "$GRAFANA_PUBLIC_HOST" in
+    *.ts.net)
+      have tailscale || die "tailscale CLI not found; cannot obtain the required HTTPS certificate for $GRAFANA_PUBLIC_HOST"
+      mkdir -p "$(dirname "$GRAFANA_CERT_FILE")" "$(dirname "$GRAFANA_CERT_KEY")"
+      tailscale cert --cert-file "$GRAFANA_CERT_FILE" --key-file "$GRAFANA_CERT_KEY" "$GRAFANA_PUBLIC_HOST" \
+        || die "failed to obtain Tailscale certificate for $GRAFANA_PUBLIC_HOST"
+      validate_grafana_cert
+      GRAFANA_PROTOCOL=https
+      ;;
+    *)
+      if [[ "$GRAFANA_PROTOCOL" == "http" && -f "$GRAFANA_CERT_FILE" && -f "$GRAFANA_CERT_KEY" ]]; then
+        validate_grafana_cert
+        GRAFANA_PROTOCOL=https
+      fi
+      ;;
+  esac
+  refresh_grafana_url
 }
 
 spawn_detached() {
@@ -293,6 +343,7 @@ start_grafana() {
   # admin secret on hand.
   require_admin_secret
   GRAFANA_HOST="$(resolve_tailscale_bind_host)"
+  prepare_grafana_protocol
 
   # Anonymous access is a policy decision this script deliberately does not
   # make: if the caller never set GF_AUTH_ANONYMOUS_ENABLED at all, it is not

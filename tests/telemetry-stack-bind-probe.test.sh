@@ -45,7 +45,61 @@ if ( GRAFANA_HOST=0.0.0.0 resolve_tailscale_bind_host ) >/dev/null 2>&1; then
 fi
 echo "PASS: GRAFANA_HOST=0.0.0.0 is rejected"
 
-# --- Test 3: start_grafana must hand the exact same resolved address to
+# --- Test 3: a .ts.net public hostname must obtain the certificate through
+#     the existing cert/key authority, validate it, and force HTTPS before
+#     Grafana is started or its URL is advertised. ---
+TLS_CAPTURE="$WORKDIR/tls-capture"
+(
+  set -euo pipefail
+  GRAFANA_PUBLIC_HOST="test-machine.example.ts.net"
+  GRAFANA_CERT_FILE="$WORKDIR/certs/test.crt"
+  GRAFANA_CERT_KEY="$WORKDIR/certs/test.key"
+  GRAFANA_PROTOCOL=http
+  have() { [[ "$1" == tailscale ]]; }
+  tailscale() {
+    printf '%s\n' "$*" > "$TLS_CAPTURE"
+    printf 'mock cert' > "$GRAFANA_CERT_FILE"
+    printf 'mock key' > "$GRAFANA_CERT_KEY"
+  }
+  validate_grafana_cert() { [[ -s "$GRAFANA_CERT_FILE" && -s "$GRAFANA_CERT_KEY" ]]; }
+  prepare_grafana_protocol
+  [[ "$GRAFANA_PROTOCOL" == https ]] || fail ".ts.net hostname did not force HTTPS"
+  [[ "$GRAFANA_URL" == https://test-machine.example.ts.net:* ]] || fail "advertised URL was not refreshed to HTTPS"
+)
+TLS_ARGS="$(cat "$TLS_CAPTURE")"
+[[ "$TLS_ARGS" == *"--cert-file $WORKDIR/certs/test.crt"* ]] || fail "tailscale cert did not receive the authoritative cert path"
+[[ "$TLS_ARGS" == *"--key-file $WORKDIR/certs/test.key"* ]] || fail "tailscale cert did not receive the authoritative key path"
+[[ "$TLS_ARGS" == *"test-machine.example.ts.net" ]] || fail "tailscale cert did not receive the public hostname"
+echo "PASS: .ts.net hostname obtains its Tailscale certificate and requires HTTPS"
+
+# --- Test 4: the real certificate validator requires an exact discrete DNS
+#     SAN and a matching private key. Generated fixtures keep this isolated
+#     from Tailscale and from the machine certificate store. ---
+VALIDATOR_DIR="$WORKDIR/validator"
+mkdir -p "$VALIDATOR_DIR"
+openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+  -subj '/CN=exact.example.ts.net' \
+  -addext 'subjectAltName=DNS:exact.example.ts.net' \
+  -keyout "$VALIDATOR_DIR/exact.key" -out "$VALIDATOR_DIR/exact.crt" >/dev/null 2>&1
+openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+  -subj '/CN=exact.example.ts.net.evil.example' \
+  -addext 'subjectAltName=DNS:exact.example.ts.net.evil.example' \
+  -keyout "$VALIDATOR_DIR/lookalike.key" -out "$VALIDATOR_DIR/lookalike.crt" >/dev/null 2>&1
+
+GRAFANA_PUBLIC_HOST=exact.example.ts.net
+GRAFANA_CERT_FILE="$VALIDATOR_DIR/exact.crt"
+GRAFANA_CERT_KEY="$VALIDATOR_DIR/exact.key"
+validate_grafana_cert
+
+if ( GRAFANA_CERT_FILE="$VALIDATOR_DIR/lookalike.crt" GRAFANA_CERT_KEY="$VALIDATOR_DIR/lookalike.key" validate_grafana_cert ) >/dev/null 2>&1; then
+  fail "lookalike SAN exact.example.ts.net.evil.example passed exact-host validation"
+fi
+if ( GRAFANA_CERT_FILE="$VALIDATOR_DIR/exact.crt" GRAFANA_CERT_KEY="$VALIDATOR_DIR/lookalike.key" validate_grafana_cert ) >/dev/null 2>&1; then
+  fail "certificate passed with a mismatched private key"
+fi
+echo "PASS: real validator accepts exact SAN only and rejects lookalike SANs and mismatched keys"
+
+# --- Test 5: start_grafana must hand the exact same resolved address to
 #     both GF_SERVER_HTTP_ADDR and the readiness-probe URL. Every
 #     side-effecting dependency (resolver, admin-secret check, binary
 #     lookup, pid tracking, spawn, health probe) is stubbed inside a
@@ -57,6 +111,7 @@ set +e
 (
   set -euo pipefail
   resolve_tailscale_bind_host() { echo "100.99.99.99"; }
+  prepare_grafana_protocol() { GRAFANA_PROTOCOL=http; refresh_grafana_url; }
   require_admin_secret() { :; }
   grafana_bin() { echo "/usr/bin/true"; }
   # pid_file_alive is NOT mocked — the real one runs. Before spawn_detached
@@ -84,7 +139,7 @@ PROBE_SEEN="$(cat "$PROBE_CAPTURE" 2>/dev/null || true)"
 [[ "$PROBE_SEEN" == *"://$BIND_SEEN:"* ]] || fail "bind address ($BIND_SEEN) not found in readiness probe URL ($PROBE_SEEN) — bind/probe mismatch"
 echo "PASS: start_grafana passes the same resolved address ($BIND_SEEN) into GF_SERVER_HTTP_ADDR and the readiness probe URL ($PROBE_SEEN)"
 
-# --- Test 4: negative control — prove test 3's comparison genuinely
+# --- Test 6: negative control — prove test 5's comparison genuinely
 #     discriminates a mismatch rather than passing vacuously. ---
 if [[ "https://100.99.99.99:3031/api/health" == *"://100.11.11.11:"* ]]; then
   fail "negative-control comparison did not discriminate a real mismatch"
