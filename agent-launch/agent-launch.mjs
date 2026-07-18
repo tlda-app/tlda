@@ -10,6 +10,7 @@ import { readDaemonConfigForCwd, withDaemonModelAliases } from './permission-led
 import { createLocalAgentLedger } from './local-agent-ledger.mjs'
 import { resolveModelSpec } from './models.mjs'
 import { isIntentionalEmptyPermissionSet, permissionSetConfersNothing } from './permissions.mjs'
+import { bindAgentSeat } from './seat-binding.mjs'
 
 const execFileP = promisify(execFile)
 
@@ -81,7 +82,7 @@ export function createAgentLauncher({
     }
   }
 
-  function emitAgentSeatBinding({
+  async function emitAgentSeatBinding({
     fleetId,
     sessionId,
     sessionPath,
@@ -95,17 +96,26 @@ export function createAgentLauncher({
   }) {
     if (!fleetId || !sessionId || !harness || !model || !cwd || !tmuxSession) return false
     const daemonKey = `${machineId}:${activeConfigName}`
-    permissionLedger.setSessionSync(fleetId, {
-      sessionId,
-      sessionKind: harness,
-      sessionPath,
-      tmuxSession,
-      model,
-      machineId,
-      envName: activeConfigName,
-      daemonKey,
-      cwd,
-      friendlyName: agentName,
+    await bindAgentSeat({
+      ledger: permissionLedger,
+      identity: {
+        agentId: fleetId,
+        sessionId,
+        resumeId,
+        kind: harness,
+        model,
+        cwd,
+        sessionPath,
+        friendlyName: agentName,
+      },
+      route: {
+        machineId,
+        envName: activeConfigName,
+        daemonKey,
+        tmuxSession,
+      },
+      createdSource: source,
+      submit: async (payload) => sendMsg({ type: 'agent-seat', ...payload }),
     })
     const localLedger = createLocalAgentLedger(path.join(configDir, 'fleet-daemon.db'))
     try {
@@ -117,20 +127,6 @@ export function createAgentLauncher({
     } finally {
       localLedger.close()
     }
-    sendMsg({
-      type: 'agent-seat',
-      agent_id: fleetId,
-      session_id: sessionId,
-      resume_id: resumeId || sessionId,
-      kind: harness,
-      model,
-      cwd,
-      machine_id: machineId,
-      env_name: activeConfigName,
-      daemon_key: daemonKey,
-      tmux_session: tmuxSession,
-      created_source: source,
-    })
     return true
   }
 
@@ -458,6 +454,7 @@ export function createAgentLauncher({
             cwd: resolvedCwd,
             model: launched.model,
             launchStartedAt,
+            processOwnedOnly: launched.harness === 'codex' && spawnMode === 'fresh' && !existingDurableSessionId,
           })
         } catch (e) {
           log.warn(`live ${launched.harness} session identity resolution failed for ${agentName}: ${e.message}`)
@@ -469,7 +466,7 @@ export function createAgentLauncher({
       const ledgerRow = launched.fleetId ? permissionLedger.get(launched.fleetId) : null
       const durableSessionId = launched.resumeId || liveIdentity?.sessionId || ledgerRow?.sessionId || sessionId || null
       const durableSessionPath = liveIdentity?.jsonlPath || ledgerRow?.sessionPath || null
-      emitAgentSeatBinding({
+      await emitAgentSeatBinding({
         fleetId: launched.fleetId,
         sessionId: durableSessionId,
         sessionPath: durableSessionPath,

@@ -64,6 +64,8 @@ import {
   readDaemonConfig,
   withDaemonModelAliases,
 } from '../agent-launch/permission-ledger.mjs'
+import { terminateTmuxSession } from '../agent-launch/tmux.mjs'
+import { bindAgentSeat } from '../agent-launch/seat-binding.mjs'
 
 // --- Argument parsing ---
 
@@ -2548,6 +2550,7 @@ export async function runFleetSpawn(spawnArgs, {
   loadConfigImpl = loadConfig,
   localAgentLedgerPath = null,
   apiImpl = api,
+  cleanupFailedBindingImpl = cleanupFailedFreshBinding,
 } = {}) {
   if (spawnArgs.includes('--list-models')) {
     const { listModels } = await import('../agent-launch/models.mjs')
@@ -2676,9 +2679,30 @@ export async function runFleetSpawn(spawnArgs, {
       }
       throw e
     }
-    const boundResume = await bindLifecycleCodexResumeIdentity(result, { ledger, cwd, name, api: apiImpl })
+    let boundResume
+    try {
+      boundResume = await bindLifecycleCodexResumeIdentity(result, {
+        ledger,
+        cwd,
+        name,
+        api: apiImpl,
+        requireReadback: spawnMode === 'fresh' || spawnMode === 'session',
+      })
+    } catch (e) {
+      if ((spawnMode === 'fresh' || spawnMode === 'session') && e?.terminalBindingFailure) {
+        await cleanupFailedBindingImpl(result, { api: apiImpl, localAgentLedgerPath })
+      }
+      throw e
+    }
+    if ((spawnMode === 'fresh' || spawnMode === 'session') && !boundResume.bound) {
+      console.log(`Spawn pending durable seat binding for ${result.fleetId}; completion will follow the durable binding event`)
+      return
+    }
+    if (!boundResume.bound && (boundResume.submitError || boundResume.readError)) {
+      throw boundResume.submitError || boundResume.readError
+    }
     if (result?.harness === 'codex' && result.fleetId && result.tmuxSession && !boundResume.bound) {
-        console.error(red(`warning: launched ${name || result.fleetId}, but could not bind a Codex resume identity yet; wake may fail until daemon session ingestion catches up`))
+      console.error(red(`warning: launched ${name || result.fleetId}, but could not bind a Codex resume identity yet; wake may fail until daemon session ingestion catches up`))
     }
     const shouldPersistGrant = params.spawnMode !== 'respawn' || params.explicitPolicy
     if (shouldPersistGrant && (!preallocatedAgentId || result.fleetId !== preallocatedAgentId)) {
@@ -2796,12 +2820,12 @@ export async function bindLifecycleCodexResumeIdentity(result, {
   name,
   api = null,
   resolveIdentity = null,
+  requireReadback = false,
   timeoutMs = Number(process.env.TLDA_SPAWN_RESUME_ID_TIMEOUT_MS || 10000),
   intervalMs = 250,
 } = {}) {
   if (result?.fleetId && result.tmuxSession && result.resumeId) {
-    await postLifecycleSeatBinding(result, { api, cwd, name, sessionId: result.resumeId })
-    return { bound: true, existing: true }
+    return await postLifecycleSeatBinding(result, { api, cwd, name, sessionId: result.resumeId, existing: true, requireReadback })
   }
   if (!result?.fleetId || !result.tmuxSession || result.harness !== 'codex') {
     return { bound: false, skipped: true }
@@ -2817,51 +2841,81 @@ export async function bindLifecycleCodexResumeIdentity(result, {
         cwd,
       },
       tmuxSession: result.tmuxSession,
+      processOwnedOnly: true,
     })
     if (identity?.sessionId && identity?.model) break
     await new Promise(resolve => setTimeout(resolve, intervalMs))
   }
-  if (!identity?.sessionId || !identity?.model) return { bound: false, identity }
-  ledger.setSessionSync(result.fleetId, {
-    sessionId: identity.sessionId,
-    sessionKind: 'codex',
-    sessionPath: identity.jsonlPath,
-    tmuxSession: result.tmuxSession,
-    model: identity.model,
+  if (!identity?.sessionId || !identity?.model) {
+    return { bound: false, pending: true, reason: 'exact-identity-pending', identity }
+  }
+  const binding = await postLifecycleSeatBinding(result, {
+    api,
+    ledger,
     cwd,
-    friendlyName: name || result.name || result.fleetId,
+    name,
+    sessionId: identity.sessionId,
+    sessionPath: identity.jsonlPath,
+    model: identity.model,
+    kind: 'codex',
+    requireReadback,
   })
-  await postLifecycleSeatBinding(result, { api, cwd, name, sessionId: identity.sessionId, model: identity.model, kind: 'codex' })
+  if (!binding.bound) return { ...binding, identity }
   result.resumeId = identity.sessionId
-  return { bound: true, identity }
+  return { ...binding, identity }
 }
 
 async function postLifecycleSeatBinding(result, {
   api = null,
+  ledger = null,
   cwd,
   name,
   sessionId,
+  sessionPath = null,
   model = result?.model,
   kind = result?.harness,
+  existing = false,
+  requireReadback = false,
 } = {}) {
-  if (!api) return
+  if (!api) return { bound: false, pending: true }
   const machineId = localMachineId()
   const envName = getActiveConfigName(loadConfig())
   const daemonKey = `${machineId}:${envName}`
-  await api('POST', '/api/agent-seat', {
-    agent_id: result.fleetId,
-    session_id: sessionId,
-    resume_id: sessionId,
-    kind,
-    model,
-    cwd,
-    machine_id: machineId,
-    env_name: envName,
-    daemon_key: daemonKey,
-    tmux_session: result.tmuxSession,
-    created_source: 'agent-lifecycle-cli',
-    transition_reason: 'agent-lifecycle-cli',
+  const binding = await bindAgentSeat({
+    ledger,
+    identity: {
+      agentId: result.fleetId,
+      sessionId,
+      resumeId: sessionId,
+      kind,
+      model,
+      cwd,
+      sessionPath,
+      friendlyName: name || result.name || result.fleetId,
+    },
+    route: { machineId, envName, daemonKey, tmuxSession: result.tmuxSession },
+    submit: (payload) => api('POST', '/api/agent-seat', payload),
+    readback: (agentId) => api('GET', `/api/agent-seat?agent=${encodeURIComponent(agentId)}`),
+    requireReadback,
+    transitionReason: 'agent-lifecycle-cli',
   })
+  return { ...binding, existing }
+}
+
+export async function cleanupFailedFreshBinding(result, {
+  api = null,
+  localAgentLedgerPath = null,
+  terminateImpl = terminateTmuxSession,
+} = {}) {
+  const terminated = await terminateImpl(result.tmuxSession)
+  if (!terminated) throw new Error(`terminal seat binding failed, but exact runtime ${result.tmuxSession} could not be terminated`)
+  if (result.localAgentId) {
+    const { createLocalAgentLedger } = await import('../agent-launch/local-agent-ledger.mjs')
+    const localLedger = createLocalAgentLedger(localAgentLedgerPath || undefined)
+    try { localLedger.delete(result.localAgentId) } finally { localLedger.close() }
+  }
+  if (result.fleetId && api) await api('POST', `/api/agents/${encodeURIComponent(result.fleetId)}/mark-dead`)
+  return { terminated: true }
 }
 
 function flagFromRaw(rawArgs, name) {

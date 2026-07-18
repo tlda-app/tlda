@@ -105,6 +105,7 @@ import { DaemonOutbox, defaultOutboxPath } from '../daemon/outbox.mjs'
 import { reconcileDaemonRoster } from '../daemon/roster-reconcile.mjs'
 import { createAgentLauncher } from '../agent-launch/agent-launch.mjs'
 import { findCodexRollout } from '../agent-launch/resume.mjs'
+import { resolveLiveSessionIdentity as resolveLiveCodexSessionIdentity } from '../agent-launch/harness/codex.mjs'
 import {
   applyDaemonGrants,
   applyGrandfatherInfill,
@@ -610,8 +611,17 @@ const agentLauncher = createAgentLauncher({
   // row carries session_id before anything tries to wake/route this seat —
   // otherwise every later wake fails with "missing daemon-ledger resume
   // identity" even though the rollout exists.
-  liveCodexSessionIdentityResolver: async ({ fleetId, sessionId, cwd, launchStartedAt }) => {
+  liveCodexSessionIdentityResolver: async ({ fleetId, sessionId, cwd, launchStartedAt, tmuxSession, processOwnedOnly = false }) => {
     const agent = { id: fleetId, session_id: sessionId || null, cwd, registered_at: launchStartedAt }
+    if (processOwnedOnly) {
+      return await resolveLiveCodexSessionIdentity({
+        agent,
+        tmuxSession,
+        tmuxArgs: TMUX_ARGS,
+        tmuxSocket: TMUX_SOCKET,
+        processOwnedOnly: true,
+      })
+    }
     const found = findCodexRollout(agent, sessionId ? { sessionOverride: sessionId } : {})
     if (found?.rolloutId) {
       return { sessionId: found.rolloutId, jsonlPath: found.jsonlPath, model: found.sessionMeta?.model || null }

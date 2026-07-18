@@ -205,16 +205,25 @@ export function adapterForKind(kind) {
 }
 
 // The one signature every runtime builds to.
-export async function resolveTranscript({ pid, kind, agent, launchTs }) {
+export async function resolveTranscript({
+  pid,
+  kind,
+  agent,
+  launchTs,
+  processOwnedOnly = false,
+  findOpenTranscript = findOpenTranscriptFd,
+  findFallbackTranscript = null,
+}) {
   const adapter = adapterForKind(kind)
   // Codex fallback ownership checks read rollout prefixes under ~/.codex/sessions.
   // That is acceptable as a rare fallback after a live runtime PID exists, but it
   // is unbounded when called for hibernating/stale roster rows. Without a PID
   // there is no live writer to bind, so do not scan the global Codex session tree.
   if (!pid && kind === 'codex') return null
-  const open = await findOpenTranscriptFd(pid, adapter.isTranscriptPath)
+  const open = await findOpenTranscript(pid, adapter.isTranscriptPath)
   if (open) return open // PRIMARY (K.39)
-  return adapter.findByLaunchWindow({ agent, launchTs }) // FALLBACK
+  if (processOwnedOnly) return null
+  return (findFallbackTranscript || adapter.findByLaunchWindow.bind(adapter))({ agent, launchTs }) // FALLBACK
 }
 
 export { claudeAdapter, codexAdapter, codexRolloutBelongsToAgent, codexRolloutHasOwnerEvidence, codexRolloutMatchesLaunch, findOpenTranscriptFd }

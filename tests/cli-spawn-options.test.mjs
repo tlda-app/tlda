@@ -7,6 +7,7 @@ import Database from 'better-sqlite3'
 
 import {
   bindLifecycleCodexResumeIdentity,
+  cleanupFailedFreshBinding,
   collectSpawnModelOptionsFromRaw,
   permissionTransparencyLine,
   resolveWakeRecipeFields,
@@ -52,12 +53,13 @@ test('CLI lifecycle codex spawn binds resume identity into existing ledger row',
         writes.push({ id, row })
       },
     },
-    resolveIdentity: async ({ agent, tmuxSession }) => {
+    resolveIdentity: async ({ agent, tmuxSession, processOwnedOnly }) => {
       assert.equal(agent.id, 'fleet:test-cli-bind')
       assert.equal(agent.friendly_name, 'test-cli-bind')
       assert.equal(agent.cwd, '/tmp/tlda-cli-bind')
       assert.equal(agent.registered_at, undefined)
       assert.equal(tmuxSession, 'fleet-test-cli-bind')
+      assert.equal(processOwnedOnly, true)
       return {
         sessionId: '11111111-2222-4333-8444-555555555555',
         jsonlPath: '/tmp/rollout-11111111-2222-4333-8444-555555555555.jsonl',
@@ -80,6 +82,9 @@ test('CLI lifecycle codex spawn binds resume identity into existing ledger row',
       sessionPath: '/tmp/rollout-11111111-2222-4333-8444-555555555555.jsonl',
       tmuxSession: 'fleet-test-cli-bind',
       model: 'gpt-5.5',
+      machineId: 'mini',
+      envName: 'default',
+      daemonKey: 'mini:default',
       cwd: '/tmp/tlda-cli-bind',
       friendlyName: 'test-cli-bind',
     },
@@ -555,7 +560,16 @@ test('fresh spawn narration prints complete read and write regions when grant ha
           resumeId: '55555555-2222-4333-8444-555555555555',
         }
       },
-      apiImpl: async () => ({ ok: true }),
+      apiImpl: async (method) => method === 'POST'
+        ? { ok: true }
+        : {
+            ok: true,
+            seat: {
+              agent_id: 'fleet:region-grant',
+              session_id: '55555555-2222-4333-8444-555555555555',
+              tmux_session: 'fleet-region-grant',
+            },
+          },
     })
 
     assert.equal(spawnCalls.length, 1)
@@ -564,6 +578,300 @@ test('fresh spawn narration prints complete read and write regions when grant ha
   } finally {
     console.log = priorLog
     fs.rmSync(configDir, { recursive: true, force: true })
+  }
+})
+
+test('fresh mint cleans only its exact spawn after terminal durable-seat collision', async () => {
+  const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-fresh-seat-collision-'))
+  const dbPath = path.join(configDir, 'fleet-daemon.db')
+  const cleaned = []
+  const logs = []
+  const errors = []
+  const priorLog = console.log
+  const priorError = console.error
+  const priorExitCode = process.exitCode
+  try {
+    writeDaemonConfig(configDir)
+    seedPermissionLedger(dbPath)
+    console.log = (...args) => logs.push(args.join(' '))
+    console.error = (...args) => errors.push(args.join(' '))
+    process.exitCode = undefined
+    await runFleetSpawn(['--fresh', 'collision'], {
+      configDir,
+      localAgentLedgerPath: dbPath,
+      loadConfigImpl: () => ({}),
+      spawnImpl: async () => ({
+        localAgentId: 'local:collision',
+        fleetId: 'fleet:collision',
+        tmuxSession: 'fleet-collision',
+        harness: 'codex',
+        model: 'gpt-5.5',
+        resumeId: 'aaaaaaaa-2222-4333-8444-555555555555',
+      }),
+      apiImpl: async (method) => {
+        const error = new Error(method === 'POST' ? 'UNIQUE constraint failed: agent_seats.session_id' : 'agent has no current durable seat')
+        error.status = method === 'POST' ? 409 : 404
+        throw error
+      },
+      cleanupFailedBindingImpl: async (result) => cleaned.push(result),
+    })
+    assert.equal(process.exitCode, 1)
+    assert.equal(cleaned.length, 1)
+    assert.equal(cleaned[0].tmuxSession, 'fleet-collision')
+    assert.doesNotMatch(logs.join('\n'), /^Created /m)
+    assert.match(errors.join('\n'), /UNIQUE constraint failed/)
+  } finally {
+    console.log = priorLog
+    console.error = priorError
+    process.exitCode = priorExitCode
+    fs.rmSync(configDir, { recursive: true, force: true })
+  }
+})
+
+test('fresh mint keeps exact runtime pending only after submitted binding has uncertain transport', async () => {
+  const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-fresh-seat-pending-'))
+  const dbPath = path.join(configDir, 'fleet-daemon.db')
+  const cleaned = []
+  const logs = []
+  const priorLog = console.log
+  const priorExitCode = process.exitCode
+  try {
+    writeDaemonConfig(configDir)
+    seedPermissionLedger(dbPath)
+    console.log = (...args) => logs.push(args.join(' '))
+    process.exitCode = undefined
+    await runFleetSpawn(['--fresh', 'pending'], {
+      configDir,
+      localAgentLedgerPath: dbPath,
+      loadConfigImpl: () => ({}),
+      spawnImpl: async () => ({
+        localAgentId: 'local:pending',
+        fleetId: 'fleet:pending',
+        tmuxSession: 'fleet-pending',
+        harness: 'codex',
+        model: 'gpt-5.5',
+        resumeId: 'bbbbbbbb-2222-4333-8444-555555555555',
+      }),
+      apiImpl: async () => { throw new Error('Request timed out') },
+      cleanupFailedBindingImpl: async (result) => cleaned.push(result),
+    })
+    assert.equal(process.exitCode, undefined)
+    assert.equal(cleaned.length, 0)
+    assert.match(logs.join('\n'), /pending durable seat binding/)
+    assert.doesNotMatch(logs.join('\n'), /^Created /m)
+  } finally {
+    console.log = priorLog
+    process.exitCode = priorExitCode
+    fs.rmSync(configDir, { recursive: true, force: true })
+  }
+})
+
+test('fresh non-Codex uncertain binding stays pending and never prints Created', async () => {
+  const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-fresh-claude-seat-pending-'))
+  const dbPath = path.join(configDir, 'fleet-daemon.db')
+  const cleaned = []
+  const logs = []
+  const priorLog = console.log
+  const priorExitCode = process.exitCode
+  try {
+    writeDaemonConfig(configDir)
+    seedPermissionLedger(dbPath)
+    console.log = (...args) => logs.push(args.join(' '))
+    process.exitCode = undefined
+    await runFleetSpawn(['--fresh', 'claude-pending'], {
+      configDir,
+      localAgentLedgerPath: dbPath,
+      loadConfigImpl: () => ({}),
+      spawnImpl: async () => ({
+        localAgentId: 'local:claude-pending',
+        fleetId: 'fleet:claude-pending',
+        tmuxSession: 'fleet-claude-pending',
+        harness: 'claude',
+        model: 'claude-sonnet-4',
+        resumeId: 'cccccccc-2222-4333-8444-555555555555',
+      }),
+      apiImpl: async () => { throw new Error('Request timed out') },
+      cleanupFailedBindingImpl: async (result) => cleaned.push(result),
+    })
+    assert.equal(process.exitCode, undefined)
+    assert.equal(cleaned.length, 0)
+    assert.match(logs.join('\n'), /pending durable seat binding/)
+    assert.doesNotMatch(logs.join('\n'), /^Created /m)
+  } finally {
+    console.log = priorLog
+    process.exitCode = priorExitCode
+    fs.rmSync(configDir, { recursive: true, force: true })
+  }
+})
+
+test('ordinary wake transport failure neither prints Woke nor becomes fresh-style pending', async () => {
+  const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-wake-seat-transport-failure-'))
+  const dbPath = path.join(configDir, 'fleet-daemon.db')
+  const logs = []
+  const errors = []
+  const priorLog = console.log
+  const priorError = console.error
+  const priorExitCode = process.exitCode
+  try {
+    writeDaemonConfig(configDir)
+    seedWakeRecipe(dbPath, { profile: 'ops' })
+    seedPermissionLedger(dbPath)
+    console.log = (...args) => logs.push(args.join(' '))
+    console.error = (...args) => errors.push(args.join(' '))
+    process.exitCode = undefined
+    await runFleetSpawn(['recipe'], {
+      configDir,
+      localAgentLedgerPath: dbPath,
+      loadConfigImpl: () => ({}),
+      spawnImpl: async () => ({
+        fleetId: 'fleet:recipe',
+        tmuxSession: 'fleet-recipe',
+        harness: 'codex',
+        model: 'gpt-5.5',
+        resumeId: 'dddddddd-2222-4333-8444-555555555555',
+      }),
+      apiImpl: async () => { throw new Error('wake seat transport unavailable') },
+    })
+    assert.equal(process.exitCode, 1)
+    assert.doesNotMatch(logs.join('\n'), /^Woke /m)
+    assert.doesNotMatch(logs.join('\n'), /pending durable seat binding/)
+    assert.match(errors.join('\n'), /wake seat transport unavailable/)
+  } finally {
+    console.log = priorLog
+    console.error = priorError
+    process.exitCode = priorExitCode
+    fs.rmSync(configDir, { recursive: true, force: true })
+  }
+})
+
+test('ordinary non-Codex wake preserves skipped binding and prints Woke', async () => {
+  const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-wake-noncodex-skipped-binding-'))
+  const dbPath = path.join(configDir, 'fleet-daemon.db')
+  const logs = []
+  const priorLog = console.log
+  try {
+    writeDaemonConfig(configDir)
+    seedWakeRecipe(dbPath, { profile: 'ops' })
+    seedPermissionLedger(dbPath)
+    console.log = (...args) => logs.push(args.join(' '))
+    await runFleetSpawn(['recipe'], {
+      configDir,
+      localAgentLedgerPath: dbPath,
+      loadConfigImpl: () => ({}),
+      spawnImpl: async () => ({
+        fleetId: 'fleet:recipe',
+        tmuxSession: 'fleet-recipe',
+        harness: 'claude',
+        model: 'claude-sonnet-4',
+        resumeId: null,
+      }),
+    })
+    assert.match(logs.join('\n'), /^Woke fleet-recipe \(fleet:recipe\)/m)
+    assert.doesNotMatch(logs.join('\n'), /pending durable seat binding/)
+  } finally {
+    console.log = priorLog
+    fs.rmSync(configDir, { recursive: true, force: true })
+  }
+})
+
+test('ordinary Codex wake preserves exact-identity absence warning and Woke', async () => {
+  const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-wake-codex-identity-pending-'))
+  const dbPath = path.join(configDir, 'fleet-daemon.db')
+  const logs = []
+  const errors = []
+  const priorLog = console.log
+  const priorError = console.error
+  const priorTimeout = process.env.TLDA_SPAWN_RESUME_ID_TIMEOUT_MS
+  try {
+    writeDaemonConfig(configDir)
+    seedWakeRecipe(dbPath, { profile: 'ops' })
+    seedPermissionLedger(dbPath)
+    console.log = (...args) => logs.push(args.join(' '))
+    console.error = (...args) => errors.push(args.join(' '))
+    process.env.TLDA_SPAWN_RESUME_ID_TIMEOUT_MS = '0'
+    await runFleetSpawn(['recipe'], {
+      configDir,
+      localAgentLedgerPath: dbPath,
+      loadConfigImpl: () => ({}),
+      spawnImpl: async () => ({
+        fleetId: 'fleet:recipe',
+        tmuxSession: 'fleet-does-not-exist',
+        harness: 'codex',
+        model: 'gpt-5.5',
+        resumeId: null,
+      }),
+    })
+    assert.match(logs.join('\n'), /^Woke fleet-does-not-exist \(fleet:recipe\)/m)
+    assert.match(errors.join('\n'), /could not bind a Codex resume identity yet/)
+    assert.doesNotMatch(logs.join('\n'), /pending durable seat binding/)
+  } finally {
+    console.log = priorLog
+    console.error = priorError
+    if (priorTimeout == null) delete process.env.TLDA_SPAWN_RESUME_ID_TIMEOUT_MS
+    else process.env.TLDA_SPAWN_RESUME_ID_TIMEOUT_MS = priorTimeout
+    fs.rmSync(configDir, { recursive: true, force: true })
+  }
+})
+
+test('fresh Codex identity absence remains pending without success, submission, or cleanup', async () => {
+  const result = {
+    harness: 'codex',
+    fleetId: 'fleet:no-exact-identity',
+    tmuxSession: 'fleet-no-exact-identity',
+  }
+  let submissions = 0
+  const binding = await bindLifecycleCodexResumeIdentity(result, {
+      cwd: '/same/cwd',
+      name: 'no-exact-identity',
+      timeoutMs: 0,
+      intervalMs: 0,
+      ledger: { setSessionSync() { throw new Error('must not write a guessed identity') } },
+      resolveIdentity: async ({ processOwnedOnly }) => {
+        assert.equal(processOwnedOnly, true)
+        return null
+      },
+      api: async () => { submissions += 1; throw new Error('must not submit without an exact identity') },
+    })
+  assert.deepEqual({ bound: binding.bound, pending: binding.pending, reason: binding.reason }, {
+    bound: false,
+    pending: true,
+    reason: 'exact-identity-pending',
+  })
+  assert.equal(submissions, 0)
+})
+
+test('terminal binding cleanup deletes the exact local recipe and retires its reservation', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-terminal-binding-cleanup-'))
+  const dbPath = path.join(dir, 'fleet-daemon.db')
+  const localLedger = createLocalAgentLedger(dbPath)
+  localLedger.create({
+    localAgentId: 'local:cleanup',
+    serverAgentId: 'fleet:cleanup',
+    friendlyName: 'cleanup',
+    harness: 'codex',
+    model: 'gpt-5.5',
+    tmuxName: 'fleet-cleanup',
+    cwd: '/tmp',
+  })
+  localLedger.close()
+  const terminated = []
+  const apiCalls = []
+  try {
+    await cleanupFailedFreshBinding({
+      localAgentId: 'local:cleanup',
+      fleetId: 'fleet:cleanup',
+      tmuxSession: 'fleet-cleanup',
+    }, {
+      localAgentLedgerPath: dbPath,
+      terminateImpl: async (tmuxSession) => { terminated.push(tmuxSession); return true },
+      api: async (method, url) => { apiCalls.push({ method, url }); return { ok: true } },
+    })
+    const verify = createLocalAgentLedger(dbPath)
+    try { assert.equal(verify.get('local:cleanup'), null) } finally { verify.close() }
+    assert.deepEqual(terminated, ['fleet-cleanup'])
+    assert.deepEqual(apiCalls, [{ method: 'POST', url: '/api/agents/fleet%3Acleanup/mark-dead' }])
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
   }
 })
 

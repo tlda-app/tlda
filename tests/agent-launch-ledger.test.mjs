@@ -864,15 +864,17 @@ test('daemon ledger session identity is validate-equal after first write', async
   }
 })
 
-async function runLiveIdentityPolicyCase({ harness, identities, timeoutMs = 1_000, existingSessionId = null }) {
+async function runLiveIdentityPolicyCase({ harness, identities, resolverImpl = null, timeoutMs = 1_000, existingSessionId = null }) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), `tlda-agent-launch-${harness}-identity-policy-`))
   const ledger = createPermissionLedger(path.join(tmp, 'fleet-daemon.db'))
   let now = 0
   const sleeps = []
   let calls = 0
+  const messages = []
   const resolverInputs = []
   const resolver = async input => {
     resolverInputs.push(input)
+    if (resolverImpl) return await resolverImpl(input)
     return identities[Math.min(calls++, identities.length - 1)]
   }
   try {
@@ -910,7 +912,7 @@ async function runLiveIdentityPolicyCase({ harness, identities, timeoutMs = 1_00
       log: { info() {}, warn() {}, error() {} },
       machineId: 'test-machine',
       permissionLedger: ledger,
-      sendMsg: () => true,
+      sendMsg: (message) => { messages.push(message); return true },
       getProjects: () => [],
       tmux: async () => true,
       startupFailureProbeMs: 1,
@@ -940,7 +942,7 @@ async function runLiveIdentityPolicyCase({ harness, identities, timeoutMs = 1_00
       cwd: tmp,
       requester: { id: 'fleet:requester', name: 'requester' },
     })
-    return { calls, resolverInputs, sleeps, result, row: ledger.get(result.agent_id) }
+    return { calls, resolverInputs, sleeps, messages, result, row: ledger.get(result.agent_id) }
   } finally {
     await ledger.close()
     fs.rmSync(tmp, { recursive: true, force: true })
@@ -984,7 +986,30 @@ test('Codex and Claude fill a missing session path without changing durable iden
     assert.equal(outcome.row?.sessionPath, sessionPath)
     assert.equal(outcome.row?.daemonKey, 'test-machine:test')
     assert.equal(outcome.resolverInputs[0]?.sessionId, sessionId)
+    assert.equal(outcome.resolverInputs[0]?.processOwnedOnly, false)
   }
+})
+
+test('fresh Codex launcher never emits or returns an adjacent same-cwd fallback rollout', async () => {
+  const adjacentSessionId = 'eeeeeeee-2222-4333-8444-555555555555'
+  const outcome = await runLiveIdentityPolicyCase({
+    harness: 'codex',
+    identities: [],
+    timeoutMs: 0,
+    resolverImpl: async ({ processOwnedOnly }) => processOwnedOnly
+      ? null
+      : {
+          sessionId: adjacentSessionId,
+          jsonlPath: `/same/cwd/rollout-${adjacentSessionId}.jsonl`,
+          model: 'gpt-5.5',
+        },
+  })
+
+  assert.equal(outcome.resolverInputs.length, 1)
+  assert.equal(outcome.resolverInputs[0].processOwnedOnly, true)
+  assert.equal(outcome.result.resume_id, null)
+  assert.equal(outcome.row?.sessionId, null)
+  assert.equal(outcome.messages.some(message => message?.type === 'agent-seat'), false)
 })
 
 test('Codex and Claude live identity resolution share timeout behavior', async () => {

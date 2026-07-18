@@ -13,7 +13,7 @@ import { dnsAliasPreloadPath } from './dns-alias-preload.mjs'
 const CODEX_CONFIG_FILE = path.join(os.homedir(), '.codex', 'config.toml')
 const execFileP = promisify(execFile)
 
-export async function resolveLiveSessionIdentity({ agent, tmuxSession, tmuxArgs = [], tmuxSocket = null, now = Date.now } = {}) {
+export async function resolveLiveSessionIdentity({ agent, tmuxSession, tmuxArgs = [], tmuxSocket = null, now = Date.now, processOwnedOnly = false } = {}) {
   if (!tmuxSession) return null
   const tmuxPrefix = tmuxSocket ? ['-S', tmuxSocket] : tmuxArgs
   let paneOut
@@ -52,7 +52,7 @@ export async function resolveLiveSessionIdentity({ agent, tmuxSession, tmuxArgs 
   }
   if (!pid) return null
   const launchTs = Date.parse(agent?.registered_at || '') || (now() - 60_000)
-  const jsonlPath = await resolveTranscript({ pid, kind: 'codex', agent, launchTs })
+  const jsonlPath = await resolveTranscript({ pid, kind: 'codex', agent, launchTs, processOwnedOnly })
   const sessionId = ledgerSessionId({ harness_kind: 'codex', jsonl_path: jsonlPath })
   if (!sessionId) return null
   let model = null
