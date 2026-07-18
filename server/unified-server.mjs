@@ -8359,24 +8359,11 @@ server.listen(PORT, HOST, () => {
 
   setInterval(ensureLocalDaemon, DAEMON_SUPERVISOR_INTERVAL_MS).unref()
 
-  const HIBERNATE_CHECK_MS = 60_000
-  setInterval(async () => {
-    if (!fleetStore) return
-    const wouldHib = getWouldHibernate()
-    for (const agentId of Object.keys(wouldHib)) {
-      const agent = fleetStore.getAgent(agentId)
-      if (!agent) continue
-      const { seat } = currentSeatOrError(agent)
-      if (!seat) continue
-      console.log(`[hibernate] auto-hibernating ${agent.friendly_name || agent.id} (idle ${wouldHib[agentId]}s)`)
-      try {
-        await sendRpc(seat.daemon_key, 'kill-session', { agent_id: agent.id, session_id: seat.session_id, tmux_session: seat.tmux_session })
-        markAgentNotAlive(agent.id, { source: 'auto-hibernate', reason: `idle ${wouldHib[agentId]}s` })
-      } catch (e) {
-        console.error(`[hibernate] failed to hibernate ${agent.friendly_name || agent.id}: ${e.message}`)
-      }
-    }
-    broadcastState()
-  }, HIBERNATE_CHECK_MS).unref()
+  // The auto-hibernate sweep is DELETED (Skip's order, 7/18, after it
+  // kill-sessioned four live working agents at 00:49 whose idleness the lying
+  // liveness projection had overstated: "nothing in the core app gets to kill
+  // or restart an agent — that machinery gets stripped out of the app and
+  // lives in Todd, where you can turn it off." Idleness-driven hibernation,
+  // if wanted, is a Todd behavior with an off switch — never a core sweep.
   }
 })
