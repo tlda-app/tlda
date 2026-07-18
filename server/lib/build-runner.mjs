@@ -1823,9 +1823,28 @@ export async function runBuild(name, { priorityPages: explicitPriority } = {}) {
   }
   let releaseLock
   _buildLocks.set(name, new Promise(r => { releaseLock = r }))
+  const previousActiveBuild = activeBuilds.get(name)
 
-  try { return await _runBuildInner(name, { priorityPages: explicitPriority }) }
-  finally { _buildLocks.delete(name); releaseLock() }
+  try {
+    return await _runBuildInner(name, { priorityPages: explicitPriority })
+  } catch (e) {
+    // _runBuildInner marks the project building before validating its inputs.
+    // Its own catch starts later, after the active-build record is created, so
+    // validation failures can escape without clearing the persisted status.
+    // Once this invocation's inner catch has set its own status to failed, it
+    // is the sole publisher of the persistent transition. A retained failed
+    // status from an older invocation must not suppress recovery here.
+    const currentActiveBuild = activeBuilds.get(name)
+    const handledByCurrentAttempt = currentActiveBuild !== previousActiveBuild && currentActiveBuild?.phase === 'failed'
+    if (!handledByCurrentAttempt) {
+      try { _reporter.updateProject(name, { buildStatus: 'failed' }) }
+      catch (e2) { console.error(`[build] failed to recover escaped build status for ${name}: ${e2.message}`) }
+    }
+    throw e
+  } finally {
+    _buildLocks.delete(name)
+    releaseLock()
+  }
 }
 
 async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
