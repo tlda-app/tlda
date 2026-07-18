@@ -863,3 +863,98 @@ test('daemon ledger session identity is validate-equal after first write', async
     fs.rmSync(tmp, { recursive: true, force: true })
   }
 })
+
+async function runLiveIdentityPolicyCase({ harness, identities, timeoutMs = 1_000 }) {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), `tlda-agent-launch-${harness}-identity-policy-`))
+  const ledger = createPermissionLedger(path.join(tmp, 'fleet-daemon.db'))
+  let now = 0
+  const sleeps = []
+  let calls = 0
+  const resolver = async () => identities[Math.min(calls++, identities.length - 1)]
+  try {
+    ledger.setSync('fleet:requester', {
+      spawnPolicy: { policy: 'unsandboxed' },
+      permissionSet: permissionSet(),
+      source: 'test-requester',
+    })
+    const launcher = createAgentLauncher({
+      activeConfigName: 'test',
+      configDir: tmp,
+      loadConfig: () => ({
+        spawnPolicy: { permissionProfiles: { ops: permissionSet() }, defaultProfile: 'ops' },
+      }),
+      log: { info() {}, warn() {}, error() {} },
+      machineId: 'test-machine',
+      permissionLedger: ledger,
+      sendMsg: () => true,
+      getProjects: () => [],
+      tmux: async () => true,
+      startupFailureProbeMs: 1,
+      liveCodexSessionIdentityResolver: harness === 'codex' ? resolver : null,
+      liveClaudeSessionIdentityResolver: harness === 'claude' ? resolver : null,
+      liveSessionIdentityTimeoutMs: timeoutMs,
+      liveSessionIdentityPollMs: 500,
+      liveSessionIdentityNow: () => now,
+      liveSessionIdentitySleep: async ms => {
+        sleeps.push(ms)
+        now += ms
+      },
+      spawnImpl: async params => ({
+        ok: true,
+        fleetId: params.agentId,
+        tmuxSession: `fleet-${harness}-identity-policy`,
+        harness,
+        model: params.model,
+        pending: true,
+      }),
+    })
+    const result = await launcher.handlers.spawn({
+      name: `${harness}-identity-policy`,
+      model: harness === 'codex' ? 'gpt-5.5' : 'opus',
+      kind: harness,
+      cwd: tmp,
+      requester: { id: 'fleet:requester', name: 'requester' },
+    })
+    return { calls, sleeps, result, row: ledger.get(result.agent_id) }
+  } finally {
+    await ledger.close()
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+}
+
+test('Codex and Claude live identity resolution share retry and persistence behavior', async () => {
+  const sessionId = '55555555-2222-4333-8444-555555555555'
+  const outcomes = []
+  for (const harness of ['codex', 'claude']) {
+    outcomes.push(await runLiveIdentityPolicyCase({
+      harness,
+      identities: [null, null, { sessionId, model: null }],
+    }))
+  }
+
+  for (const outcome of outcomes) {
+    assert.equal(outcome.result.ok, true, JSON.stringify(outcome.result))
+    assert.equal(outcome.calls, 3)
+    assert.deepEqual(outcome.sleeps, [500, 500])
+    assert.equal(outcome.result.resume_id, sessionId)
+    assert.equal(outcome.row?.sessionId, sessionId)
+  }
+})
+
+test('Codex and Claude live identity resolution share timeout behavior', async () => {
+  const outcomes = []
+  for (const harness of ['codex', 'claude']) {
+    outcomes.push(await runLiveIdentityPolicyCase({
+      harness,
+      identities: [null],
+    }))
+  }
+
+  for (const outcome of outcomes) {
+    assert.equal(outcome.result.ok, true, JSON.stringify(outcome.result))
+    assert.equal(outcome.calls, 3)
+    assert.deepEqual(outcome.sleeps, [500, 500])
+    assert.equal(outcome.result.resume_id, null)
+    assert.equal(outcome.row?.sessionId, null)
+  }
+})

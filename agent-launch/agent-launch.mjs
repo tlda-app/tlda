@@ -38,6 +38,10 @@ export function createAgentLauncher({
   startupFailureProbeMs = Number(process.env.TLDA_SPAWN_STARTUP_FAILURE_PROBE_MS || 2500),
   liveCodexSessionIdentityResolver = null,
   liveClaudeSessionIdentityResolver = null,
+  liveSessionIdentityTimeoutMs = 20_000,
+  liveSessionIdentityPollMs = 500,
+  liveSessionIdentityNow = Date.now,
+  liveSessionIdentitySleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
 }) {
   const activeSpawns = new Map()
   const reportedStartupFailures = new Set()
@@ -45,6 +49,16 @@ export function createAgentLauncher({
 
   function trace(label, detail) {
     log.info(`[spawn-trace] ${label} ${JSON.stringify({ ts: new Date().toISOString(), machineId, ...detail })}`)
+  }
+
+  async function resolveLiveSessionIdentity(resolver, args) {
+    const deadline = liveSessionIdentityNow() + liveSessionIdentityTimeoutMs
+    for (;;) {
+      const identity = await resolver(args)
+      if (identity?.sessionId) return identity
+      if (liveSessionIdentityNow() >= deadline) return null
+      await liveSessionIdentitySleep(liveSessionIdentityPollMs)
+    }
   }
 
   function spawnCrashLogPath({ agentName, agent_id, tmux_session }) {
@@ -434,7 +448,7 @@ export function createAgentLauncher({
         !permissionLedger.get(launched.fleetId)?.sessionId
       ) {
         try {
-          liveIdentity = await liveIdentityResolver({
+          liveIdentity = await resolveLiveSessionIdentity(liveIdentityResolver, {
             fleetId: launched.fleetId,
             agentName,
             tmuxSession: launched.tmuxSession,
