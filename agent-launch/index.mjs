@@ -376,17 +376,18 @@ async function spawnFresh(params) {
       throw new SpawnError('launch-failed', `tmux session ${tmuxSession} already has a live harness runtime`, { tmuxSession })
     }
     runtimeLaunched = true
+    let promptDelivery = null
     if (requestedKind === 'codex') {
       const injected = await (deps.injectCodexPrompt || injectCodexPrompt)(tmuxSession, codex.kickoffPrompt(name), { tmuxSocket: params.tmuxSocket })
       if (!injected) {
-        throw new SpawnError('launch-failed', `codex prompt injection did not reach ${tmuxSession}`, { fleetId, tmuxSession })
+        promptDelivery = { ok: false, reason: 'unverified' }
       }
     }
     if (!serverUp) {
-      return { ok: true, localAgentId, fleetId: null, tmuxSession, harness: requestedKind, model, registrationDeferred: true }
+      return { ok: true, localAgentId, fleetId: null, tmuxSession, harness: requestedKind, model, registrationDeferred: true, ...(promptDelivery ? { promptDelivery } : {}) }
     }
     let resumeId = null
-    return { ok: true, pending: true, localAgentId, fleetId, tmuxSession, harness: requestedKind, model, resumeId }
+    return { ok: true, pending: true, localAgentId, fleetId, tmuxSession, harness: requestedKind, model, resumeId, ...(promptDelivery ? { promptDelivery } : {}) }
   } catch (e) {
     const err = toSpawnError(e, e?.message?.includes('not available') ? 'name-bounced' : 'launch-failed', { fleetId, tmuxSession, model })
     librarian.failPending(fleetId || localAgentId, err.reason || 'launch-failed')

@@ -118,6 +118,75 @@ test('fresh mint persists the resolved grant profile supplied by the daemon', as
   }
 })
 
+test('fresh Codex prompt failure returns the launched route without destroying runtime evidence', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-prompt-failure-route-'))
+  const ledgerFile = path.join(dir, 'fleet-daemon.db')
+  let terminated = false
+  try {
+    const result = await spawn({
+      spawnMode: 'fresh',
+      agentId: 'fleet:prompt-failure',
+      name: 'prompt-failure',
+      model: 'gpt',
+      config,
+      cwd: dir,
+      breakGlass: true,
+      acknowledgeNoSecurity: true,
+      explicitPolicy: true,
+      localAgentLedgerPath: ledgerFile,
+      _deps: {
+        resolveApi: () => 'https://fleet.example',
+        ensureServer: async () => true,
+        uniqueSessionName: async () => 'fleet-prompt-failure',
+        resolveDnsAlias: async () => null,
+        checkFreshNameAvailable: async () => {},
+        wsReserveShell: async () => ({ server_agent_id: 'fleet:prompt-failure' }),
+        spawnTmux: async () => true,
+        injectCodexPrompt: async () => false,
+        terminateTmuxSession: async () => { terminated = true; return true },
+      },
+    })
+
+    assert.equal(result.fleetId, 'fleet:prompt-failure')
+    assert.equal(result.tmuxSession, 'fleet-prompt-failure')
+    assert.deepEqual(result.promptDelivery, { ok: false, reason: 'unverified' })
+    assert.equal(terminated, false)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('offline fresh Codex prompt failure preserves the failure fact for caller cleanup', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-offline-prompt-failure-'))
+  const ledgerFile = path.join(dir, 'fleet-daemon.db')
+  try {
+    const result = await spawn({
+      spawnMode: 'fresh',
+      name: 'offline-prompt-failure',
+      model: 'gpt',
+      config,
+      cwd: dir,
+      breakGlass: true,
+      acknowledgeNoSecurity: true,
+      explicitPolicy: true,
+      localAgentLedgerPath: ledgerFile,
+      _deps: {
+        resolveApi: () => 'https://unavailable.example',
+        ensureServer: async () => false,
+        uniqueSessionName: async () => 'fleet-offline-prompt-failure',
+        resolveDnsAlias: async () => null,
+        spawnTmux: async () => true,
+        injectCodexPrompt: async () => false,
+      },
+    })
+
+    assert.equal(result.registrationDeferred, true)
+    assert.deepEqual(result.promptDelivery, { ok: false, reason: 'unverified' })
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('an existing local identity receives the complete wake recipe', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-local-recipe-'))
   const ledger = createLocalAgentLedger(path.join(dir, 'fleet-daemon.db'))

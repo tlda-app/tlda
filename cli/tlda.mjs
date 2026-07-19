@@ -2691,8 +2691,15 @@ export async function runFleetSpawn(spawnArgs, {
     } catch (e) {
       if ((spawnMode === 'fresh' || spawnMode === 'session') && e?.terminalBindingFailure) {
         await cleanupFailedBindingImpl(result, { api: apiImpl, localAgentLedgerPath })
+        if (!suppliedAgentId && preallocatedAgentId) await ledger.delete(preallocatedAgentId)
       }
       throw e
+    }
+    const promptDeliveryFailed = result?.promptDelivery?.ok === false
+    if (promptDeliveryFailed && !boundResume.bound) {
+      await cleanupFailedBindingImpl(result, { api: apiImpl, localAgentLedgerPath })
+      if (!suppliedAgentId && preallocatedAgentId) await ledger.delete(preallocatedAgentId)
+      throw new Error(`fresh Codex prompt delivery was unverified and exact durable binding did not complete for ${result.fleetId}`)
     }
     if ((spawnMode === 'fresh' || spawnMode === 'session') && !boundResume.bound) {
       if (boundResume.reason === 'exact-identity-pending') {
@@ -2736,6 +2743,11 @@ export async function runFleetSpawn(spawnArgs, {
       } finally {
         localLedger.close()
       }
+    }
+    if (promptDeliveryFailed) {
+      console.error(red(`fresh Codex prompt delivery was unverified for ${result.fleetId}; exact durable seat binding is preserved for diagnosis`))
+      process.exitCode = 1
+      return
     }
     const action = params.enroll ? 'Enrolled' : (params.spawnMode === 'fresh' || params.spawnMode === 'session' ? 'Created' : 'Woke')
     console.log(`${action} ${result.tmuxSession} (${result.fleetId}) in ${params.cwd || process.cwd()}`)

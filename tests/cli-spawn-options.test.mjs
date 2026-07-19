@@ -936,6 +936,253 @@ test('fresh exact-identity pending durably submits obligation before returning w
   }
 })
 
+test('fresh prompt failure preserves runtime only after exact binding and reports CLI non-success', async () => {
+  const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-prompt-failure-bound-'))
+  const dbPath = path.join(configDir, 'fleet-daemon.db')
+  const calls = []
+  const cleanups = []
+  const logs = []
+  const errors = []
+  const priorLog = console.log
+  const priorError = console.error
+  const priorExitCode = process.exitCode
+  try {
+    writeDaemonConfig(configDir)
+    seedPermissionLedger(dbPath)
+    console.log = (...args) => logs.push(args.join(' '))
+    console.error = (...args) => errors.push(args.join(' '))
+    process.exitCode = undefined
+    await runFleetSpawn(['--fresh', 'prompt-failure-bound'], {
+      configDir,
+      localAgentLedgerPath: dbPath,
+      loadConfigImpl: () => ({}),
+      spawnImpl: async () => ({
+        fleetId: 'fleet:prompt-failure-bound',
+        tmuxSession: 'fleet-prompt-failure-bound',
+        harness: 'codex',
+        model: 'gpt-5.6-sol',
+        resumeId: '11111111-2222-4333-8444-555555555555',
+        promptDelivery: { ok: false, reason: 'unverified' },
+      }),
+      cleanupFailedBindingImpl: async (...args) => { cleanups.push(args) },
+      apiImpl: async (method, route, body) => {
+        calls.push({ method, route, body })
+        if (method === 'GET') return { ok: true, seat: { agent_id: 'fleet:prompt-failure-bound', session_id: '11111111-2222-4333-8444-555555555555', tmux_session: 'fleet-prompt-failure-bound' } }
+        return { ok: true }
+      },
+    })
+
+    assert.deepEqual(calls.map(call => call.method), ['POST', 'GET'])
+    assert.equal(cleanups.length, 0)
+    assert.equal(process.exitCode, 1)
+    assert.match(errors.join('\n'), /prompt delivery was unverified/)
+    assert.doesNotMatch(logs.join('\n'), /^Created /m)
+  } finally {
+    console.log = priorLog
+    console.error = priorError
+    process.exitCode = priorExitCode
+    fs.rmSync(configDir, { recursive: true, force: true })
+  }
+})
+
+test('fresh prompt failure cleans up when exact process-owned discovery does not complete', async () => {
+  const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-prompt-failure-unbound-'))
+  const dbPath = path.join(configDir, 'fleet-daemon.db')
+  const cleanups = []
+  const errors = []
+  const priorError = console.error
+  const priorExitCode = process.exitCode
+  const priorTimeout = process.env.TLDA_SPAWN_RESUME_ID_TIMEOUT_MS
+  try {
+    writeDaemonConfig(configDir)
+    seedPermissionLedger(dbPath)
+    console.error = (...args) => errors.push(args.join(' '))
+    process.exitCode = undefined
+    process.env.TLDA_SPAWN_RESUME_ID_TIMEOUT_MS = '0'
+    await runFleetSpawn(['--fresh', 'prompt-failure-unbound'], {
+      configDir,
+      localAgentLedgerPath: dbPath,
+      loadConfigImpl: () => ({}),
+      spawnImpl: async () => ({
+        fleetId: 'fleet:prompt-failure-unbound',
+        tmuxSession: 'fleet-prompt-failure-unbound',
+        harness: 'codex',
+        model: 'gpt-5.6-sol',
+        resumeId: null,
+        promptDelivery: { ok: false, reason: 'unverified' },
+      }),
+      cleanupFailedBindingImpl: async (result) => { cleanups.push(result.tmuxSession) },
+      apiImpl: async () => { throw new Error('readback unavailable') },
+    })
+
+    assert.deepEqual(cleanups, ['fleet-prompt-failure-unbound'])
+    assert.equal(process.exitCode, 1)
+    assert.match(errors.join('\n'), /exact durable binding did not complete/)
+  } finally {
+    console.error = priorError
+    process.exitCode = priorExitCode
+    if (priorTimeout == null) delete process.env.TLDA_SPAWN_RESUME_ID_TIMEOUT_MS
+    else process.env.TLDA_SPAWN_RESUME_ID_TIMEOUT_MS = priorTimeout
+    fs.rmSync(configDir, { recursive: true, force: true })
+  }
+})
+
+test('server-unavailable fresh prompt failure cleans up and never reports Created or pending success', async () => {
+  const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-prompt-failure-offline-'))
+  const dbPath = path.join(configDir, 'fleet-daemon.db')
+  const terminated = []
+  const logs = []
+  const errors = []
+  let generatedId = null
+  const priorLog = console.log
+  const priorError = console.error
+  const priorExitCode = process.exitCode
+  try {
+    writeDaemonConfig(configDir)
+    seedPermissionLedger(dbPath)
+    const localLedger = createLocalAgentLedger(dbPath)
+    localLedger.create({
+      localAgentId: 'local:prompt-failure-offline',
+      serverAgentId: null,
+      friendlyName: 'prompt-failure-offline',
+      harness: 'codex',
+      model: 'gpt-5.6-sol',
+      tmuxName: 'fleet-prompt-failure-offline',
+      cwd: '/tmp',
+    })
+    localLedger.close()
+    console.log = (...args) => logs.push(args.join(' '))
+    console.error = (...args) => errors.push(args.join(' '))
+    process.exitCode = undefined
+    await runFleetSpawn(['--fresh', 'prompt-failure-offline'], {
+      configDir,
+      localAgentLedgerPath: dbPath,
+      loadConfigImpl: () => ({}),
+      spawnImpl: async (params) => {
+        generatedId = params.agentId
+        return {
+        localAgentId: 'local:prompt-failure-offline',
+        fleetId: null,
+        tmuxSession: 'fleet-prompt-failure-offline',
+        harness: 'codex',
+        model: 'gpt-5.6-sol',
+        registrationDeferred: true,
+        promptDelivery: { ok: false, reason: 'unverified' },
+        }
+      },
+      cleanupFailedBindingImpl: (result, options) => cleanupFailedFreshBinding(result, {
+        ...options,
+        terminateImpl: async (tmuxSession) => { terminated.push(tmuxSession); return true },
+      }),
+      apiImpl: async () => { throw new Error('server unavailable') },
+    })
+
+    assert.deepEqual(terminated, ['fleet-prompt-failure-offline'])
+    const verifyLedger = createLocalAgentLedger(dbPath)
+    try { assert.equal(verifyLedger.get('local:prompt-failure-offline'), null) } finally { verifyLedger.close() }
+    assert.ok(generatedId?.startsWith('fleet:'))
+    assert.equal(rawPermissionGrantRow(dbPath, generatedId), undefined)
+    assert.equal(process.exitCode, 1)
+    assert.match(errors.join('\n'), /exact durable binding did not complete/)
+    assert.doesNotMatch(logs.join('\n'), /^Created |pending durable seat binding/m)
+  } finally {
+    console.log = priorLog
+    console.error = priorError
+    process.exitCode = priorExitCode
+    fs.rmSync(configDir, { recursive: true, force: true })
+  }
+})
+
+test('terminal prompt cleanup preserves a supplied existing seat durable grant', async () => {
+  const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-prompt-failure-existing-seat-'))
+  const dbPath = path.join(configDir, 'fleet-daemon.db')
+  const cleanups = []
+  const errors = []
+  const priorError = console.error
+  const priorExitCode = process.exitCode
+  try {
+    writeDaemonConfig(configDir)
+    seedPermissionLedger(dbPath)
+    const permissionLedger = createPermissionLedger(dbPath)
+    try {
+      permissionLedger.setSync('fleet:existing-seat', {
+        spawnPolicy: { policy: 'unsandboxed' },
+        permissionProfile: 'ops',
+        permissionSet: permissionSet('ops', ['**']),
+        source: 'existing-seat-test',
+      })
+    } finally { permissionLedger.close() }
+    console.error = (...args) => errors.push(args.join(' '))
+    process.exitCode = undefined
+    await runFleetSpawn(['--fresh', '--agent-id', 'fleet:existing-seat', 'existing-seat'], {
+      configDir,
+      localAgentLedgerPath: dbPath,
+      loadConfigImpl: () => ({}),
+      spawnImpl: async (params) => ({
+        fleetId: params.agentId,
+        tmuxSession: 'fleet-existing-seat-new',
+        harness: 'codex',
+        model: 'gpt-5.6-sol',
+        resumeId: '33333333-2222-4333-8444-555555555555',
+        promptDelivery: { ok: false, reason: 'unverified' },
+      }),
+      cleanupFailedBindingImpl: async (result) => { cleanups.push(result.tmuxSession) },
+      apiImpl: async (method) => method === 'POST'
+        ? { ok: true }
+        : { ok: true, seat: { agent_id: 'fleet:existing-seat', session_id: 'wrong', tmux_session: 'fleet-existing-seat-new' } },
+    })
+
+    assert.deepEqual(cleanups, ['fleet-existing-seat-new'])
+    assert.equal(process.exitCode, 1)
+    assert.match(errors.join('\n'), /durable seat readback mismatch/)
+    assert.ok(rawPermissionGrantRow(dbPath, 'fleet:existing-seat'))
+  } finally {
+    console.error = priorError
+    process.exitCode = priorExitCode
+    fs.rmSync(configDir, { recursive: true, force: true })
+  }
+})
+
+test('fresh prompt failure cleans up when exact server readback mismatches', async () => {
+  const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-prompt-failure-readback-'))
+  const dbPath = path.join(configDir, 'fleet-daemon.db')
+  const cleanups = []
+  const errors = []
+  const priorError = console.error
+  const priorExitCode = process.exitCode
+  try {
+    writeDaemonConfig(configDir)
+    seedPermissionLedger(dbPath)
+    console.error = (...args) => errors.push(args.join(' '))
+    process.exitCode = undefined
+    await runFleetSpawn(['--fresh', 'prompt-failure-readback'], {
+      configDir,
+      localAgentLedgerPath: dbPath,
+      loadConfigImpl: () => ({}),
+      spawnImpl: async () => ({
+        fleetId: 'fleet:prompt-failure-readback',
+        tmuxSession: 'fleet-prompt-failure-readback',
+        harness: 'codex',
+        model: 'gpt-5.6-sol',
+        resumeId: '22222222-2222-4333-8444-555555555555',
+        promptDelivery: { ok: false, reason: 'unverified' },
+      }),
+      cleanupFailedBindingImpl: async (result) => { cleanups.push(result.tmuxSession) },
+      apiImpl: async (method) => method === 'POST'
+        ? { ok: true }
+        : { ok: true, seat: { agent_id: 'fleet:prompt-failure-readback', session_id: 'different', tmux_session: 'fleet-prompt-failure-readback' } },
+    })
+
+    assert.deepEqual(cleanups, ['fleet-prompt-failure-readback'])
+    assert.equal(process.exitCode, 1)
+    assert.match(errors.join('\n'), /durable seat readback mismatch/)
+  } finally {
+    console.error = priorError
+    process.exitCode = priorExitCode
+    fs.rmSync(configDir, { recursive: true, force: true })
+  }
+})
+
 test('fresh Claude exact-identity pending uses the same durable process-owned obligation', async () => {
   const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-fresh-claude-obligation-'))
   const dbPath = path.join(configDir, 'fleet-daemon.db')
