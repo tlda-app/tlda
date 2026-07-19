@@ -126,44 +126,32 @@ try {
   assert.equal(codexResolverCalled, false, 'recorded current harness must beat stale model alias')
   assert.equal(reusedWake.alreadyAlive, true)
 
-  let spawnCall = null
-  const relaunched = await spawn({
-    spawnMode: 'respawn',
-    name: 'explicit-relaunch',
-    model: 'gpt-5.5',
-    config,
-    cwd: callerCwd,
-    spawnPolicy: { name: 'ops', policy: 'unsandboxed' },
-    permissionSet,
-    explicitPolicy: true,
-    _deps: {
-      resolveApi: () => 'http://127.0.0.1:5176',
-      ensureServer: async () => true,
-      findAgent: async () => agent,
-      sessionHasRuntime: async () => true,
-      resolveCodexResumeHandle: async () => ({
-        ok: true,
-        resumeId: '019f-test-resume',
-        jsonlPath: path.join(cwd, 'rollout.jsonl'),
-        cwd: resumeCwd,
-        source: 'test',
-      }),
-      resolveDnsAlias: async () => null,
-      wsReserveShell: async () => {},
-      spawnTmux: async (session, dir, cmd, options) => {
-        spawnCall = { session, dir, cmd, options }
-        return true
+  let destructiveSpawnCalled = false
+  let emptySeatSpawnOptions = null
+  await assert.rejects(
+    spawn({
+      spawnMode: 'respawn',
+      name: 'explicit-relaunch',
+      model: 'gpt-5.5',
+      config,
+      cwd: callerCwd,
+      spawnPolicy: { name: 'ops', policy: 'unsandboxed' },
+      permissionSet,
+      explicitPolicy: true,
+      _deps: {
+        resolveApi: () => 'http://127.0.0.1:5176',
+        ensureServer: async () => true,
+        findAgent: async () => agent,
+        sessionHasRuntime: async () => true,
+        spawnTmux: async () => {
+          destructiveSpawnCalled = true
+          return true
+        },
       },
-      injectCodexPrompt: async () => true,
-    },
-  })
-
-  assert.equal(relaunched.alreadyAlive, undefined)
-  assert.equal(spawnCall?.session, 'fleet-explicit-relaunch')
-  assert.equal(spawnCall?.dir, cwd, 'wake must restore the durable recipe cwd, not caller or resume-handle cwd')
-  assert.equal(spawnCall?.options?.killExisting, true, 'explicit permission wake must replace the stale runtime')
-  assert.match(spawnCall.cmd, /--ask-for-approval\s+never/)
-  assert.match(spawnCall.cmd, /--sandbox\s+danger-full-access/)
+    }),
+    /permission changes cannot replace a live agent/,
+  )
+  assert.equal(destructiveSpawnCalled, false, 'wake must never replace a live runtime')
 
   await assert.rejects(
     spawn({
@@ -188,12 +176,16 @@ try {
         }),
         resolveDnsAlias: async () => null,
         wsReserveShell: async () => {},
-        spawnTmux: async () => true,
+        spawnTmux: async (session, dir, cmd, options) => {
+          emptySeatSpawnOptions = options
+          return true
+        },
         injectCodexPrompt: async () => false,
       },
     }),
     /codex prompt injection did not reach/,
   )
+  assert.equal(emptySeatSpawnOptions?.killExisting, false, 'wake into an empty seat must never request tmux replacement')
 } finally {
   fs.rmSync(cwd, { recursive: true, force: true })
   fs.rmSync(callerCwd, { recursive: true, force: true })

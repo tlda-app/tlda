@@ -456,39 +456,41 @@ async function spawnRespawn(params) {
   const modelResolved = resolveAdapterModel(adapter, rawModel, config, modelSpec)
   const model = modelResolved.model
   const tmuxSession = agent.tmux_session || `fleet-${sanitizeSessionName(friendlyName)}`
-  // Explicit relaunch means the CALLER asked to relaunch with a permission
-  // change (explicitPolicy / permissionRequest). The resolved grant
-  // (params.permissionSet) is attached to EVERY wake, so treating it as
-  // explicit made every wake skip the already-alive guard and kill the live
-  // process (killExisting) — the "thing that kills agents" that restarted
-  // Skip's working agents mid-turn all night on 7/17. A non-explicit wake of
-  // a live session must always return alreadyAlive and touch nothing.
+  // Wake is non-destructive. Permission changes do not authorize replacing a
+  // live runtime: callers must use a separately named destructive operation
+  // for that. A wake either keeps the live runtime or starts the exact durable
+  // session in an empty tmux seat; it never passes killExisting.
   const explicitRelaunch = !!(
     params.explicitPolicy ||
     params.permissionRequest
   )
-  if (!explicitRelaunch) {
-    const runtimeState = deps.sessionRuntimeState
-      ? await deps.sessionRuntimeState(tmuxSession, { tmuxSocket: params.tmuxSocket })
-      : deps.sessionHasRuntime
-        ? { runtime: await deps.sessionHasRuntime(tmuxSession, { tmuxSocket: params.tmuxSocket }), mcp: true }
-        : await sessionRuntimeState(tmuxSession, { tmuxSocket: params.tmuxSocket })
-    if (runtimeState.runtime) {
-      const shellPending = !!meta.shell
-      if (requestedKind === 'codex' && (!runtimeState.mcp || shellPending)) {
-        return {
-          ok: true,
-          pending: true,
-          runtimePresent: true,
-          reason: !runtimeState.mcp ? 'mcp-not-ready' : 'login-not-ready',
-          fleetId,
-          tmuxSession,
-          harness: requestedKind,
-          model,
-        }
-      }
-      return { ok: true, fleetId, tmuxSession, harness: requestedKind, model, alreadyAlive: true }
+  const runtimeState = deps.sessionRuntimeState
+    ? await deps.sessionRuntimeState(tmuxSession, { tmuxSocket: params.tmuxSocket })
+    : deps.sessionHasRuntime
+      ? { runtime: await deps.sessionHasRuntime(tmuxSession, { tmuxSocket: params.tmuxSocket }), mcp: true }
+      : await sessionRuntimeState(tmuxSession, { tmuxSocket: params.tmuxSocket })
+  if (runtimeState.runtime) {
+    if (explicitRelaunch) {
+      throw new SpawnError(
+        'launch-failed',
+        `Wake refused for ${friendlyName} (${fleetId}): permission changes cannot replace a live agent.`,
+        { fleetId, tmuxSession },
+      )
     }
+    const shellPending = !!meta.shell
+    if (requestedKind === 'codex' && (!runtimeState.mcp || shellPending)) {
+      return {
+        ok: true,
+        pending: true,
+        runtimePresent: true,
+        reason: !runtimeState.mcp ? 'mcp-not-ready' : 'login-not-ready',
+        fleetId,
+        tmuxSession,
+        harness: requestedKind,
+        model,
+      }
+    }
+    return { ok: true, fleetId, tmuxSession, harness: requestedKind, model, alreadyAlive: true }
   }
   let handle = null
   const identityOptions = {
@@ -595,7 +597,7 @@ async function spawnRespawn(params) {
     config,
     env: spawnEnv(params),
   })
-  const launched = await (deps.spawnTmux || spawnTmux)(tmuxSession, cwd, cmd, { autoDismiss: requestedKind === 'claude', sendKeys, tmuxSocket: params.tmuxSocket, crashLogPath: params.crashLogPath, killExisting: explicitRelaunch })
+  const launched = await (deps.spawnTmux || spawnTmux)(tmuxSession, cwd, cmd, { autoDismiss: requestedKind === 'claude', sendKeys, tmuxSocket: params.tmuxSocket, crashLogPath: params.crashLogPath, killExisting: false })
   if (!launched) return { ok: true, fleetId, tmuxSession, harness: requestedKind, model, alreadyAlive: true }
   if (requestedKind === 'codex') {
     const injected = await (deps.injectCodexPrompt || injectCodexPrompt)(tmuxSession, codex.kickoffPrompt(friendlyName), { tmuxSocket: params.tmuxSocket })

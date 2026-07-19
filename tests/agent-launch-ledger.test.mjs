@@ -481,6 +481,58 @@ test('daemon launcher preserves an existing respawn ledger row when launch fails
   }
 })
 
+test('daemon launcher never kills a respawn whose durable handle is still missing', async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-agent-launch-respawn-no-handle-'))
+  const ledger = createPermissionLedger(path.join(tmp, 'fleet-daemon.db'))
+  try {
+    const targetAgentId = 'fleet:existing-respawn-no-handle'
+    ledger.setSync(targetAgentId, {
+      spawnPolicy: { name: 'ops', policy: 'unsandboxed' },
+      permissionSet: permissionSet(),
+      source: 'existing-seat',
+    })
+    const tmuxCalls = []
+    const launcher = createAgentLauncher({
+      activeConfigName: 'test',
+      configDir: tmp,
+      loadConfig: () => ({
+        spawnPolicy: { permissionProfiles: { ops: permissionSet() }, defaultProfile: 'ops' },
+      }),
+      log: { info() {}, warn() {}, error() {} },
+      machineId: 'test-machine',
+      permissionLedger: ledger,
+      sendMsg: () => true,
+      getProjects: () => [],
+      tmux: async (...args) => { tmuxCalls.push(args); return true },
+      startupFailureProbeMs: 1,
+      spawnImpl: async () => ({
+        ok: true,
+        fleetId: targetAgentId,
+        tmuxSession: 'fleet-existing-respawn-no-handle',
+        harness: 'codex',
+        model: 'gpt-5.5',
+        pending: false,
+        resumeId: null,
+      }),
+    })
+
+    const result = await launcher.handlers.spawn({
+      agent_id: targetAgentId,
+      name: 'existing-respawn-no-handle',
+      respawn: true,
+    })
+
+    assert.equal(result.ok, false, JSON.stringify(result))
+    assert.equal(result.code, 'missing-resume-handle')
+    assert.equal(result.ownership_retained, true)
+    assert.equal(tmuxCalls.some(args => args[0] === 'kill-session'), false, 'wake failure must not kill the resumed runtime')
+    assert.equal(ledger.get(targetAgentId)?.source, 'existing-seat')
+  } finally {
+    await ledger.close()
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
 test('daemon respawn restores persisted configured-profile grant identity into params, trace, and result', async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-agent-launch-respawn-profile-'))
   const ledger = createPermissionLedger(path.join(tmp, 'fleet-daemon.db'))

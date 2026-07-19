@@ -396,7 +396,9 @@ export function createAgentLauncher({
       try {
         await tmux('has-session', '-t', launched.tmuxSession)
       } catch (e) {
-        const terminated = await terminateExactLaunch(launched.tmuxSession)
+        const terminated = spawnMode === 'respawn'
+          ? false
+          : await terminateExactLaunch(launched.tmuxSession)
         if (terminated && shouldWriteLedgerRow) await permissionLedger.delete(preallocatedAgentId).catch(() => {})
         const detail = ((e.stderr || e.message || '').trim().split('\n').filter(Boolean).pop()) || 'tmux session check failed'
         return {
@@ -412,7 +414,9 @@ export function createAgentLauncher({
       }
       const launchedLedgerRow = launched.fleetId ? permissionLedger.get(launched.fleetId) : null
       if (launched.harness === 'codex' && !launched.resumeId && !launched.pending && !launchedLedgerRow?.sessionId) {
-        const terminated = await terminateExactLaunch(launched.tmuxSession)
+        const terminated = spawnMode === 'respawn'
+          ? false
+          : await terminateExactLaunch(launched.tmuxSession)
         if (terminated && shouldWriteLedgerRow) await permissionLedger.delete(preallocatedAgentId).catch(() => {})
         return {
           ok: false,
