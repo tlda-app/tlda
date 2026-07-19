@@ -127,7 +127,6 @@ try {
   assert.equal(reusedWake.alreadyAlive, true)
 
   let destructiveSpawnCalled = false
-  let emptySeatSpawnOptions = null
   await assert.rejects(
     spawn({
       spawnMode: 'respawn',
@@ -176,16 +175,12 @@ try {
         }),
         resolveDnsAlias: async () => null,
         wsReserveShell: async () => {},
-        spawnTmux: async (session, dir, cmd, options) => {
-          emptySeatSpawnOptions = options
-          return true
-        },
+        spawnTmux: async () => true,
         injectCodexPrompt: async () => false,
       },
     }),
     /codex prompt injection did not reach/,
   )
-  assert.equal(emptySeatSpawnOptions?.killExisting, false, 'wake into an empty seat must never request tmux replacement')
 } finally {
   fs.rmSync(cwd, { recursive: true, force: true })
   fs.rmSync(callerCwd, { recursive: true, force: true })

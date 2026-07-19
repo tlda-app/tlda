@@ -459,7 +459,7 @@ async function spawnRespawn(params) {
   // Wake is non-destructive. Permission changes do not authorize replacing a
   // live runtime: callers must use a separately named destructive operation
   // for that. A wake either keeps the live runtime or starts the exact durable
-  // session in an empty tmux seat; it never passes killExisting.
+  // session in an empty tmux seat; generic launch has no replacement capability.
   const explicitRelaunch = !!(
     params.explicitPolicy ||
     params.permissionRequest
@@ -597,7 +597,7 @@ async function spawnRespawn(params) {
     config,
     env: spawnEnv(params),
   })
-  const launched = await (deps.spawnTmux || spawnTmux)(tmuxSession, cwd, cmd, { autoDismiss: requestedKind === 'claude', sendKeys, tmuxSocket: params.tmuxSocket, crashLogPath: params.crashLogPath, killExisting: false })
+  const launched = await (deps.spawnTmux || spawnTmux)(tmuxSession, cwd, cmd, { autoDismiss: requestedKind === 'claude', sendKeys, tmuxSocket: params.tmuxSocket, crashLogPath: params.crashLogPath })
   if (!launched) return { ok: true, fleetId, tmuxSession, harness: requestedKind, model, alreadyAlive: true }
   if (requestedKind === 'codex') {
     const injected = await (deps.injectCodexPrompt || injectCodexPrompt)(tmuxSession, codex.kickoffPrompt(friendlyName), { tmuxSocket: params.tmuxSocket })
@@ -680,7 +680,11 @@ async function spawnRefresh(params) {
     config,
     env: spawnEnv(params),
   })
-  const launched = await (deps.spawnTmux || spawnTmux)(tmuxSession, cwd, cmd, { autoDismiss: requestedKind === 'claude', sendKeys, tmuxSocket: params.tmuxSocket, crashLogPath: params.crashLogPath, killExisting: true })
+  const terminated = await (deps.terminateTmuxSession || terminateTmuxSession)(tmuxSession, { tmuxSocket: params.tmuxSocket })
+  if (!terminated) {
+    throw new SpawnError('launch-failed', `Refresh could not terminate ${tmuxSession}; refusing to launch a replacement.`, { fleetId, tmuxSession })
+  }
+  const launched = await (deps.spawnTmux || spawnTmux)(tmuxSession, cwd, cmd, { autoDismiss: requestedKind === 'claude', sendKeys, tmuxSocket: params.tmuxSocket, crashLogPath: params.crashLogPath })
   if (!launched) return { ok: true, fleetId, tmuxSession, harness: requestedKind, model, alreadyAlive: true }
   if (requestedKind === 'codex') {
     const injected = await (deps.injectCodexPrompt || injectCodexPrompt)(tmuxSession, codex.kickoffPrompt(friendlyName), { tmuxSocket: params.tmuxSocket })

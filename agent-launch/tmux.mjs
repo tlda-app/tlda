@@ -122,18 +122,22 @@ export async function terminateTmuxSession(session, { tmuxSocket = process.env.T
   }
 }
 
-export async function spawnTmux(session, cwd, cmd, { autoDismiss = true, sendKeys = false, tmuxSocket = process.env.TMUX_SOCKET || null, crashLogPath = null, killExisting = false } = {}) {
+export async function spawnTmux(session, cwd, cmd, { autoDismiss = true, sendKeys = false, tmuxSocket = process.env.TMUX_SOCKET || null, crashLogPath = null } = {}) {
   const launchViaShell = sendKeys || !!crashLogPath
   try {
-    const args = ['respawn-pane']
-    if (killExisting) args.push('-k')
-    args.push('-t', session, '-c', cwd)
+    const args = ['respawn-pane', '-t', session, '-c', cwd]
     if (!launchViaShell) args.push(cmd)
     await tmux(tmuxSocket, ...args)
   } catch {
     if (await sessionHasRuntime(session, { tmuxSocket })) return false
-    try { await tmux(tmuxSocket, 'kill-session', '-t', session) } catch {
-      // Stale-session cleanup is best effort before creating a fresh session.
+    try {
+      await tmux(tmuxSocket, 'has-session', '-t', session)
+      // A generic launch operation never deletes an existing session, even a
+      // shell-only or otherwise unusable one. Its owner must decide whether an
+      // explicitly destructive lifecycle operation is appropriate.
+      return false
+    } catch {
+      // No existing session: safe to create a new one.
     }
     const args = ['new-session', '-d', '-s', session, '-c', cwd]
     if (!launchViaShell) args.push(cmd)
