@@ -97,6 +97,17 @@ test('fleet agent login replies before fanout side effects', () => {
   }
 })
 
+test('generic fleet agent login cannot write durable seat identity', () => {
+  const loginStart = serverSource.indexOf("if (type === 'login') {")
+  const agentLoginStart = serverSource.indexOf('if (agent_id) {', loginStart)
+  const nameLoginStart = serverSource.indexOf('if (!name || typeof name', agentLoginStart)
+  const agentLoginBlock = serverSource.slice(agentLoginStart, nameLoginStart)
+
+  assert.match(agentLoginBlock, /session_id\/session_ids are minted by the durable seat binding path/)
+  assert.equal(agentLoginBlock.includes('recordAgentBindingEvent'), false)
+  assert.equal(agentLoginBlock.includes("created_source: 'authoritative-login'"), false)
+})
+
 test('fleet agents-delta hot path is targeted and taskless by default', () => {
   const broadcastStart = serverSource.indexOf('function _broadcastStateNow()')
   assert.notEqual(broadcastStart, -1)

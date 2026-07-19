@@ -6,6 +6,81 @@ import { AgentSeatBindingObligations, verifyAgentSeatBindingTerminal } from '../
 
 const tick = () => new Promise(resolve => setImmediate(resolve))
 
+function periodicHarness() {
+  const callbacks = new Set()
+  const cleared = []
+  return {
+    callbacks,
+    cleared,
+    setPeriodic(callback) {
+      const timer = { unrefCalled: false, unref() { this.unrefCalled = true } }
+      callbacks.add(callback)
+      timer.callback = callback
+      return timer
+    },
+    clearPeriodic(timer) {
+      cleared.push(timer)
+      callbacks.delete(timer.callback)
+    },
+    fire() {
+      for (const callback of [...callbacks]) callback()
+    },
+  }
+}
+
+test('periodic retry completes an identity that appears without a filesystem event', async () => {
+  const periodic = periodicHarness()
+  let identity = null
+  const completed = []
+  const manager = createPendingSeatBindingManager({
+    watchPath: () => '/runtime-events',
+    watch: () => ({ close() {} }),
+    setPeriodic: periodic.setPeriodic,
+    clearPeriodic: periodic.clearPeriodic,
+    tmuxAlive: async () => true,
+    resolveIdentity: async () => identity,
+    complete: async (_obligation, exact) => completed.push(exact.sessionId),
+    terminal: async () => assert.fail('must not terminate'),
+  })
+  manager.accept({ obligation_id: 'o-periodic', tmux_session: 'fleet-periodic' })
+  await tick()
+  assert.equal(periodic.callbacks.size, 1)
+  identity = { sessionId: 'owned-session', model: 'gpt-5.6-sol' }
+  periodic.fire()
+  await tick()
+  assert.deepEqual(completed, ['owned-session'])
+  assert.equal(periodic.callbacks.size, 0)
+  assert.equal(periodic.cleared.length, 1)
+  periodic.fire()
+  await tick()
+  assert.equal(completed.length, 1)
+})
+
+test('periodic retry is unref-safe and close prevents later callbacks', async () => {
+  const periodic = periodicHarness()
+  let attempts = 0
+  const manager = createPendingSeatBindingManager({
+    watchPath: () => '/runtime-events',
+    watch: () => ({ close() {} }),
+    setPeriodic: periodic.setPeriodic,
+    clearPeriodic: periodic.clearPeriodic,
+    tmuxAlive: async () => true,
+    resolveIdentity: async () => { attempts += 1; return null },
+    complete: async () => assert.fail('cannot complete'),
+    terminal: async () => assert.fail('must not terminate'),
+  })
+  manager.accept({ obligation_id: 'o-close', tmux_session: 'fleet-close' })
+  await tick()
+  assert.equal(attempts, 1)
+  manager.close()
+  assert.equal(periodic.callbacks.size, 0)
+  assert.equal(periodic.cleared.length, 1)
+  assert.equal(periodic.cleared[0].unrefCalled, true)
+  periodic.fire()
+  await tick()
+  assert.equal(attempts, 1)
+})
+
 test('delayed exact-process event completes once and duplicate delivery is idempotent', async () => {
   let fire
   let identity = null
@@ -78,10 +153,13 @@ test('real completion path retains watcher on uncertain bind and later exact eve
 })
 
 test('terminal loss of the exact runtime invokes exact cleanup once', async () => {
+  const periodic = periodicHarness()
   const terminal = []
   const manager = createPendingSeatBindingManager({
     watchPath: () => '/runtime-events',
     watch: () => ({ close() {} }),
+    setPeriodic: periodic.setPeriodic,
+    clearPeriodic: periodic.clearPeriodic,
     tmuxAlive: async () => false,
     resolveIdentity: async () => assert.fail('dead runtime has no identity'),
     complete: async () => assert.fail('dead runtime cannot complete'),
@@ -91,6 +169,8 @@ test('terminal loss of the exact runtime invokes exact cleanup once', async () =
   await tick()
   assert.deepEqual(terminal, [['o-dead', 'exact launched runtime is no longer alive']])
   assert.equal(manager.pendingCount(), 0)
+  assert.equal(periodic.callbacks.size, 0)
+  assert.equal(periodic.cleared.length, 1)
 })
 
 test('terminal cleanup failure retains the durable obligation', async () => {

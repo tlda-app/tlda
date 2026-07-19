@@ -7,9 +7,17 @@ export function createPendingSeatBindingManager({
   complete,
   terminal,
   watch = fs.watch,
+  setPeriodic = setInterval,
+  clearPeriodic = clearInterval,
+  retryIntervalMs = 1000,
   log = console,
 } = {}) {
   const pending = new Map()
+
+  function clearEntry(entry) {
+    entry?.watcher?.close?.()
+    if (entry?.timer) clearPeriodic(entry.timer)
+  }
 
   async function attempt(obligation) {
     const entry = pending.get(obligation.obligation_id)
@@ -19,20 +27,20 @@ export function createPendingSeatBindingManager({
     try {
       if (!(await tmuxAlive(obligation.tmux_session))) {
         await terminal(obligation, new Error('exact launched runtime is no longer alive'))
-        pending.get(obligation.obligation_id)?.watcher?.close?.()
+        clearEntry(pending.get(obligation.obligation_id))
         pending.delete(obligation.obligation_id)
         return
       }
       const identity = await resolveIdentity(obligation)
       if (!identity?.sessionId || !identity?.model) return
       await complete(obligation, identity)
-      pending.get(obligation.obligation_id)?.watcher?.close?.()
+      clearEntry(pending.get(obligation.obligation_id))
       pending.delete(obligation.obligation_id)
     } catch (error) {
       if (error?.terminalBindingFailure) {
         try {
           await terminal(obligation, error)
-          pending.get(obligation.obligation_id)?.watcher?.close?.()
+          clearEntry(pending.get(obligation.obligation_id))
           pending.delete(obligation.obligation_id)
         } catch (cleanupError) {
           log.warn?.(`terminal cleanup for ${obligation.obligation_id} remains pending: ${cleanupError.message}`)
@@ -56,13 +64,15 @@ export function createPendingSeatBindingManager({
     if (!obligation?.obligation_id || pending.has(obligation.obligation_id)) return false
     const path = watchPath(obligation)
     const watcher = watch(path, { recursive: true }, () => { void attempt(obligation) })
-    pending.set(obligation.obligation_id, { obligation, watcher, inFlight: false, rerunRequested: false })
+    const timer = setPeriodic(() => { void attempt(obligation) }, retryIntervalMs)
+    timer?.unref?.()
+    pending.set(obligation.obligation_id, { obligation, watcher, timer, inFlight: false, rerunRequested: false })
     void attempt(obligation)
     return true
   }
 
   function close() {
-    for (const entry of pending.values()) entry.watcher?.close?.()
+    for (const entry of pending.values()) clearEntry(entry)
     pending.clear()
   }
 
