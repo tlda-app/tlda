@@ -88,6 +88,7 @@ import { partialSkillReadSummaries, recordPartialSkillReads } from '../shared/pa
 import { daemonAddress, describeAgentAddress } from '../shared/agent-move-target.mjs'
 import { readBuildInfo } from './lib/build-info.mjs'
 import { ServerDaemonOutbox } from './lib/server-daemon-outbox.mjs'
+import { AgentSeatBindingObligations, verifyAgentSeatBindingTerminal } from './lib/agent-seat-binding-obligations.mjs'
 import { DaemonAgentEvents } from './lib/daemon-agent-events.mjs'
 import { createDaemonWsControlPlane } from './lib/daemon-ws-control-plane.mjs'
 import { clearTrustedHeartbeatProbes, shouldSkipHeartbeatSweepForLag, shouldTerminateForMissedPong, socketCanAcceptMore } from '../shared/fleet-ws-flow.mjs'
@@ -215,6 +216,7 @@ resetStaleBuildStates()
 // to isolate from the live /tmp/fleet.db.
 const fleetStore = new FleetStore(process.env.TLDA_FLEET_DB, { taskDoc: true })
 const serverDaemonOutbox = new ServerDaemonOutbox(fleetStore.db)
+const agentSeatBindingObligations = new AgentSeatBindingObligations(fleetStore.db)
 const daemonAgentEvents = new DaemonAgentEvents(fleetStore.db)
 const serverDaemonOutboxInflight = new Map()
 
@@ -4146,6 +4148,8 @@ const fleetRouter = createFleetRouter({
   suppressEchoFor: () => {},
   sendRpc, resolveRpc, daemonConnections, resolveSpawnTarget,
   broadcastDaemonAgentsUpdated,
+  enqueueDaemonMessage: (...args) => enqueueDaemonMessage(...args),
+  agentSeatBindingObligations,
   hasOpenFleetSocketForAgent,
 })
 app.use(fleetRouter)
@@ -7713,6 +7717,12 @@ async function handleDaemonWsMessage(ws, msg) {
     }
     // Send persisted backing file watch list to daemon.
     sendWatchBackingFiles()
+    for (const obligation of agentSeatBindingObligations.listForDaemon(daemonKey)) {
+      enqueueDaemonMessage(daemonKey, {
+        type: 'agent-seat-binding-obligation',
+        ...obligation,
+      }, { dedupeKey: `agent-seat-binding:${obligation.obligation_id}` })
+    }
     flushServerDaemonOutbox(daemonKey)
 
     // Check each project's shadow repo for agent commits that haven't been built yet.
@@ -7959,6 +7969,34 @@ async function handleDaemonWsMessage(ws, msg) {
       await reportDaemonEventFailure(msg, 'agent-seat-write', e)
       throw e
     }
+    return
+  }
+
+  if (type === 'agent-seat-binding-obligation-complete') {
+    const obligation = agentSeatBindingObligations.get(msg.obligation_id)
+    if (!obligation) return
+    const seat = fleetStore.getCurrentAgentSeat?.(obligation.agent_id)
+    if (
+      seat?.session_id !== msg.session_id ||
+      seat?.tmux_session !== obligation.tmux_session ||
+      seat?.daemon_key !== obligation.daemon_key
+    ) throw new Error(`binding obligation completion readback mismatch for ${obligation.agent_id}`)
+    agentSeatBindingObligations.remove(obligation.obligation_id)
+    return
+  }
+
+  if (type === 'agent-seat-binding-obligation-terminal') {
+    const obligation = agentSeatBindingObligations.get(msg.obligation_id)
+    if (!obligation) return
+    const agent = fleetStore.findAgent(obligation.agent_id)
+    verifyAgentSeatBindingTerminal({
+      obligation,
+      message: msg,
+      daemonKey: ws._daemonKey,
+      agent,
+      seat: fleetStore.getCurrentAgentSeat?.(obligation.agent_id),
+    })
+    agentSeatBindingObligations.remove(obligation.obligation_id)
     return
   }
 

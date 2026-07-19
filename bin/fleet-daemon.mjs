@@ -104,8 +104,12 @@ import { DaemonDeliveryRuntime } from '../daemon/delivery-runtime.mjs'
 import { DaemonOutbox, defaultOutboxPath } from '../daemon/outbox.mjs'
 import { reconcileDaemonRoster } from '../daemon/roster-reconcile.mjs'
 import { createAgentLauncher } from '../agent-launch/agent-launch.mjs'
+import { createLocalAgentLedger } from '../agent-launch/local-agent-ledger.mjs'
+import { bindAgentSeat } from '../agent-launch/seat-binding.mjs'
+import { cleanupPendingSeatBinding, completePendingSeatBinding, createPendingSeatBindingManager } from '../agent-launch/pending-seat-binding.mjs'
 import { findCodexRollout } from '../agent-launch/resume.mjs'
 import { resolveLiveSessionIdentity as resolveLiveCodexSessionIdentity } from '../agent-launch/harness/codex.mjs'
+import { resolveLiveSessionIdentity as resolveLiveClaudeSessionIdentity } from '../agent-launch/harness/claude.mjs'
 import {
   applyDaemonGrants,
   applyGrandfatherInfill,
@@ -669,6 +673,76 @@ const agentLauncher = createAgentLauncher({
   },
 })
 
+const pendingSeatBindings = createPendingSeatBindingManager({
+  watchPath: obligation => obligation.kind === 'codex'
+    ? path.join(os.homedir(), '.codex', 'sessions')
+    : path.join(os.homedir(), '.claude'),
+  tmuxAlive: async tmuxSession => {
+    try { await tmux('has-session', '-t', tmuxSession); return true } catch { return false }
+  },
+  resolveIdentity: obligation => {
+    const resolver = obligation.kind === 'codex'
+      ? resolveLiveCodexSessionIdentity
+      : resolveLiveClaudeSessionIdentity
+    return resolver({
+      agent: {
+        id: obligation.agent_id,
+        friendly_name: obligation.friendly_name,
+        cwd: obligation.cwd,
+        registered_at: obligation.created_at,
+      },
+      tmuxSession: obligation.tmux_session,
+      tmuxArgs: TMUX_ARGS,
+      tmuxSocket: TMUX_SOCKET,
+      processOwnedOnly: true,
+    })
+  },
+  complete: (obligation, identity) => completePendingSeatBinding({
+    obligation,
+    identity,
+    bindSeat: () => bindAgentSeat({
+      ledger: permissionLedger,
+      identity: {
+        agentId: obligation.agent_id,
+        sessionId: identity.sessionId,
+        resumeId: identity.sessionId,
+        kind: obligation.kind,
+        model: identity.model,
+        cwd: obligation.cwd,
+        sessionPath: identity.jsonlPath,
+        friendlyName: obligation.friendly_name,
+      },
+      route: {
+        machineId: obligation.machine_id,
+        envName: obligation.env_name,
+        daemonKey: obligation.daemon_key,
+        tmuxSession: obligation.tmux_session,
+      },
+      submit: payload => daemonApi('POST', '/api/agent-seat', payload),
+      readback: agentId => daemonApi('GET', `/api/agent-seat?agent=${encodeURIComponent(agentId)}`),
+      requireReadback: true,
+      createdSource: 'cli-pending-exact-process',
+      transitionReason: 'cli-pending-exact-process',
+    }),
+    emitComplete: message => sendMsg(message),
+  }),
+  terminal: (obligation, error) => cleanupPendingSeatBinding({
+    obligation,
+    error,
+    terminateTmux: async tmuxSession => { try { await tmux('kill-session', '-t', tmuxSession) } catch {} },
+    tmuxAlive: async tmuxSession => { try { await tmux('has-session', '-t', tmuxSession); return true } catch { return false } },
+    permissionLedger,
+    openLocalLedger: () => createLocalAgentLedger(path.join(CONFIG_DIR, 'fleet-daemon.db')),
+    retireServerReservation: agentId => daemonApi(
+      'POST',
+      `/api/agent-seat-binding-obligation/${encodeURIComponent(obligation.obligation_id)}/retire`,
+      { agent_id: agentId, daemon_key: obligation.daemon_key },
+    ),
+    emitTerminal: message => sendMsg(message),
+  }),
+  log,
+})
+
 const machineRpc = createMachineRpc({
   sendMsg,
   getPid: () => process.pid,
@@ -727,6 +801,24 @@ function sendMsg(obj) {
 
 function sendMsgWithReply(obj, { timeoutMs = 15000 } = {}) {
   return machineRpc.requestWithReply(obj, { timeoutMs })
+}
+
+async function daemonApi(method, route, body = null) {
+  const response = await fetch(`${SERVER}${route}`, {
+    method,
+    headers: {
+      ...(TOKEN ? { authorization: `Bearer ${TOKEN}` } : {}),
+      ...(body ? { 'content-type': 'application/json' } : {}),
+    },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  })
+  const payload = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    const error = new Error(payload.error || `${method} ${route} failed (${response.status})`)
+    error.status = response.status
+    throw error
+  }
+  return payload
 }
 
 function ackServerDaemonOutboxMessage(msg) {
@@ -853,6 +945,13 @@ function handleServerMessage(msg) {
   }
   if (msg.type === DAEMON_OUTBOX_ERROR_TYPE) {
     if (msg.outbox_id) daemonDelivery.handleError(msg.outbox_id, msg.error || 'delivery failed', { permanent: msg.permanent === true })
+    return
+  }
+  if (msg.type === 'agent-seat-binding-obligation') {
+    pendingSeatBindings.accept(msg)
+    // This acknowledges transport receipt only. The server-held obligation is
+    // cleared later by the exact seat/readback completion or terminal event.
+    ackServerDaemonOutboxMessage(msg)
     return
   }
   if (msg.type === 'daemon-welcome') {
