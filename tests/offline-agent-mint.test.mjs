@@ -156,6 +156,133 @@ test('fresh Codex prompt failure returns the launched route without destroying r
   }
 })
 
+test('fresh Codex polls exact identity during prompt transport and awaits both settlements', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-concurrent-identity-poll-'))
+  const ledgerFile = path.join(dir, 'fleet-daemon.db')
+  const events = []
+  let resolveIdentity
+  let resolvePrompt
+  const identity = new Promise(resolve => { resolveIdentity = resolve })
+  const prompt = new Promise(resolve => { resolvePrompt = resolve })
+  try {
+    const spawned = spawn({
+      spawnMode: 'fresh',
+      agentId: 'fleet:concurrent-identity',
+      name: 'concurrent-identity',
+      model: 'gpt',
+      config,
+      cwd: dir,
+      breakGlass: true,
+      acknowledgeNoSecurity: true,
+      explicitPolicy: true,
+      localAgentLedgerPath: ledgerFile,
+      startFreshIdentityPolling: async (route) => {
+        events.push(`identity-start:${route.tmuxSession}`)
+        const resolved = await identity
+        events.push('identity-resolved')
+        return resolved
+      },
+      _deps: {
+        resolveApi: () => 'https://fleet.example',
+        ensureServer: async () => true,
+        uniqueSessionName: async () => 'fleet-concurrent-identity',
+        resolveDnsAlias: async () => null,
+        checkFreshNameAvailable: async () => {},
+        wsReserveShell: async () => ({ server_agent_id: 'fleet:concurrent-identity' }),
+        spawnTmux: async () => { events.push('runtime-launched'); return true },
+        injectCodexPrompt: async () => {
+          events.push('prompt-start')
+          const delivered = await prompt
+          events.push('prompt-settled')
+          return delivered
+        },
+      },
+    })
+
+    await new Promise(resolve => setImmediate(resolve))
+    assert.deepEqual(events, ['runtime-launched', 'identity-start:fleet-concurrent-identity', 'prompt-start'])
+    resolveIdentity({ identity: { sessionId: '11111111-2222-4333-8444-555555555555', model: 'gpt-5.6-sol' }, diagnostics: null })
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(events.at(-1), 'identity-resolved')
+    resolvePrompt(false)
+
+    const result = await spawned
+    assert.equal(events.at(-1), 'prompt-settled')
+    assert.equal(result.identityResolution.identity.sessionId, '11111111-2222-4333-8444-555555555555')
+    assert.deepEqual(result.promptDelivery, { ok: false, reason: 'unverified' })
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('fresh Codex preserves later exact identity when prompt transport rejects first', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-transport-reject-identity-later-'))
+  const ledgerFile = path.join(dir, 'fleet-daemon.db')
+  let resolveIdentity
+  let rejectPrompt
+  let settled = false
+  const identity = new Promise(resolve => { resolveIdentity = resolve })
+  const prompt = new Promise((_, reject) => { rejectPrompt = reject })
+  try {
+    const spawned = spawn({
+      spawnMode: 'fresh', agentId: 'fleet:transport-reject', name: 'transport-reject', model: 'gpt', config, cwd: dir,
+      breakGlass: true, acknowledgeNoSecurity: true, explicitPolicy: true, localAgentLedgerPath: ledgerFile,
+      startFreshIdentityPolling: async () => await identity,
+      _deps: {
+        resolveApi: () => 'https://fleet.example', ensureServer: async () => true,
+        uniqueSessionName: async () => 'fleet-transport-reject', resolveDnsAlias: async () => null,
+        checkFreshNameAvailable: async () => {}, wsReserveShell: async () => ({ server_agent_id: 'fleet:transport-reject' }),
+        spawnTmux: async () => true, injectCodexPrompt: async () => await prompt,
+      },
+    }).finally(() => { settled = true })
+
+    rejectPrompt(new Error('transport failed'))
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(settled, false)
+    resolveIdentity({ identity: { sessionId: '66666666-2222-4333-8444-555555555555', model: 'gpt-5.6-sol' }, diagnostics: null })
+
+    const result = await spawned
+    assert.equal(result.identityResolution.identity.sessionId, '66666666-2222-4333-8444-555555555555')
+    assert.deepEqual(result.promptDelivery, { ok: false, reason: 'unverified' })
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('fresh Codex awaits later prompt settlement when identity polling rejects first', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-identity-reject-prompt-later-'))
+  const ledgerFile = path.join(dir, 'fleet-daemon.db')
+  let rejectIdentity
+  let resolvePrompt
+  let settled = false
+  const identity = new Promise((_, reject) => { rejectIdentity = reject })
+  const prompt = new Promise(resolve => { resolvePrompt = resolve })
+  try {
+    const spawned = spawn({
+      spawnMode: 'fresh', agentId: 'fleet:identity-reject', name: 'identity-reject', model: 'gpt', config, cwd: dir,
+      breakGlass: true, acknowledgeNoSecurity: true, explicitPolicy: true, localAgentLedgerPath: ledgerFile,
+      startFreshIdentityPolling: async () => await identity,
+      _deps: {
+        resolveApi: () => 'https://fleet.example', ensureServer: async () => true,
+        uniqueSessionName: async () => 'fleet-identity-reject', resolveDnsAlias: async () => null,
+        checkFreshNameAvailable: async () => {}, wsReserveShell: async () => ({ server_agent_id: 'fleet:identity-reject' }),
+        spawnTmux: async () => true, injectCodexPrompt: async () => await prompt,
+      },
+    }).finally(() => { settled = true })
+
+    rejectIdentity(new Error('identity poll failed'))
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(settled, false)
+    resolvePrompt(true)
+
+    const result = await spawned
+    assert.deepEqual(result.identityResolution, { identity: null, diagnostics: { failureStage: 'poll-error' } })
+    assert.equal(result.promptDelivery, undefined)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('offline fresh Codex prompt failure preserves the failure fact for caller cleanup', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-offline-prompt-failure-'))
   const ledgerFile = path.join(dir, 'fleet-daemon.db')

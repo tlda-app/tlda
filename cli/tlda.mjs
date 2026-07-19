@@ -2667,6 +2667,10 @@ export async function runFleetSpawn(spawnArgs, {
       enforceFence: true,
       sessionId: session || undefined,
       enroll: hasRawFlag(spawnArgs, 'enroll'),
+      startFreshIdentityPolling: (result) => pollLifecycleResumeIdentity(result, {
+        cwd,
+        name,
+      }),
     }
     let result
     try {
@@ -2699,7 +2703,8 @@ export async function runFleetSpawn(spawnArgs, {
     if (promptDeliveryFailed && !boundResume.bound) {
       await cleanupFailedBindingImpl(result, { api: apiImpl, localAgentLedgerPath })
       if (!suppliedAgentId && preallocatedAgentId) await ledger.delete(preallocatedAgentId)
-      throw new Error(`fresh Codex prompt delivery was unverified and exact durable binding did not complete for ${result.fleetId}`)
+      const failureStage = boundResume.diagnostics?.failureStage
+      throw new Error(`fresh Codex prompt delivery was unverified and exact durable binding did not complete for ${result.fleetId}${failureStage ? ` (identity stage: ${failureStage})` : ''}`)
     }
     if ((spawnMode === 'fresh' || spawnMode === 'session') && !boundResume.bound) {
       if (boundResume.reason === 'exact-identity-pending') {
@@ -2885,24 +2890,16 @@ export async function bindLifecycleCodexResumeIdentity(result, {
   if (!result?.fleetId || !result.tmuxSession || !['codex', 'claude'].includes(result.harness)) {
     return { bound: false, skipped: true }
   }
-  const resolver = resolveIdentity || (await import(`../agent-launch/harness/${result.harness}.mjs`)).resolveLiveSessionIdentity
-  const deadline = Date.now() + timeoutMs
-  let identity = null
-  while (Date.now() <= deadline) {
-    identity = await resolver({
-      agent: {
-        id: result.fleetId,
-        friendly_name: name || result.name || result.fleetId,
-        cwd,
-      },
-      tmuxSession: result.tmuxSession,
-        processOwnedOnly: true,
-    })
-    if (identity?.sessionId && identity?.model) break
-    await new Promise(resolve => setTimeout(resolve, intervalMs))
-  }
+  const resolution = result.identityResolution || await pollLifecycleResumeIdentity(result, {
+    cwd,
+    name,
+    resolveIdentity,
+    timeoutMs,
+    intervalMs,
+  })
+  const identity = resolution?.identity || null
   if (!identity?.sessionId || !identity?.model) {
-    return { bound: false, pending: true, reason: 'exact-identity-pending', identity }
+    return { bound: false, pending: true, reason: 'exact-identity-pending', identity, diagnostics: resolution?.diagnostics || null }
   }
   const binding = await postLifecycleSeatBinding(result, {
     api,
@@ -2918,6 +2915,41 @@ export async function bindLifecycleCodexResumeIdentity(result, {
   if (!binding.bound) return { ...binding, identity }
   result.resumeId = identity.sessionId
   return { ...binding, identity }
+}
+
+export async function pollLifecycleResumeIdentity(result, {
+  cwd,
+  name,
+  resolveIdentity = null,
+  timeoutMs = Number(process.env.TLDA_SPAWN_RESUME_ID_TIMEOUT_MS || 10000),
+  intervalMs = 250,
+} = {}) {
+  if (!result?.fleetId || !result.tmuxSession || !['codex', 'claude'].includes(result.harness)) {
+    return { identity: null, diagnostics: { failureStage: 'skipped' } }
+  }
+  const resolver = resolveIdentity || (await import(`../agent-launch/harness/${result.harness}.mjs`)).resolveLiveSessionIdentity
+  const deadline = Date.now() + timeoutMs
+  let identity = null
+  while (Date.now() <= deadline) {
+    identity = await resolver({
+      agent: {
+        id: result.fleetId,
+        friendly_name: name || result.name || result.fleetId,
+        cwd,
+      },
+      tmuxSession: result.tmuxSession,
+      processOwnedOnly: true,
+      diagnose: result.harness === 'codex',
+    })
+    if (identity?.sessionId && identity?.model) break
+    await new Promise(resolve => setTimeout(resolve, intervalMs))
+  }
+  return {
+    identity,
+    diagnostics: identity?.sessionId && identity?.model
+      ? null
+      : { failureStage: identity?.failureStage || (!identity?.sessionId ? 'session-id' : 'model') },
+  }
 }
 
 async function postLifecycleSeatBinding(result, {

@@ -13,22 +13,23 @@ import { dnsAliasPreloadPath } from './dns-alias-preload.mjs'
 const CODEX_CONFIG_FILE = path.join(os.homedir(), '.codex', 'config.toml')
 const execFileP = promisify(execFile)
 
-export async function resolveLiveSessionIdentity({ agent, tmuxSession, tmuxArgs = [], tmuxSocket = null, now = Date.now, processOwnedOnly = false } = {}) {
-  if (!tmuxSession) return null
+export async function resolveLiveSessionIdentity({ agent, tmuxSession, tmuxArgs = [], tmuxSocket = null, now = Date.now, processOwnedOnly = false, diagnose = false } = {}) {
+  const unresolved = (failureStage) => diagnose ? { sessionId: null, jsonlPath: null, model: null, failureStage } : null
+  if (!tmuxSession) return unresolved('pane')
   const tmuxPrefix = tmuxSocket ? ['-S', tmuxSocket] : tmuxArgs
   let paneOut
   try {
     ;({ stdout: paneOut } = await execFileP('tmux', [...tmuxPrefix, 'list-panes', '-t', tmuxSession, '-F', '#{pane_pid}'], { timeout: 3000, encoding: 'utf8' }))
   } catch {
-    return null
+    return unresolved('pane')
   }
   const panePids = paneOut.trim().split('\n').filter(Boolean)
-  if (!panePids.length) return null
+  if (!panePids.length) return unresolved('pane')
   let psOut
   try {
     ;({ stdout: psOut } = await execFileP('ps', ['-eo', 'pid,ppid,args'], { timeout: 5000, encoding: 'utf8' }))
   } catch {
-    return null
+    return unresolved('pid')
   }
   const children = new Map()
   const runtimes = new Set()
@@ -50,11 +51,12 @@ export async function resolveLiveSessionIdentity({ agent, tmuxSession, tmuxArgs 
     if (runtimes.has(candidate)) { pid = candidate; break }
     stack.push(...(children.get(candidate) || []))
   }
-  if (!pid) return null
+  if (!pid) return unresolved('pid')
   const launchTs = Date.parse(agent?.registered_at || '') || (now() - 60_000)
   const jsonlPath = await resolveTranscript({ pid, kind: 'codex', agent, launchTs, processOwnedOnly })
+  if (!jsonlPath) return unresolved('open-writable-rollout')
   const sessionId = ledgerSessionId({ harness_kind: 'codex', jsonl_path: jsonlPath })
-  if (!sessionId) return null
+  if (!sessionId) return diagnose ? { sessionId: null, jsonlPath, model: null, failureStage: 'session-id' } : null
   let model = null
   try {
     for (const line of fs.readFileSync(jsonlPath, 'utf8').split(/\r?\n/).slice(0, 200)) {
@@ -65,9 +67,9 @@ export async function resolveLiveSessionIdentity({ agent, tmuxSession, tmuxArgs 
       if (typeof value === 'string' && value.trim()) { model = value.trim(); break }
     }
   } catch {
-    return { sessionId, jsonlPath, model: null }
+    return { sessionId, jsonlPath, model: null, ...(diagnose ? { failureStage: 'model' } : {}) }
   }
-  return { sessionId, jsonlPath, model }
+  return { sessionId, jsonlPath, model, ...(diagnose && !model ? { failureStage: 'model' } : {}) }
 }
 
 function sq(value) {

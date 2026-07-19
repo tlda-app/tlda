@@ -376,18 +376,35 @@ async function spawnFresh(params) {
       throw new SpawnError('launch-failed', `tmux session ${tmuxSession} already has a live harness runtime`, { tmuxSession })
     }
     runtimeLaunched = true
-    let promptDelivery = null
-    if (requestedKind === 'codex') {
-      const injected = await (deps.injectCodexPrompt || injectCodexPrompt)(tmuxSession, codex.kickoffPrompt(name), { tmuxSocket: params.tmuxSocket })
-      if (!injected) {
-        promptDelivery = { ok: false, reason: 'unverified' }
-      }
+    const launchedRoute = { localAgentId, fleetId, tmuxSession, harness: requestedKind, model }
+    let identityResolutionPromise
+    try {
+      identityResolutionPromise = requestedKind === 'codex' && serverUp && params.startFreshIdentityPolling
+        ? Promise.resolve(params.startFreshIdentityPolling(launchedRoute))
+        : Promise.resolve(null)
+    } catch (error) {
+      identityResolutionPromise = Promise.reject(error)
     }
+    let promptDeliveryPromise
+    try {
+      promptDeliveryPromise = requestedKind === 'codex'
+        ? Promise.resolve((deps.injectCodexPrompt || injectCodexPrompt)(tmuxSession, codex.kickoffPrompt(name), { tmuxSocket: params.tmuxSocket }))
+        : Promise.resolve(true)
+    } catch (error) {
+      promptDeliveryPromise = Promise.reject(error)
+    }
+    const [identityOutcome, promptOutcome] = await Promise.allSettled([identityResolutionPromise, promptDeliveryPromise])
+    const identityResolution = identityOutcome.status === 'fulfilled'
+      ? identityOutcome.value
+      : { identity: null, diagnostics: { failureStage: 'poll-error' } }
+    const promptDelivery = promptOutcome.status === 'fulfilled' && promptOutcome.value
+      ? null
+      : { ok: false, reason: 'unverified' }
     if (!serverUp) {
       return { ok: true, localAgentId, fleetId: null, tmuxSession, harness: requestedKind, model, registrationDeferred: true, ...(promptDelivery ? { promptDelivery } : {}) }
     }
     let resumeId = null
-    return { ok: true, pending: true, localAgentId, fleetId, tmuxSession, harness: requestedKind, model, resumeId, ...(promptDelivery ? { promptDelivery } : {}) }
+    return { ok: true, pending: true, ...launchedRoute, resumeId, ...(identityResolution ? { identityResolution } : {}), ...(promptDelivery ? { promptDelivery } : {}) }
   } catch (e) {
     const err = toSpawnError(e, e?.message?.includes('not available') ? 'name-bounced' : 'launch-failed', { fleetId, tmuxSession, model })
     librarian.failPending(fleetId || localAgentId, err.reason || 'launch-failed')

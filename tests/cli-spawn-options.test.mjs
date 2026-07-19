@@ -10,6 +10,7 @@ import {
   cleanupFailedFreshBinding,
   collectSpawnModelOptionsFromRaw,
   permissionTransparencyLine,
+  pollLifecycleResumeIdentity,
   resolveWakeRecipeFields,
   runFleetSpawn,
   spawnPositionalFromRaw,
@@ -113,6 +114,50 @@ test('CLI lifecycle codex spawn binds resume identity into existing ledger row',
     created_source: 'agent-lifecycle-cli',
     transition_reason: 'agent-lifecycle-cli',
   })
+})
+
+test('bounded identity polling captures an exact identity that appears after initial misses', async () => {
+  let attempts = 0
+  const resolution = await pollLifecycleResumeIdentity({
+    harness: 'codex',
+    fleetId: 'fleet:late-identity',
+    tmuxSession: 'fleet-late-identity',
+  }, {
+    cwd: '/tmp/late-identity',
+    name: 'late-identity',
+    timeoutMs: 100,
+    intervalMs: 0,
+    resolveIdentity: async () => {
+      attempts += 1
+      if (attempts < 3) return { sessionId: null, jsonlPath: null, model: null, failureStage: 'open-writable-rollout' }
+      return {
+        sessionId: '55555555-2222-4333-8444-555555555555',
+        jsonlPath: '/tmp/rollout-55555555-2222-4333-8444-555555555555.jsonl',
+        model: 'gpt-5.6-sol',
+      }
+    },
+  })
+
+  assert.equal(attempts, 3)
+  assert.equal(resolution.identity.sessionId, '55555555-2222-4333-8444-555555555555')
+  assert.equal(resolution.diagnostics, null)
+})
+
+test('bounded identity polling preserves the last concrete failure stage', async () => {
+  const resolution = await pollLifecycleResumeIdentity({
+    harness: 'codex',
+    fleetId: 'fleet:unresolved-identity',
+    tmuxSession: 'fleet-unresolved-identity',
+  }, {
+    cwd: '/tmp/unresolved-identity',
+    name: 'unresolved-identity',
+    timeoutMs: 0,
+    intervalMs: 0,
+    resolveIdentity: async () => ({ sessionId: null, jsonlPath: null, model: null, failureStage: 'pid' }),
+  })
+
+  assert.equal(resolution.identity.failureStage, 'pid')
+  assert.deepEqual(resolution.diagnostics, { failureStage: 'pid' })
 })
 
 test('CLI lifecycle codex wake treats existing resume id as bound', async () => {
@@ -980,6 +1025,57 @@ test('fresh prompt failure preserves runtime only after exact binding and report
   } finally {
     console.log = priorLog
     console.error = priorError
+    process.exitCode = priorExitCode
+    fs.rmSync(configDir, { recursive: true, force: true })
+  }
+})
+
+test('fresh prompt failure binds a concurrently captured exact identity before preserving terminal evidence', async () => {
+  const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-prompt-failure-concurrent-bound-'))
+  const dbPath = path.join(configDir, 'fleet-daemon.db')
+  const calls = []
+  const cleanups = []
+  const priorExitCode = process.exitCode
+  try {
+    writeDaemonConfig(configDir)
+    seedPermissionLedger(dbPath)
+    process.exitCode = undefined
+    await runFleetSpawn(['--fresh', 'prompt-failure-concurrent-bound'], {
+      configDir,
+      localAgentLedgerPath: dbPath,
+      loadConfigImpl: () => ({}),
+      spawnImpl: async (params) => {
+        const route = {
+          fleetId: params.agentId,
+          tmuxSession: 'fleet-prompt-failure-concurrent-bound',
+          harness: 'codex',
+          model: 'gpt-5.6-sol',
+        }
+        return {
+          ...route,
+          identityResolution: {
+            identity: {
+              sessionId: '44444444-2222-4333-8444-555555555555',
+              jsonlPath: '/tmp/rollout-44444444-2222-4333-8444-555555555555.jsonl',
+              model: 'gpt-5.6-sol',
+            },
+            diagnostics: null,
+          },
+          promptDelivery: { ok: false, reason: 'unverified' },
+        }
+      },
+      cleanupFailedBindingImpl: async (...args) => { cleanups.push(args) },
+      apiImpl: async (method, route, body) => {
+        calls.push({ method, route, body })
+        if (method === 'GET') return { ok: true, seat: { agent_id: calls[0].body.agent_id, session_id: '44444444-2222-4333-8444-555555555555', tmux_session: 'fleet-prompt-failure-concurrent-bound' } }
+        return { ok: true }
+      },
+    })
+
+    assert.deepEqual(calls.map(call => call.method), ['POST', 'GET'])
+    assert.equal(cleanups.length, 0)
+    assert.equal(process.exitCode, 1)
+  } finally {
     process.exitCode = priorExitCode
     fs.rmSync(configDir, { recursive: true, force: true })
   }
