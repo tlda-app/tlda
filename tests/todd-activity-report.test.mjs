@@ -24,6 +24,7 @@ function task(id, agentId, ageMs, extra = {}) {
     agent: agentId,
     description: extra.description || `work ${id}`,
     status: 'pending',
+    delegated_by: 'fleet:chief',
     delegated_at: isoAgo(ageMs),
     ...extra,
   }
@@ -61,7 +62,6 @@ test('active quiet task satisfying Todd kick rules is toddWillKick', () => {
     events: [],
     toddConfig: {
       quietMs: 5 * 60_000,
-      maxTaskAgeMs: 60 * 60_000,
       kickIntervalMs: 15 * 60_000,
     },
   })

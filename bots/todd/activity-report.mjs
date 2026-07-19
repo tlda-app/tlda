@@ -5,7 +5,6 @@ const DEFAULT_LOOKBACK_MS = 15 * 60_000
 const DEFAULT_RECENT_MS = 5 * 60_000
 const DEFAULT_QUIET_MS = 5 * 60_000
 const DEFAULT_KICK_INTERVAL_MS = 15 * 60_000
-const DEFAULT_MAX_TASK_AGE_MS = 2 * 60 * 60_000
 const OWNER_ID = 'fleet:skip'
 
 const ACTIVITY_TYPES = new Set(['activity', 'chat', 'report', 'task_done', 'turn_ended', 'timer', 'notification_attempt'])
@@ -40,7 +39,6 @@ export function buildFleetActivityReport({
     recentMs: toddConfig.recentMs || DEFAULT_RECENT_MS,
     quietMs: toddConfig.quietMs || DEFAULT_QUIET_MS,
     kickIntervalMs: toddConfig.kickIntervalMs || DEFAULT_KICK_INTERVAL_MS,
-    maxTaskAgeMs: toddConfig.maxTaskAgeMs || DEFAULT_MAX_TASK_AGE_MS,
     lastKicked: toddConfig.lastKicked || new Map(),
     lastRealActivityMs: toddConfig.lastRealActivityMs || null,
     skipLive: toddConfig.skipLive || null,
@@ -62,7 +60,6 @@ export function buildFleetActivityReport({
     agents: normalizedAgents,
     now,
     lastKicked: config.lastKicked,
-    maxTaskAgeMs: config.maxTaskAgeMs,
     quietMs: config.quietMs,
     kickIntervalMs: config.kickIntervalMs,
     skipLive,

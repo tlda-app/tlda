@@ -10,6 +10,11 @@ const execFileP = promisify(execFile)
 const SAFE_SESSION_RE = /^[^\s:\x00-\x1f]+$/
 const QUEUED_LINE_RE = /^\s*←\s/
 
+export function promptAcceptanceInput(acceptKey = '1') {
+  if (acceptKey === 'Enter') return { pty: '\r', tmuxKeys: ['Enter'] }
+  return { pty: `${acceptKey}\r`, tmuxKeys: [acceptKey, 'Enter'] }
+}
+
 export function createTerminalRpc({
   tmuxArgs,
   log,
@@ -31,6 +36,7 @@ export function createTerminalRpc({
   onPlanModeGone,
   hasPlanMode,
   validateTmuxOwner,
+  execFileImpl = execFileP,
 }) {
   const TMUX_ARGS = tmuxArgs || []
   const TERMINAL_SIZE_POLL_MS = terminalSizePollMs || 5000
@@ -50,7 +56,7 @@ export function createTerminalRpc({
   }
 
   async function tmux(...args) {
-    return execFileP('tmux', [...TMUX_ARGS, ...args], {
+    return execFileImpl('tmux', [...TMUX_ARGS, ...args], {
       timeout: 5000,
       encoding: 'utf8',
       env: { ...process.env, TMUX: '', TMUX_PANE: '' },
@@ -59,13 +65,15 @@ export function createTerminalRpc({
 
   async function autoAcceptPrompt(tmuxSession, reason, acceptKey = '1') {
     try {
+      const input = promptAcceptanceInput(acceptKey)
       const ptyState = terminalWatchPtys.get(tmuxSession)
       if (ptyState?.alive) {
-        ptyState.pty.write(`${acceptKey}\r`)
+        ptyState.pty.write(input.pty)
       } else {
-        await tmux('send-keys', '-t', tmuxSession, acceptKey)
-        await new Promise(r => setTimeout(r, 100))
-        await tmux('send-keys', '-t', tmuxSession, 'Enter')
+        for (const [index, key] of input.tmuxKeys.entries()) {
+          if (index > 0) await new Promise(r => setTimeout(r, 100))
+          await tmux('send-keys', '-t', tmuxSession, key)
+        }
       }
       log.info(`auto-accepted prompt (${reason}, key=${acceptKey}) in ${tmuxSession}`)
       return true
@@ -89,6 +97,18 @@ export function createTerminalRpc({
     checkSession(tmux_session)
     checkTmuxOwner(agent_id, session_id, tmux_session)
     onArmBySession(tmux_session)
+    // A live tmux can still be unable to consume task text. Clear only prompts
+    // already classified as safe auto-accepts before injecting the queued text;
+    // unknown, permission, and choice prompts remain untouched.
+    try {
+      const pane = await capturePaneTail(tmux_session)
+      const prompt = detectPrompt(pane)
+      if (prompt.type === 'auto-accept') {
+        await autoAcceptPrompt(tmux_session, prompt.reason, prompt.acceptKey)
+      }
+    } catch {
+      // Capture is advisory. Preserve the existing send path when unavailable.
+    }
     const pty = terminalWatchPtys.get(tmux_session)?.alive
       ? terminalWatchPtys.get(tmux_session).pty
       : null
@@ -147,7 +167,7 @@ export function createTerminalRpc({
   }
 
   async function capturePaneTail(tmux_session, lines = 50) {
-    const cap = await execFileP('tmux',
+    const cap = await execFileImpl('tmux',
       [...TMUX_ARGS, ...terminalBackscrollCaptureArgs(tmux_session, lines)],
       { timeout: 3000, encoding: 'utf8' })
     return cap.stdout

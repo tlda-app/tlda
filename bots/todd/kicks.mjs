@@ -1,8 +1,9 @@
 import { runtimeStatusName } from '../../shared/fleet-runtime-status.mjs'
 
-// `lastKicked` maps task key → either a bare timestamp (legacy) or
-// `{ ts, sig }`. `sig` is the agent/task state at the last kick; we use it to
-// stop re-kicking a blocker that hasn't changed state. `skipLive` is an optional
+// `lastKicked` maps task key → either a bare timestamp or `{ ts }`. The
+// timestamp is the bounded repeat authority: unfinished owned work remains
+// eligible regardless of age and may be kicked again after the cooldown.
+// `skipLive` is an optional
 // Set of agent ids Skip is actively in the room with — those are suppressed
 // entirely ("when I am in the room, you shut the fuck up." — Skip 6/19).
 export function decideTaskKicks({
@@ -10,7 +11,6 @@ export function decideTaskKicks({
   agents = [],
   now = Date.now(),
   lastKicked = new Map(),
-  maxTaskAgeMs = 12 * 60 * 60 * 1000,
   quietMs = 5 * 60 * 1000,
   kickIntervalMs = 15 * 60 * 1000,
   skipLive = null,
@@ -23,14 +23,14 @@ export function decideTaskKicks({
   }
   const isSkipLive = (id) => !!skipLive && typeof skipLive.has === 'function' && skipLive.has(id)
   const hasActiveTimer = (id) => !!activeTimerAgents && typeof activeTimerAgents.has === 'function' && activeTimerAgents.has(id)
-  // Tolerate both the legacy bare-timestamp shape and the { ts, sig } shape.
+  // Tolerate both the bare-timestamp shape and the current { ts } shape.
   const lastTsOf = (v) => (v && typeof v === 'object') ? (v.ts || 0) : (v || 0)
-  const lastSigOf = (v) => (v && typeof v === 'object') ? (v.sig ?? null) : null
 
   const kicks = []
   for (const task of tasks || []) {
     if (!task || task.synthetic) continue
     if (!['pending', 'working', 'idle'].includes(task.status)) continue
+    if (!task.delegated_by) continue
     const agent = agentById.get(task.agent)
     if (!agent || agent.dead || agent.human) continue
     const status = String(runtimeStatusName(agent) || '').toLowerCase()
@@ -44,7 +44,7 @@ export function decideTaskKicks({
     const delegatedAt = Date.parse(task.delegated_at || task.created_at || '')
     if (!Number.isFinite(delegatedAt)) continue
     const taskAge = now - delegatedAt
-    if (taskAge < quietMs || taskAge > maxTaskAgeMs) continue
+    if (taskAge < quietMs) continue
 
     // Guard on real work: if the agent had meaningful activity (tool calls outside
     // bot-poke suppression windows) within quietMs, they're mid-work — don't kick.
@@ -56,21 +56,10 @@ export function decideTaskKicks({
     const prev = lastKicked.get(key)
     if (now - lastTsOf(prev) < kickIntervalMs) continue
 
-    // Don't re-kick a blocker that hasn't changed state since the last kick.
-    // The signature is task status + the agent's status + last activity; if none
-    // moved, another identical nudge carries no new information (the
-    // app-project-manager case: re-kicked every 15 min for hours, "517m old",
-    // with nothing new). When the agent acts or the task changes, the signature
-    // changes and a kick is allowed again. [Skip 6/19]
-    const realActivity = lastRealActivityMs ? (lastRealActivityMs.get(agent.id) || 0) : 0
-    const sig = `${task.status}|${runtimeStatusName(agent) || ''}|${realActivity}`
-    if (lastSigOf(prev) !== null && sig === lastSigOf(prev)) continue
-
     kicks.push({
       task,
       agent,
       key,
-      sig,
       taskAgeMs: taskAge,
       action: status === 'hibernating' ? 'respawn' : 'chat',
       reason: status === 'hibernating' ? 'hibernating-active-task' : 'quiet-active-task',

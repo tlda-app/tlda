@@ -64,7 +64,6 @@ const OWNER_ID = 'fleet:skip'
 const DECISIONS_LOG = path.join(CONFIG_DIR, `${BOT_KEY}-decisions.jsonl`)
 const TASK_KICK_INTERVAL_MS = parseInt(process.env.TODD_TASK_KICK_INTERVAL_MS || '', 10) || 15 * 60_000
 const TASK_KICK_QUIET_MS = parseInt(process.env.TODD_TASK_KICK_QUIET_MS || '', 10) || 5 * 60_000
-const TASK_KICK_MAX_TASK_AGE_MS = parseInt(process.env.TODD_TASK_KICK_MAX_TASK_AGE_MS || '', 10) || 2 * 60 * 60_000
 const TASK_KICK_POLL_MS = parseInt(process.env.TODD_TASK_KICK_POLL_MS || '', 10) || 60_000
 const SELF_CHECK_PREFS_POLL_MS = 20_000
 const SELF_CHECK_COUNTDOWN_SEC = parseInt(process.env.TODD_SELF_CHECK_COUNTDOWN_SEC || process.env.DISPO_COUNTDOWN_SEC || '', 10) || 30
@@ -1810,7 +1809,6 @@ async function handleFleetActivityReportCommand(text, { direct = false } = {}) {
       toddConfig: {
         quietMs: TASK_KICK_QUIET_MS,
         kickIntervalMs: TASK_KICK_INTERVAL_MS,
-        maxTaskAgeMs: TASK_KICK_MAX_TASK_AGE_MS,
         lastKicked: taskKickLastSent,
         lastRealActivityMs,
         skipLive: skipLiveAgentSet(),
@@ -1907,17 +1905,17 @@ async function taskKickSweep() {
     agents,
     now: Date.now(),
     lastKicked: taskKickLastSent,
-    maxTaskAgeMs: TASK_KICK_MAX_TASK_AGE_MS,
     quietMs: TASK_KICK_QUIET_MS,
     kickIntervalMs: TASK_KICK_INTERVAL_MS,
     skipLive: skipLiveAgentSet(),
     lastRealActivityMs,
     activeTimerAgents,
   })
-  for (const { task, agent, key, sig, taskAgeMs, action, reason } of kicks) {
-    // Store the state signature alongside the timestamp so an unchanged blocker
-    // isn't re-kicked next interval (see decideTaskKicks).
-    taskKickLastSent.set(key, { ts: Date.now(), sig })
+  for (const { task, agent, key, taskAgeMs, action, reason } of kicks) {
+    // This timestamp is the bounded repeat authority. Unfinished owned work
+    // stays eligible regardless of age, but cannot be kicked more than once per
+    // configured interval.
+    taskKickLastSent.set(key, { ts: Date.now() })
     const ageMin = Math.max(1, Math.round(taskAgeMs / 60_000))
     const agentLabel = agent.friendly_name || agent.id
     console.log(`[todd] task kick → ${agentLabel} (${task.id}, age ${ageMin}m, action ${action || 'chat'}, reason ${reason || 'quiet-active-task'})`)

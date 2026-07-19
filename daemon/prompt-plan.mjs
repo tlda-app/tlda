@@ -9,6 +9,8 @@ const MEMORY_PATH_RE = /\.claude\/projects\/[^/]+\/memory\//
 const RADIO_PROMPT_RE = /[❯>]\s*1\.\s*Yes/
 const YN_PROMPT_RE = /Allow this (?:command|action)\?\s*\(y\/n\)/i
 const CODEX_MCP_PROMPT_RE = /Allow the tlda MCP server to run tool ["']?([^"'?\n]+?)["']?\?/
+const CODEX_UPDATE_CONTINUE_RE = /Update available!?[\s\S]{0,400}?Press enter to continue/i
+const CHOICE_OR_PERMISSION_RE = /\b(?:allow|permission|choose|choice|pick|select|yes|no|y\/n)\b/i
 
 export function stripAnsi(str) {
   return str.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '').replace(/\x1b\][^\x07]*\x07/g, '')
@@ -51,6 +53,11 @@ function extractPromptBody(stripped) {
 
 export function detectPrompt(paneText) {
   const stripped = typeof paneText === 'string' ? stripAnsi(paneText) : ''
+
+  const updateContinuation = stripped.match(CODEX_UPDATE_CONTINUE_RE)
+  if (updateContinuation && !CHOICE_OR_PERMISSION_RE.test(updateContinuation[0])) {
+    return { type: 'auto-accept', reason: 'codex update continuation', acceptKey: 'Enter' }
+  }
 
   const codexMatch = stripped.match(CODEX_MCP_PROMPT_RE)
   if (codexMatch && /Always allow/.test(stripped)) {
