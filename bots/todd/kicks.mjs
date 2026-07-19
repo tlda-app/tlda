@@ -34,10 +34,7 @@ export function decideTaskKicks({
     const agent = agentById.get(task.agent)
     if (!agent || agent.dead || agent.human) continue
     const status = String(runtimeStatusName(agent) || '').toLowerCase()
-    // Hibernation is an intentional lifecycle boundary. An unfinished task
-    // remains visible in the ledger, but Todd must not turn it into an
-    // automatic wake/respawn loop. A human or owning coordinator wakes it.
-    if (status === 'dead' || status === 'hibernating') continue
+    if (status === 'dead') continue
 
     // Skip-live beats the nudge — Todd doesn't manage an agent Skip is working
     // with right now. [taxonomy Cat 2: "don't listen to Todd here. We're good."]
@@ -65,7 +62,7 @@ export function decideTaskKicks({
       key,
       taskAgeMs: taskAge,
       action: 'chat',
-      reason: 'quiet-active-task',
+      reason: status === 'hibernating' ? 'hibernating-active-task' : 'quiet-active-task',
     })
   }
   return kicks

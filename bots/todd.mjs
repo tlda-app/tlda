@@ -1935,7 +1935,11 @@ async function taskKickSweep() {
       }
       sendChat(agent.id, formatTaskKickMessage({ task, taskAgeMs, recovery: true }))
     } else {
-      sendChat(agent.id, formatTaskKickMessage({ task, taskAgeMs, recovery: false }))
+      sendChat(agent.id, formatTaskKickMessage({
+        task,
+        taskAgeMs,
+        recovery: reason === 'hibernating-active-task',
+      }))
     }
     logDecision(agent.id, 'task-kick', task.id || 'active-task', {
       taskAgeMin: ageMin,
