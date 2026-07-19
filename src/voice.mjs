@@ -1118,7 +1118,7 @@ export function setVoiceTarget(textarea, targetHandle) {
         // Suppress the textarea-clear input event that would otherwise call enterEdit().
         if (e.key === 'Enter' && !e.shiftKey && _recording) {
           _filling = true
-          afterSend()
+          afterComposerEnter()
           setTimeout(() => { _filling = false }, 50)
           return
         }
@@ -2606,6 +2606,27 @@ function afterSend() {
   }
 }
 
+// A physical Enter is already an explicit boundary after the user has reviewed
+// the composer. Deepgram can keep its current recognizer connection: the local
+// submitted-text guard rejects the old utterance tail without imposing a
+// multi-second reconnect gap after every message. Voice-triggered sends still
+// use afterSend(), whose fresh speech epoch is the stronger unattended boundary.
+function afterComposerEnter() {
+  if (_backend !== 'deepgram') {
+    afterSend()
+    return
+  }
+  const submittedText = currentSubmittedVoiceText()
+  _state = 'edit'
+  _left = _interim = _right = ''
+  finalizeDeepgramBridge()
+  if (normalizeDeepgramText(submittedText)) {
+    resetDeepgramTextState({ ignoreUntilUtteranceEnd: true, submittedText })
+  } else {
+    resetDeepgramTextState({ preserveUtteranceGuard: true })
+  }
+}
+
 // --- Recording ---
 
 // Remote debug logging — sends voice logs to server so agent can read them.
@@ -2638,6 +2659,7 @@ if (typeof window !== 'undefined') {
     getState: () => ({ recording: _recording, backend: _backend, state: _state, speechEpoch: _speechEpoch, pcmPaused: _deepgramPcmPaused, recoveringEpoch: _deepgramRecoveringEpoch, relayConnected: _deepgramRelayConnected, recognizerStatus: currentDeepgramRecognizerStatus(), recognizerConnected: deepgramRecognizerConnected(), commonState: deepgramCommonState(), hasMic: !!_deepgramStream, left: _left, interim: _interim, dumping: _voiceDumping, hasTextarea: !!_activeTextarea }),
     injectTranscript: (text, isFinal) => onDeepgramMessage({ data: JSON.stringify({ type: 'transcript', text, is_final: isFinal, speech_final: false, epoch: _speechEpoch }) }),
     afterSend: () => afterSend(),
+    afterComposerEnter: () => afterComposerEnter(),
     getTrickle: () => ({ words: _dgTrickleWords.slice(), shown: _dgTrickleShown, hasTimer: _dgTrickleTimer !== null }),
     showDontSpeak: () => showDontSpeak(),
     isDontSpeakVisible: () => !!_dontSpeakOverlay && _dontSpeakOverlay.style.display === 'block',

@@ -670,7 +670,7 @@ function reset() {
 
   const enterEpoch = window.__voiceTest.getState().speechEpoch
   ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true }))
-  assert.equal(window.__voiceTest.getState().speechEpoch, enterEpoch + 1, 'physical Enter crosses the shared boundary exactly once')
+  assert.equal(window.__voiceTest.getState().speechEpoch, enterEpoch, 'physical Enter keeps the live Deepgram recognizer instead of forcing a reconnect')
   resetTranscript('the old message tail')
 
   assert.deepEqual(sent, ['the old message tail'], 'Enter should send and clear the composer')
