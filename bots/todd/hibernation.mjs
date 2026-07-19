@@ -51,9 +51,12 @@ export function normalizedPolicies(value) {
 
 export function dueHibernations(policies, trustedIdleSeconds, inFlight = new Set()) {
   const due = []
-  for (const [agentId, policy] of Object.entries(normalizedPolicies(policies))) {
+  const explicit = normalizedPolicies(policies)
+  const defaultIdleSeconds = 20 * 60
+  for (const [agentId, idleValue] of Object.entries(trustedIdleSeconds || {})) {
+    const policy = explicit[agentId] || { enabled: true, idleSeconds: defaultIdleSeconds }
     if (!policy.enabled || inFlight.has(agentId)) continue
-    const idleSeconds = Number(trustedIdleSeconds?.[agentId])
+    const idleSeconds = Number(idleValue)
     if (Number.isFinite(idleSeconds) && idleSeconds >= policy.idleSeconds) {
       due.push({ agentId, idleSeconds, thresholdSeconds: policy.idleSeconds })
     }

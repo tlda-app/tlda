@@ -18,7 +18,7 @@ test('parses direct and addressed per-agent configuration', () => {
   assert.equal(parseHibernationCommand('we discussed Todd hibernation'), null)
 })
 
-test('absence is disabled and malformed policies are discarded', () => {
+test('normalization keeps valid per-agent overrides and discards malformed entries', () => {
   assert.deepEqual(normalizedPolicies(null), {})
   assert.deepEqual(normalizedPolicies({
     'fleet:good': { enabled: true, idleSeconds: 1200 },
@@ -29,6 +29,21 @@ test('absence is disabled and malformed policies are discarded', () => {
     'fleet:good': { enabled: true, idleSeconds: 1200 },
     'fleet:disabled': { enabled: false, idleSeconds: 60 },
   })
+})
+
+test('absence of an override applies the fleet-wide 20 minute default', () => {
+  assert.deepEqual(dueHibernations(null, {
+    'fleet:due': 1200,
+    'fleet:not-yet': 1199,
+  }), [{ agentId: 'fleet:due', idleSeconds: 1200, thresholdSeconds: 1200 }])
+})
+
+test('an explicit per-agent off override defeats the fleet default', () => {
+  assert.deepEqual(dueHibernations({
+    'fleet:off': { enabled: false, idleSeconds: 1200 },
+  }, {
+    'fleet:off': 5000,
+  }), [])
 })
 
 test('only trusted idle facts crossing enabled thresholds are due', () => {

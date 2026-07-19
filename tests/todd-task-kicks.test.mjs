@@ -74,3 +74,17 @@ test('Todd task kicks exclude terminal, closed, and non-owned work', () => {
   ]
   assert.equal(decideTaskKicks({ tasks, agents: [agent], now, quietMs: 5 * 60_000 }).length, 0)
 })
+
+test('Todd never turns unfinished work into an automatic wake of a hibernated agent', () => {
+  const now = Date.now()
+  const hibernated = {
+    ...agent,
+    runtime_status: { status: 'hibernating' },
+  }
+  assert.deepEqual(decideTaskKicks({
+    tasks: [task(30 * 60_000)],
+    agents: [hibernated],
+    now,
+    quietMs: 5 * 60_000,
+  }), [])
+})

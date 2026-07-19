@@ -212,7 +212,7 @@ async function resolveHibernationTarget(query) {
 async function showHibernationPolicies() {
   const entries = Object.entries(hibernationPolicies)
   if (!entries.length) {
-    await sendPersistedChat(OWNER_ID, 'Todd hibernation is off for every agent. No agent has an automatic hibernation policy.')
+    await sendPersistedChat(OWNER_ID, 'Todd hibernation is on for agents after 20 minutes of trusted idle. No per-agent overrides are set.')
     return
   }
   const roster = await getAgents()
@@ -292,9 +292,17 @@ async function hibernateDueAgent({ agentId, idleSeconds, thresholdSeconds }) {
 }
 
 async function hibernationSweep() {
-  if (!isCanonicalBot() || !Object.keys(hibernationPolicies).length) return
-  const facts = await getJson('/api/fleet/trusted-idle')
+  if (!isCanonicalBot()) return
+  const [facts, roster] = await Promise.all([
+    getJson('/api/fleet/trusted-idle'),
+    getAgents(),
+  ])
+  const skipLive = skipLiveAgentSet()
+  const eligible = new Set(roster
+    .filter(agent => agent && !agent.dead && !agent.human && agent.id !== AGENT_ID && !agent.labels?.includes('bot'))
+    .map(agent => agent.id))
   const due = dueHibernations(hibernationPolicies, facts?.idleSecondsByAgent, hibernationInFlight)
+    .filter(({ agentId }) => eligible.has(agentId) && !skipLive.has(agentId))
   await Promise.all(due.map(hibernateDueAgent))
 }
 
