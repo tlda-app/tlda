@@ -2666,7 +2666,7 @@ app.post('/api/voice/whisper/stop', async (req, res) => {
 })
 
 // Lazy-start the deepgram bridge. Browser hits this when voice=deepgram is selected.
-// Deepgram is SDK-only (one implementation, Skip 6/19) — bin/deepgram-sdk-bridge.mjs.
+// Deepgram is SDK-only (one implementation, Skip 6/19) — bin/deepgram-runtime/deepgram-sdk-bridge.mjs.
 // The bridge listens on TLS (wss) only when the mkcert localhost certs exist — the
 // SAME condition the bridge uses to choose its server. On Fly there are no mkcert
 // certs, so the bridge runs on plain ws; matching the scheme here is what lets the
@@ -2737,7 +2737,7 @@ app.post('/api/voice/deepgram-sdk/start', async (req, res) => {
   try {
     res.json(await spawnVoiceBridge({
       bridgeUrl: DEEPGRAM_SDK_BRIDGE_URL,
-      scriptName: 'deepgram-sdk-bridge.mjs',
+      scriptName: 'deepgram-runtime/deepgram-sdk-bridge.mjs',
       logName: 'deepgram-sdk-bridge.log',
       label: 'deepgram sdk',
     }))
@@ -2768,7 +2768,7 @@ async function ensureDeepgramSdkBridge() {
     _deepgramSdkBridgeStarting = (async () => {
       await spawnVoiceBridge({
         bridgeUrl: DEEPGRAM_SDK_BRIDGE_URL,
-        scriptName: 'deepgram-sdk-bridge.mjs',
+        scriptName: 'deepgram-runtime/deepgram-sdk-bridge.mjs',
         logName: 'deepgram-sdk-bridge.log',
         label: 'deepgram sdk',
       })

@@ -4,7 +4,7 @@
 // same transcript/status JSON contract as the raw WebSocket bridge.
 //
 // Usage:
-//   node bin/deepgram-sdk-bridge.mjs [--port 8180] [--key DEEPGRAM_API_KEY]
+//   node bin/deepgram-runtime/deepgram-sdk-bridge.mjs [--port 8180] [--key DEEPGRAM_API_KEY]
 
 import { DeepgramClient } from '@deepgram/sdk'
 import { acceptsSpeechEpoch, createEpochTransition, enqueueEpochPcm, readyEpochTransition } from './deepgram-epoch-state.mjs'
@@ -13,7 +13,7 @@ import { createServer as createHttpsServer } from 'https'
 import { readFileSync, existsSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
-import { loadConfig } from '../shared/config.mjs'
+import { loadConfig } from '../../shared/config.mjs'
 
 const PORT = process.argv.includes('--port')
   ? parseInt(process.argv[process.argv.indexOf('--port') + 1])
