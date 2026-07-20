@@ -1724,6 +1724,8 @@ export class FleetStore {
       }
       throw e;
     }
+    this._bustAgentsCache();
+    this._syncAgentRegistry(agentId);
     return this.getCurrentAgentSeat(agentId);
   }
 

@@ -6,6 +6,7 @@ function agentName(agent) {
 }
 
 function agentDaemonKey(agent) {
+  if (agent.runtime_status?.route?.daemon_key) return agent.runtime_status.route.daemon_key
   if (agent.daemon_key) return agent.daemon_key
   if (agent.daemonKey) return agent.daemonKey
   if (agent.machine_id && agent.env_name) return `${agent.machine_id}:${agent.env_name}`
@@ -15,6 +16,7 @@ function agentDaemonKey(agent) {
 function rowForAgent(agent, now = Date.now()) {
   const lastSeenMs = agent.last_seen ? now - new Date(agent.last_seen).getTime() : null
   const act = agent.metadata?.status || null
+  const runtimeRoute = agent.runtime_status?.route || null
   return {
     id: agent.id,
     name: agentName(agent),
@@ -27,8 +29,8 @@ function rowForAgent(agent, now = Date.now()) {
     delivery_channel: agent.metadata?.deliveryChannel || null,
     machine_id: agent.machine_id || null,
     env_name: agent.env_name || null,
-    daemon_key: agentDaemonKey(agent),
-    tmux_session: agent.tmux_session || null,
+    daemon_key: runtimeRoute?.daemon_key || agentDaemonKey(agent),
+    tmux_session: runtimeRoute?.tmux_session || agent.tmux_session || null,
     activity: act?.state || null,
     tool: act?.tool || null,
     activity_health: activityHealthForProjection(agent.metadata || {}),

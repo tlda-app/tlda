@@ -5076,7 +5076,24 @@ async function handleFleetWsMessage(ws, msg) {
       // session_id/session_ids are minted by the durable seat binding path, not
       // by generic login.
       fleetStore.upsertAgent(agent)
-      const storedAgent = fleetStore.getAgent?.(agent_id) || agent
+      const daemonKey = msg.daemon_key || (machine_id && env_name ? daemonAddress(machine_id, env_name) : null)
+      if (machine_id && env_name && daemonKey) {
+        try {
+          fleetStore.activateAgentSeat?.({
+            agentId: agent_id,
+            sessionId: session_id || null,
+            machineId: machine_id,
+            envName: env_name,
+            daemonKey,
+            tmuxSession: tmux_session || null,
+            reason: 'agent-login',
+          })
+        } catch (e) {
+          error(`login route activation failed for ${agent_id}: ${e.message}`)
+          return
+        }
+      }
+      const storedAgent = fleetStore.projectAgentCurrentSeat?.(fleetStore.getAgent?.(agent_id) || agent) || fleetStore.getAgent?.(agent_id) || agent
       reply({ ok: true, agent: storedAgent, assigned_name: storedAgent.friendly_name || null })
       fleetStore.share?.({ type: 'login', agent_id, from: agent_id, to: agent_id, text: `${agent.friendly_name || agent_id} logged in` })
       const currentSeat = fleetStore.getCurrentAgentSeat?.(agent_id)
@@ -5085,7 +5102,7 @@ async function handleFleetWsMessage(ws, msg) {
       spawnLibrarian.observeLiveness({
         type: 'agent-liveness',
         agent_id,
-        tmux_session: agent.tmux_session,
+        tmux_session: currentSeat?.tmux_session || null,
         state: 'alive',
         ts: now,
       })

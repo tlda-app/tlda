@@ -4,6 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 
 import { FleetStore } from '../server/lib/fleet-store.mjs'
+import { summarizeFleetRosterTruth } from '../server/lib/fleet-roster-truth.mjs'
 import {
   LIVENESS,
   RUNTIME_STATUS,
@@ -40,6 +41,11 @@ try {
   assert.equal(route.daemon_key, 'mini:prod')
   assert.equal(route.session_id, null)
   assert.equal(route.tmux_session, null)
+
+  const daemonRoster = store.getAgentsByDaemonKey('mini:prod')
+  assert.equal(daemonRoster.length, 1)
+  assert.equal(daemonRoster[0].id, 'fleet:status-authority-test')
+  assert.equal(daemonRoster[0].daemon_key, 'mini:prod')
 
   const agent = store.getAgent('fleet:status-authority-test')
   const nowMs = Date.now()
@@ -93,6 +99,22 @@ try {
 
   assert.equal(activityDriven.status, RUNTIME_STATUS.AWAKE)
   assert.equal(activityDriven.activity, 'tool_call:inbox')
+
+  const rosterSummary = summarizeFleetRosterTruth({
+    roster: [{
+      ...agent,
+      runtime_status: activityDriven,
+      metadata: { status: { state: 'tool_call', tool: 'inbox' } },
+    }],
+    matched: [{
+      ...agent,
+      runtime_status: activityDriven,
+      metadata: { status: { state: 'tool_call', tool: 'inbox' } },
+    }],
+    machineSessions: { 'mini:prod': [] },
+    now: nowMs,
+  })
+  assert.equal(rosterSummary.agents[0].daemon_key, 'mini:prod')
 
   console.log('ok: daemon-key route authority does not require session/tmux fields')
 } finally {
