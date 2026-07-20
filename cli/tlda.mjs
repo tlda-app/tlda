@@ -66,7 +66,7 @@ import {
 } from '../agent-launch/permission-ledger.mjs'
 import { terminateTmuxSession } from '../agent-launch/tmux.mjs'
 import { bindAgentSeat } from '../agent-launch/seat-binding.mjs'
-import { projectWorldsPath, writeProjectWorld } from '../shared/project-worlds.mjs'
+import { projectWorldsPath, readProjectWorlds, writeProjectWorld } from '../shared/project-worlds.mjs'
 
 // --- Argument parsing ---
 
@@ -2068,15 +2068,22 @@ async function cmdMoveProject() {
     process.exit(1)
   }
   const cfg = loadConfig()
-  const sourceConfig = getActiveConfigName(cfg)
-  if (sourceConfig === targetConfig) throw new Error(`Project "${name}" is already in ${targetConfig}.`)
+  const selectedConfig = getActiveConfigName(cfg)
   const target = cfg.configs?.[targetConfig]
   if (!target || typeof target.store !== 'string' || typeof target.database !== 'string') {
     throw new Error(`Unknown or incomplete target config "${targetConfig}".`)
   }
-  const project = await api('GET', `/api/projects/${encodeURIComponent(name)}`)
+  let project = await api('GET', `/api/projects/${encodeURIComponent(name)}`)
   if (!project.sourceDir) throw new Error(`Project "${name}" has no local source directory; cannot change daemon ownership.`)
   const sourceDir = resolve(project.sourceDir)
+  const projectWorlds = readProjectWorlds(projectWorldsPath(CONFIG_DIR))
+  const sourceConfig = projectWorlds[sourceDir] || selectedConfig
+  if (sourceConfig === targetConfig) throw new Error(`Project "${name}" is already in ${targetConfig}.`)
+  if (sourceConfig !== selectedConfig) {
+    const source = cfg.configs?.[sourceConfig]
+    if (!source || typeof source.store !== 'string') throw new Error(`Recorded source config "${sourceConfig}" is missing.`)
+    project = await apiAt(source.store.replace(/\/+$/, ''), 'GET', `/api/projects/${encodeURIComponent(name)}`)
+  }
   if (!existsSync(sourceDir)) throw new Error(`Project source directory does not exist: ${sourceDir}`)
   const targetServer = target.store.replace(/\/+$/, '')
   if (hasFlag('dry-run')) {
