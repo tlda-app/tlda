@@ -3930,6 +3930,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       if (resolvedSince) params.since = resolvedSince;
       if (resolvedUntil) params.before = resolvedUntil;
       if (args.types?.length === 1) params.eventType = args.types[0];
+      else if (args.types?.length > 1) params.eventTypes = args.types;
       const data = await sendWS('fleet-search', params);
       if (!data) return;
       for (const e of (data.results || []).filter(r => r.source === 'fleet')) {

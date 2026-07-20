@@ -3677,7 +3677,7 @@ export class FleetStore {
     return ids;
   }
 
-  searchAll(query, { limit = 50, agent, role, since, before, agentOnly, historyOnly, eventOnly, fromOnly } = {}) {
+  searchAll(query, { limit = 50, agent, role, type, types, since, before, agentOnly, historyOnly, eventOnly, fromOnly } = {}) {
     const ftsQuery = literalFtsQuery(query);
     const runQuery = (sql, params) => {
       try { return this.db.prepare(sql).all(...params); } catch { return []; }
@@ -3688,6 +3688,7 @@ export class FleetStore {
     const hasAgent = agentIds.length > 0;
     const agentPlaceholders = agentIds.map(() => '?').join(',');
     const historyMode = historyOnly ?? agentOnly ?? false;
+    const eventTypes = Array.isArray(types) && types.length ? types : type ? [type] : null;
 
     function agentClause(fromCol, toCol, agentCol) {
       // `from:` semantics — restrict to messages the agent SENT (from_id only).
@@ -3718,6 +3719,10 @@ export class FleetStore {
       eClauses = ['events_fts MATCH ?'];
       eParams = [ftsQuery];
       if (hasAgent) { const ac = agentClause('e.from_id', 'e.to_id', 'e.agent_id'); eClauses.push(ac.clause); eParams.push(...ac.params); }
+    }
+    if (eventTypes) {
+      eClauses.push(`e.type IN (${eventTypes.map(() => '?').join(',')})`);
+      eParams.push(...eventTypes);
     }
     if (since) { eClauses.push('e.timestamp >= ?'); eParams.push(since); }
     if (before) { eClauses.push('e.timestamp < ?'); eParams.push(before); }

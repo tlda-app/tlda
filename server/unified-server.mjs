@@ -5259,7 +5259,7 @@ async function handleFleetWsMessage(ws, msg) {
       }
       const hasText = (msg.query || '').trim().length > 0;
       let results = fleetStore.searchAll(msg.query || '', {
-        limit: msg.limit, agent: searchAgent, role: msg.role, since: msg.since, before: msg.before,
+        limit: msg.limit, agent: searchAgent, role: msg.role, type: msg.eventType, types: msg.eventTypes, since: msg.since, before: msg.before,
         // No keyword + an agent filter → return that agent's whole history
         // instead of FTS-matching the literal query text.
         agentOnly: msg.agentOnly ?? (!hasText && !!searchAgent),
@@ -5277,7 +5277,7 @@ async function handleFleetWsMessage(ws, msg) {
         if (ids.length) {
           const naturalTextQuery = (msg.naturalTextQuery || '').trim()
           const agentResults = fleetStore.searchAll(naturalTextQuery, {
-            limit: msg.limit, agent: ids, role: msg.role, since: msg.since, before: msg.before,
+            limit: msg.limit, agent: ids, role: msg.role, type: msg.eventType, types: msg.eventTypes, since: msg.since, before: msg.before,
             agentOnly: !naturalTextQuery,
             historyOnly: msg.historyOnly,
             eventOnly: msg.eventOnly,
