@@ -15,7 +15,7 @@ const seat = {
   tmux_session: 'fleet-a',
 }
 
-test('positive runtime evidence projects awake until the 90s expiry', () => {
+test('positive runtime evidence does not manufacture hibernation from elapsed time', () => {
   const base = { id: 'fleet:a', dead: false, human: false, metadata: {} }
   const evidence = {
     liveness: LIVENESS.ALIVE,
@@ -37,8 +37,8 @@ test('positive runtime evidence projects awake until the 90s expiry', () => {
     seat,
     isDaemonConnected: () => true,
   })
-  assert.equal(expired.status, 'hibernating')
-  assert.match(expired.reason, /positive-liveness-expired/)
+  assert.equal(expired.status, 'awake')
+  assert.equal(expired.reason, 'daemon-hosted-session-refresh')
 })
 
 test('explicit dead or wedged evidence wins immediately', () => {
@@ -88,7 +88,18 @@ test('runtime status store reports route state from exact current seat', () => {
   assert.equal(projection.status, 'awake')
   assert.equal(projection.route_state, ROUTE_STATE.ROUTABLE)
   now += 91_000
-  assert.equal(store.project({ id: 'fleet:a', dead: false, human: false, metadata: {} }).status, 'hibernating')
+  assert.equal(store.project({ id: 'fleet:a', dead: false, human: false, metadata: {} }).status, 'awake')
+})
+
+test('a routable current seat is awake until explicit negative liveness arrives', () => {
+  const base = { id: 'fleet:a', dead: false, human: false, metadata: {} }
+  const projection = projectAgentRuntimeStatus(base, null, {
+    nowMs: 5_000,
+    seat,
+    isDaemonConnected: () => true,
+  })
+  assert.equal(projection.status, 'awake')
+  assert.equal(projection.reason, 'current-seat-routable-no-negative-evidence')
 })
 
 test('canonical runtime evidence tracks one continuous alive interval', () => {

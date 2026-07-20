@@ -224,22 +224,27 @@ export function projectAgentRuntimeStatus(agent, evidence = null, {
 
   if (evidence?.liveness === LIVENESS.ALIVE) {
     const ageMs = Number.isFinite(evidence.liveness_at_ms) ? nowMs - evidence.liveness_at_ms : Infinity
-    if (ageMs <= ttlMs) {
-      return runtimeProjection({
-        status: RUNTIME_STATUS.AWAKE,
-        activity: baseEvidence.activity,
-        route,
-        evidence: { ...baseEvidence, positive_age_ms: Math.max(0, ageMs) },
-        reason: evidence.liveness_source || 'positive-runtime-evidence',
-        nowMs,
-      })
-    }
     return runtimeProjection({
-      status: RUNTIME_STATUS.HIBERNATING,
+      status: RUNTIME_STATUS.AWAKE,
       activity: baseEvidence.activity,
       route,
       evidence: { ...baseEvidence, positive_age_ms: Number.isFinite(ageMs) ? Math.max(0, ageMs) : null },
-      reason: `positive-liveness-expired-after-${ttlMs}ms`,
+      reason: evidence.liveness_source || 'positive-runtime-evidence',
+      nowMs,
+    })
+  }
+
+  // A current seat on a connected daemon is positive routing state. Do not
+  // manufacture a death from elapsed wall time or an empty in-memory evidence
+  // map (including immediately after a server restart). Only explicit daemon
+  // dead/wedged evidence may hibernate a routed seat.
+  if (route.state === ROUTE_STATE.ROUTABLE) {
+    return runtimeProjection({
+      status: RUNTIME_STATUS.AWAKE,
+      activity: baseEvidence.activity,
+      route,
+      evidence: baseEvidence,
+      reason: 'current-seat-routable-no-negative-evidence',
       nowMs,
     })
   }
