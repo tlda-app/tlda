@@ -334,6 +334,7 @@ let agentStatusSeq = 0
 let serverProjects = []           // unfiltered project list from this world server
 let projects = []                 // projects owned by this daemon config
 let _lastSessionWatcherRosterSig = ''
+const terminalCapabilitiesRegisteredThisBoot = new Set()
 let terminalRpc
 let activityDeliveryMetricsTimer = null
 
@@ -424,6 +425,39 @@ function grantOnMintInfill(reason) {
     if (r.written) log.info(`grant-on-mint (${reason}): granted ${r.written} previously-ungranted seat(s) (${r.skippedExisting} already granted)`)
   } catch (e) {
     log.error(`grant-on-mint infill failed (${reason}): ${e.stack || e.message}`)
+  }
+}
+
+function registerHostedTerminalCapabilities(reason) {
+  const daemonKey = `${MACHINE_ID}:${ACTIVE_CONFIG}`
+  for (const row of permissionLedger.listProcessBindings()) {
+    if (!row?.id || row.daemonKey !== daemonKey || !row.sessionId || !row.tmuxSession) continue
+    if (!row.sessionKind || !row.model || !row.cwd) continue
+    try {
+      const terminalCapability = terminalCapabilitiesRegisteredThisBoot.has(row.id)
+        ? row.terminalCapability
+        : permissionLedger.rotateTerminalCapabilitySync(row.id)
+      if (!terminalCapability) continue
+      terminalCapabilitiesRegisteredThisBoot.add(row.id)
+      sendMsg({
+        type: 'agent-seat',
+        agent_id: row.id,
+        session_id: row.sessionId,
+        resume_id: row.sessionId,
+        kind: row.sessionKind,
+        model: row.model,
+        cwd: row.cwd,
+        machine_id: MACHINE_ID,
+        env_name: ACTIVE_CONFIG,
+        daemon_key: daemonKey,
+        terminal_capability: terminalCapability,
+        created_source: 'daemon-terminal-capability-refresh',
+        transition_reason: reason,
+      })
+    } catch (e) {
+      // Keep registering other hosted seats; this row will retry on the next roster reconciliation.
+      log.warn(`terminal capability registration failed for ${row.id}: ${e.message}`)
+    }
   }
 }
 
@@ -596,6 +630,12 @@ terminalRpc = createTerminalRpc({
     }
     return true
   },
+  resolveTerminalCapability: ({ agentId, terminalCapability }) => (
+    (() => {
+      const row = permissionLedger.resolveTerminalCapability({ agentId, terminalCapability })
+      return row?.daemonKey === `${MACHINE_ID}:${ACTIVE_CONFIG}` ? row : null
+    })()
+  ),
 })
 
 gooseSupervisor = createGooseSupervisor({
@@ -760,6 +800,26 @@ const pendingSeatBindings = createPendingSeatBindingManager({
   log,
 })
 
+function hydratePendingSeatBindingObligation(obligation) {
+  if (!obligation?.local_agent_id) {
+    throw new Error(`pending seat binding ${obligation?.obligation_id || 'unknown'} is missing local_agent_id`)
+  }
+  const localLedger = createLocalAgentLedger(path.join(CONFIG_DIR, 'fleet-daemon.db'))
+  try {
+    const local = localLedger.get(obligation.local_agent_id)
+    const tmuxSession = local?.process?.tmuxName || null
+    if (!tmuxSession) {
+      throw new Error(`pending seat binding ${obligation.obligation_id} has no local tmux recipe for ${obligation.local_agent_id}`)
+    }
+    return {
+      ...obligation,
+      tmux_session: tmuxSession,
+    }
+  } finally {
+    localLedger.close()
+  }
+}
+
 const machineRpc = createMachineRpc({
   sendMsg,
   getPid: () => process.pid,
@@ -905,6 +965,7 @@ function reconcileRoster(reason) {
     syncIfRosterChanged: options => jsonlIngestor.syncIfRosterChanged(options),
     onChanged: () => {
       grantOnMintInfill(reason)
+      registerHostedTerminalCapabilities(reason)
       void agentLiveness.reportHostedSessions(reason)
     },
   })
@@ -933,7 +994,11 @@ function handleServerMessage(msg) {
     return
   }
   if (msg.type === 'agent-seat-binding-obligation') {
-    pendingSeatBindings.accept(msg)
+    try {
+      pendingSeatBindings.accept(hydratePendingSeatBindingObligation(msg))
+    } catch (e) {
+      log.warn?.(`pending seat binding ${msg.obligation_id || 'unknown'} rejected locally: ${e.message}`)
+    }
     // This acknowledges transport receipt only. The server-held obligation is
     // cleared later by the exact seat/readback completion or terminal event.
     ackServerDaemonOutboxMessage(msg)

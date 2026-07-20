@@ -36,6 +36,7 @@ export function createTerminalRpc({
   onPlanModeGone,
   hasPlanMode,
   validateTmuxOwner,
+  resolveTerminalCapability,
   execFileImpl = execFileP,
 }) {
   const TMUX_ARGS = tmuxArgs || []
@@ -53,6 +54,20 @@ export function createTerminalRpc({
     if (!agentId || !validateTmuxOwner) return
     const result = validateTmuxOwner({ agentId, sessionId, tmuxSession })
     if (result === false) throw new Error(`tmux endpoint ownership rejected for ${agentId}/${tmuxSession}`)
+  }
+
+  function resolveTerminalEndpoint({ agent_id, agentId, terminal_capability, terminalCapability } = {}, { allowUnavailable = false } = {}) {
+    const fleetId = agent_id || agentId
+    const capability = terminal_capability || terminalCapability
+    if (!fleetId || !capability) throw new Error('terminal capability required')
+    if (!resolveTerminalCapability) throw new Error('terminal capability resolution unavailable')
+    const row = resolveTerminalCapability({ agentId: fleetId, terminalCapability: capability })
+    if (!row) throw new Error(`terminal capability unavailable for ${fleetId}`)
+    if (!row.tmuxSession || !row.sessionId) {
+      if (allowUnavailable) return { unavailable: true, reason: 'terminal already unavailable', agentId: row.id || fleetId }
+      throw new Error(`terminal capability unavailable for ${fleetId}`)
+    }
+    return { tmuxSession: row.tmuxSession, sessionId: row.sessionId, agentId: row.id }
   }
 
   async function tmux(...args) {
@@ -83,49 +98,51 @@ export function createTerminalRpc({
     }
   }
 
-  async function rpcSendKey({ tmux_session, key, agent_id, session_id }) {
-    checkSession(tmux_session)
-    checkTmuxOwner(agent_id, session_id, tmux_session)
+  async function rpcSendKey(args = {}) {
+    const { tmuxSession } = resolveTerminalEndpoint(args)
+    const { key } = args
+    checkSession(tmuxSession)
     if (!key) throw new Error('missing key')
-    onArmBySession(tmux_session)
+    onArmBySession(tmuxSession)
     const tmuxKey = key.replace(/^ctrl\+(.)/i, (_, c) => `C-${c}`)
-    await tmux('send-keys', '-t', tmux_session, tmuxKey)
+    await tmux('send-keys', '-t', tmuxSession, tmuxKey)
     return { ok: true }
   }
 
-  async function rpcSendText({ tmux_session, text, enter, enter_delay_ms, agent_id, session_id }) {
-    checkSession(tmux_session)
-    checkTmuxOwner(agent_id, session_id, tmux_session)
-    onArmBySession(tmux_session)
+  async function rpcSendText(args = {}) {
+    const { tmuxSession } = resolveTerminalEndpoint(args)
+    const { text, enter, enter_delay_ms } = args
+    checkSession(tmuxSession)
+    onArmBySession(tmuxSession)
     // A live tmux can still be unable to consume task text. Clear only prompts
     // already classified as safe auto-accepts before injecting the queued text;
     // unknown, permission, and choice prompts remain untouched.
     try {
-      const pane = await capturePaneTail(tmux_session)
+      const pane = await capturePaneTail(tmuxSession)
       const prompt = detectPrompt(pane)
       if (prompt.type === 'auto-accept') {
-        await autoAcceptPrompt(tmux_session, prompt.reason, prompt.acceptKey)
+        await autoAcceptPrompt(tmuxSession, prompt.reason, prompt.acceptKey)
       }
     } catch {
       // Capture is advisory. Preserve the existing send path when unavailable.
     }
-    const pty = terminalWatchPtys.get(tmux_session)?.alive
-      ? terminalWatchPtys.get(tmux_session).pty
+    const pty = terminalWatchPtys.get(tmuxSession)?.alive
+      ? terminalWatchPtys.get(tmuxSession).pty
       : null
     if (pty) {
       if (text) pty.write(text)
       if (enter !== false) {
         const delay = Number(enter_delay_ms ?? 120)
         if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay))
-        await tmux('send-keys', '-t', tmux_session, 'Enter')
+        await tmux('send-keys', '-t', tmuxSession, 'Enter')
       }
       return { ok: true, via: 'pty' }
     }
-    if (text) await tmux('send-keys', '-t', tmux_session, '--', text)
+    if (text) await tmux('send-keys', '-t', tmuxSession, '--', text)
     if (enter !== false) {
       const delay = Number(enter_delay_ms ?? 120)
       if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay))
-      await tmux('send-keys', '-t', tmux_session, 'Enter')
+      await tmux('send-keys', '-t', tmuxSession, 'Enter')
     }
     return { ok: true, via: 'tmux' }
   }
@@ -138,30 +155,31 @@ export function createTerminalRpc({
     return { ok: true, via: 'tmux-sendkeys' }
   }
 
-  async function rpcCapturePane({ tmux_session, lines, agent_id, session_id, visible }) {
-    checkSession(tmux_session)
-    checkTmuxOwner(agent_id, session_id, tmux_session)
+  async function rpcCapturePane(args = {}) {
+    const { tmuxSession, sessionId, agentId } = resolveTerminalEndpoint(args)
+    const { lines, visible } = args
+    checkSession(tmuxSession)
     const captureArgs = visible
-      ? terminalVisibleCaptureArgs(tmux_session, { ansi: true })
-      : terminalBackscrollCaptureArgs(tmux_session, lines, { ansi: true })
-    const { stdout } = await execFileP('tmux',
+      ? terminalVisibleCaptureArgs(tmuxSession, { ansi: true })
+      : terminalBackscrollCaptureArgs(tmuxSession, lines, { ansi: true })
+    const { stdout } = await execFileImpl('tmux',
       [...TMUX_ARGS, ...captureArgs],
       { timeout: 5000, encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 })
     const prompt = detectPrompt(stdout)
     if (prompt.type === 'auto-accept') {
-      const lastAction = promptCooldowns.get(tmux_session)
+      const lastAction = promptCooldowns.get(tmuxSession)
       if (!lastAction || Date.now() - lastAction >= 10_000) {
-        promptCooldowns.set(tmux_session, Date.now())
-        autoAcceptPrompt(tmux_session, prompt.reason, prompt.acceptKey)
-        if (agent_id) sendMsg({ type: 'prompt-auto-accepted', agent_id, reason: prompt.reason, ts: new Date().toISOString() })
+        promptCooldowns.set(tmuxSession, Date.now())
+        autoAcceptPrompt(tmuxSession, prompt.reason, prompt.acceptKey)
+        if (agentId) sendMsg({ type: 'prompt-auto-accepted', agent_id: agentId, reason: prompt.reason, ts: new Date().toISOString() })
       }
-    } else if (prompt.type === 'surface' && agent_id) {
-      if (surfacedPrompts.get(tmux_session) !== prompt.reason) {
-        surfacedPrompts.set(tmux_session, prompt.reason)
-        sendMsg({ type: 'terminal_attention', agent_id, tmux_session, text: prompt.reason, reason: prompt.reason, snippet: prompt.snippet || null })
+    } else if (prompt.type === 'surface' && agentId) {
+      if (surfacedPrompts.get(tmuxSession) !== prompt.reason) {
+        surfacedPrompts.set(tmuxSession, prompt.reason)
+        sendMsg({ type: 'terminal_attention', agent_id: agentId, text: prompt.reason, reason: prompt.reason, snippet: prompt.snippet || null })
       }
     } else {
-      surfacedPrompts.delete(tmux_session)
+      surfacedPrompts.delete(tmuxSession)
     }
     return { ok: true, pane: stdout }
   }
@@ -178,21 +196,21 @@ export function createTerminalRpc({
     return thinkingSpinnerRe.test(tail) || interruptHintRe.test(tail)
   }
 
-  async function rpcInterrupt({ tmux_session, agent_id, session_id }) {
-    checkSession(tmux_session)
-    checkTmuxOwner(agent_id, session_id, tmux_session)
-    try { await tmux('send-keys', '-t', tmux_session, 'Escape') } catch {
+  async function rpcInterrupt(args = {}) {
+    const { tmuxSession } = resolveTerminalEndpoint(args)
+    checkSession(tmuxSession)
+    try { await tmux('send-keys', '-t', tmuxSession, 'Escape') } catch {
       // Interrupt is best-effort; the capture loop below reports whether it stopped.
     }
     let stopped = false
     for (let i = 0; i < 3; i++) {
       await new Promise(r => setTimeout(r, 1200))
       let pane = ''
-      try { pane = await capturePaneTail(tmux_session) } catch {
+      try { pane = await capturePaneTail(tmuxSession) } catch {
         // Missing capture means no proof of ongoing work; keep trying escape.
       }
       if (!paneIsWorking(pane)) { stopped = true; break }
-      try { await tmux('send-keys', '-t', tmux_session, 'Escape') } catch {
+      try { await tmux('send-keys', '-t', tmuxSession, 'Escape') } catch {
         // Repeated escape is best-effort; stopped=false reports remaining uncertainty.
       }
     }
@@ -207,24 +225,24 @@ export function createTerminalRpc({
     return -1
   }
 
-  async function rpcSoftInterrupt({ tmux_session, agent_id, session_id }) {
-    checkSession(tmux_session)
-    checkTmuxOwner(agent_id, session_id, tmux_session)
-    if (agent_id) onArmAgent(agent_id); else onArmBySession(tmux_session)
+  async function rpcSoftInterrupt(args = {}) {
+    const { tmuxSession, agentId } = resolveTerminalEndpoint(args)
+    checkSession(tmuxSession)
+    if (agentId) onArmAgent(agentId); else onArmBySession(tmuxSession)
     let pane = ''
-    try { pane = await capturePaneTail(tmux_session) } catch {
+    try { pane = await capturePaneTail(tmuxSession) } catch {
       // Missing capture means there is no queued prompt to promote.
     }
     let lines = pane.split('\n').slice(-thinkingScanLines)
     if (!paneIsWorking(pane) || pendingQueuedIdx(lines) < 0) {
       return { ok: true, promoted: false, reason: 'nothing-queued' }
     }
-    try { await tmux('send-keys', '-t', tmux_session, 'Escape') } catch {
+    try { await tmux('send-keys', '-t', tmuxSession, 'Escape') } catch {
       // Soft interrupt is best-effort; queued-state polling below determines result.
     }
     for (let i = 0; i < 5; i++) {
       await new Promise(r => setTimeout(r, 700))
-      try { pane = await capturePaneTail(tmux_session) } catch {
+      try { pane = await capturePaneTail(tmuxSession) } catch {
         // Missing capture leaves the queued state unknown for this iteration.
       }
       lines = pane.split('\n').slice(-thinkingScanLines)
@@ -235,9 +253,7 @@ export function createTerminalRpc({
 
   async function rpcListSessions() {
     try {
-      const { stdout } = await execFileP('tmux',
-        [...TMUX_ARGS, 'list-sessions', '-F', '#{session_name}'],
-        { timeout: 3000, encoding: 'utf8' })
+      const { stdout } = await tmux('list-sessions', '-F', '#{session_name}')
       return { ok: true, sessions: stdout.trim().split('\n').filter(Boolean) }
     } catch (e) {
       if (/no server running|no sessions/i.test(e.stderr || '')) return { ok: true, sessions: [] }
@@ -245,29 +261,32 @@ export function createTerminalRpc({
     }
   }
 
-  async function rpcCheckAlive({ tmux_session, agent_id, session_id }) {
-    checkTmuxOwner(agent_id, session_id, tmux_session)
-    if (!tmux_session) return { alive: false }
-    const cached = alivenessCache.get(tmux_session)
+  async function rpcCheckAlive(args = {}) {
+    const { tmuxSession } = resolveTerminalEndpoint(args)
+    if (!tmuxSession) return { alive: false }
+    const cached = alivenessCache.get(tmuxSession)
     if (cached !== undefined) return { alive: cached }
     try {
       const r = await rpcListSessions()
-      const alive = (r.sessions || []).includes(tmux_session)
-      alivenessCache.set(tmux_session, alive)
+      const alive = (r.sessions || []).includes(tmuxSession)
+      alivenessCache.set(tmuxSession, alive)
       return { alive }
     } catch {
       return { alive: true }
     }
   }
 
-  async function rpcKillSession({ tmux_session, agent_id, session_id }) {
-    if (!tmux_session) throw new Error('missing tmux_session')
-    checkSession(tmux_session)
-    checkTmuxOwner(agent_id, session_id, tmux_session)
-    await tmux('kill-session', '-t', tmux_session)
-    if (agent_id) onEmitAgentStatus(agent_id, 'hibernating')
-    alivenessCache.set(tmux_session, false)
-    return { ok: true, tmux_session }
+  async function rpcKillSession(args = {}) {
+    const { tmuxSession, agentId, unavailable, reason } = resolveTerminalEndpoint(args, { allowUnavailable: true })
+    if (unavailable) {
+      if (agentId) onEmitAgentStatus(agentId, 'hibernating')
+      return { ok: true, already_unavailable: true, reason }
+    }
+    checkSession(tmuxSession)
+    await tmux('kill-session', '-t', tmuxSession)
+    if (agentId) onEmitAgentStatus(agentId, 'hibernating')
+    alivenessCache.set(tmuxSession, false)
+    return { ok: true }
   }
 
   async function getPty() {
@@ -297,7 +316,7 @@ export function createTerminalRpc({
       if (state.lastPromptSurfaced === result.reason) return
       state.lastPromptSurfaced = result.reason
       log.info(`pty surfacing prompt for ${agentId}: ${result.reason}`)
-      sendMsg({ type: 'terminal_attention', agent_id: agentId, tmux_session: tmuxSession, text: result.reason, reason: result.reason, snippet: result.snippet || null })
+      sendMsg({ type: 'terminal_attention', agent_id: agentId, text: result.reason, reason: result.reason, snippet: result.snippet || null })
     } else {
       state.lastPromptSurfaced = ''
     }
@@ -329,30 +348,30 @@ export function createTerminalRpc({
     }
   }
 
-  async function rpcStartTerminalWatch({ tmux_session, agent_id, session_id }) {
-    checkSession(tmux_session)
-    checkTmuxOwner(agent_id, session_id, tmux_session)
+  async function rpcStartTerminalWatch(args = {}) {
+    const { tmuxSession, agentId } = resolveTerminalEndpoint(args)
+    checkSession(tmuxSession)
     {
-      const existing = terminalWatchPtys.get(tmux_session)
+      const existing = terminalWatchPtys.get(tmuxSession)
       if (existing) return { ok: true, already: true, cols: existing.cols, rows: existing.rows }
     }
 
-    try { await execFileP('tmux', [...TMUX_ARGS, 'set-option', '-t', tmux_session, 'status', 'off'], { timeout: 3000 }) } catch {
+    try { await execFileP('tmux', [...TMUX_ARGS, 'set-option', '-t', tmuxSession, 'status', 'off'], { timeout: 3000 }) } catch {
       // Hiding tmux status is cosmetic; terminal streaming still works.
     }
 
     const PINNED_COLS = 120, PINNED_ROWS = 40
     try {
-      await execFileP('tmux', [...TMUX_ARGS, 'set-option', '-t', tmux_session, 'window-size', 'manual'], { timeout: 3000 })
-      await execFileP('tmux', [...TMUX_ARGS, 'resize-window', '-t', tmux_session, '-x', String(PINNED_COLS), '-y', String(PINNED_ROWS)], { timeout: 3000 })
+      await execFileP('tmux', [...TMUX_ARGS, 'set-option', '-t', tmuxSession, 'window-size', 'manual'], { timeout: 3000 })
+      await execFileP('tmux', [...TMUX_ARGS, 'resize-window', '-t', tmuxSession, '-x', String(PINNED_COLS), '-y', String(PINNED_ROWS)], { timeout: 3000 })
     } catch (e) {
       // Pinning improves stable rendering; existing tmux size remains usable.
-      log.warn(`terminal-watch: failed to pin window for ${tmux_session}: ${e?.message || e}`)
+      log.warn(`terminal-watch: failed to pin window for ${tmuxSession}: ${e?.message || e}`)
     }
 
-    const size = await queryWindowSize(tmux_session) || { cols: PINNED_COLS, rows: PINNED_ROWS }
+    const size = await queryWindowSize(tmuxSession) || { cols: PINNED_COLS, rows: PINNED_ROWS }
     const nodePty = await getPty()
-    const pty = nodePty.spawn('tmux', [...TMUX_ARGS, 'attach-session', '-t', tmux_session], {
+    const pty = nodePty.spawn('tmux', [...TMUX_ARGS, 'attach-session', '-t', tmuxSession], {
       name: 'xterm-256color',
       cols: size.cols,
       rows: size.rows,
@@ -360,92 +379,90 @@ export function createTerminalRpc({
     })
 
     const state = { pty, alive: true, recentOutput: '', lastPromptSurfaced: '', cols: size.cols, rows: size.rows, sizePoll: null }
-    terminalWatchPtys.set(tmux_session, state)
+    terminalWatchPtys.set(tmuxSession, state)
 
-    sendMsg({ type: 'terminal-size', agent_id, tmux_session, cols: size.cols, rows: size.rows })
+    sendMsg({ type: 'terminal-size', agent_id: agentId, cols: size.cols, rows: size.rows })
     try {
       const { stdout } = await execFileP('tmux',
-        [...TMUX_ARGS, ...terminalVisibleCaptureArgs(tmux_session)],
+        [...TMUX_ARGS, ...terminalVisibleCaptureArgs(tmuxSession)],
         { timeout: 3000, encoding: 'utf8' })
       const snapshot = trimTerminalSeedBlankRows(stdout).replace(/\n/g, '\r\n')
       if (snapshot.trim()) {
         sendMsg({
           type: 'terminal-data',
-          agent_id,
-          tmux_session,
+          agent_id: agentId,
           data: Buffer.from(snapshot).toString('base64'),
         })
         state.recentOutput = stripAnsi(snapshot).slice(-4000)
-        detectPromptFromPty(agent_id, tmux_session, state)
+        detectPromptFromPty(agentId, tmuxSession, state)
       }
     } catch (e) {
       // Initial snapshot is optional; live PTY data follows after attach.
-      log.warn(`terminal-watch: initial capture failed for ${tmux_session}: ${e?.message || e}`)
+      log.warn(`terminal-watch: initial capture failed for ${tmuxSession}: ${e?.message || e}`)
     }
 
     state.sizePoll = setInterval(async () => {
       if (!state.alive) return
-      const cur = await queryWindowSize(tmux_session)
+      const cur = await queryWindowSize(tmuxSession)
       if (!cur || (cur.cols === state.cols && cur.rows === state.rows)) return
       state.cols = cur.cols
       state.rows = cur.rows
       try { state.pty.resize(Math.max(1, cur.cols), Math.max(1, cur.rows)) } catch {
         // Resize failures are transient; next poll can retry.
       }
-      sendMsg({ type: 'terminal-size', agent_id, tmux_session, cols: cur.cols, rows: cur.rows })
+      sendMsg({ type: 'terminal-size', agent_id: agentId, cols: cur.cols, rows: cur.rows })
     }, TERMINAL_SIZE_POLL_MS)
 
     pty.onData((data) => {
       if (!state.alive) return
       sendMsg({
         type: 'terminal-data',
-        agent_id,
-        tmux_session,
+        agent_id: agentId,
         data: Buffer.from(data).toString('base64'),
       })
       state.recentOutput += stripAnsi(data)
       if (state.recentOutput.length > 8000) state.recentOutput = state.recentOutput.slice(-4000)
-      detectPromptFromPty(agent_id, tmux_session, state)
+      detectPromptFromPty(agentId, tmuxSession, state)
     })
 
     pty.onExit(({ exitCode }) => {
       state.alive = false
       if (state.sizePoll) { clearInterval(state.sizePoll); state.sizePoll = null }
-      terminalWatchPtys.delete(tmux_session)
+      terminalWatchPtys.delete(tmuxSession)
       void (async () => {
-        const decision = decideTerminalWatchExit({ paneLive: await tmuxPaneIsLive(tmux_session) })
+        const decision = decideTerminalWatchExit({ paneLive: await tmuxPaneIsLive(tmuxSession) })
         if (!decision.terminalDead) {
-          log.warn(`terminal-watch exited while pane is still live: agent=${agent_id} session=${tmux_session} exitCode=${exitCode}; suppressing terminal-dead`)
+          log.warn(`terminal-watch exited while pane is still live: agent=${agentId} exitCode=${exitCode}; suppressing terminal-dead`)
           return
         }
-        log.info(`terminal exited: agent=${agent_id} session=${tmux_session} exitCode=${exitCode}`)
-        sendMsg({ type: 'terminal-dead', agent_id, tmux_session, exitCode })
+        log.info(`terminal exited: agent=${agentId} exitCode=${exitCode}`)
+        sendMsg({ type: 'terminal-dead', agent_id: agentId, exitCode })
       })()
     })
 
     return { ok: true, streaming: true, cols: size.cols, rows: size.rows }
   }
 
-  function rpcStopTerminalWatch({ tmux_session, agent_id, session_id }) {
-    checkSession(tmux_session)
-    checkTmuxOwner(agent_id, session_id, tmux_session)
-    const state = terminalWatchPtys.get(tmux_session)
+  function rpcStopTerminalWatch(args = {}) {
+    const { tmuxSession } = resolveTerminalEndpoint(args)
+    checkSession(tmuxSession)
+    const state = terminalWatchPtys.get(tmuxSession)
     if (!state) return { ok: true, already: true }
     state.alive = false
     if (state.sizePoll) { clearInterval(state.sizePoll); state.sizePoll = null }
     try { state.pty.kill() } catch {
       // PTY may already be closed by its exit handler.
     }
-    terminalWatchPtys.delete(tmux_session)
+    terminalWatchPtys.delete(tmuxSession)
     return { ok: true }
   }
 
-  async function rpcTerminalResize({ tmux_session, agent_id, session_id }) {
-    checkSession(tmux_session)
-    checkTmuxOwner(agent_id, session_id, tmux_session)
-    const state = terminalWatchPtys.get(tmux_session)
+  async function rpcTerminalResize(args = {}) {
+    const { tmuxSession } = resolveTerminalEndpoint(args)
+    checkSession(tmuxSession)
+    const state = terminalWatchPtys.get(tmuxSession)
     if (!state || !state.alive) return { ok: false, reason: 'no active pty' }
-    const size = await queryWindowSize(tmux_session)
+    const size = await queryWindowSize(tmuxSession)
     const target = size || { cols: state.cols, rows: state.rows }
     state.cols = target.cols
     state.rows = target.rows
@@ -453,15 +470,16 @@ export function createTerminalRpc({
       state.pty.resize(Math.max(1, target.cols), Math.max(1, target.rows))
     } catch (e) {
       // Resize failure is reported but should not close the watch.
-      log.warn(`terminal-watch: failed to resize watcher PTY for ${tmux_session}: ${e?.message || e}`)
+      log.warn(`terminal-watch: failed to resize watcher PTY for ${tmuxSession}: ${e?.message || e}`)
     }
     return { ok: true, cols: target.cols, rows: target.rows }
   }
 
-  function rpcTerminalInput({ tmux_session, data, agent_id, session_id }) {
-    checkSession(tmux_session)
-    checkTmuxOwner(agent_id, session_id, tmux_session)
-    const state = terminalWatchPtys.get(tmux_session)
+  function rpcTerminalInput(args = {}) {
+    const { tmuxSession } = resolveTerminalEndpoint(args)
+    const { data } = args
+    checkSession(tmuxSession)
+    const state = terminalWatchPtys.get(tmuxSession)
     if (!state || !state.alive) return { ok: false, reason: 'no active pty' }
     state.pty.write(data)
     return { ok: true }

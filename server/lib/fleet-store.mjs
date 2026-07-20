@@ -55,7 +55,6 @@ function serializePrettyName(value) {
 }
 
 const PROTECTED_AGENT_UPSERT_FIELDS = [
-  'tmux_session',
   'session_id',
   'session_ids',
   'cwd',
@@ -308,7 +307,6 @@ export class FleetStore {
         id TEXT PRIMARY KEY,
         friendly_name TEXT,
         pretty_name TEXT,              -- JSON string/array or plain string, display-only
-        tmux_session TEXT,
         session_id TEXT,
         session_ids TEXT,             -- JSON array
         cwd TEXT,
@@ -346,16 +344,12 @@ export class FleetStore {
         machine_id TEXT NOT NULL,
         env_name TEXT NOT NULL,
         daemon_key TEXT NOT NULL,
-        tmux_session TEXT,
+        terminal_capability TEXT,
         activated_at TEXT NOT NULL,
         activated_by_event_id INTEGER,
         transition_reason TEXT,
         FOREIGN KEY (agent_id, session_id) REFERENCES agent_seats(agent_id, session_id)
       );
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_current_seats_tmux_endpoint
-        ON agent_current_seats(daemon_key, tmux_session)
-        WHERE tmux_session IS NOT NULL;
-
       CREATE TABLE IF NOT EXISTS daemon_agent_bindings (
         daemon_key TEXT NOT NULL,
         local_agent_id TEXT NOT NULL,
@@ -531,6 +525,9 @@ export class FleetStore {
     // ---- Migrations (idempotent) ----
     // Add machine_id column to agents if missing (existing DBs predate it).
     const agentCols = this.db.prepare("PRAGMA table_info(agents)").all();
+    if (agentCols.some(c => c.name === 'tmux_session')) {
+      this.db.exec("ALTER TABLE agents DROP COLUMN tmux_session");
+    }
     if (!agentCols.some(c => c.name === 'machine_id')) {
       this.db.exec("ALTER TABLE agents ADD COLUMN machine_id TEXT");
     }
@@ -598,15 +595,12 @@ export class FleetStore {
         machine_id TEXT NOT NULL,
         env_name TEXT NOT NULL,
         daemon_key TEXT NOT NULL,
-        tmux_session TEXT,
+        terminal_capability TEXT,
         activated_at TEXT NOT NULL,
         activated_by_event_id INTEGER,
         transition_reason TEXT,
         FOREIGN KEY (agent_id, session_id) REFERENCES agent_seats(agent_id, session_id)
       );
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_current_seats_tmux_endpoint
-        ON agent_current_seats(daemon_key, tmux_session)
-        WHERE tmux_session IS NOT NULL;
     `);
     this._migrateAgentCurrentSeatsRouteSchema();
     const taskCols = this.db.prepare("PRAGMA table_info(tasks)").all();
@@ -873,9 +867,12 @@ export class FleetStore {
     const cols = this.db.prepare('PRAGMA table_info(agent_current_seats)').all();
     const sessionCol = cols.find(c => c.name === 'session_id');
     const tmuxCol = cols.find(c => c.name === 'tmux_session');
-    if (sessionCol?.notnull === 1 && tmuxCol?.notnull === 0) return;
+    const capabilityCol = cols.find(c => c.name === 'terminal_capability');
+    if (sessionCol?.notnull === 1 && !tmuxCol && capabilityCol) return;
+    const capabilitySelect = capabilityCol ? 'terminal_capability' : 'NULL';
 
     this.db.exec(`
+      DROP INDEX IF EXISTS idx_agent_current_seats_tmux_endpoint;
       ALTER TABLE agent_current_seats RENAME TO agent_current_seats_old;
       CREATE TABLE agent_current_seats (
         agent_id TEXT PRIMARY KEY,
@@ -883,18 +880,19 @@ export class FleetStore {
         machine_id TEXT NOT NULL,
         env_name TEXT NOT NULL,
         daemon_key TEXT NOT NULL,
-        tmux_session TEXT,
+        terminal_capability TEXT,
         activated_at TEXT NOT NULL,
         activated_by_event_id INTEGER,
         transition_reason TEXT,
         FOREIGN KEY (agent_id, session_id) REFERENCES agent_seats(agent_id, session_id)
       );
       INSERT INTO agent_current_seats (
-        agent_id, session_id, machine_id, env_name, daemon_key, tmux_session,
+        agent_id, session_id, machine_id, env_name, daemon_key, terminal_capability,
         activated_at, activated_by_event_id, transition_reason
       )
       SELECT
-        agent_id, session_id, machine_id, env_name, daemon_key, tmux_session,
+        agent_id, session_id, machine_id, env_name, daemon_key,
+        ${capabilitySelect},
         activated_at, activated_by_event_id, transition_reason
       FROM agent_current_seats_old
       WHERE session_id IS NOT NULL AND session_id != ''
@@ -904,9 +902,6 @@ export class FleetStore {
             AND s.session_id = agent_current_seats_old.session_id
         );
       DROP TABLE agent_current_seats_old;
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_current_seats_tmux_endpoint
-        ON agent_current_seats(daemon_key, tmux_session)
-        WHERE tmux_session IS NOT NULL;
     `);
   }
 
@@ -973,15 +968,14 @@ export class FleetStore {
 
     // Agent queries
     this._upsertAgent = this.db.prepare(`
-      INSERT INTO agents (id, friendly_name, pretty_name, tmux_session, session_id, session_ids, cwd, labels, registered_at, last_seen, dead, human, is_manager, metadata, machine_id, env_name, daemon_key, resume_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO agents (id, friendly_name, pretty_name, session_id, session_ids, cwd, labels, registered_at, last_seen, dead, human, is_manager, metadata, machine_id, env_name, daemon_key, resume_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         friendly_name = COALESCE(excluded.friendly_name, agents.friendly_name),
         pretty_name = COALESCE(excluded.pretty_name, agents.pretty_name),
-        tmux_session = excluded.tmux_session,
-        session_id = excluded.session_id,
-        session_ids = excluded.session_ids,
-        cwd = excluded.cwd,
+        session_id = COALESCE(excluded.session_id, agents.session_id),
+        session_ids = COALESCE(excluded.session_ids, agents.session_ids),
+        cwd = COALESCE(excluded.cwd, agents.cwd),
         labels = COALESCE(excluded.labels, agents.labels),
         registered_at = COALESCE(excluded.registered_at, agents.registered_at),
         last_seen = excluded.last_seen,
@@ -1011,13 +1005,12 @@ export class FleetStore {
     this._getCurrentAgentSeat = this.db.prepare(`
       SELECT c.agent_id, c.session_id,
              s.resume_id, s.kind, s.model, s.cwd, s.created_at, s.created_source, s.created_by_event_id,
-             c.machine_id, c.env_name, c.daemon_key, c.tmux_session,
+             c.machine_id, c.env_name, c.daemon_key, c.terminal_capability,
              c.activated_at, c.activated_by_event_id, c.transition_reason
       FROM agent_current_seats c
       JOIN agent_seats s ON s.agent_id = c.agent_id AND s.session_id = c.session_id
       WHERE c.agent_id = ?
     `);
-    this._getCurrentEndpointOwner = this.db.prepare('SELECT * FROM agent_current_seats WHERE daemon_key = ? AND tmux_session = ?');
     this._getDaemonAgentBinding = this.db.prepare('SELECT * FROM daemon_agent_bindings WHERE daemon_key = ? AND local_agent_id = ?');
     this._getDaemonAgentBindingByAgent = this.db.prepare('SELECT * FROM daemon_agent_bindings WHERE agent_id = ?');
     this._insertDaemonAgentBinding = this.db.prepare(`
@@ -1033,14 +1026,14 @@ export class FleetStore {
     `);
     this._insertCurrentAgentSeat = this.db.prepare(`
       INSERT INTO agent_current_seats (
-        agent_id, session_id, machine_id, env_name, daemon_key, tmux_session,
+        agent_id, session_id, machine_id, env_name, daemon_key, terminal_capability,
         activated_at, activated_by_event_id, transition_reason
       )
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     this._updateCurrentAgentSeat = this.db.prepare(`
       UPDATE agent_current_seats
-      SET machine_id = ?, env_name = ?, daemon_key = ?, tmux_session = ?, activated_at = ?,
+      SET machine_id = ?, env_name = ?, daemon_key = ?, terminal_capability = ?, activated_at = ?,
           activated_by_event_id = ?, transition_reason = ?
       WHERE agent_id = ?
     `);
@@ -1601,7 +1594,7 @@ export class FleetStore {
     machineId,
     envName,
     daemonKey,
-    tmuxSession,
+    terminalCapability,
     reason = null,
     activatedByEventId = null,
     now = new Date().toISOString(),
@@ -1621,41 +1614,29 @@ export class FleetStore {
     if (current && current.session_id !== sessionId) {
       throw new Error(`current seat identity conflict for ${agentId}: session_id: existing=${current.session_id} incoming=${sessionId}`);
     }
-    const endpointOwner = tmuxSession ? this._getCurrentEndpointOwner.get(daemonKey, tmuxSession) : null;
-    if (endpointOwner && endpointOwner.agent_id !== agentId) {
-      throw new Error(`current tmux endpoint ${daemonKey}/${tmuxSession} already belongs to ${endpointOwner.agent_id}`);
-    }
-    try {
-      if (current) {
-        this._updateCurrentAgentSeat.run(
-          machineId,
-          envName,
-          daemonKey,
-          tmuxSession || null,
-          now,
-          activatedByEventId,
-          reason,
-          agentId,
-        );
-      } else {
-        this._insertCurrentAgentSeat.run(
-          agentId,
-          sessionId || null,
-          machineId,
-          envName,
-          daemonKey,
-          tmuxSession || null,
-          now,
-          activatedByEventId,
-          reason,
-        );
-      }
-    } catch (e) {
-      if (e.code === 'SQLITE_CONSTRAINT_UNIQUE' || e.message?.includes('UNIQUE constraint failed')) {
-        const owner = this._getCurrentEndpointOwner.get(daemonKey, tmuxSession);
-        throw new Error(`current tmux endpoint ${daemonKey}/${tmuxSession} already belongs to ${owner?.agent_id || 'another agent'}`);
-      }
-      throw e;
+    if (current) {
+      this._updateCurrentAgentSeat.run(
+        machineId,
+        envName,
+        daemonKey,
+        terminalCapability || null,
+        now,
+        activatedByEventId,
+        reason,
+        agentId,
+      );
+    } else {
+      this._insertCurrentAgentSeat.run(
+        agentId,
+        sessionId || null,
+        machineId,
+        envName,
+        daemonKey,
+        terminalCapability || null,
+        now,
+        activatedByEventId,
+        reason,
+      );
     }
     this._bustAgentsCache();
     this._syncAgentRegistry(agentId);
@@ -1670,8 +1651,8 @@ export class FleetStore {
       if (value == null) continue;
       const seatKey = key === 'agentId' ? 'agent_id'
         : key === 'sessionId' ? 'session_id'
-        : key === 'tmuxSession' ? 'tmux_session'
         : key === 'daemonKey' ? 'daemon_key'
+        : key === 'terminalCapability' ? 'terminal_capability'
         : key;
       if (seat[seatKey] == null) throw new Error(`seat identity conflict for ${agentId}: ${seatKey}: existing=null incoming=${value}`);
       if (String(seat[seatKey]) !== String(value)) {
@@ -1720,7 +1701,6 @@ export class FleetStore {
         agent.id,
         agent.friendly_name || null,
         serializePrettyName(agent.pretty_name),
-        agent.tmux_session || null,
         agent.session_id || null,
         agent.session_ids ? JSON.stringify(agent.session_ids) : null,
         agent.cwd || null,
@@ -1765,7 +1745,6 @@ export class FleetStore {
     if (!seat) return withoutProtectedAgentFields(agent);
     return {
       ...agent,
-      tmux_session: seat.tmux_session,
       session_id: seat.session_id,
       cwd: seat.cwd,
       machine_id: seat.machine_id,

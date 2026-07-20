@@ -3,7 +3,9 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
+import Database from 'better-sqlite3'
 import { FleetStore } from '../server/lib/fleet-store.mjs'
+import { AgentSeatBindingObligations } from '../server/lib/agent-seat-binding-obligations.mjs'
 import { summarizeFleetRosterTruth } from '../server/lib/fleet-roster-truth.mjs'
 import { agentsForTerminalWatchResume } from '../server/lib/terminal-watch-resume.mjs'
 import {
@@ -18,7 +20,60 @@ const dbPath = path.join(dir, 'fleet.db')
 let store = null
 
 try {
+  const legacyPath = path.join(dir, 'legacy-fleet.db')
+  {
+    const legacyDb = new Database(legacyPath)
+    legacyDb.exec(`
+      CREATE TABLE agents (
+        id TEXT PRIMARY KEY,
+        friendly_name TEXT,
+        pretty_name TEXT,
+        tmux_session TEXT,
+        session_id TEXT,
+        session_ids TEXT,
+        cwd TEXT,
+        labels TEXT,
+        registered_at TEXT,
+        last_seen TEXT,
+        dead INTEGER DEFAULT 0,
+        human INTEGER DEFAULT 0,
+        is_manager INTEGER DEFAULT 0,
+        metadata TEXT,
+        machine_id TEXT,
+        env_name TEXT,
+        daemon_key TEXT,
+        resume_id TEXT
+      )
+    `)
+    legacyDb.close()
+  }
+  const legacyStore = new FleetStore(legacyPath, { taskDoc: false })
+  assert(!legacyStore.db.prepare('PRAGMA table_info(agents)').all().map(col => col.name).includes('tmux_session'))
+  legacyStore.close()
+
   store = new FleetStore(dbPath, { taskDoc: false })
+  const agentCols = store.db.prepare('PRAGMA table_info(agents)').all().map(col => col.name)
+  assert(!agentCols.includes('tmux_session'))
+
+  const currentSeatCols = store.db.prepare('PRAGMA table_info(agent_current_seats)').all().map(col => col.name)
+  assert(!currentSeatCols.includes('tmux_session'))
+  assert(currentSeatCols.includes('terminal_capability'))
+
+  const obligations = new AgentSeatBindingObligations(store.db)
+  obligations.put({
+    agent_id: 'fleet:status-authority-test',
+    daemon_key: 'mini:prod',
+    local_agent_id: 'local-status-authority-test',
+    cwd: dir,
+    kind: 'codex',
+    model: 'gpt-test',
+    friendly_name: 'status-authority-test',
+    process_owned_only: true,
+  })
+  const obligationCols = store.db.prepare('PRAGMA table_info(agent_seat_binding_obligations)').all().map(col => col.name)
+  assert(!obligationCols.includes('tmux_session'))
+  assert(obligationCols.includes('local_agent_id'))
+
   store.upsertAgent({
     id: 'fleet:status-authority-test',
     friendly_name: 'status-authority-test',
@@ -55,12 +110,14 @@ try {
     machineId: 'mini',
     envName: 'prod',
     daemonKey: 'mini:prod',
+    terminalCapability: 'termcap:status-authority-test',
     reason: 'daemon-agent-activity',
   })
 
   assert.equal(route.daemon_key, 'mini:prod')
   assert.equal(route.session_id, 'rollout-status-authority-test')
-  assert.equal(route.tmux_session, null)
+  assert.equal(route.terminal_capability, 'termcap:status-authority-test')
+  assert(!Object.hasOwn(route, 'tmux_session'))
 
   const daemonRoster = store.getAgentsByDaemonKey('mini:prod')
   assert.equal(daemonRoster.length, 1)
@@ -68,6 +125,7 @@ try {
   assert.equal(daemonRoster[0].daemon_key, 'mini:prod')
 
   const agent = store.getAgent('fleet:status-authority-test')
+  assert(!Object.hasOwn(agent, 'tmux_session'))
   const nowMs = Date.now()
   const awake = projectAgentRuntimeStatus(agent, {
     liveness: LIVENESS.ALIVE,
@@ -83,6 +141,7 @@ try {
 
   assert.equal(awake.route_state, ROUTE_STATE.ROUTABLE)
   assert.equal(awake.status, RUNTIME_STATUS.AWAKE)
+  assert.deepEqual(awake.route, { daemon_key: 'mini:prod' })
 
   const unresolved = projectAgentRuntimeStatus(agent, null, {
     nowMs,
@@ -103,6 +162,21 @@ try {
   assert.equal(daemonMissing.route_state, ROUTE_STATE.DAEMON_DISCONNECTED)
   assert.equal(daemonMissing.status, RUNTIME_STATUS.UNAVAILABLE)
   assert.notEqual(daemonMissing.status, RUNTIME_STATUS.HIBERNATING)
+
+  const missingCapability = projectAgentRuntimeStatus(agent, {
+    liveness: LIVENESS.ALIVE,
+    liveness_source: 'daemon-agent-liveness',
+    liveness_at_ms: nowMs,
+    liveness_at: new Date(nowMs).toISOString(),
+    activity: 'tool_call:get_thread',
+  }, {
+    nowMs,
+    seat: { ...route, terminal_capability: null },
+    isDaemonConnected: key => key === 'mini:prod',
+  })
+
+  assert.equal(missingCapability.route_state, ROUTE_STATE.UNROUTABLE)
+  assert.equal(missingCapability.route_reason, 'current-seat-missing-terminal-capability')
 
   const activityDriven = projectAgentRuntimeStatus(agent, {
     liveness: LIVENESS.ALIVE,

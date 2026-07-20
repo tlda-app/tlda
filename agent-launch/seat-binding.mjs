@@ -13,6 +13,10 @@ export async function bindAgentSeat({
   if (!agentId || !sessionId || !route?.tmuxSession) {
     throw new Error('durable seat binding requires agentId, sessionId, and tmuxSession')
   }
+  const terminalCapability = ledger?.rotateTerminalCapabilitySync?.(agentId)
+  if (!terminalCapability) {
+    throw new Error(`durable seat binding requires daemon-minted terminal capability for ${agentId}`)
+  }
   ledger?.setSessionSync?.(agentId, {
     sessionId,
     sessionKind: identity.kind,
@@ -24,6 +28,7 @@ export async function bindAgentSeat({
     daemonKey: route.daemonKey,
     cwd: identity.cwd,
     friendlyName: identity.friendlyName,
+    terminalCapability,
   })
   const payload = {
     agent_id: agentId,
@@ -35,7 +40,7 @@ export async function bindAgentSeat({
     machine_id: route.machineId,
     env_name: route.envName,
     daemon_key: route.daemonKey,
-    tmux_session: route.tmuxSession,
+    terminal_capability: terminalCapability,
     created_source: createdSource,
     ...(transitionReason ? { transition_reason: transitionReason } : {}),
   }
@@ -49,7 +54,7 @@ export async function bindAgentSeat({
   try {
     const result = await readback?.(agentId)
     const seat = result?.seat || result
-    if (seat?.agent_id === agentId && seat?.session_id === sessionId && seat?.tmux_session === route.tmuxSession) {
+    if (seat?.agent_id === agentId && seat?.session_id === sessionId && seat?.terminal_capability === terminalCapability) {
       return { bound: true, payload, seat }
     }
     const mismatch = new Error(`durable seat readback mismatch for ${agentId}/${sessionId}`)

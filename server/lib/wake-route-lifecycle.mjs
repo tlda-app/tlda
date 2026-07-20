@@ -14,22 +14,20 @@ export function shouldSendWakeNudge(agent, nudgeText) {
   return deliveryChannelFor(agent) === 'tmux' || terminalNudgeKind(agent)
 }
 
-export function livenessFromCheckAliveResult(agentId, tmuxSession, result) {
-  if (result?.state) return { ...result, agent_id: result.agent_id || agentId, tmux_session: result.tmux_session || tmuxSession }
+export function livenessFromCheckAliveResult(agentId, result) {
+  if (result?.state) return { ...result, agent_id: result.agent_id || agentId }
   if (typeof result?.alive === 'boolean') {
     return {
       type: 'agent-liveness',
       agent_id: agentId,
-      tmux_session: tmuxSession,
       state: result.alive ? 'alive' : 'dead',
-      reason: result.alive ? undefined : 'daemon check-alive: tmux session absent',
+      reason: result.alive ? undefined : 'daemon check-alive: terminal capability unavailable',
       ts: new Date().toISOString(),
     }
   }
   return {
     type: 'agent-liveness',
     agent_id: agentId,
-    tmux_session: tmuxSession,
     state: 'unknown',
     reason: 'daemon check-alive returned no liveness state',
     ts: new Date().toISOString(),
@@ -71,16 +69,15 @@ export async function runWakeRouteLifecycle({
     })
   }
 
-  if (!seat?.daemon_key || !seat?.tmux_session) throw new Error(`agent ${agent.friendly_name || agentId} has no current durable seat; cannot route wake/respawn`)
+  if (!seat?.daemon_key || !seat?.terminal_capability) throw new Error(`agent ${agent.friendly_name || agentId} has no current durable terminal capability; cannot route wake/respawn`)
   if (!ownerDaemon || ownerDaemon.readyState !== 1) throw new Error(`No fleet-daemon connected for ${daemonKey}`)
 
   const serverAlive = isAgentAlive(agentId)
-  const liveness = await sendRpcResilient(daemonKey, 'check-alive', { agent_id: agentId, session_id: seat.session_id, tmux_session: seat.tmux_session })
-    .then(result => livenessFromCheckAliveResult(agentId, seat.tmux_session, result))
+  const liveness = await sendRpcResilient(daemonKey, 'check-alive', { agent_id: agentId, terminal_capability: seat.terminal_capability })
+    .then(result => livenessFromCheckAliveResult(agentId, result))
     .catch(e => ({
       type: 'agent-liveness',
       agent_id: agentId,
-      tmux_session: seat.tmux_session,
       state: 'unknown',
       reason: e.message,
       ts: new Date().toISOString(),
@@ -148,17 +145,16 @@ export async function runWakeRouteLifecycle({
     throw new Error(spawnResult?.error || spawnResult?.reason || 'daemon returned ok:false with no reason')
   }
   const nextSeat = getCurrentSeat?.(agentId)
-  if (!nextSeat?.daemon_key || !nextSeat?.tmux_session || !nextSeat?.session_id) {
+  if (!nextSeat?.daemon_key || !nextSeat?.terminal_capability || !nextSeat?.session_id) {
     throw new Error(`respawn for ${agentId} did not establish a current durable binding`)
   }
   await sendWakeNudge(
     nextSeat.daemon_key,
     agent,
-    nextSeat.tmux_session,
+    nextSeat,
     nudgeText,
     'post-respawn',
     'wake-route',
-    nextSeat.session_id,
   )
   if (traceId) {
     await recordWakeAttempt({ agentId, traceId, ...source, outcome: 'delivered', reason: 'spawn-and-send-text-ok', evidence: { daemon: nextSeat.daemon_key, phase: 'respawn' } })

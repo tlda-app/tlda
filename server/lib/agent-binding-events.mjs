@@ -10,7 +10,7 @@ export function recordAgentBindingEvent(fleetStore, msg = {}, {
     machineId: msg.machine_id || machineId,
     envName: msg.env_name || envName,
     daemonKey: msg.daemon_key || daemonKey,
-    tmuxSession: msg.tmux_session || msg.tmuxSession,
+    terminalCapability: msg.terminal_capability || msg.terminalCapability,
   }
   if (!agentId) throw new Error('agent-binding event missing agent_id')
 

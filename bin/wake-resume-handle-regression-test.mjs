@@ -54,7 +54,7 @@ async function testLiveTmuxWakeDoesNotRespawnWhenServerStatusIsStale() {
       agent_id: 'fleet:live',
       session_id: 'rollout-live',
       daemon_key: 'mini:prod',
-      tmux_session: 'fleet-live-agent',
+      terminal_capability: 'termcap:live',
     },
     daemonKey: 'mini:prod',
     ownerDaemon: { readyState: 1 },
@@ -63,7 +63,10 @@ async function testLiveTmuxWakeDoesNotRespawnWhenServerStatusIsStale() {
     sendRpcResilient: async (daemonKey, type, params) => {
       assert.equal(daemonKey, 'mini:prod')
       assert.equal(type, 'check-alive')
-      assert.equal(params.tmux_session, 'fleet-live-agent')
+      assert.deepEqual(params, {
+        agent_id: 'fleet:live',
+        terminal_capability: 'termcap:live',
+      })
       return { alive: true }
     },
     sendRpc: async () => {

@@ -163,8 +163,8 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       res.status(409).json({ error: 'agent has no current durable seat' })
       return null
     }
-    if (!seat.daemon_key || !seat.tmux_session || !seat.session_id) {
-      res.status(409).json({ error: 'current durable seat is missing daemon, session, or tmux endpoint' })
+    if (!seat.daemon_key || !seat.terminal_capability) {
+      res.status(409).json({ error: 'current durable seat is missing owning daemon terminal capability' })
       return null
     }
     return seat
@@ -233,7 +233,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
 
   router.post('/api/agent-seat-binding-obligation', (req, res) => {
     const body = req.body || {}
-    const required = ['agent_id', 'daemon_key', 'tmux_session', 'cwd', 'kind', 'model', 'friendly_name']
+    const required = ['agent_id', 'daemon_key', 'local_agent_id', 'cwd', 'kind', 'model', 'friendly_name']
     const missing = required.filter(key => !body[key])
     if (missing.length || body.process_owned_only !== true) {
       res.status(400).json({ ok: false, error: `invalid exact binding obligation: missing ${missing.join(', ') || 'process_owned_only=true'}` })
@@ -860,7 +860,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     if (!seat) return
     try {
       const result = await sendRpc(seat.daemon_key, 'capture-pane', {
-        agent_id: agent.id, session_id: seat.session_id, tmux_session: seat.tmux_session, lines: lines || 50,
+        agent_id: agent.id, terminal_capability: seat.terminal_capability, lines: lines || 50,
       })
       res.json(result)
     } catch (e) {
@@ -890,7 +890,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
 
     try {
       // Capture current mode
-      const cap1 = await sendRpc(seat.daemon_key, 'capture-pane', { agent_id: agent.id, session_id: seat.session_id, tmux_session: seat.tmux_session, lines: 5 })
+      const cap1 = await sendRpc(seat.daemon_key, 'capture-pane', { agent_id: agent.id, terminal_capability: seat.terminal_capability, lines: 5 })
       const currentMode = parseCCMode(cap1?.content || '')
 
       // Toggle: if in plan mode exit to default (1 BTab); otherwise enter plan mode.
@@ -898,13 +898,13 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       const btabs = currentMode === 'plan' ? 1 : currentMode === 'acceptEdits' ? 1 : 2
 
       for (let i = 0; i < btabs; i++) {
-        await sendRpc(seat.daemon_key, 'send-key', { agent_id: agent.id, session_id: seat.session_id, tmux_session: seat.tmux_session, key: 'BTab' })
+        await sendRpc(seat.daemon_key, 'send-key', { agent_id: agent.id, terminal_capability: seat.terminal_capability, key: 'BTab' })
         if (i < btabs - 1) await new Promise(r => setTimeout(r, 150))
       }
 
       // Confirm final mode
       if (btabs > 0) await new Promise(r => setTimeout(r, 300))
-      const cap2 = await sendRpc(seat.daemon_key, 'capture-pane', { agent_id: agent.id, session_id: seat.session_id, tmux_session: seat.tmux_session, lines: 5 })
+      const cap2 = await sendRpc(seat.daemon_key, 'capture-pane', { agent_id: agent.id, terminal_capability: seat.terminal_capability, lines: 5 })
       const finalMode = parseCCMode(cap2?.content || '')
 
       // Store permission mode in agent metadata so UI can show persistent badge
@@ -1141,8 +1141,6 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
         reason: reason || null,
         agentId: agent.id,
         agentLabel: label,
-        session_id: seat.session_id,
-        tmux_session: seat.tmux_session,
       }),
     })
     broadcastEvent('fleet-event', {
@@ -1152,7 +1150,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       id: event?.id,
       event_id: event?.id,
       text,
-      metadata: { reason: reason || null, agentId: agent.id, agentLabel: label, session_id: seat.session_id, tmux_session: seat.tmux_session },
+      metadata: { reason: reason || null, agentId: agent.id, agentLabel: label },
     })
     res.json({ ok: true, event_id: event?.id })
   })

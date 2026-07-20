@@ -5,25 +5,29 @@ export class AgentSeatBindingObligations {
     if (!db) throw new Error('AgentSeatBindingObligations requires db')
     this.db = db
     this.clock = clock
+    const existingCols = db.prepare("PRAGMA table_info(agent_seat_binding_obligations)").all()
+    if (existingCols.some(col => col.name === 'tmux_session')) {
+      db.exec('DROP TABLE agent_seat_binding_obligations')
+    }
     db.exec(`
       CREATE TABLE IF NOT EXISTS agent_seat_binding_obligations (
         id TEXT PRIMARY KEY,
         agent_id TEXT NOT NULL,
         daemon_key TEXT NOT NULL,
-        tmux_session TEXT NOT NULL,
+        local_agent_id TEXT NOT NULL,
         payload_json TEXT NOT NULL,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
-        UNIQUE(agent_id, tmux_session)
+        UNIQUE(agent_id, local_agent_id)
       );
       CREATE INDEX IF NOT EXISTS agent_seat_binding_obligations_daemon_idx
         ON agent_seat_binding_obligations(daemon_key, created_at, id);
     `)
     this.upsertStmt = db.prepare(`
       INSERT INTO agent_seat_binding_obligations
-        (id, agent_id, daemon_key, tmux_session, payload_json, created_at, updated_at)
-      VALUES (@id, @agent_id, @daemon_key, @tmux_session, @payload_json, @created_at, @updated_at)
-      ON CONFLICT(agent_id, tmux_session) DO UPDATE SET
+        (id, agent_id, daemon_key, local_agent_id, payload_json, created_at, updated_at)
+      VALUES (@id, @agent_id, @daemon_key, @local_agent_id, @payload_json, @created_at, @updated_at)
+      ON CONFLICT(agent_id, local_agent_id) DO UPDATE SET
         daemon_key = excluded.daemon_key,
         payload_json = excluded.payload_json,
         updated_at = excluded.updated_at
@@ -40,7 +44,7 @@ export class AgentSeatBindingObligations {
       id: payload.obligation_id || randomUUID(),
       agent_id: payload.agent_id,
       daemon_key: payload.daemon_key,
-      tmux_session: payload.tmux_session,
+      local_agent_id: payload.local_agent_id,
       payload_json: JSON.stringify(payload),
       created_at: now,
       updated_at: now,

@@ -132,7 +132,7 @@ export async function completePendingSeatBinding({
     binding?.bound !== true ||
     binding?.seat?.agent_id !== obligation.agent_id ||
     binding?.seat?.session_id !== identity.sessionId ||
-    binding?.seat?.tmux_session !== obligation.tmux_session ||
+    !binding?.seat?.terminal_capability ||
     binding?.seat?.daemon_key !== obligation.daemon_key
   ) throw new Error(`exact durable seat readback remains pending for ${obligation.agent_id}`)
   await emitComplete({
@@ -140,6 +140,7 @@ export async function completePendingSeatBinding({
     obligation_id: obligation.obligation_id,
     agent_id: obligation.agent_id,
     session_id: identity.sessionId,
+    terminal_capability: binding.seat.terminal_capability,
   })
   return binding
 }

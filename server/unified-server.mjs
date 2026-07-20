@@ -393,7 +393,6 @@ function recordExplicitCheckAliveLiveness(liveness) {
     source: 'daemon-check-alive',
     state: liveness.state,
     reason: liveness.reason,
-    tmux_session: liveness.tmux_session,
     pid: liveness.pid,
     atMs,
   }
@@ -820,16 +819,13 @@ const WAKE_BREAKER_BASE_MS = TASK_RENUDGE_INTERVAL_MS // 5 min, first backoff st
 const WAKE_BREAKER_CAP_MS = Number(process.env.TLDA_WAKE_BREAKER_CAP_MS || 2 * 60 * 60_000) // 2h ceiling (also a slow self-heal probe)
 let _taskWakeDraining = false
 
-async function sendWakeNudge(daemonKey, agent, tmuxSession, nudgeText, phase, logTag = 'wake-nudge', sessionId = null) {
+async function sendWakeNudge(daemonKey, agent, seat, nudgeText, phase, logTag = 'wake-nudge') {
   if (!shouldSendWakeNudge(agent, nudgeText)) return
-  await sendRpcResilient(daemonKey, 'send-text', {
-    agent_id: agent?.id,
-    session_id: sessionId || undefined,
-    tmux_session: tmuxSession,
+  await sendRpcResilient(daemonKey, 'send-text', terminalRpcPayload(agent, seat, {
     text: nudgeText,
     enter: true,
     enter_delay_ms: agent?.metadata?.kind === 'codex' ? 400 : 0,
-  })
+  }))
 }
 
 function requestTaskWake(agentId, nudgeText = null, keys = []) {
@@ -874,12 +870,11 @@ async function drainTaskWakeQueue() {
       if (!ownerDaemon || ownerDaemon.readyState !== 1) throw new Error(`No fleet-daemon connected for ${daemonKey}`)
       const serverAlive = isAgentAlive(agentId)
       const liveness = serverAlive
-        ? await sendRpcResilient(daemonKey, 'check-alive', { agent_id: agentId, session_id: seat.session_id, tmux_session: seat.tmux_session })
-          .then(result => livenessFromCheckAliveResult(agentId, seat.tmux_session, result))
+        ? await sendRpcResilient(daemonKey, 'check-alive', terminalRpcPayload(agent, seat))
+          .then(result => livenessFromCheckAliveResult(agentId, result))
           .catch(e => ({
             type: 'agent-liveness',
             agent_id: agentId,
-            tmux_session: seat.tmux_session,
             state: 'unknown',
             reason: e.message,
             ts: new Date().toISOString(),
@@ -887,7 +882,6 @@ async function drainTaskWakeQueue() {
         : {
             type: 'agent-liveness',
             agent_id: agentId,
-            tmux_session: seat.tmux_session,
             state: 'unknown',
             reason: 'server liveness says hibernating',
             ts: new Date().toISOString(),
@@ -896,7 +890,7 @@ async function drainTaskWakeQueue() {
       recordExplicitCheckAliveLiveness({ ...liveness, agent_id: liveness.agent_id || agentId })
       const decision = spawnLibrarian.decideWake(agent, { ...liveness, agent_id: liveness.agent_id || agentId }, { serverAlive })
       if (decision.action === 'deliver') {
-        await sendWakeNudge(daemonKey, agent, seat.tmux_session, nudgeText, 'deliver', 'task-renudge', seat.session_id)
+        await sendWakeNudge(daemonKey, agent, seat, nudgeText, 'deliver', 'task-renudge')
         onTaskWakeSuccess(agentId, taskKeys)
         continue
       }
@@ -919,7 +913,7 @@ async function drainTaskWakeQueue() {
       }
       const nextSeat = fleetStore?.getCurrentAgentSeat?.(agentId)
       if (!nextSeat) throw new Error(`respawn for ${agentId} did not create a current durable seat`)
-      await sendWakeNudge(nextSeat.daemon_key, agent, nextSeat.tmux_session, nudgeText, 'post-respawn', 'task-renudge', nextSeat.session_id)
+      await sendWakeNudge(nextSeat.daemon_key, agent, nextSeat, nudgeText, 'post-respawn', 'task-renudge')
       onTaskWakeSuccess(agentId, taskKeys)
     } catch (e) {
       // Record a terminal wake failure → open/extend the agent's circuit breaker
@@ -1339,7 +1333,6 @@ const spawnLibrarian = new SpawnLibrarian({
       type: 'agent_wedged',
       agentId: agent_id,
       agentLabel: label,
-      tmux_session: liveness?.tmux_session || agent?.tmux_session || null,
       reason: liveness?.reason || 'delivered chat produced no agent-activity advance',
       ts: new Date().toISOString(),
     }
@@ -2255,10 +2248,18 @@ function currentSeatOrError(agent, { requireTerminal = true } = {}) {
   if (!seat.daemon_key) {
     return { error: 'current durable route is missing daemon authority' }
   }
-  if (requireTerminal && (!seat.tmux_session || !seat.session_id)) {
-    return { error: 'current durable seat is missing daemon, session, or tmux endpoint' }
+  if (requireTerminal && !seat.terminal_capability) {
+    return { error: 'current durable seat is missing owning daemon terminal capability' }
   }
   return { seat }
+}
+
+function terminalRpcPayload(agent, seat, extra = {}) {
+  return {
+    agent_id: agent?.id,
+    terminal_capability: seat?.terminal_capability,
+    ...extra,
+  }
 }
 
 const PROTECTED_AGENT_EDIT_FIELDS = new Set([
@@ -2272,7 +2273,6 @@ const PROTECTED_AGENT_EDIT_FIELDS = new Set([
   'machine_id',
   'env_name',
   'daemon_key',
-  'tmux_session',
 ])
 
 function protectedAgentEditFields(agentData = {}) {
@@ -3668,8 +3668,8 @@ function currentSeatOrHttpError(res, agent) {
     res.status(409).json({ error: 'agent has no current durable seat' })
     return null
   }
-  if (!seat.daemon_key || !seat.tmux_session) {
-    res.status(409).json({ error: 'current durable seat is missing daemon or tmux endpoint' })
+  if (!seat.daemon_key || !seat.terminal_capability) {
+    res.status(409).json({ error: 'current durable seat is missing owning daemon terminal capability' })
     return null
   }
   return seat
@@ -3684,7 +3684,7 @@ app.post('/api/send-text', requireRead, async (req, res) => {
   const seat = currentSeatOrHttpError(res, agent)
   if (!seat) return
   try {
-    const result = await sendRpc(seat.daemon_key, 'send-text', { agent_id: agent.id, session_id: seat.session_id, tmux_session: seat.tmux_session, text, enter: enter !== false })
+    const result = await sendRpc(seat.daemon_key, 'send-text', { agent_id: agent.id, terminal_capability: seat.terminal_capability, text, enter: enter !== false })
     res.json(result || { ok: true })
   } catch (e) { res.status(500).json({ error: e.message }) }
 })
@@ -3698,7 +3698,7 @@ app.post('/api/send-key', requireRead, async (req, res) => {
   const seat = currentSeatOrHttpError(res, agent)
   if (!seat) return
   try {
-    const result = await sendRpc(seat.daemon_key, 'send-key', { agent_id: agent.id, session_id: seat.session_id, tmux_session: seat.tmux_session, key })
+    const result = await sendRpc(seat.daemon_key, 'send-key', { agent_id: agent.id, terminal_capability: seat.terminal_capability, key })
     res.json(result || { ok: true })
   } catch (e) { res.status(500).json({ error: e.message }) }
 })
@@ -3712,7 +3712,7 @@ app.post('/api/interrupt', requireRead, async (req, res) => {
   const seat = currentSeatOrHttpError(res, agent)
   if (!seat) return
   try {
-    const result = await sendRpc(seat.daemon_key, 'interrupt', { agent_id: agent.id, session_id: seat.session_id, tmux_session: seat.tmux_session })
+    const result = await sendRpc(seat.daemon_key, 'interrupt', terminalRpcPayload(agent, seat))
     // Only emit the interrupt card when the agent actually halted. A soft promote
     // also produces a "[Request interrupted by user]" marker but the agent resumes;
     // `stopped` is what tells a real hard interrupt (card) from a soft one (no card).
@@ -3739,7 +3739,7 @@ app.post('/api/soft-interrupt', requireRead, async (req, res) => {
   const seat = currentSeatOrHttpError(res, agent)
   if (!seat) return
   try {
-    const result = await sendRpc(seat.daemon_key, 'soft-interrupt', { agent_id: agent.id, session_id: seat.session_id, tmux_session: seat.tmux_session })
+    const result = await sendRpc(seat.daemon_key, 'soft-interrupt', terminalRpcPayload(agent, seat))
     res.json({ ok: true, agent: agent.friendly_name || agent.id, ...result })
   } catch (e) { res.status(500).json({ error: e.message }) }
 })
@@ -3753,11 +3753,11 @@ app.post('/api/kill-session', requireRead, async (req, res) => {
   const seat = currentSeatOrHttpError(res, agent)
   if (!seat) return
   try {
-    const result = await sendRpc(seat.daemon_key, 'kill-session', { agent_id: agent.id, session_id: seat.session_id, tmux_session: seat.tmux_session })
+    const result = await sendRpc(seat.daemon_key, 'kill-session', terminalRpcPayload(agent, seat))
     fleetStore.retireCurrentAgentSeat(agent.id, {
       sessionId: seat.session_id,
       daemonKey: seat.daemon_key,
-      tmuxSession: seat.tmux_session,
+      terminalCapability: seat.terminal_capability,
     })
     markAgentNotAlive(agent.id, { source: 'http-kill-session', reason: 'operator killed session' })
     const killEvent = { type: 'kill-session', from: SERVER_OWNER_ID, to: agent.id, text: `Killed ${agent.friendly_name || agent.id}` }
@@ -3777,7 +3777,7 @@ app.post('/api/plan-mode-respond', requireRead, async (req, res) => {
   const seat = currentSeatOrHttpError(res, agent)
   if (!seat) return
   try {
-    const result = await sendRpc(seat.daemon_key, 'send-text', { agent_id: agent.id, session_id: seat.session_id, tmux_session: seat.tmux_session, text: planModeResponseKey(response), enter: false })
+    const result = await sendRpc(seat.daemon_key, 'send-text', terminalRpcPayload(agent, seat, { text: planModeResponseKey(response), enter: false }))
     fleetStore.updateAgentMeta?.(agent.id, { permission_mode: null, inPlanMode: false, planModeType: null })
     const pending = pendingPlanApprovals.get(agent.id)
     if (pending?.eventId) {
@@ -4301,7 +4301,6 @@ function terminalAgentContext(agent) {
   return compactObject({
     agentId: agent?.id,
     label: agent?.friendly_name || agent?.id,
-    tmuxSession: agent?.tmux_session,
     machineId: agent?.machine_id,
     envName: agent?.env_name,
   })
@@ -4433,22 +4432,11 @@ server.on('upgrade', async (req, socket, head) => {
     if (!agentId || !fleetStore) { socket.destroy(); return }
     const agent = fleetStore.findAgent(agentId)
     const seat = agent ? fleetStore.getCurrentAgentSeat?.(agent.id) : null
-    if (!agent || !seat?.daemon_key) {
+    if (!agent || !seat?.daemon_key || !seat?.terminal_capability) {
       // Decline cleanly with a JSON message before close so the UI shows
       // a useful error instead of "WebSocket error".
       terminalWss.handleUpgrade(req, socket, head, (ws) => {
-        try { ws.send(JSON.stringify({ type: 'error', message: 'agent has no current durable seat; terminal routing unavailable' })) } catch {
-          // Socket may already be gone; close below is the remaining cleanup.
-        }
-        try { ws.close() } catch {
-          // Socket already closed by peer; no server-side recovery remains.
-        }
-      })
-      return
-    }
-    if (!seat.tmux_session) {
-      terminalWss.handleUpgrade(req, socket, head, (ws) => {
-        try { ws.send(JSON.stringify({ type: 'error', message: 'current durable seat has no tmux session' })) } catch {
+        try { ws.send(JSON.stringify({ type: 'error', message: 'agent has no owning daemon terminal capability; terminal routing unavailable' })) } catch {
           // Socket may already be gone; close below is the remaining cleanup.
         }
         try { ws.close() } catch {
@@ -4459,8 +4447,8 @@ server.on('upgrade', async (req, socket, head) => {
     }
     terminalWss.handleUpgrade(req, socket, head, async (ws) => {
       ws._agentId = agent.id
-      ws._tmuxSession = seat.tmux_session
       ws._machineId = seat.machine_id
+      const terminalCapability = seat.terminal_capability
 
       // Add to watcher set; start the daemon poll if first.
       let set = terminalWatchers.get(agent.id)
@@ -4471,7 +4459,7 @@ server.on('upgrade', async (req, socket, head) => {
       if (isFirst) {
         try {
           const res = await sendRpc(seat.daemon_key, 'start-terminal-watch', {
-            agent_id: agent.id, session_id: seat.session_id, tmux_session: seat.tmux_session, poll_ms: 500,
+            agent_id: agent.id, terminal_capability: terminalCapability, poll_ms: 500,
           })
           if (res && res.cols && res.rows) terminalSizes.set(agent.id, { cols: res.cols, rows: res.rows })
         } catch (e) {
@@ -4493,7 +4481,7 @@ server.on('upgrade', async (req, socket, head) => {
       // the screen as `pane` (see rpcCapturePane in fleet-daemon.mjs).
       try {
         const { pane } = await sendRpc(seat.daemon_key, 'capture-pane', {
-          agent_id: agent.id, session_id: seat.session_id, tmux_session: seat.tmux_session, visible: true,
+          agent_id: agent.id, terminal_capability: terminalCapability, visible: true,
         })
         if (pane && ws.readyState === 1) {
           // capture-pane emits bare `\n` line endings; xterm has no convertEol,
@@ -4507,7 +4495,7 @@ server.on('upgrade', async (req, socket, head) => {
           ws.send(JSON.stringify({ type: 'output', data: Buffer.from(seed).toString('base64'), encoding: 'base64' }))
         }
       } catch (e) {
-        console.warn(`[terminal] seed capture failed for ${agent.id} (${seat.tmux_session}): ${e.message}`)
+        console.warn(`[terminal] seed capture failed for ${agent.id}: ${e.message}`)
         if (ws.readyState === 1) {
           ws.send(JSON.stringify({ type: 'not-live', reason: 'terminal session not live' }), (sendError) => {
             if (sendError) console.warn(`[terminal] failed to send not-live frame for ${agent.id}: ${sendError.message}`)
@@ -4521,7 +4509,7 @@ server.on('upgrade', async (req, socket, head) => {
         if (msg.type === 'input' && typeof msg.data === 'string') {
           try {
             await sendRpc(seat.daemon_key, 'terminal-input', {
-              agent_id: agent.id, session_id: seat.session_id, tmux_session: seat.tmux_session, data: msg.data,
+              agent_id: agent.id, terminal_capability: terminalCapability, data: msg.data,
             })
           } catch (e) {
             if (ws.readyState === 1) {
@@ -4531,7 +4519,7 @@ server.on('upgrade', async (req, socket, head) => {
         } else if (msg.type === 'submit' && typeof msg.text === 'string') {
           try {
             await sendRpc(seat.daemon_key, 'send-text', {
-              agent_id: agent.id, session_id: seat.session_id, tmux_session: seat.tmux_session, text: msg.text, enter: true,
+              agent_id: agent.id, terminal_capability: terminalCapability, text: msg.text, enter: true,
             })
           } catch (e) {
             if (ws.readyState === 1) {
@@ -4541,7 +4529,7 @@ server.on('upgrade', async (req, socket, head) => {
         } else if (msg.type === 'resize' && msg.cols && msg.rows) {
           try {
             await sendRpc(seat.daemon_key, 'terminal-resize', {
-              agent_id: agent.id, session_id: seat.session_id, tmux_session: seat.tmux_session, cols: msg.cols, rows: msg.rows,
+              agent_id: agent.id, terminal_capability: terminalCapability, cols: msg.cols, rows: msg.rows,
             })
           } catch (e) {
             const browserNotified = sendTerminalFrame(ws, {
@@ -4568,7 +4556,7 @@ server.on('upgrade', async (req, socket, head) => {
           terminalSizes.delete(agent.id)
           try {
             await sendRpc(seat.daemon_key, 'stop-terminal-watch', {
-              agent_id: agent.id, session_id: seat.session_id, tmux_session: seat.tmux_session,
+              agent_id: agent.id, terminal_capability: terminalCapability,
             })
           } catch (e) {
             await reportTerminalBridgeIncident({
@@ -4882,7 +4870,7 @@ async function handleFleetWsMessage(ws, msg) {
     // onto every message, so the real fleet id arrives as agent_id. Falling
     // back to id keeps direct WS callers that send id=fleet_id working. Reading
     // the bare `id` first here was the root cause of phantom UUID-keyed rows.
-    const { agent_id, id: msgId, local_agent_id, name, pretty_name, tmux_session, cwd, labels, manager, session_id, resume_id, metadata, machine_id, env_name, kind } = msg
+    const { agent_id, id: msgId, local_agent_id, name, pretty_name, cwd, labels, manager, metadata, machine_id, env_name, kind } = msg
     const isShellReservation = type === 'reserve-shell' || type === 'mint-shell'
     if (type === 'register' && !msg.human) {
       error('register is only for human browser sessions; agents must use reserve-shell before startup and login after startup')
@@ -4920,9 +4908,8 @@ async function handleFleetWsMessage(ws, msg) {
     const existing = fleetStore.getAgent?.(agentId)
     // The friendly name is set once (first identity creation) and is thereafter owned
     // by rename/rotation. Re-login must NOT clobber it with the spawn name
-    // — that would undo a lineage rotation. The terminal/window name lives in
-    // tmux_session, independent of the friendly name. So only the *first* name
-    // is taken from `name`; once set, it's preserved.
+    // — that would undo a lineage rotation. So only the *first* name is taken
+    // from `name`; once set, it's preserved.
     const requestedName = name || null
     let assignedName = (existing && !existing.dead) ? (existing.friendly_name || requestedName) : requestedName
     const willSetName = (!existing?.friendly_name || existing?.dead) && requestedName
@@ -4930,7 +4917,7 @@ async function handleFleetWsMessage(ws, msg) {
       const incomingLabels = Array.isArray(labels) ? labels : []
       if (incomingLabels.includes('bot') && incomingLabels.includes(requestedName)) {
         for (const holder of fleetStore.getLiveAgentsByFriendlyName?.(requestedName) || []) {
-          if (holder.id === agentId || holder.dead || holder.friendly_name !== requestedName || holder.tmux_session) continue
+          if (holder.id === agentId || holder.dead || holder.friendly_name !== requestedName) continue
           const holderLabels = Array.isArray(holder.labels) ? holder.labels : []
           if (!holderLabels.includes('bot') || !holderLabels.includes(requestedName)) continue
           console.log(`[register] retiring legacy bot row ${holder.id} so ${agentId} can claim ${requestedName}`)
@@ -4948,7 +4935,6 @@ async function handleFleetWsMessage(ws, msg) {
       id: agentId,
       friendly_name: assignedName || null,
       pretty_name: pretty_name ?? existing?.pretty_name ?? null,
-      tmux_session: null,
       session_id: null,
       session_ids: null,
       cwd: null,
@@ -5054,7 +5040,7 @@ async function handleFleetWsMessage(ws, msg) {
   // - humans attach by `name`
   // Neither form creates a new identity.
   if (type === 'login') {
-    const { agent_id, name, tmux_session, cwd, labels, manager, session_id, resume_id, metadata, machine_id, env_name, kind } = msg
+    const { agent_id, name, cwd, labels, manager, metadata, machine_id, env_name, kind } = msg
     if (agent_id) {
       const existing = fleetStore.getAgent?.(agent_id)
       if (!existing || existing.dead) { error(`No live shell for agent "${agent_id}". Spawn must create the shell before login.`); return }
@@ -5063,7 +5049,6 @@ async function handleFleetWsMessage(ws, msg) {
       const now = new Date().toISOString()
       const agent = {
         ...existing,
-        tmux_session: null,
         session_id: null,
         session_ids: null,
         cwd: null,
@@ -5089,33 +5074,14 @@ async function handleFleetWsMessage(ws, msg) {
       // session_id/session_ids are minted by the durable seat binding path, not
       // by generic login.
       fleetStore.upsertAgent(agent)
-      const daemonKey = msg.daemon_key || (machine_id && env_name ? daemonAddress(machine_id, env_name) : null)
-      if (machine_id && env_name && daemonKey) {
-        try {
-          fleetStore.activateAgentSeat?.({
-            agentId: agent_id,
-            sessionId: session_id || null,
-            machineId: machine_id,
-            envName: env_name,
-            daemonKey,
-            tmuxSession: tmux_session || null,
-            reason: 'agent-login',
-          })
-        } catch (e) {
-          error(`login route activation failed for ${agent_id}: ${e.message}`)
-          return
-        }
-      }
       const storedAgent = fleetStore.projectAgentCurrentSeat?.(fleetStore.getAgent?.(agent_id) || agent) || fleetStore.getAgent?.(agent_id) || agent
       reply({ ok: true, agent: storedAgent, assigned_name: storedAgent.friendly_name || null })
       fleetStore.share?.({ type: 'login', agent_id, from: agent_id, to: agent_id, text: `${agent.friendly_name || agent_id} logged in` })
-      const currentSeat = fleetStore.getCurrentAgentSeat?.(agent_id)
-      markAgentAlive(agent_id, Date.now(), { source: 'agent-login', tmux_session: currentSeat?.tmux_session || null })
+      markAgentAlive(agent_id, Date.now(), { source: 'agent-login' })
       touchActivity(agent_id)
       spawnLibrarian.observeLiveness({
         type: 'agent-liveness',
         agent_id,
-        tmux_session: currentSeat?.tmux_session || null,
         state: 'alive',
         ts: now,
       })
@@ -5385,7 +5351,6 @@ async function handleFleetWsMessage(ws, msg) {
       spawnLibrarian.observeLiveness({
         type: 'agent-liveness',
         agent_id: agentId,
-        tmux_session: agent.tmux_session,
         state: 'spawning',
         reason: 'reserved shell has not logged in yet',
         ts: new Date().toISOString(),
@@ -5883,13 +5848,10 @@ async function handleFleetWsMessage(ws, msg) {
         if (approval?.agent_id) {
           const agent = fleetStore.findAgent?.(approval.agent_id)
           const { seat } = currentSeatOrError(agent)
-          if (seat) sendRpc(seat.daemon_key, 'send-text', {
-            agent_id: approval.agent_id,
-            session_id: seat.session_id,
-            tmux_session: seat.tmux_session,
+          if (seat) sendRpc(seat.daemon_key, 'send-text', terminalRpcPayload(agent, seat, {
             text: key,
             enter: false,
-          }).catch(e => console.error(`[plan-approval] keystroke failed: ${e.message}`))
+          })).catch(e => console.error(`[plan-approval] keystroke failed: ${e.message}`))
         }
       }
     }
@@ -5901,22 +5863,16 @@ async function handleFleetWsMessage(ws, msg) {
         const agent = fleetStore.findAgent(r)
         const { seat } = currentSeatOrError(agent)
         if (!seat) continue
-        sendRpc(seat.daemon_key, 'send-text', {
-          agent_id: agent.id,
-          session_id: seat.session_id,
-          tmux_session: seat.tmux_session,
+        sendRpc(seat.daemon_key, 'send-text', terminalRpcPayload(agent, seat, {
           text: '/plan',
           enter: true,
-        }).catch(e => console.error(`[outline-keyword] plan mode failed for ${r}: ${e.message}`))
+        })).catch(e => console.error(`[outline-keyword] plan mode failed for ${r}: ${e.message}`))
         if (keyword === 'outline') {
           setTimeout(() => {
-            sendRpc(seat.daemon_key, 'send-text', {
-              agent_id: agent.id,
-              session_id: seat.session_id,
-              tmux_session: seat.tmux_session,
+            sendRpc(seat.daemon_key, 'send-text', terminalRpcPayload(agent, seat, {
               text: 'Invoke the outline-before-writing skill now. Write your outline in the plan file, then share the plan file path in chat so it appears as a tappable note.',
               enter: true,
-            }).catch(e => console.error(`[outline-keyword] skill nudge failed for ${r}: ${e.message}`))
+            })).catch(e => console.error(`[outline-keyword] skill nudge failed for ${r}: ${e.message}`))
           }, 2000)
         }
         fleetStore.updateAgentMeta?.(agent.id, { inPlanMode: true, planModeType: keyword })
@@ -6611,11 +6567,11 @@ async function handleFleetWsMessage(ws, msg) {
     const { seat, error: seatError } = currentSeatOrError(agent)
     if (!seat) { error(seatError); return }
     try {
-      const result = await sendRpc(seat.daemon_key, 'kill-session', { agent_id: agent.id, session_id: seat.session_id, tmux_session: seat.tmux_session })
+      const result = await sendRpc(seat.daemon_key, 'kill-session', terminalRpcPayload(agent, seat))
       fleetStore.retireCurrentAgentSeat(agent.id, {
         sessionId: seat.session_id,
         daemonKey: seat.daemon_key,
-        tmuxSession: seat.tmux_session,
+        terminalCapability: seat.terminal_capability,
       })
       markAgentNotAlive(agent.id, { source: 'ws-kill-session', reason: 'operator killed session' })
       const killEvent = { type: 'kill-session', from: SERVER_OWNER_ID, to: agent.id, text: `Killed ${agent.friendly_name || agent.id}` }
@@ -6634,11 +6590,11 @@ async function handleFleetWsMessage(ws, msg) {
     const { seat, error: seatError } = currentSeatOrError(agent)
     if (!seat) { error(seatError); return }
     try {
-      const result = await sendRpc(seat.daemon_key, 'kill-session', { agent_id: agent.id, session_id: seat.session_id, tmux_session: seat.tmux_session })
+      const result = await sendRpc(seat.daemon_key, 'kill-session', terminalRpcPayload(agent, seat))
       fleetStore.retireCurrentAgentSeat(agent.id, {
         sessionId: seat.session_id,
         daemonKey: seat.daemon_key,
-        tmuxSession: seat.tmux_session,
+        terminalCapability: seat.terminal_capability,
       })
       markAgentNotAlive(agent.id, { source: 'ws-hibernate-session', reason: 'operator hibernated session' })
       broadcastState()
@@ -6655,7 +6611,7 @@ async function handleFleetWsMessage(ws, msg) {
     const { seat, error: seatError } = currentSeatOrError(agent)
     if (!seat) { error(seatError); return }
     try {
-      const result = await sendRpc(seat.daemon_key, 'interrupt', { agent_id: agent.id, session_id: seat.session_id, tmux_session: seat.tmux_session })
+      const result = await sendRpc(seat.daemon_key, 'interrupt', terminalRpcPayload(agent, seat))
       reply({ ok: true, agent: agent.friendly_name || agent.id, ...result })
     } catch (e) { error(e.message) }
     return
@@ -6676,7 +6632,7 @@ async function handleFleetWsMessage(ws, msg) {
     const { seat, error: seatError } = currentSeatOrError(agent)
     if (!seat) { error(seatError); return }
     try {
-      const result = await sendRpc(seat.daemon_key, 'send-key', { agent_id: agent.id, session_id: seat.session_id, tmux_session: seat.tmux_session, key })
+      const result = await sendRpc(seat.daemon_key, 'send-key', terminalRpcPayload(agent, seat, { key }))
       reply(result)
     } catch (e) { error(e.message) }
     return
@@ -6690,7 +6646,7 @@ async function handleFleetWsMessage(ws, msg) {
     const { seat, error: seatError } = currentSeatOrError(agent)
     if (!seat) { error(seatError); return }
     try {
-      const result = await sendRpc(seat.daemon_key, 'send-text', { agent_id: agent.id, session_id: seat.session_id, tmux_session: seat.tmux_session, text, enter: enter !== false })
+      const result = await sendRpc(seat.daemon_key, 'send-text', { agent_id: agent.id, terminal_capability: seat.terminal_capability, text, enter: enter !== false })
       reply(result)
     } catch (e) { error(e.message) }
     return
@@ -6704,7 +6660,7 @@ async function handleFleetWsMessage(ws, msg) {
     const { seat, error: seatError } = currentSeatOrError(agent)
     if (!seat) { error(seatError); return }
     try {
-      const result = await sendRpc(seat.daemon_key, 'capture-pane', { agent_id: agent.id, session_id: seat.session_id, tmux_session: seat.tmux_session, lines: lines || 50 })
+      const result = await sendRpc(seat.daemon_key, 'capture-pane', { agent_id: agent.id, terminal_capability: seat.terminal_capability, lines: lines || 50 })
       reply(result)
     } catch (e) { error(e.message) }
     return
@@ -6718,8 +6674,8 @@ async function handleFleetWsMessage(ws, msg) {
     const { seat, error: seatError } = currentSeatOrError(agent)
     if (!seat) { error(seatError); return }
     try {
-      const result = await sendRpc(seat.daemon_key, 'check-alive', { agent_id: agent.id, session_id: seat.session_id, tmux_session: seat.tmux_session })
-      const liveness = livenessFromCheckAliveResult(agent.id, seat.tmux_session, result)
+      const result = await sendRpc(seat.daemon_key, 'check-alive', { agent_id: agent.id, terminal_capability: seat.terminal_capability })
+      const liveness = livenessFromCheckAliveResult(agent.id, result)
       recordExplicitCheckAliveLiveness(liveness)
       reply(liveness)
     } catch (e) { error(e.message) }
@@ -6735,7 +6691,7 @@ async function handleFleetWsMessage(ws, msg) {
     const { seat, error: seatError } = currentSeatOrError(agent)
     if (!seat) { error(seatError); return }
     try {
-      let result = await sendRpc(seat.daemon_key, 'send-text', { agent_id: agent.id, session_id: seat.session_id, tmux_session: seat.tmux_session, text: planModeResponseKey(response), enter: false })
+      let result = await sendRpc(seat.daemon_key, 'send-text', terminalRpcPayload(agent, seat, { text: planModeResponseKey(response), enter: false }))
       fleetStore.updateAgentMeta?.(agent.id, { permission_mode: null, inPlanMode: false, planModeType: null })
       // Persist response on the plan_approval event
       const pending = pendingPlanApprovals.get(agent.id)
@@ -6767,15 +6723,15 @@ async function handleFleetWsMessage(ws, msg) {
         if (/accept edits on/i.test(pane)) return 'acceptEdits'
         return 'default'
       }
-      const cap1 = await sendRpc(seat.daemon_key, 'capture-pane', { agent_id: agent.id, session_id: seat.session_id, tmux_session: seat.tmux_session, lines: 5 })
+      const cap1 = await sendRpc(seat.daemon_key, 'capture-pane', terminalRpcPayload(agent, seat, { lines: 5 }))
       const currentMode = parseCCMode(cap1?.content || '')
       const btabs = currentMode === 'plan' ? 1 : currentMode === 'acceptEdits' ? 1 : 2
       for (let i = 0; i < btabs; i++) {
-        await sendRpc(seat.daemon_key, 'send-key', { agent_id: agent.id, session_id: seat.session_id, tmux_session: seat.tmux_session, key: 'BTab' })
+        await sendRpc(seat.daemon_key, 'send-key', terminalRpcPayload(agent, seat, { key: 'BTab' }))
         if (i < btabs - 1) await new Promise(r => setTimeout(r, 150))
       }
       if (btabs > 0) await new Promise(r => setTimeout(r, 300))
-      const cap2 = await sendRpc(seat.daemon_key, 'capture-pane', { agent_id: agent.id, session_id: seat.session_id, tmux_session: seat.tmux_session, lines: 5 })
+      const cap2 = await sendRpc(seat.daemon_key, 'capture-pane', terminalRpcPayload(agent, seat, { lines: 5 }))
       const finalMode = parseCCMode(cap2?.content || '')
       fleetStore.updateAgentMeta?.(agent.id, { permission_mode: finalMode === 'default' ? null : finalMode })
       broadcastState()
@@ -6808,12 +6764,12 @@ async function handleFleetWsMessage(ws, msg) {
     const text = reason ? `${label}: ${reason}` : `${label}: terminal requested`
     const event = fleetStore.share?.({
       type: 'terminal_card', from: agent.id, to: SERVER_OWNER_ID, text,
-      metadata: JSON.stringify({ reason: reason || null, agentId: agent.id, agentLabel: label, session_id: seat.session_id, tmux_session: seat.tmux_session }),
+      metadata: JSON.stringify({ reason: reason || null, agentId: agent.id, agentLabel: label }),
     })
     broadcastEvent('fleet-event', {
       type: 'terminal_card', from: agent.id, to: SERVER_OWNER_ID,
       id: event?.id, event_id: event?.id, text,
-      metadata: { reason: reason || null, agentId: agent.id, agentLabel: label, session_id: seat.session_id, tmux_session: seat.tmux_session },
+      metadata: { reason: reason || null, agentId: agent.id, agentLabel: label },
     })
     reply({ ok: true, event_id: event?.id })
     return
@@ -7726,8 +7682,7 @@ async function handleDaemonWsMessage(ws, msg) {
       })) {
         sendRpc(daemonKey, 'start-terminal-watch', {
           agent_id: a.id,
-          session_id: seat.session_id,
-          tmux_session: seat.tmux_session,
+          terminal_capability: seat.terminal_capability,
           poll_ms: 500,
         }).catch(e => console.warn(`[server] terminal-watch resume failed for ${a.id}: ${e.message}`))
       }
@@ -7801,7 +7756,7 @@ async function handleDaemonWsMessage(ws, msg) {
   }
 
   if (type === 'agent-liveness') {
-    const { agent_id, state, tmux_session, pid, reason, ts } = msg
+    const { agent_id, state, pid, reason, ts } = msg
     if (Array.isArray(msg.agent_ids) || Array.isArray(msg.checked_agent_ids)) {
       const aliveIds = new Set((msg.agent_ids || []).filter(id => typeof id === 'string' && id))
       const checkedIds = new Set([
@@ -7820,7 +7775,6 @@ async function handleDaemonWsMessage(ws, msg) {
         spawnLibrarian.observeLiveness({
           type,
           agent_id: id,
-          tmux_session: seat.tmux_session,
           state: batchState,
           reason: batchState === 'dead' ? 'daemon liveness batch: not alive' : undefined,
           ts: batchTs,
@@ -7832,13 +7786,11 @@ async function handleDaemonWsMessage(ws, msg) {
           markAgentAlive(id, Date.parse(batchTs) || Date.now(), {
             source: 'daemon-hosted-session-refresh',
             reason,
-            tmux_session: seat.tmux_session,
           })
         } else {
           markAgentNotAlive(id, {
             source: 'daemon-hosted-session-refresh',
             reason: 'daemon liveness batch: not alive',
-            tmux_session: seat.tmux_session,
           })
         }
       }
@@ -7852,8 +7804,7 @@ async function handleDaemonWsMessage(ws, msg) {
       family: 'daemon-agent-liveness',
     })
     if (!currentSeat) return
-    if (tmux_session && currentSeat.tmux_session && String(tmux_session) !== String(currentSeat.tmux_session)) return
-    spawnLibrarian.observeLiveness({ type, agent_id, state, tmux_session, pid, reason, ts })
+    spawnLibrarian.observeLiveness({ type, agent_id, state, pid, reason, ts })
     if (state === 'alive') {
       // Liveness ≠ activity (see the batch handler above): this is a 30s "process
       // exists" ping, not real work, so it must not reset the idle clock. Real
@@ -7861,7 +7812,6 @@ async function handleDaemonWsMessage(ws, msg) {
       markAgentAlive(agent_id, Date.parse(ts) || Date.now(), {
         source: 'daemon-agent-liveness',
         reason,
-        tmux_session: currentSeat.tmux_session || tmux_session || null,
         pid,
       })
     } else if (state === 'dead' || state === 'wedged') {
@@ -7869,7 +7819,6 @@ async function handleDaemonWsMessage(ws, msg) {
         source: 'daemon-agent-liveness',
         state,
         reason,
-        tmux_session: currentSeat.tmux_session || tmux_session || null,
         pid,
       })
     }
@@ -7889,7 +7838,6 @@ async function handleDaemonWsMessage(ws, msg) {
     spawnLibrarian.observeActivity({ type, agent_id, jsonl_offset, ts })
     markAgentAlive(agent_id, Date.parse(ts) || Date.now(), {
       source: 'agent-activity',
-      tmux_session: currentSeat.tmux_session,
     })
     touchActivity(agent_id)
     if (fleetStore?.updateHeartbeat) {
@@ -7941,7 +7889,6 @@ async function handleDaemonWsMessage(ws, msg) {
     if (!currentSeat) return
     markAgentAlive(agent_id, Date.parse(msg.ts) || serverReceivedAtMs, {
       source: 'daemon-activity-event',
-      tmux_session: currentSeat.tmux_session || null,
     })
     runtimeStatusStore.updateActivity(agent_id, tool ? `tool_call:${tool}` : 'activity', {
       tool,
@@ -8059,8 +8006,8 @@ async function handleDaemonWsMessage(ws, msg) {
     const seat = fleetStore.getCurrentAgentSeat?.(obligation.agent_id)
     if (
       seat?.session_id !== msg.session_id ||
-      seat?.tmux_session !== obligation.tmux_session ||
-      seat?.daemon_key !== obligation.daemon_key
+      seat?.daemon_key !== obligation.daemon_key ||
+      seat?.terminal_capability !== msg.terminal_capability
     ) throw new Error(`binding obligation completion readback mismatch for ${obligation.agent_id}`)
     agentSeatBindingObligations.remove(obligation.obligation_id)
     return
@@ -8083,7 +8030,7 @@ async function handleDaemonWsMessage(ws, msg) {
 
   if (type === 'spawn-startup-failed') {
     if (!fleetStore) return
-    const { agent_id, agent_name, tmux_session, harness, model, respawn, code, reason, snippet } = msg
+    const { agent_id, agent_name, harness, model, respawn, code, reason, snippet } = msg
     if (!agent_id) return
     const agent = fleetStore.getAgent?.(agent_id)
     const label = agent?.friendly_name || agent_name || agent_id.slice(0, 12)
@@ -8092,7 +8039,6 @@ async function handleDaemonWsMessage(ws, msg) {
       type: 'spawn_startup_failed',
       agentId: agent_id,
       agentLabel: label,
-      tmux_session: tmux_session || null,
       harness: harness || agent?.metadata?.kind || null,
       model: model || agent?.metadata?.model || null,
       respawn: !!respawn,
@@ -8111,7 +8057,6 @@ async function handleDaemonWsMessage(ws, msg) {
           ts: new Date().toISOString(),
           code: metadata.code,
           reason: metadata.reason,
-          tmux_session: metadata.tmux_session,
           harness: metadata.harness,
           model: metadata.model,
         },
@@ -8173,7 +8118,7 @@ async function handleDaemonWsMessage(ws, msg) {
 
   if (type === 'plan-mode-prompt') {
     if (!fleetStore) return
-    const { agent_id, plan_text, tmux_session } = msg
+    const { agent_id, plan_text } = msg
     if (!agent_id || !plan_text) return
     try {
       const agent = fleetStore.findAgent(agent_id)
@@ -8183,7 +8128,7 @@ async function handleDaemonWsMessage(ws, msg) {
         from: agent_id,
         to: SERVER_OWNER_ID,
         text: plan_text,
-        metadata: { session_id: seat?.session_id || null, tmux_session: seat?.tmux_session || tmux_session || null, daemon_key: seat?.daemon_key || null },
+        metadata: { daemon_key: seat?.daemon_key || null },
         unread: true,
         timestamp: new Date().toISOString(),
       })
@@ -8203,7 +8148,7 @@ async function handleDaemonWsMessage(ws, msg) {
 
   if (type === 'terminal_attention') {
     if (!fleetStore) return
-    const { agent_id, text, tmux_session, reason, snippet } = msg
+    const { agent_id, text, reason, snippet } = msg
     if (!agent_id) return
     const dedupKey = `${agent_id}:${reason || text}`
     const now = Date.now()
@@ -8218,7 +8163,7 @@ async function handleDaemonWsMessage(ws, msg) {
       from: agent_id,
       to: SERVER_OWNER_ID,
       text: text || `${label}: needs attention`,
-      metadata: { agentId: agent_id, agentLabel: label, tmux_session: tmux_session || null, reason: reason || null, snippet: snippet || null },
+      metadata: { agentId: agent_id, agentLabel: label, reason: reason || null, snippet: snippet || null },
     })
     if (event) {
       fleetStore.addUnread?.(event.id, SERVER_OWNER_ID)

@@ -2,6 +2,7 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import { execFileSync } from 'child_process'
+import { randomUUID } from 'crypto'
 import { Worker } from 'worker_threads'
 import Database from 'better-sqlite3'
 import YAML from 'yaml'
@@ -486,6 +487,7 @@ export class PermissionLedger {
         machine_id TEXT,
         env_name TEXT,
         daemon_key TEXT,
+        terminal_capability TEXT,
         cwd TEXT,
         last_seen TEXT
       );
@@ -509,6 +511,7 @@ export class PermissionLedger {
       'ALTER TABLE permission_grants ADD COLUMN machine_id TEXT',
       'ALTER TABLE permission_grants ADD COLUMN env_name TEXT',
       'ALTER TABLE permission_grants ADD COLUMN daemon_key TEXT',
+      'ALTER TABLE permission_grants ADD COLUMN terminal_capability TEXT',
       'ALTER TABLE permission_grants ADD COLUMN cwd TEXT',
       'ALTER TABLE permission_grants ADD COLUMN last_seen TEXT',
     ]) {
@@ -531,14 +534,14 @@ export class PermissionLedger {
     this._get = this.db.prepare(`
       SELECT id, spawn_policy, permission_profile, permission_intersection, permission_set, updated_at, source,
         friendly_name, session_id, session_kind, session_path, tmux_session, model,
-        machine_id, env_name, daemon_key, cwd, last_seen
+        machine_id, env_name, daemon_key, terminal_capability, cwd, last_seen
       FROM permission_grants
       WHERE id = ?
     `)
     this._findByFriendlyName = this.db.prepare(`
       SELECT id, spawn_policy, permission_profile, permission_intersection, permission_set, updated_at, source,
         friendly_name, session_id, session_kind, session_path, tmux_session, model,
-        machine_id, env_name, daemon_key, cwd, last_seen
+        machine_id, env_name, daemon_key, terminal_capability, cwd, last_seen
       FROM permission_grants
       WHERE friendly_name = ?
       ORDER BY COALESCE(last_seen, updated_at) DESC
@@ -547,7 +550,7 @@ export class PermissionLedger {
     this._list = this.db.prepare(`
       SELECT id, spawn_policy, permission_profile, permission_intersection, permission_set, updated_at, source,
         friendly_name, session_id, session_kind, session_path, tmux_session, model,
-        machine_id, env_name, daemon_key, cwd, last_seen
+        machine_id, env_name, daemon_key, terminal_capability, cwd, last_seen
       FROM permission_grants
       WHERE tmux_session IS NOT NULL
       ORDER BY id
@@ -651,6 +654,7 @@ export class PermissionLedger {
       machineId: row.machine_id || null,
       envName: row.env_name || null,
       daemonKey: row.daemon_key || null,
+      terminalCapability: row.terminal_capability || null,
       cwd: row.cwd || null,
       lastSeen: row.last_seen || null,
     }
@@ -797,13 +801,14 @@ export class PermissionLedger {
     machineId,
     envName,
     daemonKey,
+    terminalCapability,
     cwd,
     friendlyName,
     lastSeen = nowIso(),
   } = {}) {
     const key = String(id || '').trim()
     if (!key) throw new Error('cannot persist daemon session identity without fleet id')
-    if (!sessionId && !sessionKind && !sessionPath && !tmuxSession && !model && !machineId && !envName && !daemonKey && !cwd && !friendlyName) return this.get(key)
+    if (!sessionId && !sessionKind && !sessionPath && !tmuxSession && !model && !machineId && !envName && !daemonKey && !terminalCapability && !cwd && !friendlyName) return this.get(key)
     const existing = this.get(key)
     if (!existing) {
       return null
@@ -839,6 +844,7 @@ export class PermissionLedger {
         machine_id = COALESCE(machine_id, ?),
         env_name = COALESCE(env_name, ?),
         daemon_key = COALESCE(daemon_key, ?),
+        terminal_capability = COALESCE(terminal_capability, ?),
         cwd = COALESCE(cwd, ?),
         friendly_name = COALESCE(?, friendly_name),
         last_seen = ?
@@ -852,12 +858,37 @@ export class PermissionLedger {
       machineId || null,
       envName || null,
       daemonKey || null,
+      terminalCapability || null,
       cwd || null,
       friendlyName || null,
       lastSeen,
       key,
     )
     return this.get(key)
+  }
+
+  rotateTerminalCapabilitySync(id) {
+    const key = String(id || '').trim()
+    if (!key) throw new Error('cannot mint terminal capability without fleet id')
+    const existing = this.get(key)
+    if (!existing) return null
+    const capability = `termcap:${randomUUID()}`
+    this.db.prepare(`
+      UPDATE permission_grants
+      SET terminal_capability = ?, last_seen = ?
+      WHERE id = ?
+    `).run(capability, nowIso(), key)
+    return capability
+  }
+
+  resolveTerminalCapability({ agentId, terminalCapability } = {}) {
+    const key = String(agentId || '').trim()
+    const capability = String(terminalCapability || '').trim()
+    if (!key || !capability) return null
+    const row = this.get(key)
+    if (!row || row.terminalCapability !== capability) return null
+    if (!row.tmuxSession || !row.sessionId || !row.daemonKey) return null
+    return row
   }
 
   async close() {

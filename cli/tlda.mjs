@@ -2832,7 +2832,7 @@ export async function createLifecycleSeatBindingObligation(result, {
   cwd,
   name,
 } = {}) {
-  if (!api || !result?.fleetId || !result.tmuxSession || !['codex', 'claude'].includes(result.harness)) {
+  if (!api || !result?.fleetId || !result.localAgentId || !['codex', 'claude'].includes(result.harness)) {
     throw new Error('fresh/session pending requires an exact durable seat-binding obligation')
   }
   const machineId = localMachineId()
@@ -2843,7 +2843,6 @@ export async function createLifecycleSeatBindingObligation(result, {
     daemon_key: `${machineId}:${envName}`,
     machine_id: machineId,
     env_name: envName,
-    tmux_session: result.tmuxSession,
     cwd,
     kind: result.harness,
     model: result.model,
@@ -3275,34 +3274,54 @@ async function hibernateLocalAgent(name, { allowMissing = false } = {}) {
   return { status: res.status ?? 0, hibernated: res.status === 0, session: sess }
 }
 
-async function dismissAgent(name) {
+export async function dismissAgent(name, {
+  ensureServerImpl = ensureServer,
+  apiImpl = api,
+  log = console,
+  exitImpl = code => process.exit(code),
+} = {}) {
   if (!name) {
-    console.error('Usage: tlda agent dismiss <name>')
-    process.exit(1)
+    log.error('Usage: tlda agent dismiss <name>')
+    exitImpl(1)
+    return { ok: false, error: 'missing-name' }
   }
-  await ensureServer()
-  const state = await api('GET', '/api/state')
+  await ensureServerImpl()
+  const state = await apiImpl('GET', '/api/state')
   const agents = Array.isArray(state?.agents) ? state.agents : []
   const agent = resolveAgentQuery(agents, name)
   if (!agent) {
-    console.error(`No agent found for "${name}".`)
-    process.exit(1)
+    log.error(`No agent found for "${name}".`)
+    exitImpl(1)
+    return { ok: false, error: 'agent-not-found' }
   }
   const label = agent.friendly_name || agent.id
   if (agent.dead) {
-    console.log(`${label} is already dismissed.`)
-    return
+    log.log(`${label} is already dismissed.`)
+    return { ok: true, already: true, agent }
   }
-  if (agent.tmux_session) {
-    try {
-      await api('POST', '/api/kill-session', { agent: agent.id })
-    } catch (e) {
-      console.error(`Failed to hibernate ${label}; not marking it dismissed: ${e?.message || e}`)
-      process.exit(1)
+  let seat = null
+  try {
+    const data = await apiImpl('GET', `/api/agent-seat?agent=${encodeURIComponent(agent.id)}`)
+    seat = data?.seat || null
+  } catch (e) {
+    if (e?.status && e.status !== 404) {
+      log.error(`Failed to inspect current seat for ${label}; not marking it dismissed: ${e?.message || e}`)
+      exitImpl(1)
+      return { ok: false, error: 'seat-check-failed' }
     }
   }
-  await api('POST', `/api/agents/${encodeURIComponent(agent.id)}/mark-dead`)
-  console.log(`Dismissed ${label} (${agent.id}) — marked dead and removed from the live roster.`)
+  if (seat?.terminal_capability) {
+    try {
+      await apiImpl('POST', '/api/kill-session', { agent: agent.id })
+    } catch (e) {
+      log.error(`Failed to hibernate ${label}; not marking it dismissed: ${e?.message || e}`)
+      exitImpl(1)
+      return { ok: false, error: 'kill-failed' }
+    }
+  }
+  await apiImpl('POST', `/api/agents/${encodeURIComponent(agent.id)}/mark-dead`)
+  log.log(`Dismissed ${label} (${agent.id}) — marked dead and removed from the live roster.`)
+  return { ok: true, agent, seat, killed: !!seat?.terminal_capability }
 }
 
 // The profile list in help is DERIVED from daemon.yaml — never hardcoded — so it
@@ -3485,12 +3504,24 @@ export async function collectAgentReadiness(query, spawnSync, apiGet = api) {
   } catch (e) {
     return { ok: false, query, agent, error: `current durable seat missing: ${e.message}` }
   }
-  if (!seat?.tmux_session) return { ok: false, query, agent, seat, error: 'current durable seat has no tmux session' }
+  if (!seat?.terminal_capability) return { ok: false, query, agent, seat, error: 'current durable seat has no terminal capability' }
   if (seat.agent_id && seat.agent_id !== agent.id) return { ok: false, query, agent, seat, error: `current durable seat owner mismatch: ${seat.agent_id} != ${agent.id}` }
-  const registrySeatMismatch = agent.tmux_session && agent.tmux_session !== seat.tmux_session
-    ? `registry/current-seat tmux mismatch: registry=${agent.tmux_session} seat=${seat.tmux_session}`
-    : null
-  const sess = seat.tmux_session
+  const daemonConfig = readDaemonConfig(defaultDaemonConfigPath(CONFIG_DIR))
+  const ledger = createPermissionLedger(permissionLedgerPathFromDaemonConfig(daemonConfig, CONFIG_DIR))
+  let localRoute = null
+  try {
+    localRoute = ledger.get(agent.id)
+  } finally {
+    await ledger.close()
+  }
+  const localDaemonKey = `${localMachineId()}:${getActiveConfigName(loadConfig())}`
+  if (seat.daemon_key !== localDaemonKey) {
+    return { ok: false, query, agent, seat, error: `current durable seat belongs to ${seat.daemon_key || 'unknown daemon'}, not local ${localDaemonKey}` }
+  }
+  if (!localRoute?.tmuxSession || localRoute.terminalCapability !== seat.terminal_capability) {
+    return { ok: false, query, agent, seat, error: 'current durable seat capability has no matching local terminal route' }
+  }
+  const sess = localRoute.tmuxSession
   const hasSession = spawnSync('tmux', [...tmuxBase(), 'has-session', '-t', sess], { stdio: 'ignore' }).status === 0
   let panes = []
   if (hasSession) {
@@ -3516,7 +3547,7 @@ export async function collectAgentReadiness(query, spawnSync, apiGet = api) {
   const ok = !agent.dead && hasSession && runtime.ok && !!recentLogin
   return {
     ok, query, agent, seat, tableRow: row, session: sess, hasSession, panes, runtime,
-    recentLogin, recentInbox, incoming, replyAfterIncoming, warning: registrySeatMismatch,
+    recentLogin, recentInbox, incoming, replyAfterIncoming,
   }
 }
 

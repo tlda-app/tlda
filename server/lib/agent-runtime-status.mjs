@@ -72,7 +72,6 @@ export function createAgentRuntimeStatusStore({
       liveness_at: new Date(livenessAtMs).toISOString(),
       alive_since_ms: continuouslyAlive ? (previous.alive_since_ms || previousAliveAt) : atMs,
       alive_since: new Date(continuouslyAlive ? (previous.alive_since_ms || previousAliveAt) : atMs).toISOString(),
-      tmux_session: detail.tmux_session || detail.tmuxSession || null,
       pid: detail.pid || null,
     })
   }
@@ -87,7 +86,6 @@ export function createAgentRuntimeStatusStore({
       liveness_at: new Date(Number.isFinite(detail.atMs) ? detail.atMs : now()).toISOString(),
       alive_since_ms: null,
       alive_since: null,
-      tmux_session: detail.tmux_session || detail.tmuxSession || null,
       pid: detail.pid || null,
     })
   }
@@ -101,7 +99,6 @@ export function createAgentRuntimeStatusStore({
       liveness_at: new Date(Number.isFinite(detail.atMs) ? detail.atMs : now()).toISOString(),
       alive_since_ms: null,
       alive_since: null,
-      tmux_session: detail.tmux_session || detail.tmuxSession || null,
       pid: detail.pid || null,
     })
   }
@@ -225,10 +222,7 @@ export function projectAgentRuntimeStatus(agent, evidence = null, {
 
   if (evidence?.liveness === LIVENESS.ALIVE) {
     const ageMs = Number.isFinite(evidence.liveness_at_ms) ? nowMs - evidence.liveness_at_ms : Infinity
-    const tmuxMatchesWhenPresent = !seat?.tmux_session
-      || !evidence.tmux_session
-      || String(seat.tmux_session) === String(evidence.tmux_session)
-    const currentPositiveEvidence = route.state === ROUTE_STATE.ROUTABLE && tmuxMatchesWhenPresent && ageMs <= ttlMs
+    const currentPositiveEvidence = route.state === ROUTE_STATE.ROUTABLE && ageMs <= ttlMs
     return runtimeProjection({
       status: currentPositiveEvidence ? RUNTIME_STATUS.AWAKE : (seat ? RUNTIME_STATUS.UNAVAILABLE : RUNTIME_STATUS.HIBERNATING),
       activity: baseEvidence.activity,
@@ -262,6 +256,9 @@ function routeStateFor({ agent, seat, isDaemonConnected }) {
   if (!seat.daemon_key) {
     return { state: ROUTE_STATE.UNROUTABLE, reason: 'current-seat-incomplete', seat }
   }
+  if (!seat.terminal_capability) {
+    return { state: ROUTE_STATE.UNROUTABLE, reason: 'current-seat-missing-terminal-capability', seat }
+  }
   if (!isDaemonConnected(seat.daemon_key)) {
     return { state: ROUTE_STATE.DAEMON_DISCONNECTED, reason: 'daemon-disconnected', seat }
   }
@@ -276,10 +273,6 @@ function runtimeProjection({ status, activity, route, evidence, reason, nowMs })
     route_reason: route.reason,
     route: route.seat ? {
       daemon_key: route.seat.daemon_key || null,
-      machine_id: route.seat.machine_id || null,
-      env_name: route.seat.env_name || null,
-      session_id: route.seat.session_id || null,
-      tmux_session: route.seat.tmux_session || null,
     } : null,
     evidence,
     reason,

@@ -27,7 +27,6 @@ function rowForAgent(agent, now = Date.now()) {
     machine_id: runtimeRoute?.machine_id || null,
     env_name: runtimeRoute?.env_name || null,
     daemon_key: runtimeRoute?.daemon_key || agentDaemonKey(agent),
-    tmux_session: runtimeRoute?.tmux_session || null,
     activity: act?.state || null,
     tool: act?.tool || null,
     activity_health: activityHealthForProjection(agent.metadata || {}),
@@ -102,49 +101,11 @@ export function summarizeFleetRosterTruth({
 
   for (const machineId of Object.keys(machineSessions)) entry(machineId)
 
-  const activeBySession = new Map()
-  for (const agent of agentRoster) {
-    if (agent.dead || !agent.tmux_session) continue
-    const key = `${agentDaemonKey(agent)}\u0000${agent.tmux_session}`
-    if (!activeBySession.has(key)) activeBySession.set(key, [])
-    activeBySession.get(key).push(agent)
-  }
-
   for (const [machineId, sessionsRaw] of Object.entries(machineSessions)) {
     const e = entry(machineId)
     const sessions = (sessionsRaw || []).filter(s => typeof s === 'string' && s.startsWith('fleet-'))
-    const sessionSet = new Set(sessions)
     e.daemon_connected = true
     e.panes.fleet = sessions.length
-    for (const session of sessions) {
-      const matches = activeBySession.get(`${machineId}\u0000${session}`) || []
-      const hasAwakeMatch = matches.some(a => isRuntimeAwake(a))
-      if (!hasAwakeMatch) {
-        e.panes.stale++
-        if (e.stale_panes.length < 25) {
-          e.stale_panes.push({
-            tmux_session: session,
-            reason: matches.length ? 'registered but not awake' : 'no active registry row',
-            agents: matches.map(a => ({ id: a.id, name: agentName(a), status: runtimeStatusName(a) })),
-          })
-        }
-      }
-    }
-    for (const agent of agentRoster) {
-      if (agent.dead || agentDaemonKey(agent) !== machineId || !agent.tmux_session) continue
-      if (!sessionSet.has(agent.tmux_session)) {
-        e.registry_without_pane++
-        if (e.registry_without_pane_rows.length < 25) {
-          e.registry_without_pane_rows.push({
-            id: agent.id,
-            name: agentName(agent),
-            status: runtimeStatusName(agent),
-            daemon_key: agentDaemonKey(agent),
-            tmux_session: agent.tmux_session,
-          })
-        }
-      }
-    }
   }
 
   const machineRows = [...machines.values()].sort((a, b) => a.machine_id.localeCompare(b.machine_id))
