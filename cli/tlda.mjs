@@ -2110,9 +2110,13 @@ async function cmdMoveProject() {
   await apiAt(targetServer, 'POST', `/api/projects/${encodeURIComponent(name)}/push`, { files, sourceDir }, { timeoutMs: 120000 })
   writeProjectWorld(projectWorldsPath(CONFIG_DIR), sourceDir, targetConfig)
 
+  const daemonEnv = { ...process.env, TLDA_CONFIG: targetConfig }
+  delete daemonEnv.TLDA_SERVER
+  delete daemonEnv.TLDA_SYNC_SERVER
   execFileSync(process.execPath, [fileURLToPath(import.meta.url), 'daemon', 'start', '--config', targetConfig], {
     cwd: FLEET_DAEMON_MAIN_ROOT,
     stdio: 'inherit',
+    env: daemonEnv,
   })
 
   console.log(green(`Moved project "${name}" from ${sourceConfig} to ${targetConfig}.`))
