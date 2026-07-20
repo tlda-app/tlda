@@ -55,6 +55,7 @@ import { resolveServerIsolation } from '../shared/server-identity.mjs'
 import { initProjectStore, listProjects, readProject, updateProject, getProjectsDir, readProjectPartsManifest } from './lib/project-store.mjs'
 import { resumeOverleafPollers } from './lib/overleaf-sync.mjs'
 import { resetStaleBuildStates, killAllBuilds, setShadowMirrorHandler } from './lib/build-runner.mjs'
+import { createShadowMirrorRpcHandler } from './lib/shadow-mirror-rpc.mjs'
 import { dispatchBuild, killAllDispatchedBuilds } from './lib/build-dispatch.mjs'
 import { writeSentinel } from './lib/sentinel.mjs'
 import projectRoutes, { processProjectPush } from './routes/projects.mjs'
@@ -1190,20 +1191,7 @@ async function sendRpcResilient(machineId, op, params = {}, { totalDeadlineMs = 
   throw lastErr || new Error(`RPC ${op} to ${key} failed after ${totalDeadlineMs}ms`)
 }
 
-setShadowMirrorHandler(async ({ name, hash, bundleBase64 }) => {
-  const project = readProject(name)
-  const machineId = project?.lastSourceMachineId || null
-  const envName = project?.lastSourceEnvName || null
-  if (!machineId || !envName) {
-    throw new Error(`no source daemon recorded for ${name}`)
-  }
-  const result = await sendRpc(daemonAddress(machineId, envName), 'mirror-shadow-ref', {
-    project: name,
-    hash,
-    bundleBase64,
-  })
-  return { ...result, machine_id: machineId, env_name: envName }
-})
+setShadowMirrorHandler(createShadowMirrorRpcHandler({ readProject, sendRpc }))
 
 // No server-side echo suppression. Dedup is client-side: the WS reply
 // includes the event ID, which the client maps to its optimistic event

@@ -179,7 +179,7 @@ export async function initShadowRepo(name) {
  */
 const BUILD_ARTIFACT_RE = /\.(aux|log|toc|bbl|blg|fls|fdb_latexmk|out|synctex\.gz|nav|snm|vrb|dvi|lof|lot|bcf|run\.xml)$/
 
-function readPaperScope(name) {
+export function readPaperScope(name) {
   const relPath = join(outputDir(name), 'relevant-files.json')
   if (!existsSync(relPath)) return null
   let parsed
@@ -197,6 +197,24 @@ function readPaperScope(name) {
     const rel = p.slice(srcDir.length + 1)
     if (BUILD_ARTIFACT_RE.test(rel)) continue
     if (existsSync(join(srcDir, rel))) out.add(rel)
+  }
+  return out.size === 0 ? null : [...out].sort()
+}
+
+export async function readShadowSourceScope(name) {
+  const out = new Set(readPaperScope(name) || [])
+  const repoDir = shadowRepoDir(name)
+  if (existsSync(join(repoDir, '.git'))) {
+    const { stdout: commitsRaw } = await execAsync('git log --format=%H', { cwd: repoDir, timeout: 10000 })
+    const commits = commitsRaw.split('\n').map(line => line.trim()).filter(Boolean)
+    for (const commit of commits) {
+      const { stdout: filesRaw } = await execAsync(`git ls-tree -rz --name-only "${commit}"`, { cwd: repoDir, timeout: 10000 })
+      for (const rel of filesRaw.split('\0')) {
+        if (!rel || rel === '.gitignore' || rel === 'CLAUDE.md') continue
+        if (BUILD_ARTIFACT_RE.test(rel)) continue
+        out.add(rel)
+      }
+    }
   }
   return out.size === 0 ? null : [...out].sort()
 }

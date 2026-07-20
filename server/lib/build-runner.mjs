@@ -59,7 +59,7 @@ import { updateProject, sourceDir, outputDir, projectDir, readProject, listProje
 import { broadcastSignal, putShape, updateShape, emitGlobalEvent } from './sync-rooms.mjs'
 import { writeSentinel } from './sentinel.mjs'
 import { snapshotBeforeBuild, recordGitSnapshot } from './history-store.mjs'
-import { commitSnapshot, currentVersion, initShadowFromProjectRepo, createShadowBundleBase64 } from './shadow-repo.mjs'
+import { commitSnapshot, currentVersion, initShadowFromProjectRepo, createShadowBundleBase64, readShadowSourceScope } from './shadow-repo.mjs'
 import { appendBuildEntry } from './changelog.mjs'
 import { emitBuildComplete } from './webhooks.mjs'
 import { clearSynctexCache } from './synctex-query.mjs'
@@ -135,7 +135,9 @@ export async function mirrorShadow(name, hash) {
     throw new Error('no daemon mirror handler registered')
   }
   const bundleBase64 = await createShadowBundleBase64(name, hash)
-  return mirrorShadowSnapshot({ name, hash, bundleBase64 })
+  const sourceScope = await readShadowSourceScope(name)
+  if (!sourceScope) throw new Error(`no shadow source scope available for ${name}`)
+  return mirrorShadowSnapshot({ name, hash, bundleBase64, sourceScope })
 }
 
 function convertScratchMarkdown(srcDir, addLog) {
