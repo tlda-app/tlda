@@ -225,10 +225,10 @@ export function projectAgentRuntimeStatus(agent, evidence = null, {
 
   if (evidence?.liveness === LIVENESS.ALIVE) {
     const ageMs = Number.isFinite(evidence.liveness_at_ms) ? nowMs - evidence.liveness_at_ms : Infinity
-    const exactTmux = !!seat?.tmux_session
-      && !!evidence.tmux_session
-      && String(seat.tmux_session) === String(evidence.tmux_session)
-    const currentPositiveEvidence = route.state === ROUTE_STATE.ROUTABLE && exactTmux && ageMs <= ttlMs
+    const tmuxMatchesWhenPresent = !seat?.tmux_session
+      || !evidence.tmux_session
+      || String(seat.tmux_session) === String(evidence.tmux_session)
+    const currentPositiveEvidence = route.state === ROUTE_STATE.ROUTABLE && tmuxMatchesWhenPresent && ageMs <= ttlMs
     return runtimeProjection({
       status: currentPositiveEvidence ? RUNTIME_STATUS.AWAKE : (seat ? RUNTIME_STATUS.UNAVAILABLE : RUNTIME_STATUS.HIBERNATING),
       activity: baseEvidence.activity,
@@ -238,7 +238,7 @@ export function projectAgentRuntimeStatus(agent, evidence = null, {
         ? (evidence.liveness_source || 'positive-runtime-evidence')
         : route.state !== ROUTE_STATE.ROUTABLE
           ? route.reason
-          : !exactTmux
+          : !tmuxMatchesWhenPresent
             ? 'positive-evidence-does-not-match-current-seat'
             : 'positive-runtime-evidence-expired',
       nowMs,
@@ -259,7 +259,7 @@ function routeStateFor({ agent, seat, isDaemonConnected }) {
   if (!agent?.id) return { state: ROUTE_STATE.UNROUTABLE, reason: 'agent-missing' }
   if (agent.dead) return { state: ROUTE_STATE.UNROUTABLE, reason: 'agent-dead' }
   if (!seat) return { state: ROUTE_STATE.SEAT_MISSING, reason: 'current-seat-missing' }
-  if (!seat.daemon_key || !seat.tmux_session || !seat.session_id) {
+  if (!seat.daemon_key) {
     return { state: ROUTE_STATE.UNROUTABLE, reason: 'current-seat-incomplete', seat }
   }
   if (!isDaemonConnected(seat.daemon_key)) {

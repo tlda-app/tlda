@@ -13,18 +13,19 @@ export function recordAgentBindingEvent(fleetStore, msg = {}, {
     tmuxSession: msg.tmux_session || msg.tmuxSession,
   }
   if (!agentId) throw new Error('agent-binding event missing agent_id')
-  if (!sessionId) throw new Error('agent-binding event missing session_id')
 
-  fleetStore.insertAgentSeat({
-    agent_id: agentId,
-    session_id: sessionId,
-    resume_id: msg.resume_id || msg.resumeId || sessionId,
-    kind: msg.kind,
-    model: msg.model,
-    cwd: msg.cwd,
-    created_source: msg.created_source || 'daemon-runtime',
-    created_by_event_id: msg.created_by_event_id || null,
-  })
+  if (sessionId) {
+    fleetStore.insertAgentSeat({
+      agent_id: agentId,
+      session_id: sessionId,
+      resume_id: msg.resume_id || msg.resumeId || sessionId,
+      kind: msg.kind,
+      model: msg.model,
+      cwd: msg.cwd,
+      created_source: msg.created_source || 'daemon-runtime',
+      created_by_event_id: msg.created_by_event_id || null,
+    })
+  }
   return fleetStore.activateAgentSeat({
     agentId,
     sessionId,

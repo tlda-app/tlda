@@ -2250,10 +2250,13 @@ function agentDaemonAddress(agent) {
   return daemonAddress(agent?.machine_id, agent?.env_name)
 }
 
-function currentSeatOrError(agent) {
+function currentSeatOrError(agent, { requireTerminal = true } = {}) {
   const seat = agent?.id ? fleetStore?.getCurrentAgentSeat?.(agent.id) : null
   if (!seat) return { error: 'agent has no current durable seat' }
-  if (!seat.daemon_key || !seat.tmux_session || !seat.session_id) {
+  if (!seat.daemon_key) {
+    return { error: 'current durable route is missing daemon authority' }
+  }
+  if (requireTerminal && (!seat.tmux_session || !seat.session_id)) {
     return { error: 'current durable seat is missing daemon, session, or tmux endpoint' }
   }
   return { seat }
@@ -2430,7 +2433,7 @@ async function materializeRecipientAttachment({ eventId, recipientId, sourceAgen
     }
     return { attachment, record }
   }
-  const current = currentSeatOrError(recipient)
+  const current = currentSeatOrError(recipient, { requireTerminal: false })
   if (current.error) {
     return fail(`${current.error} (op=materialize-attachment)`)
   }
@@ -7581,6 +7584,21 @@ async function setSentinelSyncError(projectName, syncError) {
 async function handleDaemonWsMessage(ws, msg) {
   const { type } = msg
 
+  function ensureDaemonEventRoute(agentId, reason) {
+    if (!fleetStore || !agentId || !ws._daemonKey || !ws._machineId || !ws._envName) return null
+    const current = fleetStore.getCurrentAgentSeat?.(agentId)
+    if (current?.daemon_key === ws._daemonKey) return current
+    const agent = fleetStore.getAgent?.(agentId)
+    if (!agent || agent.dead || agent.human) return null
+    return fleetStore.activateAgentSeat({
+      agentId,
+      machineId: ws._machineId,
+      envName: ws._envName,
+      daemonKey: ws._daemonKey,
+      reason,
+    })
+  }
+
   if (type === 'activity-delivery-metrics') {
     const daemonKey = ws._daemonKey || (
       msg.machine_id && msg.env_name ? daemonAddress(msg.machine_id, msg.env_name) : null
@@ -7748,6 +7766,7 @@ async function handleDaemonWsMessage(ws, msg) {
   if (type === 'agent-status') {
     const { agentId, state, tool, ts } = msg
     if (!agentId || !state || !fleetStore) return
+    ensureDaemonEventRoute(agentId, 'daemon-agent-status')
     fleetStore.updateAgentStatus?.(agentId, state, tool, ts)
     // Display feed only — no liveness publishing (see the identical rule on
     // the WS agent-status handler above).
@@ -7767,7 +7786,7 @@ async function handleDaemonWsMessage(ws, msg) {
       ])
       const batchTs = ts || new Date().toISOString()
       for (const id of checkedIds) {
-        const seat = fleetStore?.getCurrentAgentSeat?.(id)
+        const seat = ensureDaemonEventRoute(id, 'daemon-liveness-batch') || fleetStore?.getCurrentAgentSeat?.(id)
         if (!seat || seat.daemon_key !== ws._daemonKey) continue
         const batchState = aliveIds.has(id) ? 'alive' : 'dead'
         spawnLibrarian.observeLiveness({
@@ -7799,9 +7818,9 @@ async function handleDaemonWsMessage(ws, msg) {
       return
     }
     if (!agent_id || !state) return
-    const currentSeat = fleetStore?.getCurrentAgentSeat?.(agent_id)
+    const currentSeat = ensureDaemonEventRoute(agent_id, 'daemon-agent-liveness') || fleetStore?.getCurrentAgentSeat?.(agent_id)
     if (!currentSeat || currentSeat.daemon_key !== ws._daemonKey) return
-    if (tmux_session && String(tmux_session) !== String(currentSeat.tmux_session)) return
+    if (tmux_session && currentSeat.tmux_session && String(tmux_session) !== String(currentSeat.tmux_session)) return
     spawnLibrarian.observeLiveness({ type, agent_id, state, tmux_session, pid, reason, ts })
     if (state === 'alive') {
       // Liveness ≠ activity (see the batch handler above): this is a 30s "process
@@ -7810,7 +7829,7 @@ async function handleDaemonWsMessage(ws, msg) {
       markAgentAlive(agent_id, Date.parse(ts) || Date.now(), {
         source: 'daemon-agent-liveness',
         reason,
-        tmux_session: currentSeat.tmux_session,
+        tmux_session: currentSeat.tmux_session || tmux_session || null,
         pid,
       })
     } else if (state === 'dead' || state === 'wedged') {
@@ -7818,7 +7837,7 @@ async function handleDaemonWsMessage(ws, msg) {
         source: 'daemon-agent-liveness',
         state,
         reason,
-        tmux_session: currentSeat.tmux_session,
+        tmux_session: currentSeat.tmux_session || tmux_session || null,
         pid,
       })
     }
@@ -7829,7 +7848,7 @@ async function handleDaemonWsMessage(ws, msg) {
   if (type === 'agent-activity') {
     const { agent_id, jsonl_offset, ts } = msg
     if (!agent_id || typeof jsonl_offset !== 'number') return
-    const currentSeat = fleetStore?.getCurrentAgentSeat?.(agent_id)
+    const currentSeat = ensureDaemonEventRoute(agent_id, 'daemon-agent-activity') || fleetStore?.getCurrentAgentSeat?.(agent_id)
     if (!currentSeat || currentSeat.daemon_key !== ws._daemonKey) return
     spawnLibrarian.observeActivity({ type, agent_id, jsonl_offset, ts })
     markAgentAlive(agent_id, Date.parse(ts) || Date.now(), {

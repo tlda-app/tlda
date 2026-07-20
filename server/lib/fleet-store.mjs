@@ -353,17 +353,19 @@ export class FleetStore {
 
       CREATE TABLE IF NOT EXISTS agent_current_seats (
         agent_id TEXT PRIMARY KEY,
-        session_id TEXT NOT NULL,
+        session_id TEXT,
         machine_id TEXT NOT NULL,
         env_name TEXT NOT NULL,
         daemon_key TEXT NOT NULL,
-        tmux_session TEXT NOT NULL,
+        tmux_session TEXT,
         activated_at TEXT NOT NULL,
         activated_by_event_id INTEGER,
         transition_reason TEXT,
-        UNIQUE (daemon_key, tmux_session),
         FOREIGN KEY (agent_id, session_id) REFERENCES agent_seats(agent_id, session_id)
       );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_current_seats_tmux_endpoint
+        ON agent_current_seats(daemon_key, tmux_session)
+        WHERE tmux_session IS NOT NULL;
 
       CREATE TABLE IF NOT EXISTS daemon_agent_bindings (
         daemon_key TEXT NOT NULL,
@@ -603,18 +605,21 @@ export class FleetStore {
       );
       CREATE TABLE IF NOT EXISTS agent_current_seats (
         agent_id TEXT PRIMARY KEY,
-        session_id TEXT NOT NULL,
+        session_id TEXT,
         machine_id TEXT NOT NULL,
         env_name TEXT NOT NULL,
         daemon_key TEXT NOT NULL,
-        tmux_session TEXT NOT NULL,
+        tmux_session TEXT,
         activated_at TEXT NOT NULL,
         activated_by_event_id INTEGER,
         transition_reason TEXT,
-        UNIQUE (daemon_key, tmux_session),
         FOREIGN KEY (agent_id, session_id) REFERENCES agent_seats(agent_id, session_id)
       );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_current_seats_tmux_endpoint
+        ON agent_current_seats(daemon_key, tmux_session)
+        WHERE tmux_session IS NOT NULL;
     `);
+    this._migrateAgentCurrentSeatsRouteSchema();
     const now = new Date().toISOString();
     this.db.prepare(`
       INSERT OR IGNORE INTO agent_seats (
@@ -941,6 +946,41 @@ export class FleetStore {
     `);
   }
 
+  _migrateAgentCurrentSeatsRouteSchema() {
+    const cols = this.db.prepare('PRAGMA table_info(agent_current_seats)').all();
+    const sessionCol = cols.find(c => c.name === 'session_id');
+    const tmuxCol = cols.find(c => c.name === 'tmux_session');
+    if (sessionCol?.notnull === 0 && tmuxCol?.notnull === 0) return;
+
+    this.db.exec(`
+      ALTER TABLE agent_current_seats RENAME TO agent_current_seats_old;
+      CREATE TABLE agent_current_seats (
+        agent_id TEXT PRIMARY KEY,
+        session_id TEXT,
+        machine_id TEXT NOT NULL,
+        env_name TEXT NOT NULL,
+        daemon_key TEXT NOT NULL,
+        tmux_session TEXT,
+        activated_at TEXT NOT NULL,
+        activated_by_event_id INTEGER,
+        transition_reason TEXT,
+        FOREIGN KEY (agent_id, session_id) REFERENCES agent_seats(agent_id, session_id)
+      );
+      INSERT INTO agent_current_seats (
+        agent_id, session_id, machine_id, env_name, daemon_key, tmux_session,
+        activated_at, activated_by_event_id, transition_reason
+      )
+      SELECT
+        agent_id, session_id, machine_id, env_name, daemon_key, tmux_session,
+        activated_at, activated_by_event_id, transition_reason
+      FROM agent_current_seats_old;
+      DROP TABLE agent_current_seats_old;
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_current_seats_tmux_endpoint
+        ON agent_current_seats(daemon_key, tmux_session)
+        WHERE tmux_session IS NOT NULL;
+    `);
+  }
+
   // Standard SELECT for events — aliases from_id/to_id so consumers always see `from`/`to`
   // Use _EVT for standalone queries, _EVTE for queries that join (prefixes with e.)
   get _EVT() { return 'id, type, timestamp, from_id as "from", to_id as "to", text, metadata, task_id, agent_id' }
@@ -1040,10 +1080,12 @@ export class FleetStore {
     this._getLiveAgentsByFriendlyName = this.db.prepare(`SELECT ${AGENT_SELECT} ${AGENT_JOIN} WHERE agents.dead = 0 AND agents.friendly_name = ?`);
     this._getAgentSeat = this.db.prepare('SELECT * FROM agent_seats WHERE agent_id = ?');
     this._getCurrentAgentSeat = this.db.prepare(`
-      SELECT s.*, c.machine_id, c.env_name, c.daemon_key, c.tmux_session,
+      SELECT c.agent_id, c.session_id,
+             s.resume_id, s.kind, s.model, s.cwd, s.created_at, s.created_source, s.created_by_event_id,
+             c.machine_id, c.env_name, c.daemon_key, c.tmux_session,
              c.activated_at, c.activated_by_event_id, c.transition_reason
       FROM agent_current_seats c
-      JOIN agent_seats s ON s.agent_id = c.agent_id AND s.session_id = c.session_id
+      LEFT JOIN agent_seats s ON s.agent_id = c.agent_id AND s.session_id = c.session_id
       WHERE c.agent_id = ?
     `);
     this._getCurrentEndpointOwner = this.db.prepare('SELECT * FROM agent_current_seats WHERE daemon_key = ? AND tmux_session = ?');
@@ -1075,7 +1117,7 @@ export class FleetStore {
     `);
     this._deleteCurrentAgentSeat = this.db.prepare(`
       DELETE FROM agent_current_seats
-      WHERE agent_id = ? AND session_id = ? AND daemon_key = ? AND tmux_session = ?
+      WHERE agent_id = ? AND daemon_key = ?
     `);
     this._upsertDaemonRegistration = this.db.prepare(`
       INSERT INTO daemon_registry (daemon_key, machine_id, env_name, install_path, user, hostname, version, boot_id, status, connected_at, disconnected_at, last_seen, metadata)
@@ -1635,16 +1677,18 @@ export class FleetStore {
     activatedByEventId = null,
     now = new Date().toISOString(),
   } = {}) {
-    if (!agentId || !sessionId || !machineId || !envName || !daemonKey || !tmuxSession) {
-      throw new Error('activateAgentSeat requires agentId, sessionId, machineId, envName, daemonKey, and tmuxSession');
+    if (!agentId || !machineId || !envName || !daemonKey) {
+      throw new Error('activateAgentSeat requires agentId, machineId, envName, and daemonKey');
     }
     const seat = this._getAgentSeat.get(agentId);
-    if (!seat) throw new Error(`cannot activate missing agent seat ${agentId}/${sessionId}`);
-    if (seat.session_id !== sessionId) {
-      throw new Error(`seat identity conflict for ${agentId}: session_id: existing=${seat.session_id} incoming=${sessionId}`);
+    if (sessionId) {
+      if (!seat) throw new Error(`cannot activate missing agent seat ${agentId}/${sessionId}`);
+      if (seat.session_id !== sessionId) {
+        throw new Error(`seat identity conflict for ${agentId}: session_id: existing=${seat.session_id} incoming=${sessionId}`);
+      }
     }
     const current = this.getCurrentAgentSeat(agentId);
-    const endpointOwner = this._getCurrentEndpointOwner.get(daemonKey, tmuxSession);
+    const endpointOwner = tmuxSession ? this._getCurrentEndpointOwner.get(daemonKey, tmuxSession) : null;
     if (endpointOwner && endpointOwner.agent_id !== agentId) {
       throw new Error(`current tmux endpoint ${daemonKey}/${tmuxSession} already belongs to ${endpointOwner.agent_id}`);
     }
@@ -1654,7 +1698,7 @@ export class FleetStore {
           machineId,
           envName,
           daemonKey,
-          tmuxSession,
+          tmuxSession || null,
           now,
           activatedByEventId,
           reason,
@@ -1663,11 +1707,11 @@ export class FleetStore {
       } else {
         this._insertCurrentAgentSeat.run(
           agentId,
-          seat.session_id,
+          sessionId || null,
           machineId,
           envName,
           daemonKey,
-          tmuxSession,
+          tmuxSession || null,
           now,
           activatedByEventId,
           reason,
@@ -1706,9 +1750,7 @@ export class FleetStore {
     const seat = this.validateCurrentAgentSeat(agentId, fields);
     const result = this._deleteCurrentAgentSeat.run(
       seat.agent_id,
-      seat.session_id,
       seat.daemon_key,
-      seat.tmux_session,
     );
     if (result.changes !== 1) throw new Error(`current seat changed while retiring ${agentId}`);
     this._bustAgentsCache();
@@ -2287,9 +2329,7 @@ export class FleetStore {
       if (seat) {
         const retired = this._deleteCurrentAgentSeat.run(
           seat.agent_id,
-          seat.session_id,
           seat.daemon_key,
-          seat.tmux_session,
         );
         if (retired.changes !== 1) throw new Error(`current seat changed while marking ${id} dead`);
       }
