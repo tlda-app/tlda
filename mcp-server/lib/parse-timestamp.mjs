@@ -7,7 +7,7 @@
  *   '2h'  / '-2h'    → 2 hours ago
  *   '1d'  / '-1d'    → 1 day ago
  *   (and 'min','hr','day','hours','days',... variants)
- *   ISO string        → returned as-is
+ *   parseable date    → normalized to UTC ISO
  *   null/undefined    → returned as-is
  */
 export function parseTimestamp(val) {
@@ -21,5 +21,6 @@ export function parseTimestamp(val) {
     const ms = { m: 60_000, h: 3_600_000, d: 86_400_000 }[unit];
     return new Date(Date.now() - n * ms).toISOString();
   }
-  return val;
+  const d = new Date(val);
+  return Number.isNaN(d.getTime()) ? val : d.toISOString();
 }
