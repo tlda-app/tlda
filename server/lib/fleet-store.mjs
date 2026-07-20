@@ -2313,7 +2313,19 @@ export class FleetStore {
   }
 
   markDead(id) {
-    this._markAgentDead.run(id);
+    const seat = this.getCurrentAgentSeat(id);
+    this.db.transaction(() => {
+      if (seat) {
+        const retired = this._deleteCurrentAgentSeat.run(
+          seat.agent_id,
+          seat.session_id,
+          seat.daemon_key,
+          seat.tmux_session,
+        );
+        if (retired.changes !== 1) throw new Error(`current seat changed while marking ${id} dead`);
+      }
+      this._markAgentDead.run(id);
+    })();
     this._bustAgentsCache();
     this._syncAgentRegistry(id);
   }
