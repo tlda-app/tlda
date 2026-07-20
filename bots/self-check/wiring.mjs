@@ -2,8 +2,8 @@
 //
 // The bot shell (bots/disposition.mjs, executed via bin/bots/disposition.mjs)
 // owns the WS, timers, and preferences.
-// and sendChat. This module owns the decision STATE — Skip's presence, the
-// per-agent cwd cache, and the per-turn trigger/work tracking — plus the
+// and sendChat. This module owns the decision STATE — the per-agent cwd cache
+// and the per-turn trigger/work tracking — plus the
 // dispatch from a fleet-event to the scheduler. No WS, no timers, no clock of
 // its own: the scheduler and `now` are injected, so it's unit-testable with a
 // fake clock alongside a real DispositionScheduler.
@@ -16,11 +16,7 @@
 //   0b. SUBSTANTIVE-TURN GATE (here, decided at turn_ended): the turn must have
 //      emitted a real-work activity. Pure startup, reading, or chat-only turns
 //      are not enough signal to justify a "next action" poke.
-//   1. ABSENCE GATE (in the scheduler, checked at fire time): Skip recently
-//      chatted with THAT target agent → he's in that room → stay quiet for that
-//      agent. Presence = a chat from Skip to that agent (UI or terminal, both
-//      from_id=ownerId) within presenceWindowMs.
-//   2. POKE-LOOP GATE (here, decided at turn_ended): the turn was a response to
+//   1. POKE-LOOP GATE (here, decided at turn_ended): the turn was a response to
 //      the bot's OWN poke AND did no real work — a bare "thanks, done" chat
 //      reply. Don't loop on talk. A post-poke turn that actually DID work
 //      (tool calls / edits, not just a chat reply) is fine to follow up on.
@@ -43,13 +39,10 @@ export function createDispositionWiring({
   ownerId,
   agentId,
   ignoreIds,
-  presenceWindowMs,
   onKickCommand,
-  now = () => Date.now(),
   log = () => {},
 }) {
   if (!scheduler) throw new Error('scheduler is required')
-  const lastSkipActivityByAgent = new Map() // agentId → timestamp of Skip's last chat to that agent
   const cwdCache = new Map()           // agentId → cwd
   const knownBotIds = new Set([...ignoreIds].filter(id => id !== ownerId))
   knownBotIds.add(agentId)
@@ -58,13 +51,6 @@ export function createDispositionWiring({
   const workedThisTurn = new Set()     // agentIds that emitted a real-work tool since their last turn end
 
   return {
-    // Read at scheduler fire time: he's present for this target iff he recently
-    // chatted with that same agent.
-    isSkipPresent: (id) => {
-      const last = lastSkipActivityByAgent.get(id) || 0
-      return now() - last < presenceWindowMs
-    },
-
     // Lane lookup for the poke text; unknown agent → null → generic poke.
     cwdOf: (id) => cwdCache.get(id) || null,
 
@@ -82,7 +68,10 @@ export function createDispositionWiring({
       for (const a of agents) {
         if (a?.id && typeof a.cwd === 'string' && a.cwd) cwdCache.set(a.id, a.cwd)
         const labels = Array.isArray(a?.labels) ? a.labels : []
-        if (a?.id && (labels.includes('bot') || a.human)) knownBotIds.add(a.id)
+        // The owner is human, but their request is exactly the antecedent that
+        // creates owed work. Keep other humans/bots out of the worker-trigger
+        // set without accidentally erasing Skip's request during roster refresh.
+        if (a?.id && a.id !== ownerId && (labels.includes('bot') || a.human)) knownBotIds.add(a.id)
       }
     },
 
@@ -98,10 +87,6 @@ export function createDispositionWiring({
           if (!knownBotIds.has(d.from_id)) hasOwedWork.add(d.to_id)
         }
         if (d.from_id === ownerId) {
-          if (d.to_id && d.to_id !== agentId) {
-            lastSkipActivityByAgent.set(d.to_id, now())               // presence for that agent
-            scheduler.onSkipMessage(d.to_id)                          // in the room with that agent
-          }
           if (d.to_id === agentId && d.text) onKickCommand(d.text)    // manual kick to the bot
         }
         return
@@ -146,8 +131,5 @@ export function createDispositionWiring({
         scheduler.onTurnEnd(id)
       }
     },
-
-    // Test/introspection helpers.
-    _lastSkipActivityAt: (id) => lastSkipActivityByAgent.get(id) || 0,
   }
 }

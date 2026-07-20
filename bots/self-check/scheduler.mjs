@@ -1,38 +1,31 @@
 // Pure countdown scheduler for the disposition introspection bot.
 //
-// The whole bot is: turn ends → wait ~30s → if Skip didn't speak to that agent,
-// poke it. This module is that logic with NO I/O, so it's unit-testable with a
-// fake timer. The bot shell (bots/disposition.mjs) wires it to the fleet WS:
-// turn_ended → onTurnEnd, Skip-message-to-agent → onSkipMessage, manual command
-// → kick. `sendPoke(agentId)` is the only side effect, injected by the caller.
+// The whole bot is: turn ends → wait ~30s → poke the agent. This module is that
+// logic with NO I/O, so it's unit-testable with a fake timer. The bot shell
+// (bots/disposition.mjs) wires it to the fleet WS: turn_ended → onTurnEnd,
+// manual command → kick. `sendPoke(agentId)` is the only side effect, injected
+// by the caller.
 //
 // Design notes:
-//  - SKIP-ABSENCE GATE (the primary trigger): the poke only fires when Skip is
-//    AWAY from THAT AGENT'S room. That's his standing rule — "when I'm in the
-//    room you shut up; when I walk out you manage them." Presence is target-
-//    scoped: Skip talking to agent X must not silence the bot for agent Y. The
-//    bot supplies presence via the injected isSkipPresent(agentId) predicate;
-//    the scheduler checks it at FIRE time (after the wait), so Skip arriving
-//    mid-countdown still silences that agent's poke.
+//  - Skip's presence is deliberately irrelevant. The poke goes privately to
+//    the agent, not to Skip. Suppressing it while Skip is talking makes him the
+//    agent's continuation mechanism — exactly the supervision burden this bot
+//    exists to remove.
 //  - The countdown is the "wait a beat" — don't poke the instant a turn ends.
 //  - A new turn_ended for an agent supersedes its prior countdown (restart),
 //    so a fast double-turn pokes once, at the end.
-//  - Per-agent scoped timers: each agent has at most one pending timer. Skip
-//    messaging agent X also cancels X's countdown immediately (he's in the room
-//    with X).
-//  - A MANUAL KICK bypasses the presence gate — it's Skip's explicit command.
+//  - Per-agent scoped timers: each agent has at most one pending timer.
+//  - A MANUAL KICK fires immediately — it's Skip's explicit command.
 //  - enabled=false stands the bot down entirely: no new countdowns start, and
 //    onTurnEnd/kick become no-ops. Existing timers are cleared on disable.
 //  - Timers are injected (setTimer/clearTimer) so tests drive a fake clock; the
-//    bot passes the real setTimeout/clearTimeout. isSkipPresent is injected for
-//    the same reason — tests stub presence directly.
+//    bot passes the real setTimeout/clearTimeout.
 
 export class DispositionScheduler {
   constructor({
     countdownMs = 30_000,
     enabled = true,
     sendPoke,
-    isSkipPresent = () => false,
     setTimer = setTimeout,
     clearTimer = clearTimeout,
     log = () => {},
@@ -41,7 +34,6 @@ export class DispositionScheduler {
     this.countdownMs = countdownMs
     this.enabled = enabled
     this._sendPoke = sendPoke
-    this._isSkipPresent = isSkipPresent
     this._setTimer = setTimer
     this._clearTimer = clearTimer
     this._log = log
@@ -54,19 +46,10 @@ export class DispositionScheduler {
     this._clearPending(agentId) // a new turn supersedes the old countdown
     const handle = this._setTimer(() => {
       this._pending.delete(agentId)
-      // Skip-absence gate, checked at fire time: if he's active with this
-      // target agent, he's in that room — stay silent for that agent only.
-      if (this._isSkipPresent(agentId)) { this._log('suppress-skip-present', agentId); return }
       this._fire(agentId, 'countdown-expired')
     }, this.countdownMs)
     this._pending.set(agentId, handle)
     this._log('countdown-start', agentId)
-  }
-
-  /** Skip messaged this agent → he's in the room with them; cancel their poke. */
-  onSkipMessage(agentId) {
-    if (!agentId) return
-    if (this._clearPending(agentId)) this._log('cancel-skip-live', agentId)
   }
 
   /** Manual kick — poke this agent right now, regardless of any countdown. */

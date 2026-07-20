@@ -4,9 +4,8 @@
 // DispositionScheduler + REAL createDispositionWiring + REAL pokeFor exactly the
 // way bots/disposition.mjs does, then feeds SYNTHETIC fleet-events through a
 // fake clock and asserts the observable behavior — no WS, no live agents, no
-// real time. This is the "poke fires when Skip's absent from that target agent's
-// room + the agent worked, silent when present with that target or on a bare
-// reply-to-the-bot; message short + lane-correct" evidence at the wiring level
+// real time. This is the "poke fires after owed substantive work regardless of
+// Skip's presence, but stays silent on a bare reply-to-the-bot" evidence at the wiring level
 // (the scheduler's own gate/lane logic is covered in disposition-scheduler.test.mjs).
 import { DispositionScheduler } from './scheduler.mjs'
 import { createDispositionWiring } from './wiring.mjs'
@@ -41,11 +40,10 @@ function check(name, cond) {
 const OWNER = 'fleet:skip'
 const BOT = 'fleet:disposition'
 const IGNORE = new Set([OWNER, BOT, 'fleet:todd', 'fleet:tlda', 'fleet:teacher', 'fleet:eliza'])
-const PRESENCE_MS = 120_000
 const COUNTDOWN_MS = 30_000
 
 // Build the same scheduler+wiring graph the bot builds (scheduler's sendPoke /
-// isSkipPresent close over `wiring`; sendPoke calls notePoked first, as the bot does).
+// sendPoke calls notePoked first, as the bot does).
 function setup() {
   const clock = makeClock()
   const poked = []  // { to, text }
@@ -54,7 +52,6 @@ function setup() {
   const scheduler = new DispositionScheduler({
     countdownMs: COUNTDOWN_MS,
     sendPoke: (id) => { wiring.notePoked(id); poked.push({ to: id, text: pokeFor(wiring.cwdOf(id)) }) },
-    isSkipPresent: (id) => wiring.isSkipPresent(id),
     setTimer: clock.setTimer,
     clearTimer: clock.clearTimer,
   })
@@ -63,9 +60,7 @@ function setup() {
     ownerId: OWNER,
     agentId: BOT,
     ignoreIds: IGNORE,
-    presenceWindowMs: PRESENCE_MS,
     onKickCommand: (text) => kicks.push(text),
-    now: clock.now,
   })
   return { clock, poked, kicks, wiring }
 }
@@ -91,7 +86,7 @@ const POKE_CHAT = (to) => chat(BOT, to, '🪞 self-check') // a poke as it appea
   check('no inbound/delegation antecedent → no poke', poked.length === 0)
 }
 
-// 2. Skip ABSENT + real delegation → poke fires after the countdown, with the
+// 2. Real delegation → poke fires after the countdown, with the
 //    universal poke text.
 {
   const { clock, poked, wiring } = setup()
@@ -100,7 +95,7 @@ const POKE_CHAT = (to) => chat(BOT, to, '🪞 self-check') // a poke as it appea
   wiring.handleFleetEvent(activity('fleet:a', 'Edit'))
   wiring.handleFleetEvent(turnEnded('fleet:a'))
   clock.advance(COUNTDOWN_MS + 1000)
-  check('delegated + absent → poke fires', poked.length === 1 && poked[0].to === 'fleet:a')
+  check('delegated work → poke fires', poked.length === 1 && poked[0].to === 'fleet:a')
   check('poke text is the universal completeness line', poked[0]?.text === POKE)
 }
 
@@ -114,30 +109,28 @@ const POKE_CHAT = (to) => chat(BOT, to, '🪞 self-check') // a poke as it appea
   check('delegated but non-substantive turn → no poke', poked.length === 0)
 }
 
-// 4. Skip PRESENT with another agent does NOT suppress this target agent.
+// 4. Skip chatting with another agent does not affect this target agent.
 {
   const { clock, poked, wiring } = setup()
-  wiring.handleFleetEvent(chat(OWNER, 'fleet:b', 'working on it?'))  // presence with b + cancels b
+  wiring.handleFleetEvent(chat(OWNER, 'fleet:b', 'working on it?'))
   wiring.handleFleetEvent(delegated('fleet:c'))
   wiring.handleFleetEvent(activity('fleet:c', 'Edit'))
   wiring.handleFleetEvent(turnEnded('fleet:c'))                      // unrelated agent ends a turn
   clock.advance(COUNTDOWN_MS + 1000)
-  check('Skip with b does not suppress c', poked.length === 1 && poked[0].to === 'fleet:c')
+  check('Skip chat with b does not suppress c', poked.length === 1 && poked[0].to === 'fleet:c')
 }
 
-// 5. Same-target presence suppresses while fresh, then expires.
+// 5. Same-target Skip chat does not suppress the private continuation check.
 {
   const { clock, poked, wiring } = setup()
-  wiring.handleFleetEvent(chat(OWNER, 'fleet:c', 'hi'))   // present with c at t=0
+  // Production refreshRoster includes Skip as a human. That must not classify
+  // the owner's direct request as bot chatter and erase the owed-work antecedent.
+  wiring.updateRoster([{ id: OWNER, human: true, labels: [] }])
+  wiring.handleFleetEvent(chat(OWNER, 'fleet:c', 'hi'))
   wiring.handleFleetEvent(activity('fleet:c', 'Edit'))
   wiring.handleFleetEvent(turnEnded('fleet:c'))
   clock.advance(COUNTDOWN_MS + 1000)
-  check('Skip present with c suppresses c', poked.length === 0)
-  clock.advance(PRESENCE_MS + 1000)                       // ...quiet past the window
-  wiring.handleFleetEvent(activity('fleet:c', 'Edit'))
-  wiring.handleFleetEvent(turnEnded('fleet:c'))           // turn ends while he's now absent from c
-  clock.advance(COUNTDOWN_MS + 1000)
-  check('same-target presence window expires → poke fires again', poked.length === 1 && poked[0].to === 'fleet:c')
+  check('Skip direct request survives roster refresh and does not suppress c', poked.length === 1 && poked[0].to === 'fleet:c')
 }
 
 // 6. Any lane (math cwd here) → the same universal poke (text no longer branches on cwd).
@@ -161,28 +154,26 @@ const POKE_CHAT = (to) => chat(BOT, to, '🪞 self-check') // a poke as it appea
   check('unknown-cwd addressed agent gets the universal poke', poked.length === 1 && poked[0].text === POKE)
 }
 
-// 8. Agent→agent cross-talk does NOT mark Skip present, and (per Skip's final
-//    spec) a cross-talk-triggered turn still pokes — we do NOT over-suppress.
+// 8. Agent→agent cross-talk still counts as owed work and triggers the check.
 {
   const { clock, poked, wiring } = setup()
   wiring.handleFleetEvent(chat('fleet:other', 'fleet:a', 'ping'))   // another agent messages a
-  check('cross-talk leaves Skip absent from a', wiring._lastSkipActivityAt('fleet:a') === 0)
   wiring.handleFleetEvent(activity('fleet:a', 'Edit'))
   wiring.handleFleetEvent(turnEnded('fleet:a'))
   clock.advance(COUNTDOWN_MS + 1000)
-  check('cross-talk-prompted turn still pokes (Skip absent)', poked.length === 1)
+  check('cross-talk-prompted turn still pokes', poked.length === 1)
 }
 
-// 9. Skip messaging an agent cancels THAT agent's pending countdown.
+// 9. Skip messaging an agent after turn end does not cancel its pending check.
 {
   const { clock, poked, wiring } = setup()
   wiring.handleFleetEvent(delegated('fleet:a'))
   wiring.handleFleetEvent(activity('fleet:a', 'Edit'))
-  wiring.handleFleetEvent(turnEnded('fleet:a'))               // countdown starts (Skip absent)
+  wiring.handleFleetEvent(turnEnded('fleet:a'))               // countdown starts
   clock.advance(10_000)
-  wiring.handleFleetEvent(chat(OWNER, 'fleet:a', 'hold on'))  // Skip in the room with a → cancel
+  wiring.handleFleetEvent(chat(OWNER, 'fleet:a', 'hold on'))
   clock.advance(COUNTDOWN_MS)
-  check('Skip messaging the agent cancels its poke', poked.length === 0)
+  check('Skip messaging the agent does not cancel its poke', poked.length === 1)
 }
 
 // 10. Manual kick command (Skip → bot) routes to onKickCommand, not a countdown.

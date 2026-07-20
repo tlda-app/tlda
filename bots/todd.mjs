@@ -68,7 +68,6 @@ const TASK_KICK_POLL_MS = parseInt(process.env.TODD_TASK_KICK_POLL_MS || '', 10)
 const SELF_CHECK_PREFS_POLL_MS = 20_000
 const SELF_CHECK_COUNTDOWN_SEC = parseInt(process.env.TODD_SELF_CHECK_COUNTDOWN_SEC || process.env.DISPO_COUNTDOWN_SEC || '', 10) || 30
 const SELF_CHECK_AUTO_ENABLED = process.env.TODD_SELF_CHECK_AUTO_ENABLED === '1'
-const SELF_CHECK_PRESENCE_WINDOW_MS = (parseInt(process.env.TODD_SELF_CHECK_PRESENCE_SEC || process.env.DISPO_PRESENCE_SEC || '', 10) || 120) * 1000
 const PREF_SELF_CHECK_ENABLED_KEY = 'todd-self-check-auto-enabled'
 const PREF_SELF_CHECK_COUNTDOWN_KEY = 'todd-self-check-countdown-sec'
 const PREF_BOT_SELF_CHECK_ENABLED_KEY = 'bot-self-check-enabled'
@@ -142,8 +141,9 @@ function skipLiveAgentSet() {
 
 // ---- Turn-end self-sufficiency poke ----
 // This is the old disposition-bot behavior folded into Todd so agents have one
-// hygiene voice. It remains a non-detector: turn ends → wait a beat → if Skip
-// is not in that agent's room, send the short next-action gut-check to the agent.
+// hygiene voice. It remains a non-detector: turn ends → wait a beat → send the
+// short next-action gut-check privately to the agent. Skip's presence never
+// substitutes for this continuation check.
 const SELF_CHECK_IGNORE_IDS = new Set([OWNER_ID, AGENT_ID, 'fleet:tlda', 'fleet:teacher', 'fleet:eliza'])
 let selfCheckWiring
 const selfCheckScheduler = new DispositionScheduler({
@@ -153,7 +153,6 @@ const selfCheckScheduler = new DispositionScheduler({
     selfCheckWiring.notePoked(agentId)
     sendChat(agentId, pokeFor(selfCheckWiring.cwdOf(agentId)))
   },
-  isSkipPresent: (agentId) => selfCheckWiring.isSkipPresent(agentId),
   log: (event, agentId, detail) => logDecision(agentId || AGENT_ID, `self-check:${event}`, detail || 'turn-end-self-check', {}, null),
 })
 let selfCheckAutoEnabled = SELF_CHECK_AUTO_ENABLED
@@ -164,7 +163,6 @@ selfCheckWiring = createDispositionWiring({
   ownerId: OWNER_ID,
   agentId: AGENT_ID,
   ignoreIds: SELF_CHECK_IGNORE_IDS,
-  presenceWindowMs: SELF_CHECK_PRESENCE_WINDOW_MS,
   onKickCommand: (text) =>
     handleSelfCheckCommand(text).catch(e => console.error('[todd] self-check command error:', e.message)),
   log: (event, agentId, detail) => logDecision(agentId || AGENT_ID, `self-check:${event}`, detail || 'turn-end-self-check', {}, null),

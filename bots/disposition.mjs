@@ -3,17 +3,14 @@
  * disposition-bot — a turn-end INTROSPECTION POKE.
  *
  * NOT a detector. It does not read the turn, match a regex, or judge anything.
- * The mechanism is a countdown gated on Skip's ABSENCE:
+ * The mechanism is a countdown after substantive owed work:
  *
  *   turn_ended(agent) → start a ~30s countdown for that agent ("wait a beat")
- *   Skip messages that agent → cancel that agent's countdown (he's in the room)
- *   countdown expires → if Skip is AWAY, send the agent the introspection poke
- *                       (bots/self-check/poke.mjs); if he's active, stay quiet
+ *   countdown expires → send the agent the introspection poke
+ *                       (bots/self-check/poke.mjs)
  *
- * The poke fires only when Skip is away and presumably expecting progress — when
- * he's active in the fleet he'll self-direct, so the bot shuts up (his standing
- * "when I'm in the room you shut the fuck up" rule). Presence is global: any
- * recent chat from fleet:skip (UI or terminal) marks him present for ~2 min.
+ * The poke goes privately to the agent whether or not Skip is present. Skip's
+ * chat cannot be the mechanism that keeps an agent working.
  *
  * The poke goes to the AGENT, never to Skip, and is SHORT + LANE-AWARE (a math
  * agent gets a proof-flavored nudge, a code/app agent a build-flavored one — by
@@ -70,13 +67,6 @@ const PREF_COUNTDOWN_KEY = 'disposition-countdown-sec'
 const PREF_BOT_ENABLED_KEY = 'bot-self-check-enabled'
 const PREF_BOT_COUNTDOWN_KEY = 'bot-self-check-countdown-sec'
 
-// Skip-presence window. He's "present" if he's chatted — UI OR terminal, both
-// arrive as a fleet chat from fleet:skip — within this window. SHORT on purpose
-// (~2 min): a long window would stall agents waiting to be poked the whole time
-// he's away (a 10-min job dragging into hours). Poking is cheap, so err toward
-// poking sooner — stay quiet only while he's *actively* bursting (gaps < ~2 min).
-const PRESENCE_WINDOW_MS = (parseInt(process.env.DISPO_PRESENCE_SEC || '', 10) || 120) * 1000
-
 const _cmdCache = new Map() // dedupe manual-kick acks per command
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -93,7 +83,6 @@ const scheduler = new DispositionScheduler({
   // notePoked first so a post-poke turn is recognized as bot-triggered (the
   // poke-loop gate) even if the bot never sees its own outgoing chat echoed.
   sendPoke: (agentId) => { wiring.notePoked(agentId); sendChat(agentId, pokeFor(wiring.cwdOf(agentId))) },
-  isSkipPresent: (agentId) => wiring.isSkipPresent(agentId),
   log: logDecision,
 })
 wiring = createDispositionWiring({
@@ -101,7 +90,6 @@ wiring = createDispositionWiring({
   ownerId: OWNER_ID,
   agentId: AGENT_ID,
   ignoreIds: IGNORE_IDS,
-  presenceWindowMs: PRESENCE_WINDOW_MS,
   onKickCommand: (text) =>
     handleManualKick(text).catch(e => console.error(`[${BOT_KEY}] manual kick error:`, e.message)),
   log: logDecision,
