@@ -23,6 +23,10 @@ export function isRuntimeHibernating(agent) {
   return status === 'hibernating' || status === 'human-away'
 }
 
+export function isRuntimeUnavailable(agent) {
+  return runtimeStatusName(agent) === 'unavailable'
+}
+
 export function isTerminalRoutable(agent) {
   const runtime = runtimeStatusForAgent(agent)
   return runtime.route_state == null || runtime.route_state === 'routable'

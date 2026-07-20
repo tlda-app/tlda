@@ -4,6 +4,7 @@ export const HUMAN_HEARTBEAT_TTL_MS = POSITIVE_LIVENESS_TTL_MS
 export const RUNTIME_STATUS = Object.freeze({
   AWAKE: 'awake',
   HIBERNATING: 'hibernating',
+  UNAVAILABLE: 'unavailable',
   DEAD: 'dead',
   SHELL: 'shell',
   HUMAN: 'human',
@@ -213,7 +214,7 @@ export function projectAgentRuntimeStatus(agent, evidence = null, {
 
   if (evidence?.liveness === LIVENESS.DEAD || evidence?.liveness === LIVENESS.WEDGED) {
     return runtimeProjection({
-      status: RUNTIME_STATUS.HIBERNATING,
+      status: seat ? RUNTIME_STATUS.UNAVAILABLE : RUNTIME_STATUS.HIBERNATING,
       activity: baseEvidence.activity,
       route,
       evidence: baseEvidence,
@@ -224,33 +225,28 @@ export function projectAgentRuntimeStatus(agent, evidence = null, {
 
   if (evidence?.liveness === LIVENESS.ALIVE) {
     const ageMs = Number.isFinite(evidence.liveness_at_ms) ? nowMs - evidence.liveness_at_ms : Infinity
+    const exactTmux = !!seat?.tmux_session
+      && !!evidence.tmux_session
+      && String(seat.tmux_session) === String(evidence.tmux_session)
+    const currentPositiveEvidence = route.state === ROUTE_STATE.ROUTABLE && exactTmux && ageMs <= ttlMs
     return runtimeProjection({
-      status: RUNTIME_STATUS.AWAKE,
+      status: currentPositiveEvidence ? RUNTIME_STATUS.AWAKE : (seat ? RUNTIME_STATUS.UNAVAILABLE : RUNTIME_STATUS.HIBERNATING),
       activity: baseEvidence.activity,
       route,
       evidence: { ...baseEvidence, positive_age_ms: Number.isFinite(ageMs) ? Math.max(0, ageMs) : null },
-      reason: evidence.liveness_source || 'positive-runtime-evidence',
-      nowMs,
-    })
-  }
-
-  // A current seat on a connected daemon is positive routing state. Do not
-  // manufacture a death from elapsed wall time or an empty in-memory evidence
-  // map (including immediately after a server restart). Only explicit daemon
-  // dead/wedged evidence may hibernate a routed seat.
-  if (route.state === ROUTE_STATE.ROUTABLE) {
-    return runtimeProjection({
-      status: RUNTIME_STATUS.AWAKE,
-      activity: baseEvidence.activity,
-      route,
-      evidence: baseEvidence,
-      reason: 'current-seat-routable-no-negative-evidence',
+      reason: currentPositiveEvidence
+        ? (evidence.liveness_source || 'positive-runtime-evidence')
+        : route.state !== ROUTE_STATE.ROUTABLE
+          ? route.reason
+          : !exactTmux
+            ? 'positive-evidence-does-not-match-current-seat'
+            : 'positive-runtime-evidence-expired',
       nowMs,
     })
   }
 
   return runtimeProjection({
-    status: RUNTIME_STATUS.HIBERNATING,
+    status: seat ? RUNTIME_STATUS.UNAVAILABLE : RUNTIME_STATUS.HIBERNATING,
     activity: baseEvidence.activity,
     route,
     evidence: baseEvidence,

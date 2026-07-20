@@ -240,6 +240,41 @@ export function loadNextAgentsPage() {
   return _agentsPageLoading
 }
 
+const _agentLookupPromises = new Map()
+
+export async function hydrateFleetAgentsForFilter(filter) {
+  if (!Array.isArray(filter)) return
+  const ids = new Set()
+  const names = new Set()
+  const pseudo = new Set(['awake', 'hibernating', 'unavailable', 'human', 'human-away', 'dead', 'me', 'my_labels'])
+  for (const clause of filter) {
+    if (!Array.isArray(clause)) continue
+    for (const term of clause) {
+      if (!Array.isArray(term) || term.length < 2) continue
+      const label = String(term[1] || '').trim()
+      if (!label || pseudo.has(label)) continue
+      if (label.startsWith('fleet:')) ids.add(label)
+      else names.add(label)
+    }
+  }
+  const requests = []
+  if (ids.size) requests.push({ key: `ids:${[...ids].sort().join(',')}`, url: `${FLEET}/api/agents/lookup?ids=${encodeURIComponent([...ids].join(','))}` })
+  for (const name of names) requests.push({ key: `name:${name}`, url: `${FLEET}/api/agents/lookup?name=${encodeURIComponent(name)}` })
+  const batches = await Promise.all(requests.map(({ key, url }) => {
+    let pending = _agentLookupPromises.get(key)
+    if (!pending) {
+      pending = fetch(url)
+        .then(r => r.ok ? r.json() : { agents: [] })
+        .catch(() => ({ agents: [] }))
+        .finally(() => _agentLookupPromises.delete(key))
+      _agentLookupPromises.set(key, pending)
+    }
+    return pending
+  }))
+  const agents = batches.flatMap(batch => batch?.agents || [])
+  if (agents.length) applyAgentDelta(agents, [])
+}
+
 if (typeof window !== 'undefined') {
   window.__tldaFleetIdentity = () => ({
     id: _humanId,

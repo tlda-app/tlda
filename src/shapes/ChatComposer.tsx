@@ -17,7 +17,7 @@
 import { stopEventPropagation } from 'tldraw'
 import { useEffect, useRef, useState } from 'react'
 // @ts-ignore — vanilla JS module
-import { setVoiceTarget, resetTranscript, restartRecording } from '../voice.mjs'
+import { setVoiceTarget, completeMessageSend } from '../voice.mjs'
 import { getPref, subscribePref } from '../preferences'
 
 export type KeyboardSend = (text: string, targets: string[]) => void
@@ -30,7 +30,6 @@ type VoiceTargetHandle = {
   getAgentNames: () => Record<string, string>
   sendVoice: (targets: string[], text: string) => void | Promise<void>
 }
-type VoiceSubmitKeyboardEvent = KeyboardEvent & { __tldaVoiceSubmit?: boolean }
 /** Pre-send command hook (e.g. /terminal). Gets the textarea so it can clear (or
  *  not) exactly as the original did. Return true if it consumed the input — the
  *  composer then preventDefaults and does NOT send or push history. */
@@ -165,19 +164,15 @@ export function ChatComposer({
           const doSend = () => {
             const text = val.trim()
             if (!text || sendTargets.length === 0) return
-            const nativeEvent = e.nativeEvent as VoiceSubmitKeyboardEvent
-            const isVoiceSubmit = !!nativeEvent.__tldaVoiceSubmit
             // Call the host send FIRST: its synchronous prefix (optimistic echo)
             // runs before it yields at its first await, then we clear the field
             // synchronously — preserving the original "echo + clear before any
             // awaited work" ordering that prevents Enter-mash duplicate sends.
-            if (isVoiceSubmit) onVoiceSend(sendTargets, text)
-            else onKeyboardSend(text, sendTargets)
+            onKeyboardSend(text, sendTargets)
             ta.value = ''
             ta.style.height = ''
             ta.dispatchEvent(new Event('input', { bubbles: true }))
-            resetTranscript(text)
-            restartRecording()
+            completeMessageSend()
             sentHistoryRef.current = [...sentHistoryRef.current, text]
             historyIndexRef.current = -1
           }

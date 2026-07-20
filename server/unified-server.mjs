@@ -3752,6 +3752,11 @@ app.post('/api/kill-session', requireRead, async (req, res) => {
   if (!seat) return
   try {
     const result = await sendRpc(seat.daemon_key, 'kill-session', { agent_id: agent.id, session_id: seat.session_id, tmux_session: seat.tmux_session })
+    fleetStore.retireCurrentAgentSeat(agent.id, {
+      sessionId: seat.session_id,
+      daemonKey: seat.daemon_key,
+      tmuxSession: seat.tmux_session,
+    })
     markAgentNotAlive(agent.id, { source: 'http-kill-session', reason: 'operator killed session' })
     const killEvent = { type: 'kill-session', from: SERVER_OWNER_ID, to: agent.id, text: `Killed ${agent.friendly_name || agent.id}` }
     await fleetStore.share(killEvent)
@@ -5071,7 +5076,8 @@ async function handleFleetWsMessage(ws, msg) {
       const storedAgent = fleetStore.getAgent?.(agent_id) || agent
       reply({ ok: true, agent: storedAgent, assigned_name: storedAgent.friendly_name || null })
       fleetStore.share?.({ type: 'login', agent_id, from: agent_id, to: agent_id, text: `${agent.friendly_name || agent_id} logged in` })
-      markAgentAlive(agent_id, Date.now(), { source: 'agent-login', tmux_session: agent.tmux_session })
+      const currentSeat = fleetStore.getCurrentAgentSeat?.(agent_id)
+      markAgentAlive(agent_id, Date.now(), { source: 'agent-login', tmux_session: currentSeat?.tmux_session || null })
       touchActivity(agent_id)
       spawnLibrarian.observeLiveness({
         type: 'agent-liveness',
@@ -6573,6 +6579,11 @@ async function handleFleetWsMessage(ws, msg) {
     if (!seat) { error(seatError); return }
     try {
       const result = await sendRpc(seat.daemon_key, 'kill-session', { agent_id: agent.id, session_id: seat.session_id, tmux_session: seat.tmux_session })
+      fleetStore.retireCurrentAgentSeat(agent.id, {
+        sessionId: seat.session_id,
+        daemonKey: seat.daemon_key,
+        tmuxSession: seat.tmux_session,
+      })
       markAgentNotAlive(agent.id, { source: 'ws-kill-session', reason: 'operator killed session' })
       const killEvent = { type: 'kill-session', from: SERVER_OWNER_ID, to: agent.id, text: `Killed ${agent.friendly_name || agent.id}` }
       await fleetStore.share(killEvent)
@@ -6591,6 +6602,11 @@ async function handleFleetWsMessage(ws, msg) {
     if (!seat) { error(seatError); return }
     try {
       const result = await sendRpc(seat.daemon_key, 'kill-session', { agent_id: agent.id, session_id: seat.session_id, tmux_session: seat.tmux_session })
+      fleetStore.retireCurrentAgentSeat(agent.id, {
+        sessionId: seat.session_id,
+        daemonKey: seat.daemon_key,
+        tmuxSession: seat.tmux_session,
+      })
       markAgentNotAlive(agent.id, { source: 'ws-hibernate-session', reason: 'operator hibernated session' })
       broadcastState()
       reply({ ok: true, agent: agent.friendly_name || agent.id, ...result })
@@ -7751,12 +7767,13 @@ async function handleDaemonWsMessage(ws, msg) {
       ])
       const batchTs = ts || new Date().toISOString()
       for (const id of checkedIds) {
-        const agent = fleetStore?.getAgent?.(id)
+        const seat = fleetStore?.getCurrentAgentSeat?.(id)
+        if (!seat || seat.daemon_key !== ws._daemonKey) continue
         const batchState = aliveIds.has(id) ? 'alive' : 'dead'
         spawnLibrarian.observeLiveness({
           type,
           agent_id: id,
-          tmux_session: agent?.tmux_session || null,
+          tmux_session: seat.tmux_session,
           state: batchState,
           reason: batchState === 'dead' ? 'daemon liveness batch: not alive' : undefined,
           ts: batchTs,
@@ -7768,13 +7785,13 @@ async function handleDaemonWsMessage(ws, msg) {
           markAgentAlive(id, Date.parse(batchTs) || Date.now(), {
             source: 'daemon-hosted-session-refresh',
             reason,
-            tmux_session: agent?.tmux_session || null,
+            tmux_session: seat.tmux_session,
           })
         } else {
           markAgentNotAlive(id, {
             source: 'daemon-hosted-session-refresh',
             reason: 'daemon liveness batch: not alive',
-            tmux_session: agent?.tmux_session || null,
+            tmux_session: seat.tmux_session,
           })
         }
       }
@@ -7782,6 +7799,9 @@ async function handleDaemonWsMessage(ws, msg) {
       return
     }
     if (!agent_id || !state) return
+    const currentSeat = fleetStore?.getCurrentAgentSeat?.(agent_id)
+    if (!currentSeat || currentSeat.daemon_key !== ws._daemonKey) return
+    if (tmux_session && String(tmux_session) !== String(currentSeat.tmux_session)) return
     spawnLibrarian.observeLiveness({ type, agent_id, state, tmux_session, pid, reason, ts })
     if (state === 'alive') {
       // Liveness ≠ activity (see the batch handler above): this is a 30s "process
@@ -7790,7 +7810,7 @@ async function handleDaemonWsMessage(ws, msg) {
       markAgentAlive(agent_id, Date.parse(ts) || Date.now(), {
         source: 'daemon-agent-liveness',
         reason,
-        tmux_session,
+        tmux_session: currentSeat.tmux_session,
         pid,
       })
     } else if (state === 'dead' || state === 'wedged') {
@@ -7798,7 +7818,7 @@ async function handleDaemonWsMessage(ws, msg) {
         source: 'daemon-agent-liveness',
         state,
         reason,
-        tmux_session,
+        tmux_session: currentSeat.tmux_session,
         pid,
       })
     }
@@ -7809,8 +7829,13 @@ async function handleDaemonWsMessage(ws, msg) {
   if (type === 'agent-activity') {
     const { agent_id, jsonl_offset, ts } = msg
     if (!agent_id || typeof jsonl_offset !== 'number') return
+    const currentSeat = fleetStore?.getCurrentAgentSeat?.(agent_id)
+    if (!currentSeat || currentSeat.daemon_key !== ws._daemonKey) return
     spawnLibrarian.observeActivity({ type, agent_id, jsonl_offset, ts })
-    markAgentAlive(agent_id, Date.parse(ts) || Date.now(), { source: 'agent-activity' })
+    markAgentAlive(agent_id, Date.parse(ts) || Date.now(), {
+      source: 'agent-activity',
+      tmux_session: currentSeat.tmux_session,
+    })
     touchActivity(agent_id)
     if (fleetStore?.updateHeartbeat) {
       fleetStore.updateHeartbeat(agent_id)

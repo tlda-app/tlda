@@ -1112,16 +1112,6 @@ export function setVoiceTarget(textarea, targetHandle) {
       const onEdit = () => { if (!_filling) enterEdit() }
       const onKeydown = (e) => {
         if (_filling) return
-        // Plain Enter sends the message. The stop→onend→start restart path is
-        // unreliable in Safari (webkitSpeechRecognition silently fails to resume),
-        // so do the same thing double-tap-right-shift does: hardResetVoice + start.
-        // Suppress the textarea-clear input event that would otherwise call enterEdit().
-        if (e.key === 'Enter' && !e.shiftKey && _recording) {
-          _filling = true
-          afterComposerEnter()
-          setTimeout(() => { _filling = false }, 50)
-          return
-        }
         if (['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Home','End'].includes(e.key)) {
           enterEdit()
         }
@@ -2034,33 +2024,14 @@ function replaceTextareaValue(text) {
   return true
 }
 
-function pressEnterOnActiveTextarea() {
-  const ta = _activeTextarea
-  if (!ta) {
-    showHud('no chat focused', '#c8956a')
-    fadeHud(2000)
-    return false
-  }
-  if (typeof KeyboardEvent === 'undefined') {
-    throw new Error('voice send magic word requires KeyboardEvent')
-  }
-  const event = new KeyboardEvent('keydown', {
-    key: 'Enter',
-    code: 'Enter',
-    bubbles: true,
-    cancelable: true,
-  })
-  Object.defineProperty(event, '__tldaVoiceSubmit', { value: true })
-  return ta.dispatchEvent(event)
-}
-
 function submitTextareaViaMagicWord(cleanText, submittedText) {
-  replaceTextareaValue(cleanText)
-  _filling = true
-  pressEnterOnActiveTextarea()
-  _filling = false
+  const targets = activeSendTargets()
+  if (!_activeTextarea || targets.length === 0 || !_activeTargetHandle?.sendVoice) return false
+  _activeTargetHandle.sendVoice(targets, cleanText)
+  replaceTextareaValue('')
   afterSend()
   if (_backend === 'deepgram') resetDeepgramTextState({ ignoreUntilUtteranceEnd: true, submittedText })
+  return true
 }
 
 function handleSendMagicWord(leftTrimmed) {
@@ -2078,8 +2049,7 @@ function handleSendMagicWord(leftTrimmed) {
   }
 
   if (_activeTextarea) {
-    submitTextareaViaMagicWord(cleanText, leftTrimmed)
-    return true
+    return submitTextareaViaMagicWord(cleanText, leftTrimmed)
   }
 
   showHud('no chat focused', '#c8956a')
@@ -2606,25 +2576,8 @@ function afterSend() {
   }
 }
 
-// A physical Enter is already an explicit boundary after the user has reviewed
-// the composer. Deepgram can keep its current recognizer connection: the local
-// submitted-text guard rejects the old utterance tail without imposing a
-// multi-second reconnect gap after every message. Voice-triggered sends still
-// use afterSend(), whose fresh speech epoch is the stronger unattended boundary.
-function afterComposerEnter() {
-  if (_backend !== 'deepgram') {
-    afterSend()
-    return
-  }
-  const submittedText = currentSubmittedVoiceText()
-  _state = 'edit'
-  _left = _interim = _right = ''
-  finalizeDeepgramBridge()
-  if (normalizeDeepgramText(submittedText)) {
-    resetDeepgramTextState({ ignoreUntilUtteranceEnd: true, submittedText })
-  } else {
-    resetDeepgramTextState({ preserveUtteranceGuard: true })
-  }
+export function completeMessageSend() {
+  afterSend()
 }
 
 // --- Recording ---
@@ -2659,7 +2612,7 @@ if (typeof window !== 'undefined') {
     getState: () => ({ recording: _recording, backend: _backend, state: _state, speechEpoch: _speechEpoch, pcmPaused: _deepgramPcmPaused, recoveringEpoch: _deepgramRecoveringEpoch, relayConnected: _deepgramRelayConnected, recognizerStatus: currentDeepgramRecognizerStatus(), recognizerConnected: deepgramRecognizerConnected(), commonState: deepgramCommonState(), hasMic: !!_deepgramStream, left: _left, interim: _interim, dumping: _voiceDumping, hasTextarea: !!_activeTextarea }),
     injectTranscript: (text, isFinal) => onDeepgramMessage({ data: JSON.stringify({ type: 'transcript', text, is_final: isFinal, speech_final: false, epoch: _speechEpoch }) }),
     afterSend: () => afterSend(),
-    afterComposerEnter: () => afterComposerEnter(),
+    afterComposerEnter: () => completeMessageSend(),
     getTrickle: () => ({ words: _dgTrickleWords.slice(), shown: _dgTrickleShown, hasTimer: _dgTrickleTimer !== null }),
     showDontSpeak: () => showDontSpeak(),
     isDontSpeakVisible: () => !!_dontSpeakOverlay && _dontSpeakOverlay.style.display === 'block',
@@ -2883,11 +2836,6 @@ async function hardResetVoice({ keepDeepgramMic = false } = {}) {
 }
 
 function sendCurrentText() {
-  if (_recording) {
-    afterSend()
-    stopRecording()
-  }
-
   const ta = _activeTextarea
   if (!ta) {
     showHud('no chat focused', '#c8956a')
@@ -2912,6 +2860,7 @@ function sendCurrentText() {
   if (_activeTargetHandle?.sendVoice) {
     _activeTargetHandle.sendVoice(targets, text)
   }
+  afterSend()
 
   const who = targetLabel()
   showHud(`sent → ${who}`, '#7ab8a0')

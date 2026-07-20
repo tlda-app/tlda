@@ -17,6 +17,7 @@ import {
   getHumanId,
   getHumanName,
   loadNextAgentsPage,
+  hydrateFleetAgentsForFilter,
   needsIdentity as _needsIdentity,
   login as _login,
   registerHuman as _registerHuman,
@@ -387,8 +388,13 @@ export function useFleetEvents(dnfFilter?: [string, string][][] | null, frameId?
       liveSnapshotRef.current = { key: eventViewKey, list }
       onStoreChange()
     })
+    const unsubscribeAgents = subscribe('agents', null, () => {
+      liveSnapshotRef.current = null
+      onStoreChange()
+    })
     return () => {
       unsubscribe()
+      unsubscribeAgents()
       liveView.dispose()
       if (liveSnapshotRef.current?.key === eventViewKey) liveSnapshotRef.current = null
     }
@@ -414,6 +420,7 @@ export function useFleetEvents(dnfFilter?: [string, string][][] | null, frameId?
       ensureInit().then(() => {
         if (cancelled) return
         setIsPlaybackMode(false)
+        void hydrateFleetAgentsForFilter(filter)
       })
     }
 

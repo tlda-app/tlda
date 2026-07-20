@@ -1104,6 +1104,10 @@ export class FleetStore {
           activated_by_event_id = ?, transition_reason = ?
       WHERE agent_id = ?
     `);
+    this._deleteCurrentAgentSeat = this.db.prepare(`
+      DELETE FROM agent_current_seats
+      WHERE agent_id = ? AND session_id = ? AND daemon_key = ? AND tmux_session = ?
+    `);
     this._upsertDaemonRegistration = this.db.prepare(`
       INSERT INTO daemon_registry (daemon_key, machine_id, env_name, install_path, user, hostname, version, boot_id, status, connected_at, disconnected_at, last_seen, metadata)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -1726,6 +1730,20 @@ export class FleetStore {
         throw new Error(`seat identity conflict for ${agentId}: ${seatKey}: existing=${seat[seatKey]} incoming=${value}`);
       }
     }
+    return seat;
+  }
+
+  retireCurrentAgentSeat(agentId, fields = {}) {
+    const seat = this.validateCurrentAgentSeat(agentId, fields);
+    const result = this._deleteCurrentAgentSeat.run(
+      seat.agent_id,
+      seat.session_id,
+      seat.daemon_key,
+      seat.tmux_session,
+    );
+    if (result.changes !== 1) throw new Error(`current seat changed while retiring ${agentId}`);
+    this._bustAgentsCache();
+    this._syncAgentRegistry(agentId);
     return seat;
   }
 
