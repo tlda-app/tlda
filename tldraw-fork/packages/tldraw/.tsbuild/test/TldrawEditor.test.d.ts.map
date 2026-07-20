@@ -1,1 +1,0 @@
-{"version":3,"file":"TldrawEditor.test.d.ts","sourceRoot":"","sources":["../../src/test/TldrawEditor.test.tsx"],"names":[],"mappings":"AA6gBA,QAAA,MAAM,SAAS,SAAS,CAAA;AAExB,OAAO,QAAQ,kBAAkB,CAAC,CAAC;IAClC,UAAiB,qBAAqB;QACrC,CAAC,SAAS,CAAC,EAAE;YAAE,CAAC,EAAE,MAAM,CAAC;YAAC,CAAC,EAAE,MAAM,CAAA;SAAE,CAAA;KACrC;CACD"}

@@ -1230,15 +1230,3 @@ export function closeAllRooms() {
   }
   rooms.clear()
 }
-
-export const __testSyncChangelog = {
-  recordChanges,
-  recordChangesFromSnapshot,
-  setChangelogBaseline,
-  reset() {
-    for (const timer of changeTimers.values()) clearTimeout(timer)
-    changeTimers.clear()
-    prevSnapshots.clear()
-    prevSnapshotClocks.clear()
-  },
-}

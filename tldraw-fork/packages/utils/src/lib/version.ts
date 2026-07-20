@@ -38,31 +38,6 @@ function getLibraryVersions(): TldrawLibraryVersionInfo {
 	return info
 }
 
-/**
- * Clears all registered library versions and resets warning state.
- * This function is intended for testing purposes only to reset the global version tracking state.
- * @returns void
- * @example
- * ```ts
- * // In a test setup
- * beforeEach(() => {
- *   clearRegisteredVersionsForTests()
- * })
- *
- * // Now version tracking starts fresh for each test
- * registerTldrawLibraryVersion('@tldraw/editor', '2.0.0', 'esm')
- * ```
- * @internal
- */
-export function clearRegisteredVersionsForTests() {
-	const info = getLibraryVersions()
-	info.versions = []
-	info.didWarn = false
-	if (info.scheduledNotice) {
-		clearTimeout(info.scheduledNotice)
-		info.scheduledNotice = null
-	}
-}
 
 /**
  * Registers a tldraw library version for conflict detection.

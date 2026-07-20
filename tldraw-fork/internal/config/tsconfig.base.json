@@ -30,7 +30,7 @@
 		"useDefineForClassFields": true,
 		"noImplicitOverride": true,
 		"experimentalDecorators": true,
-		"types": ["node", "vitest/globals"]
+		"types": ["node"]
 	},
 	"exclude": ["node_modules"]
 }

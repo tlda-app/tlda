@@ -180,11 +180,6 @@ function getFontFaceCacheKey(font) {
     )
   ]);
 }
-function clearFontFaceCacheForTests() {
-  fontFaceCacheByDocument = /* @__PURE__ */ new WeakMap();
-}
 export {
-  FontManager,
-  clearFontFaceCacheForTests
+  FontManager
 };
-//# sourceMappingURL=FontManager.mjs.map

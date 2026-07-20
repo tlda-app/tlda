@@ -29,7 +29,6 @@ packages/state/
 │       ├── helpers.ts              # Utility functions
 │       ├── isSignal.ts            # Type guards
 │       ├── warnings.ts            # Development warnings
-│       └── __tests__/             # Test files
 ├── DOCS.md                        # Human-readable documentation
 ├── README.md                      # Package introduction
 └── ARCHITECTURE.md               # This file

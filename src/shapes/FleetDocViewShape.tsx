@@ -47,10 +47,6 @@ const DEFAULT_H = 250
 
 const ALL_SOURCES = ['ref', 'proof', 'errors'] as const
 type Source = typeof ALL_SOURCES[number]
-type FleetDocviewWindow = Window & {
-  __tlda_wm_docviews__?: Record<string, FleetDocviewSurfaceState>
-}
-
 function parseSources(s: string | undefined): Source[] {
   try {
     const arr = JSON.parse(s ?? 'null')
@@ -405,15 +401,6 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
       if (surface) removeLayers(surface.wm, [surface.layerId])
     }
   }, [])
-
-  useEffect(() => {
-    const params = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null
-    const exposeForTest = params?.has('pw') || params?.has('wmDocviewGate')
-    if (!(import.meta.env.DEV || exposeForTest || (typeof navigator !== 'undefined' && navigator.webdriver))) return
-    const registry = ((window as FleetDocviewWindow).__tlda_wm_docviews__ ??= {})
-    if (docviewSurface) registry[shape.id] = docviewSurface
-    return () => { delete registry[shape.id] }
-  }, [shape.id, docviewSurface])
 
   if (!mainEditor || !doc) {
     return (

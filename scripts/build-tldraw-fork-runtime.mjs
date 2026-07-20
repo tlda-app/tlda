@@ -14,7 +14,6 @@ const external = [
   '@babel/*',
   '@vitejs/*',
   'vite',
-  'vitest',
   'typescript',
   'react',
   'react-dom',

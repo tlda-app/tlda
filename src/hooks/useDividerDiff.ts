@@ -46,19 +46,6 @@ export function useDividerDiff(
     const gapRight = columnX
     const resultMap = resultMapRef.current
 
-    // Expose test function for verification: window.__testDiff(pageNum) triggers diff directly
-    ;(window as any).__testDiff = async (pageNum = 25) => {
-      const allShapes = editor.getCurrentPageShapes() as any[]
-      const mainShapes = allShapes.filter((s: any) => s.type === 'svg-page' && s.x < columnX - 100)
-        .sort((a: any, b: any) => a.y - b.y)
-      const ps = mainShapes.find((s: any) => s.props.pageIndex + 1 === pageNum)
-      if (!ps) return { error: `page ${pageNum} not found` }
-      const fakeBounds = { x: columnX - OLD_PAGE_GAP + 10, y: ps.y + ps.props.h * 0.4, w: 20, h: 40 }
-      const fakeShape = { id: `shape:test-diff-${Date.now()}`, type: 'highlight' }
-      await triggerDiff(editor, fakeShape, fakeBounds, docName, hash7, columnX, shadowYOffset, resultMap)
-      return { ok: true, page: pageNum, bounds: fakeBounds }
-    }
-
     const unsub = editor.store.listen(({ changes }) => {
       // Detect new highlight shapes drawn in the gap zone
       for (const record of Object.values(changes.added)) {

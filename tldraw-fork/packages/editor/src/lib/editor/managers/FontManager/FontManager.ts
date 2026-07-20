@@ -242,11 +242,3 @@ function getFontFaceCacheKey(font: TLFontFace): string {
 		),
 	])
 }
-
-/**
- * Resets the per-document font-face cache. Only intended for tests.
- * @internal
- */
-export function clearFontFaceCacheForTests() {
-	fontFaceCacheByDocument = new WeakMap()
-}

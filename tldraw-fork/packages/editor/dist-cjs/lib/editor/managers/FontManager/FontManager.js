@@ -18,8 +18,7 @@ var __copyProps = (to, from, except, desc) => {
 var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 var FontManager_exports = {};
 __export(FontManager_exports, {
-  FontManager: () => FontManager,
-  clearFontFaceCacheForTests: () => clearFontFaceCacheForTests
+  FontManager: () => FontManager
 });
 module.exports = __toCommonJS(FontManager_exports);
 var import_state = require("@tldraw/state");
@@ -198,7 +197,3 @@ function getFontFaceCacheKey(font) {
     )
   ]);
 }
-function clearFontFaceCacheForTests() {
-  fontFaceCacheByDocument = /* @__PURE__ */ new WeakMap();
-}
-//# sourceMappingURL=FontManager.js.map

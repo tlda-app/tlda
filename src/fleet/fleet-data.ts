@@ -167,17 +167,6 @@ export function clearFleetEventBuffer(bufferKey: string | null | undefined): voi
   eventBuffers.delete(bufferKey)
 }
 
-export function getFleetEventBufferSizeForTest(bufferKey: string): number {
-  return eventBuffers.get(bufferKey)?.store.size ?? 0
-}
-
-export function setFleetEventBufferMaxForTest(bufferKey: string, maxEvents: number): void {
-  const buffer = eventBuffers.get(bufferKey)
-  if (!buffer) return
-  buffer.maxEvents = Math.max(1, Math.floor(maxEvents))
-  if (buffer.pinned) trimEventBuffer(buffer)
-}
-
 export function upsertFleetEvent(event: Record<string, unknown> | null | undefined): void {
   if (!event) return
   const fleetEvent = asFleetEvent(event)
@@ -267,14 +256,6 @@ export function viewFleetEvents(
     key: `${opts.key}:buffer:${opts.bufferKey}`,
     compare: compareFleetEvents,
   })
-}
-
-export function resetFleetEventStoreForTest(events: readonly Record<string, unknown>[] = []): void {
-  eventStore.dispose()
-  eventStore = createLiveStore<FleetEvent>()
-  for (const buffer of eventBuffers.values()) buffer.store.dispose()
-  eventBuffers.clear()
-  replaceFleetEvents(events)
 }
 
 function asFleetAgent(agent: Record<string, unknown>): FleetAgent | null {
@@ -406,14 +387,4 @@ export function fleetFilterHasMatchingAgent(
 
 export function subscribeFleetAgents(cb: () => void): () => void {
   return agentStore.listen(() => cb())
-}
-
-export function resetFleetAgentStoreForTest(agents: readonly Record<string, unknown>[] = []): void {
-  agentStore.dispose()
-  agentStore = createLiveStore<FleetAgent>()
-  agentLabelIndex = agentStore.index<string>('labels', (agent) => labelsForAgent(agent))
-  awakeAgentIndex = agentStore.index<boolean>('awake-agent', (agent) =>
-    !agent.dead && !agent.human && isRuntimeAwake(agent)
-  )
-  replaceFleetAgents(agents)
 }

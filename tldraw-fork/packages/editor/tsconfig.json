@@ -4,16 +4,14 @@
 		"node_modules",
 		"dist",
 		"**/*.css",
-		".tsbuild*",
-		"vitest.config.ts",
-		"setupVitest.js"
+		".tsbuild*"
 	],
 	"compilerOptions": {
 		"outDir": "./.tsbuild",
 		"rootDir": "src",
 		"noImplicitOverride": false,
 		"noImplicitReturns": false,
-		"types": ["node", "vitest/globals", "vitest"]
+		"types": ["node"]
 	},
 	"references": [
 		{ "path": "../state" },
