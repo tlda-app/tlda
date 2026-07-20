@@ -78,6 +78,22 @@ try {
   assert.equal(daemonMissing.status, RUNTIME_STATUS.UNAVAILABLE)
   assert.notEqual(daemonMissing.status, RUNTIME_STATUS.HIBERNATING)
 
+  const activityDriven = projectAgentRuntimeStatus(agent, {
+    liveness: LIVENESS.ALIVE,
+    liveness_source: 'daemon-activity-event',
+    liveness_at_ms: nowMs,
+    liveness_at: new Date(nowMs).toISOString(),
+    activity: 'tool_call:inbox',
+    activity_tool: 'inbox',
+  }, {
+    nowMs,
+    seat: route,
+    isDaemonConnected: key => key === 'mini:prod',
+  })
+
+  assert.equal(activityDriven.status, RUNTIME_STATUS.AWAKE)
+  assert.equal(activityDriven.activity, 'tool_call:inbox')
+
   console.log('ok: daemon-key route authority does not require session/tmux fields')
 } finally {
   store?.close?.()

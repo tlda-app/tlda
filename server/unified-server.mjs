@@ -7897,6 +7897,17 @@ async function handleDaemonWsMessage(ws, msg) {
     const serverReceivedAtMs = Date.now()
     const { agent_id, tool, arg, input } = msg
     if (!agent_id) return
+    const currentSeat = ensureDaemonEventRoute(agent_id, 'daemon-activity-event') || fleetStore?.getCurrentAgentSeat?.(agent_id)
+    if (currentSeat?.daemon_key === ws._daemonKey) {
+      markAgentAlive(agent_id, Date.parse(msg.ts) || serverReceivedAtMs, {
+        source: 'daemon-activity-event',
+        tmux_session: currentSeat.tmux_session || null,
+      })
+      runtimeStatusStore.updateActivity(agent_id, tool ? `tool_call:${tool}` : 'activity', {
+        tool,
+        atMs: Date.parse(msg.ts) || serverReceivedAtMs,
+      })
+    }
     serverActivityDeliveryCounters.record(ACTIVITY_DELIVERY_STAGES.SERVER_ACCEPTED, msg, 1, {
       type: 'activity-event',
       agent: agent_id,
