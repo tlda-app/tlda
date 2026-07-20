@@ -120,24 +120,32 @@ import {
   withDaemonModelAliases,
 } from '../agent-launch/permission-ledger.mjs'
 import { acquireSingletonLock, daemonSingletonLockPath } from '../agent-runtime/singleton-lock.mjs'
+import { projectBelongsToWorld, projectWorldsPath, readProjectWorlds } from '../shared/project-worlds.mjs'
 const log = createLogger('daemon')
+function daemonStateSuffix() {
+  const name = String(process.env.TLDA_CONFIG || '').trim()
+  if (!name || name === 'default') return ''
+  return `.${name.replace(/[^a-zA-Z0-9._-]+/g, '-')}`
+}
+const DAEMON_STATE_SUFFIX = daemonStateSuffix()
 // CONFIG_DIR holds config.json, cursors, PID and log files. Defaults to
 // ~/.config/tlda. TLDA_DAEMON_CONFIG_DIR plus PROJECTS_DIR lets tests/dev rigs
 // start a second daemon without clobbering the live daemon's PID file or JSONL
 // tails.
 const CONFIG_DIR = process.env.TLDA_DAEMON_CONFIG_DIR || _SHARED_CONFIG_DIR
-const CURSORS_FILE = path.join(CONFIG_DIR, 'daemon-cursors.json')
-const PID_FILE = path.join(CONFIG_DIR, 'fleet-daemon.pid')
-const SOURCE_BINDINGS_FILE = path.join(CONFIG_DIR, 'source-bindings.json')
+const CURSORS_FILE = path.join(CONFIG_DIR, `daemon-cursors${DAEMON_STATE_SUFFIX}.json`)
+const PID_FILE = path.join(CONFIG_DIR, `fleet-daemon${DAEMON_STATE_SUFFIX}.pid`)
+const SOURCE_BINDINGS_FILE = path.join(CONFIG_DIR, `source-bindings${DAEMON_STATE_SUFFIX}.json`)
+const PROJECT_WORLDS_FILE = projectWorldsPath(_SHARED_CONFIG_DIR)
 const DAEMON_CONFIG_FILE = defaultDaemonConfigPath(CONFIG_DIR)
 const daemonSpawnConfig = readDaemonConfig(DAEMON_CONFIG_FILE)
 const PERMISSION_LEDGER_FILE = permissionLedgerPathFromDaemonConfig(daemonSpawnConfig, CONFIG_DIR)
 const permissionLedger = createPermissionLedger(PERMISSION_LEDGER_FILE)
 applyDaemonGrants(permissionLedger, daemonSpawnConfig)
 
-const LOG_FILE = path.join(CONFIG_DIR, 'fleet-daemon.log')
-const DAEMON_OUTBOX_FILE = defaultOutboxPath(CONFIG_DIR)
-const LEGACY_DEAD_LETTER_FILE = path.join(CONFIG_DIR, 'daemon-dead-letters.jsonl')
+const LOG_FILE = path.join(CONFIG_DIR, `fleet-daemon${DAEMON_STATE_SUFFIX}.log`)
+const DAEMON_OUTBOX_FILE = defaultOutboxPath(CONFIG_DIR, DAEMON_STATE_SUFFIX)
+const LEGACY_DEAD_LETTER_FILE = path.join(CONFIG_DIR, `daemon-dead-letters${DAEMON_STATE_SUFFIX}.jsonl`)
 const PROJECTS_DIR = process.env.PROJECTS_DIR || path.join(os.homedir(), '.claude', 'projects')
 
 // ---------- config / machine identity ----------
@@ -323,7 +331,8 @@ let _rws = null  // ResilientWS instance, created at startup
 let _serverReady = false
 let agents = []                   // current agent list (from welcome / updates)
 let agentStatusSeq = 0
-let projects = []                 // current project list
+let serverProjects = []           // unfiltered project list from this world server
+let projects = []                 // projects owned by this daemon config
 let _lastSessionWatcherRosterSig = ''
 let terminalRpc
 let activityDeliveryMetricsTimer = null
@@ -449,6 +458,15 @@ const sourceSync = createSourceSync({
   isConnected: () => !!_rws?.connected,
   resolveEditor: jsonlIngestor.resolveEditor,
 })
+
+function applyProjectWorldOwnership(reason) {
+  const projectWorlds = readProjectWorlds(PROJECT_WORLDS_FILE)
+  projects = serverProjects.filter(project => projectBelongsToWorld(project, ACTIVE_CONFIG, projectWorlds))
+  sourceSync.sync(projects)
+  log.info(`project ownership applied (${reason}): ${projects.length}/${serverProjects.length} projects in ${ACTIVE_CONFIG}`)
+}
+
+fs.watchFile(PROJECT_WORLDS_FILE, { interval: 500 }, () => applyProjectWorldOwnership('registry-change'))
 
 const backingFiles = createBackingFiles({
   getSourceDir: project => sourceSync.getSourceDir(project),
@@ -926,7 +944,9 @@ function handleServerMessage(msg) {
     if (msg.agent_status_reset) agents = msg.agents || []
     applyAgentStatusEvents(msg.agent_status_events || [])
     agentStatusSeq = Math.max(agentStatusSeq, msg.agent_status_seq || 0)
-    projects = msg.projects || []
+    serverProjects = msg.projects || []
+    const projectWorlds = readProjectWorlds(PROJECT_WORLDS_FILE)
+    projects = serverProjects.filter(project => projectBelongsToWorld(project, ACTIVE_CONFIG, projectWorlds))
     reconcileRoster('daemon-welcome')
     applyDaemonGrants(permissionLedger, daemonSpawnConfig)
     log.info(`welcome: ${agents.length} agents, ${projects.length} projects`)
@@ -977,8 +997,8 @@ function handleServerMessage(msg) {
     return
   }
   if (msg.type === 'projects-updated') {
-    projects = msg.projects || []
-    sourceSync.sync(projects)
+    serverProjects = msg.projects || []
+    applyProjectWorldOwnership('projects-updated')
     ackServerDaemonOutboxMessage(msg)
     return
   }

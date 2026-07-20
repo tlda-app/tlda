@@ -66,6 +66,7 @@ import {
 } from '../agent-launch/permission-ledger.mjs'
 import { terminateTmuxSession } from '../agent-launch/tmux.mjs'
 import { bindAgentSeat } from '../agent-launch/seat-binding.mjs'
+import { projectWorldsPath, writeProjectWorld } from '../shared/project-worlds.mjs'
 
 // --- Argument parsing ---
 
@@ -77,7 +78,7 @@ import { bindAgentSeat } from '../agent-launch/seat-binding.mjs'
 // feedback hook etc. don't break, but `--help` only advertises the nouns.
 const DOC_SUBS = new Set([
   'open', 'push', 'list', 'ls', 'status', 'errors',
-  'delete', 'rm', 'share', 'publish', 'scratch', 'book', 'link', 'init',
+  'delete', 'rm', 'move', 'share', 'publish', 'scratch', 'book', 'link', 'init',
   'repo-doctor', 'init-shadow',
 ])
 const REMOVED_DOC_SUBS = new Set(['create', 'preview'])
@@ -295,6 +296,10 @@ async function api(method, path, body = null, { timeoutMs = 30000, token = getTo
     server: getServer(),
     token,
   })
+}
+
+async function apiAt(server, method, path, body = null, { timeoutMs = 30000, token = null } = {}) {
+  return tldaFetch(path, { method, body, timeoutMs, server, token })
 }
 
 // --- Source file collection ---
@@ -897,9 +902,11 @@ async function cmdInit() {
 // shorthand and `tlda daemon start` — Phase 1 doesn't deprecate
 // either. If the first positional is start/stop/status/log/run we
 // route here, otherwise we fall through to the existing watcher.
-const FLEET_DAEMON_LOGFILE = join(homedir(), '.config', 'tlda', 'fleet-daemon.log')
-const FLEET_DAEMON_PIDFILE = join(homedir(), '.config', 'tlda', 'fleet-daemon.pid')
-const FLEET_DAEMON_LABEL = 'com.tlda.fleet-daemon'
+const DAEMON_WORLD_NAME = getActiveConfigName(loadConfig()) || 'default'
+const DAEMON_WORLD_SUFFIX = DAEMON_WORLD_NAME === 'default' ? '' : `.${DAEMON_WORLD_NAME.replace(/[^a-zA-Z0-9._-]+/g, '-')}`
+const FLEET_DAEMON_LOGFILE = join(homedir(), '.config', 'tlda', `fleet-daemon${DAEMON_WORLD_SUFFIX}.log`)
+const FLEET_DAEMON_PIDFILE = join(homedir(), '.config', 'tlda', `fleet-daemon${DAEMON_WORLD_SUFFIX}.pid`)
+const FLEET_DAEMON_LABEL = `com.tlda.fleet-daemon${DAEMON_WORLD_SUFFIX}`
 const FLEET_DAEMON_PLIST = join(homedir(), 'Library', 'LaunchAgents', `${FLEET_DAEMON_LABEL}.plist`)
 const _cliDir = dirname(fileURLToPath(import.meta.url))
 const _cliWorktreeMatch = _cliDir.match(/^(.+?)\/(?:\.claude\/worktrees|\.worktrees)\//)
@@ -943,6 +950,7 @@ function daemonEnvironmentEntries({ configDir = null, processTitle = null } = {}
     ['NODE_OPTIONS', `--require=${FLEET_DAEMON_DNS_ALIAS_PRELOAD}`],
   ]
   if (existsSync(TLS_CA_PATH)) entries.push(['NODE_EXTRA_CA_CERTS', TLS_CA_PATH])
+  entries.push(['TLDA_CONFIG', DAEMON_WORLD_NAME])
   if (configDir) entries.push(['TLDA_DAEMON_CONFIG_DIR', configDir])
   if (processTitle) entries.push(['TLDA_DAEMON_PROCESS_TITLE', processTitle])
   return entries
@@ -2050,6 +2058,61 @@ async function cmdDelete() {
 
   await api('DELETE', `/api/projects/${name}`)
   console.log(green(`Project "${name}" deleted.`))
+}
+
+async function cmdMoveProject() {
+  const name = getPositional(0) || await inferProjectName()
+  const targetConfig = getPositional(1)
+  if (!name || !targetConfig) {
+    console.error('Usage: tlda doc move <project> <config>')
+    process.exit(1)
+  }
+  const cfg = loadConfig()
+  const sourceConfig = getActiveConfigName(cfg)
+  if (sourceConfig === targetConfig) throw new Error(`Project "${name}" is already in ${targetConfig}.`)
+  const target = cfg.configs?.[targetConfig]
+  if (!target || typeof target.store !== 'string' || typeof target.database !== 'string') {
+    throw new Error(`Unknown or incomplete target config "${targetConfig}".`)
+  }
+  const project = await api('GET', `/api/projects/${encodeURIComponent(name)}`)
+  if (!project.sourceDir) throw new Error(`Project "${name}" has no local source directory; cannot change daemon ownership.`)
+  const sourceDir = resolve(project.sourceDir)
+  if (!existsSync(sourceDir)) throw new Error(`Project source directory does not exist: ${sourceDir}`)
+  const targetServer = target.store.replace(/\/+$/, '')
+  if (hasFlag('dry-run')) {
+    console.log(`[dry-run] would move project "${name}" from ${sourceConfig} to ${targetConfig}`)
+    console.log(`  working directory stays: ${sourceDir}`)
+    console.log(`  daemon ownership becomes: ${targetConfig}`)
+    console.log(`  target viewer: ${targetServer}/?doc=${encodeURIComponent(name)}`)
+    return
+  }
+
+  try {
+    await apiAt(targetServer, 'POST', '/api/projects', {
+      name: project.name,
+      title: project.title || project.name,
+      mainFile: project.mainFile,
+      format: project.format,
+      sourceDir,
+      ...(project.members ? { members: project.members } : {}),
+    })
+  } catch (e) {
+    if (!String(e.message).includes('already exists')) throw e
+  }
+  const files = collectSourceFiles(sourceDir)
+  await apiAt(targetServer, 'POST', `/api/projects/${encodeURIComponent(name)}/push`, { files, sourceDir }, { timeoutMs: 120000 })
+  writeProjectWorld(projectWorldsPath(CONFIG_DIR), sourceDir, targetConfig)
+
+  execFileSync(process.execPath, [fileURLToPath(import.meta.url), 'daemon', 'start', '--config', targetConfig], {
+    cwd: FLEET_DAEMON_MAIN_ROOT,
+    stdio: 'inherit',
+  })
+
+  console.log(green(`Moved project "${name}" from ${sourceConfig} to ${targetConfig}.`))
+  console.log(dim(`  Working directory unchanged: ${sourceDir}`))
+  console.log(dim(`  Daemon ownership: ${targetConfig}`))
+  console.log(dim(`  Target viewer: ${targetServer}/?doc=${encodeURIComponent(name)}`))
+  console.log(green(`  ${targetConfig} daemon world is running.`))
 }
 
 async function cmdPublish() {
@@ -4959,6 +5022,7 @@ async function main() {
       case 'errors': await ensureServer(); await cmdErrors(); break
       case 'delete':  await ensureServer(); await cmdDelete(); break
       case 'rm':      await ensureServer(); await cmdDelete(); break
+      case 'move':    await ensureServer(); await cmdMoveProject(); break
       case 'logs':    await cmdLogs(args.slice(1)); break
       case 'log':     await cmdLogs(args.slice(1)); break
       case 'publish': await cmdPublish(); break

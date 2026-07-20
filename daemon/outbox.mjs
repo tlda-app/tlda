@@ -128,6 +128,6 @@ export class DaemonOutbox {
   }
 }
 
-export function defaultOutboxPath(configDir) {
-  return path.join(configDir, 'daemon-outbox.sqlite')
+export function defaultOutboxPath(configDir, suffix = '') {
+  return path.join(configDir, `daemon-outbox${suffix}.sqlite`)
 }
