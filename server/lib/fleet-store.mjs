@@ -3400,6 +3400,31 @@ export class FleetStore {
     return result.changes > 0;
   }
 
+  markEventUnread(eventId, agentId) {
+    this._insertUnread.run(eventId, agentId);
+    const result = this.db.prepare('UPDATE unread SET read = 0 WHERE event_id = ? AND to_id = ?').run(eventId, agentId);
+    return result.changes > 0;
+  }
+
+  claimTimerTerminal(eventId, { to, metadataPatch, unread = false } = {}) {
+    const claim = this.db.transaction(() => {
+      const result = this.db.prepare(`
+        UPDATE events
+        SET metadata = json_patch(COALESCE(metadata, '{}'), ?)
+        WHERE id = ?
+          AND type = 'timer'
+          AND json_extract(COALESCE(metadata, '{}'), '$.pending') = 1
+      `).run(JSON.stringify(metadataPatch), eventId);
+      if (result.changes === 0) return false;
+      if (unread && to) {
+        this._insertUnread.run(eventId, to);
+        this.db.prepare('UPDATE unread SET read = 0 WHERE event_id = ? AND to_id = ?').run(eventId, to);
+      }
+      return true;
+    });
+    return claim();
+  }
+
   updateEventMetadata(eventId, patch) {
     this._updateEventMetadata.run(JSON.stringify(patch), eventId);
   }
@@ -3437,6 +3462,20 @@ export class FleetStore {
     if (!row) return null;
     const meta = row.metadata ? JSON.parse(row.metadata) : null;
     return { ...row, from: row.from, to: row.to, metadata: meta };
+  }
+
+  listPendingTimerEvents() {
+    const rows = this.db.prepare(`
+      SELECT ${this._EVT}
+      FROM events
+      WHERE type = 'timer'
+        AND json_extract(COALESCE(metadata, '{}'), '$.pending') = 1
+      ORDER BY json_extract(metadata, '$.fire_at') ASC, id ASC
+    `).all();
+    return rows.map(row => {
+      const meta = row.metadata ? JSON.parse(row.metadata) : null;
+      return { ...row, from: row.from, to: row.to, metadata: meta };
+    });
   }
 
   // `agents` is the exact set of fleet ids the normal chat history is filtered to.

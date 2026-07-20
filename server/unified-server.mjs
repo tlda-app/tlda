@@ -87,6 +87,8 @@ import { daemonSingletonLockPath, inspectSingletonLock } from '../agent-runtime/
 import { partialSkillReadSummaries, recordPartialSkillReads } from '../shared/partial-skill-reads.mjs'
 import { daemonAddress, describeAgentAddress } from '../shared/agent-move-target.mjs'
 import { readBuildInfo } from './lib/build-info.mjs'
+import { resolveTimerParticipants, timerDeliveryFailureResult, timerTerminalInputFailureResult } from './lib/timer-routing.mjs'
+import { ServerTimerScheduler } from './lib/timer-scheduler.mjs'
 import { ServerDaemonOutbox } from './lib/server-daemon-outbox.mjs'
 import { AgentSeatBindingObligations, verifyAgentSeatBindingTerminal } from './lib/agent-seat-binding-obligations.mjs'
 import { DaemonAgentEvents } from './lib/daemon-agent-events.mjs'
@@ -219,6 +221,7 @@ const serverDaemonOutbox = new ServerDaemonOutbox(fleetStore.db)
 const agentSeatBindingObligations = new AgentSeatBindingObligations(fleetStore.db)
 const daemonAgentEvents = new DaemonAgentEvents(fleetStore.db)
 const serverDaemonOutboxInflight = new Map()
+let serverTimerScheduler = null
 
 const TASK_DOC_STARTUP_FLUSH_DELAY_MS = Number(process.env.TLDA_TASK_DOC_STARTUP_FLUSH_DELAY_MS ?? -1)
 function scheduleStartupTaskDocFlush() {
@@ -1237,6 +1240,12 @@ function broadcastEvent(type, data) {
   }
   broadcastFleet({ event: type, data })
 }
+
+serverTimerScheduler = new ServerTimerScheduler({
+  store: fleetStore,
+  broadcast: broadcastEvent,
+})
+serverTimerScheduler.start()
 
 function compactObject(obj = {}) {
   const out = {}
@@ -4838,29 +4847,43 @@ async function handleFleetWsMessage(ws, msg) {
   // broadcasts a pending timer; timer-fire/cancel patches it to a terminal state.
   if (type === 'timer-set') {
     const { agent, message, fire_at, to: toAgent } = msg
-    const from = (agent && fleetStore.findAgent?.(agent)?.id) || agent || SERVER_OWNER_ID
     // Address the countdown to the conversation it belongs to (e.g. the agent
     // being handed off). A chat panel only renders events whose from/to matches
-    // its target agent, so a countdown hardcoded to the owner never appears in
-    // the panel the user triggered it from. Falls back to the owner.
-    const to = (toAgent && fleetStore.findAgent?.(toAgent)?.id) || toAgent || SERVER_OWNER_ID
+    // its target agent, so a countdown hardcoded to the server owner never
+    // appears in the panel the requester triggered it from.
+    const { from, to } = resolveTimerParticipants({
+      agent,
+      toAgent,
+      findAgent: fleetStore.findAgent?.bind(fleetStore),
+      fallbackOwner: SERVER_OWNER_ID,
+    })
     const metadata = { pending: true, fire_at, message }
     const event = await fleetStore.share({ type: 'timer', from, to, text: `⏱ ${message}`, metadata })
     broadcastEvent('fleet-event', { type: 'timer', from, to, id: event.id, event_id: event.id, text: `⏱ ${message}`, metadata })
+    serverTimerScheduler?.refresh()
     reply({ ok: true, id: event.id })
     return
   }
   if (type === 'timer-fire' || type === 'timer-cancel') {
     const eventId = msg.event_id
     const state = type === 'timer-cancel' ? 'cancelled' : 'fired'
-    if (eventId != null) {
-      // Persist the terminal state; the live event-update below is what the
-      // viewer actually reacts to, so a persist failure is logged, not fatal.
-      try { fleetStore.updateEventMetadata?.(eventId, { pending: false, state }) }
-      catch (e) { console.warn(`[timer] persist ${state} for event ${eventId} failed: ${e.message}`) }
-      broadcastEvent('event-update', { id: eventId, metadata_patch: { pending: false, state } })
+    if (eventId == null) {
+      reply(timerTerminalInputFailureResult({ state, eventId }))
+      return
     }
-    reply({ ok: true })
+    const event = fleetStore.getEventById?.(Number(eventId))
+    if (!event) {
+      reply(timerTerminalInputFailureResult({ state, eventId }))
+      return
+    }
+    try {
+      const result = state === 'cancelled'
+        ? serverTimerScheduler.cancel(Number(eventId))
+        : serverTimerScheduler.fire(Number(eventId), { message: msg.message })
+      reply(result)
+    } catch (e) {
+      reply(timerDeliveryFailureResult({ state, eventId, error: e }))
+    }
     return
   }
 

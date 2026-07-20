@@ -58,6 +58,8 @@ import { parseFilter, parseMessageFilter, evalExpr } from '../shared/fleet-label
 import { runtimeStatusName } from '../shared/fleet-runtime-status.mjs';
 import { normalizeRefNumber as _normalizeRefNumber, refTypeForName as _refTypeForName, buildTheoremRefRegex as _buildTheoremRefRegex } from '../shared/doc-refs.mjs';
 import { harnessFromEnv } from './lib/harness-adapters.mjs';
+import { shouldSkipOriginatedEvent, shouldSuppressRecentContent } from './lib/timer-channel-delivery.mjs';
+import { timerSetEventIdFromAck, timerSetMessage } from './lib/timer-protocol.mjs';
 import WebSocket from 'ws';
 import {
   FleetTransportOutbox,
@@ -1540,6 +1542,7 @@ export function getFleetTools() {
         properties: {
           seconds: { type: 'number', description: 'Duration in seconds (1–600)' },
           message: { type: 'string', description: 'Reminder message delivered when timer fires (e.g. "check build status")' },
+          to: { type: 'string', description: 'Optional agent target for the timer event. Defaults to the requesting agent.' },
         },
         required: ['seconds', 'message'],
       },
@@ -4259,25 +4262,14 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     const message = args.message || 'Timer fired';
     const fireAt = new Date(Date.now() + seconds * 1000).toISOString();
 
-    // Store timer-set event immediately for dashboard countdown display
-    sendWS('timer-set', { agent: AGENT_ID, message, fire_at: fireAt })
-      .catch(e => process.stderr.write(`[fleet-transport] transient timer-set send failed before ACK: ${e.message}\n`));
-
-    // Fire after delay: deliver via channel notification + store fired event in DB
-    setTimeout(async () => {
-      // Deliver directly to Claude via channel (no tmux, no polling)
-      try {
-        await server.notification({
-          method: 'notifications/claude/channel',
-          params: { content: `⏰ ${message}`, meta: { event_type: 'timer' } },
-        });
-      } catch (e) {
-        process.stderr.write(`[fleet] timer channel delivery failed: ${e.message}\n`);
-      }
-      // Also record in DB for chat history
-      sendWS('timer-fire', { agent: AGENT_ID, message: `⏰ ${message}` })
-        .catch(e => process.stderr.write(`[fleet-transport] transient timer-fire send failed before ACK: ${e.message}\n`));
-    }, seconds * 1000);
+    // Store timer-set event immediately; the server owns scheduling, restart
+    // recovery, and terminal fire/cancel delivery from the persisted row.
+    let timerEventId = null;
+    try {
+      timerEventId = timerSetEventIdFromAck(await sendWS('timer-set', timerSetMessage({ agentId: AGENT_ID, message, fireAt, to: args.to })));
+    } catch (e) {
+      return { content: [{ type: 'text', text: `timer failed: ${e.message}` }], isError: true };
+    }
 
     return { content: [{ type: 'text', text: `Timer set: ${seconds}s → "${message}". You'll get ⏰ when it fires.` }] };
   }
@@ -4716,18 +4708,22 @@ async function reportNotificationAttempt(attempt) {
 async function handleChannelMessage(msg) {
   if (!AGENT_ID) return;
 
-  // Dashboard WS sends { event: 'fleet-event', data: {...} } or state updates
-  const eventType = msg.event === 'fleet-event' ? (msg.data?.type || '') : '';
+  // Dashboard WS sends { event: 'fleet-event', data: {...} } for new mailbox
+  // items. Fired timers are same-row `event-update`s because the timer event is
+  // first created as pending, then becomes unread again when it fires.
+  const eventType = msg.event === 'fleet-event' || msg.event === 'event-update'
+    ? (msg.data?.type || '')
+    : '';
   if (!eventType) return;
-  if (!['chat', 'delegate', 'task_done'].includes(eventType)) return;
+  if (!['chat', 'delegate', 'task_done', 'timer'].includes(eventType)) return;
 
   const data = msg.data || {};
+  const isTimerFire = eventType === 'timer' && data.metadata?.state === 'fired';
+  if (msg.event === 'event-update' && !isTimerFire) return;
+  if (eventType === 'timer' && !isTimerFire) return;
 
   // Skip broadcast echoes of events we originated
-  if (data.id && _originatedEventIds.has(data.id)) {
-    _originatedEventIds.delete(data.id);
-    return;
-  }
+  if (shouldSkipOriginatedEvent({ eventId: data.id, originatedEventIds: _originatedEventIds, isTimerFire })) return;
 
   // Dedup: skip if we already delivered a channel notification for this event
   if (data.id && _deliveredChannelIds.has(data.id)) {
@@ -4743,7 +4739,7 @@ async function handleChannelMessage(msg) {
 
   // Skip events FROM this agent
   const fromId = data.from || data.from_id || '';
-  if (fromId === AGENT_ID) return;
+  if (fromId === AGENT_ID && !isTimerFire) return;
 
   // Skip terminal-sourced messages — agent is already in their terminal and has this context
   if (data.metadata?.source === 'terminal') return;
@@ -4799,17 +4795,30 @@ async function handleChannelMessage(msg) {
     } else if (eventType === 'task_done') {
       content = formatStatusSummary({ eventType, fromLabel, preview: data.description || data.text || 'Task update' })
         || `📬 Task update. Call inbox() to see details.`;
+    } else if (eventType === 'timer') {
+      const rawText = data.text || data.message || data.metadata?.message || 'Timer fired';
+      const preview = previewOf(rawText);
+      const truncNote = isTruncated(rawText) ? `\n(TRUNCATED — showing ${PREVIEW_MAX}/${rawText.length} chars. You MUST call inbox() for the full text before responding)` : '';
+      content = `📬 ${_inboxStatus[0].toUpperCase() + _inboxStatus.slice(1)} timer: ${preview}${truncNote}\n${inboxCallText('triage')}`;
     }
   }
 
   // Suppress if identical content within 30s
   const now = Date.now();
-  if (content === handleChannelMessage._lastContent && now - handleChannelMessage._lastTs < 30000) {
+  if (shouldSuppressRecentContent({
+    isTimerFire,
+    content,
+    lastContent: handleChannelMessage._lastContent,
+    lastTs: handleChannelMessage._lastTs,
+    now,
+  })) {
     process.stderr.write(`[fleet-channel] Suppressed duplicate: ${content.slice(0, 60)}\n`);
     return;
   }
-  handleChannelMessage._lastContent = content;
-  handleChannelMessage._lastTs = now;
+  if (!isTimerFire) {
+    handleChannelMessage._lastContent = content;
+    handleChannelMessage._lastTs = now;
+  }
 
   let delivered = false;
   let notificationError = null;
