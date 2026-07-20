@@ -8,7 +8,6 @@ import fs from 'fs';
 import http from 'http';
 import os from 'os';
 import path from 'path';
-import katex from 'katex';
 import Database from 'better-sqlite3';
 import { fileURLToPath } from 'url';
 // SearchIndex (search-index.sqlite) replaced by server-side fleet-search WS operation.
@@ -24,7 +23,7 @@ import { compactPrettyResult, indentPrettyResult, normalizePrettyResult } from '
 import { resolveFilePath, uploadFileToServer } from '../shared/chat-file-processing.mjs';
 import { scanMarkdownDeps } from '../shared/markdown-deps.mjs';
 import { extractMarkdownSection } from '../shared/markdown-section.mjs';
-import { normalizeChatDisplayMathDelimiters } from '../shared/chat-math-normalize.mjs';
+import { checkChatRender as checkSharedChatRender } from '../shared/chat-render-check.mjs';
 import { formatSpawnModelSummary, validateSpawnModelSelection } from '../shared/spawn-model-validation.mjs';
 import { buildFleetSearchFilters, parseSearchQuery } from '../shared/fleet-search-query.mjs';
 import { formatActivityHealthStatus } from '../shared/activity-health.mjs';
@@ -57,7 +56,6 @@ import {
 } from '../shared/task-role-routing.mjs';
 import { parseFilter, parseMessageFilter, evalExpr } from '../shared/fleet-labels.mjs';
 import { runtimeStatusName } from '../shared/fleet-runtime-status.mjs';
-import { baseMacros } from '../shared/katex-base-macros.mjs';
 import { normalizeRefNumber as _normalizeRefNumber, refTypeForName as _refTypeForName, buildTheoremRefRegex as _buildTheoremRefRegex } from '../shared/doc-refs.mjs';
 import { harnessFromEnv } from './lib/harness-adapters.mjs';
 import WebSocket from 'ws';
@@ -339,6 +337,38 @@ async function bundleSharedMarkdownImages(body, sourceFile, fleetServerUrl) {
   return { body: out, uploaded, missing };
 }
 
+function isMarkdownFileName(name = '') {
+  const lower = String(name || '').toLowerCase();
+  return lower.endsWith('.md') || lower.endsWith('.markdown');
+}
+
+function checkSharedMarkdownAttachments(inlineAttachments = [], macros = {}) {
+  const warnings = [];
+  for (const att of inlineAttachments || []) {
+    if (att?.broken || !att?.path || !isMarkdownFileName(att.name || att.path)) continue;
+    let body = '';
+    try {
+      body = fs.readFileSync(att.path, 'utf8');
+    } catch (e) {
+      warnings.push({
+        file: att.path,
+        name: att.name || path.basename(att.path),
+        issues: [`Could not read markdown file for render check: ${e.message}`],
+      });
+      continue;
+    }
+    const { validity } = checkChatRender(body, macros);
+    if (validity.length) {
+      warnings.push({
+        file: att.path,
+        name: att.name || path.basename(att.path),
+        issues: validity,
+      });
+    }
+  }
+  return warnings;
+}
+
 // State file eliminated — all data through server REST API
 const LOG_FILE = `${os.homedir()}/.claude/agent-messages.jsonl`;
 
@@ -588,108 +618,7 @@ async function getMacrosForAgent() {
   return getMacrosForDoc(await getAgentPreambleDoc());
 }
 
-// Two distinct lint classes, deliberately kept apart (Skip, 6/19):
-//
-//   VALIDITY — will this message render at all on Skip's screen? KaTeX parse
-//   errors, undefined macros with no preamble, glued `$` delimiters, LaTeX
-//   dumped into a code block, and markdown that won't close (unbalanced ```
-//   fence or `$$` block). A validity failure means Skip sees garbage, so these
-//   are real and get surfaced PROMINENTLY with the amend affordance — "warn
-//   agents that [it] doesn't render properly so they can amend their shit."
-//   The wording is harness-neutral: it points at the `amend_id` chat path,
-//   which every agent has, not at any Claude-Code-specific tool.
-//
-//   STYLE — optional presentation hints (combine display blocks, don't narrate
-//   between equations). Never a gate; surfaced quietly and separately.
-//
-// The completion-style keyword gate ("done/fixed/handled/passing…") was REMOVED
-// entirely — Skip: "that should never be a gate." Report-shape / evidence-before-
-// claims discipline lives in the self-sufficiency and verification-before-
-// completion skills the agent reads, not in a regex that flags the word "done".
-export function checkChatRender(message, macros = {}) {
-  const validity = [];
-  const style = [];
-  // Render with the universal physics base + this doc's extracted paper macros
-  // (paper wins). `macros` is the paper-specific set; when it's empty the agent
-  // isn't scoped to a project, so an undefined-macro error means "go set them".
-  const hasPaperMacros = Object.keys(macros).length > 0;
-  const renderMacros = { ...baseMacros, ...macros };
-  let suggestedSetMacros = false;
-  const normalizedMathMessage = normalizeChatDisplayMathDelimiters(message);
-
-  // ---- markdown render validity (harness-neutral structural checks) ----
-  // An odd number of code fences leaves a block open, so everything after it
-  // renders as code. An odd number of `$$` (counted outside code blocks) leaves
-  // a display-math block open, so the math never renders. Both are silent
-  // garbage on Skip's screen — exactly the "doesn't render" case to warn on.
-  const fenceCount = (String(message).match(/```/g) || []).length;
-  if (fenceCount % 2 !== 0) {
-    validity.push('Unclosed code fence (odd number of ```) — everything after the open fence renders as a code block on Skip\'s screen. Close it, then re-chat with `amend_id` to fix it in place.');
-  }
-  const messageNoCode = String(message).replace(/```[\s\S]*?```/g, '');
-  const displayDollarCount = (normalizeChatDisplayMathDelimiters(messageNoCode).match(/\$\$/g) || []).length;
-  if (displayDollarCount % 2 !== 0) {
-    validity.push('Unclosed `$$` display-math block (odd number of `$$`) — the math will not render. Close the block, then re-chat with `amend_id`.');
-  }
-
-  const displayBlocks = (normalizedMathMessage.match(/\$\$[\s\S]*?\$\$/g) || []);
-  if (displayBlocks.length > 1) {
-    style.push(`${displayBlocks.length} separate display blocks — consider combining into one \\begin{aligned} block so all steps are visible together.`);
-  }
-  const proseLines = normalizedMathMessage.split(/\$\$[\s\S]*?\$\$/);
-  const proseBetween = proseLines.slice(1, -1).filter(p => p.trim().length > 0);
-  if (proseBetween.length > 0 && displayBlocks.length > 1) {
-    style.push(`Prose narration between display equations. If these are sequential algebra steps, put them in one block without interleaved text.`);
-  }
-  if (/\\text\{.*(?:by|since|because|using|from|note|recall).*\}/i.test(message) && displayBlocks.length > 0) {
-    const textAnnotations = (message.match(/\\text\{[^}]*\}/g) || []).length;
-    if (textAnnotations > 2) {
-      style.push(`${textAnnotations} \\text{} annotations in display math. Show the steps and let the reader follow — don't narrate each one.`);
-    }
-  }
-  const allMath = [];
-  for (const m of normalizedMathMessage.matchAll(/\$\$([\s\S]*?)\$\$/g)) allMath.push({ tex: m[1], display: true, pos: m.index });
-  for (const m of normalizedMathMessage.matchAll(/(?<!\$)\$(?!\$)((?:[^$\\]|\\.)+)\$/g)) allMath.push({ tex: m[1], display: false, pos: m.index });
-  for (const { tex, display, pos } of allMath) {
-    try {
-      katex.renderToString(tex, { displayMode: display, throwOnError: true, macros: renderMacros });
-    } catch (e) {
-      const undefinedMacro = /Undefined control sequence/.test(e.message);
-      if (undefinedMacro && !hasPaperMacros) {
-        // No project macros loaded — the renderer can't know paper macros either.
-        // One actionable nudge beats a pile of cryptic per-macro parse errors.
-        if (!suggestedSetMacros) {
-          suggestedSetMacros = true;
-          validity.push(`Math uses macros that aren't loaded, and you have no project preamble set — so the chat renderer can't display them either. Set your paper's macros once with the \`set_preamble\` tool (point it at the project's main .tex), or include the macro definitions in the message. (Physics-package commands like \\norm, \\qty are always available.)`);
-        }
-      } else {
-        const snippet = tex.length > 40 ? tex.slice(0, 40) + '…' : tex;
-        validity.push(`LaTeX parse error in \`${display ? '$$' : '$'}${snippet}${display ? '$$' : '$'}\`: ${e.message}`);
-      }
-    }
-    if (!display) {
-      const before = pos > 0 ? normalizedMathMessage[pos - 1] : ' ';
-      const afterIdx = pos + tex.length + 2;
-      const after = afterIdx < normalizedMathMessage.length ? normalizedMathMessage[afterIdx] : ' ';
-      if (/[a-zA-Z]/.test(before)) {
-        const word = normalizedMathMessage.slice(Math.max(0, pos - 20), pos).match(/[a-zA-Z]+$/)?.[0] || '';
-        validity.push(`\`$\` delimiter glued to text "${word}$..." — the chat renderer may not find the math boundary. Add a space before \`$\`.`);
-      }
-      if (/[a-zA-Z]/.test(after)) {
-        const word = normalizedMathMessage.slice(afterIdx, afterIdx + 20).match(/^[a-zA-Z]+/)?.[0] || '';
-        validity.push(`\`$\` delimiter glued to text "...$${word}" — the chat renderer may not find the math boundary. Add a space after \`$\`.`);
-      }
-    }
-  }
-  const codeBlocks = message.match(/```[\s\S]*?```/g) || [];
-  for (const block of codeBlocks) {
-    const inner = block.slice(3, -3).replace(/^[a-z]*\n/, '');
-    if (/\\(?:begin|end|frac|sum|int|prod|hat|bar|tilde|mathbb|mathrm|operatorname|left|right|alpha|beta|gamma|theta|lambda|mu|sigma|phi|psi|omega|infty|partial|nabla|sqrt|over|under)\b/.test(inner)) {
-      validity.push(`Don't put LaTeX in a code block unless you want to show the code itself, not the rendered math. Use $$ delimiters for display math or $ for inline — the chat renderer supports KaTeX. You can fix this in place by re-chatting with amend_id after it sends.`);
-    }
-  }
-  return { validity, style };
-}
+export const checkChatRender = checkSharedChatRender;
 
 export function checkLaunderChatLint(message, recipients = [], { paperContext = false } = {}) {
   const result = classifyLaunder({
@@ -2423,7 +2352,11 @@ export async function handleFleetTool(name, args) {
     // Two classes, surfaced differently: render-VALIDITY prominently with the
     // amend affordance (Skip will see garbage if it doesn't render), STYLE
     // hints quietly. No register/completion gate — that was deleted.
-    const { validity: renderIssues, style: styleHints } = checkChatRender(message, macros);
+    const renderCheck = checkChatRender(message, macros);
+    const sharedMarkdownFile = source?.file || null;
+    const renderIssues = sharedMarkdownFile ? [] : renderCheck.validity;
+    const fileRenderIssues = sharedMarkdownFile ? renderCheck.validity : [];
+    const styleHints = renderCheck.style;
 
     // ---- amend branch: edit an already-sent message in place ----
     // `amend_id` present → route to the server's amend handler (same body forms,
@@ -2440,6 +2373,7 @@ export async function handleFleetTool(name, args) {
         } else {
           ({ resolvedMessage, inlineAttachments } = await processMessageText(message, agentCwd, `${TLDA_FLEET_SERVER}`));
         }
+        const inlineMarkdownFileIssues = checkSharedMarkdownAttachments(inlineAttachments, macros);
         const body = { from: AGENT_ID, message: resolvedMessage, event_id: args.amend_id };
         if (inlineAttachments?.length) body.inline_attachments = inlineAttachments;
         if (source) body.source = source;
@@ -2448,6 +2382,13 @@ export async function handleFleetTool(name, args) {
         let extra = '';
         if (renderIssues.length > 0) {
           extra += `\n\n⚠ **Still won't render (${renderIssues.length}):**\n${renderIssues.map(l => `- ${l}`).join('\n')}\nFix and re-chat \`amend_id: ${data.event_id}\` again — Skip is reading this message.`;
+        }
+        if (fileRenderIssues.length > 0) {
+          const fileLabel = path.basename(sharedMarkdownFile);
+          extra += `\n\n⚠ **Shared markdown file won't render properly (${fileRenderIssues.length} issue${fileRenderIssues.length > 1 ? 's' : ''}): \`${fileLabel}\`.** The problem is in the file, not the chat wrapper. Edit the markdown file; the shared surface should update from the file:\n${fileRenderIssues.map(l => `- ${l}`).join('\n')}`;
+        }
+        for (const fileIssue of inlineMarkdownFileIssues) {
+          extra += `\n\n⚠ **Shared markdown file won't render properly (${fileIssue.issues.length} issue${fileIssue.issues.length > 1 ? 's' : ''}): \`${fileIssue.name}\`.** The problem is in the file, not the chat wrapper. Edit the markdown file; the shared surface should update from the file:\n${fileIssue.issues.map(l => `- ${l}`).join('\n')}`;
         }
         if (styleHints.length > 0) {
           extra += `\n\nStyle (optional): ${styleHints.join(' ')}`;
@@ -2547,6 +2488,7 @@ export async function handleFleetTool(name, args) {
         message, agentCwd, `${TLDA_FLEET_SERVER}`
       ));
     }
+    const inlineMarkdownFileIssues = checkSharedMarkdownAttachments(inlineAttachments, macros);
 
     // We don't bounce a message. Ever. Warn, don't bounce: deliver it and at most
     // append a warning so the sender can amend in place. (Here, processMessageText
@@ -2642,6 +2584,13 @@ export async function handleFleetTool(name, args) {
     if (renderIssues.length > 0) {
       const target = lastEventId != null ? `chat({ amend_id: ${lastEventId}, message: "…" })` : 'chat({ amend_id: <id>, message: "…" })';
       warning += `\n\n⚠ **Won't render properly (${renderIssues.length} issue${renderIssues.length > 1 ? 's' : ''}) — Skip will see broken output.** Fix it in place with \`${target}\` (edits the message Skip is reading, no new message):\n${renderIssues.map(l => `- ${l}`).join('\n')}`;
+    }
+    if (fileRenderIssues.length > 0) {
+      const fileLabel = path.basename(sharedMarkdownFile);
+      warning += `\n\n⚠ **Shared markdown file won't render properly (${fileRenderIssues.length} issue${fileRenderIssues.length > 1 ? 's' : ''}): \`${fileLabel}\`.** The problem is in the file, not the chat wrapper. Edit the markdown file; the shared surface should update from the file:\n${fileRenderIssues.map(l => `- ${l}`).join('\n')}`;
+    }
+    for (const fileIssue of inlineMarkdownFileIssues) {
+      warning += `\n\n⚠ **Shared markdown file won't render properly (${fileIssue.issues.length} issue${fileIssue.issues.length > 1 ? 's' : ''}): \`${fileIssue.name}\`.** The problem is in the file, not the chat wrapper. Edit the markdown file; the shared surface should update from the file:\n${fileIssue.issues.map(l => `- ${l}`).join('\n')}`;
     }
     const launderIssues = checkLaunderChatLint(message, sent, { paperContext: Object.keys(macros).length > 0 });
     if (launderIssues.length > 0) {

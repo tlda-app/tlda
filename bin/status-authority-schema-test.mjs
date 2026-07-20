@@ -30,8 +30,27 @@ try {
     metadata: { kind: 'codex', model: 'gpt-test' },
   })
 
+  assert.throws(() => store.activateAgentSeat({
+    agentId: 'fleet:status-authority-test',
+    machineId: 'mini',
+    envName: 'prod',
+    daemonKey: 'mini:prod',
+    reason: 'daemon-agent-activity',
+  }), /requires durable sessionId/)
+
+  store.insertAgentSeat({
+    agent_id: 'fleet:status-authority-test',
+    session_id: 'rollout-status-authority-test',
+    resume_id: 'rollout-status-authority-test',
+    kind: 'codex',
+    model: 'gpt-test',
+    cwd: dir,
+    created_source: 'status-authority-schema-test',
+  })
+
   const route = store.activateAgentSeat({
     agentId: 'fleet:status-authority-test',
+    sessionId: 'rollout-status-authority-test',
     machineId: 'mini',
     envName: 'prod',
     daemonKey: 'mini:prod',
@@ -39,7 +58,7 @@ try {
   })
 
   assert.equal(route.daemon_key, 'mini:prod')
-  assert.equal(route.session_id, null)
+  assert.equal(route.session_id, 'rollout-status-authority-test')
   assert.equal(route.tmux_session, null)
 
   const daemonRoster = store.getAgentsByDaemonKey('mini:prod')
@@ -116,7 +135,7 @@ try {
   })
   assert.equal(rosterSummary.agents[0].daemon_key, 'mini:prod')
 
-  console.log('ok: daemon-key route authority does not require session/tmux fields')
+  console.log('ok: daemon-key route authority requires durable session identity')
 } finally {
   store?.close?.()
   fs.rmSync(dir, { recursive: true, force: true })

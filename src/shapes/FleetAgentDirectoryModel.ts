@@ -114,6 +114,8 @@ export type FleetAgentDirectoryRowModel = {
   effort: string
   permission: string
   activityHealth: string
+  notResumable: boolean
+  resumableStatus: string
   hoverTitle: string
 }
 
@@ -129,9 +131,11 @@ export function toFleetAgentDirectoryRow(agent: any): FleetAgentDirectoryRowMode
   const effort = formatFleetAgentEffort(meta.effort, meta.kind)
   const permission = formatFleetAgentPermission(meta)
   const activityHealth = formatFleetAgentActivityHealth(meta)
+  const notResumable = !agent?.human && !agent?.dead && (!agent?.session_id || !agent?.resume_id)
+  const resumableStatus = notResumable ? 'starting · not resumable yet' : ''
   const secsAgo = ts ? (Date.now() - ts) / 1000 : Infinity
   const nameOpacity = secsAgo < 120 ? 1.0 : secsAgo < 600 ? 0.85 : 0.65
-  const hoverTitle = [displayName, machine && `machine: ${machine}`, model && `model: ${model}`, activityHealth && `activity ${activityHealth}`, ago && `seen ${ago}`]
+  const hoverTitle = [displayName, resumableStatus, machine && `machine: ${machine}`, model && `model: ${model}`, activityHealth && `activity ${activityHealth}`, ago && `seen ${ago}`]
     .filter(Boolean)
     .join('  ·  ')
   return {
@@ -150,6 +154,8 @@ export function toFleetAgentDirectoryRow(agent: any): FleetAgentDirectoryRowMode
     effort,
     permission,
     activityHealth,
+    notResumable,
+    resumableStatus,
     hoverTitle,
   }
 }

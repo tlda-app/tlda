@@ -39,6 +39,7 @@ export function createAgentLauncher({
   startupFailureProbeMs = Number(process.env.TLDA_SPAWN_STARTUP_FAILURE_PROBE_MS || 2500),
   liveCodexSessionIdentityResolver = null,
   liveClaudeSessionIdentityResolver = null,
+  bindAgentSeatImpl = bindAgentSeat,
   liveSessionIdentityTimeoutMs = 20_000,
   liveSessionIdentityPollMs = 500,
   liveSessionIdentityNow = Date.now,
@@ -96,7 +97,7 @@ export function createAgentLauncher({
   }) {
     if (!fleetId || !sessionId || !harness || !model || !cwd || !tmuxSession) return false
     const daemonKey = `${machineId}:${activeConfigName}`
-    await bindAgentSeat({
+    const binding = await bindAgentSeatImpl({
       ledger: permissionLedger,
       identity: {
         agentId: fleetId,
@@ -117,6 +118,7 @@ export function createAgentLauncher({
       createdSource: source,
       submit: async (payload) => sendMsg({ type: 'agent-seat', ...payload }),
     })
+    if (binding?.bound !== true) return false
     const localLedger = createLocalAgentLedger(path.join(configDir, 'fleet-daemon.db'))
     try {
       const local = localLedger.get(fleetId)
@@ -470,7 +472,7 @@ export function createAgentLauncher({
       const ledgerRow = launched.fleetId ? permissionLedger.get(launched.fleetId) : null
       const durableSessionId = launched.resumeId || liveIdentity?.sessionId || ledgerRow?.sessionId || sessionId || null
       const durableSessionPath = liveIdentity?.jsonlPath || ledgerRow?.sessionPath || null
-      await emitAgentSeatBinding({
+      const bindingWritten = await emitAgentSeatBinding({
         fleetId: launched.fleetId,
         sessionId: durableSessionId,
         sessionPath: durableSessionPath,
@@ -482,6 +484,24 @@ export function createAgentLauncher({
         agentName,
         source: launched.alreadyAlive ? 'spawn-runtime-already-live' : 'spawn-runtime',
       })
+      if (!bindingWritten) {
+        const terminated = spawnMode === 'respawn'
+          ? false
+          : await terminateExactLaunch(launched.tmuxSession)
+        if (terminated && shouldWriteLedgerRow) await permissionLedger.delete(preallocatedAgentId).catch(() => {})
+        return {
+          ok: false,
+          name: agentName,
+          agent_id: launched.fleetId,
+          tmux_session: launched.tmuxSession,
+          code: 'missing-resume-handle',
+          reason: 'missing-resume-handle',
+          error: terminated
+            ? 'spawn launcher could not persist a durable resume handle at session start; exact process terminated'
+            : 'spawn launcher could not persist a durable resume handle at session start; ownership retained because exact process could not be terminated',
+          ownership_retained: !terminated,
+        }
+      }
       if (!preallocatedAgentId || launched.fleetId !== preallocatedAgentId) {
         await permissionLedger.set(launched.fleetId, {
           spawnPolicy: grant.spawnPolicy,

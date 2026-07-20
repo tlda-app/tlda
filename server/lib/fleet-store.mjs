@@ -353,7 +353,7 @@ export class FleetStore {
 
       CREATE TABLE IF NOT EXISTS agent_current_seats (
         agent_id TEXT PRIMARY KEY,
-        session_id TEXT,
+        session_id TEXT NOT NULL,
         machine_id TEXT NOT NULL,
         env_name TEXT NOT NULL,
         daemon_key TEXT NOT NULL,
@@ -605,7 +605,7 @@ export class FleetStore {
       );
       CREATE TABLE IF NOT EXISTS agent_current_seats (
         agent_id TEXT PRIMARY KEY,
-        session_id TEXT,
+        session_id TEXT NOT NULL,
         machine_id TEXT NOT NULL,
         env_name TEXT NOT NULL,
         daemon_key TEXT NOT NULL,
@@ -950,13 +950,13 @@ export class FleetStore {
     const cols = this.db.prepare('PRAGMA table_info(agent_current_seats)').all();
     const sessionCol = cols.find(c => c.name === 'session_id');
     const tmuxCol = cols.find(c => c.name === 'tmux_session');
-    if (sessionCol?.notnull === 0 && tmuxCol?.notnull === 0) return;
+    if (sessionCol?.notnull === 1 && tmuxCol?.notnull === 0) return;
 
     this.db.exec(`
       ALTER TABLE agent_current_seats RENAME TO agent_current_seats_old;
       CREATE TABLE agent_current_seats (
         agent_id TEXT PRIMARY KEY,
-        session_id TEXT,
+        session_id TEXT NOT NULL,
         machine_id TEXT NOT NULL,
         env_name TEXT NOT NULL,
         daemon_key TEXT NOT NULL,
@@ -973,7 +973,13 @@ export class FleetStore {
       SELECT
         agent_id, session_id, machine_id, env_name, daemon_key, tmux_session,
         activated_at, activated_by_event_id, transition_reason
-      FROM agent_current_seats_old;
+      FROM agent_current_seats_old
+      WHERE session_id IS NOT NULL AND session_id != ''
+        AND EXISTS (
+          SELECT 1 FROM agent_seats s
+          WHERE s.agent_id = agent_current_seats_old.agent_id
+            AND s.session_id = agent_current_seats_old.session_id
+        );
       DROP TABLE agent_current_seats_old;
       CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_current_seats_tmux_endpoint
         ON agent_current_seats(daemon_key, tmux_session)
@@ -1085,7 +1091,7 @@ export class FleetStore {
              c.machine_id, c.env_name, c.daemon_key, c.tmux_session,
              c.activated_at, c.activated_by_event_id, c.transition_reason
       FROM agent_current_seats c
-      LEFT JOIN agent_seats s ON s.agent_id = c.agent_id AND s.session_id = c.session_id
+      JOIN agent_seats s ON s.agent_id = c.agent_id AND s.session_id = c.session_id
       WHERE c.agent_id = ?
     `);
     this._getCurrentEndpointOwner = this.db.prepare('SELECT * FROM agent_current_seats WHERE daemon_key = ? AND tmux_session = ?');
@@ -1680,14 +1686,18 @@ export class FleetStore {
     if (!agentId || !machineId || !envName || !daemonKey) {
       throw new Error('activateAgentSeat requires agentId, machineId, envName, and daemonKey');
     }
+    if (!sessionId) {
+      throw new Error(`activateAgentSeat requires durable sessionId for ${agentId}`);
+    }
     const seat = this._getAgentSeat.get(agentId);
-    if (sessionId) {
-      if (!seat) throw new Error(`cannot activate missing agent seat ${agentId}/${sessionId}`);
-      if (seat.session_id !== sessionId) {
-        throw new Error(`seat identity conflict for ${agentId}: session_id: existing=${seat.session_id} incoming=${sessionId}`);
-      }
+    if (!seat) throw new Error(`cannot activate missing agent seat ${agentId}/${sessionId}`);
+    if (seat.session_id !== sessionId) {
+      throw new Error(`seat identity conflict for ${agentId}: session_id: existing=${seat.session_id} incoming=${sessionId}`);
     }
     const current = this.getCurrentAgentSeat(agentId);
+    if (current && current.session_id !== sessionId) {
+      throw new Error(`current seat identity conflict for ${agentId}: session_id: existing=${current.session_id} incoming=${sessionId}`);
+    }
     const endpointOwner = tmuxSession ? this._getCurrentEndpointOwner.get(daemonKey, tmuxSession) : null;
     if (endpointOwner && endpointOwner.agent_id !== agentId) {
       throw new Error(`current tmux endpoint ${daemonKey}/${tmuxSession} already belongs to ${endpointOwner.agent_id}`);

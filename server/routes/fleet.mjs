@@ -1002,6 +1002,18 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
         `⚠ ${SERVER_OWNER_NAME} unquoted a file path that isn't on your machine: ${paths}. Fix the reference (the file may be at a different path) and re-send — that link is rendering dead in chat.`
       )
     }
+    const markdownRenderIssues = Array.isArray(result.markdownRenderIssues) ? result.markdownRenderIssues : []
+    if (markdownRenderIssues.length && typeof fleetStore?.chat === 'function') {
+      for (const fileIssue of markdownRenderIssues) {
+        const fileLabel = fileIssue.name || path.basename(fileIssue.path || 'markdown file')
+        const issues = Array.isArray(fileIssue.issues) ? fileIssue.issues : []
+        fleetStore.chat(
+          SERVER_OWNER_ID,
+          agentId,
+          `⚠ ${SERVER_OWNER_NAME} unquoted a shared markdown file that won't render properly: ${fileLabel}. The problem is in the file, not the chat wrapper. Edit the markdown file; the shared surface should update from the file:\n${issues.map(l => `- ${l}`).join('\n')}`
+        )
+      }
+    }
 
     // Patch the stored event: replace `rawText` (with or without backticks) in the text,
     // and merge new inline_attachments into the event's metadata.

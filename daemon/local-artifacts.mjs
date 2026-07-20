@@ -1,7 +1,9 @@
 import { execFile } from 'child_process'
 import fs from 'fs'
+import path from 'path'
 import { promisify } from 'util'
 import { resolveFilePath, uploadFileToServer } from '../shared/chat-file-processing.mjs'
+import { checkChatRender } from '../shared/chat-render-check.mjs'
 import { MATERIALIZATION_MAX_BYTES, materializeAttachmentBytes } from '../shared/inbox-reference-materialization.mjs'
 import { processMessageText } from '../shared/message-processing.mjs'
 
@@ -17,7 +19,32 @@ export function createLocalArtifacts({ getServerUrl, getFleetServerUrl }) {
 
   async function rechat({ text, cwd, server_url }) {
     const serverBase = server_url || getServerUrl()
-    return await processMessageText(text, cwd, serverBase)
+    const result = await processMessageText(text, cwd, serverBase)
+    const markdownRenderIssues = []
+    for (const att of result.inlineAttachments || []) {
+      const name = String(att?.name || att?.path || '')
+      if (att?.broken || !att?.path || !/\.(?:md|markdown)$/i.test(name)) continue
+      try {
+        const body = fs.readFileSync(att.path, 'utf8')
+        const { validity } = checkChatRender(body)
+        if (validity.length) {
+          markdownRenderIssues.push({
+            id: att.id,
+            name: att.name || path.basename(att.path),
+            path: att.path,
+            issues: validity,
+          })
+        }
+      } catch (e) {
+        markdownRenderIssues.push({
+          id: att.id,
+          name: att.name || path.basename(att.path),
+          path: att.path,
+          issues: [`Could not read markdown file for render check: ${e.message}`],
+        })
+      }
+    }
+    return { ...result, markdownRenderIssues }
   }
 
   async function materializeAttachment({ event_id, attachment_id, source_agent, server_url, url, name, size, sha256 }) {

@@ -1849,6 +1849,16 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
   padding: 0 4px;
   white-space: nowrap;
 }
+.fleet-agents-shape .fleet-agents-detail-not-resumable,
+.fleet-agents-shape .fleet-agents-not-resumable {
+  flex-shrink: 0;
+  opacity: 0.72;
+  color: #d79a62;
+  background: rgba(215, 154, 98, 0.12);
+  border-radius: 2px;
+  padding: 0 4px;
+  white-space: nowrap;
+}
 .fleet-agents-shape .fleet-agents-detail-seen {
   flex-shrink: 0;
   opacity: 0.45;

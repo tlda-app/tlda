@@ -2781,28 +2781,16 @@ export async function runFleetSpawn(spawnArgs, {
       throw new Error(`fresh Codex prompt delivery was unverified and exact durable binding did not complete for ${result.fleetId}${failureStage ? ` (identity stage: ${failureStage})` : ''}`)
     }
     if ((spawnMode === 'fresh' || spawnMode === 'session') && !boundResume.bound) {
-      if (boundResume.reason === 'exact-identity-pending') {
-        try {
-          await createLifecycleSeatBindingObligation(result, {
-            api: apiImpl,
-            cwd,
-            name,
-          })
-        } catch (error) {
-          if (error?.status && error.status < 500) {
-            await cleanupFailedBindingImpl(result, { api: apiImpl, localAgentLedgerPath })
-          }
-          throw error
-        }
-      }
-      console.log(`Spawn pending durable seat binding for ${result.fleetId}; completion will follow the durable binding event`)
-      return
+      await cleanupFailedBindingImpl(result, { api: apiImpl, localAgentLedgerPath })
+      if (!suppliedAgentId && preallocatedAgentId) await ledger.delete(preallocatedAgentId)
+      const failureStage = boundResume.diagnostics?.failureStage
+      throw new Error(`session start failed for ${result.fleetId}: durable resume handle was not persisted${failureStage ? ` (identity stage: ${failureStage})` : ''}`)
     }
     if (!boundResume.bound && (boundResume.submitError || boundResume.readError)) {
       throw boundResume.submitError || boundResume.readError
     }
     if (result?.harness === 'codex' && result.fleetId && result.tmuxSession && !boundResume.bound) {
-      console.error(red(`warning: launched ${name || result.fleetId}, but could not bind a Codex resume identity yet; wake may fail until daemon session ingestion catches up`))
+      throw new Error(`session start failed for ${result.fleetId}: durable resume handle was not persisted`)
     }
     const shouldPersistGrant = params.spawnMode !== 'respawn' || params.explicitPolicy
     if (shouldPersistGrant && (!preallocatedAgentId || result.fleetId !== preallocatedAgentId)) {

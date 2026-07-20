@@ -448,8 +448,6 @@ function FleetAgentsInner({ shape }: { shape: any }) {
 
   // Optimistic spawn cards — transient per-device state, not shared.
   const [optimisticAgents, setOptimisticAgents] = useState<OptimisticAgent[]>([])
-  // Timeout handles keyed by optimisticId — allows cancellation on reconciliation or error.
-  const optimisticTimeouts = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
   // Stable ref for agents so submitSpawn can read the current list without
   // taking agents as a dep (it changes frequently and would re-create the callback).
   const agentsRef = useRef<any[]>(agents)
@@ -474,8 +472,6 @@ function FleetAgentsInner({ shape }: { shape: any }) {
           return !existingSet.has(a.id) && formatFleetAgentModel(a.metadata?.model) === formatFleetAgentModel(opt.model)
         })
         if (matched) {
-          const tid = optimisticTimeouts.current.get(opt.optimisticId)
-          if (tid != null) { clearTimeout(tid); optimisticTimeouts.current.delete(opt.optimisticId) }
           changed = true
           return false
         }
@@ -485,10 +481,6 @@ function FleetAgentsInner({ shape }: { shape: any }) {
     })
   }, [agents])
 
-  // Cancel all pending timeouts when this component unmounts.
-  useEffect(() => () => {
-    for (const tid of optimisticTimeouts.current.values()) clearTimeout(tid)
-  }, [])
   const [sortKey, setSortKey] = useState<SortKey>('active')
   const [sortAsc, setSortAsc] = useState(false)
 
@@ -562,21 +554,12 @@ function FleetAgentsInner({ shape }: { shape: any }) {
     }
     setOptimisticAgents(prev => [...prev, optimistic])
 
-    // Safety: drop the card after 30s if reconciliation never happens.
-    const safeTid = setTimeout(() => {
-      setOptimisticAgents(prev => prev.filter(o => o.optimisticId !== optimisticId))
-      optimisticTimeouts.current.delete(optimisticId)
-    }, 30_000)
-    optimisticTimeouts.current.set(optimisticId, safeTid)
-
     spawnAgent(effectiveModel || undefined, doc || currentDoc || undefined, name, options)
       .catch((e: any) => {
         const message = String(e?.message || e || 'Spawn failed')
         setSpawnError(message)
         spawnInputRef.current?.focus()
         // Mark the card errored — persists until dismissed or retried by the user.
-        const existing = optimisticTimeouts.current.get(optimisticId)
-        if (existing != null) { clearTimeout(existing); optimisticTimeouts.current.delete(optimisticId) }
         setOptimisticAgents(prev => prev.map(o =>
           o.optimisticId === optimisticId
             ? { ...o, status: 'error' as const, errorMessage: message }
@@ -763,24 +746,15 @@ function FleetAgentsInner({ shape }: { shape: any }) {
                   opt={item.opt}
                   onStartDrag={startDrag}
                   onDismiss={() => {
-                    const tid = optimisticTimeouts.current.get(item.opt.optimisticId)
-                    if (tid != null) { clearTimeout(tid); optimisticTimeouts.current.delete(item.opt.optimisticId) }
                     setOptimisticAgents(prev => prev.filter(o => o.optimisticId !== item.opt.optimisticId))
                   }}
                   onRetry={() => {
                     setOptimisticAgents(prev => prev.map(o =>
                       o.optimisticId === item.opt.optimisticId ? { ...o, status: 'spawning' as const, errorMessage: undefined } : o
                     ))
-                    const safeTid = setTimeout(() => {
-                      setOptimisticAgents(prev => prev.filter(o => o.optimisticId !== item.opt.optimisticId))
-                      optimisticTimeouts.current.delete(item.opt.optimisticId)
-                    }, 30_000)
-                    optimisticTimeouts.current.set(item.opt.optimisticId, safeTid)
                     spawnAgent(item.opt.model || undefined, item.opt.doc, item.opt.name, item.opt.modelOptions || (item.opt.effort ? { effort: item.opt.effort } : {}))
                       .catch((e: any) => {
                         const msg = String(e?.message || e || 'Spawn failed')
-                        const ex = optimisticTimeouts.current.get(item.opt.optimisticId)
-                        if (ex != null) { clearTimeout(ex); optimisticTimeouts.current.delete(item.opt.optimisticId) }
                         setOptimisticAgents(prev => prev.map(o =>
                           o.optimisticId === item.opt.optimisticId ? { ...o, status: 'error' as const, errorMessage: msg } : o
                         ))

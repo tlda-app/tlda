@@ -75,25 +75,16 @@ export async function runWakeRouteLifecycle({
   if (!ownerDaemon || ownerDaemon.readyState !== 1) throw new Error(`No fleet-daemon connected for ${daemonKey}`)
 
   const serverAlive = isAgentAlive(agentId)
-  const liveness = serverAlive
-    ? await sendRpcResilient(daemonKey, 'check-alive', { agent_id: agentId, session_id: seat.session_id, tmux_session: seat.tmux_session })
-      .then(result => livenessFromCheckAliveResult(agentId, seat.tmux_session, result))
-      .catch(e => ({
-        type: 'agent-liveness',
-        agent_id: agentId,
-        tmux_session: seat.tmux_session,
-        state: 'unknown',
-        reason: e.message,
-        ts: new Date().toISOString(),
-      }))
-    : {
-        type: 'agent-liveness',
-        agent_id: agentId,
-        tmux_session: seat.tmux_session,
-        state: 'unknown',
-        reason: 'server liveness says hibernating',
-        ts: new Date().toISOString(),
-      }
+  const liveness = await sendRpcResilient(daemonKey, 'check-alive', { agent_id: agentId, session_id: seat.session_id, tmux_session: seat.tmux_session })
+    .then(result => livenessFromCheckAliveResult(agentId, seat.tmux_session, result))
+    .catch(e => ({
+      type: 'agent-liveness',
+      agent_id: agentId,
+      tmux_session: seat.tmux_session,
+      state: 'unknown',
+      reason: e.message,
+      ts: new Date().toISOString(),
+    }))
   spawnLibrarian.observeLiveness({ ...liveness, agent_id: liveness.agent_id || agentId })
   recordRuntimeLiveness({ ...liveness, agent_id: liveness.agent_id || agentId })
   if (traceId) {
@@ -108,7 +99,7 @@ export async function runWakeRouteLifecycle({
     })
   }
 
-  const decision = spawnLibrarian.decideWake(agent, { ...liveness, agent_id: liveness.agent_id || agentId }, { serverAlive })
+  const decision = spawnLibrarian.decideWake(agent, { ...liveness, agent_id: liveness.agent_id || agentId }, { serverAlive: serverAlive || liveness.state === 'alive' })
   if (traceId) {
     await recordWakeAttempt({
       agentId,
