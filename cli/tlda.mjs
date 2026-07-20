@@ -2078,7 +2078,7 @@ async function cmdMoveProject() {
   const sourceDir = resolve(project.sourceDir)
   const projectWorlds = readProjectWorlds(projectWorldsPath(CONFIG_DIR))
   const sourceConfig = projectWorlds[sourceDir] || selectedConfig
-  if (sourceConfig === targetConfig) throw new Error(`Project "${name}" is already in ${targetConfig}.`)
+  const alreadyOwned = sourceConfig === targetConfig
   if (sourceConfig !== selectedConfig) {
     const source = cfg.configs?.[sourceConfig]
     if (!source || typeof source.store !== 'string') throw new Error(`Recorded source config "${sourceConfig}" is missing.`)
@@ -2087,7 +2087,7 @@ async function cmdMoveProject() {
   if (!existsSync(sourceDir)) throw new Error(`Project source directory does not exist: ${sourceDir}`)
   const targetServer = target.store.replace(/\/+$/, '')
   if (hasFlag('dry-run')) {
-    console.log(`[dry-run] would move project "${name}" from ${sourceConfig} to ${targetConfig}`)
+    console.log(`[dry-run] would ${alreadyOwned ? 'ensure' : 'move'} project "${name}" ${alreadyOwned ? `in ${targetConfig}` : `from ${sourceConfig} to ${targetConfig}`}`)
     console.log(`  working directory stays: ${sourceDir}`)
     console.log(`  daemon ownership becomes: ${targetConfig}`)
     console.log(`  target viewer: ${targetServer}/?doc=${encodeURIComponent(name)}`)
@@ -2119,7 +2119,7 @@ async function cmdMoveProject() {
     env: daemonEnv,
   })
 
-  console.log(green(`Moved project "${name}" from ${sourceConfig} to ${targetConfig}.`))
+  console.log(green(`${alreadyOwned ? 'Confirmed' : 'Moved'} project "${name}" ${alreadyOwned ? `in ${targetConfig}` : `from ${sourceConfig} to ${targetConfig}`}.`))
   console.log(dim(`  Working directory unchanged: ${sourceDir}`))
   console.log(dim(`  Daemon ownership: ${targetConfig}`))
   console.log(dim(`  Target viewer: ${targetServer}/?doc=${encodeURIComponent(name)}`))
