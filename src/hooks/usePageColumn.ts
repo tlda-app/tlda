@@ -537,7 +537,7 @@ export function usePageColumn(
           const id = s.id as string
           const shouldDelete =
             id.startsWith('shape:shadow-col-handle-') ||
-            (/^shape:col-\d+-shadow-/.test(id) && !('compareRef' in s.props) && !('compareHash7' in s.props))
+            /^shape:col-\d+-shadow-/.test(id)
           if (shouldDelete) {
             if (s.isLocked) editor.updateShape({ id: s.id, type: s.type, isLocked: false })
             editor.deleteShapes([s.id])
