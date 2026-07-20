@@ -24,6 +24,7 @@ import {
 import { laneDy, layoutOffset } from './fleet-layout-geometry'
 import { planFleetLayoutShapes, type FleetLayoutVariant } from './fleet-layout-plan'
 import type { FleetChatFilter } from './fleet-layout-seeding'
+import { enterFleetLayoutMode, withFleetLayoutSelectionIntent } from '../overlays/fleet-layout-mode'
 
 export {
   FLEET_INTERACTION_SHAPE_SELECTOR,
@@ -54,7 +55,6 @@ export { planFleetLayoutShapes, type FleetLayoutPlan, type FleetLayoutShapePlan,
 export { defaultFleetLayoutChatFilters, type FleetChatFilter } from './fleet-layout-seeding'
 
 const nativeSnapModeStack = new WeakMap<Editor, boolean[]>()
-
 export function beginNativeSnapDrag(editor: Editor) {
   const stack = nativeSnapModeStack.get(editor) ?? []
   stack.push(editor.user.getIsSnapMode())
@@ -240,11 +240,13 @@ export function forceDeleteShapes(editor: Editor, ids: string[]) {
 /** Enter TLDraw select mode for direct resize/move of a fleet panel. */
 export function selectFleetShapeForLayout(editor: Editor, shape: TLShape) {
   if (shape.isLocked) editor.updateShape({ id: shape.id, type: shape.type, isLocked: false })
-  editor.setCurrentTool('select')
-  editor.select(shape.id)
-  if (typeof document !== 'undefined' && FLEET_SHAPE_TYPES.has(shape.type as string)) {
-    document.body.classList.add('fleet-hud-fleet-selected')
-  }
+  withFleetLayoutSelectionIntent(shape.id, () => {
+    editor.setCurrentTool('select')
+    editor.select(shape.id)
+    if (typeof document !== 'undefined' && FLEET_SHAPE_TYPES.has(shape.type as string)) {
+      enterFleetLayoutMode()
+    }
+  })
 }
 
 /**

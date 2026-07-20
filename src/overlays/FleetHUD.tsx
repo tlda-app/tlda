@@ -9,7 +9,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { react } from 'tldraw'
-import type { Editor, TLAnyShapeUtilConstructor, TLShape, TLStateNodeConstructor } from 'tldraw'
+import type { Editor, TLAnyShapeUtilConstructor, TLShape, TLShapeId, TLStateNodeConstructor } from 'tldraw'
 import { CanvasClipPanel, syncCanvasClipPanelViewportCamera, type ClipBounds } from '../CanvasClipPanel'
 import { useFleetIdentity } from '../fleet-data-adapter'
 // @ts-ignore — vanilla JS module
@@ -36,6 +36,7 @@ import { getEditorWMCore } from '../wm/editor-wm'
 import { FLEET_HUD_RESET_EVENT, FLEET_HUD_TOGGLE_EVENT, setHudEditor } from '../wm/editor-host-bridge'
 import { readFleetHudExpanded, resolveFleetHudToggle, writeFleetHudExpanded } from '../wm/fleet-hud-state'
 import { probe } from '../perf-probe'
+import { consumeFleetLayoutSelectionIntent, enterFleetLayoutMode, exitFleetLayoutMode, fleetLayoutActiveRef } from './fleet-layout-mode'
 import './FleetHUD.css'
 
 declare global {
@@ -87,11 +88,6 @@ function saveAnchorOffsets(editor: Editor, panOffset: number, cameraY: number) {
  *  getShapeVisibility on the main editor to hide fleet shapes from
  *  hit-testing (they're rendered by the overlay instead). */
 export const fleetHudOpenRef = { current: false }
-
-/** True when layout mode is active (fleet shapes are selectable/draggable).
- *  Read by BrowseIdle's _deselHandler to skip selectNone during layout.
- *  Separate from the CSS class to avoid circular dependency. */
-export const fleetLayoutActiveRef = { current: false }
 
 interface FleetHUDProps {
   mainEditor: Editor
@@ -306,12 +302,61 @@ export function FleetHUD({
   const hudRef = useRef<HTMLDivElement>(null)
   const draggingRef = useRef(false)
   const overlayEditorRef = useRef<Editor | null>(null)
+  const layoutStoreEditorRef = useRef<Editor | null>(null)
+  const layoutStoreUnsubRef = useRef<(() => void) | null>(null)
   const viewportId = FLEET_HUD_VIEWPORT_ID
   const hudWm = useMemo(() => {
     const wm = getEditorWMCore(mainEditor)
     ensureFleetHudLayers(wm)
     return wm
   }, [mainEditor])
+
+  const reconcileLayoutActiveForSelection = useCallback((editor: Editor, selectedShapeIds: readonly TLShapeId[]) => {
+    const selectedFleetIds = selectedShapeIds.filter(id => {
+      const s = editor.getShape(id)
+      return s && FLEET_SHAPE_TYPES.has(s.type as string)
+    })
+    const hasFleetSelected = selectedFleetIds.length > 0
+    const hasLayoutIntent = consumeFleetLayoutSelectionIntent(selectedFleetIds)
+    if (hasFleetSelected && (fleetLayoutActiveRef.current || hasLayoutIntent)) {
+      enterFleetLayoutMode()
+    } else if (hasFleetSelected) {
+      document.body.classList.remove('fleet-hud-fleet-selected')
+    } else {
+      exitFleetLayoutMode()
+    }
+  }, [])
+
+  const reconcileLayoutActive = useCallback((editor: Editor) => {
+    reconcileLayoutActiveForSelection(editor, editor.getSelectedShapeIds())
+  }, [reconcileLayoutActiveForSelection])
+
+  const attachLayoutStoreListener = useCallback((editor: Editor) => {
+    if (layoutStoreEditorRef.current === editor) return
+    layoutStoreUnsubRef.current?.()
+    layoutStoreEditorRef.current = editor
+    layoutStoreUnsubRef.current = editor.store.listen(({ changes }) => {
+      for (const [, next] of Object.values(changes.updated)) {
+        if (next.typeName === 'instance_page_state' && 'selectedShapeIds' in next) {
+          reconcileLayoutActiveForSelection(editor, next.selectedShapeIds)
+          return
+        }
+        if (next.typeName === 'instance' && 'brush' in next && next.brush === null) {
+          requestAnimationFrame(() => reconcileLayoutActive(editor))
+          return
+        }
+      }
+    }, { scope: 'session', source: 'all' })
+    reconcileLayoutActive(editor)
+  }, [reconcileLayoutActive, reconcileLayoutActiveForSelection])
+
+  useEffect(() => {
+    return () => {
+      layoutStoreUnsubRef.current?.()
+      layoutStoreUnsubRef.current = null
+      layoutStoreEditorRef.current = null
+    }
+  }, [])
   const hudAnchorRef = useRef<FleetHudAnchor | null>(null)
   const hudBaseCameraRef = useRef<{ x: number; y: number; z: number }>(mainEditor.getCamera())
   const lastHudDiagSigRef = useRef('')
@@ -960,30 +1005,6 @@ export function FleetHUD({
     const el = hudRef.current
     if (!el) return
 
-    const checkSelection = () => {
-      const editor = overlayEditorRef.current
-      if (!editor) return
-      const hasFleetSelected = editor.getSelectedShapeIds().some(id => {
-        const s = editor.getShape(id as any)
-        return s && FLEET_SHAPE_TYPES.has(s.type as string)
-      })
-      if (hasFleetSelected) {
-        // ADD immediately — user selected a fleet shape, enable interaction
-        fleetLayoutActiveRef.current = true
-        el.classList.add('hud-layout-active')
-        document.body.classList.add('fleet-hud-fleet-selected')
-      } else {
-        document.body.classList.remove('fleet-hud-fleet-selected')
-      }
-      // Removal is handled by BrowseIdle.onEnter.
-      // Removing from this listener races with TLDraw's state machine and
-      // kills pointer-events mid-interaction.
-    }
-
-    // Poll via RAF until overlayEditorRef is set, then switch to store listener
-    let rafId: number
-    let unsub: (() => void) | null = null
-    const onPointerUp = () => checkSelection()
     // HACK: Safety valve — if pointer-events:none was restored mid-drag
     // (e.g. class removed by a React re-render), TLDraw never sees pointerup
     // and stays stuck in brushing/pointing_canvas with isPointing=true.
@@ -1006,31 +1027,14 @@ export function FleetHUD({
         metaKey: e.metaKey, button: e.button, buttons: e.buttons,
       } as any)
     }
-    const trySubscribe = () => {
-      if (overlayEditorRef.current) {
-        checkSelection()
-        unsub = react('fleet-hud-fleet-selection-class', checkSelection)
-        el.addEventListener('pointerup', onPointerUp, true)
-        window.addEventListener('pointerup', onWindowPointerUp, true)
-      } else {
-        rafId = requestAnimationFrame(trySubscribe)
-      }
-    }
-    trySubscribe()
+    window.addEventListener('pointerup', onWindowPointerUp, true)
 
     return () => {
-      cancelAnimationFrame(rafId)
-      unsub?.()
-      el.removeEventListener('pointerup', onPointerUp, true)
       window.removeEventListener('pointerup', onWindowPointerUp, true)
-      // Only clear layout mode when the HUD is actually closing (expanded going false).
-      if (!expanded) {
-        fleetLayoutActiveRef.current = false
-        el.classList.remove('hud-layout-active')
-      }
+      exitFleetLayoutMode()
       document.body.classList.remove('fleet-hud-fleet-selected')
     }
-  }, [expanded])
+  }, [expanded, reconcileLayoutActive])
 
   useEffect(() => {
     if (!expanded) return
@@ -1245,6 +1249,13 @@ export function FleetHUD({
           onEditorMount={(e) => {
             overlayEditorRef.current = e
             setHudEditor(e)
+            if (e) {
+              attachLayoutStoreListener(e)
+            } else {
+              layoutStoreUnsubRef.current?.()
+              layoutStoreUnsubRef.current = null
+              layoutStoreEditorRef.current = null
+            }
           }}
           className="fleet-hud"
         />

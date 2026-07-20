@@ -31,7 +31,7 @@ import {
   getHitShapeOnCanvasPointerDown,
   startEditingShapeWithRichText,
 } from 'tldraw'
-import { fleetLayoutActiveRef } from '../../overlays/FleetHUD'
+import { exitFleetLayoutMode, fleetLayoutActiveRef } from '../../overlays/fleet-layout-mode'
 import { getOnSourceClick } from '../../stores'
 import { getHumanId } from '../../fleet/fleet-data.mjs'
 import { FLEET_SHAPE_TYPES } from '../../shapes/fleet-utils'
@@ -187,10 +187,7 @@ export class BrowseIdle extends StateNode {
         return s && FLEET_TYPES.has(s.type)
       })
       if (!hasFleetSelected) {
-        fleetLayoutActiveRef.current = false
-        const wrap = this.editor.getContainer().closest('.fleet-hud-wrap') as HTMLElement
-        wrap?.classList.remove('hud-layout-active')
-        document.body.classList.remove('fleet-hud-fleet-selected')
+        exitFleetLayoutMode()
       }
     }
 
