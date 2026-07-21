@@ -6,7 +6,7 @@ import path from 'path'
 
 import { recordPartialSkillReads } from '../shared/partial-skill-reads.mjs'
 import { ledgerSessionId, tailLedgerSessionInput } from '../agent-runtime/ledger-session-tail.mjs'
-import { scanFileIdentitySync, scanFileOwnersSync } from '../agent-runtime/daemon-jsonl-hot-path.mjs'
+import { scanFileIdentitySync } from '../agent-runtime/daemon-jsonl-hot-path.mjs'
 import {
   codexKnownRolloutIds,
   shouldClaimClaudeWatcher,
@@ -368,13 +368,11 @@ export function createJsonlIngestor({
   function claudeOwnersForSessionFile(sessionId, jsonlPath) {
     const entry = cursors[sessionId]
     if (entry?.classified) return entry.owners || []
-    try {
-      const scanned = scanFileOwnersSync(jsonlPath)
-      recordSessionOwners(sessionId, scanned.owners, { jsonlPath, persistIdentity: false })
-      return scanned.owners || []
-    } catch {
-      return []
-    }
+    // Never byte-scan an unclassified rollout on the daemon's event loop. A
+    // restart can expose thousands of files; doing this here starves the fleet
+    // WebSocket heartbeat and makes the live UI disappear. The niced harvester
+    // performs classification off-process and schedules one resync afterward.
+    return []
   }
 
   function indexClaudeJsonlsByOwner() {
@@ -429,6 +427,7 @@ export function createJsonlIngestor({
         })
       } else if (msg?.type === 'harvest-complete') {
         log.info(`owner harvest complete: ${msg.count} session(s) classified`)
+        scheduleJsonlDirSync('owner harvest complete')
       }
     })
     _ownerHarvester.on('exit', () => { _ownerHarvester = null })

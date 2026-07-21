@@ -286,7 +286,10 @@ export function resolveLeasePolicy({ spawnPolicy, permissionSet = null, harness,
   if (!SANDBOX_POLICIES.has(policyName)) throw new Error(`sandbox policy "${policyName}" is not valid`)
   const explicitPermissionSet = permissionSet && typeof permissionSet === 'object' && !Array.isArray(permissionSet)
   if (explicitPermissionSet) validateExplicitPermissionSet(permissionSet)
-  if (policyName === 'unsandboxed' && !explicitPermissionSet) return { policyName, devTools: true, leasePolicy: null }
+  // "unsandboxed" is a machine-level execution grant, not a broad filesystem
+  // fence. Any sandbox-exec wrapper still blocks normal user operations such as
+  // launchctl service management even when its path rules allow the whole disk.
+  if (policyName === 'unsandboxed') return { policyName, devTools: true, leasePolicy: null }
   if (policyName === 'no-dev') return { policyName, devTools: false, leasePolicy: null }
 
   const workspace = abs(cwd || process.cwd())
@@ -407,7 +410,16 @@ export function resolveLaunchPolicy({
   const effectivePermissionMode = permissionClassifierDisabled(config, env)
     ? 'bypassPermissions'
     : (permissionMode ?? mode ?? undefined)
-  const harnessOptions = resolveHarnessLaunchOptions({ harness, harnessOptions: resolvedHarnessOptions })
+  let harnessOptions = resolveHarnessLaunchOptions({ harness, harnessOptions: resolvedHarnessOptions })
+  if (leaseResolution.policyName === 'unsandboxed' && String(harness || '').trim().toLowerCase() === 'codex' && !harnessOptions.yolo) {
+    harnessOptions = resolveHarnessLaunchOptions({
+      harness,
+      harnessOptions: {
+        ...harnessOptions,
+        required: [...harnessOptions.required, '--dangerously-bypass-approvals-and-sandbox'],
+      },
+    })
+  }
   // Security comes from the applied grant (a fence) or the harness's own controls.
   // A genuinely wide-open launch (no fence, no controls) must be acknowledged
   // explicitly by the caller — no silent auto-waiver. Whether the classifier is
@@ -416,7 +428,7 @@ export function resolveLaunchPolicy({
   const launchSecurity = assertLaunchHasSecurity({
     leasePolicy: leaseResolution.leasePolicy,
     harnessOptions,
-    acknowledgeNoSecurity,
+    acknowledgeNoSecurity: acknowledgeNoSecurity || leaseResolution.policyName === 'unsandboxed',
     harness,
   })
   return {
