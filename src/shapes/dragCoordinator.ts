@@ -63,7 +63,13 @@ export const dragCoordinator = {
   claim(onMove: (e: PointerEvent) => void, onUp: (e: PointerEvent) => void, onCancel?: () => void) {
     installListeners()
     active?.onCancel?.()
-    active = { onMove, onUp, onCancel }
+    const handlers = { onMove, onUp, onCancel }
+    active = handlers
+    return () => {
+      if (active !== handlers) return
+      active = null
+      handlers.onCancel?.()
+    }
   },
 
   /** Release the active drag (idempotent). */

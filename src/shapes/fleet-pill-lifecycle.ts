@@ -1,3 +1,5 @@
+import { markFleetPillInactive } from './fleet-pill-transient'
+
 export type FleetPillSnapState = {
   deltaX: number
   deltaY: number
@@ -32,6 +34,7 @@ export function finishFleetPillTranslation(
   snapState.lines = []
 
   const deleteIfPresent = () => {
+    markFleetPillInactive(String(pillId))
     if (editor.getShape(pillId)) editor.deleteShapes([pillId])
   }
   if (options.deferDelete) queueMicrotask(deleteIfPresent)

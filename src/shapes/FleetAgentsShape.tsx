@@ -20,6 +20,7 @@ import { useState, useCallback, useMemo, useRef, useEffect, memo, forwardRef, us
 import { Virtuoso } from 'react-virtuoso'
 import { useFleetAgents, useFleetAgentTotals, useFleetTasks, useFleetUnreadCounts, useFleetContext, useFleetProjects, useFleetIdentity, searchFleet, hibernateSession, spawnAgent, loadNextAgentsPage } from '../fleet-data-adapter'
 import { dropPillOnTarget } from './FleetPillShape'
+import { markFleetPillActive, markFleetPillInactive, transientFleetPillProps } from './fleet-pill-transient'
 import { agentDisplayLabel, agentExactName, beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import { dragCoordinator } from './dragCoordinator'
@@ -259,11 +260,13 @@ export function usePillDrag() {
   const viewportId = useVisibilityViewportId()
   const frame = useMemo(() => fleetInteractionFrame(viewportId), [viewportId])
   const dragRef = useRef<DragState | null>(null)
+  const releaseRef = useRef<null | (() => void)>(null)
 
   const cancelDrag = useCallback(() => {
     const drag = dragRef.current
     dragRef.current = null
     if (drag?.pillId) {
+      markFleetPillInactive(String(drag.pillId))
       editor.run(() => {
         const id = drag.pillId as TLShapeId
         if (editor.getShape(id)) editor.deleteShapes([id])
@@ -287,7 +290,7 @@ export function usePillDrag() {
 
     // Claim the shared drag coordinator — one global listener pair handles
     // move/up events, eliminating capture-phase registration races.
-    dragCoordinator.claim(
+    releaseRef.current = dragCoordinator.claim(
       // onMove
       (ev: PointerEvent) => {
         const drag = dragRef.current
@@ -315,10 +318,11 @@ export function usePillDrag() {
               type: 'fleet-pill' as any,
               x: pagePos.x - pw / 2,
               y: pagePos.y - ph / 2,
-              props: { w: pw, h: ph, pillType: drag.pillType, value: drag.value, displayName: drag.displayName, color: drag.color },
+              props: transientFleetPillProps({ w: pw, h: ph, pillType: drag.pillType, value: drag.value, displayName: drag.displayName, color: drag.color }),
             })
           }, { history: 'ignore' })
           drag.pillId = pillId as unknown as string
+          markFleetPillActive(String(pillId))
           editor.cancel()
           return
         }
@@ -343,6 +347,7 @@ export function usePillDrag() {
         const drag = dragRef.current
         dragRef.current = null
         if (!drag || !drag.started || !drag.pillId) return
+        markFleetPillInactive(String(drag.pillId))
 
         const pagePos = fleetPointerEventPagePoint(editor, frame, ev)
         dropPillOnTarget(editor, drag.pillId as any, drag.value, pagePos)
@@ -353,6 +358,12 @@ export function usePillDrag() {
       cancelDrag,
     )
   }, [cancelDrag, editor, frame])
+
+  useEffect(() => () => {
+    releaseRef.current?.()
+    releaseRef.current = null
+    cancelDrag()
+  }, [cancelDrag])
 
   return { startDrag }
 }

@@ -21,6 +21,7 @@ function serverBase(): string {
 }
 import { openInEditor } from './texsync'
 import { dropPillOnTarget } from './shapes/FleetPillShape'
+import { markFleetPillActive, markFleetPillInactive, transientFleetPillProps } from './shapes/fleet-pill-transient'
 import { dragCoordinator } from './shapes/dragCoordinator'
 import { FLEET_HUD_VIEWPORT_ID } from './wm/fleet-hud-layer'
 import { fleetInteractionFrame, fleetPointerEventPagePoint } from './wm/fleet-interaction-frame'
@@ -1143,10 +1144,11 @@ function showSourceContextCard(
                 type: 'fleet-pill' as any,
                 x: pagePos.x,
                 y: pagePos.y,
-                props: { w: 80, h: 18, pillType: 'highlight', value: shapeId, displayName: displayText, color: '#e8a030' },
+                props: transientFleetPillProps({ w: 80, h: 18, pillType: 'highlight', value: shapeId, displayName: displayText, color: '#e8a030' }),
               })
             }, { history: 'ignore' })
             dragState.pillId = pillId as unknown as string
+            markFleetPillActive(String(pillId))
             pillEditor.cancel()
             // Animate card shrinking into pill, then remove
             Object.assign(card.style, {
@@ -1170,6 +1172,7 @@ function showSourceContextCard(
         (ev: PointerEvent) => {
           if (dragState?.pillId) {
             const pillId = dragState.pillId as TLShapeId
+            markFleetPillInactive(String(pillId))
             const dropPoint = fleetPointerEventPagePoint(pillEditor, frame, ev)
             dropPillOnTarget(pillEditor, pillId, token, dropPoint, token)
             pillEditor.run(() => {
@@ -1182,6 +1185,7 @@ function showSourceContextCard(
         () => {
           const pillId = dragState?.pillId as TLShapeId | undefined
           dragState = null
+          if (pillId) markFleetPillInactive(String(pillId))
           if (pillId && pillEditor.getShape(pillId)) {
             pillEditor.run(() => { pillEditor.deleteShapes([pillId]) }, { history: 'ignore' })
           }

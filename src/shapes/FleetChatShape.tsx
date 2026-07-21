@@ -58,6 +58,7 @@ import { ChatComposer } from './ChatComposer'
 import { PrettyName } from './PrettyName'
 import { dragCoordinator } from './dragCoordinator'
 import { cancelDragBeforeRelease } from './fleet-pill-lifecycle'
+import { markFleetPillActive, markFleetPillInactive, transientFleetPillProps } from './fleet-pill-transient'
 import { DocContext, PanelContext } from '../PanelContext'
 import { getPageRenderHash, getBuiltPageCount } from '../stores'
 import { loadLookup, type LookupData } from '../synctexLookup'
@@ -5260,6 +5261,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       const drag = dragRef.current
       dragRef.current = null
       if (drag?.pillId) {
+        markFleetPillInactive(String(drag.pillId))
         const mainEditor = (window as TldrawEditorWindow).__tldraw_editor__
         const onMain = !!drag._onMain
         const deleteEditor = onMain && mainEditor ? mainEditor : editor
@@ -5286,13 +5288,13 @@ function FleetChatInner({ shape }: { shape: any }) {
           type: 'fleet-pill' as any,
           x: pagePos.x - 35,
           y: pagePos.y - 9,
-          props: {
+          props: transientFleetPillProps({
             w: 70, h: 18,
             pillType: drag.pillType,
             value: drag.value,
             displayName: drag.displayName,
             color: drag.color,
-          },
+          }),
           meta: {
             ...(drag.sourceAgent ? { sourceAgent: drag.sourceAgent } : {}),
             ...(drag.filePath ? { filePath: drag.filePath } : {}),
@@ -5300,6 +5302,7 @@ function FleetChatInner({ shape }: { shape: any }) {
           },
         })
         drag.pillId = pillId as unknown as string
+        markFleetPillActive(String(pillId))
         // Reset tldraw's state machine via API — avoids cancelling the real pointer stream.
         editor.cancel()
       }
@@ -5336,13 +5339,13 @@ function FleetChatInner({ shape }: { shape: any }) {
               type: 'fleet-pill' as any,
               x: mainPos.x - 5,
               y: mainPos.y - 5,
-              props: {
+              props: transientFleetPillProps({
                 w: 10, h: 10,
                 pillType: drag.pillType,
                 value: drag.value,
                 displayName: drag.displayName,
                 color: drag.color,
-              },
+              }),
               meta: {
                 ...(drag.sourceAgent ? { sourceAgent: drag.sourceAgent } : {}),
                 ...(drag.filePath ? { filePath: drag.filePath } : {}),
@@ -5359,13 +5362,13 @@ function FleetChatInner({ shape }: { shape: any }) {
               type: 'fleet-pill' as any,
               x: panelPos.x - 35,
               y: panelPos.y - 9,
-              props: {
+              props: transientFleetPillProps({
                 w: 70, h: 18,  // chip form inside panel
                 pillType: drag.pillType,
                 value: drag.value,
                 displayName: drag.displayName,
                 color: drag.color,
-              },
+              }),
             })
             drag._onMain = false
           } else if (onMain) {
@@ -5427,6 +5430,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       }
       downTargetEl = null
       if (!drag.pillId) return
+      markFleetPillInactive(String(drag.pillId))
 
       const onMain = !!drag._onMain
       const mainEditor = (window as TldrawEditorWindow).__tldraw_editor__

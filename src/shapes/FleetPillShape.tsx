@@ -34,6 +34,7 @@ import {
 import { filterPreviewForDropRole, inferFleetFilterDropRole } from './fleet-filter-drop-preview'
 import { editorOwningFleetShape } from './fleet-pill-drop-target'
 import { finishFleetPillTranslation } from './fleet-pill-lifecycle'
+import { markFleetPillActive, markFleetPillInactive } from './fleet-pill-transient'
 
 const PILL_W = 70
 const PILL_H = 18
@@ -578,6 +579,10 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
     value: T.string,
     displayName: T.string,
     color: T.string,
+    userId: T.optional(T.string),
+    deviceId: T.optional(T.string),
+    createdAt: T.optional(T.number),
+    ephemeral: T.optional(T.boolean),
   }
 
   getDefaultProps() {
@@ -588,6 +593,10 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
       value: '',
       displayName: '',
       color: '#7a9ec8',
+      userId: '',
+      deviceId: '',
+      createdAt: 0,
+      ephemeral: true,
     }
   }
 
@@ -601,6 +610,7 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
 
   // Auto-delete orphaned pills that were created but never dragged
   override onTranslateStart = (shape: TLShape) => {
+    markFleetPillActive(String(shape.id))
     // Clear any pending auto-delete since the user is actively dragging
     const timerId = (this as any).__autoDeleteTimers?.get(shape.id)
     if (timerId) clearTimeout(timerId)
@@ -675,6 +685,7 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
   }
 
   override onTranslateEnd = (_initial: TLShape, current: TLShape) => {
+    markFleetPillInactive(String(current.id))
     const editor = this.editor
     const pill = current as any
 

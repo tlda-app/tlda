@@ -199,6 +199,10 @@ const customShapeSchemas = {
       value: T.string,
       displayName: T.string,
       color: T.string,
+      userId: T.optional(T.string),
+      deviceId: T.optional(T.string),
+      createdAt: T.optional(T.number),
+      ephemeral: T.optional(T.boolean),
     },
     migrations: createMigrationSequence({
       sequenceId: 'com.tldraw.shape.fleet-pill',

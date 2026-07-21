@@ -31,6 +31,7 @@ import { FleetAgentsShapeUtil } from './shapes/FleetAgentsShape'
 import { FleetDocViewShapeUtil } from './shapes/FleetDocViewShape'
 import { DocClipShapeUtil } from './shapes/DocClipShape'
 import { FleetPillShapeUtil } from './shapes/FleetPillShape'
+import { installFleetPillReclaimer } from './shapes/fleet-pill-transient'
 import { FleetSearchShapeUtil } from './shapes/FleetSearchShape'
 import { FleetInboxShapeUtil } from './shapes/FleetInboxShape'
 import { FleetNotificationsShapeUtil } from './shapes/FleetNotificationsShape'
@@ -1205,8 +1206,9 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
         overrides={overrides}
         getShapeVisibility={getShapeVisibility}
         onMount={(editor) => {
+          const cleanupFleetPillReclaimer = installFleetPillReclaimer(editor)
           // Expose editor for debugging/puppeteer access
-          (window as unknown as { __tldraw_editor__: Editor }).__tldraw_editor__ = editor
+          ;(window as unknown as { __tldraw_editor__: Editor }).__tldraw_editor__ = editor
           editorRef.current = editor
           installLivePerfProbe(editor, document, roomId, {
             getSyncStatus: () => ({
@@ -1584,6 +1586,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
               if (changedPages.size > 0) dismissAllChanges()
             })
           }
+          return cleanupFleetPillReclaimer
         }}
         components={components}
         forceMobile
