@@ -501,7 +501,11 @@ function trackWs(ws, meta) {
       ws._wsLastInputAt = Date.now()
     })
   } else {
-    ws.on('message', () => { ws._wsLastInputAt = Date.now() })
+    ws.on('message', () => {
+      const now = Date.now()
+      ws._wsLastInputAt = now
+      if (ws._wsKind === 'fleet') ws._wsLastPongAt = now
+    })
   }
   const cleanup = () => {
     recordServerPerfEvent('ws-cleanup', {
@@ -630,7 +634,8 @@ setInterval(() => {
   }
   for (const ws of _trackedWs) {
     if (ws.readyState !== 1) continue
-    if (shouldTerminateForMissedPong(ws._wsLastPongAt, ws._wsLastPingAt, now, WS_HEARTBEAT_INTERVAL_MS)) {
+    const heartbeatIntervalMs = ws._wsKind === 'fleet' ? WS_HEARTBEAT_INTERVAL_MS * 2 : WS_HEARTBEAT_INTERVAL_MS
+    if (shouldTerminateForMissedPong(ws._wsLastPongAt, ws._wsLastPingAt, now, heartbeatIntervalMs)) {
       console.log(`[heartbeat] terminating unresponsive ${ws._wsKind} ws=${ws._wsSessionId} doc=${ws._wsDocName || '-'}`)
       recordServerPerfEvent('heartbeat-terminate', {
         kind: ws._wsKind,
