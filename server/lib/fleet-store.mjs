@@ -26,7 +26,7 @@ import { createLiveStore } from '../../shared/live-store.ts';
 import { PSEUDO_LABELS, parseFilter, evalExpr, evalExprDirectional, labelsForAgent } from '../../shared/fleet-labels.mjs';
 import { baseName, nameForPhase, phaseFromName, ALL_PHASES, prettyNameForFriendlyName } from '../../shared/lineage-name.mjs';
 import { literalFtsQuery } from '../../shared/fts-query.mjs';
-import { isRuntimeAwake } from '../../shared/fleet-runtime-status.mjs';
+import { fleetRosterCategory, isRuntimeAwake } from '../../shared/fleet-runtime-status.mjs';
 import { createTaskDocMaterializer } from './task-doc-materializer.mjs';
 import { projectAgentRuntimeStatus } from './agent-runtime-status.mjs';
 
@@ -2210,7 +2210,7 @@ export class FleetStore {
     const totals = { awake: 0, hibernating: 0, total: 0 };
     for (const agent of this._aliveAgentRosterView.list) {
       totals.total += 1;
-      if (isRuntimeAwake(agent)) totals.awake += 1;
+      if (fleetRosterCategory(agent) === 'awake') totals.awake += 1;
       else totals.hibernating += 1;
     }
     return totals;

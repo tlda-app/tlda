@@ -1,6 +1,12 @@
-import { activityHealthForProjection, formatActivityHealthStatus } from '../../shared/activity-health.mjs'
+import {
+  ACTIVITY_HEALTH_BOUNDARIES,
+  activityHealthForProjection,
+  formatActivityHealthAge,
+  activityHealthLastKnownGoodAgeMs,
+  isActivityHealthOk,
+} from '../../shared/activity-health.mjs'
 // @ts-ignore - vanilla JS module
-import { runtimeStatusName } from '../../shared/fleet-runtime-status.mjs'
+import { fleetRosterCategory } from '../../shared/fleet-runtime-status.mjs'
 // @ts-ignore - vanilla JS module
 import { pretty_name_plain_text } from '../../shared/pretty_name.mjs'
 
@@ -27,10 +33,8 @@ export function fleetAgentLabelColor(name: string): string {
 }
 
 export function fleetAgentCategory(agent: any): 'awake' | 'hibernating' {
-  const status = runtimeStatusName(agent)
-  if (status === 'human') return 'awake'
-  if (status === 'human-away') return 'hibernating'
-  return status === 'awake' ? 'awake' : 'hibernating'
+  const category = fleetRosterCategory(agent)
+  return category === 'awake' ? 'awake' : 'hibernating'
 }
 
 export function formatFleetAgentModel(model: string | null | undefined): string {
@@ -77,8 +81,22 @@ export function formatFleetAgentRelativeTime(ts: number | undefined): string {
   return `${Math.floor(delta / 86400_000)}d`
 }
 
+export function formatFleetAgentUserActivityHealth(health: any): string {
+  if (!health || isActivityHealthOk(health)) return ''
+  if (health.boundary === ACTIVITY_HEALTH_BOUNDARIES.NO_TMUX) return ''
+  const age = formatActivityHealthAge(activityHealthLastKnownGoodAgeMs(health))
+  return `activity unavailable:${age}`
+}
+
 export function formatFleetAgentActivityHealth(meta: any): string {
-  return formatActivityHealthStatus(activityHealthForProjection(meta || {}), { idleText: '' })
+  return formatFleetAgentUserActivityHealth(activityHealthForProjection(meta || {}))
+}
+
+export function formatFleetAgentActivityHealthForAgent(agent: any): string {
+  if (agent?.human) return ''
+  return formatFleetAgentUserActivityHealth(activityHealthForProjection(agent?.metadata || {}, agent?.runtime_status || null, {
+    allowRoutableNoTmuxSuppression: true,
+  }))
 }
 
 export function fleetAgentDisplayLabel(agent: any): string {
@@ -131,7 +149,7 @@ export function toFleetAgentDirectoryRow(agent: any): FleetAgentDirectoryRowMode
   const model = formatFleetAgentModel(meta.model)
   const effort = formatFleetAgentEffort(meta.effort, meta.kind)
   const permission = formatFleetAgentPermission(meta)
-  const activityHealth = formatFleetAgentActivityHealth(meta)
+  const activityHealth = formatFleetAgentActivityHealthForAgent(agent)
   const notResumable = !agent?.human && !agent?.dead && (!agent?.session_id || !agent?.resume_id)
   const resumableStatus = notResumable ? 'starting · not resumable yet' : ''
   const secsAgo = ts ? (Date.now() - ts) / 1000 : Infinity

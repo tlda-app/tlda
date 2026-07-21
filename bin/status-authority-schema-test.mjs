@@ -6,14 +6,21 @@ import path from 'node:path'
 import Database from 'better-sqlite3'
 import { FleetStore } from '../server/lib/fleet-store.mjs'
 import { AgentSeatBindingObligations } from '../server/lib/agent-seat-binding-obligations.mjs'
+import { filteredFleetRosterPage } from '../server/routes/fleet.mjs'
 import { summarizeFleetRosterTruth } from '../server/lib/fleet-roster-truth.mjs'
 import { agentsForTerminalWatchResume } from '../server/lib/terminal-watch-resume.mjs'
+import { evalExpr, labelsForAgent, parseFilter } from '../shared/fleet-labels.mjs'
 import {
   LIVENESS,
   RUNTIME_STATUS,
   ROUTE_STATE,
   projectAgentRuntimeStatus,
 } from '../server/lib/agent-runtime-status.mjs'
+import {
+  ACTIVITY_HEALTH_BOUNDARIES,
+  ACTIVITY_HEALTH_UNAVAILABLE,
+} from '../shared/activity-health.mjs'
+import { fleetRosterCategory } from '../shared/fleet-runtime-status.mjs'
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-status-authority-'))
 const dbPath = path.join(dir, 'fleet.db')
@@ -198,17 +205,104 @@ try {
     roster: [{
       ...agent,
       runtime_status: activityDriven,
-      metadata: { status: { state: 'tool_call', tool: 'inbox' } },
+      metadata: {
+        status: { state: 'tool_call', tool: 'inbox' },
+        activityHealth: {
+          state: ACTIVITY_HEALTH_UNAVAILABLE,
+          boundary: ACTIVITY_HEALTH_BOUNDARIES.NO_TMUX,
+          ts: new Date(nowMs - 60_000).toISOString(),
+          lastKnownGoodAt: new Date(nowMs - 60_000).toISOString(),
+        },
+      },
     }],
     matched: [{
       ...agent,
       runtime_status: activityDriven,
-      metadata: { status: { state: 'tool_call', tool: 'inbox' } },
+      metadata: {
+        status: { state: 'tool_call', tool: 'inbox' },
+        activityHealth: {
+          state: ACTIVITY_HEALTH_UNAVAILABLE,
+          boundary: ACTIVITY_HEALTH_BOUNDARIES.NO_TMUX,
+          ts: new Date(nowMs - 60_000).toISOString(),
+          lastKnownGoodAt: new Date(nowMs - 60_000).toISOString(),
+        },
+      },
     }],
     machineSessions: { 'mini:prod': [] },
     now: nowMs,
   })
   assert.equal(rosterSummary.agents[0].daemon_key, 'mini:prod')
+  assert.equal(rosterSummary.agents[0].activity_health, null)
+  assert.deepEqual(rosterSummary.totals, {
+    awake: 1,
+    hibernating: 0,
+    dead: 0,
+    total: 1,
+  })
+  assert.deepEqual(rosterSummary.machines.find(m => m.machine_id === 'mini:prod').registry, {
+    awake: 1,
+    hibernating: 0,
+    dead: 0,
+    total: 1,
+  })
+
+  const disconnectedHealthSummary = summarizeFleetRosterTruth({
+    roster: [{
+      ...agent,
+      runtime_status: daemonMissing,
+      metadata: {
+        activityHealth: {
+          state: ACTIVITY_HEALTH_UNAVAILABLE,
+          boundary: ACTIVITY_HEALTH_BOUNDARIES.NO_TMUX,
+          ts: new Date(nowMs - 60_000).toISOString(),
+          lastKnownGoodAt: new Date(nowMs - 60_000).toISOString(),
+        },
+      },
+    }],
+    matched: [{
+      ...agent,
+      runtime_status: daemonMissing,
+      metadata: {
+        activityHealth: {
+          state: ACTIVITY_HEALTH_UNAVAILABLE,
+          boundary: ACTIVITY_HEALTH_BOUNDARIES.NO_TMUX,
+          ts: new Date(nowMs - 60_000).toISOString(),
+          lastKnownGoodAt: new Date(nowMs - 60_000).toISOString(),
+        },
+      },
+    }],
+    now: nowMs,
+  })
+  assert.equal(disconnectedHealthSummary.agents[0].activity_health.boundary, ACTIVITY_HEALTH_BOUNDARIES.NO_TMUX)
+
+  const otherHealthSummary = summarizeFleetRosterTruth({
+    roster: [{
+      ...agent,
+      runtime_status: activityDriven,
+      metadata: {
+        activityHealth: {
+          state: ACTIVITY_HEALTH_UNAVAILABLE,
+          boundary: ACTIVITY_HEALTH_BOUNDARIES.WATCH_RUNTIME_ERROR,
+          ts: new Date(nowMs - 60_000).toISOString(),
+          lastKnownGoodAt: new Date(nowMs - 60_000).toISOString(),
+        },
+      },
+    }],
+    matched: [{
+      ...agent,
+      runtime_status: activityDriven,
+      metadata: {
+        activityHealth: {
+          state: ACTIVITY_HEALTH_UNAVAILABLE,
+          boundary: ACTIVITY_HEALTH_BOUNDARIES.WATCH_RUNTIME_ERROR,
+          ts: new Date(nowMs - 60_000).toISOString(),
+          lastKnownGoodAt: new Date(nowMs - 60_000).toISOString(),
+        },
+      },
+    }],
+    now: nowMs,
+  })
+  assert.equal(otherHealthSummary.agents[0].activity_health.boundary, ACTIVITY_HEALTH_BOUNDARIES.WATCH_RUNTIME_ERROR)
 
   store.upsertAgent({
     id: 'fleet:stale-legacy-route',
@@ -263,6 +357,196 @@ try {
   assert.equal(staleRosterSummary.agents[0].daemon_key, 'unassigned')
   assert(!Object.hasOwn(staleRosterSummary.agents[0], 'tmux_session'))
   assert.equal(staleRosterSummary.machines.find(m => m.machine_id === 'legacy:prod').registry.total, 0)
+
+  store.upsertAgent({
+    id: 'fleet:skip-test-human',
+    friendly_name: 'skip-test-human',
+    labels: [],
+    registered_at: new Date(0).toISOString(),
+    last_seen: new Date(nowMs).toISOString(),
+    dead: false,
+    human: true,
+    is_manager: false,
+    metadata: {
+      activityHealth: {
+        state: ACTIVITY_HEALTH_UNAVAILABLE,
+        boundary: ACTIVITY_HEALTH_BOUNDARIES.NO_TMUX,
+        reason: 'human rows must not display daemon health',
+      },
+    },
+  })
+  const humanPageRows = store.getAliveAgentsPage({ limit: 10 }).agents
+  assert(humanPageRows.some(a => a.id === 'fleet:skip-test-human' && a.human))
+  const apiAgentsPopulation = humanPageRows.map(a => a.id).sort()
+  assert.deepEqual(store.getAliveAgentCounts(), {
+    awake: 1,
+    hibernating: 2,
+    total: 3,
+  })
+  const fleetTableSummary = summarizeFleetRosterTruth({
+    roster: humanPageRows,
+    matched: humanPageRows,
+    now: nowMs,
+  })
+  const humanRosterSummary = summarizeFleetRosterTruth({
+    roster: humanPageRows,
+    matched: humanPageRows,
+    now: nowMs,
+  })
+  assert.deepEqual(fleetTableSummary.agents.map(a => a.id).sort(), apiAgentsPopulation)
+  assert.deepEqual(humanRosterSummary.agents.map(a => a.id).sort(), apiAgentsPopulation)
+  assert.deepEqual(fleetTableSummary.totals, { ...store.getAliveAgentCounts(), dead: 0 })
+  assert.deepEqual(humanRosterSummary.totals, fleetTableSummary.totals)
+  assert.deepEqual(
+    humanPageRows.map(a => [a.id, fleetRosterCategory(a)]).sort(),
+    humanRosterSummary.agents.map(a => [a.id, a.status === 'human' || a.status === 'awake' ? 'awake' : 'hibernating']).sort()
+  )
+  const awakeFilter = parseFilter('awake')
+  const hibernatingFilter = parseFilter('hibernating')
+  const awakeRows = humanPageRows.filter(a => evalExpr(awakeFilter, labelsForAgent(a)))
+  const hibernatingRows = humanPageRows.filter(a => evalExpr(hibernatingFilter, labelsForAgent(a)))
+  assert(awakeRows.some(a => a.id === 'fleet:skip-test-human'))
+  assert(!hibernatingRows.some(a => a.id === 'fleet:skip-test-human'))
+  assert.deepEqual(awakeRows.map(a => a.id).sort(), ['fleet:skip-test-human'])
+  assert.deepEqual(hibernatingRows.map(a => a.id).sort(), [
+    'fleet:stale-legacy-route',
+    'fleet:status-authority-test',
+  ])
+  const awakeFleetTableSummary = summarizeFleetRosterTruth({
+    roster: humanPageRows,
+    matched: awakeRows,
+    now: nowMs,
+  })
+  const hibernatingFleetTableSummary = summarizeFleetRosterTruth({
+    roster: humanPageRows,
+    matched: hibernatingRows,
+    now: nowMs,
+  })
+  assert.deepEqual(awakeFleetTableSummary.totals, fleetTableSummary.totals)
+  assert.deepEqual(hibernatingFleetTableSummary.totals, fleetTableSummary.totals)
+  assert.equal(awakeFleetTableSummary.matched, awakeRows.length)
+  assert.equal(hibernatingFleetTableSummary.matched, hibernatingRows.length)
+  assert.deepEqual(awakeFleetTableSummary.agents.map(a => a.id), ['fleet:skip-test-human'])
+  assert(!hibernatingFleetTableSummary.agents.some(a => a.id === 'fleet:skip-test-human'))
+  function endpointRosterProjection({ filter = '', limit = 1 } = {}) {
+    const roster = store.getAliveAgents()
+    const filterAst = parseFilter(filter)
+    const page = filteredFleetRosterPage(roster, {
+      filterAst,
+      labelsForRow: labelsForAgent,
+      limit,
+    })
+    return {
+      ...summarizeFleetRosterTruth({
+        roster,
+        matched: page.rows,
+        limit,
+        now: nowMs,
+      }),
+      matched: page.matched,
+      nextCursor: page.nextCursor,
+    }
+  }
+  const oneRowAll = endpointRosterProjection({ limit: 1 })
+  assert.deepEqual(oneRowAll.totals, {
+    awake: 1,
+    hibernating: 2,
+    dead: 0,
+    total: 3,
+  })
+  assert.equal(oneRowAll.shown, 1)
+  assert.equal(oneRowAll.matched, 3)
+  const oneRowAwake = endpointRosterProjection({ filter: 'awake', limit: 1 })
+  assert.deepEqual(oneRowAwake.totals, oneRowAll.totals)
+  assert.equal(oneRowAwake.matched, 1)
+  assert.deepEqual(oneRowAwake.agents.map(a => a.id), ['fleet:skip-test-human'])
+  assert.equal(oneRowAwake.nextCursor, null)
+  const oneRowHibernating = endpointRosterProjection({ filter: 'hibernating', limit: 1 })
+  assert.deepEqual(oneRowHibernating.totals, oneRowAll.totals)
+  assert.equal(oneRowHibernating.matched, 2)
+  assert(!oneRowHibernating.agents.some(a => a.id === 'fleet:skip-test-human'))
+  assert(oneRowHibernating.nextCursor)
+  const hibernatingSecondPage = filteredFleetRosterPage(store.getAliveAgents(), {
+    filterAst: hibernatingFilter,
+    labelsForRow: labelsForAgent,
+    limit: 1,
+    cursor: oneRowHibernating.nextCursor,
+  })
+  assert.equal(hibernatingSecondPage.matched, 2)
+  assert.equal(hibernatingSecondPage.rows.length, 1)
+  assert.notEqual(hibernatingSecondPage.rows[0].id, oneRowHibernating.agents[0].id)
+  assert(!hibernatingSecondPage.rows.some(a => a.id === 'fleet:skip-test-human'))
+  const interleavedRows = [
+    {
+      id: 'fleet:older-runtime-awake',
+      friendly_name: 'older-runtime-awake',
+      human: false,
+      dead: false,
+      last_seen: '2026-07-21T00:00:10.000Z',
+      runtime_status: { status: 'awake' },
+      metadata: {},
+    },
+    {
+      id: 'fleet:newer-hibernating',
+      friendly_name: 'newer-hibernating',
+      human: false,
+      dead: false,
+      last_seen: '2026-07-21T00:00:30.000Z',
+      runtime_status: { status: 'hibernating' },
+      metadata: {},
+    },
+    {
+      id: 'fleet:middle-human',
+      friendly_name: 'middle-human',
+      human: true,
+      dead: false,
+      last_seen: '2026-07-21T00:00:20.000Z',
+      metadata: {},
+    },
+  ]
+  const interleavedAwakePage = filteredFleetRosterPage(interleavedRows, {
+    filterAst: awakeFilter,
+    labelsForRow: labelsForAgent,
+    limit: 1,
+  })
+  assert.equal(interleavedAwakePage.matched, 2)
+  assert.deepEqual(interleavedAwakePage.rows.map(a => a.id), ['fleet:middle-human'])
+  assert(interleavedAwakePage.nextCursor)
+  const interleavedAwakePage2 = filteredFleetRosterPage(interleavedRows, {
+    filterAst: awakeFilter,
+    labelsForRow: labelsForAgent,
+    limit: 1,
+    cursor: interleavedAwakePage.nextCursor,
+  })
+  assert.equal(interleavedAwakePage2.matched, 2)
+  assert.deepEqual(interleavedAwakePage2.rows.map(a => a.id), ['fleet:older-runtime-awake'])
+  assert.equal(interleavedAwakePage2.nextCursor, null)
+  const interleavedHumanPage = filteredFleetRosterPage(interleavedRows, {
+    filterAst: parseFilter('human'),
+    labelsForRow: labelsForAgent,
+    limit: 1,
+  })
+  assert.equal(interleavedHumanPage.matched, 1)
+  assert.deepEqual(interleavedHumanPage.rows.map(a => a.id), ['fleet:middle-human'])
+  const humanRosterRow = humanRosterSummary.agents.find(a => a.id === 'fleet:skip-test-human')
+  assert(humanRosterRow)
+  assert.equal(humanRosterRow.status, 'human')
+  assert.equal(humanRosterRow.activity_health, null)
+  assert.deepEqual(humanRosterSummary.totals, {
+    awake: 1,
+    hibernating: 2,
+    dead: 0,
+    total: 3,
+  })
+  const rosterMachineTotals = humanRosterSummary.machines.reduce((acc, machine) => {
+    acc.awake += machine.registry.awake
+    acc.hibernating += machine.registry.hibernating
+    acc.dead += machine.registry.dead
+    acc.total += machine.registry.total
+    return acc
+  }, { awake: 0, hibernating: 0, dead: 0, total: 0 })
+  assert.deepEqual(rosterMachineTotals, humanRosterSummary.totals)
+  assert.equal(humanRosterSummary.machines.find(m => m.machine_id === 'unassigned').registry.awake, 1)
 
   const terminalResume = agentsForTerminalWatchResume({
     watchedAgentIds: ['fleet:stale-legacy-route', 'fleet:routed-watch'],

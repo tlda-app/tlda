@@ -164,7 +164,9 @@ export function activityHealthIncidentDecision(incidents = {}, agent, health) {
   }
 }
 
-export function activityHealthForProjection(metadata = {}) {
+export function activityHealthForProjection(metadata = {}, runtimeStatus = null, {
+  allowRoutableNoTmuxSuppression = false,
+} = {}) {
   const health = metadata?.activityHealth || null
   const incidents = metadata?.activityHealthIncidents && typeof metadata.activityHealthIncidents === 'object'
     ? Object.values(metadata.activityHealthIncidents)
@@ -172,11 +174,18 @@ export function activityHealthForProjection(metadata = {}) {
       .sort((a, b) => Date.parse(b.raisedAt || 0) - Date.parse(a.raisedAt || 0))
     : []
   const incident = incidents[0]
-  if (!incident) return health
-  return {
+  const projected = incident ? {
     ...(health || {}),
     state: incident.state || ACTIVITY_HEALTH_UNAVAILABLE,
     boundary: incident.boundary || health?.boundary || ACTIVITY_HEALTH_BOUNDARIES.RESOLVE_JSONL_NULL,
     ts: incident.raisedAt || health?.ts || null,
+  } : health
+  if (
+    allowRoutableNoTmuxSuppression &&
+    projected?.boundary === ACTIVITY_HEALTH_BOUNDARIES.NO_TMUX &&
+    runtimeStatus?.route_state === 'routable'
+  ) {
+    return null
   }
+  return projected
 }

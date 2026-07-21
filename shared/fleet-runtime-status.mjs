@@ -18,6 +18,14 @@ export function isRuntimeAwake(agent) {
   return runtimeStatusName(agent) === 'awake'
 }
 
+export function fleetRosterCategory(agent) {
+  if (agent?.dead) return 'dead'
+  const status = runtimeStatusName(agent)
+  if (status === 'human') return 'awake'
+  if (status === 'human-away') return 'hibernating'
+  return status === 'awake' ? 'awake' : 'hibernating'
+}
+
 export function isRuntimeHibernating(agent) {
   const status = runtimeStatusName(agent)
   return status === 'hibernating' || status === 'human-away'

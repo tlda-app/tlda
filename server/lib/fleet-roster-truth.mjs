@@ -1,5 +1,5 @@
 import { activityHealthForProjection } from '../../shared/activity-health.mjs'
-import { isRuntimeAwake, runtimeStatusName } from '../../shared/fleet-runtime-status.mjs'
+import { fleetRosterCategory, runtimeStatusName } from '../../shared/fleet-runtime-status.mjs'
 
 function agentName(agent) {
   return agent.friendly_name || agent.name || agent.id
@@ -29,16 +29,18 @@ function rowForAgent(agent, now = Date.now()) {
     daemon_key: runtimeRoute?.daemon_key || agentDaemonKey(agent),
     activity: act?.state || null,
     tool: act?.tool || null,
-    activity_health: activityHealthForProjection(agent.metadata || {}),
+    activity_health: agent.human ? null : activityHealthForProjection(agent.metadata || {}, agent.runtime_status || null, {
+      allowRoutableNoTmuxSuppression: true,
+    }),
   }
 }
 
 export function fleetRosterTotals(roster) {
   const totals = { awake: 0, hibernating: 0, dead: 0, total: roster.length }
   for (const agent of roster) {
-    if (agent.dead) totals.dead++
-    else if (isRuntimeAwake(agent)) totals.awake++
-    else totals.hibernating++
+    const category = fleetRosterCategory(agent)
+    if (category === 'dead') totals.dead++
+    else totals[category]++
   }
   return totals
 }
@@ -62,7 +64,7 @@ export function summarizeFleetRosterTruth({
   machineSessions = {},
   now = Date.now(),
 } = {}) {
-  const agentRoster = (roster || []).filter(a => !a.human)
+  const agentRoster = roster || []
   const totals = fleetRosterTotals(agentRoster)
   const capped = Math.max(1, Math.min(Number(limit) || 50, 500))
   const matchedRoster = matched || agentRoster
@@ -94,9 +96,9 @@ export function summarizeFleetRosterTruth({
   for (const agent of agentRoster) {
     const e = entry(agentDaemonKey(agent))
     e.registry.total++
-    if (agent.dead) e.registry.dead++
-    else if (isRuntimeAwake(agent)) e.registry.awake++
-    else e.registry.hibernating++
+    const category = fleetRosterCategory(agent)
+    if (category === 'dead') e.registry.dead++
+    else e.registry[category]++
   }
 
   for (const machineId of Object.keys(machineSessions)) entry(machineId)

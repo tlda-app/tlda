@@ -51,13 +51,16 @@ export function statusLabels(status) {
  */
 export function labelsForAgent(agent) {
   if (!agent) return []
+  const category = fleetRosterCategory(agent)
   const out = [
     ...(agent.labels || []),
-    ...statusLabels(agent.runtime_status?.status),
+    ...statusLabels(runtimeStatusName(agent)),
+    category === 'awake' ? 'awake' : null,
+    category === 'hibernating' ? 'hibernating' : null,
     agent.friendly_name,
     agent.id,
   ]
-  return out.filter(Boolean)
+  return [...new Set(out.filter(Boolean))]
 }
 
 /**
@@ -84,6 +87,7 @@ export function labelsForAgent(agent) {
  * or injection surface.
  */
 
+import { fleetRosterCategory, runtimeStatusName } from './fleet-runtime-status.mjs'
 import { desugarMessageFilter, parseUnifiedFilter } from './unified-filter-grammar.mjs'
 
 /**
