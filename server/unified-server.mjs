@@ -129,6 +129,7 @@ import { buildVoicePipelineSnapshot } from './lib/observability/voice-pipeline.m
 import { createNotificationAttemptRecorder } from './lib/notification-attempts.mjs'
 import { daemonEventFailureIncident } from './lib/daemon-event-failures.mjs'
 import { buildDaemonActivityRecord } from './lib/daemon-activity-ingest.mjs'
+import { currentSeatForDaemonEvent } from './lib/daemon-event-route-authority.mjs'
 import { createActivityDeliveryCounters, ACTIVITY_DELIVERY_STAGES } from '../shared/activity-delivery-counters.mjs'
 import {
   ACTIVITY_HEALTH_BOUNDARIES,
@@ -7612,21 +7613,6 @@ async function setSentinelSyncError(projectName, syncError) {
 async function handleDaemonWsMessage(ws, msg) {
   const { type } = msg
 
-  function ensureDaemonEventRoute(agentId, reason) {
-    if (!fleetStore || !agentId || !ws._daemonKey || !ws._machineId || !ws._envName) return null
-    const current = fleetStore.getCurrentAgentSeat?.(agentId)
-    if (current?.daemon_key === ws._daemonKey) return current
-    const agent = fleetStore.getAgent?.(agentId)
-    if (!agent || agent.dead || agent.human) return null
-    return fleetStore.activateAgentSeat({
-      agentId,
-      machineId: ws._machineId,
-      envName: ws._envName,
-      daemonKey: ws._daemonKey,
-      reason,
-    })
-  }
-
   if (type === 'activity-delivery-metrics') {
     const daemonKey = ws._daemonKey || (
       msg.machine_id && msg.env_name ? daemonAddress(msg.machine_id, msg.env_name) : null
@@ -7794,7 +7780,12 @@ async function handleDaemonWsMessage(ws, msg) {
   if (type === 'agent-status') {
     const { agentId, state, tool, ts } = msg
     if (!agentId || !state || !fleetStore) return
-    ensureDaemonEventRoute(agentId, 'daemon-agent-status')
+    const currentSeat = currentSeatForDaemonEvent(fleetStore, {
+      agentId,
+      daemonKey: ws._daemonKey,
+      family: 'daemon-agent-status',
+    })
+    if (!currentSeat) return
     fleetStore.updateAgentStatus?.(agentId, state, tool, ts)
     // Display feed only — no liveness publishing (see the identical rule on
     // the WS agent-status handler above).
@@ -7814,8 +7805,12 @@ async function handleDaemonWsMessage(ws, msg) {
       ])
       const batchTs = ts || new Date().toISOString()
       for (const id of checkedIds) {
-        const seat = ensureDaemonEventRoute(id, 'daemon-liveness-batch') || fleetStore?.getCurrentAgentSeat?.(id)
-        if (!seat || seat.daemon_key !== ws._daemonKey) continue
+        const seat = currentSeatForDaemonEvent(fleetStore, {
+          agentId: id,
+          daemonKey: ws._daemonKey,
+          family: 'daemon-liveness-batch',
+        })
+        if (!seat) continue
         const batchState = aliveIds.has(id) ? 'alive' : 'dead'
         spawnLibrarian.observeLiveness({
           type,
@@ -7846,8 +7841,12 @@ async function handleDaemonWsMessage(ws, msg) {
       return
     }
     if (!agent_id || !state) return
-    const currentSeat = ensureDaemonEventRoute(agent_id, 'daemon-agent-liveness') || fleetStore?.getCurrentAgentSeat?.(agent_id)
-    if (!currentSeat || currentSeat.daemon_key !== ws._daemonKey) return
+    const currentSeat = currentSeatForDaemonEvent(fleetStore, {
+      agentId: agent_id,
+      daemonKey: ws._daemonKey,
+      family: 'daemon-agent-liveness',
+    })
+    if (!currentSeat) return
     if (tmux_session && currentSeat.tmux_session && String(tmux_session) !== String(currentSeat.tmux_session)) return
     spawnLibrarian.observeLiveness({ type, agent_id, state, tmux_session, pid, reason, ts })
     if (state === 'alive') {
@@ -7876,8 +7875,12 @@ async function handleDaemonWsMessage(ws, msg) {
   if (type === 'agent-activity') {
     const { agent_id, jsonl_offset, ts } = msg
     if (!agent_id || typeof jsonl_offset !== 'number') return
-    const currentSeat = ensureDaemonEventRoute(agent_id, 'daemon-agent-activity') || fleetStore?.getCurrentAgentSeat?.(agent_id)
-    if (!currentSeat || currentSeat.daemon_key !== ws._daemonKey) return
+    const currentSeat = currentSeatForDaemonEvent(fleetStore, {
+      agentId: agent_id,
+      daemonKey: ws._daemonKey,
+      family: 'daemon-agent-activity',
+    })
+    if (!currentSeat) return
     spawnLibrarian.observeActivity({ type, agent_id, jsonl_offset, ts })
     markAgentAlive(agent_id, Date.parse(ts) || Date.now(), {
       source: 'agent-activity',
@@ -7925,17 +7928,20 @@ async function handleDaemonWsMessage(ws, msg) {
     const serverReceivedAtMs = Date.now()
     const { agent_id, tool, arg, input } = msg
     if (!agent_id) return
-    const currentSeat = ensureDaemonEventRoute(agent_id, 'daemon-activity-event') || fleetStore?.getCurrentAgentSeat?.(agent_id)
-    if (currentSeat?.daemon_key === ws._daemonKey) {
-      markAgentAlive(agent_id, Date.parse(msg.ts) || serverReceivedAtMs, {
-        source: 'daemon-activity-event',
-        tmux_session: currentSeat.tmux_session || null,
-      })
-      runtimeStatusStore.updateActivity(agent_id, tool ? `tool_call:${tool}` : 'activity', {
-        tool,
-        atMs: Date.parse(msg.ts) || serverReceivedAtMs,
-      })
-    }
+    const currentSeat = currentSeatForDaemonEvent(fleetStore, {
+      agentId: agent_id,
+      daemonKey: ws._daemonKey,
+      family: 'daemon-activity-event',
+    })
+    if (!currentSeat) return
+    markAgentAlive(agent_id, Date.parse(msg.ts) || serverReceivedAtMs, {
+      source: 'daemon-activity-event',
+      tmux_session: currentSeat.tmux_session || null,
+    })
+    runtimeStatusStore.updateActivity(agent_id, tool ? `tool_call:${tool}` : 'activity', {
+      tool,
+      atMs: Date.parse(msg.ts) || serverReceivedAtMs,
+    })
     serverActivityDeliveryCounters.record(ACTIVITY_DELIVERY_STAGES.SERVER_ACCEPTED, msg, 1, {
       type: 'activity-event',
       agent: agent_id,

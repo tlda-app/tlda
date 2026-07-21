@@ -1,0 +1,145 @@
+import assert from 'node:assert/strict'
+import fs from 'node:fs'
+
+import {
+  DAEMON_EVENT_ROUTE_FAMILIES,
+  currentSeatForDaemonEvent,
+} from '../server/lib/daemon-event-route-authority.mjs'
+
+const matchingSeat = Object.freeze({
+  agent_id: 'fleet:daemon-route-test',
+  daemon_key: 'mini:prod',
+  session_id: 'rollout-daemon-route-test',
+  tmux_session: 'fleet-daemon-route-test',
+})
+
+for (const family of DAEMON_EVENT_ROUTE_FAMILIES) {
+  let activated = false
+  const noSeatStore = {
+    getCurrentAgentSeat(agentId) {
+      assert.equal(agentId, 'fleet:daemon-route-test')
+      return null
+    },
+    activateAgentSeat() {
+      activated = true
+      throw new Error('daemon event must not activate a current seat')
+    },
+  }
+  assert.equal(currentSeatForDaemonEvent(noSeatStore, {
+    agentId: 'fleet:daemon-route-test',
+    daemonKey: 'mini:prod',
+    family,
+    log: null,
+  }), null)
+  assert.equal(activated, false, `${family} activated a missing current seat`)
+
+  const wrongDaemonStore = {
+    getCurrentAgentSeat(agentId) {
+      assert.equal(agentId, 'fleet:daemon-route-test')
+      return { ...matchingSeat, daemon_key: 'air:prod' }
+    },
+    activateAgentSeat() {
+      activated = true
+      throw new Error('daemon event must not switch a current seat')
+    },
+  }
+  assert.equal(currentSeatForDaemonEvent(wrongDaemonStore, {
+    agentId: 'fleet:daemon-route-test',
+    daemonKey: 'mini:prod',
+    family,
+    log: null,
+  }), null)
+  assert.equal(activated, false, `${family} switched a current seat`)
+
+  const matchingStore = {
+    getCurrentAgentSeat(agentId) {
+      assert.equal(agentId, 'fleet:daemon-route-test')
+      return matchingSeat
+    },
+    activateAgentSeat() {
+      activated = true
+      throw new Error('daemon event must not activate when a seat already matches')
+    },
+  }
+  assert.equal(currentSeatForDaemonEvent(matchingStore, {
+    agentId: 'fleet:daemon-route-test',
+    daemonKey: 'mini:prod',
+    family,
+    log: null,
+  }), matchingSeat)
+  assert.equal(activated, false, `${family} activated despite a matching current seat`)
+}
+
+const serverSource = fs.readFileSync(new URL('../server/unified-server.mjs', import.meta.url), 'utf8')
+const handlerStart = serverSource.indexOf('async function handleDaemonWsMessage')
+assert.notEqual(handlerStart, -1, 'handleDaemonWsMessage source not found')
+const nextHandlerStart = serverSource.indexOf('\nasync function ', handlerStart + 1)
+const handlerSource = serverSource.slice(handlerStart, nextHandlerStart === -1 ? undefined : nextHandlerStart)
+
+assert.equal(handlerSource.includes('ensureDaemonEventRoute'), false, 'daemon handler still references ensureDaemonEventRoute')
+assert.equal(handlerSource.includes('activateAgentSeat'), false, 'daemon handler must not activate seats from daemon events')
+
+function assertOrdered(haystack, needles, label) {
+  let cursor = -1
+  for (const needle of needles) {
+    const index = haystack.indexOf(needle, cursor + 1)
+    assert.notEqual(index, -1, `${label}: missing ${needle}`)
+    assert.ok(index > cursor, `${label}: ${needle} is out of order`)
+    cursor = index
+  }
+}
+
+function branchSource(typeLiteral) {
+  const startNeedle = `if (type === '${typeLiteral}')`
+  const start = handlerSource.indexOf(startNeedle)
+  assert.notEqual(start, -1, `branch ${typeLiteral} not found`)
+  const next = handlerSource.indexOf('\n  if (type === ', start + startNeedle.length)
+  return handlerSource.slice(start, next === -1 ? undefined : next)
+}
+
+const statusBranch = branchSource('agent-status')
+assertOrdered(statusBranch, [
+  'currentSeatForDaemonEvent(fleetStore',
+  "family: 'daemon-agent-status'",
+  'if (!currentSeat) return',
+  'fleetStore.updateAgentStatus',
+  'runtimeStatusStore.updateActivity',
+], 'agent-status branch')
+
+const livenessBranch = branchSource('agent-liveness')
+assertOrdered(livenessBranch, [
+  'currentSeatForDaemonEvent(fleetStore',
+  "family: 'daemon-liveness-batch'",
+  'if (!seat) continue',
+  'spawnLibrarian.observeLiveness',
+  'markAgentAlive',
+], 'agent-liveness batch branch')
+assertOrdered(livenessBranch, [
+  'const currentSeat = currentSeatForDaemonEvent(fleetStore',
+  "family: 'daemon-agent-liveness'",
+  'if (!currentSeat) return',
+  'spawnLibrarian.observeLiveness',
+  'markAgentAlive',
+  'markAgentNotAlive',
+], 'agent-liveness single branch')
+
+const activityBranch = branchSource('agent-activity')
+assertOrdered(activityBranch, [
+  'currentSeatForDaemonEvent(fleetStore',
+  "family: 'daemon-agent-activity'",
+  'if (!currentSeat) return',
+  'spawnLibrarian.observeActivity',
+  'markAgentAlive',
+  'fleetStore.updateHeartbeat',
+], 'agent-activity branch')
+
+const activityEventBranch = branchSource('activity-event')
+assertOrdered(activityEventBranch, [
+  'currentSeatForDaemonEvent(fleetStore',
+  "family: 'daemon-activity-event'",
+  'if (!currentSeat) return',
+  'markAgentAlive',
+  'runtimeStatusStore.updateActivity',
+  'serverActivityDeliveryCounters.record',
+  'fleetStore.share',
+], 'activity-event branch')
