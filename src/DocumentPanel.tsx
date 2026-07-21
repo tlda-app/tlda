@@ -896,6 +896,20 @@ function useVoiceNoteController() {
   return { recording, isPlacing, triggerFromElement }
 }
 
+type VoiceButtonMode = 'dictate-selection' | 'voice-note'
+
+const VOICE_BUTTON_MODE_KEY = 'tlda-phone-voice-button-mode'
+
+function readVoiceButtonMode(): VoiceButtonMode {
+  try {
+    return localStorage.getItem(VOICE_BUTTON_MODE_KEY) === 'dictate-selection'
+      ? 'dictate-selection'
+      : 'voice-note'
+  } catch {
+    return 'voice-note'
+  }
+}
+
 function VoiceNoteButtonInner() {
   const { recording, isPlacing, triggerFromElement } = useVoiceNoteController()
   const btnRef = useRef<HTMLButtonElement>(null)
@@ -906,6 +920,7 @@ function VoiceNoteButtonInner() {
   const [dragging, setDragging] = useState(false)
   const [dragAnchor, setDragAnchor] = useState<DOMRect | null>(null)
   const [dragSlot, setDragSlot] = useState<number | null>(null)
+  const [selectedMode, setSelectedMode] = useState<VoiceButtonMode>(readVoiceButtonMode)
 
   const voiceSlots = useMemo(() => [
     {
@@ -939,6 +954,13 @@ function VoiceNoteButtonInner() {
     },
   ], [triggerFromElement])
 
+  const selectedSlot = voiceSlots.findIndex(slot => slot.id === selectedMode)
+
+  const selectMode = useCallback((mode: VoiceButtonMode) => {
+    setSelectedMode(mode)
+    try { localStorage.setItem(VOICE_BUTTON_MODE_KEY, mode) } catch { /* private mode */ }
+  }, [])
+
   const resetDrag = useCallback(() => {
     dragStartRef.current = null
     dragAnchorRef.current = null
@@ -949,13 +971,13 @@ function VoiceNoteButtonInner() {
     toolNameHud.hide()
   }, [])
 
-  const handleClick = useCallback((e: React.MouseEvent<HTMLButtonElement>) => {
+  const handleClick = useCallback(() => {
     if (suppressClickRef.current) {
       suppressClickRef.current = false
       return
     }
-    triggerFromElement(e.currentTarget)
-  }, [triggerFromElement])
+    voiceSlots[selectedSlot]?.action()
+  }, [selectedSlot, voiceSlots])
 
   const handlePointerDown = useCallback((e: React.PointerEvent<HTMLButtonElement>) => {
     stopEventPropagation(e)
@@ -996,12 +1018,16 @@ function VoiceNoteButtonInner() {
     const slot = dragSlotRef.current
     if (dragging && slot !== null) {
       suppressClickRef.current = true
-      voiceSlots[slot]?.action()
+      const selected = voiceSlots[slot]
+      if (selected) {
+        selectMode(selected.id as VoiceButtonMode)
+        selected.action()
+      }
       resetDrag()
       return
     }
     resetDrag()
-  }, [dragging, resetDrag, voiceSlots])
+  }, [dragging, resetDrag, selectMode, voiceSlots])
 
   const handlePointerCancel = useCallback((e: React.PointerEvent<HTMLButtonElement>) => {
     if (e.currentTarget.hasPointerCapture(e.pointerId)) {
@@ -1019,7 +1045,7 @@ function VoiceNoteButtonInner() {
           anchorRect={dragAnchor}
           className="voice-action-slider"
           options={voiceSlots}
-          activeIndex={dragSlot}
+          activeIndex={dragSlot ?? selectedSlot}
         />
       )}
       <button
@@ -1032,22 +1058,11 @@ function VoiceNoteButtonInner() {
         onPointerCancel={handlePointerCancel}
         onTouchStart={stopEventPropagation}
         onTouchEnd={stopEventPropagation}
-        title={_isTouchDevice ? 'New voice note' : (recording ? 'Stop recording' : isPlacing ? 'Cancel placement' : 'Voice note')}
+        title={_isTouchDevice
+          ? (selectedMode === 'dictate-selection' ? 'Toggle transcription' : 'New voice note')
+          : (recording ? 'Stop recording' : isPlacing ? 'Cancel placement' : 'Voice note')}
       >
-        {/* Mic inside a sticky-note silhouette — "voice → note". The note shape is
-            the noun, the mic the modifier, so it reads as a note-maker not a plain mic.
-            20px + a 1.18 fill-scale match the highlighter button's visual size. */}
-        <svg width="20" height="20" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
-          <g transform="translate(9 9) scale(1.18) translate(-9 -9)">
-            {/* note card with a folded top-right corner */}
-            <path d="M11.5 2.5H4.2A1.7 1.7 0 0 0 2.5 4.2V13.8A1.7 1.7 0 0 0 4.2 15.5H13.8A1.7 1.7 0 0 0 15.5 13.8V6.5Z" />
-            <path d="M11.5 2.5V6.5H15.5" />
-            {/* mic centered in the note */}
-            <rect x="7.6" y="6" width="2.8" height="4" rx="1.4" fill="currentColor" stroke="none" />
-            <path d="M6.3 9.2a2.7 2.7 0 0 0 5.4 0" strokeWidth="1.1" />
-            <line x1="9" y1="11.9" x2="9" y2="13.2" strokeWidth="1.1" />
-          </g>
-        </svg>
+        {voiceSlots[selectedSlot]?.render()}
       </button>
     </>
   )
