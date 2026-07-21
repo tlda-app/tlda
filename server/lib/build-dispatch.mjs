@@ -103,4 +103,4 @@ const _default = createDispatcherWithOptions(makeTransport(_config), {
   priority: _config.buildPriority ?? _config.build?.priority,
 })
 
-export const { dispatchBuild, killBuild, killAllDispatchedBuilds, isBuilding } = _default
+export const { dispatchBuild, killBuild, killAllDispatchedBuilds, isBuilding, isBuildKindPending } = _default

@@ -28,7 +28,7 @@ import {
   projectPartsRoot, readProjectPartsManifest, writeProjectPartsManifest,
 } from '../lib/project-store.mjs'
 import { getBuildStatus } from '../lib/build-runner.mjs'
-import { dispatchBuild } from '../lib/build-dispatch.mjs'
+import { dispatchBuild, isBuildKindPending } from '../lib/build-dispatch.mjs'
 import { outlineForRegion, regionFromSpan, structuralLeaves } from '../lib/outline/outline.mjs'
 import { buildModel, assertRoundTrip } from '../lib/outline/model.mjs'
 import { findTextNearSourceLine, sourceTextSpanToPdfSpans } from '../lib/synctex-query.mjs'
@@ -710,19 +710,30 @@ export async function processProjectPush(name, body) {
   const changedFiles = (files || []).map(f => f.path)
   const changedPartFiles = refreshMaterializedPartsFromChangedSources(name, project, changedPushFiles)
   const projectPartsChanged = changedPartFiles.length > 0
-  const decision = shouldBuildOnPush(project, name, { changedFiles, anyChanged })
+  // Persisted buildStatus can lag dispatch. The queue is the authority for
+  // whether an initial normal build is already queued or running. A `parts`
+  // job for this project must not suppress the first page-producing build.
+  const decision = shouldBuildOnPush(project, name, {
+    changedFiles,
+    anyChanged,
+    building: isBuildKindPending(name, 'build'),
+  })
 
   if (!decision.build) {
     if (projectPartsChanged) {
       await rebuildProjectPartsView(name, project)
       broadcastProjectPartsChanged(name, changedPartFiles)
-      return { status: 200, ok: true, filesWritten: files?.length || 0, building: true, partsChanged: true }
+      return { status: 200, ok: true, filesWritten: files?.length || 0, building: true, partsChanged: true,
+        ...(decision.reason === 'already-building' ? { alreadyBuilding: true } : {}),
+      }
     }
     const filtered = decision.reason === 'outside-tree' || decision.reason === 'relevant-files-parse-failed'
     if (decision.reason === 'relevant-files-parse-failed') {
       console.error(`[${name}] relevant-files.json parse failed`)
     }
-    return { status: 200, ok: true, filesWritten: files?.length || 0, building: false,
+    return { status: 200, ok: true, filesWritten: files?.length || 0,
+      building: decision.reason === 'already-building',
+      ...(decision.reason === 'already-building' ? { alreadyBuilding: true } : {}),
       ...(decision.reason === 'unchanged' ? { unchanged: true } : {}),
       ...(filtered ? { filtered: true, reason: decision.reason } : {}),
     }

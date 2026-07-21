@@ -18,17 +18,29 @@ import { outputDir, sourceDir as getSourceDir } from './project-store.mjs'
  * @param {object} options
  * @param {Array}  options.changedFiles  — files that changed (from push)
  * @param {boolean} options.anyChanged   — whether any files actually changed on disk
+ * @param {boolean} options.building     — dispatcher-authoritative queued/in-flight state
  * @returns {{ build: boolean, eager: boolean, reason: string }}
  *   - build: whether a build should happen
  *   - eager: true = start now, false = mark stale for on-demand (SVG only)
  *   - reason: human-readable explanation
  */
-export function shouldBuildOnPush(project, name, { changedFiles = [], anyChanged = false } = {}) {
+export function shouldBuildOnPush(project, name, { changedFiles = [], anyChanged = false, building = false } = {}) {
+  const format = project.format
+
+  if (format === 'svg' && Number(project.pages || 0) === 0 && building) {
+    return { build: false, eager: false, reason: 'already-building' }
+  }
+
   if (!anyChanged && project.buildStatus === 'success') {
     return { build: false, eager: false, reason: 'unchanged' }
   }
 
-  const format = project.format
+  // A brand-new SVG project has no page artifact for the viewer to request,
+  // so the normal lazy/on-demand path cannot bootstrap itself. Build the first
+  // version eagerly; once pages exist, subsequent SVG pushes stay lazy.
+  if (format === 'svg' && Number(project.pages || 0) === 0) {
+    return { build: true, eager: true, reason: 'initial-svg-build' }
+  }
 
   // Non-SVG formats always build eagerly on push
   if (format === 'markdown' || format === 'html' || format === 'slides') {

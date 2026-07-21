@@ -147,5 +147,10 @@ export function createBuildQueue({
       matchingKeys(_pending, name).length > 0
   }
 
-  return { dispatchBuild, killBuild, killAllDispatchedBuilds, isBuilding }
+  function isBuildKindPending(name, kind = 'build') {
+    const key = jobKey(name, kind)
+    return _inFlight.has(key) || _queued.has(key) || _pending.has(key)
+  }
+
+  return { dispatchBuild, killBuild, killAllDispatchedBuilds, isBuilding, isBuildKindPending }
 }
