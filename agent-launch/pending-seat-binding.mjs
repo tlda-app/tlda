@@ -1,5 +1,16 @@
 import fs from 'fs'
 
+export function reuseExactPendingSeatBinding({ obligation, identity, seat, local } = {}) {
+  if (
+    seat?.agent_id !== obligation?.agent_id ||
+    seat?.session_id !== identity?.sessionId ||
+    seat?.daemon_key !== obligation?.daemon_key ||
+    !seat?.terminal_capability ||
+    local?.terminalCapability !== seat.terminal_capability
+  ) return null
+  return { bound: true, seat, payload: seat, reused: true }
+}
+
 export function createPendingSeatBindingManager({
   watchPath,
   resolveIdentity,
@@ -125,9 +136,11 @@ export async function completePendingSeatBinding({
   obligation,
   identity,
   bindSeat,
+  readExistingBinding = null,
   emitComplete,
 } = {}) {
-  const binding = await bindSeat()
+  const existing = await readExistingBinding?.()
+  const binding = existing?.bound === true ? existing : await bindSeat()
   if (
     binding?.bound !== true ||
     binding?.seat?.agent_id !== obligation.agent_id ||

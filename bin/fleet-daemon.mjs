@@ -106,7 +106,7 @@ import { reconcileDaemonRoster } from '../daemon/roster-reconcile.mjs'
 import { createAgentLauncher } from '../agent-launch/agent-launch.mjs'
 import { createLocalAgentLedger } from '../agent-launch/local-agent-ledger.mjs'
 import { bindAgentSeat } from '../agent-launch/seat-binding.mjs'
-import { cleanupPendingSeatBinding, completePendingSeatBinding, createPendingSeatBindingManager } from '../agent-launch/pending-seat-binding.mjs'
+import { cleanupPendingSeatBinding, completePendingSeatBinding, createPendingSeatBindingManager, reuseExactPendingSeatBinding } from '../agent-launch/pending-seat-binding.mjs'
 import { findCodexRollout } from '../agent-launch/resume.mjs'
 import { resolveLiveSessionIdentity as resolveLiveCodexSessionIdentity } from '../agent-launch/harness/codex.mjs'
 import { resolveLiveSessionIdentity as resolveLiveClaudeSessionIdentity } from '../agent-launch/harness/claude.mjs'
@@ -728,6 +728,7 @@ const agentLauncher = createAgentLauncher({
     }
     return null
   },
+  persistPendingSeatBinding: payload => daemonApi('POST', '/api/agent-seat-binding-obligation', payload),
 })
 
 const pendingSeatBindings = createPendingSeatBindingManager({
@@ -757,6 +758,15 @@ const pendingSeatBindings = createPendingSeatBindingManager({
   complete: (obligation, identity) => completePendingSeatBinding({
     obligation,
     identity,
+    readExistingBinding: async () => {
+      const result = await daemonApi('GET', `/api/agent-seat?agent=${encodeURIComponent(obligation.agent_id)}`).catch(error => {
+        if (error?.status === 404) return null
+        throw error
+      })
+      const seat = result?.seat || null
+      const local = permissionLedger.get(obligation.agent_id)
+      return reuseExactPendingSeatBinding({ obligation, identity, seat, local })
+    },
     bindSeat: () => bindAgentSeat({
       ledger: permissionLedger,
       identity: {

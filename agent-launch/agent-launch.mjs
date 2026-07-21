@@ -40,6 +40,7 @@ export function createAgentLauncher({
   liveCodexSessionIdentityResolver = null,
   liveClaudeSessionIdentityResolver = null,
   bindAgentSeatImpl = bindAgentSeat,
+  persistPendingSeatBinding = null,
   liveSessionIdentityTimeoutMs = 20_000,
   liveSessionIdentityPollMs = 500,
   liveSessionIdentityNow = Date.now,
@@ -130,6 +131,25 @@ export function createAgentLauncher({
       localLedger.close()
     }
     return true
+  }
+
+  async function persistIdentityRecoveryObligation({ launched, agentName, cwd, launchKind, launchModel }) {
+    if (!persistPendingSeatBinding || !launched?.fleetId || !launched?.localAgentId || !launched?.tmuxSession) return null
+    const daemonKey = `${machineId}:${activeConfigName}`
+    const result = await persistPendingSeatBinding({
+      agent_id: launched.fleetId,
+      daemon_key: daemonKey,
+      local_agent_id: launched.localAgentId,
+      cwd,
+      kind: launched.harness || launchKind,
+      model: launched.model || launchModel,
+      friendly_name: agentName,
+      process_owned_only: true,
+    })
+    if (result?.ok !== true || result?.pending !== true || !result?.obligation?.obligation_id) {
+      throw new Error(`durable identity-recovery obligation was not acknowledged for ${launched.fleetId}`)
+    }
+    return result.obligation
   }
 
   async function probeSpawnStartupFailure({ agentName, agent_id, tmux_session, harness, model, respawn, crash_log_path }) {
@@ -414,24 +434,6 @@ export function createAgentLauncher({
           ownership_retained: !terminated,
         }
       }
-      const launchedLedgerRow = launched.fleetId ? permissionLedger.get(launched.fleetId) : null
-      if (launched.harness === 'codex' && !launched.resumeId && !launched.pending && !launchedLedgerRow?.sessionId) {
-        const terminated = spawnMode === 'respawn'
-          ? false
-          : await terminateExactLaunch(launched.tmuxSession)
-        if (terminated && shouldWriteLedgerRow) await permissionLedger.delete(preallocatedAgentId).catch(() => {})
-        return {
-          ok: false,
-          name: agentName,
-          agent_id: launched.fleetId,
-          tmux_session: launched.tmuxSession,
-          code: 'missing-resume-handle',
-          error: terminated
-            ? 'spawn launcher returned a codex session without a durable resume handle; exact process terminated'
-            : 'spawn launcher returned a codex session without a durable resume handle; ownership retained because exact process could not be terminated',
-          ownership_retained: !terminated,
-        }
-      }
       // A launch without a durable resume identity leaves the ledger row
       // sessionId-less: every later wake fails with "missing daemon-ledger
       // resume identity", and no JSONL watcher arms (no activity cards).
@@ -472,6 +474,38 @@ export function createAgentLauncher({
       const ledgerRow = launched.fleetId ? permissionLedger.get(launched.fleetId) : null
       const durableSessionId = launched.resumeId || liveIdentity?.sessionId || ledgerRow?.sessionId || sessionId || null
       const durableSessionPath = liveIdentity?.jsonlPath || ledgerRow?.sessionPath || null
+      if (!durableSessionId) {
+        try {
+          const obligation = await persistIdentityRecoveryObligation({
+            launched,
+            agentName,
+            cwd: resolvedCwd,
+            launchKind,
+            launchModel,
+          })
+          if (obligation) {
+            return {
+              ok: true,
+              pending: true,
+              name: launched.name || agentName,
+              agent_id: launched.fleetId,
+              tmux_session: launched.tmuxSession,
+              resume_id: null,
+              binding_obligation_id: obligation.obligation_id,
+              spawnerPermission: grant.spawnerPermission,
+              projectPermission: grant.projectPermission,
+              modelPermission: grant.modelPermission,
+              permissionSet: grant.permissionSet,
+              spawnPolicy: grant.spawnPolicy,
+              permissionProfile: grant.permissionProfile,
+              permissionIntersection: grant.permissionIntersection,
+            }
+          }
+        } catch (error) {
+          // Retain the exact runtime so its on-disk rollout remains recoverable.
+          log.warn(`could not persist identity-recovery obligation for ${agentName}: ${error.message}`)
+        }
+      }
       const bindingWritten = await emitAgentSeatBinding({
         fleetId: launched.fleetId,
         sessionId: durableSessionId,
@@ -485,10 +519,6 @@ export function createAgentLauncher({
         source: launched.alreadyAlive ? 'spawn-runtime-already-live' : 'spawn-runtime',
       })
       if (!bindingWritten) {
-        const terminated = spawnMode === 'respawn'
-          ? false
-          : await terminateExactLaunch(launched.tmuxSession)
-        if (terminated && shouldWriteLedgerRow) await permissionLedger.delete(preallocatedAgentId).catch(() => {})
         return {
           ok: false,
           name: agentName,
@@ -496,10 +526,8 @@ export function createAgentLauncher({
           tmux_session: launched.tmuxSession,
           code: 'missing-resume-handle',
           reason: 'missing-resume-handle',
-          error: terminated
-            ? 'spawn launcher could not persist a durable resume handle at session start; exact process terminated'
-            : 'spawn launcher could not persist a durable resume handle at session start; ownership retained because exact process could not be terminated',
-          ownership_retained: !terminated,
+          error: 'spawn launcher could not persist a durable resume handle or recovery obligation at session start; exact process retained for on-disk session recovery',
+          ownership_retained: true,
         }
       }
       if (!preallocatedAgentId || launched.fleetId !== preallocatedAgentId) {
