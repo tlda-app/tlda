@@ -100,18 +100,42 @@ All source-writing paths enter the same project push operation:
    - every deleted path is excluded from the manifest;
    - every manifest path will exist after the transaction;
    - every surviving owned path is still declared.
-5. Write changed file contents and delete only owned paths requested for
-   deletion.
+5. Create a durable, credential-free recovery snapshot and atomically publish
+   its journal under the project before mutating live source, metadata, or the
+   clone. Durability means fsyncing every snapshot file and directory, the
+   temporary journal, the renamed journal, and both enclosing directories
+   before the operation crosses into live mutation. For linked projects,
+   snapshot clone worktree bytes but never `.git` or its credential-bearing
+   config.
 6. If the project is linked to Overleaf and this is not an Overleaf-originated
-   pull, commit and push the same writes/deletes to the clone and upstream.
-7. Commit project metadata, including the new owned authored source set, only
-   after the transaction succeeds.
-8. Refresh materialized parts, dispatch the build decision, and broadcast the
+   pull, fetch the remote and prepare the same writes/deletes as a local clone
+   commit without publishing it.
+7. Write changed file contents, delete only owned paths requested for deletion,
+   and commit project metadata including the new owned authored source set.
+8. Publish the prepared Overleaf commit as the final fallible transaction step.
+   No local filesystem or metadata commit follows successful publication.
+9. Immediately remove the successful transaction's journal and snapshot. A
+   crash between publish and cleanup may leave recovery state. On startup or
+   before the next transaction, reconcile it against the remote history: the
+   proposed commit or any descendant proves publication succeeded; the prior
+   head proves it did not; an unrelated third-party head requires explicit
+   recovery without overwriting either side. Incomplete atomic-journal staging
+   is cleaned without touching live state. Poll pulls and client pushes share
+   the same per-project serialization boundary. A rejected pull transaction
+   resets the clone to its pre-fetch head and records an error, so the same
+   remote head is retried on the next poll rather than being mistaken for an
+   already-applied update. Incomplete transaction directories are safe to
+   remove because live mutation cannot begin first.
+10. Refresh materialized parts, dispatch the build decision, and broadcast the
    existing source-change signal as today.
 
 Member-only book updates are not source mutations. They may continue to update
 book membership without a source manifest because they do not claim, write, or
 delete authored source.
+
+Poll-driven Overleaf pulls and request-driven pushes share the same per-project
+serialization boundary, so neither may mutate the clone or source tree while
+the other transaction is in flight.
 
 ## Caller Inventory
 
@@ -193,9 +217,13 @@ push, or conflict blocks the tlda source mutation from committing ownership. A
 conflict may expose conflict files for review, but it does not silently bless a
 new owned set.
 
-The manifest update is not a cleanup step. It is the commit point for ownership.
-If file mutation succeeds but ownership persistence fails, the transaction is
-failed and must not be reported as accepted.
+The manifest update is not a cleanup step. It is part of the local commit. If
+file mutation succeeds but ownership persistence fails, the snapshot is
+restored and the transaction must not be reported as accepted. A remote
+compensation uses force-with-lease: if another author advances the remote, tlda
+must not overwrite that work or pretend rollback succeeded. It retains a
+durable credential-free recovery record and reports `recovery-required` using
+a server-visible identifier rather than a host filesystem path.
 
 ## Examples
 

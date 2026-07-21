@@ -8450,7 +8450,9 @@ server.listen(PORT, HOST, () => {
   ensureLocalDaemon()
 
   // Resume Overleaf git-sync pollers for any project linked to a remote.
-  resumeOverleafPollers(listProjects)
+  resumeOverleafPollers(listProjects).catch(error => {
+    console.error(`[overleaf] source transaction recovery failed: ${error.message}`)
+  })
 
   setInterval(ensureLocalDaemon, DAEMON_SUPERVISOR_INTERVAL_MS).unref()
 

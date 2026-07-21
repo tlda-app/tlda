@@ -26,6 +26,7 @@ import {
   updateClientSourceManifest,
 } from '../server/lib/project-store.mjs'
 import { processProjectPush } from '../server/routes/projects.mjs'
+import { recoverProjectSourceTransactions, resumeOverleafPollers, syncOverleaf } from '../server/lib/overleaf-sync.mjs'
 import { pushMcpSourceFiles } from '../mcp-server/source-push-orchestration.mjs'
 
 function md5(value) {
@@ -55,6 +56,7 @@ function snapshotProject(name) {
     if (!fs.existsSync(current)) return
     for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
       const rel = prefix ? `${prefix}/${entry.name}` : entry.name
+      if (rel === '.source-transactions' || rel === 'overleaf-clone/.git') continue
       const full = path.join(current, entry.name)
       if (entry.isDirectory()) walkProject(full, rel)
       else projectFiles[rel] = fs.readFileSync(full).toString('base64')
@@ -102,6 +104,7 @@ function setupOverleafProject(root, name) {
   git(['clone', remote, clone], root)
   git(['config', 'user.email', 'test@example.invalid'], clone)
   git(['config', 'user.name', 'test'], clone)
+  git(['config', 'tlda.testCredential', 'credential-must-not-leak'], clone)
   return { remote }
 }
 
@@ -116,6 +119,31 @@ function remoteHasFile(remote, filePath) {
   } catch {
     return false
   }
+}
+
+function snapshotRemote(remote) {
+  const head = git(['--git-dir', remote, 'rev-parse', 'refs/heads/master'], process.cwd())
+  const paths = git(['--git-dir', remote, 'ls-tree', '-r', '--name-only', head], process.cwd())
+    .split('\n').filter(Boolean)
+  return {
+    head,
+    files: Object.fromEntries(paths.map(filePath => [
+      filePath,
+      execFileSync('git', ['--git-dir', remote, 'show', `${head}:${filePath}`]).toString('base64'),
+    ])),
+  }
+}
+
+function advanceRemote(root, remote, { resetTo = null } = {}) {
+  if (resetTo) git(['--git-dir', remote, 'update-ref', 'refs/heads/master', resetTo], root)
+  const checkout = path.join(root, `third-party-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+  git(['clone', remote, checkout], root)
+  git(['config', 'user.email', 'third-party@example.invalid'], checkout)
+  git(['config', 'user.name', 'third party'], checkout)
+  write(path.join(checkout, 'third-party.tex'), 'third party work\n')
+  git(['add', 'third-party.tex'], checkout)
+  git(['commit', '-m', 'third party advance'], checkout)
+  git(['push', 'origin', 'HEAD:master'], checkout)
 }
 
 function assertPushSuppliersCarryManifest() {
@@ -420,6 +448,28 @@ async function main() {
     assert.equal(readSourceFile('latex-doc', 'notes.tex'), null)
     assert.deepEqual(readClientSourceManifest('latex-doc'), ['main.tex'])
 
+    for (const [failAt, body] of [
+      ['write:2', {
+        files: [
+          { path: 'main.tex', content: 'first write\n' },
+          { path: 'extra.tex', content: 'second write\n' },
+        ],
+        sourceManifest: ['extra.tex', 'main.tex'],
+      }],
+      ['delete:1', {
+        files: [], deletedFiles: ['main.tex'], sourceManifest: [],
+      }],
+      ['manifest', {
+        files: [{ path: 'main.tex', content: 'manifest failure\n' }],
+        sourceManifest: ['main.tex'],
+      }],
+    ]) {
+      beforeRejected = snapshotProject('latex-doc')
+      result = await processProjectPush('latex-doc', body, { failAt })
+      assert.equal(result.status, 409)
+      assertSnapshotEqual('latex-doc', beforeRejected)
+    }
+
     result = await processProjectPush('latex-doc', {
       files: [],
       deletedFiles: ['README.md', 'main.synctex.gz'],
@@ -502,6 +552,30 @@ async function main() {
     assert.equal(result.status, 200)
     assert.equal(remoteFile(positive.remote, 'main.tex'), 'remote new main')
     assert.equal(remoteFile(positive.remote, 'notes.tex'), 'old notes')
+    const successRecoveryRoot = path.join(projectDir('overleaf-write'), '.source-transactions')
+    assert.equal(fs.existsSync(successRecoveryRoot) && fs.readdirSync(successRecoveryRoot).length > 0, false,
+      'successful publish must immediately remove its snapshot and journal')
+
+    positive = setupOverleafProject(root, 'overleaf-crash-after-publish')
+    result = await processProjectPush('overleaf-crash-after-publish', {
+      files: [{ path: 'main.tex', content: 'published before simulated crash\n' }],
+      sourceManifest: ['main.tex', 'notes.tex'],
+    }, { simulateCrashAfterPublish: true })
+    assert.equal(result.simulatedCrash, true)
+    const crashRecoveryRoot = path.join(projectDir('overleaf-crash-after-publish'), '.source-transactions', result.recovery.id)
+    assert.equal(fs.existsSync(crashRecoveryRoot), true)
+    assert.equal(
+      fs.readdirSync(crashRecoveryRoot, { recursive: true })
+        .filter(entry => fs.statSync(path.join(crashRecoveryRoot, entry)).isFile())
+        .some(entry => fs.readFileSync(path.join(crashRecoveryRoot, entry)).includes('credential-must-not-leak')),
+      false,
+    )
+    advanceRemote(root, positive.remote)
+    initProjectStore(root)
+    assert.deepEqual(await recoverProjectSourceTransactions('overleaf-crash-after-publish'), [
+      { id: result.recovery.id, state: 'committed-cleaned' },
+    ], 'recovery must accept a later legitimate commit descending from the published head')
+    assert.equal(fs.existsSync(crashRecoveryRoot), false)
 
     positive = setupOverleafProject(root, 'overleaf-delete')
     result = await processProjectPush('overleaf-delete', {
@@ -523,6 +597,173 @@ async function main() {
     assert.equal(remoteFile(positive.remote, 'main.tex'), 'remote mixed main')
     assert.equal(remoteFile(positive.remote, 'extra.tex'), 'remote extra')
     assert.equal(remoteHasFile(positive.remote, 'notes.tex'), false)
+
+    positive = setupOverleafProject(root, 'overleaf-after-remote')
+    beforeRejected = snapshotProject('overleaf-after-remote')
+    const beforeRemote = snapshotRemote(positive.remote)
+    result = await processProjectPush('overleaf-after-remote', {
+      files: [
+        { path: 'main.tex', content: 'must roll back locally and remotely\n' },
+        { path: 'extra.tex', content: 'must not survive\n' },
+      ],
+      deletedFiles: ['notes.tex'],
+      sourceManifest: ['extra.tex', 'main.tex'],
+    }, { failAt: 'after-remote' })
+    assert.equal(result.status, 409)
+    assertSnapshotEqual('overleaf-after-remote', beforeRejected)
+    assert.deepEqual(snapshotRemote(positive.remote), beforeRemote)
+
+    positive = setupOverleafProject(root, 'overleaf-compensation-race')
+    const priorRemoteHead = snapshotRemote(positive.remote).head
+    result = await processProjectPush('overleaf-compensation-race', {
+      files: [{ path: 'main.tex', content: 'locally committed before remote race\n' }],
+      sourceManifest: ['main.tex', 'notes.tex'],
+    }, {
+      afterRemotePublished: async () => {
+        advanceRemote(root, positive.remote, { resetTo: priorRemoteHead })
+        throw new Error('Injected failure after third-party remote advance')
+      },
+    })
+    assert.equal(result.status, 409)
+    assert.equal(result.recoveryRequired, true)
+    assert.equal(readSourceFile('overleaf-compensation-race', 'main.tex'), 'locally committed before remote race\n')
+    assert.deepEqual(readClientSourceManifest('overleaf-compensation-race'), ['main.tex', 'notes.tex'])
+    assert.equal(remoteFile(positive.remote, 'main.tex'), 'old main')
+    assert.equal(remoteFile(positive.remote, 'third-party.tex'), 'third party work')
+    assert.deepEqual(Object.keys(result.recovery).sort(), ['id', 'state'])
+    assert.equal(result.recovery.state, 'publish-pending')
+    assert.doesNotMatch(JSON.stringify(result), new RegExp(root.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+    const recoveryRoot = path.join(projectDir('overleaf-compensation-race'), '.source-transactions', result.recovery.id)
+    const journal = JSON.parse(fs.readFileSync(path.join(recoveryRoot, 'recovery.json'), 'utf8'))
+    assert.equal(journal.state, 'publish-pending')
+    assert.equal(journal.previousRemoteHead, priorRemoteHead)
+    assert.equal(journal.proposedRemoteHead, readProject('overleaf-compensation-race').overleafHead)
+    assert.equal(fs.existsSync(path.join(recoveryRoot, 'overleaf-worktree', '.git')), false)
+    assert.equal(
+      fs.readdirSync(recoveryRoot, { recursive: true })
+        .filter(entry => fs.statSync(path.join(recoveryRoot, entry)).isFile())
+        .some(entry => fs.readFileSync(path.join(recoveryRoot, entry)).includes('credential-must-not-leak')),
+      false,
+    )
+    initProjectStore(root)
+    const rebootRecovery = await recoverProjectSourceTransactions('overleaf-compensation-race')
+    assert.equal(rebootRecovery.length, 1)
+    assert.equal(rebootRecovery[0].id, result.recovery.id)
+    assert.equal(rebootRecovery[0].state, 'recovery-required')
+    assert.deepEqual(Object.keys(rebootRecovery[0]).sort(), ['id', 'state'],
+      'external recovery status must never expose remote commit heads or internal reasons')
+    assert.equal(fs.existsSync(recoveryRoot), true, 'unresolved recovery must survive restart cleanup')
+
+    createProject({ name: 'journal-crash', title: 'Journal crash', mainFile: 'main.tex', format: 'svg' })
+    updateProject('journal-crash', { pages: 1, buildStatus: 'success' })
+    write(path.join(sourceDir('journal-crash'), 'main.tex'), 'unchanged\n')
+    updateClientSourceManifest('journal-crash', ['main.tex'])
+    beforeRejected = snapshotProject('journal-crash')
+    result = await processProjectPush('journal-crash', {
+      files: [{ path: 'main.tex', content: 'must not write\n' }],
+      sourceManifest: ['main.tex'],
+    }, { failAt: 'journal-write' })
+    assert.equal(result.status, 409)
+    assertSnapshotEqual('journal-crash', beforeRejected)
+    initProjectStore(root)
+    assert.equal((await recoverProjectSourceTransactions('journal-crash'))[0].state, 'incomplete-journal-cleaned')
+
+    createProject({ name: 'snapshot-ready-crash', title: 'Snapshot ready crash', mainFile: 'main.tex', format: 'svg' })
+    updateProject('snapshot-ready-crash', { pages: 1, buildStatus: 'success' })
+    write(path.join(sourceDir('snapshot-ready-crash'), 'main.tex'), 'unchanged\n')
+    updateClientSourceManifest('snapshot-ready-crash', ['main.tex'])
+    beforeRejected = snapshotProject('snapshot-ready-crash')
+    const durabilitySteps = []
+    result = await processProjectPush('snapshot-ready-crash', {
+      files: [{ path: 'main.tex', content: 'must not write\n' }],
+      sourceManifest: ['main.tex'],
+    }, {
+      simulateCrashAfterJournal: true,
+      durabilityProbe: label => durabilitySteps.push(label),
+    })
+    assert.equal(result.simulatedCrash, true)
+    assert.equal(result.recovery.state, 'snapshot-ready')
+    assertSnapshotEqual('snapshot-ready-crash', beforeRejected)
+    assert.equal(durabilitySteps.includes('snapshot-file'), true)
+    assert.equal(durabilitySteps.includes('snapshot-directory'), true)
+    assert.equal(durabilitySteps.includes('journal-temp-file'), true)
+    assert.equal(durabilitySteps.includes('journal-file'), true)
+    assert.equal(durabilitySteps.includes('journal-directory'), true)
+    assert.equal(durabilitySteps.filter(step => step === 'transaction-parent-directory').length >= 2, true)
+    assert.equal(durabilitySteps.filter(step => step === 'project-directory').length >= 2, true)
+    assert.equal(durabilitySteps.lastIndexOf('snapshot-directory') < durabilitySteps.indexOf('journal-temp-file'), true)
+    assert.equal(durabilitySteps.indexOf('journal-temp-file') < durabilitySteps.indexOf('journal-file'), true)
+    assert.equal(durabilitySteps.indexOf('journal-file') < durabilitySteps.indexOf('journal-directory'), true)
+    assert.equal(durabilitySteps.indexOf('journal-directory') < durabilitySteps.lastIndexOf('project-directory'), true)
+    initProjectStore(root)
+    assert.deepEqual(await recoverProjectSourceTransactions('snapshot-ready-crash'), [
+      { id: result.recovery.id, state: 'snapshot-rolled-back-cleaned' },
+    ], 'startup recovery must clean a durable pre-mutation snapshot for a non-Overleaf project')
+    assertSnapshotEqual('snapshot-ready-crash', beforeRejected)
+
+    positive = setupOverleafProject(root, 'clone-restore-fail')
+    beforeRejected = snapshotProject('clone-restore-fail')
+    result = await processProjectPush('clone-restore-fail', {
+      files: [{ path: 'main.tex', content: 'must roll back despite clone restore failure\n' }],
+      sourceManifest: ['main.tex', 'notes.tex'],
+    }, { failAt: 'clone-restore' })
+    assert.equal(result.status, 409)
+    assert.match(result.rollbackFailures.join('\n'), /clone restore failed/)
+    assertSnapshotEqual('clone-restore-fail', beforeRejected)
+
+    positive = setupOverleafProject(root, 'poll-push-serialization')
+    const order = []
+    let releasePoll
+    let pollEntered
+    const pollEnteredPromise = new Promise(resolve => { pollEntered = resolve })
+    const pollGate = new Promise(resolve => { releasePoll = resolve })
+    const poll = syncOverleaf('poll-push-serialization', {
+      testHooks: { afterLock: async () => { order.push('poll-enter'); pollEntered(); await pollGate; order.push('poll-exit') } },
+    })
+    await pollEnteredPromise
+    const push = processProjectPush('poll-push-serialization', {
+      files: [{ path: 'main.tex', content: 'serialized push\n' }],
+      sourceManifest: ['main.tex', 'notes.tex'],
+    }, { afterLock: async () => { order.push('push-enter') } })
+    await new Promise(resolve => setTimeout(resolve, 25))
+    assert.deepEqual(order, ['poll-enter'])
+    releasePoll()
+    await Promise.all([poll, push])
+    assert.deepEqual(order, ['poll-enter', 'poll-exit', 'push-enter'])
+
+    positive = setupOverleafProject(root, 'poll-retry')
+    advanceRemote(root, positive.remote)
+    const retryHead = execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: path.join(projectDir('poll-retry'), 'overleaf-clone'), encoding: 'utf8',
+    }).trim()
+    await assert.rejects(syncOverleaf('poll-retry', {
+      testHooks: { processProjectPush: async () => ({ status: 409, ok: false, error: 'injected transaction rejection' }) },
+    }), /injected transaction rejection/)
+    assert.equal(readProject('poll-retry').overleafSyncStatus, 'error')
+    assert.equal(execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: path.join(projectDir('poll-retry'), 'overleaf-clone'), encoding: 'utf8',
+    }).trim(), retryHead, 'failed poll must reset the clone so the same remote HEAD is retried')
+    result = await syncOverleaf('poll-retry')
+    assert.equal(result.changed > 0, true)
+    assert.equal(readProject('poll-retry').overleafSyncStatus, 'ok')
+    assert.equal(readSourceFile('poll-retry', 'third-party.tex'), 'third party work\n')
+
+    setupOverleafProject(root, 'resume-failure-first')
+    setupOverleafProject(root, 'resume-success-later')
+    const resumedProjects = []
+    const resumed = await resumeOverleafPollers(
+      () => [readProject('resume-failure-first'), readProject('resume-success-later')],
+      {
+        recover: async name => {
+          if (name === 'resume-failure-first') throw new Error('injected recovery failure')
+          return []
+        },
+        start: name => resumedProjects.push(name),
+      },
+    )
+    assert.equal(resumed, 1)
+    assert.deepEqual(resumedProjects, ['resume-success-later'])
+    assert.equal(readProject('resume-failure-first').overleafSyncStatus, 'error')
 
     assert.equal(isSourceFilePath('README.md', { format: 'markdown', mainFile: 'README.md' }), true)
     createProject({ name: 'markdown-readme', title: 'Markdown', mainFile: 'README.md', format: 'svg' })

@@ -26,7 +26,8 @@ import {
   listSourceFiles, hashSourceFiles, readSourceFile, writeSourceFile, deleteSourceFile, readBuildLog, sourceDir as getSourceDir, outputDir as getOutputDir,
   extractBuildErrors, extractPipelineWarnings, addBookMember, getProjectsDir, projectDir as getProjectDir,
   projectPartsRoot, readProjectPartsManifest, writeProjectPartsManifest,
-  isClientOwnedSourcePath, readClientSourceManifest, updateClientSourceManifest, validateSourceFilePath,
+  isClientOwnedSourcePath, readClientSourceManifest, validateSourceFilePath,
+  beginProjectSourceTransaction,
 } from '../lib/project-store.mjs'
 import { getBuildStatus } from '../lib/build-runner.mjs'
 import { dispatchBuild, isBuildKindPending } from '../lib/build-dispatch.mjs'
@@ -40,7 +41,7 @@ import { markdownColumnFileForSource, listProjectPartColumns, pageInfoFromDocume
 import { shouldBuildOnPush } from '../lib/build-decision.mjs'
 import { isSourceFilePath, normalizeSourceManifest, sourceManifestContext } from '../../shared/source-manifest.mjs'
 import historyRoutes from './history.mjs'
-import { linkOverleaf, unlinkOverleaf, syncOverleaf, pushSourceToOverleaf, stopPolling, isPolling } from '../lib/overleaf-sync.mjs'
+import { linkOverleaf, unlinkOverleaf, syncOverleaf, prepareSourcePushToOverleaf, recoverProjectSourceTransactions, readOverleafLocalHead, stopPolling, isPolling } from '../lib/overleaf-sync.mjs'
 import { getRoomRecords, getRecord, putShape, updateShape, deleteShape, onShapeChange, getOrCreateRoom, broadcastSignal, getLastSignal, onSignal, replaceRoomSnapshot, getShapesAt, emitGlobalEvent, onGlobalEvent } from '../lib/sync-rooms.mjs'
 import { getFleetServerUrl, getServerUrl } from '../../shared/config.mjs'
 
@@ -665,53 +666,159 @@ router.get('/:name/hashes', requireRead, (req, res) => {
  * once it has decided whether a build should run; build completion
  * happens in the background.
  */
-export async function processProjectPush(name, body) {
-  const project = readProject(name)
+const sourcePushQueues = new Map()
+
+export async function runSerializedProjectSourceOperation(name, operation) {
+  const previous = sourcePushQueues.get(name) || Promise.resolve()
+  let release
+  const current = new Promise(resolve => { release = resolve })
+  sourcePushQueues.set(name, current)
+  await previous
+  try {
+    return await operation()
+  } finally {
+    release()
+    if (sourcePushQueues.get(name) === current) sourcePushQueues.delete(name)
+  }
+}
+
+export async function processProjectPush(name, body, transactionTest = {}) {
+  return runSerializedProjectSourceOperation(
+    name,
+    () => processProjectPushSerialized(name, body, transactionTest),
+  )
+}
+
+export async function processProjectPushSerialized(name, body, transactionTest = {}) {
+  if (transactionTest.afterLock) await transactionTest.afterLock()
+  let project = readProject(name)
   if (!project) return { status: 404, ok: false, error: 'Project not found' }
 
   const { files, deletedFiles, sourceManifest, priorityPages, sourceDir, members, session, sessionAt, editedBy, overleafSync } = body || {}
+
+  const recoveries = await recoverProjectSourceTransactions(name)
+  const unresolved = recoveries.find(item => item.state === 'recovery-required')
+  if (unresolved) {
+    return { status: 409, ok: false, recoveryRequired: true, recovery: unresolved }
+  }
+  project = readProject(name)
 
   const validation = validateSourcePushRequest(name, project, { files, deletedFiles, sourceManifest })
   if (!validation.ok) return validation
 
   let anyChanged = sourcePushWouldChange(name, { files, deletedFiles })
-  if (anyChanged && project.overleafRemote && project.autoSync !== false && !overleafSync) {
-    try {
-      await pushSourceToOverleaf(name, { files, deletedFiles, editedBy })
-    } catch (e) {
-      console.error(`[${name}] Git sync failed: ${e.message}`)
-      return { status: 409, ok: false, error: `Git sync failed: ${e.message}` }
-    }
-  }
-
-  if (sourceDir && !project.sourceDir) updateProject(name, { sourceDir })
-  if (session) updateProject(name, { session, sessionAt: sessionAt || Date.now() })
-  // Edit attribution: the daemon resolves which agent's Edit/Write triggered
-  // this change; persist it so the build runner can address the build card.
-  if (editedBy) updateProject(name, { lastEditedBy: editedBy, lastEditedByAt: Date.now() })
-  if (members && Array.isArray(members)) {
+  if (members && Array.isArray(members) && project.format === 'book') {
     updateProject(name, { members })
-    if (project.format === 'book') return { status: 200, ok: true, members }
+    return { status: 200, ok: true, members }
   }
-
+  const originalLocalHead = await readOverleafLocalHead(name)
+  let transaction
+  try {
+    transaction = beginProjectSourceTransaction(name, {
+      originalLocalHead,
+      failJournalWrite: transactionTest.failAt === 'journal-write',
+      durabilityProbe: transactionTest.durabilityProbe,
+    })
+  } catch (error) {
+    return { status: 409, ok: false, error: `Source transaction journal failed: ${error.message}` }
+  }
+  let preparedOverleaf = null
   const changedPushFiles = []
-  if (files?.length > 0) {
-    for (const file of files) {
+  let remotePublished = false
+  let recoveryJournal = null
+  try {
+    if (transactionTest.simulateCrashAfterJournal) {
+      return { status: 598, ok: false, simulatedCrash: true, recovery: transaction.identity() }
+    }
+    if (anyChanged && project.overleafRemote && project.autoSync !== false && !overleafSync) {
+      preparedOverleaf = await prepareSourcePushToOverleaf(name, { files, deletedFiles, editedBy })
+    }
+    if (files?.length > 0) {
+      for (const [index, file] of files.entries()) {
       const content = file.encoding === 'base64'
         ? Buffer.from(file.content, 'base64')
         : file.content
       if (writeSourceFile(name, file.path, content)) {
         changedPushFiles.push({ path: file.path, content })
       }
+        if (transactionTest.failAt === `write:${index + 1}`) throw new Error(`Injected failure at write:${index + 1}`)
+      }
+    }
+    if (deletedFiles?.length > 0) {
+      for (const [index, filePath] of deletedFiles.entries()) {
+        if (!isClientOwnedSourcePath(name, filePath)) continue
+        deleteSourceFile(name, filePath)
+        if (transactionTest.failAt === `delete:${index + 1}`) throw new Error(`Injected failure at delete:${index + 1}`)
+      }
+    }
+    const metadata = {
+      ...(sourceDir && !project.sourceDir ? { sourceDir } : {}),
+      ...(session ? { session, sessionAt: sessionAt || Date.now() } : {}),
+      ...(editedBy ? { lastEditedBy: editedBy, lastEditedByAt: Date.now() } : {}),
+      ...(members && Array.isArray(members) ? { members } : {}),
+      ...(Array.isArray(sourceManifest) ? { clientSourceManifest: normalizeSourceManifest(sourceManifest, sourceManifestContext(project)) } : {}),
+      ...(preparedOverleaf ? {
+        overleafHead: preparedOverleaf.head,
+        overleafLastPullAt: Date.now(),
+        ...(preparedOverleaf.pushed ? { overleafLastPushAt: Date.now() } : {}),
+        overleafSyncStatus: 'ok', overleafSyncError: null, overleafConflictFiles: [],
+      } : {}),
+    }
+    updateProject(name, metadata)
+    if (transactionTest.failAt === 'manifest' || transactionTest.failAt === 'clone-restore') {
+      throw new Error('Injected failure after manifest persistence')
+    }
+    if (preparedOverleaf) {
+      recoveryJournal = transaction.recordRemotePlan({
+        previousRemoteHead: preparedOverleaf.previousRemoteHead,
+        proposedRemoteHead: preparedOverleaf.head,
+        remoteBranch: preparedOverleaf.remoteBranch,
+        originalLocalHead: preparedOverleaf.originalLocalHead,
+      })
+      await preparedOverleaf.publish()
+      remotePublished = preparedOverleaf.pushed
+      if (transactionTest.simulateCrashAfterPublish) {
+        return { status: 599, ok: false, simulatedCrash: true, recovery: recoveryJournal }
+      }
+      if (transactionTest.afterRemotePublished) await transactionTest.afterRemotePublished(preparedOverleaf)
+      if (transactionTest.failAt === 'after-remote') throw new Error('Injected failure after remote success')
+    }
+    transaction.commit()
+  } catch (e) {
+    if (remotePublished) {
+      try {
+        await preparedOverleaf.restoreRemote()
+      } catch (compensationError) {
+        const recovery = transaction.abandon()
+        console.error(`[${name}] Source transaction requires recovery: ${compensationError.message}`)
+        return {
+          status: 409, ok: false, recoveryRequired: true,
+          error: 'Remote advanced after publish; recovery required',
+          recovery: recoveryJournal || recovery,
+        }
+      }
+    }
+    const rollbackFailures = []
+    if (preparedOverleaf?.restoreLocal) {
+      try {
+        if (transactionTest.failAt === 'clone-restore') throw new Error('Injected clone restore failure')
+        await preparedOverleaf.restoreLocal()
+      } catch (restoreError) {
+        rollbackFailures.push(`clone restore failed: ${restoreError.message}`)
+      }
+    }
+    try {
+      transaction.rollback()
+    } catch (rollbackError) {
+      rollbackFailures.push(`local rollback failed: ${rollbackError.message}`)
+    }
+    console.error(`[${name}] Source transaction failed: ${e.message}`)
+    return {
+      status: 409, ok: false,
+      error: `Source transaction failed: ${e.message}${rollbackFailures.length ? `; ${rollbackFailures.join('; ')}` : ''}`,
+      ...(rollbackFailures.length ? { rollbackFailures } : {}),
     }
   }
-  if (deletedFiles?.length > 0) {
-    for (const filePath of deletedFiles) {
-      if (!isClientOwnedSourcePath(name, filePath)) continue
-      deleteSourceFile(name, filePath)
-    }
-  }
-  if (Array.isArray(sourceManifest)) updateClientSourceManifest(name, sourceManifest)
 
   const changedFiles = (files || []).map(f => f.path)
   const changedPartFiles = refreshMaterializedPartsFromChangedSources(name, project, changedPushFiles)

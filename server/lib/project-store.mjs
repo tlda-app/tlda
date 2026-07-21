@@ -8,9 +8,9 @@
  *   build.log     — last build log
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, rmSync, unlinkSync, realpathSync } from 'fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, rmSync, unlinkSync, realpathSync, cpSync, renameSync, openSync, fsyncSync, closeSync, statSync } from 'fs'
 import { join, relative, dirname } from 'path'
-import { createHash } from 'crypto'
+import { createHash, randomUUID } from 'crypto'
 import { isSourceFilePath, isIgnoredSourceDir, normalizeSourceManifest, sourceManifestContext } from '../../shared/source-manifest.mjs'
 import {
   projectPartsManifestPath as partsManifestPathForRoot,
@@ -92,6 +92,159 @@ export function updateProject(name, updates) {
     JSON.stringify(project, null, 2),
   )
   return project
+}
+
+/**
+ * Snapshot the mutable source-transaction surfaces. The returned transaction
+ * must be committed or rolled back exactly once. Rollback is deliberately not
+ * best-effort: a restore failure is a fatal transaction failure.
+ */
+function syncPath(path, durabilityProbe, label) {
+  const fd = openSync(path, 'r')
+  try {
+    fsyncSync(fd)
+    durabilityProbe?.(label, path)
+  } finally {
+    closeSync(fd)
+  }
+}
+
+function syncTree(root, durabilityProbe) {
+  if (!existsSync(root)) return
+  if (!statSync(root).isDirectory()) {
+    syncPath(root, durabilityProbe, 'snapshot-file')
+    return
+  }
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    syncTree(join(root, entry.name), durabilityProbe)
+  }
+  syncPath(root, durabilityProbe, 'snapshot-directory')
+}
+
+function writeRecoveryJournal(snapshotRoot, journal, durabilityProbe) {
+  const target = join(snapshotRoot, 'recovery.json')
+  const pending = join(snapshotRoot, `.recovery.json.pending-${process.pid}-${randomUUID()}`)
+  writeFileSync(pending, JSON.stringify(journal, null, 2))
+  syncPath(pending, durabilityProbe, 'journal-temp-file')
+  renameSync(pending, target)
+  syncPath(target, durabilityProbe, 'journal-file')
+  syncPath(snapshotRoot, durabilityProbe, 'journal-directory')
+}
+
+export function beginProjectSourceTransaction(name, { originalLocalHead = null, failJournalWrite = false, durabilityProbe = null } = {}) {
+  const dir = projectDir(name)
+  const id = randomUUID()
+  const transactionRoot = join(dir, '.source-transactions')
+  const snapshotRoot = join(transactionRoot, id)
+  mkdirSync(snapshotRoot, { recursive: true })
+  const source = sourceDir(name)
+  const metadata = join(dir, 'project.json')
+  const clone = join(dir, 'overleaf-clone')
+  if (existsSync(source)) cpSync(source, join(snapshotRoot, 'source'), { recursive: true, preserveTimestamps: true })
+  cpSync(metadata, join(snapshotRoot, 'project.json'), { preserveTimestamps: true })
+  if (existsSync(clone)) {
+    const cloneSnapshot = join(snapshotRoot, 'overleaf-worktree')
+    mkdirSync(cloneSnapshot, { recursive: true })
+    for (const entry of readdirSync(clone, { withFileTypes: true })) {
+      if (entry.name === '.git') continue
+      cpSync(join(clone, entry.name), join(cloneSnapshot, entry.name), { recursive: true, preserveTimestamps: true })
+    }
+  }
+  syncTree(snapshotRoot, durabilityProbe)
+  syncPath(transactionRoot, durabilityProbe, 'transaction-parent-directory')
+  syncPath(dir, durabilityProbe, 'project-directory')
+  if (failJournalWrite) {
+    writeFileSync(join(snapshotRoot, '.recovery.json.pending-injected'), '{')
+    throw new Error('Injected crash during recovery journal creation')
+  }
+  writeRecoveryJournal(snapshotRoot, {
+    version: 1,
+    project: name,
+    state: 'snapshot-ready',
+    originalLocalHead,
+  }, durabilityProbe)
+  syncPath(transactionRoot, durabilityProbe, 'transaction-parent-directory')
+  syncPath(dir, durabilityProbe, 'project-directory')
+  let finished = false
+
+  return {
+    identity() {
+      return { id, state: 'snapshot-ready' }
+    },
+    recordRemotePlan(plan) {
+      if (finished) throw new Error('Source transaction already finished')
+      writeRecoveryJournal(snapshotRoot, {
+        version: 1,
+        project: name,
+        state: 'publish-pending',
+        originalLocalHead,
+        ...plan,
+      }, durabilityProbe)
+      return { id, state: 'publish-pending' }
+    },
+    commit() {
+      if (finished) throw new Error('Source transaction already finished')
+      rmSync(snapshotRoot, { recursive: true })
+      finished = true
+    },
+    rollback() {
+      if (finished) throw new Error('Source transaction already finished')
+      rmSync(source, { recursive: true, force: true })
+      if (existsSync(join(snapshotRoot, 'source'))) cpSync(join(snapshotRoot, 'source'), source, { recursive: true, preserveTimestamps: true })
+      const metadataRestore = join(dir, `.project.json.rollback-${process.pid}-${Date.now()}`)
+      cpSync(join(snapshotRoot, 'project.json'), metadataRestore, { preserveTimestamps: true })
+      renameSync(metadataRestore, metadata)
+      restoreCloneWorktree(clone, join(snapshotRoot, 'overleaf-worktree'))
+      finished = true
+      rmSync(snapshotRoot, { recursive: true })
+    },
+    abandon() {
+      if (finished) throw new Error('Source transaction already finished')
+      finished = true
+      return { id, state: 'recovery-required' }
+    },
+  }
+}
+
+function restoreCloneWorktree(clone, snapshot) {
+  if (!existsSync(clone)) return
+  for (const entry of readdirSync(clone, { withFileTypes: true })) {
+    if (entry.name === '.git') continue
+    rmSync(join(clone, entry.name), { recursive: true, force: true })
+  }
+  if (!existsSync(snapshot)) return
+  for (const entry of readdirSync(snapshot, { withFileTypes: true })) {
+    cpSync(join(snapshot, entry.name), join(clone, entry.name), { recursive: true, preserveTimestamps: true })
+  }
+}
+
+export function listProjectSourceRecoveries(name) {
+  const root = join(projectDir(name), '.source-transactions')
+  if (!existsSync(root)) return []
+  return readdirSync(root, { withFileTypes: true })
+    .filter(entry => entry.isDirectory())
+    .map(entry => {
+      const journal = join(root, entry.name, 'recovery.json')
+      if (!existsSync(journal)) return { id: entry.name, state: 'journal-incomplete' }
+      return { id: entry.name, ...JSON.parse(readFileSync(journal, 'utf8')) }
+    })
+}
+
+export function rollbackProjectSourceRecovery(name, id) {
+  const dir = projectDir(name)
+  const snapshotRoot = join(dir, '.source-transactions', id)
+  const source = sourceDir(name)
+  const metadata = join(dir, 'project.json')
+  rmSync(source, { recursive: true, force: true })
+  if (existsSync(join(snapshotRoot, 'source'))) cpSync(join(snapshotRoot, 'source'), source, { recursive: true, preserveTimestamps: true })
+  const metadataRestore = join(dir, `.project.json.rollback-${process.pid}-${Date.now()}`)
+  cpSync(join(snapshotRoot, 'project.json'), metadataRestore, { preserveTimestamps: true })
+  renameSync(metadataRestore, metadata)
+  restoreCloneWorktree(join(dir, 'overleaf-clone'), join(snapshotRoot, 'overleaf-worktree'))
+}
+
+export function removeProjectSourceRecovery(name, id) {
+  rmSync(join(projectDir(name), '.source-transactions', id), { recursive: true })
 }
 
 /**

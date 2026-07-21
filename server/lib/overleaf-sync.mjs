@@ -30,8 +30,11 @@ const execAsync = (cmd, opts = {}) =>
 
 import { existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'fs'
 import { dirname, join } from 'path'
-import { projectDir, readProject, updateProject, createProject, listSourceFiles, writeSourceFile } from './project-store.mjs'
-import { processProjectPush } from '../routes/projects.mjs'
+import {
+  projectDir, readProject, updateProject, createProject,
+  listProjectSourceRecoveries, rollbackProjectSourceRecovery, removeProjectSourceRecovery,
+} from './project-store.mjs'
+import { processProjectPushSerialized, runSerializedProjectSourceOperation } from '../routes/projects.mjs'
 import { createLogger } from '../../shared/logger.mjs'
 
 const log = createLogger('overleaf-sync')
@@ -44,6 +47,12 @@ const pollers = new Map()
 
 function cloneDir(name) {
   return join(projectDir(name), 'overleaf-clone')
+}
+
+export async function readOverleafLocalHead(name) {
+  const dir = cloneDir(name)
+  if (!existsSync(join(dir, '.git'))) return null
+  return (await execAsync('git rev-parse HEAD', { cwd: dir, timeout: 5000 })).stdout.trim()
 }
 
 // Credentials only live in the userinfo of an http(s) URL. ssh remotes,
@@ -183,53 +192,15 @@ async function fetchAndDiff(dir) {
   }
 }
 
-async function syncCloneToProject(name, dir) {
-  const paths = (await trackedFiles(dir)).filter(p => !shouldSkip(p))
-  const tracked = new Set(paths)
-  const deletedFiles = listSourceFiles(name).filter(p => !tracked.has(p) && !shouldSkip(p))
-  const files = paths.map(p => ({ path: p, ...readFileForPush(join(dir, p)) }))
-  return processProjectPush(name, { files, deletedFiles, sourceManifest: paths, overleafSync: true })
-}
-
-async function unmergedFiles(dir) {
-  const { stdout } = await execAsync('git diff --name-only --diff-filter=U -z', { cwd: dir, timeout: 30000 })
-  return stdout.split('\0').filter(Boolean).filter(p => !shouldSkip(p))
-}
-
-async function copyConflictFilesToProject(name, dir, files) {
-  for (const relPath of files) {
-    const full = pathInsideClone(name, relPath)
-    if (existsSync(full)) writeSourceFile(name, relPath, readFileSync(full))
-  }
-}
-
-async function recordConflict(name, dir, cause) {
-  const files = await unmergedFiles(dir)
-  if (files.length > 0) await copyConflictFilesToProject(name, dir, files)
-  try {
-    await execAsync('git rebase --abort', { cwd: dir, timeout: 30000 })
-  } catch (abortErr) {
-    log.warn('rebase-abort-failed', { name, error: scrubCreds(abortErr.message) })
-  }
-  updateProject(name, {
-    overleafSyncStatus: 'conflict',
-    overleafSyncError: scrubCreds(cause?.message || cause || 'Git sync conflict'),
-    overleafConflictFiles: files,
-    overleafLastConflictAt: Date.now(),
-  })
-  return files
-}
-
 /**
  * Push tlda-side source changes back to the linked Overleaf/git remote.
  *
- * Called from the normal project push path after tlda source files have changed.
- * The local clone is first updated to the remote upstream, the incoming changed
- * files are applied on top, then one commit is pushed. After a successful push,
- * the clone's full tracked state is fed back through processProjectPush so any
- * concurrent upstream edits are reflected in tlda's source tree too.
+ * Preparation performs every fallible local git operation and returns a
+ * publish closure. The normal source transaction publishes only after local
+ * source and metadata are durably committed, leaving no fallible local commit
+ * after remote success.
  */
-export async function pushSourceToOverleaf(name, { files = [], deletedFiles = [], editedBy } = {}) {
+export async function prepareSourcePushToOverleaf(name, { files = [], deletedFiles = [], editedBy } = {}) {
   const project = readProject(name)
   if (!project?.overleafRemote || project.autoSync === false) return { skipped: true, reason: 'not-linked' }
 
@@ -244,8 +215,13 @@ export async function pushSourceToOverleaf(name, { files = [], deletedFiles = []
     return { skipped: true, reason: 'no-source-changes' }
   }
 
+  let originalLocalHead = null
   try {
+    originalLocalHead = (await execAsync('git rev-parse HEAD', { cwd: dir, timeout: 5000 })).stdout.trim()
     await execAsync('git fetch --quiet origin', { cwd: dir, timeout: 120000 })
+    const upstreamRef = (await execAsync('git rev-parse --abbrev-ref @{u}', { cwd: dir, timeout: 5000 })).stdout.trim()
+    const remoteBranch = upstreamRef.replace(/^[^/]+\//, '')
+    const previousRemoteHead = (await execAsync('git rev-parse @{u}', { cwd: dir, timeout: 5000 })).stdout.trim()
     await execAsync('git reset --hard @{u}', { cwd: dir, timeout: 30000 })
 
     for (const file of changedFiles) {
@@ -266,47 +242,98 @@ export async function pushSourceToOverleaf(name, { files = [], deletedFiles = []
     const { stdout: status } = await execAsync('git status --porcelain', { cwd: dir, timeout: 5000 })
     if (!status.trim()) {
       const head = (await execAsync('git rev-parse HEAD', { cwd: dir, timeout: 5000 })).stdout.trim()
-      updateProject(name, {
-        overleafHead: head,
-        overleafLastPullAt: Date.now(),
-        overleafSyncStatus: 'ok',
-        overleafSyncError: null,
-        overleafConflictFiles: [],
-      })
-      return { name, pushed: false, unchanged: true, head }
+      return { name, pushed: false, unchanged: true, head, previousRemoteHead, remoteBranch, originalLocalHead,
+        publish: async () => ({ name, pushed: false, unchanged: true, head }),
+        restoreRemote: async () => {},
+        restoreLocal: async () => execAsync(`git reset --hard ${shellQuote(originalLocalHead)}`, { cwd: dir, timeout: 30000 }),
+      }
     }
 
     const actor = editedBy ? ` by ${editedBy}` : ''
     await execAsync(`git commit -m ${shellQuote(`tlda sync${actor}`)}`, { cwd: dir, timeout: 30000 })
 
-    try {
-      await execAsync('git push origin HEAD', { cwd: dir, timeout: 120000 })
-    } catch (e) {
-      try {
-        await execAsync('git pull --rebase', { cwd: dir, timeout: 120000 })
-        await execAsync('git push origin HEAD', { cwd: dir, timeout: 120000 })
-      } catch (rebaseErr) {
-        const conflictFiles = await recordConflict(name, dir, rebaseErr)
-        const suffix = conflictFiles.length ? ` (${conflictFiles.join(', ')})` : ''
-        throw new Error(`Git sync conflict${suffix}: resolve the conflict markers, then push the resolved source through tlda`)
-      }
-    }
-
     const head = (await execAsync('git rev-parse HEAD', { cwd: dir, timeout: 5000 })).stdout.trim()
-    updateProject(name, {
-      overleafHead: head,
-      overleafLastPullAt: Date.now(),
-      overleafLastPushAt: Date.now(),
-      overleafSyncStatus: 'ok',
-      overleafSyncError: null,
-      overleafConflictFiles: [],
-    })
-    await syncCloneToProject(name, dir)
-    log.info('pushed', { name, changed: changedFiles.length, deleted: removedFiles.length, head: head.slice(0, 7) })
-    return { name, pushed: true, changed: changedFiles.length, deleted: removedFiles.length, head }
+    return {
+      name, pushed: true, changed: changedFiles.length, deleted: removedFiles.length,
+      head, previousRemoteHead, remoteBranch, originalLocalHead,
+      async publish() {
+        await execAsync(`git push origin HEAD:${shellQuote(remoteBranch)}`, { cwd: dir, timeout: 120000 })
+        log.info('pushed', { name, changed: changedFiles.length, deleted: removedFiles.length, head: head.slice(0, 7) })
+        return { name, pushed: true, changed: changedFiles.length, deleted: removedFiles.length, head }
+      },
+      async restoreRemote() {
+        await execAsync(
+          `git push --force-with-lease=${shellQuote(`refs/heads/${remoteBranch}:${head}`)} origin ${shellQuote(`${previousRemoteHead}:refs/heads/${remoteBranch}`)}`,
+          { cwd: dir, timeout: 120000 },
+        )
+      },
+      async restoreLocal() {
+        await execAsync(`git reset --hard ${shellQuote(originalLocalHead)}`, { cwd: dir, timeout: 30000 })
+      },
+    }
   } catch (e) {
+    if (originalLocalHead) {
+      await execAsync(`git reset --hard ${shellQuote(originalLocalHead)}`, { cwd: dir, timeout: 30000 })
+    }
     throw new Error(scrubCreds(e.message))
   }
+}
+
+export async function recoverProjectSourceTransactions(name) {
+  const dir = cloneDir(name)
+  const results = []
+  for (const recovery of listProjectSourceRecoveries(name)) {
+    if (recovery.state === 'journal-incomplete') {
+      removeProjectSourceRecovery(name, recovery.id)
+      results.push({ id: recovery.id, state: 'incomplete-journal-cleaned' })
+      continue
+    }
+    if (recovery.state === 'snapshot-ready') {
+      if (existsSync(join(dir, '.git')) && recovery.originalLocalHead) {
+        await execAsync(`git reset --hard ${shellQuote(recovery.originalLocalHead)}`, { cwd: dir, timeout: 30000 })
+      }
+      rollbackProjectSourceRecovery(name, recovery.id)
+      removeProjectSourceRecovery(name, recovery.id)
+      results.push({ id: recovery.id, state: 'snapshot-rolled-back-cleaned' })
+      continue
+    }
+    if (!existsSync(join(dir, '.git'))) {
+      log.warn('source-recovery-clone-missing', { name, recoveryId: recovery.id })
+      results.push({ id: recovery.id, state: 'recovery-required' })
+      continue
+    }
+    await execAsync('git fetch --quiet origin', { cwd: dir, timeout: 120000 })
+    const remoteHead = (await execAsync(`git rev-parse ${shellQuote(`refs/remotes/origin/${recovery.remoteBranch}`)}`, { cwd: dir, timeout: 5000 })).stdout.trim()
+    let proposedPublished = remoteHead === recovery.proposedRemoteHead
+    if (!proposedPublished) {
+      try {
+        await execAsync(`git merge-base --is-ancestor ${shellQuote(recovery.proposedRemoteHead)} ${shellQuote(remoteHead)}`, { cwd: dir, timeout: 5000 })
+        proposedPublished = true
+      } catch { /* unrelated remote head remains unresolved */ }
+    }
+    if (proposedPublished) {
+      removeProjectSourceRecovery(name, recovery.id)
+      results.push({ id: recovery.id, state: 'committed-cleaned' })
+      continue
+    }
+    if (remoteHead === recovery.previousRemoteHead) {
+      await execAsync(`git reset --hard ${shellQuote(recovery.originalLocalHead)}`, { cwd: dir, timeout: 30000 })
+      rollbackProjectSourceRecovery(name, recovery.id)
+      removeProjectSourceRecovery(name, recovery.id)
+      results.push({ id: recovery.id, state: 'rolled-back-cleaned' })
+      continue
+    }
+    log.warn('source-recovery-remote-diverged', {
+      name, recoveryId: recovery.id, remoteHead: remoteHead.slice(0, 7),
+    })
+    results.push({ id: recovery.id, state: 'recovery-required' })
+  }
+  return results
+}
+
+export async function pushSourceToOverleaf(name, changes = {}) {
+  const prepared = await prepareSourcePushToOverleaf(name, changes)
+  return prepared.publish()
 }
 
 /**
@@ -314,7 +341,12 @@ export async function pushSourceToOverleaf(name, { files = [], deletedFiles = []
  * normal push/build pipeline. Returns a summary. `initial` forces a full push
  * of every tracked file (used right after the first clone).
  */
-export async function syncOverleaf(name, { initial = false } = {}) {
+export async function syncOverleaf(name, options = {}) {
+  return runSerializedProjectSourceOperation(name, () => syncOverleafSerialized(name, options))
+}
+
+async function syncOverleafSerialized(name, { initial = false, testHooks = null } = {}) {
+  if (testHooks?.afterLock) await testHooks.afterLock()
   const project = readProject(name)
   if (!project) throw new Error(`Project ${name} not found`)
   const dir = cloneDir(name)
@@ -322,6 +354,11 @@ export async function syncOverleaf(name, { initial = false } = {}) {
     throw new Error(`No Overleaf clone for ${name} — link it first`)
   }
 
+  const recoveries = await recoverProjectSourceTransactions(name)
+  const unresolved = recoveries.find(item => item.state === 'recovery-required')
+  if (unresolved) return { name, recoveryRequired: true, recovery: unresolved }
+
+  const retryHead = (await execAsync('git rev-parse HEAD', { cwd: dir, timeout: 5000 })).stdout.trim()
   let changedPaths, deletedPaths, head
   if (initial) {
     changedPaths = (await trackedFiles(dir)).filter(p => !shouldSkip(p))
@@ -345,7 +382,18 @@ export async function syncOverleaf(name, { initial = false } = {}) {
 
   const files = changedPaths.map(p => ({ path: p, ...readFileForPush(join(dir, p)) }))
   const sourceManifest = (await trackedFiles(dir)).filter(p => !shouldSkip(p))
-  const result = await processProjectPush(name, { files, deletedFiles: deletedPaths, sourceManifest, overleafSync: true })
+  const processPush = testHooks?.processProjectPush || processProjectPushSerialized
+  const result = await processPush(name, { files, deletedFiles: deletedPaths, sourceManifest, overleafSync: true })
+
+  if (!result?.ok) {
+    await execAsync(`git reset --hard ${shellQuote(retryHead)}`, { cwd: dir, timeout: 30000 })
+    const message = result?.error || `Source transaction failed with status ${result?.status || 'unknown'}`
+    updateProject(name, {
+      overleafSyncStatus: 'error',
+      overleafSyncError: scrubCreds(message),
+    })
+    throw new Error(scrubCreds(message))
+  }
 
   updateProject(name, {
     overleafHead: head,
@@ -432,12 +480,29 @@ export function isPolling(name) {
  * On server startup, resume pollers for every project that has an Overleaf
  * remote and autoSync enabled. Call once after the project store is initialized.
  */
-export function resumeOverleafPollers(listProjectsFn) {
+export async function resumeOverleafPollers(listProjectsFn, {
+  recover = recoverProjectSourceTransactions,
+  start = startPolling,
+} = {}) {
   let resumed = 0
   for (const project of listProjectsFn()) {
-    if (project.overleafRemote && project.autoSync && existsSync(join(cloneDir(project.name), '.git'))) {
-      startPolling(project.name, project.overleafPollSeconds || 60)
-      resumed++
+    try {
+      const recoveries = await recover(project.name)
+      for (const recovery of recoveries.filter(item => item.state === 'recovery-required')) {
+        log.warn('source-recovery-required', { name: project.name, recoveryId: recovery.id })
+      }
+      if (project.overleafRemote && project.autoSync && existsSync(join(cloneDir(project.name), '.git'))) {
+        start(project.name, project.overleafPollSeconds || 60)
+        resumed++
+      }
+    } catch (error) {
+      // Startup must isolate this project so one broken recovery cannot prevent
+      // every later project's poller from resuming.
+      log.warn('poller-resume-failed', { name: project.name, error: scrubCreds(error.message) })
+      updateProject(project.name, {
+        overleafSyncStatus: 'error',
+        overleafSyncError: scrubCreds(error.message),
+      })
     }
   }
   if (resumed) log.info('pollers-resumed', { count: resumed })
