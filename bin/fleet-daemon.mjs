@@ -1047,6 +1047,10 @@ function handleServerMessage(msg) {
   if (msg.type === 'agent-status-events') {
     applyAgentStatusEvents(msg.agent_status_events || [])
     agentStatusSeq = Math.max(agentStatusSeq, msg.agent_status_seq || agentStatusSeq)
+    // Cold-start deltas arrive before daemon-welcome. Building watchers for each
+    // partial roster repeatedly starves the WebSocket and leaves the browser with
+    // no usable agent surface. Welcome reconciles the complete roster once.
+    if (!_serverReady) return
     reconcileRoster('agent-status-events')
     agentStatus.start()
     return
