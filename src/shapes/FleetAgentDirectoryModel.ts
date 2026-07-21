@@ -106,6 +106,7 @@ export type FleetAgentDirectoryRowModel = {
   prettyName: string
   color: string
   labels: string[]
+  lastActiveAt: number
   ago: string
   dimmed: boolean
   nameOpacity: number
@@ -146,6 +147,7 @@ export function toFleetAgentDirectoryRow(agent: any): FleetAgentDirectoryRowMode
     prettyName: agent?.pretty_name ?? agent?.friendly_name ?? displayName,
     color: getFleetAgentNickColor(id, agent?.is_manager),
     labels: Array.isArray(agent?.labels) ? agent.labels : [],
+    lastActiveAt: ts,
     ago,
     dimmed: fleetAgentCategory(agent) === 'hibernating',
     nameOpacity,
@@ -169,4 +171,10 @@ export function getFleetAgentDirectoryRows(agents: any[]): FleetAgentDirectoryRo
 
 export function sortFleetAgentDirectoryRows(rows: FleetAgentDirectoryRowModel[]): FleetAgentDirectoryRowModel[] {
   return [...rows].sort((a, b) => a.displayName.localeCompare(b.displayName))
+}
+
+export function sortFleetAgentDirectoryRowsByRecency(rows: FleetAgentDirectoryRowModel[]): FleetAgentDirectoryRowModel[] {
+  return [...rows].sort((a, b) =>
+    b.lastActiveAt - a.lastActiveAt || a.displayName.localeCompare(b.displayName)
+  )
 }

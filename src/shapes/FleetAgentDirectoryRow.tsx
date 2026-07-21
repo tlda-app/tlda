@@ -16,6 +16,7 @@ export {
   getFleetAgentDirectoryRows,
   getFleetAgentNickColor,
   sortFleetAgentDirectoryRows,
+  sortFleetAgentDirectoryRowsByRecency,
   toFleetAgentDirectoryRow,
 } from './FleetAgentDirectoryModel'
 

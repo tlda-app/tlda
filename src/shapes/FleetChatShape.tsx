@@ -87,7 +87,7 @@ import { DATABASE_HTTP } from '../activeConfig'
 import {
   FleetAgentDirectoryList,
   getFleetAgentDirectoryRows,
-  sortFleetAgentDirectoryRows,
+  sortFleetAgentDirectoryRowsByRecency,
 } from './FleetAgentDirectoryRow'
 import { fleetAgentFilterChoiceUpdate } from './fleet-agent-filter-choices'
 import { getUnreadAgentRailRows, isOnlyOwnedChat } from './fleet-unread-agent-rail'
@@ -6210,7 +6210,7 @@ export function FleetChatFilterMode({
     updateChatProps(fleetAgentFilterChoiceUpdate(humanLabel, label, mode))
   }, [humanLabel, updateChatProps])
   const choiceAgents = useFleetAgents()
-  const filterRows = useMemo(() => sortFleetAgentDirectoryRows(getFleetAgentDirectoryRows(choiceAgents)), [choiceAgents])
+  const filterRows = useMemo(() => sortFleetAgentDirectoryRowsByRecency(getFleetAgentDirectoryRows(choiceAgents)), [choiceAgents])
 
   useEffect(() => {
     function handlePointerUp(e: PointerEvent) {
