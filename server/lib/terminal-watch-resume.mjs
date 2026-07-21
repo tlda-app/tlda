@@ -12,7 +12,7 @@ export function agentsForTerminalWatchResume({
   for (const agent of agents) {
     if (!agent?.id || !watched.has(agent.id)) continue
     const seat = getCurrentAgentSeat(agent.id)
-    if (!seat || seat.daemon_key !== daemonKey || !seat.tmux_session) continue
+    if (!seat || seat.daemon_key !== daemonKey || !seat.terminal_capability) continue
     out.push({ agent, seat })
   }
   return out

@@ -231,7 +231,7 @@ try {
   assert.equal(staleProjected.daemon_key, null)
   assert.equal(staleProjected.machine_id, null)
   assert.equal(staleProjected.env_name, null)
-  assert.equal(staleProjected.tmux_session, null)
+  assert(!Object.hasOwn(staleProjected, 'tmux_session'))
   assert.deepEqual(store.getAgentsByDaemonKey('legacy:prod'), [])
 
   const staleRosterSummary = summarizeFleetRosterTruth({
@@ -261,7 +261,7 @@ try {
     now: nowMs,
   })
   assert.equal(staleRosterSummary.agents[0].daemon_key, 'unassigned')
-  assert.equal(staleRosterSummary.agents[0].tmux_session, null)
+  assert(!Object.hasOwn(staleRosterSummary.agents[0], 'tmux_session'))
   assert.equal(staleRosterSummary.machines.find(m => m.machine_id === 'legacy:prod').registry.total, 0)
 
   const terminalResume = agentsForTerminalWatchResume({
@@ -284,12 +284,12 @@ try {
           agent_id: id,
           daemon_key: 'mini:prod',
           session_id: 'rollout-routed-watch',
-          tmux_session: 'fleet-routed-watch',
+          terminal_capability: 'termcap:routed-watch',
         }
       : null,
   })
-  assert.deepEqual(terminalResume.map(({ agent, seat }) => [agent.id, seat.tmux_session]), [
-    ['fleet:routed-watch', 'fleet-routed-watch'],
+  assert.deepEqual(terminalResume.map(({ agent, seat }) => [agent.id, seat.terminal_capability]), [
+    ['fleet:routed-watch', 'termcap:routed-watch'],
   ])
 
   console.log('ok: daemon-key route authority requires durable session identity')
