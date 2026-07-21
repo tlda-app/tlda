@@ -232,9 +232,7 @@ export function projectAgentRuntimeStatus(agent, evidence = null, {
         ? (evidence.liveness_source || 'positive-runtime-evidence')
         : route.state !== ROUTE_STATE.ROUTABLE
           ? route.reason
-          : !tmuxMatchesWhenPresent
-            ? 'positive-evidence-does-not-match-current-seat'
-            : 'positive-runtime-evidence-expired',
+          : 'positive-runtime-evidence-expired',
       nowMs,
     })
   }
