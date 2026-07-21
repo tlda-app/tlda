@@ -21,6 +21,7 @@ import {
 import { FLEET_TOOL_DIMS, placeFleetShapeAtScreenPoint } from '../shapes/fleet-utils'
 import { getSemanticHighlight, toggleSemanticHighlight, subscribeSemanticHighlight } from '../semanticHighlight'
 import { navigateTo, navigateToPage, navigateToAnchor, parseHeadings, renderTocTitle, stripTex, getShapeText, type TocLevel, type TocEntry } from './helpers'
+import { normalizeSourceManifest } from '../../shared/source-manifest.mjs'
 
 const CHILDREN: Record<string, string[]> = {
   part: ['chapter', 'section', 'subsection', 'subsubsection'],
@@ -202,10 +203,14 @@ export function TocTab() {
         if (!err.error?.includes('exists')) throw new Error('Failed to create project')
       }
       const contentB64 = btoa(unescape(encodeURIComponent(text)))
+      const files = [{ path: 'content.md', content: contentB64, encoding: 'base64' }]
       await fetch(`/api/projects/${slug}/push`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ files: [{ path: 'content.md', content: contentB64, encoding: 'base64' }] }),
+        body: JSON.stringify({
+          files,
+          sourceManifest: normalizeSourceManifest(files.map(file => file.path), { format: 'markdown', mainFile: 'content.md' }),
+        }),
       })
       const patchRes = await fetch(`/api/projects/${book.bookName}/members`, {
         method: 'PATCH',

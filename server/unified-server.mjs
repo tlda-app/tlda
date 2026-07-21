@@ -8217,14 +8217,14 @@ async function handleDaemonWsMessage(ws, msg) {
   }
 
   if (type === 'source-change') {
-    const { project, files, deletedFiles, editedBy } = msg
+    const { project, files, deletedFiles, sourceManifest, editedBy } = msg
     if (!project) return
     if (readProject(project)) {
       updateProject(project, { lastSourceMachineId: ws._machineId, lastSourceEnvName: ws._envName, lastSourceMachineAt: Date.now() })
     }
     // Hand off to the same pipeline used by HTTP /api/projects/:name/push.
     try {
-      const result = await processProjectPush(project, { files, deletedFiles, editedBy })
+      const result = await processProjectPush(project, { files, deletedFiles, sourceManifest, editedBy })
       if (!result.ok) {
         console.error(`[fleet-daemon] source-change ${project}: ${result.error || 'unknown'}`)
         const err = new Error(result.error || 'source-change failed')

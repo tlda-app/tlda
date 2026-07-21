@@ -23,6 +23,7 @@ import {
   createTemporaryMarkdownSurfaceRequest,
   temporaryMarkdownShapeMeta,
 } from '../wm/markdown-surface'
+import { normalizeSourceManifest } from '../../shared/source-manifest.mjs'
 import { sendCanvasPageShapesToBack } from './document-pages'
 import { createFleetShape, FLEET_SHAPE_TYPES } from './fleet-utils'
 import { type UiIntentTransaction } from '../uiIntentTelemetry'
@@ -151,15 +152,17 @@ export async function createTemporaryMarkdownPageUrl(title: string, markdown: st
   const source = markdown.trim() ? markdown : `# ${title || 'Markdown chip'}`
   const startedAt = Date.now()
   await ensureTemporaryMarkdownProject()
+  const files = [{
+    path: TEMP_MARKDOWN_FILE,
+    content: encodeUtf8Base64(source),
+    encoding: 'base64',
+  }]
   const pushRes = await fetch(`/api/projects/${TEMP_MARKDOWN_PROJECT}/push`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      files: [{
-        path: TEMP_MARKDOWN_FILE,
-        content: encodeUtf8Base64(source),
-        encoding: 'base64',
-      }],
+      files,
+      sourceManifest: normalizeSourceManifest(files.map(file => file.path), { format: 'markdown', mainFile: TEMP_MARKDOWN_FILE }),
     }),
   })
   if (!pushRes.ok) throw new Error(`markdown push failed: ${pushRes.status}`)

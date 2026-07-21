@@ -24,6 +24,7 @@ import { resolveFilePath, uploadFileToServer } from '../shared/chat-file-process
 import { scanMarkdownDeps } from '../shared/markdown-deps.mjs';
 import { extractMarkdownSection } from '../shared/markdown-section.mjs';
 import { checkChatRender as checkSharedChatRender } from '../shared/chat-render-check.mjs';
+import { normalizeSourceManifest } from '../shared/source-manifest.mjs';
 import { formatSpawnModelSummary, validateSpawnModelSelection } from '../shared/spawn-model-validation.mjs';
 import { buildFleetSearchFilters, parseSearchQuery } from '../shared/fleet-search-query.mjs';
 import { formatActivityHealthStatus } from '../shared/activity-health.mjs';
@@ -2841,6 +2842,7 @@ export async function handleFleetTool(name, args) {
           method: 'POST',
           body: {
             files: [{ path: mainFile, content: reportContent }],
+            sourceManifest: normalizeSourceManifest([mainFile], { format: 'markdown', mainFile }),
             sourceDir: cwd || process.env.PWD || '/tmp',
             session: CLAUDE_SESSION,
           },

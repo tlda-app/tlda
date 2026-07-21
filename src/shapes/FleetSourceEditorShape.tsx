@@ -11,6 +11,7 @@ import {
   useEditor,
 } from 'tldraw'
 import { fleetSourceEditorProps } from '../../shared/shapes/fleet-panel-schema.mjs'
+import { normalizeSourceManifest } from '../../shared/source-manifest.mjs'
 import { useContext, useEffect, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react'
 import { ChangeSet, EditorState, Prec, Text } from '@codemirror/state'
 import { EditorView, keymap, lineNumbers } from '@codemirror/view'
@@ -465,6 +466,7 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
   const secondaryFullSourceRef = useRef('')
   const sourceFilesRef = useRef<string[] | null>(null)
   const sourceFilesPromiseRef = useRef<Promise<string[]> | null>(null)
+  const projectInfoRef = useRef<any | null>(null)
   const sourceWindowRef = useRef({ startLine: 1, endLine: 1, targetLine: 1, text: '' })
   const vimModeRef = useRef(vimMode)
   const laserSessionRef = useRef<string | null>(null)
@@ -664,6 +666,7 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
         const res = await fetch(projectApiPath(doc!.docName, ''))
         if (!res.ok) throw new Error(`project ${res.status}`)
         const info = await res.json()
+        projectInfoRef.current = info
         const nextFile = normalizeFile(info?.mainFile || 'main.tex')
         if (cancelled) return
         setFile(nextFile)
@@ -692,6 +695,7 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
         const res = await fetch(projectApiPath(doc!.docName, ''))
         if (!res.ok) throw new Error(`project ${res.status}`)
         const info = await res.json()
+        projectInfoRef.current = info
         if (cancelled) return
         const files = info?.overleafSyncStatus === 'conflict' && Array.isArray(info?.overleafConflictFiles)
           ? info.overleafConflictFiles.map(normalizeFile)
@@ -780,11 +784,17 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
   const writeSourceFile = async (sourceFile: string, nextFullText: string) => {
     if (!doc?.docName || !sourceFile) return null
     const sourcePath = await resolveSourceFilePath(sourceFile)
+    if (!projectInfoRef.current) {
+      const infoRes = await fetch(projectApiPath(doc.docName, ''))
+      if (infoRes.ok) projectInfoRef.current = await infoRes.json()
+    }
+    const sourceManifest = normalizeSourceManifest([...await loadSourceFiles(), sourcePath], projectInfoRef.current || {})
     const res = await fetch(projectApiPath(doc.docName, `/source/${encodeURIComponent(sourcePath)}`), {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         content: nextFullText,
+        sourceManifest,
         editedBy: shape.props.userId || shape.props.deviceId || 'fleet-source-editor',
       }),
     })

@@ -3,6 +3,7 @@ import fs from 'fs'
 import path from 'path'
 
 import { scanMarkdownDeps } from '../shared/markdown-deps.mjs'
+import { isBuildJunkPath, isIgnoredSourceDir, isSourceFilePath, normalizeSourceManifest } from '../shared/source-manifest.mjs'
 
 export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected, resolveEditor }) {
   const sourceWatchers = new Map()
@@ -19,10 +20,6 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
 
   // ---------- source watching ----------
 
-  // Source files we care about for tlda projects. Kept in sync with
-  // cli/lib/source-files.mjs's allowlist (extensions only — the cli
-  // helper does more, but the daemon stays standalone).
-  const SOURCE_EXTS = new Set(['.tex', '.bib', '.sty', '.cls', '.bst', '.md', '.qmd', '.html', '.css', '.js', '.svg', '.png', '.jpg', '.jpeg', '.pdf', '.eps', '.json', '.yml', '.yaml'])
   const JUNK_PATTERNS = [/^\.#/, /\.swp$/, /~$/, /\.tmp$/, /\.lock$/]
 
   // Bootstrap input scanner — regex-scan .tex files for \input-like commands
@@ -120,11 +117,10 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
     return format === 'markdown' || (mainFile?.toLowerCase().endsWith('.md') ?? false)
   }
 
-  function isSourceFile(name) {
+  function isSourceFile(name, context = {}) {
     if (JUNK_PATTERNS.some(r => r.test(name))) return false
     if (name.includes('node_modules') || name.includes('.git/')) return false
-    const ext = path.extname(name).toLowerCase()
-    return SOURCE_EXTS.has(ext)
+    return isSourceFilePath(name, context)
   }
 
   function readFileForUpload(fullPath) {
@@ -170,14 +166,40 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
     }
   }
 
-  function shouldIgnoreSourceWatchPath(sourceDir, filePath, stats) {
+  function shouldIgnoreSourceWatchPath(sourceDir, filePath, stats, context = {}) {
     const rel = sourceRel(sourceDir, filePath)
     if (!rel) return false
     const parts = rel.split('/')
     if (parts.includes('node_modules') || parts.includes('.git')) return true
     if (!stats) return false
     if (stats?.isDirectory?.()) return false
-    return !isSourceFile(rel) && !rel.includes('.tlda/scratch/')
+    return !isSourceFile(rel, context) && !rel.includes('.tlda/scratch/')
+  }
+
+  function collectSourceManifest(sourceDir, context, watchSet = null) {
+    const rels = new Set()
+    if (watchSet) {
+      for (const rel of watchSet) {
+        if (typeof rel !== 'string') continue
+        if (fs.existsSync(path.join(sourceDir, rel))) rels.add(rel)
+      }
+      return normalizeSourceManifest([...rels], context)
+    }
+
+    function walk(dir, prefix = '') {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const rel = prefix ? `${prefix}/${entry.name}` : entry.name
+        const full = path.join(dir, entry.name)
+        if (entry.isDirectory()) {
+          if (isIgnoredSourceDir(entry.name)) continue
+          walk(full, rel)
+        } else if (!isBuildJunkPath(rel) && isSourceFile(rel, context)) {
+          rels.add(rel)
+        }
+      }
+    }
+    walk(sourceDir)
+    return normalizeSourceManifest([...rels], context)
   }
 
   function sourceWatcherPaths(state) {
@@ -212,7 +234,12 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
       ignoreInitial: true,
       persistent: true,
       followSymlinks: true,
-      ignored: (filePath, stats) => shouldIgnoreSourceWatchPath(state.sourceDir, filePath, stats),
+      ignored: (filePath, stats) => shouldIgnoreSourceWatchPath(
+        state.sourceDir,
+        filePath,
+        stats,
+        { format: state.format, mainFile: state.mainFile },
+      ),
     })
     state.watcher = watcher
     const handle = (filePath) => {
@@ -280,16 +307,17 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
           existing.mainFile = p.mainFile
           existing.extraInputCommands = p.extraInputCommands || []
           existing.isMarkdown = isMarkdown
+          existing.format = p.format
           const nextWatcherKey = sourceWatcherKey(existing)
           if (!existing.watcher || existing.watcherKey !== nextWatcherKey) startSourceWatcher(existing, 'resync')
           if (newlyWatched.size > 0) {
-            pushWatchedFiles(p.name, sourceDir, newlyWatched, null, p.extraInputCommands, isMarkdown)
+            pushWatchedFiles(p.name, sourceDir, newlyWatched, null, p.extraInputCommands, isMarkdown, p.format)
           }
           continue
         }
       }
 
-      const state = { sourceDir, debounce: null, pending: new Set(), watchSet, onFileChange: null, projectName: p.name, mainFile: p.mainFile, extraInputCommands: p.extraInputCommands || [], isMarkdown, watcher: null, watcherKey: '', _symlinkWatchers: new Map() }
+      const state = { sourceDir, debounce: null, pending: new Set(), watchSet, onFileChange: null, projectName: p.name, mainFile: p.mainFile, format: p.format, extraInputCommands: p.extraInputCommands || [], isMarkdown, watcher: null, watcherKey: '', _symlinkWatchers: new Map() }
 
       const onFileChange = (filename) => {
         if (!filename) return
@@ -308,7 +336,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
             // won't be in it yet, but we must still push it so the build can pick it up.
             // Non-source files (build artifacts, .aux, etc.) are filtered by watchSet when
             // available, or dropped entirely when the watchSet is empty (bootstrap mode).
-            if (!isSourceFile(filename)) {
+            if (!isSourceFile(filename, { format: state.format, mainFile: state.mainFile })) {
               if (state.watchSet.size > 0) {
                 if (!state.watchSet.has(filename)) return
               } else {
@@ -327,7 +355,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
         sourceWatchers.set(p.name, state)
         startSourceWatcher(state, 'project sync')
         log.info(`watching source ${p.name}: ${sourceDir}${bindings[p.name] ? ' (local binding)' : ''} (${watchSet.size} files${hasFlsWatchList ? '' : ', bootstrap'})`)
-        pushWatchedFiles(p.name, sourceDir, watchSet, hasFlsWatchList ? null : p.mainFile, p.extraInputCommands, isMarkdown)
+        pushWatchedFiles(p.name, sourceDir, watchSet, hasFlsWatchList ? null : p.mainFile, p.extraInputCommands, isMarkdown, p.format)
       } catch (e) {
         // One source watcher failing should not stop other projects from syncing.
         log.error(`source watcher failed for ${p.name}: ${e.message}`)
@@ -347,37 +375,36 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
    * commands and push all discovered dependencies — the bootstrap path.
    * Otherwise push the .fls-derived watchSet.
    */
-  function pushWatchedFiles(projectName, sourceDir, watchSet, mainFile, extraInputCommands, isMarkdown) {
-    const files = []
+  function pushWatchedFiles(projectName, sourceDir, watchSet, mainFile, extraInputCommands, isMarkdown, format) {
+    let uploadPaths = new Set()
     if (mainFile) {
       // Bootstrap mode: no .fls yet. Scan the main file for its deps — \input-like
       // commands for tex, referenced images for markdown — and push main + deps.
-      const deps = isMarkdown
+      uploadPaths = isMarkdown
         ? scanMarkdownInputs(sourceDir, mainFile)
         : scanTexInputs(sourceDir, mainFile, extraInputCommands || [])
-      log.info(`bootstrap scan for ${projectName}: ${deps.size} files from ${mainFile}`)
-      for (const rel of deps) {
-        const full = path.join(sourceDir, rel)
-        try { files.push({ path: rel, ...readFileForUpload(full) }) }
-        catch (e) {
-          // Per-file upload failures are surfaced; readable files still push.
-          log.error(`read ${full}: ${e.message}`)
-        }
-      }
+      log.info(`bootstrap scan for ${projectName}: ${uploadPaths.size} files from ${mainFile}`)
     } else if (watchSet.size > 0) {
-      for (const rel of watchSet) {
-        const full = path.join(sourceDir, rel)
-        if (!fs.existsSync(full)) continue
-        try { files.push({ path: rel, ...readFileForUpload(full) }) }
-        catch (e) {
-          // Per-file upload failures are surfaced; readable files still push.
-          log.error(`read ${full}: ${e.message}`)
-        }
+      uploadPaths = new Set(watchSet)
+    }
+    const sourceManifest = collectSourceManifest(
+      sourceDir,
+      { format, mainFile },
+      uploadPaths,
+    )
+    if (sourceManifest.length === 0) return
+    const files = []
+    for (const rel of sourceManifest) {
+      const full = path.join(sourceDir, rel)
+      try { files.push({ path: rel, ...readFileForUpload(full) }) }
+      catch (e) {
+        // Per-file upload failures are surfaced; readable files still push.
+        log.error(`read ${full}: ${e.message}`)
       }
     }
     if (files.length === 0) return
     log.info(`connect push: ${files.length} files for ${projectName}`)
-    sendMsg({ type: 'source-change', project: projectName, files })
+    sendMsg({ type: 'source-change', project: projectName, files, sourceManifest })
   }
 
   const _pendingSourceProjects = new Set()
@@ -506,6 +533,11 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
       type: 'source-change',
       project: projectName,
       files,
+      sourceManifest: collectSourceManifest(
+        state.sourceDir,
+        { format: state.format, mainFile: state.mainFile },
+        state.isMarkdown ? state.watchSet : null,
+      ),
       ...(deleted.length > 0 && { deletedFiles: deleted }),
       ...(editedBy && { editedBy }),
     })

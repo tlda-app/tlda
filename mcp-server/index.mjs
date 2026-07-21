@@ -44,6 +44,7 @@ import { harnessFromEnv } from './lib/harness-adapters.mjs';
 import { getFleetServerUrl, getServerUrl, assertServerCoherence, DEFAULT_PORT } from '../shared/config.mjs'
 import { tldaFetch as _tldaFetch } from '../shared/http-client.mjs'
 import { uploadFileToServer } from '../shared/chat-file-processing.mjs'
+import { pushMcpSourceFiles } from './source-push-orchestration.mjs'
 
 // Fail loud if a hand-pinned TLDA_SERVER disagrees with the config this agent's
 // MCP resolved — the 6/27 split, refused at boot rather than joining the wrong
@@ -3440,12 +3441,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (!content) return { content: [{ type: 'text', text: `No content for ${spec.path} — provide content or localPath.` }], isError: true };
         files.push({ path: spec.path, content });
       }
-
-      await serverFetch(`/api/projects/${doc}/push`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ files, session: process.env.CLAUDE_SESSION }),
-      });
+      await pushMcpSourceFiles({ doc, files, session: process.env.CLAUDE_SESSION, serverFetch });
 
       // Shadow-branch commit (best-effort)
       try {

@@ -12,8 +12,9 @@
 import { watch, existsSync } from 'fs'
 import { join, resolve } from 'path'
 import { spawn } from 'child_process'
-import { isSourceFile, isJunk, readForUpload } from './source-files.mjs'
+import { collectSourceHashes, isSourceFile, isJunk, readForUpload } from './source-files.mjs'
 import { connectSSE } from '../../shared/sse-parser.mjs'
+import { normalizeSourceManifest } from '../../shared/source-manifest.mjs'
 
 const isTTY = process.stderr.isTTY
 const dim   = (s) => isTTY ? `\x1b[2m${s}\x1b[0m` : s
@@ -60,6 +61,7 @@ export async function startWatcher({ dir, name, debounceMs = 200, getServer, get
   const server = getServer()
   const token = getToken?.() || null
   const authHeaders = token ? { 'Authorization': `Bearer ${token}` } : {}
+  let sourceContext = {}
   let pushTimeout = null
   let pendingFiles = new Set()
   let pushing = false
@@ -77,13 +79,15 @@ export async function startWatcher({ dir, name, debounceMs = 200, getServer, get
   // Initial push — rebuild if source is newer than last build
   async function initialPush() {
     try {
-      const files = (await import('./source-files.mjs')).collectSourceFiles(dir)
+      sourceContext = await fetchSourceContext(server, name, authHeaders)
+      const files = (await import('./source-files.mjs')).collectSourceFiles(dir, sourceContext)
+      const sourceManifest = normalizeSourceManifest(files.map(f => f.path), sourceContext)
       if (files.length > 0) {
         console.log(`[watch] Initial push: ${files.length} file(s)`)
         const res = await fetch(`${server}/api/projects/${name}/push`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...authHeaders },
-          body: JSON.stringify({ files, sourceDir: dir }),
+          body: JSON.stringify({ files, sourceManifest, sourceDir: dir }),
           signal: AbortSignal.timeout(30000),
         })
         if (res.ok) {
@@ -118,6 +122,7 @@ export async function startWatcher({ dir, name, debounceMs = 200, getServer, get
     }
 
     const priorityPages = cachedViewportPages || undefined
+    const sourceManifest = normalizeSourceManifest(Object.keys(collectSourceHashes(dir, sourceContext)), sourceContext)
 
     // Detect deleted files
     const deletedFiles = filePaths.filter(p => !existsSync(join(dir, p)))
@@ -132,7 +137,7 @@ export async function startWatcher({ dir, name, debounceMs = 200, getServer, get
       const res = await fetch(`${server}/api/projects/${name}/push`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders },
-        body: JSON.stringify({ files: addedOrChanged, deletedFiles, priorityPages }),
+        body: JSON.stringify({ files: addedOrChanged, deletedFiles, sourceManifest, priorityPages }),
         signal: AbortSignal.timeout(60000),
       })
       if (!res.ok) {
@@ -172,7 +177,7 @@ export async function startWatcher({ dir, name, debounceMs = 200, getServer, get
 
     if (isJunk(filename)) return
     if (filename.includes('node_modules') || filename.includes('.git')) return
-    if (!isSourceFile(filename)) return
+    if (!isSourceFile(filename, sourceContext)) return
 
     console.log(`[watch] Changed: ${filename}`)
     pendingFiles.add(filename)
@@ -200,6 +205,20 @@ export function installProcessHandlers() {
   process.on('unhandledRejection', (e) => {
     console.error(`[watch] Unhandled rejection (continuing): ${e?.stack || e?.message || e}`)
   })
+}
+
+async function fetchSourceContext(server, name, authHeaders) {
+  try {
+    const res = await fetch(`${server}/api/projects/${name}`, {
+      headers: authHeaders,
+      signal: AbortSignal.timeout(5000),
+    })
+    if (!res.ok) return {}
+    const project = await res.json()
+    return { format: project.format, mainFile: project.mainFile }
+  } catch {
+    return {}
+  }
 }
 
 /**

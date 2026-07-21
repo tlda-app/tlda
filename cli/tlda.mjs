@@ -14,6 +14,7 @@ import { homedir, hostname } from 'os'
 import { randomBytes } from 'crypto'
 import { execFileSync } from 'child_process'
 import { collectSourceFiles, collectSourceHashes, collectSpecificFiles } from './lib/source-files.mjs'
+import { diffSourceHashes, normalizeSourceManifest } from '../shared/source-manifest.mjs'
 import { collectHtmlArtifactFiles, htmlArtifactMainForSource } from './lib/html-artifact-files.mjs'
 import {
   loadConfig, saveConfig, getServerUrl, getFleetServerUrl, getRwToken, getActiveConfigName, DEFAULT_PORT,
@@ -180,7 +181,7 @@ const COMMAND_HELP = {
   scratch: 'tlda doc scratch <file.md> [--title "Title"] [--book fleet-workspace]\n\n  Publish a scratch markdown file as a page in a book.\n  Creates a markdown project, pushes the file, and auto-joins the book.\n  Subsequent edits are auto-pushed by watch-all.\n\n  --title    Display title (default: first heading or filename)\n  --book     Book to join (default: fleet-workspace)',
   book:    'tlda doc book <name> --members doc1,doc2,doc3,...\n\n  Create a book that groups existing documents together.\n  Each member keeps its own sync room and annotations.\n  The viewer shows one member at a time with a tab bar to switch.',
   link:    'tlda doc link <name> [file] [--title "Title"] [--format slides|html|markdown]\n\n  Link the repository containing file to tlda and push files. If the project already exists,\n  pushes files and triggers a rebuild.\n\n  Examples:\n    tlda doc link paper path/to/paper.tex\n    tlda doc link talk path/to/talk.qmd --format slides\n\n  Formats:\n    (default)  LaTeX → SVG pipeline (latexmk → dvisvgm)\n    slides     Reveal.js HTML (from Quarto revealjs or manual)\n    html       Multipage HTML chapters (from Quarto book render)\n    markdown   Markdown with KaTeX math → HTML\n\n  Advanced: --dir <path> and --main <file> override file-derived paths.',
-  init:    'tlda doc init <name> [main-file] [--title "Title"] [--dir /path] [--format tex|markdown|html]\n\n  Create a new blank, git-backed project in a fresh directory and register it.\n  Unlike `tlda doc link` (which attaches an existing directory), `init` scaffolds a new one.\n\n  positional <main-file>  Main file name, e.g. paper.tex or notes.md.\n                          Format is inferred from the extension.\n                          Default: main.tex (format: tex/svg)\n  --dir <path>            Where to create the project directory (default: ./<name> in CWD)\n  --title "..."           Display title (default: <name>)\n  --format tex|markdown   Override format inference\n\n  Creates: <dir>/<main-file>, <dir>/README.md, a git repo with an initial commit,\n           then registers and pushes to the tlda server.',
+  init:    'tlda doc init <name> [main-file] [--title "Title"] [--dir /path] [--format tex|markdown|html]\n\n  Create a new blank, git-backed project in a fresh directory and register it.\n  Unlike `tlda doc link` (which attaches an existing directory), `init` scaffolds a new one.\n\n  positional <main-file>  Main file name, e.g. paper.tex or notes.md.\n                          Format is inferred from the extension.\n                          Default: main.tex (format: tex/svg)\n  --dir <path>            Where to create the project directory (default: ./<name> in CWD)\n  --title "..."           Display title (default: <name>)\n  --format tex|markdown   Override format inference\n\n  Creates: <dir>/<main-file>, a git repo with an initial commit,\n           then registers and pushes the requested main file to the tlda server.',
   push:    'tlda doc push [name] [--dir /path]\n\n  Push source files to the server and trigger a rebuild.\n  Project name is inferred from the current directory if omitted.',
   watch:   'tlda daemon [start|stop|status|log|run|install|uninstall]\n\n  Control the per-machine fleet-daemon (bin/fleet-daemon.mjs).\n  The daemon watches Claude Code session JSONLs and project source\n  dirs locally, pushing events to the tlda server over WebSocket.',
   'watch-all': 'tlda daemon [start|stop|status|log|run|install|uninstall]\n\n  Alias for `tlda daemon start/stop/status/log/run` — runs the\n  per-machine fleet-daemon (bin/fleet-daemon.mjs), which watches\n  every project source dir AND every Claude Code session JSONL\n  on this machine and pushes events to the tlda server over WebSocket.',
@@ -307,9 +308,17 @@ async function apiAt(server, method, path, body = null, { timeoutMs = 30000, tok
  * Returns the push API response.
  */
 async function incrementalPush(name, dir, extraBody = {}, { forceMetadata = false } = {}) {
+  let project
+  try {
+    project = await api('GET', `/api/projects/${name}`)
+  } catch (e) {
+    throw new Error(`could not fetch project metadata for ${name}: ${e.message}`)
+  }
+  const sourceContext = { format: project.format, mainFile: project.mainFile }
   // Compute local hashes (fast — just reads + MD5, no encoding)
-  const localHashes = collectSourceHashes(dir)
+  const localHashes = collectSourceHashes(dir, sourceContext)
   const localPaths = Object.keys(localHashes)
+  const sourceManifest = normalizeSourceManifest(localPaths, sourceContext)
 
   // Get server hashes. If this fails, the server/API contract is broken; do not
   // hide it by full-pushing.
@@ -324,14 +333,7 @@ async function incrementalPush(name, dir, extraBody = {}, { forceMetadata = fals
     throw new Error(`invalid hash response for ${name}`)
   }
 
-  // Diff: find changed/new files
-  const changedPaths = localPaths.filter(p => localHashes[p] !== serverHashes[p])
-  // Find files on server that aren't local
-  const deletedFiles = Object.keys(serverHashes).filter(p => !(p in localHashes))
-
-  if (changedPaths.length === 0 && deletedFiles.length === 0 && !forceMetadata) {
-    return { unchanged: true }
-  }
+  const { changedPaths, deletedFiles } = diffSourceHashes(localHashes, serverHashes)
 
   const files = collectSpecificFiles(dir, changedPaths)
   const total = localPaths.length
@@ -345,9 +347,14 @@ async function incrementalPush(name, dir, extraBody = {}, { forceMetadata = fals
 
   return await api('POST', `/api/projects/${name}/push`, {
     files,
+    sourceManifest,
     ...(deletedFiles?.length > 0 && { deletedFiles }),
     ...extraBody,
   })
+}
+
+function sourceManifestForFiles(files, context = {}) {
+  return normalizeSourceManifest((files || []).map(f => f.path), context)
 }
 
 function findMainTex(dir) {
@@ -463,7 +470,11 @@ async function cmdScratch() {
   // Push the file
   const content = readFileSync(absPath)
   const files = [{ path: fileName, content: content.toString('base64'), encoding: 'base64' }]
-  await api('POST', `/api/projects/${name}/push`, { files, sourceDir: dir })
+  await api('POST', `/api/projects/${name}/push`, {
+    files,
+    sourceManifest: sourceManifestForFiles(files, { format: 'markdown', mainFile: fileName }),
+    sourceDir: dir,
+  })
   console.log(green('Pushed.'))
 
   // Auto-join book
@@ -539,7 +550,11 @@ async function cmdCreate() {
     }
 
     console.log(`Pushing ${allFiles.length} artifact file(s)...`)
-    await api('POST', `/api/projects/${name}/push`, { files: allFiles, sourceDir: dir })
+    await api('POST', `/api/projects/${name}/push`, {
+      files: allFiles,
+      sourceManifest: sourceManifestForFiles(allFiles, { format: 'slides' }),
+      sourceDir: dir,
+    })
     console.log(green('Slides processed.'))
 
     const server = getServer()
@@ -589,7 +604,11 @@ async function cmdCreate() {
     }
 
     console.log(`Pushing ${allFiles.length} file(s)...`)
-    await api('POST', `/api/projects/${name}/push`, { files: allFiles, sourceDir: dir })
+    await api('POST', `/api/projects/${name}/push`, {
+      files: allFiles,
+      sourceManifest: sourceManifestForFiles(allFiles, { format: 'html' }),
+      sourceDir: dir,
+    })
     console.log(green('HTML project processed.'))
 
     const server = getServer()
@@ -635,7 +654,11 @@ async function cmdCreate() {
 
     console.log(`Pushing ${mainFile}${assetCount ? ` + ${assetCount} image(s)` : ''}...`)
     if (missing.length) console.log(dim(`  Skipped ${missing.length} unresolved image ref(s): ${missing.slice(0, 5).join(', ')}${missing.length > 5 ? '…' : ''}`))
-    await api('POST', `/api/projects/${name}/push`, { files, sourceDir: dir })
+    await api('POST', `/api/projects/${name}/push`, {
+      files,
+      sourceManifest: sourceManifestForFiles(files, { format: 'markdown', mainFile }),
+      sourceDir: dir,
+    })
     console.log(green('Markdown project processed.'))
 
     const server = getServer()
@@ -804,37 +827,38 @@ async function cmdInit() {
   mkdirSync(targetDir, { recursive: true })
   console.log(dim(`  Creating project in ${targetDir}`))
 
-  // Seed starter files based on format
+  // Create only the explicitly requested starter main file; do not add ancillary source.
   const isMarkdown = format === 'markdown'
   const isHtml = format === 'html'
+  const createdFiles = []
 
   if (isMarkdown) {
     // Minimal markdown stub
     const mdContent = `# ${title}\n\nWrite your notes here. Math works: $E = mc^2$\n`
     writeFileSync(join(targetDir, mainFile), mdContent, 'utf8')
+    createdFiles.push(mainFile)
   } else if (isHtml) {
     // Minimal HTML stub
     const htmlContent = `<!DOCTYPE html>\n<html>\n<head><meta charset="utf-8"><title>${title}</title></head>\n<body>\n<h1>${title}</h1>\n<p>Edit this file.</p>\n</body>\n</html>\n`
     writeFileSync(join(targetDir, mainFile), htmlContent, 'utf8')
+    createdFiles.push(mainFile)
   } else {
-    // Minimal compilable LaTeX stub
+    // Minimal compilable LaTeX stub for the requested main document.
     const texContent = `\\documentclass{article}\n\\title{${title}}\n\\author{}\n\\date{\\today}\n\\begin{document}\n\\maketitle\n\n\\section{Introduction}\n\nWrite your paper here.\n\n\\end{document}\n`
     writeFileSync(join(targetDir, mainFile), texContent, 'utf8')
+    createdFiles.push(mainFile)
   }
 
-  // Seed README.md
   const formatLabel = isMarkdown ? 'markdown' : isHtml ? 'html' : 'LaTeX'
-  const readmeContent = `# ${title}\n\nThis project was created with \`tlda doc init ${name}\`.\n\nFormat: ${formatLabel}  \nMain file: \`${mainFile}\`\n\nPush changes to the viewer:\n\`\`\`\ntlda doc push ${name}\n\`\`\`\n`
-  writeFileSync(join(targetDir, 'README.md'), readmeContent, 'utf8')
 
-  console.log(dim(`  Seeded ${mainFile} + README.md`))
+  console.log(dim(`  Created ${createdFiles.join(', ')}`))
 
   // Git init + initial commit
   const { execFileSync } = await import('child_process')
   try {
     execFileSync('git', ['init'], { cwd: targetDir, stdio: 'pipe' })
-    execFileSync('git', ['add', mainFile, 'README.md'], { cwd: targetDir, stdio: 'pipe' })
-    execFileSync('git', ['commit', '-m', `init: ${name} (${formatLabel})`], {
+    if (createdFiles.length) execFileSync('git', ['add', ...createdFiles], { cwd: targetDir, stdio: 'pipe' })
+    execFileSync('git', ['commit', '--allow-empty', '-m', `init: ${name} (${formatLabel})`], {
       cwd: targetDir,
       stdio: 'pipe',
       env: { ...process.env, GIT_AUTHOR_NAME: 'tlda', GIT_COMMITTER_NAME: 'tlda',
@@ -856,7 +880,11 @@ async function cmdInit() {
         content: Buffer.from(readFileSync(join(targetDir, mainFile))).toString('base64'),
         encoding: 'base64',
       }]
-      await api('POST', `/api/projects/${name}/push`, { files, sourceDir: targetDir })
+      await api('POST', `/api/projects/${name}/push`, {
+        files,
+        sourceManifest: sourceManifestForFiles(files, { format: 'markdown', mainFile }),
+        sourceDir: targetDir,
+      })
     } else if (isHtml) {
       await api('POST', '/api/projects', { name, title, format: 'html', sourceDir: targetDir })
       console.log(green(`Created HTML project "${name}".`))
@@ -865,12 +893,24 @@ async function cmdInit() {
         content: Buffer.from(readFileSync(join(targetDir, mainFile))).toString('base64'),
         encoding: 'base64',
       }]
-      await api('POST', `/api/projects/${name}/push`, { files, sourceDir: targetDir })
+      await api('POST', `/api/projects/${name}/push`, {
+        files,
+        sourceManifest: sourceManifestForFiles(files, { format: 'html', mainFile }),
+        sourceDir: targetDir,
+      })
     } else {
       await api('POST', '/api/projects', { name, title, mainFile, sourceDir: targetDir })
       console.log(green(`Created project "${name}".`))
-      console.log(`Pushing source files...`)
-      await incrementalPush(name, targetDir, { sourceDir: targetDir })
+      const files = [{
+        path: mainFile,
+        content: Buffer.from(readFileSync(join(targetDir, mainFile))).toString('base64'),
+        encoding: 'base64',
+      }]
+      await api('POST', `/api/projects/${name}/push`, {
+        files,
+        sourceManifest: sourceManifestForFiles(files, { format: 'svg', mainFile }),
+        sourceDir: targetDir,
+      })
       console.log(green('Build triggered.'))
     }
   } catch (e) {
@@ -2047,8 +2087,13 @@ async function cmdMoveProject() {
   } catch (e) {
     if (!String(e.message).includes('already exists')) throw e
   }
-  const files = collectSourceFiles(sourceDir)
-  await apiAt(targetServer, 'POST', `/api/projects/${encodeURIComponent(name)}/push`, { files, sourceDir }, { timeoutMs: 120000 })
+  const moveContext = { format: project.format, mainFile: project.mainFile }
+  const files = collectSourceFiles(sourceDir, moveContext)
+  await apiAt(targetServer, 'POST', `/api/projects/${encodeURIComponent(name)}/push`, {
+    files,
+    sourceManifest: sourceManifestForFiles(files, moveContext),
+    sourceDir,
+  }, { timeoutMs: 120000 })
   writeProjectWorld(projectWorldsPath(CONFIG_DIR), sourceDir, targetConfig)
 
   const daemonEnv = { ...process.env, TLDA_CONFIG: targetConfig }

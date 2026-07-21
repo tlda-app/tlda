@@ -11,6 +11,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, rmSync, unlinkSync, realpathSync } from 'fs'
 import { join, relative, dirname } from 'path'
 import { createHash } from 'crypto'
+import { isSourceFilePath, isIgnoredSourceDir, normalizeSourceManifest, sourceManifestContext } from '../../shared/source-manifest.mjs'
 import {
   projectPartsManifestPath as partsManifestPathForRoot,
   readProjectPartsManifest as readPartsManifestForRoot,
@@ -190,22 +191,15 @@ export function recoverProjectPartsManifest(name, options = {}) {
   return recoverPartsManifestForRoot(projectPartsRoot(name), options)
 }
 
-// Build artifacts that latexmk leaves in the source directory
-const BUILD_JUNK = new Set([
-  '.aux', '.log', '.out', '.synctex.gz', '.fls', '.fdb_latexmk',
-  '.bbl', '.blg', '.bcf', '.run.xml', '.toc', '.lof', '.lot',
-  '.nav', '.snm', '.vrb', '.dvi', '.pdf', '.fmt',
-])
-
 export function listSourceFiles(name) {
   const dir = sourceDir(name)
   if (!existsSync(dir)) return []
+  const project = readProject(name)
+  const context = sourceManifestContext(project || {})
+  const owned = clientOwnedSourceSet(project)
   return walkDir(dir)
     .map(f => relative(dir, f))
-    .filter(f => {
-      const ext = '.' + f.split('.').pop()
-      return !BUILD_JUNK.has(ext)
-    })
+    .filter(f => isClientSourcePath(f, context, owned))
 }
 
 function walkDir(dir) {
@@ -213,6 +207,7 @@ function walkDir(dir) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const full = join(dir, entry.name)
     if (entry.isDirectory()) {
+      if (isIgnoredSourceDir(entry.name)) continue
       results.push(...walkDir(full))
     } else {
       results.push(full)
@@ -227,14 +222,49 @@ function walkDir(dir) {
 export function hashSourceFiles(name) {
   const dir = sourceDir(name)
   if (!existsSync(dir)) return {}
+  const project = readProject(name)
+  const context = sourceManifestContext(project || {})
+  const owned = clientOwnedSourceSet(project)
   const hashes = {}
   for (const full of walkDir(dir)) {
     const rel = relative(dir, full)
-    const ext = '.' + rel.split('.').pop()
-    if (BUILD_JUNK.has(ext)) continue
+    if (!isClientSourcePath(rel, context, owned)) continue
     hashes[rel] = createHash('md5').update(readFileSync(full)).digest('hex')
   }
   return hashes
+}
+
+function clientOwnedSourceSet(project) {
+  const manifest = project?.clientSourceManifest
+  if (!Array.isArray(manifest)) return new Set()
+  return new Set(manifest.filter(p => typeof p === 'string'))
+}
+
+// Client-owned means authored source supplied by an external authoring ingress
+// (CLI push, daemon watcher, Overleaf sync). Server-generated and server-seeded
+// files stay outside this manifest and cannot be explicit client deletions.
+function isClientSourcePath(rel, context, owned) {
+  if (!isSourceFilePath(rel, context)) return false
+  return owned.has(rel)
+}
+
+export function isClientOwnedSourcePath(name, filePath) {
+  const project = readProject(name)
+  const owned = clientOwnedSourceSet(project)
+  return !!owned && owned.has(filePath)
+}
+
+export function readClientSourceManifest(name) {
+  const project = readProject(name)
+  if (!project) throw new Error(`Project "${name}" not found`)
+  return [...clientOwnedSourceSet(project)].sort()
+}
+
+export function updateClientSourceManifest(name, sourceManifest) {
+  const project = readProject(name)
+  if (!project) throw new Error(`Project "${name}" not found`)
+  const context = sourceManifestContext(project)
+  updateProject(name, { clientSourceManifest: normalizeSourceManifest(sourceManifest, context) })
 }
 
 /**
@@ -271,6 +301,10 @@ export function deleteSourceFile(name, filePath) {
   if (!existsSync(full)) return false
   unlinkSync(full)
   return true
+}
+
+export function validateSourceFilePath(name, filePath) {
+  sourceFilePath(name, filePath)
 }
 
 function sourceFilePath(name, filePath) {

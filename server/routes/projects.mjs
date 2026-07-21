@@ -26,6 +26,7 @@ import {
   listSourceFiles, hashSourceFiles, readSourceFile, writeSourceFile, deleteSourceFile, readBuildLog, sourceDir as getSourceDir, outputDir as getOutputDir,
   extractBuildErrors, extractPipelineWarnings, addBookMember, getProjectsDir, projectDir as getProjectDir,
   projectPartsRoot, readProjectPartsManifest, writeProjectPartsManifest,
+  isClientOwnedSourcePath, readClientSourceManifest, updateClientSourceManifest, validateSourceFilePath,
 } from '../lib/project-store.mjs'
 import { getBuildStatus } from '../lib/build-runner.mjs'
 import { dispatchBuild, isBuildKindPending } from '../lib/build-dispatch.mjs'
@@ -37,6 +38,7 @@ import { realizeProjectMarkdownArtifact, writeProjectMarkdownArtifact } from '..
 import { TASK_DOC_FILENAME, TASK_DOC_PROJECT_ID, STATUS_TASK_DOC_ROW_LIMIT, materializeTaskDocs } from '../lib/task-doc-materializer.mjs'
 import { markdownColumnFileForSource, listProjectPartColumns, pageInfoFromDocumentColumns } from '../lib/document-columns.mjs'
 import { shouldBuildOnPush } from '../lib/build-decision.mjs'
+import { isSourceFilePath, normalizeSourceManifest, sourceManifestContext } from '../../shared/source-manifest.mjs'
 import historyRoutes from './history.mjs'
 import { linkOverleaf, unlinkOverleaf, syncOverleaf, pushSourceToOverleaf, stopPolling, isPolling } from '../lib/overleaf-sync.mjs'
 import { getRoomRecords, getRecord, putShape, updateShape, deleteShape, onShapeChange, getOrCreateRoom, broadcastSignal, getLastSignal, onSignal, replaceRoomSnapshot, getShapesAt, emitGlobalEvent, onGlobalEvent } from '../lib/sync-rooms.mjs'
@@ -516,6 +518,7 @@ router.put('/:name/source/:file', requireRw, async (req, res) => {
   if (content === null) return res.status(400).json({ error: 'Required: content string' })
   const result = await processProjectPush(req.params.name, {
     files: [{ path: req.params.file, content }],
+    sourceManifest: req.body?.sourceManifest,
     editedBy: req.body?.editedBy,
   })
   const { status, ...payload } = result
@@ -666,38 +669,12 @@ export async function processProjectPush(name, body) {
   const project = readProject(name)
   if (!project) return { status: 404, ok: false, error: 'Project not found' }
 
-  const { files, deletedFiles, priorityPages, sourceDir, members, session, sessionAt, editedBy, overleafSync } = body || {}
+  const { files, deletedFiles, sourceManifest, priorityPages, sourceDir, members, session, sessionAt, editedBy, overleafSync } = body || {}
 
-  if (sourceDir && !project.sourceDir) updateProject(name, { sourceDir })
-  if (session) updateProject(name, { session, sessionAt: sessionAt || Date.now() })
-  // Edit attribution: the daemon resolves which agent's Edit/Write triggered
-  // this change; persist it so the build runner can address the build card.
-  if (editedBy) updateProject(name, { lastEditedBy: editedBy, lastEditedByAt: Date.now() })
+  const validation = validateSourcePushRequest(name, project, { files, deletedFiles, sourceManifest })
+  if (!validation.ok) return validation
 
-  if (members && Array.isArray(members)) {
-    updateProject(name, { members })
-    if (project.format === 'book') return { status: 200, ok: true, members }
-  }
-
-  let anyChanged = false
-  const changedPushFiles = []
-  if (files?.length > 0) {
-    for (const file of files) {
-      const content = file.encoding === 'base64'
-        ? Buffer.from(file.content, 'base64')
-        : file.content
-      if (writeSourceFile(name, file.path, content)) {
-        anyChanged = true
-        changedPushFiles.push({ path: file.path, content })
-      }
-    }
-  }
-  if (deletedFiles?.length > 0) {
-    for (const filePath of deletedFiles) {
-      if (deleteSourceFile(name, filePath)) anyChanged = true
-    }
-  }
-
+  let anyChanged = sourcePushWouldChange(name, { files, deletedFiles })
   if (anyChanged && project.overleafRemote && project.autoSync !== false && !overleafSync) {
     try {
       await pushSourceToOverleaf(name, { files, deletedFiles, editedBy })
@@ -706,6 +683,35 @@ export async function processProjectPush(name, body) {
       return { status: 409, ok: false, error: `Git sync failed: ${e.message}` }
     }
   }
+
+  if (sourceDir && !project.sourceDir) updateProject(name, { sourceDir })
+  if (session) updateProject(name, { session, sessionAt: sessionAt || Date.now() })
+  // Edit attribution: the daemon resolves which agent's Edit/Write triggered
+  // this change; persist it so the build runner can address the build card.
+  if (editedBy) updateProject(name, { lastEditedBy: editedBy, lastEditedByAt: Date.now() })
+  if (members && Array.isArray(members)) {
+    updateProject(name, { members })
+    if (project.format === 'book') return { status: 200, ok: true, members }
+  }
+
+  const changedPushFiles = []
+  if (files?.length > 0) {
+    for (const file of files) {
+      const content = file.encoding === 'base64'
+        ? Buffer.from(file.content, 'base64')
+        : file.content
+      if (writeSourceFile(name, file.path, content)) {
+        changedPushFiles.push({ path: file.path, content })
+      }
+    }
+  }
+  if (deletedFiles?.length > 0) {
+    for (const filePath of deletedFiles) {
+      if (!isClientOwnedSourcePath(name, filePath)) continue
+      deleteSourceFile(name, filePath)
+    }
+  }
+  if (Array.isArray(sourceManifest)) updateClientSourceManifest(name, sourceManifest)
 
   const changedFiles = (files || []).map(f => f.path)
   const changedPartFiles = refreshMaterializedPartsFromChangedSources(name, project, changedPushFiles)
@@ -807,6 +813,103 @@ function bufferToUtf8(value) {
 function broadcastProjectPartsChanged(name, files) {
   if (!files.length) return
   broadcastSignal(`doc-${name}`, 'signal:project-parts-changed', { files, timestamp: Date.now() })
+}
+
+function validateSourcePushRequest(name, project, { files, deletedFiles, sourceManifest }) {
+  const pushFiles = files || []
+  const deletes = deletedFiles || []
+  if ((pushFiles.length > 0 || deletes.length > 0) && !Array.isArray(sourceManifest)) {
+    return { status: 400, ok: false, error: 'sourceManifest is required for source pushes' }
+  }
+
+  const context = sourceManifestContext(project)
+  const validateAuthoredPath = (filePath, label) => {
+    if (typeof filePath !== 'string' || !filePath) return `${label} must be a non-empty string`
+    try {
+      validateSourceFilePath(name, filePath)
+    } catch (e) {
+      return e.message
+    }
+    const normalized = normalizeSourceManifest([filePath], context)
+    if (normalized.length !== 1 || normalized[0] !== filePath || !isSourceFilePath(filePath, context)) {
+      return `${label} is not an authored source path: ${filePath}`
+    }
+    return null
+  }
+
+  const validateContainedPath = (filePath, label) => {
+    if (typeof filePath !== 'string' || !filePath) return `${label} must be a non-empty string`
+    try {
+      validateSourceFilePath(name, filePath)
+    } catch (e) {
+      return e.message
+    }
+    return null
+  }
+
+  for (const file of pushFiles) {
+    const error = validateAuthoredPath(file?.path, 'pushed file')
+    if (error) return { status: 400, ok: false, error }
+  }
+  for (const filePath of deletes) {
+    const error = validateContainedPath(filePath, 'deleted file')
+    if (error) return { status: 400, ok: false, error }
+  }
+
+  if (!Array.isArray(sourceManifest)) return { status: 200, ok: true }
+
+  const declared = new Set()
+  for (const filePath of sourceManifest) {
+    const error = validateAuthoredPath(filePath, 'sourceManifest entry')
+    if (error) return { status: 400, ok: false, error }
+    declared.add(filePath)
+  }
+
+  for (const file of pushFiles) {
+    if (!declared.has(file.path)) {
+      return { status: 400, ok: false, error: `sourceManifest missing pushed file: ${file.path}` }
+    }
+  }
+  for (const filePath of deletes) {
+    if (declared.has(filePath)) {
+      return { status: 400, ok: false, error: `sourceManifest still contains deleted file: ${filePath}` }
+    }
+  }
+
+  const sourceRoot = getSourceDir(name)
+  const proposed = new Set()
+  for (const filePath of readClientSourceManifest(name)) {
+    const error = validateAuthoredPath(filePath, 'stored sourceManifest entry')
+    if (error) return { status: 400, ok: false, error }
+    if (existsSync(join(sourceRoot, filePath))) proposed.add(filePath)
+  }
+  for (const filePath of deletes) proposed.delete(filePath)
+  for (const file of pushFiles) proposed.add(file.path)
+
+  const missing = [...proposed].filter(filePath => !declared.has(filePath)).sort()
+  if (missing.length > 0) {
+    return { status: 400, ok: false, error: `sourceManifest missing surviving authored file: ${missing[0]}` }
+  }
+  const extra = [...declared].filter(filePath => !proposed.has(filePath)).sort()
+  if (extra.length > 0) {
+    return { status: 400, ok: false, error: `sourceManifest contains nonexistent authored file: ${extra[0]}` }
+  }
+  return { status: 200, ok: true }
+}
+
+function sourcePushWouldChange(name, { files, deletedFiles }) {
+  for (const file of files || []) {
+    const next = file.encoding === 'base64'
+      ? Buffer.from(file.content, 'base64')
+      : Buffer.from(String(file.content ?? ''))
+    const full = join(getSourceDir(name), file.path)
+    if (!existsSync(full)) return true
+    if (!readFileSync(full).equals(next)) return true
+  }
+  for (const filePath of deletedFiles || []) {
+    if (isClientOwnedSourcePath(name, filePath) && existsSync(join(getSourceDir(name), filePath))) return true
+  }
+  return false
 }
 
 /**

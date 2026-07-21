@@ -20,6 +20,7 @@ import { fetchProofInfo } from '../docInfoCache'
 import { linkifyArrowRefs, linkifyAtRefs, refToCanvas, type LabelRegionInfo, type ResolvedRef } from '../docLinks'
 import { PDF_HEIGHT } from '../layoutConstants'
 import { beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
+import { normalizeSourceManifest } from '../../shared/source-manifest.mjs'
 
 const md = new MarkdownIt({ html: true, breaks: true, linkify: true })
 // Open all links in new tab so they don't navigate the tldraw iframe
@@ -452,10 +453,14 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
               body: JSON.stringify({ name: docName, title: docName, format: 'markdown', mainFile: 'main.md' }),
             })
           }
+          const files = [{ path: 'main.md', content: text }]
           await fetch(`/api/projects/${docName}/push`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ files: [{ path: 'main.md', content: text }] }),
+            body: JSON.stringify({
+              files,
+              sourceManifest: normalizeSourceManifest(files.map(file => file.path), { format: 'markdown', mainFile: 'main.md' }),
+            }),
           })
         } catch { /* ignore — server may not be running */ }
         // Hold the suppression flag long enough to skip the next poll cycle

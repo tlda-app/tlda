@@ -188,7 +188,7 @@ async function syncCloneToProject(name, dir) {
   const tracked = new Set(paths)
   const deletedFiles = listSourceFiles(name).filter(p => !tracked.has(p) && !shouldSkip(p))
   const files = paths.map(p => ({ path: p, ...readFileForPush(join(dir, p)) }))
-  return processProjectPush(name, { files, deletedFiles, overleafSync: true })
+  return processProjectPush(name, { files, deletedFiles, sourceManifest: paths, overleafSync: true })
 }
 
 async function unmergedFiles(dir) {
@@ -344,7 +344,8 @@ export async function syncOverleaf(name, { initial = false } = {}) {
   }
 
   const files = changedPaths.map(p => ({ path: p, ...readFileForPush(join(dir, p)) }))
-  const result = await processProjectPush(name, { files, deletedFiles: deletedPaths, overleafSync: true })
+  const sourceManifest = (await trackedFiles(dir)).filter(p => !shouldSkip(p))
+  const result = await processProjectPush(name, { files, deletedFiles: deletedPaths, sourceManifest, overleafSync: true })
 
   updateProject(name, {
     overleafHead: head,
