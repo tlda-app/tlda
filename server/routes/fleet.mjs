@@ -259,7 +259,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     }
     fleetStore.markDead(obligation.agent_id)
     clearEphemeralState?.(obligation.agent_id)
-    const agent = fleetStore.findAgent(obligation.agent_id)
+    const agent = fleetStore.getAgent(obligation.agent_id)
     const retired = agent?.dead === 1 && !fleetStore.getCurrentAgentSeat?.(obligation.agent_id)
     if (!retired) { res.status(409).json({ ok: false, retired: false, error: 'agent reservation is not fully retired' }); return }
     broadcastState()

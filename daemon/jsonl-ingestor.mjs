@@ -11,7 +11,7 @@ import {
   shouldClaimClaudeWatcher,
   shouldClaimCodexWatcher,
 } from '../agent-runtime/daemon-guards.mjs'
-import { codexRolloutBelongsToAgent, codexRolloutHasOwnerEvidence } from '../agent-runtime/resolve-transcript.mjs'
+import { codexRolloutBelongsToAgent, codexRolloutHasOwnerEvidence, codexRolloutIsTopLevel } from '../agent-runtime/resolve-transcript.mjs'
 import { acquireSingletonLock, sessionReaderLockPath } from '../agent-runtime/singleton-lock.mjs'
 import {
   ACTIVITY_HEALTH_BOUNDARIES,
@@ -264,6 +264,10 @@ export function createJsonlIngestor({
     const fleetId = input?.fleet_id
     const sessionId = ledgerSessionId(input)
     if (!fleetId || !sessionId || !permissionLedger?.setSessionSync) return
+    // Collaboration subagent rollouts inherit the parent fleet login but are
+    // not independently resumable fleet seats. Watching their activity is
+    // valid; replacing the parent's durable resume identity with them is not.
+    if (input.harness_kind === 'codex' && !codexRolloutIsTopLevel(input.jsonl_path)) return
     const event = sessionIdentitySeatEvent(input, { machineId, envName, daemonKey })
     try {
       permissionLedger.setSessionSync(fleetId, {

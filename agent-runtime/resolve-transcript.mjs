@@ -38,7 +38,7 @@ const HOME = homedir()
 // That's why adapters match with substring/suffix checks, not strict equality. The
 // returned path is the real file (authoritative); treat it as such, don't compare it
 // against a non-canonical expected path.
-async function findOpenTranscriptFd(pid, isTranscriptPath) {
+async function findOpenTranscriptFd(pid, isTranscriptPath, acceptTranscript = () => true) {
   if (!pid) return null
   let stdout
   try {
@@ -54,7 +54,7 @@ async function findOpenTranscriptFd(pid, isTranscriptPath) {
     else if (tag === 'a') access = val
     else if (tag === 'n') {
       const writable = access.includes('w') || access.includes('u')
-      if (writable && isTranscriptPath(val)) return val
+      if (writable && isTranscriptPath(val) && acceptTranscript(val)) return val
     }
   }
   return null
@@ -125,7 +125,10 @@ const claudeAdapter = {
 // Codex sessions start close together.
 function codexRolloutBelongsToAgent(path, agent) {
   if (!agent) return false
-  const text = readFilePrefix(path)
+  if (!codexRolloutIsTopLevel(path)) return false
+  // The injected project guidance can exceed the generic 128 KiB prefix before
+  // the first login result records the durable fleet identity.
+  const text = readFilePrefix(path, 1024 * 1024)
   if (!text) return false
 
   const ids = [agent.id, agent.fleet_id, agent.fleetId]
@@ -138,8 +141,15 @@ function codexRolloutBelongsToAgent(path, agent) {
   return new RegExp(`(?:register\\(name=\\\\?"${quoted}\\\\?"\\)|Your name:\\s*\\\\?"${quoted}\\\\?")`).test(text)
 }
 
+function codexRolloutIsTopLevel(path) {
+  const first = readFirstJson(path)
+  if (first?.type !== 'session_meta') return false
+  const payload = first.payload || {}
+  return payload.thread_source !== 'subagent' && !payload.source?.subagent
+}
+
 function codexRolloutHasOwnerEvidence(path) {
-  const text = readFilePrefix(path)
+  const text = readFilePrefix(path, 1024 * 1024)
   return /\bRegistered fleet:[a-f0-9]+\b/.test(text) || /\bYour name:\s*\\?"/.test(text)
 }
 
@@ -211,6 +221,7 @@ export async function resolveTranscript({
   agent,
   launchTs,
   processOwnedOnly = false,
+  acceptTranscript = () => true,
   findOpenTranscript = findOpenTranscriptFd,
   findFallbackTranscript = null,
 }) {
@@ -220,10 +231,11 @@ export async function resolveTranscript({
   // is unbounded when called for hibernating/stale roster rows. Without a PID
   // there is no live writer to bind, so do not scan the global Codex session tree.
   if (!pid && kind === 'codex') return null
-  const open = await findOpenTranscript(pid, adapter.isTranscriptPath)
+  const open = await findOpenTranscript(pid, adapter.isTranscriptPath, acceptTranscript)
   if (open) return open // PRIMARY (K.39)
   if (processOwnedOnly) return null
-  return (findFallbackTranscript || adapter.findByLaunchWindow.bind(adapter))({ agent, launchTs }) // FALLBACK
+  const fallback = await (findFallbackTranscript || adapter.findByLaunchWindow.bind(adapter))({ agent, launchTs })
+  return fallback && acceptTranscript(fallback) ? fallback : null // FALLBACK
 }
 
-export { claudeAdapter, codexAdapter, codexRolloutBelongsToAgent, codexRolloutHasOwnerEvidence, codexRolloutMatchesLaunch, findOpenTranscriptFd }
+export { claudeAdapter, codexAdapter, codexRolloutBelongsToAgent, codexRolloutHasOwnerEvidence, codexRolloutIsTopLevel, codexRolloutMatchesLaunch, findOpenTranscriptFd }

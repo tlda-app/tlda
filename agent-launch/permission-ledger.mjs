@@ -745,6 +745,9 @@ export class PermissionLedger {
           && row.updated_at === expected.updatedAt
           && row.source === expected.source
       }
+      if (message.op === 'delete') {
+        return !message.id || !this._get.get(message.id)
+      }
       return false
     } catch {
       return false

@@ -4,7 +4,7 @@ import os from 'os'
 import path from 'path'
 import { promisify } from 'util'
 import { ledgerSessionId } from '../../agent-runtime/ledger-session-tail.mjs'
-import { resolveTranscript } from '../../agent-runtime/resolve-transcript.mjs'
+import { codexRolloutBelongsToAgent, resolveTranscript } from '../../agent-runtime/resolve-transcript.mjs'
 import { activeConfigName, gitAuthorEnv, readConfig } from '../identity.mjs'
 import { resolveCodexModel, resolveCodexModelSelection } from '../models.mjs'
 import { loginPrompt } from './claude.mjs'
@@ -41,19 +41,10 @@ export async function resolveLiveSessionIdentity({ agent, tmuxSession, tmuxArgs 
     children.get(ppid).push(pid)
     if (/(?:^|\s|[/\\])codex(?:\.exe)?(?:\s|$)/.test(args)) runtimes.add(pid)
   }
-  const stack = [...panePids]
-  const seen = new Set()
-  let pid = null
-  while (stack.length) {
-    const candidate = stack.pop()
-    if (seen.has(candidate)) continue
-    seen.add(candidate)
-    if (runtimes.has(candidate)) { pid = candidate; break }
-    stack.push(...(children.get(candidate) || []))
-  }
-  if (!pid) return unresolved('pid')
+  const runtimePids = codexRuntimeCandidates({ panePids, children, runtimes })
+  if (!runtimePids.length) return unresolved('pid')
   const launchTs = Date.parse(agent?.registered_at || '') || (now() - 60_000)
-  const jsonlPath = await resolveTranscript({ pid, kind: 'codex', agent, launchTs, processOwnedOnly })
+  const jsonlPath = await resolveOwnedCodexTranscript({ runtimePids, agent, launchTs, processOwnedOnly })
   if (!jsonlPath) return unresolved('open-writable-rollout')
   const sessionId = ledgerSessionId({ harness_kind: 'codex', jsonl_path: jsonlPath })
   if (!sessionId) return diagnose ? { sessionId: null, jsonlPath, model: null, failureStage: 'session-id' } : null
@@ -70,6 +61,48 @@ export async function resolveLiveSessionIdentity({ agent, tmuxSession, tmuxArgs 
     return { sessionId, jsonlPath, model: null, ...(diagnose ? { failureStage: 'model' } : {}) }
   }
   return { sessionId, jsonlPath, model, ...(diagnose && !model ? { failureStage: 'model' } : {}) }
+}
+
+export async function resolveOwnedCodexTranscript({
+  runtimePids = [],
+  agent,
+  launchTs,
+  processOwnedOnly = false,
+  resolveTranscriptImpl = resolveTranscript,
+} = {}) {
+  const acceptTranscript = path => codexRolloutBelongsToAgent(path, agent)
+  for (const pid of runtimePids) {
+    const owned = await resolveTranscriptImpl({
+      pid,
+      kind: 'codex',
+      agent,
+      launchTs,
+      processOwnedOnly: true,
+      acceptTranscript,
+    })
+    if (owned) return owned
+  }
+  if (processOwnedOnly || !runtimePids.length) return null
+  return await resolveTranscriptImpl({
+    pid: runtimePids[0],
+    kind: 'codex',
+    agent,
+    launchTs,
+    acceptTranscript,
+  })
+}
+
+export function codexRuntimeCandidates({ panePids = [], children = new Map(), runtimes = new Set() } = {}) {
+  const ordered = []
+  const seen = new Set()
+  function visit(pid) {
+    if (seen.has(pid)) return
+    seen.add(pid)
+    for (const child of children.get(pid) || []) visit(child)
+    if (runtimes.has(pid)) ordered.push(pid)
+  }
+  for (const pid of panePids) visit(pid)
+  return ordered
 }
 
 function sq(value) {
