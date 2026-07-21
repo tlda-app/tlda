@@ -494,14 +494,14 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     const legacyBackfill = !backingName && !backingOwnerMachineId && !shape.props.backingSyncStatus
     const hasOutlineTabs = (shape.props.tabs as string[] | undefined)?.length === 3
     const isOutlineTabActive = hasOutlineTabs && (shape.props.activeTab as number | undefined) === 2
+    const activeDocName = pageDoc?.docName
     useEffect(() => {
       if (!backingKey) return
-      const docParam = new URLSearchParams(window.location.search).get('doc')
-      if (!docParam) return
+      if (!activeDocName) return
       fetch('/api/backing-file-register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ backingName, filePath: backingFile, ownerMachineId: backingOwnerMachineId, legacyBackfill, docName: docParam }),
+        body: JSON.stringify({ backingName, filePath: backingFile, ownerMachineId: backingOwnerMachineId, legacyBackfill, docName: activeDocName }),
       }).then(async resp => {
         if (!resp.ok) {
           const data = await resp.json().catch(() => ({}))
@@ -511,13 +511,12 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
         setBackingSyncState('owner-unavailable')
         console.warn('[math-note] backing file register failed:', e.message)
       })
-    }, [backingKey, backingName, backingFile, backingOwnerMachineId, legacyBackfill, setBackingSyncState])
+    }, [backingKey, backingName, backingFile, backingOwnerMachineId, legacyBackfill, activeDocName, setBackingSyncState])
 
     // Backing file: write to file only when the user actually changed the text
     useEffect(() => {
       if (!backingKey) return
-      const docParam = new URLSearchParams(window.location.search).get('doc')
-      if (!docParam) { setBackingSyncState('owner-missing'); return }
+      if (!activeDocName) { setBackingSyncState('owner-missing'); return }
       if (isEditing) {
         textAtEditStartRef.current = (editor.getShape(shape.id) as any)?.props?.text ?? ''
         return
@@ -529,7 +528,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       fetch('/api/backing-file-write', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ backingName, filePath: backingFile, ownerMachineId: backingOwnerMachineId, legacyBackfill, docName: docParam, content }),
+        body: JSON.stringify({ backingName, filePath: backingFile, ownerMachineId: backingOwnerMachineId, legacyBackfill, docName: activeDocName, content }),
       }).then(async resp => {
         if (!resp.ok) {
           const data = await resp.json().catch(() => ({}))
@@ -538,7 +537,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
         }
         setBackingSyncState('synced', true)
       }).catch(() => setBackingSyncState('failed'))
-    }, [isEditing, backingKey, backingName, backingFile, backingOwnerMachineId, legacyBackfill, shape.id, editor, setBackingSyncState])
+    }, [isEditing, backingKey, backingName, backingFile, backingOwnerMachineId, legacyBackfill, activeDocName, shape.id, editor, setBackingSyncState])
 
     // Backing file changed externally: the file is the source of truth for a
     // file-backed note, so update the note in place. (We must NOT spawn a sibling

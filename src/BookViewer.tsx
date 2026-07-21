@@ -32,7 +32,7 @@ export function BookViewer({ bookName, members }: BookViewerProps) {
     try {
       let doc: SvgDocument
       if (member.format === 'html' || member.format === 'markdown') {
-        doc = await loadHtmlDocument(member.name, member.basePath)
+        doc = await loadHtmlDocument(member.key, member.basePath)
       } else {
         // SVG: create layout immediately, pages fetched async after editor mounts
         doc = createSvgDocumentLayout(member.key, member.pages, member.basePath)

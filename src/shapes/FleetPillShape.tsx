@@ -510,15 +510,6 @@ export async function dropPillOnTarget(
               backingSyncStatus: 'owner-missing',
             },
           })
-          // Register backing file watch so the server notifies us when the file changes on disk
-          const docName = new URLSearchParams(window.location.search).get('doc') || ''
-          if (docName) {
-            fetch('/api/backing-file-register', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ filePath, docName }),
-            }).catch(e => console.warn('[fleet-pill] backing file register failed:', e.message))
-          }
         } catch (e) {
           console.error('[fleet] Failed to read file for membrane drop:', e)
           createEditor.createShape({

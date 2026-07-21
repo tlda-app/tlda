@@ -314,10 +314,7 @@ export function broadcastSlideIndex(shapeId: string, index: number) {
  * Load static annotations from annotations.json when no sync server is available.
  * Used in production (GitHub Pages) where annotations were baked in by publish-snapshot.
  */
-export async function loadStaticAnnotations(editor: any, onInitialSync?: () => void) {
-  // Derive the annotations URL from the current document
-  const params = new URLSearchParams(window.location.search)
-  const docName = params.get('doc')
+export async function loadStaticAnnotations(editor: any, docName: string, onInitialSync?: () => void) {
   if (!docName) return
 
   const base = import.meta.env.BASE_URL || '/'

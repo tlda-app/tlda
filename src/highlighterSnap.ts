@@ -345,6 +345,7 @@ function _snapHighlighterToText(editor: Editor, shapeId: string, docName?: strin
         pageShapeId: pageShape.id,
         glowRects,
         glowColor: hlColor,
+        docName,
       },
     } as any)
 
@@ -353,7 +354,7 @@ function _snapHighlighterToText(editor: Editor, shapeId: string, docName?: strin
     const hasGoodMatch = hlEntries.some(sl => sl.hlStart != null && sl.hlEnd != null && sl.hlEnd > sl.hlStart)
 
     if (sourceLines.length > 0 && hasGoodMatch) {
-      showSourceContextCard(sourceLines, hlColor, bounds, editor, false, shape.id)
+      showSourceContextCard(sourceLines, hlColor, bounds, editor, false, shape.id, docName)
     } else {
       // Calibration failed — capture screenshot and store on shape meta
       const screenshotDataUrl = captureHighlightRegion(bounds, editor, pageShape.id)
@@ -921,6 +922,7 @@ function showSourceContextCard(
   editor: Editor,
   persistent = false,
   shapeId?: string,
+  docName = '',
 ): HTMLElement | null {
   const displayLines = anchoredSourceLines(sourceLines)
   if (displayLines.length === 0) return null
@@ -957,7 +959,6 @@ function showSourceContextCard(
   header.appendChild(headerLabel)
 
   // "Open in editor" button
-  const docName = new URLSearchParams(window.location.search).get('doc') || ''
   if (file && first.line) {
     const editBtn = document.createElement('button')
     editBtn.textContent = '✎'
@@ -1232,7 +1233,8 @@ export function showSourceContextCardForShape(editor: Editor, shapeId: string): 
   if (!bounds) return null
 
   const hlColor = meta?.glowColor || (shape.props as any).color || 'yellow'
-  const card = showSourceContextCard(sourceLines, hlColor, bounds, editor, true, shapeId)
+  const docName = typeof meta?.docName === 'string' ? meta.docName : ''
+  const card = showSourceContextCard(sourceLines, hlColor, bounds, editor, true, shapeId, docName)
   if (!card) return null
 
   return () => { card.remove() }

@@ -16,7 +16,7 @@ import {
   type TLShapeId,
 } from 'tldraw'
 import { fleetAgentsProps } from '../../shared/shapes/fleet-panel-schema.mjs'
-import { useState, useCallback, useMemo, useRef, useEffect, memo, forwardRef } from 'react'
+import { useState, useCallback, useMemo, useRef, useEffect, memo, forwardRef, useContext } from 'react'
 import { Virtuoso } from 'react-virtuoso'
 import { useFleetAgents, useFleetAgentTotals, useFleetTasks, useFleetUnreadCounts, useFleetContext, useFleetProjects, useFleetIdentity, searchFleet, hibernateSession, spawnAgent, loadNextAgentsPage } from '../fleet-data-adapter'
 import { dropPillOnTarget } from './FleetPillShape'
@@ -26,6 +26,7 @@ import { dragCoordinator } from './dragCoordinator'
 import { useIsInViewport, useVisibilityViewportId } from './useIsInViewport'
 import { fleetInteractionFrame, fleetPointerEventPagePoint } from '../wm/fleet-interaction-frame'
 import { useAvailableSpawnModels } from '../fleet/useAvailableSpawnModels'
+import { DocContext } from '../PanelContext'
 import { activeMintToken, applyMintCandidate, parseMintInput } from '../fleet/mint-input'
 import {
   FleetAgentDirectoryRow,
@@ -440,6 +441,8 @@ function FleetAgentsInner({ shape }: { shape: any }) {
   }, [editor])
 
   const frameId = shape.parentId as string | undefined
+  const docCtx = useContext(DocContext)
+  const currentDoc = docCtx?.docName || ''
   const agents = useFleetAgents(frameId)
   const agentTotals = useFleetAgentTotals(frameId)
   const tasks = useFleetTasks(frameId)
@@ -487,7 +490,6 @@ function FleetAgentsInner({ shape }: { shape: any }) {
   // Spawn input — always visible, fetches projects for autocomplete.
   // Starts empty/ghosted; the ghost shows the current doc as the implied
   // project, so an empty submit spawns into the doc being viewed.
-  const currentDoc = useMemo(() => new URLSearchParams(window.location.search).get('doc') || '', [])
   const [spawnDoc, setSpawnDoc] = useState('')
   const { id: userId } = useFleetIdentity()
   // Live project list — re-fetches on the server's `projects-updated` event so a

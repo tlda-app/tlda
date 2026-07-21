@@ -5,7 +5,7 @@ import {
   useEditor,
   useValue,
 } from 'tldraw'
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { useContext, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { probe } from '../perf-probe'
 import { injectSvgFonts } from '../svgFonts'
 import { LineNumberOverlay } from '../LineNumberOverlay'
@@ -16,6 +16,7 @@ import { anchorIndex, getNavigateToAnchor } from '../stores/anchorIndex'
 import { svgViewBoxStore } from '../stores/svgViewBoxStore'
 import { getPageUrl, getPageFilename } from '../stores/pageUrlStore'
 import { isPhoneViewport } from '../phoneViewport'
+import { DocContext } from '../PanelContext'
 
 export class SvgPageShapeUtil extends BaseBoxShapeUtil<any> {
   static override type = 'svg-page' as const
@@ -126,8 +127,8 @@ function SvgPageComponent({ shape }: { shape: any }) {
   const editor = useEditor()
   const isDark = useValue('isDarkMode', () => editor.user.getIsDarkMode(), [editor])
   const containerRef = useRef<HTMLDivElement>(null)
-
-  const docName = new URLSearchParams(window.location.search).get('doc') || ''
+  const doc = useContext(DocContext)
+  const docName = doc?.docName || ''
 
   // Subscribe to reactive SVG text store
   const svgText = useSyncExternalStore(
@@ -148,7 +149,7 @@ function SvgPageComponent({ shape }: { shape: any }) {
     const pageIdx = shape.props.pageIndex
     const fetchCompare = async () => {
       try {
-        const docName = new URLSearchParams(window.location.search).get('doc') || 'bregman'
+        if (!docName) return
         let hash7 = propHash7
         if (!hash7) {
           const sigRes = await fetch(`/api/projects/${docName}/signal/signal:compare`)
@@ -167,7 +168,7 @@ function SvgPageComponent({ shape }: { shape: any }) {
       } catch {}
     }
     fetchCompare()
-  }, [shape.id, shape.props.compareHash7, shape.props.compareRef, shape.props.pageIndex, svgText])
+  }, [docName, shape.id, shape.props.compareHash7, shape.props.compareRef, shape.props.pageIndex, svgText])
 
   // Track what's currently injected so we skip redundant DOM work
   const injectedRef = useRef<string | null>(null)
@@ -208,7 +209,6 @@ function SvgPageComponent({ shape }: { shape: any }) {
     const idStr = shape.id as string
     if (idStr.includes('col-') || idStr.includes('compare-page-')) return
 
-    const docName = new URLSearchParams(window.location.search).get('doc')
     if (!docName) return
 
     // Abort previous fetch if still in flight

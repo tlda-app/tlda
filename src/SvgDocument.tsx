@@ -419,7 +419,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
   const togglePanelsLocal = useCallback(() => { setPanelsLocal(prev => !prev) }, [])
 
   // --- Hooks ---
-  const docName = new URLSearchParams(window.location.search).get('doc') || document.name
+  const docName = document.name
 
   const { historyEntries, activeHistoryIdx, historyLoading, historyChangedPages, historyChanges, handleHistoryChange } = useSnapshotTimeline(document, docName)
   const { overlayActive: showHistoryPanel, toggleOverlay: toggleHistoryOverlay, hideOverlay: hideHistoryOverlay } = useHistoryOverlay(
@@ -490,10 +490,9 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
   const { suppressBroadcastRef, broadcastTimerRef } = useCameraLink(editorRef, isPresentation)
 
   // Role only meaningful in presentation (slides) format
-  const docNameForRole = new URLSearchParams(window.location.search).get('doc') || document.name
   useMemo(() => {
-    if (isPresentation) { initRole(docNameForRole); setDraftMode(getRole() === 'viewer') }
-  }, [docNameForRole, isPresentation])
+    if (isPresentation) { initRole(docName); setDraftMode(getRole() === 'viewer') }
+  }, [docName, isPresentation])
   const role = useSyncExternalStore(subscribeRole, getRole)
 
   // Presentation: broadcast presenter identity + sync draft mode to role
@@ -820,8 +819,6 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     [document, docName, isPresentation]
   )
 
-  const docKey = new URLSearchParams(window.location.search).get('doc') || document.name
-
   // Pulse effect for standalone diff docs
   useEffect(() => {
     if (!document.diffLayout) return
@@ -831,7 +828,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
 
   // Stable doc info — only changes when a different document loads
   const docContextValue = useMemo(() => ({
-    docName: docKey,
+    docName,
     format: document.format,
     pages: document.pages.map(p => ({
       bounds: { x: p.bounds.x, y: p.bounds.y, width: p.bounds.width, height: p.bounds.height },
@@ -842,7 +839,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       tldrawPageId: p.tldrawPageId,
     })),
     targets: document.targets,
-  }), [docKey, document])
+  }), [docName, document])
 
   // Volatile panel state — toggles, loading flags, history, etc.
   const panelContextValue = useMemo(() => ({
@@ -879,7 +876,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     shadowHistoryVisible: shadowVisible,
     onToggleShadowHistory: toggleShadowOverlay,
     shadowActiveVersion,
-  }), [docKey, hasDiffBuiltin, hasDiffToggle, diffMode, diffLoading, toggleDiff, proofMode, proofLoading, proofDataReady, toggleProof, role, panelsLocal, togglePanelsLocal, snapshotCount, snapshotSliderIdx, handleSliderChange, historyEntries, activeHistoryIdx, historyLoading, historyChangedPages, historyChanges, handleHistoryChange, selectedChangeId, handleSelectChange, buildErrors, buildWarnings, timelineActive, toggleTimeline, shadowVisible, toggleShadowOverlay, shadowActiveVersion])
+  }), [hasDiffBuiltin, hasDiffToggle, diffMode, diffLoading, toggleDiff, proofMode, proofLoading, proofDataReady, toggleProof, role, panelsLocal, togglePanelsLocal, snapshotCount, snapshotSliderIdx, handleSliderChange, historyEntries, activeHistoryIdx, historyLoading, historyChangedPages, historyChanges, handleHistoryChange, selectedChangeId, handleSelectChange, buildErrors, buildWarnings, timelineActive, toggleTimeline, shadowVisible, toggleShadowOverlay, shadowActiveVersion])
 
   // Hide non-owned fleet shapes (belong to another user or orphans). Owned fleet
   // shapes must remain visible to custom WM viewports; the HUD renders from the
