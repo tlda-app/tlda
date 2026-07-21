@@ -36,9 +36,9 @@ function makeHarness(overrides = {}) {
       created.push(ws)
       return ws
     },
-    onMessage: () => {},
-    onOpen: () => events.push(['onOpen']),
-    onClose: (reason) => events.push(['onClose', reason]),
+    onMessage: (msg, attemptId) => events.push(['onMessage', attemptId]),
+    onOpen: (ws, attemptId) => events.push(['onOpen', attemptId]),
+    onClose: (reason, attemptId) => events.push(['onClose', reason, attemptId]),
     onRetryScheduled: (attemptId, delayMs) => events.push(['retryScheduled', attemptId, delayMs]),
     onAttemptOpen: (attemptId) => events.push(['attemptOpen', attemptId]),
     log: () => {},
@@ -148,6 +148,93 @@ test('retry-scheduled carries the just-ended attempt id and a delay; next opened
     created[1].fakeOpen()
     const attemptOpenEvents = events.filter(e => e[0] === 'attemptOpen')
     assert.equal(attemptOpenEvents[attemptOpenEvents.length - 1][1], '2')
+  } finally {
+    rws.close()
+  }
+})
+
+test('a late close from a superseded socket stays labeled with its own attempt id, and fabricates no attempt-2 detection', () => {
+  const { rws, created, events } = makeHarness()
+  try {
+    rws.connect()
+    const ws1 = created[0]
+    ws1.fakeError(new Error('boom')) // ws1 errors -> cleanup(ws1, 'error', '1') -> retry scheduled
+
+    const firstCloseEvents = events.filter(e => e[0] === 'onClose')
+    assert.equal(firstCloseEvents.length, 1)
+    assert.equal(firstCloseEvents[0][1], 'error')
+    assert.equal(firstCloseEvents[0][2], '1', 'labeled with attempt 1, the socket that actually errored')
+
+    rws._retryTimer && clearTimeout(rws._retryTimer)
+    rws._retryTimer = null
+    rws.connect() // attempt 2 constructed; ws1 object still exists (a stale reference elsewhere)
+    const ws2 = created[1]
+    ws2.fakeOpen()
+
+    // ws2's own events must never be mislabeled as attempt 1 -- checked BEFORE
+    // clearing, since these fired at ws2.fakeOpen() above.
+    const attemptOpenEvents = events.filter(e => e[0] === 'attemptOpen')
+    assert.equal(attemptOpenEvents[attemptOpenEvents.length - 1][1], '2')
+    const onOpenEventsBeforeClear = events.filter(e => e[0] === 'onOpen')
+    assert.equal(onOpenEventsBeforeClear[onOpenEventsBeforeClear.length - 1][1], '2')
+
+    events.length = 0
+
+    // ws1 (superseded, already cleaned up) fires a late close. Node's `ws` guarantees
+    // at most one of close/error normally, but this simulates a library edge case.
+    ws1.fakeClose(1006, '')
+
+    // _cleanup's identity guard (this._ws !== ws) means this late event from a
+    // socket that is no longer this._ws must produce NO further onClose call --
+    // not a phantom second transition, and certainly not one mislabeled as attempt 2.
+    const closeEvents = events.filter(e => e[0] === 'onClose')
+    assert.equal(closeEvents.length, 0, 'a late event from a superseded, already-cleaned-up socket fires no further transition')
+    const onOpenEvents = onOpenEventsBeforeClear
+    assert.equal(onOpenEvents[onOpenEvents.length - 1][1], '2')
+  } finally {
+    rws.close()
+  }
+})
+
+test('URL-resolution failure after a prior socket schedules retry with no attempt id, not the prior one', () => {
+  let shouldThrow = false
+  const { rws, created, events } = makeHarness({
+    url: () => { if (shouldThrow) throw new Error('config vanished'); return 'ws://fake/' },
+  })
+  try {
+    rws.connect()
+    assert.equal(rws.attemptId, '1')
+    created[0].fakeClose(1006, '')
+    rws._retryTimer && clearTimeout(rws._retryTimer)
+    rws._retryTimer = null
+    events.length = 0
+
+    shouldThrow = true
+    rws.connect() // URL resolution fails this time
+    assert.equal(created.length, 1, 'no second socket was constructed')
+
+    const retryEvents = events.filter(e => e[0] === 'retryScheduled')
+    assert.equal(retryEvents.length, 1)
+    assert.equal(retryEvents[0][1], null, 'a URL-resolution failure must not be attributed to the previous attempt id')
+  } finally {
+    rws.close()
+  }
+})
+
+test('each socket generation reports its own captured attempt id on open/message, independent of connect() order', () => {
+  const { rws, created, events } = makeHarness()
+  try {
+    rws.connect()
+    created[0].fakeOpen()
+    created[0].emit('message', Buffer.from(JSON.stringify({ type: 'ping-ish' })))
+
+    const attempt1Events = events.filter(e => e[2] === '1' || (e[0] === 'onOpen' && e[1] === '1') || (e[0] === 'onMessage' && e[1] === '1'))
+    assert.ok(attempt1Events.length > 0)
+    // No event in this run should ever report an id other than '1' -- only one
+    // socket generation exists so far.
+    for (const e of events) {
+      if (e[0] === 'onOpen' || e[0] === 'onMessage') assert.equal(e[1], '1')
+    }
   } finally {
     rws.close()
   }

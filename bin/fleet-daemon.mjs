@@ -993,8 +993,8 @@ function connect() {
         connection_attempt_id: `${BOOT_ID}:${attemptId}`,
       })
     },
-    onOpen: () => {
-      const connectionAttemptId = `${BOOT_ID}:${_rws.attemptId}`
+    onOpen: (ws, attemptId) => {
+      const connectionAttemptId = `${BOOT_ID}:${attemptId}`
       const sent = sendMsg({
         type: 'daemon-hello',
         machine_id: MACHINE_ID,
@@ -1017,11 +1017,11 @@ function connect() {
       })
     },
     onMessage: handleServerMessage,
-    onClose: (reason) => {
+    onClose: (reason, attemptId) => {
       traceGate1('client-close-detected', {
         daemon_key: `${MACHINE_ID}:${ACTIVE_CONFIG}`,
         boot_id: BOOT_ID,
-        connection_attempt_id: `${BOOT_ID}:${_rws.attemptId}`,
+        connection_attempt_id: attemptId ? `${BOOT_ID}:${attemptId}` : null,
         reason,
       })
       _serverReady = false
@@ -1071,7 +1071,7 @@ function applyAgentStatusEvents(events = []) {
   }
 }
 
-function handleServerMessage(msg) {
+function handleServerMessage(msg, wsAttemptId) {
   if (machineRpc.handleReply(msg)) return
   if (msg.type === DAEMON_OUTBOX_ACK_TYPE) {
     if (msg.outbox_id) daemonDelivery.handleAck(msg.outbox_id)
@@ -1096,7 +1096,7 @@ function handleServerMessage(msg) {
     traceGate1('welcome-received', {
       daemon_key: `${MACHINE_ID}:${ACTIVE_CONFIG}`,
       boot_id: BOOT_ID,
-      connection_attempt_id: `${BOOT_ID}:${_rws.attemptId}`,
+      connection_attempt_id: wsAttemptId ? `${BOOT_ID}:${wsAttemptId}` : null,
       server_ws_session_id: msg.server_ws_session_id || null,
       echoed_connection_attempt_id: msg.connection_attempt_id || null,
     })

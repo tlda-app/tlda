@@ -18,14 +18,20 @@ export class ResilientWS {
    * @param {number}        [options.stableConnectionMs=10000] — reset retry ramp only after this long connected
    * @param {() => number}  [options.random=Math.random] — injected by tests
    * @param {number}        [options.heartbeatTimeoutMs=0] — 0 = disabled
-   * @param {(ws) => void}  [options.onOpen]     — called after connection opens
-   * @param {(msg) => void} options.onMessage    — called with parsed JSON message
-   * @param {(reason: string) => void} [options.onClose] — called on connection loss (before retry);
-   *   reason is one of 'close' | 'error' | 'heartbeat-timeout' | 'manual-reconnect'
+   * @param {(ws, attemptId: string) => void}  [options.onOpen] — called after connection opens,
+   *   with the immutable attempt id captured at mint time for THIS socket generation
+   * @param {(msg, attemptId: string) => void} options.onMessage — called with parsed JSON
+   *   message and the immutable attempt id of the socket generation it arrived on
+   * @param {(reason: string, attemptId: string|null) => void} [options.onClose] — called on
+   *   connection loss (before retry); reason is one of
+   *   'close' | 'error' | 'heartbeat-timeout' | 'manual-reconnect'; attemptId is the id minted
+   *   for the socket that just ended (null if it ended before any socket was ever created,
+   *   e.g. a URL-resolution failure)
    * @param {(reason: string) => void} [options.onActivity] — called on open/message/ping liveness
    * @param {(s: string) => void} [options.log]  — log function (default: console.log)
-   * @param {(attemptId: string, delayMs: number) => void} [options.onRetryScheduled] — the
-   *   just-ended attempt's id and the computed backoff delay before the next connect() call
+   * @param {(attemptId: string|null, delayMs: number) => void} [options.onRetryScheduled] — the
+   *   just-ended attempt's id (null if no socket was ever created for this cycle) and the
+   *   computed backoff delay before the next connect() call
    * @param {(attemptId: string) => void} [options.onAttemptOpen] — fired on 'open', with the
    *   new attempt's immutable id, before onOpen (so callers can trace attempt-opened even if
    *   they don't otherwise act on open)
@@ -59,16 +65,21 @@ export class ResilientWS {
     this._stableTimer = null
     this._closed = false
     // Monotone per-connect-attempt counter, scoped to this instance's
-    // lifetime (i.e. one daemon/process boot). Read via `attemptId` so a
-    // caller can tag daemon-hello and its own transition logs with the
-    // exact attempt a given open/close/error belongs to.
+    // lifetime (i.e. one daemon/process boot). `_lastAttemptId` is the most
+    // recent attempt minted, exposed via the `attemptId` getter for callers
+    // that just want "the current/most-recent attempt" (e.g. synchronously
+    // inside the open handler). Every event handler below, however, closes
+    // over its OWN immutable `attemptId` captured at mint time rather than
+    // rereading this field — a late close/error from a superseded socket
+    // must stay labeled with the attempt it actually belongs to, not
+    // whatever attempt happens to be current when the event fires.
     this._attemptSeq = 0
-    this._attemptId = null
+    this._lastAttemptId = null
   }
 
   get ws() { return this._ws }
   get connected() { return this._ws?.readyState === WebSocket.OPEN }
-  get attemptId() { return this._attemptId }
+  get attemptId() { return this._lastAttemptId }
 
   send(obj) {
     if (!this.connected) return false
@@ -82,13 +93,14 @@ export class ResilientWS {
 
     // Resolve the URL BEFORE minting an attempt id: a URL-resolution failure
     // (e.g. config not loaded yet) is not an actual connection attempt and
-    // must not consume/advance the attempt sequence.
+    // must not consume/advance the attempt sequence, and must not be
+    // attributed to whatever the previous attempt id happened to be.
     let url
     try {
       url = this._getUrl()
     } catch (e) {
       this._log(`[${this._label}] connect failed: ${e.message}`)
-      this._scheduleRetry()
+      this._scheduleRetry(null)
       return
     }
 
@@ -97,32 +109,35 @@ export class ResilientWS {
       // External wss:// (production) should validate normally.
       const isLocalWss = url.startsWith('wss://127.0.0.1') || url.startsWith('wss://localhost')
       // Mint the attempt id immediately before the actual constructor call —
-      // this is the real attempt, not a scheduling/URL-resolution step.
+      // this is the real attempt, not a scheduling/URL-resolution step —
+      // and capture it in a local so every handler below closes over THIS
+      // generation's id, immutably, regardless of what connect() does later.
       this._attemptSeq += 1
-      this._attemptId = String(this._attemptSeq)
-      this._log(`[${this._label}] connecting to ${url.replace(/token=[^&]+/, 'token=***')} (attempt ${this._attemptId})`)
+      const attemptId = String(this._attemptSeq)
+      this._lastAttemptId = attemptId
+      this._log(`[${this._label}] connecting to ${url.replace(/token=[^&]+/, 'token=***')} (attempt ${attemptId})`)
       const ws = new this._WebSocketImpl(url, isLocalWss ? { rejectUnauthorized: false } : undefined)
       this._ws = ws
 
       ws.on('open', () => {
-        this._log(`[${this._label}] connected (attempt ${this._attemptId})`)
-        this._onAttemptOpen?.(this._attemptId)
+        this._log(`[${this._label}] connected (attempt ${attemptId})`)
+        this._onAttemptOpen?.(attemptId)
         if (this._stableTimer) clearTimeout(this._stableTimer)
         this._stableTimer = setTimeout(() => {
           this._stableTimer = null
           this._backoff = this._initialBackoff
         }, this._stableConnectionMs)
-        this._resetHeartbeat()
+        this._resetHeartbeat(ws, attemptId)
         this._onActivity?.('open')
-        this._onOpen?.(ws)
+        this._onOpen?.(ws, attemptId)
       })
 
       ws.on('message', (raw) => {
-        this._resetHeartbeat()
+        this._resetHeartbeat(ws, attemptId)
         this._onActivity?.('message')
         let msg
         try { msg = JSON.parse(raw.toString()) } catch (e) { this._log(`[${this._label}] bad JSON: ${e.message}`); return }
-        this._onMessage(msg)
+        this._onMessage(msg, attemptId)
       })
 
       // A protocol-level ping is liveness evidence just like an application
@@ -136,24 +151,24 @@ export class ResilientWS {
       // additive: a reset only ever pushes the deadline later, so it can never
       // shorten an existing reconnect.
       ws.on('ping', () => {
-        this._resetHeartbeat()
+        this._resetHeartbeat(ws, attemptId)
         this._onActivity?.('ping')
       })
 
       ws.on('close', (code, reason) => {
-        this._log(`[${this._label}] closed (${code} ${reason || ''})`)
-        this._cleanup(ws, 'close')
-        this._scheduleRetry()
+        this._log(`[${this._label}] closed (${code} ${reason || ''}) (attempt ${attemptId})`)
+        this._cleanup(ws, 'close', attemptId)
+        this._scheduleRetry(attemptId)
       })
 
       ws.on('error', (e) => {
-        this._log(`[${this._label}] error: ${e.message}`)
-        this._cleanup(ws, 'error')
-        this._scheduleRetry()
+        this._log(`[${this._label}] error: ${e.message} (attempt ${attemptId})`)
+        this._cleanup(ws, 'error', attemptId)
+        this._scheduleRetry(attemptId)
       })
     } catch (e) {
       this._log(`[${this._label}] connect failed: ${e.message}`)
-      this._scheduleRetry()
+      this._scheduleRetry(null)
     }
   }
 
@@ -169,9 +184,10 @@ export class ResilientWS {
   reconnect() {
     if (this._closed) return
     const ws = this._ws
+    const attemptId = this._lastAttemptId
     if (ws) { try { ws.close() } catch (e) { this._log(`[${this._label}] close error: ${e.message}`) } }
-    this._cleanup(ws, 'manual-reconnect')
-    this._scheduleRetry()
+    this._cleanup(ws, 'manual-reconnect', attemptId)
+    this._scheduleRetry(attemptId)
   }
 
   close() {
@@ -183,15 +199,15 @@ export class ResilientWS {
     this._ws = null
   }
 
-  _cleanup(ws = this._ws, reason = null) {
+  _cleanup(ws = this._ws, reason = null, attemptId = this._lastAttemptId) {
     if (ws && this._ws !== ws) return
     this._ws = null
     if (this._heartbeatTimer) { clearTimeout(this._heartbeatTimer); this._heartbeatTimer = null }
     if (this._stableTimer) { clearTimeout(this._stableTimer); this._stableTimer = null }
-    this._onClose?.(reason)
+    this._onClose?.(reason, attemptId)
   }
 
-  _scheduleRetry() {
+  _scheduleRetry(attemptId) {
     if (this._closed) return
     if (this._retryTimer) return
     // Full jitter prevents every daemon that observed the same close from
@@ -199,24 +215,21 @@ export class ResilientWS {
     const delay = Math.floor(this._backoff * (0.5 + this._random() * 0.5))
     this._backoff = Math.min(this._backoff * 2, this._maxBackoff)
     this._log(`[${this._label}] reconnecting in ${delay}ms`)
-    // `this._attemptId` at this point still refers to the just-ended attempt
-    // (cleanup doesn't clear it); the next attempt isn't minted until connect().
-    this._onRetryScheduled?.(this._attemptId, delay)
+    this._onRetryScheduled?.(attemptId, delay)
     this._retryTimer = setTimeout(() => {
       this._retryTimer = null
       this.connect()
     }, delay)
   }
 
-  _resetHeartbeat() {
+  _resetHeartbeat(ws, attemptId) {
     if (!this._heartbeatTimeoutMs) return
     if (this._heartbeatTimer) clearTimeout(this._heartbeatTimer)
     this._heartbeatTimer = setTimeout(() => {
-      this._log(`[${this._label}] no heartbeat in ${this._heartbeatTimeoutMs}ms — reconnecting (attempt ${this._attemptId})`)
-      const ws = this._ws
+      this._log(`[${this._label}] no heartbeat in ${this._heartbeatTimeoutMs}ms — reconnecting (attempt ${attemptId})`)
       if (ws) { try { ws.close() } catch (e) { this._log(`[${this._label}] close error: ${e.message}`) } }
-      this._cleanup(ws, 'heartbeat-timeout')
-      this._scheduleRetry()
+      this._cleanup(ws, 'heartbeat-timeout', attemptId)
+      this._scheduleRetry(attemptId)
     }, this._heartbeatTimeoutMs)
   }
 }
