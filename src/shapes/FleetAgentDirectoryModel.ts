@@ -182,8 +182,8 @@ export function toFleetAgentDirectoryRow(agent: any): FleetAgentDirectoryRowMode
 
 export function getFleetAgentDirectoryRows(agents: any[]): FleetAgentDirectoryRowModel[] {
   return agents
-    .filter((agent: any) => !agent.dead)
-    .map((agent: any) => toFleetAgentDirectoryRow(agent))
+    .filter((agent) => !agent.dead)
+    .map((agent) => toFleetAgentDirectoryRow(agent))
     .filter((row) => !!row.exactName)
 }
 

@@ -1220,12 +1220,13 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
           selection: { anchor: line.from },
           effects: EditorView.scrollIntoView(line.from, { y: 'center' }),
         })
-      } catch (err: any) {
+      } catch (err: unknown) {
         if (cancelled) return
         secondaryCmViewRef.current?.destroy()
         secondaryCmViewRef.current = null
         setStatus('error')
-        setStatusText(`${activeSecondaryFile}: ${err?.message || 'Failed to load source'}`)
+        const message = err instanceof Error ? err.message : 'Failed to load source'
+        setStatusText(`${activeSecondaryFile}: ${message}`)
       }
     }
 
