@@ -7,6 +7,7 @@ import os from 'os'
 import path from 'path'
 import fs from 'fs'
 import { createInterface } from 'readline'
+import { pathToFileURL } from 'url'
 import TailFile from '@logdna/tail-file'
 import { parser as jsonlParser } from 'stream-json/jsonl/parser.js'
 import { parseCodexRecord } from '../agent-runtime/codex-activity.mjs'
@@ -24,16 +25,42 @@ import {
   extractNativeTaskEvents,
 } from '../agent-runtime/native-task-events.mjs'
 
-try { os.setPriority(process.pid, 10) } catch { /* priority is advisory */ }
-
 const MAX_CONTEXT = 200_000
 const watchers = new Map()
 const pendingJobAcks = new Map()
 const activeJobs = new Map()
 
-function send(msg) {
-  process.send?.(msg)
+export function createSafeIpcSender(processLike = process, {
+  onClosed = () => {},
+} = {}) {
+  let ipcOpen = !!processLike.send
+  let warnedClosed = false
+  return function safeSend(msg) {
+    if (!ipcOpen || !processLike.connected || !processLike.send) return false
+    try {
+      processLike.send(msg)
+      return true
+    } catch (e) {
+      if (e?.code === 'EPIPE' || e?.code === 'ERR_IPC_CHANNEL_CLOSED') {
+        ipcOpen = false
+        if (!warnedClosed) {
+          warnedClosed = true
+          onClosed(e)
+        }
+        return false
+      }
+      throw e
+    }
+  }
 }
+
+const send = createSafeIpcSender(process, {
+  onClosed: (e) => {
+    try { process.stderr.write(`[fleet-jsonl-ingester] parent IPC closed: ${e.code}\n`) } catch {
+      // Best-effort diagnostic after parent IPC closure; do not crash while exiting.
+    }
+  },
+})
 
 function parseRecordForHarness(harnessKind, record) {
   if (harnessKind === 'claude') return parseSessionRecord(record)
@@ -496,17 +523,26 @@ function shutdown() {
   process.exit(0)
 }
 
-process.on('message', (msg) => {
-  if (msg?.type === 'watch') startWatch(msg)
-  else if (msg?.type === 'update') updateWatch(msg)
-  else if (msg?.type === 'ack') ackBatch(msg)
-  else if (msg?.type === 'drain-once') drainOnce(msg)
-  else if (msg?.type === 'job') void startJob(msg)
-  else if (msg?.type === 'job-ack') ackJobBatch(msg)
-  else if (msg?.type === 'stop') stopWatch(msg.watchId)
-  else if (msg?.type === 'shutdown') shutdown()
-})
+function runMain() {
+  try { os.setPriority(process.pid, 10) } catch { /* priority is advisory */ }
+  process.on('message', (msg) => {
+    if (msg?.type === 'watch') startWatch(msg)
+    else if (msg?.type === 'update') updateWatch(msg)
+    else if (msg?.type === 'ack') ackBatch(msg)
+    else if (msg?.type === 'drain-once') drainOnce(msg)
+    else if (msg?.type === 'job') void startJob(msg)
+    else if (msg?.type === 'job-ack') ackJobBatch(msg)
+    else if (msg?.type === 'stop') stopWatch(msg.watchId)
+    else if (msg?.type === 'shutdown') shutdown()
+  })
 
-process.on('disconnect', shutdown)
+  process.on('disconnect', () => {
+    shutdown()
+  })
 
-send({ type: 'ready' })
+  send({ type: 'ready' })
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  runMain()
+}

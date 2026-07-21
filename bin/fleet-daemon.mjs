@@ -1152,7 +1152,10 @@ process.on('SIGTERM', () => shutdown('SIGTERM'))
 process.on('SIGHUP', () => shutdown('SIGHUP'))
 // Catch every cause-of-death we can intercept. SIGKILL and SIGSTOP can't
 // be handled, but logging the rest narrows the post-mortem dramatically.
-for (const sig of ['SIGQUIT', 'SIGABRT', 'SIGPIPE', 'SIGUSR1', 'SIGUSR2', 'SIGBUS', 'SIGSEGV', 'SIGFPE']) {
+process.on('SIGPIPE', () => {
+  log.warn('received SIGPIPE — ignoring broken pipe signal')
+})
+for (const sig of ['SIGQUIT', 'SIGABRT', 'SIGUSR1', 'SIGUSR2', 'SIGBUS', 'SIGSEGV', 'SIGFPE']) {
   try {
     process.on(sig, () => {
       log.error(`received ${sig} — exiting`)

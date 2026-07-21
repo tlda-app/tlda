@@ -1,13 +1,4 @@
 export const DEFAULT_SUPERVISED_START_TIMEOUT_MS = 120_000
-export const DEFAULT_DIRECT_FALLBACK_TIMEOUT_MS = 30_000
-
-export class DaemonTransitionFailed extends Error {
-  constructor(message, details = {}) {
-    super(message)
-    this.name = 'DaemonTransitionFailed'
-    Object.assign(this, details)
-  }
-}
 
 export function parseLaunchdPid(output) {
   const pidLine = String(output || '').split('\n').find(line => line.trim().startsWith('pid ='))
@@ -188,11 +179,8 @@ export async function runBoundedDaemonStartTransition({
   bootstrap,
   stopExisting,
   waitSupervised,
-  startDirectFallback,
   verifyTargetDaemon,
-  stageRecoveryAction,
   supervisedTimeoutMs = DEFAULT_SUPERVISED_START_TIMEOUT_MS,
-  fallbackTimeoutMs = DEFAULT_DIRECT_FALLBACK_TIMEOUT_MS,
 }) {
   if (!existingPid) {
     throw new Error('bounded daemon transition requires an existing outside daemon pid')
@@ -202,44 +190,22 @@ export async function runBoundedDaemonStartTransition({
     type: 'bounded-start-transition',
     existingPid,
     supervisedTimeoutMs,
-    fallbackTimeoutMs,
   })
 
   await writePlist()
   await bootstrap()
   await stopExisting(existingPid)
 
-  let supervisedFailure = null
-  try {
-    const supervisedPid = await waitSupervised({ previousPid: existingPid, timeoutMs: supervisedTimeoutMs })
-    if (supervisedPid) {
-      await verifyTargetDaemon(supervisedPid, { supervised: true })
-      return { mode: 'supervised', pid: supervisedPid, fallbackUsed: false }
-    }
-  } catch (e) {
-    supervisedFailure = e
+  const supervisedPid = await waitSupervised({ previousPid: existingPid, timeoutMs: supervisedTimeoutMs })
+  if (supervisedPid) {
+    await verifyTargetDaemon(supervisedPid, { supervised: true })
+    return { mode: 'supervised', pid: supervisedPid }
   }
 
-  let fallbackFailure = null
-  try {
-    const fallbackPid = await startDirectFallback({ previousPid: existingPid, timeoutMs: fallbackTimeoutMs })
-    if (fallbackPid) {
-      await verifyTargetDaemon(fallbackPid, { supervised: false })
-      return { mode: 'direct-fallback', pid: fallbackPid, fallbackUsed: true }
-    }
-  } catch (e) {
-    fallbackFailure = e
+  return {
+    mode: 'launchd-pending',
+    pid: null,
+    pending: true,
+    reason: `supervised launchd did not become ready within ${supervisedTimeoutMs}ms`,
   }
-
-  const recovery = await stageRecoveryAction?.({
-    stoppedPid: existingPid,
-    supervisedTimeoutMs,
-    fallbackTimeoutMs,
-    supervisedFailure,
-    fallbackFailure,
-  })
-  throw new DaemonTransitionFailed(
-    `fleet daemon bounded transition failed after stopping pid ${existingPid}: supervised launchd did not start within ${supervisedTimeoutMs}ms and direct fallback did not start within ${fallbackTimeoutMs}ms`,
-    { daemonless: true, recovery, supervisedFailure, fallbackFailure },
-  )
 }
