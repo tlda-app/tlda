@@ -35,7 +35,10 @@ export class DaemonDeliveryRuntime {
     const policy = daemonDeliveryPolicy(message)
 
     if (policy === DELIVERY_DURABLE_FIFO) {
-      this.outbox.enqueue(message)
+      const durableId = message?.type === 'rpc-reply' && message.id
+        ? `rpc-reply:${message.id}:${message.request_fingerprint || 'unknown'}`
+        : null
+      this.outbox.enqueue(message, durableId ? { id: durableId } : undefined)
       this.recordActivityDelivery('daemonQueued', message)
       this.scheduleFlush()
       return true

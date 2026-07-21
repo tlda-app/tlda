@@ -35,12 +35,15 @@ const DIRECT_TYPES = new Set([
   'backing-file-status',
   'daemon-hello',
   'reaper-status',
-  'rpc-reply',
 ])
 
 export function daemonDeliveryPolicy(message) {
   const type = message?.type
   if (!type) return DELIVERY_DIRECT
+
+  // Completion is durable even though the request is correlated: the daemon
+  // may finish after the websocket closes.
+  if (type === 'rpc-reply' && message.id) return DELIVERY_DURABLE_FIFO
 
   // Correlated request/response messages are governed by their caller's timeout.
   if (message.id) return DELIVERY_DIRECT

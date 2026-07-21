@@ -998,9 +998,9 @@ function matchApprovalResponse(text) {
  * Error. If no daemon is connected for `machineId`, rejects synchronously
  * with a `NoDaemonError` so callers can return 503 immediately.
  *
- * Per spec: timeout, no automatic replay. If the WS drops mid-RPC the pending
- * entry survives a short reconnect grace, then rejects if the daemon does not
- * come back before either that grace or the request's own deadline.
+ * Resilient callers reuse one request id across reconnect attempts. The daemon
+ * binds that id to the operation and canonical payload, then replays the result
+ * without repeating the side effect. The caller's deadline remains authoritative.
  */
 class NoDaemonError extends Error {
   constructor(machineId, envName) {
@@ -1036,7 +1036,7 @@ async function sendRpc(machineId, op, params = {}, opts = {}) {
     if (op === 'spawn') logSpawnDaemonMiss(key, 'sendRpc(spawn)', { hasWs: !!dws, readyState: dws?.readyState ?? 'missing', route: params.spawnRoute || 'unknown' })
     return Promise.reject(new NoDaemonError(targetMachine, envName))
   }
-  const id = `rpc-${++_rpcSeq}-${Date.now().toString(36)}`
+  const id = opts.requestId || `rpc-${++_rpcSeq}-${Date.now().toString(36)}`
   // Per-attempt deadline is a caller-passed param (event-based default): control ops
   // wrapped in sendRpcResilient pass a short per-attempt timeout so a stale-but-"open"
   // WS is abandoned quickly and retried on the fresh reconnect, rather than blocking
@@ -1105,9 +1105,8 @@ function failPendingRpcsForDaemon(machineId, envName, reason = 'daemon disconnec
 // churn, off-launchd restart). Per Skip: the deadline is a caller-passed param with an
 // event-based default — the op queues and completes on the reconnect event. This
 // wrapper waits (event-driven, not a busy-poll) for the daemon to (re)register and
-// retries, bounded by a total deadline. sendRpc() itself still does not replay a
-// request after it has been sent; fresh spawn calls only wait for a daemon that is
-// already inside the reconnect grace before their first send.
+// retries, bounded by a total deadline. Every attempt uses the same request id;
+// the daemon rejects mismatched reuse and replays an exact match.
 const RPC_RECONNECT_DEADLINE_MS = 30_000
 const RPC_RESILIENT_ATTEMPT_MS = 5_000
 const daemonReadyWaiters = new Map() // daemonKey -> Set<{ resolve, timer }>
@@ -1163,6 +1162,7 @@ function isTransientRpcError(err) {
 // transient (reconnect-class) failures; op-level errors propagate immediately.
 async function sendRpcResilient(machineId, op, params = {}, { totalDeadlineMs = RPC_RECONNECT_DEADLINE_MS, attemptTimeoutMs = RPC_RESILIENT_ATTEMPT_MS } = {}) {
   const key = rpcDaemonKey(machineId, params)
+  const requestId = `rpc-${++_rpcSeq}-${Date.now().toString(36)}`
   const start = Date.now()
   let lastErr = null
   while (true) {
@@ -1173,7 +1173,10 @@ async function sendRpcResilient(machineId, op, params = {}, { totalDeadlineMs = 
       try { await waitForDaemonReady(key, remaining) } catch (e) { lastErr = e; break }
     }
     try {
-      return await sendRpc(machineId, op, params, { timeoutMs: Math.min(attemptTimeoutMs, Math.max(1, totalDeadlineMs - (Date.now() - start))) })
+      return await sendRpc(machineId, op, params, {
+        requestId,
+        timeoutMs: Math.min(attemptTimeoutMs, Math.max(1, totalDeadlineMs - (Date.now() - start))),
+      })
     } catch (e) {
       lastErr = e
       if (!isTransientRpcError(e)) throw e
