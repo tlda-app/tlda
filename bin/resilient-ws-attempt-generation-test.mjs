@@ -189,8 +189,26 @@ test('a late close from a superseded socket stays labeled with its own attempt i
     // not a phantom second transition, and certainly not one mislabeled as attempt 2.
     const closeEvents = events.filter(e => e[0] === 'onClose')
     assert.equal(closeEvents.length, 0, 'a late event from a superseded, already-cleaned-up socket fires no further transition')
+    // Nor may it schedule a spurious retry on top of the current, healthy generation.
+    const retryEvents = events.filter(e => e[0] === 'retryScheduled')
+    assert.equal(retryEvents.length, 0, 'a late event from a superseded socket must not schedule a retry either')
     const onOpenEvents = onOpenEventsBeforeClear
     assert.equal(onOpenEvents[onOpenEvents.length - 1][1], '2')
+  } finally {
+    rws.close()
+  }
+})
+
+test('a throwing WebSocket constructor still carries the minted attempt id in the retry trace', () => {
+  const { rws, events } = makeHarness({
+    WebSocketImpl: function () { throw new Error('ENETUNREACH') },
+  })
+  try {
+    rws.connect()
+    assert.equal(rws.attemptId, '1', 'the attempt WAS minted -- this is a real connection attempt, not URL resolution')
+    const retryEvents = events.filter(e => e[0] === 'retryScheduled')
+    assert.equal(retryEvents.length, 1)
+    assert.equal(retryEvents[0][1], '1', 'a throwing constructor is attributed to the attempt it belongs to, not null')
   } finally {
     rws.close()
   }

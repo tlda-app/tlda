@@ -104,17 +104,20 @@ export class ResilientWS {
       return
     }
 
+    // Mint the attempt id as the FIRST thing inside this try block — this is
+    // the real connection attempt, not a scheduling/URL-resolution step, so
+    // any failure from here on (including the WebSocket constructor itself
+    // throwing) belongs to this attempt and must carry its id in the retry
+    // trace, not be reported as attemptId=null (that's reserved for the
+    // URL-resolution failure above, which never got this far).
+    this._attemptSeq += 1
+    const attemptId = String(this._attemptSeq)
+    this._lastAttemptId = attemptId
+
     try {
       // For wss:// with self-signed certs (local dev), skip cert validation.
       // External wss:// (production) should validate normally.
       const isLocalWss = url.startsWith('wss://127.0.0.1') || url.startsWith('wss://localhost')
-      // Mint the attempt id immediately before the actual constructor call —
-      // this is the real attempt, not a scheduling/URL-resolution step —
-      // and capture it in a local so every handler below closes over THIS
-      // generation's id, immutably, regardless of what connect() does later.
-      this._attemptSeq += 1
-      const attemptId = String(this._attemptSeq)
-      this._lastAttemptId = attemptId
       this._log(`[${this._label}] connecting to ${url.replace(/token=[^&]+/, 'token=***')} (attempt ${attemptId})`)
       const ws = new this._WebSocketImpl(url, isLocalWss ? { rejectUnauthorized: false } : undefined)
       this._ws = ws
@@ -157,18 +160,20 @@ export class ResilientWS {
 
       ws.on('close', (code, reason) => {
         this._log(`[${this._label}] closed (${code} ${reason || ''}) (attempt ${attemptId})`)
-        this._cleanup(ws, 'close', attemptId)
-        this._scheduleRetry(attemptId)
+        // _cleanup only acts (and its result is only meaningful) if `ws` is
+        // still the current socket. A late event from an already-superseded
+        // generation must not schedule a retry on top of whatever the
+        // current (possibly already-healthy) generation is doing.
+        if (this._cleanup(ws, 'close', attemptId)) this._scheduleRetry(attemptId)
       })
 
       ws.on('error', (e) => {
         this._log(`[${this._label}] error: ${e.message} (attempt ${attemptId})`)
-        this._cleanup(ws, 'error', attemptId)
-        this._scheduleRetry(attemptId)
+        if (this._cleanup(ws, 'error', attemptId)) this._scheduleRetry(attemptId)
       })
     } catch (e) {
       this._log(`[${this._label}] connect failed: ${e.message}`)
-      this._scheduleRetry(null)
+      this._scheduleRetry(attemptId)
     }
   }
 
@@ -186,8 +191,7 @@ export class ResilientWS {
     const ws = this._ws
     const attemptId = this._lastAttemptId
     if (ws) { try { ws.close() } catch (e) { this._log(`[${this._label}] close error: ${e.message}`) } }
-    this._cleanup(ws, 'manual-reconnect', attemptId)
-    this._scheduleRetry(attemptId)
+    if (this._cleanup(ws, 'manual-reconnect', attemptId)) this._scheduleRetry(attemptId)
   }
 
   close() {
@@ -199,12 +203,21 @@ export class ResilientWS {
     this._ws = null
   }
 
+  /**
+   * Returns true if this call actually tore down the current generation
+   * (ws matched this._ws, or no ws was ever specified), false if `ws` was
+   * already superseded (stale) and this was a no-op. Callers must gate any
+   * consequence of "a generation just ended" — onClose, and scheduling a
+   * retry — on this return value, not assume every close/error call site
+   * corresponds to a real transition.
+   */
   _cleanup(ws = this._ws, reason = null, attemptId = this._lastAttemptId) {
-    if (ws && this._ws !== ws) return
+    if (ws && this._ws !== ws) return false
     this._ws = null
     if (this._heartbeatTimer) { clearTimeout(this._heartbeatTimer); this._heartbeatTimer = null }
     if (this._stableTimer) { clearTimeout(this._stableTimer); this._stableTimer = null }
     this._onClose?.(reason, attemptId)
+    return true
   }
 
   _scheduleRetry(attemptId) {
@@ -228,8 +241,7 @@ export class ResilientWS {
     this._heartbeatTimer = setTimeout(() => {
       this._log(`[${this._label}] no heartbeat in ${this._heartbeatTimeoutMs}ms — reconnecting (attempt ${attemptId})`)
       if (ws) { try { ws.close() } catch (e) { this._log(`[${this._label}] close error: ${e.message}`) } }
-      this._cleanup(ws, 'heartbeat-timeout', attemptId)
-      this._scheduleRetry(attemptId)
+      if (this._cleanup(ws, 'heartbeat-timeout', attemptId)) this._scheduleRetry(attemptId)
     }, this._heartbeatTimeoutMs)
   }
 }
