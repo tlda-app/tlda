@@ -213,6 +213,69 @@ export async function markAgentDead(fleetId, { api = resolveApi(), timeoutMs = 5
   })
 }
 
+function traceIdentityAttempt(detail) {
+  process.stderr.write(`[spawn-trace] identity-ws ${JSON.stringify({ ts: new Date().toISOString(), ...detail })}\n`)
+}
+
+// One connect-then-ack round trip. Failures at either stage are traced with
+// the operation id and which stage failed, so a WS hiccup is diagnosable
+// instead of surfacing only as an opaque "timed out" spawn failure.
+async function wsIdentityAttempt(type, requestId, wsPeer, wsUrl, msg, { api, timeoutMs, attempt }) {
+  const ws = new WebSocket(wsUrl, tlsOptionsForApi(api))
+  try {
+    const opened = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`registration timed out connecting to ${wsUrl}`)), timeoutMs)
+      ws.once('open', () => {
+        clearTimeout(timer)
+        resolve()
+      })
+      ws.once('error', (e) => {
+        clearTimeout(timer)
+        reject(e)
+      })
+    })
+    try {
+      await opened
+    } catch (e) {
+      traceIdentityAttempt({ type, requestId, wsPeer, attempt, stage: 'connect', ok: false, error: e.message, timeoutMs })
+      throw e
+    }
+    traceIdentityAttempt({ type, requestId, wsPeer, attempt, stage: 'connect', ok: true })
+    const reply = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        ws.off('message', onMessage)
+        reject(new Error(`${type} timed out waiting for shell reservation ack from ${wsUrl}`))
+      }, timeoutMs)
+      const onMessage = (raw) => {
+        try {
+          const data = JSON.parse(raw.toString())
+          if (data.id !== requestId) return
+          clearTimeout(timer)
+          ws.off('message', onMessage)
+          if (data.error) reject(new Error(data.error.message || data.error))
+          else resolve(data.result || { ok: true })
+        } catch {
+          clearTimeout(timer)
+          ws.off('message', onMessage)
+          resolve({ ok: true })
+        }
+      }
+      ws.on('message', onMessage)
+    })
+    ws.send(JSON.stringify(msg))
+    try {
+      const result = await reply
+      traceIdentityAttempt({ type, requestId, wsPeer, attempt, stage: 'ack', ok: true })
+      return result
+    } catch (e) {
+      traceIdentityAttempt({ type, requestId, wsPeer, attempt, stage: 'ack', ok: false, error: e.message, timeoutMs })
+      throw e
+    }
+  } finally {
+    ws.close()
+  }
+}
+
 async function wsIdentityMessage(type, {
   fleetId,
   localAgentId,
@@ -234,24 +297,10 @@ async function wsIdentityMessage(type, {
 } = {}) {
   const wsPeer = fleetId || localAgentId || 'unbound-local-agent'
   const wsUrl = `${wsForm(api)}/ws/fleet?agent=${encodeURIComponent(wsPeer)}`
-  const ws = new WebSocket(wsUrl, tlsOptionsForApi(api))
-  const requestId = `${type}:${wsPeer}:${Date.now()}:${Math.random().toString(36).slice(2)}`
-  const opened = new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`registration timed out connecting to ${wsUrl}`)), timeoutMs)
-    ws.once('open', () => {
-      clearTimeout(timer)
-      resolve()
-    })
-    ws.once('error', (e) => {
-      clearTimeout(timer)
-      reject(e)
-    })
-  })
-  await opened
   const cfg = readConfig()
   const msg = {
     type,
-    id: requestId,
+    id: null,
     ...(fleetId ? { agent_id: fleetId } : {}),
     ...(localAgentId ? { local_agent_id: localAgentId } : {}),
     name,
@@ -277,33 +326,17 @@ async function wsIdentityMessage(type, {
     meta.spawnPolicy = { ...(meta.spawnPolicy || {}), permission: spawnPermission }
   }
   if (Object.keys(meta).length) msg.metadata = meta
-  const reply = new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      ws.off('message', onMessage)
-      reject(new Error(`${type} timed out waiting for shell reservation ack from ${wsUrl}`))
-    }, timeoutMs)
-    const onMessage = (raw) => {
-      try {
-        const data = JSON.parse(raw.toString())
-        if (data.id !== requestId) return
-        clearTimeout(timer)
-        ws.off('message', onMessage)
-        if (data.error) reject(new Error(data.error.message || data.error))
-        else resolve(data.result || { ok: true })
-      } catch {
-        clearTimeout(timer)
-        ws.off('message', onMessage)
-        resolve({ ok: true })
-      }
+  const attempts = [timeoutMs, Math.max(timeoutMs * 2, 10000)]
+  let lastError = null
+  for (let i = 0; i < attempts.length; i++) {
+    const requestId = `${type}:${wsPeer}:${Date.now()}:${Math.random().toString(36).slice(2)}`
+    try {
+      return await wsIdentityAttempt(type, requestId, wsPeer, wsUrl, { ...msg, id: requestId }, { api, timeoutMs: attempts[i], attempt: i + 1 })
+    } catch (e) {
+      lastError = e
     }
-    ws.on('message', onMessage)
-  })
-  ws.send(JSON.stringify(msg))
-  try {
-    return await reply
-  } finally {
-    ws.close()
   }
+  throw lastError
 }
 
 export async function wsReserveShell(options = {}) {
