@@ -5,6 +5,7 @@ import path from 'node:path'
 
 import { FleetStore } from '../server/lib/fleet-store.mjs'
 import { summarizeFleetRosterTruth } from '../server/lib/fleet-roster-truth.mjs'
+import { agentsForTerminalWatchResume } from '../server/lib/terminal-watch-resume.mjs'
 import {
   LIVENESS,
   RUNTIME_STATUS,
@@ -134,6 +135,88 @@ try {
     now: nowMs,
   })
   assert.equal(rosterSummary.agents[0].daemon_key, 'mini:prod')
+
+  store.upsertAgent({
+    id: 'fleet:stale-legacy-route',
+    friendly_name: 'stale-legacy-route',
+    labels: [],
+    registered_at: new Date(0).toISOString(),
+    last_seen: new Date(0).toISOString(),
+    dead: false,
+    human: false,
+    is_manager: false,
+    metadata: { kind: 'codex', model: 'gpt-test' },
+    machine_id: 'legacy',
+    env_name: 'prod',
+    daemon_key: 'legacy:prod',
+    tmux_session: 'fleet-stale-legacy-route',
+    session_id: 'rollout-stale-legacy-route',
+  }, { allowProtectedAgentFields: true })
+
+  const staleProjected = store.getAgent('fleet:stale-legacy-route')
+  assert.equal(staleProjected.daemon_key, null)
+  assert.equal(staleProjected.machine_id, null)
+  assert.equal(staleProjected.env_name, null)
+  assert.equal(staleProjected.tmux_session, null)
+  assert.deepEqual(store.getAgentsByDaemonKey('legacy:prod'), [])
+
+  const staleRosterSummary = summarizeFleetRosterTruth({
+    roster: [{
+      id: 'fleet:stale-legacy-route',
+      friendly_name: 'stale-legacy-route',
+      dead: false,
+      human: false,
+      machine_id: 'legacy',
+      env_name: 'prod',
+      daemon_key: 'legacy:prod',
+      tmux_session: 'fleet-stale-legacy-route',
+      metadata: {},
+    }],
+    matched: [{
+      id: 'fleet:stale-legacy-route',
+      friendly_name: 'stale-legacy-route',
+      dead: false,
+      human: false,
+      machine_id: 'legacy',
+      env_name: 'prod',
+      daemon_key: 'legacy:prod',
+      tmux_session: 'fleet-stale-legacy-route',
+      metadata: {},
+    }],
+    machineSessions: { 'legacy:prod': ['fleet-stale-legacy-route'] },
+    now: nowMs,
+  })
+  assert.equal(staleRosterSummary.agents[0].daemon_key, 'unassigned')
+  assert.equal(staleRosterSummary.agents[0].tmux_session, null)
+  assert.equal(staleRosterSummary.machines.find(m => m.machine_id === 'legacy:prod').registry.total, 0)
+
+  const terminalResume = agentsForTerminalWatchResume({
+    watchedAgentIds: ['fleet:stale-legacy-route', 'fleet:routed-watch'],
+    daemonKey: 'mini:prod',
+    getAgentsByIds: () => [
+      {
+        id: 'fleet:stale-legacy-route',
+        daemon_key: 'mini:prod',
+        tmux_session: 'fleet-stale-legacy-route',
+      },
+      {
+        id: 'fleet:routed-watch',
+        daemon_key: 'wrong:legacy',
+        tmux_session: 'fleet-wrong-legacy-route',
+      },
+    ],
+    getCurrentAgentSeat: id => id === 'fleet:routed-watch'
+      ? {
+          agent_id: id,
+          daemon_key: 'mini:prod',
+          session_id: 'rollout-routed-watch',
+          tmux_session: 'fleet-routed-watch',
+        }
+      : null,
+  })
+  assert.deepEqual(terminalResume.map(({ agent, seat }) => [agent.id, seat.tmux_session]), [
+    ['fleet:routed-watch', 'fleet-routed-watch'],
+  ])
 
   console.log('ok: daemon-key route authority requires durable session identity')
 } finally {

@@ -276,6 +276,8 @@ function runtimeProjection({ status, activity, route, evidence, reason, nowMs })
     route_reason: route.reason,
     route: route.seat ? {
       daemon_key: route.seat.daemon_key || null,
+      machine_id: route.seat.machine_id || null,
+      env_name: route.seat.env_name || null,
       session_id: route.seat.session_id || null,
       tmux_session: route.seat.tmux_session || null,
     } : null,

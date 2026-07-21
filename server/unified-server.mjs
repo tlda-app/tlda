@@ -64,6 +64,7 @@ import { initSyncRooms, getOrCreateRoom, flushAllRooms, closeAllRooms, replayCac
 import * as tldaFeedback from './lib/tlda-feedback.mjs'
 import { injectBridge, injectSlidesBridge, injectChapterTitle } from './lib/html-injector.mjs'
 import { FleetStore } from './lib/fleet-store.mjs'
+import { agentsForTerminalWatchResume } from './lib/terminal-watch-resume.mjs'
 import { applyNativeTaskEvents } from './lib/native-task-wrapper.mjs'
 import { resolveMachine } from './lib/tailscale-peers.mjs'
 import { createFleetRouter, RESOLVED_UPLOAD_DIR } from './routes/fleet.mjs'
@@ -7717,14 +7718,18 @@ async function handleDaemonWsMessage(ws, msg) {
     // empty after a restart so we re-fire start-terminal-watch.
     if (fleetStore) {
       const watchedAgentIds = [...terminalWatchers.keys()]
-      const watchedAgents = watchedAgentIds.length > 0 ? fleetStore.getAgentsByIds(watchedAgentIds) : []
-      for (const a of watchedAgents) {
-        if ((a.daemon_key || (a.machine_id && a.env_name ? daemonAddress(a.machine_id, a.env_name) : null)) !== daemonKey) continue
-        if (a.tmux_session && terminalWatchers.has(a.id)) {
-          sendRpc(daemonKey, 'start-terminal-watch', {
-            agent_id: a.id, tmux_session: a.tmux_session, poll_ms: 500,
-          }).catch(e => console.warn(`[server] terminal-watch resume failed for ${a.id}: ${e.message}`))
-        }
+      for (const { agent: a, seat } of agentsForTerminalWatchResume({
+        watchedAgentIds,
+        getAgentsByIds: ids => fleetStore.getAgentsByIds(ids),
+        getCurrentAgentSeat: id => fleetStore.getCurrentAgentSeat(id),
+        daemonKey,
+      })) {
+        sendRpc(daemonKey, 'start-terminal-watch', {
+          agent_id: a.id,
+          session_id: seat.session_id,
+          tmux_session: seat.tmux_session,
+          poll_ms: 500,
+        }).catch(e => console.warn(`[server] terminal-watch resume failed for ${a.id}: ${e.message}`))
       }
     }
 

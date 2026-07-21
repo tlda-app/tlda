@@ -7,10 +7,7 @@ function agentName(agent) {
 
 function agentDaemonKey(agent) {
   if (agent.runtime_status?.route?.daemon_key) return agent.runtime_status.route.daemon_key
-  if (agent.daemon_key) return agent.daemon_key
-  if (agent.daemonKey) return agent.daemonKey
-  if (agent.machine_id && agent.env_name) return `${agent.machine_id}:${agent.env_name}`
-  return agent.machine_id || 'unassigned'
+  return 'unassigned'
 }
 
 function rowForAgent(agent, now = Date.now()) {
@@ -27,10 +24,10 @@ function rowForAgent(agent, now = Date.now()) {
     inbox_status: agent.metadata?.inboxStatus || null,
     inbox_status_tag: agent.metadata?.inboxStatusTag || null,
     delivery_channel: agent.metadata?.deliveryChannel || null,
-    machine_id: agent.machine_id || null,
-    env_name: agent.env_name || null,
+    machine_id: runtimeRoute?.machine_id || null,
+    env_name: runtimeRoute?.env_name || null,
     daemon_key: runtimeRoute?.daemon_key || agentDaemonKey(agent),
-    tmux_session: runtimeRoute?.tmux_session || agent.tmux_session || null,
+    tmux_session: runtimeRoute?.tmux_session || null,
     activity: act?.state || null,
     tool: act?.tool || null,
     activity_health: activityHealthForProjection(agent.metadata || {}),

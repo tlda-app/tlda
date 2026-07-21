@@ -65,22 +65,11 @@ const PROTECTED_AGENT_UPSERT_FIELDS = [
   'resume_id',
 ];
 
-function protectedAgentFieldValue(agent, field) {
-  if (field === 'session_ids') return Array.isArray(agent?.session_ids) ? agent.session_ids : [];
-  return agent?.[field] ?? null;
-}
-
-function protectedAgentFieldProvided(agent, field) {
-  if (!agent || !(field in agent)) return false;
-  if (field === 'session_ids') return Array.isArray(agent.session_ids);
-  return agent[field] != null && agent[field] !== '';
-}
-
-function sameProtectedAgentField(a, b, field) {
-  if (field === 'session_ids') {
-    return JSON.stringify(protectedAgentFieldValue(a, field)) === JSON.stringify(protectedAgentFieldValue(b, field));
-  }
-  return String(protectedAgentFieldValue(a, field) ?? '') === String(protectedAgentFieldValue(b, field) ?? '');
+function withoutProtectedAgentFields(agent) {
+  if (!agent) return agent;
+  const next = { ...agent };
+  for (const field of PROTECTED_AGENT_UPSERT_FIELDS) next[field] = null;
+  return next;
 }
 
 function parsePrettyName(value) {
@@ -620,72 +609,6 @@ export class FleetStore {
         WHERE tmux_session IS NOT NULL;
     `);
     this._migrateAgentCurrentSeatsRouteSchema();
-    const now = new Date().toISOString();
-    this.db.prepare(`
-      INSERT OR IGNORE INTO agent_seats (
-        agent_id, session_id, resume_id, kind, model, cwd,
-        created_at, created_source, created_by_event_id
-      )
-      SELECT
-        id,
-        session_id,
-        COALESCE(resume_id, session_id),
-        json_extract(metadata, '$.kind'),
-        json_extract(metadata, '$.model'),
-        cwd,
-        ?,
-        'legacy-agent-route-backfill',
-        NULL
-      FROM agents
-      WHERE dead = 0
-        AND human = 0
-        AND session_id IS NOT NULL AND session_id != ''
-        AND tmux_session IS NOT NULL AND tmux_session != ''
-        AND machine_id IS NOT NULL AND machine_id != ''
-        AND env_name IS NOT NULL AND env_name != ''
-        AND daemon_key IS NOT NULL AND daemon_key != ''
-        AND cwd IS NOT NULL AND cwd != ''
-        AND json_extract(metadata, '$.kind') IS NOT NULL AND json_extract(metadata, '$.kind') != ''
-        AND json_extract(metadata, '$.model') IS NOT NULL AND json_extract(metadata, '$.model') != ''
-        AND NOT EXISTS (
-          SELECT 1 FROM agent_current_seats c WHERE c.agent_id = agents.id
-        )
-    `).run(now);
-    this.db.prepare(`
-      INSERT OR IGNORE INTO agent_current_seats (
-        agent_id, session_id, machine_id, env_name, daemon_key, tmux_session,
-        activated_at, activated_by_event_id, transition_reason
-      )
-      SELECT
-        a.id,
-        a.session_id,
-        a.machine_id,
-        a.env_name,
-        a.daemon_key,
-        a.tmux_session,
-        ?,
-        NULL,
-        'legacy-agent-route-backfill'
-      FROM agents a
-      JOIN agent_seats s ON s.agent_id = a.id AND s.session_id = a.session_id
-      WHERE a.dead = 0
-        AND a.human = 0
-        AND a.session_id IS NOT NULL AND a.session_id != ''
-        AND a.tmux_session IS NOT NULL AND a.tmux_session != ''
-        AND a.machine_id IS NOT NULL AND a.machine_id != ''
-        AND a.env_name IS NOT NULL AND a.env_name != ''
-        AND a.daemon_key IS NOT NULL AND a.daemon_key != ''
-        AND NOT EXISTS (
-          SELECT 1 FROM agent_current_seats c WHERE c.agent_id = a.id
-        )
-        AND NOT EXISTS (
-          SELECT 1 FROM agent_current_seats c
-          WHERE c.daemon_key = a.daemon_key
-            AND c.tmux_session = a.tmux_session
-            AND c.agent_id != a.id
-        )
-    `).run(now);
-
     const taskCols = this.db.prepare("PRAGMA table_info(tasks)").all();
     if (!taskCols.some(c => c.name === 'updated_at')) {
       this.db.exec("ALTER TABLE tasks ADD COLUMN updated_at TEXT");
@@ -1055,10 +978,10 @@ export class FleetStore {
       ON CONFLICT(id) DO UPDATE SET
         friendly_name = COALESCE(excluded.friendly_name, agents.friendly_name),
         pretty_name = COALESCE(excluded.pretty_name, agents.pretty_name),
-        tmux_session = COALESCE(excluded.tmux_session, agents.tmux_session),
-        session_id = COALESCE(excluded.session_id, agents.session_id),
-        session_ids = COALESCE(excluded.session_ids, agents.session_ids),
-        cwd = COALESCE(excluded.cwd, agents.cwd),
+        tmux_session = excluded.tmux_session,
+        session_id = excluded.session_id,
+        session_ids = excluded.session_ids,
+        cwd = excluded.cwd,
         labels = COALESCE(excluded.labels, agents.labels),
         registered_at = COALESCE(excluded.registered_at, agents.registered_at),
         last_seen = excluded.last_seen,
@@ -1070,10 +993,10 @@ export class FleetStore {
           WHEN agents.metadata IS NULL THEN excluded.metadata
           ELSE json_patch(agents.metadata, excluded.metadata)
         END,
-        machine_id = COALESCE(excluded.machine_id, agents.machine_id),
-        env_name = COALESCE(excluded.env_name, agents.env_name),
-        daemon_key = COALESCE(excluded.daemon_key, agents.daemon_key),
-        resume_id = COALESCE(excluded.resume_id, agents.resume_id)
+        machine_id = excluded.machine_id,
+        env_name = excluded.env_name,
+        daemon_key = excluded.daemon_key,
+        resume_id = excluded.resume_id
     `);
 
     const AGENT_SELECT = 'agents.*, lineages.friendly_name AS lineage_name';
@@ -1533,7 +1456,7 @@ export class FleetStore {
 
   _reloadAgentRegistry() {
     if (!this._agentRegistry || !this._aliveAgentRegistry) return;
-    const rows = this._getAllAgents.all().map(r => this._hydrateAgent(r));
+    const rows = this._getAllAgents.all().map(r => this.projectAgentCurrentSeat(this._hydrateAgent(r)));
     const ids = new Set(rows.map(a => a.id));
     const aliveIds = new Set(rows.filter(a => !a.dead).map(a => a.id));
     this._agentRegistry.bulk(s => {
@@ -1773,15 +1696,7 @@ export class FleetStore {
   upsertAgent(agent, { allowProtectedAgentFields = false } = {}) {
     try {
       if (!allowProtectedAgentFields) {
-        const existing = agent?.id ? this.getAgent(agent.id) : null;
-        const forbidden = [];
-        for (const field of PROTECTED_AGENT_UPSERT_FIELDS) {
-          if (!protectedAgentFieldProvided(agent, field)) continue;
-          if (!existing || !sameProtectedAgentField(existing, agent, field)) forbidden.push(field);
-        }
-        if (forbidden.length) {
-          throw new Error(`generic upsertAgent cannot write protected identity/runtime route field(s): ${forbidden.join(', ')}`);
-        }
+        agent = withoutProtectedAgentFields(agent);
       }
       // An agent must not hold a label equal to a live agent's friendly_name —
       // DNF chat routing treats friendly_names and labels equivalently, so a
@@ -1847,7 +1762,7 @@ export class FleetStore {
   projectAgentCurrentSeat(agent) {
     if (!agent?.id) return agent;
     const seat = this.getCurrentAgentSeat(agent.id);
-    if (!seat) return agent;
+    if (!seat) return withoutProtectedAgentFields(agent);
     return {
       ...agent,
       tmux_session: seat.tmux_session,
@@ -1899,7 +1814,7 @@ export class FleetStore {
 
   getAgent(id) {
     const row = this._getAgent.get(id);
-    return row ? this._hydrateAgent(row) : null;
+    return row ? this.projectAgentCurrentSeat(this._hydrateAgent(row)) : null;
   }
 
   // ---- Name provenance ----
@@ -2058,7 +1973,7 @@ export class FleetStore {
       // Search by session_id
       row = this.db.prepare('SELECT * FROM agents WHERE session_id = ?').get(query);
     }
-    return row ? this._hydrateAgent(row) : null;
+    return row ? this.projectAgentCurrentSeat(this._hydrateAgent(row)) : null;
   }
 
   // Among non-dead rows that share a friendly name, pick the live-holder-wins /
@@ -2276,12 +2191,12 @@ export class FleetStore {
       FROM agents LEFT JOIN lineages ON lineages.id = agents.lineage_id
       WHERE agents.id IN (${placeholders})
     `).all(...unique);
-    return rows.map(row => this._hydrateAgent(row));
+    return rows.map(row => this.projectAgentCurrentSeat(this._hydrateAgent(row)));
   }
 
   getLiveAgentsByFriendlyName(friendlyName) {
     if (!friendlyName) return [];
-    return this._getLiveAgentsByFriendlyName.all(String(friendlyName)).map(row => this._hydrateAgent(row));
+    return this._getLiveAgentsByFriendlyName.all(String(friendlyName)).map(row => this.projectAgentCurrentSeat(this._hydrateAgent(row)));
   }
 
   getAliveAgentsPage({ limit = 100, cursor = null } = {}) {
@@ -2300,7 +2215,7 @@ export class FleetStore {
     }
     const rows = this._getAliveAgentsPage.all({ ...boundary, limit: size + 1 });
     const hasMore = rows.length > size;
-    const page = rows.slice(0, size).map(row => this._hydrateAgent(row));
+    const page = rows.slice(0, size).map(row => this.projectAgentCurrentSeat(this._hydrateAgent(row)));
     const tail = page[page.length - 1];
     const nextCursor = hasMore && tail
       ? Buffer.from(JSON.stringify({ lastSeen: tail.last_seen, id: tail.id })).toString('base64url')
@@ -2464,7 +2379,7 @@ export class FleetStore {
   getLineageRoster(lineageId) {
     return this.db.prepare(
       "SELECT agents.*, lineages.friendly_name AS lineage_name FROM agents LEFT JOIN lineages ON lineages.id = agents.lineage_id WHERE agents.lineage_id = ? AND agents.friendly_name IS NOT NULL AND agents.dead = 0"
-    ).all(lineageId).map(r => this._hydrateAgent(r));
+    ).all(lineageId).map(r => this.projectAgentCurrentSeat(this._hydrateAgent(r)));
   }
 
   // The day (manager) member — the one whose name is "<base>:day".
@@ -2474,7 +2389,7 @@ export class FleetStore {
     const row = this.db.prepare(
       "SELECT agents.*, lineages.friendly_name AS lineage_name FROM agents LEFT JOIN lineages ON lineages.id = agents.lineage_id WHERE agents.lineage_id = ? AND agents.friendly_name = ? AND agents.dead = 0"
     ).get(lineageId, nameForPhase(base, 'day'));
-    return row ? this._hydrateAgent(row) : null;
+    return row ? this.projectAgentCurrentSeat(this._hydrateAgent(row)) : null;
   }
 
   // Assign an agent into a lineage at a phase. Phase isn't stored — it's the
@@ -2775,7 +2690,7 @@ export class FleetStore {
     const row = this.db.prepare(
       'SELECT agents.*, lineages.friendly_name AS lineage_name FROM agents LEFT JOIN lineages ON lineages.id = agents.lineage_id WHERE agents.lineage_id = ? AND agents.friendly_name = ? AND agents.dead = 0'
     ).get(lineage.id, nameForPhase(lineage.friendly_name, phase));
-    return row ? this._hydrateAgent(row) : null;
+    return row ? this.projectAgentCurrentSeat(this._hydrateAgent(row)) : null;
   }
 
   _hydrateAgent(row) {
