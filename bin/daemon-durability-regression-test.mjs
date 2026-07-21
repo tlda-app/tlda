@@ -55,12 +55,14 @@ test('closed JSONL child IPC exits instead of remaining live and mute', () => {
   assert.match(ingesterSource, /onClosed:[\s\S]*process\.exit\(1\)/)
 })
 
-test('daemon connection carries no roster and starts no activity ingestion', () => {
+test('daemon welcome carries no roster and starts local-binding liveness only', () => {
   const welcomeHandler = daemonSource.match(/if \(msg\.type === 'daemon-welcome'\) \{([\s\S]*?)\n  \}\n  if \(msg\.type === 'agent-status-events'\)/)?.[1] || ''
   const welcomePayload = serverSource.match(/type: 'daemon-welcome',([\s\S]*?)projects: projectsForDaemon\(\)/)?.[1] || ''
   assert.ok(welcomeHandler)
-  assert.doesNotMatch(welcomeHandler, /msg\.agents|reconcileRoster|agentStatus\.start|agentLiveness\.start|jsonlIngestor/)
+  assert.doesNotMatch(welcomeHandler, /msg\.agents|reconcileRoster|agentStatus\.start|jsonlIngestor/)
+  assert.match(welcomeHandler, /agentLiveness\.start\(\)/)
   assert.doesNotMatch(welcomePayload, /agents|agent_status/)
+  assert.match(daemonSource, /getAgents: \(\) => livenessAgentsFromProcessBindings\(permissionLedger\.listProcessBindings\(\)/)
 })
 
 test('fleet daemon does not intentionally exit on SIGPIPE', () => {

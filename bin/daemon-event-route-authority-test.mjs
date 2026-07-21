@@ -108,9 +108,9 @@ assertOrdered(statusBranch, [
 
 const livenessBranch = branchSource('agent-liveness')
 assertOrdered(livenessBranch, [
-  'currentSeatForDaemonEvent(fleetStore',
+  'daemonEventSeatDecision(fleetStore',
   "family: 'daemon-liveness-batch'",
-  'if (!seat) continue',
+  'if (!decision.accepted)',
   'spawnLibrarian.observeLiveness',
   'markAgentAlive',
 ], 'agent-liveness batch branch')

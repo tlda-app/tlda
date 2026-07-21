@@ -1,13 +1,29 @@
+export function livenessAgentsFromProcessBindings(rows = [], { daemonKey } = {}) {
+  return rows
+    .filter(row => row?.id && row.daemonKey === daemonKey && row.tmuxSession)
+    .map(row => ({
+      id: row.id,
+      tmux_session: row.tmuxSession,
+      dead: false,
+      human: false,
+      metadata: { shell: false },
+    }))
+}
+
 export function createAgentLiveness({
   getAgents,
   listSessions,
   sendMsg,
   log,
+  daemonKey,
+  daemonBootId,
   livenessRefreshMs = parseInt(process.env.TLDA_AGENT_LIVENESS_REFRESH_MS, 10) || 30_000,
   setIntervalFn = setInterval,
+  clearIntervalFn = clearInterval,
 } = {}) {
   const alivenessCache = new Map()
   let refreshInterval = null
+  let reportSeq = 0
 
   function clearTransientMissingState() {
     alivenessCache.clear()
@@ -50,22 +66,42 @@ export function createAgentLiveness({
       if (alive) agent_ids.push(agent.id)
     }
     if (!checked_agent_ids.length) return
+    reportSeq += 1
+    const reportedAt = new Date().toISOString()
     sendMsg({
       type: 'agent-liveness',
       agent_ids,
       checked_agent_ids,
       reason,
-      ts: new Date().toISOString(),
+      ts: reportedAt,
+      daemon_key: daemonKey,
+      daemon_boot_id: daemonBootId,
+      report_seq: reportSeq,
+      report_reason: reason,
+      reported_at: reportedAt,
+      liveness_generations: checked_agent_ids.map(agent_id => ({
+        daemon_key: daemonKey,
+        daemon_boot_id: daemonBootId,
+        report_seq: reportSeq,
+        agent_id,
+      })),
     })
   }
 
   function start() {
-    void reportHostedSessions('periodic-hosted-session-refresh')
-    if (refreshInterval) return
+    const initialReport = reportHostedSessions('periodic-hosted-session-refresh')
+    if (refreshInterval) return initialReport
     refreshInterval = setIntervalFn(() => {
       void reportHostedSessions('periodic-hosted-session-refresh')
     }, livenessRefreshMs)
     refreshInterval?.unref?.()
+    return initialReport
+  }
+
+  function stop() {
+    if (!refreshInterval) return
+    clearIntervalFn(refreshInterval)
+    refreshInterval = null
   }
 
   return {
@@ -75,5 +111,6 @@ export function createAgentLiveness({
     noteActivity,
     reportHostedSessions,
     start,
+    stop,
   }
 }

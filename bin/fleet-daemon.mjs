@@ -95,7 +95,7 @@ import { createLocalArtifacts } from '../daemon/local-artifacts.mjs'
 import { createPromptPlan } from '../daemon/prompt-plan.mjs'
 import { createAgentStatus } from '../daemon/agent-status.mjs'
 import { createGooseSupervisor } from '../daemon/goose-supervisor.mjs'
-import { createAgentLiveness } from '../daemon/agent-liveness.mjs'
+import { createAgentLiveness, livenessAgentsFromProcessBindings } from '../daemon/agent-liveness.mjs'
 import { ACTIVITY_NOISE } from '../shared/activity-tool-classification.mjs'
 import { createHarnessRuntime } from '../daemon/harness-runtime.mjs'
 import { createShadowMirror } from '../daemon/shadow-mirror.mjs'
@@ -582,10 +582,14 @@ let gooseSupervisor
 // The server projects current durable-seat bindings onto every roster row, so
 // liveness and every other daemon consumer read the same server authority.
 const agentLiveness = createAgentLiveness({
-  getAgents: () => agents,
+  getAgents: () => livenessAgentsFromProcessBindings(permissionLedger.listProcessBindings(), {
+    daemonKey: `${MACHINE_ID}:${ACTIVE_CONFIG}`,
+  }),
   listSessions: () => terminalRpc.listSessions(),
   sendMsg,
   log,
+  daemonKey: `${MACHINE_ID}:${ACTIVE_CONFIG}`,
+  daemonBootId: BOOT_ID,
 })
 
 const promptPlan = createPromptPlan({
@@ -959,6 +963,7 @@ function connect() {
     onMessage: handleServerMessage,
     onClose: () => {
       _serverReady = false
+      agentLiveness.stop()
       agentLiveness.clearTransientMissingState()
       teardownWatchers()
     },
@@ -1027,6 +1032,7 @@ function handleServerMessage(msg) {
     sourceSync.flushPending()
     gooseSupervisor.startActivityPolling()
     promptPlan.startAutoAcceptSweep()
+    agentLiveness.start()
     log.info(`daemon-ready pid=${process.pid} server=${SERVER} machine_id=${MACHINE_ID} env_name=${ACTIVE_CONFIG} projects=${projects.length}`)
     return
   }

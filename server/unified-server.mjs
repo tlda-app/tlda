@@ -129,7 +129,14 @@ import { buildVoicePipelineSnapshot } from './lib/observability/voice-pipeline.m
 import { createNotificationAttemptRecorder } from './lib/notification-attempts.mjs'
 import { daemonEventFailureIncident } from './lib/daemon-event-failures.mjs'
 import { buildDaemonActivityRecord } from './lib/daemon-activity-ingest.mjs'
-import { currentSeatForDaemonEvent } from './lib/daemon-event-route-authority.mjs'
+import { currentSeatForDaemonEvent, daemonEventSeatDecision } from './lib/daemon-event-route-authority.mjs'
+import {
+  agentLivenessTraceResponse,
+  createAgentLivenessTraceStore,
+  decideAgentLivenessBatch,
+  recordLivenessIngress,
+  recordLivenessProjection,
+} from './lib/agent-liveness-trace.mjs'
 import { createActivityDeliveryCounters, ACTIVITY_DELIVERY_STAGES } from '../shared/activity-delivery-counters.mjs'
 import {
   ACTIVITY_HEALTH_BOUNDARIES,
@@ -145,6 +152,7 @@ import {
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const fleetWsLog = createBackendLogger('fleet-ws')
 const notificationAttemptLog = createBackendLogger('notification-attempts')
+const agentLivenessTrace = createAgentLivenessTraceStore()
 const terminalBridgeLog = createBackendLogger('terminal-bridge')
 const syncSignalLog = createBackendLogger('sync-signals')
 const daemonEventLog = createBackendLogger('daemon-events')
@@ -1509,11 +1517,20 @@ function _broadcastStateNow() {
       }
       continue
     }
+    const runtime = a.runtime_status || null
+    const generation = runtime?.evidence?.liveness_generation || null
     const json = JSON.stringify(a)
-    if (_lastAgentJson.get(a.id) !== json) {
+    const changedRowBuilt = _lastAgentJson.get(a.id) !== json
+    if (changedRowBuilt) {
       changed.push(a)
       _lastAgentJson.set(a.id, json)
     }
+    if (generation) recordLivenessProjection(agentLivenessTrace, {
+      agentId: id,
+      generation,
+      runtime,
+      changedRowBuilt,
+    })
   }
 
   broadcastFleet({
@@ -2935,6 +2952,14 @@ app.get('/api/diagnostics/live-perf', requireRead, (req, res) => {
     },
     activityDelivery: activityDeliverySnapshot(),
   })
+})
+
+app.get('/api/diagnostics/agent-liveness-trace', requireRead, (req, res) => {
+  const agent = typeof req.query.agent === 'string' && req.query.agent ? req.query.agent : null
+  if (!agent) return res.status(400).json({ error: 'agent query parameter is required' })
+  const limitRaw = Number(req.query.limit || 200)
+  const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(1000, Math.trunc(limitRaw))) : 200
+  res.json(agentLivenessTraceResponse(agentLivenessTrace, { agent, limit }))
 })
 
 function telemetryStatusSnapshotFromLiveBuffers() {
@@ -7676,20 +7701,26 @@ async function handleDaemonWsMessage(ws, msg) {
   if (type === 'agent-liveness') {
     const { agent_id, state, pid, reason, ts } = msg
     if (Array.isArray(msg.agent_ids) || Array.isArray(msg.checked_agent_ids)) {
-      const aliveIds = new Set((msg.agent_ids || []).filter(id => typeof id === 'string' && id))
-      const checkedIds = new Set([
-        ...(msg.checked_agent_ids || []).filter(id => typeof id === 'string' && id),
-        ...aliveIds,
-      ])
       const batchTs = ts || new Date().toISOString()
-      for (const id of checkedIds) {
-        const seat = currentSeatForDaemonEvent(fleetStore, {
+      const decisions = decideAgentLivenessBatch({
+        message: msg,
+        socketDaemonKey: ws._daemonKey,
+        socketBootId: ws._bootId,
+        seatForAgent: id => daemonEventSeatDecision(fleetStore, {
           agentId: id,
           daemonKey: ws._daemonKey,
           family: 'daemon-liveness-batch',
+        }),
+      })
+      for (const decision of decisions) {
+        const id = decision.agent_id
+        const generation = decision.generation
+        recordLivenessIngress(agentLivenessTrace, decision, msg, {
+          socketDaemonKey: ws._daemonKey,
+          socketBootId: ws._bootId,
         })
-        if (!seat) continue
-        const batchState = aliveIds.has(id) ? 'alive' : 'dead'
+        if (!decision.accepted) continue
+        const batchState = decision.alive ? 'alive' : 'dead'
         spawnLibrarian.observeLiveness({
           type,
           agent_id: id,
@@ -7704,12 +7735,22 @@ async function handleDaemonWsMessage(ws, msg) {
           markAgentAlive(id, Date.parse(batchTs) || Date.now(), {
             source: 'daemon-hosted-session-refresh',
             reason,
+            liveness_generation: generation,
+            daemon_key: msg.daemon_key,
+            daemon_boot_id: msg.daemon_boot_id,
+            report_seq: msg.report_seq,
           })
+          agentLivenessTrace.record({ agent_id: id, generation, stage: 'runtime.markAlive', seat_identity_match: true, terminal_decision: decision.terminal_decision, mark_alive_applied: true })
         } else {
           markAgentNotAlive(id, {
             source: 'daemon-hosted-session-refresh',
             reason: 'daemon liveness batch: not alive',
+            liveness_generation: generation,
+            daemon_key: msg.daemon_key,
+            daemon_boot_id: msg.daemon_boot_id,
+            report_seq: msg.report_seq,
           })
+          agentLivenessTrace.record({ agent_id: id, generation, stage: 'runtime.markNotAlive', seat_identity_match: true, terminal_decision: decision.terminal_decision, mark_alive_applied: false })
         }
       }
       broadcastState()

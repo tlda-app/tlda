@@ -73,6 +73,10 @@ export function createAgentRuntimeStatusStore({
       alive_since_ms: continuouslyAlive ? (previous.alive_since_ms || previousAliveAt) : atMs,
       alive_since: new Date(continuouslyAlive ? (previous.alive_since_ms || previousAliveAt) : atMs).toISOString(),
       pid: detail.pid || null,
+      liveness_generation: detail.liveness_generation || null,
+      liveness_daemon_key: detail.daemon_key || null,
+      liveness_daemon_boot_id: detail.daemon_boot_id ?? null,
+      liveness_report_seq: detail.report_seq ?? null,
     })
   }
 
@@ -87,6 +91,10 @@ export function createAgentRuntimeStatusStore({
       alive_since_ms: null,
       alive_since: null,
       pid: detail.pid || null,
+      liveness_generation: detail.liveness_generation || null,
+      liveness_daemon_key: detail.daemon_key || null,
+      liveness_daemon_boot_id: detail.daemon_boot_id ?? null,
+      liveness_report_seq: detail.report_seq ?? null,
     })
   }
 
@@ -100,6 +108,10 @@ export function createAgentRuntimeStatusStore({
       alive_since_ms: null,
       alive_since: null,
       pid: detail.pid || null,
+      liveness_generation: detail.liveness_generation || null,
+      liveness_daemon_key: detail.daemon_key || null,
+      liveness_daemon_boot_id: detail.daemon_boot_id ?? null,
+      liveness_report_seq: detail.report_seq ?? null,
     })
   }
 
@@ -161,6 +173,10 @@ export function projectAgentRuntimeStatus(agent, evidence = null, {
     activity_tool: evidence?.activity_tool || metadata.status?.tool || null,
     activity_at: evidence?.activity_at || metadata.status?.ts || null,
     activity_health: metadata.activityHealth || null,
+    liveness_generation: evidence?.liveness_generation || null,
+    liveness_daemon_key: evidence?.liveness_daemon_key || null,
+    liveness_daemon_boot_id: evidence?.liveness_daemon_boot_id ?? null,
+    liveness_report_seq: evidence?.liveness_report_seq ?? null,
   }
 
   if (!agent) {
