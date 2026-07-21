@@ -978,6 +978,21 @@ function connect() {
     // (unified-server.mjs WS_HEARTBEAT_INTERVAL_MS) and ResilientWS resets the
     // watchdog on 'ping', so 90s = 3× margin (tolerates two missed pings).
     heartbeatTimeoutMs: 90_000,
+    onRetryScheduled: (attemptId, delayMs) => {
+      traceGate1('retry-scheduled', {
+        daemon_key: `${MACHINE_ID}:${ACTIVE_CONFIG}`,
+        boot_id: BOOT_ID,
+        connection_attempt_id: attemptId ? `${BOOT_ID}:${attemptId}` : null,
+        delay_ms: delayMs,
+      })
+    },
+    onAttemptOpen: (attemptId) => {
+      traceGate1('attempt-opened', {
+        daemon_key: `${MACHINE_ID}:${ACTIVE_CONFIG}`,
+        boot_id: BOOT_ID,
+        connection_attempt_id: `${BOOT_ID}:${attemptId}`,
+      })
+    },
     onOpen: () => {
       const connectionAttemptId = `${BOOT_ID}:${_rws.attemptId}`
       const sent = sendMsg({

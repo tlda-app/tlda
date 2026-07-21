@@ -7612,6 +7612,7 @@ async function handleDaemonWsMessage(ws, msg) {
       try { existing.close() } catch {}
       daemonConnections.delete(daemonKey)
     }
+    traceGate1('hello-accepted', { daemon_key: daemonKey, boot_id, connection_attempt_id, ws_session_id: ws._wsSessionId })
     ws._machineId = machine_id
     ws._envName = env_name
     ws._daemonKey = daemonKey
@@ -7623,7 +7624,13 @@ async function handleDaemonWsMessage(ws, msg) {
     ws._connectionAttemptId = connection_attempt_id || null
     ws._agentStatusSeq = Number.isInteger(last_agent_status_seq) ? last_agent_status_seq : 0
     daemonConnections.set(daemonKey, ws)
-    traceGate1('hello-accepted', { daemon_key: daemonKey, boot_id, connection_attempt_id, ws_session_id: ws._wsSessionId })
+    traceGate1('registry-set', {
+      daemon_key: daemonKey,
+      boot_id,
+      connection_attempt_id,
+      ws_session_id: ws._wsSessionId,
+      readback_ok: daemonConnections.get(daemonKey) === ws,
+    })
     refreshRuntimeRoutesForDaemon(daemonKey)
     notifyDaemonReady(daemonKey) // wake any control-op RPCs waiting to retry across this reconnect
     clearServerDaemonOutboxInflightForDaemon(daemonKey)

@@ -24,6 +24,13 @@ export class ResilientWS {
    *   reason is one of 'close' | 'error' | 'heartbeat-timeout' | 'manual-reconnect'
    * @param {(reason: string) => void} [options.onActivity] — called on open/message/ping liveness
    * @param {(s: string) => void} [options.log]  — log function (default: console.log)
+   * @param {(attemptId: string, delayMs: number) => void} [options.onRetryScheduled] — the
+   *   just-ended attempt's id and the computed backoff delay before the next connect() call
+   * @param {(attemptId: string) => void} [options.onAttemptOpen] — fired on 'open', with the
+   *   new attempt's immutable id, before onOpen (so callers can trace attempt-opened even if
+   *   they don't otherwise act on open)
+   * @param {typeof WebSocket} [options.WebSocketImpl] — injectable WebSocket constructor,
+   *   defaults to the real `ws` library; test seam only, never used in production
    */
   constructor(options) {
     this._getUrl = options.url
@@ -40,7 +47,10 @@ export class ResilientWS {
     this._onMessage = options.onMessage
     this._onClose = options.onClose
     this._onActivity = options.onActivity
+    this._onRetryScheduled = options.onRetryScheduled
+    this._onAttemptOpen = options.onAttemptOpen
     this._log = options.log ?? ((s) => console.log(s))
+    this._WebSocketImpl = options.WebSocketImpl ?? WebSocket
 
     this._ws = null
     this._backoff = this._initialBackoff
@@ -70,21 +80,33 @@ export class ResilientWS {
     if (this._closed) return
     if (this._ws) return
 
-    this._attemptSeq += 1
-    this._attemptId = String(this._attemptSeq)
-
-    const url = this._getUrl()
-    this._log(`[${this._label}] connecting to ${url.replace(/token=[^&]+/, 'token=***')} (attempt ${this._attemptId})`)
+    // Resolve the URL BEFORE minting an attempt id: a URL-resolution failure
+    // (e.g. config not loaded yet) is not an actual connection attempt and
+    // must not consume/advance the attempt sequence.
+    let url
+    try {
+      url = this._getUrl()
+    } catch (e) {
+      this._log(`[${this._label}] connect failed: ${e.message}`)
+      this._scheduleRetry()
+      return
+    }
 
     try {
       // For wss:// with self-signed certs (local dev), skip cert validation.
       // External wss:// (production) should validate normally.
       const isLocalWss = url.startsWith('wss://127.0.0.1') || url.startsWith('wss://localhost')
-      const ws = new WebSocket(url, isLocalWss ? { rejectUnauthorized: false } : undefined)
+      // Mint the attempt id immediately before the actual constructor call —
+      // this is the real attempt, not a scheduling/URL-resolution step.
+      this._attemptSeq += 1
+      this._attemptId = String(this._attemptSeq)
+      this._log(`[${this._label}] connecting to ${url.replace(/token=[^&]+/, 'token=***')} (attempt ${this._attemptId})`)
+      const ws = new this._WebSocketImpl(url, isLocalWss ? { rejectUnauthorized: false } : undefined)
       this._ws = ws
 
       ws.on('open', () => {
         this._log(`[${this._label}] connected (attempt ${this._attemptId})`)
+        this._onAttemptOpen?.(this._attemptId)
         if (this._stableTimer) clearTimeout(this._stableTimer)
         this._stableTimer = setTimeout(() => {
           this._stableTimer = null
@@ -177,6 +199,9 @@ export class ResilientWS {
     const delay = Math.floor(this._backoff * (0.5 + this._random() * 0.5))
     this._backoff = Math.min(this._backoff * 2, this._maxBackoff)
     this._log(`[${this._label}] reconnecting in ${delay}ms`)
+    // `this._attemptId` at this point still refers to the just-ended attempt
+    // (cleanup doesn't clear it); the next attempt isn't minted until connect().
+    this._onRetryScheduled?.(this._attemptId, delay)
     this._retryTimer = setTimeout(() => {
       this._retryTimer = null
       this.connect()
