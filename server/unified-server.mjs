@@ -93,7 +93,6 @@ import { resolveTimerParticipants, timerDeliveryFailureResult, timerTerminalInpu
 import { ServerTimerScheduler } from './lib/timer-scheduler.mjs'
 import { ServerDaemonOutbox } from './lib/server-daemon-outbox.mjs'
 import { AgentSeatBindingObligations, verifyAgentSeatBindingTerminal } from './lib/agent-seat-binding-obligations.mjs'
-import { DaemonAgentEvents } from './lib/daemon-agent-events.mjs'
 import { createDaemonWsControlPlane } from './lib/daemon-ws-control-plane.mjs'
 import { clearTrustedHeartbeatProbes, shouldSkipHeartbeatSweepForLag, shouldTerminateForMissedPong, socketCanAcceptMore } from '../shared/fleet-ws-flow.mjs'
 import {
@@ -222,7 +221,6 @@ resetStaleBuildStates()
 const fleetStore = new FleetStore(process.env.TLDA_FLEET_DB, { taskDoc: true })
 const serverDaemonOutbox = new ServerDaemonOutbox(fleetStore.db)
 const agentSeatBindingObligations = new AgentSeatBindingObligations(fleetStore.db)
-const daemonAgentEvents = new DaemonAgentEvents(fleetStore.db)
 const serverDaemonOutboxInflight = new Map()
 let serverTimerScheduler = null
 
@@ -7282,7 +7280,6 @@ const _daemonOutboxProcessedGetStmt = fleetStore?.db.prepare(
 const _daemonOutboxProcessedInsertStmt = fleetStore?.db.prepare(
   'INSERT OR IGNORE INTO daemon_outbox_processed (id, type, processed_at) VALUES (?, ?, ?)'
 )
-const DAEMON_AGENT_REPLAY_BATCH = Number(process.env.TLDA_DAEMON_AGENT_REPLAY_BATCH || 200)
 
 const {
   handleDaemonOutboxEnvelope,
@@ -7363,41 +7360,9 @@ function daemonProjectPartSourceWatchFiles(project) {
 }
 
 function broadcastDaemonAgentsUpdated(agentUpdates = null) {
-  const updates = agentUpdates
-    ? (Array.isArray(agentUpdates) ? agentUpdates : [agentUpdates])
-      .filter(Boolean)
-      .map(agent => fleetStore?.projectAgentCurrentSeat?.(agent) || agent)
-    : null
-  const daemonKeys = updates
-    ? [...new Set(updates.map(a => a.daemon_key || (a.machine_id && a.env_name ? daemonAddress(a.machine_id, a.env_name) : null)).filter(Boolean))]
-    : knownDaemonKeys()
-  if (!fleetStore || daemonKeys.length === 0) {
-    if (!fleetStore) console.warn('[fleet-daemon] broadcastDaemonAgentsUpdated: no fleetStore')
-    return
-  }
-  for (const daemonKey of daemonKeys) {
-    try {
-      let agents = updates
-        ? updates.filter(a => (a.daemon_key || (a.machine_id && a.env_name ? daemonAddress(a.machine_id, a.env_name) : null)) === daemonKey)
-        : fleetStore.getAgentsByDaemonKey(daemonKey)
-      for (const agent of agents) daemonAgentEvents.append(daemonKey, agent)
-      // Connected daemons receive only the mutations recorded since their
-      // cursor; the durable replay stream preserves ordering across a flap.
-      const cursor = daemonConnections.get(daemonKey)?._agentStatusSeq ?? 0
-      const replay = daemonAgentEvents.replay(daemonKey, cursor, { snapshotOverLimit: !updates })
-      if (replay.snapshot) {
-        agents = fleetStore.getAgentsByDaemonKey(daemonKey)
-        enqueueDaemonMessage(daemonKey, { type: 'agents-updated', agents, agent_status_seq: replay.lastSeq }, { dedupeKey: 'agents-snapshot' })
-      }
-      else {
-        for (const event of replay.events) enqueueDaemonMessage(daemonKey, { ...event, type: 'agent-status-event', event_type: event.type })
-        const ws = daemonConnections.get(daemonKey)
-        if (ws) ws._agentStatusSeq = replay.lastSeq
-      }
-    } catch (e) {
-      console.error(`[fleet-daemon] broadcastDaemonAgentsUpdated failed for ${daemonKey}: ${e.message}`)
-    }
-  }
+  // Daemons do not own or mirror the agent list. Agent surfaces query the
+  // server directly; sending roster snapshots or replaying them as mutations
+  // makes daemon startup proportional to fleet history and can take chat down.
 }
 
 function broadcastDaemonProjectsUpdated() {
@@ -7415,46 +7380,6 @@ function broadcastDaemonActiveViewers() {
   const viewers = [...getActiveViewerProjects()]
   for (const daemonKey of daemonKeys) {
     enqueueDaemonMessage(daemonKey, { type: 'active-viewers', projects: viewers }, { dedupeKey: 'active-viewers' })
-  }
-}
-
-function daemonAgentReplayForWelcome(daemonKey, lastSeq) {
-  const cursor = Number.isInteger(lastSeq) ? lastSeq : 0
-  if (cursor <= 0) {
-    const agents = fleetStore?.getAgentsByDaemonKey(daemonKey) || []
-    for (const agent of agents) daemonAgentEvents.append(daemonKey, agent)
-    const replay = daemonAgentEvents.replay(daemonKey, 0, { limit: DAEMON_AGENT_REPLAY_BATCH })
-    return { ...replay, agents, reset: true }
-  }
-  const replay = daemonAgentEvents.replay(daemonKey, cursor, {
-    limit: DAEMON_AGENT_REPLAY_BATCH,
-    snapshotOverLimit: false,
-  })
-  return { ...replay, agents: [], reset: false }
-}
-
-function sendDaemonAgentReplayContinuation(daemonKey, afterSeq) {
-  const ws = daemonConnections.get(daemonKey)
-  if (!ws || ws.readyState !== 1) return
-  const replay = daemonAgentEvents.replay(daemonKey, afterSeq, {
-    limit: DAEMON_AGENT_REPLAY_BATCH,
-    snapshotOverLimit: false,
-  })
-  if (replay.events.length === 0) return
-  try {
-    ws.send(JSON.stringify({
-      type: 'agent-status-events',
-      agent_status_seq: replay.lastSeq,
-      agent_status_events: replay.events,
-      agent_status_has_more: replay.hasMore,
-    }))
-    ws._agentStatusSeq = replay.lastSeq
-  } catch (e) {
-    console.warn(`[fleet-daemon] agent replay continuation failed for ${daemonKey}: ${e.message}`)
-    return
-  }
-  if (replay.hasMore) {
-    setImmediate(() => sendDaemonAgentReplayContinuation(daemonKey, replay.lastSeq))
   }
 }
 
@@ -7691,25 +7616,15 @@ async function handleDaemonWsMessage(ws, msg) {
       }
     }
 
-    // Send daemon-welcome with agents + projects this machine should
-    // watch. Agents are filtered by machine_id; legacy NULL agents will
-    // be invisible to daemons until the MCP starts sending machine_id.
-    const agentReplay = daemonAgentReplayForWelcome(daemonKey, ws._agentStatusSeq)
+    // Establish the daemon transport and send only machine work. Agent lists
+    // belong to paginated server queries, never to this connection message.
     try {
       ws.send(JSON.stringify({
         type: 'daemon-welcome',
         server_boot_id: SERVER_BOOT_ID,
-        agents: agentReplay.snapshot ? agentReplay.agents : [],
-        agent_status_reset: agentReplay.reset,
-        agent_status_seq: agentReplay.lastSeq,
-        agent_status_events: agentReplay.events,
-        agent_status_has_more: agentReplay.hasMore,
         projects: projectsForDaemon(),
         activeViewers: [...getActiveViewerProjects()],
       }))
-      if (agentReplay.hasMore) {
-        setImmediate(() => sendDaemonAgentReplayContinuation(daemonKey, agentReplay.lastSeq))
-      }
     } catch (e) {
       console.error(`[fleet-daemon] welcome send failed: ${e.message}`)
     }

@@ -1016,32 +1016,18 @@ function handleServerMessage(msg) {
   }
   if (msg.type === 'daemon-welcome') {
     _serverReady = true
-    if (msg.agent_status_reset) agents = msg.agents || []
-    applyAgentStatusEvents(msg.agent_status_events || [])
-    agentStatusSeq = Math.max(agentStatusSeq, msg.agent_status_seq || 0)
     serverProjects = msg.projects || []
     const projectWorlds = readProjectWorlds(PROJECT_WORLDS_FILE)
     projects = serverProjects.filter(project => projectBelongsToWorld(project, ACTIVE_CONFIG, projectWorlds))
-    reconcileRoster('daemon-welcome')
     applyDaemonGrants(permissionLedger, daemonSpawnConfig)
-    log.info(`welcome: ${agents.length} agents, ${projects.length} projects`)
+    log.info(`connected work received: ${projects.length} projects`)
     daemonDelivery.noteReady()
     sendActivityDeliveryMetrics('daemon-welcome')
     sourceSync.sync(projects)
     sourceSync.flushPending()
-    agentLiveness.start()
-    // Fast status state machine — pulls panes only for agents armed by recent
-    // activity, so it's bounded to the few agents actually working (1-3s status,
-    // accurate turn edges) without a fleet-wide sweep.
-    agentStatus.start()
     gooseSupervisor.startActivityPolling()
     promptPlan.startAutoAcceptSweep()
-    jsonlIngestor.startOwnerHarvester()
-    // An ingester exit can race a fleet-WebSocket outage. Its one-shot restart
-    // timer cannot rebuild watchers while the server is unavailable, so keep
-    // the recovery obligation pending and discharge it on the next welcome.
-    jsonlIngestor.resumeAfterServerReady()
-    log.info(`daemon-ready pid=${process.pid} server=${SERVER} machine_id=${MACHINE_ID} env_name=${ACTIVE_CONFIG} agents=${agents.length} projects=${projects.length} watchers=started`)
+    log.info(`daemon-ready pid=${process.pid} server=${SERVER} machine_id=${MACHINE_ID} env_name=${ACTIVE_CONFIG} projects=${projects.length}`)
     return
   }
   if (msg.type === 'agent-status-events') {
