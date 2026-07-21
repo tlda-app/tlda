@@ -1037,6 +1037,10 @@ function handleServerMessage(msg) {
     gooseSupervisor.startActivityPolling()
     promptPlan.startAutoAcceptSweep()
     jsonlIngestor.startOwnerHarvester()
+    // An ingester exit can race a fleet-WebSocket outage. Its one-shot restart
+    // timer cannot rebuild watchers while the server is unavailable, so keep
+    // the recovery obligation pending and discharge it on the next welcome.
+    jsonlIngestor.resumeAfterServerReady()
     log.info(`daemon-ready pid=${process.pid} server=${SERVER} machine_id=${MACHINE_ID} env_name=${ACTIVE_CONFIG} agents=${agents.length} projects=${projects.length} watchers=started`)
     return
   }

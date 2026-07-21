@@ -56,9 +56,13 @@ export function createSafeIpcSender(processLike = process, {
 
 const send = createSafeIpcSender(process, {
   onClosed: (e) => {
-    try { process.stderr.write(`[fleet-jsonl-ingester] parent IPC closed: ${e.code}\n`) } catch {
+    // A closed IPC channel leaves this child tailing files with no way to
+    // deliver activity or terminal-chat records. Exit so the parent can
+    // recreate the child and resync every live watcher.
+    try { process.stderr.write(`[fleet-jsonl-ingester] parent IPC closed: ${e.code}; exiting for resync\n`) } catch {
       // Best-effort diagnostic after parent IPC closure; do not crash while exiting.
     }
+    process.exit(1)
   },
 })
 

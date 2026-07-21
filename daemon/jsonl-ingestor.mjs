@@ -437,6 +437,7 @@ export function createJsonlIngestor({
 
   let _jsonlIngester = null
   let _jsonlIngesterRestartTimer = null
+  let _jsonlIngesterRestartPending = false
   let _shuttingDown = false
   let _sessionReaderLock = null
   const pathWatchers = new Map()    // jsonlPath -> child-backed watcher state
@@ -486,6 +487,7 @@ export function createJsonlIngestor({
 
   function handleJsonlIngesterExit(code, signal) {
     if (_shuttingDown) return
+    _jsonlIngesterRestartPending = true
     log.warn(`JSONL ingester exited code=${code ?? 'null'} signal=${signal ?? 'null'}; resyncing live session tails`)
     for (const [, pw] of childWatchers) {
       pw.stopped = true
@@ -500,11 +502,21 @@ export function createJsonlIngestor({
       _jsonlIngesterRestartTimer = setTimeout(() => {
         _jsonlIngesterRestartTimer = null
         if (isServerReady()) {
-          retryPendingJsonlBackfillJobs()
-          void syncSessionWatchers(getAgents()).catch(e => log.error(`syncSessionWatchers after ingester exit failed: ${e.stack || e.message}`))
+          resumeJsonlIngesterAfterServerReady()
         }
       }, 1000)
     }
+  }
+
+  function resumeJsonlIngesterAfterServerReady() {
+    if (!_jsonlIngesterRestartPending || _shuttingDown || !isServerReady()) return false
+    _jsonlIngesterRestartPending = false
+    retryPendingJsonlBackfillJobs()
+    void syncSessionWatchers(getAgents()).catch(e => {
+      _jsonlIngesterRestartPending = true
+      log.error(`syncSessionWatchers after ingester exit failed: ${e.stack || e.message}`)
+    })
+    return true
   }
 
   function retryPendingJsonlBackfillJobs() {
@@ -1456,6 +1468,7 @@ export function createJsonlIngestor({
     rosterSignature: sessionWatcherRosterSignature,
     scheduleJsonlDirSync,
     startOwnerHarvester,
+    resumeAfterServerReady: resumeJsonlIngesterAfterServerReady,
     resolveEditor,
     hasWatcherForAgent,
     teardown,

@@ -14,6 +14,8 @@ import {
 
 const here = dirname(fileURLToPath(import.meta.url))
 const daemonSource = readFileSync(join(here, 'fleet-daemon.mjs'), 'utf8')
+const ingesterSource = readFileSync(join(here, 'fleet-jsonl-ingester.mjs'), 'utf8')
+const ingestorSupervisorSource = readFileSync(join(here, '..', 'daemon', 'jsonl-ingestor.mjs'), 'utf8')
 const cliSource = readFileSync(join(here, '..', 'cli', 'tlda.mjs'), 'utf8')
 const transitionSource = readFileSync(join(here, '..', 'cli', 'lib', 'daemon-supervision-transition.mjs'), 'utf8')
 
@@ -46,6 +48,18 @@ test('JSONL ingester IPC send rethrows unexpected failures', () => {
   }
   const send = createSafeIpcSender(processLike)
   assert.throws(() => send({ type: 'batch' }), /unexpected/)
+})
+
+test('closed JSONL child IPC exits instead of remaining live and mute', () => {
+  assert.match(ingesterSource, /parent IPC closed:.*exiting for resync/)
+  assert.match(ingesterSource, /onClosed:[\s\S]*process\.exit\(1\)/)
+})
+
+test('JSONL child restart obligation survives a server disconnect race', () => {
+  assert.match(ingestorSupervisorSource, /_jsonlIngesterRestartPending = true/)
+  assert.match(ingestorSupervisorSource, /function resumeJsonlIngesterAfterServerReady\(\)/)
+  assert.match(ingestorSupervisorSource, /resumeAfterServerReady: resumeJsonlIngesterAfterServerReady/)
+  assert.match(daemonSource, /daemon-welcome[\s\S]*jsonlIngestor\.resumeAfterServerReady\(\)/)
 })
 
 test('fleet daemon does not intentionally exit on SIGPIPE', () => {
