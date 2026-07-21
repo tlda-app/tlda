@@ -88,6 +88,11 @@ import {
 import { createDevReaper } from '../bots/dev/reaper.mjs'
 import { createSourceSync } from '../daemon/source-sync.mjs'
 import { createJsonlIngestor } from '../daemon/jsonl-ingestor.mjs'
+import {
+  createJsonlProcessBindingReconciler,
+  jsonlProcessBindingSignature,
+  projectJsonlAgentsFromProcessBindings,
+} from '../daemon/jsonl-local-bindings.mjs'
 import { createMachineRpc } from '../daemon/machine-rpc.mjs'
 import { createTerminalRpc } from '../daemon/terminal-rpc.mjs'
 import { createBackingFiles } from '../daemon/backing-files.mjs'
@@ -140,7 +145,10 @@ const PROJECT_WORLDS_FILE = projectWorldsPath(_SHARED_CONFIG_DIR)
 const DAEMON_CONFIG_FILE = defaultDaemonConfigPath(CONFIG_DIR)
 const daemonSpawnConfig = readDaemonConfig(DAEMON_CONFIG_FILE)
 const PERMISSION_LEDGER_FILE = permissionLedgerPathFromDaemonConfig(daemonSpawnConfig, CONFIG_DIR)
-const permissionLedger = createPermissionLedger(PERMISSION_LEDGER_FILE)
+let _onPermissionLedgerProcessBindingChange = null
+const permissionLedger = createPermissionLedger(PERMISSION_LEDGER_FILE, {
+  onProcessBindingChange: event => _onPermissionLedgerProcessBindingChange?.(event),
+})
 applyDaemonGrants(permissionLedger, daemonSpawnConfig)
 
 const LOG_FILE = path.join(CONFIG_DIR, `fleet-daemon${DAEMON_STATE_SUFFIX}.log`)
@@ -334,6 +342,7 @@ let agentStatusSeq = 0
 let serverProjects = []           // unfiltered project list from this world server
 let projects = []                 // projects owned by this daemon config
 let _lastSessionWatcherRosterSig = ''
+let jsonlBindingReconciler
 const terminalCapabilitiesRegisteredThisBoot = new Set()
 let terminalRpc
 let activityDeliveryMetricsTimer = null
@@ -462,6 +471,12 @@ function registerHostedTerminalCapabilities(reason) {
 }
 
 // ---------- JSONL ingestion ----------
+function currentJsonlBindingAgents() {
+  return projectJsonlAgentsFromProcessBindings(permissionLedger.listProcessBindings(), {
+    daemonKey: `${MACHINE_ID}:${ACTIVE_CONFIG}`,
+  })
+}
+
 jsonlIngestor = createJsonlIngestor({
   configDir: CONFIG_DIR,
   cursorsFile: CURSORS_FILE,
@@ -472,7 +487,7 @@ jsonlIngestor = createJsonlIngestor({
   sendMsgWithReply,
   isConnected: () => !!_rws?.connected,
   isServerReady: () => _serverReady,
-  getAgents: () => agents,
+  getAgents: currentJsonlBindingAgents,
   listSessions: rpcListSessions,
   selectAgentKind: harnessRuntime.resolveAgentKind,
   harnessAdapters: harnessRuntime.harnessAdapters,
@@ -482,6 +497,13 @@ jsonlIngestor = createJsonlIngestor({
   machineId: MACHINE_ID,
   envName: ACTIVE_CONFIG,
   daemonKey: `${MACHINE_ID}:${ACTIVE_CONFIG}`,
+})
+
+jsonlBindingReconciler = createJsonlProcessBindingReconciler({
+  listProcessBindings: () => permissionLedger.listProcessBindings(),
+  sync: agents => jsonlIngestor.sync(agents),
+  daemonKey: `${MACHINE_ID}:${ACTIVE_CONFIG}`,
+  log,
 })
 
 // ---------- source watching ----------
@@ -986,6 +1008,17 @@ function reconcileRoster(reason) {
   })
 }
 
+function reconcileJsonlProcessBindings(reason) {
+  void jsonlBindingReconciler.reconcile(reason)
+    .catch(e => log.error(`syncSessionWatchers failed: ${e.stack || e.message}`))
+  return true
+}
+
+_onPermissionLedgerProcessBindingChange = () => {
+  if (!_serverReady) return
+  reconcileJsonlProcessBindings('permission-ledger-session-binding')
+}
+
 function applyAgentStatusEvents(events = []) {
   for (const event of events) {
     if (event.seq <= agentStatusSeq) continue
@@ -1030,6 +1063,9 @@ function handleServerMessage(msg) {
     sendActivityDeliveryMetrics('daemon-welcome')
     sourceSync.sync(projects)
     sourceSync.flushPending()
+    jsonlIngestor.startOwnerHarvester()
+    reconcileJsonlProcessBindings('daemon-welcome')
+    jsonlIngestor.resumeAfterServerReady()
     gooseSupervisor.startActivityPolling()
     promptPlan.startAutoAcceptSweep()
     agentLiveness.start()

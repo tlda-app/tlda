@@ -40,6 +40,42 @@ export function shouldSuppressCatchupOutput(output) {
   return CATCHUP_DISPLAY_OUTPUT_TYPES.has(output?.type)
 }
 
+export function createCoalescedSyncRunner(run) {
+  let running = false
+  let pending = null
+  let pendingResolvers = []
+
+  async function sync(value) {
+    if (running) {
+      pending = value
+      return new Promise((resolve, reject) => {
+        pendingResolvers.push({ resolve, reject })
+      })
+    }
+    running = true
+    try {
+      await run(value)
+    } finally {
+      running = false
+      if (pending) {
+        const next = pending
+        const resolvers = pendingResolvers
+        pending = null
+        pendingResolvers = []
+        try {
+          await sync(next)
+          for (const item of resolvers) item.resolve()
+        } catch (e) {
+          for (const item of resolvers) item.reject(e)
+          throw e
+        }
+      }
+    }
+  }
+
+  return { sync }
+}
+
 // Historical owner classification answers "which fleet ids appear in this
 // file?" It is not a claim that every historical file is the owner's current
 // immutable session. Only live/current identity observations may write through
@@ -255,6 +291,10 @@ export function createJsonlIngestor({
   machineId = null,
   envName = null,
   daemonKey = null,
+  forkProcess = fork,
+  watchDir = (...args) => chokidar.watch(...args),
+  nowMs = () => Date.now(),
+  random = Math.random,
 }) {
   // ---------- cursor persistence ----------
 
@@ -411,7 +451,7 @@ export function createJsonlIngestor({
     if (!fs.existsSync(script)) return
     try {
       // execArgv:[] so the child doesn't inherit --import tsx etc.; it's plain ESM.
-      _ownerHarvester = fork(script, [], { execArgv: [], stdio: ['ignore', 'ignore', 'ignore', 'ipc'] })
+      _ownerHarvester = forkProcess(script, [], { execArgv: [], stdio: ['ignore', 'ignore', 'ignore', 'ipc'] })
     } catch (e) {
       log.warn(`owner harvester failed to start: ${e.message}`)
       _ownerHarvester = null
@@ -447,8 +487,7 @@ export function createJsonlIngestor({
   const searchBackfillPendingBySession = new Set()
   const priorSessionBackfillPending = new Set()
   const priorSessionBackfillComplete = new Set()
-  let _syncSessionWatchersRunning = false
-  let _syncSessionWatchersPending = null
+  const sessionWatcherSyncRunner = createCoalescedSyncRunner(syncSessionWatchersOnce)
 
   function startJsonlIngester() {
     if (_jsonlIngester) return _jsonlIngester
@@ -468,7 +507,7 @@ export function createJsonlIngestor({
     const script = path.join(daemonDir, 'fleet-jsonl-ingester.mjs')
     if (!fs.existsSync(script)) throw new Error(`JSONL ingester child missing: ${script}`)
     try {
-      _jsonlIngester = fork(script, [], { execArgv: [], stdio: ['ignore', 'ignore', 'ignore', 'ipc'] })
+      _jsonlIngester = forkProcess(script, [], { execArgv: [], stdio: ['ignore', 'ignore', 'ignore', 'ipc'] })
     } catch (e) {
       _jsonlIngester = null
       throw e
@@ -685,21 +724,7 @@ export function createJsonlIngestor({
 
 
   async function syncSessionWatchers(agentList) {
-    if (_syncSessionWatchersRunning) {
-      _syncSessionWatchersPending = agentList
-      return
-    }
-    _syncSessionWatchersRunning = true
-    try {
-      await syncSessionWatchersOnce(agentList)
-    } finally {
-      _syncSessionWatchersRunning = false
-      if (_syncSessionWatchersPending) {
-        const pending = _syncSessionWatchersPending
-        _syncSessionWatchersPending = null
-        await syncSessionWatchers(pending)
-      }
-    }
+    await sessionWatcherSyncRunner.sync(agentList)
   }
 
   async function syncSessionWatchersOnce(agentList) {
@@ -1014,7 +1039,7 @@ export function createJsonlIngestor({
       existing.refs += 1
       return
     }
-    const watcher = chokidar.watch(dir, {
+    const watcher = watchDir(dir, {
       depth: 0,
       ignoreInitial: true,
       persistent: true,
@@ -1043,7 +1068,7 @@ export function createJsonlIngestor({
 
   function startJsonlTail({ agent, jsonlPath, sessionId, harness, startOffset, liveOffset }) {
     const child = startJsonlIngester()
-    const watchId = `${sessionId}:${agent.id}:${Date.now()}:${Math.random().toString(36).slice(2)}`
+    const watchId = `${sessionId}:${agent.id}:${nowMs()}:${random().toString(36).slice(2)}`
     const replayThresholdBytes = Number(process.env.TLDA_JSONL_DISPLAY_REPLAY_MAX_BYTES || DEFAULT_DISPLAY_REPLAY_MAX_BYTES)
     const catchupUntilOffset = catchupReplayBoundary({ startOffset, liveOffset, thresholdBytes: replayThresholdBytes })
     const pw = {

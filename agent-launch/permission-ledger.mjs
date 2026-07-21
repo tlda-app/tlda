@@ -17,6 +17,24 @@ function nowIso() {
   return new Date().toISOString()
 }
 
+function processBindingSignature(row = {}) {
+  return JSON.stringify({
+    id: row.id || null,
+    sessionId: row.sessionId || null,
+    sessionKind: row.sessionKind || null,
+    sessionPath: row.sessionPath || null,
+    tmuxSession: row.tmuxSession || null,
+    machineId: row.machineId || null,
+    envName: row.envName || null,
+    daemonKey: row.daemonKey || null,
+    cwd: row.cwd || null,
+  })
+}
+
+function hasProcessBinding(row = {}) {
+  return !!(row?.id && row.sessionId && row.sessionKind && row.tmuxSession && row.daemonKey && row.cwd)
+}
+
 const WRITE_TIMEOUT_MS = Number(process.env.TLDA_PERMISSION_LEDGER_WRITE_TIMEOUT_MS || 5000)
 const YAML_MIGRATION_META_KEY = 'migration.daemon-permissions-yaml.v1'
 
@@ -461,9 +479,10 @@ export function resolveGrandfatherGrant(agent, { config = {}, projects = [] } = 
 }
 
 export class PermissionLedger {
-  constructor(dbPath) {
+  constructor(dbPath, { onProcessBindingChange } = {}) {
     this.file = dbPath
     this.dbPath = dbPath
+    this.onProcessBindingChange = typeof onProcessBindingChange === 'function' ? onProcessBindingChange : null
     fs.mkdirSync(path.dirname(dbPath), { recursive: true })
     this.db = new Database(dbPath)
     this.db.pragma('busy_timeout = 5000')
@@ -774,7 +793,30 @@ export class PermissionLedger {
   async delete(id) {
     const key = String(id || '').trim()
     if (!key) return
+    const existing = this.get(key)
     await this.writeAsync({ op: 'delete', id: key })
+    if (hasProcessBinding(existing)) {
+      this.notifyProcessBindingChange({ id: key, row: null, previous: existing, deleted: true })
+    }
+  }
+
+  deleteSyncForTest(id) {
+    const key = String(id || '').trim()
+    if (!key) return
+    const existing = this.get(key)
+    this._delete.run(key)
+    if (hasProcessBinding(existing)) {
+      this.notifyProcessBindingChange({ id: key, row: null, previous: existing, deleted: true })
+    }
+  }
+
+  notifyProcessBindingChange(event) {
+    if (!this.onProcessBindingChange) return
+    try {
+      this.onProcessBindingChange(event)
+    } catch (e) {
+      console.warn?.(`[permission-ledger] process binding observer failed for ${event?.id || 'unknown'}: ${e?.message || e}`)
+    }
   }
 
   setSyncForTest(id, options = {}) {
@@ -816,6 +858,7 @@ export class PermissionLedger {
     if (!existing) {
       return null
     }
+    const beforeBindingSignature = processBindingSignature(existing)
     // Identity is the seat tuple. `model` and `cwd` are metadata, not
     // identity: a model ALIAS vs its resolved name ('fable' vs
     // 'claude-fable-5') bounced every wake of a healthy seat, and a worktree
@@ -867,7 +910,11 @@ export class PermissionLedger {
       lastSeen,
       key,
     )
-    return this.get(key)
+    const updated = this.get(key)
+    if (processBindingSignature(updated) !== beforeBindingSignature) {
+      this.notifyProcessBindingChange({ id: key, row: updated, previous: existing })
+    }
+    return updated
   }
 
   rotateTerminalCapabilitySync(id) {
@@ -1050,6 +1097,6 @@ export function permissionLedgerPathFromDaemonConfig(daemonConfig = {}, configDi
   return defaultPermissionLedgerPath(configDir)
 }
 
-export function createPermissionLedger(file = defaultPermissionLedgerPath()) {
-  return new PermissionLedger(file)
+export function createPermissionLedger(file = defaultPermissionLedgerPath(), options = {}) {
+  return new PermissionLedger(file, options)
 }
