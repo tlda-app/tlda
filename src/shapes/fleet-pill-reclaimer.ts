@@ -10,7 +10,7 @@ import {
 
 type Pill = { id: TLShapeId; type: string; props?: { userId?: string; deviceId?: string; createdAt?: number; ephemeral?: boolean } }
 type Options = {
-  identity: { userId: string; deviceId: string }
+  getIdentity: () => { userId: string; deviceId: string }
   now?: () => number
   setTimer?: typeof setTimeout
   clearTimer?: typeof clearTimeout
@@ -28,7 +28,6 @@ export function installFleetPillReclaimerWithIdentity(editor: Editor, options: O
   const clearTimer = options.clearTimer || clearTimeout
   const windowTarget = options.windowTarget || window
   const documentTarget = options.documentTarget || document
-  const { identity } = options
   const timers = new Map<string, ReturnType<typeof setTimeout>>()
   let disposed = false
   const cancelTimer = (id: string) => {
@@ -40,7 +39,7 @@ export function installFleetPillReclaimerWithIdentity(editor: Editor, options: O
     cancelTimer(String(id))
     if (disposed) return
     const shape = editor.getShape(id) as Pill | undefined
-    if (shape && shouldReclaimFleetPill(shape, now(), identity)) editor.run(() => {
+    if (shape && shouldReclaimFleetPill(shape, now(), options.getIdentity())) editor.run(() => {
       if (editor.getShape(id)) editor.deleteShapes([id])
     }, { history: 'ignore' })
   }
@@ -61,6 +60,7 @@ export function installFleetPillReclaimerWithIdentity(editor: Editor, options: O
     for (const record of Object.values(changes.removed || {})) cancelTimer(String((record as Pill).id))
   }, { source: 'all', scope: 'document' })
   const terminateActivePills = () => {
+    const identity = options.getIdentity()
     for (const rawId of getActiveFleetPillIds()) {
       const id = rawId as TLShapeId
       const shape = editor.getShape(id) as Pill | undefined

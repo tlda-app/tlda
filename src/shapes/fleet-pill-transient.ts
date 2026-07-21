@@ -39,6 +39,6 @@ export function shouldReclaimFleetPill(
 
 export function installFleetPillReclaimer(editor: Editor): () => void {
   return installFleetPillReclaimerWithIdentity(editor, {
-    identity: { userId: getHumanId() || '', deviceId: getDeviceId() || '' },
+    getIdentity: () => ({ userId: getHumanId() || '', deviceId: getDeviceId() || '' }),
   })
 }

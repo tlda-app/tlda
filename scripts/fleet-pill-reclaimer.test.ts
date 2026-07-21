@@ -49,21 +49,29 @@ function harness(initial: Shape[]) {
   }
 }
 
-function install(initial: Shape[]) {
+function install(initial: Shape[], initialIdentity = { userId: 'fleet:me', deviceId: 'phone' }) {
   const timers = new FakeTimers()
   const h = harness(initial)
   const windowTarget = new EventTarget()
   const documentTarget = new EventTarget() as EventTarget & { hidden: boolean }
   documentTarget.hidden = false
+  let identity = initialIdentity
   const cleanup = installFleetPillReclaimerWithIdentity(h.editor as any, {
     now: () => timers.now,
     setTimer: timers.set as any,
     clearTimer: timers.clear as any,
     windowTarget: windowTarget as any,
     documentTarget: documentTarget as any,
-    identity: { userId: 'fleet:me', deviceId: 'phone' },
+    getIdentity: () => identity,
   })!
-  return { ...h, timers, windowTarget, documentTarget, cleanup }
+  return {
+    ...h,
+    timers,
+    windowTarget,
+    documentTarget,
+    cleanup,
+    setIdentity(next: { userId: string; deviceId: string }) { identity = next },
+  }
 }
 
 const legacy = (id = 'shape:legacy'): Shape => ({ id, type: 'fleet-pill', props: {} })
@@ -89,6 +97,28 @@ test('own stamped pill is reclaimed at 10s', () => {
   assert.equal(h.shapes.has('shape:owned'), false)
   h.cleanup()
 })
+
+test('identity resolved after install is used by the stale timer without remounting', () => {
+  const h = install([], { userId: '', deviceId: '' })
+  h.setIdentity({ userId: 'fleet:me', deviceId: 'phone' })
+  h.update(owned())
+  h.timers.advance(10_000)
+  assert.equal(h.shapes.has('shape:owned'), false)
+  h.cleanup()
+})
+
+for (const terminal of ['blur', 'pagehide'] as const) {
+  test(`identity resolved after install is used by ${terminal} cleanup without remounting`, () => {
+    const h = install([], { userId: '', deviceId: '' })
+    h.setIdentity({ userId: 'fleet:me', deviceId: 'phone' })
+    h.update(owned())
+    markFleetPillActive('shape:owned')
+    h.windowTarget.dispatchEvent(new Event(terminal))
+    assert.equal(h.shapes.has('shape:owned'), false)
+    assert.equal(isFleetPillActive('shape:owned'), false)
+    h.cleanup()
+  })
+}
 
 test('other user/device and non-ephemeral pills are excluded', () => {
   const h = install([
