@@ -1337,6 +1337,18 @@ export function useFleetGestures(opts: {
       if (!overlay) return
       const main = getMainEditor(mainEditor)
 
+      if (ts.length === 3) {
+        // Three fingers always pan the document canvas, including when the
+        // gesture starts over a fleet panel. The HUD camera mirror keeps the
+        // document and fleet surface moving together.
+        consumeTouchEvent(e)
+        setGestureActive(true)
+        const cam = main.getCamera()
+        state = { kind: 'pan', z0: cam.z, lastC: touchCenter(ts), axis: null, accX: 0, accY: 0 }
+        log.info(LOG_NS, 'gesture start: pan', { touchesLength: ts.length, z: cam.z })
+        return
+      }
+
       if (ts.length === 2) {
         const hit0 = fleetHitAtScreen(overlay, ts[0].clientX, ts[0].clientY, viewportId)
         const hit1 = fleetHitAtScreen(overlay, ts[1].clientX, ts[1].clientY, viewportId)
