@@ -10,6 +10,17 @@ node_modules
 server/projects
 server/data
 server/persist
+server/uploads
+server/*.db
+server/*.sqlite
+scratch
+.claude
+telemetry
+.playwright-cli
+.cache
+.vite
+.turbo
+coverage
 **/__pycache__
 **/.biber-par-cache
 **/build-cache
