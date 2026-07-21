@@ -4,6 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 
 import { createTerminalRpc } from '../daemon/terminal-rpc.mjs'
+import { decideTerminalWatchExit } from '../agent-runtime/daemon-guards.mjs'
 import { createPermissionLedger } from '../agent-launch/permission-ledger.mjs'
 
 function createRpc({ ledgerRow = null } = {}) {
@@ -41,6 +42,12 @@ function createRpc({ ledgerRow = null } = {}) {
     },
   })
   return { rpc, calls }
+}
+
+{
+  assert.equal(decideTerminalWatchExit({ paneLive: true }).terminalDead, false)
+  assert.equal(decideTerminalWatchExit({ paneLive: null }).terminalDead, false)
+  assert.equal(decideTerminalWatchExit({ paneLive: false }).terminalDead, true)
 }
 
 {
