@@ -328,6 +328,15 @@ const agentFleetConnections = new Map()     // agent_id -> latest /ws/fleet conn
 const daemonConnections = new Map()         // machine_id:env_name -> ws
 const daemonWelcomeSeenAt = new Map()       // machine_id:env_name -> last successful hello setup
 
+// Gate 1 observability: correlates one daemon WS connection attempt across
+// server and client logs, keyed by client-minted `connection_attempt_id`
+// (echoed back in daemon-welcome alongside ws._wsSessionId). Observability
+// only — no new liveness authority, no self-poll, no delivery-policy change.
+// Content-free: no token, URL query, session/resume/terminal capability.
+function traceGate1(stage, detail) {
+  console.log(`[gate1-trace] ${stage} ${JSON.stringify({ ts: new Date().toISOString(), ...detail })}`)
+}
+
 // Runtime status truth. Positive process evidence expires after three missed
 // hosted-session refresh intervals (90s); explicit dead/wedged evidence wins
 // immediately. Durable seats are route identity, not liveness proof.
@@ -630,6 +639,15 @@ setInterval(() => {
         lastPongAgoMs: ws._wsLastPongAt ? now - ws._wsLastPongAt : null,
         lastPingAgoMs: ws._wsLastPingAt ? now - ws._wsLastPingAt : null,
       })
+      if (ws._wsKind === 'daemon' && ws._daemonKey) {
+        traceGate1('heartbeat-terminate', {
+          daemon_key: ws._daemonKey,
+          boot_id: ws._bootId,
+          connection_attempt_id: ws._connectionAttemptId,
+          ws_session_id: ws._wsSessionId,
+          lastPongAgoMs: ws._wsLastPongAt ? now - ws._wsLastPongAt : null,
+        })
+      }
       ws.terminate()
       continue
     }
@@ -4626,6 +4644,14 @@ server.on('upgrade', async (req, socket, head) => {
       ws.on('close', (code, reason) => {
         logWsClose('daemon', ws, code, reason?.toString?.() || '')
         if (ws._daemonKey && daemonConnections.get(ws._daemonKey) === ws) {
+          traceGate1('registry-removed', {
+            daemon_key: ws._daemonKey,
+            boot_id: ws._bootId,
+            connection_attempt_id: ws._connectionAttemptId,
+            ws_session_id: ws._wsSessionId,
+            via: 'close',
+            code,
+          })
           daemonConnections.delete(ws._daemonKey)
           daemonActivityDeliverySnapshots.delete(ws._daemonKey)
           fleetStore?.markDaemonDisconnected?.(ws._daemonKey)
@@ -4647,6 +4673,13 @@ server.on('upgrade', async (req, socket, head) => {
       })
       ws.on('error', () => {
         if (ws._daemonKey && daemonConnections.get(ws._daemonKey) === ws) {
+          traceGate1('registry-removed', {
+            daemon_key: ws._daemonKey,
+            boot_id: ws._bootId,
+            connection_attempt_id: ws._connectionAttemptId,
+            ws_session_id: ws._wsSessionId,
+            via: 'error',
+          })
           daemonConnections.delete(ws._daemonKey)
           daemonActivityDeliverySnapshots.delete(ws._daemonKey)
           fleetStore?.markDaemonDisconnected?.(ws._daemonKey)
@@ -7540,7 +7573,7 @@ async function handleDaemonWsMessage(ws, msg) {
   }
 
   if (type === 'daemon-hello') {
-    const { machine_id, env_name, user, hostname, version, boot_id, install_path, last_agent_status_seq } = msg
+    const { machine_id, env_name, user, hostname, version, boot_id, install_path, last_agent_status_seq, connection_attempt_id } = msg
     if (!machine_id || !env_name) return
     const daemonKey = daemonAddress(machine_id, env_name)
     // §4b backstop: a daemon address is owned by ONE daemon install. If another
@@ -7561,6 +7594,7 @@ async function handleDaemonWsMessage(ws, msg) {
           ? 'a newer daemon already holds this daemon address'
           : `daemon address ${daemonKey} is already held live by a different daemon install (${existing._installPath || 'unknown'}); refusing this one (${install_path || 'unknown'})`
         console.warn(`[fleet-daemon] REFUSED daemon-hello: ${reason}`)
+        traceGate1('hello-refused', { daemon_key: daemonKey, boot_id, connection_attempt_id, ws_session_id: ws._wsSessionId })
         try {
           ws.send(JSON.stringify({ type: 'daemon-evict', reason, held_by_boot_id: existing._bootId || 0 }))
         } catch {}
@@ -7586,8 +7620,10 @@ async function handleDaemonWsMessage(ws, msg) {
     ws._user = user
     ws._hostname = hostname
     ws._version = version
+    ws._connectionAttemptId = connection_attempt_id || null
     ws._agentStatusSeq = Number.isInteger(last_agent_status_seq) ? last_agent_status_seq : 0
     daemonConnections.set(daemonKey, ws)
+    traceGate1('hello-accepted', { daemon_key: daemonKey, boot_id, connection_attempt_id, ws_session_id: ws._wsSessionId })
     refreshRuntimeRoutesForDaemon(daemonKey)
     notifyDaemonReady(daemonKey) // wake any control-op RPCs waiting to retry across this reconnect
     clearServerDaemonOutboxInflightForDaemon(daemonKey)
@@ -7649,9 +7685,13 @@ async function handleDaemonWsMessage(ws, msg) {
         server_boot_id: SERVER_BOOT_ID,
         projects: projectsForDaemon(),
         activeViewers: [...getActiveViewerProjects()],
+        connection_attempt_id: ws._connectionAttemptId || null,
+        server_ws_session_id: ws._wsSessionId || null,
       }))
+      traceGate1('welcome-sent', { daemon_key: daemonKey, boot_id, connection_attempt_id: ws._connectionAttemptId, ws_session_id: ws._wsSessionId, ok: true })
     } catch (e) {
       console.error(`[fleet-daemon] welcome send failed: ${e.message}`)
+      traceGate1('welcome-sent', { daemon_key: daemonKey, boot_id, connection_attempt_id: ws._connectionAttemptId, ws_session_id: ws._wsSessionId, ok: false, error: e.message })
     }
     // Send persisted backing file watch list to daemon.
     sendWatchBackingFiles()

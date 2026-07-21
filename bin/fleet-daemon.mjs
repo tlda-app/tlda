@@ -954,6 +954,17 @@ function teardownWatchers({ jsonl = true } = {}) {
   backingFiles.teardown()
 }
 
+// Gate 1 observability: correlates one daemon WS connection attempt across
+// client and server logs. `connection_attempt_id` is client-minted
+// (BOOT_ID:attemptSeq, never reused across a process lifetime); the server
+// echoes its own ws._wsSessionId in daemon-welcome so the two can be joined
+// after the fact. Content-free: no token, URL query, session/resume/terminal
+// capability identifiers. Observability only — does not affect connect/retry
+// behavior, does not add a self-poll, does not change delivery policy.
+function traceGate1(stage, detail) {
+  log.info(`[gate1-trace] ${stage} ${JSON.stringify({ ts: new Date().toISOString(), ...detail })}`)
+}
+
 function connect() {
   _rws = new ResilientWS({
     url: () => SERVER.replace(/^http/, 'ws') + '/ws/fleet-daemon' +
@@ -968,7 +979,8 @@ function connect() {
     // watchdog on 'ping', so 90s = 3× margin (tolerates two missed pings).
     heartbeatTimeoutMs: 90_000,
     onOpen: () => {
-      sendMsg({
+      const connectionAttemptId = `${BOOT_ID}:${_rws.attemptId}`
+      const sent = sendMsg({
         type: 'daemon-hello',
         machine_id: MACHINE_ID,
         env_name: ACTIVE_CONFIG,
@@ -977,13 +989,26 @@ function connect() {
         version: VERSION,
         boot_id: BOOT_ID,
         install_path: INSTALL_PATH,
+        connection_attempt_id: connectionAttemptId,
         // A cold daemon has no roster to apply a delta to, so 0 deliberately
         // requests the exceptional snapshot. Reconnects retain the cursor.
         last_agent_status_seq: agents.length ? agentStatusSeq : 0,
       })
+      traceGate1('hello-send', {
+        daemon_key: `${MACHINE_ID}:${ACTIVE_CONFIG}`,
+        boot_id: BOOT_ID,
+        connection_attempt_id: connectionAttemptId,
+        sent,
+      })
     },
     onMessage: handleServerMessage,
-    onClose: () => {
+    onClose: (reason) => {
+      traceGate1('client-close-detected', {
+        daemon_key: `${MACHINE_ID}:${ACTIVE_CONFIG}`,
+        boot_id: BOOT_ID,
+        connection_attempt_id: `${BOOT_ID}:${_rws.attemptId}`,
+        reason,
+      })
       _serverReady = false
       agentLiveness.stop()
       agentLiveness.clearTransientMissingState()
@@ -1053,6 +1078,13 @@ function handleServerMessage(msg) {
     return
   }
   if (msg.type === 'daemon-welcome') {
+    traceGate1('welcome-received', {
+      daemon_key: `${MACHINE_ID}:${ACTIVE_CONFIG}`,
+      boot_id: BOOT_ID,
+      connection_attempt_id: `${BOOT_ID}:${_rws.attemptId}`,
+      server_ws_session_id: msg.server_ws_session_id || null,
+      echoed_connection_attempt_id: msg.connection_attempt_id || null,
+    })
     _serverReady = true
     serverProjects = msg.projects || []
     const projectWorlds = readProjectWorlds(PROJECT_WORLDS_FILE)

@@ -20,7 +20,8 @@ export class ResilientWS {
    * @param {number}        [options.heartbeatTimeoutMs=0] — 0 = disabled
    * @param {(ws) => void}  [options.onOpen]     — called after connection opens
    * @param {(msg) => void} options.onMessage    — called with parsed JSON message
-   * @param {() => void}    [options.onClose]    — called on connection loss (before retry)
+   * @param {(reason: string) => void} [options.onClose] — called on connection loss (before retry);
+   *   reason is one of 'close' | 'error' | 'heartbeat-timeout' | 'manual-reconnect'
    * @param {(reason: string) => void} [options.onActivity] — called on open/message/ping liveness
    * @param {(s: string) => void} [options.log]  — log function (default: console.log)
    */
@@ -47,10 +48,17 @@ export class ResilientWS {
     this._heartbeatTimer = null
     this._stableTimer = null
     this._closed = false
+    // Monotone per-connect-attempt counter, scoped to this instance's
+    // lifetime (i.e. one daemon/process boot). Read via `attemptId` so a
+    // caller can tag daemon-hello and its own transition logs with the
+    // exact attempt a given open/close/error belongs to.
+    this._attemptSeq = 0
+    this._attemptId = null
   }
 
   get ws() { return this._ws }
   get connected() { return this._ws?.readyState === WebSocket.OPEN }
+  get attemptId() { return this._attemptId }
 
   send(obj) {
     if (!this.connected) return false
@@ -62,8 +70,11 @@ export class ResilientWS {
     if (this._closed) return
     if (this._ws) return
 
+    this._attemptSeq += 1
+    this._attemptId = String(this._attemptSeq)
+
     const url = this._getUrl()
-    this._log(`[${this._label}] connecting to ${url.replace(/token=[^&]+/, 'token=***')}`)
+    this._log(`[${this._label}] connecting to ${url.replace(/token=[^&]+/, 'token=***')} (attempt ${this._attemptId})`)
 
     try {
       // For wss:// with self-signed certs (local dev), skip cert validation.
@@ -73,7 +84,7 @@ export class ResilientWS {
       this._ws = ws
 
       ws.on('open', () => {
-        this._log(`[${this._label}] connected`)
+        this._log(`[${this._label}] connected (attempt ${this._attemptId})`)
         if (this._stableTimer) clearTimeout(this._stableTimer)
         this._stableTimer = setTimeout(() => {
           this._stableTimer = null
@@ -109,13 +120,13 @@ export class ResilientWS {
 
       ws.on('close', (code, reason) => {
         this._log(`[${this._label}] closed (${code} ${reason || ''})`)
-        this._cleanup(ws)
+        this._cleanup(ws, 'close')
         this._scheduleRetry()
       })
 
       ws.on('error', (e) => {
         this._log(`[${this._label}] error: ${e.message}`)
-        this._cleanup(ws)
+        this._cleanup(ws, 'error')
         this._scheduleRetry()
       })
     } catch (e) {
@@ -137,7 +148,7 @@ export class ResilientWS {
     if (this._closed) return
     const ws = this._ws
     if (ws) { try { ws.close() } catch (e) { this._log(`[${this._label}] close error: ${e.message}`) } }
-    this._cleanup(ws)
+    this._cleanup(ws, 'manual-reconnect')
     this._scheduleRetry()
   }
 
@@ -150,12 +161,12 @@ export class ResilientWS {
     this._ws = null
   }
 
-  _cleanup(ws = this._ws) {
+  _cleanup(ws = this._ws, reason = null) {
     if (ws && this._ws !== ws) return
     this._ws = null
     if (this._heartbeatTimer) { clearTimeout(this._heartbeatTimer); this._heartbeatTimer = null }
     if (this._stableTimer) { clearTimeout(this._stableTimer); this._stableTimer = null }
-    this._onClose?.()
+    this._onClose?.(reason)
   }
 
   _scheduleRetry() {
@@ -176,10 +187,10 @@ export class ResilientWS {
     if (!this._heartbeatTimeoutMs) return
     if (this._heartbeatTimer) clearTimeout(this._heartbeatTimer)
     this._heartbeatTimer = setTimeout(() => {
-      this._log(`[${this._label}] no heartbeat in ${this._heartbeatTimeoutMs}ms — reconnecting`)
+      this._log(`[${this._label}] no heartbeat in ${this._heartbeatTimeoutMs}ms — reconnecting (attempt ${this._attemptId})`)
       const ws = this._ws
       if (ws) { try { ws.close() } catch (e) { this._log(`[${this._label}] close error: ${e.message}`) } }
-      this._cleanup(ws)
+      this._cleanup(ws, 'heartbeat-timeout')
       this._scheduleRetry()
     }, this._heartbeatTimeoutMs)
   }
