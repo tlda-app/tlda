@@ -16,6 +16,8 @@ instruction.
 - `fleet-query-language.md` — current public fleet query language
 - `fleet-sandbox-policy.md` — current sandbox policy
 - `spawn-machine-privileges.md` — current machine-local spawn privilege model
+- `source-ownership-manifest-transaction.md` — accepted under-review source
+  ownership and complete-manifest transaction contract
 - `testing-fleet-shapes.md` — current browser-testing and cleanup contract
 - `fleet/agent-guide.md` — current agent fleet workflow
 - `fleet/managing-agents.md` — current manager fleet workflow
