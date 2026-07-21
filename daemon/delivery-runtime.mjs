@@ -85,7 +85,7 @@ export class DaemonDeliveryRuntime {
 
   noteReady() {
     this.inflight.clear()
-    this.ephemeralQueues.clear()
+    this.flushEphemeral()
     this.scheduleFlush()
   }
 

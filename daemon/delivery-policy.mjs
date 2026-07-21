@@ -27,14 +27,14 @@ const EPHEMERAL_FIFO_TYPES = new Set([
 ])
 
 const LATEST_WINS_TYPES = new Set([
+  'agent-liveness',
+  'reaper-status',
   'terminal-size',
 ])
 
 const DIRECT_TYPES = new Set([
-  'agent-liveness',
   'backing-file-status',
   'daemon-hello',
-  'reaper-status',
 ])
 
 export function daemonDeliveryPolicy(message) {

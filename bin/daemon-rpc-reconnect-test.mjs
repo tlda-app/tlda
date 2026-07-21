@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 
 import { DaemonDeliveryRuntime } from '../daemon/delivery-runtime.mjs'
-import { daemonDeliveryPolicy, DELIVERY_DURABLE_FIFO } from '../daemon/delivery-policy.mjs'
+import { daemonDeliveryPolicy, DELIVERY_DURABLE_FIFO, DELIVERY_LATEST_WINS } from '../daemon/delivery-policy.mjs'
 import { createMachineRpc, rpcRequestFingerprint } from '../daemon/machine-rpc.mjs'
 import { DaemonOutbox } from '../daemon/outbox.mjs'
 import { startWsRequest } from '../shared/fleet-transport.mjs'
@@ -55,6 +55,25 @@ test('rpc replies are durable and canonical fingerprints ignore object key order
     rpcRequestFingerprint({ type: 'rpc', id: 'a', op: 'send-text', body: { a: 1, b: 2 } }),
     rpcRequestFingerprint({ type: 'rpc', id: 'b', op: 'send-text', body: { b: 2, a: 1 } }),
   )
+})
+
+test('liveness and reaper status survive a reconnect as latest-wins messages', t => {
+  const h = harness(t)
+  h.disconnect()
+
+  assert.equal(daemonDeliveryPolicy({ type: 'agent-liveness' }), DELIVERY_LATEST_WINS)
+  assert.equal(daemonDeliveryPolicy({ type: 'reaper-status' }), DELIVERY_LATEST_WINS)
+
+  assert.equal(h.delivery.send({ type: 'agent-liveness', agent_ids: ['fleet:a'], checked_agent_ids: ['fleet:a'], ts: '2026-07-21T23:00:00.000Z' }), false)
+  assert.equal(h.delivery.send({ type: 'agent-liveness', agent_ids: ['fleet:b'], checked_agent_ids: ['fleet:b'], ts: '2026-07-21T23:00:01.000Z' }), false)
+  assert.equal(h.delivery.send({ type: 'reaper-status', ok: true, ts: '2026-07-21T23:00:00.000Z' }), false)
+  assert.equal(h.sent.length, 0)
+
+  h.reconnect()
+  h.delivery.flushEphemeral()
+
+  assert.deepEqual(h.sent.map(m => m.type), ['agent-liveness', 'reaper-status'])
+  assert.deepEqual(h.sent[0].agent_ids, ['fleet:b'])
 })
 
 test('closed socket after execution replays reply on daemon-ready and resolves server request', async t => {
