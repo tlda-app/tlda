@@ -69,6 +69,11 @@ export function createAgentLauncher({
     return path.join(spawnCrashLogDir, `${base}.log`)
   }
 
+  function reservationTimeoutMs() {
+    const raw = Number(process.env.TLDA_SHELL_RESERVATION_TIMEOUT_MS || 30_000)
+    return Number.isFinite(raw) && raw > 0 ? raw : 30_000
+  }
+
   async function terminateExactLaunch(tmuxSession) {
     if (!tmuxSession) return true
     try {
@@ -187,6 +192,7 @@ export function createAgentLauncher({
 
   async function spawn({
     agent_id,
+    agentId,
     name,
     model,
     kind,
@@ -206,6 +212,7 @@ export function createAgentLauncher({
   }) {
     const projects = getProjects()
     const sessionId = session || session_id
+    const requestedAgentId = agent_id || agentId || null
     const agentName = name || (sessionId ? `session-${String(sessionId).slice(0, 8)}` : `agent-${Date.now().toString(36).slice(-4)}`)
     let launchModel = model
     let launchKind = null
@@ -248,9 +255,9 @@ export function createAgentLauncher({
         launchKind = launchModelSpec.harness
       }
       if (respawn) {
-        const own = agent_id ? permissionLedger.get(agent_id) : null
+        const own = requestedAgentId ? permissionLedger.get(requestedAgentId) : null
         if (!own) {
-          throw new Error(`wake refused: seat ${agent_id || '(no id)'} has no ledger entry — a real agent must have a seat; refusing to resume with a fabricated grant`)
+          throw new Error(`wake refused: seat ${requestedAgentId || '(no id)'} has no ledger entry — a real agent must have a seat; refusing to resume with a fabricated grant`)
         }
         grant = {
           spawnPolicy: own.spawnPolicy,
@@ -330,7 +337,7 @@ export function createAgentLauncher({
       if (permissionSetConfersNothing(grant.permissionSet)
         && !isIntentionalEmptyPermissionSet(grant.permissionSet)) {
         const err = new Error(
-          `spawn refused: no grant resolved for ${agentName}${agent_id ? ` (${agent_id})` : ''} — `
+          `spawn refused: no grant resolved for ${agentName}${requestedAgentId ? ` (${requestedAgentId})` : ''} — `
           + `the spawn policy produced an empty grant (no readable or writable zone) and none was deliberately requested. `
           + `Refusing to create an alive-but-caged agent. Specify a real profile/grant for this spawn.`)
         err.code = 'SPAWN_NO_GRANT'
@@ -341,7 +348,7 @@ export function createAgentLauncher({
     }
     trace('grant', {
       agentName,
-      agent_id: agent_id || null,
+      agent_id: requestedAgentId || null,
       requestedKind: kind || null,
       launchKind: launchKind || null,
       requestedModel: model || null,
@@ -359,9 +366,9 @@ export function createAgentLauncher({
     try {
       const nodeSpawn = spawnImpl || (await import('./index.mjs')).spawn
       const spawnMode = sessionId ? 'session' : (refresh ? 'refresh' : (respawn ? 'respawn' : 'fresh'))
-      const preallocatedAgentId = agent_id || ((spawnMode === 'fresh' || spawnMode === 'session') ? newFleetId() : undefined)
+      const preallocatedAgentId = requestedAgentId || ((spawnMode === 'fresh' || spawnMode === 'session') ? newFleetId() : undefined)
       const shouldWriteLedgerRow = !!preallocatedAgentId && (spawnMode === 'fresh' || spawnMode === 'session')
-      const crashLogPath = spawnCrashLogPath({ agentName, agent_id: preallocatedAgentId || agent_id, tmux_session: null })
+      const crashLogPath = spawnCrashLogPath({ agentName, agent_id: preallocatedAgentId || requestedAgentId, tmux_session: null })
       if (shouldWriteLedgerRow) {
         await permissionLedger.set(preallocatedAgentId, {
           spawnPolicy: grant.spawnPolicy,
@@ -399,6 +406,7 @@ export function createAgentLauncher({
           tmuxSocket,
           crashLogPath,
           identityConfigDir: configDir,
+          shellReservationTimeoutMs: reservationTimeoutMs(),
         })
       } catch (e) {
         if (shouldWriteLedgerRow) await permissionLedger.delete(preallocatedAgentId).catch(() => {})

@@ -137,6 +137,10 @@ function spawnEnv(params = {}) {
   return env
 }
 
+function shellReservationOptions(params = {}) {
+  return params.shellReservationTimeoutMs ? { timeoutMs: params.shellReservationTimeoutMs } : {}
+}
+
 async function buildCommand({ requestedKind, adapter, fleetId, localAgentId, tmuxSession, model, modelProvider = null, name, cwd, effort, permissionMode, spawnPolicy, api, dnsAlias, resumeId = null, includePrompt = true, leasePolicy = null, enforceFence = false, harnessOptions = {}, config = undefined, env = process.env }) {
   let cmd
   let sendKeys = false
@@ -215,6 +219,7 @@ async function spawnFresh(params) {
   const ownedLocalLedger = params.localAgentLedger ? null : createLocalAgentLedger(params.localAgentLedgerPath)
   const localAgentLedger = params.localAgentLedger || ownedLocalLedger
   const existingBoundLocal = fleetId ? localAgentLedger.get(fleetId) : null
+  const requiresServerShellReservation = !!fleetId
   const localAgentId = params.localAgentId || params.local_agent_id || existingBoundLocal?.localAgentId || newLocalAgentId()
   const cwd = resolveSpawnCwd(params.cwd)
   let tmuxSession = null
@@ -225,8 +230,22 @@ async function spawnFresh(params) {
   try {
     try {
       serverUp = await (deps.ensureServer || ensureServer)({ api })
-    } catch {
+    } catch (e) {
+      if (requiresServerShellReservation) {
+        throw new SpawnError(
+          'launch-failed',
+          `server shell reservation required before launching ${name} (${fleetId}); server unavailable at ${api}: ${e?.message || String(e)}`,
+          { fleetId, api },
+        )
+      }
       serverUp = false
+    }
+    if (!serverUp && requiresServerShellReservation) {
+      throw new SpawnError(
+        'launch-failed',
+        `server shell reservation required before launching ${name} (${fleetId}); server unavailable at ${api}`,
+        { fleetId, api },
+      )
     }
     const config = params.config ?? readConfig()
     tmuxSession = await (deps.uniqueSessionName || uniqueSessionName)(`fleet-${sanitizeSessionName(name)}`, { tmuxSocket: params.tmuxSocket })
@@ -306,20 +325,22 @@ async function spawnFresh(params) {
             metadata: sandboxMetadata(launchPolicy.spawnPolicy, launchPolicy.leasePolicy),
             machineId: params.machineId,
             api,
+            ...shellReservationOptions(params),
           })
         : await (deps.wsMintShell || wsMintShell)({
             localAgentId,
-        name,
-        tmuxSession,
-        cwd,
-        model,
-        effort: params.effort,
-        kind: requestedKind,
-        spawnPermission: params.permissionProfile,
-        metadata: sandboxMetadata(launchPolicy.spawnPolicy, launchPolicy.leasePolicy),
-        machineId: params.machineId,
-        api,
-      })
+            name,
+            tmuxSession,
+            cwd,
+            model,
+            effort: params.effort,
+            kind: requestedKind,
+            spawnPermission: params.permissionProfile,
+            metadata: sandboxMetadata(launchPolicy.spawnPolicy, launchPolicy.leasePolicy),
+            machineId: params.machineId,
+            api,
+            ...shellReservationOptions(params),
+          })
       fleetId = fleetId || reserve?.server_agent_id || reserve?.agent?.id || null
       if (!fleetId) throw new Error('server mint returned no server agent id')
       localAgentLedger.bind(localAgentId, fleetId, { friendlyName: reserve?.assigned_name || name })
@@ -581,6 +602,7 @@ async function spawnRespawn(params) {
       metadata: sandboxMetadata(launchPolicy.spawnPolicy, launchPolicy.leasePolicy),
       machineId: params.machineId,
       api,
+      ...shellReservationOptions(params),
     })
   }
   const { cmd, sendKeys } = await buildCommand({
@@ -666,6 +688,7 @@ async function spawnRefresh(params) {
     metadata: sandboxMetadata(launchPolicy.spawnPolicy, launchPolicy.leasePolicy),
     machineId: params.machineId,
     api,
+    ...shellReservationOptions(params),
   })
   const { cmd, sendKeys } = await buildCommand({
     requestedKind,
@@ -795,6 +818,7 @@ async function spawnCodexSession(params, { api, sessionId, codexPath, deps = {} 
     metadata: sandboxMetadata(launchPolicy.spawnPolicy, launchPolicy.leasePolicy),
     machineId: params.machineId,
     api,
+    ...shellReservationOptions(params),
   })
   const { cmd, sendKeys } = await buildCommand({
     requestedKind: 'codex',
@@ -877,6 +901,7 @@ async function spawnClaudeSession(params, { api, sessionId, identity, deps = {} 
     metadata: sandboxMetadata(launchPolicy.spawnPolicy, launchPolicy.leasePolicy),
     machineId: params.machineId,
     api,
+    ...shellReservationOptions(params),
   })
   const { cmd, sendKeys } = await buildCommand({
     requestedKind: 'claude',

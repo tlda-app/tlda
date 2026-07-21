@@ -230,13 +230,14 @@ async function wsIdentityMessage(type, {
   machineId,
   envName,
   api = resolveApi(),
+  timeoutMs = 5000,
 } = {}) {
   const wsPeer = fleetId || localAgentId || 'unbound-local-agent'
   const wsUrl = `${wsForm(api)}/ws/fleet?agent=${encodeURIComponent(wsPeer)}`
   const ws = new WebSocket(wsUrl, tlsOptionsForApi(api))
   const requestId = `${type}:${wsPeer}:${Date.now()}:${Math.random().toString(36).slice(2)}`
   const opened = new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`registration timed out connecting to ${wsUrl}`)), 5000)
+    const timer = setTimeout(() => reject(new Error(`registration timed out connecting to ${wsUrl}`)), timeoutMs)
     ws.once('open', () => {
       clearTimeout(timer)
       resolve()
@@ -280,7 +281,7 @@ async function wsIdentityMessage(type, {
     const timer = setTimeout(() => {
       ws.off('message', onMessage)
       reject(new Error(`${type} timed out waiting for shell reservation ack from ${wsUrl}`))
-    }, 5000)
+    }, timeoutMs)
     const onMessage = (raw) => {
       try {
         const data = JSON.parse(raw.toString())
