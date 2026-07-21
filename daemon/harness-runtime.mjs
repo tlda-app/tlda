@@ -2,13 +2,17 @@ import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { parseCodexLine, parseCodexRecord } from '../agent-runtime/codex-activity.mjs'
 import { harnessKindForAgent } from '../agent-runtime/daemon-guards.mjs'
-import { resolveTranscript } from '../agent-runtime/resolve-transcript.mjs'
+import { resolveCodexTranscriptByKnownRollout } from '../agent-runtime/resolve-transcript.mjs'
 import { extractActivityEvents, parseSessionLine, parseSessionRecord } from './activity-events.mjs'
 
-const execFileP = promisify(execFile)
-
-export function createHarnessRuntime({ tmuxArgs = [], log }) {
+export function createHarnessRuntime({
+  tmuxArgs = [],
+  log,
+  execFileImpl = execFile,
+  resolveCodexTranscript = resolveCodexTranscriptByKnownRollout,
+} = {}) {
   const TMUX_ARGS = tmuxArgs || []
+  const execFileP = promisify(execFileImpl)
 
   async function findRuntimePidForAgent(agent, kind) {
     const adapter = harnessAdapters[kind]
@@ -57,10 +61,7 @@ export function createHarnessRuntime({ tmuxArgs = [], log }) {
   }
 
   async function resolveCodexJsonl(agent) {
-    const pid = await findRuntimePidForAgent(agent, 'codex')
-    if (!pid) return null
-    const launchTs = Date.parse(agent.registered_at || agent.last_seen || '') || 0
-    return resolveTranscript({ pid, kind: 'codex', agent, launchTs })
+    return resolveCodexTranscript(agent)
   }
 
   const harnessAdapters = {

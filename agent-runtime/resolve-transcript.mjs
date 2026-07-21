@@ -176,6 +176,19 @@ function codexRolloutMatchesLaunch(path, agent, launchTs) {
   return ts >= launchTs - 5_000 && ts <= launchTs + 60_000
 }
 
+export function resolveCodexTranscriptByKnownRollout(agent, { root = join(HOME, '.codex', 'sessions') } = {}) {
+  const knownIds = []
+  if (agent?.session_id) knownIds.push(agent.session_id)
+  for (const sid of (agent?.session_ids || [])) {
+    if (sid && !knownIds.includes(sid)) knownIds.push(sid)
+  }
+  if (!knownIds.length) return null
+  return newestUnder([root], (p) =>
+    knownIds.some(id => p.endsWith(`-${id}.jsonl`))
+      && (!codexRolloutHasOwnerEvidence(p) || codexRolloutBelongsToAgent(p, agent))
+  )
+}
+
 const codexAdapter = {
   label: 'codex',
   isTranscriptPath(p) {

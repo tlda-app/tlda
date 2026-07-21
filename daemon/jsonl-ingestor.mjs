@@ -8,6 +8,7 @@ import { recordPartialSkillReads } from '../shared/partial-skill-reads.mjs'
 import { ledgerSessionId, tailLedgerSessionInput } from '../agent-runtime/ledger-session-tail.mjs'
 import { scanFileIdentitySync, scanFileOwnersSync } from '../agent-runtime/daemon-jsonl-hot-path.mjs'
 import {
+  codexKnownRolloutIds,
   shouldClaimClaudeWatcher,
   shouldClaimCodexWatcher,
 } from '../agent-runtime/daemon-guards.mjs'
@@ -87,10 +88,10 @@ export function sessionIdentitySeatEvent(input = {}, {
   const effectiveMachineId = input.machine_id || machineId
   const effectiveEnvName = input.env_name || envName
   const effectiveDaemonKey = input.daemon_key || daemonKey || (effectiveMachineId && effectiveEnvName ? `${effectiveMachineId}:${effectiveEnvName}` : null)
-  if (!fleetId || !sessionId || !input.harness_kind || !input.model || !input.cwd || !input.tmux_session || !effectiveMachineId || !effectiveEnvName || !effectiveDaemonKey) {
+  if (!fleetId || !sessionId || !input.harness_kind || !input.model || !input.cwd || !effectiveMachineId || !effectiveEnvName || !effectiveDaemonKey) {
     return null
   }
-  return {
+  const event = {
     type: 'agent-seat',
     agent_id: fleetId,
     session_id: sessionId,
@@ -101,9 +102,28 @@ export function sessionIdentitySeatEvent(input = {}, {
     machine_id: effectiveMachineId,
     env_name: effectiveEnvName,
     daemon_key: effectiveDaemonKey,
-    tmux_session: input.tmux_session,
     created_source: input.created_source || 'daemon-session-observed',
   }
+  if (input.tmux_session) event.tmux_session = input.tmux_session
+  return event
+}
+
+export function jsonlWatchEligibility(agent, {
+  machineId = null,
+  envName = null,
+  daemonKey = null,
+} = {}) {
+  if (!agent?.id) return { ok: false, reason: 'missing agent identity' }
+  if (agent.dead) return { ok: false, reason: 'agent is dead' }
+  if (agent.human) return { ok: false, reason: 'human rows do not have activity JSONL' }
+  if (!daemonKey || !machineId || !envName) return { ok: false, reason: 'daemon identity incomplete' }
+  if (agent.daemon_key !== daemonKey || agent.machine_id !== machineId || agent.env_name !== envName) {
+    return { ok: false, reason: 'agent current seat belongs to another daemon environment' }
+  }
+  if (codexKnownRolloutIds(agent).length === 0) {
+    return { ok: false, reason: 'agent has no durable session identity' }
+  }
+  return { ok: true }
 }
 
 export function createJsonlIngesterMessageHandler({
@@ -672,24 +692,17 @@ export function createJsonlIngestor({
   }
 
   async function syncSessionWatchersOnce(agentList) {
-    let liveSessions = new Set()
-    try {
-      const r = await listSessions()
-      liveSessions = new Set(r.sessions || [])
-    } catch (e) {
-      log.warn(`tmux session list failed during JSONL watcher sync: ${e.message}`)
-      return
-    }
     const activePaths = new Set()
     const claudeJsonlsByOwner = indexClaudeJsonlsByOwner()
 
     for (const agent of agentList) {
       if (agent.dead) continue
-      if (!agent.tmux_session || !liveSessions.has(agent.tmux_session)) {
+      const eligibility = jsonlWatchEligibility(agent, { machineId, envName, daemonKey })
+      if (!eligibility.ok) {
         sendActivityHealth(agent, {
           state: ACTIVITY_HEALTH_UNAVAILABLE,
-          boundary: ACTIVITY_HEALTH_BOUNDARIES.NO_TMUX,
-          reason: agent.tmux_session ? `tmux session ${agent.tmux_session} is not live` : 'agent has no tmux_session',
+          boundary: ACTIVITY_HEALTH_BOUNDARIES.RESOLVE_JSONL_NULL,
+          reason: eligibility.reason,
         })
         continue
       }
@@ -949,7 +962,7 @@ export function createJsonlIngestor({
       }
     }
     for (const aid of [...agentPaths.keys()]) {
-      if (!agentList.some(a => a.id === aid && !a.dead)) agentPaths.delete(aid)
+      if (!agentList.some(a => a.id === aid && jsonlWatchEligibility(a, { machineId, envName, daemonKey }).ok)) agentPaths.delete(aid)
     }
   }
 
@@ -961,7 +974,6 @@ export function createJsonlIngestor({
         return [
           a.id,
           a.dead ? 'dead' : 'live',
-          a.tmux_session || '',
           a.session_id || '',
           sessionIds,
           a.cwd || '',
