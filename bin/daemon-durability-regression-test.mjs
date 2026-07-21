@@ -14,8 +14,8 @@ import {
 
 const here = dirname(fileURLToPath(import.meta.url))
 const daemonSource = readFileSync(join(here, 'fleet-daemon.mjs'), 'utf8')
+const serverSource = readFileSync(join(here, '..', 'server', 'unified-server.mjs'), 'utf8')
 const ingesterSource = readFileSync(join(here, 'fleet-jsonl-ingester.mjs'), 'utf8')
-const ingestorSupervisorSource = readFileSync(join(here, '..', 'daemon', 'jsonl-ingestor.mjs'), 'utf8')
 const cliSource = readFileSync(join(here, '..', 'cli', 'tlda.mjs'), 'utf8')
 const transitionSource = readFileSync(join(here, '..', 'cli', 'lib', 'daemon-supervision-transition.mjs'), 'utf8')
 
@@ -55,11 +55,12 @@ test('closed JSONL child IPC exits instead of remaining live and mute', () => {
   assert.match(ingesterSource, /onClosed:[\s\S]*process\.exit\(1\)/)
 })
 
-test('JSONL child restart obligation survives a server disconnect race', () => {
-  assert.match(ingestorSupervisorSource, /_jsonlIngesterRestartPending = true/)
-  assert.match(ingestorSupervisorSource, /function resumeJsonlIngesterAfterServerReady\(\)/)
-  assert.match(ingestorSupervisorSource, /resumeAfterServerReady: resumeJsonlIngesterAfterServerReady/)
-  assert.match(daemonSource, /daemon-welcome[\s\S]*jsonlIngestor\.resumeAfterServerReady\(\)/)
+test('daemon connection carries no roster and starts no activity ingestion', () => {
+  const welcomeHandler = daemonSource.match(/if \(msg\.type === 'daemon-welcome'\) \{([\s\S]*?)\n  \}\n  if \(msg\.type === 'agent-status-events'\)/)?.[1] || ''
+  const welcomePayload = serverSource.match(/type: 'daemon-welcome',([\s\S]*?)projects: projectsForDaemon\(\)/)?.[1] || ''
+  assert.ok(welcomeHandler)
+  assert.doesNotMatch(welcomeHandler, /msg\.agents|reconcileRoster|agentStatus\.start|agentLiveness\.start|jsonlIngestor/)
+  assert.doesNotMatch(welcomePayload, /agents|agent_status/)
 })
 
 test('fleet daemon does not intentionally exit on SIGPIPE', () => {
