@@ -222,8 +222,8 @@ export function decideMissingLiveness({
 
 export function decideTerminalWatchExit({ paneLive } = {}) {
   return {
-    terminalDead: !paneLive,
-    reason: paneLive ? 'watcher-exited-pane-live' : 'pane-dead-or-missing',
+    terminalDead: paneLive === false,
+    reason: paneLive === false ? 'pane-dead-or-missing' : paneLive === true ? 'watcher-exited-pane-live' : 'pane-liveness-unknown',
   }
 }
 

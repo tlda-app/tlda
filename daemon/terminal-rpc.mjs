@@ -343,8 +343,9 @@ export function createTerminalRpc({
       const { stdout } = await tmux('display-message', '-p', '-t', tmux_session, '#{pane_dead}')
       return stdout.trim() === '0'
     } catch {
-      // Treat tmux probe failure as not live; callers use this as a guard.
-      return false
+      // A failed probe is not evidence that the pane died. Treat it as unknown
+      // so a transient tmux routing failure cannot erase a live terminal.
+      return null
     }
   }
 
@@ -432,7 +433,7 @@ export function createTerminalRpc({
       void (async () => {
         const decision = decideTerminalWatchExit({ paneLive: await tmuxPaneIsLive(tmuxSession) })
         if (!decision.terminalDead) {
-          log.warn(`terminal-watch exited while pane is still live: agent=${agentId} exitCode=${exitCode}; suppressing terminal-dead`)
+          log.warn(`terminal-watch exited without positive pane-death evidence: agent=${agentId} exitCode=${exitCode}; suppressing terminal-dead`)
           return
         }
         log.info(`terminal exited: agent=${agentId} exitCode=${exitCode}`)
