@@ -93,14 +93,33 @@ export async function apiJson(pathname, { api = resolveApi(), timeoutMs = 5000, 
   })
 }
 
+// A single 2s probe was too fragile against the remote Fly server's real,
+// observed latency variance: one missed window silently (for non-localhost
+// targets) skipped shell reservation entirely, producing a live, working
+// harness process with no server-side identity and no way to ever register
+// later (see server-check/registration-skipped spawn-trace events). One retry
+// at a longer timeout absorbs a transient blip; both attempts are traced so a
+// sustained outage is visible instead of silently deferred.
 export async function ensureServer({ api = resolveApi() } = {}) {
-  try {
-    await apiJson('/api/state', { api, timeoutMs: 2000 })
-    return true
-  } catch (e) {
-    if (!/^https?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?$/.test(api)) return false
-    throw new Error(`server unreachable at ${api}: ${e.message}`)
+  const isLocal = /^https?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?$/.test(api)
+  const attempts = [2000, 6000]
+  let lastError = null
+  for (let i = 0; i < attempts.length; i++) {
+    try {
+      await apiJson('/api/state', { api, timeoutMs: attempts[i] })
+      traceServerCheck({ api, attempt: i + 1, ok: true })
+      return true
+    } catch (e) {
+      lastError = e
+      traceServerCheck({ api, attempt: i + 1, ok: false, error: e.message, timeoutMs: attempts[i] })
+    }
   }
+  if (isLocal) throw new Error(`server unreachable at ${api}: ${lastError?.message}`)
+  return false
+}
+
+function traceServerCheck(detail) {
+  process.stderr.write(`[spawn-trace] server-check ${JSON.stringify({ ts: new Date().toISOString(), ...detail })}\n`)
 }
 
 export async function checkFreshNameAvailable(name, { api = resolveApi(), serverUp = true, excludeId = null } = {}) {

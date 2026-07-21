@@ -401,6 +401,14 @@ async function spawnFresh(params) {
       ? null
       : { ok: false, reason: 'unverified' }
     if (!serverUp) {
+      traceSpawnDecision('registration-skipped', {
+        name,
+        localAgentId,
+        tmuxSession,
+        requestedKind,
+        model,
+        reason: 'ensureServer reported down after retries; no server-side shell was ever requested for this process',
+      })
       return { ok: true, localAgentId, fleetId: null, tmuxSession, harness: requestedKind, model, registrationDeferred: true, ...(promptDelivery ? { promptDelivery } : {}) }
     }
     let resumeId = null
