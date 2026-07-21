@@ -8001,6 +8001,10 @@ async function handleDaemonWsMessage(ws, msg) {
       broadcastState()
     } catch (e) {
       await reportDaemonEventFailure(msg, 'agent-seat-write', e)
+      if (/seat identity conflict|UNIQUE constraint failed: agent_seats\.session_id/.test(e?.message || '')) {
+        console.warn(`[agent-seat] ignored stale/conflicting binding for ${agentId}/${sessionId}: ${e.message}`)
+        return
+      }
       throw e
     }
     return
