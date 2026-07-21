@@ -90,7 +90,7 @@ test('bounded transition reports accepted launchd pending without fallback', asy
     pending: true,
     reason: 'supervised launchd did not become ready within 25ms',
   })
-  assert.deepEqual(calls.map(call => call[0]), ['log', 'writePlist', 'bootstrap', 'stopExisting', 'waitSupervised'])
+  assert.deepEqual(calls.map(call => call[0]), ['log', 'writePlist', 'stopExisting', 'bootstrap', 'waitSupervised'])
 })
 
 test('daemon start keeps already-supervised daemon as supervised noop', async () => {
@@ -124,18 +124,23 @@ test('bounded transition reports supervised-ready without fallback metadata', as
   assert.deepEqual(result, { mode: 'supervised', pid: 333 })
 })
 
-test('bounded transition surfaces true bootstrap rejection as failure', async () => {
+test('bounded transition releases the singleton before bootstrapping launchd', async () => {
+  const calls = []
   await assert.rejects(
     runBoundedDaemonStartTransition({
       existingPid: 111,
-      writePlist: async () => {},
-      bootstrap: async () => { throw new Error('bootstrap rejected') },
-      stopExisting: async () => assert.fail('must not stop existing when bootstrap rejects'),
+      writePlist: async () => calls.push('writePlist'),
+      bootstrap: async () => {
+        calls.push('bootstrap')
+        throw new Error('bootstrap rejected')
+      },
+      stopExisting: async () => calls.push('stopExisting'),
       waitSupervised: async () => null,
       verifyTargetDaemon: async () => {},
     }),
     /bootstrap rejected/,
   )
+  assert.deepEqual(calls, ['writePlist', 'stopExisting', 'bootstrap'])
 })
 
 test('daemon start code has no direct detached fallback or recovery script path', () => {

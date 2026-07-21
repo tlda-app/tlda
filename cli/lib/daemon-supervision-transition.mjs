@@ -193,8 +193,8 @@ export async function runBoundedDaemonStartTransition({
   })
 
   await writePlist()
-  await bootstrap()
   await stopExisting(existingPid)
+  await bootstrap()
 
   const supervisedPid = await waitSupervised({ previousPid: existingPid, timeoutMs: supervisedTimeoutMs })
   if (supervisedPid) {
