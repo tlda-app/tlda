@@ -666,18 +666,22 @@ async function cmdCreate() {
     return
   }
 
-  // Guard: this path uploads the WHOLE directory tree. A real paper source dir
-  // never contains node_modules/.git — their presence means --dir points at a
-  // code repo (or --format markdown was forgotten), and the upload would be
-  // gigabytes. Refuse loudly instead of hanging on "Pushing source files...".
-  for (const junk of ['node_modules', '.git']) {
-    if (existsSync(join(dir, junk))) {
-      console.error(red(`Refusing to create an svg/LaTeX project from ${dir}`))
-      console.error(red(`  — it contains ${junk}/, and the LaTeX path uploads the entire directory.`))
-      console.error(`  If this is a LaTeX paper, point --dir at just the paper's source folder.`)
-      console.error(`  If you meant a markdown doc, add --format markdown (uploads only --main + its images).`)
-      process.exit(1)
-    }
+  // `doc link` attaches an existing Git working copy. The source collector is
+  // deliberately repository-aware: it skips `.git`, build products, and
+  // non-source files, so the repository root is safe and is the canonical
+  // local project directory watched by the daemon.
+  let repoRoot
+  try {
+    repoRoot = execFileSync('git', ['-C', dir, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim()
+  } catch {
+    console.error(red(`Refusing to link ${dir}`))
+    console.error(red('  — tlda doc link requires an existing Git repository.'))
+    process.exit(1)
+  }
+  if (realpathSync(repoRoot) !== realpathSync(dir)) {
+    console.error(red(`Refusing to link ${dir}`))
+    console.error(red(`  — use the Git repository root: ${repoRoot}`))
+    process.exit(1)
   }
 
   const mainFile = mainArg || findMainTex(dir)
