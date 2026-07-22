@@ -15,8 +15,8 @@
  *      tlda chat uses $...$ / $$...$$; the backslash forms are a house-style
  *      nudge. Code fences and inline code are stripped before the check.
  *
- * On a finding it (a) nudges the message author to amend, and (b) sends a brief
- * note to fleet:skip so the linter firing is visible to him.
+ * On a finding it nudges the message AUTHOR to amend. Bots talk to authors, not
+ * to Skip — Skip observes the nudge in fleet chat; the bot never DMs him.
  *
  * Identity is env-driven exactly like todd (TLDA_BOT_NAME, TLDA_BOT_PIDFILE, …).
  *
