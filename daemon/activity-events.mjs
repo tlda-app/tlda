@@ -86,6 +86,9 @@ export function extractActivityEvents(events) {
           input.query || input.description || input.reason ||
           input.agent || input.doc || input.ref || input.text || ''
         const evt = { tool: humanName, arg, ts: ev.timestamp, id: block.id }
+        if (block.status) evt.status = block.status
+        if (block.duration) evt.duration = block.duration
+        if (block.correlationId) evt.correlationId = block.correlationId
         if (Object.keys(input).length > 0) evt.input = input
         if (isPrettyPrintTool(name) && block.id) {
           if (toolResults.has(block.id)) {

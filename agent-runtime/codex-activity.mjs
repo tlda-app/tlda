@@ -28,6 +28,7 @@
 // for shell), so the noise filter and arg extraction work unchanged.
 
 import { normalizePrettyResult } from '../shared/activity-pretty-result.mjs'
+import { extractFunctionsExecCalls, isMcpToolName, mcpEndEvent } from './functions-exec-activity.mjs'
 
 // Native Codex tool name → Claude vocabulary, so a Codex agent's activity
 // stream reads identically to a Claude agent's (Skip's call, 2026-06-15:
@@ -251,6 +252,34 @@ export function parseCodexRecord(o) {
       return normalizedToolUseEvent({ name: p.name, namespace: p.namespace, input, callId: p.call_id, ts })
     }
     if (p.type === 'custom_tool_call') {
+      if (p.name === 'exec') {
+        const calls = extractFunctionsExecCalls(p.input)
+        if (calls.length) {
+          // MCP calls have their own authoritative mcp_tool_call_end record,
+          // including the real args/result/error. Emit only native inner calls
+          // here so the outer JavaScript envelope never becomes a fake Bash.
+          const nativeCalls = calls.filter(call => !isMcpToolName(call.name))
+          if (!nativeCalls.length) return null
+          return {
+            type: 'assistant',
+            timestamp: ts,
+            blocks: nativeCalls.map((call, index) => ({
+              type: 'tool_use',
+              name: normalizeToolName(call.name),
+              input: addGenericArgSummary(aliasNativeArgs(call.name, call.input)),
+              id: nativeCalls.length === 1 ? p.call_id : `${p.call_id}#${index}`,
+            })),
+          }
+        }
+        // An exec cell with no recognizable tools is still real activity. Keep
+        // it honest without presenting the transport envelope as Bash.
+        return normalizedToolUseEvent({
+          name: 'orchestration',
+          input: { description: 'Custom orchestration', _raw: typeof p.input === 'string' ? p.input : '' },
+          callId: p.call_id,
+          ts,
+        })
+      }
       if (p.name === 'apply_patch') {
         const ev = applyPatchEvent(typeof p.input === 'string' ? p.input : '', p.call_id, ts)
         if (ev) return ev
@@ -286,6 +315,7 @@ export function parseCodexRecord(o) {
   }
 
   if (o.type === 'event_msg') {
+    if (p.type === 'mcp_tool_call_end') return mcpEndEvent(p, ts)
     if (p.type === 'user_message') {
       return { type: 'user', timestamp: ts, blocks: [{ type: 'text', text: p.message || '' }] }
     }

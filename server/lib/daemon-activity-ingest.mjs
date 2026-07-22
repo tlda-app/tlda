@@ -15,6 +15,9 @@ export function normalizeDaemonActivityEvent(msg, { serverReceivedAtMs = Date.no
     usage,
     prettyResult,
     origTool,
+    status,
+    duration,
+    correlationId,
     daemon_received_at,
     daemon_received_at_ms,
     daemon_sent_at,
@@ -35,7 +38,7 @@ export function normalizeDaemonActivityEvent(msg, { serverReceivedAtMs = Date.no
 
   return {
     text: tool === '_text' ? boundActivityPayload(arg || '') : (tool || ''),
-    metadata: boundActivityMetadata({ tool, arg, input, usage, prettyResult, origTool, activityLatency }),
+    metadata: boundActivityMetadata({ tool, arg, input, usage, prettyResult, origTool, status, duration, correlationId, activityLatency }),
     timestamp: ts || new Date().toISOString(),
     activityLatency,
   }
