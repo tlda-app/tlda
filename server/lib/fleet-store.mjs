@@ -189,7 +189,6 @@ export class FleetStore {
         ops: ops.map(op => ({
           sql: typeof op.stmtOrSql === 'string' ? op.stmtOrSql : op.stmtOrSql.source,
           params: op.params || [],
-          expectChanges: op.expectChanges,
         })),
       });
     });
@@ -2764,85 +2763,6 @@ export class FleetStore {
     this._queueTaskDelta({ type: 'upsert', task: this.getTask(task.id) });
   }
 
-  async acceptTaskAtomically({ task, fingerprint, operationId, acceptedAt }) {
-    const acceptance = JSON.stringify({
-      operation_id: operationId,
-      accepted_at: acceptedAt,
-      fingerprint,
-      event_id: null,
-    })
-    const eventMetadata = JSON.stringify({
-      status: 'working',
-      transition: 'task-accepted',
-      operation_id: operationId,
-      accepted_at: acceptedAt,
-      fingerprint,
-    })
-    const [, updateResult] = await this._wBatchAwait([
-      {
-        stmtOrSql: this._insertEvent,
-        params: ['task_update', acceptedAt, null, null, 'status → working', eventMetadata, task.id, task.agent],
-        expectChanges: 1,
-      },
-      {
-        stmtOrSql: `
-          UPDATE tasks
-          SET status = 'working',
-              acknowledged = 1,
-              updated_at = ?,
-              metadata = json_set(
-                COALESCE(metadata, '{}'),
-                '$.task_acceptance',
-                json_set(json(?), '$.event_id', last_insert_rowid())
-              )
-          WHERE id = ? AND agent = ? AND status = 'pending' AND acknowledged = 0
-            AND EXISTS (
-              SELECT 1
-              FROM agent_current_seats c
-              JOIN agent_seats s ON s.agent_id = c.agent_id AND s.session_id = c.session_id
-              WHERE c.agent_id = ? AND c.session_id = ? AND c.daemon_key = ?
-                AND c.terminal_capability = ? AND c.activated_at = ?
-            )
-        `,
-        params: [acceptedAt, acceptance, task.id, task.agent, fingerprint.agent_id,
-          fingerprint.session_id, fingerprint.daemon_key, fingerprint.terminal_capability,
-          fingerprint.activated_at],
-        expectChanges: 1,
-      },
-    ])
-    const committed = this.getTask(task.id)
-    const eventId = committed?.metadata?.task_acceptance?.event_id
-    if (!committed?.acknowledged || committed.status !== 'working' || eventId == null || updateResult.changes !== 1) {
-      throw new Error('atomic task acceptance readback failed')
-    }
-    this._queueTaskDocChange({ type: 'update', task: committed, actor: task.agent })
-    this._queueTaskDelta({ type: 'upsert', task: committed })
-    const inserted = {
-      id: Number(eventId), type: 'task_update', timestamp: acceptedAt,
-      from_id: null, to_id: null, text: 'status → working',
-      metadata: JSON.parse(eventMetadata), task_id: task.id, agent_id: task.agent, read: false,
-    }
-    const listenerErrors = []
-    for (const fn of this._listeners) {
-      try { fn(inserted) } catch (error) { listenerErrors.push(error) }
-    }
-    if (listenerErrors.length) throw new AggregateError(listenerErrors, 'committed task acceptance notification failed')
-    return { task: committed, event: inserted }
-  }
-
-  transferTaskOwnership(taskId, toAgentId) {
-    return this.db.prepare(`
-      UPDATE tasks
-      SET agent = ?,
-          status = CASE WHEN json_type(metadata, '$.task_acceptance') = 'object' THEN 'pending' ELSE status END,
-          acknowledged = CASE WHEN json_type(metadata, '$.task_acceptance') = 'object' THEN 0 ELSE acknowledged END,
-          metadata = CASE WHEN json_type(metadata, '$.task_acceptance') = 'object'
-            THEN json_remove(metadata, '$.task_acceptance') ELSE metadata END,
-          updated_at = ?
-      WHERE id = ? AND status != 'done'
-    `).run(toAgentId, new Date().toISOString(), taskId).changes
-  }
-
   getTask(id) {
     const row = this._getTask.get(id);
     return row ? this._hydrateTask(row) : null;
@@ -4048,16 +3968,8 @@ export class FleetStore {
    * Returns the number of tasks transferred.
    */
   transferTasks(fromAgentId, toAgentId) {
-    return this.db.prepare(`
-      UPDATE tasks
-      SET agent = ?,
-          status = CASE WHEN json_type(metadata, '$.task_acceptance') = 'object' THEN 'pending' ELSE status END,
-          acknowledged = CASE WHEN json_type(metadata, '$.task_acceptance') = 'object' THEN 0 ELSE acknowledged END,
-          metadata = CASE WHEN json_type(metadata, '$.task_acceptance') = 'object'
-            THEN json_remove(metadata, '$.task_acceptance') ELSE metadata END,
-          updated_at = ?
-      WHERE agent = ? AND status != 'done'
-    `).run(toAgentId, new Date().toISOString(), fromAgentId).changes;
+    return this.db.prepare("UPDATE tasks SET agent = ? WHERE agent = ? AND status != 'done'")
+      .run(toAgentId, fromAgentId).changes;
   }
 
   /**
