@@ -3,6 +3,7 @@ import {
   DAEMON_OUTBOX_ERROR_TYPE,
   DAEMON_OUTBOX_ID_FIELD,
   SERVER_DAEMON_OUTBOX_ACK_TYPE,
+  SERVER_DAEMON_OUTBOX_ERROR_TYPE,
 } from '../../shared/daemon-delivery.mjs'
 
 export function daemonOutboxId(msg) {
@@ -62,6 +63,18 @@ export function createDaemonWsControlPlane({
     serverDaemonOutboxInflight.delete(outboxId)
   }
 
+  function errorServerDaemonOutboxMessage(msg) {
+    const outboxId = msg?.outbox_id
+    if (!outboxId) return
+    const daemonKey = serverDaemonOutboxInflight.get(outboxId)
+    serverDaemonOutbox.markError(outboxId, msg.error || 'receiver did not accept delivery')
+    serverDaemonOutboxInflight.delete(outboxId)
+    if (daemonKey) {
+      const timer = setTimeoutFn(() => flushServerDaemonOutbox(daemonKey), 1000)
+      timer?.unref?.()
+    }
+  }
+
   function flushServerDaemonOutbox(daemonKey) {
     const dws = daemonConnections.get(daemonKey)
     if (!dws || dws.readyState !== 1) return
@@ -99,6 +112,10 @@ export function createDaemonWsControlPlane({
         ackServerDaemonOutboxMessage(msg)
         return { handled: true, kind: 'server-daemon-outbox-ack' }
       }
+      if (msg?.type === SERVER_DAEMON_OUTBOX_ERROR_TYPE) {
+        errorServerDaemonOutboxMessage(msg)
+        return { handled: true, kind: 'server-daemon-outbox-error' }
+      }
       if (isProcessedDaemonOutboxMessage(msg)) {
         ackDaemonOutboxMessage(ws, msg)
         return { handled: true, kind: 'duplicate-daemon-outbox' }
@@ -122,6 +139,7 @@ export function createDaemonWsControlPlane({
     errorDaemonOutboxMessage,
     enqueueDaemonMessage,
     ackServerDaemonOutboxMessage,
+    errorServerDaemonOutboxMessage,
     flushServerDaemonOutbox,
     clearServerDaemonOutboxInflightForDaemon,
   }

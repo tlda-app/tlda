@@ -115,7 +115,7 @@ export function createPendingSeatBindingManager({
     pending.clear()
   }
 
-  return { accept, attempt, close, pendingCount: () => pending.size }
+  return { accept, attempt, close, has: id => pending.has(id), pendingCount: () => pending.size }
 }
 
 export async function cleanupPendingSeatBinding({

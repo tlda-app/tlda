@@ -78,6 +78,7 @@ import {
   DAEMON_OUTBOX_ACK_TYPE,
   DAEMON_OUTBOX_ERROR_TYPE,
   SERVER_DAEMON_OUTBOX_ACK_TYPE,
+  SERVER_DAEMON_OUTBOX_ERROR_TYPE,
   SERVER_DAEMON_OUTBOX_ID_FIELD,
 } from '../shared/daemon-delivery.mjs'
 import {
@@ -914,6 +915,16 @@ function ackServerDaemonOutboxMessage(msg) {
   })
 }
 
+function errorServerDaemonOutboxMessage(msg, error) {
+  const outboxId = msg?.[SERVER_DAEMON_OUTBOX_ID_FIELD]
+  if (!outboxId) return
+  sendMsg({
+    type: SERVER_DAEMON_OUTBOX_ERROR_TYPE,
+    outbox_id: outboxId,
+    error: String(error?.message || error || 'receiver did not accept delivery'),
+  })
+}
+
 function teardownWatchers({ jsonl = true } = {}) {
   if (jsonl) {
     jsonlIngestor.teardown()
@@ -1070,9 +1081,14 @@ function handleServerMessage(msg, wsAttemptId) {
   }
   if (msg.type === 'agent-seat-binding-obligation') {
     try {
-      pendingSeatBindings.accept(hydratePendingSeatBindingObligation(msg))
+      const accepted = pendingSeatBindings.accept(hydratePendingSeatBindingObligation(msg))
+      if (!accepted && !pendingSeatBindings.has(msg.obligation_id)) {
+        throw new Error(`pending seat binding ${msg.obligation_id || 'unknown'} was not accepted locally`)
+      }
     } catch (e) {
       log.warn?.(`pending seat binding ${msg.obligation_id || 'unknown'} rejected locally: ${e.message}`)
+      errorServerDaemonOutboxMessage(msg, e)
+      return
     }
     // This acknowledges transport receipt only. The server-held obligation is
     // cleared later by the exact seat/readback completion or terminal event.
