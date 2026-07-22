@@ -47,14 +47,16 @@ function createLedger(onProcessBindingChange = () => {}) {
   }
 }
 
-function createHarness() {
+function createHarness({ kind = 'codex' } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'tlda-jsonl-watchers-'))
   const configDir = join(dir, 'config')
   const projectsDir = join(dir, 'projects')
   const projectDir = join(projectsDir, '-Users-skip-work-tlda')
   const jsonlPath = join(projectDir, 'rollout-jsonl-owner.jsonl')
   mkdirSync(projectDir, { recursive: true })
-  writeFileSync(jsonlPath, '', { flag: 'w' })
+  writeFileSync(jsonlPath, kind === 'claude'
+    ? '{"message":{"content":[{"type":"text","text":"Logged in fleet:jsonlown.\\nYour name: \\"jsonl-owner\\""}]}}\n'
+    : '', { flag: 'w' })
 
   const sentToChild = []
   const sentToServer = []
@@ -64,12 +66,12 @@ function createHarness() {
   let rows = []
   const syncCalls = []
 
-  function forkProcess(script) {
+  function forkProcess(script, args = []) {
     assert.ok(script.endsWith('fleet-jsonl-ingester.mjs') || script.endsWith('fleet-owner-harvester.mjs'))
     const child = new EventEmitter()
     child.send = message => sentToChild.push(message)
     child.kill = () => child.emit('exit', 0, null)
-    children.push(child)
+    children.push({ child, script, args })
     return child
   }
 
@@ -93,6 +95,14 @@ function createHarness() {
           terminalChat: false,
           backfillSearch: false,
           resolveJsonl: agent => agent.session_path,
+        },
+      },
+      claude: {
+        activity: {
+          kind: 'claude',
+          terminalChat: true,
+          backfillSearch: false,
+          usesClaudeSessionIds: true,
         },
       },
     },
@@ -235,6 +245,37 @@ function assertWatcher(harness, expected) {
   }
 }
 
+// Regression: a Claude JSONL created after the one-shot startup harvest is
+// unclassified on the first binding sync. That sync must schedule bounded
+// classification of the exact file, then attach the same agent after the
+// ownership result arrives.
+{
+  const harness = createHarness({ kind: 'claude' })
+  try {
+    harness.setRows([{ id: 'fleet:jsonl-owner', ...fullBinding({
+      sessionKind: 'claude',
+      sessionId: 'rollout-jsonl-owner',
+      sessionPath: harness.jsonlPath,
+    }) }])
+    await harness.sync('post-startup-new-jsonl')
+    assert.equal(harness.sentToChild.some(message => message.type === 'watch'), false)
+    const targeted = harness.children.find(entry => entry.script.endsWith('fleet-owner-harvester.mjs'))
+    assert.deepEqual(targeted?.args, [harness.jsonlPath])
+    targeted.child.emit('message', {
+      type: 'owners',
+      sessionId: 'rollout-jsonl-owner',
+      jsonlPath: harness.jsonlPath,
+      harnessKind: 'claude',
+      owners: ['fleet:jsonl-owner'],
+      identity: { fleet_id: 'fleet:jsonl-owner', friendly_name: 'jsonl-owner' },
+    })
+    await new Promise(resolve => setTimeout(resolve, 550))
+    assert.equal(harness.sentToChild.some(message => message.type === 'watch'), true)
+  } finally {
+    harness.cleanup()
+  }
+}
+
 {
   const harness = createHarness()
   const changes = []
@@ -284,7 +325,7 @@ function assertWatcher(harness, expected) {
     harness.setRows([{ id: 'fleet:jsonl-owner', ...fullBinding({ sessionPath: harness.jsonlPath }) }])
     await harness.sync('attach')
     harness.setReady(false)
-    const child = harness.children.find(Boolean)
+    const child = harness.children.find(Boolean).child
     child.emit('exit', 1, null)
     assertWatcher(harness, false)
     harness.setReady(true)

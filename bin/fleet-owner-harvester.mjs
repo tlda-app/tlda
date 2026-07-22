@@ -54,9 +54,26 @@ export function listSessionsByRecency(dirs = HARVEST_DIRS) {
   return out
 }
 
+export function listedSessionFiles(filePaths = []) {
+  return filePaths.flatMap(filePath => {
+    if (!String(filePath).endsWith('.jsonl')) return []
+    let mtimeMs = 0
+    try { mtimeMs = fs.statSync(filePath).mtimeMs } catch { return [] }
+    return [{
+      sessionId: path.basename(filePath, '.jsonl'),
+      filePath,
+      mtimeMs,
+      harnessKind: filePath.includes('/.codex/sessions/') ? 'codex' : 'claude',
+    }]
+  }).sort((a, b) => b.mtimeMs - a.mtimeMs)
+}
+
 async function main() {
   process.on('message', (msg) => { if (msg?.type === 'stop') process.exit(0) })
-  const queue = listSessionsByRecency() // recent -> old
+  // Passing explicit files makes classification of a newly-created session
+  // bounded. The startup harvest still scans every session in the background.
+  const requestedFiles = process.argv.slice(2)
+  const queue = requestedFiles.length ? listedSessionFiles(requestedFiles) : listSessionsByRecency()
   const breathe = () => new Promise((r) => setImmediate(r))
   let count = 0
   for (const item of queue) {

@@ -452,6 +452,57 @@ export function createJsonlIngestor({
   // The niced child that classifies every session's owners in the background
   // (recent→old by mtime), so the daemon's main loop never byte-scans files on a spawn.
   let _ownerHarvester = null
+  const _targetedOwnerHarvesters = new Map()
+  const _targetedOwnerRetryTimers = new Map()
+
+  function startTargetedOwnerHarvester(jsonlPath) {
+    if (!jsonlPath || _targetedOwnerHarvesters.has(jsonlPath)) return
+    const script = path.join(daemonDir, 'fleet-owner-harvester.mjs')
+    if (!fs.existsSync(script)) return
+    let child
+    try {
+      child = forkProcess(script, [jsonlPath], { execArgv: [], stdio: ['ignore', 'ignore', 'pipe', 'ipc'] })
+      _targetedOwnerHarvesters.set(jsonlPath, child)
+    } catch (e) {
+      log.warn(`targeted owner harvester failed to start for ${path.basename(jsonlPath)}: ${e.message}`)
+      if (!_targetedOwnerRetryTimers.has(jsonlPath)) {
+        const timer = setTimeout(() => {
+          _targetedOwnerRetryTimers.delete(jsonlPath)
+          startTargetedOwnerHarvester(jsonlPath)
+        }, 1000)
+        _targetedOwnerRetryTimers.set(jsonlPath, timer)
+      }
+      return
+    }
+    child.stderr?.on?.('data', chunk => {
+      const text = String(chunk || '').trim()
+      if (text) log.warn(`targeted owner harvester stderr: ${text}`)
+    })
+    child.on('message', msg => {
+      if (msg?.type !== 'owners') return
+      recordSessionOwners(msg.sessionId, msg.owners, {
+        jsonlPath: msg.jsonlPath,
+        harnessKind: msg.harnessKind || 'claude',
+        identity: msg.identity,
+        persistIdentity: false,
+      })
+      const retryTimer = _targetedOwnerRetryTimers.get(jsonlPath)
+      if (retryTimer) clearTimeout(retryTimer)
+      _targetedOwnerRetryTimers.delete(jsonlPath)
+      scheduleJsonlDirSync(`owner classified ${path.basename(jsonlPath)}`)
+    })
+    const clear = () => {
+      if (_targetedOwnerHarvesters.get(jsonlPath) === child) _targetedOwnerHarvesters.delete(jsonlPath)
+    }
+    child.on('exit', clear)
+    child.on('close', clear)
+    child.on('disconnect', clear)
+    child.on('error', e => {
+      clear()
+      log.warn(`targeted owner harvester failed for ${path.basename(jsonlPath)}: ${e.message}`)
+    })
+  }
+
   function startOwnerHarvester() {
     if (_ownerHarvester) return
     const script = path.join(daemonDir, 'fleet-owner-harvester.mjs')
@@ -883,6 +934,7 @@ export function createJsonlIngestor({
           }
           if (foundStat) {
             const owners = claudeOwnersForSessionFile(sid, p)
+            if (!cursors[sid]?.classified) startTargetedOwnerHarvester(p)
             if (!shouldClaimClaudeWatcher({ currentPrimaryId: null, agent, owners })) continue
           }
           if (foundStat && foundStat.mtimeMs > bestMtime) {
@@ -1556,6 +1608,12 @@ export function createJsonlIngestor({
     try { _ownerHarvester?.kill() } catch {
       // Shutdown must keep progressing even if the helper has already exited.
     }
+    for (const child of _targetedOwnerHarvesters.values()) {
+      try { child.kill() } catch { /* cleanup continues */ }
+    }
+    _targetedOwnerHarvesters.clear()
+    for (const timer of _targetedOwnerRetryTimers.values()) clearTimeout(timer)
+    _targetedOwnerRetryTimers.clear()
     try { _jsonlIngester?.send?.({ type: 'shutdown' }) } catch {
       // IPC may already be closed during shutdown; killing below is the fallback.
     }
