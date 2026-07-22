@@ -197,6 +197,11 @@ export function getReadToken() {
   return d.tokenRead || null
 }
 
+/** This machine's id, from daemon.yaml `machineId` (TLDA_MACHINE_ID env wins). */
+export function getMachineId() {
+  return process.env.TLDA_MACHINE_ID || loadDaemonYaml().machineId || null
+}
+
 const BOTS_FILE = join(CONFIG_DIR, 'bots.yaml')
 
 /**

@@ -60,7 +60,7 @@ import {
   loadConfig as _loadSharedConfig, saveConfig as _saveSharedConfig,
   getServerUrl, getFleetServerUrl, getRwToken, DEFAULT_PORT, hasTls,
   CONFIG_DIR as _SHARED_CONFIG_DIR, TLS_CA_PATH,
-  getActiveConfigName, assertServerCoherence,
+  getActiveConfigName, assertServerCoherence, getMachineId,
 } from '../shared/config.mjs'
 const VERSION = '0.1.1'
 import { createLogger } from '../shared/logger.mjs'
@@ -317,7 +317,7 @@ const TOKEN = _usingCustomConfigDir
 const TMUX_SOCKET = config.tmuxSocket || null
 const TMUX_ARGS = TMUX_SOCKET ? ['-L', TMUX_SOCKET] : []
 
-let MACHINE_ID = config.machineId || null
+let MACHINE_ID = getMachineId()
 if (!MACHINE_ID) {
   MACHINE_ID = deriveMachineId()
   saveConfig({ ...config, machineId: MACHINE_ID })

@@ -18,7 +18,7 @@ import { diffSourceHashes, normalizeSourceManifest } from '../shared/source-mani
 import { collectHtmlArtifactFiles, htmlArtifactMainForSource } from './lib/html-artifact-files.mjs'
 import {
   loadConfig, saveConfig, getServerUrl, getFleetServerUrl, getRwToken, getActiveConfigName, DEFAULT_PORT,
-  CONFIG_DIR, CONFIG_FILE, hasTls, TLS_CA_PATH, getManagedBots,
+  CONFIG_DIR, CONFIG_FILE, hasTls, TLS_CA_PATH, getManagedBots, getMachineId,
 } from '../shared/config.mjs'
 import { tldaFetch } from '../shared/http-client.mjs'
 import { DEV_COMMANDS } from './lib/dev-commands.mjs'
@@ -1376,7 +1376,7 @@ function daemonTargetIdentity(config = loadConfig()) {
   const server = getFleetServerUrl(config)
   const envName = getActiveConfigName(config)
   if (!envName) throw new Error('cannot identify daemon target: active config name is missing')
-  const machineId = config.machineId || hostname().split('.')[0]
+  const machineId = getMachineId() || hostname().split('.')[0]
   const lockScope = `${server}#${envName}`
   const lockPath = daemonSingletonLockPath({ configDir: CONFIG_DIR, origin: lockScope })
   return { machineId, envName, server, lockScope, lockPath }
