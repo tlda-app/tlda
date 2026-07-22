@@ -1011,19 +1011,16 @@ export function withDaemonModelAliases(config = {}, daemonConfig = {}) {
     : {}
   if (!Object.keys(daemonModels).length && !Object.keys(daemonProfiles).length) return config || {}
   const { aliases, harnessOptions, modelSpecs, defaultModel } = normalizeDaemonModelRows(daemonModels)
+  // config.json contributes nothing: the spawn policy, model aliases, specs, and
+  // catalog are the daemon config's alone. No config.json base is spread in.
   const nextSpawnPolicy = {
-    ...((config || {}).spawnPolicy || {}),
     ...(Object.keys(daemonProfiles).length ? {
-      permissionProfiles: {
-        ...(((config || {}).spawnPolicy || {}).permissionProfiles || {}),
-        ...daemonProfiles,
-      },
+      permissionProfiles: { ...daemonProfiles },
       fenceEnabled: true,
       defaultProfile: daemonConfig.default || null,
     } : {}),
   }
   return {
-    ...(config || {}),
     ...(Object.keys(modelSpecs).length ? { modelSpecs } : {}),
     ...(Object.keys(modelSpecs).length ? { modelCatalog: { default: defaultModel, values: modelSpecs } } : {}),
     ...(Object.keys(aliases).length ? { models: aliases } : {}),

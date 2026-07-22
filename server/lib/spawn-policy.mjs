@@ -15,8 +15,6 @@ import { basename, join, resolve } from 'node:path'
 // own sandbox API value, mapped at the fleet-spawn boundary, not here.
 const PERMISSION_NAMES = new Set(['none', 'read', 'write', 'tlda-write', 'full'])
 
-export const ROOT_PERMISSION = 'full'
-
 export function normalizePermission(value) {
   if (value == null || value === '') {
     throw new Error('spawn permission is required')
@@ -178,50 +176,6 @@ function addPermissionRule(profile, { operation, effect, zone, line }) {
   profile.operations[operation][effect].push(zone)
 }
 
-export function compilePermissionProfiles(source, { sourcePath } = {}) {
-  if (typeof source !== 'string') throw new Error('permission profile source must be a string')
-  const profiles = {}
-  let current = null
-  const lines = source.split(/\r?\n/)
-  for (let idx = 0; idx < lines.length; idx++) {
-    const lineNumber = idx + 1
-    const raw = lines[idx]
-    const line = raw.trim()
-    if (!line || line.startsWith('#')) continue
-
-    const header = line.match(/^profile\s+([A-Za-z0-9_.-]+)\s*:\s*$/)
-    if (header) {
-      const name = normalizePermissionProfileName(header[1], lineNumber)
-      const key = name.toLowerCase()
-      if (profiles[key]) throw new Error(`duplicate permission profile "${name}" on line ${lineNumber}`)
-      current = {
-        type: 'permission-set',
-        name,
-        operations: emptyPermissionOperations(),
-        rules: [],
-        ...(sourcePath ? { sourcePath } : {}),
-      }
-      profiles[key] = current
-      continue
-    }
-
-    if (!current) throw new Error(`permission rule before profile header on line ${lineNumber}`)
-    const rule = line.match(/^([A-Za-z][A-Za-z0-9_-]*)\s+([+-])\s+(.+?)\s*$/)
-    if (!rule) throw new Error(`invalid permission rule on line ${lineNumber}: ${raw.trim()}`)
-    const operation = normalizePermissionOperation(rule[1], lineNumber)
-    const effect = rule[2] === '+' ? 'allow' : 'deny'
-    const zone = rule[3].trim()
-    if (!zone) throw new Error(`empty permission zone on line ${lineNumber}`)
-    addPermissionRule(current, { operation, effect, zone, line: lineNumber })
-  }
-  if (!Object.keys(profiles).length) throw new Error('permission profile source contains no profile blocks')
-  return {
-    type: 'permission-profile-bundle',
-    profiles,
-    ...(sourcePath ? { sourcePath } : {}),
-  }
-}
-
 function selectCompiledPermissionProfile(bundle, requestedName = null) {
   const keys = Object.keys(bundle.profiles || {})
   if (!keys.length) throw new Error('compiled permission bundle contains no profiles')
@@ -243,36 +197,6 @@ function zoneForPolicy(policy, { cwd, project } = {}) {
   if (base === 'cwd' || base === 'tlda-projects') return base
   const resolved = normalizedPath(base)
   return `${resolved || base}/**`
-}
-
-export function permissionSetFromPolicy(policyValue, { name, cwd, project } = {}) {
-  const policy = normalizeSpawnPolicy(policyValue)
-  const zone = zoneForPolicy(policy, { cwd, project })
-  const operations = emptyPermissionOperations()
-  const rules = []
-  if (policy.permission !== 'none') {
-    const readRule = { operation: 'read', effect: 'allow', zone, line: null }
-    rules.push(readRule)
-    operations.read.allow.push(zone)
-  }
-  if (policy.permission !== 'none' && policy.permission !== 'read') {
-    const writeRule = { operation: 'write', effect: 'allow', zone, line: null }
-    rules.push(writeRule)
-    operations.write.allow.push(zone)
-  }
-  if (policy.permission !== 'none') {
-    const spawnRule = { operation: 'spawn', effect: 'allow', zone: '**', line: null }
-    rules.push(spawnRule)
-    operations.spawn.allow.push('**')
-  }
-  return {
-    type: 'permission-set',
-    name: name || policy.name,
-    operations,
-    rules,
-    projectedPolicy: policy,
-    compiledFrom: 'spawn-policy',
-  }
 }
 
 export function emptyPermissionSet({ name = 'none', projectedPolicy } = {}) {
@@ -508,19 +432,6 @@ export function resolveProjectProfileName(config = {}, { doc, project, cwd } = {
 // requested permission when the caller does not request one explicitly — the
 // default fence. resolveSpawnGrant still bounds it, via the region-set
 // intersection, by the model ceiling and the spawner's own authority.
-export function resolveProjectProfile(config = {}, { doc, project, cwd } = {}) {
-  const name = resolveProjectProfileName(config, { doc, project, cwd })
-  if (!name) {
-    throw new Error('no configured project permission profile')
-  }
-  const configured = configuredPermissionProfile(config, name)
-  if (configured) {
-    const policy = { name, policy: regionScopeFromSet(configured) }
-    return { ...policy, name }
-  }
-  throw new Error(`unknown permission profile "${name}"`)
-}
-
 function permissionSetForProfileName(name, { cwd, project, config } = {}) {
   const key = String(name || '').trim()
   if (!key) {
@@ -596,11 +507,6 @@ function explicitPermissionProfileRequest(config = {}, value, fallback = null) {
 // caller permitted to raise a model's trust ceiling per-agent. Every agent, no
 // matter how trusted its model, resolves here as non-operator — so an agent can
 // never self-escalate.
-export function isOperator(caller, { serverOwnerId } = {}) {
-  return !!(caller?.human || (serverOwnerId && caller?.id === serverOwnerId))
-}
-
-
 export function resolveSpawnGrant({
   permissionRequest,
   spawnerPermissionSet: explicitSpawnerPermissionSet,
