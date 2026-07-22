@@ -29,6 +29,12 @@ const JSONL_RUNTIME_FAILURE_BOUNDARIES = {
   'ack-failed': ACTIVITY_HEALTH_BOUNDARIES.WATCH_ACK_FAILED,
   'delivery-failed': ACTIVITY_HEALTH_BOUNDARIES.WATCH_DELIVERY_FAILED,
 }
+const CLOSED_IPC_ERROR_CODES = new Set(['EPIPE', 'ERR_IPC_CHANNEL_CLOSED'])
+
+function isClosedIpcError(e) {
+  if (CLOSED_IPC_ERROR_CODES.has(e?.code)) return true
+  return /EPIPE|IPC channel closed|channel closed/i.test(String(e?.message || e || ''))
+}
 
 export function catchupReplayBoundary({ startOffset = 0, liveOffset = 0, thresholdBytes = DEFAULT_DISPLAY_REPLAY_MAX_BYTES } = {}) {
   if (!Number.isFinite(startOffset) || !Number.isFinite(liveOffset)) return null
@@ -288,6 +294,7 @@ export function createJsonlIngestor({
   permissionLedger,
   bufferActivity,
   extractActivityEvents,
+  activityDeliveryCounters = null,
   machineId = null,
   envName = null,
   daemonKey = null,
@@ -490,7 +497,12 @@ export function createJsonlIngestor({
   const sessionWatcherSyncRunner = createCoalescedSyncRunner(syncSessionWatchersOnce)
 
   function startJsonlIngester() {
-    if (_jsonlIngester) return _jsonlIngester
+    if (_jsonlIngester) {
+      if (_jsonlIngester.connected !== false && !_jsonlIngester.killed) return _jsonlIngester
+      log.warn('JSONL ingester stale child handle found; resyncing live session tails')
+      _jsonlIngester = null
+      handleJsonlIngesterExit('stale-ipc', null)
+    }
     if (!_sessionReaderLock) {
       const lockPath = sessionReaderLockPath({ configDir })
       const lock = acquireSingletonLock({
@@ -506,26 +518,42 @@ export function createJsonlIngestor({
     }
     const script = path.join(daemonDir, 'fleet-jsonl-ingester.mjs')
     if (!fs.existsSync(script)) throw new Error(`JSONL ingester child missing: ${script}`)
+    let child
     try {
-      _jsonlIngester = forkProcess(script, [], { execArgv: [], stdio: ['ignore', 'ignore', 'ignore', 'ipc'] })
+      child = forkProcess(script, [], { execArgv: [], stdio: ['ignore', 'ignore', 'ignore', 'ipc'] })
+      _jsonlIngester = child
     } catch (e) {
       _jsonlIngester = null
       throw e
     }
-    _jsonlIngester.on('message', handleJsonlIngesterMessage)
-    _jsonlIngester.on('exit', (code, signal) => {
-      _jsonlIngester = null
+    let downHandled = false
+    const noteDown = (code, signal) => {
+      if (downHandled) return
+      downHandled = true
+      if (_jsonlIngester === child) _jsonlIngester = null
       handleJsonlIngesterExit(code, signal)
+    }
+    child.on('message', handleJsonlIngesterMessage)
+    child.on('exit', (code, signal) => {
+      noteDown(code, signal)
     })
-    _jsonlIngester.on('error', (e) => {
+    child.on('error', (e) => {
+      if (isClosedIpcError(e)) {
+        if (!downHandled) log.warn(`JSONL ingester child IPC closed: ${e.message}`)
+        noteDown(e.code || 'ipc-closed', null)
+        return
+      }
       log.warn(`JSONL ingester child error: ${e.message}`)
     })
-    return _jsonlIngester
+    return child
   }
 
   function handleJsonlIngesterExit(code, signal) {
     if (_shuttingDown) return
     _jsonlIngesterRestartPending = true
+    activityDeliveryCounters?.record?.('jsonlIngesterDown', { type: 'jsonl-ingester' }, 1, {
+      error: `code=${code ?? 'null'} signal=${signal ?? 'null'}`,
+    })
     log.warn(`JSONL ingester exited code=${code ?? 'null'} signal=${signal ?? 'null'}; resyncing live session tails`)
     for (const [, pw] of childWatchers) {
       pw.stopped = true
@@ -543,6 +571,28 @@ export function createJsonlIngestor({
           resumeJsonlIngesterAfterServerReady()
         }
       }, 1000)
+    }
+  }
+
+  function sendJsonlIngesterMessage(msg) {
+    const child = _jsonlIngester
+    if (!child || child.connected === false || child.killed) {
+      const error = new Error('JSONL ingester IPC is not open')
+      error.code = 'ERR_IPC_CHANNEL_CLOSED'
+      if (child && _jsonlIngester === child) {
+        _jsonlIngester = null
+        handleJsonlIngesterExit('ipc-closed', null)
+      }
+      throw error
+    }
+    try {
+      return child.send?.(msg)
+    } catch (e) {
+      if (isClosedIpcError(e) && _jsonlIngester === child) {
+        _jsonlIngester = null
+        handleJsonlIngesterExit(e.code || 'ipc-closed', null)
+      }
+      throw e
     }
   }
 
@@ -870,7 +920,7 @@ export function createJsonlIngestor({
           }
           pw.harnessKind = harness.kind
           try {
-            _jsonlIngester?.send?.({
+            sendJsonlIngesterMessage({
               type: 'update',
               watchId: pw.watchId,
               agentId: pw.primaryAgentId,
@@ -1067,7 +1117,7 @@ export function createJsonlIngestor({
   }
 
   function startJsonlTail({ agent, jsonlPath, sessionId, harness, startOffset, liveOffset }) {
-    const child = startJsonlIngester()
+    startJsonlIngester()
     const watchId = `${sessionId}:${agent.id}:${nowMs()}:${random().toString(36).slice(2)}`
     const replayThresholdBytes = Number(process.env.TLDA_JSONL_DISPLAY_REPLAY_MAX_BYTES || DEFAULT_DISPLAY_REPLAY_MAX_BYTES)
     const catchupUntilOffset = catchupReplayBoundary({ startOffset, liveOffset, thresholdBytes: replayThresholdBytes })
@@ -1089,17 +1139,22 @@ export function createJsonlIngestor({
       log.warn(`JSONL display catch-up for ${agent.friendly_name || agent.id}: suppressing backlog display events from offset ${startOffset} to ${catchupUntilOffset}`)
     }
     childWatchers.set(watchId, pw)
-    child.send?.({
-      type: 'watch',
-      watchId,
-      jsonlPath,
-      sessionId,
-      agentId: agent.id,
-      harnessKind: harness.kind,
-      startOffset,
-      terminalChat: !!harness.terminalChat,
-      backfillSearch: !!harness.backfillSearch,
-    })
+    try {
+      sendJsonlIngesterMessage({
+        type: 'watch',
+        watchId,
+        jsonlPath,
+        sessionId,
+        agentId: agent.id,
+        harnessKind: harness.kind,
+        startOffset,
+        terminalChat: !!harness.terminalChat,
+        backfillSearch: !!harness.backfillSearch,
+      })
+    } catch (e) {
+      childWatchers.delete(watchId)
+      throw e
+    }
     refreshIngestionCaughtUp()
     return pw
   }
@@ -1115,7 +1170,7 @@ export function createJsonlIngestor({
     handleJsonlBackfillJobDone,
     retireJsonlTail,
     processJsonlChildOutputs,
-    sendJsonlIngesterMessage: (msg) => _jsonlIngester?.send?.(msg),
+    sendJsonlIngesterMessage,
     maybeCompleteDisplayCatchup,
     updateJsonlCursorFromTail,
   })
@@ -1149,7 +1204,7 @@ export function createJsonlIngestor({
       }
     }
     try {
-      _jsonlIngester?.send?.({ type: 'job-ack', jobId: msg.jobId, seq: msg.seq, ok: delivered })
+      sendJsonlIngesterMessage({ type: 'job-ack', jobId: msg.jobId, seq: msg.seq, ok: delivered })
     } catch (e) {
       log.warn(`JSONL backfill job ack failed for ${msg.jobId}: ${e?.message || e}`)
       delivered = false
@@ -1277,7 +1332,7 @@ export function createJsonlIngestor({
     if (!pw || pw.stopped) return
     pw.stopped = true
     childWatchers.delete(pw.watchId)
-    try { _jsonlIngester?.send?.({ type: 'stop', watchId: pw.watchId, reason }) } catch (e) {
+    try { sendJsonlIngesterMessage({ type: 'stop', watchId: pw.watchId, reason }) } catch (e) {
       log.warn(`JSONL ingester stop failed (${reason}): ${e?.message || e}`)
     }
     refreshIngestionCaughtUp()
@@ -1382,10 +1437,10 @@ export function createJsonlIngestor({
   }
 
   function startJsonlBackfillJob(job) {
-    const child = startJsonlIngester()
+    startJsonlIngester()
     const nextJob = { ...job, attempts: (job.attempts || 0) + 1 }
     searchBackfillJobs.set(nextJob.jobId, nextJob)
-    child.send?.({ type: 'job', ...nextJob })
+    sendJsonlIngesterMessage({ type: 'job', ...nextJob })
     refreshIngestionCaughtUp()
   }
 

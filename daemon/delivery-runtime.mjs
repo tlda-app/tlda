@@ -162,6 +162,7 @@ export class DaemonDeliveryRuntime {
 
   warnDropped(message) {
     this.droppedCount++
+    this.recordActivityDelivery('daemonDropped', message)
     const now = Date.now()
     if (now - this.droppedWarnAt > 5000) {
       this.log?.warn?.(`dropping messages (ws not open); dropped ${this.droppedCount} since last warn; sample type=${message?.type}`)

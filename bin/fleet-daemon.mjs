@@ -346,6 +346,7 @@ let jsonlBindingReconciler
 const terminalCapabilitiesRegisteredThisBoot = new Set()
 let terminalRpc
 let activityDeliveryMetricsTimer = null
+let daemonWsConnectedAtMs = null
 
 const TERMINAL_SIZE_POLL_MS = parseInt(process.env.TLDA_TERMINAL_SIZE_POLL_MS, 10) || 5000
 
@@ -494,6 +495,7 @@ jsonlIngestor = createJsonlIngestor({
   permissionLedger,
   bufferActivity,
   extractActivityEvents: harnessRuntime.extractActivityEvents,
+  activityDeliveryCounters: daemonActivityDeliveryCounters,
   machineId: MACHINE_ID,
   envName: ACTIVE_CONFIG,
   daemonKey: `${MACHINE_ID}:${ACTIVE_CONFIG}`,
@@ -994,6 +996,13 @@ function connect() {
       })
     },
     onOpen: (ws, attemptId) => {
+      daemonWsConnectedAtMs = Date.now()
+      daemonActivityDeliveryCounters.record(
+        ACTIVITY_DELIVERY_STAGES.DAEMON_WS_CONNECTED,
+        { type: 'fleet-daemon-ws' },
+        1,
+        { error: `attempt=${attemptId}` }
+      )
       const connectionAttemptId = `${BOOT_ID}:${attemptId}`
       const sent = sendMsg({
         type: 'daemon-hello',
@@ -1018,6 +1027,15 @@ function connect() {
     },
     onMessage: handleServerMessage,
     onClose: (reason, attemptId) => {
+      const now = Date.now()
+      const uptimeMs = daemonWsConnectedAtMs == null ? null : now - daemonWsConnectedAtMs
+      daemonWsConnectedAtMs = null
+      daemonActivityDeliveryCounters.record(
+        ACTIVITY_DELIVERY_STAGES.DAEMON_WS_DISCONNECTED,
+        { type: 'fleet-daemon-ws' },
+        1,
+        { error: `${reason || 'unknown'}${uptimeMs == null ? '' : ` uptimeMs=${uptimeMs}`}` }
+      )
       traceGate1('client-close-detected', {
         daemon_key: `${MACHINE_ID}:${ACTIVE_CONFIG}`,
         boot_id: BOOT_ID,
