@@ -24,12 +24,17 @@ export function voiceIndicatorState(recording, healthLabel) {
 
 export class PcmBacklog {
   constructor() { this.chunks = [] }
-  push(buffer) { if (buffer instanceof ArrayBuffer && buffer.byteLength) this.chunks.push(buffer) }
-  drain(send) {
-    const pending = this.chunks
+  push(epoch, buffer) {
+    if (Number.isInteger(epoch) && buffer instanceof ArrayBuffer && buffer.byteLength) {
+      this.chunks.push({ epoch, buffer })
+    }
+  }
+  drain(epoch, send) {
+    const pending = this.chunks.filter(chunk => chunk.epoch === epoch)
+    // Anything from another epoch is stale and can never be replayed.
     this.chunks = []
     for (let i = 0; i < pending.length; i++) {
-      if (!send(pending[i])) {
+      if (!send(pending[i].buffer)) {
         this.chunks.unshift(...pending.slice(i))
         return false
       }

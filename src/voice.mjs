@@ -329,6 +329,12 @@ const CHROME_MIN_MISSINGNESS_MARKER_MS = 100
 // current value; onresult discards callbacks from an older generation.
 // Prevents stale in-flight results from writing to the textarea after a send.
 let _speechEpoch = 0
+function advanceSpeechEpoch() {
+  _speechEpoch++
+  // Captured PCM belongs to exactly one transcript/message epoch. Any boundary
+  // (send, target switch, reset, restart) invalidates the old audio eagerly.
+  _deepgramAudioBacklog.clear()
+}
 
 // Active chat target
 let _activeTextarea = null
@@ -855,14 +861,14 @@ function sendDeepgramAudioChunk(data) {
   if (_dgUpstreamPaused) return false
   if (_deepgramPcmPaused || !_deepgramWs || _deepgramWs.readyState !== WebSocket.OPEN ||
       !_deepgramRelayConnected || !deepgramRecognizerConnected() || _deepgramReadyEpoch !== _speechEpoch) {
-    _deepgramAudioBacklog.push(data)
+    _deepgramAudioBacklog.push(_speechEpoch, data)
     return true
   }
   try {
     _deepgramWs.send(data)
   } catch (err) {
     console.warn('voice: deepgram audio send failed', err)
-    _deepgramAudioBacklog.push(data)
+    _deepgramAudioBacklog.push(_speechEpoch, data)
     return true
   }
   _lastAudioChunkTime = Date.now()
@@ -872,7 +878,7 @@ function sendDeepgramAudioChunk(data) {
 function flushDeepgramAudioBacklog() {
   if (!_deepgramWs || !deepgramRecognizerConnected() || _deepgramReadyEpoch !== _speechEpoch) return false
   const relay = _deepgramWs
-  const drained = _deepgramAudioBacklog.drain(chunk => {
+  const drained = _deepgramAudioBacklog.drain(_speechEpoch, chunk => {
     if (relay !== _deepgramWs || relay.readyState !== WebSocket.OPEN) return false
     try { relay.send(chunk); return true } catch { return false }
   })
@@ -1117,7 +1123,7 @@ function enterEdit() {
     setTextareaGlow(GLOW_AMBER)
   }
   _state = 'edit'
-  _speechEpoch++
+  advanceSpeechEpoch()
   _left = _interim = _right = ''
   if (_recording && _recognition) {
     _editStopped = true
@@ -1158,7 +1164,7 @@ export function setVoiceTarget(textarea, targetHandle) {
       _inputListeners = null
     }
     _state = 'edit'
-    _speechEpoch++
+    advanceSpeechEpoch()
     _left = _interim = _right = ''
     if (textarea) {
       const onEdit = () => { if (!_filling) enterEdit() }
@@ -1232,7 +1238,7 @@ export function setVoiceAccumulator(onUpdate, onSend, onStop, label) {
   }
   _activeTextarea = null
   _state = 'edit'
-  _speechEpoch++
+  advanceSpeechEpoch()
   _left = _interim = _right = ''
   _accumulator = { onUpdate, onSend: onSend || null, onStop: onStop || null, label: label || 'note' }
   if (wasRecording) startRecording()
@@ -1623,7 +1629,7 @@ function _setupRecognition() {
           showHud('→ other chat', '#9370db')
           fadeHud(1500)
           _state = 'edit'
-          _speechEpoch++
+          advanceSpeechEpoch()
           _left = _interim = _right = ''
           // Force a fresh session so cumulative results from the previous
           // chat can't leak into the new chat's textarea.
@@ -1877,7 +1883,7 @@ function onWhisperMessage(event) {
         showHud('→ other chat', '#9370db')
         fadeHud(1500)
         _state = 'edit'
-        _speechEpoch++
+        advanceSpeechEpoch()
         _left = _interim = _right = ''
         flushWhisperBridge()
         setTimeout(() => { if (_recording) showRecordingHud() }, 1600)
@@ -2312,7 +2318,7 @@ function onDeepgramMessage(event, relay = _deepgramWs) {
         showHud('→ other chat', '#9370db')
         fadeHud(1500)
         _state = 'edit'
-        _speechEpoch++
+        advanceSpeechEpoch()
         _left = _interim = _right = ''
         resetDeepgramTextState({ ignoreUntilUtteranceEnd: true })
         setTimeout(() => { if (_recording) showRecordingHud() }, 1600)
@@ -2589,7 +2595,7 @@ function stopDeepgramMic() {
 // One function, called from all send paths — no parallel implementations.
 function afterSend() {
   const submittedText = currentSubmittedVoiceText()
-  _speechEpoch++
+  advanceSpeechEpoch()
   _state = 'edit'
   _left = _interim = _right = ''
   if (_backend === 'whisper-stream') {
@@ -2674,7 +2680,7 @@ function startRecording() {
   _dgUpstreamPaused = false   // fresh recording — upstream is active until routing/tab says otherwise
   emitRecordingChange()
   _state = 'edit'
-  _speechEpoch++
+  advanceSpeechEpoch()
   _left = _interim = _right = ''
   _lastResultTime = 0
   _lastWhisperMessageTime = 0
@@ -2767,6 +2773,7 @@ function stopRecording() {
 // The mic stream is stateless — only text state needs clearing on switch.
 // Full teardown (getUserMedia round-trip) is reserved for double-tap.
 async function hardResetVoice({ keepDeepgramMic = false } = {}) {
+  advanceSpeechEpoch()
   if (_recognition) {
     try {
       _recognition.onresult = null
@@ -3130,7 +3137,7 @@ export async function setBackend(be) {
 /** @param {string | null | undefined} submittedText */
 export function resetTranscript(submittedText = undefined) {
   _state = 'edit'
-  _speechEpoch++
+  advanceSpeechEpoch()
   _left = _interim = _right = ''
   if (_backend === 'deepgram') {
     if (submittedText != null) resetDeepgramTextState({ ignoreUntilUtteranceEnd: true, submittedText })
