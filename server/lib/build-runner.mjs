@@ -1713,26 +1713,16 @@ async function finalizeBuildVersion({
     await _reporter.writeSentinel(`doc-${name}`, { timestamp: Date.now(), syncErrorJson: '' })
     console.log(`[mirror] ${name}@${hash7} ok via daemon ${mirrorResult?.machine_id || 'unknown'} -> ${mirrorResult?.sourceDir || 'source repo'}`)
   } catch (mirrorErr) {
-    console.error(`[mirror] ${name}@${hash7} failed: ${mirrorErr.message}`)
+    // Mirror-back to the working copy is NON-FATAL: the doc is built and rendered
+    // regardless. The resilient sender already retried across any reconnect flap,
+    // so a failure here means the working-copy git repo is momentarily behind —
+    // not that the build failed. Record it (for debugging) and log it, but do NOT
+    // paint a red sync-error badge on the doc or a "Mirror failed" card at the
+    // user. A timeout is not a failure, and a non-fatal miss is not the user's
+    // problem to see. (Skip 7/22)
+    console.error(`[mirror] ${name}@${hash7} failed (non-fatal, not surfaced): ${mirrorErr.message}`)
     ctx.addLog(`mirror to working copy failed (non-fatal): ${mirrorErr.message}`)
     _reporter.updateProject(name, { lastMirrorFailure: { at: new Date().toISOString(), hash: result.hash, message: mirrorErr.message } })
-    await _reporter.writeSentinel(`doc-${name}`, {
-      timestamp: Date.now(),
-      sourceVersion,
-      syncErrorJson: JSON.stringify([{ kind: 'sync-error', message: `Mirror failed: ${mirrorErr.message}` }]),
-    })
-    const lastMirrorSuccessForFailure = readProject(name)?.lastMirrorSuccess || null
-    const buildFiles = readBuildFilesForEvent(name, projDir)
-    _reporter.emitGlobalEvent('build-card', {
-      name,
-      hash: hash7,
-      summary: null,
-      lintFindings: [],
-      mirrorFailed: mirrorErr.message,
-      lastMirrorSuccess: lastMirrorSuccessForFailure,
-      buildFiles,
-      editedBy: resolveEditedBy(name),
-    })
   }
 
   try {

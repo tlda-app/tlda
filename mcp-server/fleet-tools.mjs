@@ -1138,8 +1138,11 @@ export function operationMailboxStartedResult(mailbox, { extra = '' } = {}) {
 export function deliverOperationMailboxCompletion(mailbox, status, detail = {}) {
   if (!mailbox?.ownerId) return;
   const label = detail.label || mailbox.meta?.label || mailbox.kind;
+  // Silence on success unless there's a real payload to deliver (a result URL or
+  // message the caller asked for). A bare "it completed" is noise. (Skip 7/22)
+  if (status === 'completed' && !detail.message && !detail.url) return;
   const text = status === 'completed'
-    ? `**${mailbox.kind} mailbox ${mailbox.id} complete**: ${label}\n\n${detail.message || detail.url || 'completed'}`
+    ? `**${mailbox.kind} mailbox ${mailbox.id} complete**: ${label}\n\n${detail.message || detail.url}`
     : `**${mailbox.kind} mailbox ${mailbox.id} failed**: ${label} — ${detail.error || detail.reason || 'failed'}`;
   postMessage(mailbox.ownerId, AGENT_ID, text, {
     metadata: {

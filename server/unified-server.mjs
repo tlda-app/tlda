@@ -1244,7 +1244,10 @@ async function sendRpcResilient(machineId, op, params = {}, { totalDeadlineMs = 
   throw lastErr || new Error(`RPC ${op} to ${key} failed after ${totalDeadlineMs}ms`)
 }
 
-setShadowMirrorHandler(createShadowMirrorRpcHandler({ readProject, sendRpc }))
+// Mirror-back is event-based and idempotent (same hash → same ref): use the
+// resilient sender so a daemon WS reconnect flap retries instead of throwing a
+// 10s timeout that masquerades as a failure. (Skip 7/22)
+setShadowMirrorHandler(createShadowMirrorRpcHandler({ readProject, sendRpc: sendRpcResilient }))
 
 // No server-side echo suppression. Dedup is client-side: the WS reply
 // includes the event ID, which the client maps to its optimistic event
@@ -1402,25 +1405,23 @@ const spawnLibrarian = new SpawnLibrarian({
   onLateLogin: (agent) => {
     const label = agent.friendly_name || agent.id
     const metadata = { type: 'spawn_late_login', agentId: agent.id, agentLabel: label, ts: new Date().toISOString() }
+    // Silence on success: a late-arriving spawn is still just a success. Surface it
+    // as state (event + roster), not a "it's now available" chat line. (Skip 7/22)
     broadcastEvent('spawn-late-login', metadata)
-    deliverTldaFeedbackChat({
-      from: 'fleet:tlda',
-      to: SERVER_OWNER_ID,
-      text: `**Late login**: \`${label}\` logged in after the spawn deadline — it is now available.`,
-      metadata,
-    })
     broadcastState(agent)
   },
 })
 const mailboxLibrarian = new MailboxLibrarian({
   onExpire: (entry) => {
     if (entry.kind !== 'spawn') return
-    deliverTldaFeedbackChat({
-      from: 'fleet:tlda',
-      to: entry.ownerId,
-      text: `**Spawn mailbox ${entry.id} failed**: deadline exceeded for \`${entry.meta?.name || entry.meta?.agentId || 'spawn'}\`.`,
-      metadata: { type: 'mailbox_complete', mailbox_id: entry.id, mailbox_kind: entry.kind, status: 'failed' },
-    })
+    // A timeout is not a failure. A spawn that hasn't logged in within the mailbox
+    // deadline is event-based and still in flight — it either logs in later (the
+    // agent shows up in the roster; onLateLogin handled that) or the launch itself
+    // threw a REAL error, which surfaces separately with a real reason. Firing a
+    // "deadline exceeded → failed" chat at the requesting agent manufactures a
+    // failure out of a timeout and disrupts that agent for nothing. Whether a
+    // spawn is genuinely stuck belongs on a live status surface, not a chat push.
+    // (Skip 7/22)
   },
 })
 // Server-authoritative thinking/compacting state.
@@ -1717,6 +1718,9 @@ function spawnMailboxCompletionText(entry, status, detail) {
 }
 
 function deliverSpawnMailboxCompletion(entry, status, detail) {
+  // Silence on success: a spawn that logged in is already in the roster and picks
+  // up its own inbox — no "it happened" chat. Only real failures surface. (Skip 7/22)
+  if (status === 'completed') return
   deliverTldaFeedbackChat({
     from: 'fleet:tlda',
     to: entry.ownerId,
