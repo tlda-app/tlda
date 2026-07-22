@@ -186,8 +186,27 @@ function recordServerPerfEvent(type, detail = {}) {
   }
 }
 
+// Running total of background jsonl-index failures. Because the jsonl-index
+// handlers now ack immediately and index in the background (search-backfill is
+// best-effort, decoupled from daemon request health — see the handlers), a
+// failed index would otherwise be a SILENT search gap. This makes it loud +
+// counted: distinctive log tag, a perf event, and a running total surfaced in
+// activityDeliverySnapshot() so a gap is detectable and re-indexable.
+const jsonlIndexBgFailures = { count: 0, entriesDropped: 0, lastError: null, lastAt: null, sessions: [] }
+function recordJsonlIndexBgFailure(source, entries, e) {
+  const sessions = [...new Set((entries || []).map(x => x?.session_id).filter(Boolean))]
+  jsonlIndexBgFailures.count += 1
+  jsonlIndexBgFailures.entriesDropped += (entries || []).length
+  jsonlIndexBgFailures.lastError = e?.message || String(e)
+  jsonlIndexBgFailures.lastAt = new Date().toISOString()
+  jsonlIndexBgFailures.sessions = sessions
+  console.error(`[jsonl-index-bg-fail] ${source}: background index of ${(entries || []).length} entries failed — SEARCH GAP (re-indexable), sessions=${sessions.join(',')}:`, e?.message || e)
+  recordServerPerfEvent('jsonl-index-bg-fail', { source, entries: (entries || []).length, sessions, error: e?.message || String(e) })
+}
+
 function activityDeliverySnapshot() {
   return {
+    jsonlIndexBgFailures,
     server: serverActivityDeliveryCounters.snapshot(),
     daemons: [...daemonActivityDeliverySnapshots.entries()].map(([daemonKey, snapshot]) => ({
       daemonKey,
@@ -5220,12 +5239,17 @@ async function handleFleetWsMessage(ws, msg) {
   // ---- jsonl-index: daemon pushes JSONL text entries for unified search ----
   if (type === 'jsonl-index') {
     const entries = msg.entries || []
-    try {
-      await measureHotOp('fleet-ws jsonl-index', `entries=${entries.length}`, () => fleetStore.insertSessionEntries(entries))
-    } catch (e) {
-      console.error(`[jsonl-index] Failed to index ${entries.length} entries — search gaps possible:`, e.message); error(e.message); return
-    }
+    // Ack immediately (accept-on-queue), then index in the BACKGROUND. Historical
+    // search-backfill is best-effort per sign-off (2026-07-22): the FTS insert must
+    // not couple to the daemon's request health — a slow/large index batch delaying
+    // this reply was timing out the daemon's `jsonl-index` request → WS flap. This
+    // reply advances NO offset/liveness cursor on the daemon (that stays keyed to
+    // `job-complete`), so the risk is bounded to SEARCH only. A background failure is
+    // surfaced loudly (never silent) with its session_ids so the gap is detectable
+    // and re-indexable.
     reply({ ok: true })
+    measureHotOp('fleet-ws jsonl-index', `entries=${entries.length}`, () => fleetStore.insertSessionEntries(entries))
+      .catch(e => recordJsonlIndexBgFailure('fleet-ws', entries, e))
     return
   }
 
@@ -7939,13 +7963,14 @@ async function handleDaemonWsMessage(ws, msg) {
   if (type === 'jsonl-index') {
     if (!fleetStore) return
     const entries = msg.entries || []
-    try {
-      await measureHotOp('daemon-ws jsonl-index', `entries=${entries.length}`, () => fleetStore.insertSessionEntries(entries))
-      if (msg.id) ws.send(JSON.stringify({ id: msg.id, result: { ok: true } }))
-    } catch (e) {
-      console.error(`[jsonl-index] Failed to index ${entries.length} entries — search gaps possible:`, e.message)
-      if (msg.id) ws.send(JSON.stringify({ id: msg.id, error: e.message }))
-    }
+    // Ack immediately (accept-on-queue), then index in the background — see the
+    // fleet-ws jsonl-index handler for the rationale: decouple search FTS work
+    // from the daemon's request health to stop the WS flap. Search is best-effort,
+    // this reply advances no offset/liveness cursor, and background failures are
+    // loudly counted (recordJsonlIndexBgFailure) so a search gap stays detectable.
+    if (msg.id) ws.send(JSON.stringify({ id: msg.id, result: { ok: true } }))
+    measureHotOp('daemon-ws jsonl-index', `entries=${entries.length}`, () => fleetStore.insertSessionEntries(entries))
+      .catch(e => recordJsonlIndexBgFailure('daemon-ws', entries, e))
     return
   }
 
