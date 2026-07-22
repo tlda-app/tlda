@@ -153,6 +153,25 @@ bucket for a present non-human agent. That is not the daemon's activity state.
 Clients render server-maintained state. They do not reconstruct daemon truth from
 raw roster scans.
 
+## Protocol Boundary
+
+The daemon starts local terminal inspection exactly once from its own process
+lifecycle, after local tmux/runtime dependencies are constructed. Server
+connection is checked by the scan when it runs; a server message is never the
+reason the local watcher exists.
+
+Communication has these directions and no others:
+
+- Local process/session lifecycle maintains daemon-owned bindings.
+- Local JSONL activity arms terminal inspection for the corresponding owned
+  agent.
+- The daemon sends extracted activity and resulting status edges to the server.
+- Server roster/status messages update replicated fleet state only. They must
+  not start local discovery, JSONL watching, pane inspection, or process scans.
+
+Any handler that crosses those directions needs a new protocol rule explaining
+the event, owner, recipient, and required side effect before code is added.
+
 ## Performance Contract
 
 Idle steady state:

@@ -1,7 +1,26 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import { createAgentStatus } from '../daemon/agent-status.mjs'
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+
+test('server roster messages never start local terminal inspection', () => {
+  const source = fs.readFileSync(path.join(repoRoot, 'bin/fleet-daemon.mjs'), 'utf8')
+  const starts = [...source.matchAll(/agentStatus\.start\(\)/g)]
+  assert.equal(starts.length, 1)
+  const messageHandler = source.indexOf('function handleServerMessage(msg')
+  const lifecycle = source.indexOf('// ---------- lifecycle ----------')
+  const connect = source.lastIndexOf('\nconnect()')
+  assert.ok(messageHandler >= 0)
+  assert.ok(lifecycle > messageHandler)
+  assert.ok(connect > lifecycle)
+  assert.ok(starts[0].index > lifecycle && starts[0].index < connect)
+  assert.doesNotMatch(source.slice(messageHandler, lifecycle), /agentStatus\.start\(\)/)
+})
 
 test('agent status start does not cold-scan the full roster', async () => {
   let captureCalls = 0

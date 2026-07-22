@@ -1114,14 +1114,12 @@ function handleServerMessage(msg, wsAttemptId) {
     // no usable agent surface. Welcome reconciles the complete roster once.
     if (!_serverReady) return
     reconcileRoster('agent-status-events')
-    agentStatus.start()
     return
   }
   if (msg.type === 'agents-updated') {
     agents = msg.agents || []
     agentStatusSeq = msg.agent_status_seq || agentStatusSeq
     reconcileRoster('agents-updated')
-    agentStatus.start()
     ackServerDaemonOutboxMessage(msg)
     return
   }
@@ -1134,7 +1132,6 @@ function handleServerMessage(msg, wsAttemptId) {
       }
       agentStatusSeq = msg.seq
       reconcileRoster('agent-status-event')
-      agentStatus.start()
     }
     // Deltas use the same durable server-to-daemon outbox as snapshots. ACK
     // even an already-applied delta so a reconnect cannot leave it inflight.
@@ -1281,6 +1278,11 @@ if (process.env.TLDA_DAEMON_DEV_REAPER === '1') {
   log.info('dev reaper auto-start disabled; use reaper-sweep RPC or TLDA_DAEMON_DEV_REAPER=1')
 }
 botSupervisor.start()
+// Local terminal inspection belongs to the daemon process lifecycle, not the
+// server message protocol. Its tmux/runtime dependencies are fully constructed
+// above; connectivity is checked inside each scan, and local activity explicitly
+// arms the owned agents that may be inspected.
+agentStatus.start()
 connect()
 watchConfigDrift()
 
