@@ -12,6 +12,11 @@ import {
   normalizeRegionPolicy,
   regionScopeFromSet,
 } from '../server/lib/spawn-policy.mjs'
+import {
+  validateDaemonConfigTopLevel,
+  validateProjectDaemonOverrideTopLevel,
+  validateStrictServers,
+} from '../shared/daemon-config-schema.mjs'
 
 function nowIso() {
   return new Date().toISOString()
@@ -122,10 +127,8 @@ function validateDaemonDefault(config = {}) {
 }
 
 function normalizeDaemonConfig(parsed, { validateDefault = true } = {}) {
-  const root = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
-  const allowed = new Set(['regions', 'profiles', 'grants', 'models', 'servers', 'default'])
-  const extra = Object.keys(root).filter(key => !allowed.has(key))
-  if (extra.length) throw new Error(`daemon config supports only regions, profiles, grants, models, servers, default; unknown key(s): ${extra.join(', ')}`)
+  const root = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : parsed
+  validateDaemonConfigTopLevel(root, 'daemon config')
   const models = root.models && typeof root.models === 'object' && !Array.isArray(root.models)
     ? root.models
     : {}
@@ -134,19 +137,46 @@ function normalizeDaemonConfig(parsed, { validateDefault = true } = {}) {
   const grants = root.grants && typeof root.grants === 'object' && !Array.isArray(root.grants)
     ? root.grants
     : {}
-  const servers = root.servers && typeof root.servers === 'object' && !Array.isArray(root.servers)
-    ? root.servers
-    : {}
+  const servers = validateStrictServers(root.servers)
   const defaultProfile = typeof root.default === 'string' && root.default.trim() ? root.default.trim() : null
+  const defaultServer = typeof root.defaultServer === 'string' && root.defaultServer.trim() ? root.defaultServer.trim() : null
+  if (typeof root.defaultServer !== 'string' || !root.defaultServer.trim()) {
+    throw new Error('tlda config: "defaultServer" must be a nonempty string in daemon.yaml')
+  }
+  if (!servers[defaultServer]) {
+    throw new Error(`tlda config: no server named "${defaultServer}" in daemon.yaml servers — known: ${Object.keys(servers).join(', ') || '(none)'}`)
+  }
   const config = {
     regions,
     profiles,
     grants,
     models,
     servers,
+    ...(defaultServer ? { defaultServer } : {}),
     ...(defaultProfile ? { default: defaultProfile } : {}),
   }
   return validateDefault ? validateDaemonDefault(config) : config
+}
+
+function normalizeProjectDaemonOverride(parsed) {
+  const root = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : parsed
+  validateProjectDaemonOverrideTopLevel(root, 'project daemon override')
+  const models = root.models && typeof root.models === 'object' && !Array.isArray(root.models)
+    ? root.models
+    : {}
+  const regions = normalizeDaemonRegions(root.regions)
+  const profiles = normalizeDaemonProfiles(root.profiles, regions)
+  const grants = root.grants && typeof root.grants === 'object' && !Array.isArray(root.grants)
+    ? root.grants
+    : {}
+  const defaultProfile = typeof root.default === 'string' && root.default.trim() ? root.default.trim() : null
+  return {
+    regions,
+    profiles,
+    grants,
+    models,
+    ...(defaultProfile ? { default: defaultProfile } : {}),
+  }
 }
 
 // Deep-merge helper for the base ⊕ project-override join (project values win).
@@ -998,7 +1028,7 @@ export function readDaemonConfigForCwd(cwd, file = defaultDaemonConfigPath()) {
   const base = readDaemonConfig(file)
   const overridePath = projectDaemonOverridePath(cwd)
   if (!overridePath) return base
-  const override = normalizeDaemonConfig(readYamlFile(overridePath, 'project daemon override'), { validateDefault: false })
+  const override = normalizeProjectDaemonOverride(readYamlFile(overridePath, 'project daemon override'))
   return validateDaemonDefault(joinConfigs(base, override))
 }
 
