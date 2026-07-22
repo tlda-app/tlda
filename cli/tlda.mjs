@@ -1782,8 +1782,13 @@ async function cmdBot() {
 
   if (sub === 'start') {
     const bots = findConfiguredBot(name)
-    requireLaunchd()
+    if (!dryRun) requireLaunchd()
     for (const bot of bots) {
+      if (dryRun) {
+        console.log('Would start bot service:')
+        printBotPlan(bot)
+        continue
+      }
       const paths = existsSync(botServicePaths(bot.name).plist) ? botServicePaths(bot.name) : writeBotPlist(bot)
       await bootstrapBot(bot)
       console.log(green(`Started ${paths.label}.`))
