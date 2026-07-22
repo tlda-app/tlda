@@ -85,22 +85,44 @@ if (hasTls && !process.env.NODE_EXTRA_CA_CERTS) {
 function _httpForm(u) { return u.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:').replace(/\/+$/, '') }
 function _wsForm(u) { return u.replace(/^https:/, 'wss:').replace(/^http:/, 'ws:').replace(/\/+$/, '') }
 
-export function resolveConfig(config = null) {
-  const cfg = config ?? loadConfig()
-  const name = process.env.TLDA_CONFIG || cfg.defaultConfig
-  if (!name) throw new Error('tlda config: no active config — set "defaultConfig" in config.json (or TLDA_CONFIG)')
-  const raw = cfg.configs && cfg.configs[name]
-  if (!raw) throw new Error(`tlda config: no config named "${name}" — known: ${Object.keys(cfg.configs || {}).join(', ') || '(none)'}`)
-  for (const field of ['database', 'store', 'licenseKey']) {
-    if (typeof raw[field] !== 'string') {
-      throw new Error(`tlda config "${name}": field "${field}" must be a string (got ${typeof raw[field]}). Configs are complete — no field is optional.`)
+const DAEMON_FILE = join(CONFIG_DIR, 'daemon.yaml')
+
+function loadDaemonYaml() {
+  if (!existsSync(DAEMON_FILE)) throw new Error(`tlda config: ${DAEMON_FILE} not found`)
+  try {
+    return parseYaml(readFileSync(DAEMON_FILE, 'utf8')) || {}
+  } catch (e) {
+    throw new Error(`daemon.yaml is malformed: ${e.message}`)
+  }
+}
+
+/**
+ * Resolve the active server from daemon.yaml `servers:` — the single source of
+ * truth for "which server this machine talks to" (config.json is gone). The
+ * active server is TLDA_CONFIG or daemon.yaml `defaultServer`. Each server entry
+ * is { database, store } (a bare `url` is accepted as both); `licenseKey` is a
+ * top-level daemon.yaml key shared by all servers. Same return shape as before,
+ * so every caller (getServerUrl/getFleetServerUrl/coherence) is unchanged.
+ */
+export function resolveConfig() {
+  const d = loadDaemonYaml()
+  const name = process.env.TLDA_CONFIG || d.defaultServer
+  if (!name) throw new Error('tlda config: no active server — set "defaultServer" in daemon.yaml (or TLDA_CONFIG)')
+  const raw = d.servers && d.servers[name]
+  if (!raw) throw new Error(`tlda config: no server named "${name}" in daemon.yaml servers — known: ${Object.keys(d.servers || {}).join(', ') || '(none)'}`)
+  const database = raw.database || raw.url
+  const store = raw.store || raw.database || raw.url
+  const licenseKey = raw.licenseKey || d.licenseKey
+  for (const [field, val] of [['database', database], ['store', store], ['licenseKey', licenseKey]]) {
+    if (typeof val !== 'string') {
+      throw new Error(`tlda server "${name}": "${field}" must resolve to a string (check daemon.yaml servers.${name} and top-level licenseKey).`)
     }
   }
   return {
     name,
-    database: { http: _httpForm(raw.database), ws: _wsForm(raw.database) },
-    store: { http: _httpForm(raw.store), ws: _wsForm(raw.store) },
-    licenseKey: raw.licenseKey,
+    database: { http: _httpForm(database), ws: _wsForm(database) },
+    store: { http: _httpForm(store), ws: _wsForm(store) },
+    licenseKey,
   }
 }
 
@@ -150,7 +172,7 @@ export function assertServerCoherence(config = null) {
   if (got !== want) {
     throw new Error(
       `tlda config incoherent: TLDA_SERVER=${got} but active config "${resolved.name}" resolves to ${want}. ` +
-      `Don't pin a server by URL — select a config with TLDA_CONFIG=<name> (or fix "defaultConfig" in config.json).`
+      `Don't pin a server by URL — select a server with TLDA_CONFIG=<name> (or fix "defaultServer" in daemon.yaml).`
     )
   }
 }
