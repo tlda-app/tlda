@@ -2029,7 +2029,7 @@ export async function handleFleetTool(name, args) {
       if (project && project !== '~') labels.push(project);
     }
     const machineId = process.env.TLDA_MACHINE_ID || os.hostname().split('.')[0];
-    const envName = getActiveConfigName(loadConfig());
+    const envName = getActiveConfigName();
     const currentHarness = harnessFromEnv();
     if (!shellId) {
       if (!localAgentId) {
@@ -4650,7 +4650,7 @@ function startChannelWS() {
         tmux_session: _tmuxSession || undefined,
         cwd: getAgentCwd() || process.cwd(),
         machine_id: process.env.TLDA_MACHINE_ID || os.hostname().split('.')[0],
-        env_name: getActiveConfigName(loadConfig()),
+        env_name: getActiveConfigName(),
       };
       sendWS('login', loginBody)
         ?.then(() => flushFleetTransport({ limit: 100 }))

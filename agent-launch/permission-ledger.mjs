@@ -1009,7 +1009,12 @@ export function withDaemonModelAliases(config = {}, daemonConfig = {}) {
   const daemonProfiles = daemonConfig?.profiles && typeof daemonConfig.profiles === 'object' && !Array.isArray(daemonConfig.profiles)
     ? daemonConfig.profiles
     : {}
-  if (!Object.keys(daemonModels).length && !Object.keys(daemonProfiles).length) return config || {}
+  // No daemon models AND no daemon profiles: the daemon config contributes
+  // nothing. Return an EMPTY, daemon-only policy — never the legacy `config`
+  // (config.json is retired; leaking its spawn policy here is exactly the
+  // fallback this migration removes). Fail closed: no profiles → no permission
+  // profiles, not config.json's.
+  if (!Object.keys(daemonModels).length && !Object.keys(daemonProfiles).length) return { spawnPolicy: {} }
   const { aliases, harnessOptions, modelSpecs, defaultModel } = normalizeDaemonModelRows(daemonModels)
   // config.json contributes nothing: the spawn policy, model aliases, specs, and
   // catalog are the daemon config's alone. No config.json base is spread in.

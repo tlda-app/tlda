@@ -700,7 +700,7 @@ setInterval(() => {
 // of a misfire (an extra short-lived daemon) is much smaller than the
 // cost of silent feature loss.
 const LOCAL_MACHINE_ID = (hostname() || '').split('.')[0] || 'localhost'
-const SERVER_ENV_NAME = getActiveConfigName(loadConfig())
+const SERVER_ENV_NAME = getActiveConfigName()
 const LOCAL_DAEMON_ADDRESS = daemonAddress(LOCAL_MACHINE_ID, SERVER_ENV_NAME)
 // Server owner — the human running this server process. Used as fallback
 // identity for MCP agents and CLI operations. Browser users identify

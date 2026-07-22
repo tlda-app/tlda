@@ -944,7 +944,7 @@ async function cmdInit() {
 // shorthand and `tlda daemon start` — Phase 1 doesn't deprecate
 // either. If the first positional is start/stop/status/log/run we
 // route here, otherwise we fall through to the existing watcher.
-const DAEMON_WORLD_NAME = getActiveConfigName(loadConfig()) || 'default'
+const DAEMON_WORLD_NAME = getActiveConfigName() || 'default'
 const DAEMON_WORLD_SUFFIX = DAEMON_WORLD_NAME === 'default' ? '' : `.${DAEMON_WORLD_NAME.replace(/[^a-zA-Z0-9._-]+/g, '-')}`
 const FLEET_DAEMON_LOGFILE = join(homedir(), '.config', 'tlda', `fleet-daemon${DAEMON_WORLD_SUFFIX}.log`)
 const FLEET_DAEMON_PIDFILE = join(homedir(), '.config', 'tlda', `fleet-daemon${DAEMON_WORLD_SUFFIX}.pid`)
@@ -1270,11 +1270,10 @@ function printBotPlan(bot) {
 }
 
 function sandboxDaemonConfig(configDir, label) {
-  const cfg = loadConfig()
   return {
-    fleetServer: getFleetServerUrl(cfg),
-    server: getServerUrl(cfg),
-    tokenRw: getRwToken(cfg) || '',
+    fleetServer: getFleetServerUrl(),
+    server: getServerUrl(),
+    tokenRw: getRwToken() || '',
     machineId: `${label}.${hostname().split('.')[0]}.${process.pid}`,
   }
 }
@@ -1372,9 +1371,9 @@ function processTreeOwnsPid(ancestorPid, childPid) {
   return false
 }
 
-function daemonTargetIdentity(config = loadConfig()) {
-  const server = getFleetServerUrl(config)
-  const envName = getActiveConfigName(config)
+function daemonTargetIdentity() {
+  const server = getFleetServerUrl()
+  const envName = getActiveConfigName()
   if (!envName) throw new Error('cannot identify daemon target: active config name is missing')
   const machineId = getMachineId() || hostname().split('.')[0]
   const lockScope = `${server}#${envName}`
@@ -2053,7 +2052,7 @@ async function cmdMoveProject() {
     process.exit(1)
   }
   const cfg = loadConfig()
-  const selectedConfig = getActiveConfigName(cfg)
+  const selectedConfig = getActiveConfigName()
   const target = cfg.configs?.[targetConfig]
   if (!target || typeof target.store !== 'string' || typeof target.database !== 'string') {
     throw new Error(`Unknown or incomplete target config "${targetConfig}".`)
@@ -2821,7 +2820,7 @@ export async function createLifecycleSeatBindingObligation(result, {
     throw new Error('fresh/session pending requires an exact durable seat-binding obligation')
   }
   const machineId = localMachineId()
-  const envName = getActiveConfigName(loadConfig())
+  const envName = getActiveConfigName()
   const response = await api('POST', '/api/agent-seat-binding-obligation', {
     agent_id: result.fleetId,
     local_agent_id: result.localAgentId || null,
@@ -3015,7 +3014,7 @@ async function postLifecycleSeatBinding(result, {
 } = {}) {
   if (!api) return { bound: false, pending: true }
   const machineId = localMachineId()
-  const envName = getActiveConfigName(loadConfig())
+  const envName = getActiveConfigName()
   const daemonKey = `${machineId}:${envName}`
   const binding = await bindAgentSeat({
     ledger,
@@ -3563,7 +3562,7 @@ export async function collectAgentReadiness(query, spawnSync, apiGet = api) {
   } finally {
     await ledger.close()
   }
-  const localDaemonKey = `${localMachineId()}:${getActiveConfigName(loadConfig())}`
+  const localDaemonKey = `${localMachineId()}:${getActiveConfigName()}`
   if (seat.daemon_key !== localDaemonKey) {
     return { ok: false, query, agent, seat, error: `current durable seat belongs to ${seat.daemon_key || 'unknown daemon'}, not local ${localDaemonKey}` }
   }
@@ -3796,7 +3795,7 @@ async function cmdAgentMove() {
   await ensureServer()
   const agent = await findSingleAgent(agentQuery)
   const sourceMachine = localMachineId()
-  const sourceEnv = getActiveConfigName(loadConfig())
+  const sourceEnv = getActiveConfigName()
   if (!agent.machine_id || !agent.env_name) throw new Error(`Agent ${agent.id} has no daemon address; cannot prove this is the source daemon.`)
   if (agent.machine_id !== sourceMachine || agent.env_name !== sourceEnv) {
     throw new Error(`Agent ${agent.id} belongs to ${describeAgentAddress(agent.machine_id, agent.env_name)}; run move from ${describeAgentAddress(agent.machine_id, agent.env_name)}.`)

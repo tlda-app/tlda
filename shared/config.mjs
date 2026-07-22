@@ -8,7 +8,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
-import { parse as parseYaml } from 'yaml'
+import { parse as parseYaml, parseDocument } from 'yaml'
 
 // Preview servers receive an isolated config directory from `tlda-dev serve`.
 // Production keeps the normal shared location; previews must never mutate it.
@@ -99,23 +99,31 @@ function loadDaemonYaml() {
 /**
  * Resolve the active server from daemon.yaml `servers:` — the single source of
  * truth for "which server this machine talks to" (config.json is gone). The
- * active server is TLDA_CONFIG or daemon.yaml `defaultServer`. Each server entry
- * is { database, store } (a bare `url` is accepted as both); `licenseKey` is a
- * top-level daemon.yaml key shared by all servers. Same return shape as before,
- * so every caller (getServerUrl/getFleetServerUrl/coherence) is unchanged.
+ * active server is `serverName` (a string override — used to route a specific
+ * bot to its declared `server:`), else TLDA_CONFIG, else daemon.yaml
+ * `defaultServer`.
+ *
+ * Each server entry MUST be COMPLETE: an explicit `database`, `store`, and
+ * `licenseKey` (licenseKey "" = explicitly unlicensed). There are NO fallbacks —
+ * no legacy `url` shorthand, no reusing `database` as `store`, no top-level
+ * `licenseKey` shared across servers. A missing/partial entry THROWS. This is the
+ * whole point of the migration: one declared authority per server, no guessing.
+ *
  */
-export function resolveConfig() {
+export function resolveConfig(serverName = null) {
   const d = loadDaemonYaml()
-  const name = process.env.TLDA_CONFIG || d.defaultServer
+  if (serverName !== null && typeof serverName !== 'string') {
+    throw new TypeError('tlda config: server name override must be a string')
+  }
+  const override = serverName || null
+  const name = override || process.env.TLDA_CONFIG || d.defaultServer
   if (!name) throw new Error('tlda config: no active server — set "defaultServer" in daemon.yaml (or TLDA_CONFIG)')
   const raw = d.servers && d.servers[name]
   if (!raw) throw new Error(`tlda config: no server named "${name}" in daemon.yaml servers — known: ${Object.keys(d.servers || {}).join(', ') || '(none)'}`)
-  const database = raw.database || raw.url
-  const store = raw.store || raw.database || raw.url
-  const licenseKey = raw.licenseKey || d.licenseKey
+  const { database, store, licenseKey } = raw
   for (const [field, val] of [['database', database], ['store', store], ['licenseKey', licenseKey]]) {
     if (typeof val !== 'string') {
-      throw new Error(`tlda server "${name}": "${field}" must resolve to a string (check daemon.yaml servers.${name} and top-level licenseKey).`)
+      throw new Error(`tlda server "${name}": "${field}" must be a string in daemon.yaml servers.${name} — declare database, store, and licenseKey explicitly (no url/database-as-store/top-level-license fallback).`)
     }
   }
   return {
@@ -127,18 +135,18 @@ export function resolveConfig() {
 }
 
 /** Server URL = the active config's STORE (doc assets + shape sync) over http. */
-export function getServerUrl(config = null) {
-  return resolveConfig(config).store.http
+export function getServerUrl(serverName = null) {
+  return resolveConfig(serverName).store.http
 }
 
 /** Fleet/event-store URL = the active config's DATABASE (chat/agents) over http. */
-export function getFleetServerUrl(config = null) {
-  return resolveConfig(config).database.http
+export function getFleetServerUrl(serverName = null) {
+  return resolveConfig(serverName).database.http
 }
 
 /** The active config's name — what TLDA_CONFIG/defaultConfig selected. */
-export function getActiveConfigName(config = null) {
-  return resolveConfig(config).name
+export function getActiveConfigName(serverName = null) {
+  return resolveConfig(serverName).name
 }
 
 /**
@@ -162,11 +170,11 @@ export function getActiveConfigName(config = null) {
  * today); if the two axes ever split, TLDA_SERVER — a single URL — can't name
  * both, so store is the right one to pin.
  */
-export function assertServerCoherence(config = null) {
+export function assertServerCoherence(serverName = null) {
   const envServer = process.env.TLDA_SERVER
   if (!envServer) return
   if (process.env.TLDA_SYNC_SERVER) return // internal harness-projected room target — see docs/live-deploy.md
-  const resolved = resolveConfig(config)
+  const resolved = resolveConfig(serverName)
   const want = resolved.store.http
   const got = _httpForm(envServer)
   if (got !== want) {
@@ -183,17 +191,26 @@ export function assertServerCoherence(config = null) {
  */
 const TOKENS_FILE = join(CONFIG_DIR, 'tokens.json')
 
-/** Tokens live in their own tokens.json — NOT in config.json or daemon.yaml. */
+/**
+ * Tokens live in their own tokens.json — NOT in config.json or daemon.yaml.
+ * An absent file means "no tokens here" (env may still supply one). A file that
+ * EXISTS but is malformed JSON is a real misconfiguration and THROWS loudly —
+ * silently treating a corrupt tokens.json as "no token" would strand every
+ * authenticated caller with an opaque 401 instead of the actual cause.
+ */
 function loadTokens() {
+  if (!existsSync(TOKENS_FILE)) return {}
+  const raw = readFileSync(TOKENS_FILE, 'utf8')
   try {
-    return JSON.parse(readFileSync(TOKENS_FILE, 'utf8'))
-  } catch {
-    return {}
+    return JSON.parse(raw)
+  } catch (e) {
+    throw new Error(`tokens.json is malformed: ${e.message}`)
   }
 }
 
 export function getRwToken() {
-  return process.env.TLDA_TOKEN || loadTokens().tokenRw || loadTokens().token || null
+  const t = loadTokens()
+  return process.env.TLDA_TOKEN || t.tokenRw || t.token || null
 }
 
 /**
@@ -213,6 +230,21 @@ export function saveTokens(tokens) {
 /** This machine's id, from daemon.yaml `machineId` (TLDA_MACHINE_ID env wins). */
 export function getMachineId() {
   return process.env.TLDA_MACHINE_ID || loadDaemonYaml().machineId || null
+}
+
+/**
+ * Persist a derived machineId into daemon.yaml (top-level `machineId`), used once
+ * on a fresh host when it is unset. config.json is retired — the id lives with
+ * the rest of the daemon's identity in daemon.yaml. Writes via the yaml Document
+ * API so existing comments/structure are preserved, not flattened.
+ */
+export function saveMachineId(id) {
+  const doc = existsSync(DAEMON_FILE)
+    ? parseDocument(readFileSync(DAEMON_FILE, 'utf8'))
+    : parseDocument('')
+  doc.set('machineId', id)
+  if (!existsSync(CONFIG_DIR)) mkdirSync(CONFIG_DIR, { recursive: true })
+  writeFileSync(DAEMON_FILE, String(doc))
 }
 
 const BOTS_FILE = join(CONFIG_DIR, 'bots.yaml')

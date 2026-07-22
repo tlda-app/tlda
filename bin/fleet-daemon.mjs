@@ -18,8 +18,10 @@
  *   - No HTTP. Browsers talk to the server, not the daemon.
  *
  * Lifecycle:
- *   - Reads ~/.config/tlda/config.json for { server, tokenRw, machineId }.
- *   - Derives a stable machineId from the MAC if missing; persists it.
+ *   - Reads server, spawn policy, and machine identity from daemon.yaml;
+ *     authentication tokens come from tokens.json.
+ *   - Derives a stable machineId from the hostname if missing and persists it
+ *     to daemon.yaml.
  *   - Opens WS to ${server}/ws/fleet-daemon?token=...
  *   - Sends `daemon-hello`; waits for `daemon-welcome` with the agent
  *     and project list for this machine, then starts watching.
@@ -57,10 +59,9 @@ import path from 'path'
 import os from 'os'
 import { fileURLToPath } from 'url'
 import {
-  loadConfig as _loadSharedConfig, saveConfig as _saveSharedConfig,
   getServerUrl, getFleetServerUrl, getRwToken, DEFAULT_PORT, hasTls,
   CONFIG_DIR as _SHARED_CONFIG_DIR, TLS_CA_PATH,
-  getActiveConfigName, assertServerCoherence, getMachineId,
+  getActiveConfigName, assertServerCoherence, getMachineId, saveMachineId,
 } from '../shared/config.mjs'
 const VERSION = '0.1.1'
 import { createLogger } from '../shared/logger.mjs'
@@ -132,7 +133,7 @@ function daemonStateSuffix() {
   return `.${name.replace(/[^a-zA-Z0-9._-]+/g, '-')}`
 }
 const DAEMON_STATE_SUFFIX = daemonStateSuffix()
-// CONFIG_DIR holds config.json, cursors, PID and log files. Defaults to
+// CONFIG_DIR holds daemon configuration, cursors, PID and log files. Defaults to
 // ~/.config/tlda. TLDA_DAEMON_CONFIG_DIR plus PROJECTS_DIR lets tests/dev rigs
 // start a second daemon without clobbering the live daemon's PID file or JSONL
 // tails.
@@ -194,13 +195,6 @@ const INSTALL_PATH = (() => {
 // move without a restart), and seeds _lastGoodDaemon here.
 let _lastGoodDaemon = daemonSpawnConfig
 function loadConfig() {
-  let cfg
-  if (_usingCustomConfigDir) {
-    const f = path.join(CONFIG_DIR, 'config.json')
-    cfg = fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, 'utf8')) : {}
-  } else {
-    cfg = _loadSharedConfig()
-  }
   let freshDaemon
   try {
     freshDaemon = readDaemonConfig(DAEMON_CONFIG_FILE)
@@ -209,16 +203,7 @@ function loadConfig() {
     log.warn(`daemon config re-read failed, using last good: ${e.message}`)
     freshDaemon = _lastGoodDaemon
   }
-  return withDaemonModelAliases(cfg, freshDaemon)
-}
-
-function saveConfig(cfg) {
-  if (_usingCustomConfigDir) {
-    if (!fs.existsSync(CONFIG_DIR)) fs.mkdirSync(CONFIG_DIR, { recursive: true })
-    fs.writeFileSync(path.join(CONFIG_DIR, 'config.json'), JSON.stringify(cfg, null, 2))
-    return
-  }
-  _saveSharedConfig(cfg)
+  return withDaemonModelAliases({}, freshDaemon)
 }
 
 // Stable per-machine identifier. Uses the short hostname (hostname -s) —
@@ -239,28 +224,24 @@ const config = loadConfig()
 // fleet. Resolve the fleet server (config.fleetServer → Fly), not a local one.
 // Honor TLDA_SERVER on BOTH paths. Previously it was read only when a custom
 // config dir was set, so `TLDA_SERVER=… node fleet-daemon.mjs` silently fell
-// through to getFleetServerUrl(config) = live Fly — a rig that thought it was
+// through to the active daemon.yaml server = live Fly — a rig that thought it was
 // isolated joined the live fleet. TLDA_SERVER set now always targets that server.
 const SERVER = process.env.TLDA_SERVER
   ? process.env.TLDA_SERVER
-  : (_usingCustomConfigDir
-      ? getFleetServerUrl(config)
-      : getFleetServerUrl(config))
-// The active config NAME (TLDA_CONFIG → defaultConfig). This — not a URL — is the
+  : getFleetServerUrl()
+// The active server NAME (TLDA_CONFIG → defaultServer). This — not a URL — is the
 // single selector we propagate to spawned agents so their MCP resolves the SAME
 // complete config (database + store) the daemon did. A stray defaultConfig can't
 // then misroute a spawn, because the spawn carries the real active name.
 // Safe to resolve unconditionally: SERVER already ran resolveConfig via
-// getFleetServerUrl(config) above, so a broken config would have thrown there.
-const ACTIVE_CONFIG = getActiveConfigName(config)
+// getFleetServerUrl() above, so a broken config would have thrown there.
+const ACTIVE_CONFIG = getActiveConfigName()
 if (!ACTIVE_CONFIG) {
   console.error('[fleet-daemon] REFUSING to start without a named active config; daemon env is required')
   process.exit(1)
 }
 {
-  const configuredServer = _usingCustomConfigDir
-    ? getFleetServerUrl(config)
-    : getFleetServerUrl(config)
+  const configuredServer = getFleetServerUrl()
   const { refuseReason } = resolveDaemonIsolation({
     env: process.env,
     scriptPath: INSTALL_PATH,
@@ -304,22 +285,22 @@ if (process.env.TLDA_DEV_DAEMON) {
 
 // True only when SERVER was derived from the named config (the normal path) —
 // not pinned via TLDA_SERVER or a custom config dir. Only then can a later edit
-// to config.json's defaultConfig drift us off the origin we're connected to, so
+// to daemon.yaml's defaultServer drift us off the origin we're connected to, so
 // only then does the runtime drift watcher (watchConfigDrift) arm.
 const _serverFromConfig = !process.env.TLDA_SERVER && !_usingCustomConfigDir
 
 // Fail loud if a hand-pinned TLDA_SERVER disagrees with the active config — the
 // 6/27 divergence, refused at the door rather than served silently. Bubbles.
-assertServerCoherence(config)
-const TOKEN = getRwToken(config)
+assertServerCoherence()
+const TOKEN = getRwToken()
 const TMUX_SOCKET = config.tmuxSocket || null
 const TMUX_ARGS = TMUX_SOCKET ? ['-L', TMUX_SOCKET] : []
 
 let MACHINE_ID = getMachineId()
 if (!MACHINE_ID) {
   MACHINE_ID = deriveMachineId()
-  saveConfig({ ...config, machineId: MACHINE_ID })
-  log.info(`derived machine_id=${MACHINE_ID} (saved to config)`)
+  saveMachineId(MACHINE_ID)
+  log.info(`derived machine_id=${MACHINE_ID} (saved to daemon.yaml)`)
 }
 
 // boot_id — monotonic per process start. Used by the server to break ties
@@ -530,8 +511,8 @@ const backingFiles = createBackingFiles({
 })
 
 const localArtifacts = createLocalArtifacts({
-  getServerUrl: () => getServerUrl(loadConfig()),
-  getFleetServerUrl: () => getFleetServerUrl(loadConfig()),
+  getServerUrl: () => getServerUrl(),
+  getFleetServerUrl: () => getFleetServerUrl(),
 })
 
 const shadowMirror = createShadowMirror({
@@ -1290,18 +1271,19 @@ connect()
 watchConfigDrift()
 
 // ---------- config drift guard ----------
-// SERVER is frozen at startup. If config.json is later edited so the active
-// config resolves to a DIFFERENT fleet origin than the one this daemon is
+// SERVER is frozen at startup. If daemon.yaml is later edited so the active
+// server resolves to a DIFFERENT fleet origin than the one this daemon is
 // connected to, every fresh CLI/MCP/spawn resolves the NEW origin while this
 // running daemon keeps serving the OLD one — exactly the 6/27 split, just
 // arriving over the daemon's lifetime instead of at boot. Don't serve a stale
 // roster silently: shout (daemon-warning) and exit non-zero. launchd's KeepAlive
-// relaunches us, re-reading config fresh, so we come back on the corrected
+// relaunches us, re-reading daemon.yaml fresh, so we come back on the corrected
 // target. (Only armed when SERVER came from the named config — a URL-pinned or
-// custom-dir daemon has no config to drift against.)
+// custom-dir daemon has no config to drift against.) config.json is retired; the
+// authority is daemon.yaml `servers:`/`defaultServer`.
 function watchConfigDrift() {
   if (!_serverFromConfig) return
-  const f = path.join(CONFIG_DIR, 'config.json')
+  const f = path.join(CONFIG_DIR, 'daemon.yaml')
   if (!fs.existsSync(f)) return
   const norm = (u) => String(u).replace(/\/+$/, '')
   let fired = false
@@ -1309,13 +1291,13 @@ function watchConfigDrift() {
     if (fired) return
     let fresh
     try {
-      fresh = getFleetServerUrl(loadConfig())
+      fresh = getFleetServerUrl()
     } catch (e) {
       // A config that no longer resolves is itself a loud failure — surface it
       // and exit so launchd reloads once it's fixed. Not a silent swallow: we
       // re-raise as an exit after announcing.
       fired = true
-      const msg = `config.json no longer resolves (${e.message}) — daemon exiting for launchd relaunch`
+      const msg = `daemon.yaml no longer resolves (${e.message}) — daemon exiting for launchd relaunch`
       log.error(msg)
       sendMsg({ type: 'daemon-warning', message: msg })
       setTimeout(() => process.exit(1), 250)
@@ -1323,7 +1305,7 @@ function watchConfigDrift() {
     }
     if (norm(fresh) !== norm(SERVER)) {
       fired = true
-      const msg = `config drift: config.json now targets ${fresh} but this daemon is connected to ${SERVER}. ` +
+      const msg = `config drift: daemon.yaml now targets ${fresh} but this daemon is connected to ${SERVER}. ` +
         `Exiting so launchd relaunches on the corrected target.`
       log.error(msg)
       sendMsg({ type: 'daemon-warning', message: msg })

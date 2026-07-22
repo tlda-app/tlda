@@ -5,7 +5,7 @@ import os from 'os'
 import path from 'path'
 import tls from 'tls'
 import { WebSocket } from 'ws'
-import { getFleetServerUrl, getMachineId, loadConfig } from '../shared/config.mjs'
+import { getFleetServerUrl, getMachineId } from '../shared/config.mjs'
 import { prettyNameForFriendlyName } from '../shared/lineage-name.mjs'
 import { activeConfigName, readConfig, sanitizeSessionName } from './identity.mjs'
 import { createPermissionLedger } from './permission-ledger.mjs'
@@ -24,7 +24,8 @@ function wsForm(url) {
 
 export function resolveApi({ env = process.env, config = null } = {}) {
   if (env.TLDA_SERVER) return httpForm(env.TLDA_SERVER)
-  return httpForm(getFleetServerUrl(config || loadConfig()))
+  if (config !== null) throw new TypeError('resolveApi no longer accepts a legacy config object')
+  return httpForm(getFleetServerUrl())
 }
 
 export function tlsOptionsForApi(api) {

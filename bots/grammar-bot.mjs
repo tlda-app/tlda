@@ -20,7 +20,7 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 import { spawn } from 'child_process'
 import readline from 'readline'
-import { getServerUrl, CONFIG_DIR } from '../shared/config.mjs'
+import { getFleetServerUrl, getManagedBots, CONFIG_DIR } from '../shared/config.mjs'
 import { startWsRequest } from '../shared/ws-request-policy.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -33,7 +33,11 @@ const PID_FILE = process.env.TLDA_BOT_PIDFILE || path.join(CONFIG_DIR, `${BOT_KE
 const HEARTBEAT_FILE = process.env.TLDA_BOT_HEARTBEAT || path.join(CONFIG_DIR, `${BOT_KEY}.heartbeat`)
 const ID_FILE = process.env.TLDA_BOT_IDFILE || path.join(CONFIG_DIR, `${BOT_KEY}.fleet-id`)
 const OWNER_ID = 'fleet:skip'
-const SERVER = getServerUrl()
+// Bots connect to the FLEET/database axis (chat + registry live there), not the
+// store. A bot's declared `server:` in bots.yaml routes it to that named
+// daemon.yaml server; omit for the machine default.
+const MY_BOT = getManagedBots().find(b => String(b.name || '').toLowerCase() === BOT_KEY) || {}
+const SERVER = getFleetServerUrl(MY_BOT.server)
 const WS_URL = SERVER.replace(/^http/, 'ws') + '/ws/fleet'
 
 // --- warm lint-server config ---
