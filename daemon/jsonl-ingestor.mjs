@@ -1054,7 +1054,10 @@ export function createJsonlIngestor({
         // New file (or rotated): start at EOF for activity cards, but backfill
         // all historical content to the search index.
         offset = stat.size
-        cursors[sessionId] = { inode, offset }
+        // Owner classification may have been written immediately before this
+        // first watcher attach. Preserve it so the next daemon restart does not
+        // turn the same live session back into an unclassified JSONL.
+        cursors[sessionId] = { ...(stored || {}), inode, offset }
         scheduleCursorSave()
         if (harness.backfillSearch) backfillSearchEntries(agent.id, jsonlPath, sessionId, harness.kind)
         // Also backfill all prior sessions for this agent (other JSONLs that

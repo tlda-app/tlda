@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -271,6 +271,10 @@ function assertWatcher(harness, expected) {
     })
     await new Promise(resolve => setTimeout(resolve, 550))
     assert.equal(harness.sentToChild.some(message => message.type === 'watch'), true)
+    harness.ingestor.saveCursors()
+    const saved = JSON.parse(readFileSync(join(harness.dir, 'config', 'cursors.json'), 'utf8'))
+    assert.deepEqual(saved['rollout-jsonl-owner'].owners, ['fleet:jsonl-owner'])
+    assert.equal(saved['rollout-jsonl-owner'].classified, true)
   } finally {
     harness.cleanup()
   }
