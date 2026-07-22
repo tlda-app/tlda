@@ -3,6 +3,7 @@ import { promisify } from 'util'
 import {
   classifyPane,
   decideThinkingEdge,
+  shouldDisarm,
   THINKING_SCAN_LINES,
 } from '../agent-runtime/status-classifier.mjs'
 import { isObservableDaemonProcessBinding } from '../agent-runtime/daemon-process-binding.mjs'
@@ -17,6 +18,7 @@ export function createAgentStatus({
   harnessForAgent,
   isConnected,
   statusScanMs = parseInt(process.env.TLDA_STATUS_SCAN_MS, 10) || 5000,
+  statusLingerMs = parseInt(process.env.TLDA_STATUS_LINGER_MS, 10) || 30_000,
   idleConfirmScans = 2,
   setIntervalFn = setInterval,
   capturePane = (tmuxSession) => execFileP('tmux',
@@ -159,6 +161,8 @@ export function createAgentStatus({
           try { ({ busy } = await scanAgentPaneStatus(agent)) } catch { busy = false }
           if (busy) {
             armedSince.set(agentId, now)
+          } else if (shouldDisarm(now, armedSince.get(agentId) || 0, false, statusLingerMs)) {
+            disarmAgent(agentId)
           }
         }
       } while (scanAgain && isConnected() && armedSince.size)
@@ -171,16 +175,8 @@ export function createAgentStatus({
   }
 
   function start() {
-    let armed = 0
-    for (const agent of getAgents()) {
-      if (isObservableDaemonProcessBinding(agent)) {
-        armAgent(agent.id)
-        armed += 1
-      }
-    }
-    log?.info?.(`agent status watcher sync: armed=${armed}`)
     if (statusScanInterval) return
-    void scanArmedStatus()
+    log?.info?.('agent status watcher sync: armed=0')
     statusScanInterval = setIntervalFn(scanArmedStatus, statusScanMs)
     statusScanInterval?.unref?.()
   }

@@ -93,6 +93,8 @@ export function createPromptPlan({
   hasActiveTerminalWatch,
   autoAcceptPrompt,
   intervalMs = 5000,
+  execFileP: run = execFileP,
+  setIntervalFn = setInterval,
 }) {
   const TMUX_ARGS = tmuxArgs || []
   const promptCooldowns = new Map()
@@ -100,6 +102,8 @@ export function createPromptPlan({
   const planModeHashes = new Map()
   const pendingPlanChecks = new Map()
   let autoAcceptInterval = null
+  let sweepInFlight = false
+  let sweepAgain = false
 
   async function checkForPlanModePrompt(agentId) {
     pendingPlanChecks.delete(agentId)
@@ -108,7 +112,7 @@ export function createPromptPlan({
 
     let pane
     try {
-      const { stdout } = await execFileP('tmux',
+      const { stdout } = await run('tmux',
         [...TMUX_ARGS, 'capture-pane', '-t', agent.tmux_session, '-p', '-e', '-S', '-150'],
         { timeout: 5000, encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 })
       pane = stripAnsi(stdout)
@@ -175,48 +179,66 @@ export function createPromptPlan({
     pendingPlanChecks.set(agentId, handle)
   }
 
+  async function runAutoAcceptSweep() {
+    if (sweepInFlight) {
+      sweepAgain = true
+      return
+    }
+    sweepInFlight = true
+    try {
+      do {
+        sweepAgain = false
+        const sweptSessions = new Set()
+        for (const agent of getAgents()) {
+          if (!agent.tmux_session) continue
+          const surfaced = surfacedPrompts.has(agent.tmux_session)
+          if (!shouldPromptSweepAgent(agent, { armed: isArmed(agent.id), surfaced })) continue
+          if (sweptSessions.has(agent.tmux_session)) continue
+          sweptSessions.add(agent.tmux_session)
+          if (hasActiveTerminalWatch(agent.tmux_session)) continue
+          try {
+            const { stdout } = await run('tmux',
+              [...TMUX_ARGS, 'capture-pane', '-t', agent.tmux_session, '-p', '-S', '-80'],
+              { timeout: 2000, encoding: 'utf8', maxBuffer: 512 * 1024 })
+            const stripped = stripAnsi(stdout)
+            const result = detectPrompt(stdout)
+            if (result.type === 'auto-accept') {
+              const lastAccept = promptCooldowns.get(agent.tmux_session)
+              if (lastAccept && Date.now() - lastAccept < 10_000) continue
+              promptCooldowns.set(agent.tmux_session, Date.now())
+              surfacedPrompts.delete(agent.tmux_session)
+              await autoAcceptPrompt(agent.tmux_session, result.reason, result.acceptKey)
+              sendMsg({ type: 'prompt-auto-accepted', agent_id: agent.id, reason: result.reason, ts: new Date().toISOString() })
+            } else if (result.type === 'surface') {
+              if (surfacedPrompts.get(agent.tmux_session) === result.reason) continue
+              surfacedPrompts.set(agent.tmux_session, result.reason)
+              log.info(`surfacing prompt for ${agent.friendly_name || agent.id}: ${result.reason}`)
+              sendMsg({ type: 'terminal_attention', agent_id: agent.id, tmux_session: agent.tmux_session, text: result.reason, reason: result.reason, snippet: result.snippet || null })
+            } else {
+              surfacedPrompts.delete(agent.tmux_session)
+            }
+            if (stripped.includes("Here is Claude's plan") && stripped.includes('Would you like to')) {
+              scheduleCheckForPlanModePrompt(agent.id)
+            } else {
+              planModeHashes.delete(agent.id)
+            }
+          } catch {
+            // Session gone or capture failed; the next sweep can retry if needed.
+          }
+        }
+      } while (sweepAgain)
+    } finally {
+      sweepInFlight = false
+      if (sweepAgain) void runAutoAcceptSweep()
+    }
+  }
+
   function startAutoAcceptSweep() {
     if (autoAcceptInterval) return
-    autoAcceptInterval = setInterval(async () => {
-      const sweptSessions = new Set()
-      for (const agent of getAgents()) {
-        if (!agent.tmux_session) continue
-        const surfaced = surfacedPrompts.has(agent.tmux_session)
-        if (!shouldPromptSweepAgent(agent, { armed: isArmed(agent.id), surfaced })) continue
-        if (sweptSessions.has(agent.tmux_session)) continue
-        sweptSessions.add(agent.tmux_session)
-        if (hasActiveTerminalWatch(agent.tmux_session)) continue
-        try {
-          const { stdout } = await execFileP('tmux',
-            [...TMUX_ARGS, 'capture-pane', '-t', agent.tmux_session, '-p', '-S', '-80'],
-            { timeout: 2000, encoding: 'utf8', maxBuffer: 512 * 1024 })
-          const stripped = stripAnsi(stdout)
-          const result = detectPrompt(stdout)
-          if (result.type === 'auto-accept') {
-            const lastAccept = promptCooldowns.get(agent.tmux_session)
-            if (lastAccept && Date.now() - lastAccept < 10_000) continue
-            promptCooldowns.set(agent.tmux_session, Date.now())
-            surfacedPrompts.delete(agent.tmux_session)
-            await autoAcceptPrompt(agent.tmux_session, result.reason, result.acceptKey)
-            sendMsg({ type: 'prompt-auto-accepted', agent_id: agent.id, reason: result.reason, ts: new Date().toISOString() })
-          } else if (result.type === 'surface') {
-            if (surfacedPrompts.get(agent.tmux_session) === result.reason) continue
-            surfacedPrompts.set(agent.tmux_session, result.reason)
-            log.info(`surfacing prompt for ${agent.friendly_name || agent.id}: ${result.reason}`)
-            sendMsg({ type: 'terminal_attention', agent_id: agent.id, tmux_session: agent.tmux_session, text: result.reason, reason: result.reason, snippet: result.snippet || null })
-          } else {
-            surfacedPrompts.delete(agent.tmux_session)
-          }
-          if (stripped.includes("Here is Claude's plan") && stripped.includes('Would you like to')) {
-            scheduleCheckForPlanModePrompt(agent.id)
-          } else {
-            planModeHashes.delete(agent.id)
-          }
-        } catch {
-          // Session gone or capture failed; the next sweep can retry if needed.
-        }
-      }
+    autoAcceptInterval = setIntervalFn(() => {
+      void runAutoAcceptSweep()
     }, intervalMs)
+    autoAcceptInterval?.unref?.()
   }
 
   return {

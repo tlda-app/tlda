@@ -24,10 +24,38 @@ export function createPendingSeatBindingManager({
   log = console,
 } = {}) {
   const pending = new Map()
+  const queuedAttemptIds = new Set()
+  const attemptQueue = []
+  let drainingAttempts = false
 
   function clearEntry(entry) {
     entry?.watcher?.close?.()
     if (entry?.timer) clearPeriodic(entry.timer)
+  }
+
+  function scheduleAttempt(obligation) {
+    const id = obligation?.obligation_id
+    if (!id || !pending.has(id) || queuedAttemptIds.has(id)) return
+    queuedAttemptIds.add(id)
+    attemptQueue.push(id)
+    void drainAttempts()
+  }
+
+  async function drainAttempts() {
+    if (drainingAttempts) return
+    drainingAttempts = true
+    try {
+      while (attemptQueue.length) {
+        const id = attemptQueue.shift()
+        queuedAttemptIds.delete(id)
+        const entry = pending.get(id)
+        if (!entry) continue
+        await attempt(entry.obligation)
+      }
+    } finally {
+      drainingAttempts = false
+      if (attemptQueue.length) void drainAttempts()
+    }
   }
 
   async function attempt(obligation) {
@@ -65,7 +93,7 @@ export function createPendingSeatBindingManager({
         current.inFlight = false
         if (current.rerunRequested) {
           current.rerunRequested = false
-          void attempt(obligation)
+          scheduleAttempt(obligation)
         }
       }
     }
@@ -74,11 +102,11 @@ export function createPendingSeatBindingManager({
   function accept(obligation) {
     if (!obligation?.obligation_id || pending.has(obligation.obligation_id)) return false
     const path = watchPath(obligation)
-    const watcher = watch(path, { recursive: true }, () => { void attempt(obligation) })
-    const timer = setPeriodic(() => { void attempt(obligation) }, retryIntervalMs)
+    const watcher = watch(path, { recursive: true }, () => { scheduleAttempt(obligation) })
+    const timer = setPeriodic(() => { scheduleAttempt(obligation) }, retryIntervalMs)
     timer?.unref?.()
     pending.set(obligation.obligation_id, { obligation, watcher, timer, inFlight: false, rerunRequested: false })
-    void attempt(obligation)
+    scheduleAttempt(obligation)
     return true
   }
 

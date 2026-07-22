@@ -218,6 +218,12 @@ test('fleet daemon does not intentionally exit on SIGPIPE', () => {
   assert.doesNotMatch(exitSignalList, /SIGPIPE/)
 })
 
+test('fleet daemon does not auto-start dev reaper sweeps without opt-in', () => {
+  assert.match(daemonSource, /TLDA_DAEMON_DEV_REAPER === '1'/)
+  assert.match(daemonSource, /dev reaper auto-start disabled/)
+  assert.doesNotMatch(daemonSource, /startHeartbeat\(\)\s*devReaper\.start\(\)/)
+})
+
 test('bounded transition reports accepted launchd pending without fallback', async () => {
   const calls = []
   const result = await runBoundedDaemonStartTransition({
