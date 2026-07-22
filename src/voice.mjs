@@ -13,6 +13,7 @@
 import { appendToken } from './authToken.ts'
 import { log } from './logger.ts'
 import { getPref, normalizeRadioSubtitleDwellSec, subscribePref, whenPrefsLoaded } from './preferences.ts'
+import { PcmBacklog, pcmInputLevel, voiceIndicatorState } from './voice-indicator.mjs'
 
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
 const _isSafari = !navigator.userAgent.includes('Chrome') && navigator.userAgent.includes('Safari')
@@ -576,6 +577,11 @@ function shouldAutoStartOnInit() {
 }
 
 let _healthDot = null
+let _micLevelFill = null
+let _micLevel = 0
+let _micLevelPending = 0
+let _micLevelRaf = null
+let _micAudible = false
 let _healthDotTimer = null
 let _voiceHealthLabel = ''
 let _voiceLivenessInterval = null
@@ -584,16 +590,47 @@ let _lastWhisperMessageTime = 0
 function ensureHealthDot() {
   if (_healthDot) return _healthDot
   _healthDot = document.createElement('span')
+  _healthDot.setAttribute('aria-hidden', 'true')
   Object.assign(_healthDot.style, {
-    display: 'none',
-    width: '10px',
-    height: '10px',
-    borderRadius: '50%',
-    marginRight: '6px',
+    display: 'inline-block',
+    position: 'relative',
+    width: '34px',
+    height: '8px',
+    borderRadius: '2px',
+    marginRight: '7px',
     flexShrink: '0',
-    transition: 'opacity 0.3s, background-color 0.3s',
+    overflow: 'hidden',
+    background: 'rgba(255,255,255,0.12)',
   })
+  _micLevelFill = document.createElement('span')
+  Object.assign(_micLevelFill.style, {
+    display: 'block', width: '100%', height: '100%',
+    transformOrigin: 'left center', transform: 'scaleX(0)',
+    background: DOT_GREEN,
+    transition: 'transform 60ms linear, background-color 0.2s',
+  })
+  _healthDot.appendChild(_micLevelFill)
   return _healthDot
+}
+
+function setMicInputLevel(level) {
+  _micLevelPending = level
+  if (_micLevelRaf != null) return
+  _micLevelRaf = requestAnimationFrame(() => {
+    _micLevelRaf = null
+    _micLevel = Math.max(_micLevelPending, _micLevel * 0.72)
+    const meter = ensureHealthDot()
+    meter.style.opacity = _recording ? '1' : '0.35'
+    if (_micLevelFill) _micLevelFill.style.transform = `scaleX(${_recording ? Math.max(0.025, _micLevel) : 0})`
+    const audible = _recording && (_micAudible ? _micLevel >= 0.02 : _micLevel >= 0.035)
+    if (audible !== _micAudible) {
+      _micAudible = audible
+      if (_micLevelFill) _micLevelFill.style.backgroundColor = audible ? DOT_GREEN : DOT_AMBER
+      _voiceHealthLabel = audible ? 'speech detected' : liveLivenessLabel()
+      if (_recording) showRecordingHud()
+      else showHud('off', '#9370db')
+    }
+  })
 }
 
 // --- Textarea glow — shows voice state on the input you're looking at ---
@@ -621,9 +658,8 @@ function dotAudioFlowing() {
   _voiceHealthLabel = 'speech detected'
   showRecordingHud()
   const dot = ensureHealthDot()
-  dot.style.display = 'inline-block'
-  dot.style.backgroundColor = DOT_GREEN
-  requestAnimationFrame(() => { dot.style.opacity = DOT_GREEN_OPACITY })
+  dot.style.opacity = '1'
+  if (_micLevelFill) _micLevelFill.style.backgroundColor = DOT_GREEN
   setTextareaGlow(GLOW_GREEN)
   // Schedule transition to amber after silence
   clearTimeout(_healthDotTimer)
@@ -636,8 +672,8 @@ function dotAudioStale() {
   _voiceHealthLabel = liveLivenessLabel()
   showRecordingHud()
   const dot = ensureHealthDot()
-  dot.style.backgroundColor = DOT_AMBER
-  dot.style.opacity = DOT_AMBER_OPACITY
+  dot.style.opacity = '1'
+  if (_micLevelFill) _micLevelFill.style.backgroundColor = DOT_AMBER
   setTextareaGlow(GLOW_AMBER)
 }
 
@@ -645,9 +681,8 @@ function dotAudioStale() {
 function dotRecordingStart() {
   _voiceHealthLabel = 'starting voice'
   const dot = ensureHealthDot()
-  dot.style.display = 'inline-block'
-  dot.style.backgroundColor = DOT_AMBER
-  requestAnimationFrame(() => { dot.style.opacity = DOT_AMBER_OPACITY })
+  dot.style.opacity = '1'
+  if (_micLevelFill) _micLevelFill.style.backgroundColor = DOT_AMBER
   setTextareaGlow(GLOW_AMBER)
 }
 
@@ -664,9 +699,8 @@ function showVoiceLiveness(status, liveLabel) {
   if (_voiceHealthLabel === nextLabel) return
   _voiceHealthLabel = nextLabel
   const dot = ensureHealthDot()
-  dot.style.display = 'inline-block'
-  dot.style.backgroundColor = DOT_AMBER
-  dot.style.opacity = DOT_AMBER_OPACITY
+  dot.style.opacity = '1'
+  if (_micLevelFill) _micLevelFill.style.backgroundColor = DOT_AMBER
   setTextareaGlow(GLOW_AMBER)
   showRecordingHud()
 }
@@ -736,8 +770,7 @@ function hideHealthDot() {
   _voiceHealthLabel = ''
   setTextareaGlow(null)
   if (_healthDot) {
-    _healthDot.style.opacity = '0'
-    setTimeout(() => { if (_healthDot) _healthDot.style.display = 'none' }, 300)
+    setMicInputLevel(0)
   }
 }
 
@@ -816,18 +849,35 @@ function reconcileUpstream() {
 }
 
 function sendDeepgramAudioChunk(data) {
-  if (_deepgramPcmPaused) return false
-  if (_backend !== 'deepgram' || !_deepgramWs || _deepgramWs.readyState !== WebSocket.OPEN || !_deepgramRelayConnected || !_recording) return false
-  reconcileUpstream()
-  if (_dgUpstreamPaused) return false   // routed-to-nowhere / backgrounded — don't stream (don't bill)
+  if (_backend !== 'deepgram' || !_recording) return false
+  if (!voiceHasRoute() || (typeof document !== 'undefined' && document.hidden)) return false
+  if (_deepgramWs?.readyState === WebSocket.OPEN && _deepgramRelayConnected) reconcileUpstream()
+  if (_dgUpstreamPaused) return false
+  if (_deepgramPcmPaused || !_deepgramWs || _deepgramWs.readyState !== WebSocket.OPEN ||
+      !_deepgramRelayConnected || !deepgramRecognizerConnected() || _deepgramReadyEpoch !== _speechEpoch) {
+    _deepgramAudioBacklog.push(data)
+    return true
+  }
   try {
     _deepgramWs.send(data)
   } catch (err) {
     console.warn('voice: deepgram audio send failed', err)
-    return false
+    _deepgramAudioBacklog.push(data)
+    return true
   }
   _lastAudioChunkTime = Date.now()
   return true
+}
+
+function flushDeepgramAudioBacklog() {
+  if (!_deepgramWs || !deepgramRecognizerConnected() || _deepgramReadyEpoch !== _speechEpoch) return false
+  const relay = _deepgramWs
+  const drained = _deepgramAudioBacklog.drain(chunk => {
+    if (relay !== _deepgramWs || relay.readyState !== WebSocket.OPEN) return false
+    try { relay.send(chunk); return true } catch { return false }
+  })
+  if (drained) _lastAudioChunkTime = Date.now()
+  return drained
 }
 
 function finalizeDeepgramBridge() {
@@ -848,7 +898,7 @@ function showHud(text, stateColor) {
   hud.style.flexDirection = 'column'
   const radioLayout = _radioExpanded && _radioSubtitle ? radioHudPageLayout() : null
   hud.style.width = radioLayout ? `${radioLayout.width}px` : VOICE_HUD_WIDTH
-  hud.style.left = radioLayout ? `${radioLayout.left}px` : '50%'
+  hud.style.left = '50%'
   hud.style.padding = _radioExpanded && _radioSubtitle ? '7px 12px' : '3px 10px'
   const statusRow = document.createElement('div')
   Object.assign(statusRow.style, {
@@ -857,8 +907,11 @@ function showHud(text, stateColor) {
     justifyContent: 'center',
     minWidth: '0',
     overflow: 'hidden',
-    width: '100%',
+    width: VOICE_HUD_WIDTH,
+    alignSelf: 'center',
   })
+  statusRow.dataset.voiceState = voiceIndicatorState(_recording, _voiceHealthLabel)
+  statusRow.setAttribute('aria-label', `Voice ${statusRow.dataset.voiceState}`)
   statusRow.appendChild(dot)
   const span = document.createElement('span')
   span.textContent = text
@@ -870,7 +923,7 @@ function showHud(text, stateColor) {
   })
   statusRow.appendChild(span)
   appendCallSegment(statusRow)
-  hud.appendChild(statusRow)
+  const phone = document.body?.classList?.contains('phone-mode')
   if (_radioExpanded && _radioSubtitle) {
     const line = document.createElement('div')
     line.textContent = _radioSubtitle.text
@@ -918,6 +971,10 @@ function showHud(text, stateColor) {
       hud.appendChild(trace)
     }
   }
+  // The status row is the stable spatial anchor. Desktop plaques grow upward
+  // from the bottom, phone plaques downward from the top.
+  if (phone) hud.prepend(statusRow)
+  else hud.appendChild(statusRow)
   hud.style.color = activeAgentColor() || stateColor || 'rgba(255,255,255,0.7)'
   requestAnimationFrame(() => { hud.style.opacity = '1' })
 }
@@ -1014,17 +1071,7 @@ export function setCallMicState(state) {
 
 // Show recording status — text uses agent color, dot shows health separately
 function voiceStatusLabel() {
-  const label = _voiceHealthLabel || ''
-  if (label.startsWith('mic stalled') || label.startsWith('mic stopped') || label.startsWith('connection lost')) return 'reconnecting'
-  if (label.includes('reconnecting') || label.includes('restarting')) return 'reconnecting'
-  if (label === 'no mic input') return 'reconnecting'
-  if (label === 'speech detected') return 'speaking'
-  if (label === 'restarting voice') return 'reconnecting'
-  if (label === 'starting voice' || label === 'connecting to recognizer') return 'reconnecting'
-  if (label === 'recognizer connected') return 'mic live'
-  if (label === 'waiting for recognizer' || label.startsWith('recognizer idle') || label.startsWith('recognizer unavailable')) return 'reconnecting'
-  if (label.startsWith('mic live')) return 'mic live'
-  return label || 'mic live'
+  return voiceIndicatorState(_recording, _voiceHealthLabel)
 }
 
 function showRecordingHud() {
@@ -1036,6 +1083,11 @@ function showRecordingHud() {
 
 function hideHud() {
   clearTimeout(_fadeTimer)
+  if (_initialized) {
+    if (_recording) showRecordingHud()
+    else showHud('off', '#9370db')
+    return
+  }
   if (_hud) {
     _hud.style.opacity = '0'
     setTimeout(() => { if (_hud) _hud.style.display = 'none' }, 300)
@@ -1901,6 +1953,7 @@ let _deepgramMicAttempt = 0          // exact owner of async mic-start publicati
 let _deepgramPcmPaused = false
 let _deepgramRecoveringEpoch = null
 let _deepgramReadyEpoch = null
+const _deepgramAudioBacklog = new PcmBacklog()
 let _dgUpstreamPaused = false   // we've told the bridge to `stop` (routed-to-nowhere or tab backgrounded); not streaming
 let _deepgramStream = null      // MediaStream from getUserMedia
 let _deepgramContext = null      // AudioContext
@@ -2098,6 +2151,7 @@ function onDeepgramMessage(event, relay = _deepgramWs) {
       _deepgramRecognizerRelay = relay
       hideDontSpeak()
       showRecordingHud()
+      flushDeepgramAudioBacklog()
       return
     }
 
@@ -2359,6 +2413,7 @@ function disconnectDeepgramBridge() {
     _deepgramWs = null
   }
   _deepgramRelayConnected = false
+  if (!_recording) _deepgramAudioBacklog.clear()
 }
 
 // What the audio heartbeat should do, decided ONLY from the AudioContext state.
@@ -2438,6 +2493,7 @@ async function startDeepgramMic() {
   _deepgramWorklet = new AudioWorkletNode(_deepgramContext, 'deepgram-capture')
   _deepgramWorklet.port.onmessage = (e) => {
     _lastMicFrameTime = Date.now()   // raw mic delivery — stamped BEFORE the route/idle gate so a paused-but-live mic still reads as live
+    setMicInputLevel(pcmInputLevel(e.data))
     sendDeepgramAudioChunk(e.data)
   }
   source.connect(_deepgramWorklet)
@@ -2698,9 +2754,7 @@ function stopRecording() {
   // Notify accumulator that recording stopped (caller can reset cursor anchor etc.)
   if (_accumulator?.onStop) _accumulator.onStop()
 
-  const who = targetLabel()
-  showHud(who ? `paused → ${who}` : 'paused', '#9370db')
-  fadeHud(4000)
+  showHud('off', '#9370db')
 }
 
 // Hard reset — the escape hatch for when Chrome's SpeechRecognition
@@ -2991,6 +3045,7 @@ export async function initVoice() {
 
   const backend = _backend === 'deepgram' ? 'deepgram-sdk' : _backend === 'whisper-stream' ? 'whisper' : 'Web Speech API'
   console.log(`voice: initialized v8 — ${backend} — BroadcastChannel: ${!!_micChannel}`)
+  if (!_recording && !_callState) showHud('off', '#9370db')
   if (shouldAutoStartOnInit(_isTouchDevice, _backend)) startRecording()
   return _backend !== 'none'
 }
@@ -3039,8 +3094,7 @@ export async function setBackend(be) {
     if (_recording) stopRecording()
     else if (_backend === 'deepgram') disconnectDeepgramBridge()
     _backend = 'none'
-    showHud('voice: off', '#9370db')
-    fadeHud(2000)
+    showHud('off', '#9370db')
     return
   }
   if (be !== 'chrome' && be !== 'whisper-stream' && be !== 'deepgram') return
