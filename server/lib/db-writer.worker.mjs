@@ -47,7 +47,13 @@ parentPort.on('message', (msg) => {
     if (kind === 'run') {
       result = one(msg.sql, msg.params)
     } else if (kind === 'batch') {
-      const tx = db.transaction((ops) => ops.map(o => one(o.sql, o.params)))
+      const tx = db.transaction((ops) => ops.map((o, index) => {
+        const result = one(o.sql, o.params)
+        if (o.expectChanges != null && result.changes !== o.expectChanges) {
+          throw new Error(`batch operation ${index} expected ${o.expectChanges} change(s), got ${result.changes}`)
+        }
+        return result
+      }))
       result = tx(msg.ops)
     } else if (kind === 'exec') {
       db.exec(msg.sql); result = {}

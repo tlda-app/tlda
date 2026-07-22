@@ -1367,6 +1367,18 @@ export function getFleetTools() {
       },
     },
     {
+      name: 'accept_task',
+      description: 'Explicitly accept durable responsibility for an assigned pending task. Inbox reads and notification delivery do not accept work.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          task_id: { type: 'string', description: 'Exact assigned task ID to accept.' },
+          operation_id: { type: 'string', description: 'Optional stable idempotency key for retrying this acceptance.' },
+        },
+        required: ['task_id'],
+      },
+    },
+    {
       name: 'set_inbox_status',
       description: 'Set this agent\'s visible notification status without reading or marking inbox items. Status controls future wake behavior; inbox views are chosen separately when calling inbox().',
       inputSchema: {
@@ -1726,7 +1738,7 @@ function inboxTaskSummary(task) {
   const nativeLabel = nativeSystem === 'claude' ? 'Claude Code' : nativeSystem;
   const lines = [
     `[task:${task.id}] ${task.description || '(untitled task)'}`,
-    `State: ${task.status || 'active'}${Number.isFinite(age) ? ` | delegated ${age}m ago` : ''}`,
+    `State: ${task.status || 'active'}${task.metadata?.task_acceptance?.accepted_at ? ` | accepted ${task.metadata.task_acceptance.accepted_at}` : ''}${Number.isFinite(age) ? ` | delegated ${age}m ago` : ''}`,
   ];
   if (task.metadata?.native) lines.push(`Native task in ${nativeLabel || 'native harness'}`);
   if (task.success_criteria?.length) lines.push(`Success criteria: ${task.success_criteria.length}`);
@@ -2733,6 +2745,7 @@ export async function handleFleetTool(name, args) {
       const includeHealthAction = healthBucket?.kind !== 'stale-backlog';
       const healthNote = formatTaskHealth(health, { includeAction: includeHealthAction });
       let status = t.status;
+      if (t.metadata?.task_acceptance?.accepted_at) status += ` | accepted ${t.metadata.task_acceptance.accepted_at}`;
       const nativeSystem = t.metadata?.native_system || t.metadata?.native?.system || null;
       const nativeLabel = nativeSystem === 'claude' ? 'Claude Code' : nativeSystem;
       if (t.synthetic) status = `📬 ${t.priority || 'normal'}`;
@@ -3374,6 +3387,25 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
     })));
     const text = formatInboxText({ mode: view, task: data.task || null, tasks: data.tasks || null, messages, counts: data.counts || null });
     return { content: [{ type: 'text', text }] };
+  }
+
+  if (name === 'accept_task') {
+    if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not logged in. Call login() first.' }], isError: true };
+    const sessionId = currentTransportSessionId();
+    if (!sessionId) return { content: [{ type: 'text', text: 'Cannot accept task without the bound session id.' }], isError: true };
+    const operationId = args.operation_id || `${AGENT_ID}:mcp-accept-task:${args.task_id}:${crypto.randomUUID()}`;
+    try {
+      const data = await sendDurableFleet('accept-task', {
+        task_id: args.task_id,
+        session_id: sessionId,
+        operation_id: operationId,
+      }, { operationId });
+      if (data?.queued) return { content: [{ type: 'text', text: `Task acceptance queued durably for ${args.task_id}; responsibility is not accepted until the server confirms it.` }] };
+      const acceptedAt = data?.acceptance?.accepted_at || data?.task?.metadata?.task_acceptance?.accepted_at;
+      return { content: [{ type: 'text', text: `Accepted task ${args.task_id}${acceptedAt ? ` at ${acceptedAt}` : ''}${data?.idempotent ? ' (already accepted; no duplicate transition)' : ''}.` }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Task acceptance failed before authoritative confirmation: ${e.message}` }], isError: true };
+    }
   }
 
   // ---- set_inbox_status ----

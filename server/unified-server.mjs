@@ -77,6 +77,7 @@ import { normalizeSpawnRelayInput } from './lib/spawn-relay-input.mjs'
 import { resolveFreshSpawnAvailabilityModels } from './lib/spawn-availability-models.mjs'
 import { decideTaskRenudges, isWakeBreakerOpen, wakeBreakerBackoffMs } from './lib/task-renudge.mjs'
 import { canReportTask, completeTaskLifecycle } from './lib/task-lifecycle.mjs'
+import { acceptTaskResponsibility } from './lib/task-acceptance.mjs'
 import { livenessFromCheckAliveResult, runWakeRouteLifecycle, shouldSendWakeNudge } from './lib/wake-route-lifecycle.mjs'
 import { recordAgentBindingEvent } from './lib/agent-binding-events.mjs'
 import { decideReportClose } from '../bots/todd/report-close-guard.mjs'
@@ -6128,6 +6129,25 @@ async function handleFleetWsMessage(ws, msg) {
     return
   }
 
+  if (type === 'accept-task') {
+    const callerAgentId = ws._tldaAgentId
+    if (!callerAgentId) { error('task acceptance requires an authenticated agent login'); return }
+    try {
+      const result = await acceptTaskResponsibility({
+        fleetStore,
+        taskId: msg.task_id,
+        callerAgentId,
+        callerSessionId: msg.session_id,
+        operationId: msg.operation_id,
+      })
+      broadcastState()
+      reply(result)
+    } catch (e) {
+      error(e)
+    }
+    return
+  }
+
   if (type === 'task-done') {
     const { agent: rawAgent, task_id, skip_qa, approval_id } = msg
     if (!rawAgent) { error('missing agent'); return }
@@ -6557,7 +6577,7 @@ async function handleFleetWsMessage(ws, msg) {
         "SELECT id FROM tasks WHERE agent = ? AND status NOT IN ('done')"
       ).all(agent.id)
       for (const t of pendingTasks) {
-        fleetStore.db.prepare('UPDATE tasks SET agent = ? WHERE id = ?').run(dayAgent.id, t.id)
+        fleetStore.transferTaskOwnership(t.id, dayAgent.id)
       }
     }
     fleetStore.retireFromLineage(agent.id)
