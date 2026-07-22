@@ -3059,6 +3059,67 @@ export async function cleanupFailedFreshBinding(result, {
   return { terminated: true }
 }
 
+export async function bindDoctorYoloDurableSeat(launched, {
+  cwd,
+  name,
+  api,
+  configDir = CONFIG_DIR,
+  daemonConfig = null,
+  ledger = null,
+  bindLifecycleImpl = bindLifecycleCodexResumeIdentity,
+  cleanupFailedBindingImpl = cleanupFailedFreshBinding,
+} = {}) {
+  const resolvedDaemonConfig = daemonConfig || readDaemonConfig(defaultDaemonConfigPath(configDir))
+  const permissionLedger = ledger || createPermissionLedger(permissionLedgerPathFromDaemonConfig(resolvedDaemonConfig, configDir))
+  const ownsLedger = !ledger
+  let seededGrant = false
+  try {
+    applyDaemonGrants(permissionLedger, resolvedDaemonConfig)
+    if (!permissionLedger.get(launched.fleetId)) {
+      const baseGrant = permissionLedger.grantFor({ id: 'localhost' })
+      permissionLedger.setSync(launched.fleetId, {
+        spawnPolicy: baseGrant.spawnPolicy,
+        permissionProfile: baseGrant.permissionProfile,
+        permissionIntersection: baseGrant.permissionIntersection,
+        permissionSet: baseGrant.permissionSet,
+        source: 'doctor-yolo-break-glass',
+      })
+      seededGrant = true
+    }
+    const binding = await bindLifecycleImpl(launched, {
+      ledger: permissionLedger,
+      cwd,
+      name,
+      api,
+      requireReadback: true,
+    })
+    if (!binding?.bound) {
+      throw new Error(`Break-glass launch FAILED: ${launched.fleetId} logged in but did not create a current durable seat`)
+    }
+    return binding
+  } catch (error) {
+    let cleanupError = null
+    try {
+      await cleanupFailedBindingImpl(launched, { api })
+    } catch (e) {
+      cleanupError = e
+    }
+    if (seededGrant) {
+      try {
+        await permissionLedger.delete(launched.fleetId)
+      } catch (e) {
+        cleanupError ||= e
+      }
+    }
+    if (cleanupError) {
+      error.message = `${error.message}; cleanup failed: ${cleanupError.message}`
+    }
+    throw error
+  } finally {
+    if (ownsLedger) await permissionLedger.close()
+  }
+}
+
 function flagFromRaw(rawArgs, name) {
   const idx = rawArgs.indexOf(`--${name}`)
   if (idx === -1) return null
@@ -4496,6 +4557,11 @@ async function cmdDoctorYolo() {
     config,
   })
   const { localAgentId, fleetId, tmuxSession, harness: kind, model } = launched
+  await bindDoctorYoloDurableSeat(launched, {
+    cwd,
+    name,
+    api: (method, pathname, body = null) => apiJson(pathname, { api, method, body, timeoutMs: 10_000 }),
+  })
 
   // Interactive terminal → drop the operator straight into the agent's session, the
   // way spawn used to. You watch it log in live, so there is no false "launched" — a
