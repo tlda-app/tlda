@@ -12,10 +12,6 @@ import {
   normalizeRegionPolicy,
   regionScopeFromSet,
 } from '../server/lib/spawn-policy.mjs'
-import {
-  validateDaemonConfigTopLevel,
-  validateStrictServers,
-} from '../shared/daemon-config-schema.mjs'
 
 function nowIso() {
   return new Date().toISOString()
@@ -127,7 +123,9 @@ function validateDaemonDefault(config = {}) {
 
 function normalizeDaemonConfig(parsed, { validateDefault = true } = {}) {
   const root = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
-  validateDaemonConfigTopLevel(root, 'daemon config')
+  const allowed = new Set(['regions', 'profiles', 'grants', 'models', 'servers', 'default'])
+  const extra = Object.keys(root).filter(key => !allowed.has(key))
+  if (extra.length) throw new Error(`daemon config supports only regions, profiles, grants, models, servers, default; unknown key(s): ${extra.join(', ')}`)
   const models = root.models && typeof root.models === 'object' && !Array.isArray(root.models)
     ? root.models
     : {}
@@ -136,18 +134,16 @@ function normalizeDaemonConfig(parsed, { validateDefault = true } = {}) {
   const grants = root.grants && typeof root.grants === 'object' && !Array.isArray(root.grants)
     ? root.grants
     : {}
-  const servers = validateStrictServers(
-    root.servers && typeof root.servers === 'object' && !Array.isArray(root.servers) ? root.servers : {}
-  )
+  const servers = root.servers && typeof root.servers === 'object' && !Array.isArray(root.servers)
+    ? root.servers
+    : {}
   const defaultProfile = typeof root.default === 'string' && root.default.trim() ? root.default.trim() : null
-  const defaultServer = typeof root.defaultServer === 'string' && root.defaultServer.trim() ? root.defaultServer.trim() : null
   const config = {
     regions,
     profiles,
     grants,
     models,
     servers,
-    ...(defaultServer ? { defaultServer } : {}),
     ...(defaultProfile ? { default: defaultProfile } : {}),
   }
   return validateDefault ? validateDaemonDefault(config) : config
