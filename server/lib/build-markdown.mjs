@@ -12,6 +12,7 @@
 import MarkdownIt from 'markdown-it'
 import markdownItAnchor from 'markdown-it-anchor'
 import katex from 'katex'
+import { normalizeChatDisplayMathDelimiters } from '../../shared/chat-math-normalize.mjs'
 import { readFileSync, writeFileSync, mkdirSync, cpSync, existsSync, readdirSync } from 'fs'
 import { join, basename, dirname } from 'path'
 import { readProject, listProjects, aggregateBookToc, sourceDir as getSourceDir, outputDir as getOutputDir, readProjectPartsManifest } from './project-store.mjs'
@@ -725,7 +726,7 @@ function rewriteMarkdownHrefTargets(html) {
 }
 
 function markdownTocForSource(source, page) {
-  const renderSource = stripMarkdownFrontmatter(source)
+  const renderSource = normalizeChatDisplayMathDelimiters(stripMarkdownFrontmatter(source))
   const slugify = s => s.toLowerCase().replace(/[^\w]+/g, '-').replace(/^-|-$/g, '')
   const levels = { 1: 'section', 2: 'subsection', 3: 'subsubsection', 4: 'subsubsection' }
   const toc = []
@@ -748,7 +749,7 @@ function markdownTocForSource(source, page) {
 
 export function renderMarkdownColumnHtml({ source, title, isTaskDoc }) {
   _macros = extractMacros(source)
-  const renderSource = stripMarkdownFrontmatter(source)
+  const renderSource = normalizeChatDisplayMathDelimiters(stripMarkdownFrontmatter(source))
   const slugify = s => s.toLowerCase().replace(/[^\w]+/g, '-').replace(/^-|-$/g, '')
   const processedSource = renderSource.replace(/(^#{1,6}[^\n]*?)\s*\{#[\w-]+\}/gm, '$1')
   const md = new MarkdownIt({ html: true, linkify: true, typographer: true })
