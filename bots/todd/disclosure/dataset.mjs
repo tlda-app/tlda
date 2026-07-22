@@ -10,6 +10,7 @@ import {
   extractDisclosureFeatures,
   isDisclosureCandidate,
 } from './classifier.mjs'
+import { getFleetServerUrl, getReadToken } from '../../../shared/config.mjs'
 
 const DEFAULT_DB = path.join(os.homedir(), '.config', 'tlda', 'fleet.db')
 const DEFAULT_CONFIG = path.join(os.homedir(), '.config', 'tlda', 'config.json')
@@ -103,8 +104,8 @@ function readConfig(args) {
 function applyConfigDefaults(args) {
   if (args.source !== 'server') return args
   const config = readConfig(args)
-  args.server = args.server || config.fleetServer || config.server || config.tldaServer
-  args.token = args.token || config.tokenRead || config.token
+  args.server = args.server || getFleetServerUrl()
+  args.token = args.token || getReadToken()
 
   if (!args.server) {
     throw new Error('Server source requires --server or fleetServer/server in config')
