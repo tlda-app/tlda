@@ -8,6 +8,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
+import { parse as parseYaml } from 'yaml'
 
 // Preview servers receive an isolated config directory from `tlda-dev serve`.
 // Production keeps the normal shared location; previews must never mutate it.
@@ -174,16 +175,24 @@ export function getReadToken(config = null) {
   return cfg.tokenRead || null
 }
 
+const BOTS_FILE = join(CONFIG_DIR, 'bots.yaml')
+
 /**
- * Background bot specs for `tlda bot` managed services. Each is just a script
- * that talks to the fleet API; tlda doesn't special-case any of them. Each
- * entry: { name, script, machine_id? } where `script` is absolute or
- * repo-relative and `machine_id` optionally pins the bot to one machine.
- * config.bots overrides; the default is the shipped example bot, Todd. Write
- * your own by adding an entry.
+ * Managed bots for this machine, read directly from bots.yaml — the single
+ * source of truth. Bots are independent, launchd-owned services; the daemon
+ * does not manage them. Each entry: { name, script, machine_id?, server? }
+ * where `script` is absolute or repo-relative, `machine_id` optionally pins the
+ * bot to one machine, and `server` names an entry in daemon.yaml `servers:`
+ * (omit for the machine default). No config.json fallback — if bots.yaml is
+ * absent there are no managed bots; a malformed bots.yaml throws loudly.
  */
-export function getManagedBots(config = null) {
-  const cfg = config ?? loadConfig()
-  if (Array.isArray(cfg.bots)) return cfg.bots
-  return [{ name: 'todd', script: 'bin/bots/todd.mjs' }]
+export function getManagedBots() {
+  if (!existsSync(BOTS_FILE)) return []
+  let doc
+  try {
+    doc = parseYaml(readFileSync(BOTS_FILE, 'utf8'))
+  } catch (e) {
+    throw new Error(`bots.yaml is malformed: ${e.message}`)
+  }
+  return Array.isArray(doc?.bots) ? doc.bots : []
 }

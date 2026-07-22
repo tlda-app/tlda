@@ -1142,7 +1142,7 @@ function resolveBotScriptForCli(script) {
 }
 
 function configuredBots() {
-  return getManagedBots(loadConfig())
+  return getManagedBots()
 }
 
 function findConfiguredBot(name) {

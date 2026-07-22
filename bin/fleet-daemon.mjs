@@ -104,7 +104,6 @@ import { createAgentLiveness, livenessAgentsFromProcessBindings } from '../daemo
 import { ACTIVITY_NOISE } from '../shared/activity-tool-classification.mjs'
 import { createHarnessRuntime } from '../daemon/harness-runtime.mjs'
 import { createShadowMirror } from '../daemon/shadow-mirror.mjs'
-import { createBotSupervisor } from '../daemon/bot-supervisor.mjs'
 import { DaemonDeliveryRuntime } from '../daemon/delivery-runtime.mjs'
 import { DaemonOutbox, defaultOutboxPath } from '../daemon/outbox.mjs'
 import { reconcileDaemonRoster } from '../daemon/roster-reconcile.mjs'
@@ -542,18 +541,8 @@ const shadowMirror = createShadowMirror({
   log,
 })
 
-const botSupervisor = createBotSupervisor({
-  config,
-  configDir: CONFIG_DIR,
-  rootDir: process.cwd(),
-  machineId: MACHINE_ID,
-  tmuxArgs: TMUX_ARGS,
-  log,
-  tlsCaPath: hasTls ? TLS_CA_PATH : null,
-  tldaConfig: ACTIVE_CONFIG,
-  tldaServer: SERVER,
-  tldaSyncServer: SERVER,
-})
+// Bots are independent, launchd-owned services configured in bots.yaml — the
+// daemon no longer manages them (see getManagedBots / bots.yaml).
 
 // ---------- terminal RPC facades ----------
 
@@ -1233,7 +1222,6 @@ try { fs.writeFileSync(PID_FILE, String(process.pid)) } catch (e) { log.warn(`fa
 function shutdown(signal) {
   // Log WHY we're dying so the next post-mortem isn't a scavenger hunt.
   log.info(`shutdown via ${signal || 'unknown'} signal; saving cursors and exiting`)
-  botSupervisor.stop()
   jsonlIngestor.shutdown()
   teardownWatchers({ jsonl: false })
   unlinkPidfileIfOwnPid(PID_FILE, process.pid)
@@ -1293,7 +1281,8 @@ if (process.env.TLDA_DAEMON_DEV_REAPER === '1') {
 } else {
   log.info('dev reaper auto-start disabled; use reaper-sweep RPC or TLDA_DAEMON_DEV_REAPER=1')
 }
-botSupervisor.start()
+// Bots are independent, launchd-owned services (bots.yaml) — the daemon no
+// longer starts a bot-supervisor.
 // Local terminal inspection belongs to the daemon process lifecycle, not the
 // server message protocol. Its tmux/runtime dependencies are fully constructed
 // above; connectivity is checked inside each scan, and local activity explicitly
