@@ -35,18 +35,26 @@ export function createSafeIpcSender(processLike = process, {
 } = {}) {
   let ipcOpen = !!processLike.send
   let warnedClosed = false
+  function markClosed(e) {
+    ipcOpen = false
+    if (!warnedClosed) {
+      warnedClosed = true
+      onClosed(e)
+    }
+  }
   return function safeSend(msg) {
-    if (!ipcOpen || !processLike.connected || !processLike.send) return false
+    if (!ipcOpen || !processLike.connected || !processLike.send) {
+      const e = new Error('IPC channel closed')
+      e.code = 'ERR_IPC_CHANNEL_CLOSED'
+      markClosed(e)
+      return false
+    }
     try {
       processLike.send(msg)
       return true
     } catch (e) {
       if (e?.code === 'EPIPE' || e?.code === 'ERR_IPC_CHANNEL_CLOSED') {
-        ipcOpen = false
-        if (!warnedClosed) {
-          warnedClosed = true
-          onClosed(e)
-        }
+        markClosed(e)
         return false
       }
       throw e

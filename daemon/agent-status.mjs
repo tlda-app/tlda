@@ -31,6 +31,8 @@ export function createAgentStatus({
   const prevCompacting = new Map()
   const prevAgentStatus = new Map()
   const prevApprovalFP = new Map()
+  let scanInFlight = false
+  let scanAgain = false
 
   function isArmed(agentId) {
     return armedSince.has(agentId)
@@ -135,19 +137,35 @@ export function createAgentStatus({
   }
 
   async function scanArmedStatus() {
+    if (scanInFlight) {
+      scanAgain = true
+      return
+    }
     if (!isConnected()) return
     if (!armedSince.size) return
-    const now = Date.now()
-    for (const agentId of [...armedSince.keys()]) {
-      const agent = getAgents().find(a => a.id === agentId)
-      if (!isObservableDaemonProcessBinding(agent)) {
-        disarmAgent(agentId)
-        continue
-      }
-      let busy = false
-      try { ({ busy } = await scanAgentPaneStatus(agent)) } catch { busy = false }
-      if (busy) {
-        armedSince.set(agentId, now)
+    scanInFlight = true
+    try {
+      do {
+        scanAgain = false
+        const now = Date.now()
+        const agents = getAgents()
+        for (const agentId of [...armedSince.keys()]) {
+          const agent = agents.find(a => a.id === agentId)
+          if (!isObservableDaemonProcessBinding(agent)) {
+            disarmAgent(agentId)
+            continue
+          }
+          let busy = false
+          try { ({ busy } = await scanAgentPaneStatus(agent)) } catch { busy = false }
+          if (busy) {
+            armedSince.set(agentId, now)
+          }
+        }
+      } while (scanAgain && isConnected() && armedSince.size)
+    } finally {
+      scanInFlight = false
+      if (scanAgain && isConnected() && armedSince.size) {
+        void scanArmedStatus()
       }
     }
   }
@@ -161,8 +179,8 @@ export function createAgentStatus({
       }
     }
     log?.info?.(`agent status watcher sync: armed=${armed}`)
-    void scanArmedStatus()
     if (statusScanInterval) return
+    void scanArmedStatus()
     statusScanInterval = setIntervalFn(scanArmedStatus, statusScanMs)
     statusScanInterval?.unref?.()
   }

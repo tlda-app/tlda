@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { readFileSync } from 'node:fs'
+import { EventEmitter } from 'node:events'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
@@ -11,11 +13,15 @@ import {
 import {
   createSafeIpcSender,
 } from './fleet-jsonl-ingester.mjs'
+import {
+  createJsonlIngestor,
+} from '../daemon/jsonl-ingestor.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const daemonSource = readFileSync(join(here, 'fleet-daemon.mjs'), 'utf8')
 const serverSource = readFileSync(join(here, '..', 'server', 'unified-server.mjs'), 'utf8')
 const ingesterSource = readFileSync(join(here, 'fleet-jsonl-ingester.mjs'), 'utf8')
+const jsonlIngestorSource = readFileSync(join(here, '..', 'daemon', 'jsonl-ingestor.mjs'), 'utf8')
 const cliSource = readFileSync(join(here, '..', 'cli', 'tlda.mjs'), 'utf8')
 const transitionSource = readFileSync(join(here, '..', 'cli', 'lib', 'daemon-supervision-transition.mjs'), 'utf8')
 
@@ -50,9 +56,146 @@ test('JSONL ingester IPC send rethrows unexpected failures', () => {
   assert.throws(() => send({ type: 'batch' }), /unexpected/)
 })
 
+test('JSONL ingester IPC sender closes on disconnected process state', () => {
+  const errors = []
+  const processLike = {
+    connected: false,
+    send() {
+      assert.fail('send must not be called when disconnected')
+    },
+  }
+  const send = createSafeIpcSender(processLike, { onClosed: e => errors.push(e.code) })
+
+  assert.equal(send({ type: 'batch' }), false)
+  assert.deepEqual(errors, ['ERR_IPC_CHANNEL_CLOSED'])
+  assert.equal(send({ type: 'batch' }), false)
+  assert.deepEqual(errors, ['ERR_IPC_CHANNEL_CLOSED'])
+})
+
 test('closed JSONL child IPC exits instead of remaining live and mute', () => {
   assert.match(ingesterSource, /parent IPC closed:.*exiting for resync/)
   assert.match(ingesterSource, /onClosed:[\s\S]*process\.exit\(1\)/)
+})
+
+test('daemon treats stale JSONL child IPC as an ingester-down lifecycle event', () => {
+  assert.match(jsonlIngestorSource, /function sendJsonlIngesterMessage\(msg\)/)
+  assert.match(jsonlIngestorSource, /child\.connected === false \|\| child\.killed/)
+  assert.match(jsonlIngestorSource, /handleJsonlIngesterExit\('ipc-closed', null\)/)
+  assert.match(jsonlIngestorSource, /JSONL ingester child IPC closed/)
+  assert.match(jsonlIngestorSource, /child\.on\('disconnect'/)
+  assert.match(jsonlIngestorSource, /child\.on\('close'/)
+  assert.match(jsonlIngestorSource, /JSONL ingester stderr/)
+  assert.match(jsonlIngestorSource, /activityDeliveryCounters\?\.record\?\.\('jsonlIngesterDown'/)
+})
+
+test('JSONL ingestor respawns after parent-side EPIPE on stale child handle', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'tlda-jsonl-ingestor-stale-ipc-'))
+  try {
+    const configDir = join(dir, 'config')
+    const projectsDir = join(dir, 'projects')
+    const jsonlPath = join(dir, 'rollout-stale-ipc.jsonl')
+    writeFileSync(jsonlPath, '')
+    const children = []
+    const logs = []
+    const counters = []
+    const agent = {
+      id: 'fleet:staleipc',
+      friendly_name: 'stale-ipc',
+      dead: false,
+      human: false,
+      machine_id: 'mini',
+      env_name: 'test',
+      daemon_key: 'mini:test',
+      cwd: dir,
+      session_id: 'rollout-stale-ipc',
+      session_ids: ['rollout-stale-ipc'],
+    }
+    const ingestor = createJsonlIngestor({
+      configDir,
+      cursorsFile: join(configDir, 'cursors.json'),
+      projectsDir,
+      daemonDir: here,
+      log: {
+        info: message => logs.push(['info', message]),
+        warn: message => logs.push(['warn', message]),
+        error: message => logs.push(['error', message]),
+      },
+      sendMsg: () => true,
+      sendMsgWithReply: async () => ({}),
+      isConnected: () => true,
+      isServerReady: () => true,
+      getAgents: () => [agent],
+      listSessions: async () => ({ sessions: [] }),
+      selectAgentKind: async () => 'codex',
+      harnessAdapters: {
+        codex: {
+          activity: {
+            kind: 'codex',
+            resolveJsonl: async () => jsonlPath,
+            terminalChat: false,
+            backfillSearch: false,
+          },
+        },
+      },
+      permissionLedger: { setSessionSync: () => {} },
+      bufferActivity: () => true,
+      extractActivityEvents: () => [],
+      activityDeliveryCounters: { record: (...args) => counters.push(args) },
+      machineId: 'mini',
+      envName: 'test',
+      daemonKey: 'mini:test',
+      forkProcess: () => {
+        const child = new EventEmitter()
+        child.connected = true
+        child.killed = false
+        child.sent = []
+        child.send = msg => {
+          child.sent.push(msg)
+          return true
+        }
+        child.kill = () => {
+          child.killed = true
+          child.connected = false
+        }
+        children.push(child)
+        return child
+      },
+      watchDir: () => ({ on: () => ({ on: () => ({ on: () => {} }) }), close: () => {} }),
+      nowMs: () => 1000 + children.length,
+      random: () => 0.25,
+    })
+
+    await ingestor.sync([agent])
+    assert.equal(children.length, 1)
+    assert.equal(children[0].sent[0]?.type, 'watch')
+
+    const e = new Error('write EPIPE')
+    e.code = 'EPIPE'
+    children[0].emit('error', e)
+
+    assert.ok(logs.some(([, message]) => /JSONL ingester child IPC closed: write EPIPE/.test(message)))
+    assert.ok(counters.some(([stage]) => stage === 'jsonlIngesterDown'))
+
+    await ingestor.sync([agent])
+    assert.equal(children.length, 2)
+    assert.equal(children[1].sent[0]?.type, 'watch')
+    ingestor.shutdown()
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('daemon records drop and websocket lifecycle counters', () => {
+  const counterSource = readFileSync(join(here, '..', 'shared', 'activity-delivery-counters.mjs'), 'utf8')
+  const deliverySource = readFileSync(join(here, '..', 'daemon', 'delivery-runtime.mjs'), 'utf8')
+  assert.match(counterSource, /DAEMON_DROPPED: 'daemonDropped'/)
+  assert.match(counterSource, /DAEMON_WS_CONNECTED: 'daemonWsConnected'/)
+  assert.match(counterSource, /DAEMON_WS_DISCONNECTED: 'daemonWsDisconnected'/)
+  assert.match(counterSource, /JSONL_INGESTER_DOWN: 'jsonlIngesterDown'/)
+  assert.match(deliverySource, /recordActivityDelivery\('daemonDropped', message\)/)
+  assert.match(daemonSource, /ACTIVITY_DELIVERY_STAGES\.DAEMON_WS_CONNECTED/)
+  assert.match(daemonSource, /ACTIVITY_DELIVERY_STAGES\.DAEMON_WS_DISCONNECTED/)
+  assert.match(daemonSource, /activityDeliveryCounters: daemonActivityDeliveryCounters/)
 })
 
 test('daemon welcome carries no roster and restores local-binding liveness plus JSONL lifecycle', () => {

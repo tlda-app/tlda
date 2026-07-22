@@ -458,13 +458,18 @@ export function createJsonlIngestor({
     if (!fs.existsSync(script)) return
     try {
       // execArgv:[] so the child doesn't inherit --import tsx etc.; it's plain ESM.
-      _ownerHarvester = forkProcess(script, [], { execArgv: [], stdio: ['ignore', 'ignore', 'ignore', 'ipc'] })
+      _ownerHarvester = forkProcess(script, [], { execArgv: [], stdio: ['ignore', 'ignore', 'pipe', 'ipc'] })
     } catch (e) {
       log.warn(`owner harvester failed to start: ${e.message}`)
       _ownerHarvester = null
       return
     }
-    _ownerHarvester.on('message', (msg) => {
+    const child = _ownerHarvester
+    child.stderr?.on?.('data', chunk => {
+      const text = String(chunk || '').trim()
+      if (text) log.warn(`owner harvester stderr: ${text}`)
+    })
+    child.on('message', (msg) => {
       if (msg?.type === 'owners') {
         recordSessionOwners(msg.sessionId, msg.owners, {
           jsonlPath: msg.jsonlPath,
@@ -477,8 +482,14 @@ export function createJsonlIngestor({
         scheduleJsonlDirSync('owner harvest complete')
       }
     })
-    _ownerHarvester.on('exit', () => { _ownerHarvester = null })
-    _ownerHarvester.on('error', (e) => { log.warn(`owner harvester error: ${e.message}`); _ownerHarvester = null })
+    const noteOwnerDown = (reason) => {
+      if (_ownerHarvester === child) _ownerHarvester = null
+      if (reason) log.warn(`owner harvester down: ${reason}`)
+    }
+    child.on('exit', (code, signal) => noteOwnerDown(`exit code=${code ?? 'null'} signal=${signal ?? 'null'}`))
+    child.on('close', (code, signal) => noteOwnerDown(`close code=${code ?? 'null'} signal=${signal ?? 'null'}`))
+    child.on('disconnect', () => noteOwnerDown('ipc disconnect'))
+    child.on('error', (e) => noteOwnerDown(`error: ${e.message}`))
   }
 
   let _jsonlIngester = null
@@ -520,7 +531,7 @@ export function createJsonlIngestor({
     if (!fs.existsSync(script)) throw new Error(`JSONL ingester child missing: ${script}`)
     let child
     try {
-      child = forkProcess(script, [], { execArgv: [], stdio: ['ignore', 'ignore', 'ignore', 'ipc'] })
+      child = forkProcess(script, [], { execArgv: [], stdio: ['ignore', 'ignore', 'pipe', 'ipc'] })
       _jsonlIngester = child
     } catch (e) {
       _jsonlIngester = null
@@ -533,9 +544,19 @@ export function createJsonlIngestor({
       if (_jsonlIngester === child) _jsonlIngester = null
       handleJsonlIngesterExit(code, signal)
     }
+    child.stderr?.on?.('data', chunk => {
+      const text = String(chunk || '').trim()
+      if (text) log.warn(`JSONL ingester stderr: ${text}`)
+    })
     child.on('message', handleJsonlIngesterMessage)
     child.on('exit', (code, signal) => {
       noteDown(code, signal)
+    })
+    child.on('close', (code, signal) => {
+      noteDown(code ?? 'close', signal)
+    })
+    child.on('disconnect', () => {
+      noteDown('disconnect', null)
     })
     child.on('error', (e) => {
       if (isClosedIpcError(e)) {
@@ -590,6 +611,9 @@ export function createJsonlIngestor({
     } catch (e) {
       if (isClosedIpcError(e) && _jsonlIngester === child) {
         _jsonlIngester = null
+        try { child.kill?.() } catch {
+          // Best-effort cleanup of a stale child handle.
+        }
         handleJsonlIngesterExit(e.code || 'ipc-closed', null)
       }
       throw e
