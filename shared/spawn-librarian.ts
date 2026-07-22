@@ -1,6 +1,6 @@
 import { createLiveStore } from './live-store.ts'
 export type LivenessState = 'alive' | 'dead' | 'spawning' | 'wedged' | 'unknown'
-export type SpawnFailureReason = 'launch-failed' | 'login-timeout' | 'acceptance-timeout' | 'policy-denied' | 'name-bounced'
+export type SpawnFailureReason = 'launch-failed' | 'login-timeout' | 'policy-denied' | 'name-bounced'
 
 export interface AgentRecord {
   id: string
@@ -129,18 +129,6 @@ export function raiseSpawnBounceItem(
 interface PendingWaiter {
   resolve: (result: SpawnResult) => void
   timer: ReturnType<typeof setTimeout>
-  mode: 'login' | 'accepted-seat'
-  agent?: AgentRecord
-  seatObservation?: AcceptedSeatObservation
-  isSeatCurrent?: (seat: AcceptedSeatObservation) => boolean
-}
-
-export interface AcceptedSeatObservation {
-  agent_id: string
-  session_id: string
-  daemon_key: string
-  terminal_capability: string
-  activated_at: string
 }
 
 interface DeliveryWait {
@@ -189,18 +177,6 @@ export class SpawnLibrarian {
   }
 
   awaitLogin(input: { id: string; name: string; spec?: SpawnSpec }): Promise<SpawnResult> {
-    return this.awaitReadiness(input, 'login')
-  }
-
-  awaitAcceptedSeat(input: { id: string; name: string; spec?: SpawnSpec; isSeatCurrent: (seat: AcceptedSeatObservation) => boolean }): Promise<SpawnResult> {
-    return this.awaitReadiness(input, 'accepted-seat', input.isSeatCurrent)
-  }
-
-  private awaitReadiness(
-    input: { id: string; name: string; spec?: SpawnSpec },
-    mode: PendingWaiter['mode'],
-    isSeatCurrent?: PendingWaiter['isSeatCurrent'],
-  ): Promise<SpawnResult> {
     const startedAt = this.now()
     const pending: PendingSpawn = {
       id: input.id,
@@ -212,26 +188,18 @@ export class SpawnLibrarian {
     this.pendingSpawns.upsert(pending)
     return new Promise((resolve) => {
       const timer = this.setTimer(() => {
-        const waiter = this.waiters.get(input.id)
         this.waiters.delete(input.id)
         this.pendingSpawns.remove(input.id)
-        if (mode === 'login' || !waiter?.agent) this.timedOutIds.set(input.id, this.now())
-        resolve({ ok: false, reason: mode === 'login' ? 'login-timeout' : 'acceptance-timeout' })
+        this.timedOutIds.set(input.id, this.now())
+        resolve({ ok: false, reason: 'login-timeout' })
       }, this.loginDeadlineMs)
-      this.waiters.set(input.id, { resolve, timer, mode, isSeatCurrent })
+      this.waiters.set(input.id, { resolve, timer })
     })
   }
 
   observeLogin(agent: AgentRecord): void {
     const waiter = this.waiters.get(agent.id)
     if (waiter) {
-      if (waiter.mode === 'accepted-seat') {
-        waiter.agent = agent
-        if (waiter.seatObservation && waiter.isSeatCurrent?.(waiter.seatObservation)) {
-          this.resolveAcceptedSeat(agent.id, waiter)
-        }
-        return
-      }
       this.clearTimer(waiter.timer)
       this.waiters.delete(agent.id)
       this.pendingSpawns.remove(agent.id)
@@ -251,24 +219,6 @@ export class SpawnLibrarian {
     for (const [id, ts] of this.timedOutIds) {
       if (ts < cutoff) this.timedOutIds.delete(id)
     }
-  }
-
-  observeSeat(seat: Partial<AcceptedSeatObservation>): void {
-    const agentId = seat.agent_id
-    if (!agentId || !seat.session_id || !seat.daemon_key || !seat.terminal_capability || !seat.activated_at) return
-    const waiter = this.waiters.get(agentId)
-    if (!waiter || waiter.mode !== 'accepted-seat') return
-    waiter.seatObservation = seat as AcceptedSeatObservation
-    if (!waiter.agent || !waiter.isSeatCurrent?.(waiter.seatObservation)) return
-    this.resolveAcceptedSeat(agentId, waiter)
-  }
-
-  private resolveAcceptedSeat(agentId: string, waiter: PendingWaiter): void {
-    if (!waiter.agent) return
-    this.clearTimer(waiter.timer)
-    this.waiters.delete(agentId)
-    this.pendingSpawns.remove(agentId)
-    waiter.resolve({ ok: true, agent: waiter.agent })
   }
 
   failPending(id: string, reason: SpawnFailureReason): void {

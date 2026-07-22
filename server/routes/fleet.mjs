@@ -193,7 +193,7 @@ export function filteredFleetRosterPage(roster, {
   return { matched: ordered.length, rows: page, nextCursor }
 }
 
-export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, clearEphemeralState, suppressEchoFor, sendRpc, resolveRpc, daemonConnections, resolveSpawnTarget, broadcastDaemonAgentsUpdated, enqueueDaemonMessage, agentSeatBindingObligations, onAgentSeatAccepted = () => {}, hasOpenFleetSocketForAgent = () => false }) {
+export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, clearEphemeralState, suppressEchoFor, sendRpc, resolveRpc, daemonConnections, resolveSpawnTarget, broadcastDaemonAgentsUpdated, enqueueDaemonMessage, agentSeatBindingObligations, hasOpenFleetSocketForAgent = () => false }) {
   // Helper: route an agent op through the daemon, or 503 cleanly. The
   // op-name is whatever the daemon's rpc dispatcher expects (kebab-case
   // matches the spec: 'send-key', 'capture-pane', etc.).
@@ -280,7 +280,6 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
         envName,
         daemonKey,
       })
-      onAgentSeatAccepted(agent.id, seat)
       broadcastState()
       res.json({ ok: true, seat })
     } catch (e) {
