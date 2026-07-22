@@ -675,6 +675,13 @@ let _reconnectDelay = 1000
 let _connected = false
 let _disconnectedAt = 0
 let _heartbeatInterval = null
+let _receiveWatchdogInterval = null
+// Force a reconnect if the socket produces no inbound traffic for this long. A
+// healthy socket yields a message at least every ~30s (server heartbeat reply +
+// deltas), so >2 cycles of total silence means it's half-open/dead. Kept above
+// the server's 60s heartbeat grace so the two can't fight over a jittery socket.
+const WS_RECEIVE_TIMEOUT_MS = 75_000
+const WS_RECEIVE_CHECK_MS = 15_000
 let _lastWsOpenAt = 0
 let _lastWsCloseAt = 0
 let _lastWsActivityAt = 0
@@ -829,9 +836,47 @@ function _startHeartbeat() {
   if (_heartbeatInterval) clearInterval(_heartbeatInterval)
   _heartbeatInterval = setInterval(() => {
     if (_humanId && _ws && _ws.readyState === 1) {
-      _ws.send(JSON.stringify({ type: 'heartbeat', agent: _humanId }))
+      // Send the heartbeat as a REQUEST (with an id) so the server's reply()
+      // sends a frame back. That inbound frame is what resets the receive
+      // watchdog every 30s on a healthy socket. A raw id-less heartbeat gets
+      // NO reply — the server's reply() no-ops without an id — so a
+      // quiet-but-healthy connection would produce zero inbound and the
+      // watchdog would false-reconnect every cycle. The reply is fire-and-forget
+      // here (we only need the inbound frame); a half-open socket gets no reply,
+      // so the watchdog still fires.
+      wsSend({ type: 'heartbeat', agent: _humanId }).catch(() => {})
     }
   }, 30_000)
+  _startReceiveWatchdog()
+}
+
+// Receive-side watchdog. The heartbeat above only SENDS; on its own it can't
+// notice a socket that went half-open (Wi-Fi sleep, network change, backgrounded
+// tab) where `onclose` never fires. A half-open socket sits at readyState===1
+// forever, so no reconnect runs and new chat events silently stop arriving —
+// the "reload over and over to see anything" failure. This is the browser-native
+// equivalent of ResilientWS's heartbeat-timeout (shared/resilient-ws.mjs): a live
+// socket produces inbound traffic at least every 30s (the server replies to our
+// heartbeat, plus agents-delta/chat), so if we've heard NOTHING for well over two
+// heartbeat cycles we assume the socket is dead and force-close it. That close
+// fires `onclose`, which runs the existing reconnect + reconnect-backfill path.
+function _startReceiveWatchdog() {
+  if (_receiveWatchdogInterval) clearInterval(_receiveWatchdogInterval)
+  // Seed activity so a stale timestamp from a prior dead socket can't fire
+  // immediately after a fresh open.
+  _lastWsActivityAt = Date.now()
+  _receiveWatchdogInterval = setInterval(() => {
+    if (!_ws || _ws.readyState !== 1) return
+    const silentForMs = Date.now() - _lastWsActivityAt
+    if (silentForMs > WS_RECEIVE_TIMEOUT_MS) {
+      log.warn('fleet-data', 'receive watchdog: no inbound activity — forcing reconnect', { silentForMs })
+      try { _ws.close() } catch { /* onclose still fires the reconnect path */ }
+    }
+  }, WS_RECEIVE_CHECK_MS)
+}
+
+function _stopReceiveWatchdog() {
+  if (_receiveWatchdogInterval) { clearInterval(_receiveWatchdogInterval); _receiveWatchdogInterval = null }
 }
 
 let _lastViewingSent = 0
@@ -970,6 +1015,7 @@ export function connect() {
     _connected = false
     _disconnectedAt = _disconnectedAt || Date.now()
     if (_heartbeatInterval) { clearInterval(_heartbeatInterval); _heartbeatInterval = null }
+    _stopReceiveWatchdog()
     notify('connection', { type: 'connection', connected: false })
     setTimeout(connect, _reconnectDelay)
     _reconnectDelay = Math.min(_reconnectDelay * 2, 15000) // cap at 15s, not 30s
