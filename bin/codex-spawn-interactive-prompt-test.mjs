@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { detectSpawnStartupFailureTranscript } from '../agent-runtime/daemon-guards.mjs'
 import { buildCmd, resolveOwnedCodexTranscript } from '../agent-launch/harness/codex.mjs'
 import { createAgentLauncher } from '../agent-launch/agent-launch.mjs'
-import { bindLifecycleCodexResumeIdentity, persistAssignedAgentGrant } from '../cli/tlda.mjs'
+import { bindLifecycleCodexResumeIdentity, bindSpawnRuntimeIfNeeded, persistAssignedAgentGrant } from '../cli/tlda.mjs'
 import { recordAgentBindingEvent } from '../server/lib/agent-binding-events.mjs'
 
 function permissionSet(name = 'test') {
@@ -208,6 +208,22 @@ async function testLocalMintPersistsGrantBeforeBinding() {
   })
 }
 
+async function testClaudeWakeReusesExistingBinding() {
+  let bindCalls = 0
+  const result = {
+    fleetId: 'fleet:claude-wake',
+    resumeId: '6c722cd2-e207-4680-960b-ab40e1a77d0c',
+    harness: 'claude',
+  }
+  const binding = await bindSpawnRuntimeIfNeeded({
+    spawnMode: 'respawn',
+    result,
+    bindLifecycleImpl: async () => { bindCalls += 1; throw new Error('wake must not rotate the current terminal capability') },
+  })
+  assert.deepEqual(binding, { bound: true, reused: true, existing: true })
+  assert.equal(bindCalls, 0)
+}
+
 async function testExistingResumeBindingUsesLedgerTerminalCapability() {
   const posted = []
   const ledger = memoryLedger()
@@ -333,6 +349,7 @@ testCodexLaunchForcesCiEnv()
 await testFreshCodexPromptFailureFailsLoud()
 await testLifecycleBindingRepollsIncompleteEarlyIdentity()
 await testLocalMintPersistsGrantBeforeBinding()
+await testClaudeWakeReusesExistingBinding()
 await testExistingResumeBindingUsesLedgerTerminalCapability()
 await testFreshCodexOpenRolloutAcceptsLaunchMatchedOwnerlessFile()
 testAgentSeatBindingMirrorsRouteIdentityToRosterFields()

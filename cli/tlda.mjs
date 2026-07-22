@@ -2772,13 +2772,13 @@ export async function runFleetSpawn(spawnArgs, {
     await persistAssignedAgentGrant({ ledger, result, grant, grantedProfile, preallocatedAgentId, params })
     let boundResume
     try {
-      boundResume = await bindLifecycleCodexResumeIdentity(result, {
+      boundResume = await bindSpawnRuntimeIfNeeded({ spawnMode, result, bindLifecycleImpl: bindLifecycleCodexResumeIdentity, options: {
         ledger,
         cwd,
         name,
         api: apiImpl,
         requireReadback: spawnMode === 'fresh' || spawnMode === 'session',
-      })
+      } })
     } catch (e) {
       throw e
     }
@@ -2812,6 +2812,14 @@ export async function runFleetSpawn(spawnArgs, {
   } finally {
     if (ledger) await ledger.close()
   }
+}
+
+export async function bindSpawnRuntimeIfNeeded({ spawnMode, result, bindLifecycleImpl = bindLifecycleCodexResumeIdentity, options } = {}) {
+  // Wake resumes the runtime/session binding already used to locate the exact
+  // session. Rebinding would rotate its terminal capability and conflict with
+  // the current server record.
+  if (spawnMode === 'respawn') return { bound: true, reused: true, existing: true }
+  return bindLifecycleImpl(result, options)
 }
 
 export async function persistAssignedAgentGrant({ ledger, result, grant, grantedProfile, preallocatedAgentId, params } = {}) {
