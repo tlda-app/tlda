@@ -455,10 +455,16 @@ def _iter_math_spans(raw_lines):
             body = DISPLAY_OPEN.sub(' ', body)
             display_buf = [body]
             # single-line display closed on same line?
-            if ENV_END_RE.search(body) or DISPLAY_CLOSE_ANY.search(body):
+            env_close = ENV_END_RE.search(body)
+            bracket_close = DISPLAY_CLOSE_ANY.search(body)
+            if env_close or bracket_close:
                 in_display = False
-                body = ENV_END_RE.sub(' ', body)
-                body = re.sub(r'\\\]', ' ', body)
+                # The display span ends at its first same-line close delimiter.
+                # Do not include prose after \] in the math body.
+                close = min(
+                    (m for m in (env_close, bracket_close) if m is not None),
+                    key=lambda m: m.start())
+                body = body[:close.start()]
                 yield (i, body)
                 display_buf = []
             continue

@@ -40,8 +40,10 @@ check('one-line display body strips the closing \\]',
       one and '\\]' not in one[0][1])
 
 # Trailing text after the close on the same line must not swallow the span.
-one2 = spans([r'\[ a = b \] and then prose'])
+one2 = spans([r'\[ a=b \] prose, c=d'])
 check('one-line display with trailing prose still yields one span', len(one2) == 1)
+check('one-line display excludes relation/comma-like trailing prose',
+      one2 and one2[0][1].strip() == 'a=b')
 
 # --- no-regression: multi-line display (\] on its own line) still works ---
 multi = spans([r'\[', r'  p = \Pr(A), d = \E[Y]', r'\]'])
