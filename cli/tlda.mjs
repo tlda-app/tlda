@@ -2766,6 +2766,10 @@ export async function runFleetSpawn(spawnArgs, {
       }
       throw e
     }
+    // A local-origin launch receives its fleet id from mint-shell. Persist the
+    // already-authorized grant under that server id before runtime binding so
+    // bindAgentSeat can mint the terminal capability for the same agent.
+    await persistAssignedAgentGrant({ ledger, result, grant, grantedProfile, preallocatedAgentId, params })
     let boundResume
     try {
       boundResume = await bindLifecycleCodexResumeIdentity(result, {
@@ -2784,16 +2788,6 @@ export async function runFleetSpawn(spawnArgs, {
     }
     if (!boundResume.bound && (boundResume.submitError || boundResume.readError)) {
       throw boundResume.submitError || boundResume.readError
-    }
-    const shouldPersistGrant = params.spawnMode !== 'respawn' || params.explicitPolicy
-    if (shouldPersistGrant && (!preallocatedAgentId || result.fleetId !== preallocatedAgentId)) {
-      await ledger.set(result.fleetId, {
-        spawnPolicy: grant.spawnPolicy,
-        permissionProfile: grantedProfile,
-        permissionIntersection: grant.permissionIntersection,
-        permissionSet: grant.permissionSet,
-        source: 'agent-lifecycle-cli',
-      })
     }
     if (spawnMode === 'respawn' && wakeLocalAgentId && grantedProfile) {
       const { createLocalAgentLedger } = await import('../agent-launch/local-agent-ledger.mjs')
@@ -2818,6 +2812,19 @@ export async function runFleetSpawn(spawnArgs, {
   } finally {
     if (ledger) await ledger.close()
   }
+}
+
+export async function persistAssignedAgentGrant({ ledger, result, grant, grantedProfile, preallocatedAgentId, params } = {}) {
+  const shouldPersistGrant = params?.spawnMode !== 'respawn' || params?.explicitPolicy
+  if (!shouldPersistGrant || (preallocatedAgentId && result?.fleetId === preallocatedAgentId)) return false
+  await ledger.set(result.fleetId, {
+    spawnPolicy: grant.spawnPolicy,
+    permissionProfile: grantedProfile,
+    permissionIntersection: grant.permissionIntersection,
+    permissionSet: grant.permissionSet,
+    source: 'agent-lifecycle-cli',
+  })
+  return true
 }
 
 export async function createLifecycleSeatBindingObligation(result, {

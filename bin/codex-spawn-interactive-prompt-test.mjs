@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { detectSpawnStartupFailureTranscript } from '../agent-runtime/daemon-guards.mjs'
 import { buildCmd, resolveOwnedCodexTranscript } from '../agent-launch/harness/codex.mjs'
 import { createAgentLauncher } from '../agent-launch/agent-launch.mjs'
-import { bindLifecycleCodexResumeIdentity } from '../cli/tlda.mjs'
+import { bindLifecycleCodexResumeIdentity, persistAssignedAgentGrant } from '../cli/tlda.mjs'
 import { recordAgentBindingEvent } from '../server/lib/agent-binding-events.mjs'
 
 function permissionSet(name = 'test') {
@@ -185,6 +185,29 @@ async function testLifecycleBindingRepollsIncompleteEarlyIdentity() {
   assert.equal(posted[0].payload.agent_id, 'fleet:repoll')
 }
 
+async function testLocalMintPersistsGrantBeforeBinding() {
+  const ledger = memoryLedger()
+  const result = { fleetId: 'fleet:server-assigned' }
+  const grant = {
+    spawnPolicy: { policy: 'sandboxed' },
+    permissionIntersection: { profiles: ['local', 'project'] },
+    permissionSet: { operations: {} },
+  }
+  assert.equal(await persistAssignedAgentGrant({
+    ledger,
+    result,
+    grant,
+    grantedProfile: 'app-dev',
+    preallocatedAgentId: undefined,
+    params: { spawnMode: 'fresh', explicitPolicy: false },
+  }), true)
+  assert.deepEqual(ledger.get(result.fleetId), {
+    ...grant,
+    permissionProfile: 'app-dev',
+    source: 'agent-lifecycle-cli',
+  })
+}
+
 async function testExistingResumeBindingUsesLedgerTerminalCapability() {
   const posted = []
   const ledger = memoryLedger()
@@ -309,6 +332,7 @@ testCodexInteractivePromptClassifier()
 testCodexLaunchForcesCiEnv()
 await testFreshCodexPromptFailureFailsLoud()
 await testLifecycleBindingRepollsIncompleteEarlyIdentity()
+await testLocalMintPersistsGrantBeforeBinding()
 await testExistingResumeBindingUsesLedgerTerminalCapability()
 await testFreshCodexOpenRolloutAcceptsLaunchMatchedOwnerlessFile()
 testAgentSeatBindingMirrorsRouteIdentityToRosterFields()
