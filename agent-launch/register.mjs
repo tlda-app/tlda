@@ -5,7 +5,7 @@ import os from 'os'
 import path from 'path'
 import tls from 'tls'
 import { WebSocket } from 'ws'
-import { getFleetServerUrl, loadConfig } from '../shared/config.mjs'
+import { getFleetServerUrl, getMachineId, loadConfig } from '../shared/config.mjs'
 import { prettyNameForFriendlyName } from '../shared/lineage-name.mjs'
 import { activeConfigName, readConfig, sanitizeSessionName } from './identity.mjs'
 import { createPermissionLedger } from './permission-ledger.mjs'
@@ -24,20 +24,7 @@ function wsForm(url) {
 
 export function resolveApi({ env = process.env, config = null } = {}) {
   if (env.TLDA_SERVER) return httpForm(env.TLDA_SERVER)
-  try {
-    return httpForm(getFleetServerUrl(config || loadConfig()))
-  } catch {
-    const cfg = config || readConfig()
-    const name = env.TLDA_CONFIG || cfg.defaultConfig
-    const raw = cfg.configs?.[name]
-    if (raw?.database || raw?.store) return httpForm(raw.database || raw.store)
-    if (cfg.fleetServer) return httpForm(cfg.fleetServer)
-    if (cfg.server) return httpForm(cfg.server)
-    const port = env.FLEET_DASH_PORT || '5176'
-    const host = env.FLEET_DASH_HOST || '127.0.0.1'
-    const cert = path.join(os.homedir(), '.config', 'tlda', 'localhost+2.pem')
-    return `${fs.existsSync(cert) ? 'https' : 'http'}://${host}:${port}`
-  }
+  return httpForm(getFleetServerUrl(config || loadConfig()))
 }
 
 export function tlsOptionsForApi(api) {
@@ -310,7 +297,7 @@ async function wsIdentityMessage(type, {
     kind,
   }
   if (shell) msg.shell = true
-  const resolvedMachineId = machineId || process.env.TLDA_MACHINE_ID || cfg.machineId
+  const resolvedMachineId = machineId || getMachineId()
   if (resolvedMachineId) msg.machine_id = resolvedMachineId
   const resolvedEnvName = envName || activeConfigName(cfg)
   if (resolvedEnvName) {

@@ -244,7 +244,7 @@ const config = loadConfig()
 const SERVER = process.env.TLDA_SERVER
   ? process.env.TLDA_SERVER
   : (_usingCustomConfigDir
-      ? (config.fleetServer || config.server || `${hasTls ? 'https' : 'http'}://localhost:${DEFAULT_PORT}`)
+      ? getFleetServerUrl(config)
       : getFleetServerUrl(config))
 // The active config NAME (TLDA_CONFIG → defaultConfig). This — not a URL — is the
 // single selector we propagate to spawned agents so their MCP resolves the SAME
@@ -259,7 +259,7 @@ if (!ACTIVE_CONFIG) {
 }
 {
   const configuredServer = _usingCustomConfigDir
-    ? (config.fleetServer || config.server || `${hasTls ? 'https' : 'http'}://localhost:${DEFAULT_PORT}`)
+    ? getFleetServerUrl(config)
     : getFleetServerUrl(config)
   const { refuseReason } = resolveDaemonIsolation({
     env: process.env,
@@ -311,9 +311,7 @@ const _serverFromConfig = !process.env.TLDA_SERVER && !_usingCustomConfigDir
 // Fail loud if a hand-pinned TLDA_SERVER disagrees with the active config — the
 // 6/27 divergence, refused at the door rather than served silently. Bubbles.
 assertServerCoherence(config)
-const TOKEN = _usingCustomConfigDir
-  ? (process.env.TLDA_TOKEN || config.tokenRw || config.token || null)
-  : getRwToken(config)
+const TOKEN = getRwToken(config)
 const TMUX_SOCKET = config.tmuxSocket || null
 const TMUX_ARGS = TMUX_SOCKET ? ['-L', TMUX_SOCKET] : []
 

@@ -17,7 +17,7 @@ import { collectSourceFiles, collectSourceHashes, collectSpecificFiles } from '.
 import { diffSourceHashes, normalizeSourceManifest } from '../shared/source-manifest.mjs'
 import { collectHtmlArtifactFiles, htmlArtifactMainForSource } from './lib/html-artifact-files.mjs'
 import {
-  loadConfig, saveConfig, getServerUrl, getFleetServerUrl, getRwToken, getActiveConfigName, DEFAULT_PORT,
+  loadConfig, saveConfig, getServerUrl, getFleetServerUrl, getRwToken, getReadToken, saveTokens, getActiveConfigName, DEFAULT_PORT,
   CONFIG_DIR, CONFIG_FILE, hasTls, TLS_CA_PATH, getManagedBots, getMachineId,
 } from '../shared/config.mjs'
 import { tldaFetch } from '../shared/http-client.mjs'
@@ -2184,15 +2184,12 @@ async function cmdAuth() {
   const sub = getPositional(0)
 
   if (sub === 'init') {
-    const config = loadConfig()
     const tokenRw = randomBytes(24).toString('base64url')
     const tokenRead = randomBytes(24).toString('base64url')
-    config.tokenRw = tokenRw
-    config.tokenRead = tokenRead
-    config.token = tokenRw  // CLI uses the RW token
-    saveConfig(config)
+    // Tokens live in their own tokens.json — never config.json or daemon.yaml.
+    saveTokens({ tokenRw, tokenRead })
 
-    console.log(green('Tokens generated and saved to config.'))
+    console.log(green('Tokens generated and saved to tokens.json.'))
     console.log()
     console.log(`  RW token:   ${bold(tokenRw)}`)
     console.log(`  Read token: ${bold(tokenRead)}`)
@@ -2203,10 +2200,8 @@ async function cmdAuth() {
   }
 
   if (sub === 'show') {
-    const config = loadConfig()
-    console.log(`  RW token:   ${config.tokenRw || dim('(not set)')}`)
-    console.log(`  Read token: ${config.tokenRead || dim('(not set)')}`)
-    console.log(`  CLI token:  ${config.token || dim('(not set)')}`)
+    console.log(`  RW token:   ${getRwToken() || dim('(not set)')}`)
+    console.log(`  Read token: ${getReadToken() || dim('(not set)')}`)
     return
   }
 

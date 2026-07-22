@@ -181,10 +181,19 @@ export function assertServerCoherence(config = null) {
  * RW token resolution. Used by agents, daemon, CLI — anything that writes.
  * TLDA_TOKEN env → config.tokenRw → config.token → null
  */
+const TOKENS_FILE = join(CONFIG_DIR, 'tokens.json')
+
+/** Tokens live in their own tokens.json — NOT in config.json or daemon.yaml. */
+function loadTokens() {
+  try {
+    return JSON.parse(readFileSync(TOKENS_FILE, 'utf8'))
+  } catch {
+    return {}
+  }
+}
+
 export function getRwToken() {
-  if (process.env.TLDA_TOKEN) return process.env.TLDA_TOKEN
-  const d = loadDaemonYaml()
-  return d.tokenRw || d.token || null
+  return process.env.TLDA_TOKEN || loadTokens().tokenRw || loadTokens().token || null
 }
 
 /**
@@ -192,9 +201,13 @@ export function getRwToken() {
  * TLDA_TOKEN_READ env → config.tokenRead → null
  */
 export function getReadToken() {
-  if (process.env.TLDA_TOKEN_READ) return process.env.TLDA_TOKEN_READ
-  const d = loadDaemonYaml()
-  return d.tokenRead || null
+  return process.env.TLDA_TOKEN_READ || loadTokens().tokenRead || null
+}
+
+/** Write tokens to tokens.json — their own file, never config.json/daemon.yaml. */
+export function saveTokens(tokens) {
+  if (!existsSync(CONFIG_DIR)) mkdirSync(CONFIG_DIR, { recursive: true })
+  writeFileSync(TOKENS_FILE, JSON.stringify(tokens, null, 2))
 }
 
 /** This machine's id, from daemon.yaml `machineId` (TLDA_MACHINE_ID env wins). */
