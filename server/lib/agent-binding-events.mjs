@@ -26,11 +26,22 @@ export function recordAgentBindingEvent(fleetStore, msg = {}, {
       created_by_event_id: msg.created_by_event_id || null,
     })
   }
-  return fleetStore.activateAgentSeat({
+  const seat = fleetStore.activateAgentSeat({
     agentId,
     sessionId,
     ...route,
     reason: msg.transition_reason || 'runtime-binding',
     activatedByEventId: msg.activated_by_event_id || null,
   })
+  fleetStore.mirrorAgentSeatIdentity?.({
+    agentId,
+    session_id: seat.session_id,
+    session_ids: seat.session_id ? [seat.session_id] : null,
+    resume_id: seat.resume_id || seat.session_id,
+    cwd: seat.cwd || msg.cwd || null,
+    machine_id: seat.machine_id,
+    env_name: seat.env_name,
+    daemon_key: seat.daemon_key,
+  })
+  return seat
 }

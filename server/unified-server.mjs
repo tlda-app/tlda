@@ -5005,9 +5005,9 @@ async function handleFleetWsMessage(ws, msg) {
       id: agentId,
       friendly_name: assignedName || null,
       pretty_name: pretty_name ?? existing?.pretty_name ?? null,
-      session_id: null,
-      session_ids: null,
-      cwd: null,
+      session_id: existing?.session_id || null,
+      session_ids: existing?.session_ids || null,
+      cwd: existing?.cwd || null,
       labels: labels || existing?.labels || [],
       registered_at: existing?.registered_at || now,
       last_seen: now,
@@ -5017,10 +5017,10 @@ async function handleFleetWsMessage(ws, msg) {
       metadata: (metadata || existing?.metadata || kind)
         ? { ...(existing?.metadata || {}), ...(metadata || {}), ...(kind ? { kind } : {}) }
         : null,
-      machine_id: null,
-      env_name: null,
-      daemon_key: null,
-      resume_id: null,
+      machine_id: existing?.machine_id || null,
+      env_name: existing?.env_name || null,
+      daemon_key: existing?.daemon_key || null,
+      resume_id: existing?.resume_id || null,
     }
     // Persist spawnPolicy ATOMICALLY as a coherent region blob. The shallow metadata
     // merge above is what let partial spawnPolicy writes corrupt the blob across
@@ -5119,9 +5119,9 @@ async function handleFleetWsMessage(ws, msg) {
       const now = new Date().toISOString()
       const agent = {
         ...existing,
-        session_id: null,
-        session_ids: null,
-        cwd: null,
+        session_id: existing.session_id || null,
+        session_ids: existing.session_ids || null,
+        cwd: existing.cwd || null,
         labels: labels || existing.labels || [],
         last_seen: now,
         dead: false,
@@ -5130,10 +5130,10 @@ async function handleFleetWsMessage(ws, msg) {
         metadata: (metadata || existing.metadata || kind)
           ? { ...(existing.metadata || {}), ...(metadata || {}), ...(kind ? { kind } : {}) }
           : null,
-        machine_id: null,
-        env_name: null,
-        daemon_key: null,
-        resume_id: null,
+        machine_id: existing.machine_id || null,
+        env_name: existing.env_name || null,
+        daemon_key: existing.daemon_key || null,
+        resume_id: existing.resume_id || null,
       }
       if (agent.metadata?.spawnPolicy) {
         agent.metadata = { ...agent.metadata, spawnPolicy: normalizeRegionPolicy(agent.metadata.spawnPolicy) }

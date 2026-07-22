@@ -229,6 +229,16 @@ export function decideTerminalWatchExit({ paneLive } = {}) {
 
 const STARTUP_FAILURE_PATTERNS = [
   {
+    code: 'codex-interactive-prompt',
+    harness: 'codex',
+    pattern: /(?:update available|new version available|press enter to (?:continue|confirm)|enter to continue|restart codex to update)/i,
+  },
+  {
+    code: 'codex-interactive-prompt',
+    harness: 'codex',
+    pattern: /(?:do you trust the contents of this directory|trust this directory|approval required|allow command|press enter to confirm)/i,
+  },
+  {
     code: 'codex-unsupported-model',
     harness: 'codex',
     pattern: /(?:unsupported|unknown|invalid)\s+model|model\s+[`"']?gpt-5[`"']?\s+(?:is\s+)?(?:not\s+)?(?:supported|available)|model_not_found/i,

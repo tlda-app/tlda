@@ -382,10 +382,58 @@ async function testRestartReplayReusesExactBoundSeatAndCapability() {
   }
 }
 
+async function testRespawnKeepsExistingIdGrantAndReportsMissingResume() {
+  const cwd = mkdtempSync(join(tmpdir(), 'tlda-wake-resume-'))
+  const ledger = memoryLedger()
+  const originalGrant = {
+    permissionSet: permissionSet('existing'),
+    permissionProfile: 'test',
+    spawnPolicy: { policy: 'unsandboxed' },
+    source: 'existing-seat',
+  }
+  await ledger.set('fleet:existing', originalGrant)
+  const launcher = createAgentLauncher({
+    activeConfigName: 'prod',
+    configDir: cwd,
+    loadConfig: () => configFor(cwd),
+    log: { info() {}, warn() {} },
+    machineId: 'mini',
+    permissionLedger: ledger,
+    sendMsg: () => {},
+    getProjects: () => [{ name: 'test-doc', sourceDir: cwd }],
+    tmux: async () => { throw new Error('tmux should not be reached when resume handle is missing') },
+    spawnImpl: async () => {
+      const error = new Error("can't find a daemon-ledger resume identity for existing (fleet:existing); this is a ledger write/key bug, not a lost rollout")
+      error.reason = 'missing-resume-handle'
+      error.code = 'missing-resume-handle'
+      throw error
+    },
+    liveSessionIdentityTimeoutMs: 0,
+  })
+
+  try {
+    const result = await launcher.handlers.spawn({
+      agent_id: 'fleet:existing',
+      name: 'fleet:existing',
+      respawn: true,
+      cwd,
+      requester: { id: 'fleet:requester', name: 'requester' },
+    })
+    assert.equal(result.ok, false)
+    assert.equal(result.code, 'missing-resume-handle')
+    assert.match(result.error, /daemon-ledger resume identity|missing-resume-handle|could not locate/i)
+    assert.deepEqual(ledger.get('fleet:existing'), originalGrant)
+    assert.equal([...ledger.rows.keys()].filter(id => id.startsWith('fleet:')).length, 1)
+  } finally {
+    rmSync(cwd, { recursive: true, force: true })
+  }
+}
+
 await testLiveTmuxWakeDoesNotRespawnWhenServerStatusIsStale()
 await testFreshStartRetainsRuntimeWhenDurableRecoveryCannotBePersisted()
 await testPendingSeatBindingResultDoesNotCountAsWritten()
 await testFreshStartPersistsRecoveryBeforeReturningPending()
 await testPendingRecoveryFindsOnDiskSessionAndIsIdempotent()
 await testRestartReplayReusesExactBoundSeatAndCapability()
+await testRespawnKeepsExistingIdGrantAndReportsMissingResume()
 console.log('wake resume handle regression tests passed')

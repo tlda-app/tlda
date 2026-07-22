@@ -2932,22 +2932,25 @@ export async function bindLifecycleCodexResumeIdentity(result, {
   api = null,
   resolveIdentity = null,
   requireReadback = false,
-  timeoutMs = Number(process.env.TLDA_SPAWN_RESUME_ID_TIMEOUT_MS || 10000),
+  timeoutMs = Number(process.env.TLDA_SPAWN_RESUME_ID_TIMEOUT_MS || 120000),
   intervalMs = 250,
 } = {}) {
   if (result?.fleetId && result.tmuxSession && result.resumeId) {
-    return await postLifecycleSeatBinding(result, { api, cwd, name, sessionId: result.resumeId, existing: true, requireReadback })
+    return await postLifecycleSeatBinding(result, { api, ledger, cwd, name, sessionId: result.resumeId, existing: true, requireReadback })
   }
   if (!result?.fleetId || !result.tmuxSession || !['codex', 'claude'].includes(result.harness)) {
     return { bound: false, skipped: true }
   }
-  const resolution = result.identityResolution || await pollLifecycleResumeIdentity(result, {
-    cwd,
-    name,
-    resolveIdentity,
-    timeoutMs,
-    intervalMs,
-  })
+  let resolution = result.identityResolution || null
+  if (!resolution?.identity?.sessionId || !resolution?.identity?.model) {
+    resolution = await pollLifecycleResumeIdentity(result, {
+      cwd,
+      name,
+      resolveIdentity,
+      timeoutMs,
+      intervalMs,
+    })
+  }
   const identity = resolution?.identity || null
   if (!identity?.sessionId || !identity?.model) {
     return { bound: false, pending: true, reason: 'exact-identity-pending', identity, diagnostics: resolution?.diagnostics || null }
@@ -2972,7 +2975,7 @@ export async function pollLifecycleResumeIdentity(result, {
   cwd,
   name,
   resolveIdentity = null,
-  timeoutMs = Number(process.env.TLDA_SPAWN_RESUME_ID_TIMEOUT_MS || 10000),
+  timeoutMs = Number(process.env.TLDA_SPAWN_RESUME_ID_TIMEOUT_MS || 120000),
   intervalMs = 250,
 } = {}) {
   if (!result?.fleetId || !result.tmuxSession || !['codex', 'claude'].includes(result.harness)) {
