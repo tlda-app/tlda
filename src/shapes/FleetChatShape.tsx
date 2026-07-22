@@ -24,6 +24,8 @@ import { isPhoneViewport } from '../phoneViewport'
 // @ts-ignore — vanilla JS module
 import { renderChatLine, resolveInlineAttachments, esc, chatLineAttachmentRenderSignature } from '../fleet/chat-render.mjs'
 // @ts-ignore — vanilla JS module
+import { compareChatMessagesChronologically } from '../fleet/chat-ordering.mjs'
+// @ts-ignore — vanilla JS module
 import { renderActivityGroup, scheduleTimeLabel } from '../fleet/activity-render.mjs'
 // @ts-ignore — vanilla JS module
 import { highlightSyntax, langFromFilePath, renderMarkdown as renderMarkdownUtil } from '../fleet/utils.mjs'
@@ -1819,7 +1821,6 @@ const ChatMessageRow = memo(function ChatMessageRow({
   return <div ref={divRef} data-item-key={itemKey} dangerouslySetInnerHTML={{ __html: processed }} />
 }, (prev, next) => prev.html === next.html && prev.postProcess === next.postProcess && prev.itemKey === next.itemKey)
 
-
 function FleetChatInner({ shape }: { shape: any }) {
   recordFleetChatRender(shape)
   const editor = useEditor()
@@ -2255,24 +2256,14 @@ function FleetChatInner({ shape }: { shape: any }) {
         return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'activity' || t === 'kill-session' || t === 'interrupt' || t === 'terminal_attention' || t === 'terminal_card' || t === 'plan_approval' || t === 'timer'
       })
       .filter((m: any) => !m._timer) // skip legacy timer-expired messages (fired→_timerFired and cancelled→_timerCancelled still render)
-      // Order by arrival (DB insert id), NOT wall-clock timestamp. The daemon
-      // delivers activity/terminal events carrying their original JSONL ts, but
-      // it delivers them late (buffer flush + poll fallback). Sorting by ts would
-      // insert a late event *back in the past*, behind rows already on screen —
-      // that backward jump is the "bounce". _dbId is the monotonic server insert
-      // order, so a late event always appends at the bottom and nothing already
-      // rendered ever moves. Un-persisted optimistic sends (no _dbId yet) sort
-      // last (they're the newest), tie-broken by timestamp.
-      .sort((a: any, b: any) => {
-        const ida = a._dbId, idb = b._dbId
-        if (ida != null && idb != null) return ida - idb
-        if (ida == null && idb == null) {
-          const ta = a.timestamp ? new Date(a.timestamp).getTime() : 0
-          const tb = b.timestamp ? new Date(b.timestamp).getTime() : 0
-          return ta - tb
-        }
-        return ida == null ? 1 : -1
-      })
+      // Match the server history contract: chronological by event timestamp,
+      // with DB id only as the deterministic tie-breaker. Reconnect backfill is
+      // rowid-based so it can recover missed rows, but rendering by rowid made
+      // delayed terminal/activity/chat rows appear minutes out of chronological
+      // place when they were persisted late. Pending optimistic sends have no
+      // db id and naturally sort to the live tail until the server timestamp
+      // arrives.
+      .sort(compareChatMessagesChronologically)
 
     if (isManagedSurfaceProofFixtureEnabled()) {
       sorted.push(createManagedSurfaceProofMessage(shape.id))
