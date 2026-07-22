@@ -9,6 +9,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 import { parse as parseYaml, parseDocument } from 'yaml'
+import { resolveStrictServerAuthority } from './daemon-config-schema.mjs'
 
 // Preview servers receive an isolated config directory from `tlda-dev serve`.
 // Production keeps the normal shared location; previews must never mutate it.
@@ -112,20 +113,8 @@ function loadDaemonYaml() {
  */
 export function resolveConfig(serverName = null) {
   const d = loadDaemonYaml()
-  if (serverName !== null && typeof serverName !== 'string') {
-    throw new TypeError('tlda config: server name override must be a string')
-  }
-  const override = serverName || null
-  const name = override || process.env.TLDA_CONFIG || d.defaultServer
-  if (!name) throw new Error('tlda config: no active server — set "defaultServer" in daemon.yaml (or TLDA_CONFIG)')
-  const raw = d.servers && d.servers[name]
-  if (!raw) throw new Error(`tlda config: no server named "${name}" in daemon.yaml servers — known: ${Object.keys(d.servers || {}).join(', ') || '(none)'}`)
+  const { name, raw } = resolveStrictServerAuthority(d, serverName)
   const { database, store, licenseKey } = raw
-  for (const [field, val] of [['database', database], ['store', store], ['licenseKey', licenseKey]]) {
-    if (typeof val !== 'string') {
-      throw new Error(`tlda server "${name}": "${field}" must be a string in daemon.yaml servers.${name} — declare database, store, and licenseKey explicitly (no url/database-as-store/top-level-license fallback).`)
-    }
-  }
   return {
     name,
     database: { http: _httpForm(database), ws: _wsForm(database) },

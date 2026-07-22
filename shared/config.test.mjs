@@ -7,7 +7,7 @@
  * Run:  node shared/config.test.mjs
  * Exits non-zero on failure. Uses a temp TLDA_CONFIG_DIR — never touches ~/.config.
  */
-import { mkdtempSync, writeFileSync, rmSync, unlinkSync } from 'fs'
+import { mkdtempSync, writeFileSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 
@@ -19,7 +19,6 @@ delete process.env.TLDA_TOKEN
 delete process.env.TLDA_MACHINE_ID
 
 writeFileSync(join(DIR, 'daemon.yaml'), `
-licenseKey: TOP-LEVEL-MUST-NOT-BE-USED
 defaultServer: complete
 servers:
   complete:
@@ -30,17 +29,32 @@ servers:
     database: https://db2.example
     store: https://store2.example
     licenseKey: ""
-  urlonly:
-    url: https://both.example
-  nostore:
-    database: https://db.example
-    licenseKey: L
-  nolicense:
-    database: https://db.example
-    store: https://store.example
+regions:
+  cwd:
+    - cwd
+profiles:
+  wd:
+    read:
+      allow:
+        - cwd
+      deny: []
+grants:
+  localhost: wd
+models:
+  default: gpt
+  values:
+    gpt:
+      id: gpt
+      harness:
+        kind: codex
+        required: []
+        preferences: []
+        controls: true
+default: wd
 `)
 
 const cfg = await import('./config.mjs?bust=' + Date.now())
+const ledger = await import('../agent-launch/permission-ledger.mjs?bust=' + Date.now())
 const failures = []
 function check(name, cond) {
   console.log((cond ? '  ok  ' : '  FAIL ') + name)
@@ -56,19 +70,109 @@ check('complete: database axis resolves', r.database.http === 'https://db.exampl
 check('complete: store axis resolves', r.store.http === 'https://store.example')
 check('complete: uses per-server license, NOT top-level',
       r.licenseKey === 'SERVER-LICENSE')
+const daemonConfig = ledger.readDaemonConfig(join(DIR, 'daemon.yaml'))
+check('daemon reader accepts strict defaultServer',
+      daemonConfig.defaultServer === r.name)
+check('daemon reader sees same selected database authority',
+      daemonConfig.servers[daemonConfig.defaultServer].database === r.database.http)
+check('daemon reader sees same selected store authority',
+      daemonConfig.servers[daemonConfig.defaultServer].store === r.store.http)
+check('daemon reader sees same selected license authority',
+      daemonConfig.servers[daemonConfig.defaultServer].licenseKey === r.licenseKey)
 
 // --- B4: fleet URL = database axis, distinct from store URL ---
 check('getFleetServerUrl = database axis', cfg.getFleetServerUrl() === 'https://db.example')
 check('getServerUrl = store axis', cfg.getServerUrl() === 'https://store.example')
 check('fleet and store axes are distinct', cfg.getFleetServerUrl() !== cfg.getServerUrl())
 
-// --- B1: every fallback removed ---
-check('legacy url-only entry THROWS (no url fallback)',
-      throws(() => cfg.resolveConfig('urlonly')))
-check('missing store THROWS (no database->store fallback)',
-      throws(() => cfg.resolveConfig('nostore')))
-check('missing per-server license THROWS (no top-level license fallback)',
-      throws(() => cfg.resolveConfig('nolicense')))
+// --- B1: every fallback removed, and both readers reject the same legacy authority ---
+writeDaemon(`defaultServer: urlonly
+servers:
+  urlonly:
+    url: https://both.example
+`)
+check('legacy url-only entry THROWS in resolver (no url fallback)',
+      throws(() => cfg.resolveConfig()))
+check('legacy url-only entry THROWS in daemon reader',
+      throws(() => ledger.readDaemonConfig(join(DIR, 'daemon.yaml'))))
+writeDaemon(`defaultServer: nostore
+servers:
+  nostore:
+    database: https://db.example
+    licenseKey: L
+`)
+check('missing store THROWS in resolver (no database->store fallback)',
+      throws(() => cfg.resolveConfig()))
+check('missing store THROWS in daemon reader',
+      throws(() => ledger.readDaemonConfig(join(DIR, 'daemon.yaml'))))
+writeDaemon(`licenseKey: TOP-LEVEL-MUST-NOT-BE-USED
+defaultServer: nolicense
+servers:
+  nolicense:
+    database: https://db.example
+    store: https://store.example
+`)
+check('top-level license fallback THROWS in resolver',
+      throws(() => cfg.resolveConfig()))
+check('top-level license fallback THROWS in daemon reader',
+      throws(() => ledger.readDaemonConfig(join(DIR, 'daemon.yaml'))))
+writeDaemon(`defaultConfig: complete
+servers:
+  complete:
+    database: https://db.example
+    store: https://store.example
+    licenseKey: L
+`)
+check('legacy defaultConfig selector THROWS in resolver',
+      throws(() => cfg.resolveConfig()))
+check('legacy defaultConfig selector THROWS in daemon reader',
+      throws(() => ledger.readDaemonConfig(join(DIR, 'daemon.yaml'))))
+writeDaemon(`defaultServer: complete
+mystery: true
+servers:
+  complete:
+    database: https://db.example
+    store: https://store.example
+    licenseKey: L
+`)
+check('unknown top-level key THROWS in resolver',
+      throws(() => cfg.resolveConfig()))
+check('unknown top-level key THROWS in daemon reader',
+      throws(() => ledger.readDaemonConfig(join(DIR, 'daemon.yaml'))))
+
+writeDaemon(`defaultServer: complete
+servers:
+  complete:
+    database: https://db.example
+    store: https://store.example
+    licenseKey: SERVER-LICENSE
+  unlicensed:
+    database: https://db2.example
+    store: https://store2.example
+    licenseKey: ""
+regions:
+  cwd:
+    - cwd
+profiles:
+  wd:
+    read:
+      allow:
+        - cwd
+      deny: []
+grants:
+  localhost: wd
+models:
+  default: gpt
+  values:
+    gpt:
+      id: gpt
+      harness:
+        kind: codex
+        required: []
+        preferences: []
+        controls: true
+default: wd
+`)
 
 // --- licenseKey "" is a VALID explicit value (unlicensed), not a failure ---
 check('empty-string license is accepted (explicit unlicensed)',
@@ -121,6 +225,7 @@ check('no config.json was created for machineId',
 rmSync(DIR2, { recursive: true, force: true })
 
 function existsSyncSafe(p) { try { readFileSync(p); return true } catch { return false } }
+function writeDaemon(text) { writeFileSync(join(DIR, 'daemon.yaml'), text) }
 
 rmSync(DIR, { recursive: true, force: true })
 if (failures.length) {
