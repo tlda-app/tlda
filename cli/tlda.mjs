@@ -13,11 +13,12 @@ import { fileURLToPath } from 'url'
 import { homedir, hostname } from 'os'
 import { randomBytes } from 'crypto'
 import { execFileSync } from 'child_process'
+import { stringify as stringifyYaml } from 'yaml'
 import { collectSourceFiles, collectSourceHashes, collectSpecificFiles } from './lib/source-files.mjs'
 import { diffSourceHashes, normalizeSourceManifest } from '../shared/source-manifest.mjs'
 import { collectHtmlArtifactFiles, htmlArtifactMainForSource } from './lib/html-artifact-files.mjs'
 import {
-  loadConfig, saveConfig, getServerUrl, getFleetServerUrl, getRwToken, getReadToken, saveTokens, getActiveConfigName, DEFAULT_PORT,
+  loadConfig, saveConfig, resolveConfig, getServerUrl, getFleetServerUrl, getRwToken, getReadToken, saveTokens, getActiveConfigName, DEFAULT_PORT,
   CONFIG_DIR, CONFIG_FILE, hasTls, TLS_CA_PATH, getManagedBots, getMachineId,
 } from '../shared/config.mjs'
 import { tldaFetch } from '../shared/http-client.mjs'
@@ -986,25 +987,28 @@ function daemonPathEnv() {
   ].join(':')
 }
 
-function daemonEnvironmentEntries({ configDir = null, processTitle = null } = {}) {
+function daemonEnvironmentEntries({ configDir = null, configName = DAEMON_WORLD_NAME, processTitle = null } = {}) {
   const entries = [
     ['PATH', daemonPathEnv()],
     ['NODE_OPTIONS', `--require=${FLEET_DAEMON_DNS_ALIAS_PRELOAD}`],
   ]
   if (existsSync(TLS_CA_PATH)) entries.push(['NODE_EXTRA_CA_CERTS', TLS_CA_PATH])
-  entries.push(['TLDA_CONFIG', DAEMON_WORLD_NAME])
-  if (configDir) entries.push(['TLDA_DAEMON_CONFIG_DIR', configDir])
+  entries.push(['TLDA_CONFIG', configName])
+  if (configDir) {
+    entries.push(['TLDA_CONFIG_DIR', configDir])
+    entries.push(['TLDA_DAEMON_CONFIG_DIR', configDir])
+  }
   if (processTitle) entries.push(['TLDA_DAEMON_PROCESS_TITLE', processTitle])
   return entries
 }
 
-function daemonEnvironmentPlist({ configDir = null, processTitle = null } = {}) {
-  return daemonEnvironmentEntries({ configDir, processTitle })
+function daemonEnvironmentPlist({ configDir = null, configName = DAEMON_WORLD_NAME, processTitle = null } = {}) {
+  return daemonEnvironmentEntries({ configDir, configName, processTitle })
     .map(([key, value]) => `        <key>${plistEscape(key)}</key>\n        <string>${plistEscape(value)}</string>`)
     .join('\n')
 }
 
-function daemonPlistContent({ label = FLEET_DAEMON_LABEL, logFile = FLEET_DAEMON_LOGFILE, configDir = null, cliPath = null, processTitle = null } = {}) {
+function daemonPlistContent({ label = FLEET_DAEMON_LABEL, logFile = FLEET_DAEMON_LOGFILE, configDir = null, configName = DAEMON_WORLD_NAME, cliPath = null, processTitle = null } = {}) {
   const command = `exec /opt/homebrew/bin/node --import tsx ${JSON.stringify(FLEET_DAEMON_SCRIPT)}`
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -1024,7 +1028,7 @@ function daemonPlistContent({ label = FLEET_DAEMON_LABEL, logFile = FLEET_DAEMON
     <string>Background</string>
     <key>EnvironmentVariables</key>
     <dict>
-${daemonEnvironmentPlist({ configDir, processTitle })}
+${daemonEnvironmentPlist({ configDir, configName, processTitle })}
     </dict>
     <key>KeepAlive</key>
     <true/>
@@ -1041,10 +1045,10 @@ ${daemonEnvironmentPlist({ configDir, processTitle })}
 `
 }
 
-async function writeDaemonPlist({ plist = FLEET_DAEMON_PLIST, label = FLEET_DAEMON_LABEL, logFile = FLEET_DAEMON_LOGFILE, configDir = null, cliPath = null, processTitle = null } = {}) {
+async function writeDaemonPlist({ plist = FLEET_DAEMON_PLIST, label = FLEET_DAEMON_LABEL, logFile = FLEET_DAEMON_LOGFILE, configDir = null, configName = DAEMON_WORLD_NAME, cliPath = null, processTitle = null } = {}) {
   if (!existsSync(dirname(plist))) mkdirSync(dirname(plist), { recursive: true })
   if (!existsSync(dirname(logFile))) mkdirSync(dirname(logFile), { recursive: true })
-  writeFileSync(plist, daemonPlistContent({ label, logFile, configDir, cliPath, processTitle }))
+  writeFileSync(plist, daemonPlistContent({ label, logFile, configDir, configName, cliPath, processTitle }))
   return plist
 }
 
@@ -1270,11 +1274,22 @@ function printBotPlan(bot) {
 }
 
 function sandboxDaemonConfig(configDir, label) {
+  const source = resolveConfig()
+  const configName = 'sandbox'
   return {
-    fleetServer: getFleetServerUrl(),
-    server: getServerUrl(),
-    tokenRw: getRwToken() || '',
-    machineId: `${label}.${hostname().split('.')[0]}.${process.pid}`,
+    configName,
+    daemon: {
+      defaultServer: configName,
+      machineId: `${label}.${hostname().split('.')[0]}.${process.pid}`,
+      servers: {
+        [configName]: {
+          database: source.database.http,
+          store: source.store.http,
+          licenseKey: source.licenseKey,
+        },
+      },
+    },
+    tokens: { tokenRw: getRwToken() || '' },
   }
 }
 
@@ -1285,12 +1300,15 @@ async function writeSandboxDaemonPlist() {
   const configDir = join(baseDir, 'config')
   const logFile = join(configDir, 'fleet-daemon.log')
   if (!existsSync(configDir)) mkdirSync(configDir, { recursive: true })
-  writeFileSync(join(configDir, 'config.json'), JSON.stringify(sandboxDaemonConfig(configDir, label), null, 2))
+  const authority = sandboxDaemonConfig(configDir, label)
+  writeFileSync(join(configDir, 'daemon.yaml'), stringifyYaml(authority.daemon))
+  writeFileSync(join(configDir, 'tokens.json'), JSON.stringify(authority.tokens, null, 2))
   await writeDaemonPlist({
     plist,
     label,
     logFile,
     configDir,
+    configName: authority.configName,
     cliPath: join(_cliDir, 'tlda.mjs'),
     processTitle: `tlda-fleet-daemon-${label.replace(/[^A-Za-z0-9_.-]/g, '-')}`,
   })
