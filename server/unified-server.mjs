@@ -634,7 +634,13 @@ setInterval(() => {
   }
   for (const ws of _trackedWs) {
     if (ws.readyState !== 1) continue
-    const heartbeatIntervalMs = ws._wsKind === 'fleet' ? WS_HEARTBEAT_INTERVAL_MS * 2 : WS_HEARTBEAT_INTERVAL_MS
+    // Stopgap (transport-unification): give EVERY socket kind the same 2× grace
+    // fleet already had, so a live-but-jittery daemon/terminal/sync socket isn't
+    // reaped at 30s. Observed: a healthy Mini daemon was terminated at 45s of
+    // no-pong under event-loop/Tailscale jitter, tearing down cards + watcher
+    // push. The client watchdogs (ResilientWS 90s, browser heartbeat) still
+    // reconnect if a socket is genuinely dead; this only stops false kills.
+    const heartbeatIntervalMs = WS_HEARTBEAT_INTERVAL_MS * 2
     if (shouldTerminateForMissedPong(ws._wsLastPongAt, ws._wsLastPingAt, now, heartbeatIntervalMs)) {
       console.log(`[heartbeat] terminating unresponsive ${ws._wsKind} ws=${ws._wsSessionId} doc=${ws._wsDocName || '-'}`)
       recordServerPerfEvent('heartbeat-terminate', {
