@@ -233,7 +233,6 @@ async function testFreshCodexOpenRolloutAcceptsLaunchMatchedOwnerlessFile() {
       runtimePids: [123],
       agent: { id: 'fleet:fresh', friendly_name: 'fresh', cwd },
       launchTs,
-      processOwnedOnly: true,
       resolveTranscriptImpl: async ({ acceptTranscript }) => acceptTranscript(rolloutPath) ? rolloutPath : null,
     })
     assert.equal(resolved, rolloutPath)
@@ -250,7 +249,6 @@ async function testFreshCodexOpenRolloutAcceptsLaunchMatchedOwnerlessFile() {
       runtimePids: [123],
       agent: { id: 'fleet:fresh', friendly_name: 'fresh', cwd },
       launchTs,
-      processOwnedOnly: true,
       resolveTranscriptImpl: async ({ acceptTranscript }) => acceptTranscript(conflictingPath) ? conflictingPath : null,
     })
     assert.equal(rejected, null)

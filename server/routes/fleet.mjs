@@ -291,8 +291,8 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     const body = req.body || {}
     const required = ['agent_id', 'daemon_key', 'local_agent_id', 'cwd', 'kind', 'model', 'friendly_name']
     const missing = required.filter(key => !body[key])
-    if (missing.length || body.process_owned_only !== true) {
-      res.status(400).json({ ok: false, error: `invalid exact binding obligation: missing ${missing.join(', ') || 'process_owned_only=true'}` })
+    if (missing.length) {
+      res.status(400).json({ ok: false, error: `invalid runtime binding obligation: missing ${missing.join(', ')}` })
       return
     }
     const agent = fleetStore?.findAgent(body.agent_id)

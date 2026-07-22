@@ -75,7 +75,6 @@ try {
     kind: 'codex',
     model: 'gpt-test',
     friendly_name: 'status-authority-test',
-    process_owned_only: true,
   })
   const obligationCols = store.db.prepare('PRAGMA table_info(agent_seat_binding_obligations)').all().map(col => col.name)
   assert(!obligationCols.includes('tmux_session'))

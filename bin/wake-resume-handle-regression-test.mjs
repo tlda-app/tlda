@@ -233,10 +233,10 @@ async function testFreshStartPersistsRecoveryBeforeReturningPending() {
     assert.equal(killed, false)
     assert.deepEqual(persisted.map(row => ({
       agent_id: row.agent_id, local_agent_id: row.local_agent_id,
-      daemon_key: row.daemon_key, process_owned_only: row.process_owned_only,
+      daemon_key: row.daemon_key,
     })), [{
       agent_id: 'fleet:newborn', local_agent_id: 'local:newborn',
-      daemon_key: 'mini:prod', process_owned_only: true,
+      daemon_key: 'mini:prod',
     }])
   } finally {
     rmSync(cwd, { recursive: true, force: true })

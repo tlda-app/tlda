@@ -31,7 +31,6 @@ const chosen = await resolveTranscript({
   kind: 'codex',
   agent: { id: 'fleet:expected' },
   launchTs: Date.now(),
-  processOwnedOnly: true,
   acceptTranscript: path => path.includes('expected'),
   findOpenTranscript: async (_pid, _matches, accept) => {
     for (const path of [
@@ -105,10 +104,8 @@ try {
     runtimePids: ['native-codex', 'node-wrapper'],
     agent: { id: 'fleet:expected' },
     launchTs: Date.now(),
-    processOwnedOnly: false,
     resolveTranscriptImpl: async options => {
       resolverCalls.push(options)
-      if (options.processOwnedOnly) return null
       const nearby = options.pid === 'node-wrapper'
         ? [wrongTopLevel]
         : [wrongTopLevel, topLevel]
@@ -116,7 +113,8 @@ try {
     },
   })
   assert.equal(resolved, topLevel, 'a nearby top-level rollout owned by another seat must not bind')
-  assert.equal(resolverCalls.length, 3, 'all descendant runtimes are checked before the owner-filtered fallback')
+  assert.equal(resolverCalls.length, 1, 'the launched runtime JSONL is read without an open-file ownership gate')
+  assert.equal('processOwnedOnly' in resolverCalls[0], false)
   assert.ok(resolverCalls.every(call => typeof call.acceptTranscript === 'function'))
 } finally {
   fs.rmSync(fixtureDir, { recursive: true, force: true })

@@ -145,7 +145,6 @@ export function createAgentLauncher({
       kind: launched.harness || launchKind,
       model: launched.model || launchModel,
       friendly_name: agentName,
-      process_owned_only: true,
     })
     if (result?.ok !== true || result?.pending !== true || !result?.obligation?.obligation_id) {
       throw new Error(`durable identity-recovery obligation was not acknowledged for ${launched.fleetId}`)
@@ -506,7 +505,6 @@ export function createAgentLauncher({
             cwd: resolvedCwd,
             model: launched.model,
             launchStartedAt,
-            processOwnedOnly: launched.harness === 'codex' && spawnMode === 'fresh' && !existingDurableSessionId,
           })
         } catch (e) {
           log.warn(`live ${launched.harness} session identity resolution failed for ${agentName}: ${e.message}`)

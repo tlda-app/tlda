@@ -2641,7 +2641,6 @@ export async function runFleetSpawn(spawnArgs, {
   }
   const { spawn: defaultSpawn } = await import('../agent-launch/index.mjs')
   const spawn = spawnImpl || defaultSpawn
-  const { newFleetId } = await import('../agent-launch/identity.mjs')
   const session = flagFromRaw(spawnArgs, 'session')
   const refresh = hasRawFlag(spawnArgs, 'refresh')
   const fresh = hasRawFlag(spawnArgs, 'fresh')
@@ -2716,7 +2715,10 @@ export async function runFleetSpawn(spawnArgs, {
     const grantedProfile = grant.permissionProfile
     const permissionLine = permissionTransparencyLine(grant)
     const suppliedAgentId = flagFromRaw(spawnArgs, 'agent-id') || undefined
-    const preallocatedAgentId = suppliedAgentId || ((spawnMode === 'fresh' || spawnMode === 'session') ? newFleetId() : undefined)
+    // Local creation begins with the daemon-scoped local_agent_id. The server
+    // assigns the fleet id through mint-shell; only an explicit caller-supplied
+    // id bypasses that join.
+    const preallocatedAgentId = suppliedAgentId
     if (preallocatedAgentId) {
       await ledger.set(preallocatedAgentId, {
         spawnPolicy: grant.spawnPolicy,
@@ -2774,30 +2776,14 @@ export async function runFleetSpawn(spawnArgs, {
         requireReadback: spawnMode === 'fresh' || spawnMode === 'session',
       })
     } catch (e) {
-      if ((spawnMode === 'fresh' || spawnMode === 'session') && e?.terminalBindingFailure) {
-        await cleanupFailedBindingImpl(result, { api: apiImpl, localAgentLedgerPath })
-        if (!suppliedAgentId && preallocatedAgentId) await ledger.delete(preallocatedAgentId)
-      }
       throw e
     }
     const promptDeliveryFailed = result?.promptDelivery?.ok === false
-    if (promptDeliveryFailed && !boundResume.bound) {
-      await cleanupFailedBindingImpl(result, { api: apiImpl, localAgentLedgerPath })
-      if (!suppliedAgentId && preallocatedAgentId) await ledger.delete(preallocatedAgentId)
-      const failureStage = boundResume.diagnostics?.failureStage
-      throw new Error(`fresh Codex prompt delivery was unverified and exact durable binding did not complete for ${result.fleetId}${failureStage ? ` (identity stage: ${failureStage})` : ''}`)
-    }
     if ((spawnMode === 'fresh' || spawnMode === 'session') && !boundResume.bound) {
-      await cleanupFailedBindingImpl(result, { api: apiImpl, localAgentLedgerPath })
-      if (!suppliedAgentId && preallocatedAgentId) await ledger.delete(preallocatedAgentId)
-      const failureStage = boundResume.diagnostics?.failureStage
-      throw new Error(`session start failed for ${result.fleetId}: durable resume handle was not persisted${failureStage ? ` (identity stage: ${failureStage})` : ''}`)
+      await createLifecycleSeatBindingObligation(result, { api: apiImpl, cwd, name })
     }
     if (!boundResume.bound && (boundResume.submitError || boundResume.readError)) {
       throw boundResume.submitError || boundResume.readError
-    }
-    if (result?.harness === 'codex' && result.fleetId && result.tmuxSession && !boundResume.bound) {
-      throw new Error(`session start failed for ${result.fleetId}: durable resume handle was not persisted`)
     }
     const shouldPersistGrant = params.spawnMode !== 'respawn' || params.explicitPolicy
     if (shouldPersistGrant && (!preallocatedAgentId || result.fleetId !== preallocatedAgentId)) {
@@ -2819,7 +2805,7 @@ export async function runFleetSpawn(spawnArgs, {
       }
     }
     if (promptDeliveryFailed) {
-      console.error(red(`fresh Codex prompt delivery was unverified for ${result.fleetId}; exact durable seat binding is preserved for diagnosis`))
+      console.error(red(`fresh Codex prompt delivery was unverified for ${result.fleetId}; runtime/session binding remains pending`))
       process.exitCode = 1
       return
     }
@@ -2854,7 +2840,6 @@ export async function createLifecycleSeatBindingObligation(result, {
     kind: result.harness,
     model: result.model,
     friendly_name: name || result.name || result.fleetId,
-    process_owned_only: true,
   })
   if (!response?.ok || !response?.obligation?.obligation_id) {
     throw new Error(`durable seat-binding obligation was not accepted for ${result.fleetId}`)
@@ -3009,7 +2994,6 @@ export async function pollLifecycleResumeIdentity(result, {
         cwd,
       },
       tmuxSession: result.tmuxSession,
-      processOwnedOnly: true,
       diagnose: result.harness === 'codex',
     })
     if (identity?.sessionId && identity?.model) break

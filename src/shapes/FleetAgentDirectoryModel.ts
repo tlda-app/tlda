@@ -141,7 +141,8 @@ export type FleetAgentDirectoryRowModel = {
 export function toFleetAgentDirectoryRow(agent: any): FleetAgentDirectoryRowModel {
   const id = agent?.id || ''
   const exactName = fleetAgentExactName(agent)
-  const displayName = fleetAgentDisplayLabel(agent)
+  const bindingPending = !agent?.human && !agent?.dead && !agent?.session_id
+  const displayName = `${fleetAgentDisplayLabel(agent)}${bindingPending ? '*' : ''}`
   const ts = agentTimestamp(agent)
   const meta = agent?.metadata || {}
   const ago = formatFleetAgentRelativeTime(ts)

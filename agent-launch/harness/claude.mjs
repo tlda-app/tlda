@@ -117,7 +117,7 @@ export function resumeId(handle) {
   return handle?.sessionId || null
 }
 
-export async function resolveLiveSessionIdentity({ agent, tmuxSession, tmuxArgs = [], tmuxSocket = null, now = Date.now, processOwnedOnly = false, _deps = {} } = {}) {
+export async function resolveLiveSessionIdentity({ agent, tmuxSession, tmuxArgs = [], tmuxSocket = null, now = Date.now, _deps = {} } = {}) {
   const run = _deps.execFile || execFileP
   const resolve = _deps.resolveTranscript || resolveTranscript
   const read = _deps.readFileSync || fs.readFileSync
@@ -156,7 +156,7 @@ export async function resolveLiveSessionIdentity({ agent, tmuxSession, tmuxArgs 
   if (ownedRuntimes.length !== 1) return null
   const pid = ownedRuntimes[0]
   const launchTs = Date.parse(agent?.registered_at || '') || (now() - 60_000)
-  const jsonlPath = await resolve({ pid, kind: 'claude', agent, launchTs, processOwnedOnly })
+  const jsonlPath = await resolve({ pid, kind: 'claude', agent, launchTs })
   if (!jsonlPath) return null
   const sessionId = ledgerSessionId({ harness_kind: 'claude', jsonl_path: jsonlPath }) || path.basename(jsonlPath, '.jsonl')
   let model = null

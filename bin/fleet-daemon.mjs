@@ -112,7 +112,6 @@ import { createAgentLauncher } from '../agent-launch/agent-launch.mjs'
 import { createLocalAgentLedger } from '../agent-launch/local-agent-ledger.mjs'
 import { bindAgentSeat } from '../agent-launch/seat-binding.mjs'
 import { cleanupPendingSeatBinding, completePendingSeatBinding, createPendingSeatBindingManager, reuseExactPendingSeatBinding } from '../agent-launch/pending-seat-binding.mjs'
-import { findCodexRollout } from '../agent-launch/resume.mjs'
 import { resolveLiveSessionIdentity as resolveLiveCodexSessionIdentity } from '../agent-launch/harness/codex.mjs'
 import { resolveLiveSessionIdentity as resolveLiveClaudeSessionIdentity } from '../agent-launch/harness/claude.mjs'
 import {
@@ -663,35 +662,21 @@ const agentLauncher = createAgentLauncher({
   tmux,
   tmuxArgs: TMUX_ARGS,
   tmuxSocket: TMUX_SOCKET,
-  // A pending codex launch has no durable resume identity until its rollout
-  // file exists on disk. Resolve it here, at spawn time, so the daemon ledger
-  // row carries session_id before anything tries to wake/route this seat —
-  // otherwise every later wake fails with "missing daemon-ledger resume
-  // identity" even though the rollout exists.
-  liveCodexSessionIdentityResolver: async ({ fleetId, sessionId, cwd, launchStartedAt, tmuxSession, processOwnedOnly = false }) => {
+  // A pending Codex launch has no durable resume identity until its rollout
+  // exists. Resolve only the launched runtime's record; never infer identity
+  // from the globally newest rollout.
+  liveCodexSessionIdentityResolver: async ({ fleetId, sessionId, cwd, launchStartedAt, tmuxSession }) => {
     const agent = { id: fleetId, session_id: sessionId || null, cwd, registered_at: launchStartedAt }
-    if (processOwnedOnly) {
-      return await resolveLiveCodexSessionIdentity({
-        agent,
-        tmuxSession,
-        tmuxArgs: TMUX_ARGS,
-        tmuxSocket: TMUX_SOCKET,
-        processOwnedOnly: true,
-      })
-    }
-    const found = findCodexRollout(agent, sessionId ? { sessionOverride: sessionId } : {})
-    if (found?.rolloutId) {
-      return { sessionId: found.rolloutId, jsonlPath: found.jsonlPath, model: found.sessionMeta?.model || null }
-    }
+    const live = await resolveLiveCodexSessionIdentity({ agent, tmuxSession, tmuxArgs: TMUX_ARGS, tmuxSocket: TMUX_SOCKET })
+    if (live?.sessionId) return live
     return null
   },
-  liveClaudeSessionIdentityResolver: async ({ fleetId, sessionId, cwd, launchStartedAt, tmuxSession, processOwnedOnly = false }) => {
+  liveClaudeSessionIdentityResolver: async ({ fleetId, sessionId, cwd, launchStartedAt, tmuxSession }) => {
     return await resolveLiveClaudeSessionIdentity({
       agent: { id: fleetId, session_id: sessionId || null, cwd, registered_at: launchStartedAt },
       tmuxSession,
       tmuxArgs: TMUX_ARGS,
       tmuxSocket: TMUX_SOCKET,
-      processOwnedOnly,
     })
   },
   persistPendingSeatBinding: payload => daemonApi('POST', '/api/agent-seat-binding-obligation', payload),
@@ -718,7 +703,6 @@ const pendingSeatBindings = createPendingSeatBindingManager({
       tmuxSession: obligation.tmux_session,
       tmuxArgs: TMUX_ARGS,
       tmuxSocket: TMUX_SOCKET,
-      processOwnedOnly: true,
     })
   },
   complete: (obligation, identity) => completePendingSeatBinding({

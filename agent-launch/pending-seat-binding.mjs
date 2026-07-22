@@ -76,17 +76,9 @@ export function createPendingSeatBindingManager({
       clearEntry(pending.get(obligation.obligation_id))
       pending.delete(obligation.obligation_id)
     } catch (error) {
-      if (error?.terminalBindingFailure) {
-        try {
-          await terminal(obligation, error)
-          clearEntry(pending.get(obligation.obligation_id))
-          pending.delete(obligation.obligation_id)
-        } catch (cleanupError) {
-          log.warn?.(`terminal cleanup for ${obligation.obligation_id} remains pending: ${cleanupError.message}`)
-        }
-      } else {
-        log.warn?.(`pending seat binding ${obligation.obligation_id} remains pending: ${error.message}`)
-      }
+      // Binding is a follow-on capability transition, never an admission gate.
+      // A binding failure must not terminate or retire an otherwise live runtime.
+      log.warn?.(`pending runtime/session binding ${obligation.obligation_id} remains pending: ${error.message}`)
     } finally {
       const current = pending.get(obligation.obligation_id)
       if (current) {
