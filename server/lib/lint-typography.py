@@ -40,6 +40,10 @@ ENV_BEGIN_RE  = re.compile(rf'\\begin\{{({_DISPLAY_ENVS})\}}')
 ENV_END_RE    = re.compile(rf'\\end\{{({_DISPLAY_ENVS})\}}')
 DISPLAY_OPEN  = re.compile(r'^\s*\\\[')
 DISPLAY_CLOSE = re.compile(r'^\s*\\\]')
+# Unanchored close: for a display opened and closed on the SAME line (\[ ... \]),
+# the leading \[ is already stripped, so the \] sits at the end of the body, not
+# the start. The anchored DISPLAY_CLOSE would miss it; use this to detect it.
+DISPLAY_CLOSE_ANY = re.compile(r'\\\]')
 COMMENT_RE    = re.compile(r'(?<!\\)%.*$')
 
 # Inline math — greedily matches $...$ and $$...$$
@@ -451,7 +455,7 @@ def _iter_math_spans(raw_lines):
             body = DISPLAY_OPEN.sub(' ', body)
             display_buf = [body]
             # single-line display closed on same line?
-            if ENV_END_RE.search(body) or DISPLAY_CLOSE.search(body):
+            if ENV_END_RE.search(body) or DISPLAY_CLOSE_ANY.search(body):
                 in_display = False
                 body = ENV_END_RE.sub(' ', body)
                 body = re.sub(r'\\\]', ' ', body)
