@@ -48,6 +48,18 @@ assert.equal(held.status, 'reconciliation-required')
 assert.equal(reconcile.readAuthority().currentRevision, null)
 assert.equal(reconcile.readRevision(held.authority.evidenceRevision).files[0].content, Buffer.from('existing\n').toString('base64'))
 
+const partialRoot = mkdtempSync(join(tmpdir(), 'tlda-source-partial-'))
+const partial = createSourceLifecycleStore({ root: partialRoot, context: { format: 'svg', mainFile: 'main.tex' } })
+const partialHeld = partial.bootstrap({
+  expectedRevision: null,
+  sourceManifest: ['main.tex', 'notes.tex'],
+  files: [{ path: 'main.tex', content: 'proposed\n' }, { path: 'notes.tex', content: 'notes\n' }],
+  observedSourceManifest: ['main.tex'],
+  observedServerFiles: [{ path: 'main.tex', content: 'proposed\n' }],
+})
+assert.equal(partialHeld.status, 'reconciliation-required')
+assert.deepEqual(partial.readRevision(partialHeld.authority.evidenceRevision).manifest, ['main.tex'])
+
 const crashRoot = mkdtempSync(join(tmpdir(), 'tlda-source-crash-'))
 const crashing = createSourceLifecycleStore({ root: crashRoot, context: { format: 'svg', mainFile: 'main.tex' }, fault(stage) { if (stage === 'before-rename') throw new Error('injected crash') } })
 assert.throws(() => crashing.bootstrap(snapshot('never-current\n')), /injected crash/)

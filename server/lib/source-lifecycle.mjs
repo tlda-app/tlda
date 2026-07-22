@@ -130,7 +130,7 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null })
   return {
     readAuthority: state,
     readRevision: revision,
-    bootstrap({ expectedRevision, files, sourceManifest, observedServerFiles = null, dependencyPins = [] }) {
+    bootstrap({ expectedRevision, files, sourceManifest, observedServerFiles = null, observedSourceManifest = null, dependencyPins = [] }) {
       const before = state()
       if (before.state !== SOURCE_AUTHORITY_UNINITIALIZED || expectedRevision !== null) {
         return { ok: false, status: 'stale-base', authority: before }
@@ -138,7 +138,7 @@ export function createSourceLifecycleStore({ root, context = {}, fault = null })
       const canonical = canonicalSnapshot(files, sourceManifest, context)
       const next = persistSnapshot(canonical, dependencyPins)
       if (observedServerFiles !== null) {
-        const observed = canonicalSnapshot(observedServerFiles, sourceManifest, context)
+        const observed = canonicalSnapshot(observedServerFiles, observedSourceManifest || sourceManifest, context)
         if (revisionFor(observed, next.dependencyPins) !== next.id) {
           const evidence = persistSnapshot(observed)
           const authority = { state: SOURCE_AUTHORITY_RECONCILIATION_REQUIRED, currentRevision: null, proposedRevision: next.id, evidenceRevision: evidence.id }

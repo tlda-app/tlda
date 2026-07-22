@@ -141,6 +141,7 @@ export function beginProjectSourceTransaction(name, { originalLocalHead = null, 
   const source = sourceDir(name)
   const metadata = join(dir, 'project.json')
   const clone = join(dir, 'overleaf-clone')
+  const lifecycleAuthority = join(dir, '.source-lifecycle', 'authority.json')
   if (existsSync(source)) cpSync(source, join(snapshotRoot, 'source'), { recursive: true, preserveTimestamps: true })
   cpSync(metadata, join(snapshotRoot, 'project.json'), { preserveTimestamps: true })
   if (existsSync(clone)) {
@@ -151,6 +152,7 @@ export function beginProjectSourceTransaction(name, { originalLocalHead = null, 
       cpSync(join(clone, entry.name), join(cloneSnapshot, entry.name), { recursive: true, preserveTimestamps: true })
     }
   }
+  if (existsSync(lifecycleAuthority)) cpSync(lifecycleAuthority, join(snapshotRoot, 'source-lifecycle-authority.json'), { preserveTimestamps: true })
   syncTree(snapshotRoot, durabilityProbe)
   syncPath(transactionRoot, durabilityProbe, 'transaction-parent-directory')
   syncPath(dir, durabilityProbe, 'project-directory')
@@ -196,6 +198,11 @@ export function beginProjectSourceTransaction(name, { originalLocalHead = null, 
       cpSync(join(snapshotRoot, 'project.json'), metadataRestore, { preserveTimestamps: true })
       renameSync(metadataRestore, metadata)
       restoreCloneWorktree(clone, join(snapshotRoot, 'overleaf-worktree'))
+      rmSync(lifecycleAuthority, { force: true })
+      if (existsSync(join(snapshotRoot, 'source-lifecycle-authority.json'))) {
+        mkdirSync(dirname(lifecycleAuthority), { recursive: true })
+        cpSync(join(snapshotRoot, 'source-lifecycle-authority.json'), lifecycleAuthority, { preserveTimestamps: true })
+      }
       finished = true
       rmSync(snapshotRoot, { recursive: true })
     },
@@ -242,6 +249,12 @@ export function rollbackProjectSourceRecovery(name, id) {
   cpSync(join(snapshotRoot, 'project.json'), metadataRestore, { preserveTimestamps: true })
   renameSync(metadataRestore, metadata)
   restoreCloneWorktree(join(dir, 'overleaf-clone'), join(snapshotRoot, 'overleaf-worktree'))
+  const lifecycleAuthority = join(dir, '.source-lifecycle', 'authority.json')
+  rmSync(lifecycleAuthority, { force: true })
+  if (existsSync(join(snapshotRoot, 'source-lifecycle-authority.json'))) {
+    mkdirSync(dirname(lifecycleAuthority), { recursive: true })
+    cpSync(join(snapshotRoot, 'source-lifecycle-authority.json'), lifecycleAuthority, { preserveTimestamps: true })
+  }
 }
 
 export function removeProjectSourceRecovery(name, id) {

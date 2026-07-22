@@ -28,6 +28,7 @@ import {
   projectPartsRoot, readProjectPartsManifest, writeProjectPartsManifest,
   isClientOwnedSourcePath, readClientSourceManifest, validateSourceFilePath,
   beginProjectSourceTransaction,
+  sourceLifecycleStore,
 } from '../lib/project-store.mjs'
 import { getBuildStatus } from '../lib/build-runner.mjs'
 import { dispatchBuild, isBuildKindPending } from '../lib/build-dispatch.mjs'
@@ -498,6 +499,11 @@ router.get('/:name/files', requireRead, (req, res) => {
   res.json({ files: listSourceFiles(req.params.name) })
 })
 
+router.get('/:name/source-authority', requireRead, (req, res) => {
+  try { res.json(sourceLifecycleStore(req.params.name).readAuthority()) }
+  catch (e) { res.status(404).json({ error: e.message }) }
+})
+
 // Read a specific source file's content
 router.get('/:name/source/:file', requireRead, (req, res) => {
   const project = readProject(req.params.name)
@@ -521,9 +527,10 @@ router.put('/:name/source/:file', requireRw, async (req, res) => {
     files: [{ path: req.params.file, content }],
     sourceManifest: req.body?.sourceManifest,
     editedBy: req.body?.editedBy,
+    expectedRevision: req.body?.expectedRevision,
   })
-  const { status, ...payload } = result
-  res.status(status).json(payload)
+  const { status, lifecycleStatus, ...payload } = result
+  res.status(status).json({ ...payload, ...(lifecycleStatus ? { status: lifecycleStatus } : {}) })
 })
 
 // Synctex path-based lookup: trace highlight path through synctex records
@@ -683,10 +690,14 @@ export async function runSerializedProjectSourceOperation(name, operation) {
 }
 
 export async function processProjectPush(name, body, transactionTest = {}) {
-  return runSerializedProjectSourceOperation(
+  const result = await runSerializedProjectSourceOperation(
     name,
     () => processProjectPushSerialized(name, body, transactionTest),
   )
+  if (result.ok && (((body?.files?.length || 0) > 0) || ((body?.deletedFiles?.length || 0) > 0))) {
+    result.sourceRevision = sourceLifecycleStore(name).readAuthority().currentRevision
+  }
+  return result
 }
 
 export async function processProjectPushSerialized(name, body, transactionTest = {}) {
@@ -694,7 +705,7 @@ export async function processProjectPushSerialized(name, body, transactionTest =
   let project = readProject(name)
   if (!project) return { status: 404, ok: false, error: 'Project not found' }
 
-  const { files, deletedFiles, sourceManifest, priorityPages, sourceDir, members, session, sessionAt, editedBy, overleafSync } = body || {}
+  const { files, deletedFiles, sourceManifest, priorityPages, sourceDir, members, session, sessionAt, editedBy, overleafSync, expectedRevision } = body || {}
 
   const recoveries = await recoverProjectSourceTransactions(name)
   const unresolved = recoveries.find(item => item.state === 'recovery-required')
@@ -705,6 +716,30 @@ export async function processProjectPushSerialized(name, body, transactionTest =
 
   const validation = validateSourcePushRequest(name, project, { files, deletedFiles, sourceManifest })
   if (!validation.ok) return validation
+
+  const sourceMutation = (files?.length || 0) > 0 || (deletedFiles?.length || 0) > 0
+  const lifecycle = sourceLifecycleStore(name)
+  const authorityBefore = lifecycle.readAuthority()
+  if (sourceMutation && expectedRevision === undefined) {
+    return { status: 428, ok: false, error: 'expectedRevision is required for source mutations', authority: authorityBefore }
+  }
+  let lifecycleCandidate = null
+  if (sourceMutation) {
+    const current = authorityBefore.currentRevision ? lifecycle.readRevision(authorityBefore.currentRevision) : null
+    const candidate = new Map((current?.files || []).map(file => [file.path, file]))
+    for (const filePath of deletedFiles || []) candidate.delete(filePath)
+    for (const file of files || []) candidate.set(file.path, { path: file.path, content: file.encoding === 'base64' ? file.content : Buffer.from(String(file.content ?? '')).toString('base64') })
+    const manifest = normalizeSourceManifest(sourceManifest, sourceManifestContext(project))
+    if (candidate.size !== manifest.length || manifest.some(path => !candidate.has(path))) {
+      return { status: 409, ok: false, error: authorityBefore.state === 'uninitialized' ? 'Bootstrap requires a complete source snapshot' : 'Proposed snapshot does not match sourceManifest', authority: authorityBefore }
+    }
+    const observed = manifest.map(path => ({ path, content: readSourceFile(name, path) })).filter(file => file.content !== null)
+    lifecycleCandidate = {
+      expectedRevision, sourceManifest: manifest, files: manifest.map(path => candidate.get(path)),
+      observedServerFiles: authorityBefore.state === 'uninitialized' && observed.length > 0 ? observed : null,
+      observedSourceManifest: observed.map(file => file.path),
+    }
+  }
 
   let anyChanged = sourcePushWouldChange(name, { files, deletedFiles })
   if (members && Array.isArray(members) && project.format === 'book') {
@@ -765,6 +800,17 @@ export async function processProjectPushSerialized(name, body, transactionTest =
       } : {}),
     }
     updateProject(name, metadata)
+    if (lifecycleCandidate) {
+      const { observedServerFiles, observedSourceManifest, ...candidate } = lifecycleCandidate
+      const lifecycleResult = authorityBefore.state === 'uninitialized'
+        ? lifecycle.bootstrap({ ...candidate, observedServerFiles, observedSourceManifest })
+        : lifecycle.submit(candidate)
+      if (!lifecycleResult.ok) {
+        const error = new Error(lifecycleResult.status)
+        error.lifecycleResult = lifecycleResult
+        throw error
+      }
+    }
     if (transactionTest.failAt === 'manifest' || transactionTest.failAt === 'clone-restore') {
       throw new Error('Injected failure after manifest persistence')
     }
@@ -816,6 +862,7 @@ export async function processProjectPushSerialized(name, body, transactionTest =
     return {
       status: 409, ok: false,
       error: `Source transaction failed: ${e.message}${rollbackFailures.length ? `; ${rollbackFailures.join('; ')}` : ''}`,
+      ...(e.lifecycleResult ? { lifecycleStatus: e.lifecycleResult.status, authority: e.lifecycleResult.authority, evidence: e.lifecycleResult.evidence } : {}),
       ...(rollbackFailures.length ? { rollbackFailures } : {}),
     }
   }
@@ -1042,8 +1089,8 @@ function markProjectStale(name) {
 // Push files + trigger build
 router.post('/:name/push', requireRw, async (req, res) => {
   const result = await processProjectPush(req.params.name, req.body)
-  const { status, ...payload } = result
-  res.status(status).json(payload)
+  const { status, lifecycleStatus, ...payload } = result
+  res.status(status).json({ ...payload, ...(lifecycleStatus ? { status: lifecycleStatus } : {}) })
 })
 
 // Trigger rebuild (no file changes)
