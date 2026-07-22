@@ -47,9 +47,18 @@ def main():
             sys.stdout.write(json.dumps({'error': f'bad json: {e}'}) + '\n')
             sys.stdout.flush()
             continue
+        # A valid-but-non-object frame (5, "x", [..], null) must be rejected
+        # WITHOUT touching req.get — otherwise the handler AND the except path
+        # would both raise AttributeError and kill the resident server.
+        if not isinstance(req, dict):
+            sys.stdout.write(json.dumps(
+                {'error': 'request must be a JSON object', 'findings': []}) + '\n')
+            sys.stdout.flush()
+            continue
         try:
             resp = _handle(req)
         except Exception as e:  # noqa: BLE001
+            # req is guaranteed a dict here, so req.get is safe.
             resp = {'id': req.get('id'), 'error': str(e), 'findings': []}
         sys.stdout.write(json.dumps(resp) + '\n')
         sys.stdout.flush()
