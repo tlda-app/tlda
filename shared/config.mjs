@@ -181,20 +181,20 @@ export function assertServerCoherence(config = null) {
  * RW token resolution. Used by agents, daemon, CLI — anything that writes.
  * TLDA_TOKEN env → config.tokenRw → config.token → null
  */
-export function getRwToken(config = null) {
+export function getRwToken() {
   if (process.env.TLDA_TOKEN) return process.env.TLDA_TOKEN
-  const cfg = config ?? loadConfig()
-  return cfg.tokenRw || cfg.token || null
+  const d = loadDaemonYaml()
+  return d.tokenRw || d.token || null
 }
 
 /**
  * Read token resolution. Used by server auth.
  * TLDA_TOKEN_READ env → config.tokenRead → null
  */
-export function getReadToken(config = null) {
+export function getReadToken() {
   if (process.env.TLDA_TOKEN_READ) return process.env.TLDA_TOKEN_READ
-  const cfg = config ?? loadConfig()
-  return cfg.tokenRead || null
+  const d = loadDaemonYaml()
+  return d.tokenRead || null
 }
 
 const BOTS_FILE = join(CONFIG_DIR, 'bots.yaml')
