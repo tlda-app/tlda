@@ -19,6 +19,7 @@ import {
   writeProjectPartsManifest as writePartsManifestForRoot,
 } from './project-parts-scanner.mjs'
 import { resolveContainedPath } from './path-containment.mjs'
+import { createSourceLifecycleStore } from './source-lifecycle.mjs'
 
 let projectsDir = null
 
@@ -319,6 +320,17 @@ export function sourceDir(name) {
 
 export function outputDir(name) {
   return join(projectsDir, name, 'output')
+}
+
+// Dormant authority store for the lifecycle rollout. Current ingress paths do
+// not call this until the revision contract is wired atomically in Phase B.
+export function sourceLifecycleStore(name, options = {}) {
+  if (!readProject(name)) throw new Error(`Project "${name}" not found`)
+  return createSourceLifecycleStore({
+    root: join(projectDir(name), '.source-lifecycle'),
+    context: sourceManifestContext(readProject(name)),
+    ...options,
+  })
 }
 
 export function projectPartsRoot(name) {

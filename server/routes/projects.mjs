@@ -1004,6 +1004,12 @@ function validateSourcePushRequest(name, project, { files, deletedFiles, sourceM
   return { status: 200, ok: true }
 }
 
+// Exported for the dormant lifecycle contract tests. This does not change any
+// route or caller behavior before the Phase B ingress cutover.
+export function validateSourceLifecycleCandidate(name, project, candidate) {
+  return validateSourcePushRequest(name, project, candidate)
+}
+
 function sourcePushWouldChange(name, { files, deletedFiles }) {
   for (const file of files || []) {
     const next = file.encoding === 'base64'
