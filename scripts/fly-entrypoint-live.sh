@@ -30,33 +30,27 @@ ln -sfn "$PERSIST/data" /app/server/data
 git config --global user.name "${TLDA_GIT_USER_NAME:-tlda-friend-box}"
 git config --global user.email "${TLDA_GIT_USER_EMAIL:-tlda-friend-box@local}"
 
-# Ensure an active tlda config exists. Commit d04a0eef ("one named-config, zero
-# fallbacks") makes the server resolveConfig() at startup and THROW — crashing
-# during module evaluation, before it binds :5176 and before any log line — if
-# there is no active config (this caused the v59 silent outage: the volume had no
-# config.json). The Fly server's config is deterministic: it tells browsers to
-# sync against this machine. Friend boxes set TLDA_FLEET_SERVER to their own
-# fly.dev URL, so rewrite the persisted config on startup for those boxes instead
-# of preserving a stale volume config from another app.
+# Ensure the strict daemon authority exists. The server resolves its active
+# database/store pair from daemon.yaml at startup and fails loudly when it is
+# absent. The Fly server's authority is deterministic: it tells browsers to sync
+# against this machine. Friend boxes set TLDA_FLEET_SERVER to their own fly.dev
+# URL, so rewrite the persisted authority on startup for those boxes instead of
+# preserving a stale volume config from another app.
 # (A tldraw license key is a client-side value shipped in window.__TLDA_CONFIG__
 # to every browser — not a secret — so it lives here, not in `fly secrets`.)
-CONFIG_JSON=/root/.config/tlda/config.json
+DAEMON_YAML=/root/.config/tlda/daemon.yaml
 CONFIG_ENDPOINT="${TLDA_FLEET_SERVER:-https://tlda-fly.cormorant-matrix.ts.net}"
-if [ ! -f "$CONFIG_JSON" ] || [ -n "$TLDA_FLEET_SERVER" ]; then
-  echo "[entrypoint] writing canonical Fly config for $CONFIG_ENDPOINT"
-  cat > "$CONFIG_JSON" <<'EOF'
-{
-  "defaultConfig": "default",
-  "configs": {
-    "default": {
-      "database": "__TLDA_CONFIG_ENDPOINT__",
-      "store": "__TLDA_CONFIG_ENDPOINT__",
-      "licenseKey": "tldraw-david-hirshberg-2031-06-29/WyJpTW00VFpraCIsWyIqLmNvcm1vcmFudC1tYXRyaXgudHMubmV0Il0sOSwiMjAzMS0wNi0yOSJd.76nwqwOXRChl0rxuqrgwvwOqZ+Aztw8sC+qFOFixTWyVpH96riTXLDVOY83AFmW0GRcHodjkGpjUvdh/GouzzA"
-    }
-  }
-}
+if [ ! -f "$DAEMON_YAML" ] || [ -n "$TLDA_FLEET_SERVER" ]; then
+  echo "[entrypoint] writing canonical Fly daemon authority for $CONFIG_ENDPOINT"
+  cat > "$DAEMON_YAML" <<'EOF'
+defaultServer: default
+servers:
+  default:
+    database: __TLDA_CONFIG_ENDPOINT__
+    store: __TLDA_CONFIG_ENDPOINT__
+    licenseKey: tldraw-david-hirshberg-2031-06-29/WyJpTW00VFpraCIsWyIqLmNvcm1vcmFudC1tYXRyaXgudHMubmV0Il0sOSwiMjAzMS0wNi0yOSJd.76nwqwOXRChl0rxuqrgwvwOqZ+Aztw8sC+qFOFixTWyVpH96riTXLDVOY83AFmW0GRcHodjkGpjUvdh/GouzzA
 EOF
-  sed -i "s|__TLDA_CONFIG_ENDPOINT__|$CONFIG_ENDPOINT|g" "$CONFIG_JSON"
+  sed -i "s|__TLDA_CONFIG_ENDPOINT__|$CONFIG_ENDPOINT|g" "$DAEMON_YAML"
 fi
 
 # --- Tailscale: join Skip's tailnet so the server is reachable privately ---
