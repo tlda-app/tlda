@@ -93,6 +93,7 @@ import { resolveTimerParticipants, timerDeliveryFailureResult, timerTerminalInpu
 import { ServerTimerScheduler } from './lib/timer-scheduler.mjs'
 import { ServerDaemonOutbox } from './lib/server-daemon-outbox.mjs'
 import { AgentSeatBindingObligations, verifyAgentSeatBindingTerminal } from './lib/agent-seat-binding-obligations.mjs'
+import { observeSpawnAcceptedSeat, observeSpawnProcessLogin, readAcceptedCurrentSeat } from './lib/spawn-seat-acceptance.mjs'
 import { createDaemonWsControlPlane } from './lib/daemon-ws-control-plane.mjs'
 import { clearTrustedHeartbeatProbes, shouldSkipHeartbeatSweepForLag, shouldTerminateForMissedPong, socketCanAcceptMore } from '../shared/fleet-ws-flow.mjs'
 import {
@@ -1411,6 +1412,10 @@ const spawnLibrarian = new SpawnLibrarian({
     broadcastState(agent)
   },
 })
+
+function observeAcceptedAgentSeat(agentId, candidate) {
+  observeSpawnAcceptedSeat(spawnLibrarian, fleetStore, agentId, candidate)
+}
 const mailboxLibrarian = new MailboxLibrarian({
   onExpire: (entry) => {
     if (entry.kind !== 'spawn') return
@@ -1805,7 +1810,12 @@ async function performSpawnRelay(caller, msg) {
     },
   })
   const readiness = pendingAgentId
-    ? spawnLibrarian.awaitLogin({ id: pendingAgentId, name: spawnName, spec: requestedSpec })
+    ? spawnLibrarian.awaitAcceptedSeat({
+        id: pendingAgentId,
+        name: spawnName,
+        spec: requestedSpec,
+        isSeatCurrent: seat => !!readAcceptedCurrentSeat(fleetStore, pendingAgentId, seat),
+      })
     : null
   const spawnRequest = {
     agent_id: targetAgentId,
@@ -4235,6 +4245,7 @@ const fleetRouter = createFleetRouter({
   broadcastDaemonAgentsUpdated,
   enqueueDaemonMessage: (...args) => enqueueDaemonMessage(...args),
   agentSeatBindingObligations,
+  onAgentSeatAccepted: observeAcceptedAgentSeat,
   hasOpenFleetSocketForAgent,
 })
 app.use(fleetRouter)
@@ -5178,7 +5189,7 @@ async function handleFleetWsMessage(ws, msg) {
         state: 'alive',
         ts: now,
       })
-      spawnLibrarian.observeLogin(fleetStore.getAgent?.(agent_id) || agent)
+      observeSpawnProcessLogin(spawnLibrarian, fleetStore.getAgent?.(agent_id) || agent)
       broadcastState(storedAgent)
       broadcastDaemonAgentsUpdated(storedAgent)
       return
@@ -8033,11 +8044,12 @@ async function handleDaemonWsMessage(ws, msg) {
     const sessionId = msg.session_id || msg.sessionId
     if (!agentId || !sessionId) return
     try {
-      recordAgentBindingEvent(fleetStore, msg, {
+      const seat = recordAgentBindingEvent(fleetStore, msg, {
         machineId: ws._machineId,
         envName: ws._envName,
         daemonKey: ws._daemonKey,
       })
+      observeAcceptedAgentSeat(agentId, seat)
       broadcastState()
     } catch (e) {
       await reportDaemonEventFailure(msg, 'agent-seat-write', e)
