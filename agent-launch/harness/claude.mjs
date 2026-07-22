@@ -8,6 +8,7 @@ import { activeConfigName, gitAuthorEnv, readConfig } from '../identity.mjs'
 import { resolveClaudeModel, resolveClaudeModelSelection } from '../models.mjs'
 import { resolveHarnessLaunchOptions } from '../permissions.mjs'
 import { dnsAliasPreloadPath } from './dns-alias-preload.mjs'
+import { claudeJsonlPath } from '../resume.mjs'
 
 const LOGIN_PROMPT = 'Call login() with the fleet MCP server. Then call inbox() to check for a pending task.'
 const FENCE_TMP_ROOT = '/tmp/tlda-fence-env'
@@ -46,6 +47,7 @@ export function buildCmd({
   api,
   dnsAlias = null,
   resumeId = null,
+  freshSessionId = null,
   includePrompt = true,
   env = process.env,
   config = readConfig(),
@@ -98,6 +100,7 @@ export function buildCmd({
   parts.push('claude')
   appendLaunchFlags(parts, effectiveHarnessOptions)
   if (resumeId) parts.push(`--resume ${sq(resumeId)}`)
+  else if (freshSessionId) parts.push(`--session-id ${sq(freshSessionId)}`)
   parts.push(`--model ${sq(model)}`)
   if (effort) parts.push(`--effort ${sq(effort)}`)
   // Permission flags (--dangerously-skip-permissions / --permission-mode) are NOT
@@ -156,7 +159,17 @@ export async function resolveLiveSessionIdentity({ agent, tmuxSession, tmuxArgs 
   if (ownedRuntimes.length !== 1) return null
   const pid = ownedRuntimes[0]
   const launchTs = Date.parse(agent?.registered_at || '') || (now() - 60_000)
-  const jsonlPath = await resolve({ pid, kind: 'claude', agent, launchTs })
+  const expectedSessionId = agent?.session_id || null
+  const jsonlPath = await resolve({
+    pid,
+    kind: 'claude',
+    agent,
+    launchTs,
+    ...(expectedSessionId ? {
+      acceptTranscript: candidate => path.basename(candidate, '.jsonl') === expectedSessionId,
+      findFallbackTranscript: () => claudeJsonlPath(expectedSessionId),
+    } : {}),
+  })
   if (!jsonlPath) return null
   const sessionId = ledgerSessionId({ harness_kind: 'claude', jsonl_path: jsonlPath }) || path.basename(jsonlPath, '.jsonl')
   let model = null

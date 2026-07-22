@@ -2855,6 +2855,7 @@ export async function createLifecycleSeatBindingObligation(result, {
     kind: result.harness,
     model: result.model,
     friendly_name: name || result.name || result.fleetId,
+    session_id: result.resumeId || null,
   })
   if (!response?.ok || !response?.obligation?.obligation_id) {
     throw new Error(`durable seat-binding obligation was not accepted for ${result.fleetId}`)

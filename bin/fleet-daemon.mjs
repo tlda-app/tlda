@@ -696,6 +696,7 @@ const pendingSeatBindings = createPendingSeatBindingManager({
     return resolver({
       agent: {
         id: obligation.agent_id,
+        session_id: obligation.session_id || null,
         friendly_name: obligation.friendly_name,
         cwd: obligation.cwd,
         registered_at: obligation.created_at,

@@ -145,6 +145,7 @@ export function createAgentLauncher({
       kind: launched.harness || launchKind,
       model: launched.model || launchModel,
       friendly_name: agentName,
+      session_id: launched.resumeId || null,
     })
     if (result?.ok !== true || result?.pending !== true || !result?.obligation?.obligation_id) {
       throw new Error(`durable identity-recovery obligation was not acknowledged for ${launched.fleetId}`)

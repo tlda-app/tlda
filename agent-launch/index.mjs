@@ -18,6 +18,7 @@ import {
 import * as claude from './harness/claude.mjs'
 import * as codex from './harness/codex.mjs'
 import * as goose from './harness/goose.mjs'
+import { randomUUID } from 'node:crypto'
 
 export class SpawnError extends Error {
   constructor(reason, message, detail = {}) {
@@ -141,7 +142,7 @@ function shellReservationOptions(params = {}) {
   return params.shellReservationTimeoutMs ? { timeoutMs: params.shellReservationTimeoutMs } : {}
 }
 
-async function buildCommand({ requestedKind, adapter, fleetId, localAgentId, tmuxSession, model, modelProvider = null, name, cwd, effort, permissionMode, spawnPolicy, api, dnsAlias, resumeId = null, includePrompt = true, leasePolicy = null, enforceFence = false, harnessOptions = {}, config = undefined, env = process.env }) {
+async function buildCommand({ requestedKind, adapter, fleetId, localAgentId, tmuxSession, model, modelProvider = null, name, cwd, effort, permissionMode, spawnPolicy, api, dnsAlias, resumeId = null, freshSessionId = null, includePrompt = true, leasePolicy = null, enforceFence = false, harnessOptions = {}, config = undefined, env = process.env }) {
   let cmd
   let sendKeys = false
   if (requestedKind === 'codex') {
@@ -178,6 +179,7 @@ async function buildCommand({ requestedKind, adapter, fleetId, localAgentId, tmu
       api,
       dnsAlias,
       resumeId,
+      freshSessionId,
       config,
       env,
       includePrompt,
@@ -353,6 +355,7 @@ async function spawnFresh(params) {
         ts: new Date().toISOString(),
       })
     }
+    const freshSessionId = requestedKind === 'claude' ? (deps.randomUUID || randomUUID)() : null
     const { cmd, sendKeys, commandTrace } = await buildCommand({
       requestedKind,
       adapter,
@@ -368,6 +371,7 @@ async function spawnFresh(params) {
       spawnPolicy: launchPolicy.spawnPolicy,
       api,
       dnsAlias,
+      freshSessionId,
       leasePolicy: launchPolicy.leasePolicy,
       enforceFence: !!params.enforceFence,
       harnessOptions: launchPolicy.harnessOptions,
@@ -397,7 +401,7 @@ async function spawnFresh(params) {
       throw new SpawnError('launch-failed', `tmux session ${tmuxSession} already has a live harness runtime`, { tmuxSession })
     }
     runtimeLaunched = true
-    const launchedRoute = { localAgentId, fleetId, tmuxSession, harness: requestedKind, model }
+    const launchedRoute = { localAgentId, fleetId, tmuxSession, harness: requestedKind, model, resumeId: freshSessionId }
     let identityResolutionPromise
     try {
       identityResolutionPromise = requestedKind === 'codex' && serverUp && params.startFreshIdentityPolling
@@ -432,8 +436,7 @@ async function spawnFresh(params) {
       })
       return { ok: true, localAgentId, fleetId: null, tmuxSession, harness: requestedKind, model, registrationDeferred: true, ...(promptDelivery ? { promptDelivery } : {}) }
     }
-    let resumeId = null
-    return { ok: true, pending: true, ...launchedRoute, resumeId, ...(identityResolution ? { identityResolution } : {}), ...(promptDelivery ? { promptDelivery } : {}) }
+    return { ok: true, pending: true, ...launchedRoute, ...(identityResolution ? { identityResolution } : {}), ...(promptDelivery ? { promptDelivery } : {}) }
   } catch (e) {
     const err = toSpawnError(e, e?.message?.includes('not available') ? 'name-bounced' : 'launch-failed', { fleetId, tmuxSession, model })
     librarian.failPending(fleetId || localAgentId, err.reason || 'launch-failed')

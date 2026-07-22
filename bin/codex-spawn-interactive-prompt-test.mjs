@@ -6,6 +6,7 @@ import { join } from 'node:path'
 
 import { detectSpawnStartupFailureTranscript } from '../agent-runtime/daemon-guards.mjs'
 import { buildCmd, resolveOwnedCodexTranscript } from '../agent-launch/harness/codex.mjs'
+import { buildCmd as buildClaudeCmd, resolveLiveSessionIdentity as resolveLiveClaudeSessionIdentity } from '../agent-launch/harness/claude.mjs'
 import { createAgentLauncher } from '../agent-launch/agent-launch.mjs'
 import { bindLifecycleCodexResumeIdentity, bindSpawnRuntimeIfNeeded, persistAssignedAgentGrant } from '../cli/tlda.mjs'
 import { recordAgentBindingEvent } from '../server/lib/agent-binding-events.mjs'
@@ -82,6 +83,42 @@ function testCodexLaunchForcesCiEnv() {
   })
   assert.match(cmd, /(?:^|\s)CODEX_CI=1(?:\s|$)/)
   assert.match(cmd, /mcp_servers\.tlda\.env\.CODEX_CI=.*"1"/)
+}
+
+function testFreshClaudeLaunchPinsItsOwnSessionId() {
+  const cmd = buildClaudeCmd({
+    fleetId: 'fleet:claude-fresh',
+    localAgentId: 'local:claude-fresh',
+    tmuxSession: 'fleet-claude-fresh',
+    model: 'opus',
+    name: 'claude-fresh',
+    api: 'https://example.test',
+    freshSessionId: '11111111-2222-4333-8444-555555555555',
+    config: {},
+    harnessOptions: { required: [], preferences: [] },
+  })
+  assert.match(cmd, /--session-id '11111111-2222-4333-8444-555555555555'/)
+  assert.doesNotMatch(cmd, /--resume/)
+}
+
+async function testClaudeResolverRejectsAnotherSessionsJsonl() {
+  const expected = '11111111-2222-4333-8444-555555555555'
+  const identity = await resolveLiveClaudeSessionIdentity({
+    agent: { session_id: expected, cwd: '/tmp/project' },
+    tmuxSession: 'fleet-claude-fresh',
+    _deps: {
+      execFile: async (command) => command === 'tmux'
+        ? { stdout: '100\n' }
+        : { stdout: '100 1 claude\n' },
+      resolveTranscript: async options => {
+        assert.equal(options.acceptTranscript(`/tmp/.claude/projects/x/${expected}.jsonl`), true)
+        assert.equal(options.acceptTranscript('/tmp/.claude/projects/x/aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee.jsonl'), false)
+        return `/tmp/.claude/projects/x/${expected}.jsonl`
+      },
+      readFileSync: () => `${JSON.stringify({ model: 'opus', cwd: '/tmp/project' })}\n`,
+    },
+  })
+  assert.equal(identity.sessionId, expected)
 }
 
 async function testFreshCodexPromptFailureFailsLoud() {
@@ -346,6 +383,8 @@ function testAgentSeatBindingMirrorsRouteIdentityToRosterFields() {
 
 testCodexInteractivePromptClassifier()
 testCodexLaunchForcesCiEnv()
+testFreshClaudeLaunchPinsItsOwnSessionId()
+await testClaudeResolverRejectsAnotherSessionsJsonl()
 await testFreshCodexPromptFailureFailsLoud()
 await testLifecycleBindingRepollsIncompleteEarlyIdentity()
 await testLocalMintPersistsGrantBeforeBinding()
