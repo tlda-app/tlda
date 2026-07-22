@@ -344,6 +344,142 @@ def check_by_property(raw_lines, file_label):
 
 
 # --------------------------------------------------------------------------
+# Comma-splice / comma-as-connective in math sentences
+#
+# A comma inside math that joins two independent relation-clauses with no
+# connecting word ("where", "so", "we have", …) is a comma standing in for a
+# word. We substitute the math to grammar-typed English (relations -> the verb
+# "equals", arrows -> "maps", symbols -> the noun "x", \text{} -> its prose)
+# and flag a comma with a relation-clause on both sides — unless the clauses are
+# joined by a coordinating conjunction (X, and Y) or the left side is a fronted
+# subordinate clause (For every X, Y), both of which are proper commas.
+# --------------------------------------------------------------------------
+
+_ARROWS_RE = re.compile(
+    r'\\(?:to|longrightarrow|rightarrow|mapsto|hookrightarrow|'
+    r'twoheadrightarrow|longmapsto|xrightarrow)\b')
+_RELS_RE = re.compile(
+    r'\\(?:le|leq|leqslant|ge|geq|geqslant|ne|neq|in|notin|subseteq|subset|'
+    r'supseteq|supset|approx|sim|simeq|equiv|cong|propto|leftrightarrow|iff|mid)\b')
+
+_VERB_MARKERS = {'equals', 'maps'}
+_CONJ_WORDS = {'and', 'or', 'but'}
+_FRONTERS = {'for', 'if', 'when', 'whenever', 'let', 'suppose', 'given',
+             'assume', 'since', 'because', 'where', 'while', 'as'}
+
+
+def _math_to_grammar_english(math: str) -> str:
+    """Substitute math to grammar-typed English for clause-structure checking."""
+    s = math
+    s = re.sub(r'\\text\{([^{}]*)\}', r' \1 ', s)          # \text{...} -> prose
+    s = re.sub(r'\\q(where|for|and)\b', r' \1 ', s)         # \qwhere -> where
+    s = _ARROWS_RE.sub(' maps ', s)                         # arrows -> verb
+    s = _RELS_RE.sub(' equals ', s)                         # relations -> verb
+    s = re.sub(r'(?<![=<>!:])=(?!=)', ' equals ', s)        # = -> verb
+    s = re.sub(r'(?<![<>])[<>](?![<>])', ' equals ', s)     # < > -> verb
+    s = re.sub(r'\\(?:quad|qquad|,|;|!|:|\s)', ' ', s)      # spacing macros
+    s = re.sub(r'\\\\', ' ', s)                             # line break
+    s = re.sub(r'\\[a-zA-Z]+\*?', ' ', s)                   # drop other commands
+    s = re.sub(r'[^A-Za-z,\. ]+', ' ', s)                   # keep letters/comma/period
+    keep = _VERB_MARKERS | {'where', 'for', 'and', 'in', 'or', 'but'}
+    out = []
+    for tok in re.split(r'(\s+|,)', s):
+        if tok.strip() == '' or tok == ',':
+            out.append(tok)
+        elif tok.lower() in keep:
+            out.append(tok.lower())
+        elif re.fullmatch(r'[A-Za-z]{3,}', tok):
+            out.append(tok)                                 # \text prose word
+        else:
+            out.append('x')                                 # 1-2 letter symbol -> noun
+    s = re.sub(r'\s+', ' ', ''.join(out)).strip()
+    if s and s[-1] not in '.!?':
+        s += ' .'
+    return s
+
+
+def _is_comma_splice(math: str, nlp) -> bool:
+    """True if `math` contains a comma joining two relation-clauses with no word."""
+    english = _math_to_grammar_english(math)
+    try:
+        doc = nlp(english)
+    except Exception:
+        return False
+    for sent in doc.sents:
+        toks = [t for t in sent if t.text.strip()]
+        first_alpha = next((t for t in toks if t.is_alpha), None)
+        fronted = first_alpha is not None and first_alpha.text.lower() in _FRONTERS
+        has_cc = any(t.text.lower() in _CONJ_WORDS for t in toks)
+        if has_cc or fronted:
+            continue
+        comma_idxs = [i for i, t in enumerate(toks) if t.text == ',']
+        for ci in comma_idxs:
+            left_verb = any(t.text.lower() in _VERB_MARKERS for t in toks[:ci])
+            right_verb = any(t.text.lower() in _VERB_MARKERS for t in toks[ci + 1:])
+            if left_verb and right_verb:
+                return True
+    return False
+
+
+def _iter_math_spans(raw_lines):
+    """Yield (lineno, math_str) for inline $...$/$$...$$ and display blocks."""
+    in_display = False
+    display_start = 0
+    display_buf = []
+    bracket_depth = 0
+    for i, raw in enumerate(raw_lines, start=1):
+        line = strip_comment(raw)
+        if in_display:
+            if ENV_END_RE.search(line) or DISPLAY_CLOSE.match(line.strip()):
+                bracket_depth = max(0, bracket_depth - 1)
+                if ENV_END_RE.search(line) or bracket_depth == 0:
+                    in_display = False
+                    body = line
+                    body = ENV_END_RE.sub(' ', body)
+                    body = DISPLAY_CLOSE.sub(' ', body)
+                    display_buf.append(body)
+                    yield (display_start, ' '.join(display_buf))
+                    display_buf = []
+                continue
+            display_buf.append(line)
+            continue
+        if ENV_BEGIN_RE.search(line) or DISPLAY_OPEN.match(line.strip()):
+            in_display = True
+            display_start = i
+            bracket_depth = 1
+            body = ENV_BEGIN_RE.sub(' ', line)
+            body = DISPLAY_OPEN.sub(' ', body)
+            display_buf = [body]
+            # single-line display closed on same line?
+            if ENV_END_RE.search(body) or DISPLAY_CLOSE.search(body):
+                in_display = False
+                body = ENV_END_RE.sub(' ', body)
+                body = re.sub(r'\\\]', ' ', body)
+                yield (i, body)
+                display_buf = []
+            continue
+        for m in INLINE_MATH_RE.finditer(line):
+            inner = m.group().strip('$')
+            yield (i, inner)
+
+
+def check_comma_splice(raw_lines, file_label, nlp):
+    """Detect comma-as-connective inside math spans."""
+    findings = []
+    for lineno, math in _iter_math_spans(raw_lines):
+        if ',' not in math:
+            continue
+        if _is_comma_splice(math, nlp):
+            findings.append({
+                'file': file_label,
+                'line': lineno,
+                'kind': 'comma-splice',
+                'snippet': math.strip()[:80],
+            })
+    return findings
+
+
+# --------------------------------------------------------------------------
 # spaCy pass: check substituted prose for structural grammar violations
 # --------------------------------------------------------------------------
 
@@ -421,6 +557,7 @@ def lint_text(text: str, file_label: str = '<text>'):
     findings += check_punct_before_display(raw_lines, file_label)
     findings += check_comma_before_conjunction(raw_lines, file_label)
     findings += check_by_property(raw_lines, file_label)
+    findings += check_comma_splice(raw_lines, file_label, nlp)
     # spaCy pass catches anything the pre-passes miss and provides the
     # infrastructure for future grammar rules.
     spacy_findings = check_grammar_with_spacy(raw_lines, file_label, nlp)
