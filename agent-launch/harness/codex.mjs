@@ -4,7 +4,12 @@ import os from 'os'
 import path from 'path'
 import { promisify } from 'util'
 import { ledgerSessionId } from '../../agent-runtime/ledger-session-tail.mjs'
-import { codexRolloutBelongsToAgent, resolveTranscript } from '../../agent-runtime/resolve-transcript.mjs'
+import {
+  codexRolloutBelongsToAgent,
+  codexRolloutHasOwnerEvidence,
+  codexRolloutMatchesLaunch,
+  resolveTranscript,
+} from '../../agent-runtime/resolve-transcript.mjs'
 import { activeConfigName, gitAuthorEnv, readConfig } from '../identity.mjs'
 import { resolveCodexModel, resolveCodexModelSelection } from '../models.mjs'
 import { loginPrompt } from './claude.mjs'
@@ -70,7 +75,9 @@ export async function resolveOwnedCodexTranscript({
   processOwnedOnly = false,
   resolveTranscriptImpl = resolveTranscript,
 } = {}) {
-  const acceptTranscript = path => codexRolloutBelongsToAgent(path, agent)
+  const acceptTranscript = path =>
+    codexRolloutBelongsToAgent(path, agent)
+    || (!codexRolloutHasOwnerEvidence(path) && codexRolloutMatchesLaunch(path, agent, launchTs))
   for (const pid of runtimePids) {
     const owned = await resolveTranscriptImpl({
       pid,
@@ -176,6 +183,7 @@ export function buildCmd({
   harnessOptions = {},
 } = {}) {
   const processEnv = [
+    'CODEX_CI=1',
     ...(fleetId ? [`FLEET_ID=${sq(fleetId)}`] : []),
     ...(localAgentId ? [`FLEET_LOCAL_ID=${sq(localAgentId)}`] : []),
     `FLEET_TMUX_SESSION=${sq(tmuxSession)}`,
@@ -195,6 +203,7 @@ export function buildCmd({
   }
   const parts = [...processEnv, 'codex', '--no-alt-screen']
   if (resumeId) parts.push(`resume ${sq(resumeId)}`)
+  parts.push(cenv('CODEX_CI', '1'))
   if (fleetId) parts.push(cenv('FLEET_ID', fleetId))
   if (localAgentId) parts.push(cenv('FLEET_LOCAL_ID', localAgentId))
   if (name) parts.push(cenv('FLEET_NAME', name))

@@ -1,7 +1,5 @@
-import { execFile } from 'child_process'
 import fs from 'fs'
 import path from 'path'
-import { promisify } from 'util'
 import { resolveSpawnGrant } from '../server/lib/spawn-policy.mjs'
 import { detectSpawnStartupFailureTranscript } from '../agent-runtime/daemon-guards.mjs'
 import { probeSpawnAvailability } from './availability.mjs'
@@ -11,8 +9,6 @@ import { createLocalAgentLedger } from './local-agent-ledger.mjs'
 import { resolveModelSpec } from './models.mjs'
 import { isIntentionalEmptyPermissionSet, permissionSetConfersNothing } from './permissions.mjs'
 import { bindAgentSeat } from './seat-binding.mjs'
-
-const execFileP = promisify(execFile)
 
 function readFileTail(file, max = 6000) {
   try {
@@ -163,9 +159,7 @@ export function createAgentLauncher({
     if (reportedStartupFailures.has(dedupKey)) return null
     try {
       await new Promise(resolve => setTimeout(resolve, startupFailureProbeMs))
-      const { stdout } = await execFileP('tmux',
-        [...tmuxArgs, 'capture-pane', '-t', tmux_session, '-p', '-e', '-S', '-120'],
-        { timeout: 5000, encoding: 'utf8' })
+      const { stdout } = await tmux('capture-pane', '-t', tmux_session, '-p', '-e', '-S', '-120')
       const failure = detectSpawnStartupFailureTranscript(stdout, { harness })
       if (!failure) return null
       reportedStartupFailures.add(dedupKey)
@@ -187,6 +181,25 @@ export function createAgentLauncher({
       const crashTail = crash_log_path ? readFileTail(crash_log_path) : ''
       log.warn(`startup failure probe failed for ${agentName || agent_id}: ${e.message}${crash_log_path ? `; crash_log=${crash_log_path}` : ''}${crashTail ? `\n${crashTail}` : ''}`)
       return null
+    }
+  }
+
+  async function diagnoseSpawnStartupFailure({ agentName, agent_id, tmux_session, harness, model, respawn, crash_log_path }) {
+    const failure = await probeSpawnStartupFailure({
+      agentName,
+      agent_id,
+      tmux_session,
+      harness,
+      model,
+      respawn,
+      crash_log_path,
+    })
+    if (failure) return failure
+    const crashTail = crash_log_path ? readFileTail(crash_log_path) : ''
+    return {
+      code: 'prompt-delivery-unverified',
+      reason: `prompt delivery was unverified for ${tmux_session}`,
+      snippet: crashTail,
     }
   }
 
@@ -423,6 +436,29 @@ export function createAgentLauncher({
         permissionProfile: grant.permissionProfile || null,
         permissionIntersection: grant.permissionIntersection || null,
       })
+      const promptDeliveryFailed = launched?.promptDelivery?.ok === false
+      if (promptDeliveryFailed && spawnMode === 'fresh' && launched.harness === 'codex') {
+        const failure = await diagnoseSpawnStartupFailure({
+          agentName,
+          agent_id: launched.fleetId,
+          tmux_session: launched.tmuxSession,
+          crash_log_path: crashLogPath,
+          harness: launched.harness,
+          model: launched.model,
+          respawn,
+        })
+        return {
+          ok: false,
+          name: agentName,
+          agent_id: launched.fleetId,
+          tmux_session: launched.tmuxSession,
+          code: failure.code,
+          reason: failure.code,
+          error: failure.reason || 'fresh Codex prompt delivery was blocked before login',
+          snippet: failure.snippet || null,
+          ownership_retained: true,
+        }
+      }
       try {
         await tmux('has-session', '-t', launched.tmuxSession)
       } catch (e) {

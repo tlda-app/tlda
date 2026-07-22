@@ -1662,6 +1662,41 @@ export class FleetStore {
     return seat;
   }
 
+  mirrorAgentSeatIdentity({
+    agentId,
+    session_id,
+    session_ids,
+    resume_id,
+    cwd,
+    machine_id,
+    env_name,
+    daemon_key,
+  } = {}) {
+    if (!agentId) return;
+    this.db.prepare(`
+      UPDATE agents
+      SET session_id = COALESCE(?, session_id),
+          session_ids = COALESCE(?, session_ids),
+          resume_id = COALESCE(?, resume_id),
+          cwd = COALESCE(?, cwd),
+          machine_id = COALESCE(?, machine_id),
+          env_name = COALESCE(?, env_name),
+          daemon_key = COALESCE(?, daemon_key)
+      WHERE id = ?
+    `).run(
+      session_id || null,
+      session_ids ? JSON.stringify(session_ids) : null,
+      resume_id || null,
+      cwd || null,
+      machine_id || null,
+      env_name || null,
+      daemon_key || null,
+      agentId,
+    );
+    this._bustAgentsCache();
+    this._syncAgentRegistry(agentId);
+  }
+
   retireCurrentAgentSeat(agentId, fields = {}) {
     const seat = this.validateCurrentAgentSeat(agentId, fields);
     const result = this._deleteCurrentAgentSeat.run(
