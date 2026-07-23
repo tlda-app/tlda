@@ -2724,6 +2724,142 @@ export class FleetStore {
     return report;
   }
 
+  // The live active stack (ascending by position) for a lineage.
+  _activeStack(lineageId) {
+    return this.db.prepare(
+      'SELECT fleet_id, stack_index, entered_at FROM lineage_stack_entries WHERE lineage_id = ? AND active = 1 ORDER BY stack_index'
+    ).all(lineageId);
+  }
+
+  // Apply Todd-computed exact names for a re-seat. Two-phase to dodge the
+  // (friendly_name unique) index: null every affected name first (NULLs don't
+  // collide), then set each final name (all targets now free) through the
+  // event-emitting rename. The server NEVER computes these names — Todd passes
+  // them in. Every agent vacating a named slot must be in the list (→ its new
+  // name or null) so the name it holds is freed for whoever takes it.
+  async _applyNameAssignments(nameAssignments, { actorId = null, reason = 'stack' } = {}) {
+    if (!nameAssignments || !nameAssignments.length) return;
+    this.db.transaction(() => {
+      const clear = this.db.prepare('UPDATE agents SET friendly_name = NULL, pretty_name = NULL WHERE id = ?');
+      for (const { fleetId } of nameAssignments) clear.run(fleetId);
+      this._bustAgentsCache();
+    })();
+    for (const { fleetId, friendlyName } of nameAssignments) {
+      await this.renameAgentFriendlyName(fleetId, friendlyName || null, { actorId, reason });
+    }
+  }
+
+  // ---- CP3: the atomic re-seat primitive ----
+  // The server stores opaque stack POSITIONS and never derives a name. The caller
+  // (Todd) passes `nameAssignments` = [{ fleetId, friendlyName }] it has already
+  // computed; those are applied via renameAgentFriendlyName() (each atomic +
+  // event-emitting) right after the stack transaction. Every op returns the set
+  // of affected ids so the route wrapper does exactly one broadcastState().
+  //
+  // Position mutations run in a single transaction. To respect the
+  // (lineage_id, stack_index) WHERE active=1 unique index, a shifted member's
+  // position-tenure is CLOSED and re-opened at its new index (history preserved),
+  // processed in an order that always frees the target slot first: descending for
+  // a downward push, ascending for an upward pop.
+
+  // Seat `incomingId` at `position` (default top=0), pushing active members at
+  // index >= position down by one.
+  async adoptIntoLineage({ lineageId, incomingId, position = 0, reason = 'adopt', actorId = null, nameAssignments = [] }) {
+    const now = Date.now();
+    const affected = new Set();
+    this.db.transaction(() => {
+      const active = this._activeStack(lineageId);
+      const closeOne = this.db.prepare('UPDATE lineage_stack_entries SET active=0, exited_at=? WHERE lineage_id=? AND fleet_id=? AND stack_index=? AND active=1');
+      const insert = this.db.prepare("INSERT INTO lineage_stack_entries (lineage_id, fleet_id, stack_index, active, entered_at, entry_reason) VALUES (?, ?, ?, 1, ?, ?)");
+      const incomingActive = active.find(a => a.fleet_id === incomingId);
+      if (incomingActive) closeOne.run(now, lineageId, incomingId, incomingActive.stack_index);
+      const rest = active.filter(a => a.fleet_id !== incomingId);
+      const pos = Math.max(0, Math.min(position, rest.length));
+      const toShift = rest.filter(a => a.stack_index >= pos).sort((x, y) => y.stack_index - x.stack_index);
+      let tick = 0;
+      for (const r of toShift) {
+        closeOne.run(now, lineageId, r.fleet_id, r.stack_index);
+        insert.run(lineageId, r.fleet_id, r.stack_index + 1, now + (++tick), reason);
+        affected.add(r.fleet_id);
+      }
+      insert.run(lineageId, incomingId, pos, now + (++tick), reason);
+      affected.add(incomingId);
+      this.db.prepare('UPDATE agents SET lineage_id = ? WHERE id = ?').run(lineageId, incomingId);
+      this._bustAgentsCache();
+    })();
+    await this._applyNameAssignments(nameAssignments, { actorId, reason: `stack-${reason}` });
+    for (const { fleetId } of nameAssignments) affected.add(fleetId);
+    return { lineageId, affected: [...affected] };
+  }
+
+  // Seat an existing fleet id at the top of a lineage.
+  pushExisting(lineageId, incomingId, nameAssignments = [], opts = {}) {
+    return this.adoptIntoLineage({ lineageId, incomingId, position: 0, reason: 'push-existing', nameAssignments, ...opts });
+  }
+
+  // Close the top holder and shift everyone below up by one. The popped agent
+  // leaves current membership (its history rows remain).
+  async pop(lineageId, nameAssignments = [], { reason = 'pop', actorId = null } = {}) {
+    const now = Date.now();
+    const affected = new Set();
+    let popped = null;
+    this.db.transaction(() => {
+      const active = this._activeStack(lineageId);
+      if (active.length === 0) return;
+      const top = active[0];
+      popped = top.fleet_id;
+      const closeOne = this.db.prepare('UPDATE lineage_stack_entries SET active=0, exited_at=? WHERE lineage_id=? AND fleet_id=? AND stack_index=? AND active=1');
+      const insert = this.db.prepare("INSERT INTO lineage_stack_entries (lineage_id, fleet_id, stack_index, active, entered_at, entry_reason) VALUES (?, ?, ?, 1, ?, ?)");
+      closeOne.run(now, lineageId, top.fleet_id, top.stack_index);
+      affected.add(top.fleet_id);
+      const rest = active.slice(1).sort((x, y) => x.stack_index - y.stack_index);
+      let tick = 0;
+      for (const r of rest) {
+        closeOne.run(now, lineageId, r.fleet_id, r.stack_index);
+        insert.run(lineageId, r.fleet_id, r.stack_index - 1, now + (++tick), reason);
+        affected.add(r.fleet_id);
+      }
+      this.db.prepare('UPDATE agents SET lineage_id = NULL WHERE id = ?').run(top.fleet_id);
+      this._bustAgentsCache();
+    })();
+    await this._applyNameAssignments(nameAssignments, { actorId, reason: `stack-${reason}` });
+    for (const { fleetId } of nameAssignments) affected.add(fleetId);
+    return { lineageId, popped, affected: [...affected] };
+  }
+
+  // Replace the exact stack position held by `recipientId` with `incomingId`.
+  // The anywhere-op — no shift of other members.
+  async swap(recipientId, incomingId, nameAssignments = [], { reason = 'swap', actorId = null } = {}) {
+    const now = Date.now();
+    const affected = new Set();
+    let lineageId = null, idx = null;
+    this.db.transaction(() => {
+      const row = this.db.prepare('SELECT lineage_id, stack_index FROM lineage_stack_entries WHERE fleet_id = ? AND active = 1').get(recipientId);
+      if (!row) throw new Error('swap recipient is not on any active stack');
+      lineageId = row.lineage_id; idx = row.stack_index;
+      this.db.prepare('UPDATE lineage_stack_entries SET active=0, exited_at=?, replaced_by=? WHERE lineage_id=? AND fleet_id=? AND stack_index=? AND active=1')
+        .run(now, incomingId, lineageId, recipientId, idx);
+      this.db.prepare("INSERT INTO lineage_stack_entries (lineage_id, fleet_id, stack_index, active, entered_at, entry_reason) VALUES (?, ?, ?, 1, ?, ?)")
+        .run(lineageId, incomingId, idx, now, reason);
+      this.db.prepare('UPDATE agents SET lineage_id = ? WHERE id = ?').run(lineageId, incomingId);
+      this.db.prepare('UPDATE agents SET lineage_id = NULL WHERE id = ?').run(recipientId);
+      this._bustAgentsCache();
+      affected.add(recipientId); affected.add(incomingId);
+    })();
+    await this._applyNameAssignments(nameAssignments, { actorId, reason: `stack-${reason}` });
+    for (const { fleetId } of nameAssignments) affected.add(fleetId);
+    return { lineageId, stackIndex: idx, affected: [...affected] };
+  }
+
+  // Current active stack members, top-first, hydrated.
+  getStack(lineageId) {
+    const rows = this._activeStack(lineageId);
+    return rows.map(r => {
+      const a = this.getAgent(r.fleet_id);
+      return a ? { ...a, stack_index: r.stack_index } : { id: r.fleet_id, stack_index: r.stack_index };
+    });
+  }
+
   // Assign an agent into a lineage at a phase. Phase isn't stored — it's the
   // name: the agent is renamed to "<base>" (dawn) / "<base>:day" / "<base>:dusk".
   assignPhase(agentId, lineageId, phase) {
