@@ -34,7 +34,7 @@ function configFor(cwd) {
         spawn: { allow: ['**'], deny: [] },
       },
     },
-    spawnPolicy: { projectProfiles: { [cwd]: 'test' } },
+    permissionGrant: { projectProfiles: { [cwd]: 'test' } },
   }
 }
 
@@ -126,14 +126,14 @@ async function testFreshCodexPromptFailureFailsLoud() {
   const ledger = memoryLedger()
   await ledger.set('fleet:requester', {
     permissionSet: permissionSet('requester'),
-    permissionProfile: 'test',
-    spawnPolicy: { policy: 'unsandboxed' },
+    permissionGrant: 'test',
+    permissionGrant: 'ops',
   })
   const sent = []
   const launcher = createAgentLauncher({
     activeConfigName: 'prod',
     configDir: cwd,
-    loadConfig: () => configFor(cwd),
+    loadDaemonLaunchConfig: () => configFor(cwd),
     log: { info() {}, warn() {} },
     machineId: 'mini',
     permissionLedger: ledger,
@@ -226,8 +226,7 @@ async function testLocalMintPersistsGrantBeforeBinding() {
   const ledger = memoryLedger()
   const result = { fleetId: 'fleet:server-assigned' }
   const grant = {
-    spawnPolicy: { policy: 'sandboxed' },
-    permissionIntersection: { profiles: ['local', 'project'] },
+    permissionGrant: 'app-dev',
     permissionSet: { operations: {} },
   }
   assert.equal(await persistAssignedAgentGrant({
@@ -236,11 +235,10 @@ async function testLocalMintPersistsGrantBeforeBinding() {
     grant,
     grantedProfile: 'app-dev',
     preallocatedAgentId: undefined,
-    params: { spawnMode: 'fresh', explicitPolicy: false },
+    params: { spawnMode: 'fresh', explicitPermissionRequest: false },
   }), true)
   assert.deepEqual(ledger.get(result.fleetId), {
-    ...grant,
-    permissionProfile: 'app-dev',
+    permissionGrant: 'app-dev',
     source: 'agent-lifecycle-cli',
   })
 }

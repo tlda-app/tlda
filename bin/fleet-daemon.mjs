@@ -18,7 +18,7 @@
  *   - No HTTP. Browsers talk to the server, not the daemon.
  *
  * Lifecycle:
- *   - Reads server, spawn policy, and machine identity from daemon.yaml;
+ *   - Reads server, permission grant, and machine identity from daemon.yaml;
  *     authentication tokens come from tokens.json.
  *   - Derives a stable machineId from the hostname if missing and persists it
  *     to daemon.yaml.
@@ -183,17 +183,17 @@ const INSTALL_PATH = (() => {
 }
 
 // The daemon config (fence profiles + model aliases) is re-read from daemon.yaml
-// fresh on every loadConfig() call — including per-spawn reads in the agent-launch
+// fresh on every loadDaemonLaunchConfig() call — including per-spawn reads in the agent-launch
 // module — so edits to daemon.yaml take effect on the NEXT spawn without a daemon restart. Both levers
 // ride this single read: withDaemonModelAliases injects daemonConfig.profiles
-// (fence) AND daemonConfig.models (aliases) into the config that spawn policy
+// (fence) AND daemonConfig.models (aliases) into the config that permission grant
 // resolution consumes. Keep-last-good: a malformed daemon.yaml (readDaemonConfig throws) must
 // never half-apply — fall back to the last successfully parsed config and warn.
 // Running agents' leases are untouched; only new spawns re-read. The startup const
 // daemonSpawnConfig still seeds the ledger path + startup grants (those must not
 // move without a restart), and seeds _lastGoodDaemon here.
 let _lastGoodDaemon = daemonSpawnConfig
-function loadConfig() {
+function loadDaemonLaunchConfig() {
   let freshDaemon
   try {
     freshDaemon = readDaemonConfig(DAEMON_CONFIG_FILE)
@@ -216,7 +216,7 @@ function deriveMachineId() {
   return os.hostname().split('.')[0]
 }
 
-const config = loadConfig()
+const config = loadDaemonLaunchConfig()
 // The daemon is the local relay to THE server. There is one server (Fly); the
 // daemon watches local things (files, agents, terminals) and relays everything
 // to it — source-change → server builds in its shadow, activity/terminal/RPC →
@@ -653,7 +653,7 @@ const devReaper = createDevReaper({
 const agentLauncher = createAgentLauncher({
   activeConfigName: ACTIVE_CONFIG,
   configDir: CONFIG_DIR,
-  loadConfig,
+  loadDaemonLaunchConfig,
   log,
   machineId: MACHINE_ID,
   permissionLedger,
@@ -1269,7 +1269,7 @@ watchConfigDrift()
 // relaunches us, re-reading daemon.yaml fresh, so we come back on the corrected
 // target. (Only armed when SERVER came from the named config — a URL-pinned or
 // custom-dir daemon has no config to drift against.) config.json is retired; the
-// authority is daemon.yaml `servers:`/`defaultServer`.
+// authority is server.yaml `servers:`/`defaultServer`.
 function watchConfigDrift() {
   if (!_serverFromConfig) return
   const f = path.join(CONFIG_DIR, 'daemon.yaml')

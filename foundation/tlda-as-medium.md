@@ -70,7 +70,10 @@ Two MCP servers:
 
 ## Configuration
 
-- `~/.config/tlda/config.json` — server URL config
+- `~/.config/tlda/server.yaml` — server URL and build configuration
+- `~/.config/tlda/daemon.yaml` — machine, model, and permission configuration
+- `~/.config/tlda/bots.yaml` — managed bot configuration
+- `~/.config/tlda/cli.yaml` — ordinary CLI preferences
 - `~/work/tlda/CLAUDE.md` — project-specific agent instructions
 - `~/.claude/CLAUDE.md` — global agent instructions
 - `~/.claude/projects/<slug>/memory/` — per-project auto-memory (now symlinked to `~/work/dot-claude-memory/<slug>/`)

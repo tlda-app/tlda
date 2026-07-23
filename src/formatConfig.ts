@@ -43,7 +43,6 @@ const SVG_TOOLS = [
   'eraser',       // 3: double-tap zone
   'math-note',
   'cluster',
-  'usage-meter',
   'arrow',
   'laser',
   'text-select',
@@ -68,7 +67,6 @@ const HTML_TOOLS = [
   'eraser',       // 3: double-tap zone
   'math-note',
   'cluster',
-  'usage-meter',
   'arrow',
   'laser',
   'select',

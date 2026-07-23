@@ -12,7 +12,7 @@ import { Router } from 'express'
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
-import { DEFAULT_PORT, loadConfig, resolveConfig } from '../../shared/config.mjs'
+import { DEFAULT_PORT, resolveConfig } from '../../shared/config.mjs'
 import { parseFilter, evalExpr, labelsForAgent } from '../../shared/fleet-labels.mjs'
 import { fleetRosterCategory } from '../../shared/fleet-runtime-status.mjs'
 import { resolveSpawnMachine } from '../lib/spawn-routing.mjs'
@@ -330,7 +330,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   })
 
   // --- GET /api/fleet-config ---
-  // The global fleet/event-store URL this server points at (env → config.json
+  // The global fleet/event-store URL this server points at (env → server.yaml
   // fleetServer → this server). The SPA fetches this from whatever server served
   // it, then connects its chat/fleet to the returned URL — so any UI (the Pages
   // site, the main app, or an agent's dev server) resolves chat to the same
@@ -816,7 +816,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
           id: caller.id,
           name: caller.friendly_name || caller.name || undefined,
           human: !!caller.human,
-          spawnPolicy: caller.metadata?.spawnPolicy || undefined,
+          permissionGrant: caller.metadata?.permissionGrant || undefined,
           daemonId: caller.daemon_key || caller.metadata?.daemon_key || undefined,
         },
         spawnRoute: route.source,

@@ -4,7 +4,6 @@ import path from 'path'
 import { harnessStateWriteRoots } from './harness-state-roots.mjs'
 import { repoRoot } from './identity.mjs'
 
-const SANDBOX_POLICIES = new Set(['no-dev', 'cwd', 'tlda-projects', 'unsandboxed'])
 const DEFAULT_READ_ROOTS = []
 const DEFAULT_OPTIONS = { network: false, git: 'read', artifacts: true }
 const DEFAULT_TRUSTED_MCP_SERVERS = { tlda: { defaultToolsApprovalMode: 'approve' } }
@@ -54,12 +53,7 @@ function permissionSetList(value, operation, effect) {
 }
 
 export function isIntentionalEmptyPermissionSet(value) {
-  const projected = value?.projectedPolicy
-  const projectedName = typeof projected === 'string'
-    ? projected
-    : (projected && typeof projected === 'object' ? (projected.permission || projected.policy || projected.name) : '')
   return String(value?.name || '').trim().toLowerCase() === 'none'
-    || String(projectedName || '').trim().toLowerCase() === 'none'
     || value?.compiledFrom === 'empty-permission-set'
 }
 
@@ -241,14 +235,11 @@ function projectSourceDirs(config = {}) {
   return [...new Set(roots)].sort()
 }
 
-export function sandboxMetadata(spawnPolicy, leasePolicy = null) {
-  if (!spawnPolicy) return {}
+export function permissionMetadata(permissionGrant, leasePolicy = null) {
+  if (!permissionGrant) return {}
   return {
-    spawnPolicy: {
-      ...(spawnPolicy.policy ? { policy: spawnPolicy.policy } : {}),
-    },
-    ...(leasePolicy?.permission_set ? { permissionSet: leasePolicy.permission_set } : {}),
-    ...(leasePolicy ? { sandbox: stripRunner(leasePolicy) } : {}),
+    permissionGrant,
+    ...(leasePolicy ? { permissions: stripRunner(leasePolicy) } : {}),
   }
 }
 
@@ -269,76 +260,28 @@ function resolvedPermissionZones(permissionSet, operation, effect, workspace) {
     .filter(Boolean)
 }
 
-// The fence REGION scope from a grant blob (or a bare region string). The grant now
-// carries only its region (`policy`), never a permission level.
-function regionScope(spawnPolicy) {
-  if (!spawnPolicy || typeof spawnPolicy !== 'object' || Array.isArray(spawnPolicy)) {
-    throw new Error('resolved daemon spawn policy is required')
-  }
-  const raw = spawnPolicy.policy
-  const s = String(raw || '').trim().toLowerCase()
-  if (SANDBOX_POLICIES.has(s)) return s
-  throw new Error(`unknown sandbox policy "${raw}"`)
-}
-
-export function resolveLeasePolicy({ spawnPolicy, permissionSet = null, harness, model, cwd, config = {}, env = process.env } = {}) {
-  const policyName = regionScope(spawnPolicy)
-  if (!SANDBOX_POLICIES.has(policyName)) throw new Error(`sandbox policy "${policyName}" is not valid`)
+export function resolveLeasePolicy({ permissionGrant, permissionSet = null, harness, model, cwd, config = {}, env = process.env } = {}) {
+  if (!permissionGrant) throw new Error('resolved permission grant is required')
   const explicitPermissionSet = permissionSet && typeof permissionSet === 'object' && !Array.isArray(permissionSet)
   if (explicitPermissionSet) validateExplicitPermissionSet(permissionSet)
-  // "unsandboxed" is a machine-level execution grant, not a broad filesystem
-  // fence. Any sandbox-exec wrapper still blocks normal user operations such as
-  // launchctl service management even when its path rules allow the whole disk.
-  if (policyName === 'unsandboxed') return { policyName, devTools: true, leasePolicy: null }
-  if (policyName === 'no-dev') return { policyName, devTools: false, leasePolicy: null }
+  if (!explicitPermissionSet) throw new Error('compiled permission set is required')
 
   const workspace = abs(cwd || process.cwd())
-  let writeRoots = []
-  let matchedRoot = workspace
-  if (explicitPermissionSet) {
-    writeRoots = resolvedPermissionZones(permissionSet, 'write', 'allow', workspace)
-    matchedRoot = workspace
-  } else if (policyName === 'cwd') {
-    writeRoots = [workspace]
-  } else if (policyName === 'tlda-projects') {
-    const roots = projectSourceDirs(config)
-    matchedRoot = roots.find((root) => pathInside(workspace, root)) || null
-    if (!matchedRoot) return { policyName, devTools: false, leasePolicy: null }
-    writeRoots = roots
-  }
+  let writeRoots = resolvedPermissionZones(permissionSet, 'write', 'allow', workspace)
+  const matchedRoot = workspace
 
   const options = { ...DEFAULT_OPTIONS }
-  // Read/write come straight off the region set (explicit grant) or the region (bare
-  // policy) — no permission level. Any write-bearing grant gets git metadata; a
-  // bare-policy write grant also gets the dev caches so a fenced job is never trapped.
-  // Network is on whenever the grant allows anything, unless it explicitly turned it off.
-  const networkOff = (explicitPermissionSet && permissionSet.network === false)
-    || (spawnPolicy && typeof spawnPolicy === 'object' && spawnPolicy.network === false)
-  const grantsWrite = explicitPermissionSet
-    ? permissionSetList(permissionSet, 'write', 'allow').length > 0
-    : (policyName === 'cwd' || policyName === 'tlda-projects')
-  const grantsAnything = explicitPermissionSet
-    ? grantsWrite || permissionSetList(permissionSet, 'read', 'allow').length > 0
-    : true
+  const networkOff = permissionSet.network === false
+  const grantsWrite = permissionSetList(permissionSet, 'write', 'allow').length > 0
+  const grantsAnything = grantsWrite || permissionSetList(permissionSet, 'read', 'allow').length > 0
   if (explicitPermissionSet && !grantsAnything && !isIntentionalEmptyPermissionSet(permissionSet)) {
     throw new Error(`explicit permissionSet "${permissionSet.name || '(unnamed)'}" grants no read/write zones`)
-  }
-  if (grantsWrite && !explicitPermissionSet) {
-    writeRoots = [
-      ...writeRoots,
-      path.join(os.homedir(), '.config', 'tlda'),
-      CHROME_FOR_TESTING_CRASHPAD_ROOT,
-      path.join(CHROME_FOR_TESTING_CRASHPAD_ROOT, '**'),
-      TLDA_PW_RUNTIME_ROOT,
-      TLDA_FENCE_TMP_ROOT,
-    ]
   }
   writeRoots = [...writeRoots, ...harnessStateWriteRoots(env)]
   if (grantsWrite) writeRoots = [...writeRoots, ...gitMetadataRoots(workspace)]
   if (grantsAnything && !networkOff) options.network = true
-  const explicitReadRoots = explicitPermissionSet ? resolvedPermissionZones(permissionSet, 'read', 'allow', workspace) : []
+  const explicitReadRoots = resolvedPermissionZones(permissionSet, 'read', 'allow', workspace)
   const readRoots = [...new Set([
-    ...(explicitPermissionSet ? [] : [workspace]),
     ...(grantsAnything ? [PLAYWRIGHT_CACHE_ROOT, CHROME_FOR_TESTING_CRASHPAD_ROOT] : []),
     ...(grantsAnything ? configPathList(DEFAULT_READ_ROOTS) : []),
     ...explicitReadRoots,
@@ -347,23 +290,21 @@ export function resolveLeasePolicy({ spawnPolicy, permissionSet = null, harness,
   writeRoots = [...new Set(writeRoots.map(absOrPattern))].sort()
   const trusted = deepMerge(DEFAULT_TRUSTED_MCP_SERVERS, {})
   return {
-    policyName,
     devTools: true,
     matchedRoot,
     leasePolicy: {
       schema: 1,
-      policy: policyName,
       // An empty grant confers nothing (no read, no write) — the seatbelt default-denies
       // and adds no agent roots. Replaces the old `permission === 'none'` signal.
       empty: !grantsAnything,
       harness,
       model: model || '',
+      permission_grant: permissionGrant,
       workspace,
       read_roots: readRoots,
       write_roots: writeRoots,
-      deny_read_roots: explicitPermissionSet ? resolvedPermissionZones(permissionSet, 'read', 'deny', workspace) : [],
-      deny_write_roots: explicitPermissionSet ? resolvedPermissionZones(permissionSet, 'write', 'deny', workspace) : [],
-      ...(explicitPermissionSet ? { explicit_permission_set: true, permission_set: permissionSet } : {}),
+      deny_read_roots: resolvedPermissionZones(permissionSet, 'read', 'deny', workspace),
+      deny_write_roots: resolvedPermissionZones(permissionSet, 'write', 'deny', workspace),
       network: options.network !== false,
       git: options.git || 'read',
       artifacts: options.artifacts !== false,
@@ -376,7 +317,7 @@ export function resolveLeasePolicy({ spawnPolicy, permissionSet = null, harness,
 }
 
 export function resolveLaunchPolicy({
-  spawnPolicy,
+  permissionGrant,
   permissionSet = null,
   harness,
   model,
@@ -384,23 +325,13 @@ export function resolveLaunchPolicy({
   config = {},
   permissionMode,
   mode,
-  explicitPolicy = false,
+  explicitPermissionRequest = false,
   acknowledgeNoSecurity = false,
   harnessOptions: resolvedHarnessOptions = null,
   env = process.env,
 } = {}) {
-  // No hardcoded fallback: an un-granted agent has no fabricated policy. The grant
-  // (already the intersection of project ∩ spawner ∩ model-ceiling region sets) is
-  // passed in as spawnPolicy (its region scope) + permissionSet (its zones).
-  if (!spawnPolicy) throw new Error('resolved daemon spawn policy is required')
-  const requestedPolicy = spawnPolicy
-  // Apply the specified policy. No opt-in gate, no global off-switch, no silent
-  // waiver — the agent's grant IS the fence, and it is enforced as written. If there
-  // is a policy to apply, apply it.
-  const useFence = !!requestedPolicy
-  const leaseResolution = useFence
-    ? resolveLeasePolicy({ spawnPolicy: requestedPolicy, permissionSet, harness, model, cwd, config, env })
-    : { policyName: null, devTools: true, leasePolicy: null }
+  if (!permissionGrant) throw new Error('resolved daemon permission grant is required')
+  const leaseResolution = resolveLeasePolicy({ permissionGrant, permissionSet, harness, model, cwd, config, env })
   // Permission mode is NOT derived from the grant or a permission level. The flag the
   // operator wants (--dangerously-skip-permissions, --permission-mode plan, …) is
   // configured in the daemon settings' harness options and passed straight through by
@@ -411,15 +342,6 @@ export function resolveLaunchPolicy({
     ? 'bypassPermissions'
     : (permissionMode ?? mode ?? undefined)
   let harnessOptions = resolveHarnessLaunchOptions({ harness, harnessOptions: resolvedHarnessOptions })
-  if (leaseResolution.policyName === 'unsandboxed' && String(harness || '').trim().toLowerCase() === 'codex' && !harnessOptions.yolo) {
-    harnessOptions = resolveHarnessLaunchOptions({
-      harness,
-      harnessOptions: {
-        ...harnessOptions,
-        required: [...harnessOptions.required, '--dangerously-bypass-approvals-and-sandbox'],
-      },
-    })
-  }
   // Security comes from the applied grant (a fence) or the harness's own controls.
   // A genuinely wide-open launch (no fence, no controls) must be acknowledged
   // explicitly by the caller — no silent auto-waiver. Whether the classifier is
@@ -428,14 +350,14 @@ export function resolveLaunchPolicy({
   const launchSecurity = assertLaunchHasSecurity({
     leasePolicy: leaseResolution.leasePolicy,
     harnessOptions,
-    acknowledgeNoSecurity: acknowledgeNoSecurity || leaseResolution.policyName === 'unsandboxed',
+    acknowledgeNoSecurity,
     harness,
   })
   return {
     ...leaseResolution,
     harnessOptions,
     launchSecurity,
-    spawnPolicy: requestedPolicy,
+    permissionGrant,
     permissionMode: effectivePermissionMode,
     classifierDisabled: permissionClassifierDisabled(config, env),
   }

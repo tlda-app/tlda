@@ -22,8 +22,8 @@ function assertPreservesBinding(block, label, existingSyntax = 'existing') {
   }
 }
 
-const registerBlock = sliceBetween('const agent = {', '// Persist spawnPolicy ATOMICALLY')
-const loginBlock = sliceBetween("if (type === 'login')", 'if (agent.metadata?.spawnPolicy)')
+const registerBlock = sliceBetween('const agent = {', '// Persist permissionGrant ATOMICALLY')
+const loginBlock = sliceBetween("if (type === 'login')", 'if (agent.metadata?.permissionGrant)')
 
 assertPreservesBinding(registerBlock, 'register', 'existing')
 assertPreservesBinding(loginBlock, 'login', 'existing')

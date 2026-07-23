@@ -97,14 +97,14 @@ async function run() {
     name: 'collidertest',
     machine_id: 'testbox-caller',
     env_name: ENV_NAME,
-    metadata: { spawnPolicy: { permission: 'read', policy: 'cwd' } },
+    metadata: { permissionGrant: { permission: 'read', policy: 'cwd' } },
   }))
   ws.send(JSON.stringify({
     type: 'login',
     agent_id: 'fleet:tester1',
     machine_id: 'testbox-caller',
     env_name: ENV_NAME,
-    metadata: { spawnPolicy: { permission: 'read', policy: 'cwd' } },
+    metadata: { permissionGrant: { permission: 'read', policy: 'cwd' } },
   }))
   await sleep(800)
 
@@ -122,19 +122,19 @@ async function run() {
 
   if (!collide) fail(`no spawn RPC for fleet:tester1 reached the daemon. RPCs: ${JSON.stringify(spawnRpcs)}`)
   if (collide.respawn !== true) fail(`collision spawn should coerce respawn=true, got ${collide.respawn}`)
-  if (collide.spawnPolicy || collide.permissionProfile || collide.mode) {
-    fail(`server must not send granted policy/mode/fence on collision wake: ${JSON.stringify(collide)}`)
+  if (collide.permissionGrant || collide.mode) {
+    fail(`server must not choose a grant or mode on collision wake: ${JSON.stringify(collide)}`)
   }
   console.log('PASS: collision spawn coerced to respawn=true using the resolved fleet id')
 
   if (!fresh) fail(`no spawn RPC for totallynewname reached the daemon. RPCs: ${JSON.stringify(spawnRpcs)}`)
   if (fresh.respawn === true) fail(`new-name spawn should stay fresh (respawn falsy), got ${fresh.respawn}`)
   if (fresh.permissionRequest !== 'full') fail(`server should relay permissionRequest full, got ${fresh.permissionRequest}`)
-  if (fresh.spawnPolicy || fresh.permissionProfile || fresh.mode) {
-    fail(`server readiness/policy handling must be status-only; it must not choose grant/mode/fence: ${JSON.stringify(fresh)}`)
+  if (fresh.permissionGrant || fresh.mode) {
+    fail(`server readiness handling must be status-only; it must not choose a grant or mode: ${JSON.stringify(fresh)}`)
   }
   console.log('PASS: new-name spawn stayed fresh (respawn falsy)')
-  console.log('PASS: server spawn path is relay-only for permission/fence/mode')
+  console.log('PASS: server spawn path relays permission requests without choosing grants')
 
   // Assert the synthetic activity: a fresh 'activity' event for fleet:tester1 and
   // a bumped last_active. Read it back over the events API.

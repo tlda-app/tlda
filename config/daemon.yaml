@@ -69,7 +69,6 @@ models:
       description: Codex Terra
       options: {}
 
-servers: {}
 regions: {}
 profiles: {}
 grants: {}

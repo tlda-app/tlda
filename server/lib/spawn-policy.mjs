@@ -1,127 +1,13 @@
 import { homedir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 
-// Skip's ONE permission vocabulary — the coarse permission NAMES. This is the
-// only permission vocabulary tlda owns; there is NO machine vocabulary
-// (workspace-*, *-no-net, full-access) on any tlda surface. These names are a
-// COARSE LABEL for a region set, not a rank ladder: the real authority is the
-// region-set intersection (intersectPermissionSets); the name is derived FROM
-// the region set for display and for the sandbox-region
-// selection downstream. The filesystem REGION each name maps to is PART OF THE
-// NAME (tlda-write = write across all tlda projects), not a second axis. "no-net"
-// is not a name — net is always on (Skip: "literally every type of agent should
-// be able to use the Internet"); it survives only as a never-typed
-// `network:false` modifier. The single foreign string that survives is Codex's
-// own sandbox API value, mapped at the fleet-spawn boundary, not here.
-const PERMISSION_NAMES = new Set(['none', 'read', 'write', 'tlda-write', 'full'])
-
-export function normalizePermission(value) {
-  if (value == null || value === '') {
-    throw new Error('spawn permission is required')
-  }
-  const raw = String(value).trim().toLowerCase()
-  if (!PERMISSION_NAMES.has(raw)) {
-    throw new Error(`unknown spawn permission "${value}"`)
-  }
-  return raw
-}
-
-// Spawn policy is a resolved daemon-config object. The code validates it but does
-// not infer a region from a permission name.
-export function normalizeSpawnPolicy(value) {
-  if (value == null || value === '') {
-    throw new Error('spawn policy is required')
-  }
-
-  if (typeof value === 'string') {
-    throw new Error('spawn policy must include a configured permission and region')
-  }
-
-  if (typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error(`unknown spawn policy "${value}"`)
-  }
-
-  const permission = normalizePermission(value.permission)
-  const policy = String(value.policy || '').trim().toLowerCase()
-  if (!policy) throw new Error('spawn policy region is required')
-  return {
-    name: value.name || permission,
-    permission,
-    policy,
-    category: 'write-scope',
-    ...(value.network === false ? { network: false } : {}),
-  }
-}
-
-// Build a region set: read == write == the zone, spawn open. The one shape used for
-// model ceilings, bare profile-name fallbacks, and the machine (root) spawner set.
-function regionPermissionSet(zone, { name, cwd, project } = {}) {
-  const operations = emptyPermissionOperations()
-  const rules = []
-  for (const op of ['read', 'write']) {
-    operations[op].allow.push(zone)
-    rules.push({ operation: op, effect: 'allow', zone, line: null })
-  }
-  operations.spawn.allow.push('**')
-  rules.push({ operation: 'spawn', effect: 'allow', zone: '**', line: null })
-  return materializePermissionSet(
-    { type: 'permission-set', name: name || `region:${zone}`, operations, rules, compiledFrom: 'region' },
-    { cwd, project },
-  )
-}
-
-// The whole machine — the spawner set for root/operator/direct spawns.
-function allMachineSet(name = 'machine') {
-  return regionPermissionSet('**', { name })
-}
-
-// The fence REGION a set covers, read off its write zones — NOT a level. A
-// machine-covering write ⇒ unsandboxed; the literal tlda-projects token ⇒
-// tlda-projects; anything else (bounded write, read-only, or empty) ⇒ cwd. This is
-// the only thing derived from the region set, and it's a region scope for the lease,
-// never a rank.
-export function regionScopeFromSet(set) {
-  const writeAllow = set.operations?.write?.allow || []
-  return writeAllow.some(isMachineZone)
-    ? 'unsandboxed'
-    : writeAllow.some((z) => String(z).trim() === 'tlda-projects')
-      ? 'tlda-projects'
-      : 'cwd'
-}
-
-// Stored grants use only current fence region names. Older permission vocabulary
-// must be migrated before startup; it is not interpreted at runtime.
-const REGION_SCOPES = new Set(['cwd', 'tlda-projects', 'unsandboxed', 'no-dev'])
-function regionOf(raw) {
-  const s = String(raw || '').trim().toLowerCase()
-  if (REGION_SCOPES.has(s)) return s
-  return null
-}
-export function normalizeRegionPolicy(value) {
-  if (value == null || value === '') throw new Error('spawn policy region is required')
-  if (typeof value === 'string') {
-    const policy = regionOf(value)
-    if (!policy) throw new Error(`unknown spawn policy region "${value}"`)
-    return { policy }
-  }
-  if (typeof value === 'object' && !Array.isArray(value)) {
-    const policy = regionOf(value.policy)
-    if (!policy) throw new Error('spawn policy region is required')
-    return {
-      policy,
-      ...(value.network === false ? { network: false } : {}),
-    }
-  }
-  throw new Error(`unknown spawn policy region "${value}"`)
-}
-
 // Optional model cap from the resolved daemon model spec. There is no code-owned
 // trust tier fallback here: absent daemon cap, this operand is identity.
 function modelCeilingPermissionSet(config = {}, { modelCap, cwd, project } = {}) {
-  if (!modelCap) return allMachineSet('model:uncapped')
+  if (!modelCap) return null
   const profile = configuredPermissionProfile(config, modelCap)
   if (profile) return materializePermissionSet(profile, { cwd, project })
-  return regionPermissionSet(modelCap, { name: `model:${modelCap}`, cwd, project })
+  throw unknownPermissionProfileError(config, modelCap)
 }
 
 // Project-default profiles (Skip 06-19: "reasonable configurations on a
@@ -187,28 +73,6 @@ function selectCompiledPermissionProfile(bundle, requestedName = null) {
   }
   if (keys.length === 1) return bundle.profiles[keys[0]]
   throw new Error('permission profile source has multiple profiles; specify profile/name')
-}
-
-function zoneForPolicy(policy, { cwd, project } = {}) {
-  if (policy.policy === 'unsandboxed') return '**'
-  const base = policy.policy === 'tlda-projects'
-    ? (project?.sourceDir || cwd || 'tlda-projects')
-    : (cwd || policy.policy)
-  if (base === 'cwd' || base === 'tlda-projects') return base
-  const resolved = normalizedPath(base)
-  return `${resolved || base}/**`
-}
-
-export function emptyPermissionSet({ name = 'none', projectedPolicy } = {}) {
-  if (!projectedPolicy) throw new Error('empty permission set requires a resolved spawn policy')
-  return {
-    type: 'permission-set',
-    name,
-    operations: emptyPermissionOperations(),
-    rules: [],
-    projectedPolicy: normalizeSpawnPolicy(projectedPolicy),
-    compiledFrom: 'empty-permission-set',
-  }
 }
 
 function globRoot(zone) {
@@ -295,13 +159,12 @@ function intersectPermissionPair(left, right) {
   }
 }
 
-export function intersectPermissionSets(sets, { name = 'grant', projectedPolicy = null } = {}) {
+export function intersectPermissionSets(sets, { name = 'grant' } = {}) {
   const normalized = sets.filter(Boolean).map(clonePermissionSet)
   if (!normalized.length) throw new Error('cannot intersect an empty permission-set list')
   let current = normalized[0]
   for (const next of normalized.slice(1)) current = intersectPermissionPair(current, next)
   current.name = name
-  if (projectedPolicy) current.projectedPolicy = projectedPolicy
   return current
 }
 
@@ -326,14 +189,6 @@ function looksLikePermissionSet(value) {
     && typeof value.operations === 'object'
 }
 
-// A write zone that covers the whole machine — the signal that a region set is
-// "unsandboxed / full". Matches the universal globs the fence treats as machine
-// scope (permissions.mjs / permission-ledger.mjs derivedPolicyFromOperations).
-function isMachineZone(zone) {
-  const raw = String(zone || '').trim()
-  return raw === '**' || raw === '/' || raw === '/**'
-}
-
 function normalizedPath(value) {
   if (!value || typeof value !== 'string') return null
   try {
@@ -355,7 +210,7 @@ function pathBasename(value) {
 }
 
 function configuredPermissionProfiles(config = {}) {
-  const profiles = config.spawnPolicy?.permissionProfiles || {}
+  const profiles = config.permissionProfiles || {}
   return profiles && typeof profiles === 'object' && !Array.isArray(profiles) ? profiles : {}
 }
 
@@ -380,17 +235,6 @@ function firstConfiguredProfile(config = {}, ...values) {
   return null
 }
 
-export function exactConfiguredPermissionProfile(permissionSet, config = {}, preferred = null) {
-  const profiles = configuredPermissionProfiles(config)
-  const candidates = preferred && profiles[preferred]
-    ? [[preferred, profiles[preferred]], ...Object.entries(profiles).filter(([name]) => name !== preferred)]
-    : Object.entries(profiles)
-  for (const [name, profile] of candidates) {
-    if (permissionSetLte(permissionSet, profile) && permissionSetLte(profile, permissionSet)) return name
-  }
-  return null
-}
-
 function configuredProjectProfileName(config = {}, projectProfiles = {}, keys = []) {
   for (const key of keys) {
     if (!key) continue
@@ -402,13 +246,12 @@ function configuredProjectProfileName(config = {}, projectProfiles = {}, keys = 
 }
 
 // Resolve which profile NAME a spawn should inherit. Precedence:
-// the project record's own `profile` field → config.spawnPolicy.projectProfiles
+// the project record's own `profile` field → configured project profile mapping
 // keyed by project name / sourceDir / cwd basename → configured default profile.
-// The daemon permission ledger is the authority for caller grants; config.json
+// The daemon permission ledger is the authority for caller grants; server.yaml
 // must not invent a broad default profile.
 export function resolveProjectProfileName(config = {}, { doc, project, cwd } = {}) {
-  const policy = config.spawnPolicy || {}
-  const projectProfiles = policy.projectProfiles || {}
+  const projectProfiles = config.projectPermissionProfiles || {}
   const sourceDir = project?.sourceDir || null
   const cwdMatchesProject = cwd && sourceDir && pathInside(cwd, sourceDir)
   return firstConfiguredProfile(config, project?.profile)
@@ -424,11 +267,11 @@ export function resolveProjectProfileName(config = {}, { doc, project, cwd } = {
       cwdMatchesProject ? pathBasename(sourceDir) : null,
       pathBasename(cwd)
     )
-    || firstConfiguredProfile(config, policy.defaultProfile)
+    || firstConfiguredProfile(config, config.defaultPermissionProfile)
     || DEFAULT_SPAWN_PROFILE
 }
 
-// The profile a spawn inherits, as a normalized spawn policy. This becomes the
+// The profile a spawn inherits becomes the requested permission when the caller
 // requested permission when the caller does not request one explicitly — the
 // default fence. resolveSpawnGrant still bounds it, via the region-set
 // intersection, by the model ceiling and the spawner's own authority.
@@ -485,21 +328,52 @@ function unknownPermissionProfileError(config = {}, name) {
   return new Error(`unknown permission profile "${name}". Profiles: ${configured.join(', ') || '(none configured)'}`)
 }
 
-function explicitPermissionProfileRequest(config = {}, value, fallback = null) {
-  const named = typeof value === 'string'
-    ? value
-    : (value && typeof value === 'object' && !Array.isArray(value) && !value.permission && !value.source && !looksLikePermissionSet(value)
-      ? (value.profile || value.preset || value.name)
-      : null)
-  if (!named) return null
-  const name = String(named || '').trim()
+function explicitPermissionProfileRequest(config = {}, value) {
+  if (typeof value !== 'string') throw new Error('permission request must name one configured profile')
+  const name = value.trim()
   if (!name) return null
   const configured = configuredPermissionProfile(config, name)
   if (configured) {
-    const policy = { name, policy: regionScopeFromSet(configured) }
-    return { ...policy, permissionSet: configured }
+    return { name, permissionSet: configured }
   }
   throw unknownPermissionProfileError(config, name)
+}
+
+export function normalizePermissionGrant(value, config = {}) {
+  if (typeof value === 'string') {
+    const profile = firstConfiguredProfile(config, value)
+    if (!profile) throw unknownPermissionProfileError(config, value)
+    return profile
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value) || value.type !== 'permission-intersection') {
+    throw new Error('permission grant must be a configured profile or permission-profile intersection')
+  }
+  const profiles = [...new Set(
+    (Array.isArray(value.profiles) ? value.profiles : [])
+      .map((name) => firstConfiguredProfile(config, name))
+      .filter(Boolean),
+  )]
+  if (profiles.length < 2) {
+    throw new Error('permission-profile intersection requires at least two configured profiles')
+  }
+  return { type: 'permission-intersection', profiles }
+}
+
+export function permissionGrantProfileName(grant) {
+  return typeof grant === 'string' ? grant : null
+}
+
+export function permissionGrantIntersection(grant) {
+  return grant?.type === 'permission-intersection' ? grant : null
+}
+
+export function compilePermissionGrant(config = {}, grant, { cwd, project } = {}) {
+  const normalized = normalizePermissionGrant(grant, config)
+  const profiles = typeof normalized === 'string' ? [normalized] : normalized.profiles
+  return intersectPermissionSets(
+    profiles.map((name) => profileSet(config, name, { cwd, project })),
+    { name: typeof normalized === 'string' ? normalized : `intersection(${profiles.join(',')})` },
+  )
 }
 
 // The operator (human, or the server owner identity) is root: never fenced, can
@@ -548,34 +422,21 @@ export function resolveSpawnGrant({
     modelPermissionSet,
     spawnerPermissionSet,
   ], { name: 'grant' })
-  const resolvedGrantIdentity = permissionRequest
-    ? resolvedExplicitPermissionGrantIdentity({
-        requestedProfile,
-        requestedSet,
-        modelPermissionProfile,
-        modelPermissionSet,
-        spawnerPermissionProfile: configuredSpawnerProfile,
-        spawnerPermissionSet,
-        permissionSet,
-        config,
-        cwd,
-        project,
-      })
-    : exactConfiguredPermissionProfile(permissionSet, config, requestedProfile)
-  const permissionProfile = typeof resolvedGrantIdentity === 'string' ? resolvedGrantIdentity : null
-  const permissionIntersection = resolvedGrantIdentity?.type === 'permission-intersection'
-    ? resolvedGrantIdentity
-    : null
-  // The grant carries the configured profile identity separately from the fence scope.
-  const spawnPolicy = {
-    policy: regionScopeFromSet(permissionSet),
-  }
-  permissionSet.projectedPolicy = spawnPolicy
-  return {
-    spawnPolicy,
+  const permissionGrant = resolvedPermissionGrantIdentity({
+    requestedProfile,
+    requestedSet,
+    modelPermissionProfile,
+    modelPermissionSet,
+    spawnerPermissionProfile: configuredSpawnerProfile,
+    spawnerPermissionSet,
     permissionSet,
-    permissionProfile,
-    ...(permissionIntersection ? { permissionIntersection } : {}),
+    config,
+    cwd,
+    project,
+  })
+  return {
+    permissionGrant,
+    permissionSet,
   }
 }
 
@@ -595,7 +456,7 @@ function strictlyClamps(clampSet, baseSet) {
   return !!(clampSet && baseSet && permissionSetLte(clampSet, baseSet) && !permissionSetLte(baseSet, clampSet))
 }
 
-function resolvedExplicitPermissionGrantIdentity({
+function resolvedPermissionGrantIdentity({
   requestedProfile,
   requestedSet,
   modelPermissionProfile,
@@ -623,7 +484,7 @@ function resolvedExplicitPermissionGrantIdentity({
   }
 
   if (!chosenProfile) {
-    throw new Error('explicit permission request resolved to an anonymous grant; refusing to persist without a configured permission profile')
+    throw new Error('permission request resolved without a configured permission profile')
   }
 
   if (chosenSet && samePermissionSet(permissionSet, chosenSet)) {
@@ -634,18 +495,16 @@ function resolvedExplicitPermissionGrantIdentity({
     requestedProfile,
     modelPermissionProfile,
     spawnerPermissionProfile,
-    permissionSet,
   })
   if (intersection) return intersection
 
-  throw new Error(`explicit permission request for "${requestedProfile || '(unknown)'}" resolved to an anonymous clamped grant; refusing to persist without a configured permission profile`)
+  throw new Error(`permission request for "${requestedProfile || '(unknown)'}" cannot be represented as configured permission profiles`)
 }
 
 function structuredPermissionIntersection({
   requestedProfile,
   modelPermissionProfile,
   spawnerPermissionProfile,
-  permissionSet,
 } = {}) {
   const profiles = [
     requestedProfile,
@@ -657,11 +516,33 @@ function structuredPermissionIntersection({
   return {
     type: 'permission-intersection',
     profiles: uniqueProfiles,
-    permissionSet,
-    provenance: {
-      requestedProfile: requestedProfile || null,
-      modelPermissionProfile: modelPermissionProfile || null,
-      spawnerPermissionProfile: spawnerPermissionProfile || null,
-    },
   }
+}
+
+export function permissionGrantTransparencyLine(grant, permissionSet = null) {
+  if (typeof grant === 'string' && grant.trim()) return `  permissions: ${grant.trim()}`
+  const profiles = grant?.type === 'permission-intersection' && Array.isArray(grant.profiles)
+    ? grant.profiles.map((name) => String(name || '').trim()).filter(Boolean)
+    : []
+  if (profiles.length >= 2) return `  permissions: ${profiles.join(' intersection ')}`
+  const regions = permissionSetRegionSummary(permissionSet)
+  return regions ? `  permissions: ${regions}` : null
+}
+
+function permissionSetRegionSummary(permissionSet) {
+  const operations = permissionSet?.operations
+  if (!operations || typeof operations !== 'object') return null
+  return [
+    `read regions: ${permissionOperationRegions(operations.read)}`,
+    `write regions: ${permissionOperationRegions(operations.write)}`,
+  ].join('; ')
+}
+
+function permissionOperationRegions(row = {}) {
+  const allow = Array.isArray(row.allow) ? row.allow.map(String).filter(Boolean) : []
+  const deny = Array.isArray(row.deny) ? row.deny.map(String).filter(Boolean) : []
+  const parts = []
+  parts.push(allow.length ? allow.join(', ') : 'none')
+  if (deny.length) parts.push(`deny ${deny.join(', ')}`)
+  return parts.join(' / ')
 }

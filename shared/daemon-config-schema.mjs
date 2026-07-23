@@ -3,14 +3,22 @@ function isRecord(value) {
 }
 
 export const DAEMON_CONFIG_TOP_LEVEL_KEYS = Object.freeze([
-  'defaultServer',
   'machineId',
   'regions',
   'profiles',
   'grants',
   'models',
-  'servers',
   'default',
+  'tmuxSocket',
+  'taskDoc',
+  'spawnMachineId',
+])
+
+export const SERVER_CONFIG_TOP_LEVEL_KEYS = Object.freeze([
+  'defaultServer',
+  'servers',
+  'buildMaxConcurrency',
+  'buildPriority',
 ])
 
 export const PROJECT_DAEMON_OVERRIDE_TOP_LEVEL_KEYS = Object.freeze([
@@ -48,7 +56,11 @@ export function validateProjectDaemonOverrideTopLevel(root, label = 'project dae
   return validateTopLevelKeys(root, PROJECT_DAEMON_OVERRIDE_TOP_LEVEL_KEYS, label)
 }
 
-export function validateStrictServers(servers, label = 'daemon.yaml servers') {
+export function validateServerConfigTopLevel(root, label = 'server config') {
+  return validateTopLevelKeys(root, SERVER_CONFIG_TOP_LEVEL_KEYS, label)
+}
+
+export function validateStrictServers(servers, label = 'server.yaml servers') {
   if (!isRecord(servers)) {
     throw new Error(`${label} must be an object of named server entries`)
   }
@@ -71,21 +83,21 @@ export function validateStrictServers(servers, label = 'daemon.yaml servers') {
 }
 
 export function resolveStrictServerAuthority(root, serverName = null) {
-  const config = validateDaemonConfigTopLevel(root, 'daemon config')
+  const config = validateServerConfigTopLevel(root, 'server config')
   if (serverName !== null && typeof serverName !== 'string') {
     throw new TypeError('tlda config: server name override must be a string')
   }
   const servers = validateStrictServers(config.servers)
   if (typeof config.defaultServer !== 'string' || !config.defaultServer.trim()) {
-    throw new Error('tlda config: "defaultServer" must be a nonempty string in daemon.yaml')
+    throw new Error('tlda config: "defaultServer" must be a nonempty string in server.yaml')
   }
   const fallbackName = config.defaultServer.trim()
   if (!servers[fallbackName]) {
-    throw new Error(`tlda config: no server named "${fallbackName}" in daemon.yaml servers — known: ${Object.keys(servers).join(', ') || '(none)'}`)
+    throw new Error(`tlda config: no server named "${fallbackName}" in server.yaml servers — known: ${Object.keys(servers).join(', ') || '(none)'}`)
   }
   const name = serverName || process.env.TLDA_CONFIG || fallbackName
-  if (!name) throw new Error('tlda config: no active server — set "defaultServer" in daemon.yaml (or TLDA_CONFIG)')
+  if (!name) throw new Error('tlda config: no active server — set "defaultServer" in server.yaml (or TLDA_CONFIG)')
   const raw = servers[name]
-  if (!raw) throw new Error(`tlda config: no server named "${name}" in daemon.yaml servers — known: ${Object.keys(servers).join(', ') || '(none)'}`)
+  if (!raw) throw new Error(`tlda config: no server named "${name}" in server.yaml servers — known: ${Object.keys(servers).join(', ') || '(none)'}`)
   return { name, raw }
 }

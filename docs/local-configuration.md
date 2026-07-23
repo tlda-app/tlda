@@ -6,10 +6,10 @@ example daemon configurations in `config/`; the operator-owned file is
 
 ## Named server selection
 
-`~/.config/tlda/config.json` contains named complete server configs. Select one
+`~/.config/tlda/server.yaml` contains named complete server configs. Select one
 for a process with `TLDA_CONFIG=<name>` or for a CLI run with
 `--config <name>`. `tlda daemon start --config <name>` carries that selection
-through the daemon to agents it spawns. Do not edit the shared `defaultConfig`
+through the daemon to agents it spawns. Do not edit the shared `defaultServer`
 just to test another deployment.
 
 ## `daemon.yaml`
@@ -21,7 +21,7 @@ The active daemon file defines:
 - `grants`: identities with durable profile grants;
 - `models`: harness model aliases, required launch flags, preferences, and
   whether the daemon may control that harness;
-- `servers`: optional named server/RPC capabilities.
+- `tmuxSocket` and task-document settings.
 
 The daemon reads `~/.config/tlda/daemon.yaml` by default. Spawn-time model and
 profile resolution is re-read for the next spawn, with keep-last-good behavior
@@ -48,21 +48,25 @@ Do not infer live grants from the repository examples.
 
 ## Bots
 
-There is currently **no `bots.yaml` reader**. Managed bots are configured by the
-top-level `bots` array in `~/.config/tlda/config.json`:
+Managed bots are configured in `~/.config/tlda/bots.yaml`:
 
-```json
-{
-  "bots": [
-    { "name": "todd", "script": "bin/bots/todd.mjs" },
-    { "name": "teacher", "script": "/absolute/path/to/teacher-bot.mjs", "machine_id": "mini" }
-  ]
-}
+```yaml
+bots:
+  - name: todd
+    script: bin/bots/todd.mjs
+  - name: teacher
+    script: /absolute/path/to/teacher-bot.mjs
+    machine_id: mini
 ```
 
 Each entry has `name`, `script`, and an optional `machine_id`; optional `env`
 values are passed to the bot process. With no `bots` array, the code defaults to
 Todd. Relative scripts resolve from the installed tlda root.
+
+## CLI preferences
+
+Ordinary CLI preferences such as browser selection live in
+`~/.config/tlda/cli.yaml`.
 
 Manage configured bots with:
 

@@ -1,11 +1,12 @@
 import { SpawnLibrarian } from '../shared/spawn-librarian.ts'
-import { newLocalAgentId, readConfig, resolveDnsAlias, resolveSpawnCwd, sanitizeSessionName } from './identity.mjs'
+import { newLocalAgentId, resolveDnsAlias, resolveSpawnCwd, sanitizeSessionName } from './identity.mjs'
+import { readDaemonConfigForCwd, withDaemonModelAliases } from './permission-ledger.mjs'
 import { createLocalAgentLedger } from './local-agent-ledger.mjs'
 import { normalizeSpawnModelKwargs } from './models.mjs'
 import { checkFreshNameAvailable, ensureServer, findAgent, markAgentDead, resolveApi, wsMintShell, wsReserveShell } from './register.mjs'
 import { injectClaudePrompt, injectCodexPrompt, sessionHasRuntime, sessionRuntimeState, spawnTmux, terminateTmuxSession, uniqueSessionName } from './tmux.mjs'
 import { wrapSandboxCmd } from './fence.mjs'
-import { resolveLaunchPolicy, sandboxMetadata } from './permissions.mjs'
+import { resolveLaunchPolicy, permissionMetadata } from './permissions.mjs'
 import { resolveCodexResumeHandle } from '../agent-runtime/codex-resume-resolver.mjs'
 import {
   codexRolloutPath,
@@ -50,12 +51,6 @@ function metadataOf(agent) {
     }
   }
   return meta && typeof meta === 'object' ? meta : {}
-}
-
-function configuredPermissionProfileName(config = {}, name) {
-  const profiles = config?.spawnPolicy?.permissionProfiles || {}
-  const key = String(name || '').trim()
-  return key && Object.prototype.hasOwnProperty.call(profiles, key) ? key : null
 }
 
 function modelKwargs(params = {}, extra = {}) {
@@ -108,12 +103,6 @@ function modelForRespawn(params, meta, config) {
   return model
 }
 
-function assertNativeTools(policy, requestedKind) {
-  if (!policy.devTools && (requestedKind === 'claude' || requestedKind === 'codex')) {
-    throw new SpawnError('launch-failed', `${requestedKind} cannot satisfy sandbox policy "${policy.policyName}" without native developer tools`, { policyName: policy.policyName })
-  }
-}
-
 function traceSpawnDecision(label, detail) {
   const payload = {
     ts: new Date().toISOString(),
@@ -142,7 +131,7 @@ function shellReservationOptions(params = {}) {
   return params.shellReservationTimeoutMs ? { timeoutMs: params.shellReservationTimeoutMs } : {}
 }
 
-async function buildCommand({ requestedKind, adapter, fleetId, localAgentId, tmuxSession, model, modelProvider = null, name, cwd, effort, permissionMode, spawnPolicy, api, dnsAlias, resumeId = null, freshSessionId = null, includePrompt = true, leasePolicy = null, enforceFence = false, harnessOptions = {}, config = undefined, env = process.env }) {
+async function buildCommand({ requestedKind, adapter, fleetId, localAgentId, tmuxSession, model, modelProvider = null, name, cwd, effort, permissionMode, permissionGrant, api, dnsAlias, resumeId = null, freshSessionId = null, includePrompt = true, leasePolicy = null, enforceFence = false, harnessOptions = {}, config = undefined, env = process.env }) {
   let cmd
   let sendKeys = false
   if (requestedKind === 'codex') {
@@ -249,25 +238,14 @@ async function spawnFresh(params) {
         { fleetId, api },
       )
     }
-    const config = params.config ?? readConfig()
+    const config = params.config ?? withDaemonModelAliases({}, readDaemonConfigForCwd(cwd))
     tmuxSession = await (deps.uniqueSessionName || uniqueSessionName)(`fleet-${sanitizeSessionName(name)}`, { tmuxSocket: params.tmuxSocket })
     const modelResolved = resolveAdapterModel(adapter, params.model, config, modelSpec)
     model = modelResolved.model
     const dnsAlias = await (deps.resolveDnsAlias || resolveDnsAlias)(api)
-    const bypassHarnessSandbox = params.breakGlass || params.permissionProfile === 'ops'
-    const configuredHarnessOptions = bypassHarnessSandbox
-      ? {
-          required: requestedKind === 'codex'
-            ? ['--dangerously-bypass-approvals-and-sandbox']
-            : requestedKind === 'claude'
-              ? ['--dangerously-load-development-channels server:tlda']
-              : [],
-          preferences: requestedKind === 'claude' ? ['--dangerously-skip-permissions'] : [],
-          controls: false,
-        }
-      : (modelResolved.spec?.harnessOptions || null)
+    const configuredHarnessOptions = modelResolved.spec?.harnessOptions || null
     const launchPolicy = resolveLaunchPolicy({
-      spawnPolicy: params.spawnPolicy || (params.breakGlass ? { name: 'break-glass', policy: 'unsandboxed' } : undefined),
+      permissionGrant: params.permissionGrant,
       permissionSet: params.permissionSet,
       harness: requestedKind,
       model,
@@ -275,11 +253,10 @@ async function spawnFresh(params) {
       config,
       permissionMode: params.permissionMode,
       mode: params.mode,
-      explicitPolicy: params.explicitPolicy,
+      explicitPermissionRequest: params.explicitPermissionRequest,
       acknowledgeNoSecurity: !!params.acknowledgeNoSecurity,
       harnessOptions: configuredHarnessOptions,
     })
-    assertNativeTools(launchPolicy, requestedKind)
     traceSpawnDecision('policy', {
       name,
       fleetId,
@@ -288,18 +265,16 @@ async function spawnFresh(params) {
       modelProvider: modelResolved.provider,
       cwd,
       permissionRequest: params.permissionRequest || null,
-      requestedSpawnPolicy: params.spawnPolicy || null,
-      explicitPolicy: !!params.explicitPolicy,
-      policyName: launchPolicy.policyName,
+      permissionGrant: params.permissionGrant || null,
+      explicitPermissionRequest: !!params.explicitPermissionRequest,
       permissionMode: launchPolicy.permissionMode,
       hasLeasePolicy: !!launchPolicy.leasePolicy,
       hasHarnessControls: !!launchPolicy.launchSecurity?.hasHarnessControls,
       acknowledgedNoSecurity: !!launchPolicy.launchSecurity?.acknowledgedNoSecurity,
       harnessRequiredFlags: launchPolicy.harnessOptions?.required || [],
       harnessPreferenceFlags: launchPolicy.harnessOptions?.preferences || [],
-      leasePolicyName: launchPolicy.leasePolicy?.policy || null,
       leaseWriteRoots: launchPolicy.leasePolicy?.write_roots || [],
-      spawnPolicy: launchPolicy.spawnPolicy || null,
+      permissionGrant: launchPolicy.permissionGrant || null,
     })
     localAgentLedger.create({
       localAgentId,
@@ -309,7 +284,7 @@ async function spawnFresh(params) {
       model,
       tmuxName: tmuxSession,
       cwd,
-      permissionProfile: configuredPermissionProfileName(config, params.permissionProfile),
+      permissionGrant: params.permissionGrant,
     })
     if (serverUp) {
       await (deps.checkFreshNameAvailable || checkFreshNameAvailable)(name, { api, serverUp, excludeId: fleetId })
@@ -323,8 +298,7 @@ async function spawnFresh(params) {
             model,
             effort: params.effort,
             kind: requestedKind,
-            spawnPermission: params.permissionProfile,
-            metadata: sandboxMetadata(launchPolicy.spawnPolicy, launchPolicy.leasePolicy),
+            metadata: permissionMetadata(launchPolicy.permissionGrant, launchPolicy.leasePolicy),
             machineId: params.machineId,
             api,
             ...shellReservationOptions(params),
@@ -337,8 +311,7 @@ async function spawnFresh(params) {
             model,
             effort: params.effort,
             kind: requestedKind,
-            spawnPermission: params.permissionProfile,
-            metadata: sandboxMetadata(launchPolicy.spawnPolicy, launchPolicy.leasePolicy),
+            metadata: permissionMetadata(launchPolicy.permissionGrant, launchPolicy.leasePolicy),
             machineId: params.machineId,
             api,
             ...shellReservationOptions(params),
@@ -368,7 +341,7 @@ async function spawnFresh(params) {
       cwd,
       effort: params.effort,
       permissionMode: launchPolicy.permissionMode,
-      spawnPolicy: launchPolicy.spawnPolicy,
+      permissionGrant: launchPolicy.permissionGrant,
       api,
       dnsAlias,
       freshSessionId,
@@ -472,7 +445,7 @@ async function spawnRespawn(params) {
   const agent = await (deps.findAgent || findAgent)(name, { api })
   if (!agent) throw new SpawnError('launch-failed', `No agent '${name}'. Use --fresh to create.`, { name })
   const meta = metadataOf(agent)
-  const config = params.config ?? readConfig()
+  const config = params.config ?? withDaemonModelAliases({}, readDaemonConfigForCwd(cwd))
   const rawModel = modelForRespawn(params, meta, config)
   const modelSpec = resolveLaunchSpec(rawModel, config, modelKwargs(params, meta.effort ? { effort: params.effort || meta.effort } : {}))
   applyNormalizedOptions(params, modelSpec)
@@ -493,7 +466,7 @@ async function spawnRespawn(params) {
   // for that. A wake either keeps the live runtime or starts the exact durable
   // session in an empty tmux seat; generic launch has no replacement capability.
   const explicitRelaunch = !!(
-    params.explicitPolicy ||
+    params.explicitPermissionRequest ||
     params.permissionRequest
   )
   const runtimeState = deps.sessionRuntimeState
@@ -579,7 +552,7 @@ async function spawnRespawn(params) {
   if (requestedKind === 'claude' && resumeId) stripSyntheticTail(resumeId)
   const dnsAlias = await (deps.resolveDnsAlias || resolveDnsAlias)(api).catch(() => null)
   const launchPolicy = resolveLaunchPolicy({
-    spawnPolicy: params.spawnPolicy || meta.spawnPolicy,
+    permissionGrant: params.permissionGrant || meta.permissionGrant,
     permissionSet: params.permissionSet || meta.permissionSet,
     harness: requestedKind,
     model,
@@ -587,11 +560,10 @@ async function spawnRespawn(params) {
     config,
     permissionMode: params.permissionMode,
     mode: params.mode,
-    explicitPolicy: params.explicitPolicy,
+    explicitPermissionRequest: params.explicitPermissionRequest,
     acknowledgeNoSecurity: !!params.acknowledgeNoSecurity,
     harnessOptions: modelResolved.spec?.harnessOptions || null,
   })
-  assertNativeTools(launchPolicy, requestedKind)
   if (serverUp && requestedKind === 'codex' && resumeId) {
     await (deps.wsReserveShell || wsReserveShell)({
       fleetId,
@@ -602,7 +574,7 @@ async function spawnRespawn(params) {
       effort: params.effort || meta.effort,
       kind: requestedKind,
       sessionId: resumeId,
-      metadata: sandboxMetadata(launchPolicy.spawnPolicy, launchPolicy.leasePolicy),
+      metadata: permissionMetadata(launchPolicy.permissionGrant, launchPolicy.leasePolicy),
       machineId: params.machineId,
       api,
       ...shellReservationOptions(params),
@@ -619,7 +591,7 @@ async function spawnRespawn(params) {
     cwd,
     effort: params.effort || meta.effort,
     permissionMode: launchPolicy.permissionMode,
-    spawnPolicy: launchPolicy.spawnPolicy,
+    permissionGrant: launchPolicy.permissionGrant,
     api,
     dnsAlias,
     resumeId,
@@ -652,7 +624,7 @@ async function spawnRefresh(params) {
   if (!agent) throw new SpawnError('launch-failed', `No agent '${name}'. Use --fresh to create.`, { name })
   const meta = metadataOf(agent)
   const rawModel = params.model || meta.model
-  const config = params.config ?? readConfig()
+  const config = params.config ?? withDaemonModelAliases({}, readDaemonConfigForCwd(cwd))
   const modelSpec = resolveLaunchSpec(rawModel, config, modelKwargs(params, meta.effort ? { effort: params.effort || meta.effort } : {}))
   applyNormalizedOptions(params, modelSpec)
   const requestedKind = modelSpec.harness
@@ -666,7 +638,7 @@ async function spawnRefresh(params) {
   const tmuxSession = agent.tmux_session || `fleet-${sanitizeSessionName(friendlyName)}`
   const dnsAlias = await (deps.resolveDnsAlias || resolveDnsAlias)(api)
   const launchPolicy = resolveLaunchPolicy({
-    spawnPolicy: params.spawnPolicy || meta.spawnPolicy,
+    permissionGrant: params.permissionGrant || meta.permissionGrant,
     permissionSet: params.permissionSet || meta.permissionSet,
     harness: requestedKind,
     model,
@@ -674,11 +646,10 @@ async function spawnRefresh(params) {
     config,
     permissionMode: params.permissionMode,
     mode: params.mode,
-    explicitPolicy: params.explicitPolicy,
+    explicitPermissionRequest: params.explicitPermissionRequest,
     acknowledgeNoSecurity: !!params.acknowledgeNoSecurity,
     harnessOptions: modelResolved.spec?.harnessOptions || null,
   })
-  assertNativeTools(launchPolicy, requestedKind)
   await wsReserveShell({
     fleetId,
     name: friendlyName,
@@ -687,8 +658,8 @@ async function spawnRefresh(params) {
     model,
     effort: params.effort || meta.effort,
     kind: requestedKind,
-    spawnPermission: params.permissionProfile,
-    metadata: sandboxMetadata(launchPolicy.spawnPolicy, launchPolicy.leasePolicy),
+    permissionGrant: params.permissionGrant,
+    metadata: permissionMetadata(launchPolicy.permissionGrant, launchPolicy.leasePolicy),
     machineId: params.machineId,
     api,
     ...shellReservationOptions(params),
@@ -704,7 +675,7 @@ async function spawnRefresh(params) {
     cwd,
     effort: params.effort || meta.effort,
     permissionMode: launchPolicy.permissionMode,
-    spawnPolicy: launchPolicy.spawnPolicy,
+    permissionGrant: launchPolicy.permissionGrant,
     api,
     dnsAlias,
     includePrompt: true,
@@ -786,7 +757,7 @@ async function spawnCodexSession(params, { api, sessionId, codexPath, deps = {} 
     ? params.name
     : (agentName || defaultEnrolledName(params, sessionId))
   const cwd = resolveSpawnCwd(params.cwd || sessionMeta.cwd || process.cwd())
-  const config = params.config ?? readConfig()
+  const config = params.config ?? withDaemonModelAliases({}, readDaemonConfigForCwd(cwd))
   const modelResolved = resolveAdapterModel(codex, params.model, config)
   const model = modelResolved.model
   const tmuxSession = params.tmuxSession || `fleet-${sanitizeSessionName(friendlyName)}`
@@ -796,7 +767,7 @@ async function spawnCodexSession(params, { api, sessionId, codexPath, deps = {} 
   if (params.enroll) await (deps.checkFreshNameAvailable || checkFreshNameAvailable)(friendlyName, { api, serverUp: true })
   const dnsAlias = await (deps.resolveDnsAlias || resolveDnsAlias)(api)
   const launchPolicy = resolveLaunchPolicy({
-    spawnPolicy: params.spawnPolicy,
+    permissionGrant: params.permissionGrant,
     permissionSet: params.permissionSet,
     harness: 'codex',
     model,
@@ -804,10 +775,9 @@ async function spawnCodexSession(params, { api, sessionId, codexPath, deps = {} 
     config,
     permissionMode: params.permissionMode,
     mode: params.mode,
-    explicitPolicy: params.explicitPolicy,
+    explicitPermissionRequest: params.explicitPermissionRequest,
     acknowledgeNoSecurity: !!params.acknowledgeNoSecurity,
   })
-  assertNativeTools(launchPolicy, 'codex')
   await (deps.wsReserveShell || wsReserveShell)({
     fleetId,
     name: friendlyName,
@@ -817,8 +787,8 @@ async function spawnCodexSession(params, { api, sessionId, codexPath, deps = {} 
     effort: params.effort,
     kind: 'codex',
     sessionId,
-    spawnPermission: params.permissionProfile,
-    metadata: sandboxMetadata(launchPolicy.spawnPolicy, launchPolicy.leasePolicy),
+    permissionGrant: params.permissionGrant,
+    metadata: permissionMetadata(launchPolicy.permissionGrant, launchPolicy.leasePolicy),
     machineId: params.machineId,
     api,
     ...shellReservationOptions(params),
@@ -834,7 +804,7 @@ async function spawnCodexSession(params, { api, sessionId, codexPath, deps = {} 
     cwd,
     effort: params.effort,
     permissionMode: launchPolicy.permissionMode,
-    spawnPolicy: launchPolicy.spawnPolicy,
+    permissionGrant: launchPolicy.permissionGrant,
     api,
     dnsAlias,
     resumeId: sessionId,
@@ -868,7 +838,7 @@ async function spawnClaudeSession(params, { api, sessionId, identity, deps = {} 
     ? params.name
     : (identity.agentName || defaultEnrolledName(params, sessionId))
   const cwd = resolveSpawnCwd(params.cwd || identity.cwd || process.cwd())
-  const config = params.config ?? readConfig()
+  const config = params.config ?? withDaemonModelAliases({}, readDaemonConfigForCwd(cwd))
   const modelResolved = resolveAdapterModel(claude, params.model, config)
   const model = modelResolved.model
   const tmuxSession = params.tmuxSession || `fleet-${sanitizeSessionName(friendlyName)}`
@@ -879,7 +849,7 @@ async function spawnClaudeSession(params, { api, sessionId, identity, deps = {} 
   stripSyntheticTail(sessionId, { projectsBase: params.claudeProjectsBase })
   const dnsAlias = await (deps.resolveDnsAlias || resolveDnsAlias)(api)
   const launchPolicy = resolveLaunchPolicy({
-    spawnPolicy: params.spawnPolicy,
+    permissionGrant: params.permissionGrant,
     permissionSet: params.permissionSet,
     harness: 'claude',
     model,
@@ -887,10 +857,9 @@ async function spawnClaudeSession(params, { api, sessionId, identity, deps = {} 
     config,
     permissionMode: params.permissionMode,
     mode: params.mode,
-    explicitPolicy: params.explicitPolicy,
+    explicitPermissionRequest: params.explicitPermissionRequest,
     acknowledgeNoSecurity: !!params.acknowledgeNoSecurity,
   })
-  assertNativeTools(launchPolicy, 'claude')
   await (deps.wsReserveShell || wsReserveShell)({
     fleetId,
     name: friendlyName,
@@ -900,8 +869,8 @@ async function spawnClaudeSession(params, { api, sessionId, identity, deps = {} 
     effort: params.effort,
     kind: 'claude',
     sessionId,
-    spawnPermission: params.permissionProfile,
-    metadata: sandboxMetadata(launchPolicy.spawnPolicy, launchPolicy.leasePolicy),
+    permissionGrant: params.permissionGrant,
+    metadata: permissionMetadata(launchPolicy.permissionGrant, launchPolicy.leasePolicy),
     machineId: params.machineId,
     api,
     ...shellReservationOptions(params),
@@ -917,7 +886,7 @@ async function spawnClaudeSession(params, { api, sessionId, identity, deps = {} 
     cwd,
     effort: params.effort,
     permissionMode: launchPolicy.permissionMode,
-    spawnPolicy: launchPolicy.spawnPolicy,
+    permissionGrant: launchPolicy.permissionGrant,
     api,
     dnsAlias,
     resumeId: sessionId,
@@ -940,7 +909,7 @@ export async function spawn(params = {}) {
   if (mode === 'respawn') return await spawnRespawn(params)
   if (mode === 'session') return await spawnSession(params)
   if (mode === 'fresh') {
-    const config = params.config ?? readConfig()
+    const config = params.config ?? withDaemonModelAliases({}, readDaemonConfigForCwd(params.cwd || process.cwd()))
     const modelSpec = resolveLaunchSpec(params.model, config, modelKwargs(params))
     applyNormalizedOptions(params, modelSpec)
     const requestedKind = modelSpec.harness

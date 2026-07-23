@@ -5,7 +5,7 @@ import type { TLShape } from 'tldraw'
 import { loadLookup, clearLookupCache, loadHtmlSearch, loadHtmlToc, type LookupEntry, type HtmlTocEntry, type HtmlSearchEntry } from '../synctexLookup'
 import { pdfToCanvas } from '../synctexAnchor'
 import { DocContext, PanelContext } from '../PanelContext'
-import { getLiveUrl, onReloadSignal } from '../useYjsSync'
+import { onReloadSignal } from '../useYjsSync'
 import { canPresent, subscribeCanPresent } from '../authToken'
 import { getVimMode, toggleVimMode, subscribeVimMode } from '../vimMode'
 import {
@@ -427,8 +427,6 @@ export function TocTab() {
     )
   }
 
-  const liveUrl = getLiveUrl()
-
   // Unified render for both TeX and HTML TOC entries
   let items: Array<{ level: TocLevel; title: string; nav: () => void; center: () => void; targetFile?: string }> = useHtml
     ? tocItems!.map(h => ({
@@ -550,16 +548,6 @@ export function TocTab() {
         <div className="panel-empty">No results</div>
       )}
       {/* TOC */}
-      {liveUrl && (
-        <a
-          href={liveUrl}
-          className="toc-live-link"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          Join live session
-        </a>
-      )}
       {items.map((h, i) => {
         if (h.level === 'divider') {
           return (

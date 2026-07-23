@@ -14,7 +14,7 @@ primary_region = "sjc"
 [env]
   PORT = "5176"
   NODE_ENV = "production"
-  # Browser/fleet origin = this app's own public URL (overridden in config.json too).
+  # Browser/fleet origin = this app's own public URL.
   TLDA_FLEET_SERVER = "https://tlda-overleaf-test.fly.dev"
 
 [http_service]

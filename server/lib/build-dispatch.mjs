@@ -6,8 +6,8 @@
 import { broadcastSignal, putShape, updateShape, emitGlobalEvent, getLastSignal } from './sync-rooms.mjs'
 import { updateProject, getProjectsDir } from './project-store.mjs'
 import { writeSentinel } from './sentinel.mjs'
-import { loadConfig } from '../../shared/config.mjs'
-import { makeTransport } from './build-transport.mjs'
+import { loadServerConfig } from '../../shared/config.mjs'
+import { ForkTransport } from './build-transport.mjs'
 import { createBuildQueue } from './build-queue.mjs'
 import { mirrorShadow } from './build-runner.mjs'
 
@@ -96,11 +96,12 @@ export function createDispatcherWithOptions(transport, options = {}) {
   return { ...queue, dispatchBuild }
 }
 
-// Select the transport once at server start — no per-call branching.
-const _config = loadConfig()
-const _default = createDispatcherWithOptions(makeTransport(_config), {
-  maxConcurrency: _config.buildMaxConcurrency ?? _config.build?.maxConcurrency,
-  priority: _config.buildPriority ?? _config.build?.priority,
+// The server always forks the local worker. Only real queue settings remain
+// configurable in server.yaml.
+const _config = loadServerConfig()
+const _default = createDispatcherWithOptions(ForkTransport, {
+  maxConcurrency: _config.buildMaxConcurrency,
+  priority: _config.buildPriority,
 })
 
 export const { dispatchBuild, killBuild, killAllDispatchedBuilds, isBuilding, isBuildKindPending } = _default

@@ -42,8 +42,7 @@ import os from 'os'
 const { homedir, hostname } = os
 import { randomUUID } from 'crypto'
 import { lookup as mimeLookup } from 'mime-types'
-import { DEFAULT_PORT, getActiveConfigName, getFleetServerUrl, hasTls, loadConfig, resolveConfig } from '../shared/config.mjs'
-import { normalizeUsageStatus } from '../shared/usage-status.mjs'
+import { DEFAULT_PORT, getActiveConfigName, getFleetServerUrl, hasTls, resolveConfig } from '../shared/config.mjs'
 import { BARE_METADATA, resolveAsset } from '../shared/doc-assets.mjs'
 import { listModels as listSpawnModels } from '../agent-launch/models.mjs'
 import { readDaemonConfig, readDaemonConfigForCwd, withDaemonModelAliases } from '../agent-launch/permission-ledger.mjs'
@@ -70,7 +69,6 @@ import { applyNativeTaskEvents } from './lib/native-task-wrapper.mjs'
 import { resolveMachine } from './lib/tailscale-peers.mjs'
 import { createFleetRouter, RESOLVED_UPLOAD_DIR } from './routes/fleet.mjs'
 import { copyAttachmentsToUploadDir } from './lib/chat-attachment-store.mjs'
-import { normalizeRegionPolicy } from './lib/spawn-policy.mjs'
 import { buildRuntimeStatus } from './lib/runtime-status.mjs'
 import { createAgentRuntimeStatusStore, POSITIVE_LIVENESS_TTL_MS } from './lib/agent-runtime-status.mjs'
 import { resolveSpawnMachine, SPAWN_MACHINE_PREF_KEY } from './lib/spawn-routing.mjs'
@@ -1713,7 +1711,7 @@ function spawnMailboxCompletionText(entry, status, detail) {
   const label = detail.label || detail.agentId || entry.meta?.name || 'spawn'
   if (status === 'completed') {
     const agentPart = detail.agentId ? ` (${detail.agentId})` : ''
-    const policyPart = detail.permissionProfile ? ` Permission: \`${detail.permissionProfile}\`.` : ''
+    const policyPart = detail.permissionGrant ? ` Permission: \`${detail.permissionGrant}\`.` : ''
     return `**Spawn mailbox ${entry.id} complete**: \`${label}\`${agentPart} has logged in and is ready for inbox pickup.${policyPart}`
   }
   return `**Spawn mailbox ${entry.id} failed**: \`${label}\` — ${detail.error || detail.reason || 'spawn failed'}.`
@@ -1828,7 +1826,7 @@ async function performSpawnRelay(caller, msg) {
       id: caller.id,
       name: caller.friendly_name || caller.name || undefined,
       human: !!caller.human,
-      spawnPolicy: caller.metadata?.spawnPolicy || undefined,
+      permissionGrant: caller.metadata?.permissionGrant || undefined,
       daemonId: caller.daemon_key || caller.metadata?.daemon_key || undefined,
     },
     spawnRoute: route.source,
@@ -1902,8 +1900,8 @@ async function performSpawnRelay(caller, msg) {
           return
         }
       }
-      const registeredPolicy = agentRecord?.metadata?.spawnPolicy
-      const spawnPolicy = result?.spawnPolicy || registeredPolicy
+      const registeredPolicy = agentRecord?.metadata?.permissionGrant
+      const permissionGrant = result?.permissionGrant || registeredPolicy
       const assignedName = agentRecord?.friendly_name || result?.assigned_name || result?.name || spawnName
       const requestedName = result?.requested_name || spawnName
       const completion = {
@@ -1913,8 +1911,7 @@ async function performSpawnRelay(caller, msg) {
         assigned_name: assignedName,
         requested_name: requestedName,
         name_changed: result?.name_changed ?? (assignedName !== requestedName),
-        spawnPolicy,
-        permissionProfile: result?.permissionProfile || null,
+        permissionGrant,
         spawnerPermission: result?.spawnerPermission,
         projectPermission: result?.projectPermission,
         modelPermission: result?.modelPermission,
@@ -1972,7 +1969,7 @@ if (fleetStore) {
     registered_at: new Date().toISOString(),
     last_seen: new Date().toISOString(),
   })
-  const configuredSpawnMachine = process.env.TLDA_SPAWN_MACHINE_ID || loadConfig()?.spawnMachineId
+  const configuredSpawnMachine = process.env.TLDA_SPAWN_MACHINE_ID || readDaemonConfig().spawnMachineId
   if (configuredSpawnMachine && !fleetStore.getFleetPref(SERVER_OWNER_ID, SPAWN_MACHINE_PREF_KEY)) {
     fleetStore.setFleetPref(SERVER_OWNER_ID, SPAWN_MACHINE_PREF_KEY, configuredSpawnMachine)
     console.log(`[spawn-route] configured ${SERVER_OWNER_ID} ${SPAWN_MACHINE_PREF_KEY}=${configuredSpawnMachine}`)
@@ -2770,8 +2767,7 @@ async function isBridgeUp(bridgeUrl) {
 }
 
 function hasDeepgramKey() {
-  if (process.env.DEEPGRAM_API_KEY) return true
-  try { return !!loadConfig()?.deepgramApiKey } catch { return false }
+  return !!process.env.DEEPGRAM_API_KEY
 }
 
 app.get('/api/voice/backends', async (req, res) => {
@@ -3097,14 +3093,6 @@ app.get('/api/reaper/report.md', requireRead, (req, res) => {
 // Sanitized provider/account usage status for the usage-meter shape. Same data
 // as the `usage_status` MCP tool — manual/static config only, no scraping, no
 // tokens. The shape polls this; missing config returns an empty accounts list.
-app.get('/api/usage-status', requireRead, (req, res) => {
-  try {
-    res.json(normalizeUsageStatus(loadConfig()))
-  } catch (e) {
-    res.status(500).json({ error: `usage-status failed: ${e.message}` })
-  }
-})
-
 app.post('/api/reaper/kill', requireRead, async (req, res) => {
   const { pid } = req.body
   if (!pid) return res.status(400).json({ error: 'missing pid' })
@@ -3177,7 +3165,7 @@ app.get('/api/fleet/models', requireRead, (req, res) => {
     return
   }
   const daemonConfig = context.cwd ? readDaemonConfigForCwd(context.cwd) : readDaemonConfig()
-  res.json(listSpawnModels(withDaemonModelAliases(loadConfig(), daemonConfig)))
+  res.json(listSpawnModels(withDaemonModelAliases({}, daemonConfig)))
 })
 
 app.get('/api/fleet/spawn-availability', requireRead, async (req, res) => {
@@ -4324,7 +4312,7 @@ app.get('/{*path}', (req, res) => {
     // Inject the resolved active config so the SPA reads database/store/licenseKey
     // synchronously at startup — no build-time baking, no async race, no guessing.
     // resolveConfig() is validated at boot (server won't start on a bad config),
-    // so this can't throw here; if config.json were edited to something invalid
+    // so this can't throw here; if server.yaml were edited to something invalid
     // while running, the page erroring loud is the correct, predictable behavior.
     const cfg = resolveConfig()
     const cfgScript = `<script>window.__TLDA_CONFIG__=${JSON.stringify(cfg)}</script>`
@@ -5065,14 +5053,6 @@ async function handleFleetWsMessage(ws, msg) {
       daemon_key: existing?.daemon_key || null,
       resume_id: existing?.resume_id || null,
     }
-    // Persist spawnPolicy ATOMICALLY as a coherent region blob. The shallow metadata
-    // merge above is what let partial spawnPolicy writes corrupt the blob across
-    // repeated identity updates; coercing to a coherent { name, policy } region here means no new
-    // corruption can form. Representation-only — it reads the region off the stored blob
-    // (new or legacy), never re-grants.
-    if (agent.metadata?.spawnPolicy) {
-      agent.metadata = { ...agent.metadata, spawnPolicy: normalizeRegionPolicy(agent.metadata.spawnPolicy) }
-    }
     // Shell reservation vs claim. The spawn flow reserves the identity as a
     // "shell" (msg.shell) before the agent process exists — addressable
     // (dead=0, in the not-dead registry) but NOT awake. The agent's login/claim
@@ -5177,9 +5157,6 @@ async function handleFleetWsMessage(ws, msg) {
         env_name: existing.env_name || null,
         daemon_key: existing.daemon_key || null,
         resume_id: existing.resume_id || null,
-      }
-      if (agent.metadata?.spawnPolicy) {
-        agent.metadata = { ...agent.metadata, spawnPolicy: normalizeRegionPolicy(agent.metadata.spawnPolicy) }
       }
       if (agent.metadata?.shell) {
         agent.metadata = { ...agent.metadata, shell: null }
@@ -6738,7 +6715,7 @@ async function handleFleetWsMessage(ws, msg) {
   // (The authoritative `spawn` handler is above — it runs through
   // performAuthorizedSpawn / authorizeSpawn and returns for every spawn message.
   // A second, older `if (type === 'spawn')` block used to live here that sent the
-  // daemon RPC WITHOUT permission authorization or a spawnPolicy; it was dead
+  // daemon RPC WITHOUT permission authorization or a permissionGrant; it was dead
   // (unreachable after the first handler's return) and a latent self-escalation
   // bypass, so it was removed. Do not reintroduce an unauthorized spawn path.)
 

@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict'
 import { spawn as spawnProcess } from 'node:child_process'
-import { existsSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { WebSocket } from 'ws'
 
 const PORT = Number(process.env.PORT || (5207 + (process.pid % 1000)))
 const DB = `/tmp/delegate-spawn-shell-e2e-${process.pid}.db`
+const CONFIG_DIR = `/tmp/delegate-spawn-shell-e2e-config-${process.pid}`
 const ENV_NAME = 'default'
 const MACHINE_ID = 'delegate-e2e-box'
 const useTls = existsSync(`${process.env.HOME}/.config/tlda/localhost+2.pem`)
@@ -28,6 +29,9 @@ function cleanup(code) {
   }
   try { rmSync(`${DB}-shm`, { force: true }) } catch (e) { // best-effort test cleanup
     if (process.env.TLDA_TEST_DEBUG) console.error(`cleanup db shm failed: ${e.message}`)
+  }
+  try { rmSync(CONFIG_DIR, { recursive: true, force: true }) } catch (e) {
+    if (process.env.TLDA_TEST_DEBUG) console.error(`cleanup config dir failed: ${e.message}`)
   }
   process.exit(code)
 }
@@ -107,7 +111,7 @@ async function reserveShell(agentId, name) {
       machine_id: MACHINE_ID,
       env_name: ENV_NAME,
       daemon_key: `${MACHINE_ID}:${ENV_NAME}`,
-      metadata: { spawnPolicy: { policy: 'unsandboxed' } },
+      metadata: { permissionGrant: 'ops' },
     })
   } finally {
     ws.close()
@@ -160,12 +164,19 @@ async function startMockDaemon() {
 }
 
 async function run() {
+  mkdirSync(CONFIG_DIR, { recursive: true })
+  const base = `${proto}://localhost:${PORT}`
+  writeFileSync(`${CONFIG_DIR}/server.yaml`, `defaultServer: test\nservers:\n  test:\n    database: ${base}\n    store: ${base}\n    licenseKey: \"\"\n`)
+  writeFileSync(`${CONFIG_DIR}/daemon.yaml`, `machineId: ${MACHINE_ID}\nregions:\n  machine: [\"**\"]\nprofiles:\n  ops:\n    read: { allow: [machine], deny: [] }\n    write: { allow: [machine], deny: [] }\ngrants:\n  localhost: ops\nmodels: {}\ndefault: ops\n`)
   srv = spawnProcess('node', ['server/unified-server.mjs', '--i-am-tlda-cli'], {
     cwd: process.cwd(),
     env: {
       ...process.env,
       PORT: String(PORT),
       TLDA_FLEET_DB: DB,
+      TLDA_CONFIG_DIR: CONFIG_DIR,
+      TLDA_DAEMON_CONFIG_DIR: CONFIG_DIR,
+      TLDA_CONFIG: 'test',
       TLDA_DEV_SERVER: '1',
       TLDA_SPAWN_MAILBOX_DEADLINE_MS: '3000',
     },
@@ -185,7 +196,7 @@ async function run() {
       machine_id: MACHINE_ID,
       env_name: ENV_NAME,
       daemon_key: `${MACHINE_ID}:${ENV_NAME}`,
-      metadata: { spawnPolicy: { policy: 'unsandboxed' } },
+      metadata: { permissionGrant: 'ops' },
     })
     await request(requesterWs, 'login', { agent_id: 'fleet:delegate-e2e-requester' })
 

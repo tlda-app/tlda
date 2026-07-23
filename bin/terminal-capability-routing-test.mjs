@@ -239,7 +239,7 @@ for (const [name, payload] of [
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-terminal-capability-ledger-'))
   const ledger = createPermissionLedger(path.join(dir, 'permissions.db'))
   try {
-    ledger.setSyncForTest('fleet:cap-test', { spawnPolicy: { policy: 'unsandboxed' }, permissionProfile: 'test' })
+    ledger.setSyncForTest('fleet:cap-test', { permissionGrant: 'ops', permissionGrant: 'test' })
     ledger.setSessionSync('fleet:cap-test', {
       sessionId: 'rollout-one',
       sessionKind: 'codex',

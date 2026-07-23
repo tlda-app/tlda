@@ -6,10 +6,10 @@ config and the server sits behind an explicit access boundary.
 
 ## The configuration shape
 
-Each entry in `~/.config/tlda/config.json` is a complete
+Each entry in `~/.config/tlda/server.yaml` is a complete
 `{ database, store, licenseKey }` record. `database` selects fleet/chat/agent
 state; `store` selects document assets and shape sync. Choose an entry with
-`defaultConfig`, `--config <name>`, or `TLDA_CONFIG=<name>`.
+`defaultServer`, `--config <name>`, or `TLDA_CONFIG=<name>`.
 
 Do not manually compose a deployment from separate URL variables. The internal
 `TLDA_SYNC_SERVER` value used by agent launch harnesses is not a hosting

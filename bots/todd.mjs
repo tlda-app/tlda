@@ -28,7 +28,6 @@ const execFileP = promisify(execFile)
 import { getServerUrl, CONFIG_DIR } from '../shared/config.mjs'
 import { labelsForAgent } from '../shared/fleet-labels.mjs'
 import { startWsRequest } from '../shared/ws-request-policy.mjs'
-import { commitMdShare } from '../bin/md-share-commit.mjs'
 import { decideTaskKicks, formatTaskKickMessage } from './todd/kicks.mjs'
 import { buildFleetActivityReport, parseFleetActivityCommand } from './todd/activity-report.mjs'
 import { dueHibernations, formatDuration, normalizedPolicies, parseHibernationCommand } from './todd/hibernation.mjs'
@@ -2741,9 +2740,6 @@ async function handleMessage(msg) {
 
   if (type === 'chat') {
     if (!text) return
-
-    // Per-share md versioning → ~/work/md-versions (fire-and-forget, never throws)
-    commitMdShare(data)
 
     // Messages sent directly to Todd from agents: handoff-ready signal or
     // pattern-arm registration. Only those protocol messages are consumed here;

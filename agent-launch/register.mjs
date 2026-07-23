@@ -7,7 +7,7 @@ import tls from 'tls'
 import { WebSocket } from 'ws'
 import { getFleetServerUrl, getMachineId } from '../shared/config.mjs'
 import { prettyNameForFriendlyName } from '../shared/lineage-name.mjs'
-import { activeConfigName, readConfig, sanitizeSessionName } from './identity.mjs'
+import { activeConfigName, sanitizeSessionName } from './identity.mjs'
 import { createPermissionLedger } from './permission-ledger.mjs'
 import { createLocalAgentLedger } from './local-agent-ledger.mjs'
 
@@ -159,7 +159,7 @@ export function findLocalAgent(name, { ledger = null } = {}) {
       metadata: {
         kind: local.conversation?.harness || undefined,
         model: local.conversation?.model || undefined,
-        permissionProfile: local.process?.permissionProfile || undefined,
+        permissionGrant: local.process?.permissionGrant || undefined,
       },
     }
   }
@@ -182,8 +182,7 @@ export function findLocalAgent(name, { ledger = null } = {}) {
       cwd: rec.cwd || undefined,
       dead: false,
       metadata: {
-        ...(rec.spawnPolicy ? { spawnPolicy: rec.spawnPolicy } : {}),
-        ...(rec.permissionSet ? { permissionSet: rec.permissionSet } : {}),
+        ...(rec.permissionGrant ? { permissionGrant: rec.permissionGrant } : {}),
         ...(rec.sessionKind ? { kind: rec.sessionKind } : {}),
       },
     }
@@ -274,7 +273,7 @@ async function wsIdentityMessage(type, {
   effort,
   refresh = false,
   kind = 'claude',
-  spawnPermission,
+  permissionGrant,
   sessionId,
   metadata,
   shell = false,
@@ -285,7 +284,6 @@ async function wsIdentityMessage(type, {
 } = {}) {
   const wsPeer = fleetId || localAgentId || 'unbound-local-agent'
   const wsUrl = `${wsForm(api)}/ws/fleet?agent=${encodeURIComponent(wsPeer)}`
-  const cfg = readConfig()
   const msg = {
     type,
     id: null,
@@ -300,7 +298,7 @@ async function wsIdentityMessage(type, {
   if (shell) msg.shell = true
   const resolvedMachineId = machineId || getMachineId()
   if (resolvedMachineId) msg.machine_id = resolvedMachineId
-  const resolvedEnvName = envName || activeConfigName(cfg)
+  const resolvedEnvName = envName || activeConfigName()
   if (resolvedEnvName) {
     msg.env_name = resolvedEnvName
     if (resolvedMachineId) msg.daemon_key = `${resolvedMachineId}:${resolvedEnvName}`
@@ -310,8 +308,8 @@ async function wsIdentityMessage(type, {
   if (model) meta.model = model
   if (effort) meta.effort = effort
   if (refresh) meta.refresh = true
-  if (spawnPermission) {
-    meta.spawnPolicy = { ...(meta.spawnPolicy || {}), permission: spawnPermission }
+  if (permissionGrant) {
+    meta.permissionGrant = permissionGrant
   }
   if (Object.keys(meta).length) msg.metadata = meta
   const attempts = [timeoutMs, Math.max(timeoutMs * 2, 10000)]

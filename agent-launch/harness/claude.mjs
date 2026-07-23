@@ -4,7 +4,7 @@ import path from 'path'
 import { promisify } from 'util'
 import { resolveTranscript } from '../../agent-runtime/resolve-transcript.mjs'
 import { ledgerSessionId } from '../../agent-runtime/ledger-session-tail.mjs'
-import { activeConfigName, gitAuthorEnv, readConfig } from '../identity.mjs'
+import { activeConfigName, gitAuthorEnv } from '../identity.mjs'
 import { resolveClaudeModel, resolveClaudeModelSelection } from '../models.mjs'
 import { resolveHarnessLaunchOptions } from '../permissions.mjs'
 import { dnsAliasPreloadPath } from './dns-alias-preload.mjs'
@@ -50,7 +50,7 @@ export function buildCmd({
   freshSessionId = null,
   includePrompt = true,
   env = process.env,
-  config = readConfig(),
+  config = {},
   harnessOptions = null,
 } = {}) {
   const effectiveHarnessOptions = harnessOptions && Object.keys(harnessOptions).length

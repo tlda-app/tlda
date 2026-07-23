@@ -9,32 +9,14 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 import { parse as parseYaml, parseDocument } from 'yaml'
-import { resolveStrictServerAuthority } from './daemon-config-schema.mjs'
+import { resolveStrictServerAuthority, validateServerConfigTopLevel } from './daemon-config-schema.mjs'
 
 // Preview servers receive an isolated config directory from `tlda-dev serve`.
 // Production keeps the normal shared location; previews must never mutate it.
 const CONFIG_DIR = process.env.TLDA_CONFIG_DIR || join(homedir(), '.config', 'tlda')
-const CONFIG_FILE = join(CONFIG_DIR, 'config.json')
-
 export const DEFAULT_PORT = 5176
 
-export { CONFIG_DIR, CONFIG_FILE }
-
-/**
- * Load config from ~/.config/tlda/config.json.
- * Throws on parse errors instead of silently returning {}.
- * Returns {} only if the file doesn't exist.
- */
-export function loadConfig() {
-  if (!existsSync(CONFIG_FILE)) return {}
-  const raw = readFileSync(CONFIG_FILE, 'utf8')
-  return JSON.parse(raw)
-}
-
-export function saveConfig(config) {
-  if (!existsSync(CONFIG_DIR)) mkdirSync(CONFIG_DIR, { recursive: true })
-  writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2))
-}
+export { CONFIG_DIR }
 
 /**
  * Server URL resolution.
@@ -68,8 +50,8 @@ if (hasTls && !process.env.NODE_EXTRA_CA_CERTS) {
  * talk to." There is exactly one selection rule and one derivation; outside this
  * function nothing computes or branches on config.
  *
- * Model (git-style): config.configs is a map of named configs, each a COMPLETE
- * { database, store, licenseKey }. config.defaultConfig names the active one
+ * Model (git-style): server.yaml `servers` is a map of named servers, each a
+ * COMPLETE { database, store, licenseKey }. `defaultServer` names the active one
  * unless TLDA_CONFIG overrides it. That single selector is the only choice.
  *
  *   database — fleet/chat/registry/agents (the one global event store)
@@ -87,6 +69,8 @@ function _httpForm(u) { return u.replace(/^wss:/, 'https:').replace(/^ws:/, 'htt
 function _wsForm(u) { return u.replace(/^https:/, 'wss:').replace(/^http:/, 'ws:').replace(/\/+$/, '') }
 
 const DAEMON_FILE = join(CONFIG_DIR, 'daemon.yaml')
+const SERVER_FILE = join(CONFIG_DIR, 'server.yaml')
+const CLI_FILE = join(CONFIG_DIR, 'cli.yaml')
 
 function loadDaemonYaml() {
   if (!existsSync(DAEMON_FILE)) throw new Error(`tlda config: ${DAEMON_FILE} not found`)
@@ -97,11 +81,34 @@ function loadDaemonYaml() {
   }
 }
 
+export function loadServerConfig() {
+  if (!existsSync(SERVER_FILE)) throw new Error(`tlda config: ${SERVER_FILE} not found`)
+  try {
+    return validateServerConfigTopLevel(parseYaml(readFileSync(SERVER_FILE, 'utf8')) || {}, 'server.yaml')
+  } catch (e) {
+    throw new Error(`server.yaml is malformed: ${e.message}`)
+  }
+}
+
+export function loadCliConfig() {
+  if (!existsSync(CLI_FILE)) return {}
+  const value = parseYaml(readFileSync(CLI_FILE, 'utf8')) || {}
+  const extra = Object.keys(value).filter(key => key !== 'browser')
+  if (extra.length) throw new Error(`cli.yaml supports only browser; unknown key(s): ${extra.join(', ')}`)
+  return value
+}
+
+export function saveCliConfig(value = {}) {
+  const browser = typeof value.browser === 'string' && value.browser.trim() ? value.browser.trim() : null
+  if (!existsSync(CONFIG_DIR)) mkdirSync(CONFIG_DIR, { recursive: true })
+  writeFileSync(CLI_FILE, browser ? `browser: ${JSON.stringify(browser)}\n` : '')
+}
+
 /**
- * Resolve the active server from daemon.yaml `servers:` — the single source of
- * truth for "which server this machine talks to" (config.json is gone). The
+ * Resolve the active server from server.yaml `servers:` — the single source of
+ * truth for which server this machine talks to. The
  * active server is `serverName` (a string override — used to route a specific
- * bot to its declared `server:`), else TLDA_CONFIG, else daemon.yaml
+ * bot to its declared `server:`), else TLDA_CONFIG, else server.yaml
  * `defaultServer`.
  *
  * Each server entry MUST be COMPLETE: an explicit `database`, `store`, and
@@ -112,8 +119,7 @@ function loadDaemonYaml() {
  *
  */
 export function resolveConfig(serverName = null) {
-  const d = loadDaemonYaml()
-  const { name, raw } = resolveStrictServerAuthority(d, serverName)
+  const { name, raw } = resolveStrictServerAuthority(loadServerConfig(), serverName)
   const { database, store, licenseKey } = raw
   return {
     name,
@@ -133,7 +139,7 @@ export function getFleetServerUrl(serverName = null) {
   return resolveConfig(serverName).database.http
 }
 
-/** The active config's name — what TLDA_CONFIG/defaultConfig selected. */
+/** The active server's name — what TLDA_CONFIG/defaultServer selected. */
 export function getActiveConfigName(serverName = null) {
   return resolveConfig(serverName).name
 }
@@ -141,9 +147,9 @@ export function getActiveConfigName(serverName = null) {
 /**
  * Coherence guard — fail loud when an explicit TLDA_SERVER URL disagrees with
  * the active config's resolved origin. This is the tripwire for the 6/27
- * config-split: a stray defaultConfig (or a hand-pinned TLDA_SERVER) routing a
+ * config-split: a stray defaultServer (or a hand-pinned TLDA_SERVER) routing a
  * process to a different server than the rest of the fleet, silently. The one
- * selector is TLDA_CONFIG (or defaultConfig) — every axis derives from it; a
+ * selector is TLDA_CONFIG (or defaultServer) — every axis derives from it; a
  * leftover TLDA_SERVER that points somewhere else means the process refuses to
  * start rather than join a roster nobody else is on.
  *
@@ -169,7 +175,7 @@ export function assertServerCoherence(serverName = null) {
   if (got !== want) {
     throw new Error(
       `tlda config incoherent: TLDA_SERVER=${got} but active config "${resolved.name}" resolves to ${want}. ` +
-      `Don't pin a server by URL — select a server with TLDA_CONFIG=<name> (or fix "defaultServer" in daemon.yaml).`
+      `Don't pin a server by URL — select a server with TLDA_CONFIG=<name> (or fix "defaultServer" in server.yaml).`
     )
   }
 }
@@ -243,7 +249,7 @@ const BOTS_FILE = join(CONFIG_DIR, 'bots.yaml')
  * source of truth. Bots are independent, launchd-owned services; the daemon
  * does not manage them. Each entry: { name, script, machine_id?, server? }
  * where `script` is absolute or repo-relative, `machine_id` optionally pins the
- * bot to one machine, and `server` names an entry in daemon.yaml `servers:`
+ * bot to one machine, and `server` names an entry in server.yaml `servers:`
  * (omit for the machine default). No config.json fallback — if bots.yaml is
  * absent there are no managed bots; a malformed bots.yaml throws loudly.
  */

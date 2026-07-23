@@ -8,18 +8,9 @@ import { createAgentLauncher } from '../agent-launch/agent-launch.mjs'
 import { completePendingSeatBinding, createPendingSeatBindingManager, reuseExactPendingSeatBinding } from '../agent-launch/pending-seat-binding.mjs'
 import { runWakeRouteLifecycle } from '../server/lib/wake-route-lifecycle.mjs'
 
-function permissionSet(name = 'test') {
-  return {
-    type: 'permission-set',
-    name,
-    operations: {
-      read: { allow: ['**'], deny: [] },
-      write: { allow: ['**'], deny: [] },
-      spawn: { allow: ['**'], deny: [] },
-    },
-    rules: [],
-  }
-}
+const TEST_CONFIG_DIR = mkdtempSync(join(tmpdir(), 'tlda-wake-config-'))
+writeFileSync(join(TEST_CONFIG_DIR, 'daemon.yaml'), `machineId: test\nregions:\n  machine: ["**"]\nprofiles:\n  test:\n    read: { allow: [machine], deny: [] }\n    write: { allow: [machine], deny: [] }\ngrants:\n  localhost: test\nmodels:\n  default: gpt\n  values:\n    gpt:\n      id: gpt-5.5\n      harness:\n        kind: codex\n        required: []\n        preferences: []\n        controls: true\ndefault: test\n`)
+process.env.TLDA_DAEMON_CONFIG_DIR = TEST_CONFIG_DIR
 
 function configFor(cwd) {
   return {
@@ -30,7 +21,6 @@ function configFor(cwd) {
         spawn: { allow: ['**'], deny: [] },
       },
     },
-    spawnPolicy: { projectProfiles: { [cwd]: 'test' } },
   }
 }
 
@@ -89,15 +79,13 @@ async function testFreshStartRetainsRuntimeWhenDurableRecoveryCannotBePersisted(
   const cwd = mkdtempSync(join(tmpdir(), 'tlda-wake-resume-'))
   const ledger = memoryLedger()
   await ledger.set('fleet:requester', {
-    permissionSet: permissionSet('requester'),
-    permissionProfile: 'test',
-    spawnPolicy: { policy: 'unsandboxed' },
+    permissionGrant: 'test',
   })
   const sent = []
   const launcher = createAgentLauncher({
     activeConfigName: 'prod',
     configDir: cwd,
-    loadConfig: () => configFor(cwd),
+    loadDaemonLaunchConfig: () => configFor(cwd),
     log: { info() {}, warn() {} },
     machineId: 'mini',
     permissionLedger: ledger,
@@ -141,15 +129,13 @@ async function testPendingSeatBindingResultDoesNotCountAsWritten() {
   const cwd = mkdtempSync(join(tmpdir(), 'tlda-wake-resume-'))
   const ledger = memoryLedger()
   await ledger.set('fleet:requester', {
-    permissionSet: permissionSet('requester'),
-    permissionProfile: 'test',
-    spawnPolicy: { policy: 'unsandboxed' },
+    permissionGrant: 'test',
   })
   let bindAttempts = 0
   const launcher = createAgentLauncher({
     activeConfigName: 'prod',
     configDir: cwd,
-    loadConfig: () => configFor(cwd),
+    loadDaemonLaunchConfig: () => configFor(cwd),
     log: { info() {}, warn() {} },
     machineId: 'mini',
     permissionLedger: ledger,
@@ -200,14 +186,12 @@ async function testFreshStartPersistsRecoveryBeforeReturningPending() {
   const cwd = mkdtempSync(join(tmpdir(), 'tlda-wake-resume-'))
   const ledger = memoryLedger()
   await ledger.set('fleet:requester', {
-    permissionSet: permissionSet('requester'),
-    permissionProfile: 'test',
-    spawnPolicy: { policy: 'unsandboxed' },
+    permissionGrant: 'test',
   })
   const persisted = []
   let killed = false
   const launcher = createAgentLauncher({
-    activeConfigName: 'prod', configDir: cwd, loadConfig: () => configFor(cwd),
+    activeConfigName: 'prod', configDir: cwd, loadDaemonLaunchConfig: () => configFor(cwd),
     log: { info() {}, warn() {} }, machineId: 'mini', permissionLedger: ledger,
     sendMsg: () => {}, getProjects: () => [{ name: 'test-doc', sourceDir: cwd }],
     tmux: async cmd => { if (cmd === 'kill-session') killed = true },
@@ -386,16 +370,14 @@ async function testRespawnKeepsExistingIdGrantAndReportsMissingResume() {
   const cwd = mkdtempSync(join(tmpdir(), 'tlda-wake-resume-'))
   const ledger = memoryLedger()
   const originalGrant = {
-    permissionSet: permissionSet('existing'),
-    permissionProfile: 'test',
-    spawnPolicy: { policy: 'unsandboxed' },
+    permissionGrant: 'test',
     source: 'existing-seat',
   }
   await ledger.set('fleet:existing', originalGrant)
   const launcher = createAgentLauncher({
     activeConfigName: 'prod',
     configDir: cwd,
-    loadConfig: () => configFor(cwd),
+    loadDaemonLaunchConfig: () => configFor(cwd),
     log: { info() {}, warn() {} },
     machineId: 'mini',
     permissionLedger: ledger,
@@ -436,4 +418,5 @@ await testFreshStartPersistsRecoveryBeforeReturningPending()
 await testPendingRecoveryFindsOnDiskSessionAndIsIdempotent()
 await testRestartReplayReusesExactBoundSeatAndCapability()
 await testRespawnKeepsExistingIdGrantAndReportsMissingResume()
+rmSync(TEST_CONFIG_DIR, { recursive: true, force: true })
 console.log('wake resume handle regression tests passed')

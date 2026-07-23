@@ -13,7 +13,6 @@ import { createServer as createHttpsServer } from 'https'
 import { readFileSync, existsSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
-import { loadConfig } from '../../shared/config.mjs'
 
 const PORT = process.argv.includes('--port')
   ? parseInt(process.argv[process.argv.indexOf('--port') + 1])
@@ -26,30 +25,22 @@ function resolveApiKey() {
   if (process.env.DEEPGRAM_API_KEY) {
     return process.env.DEEPGRAM_API_KEY
   }
-  try {
-    const config = loadConfig()
-    if (config.deepgramApiKey) return config.deepgramApiKey
-  } catch {}
   return null
 }
 
 const API_KEY = resolveApiKey()
 if (!API_KEY) {
-  console.error('[deepgram-sdk-bridge] No API key found. Set DEEPGRAM_API_KEY, use --key, or add deepgramApiKey to ~/.config/tlda/config.json')
+  console.error('[deepgram-sdk-bridge] No API key found. Set DEEPGRAM_API_KEY or use --key.')
   process.exit(1)
 }
 
 // CLI flag → config key → default. Used for the idle-cutoff tunable so Skip can
 // feel-test without a rebuild (config) and tests can pin short values (flags).
-function resolveIntOpt(flag, configKey, def) {
+function resolveIntOpt(flag, _configKey, def) {
   if (process.argv.includes(flag)) {
     const v = parseInt(process.argv[process.argv.indexOf(flag) + 1], 10)
     if (Number.isFinite(v)) return v
   }
-  try {
-    const config = loadConfig()
-    if (config[configKey] != null && Number.isFinite(Number(config[configKey]))) return Number(config[configKey])
-  } catch { /* config is an optional tuning surface — fall through to the default */ }
   return def
 }
 
@@ -95,17 +86,12 @@ const KEYWORDS = [
   'kernel balancing', 'synthetic control', 'kernel ridge',
 ]
 
-// Tunable Deepgram recognition params. Defaults are docs-backed; any of them can
-// be overridden at RUNTIME with no rebuild (Skip 6/19: "tweakable parameters to
-// just play with so we don't have to rebuild all the time") by adding a
-// `voiceParams` object to ~/.config/tlda/config.json. listenOptions() re-reads the
-// config on every Deepgram connect, so editing the file and starting a fresh voice
-// session (toggle voice off→on, or reconnect) applies the change.
+// Deepgram recognition defaults. Per-connection options can override them;
+// secrets and runtime settings are never read from YAML or a generic config.
 //
 // To widen the recognition window so Deepgram stops cutting off / revising the
 // tail of an utterance ("it keeps eating parts of my text… make our window
-// bigger"), raise endpointing and utterance_end_ms, e.g.:
-//   "voiceParams": { "endpointing": 500, "utterance_end_ms": 1500 }
+// bigger"), raise endpointing and utterance_end_ms on the connection.
 const DEFAULT_LISTEN_OPTIONS = {
   model: 'nova-3',
   language: 'en',
@@ -121,19 +107,11 @@ const DEFAULT_LISTEN_OPTIONS = {
 }
 
 function loadVoiceParamOverrides() {
-  try {
-    const config = loadConfig()
-    if (config.voiceParams && typeof config.voiceParams === 'object') return config.voiceParams
-  } catch {
-    // Config is an OPTIONAL tuning surface — if it's missing/unreadable, voice
-    // must still work on the docs-backed defaults. No overrides, no failure.
-  }
   return {}
 }
 
 function listenOptions(clientOverrides = {}) {
-  // Precedence: docs-backed defaults < config.json voiceParams < per-connection
-  // client params (Skip's Preferences, sent in the `start` message).
+  // Precedence: docs-backed defaults < per-connection client params.
   const overrides = { ...loadVoiceParamOverrides(), ...clientOverrides }
   const recognition = { ...DEFAULT_LISTEN_OPTIONS, ...overrides }
   if (Object.keys(overrides).length) {

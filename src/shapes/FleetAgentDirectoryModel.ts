@@ -44,27 +44,13 @@ export function formatFleetAgentModel(model: string | null | undefined): string 
   return s.replace(/[.\-]/g, '')
 }
 
-const PERMISSION_LABELS: Record<string, string> = {
-  read: 'read',
-  write: 'write',
-  'tlda-write': 'tlda-write',
-  full: 'full',
-}
-const POLICY_LABELS: Record<string, string> = {
-  cwd: 'own project',
-  'tlda-projects': 'all projects',
-  unsandboxed: 'machine',
-}
-
 export function formatFleetAgentPermission(meta: any): string {
-  const sp = meta?.spawnPolicy
-  if (!sp) return ''
-  const cap = typeof sp === 'string' ? sp : sp.permission
-  const policy = typeof sp === 'object' ? sp.policy : null
-  if (!cap) return ''
-  const capLabel = PERMISSION_LABELS[cap] || cap
-  const policyLabel = policy ? (POLICY_LABELS[policy] || policy) : ''
-  return policyLabel ? `${capLabel} · ${policyLabel}` : capLabel
+  const grant = meta?.permissionGrant
+  if (typeof grant === 'string') return grant
+  if (grant?.type === 'permission-intersection' && Array.isArray(grant.profiles)) {
+    return grant.profiles.join(' intersection ')
+  }
+  return ''
 }
 
 export function formatFleetAgentEffort(effort: string | null | undefined, kind: string | null | undefined): string {

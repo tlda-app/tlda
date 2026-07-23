@@ -102,18 +102,31 @@ function writeConfig() {
   mkdirSync(CONFIG_DIR, { recursive: true })
   mkdirSync(HOME_DIR, { recursive: true })
   mkdirSync(PROJECTS_DIR, { recursive: true })
-  writeFileSync(join(CONFIG_DIR, 'config.json'), JSON.stringify({
-    defaultConfig: ENV_NAME,
-    machineId: MACHINE_ID,
-    bots: [],
-    configs: {
-      [ENV_NAME]: {
-        database: BASE,
-        store: BASE,
-        licenseKey: '',
-      },
-    },
-  }, null, 2))
+  writeFileSync(join(CONFIG_DIR, 'server.yaml'), `defaultServer: loop
+servers:
+  loop:
+    database: ${BASE}
+    store: ${BASE}
+    licenseKey: test
+`)
+  writeFileSync(join(CONFIG_DIR, 'daemon.yaml'), `machineId: ${MACHINE_ID}
+regions:
+  machine:
+    - "**"
+profiles:
+  ops:
+    read:
+      allow: [machine]
+      deny: []
+    write:
+      allow: [machine]
+      deny: []
+grants:
+  localhost: ops
+  ${AGENT_ID}: ops
+models: {}
+default: ops
+`)
 }
 
 function daemonLogText() {
@@ -164,18 +177,7 @@ function seedDaemonProcessLedger() {
   const ledger = createPermissionLedger(join(CONFIG_DIR, 'fleet-daemon.db'))
   try {
     ledger.setSync(AGENT_ID, {
-      spawnPolicy: { policy: 'unsandboxed' },
-      permissionProfile: 'test',
-      permissionSet: {
-        type: 'permission-set',
-        name: 'test',
-        operations: {
-          read: { allow: ['**'], deny: [] },
-          write: { allow: ['**'], deny: [] },
-          spawn: { allow: ['**'], deny: [] },
-        },
-        rules: [],
-      },
+      permissionGrant: 'ops',
       source: 'login-register-binding-full-loop-test',
     })
     ledger.setSessionSync(AGENT_ID, {
@@ -205,6 +207,7 @@ async function startDaemon() {
       TLDA_CONFIG: ENV_NAME,
       TLDA_CONFIG_DIR: CONFIG_DIR,
       TLDA_DAEMON_CONFIG_DIR: CONFIG_DIR,
+      TLDA_MACHINE_ID: MACHINE_ID,
       TLDA_SERVER: BASE,
       TLDA_DEV_DAEMON: BASE,
       PROJECTS_DIR,
@@ -282,7 +285,7 @@ async function run() {
       machine_id: MACHINE_ID,
       env_name: ENV_NAME,
       daemon_key: DAEMON_KEY,
-      metadata: { spawnPolicy: { policy: 'unsandboxed' } },
+      metadata: { permissionGrant: 'ops' },
     })
     assert.equal(reserve.ok, true)
     console.log('PASS: mint shell reserved with stable fleet id')
@@ -325,7 +328,7 @@ async function run() {
       machine_id: MACHINE_ID,
       env_name: ENV_NAME,
       daemon_key: DAEMON_KEY,
-      metadata: { spawnPolicy: { policy: 'unsandboxed' } },
+      metadata: { permissionGrant: 'ops' },
     })
     assert.equal(wakeReserve.ok, true)
     assert.equal(wakeReserve.agent_id || wakeReserve.agent?.id || AGENT_ID, AGENT_ID)

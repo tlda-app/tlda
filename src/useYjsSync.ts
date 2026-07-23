@@ -3,7 +3,6 @@
 // Signal writes go via HTTP POST to /api/projects/:name/signal.
 // Shape sync is handled by @tldraw/sync (see SvgDocument.tsx).
 
-import type { TLRecord } from 'tldraw'
 import { getSignalReplayMs } from '../shared/signals.ts'
 import { SignalBus } from './signalBus'
 
@@ -38,10 +37,6 @@ export function teardownSignalConnection() {
 export function isSignalConnected(): boolean {
   return activeDocName !== null
 }
-
-// Live URL from static annotations (set when loading annotations.json)
-let staticLiveUrl: string | null = null
-export function getLiveUrl() { return staticLiveUrl }
 
 // Stable random viewer ID for this tab (prevents applying own signals)
 const localViewerId = Math.random().toString(36).slice(2, 10)
@@ -308,51 +303,4 @@ export function broadcastSlideFragment(shapeId: string, current: number, total: 
 
 export function broadcastSlideIndex(shapeId: string, index: number) {
   writeSignal('signal:slide-index', { shapeId, index, viewerId: localViewerId })
-}
-
-/**
- * Load static annotations from annotations.json when no sync server is available.
- * Used in production (GitHub Pages) where annotations were baked in by publish-snapshot.
- */
-export async function loadStaticAnnotations(editor: any, docName: string, onInitialSync?: () => void) {
-  if (!docName) return
-
-  const base = import.meta.env.BASE_URL || '/'
-  const url = `${base}docs/${docName}/annotations.json`
-
-  const SYNC_TYPES = new Set(['shape', 'asset', 'page', 'document'])
-
-  try {
-    const resp = await fetch(url)
-    if (!resp.ok) {
-      console.log('[Sync] No static annotations available')
-      return
-    }
-
-    const data = await resp.json()
-    if (data.liveUrl) {
-      staticLiveUrl = data.liveUrl
-    }
-    const records = data.records || {}
-    const toApply: TLRecord[] = []
-
-    for (const [id, record] of Object.entries(records)) {
-      if ((id as string).startsWith('signal:')) continue
-      const rec = record as TLRecord
-      if (rec.typeName && SYNC_TYPES.has(rec.typeName) && !(rec.id as string).includes('-page-')) {
-        toApply.push(rec)
-      }
-    }
-
-    if (toApply.length > 0) {
-      console.log(`[Sync] Loaded ${toApply.length} static annotations from ${url}`)
-      editor.store.mergeRemoteChanges(() => {
-        editor.store.put(toApply)
-      })
-    }
-
-    if (onInitialSync) onInitialSync()
-  } catch (e) {
-    console.log('[Sync] Failed to load static annotations:', e)
-  }
 }

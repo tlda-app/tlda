@@ -36,7 +36,7 @@ function fullBinding(overrides = {}) {
 function createLedger(onProcessBindingChange = () => {}) {
   const dir = mkdtempSync(join(tmpdir(), 'tlda-jsonl-local-binding-'))
   const ledger = createPermissionLedger(join(dir, 'permission-ledger.db'), { onProcessBindingChange })
-  ledger.setSync('fleet:jsonl-owner', { spawnPolicy: 'cwd', source: 'test' })
+  ledger.setSync('fleet:jsonl-owner', { permissionGrant: 'cwd', source: 'test' })
   return {
     ledger,
     dir,

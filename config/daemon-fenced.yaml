@@ -67,7 +67,6 @@ models:
       description: Codex Terra
       options: {}
 
-servers: {}
 regions:
   cwd:
     - cwd

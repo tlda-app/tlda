@@ -20,10 +20,7 @@
  *   node bin/brush-test.mjs --headed   # visible browser (for debugging)
  */
 import { chromium } from 'playwright'
-import { hasTls } from '../shared/config.mjs'
-import { readFileSync } from 'node:fs'
-import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { getReadToken, hasTls } from '../shared/config.mjs'
 
 // Default to headed — never test UI behavior in a headless browser (real
 // browsers and headless have different pointer/rendering semantics).
@@ -31,8 +28,7 @@ import { join } from 'node:path'
 // after you've already verified the headed result matches the real-browser
 // symptom).
 const HEADED = !process.argv.includes('--headless')
-const cfg = JSON.parse(readFileSync(join(homedir(), '.config', 'tlda', 'config.json'), 'utf8'))
-const token = cfg.tokenRead || cfg.tokenRw || cfg.token
+const token = getReadToken()
 
 const browser = await chromium.launch({ headless: !HEADED })
 const ctx = await browser.newContext({ viewport: { width: 1920, height: 1080 } })

@@ -190,7 +190,7 @@ async function spawnWithDeps(overrides = {}) {
       model: 'goose-test',
       config: TEST_MODEL_CONFIG,
       cwd,
-      spawnPolicy: { policy: 'unsandboxed' },
+      permissionGrant: 'ops',
       acknowledgeNoSecurity: true,
       localAgentLedger: ledger,
       shellReservationTimeoutMs: 12_345,

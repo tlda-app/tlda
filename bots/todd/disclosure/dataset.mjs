@@ -13,7 +13,7 @@ import {
 import { getFleetServerUrl, getReadToken } from '../../../shared/config.mjs'
 
 const DEFAULT_DB = path.join(os.homedir(), '.config', 'tlda', 'fleet.db')
-const DEFAULT_CONFIG = path.join(os.homedir(), '.config', 'tlda', 'config.json')
+const DEFAULT_CONFIG = path.join(os.homedir(), '.config', 'tlda', 'disclosure-dataset.json')
 const INTERNAL_AGENT_IDS = new Set(['fleet:skip', 'fleet:todd', 'fleet:tlda'])
 
 function parseArgs(argv) {
@@ -77,7 +77,7 @@ Extract candidate Todd disclosure events from the fleet event log.
 Options:
   --source MODE      sqlite or server (default: sqlite)
   --db PATH          SQLite fleet DB (default: ~/.config/tlda/fleet.db)
-  --config PATH      tlda config for server/token defaults
+  --config PATH      dataset-local JSON defaults
   --server URL       Fleet server URL (default: config fleetServer/server)
   --token TOKEN      Read token (default: TLDA_TOKEN_READ or config tokenRead)
   --out PATH         Write rows to PATH instead of stdout

@@ -194,7 +194,7 @@ function apiNeedsLocalOutbound(dnsAlias) {
 export function fenceSettings(policy, { api, dnsAlias, env = process.env } = {}) {
   const emptyPermission = policy.empty === true
   const allowRead = uniqueSorted([...(policy.read_roots || []), ...(emptyPermission ? [] : FENCE_AGENT_READ_ROOTS)].map(expandPathPattern))
-  const broadWriteRoots = policy.explicit_permission_set ? [] : FENCE_BROAD_WRITE_ROOTS
+  const broadWriteRoots = []
   const allowWrite = uniqueSorted([
     ...(policy.write_roots || []),
     ...harnessStateWriteRoots(env),
@@ -251,7 +251,7 @@ export function writeFenceSettings(policy, opts = {}) {
   const settings = { ...fenceSettings(policy, opts), _tldaLease: stripRunner(policy) }
   const dir = path.join(os.tmpdir(), 'tlda-fence-leases')
   fs.mkdirSync(dir, { recursive: true })
-  const file = path.join(dir, `${policy.harness}-${policy.policy}-${randomUUID().replace(/-/g, '')}.json`)
+  const file = path.join(dir, `${policy.harness}-permissions-${randomUUID().replace(/-/g, '')}.json`)
   fs.writeFileSync(file, `${JSON.stringify(settings, null, 2)}\n`)
   return file
 }
@@ -259,7 +259,7 @@ export function writeFenceSettings(policy, opts = {}) {
 export function writeFenceLease(policy) {
   const dir = path.join(os.tmpdir(), 'tlda-fence-leases')
   fs.mkdirSync(dir, { recursive: true })
-  const file = path.join(dir, `${policy.harness}-${policy.policy}-lease-${randomUUID().replace(/-/g, '')}.json`)
+  const file = path.join(dir, `${policy.harness}-permission-lease-${randomUUID().replace(/-/g, '')}.json`)
   fs.writeFileSync(file, `${JSON.stringify(stripRunner(policy), null, 2)}\n`)
   return file
 }
@@ -267,8 +267,7 @@ export function writeFenceLease(policy) {
 function formatRunnerArg(arg, policy, cmd, files = {}) {
   const vals = {
     workspace: policy.workspace,
-    profile: policy.policy,
-    policy: policy.policy,
+    permission_grant: JSON.stringify(policy.permission_grant),
     harness: policy.harness,
     model: policy.model || '',
     network: policy.network ? 'allow' : 'deny',
@@ -289,9 +288,8 @@ function ensureFenceEnv() {
   fs.closeSync(fs.openSync(path.join(TLDA_FENCE_TMP_ROOT, 'empty-gitconfig'), 'a'))
   fs.closeSync(fs.openSync(path.join(xdgConfig, 'git', 'ignore'), 'a'))
   return {
-    TLDA_SANDBOX_PROFILE: null,
-    TLDA_SANDBOX_POLICY: null,
-    TLDA_SANDBOX_LEASE_FILE: null,
+    TLDA_PERMISSION_GRANT: null,
+    TLDA_PERMISSION_LEASE_FILE: null,
     TMPDIR: TLDA_FENCE_TMP_ROOT,
     GIT_CONFIG_GLOBAL: path.join(TLDA_FENCE_TMP_ROOT, 'empty-gitconfig'),
     GIT_CONFIG_NOSYSTEM: '1',
@@ -305,8 +303,7 @@ function fenceLogPath(policy) {
   fs.mkdirSync(dir, { recursive: true })
   const stamp = new Date().toISOString().replace(/[:.]/g, '-')
   const harness = String(policy.harness || 'agent').replace(/[^A-Za-z0-9_.-]/g, '_')
-  const profile = String(policy.policy || 'policy').replace(/[^A-Za-z0-9_.-]/g, '_')
-  return path.join(dir, `${stamp}-${harness}-${profile}-${randomUUID().replace(/-/g, '')}.log`)
+  return path.join(dir, `${stamp}-${harness}-permissions-${randomUUID().replace(/-/g, '')}.log`)
 }
 
 export function wrapSandboxCmd(cmd, policy, opts = {}) {
@@ -321,10 +318,9 @@ export function wrapSandboxCmd(cmd, policy, opts = {}) {
   const command = runner.command
   if (!command) throw new Error('sandbox runner command is required')
   const env = ensureFenceEnv()
-  env.TLDA_SANDBOX_PROFILE = policy.policy
-  env.TLDA_SANDBOX_POLICY = policy.policy
+  env.TLDA_PERMISSION_GRANT = JSON.stringify(policy.permission_grant)
   const leaseFile = writeFenceLease(policy)
-  env.TLDA_SANDBOX_LEASE_FILE = leaseFile
+  env.TLDA_PERMISSION_LEASE_FILE = leaseFile
   const xcodeGit = '/Applications/Xcode.app/Contents/Developer/usr/bin/git'
   if (fs.existsSync(xcodeGit)) {
     env.PATH = `/Applications/Xcode.app/Contents/Developer/usr/bin:${process.env.PATH || ''}`

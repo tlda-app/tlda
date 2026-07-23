@@ -35,7 +35,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, openSyn
 import { join } from 'path'
 import { homedir } from 'os'
 import { X509Certificate } from 'crypto'
-import { hasTls, loadConfig, saveConfig, CONFIG_DIR } from '../../shared/config.mjs'
+import { hasTls, loadServerConfig, CONFIG_DIR } from '../../shared/config.mjs'
 import { resolveRepoRoot, findFreePort } from './dev-vite.mjs'
 import { spawnDetachedServer } from './server-start.mjs'
 import { findTailscaleIPv4 } from './share-url.mjs'
@@ -249,22 +249,34 @@ export function resolveReachableHost() {
 function previewConfigDir(branch) { return join(stateDir(branch), 'config') }
 
 function writePreviewConfig(branch, base, { realFleet = false } = {}) {
-  const cfg = loadConfig()
-  cfg.configs = cfg.configs || {}
+  const cfg = loadServerConfig()
   // Borrow a licenseKey from any existing config (tldraw sync license).
-  const donor = Object.values(cfg.configs).find(c => typeof c?.licenseKey === 'string')
-  const active = cfg.configs[cfg.defaultConfig]
+  const donor = Object.values(cfg.servers).find(c => typeof c?.licenseKey === 'string')
+  const active = cfg.servers[cfg.defaultServer]
   const database = realFleet && typeof active?.database === 'string' ? active.database : base
-  cfg.configs[configName(branch)] = {
+  const serverConfig = {
+    defaultServer: configName(branch),
+    servers: {
+      [configName(branch)]: {
     database,         // fleet/chat/agents → preview by default, or live with --real-fleet
     store: base,      // shapes + doc assets → the preview server itself
     licenseKey: donor?.licenseKey ?? '',
+      },
+    },
   }
   // Preview servers get an isolated copy. Writing the shared config would both
   // corrupt the real daemon's authority surface and violate the app-dev fence.
   const dir = previewConfigDir(branch)
   mkdirSync(dir, { recursive: true })
-  writeFileSync(join(dir, 'config.json'), JSON.stringify(cfg, null, 2))
+  writeFileSync(join(dir, 'server.yaml'), [
+    `defaultServer: ${JSON.stringify(serverConfig.defaultServer)}`,
+    'servers:',
+    `  ${JSON.stringify(configName(branch))}:`,
+    `    database: ${JSON.stringify(database)}`,
+    `    store: ${JSON.stringify(base)}`,
+    `    licenseKey: ${JSON.stringify(donor?.licenseKey ?? '')}`,
+    '',
+  ].join('\n'))
 }
 
 function removePreviewConfig(branch) {
@@ -443,19 +455,29 @@ export async function cmdServeWorktree(args) {
     // machine_id = no eviction). TLDA_SERVER (precedence) keeps its target = base.
     const dcfg = daemonConfigDir(branch)
     mkdirSync(dcfg, { recursive: true })
-    writeFileSync(join(dcfg, 'config.json'), JSON.stringify({
-      defaultConfig: configName(branch),
-      configs: {
-        [configName(branch)]: {
-          database: base,
-          store: base,
-          licenseKey: '',
-        },
-      },
-      machineId: `dev-${sanitize(branch)}`,
-      fleetServer: base,
-      server: base,
-    }, null, 2))
+    writeFileSync(join(dcfg, 'server.yaml'), [
+      `defaultServer: ${JSON.stringify(configName(branch))}`,
+      'servers:',
+      `  ${JSON.stringify(configName(branch))}:`,
+      `    database: ${JSON.stringify(base)}`,
+      `    store: ${JSON.stringify(base)}`,
+      '    licenseKey: ""',
+      '',
+    ].join('\n'))
+    writeFileSync(join(dcfg, 'daemon.yaml'), [
+      `machineId: ${JSON.stringify(`dev-${sanitize(branch)}`)}`,
+      'regions:',
+      '  machine: ["**"]',
+      'profiles:',
+      '  ops:',
+      '    read: { allow: [machine], deny: [] }',
+      '    write: { allow: [machine], deny: [] }',
+      'grants:',
+      '  localhost: ops',
+      'models: {}',
+      'default: ops',
+      '',
+    ].join('\n'))
     const dlogFd = openSync(daemonLogFile(branch), 'a')
     const dchild = spawn(process.execPath, [join(worktreeDir, 'bin', 'fleet-daemon.mjs')], {
       detached: true,

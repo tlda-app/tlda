@@ -1,7 +1,7 @@
 /**
  * Resolve CTD auth token.
  *
- * Priority: TLDA_TOKEN env → tokenRw from ~/.config/tlda/config.json → null
+ * Priority: TLDA_TOKEN env → tokenRw from tokens.json → null
  */
 
 import { getRwToken } from '../shared/config.mjs'

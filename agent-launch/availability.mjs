@@ -4,7 +4,6 @@ import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import { listModels } from './models.mjs'
-import { readConfig } from './identity.mjs'
 import { readDaemonConfig, readDaemonConfigForCwd, withDaemonModelAliases } from './permission-ledger.mjs'
 
 const execFileP = promisify(execFile)
@@ -113,7 +112,7 @@ function resolveContextCwd({ cwd } = {}) {
 export async function probeSpawnAvailability({ cwd = null, env = process.env, now = new Date(), deps = {} } = {}) {
   const contextCwd = resolveContextCwd({ cwd })
   const daemonConfig = contextCwd ? readDaemonConfigForCwd(contextCwd) : readDaemonConfig()
-  const config = deps.config ?? withDaemonModelAliases(readConfig(), daemonConfig)
+  const config = deps.config ?? withDaemonModelAliases({}, daemonConfig)
   const runner = {
     run: deps.run || ((command, args, opts = {}) => run(command, args, { ...opts, env })),
   }

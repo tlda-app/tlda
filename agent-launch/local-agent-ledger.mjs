@@ -15,6 +15,40 @@ function value(value) {
   return value == null || value === '' ? null : String(value)
 }
 
+function grantValue(grant) {
+  return grant == null || grant === '' ? null : JSON.stringify(grant)
+}
+
+function parseGrant(value) {
+  if (!value) return null
+  return JSON.parse(value)
+}
+
+function migrateProcessRecipes(db) {
+  const columns = db.prepare('PRAGMA table_info(local_agent_process_recipes)').all().map(row => row.name)
+  if (!columns.includes('permission_profile')) return
+  const rows = db.prepare('SELECT * FROM local_agent_process_recipes').all()
+  const transaction = db.transaction(() => {
+    db.exec(`
+      CREATE TABLE local_agent_process_recipes_next (
+        local_agent_id TEXT PRIMARY KEY REFERENCES local_agents(local_agent_id) ON DELETE CASCADE,
+        tmux_name TEXT,
+        cwd TEXT,
+        permission_grant TEXT
+      )
+    `)
+    const insert = db.prepare('INSERT INTO local_agent_process_recipes_next VALUES (?, ?, ?, ?)')
+    for (const row of rows) {
+      if (!row.permission_profile) {
+        throw new Error(`local process recipe ${row.local_agent_id} has no representable permission grant`)
+      }
+      insert.run(row.local_agent_id, row.tmux_name, row.cwd, JSON.stringify(row.permission_profile))
+    }
+    db.exec('DROP TABLE local_agent_process_recipes; ALTER TABLE local_agent_process_recipes_next RENAME TO local_agent_process_recipes')
+  })
+  transaction()
+}
+
 export class LocalAgentLedger {
   constructor(file = defaultLocalAgentLedgerPath()) {
     this.file = file
@@ -24,6 +58,7 @@ export class LocalAgentLedger {
     this.db.pragma('journal_mode = WAL')
     this.db.pragma('synchronous = NORMAL')
     this.db.pragma('foreign_keys = ON')
+    migrateProcessRecipes(this.db)
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS local_agents (
         local_agent_id TEXT PRIMARY KEY,
@@ -42,7 +77,7 @@ export class LocalAgentLedger {
         local_agent_id TEXT PRIMARY KEY REFERENCES local_agents(local_agent_id) ON DELETE CASCADE,
         tmux_name TEXT,
         cwd TEXT,
-        permission_profile TEXT
+        permission_grant TEXT
       );
       CREATE TABLE IF NOT EXISTS local_agent_mint_requests (
         request_id TEXT PRIMARY KEY,
@@ -72,7 +107,7 @@ export class LocalAgentLedger {
       VALUES (?, ?, ?, ?)
     `)
     this._insertRecipe = this.db.prepare(`
-      INSERT INTO local_agent_process_recipes (local_agent_id, tmux_name, cwd, permission_profile)
+      INSERT INTO local_agent_process_recipes (local_agent_id, tmux_name, cwd, permission_grant)
       VALUES (?, ?, ?, ?)
     `)
     this._bind = this.db.prepare(`
@@ -83,7 +118,7 @@ export class LocalAgentLedger {
     this._create = this.db.transaction((row) => {
       this._insertAgent.run(row.localAgentId, row.serverAgentId, row.friendlyName, row.now, row.serverAgentId ? row.now : null)
       this._insertConversation.run(row.localAgentId, row.sessionId, row.harness, row.model)
-      this._insertRecipe.run(row.localAgentId, row.tmuxName, row.cwd, row.permissionProfile)
+      this._insertRecipe.run(row.localAgentId, row.tmuxName, row.cwd, row.permissionGrant)
       return this.get(row.localAgentId)
     })
   }
@@ -109,7 +144,7 @@ export class LocalAgentLedger {
       process: process ? {
         tmuxName: process.tmux_name || null,
         cwd: process.cwd || null,
-        permissionProfile: process.permission_profile || null,
+        permissionGrant: parseGrant(process.permission_grant),
       } : null,
     }
   }
@@ -135,7 +170,7 @@ export class LocalAgentLedger {
     model = null,
     tmuxName = null,
     cwd = null,
-    permissionProfile = null,
+    permissionGrant = null,
     now = new Date().toISOString(),
   } = {}) {
     const existing = this.get(localAgentId)
@@ -154,13 +189,13 @@ export class LocalAgentLedger {
           model = COALESCE(excluded.model, model)
       `).run(existing.localAgentId, value(sessionId), value(harness), value(model))
       this.db.prepare(`
-        INSERT INTO local_agent_process_recipes (local_agent_id, tmux_name, cwd, permission_profile)
+        INSERT INTO local_agent_process_recipes (local_agent_id, tmux_name, cwd, permission_grant)
         VALUES (?, ?, ?, ?)
         ON CONFLICT(local_agent_id) DO UPDATE SET
           tmux_name = COALESCE(excluded.tmux_name, tmux_name),
           cwd = COALESCE(excluded.cwd, cwd),
-          permission_profile = COALESCE(excluded.permission_profile, permission_profile)
-      `).run(existing.localAgentId, value(tmuxName), value(cwd), value(permissionProfile))
+          permission_grant = COALESCE(excluded.permission_grant, permission_grant)
+      `).run(existing.localAgentId, value(tmuxName), value(cwd), grantValue(permissionGrant))
       return this.get(localAgentId)
     }
     return this._create({
@@ -172,7 +207,7 @@ export class LocalAgentLedger {
       model: value(model),
       tmuxName: value(tmuxName),
       cwd: value(cwd),
-      permissionProfile: value(permissionProfile),
+      permissionGrant: grantValue(permissionGrant),
       now,
     })
   }
@@ -216,16 +251,16 @@ export class LocalAgentLedger {
     return this.get(local.localAgentId)
   }
 
-  updateProcess(localAgentId, { tmuxName, cwd, permissionProfile } = {}) {
+  updateProcess(localAgentId, { tmuxName, cwd, permissionGrant } = {}) {
     const local = this.get(localAgentId)
     if (!local) throw new Error(`missing local agent ${localAgentId}`)
     this.db.prepare(`
       UPDATE local_agent_process_recipes SET
         tmux_name = COALESCE(?, tmux_name),
         cwd = COALESCE(?, cwd),
-        permission_profile = COALESCE(?, permission_profile)
+        permission_grant = COALESCE(?, permission_grant)
       WHERE local_agent_id = ?
-    `).run(value(tmuxName), value(cwd), value(permissionProfile), local.localAgentId)
+    `).run(value(tmuxName), value(cwd), grantValue(permissionGrant), local.localAgentId)
     return this.get(local.localAgentId)
   }
 

@@ -10,7 +10,7 @@ import {
   codexRolloutMatchesLaunch,
   resolveTranscript,
 } from '../../agent-runtime/resolve-transcript.mjs'
-import { activeConfigName, gitAuthorEnv, readConfig } from '../identity.mjs'
+import { activeConfigName, gitAuthorEnv } from '../identity.mjs'
 import { resolveCodexModel, resolveCodexModelSelection } from '../models.mjs'
 import { loginPrompt } from './claude.mjs'
 import { dnsAliasPreloadPath } from './dns-alias-preload.mjs'
@@ -177,7 +177,7 @@ export function buildCmd({
   dnsAlias = null,
   resumeId = null,
   env = process.env,
-  config = readConfig(),
+  config = {},
   harnessOptions = {},
 } = {}) {
   const processEnv = [

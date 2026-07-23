@@ -7,15 +7,13 @@ import { Worker } from 'worker_threads'
 import Database from 'better-sqlite3'
 import YAML from 'yaml'
 import {
-  emptyPermissionSet,
+  compilePermissionGrant,
+  normalizePermissionGrant,
   resolveSpawnGrant,
-  normalizeRegionPolicy,
-  regionScopeFromSet,
 } from '../server/lib/spawn-policy.mjs'
 import {
   validateDaemonConfigTopLevel,
   validateProjectDaemonOverrideTopLevel,
-  validateStrictServers,
 } from '../shared/daemon-config-schema.mjs'
 
 function nowIso() {
@@ -41,63 +39,96 @@ function hasProcessBinding(row = {}) {
 }
 
 const WRITE_TIMEOUT_MS = Number(process.env.TLDA_PERMISSION_LEDGER_WRITE_TIMEOUT_MS || 5000)
-const YAML_MIGRATION_META_KEY = 'migration.daemon-permissions-yaml.v1'
 
-// An explicit empty ('none') grant — confers nothing. Detected off the raw input so a
-// stored 'none' still materializes as an empty permission set after the level strip.
-function isNoneGrant(value) {
-  if (value == null || value === '') return false
-  const s = typeof value === 'string' ? value : (value.permission ?? value.policy ?? value.name ?? '')
-  return String(s).trim().toLowerCase() === 'none'
-}
-
-function normalizeLedgerGrant(value) {
+function normalizeLedgerGrant(value, config = null) {
   if (!value) {
     throw new PermissionLedgerError('SPAWN_PERMISSION_LEDGER_MISSING_GRANT', 'permission ledger grant is required')
   }
-  const rawPermissionSet = value.permissionSet || value.permissions || null
-  if (rawPermissionSet) {
-    const profileName = String(value.permissionProfile || '').trim()
-    const scope = value.spawnPolicy
-      ? normalizeRegionPolicy(value.spawnPolicy)
-      : { policy: regionScopeFromSet(rawPermissionSet) }
-    const spawnPolicy = {
-      policy: scope.policy,
-      ...(scope.network === false ? { network: false } : {}),
-    }
-    return {
-      spawnPolicy,
-      permissionProfile: profileName || null,
-      ...(normalizePermissionIntersection(value.permissionIntersection) ? { permissionIntersection: normalizePermissionIntersection(value.permissionIntersection) } : {}),
-      permissionSet: {
-        ...rawPermissionSet,
-        projectedPolicy: spawnPolicy,
-      },
-    }
-  }
-  const raw = value.spawnPolicy || value.policy || value.permission || value
-  const spawnPolicy = normalizeRegionPolicy(raw)
+  const rawGrant = value.permissionGrant ?? value
+  const permissionGrant = config
+    ? normalizePermissionGrant(rawGrant, config)
+    : normalizeStoredPermissionGrant(rawGrant)
   return {
-    spawnPolicy,
-    permissionProfile: null,
-    ...(normalizePermissionIntersection(value.permissionIntersection) ? { permissionIntersection: normalizePermissionIntersection(value.permissionIntersection) } : {}),
-    permissionSet: isNoneGrant(raw)
-      ? emptyPermissionSet({ name: 'none', projectedPolicy: { ...spawnPolicy, permission: 'none' } })
-      : null,
+    permissionGrant,
   }
 }
 
-function normalizePermissionIntersection(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+function normalizeStoredPermissionGrant(value) {
+  if (typeof value === 'string' && value.trim()) return value.trim()
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new PermissionLedgerError('SPAWN_PERMISSION_LEDGER_INVALID_GRANT', 'permission grant must be a configured profile name or structured intersection')
+  }
   const profiles = Array.isArray(value.profiles)
     ? value.profiles.map((name) => String(name || '').trim()).filter(Boolean)
     : []
-  if (value.type !== 'permission-intersection' || profiles.length < 2) return null
-  return {
-    ...value,
-    type: 'permission-intersection',
-    profiles: [...new Set(profiles)],
+  const unique = [...new Set(profiles)]
+  if (value.type !== 'permission-intersection' || unique.length < 2) {
+    throw new PermissionLedgerError('SPAWN_PERMISSION_LEDGER_INVALID_GRANT', 'permission grant intersection requires at least two configured profile names')
   }
+  return { type: 'permission-intersection', profiles: unique }
+}
+
+function migratePermissionGrantTable(db) {
+  const columns = db.prepare('PRAGMA table_info(permission_grants)').all().map(row => row.name)
+  if (!columns.length) return
+  const obsolete = ['spawn_policy', 'permission_profile', 'permission_intersection', 'permission_set']
+  if (!obsolete.some(name => columns.includes(name))) return
+  const rows = db.prepare('SELECT * FROM permission_grants').all()
+  const migrated = rows.map(row => {
+    let raw = null
+    if (row.permission_grant) raw = JSON.parse(row.permission_grant)
+    else if (row.permission_intersection) raw = JSON.parse(row.permission_intersection)
+    else if (row.permission_profile) raw = row.permission_profile
+    if (!raw) {
+      throw new PermissionLedgerError(
+        'SPAWN_PERMISSION_LEDGER_UNREPRESENTABLE_GRANT',
+        `permission ledger row ${row.id} has no configured profile or structured intersection; refusing schema cutover`,
+        { id: row.id },
+      )
+    }
+    return { ...row, permission_grant: JSON.stringify(normalizeStoredPermissionGrant(raw)) }
+  })
+  const transaction = db.transaction(() => {
+    db.exec(`
+      DROP TABLE IF EXISTS permission_grants_next;
+      CREATE TABLE permission_grants_next (
+        id TEXT PRIMARY KEY,
+        permission_grant TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        source TEXT NOT NULL,
+        friendly_name TEXT,
+        session_id TEXT,
+        session_kind TEXT,
+        session_path TEXT,
+        tmux_session TEXT,
+        model TEXT,
+        machine_id TEXT,
+        env_name TEXT,
+        daemon_key TEXT,
+        terminal_capability TEXT,
+        cwd TEXT,
+        last_seen TEXT
+      )
+    `)
+    const insert = db.prepare(`
+      INSERT INTO permission_grants_next (
+        id, permission_grant, updated_at, source, friendly_name, session_id,
+        session_kind, session_path, tmux_session, model, machine_id, env_name,
+        daemon_key, terminal_capability, cwd, last_seen
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+    for (const row of migrated) {
+      insert.run(
+        row.id, row.permission_grant, row.updated_at, row.source,
+        row.friendly_name || null, row.session_id || null, row.session_kind || null,
+        row.session_path || null, row.tmux_session || null, row.model || null,
+        row.machine_id || null, row.env_name || null, row.daemon_key || null,
+        row.terminal_capability || null, row.cwd || null, row.last_seen || null,
+      )
+    }
+    db.exec('DROP TABLE permission_grants; ALTER TABLE permission_grants_next RENAME TO permission_grants')
+  })
+  transaction()
 }
 
 function readYamlFile(file, label) {
@@ -137,23 +168,16 @@ function normalizeDaemonConfig(parsed, { validateDefault = true } = {}) {
   const grants = root.grants && typeof root.grants === 'object' && !Array.isArray(root.grants)
     ? root.grants
     : {}
-  const servers = validateStrictServers(root.servers)
   const defaultProfile = typeof root.default === 'string' && root.default.trim() ? root.default.trim() : null
-  const defaultServer = typeof root.defaultServer === 'string' && root.defaultServer.trim() ? root.defaultServer.trim() : null
-  if (typeof root.defaultServer !== 'string' || !root.defaultServer.trim()) {
-    throw new Error('tlda config: "defaultServer" must be a nonempty string in daemon.yaml')
-  }
-  if (!servers[defaultServer]) {
-    throw new Error(`tlda config: no server named "${defaultServer}" in daemon.yaml servers — known: ${Object.keys(servers).join(', ') || '(none)'}`)
-  }
   const config = {
     regions,
     profiles,
     grants,
     models,
-    servers,
-    ...(defaultServer ? { defaultServer } : {}),
     ...(defaultProfile ? { default: defaultProfile } : {}),
+    ...(typeof root.tmuxSocket === 'string' && root.tmuxSocket.trim() ? { tmuxSocket: root.tmuxSocket.trim() } : {}),
+    ...(root.taskDoc && typeof root.taskDoc === 'object' && !Array.isArray(root.taskDoc) ? { taskDoc: root.taskDoc } : {}),
+    ...(typeof root.spawnMachineId === 'string' && root.spawnMachineId.trim() ? { spawnMachineId: root.spawnMachineId.trim() } : {}),
   }
   return validateDefault ? validateDaemonDefault(config) : config
 }
@@ -230,15 +254,6 @@ function normalizeProfileRootRefs(value = {}, regions, context) {
   }
 }
 
-function derivedPolicyFromOperations(name, operations) {
-  const writeAllow = operations.write?.allow || []
-  const hasUniversalWrite = writeAllow.some(zone => zone === '**' || zone === '/' || zone === '/**')
-  const hasTldaWrite = writeAllow.some(zone => zone === 'tlda-projects')
-  // The fence REGION this profile's zones cover — not a level.
-  const policy = hasUniversalWrite ? 'unsandboxed' : hasTldaWrite ? 'tlda-projects' : 'cwd'
-  return { name, policy }
-}
-
 function normalizeDaemonProfile(name, value, regions) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error(`daemon profile "${name}" must be an object`)
@@ -262,13 +277,11 @@ function normalizeDaemonProfile(name, value, regions) {
       }
     }
   }
-  const policy = derivedPolicyFromOperations(name, operations)
   return {
     type: 'permission-set',
     name,
     operations,
     rules,
-    projectedPolicy: policy,
     compiledFrom: 'daemon.yaml',
     ...(typeof value.description === 'string' && value.description.trim()
       ? { description: value.description.trim() }
@@ -285,19 +298,6 @@ function normalizeDaemonProfiles(value, regions) {
     profiles[key] = normalizeDaemonProfile(key, profile, regions)
   }
   return profiles
-}
-
-function normalizeLegacyLedgerAgents(parsed) {
-  const root = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
-  const nested = root.permissions && typeof root.permissions === 'object' && !Array.isArray(root.permissions)
-    ? root.permissions.agents
-    : null
-  const agents = nested && typeof nested === 'object' && !Array.isArray(nested)
-    ? nested
-    : root.agents && typeof root.agents === 'object' && !Array.isArray(root.agents)
-      ? root.agents
-      : {}
-  return agents
 }
 
 function normalizeChoiceOptions(options = {}, context = 'options') {
@@ -351,7 +351,7 @@ function normalizeDaemonModelRows(models = {}) {
     if (!harness) throw new Error(`daemon model "${key}" must specify a harness/provider`)
     const id = row.id || row.provider_model || row.providerModel || (typeof value === 'string' ? value : null)
     if (!id) throw new Error(`daemon model "${key}" must specify an id/provider_model`)
-    const cap = row.cap || row.permission || row.spawnPolicy || row.model_cap || null
+    const cap = row.cap || row.permission || row.permissionGrant || row.model_cap || null
     const ownHarnessOptions = normalizeHarnessOptions(row)
     const inheritedHarnessOptions = defaults.harnessOptions || { required: [], preferences: [], controls: false, options: {} }
     const group = String(row.group || defaults.group || explicitProvider || harness).trim()
@@ -450,7 +450,6 @@ function allPermissionSet(name = 'full') {
       { operation: 'write', effect: 'allow', zone: '**', line: null },
       { operation: 'spawn', effect: 'allow', zone: '**', line: null },
     ],
-    projectedPolicy: normalizeRegionPolicy('unsandboxed'),
     compiledFrom: 'grandfather-infill-bound',
   }
 }
@@ -492,7 +491,7 @@ function normalizeGrandfatherAgents(agents = []) {
     }))
 }
 
-// The fleet-standard grandfather grant: full spawn policy bounded to the agent's
+// The fleet-standard grandfather grant: full permission grant bounded to the agent's
 // project/cwd region. This is the same derivation the ledger has always used for
 // non-spawn-tracked seats — reused verbatim, no new grant shape.
 export function resolveGrandfatherGrant(agent, { config = {}, projects = [] } = {}) {
@@ -518,13 +517,11 @@ export class PermissionLedger {
     this.db.pragma('busy_timeout = 5000')
     this.db.pragma('journal_mode = WAL')
     this.db.pragma('synchronous = NORMAL')
+    migratePermissionGrantTable(this.db)
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS permission_grants (
         id TEXT PRIMARY KEY,
-        spawn_policy TEXT NOT NULL,
-        permission_profile TEXT,
-        permission_intersection TEXT,
-        permission_set TEXT,
+        permission_grant TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         source TEXT NOT NULL,
         friendly_name TEXT,
@@ -550,8 +547,6 @@ export class PermissionLedger {
     `)
     for (const ddl of [
       'ALTER TABLE permission_grants ADD COLUMN friendly_name TEXT',
-      'ALTER TABLE permission_grants ADD COLUMN permission_profile TEXT',
-      'ALTER TABLE permission_grants ADD COLUMN permission_intersection TEXT',
       'ALTER TABLE permission_grants ADD COLUMN session_id TEXT',
       'ALTER TABLE permission_grants ADD COLUMN session_kind TEXT',
       'ALTER TABLE permission_grants ADD COLUMN session_path TEXT',
@@ -581,14 +576,14 @@ export class PermissionLedger {
         updated_at = excluded.updated_at
     `)
     this._get = this.db.prepare(`
-      SELECT id, spawn_policy, permission_profile, permission_intersection, permission_set, updated_at, source,
+      SELECT id, permission_grant, updated_at, source,
         friendly_name, session_id, session_kind, session_path, tmux_session, model,
         machine_id, env_name, daemon_key, terminal_capability, cwd, last_seen
       FROM permission_grants
       WHERE id = ?
     `)
     this._findByFriendlyName = this.db.prepare(`
-      SELECT id, spawn_policy, permission_profile, permission_intersection, permission_set, updated_at, source,
+      SELECT id, permission_grant, updated_at, source,
         friendly_name, session_id, session_kind, session_path, tmux_session, model,
         machine_id, env_name, daemon_key, terminal_capability, cwd, last_seen
       FROM permission_grants
@@ -597,7 +592,7 @@ export class PermissionLedger {
       LIMIT 1
     `)
     this._list = this.db.prepare(`
-      SELECT id, spawn_policy, permission_profile, permission_intersection, permission_set, updated_at, source,
+      SELECT id, permission_grant, updated_at, source,
         friendly_name, session_id, session_kind, session_path, tmux_session, model,
         machine_id, env_name, daemon_key, terminal_capability, cwd, last_seen
       FROM permission_grants
@@ -605,13 +600,10 @@ export class PermissionLedger {
       ORDER BY id
     `)
     this._upsert = this.db.prepare(`
-      INSERT INTO permission_grants (id, spawn_policy, permission_profile, permission_intersection, permission_set, updated_at, source)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO permission_grants (id, permission_grant, updated_at, source)
+      VALUES (?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
-        spawn_policy = excluded.spawn_policy,
-        permission_profile = excluded.permission_profile,
-        permission_intersection = excluded.permission_intersection,
-        permission_set = excluded.permission_set,
+        permission_grant = excluded.permission_grant,
         updated_at = excluded.updated_at,
         source = excluded.source
     `)
@@ -619,45 +611,6 @@ export class PermissionLedger {
     this._worker = null
     this._nextRequestId = 1
     this._pending = new Map()
-    this.migrateLegacyYamlIfNeeded()
-  }
-
-  migrateLegacyYamlIfNeeded() {
-    if (this._metaGet.get(YAML_MIGRATION_META_KEY)) return { skipped: true, imported: 0 }
-    const legacyFile = path.join(path.dirname(this.dbPath), 'daemon-permissions.yaml')
-    if (!fs.existsSync(legacyFile)) {
-      this._metaSet.run(YAML_MIGRATION_META_KEY, JSON.stringify({ imported: 0, file: legacyFile, missing: true }), nowIso())
-      return { skipped: false, imported: 0 }
-    }
-    const parsed = readYamlFile(legacyFile, 'legacy daemon permission ledger')
-    const agents = normalizeLegacyLedgerAgents(parsed)
-    let imported = 0
-    const importOne = this.db.transaction(() => {
-      for (const [id, sourceRow] of Object.entries(agents)) {
-        if (!id || !sourceRow || typeof sourceRow !== 'object') continue
-        const grant = normalizeLedgerGrant(sourceRow)
-        const row = this.rowFor(id, {
-          spawnPolicy: grant.spawnPolicy,
-          permissionProfile: grant.permissionProfile,
-          permissionIntersection: grant.permissionIntersection,
-          permissionSet: grant.permissionSet,
-          source: sourceRow.source || 'migration:daemon-permissions-yaml',
-        })
-        this._upsert.run(
-          row.id,
-          JSON.stringify(row.spawnPolicy),
-          row.permissionProfile,
-          row.permissionIntersection ? JSON.stringify(row.permissionIntersection) : null,
-          row.permissionSet ? JSON.stringify(row.permissionSet) : null,
-          sourceRow.updatedAt || row.updatedAt,
-          row.source,
-        )
-        imported++
-      }
-      this._metaSet.run(YAML_MIGRATION_META_KEY, JSON.stringify({ imported, file: legacyFile }), nowIso())
-    })
-    importOne()
-    return { skipped: false, imported }
   }
 
   get(id) {
@@ -680,18 +633,12 @@ export class PermissionLedger {
   parseRow(row) {
     if (!row) return null
     const parsed = {
-      spawnPolicy: JSON.parse(row.spawn_policy),
-      permissionProfile: row.permission_profile || null,
-      ...(row.permission_intersection ? { permissionIntersection: JSON.parse(row.permission_intersection) } : {}),
-      ...(row.permission_set ? { permissionSet: JSON.parse(row.permission_set) } : {}),
+      permissionGrant: JSON.parse(row.permission_grant),
     }
     const grant = normalizeLedgerGrant(parsed)
     return {
       id: row.id,
-      spawnPolicy: grant.spawnPolicy,
-      permissionProfile: grant.permissionProfile,
-      ...(grant.permissionIntersection ? { permissionIntersection: grant.permissionIntersection } : {}),
-      permissionSet: grant.permissionSet,
+      permissionGrant: grant.permissionGrant,
       updatedAt: row.updated_at,
       source: row.source || 'ledger',
       friendlyName: row.friendly_name || null,
@@ -720,18 +667,13 @@ export class PermissionLedger {
     )
   }
 
-  rowFor(id, { spawnPolicy, permissionProfile = null, permissionIntersection = null, permissionSet, source = 'spawn' } = {}) {
+  rowFor(id, { permissionGrant, source = 'spawn' } = {}) {
     const key = String(id || '').trim()
     if (!key) throw new Error('cannot persist daemon permission grant without fleet id')
-    const policy = normalizeRegionPolicy(spawnPolicy)
+    const grant = normalizeStoredPermissionGrant(permissionGrant)
     return {
       id: key,
-      spawnPolicy: policy,
-      permissionProfile: permissionProfile || null,
-      permissionIntersection: normalizePermissionIntersection(permissionIntersection),
-      permissionSet: permissionSet || (isNoneGrant(spawnPolicy)
-        ? emptyPermissionSet({ name: 'none', projectedPolicy: { ...policy, permission: 'none' } })
-        : null),
+      permissionGrant: grant,
       updatedAt: nowIso(),
       source,
     }
@@ -787,10 +729,7 @@ export class PermissionLedger {
         if (!expected.id) return false
         const row = this._get.get(expected.id)
         return !!row
-          && row.spawn_policy === expected.spawnPolicy
-          && row.permission_profile === expected.permissionProfile
-          && row.permission_intersection === expected.permissionIntersection
-          && row.permission_set === expected.permissionSet
+          && row.permission_grant === expected.permissionGrant
           && row.updated_at === expected.updatedAt
           && row.source === expected.source
       }
@@ -809,10 +748,7 @@ export class PermissionLedger {
       op: 'upsert',
       row: {
         id: row.id,
-        spawnPolicy: JSON.stringify(row.spawnPolicy),
-        permissionProfile: row.permissionProfile,
-        permissionIntersection: row.permissionIntersection ? JSON.stringify(row.permissionIntersection) : null,
-        permissionSet: row.permissionSet ? JSON.stringify(row.permissionSet) : null,
+        permissionGrant: JSON.stringify(row.permissionGrant),
         updatedAt: row.updatedAt,
         source: row.source,
       },
@@ -857,10 +793,7 @@ export class PermissionLedger {
     const row = this.rowFor(id, options)
     this._upsert.run(
       row.id,
-      JSON.stringify(row.spawnPolicy),
-      row.permissionProfile,
-      row.permissionIntersection ? JSON.stringify(row.permissionIntersection) : null,
-      row.permissionSet ? JSON.stringify(row.permissionSet) : null,
+      JSON.stringify(row.permissionGrant),
       row.updatedAt,
       row.source,
     )
@@ -1039,28 +972,18 @@ export function withDaemonModelAliases(config = {}, daemonConfig = {}) {
   const daemonProfiles = daemonConfig?.profiles && typeof daemonConfig.profiles === 'object' && !Array.isArray(daemonConfig.profiles)
     ? daemonConfig.profiles
     : {}
-  // No daemon models AND no daemon profiles: the daemon config contributes
-  // nothing. Return an EMPTY, daemon-only policy — never the legacy `config`
-  // (config.json is retired; leaking its spawn policy here is exactly the
-  // fallback this migration removes). Fail closed: no profiles → no permission
-  // profiles, not config.json's.
-  if (!Object.keys(daemonModels).length && !Object.keys(daemonProfiles).length) return { spawnPolicy: {} }
+  // No daemon models AND no daemon profiles: return an empty daemon authority.
+  // Fail closed: no profiles means no permission profiles.
+  if (!Object.keys(daemonModels).length && !Object.keys(daemonProfiles).length) return { permissionProfiles: {} }
   const { aliases, harnessOptions, modelSpecs, defaultModel } = normalizeDaemonModelRows(daemonModels)
-  // config.json contributes nothing: the spawn policy, model aliases, specs, and
-  // catalog are the daemon config's alone. No config.json base is spread in.
-  const nextSpawnPolicy = {
-    ...(Object.keys(daemonProfiles).length ? {
-      permissionProfiles: { ...daemonProfiles },
-      fenceEnabled: true,
-      defaultProfile: daemonConfig.default || null,
-    } : {}),
-  }
+  // Permission grants, model aliases, specs, and catalog are daemon-owned.
   return {
     ...(Object.keys(modelSpecs).length ? { modelSpecs } : {}),
     ...(Object.keys(modelSpecs).length ? { modelCatalog: { default: defaultModel, values: modelSpecs } } : {}),
     ...(Object.keys(aliases).length ? { models: aliases } : {}),
     ...(Object.keys(harnessOptions).length ? { harnessOptions } : {}),
-    spawnPolicy: nextSpawnPolicy,
+    permissionProfiles: { ...daemonProfiles },
+    defaultPermissionProfile: daemonConfig.default || null,
   }
 }
 
@@ -1073,15 +996,10 @@ export function applyDaemonGrants(ledger, daemonConfig = {}) {
     : {}
   let written = 0
   for (const [id, value] of Object.entries(grants)) {
-    const profileName = typeof value === 'string' ? value.trim().toLowerCase() : null
-    const source = profileName ? profiles[profileName] : value
-    if (!source) throw new Error(`daemon grant for ${id} references unknown profile "${value}"`)
-    const grant = normalizeLedgerGrant(profileName ? { permissionProfile: profileName, permissionSet: source } : source)
+    const permissionGrant = normalizePermissionGrant(value, { permissionProfiles: profiles })
+    const grant = normalizeLedgerGrant({ permissionGrant })
     ledger.setSync(id, {
-      spawnPolicy: grant.spawnPolicy,
-      permissionProfile: profileName,
-      permissionIntersection: grant.permissionIntersection,
-      permissionSet: grant.permissionSet,
+      permissionGrant: grant.permissionGrant,
       source: 'daemon.yaml:grants',
     })
     written++
@@ -1106,10 +1024,7 @@ export function applyGrandfatherInfill(ledger, { agents = [], config = {}, proje
     }
     const grant = resolveGrandfatherGrant(agent, { config, projects })
     ledger.setSync(agent.id, {
-      spawnPolicy: grant.spawnPolicy,
-      permissionProfile: grant.permissionProfile,
-      permissionIntersection: grant.permissionIntersection,
-      permissionSet: grant.permissionSet,
+      permissionGrant: grant.permissionGrant,
       source: 'grandfather:fleet-db-cutover',
     })
     written++

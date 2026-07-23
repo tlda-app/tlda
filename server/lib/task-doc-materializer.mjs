@@ -3,7 +3,8 @@ import { mkdirSync, readFileSync, realpathSync } from 'node:fs'
 import { join, resolve, sep } from 'node:path'
 import { homedir } from 'node:os'
 
-import { CONFIG_DIR, loadConfig } from '../../shared/config.mjs'
+import { CONFIG_DIR } from '../../shared/config.mjs'
+import { readDaemonConfig } from '../../agent-launch/permission-ledger.mjs'
 import { createProjectPartRecord } from '../../shared/project-parts.mjs'
 import { listProjects, projectPartsRoot } from './project-store.mjs'
 import { readProjectPartsManifest, upsertProjectPartsManifest } from './project-parts-scanner.mjs'
@@ -197,13 +198,8 @@ export function materializeTaskDocs({
   return { ok: failures.length === 0, tasks, taskTotal: totalTasks, touchedDirs: [...touchedDirs], globalDir, writebacks, failures }
 }
 
-export function resolveTaskDocGlobalDir(config = loadConfig()) {
-  const raw =
-    config.taskDocGlobalDir ||
-    config.taskDoc?.globalDir ||
-    config.daemon?.taskDocGlobalDir ||
-    config.daemon?.taskDoc?.globalDir ||
-    null
+export function resolveTaskDocGlobalDir(config = readDaemonConfig()) {
+  const raw = config.taskDoc?.globalDir || null
   return resolve(expandHome(raw || DEFAULT_GLOBAL_DIR))
 }
 

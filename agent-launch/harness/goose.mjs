@@ -1,7 +1,7 @@
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import { activeConfigName, gitAuthorEnv, readConfig, repoRoot } from '../identity.mjs'
+import { activeConfigName, gitAuthorEnv, repoRoot } from '../identity.mjs'
 import { gooseModelVerified, resolveGooseModel, resolveGooseModelSelection } from '../models.mjs'
 import { dnsAliasPreloadPath } from './dns-alias-preload.mjs'
 
@@ -49,7 +49,7 @@ export function buildCmd({
   api,
   dnsAlias = null,
   env = process.env,
-  config = readConfig(),
+  config = {},
   modelProvider = null,
   harnessOptions = {},
 } = {}) {

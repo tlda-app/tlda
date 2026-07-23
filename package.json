@@ -21,7 +21,6 @@
     "build:tldraw-fork-runtime": "node scripts/build-tldraw-fork-runtime.mjs",
     "lint": "eslint .",
     "preview": "vite preview",
-    "publish-snapshot": "node scripts/publish-snapshot.mjs",
     "start": "tlda server start && npm run dev",
     "smoke": "node scripts/smoke-test.mjs"
   },

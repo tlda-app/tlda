@@ -62,13 +62,16 @@ async function run() {
   if (!await waitHealth()) fail(`server never healthy.\n${log}`)
   const toddConfigDir = join(TODD_HOME, '.config', 'tlda')
   mkdirSync(toddConfigDir, { recursive: true })
-  writeFileSync(join(toddConfigDir, 'config.json'), JSON.stringify({
-    defaultConfig: TODD_CONFIG,
-    configs: {
-      [TODD_CONFIG]: { database: base, store: base, licenseKey: '' },
-    },
-    bots: [],
-  }, null, 2))
+  writeFileSync(join(toddConfigDir, 'server.yaml'), [
+    `defaultServer: ${TODD_CONFIG}`,
+    'servers:',
+    `  ${TODD_CONFIG}:`,
+    `    database: ${base}`,
+    `    store: ${base}`,
+    '    licenseKey: ""',
+    '',
+  ].join('\n'))
+  writeFileSync(join(toddConfigDir, 'bots.yaml'), 'bots: []\n')
 
   // WS client to capture the 'suggestions' broadcast.
   let lastBroadcast = null

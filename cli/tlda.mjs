@@ -18,8 +18,8 @@ import { collectSourceFiles, collectSourceHashes, collectSpecificFiles } from '.
 import { diffSourceHashes, normalizeSourceManifest } from '../shared/source-manifest.mjs'
 import { collectHtmlArtifactFiles, htmlArtifactMainForSource } from './lib/html-artifact-files.mjs'
 import {
-  loadConfig, saveConfig, resolveConfig, getServerUrl, getFleetServerUrl, getRwToken, getReadToken, saveTokens, getActiveConfigName, DEFAULT_PORT,
-  CONFIG_DIR, CONFIG_FILE, hasTls, TLS_CA_PATH, getManagedBots, getMachineId,
+  loadCliConfig, saveCliConfig, resolveConfig, getServerUrl, getFleetServerUrl, getRwToken, getReadToken, saveTokens, getActiveConfigName, DEFAULT_PORT,
+  CONFIG_DIR, hasTls, TLS_CA_PATH, getManagedBots, getMachineId,
 } from '../shared/config.mjs'
 import { tldaFetch } from '../shared/http-client.mjs'
 import { DEV_COMMANDS } from './lib/dev-commands.mjs'
@@ -52,6 +52,9 @@ import { parseAgentMoveTarget, describeAgentAddress } from '../shared/agent-move
 import { runtimeStatusName } from '../shared/fleet-runtime-status.mjs'
 import { daemonSingletonLockPath, inspectSingletonLock } from '../agent-runtime/singleton-lock.mjs'
 import {
+  compilePermissionGrant,
+  permissionGrantProfileName,
+  permissionGrantTransparencyLine,
   resolveDirectSpawnGrant,
 } from '../server/lib/spawn-policy.mjs'
 import { SPAWN_MACHINE_PREF_KEY } from '../server/lib/spawn-routing.mjs'
@@ -78,7 +81,7 @@ import { projectWorldsPath, readProjectWorlds, writeProjectWorld } from '../shar
 // feedback hook etc. don't break, but `--help` only advertises the nouns.
 const DOC_SUBS = new Set([
   'open', 'push', 'list', 'ls', 'status', 'errors',
-  'delete', 'rm', 'move', 'share', 'publish', 'scratch', 'book', 'link', 'init',
+  'delete', 'rm', 'move', 'share', 'scratch', 'book', 'link', 'init',
   'repo-doctor', 'init-shadow',
 ])
 const REMOVED_DOC_SUBS = new Set(['create', 'preview'])
@@ -105,7 +108,6 @@ const DOC_COMMANDS = [
   ['list', 'List projects'],
   ['share', 'Print a shareable read-only URL'],
   ['delete', 'Delete a project'],
-  ['publish', 'Publish to GitHub Pages + Fly'],
   ['scratch', 'Publish a scratch .md'],
   ['book', 'Group existing docs into a book'],
   ['repo-doctor', 'Diagnose/repair a project source repo'],
@@ -199,7 +201,6 @@ const COMMAND_HELP = {
   daemon:  'tlda daemon [start|stop|status|log|run|install|uninstall]\n\n  Control the per-machine fleet daemon.\n  It watches project source directories and agent session activity,\n  then pushes events to the tlda server over WebSocket.',
   doctor:  'tlda doctor [--fix]\ntlda doctor yolo [--name yolo] --model <daemon-alias> [--cwd /path] [--no-attach] [--dry-run]\n\n  Run a health check for local tools, server, SPA bundle, daemon, MCP setup,\n  project builds, and doc sync stores.\n\n  --fix  Apply the limited automatic repairs that doctor explicitly offers.\n\n  yolo   Break-glass: locally launch an in-fleet agent with a real FLEET_ID outside\n         the normal daemon spawn grant path. Reserves a fleet shell, then starts tmux\n         directly. Deliberately shallow so it works when the normal spawn path is broken.\n\n         --model names a configured daemon model alias; the daemon model spec picks the harness.\n         Run in a terminal and it attaches you into the agent session when it comes up\n         (--no-attach to skip). Run non-interactively and it verifies the agent actually\n         logged in and is reachable before reporting success (or errors out and tears\n         down the phantom seat).',
   'repo-doctor': 'tlda doc repo-doctor <project> [--rescue|--apply|--rollback|--cleanup]\n\n  Diagnose a project source repo for tlda-induced damage.\n  No flag: diagnose only (read-only).\n  --rescue   Compute a rescue plan (dry run).\n  --apply    Execute the rescue plan.\n  --rollback Roll back a previous rescue apply.\n  --cleanup  Clean rescue apply state.',
-  publish: 'tlda publish [--target <name>] [doc ...]\n\n  Publish docs to GitHub Pages (+ optionally Fly).\n\n  With no args, publishes all docs in config.published using the "default" target.\n  With --target, uses the named target config (sync server, repo, etc.).\n  With doc names, publishes those and adds them to the list.\n\n  Config (targets in ~/.config/tlda/config.json):\n    targets.<name>.sync     — sync server WebSocket URL\n    targets.<name>.repo     — git remote for gh-pages (null = same repo)\n    targets.<name>.fly      — deploy to Fly (default: false)\n    targets.<name>.basePath — vite base path (default: /tlda/)',
   config:  'tlda config [set <key> <value> | get [key]]\n\n  Manage persistent configuration.\n  Example: tlda config set server http://myhost:5176',
 }
 
@@ -1297,9 +1298,8 @@ function sandboxDaemonConfig(configDir, label) {
   const configName = 'sandbox'
   return {
     configName,
-    daemon: {
+    server: {
       defaultServer: configName,
-      machineId: `${label}.${hostname().split('.')[0]}.${process.pid}`,
       servers: {
         [configName]: {
           database: source.database.http,
@@ -1307,6 +1307,13 @@ function sandboxDaemonConfig(configDir, label) {
           licenseKey: source.licenseKey,
         },
       },
+    },
+    daemon: {
+      machineId: `${label}.${hostname().split('.')[0]}.${process.pid}`,
+      regions: {},
+      profiles: {},
+      grants: {},
+      models: {},
     },
     tokens: { tokenRw: getRwToken() || '' },
   }
@@ -1320,6 +1327,7 @@ async function writeSandboxDaemonPlist() {
   const logFile = join(configDir, 'fleet-daemon.log')
   if (!existsSync(configDir)) mkdirSync(configDir, { recursive: true })
   const authority = sandboxDaemonConfig(configDir, label)
+  writeFileSync(join(configDir, 'server.yaml'), stringifyYaml(authority.server))
   writeFileSync(join(configDir, 'daemon.yaml'), stringifyYaml(authority.daemon))
   writeFileSync(join(configDir, 'tokens.json'), JSON.stringify(authority.tokens, null, 2))
   await writeDaemonPlist({
@@ -1928,7 +1936,7 @@ async function cmdOpen() {
   const name = getPositional(0) || await inferProjectName()
   const server = getServer()
   const token = getToken()
-  const browser = getFlag('browser') || loadConfig().browser || null
+  const browser = getFlag('browser') || loadCliConfig().browser || null
   const redirect = name ? `/?doc=${name}` : '/'
   const url = token
     ? `${server}/auth/login?token=${token}&redirect=${encodeURIComponent(redirect)}`
@@ -1962,10 +1970,9 @@ async function cmdShare() {
     name = arg
   }
 
-  const config = loadConfig()
   const serverUrl = getServer()
   const port = new URL(serverUrl).port || getPort()
-  const readToken = config.tokenRead || null
+  const readToken = getReadToken()
 
   if (!readToken) {
     console.error('No read token configured. Run `tlda config auth init` to generate tokens.')
@@ -2093,12 +2100,8 @@ async function cmdMoveProject() {
     console.error('Usage: tlda doc move <project> <config>')
     process.exit(1)
   }
-  const cfg = loadConfig()
   const selectedConfig = getActiveConfigName()
-  const target = cfg.configs?.[targetConfig]
-  if (!target || typeof target.store !== 'string' || typeof target.database !== 'string') {
-    throw new Error(`Unknown or incomplete target config "${targetConfig}".`)
-  }
+  const target = resolveConfig(targetConfig)
   let project = await api('GET', `/api/projects/${encodeURIComponent(name)}`)
   if (!project.sourceDir) throw new Error(`Project "${name}" has no local source directory; cannot change daemon ownership.`)
   const sourceDir = resolve(project.sourceDir)
@@ -2159,13 +2162,6 @@ async function cmdMoveProject() {
   console.log(green(`  ${targetConfig} daemon world is running.`))
 }
 
-async function cmdPublish() {
-  const { execSync: exec } = await import('child_process')
-  const scriptPath = join(dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'publish-snapshot.mjs')
-  const passthrough = args.slice(1) // pass --target and doc names through
-  exec(`node ${scriptPath} ${passthrough.join(' ')}`, { stdio: 'inherit' })
-}
-
 async function cmdMcpSetup() {
   const tldaRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
   const nodePath = process.execPath
@@ -2209,17 +2205,16 @@ async function cmdConfig() {
     const key = getPositional(1)
     const value = getPositional(2)
     if (!key || !value) { console.error('Usage: tlda config set <key> <value>'); process.exit(1) }
-    const config = loadConfig()
-    config[key] = value
-    saveConfig(config)
+    if (key !== 'browser') throw new Error('cli.yaml supports only the browser preference')
+    saveCliConfig({ browser: value })
     console.log(`Set ${key} = ${value}`)
   } else if (sub === 'get') {
     const key = getPositional(1)
-    const config = loadConfig()
+    const config = loadCliConfig()
     console.log(key ? (config[key] || '') : JSON.stringify(config, null, 2))
   } else {
     console.log(`Server: ${getServer()}`)
-    console.log(`Config: ${CONFIG_FILE}`)
+    console.log(`CLI config: ${CONFIG_DIR}/cli.yaml`)
   }
 }
 
@@ -2237,7 +2232,7 @@ async function cmdAuth() {
     console.log(`  RW token:   ${bold(tokenRw)}`)
     console.log(`  Read token: ${bold(tokenRead)}`)
     console.log()
-    console.log(dim(`Config: ${CONFIG_FILE}`))
+    console.log(dim(`CLI config: ${CONFIG_DIR}/cli.yaml`))
     console.log(dim(`Restart the server for tokens to take effect.`))
     return
   }
@@ -2589,7 +2584,7 @@ function agentSessionName(name) {
 }
 
 function tmuxBase() {
-  const sock = loadConfig().tmuxSocket || null
+  const sock = readDaemonConfig().tmuxSocket || null
   return sock ? ['-L', sock] : []
 }
 
@@ -2649,7 +2644,7 @@ function agentEnrollArgs(rawArgs) {
 export async function runFleetSpawn(spawnArgs, {
   spawnImpl = null,
   configDir = CONFIG_DIR,
-  loadConfigImpl = loadConfig,
+  loadDaemonConfigImpl = () => ({}),
   localAgentLedgerPath = null,
   apiImpl = api,
   cleanupFailedBindingImpl = cleanupFailedFreshBinding,
@@ -2657,7 +2652,7 @@ export async function runFleetSpawn(spawnArgs, {
   if (spawnArgs.includes('--list-models')) {
     const { listModels } = await import('../agent-launch/models.mjs')
     const daemonConfig = readDaemonConfig(defaultDaemonConfigPath(CONFIG_DIR))
-    console.log(JSON.stringify(listModels(withDaemonModelAliases(loadConfig(), daemonConfig)), null, 2))
+    console.log(JSON.stringify(listModels(withDaemonModelAliases({}, daemonConfig)), null, 2))
     return
   }
   const { spawn: defaultSpawn } = await import('../agent-launch/index.mjs')
@@ -2720,20 +2715,20 @@ export async function runFleetSpawn(spawnArgs, {
     }
     ledger = createPermissionLedger(permissionLedgerPathFromDaemonConfig(daemonConfig, configDir))
     applyDaemonGrants(ledger, daemonConfig)
-    const config = withDaemonModelAliases(loadConfigImpl(), daemonConfig)
+    const config = withDaemonModelAliases(loadDaemonConfigImpl(), daemonConfig)
     const localhostGrant = ledger.grantFor({ id: 'localhost' })
     const grant = (spawnMode === 'respawn' && !explicitPermissionArg)
-      ? durableWakeGrant(ledger, { agentId: wakeAgentId, name })
+      ? durableWakeGrant(ledger, { agentId: wakeAgentId, name, config, cwd })
       : resolveDirectSpawnGrant({
           permissionRequest,
           model,
           kind,
           config,
           cwd,
-          spawnerPermissionSet: localhostGrant.permissionSet,
-          spawnerPermissionProfile: localhostGrant.permissionProfile,
+          spawnerPermissionSet: compilePermissionGrant(config, localhostGrant.permissionGrant, { cwd }),
+          spawnerPermissionProfile: permissionGrantProfileName(localhostGrant.permissionGrant),
         })
-    const grantedProfile = grant.permissionProfile
+    const grantedProfile = grant.permissionGrant
     const permissionLine = permissionTransparencyLine(grant)
     const suppliedAgentId = flagFromRaw(spawnArgs, 'agent-id') || undefined
     // Local creation begins with the daemon-scoped local_agent_id. The server
@@ -2742,10 +2737,7 @@ export async function runFleetSpawn(spawnArgs, {
     const preallocatedAgentId = suppliedAgentId
     if (preallocatedAgentId) {
       await ledger.set(preallocatedAgentId, {
-        spawnPolicy: grant.spawnPolicy,
-        permissionProfile: grantedProfile,
-        permissionIntersection: grant.permissionIntersection,
-        permissionSet: grant.permissionSet,
+        permissionGrant: grant.permissionGrant,
         source: 'agent-lifecycle-cli',
       })
     }
@@ -2761,12 +2753,10 @@ export async function runFleetSpawn(spawnArgs, {
       modelOptions,
       permissionMode: flagFromRaw(spawnArgs, 'mode') || undefined,
       permissionRequest: explicitPermissionArg ? permissionRequest : undefined,
-      permissionProfile: grantedProfile,
-      permissionIntersection: grant.permissionIntersection,
-      spawnPolicy: grant.spawnPolicy,
+      permissionGrant: grantedProfile,
       permissionSet: grant.permissionSet,
       permissionLedger: ledger,
-      explicitPolicy: !!explicitPermissionArg,
+      explicitPermissionRequest: !!explicitPermissionArg,
       acknowledgeNoSecurity,
       enforceFence: true,
       sessionId: session || undefined,
@@ -2814,7 +2804,7 @@ export async function runFleetSpawn(spawnArgs, {
       const { createLocalAgentLedger } = await import('../agent-launch/local-agent-ledger.mjs')
       const localLedger = createLocalAgentLedger(localAgentLedgerPath || undefined)
       try {
-        localLedger.updateProcess(wakeLocalAgentId, { cwd, permissionProfile: grantedProfile })
+        localLedger.updateProcess(wakeLocalAgentId, { cwd, permissionGrant: grantedProfile })
       } finally {
         localLedger.close()
       }
@@ -2844,13 +2834,10 @@ export async function bindSpawnRuntimeIfNeeded({ spawnMode, result, bindLifecycl
 }
 
 export async function persistAssignedAgentGrant({ ledger, result, grant, grantedProfile, preallocatedAgentId, params } = {}) {
-  const shouldPersistGrant = params?.spawnMode !== 'respawn' || params?.explicitPolicy
+  const shouldPersistGrant = params?.spawnMode !== 'respawn' || params?.explicitPermissionRequest
   if (!shouldPersistGrant || (preallocatedAgentId && result?.fleetId === preallocatedAgentId)) return false
   await ledger.set(result.fleetId, {
-    spawnPolicy: grant.spawnPolicy,
-    permissionProfile: grantedProfile,
-    permissionIntersection: grant.permissionIntersection,
-    permissionSet: grant.permissionSet,
+    permissionGrant: grant.permissionGrant,
     source: 'agent-lifecycle-cli',
   })
   return true
@@ -2900,7 +2887,7 @@ export function resolveWakeRecipeFields({
   if (!stored.process?.cwd) {
     throw new Error(`wake refused: local durable recipe for "${label}" has no cwd`)
   }
-  const permissionArg = explicitPermissionArg || stored.process.permissionProfile || undefined
+  const permissionArg = explicitPermissionArg || stored.process.permissionGrant || undefined
   return {
     cwd: resolve(stored.process.cwd),
     localAgentId: stored.localAgentId,
@@ -2910,58 +2897,19 @@ export function resolveWakeRecipeFields({
   }
 }
 
-function durableWakeGrant(ledger, { agentId, name } = {}) {
+function durableWakeGrant(ledger, { agentId, name, config, cwd } = {}) {
   const rec = ledger.get(agentId)
-  if (!rec?.spawnPolicy || !rec?.permissionSet) {
+  if (!rec?.permissionGrant) {
     throw new Error(`wake refused: durable grant missing for "${name || agentId || '(unknown)'}"`)
   }
-  // spawnPolicy + permissionSet ARE the durable authority; profile /
-  // intersection is transparency metadata. Refusing to wake a real seat over
-  // a missing metadata label (and pointing at a "backfill migration" that
-  // does not exist) kept legitimately-granted pre-profile-era seats dead —
-  // including the four killed on 7/18 that Skip ordered restored. A missing
-  // label surfaces as "legacy grant" in the transparency line instead.
   return {
-    spawnPolicy: rec.spawnPolicy,
-    permissionSet: rec.permissionSet,
-    permissionProfile: rec.permissionProfile,
-    permissionIntersection: rec.permissionIntersection,
+    permissionGrant: rec.permissionGrant,
+    permissionSet: compilePermissionGrant(config, rec.permissionGrant, { cwd }),
   }
 }
 
 export function permissionTransparencyLine(grant = {}) {
-  if (typeof grant.permissionProfile === 'string' && grant.permissionProfile.trim()) {
-    return `  permissions: ${grant.permissionProfile.trim()}`
-  }
-  const intersectionProfiles = grant.permissionIntersection?.profiles
-  if (Array.isArray(intersectionProfiles) && intersectionProfiles.length) {
-    const names = intersectionProfiles.map((name) => String(name || '').trim()).filter(Boolean)
-    if (names.length === intersectionProfiles.length && names.length >= 2) return `  permissions: ${names.join(' intersection ')}`
-  }
-  const regions = permissionSetRegionSummary(grant.permissionSet)
-  if (regions) return `  permissions: ${regions}`
-  return null
-}
-
-function permissionSetRegionSummary(permissionSet) {
-  const operations = permissionSet?.operations
-  if (!operations || typeof operations !== 'object') return null
-  return [
-    `read regions: ${permissionOperationRegions(operations.read)}`,
-    `write regions: ${permissionOperationRegions(operations.write)}`,
-  ].join('; ')
-}
-
-function permissionOperationRegions(operation = {}) {
-  return [
-    `allow ${formatPermissionRegionList(operation.allow)}`,
-    `deny ${formatPermissionRegionList(operation.deny)}`,
-  ].join(', ')
-}
-
-function formatPermissionRegionList(value) {
-  const regions = Array.isArray(value) ? value.map((item) => String(item)).sort() : []
-  return `[${regions.join(', ')}]`
+  return permissionGrantTransparencyLine(grant.permissionGrant, grant.permissionSet)
 }
 
 export async function bindLifecycleCodexResumeIdentity(result, {
@@ -3116,11 +3064,8 @@ export async function bindDoctorYoloDurableSeat(launched, {
     if (!permissionLedger.get(launched.fleetId)) {
       const baseGrant = permissionLedger.grantFor({ id: 'localhost' })
       permissionLedger.setSync(launched.fleetId, {
-        spawnPolicy: baseGrant.spawnPolicy,
-        permissionProfile: baseGrant.permissionProfile,
-        permissionIntersection: baseGrant.permissionIntersection,
-        permissionSet: baseGrant.permissionSet,
-        source: 'doctor-yolo-break-glass',
+        permissionGrant: baseGrant.permissionGrant,
+        source: 'doctor-yolo',
       })
       seededGrant = true
     }
@@ -3476,7 +3421,7 @@ mint starts a FRESH agent; enroll adopts an already-running external session (ki
 required); wake brings back an existing hibernating agent. All are local-operator gated
 by machine access, and write the child grant to the daemon ledger.
 --permissions names one of the profiles above; without it, fresh uses the configured default and wake restores the durable grant.
-Set TLDA_DISABLE_PERMISSION_CLASSIFIER=1 only as a mint/wake-time break-glass to launch Claude with --dangerously-skip-permissions.
+Set TLDA_DISABLE_PERMISSION_CLASSIFIER=1 only as a mint/wake-time emergency override to launch Claude with --dangerously-skip-permissions.
 move must be run on the agent's current daemon address; cross-box moves use SSH/rsync.
 set-mint-machine stores the caller's default mint machine in fleet prefs.
 The permissions command defaults to waking now; --on-wake stores only the next-wake profile.
@@ -3484,7 +3429,7 @@ check-ready verifies registry + local tmux/runtime + recent login/inbox evidence
 list reads the server roster by default; --local shows only tmux sessions on this machine.`)
 }
 
-function permissionProfileNamesForError() {
+function permissionGrantNamesForError() {
   let daemonProfiles = []
   try {
     const cfg = readDaemonConfig(defaultDaemonConfigPath(CONFIG_DIR))
@@ -3497,20 +3442,12 @@ function permissionProfileNamesForError() {
   return daemonProfiles.join(', ')
 }
 
-function describePermissionProfile(profileName, policy) {
-  const name = profileName || policy?.name || 'custom'
-  const permission = policy?.permission || 'unknown'
-  const policyName = policy?.policy || 'unknown'
-  const profileType = policy?.permissionSet ? 'explicit permissions' : 'policy'
-  return `${name} (${policyName} / ${permission} / ${profileType})`
-}
-
 function normalizeAgentMetadata(meta) {
   return meta && typeof meta === 'object' && !Array.isArray(meta) ? meta : {}
 }
 
 function localMachineId() {
-  return loadConfig().machineId || hostname().split('.')[0]
+  return getMachineId() || hostname().split('.')[0]
 }
 
 function parseJsonMaybe(value) {
@@ -3677,7 +3614,7 @@ async function findAgentForPermission(agentQuery) {
   if (runtimeStatusName(agent) === 'dead') {
     throw new Error(`Agent ${agent.id} is marked dead; refusing to create an impostor identity.`)
   }
-  const localMachine = loadConfig().machineId
+  const localMachine = getMachineId()
   if (agent.machine_id && localMachine && agent.machine_id !== localMachine) {
     throw new Error(`Agent ${agent.id} belongs to machine ${agent.machine_id}; run this command on that machine.`)
   }
@@ -3918,56 +3855,31 @@ async function cmdAgentPermissions() {
     await ensureServer()
     const agent = await findSingleAgent(agentQuery)
     const meta = normalizeAgentMetadata(agent.metadata)
-    const stored = meta.permissionRequest || meta.permissionProfile || meta.spawnPolicy || null
+    const stored = meta.permissionGrant || null
     const storedText = stored ? (typeof stored === 'string' ? stored : JSON.stringify(stored)) : 'none'
-    const policy = meta.spawnPolicy || null
     console.log(`${agent.friendly_name || agent.id} (${agent.id})`)
-    console.log(`  permission profile: ${meta.permissionProfile || 'none'}`)
-    console.log(`  requested permissions: ${storedText}`)
-    console.log(`  spawn policy: ${policy ? `${policy.name || 'custom'} (${policy.policy || 'unknown'} / ${policy.permission || 'unknown'})` : 'none'}`)
+    console.log(`  permissions: ${storedText}`)
     return
   }
 
-  let requestedPolicy
   try {
     const daemonConfig = readDaemonConfig(defaultDaemonConfigPath(CONFIG_DIR))
-    const config = withDaemonModelAliases(loadConfig(), daemonConfig)
-    const profiles = config?.spawnPolicy?.permissionProfiles || {}
+    const config = withDaemonModelAliases({}, daemonConfig)
+    const profiles = config.permissionProfiles || {}
     const name = String(profileArg || '').trim()
-    const profile = profiles[name]
-    if (!profile) throw new Error('not configured')
-    const writeZones = profile.operations?.write?.allow || []
-    const readZones = profile.operations?.read?.allow || []
-    const machineWrite = writeZones.some((zone) => ['**', '/', '/**'].includes(String(zone || '').trim()))
-    const tldaWrite = writeZones.some((zone) => String(zone || '').trim() === 'tlda-projects')
-    const permission = machineWrite ? 'full'
-      : tldaWrite ? 'tlda-write'
-        : writeZones.length ? 'write'
-          : readZones.length ? 'read'
-            : 'none'
-    const policy = machineWrite ? 'unsandboxed'
-      : tldaWrite ? 'tlda-projects'
-        : 'cwd'
-    requestedPolicy = { name, permission, policy, permissionSet: profile }
+    if (!profiles[name]) throw new Error('not configured')
   } catch (e) {
     const detail = e?.message ? `: ${e.message}` : ''
-    console.error(`Unknown permission profile "${profileArg}"${detail}. Supported profiles: ${permissionProfileNamesForError()}`)
+    console.error(`Unknown permission profile "${profileArg}"${detail}. Supported profiles: ${permissionGrantNamesForError()}`)
     process.exit(1)
   }
-  const nextSpawnPolicy = {
-    name: requestedPolicy.name || profileArg,
-    permission: requestedPolicy.permission,
-    policy: requestedPolicy.policy,
-    network: requestedPolicy.network,
-    permissionSet: requestedPolicy.permissionSet,
-  }
-  const description = describePermissionProfile(profileArg, requestedPolicy)
+  const description = profileArg
   const wakeNow = !hasFlag('on-wake')
 
   if (hasFlag('dry-run')) {
     console.log(`[dry-run] would set ${agentQuery} permissions to ${description}`)
     console.log('  1. look up existing agent identity')
-    console.log('  2. update metadata.permissionRequest / metadata.spawnPolicy')
+    console.log('  2. update the durable permission grant')
     console.log(wakeNow
       ? `  3. run locally: ${agentWakeSuggestion([agentQuery, '--permissions', profileArg])}`
       : '  3. leave the change for the next wake')
@@ -3980,10 +3892,9 @@ async function cmdAgentPermissions() {
   await api('POST', '/api/set-metadata', {
     agent: agent.id,
     permissionRequest: profileArg,
-    permissionProfile: profileArg,
-    spawnPolicy: nextSpawnPolicy,
-    spawnPolicyChangedBy: 'tlda-agent-permissions-cli',
-    spawnPolicyChangedAt: new Date().toISOString(),
+    permissionGrant: profileArg,
+    permissionGrantChangedBy: 'tlda-agent-permissions-cli',
+    permissionGrantChangedAt: new Date().toISOString(),
   })
   if (!wakeNow) {
     console.log(`Updated ${agent.id} permissions to ${description}; will apply on wake.`)
@@ -3996,7 +3907,7 @@ async function cmdAgentPermissions() {
 async function cmdAgentModels() {
   const { listModels } = await import('../agent-launch/models.mjs')
   const daemonConfig = readDaemonConfig()
-  const catalog = listModels(withDaemonModelAliases(loadConfig(), daemonConfig))
+  const catalog = listModels(withDaemonModelAliases({}, daemonConfig))
   if (hasFlag('json')) {
     console.log(JSON.stringify(catalog, null, 2))
     return
@@ -4560,17 +4471,16 @@ async function cmdDoctorYolo() {
   }
 
   const { spawn } = await import('../agent-launch/index.mjs')
-  const { readConfig } = await import('../agent-launch/identity.mjs')
   const { readDaemonConfigForCwd, withDaemonModelAliases } = await import('../agent-launch/permission-ledger.mjs')
   const { apiJson, markAgentDead, resolveApi } = await import('../agent-launch/register.mjs')
   const { tmuxArgs } = await import('../agent-launch/tmux.mjs')
 
   const name = String(getFlag('name', 'yolo') || 'yolo')
   const cwd = resolve(getFlag('cwd') || process.cwd())
-  const tmuxSocket = loadConfig().tmuxSocket || null
+  const tmuxSocket = readDaemonConfigForCwd(cwd).tmuxSocket || null
   const dryRun = hasFlag('dry-run')
   const modelAlias = String(getFlag('model') || '')
-  const config = withDaemonModelAliases(readConfig(), readDaemonConfigForCwd(cwd))
+  const config = withDaemonModelAliases({}, readDaemonConfigForCwd(cwd))
   const api = resolveApi()
 
   if (dryRun) {
@@ -4578,7 +4488,7 @@ async function cmdDoctorYolo() {
     console.log(`  name: ${name}`)
     console.log(`  cwd: ${cwd}`)
     console.log(`  model: ${modelAlias}`)
-    console.log('  path: shared local mint (break-glass profile)')
+    console.log('  path: shared local mint (configured ops profile)')
     return
   }
 
@@ -4588,9 +4498,9 @@ async function cmdDoctorYolo() {
     cwd,
     model: modelAlias,
     agentId: getFlag('id') || undefined,
-    breakGlass: true,
-    acknowledgeNoSecurity: true,
-    explicitPolicy: true,
+    permissionGrant: 'ops',
+    permissionSet: compilePermissionGrant(config, 'ops', { cwd }),
+    explicitPermissionRequest: true,
     tmuxSocket,
     config,
   })
@@ -4635,7 +4545,7 @@ async function cmdDoctorYolo() {
   // handler clears that flag (unified-server.mjs). So we poll until the flag is
   // cleared and the row is live = the agent actually completed login and is a real
   // recipient. If it never logs in, that is a DISASTER, not a success: tear down the
-  // phantom reserved seat and error out loudly. A break-glass tool that says
+  // phantom reserved seat and error out loudly. An emergency tool that says
   // "launched" about an agent you cannot reach is worse than one that fails.
   // ──────────────────────────────────────────────────────────────────────────
   const reachDeadline = Date.now() + 60_000
@@ -4696,10 +4606,11 @@ async function cmdServer(action) {
       nodePath = '/opt/homebrew/bin/node'
     }
 
-    const config = loadConfig()
     const tokenEnvLines = []
-    if (config.tokenRw) tokenEnvLines.push(`        <key>TLDA_TOKEN_RW</key>\n        <string>${config.tokenRw}</string>`)
-    if (config.tokenRead) tokenEnvLines.push(`        <key>TLDA_TOKEN_READ</key>\n        <string>${config.tokenRead}</string>`)
+    const tokenRw = getRwToken()
+    const tokenRead = getReadToken()
+    if (tokenRw) tokenEnvLines.push(`        <key>TLDA_TOKEN_RW</key>\n        <string>${tokenRw}</string>`)
+    if (tokenRead) tokenEnvLines.push(`        <key>TLDA_TOKEN_READ</key>\n        <string>${tokenRead}</string>`)
 
     const plistContent = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -5152,7 +5063,6 @@ async function main() {
       case 'move':    await ensureServer(); await cmdMoveProject(); break
       case 'logs':    await cmdLogs(args.slice(1)); break
       case 'log':     await cmdLogs(args.slice(1)); break
-      case 'publish': await cmdPublish(); break
       case 'auth': await cmdAuth(); break
       case 'mcp-setup': await cmdMcpSetup(); break
       case 'config': await cmdConfig(); break

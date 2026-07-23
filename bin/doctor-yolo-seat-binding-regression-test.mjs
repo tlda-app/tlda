@@ -18,9 +18,8 @@ function createLedger() {
     grantFor(agent) {
       assert.equal(agent.id, 'localhost')
       return {
-        spawnPolicy: { policy: 'unsandboxed' },
-        permissionProfile: 'break-glass',
-        permissionIntersection: { type: 'permission-intersection', profiles: ['operator', 'break-glass'] },
+        permissionGrant: 'ops',
+        permissionGrant: 'ops',
         permissionSet: {
           operations: {
             read: { allow: ['**'], deny: [] },
@@ -112,9 +111,7 @@ async function testExistingGrantIsPreservedOnFailedBinding() {
   const ledger = createLedger()
   const fleetId = 'fleet:doctor-yolo-existing-grant'
   ledger.setSync(fleetId, {
-    spawnPolicy: { policy: 'cwd' },
-    permissionProfile: 'existing',
-    permissionSet: { operations: { read: { allow: ['/tmp'], deny: [] }, write: { allow: [], deny: [] } } },
+    permissionGrant: 'existing',
     source: 'pre-existing-test-grant',
   })
 

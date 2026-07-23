@@ -12,34 +12,22 @@ function openDb(dbPath) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS permission_grants (
       id TEXT PRIMARY KEY,
-      spawn_policy TEXT NOT NULL,
-      permission_profile TEXT,
-      permission_intersection TEXT,
-      permission_set TEXT,
+      permission_grant TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       source TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_permission_grants_updated_at
       ON permission_grants(updated_at);
   `)
-  try { db.exec('ALTER TABLE permission_grants ADD COLUMN permission_profile TEXT') } catch (e) {
-    if (!String(e?.message || '').includes('duplicate column name')) throw e
-  }
-  try { db.exec('ALTER TABLE permission_grants ADD COLUMN permission_intersection TEXT') } catch (e) {
-    if (!String(e?.message || '').includes('duplicate column name')) throw e
-  }
   return db
 }
 
 const db = openDb(workerData.dbPath)
 const upsert = db.prepare(`
-  INSERT INTO permission_grants (id, spawn_policy, permission_profile, permission_intersection, permission_set, updated_at, source)
-  VALUES (?, ?, ?, ?, ?, ?, ?)
+  INSERT INTO permission_grants (id, permission_grant, updated_at, source)
+  VALUES (?, ?, ?, ?)
   ON CONFLICT(id) DO UPDATE SET
-    spawn_policy = excluded.spawn_policy,
-    permission_profile = excluded.permission_profile,
-    permission_intersection = excluded.permission_intersection,
-    permission_set = excluded.permission_set,
+    permission_grant = excluded.permission_grant,
     updated_at = excluded.updated_at,
     source = excluded.source
 `)
@@ -50,7 +38,7 @@ parentPort.on('message', (message) => {
   try {
     if (op === 'upsert') {
       const row = message.row || {}
-      upsert.run(row.id, row.spawnPolicy, row.permissionProfile, row.permissionIntersection, row.permissionSet, row.updatedAt, row.source)
+      upsert.run(row.id, row.permissionGrant, row.updatedAt, row.source)
       parentPort.postMessage({ requestId, ok: true })
       return
     }

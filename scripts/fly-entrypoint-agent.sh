@@ -81,22 +81,31 @@ fi
 # is unauthenticated server-side, so no token is strictly required. machine_id
 # comes from TLDA_MACHINE_ID (distinct per friend so daemons don't evict each
 # other on the render box).
-if [ ! -f /root/.config/tlda/config.json ]; then
-  # shared/config.mjs requires every config to be COMPLETE: database, store, AND
-  # licenseKey (no field optional). The agent box doesn't serve the tldraw SPA, so
-  # licenseKey is unused here — but the field must be present (empty string ok) or
-  # `tlda agent spawn` throws "field licenseKey must be a string (got undefined)".
-  cat > /root/.config/tlda/config.json <<EOF
-{ "defaultConfig": "default", "configs": { "default": { "database": "${TLDA_SERVER}", "store": "${TLDA_SERVER}", "licenseKey": "" } } }
+if [ ! -f /root/.config/tlda/server.yaml ]; then
+  cat > /root/.config/tlda/server.yaml <<EOF
+defaultServer: default
+servers:
+  default:
+    database: "${TLDA_SERVER}"
+    store: "${TLDA_SERVER}"
+    licenseKey: ""
 EOF
 fi
 
-# Keep the daemon's route identity stable across redeploys. The daemon persists
-# a derived host id when machineId is absent; a reused volume may already contain
-# that derived id from an older boot, so force the per-friend id every time.
-if [ -n "${TLDA_MACHINE_ID}" ]; then
-  node -e 'const fs=require("fs"); const f=process.argv[1]; const id=process.argv[2]; const cfg=JSON.parse(fs.readFileSync(f,"utf8")); if (cfg.machineId !== id) { cfg.machineId = id; fs.writeFileSync(f, JSON.stringify(cfg, null, 2)); }' \
-    /root/.config/tlda/config.json "${TLDA_MACHINE_ID}"
+if [ ! -f /root/.config/tlda/daemon.yaml ]; then
+  cat > /root/.config/tlda/daemon.yaml <<EOF
+machineId: "${TLDA_MACHINE_ID}"
+regions:
+  machine: ["**"]
+profiles:
+  ops:
+    read: { allow: [machine], deny: [] }
+    write: { allow: [machine], deny: [] }
+grants:
+  localhost: ops
+models: {}
+default: ops
+EOF
 fi
 
 # Put the friend paper where an agent expects to work: a real git checkout in

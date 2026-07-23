@@ -10,15 +10,15 @@ const output = join(root, 'output')
 const plist = join(output, 'sandbox.plist')
 mkdirSync(source, { recursive: true })
 
-writeFileSync(join(source, 'daemon.yaml'), `
+writeFileSync(join(source, 'server.yaml'), `
 defaultServer: source
-machineId: shared-live-machine
 servers:
   source:
     database: https://isolated-db.example
     store: https://isolated-store.example
     licenseKey: ISOLATED-LICENSE
 `)
+writeFileSync(join(source, 'daemon.yaml'), 'machineId: shared-live-machine\n')
 writeFileSync(join(source, 'tokens.json'), JSON.stringify({ tokenRw: 'isolated-token' }))
 
 try {

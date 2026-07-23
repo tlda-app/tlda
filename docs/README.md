@@ -14,7 +14,6 @@ instruction.
 - `permissions.md` — current agent permission model
 - `fleet-chat-artifacts.md` — current cross-machine chat artifact contract
 - `fleet-query-language.md` — current public fleet query language
-- `fleet-sandbox-policy.md` — current sandbox policy
 - `spawn-machine-privileges.md` — current machine-local spawn privilege model
 - `source-ownership-manifest-transaction.md` — accepted under-review source
   ownership and complete-manifest transaction contract

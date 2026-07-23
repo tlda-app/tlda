@@ -297,18 +297,6 @@ Bots can register and talk over chat like any other agent. tlda ships with one e
 
 **Handoffs are a Todd feature.** When an agent goes stale — context-poisoned, drifted, or you just want a fresh start — say "hand this off" in chat and Todd spawns a fresh agent, briefed by a separate briefer, that takes over the same name. That name is a *lineage*: the base name carries across hand-offs, the bare name is whoever's working now, and earlier members keep it with a phase suffix — a naming convention we support a little with UI, a sun-or-moon icon marking each member's phase so the family reads as one.
 
-**Markdown versioning is opt-in.** Todd can keep a version history of the markdown your agents share. When an agent shares a `.md` file in chat, Todd copies its current contents into a dedicated git repo and commits, tagging the commit with the chat message id — so you get a timeline of every shared draft, lined up with the conversation. It's off until configured; add an `mdVersions` block to `~/.config/tlda/config.json`:
-
-```json
-"mdVersions": {
-  "enabled": true,
-  "repoDir": "~/work/md-versions",
-  "folders": ["~/work/my-paper", "notes"]
-}
-```
-
-`folders` lists the directories whose markdown to version — each an absolute path or a bare name resolved under `~/work`; shares from anywhere else are ignored. `repoDir` is the git repo Todd writes into (create it once with `git init`). With the block absent, Todd does nothing here. The same block also drives `md-versions/bin/mirror-md.sh`, a companion script that checkpoints all markdown on a cadence and mirrors it (plus the chat DB, session logs, and shadow repos) to cloud storage via [rclone](https://rclone.org/).
-
 ### Writing your own
 
 A bot connects through `@tlda/client` (auth, doc assets, staging annotations) and runs its lifecycle on `@tlda/bot` (register, reconnect, pidfile, addressed-command dispatch) — both shipped in this repo. For a full worked example that lives as its own external project, see **[teacher](https://github.com/davidahirshberg/teacher-bot)**: a bot that drills agents on *how they conduct themselves* against a real in-progress paper, built entirely on those two packages.
@@ -373,13 +361,17 @@ Local configuration, logs, and linters live in `~/.config/tlda/`. Fleet/chat
 state belongs to the active config's remote database; the local `fleet.db` is
 not authoritative.
 
-`config.json` contains a `configs` map. Each named config is a complete
+`server.yaml` contains a `servers` map. Each named server is a complete
 `{ database, store, licenseKey }` record: `database` selects fleet/chat/agent
-state, while `store` selects document assets and shape sync. `defaultConfig`
+state, while `store` selects document assets and shape sync. `defaultServer`
 names the normal selection. Use `--config <name>` for one CLI run or
-`TLDA_CONFIG=<name>` for one process; do not edit `defaultConfig` just to test a
+`TLDA_CONFIG=<name>` for one process; do not edit `defaultServer` just to test a
 different server and do not manually split the axes with URL environment
 variables.
+
+Machine identity, permissions, models, tmux, and task-document settings live in
+`daemon.yaml`; managed bots live in `bots.yaml`; ordinary CLI preferences such
+as browser selection live in `cli.yaml`; tokens live in `tokens.json`.
 
 **Environment variables** override the config file and are how you configure a hosted server:
 
@@ -387,7 +379,7 @@ variables.
 |----------|--------------|
 | `TLDA_CONFIG` | Select a named complete config for this process. |
 | `TLDA_NO_AUTH=1` | Run the app open (no per-request token). Use only when the server is behind a network boundary. |
-| `TLDA_TOKEN_READ` / `TLDA_TOKEN_RW` | The read / read-write tokens, when token-gating instead of using `config.json`. |
+| `TLDA_TOKEN_READ` / `TLDA_TOKEN_RW` | The read / read-write tokens, overriding `tokens.json`. |
 | `DEEPGRAM_API_KEY` | Enables server-side voice transcription (the [Deepgram](https://deepgram.com/) bridge) for everyone on the server. |
 | `PORT` | The port to serve on (default `5176`). A non-default port also disables auth, for dev/worktree servers. |
 
