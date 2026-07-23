@@ -22,11 +22,23 @@ export function voiceIndicatorState(recording, healthLabel) {
   return 'listening'
 }
 
-export function deliverVoiceTextareaValue(textarea, text, write) {
+export function composeVoiceText(left, interim, right) {
+  return `${left || ''}${interim || ''}${right || ''}`
+}
+
+export function partitionAtCursor(value, selectionStart, selectionEnd = selectionStart) {
+  const text = typeof value === 'string' ? value : ''
+  const start = Number.isFinite(selectionStart) ? Math.max(0, Math.min(text.length, selectionStart)) : text.length
+  const end = Number.isFinite(selectionEnd) ? Math.max(start, Math.min(text.length, selectionEnd)) : start
+  return { left: text.slice(0, start), interim: '', right: text.slice(end), cursor: start }
+}
+
+export function deliverVoiceComposition(textarea, composition, write) {
   const beforeLength = typeof textarea?.value === 'string' ? textarea.value.length : 0
   const connectedBefore = textarea?.isConnected === true
+  const text = composeVoiceText(composition?.left, composition?.interim, composition?.right)
   if (!connectedBefore) {
-    return { connectedBefore, connectedAfter: false, beforeLength, afterLength: beforeLength, retained: false }
+    return { connectedBefore, connectedAfter: false, beforeLength, afterLength: beforeLength, written: false }
   }
   write(textarea, text)
   const connectedAfter = textarea.isConnected === true
@@ -36,14 +48,8 @@ export function deliverVoiceTextareaValue(textarea, text, write) {
     connectedAfter,
     beforeLength,
     afterLength,
-    retained: connectedAfter && textarea.value === text,
+    written: connectedAfter && textarea.value === text,
   }
-}
-
-export function retainVoiceTextareaValue(textarea, text, receipt) {
-  const connectedAfter = textarea?.isConnected === true
-  const afterLength = typeof textarea?.value === 'string' ? textarea.value.length : 0
-  return { ...receipt, connectedAfter, afterLength, retained: connectedAfter && textarea.value === text }
 }
 
 export class PcmBacklog {

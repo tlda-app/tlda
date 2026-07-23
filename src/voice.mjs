@@ -13,7 +13,7 @@
 import { appendToken } from './authToken.ts'
 import { log } from './logger.ts'
 import { getPref, normalizeRadioSubtitleDwellSec, subscribePref, whenPrefsLoaded } from './preferences.ts'
-import { PcmBacklog, deliverVoiceTextareaValue, pcmInputLevel, retainVoiceTextareaValue, voiceIndicatorState } from './voice-indicator.mjs'
+import { PcmBacklog, deliverVoiceComposition, partitionAtCursor, pcmInputLevel, voiceIndicatorState } from './voice-indicator.mjs'
 
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
 const _isSafari = !navigator.userAgent.includes('Chrome') && navigator.userAgent.includes('Safari')
@@ -338,7 +338,6 @@ function advanceSpeechEpoch() {
 
 // Active chat target
 let _activeTextarea = null
-let _lastFillReceiptAt = 0
 let _activeTargetHandle = null
 let _voiceDumping = false
 // The real field voice was routed to just before going to <nowhere>, captured so
@@ -1120,8 +1119,14 @@ function enterEdit() {
     setTextareaGlow(GLOW_AMBER)
   }
   if (_backend === 'deepgram') {
-    resetDeepgramTextState()
+    _dgTrickleFlush()
+    _deepgramInterim = ''
+    _dgTrickleWords = []
+    _dgTrickleShown = 0
     setTextareaGlow(GLOW_AMBER)
+    _state = 'edit'
+    _left = _interim = _right = ''
+    return
   }
   _state = 'edit'
   advanceSpeechEpoch()
@@ -1145,18 +1150,11 @@ function activeAgentColor() {
 }
 
 export function setVoiceTarget(textarea, targetHandle) {
-  let wasRecording = false
   _voiceDumping = false
   if (textarea !== _activeTextarea) {
-    // Hard reset voice on chat switch — same as double-shift-right.
-    // Without this, the old recognition session keeps running with a stale
-    // generation and onresult discards everything, making voice appear dead.
-    wasRecording = _recording
+    const wasRecording = _recording
     vlog('setVoiceTarget: switching chat', { wasRecording, backend: _backend, wsOpen: _deepgramRelayConnected, hasMic: !!_deepgramStream })
     if (_backend === 'whisper-stream') flushWhisperBridge()
-    if (_backend === 'deepgram') resetDeepgramTextState()
-    hardResetVoice({ keepDeepgramMic: true })
-    _recording = false
     // Remove old listeners
     if (_inputListeners && _activeTextarea) {
       _activeTextarea.removeEventListener('input', _inputListeners.input)
@@ -1167,6 +1165,22 @@ export function setVoiceTarget(textarea, targetHandle) {
     _state = 'edit'
     advanceSpeechEpoch()
     _left = _interim = _right = ''
+    if (_backend === 'deepgram') {
+      resetDeepgramTextState({ ignoreUntilUtteranceEnd: true })
+      if (wasRecording && _deepgramWs?.readyState === WebSocket.OPEN) {
+        _deepgramPcmPaused = false
+        _deepgramReadyEpoch = null
+        _deepgramRecognizerStatus = null
+        try {
+          _deepgramWs.send(JSON.stringify({ type: 'speech_epoch', epoch: _speechEpoch }))
+        } catch (err) {
+          _deepgramPcmPaused = true
+          _deepgramRecoveringEpoch = _speechEpoch
+          console.warn('voice: target-switch epoch control failed', err)
+          showDontSpeak('recognizer unavailable; recovering')
+        }
+      }
+    }
     if (textarea) {
       const onEdit = () => { if (!_filling) enterEdit() }
       const onKeydown = (e) => {
@@ -1186,10 +1200,7 @@ export function setVoiceTarget(textarea, targetHandle) {
   // Prime the always-present transparent ring so the first record-start is a
   // colour-only transition, not a 0→2px geometry pop (see setTextareaGlow).
   if (textarea && !textarea.style.boxShadow) textarea.style.boxShadow = '0 0 0 2px transparent'
-  // If voice was recording before the chat switch, restart it on the new target
-  if (wasRecording && textarea) {
-    startRecording()
-  } else if (_recording) {
+  if (_recording) {
     showRecordingHud()
   }
   emitVoiceTargetChange()
@@ -1476,7 +1487,7 @@ function fillTextarea(text) {
   const ta = _activeTextarea
   if (!ta) return
   _filling = true
-  const receipt = deliverVoiceTextareaValue(ta, text, (liveTextarea, nextText) => {
+  const receipt = deliverVoiceComposition(ta, { left: _left, interim: _interim, right: _right }, (liveTextarea, nextText) => {
     liveTextarea.value = nextText
     liveTextarea.style.height = 'auto'
     liveTextarea.style.height = Math.min(liveTextarea.scrollHeight, 200) + 'px'
@@ -1488,17 +1499,7 @@ function fillTextarea(text) {
     liveTextarea.dispatchEvent(new Event('input', { bubbles: true }))
   })
   _filling = false
-  const now = Date.now()
-  if (!receipt.retained || now - _lastFillReceiptAt >= 1000) {
-    _lastFillReceiptAt = now
-    vlog('transcript fill receipt', { target: targetLabel(), ...receipt })
-  }
-  if (receipt.retained) {
-    setTimeout(() => {
-      const retained = retainVoiceTextareaValue(ta, text, receipt)
-      if (!retained.retained) vlog('transcript fill receipt', { target: targetLabel(), phase: 'retention-check', ...retained })
-    }, 0)
-  }
+  if (!receipt.written) vlog('transcript not written', { target: targetLabel(), ...receipt })
   if (!receipt.connectedBefore && _activeTextarea === ta) clearVoiceTarget(ta)
 }
 
@@ -2232,11 +2233,6 @@ function onDeepgramMessage(event, relay = _deepgramWs) {
       _dgIgnoredSubmittedText = null
       _dgLastFinalNorm = ''
       _dgLastFinalAt = 0
-      if (_deepgramInterim || _interim) {
-        resetDeepgramTextState()
-        _interim = ''
-        fillTextarea(_left + _right)
-      }
       return
     }
 
@@ -2253,20 +2249,16 @@ function onDeepgramMessage(event, relay = _deepgramWs) {
       _dgIgnoredSubmittedText = null
     }
 
-    // Discard finals that arrive after afterSend() cleared the session but before
-    // the user speaks again. Without this, the last utterance of the previous
-    // message bleeds into the new one.
-    if (msg.is_final && !_dgHasSeenInterim && _state === 'edit') return
-
     _lastResultTime = Date.now()
     dotAudioFlowing()
 
     if (_state !== 'speech') {
       _state = 'speech'
       const ta = _activeTextarea
-      const cursor = ta?.selectionStart ?? (ta?.value?.length ?? 0)
-      _left = ta?.value?.slice(0, cursor) ?? ''
-      _right = ta?.value?.slice(cursor) ?? ''
+      const partition = partitionAtCursor(ta?.value, ta?.selectionStart, ta?.selectionEnd)
+      _left = partition.left
+      _interim = partition.interim
+      _right = partition.right
       resetDeepgramTextState()
     }
 
@@ -2608,8 +2600,8 @@ function stopDeepgramMic() {
 // Called after any send (Enter key or voice-send keyword) to prepare for the
 // next message. Resets text buffers and handles recognition restart.
 // One function, called from all send paths — no parallel implementations.
-function afterSend() {
-  const submittedText = currentSubmittedVoiceText()
+function afterSend(submittedTextOverride) {
+  const submittedText = submittedTextOverride ?? currentSubmittedVoiceText()
   advanceSpeechEpoch()
   _state = 'edit'
   _left = _interim = _right = ''
@@ -2653,8 +2645,8 @@ function afterSend() {
   }
 }
 
-export function completeMessageSend() {
-  afterSend()
+export function completeMessageSend(submittedText) {
+  afterSend(submittedText)
 }
 
 // --- Recording ---

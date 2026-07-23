@@ -176,7 +176,7 @@ export function ChatComposer({
             ta.value = ''
             ta.style.height = ''
             ta.dispatchEvent(new Event('input', { bubbles: true }))
-            completeMessageSend()
+            completeMessageSend(text)
             sentHistoryRef.current = [...sentHistoryRef.current, text]
             historyIndexRef.current = -1
           }
