@@ -220,16 +220,19 @@ function SvgPageComponent({ shape }: { shape: any }) {
 
     const url = getPageUrl(shape.props.pageIndex)
     if (!url) return
-    fetch(url, { signal: controller.signal }).then(async res => {
+    const sentinel = editor.store.get('shape:doc-version--sentinel' as TLShapeId) as unknown as
+      | { type?: string; props?: { commitHash?: unknown } }
+      | undefined
+    const builtHash = sentinel?.type === 'doc-version' && typeof sentinel.props?.commitHash === 'string'
+      ? sentinel.props.commitHash
+      : undefined
+    const versionedUrl = builtHash && builtHash !== 'unknown'
+      ? `${url}${url.includes('?') ? '&' : '?'}v=${encodeURIComponent(builtHash)}`
+      : url
+    fetch(versionedUrl, { signal: controller.signal }).then(async res => {
       if (!res.ok) return
       const newText = await res.text()
       if (newText !== svgText) setSvgText(shape.id as string, newText)
-      const sentinel = editor.store.get('shape:doc-version--sentinel' as TLShapeId) as unknown as
-        | { type?: string; props?: { commitHash?: unknown } }
-        | undefined
-      const builtHash = sentinel?.type === 'doc-version' && typeof sentinel.props?.commitHash === 'string'
-        ? sentinel.props.commitHash
-        : undefined
       if (builtHash && builtHash !== 'unknown') {
         setPageRenderHash(shape.id as string, String(builtHash).slice(0, 7))
       }
