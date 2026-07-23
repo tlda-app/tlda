@@ -2784,7 +2784,7 @@ app.get('/api/voice/backends', async (req, res) => {
   }
 })
 
-async function spawnVoiceBridge({ bridgeUrl, scriptName, logName, label }) {
+async function spawnVoiceBridge({ bridgeUrl, scriptName, logName, label, nice = null }) {
   if (await isBridgeUp(bridgeUrl)) return { ok: true, started: false }
 
   const { spawn } = await import('child_process')
@@ -2802,8 +2802,15 @@ async function spawnVoiceBridge({ bridgeUrl, scriptName, logName, label }) {
     cwd: tldaRoot,
   })
   child.unref()
-  console.log(`[voice] ${label} bridge spawned (pid ${child.pid})`)
-  return { ok: true, started: true, pid: child.pid }
+  if (Number.isFinite(nice)) {
+    const { execFile } = await import('child_process')
+    execFile('renice', ['-n', String(nice), '-p', String(child.pid)], { timeout: 3000 }, (err) => {
+      if (err) console.warn(`[voice] ${label} bridge priority request failed: ${err.message}`)
+    })
+  }
+  const priorityLabel = Number.isFinite(nice) ? ` nice=${nice}` : ''
+  console.log(`[voice] ${label} bridge spawned (pid ${child.pid}${priorityLabel})`)
+  return { ok: true, started: true, pid: child.pid, nice: Number.isFinite(nice) ? nice : undefined }
 }
 
 app.post('/api/voice/deepgram-sdk/start', async (req, res) => {
@@ -2813,6 +2820,7 @@ app.post('/api/voice/deepgram-sdk/start', async (req, res) => {
       scriptName: 'deepgram-runtime/deepgram-sdk-bridge.mjs',
       logName: 'deepgram-sdk-bridge.log',
       label: 'deepgram sdk',
+      nice: -10,
     }))
   } catch (err) {
     console.error('[voice] deepgram-sdk/start failed:', err.message)
@@ -2844,6 +2852,7 @@ async function ensureDeepgramSdkBridge() {
         scriptName: 'deepgram-runtime/deepgram-sdk-bridge.mjs',
         logName: 'deepgram-sdk-bridge.log',
         label: 'deepgram sdk',
+        nice: -10,
       })
       for (let i = 0; i < 24; i++) {
         await new Promise(r => setTimeout(r, 250))
