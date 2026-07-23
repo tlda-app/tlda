@@ -5,16 +5,18 @@
 // then uses spaCy's dependency tree to flag violations.
 
 import { spawnSync } from 'node:child_process'
-import { writeFileSync, mkdtempSync, realpathSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { writeFileSync, mkdtempSync, realpathSync, existsSync } from 'node:fs'
+import { tmpdir, homedir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const HELPER = join(__dirname, 'lint-typography.py')
+const MANAGED_PYTHON = join(homedir(), '.config', 'tlda', 'lint-venv', 'bin', 'python')
+const PYTHON = process.env.TLDA_LINT_PY || (existsSync(MANAGED_PYTHON) ? MANAGED_PYTHON : 'python3')
 
 function runHelper(filePath) {
-  const result = spawnSync('python3', [HELPER, filePath], { encoding: 'utf8' })
+  const result = spawnSync(PYTHON, [HELPER, filePath], { encoding: 'utf8' })
   if (result.status !== 0) {
     console.error('[lint-typography] helper failed:', result.stderr || `exit ${result.status}`)
     return []
