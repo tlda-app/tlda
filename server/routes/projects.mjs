@@ -30,6 +30,7 @@ import {
   beginProjectSourceTransaction,
   sourceLifecycleStore,
 } from '../lib/project-store.mjs'
+import { changedTextRegions } from '../lib/changed-text-regions.mjs'
 import { getBuildStatus } from '../lib/build-runner.mjs'
 import { dispatchBuild, isBuildKindPending } from '../lib/build-dispatch.mjs'
 import { outlineForRegion, regionFromSpan, structuralLeaves } from '../lib/outline/outline.mjs'
@@ -675,6 +676,11 @@ router.get('/:name/hashes', requireRead, (req, res) => {
  */
 const sourcePushQueues = new Map()
 
+function withAcceptedChangedFiles(result, files) {
+  Object.defineProperty(result, 'acceptedChangedFiles', { value: files })
+  return result
+}
+
 export async function runSerializedProjectSourceOperation(name, operation) {
   const previous = sourcePushQueues.get(name) || Promise.resolve()
   let release
@@ -794,8 +800,13 @@ export async function processProjectPushSerialized(name, body, transactionTest =
       const content = file.encoding === 'base64'
         ? Buffer.from(file.content, 'base64')
         : file.content
+      const previousContent = readSourceFile(name, file.path)
       if (writeSourceFile(name, file.path, content)) {
-        changedPushFiles.push({ path: file.path, content })
+        changedPushFiles.push({
+          path: file.path,
+          content,
+          regions: changedTextRegions(previousContent, bufferToUtf8(content)),
+        })
       }
         if (transactionTest.failAt === `write:${index + 1}`) throw new Error(`Injected failure at write:${index + 1}`)
       }
@@ -904,20 +915,20 @@ export async function processProjectPushSerialized(name, body, transactionTest =
     if (projectPartsChanged) {
       await rebuildProjectPartsView(name, project)
       broadcastProjectPartsChanged(name, changedPartFiles)
-      return { status: 200, ok: true, filesWritten: files?.length || 0, building: true, partsChanged: true,
+      return withAcceptedChangedFiles({ status: 200, ok: true, filesWritten: files?.length || 0, building: true, partsChanged: true,
         ...(decision.reason === 'already-building' ? { alreadyBuilding: true } : {}),
-      }
+      }, changedPushFiles)
     }
     const filtered = decision.reason === 'outside-tree' || decision.reason === 'relevant-files-parse-failed'
     if (decision.reason === 'relevant-files-parse-failed') {
       console.error(`[${name}] relevant-files.json parse failed`)
     }
-    return { status: 200, ok: true, filesWritten: files?.length || 0,
+    return withAcceptedChangedFiles({ status: 200, ok: true, filesWritten: files?.length || 0,
       building: decision.reason === 'already-building',
       ...(decision.reason === 'already-building' ? { alreadyBuilding: true } : {}),
       ...(decision.reason === 'unchanged' ? { unchanged: true } : {}),
       ...(filtered ? { filtered: true, reason: decision.reason } : {}),
-    }
+    }, changedPushFiles)
   }
 
   if (decision.eager) {
@@ -935,7 +946,10 @@ export async function processProjectPushSerialized(name, body, transactionTest =
       console.error(`[${project.format}] Build failed for ${name}: ${e.message}`)
       updateProject(name, { buildStatus: 'error' })
     })
-    return { status: 200, ok: true, filesWritten: files?.length || 0, building: true }
+    return withAcceptedChangedFiles(
+      { status: 200, ok: true, filesWritten: files?.length || 0, building: true },
+      changedPushFiles,
+    )
   }
 
   if (projectPartsChanged) {
@@ -946,7 +960,10 @@ export async function processProjectPushSerialized(name, body, transactionTest =
   // SVG: mark stale, let ensure handle it on next page request
   markProjectStale(name)
   broadcastSignal(`doc-${name}`, 'signal:source-changed', { timestamp: Date.now() })
-  return { status: 200, ok: true, filesWritten: files?.length || 0, building: false }
+  return withAcceptedChangedFiles(
+    { status: 200, ok: true, filesWritten: files?.length || 0, building: false },
+    changedPushFiles,
+  )
 }
 
 function refreshMaterializedPartsFromChangedSources(name, project, changedPushFiles) {

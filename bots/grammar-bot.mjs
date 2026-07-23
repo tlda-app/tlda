@@ -21,6 +21,7 @@ import { spawn } from 'child_process'
 import readline from 'readline'
 import { getFleetServerUrl, getManagedBots, CONFIG_DIR } from '../shared/config.mjs'
 import { startWsRequest } from '../shared/ws-request-policy.mjs'
+import { lintSourceEditFiles, sourceEditNudgeText } from './grammar-source-edit.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = path.resolve(__dirname, '..')
@@ -123,12 +124,6 @@ function nudgeText(findings) {
   return `⚠ **Possible comma splice** in your math${n > 1 ? ` (${n} spots)` : ''}: a comma is joining two statements as if it were a word. Which word did you mean — ${which}? Write it out; a comma isn't a connective. You can fix it in place by **amending** the message (\`chat({ amend_id })\`), no need to repost.`
 }
 
-function editNudgeText(project, findings) {
-  const first = findings[0]
-  const location = `${project}/${first.file}:${first.line}`
-  return `⚠ **Possible comma splice** at \`${location}\`: \`${first.snippet}\`. Replace the comma with the connective you mean — for example “where”, “and”, “so”, or “we have”.`
-}
-
 const nudgedRecently = new Map()   // messageKey -> ts, dedupe
 const NUDGE_DEDUPE_MS = 60_000
 
@@ -194,15 +189,11 @@ async function handleMessage(raw) {
     const project = d.metadata?.project || 'source'
     const files = Array.isArray(d.metadata?.files) ? d.metadata.files : []
     if (!author || author === OWNER_ID || author === AGENT_ID) return
-    const findings = []
-    for (const file of files) {
-      if (!file?.path?.endsWith('.tex') || file.encoding === 'base64' || typeof file.content !== 'string') continue
-      findings.push(...await lint(file.content, 8000, file.path))
-    }
+    const findings = await lintSourceEditFiles(files, (content, file) => lint(content, 8000, file))
     if (!findings.length) return
     const key = `edit:${project}:${d.metadata?.requestId || files.map((file) => file.path).join(',')}`
     if (alreadyNudged(key)) return
-    sendChat(author, editNudgeText(project, findings))
+    sendChat(author, sourceEditNudgeText(project, findings))
     writeHeartbeat('edit-nudge')
     return
   }

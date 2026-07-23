@@ -8308,7 +8308,7 @@ async function handleDaemonWsMessage(ws, msg) {
       resultCache.record(requestId, cached.hash, reply)
       ws.send(JSON.stringify(reply))
       replied = true
-      const sourceEditEvent = createSourceEditEvent({ result, project, files, editedBy, requestId })
+      const sourceEditEvent = createSourceEditEvent({ result, project, editedBy, requestId })
       if (sourceEditEvent) broadcastEvent('fleet-event', sourceEditEvent)
       if (!result.ok) {
         console.error(`[fleet-daemon] source-change ${project}: ${result.error || 'unknown'}`)
