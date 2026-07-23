@@ -17,10 +17,10 @@ export function createSourceChangeCorrelation({ makeId = randomUUID, log = conso
       if (nextRevision !== revisions.get(project)) blocked.delete(project)
       revisions.set(project, nextRevision)
     },
-    prepare(payload) {
+    prepare(payload, retried = false) {
       if (blocked.has(payload.project)) return null
       const requestId = makeId()
-      pending.set(requestId, { project: payload.project, payload })
+      pending.set(requestId, { project: payload.project, payload, retried })
       return { ...payload, requestId, expectedRevision: revisions.get(payload.project) ?? null }
     },
     handle(message) {
@@ -33,8 +33,12 @@ export function createSourceChangeCorrelation({ makeId = randomUUID, log = conso
         const currentRevision = message.authority?.currentRevision
         if (message.status === 'stale-base' && typeof currentRevision === 'string') {
           revisions.set(project, currentRevision)
-          blocked.delete(project)
-          retries.push(request.payload)
+          if (!request.retried) {
+            blocked.delete(project)
+            retries.push({ payload: request.payload, retried: true })
+          } else {
+            blocked.add(project)
+          }
         } else if (message.status === 'stale-base') {
           blocked.add(project)
         }
@@ -51,8 +55,8 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
   const sourceWatchers = new Map()
   const sourceCorrelation = createSourceChangeCorrelation({ log })
 
-  function sendSourceChange(payload) {
-    const message = sourceCorrelation.prepare(payload)
+  function sendSourceChange(payload, retried = false) {
+    const message = sourceCorrelation.prepare(payload, retried)
     if (!message) { log.warn(`source authority blocked for ${payload.project}; refresh/reconcile required`); return false }
     return sendMsg(message)
   }
@@ -61,7 +65,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
     const handled = sourceCorrelation.handle(message)
     if (!handled) return false
     let retry
-    while ((retry = sourceCorrelation.takeRetry())) sendSourceChange(retry)
+    while ((retry = sourceCorrelation.takeRetry())) sendSourceChange(retry.payload, retry.retried)
     return true
   }
 
