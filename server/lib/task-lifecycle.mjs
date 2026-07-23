@@ -29,9 +29,22 @@ export async function completeTaskLifecycle({
   }
 }
 
-export function canReportTask({ caller, task }) {
+export function canReportTask({ caller, task, fleetStore }) {
   if (!caller?.id || !task?.id) return false
-  // A human is the fleet owner. Agents may report/close their own tasks or tasks
-  // they delegated; broader manager hierarchies need an explicit relation.
-  return !!caller.human || task.agent === caller.id || task.delegated_by === caller.id
+  if (caller.human || task.agent === caller.id || task.delegated_by === caller.id) return true
+  if (!fleetStore?.getActiveTasks) return false
+
+  const managedAgents = new Set([caller.id])
+  const pendingManagers = [caller.id]
+  const activeTasks = fleetStore.getActiveTasks()
+  while (pendingManagers.length > 0) {
+    const manager = pendingManagers.shift()
+    for (const delegatedTask of activeTasks) {
+      if (delegatedTask.delegated_by !== manager || !delegatedTask.agent || managedAgents.has(delegatedTask.agent)) continue
+      managedAgents.add(delegatedTask.agent)
+      pendingManagers.push(delegatedTask.agent)
+    }
+  }
+
+  return managedAgents.has(task.agent) || managedAgents.has(task.delegated_by)
 }

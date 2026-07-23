@@ -6334,8 +6334,8 @@ async function handleFleetWsMessage(ws, msg) {
       ? fleetStore.getTask?.(task_id)
       : fleetStore.getTaskByAgent?.(agent)
     if (!task) { error('no active task'); return }
-    if (task_id && !canReportTask({ caller: caller || { id: agent }, task })) {
-      error('not authorized to report on this task; only its assignee, delegator, or a human may do so'); return
+    if (task_id && !canReportTask({ caller: caller || { id: agent }, task, fleetStore })) {
+      error('not authorized to report on this task; only its assignee, delegator, their management chains, or a human may do so'); return
     }
     const closeDecision = close ? decideReportClose(summary) : { allowClose: true }
     if (close && task.metadata?.requires_approval) {
