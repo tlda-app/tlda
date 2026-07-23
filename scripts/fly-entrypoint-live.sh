@@ -54,16 +54,12 @@ EOF
   sed -i "s|__TLDA_CONFIG_ENDPOINT__|$CONFIG_ENDPOINT|g" "$SERVER_YAML"
 fi
 if [ ! -f "$DAEMON_YAML" ] || [ -n "$TLDA_FLEET_SERVER" ]; then
-  echo "[entrypoint] writing canonical Fly daemon authority for $CONFIG_ENDPOINT"
+  echo "[entrypoint] writing canonical Fly daemon config"
   cat > "$DAEMON_YAML" <<'EOF'
-defaultServer: default
-servers:
-  default:
-    database: __TLDA_CONFIG_ENDPOINT__
-    store: __TLDA_CONFIG_ENDPOINT__
-    licenseKey: tldraw-david-hirshberg-2031-06-29/WyJpTW00VFpraCIsWyIqLmNvcm1vcmFudC1tYXRyaXgudHMubmV0Il0sOSwiMjAzMS0wNi0yOSJd.76nwqwOXRChl0rxuqrgwvwOqZ+Aztw8sC+qFOFixTWyVpH96riTXLDVOY83AFmW0GRcHodjkGpjUvdh/GouzzA
+machineId: fly
+taskDoc:
+  globalDir: /app/server/persist/fleet-task-doc
 EOF
-  sed -i "s|__TLDA_CONFIG_ENDPOINT__|$CONFIG_ENDPOINT|g" "$DAEMON_YAML"
 fi
 
 # --- Tailscale: join Skip's tailnet so the server is reachable privately ---
