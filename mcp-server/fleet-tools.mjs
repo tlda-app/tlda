@@ -24,7 +24,6 @@ import { resolveFilePath, uploadFileToServer } from '../shared/chat-file-process
 import { scanMarkdownDeps } from '../shared/markdown-deps.mjs';
 import { extractMarkdownSection } from '../shared/markdown-section.mjs';
 import { checkChatRender as checkSharedChatRender } from '../shared/chat-render-check.mjs';
-import { normalizeSourceManifest } from '../shared/source-manifest.mjs';
 import { formatSpawnModelSummary, validateSpawnModelSelection } from '../shared/spawn-model-validation.mjs';
 import { buildFleetSearchFilters, parseSearchQuery } from '../shared/fleet-search-query.mjs';
 import { formatActivityHealthStatus } from '../shared/activity-health.mjs';
@@ -378,6 +377,7 @@ const LOG_FILE = `${os.homedir()}/.claude/agent-messages.jsonl`;
 // --- tlda integration ---
 import { CONFIG_DIR, getRwToken, getServerUrl, getFleetServerUrl } from '../shared/config.mjs';
 import { tldaFetch as _sharedFetch } from '../shared/http-client.mjs';
+import { reportDocName, postReportDoc } from './report-doc-post.mjs';
 import { formatUsageStatus, normalizeUsageStatus } from '../shared/usage-status.mjs';
 const TLDA_SERVER = getServerUrl();
 const TLDA_WS_SERVER = TLDA_SERVER.replace(/^http/, 'ws');
@@ -403,17 +403,6 @@ function getFleetTransportOutbox() {
   _fleetTransportOutbox = new FleetTransportOutbox(_fleetTransportDb);
   return _fleetTransportOutbox;
 }
-
-async function tldaFetch(apiPath, opts = {}) {
-  const data = await _sharedFetch(`/api/projects/${apiPath}`, {
-    method: opts.method,
-    body: opts.body,
-    headers: opts.headers,
-    server: TLDA_SERVER,
-  });
-  return { status: 200, data };
-}
-
 
 // Fleet store — REMOVED. MCP server is a REST client; all reads/writes go through the dashboard server.
 // All server fetches go through fleetFetch — adds a timeout so tool handlers
@@ -2811,8 +2800,7 @@ export async function handleFleetTool(name, args) {
       const operationId = args.operation_id || `${AGENT_ID}:mcp-report:${reportTaskId}:${closeRequested ? 'close' : 'report'}:${summaryHash}`;
       const friendlyName = process.env.FLEET_NAME || AGENT_ID.slice(0, 8);
 
-      const docName = `report-${reportTaskId}`;
-      const mainFile = `${docName}.md`;
+      const docName = reportDocName(reportTaskId);
       let tldaMsg = '';
 
       let data;
@@ -2837,25 +2825,19 @@ export async function handleFleetTool(name, args) {
       const reportContent = `# ${taskDescription}\n\n**Agent:** ${friendlyName}  \n**Status:** ${reportStatus}  \n**Filed:** ${new Date().toISOString()}\n\n---\n\n${args.summary}`;
 
       try {
-        const check = await tldaFetch(docName);
-        if (check.status === 404) {
-          await tldaFetch('', { method: 'POST', body: { name: docName, title: taskDescription, format: 'markdown', mainFile } });
-        }
-        const sourceAuthority = await tldaFetch(docName + '/source-authority');
-        await tldaFetch(docName + '/push', {
-          method: 'POST',
-          body: {
-            files: [{ path: mainFile, content: reportContent }],
-            sourceManifest: normalizeSourceManifest([mainFile], { format: 'markdown', mainFile }),
-            sourceDir: cwd || process.env.PWD || '/tmp',
-            session: CLAUDE_SESSION,
-            expectedRevision: sourceAuthority.currentRevision,
-          },
+        await postReportDoc({
+          reportTaskId,
+          taskDescription,
+          reportContent,
+          cwd: cwd || process.env.PWD || '/tmp',
+          session: CLAUDE_SESSION,
+          fetchImpl: _sharedFetch,
+          server: TLDA_SERVER,
         });
         tldaMsg = `\n📄 Report pushed to tlda as **${docName}** [${reportStatus}]`;
         logEvent({ type: 'report_share', agent: AGENT_ID, doc: docName, task_id: reportTaskId, status: reportStatus });
       } catch (e) {
-        tldaMsg = `\n⚠ tlda unavailable (${e.message}) — report posted to chat only.`;
+        tldaMsg = `\n⚠ Report share to tlda failed (${e.message}) — report recorded in chat.`;
       }
 
       if (closeCompleted) logEvent({ type: 'task_done', agent: AGENT_ID, task_id: reportTaskId, description: taskDescription });
