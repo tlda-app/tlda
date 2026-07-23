@@ -319,19 +319,13 @@ export function FleetHUD({
     const hasFleetSelected = selectedFleetIds.length > 0
     const hasLayoutIntent = consumeFleetLayoutSelectionIntent(selectedFleetIds)
     if (hasFleetSelected && (fleetLayoutActiveRef.current || hasLayoutIntent)) {
-      // Selection handles are rendered by the viewport overlay canvas, while
-      // fleet panels use the imperatively updated HTML layer. Reconcile the
-      // viewport camera before layout mode exposes the handles so both layers
-      // enter the mode on the same transform instead of snapping together on
-      // the next camera frame.
-      syncCanvasClipPanelViewportCamera(viewportId, readFleetHudOverlayLayer(hudWm).camera)
       enterFleetLayoutMode()
     } else if (hasFleetSelected) {
       document.body.classList.remove('fleet-hud-fleet-selected')
     } else {
       exitFleetLayoutMode()
     }
-  }, [hudWm, viewportId])
+  }, [])
 
   const reconcileLayoutActive = useCallback((editor: Editor) => {
     reconcileLayoutActiveForSelection(editor, editor.getSelectedShapeIds())
