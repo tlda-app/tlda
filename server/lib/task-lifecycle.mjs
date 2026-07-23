@@ -32,14 +32,24 @@ export async function completeTaskLifecycle({
 export function canReportTask({ caller, task, fleetStore }) {
   if (!caller?.id || !task?.id) return false
   if (caller.human || task.agent === caller.id || task.delegated_by === caller.id) return true
-  if (!fleetStore?.getActiveTasks) return false
+  if (!fleetStore?.getAllTasks || !task.delegated_at) return false
 
   const managedAgents = new Set([caller.id])
   const pendingManagers = [caller.id]
-  const activeTasks = fleetStore.getActiveTasks()
+  const targetDelegatedAt = Date.parse(task.delegated_at)
+  if (!Number.isFinite(targetDelegatedAt)) return false
+
+  // Management authority must already exist when the target task is delegated.
+  // Otherwise a caller could manufacture authority over any existing task by
+  // creating a new task assigned to its assignee or delegator.
+  const lineageTasks = fleetStore.getAllTasks().filter((delegatedTask) => {
+    if (delegatedTask.id === task.id || !delegatedTask.delegated_at) return false
+    const delegatedAt = Date.parse(delegatedTask.delegated_at)
+    return Number.isFinite(delegatedAt) && delegatedAt < targetDelegatedAt
+  })
   while (pendingManagers.length > 0) {
     const manager = pendingManagers.shift()
-    for (const delegatedTask of activeTasks) {
+    for (const delegatedTask of lineageTasks) {
       if (delegatedTask.delegated_by !== manager || !delegatedTask.agent || managedAgents.has(delegatedTask.agent)) continue
       managedAgents.add(delegatedTask.agent)
       pendingManagers.push(delegatedTask.agent)
