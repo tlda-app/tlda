@@ -1,6 +1,6 @@
 import fs from 'fs'
 import path from 'path'
-import { compilePermissionGrant, permissionGrantProfileName, resolveSpawnGrant } from '../server/lib/spawn-policy.mjs'
+import { compilePermissionGrant, permissionGrantProfileName, resolveSpawnGrant } from '../server/lib/permission-grants.mjs'
 import { detectSpawnStartupFailureTranscript } from '../agent-runtime/daemon-guards.mjs'
 import { probeSpawnAvailability } from './availability.mjs'
 import { newFleetId } from './identity.mjs'

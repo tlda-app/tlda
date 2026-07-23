@@ -57,15 +57,9 @@ export function isIntentionalEmptyPermissionSet(value) {
     || value?.compiledFrom === 'empty-permission-set'
 }
 
-// A grant that confers NO access at all — no readable and no writable zone. This is
-// the shape a collapsed spawn-policy intersection produces when nothing was actually
-// specified for the agent (empty daemon profiles/grants, an absent requester grant,
-// a mismatched project). Combined with isIntentionalEmptyPermissionSet (which
-// distinguishes a deliberately-requested `none` from an accidental collapse), this
-// is the single predicate that decides "no grant specified" at the spawn boundary
-// (agent-launch.mjs) AND here in the launch-time lease build. Keep both callers on
-// THIS function — do not fork the definition, or the two checks will drift and a
-// caged agent will slip through one of them.
+// A grant that confers NO access at all: no readable and no writable zone. This
+// is the single predicate for "no grant specified" at the spawn boundary
+// (agent-launch.mjs) and in the launch-time lease build.
 export function permissionSetConfersNothing(permissionSet) {
   return permissionSetList(permissionSet, 'read', 'allow').length === 0
     && permissionSetList(permissionSet, 'write', 'allow').length === 0
@@ -295,7 +289,7 @@ export function resolveLeasePolicy({ permissionGrant, permissionSet = null, harn
     leasePolicy: {
       schema: 1,
       // An empty grant confers nothing (no read, no write) — the seatbelt default-denies
-      // and adds no agent roots. Replaces the old `permission === 'none'` signal.
+      // and adds no agent roots.
       empty: !grantsAnything,
       harness,
       model: model || '',
@@ -332,7 +326,7 @@ export function resolveLaunchPolicy({
 } = {}) {
   if (!permissionGrant) throw new Error('resolved daemon permission grant is required')
   const leaseResolution = resolveLeasePolicy({ permissionGrant, permissionSet, harness, model, cwd, config, env })
-  // Permission mode is NOT derived from the grant or a permission level. The flag the
+  // Permission mode is NOT derived from the grant. The flag the
   // operator wants (--dangerously-skip-permissions, --permission-mode plan, …) is
   // configured in the daemon settings' harness options and passed straight through by
   // the harness adapter, exactly like the codex sandbox flag. The only mode honored

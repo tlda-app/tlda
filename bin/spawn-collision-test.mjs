@@ -97,14 +97,14 @@ async function run() {
     name: 'collidertest',
     machine_id: 'testbox-caller',
     env_name: ENV_NAME,
-    metadata: { permissionGrant: { permission: 'read', policy: 'cwd' } },
+    metadata: { permissionGrant: 'ops' },
   }))
   ws.send(JSON.stringify({
     type: 'login',
     agent_id: 'fleet:tester1',
     machine_id: 'testbox-caller',
     env_name: ENV_NAME,
-    metadata: { permissionGrant: { permission: 'read', policy: 'cwd' } },
+    metadata: { permissionGrant: 'ops' },
   }))
   await sleep(800)
 

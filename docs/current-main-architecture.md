@@ -27,7 +27,7 @@ Primary modules:
 - `server/routes/fleet.mjs`
 - `server/lib/spawn-routing.mjs`
 - `shared/spawn-librarian.ts`
-- `server/lib/spawn-policy.mjs`
+- `server/lib/permission-grants.mjs`
 - `bin/fleet-daemon.mjs`
 - `agent-launch/agent-launch.mjs`
 - `agent-launch/index.mjs`

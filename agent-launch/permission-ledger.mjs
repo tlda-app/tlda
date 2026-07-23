@@ -4,13 +4,14 @@ import path from 'path'
 import { execFileSync } from 'child_process'
 import { randomUUID } from 'crypto'
 import { Worker } from 'worker_threads'
+import { fileURLToPath } from 'url'
 import Database from 'better-sqlite3'
 import YAML from 'yaml'
 import {
   compilePermissionGrant,
   normalizePermissionGrant,
   resolveSpawnGrant,
-} from '../server/lib/spawn-policy.mjs'
+} from '../server/lib/permission-grants.mjs'
 import {
   validateDaemonConfigTopLevel,
   validateProjectDaemonOverrideTopLevel,
@@ -39,6 +40,8 @@ function hasProcessBinding(row = {}) {
 }
 
 const WRITE_TIMEOUT_MS = Number(process.env.TLDA_PERMISSION_LEDGER_WRITE_TIMEOUT_MS || 5000)
+const PERMISSION_LEDGER_SCHEMA_KEY = 'permission-ledger-schema'
+const PERMISSION_LEDGER_SCHEMA_CURRENT = 'permission-grant-v1'
 
 function normalizeLedgerGrant(value, config = null) {
   if (!value) {
@@ -68,67 +71,45 @@ function normalizeStoredPermissionGrant(value) {
   return { type: 'permission-intersection', profiles: unique }
 }
 
-function migratePermissionGrantTable(db) {
-  const columns = db.prepare('PRAGMA table_info(permission_grants)').all().map(row => row.name)
-  if (!columns.length) return
-  const obsolete = ['spawn_policy', 'permission_profile', 'permission_intersection', 'permission_set']
-  if (!obsolete.some(name => columns.includes(name))) return
-  const rows = db.prepare('SELECT * FROM permission_grants').all()
-  const migrated = rows.map(row => {
-    let raw = null
-    if (row.permission_grant) raw = JSON.parse(row.permission_grant)
-    else if (row.permission_intersection) raw = JSON.parse(row.permission_intersection)
-    else if (row.permission_profile) raw = row.permission_profile
-    if (!raw) {
-      throw new PermissionLedgerError(
-        'SPAWN_PERMISSION_LEDGER_UNREPRESENTABLE_GRANT',
-        `permission ledger row ${row.id} has no configured profile or structured intersection; refusing schema cutover`,
-        { id: row.id },
-      )
-    }
-    return { ...row, permission_grant: JSON.stringify(normalizeStoredPermissionGrant(raw)) }
-  })
-  const transaction = db.transaction(() => {
-    db.exec(`
-      DROP TABLE IF EXISTS permission_grants_next;
-      CREATE TABLE permission_grants_next (
-        id TEXT PRIMARY KEY,
-        permission_grant TEXT NOT NULL,
-        updated_at TEXT NOT NULL,
-        source TEXT NOT NULL,
-        friendly_name TEXT,
-        session_id TEXT,
-        session_kind TEXT,
-        session_path TEXT,
-        tmux_session TEXT,
-        model TEXT,
-        machine_id TEXT,
-        env_name TEXT,
-        daemon_key TEXT,
-        terminal_capability TEXT,
-        cwd TEXT,
-        last_seen TEXT
-      )
-    `)
-    const insert = db.prepare(`
-      INSERT INTO permission_grants_next (
-        id, permission_grant, updated_at, source, friendly_name, session_id,
-        session_kind, session_path, tmux_session, model, machine_id, env_name,
-        daemon_key, terminal_capability, cwd, last_seen
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `)
-    for (const row of migrated) {
-      insert.run(
-        row.id, row.permission_grant, row.updated_at, row.source,
-        row.friendly_name || null, row.session_id || null, row.session_kind || null,
-        row.session_path || null, row.tmux_session || null, row.model || null,
-        row.machine_id || null, row.env_name || null, row.daemon_key || null,
-        row.terminal_capability || null, row.cwd || null, row.last_seen || null,
-      )
-    }
-    db.exec('DROP TABLE permission_grants; ALTER TABLE permission_grants_next RENAME TO permission_grants')
-  })
-  transaction()
+function ensureLedgerMetaTable(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS ledger_meta (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+  `)
+}
+
+function markPermissionGrantSchemaCurrent(db) {
+  ensureLedgerMetaTable(db)
+  db.prepare(`
+    INSERT INTO ledger_meta (key, value, updated_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT(key) DO UPDATE SET
+      value = excluded.value,
+      updated_at = excluded.updated_at
+  `).run(PERMISSION_LEDGER_SCHEMA_KEY, PERMISSION_LEDGER_SCHEMA_CURRENT, nowIso())
+}
+
+function permissionGrantSchemaIsCurrent(db) {
+  ensureLedgerMetaTable(db)
+  const marked = db.prepare('SELECT value FROM ledger_meta WHERE key = ?').get(PERMISSION_LEDGER_SCHEMA_KEY)?.value
+  if (marked === PERMISSION_LEDGER_SCHEMA_CURRENT) return true
+  const table = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'permission_grants'").get()
+  if (!table) return true
+  try {
+    db.prepare('SELECT id, permission_grant FROM permission_grants LIMIT 0').all()
+    markPermissionGrantSchemaCurrent(db)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function runHistoricalPermissionGrantMigration(dbPath) {
+  const script = fileURLToPath(new URL('../migrations/permissions/permission-grants-v1.mjs', import.meta.url))
+  execFileSync(process.execPath, [script, dbPath], { stdio: 'inherit' })
 }
 
 function readYamlFile(file, label) {
@@ -517,7 +498,14 @@ export class PermissionLedger {
     this.db.pragma('busy_timeout = 5000')
     this.db.pragma('journal_mode = WAL')
     this.db.pragma('synchronous = NORMAL')
-    migratePermissionGrantTable(this.db)
+    if (!permissionGrantSchemaIsCurrent(this.db)) {
+      this.db.close()
+      runHistoricalPermissionGrantMigration(dbPath)
+      this.db = new Database(dbPath)
+      this.db.pragma('busy_timeout = 5000')
+      this.db.pragma('journal_mode = WAL')
+      this.db.pragma('synchronous = NORMAL')
+    }
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS permission_grants (
         id TEXT PRIMARY KEY,
@@ -537,14 +525,10 @@ export class PermissionLedger {
         cwd TEXT,
         last_seen TEXT
       );
-      CREATE TABLE IF NOT EXISTS ledger_meta (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      );
       CREATE INDEX IF NOT EXISTS idx_permission_grants_updated_at
         ON permission_grants(updated_at);
     `)
+    markPermissionGrantSchemaCurrent(this.db)
     for (const ddl of [
       'ALTER TABLE permission_grants ADD COLUMN friendly_name TEXT',
       'ALTER TABLE permission_grants ADD COLUMN session_id TEXT',
@@ -1010,7 +994,7 @@ export function applyDaemonGrants(ledger, daemonConfig = {}) {
 // Fill a missing permission-ledger grant for every eligible agent in `agents`
 // (the authoritative roster). FILL-NULL-ONLY: writes only when `ledger.get(id)`
 // is null — never overwrites or broadens an existing grant, so narrower
-// spawn-derived grants are preserved and it is safe to run on every roster
+// existing grant records are preserved and it is safe to run on every roster
 // change. Idempotent: a second pass over the same roster is a no-op.
 export function applyGrandfatherInfill(ledger, { agents = [], config = {}, projects = [] } = {}) {
   const eligible = normalizeGrandfatherAgents(agents)

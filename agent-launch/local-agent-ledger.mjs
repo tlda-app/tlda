@@ -1,6 +1,8 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { execFileSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import Database from 'better-sqlite3'
 
 import { newLocalAgentId } from './identity.mjs'
@@ -24,29 +26,48 @@ function parseGrant(value) {
   return JSON.parse(value)
 }
 
-function migrateProcessRecipes(db) {
-  const columns = db.prepare('PRAGMA table_info(local_agent_process_recipes)').all().map(row => row.name)
-  if (!columns.includes('permission_profile')) return
-  const rows = db.prepare('SELECT * FROM local_agent_process_recipes').all()
-  const transaction = db.transaction(() => {
-    db.exec(`
-      CREATE TABLE local_agent_process_recipes_next (
-        local_agent_id TEXT PRIMARY KEY REFERENCES local_agents(local_agent_id) ON DELETE CASCADE,
-        tmux_name TEXT,
-        cwd TEXT,
-        permission_grant TEXT
-      )
-    `)
-    const insert = db.prepare('INSERT INTO local_agent_process_recipes_next VALUES (?, ?, ?, ?)')
-    for (const row of rows) {
-      if (!row.permission_profile) {
-        throw new Error(`local process recipe ${row.local_agent_id} has no representable permission grant`)
-      }
-      insert.run(row.local_agent_id, row.tmux_name, row.cwd, JSON.stringify(row.permission_profile))
-    }
-    db.exec('DROP TABLE local_agent_process_recipes; ALTER TABLE local_agent_process_recipes_next RENAME TO local_agent_process_recipes')
-  })
-  transaction()
+const LOCAL_RECIPE_SCHEMA_KEY = 'local-agent-process-recipes-schema'
+const LOCAL_RECIPE_SCHEMA_CURRENT = 'permission-grant-v1'
+
+function ensureLocalLedgerMetaTable(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS local_agent_ledger_meta (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+  `)
+}
+
+function markLocalRecipeSchemaCurrent(db) {
+  ensureLocalLedgerMetaTable(db)
+  db.prepare(`
+    INSERT INTO local_agent_ledger_meta (key, value, updated_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT(key) DO UPDATE SET
+      value = excluded.value,
+      updated_at = excluded.updated_at
+  `).run(LOCAL_RECIPE_SCHEMA_KEY, LOCAL_RECIPE_SCHEMA_CURRENT, new Date().toISOString())
+}
+
+function localRecipeSchemaIsCurrent(db) {
+  ensureLocalLedgerMetaTable(db)
+  const marked = db.prepare('SELECT value FROM local_agent_ledger_meta WHERE key = ?').get(LOCAL_RECIPE_SCHEMA_KEY)?.value
+  if (marked === LOCAL_RECIPE_SCHEMA_CURRENT) return true
+  const table = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'local_agent_process_recipes'").get()
+  if (!table) return true
+  try {
+    db.prepare('SELECT local_agent_id, permission_grant FROM local_agent_process_recipes LIMIT 0').all()
+    markLocalRecipeSchemaCurrent(db)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function runHistoricalLocalRecipeMigration(dbPath) {
+  const script = fileURLToPath(new URL('../migrations/permissions/local-agent-process-recipes-v1.mjs', import.meta.url))
+  execFileSync(process.execPath, [script, dbPath], { stdio: 'inherit' })
 }
 
 export class LocalAgentLedger {
@@ -58,7 +79,15 @@ export class LocalAgentLedger {
     this.db.pragma('journal_mode = WAL')
     this.db.pragma('synchronous = NORMAL')
     this.db.pragma('foreign_keys = ON')
-    migrateProcessRecipes(this.db)
+    if (!localRecipeSchemaIsCurrent(this.db)) {
+      this.db.close()
+      runHistoricalLocalRecipeMigration(file)
+      this.db = new Database(file)
+      this.db.pragma('busy_timeout = 5000')
+      this.db.pragma('journal_mode = WAL')
+      this.db.pragma('synchronous = NORMAL')
+      this.db.pragma('foreign_keys = ON')
+    }
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS local_agents (
         local_agent_id TEXT PRIMARY KEY,
@@ -96,6 +125,7 @@ export class LocalAgentLedger {
       CREATE UNIQUE INDEX IF NOT EXISTS idx_local_agents_server_agent_id
         ON local_agents(server_agent_id) WHERE server_agent_id IS NOT NULL;
     `)
+    markLocalRecipeSchemaCurrent(this.db)
     this._getLocal = this.db.prepare('SELECT * FROM local_agents WHERE local_agent_id = ?')
     this._getServer = this.db.prepare('SELECT * FROM local_agents WHERE server_agent_id = ?')
     this._insertAgent = this.db.prepare(`

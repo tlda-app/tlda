@@ -14,7 +14,7 @@
 # small helper scripts used by the fleet tooling.
 #
 # node:24 (NOT 20): the daemon surface imports TypeScript modules directly
-# (server/lib/spawn-policy.mjs → ../../shared/harness.ts; fleet-store → live-store.ts;
+# (server/lib/permission-grants.mjs → ../../shared/harness.ts; fleet-store → live-store.ts;
 # sync-rooms → signals.ts). Those rely on Node's native type-stripping, which is
 # on by default since 23.6 (the Mini runs node 26). node:20 throws
 # ERR_UNKNOWN_FILE_EXTENSION on the first `.ts` import and the daemon never starts.
@@ -70,7 +70,8 @@ COPY bin/requirements.txt ./bin/requirements.txt
 COPY bin/lib/ ./bin/lib/
 COPY cli/ ./cli/
 COPY shared/ ./shared/
-# The daemon imports ../server/lib/spawn-policy.mjs (and its transitive server/lib
+COPY migrations/ ./migrations/
+# The daemon imports ../server/lib/permission-grants.mjs (and its transitive server/lib
 # siblings); copy the lib tree wholesale.
 COPY server/lib/ ./server/lib/
 

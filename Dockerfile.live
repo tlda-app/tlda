@@ -102,6 +102,7 @@ COPY agent-launch/ ./agent-launch/
 COPY agent-runtime/ ./agent-runtime/
 COPY daemon/ ./daemon/
 COPY bots/ ./bots/
+COPY migrations/ ./migrations/
 COPY cli/lib/ ./cli/lib/
 
 # Feelings export: server-side job reads fleet.db chat -> JSONL + copies referenced

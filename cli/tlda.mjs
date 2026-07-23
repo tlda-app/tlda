@@ -56,7 +56,7 @@ import {
   permissionGrantProfileName,
   permissionGrantTransparencyLine,
   resolveDirectSpawnGrant,
-} from '../server/lib/spawn-policy.mjs'
+} from '../server/lib/permission-grants.mjs'
 import { SPAWN_MACHINE_PREF_KEY } from '../server/lib/spawn-routing.mjs'
 import {
   applyDaemonGrants,
