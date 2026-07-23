@@ -24,7 +24,7 @@ import os from 'os';
 
 import { createLiveStore } from '../../shared/live-store.ts';
 import { PSEUDO_LABELS, parseFilter, evalExpr, evalExprDirectional, astReadsSubscriberLabels, labelsForAgent } from '../../shared/fleet-labels.mjs';
-import { baseName, nameForPhase, phaseFromName, ALL_PHASES, prettyNameForFriendlyName } from '../../shared/lineage-name.mjs';
+import { baseName, nameForPhase, phaseFromName, prettyNameForFriendlyName } from '../../shared/lineage-name.mjs';
 import { literalFtsQuery } from '../../shared/fts-query.mjs';
 import { fleetRosterCategory, isRuntimeAwake } from '../../shared/fleet-runtime-status.mjs';
 import { createTaskDocMaterializer } from './task-doc-materializer.mjs';
@@ -2182,16 +2182,9 @@ export class FleetStore {
   findAgent(query) {
     if (!query) return null;
 
-    // Lineage:phase addressing (e.g. "writing-A:dawn", "writing-A:dusk")
-    const colonIdx = query.indexOf(':');
-    if (colonIdx > 0 && !query.startsWith('fleet:')) {
-      const lineageName = query.slice(0, colonIdx);
-      const phase = query.slice(colonIdx + 1);
-      if (ALL_PHASES.includes(phase)) {
-        return this.findAgentByLineagePhase(lineageName, phase);
-      }
-    }
-
+    // A name is an opaque atom — resolved exact-match, never parsed. `chief:day`
+    // is one whole friendly_name, not a lineage:phase lookup. "Phase" is a
+    // Todd-owned naming convention the server never interprets.
     let row = this._getAgent.get(query);
     if (!row) {
       // Name lookup — liveness-aware, NEVER throws (Skip's spec S1 / G.22 /
@@ -3924,9 +3917,9 @@ export class FleetStore {
     selector = typeof selector === 'string' ? { fragment: selector } : (selector || {});
     const baseFragment = (selector.fragment || '').trim().toLowerCase();
     if (!baseFragment) return [];
-    const phase = selector.phase && selector.phase !== 'bare' ? selector.phase : null;
-    const q = phase ? `${baseFragment}:${phase}` : baseFragment;
-    if (!q) return [];
+    // The fragment is the whole name (including any `:suffix`) — the grammar no
+    // longer splits off a "phase". Match it as-is.
+    const q = baseFragment;
     const like = `%${q}%`;
     // A bare name (no ':') gets a virtual ":dawn" so substring is uniform.
     const synth = "CASE WHEN instr(friendly_name, ':') > 0 THEN lower(friendly_name) ELSE lower(friendly_name) || ':dawn' END";

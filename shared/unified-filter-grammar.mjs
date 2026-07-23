@@ -1,5 +1,4 @@
 const OP_CHARS = new Set(['&', '|', '!', '(', ')'])
-const PHASES = new Set(['bare', 'dawn', 'day', 'dusk', 'night', 'zombie'])
 
 export function tokenizeFilterExpression(input) {
   const toks = []
@@ -143,13 +142,12 @@ export function parseAgentSelector(raw) {
     else selector.position = range.position
     selector.match = 'substring'
   }
-  const phaseSuffix = text.match(/:([A-Za-z][A-Za-z0-9_-]*)$/)
-  if (phaseSuffix && PHASES.has(phaseSuffix[1])) {
-    selector.phase = phaseSuffix[1]
-    text = text.slice(0, -phaseSuffix[0].length)
-  }
+  // A `:suffix` is NOT parsed — a name is an opaque atom (e.g. `chief:day` is one
+  // whole name, matched exact). Lineage "phase" is a Todd-owned naming convention;
+  // the app never knows or strips it. Only the positional `~N` search syntax above
+  // is a real operator.
   selector.fragment = text.trim()
-  return selector.fragment === raw && selector.match === 'auto' && selector.phase == null ? null : selector
+  return selector.fragment === raw && selector.match === 'auto' ? null : selector
 }
 
 function parseRangeSuffix(text) {
