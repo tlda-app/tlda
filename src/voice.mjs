@@ -598,14 +598,13 @@ function ensureHealthDot() {
   _healthDot = document.createElement('span')
   _healthDot.setAttribute('aria-hidden', 'true')
   Object.assign(_healthDot.style, {
-    display: 'block',
-    position: 'absolute',
-    left: '0',
-    right: '0',
-    bottom: '0',
-    width: '100%',
-    height: '2px',
-    borderRadius: '0 0 3px 3px',
+    display: 'inline-block',
+    position: 'relative',
+    width: '34px',
+    height: '8px',
+    borderRadius: '2px',
+    marginRight: '7px',
+    flexShrink: '0',
     overflow: 'hidden',
     background: 'rgba(255,255,255,0.12)',
   })
@@ -903,11 +902,10 @@ function showHud(text, stateColor) {
   hud.style.display = 'flex'
   hud.style.alignItems = _radioExpanded && _radioSubtitle ? 'stretch' : 'center'
   hud.style.flexDirection = 'column'
-  // Keep one stable plaque width whether radio copy is present or not.
-  const radioLayout = radioHudPageLayout()
+  const radioLayout = _radioExpanded && _radioSubtitle ? radioHudPageLayout() : null
   hud.style.width = radioLayout ? `${radioLayout.width}px` : VOICE_HUD_WIDTH
   hud.style.left = '50%'
-  hud.style.padding = '7px 12px'
+  hud.style.padding = _radioExpanded && _radioSubtitle ? '7px 12px' : '3px 10px'
   const statusRow = document.createElement('div')
   Object.assign(statusRow.style, {
     display: 'flex',
@@ -915,10 +913,8 @@ function showHud(text, stateColor) {
     justifyContent: 'center',
     minWidth: '0',
     overflow: 'hidden',
-    width: '100%',
+    width: VOICE_HUD_WIDTH,
     alignSelf: 'center',
-    position: 'relative',
-    paddingBottom: '4px',
   })
   statusRow.dataset.voiceState = voiceIndicatorState(_recording, _voiceHealthLabel)
   statusRow.setAttribute('aria-label', `Voice ${statusRow.dataset.voiceState}`)
@@ -951,10 +947,6 @@ function showHud(text, stateColor) {
       lineHeight: '1.35',
       textAlign: 'left',
       width: '100%',
-      borderBottom: phone ? '1px solid rgba(255,255,255,0.12)' : '',
-      borderTop: phone ? '' : '1px solid rgba(255,255,255,0.12)',
-      paddingBottom: phone ? '6px' : '',
-      paddingTop: phone ? '' : '6px',
     })
     hud.appendChild(line)
     const prior = _radioHistory.slice(1)
