@@ -45,8 +45,8 @@ export async function runWakeRouteLifecycle({
   traceId = null,
   source = {},
   isAgentAlive,
-  sendRpcResilient,
-  sendRpc,
+  sendDaemonDurable,
+  sendDaemonEphemeral,
   spawnLibrarian,
   recordWakeAttempt,
   appendControlTrace = () => {},
@@ -73,7 +73,7 @@ export async function runWakeRouteLifecycle({
   if (!ownerDaemon || ownerDaemon.readyState !== 1) throw new Error(`No fleet-daemon connected for ${daemonKey}`)
 
   const serverAlive = isAgentAlive(agentId)
-  const liveness = await sendRpcResilient(daemonKey, 'check-alive', { agent_id: agentId, terminal_capability: seat.terminal_capability })
+  const liveness = await sendDaemonDurable(daemonKey, 'check-alive', { agent_id: agentId, terminal_capability: seat.terminal_capability })
     .then(result => livenessFromCheckAliveResult(agentId, result))
     .catch(e => ({
       type: 'agent-liveness',
@@ -140,7 +140,7 @@ export async function runWakeRouteLifecycle({
     return { action: 'surfaced', liveness, decision }
   }
 
-  const spawnResult = await sendRpc(daemonKey, 'spawn', { name: agentId, agent_id: agentId, respawn: true })
+  const spawnResult = await sendDaemonDurable(daemonKey, 'spawn', { name: agentId, agent_id: agentId, respawn: true })
   if (!spawnResult?.ok) {
     throw new Error(spawnResult?.error || spawnResult?.reason || 'daemon returned ok:false with no reason')
   }

@@ -29,7 +29,7 @@ const SERVER_OWNER_ID = `fleet:${SERVER_OWNER_NAME}`
 const SERVER_OWNER_HOST = os.hostname()
 
 // All inline tmux operations were removed — they now route through the
-// fleet-daemon WS RPC layer (`sendRpc(machineId, op, params)` injected
+// fleet-daemon WS RPC layer (`sendDaemonEphemeral(machineId, op, params)` injected
 // from unified-server.mjs). If no daemon is connected for an agent's
 // machine, the handler returns 503.
 
@@ -193,7 +193,18 @@ export function filteredFleetRosterPage(roster, {
   return { matched: ordered.length, rows: page, nextCursor }
 }
 
-export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, clearEphemeralState, suppressEchoFor, sendRpc, resolveRpc, daemonConnections, resolveSpawnTarget, broadcastDaemonAgentsUpdated, enqueueDaemonMessage, agentSeatBindingObligations, hasOpenFleetSocketForAgent = () => false }) {
+export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, clearEphemeralState, suppressEchoFor, sendDaemonEphemeral, sendDaemonDurable, resolveRpc, daemonConnections, resolveSpawnTarget, broadcastDaemonAgentsUpdated, enqueueDaemonMessage, agentSeatBindingObligations, hasOpenFleetSocketForAgent = () => false, requireOperationRead }) {
+  const router = Router()
+
+  router.get('/api/fleet/operations/:operationId', requireOperationRead, (req, res) => {
+    const operation = fleetStore.getTransportOperationStatus(req.params.operationId)
+    if (!operation) {
+      res.status(404).json({ ok: false, error: 'operation not found' })
+      return
+    }
+    res.json({ ok: true, operation })
+  })
+
   // Helper: route an agent op through the daemon, or 503 cleanly. The
   // op-name is whatever the daemon's rpc dispatcher expects (kebab-case
   // matches the spec: 'send-key', 'capture-pane', etc.).
@@ -204,7 +215,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       return null
     }
     try {
-      const result = await sendRpc(route.machine_id, op, params)
+      const result = await sendDaemonEphemeral(route.machine_id, op, params)
       return result
     } catch (e) {
       const code = e.code === 'NO_DAEMON' ? 503 : 502
@@ -225,8 +236,6 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     }
     return seat
   }
-
-  const router = Router()
 
   // --- CORS ---
   router.use((req, res, next) => {
@@ -617,7 +626,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       const machineIds = [...(daemonConnections?.keys?.() || [])]
       await Promise.all(machineIds.map(async machineId => {
         try {
-          const result = await sendRpc(machineId, 'list-sessions', {})
+          const result = await sendDaemonEphemeral(machineId, 'list-sessions', {})
           machineSessions[machineId] = Array.isArray(result?.sessions) ? result.sessions : []
         } catch {
           machineSessions[machineId] = []
@@ -802,7 +811,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
             requested: { model, project: doc },
           })
         : { name: spawnName, respawn: !!respawn }
-      const result = await sendRpc(route.machine_id, 'spawn', {
+      const result = await sendDaemonDurable(route.machine_id, 'spawn', {
         name: resolved.name || undefined,
         model: model || undefined,
         modelOptions,
@@ -917,7 +926,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     const seat = currentSeatOrHttpError(res, agent)
     if (!seat) return
     try {
-      const result = await sendRpc(seat.daemon_key, 'capture-pane', {
+      const result = await sendDaemonEphemeral(seat.daemon_key, 'capture-pane', {
         agent_id: agent.id, terminal_capability: seat.terminal_capability, lines: lines || 50,
       })
       res.json(result)
@@ -948,7 +957,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
 
     try {
       // Capture current mode
-      const cap1 = await sendRpc(seat.daemon_key, 'capture-pane', { agent_id: agent.id, terminal_capability: seat.terminal_capability, lines: 5 })
+      const cap1 = await sendDaemonEphemeral(seat.daemon_key, 'capture-pane', { agent_id: agent.id, terminal_capability: seat.terminal_capability, lines: 5 })
       const currentMode = parseCCMode(cap1?.content || '')
 
       // Toggle: if in plan mode exit to default (1 BTab); otherwise enter plan mode.
@@ -956,13 +965,13 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       const btabs = currentMode === 'plan' ? 1 : currentMode === 'acceptEdits' ? 1 : 2
 
       for (let i = 0; i < btabs; i++) {
-        await sendRpc(seat.daemon_key, 'send-key', { agent_id: agent.id, terminal_capability: seat.terminal_capability, key: 'BTab' })
+        await sendDaemonEphemeral(seat.daemon_key, 'send-key', { agent_id: agent.id, terminal_capability: seat.terminal_capability, key: 'BTab' })
         if (i < btabs - 1) await new Promise(r => setTimeout(r, 150))
       }
 
       // Confirm final mode
       if (btabs > 0) await new Promise(r => setTimeout(r, 300))
-      const cap2 = await sendRpc(seat.daemon_key, 'capture-pane', { agent_id: agent.id, terminal_capability: seat.terminal_capability, lines: 5 })
+      const cap2 = await sendDaemonEphemeral(seat.daemon_key, 'capture-pane', { agent_id: agent.id, terminal_capability: seat.terminal_capability, lines: 5 })
       const finalMode = parseCCMode(cap2?.content || '')
 
       // Store permission mode in agent metadata so UI can show persistent badge
@@ -1037,7 +1046,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
 
     let result
     try {
-      result = await sendRpc(route.machine_id, 'rechat', {
+      result = await sendDaemonDurable(route.machine_id, 'rechat', {
         text: rawText,
         cwd: agent.cwd,
       })

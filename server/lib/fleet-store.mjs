@@ -224,6 +224,22 @@ export class FleetStore {
       CREATE INDEX IF NOT EXISTS idx_events_delegate_operation_id
         ON events(json_extract(metadata, '$.client_operation_id'), id)
         WHERE type = 'delegate';
+      CREATE TABLE IF NOT EXISTS transport_operations (
+        operation_id TEXT PRIMARY KEY,
+        operation_type TEXT NOT NULL,
+        delivery_class TEXT NOT NULL CHECK (delivery_class IN ('durable', 'ephemeral')),
+        sender TEXT,
+        destination TEXT,
+        parent_operation_id TEXT,
+        created_at TEXT NOT NULL,
+        attempt INTEGER NOT NULL DEFAULT 1,
+        status TEXT NOT NULL CHECK (status IN ('accepted', 'completed', 'failed')),
+        terminal_kind TEXT CHECK (terminal_kind IN ('result', 'error')),
+        terminal_payload TEXT,
+        completed_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_transport_operations_parent
+        ON transport_operations(parent_operation_id, created_at);
       CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
         text,
         content='events',
@@ -1325,6 +1341,122 @@ export class FleetStore {
       recipients: rows.map(row => row.to_id).filter(Boolean),
       receipts: [],
     }
+  }
+
+  getTransportOperationResult(operationId, operationType) {
+    if (!operationId) return null
+    const row = this.db.prepare(`
+      SELECT operation_type, status, terminal_kind, terminal_payload, completed_at
+      FROM transport_operations
+      WHERE operation_id = ?
+    `).get(operationId)
+    if (!row) return null
+    if (row.operation_type !== operationType) {
+      const error = new Error(`operation id ${operationId} was already used for ${row.operation_type}`)
+      error.code = 'operation-id-conflict'
+      throw error
+    }
+    if (row.status === 'accepted' || !row.terminal_kind) return null
+    return {
+      kind: row.terminal_kind,
+      payload: JSON.parse(row.terminal_payload),
+      completedAt: row.completed_at,
+    }
+  }
+
+  beginTransportOperation(envelope) {
+    const operationId = envelope?.operation_id
+    if (!operationId) return null
+    const existing = this.db.prepare(`
+      SELECT operation_type, delivery_class
+      FROM transport_operations
+      WHERE operation_id = ?
+    `).get(operationId)
+    if (existing && (
+      existing.operation_type !== envelope.operation_type
+      || existing.delivery_class !== envelope.delivery_class
+    )) {
+      const error = new Error(
+        `operation id ${operationId} was already used for `
+        + `${existing.delivery_class}:${existing.operation_type}`,
+      )
+      error.code = 'operation-id-conflict'
+      throw error
+    }
+    this.db.prepare(`
+      INSERT INTO transport_operations (
+        operation_id, operation_type, delivery_class, sender, destination,
+        parent_operation_id, created_at, attempt, status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'accepted')
+      ON CONFLICT(operation_id) DO UPDATE SET
+        attempt = MAX(transport_operations.attempt, excluded.attempt)
+    `).run(
+      operationId,
+      envelope.operation_type,
+      envelope.delivery_class,
+      envelope.sender || null,
+      envelope.destination || null,
+      envelope.parent_operation_id || null,
+      envelope.created_at || new Date().toISOString(),
+      Number(envelope.attempt) || 1,
+    )
+    return this.getTransportOperationStatus(operationId)
+  }
+
+  getTransportOperationStatus(operationId) {
+    if (!operationId) return null
+    const row = this.db.prepare(`
+      SELECT *
+      FROM transport_operations
+      WHERE operation_id = ?
+    `).get(operationId)
+    if (!row) return null
+    return {
+      operation_id: row.operation_id,
+      operation_type: row.operation_type,
+      delivery_class: row.delivery_class,
+      sender: row.sender,
+      destination: row.destination,
+      parent_operation_id: row.parent_operation_id,
+      created_at: row.created_at,
+      attempt: row.attempt,
+      status: row.status,
+      terminal_kind: row.terminal_kind,
+      terminal_payload: row.terminal_payload ? JSON.parse(row.terminal_payload) : null,
+      completed_at: row.completed_at,
+    }
+  }
+
+  recordTransportOperationResult(operationId, operationType, kind, payload, envelope = null) {
+    if (!operationId) return
+    const terminalKind = kind === 'error' ? 'error' : 'result'
+    const serialized = JSON.stringify(payload ?? null)
+    this.db.prepare(`
+      INSERT INTO transport_operations (
+        operation_id, operation_type, delivery_class, sender, destination,
+        parent_operation_id, created_at, attempt, status,
+        terminal_kind, terminal_payload, completed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(operation_id) DO UPDATE SET
+        status = excluded.status,
+        terminal_kind = excluded.terminal_kind,
+        terminal_payload = excluded.terminal_payload,
+        completed_at = excluded.completed_at,
+        attempt = MAX(transport_operations.attempt, excluded.attempt)
+    `).run(
+      operationId,
+      operationType,
+      envelope?.delivery_class || 'durable',
+      envelope?.sender || null,
+      envelope?.destination || null,
+      envelope?.parent_operation_id || null,
+      envelope?.created_at || new Date().toISOString(),
+      Number(envelope?.attempt) || 1,
+      terminalKind === 'error' ? 'failed' : 'completed',
+      terminalKind,
+      serialized,
+      new Date().toISOString(),
+    )
   }
 
   getReportCloseOperationResult(operationId) {

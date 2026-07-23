@@ -28,8 +28,7 @@ import 'xterm/css/xterm.css'
 import './TerminalShape.css'
 import { subscribePref } from '../preferences'
 import { getReadabilityProfile, readabilityStyleVars } from '../readabilityProfile'
-import { getFleetWsBase } from '../fleet/fleet-data.mjs'
-import { appendToken } from '../authToken'
+import { openTerminalTransport, type TerminalTransport } from '../fleet/terminal-transport'
 
 // Terminal PTY is daemon-routed through the global fleet server (not the serving
 // origin) — on the hosted Pages site window.location.origin has no /ws/terminal,
@@ -126,7 +125,7 @@ function TerminalComponent({ shape }: { shape: any }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
-  const wsRef = useRef<WebSocket | null>(null)
+  const terminalTransportRef = useRef<TerminalTransport | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const [status, setStatus] = useState<'disconnected' | 'connecting' | 'connected' | 'error'>('disconnected')
   const [statusMsg, setStatusMsg] = useState('')
@@ -177,9 +176,7 @@ function TerminalComponent({ shape }: { shape: any }) {
 
     // Forward key input from xterm to WebSocket (for direct xterm focus)
     term.onData((data) => {
-      if (wsRef.current?.readyState === WebSocket.OPEN) {
-        wsRef.current.send(JSON.stringify({ type: 'input', data }))
-      }
+      terminalTransportRef.current?.input(data)
     })
 
     return () => {
@@ -192,7 +189,7 @@ function TerminalComponent({ shape }: { shape: any }) {
   // Resize xterm when shape dimensions change
   useEffect(() => {
     const fit = fitRef.current
-    const ws = wsRef.current
+    const terminalTransport = terminalTransportRef.current
     if (!fit) return
 
     // Give the layout a tick to settle
@@ -200,9 +197,7 @@ function TerminalComponent({ shape }: { shape: any }) {
       try {
         fit.fit()
         const term = termRef.current
-        if (ws?.readyState === WebSocket.OPEN && term) {
-          ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
-        }
+        if (term) terminalTransport?.resize(term.cols, term.rows)
       } catch {}
     }, 50)
     return () => clearTimeout(timer)
@@ -213,33 +208,31 @@ function TerminalComponent({ shape }: { shape: any }) {
     if (!agentId) {
       setStatus('disconnected')
       setStatusMsg('')
-      wsRef.current?.close()
-      wsRef.current = null
+      terminalTransportRef.current?.close()
+      terminalTransportRef.current = null
       termRef.current?.clear()
       return
     }
 
     setStatus('connecting')
-    wsRef.current?.close()
+    terminalTransportRef.current?.close()
 
-    const ws = new WebSocket(appendToken(`${getFleetWsBase()}/ws/terminal?agent=${encodeURIComponent(agentId)}`))
-    wsRef.current = ws
-
-    ws.onopen = () => {
-      setStatus('connected')
-      setStatusMsg('')
-      // Send current dimensions
-      const term = termRef.current
-      const fit = fitRef.current
-      if (term && fit) {
-        try { fit.fit() } catch {}
-        ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
-      }
-    }
-
-    ws.onmessage = (evt) => {
-      try {
-        const msg = JSON.parse(evt.data)
+    const terminalTransport = openTerminalTransport({
+      agentId,
+      onOpen: () => {
+        setStatus('connected')
+        setStatusMsg('')
+        const term = termRef.current
+        const fit = fitRef.current
+        if (term && fit) {
+          try { fit.fit() } catch {
+            // A transient layout measurement failure must not prevent the live
+            // terminal stream from opening; the next ResizeObserver pass fits it.
+          }
+          terminalTransport.resize(term.cols, term.rows)
+        }
+      },
+      onFrame: (msg) => {
         if (msg.type === 'output' && msg.data && termRef.current) {
           termRef.current.reset()
           termRef.current.write(msg.data)
@@ -247,23 +240,25 @@ function TerminalComponent({ shape }: { shape: any }) {
           setStatus('error')
           setStatusMsg(msg.message || 'server error')
         }
-      } catch {}
-    }
-
-    ws.onerror = () => {
-      setStatus('error')
-      setStatusMsg('WebSocket error')
-    }
-
-    ws.onclose = (evt) => {
-      if (status === 'connecting' || status === 'connected') {
+      },
+      onError: () => {
         setStatus('error')
-        setStatusMsg(evt.reason || 'connection closed')
-      }
-    }
+        setStatusMsg('WebSocket error')
+      },
+      onClose: (evt) => {
+        setStatus((current) => {
+          if (current === 'connecting' || current === 'connected') {
+            setStatusMsg(evt.reason || 'connection closed')
+            return 'error'
+          }
+          return current
+        })
+      },
+    })
+    terminalTransportRef.current = terminalTransport
 
     return () => {
-      ws.close()
+      terminalTransport.close()
     }
   }, [agentId])
 
@@ -278,9 +273,7 @@ function TerminalComponent({ shape }: { shape: any }) {
 
   // Send raw data to tmux via WebSocket
   const sendInput = useCallback((data: string) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: 'input', data }))
-    }
+    terminalTransportRef.current?.input(data)
   }, [])
 
   // Handle input bar submit

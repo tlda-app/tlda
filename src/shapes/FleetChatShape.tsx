@@ -32,7 +32,7 @@ import { highlightSyntax, langFromFilePath, renderMarkdown as renderMarkdownUtil
 // @ts-ignore — vanilla JS module
 import { initVoice, setVoiceTarget, clearVoiceTarget, resetTranscript, restartRecording, toggleRecording, sendCurrentText, isRecording } from '../voice.mjs'
 // @ts-ignore — vanilla JS module
-import { getHumanId, getHumanName, getDeviceId, isDeviceReady, updateEventById, sendViewingContext, setViewingEnrichFn, getFleetWsBase, setFleetEventsLiveTailPinned, clearFleetEventsLiveTailPinned, recordBrowserActivityRendered } from '../fleet/fleet-data.mjs'
+import { getHumanId, getHumanName, getDeviceId, isDeviceReady, updateEventById, sendViewingContext, setViewingEnrichFn, setFleetEventsLiveTailPinned, clearFleetEventsLiveTailPinned, recordBrowserActivityRendered } from '../fleet/fleet-data.mjs'
 // @ts-ignore — vanilla JS module
 import { installChatImageRetry } from '../fleet/chat-image-retry.mjs'
 // @ts-ignore — vanilla JS module
@@ -45,7 +45,7 @@ import {
   nextFleetComposerTrafficMode,
   quietTrafficSuppressesActivity,
 } from '../fleet/filter-semantics.mjs'
-import { appendToken } from '../authToken'
+import { openTerminalTransport, type TerminalTransport } from '../fleet/terminal-transport'
 import { labelsForAgent } from '../../shared/fleet-labels.mjs'
 import { runtimeStatusName } from '../../shared/fleet-runtime-status.mjs'
 import { ACTIVITY_DELIVERY_STAGES } from '../../shared/activity-delivery-counters.mjs'
@@ -402,7 +402,7 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
   const containerRef = useRef<HTMLDivElement>(null)
   const bodyRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
-  const wsRef = useRef<WebSocket | null>(null)
+  const terminalTransportRef = useRef<TerminalTransport | null>(null)
   const pinnedRef = useRef(pinned)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const [status, setStatus] = useState<'connecting' | 'connected' | 'error'>('connecting')
@@ -573,7 +573,7 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
 
   useEffect(() => {
     if (!agentId) return
-    wsRef.current?.close()
+    terminalTransportRef.current?.close()
     termRef.current?.clear()
     setStatus('connecting')
     let sawAuthoritativeSize = false
@@ -603,14 +603,12 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
     // /ws/terminal must hit the fleet server (where the daemon is connected),
     // NOT the page origin — on the local copy the page is served from 5176 but
     // the daemon talks to Fly, so the page-origin socket had no daemon behind it.
-    const ws = new WebSocket(appendToken(`${getFleetWsBase()}/ws/terminal?agent=${encodeURIComponent(agentId)}`))
-    wsRef.current = ws
-    ws.onopen = () => {
-      setStatus('connected')
-    }
-    ws.onmessage = (evt) => {
-      try {
-        const msg = JSON.parse(evt.data)
+    const terminalTransport = openTerminalTransport({
+      agentId,
+      onOpen: () => {
+        setStatus('connected')
+      },
+      onFrame: (msg) => {
         if (msg.type === 'size' && msg.cols && msg.rows) {
           // The daemon reports the agent's real tmux window size. Resize the live
           // grid to match so the absolute-positioned stream renders cleanly; the
@@ -631,38 +629,35 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
             }
           } catch { void 0 }
         } else if (msg.type === 'output' && msg.data && termRef.current) {
+          const output = { type: 'output', data: msg.data, encoding: msg.encoding }
           if (sawAuthoritativeSize) {
-            writeOutput(msg)
+            writeOutput(output)
           } else {
-            pendingOutput.push(msg)
-            if (fallbackFlushed) writeOutput(msg)
+            pendingOutput.push(output)
+            if (fallbackFlushed) writeOutput(output)
           }
         } else if (msg.type === 'error') {
           setStatus('error')
         }
-      } catch {}
-    }
-    ws.onerror = () => setStatus('error')
-    ws.onclose = () => {}
+      },
+      onError: () => setStatus('error'),
+    })
+    terminalTransportRef.current = terminalTransport
     return () => {
       if (fallbackTimer) clearTimeout(fallbackTimer)
-      ws.close()
+      terminalTransport.close()
     }
   }, [agentId])
 
   const sendInput = (data: string) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: 'input', data }))
-    }
+    terminalTransportRef.current?.input(data)
     // Lightbox shows a capture snapshot, not the live stream — re-pull it so the
     // command's effect shows up.
     refreshHistory()
   }
 
   const submitInput = (text: string) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: 'submit', text }))
-    }
+    terminalTransportRef.current?.submit(text)
     // Lightbox shows a capture snapshot, not the live stream — re-pull it so the
     // command's effect shows up.
     refreshHistory()
@@ -4390,7 +4385,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       const sendWithRetry = (attempt: number) => {
         Promise.all(
           targets.map(t => sendMessage(t, text, sendOpts))
-        ).then((results: {ok: boolean, event_id: number}[]) => {
+        ).then((results) => {
           if (!results.every(r => r.ok)) throw new Error('send failed')
         }).catch(() => {
           if (attempt < 3) {
@@ -4430,7 +4425,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     const sendWithRetry = (attempt: number) => {
       Promise.all(
         targets.map(t => sendMessage(t, text, sendOpts))
-      ).then((results: {ok: boolean, event_id: number}[]) => {
+      ).then((results) => {
         if (!results.every(r => r.ok)) throw new Error('send failed')
       }).catch(() => {
         if (attempt < 3) {

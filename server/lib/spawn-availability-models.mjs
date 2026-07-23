@@ -6,7 +6,7 @@ export async function resolveFreshSpawnAvailabilityModels({
   doc = null,
   fleetStore,
   daemonConnections,
-  sendRpc,
+  sendDaemonEphemeral,
   resolveSpawnMachine,
   onDaemonMissing,
 }) {
@@ -38,10 +38,10 @@ export async function resolveFreshSpawnAvailabilityModels({
 
   try {
     // Route to the resolved daemon by its FULL key (machine_id + env_name). Passing
-    // only route.machine_id drops the env — sendRpc then has no env_name and rejects
+    // only route.machine_id drops the env — sendDaemonEphemeral then has no env_name and rejects
     // with "No fleet-daemon connected for <machine>:(unknown)", which surfaced as the
     // mint UI's "models unavailable" even though the daemon is connected at mini:default.
-    const capabilities = await sendRpc(route.machine_id, 'spawn-availability', {
+    const capabilities = await sendDaemonEphemeral(route.machine_id, 'spawn-availability', {
       daemon_env_name: route.env_name,
       ...(cwd ? { cwd } : {}),
     })

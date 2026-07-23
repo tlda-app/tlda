@@ -15,8 +15,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import 'xterm/css/xterm.css'
 import './TerminalCard.css'
 import { log } from '../logger'
-import { getFleetWsBase } from '../fleet/fleet-data.mjs'
-import { appendToken } from '../authToken'
+import { openTerminalTransport, type TerminalTransport } from '../fleet/terminal-transport'
 
 // Terminal PTY is daemon-routed through the global fleet server, not the serving
 // origin (the hosted Pages host has no /ws/terminal). Derive from the resolved
@@ -35,7 +34,7 @@ export function TerminalCard({ agentId, agentName, pinned, onDismiss, onMouseEnt
   const containerRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
-  const wsRef = useRef<WebSocket | null>(null)
+  const terminalTransportRef = useRef<TerminalTransport | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const [status, setStatus] = useState<'connecting' | 'connected' | 'error'>('connecting')
   const [statusMsg, setStatusMsg] = useState('')
@@ -107,13 +106,12 @@ export function TerminalCard({ agentId, agentName, pinned, onDismiss, onMouseEnt
       if (cancelled) return
       log.info('terminal-card', 'connecting', { agentId, agentName })
       setStatus('connecting')
-      wsRef.current?.close()
+      terminalTransportRef.current?.close()
 
-      const ws = new WebSocket(appendToken(`${getFleetWsBase()}/ws/terminal?agent=${encodeURIComponent(agentId)}`))
-      wsRef.current = ws
-
-      ws.onopen = () => {
-        if (cancelled) { ws.close(); return }
+      const terminalTransport = openTerminalTransport({
+        agentId,
+        onOpen: () => {
+        if (cancelled) { terminalTransport.close(); return }
         retryCountRef.current = 0
         log.info('terminal-card', 'connected', { agentId, agentName })
         setStatus('connected')
@@ -122,13 +120,10 @@ export function TerminalCard({ agentId, agentName, pinned, onDismiss, onMouseEnt
         const fit = fitRef.current
         if (term && fit) {
           try { fit.fit() } catch {}
-          ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
+          terminalTransport.resize(term.cols, term.rows)
         }
-      }
-
-      ws.onmessage = (evt) => {
-        try {
-          const msg = JSON.parse(evt.data)
+        },
+        onFrame: (msg) => {
           if (msg.type === 'output' && msg.data && termRef.current) {
             if (msg.encoding === 'base64') {
               const bytes = Uint8Array.from(atob(msg.data), c => c.charCodeAt(0))
@@ -141,17 +136,14 @@ export function TerminalCard({ agentId, agentName, pinned, onDismiss, onMouseEnt
             setStatus('error')
             setStatusMsg(msg.message || 'server error')
           }
-        } catch {}
-      }
-
-      ws.onerror = () => {
+        },
+        onError: () => {
         if (cancelled) return
         log.warn('terminal-card', 'ws error', { agentId, agentName })
         setStatus('error')
         setStatusMsg('WebSocket error')
-      }
-
-      ws.onclose = (evt) => {
+        },
+        onClose: (evt) => {
         if (cancelled || frozen) return
         if (retryCountRef.current < 3) {
           retryCountRef.current++
@@ -164,7 +156,9 @@ export function TerminalCard({ agentId, agentName, pinned, onDismiss, onMouseEnt
           setStatus('error')
           setStatusMsg(evt.reason || 'connection lost')
         }
-      }
+        },
+      })
+      terminalTransportRef.current = terminalTransport
     }
 
     connect()
@@ -172,7 +166,7 @@ export function TerminalCard({ agentId, agentName, pinned, onDismiss, onMouseEnt
     return () => {
       cancelled = true
       if (retryTimerRef.current) clearTimeout(retryTimerRef.current)
-      wsRef.current?.close()
+      terminalTransportRef.current?.close()
     }
   }, [agentId, frozen])
 
@@ -183,10 +177,7 @@ export function TerminalCard({ agentId, agentName, pinned, onDismiss, onMouseEnt
       try {
         fitRef.current?.fit()
         const term = termRef.current
-        const ws = wsRef.current
-        if (ws?.readyState === WebSocket.OPEN && term) {
-          ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }))
-        }
+        if (term) terminalTransportRef.current?.resize(term.cols, term.rows)
       } catch {}
     })
     observer.observe(containerRef.current)
@@ -195,9 +186,7 @@ export function TerminalCard({ agentId, agentName, pinned, onDismiss, onMouseEnt
 
   // Send raw data to tmux
   const sendInput = useCallback((data: string) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: 'input', data }))
-    }
+    terminalTransportRef.current?.input(data)
   }, [])
 
   const handleInputSubmit = useCallback(() => {
@@ -248,8 +237,8 @@ export function TerminalCard({ agentId, agentName, pinned, onDismiss, onMouseEnt
       while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop()
       setFrozenText(lines.join('\n'))
     }
-    wsRef.current?.close()
-    wsRef.current = null
+    terminalTransportRef.current?.close()
+    terminalTransportRef.current = null
     setFrozen(true)
   }, [])
 

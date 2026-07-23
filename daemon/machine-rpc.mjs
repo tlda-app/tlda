@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import Database from 'better-sqlite3'
 import { rejectWsRequests, startWsRequest } from '../shared/fleet-transport.mjs'
 
 function canonicalJson(value) {
@@ -24,6 +25,7 @@ export function createMachineRpc({
   now = () => Date.now(),
   replayTtlMs = 2 * 60_000,
   replayLimit = 500,
+  executionDbPath = null,
 } = {}) {
   if (typeof sendMsg !== 'function') throw new Error('createMachineRpc requires sendMsg')
 
@@ -32,9 +34,37 @@ export function createMachineRpc({
   const pendingReplies = new Map()
   const handlers = new Map()
   const executions = new Map()
+  const executionDb = executionDbPath ? new Database(executionDbPath) : null
+  executionDb?.pragma('journal_mode = WAL')
+  executionDb?.exec(`
+    CREATE TABLE IF NOT EXISTS daemon_rpc_executions (
+      request_id TEXT PRIMARY KEY,
+      operation TEXT NOT NULL,
+      fingerprint TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('running', 'terminal')),
+      reply TEXT,
+      updated_at INTEGER NOT NULL
+    )
+  `)
+  const readPersistedExecution = executionDb?.prepare(
+    'SELECT operation, fingerprint, status, reply FROM daemon_rpc_executions WHERE request_id = ?',
+  )
+  const beginPersistedExecution = executionDb?.prepare(`
+    INSERT INTO daemon_rpc_executions (request_id, operation, fingerprint, status, reply, updated_at)
+    VALUES (?, ?, ?, 'running', NULL, ?)
+  `)
+  const completePersistedExecution = executionDb?.prepare(`
+    UPDATE daemon_rpc_executions
+    SET status = 'terminal', reply = ?, updated_at = ?
+    WHERE request_id = ?
+  `)
+  const prunePersistedExecutions = executionDb?.prepare(
+    'DELETE FROM daemon_rpc_executions WHERE updated_at < ?',
+  )
 
   function pruneExecutions() {
     const cutoff = now() - replayTtlMs
+    prunePersistedExecutions?.run(cutoff)
     for (const [id, entry] of executions) {
       if (entry.settledAt != null && entry.settledAt < cutoff) executions.delete(id)
     }
@@ -71,6 +101,22 @@ export function createMachineRpc({
     if (!id) return
     const identity = { id, op, fingerprint: rpcRequestFingerprint(msg) }
     pruneExecutions()
+    const persisted = readPersistedExecution?.get(id)
+    if (persisted) {
+      if (persisted.operation !== op || persisted.fingerprint !== identity.fingerprint) {
+        sendMsg(replyFor(identity, { error: 'rpc request id reused with different operation or payload' }))
+        return
+      }
+      if (persisted.status === 'terminal' && persisted.reply) {
+        sendMsg(JSON.parse(persisted.reply))
+        return
+      }
+      sendMsg(replyFor(identity, {
+        error: 'previous daemon RPC execution outcome is indeterminate after process restart; operation was not replayed',
+        reason: 'indeterminate-after-restart',
+      }))
+      return
+    }
     const existing = executions.get(id)
     if (existing) {
       if (existing.op !== op || existing.fingerprint !== identity.fingerprint) {
@@ -92,6 +138,7 @@ export function createMachineRpc({
       return
     }
     const entry = { ...identity, promise: null, reply: null, settledAt: null }
+    beginPersistedExecution?.run(id, op, identity.fingerprint, now())
     entry.promise = Promise.resolve()
       .then(() => handler(msg))
       .then(
@@ -101,6 +148,7 @@ export function createMachineRpc({
       .then(reply => {
         entry.reply = reply
         entry.settledAt = now()
+        completePersistedExecution?.run(JSON.stringify(reply), entry.settledAt, id)
         return reply
       })
     executions.set(id, entry)

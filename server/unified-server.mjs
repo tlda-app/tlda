@@ -41,6 +41,7 @@ const { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, openSyn
 import os from 'os'
 const { homedir, hostname } = os
 import { randomUUID } from 'crypto'
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { lookup as mimeLookup } from 'mime-types'
 import { DEFAULT_PORT, getActiveConfigName, getFleetServerUrl, hasTls, resolveConfig } from '../shared/config.mjs'
 import { BARE_METADATA, resolveAsset } from '../shared/doc-assets.mjs'
@@ -80,6 +81,7 @@ import { livenessFromCheckAliveResult, runWakeRouteLifecycle, shouldSendWakeNudg
 import { recordAgentBindingEvent } from './lib/agent-binding-events.mjs'
 import { decideReportClose } from '../bots/todd/report-close-guard.mjs'
 import { rejectMatchingWsRequests, startWsRequest } from '../shared/fleet-transport.mjs'
+import { createFleetOperationTransport } from '../shared/fleet-operation-transport.mjs'
 import { isPlanModeResponse, planModeResponseKey } from './lib/plan-mode-response.mjs'
 import { SpawnBounceError, SpawnLibrarian, resolveSpawnCollision } from '../shared/spawn-librarian.ts'
 import { MailboxLibrarian } from '../shared/mailbox-librarian.ts'
@@ -246,6 +248,7 @@ resetStaleBuildStates()
 // TLDA_FLEET_DB overrides the default path — used by integration tests
 // to isolate from the live /tmp/fleet.db.
 const fleetStore = new FleetStore(process.env.TLDA_FLEET_DB, { taskDoc: true })
+const fleetOperationContext = new AsyncLocalStorage()
 const serverDaemonOutbox = new ServerDaemonOutbox(fleetStore.db)
 const agentSeatBindingObligations = new AgentSeatBindingObligations(fleetStore.db)
 const serverDaemonOutboxInflight = new Map()
@@ -600,7 +603,7 @@ async function reapZombies() {
       continue
     }
     try {
-      const r = await sendRpc(machineId, 'kill-orphan-chromium', {
+      const r = await sendDaemonDurable(machineId, 'kill-orphan-chromium', {
         port: z.port,
         addr: normalizeAddr(z.addr),
       })
@@ -875,7 +878,7 @@ let _taskWakeDraining = false
 
 async function sendWakeNudge(daemonKey, agent, seat, nudgeText, phase, logTag = 'wake-nudge') {
   if (!shouldSendWakeNudge(agent, nudgeText)) return
-  await sendRpcResilient(daemonKey, 'send-text', terminalRpcPayload(agent, seat, {
+  await sendDaemonDurable(daemonKey, 'send-text', terminalRpcPayload(agent, seat, {
     text: nudgeText,
     enter: true,
     enter_delay_ms: agent?.metadata?.kind === 'codex' ? 400 : 0,
@@ -924,7 +927,7 @@ async function drainTaskWakeQueue() {
       if (!ownerDaemon || ownerDaemon.readyState !== 1) throw new Error(`No fleet-daemon connected for ${daemonKey}`)
       const serverAlive = isAgentAlive(agentId)
       const liveness = serverAlive
-        ? await sendRpcResilient(daemonKey, 'check-alive', terminalRpcPayload(agent, seat))
+        ? await sendDaemonDurable(daemonKey, 'check-alive', terminalRpcPayload(agent, seat))
           .then(result => livenessFromCheckAliveResult(agentId, result))
           .catch(e => ({
             type: 'agent-liveness',
@@ -960,7 +963,7 @@ async function drainTaskWakeQueue() {
       // Wake carries NO privilege check (hibernation is transparent) — pass no
       // requester; the daemon resumes the agent with its own privileges. agent_id
       // lets the daemon find that agent's own grant.
-      const spawnResult = await sendRpc(daemonKey, 'spawn', { name: agentId, agent_id: agentId, respawn: true })
+      const spawnResult = await sendDaemonDurable(daemonKey, 'spawn', { name: agentId, agent_id: agentId, respawn: true })
       if (!spawnResult?.ok) {
         // Don't drop a failed re-nudge silently — surface via the catch (agent-wedged).
         throw new Error(spawnResult?.error || spawnResult?.reason || 'daemon returned ok:false with no reason')
@@ -1065,7 +1068,7 @@ class NoDaemonError extends Error {
   }
 }
 
-async function sendRpc(machineId, op, params = {}, opts = {}) {
+async function sendDaemonRpcAttempt(machineId, op, params = {}, opts = {}) {
   let targetMachine = machineId
   let envName = params.daemon_env_name
   if (!envName && typeof machineId === 'string' && machineId.includes(':')) {
@@ -1087,12 +1090,12 @@ async function sendRpc(machineId, op, params = {}, opts = {}) {
     }
   }
   if (!dws || dws.readyState !== 1) {
-    if (op === 'spawn') logSpawnDaemonMiss(key, 'sendRpc(spawn)', { hasWs: !!dws, readyState: dws?.readyState ?? 'missing', route: params.spawnRoute || 'unknown' })
+    if (op === 'spawn') logSpawnDaemonMiss(key, 'sendDaemonRpcAttempt(spawn)', { hasWs: !!dws, readyState: dws?.readyState ?? 'missing', route: params.spawnRoute || 'unknown' })
     return Promise.reject(new NoDaemonError(targetMachine, envName))
   }
   const id = opts.requestId || `rpc-${++_rpcSeq}-${Date.now().toString(36)}`
   // Per-attempt deadline is a caller-passed param (event-based default): control ops
-  // wrapped in sendRpcResilient pass a short per-attempt timeout so a stale-but-"open"
+  // wrapped in sendDaemonDurable pass a short per-attempt timeout so a stale-but-"open"
   // WS is abandoned quickly and retried on the fresh reconnect, rather than blocking
   // the full 10s each time.
   const timeoutMs = Number.isFinite(opts.timeoutMs) ? opts.timeoutMs : (op === 'spawn' ? SPAWN_RPC_TIMEOUT_MS : RPC_TIMEOUT_MS)
@@ -1153,7 +1156,7 @@ function failPendingRpcsForDaemon(machineId, envName, reason = 'daemon disconnec
 }
 
 // ── Event-based RPC retry across a transient daemon reconnect ──────────────────
-// Base sendRpc() is deliberately "10s timeout, no retry" — the caller decides. But
+// Base sendDaemonEphemeral() is deliberately "10s timeout, no retry" — the caller decides. But
 // durable *control* ops (send-text / wake-nudge, check-alive, spawn-availability)
 // should NOT hard-fail while the daemon WS is mid-reconnect (Fly deploy flap, 1006
 // churn, off-launchd restart). Per Skip: the deadline is a caller-passed param with an
@@ -1214,9 +1217,13 @@ function isTransientRpcError(err) {
 
 // Event-based retry across reconnect for idempotent control ops. Retries only on
 // transient (reconnect-class) failures; op-level errors propagate immediately.
-async function sendRpcResilient(machineId, op, params = {}, { totalDeadlineMs = RPC_RECONNECT_DEADLINE_MS, attemptTimeoutMs = RPC_RESILIENT_ATTEMPT_MS } = {}) {
+async function sendDaemonRpcDurableAttempt(machineId, op, params = {}, {
+  totalDeadlineMs = RPC_RECONNECT_DEADLINE_MS,
+  attemptTimeoutMs = RPC_RESILIENT_ATTEMPT_MS,
+  requestId = null,
+} = {}) {
   const key = rpcDaemonKey(machineId, params)
-  const requestId = `rpc-${++_rpcSeq}-${Date.now().toString(36)}`
+  const stableRequestId = requestId || `rpc-${++_rpcSeq}-${Date.now().toString(36)}`
   const start = Date.now()
   let lastErr = null
   while (true) {
@@ -1227,8 +1234,8 @@ async function sendRpcResilient(machineId, op, params = {}, { totalDeadlineMs = 
       try { await waitForDaemonReady(key, remaining) } catch (e) { lastErr = e; break }
     }
     try {
-      return await sendRpc(machineId, op, params, {
-        requestId,
+      return await sendDaemonRpcAttempt(machineId, op, params, {
+        requestId: stableRequestId,
         timeoutMs: Math.min(attemptTimeoutMs, Math.max(1, totalDeadlineMs - (Date.now() - start))),
       })
     } catch (e) {
@@ -1244,17 +1251,69 @@ async function sendRpcResilient(machineId, op, params = {}, { totalDeadlineMs = 
   throw lastErr || new Error(`RPC ${op} to ${key} failed after ${totalDeadlineMs}ms`)
 }
 
+const serverDaemonTransport = createFleetOperationTransport({
+  name: 'server-daemon',
+  sendEphemeral: (operation, payload, options) =>
+    sendDaemonRpcAttempt(payload.machineId, operation, {
+      ...payload.params,
+      operation_id: payload.params?.operation_id || options.envelope.operation_id,
+      fleet_operation: options.envelope,
+    }, options.rpcOptions),
+  sendDurable: (operation, payload, options) =>
+    sendDaemonRpcDurableAttempt(payload.machineId, operation, {
+      ...payload.params,
+      operation_id: payload.params?.operation_id || options.envelope.operation_id,
+      fleet_operation: options.envelope,
+    }, { ...options.rpcOptions, requestId: options.envelope.operation_id }),
+  observe: event => {
+    if (event.stage === 'started') {
+      fleetStore.beginTransportOperation(event.envelope)
+      return
+    }
+    fleetStore.recordTransportOperationResult(
+      event.operation_id,
+      event.operation,
+      event.ok ? 'result' : 'error',
+      event.ok ? { ok: true, queued: event.queued === true } : { message: event.error },
+      event.envelope,
+    )
+  },
+})
+
+function sendDaemonEphemeral(machineId, operation, params = {}, rpcOptions = {}) {
+  const parent = fleetOperationContext.getStore()
+  return serverDaemonTransport.ephemeral(operation, { machineId, params }, {
+    rpcOptions,
+    sender: 'server',
+    destination: machineId,
+    parentOperationId: parent?.operation_id || null,
+  })
+}
+
+function sendDaemonDurable(machineId, operation, params = {}, rpcOptions = {}) {
+  const parent = fleetOperationContext.getStore()
+  return serverDaemonTransport.durable(operation, { machineId, params }, {
+    rpcOptions,
+    sender: 'server',
+    destination: machineId,
+    parentOperationId: parent?.operation_id || null,
+  })
+}
+
 // Mirror-back is event-based and idempotent (same hash → same ref): use the
 // resilient sender so a daemon WS reconnect flap retries instead of throwing a
 // 10s timeout that masquerades as a failure. (Skip 7/22)
-setShadowMirrorHandler(createShadowMirrorRpcHandler({ readProject, sendRpc: sendRpcResilient }))
+setShadowMirrorHandler(createShadowMirrorRpcHandler({ readProject, sendDaemonEphemeral: sendDaemonDurable }))
 
 // No server-side echo suppression. Dedup is client-side: the WS reply
 // includes the event ID, which the client maps to its optimistic event
 // before the echo arrives (WS message ordering guarantees this).
 
 function broadcastFleet(msg) {
-  const data = JSON.stringify(msg)
+  const operation = fleetOperationContext.getStore()
+  const data = JSON.stringify(operation && !msg.fleet_operation
+    ? { ...msg, fleet_operation: operation }
+    : msg)
   for (const ws of wsFleetClients) {
     try { if (ws.readyState === 1) ws.send(data) } catch { wsFleetClients.delete(ws) }
   }
@@ -1319,7 +1378,7 @@ async function surfaceFleetWsError(ws, msg, err) {
 
     if (requestId && !msg?._fleetReplied && ws?.readyState === 1) {
       try {
-        ws.send(JSON.stringify({ id: requestId, error: { message } }))
+        sendFleetResponseFrame(ws, { id: requestId, error: { message } })
         msg._fleetReplied = true
       } catch (sendErr) {
         rpcReplyFailure = sendErr?.stack || sendErr?.message || String(sendErr)
@@ -1370,7 +1429,7 @@ async function handleFleetWsFrame(ws, raw) {
   let msg = null
   try {
     msg = JSON.parse(raw.toString())
-    await handleFleetWsMessage(ws, msg)
+    await fleetOperationContext.run(msg.fleet_operation || null, () => handleFleetWsMessage(ws, msg))
   } catch (err) {
     await surfaceFleetWsError(ws, msg, err)
   }
@@ -1838,7 +1897,7 @@ async function performSpawnRelay(caller, msg) {
     try {
       let result
       try {
-        result = await sendRpc(machineId, 'spawn', spawnRequest)
+        result = await sendDaemonDurable(machineId, 'spawn', spawnRequest)
         if (pendingAgentId && result?.ok === false) {
           spawnLibrarian.failPending(pendingAgentId, result.code || result.reason || 'launch-failed')
         }
@@ -2216,7 +2275,7 @@ onGlobalEvent((event) => {
         const machineIds = [...daemonConnections.keys()]
         if (machineIds.length > 0) {
           const taskDesc = `Watch the ${docName} writing project. Read the qa-writing-watch skill for your full spec.`
-          sendRpc(machineIds[0], 'spawn', { name: qaName, fresh: !existing })
+          sendDaemonDurable(machineIds[0], 'spawn', { name: qaName, fresh: !existing })
             .then(() => {
               const agent = fleetStore.findAgent(qaName)
               if (agent) {
@@ -2509,7 +2568,7 @@ async function materializeRecipientAttachment({ eventId, recipientId, sourceAgen
     return fail(`${current.error} (op=materialize-attachment)`)
   }
   try {
-    const result = await sendRpc(current.seat.daemon_key, 'materialize-attachment', {
+    const result = await sendDaemonDurable(current.seat.daemon_key, 'materialize-attachment', {
       event_id: eventId,
       attachment_id: attachment.id,
       source_agent: sourceAgent || 'unknown',
@@ -3107,7 +3166,7 @@ app.post('/api/reaper/kill', requireRead, async (req, res) => {
   if (!pid) return res.status(400).json({ error: 'missing pid' })
   const machineId = _lastReaperStatus?.daemon_key || LOCAL_DAEMON_ADDRESS
   try {
-    const result = await sendRpc(machineId, 'reaper-kill', { pid })
+    const result = await sendDaemonDurable(machineId, 'reaper-kill', { pid })
     res.json(result || { ok: true })
   } catch (e) {
     res.status(500).json({ error: e.message })
@@ -3117,7 +3176,7 @@ app.post('/api/reaper/kill', requireRead, async (req, res) => {
 app.post('/api/reaper/sweep', requireRead, async (req, res) => {
   const machineId = _lastReaperStatus?.daemon_key || LOCAL_DAEMON_ADDRESS
   try {
-    const result = await sendRpc(machineId, 'reaper-sweep', {})
+    const result = await sendDaemonDurable(machineId, 'reaper-sweep', {})
     res.json(result || { ok: true })
   } catch (e) {
     res.status(500).json({ error: e.message })
@@ -3191,7 +3250,7 @@ app.get('/api/fleet/spawn-availability', requireRead, async (req, res) => {
       fleetStore,
       daemonConnections,
       // Resilient: a mint models query shouldn't fail because the daemon WS is mid-reconnect.
-      sendRpc: (machineId, op, params) => sendRpcResilient(machineId, op, params),
+      sendDaemonEphemeral: (machineId, op, params) => sendDaemonDurable(machineId, op, params),
       resolveSpawnMachine,
       onDaemonMissing: (machineId, context, detail) => logSpawnDaemonMiss(machineId, context, detail),
     })
@@ -3203,7 +3262,7 @@ app.get('/api/fleet/spawn-availability', requireRead, async (req, res) => {
   const results = {}
   await Promise.all(machines.map(async (machineId) => {
     try {
-      results[machineId] = await sendRpc(machineId, 'spawn-availability', {
+      results[machineId] = await sendDaemonEphemeral(machineId, 'spawn-availability', {
         ...(context.cwd ? { cwd: context.cwd } : {}),
       })
     } catch (e) {
@@ -3731,7 +3790,7 @@ app.post('/api/backing-file-write', requireRead, async (req, res) => {
   if (record.error) return res.status(409).json({ ok: false, error: record.error, status: record.status })
   backingFileRegister(record)
   try {
-    const result = await sendRpc(record.ownerMachineId, 'write-backing-file', { project: record.project, backingName: record.backingName, content: content ?? '', restore: !!restore })
+    const result = await sendDaemonDurable(record.ownerMachineId, 'write-backing-file', { project: record.project, backingName: record.backingName, content: content ?? '', restore: !!restore })
     res.json({ ok: true, status: result?.status || 'synced', project: record.project, backingName: record.backingName, ownerMachineId: record.ownerMachineId })
   } catch (e) {
     const status = e?.message?.includes('deleted externally') ? 'deleted' : e?.code === 'NO_DAEMON' ? 'owner-unavailable' : 'failed'
@@ -3764,7 +3823,7 @@ app.post('/api/send-text', requireRead, async (req, res) => {
   const seat = currentSeatOrHttpError(res, agent)
   if (!seat) return
   try {
-    const result = await sendRpc(seat.daemon_key, 'send-text', { agent_id: agent.id, terminal_capability: seat.terminal_capability, text, enter: enter !== false })
+    const result = await sendDaemonDurable(seat.daemon_key, 'send-text', { agent_id: agent.id, terminal_capability: seat.terminal_capability, text, enter: enter !== false })
     res.json(result || { ok: true })
   } catch (e) { res.status(500).json({ error: e.message }) }
 })
@@ -3778,7 +3837,7 @@ app.post('/api/send-key', requireRead, async (req, res) => {
   const seat = currentSeatOrHttpError(res, agent)
   if (!seat) return
   try {
-    const result = await sendRpc(seat.daemon_key, 'send-key', { agent_id: agent.id, terminal_capability: seat.terminal_capability, key })
+    const result = await sendDaemonDurable(seat.daemon_key, 'send-key', { agent_id: agent.id, terminal_capability: seat.terminal_capability, key })
     res.json(result || { ok: true })
   } catch (e) { res.status(500).json({ error: e.message }) }
 })
@@ -3792,7 +3851,7 @@ app.post('/api/interrupt', requireRead, async (req, res) => {
   const seat = currentSeatOrHttpError(res, agent)
   if (!seat) return
   try {
-    const result = await sendRpc(seat.daemon_key, 'interrupt', terminalRpcPayload(agent, seat))
+    const result = await sendDaemonDurable(seat.daemon_key, 'interrupt', terminalRpcPayload(agent, seat))
     // Only emit the interrupt card when the agent actually halted. A soft promote
     // also produces a "[Request interrupted by user]" marker but the agent resumes;
     // `stopped` is what tells a real hard interrupt (card) from a soft one (no card).
@@ -3819,7 +3878,7 @@ app.post('/api/soft-interrupt', requireRead, async (req, res) => {
   const seat = currentSeatOrHttpError(res, agent)
   if (!seat) return
   try {
-    const result = await sendRpc(seat.daemon_key, 'soft-interrupt', terminalRpcPayload(agent, seat))
+    const result = await sendDaemonDurable(seat.daemon_key, 'soft-interrupt', terminalRpcPayload(agent, seat))
     res.json({ ok: true, agent: agent.friendly_name || agent.id, ...result })
   } catch (e) { res.status(500).json({ error: e.message }) }
 })
@@ -3833,7 +3892,7 @@ app.post('/api/kill-session', requireRead, async (req, res) => {
   const seat = currentSeatOrHttpError(res, agent)
   if (!seat) return
   try {
-    const result = await sendRpc(seat.daemon_key, 'kill-session', terminalRpcPayload(agent, seat))
+    const result = await sendDaemonDurable(seat.daemon_key, 'kill-session', terminalRpcPayload(agent, seat))
     fleetStore.retireCurrentAgentSeat(agent.id, {
       sessionId: seat.session_id,
       daemonKey: seat.daemon_key,
@@ -3857,7 +3916,7 @@ app.post('/api/plan-mode-respond', requireRead, async (req, res) => {
   const seat = currentSeatOrHttpError(res, agent)
   if (!seat) return
   try {
-    const result = await sendRpc(seat.daemon_key, 'send-text', terminalRpcPayload(agent, seat, { text: planModeResponseKey(response), enter: false }))
+    const result = await sendDaemonDurable(seat.daemon_key, 'send-text', terminalRpcPayload(agent, seat, { text: planModeResponseKey(response), enter: false }))
     fleetStore.updateAgentMeta?.(agent.id, { permission_mode: null, inPlanMode: false, planModeType: null })
     const pending = pendingPlanApprovals.get(agent.id)
     if (pending?.eventId) {
@@ -4233,11 +4292,12 @@ function clearEphemeralState(agentId) {
 const fleetRouter = createFleetRouter({
   fleetStore, broadcastEvent, broadcastState, clearEphemeralState,
   suppressEchoFor: () => {},
-  sendRpc, resolveRpc, daemonConnections, resolveSpawnTarget,
+  sendDaemonEphemeral, sendDaemonDurable, resolveRpc, daemonConnections, resolveSpawnTarget,
   broadcastDaemonAgentsUpdated,
   enqueueDaemonMessage: (...args) => enqueueDaemonMessage(...args),
   agentSeatBindingObligations,
   hasOpenFleetSocketForAgent,
+  requireOperationRead: requireRw,
 })
 app.use(fleetRouter)
 
@@ -4401,10 +4461,10 @@ function terminalAgentContext(agent) {
   })
 }
 
-function sendTerminalFrame(ws, frame, { agentId, operation }) {
+function sendTerminalFrame(ws, frame, { agentId, operation }, callback = undefined) {
   if (ws?.readyState !== 1) return false
   try {
-    ws.send(JSON.stringify(frame))
+    ws.send(JSON.stringify(frame), callback)
     return true
   } catch (err) {
     terminalBridgeLog.warn({
@@ -4531,9 +4591,7 @@ server.on('upgrade', async (req, socket, head) => {
       // Decline cleanly with a JSON message before close so the UI shows
       // a useful error instead of "WebSocket error".
       terminalWss.handleUpgrade(req, socket, head, (ws) => {
-        try { ws.send(JSON.stringify({ type: 'error', message: 'agent has no owning daemon terminal capability; terminal routing unavailable' })) } catch {
-          // Socket may already be gone; close below is the remaining cleanup.
-        }
+        sendTerminalFrame(ws, { type: 'error', message: 'agent has no owning daemon terminal capability; terminal routing unavailable' }, { agentId, operation: 'terminal-open' })
         try { ws.close() } catch {
           // Socket already closed by peer; no server-side recovery remains.
         }
@@ -4553,12 +4611,12 @@ server.on('upgrade', async (req, socket, head) => {
 
       if (isFirst) {
         try {
-          const res = await sendRpc(seat.daemon_key, 'start-terminal-watch', {
+          const res = await sendDaemonEphemeral(seat.daemon_key, 'start-terminal-watch', {
             agent_id: agent.id, terminal_capability: terminalCapability, poll_ms: 500,
           })
           if (res && res.cols && res.rows) terminalSizes.set(agent.id, { cols: res.cols, rows: res.rows })
         } catch (e) {
-          try { ws.send(JSON.stringify({ type: 'error', message: e.message })) } catch {}
+          sendTerminalFrame(ws, { type: 'error', message: e.message }, { agentId: agent.id, operation: 'start-terminal-watch' })
         }
       }
 
@@ -4566,7 +4624,7 @@ server.on('upgrade', async (req, socket, head) => {
       // so the peek grid is created at the right width and the seed doesn't wrap.
       const cachedSize = terminalSizes.get(agent.id)
       if (cachedSize && ws.readyState === 1) {
-        try { ws.send(JSON.stringify({ type: 'size', cols: cachedSize.cols, rows: cachedSize.rows })) } catch {}
+        sendTerminalFrame(ws, { type: 'size', cols: cachedSize.cols, rows: cachedSize.rows }, { agentId: agent.id, operation: 'terminal-size' })
       }
 
       // Seed with current terminal content so the card isn't blank on open.
@@ -4575,7 +4633,7 @@ server.on('upgrade', async (req, socket, head) => {
       // idle awake agent shows nothing. capture-pane takes `lines` and returns
       // the screen as `pane` (see rpcCapturePane in fleet-daemon.mjs).
       try {
-        const { pane } = await sendRpc(seat.daemon_key, 'capture-pane', {
+        const { pane } = await sendDaemonEphemeral(seat.daemon_key, 'capture-pane', {
           agent_id: agent.id, terminal_capability: terminalCapability, visible: true,
         })
         if (pane && ws.readyState === 1) {
@@ -4587,12 +4645,12 @@ server.on('upgrade', async (req, socket, head) => {
           // repaints that overwrite the garble) but permanent for an idle goose
           // agent that never repaints. Convert here too so the seed is readable.
           const seed = trimTerminalSeedBlankRows(pane).replace(/\r?\n/g, '\r\n')
-          ws.send(JSON.stringify({ type: 'output', data: Buffer.from(seed).toString('base64'), encoding: 'base64' }))
+          sendTerminalFrame(ws, { type: 'output', data: Buffer.from(seed).toString('base64'), encoding: 'base64' }, { agentId: agent.id, operation: 'terminal-seed' })
         }
       } catch (e) {
         console.warn(`[terminal] seed capture failed for ${agent.id}: ${e.message}`)
         if (ws.readyState === 1) {
-          ws.send(JSON.stringify({ type: 'not-live', reason: 'terminal session not live' }), (sendError) => {
+          sendTerminalFrame(ws, { type: 'not-live', reason: 'terminal session not live' }, { agentId: agent.id, operation: 'terminal-seed' }, (sendError) => {
             if (sendError) console.warn(`[terminal] failed to send not-live frame for ${agent.id}: ${sendError.message}`)
           })
         }
@@ -4601,45 +4659,47 @@ server.on('upgrade', async (req, socket, head) => {
       ws.on('message', async (raw) => {
         let msg
         try { msg = JSON.parse(raw.toString()) } catch { return }
-        if (msg.type === 'input' && typeof msg.data === 'string') {
-          try {
-            await sendRpc(seat.daemon_key, 'terminal-input', {
-              agent_id: agent.id, terminal_capability: terminalCapability, data: msg.data,
-            })
-          } catch (e) {
-            if (ws.readyState === 1) {
-              ws.send(JSON.stringify({ type: 'error', message: e.message }))
+        await fleetOperationContext.run(msg.fleet_operation || null, async () => {
+          if (msg.type === 'input' && typeof msg.data === 'string') {
+            try {
+              await sendDaemonEphemeral(seat.daemon_key, 'terminal-input', {
+                agent_id: agent.id, terminal_capability: terminalCapability, data: msg.data,
+              })
+            } catch (e) {
+              if (ws.readyState === 1) {
+                sendTerminalFrame(ws, { type: 'error', message: e.message }, { agentId: agent.id, operation: 'terminal-input' })
+              }
+            }
+          } else if (msg.type === 'submit' && typeof msg.text === 'string') {
+            try {
+              await sendDaemonEphemeral(seat.daemon_key, 'send-text', {
+                agent_id: agent.id, terminal_capability: terminalCapability, text: msg.text, enter: true,
+              })
+            } catch (e) {
+              if (ws.readyState === 1) {
+                sendTerminalFrame(ws, { type: 'error', message: e.message }, { agentId: agent.id, operation: 'terminal-submit' })
+              }
+            }
+          } else if (msg.type === 'resize' && msg.cols && msg.rows) {
+            try {
+              await sendDaemonEphemeral(seat.daemon_key, 'terminal-resize', {
+                agent_id: agent.id, terminal_capability: terminalCapability, cols: msg.cols, rows: msg.rows,
+              })
+            } catch (e) {
+              const browserNotified = sendTerminalFrame(ws, {
+                type: 'error',
+                message: `terminal resize failed: ${e.message}`,
+              }, { agentId: agent.id, operation: 'terminal-resize' })
+              await reportTerminalBridgeIncident({
+                operation: 'terminal-resize',
+                agent,
+                error: e,
+                browserNotified,
+                evidence: { cols: msg.cols, rows: msg.rows },
+              })
             }
           }
-        } else if (msg.type === 'submit' && typeof msg.text === 'string') {
-          try {
-            await sendRpc(seat.daemon_key, 'send-text', {
-              agent_id: agent.id, terminal_capability: terminalCapability, text: msg.text, enter: true,
-            })
-          } catch (e) {
-            if (ws.readyState === 1) {
-              ws.send(JSON.stringify({ type: 'error', message: e.message }))
-            }
-          }
-        } else if (msg.type === 'resize' && msg.cols && msg.rows) {
-          try {
-            await sendRpc(seat.daemon_key, 'terminal-resize', {
-              agent_id: agent.id, terminal_capability: terminalCapability, cols: msg.cols, rows: msg.rows,
-            })
-          } catch (e) {
-            const browserNotified = sendTerminalFrame(ws, {
-              type: 'error',
-              message: `terminal resize failed: ${e.message}`,
-            }, { agentId: agent.id, operation: 'terminal-resize' })
-            await reportTerminalBridgeIncident({
-              operation: 'terminal-resize',
-              agent,
-              error: e,
-              browserNotified,
-              evidence: { cols: msg.cols, rows: msg.rows },
-            })
-          }
-        }
+        })
       })
 
       const cleanup = async () => {
@@ -4650,7 +4710,7 @@ server.on('upgrade', async (req, socket, head) => {
           terminalWatchers.delete(agent.id)
           terminalSizes.delete(agent.id)
           try {
-            await sendRpc(seat.daemon_key, 'stop-terminal-watch', {
+            await sendDaemonEphemeral(seat.daemon_key, 'stop-terminal-watch', {
               agent_id: agent.id, terminal_capability: terminalCapability,
             })
           } catch (e) {
@@ -4921,36 +4981,80 @@ server.on('upgrade', async (req, socket, head) => {
 })
 
 // ---------- Fleet WS message handler ----------
-// Handles request/response messages from the fleet MCP (sendWS pattern)
+// Handles request/response messages from the fleet operation transport.
+
+function sendFleetResponseFrame(ws, frame) {
+  if (ws?.readyState !== 1) return false
+  ws.send(JSON.stringify(frame))
+  return true
+}
 
 async function handleFleetWsMessage(ws, msg) {
   const { id, type } = msg
+  const operationEnvelope = msg.fleet_operation || null
+  if (operationEnvelope) {
+    if (operationEnvelope.operation_type !== type) {
+      throw new Error(`fleet operation envelope type ${operationEnvelope.operation_type} does not match message type ${type}`)
+    }
+    if (!['durable', 'ephemeral'].includes(operationEnvelope.delivery_class)) {
+      throw new Error(`fleet operation ${type} has invalid delivery class ${operationEnvelope.delivery_class}`)
+    }
+  }
+  const clientOperationId = msg.operation_id || operationEnvelope?.operation_id || null
   const reply = (result) => {
+    if (clientOperationId && fleetStore) {
+      fleetStore.recordTransportOperationResult(clientOperationId, type, 'result', result, operationEnvelope)
+    }
     if (id) {
-      ws.send(JSON.stringify({ id, result }))
+      sendFleetResponseFrame(ws, { id, result })
       msg._fleetReplied = true
     }
   }
   const error = (err) => {
     if (!id) return
-    if (err && typeof err === 'object') {
-      ws.send(JSON.stringify({
-        id,
-        error: {
+    const payload = err && typeof err === 'object'
+      ? {
           message: err.message || String(err),
           code: err.code,
           reason: err.reason,
           ...(err.payload ? { payload: err.payload } : {}),
-        },
-      }))
+        }
+      : err
+    if (clientOperationId && fleetStore) {
+      fleetStore.recordTransportOperationResult(clientOperationId, type, 'error', payload, operationEnvelope)
+    }
+    if (err && typeof err === 'object') {
+      sendFleetResponseFrame(ws, {
+        id,
+        error: payload,
+      })
       msg._fleetReplied = true
     } else {
-      ws.send(JSON.stringify({ id, error: err }))
+      sendFleetResponseFrame(ws, { id, error: err })
       msg._fleetReplied = true
     }
   }
 
   if (!fleetStore) { error('fleet store unavailable'); return }
+  if (clientOperationId) {
+    try {
+      if (operationEnvelope) fleetStore.beginTransportOperation(operationEnvelope)
+      const previous = fleetStore.getTransportOperationResult(clientOperationId, type)
+      if (previous?.kind === 'error') {
+        sendFleetResponseFrame(ws, { id, error: previous.payload })
+        msg._fleetReplied = true
+        return
+      }
+      if (previous?.kind === 'result') {
+        sendFleetResponseFrame(ws, { id, result: previous.payload })
+        msg._fleetReplied = true
+        return
+      }
+    } catch (e) {
+      error(e)
+      return
+    }
+  }
 
   if (type === 'notification-attempt') {
     const actor = ws._tldaAgentId || ws._tldaHumanId || msg.agentId || null
@@ -5030,7 +5134,7 @@ async function handleFleetWsMessage(ws, msg) {
   }
 
   if (type === 'register' || type === 'reserve-shell' || type === 'mint-shell') {
-    // Prefer agent_id over id: the MCP's sendWS() stamps a correlation `id`
+    // Prefer agent_id over id: the transport adapter stamps a correlation `id`
     // onto every message, so the real fleet id arrives as agent_id. Falling
     // back to id keeps direct WS callers that send id=fleet_id working. Reading
     // the bare `id` first here was the root cause of phantom UUID-keyed rows.
@@ -5614,8 +5718,8 @@ async function handleFleetWsMessage(ws, msg) {
           traceId,
           source,
           isAgentAlive,
-          sendRpcResilient,
-          sendRpc,
+          sendDaemonDurable,
+          sendDaemonEphemeral,
           spawnLibrarian,
           recordWakeAttempt,
           appendControlTrace: (event) => controlPlaneTraces.append(event),
@@ -6006,7 +6110,7 @@ async function handleFleetWsMessage(ws, msg) {
         if (approval?.agent_id) {
           const agent = fleetStore.findAgent?.(approval.agent_id)
           const { seat } = currentSeatOrError(agent)
-          if (seat) sendRpc(seat.daemon_key, 'send-text', terminalRpcPayload(agent, seat, {
+          if (seat) sendDaemonDurable(seat.daemon_key, 'send-text', terminalRpcPayload(agent, seat, {
             text: key,
             enter: false,
           })).catch(e => console.error(`[plan-approval] keystroke failed: ${e.message}`))
@@ -6021,13 +6125,13 @@ async function handleFleetWsMessage(ws, msg) {
         const agent = fleetStore.findAgent(r)
         const { seat } = currentSeatOrError(agent)
         if (!seat) continue
-        sendRpc(seat.daemon_key, 'send-text', terminalRpcPayload(agent, seat, {
+        sendDaemonDurable(seat.daemon_key, 'send-text', terminalRpcPayload(agent, seat, {
           text: '/plan',
           enter: true,
         })).catch(e => console.error(`[outline-keyword] plan mode failed for ${r}: ${e.message}`))
         if (keyword === 'outline') {
           setTimeout(() => {
-            sendRpc(seat.daemon_key, 'send-text', terminalRpcPayload(agent, seat, {
+            sendDaemonDurable(seat.daemon_key, 'send-text', terminalRpcPayload(agent, seat, {
               text: 'Invoke the outline-before-writing skill now. Write your outline in the plan file, then share the plan file path in chat so it appears as a tappable note.',
               enter: true,
             })).catch(e => console.error(`[outline-keyword] skill nudge failed for ${r}: ${e.message}`))
@@ -6710,7 +6814,7 @@ async function handleFleetWsMessage(ws, msg) {
     const route = resolveRpc('kick', agent)
     if (route.via === 'none') { error(route.error); return }
     try {
-      const result = await sendRpc(route.machine_id, 'kick', { agent_id: agent.id })
+      const result = await sendDaemonDurable(route.machine_id, 'kick', { agent_id: agent.id })
       broadcastEvent('fleet-event', { type: 'kick', to: agent.id, from: SERVER_OWNER_ID, text: 'manual kick' })
       reply(result)
     } catch (e) { error(e.message) }
@@ -6725,7 +6829,7 @@ async function handleFleetWsMessage(ws, msg) {
     const { seat, error: seatError } = currentSeatOrError(agent)
     if (!seat) { error(seatError); return }
     try {
-      const result = await sendRpc(seat.daemon_key, 'kill-session', terminalRpcPayload(agent, seat))
+      const result = await sendDaemonDurable(seat.daemon_key, 'kill-session', terminalRpcPayload(agent, seat))
       fleetStore.retireCurrentAgentSeat(agent.id, {
         sessionId: seat.session_id,
         daemonKey: seat.daemon_key,
@@ -6748,7 +6852,7 @@ async function handleFleetWsMessage(ws, msg) {
     const { seat, error: seatError } = currentSeatOrError(agent)
     if (!seat) { error(seatError); return }
     try {
-      const result = await sendRpc(seat.daemon_key, 'kill-session', terminalRpcPayload(agent, seat))
+      const result = await sendDaemonDurable(seat.daemon_key, 'kill-session', terminalRpcPayload(agent, seat))
       fleetStore.retireCurrentAgentSeat(agent.id, {
         sessionId: seat.session_id,
         daemonKey: seat.daemon_key,
@@ -6769,7 +6873,7 @@ async function handleFleetWsMessage(ws, msg) {
     const { seat, error: seatError } = currentSeatOrError(agent)
     if (!seat) { error(seatError); return }
     try {
-      const result = await sendRpc(seat.daemon_key, 'interrupt', terminalRpcPayload(agent, seat))
+      const result = await sendDaemonDurable(seat.daemon_key, 'interrupt', terminalRpcPayload(agent, seat))
       reply({ ok: true, agent: agent.friendly_name || agent.id, ...result })
     } catch (e) { error(e.message) }
     return
@@ -6790,7 +6894,7 @@ async function handleFleetWsMessage(ws, msg) {
     const { seat, error: seatError } = currentSeatOrError(agent)
     if (!seat) { error(seatError); return }
     try {
-      const result = await sendRpc(seat.daemon_key, 'send-key', terminalRpcPayload(agent, seat, { key }))
+      const result = await sendDaemonDurable(seat.daemon_key, 'send-key', terminalRpcPayload(agent, seat, { key }))
       reply(result)
     } catch (e) { error(e.message) }
     return
@@ -6804,7 +6908,7 @@ async function handleFleetWsMessage(ws, msg) {
     const { seat, error: seatError } = currentSeatOrError(agent)
     if (!seat) { error(seatError); return }
     try {
-      const result = await sendRpc(seat.daemon_key, 'send-text', { agent_id: agent.id, terminal_capability: seat.terminal_capability, text, enter: enter !== false })
+      const result = await sendDaemonDurable(seat.daemon_key, 'send-text', { agent_id: agent.id, terminal_capability: seat.terminal_capability, text, enter: enter !== false })
       reply(result)
     } catch (e) { error(e.message) }
     return
@@ -6818,7 +6922,7 @@ async function handleFleetWsMessage(ws, msg) {
     const { seat, error: seatError } = currentSeatOrError(agent)
     if (!seat) { error(seatError); return }
     try {
-      const result = await sendRpc(seat.daemon_key, 'capture-pane', { agent_id: agent.id, terminal_capability: seat.terminal_capability, lines: lines || 50 })
+      const result = await sendDaemonEphemeral(seat.daemon_key, 'capture-pane', { agent_id: agent.id, terminal_capability: seat.terminal_capability, lines: lines || 50 })
       reply(result)
     } catch (e) { error(e.message) }
     return
@@ -6832,7 +6936,7 @@ async function handleFleetWsMessage(ws, msg) {
     const { seat, error: seatError } = currentSeatOrError(agent)
     if (!seat) { error(seatError); return }
     try {
-      const result = await sendRpc(seat.daemon_key, 'check-alive', { agent_id: agent.id, terminal_capability: seat.terminal_capability })
+      const result = await sendDaemonEphemeral(seat.daemon_key, 'check-alive', { agent_id: agent.id, terminal_capability: seat.terminal_capability })
       const liveness = livenessFromCheckAliveResult(agent.id, result)
       recordExplicitCheckAliveLiveness(liveness)
       reply(liveness)
@@ -6849,7 +6953,7 @@ async function handleFleetWsMessage(ws, msg) {
     const { seat, error: seatError } = currentSeatOrError(agent)
     if (!seat) { error(seatError); return }
     try {
-      let result = await sendRpc(seat.daemon_key, 'send-text', terminalRpcPayload(agent, seat, { text: planModeResponseKey(response), enter: false }))
+      let result = await sendDaemonDurable(seat.daemon_key, 'send-text', terminalRpcPayload(agent, seat, { text: planModeResponseKey(response), enter: false }))
       fleetStore.updateAgentMeta?.(agent.id, { permission_mode: null, inPlanMode: false, planModeType: null })
       // Persist response on the plan_approval event
       const pending = pendingPlanApprovals.get(agent.id)
@@ -6881,15 +6985,15 @@ async function handleFleetWsMessage(ws, msg) {
         if (/accept edits on/i.test(pane)) return 'acceptEdits'
         return 'default'
       }
-      const cap1 = await sendRpc(seat.daemon_key, 'capture-pane', terminalRpcPayload(agent, seat, { lines: 5 }))
+      const cap1 = await sendDaemonEphemeral(seat.daemon_key, 'capture-pane', terminalRpcPayload(agent, seat, { lines: 5 }))
       const currentMode = parseCCMode(cap1?.content || '')
       const btabs = currentMode === 'plan' ? 1 : currentMode === 'acceptEdits' ? 1 : 2
       for (let i = 0; i < btabs; i++) {
-        await sendRpc(seat.daemon_key, 'send-key', terminalRpcPayload(agent, seat, { key: 'BTab' }))
+        await sendDaemonEphemeral(seat.daemon_key, 'send-key', terminalRpcPayload(agent, seat, { key: 'BTab' }))
         if (i < btabs - 1) await new Promise(r => setTimeout(r, 150))
       }
       if (btabs > 0) await new Promise(r => setTimeout(r, 300))
-      const cap2 = await sendRpc(seat.daemon_key, 'capture-pane', terminalRpcPayload(agent, seat, { lines: 5 }))
+      const cap2 = await sendDaemonEphemeral(seat.daemon_key, 'capture-pane', terminalRpcPayload(agent, seat, { lines: 5 }))
       const finalMode = parseCCMode(cap2?.content || '')
       fleetStore.updateAgentMeta?.(agent.id, { permission_mode: finalMode === 'default' ? null : finalMode })
       broadcastState()
@@ -7025,7 +7129,7 @@ async function handleFleetWsMessage(ws, msg) {
   }
 
   // ---- wiretap-remove ----
-  // Field is `tap_id`, NOT `id`: sendWS() stamps a correlation `id` onto every
+    // Field is `tap_id`, NOT `id`: the transport adapter stamps a correlation `id` onto every
   // RPC message, which would clobber a payload `id` (same reason task_id /
   // agent_id are used elsewhere).
   if (type === 'wiretap-remove') {
@@ -7777,7 +7881,7 @@ async function handleDaemonWsMessage(ws, msg) {
         getCurrentAgentSeat: id => fleetStore.getCurrentAgentSeat(id),
         daemonKey,
       })) {
-        sendRpc(daemonKey, 'start-terminal-watch', {
+        sendDaemonEphemeral(daemonKey, 'start-terminal-watch', {
           agent_id: a.id,
           terminal_capability: seat.terminal_capability,
           poll_ms: 500,

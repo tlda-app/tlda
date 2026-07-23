@@ -70,6 +70,7 @@ import {
   startWsRequest,
   WsReconnectBuffer,
 } from '../shared/fleet-transport.mjs';
+import { createFleetOperationTransport } from '../shared/fleet-operation-transport.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BIN = path.join(__dirname, 'bin');
@@ -512,7 +513,7 @@ function logEvent(event) {
       agentId: entry.agent || null,
       metadata: entry,
     };
-    sendWS('fleet-event', { event_data: eventData })
+    mcpFleetTransport.ephemeral('fleet-event', { event_data: eventData })
       .catch(e => process.stderr.write(`[fleet-transport] transient fleet-event send failed before ACK: ${e.message}\n`));
   }
 }
@@ -698,7 +699,7 @@ let _lastAgentPrune = 0;
 // Callers should prefer specific API endpoints over loadState() where possible.
 async function loadState() {
   try {
-    const [agents, tasks] = await Promise.all([sendWS('store-agents'), sendWS('store-tasks')]);
+    const [agents, tasks] = await Promise.all([mcpFleetTransport.ephemeral('store-agents'), mcpFleetTransport.ephemeral('store-tasks')]);
     return { agents: agents || [], tasks: tasks || [], messages: [] };
   } catch (e) {
     process.stderr.write(`[fleet] loadState failed: ${e.message}\n`);
@@ -711,7 +712,7 @@ async function loadState() {
 // stay addressable by name — search is the only handle on it.
 async function loadStateAll() {
   try {
-    const [agents, tasks] = await Promise.all([sendWS('store-agents-all'), sendWS('store-tasks')]);
+    const [agents, tasks] = await Promise.all([mcpFleetTransport.ephemeral('store-agents-all'), mcpFleetTransport.ephemeral('store-tasks')]);
     return { agents: agents || [], tasks: tasks || [], messages: [] };
   } catch (e) {
     process.stderr.write(`[fleet] loadStateAll failed: ${e.message}\n`);
@@ -722,7 +723,7 @@ async function loadStateAll() {
 async function resolveAgent(query) {
   let data;
   try {
-    data = await sendWS('resolve-agent', { agent: query });
+    data = await mcpFleetTransport.ephemeral('resolve-agent', { agent: query });
   } catch (e) {
     throw new Error(`Agent resolution transport failed for "${query}": ${e.message}`);
   }
@@ -1093,7 +1094,7 @@ function formatHumanMessages(messages, state) {
 // ---- Message helpers ----
 
 function postMessage(to, from, text, metadata) {
-  sendWS('chat', { message: text, to, from, ...metadata })?.catch(e => {
+  mcpFleetTransport.durable('chat', { message: text, to, from, ...metadata })?.catch(e => {
     process.stderr.write(`[fleet] postMessage failed: ${e.message}\n`);
   });
 }
@@ -1145,7 +1146,7 @@ export function deliverOperationMailboxCompletion(mailbox, status, detail = {}) 
 
 async function getUnread(_state, agent) {
   try {
-    const data = await sendWS('my-task', { agent, peek: true });
+    const data = await mcpFleetTransport.ephemeral('my-task', { agent, peek: true });
     return data?.messages || [];
   } catch (e) { process.stderr.write(`[fleet] getUnread failed: ${e.message}\n`); }
   return [];
@@ -2016,13 +2017,13 @@ export async function handleFleetTool(name, args) {
         return { content: [{ type: 'text', text: 'No local or server agent identity is available.' }], isError: true };
       }
       if (!_channelRWS?.connected) {
-        startChannelWS();
+        startChannelWS({ bootstrap: true });
         const deadline = Date.now() + 2000;
         while (!_channelRWS?.connected && Date.now() < deadline) {
           await new Promise(r => setTimeout(r, 50));
         }
       }
-      const mintResult = await sendWS('mint-shell', {
+      const mintResult = await mcpFleetTransport.durable('mint-shell', {
         local_agent_id: localAgentId,
         name: process.env.FLEET_NAME || undefined,
         tmux_session: detectedTmux || undefined,
@@ -2031,7 +2032,7 @@ export async function handleFleetTool(name, args) {
         env_name: envName,
         kind: currentHarness.kind,
         metadata: { kind: currentHarness.kind },
-      })?.catch(e => ({ error: e.message }));
+      }, { agentId: localAgentId })?.catch(e => ({ error: e.message }));
       if (!mintResult || mintResult.error) {
         return { content: [{ type: 'text', text: `Server binding unavailable; this agent remains usable locally as ${localAgentId}.` }], isError: true };
       }
@@ -2066,7 +2067,7 @@ export async function handleFleetTool(name, args) {
         await new Promise(r => setTimeout(r, 50));
       }
     }
-    const serverResult = await sendWS('login', loginBody)?.catch(e => ({ error: e.message }));
+    const serverResult = await mcpFleetTransport.durable('login', loginBody)?.catch(e => ({ error: e.message }));
     if (!serverResult) {
       return { content: [{ type: 'text', text: 'Login failed: fleet WS did not connect before the request deadline.' }], isError: true };
     }
@@ -2107,7 +2108,7 @@ export async function handleFleetTool(name, args) {
   async function harnessKindForDelegateTarget(agent, spawnOpts) {
     if (!agent) return null;
     try {
-      const agents = await sendWS('store-agents');
+      const agents = await mcpFleetTransport.ephemeral('store-agents');
       const target = Array.isArray(agents)
         ? agents.find(a => a.id === agent || a.friendly_name === agent)
         : null;
@@ -2119,7 +2120,7 @@ export async function handleFleetTool(name, args) {
   }
 
   async function getRoster() {
-    const agents = await sendWS('store-agents');
+    const agents = await mcpFleetTransport.ephemeral('store-agents');
     return Array.isArray(agents) ? agents : [];
   }
 
@@ -2130,7 +2131,7 @@ export async function handleFleetTool(name, args) {
   async function recentDirectInbound(fromId, toId) {
     try {
       const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-      const data = await sendWS('store-events', { agent: fromId, since, limit: 100 });
+      const data = await mcpFleetTransport.ephemeral('store-events', { agent: fromId, since, limit: 100 });
       return (data.events || []).some(e =>
         e.type === 'chat' &&
         e.from === toId &&
@@ -2211,14 +2212,14 @@ export async function handleFleetTool(name, args) {
 
       const operationId = args.operation_id || `${AGENT_ID}:mcp-delegate:${crypto.randomUUID()}`;
       const delegateBody = { from: AGENT_ID, agent: targetAgent, description, message: routedMessage, success_criteria: criteria.length ? criteria : undefined, blocked_by: blockedBy.length ? blockedBy : undefined, requires_approval: args.requires_approval || undefined, allow_pending_agent: opts.allowPendingAgent || undefined, operation_id: operationId };
-      const data = await sendDurableFleet('delegate', delegateBody, { operationId });
+      const data = await mcpFleetTransport.durable('delegate', delegateBody, { operationId });
       rememberOriginatedEvents(data);
       if (!data.ok) throw new Error(`Delegate failed: ${JSON.stringify(data)}`);
       if (data.queued && !data.task_id) return { data, spawnedInfo: targetSpawnedInfo, queued: true, operationId };
 
       // Set friendly name if provided (two-call form only; spawn form already has the name set)
       if (args.friendly_name) {
-        await sendWS('rename', { agent: targetAgent, name: args.friendly_name })?.catch(e => process.stderr.write(`[fleet] rename failed: ${e.message}\n`));
+        await mcpFleetTransport.durable('rename', { agent: targetAgent, name: args.friendly_name })?.catch(e => process.stderr.write(`[fleet] rename failed: ${e.message}\n`));
       }
       return { data, spawnedInfo: targetSpawnedInfo };
     }
@@ -2236,7 +2237,7 @@ export async function handleFleetTool(name, args) {
       try {
         const modelError = await validateSpawnRequest(spawnOpts);
         if (modelError) return { content: [{ type: 'text', text: modelError }], isError: true };
-        spawnResult = await sendWS('spawn', {
+        spawnResult = await mcpFleetTransport.durable('spawn', {
           fresh: true,
           name: agentName,
           model: spawnOpts.model,
@@ -2364,7 +2365,7 @@ export async function handleFleetTool(name, args) {
         const body = { from: AGENT_ID, message: resolvedMessage, event_id: args.amend_id };
         if (inlineAttachments?.length) body.inline_attachments = inlineAttachments;
         if (source) body.source = source;
-        const data = await sendWS('amend', body);
+        const data = await mcpFleetTransport.durable('amend', body);
         if (!data?.ok) return { content: [{ type: 'text', text: `Amend failed: ${data?.error || `no message of yours matched id ${args.amend_id}`}` }], isError: true };
         let extra = '';
         if (renderIssues.length > 0) {
@@ -2411,7 +2412,7 @@ export async function handleFleetTool(name, args) {
       if (bareId !== AGENT_ID) recipients.push(bareId);
     } else {
       try {
-        agents = (await sendWS('store-agents')) || [];
+        agents = (await mcpFleetTransport.ephemeral('store-agents')) || [];
         if (agents.length === 0) {
           rosterUnavailable = true;
         } else {
@@ -2527,7 +2528,7 @@ export async function handleFleetTool(name, args) {
       if (preambleRef) chatBody.preambleRef = preambleRef;
       if (source) chatBody.source = source;
       try {
-        const data = await sendDurableFleet('chat', chatBody, { operationId: chatBody._tempId });
+        const data = await mcpFleetTransport.durable('chat', chatBody, { operationId: chatBody._tempId });
         if (data?.queued) {
           sent.push(to);
           queued.push({ to, operationId: data.operation_id || chatBody._tempId });
@@ -2647,7 +2648,7 @@ export async function handleFleetTool(name, args) {
       priority: args.priority || undefined,
     };
     try {
-      const data = await sendWS('notify', action === 'dismiss'
+      const data = await mcpFleetTransport.durable('notify', action === 'dismiss'
         ? { action: 'dismiss', id: args.id, userId: args.userId }
         : { action: 'raise', userId: args.userId, item }, { deadlineMs: 3000 });
       return { content: [{ type: 'text', text: action === 'dismiss' ? `Dismissed item ${args.id}.` : `Raised ${data.item?.kind || item.kind} item ${data.item?.id || item.id}.` }] };
@@ -2661,7 +2662,7 @@ export async function handleFleetTool(name, args) {
   if (name === 'task_list') {
     let agents, active;
     try {
-      [agents, active] = await Promise.all([sendWS('store-agents'), sendWS('store-tasks', { active: true })]);
+      [agents, active] = await Promise.all([mcpFleetTransport.ephemeral('store-agents'), mcpFleetTransport.ephemeral('store-tasks', { active: true })]);
       if (agents.error) return { content: [{ type: 'text', text: `task_list failed: ${agents.error}` }], isError: true };
       if (active.error) return { content: [{ type: 'text', text: `task_list failed: ${active.error}` }], isError: true };
     } catch (e) {
@@ -2762,7 +2763,7 @@ export async function handleFleetTool(name, args) {
     if (!targetTaskId) {
       let taskData;
       try {
-        taskData = await sendWS('my-task', { agent: AGENT_ID, peek: true });
+        taskData = await mcpFleetTransport.ephemeral('my-task', { agent: AGENT_ID, peek: true });
       } catch (e) {
         return { content: [{ type: 'text', text: `Fleet transport failed before ACK. Active task lookup was not completed: ${e.message}` }], isError: true };
       }
@@ -2796,7 +2797,7 @@ export async function handleFleetTool(name, args) {
 
       let data;
       try {
-        data = await sendDurableFleet('report-close', {
+        data = await mcpFleetTransport.durable('report-close', {
           agent: AGENT_ID,
           task_id: reportTaskId,
           summary: args.summary,
@@ -2921,7 +2922,7 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
     // Look up agent via server API
     let agents;
     try {
-      agents = await sendWS('store-agents');
+      agents = await mcpFleetTransport.ephemeral('store-agents');
       if (!agents || agents.error) return { content: [{ type: 'text', text: `task_check failed: ${agents?.error || 'no response'}` }], isError: true };
     } catch (e) {
       return { content: [{ type: 'text', text: `task_check failed before transport ACK: ${e.message}` }], isError: true };
@@ -2965,7 +2966,7 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
     // Fetch tasks to find active task for this agent
     let tasks;
     try {
-      tasks = await sendWS('store-tasks', { active: true });
+      tasks = await mcpFleetTransport.ephemeral('store-tasks', { active: true });
     } catch {
       tasks = [];
     }
@@ -3183,13 +3184,13 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
         if (evIdMatch) {
           // Event ID path
           try {
-            const data = await sendWS('store-events', { after: evIdMatch[1] - 1, limit: 1 })
+            const data = await mcpFleetTransport.ephemeral('store-events', { after: evIdMatch[1] - 1, limit: 1 })
             const events = (data.events || []).filter(e => e.type === 'chat')
             const ev = events[0]
             if (ev) {
               let agents = []
               try {
-                const stateData = await sendWS('store-agents')
+                const stateData = await mcpFleetTransport.ephemeral('store-agents')
                 agents = Array.isArray(stateData) ? stateData : []
               } catch {}
               resolved = resolved.replace(match[0], '\n' + formatMessage(ev, agents) + '\n')
@@ -3211,13 +3212,13 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
         if (evIdMatch) {
           // Event ID — look up this event and surrounding activity events (±60s)
           try {
-            const data = await sendWS('store-events', { after: evIdMatch[1] - 1, limit: 1 })
+            const data = await mcpFleetTransport.ephemeral('store-events', { after: evIdMatch[1] - 1, limit: 1 })
             const anchor = (data.events || [])[0]
             if (anchor) {
               const since = new Date(new Date(anchor.timestamp).getTime() - 60000).toISOString()
               const until = new Date(new Date(anchor.timestamp).getTime() + 60000).toISOString()
               const agentId = anchor.from
-              const data2 = await sendWS('store-events', { agent: agentId, since, until, limit: 50 })
+              const data2 = await mcpFleetTransport.ephemeral('store-events', { agent: agentId, since, until, limit: 50 })
               activities = (data2.events || []).filter(e => e.type === 'activity')
             }
           } catch {}
@@ -3232,7 +3233,7 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
             try {
               const since = new Date(new Date(isoTs).getTime() - 60000).toISOString()
               const until = new Date(new Date(isoTs).getTime() + 60000).toISOString()
-              const data = await sendWS('store-events', { agent: agentId, since, until, limit: 50 })
+              const data = await mcpFleetTransport.ephemeral('store-events', { agent: agentId, since, until, limit: 50 })
               activities = (data.events || []).filter(e => e.type === 'activity')
             } catch (e) { process.stderr.write(`[fleet] activity fetch failed: ${e.message}\n`); }
           }
@@ -3249,7 +3250,7 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
           const resolvedAgentId = activities[0]?.from || activities[0]?.to || ''
           let agents = []
           try {
-            const stateData = await sendWS('store-agents')
+            const stateData = await mcpFleetTransport.ephemeral('store-agents')
             agents = Array.isArray(stateData) ? stateData : []
           } catch (e) { process.stderr.write(`[fleet] store-agents fetch failed: ${e.message}\n`); }
           resolved = resolved.replace(match[0], '\n' + formatActivity(activities, agents) + '\n')
@@ -3267,7 +3268,7 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
         if (evIdMatch) {
           const eventId = evIdMatch[1]
           try {
-            const data = await sendWS('store-events', { after: eventId - 1, limit: 1 })
+            const data = await mcpFleetTransport.ephemeral('store-events', { after: eventId - 1, limit: 1 })
             const ev = (data.events || [])[0]
             if (ev) {
               let meta = ev.metadata
@@ -3280,7 +3281,7 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
               // Resolve agent name
               let agentName = (ev.from || '').replace('fleet:', '')
               try {
-                const agents = await sendWS('store-agents')
+                const agents = await mcpFleetTransport.ephemeral('store-agents')
                 const a = (Array.isArray(agents) ? agents : []).find(a => a.id === ev.from)
                 if (a) agentName = a.friendly_name || a.name || agentName
               } catch {}
@@ -3337,7 +3338,7 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
 
     let data;
     try {
-      data = await sendWS('my-task', { agent: AGENT_ID, peek: !!args?.peek });
+      data = await mcpFleetTransport.ephemeral('my-task', { agent: AGENT_ID, peek: !!args?.peek });
     } catch (e) {
       return { content: [{ type: 'text', text: `Fleet transport failed before ACK. This read was not completed: ${e.message}` }], isError: true };
     }
@@ -3359,7 +3360,7 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
     const tag = typeof args?.tag === 'string' && args.tag.trim() ? args.tag.trim().slice(0, 80) : null;
     _inboxStatus = status;
     try {
-      await sendWS('inbox-status', { agent: AGENT_ID, status, tag });
+      await mcpFleetTransport.durable('inbox-status', { agent: AGENT_ID, status, tag });
     } catch (e) {
       return { content: [{ type: 'text', text: `Could not publish inbox status "${status}" to tlda (${e.message}).` }], isError: true };
     }
@@ -3373,7 +3374,7 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
     if (!channel) return { content: [{ type: 'text', text: `Bad delivery channel: ${args?.channel || '(missing)'}. Use one of: ${DELIVERY_CHANNELS.join(', ')}.` }], isError: true };
     const agent = typeof args?.agent === 'string' && args.agent.trim() ? args.agent.trim() : AGENT_ID;
     try {
-      const data = await sendWS('delivery-channel', { caller: AGENT_ID, agent, channel });
+      const data = await mcpFleetTransport.durable('delivery-channel', { caller: AGENT_ID, agent, channel });
       if (data?.error) return { content: [{ type: 'text', text: `Could not set delivery channel: ${data.error}` }], isError: true };
       const target = data.target_label || data.agent || agent;
       const ownerNote = data.self ? '' : ' as their manager';
@@ -3388,7 +3389,7 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
   // ---- name_agent ----
   if (name === 'name_agent') {
     try {
-      const data = await sendWS('rename', { agent: args.agent, name: args.friendly_name });
+      const data = await mcpFleetTransport.durable('rename', { agent: args.agent, name: args.friendly_name });
       if (data.error) return { content: [{ type: 'text', text: `Rename failed: ${data.error}` }], isError: true };
       return { content: [{ type: 'text', text: `Named ${args.agent}: "${args.friendly_name}"` }] };
     } catch (e) {
@@ -3592,7 +3593,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
         filterExpression: searchFilters.filterExpression,
         eventType: searchFilters.eventType,
       };
-      const data = await sendWS('fleet-search', searchParams);
+      const data = await mcpFleetTransport.ephemeral('fleet-search', searchParams);
       results = data?.results || [];
 
       // Fetch context for chat results if requested
@@ -3602,7 +3603,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
         }
         if (contextTimestamps.length > 0) {
           const ctxSearchParams = { ...searchParams, context_timestamps: contextTimestamps.slice(0, 10), context_window: contextWindow };
-          const ctxData = await sendWS('fleet-search', ctxSearchParams);
+          const ctxData = await mcpFleetTransport.ephemeral('fleet-search', ctxSearchParams);
           contextMap = ctxData?.context || {};
         }
       }
@@ -3776,7 +3777,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
 
   // ---- get_thread ----
   if (name === 'get_thread') {
-    const tasks = args.task_id ? ((await sendWS('store-tasks')) || []) : [];
+    const tasks = args.task_id ? ((await mcpFleetTransport.ephemeral('store-tasks')) || []) : [];
     const resolvedAgents = new Map();
     let filtered = [];
     let overflow = false;
@@ -3831,7 +3832,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       if (resolvedSince) params.since = resolvedSince;
       if (resolvedUntil) params.until = resolvedUntil;
       if (args.types?.length) params.event_types = args.types;
-      const data = await sendWS('store-events', params);
+      const data = await mcpFleetTransport.ephemeral('store-events', params);
       if (!data) return;
       for (const e of (data.events || [])) {
         const metadata = parseEventMetadata(e.metadata);
@@ -3863,7 +3864,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       if (resolvedUntil) params.before = resolvedUntil;
       if (args.types?.length === 1) params.eventType = args.types[0];
       else if (args.types?.length > 1) params.eventTypes = args.types;
-      const data = await sendWS('fleet-search', params);
+      const data = await mcpFleetTransport.ephemeral('fleet-search', params);
       if (!data) return;
       for (const e of (data.results || []).filter(r => r.source === 'fleet')) {
         if (args.types?.length > 1 && !args.types.includes(e.type)) continue;
@@ -4085,7 +4086,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
   // ---- label_agent ----
   if (name === 'label_agent') {
     try {
-      const data = await sendWS('label', { agent: args.agent, labels: args.labels || [] });
+      const data = await mcpFleetTransport.durable('label', { agent: args.agent, labels: args.labels || [] });
       if (data.error) return { content: [{ type: 'text', text: `Label failed: ${data.error}` }], isError: true };
       return { content: [{ type: 'text', text: `Labels for ${data.agent}: ${(data.labels || []).join(', ') || '(none)'}` }] };
     } catch (e) {
@@ -4099,7 +4100,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     if (!agent) return { content: [{ type: 'text', text: 'Specify an agent to interrupt.' }], isError: true };
 
     try {
-      const data = await sendWS('interrupt', { agent });
+      const data = await mcpFleetTransport.durable('interrupt', { agent });
       if (data.error) return { content: [{ type: 'text', text: `Interrupt failed: ${data.error}` }], isError: true };
       const status = data.stopped ? 'confirmed stopped' : `not confirmed after ${data.attempts} attempts`;
       return { content: [{ type: 'text', text: `${data.agent || agent}: ${status}.` }] };
@@ -4195,7 +4196,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
   if (name === 'subscribe') {
     if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not logged in. Call login() first.' }], isError: true };
     try {
-      const data = await sendWS('subscribe', { caller: AGENT_ID, target: args.target || AGENT_ID, query: args.query, notification_policy: args.notification_policy });
+      const data = await mcpFleetTransport.durable('subscribe', { caller: AGENT_ID, target: args.target || AGENT_ID, query: args.query, notification_policy: args.notification_policy });
       if (data?.error) return { content: [{ type: 'text', text: `subscribe failed: ${data.error}` }], isError: true };
       return { content: [{ type: 'text', text: `Subscribed #${data.subscription_id} for ${data.owner}: ${data.query} (${data.notification_policy}).` }] };
     } catch (e) {
@@ -4206,7 +4207,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
   if (name === 'subscriptions') {
     if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not logged in. Call login() first.' }], isError: true };
     try {
-      const rows = await sendWS('subscriptions', { caller: AGENT_ID, target: args.target || AGENT_ID });
+      const rows = await mcpFleetTransport.ephemeral('subscriptions', { caller: AGENT_ID, target: args.target || AGENT_ID });
       if (rows?.error) return { content: [{ type: 'text', text: `subscriptions failed: ${rows.error}` }], isError: true };
       if (!rows.length) return { content: [{ type: 'text', text: 'No subscriptions.' }] };
       return { content: [{ type: 'text', text: rows.map(r => `#${r.subscription_id} ${r.owner}: ${r.query} (${r.notification_policy})`).join('\n') }] };
@@ -4218,7 +4219,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
   if (name === 'unsubscribe') {
     if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not logged in. Call login() first.' }], isError: true };
     try {
-      const data = await sendWS('unsubscribe', { caller: AGENT_ID, subscription_id: args.subscription_id });
+      const data = await mcpFleetTransport.durable('unsubscribe', { caller: AGENT_ID, subscription_id: args.subscription_id });
       if (data?.error) return { content: [{ type: 'text', text: `unsubscribe failed: ${data.error}` }], isError: true };
       return { content: [{ type: 'text', text: `Unsubscribed #${data.subscription_id}.` }] };
     } catch (e) {
@@ -4236,7 +4237,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     // recovery, and terminal fire/cancel delivery from the persisted row.
     let timerEventId = null;
     try {
-      timerEventId = timerSetEventIdFromAck(await sendWS('timer-set', timerSetMessage({ agentId: AGENT_ID, message, fireAt, to: args.to })));
+      timerEventId = timerSetEventIdFromAck(await mcpFleetTransport.durable('timer-set', timerSetMessage({ agentId: AGENT_ID, message, fireAt, to: args.to })));
     } catch (e) {
       return { content: [{ type: 'text', text: `timer failed: ${e.message}` }], isError: true };
     }
@@ -4398,9 +4399,8 @@ const _reconnectBuffer = new WsReconnectBuffer({ isConnected: () => !!_channelRW
 /**
  * Send a request over the WS channel and wait for a response.
  * Returns the server ACK result on success and throws on error or timeout.
- * Callers that need durability must use sendDurableFleet(), which persists the
- * operation before this transport attempt and turns retryable failures into a
- * queued transport state.
+ * Feature callers use mcpFleetTransport and must choose durable or ephemeral.
+ * This function is the private one-attempt adapter beneath that boundary.
  */
 function _sendWSOnce(type, params = {}, opts = {}) {
   if (!_channelRWS?.connected) return null;
@@ -4413,7 +4413,15 @@ function _sendWSOnce(type, params = {}, opts = {}) {
     type,
     idleTimeoutMs,
     deadlineMs,
-    send: () => _channelRWS.send({ type, ...params, id }),
+    send: () => _channelRWS.send({
+      type,
+      ...params,
+      id,
+      ...(opts.envelope ? {
+        operation_id: params.operation_id || opts.envelope.operation_id,
+        fleet_operation: opts.envelope,
+      } : {}),
+    }),
   });
 }
 
@@ -4423,7 +4431,7 @@ function _sendWSOnce(type, params = {}, opts = {}) {
 // deliberately lighter than the daemon's SQLite outbox: MCP losslessness only
 // needs to cover a live tool call's brief reconnect window, bounded by the
 // request deadline/idle timeout.
-async function sendWS(type, params = {}, opts = {}) {
+async function sendFleetRequestAttempt(type, params = {}, opts = {}) {
   const startedAt = Date.now();
   const deadlineMs = opts.deadlineMs ?? opts.idleTimeoutMs ?? WS_REQUEST_IDLE_MS;
   while (Date.now() - startedAt < deadlineMs) {
@@ -4450,18 +4458,18 @@ function scheduleFleetTransportFlush(delayMs = 1000) {
   }, Math.max(0, delayMs));
 }
 
-async function flushFleetTransport({ operationId = null, limit = 50, deadlineMs = 5000 } = {}) {
-  if (!AGENT_ID) return null;
+async function flushFleetTransport({ operationId = null, limit = 50, deadlineMs = 5000, agentId = AGENT_ID } = {}) {
+  if (!agentId) return null;
   if (_fleetTransportFlushInFlight && !operationId) return _fleetTransportFlushInFlight;
 
   const run = async () => {
     const outbox = getFleetTransportOutbox();
-    if (!_fleetTransportRecoveredAgents.has(AGENT_ID)) {
-      outbox.recoverInflight({ agentId: AGENT_ID });
-      _fleetTransportRecoveredAgents.add(AGENT_ID);
+    if (!_fleetTransportRecoveredAgents.has(agentId)) {
+      outbox.recoverInflight({ agentId });
+      _fleetTransportRecoveredAgents.add(agentId);
     }
     const rows = outbox.dueRows({
-      agentId: AGENT_ID,
+      agentId,
       sessionId: currentTransportSessionId(),
       operationId,
       limit,
@@ -4470,7 +4478,7 @@ async function flushFleetTransport({ operationId = null, limit = 50, deadlineMs 
     for (const row of rows) {
       outbox.markAttempt(row.operationId);
       try {
-        const result = await sendWS(row.type, row.params, { deadlineMs });
+        const result = await sendFleetRequestAttempt(row.type, row.params, { deadlineMs });
         if (result) {
           outbox.markAccepted(row.operationId, result);
           if (!operationId || row.operationId === operationId) targetResult = result;
@@ -4496,15 +4504,20 @@ async function flushFleetTransport({ operationId = null, limit = 50, deadlineMs 
 }
 
 async function sendDurableFleet(type, params = {}, opts = {}) {
-  if (!AGENT_ID) throw new Error(`cannot send durable ${type}: not logged in`);
+  const transportAgentId = opts.agentId || AGENT_ID;
+  if (!transportAgentId) throw new Error(`cannot send durable ${type}: no transport identity`);
   const outbox = getFleetTransportOutbox();
-  const operationId = opts.operationId || params?._tempId || `${AGENT_ID}:mcp-${type}:${crypto.randomUUID()}`;
+  const operationId = opts.operationId || params?._tempId || `${transportAgentId}:mcp-${type}:${crypto.randomUUID()}`;
   const row = outbox.enqueue({
     operationId,
-    agentId: AGENT_ID,
+    agentId: transportAgentId,
     sessionId: currentTransportSessionId(),
     type,
-    params,
+    params: {
+      ...params,
+      operation_id: params.operation_id || operationId,
+      fleet_operation: opts.envelope,
+    },
     mode: 'durable',
   });
   if (row.status === 'accepted') return row.result || { ok: true, operation_id: operationId };
@@ -4512,7 +4525,7 @@ async function sendDurableFleet(type, params = {}, opts = {}) {
     throw new Error(row.lastError || `durable ${type} ${row.status}`);
   }
 
-  const result = await flushFleetTransport({ operationId });
+  const result = await flushFleetTransport({ operationId, agentId: transportAgentId });
   const latest = outbox.get(operationId);
   if (latest?.status === 'accepted') return latest.result || result || { ok: true, operation_id: operationId };
   if (latest?.status === 'failed' || latest?.status === 'dead') {
@@ -4521,6 +4534,21 @@ async function sendDurableFleet(type, params = {}, opts = {}) {
   scheduleFleetTransportFlush(1000);
   return { ok: true, queued: true, operation_id: operationId };
 }
+
+const mcpFleetTransport = createFleetOperationTransport({
+  name: 'mcp-fleet',
+  sendEphemeral: sendFleetRequestAttempt,
+  sendDurable: sendDurableFleet,
+  resolveSender: () => AGENT_ID,
+  resolveDestination: ({ payload }) => (
+    payload.to || payload.agent || payload.agent_id || payload.target || payload.filter || null
+  ),
+  observe: event => {
+    if (event.stage === 'terminal' && !event.ok) {
+      process.stderr.write(`[fleet-transport] ${event.mode} ${event.operation} failed: ${event.error}\n`);
+    }
+  },
+})
 
 async function flushFleetTransportOpportunistically(toolName) {
   if (!AGENT_ID || toolName === 'login') return;
@@ -4536,7 +4564,7 @@ async function _flushUnread() {
   let sourceEventId = null;
   let notificationError = null;
   try {
-    const data = await sendWS('my-task', { agent: AGENT_ID, peek: true });
+    const data = await mcpFleetTransport.ephemeral('my-task', { agent: AGENT_ID, peek: true });
     if (!data) return;
     const msgs = (data.messages || []).filter(m => !m.read);
     const task = data.task;
@@ -4598,17 +4626,24 @@ async function _flushUnread() {
   }
 }
 
-function startChannelWS() {
-  if (!AGENT_ID) return;
+let _channelHasOpened = false;
+
+function startChannelWS({ bootstrap = false } = {}) {
+  if (!AGENT_ID && !bootstrap) return;
   if (_channelRWS) return;
 
   _channelRWS = new ResilientWS({
-    url: () => `${TLDA_FLEET_WS_SERVER}/ws/fleet?agent=${encodeURIComponent(AGENT_ID)}`,
+    url: () => AGENT_ID
+      ? `${TLDA_FLEET_WS_SERVER}/ws/fleet?agent=${encodeURIComponent(AGENT_ID)}`
+      : `${TLDA_FLEET_WS_SERVER}/ws/fleet`,
     label: 'fleet-channel',
     heartbeatTimeoutMs: 45000,
     log: (s) => process.stderr.write(s + '\n'),
     onOpen: () => {
       _reconnectBuffer.resolveConnected();
+      const reconnect = _channelHasOpened;
+      _channelHasOpened = true;
+      if (!AGENT_ID || !reconnect) return;
       const loginBody = {
         agent_id: AGENT_ID,
         session_id: currentTransportSessionId() || undefined,
@@ -4617,7 +4652,7 @@ function startChannelWS() {
         machine_id: process.env.TLDA_MACHINE_ID || os.hostname().split('.')[0],
         env_name: getActiveConfigName(),
       };
-      sendWS('login', loginBody)
+      mcpFleetTransport.durable('login', loginBody)
         ?.then(() => flushFleetTransport({ limit: 100 }))
         ?.catch(e => process.stderr.write(`[fleet-channel] re-login/flush failed: ${e.message}\n`));
       process.stderr.write(`[fleet-channel] re-logged-in ${AGENT_ID}\n`);
@@ -4667,7 +4702,7 @@ function formatStatusSummary({ eventType, fromLabel, docHint = '', preview = '',
 
 async function reportNotificationAttempt(attempt) {
   try {
-    const result = await sendWS('notification-attempt', { attempt }, { deadlineMs: 5000 });
+    const result = await mcpFleetTransport.durable('notification-attempt', { attempt }, { deadlineMs: 5000 });
     return true;
   } catch (e) {
     process.stderr.write(`[fleet-channel] failed to report notification attempt for ${attempt.agentId} (${attempt.outcome}): ${e.message}\n`);
@@ -4871,12 +4906,13 @@ function reportStatus(state, toolName) {
   if (now - _lastStatusReport < STATUS_DEBOUNCE_MS) return;
   _lastStatusReport = now;
 
-  _channelRWS?.send({
-    type: 'agent-status',
+  mcpFleetTransport.ephemeral('agent-status', {
     agentId: AGENT_ID,
     state,
     tool: toolName || null,
     ts: new Date().toISOString(),
+  }).catch((error) => {
+    console.error(`[fleet-transport] agent-status failed: ${error.message}`);
   });
 }
 

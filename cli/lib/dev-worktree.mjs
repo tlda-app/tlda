@@ -485,6 +485,7 @@ export async function cmdServeWorktree(args) {
       env: {
         ...process.env,
         TLDA_DAEMON_CONFIG_DIR: dcfg,    // own machine_id + pidfile (coexist with real daemon)
+        TLDA_CONFIG_DIR: dcfg,           // resolve the sandbox's named server authority
         TLDA_SERVER: base,               // isolation target == config fleet host (coherent)
         TLDA_DEV_DAEMON: base,           // the authorized sandbox target; arms the invariant
         TLDA_CONFIG: configName(branch),

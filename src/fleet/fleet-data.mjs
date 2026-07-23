@@ -33,6 +33,7 @@ import { probe } from '../perf-probe'
 import { DATABASE_HTTP, DATABASE_WS } from '../activeConfig'
 import { isUsableIdentityName, sanitizeIdentityName, storedIdentityLoginFailureAction } from './identity-persistence.mjs'
 import { resetWsRequestIdleTimers, startWsRequest, WsReconnectBuffer } from '../../shared/fleet-browser-transport.mjs'
+import { createFleetOperationTransport } from '../../shared/fleet-operation-transport.mjs'
 import { createActivityDeliveryCounters, ACTIVITY_DELIVERY_STAGES } from '../../shared/activity-delivery-counters.mjs'
 import { maybeShowRadioSubtitleForIncomingChat } from '../voice.mjs'
 import { checkAppShellFreshness } from '../appShellFreshness'
@@ -466,7 +467,7 @@ function clearIdentityRetry() {
 export async function login(name) {
   const clean = sanitizeIdentityName(name)
   if (!isUsableIdentityName(clean)) throw new Error('invalid identity name')
-  const res = await wsSend({ type: 'login', name: clean })
+  const res = await browserFleetTransport.durable('login', { name: clean })
   _humanId = res.id
   _humanName = res.name
   _identifyPending = false
@@ -483,7 +484,7 @@ export async function registerHuman(name, { persist = true } = {}) {
   const sanitized = sanitizeIdentityName(name)
   if (!isUsableIdentityName(sanitized)) throw new Error('invalid identity name')
   const humanId = `fleet:${sanitized}`
-  const res = await wsSend({ type: 'register', agent_id: humanId, name: sanitized, human: true })
+  const res = await browserFleetTransport.durable('register', { agent_id: humanId, name: sanitized, human: true })
   _humanId = res.agent?.id || humanId
   _humanName = sanitized
   _identifyPending = false
@@ -507,7 +508,7 @@ function retryStoredIdentity(storedName) {
     if (!_ws || _ws.readyState !== 1) return
     if (readStoredIdentity() !== storedName) return
     if (_humanName === storedName) return
-    wsSend({ type: 'login', name: storedName }).then(res => {
+    browserFleetTransport.durable('login', { name: storedName }).then(res => {
       _humanId = res.id
       _humanName = res.name
       _identifyPending = false
@@ -557,9 +558,10 @@ export async function sendMessage(to, text, opts = {}) {
   if (opts.preambleRef) body.preambleRef = opts.preambleRef
   const _t0 = performance.now()
   try {
-    const d = await wsSend(body)
+    const { type, ...payload } = body
+    const d = await browserFleetTransport.durable(type, payload, { operationId: body._tempId })
     console.log(`[chat-send] to=${to} id=${d.event_id} ws=${Math.round(performance.now()-_t0)}ms text=${text.substring(0,30)}`)
-    return { ok: true, event_id: d.event_id }
+    return { ok: true, event_id: d.event_id || null, queued: d.queued === true, operation_id: d.operation_id || body._tempId || null }
   } catch (e) {
     console.log(`[chat-send] to=${to} FAILED ws=${Math.round(performance.now()-_t0)}ms err=${e.message}`)
     return { ok: false, event_id: null }
@@ -612,45 +614,45 @@ export function reconcileOptimistic(tempId, serverEventId, newTo) {
 }
 
 export function respawnAgent(id) {
-  return wsSend({ type: 'spawn', agent: id, respawn: true })
+  return browserFleetTransport.durable('spawn', { agent: id, respawn: true })
 }
 
 export function spawnAgent(model, doc, name, options = {}) {
   const modelOptions = options && typeof options === 'object' && !Array.isArray(options) ? options : {}
-  return wsSend({ type: 'spawn', fresh: true, model, ...(doc ? { doc } : {}), ...(name ? { name } : {}), ...modelOptions })
+  return browserFleetTransport.durable('spawn', { fresh: true, model, ...(doc ? { doc } : {}), ...(name ? { name } : {}), ...modelOptions })
 }
 
 export function renameAgent(id, name) {
-  return wsSend({ type: 'rename', agent: id, name })
+  return browserFleetTransport.durable('rename', { agent: id, name })
 }
 
 export function setAgentLabels(id, labels) {
-  return wsSend({ type: 'label', agent: id, labels })
+  return browserFleetTransport.durable('label', { agent: id, labels })
 }
 
 export function kickAgent(id) {
-  return wsSend({ type: 'kick', agent: id })
+  return browserFleetTransport.durable('kick', { agent: id })
 }
 
 export function killSession(id) {
-  return wsSend({ type: 'kill-session', agent: id })
+  return browserFleetTransport.durable('kill-session', { agent: id })
 }
 
 export function hibernateSession(id) {
-  return wsSend({ type: 'hibernate-session', agent: id })
+  return browserFleetTransport.durable('hibernate-session', { agent: id })
 }
 
 export function sendKey(agent, key) {
-  return wsSend({ type: 'send-key', agent, key })
+  return browserFleetTransport.ephemeral('send-key', { agent, key })
 }
 
 export function sendText(agent, text) {
-  return wsSend({ type: 'send-text', agent, text })
+  return browserFleetTransport.ephemeral('send-text', { agent, text })
 }
 
 /** Send an arbitrary WS message to the fleet server. Returns a promise for the result. */
-export function fleetWS(type, body = {}) {
-  return wsSend({ type, ...body })
+export function fleetEphemeral(type, body = {}) {
+  return browserFleetTransport.ephemeral(type, body)
 }
 
 export async function dismissItem(id) {
@@ -847,7 +849,7 @@ function _startHeartbeat() {
       // watchdog would false-reconnect every cycle. The reply is fire-and-forget
       // here (we only need the inbound frame); a half-open socket gets no reply,
       // so the watchdog still fires.
-      wsSend({ type: 'heartbeat', agent: _humanId }).catch(() => {})
+      browserFleetTransport.ephemeral('heartbeat', { agent: _humanId }).catch(() => {})
     }
   }, 10_000)
   _startReceiveWatchdog()
@@ -889,8 +891,10 @@ export function sendViewingContext(context) {
   const now = Date.now()
   if (now - _lastViewingSent < 5000) return
   _lastViewingSent = now
-  if (!_humanId || !_ws || _ws.readyState !== 1) return
-  const send = (ctx) => _ws.send(JSON.stringify({ type: 'viewing', agent: _humanId, context: ctx }))
+  if (!_humanId) return
+  const send = (ctx) => browserFleetTransport.ephemeral('viewing', { agent: _humanId, context: ctx }).catch(error => {
+    log.error('fleet-transport', 'viewing update failed', { error: error.message })
+  })
   if (_viewingEnrichFn) {
     _viewingEnrichFn({ ...context }).then(send).catch(() => send(context))
   } else {
@@ -898,7 +902,15 @@ export function sendViewingContext(context) {
   }
 }
 
-async function wsSend(msg, { idleTimeoutMs = WS_REQUEST_IDLE_MS, deadlineMs } = {}) {
+async function sendBrowserRequestAttempt(type, payload = {}, { idleTimeoutMs = WS_REQUEST_IDLE_MS, deadlineMs, envelope = null } = {}) {
+  const msg = {
+    type,
+    ...payload,
+    ...(envelope ? {
+      operation_id: payload.operation_id || envelope.operation_id,
+      fleet_operation: envelope,
+    } : {}),
+  }
   const startedAt = Date.now()
   const connectionDeadlineMs = deadlineMs ?? idleTimeoutMs
   while (!_ws || _ws.readyState !== 1) {
@@ -924,6 +936,78 @@ async function wsSend(msg, { idleTimeoutMs = WS_REQUEST_IDLE_MS, deadlineMs } = 
   })
 }
 
+const BROWSER_DURABLE_OUTBOX_KEY = `tlda:fleet-transport:${FLEET}`
+let _browserDurableFlush = null
+
+function readBrowserDurableOutbox() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(BROWSER_DURABLE_OUTBOX_KEY) || '[]')
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+function writeBrowserDurableOutbox(rows) {
+  localStorage.setItem(BROWSER_DURABLE_OUTBOX_KEY, JSON.stringify(rows))
+}
+
+async function flushBrowserDurableOutbox() {
+  if (_browserDurableFlush) return _browserDurableFlush
+  _browserDurableFlush = (async () => {
+    for (const row of readBrowserDurableOutbox()) {
+      try {
+        await sendBrowserRequestAttempt(row.operation, {
+          ...row.payload,
+          operation_id: row.operationId,
+        }, { envelope: row.envelope })
+        writeBrowserDurableOutbox(readBrowserDurableOutbox().filter(item => item.operationId !== row.operationId))
+      } catch {
+        break
+      }
+    }
+  })().finally(() => { _browserDurableFlush = null })
+  return _browserDurableFlush
+}
+
+async function sendBrowserDurable(operation, payload = {}, options = {}) {
+  const operationId = options.operationId || payload._tempId || crypto.randomUUID()
+  const rows = readBrowserDurableOutbox()
+  if (!rows.some(row => row.operationId === operationId)) {
+    rows.push({ operationId, operation, payload, envelope: options.envelope, createdAt: new Date().toISOString() })
+    writeBrowserDurableOutbox(rows)
+  }
+  try {
+    const result = await sendBrowserRequestAttempt(operation, {
+      ...payload,
+      operation_id: operationId,
+    }, { ...options, envelope: options.envelope })
+    writeBrowserDurableOutbox(readBrowserDurableOutbox().filter(row => row.operationId !== operationId))
+    return result
+  } catch (error) {
+    if (error?.fleetServerRejected) {
+      writeBrowserDurableOutbox(readBrowserDurableOutbox().filter(row => row.operationId !== operationId))
+      throw error
+    }
+    return { ok: true, queued: true, operation_id: operationId }
+  }
+}
+
+const browserFleetTransport = createFleetOperationTransport({
+  name: 'browser-fleet',
+  sendEphemeral: sendBrowserRequestAttempt,
+  sendDurable: sendBrowserDurable,
+  resolveSender: () => _humanId,
+  resolveDestination: ({ payload }) => (
+    payload.to || payload.agent || payload.agent_id || payload.target || null
+  ),
+  observe: event => {
+    if (event.stage === 'terminal' && !event.ok) {
+      log.error('fleet-transport', `${event.mode} ${event.operation} failed`, event)
+    }
+  },
+})
+
 export function connect() {
   if (_ws) return
   const params = new URLSearchParams(location.search)
@@ -938,6 +1022,9 @@ export function connect() {
     _reconnectDelay = 1000
     _connected = true
     notify('connection', { type: 'connection', connected: true })
+    flushBrowserDurableOutbox().catch(error => {
+      log.error('fleet-transport', 'durable outbox flush failed', { error: error.message })
+    })
     void checkAppShellFreshness('fleet-ws-open')
     // Log in if we have a requested or stored identity. The URL is explicit for
     // this tab and must beat stale browser storage.
@@ -946,7 +1033,7 @@ export function connect() {
     if (storedName) {
       _identifyPending = true
       notify('identity', { type: 'identity', id: null, name: storedName, needsIdentity: true })
-      wsSend({ type: 'login', name: storedName }).then(res => {
+      browserFleetTransport.durable('login', { name: storedName }).then(res => {
         _humanId = res.id
         _humanName = res.name
         _identifyPending = false
@@ -1036,7 +1123,7 @@ export function connect() {
       msg = JSON.parse(e.data)
       _lastWsMessageAt = Date.now()
 
-      // Handle request/response messages (replies to wsSend)
+      // Handle request/response messages from the operation transport adapter.
       if (msg.id && (msg.result !== undefined || msg.error !== undefined)) {
         const cb = _wsCallbacks.get(msg.id)
         if (cb) {
@@ -1055,6 +1142,7 @@ export function connect() {
             const detail = typeof msg.error === 'object' && msg.error !== null ? msg.error : { message: msg.error }
             const err = new Error(detail.message || String(msg.error))
             Object.assign(err, detail)
+            err.fleetServerRejected = true
             cb.reject(err)
           } else cb.resolve(msg.result)
         }
@@ -1346,7 +1434,8 @@ export async function loadBefore(agentIds = [], beforeTs, count = 100, opts = {}
   let res
   if (_ws && _ws.readyState === 1) {
     const msg = { type: 'load-history', agents: agentIds || [], before: beforeTs, limit: count }
-    res = await wsSend(msg)
+    const { type, ...payload } = msg
+    res = await browserFleetTransport.ephemeral(type, payload)
   } else {
     const agentParams = (agentIds || []).map(id => `&agents=${encodeURIComponent(id)}`).join('')
     res = await fetch(`${FLEET}/api/chat/history?limit=${count}&before=${encodeURIComponent(beforeTs)}${agentParams}`).then(r => r.json())

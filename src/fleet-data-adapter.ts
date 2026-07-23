@@ -35,7 +35,7 @@ import {
   updateOptimisticEvent as _updateOptimisticEvent,
   removeOptimisticEvent as _removeOptimisticEvent,
   reconcileOptimistic as _reconcileOptimistic,
-  fleetWS as _fleetWS,
+  fleetEphemeral as _fleetEphemeral,
   dismissItem as _dismissItem,
   // @ts-ignore — vanilla JS module
 } from './fleet/fleet-data.mjs'
@@ -987,7 +987,7 @@ export async function searchFleet(query: string, limit = 50, filters: FleetSearc
     if (filters.before) payload.before = filters.before
     if (filters.filterExpression) payload.filterExpression = filters.filterExpression
     if (filters.eventType) payload.eventType = filters.eventType
-    const data = await _fleetWS('fleet-search', payload)
+    const data = await _fleetEphemeral('fleet-search', payload)
     return data?.results || []
   } catch (e) { console.warn('[fleet] search failed:', (e as Error).message); return [] }
 }
@@ -1129,5 +1129,5 @@ export const injectOptimisticEvent = _injectOptimisticEvent
 export const updateOptimisticEvent = _updateOptimisticEvent
 export const removeOptimisticEvent = _removeOptimisticEvent
 export const reconcileOptimistic = _reconcileOptimistic
-export const fleetWS = _fleetWS
+export const fleetEphemeral = _fleetEphemeral
 export { loadBefore, fetchHistory, resolveFilter }

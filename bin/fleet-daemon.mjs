@@ -54,9 +54,11 @@
 
 import { WebSocket } from 'ws'
 import { ResilientWS } from '../shared/fleet-transport.mjs'
+import { createFleetOperationTransport } from '../shared/fleet-operation-transport.mjs'
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { fileURLToPath } from 'url'
 import {
   getServerUrl, getFleetServerUrl, getRwToken, DEFAULT_PORT, hasTls,
@@ -784,6 +786,7 @@ function hydratePendingSeatBindingObligation(obligation) {
 const machineRpc = createMachineRpc({
   sendMsg,
   getPid: () => process.pid,
+  executionDbPath: path.join(CONFIG_DIR, 'daemon-rpc-executions.sqlite'),
 })
 
 machineRpc.register({
@@ -798,7 +801,7 @@ machineRpc.register({
 })
 
 async function handleRpc(msg) {
-  return machineRpc.handleRpc(msg)
+  return daemonOperationContext.run(msg.fleet_operation || null, () => machineRpc.handleRpc(msg))
 }
 
 // ---------- WS connection ----------
@@ -833,8 +836,33 @@ function migrateLegacyDeadLetters() {
   log.warn(`migrated legacy daemon dead letters into outbox: migrated=${migrated} malformed=${malformed}`)
 }
 
-function sendMsg(obj) {
+function sendDaemonMessageAttempt(obj) {
   return daemonDelivery.send(obj)
+}
+
+const daemonServerTransport = createFleetOperationTransport({
+  name: 'daemon-server',
+  sendEphemeral: (_operation, payload, options) => sendDaemonMessageAttempt({
+    ...payload,
+    operation_id: payload?.operation_id || options.envelope.operation_id,
+    fleet_operation: options.envelope,
+  }),
+  sendDurable: (_operation, payload, options) => sendDaemonMessageAttempt({
+    ...payload,
+    operation_id: payload?.operation_id || options.envelope.operation_id,
+    fleet_operation: options.envelope,
+  }),
+})
+
+const daemonOperationContext = new AsyncLocalStorage()
+
+function sendMsg(obj) {
+  const parent = daemonOperationContext.getStore()
+  return daemonServerTransport.durable(obj?.type || 'daemon-message', obj, {
+    sender: `${MACHINE_ID}:${ACTIVE_CONFIG}`,
+    destination: 'server',
+    parentOperationId: parent?.operation_id || null,
+  })
 }
 
 function sendMsgWithReply(obj, { timeoutMs = 15000 } = {}) {
