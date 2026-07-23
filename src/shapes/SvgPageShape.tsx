@@ -2,6 +2,7 @@ import {
   BaseBoxShapeUtil,
   HTMLContainer,
   T,
+  type TLShapeId,
   useEditor,
   useValue,
 } from 'tldraw'
@@ -14,6 +15,7 @@ import { subscribeSvgText, getSvgText, setSvgText } from '../stores/svgTextStore
 import { changeStore, onShapeChangeUpdate, type ChangeRegion } from '../stores/changeStore'
 import { anchorIndex, getNavigateToAnchor } from '../stores/anchorIndex'
 import { svgViewBoxStore } from '../stores/svgViewBoxStore'
+import { setPageRenderHash } from '../stores/renderHashStore'
 import { getPageUrl, getPageFilename } from '../stores/pageUrlStore'
 import { isPhoneViewport } from '../phoneViewport'
 import { DocContext } from '../PanelContext'
@@ -222,6 +224,15 @@ function SvgPageComponent({ shape }: { shape: any }) {
       if (!res.ok) return
       const newText = await res.text()
       if (newText !== svgText) setSvgText(shape.id as string, newText)
+      const sentinel = editor.store.get('shape:doc-version--sentinel' as TLShapeId) as unknown as
+        | { type?: string; props?: { commitHash?: unknown } }
+        | undefined
+      const builtHash = sentinel?.type === 'doc-version' && typeof sentinel.props?.commitHash === 'string'
+        ? sentinel.props.commitHash
+        : undefined
+      if (builtHash && builtHash !== 'unknown') {
+        setPageRenderHash(shape.id as string, String(builtHash).slice(0, 7))
+      }
       // Populate anchorIndex and viewBox store from <view> elements.
       // Enables ref-click navigation for pages that haven't been through a reload cycle.
       const parser = new DOMParser()
@@ -243,7 +254,7 @@ function SvgPageComponent({ shape }: { shape: any }) {
         }
       }
     }).catch(e => { if (e.name !== 'AbortError') console.warn('[svg-page] anchor index build failed:', e.message) })
-  }, [isNearViewport, svgText, shape.id, shape.props.pageIndex])
+  }, [editor, isNearViewport, svgText, shape.id, shape.props.pageIndex])
 
   // Subscribe to change store for THIS shape's highlights only (not all shapes)
   const [highlights, setHighlights] = useState<ChangeRegion[]>(() => changeStore.get(shape.id) || [])

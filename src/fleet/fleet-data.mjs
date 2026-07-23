@@ -941,7 +941,8 @@ export function connect() {
     void checkAppShellFreshness('fleet-ws-open')
     // Log in if we have a requested or stored identity. The URL is explicit for
     // this tab and must beat stale browser storage.
-    const storedName = readUrlIdentity() || readStoredIdentity()
+    const urlName = readUrlIdentity()
+    const storedName = urlName || readStoredIdentity()
     if (storedName) {
       _identifyPending = true
       notify('identity', { type: 'identity', id: null, name: storedName, needsIdentity: true })
@@ -964,7 +965,7 @@ export function connect() {
         // Fresh/test servers may not have the human row yet. Preserve the
         // browser identity by creating that same human instead of forcing a
         // manual switch or temporary identity.
-        registerHuman(storedName).catch(() => {
+        registerHuman(storedName, { persist: !urlName }).catch(() => {
           _identifyPending = true
           notify('identity', { type: 'identity', id: null, name: storedName, needsIdentity: true })
         })
