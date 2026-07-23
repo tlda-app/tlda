@@ -60,7 +60,7 @@ import { createShadowMirrorRpcHandler } from './lib/shadow-mirror-rpc.mjs'
 import { dispatchBuild, killAllDispatchedBuilds } from './lib/build-dispatch.mjs'
 import { writeSentinel } from './lib/sentinel.mjs'
 import projectRoutes, { processProjectPush } from './routes/projects.mjs'
-import { initAuth, isAuthEnabled, validateToken, extractToken, requireRead, loginRoute } from './lib/auth.mjs'
+import { initAuth, isAuthEnabled, validateToken, extractToken, requireRead, requireRw, loginRoute } from './lib/auth.mjs'
 import { initSyncRooms, getOrCreateRoom, flushAllRooms, closeAllRooms, replayCachedSignals, onGlobalEvent, broadcastSignal, getRoomRecords, listActiveRooms, updateShape, putShape } from './lib/sync-rooms.mjs'
 import * as tldaFeedback from './lib/tlda-feedback.mjs'
 import { injectBridge, injectSlidesBridge, injectChapterTitle } from './lib/html-injector.mjs'
@@ -88,6 +88,7 @@ import { MailboxLibrarian } from '../shared/mailbox-librarian.ts'
 import { trimTerminalSeedBlankRows } from '../shared/terminal-seed.mjs'
 import { daemonSingletonLockPath, inspectSingletonLock } from '../agent-runtime/singleton-lock.mjs'
 import { partialSkillReadSummaries, recordPartialSkillReads } from '../shared/partial-skill-reads.mjs'
+import { reloadHumanFleetClients } from './lib/targeted-client-control.mjs'
 import { daemonAddress, describeAgentAddress } from '../shared/agent-move-target.mjs'
 import { readBuildInfo } from './lib/build-info.mjs'
 import { resolveTimerParticipants, timerDeliveryFailureResult, timerTerminalInputFailureResult } from './lib/timer-routing.mjs'
@@ -4239,6 +4240,21 @@ const fleetRouter = createFleetRouter({
   hasOpenFleetSocketForAgent,
 })
 app.use(fleetRouter)
+
+app.post('/api/fleet/reload-client', requireRw, (req, res) => {
+  const humanId = req.body?.humanId
+  try {
+    const result = reloadHumanFleetClients(fleetWss.clients, humanId, {
+      reason: req.body?.reason || 'operator-request',
+    })
+    if (result.sent === 0) {
+      return res.status(404).json({ ok: false, error: `No connected browser for ${humanId}`, ...result })
+    }
+    res.json({ ok: true, ...result })
+  } catch (error) {
+    res.status(400).json({ ok: false, error: error.message })
+  }
+})
 
 // ---------- KaTeX static assets ----------
 // Served at /katex/ for markdown pages that use KaTeX-rendered math
