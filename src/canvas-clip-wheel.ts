@@ -20,7 +20,7 @@ export function canvasClipWheelCamera(
   bounds: ClipBounds | null,
   panelWidth: number,
   canvasHeight: number,
-  options: { zoom?: boolean } = {},
+  options: { zoom?: boolean; unboundedPan?: boolean } = {},
 ) {
   const z = camera.z || 1
   if (options.zoom) {
@@ -39,11 +39,12 @@ export function canvasClipWheelCamera(
     }
     return clampClipCamera(next, bounds, panelWidth, canvasHeight)
   }
-  return clampClipCamera({
+  const next = {
     ...camera,
     x: camera.x - deltaX / z,
     y: camera.y - deltaY / z,
-  }, bounds, panelWidth, canvasHeight)
+  }
+  return options.unboundedPan ? next : clampClipCamera(next, bounds, panelWidth, canvasHeight)
 }
 
 function clampClipCamera(
