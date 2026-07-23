@@ -7,7 +7,7 @@ import {
   type TLPropsMigrations,
 } from 'tldraw'
 import { getLiveVideoTiles, subscribeLiveVideoTiles, type LiveVideoTile } from '../livekit/liveVideoRegistry'
-import { isMyFleetShape } from './fleet-utils'
+import { beginFleetDragWithoutSnap, endFleetDragWithoutSnap, isMyFleetShape } from './fleet-utils'
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import './fleet-video.css'
 
@@ -40,6 +40,9 @@ export class FleetVideoShapeUtil extends BaseBoxShapeUtil<any> {
   override canEdit = () => false
   override canBind = () => false
   override hideRotateHandle = () => true
+  override onTranslateStart = () => beginFleetDragWithoutSnap(this.editor)
+  override onTranslateEnd = () => endFleetDragWithoutSnap(this.editor)
+  override onTranslateCancel = () => endFleetDragWithoutSnap(this.editor)
 
   component(shape: any) {
     return (

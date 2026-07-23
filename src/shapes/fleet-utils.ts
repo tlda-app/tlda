@@ -70,6 +70,22 @@ export function endNativeSnapDrag(editor: Editor) {
   if (stack && stack.length === 0) nativeSnapModeStack.delete(editor)
 }
 
+const fleetSnapModeStack = new WeakMap<Editor, boolean[]>()
+export function beginFleetDragWithoutSnap(editor: Editor) {
+  const stack = fleetSnapModeStack.get(editor) ?? []
+  stack.push(editor.user.getIsSnapMode())
+  fleetSnapModeStack.set(editor, stack)
+  editor.user.updateUserPreferences({ isSnapMode: false })
+}
+
+export function endFleetDragWithoutSnap(editor: Editor) {
+  const stack = fleetSnapModeStack.get(editor)
+  const previous = stack?.pop()
+  if (previous === undefined) return
+  editor.user.updateUserPreferences({ isSnapMode: previous })
+  if (stack && stack.length === 0) fleetSnapModeStack.delete(editor)
+}
+
 /** Display-only label. Do not use this as a filter or routing value. */
 export function agentDisplayLabel(agent: any, _allAgents?: any[]): string {
   if (!agent) return '[unknown]'

@@ -14,7 +14,7 @@ import {
   createShapeId,
   type TLShapeId,
 } from 'tldraw'
-import { beginNativeSnapDrag, createFleetShape, agentDisplayLabel, endNativeSnapDrag } from './fleet-utils'
+import { beginFleetDragWithoutSnap, createFleetShape, agentDisplayLabel, endFleetDragWithoutSnap } from './fleet-utils'
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import { fleetSearchProps } from '../../shared/shapes/fleet-panel-schema.mjs'
 import { useState, useCallback, useRef, useMemo, useEffect, memo } from 'react'
@@ -242,12 +242,12 @@ export class FleetSearchShapeUtil extends BaseBoxShapeUtil<any> {
 
   override canEdit = () => true
   override canResize = () => true
+  override onTranslateStart = () => beginFleetDragWithoutSnap(this.editor)
+  override onTranslateEnd = () => endFleetDragWithoutSnap(this.editor)
+  override onTranslateCancel = () => endFleetDragWithoutSnap(this.editor)
   override canSnap = () => true
   override canBind = () => false
   override hideRotateHandle = () => true
-  override onTranslateStart = () => beginNativeSnapDrag(this.editor)
-  override onTranslateEnd = () => endNativeSnapDrag(this.editor)
-  override onTranslateCancel = () => endNativeSnapDrag(this.editor)
 
   component(shape: any) {
     return <FleetSearchComponent shape={shape} />

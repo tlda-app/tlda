@@ -53,7 +53,7 @@ import { useFleetAgents, useFleetChatAgents, useFleetEvents, useFleetTasks, useF
 import { isTerminalAvailableForAgent } from '../fleet/fleet-chat-visibility.mjs'
 import type { Suggestion } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
-import { agentDisplayLabel, agentExactName, beginNativeSnapDrag, endNativeSnapDrag, isFleetShapeForOwnerKey } from './fleet-utils'
+import { agentDisplayLabel, agentExactName, beginFleetDragWithoutSnap, endFleetDragWithoutSnap, isFleetShapeForOwnerKey } from './fleet-utils'
 import { usePillDrag } from './FleetAgentsShape'
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import { ChatComposer } from './ChatComposer'
@@ -1325,12 +1325,12 @@ export class FleetChatShapeUtil extends BaseBoxShapeUtil<any> {
 
   override canEdit = () => false
   override canResize = () => true
+  override onTranslateStart = () => beginFleetDragWithoutSnap(this.editor)
+  override onTranslateEnd = () => endFleetDragWithoutSnap(this.editor)
+  override onTranslateCancel = () => endFleetDragWithoutSnap(this.editor)
   override canSnap = () => true
   override canBind = () => false
   override hideRotateHandle = () => true
-  override onTranslateStart = () => beginNativeSnapDrag(this.editor)
-  override onTranslateEnd = () => endNativeSnapDrag(this.editor)
-  override onTranslateCancel = () => endNativeSnapDrag(this.editor)
 
   component(shape: any) {
     return <FleetChatComponent shape={shape} />
