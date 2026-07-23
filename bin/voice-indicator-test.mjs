@@ -67,4 +67,33 @@ backlog.clear()
 const afterResetDelivered = []
 assert.equal(backlog.drain(10, chunk => { afterResetDelivered.push(new Uint8Array(chunk)[0]); return true }), true)
 assert.deepEqual(afterResetDelivered, [])
+
+const boundedBacklog = new PcmBacklog({ maxBytes: 2, maxAgeMs: 1000 })
+boundedBacklog.push(11, new Uint8Array([1]).buffer)
+boundedBacklog.push(11, new Uint8Array([2]).buffer)
+boundedBacklog.push(11, new Uint8Array([3]).buffer)
+const boundedSnapshot = boundedBacklog.snapshot()
+assert.equal(boundedSnapshot.frames, 2)
+assert.equal(boundedSnapshot.bytes, 2)
+assert.equal(boundedSnapshot.droppedFrames, 1)
+assert.equal(boundedSnapshot.flushedFrames, 0)
+assert.equal(boundedSnapshot.maxBytes, 2)
+assert.equal(boundedSnapshot.maxAgeMs, 1000)
+assert.ok(Number.isFinite(boundedSnapshot.oldestAgeMs))
+assert.deepEqual({
+  ...boundedSnapshot,
+  oldestAgeMs: 0,
+}, {
+  frames: 2,
+  bytes: 2,
+  oldestAgeMs: 0,
+  droppedFrames: 1,
+  flushedFrames: 0,
+  maxBytes: 2,
+  maxAgeMs: 1000,
+})
+const boundedDelivered = []
+assert.equal(boundedBacklog.drain(11, chunk => { boundedDelivered.push(new Uint8Array(chunk)[0]); return true }), true)
+assert.deepEqual(boundedDelivered, [2, 3])
+assert.equal(boundedBacklog.snapshot().flushedFrames, 2)
 console.log('voice indicator tests passed')

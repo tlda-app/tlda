@@ -4816,6 +4816,47 @@ server.on('upgrade', async (req, socket, head) => {
       let upstream = null
       let closed = false
       const pending = []
+      let pendingBytes = 0
+      let droppedFrames = 0
+      let flushedFrames = 0
+      const maxPendingBytes = 16000 * 2 * 3
+      const maxPendingAgeMs = 3000
+
+      const proxySnapshot = () => ({
+        pendingFrames: pending.length,
+        pendingBytes,
+        oldestAgeMs: pending.length ? Math.max(0, Date.now() - pending[0].queuedAt) : null,
+        droppedFrames,
+        flushedFrames,
+        maxPendingBytes,
+        maxPendingAgeMs,
+        upstreamReadyState: upstream?.readyState ?? null,
+      })
+
+      const sendProxyStatus = () => {
+        if (browserWs.readyState !== 1) return
+        try {
+          browserWs.send(JSON.stringify({ type: 'proxy_status', proxy: proxySnapshot(), timestamp: Date.now() }))
+        } catch (err) {
+          // Best-effort telemetry must not interrupt live audio proxying.
+          console.warn('[voice-proxy:sdk] proxy telemetry send failed:', err.message)
+        }
+      }
+
+      const dropPendingAt = (index) => {
+        const [frame] = pending.splice(index, 1)
+        if (!frame) return
+        pendingBytes = Math.max(0, pendingBytes - frame.data.length)
+        droppedFrames++
+      }
+
+      const prunePending = () => {
+        const now = Date.now()
+        for (let i = pending.length - 1; i >= 0; i--) {
+          if (now - pending[i].queuedAt > maxPendingAgeMs) dropPendingAt(i)
+        }
+        while (pendingBytes > maxPendingBytes && pending.length) dropPendingAt(0)
+      }
 
       const closeBoth = () => {
         if (closed) return
@@ -4828,7 +4869,11 @@ server.on('upgrade', async (req, socket, head) => {
         if (upstream && upstream.readyState === WS.OPEN) {
           try { upstream.send(data, { binary: isBinary }) } catch {}
         } else {
-          pending.push({ data, isBinary })
+          const frame = Buffer.isBuffer(data) ? data : Buffer.from(data)
+          pending.push({ data: frame, isBinary, queuedAt: Date.now() })
+          pendingBytes += frame.length
+          prunePending()
+          sendProxyStatus()
         }
       })
       browserWs.on('close', closeBoth)
@@ -4844,10 +4889,19 @@ server.on('upgrade', async (req, socket, head) => {
 
       upstream = new WS(bridgeUrl, { rejectUnauthorized: false })
       upstream.on('open', () => {
+        prunePending()
         for (const { data, isBinary } of pending) {
-          try { upstream.send(data, { binary: isBinary }) } catch {}
+          try {
+            upstream.send(data, { binary: isBinary })
+            flushedFrames++
+          } catch (err) {
+            droppedFrames++
+            console.warn('[voice-proxy:sdk] pending audio flush failed:', err.message)
+          }
         }
         pending.length = 0
+        pendingBytes = 0
+        sendProxyStatus()
       })
       upstream.on('message', (data, isBinary) => {
         if (browserWs.readyState === 1) {

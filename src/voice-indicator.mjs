@@ -53,24 +53,71 @@ export function deliverVoiceComposition(textarea, composition, write) {
 }
 
 export class PcmBacklog {
-  constructor() { this.chunks = [] }
+  constructor({ maxBytes = 16000 * 2 * 3, maxAgeMs = 3000 } = {}) {
+    this.chunks = []
+    this.maxBytes = maxBytes
+    this.maxAgeMs = maxAgeMs
+    this.bytes = 0
+    this.dropped = 0
+    this.flushed = 0
+  }
+  _dropAt(index) {
+    const [chunk] = this.chunks.splice(index, 1)
+    if (!chunk) return null
+    this.bytes = Math.max(0, this.bytes - chunk.buffer.byteLength)
+    this.dropped++
+    return chunk
+  }
+  _prune(now = Date.now()) {
+    if (this.maxAgeMs > 0) {
+      for (let i = this.chunks.length - 1; i >= 0; i--) {
+        if (now - this.chunks[i].queuedAt > this.maxAgeMs) this._dropAt(i)
+      }
+    }
+    while (this.maxBytes > 0 && this.bytes > this.maxBytes && this.chunks.length) {
+      this._dropAt(0)
+    }
+  }
   push(epoch, buffer) {
     if (Number.isInteger(epoch) && buffer instanceof ArrayBuffer && buffer.byteLength) {
-      this.chunks.push({ epoch, buffer })
+      this.chunks.push({ epoch, buffer, queuedAt: Date.now() })
+      this.bytes += buffer.byteLength
+      this._prune()
     }
   }
   drain(epoch, send) {
+    this._prune()
     const pending = this.chunks.filter(chunk => chunk.epoch === epoch)
     // Anything from another epoch is stale and can never be replayed.
+    const stale = this.chunks.filter(chunk => chunk.epoch !== epoch)
+    this.dropped += stale.length
     this.chunks = []
+    this.bytes = 0
     for (let i = 0; i < pending.length; i++) {
       if (!send(pending[i].buffer)) {
         this.chunks.unshift(...pending.slice(i))
+        this.bytes = this.chunks.reduce((sum, chunk) => sum + chunk.buffer.byteLength, 0)
         return false
       }
+      this.flushed++
     }
     return true
   }
-  clear() { this.chunks = [] }
+  clear() {
+    this.chunks = []
+    this.bytes = 0
+  }
+  snapshot(now = Date.now()) {
+    this._prune(now)
+    return {
+      frames: this.chunks.length,
+      bytes: this.bytes,
+      oldestAgeMs: this.chunks.length ? Math.max(0, now - this.chunks[0].queuedAt) : null,
+      droppedFrames: this.dropped,
+      flushedFrames: this.flushed,
+      maxBytes: this.maxBytes,
+      maxAgeMs: this.maxAgeMs,
+    }
+  }
   get length() { return this.chunks.length }
 }

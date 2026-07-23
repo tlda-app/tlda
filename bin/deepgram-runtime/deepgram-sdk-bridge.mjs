@@ -176,6 +176,12 @@ wss.on('connection', (browserWs) => {
   let activeEpoch = null
   let epochTransition = null
   let connectionAttemptId = 0
+  let lastBrowserAudioAt = 0
+  let lastUpstreamAudioAt = 0
+  let lastTranscriptAt = 0
+  let pendingFinalSince = 0
+  let droppedChunks = 0
+  let flushedChunks = 0
 
   function closeConnection(connection, context) {
     try {
@@ -251,6 +257,26 @@ wss.on('connection', (browserWs) => {
     return connection?.socket?.readyState === WebSocket.OPEN
   }
 
+  function bridgeSnapshot() {
+    const now = Date.now()
+    return {
+      upstreamConnected: isDeepgramOpen(),
+      lastBrowserAudioAgoMs: lastBrowserAudioAt ? now - lastBrowserAudioAt : null,
+      lastUpstreamAudioAgoMs: lastUpstreamAudioAt ? now - lastUpstreamAudioAt : null,
+      transcriptLatencyMs: lastTranscriptAt && lastUpstreamAudioAt ? Math.max(0, lastTranscriptAt - lastUpstreamAudioAt) : null,
+      pendingFinalAgeMs: pendingFinalSince ? now - pendingFinalSince : null,
+      reconnectCount: reconnectFailures,
+      droppedChunks,
+      flushedChunks,
+      epoch: activeEpoch,
+      attemptId: connectionAttemptId,
+    }
+  }
+
+  function emitBridgeTelemetry() {
+    sendToBrowser(browserWs, { type: 'bridge_telemetry', bridge: bridgeSnapshot(), timestamp: Date.now() })
+  }
+
   function sendDeepgramJson(connection, msg) {
     if (!isDeepgramOpen(connection)) return false
     connection.socket.send(JSON.stringify(msg))
@@ -260,6 +286,7 @@ wss.on('connection', (browserWs) => {
   function sendDeepgramAudio(connection, data) {
     if (!isDeepgramOpen(connection)) return false
     connection.socket.send(data)
+    lastUpstreamAudioAt = Date.now()
     return true
   }
 
@@ -308,6 +335,9 @@ wss.on('connection', (browserWs) => {
         if (!text) return
 
         lastSpeechAt = Date.now() // speech activity → keep the upstream session alive
+        lastTranscriptAt = lastSpeechAt
+        if (msg.is_final) pendingFinalSince = 0
+        else if (!pendingFinalSince) pendingFinalSince = lastTranscriptAt
         console.log(`[deepgram-sdk-bridge] transcript: is_final=${msg.is_final} speech_final=${msg.speech_final} from_finalize=${msg.from_finalize} "${text.slice(0, 60)}"`)
         sendToBrowser(browserWs, {
           type: 'transcript',
@@ -318,18 +348,23 @@ wss.on('connection', (browserWs) => {
           timestamp: Date.now(),
           epoch,
         })
+        emitBridgeTelemetry()
         return
       }
 
       if (msg.type === 'SpeechStarted') {
         lastSpeechAt = Date.now()
+        pendingFinalSince = pendingFinalSince || lastSpeechAt
         console.log('[deepgram-sdk-bridge] speech started')
         sendToBrowser(browserWs, { type: 'speech_started', timestamp: Date.now(), epoch })
+        emitBridgeTelemetry()
         return
       }
 
       if (msg.type === 'UtteranceEnd') {
+        pendingFinalSince = 0
         sendToBrowser(browserWs, { type: 'utterance_end', timestamp: Date.now(), epoch })
+        emitBridgeTelemetry()
         return
       }
 
@@ -356,6 +391,7 @@ wss.on('connection', (browserWs) => {
       if (reconnectFailures <= 2 || reconnectFailures % 10 === 0) {
         console.log(`[deepgram-sdk-bridge] upstream closed (code ${event?.code ?? '?'}); not redialing — waits for audio/start (drop #${reconnectFailures})`)
       }
+      emitBridgeTelemetry()
     })
 
     connection.on('error', (err) => {
@@ -400,6 +436,7 @@ wss.on('connection', (browserWs) => {
       if (epoch === activeEpoch && attemptId === connectionAttemptId) {
         sendToBrowser(browserWs, { type: 'status', status: 'error', error: err.message, implementation: 'sdk', epoch, attemptId })
       }
+      emitBridgeTelemetry()
       return null
     })
     return connecting
@@ -413,6 +450,7 @@ wss.on('connection', (browserWs) => {
     idleClosed = true
     disconnectDeepgram()
     sendToBrowser(browserWs, { type: 'status', status: 'idle', implementation: 'sdk', epoch: activeEpoch, attemptId: connectionAttemptId })
+    emitBridgeTelemetry()
   }
 
   function disconnectDeepgram() {
@@ -431,18 +469,21 @@ wss.on('connection', (browserWs) => {
   browserWs.on('message', (data, isBinary) => {
     if (isBinary) {
       const frame = Buffer.from(data)
+      lastBrowserAudioAt = Date.now()
       if (epochTransition?.state === 'connecting') {
         const maxBytes = epochQueueMaxBytes()
         if (!enqueueEpochPcm(epochTransition, frame, maxBytes)) {
           revokeConnectionAttempt('overflowed epoch')
           emitEpochLoss(epochTransition, 'queue-overflow', frame.length)
+          droppedChunks++
           epochTransition.state = 'recovering'
           sendToBrowser(browserWs, { type: 'epoch_error', epoch: epochTransition.epoch, reason: 'queue-overflow' })
+          emitBridgeTelemetry()
           return
         }
         return
       }
-      if (epochTransition?.state === 'recovering') return
+      if (epochTransition?.state === 'recovering') { droppedChunks++; emitBridgeTelemetry(); return }
       // After an idle cutoff the upstream is closed. A continuously-streaming
       // client must NOT instantly reconnect (that defeats the cutoff and was the
       // storm). Resume ONLY when the audio actually contains sound (RMS), not on a
@@ -458,7 +499,15 @@ wss.on('connection', (browserWs) => {
         preroll = []; prerollBytes = 0
         connectDeepgram().then(connection => {
           if (!connection || browserWs.readyState !== WebSocket.OPEN) return
-          for (const f of frames) { try { sendDeepgramAudio(connection, f) } catch {} }
+          for (const f of frames) {
+            try {
+              if (sendDeepgramAudio(connection, f)) flushedChunks++
+            } catch (err) {
+              console.warn('[deepgram-sdk-bridge] preroll audio send failed:', err.message)
+              droppedChunks++
+            }
+          }
+          emitBridgeTelemetry()
         })
         return
       }
@@ -472,10 +521,15 @@ wss.on('connection', (browserWs) => {
         try {
           if (!sendDeepgramAudio(connection, pending)) {
             console.warn('[deepgram-sdk-bridge] pending audio dropped: socket not open')
+            droppedChunks++
+          } else {
+            flushedChunks++
           }
         } catch (err) {
           console.warn('[deepgram-sdk-bridge] pending audio send failed:', err.message)
+          droppedChunks++
         }
+        emitBridgeTelemetry()
       })
       return
     }

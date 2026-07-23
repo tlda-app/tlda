@@ -575,6 +575,14 @@ function whisperLiveness(messageAgo, wsReadyState, connected, timeoutMs = WHISPE
   return 'live'
 }
 
+function voiceCanReportRawAudioFlowing() {
+  if (_backend !== 'deepgram') return true
+  return _deepgramRelayConnected &&
+    deepgramRecognizerConnected() &&
+    _deepgramReadyEpoch === _speechEpoch &&
+    !_deepgramPcmPaused
+}
+
 function shouldAutoStartOnInit() {
   // initVoice() should only install controls and select the saved backend. Starting
   // capture on page load creates hidden prompts, Web Speech gesture failures, and
@@ -632,7 +640,7 @@ function setMicInputLevel(level) {
     if (audible !== _micAudible) {
       _micAudible = audible
       if (_micLevelFill) _micLevelFill.style.backgroundColor = audible ? DOT_GREEN : DOT_AMBER
-      _voiceHealthLabel = audible ? 'speech detected' : liveLivenessLabel()
+      _voiceHealthLabel = audible && voiceCanReportRawAudioFlowing() ? 'speech detected' : liveLivenessLabel()
       if (_recording) showRecordingHud()
       else showHud('off', '#9370db')
     }
@@ -871,7 +879,9 @@ function sendDeepgramAudioChunk(data) {
     _deepgramAudioBacklog.push(_speechEpoch, data)
     return true
   }
-  _lastAudioChunkTime = Date.now()
+  const now = Date.now()
+  _audioChunkCadenceMs = _lastAudioChunkTime ? now - _lastAudioChunkTime : null
+  _lastAudioChunkTime = now
   return true
 }
 
@@ -882,7 +892,11 @@ function flushDeepgramAudioBacklog() {
     if (relay !== _deepgramWs || relay.readyState !== WebSocket.OPEN) return false
     try { relay.send(chunk); return true } catch { return false }
   })
-  if (drained) _lastAudioChunkTime = Date.now()
+  if (drained) {
+    const now = Date.now()
+    _audioChunkCadenceMs = _lastAudioChunkTime ? now - _lastAudioChunkTime : null
+    _lastAudioChunkTime = now
+  }
   return drained
 }
 
@@ -1291,6 +1305,7 @@ function voiceHasRoute() {
 }
 
 export function getVoiceRuntimeSummary(now = Date.now()) {
+  const deepgramBacklog = _deepgramAudioBacklog.snapshot(now)
   return {
     backend: _backend,
     recording: _recording,
@@ -1316,8 +1331,17 @@ export function getVoiceRuntimeSummary(now = Date.now()) {
       hasMicStream: !!_deepgramStream,
       audioContextState: _deepgramContext?.state ?? null,
       upstreamPaused: _dgUpstreamPaused,
+      micFrameCadenceMs: _micFrameCadenceMs,
+      audioChunkCadenceMs: _audioChunkCadenceMs,
       lastMicFrameAgoMs: _lastMicFrameTime ? now - _lastMicFrameTime : null,
       lastAudioChunkAgoMs: _lastAudioChunkTime ? now - _lastAudioChunkTime : null,
+      audioBacklogFrames: deepgramBacklog.frames,
+      audioBacklogBytes: deepgramBacklog.bytes,
+      audioBacklogOldestAgeMs: deepgramBacklog.oldestAgeMs,
+      droppedAudioFrames: deepgramBacklog.droppedFrames,
+      flushedAudioFrames: deepgramBacklog.flushedFrames,
+      proxy: _lastProxyTelemetry,
+      bridge: _lastBridgeTelemetry,
     },
     chrome: {
       recognizerActive: !!_recognition,
@@ -1995,6 +2019,10 @@ let _dgIgnoredSubmittedText = null // normalized utterance submitted before wait
 let _dgLastFinalNorm = ''        // last committed final; used to drop duplicate stale finals
 let _dgLastFinalAt = 0           // timestamp for same-final echo suppression
 const DEEPGRAM_REPEAT_ECHO_WINDOW_MS = 1200
+let _micFrameCadenceMs = null
+let _audioChunkCadenceMs = null
+let _lastProxyTelemetry = null
+let _lastBridgeTelemetry = null
 
 function currentDeepgramRecognizerStatus() {
   return _deepgramRelayConnected && _deepgramRecognizerRelay === _deepgramWs
@@ -2163,6 +2191,18 @@ function onDeepgramMessage(event, relay = _deepgramWs) {
   }
   try {
     const msg = JSON.parse(event.data)
+
+    if (msg.type === 'proxy_status') {
+      if (relay !== _deepgramWs) return
+      _lastProxyTelemetry = { ...(msg.proxy || {}), receivedAt: Date.now() }
+      return
+    }
+
+    if (msg.type === 'bridge_telemetry') {
+      if (relay !== _deepgramWs) return
+      _lastBridgeTelemetry = { ...(msg.bridge || {}), receivedAt: Date.now() }
+      return
+    }
 
     if (msg.type === 'epoch_ready') {
       if (relay !== _deepgramWs || msg.epoch !== _speechEpoch) return
@@ -2505,7 +2545,9 @@ async function startDeepgramMic() {
 
   _deepgramWorklet = new AudioWorkletNode(_deepgramContext, 'deepgram-capture')
   _deepgramWorklet.port.onmessage = (e) => {
-    _lastMicFrameTime = Date.now()   // raw mic delivery — stamped BEFORE the route/idle gate so a paused-but-live mic still reads as live
+    const now = Date.now()
+    _micFrameCadenceMs = _lastMicFrameTime ? now - _lastMicFrameTime : null
+    _lastMicFrameTime = now   // raw mic delivery — stamped BEFORE the route/idle gate so a paused-but-live mic still reads as live
     setMicInputLevel(pcmInputLevel(e.data))
     sendDeepgramAudioChunk(e.data)
   }
