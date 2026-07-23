@@ -726,7 +726,7 @@ export async function processProjectPushSerialized(name, body, transactionTest =
   let lifecycleCandidate = null
   if (sourceMutation) {
     const current = authorityBefore.currentRevision ? lifecycle.readRevision(authorityBefore.currentRevision) : null
-    const candidate = new Map((current?.files || []).map(file => [file.path, file]))
+    const candidate = new Map((current?.files || []).map(file => [file.path, { ...file, encoding: 'base64' }]))
     const inheritedManifest = authorityBefore.state === 'uninitialized'
       ? new Set(Array.isArray(project.clientSourceManifest) ? project.clientSourceManifest : [])
       : new Set()
@@ -734,11 +734,15 @@ export async function processProjectPushSerialized(name, body, transactionTest =
       for (const filePath of normalizeSourceManifest(sourceManifest, sourceManifestContext(project))) {
         if (!inheritedManifest.has(filePath)) continue
         const content = readSourceFile(name, filePath)
-        if (content !== null) candidate.set(filePath, { path: filePath, content: Buffer.from(content).toString('base64') })
+        if (content !== null) candidate.set(filePath, { path: filePath, content: Buffer.from(content).toString('base64'), encoding: 'base64' })
       }
     }
     for (const filePath of deletedFiles || []) candidate.delete(filePath)
-    for (const file of files || []) candidate.set(file.path, { path: file.path, content: file.encoding === 'base64' ? file.content : Buffer.from(String(file.content ?? '')).toString('base64') })
+    for (const file of files || []) candidate.set(file.path, {
+      path: file.path,
+      content: file.encoding === 'base64' ? file.content : Buffer.from(String(file.content ?? '')).toString('base64'),
+      encoding: 'base64',
+    })
     const manifest = normalizeSourceManifest(sourceManifest, sourceManifestContext(project))
     if (candidate.size !== manifest.length || manifest.some(path => !candidate.has(path))) {
       return { status: 409, ok: false, error: authorityBefore.state === 'uninitialized' ? 'Bootstrap requires a complete source snapshot' : 'Proposed snapshot does not match sourceManifest', authority: authorityBefore }

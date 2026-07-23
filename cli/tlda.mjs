@@ -333,6 +333,12 @@ async function incrementalPush(name, dir, extraBody = {}, { forceMetadata = fals
   if (!serverHashes || typeof serverHashes !== 'object' || Array.isArray(serverHashes)) {
     throw new Error(`invalid hash response for ${name}`)
   }
+  let sourceAuthority
+  try {
+    sourceAuthority = await api('GET', `/api/projects/${name}/source-authority`)
+  } catch (e) {
+    throw new Error(`could not fetch source authority for ${name}: ${e.message}`)
+  }
 
   const { changedPaths, deletedFiles } = diffSourceHashes(localHashes, serverHashes)
 
@@ -349,6 +355,7 @@ async function incrementalPush(name, dir, extraBody = {}, { forceMetadata = fals
   return await api('POST', `/api/projects/${name}/push`, {
     files,
     sourceManifest,
+    expectedRevision: sourceAuthority.currentRevision,
     ...(deletedFiles?.length > 0 && { deletedFiles }),
     ...extraBody,
   })

@@ -69,6 +69,8 @@ const added = await processProjectPush('authority-http', {
 })
 assert.equal(added.status, 200)
 assert.equal(readSourceFile('authority-http', 'notes.tex'), 'notes\n')
+const addedRevision = sourceLifecycleStore('authority-http').readRevision(added.sourceRevision)
+assert.equal(addedRevision.byteSize, Buffer.byteLength('current\n') + Buffer.byteLength('notes\n'), 'unchanged snapshot bytes must not be base64-encoded again')
 
 const renamed = await processProjectPush('authority-http', {
   expectedRevision: added.sourceRevision,
