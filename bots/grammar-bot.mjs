@@ -124,6 +124,11 @@ function nudgeText(findings) {
   return `⚠ **Possible comma splice** in your math${n > 1 ? ` (${n} spots)` : ''}: a comma is joining two statements as if it were a word. Which word did you mean — ${which}? Write it out; a comma isn't a connective. You can fix it in place by **amending** the message (\`chat({ amend_id })\`), no need to repost.`
 }
 
+function ownerNudgeText(authorId, findings) {
+  const n = findings.length
+  return `⚠ **Grammar lint** for **${authorId}**: possible comma splice${n > 1 ? ` (${n} spots)` : ''} in a math message. The author received the repair nudge.`
+}
+
 const nudgedRecently = new Map()   // messageKey -> ts, dedupe
 const NUDGE_DEDUPE_MS = 60_000
 
@@ -195,6 +200,7 @@ async function handleMessage(raw) {
   const key = `${from}:${d.id ?? text.slice(0, 40)}`
   if (alreadyNudged(key)) return
   sendChat(from, nudgeText(findings))
+  sendChat(OWNER_ID, ownerNudgeText(from, findings))
   writeHeartbeat('nudge')
 }
 
