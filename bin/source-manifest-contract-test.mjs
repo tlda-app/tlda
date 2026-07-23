@@ -168,6 +168,7 @@ function assertPushSuppliersCarryManifest() {
     ['server/unified-server.mjs', line => line.includes('processProjectPush(project')],
     ['server/lib/overleaf-sync.mjs', line => line.includes('processProjectPush(name')],
     ['mcp-server/fleet-tools.mjs', line => line.includes('/push')],
+    ['mcp-server/source-push-orchestration.mjs', line => line.includes('/push')],
     ['mcp-server/index.mjs', line => line.includes('/push')],
     ['src/panels/TocTab.tsx', line => line.includes('/push')],
     ['src/shapes/FleetPillShape.tsx', line => line.includes('/push')],
@@ -180,6 +181,9 @@ function assertPushSuppliersCarryManifest() {
       const snippet = lines.slice(i, i + 16).join('\n')
       if (snippet.includes('files: []') && snippet.includes('members')) continue
       assert.match(snippet, /sourceManifest/, `${file} file-push supplier missing sourceManifest:\n${snippet}`)
+      if (lines[i].includes('/push')) {
+        assert.match(snippet, /expectedRevision/, `${file} source-mutation supplier missing expectedRevision:\n${snippet}`)
+      }
     }
   }
 }
@@ -212,6 +216,8 @@ function assertPutRequiresCallerManifest() {
   assert.ok(writeStart >= 0 && writeEnd > writeStart, 'fleet source editor writeSourceFile not found')
   const writeSource = callerSource.slice(writeStart, writeEnd)
   assert.match(writeSource, /sourceManifest/, 'fleet source editor PUT caller must send sourceManifest')
+  assert.match(writeSource, /expectedRevision/, 'fleet source editor PUT caller must send expectedRevision')
+  assert.match(writeSource, /\/source-authority/, 'fleet source editor PUT caller must read current source authority')
   assert.match(writeSource, /loadSourceFiles\(\)/, 'fleet source editor PUT caller must base manifest on current client inventory')
 }
 
@@ -251,6 +257,7 @@ async function assertMcpPushOrchestrationBehavior() {
       calls.push({ urlPath, options })
       if (urlPath === '/api/projects/mcp-doc') return { format: 'svg', mainFile: 'main.tex' }
       if (urlPath === '/api/projects/mcp-doc/files') return { files: ['main.tex', 'notes.tex'] }
+      if (urlPath === '/api/projects/mcp-doc/source-authority') return { currentRevision: 'revision-1' }
       if (urlPath === '/api/projects/mcp-doc/push') return { ok: true }
       throw new Error(`unexpected fetch ${urlPath}`)
     },
@@ -258,12 +265,14 @@ async function assertMcpPushOrchestrationBehavior() {
   assert.deepEqual(calls.map(call => call.urlPath), [
     '/api/projects/mcp-doc',
     '/api/projects/mcp-doc/files',
+    '/api/projects/mcp-doc/source-authority',
     '/api/projects/mcp-doc/push',
   ])
-  const pushBody = JSON.parse(calls[2].options.body)
+  const pushBody = JSON.parse(calls[3].options.body)
   assert.deepEqual(pushBody.files, files)
   assert.deepEqual(pushBody.sourceManifest, ['extra.tex', 'main.tex', 'notes.tex'])
   assert.equal(pushBody.session, 'session-1')
+  assert.equal(pushBody.expectedRevision, 'revision-1')
 
   for (const filesResponse of [
     Promise.reject(new Error('files failed')),
@@ -280,6 +289,7 @@ async function assertMcpPushOrchestrationBehavior() {
           failedCalls.push({ urlPath, options })
           if (urlPath === '/api/projects/mcp-doc') return { format: 'svg', mainFile: 'main.tex' }
           if (urlPath === '/api/projects/mcp-doc/files') return filesResponse
+          if (urlPath === '/api/projects/mcp-doc/source-authority') return { currentRevision: 'revision-1' }
           if (urlPath === '/api/projects/mcp-doc/push') return { ok: true }
           throw new Error(`unexpected fetch ${urlPath}`)
         },

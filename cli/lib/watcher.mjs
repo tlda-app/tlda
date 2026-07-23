@@ -67,6 +67,17 @@ export async function startWatcher({ dir, name, debounceMs = 200, getServer, get
   let pushing = false
   let pushQueued = false
   let retryDelay = 1000
+  let expectedRevision
+
+  async function loadExpectedRevision() {
+    const res = await fetch(`${server}/api/projects/${name}/source-authority`, {
+      headers: authHeaders,
+      signal: AbortSignal.timeout(30000),
+    })
+    if (!res.ok) throw new Error(`source authority failed: ${await res.text()}`)
+    const authority = await res.json()
+    expectedRevision = authority.currentRevision
+  }
 
   // Signal SSE stream for viewport + reverse sync
   let cachedViewportPages = null
@@ -80,6 +91,7 @@ export async function startWatcher({ dir, name, debounceMs = 200, getServer, get
   async function initialPush() {
     try {
       sourceContext = await fetchSourceContext(server, name, authHeaders)
+      await loadExpectedRevision()
       const files = (await import('./source-files.mjs')).collectSourceFiles(dir, sourceContext)
       const sourceManifest = normalizeSourceManifest(files.map(f => f.path), sourceContext)
       if (files.length > 0) {
@@ -87,11 +99,12 @@ export async function startWatcher({ dir, name, debounceMs = 200, getServer, get
         const res = await fetch(`${server}/api/projects/${name}/push`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...authHeaders },
-          body: JSON.stringify({ files, sourceManifest, sourceDir: dir }),
+          body: JSON.stringify({ files, sourceManifest, sourceDir: dir, expectedRevision }),
           signal: AbortSignal.timeout(30000),
         })
         if (res.ok) {
           const data = await res.json()
+          expectedRevision = data.sourceRevision
           if (data.unchanged) console.log('[watch] Source unchanged, skipping build.')
           else awaitBuild(server, name, authHeaders)
           retryDelay = 1000
@@ -137,7 +150,7 @@ export async function startWatcher({ dir, name, debounceMs = 200, getServer, get
       const res = await fetch(`${server}/api/projects/${name}/push`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders },
-        body: JSON.stringify({ files: addedOrChanged, deletedFiles, sourceManifest, priorityPages }),
+        body: JSON.stringify({ files: addedOrChanged, deletedFiles, sourceManifest, priorityPages, expectedRevision }),
         signal: AbortSignal.timeout(60000),
       })
       if (!res.ok) {
@@ -150,6 +163,8 @@ export async function startWatcher({ dir, name, debounceMs = 200, getServer, get
         }
         console.error(`[watch] Push failed: ${text}`)
       } else {
+        const data = await res.json()
+        expectedRevision = data.sourceRevision
         retryDelay = 1000
         // Poll for build result
         awaitBuild(server, name, authHeaders)

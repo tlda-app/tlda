@@ -2841,6 +2841,7 @@ export async function handleFleetTool(name, args) {
         if (check.status === 404) {
           await tldaFetch('', { method: 'POST', body: { name: docName, title: taskDescription, format: 'markdown', mainFile } });
         }
+        const sourceAuthority = await tldaFetch(docName + '/source-authority');
         await tldaFetch(docName + '/push', {
           method: 'POST',
           body: {
@@ -2848,6 +2849,7 @@ export async function handleFleetTool(name, args) {
             sourceManifest: normalizeSourceManifest([mainFile], { format: 'markdown', mainFile }),
             sourceDir: cwd || process.env.PWD || '/tmp',
             session: CLAUDE_SESSION,
+            expectedRevision: sourceAuthority.currentRevision,
           },
         });
         tldaMsg = `\n📄 Report pushed to tlda as **${docName}** [${reportStatus}]`;

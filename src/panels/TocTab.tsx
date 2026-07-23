@@ -204,12 +204,16 @@ export function TocTab() {
       }
       const contentB64 = btoa(unescape(encodeURIComponent(text)))
       const files = [{ path: 'content.md', content: contentB64, encoding: 'base64' }]
+      const authorityRes = await fetch(`/api/projects/${slug}/source-authority`)
+      if (!authorityRes.ok) throw new Error('Failed to read source authority')
+      const sourceAuthority = await authorityRes.json()
       await fetch(`/api/projects/${slug}/push`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           files,
           sourceManifest: normalizeSourceManifest(files.map(file => file.path), { format: 'markdown', mainFile: 'content.md' }),
+          expectedRevision: sourceAuthority.currentRevision,
         }),
       })
       const patchRes = await fetch(`/api/projects/${book.bookName}/members`, {

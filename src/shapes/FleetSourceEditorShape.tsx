@@ -789,6 +789,9 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
       if (infoRes.ok) projectInfoRef.current = await infoRes.json()
     }
     const sourceManifest = normalizeSourceManifest([...await loadSourceFiles(), sourcePath], projectInfoRef.current || {})
+    const authorityRes = await fetch(projectApiPath(doc.docName, '/source-authority'))
+    if (!authorityRes.ok) throw new Error(`source authority ${authorityRes.status}`)
+    const sourceAuthority = await authorityRes.json()
     const res = await fetch(projectApiPath(doc.docName, `/source/${encodeURIComponent(sourcePath)}`), {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -796,6 +799,7 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
         content: nextFullText,
         sourceManifest,
         editedBy: shape.props.userId || shape.props.deviceId || 'fleet-source-editor',
+        expectedRevision: sourceAuthority.currentRevision,
       }),
     })
     const payload = await res.json().catch(() => ({}))

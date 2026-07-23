@@ -454,12 +454,16 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
             })
           }
           const files = [{ path: 'main.md', content: text }]
+          const authorityRes = await fetch(`/api/projects/${docName}/source-authority`)
+          if (!authorityRes.ok) throw new Error(`source authority failed: ${authorityRes.status}`)
+          const sourceAuthority = await authorityRes.json()
           await fetch(`/api/projects/${docName}/push`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               files,
               sourceManifest: normalizeSourceManifest(files.map(file => file.path), { format: 'markdown', mainFile: 'main.md' }),
+              expectedRevision: sourceAuthority.currentRevision,
             }),
           })
         } catch { /* ignore — server may not be running */ }

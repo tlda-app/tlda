@@ -365,6 +365,11 @@ function sourceManifestForFiles(files, context = {}) {
   return normalizeSourceManifest((files || []).map(f => f.path), context)
 }
 
+async function currentSourceRevision(name) {
+  const authority = await api('GET', `/api/projects/${name}/source-authority`)
+  return authority.currentRevision
+}
+
 function findMainTex(dir) {
   // Prefer a .tex file matching the directory name
   const dirName = basename(dir)
@@ -482,6 +487,7 @@ async function cmdScratch() {
     files,
     sourceManifest: sourceManifestForFiles(files, { format: 'markdown', mainFile: fileName }),
     sourceDir: dir,
+    expectedRevision: await currentSourceRevision(name),
   })
   console.log(green('Pushed.'))
 
@@ -562,6 +568,7 @@ async function cmdCreate() {
       files: allFiles,
       sourceManifest: sourceManifestForFiles(allFiles, { format: 'slides' }),
       sourceDir: dir,
+      expectedRevision: await currentSourceRevision(name),
     })
     console.log(green('Slides processed.'))
 
@@ -616,6 +623,7 @@ async function cmdCreate() {
       files: allFiles,
       sourceManifest: sourceManifestForFiles(allFiles, { format: 'html' }),
       sourceDir: dir,
+      expectedRevision: await currentSourceRevision(name),
     })
     console.log(green('HTML project processed.'))
 
@@ -666,6 +674,7 @@ async function cmdCreate() {
       files,
       sourceManifest: sourceManifestForFiles(files, { format: 'markdown', mainFile }),
       sourceDir: dir,
+      expectedRevision: await currentSourceRevision(name),
     })
     console.log(green('Markdown project processed.'))
 
@@ -896,6 +905,7 @@ async function cmdInit() {
         files,
         sourceManifest: sourceManifestForFiles(files, { format: 'markdown', mainFile }),
         sourceDir: targetDir,
+        expectedRevision: await currentSourceRevision(name),
       })
     } else if (isHtml) {
       await api('POST', '/api/projects', { name, title, format: 'html', sourceDir: targetDir })
@@ -909,6 +919,7 @@ async function cmdInit() {
         files,
         sourceManifest: sourceManifestForFiles(files, { format: 'html', mainFile }),
         sourceDir: targetDir,
+        expectedRevision: await currentSourceRevision(name),
       })
     } else {
       await api('POST', '/api/projects', { name, title, mainFile, sourceDir: targetDir })
@@ -922,6 +933,7 @@ async function cmdInit() {
         files,
         sourceManifest: sourceManifestForFiles(files, { format: 'svg', mainFile }),
         sourceDir: targetDir,
+        expectedRevision: await currentSourceRevision(name),
       })
       console.log(green('Build triggered.'))
     }
@@ -2122,10 +2134,12 @@ async function cmdMoveProject() {
   }
   const moveContext = { format: project.format, mainFile: project.mainFile }
   const files = collectSourceFiles(sourceDir, moveContext)
+  const targetAuthority = await apiAt(targetServer, 'GET', `/api/projects/${encodeURIComponent(name)}/source-authority`)
   await apiAt(targetServer, 'POST', `/api/projects/${encodeURIComponent(name)}/push`, {
     files,
     sourceManifest: sourceManifestForFiles(files, moveContext),
     sourceDir,
+    expectedRevision: targetAuthority.currentRevision,
   }, { timeoutMs: 120000 })
   writeProjectWorld(projectWorldsPath(CONFIG_DIR), sourceDir, targetConfig)
 

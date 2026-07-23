@@ -157,12 +157,16 @@ export async function createTemporaryMarkdownPageUrl(title: string, markdown: st
     content: encodeUtf8Base64(source),
     encoding: 'base64',
   }]
+  const authorityRes = await fetch(`/api/projects/${TEMP_MARKDOWN_PROJECT}/source-authority`)
+  if (!authorityRes.ok) throw new Error(`markdown source authority failed: ${authorityRes.status}`)
+  const sourceAuthority = await authorityRes.json()
   const pushRes = await fetch(`/api/projects/${TEMP_MARKDOWN_PROJECT}/push`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       files,
       sourceManifest: normalizeSourceManifest(files.map(file => file.path), { format: 'markdown', mainFile: TEMP_MARKDOWN_FILE }),
+      expectedRevision: sourceAuthority.currentRevision,
     }),
   })
   if (!pushRes.ok) throw new Error(`markdown push failed: ${pushRes.status}`)
