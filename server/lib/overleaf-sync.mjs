@@ -33,6 +33,7 @@ import { dirname, join } from 'path'
 import {
   projectDir, readProject, updateProject, createProject,
   listProjectSourceRecoveries, rollbackProjectSourceRecovery, removeProjectSourceRecovery,
+  sourceLifecycleStore,
 } from './project-store.mjs'
 import { processProjectPushSerialized, runSerializedProjectSourceOperation } from '../routes/projects.mjs'
 import { createLogger } from '../../shared/logger.mjs'
@@ -383,7 +384,8 @@ async function syncOverleafSerialized(name, { initial = false, testHooks = null 
   const files = changedPaths.map(p => ({ path: p, ...readFileForPush(join(dir, p)) }))
   const sourceManifest = (await trackedFiles(dir)).filter(p => !shouldSkip(p))
   const processPush = testHooks?.processProjectPush || processProjectPushSerialized
-  const result = await processPush(name, { files, deletedFiles: deletedPaths, sourceManifest, overleafSync: true })
+  const expectedRevision = sourceLifecycleStore(name).readAuthority().currentRevision
+  const result = await processPush(name, { expectedRevision, files, deletedFiles: deletedPaths, sourceManifest, overleafSync: true })
 
   if (!result?.ok) {
     await execAsync(`git reset --hard ${shellQuote(retryHead)}`, { cwd: dir, timeout: 30000 })

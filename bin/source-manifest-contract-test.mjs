@@ -21,6 +21,7 @@ import {
   readClientSourceManifest,
   readProject,
   readSourceFile,
+  sourceLifecycleStore,
   sourceDir,
   updateProject,
   updateClientSourceManifest,
@@ -36,6 +37,16 @@ function md5(value) {
 function write(file, content) {
   fs.mkdirSync(path.dirname(file), { recursive: true })
   fs.writeFileSync(file, content)
+}
+
+function bootstrapAuthority(name, manifest) {
+  const result = sourceLifecycleStore(name).bootstrap({
+    expectedRevision: null,
+    sourceManifest: manifest,
+    files: manifest.map(filePath => ({ path: filePath, content: readSourceFile(name, filePath) })),
+  })
+  assert.equal(result.ok, true)
+  return result.authority.currentRevision
 }
 
 function snapshotProject(name) {
@@ -57,6 +68,7 @@ function snapshotProject(name) {
     for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
       const rel = prefix ? `${prefix}/${entry.name}` : entry.name
       if (rel === '.source-transactions' || rel === 'overleaf-clone/.git') continue
+      if (rel === '.source-lifecycle/revisions' || rel === '.source-lifecycle/evidence') continue
       const full = path.join(current, entry.name)
       if (entry.isDirectory()) walkProject(full, rel)
       else projectFiles[rel] = fs.readFileSync(full).toString('base64')
@@ -91,6 +103,7 @@ function setupOverleafProject(root, name) {
   git(['add', 'main.tex', 'notes.tex'], seed)
   git(['commit', '-m', 'seed'], seed)
   git(['init', '--bare', remote], root)
+  git(['--git-dir', remote, 'symbolic-ref', 'HEAD', 'refs/heads/master'], root)
   git(['remote', 'add', 'origin', remote], seed)
   git(['push', '-u', 'origin', 'HEAD:master'], seed)
 
@@ -99,13 +112,14 @@ function setupOverleafProject(root, name) {
   write(path.join(sourceDir(name), 'main.tex'), 'old main\n')
   write(path.join(sourceDir(name), 'notes.tex'), 'old notes\n')
   updateClientSourceManifest(name, ['main.tex', 'notes.tex'])
+  const expectedRevision = bootstrapAuthority(name, ['main.tex', 'notes.tex'])
 
   const clone = path.join(projectDir(name), 'overleaf-clone')
   git(['clone', remote, clone], root)
   git(['config', 'user.email', 'test@example.invalid'], clone)
   git(['config', 'user.name', 'test'], clone)
   git(['config', 'tlda.testCredential', 'credential-must-not-leak'], clone)
-  return { remote }
+  return { remote, expectedRevision }
 }
 
 function remoteFile(remote, filePath) {
@@ -170,15 +184,16 @@ function assertPushSuppliersCarryManifest() {
   }
 }
 
-function assertDaemonBootstrapUsesOneInventory() {
+function assertDaemonBootstrapSeparatesOwnershipFromBytePayload() {
   const source = fs.readFileSync(path.join(process.cwd(), 'daemon/source-sync.mjs'), 'utf8')
   const start = source.indexOf('function pushWatchedFiles')
   const end = source.indexOf('const _pendingSourceProjects', start)
   assert.ok(start >= 0 && end > start, 'pushWatchedFiles not found')
   const fn = source.slice(start, end)
-  assert.match(fn, /let uploadPaths = new Set\(\)/, 'daemon bootstrap must compute one upload inventory')
-  assert.match(fn, /sourceManifest = collectSourceManifest\([\s\S]*uploadPaths/, 'daemon sourceManifest must come from upload inventory')
-  assert.match(fn, /for \(const rel of sourceManifest\)/, 'daemon files must be read from the same manifest inventory')
+  assert.match(fn, /let uploadPaths = new Set\(\)/, 'daemon bootstrap must compute the byte-bearing upload inventory')
+  assert.match(fn, /sourceManifest = collectSourceManifest\([\s\S]*uploadPaths[\s\S]*authorityManifest/, 'daemon sourceManifest must preserve inherited ownership around the upload inventory')
+  assert.match(fn, /for \(const rel of normalizeSourceManifest\(\[\.\.\.uploadPaths\]/, 'daemon files must contain only byte-bearing upload paths')
+  assert.doesNotMatch(fn, /for \(const rel of sourceManifest\)/, 'daemon must not resend every inherited ownership path as a file body')
   assert.doesNotMatch(fn, /new Set\(\[\.\.\.watchSet,[\s\S]*mainFile/, 'daemon markdown manifest must not derive from watchSet + mainFile')
 }
 
@@ -297,7 +312,7 @@ async function main() {
     assert.equal(isSourceFilePath('main.run.xml', { mainFile: 'main.tex' }), false)
     assert.equal(isSourceFilePath('main.fdb_latexmk', { mainFile: 'main.tex' }), false)
     assertPushSuppliersCarryManifest()
-    assertDaemonBootstrapUsesOneInventory()
+    assertDaemonBootstrapSeparatesOwnershipFromBytePayload()
     assertPutRequiresCallerManifest()
     assertMcpCallersCarryManifest()
     await assertMcpPushOrchestrationBehavior()
@@ -311,10 +326,12 @@ async function main() {
     assert.deepEqual(hashSourceFiles('latex-doc'), {})
 
     let result = await processProjectPush('latex-doc', {
+      expectedRevision: null,
       files: [{ path: 'main.tex', content: 'hello\n' }],
       sourceManifest: ['main.tex'],
     })
     assert.equal(result.ok, true)
+    let expectedRevision = result.sourceRevision
     assert.deepEqual(readClientSourceManifest('latex-doc'), ['main.tex'])
     assert.deepEqual(Object.keys(hashSourceFiles('latex-doc')).sort(), ['main.tex'])
     updateProject('latex-doc', {
@@ -328,6 +345,7 @@ async function main() {
 
     let beforeRejected = snapshotProject('latex-doc')
     result = await processProjectPush('latex-doc', {
+      expectedRevision,
       files: [{ path: 'notes.tex', content: 'notes\n' }],
       sourceDir: '/tmp/should-not-stick',
       session: 'bad-session',
@@ -430,21 +448,25 @@ async function main() {
     assertSnapshotEqual('latex-doc', beforeRejected)
 
     result = await processProjectPush('latex-doc', {
+      expectedRevision,
       files: [{ path: 'notes.tex', content: 'notes\n' }],
       deletedFiles: ['main.tex'],
       sourceManifest: ['notes.tex'],
     })
     assert.equal(result.ok, true)
+    expectedRevision = result.sourceRevision
     assert.equal(readSourceFile('latex-doc', 'main.tex'), null)
     assert.equal(readSourceFile('latex-doc', 'notes.tex'), 'notes\n')
     assert.deepEqual(readClientSourceManifest('latex-doc'), ['notes.tex'])
 
     result = await processProjectPush('latex-doc', {
+      expectedRevision,
       files: [{ path: 'main.tex', content: 'hello again\n' }],
       deletedFiles: ['notes.tex'],
       sourceManifest: ['main.tex'],
     })
     assert.equal(result.ok, true)
+    expectedRevision = result.sourceRevision
     assert.equal(readSourceFile('latex-doc', 'notes.tex'), null)
     assert.deepEqual(readClientSourceManifest('latex-doc'), ['main.tex'])
 
@@ -465,12 +487,13 @@ async function main() {
       }],
     ]) {
       beforeRejected = snapshotProject('latex-doc')
-      result = await processProjectPush('latex-doc', body, { failAt })
+      result = await processProjectPush('latex-doc', { expectedRevision, ...body }, { failAt })
       assert.equal(result.status, 409)
       assertSnapshotEqual('latex-doc', beforeRejected)
     }
 
     result = await processProjectPush('latex-doc', {
+      expectedRevision,
       files: [],
       deletedFiles: ['README.md', 'main.synctex.gz'],
       sourceManifest: ['main.tex'],
@@ -503,6 +526,7 @@ async function main() {
     write(path.join(sourceDir('overleaf-fail'), 'main.tex'), 'old main\n')
     write(path.join(sourceDir('overleaf-fail'), 'notes.tex'), 'old notes\n')
     updateClientSourceManifest('overleaf-fail', ['main.tex', 'notes.tex'])
+    const overleafFailRevision = bootstrapAuthority('overleaf-fail', ['main.tex', 'notes.tex'])
 
     const originalConsoleError = console.error
     console.error = (...args) => {
@@ -531,6 +555,7 @@ async function main() {
     ]) {
       beforeRejected = snapshotProject('overleaf-fail')
       result = await processProjectPush('overleaf-fail', {
+        expectedRevision: overleafFailRevision,
         ...body,
         sourceDir: '/tmp/should-not-stick',
         session: 'bad-session',
@@ -546,6 +571,7 @@ async function main() {
 
     let positive = setupOverleafProject(root, 'overleaf-write')
     result = await processProjectPush('overleaf-write', {
+      expectedRevision: positive.expectedRevision,
       files: [{ path: 'main.tex', content: 'remote new main\n' }],
       sourceManifest: ['main.tex', 'notes.tex'],
     })
@@ -558,6 +584,7 @@ async function main() {
 
     positive = setupOverleafProject(root, 'overleaf-crash-after-publish')
     result = await processProjectPush('overleaf-crash-after-publish', {
+      expectedRevision: positive.expectedRevision,
       files: [{ path: 'main.tex', content: 'published before simulated crash\n' }],
       sourceManifest: ['main.tex', 'notes.tex'],
     }, { simulateCrashAfterPublish: true })
@@ -579,6 +606,7 @@ async function main() {
 
     positive = setupOverleafProject(root, 'overleaf-delete')
     result = await processProjectPush('overleaf-delete', {
+      expectedRevision: positive.expectedRevision,
       files: [],
       deletedFiles: ['notes.tex'],
       sourceManifest: ['main.tex'],
@@ -589,6 +617,7 @@ async function main() {
 
     positive = setupOverleafProject(root, 'overleaf-mixed')
     result = await processProjectPush('overleaf-mixed', {
+      expectedRevision: positive.expectedRevision,
       files: [{ path: 'main.tex', content: 'remote mixed main\n' }, { path: 'extra.tex', content: 'remote extra\n' }],
       deletedFiles: ['notes.tex'],
       sourceManifest: ['extra.tex', 'main.tex'],
@@ -602,6 +631,7 @@ async function main() {
     beforeRejected = snapshotProject('overleaf-after-remote')
     const beforeRemote = snapshotRemote(positive.remote)
     result = await processProjectPush('overleaf-after-remote', {
+      expectedRevision: positive.expectedRevision,
       files: [
         { path: 'main.tex', content: 'must roll back locally and remotely\n' },
         { path: 'extra.tex', content: 'must not survive\n' },
@@ -616,6 +646,7 @@ async function main() {
     positive = setupOverleafProject(root, 'overleaf-compensation-race')
     const priorRemoteHead = snapshotRemote(positive.remote).head
     result = await processProjectPush('overleaf-compensation-race', {
+      expectedRevision: positive.expectedRevision,
       files: [{ path: 'main.tex', content: 'locally committed before remote race\n' }],
       sourceManifest: ['main.tex', 'notes.tex'],
     }, {
@@ -658,8 +689,10 @@ async function main() {
     updateProject('journal-crash', { pages: 1, buildStatus: 'success' })
     write(path.join(sourceDir('journal-crash'), 'main.tex'), 'unchanged\n')
     updateClientSourceManifest('journal-crash', ['main.tex'])
+    const journalCrashRevision = bootstrapAuthority('journal-crash', ['main.tex'])
     beforeRejected = snapshotProject('journal-crash')
     result = await processProjectPush('journal-crash', {
+      expectedRevision: journalCrashRevision,
       files: [{ path: 'main.tex', content: 'must not write\n' }],
       sourceManifest: ['main.tex'],
     }, { failAt: 'journal-write' })
@@ -672,9 +705,11 @@ async function main() {
     updateProject('snapshot-ready-crash', { pages: 1, buildStatus: 'success' })
     write(path.join(sourceDir('snapshot-ready-crash'), 'main.tex'), 'unchanged\n')
     updateClientSourceManifest('snapshot-ready-crash', ['main.tex'])
+    const snapshotReadyRevision = bootstrapAuthority('snapshot-ready-crash', ['main.tex'])
     beforeRejected = snapshotProject('snapshot-ready-crash')
     const durabilitySteps = []
     result = await processProjectPush('snapshot-ready-crash', {
+      expectedRevision: snapshotReadyRevision,
       files: [{ path: 'main.tex', content: 'must not write\n' }],
       sourceManifest: ['main.tex'],
     }, {
@@ -704,6 +739,7 @@ async function main() {
     positive = setupOverleafProject(root, 'clone-restore-fail')
     beforeRejected = snapshotProject('clone-restore-fail')
     result = await processProjectPush('clone-restore-fail', {
+      expectedRevision: positive.expectedRevision,
       files: [{ path: 'main.tex', content: 'must roll back despite clone restore failure\n' }],
       sourceManifest: ['main.tex', 'notes.tex'],
     }, { failAt: 'clone-restore' })
@@ -722,6 +758,7 @@ async function main() {
     })
     await pollEnteredPromise
     const push = processProjectPush('poll-push-serialization', {
+      expectedRevision: positive.expectedRevision,
       files: [{ path: 'main.tex', content: 'serialized push\n' }],
       sourceManifest: ['main.tex', 'notes.tex'],
     }, { afterLock: async () => { order.push('push-enter') } })
@@ -769,14 +806,17 @@ async function main() {
     createProject({ name: 'markdown-readme', title: 'Markdown', mainFile: 'README.md', format: 'svg' })
     updateProject('markdown-readme', { pages: 1, buildStatus: 'success' })
     result = await processProjectPush('markdown-readme', {
+      expectedRevision: null,
       files: [{ path: 'README.md', content: '# authored\n' }],
       sourceManifest: ['README.md'],
     })
     assert.equal(result.ok, true)
+    const markdownRevision = result.sourceRevision
     assert.deepEqual(readClientSourceManifest('markdown-readme'), ['README.md'])
     assert.equal(readSourceFile('markdown-readme', 'README.md'), '# authored\n')
 
     result = await processProjectPush('markdown-readme', {
+      expectedRevision: markdownRevision,
       files: [],
       deletedFiles: ['README.md'],
       sourceManifest: [],
