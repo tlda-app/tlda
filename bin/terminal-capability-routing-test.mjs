@@ -7,7 +7,7 @@ import { createTerminalRpc } from '../daemon/terminal-rpc.mjs'
 import { decideTerminalWatchExit } from '../agent-runtime/daemon-guards.mjs'
 import { createPermissionLedger } from '../agent-launch/permission-ledger.mjs'
 
-function createRpc({ ledgerRow = null } = {}) {
+function createRpc({ ledgerRow = null, killSessionError = null } = {}) {
   const calls = []
   const rpc = createTerminalRpc({
     tmuxArgs: [],
@@ -38,6 +38,7 @@ function createRpc({ ledgerRow = null } = {}) {
     execFileImpl: async (cmd, args) => {
       calls.push({ cmd, args })
       if (args.includes('list-sessions')) return { stdout: `${ledgerRow?.tmuxSession || ''}\n` }
+      if (args.includes('kill-session') && killSessionError) throw killSessionError
       return { stdout: 'live terminal\n' }
     },
   })
@@ -188,6 +189,50 @@ for (const [name, payload] of [
   assert.equal(killed.ok, true)
   assert.equal(killed.already_unavailable, true)
   assert.equal(calls.length, 0)
+}
+
+{
+  const missing = Object.assign(new Error('no session'), { stderr: 'no session: daemon-local-tmux-gone' })
+  const { rpc, calls } = createRpc({
+    ledgerRow: {
+      id: 'fleet:cap-test',
+      terminalCapability: 'termcap:gone',
+      sessionId: 'rollout-gone',
+      tmuxSession: 'daemon-local-tmux-gone',
+      daemonKey: 'mini:prod',
+    },
+    killSessionError: missing,
+  })
+  const killed = await rpc.handlers['kill-session']({
+    agent_id: 'fleet:cap-test',
+    terminal_capability: 'termcap:gone',
+  })
+  assert.equal(killed.ok, true)
+  assert.equal(killed.already_unavailable, true)
+  assert.equal(killed.reason, 'tmux session already absent')
+  assert.equal(calls.length, 1)
+  assert.deepEqual(calls[0].args, ['kill-session', '-t', 'daemon-local-tmux-gone'])
+}
+
+{
+  const refused = Object.assign(new Error('permission denied'), { stderr: 'permission denied' })
+  const { rpc } = createRpc({
+    ledgerRow: {
+      id: 'fleet:cap-test',
+      terminalCapability: 'termcap:refused',
+      sessionId: 'rollout-refused',
+      tmuxSession: 'daemon-local-tmux-refused',
+      daemonKey: 'mini:prod',
+    },
+    killSessionError: refused,
+  })
+  await assert.rejects(
+    () => rpc.handlers['kill-session']({
+      agent_id: 'fleet:cap-test',
+      terminal_capability: 'termcap:refused',
+    }),
+    /permission denied/,
+  )
 }
 
 {

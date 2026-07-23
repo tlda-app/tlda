@@ -10,6 +10,14 @@ const execFileP = promisify(execFile)
 const SAFE_SESSION_RE = /^[^\s:\x00-\x1f]+$/
 const QUEUED_LINE_RE = /^\s*←\s/
 
+function tmuxSessionAlreadyGone(error) {
+  const text = `${error?.stderr || ''}\n${error?.stdout || ''}\n${error?.message || ''}`
+  return /no server running/i.test(text)
+    || /no sessions?/i.test(text)
+    || /can't find session/i.test(text)
+    || /no session/i.test(text)
+}
+
 export function promptAcceptanceInput(acceptKey = '1') {
   if (acceptKey === 'Enter') return { pty: '\r', tmuxKeys: ['Enter'] }
   return { pty: `${acceptKey}\r`, tmuxKeys: [acceptKey, 'Enter'] }
@@ -283,7 +291,14 @@ export function createTerminalRpc({
       return { ok: true, already_unavailable: true, reason }
     }
     checkSession(tmuxSession)
-    await tmux('kill-session', '-t', tmuxSession)
+    try {
+      await tmux('kill-session', '-t', tmuxSession)
+    } catch (e) {
+      if (!tmuxSessionAlreadyGone(e)) throw e
+      if (agentId) onEmitAgentStatus(agentId, 'hibernating')
+      alivenessCache.set(tmuxSession, false)
+      return { ok: true, already_unavailable: true, reason: 'tmux session already absent' }
+    }
     if (agentId) onEmitAgentStatus(agentId, 'hibernating')
     alivenessCache.set(tmuxSession, false)
     return { ok: true }
