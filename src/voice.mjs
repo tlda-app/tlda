@@ -13,7 +13,7 @@
 import { appendToken } from './authToken.ts'
 import { log } from './logger.ts'
 import { getPref, normalizeRadioSubtitleDwellSec, subscribePref, whenPrefsLoaded } from './preferences.ts'
-import { PcmBacklog, pcmInputLevel, voiceIndicatorState } from './voice-indicator.mjs'
+import { PcmBacklog, deliverVoiceTextareaValue, pcmInputLevel, retainVoiceTextareaValue, voiceIndicatorState } from './voice-indicator.mjs'
 
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
 const _isSafari = !navigator.userAgent.includes('Chrome') && navigator.userAgent.includes('Safari')
@@ -338,6 +338,7 @@ function advanceSpeechEpoch() {
 
 // Active chat target
 let _activeTextarea = null
+let _lastFillReceiptAt = 0
 let _activeTargetHandle = null
 let _voiceDumping = false
 // The real field voice was routed to just before going to <nowhere>, captured so
@@ -1271,11 +1272,11 @@ export function dumpVoiceTarget() {
   enterVoiceSink()
 }
 
-// True when voice is routed to a real destination (a textarea, an accumulator,
-// or chat send-targets) and NOT dumping to nowhere. Streaming to Deepgram is
+// True when voice is routed to a live textarea or accumulator and NOT dumping
+// to nowhere. Streaming to Deepgram is
 // gated on this so "recording to nowhere" / dumb mode never bills.
 function voiceHasRoute() {
-  return !_voiceDumping && (!!_activeTextarea || !!_accumulator || activeSendTargets().length > 0)
+  return !_voiceDumping && (_activeTextarea?.isConnected === true || !!_accumulator)
 }
 
 export function getVoiceRuntimeSummary(now = Date.now()) {
@@ -1475,16 +1476,30 @@ function fillTextarea(text) {
   const ta = _activeTextarea
   if (!ta) return
   _filling = true
-  ta.value = text
-  ta.style.height = 'auto'
-  ta.style.height = Math.min(ta.scrollHeight, 200) + 'px'
-  // Restore cursor to end of voice portion (between interim and right)
-  if (_state === 'speech' && _right.length > 0) {
-    const cursorPos = text.length - _right.length
-    ta.setSelectionRange(cursorPos, cursorPos)
-  }
-  ta.dispatchEvent(new Event('input', { bubbles: true }))
+  const receipt = deliverVoiceTextareaValue(ta, text, (liveTextarea, nextText) => {
+    liveTextarea.value = nextText
+    liveTextarea.style.height = 'auto'
+    liveTextarea.style.height = Math.min(liveTextarea.scrollHeight, 200) + 'px'
+    // Restore cursor to end of voice portion (between interim and right)
+    if (_state === 'speech' && _right.length > 0) {
+      const cursorPos = nextText.length - _right.length
+      liveTextarea.setSelectionRange(cursorPos, cursorPos)
+    }
+    liveTextarea.dispatchEvent(new Event('input', { bubbles: true }))
+  })
   _filling = false
+  const now = Date.now()
+  if (!receipt.retained || now - _lastFillReceiptAt >= 1000) {
+    _lastFillReceiptAt = now
+    vlog('transcript fill receipt', { target: targetLabel(), ...receipt })
+  }
+  if (receipt.retained) {
+    setTimeout(() => {
+      const retained = retainVoiceTextareaValue(ta, text, receipt)
+      if (!retained.retained) vlog('transcript fill receipt', { target: targetLabel(), phase: 'retention-check', ...retained })
+    }, 0)
+  }
+  if (!receipt.connectedBefore && _activeTextarea === ta) clearVoiceTarget(ta)
 }
 
 function formatMissingnessSeconds(ms) {

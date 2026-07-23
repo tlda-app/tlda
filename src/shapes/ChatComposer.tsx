@@ -17,7 +17,7 @@
 import { stopEventPropagation } from 'tldraw'
 import { useEffect, useRef, useState } from 'react'
 // @ts-ignore — vanilla JS module
-import { setVoiceTarget, completeMessageSend } from '../voice.mjs'
+import { setVoiceTarget, clearVoiceTarget, completeMessageSend } from '../voice.mjs'
 import { getPref, subscribePref } from '../preferences'
 
 export type KeyboardSend = (text: string, targets: string[]) => void
@@ -70,6 +70,10 @@ export function ChatComposer({
 }) {
   const localRef = useRef<HTMLTextAreaElement>(null)
   const inputRef = externalRef ?? localRef
+  useEffect(() => {
+    const textarea = inputRef.current
+    return () => { if (textarea) clearVoiceTarget(textarea) }
+  }, [inputRef])
   const [voiceBackend, setVoiceBackend] = useState(() => getPref('voice-backend') as string)
   useEffect(() => subscribePref(() => {
     setVoiceBackend(getPref('voice-backend') as string)

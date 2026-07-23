@@ -22,6 +22,30 @@ export function voiceIndicatorState(recording, healthLabel) {
   return 'listening'
 }
 
+export function deliverVoiceTextareaValue(textarea, text, write) {
+  const beforeLength = typeof textarea?.value === 'string' ? textarea.value.length : 0
+  const connectedBefore = textarea?.isConnected === true
+  if (!connectedBefore) {
+    return { connectedBefore, connectedAfter: false, beforeLength, afterLength: beforeLength, retained: false }
+  }
+  write(textarea, text)
+  const connectedAfter = textarea.isConnected === true
+  const afterLength = typeof textarea.value === 'string' ? textarea.value.length : 0
+  return {
+    connectedBefore,
+    connectedAfter,
+    beforeLength,
+    afterLength,
+    retained: connectedAfter && textarea.value === text,
+  }
+}
+
+export function retainVoiceTextareaValue(textarea, text, receipt) {
+  const connectedAfter = textarea?.isConnected === true
+  const afterLength = typeof textarea?.value === 'string' ? textarea.value.length : 0
+  return { ...receipt, connectedAfter, afterLength, retained: connectedAfter && textarea.value === text }
+}
+
 export class PcmBacklog {
   constructor() { this.chunks = [] }
   push(epoch, buffer) {
