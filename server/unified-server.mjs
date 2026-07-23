@@ -54,7 +54,6 @@ import { daemonHelloDecision, resolveMainDaemonScript } from '../shared/daemon-i
 import { resolveServerIsolation } from '../shared/server-identity.mjs'
 import { initProjectStore, listProjects, readProject, updateProject, getProjectsDir, readProjectPartsManifest, sourceLifecycleStore } from './lib/project-store.mjs'
 import { createSourceChangeResultCache } from './lib/source-change-correlation.mjs'
-import { createSourceEditEvent } from './lib/source-edit-event.mjs'
 import { resumeOverleafPollers } from './lib/overleaf-sync.mjs'
 import { resetStaleBuildStates, killAllBuilds, setShadowMirrorHandler } from './lib/build-runner.mjs'
 import { createShadowMirrorRpcHandler } from './lib/shadow-mirror-rpc.mjs'
@@ -2203,6 +2202,9 @@ onGlobalEvent((event) => {
   if (event?.type === 'project-changed') {
     broadcastDaemonProjectsUpdated()
     broadcastEvent('projects-updated', { name: event.name })
+  }
+  if (event?.type === 'source-edit') {
+    broadcastEvent('fleet-event', event)
   }
   if (event?.type === 'version-committed') {
     // Auto-spawn a QA watcher agent when new content is committed to the shadow repo.
@@ -8302,14 +8304,12 @@ async function handleDaemonWsMessage(ws, msg) {
     // Hand off to the same pipeline used by HTTP /api/projects/:name/push.
     let replied = false
     try {
-      const result = await processProjectPush(project, { files, deletedFiles, sourceManifest, editedBy, expectedRevision })
+      const result = await processProjectPush(project, { files, deletedFiles, sourceManifest, editedBy, expectedRevision, requestId })
       const { status: httpStatus, lifecycleStatus, ...payload } = result
       const reply = { type: 'source-change-result', requestId, project, ...payload, httpStatus, status: lifecycleStatus || (result.ok ? 'accepted' : 'error') }
       resultCache.record(requestId, cached.hash, reply)
       ws.send(JSON.stringify(reply))
       replied = true
-      const sourceEditEvent = createSourceEditEvent({ result, project, editedBy, requestId })
-      if (sourceEditEvent) broadcastEvent('fleet-event', sourceEditEvent)
       if (!result.ok) {
         console.error(`[fleet-daemon] source-change ${project}: ${result.error || 'unknown'}`)
       }

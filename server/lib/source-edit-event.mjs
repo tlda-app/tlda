@@ -13,3 +13,9 @@ export function createSourceEditEvent({ result, project, editedBy, requestId }) 
     metadata: { project, files: changedTexFiles, requestId },
   }
 }
+
+export function emitSourceEditEvent({ emit, ...input }) {
+  const event = createSourceEditEvent(input)
+  if (event) emit('source-edit', event)
+  return event
+}

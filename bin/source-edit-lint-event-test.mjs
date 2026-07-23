@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import {
   GRAMMAR_REPAIR_CHOICES,
   lintSourceEditFiles,
@@ -7,7 +8,7 @@ import {
   sourceEditNudgeText,
 } from '../bots/grammar-source-edit.mjs'
 import { changedTextRegions } from '../server/lib/changed-text-regions.mjs'
-import { createSourceEditEvent } from '../server/lib/source-edit-event.mjs'
+import { createSourceEditEvent, emitSourceEditEvent } from '../server/lib/source-edit-event.mjs'
 
 const files = [{
   path: 'main.tex',
@@ -43,6 +44,21 @@ assert.deepEqual(createSourceEditEvent({ ...input, result: {
   },
 })
 
+const emitted = []
+assert.ok(emitSourceEditEvent({
+  emit: (type, event) => emitted.push({ type, event }),
+  ...input,
+  result: { ok: true, acceptedChangedFiles: files },
+}))
+assert.equal(emitted.length, 1)
+assert.equal(emitted[0].type, 'source-edit')
+assert.equal(emitSourceEditEvent({
+  emit: () => emitted.push('unexpected'),
+  ...input,
+  result: { ok: true, unchanged: true, acceptedChangedFiles: files },
+}), null)
+assert.equal(emitted.length, 1)
+
 assert.deepEqual(
   changedTextRegions(
     ['old issue $a=1, b=2$.', 'keep', 'old middle', 'keep again', 'tail'].join('\n'),
@@ -73,5 +89,11 @@ assert.match(ordinaryPrompt, /"where", "and", "so", "we have"/)
 assert.match(sourcePrompt, /“where”, “and”, “so”, or “we have”/)
 assert.doesNotMatch(ordinaryPrompt, /which gives/)
 assert.doesNotMatch(sourcePrompt, /which gives/)
+
+const projectsSource = readFileSync(new URL('../server/routes/projects.mjs', import.meta.url), 'utf8')
+const unifiedSource = readFileSync(new URL('../server/unified-server.mjs', import.meta.url), 'utf8')
+assert.match(projectsSource, /export async function processProjectPush[\s\S]*emitSourceEditEvent\(/)
+assert.match(unifiedSource, /processProjectPush\(project, \{ files, deletedFiles, sourceManifest, editedBy, expectedRevision, requestId \}\)/)
+assert.doesNotMatch(unifiedSource, /createSourceEditEvent/)
 
 console.log('source-edit lint event tests passed')

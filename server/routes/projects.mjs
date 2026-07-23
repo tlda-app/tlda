@@ -18,6 +18,7 @@
 
 import { Router } from 'express'
 import { execFileSync } from 'child_process'
+import { randomUUID } from 'crypto'
 import { existsSync, readFileSync, readdirSync, mkdirSync, statSync, writeFileSync, rmSync, unlinkSync } from 'fs'
 import { join, dirname, resolve } from 'path'
 import { requireRead, requireRw } from '../lib/auth.mjs'
@@ -31,6 +32,7 @@ import {
   sourceLifecycleStore,
 } from '../lib/project-store.mjs'
 import { changedTextRegions } from '../lib/changed-text-regions.mjs'
+import { emitSourceEditEvent } from '../lib/source-edit-event.mjs'
 import { getBuildStatus } from '../lib/build-runner.mjs'
 import { dispatchBuild, isBuildKindPending } from '../lib/build-dispatch.mjs'
 import { outlineForRegion, regionFromSpan, structuralLeaves } from '../lib/outline/outline.mjs'
@@ -703,6 +705,13 @@ export async function processProjectPush(name, body, transactionTest = {}) {
   if (result.ok && (((body?.files?.length || 0) > 0) || ((body?.deletedFiles?.length || 0) > 0))) {
     result.sourceRevision = sourceLifecycleStore(name).readAuthority().currentRevision
   }
+  emitSourceEditEvent({
+    emit: emitGlobalEvent,
+    result,
+    project: name,
+    editedBy: body?.editedBy,
+    requestId: body?.requestId || randomUUID(),
+  })
   return result
 }
 
