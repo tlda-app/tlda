@@ -21,7 +21,7 @@ import { spawn } from 'child_process'
 import readline from 'readline'
 import { getFleetServerUrl, getManagedBots, CONFIG_DIR } from '../shared/config.mjs'
 import { startWsRequest } from '../shared/ws-request-policy.mjs'
-import { lintSourceEditFiles, sourceEditNudgeText } from './grammar-source-edit.mjs'
+import { lintSourceEditFiles, ordinaryChatNudgeText, sourceEditNudgeText } from './grammar-source-edit.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = path.resolve(__dirname, '..')
@@ -118,12 +118,6 @@ function lint(text, timeoutMs = 8000, file = '<chat>') {
 // ---------------------------------------------------------------------------
 // Nudge
 // ---------------------------------------------------------------------------
-function nudgeText(findings) {
-  const n = findings.length
-  const which = '"where", "so", "we have", "which gives"'
-  return `⚠ **Possible comma splice** in your math${n > 1 ? ` (${n} spots)` : ''}: a comma is joining two statements as if it were a word. Which word did you mean — ${which}? Write it out; a comma isn't a connective. You can fix it in place by **amending** the message (\`chat({ amend_id })\`), no need to repost.`
-}
-
 const nudgedRecently = new Map()   // messageKey -> ts, dedupe
 const NUDGE_DEDUPE_MS = 60_000
 
@@ -207,7 +201,7 @@ async function handleMessage(raw) {
   if (!findings.length) return
   const key = `${from}:${d.id ?? text.slice(0, 40)}`
   if (alreadyNudged(key)) return
-  sendChat(from, nudgeText(findings))
+  sendChat(from, ordinaryChatNudgeText(findings))
   writeHeartbeat('nudge')
 }
 

@@ -1,6 +1,11 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict'
-import { lintSourceEditFiles, sourceEditNudgeText } from '../bots/grammar-source-edit.mjs'
+import {
+  GRAMMAR_REPAIR_CHOICES,
+  lintSourceEditFiles,
+  ordinaryChatNudgeText,
+  sourceEditNudgeText,
+} from '../bots/grammar-source-edit.mjs'
 import { changedTextRegions } from '../server/lib/changed-text-regions.mjs'
 import { createSourceEditEvent } from '../server/lib/source-edit-event.mjs'
 
@@ -61,5 +66,12 @@ assert.equal(
   sourceEditNudgeText('lint-probe', findings),
   '⚠ **Possible comma splice** at `lint-probe/main.tex:3`: `x=5, y=6`. Replace the comma with the connective you mean — for example “where”, “and”, “so”, or “we have”.',
 )
+assert.deepEqual(GRAMMAR_REPAIR_CHOICES, ['where', 'and', 'so', 'we have'])
+const ordinaryPrompt = ordinaryChatNudgeText([{ file: '<chat>', line: 1, snippet: 'x=5, y=6' }])
+const sourcePrompt = sourceEditNudgeText('lint-probe', findings)
+assert.match(ordinaryPrompt, /"where", "and", "so", "we have"/)
+assert.match(sourcePrompt, /“where”, “and”, “so”, or “we have”/)
+assert.doesNotMatch(ordinaryPrompt, /which gives/)
+assert.doesNotMatch(sourcePrompt, /which gives/)
 
 console.log('source-edit lint event tests passed')
