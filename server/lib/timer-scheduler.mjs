@@ -25,6 +25,7 @@ export function timerFireBroadcast({ event, to, metadataPatch, message }) {
     from_id: event.from || null,
     to_id: to,
     text: message || event.text || event.metadata?.message || 'Timer fired',
+    timestamp: metadataPatch.timer_fire_notified_at,
     metadata: {
       ...(event.metadata || {}),
       ...metadataPatch,
@@ -117,6 +118,7 @@ export class ServerTimerScheduler {
       from_id: event.from || null,
       to_id: to,
       text: event.text || event.metadata?.message || 'Timer cancelled',
+      timestamp: metadataPatch.timer_cancelled_at,
       metadata: {
         ...(event.metadata || {}),
         ...metadataPatch,

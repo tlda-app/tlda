@@ -4542,6 +4542,7 @@ async function _flushUnread() {
     const task = data.task;
     if (msgs.length === 0 && !task) return;
     sourceEventId = msgs[0]?.id || msgs[0]?.event_id || null;
+    const deliveredAt = new Date().toISOString();
     const lines = [];
     const label = _inboxStatus[0].toUpperCase() + _inboxStatus.slice(1);
     if (task) lines.push(`📬 ${label}: pending task: ${(task.description || '').slice(0, 80)}`);
@@ -4555,7 +4556,14 @@ async function _flushUnread() {
     await Promise.race([
       server.notification({
         method: 'notifications/claude/channel',
-        params: { content, meta: { event_type: 'flush' } },
+        params: {
+          content,
+          meta: {
+            event_type: 'flush',
+            event_id: sourceEventId,
+            timestamp: deliveredAt,
+          },
+        },
       }),
       new Promise((_, reject) => setTimeout(() => reject(new Error('notification timeout')), 1000)),
     ]);
@@ -4775,6 +4783,7 @@ async function handleChannelMessage(msg) {
 
   // Suppress if identical content within 30s
   const now = Date.now();
+  const deliveredAt = new Date(now).toISOString();
   if (shouldSuppressRecentContent({
     isTimerFire,
     content,
@@ -4813,6 +4822,8 @@ async function handleChannelMessage(msg) {
           meta: {
             event_type: isWiretapTarget && !isDirectTarget ? 'wiretap' : eventType,
             from: fromId,
+            event_id: data.id || data.event_id || null,
+            timestamp: deliveredAt,
           },
         },
       }),
