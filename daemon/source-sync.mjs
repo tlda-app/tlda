@@ -215,8 +215,8 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
     return !isSourceFile(rel, context) && !rel.includes('.tlda/scratch/')
   }
 
-  function collectSourceManifest(sourceDir, context, watchSet = null) {
-    const rels = new Set()
+  function collectSourceManifest(sourceDir, context, watchSet = null, authorityManifest = null) {
+    const rels = new Set(Array.isArray(authorityManifest) ? authorityManifest : [])
     if (watchSet) {
       for (const rel of watchSet) {
         if (typeof rel !== 'string') continue
@@ -386,6 +386,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
           existing.extraInputCommands = p.extraInputCommands || []
           existing.isMarkdown = isMarkdown
           existing.format = p.format
+          existing.authorityManifest = new Set(Array.isArray(p.sourceManifest) ? p.sourceManifest : [])
           const nextWatcherKey = sourceWatcherKey(existing)
           if (!existing.watcher || existing.watcherKey !== nextWatcherKey) startSourceWatcher(existing, 'resync')
           if (newlyWatched.size > 0) {
@@ -395,10 +396,12 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
         }
       }
 
-      const state = { sourceDir, debounce: null, pending: new Set(), watchSet, onFileChange: null, projectName: p.name, mainFile: p.mainFile, format: p.format, extraInputCommands: p.extraInputCommands || [], isMarkdown, watcher: null, watcherKey: '', pathFingerprints: new Map(), reconcileTimer: null, _symlinkWatchers: new Map() }
+      const state = { sourceDir, debounce: null, pending: new Set(), watchSet, authorityManifest: new Set(Array.isArray(p.sourceManifest) ? p.sourceManifest : []), onFileChange: null, projectName: p.name, mainFile: p.mainFile, format: p.format, extraInputCommands: p.extraInputCommands || [], isMarkdown, watcher: null, watcherKey: '', pathFingerprints: new Map(), reconcileTimer: null, _symlinkWatchers: new Map() }
 
       const onFileChange = (filename) => {
         if (!filename) return
+        if (fs.existsSync(path.join(state.sourceDir, filename))) state.authorityManifest.add(filename)
+        else state.authorityManifest.delete(filename)
         if (state.isMarkdown) {
           // A markdown doc bundles exactly its dependency graph (main + referenced
           // images). Enforce the watchSet strictly — do NOT let arbitrary source
@@ -471,6 +474,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
       sourceDir,
       { format, mainFile },
       uploadPaths,
+      sourceWatchers.get(projectName)?.authorityManifest ? [...sourceWatchers.get(projectName).authorityManifest] : null,
     )
     if (sourceManifest.length === 0) return
     const files = []
@@ -617,6 +621,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
         state.sourceDir,
         { format: state.format, mainFile: state.mainFile },
         state.isMarkdown ? state.watchSet : null,
+        [...state.authorityManifest],
       ),
       ...(deleted.length > 0 && { deletedFiles: deleted }),
       ...(editedBy && { editedBy }),

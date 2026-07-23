@@ -29,14 +29,16 @@ const sourceSync = createSourceSync({
 })
 
 try {
-  sourceSync.sync([{ name: 'paper', sourceDir: root, mainFile: 'main.tex', format: 'svg' }])
+  sourceSync.sync([{ name: 'paper', sourceDir: root, mainFile: 'main.tex', format: 'svg', sourceManifest: ['legacy-preserved.tex'] }])
   assert.equal(sent.length, 1, 'connect push establishes the initial source version')
+  assert.deepEqual(sent[0].sourceManifest, ['legacy-preserved.tex', 'main.tex'], 'connect push preserves inherited authored ownership')
 
   writeFileSync(main, 'second')
   await new Promise(resolve => setTimeout(resolve, 350))
 
   assert.equal(sent.length, 2, 'reconciliation recovers a source change missed by the watcher')
   assert.equal(sent[1].files[0].content, 'second')
+  assert.deepEqual(sent[1].sourceManifest, ['legacy-preserved.tex', 'main.tex'], 'reconciliation does not imply deletion of inherited authored files')
   assert.match(warnings.join('\n'), /missed watcher edge.*paper: main\.tex/)
   console.log('source watch reconciliation: ok')
 } finally {

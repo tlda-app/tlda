@@ -7436,6 +7436,7 @@ function projectsForDaemon() {
         mainFile: p.mainFile || null,
         extraInputCommands: p.extraInputCommands || null,
         sourceRevision: sourceLifecycleStore(p.name).readAuthority().currentRevision,
+        sourceManifest: Array.isArray(p.clientSourceManifest) ? p.clientSourceManifest : [],
       }
     })
 }
