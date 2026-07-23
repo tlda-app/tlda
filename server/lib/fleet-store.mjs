@@ -756,6 +756,32 @@ export class FleetStore {
       CREATE INDEX IF NOT EXISTS idx_lineage_phase_log_lineage ON lineage_phase_log(lineage_id);
       CREATE INDEX IF NOT EXISTS idx_lineage_phase_log_fleet ON lineage_phase_log(fleet_id);
       CREATE INDEX IF NOT EXISTS idx_agents_lineage ON agents(lineage_id);
+
+      -- Stack model (source of truth for lineage membership). A lineage is an
+      -- explicit stack of agents; stack_index 0 = current/top holder. Phase is
+      -- NOT stored — position is. Todd owns the position→name pretty-printing and
+      -- applies exact names via renameAgentFriendlyName(). The server stores
+      -- opaque positions and never interprets a name. Full history is retained
+      -- (active=0 rows) so search can answer "every id ever on this stack",
+      -- including swapped-out occupants.
+      CREATE TABLE IF NOT EXISTS lineage_stack_entries (
+        lineage_id TEXT NOT NULL,
+        fleet_id TEXT NOT NULL,
+        stack_index INTEGER NOT NULL,      -- 0 = top/current holder
+        active INTEGER NOT NULL DEFAULT 1, -- 1 = live stack member, 0 = historical
+        entered_at INTEGER NOT NULL,
+        exited_at INTEGER,
+        entry_reason TEXT,                 -- push-new, push-existing, pop, adopt, swap, migration
+        replaced_by TEXT,
+        metadata TEXT,
+        PRIMARY KEY (lineage_id, fleet_id, entered_at)
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_lineage_stack_active_pos
+        ON lineage_stack_entries(lineage_id, stack_index) WHERE active = 1;
+      CREATE INDEX IF NOT EXISTS idx_lineage_stack_fleet
+        ON lineage_stack_entries(fleet_id, active, stack_index);
+      CREATE INDEX IF NOT EXISTS idx_lineage_stack_lineage_active
+        ON lineage_stack_entries(lineage_id, active, stack_index);
     `);
 
     // Dedupe + enforce unique friendly_name among live agents.
@@ -2629,6 +2655,73 @@ export class FleetStore {
       "SELECT agents.*, lineages.friendly_name AS lineage_name FROM agents LEFT JOIN lineages ON lineages.id = agents.lineage_id WHERE agents.lineage_id = ? AND agents.friendly_name = ? AND agents.dead = 0"
     ).get(lineageId, nameForPhase(base, 'day'));
     return row ? this.projectAgentCurrentSeat(this._hydrateAgent(row)) : null;
+  }
+
+  // Map an OLD phase label to a stack position. dawn/bare = top (0), then day/
+  // dusk/night down. zombie/unknown = not an active position (historical). This
+  // is used ONLY by the one-time migration below — the live server never maps a
+  // name to a position.
+  _stackPositionForPhase(phase) {
+    switch (phase) {
+      case null: case undefined: case 'dawn': case 'bare': return 0;
+      case 'day': return 1;
+      case 'dusk': return 2;
+      case 'night': return 3;
+      default: return null; // zombie / unknown → historical, not an active seat
+    }
+  }
+
+  // One-time, idempotent migration from the phase-slot model to the stack model.
+  // Reads each lineage's live named members, maps their EXISTING phase name to a
+  // stack position, and (only when apply && zero blockers) records
+  // `lineage_stack_entries`. This is the sole place old phase names are read — a
+  // translation out of the old world, not live routing. Dry-run first: returns a
+  // per-lineage report + blockers so the exact position assignments and any
+  // collision/off-the-bottom cases are visible before any write. Policy (Skip):
+  // the named stack caps at 4 (positions 0..3); an active member that would land
+  // at position ≥ 4 is reported `nameless` (rotated off the bottom, Todd nulls
+  // the name). With only dawn/day/dusk/night phases the cap is never exceeded, so
+  // that branch is defensive.
+  migrateToStackEntries({ apply = false } = {}) {
+    const report = { lineages: [], blockers: [], applied: false, writeCount: 0 };
+    const lineages = this.db.prepare('SELECT id, friendly_name FROM lineages').all();
+    const now = Date.now();
+    const writes = [];
+    for (const lin of lineages) {
+      const base = lin.friendly_name;
+      const members = this.getLineageRoster(lin.id); // live, named members only
+      const byPos = new Map();
+      const entry = { lineage_id: lin.id, base, assignments: [], nameless: [] };
+      for (const m of members) {
+        const phase = phaseFromName(m.friendly_name) || (baseName(m.friendly_name) === base ? 'dawn' : null);
+        const pos = this._stackPositionForPhase(phase);
+        if (pos === null) {
+          entry.assignments.push({ fleet_id: m.id, name: m.friendly_name, phase, stack_index: null, historical: true });
+          continue;
+        }
+        if (byPos.has(pos)) {
+          report.blockers.push({ lineage_id: lin.id, base, kind: 'duplicate-position', stack_index: pos, ids: [byPos.get(pos), m.id] });
+        } else {
+          byPos.set(pos, m.id);
+        }
+        if (pos >= 4) entry.nameless.push(m.id);
+        entry.assignments.push({ fleet_id: m.id, name: m.friendly_name, phase, stack_index: pos });
+      }
+      report.lineages.push(entry);
+      for (const a of entry.assignments) {
+        if (a.stack_index === null || a.stack_index >= 4) continue;
+        writes.push([lin.id, a.fleet_id, a.stack_index, now]);
+      }
+    }
+    report.writeCount = writes.length;
+    if (apply && report.blockers.length === 0) {
+      const ins = this.db.prepare(
+        "INSERT OR IGNORE INTO lineage_stack_entries (lineage_id, fleet_id, stack_index, active, entered_at, entry_reason) VALUES (?, ?, ?, 1, ?, 'migration')"
+      );
+      this.db.transaction(() => { for (const w of writes) ins.run(...w); })();
+      report.applied = true;
+    }
+    return report;
   }
 
   // Assign an agent into a lineage at a phase. Phase isn't stored — it's the
