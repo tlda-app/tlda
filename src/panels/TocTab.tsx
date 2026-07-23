@@ -819,7 +819,6 @@ const SCHEME_STEPS: { value: ColorScheme; icon: string; label: string }[] = [
 const FAMILY_STEPS: { value: ThemeFamily; icon: string; label: string }[] = [
   { value: null,   icon: '○',      label: 'Default' },
   { value: 'fog',  icon: '\u{1F30A}', label: 'Fog' },
-  { value: 'lilac', icon: '◌',      label: 'Lilac' },
   { value: 'warm', icon: '☀︎',     label: 'Warm' },
 ]
 
