@@ -37,7 +37,7 @@ import { pdfToCanvas } from '../synctexAnchor'
 import { getSvgText, setSvgText } from '../stores/svgTextStore'
 import { getPageUrl } from '../stores/pageUrlStore'
 import { getPref } from '../preferences'
-import { beginFleetDragWithoutSnap, endFleetDragWithoutSnap, FLEET_SHAPE_TYPES } from './fleet-utils'
+import { beginNativeSnapDrag, endNativeSnapDrag, FLEET_SHAPE_TYPES } from './fleet-utils'
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import { createFleetDocviewSurface, type FleetDocviewSurfaceState } from '../wm/fleet-docview-layer'
 import { getEditorWMCore, removeLayers } from '../wm/editor-wm'
@@ -84,10 +84,10 @@ export class FleetDocViewShapeUtil extends BaseBoxShapeUtil<any> {
     return { w: DEFAULT_W, h: DEFAULT_H, sources: JSON.stringify(getPref('docview-sources')), label: '', page: 0, yTop: 0, yBottom: 0, title: '', userId: '', deviceId: '' }
   }
 
-  override onTranslateStart = () => beginFleetDragWithoutSnap(this.editor)
-  override onTranslateEnd = () => endFleetDragWithoutSnap(this.editor)
-  override onTranslateCancel = () => endFleetDragWithoutSnap(this.editor)
   override canSnap = () => true
+  override onTranslateStart = () => beginNativeSnapDrag(this.editor)
+  override onTranslateEnd = () => endNativeSnapDrag(this.editor)
+  override onTranslateCancel = () => endNativeSnapDrag(this.editor)
 
   component(shape: any) {
     return (

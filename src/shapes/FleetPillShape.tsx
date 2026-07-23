@@ -624,17 +624,18 @@ export class FleetPillShapeUtil extends BaseBoxShapeUtil<any> {
     _snapState.active = true
     _snapState.expanded = false
 
-    // Fleet pills move freely even when native snap mode is enabled elsewhere.
-    // Save the user's previous state and restore it when the drag ends.
+    // Enable snap mode during pill drag so TLDraw shows native snap guides.
+    // Save previous state to restore on translate end.
     const pill = shape as any
     if (pill.props?.pillType === 'agent' || pill.props?.pillType === 'label') {
       _snapState.prevSnapMode = this.editor.user.getIsSnapMode()
-      this.editor.user.updateUserPreferences({ isSnapMode: false })
+      this.editor.user.updateUserPreferences({ isSnapMode: true })
     }
   }
 
   // During drag: expand pill to chat dimensions when over empty canvas,
-  // collapse back when over a fleet shape.
+  // collapse back when over a fleet shape. TLDraw's native snap handles
+  // the expanded pill like any other shape.
   override onTranslate = (_initial: TLShape, current: TLShape) => {
     const pill = current as any
     if (pill.props?.pillType !== 'agent' && pill.props?.pillType !== 'label') return
