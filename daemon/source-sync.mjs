@@ -10,25 +10,39 @@ export function createSourceChangeCorrelation({ makeId = randomUUID, log = conso
   const revisions = new Map()
   const pending = new Map()
   const blocked = new Set()
+  const retries = []
   return {
-    seed(project, revision) { revisions.set(project, revision ?? null) },
+    seed(project, revision) {
+      const nextRevision = revision ?? null
+      if (nextRevision !== revisions.get(project)) blocked.delete(project)
+      revisions.set(project, nextRevision)
+    },
     prepare(payload) {
       if (blocked.has(payload.project)) return null
       const requestId = makeId()
-      pending.set(requestId, payload.project)
+      pending.set(requestId, { project: payload.project, payload })
       return { ...payload, requestId, expectedRevision: revisions.get(payload.project) ?? null }
     },
     handle(message) {
-      const project = pending.get(message.requestId)
-      if (!project || project !== message.project) return false
+      const request = pending.get(message.requestId)
+      if (!request || request.project !== message.project) return false
       pending.delete(message.requestId)
+      const project = request.project
       if (message.ok && typeof message.sourceRevision === 'string') revisions.set(project, message.sourceRevision)
       else {
-        if (message.status === 'stale-base') blocked.add(project)
+        const currentRevision = message.authority?.currentRevision
+        if (message.status === 'stale-base' && typeof currentRevision === 'string') {
+          revisions.set(project, currentRevision)
+          blocked.delete(project)
+          retries.push(request.payload)
+        } else if (message.status === 'stale-base') {
+          blocked.add(project)
+        }
         log.warn(`source change rejected for ${project}: ${message.error || message.status || 'unknown'}`)
       }
       return true
     },
+    takeRetry() { return retries.shift() ?? null },
     state(project) { return { revision: revisions.get(project) ?? null, blocked: blocked.has(project) } },
   }
 }
@@ -44,7 +58,11 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
   }
 
   function handleSourceChangeResult(message) {
-    return sourceCorrelation.handle(message)
+    const handled = sourceCorrelation.handle(message)
+    if (!handled) return false
+    let retry
+    while ((retry = sourceCorrelation.takeRetry())) sendSourceChange(retry)
+    return true
   }
 
   function loadSourceBindings() {

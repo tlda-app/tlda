@@ -18,10 +18,40 @@ assert.equal(daemon.state('paper').revision, 'revision-2')
 assert.equal(daemon.handle({ requestId: first.requestId, project: 'paper', ok: true, sourceRevision: 'duplicate' }), false)
 
 const stale = daemon.prepare({ type: 'source-change', project: 'paper', files: [] })
-assert.equal(daemon.handle({ requestId: stale.requestId, project: 'paper', ok: false, status: 'stale-base' }), true)
+assert.equal(daemon.handle({
+  requestId: stale.requestId,
+  project: 'paper',
+  ok: false,
+  status: 'stale-base',
+  authority: { state: 'current', currentRevision: 'revision-3' },
+}), true)
+assert.equal(daemon.state('paper').blocked, false)
+const retryPayload = daemon.takeRetry()
+assert.deepEqual(retryPayload, { type: 'source-change', project: 'paper', files: [] })
+assert.equal(daemon.takeRetry(), null)
+const retry = daemon.prepare(retryPayload)
+assert.equal(retry.expectedRevision, 'revision-3')
+assert.equal(daemon.handle({
+  requestId: retry.requestId,
+  project: 'paper',
+  ok: true,
+  sourceRevision: 'revision-4',
+}), true)
+const laterEdit = daemon.prepare({
+  type: 'source-change',
+  project: 'paper',
+  files: [{ path: 'main.tex', content: 'later edit' }],
+})
+assert.equal(laterEdit.expectedRevision, 'revision-4')
+assert.deepEqual(laterEdit.files, [{ path: 'main.tex', content: 'later edit' }])
+
+const unrecoverableStale = laterEdit
+assert.equal(daemon.handle({ requestId: unrecoverableStale.requestId, project: 'paper', ok: false, status: 'stale-base' }), true)
 assert.equal(daemon.state('paper').blocked, true)
 assert.equal(daemon.prepare({ type: 'source-change', project: 'paper', files: [] }), null)
-assert.equal(warnings.length, 1)
+assert.equal(warnings.length, 2)
+daemon.seed('paper', 'revision-5')
+assert.equal(daemon.state('paper').blocked, false)
 
 const server = createSourceChangeResultCache()
 const request = { requestId: 'r1', project: 'paper', expectedRevision: 'revision-1', files: [], sourceManifest: [] }
