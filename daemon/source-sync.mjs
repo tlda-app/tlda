@@ -478,7 +478,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
     )
     if (sourceManifest.length === 0) return
     const files = []
-    for (const rel of sourceManifest) {
+    for (const rel of normalizeSourceManifest([...uploadPaths], { format, mainFile })) {
       const full = path.join(sourceDir, rel)
       try { files.push({ path: rel, ...readFileForUpload(full) }) }
       catch (e) {

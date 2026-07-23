@@ -10,6 +10,7 @@ import { createSourceSync } from '../daemon/source-sync.mjs'
 const root = mkdtempSync(join(tmpdir(), 'tlda-source-reconcile-'))
 const main = join(root, 'main.tex')
 writeFileSync(main, 'first')
+writeFileSync(join(root, 'legacy-preserved.tex'), 'surviving server bytes')
 
 const sent = []
 const warnings = []
@@ -32,6 +33,7 @@ try {
   sourceSync.sync([{ name: 'paper', sourceDir: root, mainFile: 'main.tex', format: 'svg', sourceManifest: ['legacy-preserved.tex'] }])
   assert.equal(sent.length, 1, 'connect push establishes the initial source version')
   assert.deepEqual(sent[0].sourceManifest, ['legacy-preserved.tex', 'main.tex'], 'connect push preserves inherited authored ownership')
+  assert.deepEqual(sent[0].files.map(file => file.path), ['main.tex'], 'connect push sends bytes only for the watched snapshot')
 
   writeFileSync(main, 'second')
   await new Promise(resolve => setTimeout(resolve, 350))
