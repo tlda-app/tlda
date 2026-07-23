@@ -535,7 +535,6 @@ export function AnnotationViewer({
           className="annotation-viewer-clip"
           requestedShapeIds={data.shapeIds}
           interactionMode={state === 'hovering' ? 'preview' : 'pinned'}
-          unboundedPanning={data.useFullBounds}
         />
       </div>
 
