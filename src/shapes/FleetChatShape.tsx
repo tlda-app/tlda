@@ -1235,7 +1235,7 @@ function currentDocVersion(panel: any, editor?: Editor | null): string | null {
 
   // Scrubbed back via the git-history slider → the entry you scrubbed to.
   const idx = panel?.activeHistoryIdx
-  if (typeof idx === 'number' && idx >= 0) {
+  if (typeof idx === 'number' && idx >= 0 && idx < (panel?.historyEntries?.length ?? 0) - 1) {
     const e = panel?.historyEntries?.[idx]
     return e?.commitHash ? String(e.commitHash).slice(0, 7) : null
   }

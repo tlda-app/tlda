@@ -36,7 +36,7 @@ export function useSnapshotTimeline(document: SvgDocument, docName: string) {
       setTimeout(async () => {
         await refresh()
         if (wasAtEnd) {
-          setActiveIdx(entriesRef.current.length - 1)
+          setActiveIdx(-1)
         }
       }, 500)
     })
