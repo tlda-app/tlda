@@ -19,6 +19,8 @@ import {
 } from 'tldraw'
 import { fleetInboxProps } from '../../shared/shapes/fleet-panel-schema.mjs'
 import { labelsForAgent } from '../../shared/fleet-labels.mjs'
+// @ts-ignore — vanilla JS module
+import { inboxConversationRecipientId } from '../fleet/send-target-binding.mjs'
 import type { Editor, TLShapeId } from 'tldraw'
 import { agentDisplayLabel, beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
@@ -1277,13 +1279,20 @@ function ConversationView({
 
   const send = useCallback((text: string, targets: string[]) => {
     if (!text || targets.length === 0) return
+    // Bind the payload to the conversation partner's immutable id, not the
+    // mutable friendly name the composer carries — so the inbox composer obeys
+    // the same canonical-ID contract as the main fleet-chat composer: the shown
+    // partner and the delivered recipient are one agent object, independent of
+    // any name/phase change and without leaning on server name-resolution.
+    const to = inboxConversationRecipientId(thread)
+    if (!to) return
     const tempId = `opt-inbox-${Date.now()}-${Math.random().toString(36).slice(2)}`
     injectOptimisticEvent({
       _tempId: tempId,
       type: 'chat',
       event_type: 'chat',
       from: getHumanId(),
-      to: targets[0],
+      to,
       text,
       timestamp: new Date().toISOString(),
       read: false,
@@ -1291,9 +1300,14 @@ function ConversationView({
     wasNearBottomRef.current = true
     setTimeout(scrollToBottom, 0)
     const sendWithRetry = (attempt: number) => {
-      Promise.all(targets.map((t) => sendMessage(t, text, { _tempId: tempId })))
-        .then((results: { ok: boolean; event_id: number }[]) => {
-          if (!results.every((r) => r.ok)) throw new Error('send failed')
+      Promise.all([sendMessage(to, text, { _tempId: tempId })])
+        .then((results: { ok: boolean; event_id: number | null; permanent?: boolean }[]) => {
+          if (results.every((r) => r.ok)) return
+          // A permanent failure (target matched no recipient) can't succeed on
+          // retry — fail visibly now instead of masking it through the retries.
+          const permanent = results.some((r) => !r.ok && r.permanent)
+          if (permanent || attempt >= 3) updateOptimisticEvent(tempId, { _failed: true })
+          else setTimeout(() => sendWithRetry(attempt + 1), 2000 * attempt)
         })
         .catch(() => {
           if (attempt < 3) setTimeout(() => sendWithRetry(attempt + 1), 2000 * attempt)
@@ -1301,7 +1315,7 @@ function ConversationView({
         })
     }
     sendWithRetry(1)
-  }, [scrollToBottom])
+  }, [scrollToBottom, thread.partnerId])
 
   const openMarkdownColumn = useCallback((title: string, markdown: string, sourceEl: HTMLElement) => {
     openChatMarkdownColumn({
