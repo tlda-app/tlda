@@ -52,7 +52,8 @@ import { parseAgentSelector as parseUnifiedAgentSelector } from '../shared/unifi
 import { phaseFromName, baseName, PHASES, prettyNameForFriendlyName } from '../shared/lineage-name.mjs'
 import { daemonHelloDecision, resolveMainDaemonScript } from '../shared/daemon-identity.mjs'
 import { resolveServerIsolation } from '../shared/server-identity.mjs'
-import { initProjectStore, listProjects, readProject, updateProject, getProjectsDir, readProjectPartsManifest } from './lib/project-store.mjs'
+import { initProjectStore, listProjects, readProject, updateProject, getProjectsDir, readProjectPartsManifest, sourceLifecycleStore } from './lib/project-store.mjs'
+import { createSourceChangeResultCache } from './lib/source-change-correlation.mjs'
 import { resumeOverleafPollers } from './lib/overleaf-sync.mjs'
 import { resetStaleBuildStates, killAllBuilds, setShadowMirrorHandler } from './lib/build-runner.mjs'
 import { createShadowMirrorRpcHandler } from './lib/shadow-mirror-rpc.mjs'
@@ -7434,6 +7435,7 @@ function projectsForDaemon() {
         watchFiles,  // null = no .fls yet, watch main file only
         mainFile: p.mainFile || null,
         extraInputCommands: p.extraInputCommands || null,
+        sourceRevision: sourceLifecycleStore(p.name).readAuthority().currentRevision,
       }
     })
 }
@@ -8267,24 +8269,37 @@ async function handleDaemonWsMessage(ws, msg) {
   }
 
   if (type === 'source-change') {
-    const { project, files, deletedFiles, sourceManifest, editedBy } = msg
+    const { project, files, deletedFiles, sourceManifest, editedBy, expectedRevision, requestId } = msg
+    const resultCache = ws._sourceChangeResultCache ||= createSourceChangeResultCache()
+    const cached = resultCache.lookup(msg)
+    if (cached.error) {
+      ws.send(JSON.stringify({ type: 'source-change-result', requestId, project, ok: false, httpStatus: 400, status: 'invalid-request', error: cached.error }))
+      return
+    }
+    if (cached.replay) { ws.send(JSON.stringify(cached.replay)); return }
     if (!project) return
     if (readProject(project)) {
       updateProject(project, { lastSourceMachineId: ws._machineId, lastSourceEnvName: ws._envName, lastSourceMachineAt: Date.now() })
     }
     // Hand off to the same pipeline used by HTTP /api/projects/:name/push.
+    let replied = false
     try {
-      const result = await processProjectPush(project, { files, deletedFiles, sourceManifest, editedBy })
+      const result = await processProjectPush(project, { files, deletedFiles, sourceManifest, editedBy, expectedRevision })
+      const { status: httpStatus, lifecycleStatus, ...payload } = result
+      const reply = { type: 'source-change-result', requestId, project, ...payload, httpStatus, status: lifecycleStatus || (result.ok ? 'accepted' : 'error') }
+      resultCache.record(requestId, cached.hash, reply)
+      ws.send(JSON.stringify(reply))
+      replied = true
       if (!result.ok) {
         console.error(`[fleet-daemon] source-change ${project}: ${result.error || 'unknown'}`)
-        const err = new Error(result.error || 'source-change failed')
-        err.status = result.status || 500
-        err.permanent = err.status >= 400 && err.status < 500 && err.status !== 409
-        throw err
       }
     } catch (e) {
       console.error(`[fleet-daemon] source-change ${project} crashed: ${e.message}`)
-      throw e
+      if (!replied) {
+        const reply = { type: 'source-change-result', requestId, project, ok: false, httpStatus: 500, status: 'error', error: e.message }
+        resultCache.record(requestId, cached.hash, reply)
+        ws.send(JSON.stringify(reply))
+      }
     }
     return
   }

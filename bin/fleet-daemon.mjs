@@ -1024,6 +1024,10 @@ function applyAgentStatusEvents(events = []) {
 
 function handleServerMessage(msg, wsAttemptId) {
   if (machineRpc.handleReply(msg)) return
+  if (msg.type === 'source-change-result') {
+    sourceSync.handleSourceChangeResult(msg)
+    return
+  }
   if (msg.type === DAEMON_OUTBOX_ACK_TYPE) {
     if (msg.outbox_id) daemonDelivery.handleAck(msg.outbox_id)
     return

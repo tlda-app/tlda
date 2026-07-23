@@ -1,12 +1,51 @@
 import chokidar from 'chokidar'
 import fs from 'fs'
 import path from 'path'
+import { randomUUID } from 'crypto'
 
 import { scanMarkdownDeps } from '../shared/markdown-deps.mjs'
 import { isBuildJunkPath, isIgnoredSourceDir, isSourceFilePath, normalizeSourceManifest } from '../shared/source-manifest.mjs'
 
-export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected, resolveEditor }) {
+export function createSourceChangeCorrelation({ makeId = randomUUID, log = console } = {}) {
+  const revisions = new Map()
+  const pending = new Map()
+  const blocked = new Set()
+  return {
+    seed(project, revision) { revisions.set(project, revision ?? null) },
+    prepare(payload) {
+      if (blocked.has(payload.project)) return null
+      const requestId = makeId()
+      pending.set(requestId, payload.project)
+      return { ...payload, requestId, expectedRevision: revisions.get(payload.project) ?? null }
+    },
+    handle(message) {
+      const project = pending.get(message.requestId)
+      if (!project || project !== message.project) return false
+      pending.delete(message.requestId)
+      if (message.ok && typeof message.sourceRevision === 'string') revisions.set(project, message.sourceRevision)
+      else {
+        if (message.status === 'stale-base') blocked.add(project)
+        log.warn(`source change rejected for ${project}: ${message.error || message.status || 'unknown'}`)
+      }
+      return true
+    },
+    state(project) { return { revision: revisions.get(project) ?? null, blocked: blocked.has(project) } },
+  }
+}
+
+export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected, resolveEditor, reconcileIntervalMs = 1000, watch = chokidar.watch }) {
   const sourceWatchers = new Map()
+  const sourceCorrelation = createSourceChangeCorrelation({ log })
+
+  function sendSourceChange(payload) {
+    const message = sourceCorrelation.prepare(payload)
+    if (!message) { log.warn(`source authority blocked for ${payload.project}; refresh/reconcile required`); return false }
+    return sendMsg(message)
+  }
+
+  function handleSourceChangeResult(message) {
+    return sourceCorrelation.handle(message)
+  }
 
   function loadSourceBindings() {
     try {
@@ -221,6 +260,40 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
     return sourceWatcherPaths(state).join('\0')
   }
 
+  function sourcePathFingerprint(filePath) {
+    try {
+      const stat = fs.statSync(filePath, { bigint: true })
+      return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`
+    } catch (error) {
+      if (error?.code === 'ENOENT') return 'missing'
+      return `error:${error?.code || error?.message || 'unknown'}`
+    }
+  }
+
+  function reconcileSourceWatcher(state) {
+    if (sourceWatchers.get(state.projectName) !== state) return
+    const nextPaths = sourceWatcherPaths(state)
+    const next = new Map()
+    for (const filePath of nextPaths) {
+      const fingerprint = sourcePathFingerprint(filePath)
+      next.set(filePath, fingerprint)
+      const previous = state.pathFingerprints.get(filePath)
+      if (previous !== undefined && previous !== fingerprint) {
+        const rel = sourceRel(state.sourceDir, filePath)
+        if (rel) {
+          log.warn(`source reconciliation detected missed watcher edge for ${state.projectName}: ${rel}`)
+          state.onFileChange(rel)
+        }
+      }
+    }
+    for (const filePath of state.pathFingerprints.keys()) {
+      if (next.has(filePath)) continue
+      const rel = sourceRel(state.sourceDir, filePath)
+      if (rel) state.onFileChange(rel)
+    }
+    state.pathFingerprints = next
+  }
+
   function startSourceWatcher(state, reason = 'start') {
     closeWatcher(state.watcher, state.projectName)
     const watchPaths = sourceWatcherPaths(state)
@@ -230,7 +303,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
       log.warn(`source watcher disabled for ${state.projectName}: no bounded source files to watch`)
       return
     }
-    const watcher = chokidar.watch(watchPaths, {
+    const watcher = watch(watchPaths, {
       ignoreInitial: true,
       persistent: true,
       followSymlinks: true,
@@ -242,8 +315,10 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
       ),
     })
     state.watcher = watcher
+    state.pathFingerprints = new Map(watchPaths.map(filePath => [filePath, sourcePathFingerprint(filePath)]))
     const handle = (filePath) => {
       if (state.watcher !== watcher) return
+      state.pathFingerprints.set(filePath, sourcePathFingerprint(filePath))
       const rel = sourceRel(state.sourceDir, filePath)
       if (rel) state.onFileChange(rel)
     }
@@ -266,6 +341,8 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
   function closeSourceState(state) {
     closeWatcher(state.watcher, state.projectName)
     state.watcher = null
+    if (state.reconcileTimer) clearInterval(state.reconcileTimer)
+    state.reconcileTimer = null
     if (state._symlinkWatchers) {
       for (const [target, watcher] of state._symlinkWatchers) closeWatcher(watcher, `symlink target ${target}`)
       state._symlinkWatchers.clear()
@@ -276,6 +353,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
     const activeNames = new Set()
     const bindings = loadSourceBindings()
     for (const p of projectList) {
+      sourceCorrelation.seed(p.name, p.sourceRevision)
       // Per-machine binding wins over the server-provided sourceDir (the host's
       // path). No binding → fall back to the server's sourceDir (single-host case).
       const sourceDir = bindings[p.name] || p.sourceDir
@@ -317,7 +395,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
         }
       }
 
-      const state = { sourceDir, debounce: null, pending: new Set(), watchSet, onFileChange: null, projectName: p.name, mainFile: p.mainFile, format: p.format, extraInputCommands: p.extraInputCommands || [], isMarkdown, watcher: null, watcherKey: '', _symlinkWatchers: new Map() }
+      const state = { sourceDir, debounce: null, pending: new Set(), watchSet, onFileChange: null, projectName: p.name, mainFile: p.mainFile, format: p.format, extraInputCommands: p.extraInputCommands || [], isMarkdown, watcher: null, watcherKey: '', pathFingerprints: new Map(), reconcileTimer: null, _symlinkWatchers: new Map() }
 
       const onFileChange = (filename) => {
         if (!filename) return
@@ -354,6 +432,8 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
       try {
         sourceWatchers.set(p.name, state)
         startSourceWatcher(state, 'project sync')
+        state.reconcileTimer = setInterval(() => reconcileSourceWatcher(state), reconcileIntervalMs)
+        state.reconcileTimer.unref?.()
         log.info(`watching source ${p.name}: ${sourceDir}${bindings[p.name] ? ' (local binding)' : ''} (${watchSet.size} files${hasFlsWatchList ? '' : ', bootstrap'})`)
         pushWatchedFiles(p.name, sourceDir, watchSet, hasFlsWatchList ? null : p.mainFile, p.extraInputCommands, isMarkdown, p.format)
       } catch (e) {
@@ -404,7 +484,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
     }
     if (files.length === 0) return
     log.info(`connect push: ${files.length} files for ${projectName}`)
-    sendMsg({ type: 'source-change', project: projectName, files, sourceManifest })
+    sendSourceChange({ type: 'source-change', project: projectName, files, sourceManifest })
   }
 
   const _pendingSourceProjects = new Set()
@@ -529,7 +609,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
     // Edit attribution: which agent's recent Edit/Write touched a changed file.
     const editedBy = resolveEditor(filePaths.map(rel => path.join(state.sourceDir, rel)))
 
-    sendMsg({
+    sendSourceChange({
       type: 'source-change',
       project: projectName,
       files,
@@ -565,5 +645,6 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
     flushPending,
     getSourceDir,
     closeAll,
+    handleSourceChangeResult,
   }
 }
