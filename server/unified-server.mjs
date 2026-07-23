@@ -54,6 +54,7 @@ import { daemonHelloDecision, resolveMainDaemonScript } from '../shared/daemon-i
 import { resolveServerIsolation } from '../shared/server-identity.mjs'
 import { initProjectStore, listProjects, readProject, updateProject, getProjectsDir, readProjectPartsManifest, sourceLifecycleStore } from './lib/project-store.mjs'
 import { createSourceChangeResultCache } from './lib/source-change-correlation.mjs'
+import { createSourceEditEvent } from './lib/source-edit-event.mjs'
 import { resumeOverleafPollers } from './lib/overleaf-sync.mjs'
 import { resetStaleBuildStates, killAllBuilds, setShadowMirrorHandler } from './lib/build-runner.mjs'
 import { createShadowMirrorRpcHandler } from './lib/shadow-mirror-rpc.mjs'
@@ -8307,6 +8308,8 @@ async function handleDaemonWsMessage(ws, msg) {
       resultCache.record(requestId, cached.hash, reply)
       ws.send(JSON.stringify(reply))
       replied = true
+      const sourceEditEvent = createSourceEditEvent({ result, project, files, editedBy, requestId })
+      if (sourceEditEvent) broadcastEvent('fleet-event', sourceEditEvent)
       if (!result.ok) {
         console.error(`[fleet-daemon] source-change ${project}: ${result.error || 'unknown'}`)
       }

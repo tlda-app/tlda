@@ -10,9 +10,8 @@
  * Detection is the SAME implementation as the paper linter (server/lib/
  * lint-server.py -> lint-typography.check_comma_splice) — one linter, both surfaces.
  *
- * NOTE: tex/md file-edit events do not reach a /ws/fleet bot today (only chat/
- * activity/turn_ended). Watching source edits on save is a follow-up that needs a
- * server source-change fleet-event or the bot's own chokidar. This bot does chat.
+ * Accepted tex source edits also arrive as source-edit fleet events. The daemon
+ * supplies edit attribution, so the repair goes to the author who made the edit.
  */
 import WebSocket from 'ws'
 import fs from 'fs'
@@ -102,7 +101,7 @@ function startLintServer() {
   })
 }
 
-function lint(text, timeoutMs = 8000) {
+function lint(text, timeoutMs = 8000, file = '<chat>') {
   return new Promise((resolve) => {
     if (!lintProc || !lintReady) return resolve([])
     const id = lintReqId++
@@ -110,7 +109,7 @@ function lint(text, timeoutMs = 8000) {
       if (lintPending.has(id)) { lintPending.delete(id); resolve([]) }
     }, timeoutMs)
     lintPending.set(id, { resolve: (f) => { clearTimeout(timer); resolve(f) } })
-    try { lintProc.stdin.write(JSON.stringify({ id, text }) + '\n') }
+    try { lintProc.stdin.write(JSON.stringify({ id, text, file }) + '\n') }
     catch { /* child pipe broke — degrade to no findings, restart handled on exit */ lintPending.delete(id); clearTimeout(timer); resolve([]) }
   })
 }
@@ -122,6 +121,12 @@ function nudgeText(findings) {
   const n = findings.length
   const which = '"where", "so", "we have", "which gives"'
   return `⚠ **Possible comma splice** in your math${n > 1 ? ` (${n} spots)` : ''}: a comma is joining two statements as if it were a word. Which word did you mean — ${which}? Write it out; a comma isn't a connective. You can fix it in place by **amending** the message (\`chat({ amend_id })\`), no need to repost.`
+}
+
+function editNudgeText(project, findings) {
+  const first = findings[0]
+  const location = `${project}/${first.file}:${first.line}`
+  return `⚠ **Possible comma splice** at \`${location}\`: \`${first.snippet}\`. Replace the comma with the connective you mean — for example “where”, “and”, “so”, or “we have”.`
 }
 
 const nudgedRecently = new Map()   // messageKey -> ts, dedupe
@@ -184,6 +189,23 @@ async function handleMessage(raw) {
   const d = msg.data
   const from = d.from_id ?? d.from
   const text = d.text ?? d.message
+  if (d.type === 'source-edit') {
+    const author = d.to_id ?? d.to
+    const project = d.metadata?.project || 'source'
+    const files = Array.isArray(d.metadata?.files) ? d.metadata.files : []
+    if (!author || author === OWNER_ID || author === AGENT_ID) return
+    const findings = []
+    for (const file of files) {
+      if (!file?.path?.endsWith('.tex') || file.encoding === 'base64' || typeof file.content !== 'string') continue
+      findings.push(...await lint(file.content, 8000, file.path))
+    }
+    if (!findings.length) return
+    const key = `edit:${project}:${d.metadata?.requestId || files.map((file) => file.path).join(',')}`
+    if (alreadyNudged(key)) return
+    sendChat(author, editNudgeText(project, findings))
+    writeHeartbeat('edit-nudge')
+    return
+  }
   if (d.type !== 'chat' || !text) return
   writeHeartbeat('chat')
   // Lint AGENT messages containing math. Skip the human owner (voice input),
