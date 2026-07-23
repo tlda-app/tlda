@@ -42,6 +42,7 @@ const PROBE_DOC = process.env.TLDA_DEV_BOT_DOC || ''
 const ASSET_PATH_OVERRIDE = process.env.TLDA_DEV_BOT_ASSET_PATH_OVERRIDE || ''
 const ALLOW_NONDEFAULT = process.env.TLDA_DEV_BOT_ALLOW_NONDEFAULT === '1'
 const NUDGE_TO_OVERRIDE = process.env.TLDA_DEV_BOT_NUDGE_TO || ''
+const NUDGE_LABEL = (process.env.TLDA_DEV_BOT_NUDGE_LABEL || 'on-call').trim()
 const NUDGE_ON_SETUP = process.env.TLDA_DEV_BOT_NUDGE_SETUP === '1'
 const NUDGE_DRY_RUN = process.env.TLDA_DEV_BOT_NUDGE_DRY_RUN === '1'
 
@@ -291,20 +292,22 @@ async function runChecks() {
   }
 }
 
-function isDevTarget(agent) {
-  if (!agent || agent.dead || agent.human || agent.id === OWNER_ID || agent.id === AGENT_ID) return false
+function isNudgeTarget(agent) {
+  const status = String(agent?.status || '').toLowerCase()
+  if (!agent || agent.dead || agent.human || status === 'human' || status === 'human-away' || agent.id === OWNER_ID || agent.id === AGENT_ID) return false
   const labels = labelsForAgent(agent)
   if (labels.includes('bot')) return false
   if (agent.id?.startsWith?.('fleet:dev-probe-')) return false
-  const cwd = String(agent.cwd || '')
-  return labels.includes('dev') || labels.includes('app') || /(^|\/)tlda(\/|$)/.test(cwd)
+  return true
 }
 
 async function nudgeTargets() {
   if (NUDGE_TO_OVERRIDE) return [NUDGE_TO_OVERRIDE]
-  const data = await fetchJson(FLEET_SERVER, '/api/fleet-table?filter=awake&limit=500')
+  if (!NUDGE_LABEL) return []
+  const filter = encodeURIComponent(`awake & ${NUDGE_LABEL}`)
+  const data = await fetchJson(FLEET_SERVER, `/api/fleet-table?filter=${filter}&limit=500`)
   const agents = Array.isArray(data?.agents) ? data.agents : []
-  return agents.filter(isDevTarget).map(agent => agent.id)
+  return agents.filter(isNudgeTarget).map(agent => agent.id)
 }
 
 async function sendChat(to, message) {
