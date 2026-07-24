@@ -5154,8 +5154,21 @@ async function handleFleetWsMessage(ws, msg) {
     return
   }
 
-  if (type === 'review-inbox' || type === 'review-action') {
-    error('task review inbox is not implemented')
+  if (type === 'agents-page') {
+    const page = fleetStore.getAliveAgentsPage({
+      limit: msg.limit,
+      cursor: msg.cursor || null,
+    })
+    reply({ ...page, totals: fleetStore.getAliveAgentCounts() })
+    return
+  }
+
+  if (type === 'tasks-page') {
+    const page = fleetStore.getActiveTasksPage({
+      limit: msg.limit,
+      cursor: msg.cursor || null,
+    })
+    reply({ ...page, total: fleetStore.getActiveTaskCount() })
     return
   }
 

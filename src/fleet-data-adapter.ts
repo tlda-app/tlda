@@ -288,35 +288,6 @@ export function useFleetRosterTruth(): any | null {
 }
 
 
-export function useTaskInbox(): { items: any[], refresh: () => void, act: (taskId: string, action: string, reason?: string) => Promise<any> } {
-  const [items, setItems] = useState<any[]>([])
-
-  const fetchInbox = useCallback(() => {
-    _fleetEphemeral('review-inbox')
-      .then((data: any) => { if (Array.isArray(data)) setItems(data) })
-      .catch((e: Error) => console.warn('[fleet] review inbox transport failed:', e.message))
-  }, [])
-
-  useEffect(() => {
-    fetchInbox()
-    let unsub: (() => void) | null = null
-    let cancelled = false
-    ensureInit().then(() => {
-      if (cancelled) return
-      unsub = subscribe('tasks', null, fetchInbox)
-    })
-    return () => { cancelled = true; unsub?.() }
-  }, [fetchInbox])
-
-  const act = useCallback(async (taskId: string, action: string, reason?: string) => {
-    const data = await _fleetDurable('review-action', { task_id: taskId, action, reason })
-    fetchInbox()
-    return data
-  }, [fetchInbox])
-
-  return { items, refresh: fetchInbox, act }
-}
-
 export function useFleetTasks(frameId?: string): any[] {
   const [tasks, setTasks] = useState<any[]>([])
 

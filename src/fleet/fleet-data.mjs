@@ -224,10 +224,14 @@ export function getHumanName() { return _humanName }
 // Dead agents are intentionally not hydrated into the browser roster.
 export function loadNextAgentsPage() {
   if (!_nextAgentsCursor || _agentsPageLoading) return _agentsPageLoading || Promise.resolve(false)
-  _agentsPageLoading = browserFleetTransport.ephemeral('store-agents')
-    .then(agents => {
-      _nextAgentsCursor = null
-      applyAgentDelta(agents || [], [])
+  _agentsPageLoading = browserFleetTransport.ephemeral('agents-page', {
+    limit: 100,
+    cursor: _nextAgentsCursor,
+  })
+    .then(data => {
+      _nextAgentsCursor = data.nextCursor || null
+      if (data.totals) _agentTotals = data.totals
+      applyAgentDelta(data.agents || [], [], data.totals)
       return true
     })
     .catch(e => { console.warn('[fleet-data] agent page transport failed:', e.message); return false })
@@ -1279,8 +1283,8 @@ export async function init() {
   // feature transport.
   connect()
   const [agentsRes, tasksRes, historyRes] = await Promise.all([
-    browserFleetTransport.ephemeral('store-agents').then(agents => ({ agents })).catch(e => { console.warn('[fleet-data] agents transport failed:', e.message); return {} }),
-    browserFleetTransport.ephemeral('store-tasks').then(tasks => ({ tasks })).catch(e => { console.warn('[fleet-data] tasks transport failed:', e.message); return {} }),
+    browserFleetTransport.ephemeral('agents-page', { limit: 100 }).catch(e => { console.warn('[fleet-data] agents transport failed:', e.message); return {} }),
+    browserFleetTransport.ephemeral('tasks-page', { limit: 100 }).catch(e => { console.warn('[fleet-data] tasks transport failed:', e.message); return {} }),
     browserFleetTransport.ephemeral('load-history', { limit: HISTORY_PAGE }).catch(e => { console.warn('[fleet-data] history transport failed:', e.message); return { events: [] } }),
   ])
 
@@ -1370,10 +1374,10 @@ function updateTasks(tasks) {
 function applyTaskDelta(delta) {
   if (!delta) return
   if (delta.overflow) {
-    browserFleetTransport.ephemeral('store-tasks')
-      .then(tasks => {
-        _nextTasksCursor = null
-        updateTasks(tasks || [])
+    browserFleetTransport.ephemeral('tasks-page', { limit: 100 })
+      .then(data => {
+        _nextTasksCursor = data.nextCursor || null
+        updateTasks(data.tasks || [])
       })
       .catch(e => console.warn('[fleet-data] task refresh transport failed:', e.message))
     return
