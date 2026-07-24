@@ -11,6 +11,7 @@
 import type { CurveHandles } from './curveEditor.ts'
 import { DEFAULT_CURVE } from './curveEditor.ts'
 import { DEFAULT_READABILITY_PROFILES, type ReadabilityProfiles } from './readabilityDefaults.ts'
+import { fleetDurable, fleetEphemeral } from './fleet/fleet-data.mjs'
 
 export const DEFAULT_RADIO_SUBTITLE_DWELL_SEC = 15
 export const MIN_RADIO_SUBTITLE_DWELL_SEC = 3
@@ -130,11 +131,8 @@ export function setPref<K extends PrefKey>(key: K, value: (typeof DEFAULTS)[K]) 
   _cache[key] = value
   _notify()
   if (_userId) {
-    fetch(`/api/fleet/prefs/${encodeURIComponent(key)}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user: _userId, value }),
-    }).catch(e => console.warn('[prefs] save failed:', e.message))
+    fleetDurable('prefs-set', { user: _userId, key, value })
+      .catch((e: Error) => console.warn('[prefs] save failed:', e.message))
   }
 }
 
@@ -146,9 +144,7 @@ export function getAllPrefs(): typeof DEFAULTS {
 export async function loadPrefs(userId: string): Promise<void> {
   _userId = userId
   try {
-    const res = await fetch(`/api/fleet/prefs?user=${encodeURIComponent(userId)}`)
-    if (!res.ok) return
-    const data = await res.json()
+    const data = await fleetEphemeral('prefs-get-all', { user: userId })
     Object.assign(_cache, data)
     _notify()
   } catch {}

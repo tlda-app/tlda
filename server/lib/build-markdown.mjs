@@ -289,8 +289,9 @@ function linkifyMarkdownTextRefs(html) {
   return result.join('')
 }
 
-function taskDocRenderLayerAssets(enabled) {
+function taskDocRenderLayerAssets(enabled, agentNames = []) {
   if (!enabled) return { style: '', script: '' }
+  const serializedAgentNames = JSON.stringify(agentNames).replace(/</g, '\\u003c')
   return {
     style: `
     .task-doc-tools {
@@ -611,26 +612,19 @@ function taskDocRenderLayerAssets(enabled) {
     return [...ids].slice(0, 200)
   }
 
-  async function loadAgentNames(state) {
+  function loadAgentNames(state) {
     const ids = collectFleetIds(state)
     if (!ids.length) return { exactNames: new Map(), prefixNames: new Map() }
-    try {
-      const res = await fetch('/api/agents/lookup?ids=' + encodeURIComponent(ids.join(',')))
-      if (!res.ok) return { exactNames: new Map(), prefixNames: new Map() }
-      const data = await res.json()
-      const agents = data.agents || []
-      const exactNames = new Map()
-      const prefixNames = new Map()
-      for (const agent of agents) {
-        if (!agent?.id) continue
-        const display = agent.pretty_name || agent.friendly_name || agent.lineage_name || agent.id
-        exactNames.set(agent.id, display)
-        prefixNames.set(agent.id.slice(0, 10), display)
-      }
-      return { exactNames, prefixNames }
-    } catch {
-      return { exactNames: new Map(), prefixNames: new Map() }
+    const requested = new Set(ids)
+    const exactNames = new Map()
+    const prefixNames = new Map()
+    for (const agent of ${serializedAgentNames}) {
+      if (!agent?.id || !requested.has(agent.id)) continue
+      const display = agent.pretty_name || agent.friendly_name || agent.lineage_name || agent.id
+      exactNames.set(agent.id, display)
+      prefixNames.set(agent.id.slice(0, 10), display)
     }
+    return { exactNames, prefixNames }
   }
 
   function prettyPrintFleetIds(table, state, names) {
@@ -662,7 +656,7 @@ function taskDocRenderLayerAssets(enabled) {
     addSorting(table, state)
     addEmptyRow(table, state)
     update(table, state)
-    loadAgentNames(state).then(names => prettyPrintFleetIds(table, state, names))
+    prettyPrintFleetIds(table, state, loadAgentNames(state))
   }
 
   function wrapTable(table) {
@@ -747,7 +741,7 @@ function markdownTocForSource(source, page) {
   return toc
 }
 
-export function renderMarkdownColumnHtml({ source, title, isTaskDoc }) {
+export function renderMarkdownColumnHtml({ source, title, isTaskDoc, agentNames = [] }) {
   _macros = extractMacros(source)
   const renderSource = normalizeChatDisplayMathDelimiters(stripMarkdownFrontmatter(source))
   const slugify = s => s.toLowerCase().replace(/[^\w]+/g, '-').replace(/^-|-$/g, '')
@@ -771,7 +765,7 @@ export function renderMarkdownColumnHtml({ source, title, isTaskDoc }) {
   const tokens = md.parse(processedSource, env)
   let content = md.renderer.render(tokens, md.options, env)
   content = rewriteMarkdownHrefTargets(linkifyMarkdownDocRefs(content))
-  const taskDocAssets = taskDocRenderLayerAssets(isTaskDoc)
+  const taskDocAssets = taskDocRenderLayerAssets(isTaskDoc, agentNames)
   return `<!DOCTYPE html>
 <html lang="en">
 <head>

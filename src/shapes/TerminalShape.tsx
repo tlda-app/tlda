@@ -28,6 +28,7 @@ import 'xterm/css/xterm.css'
 import './TerminalShape.css'
 import { subscribePref } from '../preferences'
 import { getReadabilityProfile, readabilityStyleVars } from '../readabilityProfile'
+import { fleetEphemeral } from '../fleet/fleet-data.mjs'
 import { openTerminalTransport, type TerminalTransport } from '../fleet/terminal-transport'
 
 // Terminal PTY is daemon-routed through the global fleet server (not the serving
@@ -98,10 +99,7 @@ function useAgents(): Agent[] {
     let cancelled = false
     async function load() {
       try {
-        const res = await fetch(`/api/agents?limit=100`)
-        if (!res.ok) return
-        const data = await res.json()
-        const list: Agent[] = data.agents || []
+        const list: Agent[] = await fleetEphemeral('store-agents') || []
         if (!cancelled) {
           setAgents(list.filter(a => !a.dead && a.runtime_status?.status === 'awake' && (!a.runtime_status?.route_state || a.runtime_status.route_state === 'routable')))
         }

@@ -41,18 +41,18 @@ import MarkdownIt from 'markdown-it'
 // @ts-ignore — vanilla JS module
 import { renderChatLine, esc, timeShort } from '../fleet/chat-render.mjs'
 // @ts-ignore — vanilla JS module
+import { fleetDurable } from '../fleet/fleet-data.mjs'
+// @ts-ignore — vanilla JS module
 import { highlightSyntax, langFromFilePath } from '../fleet/utils.mjs'
 // @ts-ignore — vanilla JS module
 import { getHumanId } from '../fleet/fleet-data.mjs'
 import { useIsInViewport } from './useIsInViewport'
-import { DATABASE_HTTP } from '../activeConfig'
 import { fetchMarkdownChipText, openChatMarkdownColumn, openMarkdownChipFromTarget } from './fleet-chat-markdown-open'
 import './fleet-chat.css'
 import './fleet-inbox.css'
 
 const DEFAULT_W = 360
 const DEFAULT_H = 560
-const FLEET_API = DATABASE_HTTP
 type FleetFilter = [string, string][][]
 type ChatFilterTargetShape = {
   id: TLShapeId
@@ -741,11 +741,7 @@ function FleetInboxInner({ shape }: { shape: any }) {
       (e: any) => canonicalFleetParticipantId(e.to || e.to_id, agents, myId, myName) === myId && e.read !== true && (e._dbId || e.id),
     )
     for (const e of unread) {
-      fetch(`${FLEET_API}/api/mark-event-read`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ event_id: e._dbId || e.id, agent: myId }),
-      }).catch(() => {})
+      fleetDurable('mark-event-read', { event_id: e._dbId || e.id, agent: myId }).catch(() => {})
     }
   }, [agents, myId, myName])
 

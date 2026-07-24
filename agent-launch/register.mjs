@@ -10,6 +10,7 @@ import { prettyNameForFriendlyName } from '../shared/lineage-name.mjs'
 import { activeConfigName, sanitizeSessionName } from './identity.mjs'
 import { createPermissionLedger } from './permission-ledger.mjs'
 import { createLocalAgentLedger } from './local-agent-ledger.mjs'
+import { createFleetOperationTransport } from '../shared/fleet-operation-transport.mjs'
 
 const MKCERT_CA = path.join(os.homedir(), 'Library/Application Support/mkcert/rootCA.pem')
 const TLDA_LOCAL_CERT = path.join(os.homedir(), '.config', 'tlda', 'localhost+2.pem')
@@ -81,6 +82,27 @@ export async function apiJson(pathname, { api = resolveApi(), timeoutMs = 5000, 
   })
 }
 
+function createAgentLaunchHttpTransport(api) {
+  return createFleetOperationTransport({
+    name: 'agent-launch-http',
+    resolveSender: () => getMachineId(),
+    resolveDestination: () => 'fleet-server',
+    sendEphemeral: async (operation, payload) => {
+      if (operation === 'server-state') {
+        return apiJson('/api/state', { api, timeoutMs: payload.timeoutMs })
+      }
+      if (operation === 'check-name') {
+        const exclude = payload.excludeId ? `&exclude=${encodeURIComponent(payload.excludeId)}` : ''
+        return apiJson(`/api/check-name?name=${encodeURIComponent(payload.name)}${exclude}`, { api })
+      }
+      throw new Error(`unsupported agent-launch HTTP operation: ${operation}`)
+    },
+    sendDurable: async () => {
+      throw new Error('agent-launch HTTP transport has no durable operations')
+    },
+  })
+}
+
 // A single 2s probe was too fragile against the remote Fly server's real,
 // observed latency variance: one missed window silently (for non-localhost
 // targets) skipped shell reservation entirely, producing a live, working
@@ -89,12 +111,13 @@ export async function apiJson(pathname, { api = resolveApi(), timeoutMs = 5000, 
 // at a longer timeout absorbs a transient blip; both attempts are traced so a
 // sustained outage is visible instead of silently deferred.
 export async function ensureServer({ api = resolveApi() } = {}) {
+  const transport = createAgentLaunchHttpTransport(api)
   const isLocal = /^https?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?$/.test(api)
   const attempts = [2000, 6000]
   let lastError = null
   for (let i = 0; i < attempts.length; i++) {
     try {
-      await apiJson('/api/state', { api, timeoutMs: attempts[i] })
+      await transport.ephemeral('server-state', { timeoutMs: attempts[i] })
       traceServerCheck({ api, attempt: i + 1, ok: true })
       return true
     } catch (e) {
@@ -112,8 +135,7 @@ function traceServerCheck(detail) {
 
 export async function checkFreshNameAvailable(name, { api = resolveApi(), serverUp = true, excludeId = null } = {}) {
   if (!serverUp || !name || name.startsWith('fleet:')) return
-  const exclude = excludeId ? `&exclude=${encodeURIComponent(excludeId)}` : ''
-  const data = await apiJson(`/api/check-name?name=${encodeURIComponent(name)}${exclude}`, { api })
+  const data = await createAgentLaunchHttpTransport(api).ephemeral('check-name', { name, excludeId })
   const collisions = data.collisions || []
   if (!collisions.length) return
   const kinds = new Map()
@@ -193,11 +215,7 @@ export function findLocalAgent(name, { ledger = null } = {}) {
 
 export async function markAgentDead(fleetId, { api = resolveApi(), timeoutMs = 5000 } = {}) {
   if (!fleetId) return { ok: false, skipped: true }
-  return await apiJson(`/api/agents/${encodeURIComponent(fleetId)}/mark-dead`, {
-    api,
-    timeoutMs,
-    method: 'POST',
-  })
+  return wsIdentityMessage('mark-dead', { fleetId, api, timeoutMs })
 }
 
 function traceIdentityAttempt(detail) {
@@ -313,16 +331,33 @@ async function wsIdentityMessage(type, {
   }
   if (Object.keys(meta).length) msg.metadata = meta
   const attempts = [timeoutMs, Math.max(timeoutMs * 2, 10000)]
-  let lastError = null
-  for (let i = 0; i < attempts.length; i++) {
-    const requestId = `${type}:${wsPeer}:${Date.now()}:${Math.random().toString(36).slice(2)}`
-    try {
-      return await wsIdentityAttempt(type, requestId, wsPeer, wsUrl, { ...msg, id: requestId }, { api, timeoutMs: attempts[i], attempt: i + 1 })
-    } catch (e) {
-      lastError = e
+  const transport = createFleetOperationTransport({
+    name: 'agent-launch-identity',
+    resolveSender: () => localAgentId || fleetId || null,
+    resolveDestination: () => fleetId || 'fleet-server',
+    sendEphemeral: sendIdentityOperation,
+    sendDurable: sendIdentityOperation,
+  })
+
+  async function sendIdentityOperation(operation, payload, options) {
+    let lastError = null
+    for (let i = 0; i < attempts.length; i++) {
+      const requestId = options.operationId
+      try {
+        return await wsIdentityAttempt(operation, requestId, wsPeer, wsUrl, {
+          ...payload,
+          id: requestId,
+          operation_id: requestId,
+          fleet_operation: options.envelope,
+        }, { api, timeoutMs: attempts[i], attempt: i + 1 })
+      } catch (e) {
+        lastError = e
+      }
     }
+    throw lastError
   }
-  throw lastError
+
+  return transport.durable(type, msg)
 }
 
 export async function wsReserveShell(options = {}) {

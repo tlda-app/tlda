@@ -23,6 +23,7 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { getServerUrl } from '../shared/config.mjs';
+import { createFleetOperationTransport } from '../shared/fleet-operation-transport.mjs';
 
 const PAGE = 5000; // server cap; tight windows fit in one page
 
@@ -68,13 +69,29 @@ function makeClient() {
     ws.on('open', res);
     ws.on('error', rej);
   });
-  function call(msg) {
+  function sendRequest(operation, payload, options) {
     return new Promise((resolve, reject) => {
-      const id = crypto.randomUUID();
-      const timer = setTimeout(() => { pending.delete(id); reject(new Error('WS timeout for ' + msg.type)); }, 30000);
+      const id = options.operationId || crypto.randomUUID();
+      const timer = setTimeout(() => { pending.delete(id); reject(new Error('WS timeout for ' + operation)); }, 30000);
       pending.set(id, { resolve, reject, timer });
-      ws.send(JSON.stringify({ ...msg, id }));
+      ws.send(JSON.stringify({
+        ...payload,
+        type: operation,
+        id,
+        operation_id: id,
+        fleet_operation: options.envelope,
+      }));
     });
+  }
+  const transport = createFleetOperationTransport({
+    name: 'export-thread',
+    resolveSender: () => 'fleet:export-thread',
+    resolveDestination: () => 'fleet-server',
+    sendEphemeral: sendRequest,
+  });
+  function call(msg) {
+    const { type, ...payload } = msg;
+    return transport.ephemeral(type, payload);
   }
   return { ws, ready, call, close: () => ws.close() };
 }
