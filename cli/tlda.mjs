@@ -2704,6 +2704,10 @@ function printMintLifecycleEvent(event, data = {}) {
     console.log(`Server registration deferred${fleetId ? ` for ${fleetId}` : ''}: ${data.reason || 'server unavailable'}`)
     return
   }
+  if (event === 'server-reconciliation-deferred') {
+    console.error(`Server wake reconciliation deferred${fleetId ? ` for ${fleetId}` : ''}: ${data.reason || 'server unavailable'}`)
+    return
+  }
   if (event === 'terminal-command') {
     console.log(data.ok
       ? `Terminal command delivered${tmuxSession ? ` to ${tmuxSession}` : ''}`
@@ -2713,6 +2717,16 @@ function printMintLifecycleEvent(event, data = {}) {
   if (event === 'terminal-local-only') {
     console.log(`Terminal local-only${tmuxSession ? ` in ${tmuxSession}` : ''}: ${data.reason || 'server registration deferred'}`)
   }
+}
+
+function printLocalDaemonOutcome(result = {}) {
+  for (const failure of result.lifecycle_errors || []) {
+    console.error(`Lifecycle delivery failed for ${failure.event || 'unknown event'}: ${failure.error || 'unknown error'}`)
+  }
+  if (result.reconciliation?.deferred) {
+    console.error(`Server wake reconciliation deferred: ${result.reconciliation.error || 'server unavailable'}`)
+  }
+  if (result.cleanup_error) console.error(result.cleanup_error)
 }
 
 // `mint` makes a FRESH agent only. Adopting an already-running external session
@@ -2789,6 +2803,7 @@ export async function runFleetSpawn(spawnArgs, {
       respawn: false,
     }, { onEvent: printMintLifecycleEvent })
     if (!result?.ok) throw new Error(result?.error || result?.reason || `mint failed for ${name}`)
+    printLocalDaemonOutcome(result)
     const agentId = result.agent_id || result.fleetId || result.localAgentId || result.local_agent_id || 'local-only'
     console.log(`Created ${result.tmux_session || result.tmuxSession || result.name || name} (${agentId}) in ${cwd}`)
     return
@@ -2805,6 +2820,7 @@ export async function runFleetSpawn(spawnArgs, {
     }
     const result = await callLocalDaemonLifecycle('wake', { fleet_id: restored.agentId })
     if (!result?.ok) throw new Error(result?.error || result?.reason || `wake failed for ${restored.agentId}`)
+    printLocalDaemonOutcome(result)
     console.log(`Woke ${result.tmux_session || result.tmuxSession || restored.agentId} (${result.agent_id || result.fleetId || restored.agentId}) in ${restored.cwd}`)
     return
   }

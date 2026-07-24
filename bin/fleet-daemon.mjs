@@ -819,11 +819,7 @@ machineRpc.register({
 })
 
 function startLocalLifecycleRpc() {
-  try {
-    fs.rmSync(LOCAL_RPC_SOCKET, { force: true })
-  } catch {
-    // Best-effort stale socket cleanup; listen will report real bind failures.
-  }
+  fs.rmSync(LOCAL_RPC_SOCKET, { force: true })
   const server = net.createServer(socket => {
     let raw = ''
     let observing = true
@@ -858,12 +854,23 @@ function startLocalLifecycleRpc() {
       }
     })
   })
-  server.on('error', error => log.warn(`local lifecycle rpc failed: ${error.message}`))
+  server.on('error', error => {
+    log.error(`local lifecycle rpc failed: ${error.message}`)
+    sendMsg({
+      type: 'daemon-warning',
+      warning: 'local-lifecycle-rpc-failed',
+      error: error.message,
+      socket: LOCAL_RPC_SOCKET,
+    })
+    process.exit(1)
+  })
   server.listen(LOCAL_RPC_SOCKET, () => {
     try {
       fs.chmodSync(LOCAL_RPC_SOCKET, 0o600)
-    } catch {
-      // Best-effort socket hardening; lifecycle RPC still remains local-only.
+    } catch (error) {
+      log.error(`local lifecycle rpc socket hardening failed: ${error.message}`)
+      server.close(() => process.exit(1))
+      return
     }
     log.info(`local lifecycle rpc listening on ${LOCAL_RPC_SOCKET}`)
   })

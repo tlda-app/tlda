@@ -51,11 +51,17 @@ export function createAgentLauncher({
     log.info(`[spawn-trace] ${label} ${JSON.stringify({ ts: new Date().toISOString(), machineId, ...detail })}`)
   }
 
-  function emitLifecycle(onLifecycleEvent, event, data = {}) {
+  async function emitLifecycle(onLifecycleEvent, event, data = {}) {
     try {
-      onLifecycleEvent?.(event, data)
-    } catch {
-      // Lifecycle observers are diagnostic streams; they must not cancel daemon-owned launch work.
+      await onLifecycleEvent?.(event, data)
+    } catch (error) {
+      await sendMsg({
+        type: 'daemon-warning',
+        warning: 'spawn-lifecycle-delivery-failed',
+        event,
+        error: error?.message || String(error),
+        data,
+      })
     }
   }
 
@@ -512,15 +518,16 @@ export function createAgentLauncher({
       const durableSessionId = launched.resumeId || liveIdentity?.sessionId || ledgerRow?.sessionId || sessionId || null
       const durableSessionPath = liveIdentity?.jsonlPath || ledgerRow?.sessionPath || null
       if (launched.registrationDeferred && !launched.fleetId) {
+        let ledgerCleanupError = null
         if (shouldWriteLedgerRow && preallocatedAgentId) {
           try {
             await permissionLedger.delete(preallocatedAgentId)
           } catch (e) {
             // Local runtime ownership is retained; later server reconciliation creates the real binding.
-            log.warn(`could not remove unbound server ledger row for local-only mint ${agentName}: ${e.message}`)
+            ledgerCleanupError = `could not remove unbound server ledger row for local-only mint ${agentName}: ${e.message}`
           }
         }
-        emitLifecycle(onLifecycleEvent, 'terminal-local-only', {
+        await emitLifecycle(onLifecycleEvent, 'terminal-local-only', {
           ok: true,
           local_agent_id: launched.localAgentId || null,
           tmux_session: launched.tmuxSession,
@@ -546,6 +553,7 @@ export function createAgentLauncher({
           modelPermission: grant.modelPermission,
           permissionSet: grant.permissionSet,
           permissionGrant: grant.permissionGrant,
+          ...(ledgerCleanupError ? { cleanup_error: ledgerCleanupError } : {}),
         }
       }
       if (!durableSessionId) {
@@ -602,7 +610,7 @@ export function createAgentLauncher({
           ownership_retained: true,
         }
       }
-      emitLifecycle(onLifecycleEvent, 'server-binding-joined', {
+      await emitLifecycle(onLifecycleEvent, 'server-binding-joined', {
         agent_id: launched.fleetId,
         fleet_id: launched.fleetId,
         tmux_session: launched.tmuxSession,

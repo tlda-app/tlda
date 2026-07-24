@@ -130,8 +130,9 @@ export function extractLoginMarkerFromText(text) {
     const parsed = JSON.parse(line)
     if (parsed?.type !== 'tlda-login-marker') return null
     return normalizeLoginMarker(parsed)
-  } catch {
-    return null
+  } catch (error) {
+    if (error instanceof SyntaxError) return null
+    throw error
   }
 }
 

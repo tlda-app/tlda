@@ -372,6 +372,7 @@ export function createJsonlIngestor({
   function persistLocalMarkerBinding(marker, { sessionId, jsonlPath, harnessKind } = {}) {
     if (!marker?.mint_id) return
     const localLedger = createLocalAgentLedger(path.join(configDir, 'fleet-daemon.db'))
+    let bindingError = null
     try {
       if (!localLedger.get(marker.mint_id)) {
         localLedger.create({
@@ -397,8 +398,15 @@ export function createJsonlIngestor({
         })
       }
     } catch (e) {
-      // Best-effort local ledger repair; ownership classification must continue.
-      log.warn(`local login marker binding failed for ${marker.mint_id}: ${e.message}`)
+      bindingError = e?.message || String(e)
+      sendMsg({
+        type: 'daemon-warning',
+        warning: 'local-login-marker-binding-failed',
+        mint_id: marker.mint_id,
+        fleet_id: marker.fleet_id || null,
+        session_id: marker.session_id || sessionId || null,
+        error: bindingError,
+      })
     } finally {
       localLedger.close()
     }
@@ -417,6 +425,7 @@ export function createJsonlIngestor({
         daemon_key: marker.daemon_key,
       })
     }
+    return bindingError
   }
 
   function setJsonlOwnership(pw, state, marker = null) {
@@ -431,11 +440,12 @@ export function createJsonlIngestor({
     }
     pw.ownershipState = state
     if (state === 'mine' && marker) {
-      persistLocalMarkerBinding(marker, {
+      const bindingError = persistLocalMarkerBinding(marker, {
         sessionId: pw.sessionId,
         jsonlPath: pw.jsonlPath,
         harnessKind: pw.harnessKind,
       })
+      if (bindingError) entry.owner.binding_error = bindingError
       if (prev !== 'mine' && isConnected()) {
         sendActivityHealth(pw.primaryAgentId, {
           state: ACTIVITY_HEALTH_OK,

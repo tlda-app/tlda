@@ -42,9 +42,19 @@ function toSpawnError(e, reason = 'launch-failed', detail = {}) {
 function emitLifecycle(params, event, data = {}) {
   try {
     params.onLifecycleEvent?.(event, data)
-  } catch {
-    // Lifecycle observers are diagnostic streams; they must not cancel daemon-owned launch work.
+  } catch (error) {
+    params.lifecycleErrors ||= []
+    params.lifecycleErrors.push({
+      event,
+      error: error?.message || String(error),
+    })
   }
+}
+
+function lifecycleOutcome(params) {
+  return params.lifecycleErrors?.length
+    ? { lifecycle_errors: [...params.lifecycleErrors] }
+    : {}
 }
 
 const ADAPTERS = { claude, codex, goose }
@@ -490,9 +500,9 @@ async function spawnFresh(params) {
         model,
         reason: 'server registration branch failed after local launch',
       })
-      return { ok: true, localAgentId, fleetId: fleetId || null, tmuxSession, harness: requestedKind, model, registrationDeferred: true, ...(promptDelivery ? { promptDelivery } : {}) }
+      return { ok: true, localAgentId, fleetId: fleetId || null, tmuxSession, harness: requestedKind, model, registrationDeferred: true, ...(promptDelivery ? { promptDelivery } : {}), ...lifecycleOutcome(params) }
     }
-    return { ok: true, pending: true, ...launchedRoute, ...(identityResolution ? { identityResolution } : {}), ...(promptDelivery ? { promptDelivery } : {}) }
+    return { ok: true, pending: true, ...launchedRoute, ...(identityResolution ? { identityResolution } : {}), ...(promptDelivery ? { promptDelivery } : {}), ...lifecycleOutcome(params) }
   } catch (e) {
     const err = toSpawnError(e, e?.message?.includes('not available') ? 'name-bounced' : 'launch-failed', { fleetId, tmuxSession, model })
     librarian.failPending(fleetId || localAgentId, err.reason || 'launch-failed')
@@ -708,8 +718,9 @@ async function spawnRespawn(params) {
   } else if (requestedKind === 'claude' && resumeId) {
     await injectClaudePrompt(tmuxSession, claude.kickoffPrompt(friendlyName), { tmuxSocket: params.tmuxSocket })
   }
+  let reconciliation = null
   if (requestedKind === 'codex' && resumeId) {
-    Promise.resolve().then(async () => {
+    try {
       await (deps.ensureServer || ensureServer)({ api })
       await (deps.wsReserveShell || wsReserveShell)({
         fleetId,
@@ -725,16 +736,22 @@ async function spawnRespawn(params) {
         api,
         ...shellReservationOptions(params),
       })
-    }).catch(e => {
-      // This reservation attempt is best-effort/non-gating; normal login plus durable seat binding is authoritative.
+      reconciliation = { ok: true }
+    } catch (e) {
+      reconciliation = { ok: false, deferred: true, error: e?.message || String(e) }
       traceSpawnDecision('wake-server-reconciliation-deferred', {
         fleetId,
         tmuxSession,
-        reason: e?.message || String(e),
+        reason: reconciliation.error,
       })
-    })
+      emitLifecycle(params, 'server-reconciliation-deferred', {
+        fleet_id: fleetId,
+        tmux_session: tmuxSession,
+        reason: reconciliation.error,
+      })
+    }
   }
-  return { ok: true, fleetId, tmuxSession, harness: requestedKind, model, resumeId }
+  return { ok: true, fleetId, tmuxSession, harness: requestedKind, model, resumeId, ...(reconciliation ? { reconciliation } : {}), ...lifecycleOutcome(params) }
 }
 
 async function spawnRefresh(params) {
