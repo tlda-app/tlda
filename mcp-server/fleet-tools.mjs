@@ -378,6 +378,7 @@ const LOG_FILE = `${os.homedir()}/.claude/agent-messages.jsonl`;
 
 // --- tlda integration ---
 import { CONFIG_DIR, getRwToken, getServerUrl, getFleetServerUrl } from '../shared/config.mjs';
+import { resolveLoginFleetId } from '../daemon/mint-store.mjs';
 import { tldaFetch as _sharedFetch } from '../shared/http-client.mjs';
 import { reportDocName, postReportDoc } from './report-doc-post.mjs';
 const TLDA_SERVER = getServerUrl();
@@ -1996,8 +1997,12 @@ export async function handleFleetTool(name, args) {
 
   // ---- login ----
   if (name === 'login') {
-    const shellId = args.agent_id || AGENT_ID || process.env.FLEET_ID || null;
     const localAgentId = process.env.FLEET_MINT_ID || process.env.FLEET_LOCAL_ID || null;
+    const shellId = resolveLoginFleetId({
+      explicitFleetId: args.agent_id || AGENT_ID || process.env.FLEET_ID || null,
+      mintId: localAgentId,
+      storeFile: path.join(CONFIG_DIR, 'daemon-mints.sqlite'),
+    });
     const boundFleetId = process.env.FLEET_ID || null;
     if (boundFleetId && shellId !== boundFleetId) {
       return { content: [{ type: 'text', text: `Login rejected: requested ${shellId} but this process is bound to ${boundFleetId}.` }], isError: true };

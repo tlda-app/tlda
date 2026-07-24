@@ -31,6 +31,38 @@ function decoded(value) {
   try { return JSON.parse(value) } catch { return value }
 }
 
+function mintRow(row) {
+  return row ? {
+    mintId: row.mint_id,
+    fleetId: row.fleet_id,
+    friendlyName: row.friendly_name,
+    metadata: decoded(row.metadata),
+    launchRecipe: decoded(row.launch_recipe),
+    processState: decoded(row.process_state),
+    sessionId: row.session_id,
+    sessionPath: row.session_path,
+    joinedAt: row.joined_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  } : null
+}
+
+export function readMintFacts(file, mintId) {
+  if (!file || !mintId || !fs.existsSync(file)) return null
+  const db = new Database(file, { readonly: true, fileMustExist: true })
+  try {
+    const table = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'daemon_mints'").get()
+    if (!table) return null
+    return mintRow(db.prepare('SELECT * FROM daemon_mints WHERE mint_id = ?').get(mintId))
+  } finally {
+    db.close()
+  }
+}
+
+export function resolveLoginFleetId({ explicitFleetId = null, mintId = null, storeFile = null } = {}) {
+  return explicitFleetId || readMintFacts(storeFile, mintId)?.fleetId || null
+}
+
 export class MintStore {
   constructor(file) {
     fs.mkdirSync(path.dirname(file), { recursive: true })
@@ -66,12 +98,12 @@ export class MintStore {
 
   get(mintId) {
     const row = this.db.prepare('SELECT * FROM daemon_mints WHERE mint_id = ?').get(mintId)
-    return row ? this.#row(row) : null
+    return mintRow(row)
   }
 
   getByFleetId(fleetId) {
     const row = this.db.prepare('SELECT * FROM daemon_mints WHERE fleet_id = ?').get(fleetId)
-    return row ? this.#row(row) : null
+    return mintRow(row)
   }
 
   getByFriendlyName(name) {
@@ -79,7 +111,7 @@ export class MintStore {
       SELECT * FROM daemon_mints WHERE friendly_name = ?
       ORDER BY created_at DESC LIMIT 1
     `).get(name)
-    return row ? this.#row(row) : null
+    return mintRow(row)
   }
 
   setFact(mintId, fact, value, now = new Date().toISOString()) {
@@ -111,21 +143,5 @@ export class MintStore {
 
   close() {
     this.db.close()
-  }
-
-  #row(row) {
-    return {
-      mintId: row.mint_id,
-      fleetId: row.fleet_id,
-      friendlyName: row.friendly_name,
-      metadata: decoded(row.metadata),
-      launchRecipe: decoded(row.launch_recipe),
-      processState: decoded(row.process_state),
-      sessionId: row.session_id,
-      sessionPath: row.session_path,
-      joinedAt: row.joined_at,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-    }
   }
 }

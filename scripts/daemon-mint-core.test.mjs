@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 
 import { createDaemonMintCore } from '../daemon/mint-core.mjs'
-import { MintFactConflictError, MintStore } from '../daemon/mint-store.mjs'
+import { MintFactConflictError, MintStore, readMintFacts, resolveLoginFleetId } from '../daemon/mint-store.mjs'
 import { createDaemonWakeCore } from '../daemon/wake-core.mjs'
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-mint-core-'))
@@ -39,6 +39,16 @@ await new Promise(resolve => setImmediate(resolve))
 assert.deepEqual(events, ['process-start', 'seat-start'])
 assert.equal(store.get('mint:test').fleetId, 'fleet:test')
 assert.equal(store.get('mint:test').sessionId, null)
+assert.equal(readMintFacts(path.join(dir, 'mint.sqlite'), 'mint:test').fleetId, 'fleet:test')
+assert.equal(readMintFacts(path.join(dir, 'mint.sqlite'), 'mint:missing'), null)
+assert.equal(resolveLoginFleetId({
+  mintId: 'mint:test',
+  storeFile: path.join(dir, 'mint.sqlite'),
+}), 'fleet:test')
+assert.equal(resolveLoginFleetId({
+  mintId: 'mint:missing',
+  storeFile: path.join(dir, 'mint.sqlite'),
+}), null)
 releaseProcess()
 const facts = await pending
 assert.equal(facts.fleetId, 'fleet:test')
