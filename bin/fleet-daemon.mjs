@@ -118,7 +118,6 @@ import { resolveLiveSessionIdentity as resolveLiveCodexSessionIdentity } from '.
 import { resolveLiveSessionIdentity as resolveLiveClaudeSessionIdentity } from '../agent-launch/harness/claude.mjs'
 import {
   applyDaemonGrants,
-  applyGrandfatherInfill,
   createPermissionLedger,
   defaultDaemonConfigPath,
   permissionLedgerPathFromDaemonConfig,
@@ -399,22 +398,6 @@ function bufferActivity(agentId, evts) {
     last_activity_at: new Date(daemonReceivedAtMs).toISOString(),
   })
   return sendActivityEvents(agentId, stampedEvents, sendMsg)
-}
-
-// grant-on-mint: ensure every agent THIS daemon hosts has a permission-ledger
-// grant (fill-null-only), from the authoritative in-memory roster. Machine-scoped
-// (`machine_id === MACHINE_ID`) so we never grant off-machine seats; dead/human are
-// filtered inside applyGrandfatherInfill. Runs at welcome and on every hosted-roster
-// change (debounced by the roster signature below), so a newly-registered agent is
-// wakeable the moment the daemon sees it — no separate register hook, no infill lag.
-function grantOnMintInfill(reason) {
-  try {
-    const hosted = agents.filter(a => a && a.machine_id === MACHINE_ID)
-    const r = applyGrandfatherInfill(permissionLedger, { agents: hosted, config, projects })
-    if (r.written) log.info(`grant-on-mint (${reason}): granted ${r.written} previously-ungranted seat(s) (${r.skippedExisting} already granted)`)
-  } catch (e) {
-    log.error(`grant-on-mint infill failed (${reason}): ${e.stack || e.message}`)
-  }
 }
 
 function registerHostedTerminalCapabilities(reason) {
@@ -1020,7 +1003,6 @@ function reconcileRoster(reason) {
     syncIdentityNames: roster => jsonlIngestor.syncIdentityNames(roster),
     syncIfRosterChanged: options => jsonlIngestor.syncIfRosterChanged(options),
     onChanged: () => {
-      grantOnMintInfill(reason)
       registerHostedTerminalCapabilities(reason)
       void agentLiveness.reportHostedSessions(reason)
     },

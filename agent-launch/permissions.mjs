@@ -229,12 +229,9 @@ function projectSourceDirs(config = {}) {
   return [...new Set(roots)].sort()
 }
 
-export function permissionMetadata(permissionGrant, leasePolicy = null) {
+export function permissionMetadata(permissionGrant) {
   if (!permissionGrant) return {}
-  return {
-    permissionGrant,
-    ...(leasePolicy ? { permissions: stripRunner(leasePolicy) } : {}),
-  }
+  return { permissionGrant }
 }
 
 export function stripRunner(policy) {

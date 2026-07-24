@@ -60,7 +60,6 @@ import {
 import { SPAWN_MACHINE_PREF_KEY } from '../server/lib/spawn-routing.mjs'
 import {
   applyDaemonGrants,
-  applyGrandfatherInfill,
   createPermissionLedger,
   defaultDaemonConfigPath,
   permissionLedgerPathFromDaemonConfig,

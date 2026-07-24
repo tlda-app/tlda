@@ -10,7 +10,6 @@ import YAML from 'yaml'
 import {
   compilePermissionGrant,
   normalizePermissionGrant,
-  resolveSpawnGrant,
 } from '../server/lib/permission-grants.mjs'
 import {
   validateDaemonConfigTopLevel,
@@ -415,77 +414,6 @@ function normalizeHarnessOptions(row = {}) {
     controls,
     options,
   }
-}
-
-function allPermissionSet(name = 'full') {
-  return {
-    type: 'permission-set',
-    name,
-    operations: {
-      read: { allow: ['**'], deny: [] },
-      write: { allow: ['**'], deny: [] },
-      spawn: { allow: ['**'], deny: [] },
-    },
-    rules: [
-      { operation: 'read', effect: 'allow', zone: '**', line: null },
-      { operation: 'write', effect: 'allow', zone: '**', line: null },
-      { operation: 'spawn', effect: 'allow', zone: '**', line: null },
-    ],
-    compiledFrom: 'grandfather-infill-bound',
-  }
-}
-
-function parseJsonField(value, fallback) {
-  if (!value) return fallback
-  try {
-    return JSON.parse(value)
-  } catch {
-    return fallback
-  }
-}
-
-function pathInside(child, parent) {
-  if (!child || !parent) return false
-  const c = path.resolve(child)
-  const p = path.resolve(parent)
-  return c === p || c.startsWith(`${p}${path.sep}`)
-}
-
-function projectForAgent(agent, projects = []) {
-  const cwd = agent?.cwd
-  if (!cwd) return null
-  return projects.find(project => project?.sourceDir && pathInside(cwd, project.sourceDir)) || null
-}
-
-// Grant-eligible agents from an in-memory roster (the authoritative `msg.agents`
-// the daemon receives). Never grant dead or human seats. This replaces the old
-// local-`fleet.db` read, which was stale/incomplete (missed live agents that had
-// never been written to the local db) — the roster is the complete source.
-function normalizeGrandfatherAgents(agents = []) {
-  if (!Array.isArray(agents)) return []
-  return agents
-    .filter(agent => agent && typeof agent === 'object')
-    .filter(agent => !agent.dead && !agent.human)
-    .map(agent => ({
-      ...agent,
-      metadata: typeof agent.metadata === 'string' ? parseJsonField(agent.metadata, {}) : (agent.metadata || {}),
-    }))
-}
-
-// The fleet-standard grandfather grant: full permission grant bounded to the agent's
-// project/cwd region. This is the same derivation the ledger has always used for
-// non-spawn-tracked seats — reused verbatim, no new grant shape.
-export function resolveGrandfatherGrant(agent, { config = {}, projects = [] } = {}) {
-  const project = projectForAgent(agent, projects)
-  const metadata = agent.metadata || {}
-  return resolveSpawnGrant({
-    spawnerPermissionSet: allPermissionSet('grandfather-root-bound'),
-    model: metadata.model || undefined,
-    kind: metadata.kind || undefined,
-    config,
-    project,
-    cwd: agent.cwd || undefined,
-  })
 }
 
 export class PermissionLedger {
@@ -989,31 +917,6 @@ export function applyDaemonGrants(ledger, daemonConfig = {}) {
     written++
   }
   return { written }
-}
-
-// Fill a missing permission-ledger grant for every eligible agent in `agents`
-// (the authoritative roster). FILL-NULL-ONLY: writes only when `ledger.get(id)`
-// is null — never overwrites or broadens an existing grant, so narrower
-// existing grant records are preserved and it is safe to run on every roster
-// change. Idempotent: a second pass over the same roster is a no-op.
-export function applyGrandfatherInfill(ledger, { agents = [], config = {}, projects = [] } = {}) {
-  const eligible = normalizeGrandfatherAgents(agents)
-  let written = 0
-  let skippedExisting = 0
-  for (const agent of eligible) {
-    if (!agent.id) continue
-    if (ledger.get(agent.id)) {
-      skippedExisting++
-      continue
-    }
-    const grant = resolveGrandfatherGrant(agent, { config, projects })
-    ledger.setSync(agent.id, {
-      permissionGrant: grant.permissionGrant,
-      source: 'grandfather:fleet-db-cutover',
-    })
-    written++
-  }
-  return { considered: eligible.length, written, skippedExisting }
 }
 
 export function defaultPermissionLedgerPath(configDir = process.env.TLDA_DAEMON_CONFIG_DIR || path.join(os.homedir(), '.config', 'tlda')) {
