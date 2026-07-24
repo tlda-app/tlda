@@ -1996,8 +1996,8 @@ export async function handleFleetTool(name, args) {
 
   // ---- login ----
   if (name === 'login') {
-    let shellId = args.agent_id || AGENT_ID || process.env.FLEET_ID || null;
-    const localAgentId = process.env.FLEET_LOCAL_ID || null;
+    const shellId = args.agent_id || AGENT_ID || process.env.FLEET_ID || null;
+    const localAgentId = process.env.FLEET_MINT_ID || process.env.FLEET_LOCAL_ID || null;
     const boundFleetId = process.env.FLEET_ID || null;
     if (boundFleetId && shellId !== boundFleetId) {
       return { content: [{ type: 'text', text: `Login rejected: requested ${shellId} but this process is bound to ${boundFleetId}.` }], isError: true };
@@ -2045,40 +2045,10 @@ export async function handleFleetTool(name, args) {
       if (!localAgentId) {
         return { content: [{ type: 'text', text: 'No local or server agent identity is available.' }], isError: true };
       }
-      if (!_channelRWS?.connected) {
-        startChannelWS({ bootstrap: true });
-        const deadline = Date.now() + 2000;
-        while (!_channelRWS?.connected && Date.now() < deadline) {
-          await new Promise(r => setTimeout(r, 50));
-        }
-      }
-      const mintResult = await mcpFleetTransport.durable('mint-shell', {
-        local_agent_id: localAgentId,
-        name: process.env.FLEET_NAME || undefined,
-        tmux_session: detectedTmux || undefined,
-        cwd: cwd || undefined,
-        machine_id: machineId,
-        env_name: envName,
-        kind: currentHarness.kind,
-        metadata: { kind: currentHarness.kind },
-      }, { agentId: localAgentId })?.catch(e => ({ error: e.message }));
-      if (!mintResult || mintResult.error) {
-        return { content: [{ type: 'text', text: [
-          localMarker({}),
-          `Server binding unavailable; this agent remains usable locally as ${localAgentId}.`,
-        ].join('\n') }], isError: true };
-      }
-      shellId = mintResult.server_agent_id || mintResult.agent?.id || null;
-      if (!shellId) {
-        return { content: [{ type: 'text', text: 'Server mint returned no server agent identity.' }], isError: true };
-      }
-      const { createLocalAgentLedger } = await import('../agent-launch/local-agent-ledger.mjs');
-      const localLedger = createLocalAgentLedger();
-      try {
-        localLedger.bind(localAgentId, shellId, { friendlyName: mintResult.assigned_name || mintResult.agent?.friendly_name || null });
-      } finally {
-        localLedger.close();
-      }
+      return { content: [{ type: 'text', text: [
+        localMarker({ fleet_id: undefined }),
+        `Fleet seat is not recorded yet for mint ${localAgentId}.`,
+      ].join('\n') }], isError: true };
     }
     AGENT_ID = shellId;
     const loginBody = {

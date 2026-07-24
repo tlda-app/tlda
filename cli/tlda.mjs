@@ -2803,7 +2803,7 @@ export async function runFleetSpawn(spawnArgs, {
   const explicitCwd = hasRawFlag(spawnArgs, 'cwd')
   if (spawnMode === 'fresh') {
     const cwd = resolve(flagFromRaw(spawnArgs, 'cwd') || process.cwd())
-    const result = await callLocalDaemonLifecycle('spawn', {
+    const result = await callLocalDaemonLifecycle('mint', {
       name,
       model: flagFromRaw(spawnArgs, 'model') || undefined,
       cwd,
@@ -2818,19 +2818,21 @@ export async function runFleetSpawn(spawnArgs, {
     }, { onEvent: printMintLifecycleEvent })
     if (!result?.ok) throw new Error(result?.error || result?.reason || `mint failed for ${name}`)
     printLocalDaemonOutcome(result)
-    const agentId = result.agent_id || result.fleetId || result.localAgentId || result.local_agent_id || 'local-only'
+    const agentId = result.agent_id || result.fleet_id
+    if (!agentId) throw new Error(`mint completed without a public fleet_id for ${name}`)
     console.log(`Created ${result.tmux_session || result.tmuxSession || result.name || name} (${agentId}) in ${cwd}`)
     return
   }
   if (spawnMode === 'respawn') {
-    const { createLocalAgentLedger } = await import('../agent-launch/local-agent-ledger.mjs')
-    const localLedger = createLocalAgentLedger(localAgentLedgerPath || undefined)
+    const { MintStore } = await import('../daemon/mint-store.mjs')
+    const mintStore = new MintStore(localAgentLedgerPath || resolve(configDir, 'daemon-mints.sqlite'))
     let restored
     try {
-      const stored = localLedger.get(name) || localLedger.findByFriendlyName(name)
-      restored = resolveWakeRecipeFields({ name, stored, explicitCwd, explicitPermissionArg })
+      const stored = mintStore.getByFleetId(name) || mintStore.getByFriendlyName(name)
+      if (!stored?.fleetId) throw new Error(`no fleet_id recorded for ${name}`)
+      restored = { agentId: stored.fleetId, cwd: stored.launchRecipe?.cwd || null }
     } finally {
-      localLedger.close()
+      mintStore.close()
     }
     const result = await callLocalDaemonLifecycle('wake', { fleet_id: restored.agentId })
     if (!result?.ok) throw new Error(result?.error || result?.reason || `wake failed for ${restored.agentId}`)

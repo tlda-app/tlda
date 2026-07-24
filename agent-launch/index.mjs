@@ -245,6 +245,108 @@ async function buildCommand({ requestedKind, adapter, fleetId, localAgentId, tmu
   }
 }
 
+// Low-level executor for the daemon mint core. It launches one fresh harness
+// process and reports only process facts. It does not create/request a Fleet
+// seat, join identities, poll server state, or write either identity ledger.
+export async function launchMintProcess(params) {
+  const api = (params._deps?.resolveApi || resolveApi)()
+  const name = params.name || `agent-${Date.now().toString(36).slice(-4)}`
+  const mintId = params.mintId || params.mint_id || newLocalAgentId()
+  const fleetId = params.fleetId || params.fleet_id || null
+  const cwd = resolveSpawnCwd(params.cwd)
+  const config = params.config ?? withDaemonModelAliases({}, readDaemonConfigForCwd(cwd))
+  const modelSpec = params.modelSpec || resolveLaunchSpec(params.model, config, modelKwargs(params))
+  const requestedKind = params.requestedKind || params.kind || modelSpec.harness
+  const adapter = ADAPTERS[requestedKind]
+  if (!adapter) throw new SpawnError('launch-failed', `unsupported harness: ${requestedKind}`)
+  applyNormalizedOptions(params, modelSpec)
+  const modelResolved = resolveAdapterModel(adapter, params.model, config, modelSpec)
+  const model = modelResolved.model
+  const tmuxSession = await (params._deps?.uniqueSessionName || uniqueSessionName)(
+    `fleet-${sanitizeSessionName(name)}`,
+    { tmuxSocket: params.tmuxSocket },
+  )
+  const dnsAlias = await (params._deps?.resolveDnsAlias || resolveDnsAlias)(api)
+  const launchPolicy = resolveLaunchPolicy({
+    permissionGrant: params.permissionGrant,
+    permissionSet: params.permissionSet,
+    harness: requestedKind,
+    model,
+    cwd,
+    config,
+    permissionMode: params.permissionMode,
+    mode: params.mode,
+    explicitPermissionRequest: params.explicitPermissionRequest,
+    acknowledgeNoSecurity: !!params.acknowledgeNoSecurity,
+    harnessOptions: modelResolved.spec?.harnessOptions || null,
+  })
+  const resumeId = params.resumeId || params.sessionId || params.session_id || null
+  const freshSessionId = requestedKind === 'claude' && !resumeId
+    ? (params._deps?.randomUUID || randomUUID)()
+    : null
+  const { cmd, sendKeys } = await buildCommand({
+    requestedKind,
+    adapter,
+    fleetId,
+    localAgentId: mintId,
+    tmuxSession,
+    model,
+    modelProvider: modelResolved.provider,
+    name,
+    cwd,
+    effort: params.effort,
+    permissionMode: launchPolicy.permissionMode,
+    permissionGrant: launchPolicy.permissionGrant,
+    api,
+    dnsAlias,
+    resumeId,
+    freshSessionId,
+    leasePolicy: launchPolicy.leasePolicy,
+    enforceFence: !!params.enforceFence,
+    harnessOptions: launchPolicy.harnessOptions,
+    config,
+    env: spawnEnv(params),
+  })
+  const launched = await (params._deps?.spawnTmux || spawnTmux)(
+    tmuxSession,
+    cwd,
+    cmd,
+    {
+      autoDismiss: requestedKind === 'claude',
+      sendKeys,
+      tmuxSocket: params.tmuxSocket,
+      crashLogPath: params.crashLogPath,
+    },
+  )
+  if (!launched) {
+    throw new SpawnError(
+      'launch-failed',
+      `tmux session ${tmuxSession} already has a live harness runtime`,
+      { tmuxSession },
+    )
+  }
+  if (requestedKind === 'codex') {
+    await (params._deps?.injectCodexPrompt || injectCodexPrompt)(
+      tmuxSession,
+      codex.kickoffPrompt(name),
+      { tmuxSocket: params.tmuxSocket },
+    )
+  }
+  return {
+    mint_id: mintId,
+    fleet_id: fleetId,
+    name,
+    tmux_session: tmuxSession,
+    cwd,
+    harness: requestedKind,
+    model,
+    session_id: resumeId || freshSessionId,
+    permission_grant: launchPolicy.permissionGrant,
+    permission_set: launchPolicy.permissionSet,
+    alive: true,
+  }
+}
+
 async function spawnFresh(params) {
   const { requestedKind, adapter, modelSpec } = params
   const deps = params._deps || {}

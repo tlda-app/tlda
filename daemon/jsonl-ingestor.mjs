@@ -7,7 +7,6 @@ import path from 'path'
 import { recordPartialSkillReads } from '../shared/partial-skill-reads.mjs'
 import { ledgerSessionId, tailLedgerSessionInput } from '../agent-runtime/ledger-session-tail.mjs'
 import { scanFileIdentitySync } from '../agent-runtime/daemon-jsonl-hot-path.mjs'
-import { createLocalAgentLedger } from '../agent-launch/local-agent-ledger.mjs'
 import {
   codexKnownRolloutIds,
   shouldClaimClaudeWatcher,
@@ -307,6 +306,7 @@ export function createJsonlIngestor({
   bufferActivity,
   extractActivityEvents,
   activityDeliveryCounters = null,
+  recordMintMarker = null,
   machineId = null,
   envName = null,
   daemonKey = null,
@@ -370,32 +370,14 @@ export function createJsonlIngestor({
 
   function persistLocalMarkerBinding(marker, { sessionId, jsonlPath, harnessKind } = {}) {
     if (!marker?.mint_id) return
-    const localLedger = createLocalAgentLedger(path.join(configDir, 'fleet-daemon.db'))
     let bindingError = null
     try {
-      if (!localLedger.get(marker.mint_id)) {
-        localLedger.create({
-          localAgentId: marker.mint_id,
-          serverAgentId: marker.fleet_id || null,
-          friendlyName: marker.friendly_name || null,
-          sessionId,
-          harness: marker.harness_kind || harnessKind,
-          model: marker.model || null,
-          tmuxName: marker.tmux_session || null,
-          cwd: marker.cwd || null,
-        })
-      } else {
-        if (marker.fleet_id) localLedger.bind(marker.mint_id, marker.fleet_id, { friendlyName: marker.friendly_name || null })
-        localLedger.updateConversation(marker.mint_id, {
-          sessionId,
-          harness: marker.harness_kind || harnessKind,
-          model: marker.model || null,
-        })
-        localLedger.updateProcess(marker.mint_id, {
-          tmuxName: marker.tmux_session || null,
-          cwd: marker.cwd || null,
-        })
-      }
+      recordMintMarker?.({
+        ...marker,
+        session_id: marker.session_id || sessionId,
+        session_path: jsonlPath,
+        harness_kind: marker.harness_kind || harnessKind,
+      })
     } catch (e) {
       bindingError = e?.message || String(e)
       sendMsg({
@@ -406,8 +388,6 @@ export function createJsonlIngestor({
         session_id: marker.session_id || sessionId || null,
         error: bindingError,
       })
-    } finally {
-      localLedger.close()
     }
     if (marker.fleet_id) {
       recordSessionIdentity({

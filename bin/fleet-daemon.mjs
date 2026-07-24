@@ -112,8 +112,12 @@ import { DaemonDeliveryRuntime } from '../daemon/delivery-runtime.mjs'
 import { DaemonOutbox, defaultOutboxPath } from '../daemon/outbox.mjs'
 import { reconcileDaemonRoster } from '../daemon/roster-reconcile.mjs'
 import { createAgentLauncher } from '../agent-launch/agent-launch.mjs'
+import { launchMintProcess } from '../agent-launch/index.mjs'
 import { createLocalAgentLedger } from '../agent-launch/local-agent-ledger.mjs'
 import { bindAgentSeat } from '../agent-launch/seat-binding.mjs'
+import { wsMintShell } from '../agent-launch/register.mjs'
+import { resolveModelSpec } from '../agent-launch/models.mjs'
+import { compilePermissionGrant, permissionGrantProfileName, resolveSpawnGrant } from '../server/lib/permission-grants.mjs'
 import { cleanupPendingSeatBinding, completePendingSeatBinding, createPendingSeatBindingManager, reuseExactPendingSeatBinding } from '../agent-launch/pending-seat-binding.mjs'
 import { resolveLiveSessionIdentity as resolveLiveCodexSessionIdentity } from '../agent-launch/harness/codex.mjs'
 import { resolveLiveSessionIdentity as resolveLiveClaudeSessionIdentity } from '../agent-launch/harness/claude.mjs'
@@ -123,9 +127,13 @@ import {
   defaultDaemonConfigPath,
   permissionLedgerPathFromDaemonConfig,
   readDaemonConfig,
+  readDaemonConfigForCwd,
   withDaemonModelAliases,
 } from '../agent-launch/permission-ledger.mjs'
 import { acquireSingletonLock, daemonSingletonLockPath } from '../agent-runtime/singleton-lock.mjs'
+import { createDaemonMintCore } from '../daemon/mint-core.mjs'
+import { MintStore } from '../daemon/mint-store.mjs'
+import { createDaemonWakeCore } from '../daemon/wake-core.mjs'
 import { projectBelongsToWorld, projectWorldsPath, readProjectWorlds } from '../shared/project-worlds.mjs'
 const log = createLogger('daemon')
 function daemonStateSuffix() {
@@ -345,6 +353,7 @@ const USER = os.userInfo().username
 const HOSTNAME = os.hostname()
 
 let jsonlIngestor
+let daemonMintCore
 
 // ---------- daemon state ----------
 
@@ -493,6 +502,20 @@ jsonlIngestor = createJsonlIngestor({
   bufferActivity,
   extractActivityEvents: harnessRuntime.extractActivityEvents,
   activityDeliveryCounters: daemonActivityDeliveryCounters,
+  recordMintMarker: marker => {
+    if (!daemonMintCore) throw new Error('daemon mint core is not initialized')
+    Promise.resolve()
+      .then(async () => {
+        if (marker.fleet_id) {
+          await daemonMintCore.recordSeat(marker.mint_id, {
+            fleet_id: marker.fleet_id,
+            friendly_name: marker.friendly_name,
+          })
+        }
+        await daemonMintCore.recordSession(marker.mint_id, marker)
+      })
+      .catch(error => log.error(`mint marker fact write failed for ${marker.mint_id}: ${error.message}`))
+  },
   machineId: MACHINE_ID,
   envName: ACTIVE_CONFIG,
   daemonKey: `${MACHINE_ID}:${ACTIVE_CONFIG}`,
@@ -702,6 +725,147 @@ const agentLauncher = createAgentLauncher({
   persistPendingSeatBinding: payload => daemonApi('POST', '/api/agent-seat-binding-obligation', payload),
 })
 
+const mintStore = new MintStore(path.join(CONFIG_DIR, 'daemon-mints.sqlite'))
+daemonMintCore = createDaemonMintCore({
+  store: mintStore,
+  launchProcess: params => launchMintProcess({
+    ...params,
+    mintId: params.mint_id,
+    fleetId: params.fleet_id,
+    requestedKind: params.kind,
+    activeConfigName: ACTIVE_CONFIG,
+    machineId: MACHINE_ID,
+    tmuxSocket: TMUX_SOCKET,
+  }),
+  requestSeat: ({ mint_id, name, metadata, launch }) => wsMintShell({
+    localAgentId: mint_id,
+    name,
+    tmuxSession: null,
+    cwd: launch.cwd,
+    model: launch.model,
+    effort: launch.effort,
+    kind: launch.kind || 'codex',
+    metadata,
+    machineId: MACHINE_ID,
+    envName: ACTIVE_CONFIG,
+    daemonKey: `${MACHINE_ID}:${ACTIVE_CONFIG}`,
+  }),
+  bindSeat: async facts => {
+    const processFact = facts.processState || {}
+    await permissionLedger.set(facts.fleetId, {
+      permissionGrant: processFact.permission_grant,
+      permissionSet: processFact.permission_set,
+      source: 'daemon-mint',
+    })
+    await bindAgentSeat({
+      ledger: permissionLedger,
+      identity: {
+        agentId: facts.fleetId,
+        sessionId: facts.sessionId,
+        resumeId: facts.sessionId,
+        kind: processFact.harness,
+        model: processFact.model,
+        cwd: processFact.cwd,
+        sessionPath: facts.sessionPath,
+        friendlyName: facts.friendlyName,
+      },
+      route: {
+        machineId: MACHINE_ID,
+        envName: ACTIVE_CONFIG,
+        daemonKey: `${MACHINE_ID}:${ACTIVE_CONFIG}`,
+        tmuxSession: processFact.tmux_session,
+      },
+      createdSource: 'daemon-mint-join',
+      submit: payload => sendMsg({ type: 'agent-seat', ...payload }),
+    })
+  },
+})
+
+const wakeMint = createDaemonWakeCore({
+  store: mintStore,
+  processAlive: async facts => {
+    const tmuxSession = facts.processState?.tmux_session
+    if (!tmuxSession) return false
+    try {
+      await tmux('has-session', '-t', tmuxSession)
+      return true
+    } catch {
+      return false
+    }
+  },
+  resumeSession: async facts => launchMintProcess({
+    ...(facts.launchRecipe || {}),
+    mintId: facts.mintId,
+    fleetId: facts.fleetId,
+    name: facts.friendlyName,
+    resumeId: facts.sessionId,
+    requestedKind: facts.processState?.harness || facts.launchRecipe?.kind || 'codex',
+    activeConfigName: ACTIVE_CONFIG,
+    machineId: MACHINE_ID,
+    tmuxSocket: TMUX_SOCKET,
+  }),
+})
+
+async function rpcMint(params = {}) {
+  const cwd = params.cwd || process.cwd()
+  const daemonConfig = readDaemonConfigForCwd(cwd)
+  const spawnConfig = withDaemonModelAliases(loadDaemonLaunchConfig(), daemonConfig)
+  const modelSpec = resolveModelSpec(params.model, { config: spawnConfig })
+  const requester = params.requester || { id: 'localhost', human: true }
+  const spawnerGrant = permissionLedger.get(requester.id) || permissionLedger.grantFor(requester)
+  const defaultProfile = daemonConfig?.default || null
+  const grantConfig = defaultProfile
+    ? { ...spawnConfig, projectPermissionProfiles: { ...(spawnConfig.projectPermissionProfiles || {}), [cwd]: defaultProfile } }
+    : spawnConfig
+  const grant = resolveSpawnGrant({
+    permissionRequest: params.permissionRequest,
+    requester,
+    spawnerPermissionSet: compilePermissionGrant(grantConfig, spawnerGrant.permissionGrant, { cwd }),
+    spawnerPermissionProfile: permissionGrantProfileName(spawnerGrant.permissionGrant),
+    model: modelSpec.id,
+    kind: modelSpec.harness,
+    modelCap: modelSpec.cap || null,
+    config: grantConfig,
+    cwd,
+  })
+  const facts = await daemonMintCore.mint({
+    mint_id: params.mint_id || null,
+    fleet_id: params.fleet_id || params.agent_id || null,
+    name: params.friendly_name || params.name || null,
+    metadata: params.metadata || null,
+    request_seat: !(params.fleet_id || params.agent_id),
+    launch: {
+      name: params.friendly_name || params.name || null,
+      model: params.model,
+      modelSpec,
+      config: spawnConfig,
+      kind: params.kind || modelSpec.harness,
+      cwd,
+      effort: params.effort,
+      mode: params.mode,
+      permissionRequest: params.permissionRequest,
+      permissionGrant: grant.permissionGrant,
+      permissionSet: grant.permissionSet,
+      acknowledgeNoSecurity: params.acknowledgeNoSecurity,
+      requester: params.requester,
+    },
+  })
+  return {
+    ok: true,
+    mint_id: facts.mintId,
+    fleet_id: facts.fleetId,
+    agent_id: facts.fleetId,
+    name: facts.friendlyName,
+    tmux_session: facts.processState?.tmux_session || null,
+    session_id: facts.sessionId,
+    joined: !!facts.joinedAt,
+  }
+}
+
+async function rpcWake(params = {}) {
+  return wakeMint(params.fleet_id)
+}
+
 const pendingSeatBindings = createPendingSeatBindingManager({
   watchPath: obligation => obligation.kind === 'codex'
     ? path.join(os.homedir(), '.codex', 'sessions')
@@ -811,6 +975,8 @@ machineRpc.register({
   ...terminalRpc.handlers,
   'kick': rpcKick,
   ...agentLauncher.handlers,
+  'mint': rpcMint,
+  'wake': rpcWake,
   ...localArtifacts.handlers,
   'write-backing-file': backingFiles.write,
   'mirror-shadow-ref': shadowMirror.mirrorShadowRef,
@@ -836,8 +1002,8 @@ function startLocalLifecycleRpc() {
       try {
         request = JSON.parse(raw || '{}')
         const op = String(request.op || '').trim()
-        if (op !== 'spawn' && op !== 'wake') throw new Error(`unsupported local daemon op: ${op || '(missing)'}`)
-        const handler = agentLauncher.handlers[op]
+        if (op !== 'mint' && op !== 'wake') throw new Error(`unsupported local daemon op: ${op || '(missing)'}`)
+        const handler = op === 'mint' ? rpcMint : rpcWake
         const params = {
           ...(request.params || {}),
           onLifecycleEvent: (event, data = {}) => writeFrame({ event, data }),

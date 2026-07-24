@@ -1866,9 +1866,30 @@ async function performSpawnRelay(caller, msg) {
   const readiness = pendingAgentId
     ? spawnLibrarian.awaitLogin({ id: pendingAgentId, name: spawnName, spec: requestedSpec })
     : null
+  let reservedFriendlyName = null
+  if (pendingAgentId) {
+    const now = new Date().toISOString()
+    const assignedName = fleetStore.allocateFreshFriendlyName(spawnName, { excludeId: pendingAgentId })
+    reservedFriendlyName = assignedName
+    fleetStore.upsertAgent({
+      id: pendingAgentId,
+      friendly_name: assignedName,
+      pretty_name: prettyNameForFriendlyName(assignedName),
+      labels: [],
+      registered_at: now,
+      last_seen: now,
+      dead: false,
+      human: false,
+      metadata: { shell: true },
+      machine_id: route.machine_id,
+      env_name: route.env_name,
+      daemon_key: daemonAddress(route.machine_id, route.env_name),
+    })
+    fleetStore.ensureDefaultSubscription?.(pendingAgentId)
+  }
   const spawnRequest = {
     agent_id: targetAgentId,
-    friendly_name: pendingAgentId ? spawnName : undefined,
+    friendly_name: reservedFriendlyName || undefined,
     pretty_name: pendingAgentId ? prettyNameForFriendlyName(spawnName) : undefined,
     name: resolved.name || undefined,
     model: model || undefined,
@@ -1897,7 +1918,8 @@ async function performSpawnRelay(caller, msg) {
     try {
       let result
       try {
-        result = await sendDaemonDurable(machineId, 'spawn', spawnRequest)
+        const operation = pendingAgentId ? 'mint' : (resolved.respawn ? 'wake' : 'spawn')
+        result = await sendDaemonDurable(machineId, operation, spawnRequest)
         if (pendingAgentId && result?.ok === false) {
           spawnLibrarian.failPending(pendingAgentId, result.code || result.reason || 'launch-failed')
         }
