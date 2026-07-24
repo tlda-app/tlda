@@ -32,7 +32,7 @@ import { highlightSyntax, langFromFilePath, renderMarkdown as renderMarkdownUtil
 // @ts-ignore — vanilla JS module
 import { initVoice, setVoiceTarget, clearVoiceTarget, resetTranscript, restartRecording, toggleRecording, sendCurrentText, isRecording } from '../voice.mjs'
 // @ts-ignore — vanilla JS module
-import { getHumanId, getHumanName, getDeviceId, isDeviceReady, updateEventById, sendViewingContext, setViewingEnrichFn, setFleetEventsLiveTailPinned, clearFleetEventsLiveTailPinned, recordBrowserActivityRendered } from '../fleet/fleet-data.mjs'
+import { getHumanId, getHumanName, getDeviceId, isDeviceReady, updateEventById, sendViewingContext, setViewingEnrichFn, setFleetEventsLiveTailPinned, clearFleetEventsLiveTailPinned, recordBrowserActivityRendered, fleetDurable, fleetEphemeral } from '../fleet/fleet-data.mjs'
 // @ts-ignore — vanilla JS module
 import { installChatImageRetry } from '../fleet/chat-image-retry.mjs'
 // @ts-ignore — vanilla JS module
@@ -449,13 +449,7 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
     let cancelled = false
     ;(async () => {
       try {
-        const r = await fetch(`${FLEET_API}/api/capture-pane`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ agent: agentId, lines: HISTORY_LINES }),
-        })
-        if (!r.ok) return
-        const { pane } = await r.json()
+        const { pane } = await fleetEphemeral('capture-pane', { agent: agentId, lines: HISTORY_LINES })
         if (!cancelled && typeof pane === 'string') setHistoryText(pane)
       } catch {}
     })()
@@ -1934,11 +1928,8 @@ function FleetChatInner({ shape }: { shape: any }) {
       )
       .map((e: any) => e._dbId || e.id)
     for (const eid of unreadEventIds) {
-      fetch(`${FLEET_API}/api/mark-event-read`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ event_id: eid, agent: getHumanId() }),
-      }).catch(e => console.warn('[fleet-chat] mark-read failed:', e.message))
+      fleetDurable('mark-event-read', { event_id: eid, agent: getHumanId() })
+        .catch((e: Error) => console.warn('[fleet-chat] mark-read failed:', e.message))
     }
     setTermCardPinnedId(null)
     setTermCardHoverId(null)
@@ -2968,9 +2959,7 @@ function FleetChatInner({ shape }: { shape: any }) {
           const { convertChatEvent } = await import('../fleet/fleet-data.mjs')
 
           // Fetch the target event first
-          const res0 = await fetch(`/api/store/events?after=${id - 1}&limit=1`)
-          if (!res0.ok) throw new Error()
-          const d0 = await res0.json()
+          const d0 = await fleetEphemeral('store-events', { after: id - 1, limit: 1 })
           const targetRaw = (d0.events || [])[0]
           if (!targetRaw) throw new Error()
           const target = convertChatEvent(targetRaw) as any
@@ -2985,9 +2974,7 @@ function FleetChatInner({ shape }: { shape: any }) {
             let backId = id
             let backDone = false
             while (!backDone) {
-              const res = await fetch(`/api/store/events?before=${backId}&limit=10`)
-              if (!res.ok) break
-              const d = await res.json()
+              const d = await fleetEphemeral('store-events', { before: backId, limit: 10 })
               const evts = (d.events || []).map(convertChatEvent)
               if (evts.length === 0) break
               for (let i = evts.length - 1; i >= 0; i--) {
@@ -3006,9 +2993,7 @@ function FleetChatInner({ shape }: { shape: any }) {
             let fwdId = id
             let fwdDone = false
             while (!fwdDone) {
-              const res = await fetch(`/api/store/events?after=${fwdId}&limit=10`)
-              if (!res.ok) break
-              const d = await res.json()
+              const d = await fleetEphemeral('store-events', { after: fwdId, limit: 10 })
               const evts = (d.events || []).map(convertChatEvent)
               if (evts.length === 0) break
               for (const ev of evts) {
@@ -3735,13 +3720,8 @@ function FleetChatInner({ shape }: { shape: any }) {
         e.stopPropagation()
         const agentId = approveBtn.dataset.agentId
         if (agentId) {
-          fetch(`${FLEET_API}/api/plan-mode-respond`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ agent: agentId, response: 'approve' }),
-          })
-            .then(r => r.ok ? null : r.json().then(d => { throw new Error(d?.error || 'failed') }))
-            .catch(err => sendMessage(getHumanId(), `⚠️ plan approve failed: ${err.message}`, {}))
+          fleetEphemeral('plan-mode-respond', { agent: agentId, response: 'approve' })
+            .catch((err: Error) => sendMessage(getHumanId(), `⚠️ plan approve failed: ${err.message}`, {}))
         }
         return
       }
@@ -3750,13 +3730,8 @@ function FleetChatInner({ shape }: { shape: any }) {
         e.stopPropagation()
         const agentId = supervisedBtn.dataset.agentId
         if (agentId) {
-          fetch(`${FLEET_API}/api/plan-mode-respond`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ agent: agentId, response: 'supervised' }),
-          })
-            .then(r => r.ok ? null : r.json().then(d => { throw new Error(d?.error || 'failed') }))
-            .catch(err => sendMessage(getHumanId(), `⚠️ plan supervised-approve failed: ${err.message}`, {}))
+          fleetEphemeral('plan-mode-respond', { agent: agentId, response: 'supervised' })
+            .catch((err: Error) => sendMessage(getHumanId(), `⚠️ plan supervised-approve failed: ${err.message}`, {}))
         }
         return
       }
@@ -3765,13 +3740,8 @@ function FleetChatInner({ shape }: { shape: any }) {
         e.stopPropagation()
         const agentId = rejectBtn.dataset.agentId
         if (agentId) {
-          fetch(`${FLEET_API}/api/plan-mode-respond`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ agent: agentId, response: 'reject' }),
-          })
-            .then(r => r.ok ? null : r.json().then(d => { throw new Error(d?.error || 'failed') }))
-            .catch(err => sendMessage(getHumanId(), `⚠️ plan reject failed: ${err.message}`, {}))
+          fleetEphemeral('plan-mode-respond', { agent: agentId, response: 'reject' })
+            .catch((err: Error) => sendMessage(getHumanId(), `⚠️ plan reject failed: ${err.message}`, {}))
         }
         return
       }
@@ -3782,21 +3752,16 @@ function FleetChatInner({ shape }: { shape: any }) {
         const agentId = planBadge.dataset.agentId
         if (agentId) {
           const agentName = agentNamesRef.current[agentId] || agentId.replace('fleet:', '')
-          fetch(`${FLEET_API}/api/plan-mode-toggle`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ agent: agentId }),
-          })
-            .then(r => r.json().then(data => ({ ok: r.ok, data })))
-            .then(({ ok, data }) => {
-              if (!ok || data?.error) {
+          fleetEphemeral('plan-mode-toggle', { agent: agentId })
+            .then((data: any) => {
+              if (data?.error) {
                 sendMessage(getHumanId(), `⚠️ plan mode toggle failed for ${agentName}: ${data?.error || 'unknown error'}`, {})
               } else if (data?.mode) {
                 const modeLabel = data.mode === 'plan' ? 'plan mode ✓' : data.mode === 'default' ? 'plan mode off ✓' : data.mode
                 sendMessage(getHumanId(), `📋 ${agentName} → ${modeLabel}`, {})
               }
             })
-            .catch(err => sendMessage(getHumanId(), `⚠️ plan mode toggle failed for ${agentName}: ${err.message}`, {}))
+            .catch((err: Error) => sendMessage(getHumanId(), `⚠️ plan mode toggle failed for ${agentName}: ${err.message}`, {}))
         }
         return
       }
@@ -3811,12 +3776,12 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (lcApproveBtn) {
         const agentId = lcApproveBtn.dataset.agentId
         if (agentId) {
-          fetch(`${FLEET_API}/api/send-text`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent: agentId, text: '1', enter: true }) })
+          fleetEphemeral('send-text', { agent: agentId, text: '1', enter: true })
           const eventId = lcApproveBtn.dataset.eventId || lcApproveBtn.closest('[data-msg-id]')?.getAttribute('data-msg-id')
           if (eventId) {
-            fetch(`${FLEET_API}/api/prompt-respond`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ eventId, response: 'approved' }) })
-              .then(r => { if (r.ok) updateEventById(eventId, { _promptResponse: 'approved', metadata: { approvedAt: new Date().toISOString() } }) })
-              .catch(e => console.warn('[fleet-chat] prompt approve failed:', e.message))
+            fleetDurable('prompt-respond', { eventId, response: 'approved' })
+              .then(() => updateEventById(eventId, { _promptResponse: 'approved', metadata: { approvedAt: new Date().toISOString() } }))
+              .catch((e: Error) => console.warn('[fleet-chat] prompt approve failed:', e.message))
           }
           return
         }
@@ -3825,12 +3790,12 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (lcDenyBtn) {
         const agentId = lcDenyBtn.dataset.agentId
         if (agentId) {
-          fetch(`${FLEET_API}/api/send-text`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent: agentId, text: '3', enter: true }) })
+          fleetEphemeral('send-text', { agent: agentId, text: '3', enter: true })
           const eventId = lcDenyBtn.dataset.eventId || lcDenyBtn.closest('[data-msg-id]')?.getAttribute('data-msg-id')
           if (eventId) {
-            fetch(`${FLEET_API}/api/prompt-respond`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ eventId, response: 'rejected' }) })
-              .then(r => { if (r.ok) updateEventById(eventId, { _promptResponse: 'rejected', metadata: { rejectedAt: new Date().toISOString() } }) })
-              .catch(e => console.warn('[fleet-chat] prompt reject failed:', e.message))
+            fleetDurable('prompt-respond', { eventId, response: 'rejected' })
+              .then(() => updateEventById(eventId, { _promptResponse: 'rejected', metadata: { rejectedAt: new Date().toISOString() } }))
+              .catch((e: Error) => console.warn('[fleet-chat] prompt reject failed:', e.message))
           }
           return
         }
@@ -4148,18 +4113,16 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (count >= 3) {
         escCountRef.current = 0
         injectOptimisticEvent({ _tempId: tempId, _evType: 'system_notice', _isInterrupt: true, from: 'system', to: agent, text: `💀 Killing ${agentLabel}…`, timestamp: ts })
-        fetch(`${FLEET_API}/api/kill-session`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent }) })
-          .then(r => r.json())
-          .then(d => {
+        fleetDurable('kill-session', { agent })
+          .then((d: { error?: string }) => {
             updateOptimisticEvent(tempId, { text: d.error ? `⚠ Kill failed: ${d.error}` : `💀 Killed ${agentLabel}` })
             if (!d.error) confirmEscLevel(agent, 3)
             setTimeout(() => clearEscState(agent), 2000)
           })
           .catch(() => { updateOptimisticEvent(tempId, { text: `⚠ Kill failed (server unreachable)` }) })
       } else if (count === 2) {
-        fetch(`${FLEET_API}/api/interrupt`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent }) })
-          .then(r => r.json())
-          .then(d => {
+        fleetEphemeral('interrupt', { agent })
+          .then((d: { error?: string }) => {
             if (d.error) injectOptimisticEvent({ _tempId: tempId, _evType: 'system_notice', _isInterrupt: true, from: 'system', to: agent, text: `⚠ Interrupt failed: ${d.error}`, timestamp: ts })
             else confirmEscLevel(agent, 2)
           })
@@ -4170,9 +4133,8 @@ function FleetChatInner({ shape }: { shape: any }) {
         // Esc must never hard-interrupt. Confirm the card off the real result
         // (promoted / nothing-queued), not optimistically.
         injectOptimisticEvent({ _tempId: tempId, _evType: 'system_notice', _isInterrupt: true, from: 'system', to: agent, text: `⏸ Soft interrupt → ${agentLabel}…`, timestamp: ts })
-        fetch(`${FLEET_API}/api/soft-interrupt`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent }) })
-          .then(r => r.json())
-          .then(d => {
+        fleetEphemeral('soft-interrupt', { agent })
+          .then((d: { error?: string; promoted?: boolean; reason?: string }) => {
             if (d.error) { updateOptimisticEvent(tempId, { text: `⚠ Soft interrupt failed: ${d.error}` }) }
             else if (d.promoted) { updateOptimisticEvent(tempId, { text: `⏸ Promoted queued message → ${agentLabel}` }); confirmEscLevel(agent, 1) }
             else if (d.reason === 'nothing-queued') { updateOptimisticEvent(tempId, { text: `· nothing queued for ${agentLabel} — no-op` }) }
@@ -4349,11 +4311,8 @@ function FleetChatInner({ shape }: { shape: any }) {
                 .some(el => !el.classList.contains('plan-card-approved') && !el.classList.contains('plan-card-rejected'))
             : false
           if (hasCard) {
-            fetch(`${FLEET_API}/api/plan-mode-respond`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ agent: agentId, response: planResponse }),
-            }).catch(e => console.warn('[fleet-chat] plan-mode-respond failed:', e.message))
+            fleetEphemeral('plan-mode-respond', { agent: agentId, response: planResponse })
+              .catch((e: Error) => console.warn('[fleet-chat] plan-mode-respond failed:', e.message))
           }
         }
       }
@@ -4361,14 +4320,9 @@ function FleetChatInner({ shape }: { shape: any }) {
       if (ENTER_PLAN_RE.test(text)) {
         for (const agentId of targets) {
           const agentName = agentNames[agentId] || agentId
-          fetch(`${FLEET_API}/api/plan-mode-toggle`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ agent: agentId }),
-          })
-            .then(r => r.json().then((data: any) => ({ ok: r.ok, data })))
-            .then(({ ok, data }: { ok: boolean; data: any }) => {
-              if (!ok || data?.error) {
+          fleetEphemeral('plan-mode-toggle', { agent: agentId })
+            .then((data: any) => {
+              if (data?.error) {
                 sendMessage(getHumanId(), `⚠️ plan mode failed for ${agentName}: ${data?.error || 'unknown error'}`, {})
               } else if (data?.mode) {
                 const modeLabel = data.mode === 'plan' ? 'plan mode ✓' : data.mode
@@ -5739,7 +5693,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                 // synthesized click on touch); pointerup covers mouse too.
                 onPointerUp={(e) => {
                   stopEventPropagation(e as any)
-                  fetch(`/api/agents/${encodeURIComponent(deadTargetAgent.id)}/resurrect`, { method: 'POST' })
+                  fleetDurable('resurrect', { agent: deadTargetAgent.id })
                 }}
               >resurrect?</span>
             </div>

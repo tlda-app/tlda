@@ -356,16 +356,6 @@ const customShapeSchemas = {
       sequence: [],
     }),
   },
-  'task-inbox': {
-    props: {
-      w: T.number,
-      h: T.number,
-    },
-    migrations: createMigrationSequence({
-      sequenceId: 'com.tldraw.shape.task-inbox',
-      sequence: [],
-    }),
-  },
 }
 
 const schema = createTLSchema({

@@ -36,6 +36,7 @@ import {
   removeOptimisticEvent as _removeOptimisticEvent,
   reconcileOptimistic as _reconcileOptimistic,
   fleetEphemeral as _fleetEphemeral,
+  fleetDurable as _fleetDurable,
   dismissItem as _dismissItem,
   // @ts-ignore — vanilla JS module
 } from './fleet/fleet-data.mjs'
@@ -271,9 +272,8 @@ export function useFleetRosterTruth(): any | null {
   useEffect(() => {
     let cancelled = false
     const refresh = () => {
-      fetch(`${INBOX_API}/api/fleet-roster-truth?limit=1`)
-        .then(r => r.json())
-        .then(data => { if (!cancelled) setTruth(data) })
+      _fleetEphemeral('fleet-roster-truth', { limit: 1 })
+        .then((data: any) => { if (!cancelled) setTruth(data) })
         .catch(() => { if (!cancelled) setTruth(null) })
     }
     refresh()
@@ -287,43 +287,6 @@ export function useFleetRosterTruth(): any | null {
   return truth
 }
 
-
-const INBOX_API = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5176'
-
-export function useTaskInbox(): { items: any[], refresh: () => void, act: (taskId: string, action: string, reason?: string) => Promise<any> } {
-  const [items, setItems] = useState<any[]>([])
-
-  const fetchInbox = useCallback(() => {
-    fetch(`${INBOX_API}/api/inbox`)
-      .then(r => r.json())
-      .then(data => { if (Array.isArray(data)) setItems(data) })
-      .catch(e => console.warn('[fleet] inbox fetch failed:', e.message))
-  }, [])
-
-  useEffect(() => {
-    fetchInbox()
-    let unsub: (() => void) | null = null
-    let cancelled = false
-    ensureInit().then(() => {
-      if (cancelled) return
-      unsub = subscribe('tasks', null, fetchInbox)
-    })
-    return () => { cancelled = true; unsub?.() }
-  }, [fetchInbox])
-
-  const act = useCallback(async (taskId: string, action: string, reason?: string) => {
-    const res = await fetch(`${INBOX_API}/api/inbox/action`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ task_id: taskId, action, reason }),
-    })
-    const data = await res.json()
-    fetchInbox()
-    return data
-  }, [fetchInbox])
-
-  return { items, refresh: fetchInbox, act }
-}
 
 export function useFleetTasks(frameId?: string): any[] {
   const [tasks, setTasks] = useState<any[]>([])
@@ -828,10 +791,8 @@ export function useItems(role: 'hud' | 'list' | 'chat' | 'suggest' = 'chat'): It
       if (cancelled) return
       setItems(getItems())
       const humanId = getHumanId()
-      const query = humanId ? `?userId=${encodeURIComponent(humanId)}` : ''
-      fetch(`/api/items${query}`)
-        .then(r => r.json())
-        .then(j => { if (!cancelled) setItems(j.items || []) })
+      _fleetEphemeral('items', humanId ? { userId: humanId } : {})
+        .then((j: any) => { if (!cancelled) setItems(j.items || []) })
         .catch(() => {})
       unsub = subscribe('items', null, (data: any) => {
         setItems(data.items || getItems())
@@ -857,9 +818,8 @@ export function useSuggestions(): Suggestion[] {
 
     ensureInit().then(() => {
       if (cancelled) return
-      fetch('/api/suggestions')
-        .then(r => r.json())
-        .then(j => { if (!cancelled) setSuggestions(j.suggestions || []) })
+      _fleetEphemeral('suggestions-get')
+        .then((j: any) => { if (!cancelled) setSuggestions(j.suggestions || []) })
         .catch(() => {})
       unsub = subscribe('suggestions', null, (data: any) => {
         setSuggestions(data.suggestions || [])
@@ -887,14 +847,10 @@ export const dismissItem = _dismissItem
 // A group is the shared `group` tag, or a lone suggestion's own id.
 export async function clearGroup(agentId: string, groupKey: string) {
   try {
-    const j = await fetch('/api/suggestions').then(r => r.json())
+    const j = await _fleetEphemeral('suggestions-get')
     const remaining = (j.suggestions || []).filter((s: Suggestion) =>
       suggestionOwnerId(s) === agentId && suggestionGroupKey(s) !== groupKey)
-    await fetch('/api/suggestions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ agentId, suggestions: remaining }),
-    })
+    await _fleetDurable('suggestions-set', { agentId, suggestions: remaining })
   } catch (e) {
     console.warn('clearGroup failed', e)
   }

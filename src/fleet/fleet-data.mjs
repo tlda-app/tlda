@@ -224,19 +224,17 @@ export function getHumanName() { return _humanName }
 // Dead agents are intentionally not hydrated into the browser roster.
 export function loadNextAgentsPage() {
   if (!_nextAgentsCursor || _agentsPageLoading) return _agentsPageLoading || Promise.resolve(false)
-  const cursor = _nextAgentsCursor
-  _agentsPageLoading = fetch(`${FLEET}/api/agents?limit=100&cursor=${encodeURIComponent(cursor)}`)
-    .then(r => {
-      if (!r.ok) throw new Error(`agent page failed: ${r.status}`)
-      return r.json()
-    })
+  _agentsPageLoading = browserFleetTransport.ephemeral('agents-page', {
+    limit: 100,
+    cursor: _nextAgentsCursor,
+  })
     .then(data => {
       _nextAgentsCursor = data.nextCursor || null
       if (data.totals) _agentTotals = data.totals
-      applyAgentDelta(data.agents || [], [])
+      applyAgentDelta(data.agents || [], [], data.totals)
       return true
     })
-    .catch(e => { console.warn('[fleet-data] agent page fetch failed:', e.message); return false })
+    .catch(e => { console.warn('[fleet-data] agent page transport failed:', e.message); return false })
     .finally(() => { _agentsPageLoading = null })
   return _agentsPageLoading
 }
@@ -655,18 +653,15 @@ export function fleetEphemeral(type, body = {}) {
   return browserFleetTransport.ephemeral(type, body)
 }
 
+/** Send an arbitrary durable fleet operation through the shared transport. */
+export function fleetDurable(type, body = {}, options = {}) {
+  return browserFleetTransport.durable(type, body, options)
+}
+
 export async function dismissItem(id) {
   const userId = _humanId
   if (!userId) throw new Error('no human identity')
-  const res = await fetch(`${FLEET}/api/items`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action: 'dismiss', userId, id }),
-  })
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}))
-    throw new Error(data.error || res.statusText)
-  }
+  await browserFleetTransport.durable('notify', { action: 'dismiss', userId, id })
   _items = _items.filter(i => i.id !== id)
   notify('items', { userId, items: _items })
 }
@@ -1066,8 +1061,7 @@ export function connect() {
     // Catch up on missed chat events
     if (_lastEventId > 0) {
       const reconnectTimer = probe.start('reconnect', 'reconnect-backfill')
-      fetch(`${FLEET}/api/store/events?after=${_lastEventId}&limit=500`)
-        .then(r => r.json())
+      browserFleetTransport.ephemeral('store-events', { after: _lastEventId, limit: 500 })
         .then(data => {
           // One path: ingest EVERYTHING the live stream would (it upserts any
           // typed fleet-event — the render whitelist is the sole display gate).
@@ -1285,15 +1279,13 @@ export async function init() {
   // If localStorage has a stored name, login is sent automatically.
   // If not, the UI shows a picker with login/register options.
 
-  // FLEET/FLEET_WS come straight from the injected active config — no resolution
-  // step needed before the fetches below.
-
-  // Each browser list starts with a bounded live-agent page.  Do not use
-  // /api/state here: it is a whole-roster diagnostic endpoint.
+  // Establish the one fleet wire before loading state. HTTP is not a fallback
+  // feature transport.
+  connect()
   const [agentsRes, tasksRes, historyRes] = await Promise.all([
-    fetch(`${FLEET}/api/agents?limit=100`).then(r => r.json()).catch(e => { console.warn('[fleet-data] agents fetch failed:', e.message); return {} }),
-    fetch(`${FLEET}/api/tasks?limit=100`).then(r => r.json()).catch(e => { console.warn('[fleet-data] tasks fetch failed:', e.message); return {} }),
-    fetch(`${FLEET}/api/chat/history?limit=${HISTORY_PAGE}`).then(r => r.json()).catch(e => { console.warn('[fleet-data] history fetch failed:', e.message); return { events: [] } }),
+    browserFleetTransport.ephemeral('agents-page', { limit: 100 }).catch(e => { console.warn('[fleet-data] agents transport failed:', e.message); return {} }),
+    browserFleetTransport.ephemeral('tasks-page', { limit: 100 }).catch(e => { console.warn('[fleet-data] tasks transport failed:', e.message); return {} }),
+    browserFleetTransport.ephemeral('load-history', { limit: HISTORY_PAGE }).catch(e => { console.warn('[fleet-data] history transport failed:', e.message); return { events: [] } }),
   ])
 
   // Populate agents + tasks
@@ -1319,20 +1311,17 @@ export async function init() {
 
   const fetchItemsForHuman = () => {
     if (!_humanId) return
-    fetch(`${FLEET}/api/items?userId=${encodeURIComponent(_humanId)}`)
-      .then(r => r.json())
+    browserFleetTransport.ephemeral('items', { userId: _humanId })
       .then(data => {
         _items = data.items || []
         notify('items', { userId: _humanId, items: _items })
       })
-      .catch(e => console.warn('[fleet-data] items fetch failed:', e.message))
+      .catch(e => console.warn('[fleet-data] items transport failed:', e.message))
   }
   const offIdentity = subscribe('identity', null, fetchItemsForHuman)
   fetchItemsForHuman()
   setTimeout(() => offIdentity?.(), 30000)
 
-  // Connect SSE for live updates
-  connect()
 }
 
 // --- State updates ---
@@ -1385,13 +1374,12 @@ function updateTasks(tasks) {
 function applyTaskDelta(delta) {
   if (!delta) return
   if (delta.overflow) {
-    fetch(`${FLEET}/api/tasks?limit=100`)
-      .then(r => r.json())
+    browserFleetTransport.ephemeral('tasks-page', { limit: 100 })
       .then(data => {
         _nextTasksCursor = data.nextCursor || null
         updateTasks(data.tasks || [])
       })
-      .catch(e => console.warn('[fleet-data] task refresh failed:', e.message))
+      .catch(e => console.warn('[fleet-data] task refresh transport failed:', e.message))
     return
   }
   const changed = Array.isArray(delta.changed) ? delta.changed : []
@@ -1415,8 +1403,7 @@ function applyTaskDelta(delta) {
 // No separate activity fetch needed.
 
 export async function fetchHistory(agentIds = [], limit = 200) {
-  const agentParams = (agentIds || []).map(id => `&agents=${encodeURIComponent(id)}`).join('')
-  const res = await fetch(`${FLEET}/api/chat/history?limit=${limit}${agentParams}`).then(r => r.json())
+  const res = await browserFleetTransport.ephemeral('load-history', { agents: agentIds || [], limit })
 
   const events = (res.events || [])
     .filter(e => {
@@ -1431,15 +1418,11 @@ export async function fetchHistory(agentIds = [], limit = 200) {
 }
 
 export async function loadBefore(agentIds = [], beforeTs, count = 100, opts = {}) {
-  let res
-  if (_ws && _ws.readyState === 1) {
-    const msg = { type: 'load-history', agents: agentIds || [], before: beforeTs, limit: count }
-    const { type, ...payload } = msg
-    res = await browserFleetTransport.ephemeral(type, payload)
-  } else {
-    const agentParams = (agentIds || []).map(id => `&agents=${encodeURIComponent(id)}`).join('')
-    res = await fetch(`${FLEET}/api/chat/history?limit=${count}&before=${encodeURIComponent(beforeTs)}${agentParams}`).then(r => r.json())
-  }
+  const res = await browserFleetTransport.ephemeral('load-history', {
+    agents: agentIds || [],
+    before: beforeTs,
+    limit: count,
+  })
 
   const events = (res.events || [])
     .filter(e => {

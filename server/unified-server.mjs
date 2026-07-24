@@ -2925,27 +2925,10 @@ async function ensureDeepgramSdkBridge() {
 
 // Services health — checks tlda server (self), fleet server, Yjs sync
 app.get('/health/services', async (req, res) => {
-  const FLEET_URL = process.env.FLEET_SERVER || 'http://localhost:5199'
   const services = {
     tlda: { ok: true, uptime: process.uptime() },
-    fleet: { ok: false, error: null },
+    fleet: { ok: true, agents: fleetStore.getAgentSummary?.().live ?? 0 },
     sync: { ok: true },
-  }
-
-  // Check fleet server without loading the full roster.
-  try {
-    const ctrl = new AbortController()
-    const timer = setTimeout(() => ctrl.abort(), 2000)
-    const r = await fetch(`${FLEET_URL}/api/agents/summary`, { signal: ctrl.signal })
-    clearTimeout(timer)
-    if (r.ok) {
-      const data = await r.json()
-      services.fleet = { ok: true, agents: data.live ?? data.total ?? 0 }
-    } else {
-      services.fleet = { ok: false, error: `HTTP ${r.status}` }
-    }
-  } catch (e) {
-    services.fleet = { ok: false, error: e.message }
   }
 
   res.json(services)
@@ -4127,7 +4110,15 @@ app.use('/docs', (req, res, next) => {
         if (column) {
           const source = readFileSync(join(PROJECTS_DIR, name, 'source', column.sourceFile), 'utf8')
           const isTaskDoc = /(^|\n)tlda-kind:\s*task-doc\s*(\n|$)/.test(source)
-          const html = renderMarkdownColumnHtml({ source, title: column.title, isTaskDoc })
+          const agentNames = isTaskDoc
+            ? fleetStore.getAllAgents().map(agent => ({
+                id: agent.id,
+                pretty_name: agent.pretty_name,
+                friendly_name: agent.friendly_name,
+                lineage_name: agent.lineage_name,
+              }))
+            : []
+          const html = renderMarkdownColumnHtml({ source, title: column.title, isTaskDoc, agentNames })
           const bridged = injectBridge(html, `/docs/${name}/`, '', true, {})
 
           function memberTitle(memberName) {
@@ -5083,6 +5074,101 @@ async function handleFleetWsMessage(ws, msg) {
     } catch (e) {
       error(e)
     }
+    return
+  }
+
+  if (type === 'items') {
+    const userId = msg.userId || SERVER_OWNER_ID
+    reply({ userId, items: unexpiredItemsFor(userId) })
+    return
+  }
+
+  if (type === 'suggestions-get') {
+    reply({ suggestions: flattenSuggestions() })
+    return
+  }
+
+  if (type === 'suggestions-set') {
+    const { agentId, suggestions } = msg
+    if (!agentId) { error('Missing agentId'); return }
+    if (!Array.isArray(suggestions)) { error('Missing suggestions array'); return }
+    if (suggestions.length === 0) _suggestions.delete(agentId)
+    else _suggestions.set(agentId, suggestions.map(s => ({ ...s, from: agentId })))
+    refreshSuggestionItems(agentId, _suggestions.get(agentId) || [])
+    broadcastEvent('suggestions', { suggestions: flattenSuggestions() })
+    reply({ ok: true })
+    return
+  }
+
+  if (type === 'prefs-get-all') {
+    if (!msg.user || typeof msg.user !== 'string') { error('prefs-get-all requires user'); return }
+    reply(fleetStore.getAllFleetPrefs(msg.user))
+    return
+  }
+
+  if (type === 'prefs-set') {
+    if (!msg.user || typeof msg.user !== 'string') { error('prefs-set requires user'); return }
+    if (!msg.key || typeof msg.key !== 'string') { error('prefs-set requires key'); return }
+    if (msg.value === undefined) { error('prefs-set requires value'); return }
+    fleetStore.setFleetPref(msg.user, msg.key, msg.value)
+    reply({ ok: true })
+    return
+  }
+
+  if (type === 'resurrect') {
+    if (!msg.agent) { error('resurrect requires agent'); return }
+    try {
+      const result = fleetStore.resurrectAsZombie(msg.agent)
+      broadcastState()
+      reply(result)
+    } catch (e) {
+      error(e)
+    }
+    return
+  }
+
+  if (type === 'mark-dead') {
+    const agentId = msg.agent_id || msg.agent
+    if (!agentId) { error('mark-dead requires agent'); return }
+    try {
+      fleetStore.markDead(agentId)
+      clearEphemeralState(agentId)
+      broadcastState()
+      reply({ ok: true })
+    } catch (e) {
+      error(e)
+    }
+    return
+  }
+
+  if (type === 'fleet-roster-truth') {
+    const agents = fleetStore.getAliveAgents?.() || []
+    const totals = fleetStore.getAgentSummary?.() || { total: agents.length }
+    reply({
+      totals,
+      agents: agents.slice(0, Math.max(1, Math.min(Number(msg.limit) || 50, 500))),
+      shown: Math.min(agents.length, Math.max(1, Math.min(Number(msg.limit) || 50, 500))),
+      matched: agents.length,
+      wholeFleet: totals,
+    })
+    return
+  }
+
+  if (type === 'agents-page') {
+    const page = fleetStore.getAliveAgentsPage({
+      limit: msg.limit,
+      cursor: msg.cursor || null,
+    })
+    reply({ ...page, totals: fleetStore.getAliveAgentCounts() })
+    return
+  }
+
+  if (type === 'tasks-page') {
+    const page = fleetStore.getActiveTasksPage({
+      limit: msg.limit,
+      cursor: msg.cursor || null,
+    })
+    reply({ ...page, total: fleetStore.getActiveTaskCount() })
     return
   }
 
@@ -6879,6 +6965,20 @@ async function handleFleetWsMessage(ws, msg) {
     return
   }
 
+  // ---- soft-interrupt ----
+  if (type === 'soft-interrupt') {
+    const { agent: agentQuery } = msg
+    const agent = fleetStore.findAgent(agentQuery)
+    if (!agent) { error('agent not found'); return }
+    const { seat, error: seatError } = currentSeatOrError(agent)
+    if (!seat) { error(seatError); return }
+    try {
+      const result = await sendDaemonDurable(seat.daemon_key, 'soft-interrupt', terminalRpcPayload(agent, seat))
+      reply({ ok: true, agent: agent.friendly_name || agent.id, ...result })
+    } catch (e) { error(e.message) }
+    return
+  }
+
   // (The authoritative `spawn` handler is above — it runs through
   // performAuthorizedSpawn / authorizeSpawn and returns for every spawn message.
   // A second, older `if (type === 'spawn')` block used to live here that sent the
@@ -7011,6 +7111,21 @@ async function handleFleetWsMessage(ws, msg) {
     const changed = fleetStore.markEventRead?.(parseInt(event_id, 10), agentId)
     if (changed) broadcastEvent('read-receipt', { event_ids: [parseInt(event_id, 10)], agent: agentId })
     reply({ ok: true, changed: !!changed })
+    return
+  }
+
+  // ---- prompt-respond ----
+  if (type === 'prompt-respond') {
+    const { eventId, response } = msg
+    if (!eventId) { error('Missing eventId'); return }
+    try {
+      const patch = response === 'approved'
+        ? { approvedAt: new Date().toISOString() }
+        : { rejectedAt: new Date().toISOString() }
+      fleetStore.updateEventMetadata(eventId, patch)
+      broadcastEvent('event-update', { id: eventId, metadata_patch: patch })
+      reply({ ok: true })
+    } catch (e) { error(e.message) }
     return
   }
 
