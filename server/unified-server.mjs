@@ -963,7 +963,7 @@ async function drainTaskWakeQueue() {
       // Wake carries NO privilege check (hibernation is transparent) — pass no
       // requester; the daemon resumes the agent with its own privileges. agent_id
       // lets the daemon find that agent's own grant.
-      const spawnResult = await sendDaemonDurable(daemonKey, 'spawn', { name: agentId, agent_id: agentId, respawn: true })
+      const spawnResult = await sendDaemonDurable(daemonKey, 'wake', { fleet_id: agentId })
       if (!spawnResult?.ok) {
         // Don't drop a failed re-nudge silently — surface via the catch (agent-wedged).
         throw new Error(spawnResult?.error || spawnResult?.reason || 'daemon returned ok:false with no reason')

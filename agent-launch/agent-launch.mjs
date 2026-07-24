@@ -23,6 +23,7 @@ export function createAgentLauncher({
   activeConfigName,
   configDir,
   loadDaemonLaunchConfig,
+  loadDaemonConfigForCwd = readDaemonConfigForCwd,
   log,
   machineId,
   permissionLedger,
@@ -48,6 +49,20 @@ export function createAgentLauncher({
 
   function trace(label, detail) {
     log.info(`[spawn-trace] ${label} ${JSON.stringify({ ts: new Date().toISOString(), machineId, ...detail })}`)
+  }
+
+  async function emitLifecycle(onLifecycleEvent, event, data = {}) {
+    try {
+      await onLifecycleEvent?.(event, data)
+    } catch (error) {
+      await sendMsg({
+        type: 'daemon-warning',
+        warning: 'spawn-lifecycle-delivery-failed',
+        event,
+        error: error?.message || String(error),
+        data,
+      })
+    }
   }
 
   async function resolveLiveSessionIdentity(resolver, args) {
@@ -222,6 +237,7 @@ export function createAgentLauncher({
     acknowledgeNoSecurity,
     callerRung,
     requester,
+    onLifecycleEvent,
   }) {
     const projects = getProjects()
     const sessionId = session || session_id
@@ -260,7 +276,7 @@ export function createAgentLauncher({
     let spawnConfig
     try {
       const config = loadDaemonLaunchConfig()
-      const daemonConfig = readDaemonConfigForCwd(resolvedCwd)
+      const daemonConfig = loadDaemonConfigForCwd(resolvedCwd)
       spawnConfig = withDaemonModelAliases(config, daemonConfig)
       if (model || (!respawn && !refresh)) {
         launchModelSpec = resolveModelSpec(model, { config: spawnConfig })
@@ -405,6 +421,7 @@ export function createAgentLauncher({
           crashLogPath,
           identityConfigDir: configDir,
           shellReservationTimeoutMs: reservationTimeoutMs(),
+          onLifecycleEvent,
         })
       } catch (e) {
         if (shouldWriteLedgerRow) await permissionLedger.delete(preallocatedAgentId).catch(() => {})
@@ -500,6 +517,45 @@ export function createAgentLauncher({
       const ledgerRow = launched.fleetId ? permissionLedger.get(launched.fleetId) : null
       const durableSessionId = launched.resumeId || liveIdentity?.sessionId || ledgerRow?.sessionId || sessionId || null
       const durableSessionPath = liveIdentity?.jsonlPath || ledgerRow?.sessionPath || null
+      if (launched.registrationDeferred && !launched.fleetId) {
+        let ledgerCleanupError = null
+        if (shouldWriteLedgerRow && preallocatedAgentId) {
+          try {
+            await permissionLedger.delete(preallocatedAgentId)
+          } catch (e) {
+            // Local runtime ownership is retained; later server reconciliation creates the real binding.
+            ledgerCleanupError = `could not remove unbound server ledger row for local-only mint ${agentName}: ${e.message}`
+          }
+        }
+        await emitLifecycle(onLifecycleEvent, 'terminal-local-only', {
+          ok: true,
+          local_agent_id: launched.localAgentId || null,
+          tmux_session: launched.tmuxSession,
+          harness: launched.harness || launchKind,
+          model: launched.model || launchModel,
+          cwd: resolvedCwd || null,
+          name: launched.name || agentName,
+          reason: 'server-registration-deferred',
+        })
+        return {
+          ok: true,
+          name: launched.name || agentName,
+          agent_id: null,
+          local_agent_id: launched.localAgentId || null,
+          tmux_session: launched.tmuxSession,
+          resume_id: launched.resumeId || liveIdentity?.sessionId || null,
+          registrationDeferred: true,
+          pending: !!launched.pending,
+          harness: launched.harness || launchKind,
+          model: launched.model || launchModel,
+          spawnerPermission: grant.spawnerPermission,
+          projectPermission: grant.projectPermission,
+          modelPermission: grant.modelPermission,
+          permissionSet: grant.permissionSet,
+          permissionGrant: grant.permissionGrant,
+          ...(ledgerCleanupError ? { cleanup_error: ledgerCleanupError } : {}),
+        }
+      }
       if (!durableSessionId) {
         try {
           const obligation = await persistIdentityRecoveryObligation({
@@ -554,6 +610,15 @@ export function createAgentLauncher({
           ownership_retained: true,
         }
       }
+      await emitLifecycle(onLifecycleEvent, 'server-binding-joined', {
+        agent_id: launched.fleetId,
+        fleet_id: launched.fleetId,
+        tmux_session: launched.tmuxSession,
+        harness: launched.harness || ledgerRow?.sessionKind || launchKind,
+        model: launched.model || liveIdentity?.model || ledgerRow?.model || launchModel,
+        cwd: resolvedCwd || ledgerRow?.cwd || null,
+        name: launched.name || agentName,
+      })
       if (!preallocatedAgentId || launched.fleetId !== preallocatedAgentId) {
         await permissionLedger.set(launched.fleetId, {
           permissionGrant: grant.permissionGrant,
@@ -605,9 +670,27 @@ export function createAgentLauncher({
     }
   }
 
+  async function wake(params = {}) {
+    const fleetId = params.fleet_id
+    if (!fleetId || !String(fleetId).startsWith('fleet:')) {
+      return { ok: false, error: 'wake requires literal fleet_id', code: 'missing-fleet-id', reason: 'missing-fleet-id' }
+    }
+    if (params.agent_id || params.agentId || params.name) {
+      return { ok: false, error: 'wake accepts only fleet_id; resolve aliases before calling daemon wake', code: 'wake-alias-refused', reason: 'wake-alias-refused' }
+    }
+    return spawn({
+      ...params,
+      name: fleetId,
+      agent_id: fleetId,
+      respawn: true,
+      refresh: false,
+    })
+  }
+
   return {
     handlers: {
       spawn,
+      wake,
       'spawn-availability': (params = {}) => probeSpawnAvailability({ cwd: params?.cwd || null }),
     },
     probeSpawnStartupFailure,

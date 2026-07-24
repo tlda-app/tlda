@@ -58,12 +58,13 @@ import { createFleetOperationTransport } from '../shared/fleet-operation-transpo
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
+import net from 'node:net'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { fileURLToPath } from 'url'
 import {
-  getServerUrl, getFleetServerUrl, getRwToken, DEFAULT_PORT, hasTls,
+  getRwToken, DEFAULT_PORT, hasTls,
   CONFIG_DIR as _SHARED_CONFIG_DIR, TLS_CA_PATH,
-  getActiveConfigName, assertServerCoherence, getMachineId, saveMachineId,
+  getMachineId, saveMachineId,
 } from '../shared/config.mjs'
 const VERSION = '0.1.1'
 import { createLogger } from '../shared/logger.mjs'
@@ -144,6 +145,33 @@ const SOURCE_BINDINGS_FILE = path.join(CONFIG_DIR, `source-bindings${DAEMON_STAT
 const PROJECT_WORLDS_FILE = projectWorldsPath(_SHARED_CONFIG_DIR)
 const DAEMON_CONFIG_FILE = defaultDaemonConfigPath(CONFIG_DIR)
 const daemonSpawnConfig = readDaemonConfig(DAEMON_CONFIG_FILE)
+function resolveDaemonServer(config = daemonSpawnConfig, serverName = null) {
+  const servers = config?.servers
+  if (!servers || typeof servers !== 'object' || Array.isArray(servers)) {
+    throw new Error('daemon.yaml servers must be an object of named server entries')
+  }
+  const name = serverName || process.env.TLDA_CONFIG || config.defaultServer
+  if (typeof name !== 'string' || !name.trim()) {
+    throw new Error('daemon.yaml defaultServer must name the active remote server')
+  }
+  const raw = servers[name]
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error(`daemon.yaml has no server named "${name}"`)
+  }
+  if (typeof raw.database !== 'string' || !raw.database.trim()) {
+    throw new Error(`daemon.yaml server "${name}" must declare database`)
+  }
+  if (typeof raw.store !== 'string' || !raw.store.trim()) {
+    throw new Error(`daemon.yaml server "${name}" must declare store`)
+  }
+  return { name, database: raw.database.trim(), store: raw.store.trim() }
+}
+function getDaemonFleetServerUrl(config = daemonSpawnConfig) {
+  return resolveDaemonServer(config).database
+}
+function getDaemonStoreUrl(config = daemonSpawnConfig) {
+  return resolveDaemonServer(config).store
+}
 const PERMISSION_LEDGER_FILE = permissionLedgerPathFromDaemonConfig(daemonSpawnConfig, CONFIG_DIR)
 let _onPermissionLedgerProcessBindingChange = null
 const permissionLedger = createPermissionLedger(PERMISSION_LEDGER_FILE, {
@@ -152,6 +180,7 @@ const permissionLedger = createPermissionLedger(PERMISSION_LEDGER_FILE, {
 applyDaemonGrants(permissionLedger, daemonSpawnConfig)
 
 const LOG_FILE = path.join(CONFIG_DIR, `fleet-daemon${DAEMON_STATE_SUFFIX}.log`)
+const LOCAL_RPC_SOCKET = path.join(CONFIG_DIR, `fleet-daemon${DAEMON_STATE_SUFFIX}.sock`)
 const DAEMON_OUTBOX_FILE = defaultOutboxPath(CONFIG_DIR, DAEMON_STATE_SUFFIX)
 const LEGACY_DEAD_LETTER_FILE = path.join(CONFIG_DIR, `daemon-dead-letters${DAEMON_STATE_SUFFIX}.jsonl`)
 const PROJECTS_DIR = process.env.PROJECTS_DIR || path.join(os.homedir(), '.claude', 'projects')
@@ -228,20 +257,20 @@ const config = loadDaemonLaunchConfig()
 // isolated joined the live fleet. TLDA_SERVER set now always targets that server.
 const SERVER = process.env.TLDA_SERVER
   ? process.env.TLDA_SERVER
-  : getFleetServerUrl()
+  : getDaemonFleetServerUrl()
 // The active server NAME (TLDA_CONFIG → defaultServer). This — not a URL — is the
 // single selector we propagate to spawned agents so their MCP resolves the SAME
 // complete config (database + store) the daemon did. A stray defaultConfig can't
 // then misroute a spawn, because the spawn carries the real active name.
 // Safe to resolve unconditionally: SERVER already ran resolveConfig via
 // getFleetServerUrl() above, so a broken config would have thrown there.
-const ACTIVE_CONFIG = getActiveConfigName()
+const ACTIVE_CONFIG = resolveDaemonServer().name
 if (!ACTIVE_CONFIG) {
   console.error('[fleet-daemon] REFUSING to start without a named active config; daemon env is required')
   process.exit(1)
 }
 {
-  const configuredServer = getFleetServerUrl()
+  const configuredServer = getDaemonFleetServerUrl()
   const { refuseReason } = resolveDaemonIsolation({
     env: process.env,
     scriptPath: INSTALL_PATH,
@@ -291,7 +320,13 @@ const _serverFromConfig = !process.env.TLDA_SERVER && !_usingCustomConfigDir
 
 // Fail loud if a hand-pinned TLDA_SERVER disagrees with the active config — the
 // 6/27 divergence, refused at the door rather than served silently. Bubbles.
-assertServerCoherence()
+if (process.env.TLDA_SERVER) {
+  const got = String(process.env.TLDA_SERVER).replace(/\/+$/, '')
+  const want = String(getDaemonFleetServerUrl()).replace(/\/+$/, '')
+  if (got !== want) {
+    throw new Error(`tlda daemon config incoherent: TLDA_SERVER=${got} but daemon.yaml "${ACTIVE_CONFIG}" resolves to ${want}`)
+  }
+}
 const TOKEN = getRwToken()
 const TMUX_SOCKET = config.tmuxSocket || null
 const TMUX_ARGS = TMUX_SOCKET ? ['-L', TMUX_SOCKET] : []
@@ -495,8 +530,8 @@ const backingFiles = createBackingFiles({
 })
 
 const localArtifacts = createLocalArtifacts({
-  getServerUrl: () => getServerUrl(),
-  getFleetServerUrl: () => getFleetServerUrl(),
+  getServerUrl: () => getDaemonStoreUrl(),
+  getFleetServerUrl: () => getDaemonFleetServerUrl(),
 })
 
 const shadowMirror = createShadowMirror({
@@ -782,6 +817,66 @@ machineRpc.register({
   'reaper-kill': devReaper.rpcKill,
   'reaper-sweep': devReaper.rpcSweep,
 })
+
+function startLocalLifecycleRpc() {
+  fs.rmSync(LOCAL_RPC_SOCKET, { force: true })
+  const server = net.createServer(socket => {
+    let raw = ''
+    let observing = true
+    const writeFrame = payload => {
+      if (!observing || socket.destroyed || !socket.writable) return
+      socket.write(`${JSON.stringify(payload)}\n`)
+    }
+    socket.setEncoding('utf8')
+    socket.on('data', chunk => { raw += chunk })
+    socket.on('error', () => { observing = false })
+    socket.on('close', () => { observing = false })
+    socket.on('end', () => {
+      let request
+      try {
+        request = JSON.parse(raw || '{}')
+        const op = String(request.op || '').trim()
+        if (op !== 'spawn' && op !== 'wake') throw new Error(`unsupported local daemon op: ${op || '(missing)'}`)
+        const handler = agentLauncher.handlers[op]
+        const params = {
+          ...(request.params || {}),
+          onLifecycleEvent: (event, data = {}) => writeFrame({ event, data }),
+        }
+        Promise.resolve(handler(params))
+          .then(result => {
+            if (observing) socket.end(`${JSON.stringify({ ok: true, result })}\n`)
+          })
+          .catch(e => {
+            if (observing) socket.end(`${JSON.stringify({ ok: false, error: e.message || String(e) })}\n`)
+          })
+      } catch (e) {
+        if (observing) socket.end(`${JSON.stringify({ ok: false, error: e.message || String(e) })}\n`)
+      }
+    })
+  })
+  server.on('error', error => {
+    log.error(`local lifecycle rpc failed: ${error.message}`)
+    sendMsg({
+      type: 'daemon-warning',
+      warning: 'local-lifecycle-rpc-failed',
+      error: error.message,
+      socket: LOCAL_RPC_SOCKET,
+    })
+    process.exit(1)
+  })
+  server.listen(LOCAL_RPC_SOCKET, () => {
+    try {
+      fs.chmodSync(LOCAL_RPC_SOCKET, 0o600)
+    } catch (error) {
+      log.error(`local lifecycle rpc socket hardening failed: ${error.message}`)
+      server.close(() => process.exit(1))
+      return
+    }
+    log.info(`local lifecycle rpc listening on ${LOCAL_RPC_SOCKET}`)
+  })
+}
+
+startLocalLifecycleRpc()
 
 async function handleRpc(msg) {
   return daemonOperationContext.run(msg.fleet_operation || null, () => machineRpc.handleRpc(msg))
@@ -1279,7 +1374,7 @@ watchConfigDrift()
 // relaunches us, re-reading daemon.yaml fresh, so we come back on the corrected
 // target. (Only armed when SERVER came from the named config — a URL-pinned or
 // custom-dir daemon has no config to drift against.) config.json is retired; the
-// authority is server.yaml `servers:`/`defaultServer`.
+// authority is daemon.yaml `servers:`/`defaultServer`.
 function watchConfigDrift() {
   if (!_serverFromConfig) return
   const f = path.join(CONFIG_DIR, 'daemon.yaml')
@@ -1290,7 +1385,7 @@ function watchConfigDrift() {
     if (fired) return
     let fresh
     try {
-      fresh = getFleetServerUrl()
+      fresh = getDaemonFleetServerUrl(readDaemonConfig(DAEMON_CONFIG_FILE))
     } catch (e) {
       // A config that no longer resolves is itself a loud failure — surface it
       // and exit so launchd reloads once it's fixed. Not a silent swallow: we

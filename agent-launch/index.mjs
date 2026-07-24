@@ -39,6 +39,24 @@ function toSpawnError(e, reason = 'launch-failed', detail = {}) {
   return new SpawnError(reason, message, detail)
 }
 
+function emitLifecycle(params, event, data = {}) {
+  try {
+    params.onLifecycleEvent?.(event, data)
+  } catch (error) {
+    params.lifecycleErrors ||= []
+    params.lifecycleErrors.push({
+      event,
+      error: error?.message || String(error),
+    })
+  }
+}
+
+function lifecycleOutcome(params) {
+  return params.lifecycleErrors?.length
+    ? { lifecycle_errors: [...params.lifecycleErrors] }
+    : {}
+}
+
 const ADAPTERS = { claude, codex, goose }
 
 function metadataOf(agent) {
@@ -118,6 +136,35 @@ function resolveAdapterModel(adapter, rawModel, config, modelSpec = null) {
     return { model: selection.model, provider: selection.provider, selection, spec }
   }
   return { model: spec.id, provider: spec.provider || null, selection: null, spec }
+}
+
+function directModelConfig(kind, model) {
+  const harness = String(kind || '').trim().toLowerCase()
+  const id = String(model || '').trim()
+  if (!harness) throw new SpawnError('launch-failed', 'doctor yolo requires a harness kind', {})
+  if (!id) throw new SpawnError('launch-failed', 'doctor yolo requires --model', {})
+  const spec = {
+    alias: id,
+    id,
+    model: id,
+    provider: harness,
+    harness,
+    kind: harness,
+    group: harness,
+    level: null,
+    description: 'doctor-yolo direct model',
+    options: {},
+    tags: [],
+    available: true,
+    verified: true,
+  }
+  return {
+    modelSpecs: { [id]: spec },
+    modelCatalog: { default: id, values: { [id]: spec } },
+    harnessOptions: {},
+    permissionProfiles: {},
+    defaultPermissionProfile: null,
+  }
 }
 
 function spawnEnv(params = {}) {
@@ -210,34 +257,14 @@ async function spawnFresh(params) {
   const ownedLocalLedger = params.localAgentLedger ? null : createLocalAgentLedger(params.localAgentLedgerPath)
   const localAgentLedger = params.localAgentLedger || ownedLocalLedger
   const existingBoundLocal = fleetId ? localAgentLedger.get(fleetId) : null
-  const requiresServerShellReservation = !!fleetId
   const localAgentId = params.localAgentId || params.local_agent_id || existingBoundLocal?.localAgentId || newLocalAgentId()
   const cwd = resolveSpawnCwd(params.cwd)
   let tmuxSession = null
   let model = null
   let shellRegistered = false
-  let serverUp = false
+  let registrationDeferred = false
   let runtimeLaunched = false
   try {
-    try {
-      serverUp = await (deps.ensureServer || ensureServer)({ api })
-    } catch (e) {
-      if (requiresServerShellReservation) {
-        throw new SpawnError(
-          'launch-failed',
-          `server shell reservation required before launching ${name} (${fleetId}); server unavailable at ${api}: ${e?.message || String(e)}`,
-          { fleetId, api },
-        )
-      }
-      serverUp = false
-    }
-    if (!serverUp && requiresServerShellReservation) {
-      throw new SpawnError(
-        'launch-failed',
-        `server shell reservation required before launching ${name} (${fleetId}); server unavailable at ${api}`,
-        { fleetId, api },
-      )
-    }
     const config = params.config ?? withDaemonModelAliases({}, readDaemonConfigForCwd(cwd))
     tmuxSession = await (deps.uniqueSessionName || uniqueSessionName)(`fleet-${sanitizeSessionName(name)}`, { tmuxSocket: params.tmuxSocket })
     const modelResolved = resolveAdapterModel(adapter, params.model, config, modelSpec)
@@ -286,48 +313,50 @@ async function spawnFresh(params) {
       cwd,
       permissionGrant: params.permissionGrant,
     })
-    if (serverUp) {
-      await (deps.checkFreshNameAvailable || checkFreshNameAvailable)(name, { api, serverUp, excludeId: fleetId })
-      const reserve = fleetId
-        ? await (deps.wsReserveShell || wsReserveShell)({
-            fleetId,
-            localAgentId,
-            name,
-            tmuxSession,
-            cwd,
-            model,
-            effort: params.effort,
-            kind: requestedKind,
-            metadata: permissionMetadata(launchPolicy.permissionGrant),
-            machineId: params.machineId,
-            api,
-            ...shellReservationOptions(params),
-          })
-        : await (deps.wsMintShell || wsMintShell)({
-            localAgentId,
-            name,
-            tmuxSession,
-            cwd,
-            model,
-            effort: params.effort,
-            kind: requestedKind,
-            metadata: permissionMetadata(launchPolicy.permissionGrant),
-            machineId: params.machineId,
-            api,
-            ...shellReservationOptions(params),
-          })
-      fleetId = fleetId || reserve?.server_agent_id || reserve?.agent?.id || null
-      if (!fleetId) throw new Error('server mint returned no server agent id')
-      localAgentLedger.bind(localAgentId, fleetId, { friendlyName: reserve?.assigned_name || name })
-      shellRegistered = true
-      librarian.observeLiveness({
-        type: 'agent-liveness',
-        agent_id: fleetId,
-        tmux_session: tmuxSession,
-        state: 'spawning',
-        ts: new Date().toISOString(),
-      })
-    }
+    emitLifecycle(params, 'local-mint', {
+      local_agent_id: localAgentId,
+      fleet_id: fleetId || null,
+      name,
+      tmux_session: tmuxSession,
+      cwd,
+      harness: requestedKind,
+      model,
+    })
+    const serverRegistrationPromise = (async () => {
+          const serverUp = await (deps.ensureServer || ensureServer)({ api })
+          await (deps.checkFreshNameAvailable || checkFreshNameAvailable)(name, { api, serverUp, excludeId: fleetId })
+          const reserve = fleetId
+            ? await (deps.wsReserveShell || wsReserveShell)({
+                fleetId,
+                localAgentId,
+                name,
+                tmuxSession,
+                cwd,
+                model,
+                effort: params.effort,
+                kind: requestedKind,
+                metadata: permissionMetadata(launchPolicy.permissionGrant, launchPolicy.leasePolicy),
+                machineId: params.machineId,
+                api,
+                ...shellReservationOptions(params),
+              })
+            : await (deps.wsMintShell || wsMintShell)({
+                localAgentId,
+                name,
+                tmuxSession,
+                cwd,
+                model,
+                effort: params.effort,
+                kind: requestedKind,
+                metadata: permissionMetadata(launchPolicy.permissionGrant, launchPolicy.leasePolicy),
+                machineId: params.machineId,
+                api,
+                ...shellReservationOptions(params),
+              })
+          return { reserve, serverUp }
+        })()
+          .then(registration => registration)
+          .catch(error => ({ error: error?.message || String(error) }))
     const freshSessionId = requestedKind === 'claude' ? (deps.randomUUID || randomUUID)() : null
     const { cmd, sendKeys, commandTrace } = await buildCommand({
       requestedKind,
@@ -374,10 +403,63 @@ async function spawnFresh(params) {
       throw new SpawnError('launch-failed', `tmux session ${tmuxSession} already has a live harness runtime`, { tmuxSession })
     }
     runtimeLaunched = true
+    emitLifecycle(params, 'local-launch', {
+      local_agent_id: localAgentId,
+      fleet_id: fleetId || null,
+      name,
+      tmux_session: tmuxSession,
+      cwd,
+      harness: requestedKind,
+      model,
+    })
+    const registration = await serverRegistrationPromise
+    if (registration?.error) {
+      registrationDeferred = true
+      emitLifecycle(params, 'server-registration-deferred', {
+        local_agent_id: localAgentId,
+        fleet_id: fleetId || null,
+        name,
+        tmux_session: tmuxSession,
+        cwd,
+        harness: requestedKind,
+        model,
+        reason: registration.error,
+      })
+      traceSpawnDecision('registration-deferred', {
+        name,
+        localAgentId,
+        tmuxSession,
+        requestedKind,
+        model,
+        reason: registration.error,
+      })
+    } else if (registration?.reserve) {
+      const reserve = registration.reserve
+      fleetId = fleetId || reserve?.server_agent_id || reserve?.agent?.id || null
+      if (!fleetId) throw new Error('server mint returned no server agent id')
+      localAgentLedger.bind(localAgentId, fleetId, { friendlyName: reserve?.assigned_name || name })
+      shellRegistered = true
+      emitLifecycle(params, 'server-registration-joined', {
+        local_agent_id: localAgentId,
+        fleet_id: fleetId,
+        name: reserve?.assigned_name || name,
+        tmux_session: tmuxSession,
+        cwd,
+        harness: requestedKind,
+        model,
+      })
+      librarian.observeLiveness({
+        type: 'agent-liveness',
+        agent_id: fleetId,
+        tmux_session: tmuxSession,
+        state: 'spawning',
+        ts: new Date().toISOString(),
+      })
+    }
     const launchedRoute = { localAgentId, fleetId, tmuxSession, harness: requestedKind, model, resumeId: freshSessionId }
     let identityResolutionPromise
     try {
-      identityResolutionPromise = requestedKind === 'codex' && serverUp && params.startFreshIdentityPolling
+      identityResolutionPromise = requestedKind === 'codex' && registration?.serverUp && params.startFreshIdentityPolling
         ? Promise.resolve(params.startFreshIdentityPolling(launchedRoute))
         : Promise.resolve(null)
     } catch (error) {
@@ -398,18 +480,29 @@ async function spawnFresh(params) {
     const promptDelivery = promptOutcome.status === 'fulfilled' && promptOutcome.value
       ? null
       : { ok: false, reason: 'unverified' }
-    if (!serverUp) {
+    emitLifecycle(params, 'terminal-command', {
+      ok: !promptDelivery,
+      local_agent_id: localAgentId,
+      fleet_id: fleetId || null,
+      name,
+      tmux_session: tmuxSession,
+      cwd,
+      harness: requestedKind,
+      model,
+      reason: promptDelivery?.reason || null,
+    })
+    if (registrationDeferred) {
       traceSpawnDecision('registration-skipped', {
         name,
         localAgentId,
         tmuxSession,
         requestedKind,
         model,
-        reason: 'ensureServer reported down after retries; no server-side shell was ever requested for this process',
+        reason: 'server registration branch failed after local launch',
       })
-      return { ok: true, localAgentId, fleetId: null, tmuxSession, harness: requestedKind, model, registrationDeferred: true, ...(promptDelivery ? { promptDelivery } : {}) }
+      return { ok: true, localAgentId, fleetId: fleetId || null, tmuxSession, harness: requestedKind, model, registrationDeferred: true, ...(promptDelivery ? { promptDelivery } : {}), ...lifecycleOutcome(params) }
     }
-    return { ok: true, pending: true, ...launchedRoute, ...(identityResolution ? { identityResolution } : {}), ...(promptDelivery ? { promptDelivery } : {}) }
+    return { ok: true, pending: true, ...launchedRoute, ...(identityResolution ? { identityResolution } : {}), ...(promptDelivery ? { promptDelivery } : {}), ...lifecycleOutcome(params) }
   } catch (e) {
     const err = toSpawnError(e, e?.message?.includes('not available') ? 'name-bounced' : 'launch-failed', { fleetId, tmuxSession, model })
     librarian.failPending(fleetId || localAgentId, err.reason || 'launch-failed')
@@ -423,7 +516,7 @@ async function spawnFresh(params) {
     }
     if (terminated) localAgentLedger.delete(localAgentId)
     else err.detail = { ...(err.detail || {}), ownershipRetained: true, fleetId, tmuxSession }
-    if (terminated && serverUp && shellRegistered) {
+    if (terminated && shellRegistered) {
       try {
         await (deps.markAgentDead || markAgentDead)(fleetId, { api })
       } catch (markErr) {
@@ -439,12 +532,35 @@ async function spawnFresh(params) {
 async function spawnRespawn(params) {
   const deps = params._deps || {}
   const api = (deps.resolveApi || resolveApi)()
-  let serverUp = false
-  try { serverUp = await (deps.ensureServer || ensureServer)({ api }) } catch { serverUp = false }
   const name = params.name || params.agentId || params.agent_id
-  const agent = await (deps.findAgent || findAgent)(name, { api })
-  if (!agent) throw new SpawnError('launch-failed', `No agent '${name}'. Use --fresh to create.`, { name })
-  const meta = metadataOf(agent)
+  const fleetId = params.agentId || params.agent_id || (String(name || '').startsWith('fleet:') ? name : null)
+  if (!fleetId) throw new SpawnError('launch-failed', 'wake requires literal fleet_id', { name })
+  const ownedLocalLedger = params.localAgentLedger ? null : createLocalAgentLedger(params.localAgentLedgerPath)
+  const localAgentLedger = params.localAgentLedger || ownedLocalLedger
+  let localRecord
+  try {
+    localRecord = localAgentLedger.get(fleetId)
+  } finally {
+    ownedLocalLedger?.close()
+  }
+  if (!localRecord) {
+    throw new SpawnError('launch-failed', `Cannot wake ${fleetId}: daemon-local ledger has no bound mint record`, { fleetId })
+  }
+  const localProcess = localRecord.process || {}
+  const localConversation = localRecord.conversation || {}
+  if (!localProcess.cwd) {
+    throw new SpawnError('launch-failed', `Cannot wake ${fleetId}: daemon-local recipe has no cwd`, { fleetId, localAgentId: localRecord.localAgentId })
+  }
+  const permissionRow = params.permissionLedger?.get?.(fleetId) || null
+  const friendlyName = localRecord.friendlyName || fleetId
+  const cwd = resolveSpawnCwd(localProcess.cwd)
+  const meta = {
+    kind: localConversation.harness || permissionRow?.sessionKind || null,
+    model: localConversation.model || permissionRow?.model || null,
+    permissionGrant: params.permissionGrant || localProcess.permissionGrant || permissionRow?.permissionGrant || null,
+    permissionSet: params.permissionSet || permissionRow?.permissionSet || null,
+    effort: params.effort || null,
+  }
   const config = params.config ?? withDaemonModelAliases({}, readDaemonConfigForCwd(cwd))
   const rawModel = modelForRespawn(params, meta, config)
   const modelSpec = resolveLaunchSpec(rawModel, config, modelKwargs(params, meta.effort ? { effort: params.effort || meta.effort } : {}))
@@ -452,15 +568,23 @@ async function spawnRespawn(params) {
   const requestedKind = modelSpec.harness
   const adapter = ADAPTERS[requestedKind]
   if (!adapter) throw new SpawnError('launch-failed', `unknown spawn harness: ${requestedKind}`, { kind: requestedKind })
-  const fleetId = agent.id
-  const friendlyName = params.name && !params.name.startsWith('fleet:') ? params.name : (agent.friendly_name || agent.name || fleetId)
-  if (!agent.cwd) {
-    throw new SpawnError('launch-failed', `Cannot wake ${friendlyName} (${fleetId}): durable recipe has no cwd`, { fleetId })
-  }
-  const cwd = resolveSpawnCwd(agent.cwd)
   const modelResolved = resolveAdapterModel(adapter, rawModel, config, modelSpec)
   const model = modelResolved.model
-  const tmuxSession = agent.tmux_session || `fleet-${sanitizeSessionName(friendlyName)}`
+  const tmuxSession = localProcess.tmuxName || `fleet-${sanitizeSessionName(friendlyName)}`
+  const agent = {
+    id: fleetId,
+    friendly_name: friendlyName,
+    name: friendlyName,
+    cwd,
+    tmux_session: tmuxSession,
+    session_id: localConversation.sessionId || permissionRow?.sessionId || params.sessionId || params.session_id || null,
+    session_kind: requestedKind,
+    metadata: {
+      kind: requestedKind,
+      model: rawModel,
+      permissionGrant: meta.permissionGrant,
+    },
+  }
   // Wake is non-destructive. Permission changes do not authorize replacing a
   // live runtime: callers must use a separately named destructive operation
   // for that. A wake either keeps the live runtime or starts the exact durable
@@ -482,13 +606,12 @@ async function spawnRespawn(params) {
         { fleetId, tmuxSession },
       )
     }
-    const shellPending = !!meta.shell
-    if (requestedKind === 'codex' && (!runtimeState.mcp || shellPending)) {
+    if (requestedKind === 'codex' && !runtimeState.mcp) {
       return {
         ok: true,
         pending: true,
         runtimePresent: true,
-        reason: !runtimeState.mcp ? 'mcp-not-ready' : 'login-not-ready',
+        reason: 'mcp-not-ready',
         fleetId,
         tmuxSession,
         harness: requestedKind,
@@ -550,7 +673,6 @@ async function spawnRespawn(params) {
   }
   const resumeId = adapter.resumeId?.(handle)
   if (requestedKind === 'claude' && resumeId) stripSyntheticTail(resumeId)
-  const dnsAlias = await (deps.resolveDnsAlias || resolveDnsAlias)(api).catch(() => null)
   const launchPolicy = resolveLaunchPolicy({
     permissionGrant: params.permissionGrant || meta.permissionGrant,
     permissionSet: params.permissionSet || meta.permissionSet,
@@ -564,22 +686,6 @@ async function spawnRespawn(params) {
     acknowledgeNoSecurity: !!params.acknowledgeNoSecurity,
     harnessOptions: modelResolved.spec?.harnessOptions || null,
   })
-  if (serverUp && requestedKind === 'codex' && resumeId) {
-    await (deps.wsReserveShell || wsReserveShell)({
-      fleetId,
-      name: friendlyName,
-      tmuxSession,
-      cwd,
-      model,
-      effort: params.effort || meta.effort,
-      kind: requestedKind,
-      sessionId: resumeId,
-      metadata: permissionMetadata(launchPolicy.permissionGrant),
-      machineId: params.machineId,
-      api,
-      ...shellReservationOptions(params),
-    })
-  }
   const { cmd, sendKeys } = await buildCommand({
     requestedKind,
     adapter,
@@ -593,7 +699,7 @@ async function spawnRespawn(params) {
     permissionMode: launchPolicy.permissionMode,
     permissionGrant: launchPolicy.permissionGrant,
     api,
-    dnsAlias,
+    dnsAlias: null,
     resumeId,
     includePrompt: !(requestedKind === 'claude' && resumeId),
     leasePolicy: launchPolicy.leasePolicy,
@@ -612,7 +718,40 @@ async function spawnRespawn(params) {
   } else if (requestedKind === 'claude' && resumeId) {
     await injectClaudePrompt(tmuxSession, claude.kickoffPrompt(friendlyName), { tmuxSocket: params.tmuxSocket })
   }
-  return { ok: true, fleetId, tmuxSession, harness: requestedKind, model, resumeId }
+  let reconciliation = null
+  if (requestedKind === 'codex' && resumeId) {
+    try {
+      await (deps.ensureServer || ensureServer)({ api })
+      await (deps.wsReserveShell || wsReserveShell)({
+        fleetId,
+        name: friendlyName,
+        tmuxSession,
+        cwd,
+        model,
+        effort: params.effort || meta.effort,
+        kind: requestedKind,
+        sessionId: resumeId,
+        metadata: permissionMetadata(launchPolicy.permissionGrant, launchPolicy.leasePolicy),
+        machineId: params.machineId,
+        api,
+        ...shellReservationOptions(params),
+      })
+      reconciliation = { ok: true }
+    } catch (e) {
+      reconciliation = { ok: false, deferred: true, error: e?.message || String(e) }
+      traceSpawnDecision('wake-server-reconciliation-deferred', {
+        fleetId,
+        tmuxSession,
+        reason: reconciliation.error,
+      })
+      emitLifecycle(params, 'server-reconciliation-deferred', {
+        fleet_id: fleetId,
+        tmux_session: tmuxSession,
+        reason: reconciliation.error,
+      })
+    }
+  }
+  return { ok: true, fleetId, tmuxSession, harness: requestedKind, model, resumeId, ...(reconciliation ? { reconciliation } : {}), ...lifecycleOutcome(params) }
 }
 
 async function spawnRefresh(params) {
@@ -715,6 +854,87 @@ function defaultEnrolledName(params, sessionId) {
 function normalizeSessionKind(kind) {
   const k = String(kind ?? '').trim().toLowerCase()
   return k === 'codex' || k === 'claude' ? k : null
+}
+
+export async function launchDoctorYolo(params = {}) {
+  const deps = params._deps || {}
+  const requestedKind = String(params.kind || params.harness || 'codex').trim().toLowerCase()
+  const adapter = ADAPTERS[requestedKind]
+  if (!adapter) throw new SpawnError('launch-failed', `unknown doctor yolo harness: ${requestedKind}`, { kind: requestedKind })
+  const name = params.name || `yolo-${Date.now().toString(36).slice(-4)}`
+  const cwd = resolveSpawnCwd(params.cwd)
+  const rawModel = params.model
+  const config = directModelConfig(requestedKind, rawModel)
+  const localAgentId = params.localAgentId || params.local_agent_id || newLocalAgentId()
+  const tmuxSession = await (deps.uniqueSessionName || uniqueSessionName)(`fleet-${sanitizeSessionName(name)}`, { tmuxSocket: params.tmuxSocket })
+  const modelSpec = resolveLaunchSpec(rawModel, config)
+  const modelResolved = resolveAdapterModel(adapter, rawModel, config, modelSpec)
+  const { cmd, sendKeys, commandTrace } = await buildCommand({
+    requestedKind,
+    adapter,
+    fleetId: null,
+    localAgentId,
+    tmuxSession,
+    model: modelResolved.model,
+    modelProvider: modelResolved.provider,
+    name,
+    cwd,
+    effort: params.effort,
+    permissionMode: 'bypass',
+    permissionGrant: 'doctor-yolo',
+    api: null,
+    dnsAlias: null,
+    includePrompt: true,
+    leasePolicy: null,
+    enforceFence: false,
+    harnessOptions: requestedKind === 'codex'
+      ? { required: ['--dangerously-bypass-approvals-and-sandbox'], preferences: [] }
+      : {},
+    config,
+    env: spawnEnv(params),
+  })
+  traceSpawnDecision('doctor-yolo-command', {
+    name,
+    localAgentId,
+    requestedKind,
+    model: modelResolved.model,
+    cwd,
+    tmuxSession,
+    commandContainsFence: commandTrace.commandContainsFence,
+    commandContainsCodexYolo: commandTrace.commandContainsCodexYolo,
+    commandContainsDangerSandbox: commandTrace.commandContainsDangerSandbox,
+  })
+  const launched = await (deps.spawnTmux || spawnTmux)(tmuxSession, cwd, cmd, {
+    autoDismiss: requestedKind === 'claude',
+    sendKeys,
+    tmuxSocket: params.tmuxSocket,
+    crashLogPath: params.crashLogPath,
+  })
+  if (!launched) throw new SpawnError('launch-failed', `tmux session ${tmuxSession} already has a live harness runtime`, { tmuxSession })
+  if (requestedKind === 'codex') {
+    const injected = await (deps.injectCodexPrompt || injectCodexPrompt)(tmuxSession, codex.kickoffPrompt(name), { tmuxSocket: params.tmuxSocket })
+    if (!injected) {
+      return {
+        ok: true,
+        localAgentId,
+        fleetId: null,
+        tmuxSession,
+        harness: requestedKind,
+        model: modelResolved.model,
+        registrationDeferred: true,
+        promptDelivery: { ok: false, reason: 'unverified' },
+      }
+    }
+  }
+  return {
+    ok: true,
+    localAgentId,
+    fleetId: null,
+    tmuxSession,
+    harness: requestedKind,
+    model: modelResolved.model,
+    registrationDeferred: true,
+  }
 }
 
 async function spawnSession(params) {

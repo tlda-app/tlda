@@ -65,10 +65,10 @@ export function buildCmd({
   const parts = [
     ...(fleetId ? [`FLEET_ID=${sq(fleetId)}`] : []),
     ...(localAgentId ? [`FLEET_LOCAL_ID=${sq(localAgentId)}`] : []),
+    ...(localAgentId ? [`FLEET_MINT_ID=${sq(localAgentId)}`] : []),
     `FLEET_TMUX_SESSION=${sq(tmuxSession)}`,
     'FLEET_HARNESS=goose',
-    `TLDA_SERVER=${sq(api)}`,
-    `TLDA_SYNC_SERVER=${sq(api)}`,
+    ...(api ? [`TLDA_SERVER=${sq(api)}`, `TLDA_SYNC_SERVER=${sq(api)}`] : []),
   ]
   // Fresh spawn names can still be tentative before server confirm/rename;
   // GIT_AUTHOR_EMAIL carries the stable fleet id for authoritative attribution.
@@ -76,6 +76,7 @@ export function buildCmd({
   if (env.TLDA_MACHINE_ID) parts.push(`TLDA_MACHINE_ID=${sq(env.TLDA_MACHINE_ID)}`)
   const configName = activeConfigName(config, env)
   if (configName) parts.push(`TLDA_CONFIG=${sq(configName)}`)
+  if (env.TLDA_MACHINE_ID && configName) parts.push(`FLEET_DAEMON_KEY=${sq(`${env.TLDA_MACHINE_ID}:${configName}`)}`)
   const dnsAliasPreload = dnsAlias ? dnsAliasPreloadPath() : null
   if (dnsAlias && dnsAliasPreload) {
     parts.push(`NODE_OPTIONS=${sq(`--require=${dnsAliasPreload}`)}`)
