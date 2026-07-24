@@ -728,15 +728,34 @@ const agentLauncher = createAgentLauncher({
 const mintStore = new MintStore(path.join(CONFIG_DIR, 'daemon-mints.sqlite'))
 daemonMintCore = createDaemonMintCore({
   store: mintStore,
-  launchProcess: params => launchMintProcess({
-    ...params,
-    mintId: params.mint_id,
-    fleetId: params.fleet_id,
-    requestedKind: params.kind,
-    activeConfigName: ACTIVE_CONFIG,
-    machineId: MACHINE_ID,
-    tmuxSocket: TMUX_SOCKET,
-  }),
+  launchProcess: async params => {
+    const launchStartedAt = new Date().toISOString()
+    const processFact = await launchMintProcess({
+      ...params,
+      mintId: params.mint_id,
+      fleetId: params.fleet_id,
+      requestedKind: params.kind,
+      activeConfigName: ACTIVE_CONFIG,
+      machineId: MACHINE_ID,
+      tmuxSocket: TMUX_SOCKET,
+    })
+    if (processFact.session_id) return processFact
+    if (processFact.harness !== 'codex') return processFact
+    const live = await resolveLiveCodexSessionIdentity({
+      agent: {
+        id: processFact.fleet_id || params.fleet_id || null,
+        friendly_name: processFact.name || params.name || null,
+        cwd: processFact.cwd,
+        registered_at: launchStartedAt,
+      },
+      tmuxSession: processFact.tmux_session,
+      tmuxArgs: TMUX_ARGS,
+      tmuxSocket: TMUX_SOCKET,
+    })
+    return live?.sessionId
+      ? { ...processFact, session_id: live.sessionId, session_path: live.jsonlPath || null, model: live.model || processFact.model }
+      : processFact
+  },
   requestSeat: ({ mint_id, name, metadata, launch }) => wsMintShell({
     localAgentId: mint_id,
     name,
