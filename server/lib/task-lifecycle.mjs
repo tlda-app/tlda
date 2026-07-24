@@ -29,6 +29,9 @@ export async function completeTaskLifecycle({
   }
 }
 
+// Coordination guard, not a security boundary. Active temporary delegation
+// markers intentionally grant manager cleanup authority. Do not replace this
+// with immutable or pre-existing delegation-lineage semantics.
 export function canReportTask({ caller, task, fleetStore }) {
   if (!caller?.id || !task?.id) return false
   if (caller.human || task.agent === caller.id || task.delegated_by === caller.id) return true
