@@ -24,7 +24,6 @@ import os from 'os';
 
 import { createLiveStore } from '../../shared/live-store.ts';
 import { PSEUDO_LABELS, parseFilter, evalExpr, evalExprDirectional, astReadsSubscriberLabels, labelsForAgent } from '../../shared/fleet-labels.mjs';
-import { baseName, nameForPhase, phaseFromName, prettyNameForFriendlyName } from '../../shared/lineage-name.mjs';
 import { literalFtsQuery } from '../../shared/fts-query.mjs';
 import { fleetRosterCategory, isRuntimeAwake } from '../../shared/fleet-runtime-status.mjs';
 import { createTaskDocMaterializer } from './task-doc-materializer.mjs';
@@ -639,16 +638,7 @@ export class FleetStore {
     if (!agentCols.some(c => c.name === 'resume_id')) {
       this.db.exec("ALTER TABLE agents ADD COLUMN resume_id TEXT");
     }
-    if (!agentCols.some(c => c.name === 'pretty_name')) {
-      this.db.exec("ALTER TABLE agents ADD COLUMN pretty_name TEXT");
-    }
-    this.db.exec(`
-      CREATE INDEX IF NOT EXISTS idx_agents_missing_pretty_name
-      ON agents(friendly_name)
-      WHERE friendly_name IS NOT NULL
-        AND friendly_name != ''
-        AND (pretty_name IS NULL OR pretty_name = '')
-    `);
+    if (!agentCols.some(c => c.name === 'pretty_name')) this.db.exec("ALTER TABLE agents ADD COLUMN pretty_name TEXT");
     this.db.exec(`
       UPDATE agents
       SET daemon_key = machine_id || ':' || env_name
@@ -656,20 +646,6 @@ export class FleetStore {
         AND machine_id IS NOT NULL AND machine_id != ''
         AND env_name IS NOT NULL AND env_name != ''
     `);
-    const backfillPrettyNameRows = this.db.prepare(`
-      SELECT id, friendly_name FROM agents
-      WHERE friendly_name IS NOT NULL
-        AND friendly_name != ''
-        AND (pretty_name IS NULL OR pretty_name = '')
-    `).all();
-    if (backfillPrettyNameRows.length) {
-      const setPrettyName = this.db.prepare('UPDATE agents SET pretty_name = ? WHERE id = ?');
-      this.db.transaction((rows) => {
-        for (const row of rows) {
-          setPrettyName.run(serializePrettyName(prettyNameForFriendlyName(row.friendly_name)), row.id);
-        }
-      })(backfillPrettyNameRows);
-    }
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_agents_machine_env ON agents(machine_id, env_name)");
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_agents_daemon_key ON agents(daemon_key)");
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_daemon_registry_status ON daemon_registry(status, machine_id, env_name)");
@@ -712,9 +688,6 @@ export class FleetStore {
     if (!agentCols.some(c => c.name === 'lineage_id')) {
       this.db.exec("ALTER TABLE agents ADD COLUMN lineage_id TEXT");
     }
-    if (!agentCols.some(c => c.name === 'phase')) {
-      this.db.exec("ALTER TABLE agents ADD COLUMN phase TEXT");
-    }
 
     // last_active = most recent event timestamp where the agent is sender or
     // recipient. Maintained incrementally on every event insert (see share())
@@ -744,17 +717,6 @@ export class FleetStore {
         created_at INTEGER
       );
 
-      CREATE TABLE IF NOT EXISTS lineage_phase_log (
-        lineage_id TEXT,
-        fleet_id TEXT,
-        phase TEXT,
-        entered_at INTEGER,
-        exited_at INTEGER,
-        PRIMARY KEY (lineage_id, fleet_id, entered_at)
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_lineage_phase_log_lineage ON lineage_phase_log(lineage_id);
-      CREATE INDEX IF NOT EXISTS idx_lineage_phase_log_fleet ON lineage_phase_log(fleet_id);
       CREATE INDEX IF NOT EXISTS idx_agents_lineage ON agents(lineage_id);
 
       -- Stack model (source of truth for lineage membership). A lineage is an
@@ -783,6 +745,44 @@ export class FleetStore {
       CREATE INDEX IF NOT EXISTS idx_lineage_stack_lineage_active
         ON lineage_stack_entries(lineage_id, active, stack_index);
     `);
+
+    // One-way cutover from the retired phase tables. This runs only when an
+    // older database still has them, copies their history into the stack, then
+    // deletes the old schema. Runtime lineage behavior never reads phase data.
+    const hasPhaseLog = this.db.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type='table' AND name='lineage_phase_log'"
+    ).get();
+    if (hasPhaseLog) {
+      const position = new Map([['dawn', 0], ['day', 1], ['dusk', 2], ['night', 3]]);
+      const rows = this.db.prepare(
+        'SELECT lineage_id, fleet_id, phase, entered_at, exited_at FROM lineage_phase_log ORDER BY entered_at'
+      ).all();
+      const insertHistory = this.db.prepare(`
+        INSERT OR IGNORE INTO lineage_stack_entries
+          (lineage_id, fleet_id, stack_index, active, entered_at, exited_at, entry_reason)
+        VALUES (?, ?, ?, 0, ?, ?, 'phase-cutover')
+      `);
+      const latestActive = new Map();
+      this.db.transaction(() => {
+        for (const row of rows) {
+          const stackIndex = position.get(row.phase);
+          if (stackIndex == null) continue;
+          insertHistory.run(row.lineage_id, row.fleet_id, stackIndex, row.entered_at, row.exited_at);
+          if (row.exited_at == null) latestActive.set(`${row.lineage_id}:${stackIndex}`, row);
+        }
+        const insertActive = this.db.prepare(`
+          INSERT OR IGNORE INTO lineage_stack_entries
+            (lineage_id, fleet_id, stack_index, active, entered_at, entry_reason)
+          VALUES (?, ?, ?, 1, ?, 'phase-cutover')
+        `);
+        for (const row of latestActive.values()) {
+          insertActive.run(row.lineage_id, row.fleet_id, position.get(row.phase), Date.now());
+        }
+      })();
+      this.db.exec('DROP TABLE lineage_phase_log');
+    }
+    const currentAgentCols = this.db.prepare("PRAGMA table_info(agents)").all();
+    if (currentAgentCols.some(c => c.name === 'phase')) this.db.exec('ALTER TABLE agents DROP COLUMN phase');
 
     // Dedupe + enforce unique friendly_name among live agents.
     // Step 1: resolve existing duplicates — keep the most-recently-seen, mark the rest dead.
@@ -2124,55 +2124,18 @@ export class FleetStore {
   }
 
   // One-time seed so existing agents (registered before the triggers existed)
-  // resolve correctly. Idempotent: skipped once the table has any rows. Seeds
-  // from two sources, richest first:
-  //   1. lineage_phase_log — every phase an agent held maps to nameForPhase(base,
-  //      phase) over [entered_at, exited_at); the open phase becomes the current
-  //      span. This recovers dawn/day/dusk/night rotation history.
-  //   2. current friendly_name — for every named agent with no span yet, open a
-  //      span from registered_at so nameAt() at least returns the current name.
+  // resolve correctly. The exact current friendly_name is copied verbatim.
   // Pre-history events (before from_ts) fall back to the earliest known name.
   _backfillNameHistory() {
     const has = this.db.prepare('SELECT 1 FROM name_history LIMIT 1').get();
     if (has) return;
-    const msToIso = (ms) => (ms ? new Date(Number(ms)).toISOString() : null);
-    const lineageBase = new Map();
-    const baseOf = (lid) => {
-      if (!lid) return null;
-      if (!lineageBase.has(lid)) {
-        const row = this.db.prepare('SELECT friendly_name FROM lineages WHERE id = ?').get(lid);
-        lineageBase.set(lid, row?.friendly_name || null);
-      }
-      return lineageBase.get(lid);
-    };
     const insert = this.db.prepare(
       'INSERT INTO name_history (fleet_id, friendly_name, from_ts, to_ts) VALUES (?, ?, ?, ?)'
     );
     const seeded = new Set(); // fleet_ids that got at least one span
     let spans = 0;
-    // Humans don't rotate through lineage phases; any phase-log rows for a human
-    // are test noise. Excluding them keeps a human's own old messages tagged with
-    // their stable name (e.g. "skip"), not a spurious "skip:day".
-    const humanIds = new Set(
-      this.db.prepare('SELECT id FROM agents WHERE human = 1').all().map(r => r.id)
-    );
     this.db.transaction(() => {
-      // 1. Phase-log replay (skip humans).
-      const phaseRows = this.db.prepare(
-        'SELECT lineage_id, fleet_id, phase, entered_at, exited_at FROM lineage_phase_log ORDER BY entered_at'
-      ).all();
-      for (const r of phaseRows) {
-        if (humanIds.has(r.fleet_id)) continue;
-        const base = baseOf(r.lineage_id);
-        if (!base) continue;
-        const from = msToIso(r.entered_at);
-        if (!from) continue;
-        const nm = r.phase ? nameForPhase(base, r.phase) : null;
-        insert.run(r.fleet_id, nm, from, msToIso(r.exited_at));
-        seeded.add(r.fleet_id);
-        spans++;
-      }
-      // 2. Reconcile every agent's open span against its CURRENT friendly_name.
+      // Reconcile every agent's open span against its CURRENT friendly_name.
       //    The agents table is the source of truth for the present name; the open
       //    span must match it. Three cases:
       //      (a) no open span        → seed current name from registered_at.
@@ -2223,16 +2186,6 @@ export class FleetStore {
       // when no live agent holds the name, so resurrect-by-name still resolves.
       const nameRows = this.db.prepare('SELECT * FROM agents WHERE friendly_name = ? AND dead = 0').all(query);
       row = nameRows.length > 0 ? this._pickLiveHolder(nameRows) : this._getAgentByName.get(query);
-    }
-    if (!row) {
-      // A bare lineage name normally matches its dawn member directly (that
-      // member's name IS the base). Fall back to the day member if the dawn
-      // slot is currently empty.
-      const lineage = this.getLineage(query);
-      if (lineage) {
-        const day = this.getLineageDay(lineage.id);
-        if (day) return day;
-      }
     }
     if (!row) {
       // Search by session_id
@@ -2531,14 +2484,14 @@ export class FleetStore {
     this._syncAgentRegistry(id);
   }
 
-  async renameAgentFriendlyName(id, friendlyName, { actorId = null, reason = 'rename' } = {}) {
+  async renameAgentFriendlyName(id, friendlyName, { actorId = null, reason = 'rename', prettyName = undefined } = {}) {
     const agent = this._getAgent.get(id);
     if (!agent) throw new Error('agent not found');
     const oldName = agent.friendly_name || null;
     const newName = friendlyName || null;
     this.db.transaction(() => {
       this.db.prepare('UPDATE agents SET friendly_name = ?, pretty_name = ? WHERE id = ?')
-        .run(newName, serializePrettyName(prettyNameForFriendlyName(newName)), id);
+        .run(newName, prettyName === undefined ? null : serializePrettyName(prettyName), id);
       this._bustAgentsCache();
       this._syncAgentRegistry(id);
     })();
@@ -2634,94 +2587,18 @@ export class FleetStore {
     return row;
   }
 
-  // The lineage's base name — the bare (dawn) name its triple is built on.
-  _lineageBase(lineageId) {
-    return this.db.prepare('SELECT friendly_name FROM lineages WHERE id = ?').get(lineageId)?.friendly_name || null;
-  }
-
-  // The live, named members of a lineage. Phase is read off each name on the
-  // client; rotated-off members have a NULL name and are excluded here.
+  // Current named roster. Stack position is returned as data; names remain
+  // opaque atoms and are never interpreted by the store.
   getLineageRoster(lineageId) {
     return this.db.prepare(
-      "SELECT agents.*, lineages.friendly_name AS lineage_name FROM agents LEFT JOIN lineages ON lineages.id = agents.lineage_id WHERE agents.lineage_id = ? AND agents.friendly_name IS NOT NULL AND agents.dead = 0"
+      `SELECT agents.*, lineages.friendly_name AS lineage_name, stack.stack_index
+       FROM lineage_stack_entries stack
+       JOIN agents ON agents.id = stack.fleet_id
+       LEFT JOIN lineages ON lineages.id = stack.lineage_id
+       WHERE stack.lineage_id = ? AND stack.active = 1
+         AND agents.friendly_name IS NOT NULL AND agents.dead = 0
+       ORDER BY stack.stack_index`
     ).all(lineageId).map(r => this.projectAgentCurrentSeat(this._hydrateAgent(r)));
-  }
-
-  // The day (manager) member — the one whose name is "<base>:day".
-  getLineageDay(lineageId) {
-    const base = this._lineageBase(lineageId);
-    if (!base) return null;
-    const row = this.db.prepare(
-      "SELECT agents.*, lineages.friendly_name AS lineage_name FROM agents LEFT JOIN lineages ON lineages.id = agents.lineage_id WHERE agents.lineage_id = ? AND agents.friendly_name = ? AND agents.dead = 0"
-    ).get(lineageId, nameForPhase(base, 'day'));
-    return row ? this.projectAgentCurrentSeat(this._hydrateAgent(row)) : null;
-  }
-
-  // Map an OLD phase label to a stack position. dawn/bare = top (0), then day/
-  // dusk/night down. zombie/unknown = not an active position (historical). This
-  // is used ONLY by the one-time migration below — the live server never maps a
-  // name to a position.
-  _stackPositionForPhase(phase) {
-    switch (phase) {
-      case null: case undefined: case 'dawn': case 'bare': return 0;
-      case 'day': return 1;
-      case 'dusk': return 2;
-      case 'night': return 3;
-      default: return null; // zombie / unknown → historical, not an active seat
-    }
-  }
-
-  // One-time, idempotent migration from the phase-slot model to the stack model.
-  // Reads each lineage's live named members, maps their EXISTING phase name to a
-  // stack position, and (only when apply && zero blockers) records
-  // `lineage_stack_entries`. This is the sole place old phase names are read — a
-  // translation out of the old world, not live routing. Dry-run first: returns a
-  // per-lineage report + blockers so the exact position assignments and any
-  // collision/off-the-bottom cases are visible before any write. Policy (Skip):
-  // the named stack caps at 4 (positions 0..3); an active member that would land
-  // at position ≥ 4 is reported `nameless` (rotated off the bottom, Todd nulls
-  // the name). With only dawn/day/dusk/night phases the cap is never exceeded, so
-  // that branch is defensive.
-  migrateToStackEntries({ apply = false } = {}) {
-    const report = { lineages: [], blockers: [], applied: false, writeCount: 0 };
-    const lineages = this.db.prepare('SELECT id, friendly_name FROM lineages').all();
-    const now = Date.now();
-    const writes = [];
-    for (const lin of lineages) {
-      const base = lin.friendly_name;
-      const members = this.getLineageRoster(lin.id); // live, named members only
-      const byPos = new Map();
-      const entry = { lineage_id: lin.id, base, assignments: [], nameless: [] };
-      for (const m of members) {
-        const phase = phaseFromName(m.friendly_name) || (baseName(m.friendly_name) === base ? 'dawn' : null);
-        const pos = this._stackPositionForPhase(phase);
-        if (pos === null) {
-          entry.assignments.push({ fleet_id: m.id, name: m.friendly_name, phase, stack_index: null, historical: true });
-          continue;
-        }
-        if (byPos.has(pos)) {
-          report.blockers.push({ lineage_id: lin.id, base, kind: 'duplicate-position', stack_index: pos, ids: [byPos.get(pos), m.id] });
-        } else {
-          byPos.set(pos, m.id);
-        }
-        if (pos >= 4) entry.nameless.push(m.id);
-        entry.assignments.push({ fleet_id: m.id, name: m.friendly_name, phase, stack_index: pos });
-      }
-      report.lineages.push(entry);
-      for (const a of entry.assignments) {
-        if (a.stack_index === null || a.stack_index >= 4) continue;
-        writes.push([lin.id, a.fleet_id, a.stack_index, now]);
-      }
-    }
-    report.writeCount = writes.length;
-    if (apply && report.blockers.length === 0) {
-      const ins = this.db.prepare(
-        "INSERT OR IGNORE INTO lineage_stack_entries (lineage_id, fleet_id, stack_index, active, entered_at, entry_reason) VALUES (?, ?, ?, 1, ?, 'migration')"
-      );
-      this.db.transaction(() => { for (const w of writes) ins.run(...w); })();
-      report.applied = true;
-    }
-    return report;
   }
 
   // The live active stack (ascending by position) for a lineage.
@@ -2741,11 +2618,15 @@ export class FleetStore {
     if (!nameAssignments || !nameAssignments.length) return;
     this.db.transaction(() => {
       const clear = this.db.prepare('UPDATE agents SET friendly_name = NULL, pretty_name = NULL WHERE id = ?');
-      for (const { fleetId } of nameAssignments) clear.run(fleetId);
+      const setLabels = this.db.prepare('UPDATE agents SET labels = ? WHERE id = ?');
+      for (const { fleetId, labels } of nameAssignments) {
+        clear.run(fleetId);
+        if (labels !== undefined) setLabels.run(JSON.stringify(labels), fleetId);
+      }
       this._bustAgentsCache();
     })();
-    for (const { fleetId, friendlyName } of nameAssignments) {
-      await this.renameAgentFriendlyName(fleetId, friendlyName || null, { actorId, reason });
+    for (const { fleetId, friendlyName, prettyName } of nameAssignments) {
+      await this.renameAgentFriendlyName(fleetId, friendlyName || null, { actorId, reason, prettyName });
     }
   }
 
@@ -2803,11 +2684,13 @@ export class FleetStore {
     const now = Date.now();
     const affected = new Set();
     let popped = null;
+    let successor = null;
     this.db.transaction(() => {
       const active = this._activeStack(lineageId);
       if (active.length === 0) return;
       const top = active[0];
       popped = top.fleet_id;
+      successor = active[1]?.fleet_id || null;
       const closeOne = this.db.prepare('UPDATE lineage_stack_entries SET active=0, exited_at=? WHERE lineage_id=? AND fleet_id=? AND stack_index=? AND active=1');
       const insert = this.db.prepare("INSERT INTO lineage_stack_entries (lineage_id, fleet_id, stack_index, active, entered_at, entry_reason) VALUES (?, ?, ?, 1, ?, ?)");
       closeOne.run(now, lineageId, top.fleet_id, top.stack_index);
@@ -2820,6 +2703,7 @@ export class FleetStore {
         affected.add(r.fleet_id);
       }
       this.db.prepare('UPDATE agents SET lineage_id = NULL WHERE id = ?').run(top.fleet_id);
+      if (successor) this.transferTasks(top.fleet_id, successor);
       this._bustAgentsCache();
     })();
     await this._applyNameAssignments(nameAssignments, { actorId, reason: `stack-${reason}` });
@@ -2860,306 +2744,19 @@ export class FleetStore {
     });
   }
 
-  // Assign an agent into a lineage at a phase. Phase isn't stored — it's the
-  // name: the agent is renamed to "<base>" (dawn) / "<base>:day" / "<base>:dusk".
-  assignPhase(agentId, lineageId, phase) {
-    const now = Date.now();
-    const base = this._lineageBase(lineageId);
-    // No base name = nothing to name the agent. Attach it to the lineage but
-    // leave its existing name alone rather than NULLing it — a NULL name on a
-    // live agent is exactly the nameless phantom row we must never create.
-    if (!base) {
-      this.db.transaction(() => {
-        this.db.prepare('UPDATE agents SET lineage_id = ? WHERE id = ?').run(lineageId, agentId);
-        this.db.prepare(
-          'INSERT INTO lineage_phase_log (lineage_id, fleet_id, phase, entered_at) VALUES (?, ?, ?, ?)'
-        ).run(lineageId, agentId, phase, now);
-      })();
-      this._bustAgentsCache();
-      this._syncAgentRegistry(agentId);
-      return;
-    }
-    this.db.transaction(() => {
-      const nextName = nameForPhase(base, phase);
-      this.db.prepare('UPDATE agents SET lineage_id = ?, friendly_name = ?, pretty_name = ? WHERE id = ?')
-        .run(lineageId, nextName, serializePrettyName(prettyNameForFriendlyName(nextName)), agentId);
-      this.db.prepare(
-        'INSERT INTO lineage_phase_log (lineage_id, fleet_id, phase, entered_at) VALUES (?, ?, ?, ?)'
-      ).run(lineageId, agentId, phase, now);
-    })();
-    this._bustAgentsCache();
-    this._syncAgentRegistry(agentId);
-  }
-
-  retireFromLineage(agentId) {
-    const now = Date.now();
-    this.db.transaction(() => {
-      const agent = this._getAgent.get(agentId);
-      if (!agent || !agent.lineage_id) return;
-      this.db.prepare(
-        'UPDATE lineage_phase_log SET exited_at = ? WHERE fleet_id = ? AND exited_at IS NULL'
-      ).run(now, agentId);
-      this.db.prepare('UPDATE agents SET lineage_id = NULL WHERE id = ?')
-        .run(agentId);
-    })();
-    this._bustAgentsCache();
-    this._syncAgentRegistry(agentId);
-  }
-
-  // Resurrect a dead agent. If it was rotated out of a lineage — i.e. it is
-  // still attached to a lineage but lost its slot name (friendly_name NULL) when
-  // it aged out — bring it back as a zombie: in the lineage, out of rotation,
-  // named "<base>:zombie". A plain dead agent (no lineage, or still named) just
-  // comes back as-is. Returns { ok, zombie, name? }.
-  resurrectAsZombie(agentId) {
-    const result = this.db.transaction(() => {
-      const agent = this._getAgent.get(agentId);
-      if (!agent) return { ok: false, reason: 'not found' };
-      this.db.prepare('UPDATE agents SET dead = 0 WHERE id = ?').run(agentId);
-      if (!agent.lineage_id || agent.friendly_name) return { ok: true, zombie: false };
-      const base = this._lineageBase(agent.lineage_id);
-      if (!base) return { ok: true, zombie: false };
-      const zombieName = nameForPhase(base, 'zombie');
-      // Global friendly_name uniqueness: if a live agent OUTSIDE this agent
-      // already holds zombieName, bail rather than mint a cross-lineage duplicate.
-      const nameHeldByOther = this.db.prepare(
-        'SELECT id FROM agents WHERE friendly_name = ? AND dead = 0 AND id != ?'
-      ).get(zombieName, agentId);
-      if (nameHeldByOther) return { ok: false, reason: 'zombie name held by another live agent' };
-      const now = Date.now();
-      // At most one zombie per lineage: raising this one ages out any existing
-      // live zombie (name off, marked dead), freeing the name for this agent.
-      const existing = this.db.prepare(
-        'SELECT id FROM agents WHERE lineage_id = ? AND friendly_name = ? AND dead = 0 AND id != ?'
-      ).all(agent.lineage_id, zombieName, agentId);
-      for (const z of existing) {
-        this.db.prepare('UPDATE lineage_phase_log SET exited_at = ? WHERE fleet_id = ? AND exited_at IS NULL').run(now, z.id);
-        this.db.prepare('UPDATE agents SET friendly_name = NULL, pretty_name = NULL, dead = 1 WHERE id = ?').run(z.id);
-      }
-      this.db.prepare('UPDATE agents SET friendly_name = ?, pretty_name = ? WHERE id = ?')
-        .run(zombieName, serializePrettyName(prettyNameForFriendlyName(zombieName)), agentId);
-      const prev = this.db.prepare(
-        'SELECT MAX(entered_at) AS m FROM lineage_phase_log WHERE lineage_id = ? AND fleet_id = ?'
-      ).get(agent.lineage_id, agentId);
-      const ts = Math.max(now, (prev?.m || 0) + 1);
-      this.db.prepare(
-        'INSERT INTO lineage_phase_log (lineage_id, fleet_id, phase, entered_at) VALUES (?, ?, ?, ?)'
-      ).run(agent.lineage_id, agentId, 'zombie', ts);
-      return { ok: true, zombie: true, name: zombieName };
-    })();
-    this._bustAgentsCache();
-    this._reloadAgentRegistry();
-    return result;
-  }
-
-  // Move an agent to a different phase within its lineage = rename it.
-  transitionPhase(agentId, newPhase) {
-    const now = Date.now();
-    this.db.transaction(() => {
-      const agent = this._getAgent.get(agentId);
-      if (!agent || !agent.lineage_id) return;
-      const base = this._lineageBase(agent.lineage_id);
-      // No base name = nothing to rename to. Bail rather than NULLing the name,
-      // which would leave an alive-but-nameless phantom row off any lineage.
-      if (!base) return;
-      const nextName = nameForPhase(base, newPhase);
-      // Global friendly_name uniqueness (the "two chiefs" bug): a name may
-      // belong to at most one non-dead agent. If a live agent OUTSIDE this
-      // lineage already holds nextName, bail rather than mint a duplicate —
-      // same safety stance as the "bail rather than NULL" guard above. The
-      // per-lineage free happens in the rotation paths; this is the global
-      // backstop the lineage paths were missing.
-      const nameHeldByOther = this.db.prepare(
-        'SELECT id FROM agents WHERE friendly_name = ? AND dead = 0 AND id != ?'
-      ).get(nextName, agentId);
-      if (nameHeldByOther) return;
-      this.db.prepare(
-        'UPDATE lineage_phase_log SET exited_at = ? WHERE fleet_id = ? AND exited_at IS NULL'
-      ).run(now, agentId);
-      this.db.prepare('UPDATE agents SET friendly_name = ?, pretty_name = ? WHERE id = ?')
-        .run(nextName, serializePrettyName(prettyNameForFriendlyName(nextName)), agentId);
-      this.db.prepare(
-        'INSERT INTO lineage_phase_log (lineage_id, fleet_id, phase, entered_at) VALUES (?, ?, ?, ?)'
-      ).run(agent.lineage_id, agentId, newPhase, now);
-    })();
-    this._bustAgentsCache();
-    this._syncAgentRegistry(agentId);
-  }
-
-  // One rotation of the lineage's name-chain. The incoming agent takes the
-  // dawn name (bare base); the existing holders each shift up a rung —
-  // dawn → "<base>:day", day → "<base>:dusk", dusk → "<base>:night", and the
-  // old night ages OUT OF EXISTENCE: its name rotates off (NULL) and it is
-  // marked dead, so it drops off the live roster (all roster queries filter
-  // dead = 0) — no nameless phantom row. Its name is preserved in name_history,
-  // and it can be brought back later as a zombie (out of rotation) via
-  // resurrect. Zombie is NOT assigned here — that phase is reserved for manual
-  // resurrection. Direct handoff applies this once; briefing applies it twice.
-  rotateLineageIn(lineageId, incomingAgentId) {
-    const now = Date.now();
-    const base = this._lineageBase(lineageId);
-    if (!base) return;
-    const dawnName = nameForPhase(base, 'dawn');
-    const dayName = nameForPhase(base, 'day');
-    const duskName = nameForPhase(base, 'dusk');
-    const nightName = nameForPhase(base, 'night');
-    // Find the current holder of a given name within this lineage.
-    const holder = (name) => this.db.prepare(
-      'SELECT id FROM agents WHERE lineage_id = ? AND friendly_name = ? AND dead = 0'
-    ).get(lineageId, name)?.id || null;
-    const rename = (id, name) => this.db.prepare('UPDATE agents SET friendly_name = ?, pretty_name = ? WHERE id = ?')
-      .run(name, serializePrettyName(prettyNameForFriendlyName(name)), id);
-    // Ages out of existence: name rotates off (NULL) AND the agent is marked
-    // dead, so it drops off the live roster (no nameless phantom row). The name
-    // lives on in name_history; resurrect can bring it back as a zombie.
-    const retire = (id) => this.db.prepare('UPDATE agents SET friendly_name = NULL, pretty_name = NULL, dead = 1 WHERE id = ?').run(id);
-    const exitLog = (id) => this.db.prepare(
-      'UPDATE lineage_phase_log SET exited_at = ? WHERE fleet_id = ? AND exited_at IS NULL'
-    ).run(now, id);
-    const enterLog = (id, phase) => {
-      // PK is (lineage_id, fleet_id, entered_at); ms-resolution Date.now() can
-      // collide with a prior entry for the same agent under rapid rotation, so
-      // force the timestamp strictly past this agent's last entry in the lineage.
-      const prev = this.db.prepare(
-        'SELECT MAX(entered_at) AS m FROM lineage_phase_log WHERE lineage_id = ? AND fleet_id = ?'
-      ).get(lineageId, id);
-      const ts = Math.max(now, (prev?.m || 0) + 1);
-      this.db.prepare(
-        'INSERT INTO lineage_phase_log (lineage_id, fleet_id, phase, entered_at) VALUES (?, ?, ?, ?)'
-      ).run(lineageId, id, phase, ts);
-    };
-    // Resolve holders BEFORE any rename, then apply in an order that frees each
-    // name before it's reused: night → retired, dusk → night, day → dusk,
-    // dawn → day, in → dawn.
-    // Global friendly_name uniqueness: the incoming agent will take dawnName
-    // (the bare base). Bail if another live agent outside this agent already
-    // holds it — same guard as transitionPhase.
-    const dawnNameHeldByOther = this.db.prepare(
-      'SELECT id FROM agents WHERE friendly_name = ? AND dead = 0 AND id != ?'
-    ).get(dawnName, incomingAgentId);
-    if (dawnNameHeldByOther) return;
-    const nightId = holder(nightName);
-    const duskId = holder(duskName);
-    const dayId = holder(dayName);
-    const dawnId = holder(dawnName);
-    this.db.transaction(() => {
-      if (nightId && nightId !== incomingAgentId) {
-        exitLog(nightId);
-        retire(nightId); // ages out of existence: marked dead, drops off the roster
-      }
-      if (duskId && duskId !== incomingAgentId) {
-        exitLog(duskId);
-        rename(duskId, nightName);
-        enterLog(duskId, 'night');
-      }
-      if (dayId && dayId !== incomingAgentId) {
-        exitLog(dayId);
-        rename(dayId, duskName);
-        enterLog(dayId, 'dusk');
-      }
-      if (dawnId && dawnId !== incomingAgentId) {
-        exitLog(dawnId);
-        rename(dawnId, dayName);
-        enterLog(dawnId, 'day');
-      }
-      // Incoming enters at dawn (the worker), taking the bare base name and
-      // leaving whatever lineage/name it held before.
-      exitLog(incomingAgentId);
-      this.db.prepare('UPDATE agents SET lineage_id = ?, friendly_name = ?, pretty_name = ? WHERE id = ?')
-        .run(lineageId, dawnName, serializePrettyName(prettyNameForFriendlyName(dawnName)), incomingAgentId);
-      enterLog(incomingAgentId, 'dawn');
-    })();
-    this._bustAgentsCache();
-    this._reloadAgentRegistry();
-  }
-
-  // Free a phase slot so a new agent can be placed there, instead of erroring on
-  // "occupied." The current occupant ages one rung toward night, cascading — each
-  // occupied rung from the target down pushes its holder into the rung below, and
-  // whoever would fall off night ages OUT OF EXISTENCE (name rotates off to NULL
-  // AND marked dead, so it drops off the live roster — no nameless phantom row;
-  // name preserved in name_history). No-op if the slot is already free. This is
-  // the "free the names you need, then place" half of a handoff rotation.
-  makeRoomForPhase(lineageId, phase) {
-    const base = this._lineageBase(lineageId);
-    if (!base) return;
-    const ORDER = ['dawn', 'day', 'dusk', 'night'];
-    const startIdx = ORDER.indexOf(phase);
-    if (startIdx < 0) return;
-    const now = Date.now();
-    const holder = (name) => this.db.prepare(
-      'SELECT id FROM agents WHERE lineage_id = ? AND friendly_name = ? AND dead = 0'
-    ).get(lineageId, name)?.id || null;
-    const exitLog = (id) => this.db.prepare(
-      'UPDATE lineage_phase_log SET exited_at = ? WHERE fleet_id = ? AND exited_at IS NULL'
-    ).run(now, id);
-    const enterLog = (id, ph) => {
-      const prev = this.db.prepare(
-        'SELECT MAX(entered_at) AS m FROM lineage_phase_log WHERE lineage_id = ? AND fleet_id = ?'
-      ).get(lineageId, id);
-      const ts = Math.max(now, (prev?.m || 0) + 1);
-      this.db.prepare(
-        'INSERT INTO lineage_phase_log (lineage_id, fleet_id, phase, entered_at) VALUES (?, ?, ?, ?)'
-      ).run(lineageId, id, ph, ts);
-    };
-    // Global friendly_name uniqueness: before rotating, verify no target name
-    // is held by a live agent outside its current holder (cross-lineage guard).
-    for (let i = ORDER.length - 1; i >= startIdx; i--) {
-      const id = holder(nameForPhase(base, ORDER[i]));
-      if (!id) continue;
-      if (i < ORDER.length - 1) {
-        const downName = nameForPhase(base, ORDER[i + 1]);
-        const nameHeldByOther = this.db.prepare(
-          'SELECT id FROM agents WHERE friendly_name = ? AND dead = 0 AND id != ?'
-        ).get(downName, id);
-        if (nameHeldByOther) return;
-      }
-    }
-    this.db.transaction(() => {
-      // Walk bottom-up (night → target): each occupied rung's holder moves into
-      // the rung below (already vacated this pass), and the night holder ages out
-      // of existence (name → NULL, marked dead, drops off the live roster).
-      for (let i = ORDER.length - 1; i >= startIdx; i--) {
-        const id = holder(nameForPhase(base, ORDER[i]));
-        if (!id) continue;
-        exitLog(id);
-        if (i === ORDER.length - 1) {
-          this.db.prepare('UPDATE agents SET friendly_name = NULL, pretty_name = NULL, dead = 1 WHERE id = ?').run(id);
-        } else {
-          const downPh = ORDER[i + 1];
-          const downName = nameForPhase(base, downPh);
-          this.db.prepare('UPDATE agents SET friendly_name = ?, pretty_name = ? WHERE id = ?')
-            .run(downName, serializePrettyName(prettyNameForFriendlyName(downName)), id);
-          enterLog(id, downPh);
-        }
-      }
-    })();
-    this._bustAgentsCache();
-    this._reloadAgentRegistry();
-  }
-
   getLineageHistory(lineageId) {
     return this.db.prepare(
-      'SELECT * FROM lineage_phase_log WHERE lineage_id = ? ORDER BY entered_at'
+      'SELECT * FROM lineage_stack_entries WHERE lineage_id = ? ORDER BY entered_at'
     ).all(lineageId);
   }
 
   getLineageFleetIds(lineageId) {
     const rows = this.db.prepare(
-      'SELECT DISTINCT fleet_id FROM lineage_phase_log WHERE lineage_id = ?'
+      'SELECT DISTINCT fleet_id FROM lineage_stack_entries WHERE lineage_id = ?'
     ).all(lineageId);
     return rows.map(r => r.fleet_id);
   }
 
-  findAgentByLineagePhase(lineageName, phase) {
-    const lineage = this.getLineage(lineageName);
-    if (!lineage) return null;
-    // Phase is the name: "<base>" (dawn) / "<base>:day" / "<base>:dusk".
-    const row = this.db.prepare(
-      'SELECT agents.*, lineages.friendly_name AS lineage_name FROM agents LEFT JOIN lineages ON lineages.id = agents.lineage_id WHERE agents.lineage_id = ? AND agents.friendly_name = ? AND agents.dead = 0'
-    ).get(lineage.id, nameForPhase(lineage.friendly_name, phase));
-    return row ? this.projectAgentCurrentSeat(this._hydrateAgent(row)) : null;
-  }
 
   _hydrateAgent(row) {
     const lastActive = row.last_active || null
@@ -3175,8 +2772,7 @@ export class FleetStore {
       pretty_name: parsePrettyName(row.pretty_name),
       last_active: lastActive,
       lineage_id: row.lineage_id || null,
-      // No `phase` field — phase is encoded in friendly_name and parsed on the
-      // client. lineage_name (the base) is still exposed for lineage search.
+      // Names are opaque atoms. Stack position is separate lineage data.
       lineage_name: row.lineage_name || null,
     }
     const runtimeStatus = this._runtimeStatusProvider
@@ -4131,13 +3727,9 @@ export class FleetStore {
   }
 
   // Unified search across fleet events (events_fts) and session JSONL text (session_entries_fts).
-  // Resolve a typed agent-name fragment to the set of fleet ids it refers to.
-  // Pure substring over the agent's SEARCHABLE name, where a bare (dawn) name is
-  // treated as if it carried an explicit ":dawn" suffix — so `bear` matches the
-  // whole family (bear, bear:day, …), `bear:` pins to just that family, `bear:dawn`
-  // reaches the otherwise-bare dawn incarnation, and `:dawn` matches every dawn.
-  // Matches against the current friendly_name AND every name an agent ever held
-  // (name_history), so a name an agent USED to hold still finds it. Distinct ids.
+  // Resolve a typed name atom or lineage to fleet ids. Friendly names are
+  // matched verbatim; lineage expansion comes from the stack table, never from
+  // decomposing a name.
   resolveAgentQuery(fragment) {
     return this.resolveAgentSelector({ fragment });
   }
@@ -4146,19 +3738,35 @@ export class FleetStore {
     selector = typeof selector === 'string' ? { fragment: selector } : (selector || {});
     const baseFragment = (selector.fragment || '').trim().toLowerCase();
     if (!baseFragment) return [];
-    // The fragment is the whole name (including any `:suffix`) — the grammar no
-    // longer splits off a "phase". Match it as-is.
+    const lineage = this.getLineage(selector.fragment)
+    if (lineage) {
+      const stackRows = this.db.prepare(`
+        SELECT fleet_id, MIN(stack_index) AS stack_index, MAX(entered_at) AS entered_at
+        FROM lineage_stack_entries WHERE lineage_id = ?
+        GROUP BY fleet_id
+        ORDER BY CASE WHEN MAX(active) = 1 THEN 0 ELSE 1 END, stack_index, entered_at DESC
+      `).all(lineage.id)
+      const stackIds = stackRows.map(row => row.fleet_id)
+      if (selector.position != null) {
+        const idx = Math.max(0, Number(selector.position) - 1)
+        return stackIds[idx] ? [stackIds[idx]] : []
+      }
+      if (selector.range) {
+        const from = selector.range.from == null ? 0 : Math.max(0, Number(selector.range.from) - 1)
+        const to = selector.range.to == null ? undefined : Math.max(from, Number(selector.range.to))
+        return stackIds.slice(from, to)
+      }
+      return stackIds
+    }
     const q = baseFragment;
     const like = `%${q}%`;
-    // A bare name (no ':') gets a virtual ":dawn" so substring is uniform.
-    const synth = "CASE WHEN instr(friendly_name, ':') > 0 THEN lower(friendly_name) ELSE lower(friendly_name) || ':dawn' END";
     const rows = this.db.prepare(`
       WITH matches AS (
         SELECT id, coalesce(last_seen, registered_at, '') AS seen_at FROM agents
-          WHERE friendly_name IS NOT NULL AND (${synth}) LIKE ?
+          WHERE friendly_name IS NOT NULL AND lower(friendly_name) LIKE ?
         UNION ALL
         SELECT fleet_id AS id, coalesce(to_ts, from_ts, '') AS seen_at FROM name_history
-          WHERE friendly_name IS NOT NULL AND (${synth}) LIKE ?
+          WHERE friendly_name IS NOT NULL AND lower(friendly_name) LIKE ?
       )
       SELECT id FROM matches
       GROUP BY id

@@ -92,7 +92,7 @@ export function fleetAgentDisplayLabel(agent: any): string {
 
 export function fleetAgentExactName(agent: any): string {
   if (!agent) return ''
-  return agent.friendly_name || (agent.id || '').replace('fleet:', '')
+  return agent.friendly_name || agent.id || ''
 }
 
 function agentTimestamp(agent: any): number {

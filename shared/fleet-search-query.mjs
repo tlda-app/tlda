@@ -75,7 +75,6 @@ export function parseAgentSelector(raw, scope = 'any') {
     scope,
     expansion: 'stack',
     match: parsed?.match ?? 'auto',
-    ...(parsed?.phase ? { phase: parsed.phase } : {}),
     ...(parsed?.position != null ? { position: parsed.position } : {}),
     ...(parsed?.range ? { range: parsed.range } : {}),
   }

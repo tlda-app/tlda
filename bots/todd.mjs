@@ -1581,6 +1581,9 @@ const HANDOFF_PATTERN = /(?:(?:I\s+(?:want|wanna|need)\s+to\s+)?hand\s+(?:this\s
 const ROTATE_PATTERN = /\brotate\s+(?:this\s+(?:guy|agent|one)|him|her|them|it|me|myself|us|the\s+agent)?\s*out\b|\brotate\s+out\b/i
 const ROTATE_NAMED_PATTERN = /\brotate\s+(.+?)\s+out\b/i
 const DISINHERIT_PATTERN = /\bdisinherit\b/i
+const LINEAGE_ADOPT_PATTERN = /\badopt\s+([^\s,;]+)/i
+const LINEAGE_SWAP_PATTERN = /\bswap(?:\s+(?:this\s+)?(?:agent|holder|one|them|him|her))?\s+(?:with|for)\s+([^\s,;]+)/i
+const LINEAGE_POP_PATTERN = /\b(?:pop|remove)\s+(?:(?:this\s+)?(?:agent|holder|one|them|him|her)\s+)?(?:from\s+(?:the\s+)?lineage)?\b/i
 const DISINHERIT_CAT_NAMES = ['Whiskers', 'Mittens', 'Felix', 'Salem', 'Tom', 'Garfield', 'Simba']
 const handoffCooldowns = new Map()
 const HANDOFF_COOLDOWN_MS = 120_000
@@ -2060,6 +2063,71 @@ async function hasInvokedSkillSince(agentId, skillName, sinceTs) {
 
 // ---- Handoff automation ----
 
+const LINEAGE_SUFFIXES = ['', ':day', ':dusk', ':night']
+
+function lineageNameAssignments(base, fleetIds, topLabels = []) {
+  return fleetIds.map((fleetId, index) => ({
+    fleet_id: fleetId,
+    friendly_name: index < LINEAGE_SUFFIXES.length ? `${base}${LINEAGE_SUFFIXES[index]}` : null,
+    labels: index === 0 ? topLabels : [],
+  }))
+}
+
+async function lineageStack(lineage) {
+  const result = await sendRequest({ type: 'lineage-stack', lineage })
+  return result?.stack || []
+}
+
+async function pushLineageHolder(lineage, incomingId, reason = 'push-existing') {
+  const before = await lineageStack(lineage).catch(() => [])
+  const topLabels = before[0]?.labels || []
+  const ids = [incomingId, ...before.map(item => item.id).filter(id => id !== incomingId)]
+  return await sendRequest({
+    type: 'lineage-push',
+    lineage,
+    agent: incomingId,
+    caller: AGENT_ID,
+    reason,
+    name_assignments: lineageNameAssignments(lineage, ids, topLabels),
+  })
+}
+
+async function popLineageHolder(lineage, reason = 'pop') {
+  const before = await lineageStack(lineage)
+  const topLabels = before[0]?.labels || []
+  const ids = before.slice(1).map(item => item.id)
+  const assignments = [
+    ...(before[0] ? [{ fleet_id: before[0].id, friendly_name: null, labels: [] }] : []),
+    ...lineageNameAssignments(lineage, ids, topLabels),
+  ]
+  return await sendRequest({
+    type: 'lineage-pop',
+    lineage,
+    caller: AGENT_ID,
+    reason,
+    name_assignments: assignments,
+  })
+}
+
+async function swapLineageHolder(recipientId, incomingId, reason = 'swap') {
+  const lineage = stripPhase(await resolveAgentName(recipientId))
+  if (!lineage) throw new Error('swap recipient has no lineage')
+  const before = await lineageStack(lineage)
+  const recipientLabels = before.find(item => item.id === recipientId)?.labels || []
+  const ids = before.map(item => item.id === recipientId ? incomingId : item.id)
+  return await sendRequest({
+    type: 'lineage-swap',
+    recipient: recipientId,
+    agent: incomingId,
+    caller: AGENT_ID,
+    reason,
+    name_assignments: [
+      { fleet_id: recipientId, friendly_name: null, labels: [] },
+      ...lineageNameAssignments(lineage, ids, recipientLabels),
+    ],
+  })
+}
+
 function rotationBriefFrom(triggerText, fallback) {
   const text = (triggerText || '').trim()
   const explicit = text.match(/\bbrief\s*:\s*([\s\S]+)$/i)?.[1]?.trim()
@@ -2087,20 +2155,13 @@ async function handleRotate(agentId, triggerText, opts = {}) {
   )
   console.log(`[todd] rotate triggered for ${agentName} (${agentId}) → ${successorName}`)
 
-  sendChat(OWNER_ID, `Rotating **${agentName}** out to **${successorName}:day** and starting a fresh **${successorName}** with a brief.`)
-  sendChat(agentId, `⚠️ Rotation started. You are moving to **${successorName}:day** as the immediate advisor. The fresh **${successorName}** owns the role and the work now. Advise only when consulted; do not manage, direct, or continue the work yourself.`)
+  sendChat(OWNER_ID, `Rotating **${agentName}** out and starting a fresh **${successorName}** with a brief.`)
+  sendChat(agentId, `⚠️ Rotation started. A fresh holder is being added above you; you will remain in the lineage as the immediate advisor.`)
 
-  try {
-    await sendRequest({ type: 'lineage-transition', agent: agentId, phase: 'day' })
-  } catch (e) {
-    sendChat(OWNER_ID, `⚠️ Moving ${agentName} out of the active role failed: ${e.message}`)
-    logDecision(agentId, 'rotate-lineage-failed', 'rotate', { error: e.message }, triggerText)
-    return
-  }
-
+  const temporaryName = `${successorName}-successor-${Date.now().toString(36)}`
   const spawnResult = await spawnAgent({
     fresh: true,
-    name: successorName,
+    name: temporaryName,
     cwd: agentCwd,
     routeAgent: agentId,
   })
@@ -2108,6 +2169,18 @@ async function handleRotate(agentId, triggerText, opts = {}) {
     const error = spawnResult.error || spawnResult.reason || 'unknown spawn failure'
     sendChat(OWNER_ID, `⚠️ Rotate failed while spawning **${successorName}**: ${error}`)
     logDecision(agentId, 'rotate-spawn-failed', 'rotate', { successorName, error }, triggerText)
+    return
+  }
+  const incomingId = spawnResult?.agent?.id || spawnResult?.agent_id || await resolveAgentId(temporaryName)
+  if (!incomingId) {
+    sendChat(OWNER_ID, `⚠️ Rotate launched a successor but could not resolve its fleet id.`)
+    return
+  }
+  try {
+    await pushLineageHolder(successorName, incomingId, 'push-new')
+  } catch (e) {
+    sendChat(OWNER_ID, `⚠️ Seating the new ${successorName} holder failed: ${e.message}`)
+    logDecision(agentId, 'rotate-lineage-failed', 'rotate', { error: e.message }, triggerText)
     return
   }
 
@@ -2206,35 +2279,36 @@ async function handleDisinherit(agentId, triggerText, opts = {}) {
   const agentCwd = await resolveAgentCwd(agentId)
   const spawnSpec = await resolveAgentSpawnSpec(agentId)
   const originalTask = await activeTaskForAgent(agentId, agentName)
-  const renameTo = await chooseDisinheritCatName(agentId)
+  const lineage = stripPhase(agentName)
   const correction = opts.correction || ''
 
-  console.log(`[todd] disinherit triggered for ${agentName} (${agentId}) → rename ${renameTo}, fresh ${successorName}`)
-  sendChat(OWNER_ID, `Disinheriting **${agentName}**: renaming incumbent to **${renameTo}** and starting a fresh **${successorName}** on the original task.`)
-
-  const renameResult = await renameAgent(agentId, renameTo)
-  if (renameResult?.error || renameResult?.ok === false) {
-    const error = renameResult.error || 'unknown rename failure'
-    sendChat(OWNER_ID, `⚠️ Disinherit failed while renaming **${agentName}** to **${renameTo}**: ${error}`)
-    logDecision(agentId, 'disinherit-rename-failed', 'disinherit', { renameTo, error }, triggerText)
+  console.log(`[todd] disinherit triggered for ${agentName} (${agentId})`)
+  sendChat(OWNER_ID, `Disinheriting **${agentName}**: removing the current holder and starting a fresh **${successorName}** on the original task.`)
+  try {
+    await popLineageHolder(lineage, 'disinherit')
+  } catch (e) {
+    sendChat(OWNER_ID, `⚠️ Disinherit failed while removing **${agentName}**: ${e.message}`)
+    logDecision(agentId, 'disinherit-pop-failed', 'disinherit', { error: e.message }, triggerText)
     return
   }
 
+  const temporaryName = `${successorName}-successor-${Date.now().toString(36)}`
   const spawnResult = await spawnAgent({
     fresh: true,
-    name: successorName,
+    name: temporaryName,
     cwd: agentCwd,
     routeAgent: agentId,
     ...spawnSpec,
   })
   if (spawnResult?.error || spawnResult?.ok === false) {
     const error = spawnResult.error || spawnResult.reason || 'unknown spawn failure'
-    sendChat(OWNER_ID, `⚠️ Disinherit renamed **${agentName}** to **${renameTo}**, but failed to spawn **${successorName}**: ${error}`)
-    logDecision(agentId, 'disinherit-spawn-failed', 'disinherit', { successorName, renameTo, error }, triggerText)
+    sendChat(OWNER_ID, `⚠️ Disinherit removed **${agentName}**, but failed to spawn **${successorName}**: ${error}`)
+    logDecision(agentId, 'disinherit-spawn-failed', 'disinherit', { successorName, error }, triggerText)
     return
   }
-
-  sendChat(agentId, `I've named you ${renameTo} to make space for your successor. Give yourself a new name.`)
+  const incomingId = spawnResult?.agent?.id || spawnResult?.agent_id || await resolveAgentId(temporaryName)
+  if (!incomingId) throw new Error('disinherit successor launched without a resolvable fleet id')
+  await pushLineageHolder(lineage, incomingId, 'push-new')
 
   setTimeout(async () => {
     try {
@@ -2252,11 +2326,11 @@ ${originalMessage}
 **Skip's specific instructions for you:**
 ${correction || '(no separate correction text)'}
 
-You are the fresh **${successorName}**. The previous holder was renamed to **${renameTo}** and remains alive there; nothing else is inherited. Start from the original instructions plus the specific instructions for you. Do not inherit the incumbent's name, state, or assumptions; check the workspace/task state and proceed from the corrected task.`,
+You are the fresh **${successorName}**. The previous holder was removed from the active lineage; nothing else is inherited. Start from the original instructions plus the specific instructions for you. Do not inherit the incumbent's assumptions; check the workspace/task state and proceed from the corrected task.`,
         ...(originalTask?.success_criteria ? { success_criteria: originalTask.success_criteria } : {}),
         ...(originalTask?.blockedBy ? { blocked_by: originalTask.blockedBy } : {}),
       })
-      sendChat(OWNER_ID, `Disinherit complete. **${renameTo}** stayed alive under the new name; fresh **${successorName}** has the original task plus the correction.`)
+      sendChat(OWNER_ID, `Disinherit complete. Fresh **${successorName}** has the original task plus the correction.`)
     } catch (e) {
       console.error(`[todd] disinherit delegate failed: ${e.message}`)
       sendChat(OWNER_ID, `⚠️ Disinherit spawned **${successorName}**, but delegating the original task failed: ${e.message}`)
@@ -2265,7 +2339,6 @@ You are the fresh **${successorName}**. The previous holder was renamed to **${r
 
   logDecision(agentId, 'disinherit-fresh-successor', 'disinherit', {
     successorName,
-    renameTo,
     routeAgent: agentId,
     cwd: agentCwd,
     requestedBy: opts.requestedBy || OWNER_ID,
@@ -2318,22 +2391,13 @@ async function handleHandoff(agentId, triggerText, opts = {}) {
       ? `⚠️ Direct handoff started. You're moving to advisor; a fresh worker is coming in.`
       : `⚠️ Skip is handing your work off directly. You're moving to advisor; a fresh worker is coming in.`)
     const agentCwd = await resolveAgentCwd(agentId)
-    // Move the original to advisor (:day), freeing the bare name, then spawn
-    // the new worker directly as the bare base name (dawn). Its name maps it into
-    // the lineage on register — no temp "-1" name, no rotation, no stray lineage.
     const lineageBase = stripPhase(agentName)
     const workerName = lineageBase
     const advisorName = `${lineageBase}:day`
-    try {
-      await sendRequest({ type: 'lineage-transition', agent: agentId, phase: 'day' })
-    } catch (e) {
-      sendChat(OWNER_ID, `⚠️ Moving ${agentName} → :day advisor failed: ${e.message}`)
-      logDecision(agentId, 'handoff-direct-lineage-failed', 'handoff', { error: e.message }, triggerText)
-      return
-    }
+    const temporaryName = `${lineageBase}-successor-${Date.now().toString(36)}`
     const spawnResult = await spawnAgent({
       fresh: true,
-      name: workerName,
+      name: temporaryName,
       cwd: agentCwd,
       routeAgent: agentId,
       ...handoffSpawnSpec,
@@ -2342,6 +2406,18 @@ async function handleHandoff(agentId, triggerText, opts = {}) {
       const error = spawnResult.error || spawnResult.reason || 'unknown spawn failure'
       sendChat(OWNER_ID, `⚠️ Failed to spawn worker: ${error}`)
       logDecision(agentId, 'handoff-direct-spawn-failed', 'handoff', { workerAgent: workerName, routeAgent: agentId, error }, triggerText)
+      return
+    }
+    const incomingId = spawnResult?.agent?.id || spawnResult?.agent_id || await resolveAgentId(temporaryName)
+    if (!incomingId) {
+      sendChat(OWNER_ID, `⚠️ Direct handoff launched a successor but could not resolve its fleet id.`)
+      return
+    }
+    try {
+      await pushLineageHolder(lineageBase, incomingId, 'push-new')
+    } catch (e) {
+      sendChat(OWNER_ID, `⚠️ Seating the new ${workerName} holder failed: ${e.message}`)
+      logDecision(agentId, 'handoff-direct-lineage-failed', 'handoff', { error: e.message }, triggerText)
       return
     }
     setTimeout(async () => {
@@ -2380,38 +2456,24 @@ ${triggerText ? `\n**Handoff message from ${requesterLabel}:**\n> ${triggerText}
   const lineageBase = stripPhase(agentName)
   const briefingName = `${lineageBase}:day`
   try {
-    // Free :day first (reserve it for the briefer, which registers later), THEN
-    // move the outgoing to :dusk. Order matters: freeing :day ages its occupant
-    // down toward :dusk/:night; doing it before the outgoing lands in :dusk keeps
-    // the cascade from displacing the outgoing. Both ops age the oldest out via
-    // the night slot instead of erroring on a full lineage.
-    try {
-      await sendRequest({ type: 'lineage-make-room', lineage: lineageBase, phase: 'day' })
-    } catch (e) {
-      sendChat(OWNER_ID, `⚠️ Freeing :day in ${lineageBase} failed: ${e.message}`)
-    }
-    try {
-      await sendRequest({ type: 'lineage-transition', agent: agentId, phase: 'dusk' })
-    } catch (e) {
-      sendChat(OWNER_ID, `⚠️ Outgoing ${agentName} → :dusk failed: ${e.message}`)
-    }
-    let spawnResult = await spawnAgent({ name: briefingName, cwd: agentCwd, fresh: true, routeAgent: agentId, ...handoffSpawnSpec })
-    if (spawnResult.error && spawnResult.error.includes('already exists')) {
-      spawnResult = await spawnAgent({ agent: briefingName, respawn: true, ...handoffSpawnSpec })
-    }
+    const temporaryName = `${lineageBase}-briefer-${Date.now().toString(36)}`
+    const spawnResult = await spawnAgent({ name: temporaryName, cwd: agentCwd, fresh: true, routeAgent: agentId, ...handoffSpawnSpec })
     if (spawnResult.error) {
       sendChat(OWNER_ID, `⚠️ Failed to spawn briefing agent: ${spawnResult.error}`)
       return
     }
+    const briefingId = spawnResult?.agent?.id || spawnResult?.agent_id || await resolveAgentId(temporaryName)
+    if (!briefingId) throw new Error('briefing agent launched without a resolvable fleet id')
+    await pushLineageHolder(lineageBase, briefingId, 'push-new')
 
-    pendingHandoffs.set(briefingName, { originalAgent: agentName, originalAgentId: agentId, originalCwd: agentCwd, spawnSpec: handoffSpawnSpec, requestedBy, startedAt: now, triggerText })
+    pendingHandoffs.set(briefingId, { originalAgent: agentName, originalAgentId: agentId, originalCwd: agentCwd, spawnSpec: handoffSpawnSpec, requestedBy, startedAt: now, triggerText })
     savePendingHandoffs()
 
     setTimeout(async () => {
       try {
         await postJson('/api/tasks/delegate', {
           from: AGENT_ID,
-          agent: briefingName,
+          agent: briefingId,
           description: `Write handoff briefing for ${agentName}`,
           message: `**Read these skills first:** \`write-briefing\`
 
@@ -2454,8 +2516,8 @@ async function handleHandoffReady(fromId, text) {
 
   // Match the briefing agent to a pending handoff by name
   const fromName = await resolveAgentName(fromId)
-  let handoffInfo = pendingHandoffs.get(fromName)
-  let briefingAgentName = fromName
+  let handoffInfo = pendingHandoffs.get(fromId) || pendingHandoffs.get(fromName)
+  let briefingAgentName = pendingHandoffs.has(fromId) ? fromId : fromName
 
   // Fallback: check if any pending handoff name is a substring
   if (!handoffInfo) {
@@ -2488,32 +2550,31 @@ async function handleHandoffReady(fromId, text) {
 
   sendChat(OWNER_ID, `Briefing ready: **${briefingPath}**. Spawning fresh agent…`)
 
-  // The pickup is the new worker — spawn it directly with the bare base name
-  // (dawn). Its name maps it into the lineage on register; no rotation needed.
   const pickupName = stripPhase(handoffInfo.originalAgent)
   const pickupSpawnSpec = handoffInfo.spawnSpec || {}
   const spawnPickup = async () => {
     try {
-      let spawnResult = await spawnAgent({
-        name: pickupName,
+      const temporaryName = `${pickupName}-pickup-${Date.now().toString(36)}`
+      const spawnResult = await spawnAgent({
+        name: temporaryName,
         cwd: handoffInfo.originalCwd,
         fresh: true,
         routeAgent: handoffInfo.originalAgentId,
         ...pickupSpawnSpec,
       })
-      if (spawnResult.error && spawnResult.error.includes('already exists')) {
-        spawnResult = await spawnAgent({ agent: pickupName, respawn: true, ...pickupSpawnSpec })
-      }
       if (spawnResult.error) {
         sendChat(OWNER_ID, `⚠️ Failed to spawn pickup agent: ${spawnResult.error}`)
         return
       }
+      const pickupId = spawnResult?.agent?.id || spawnResult?.agent_id || await resolveAgentId(temporaryName)
+      if (!pickupId) throw new Error('pickup agent launched without a resolvable fleet id')
+      await pushLineageHolder(pickupName, pickupId, 'push-new')
 
       setTimeout(async () => {
         try {
           await postJson('/api/tasks/delegate', {
             from: AGENT_ID,
-            agent: pickupName,
+            agent: pickupId,
             description: `Pick up work from ${handoffInfo.originalAgent}`,
             message: `**Read these skills first:** \`pickup\`
 
@@ -2827,6 +2888,36 @@ async function handleMessage(msg) {
       const mode = MANAGER_MODE_1_PATTERN.test(text) ? 'talk-to-skip' : 'set-them-straight'
       scheduleAction('manager-escalation', 'Escalating to a manager',
         () => handleManagerEscalation(to_id, text, mode).catch(e => console.error('[todd] manager escalation error:', e.message)), to_id)
+      return
+    }
+
+    // Simple lineage operations. The chat recipient (or direct agent sender)
+    // supplies the lineage/position tacitly; adopt and swap name only the
+    // existing agent being brought in.
+    const lineageTarget = (to_id && to_id !== AGENT_ID)
+      ? to_id
+      : (from_id && from_id !== OWNER_ID && from_id !== AGENT_ID ? from_id : null)
+    const adoptMatch = text.match(LINEAGE_ADOPT_PATTERN)
+    if (lineageTarget && adoptMatch && (to_id === AGENT_ID || addressedBefore(LINEAGE_ADOPT_PATTERN))) {
+      const incoming = await resolveAgentId(adoptMatch[1])
+      if (!incoming) { sendChat(OWNER_ID, `Adopt could not resolve **${adoptMatch[1]}**.`); return }
+      const lineage = stripPhase(await resolveAgentName(lineageTarget))
+      scheduleAction('lineage-adopt', 'Adopting lineage holder',
+        () => pushLineageHolder(lineage, incoming, 'adopt').catch(e => sendChat(OWNER_ID, `⚠️ Adopt failed: ${e.message}`)), lineageTarget)
+      return
+    }
+    const swapMatch = text.match(LINEAGE_SWAP_PATTERN)
+    if (lineageTarget && swapMatch && (to_id === AGENT_ID || addressedBefore(LINEAGE_SWAP_PATTERN))) {
+      const incoming = await resolveAgentId(swapMatch[1])
+      if (!incoming) { sendChat(OWNER_ID, `Swap could not resolve **${swapMatch[1]}**.`); return }
+      scheduleAction('lineage-swap', 'Swapping lineage holder',
+        () => swapLineageHolder(lineageTarget, incoming).catch(e => sendChat(OWNER_ID, `⚠️ Swap failed: ${e.message}`)), lineageTarget)
+      return
+    }
+    if (lineageTarget && LINEAGE_POP_PATTERN.test(text) && (to_id === AGENT_ID || addressedBefore(LINEAGE_POP_PATTERN))) {
+      const lineage = stripPhase(await resolveAgentName(lineageTarget))
+      scheduleAction('lineage-pop', 'Removing lineage holder',
+        () => popLineageHolder(lineage).catch(e => sendChat(OWNER_ID, `⚠️ Pop failed: ${e.message}`)), lineageTarget)
       return
     }
 

@@ -6,7 +6,6 @@ import path from 'path'
 import tls from 'tls'
 import { WebSocket } from 'ws'
 import { getFleetServerUrl, getMachineId } from '../shared/config.mjs'
-import { prettyNameForFriendlyName } from '../shared/lineage-name.mjs'
 import { activeConfigName, sanitizeSessionName } from './identity.mjs'
 import { createPermissionLedger } from './permission-ledger.mjs'
 import { createLocalAgentLedger } from './local-agent-ledger.mjs'
@@ -307,7 +306,6 @@ async function wsIdentityMessage(type, {
     ...(fleetId ? { agent_id: fleetId } : {}),
     ...(localAgentId ? { local_agent_id: localAgentId } : {}),
     name,
-    pretty_name: prettyNameForFriendlyName(name),
     tmux_session: tmuxSession,
     cwd,
     kind,

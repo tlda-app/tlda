@@ -16,7 +16,7 @@
  *
  * Inputs are *hydrated* agent objects (fleet-store `_hydrateAgent`): they carry
  * `runtime_status.status` (awake|hibernating|human|human-away|dead), parsed
- * `labels`, `friendly_name`, `id`, `lineage_name`, and `phase`. The client
+ * `labels`, `friendly_name`, `id`, and `lineage_name`. The client
  * receives the same shape over /api/state and the WS push.
  */
 
@@ -42,9 +42,7 @@ export function statusLabels(status) {
  * The full set of labels a (hydrated) agent answers to, for chat routing,
  * filtering, and history resolution.
  *
- * Includes: explicit labels[], status pseudo-labels, friendly_name, id. Phase
- * is encoded in the friendly name ("base:day"/"base:dusk"; dawn is the bare
- * base), so the phase-qualified address is already covered by friendly_name.
+ * Includes: explicit labels[], status pseudo-labels, friendly_name, id.
  * Each agent answers ONLY to its own full name — the base name does NOT fan out
  * to the whole lineage. Lineage is a name-rotation convention, a search gloss,
  * and a graphical overlay; it is not a chat-routing label.
