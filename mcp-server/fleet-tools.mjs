@@ -392,15 +392,56 @@ const TLDA_FLEET_WS_SERVER = TLDA_FLEET_SERVER.replace(/^http/, 'ws');
 const _tldaToken = getRwToken();
 let _fleetTransportDb = null;
 let _fleetTransportOutbox = null;
+let _fleetTransportAgentId = null;
 let _fleetTransportFlushTimer = null;
 let _fleetTransportFlushInFlight = null;
 const _fleetTransportRecoveredAgents = new Set();
 
-function getFleetTransportOutbox() {
-  if (_fleetTransportOutbox) return _fleetTransportOutbox;
+function fleetTransportOutboxPath(agentId) {
+  const digest = crypto.createHash('sha256').update(agentId).digest('hex').slice(0, 20);
+  return path.join(CONFIG_DIR, `mcp-fleet-transport-${digest}.sqlite`);
+}
+
+function importLegacyFleetTransportRows(db, agentId) {
+  const legacyPath = path.join(CONFIG_DIR, 'mcp-fleet-transport.sqlite');
+  if (!fs.existsSync(legacyPath)) return;
+  db.prepare('ATTACH DATABASE ? AS legacy_fleet_transport').run(legacyPath);
+  try {
+    const hasTable = db.prepare(`
+      SELECT 1
+      FROM legacy_fleet_transport.sqlite_master
+      WHERE type = 'table' AND name = 'mcp_fleet_outbox'
+    `).get();
+    if (!hasTable) return;
+    db.prepare(`
+      INSERT OR IGNORE INTO main.mcp_fleet_outbox
+        (operation_id, agent_id, session_id, type, mode, params_json, status,
+         attempts, created_at, updated_at, next_attempt_at, last_attempt_at,
+         last_error, result_json)
+      SELECT operation_id, agent_id, session_id, type, mode, params_json, status,
+             attempts, created_at, updated_at, next_attempt_at, last_attempt_at,
+             last_error, result_json
+      FROM legacy_fleet_transport.mcp_fleet_outbox
+      WHERE agent_id = ?
+    `).run(agentId);
+  } finally {
+    db.exec('DETACH DATABASE legacy_fleet_transport');
+  }
+}
+
+function getFleetTransportOutbox(agentId) {
+  if (!agentId) throw new Error('fleet transport outbox requires agent identity');
+  if (_fleetTransportOutbox) {
+    if (_fleetTransportAgentId !== agentId) {
+      throw new Error(`fleet transport process is already bound to ${_fleetTransportAgentId}`);
+    }
+    return _fleetTransportOutbox;
+  }
   fs.mkdirSync(CONFIG_DIR, { recursive: true });
-  _fleetTransportDb = new Database(path.join(CONFIG_DIR, 'mcp-fleet-transport.sqlite'));
+  _fleetTransportDb = new Database(fleetTransportOutboxPath(agentId));
   _fleetTransportOutbox = new FleetTransportOutbox(_fleetTransportDb);
+  importLegacyFleetTransportRows(_fleetTransportDb, agentId);
+  _fleetTransportAgentId = agentId;
   return _fleetTransportOutbox;
 }
 
@@ -4463,7 +4504,7 @@ async function flushFleetTransport({ operationId = null, limit = 50, deadlineMs 
   if (_fleetTransportFlushInFlight && !operationId) return _fleetTransportFlushInFlight;
 
   const run = async () => {
-    const outbox = getFleetTransportOutbox();
+    const outbox = getFleetTransportOutbox(agentId);
     if (!_fleetTransportRecoveredAgents.has(agentId)) {
       outbox.recoverInflight({ agentId });
       _fleetTransportRecoveredAgents.add(agentId);
@@ -4506,7 +4547,7 @@ async function flushFleetTransport({ operationId = null, limit = 50, deadlineMs 
 async function sendDurableFleet(type, params = {}, opts = {}) {
   const transportAgentId = opts.agentId || AGENT_ID;
   if (!transportAgentId) throw new Error(`cannot send durable ${type}: no transport identity`);
-  const outbox = getFleetTransportOutbox();
+  const outbox = getFleetTransportOutbox(transportAgentId);
   const operationId = opts.operationId || params?._tempId || `${transportAgentId}:mcp-${type}:${crypto.randomUUID()}`;
   const row = outbox.enqueue({
     operationId,
