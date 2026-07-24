@@ -85,6 +85,55 @@ const NAME_RE = /Your name: "([^"]+)"/
 // session pointers. Hex-only also rejects quoted junk (fleet:<id>, fleet:reconA). Not
 // global: we take the first match per scan and stop.
 const LOGIN_HEX_OWNER_RE = /(?:Registered|Logged in) fleet:([0-9a-f]{8})\b/
+export const TLDA_LOGIN_MARKER_PREFIX = 'TLDA_LOGIN_MARKER '
+
+function cleanString(value) {
+  const text = String(value || '').trim()
+  return text || null
+}
+
+export function normalizeLoginMarker(input = {}) {
+  const mintId = cleanString(input.mint_id || input.local_agent_id || input.localAgentId)
+  const daemonKey = cleanString(input.daemon_key || input.daemonKey)
+  const machineId = cleanString(input.machine_id || input.machineId)
+  const envName = cleanString(input.env_name || input.envName)
+  const fleetId = cleanString(input.fleet_id || input.fleetId)
+  return {
+    type: 'tlda-login-marker',
+    version: 1,
+    ...(mintId ? { mint_id: mintId } : {}),
+    ...(daemonKey ? { daemon_key: daemonKey } : {}),
+    ...(machineId ? { machine_id: machineId } : {}),
+    ...(envName ? { env_name: envName } : {}),
+    ...(fleetId ? { fleet_id: fleetId } : {}),
+    ...(cleanString(input.friendly_name || input.friendlyName) ? { friendly_name: cleanString(input.friendly_name || input.friendlyName) } : {}),
+    ...(cleanString(input.session_id || input.sessionId) ? { session_id: cleanString(input.session_id || input.sessionId) } : {}),
+    ...(cleanString(input.harness_kind || input.harnessKind || input.kind) ? { harness_kind: cleanString(input.harness_kind || input.harnessKind || input.kind) } : {}),
+    ...(cleanString(input.tmux_session || input.tmuxSession) ? { tmux_session: cleanString(input.tmux_session || input.tmuxSession) } : {}),
+    ...(cleanString(input.cwd) ? { cwd: cleanString(input.cwd) } : {}),
+    ...(cleanString(input.model) ? { model: cleanString(input.model) } : {}),
+  }
+}
+
+export function formatLoginMarker(input = {}) {
+  return `${TLDA_LOGIN_MARKER_PREFIX}${JSON.stringify(normalizeLoginMarker(input))}`
+}
+
+export function extractLoginMarkerFromText(text) {
+  const raw = String(text || '')
+  const idx = raw.indexOf(TLDA_LOGIN_MARKER_PREFIX)
+  if (idx === -1) return null
+  const after = raw.slice(idx + TLDA_LOGIN_MARKER_PREFIX.length)
+  const line = after.split(/\r?\n/, 1)[0]?.trim()
+  if (!line) return null
+  try {
+    const parsed = JSON.parse(line)
+    if (parsed?.type !== 'tlda-login-marker') return null
+    return normalizeLoginMarker(parsed)
+  } catch {
+    return null
+  }
+}
 
 export function extractOwnersFromText(text) {
   const owners = new Set()
@@ -119,6 +168,14 @@ function textPartsFromValue(value) {
 }
 
 export function extractIdentityFromText(text) {
+  const marker = extractLoginMarkerFromText(text)
+  if (marker) {
+    return {
+      ...(marker.fleet_id ? { fleet_id: marker.fleet_id } : {}),
+      ...(marker.friendly_name ? { friendly_name: marker.friendly_name } : {}),
+      marker,
+    }
+  }
   LOGIN_ID_RE.lastIndex = 0
   const m = LOGIN_ID_RE.exec(text || '')
   if (!m) return null

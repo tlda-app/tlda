@@ -198,7 +198,7 @@ const COMMAND_HELP = {
   bot:     'tlda bot [list|install|uninstall|start|stop|status|log] [name] [--dry-run]\n\n  Manage configured fleet bots as launchd services. The bot process logs in like an agent; the daemon does not start it.',
   system:  'tlda system status\n\n  Show server, daemon, deploy stamp, and fleet runtime identity.',
   daemon:  'tlda daemon [start|stop|status|log|run|install|uninstall]\n\n  Control the per-machine fleet daemon.\n  It watches project source directories and agent session activity,\n  then pushes events to the tlda server over WebSocket.',
-  doctor:  'tlda doctor [--fix]\ntlda doctor yolo [--name yolo] --model <daemon-alias> [--cwd /path] [--no-attach] [--dry-run]\n\n  Run a health check for local tools, server, SPA bundle, daemon, MCP setup,\n  project builds, and doc sync stores.\n\n  --fix  Apply the limited automatic repairs that doctor explicitly offers.\n\n  yolo   Break-glass: locally launch an in-fleet agent with a real FLEET_ID outside\n         the normal daemon spawn grant path. Reserves a fleet shell, then starts tmux\n         directly. Deliberately shallow so it works when the normal spawn path is broken.\n\n         --model names a configured daemon model alias; the daemon model spec picks the harness.\n         Run in a terminal and it attaches you into the agent session when it comes up\n         (--no-attach to skip). Run non-interactively and it verifies the agent actually\n         logged in and is reachable before reporting success (or errors out and tears\n         down the phantom seat).',
+  doctor:  'tlda doctor [--fix]\ntlda doctor yolo [--name yolo] --model <provider-model> [--kind codex] [--cwd /path] [--no-attach] [--dry-run]\n\n  Run a health check for local tools, server, SPA bundle, daemon, MCP setup,\n  project builds, and doc sync stores.\n\n  --fix  Apply the limited automatic repairs that doctor explicitly offers.\n\n  yolo   Break-glass: locally launch an unrestricted repair agent outside the\n         normal daemon/server/grant path. Deliberately shallow so it works when\n         the normal spawn path is broken.\n\n         --model names the provider model directly. --kind selects the harness\n         and defaults to codex. Run in a terminal and it attaches you into the\n         agent session when it comes up (--no-attach to skip). Non-interactive\n         calls report the local tmux session and local mint id; they do not claim\n         a fleet-recipient binding.',
   'repo-doctor': 'tlda doc repo-doctor <project> [--rescue|--apply|--rollback|--cleanup]\n\n  Diagnose a project source repo for tlda-induced damage.\n  No flag: diagnose only (read-only).\n  --rescue   Compute a rescue plan (dry run).\n  --apply    Execute the rescue plan.\n  --rollback Roll back a previous rescue apply.\n  --cleanup  Clean rescue apply state.',
   config:  'tlda config [set <key> <value> | get [key]]\n\n  Manage persistent configuration.\n  Example: tlda config set server http://myhost:5176',
 }
@@ -968,6 +968,7 @@ const DAEMON_WORLD_NAME = getActiveConfigName() || 'default'
 const DAEMON_WORLD_SUFFIX = DAEMON_WORLD_NAME === 'default' ? '' : `.${DAEMON_WORLD_NAME.replace(/[^a-zA-Z0-9._-]+/g, '-')}`
 const FLEET_DAEMON_LOGFILE = join(homedir(), '.config', 'tlda', `fleet-daemon${DAEMON_WORLD_SUFFIX}.log`)
 const FLEET_DAEMON_PIDFILE = join(homedir(), '.config', 'tlda', `fleet-daemon${DAEMON_WORLD_SUFFIX}.pid`)
+const FLEET_DAEMON_SOCKET = join(CONFIG_DIR, `fleet-daemon${DAEMON_WORLD_SUFFIX}.sock`)
 const FLEET_DAEMON_LABEL = `com.tlda.fleet-daemon${DAEMON_WORLD_SUFFIX}`
 const FLEET_DAEMON_PLIST = join(homedir(), 'Library', 'LaunchAgents', `${FLEET_DAEMON_LABEL}.plist`)
 const _cliDir = dirname(fileURLToPath(import.meta.url))
@@ -2613,6 +2614,107 @@ async function attachToAgent(name) {
   process.exit(result.status ?? 0)
 }
 
+async function callLocalDaemonLifecycle(op, params = {}, { socketPath = FLEET_DAEMON_SOCKET, timeoutMs = 120000, onEvent = null } = {}) {
+  const { createConnection } = await import('node:net')
+  return await new Promise((resolvePromise, reject) => {
+    const socket = createConnection(socketPath)
+    let buffer = ''
+    let settled = false
+    const fail = error => {
+      if (settled) return
+      settled = true
+      socket.destroy()
+      reject(error)
+    }
+    const timer = setTimeout(() => {
+      fail(new Error(`local daemon ${op} timed out; use \`tlda doctor yolo\` only for break-glass repair`))
+    }, timeoutMs)
+    socket.setEncoding('utf8')
+    socket.on('connect', () => {
+      socket.end(JSON.stringify({ op, params }))
+    })
+    const handlePayload = payload => {
+      if (payload.event) {
+        onEvent?.(payload.event, payload.data || {})
+        return
+      }
+      if (!payload.ok) throw new Error(payload.error || `local daemon ${op} failed`)
+      settled = true
+      clearTimeout(timer)
+      resolvePromise(payload.result)
+    }
+    socket.on('data', chunk => {
+      buffer += chunk
+      for (;;) {
+        const nl = buffer.indexOf('\n')
+        if (nl === -1) break
+        const line = buffer.slice(0, nl).trim()
+        buffer = buffer.slice(nl + 1)
+        if (!line) continue
+        try {
+          handlePayload(JSON.parse(line))
+        } catch (e) {
+          fail(e)
+          break
+        }
+      }
+    })
+    socket.on('error', error => {
+      clearTimeout(timer)
+      const message = error.code === 'ENOENT' || error.code === 'ECONNREFUSED'
+        ? `local fleet daemon is unavailable; start it with \`tlda daemon start\` or use \`tlda doctor yolo\` for break-glass repair`
+        : `local fleet daemon ${op} failed: ${error.message}`
+      fail(new Error(message))
+    })
+    socket.on('close', () => {
+      if (settled) return
+      clearTimeout(timer)
+      try {
+        const line = buffer.trim()
+        if (!line) throw new Error(`local daemon ${op} ended without a result`)
+        handlePayload(JSON.parse(line))
+      } catch (e) {
+        fail(e)
+      }
+    })
+  })
+}
+
+function printMintLifecycleEvent(event, data = {}) {
+  const fleetId = data.fleet_id || data.fleetId || null
+  const localId = data.local_agent_id || data.localAgentId || null
+  const tmuxSession = data.tmux_session || data.tmuxSession || null
+  if (event === 'local-mint') {
+    console.log(`Local mint ${localId || '(pending local id)'}${tmuxSession ? ` in ${tmuxSession}` : ''}`)
+    return
+  }
+  if (event === 'local-launch') {
+    console.log(`Local launch ${localId || '(pending local id)'}${tmuxSession ? ` in ${tmuxSession}` : ''}`)
+    return
+  }
+  if (event === 'server-registration-joined') {
+    console.log(`Server registration joined ${fleetId || '(pending fleet id)'}`)
+    return
+  }
+  if (event === 'server-binding-joined') {
+    console.log(`Server binding joined ${fleetId || '(pending fleet id)'}`)
+    return
+  }
+  if (event === 'server-registration-deferred') {
+    console.log(`Server registration deferred${fleetId ? ` for ${fleetId}` : ''}: ${data.reason || 'server unavailable'}`)
+    return
+  }
+  if (event === 'terminal-command') {
+    console.log(data.ok
+      ? `Terminal command delivered${tmuxSession ? ` to ${tmuxSession}` : ''}`
+      : `Terminal command unverified${tmuxSession ? ` for ${tmuxSession}` : ''}: ${data.reason || 'unknown'}`)
+    return
+  }
+  if (event === 'terminal-local-only') {
+    console.log(`Terminal local-only${tmuxSession ? ` in ${tmuxSession}` : ''}: ${data.reason || 'server registration deferred'}`)
+  }
+}
+
 // `mint` makes a FRESH agent only. Adopting an already-running external session
 // is a separate verb (`enroll`) so the two are never confused (Skip: "the create
 // command now is overloaded, to both create fresh agents and enroll extant agents").
@@ -2671,6 +2773,41 @@ export async function runFleetSpawn(spawnArgs, {
   const spawnMode = session ? 'session' : (refresh ? 'refresh' : (fresh ? 'fresh' : 'respawn'))
   const explicitPermissionArg = flagFromRaw(spawnArgs, 'permissions') || undefined
   const explicitCwd = hasRawFlag(spawnArgs, 'cwd')
+  if (spawnMode === 'fresh') {
+    const cwd = resolve(flagFromRaw(spawnArgs, 'cwd') || process.cwd())
+    const result = await callLocalDaemonLifecycle('spawn', {
+      name,
+      model: flagFromRaw(spawnArgs, 'model') || undefined,
+      cwd,
+      effort: flagFromRaw(spawnArgs, 'effort') || undefined,
+      modelOptions: collectSpawnModelOptionsFromRaw(spawnArgs),
+      mode: flagFromRaw(spawnArgs, 'mode') || undefined,
+      permissionRequest: explicitPermissionArg ? permissionsFromRaw(spawnArgs) : undefined,
+      acknowledgeNoSecurity: hasRawFlag(spawnArgs, 'i-like-to-live-dangerously'),
+      requester: { id: 'localhost', human: true },
+      fresh: true,
+      respawn: false,
+    }, { onEvent: printMintLifecycleEvent })
+    if (!result?.ok) throw new Error(result?.error || result?.reason || `mint failed for ${name}`)
+    const agentId = result.agent_id || result.fleetId || result.localAgentId || result.local_agent_id || 'local-only'
+    console.log(`Created ${result.tmux_session || result.tmuxSession || result.name || name} (${agentId}) in ${cwd}`)
+    return
+  }
+  if (spawnMode === 'respawn') {
+    const { createLocalAgentLedger } = await import('../agent-launch/local-agent-ledger.mjs')
+    const localLedger = createLocalAgentLedger(localAgentLedgerPath || undefined)
+    let restored
+    try {
+      const stored = localLedger.get(name) || localLedger.findByFriendlyName(name)
+      restored = resolveWakeRecipeFields({ name, stored, explicitCwd, explicitPermissionArg })
+    } finally {
+      localLedger.close()
+    }
+    const result = await callLocalDaemonLifecycle('wake', { fleet_id: restored.agentId })
+    if (!result?.ok) throw new Error(result?.error || result?.reason || `wake failed for ${restored.agentId}`)
+    console.log(`Woke ${result.tmux_session || result.tmuxSession || restored.agentId} (${result.agent_id || result.fleetId || restored.agentId}) in ${restored.cwd}`)
+    return
+  }
   let permissionArg = explicitPermissionArg
   let permissionRequest = explicitPermissionArg ? permissionsFromRaw(spawnArgs) : undefined
   let cwd = resolve(flagFromRaw(spawnArgs, 'cwd') || process.cwd())
@@ -2734,6 +2871,7 @@ export async function runFleetSpawn(spawnArgs, {
     // assigns the fleet id through mint-shell; only an explicit caller-supplied
     // id bypasses that join.
     const preallocatedAgentId = suppliedAgentId
+    const launchAgentId = spawnMode === 'respawn' ? wakeAgentId : preallocatedAgentId
     if (preallocatedAgentId) {
       await ledger.set(preallocatedAgentId, {
         permissionGrant: grant.permissionGrant,
@@ -2743,7 +2881,7 @@ export async function runFleetSpawn(spawnArgs, {
     const params = {
       spawnMode,
       name,
-      agentId: preallocatedAgentId,
+      agentId: launchAgentId,
       model,
       kind,
       config,
@@ -2886,11 +3024,14 @@ export function resolveWakeRecipeFields({
   if (!stored.process?.cwd) {
     throw new Error(`wake refused: local durable recipe for "${label}" has no cwd`)
   }
+  if (!stored.serverAgentId || !stored.serverAgentId.startsWith('fleet:')) {
+    throw new Error(`wake refused: local durable recipe for "${label}" has no fleet_id binding`)
+  }
   const permissionArg = explicitPermissionArg || stored.process.permissionGrant || undefined
   return {
     cwd: resolve(stored.process.cwd),
     localAgentId: stored.localAgentId,
-    agentId: stored.serverAgentId || stored.localAgentId,
+    agentId: stored.serverAgentId,
     permissionArg,
     permissionRequest: explicitPermissionArg || undefined,
   }
@@ -4469,46 +4610,35 @@ async function cmdDoctorYolo() {
     return
   }
 
-  const { spawn } = await import('../agent-launch/index.mjs')
-  const { readDaemonConfigForCwd, withDaemonModelAliases } = await import('../agent-launch/permission-ledger.mjs')
-  const { apiJson, markAgentDead, resolveApi } = await import('../agent-launch/register.mjs')
+  const { launchDoctorYolo } = await import('../agent-launch/index.mjs')
   const { tmuxArgs } = await import('../agent-launch/tmux.mjs')
 
   const name = String(getFlag('name', 'yolo') || 'yolo')
   const cwd = resolve(getFlag('cwd') || process.cwd())
-  const tmuxSocket = readDaemonConfigForCwd(cwd).tmuxSocket || null
+  const tmuxSocket = process.env.TMUX_SOCKET || null
   const dryRun = hasFlag('dry-run')
   const modelAlias = String(getFlag('model') || '')
-  const config = withDaemonModelAliases({}, readDaemonConfigForCwd(cwd))
-  const api = resolveApi()
+  const kind = String(getFlag('kind', 'codex') || 'codex').trim().toLowerCase()
+  if (!modelAlias) throw new Error('tlda doctor yolo requires --model <provider-model>')
 
   if (dryRun) {
     console.log('tlda doctor yolo dry run')
     console.log(`  name: ${name}`)
     console.log(`  cwd: ${cwd}`)
     console.log(`  model: ${modelAlias}`)
-    console.log('  path: shared local mint (configured ops profile)')
+    console.log(`  kind: ${kind}`)
+    console.log('  path: direct local tmux launch; no daemon/server/grant dependency')
     return
   }
 
-  const launched = await spawn({
-    spawnMode: 'fresh',
+  const launched = await launchDoctorYolo({
     name,
     cwd,
     model: modelAlias,
-    agentId: getFlag('id') || undefined,
-    permissionGrant: 'ops',
-    permissionSet: compilePermissionGrant(config, 'ops', { cwd }),
-    explicitPermissionRequest: true,
+    kind,
     tmuxSocket,
-    config,
   })
-  const { localAgentId, fleetId, tmuxSession, harness: kind, model } = launched
-  await bindDoctorYoloDurableSeat(launched, {
-    cwd,
-    name,
-    api: (method, pathname, body = null) => apiJson(pathname, { api, method, body, timeoutMs: 10_000 }),
-  })
+  const { localAgentId, fleetId, tmuxSession, harness: harnessKind, model } = launched
 
   // Interactive terminal → drop the operator straight into the agent's session, the
   // way spawn used to. You watch it log in live, so there is no false "launched" — a
@@ -4520,58 +4650,18 @@ async function cmdDoctorYolo() {
     return
   }
 
-  if (launched.registrationDeferred) {
-    console.log(green(bold('Break-glass agent launched and verified locally usable.')))
-    console.log(`  local_agent_id: ${localAgentId}`)
-    console.log(`  kind: ${kind}`)
-    console.log(`  tmux: ${tmuxSession}`)
-    console.log(`  cwd: ${cwd}`)
-    console.log(`  model: ${model}`)
-    console.log(dim('  Server binding is deferred; the agent will request its one-time binding when connectivity returns.'))
-    return
-  }
-
-  // ──────────────────────────────────────────────────────────────────────────
-  // Non-interactive caller (an agent, a script) can't attach, so PROVE THE SEAT IS
-  // REACHABLE BEFORE REPORTING SUCCESS. Do NOT print "launched" just because tmux
-  // started — that is exactly how the 2026-07-10 GHOST happened: an agent whose
-  // shell was reserved but never logged in. It could SEND one message off its raw
-  // FLEET_ID, but it had no roster seat, no friendly name in the agents panel, and
-  // was NOT a routable chat recipient ("filter matches no known agents"). Skip could
-  // not talk to it and it tortured him for a stretch.
-  //
-  // A reserved-but-not-logged-in shell carries `metadata.shell === true`; the login
-  // handler clears that flag (unified-server.mjs). So we poll until the flag is
-  // cleared and the row is live = the agent actually completed login and is a real
-  // recipient. If it never logs in, that is a DISASTER, not a success: tear down the
-  // phantom reserved seat and error out loudly. An emergency tool that says
-  // "launched" about an agent you cannot reach is worse than one that fails.
-  // ──────────────────────────────────────────────────────────────────────────
-  const reachDeadline = Date.now() + 60_000
-  let reachable = null
-  while (Date.now() < reachDeadline) {
-    await new Promise(r => setTimeout(r, 1500))
-    const found = await apiJson(`/api/agents/lookup?ids=${encodeURIComponent(fleetId)}`, { api })
-      .then(result => result.agents?.[0] || null)
-      .catch(() => null)
-    if (found && !found.dead && !found.metadata?.shell) { reachable = found; break }
-  }
-  if (!reachable) {
-    await markAgentDead(fleetId, { api }).catch(() => {})
-    throw new Error(
-      `Break-glass launch FAILED: ${fleetId} was minted but never logged in within 60s — `
-      + `it is NOT a reachable fleet recipient. `
-      + `Inspect tmux '${tmuxSession}' for a stuck prompt or a crash, then retry.`)
-  }
-  console.log(green(bold('Break-glass agent launched and verified reachable.')))
-  console.log(`  fleet_id: ${fleetId}`)
+  console.log(green(bold('Break-glass agent launched locally.')))
+  if (fleetId) console.log(`  fleet_id: ${fleetId}`)
   console.log(`  local_agent_id: ${localAgentId}`)
-  console.log(`  name: ${reachable.friendly_name || name}`)
-  console.log(`  kind: ${kind}`)
+  console.log(`  name: ${name}`)
+  console.log(`  kind: ${harnessKind}`)
   console.log(`  tmux: ${tmuxSession}`)
   console.log(`  cwd: ${cwd}`)
   console.log(`  model: ${model}`)
-  console.log(dim('  Logged in to fleet, in the roster, and a routable chat recipient.'))
+  if (launched.promptDelivery?.ok === false) {
+    console.log(dim('  Prompt delivery was not verified; attach to inspect the local session.'))
+  }
+  console.log(dim('  This is not a normal fleet mint and does not prove a server recipient binding.'))
 }
 
 

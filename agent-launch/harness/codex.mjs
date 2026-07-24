@@ -184,6 +184,7 @@ export function buildCmd({
     'CODEX_CI=1',
     ...(fleetId ? [`FLEET_ID=${sq(fleetId)}`] : []),
     ...(localAgentId ? [`FLEET_LOCAL_ID=${sq(localAgentId)}`] : []),
+    ...(localAgentId ? [`FLEET_MINT_ID=${sq(localAgentId)}`] : []),
     `FLEET_TMUX_SESSION=${sq(tmuxSession)}`,
     'FLEET_HARNESS=codex',
     'TLDA_MCP_FLEET_ONLY=1',
@@ -204,15 +205,19 @@ export function buildCmd({
   parts.push(cenv('CODEX_CI', '1'))
   if (fleetId) parts.push(cenv('FLEET_ID', fleetId))
   if (localAgentId) parts.push(cenv('FLEET_LOCAL_ID', localAgentId))
+  if (localAgentId) parts.push(cenv('FLEET_MINT_ID', localAgentId))
   if (name) parts.push(cenv('FLEET_NAME', name))
   parts.push(cenv('FLEET_HARNESS', 'codex'))
   parts.push(cenv('FLEET_TMUX_SESSION', tmuxSession))
   parts.push(cenv('TLDA_MCP_FLEET_ONLY', '1'))
-  parts.push(cenv('TLDA_SERVER', api))
-  parts.push(cenv('TLDA_SYNC_SERVER', api))
+  if (api) {
+    parts.push(cenv('TLDA_SERVER', api))
+    parts.push(cenv('TLDA_SYNC_SERVER', api))
+  }
   const configName = activeConfigName(config, env)
   if (configName) parts.push(cenv('TLDA_CONFIG', configName))
   if (env.TLDA_MACHINE_ID) parts.push(cenv('TLDA_MACHINE_ID', env.TLDA_MACHINE_ID))
+  if (env.TLDA_MACHINE_ID && configName) parts.push(cenv('FLEET_DAEMON_KEY', `${env.TLDA_MACHINE_ID}:${configName}`))
   if (dnsAlias && dnsAliasPreload) {
     parts.push(cenv('NODE_OPTIONS', `--require=${dnsAliasPreload}`))
     parts.push(cenv('TLDA_NODE_DNS_ALIAS_HOST', dnsAlias.host))

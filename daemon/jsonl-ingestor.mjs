@@ -7,6 +7,7 @@ import path from 'path'
 import { recordPartialSkillReads } from '../shared/partial-skill-reads.mjs'
 import { ledgerSessionId, tailLedgerSessionInput } from '../agent-runtime/ledger-session-tail.mjs'
 import { scanFileIdentitySync } from '../agent-runtime/daemon-jsonl-hot-path.mjs'
+import { createLocalAgentLedger } from '../agent-launch/local-agent-ledger.mjs'
 import {
   codexKnownRolloutIds,
   shouldClaimClaudeWatcher,
@@ -166,6 +167,18 @@ export function jsonlWatchEligibility(agent, {
     return { ok: false, reason: 'agent has no durable session identity' }
   }
   return { ok: true }
+}
+
+export function jsonlOwnershipState(entry = {}, daemonKey = null) {
+  const owner = entry?.owner || {}
+  if (owner.state === 'ignore') return 'ignore'
+  if (owner.state === 'mine' && (!owner.daemon_key || owner.daemon_key === daemonKey)) return 'mine'
+  return 'unknown'
+}
+
+export function classifyLoginMarkerOwner(marker = {}, daemonKey = null) {
+  if (!marker?.daemon_key) return 'unknown'
+  return marker.daemon_key === daemonKey ? 'mine' : 'ignore'
 }
 
 export function createJsonlIngesterMessageHandler({
@@ -354,6 +367,95 @@ export function createJsonlIngestor({
       log.error(`daemon ledger session identity write failed for ${fleetId}: ${e.message}`)
       throw e
     }
+  }
+
+  function persistLocalMarkerBinding(marker, { sessionId, jsonlPath, harnessKind } = {}) {
+    if (!marker?.mint_id) return
+    const localLedger = createLocalAgentLedger(path.join(configDir, 'fleet-daemon.db'))
+    try {
+      if (!localLedger.get(marker.mint_id)) {
+        localLedger.create({
+          localAgentId: marker.mint_id,
+          serverAgentId: marker.fleet_id || null,
+          friendlyName: marker.friendly_name || null,
+          sessionId,
+          harness: marker.harness_kind || harnessKind,
+          model: marker.model || null,
+          tmuxName: marker.tmux_session || null,
+          cwd: marker.cwd || null,
+        })
+      } else {
+        if (marker.fleet_id) localLedger.bind(marker.mint_id, marker.fleet_id, { friendlyName: marker.friendly_name || null })
+        localLedger.updateConversation(marker.mint_id, {
+          sessionId,
+          harness: marker.harness_kind || harnessKind,
+          model: marker.model || null,
+        })
+        localLedger.updateProcess(marker.mint_id, {
+          tmuxName: marker.tmux_session || null,
+          cwd: marker.cwd || null,
+        })
+      }
+    } catch (e) {
+      // Best-effort local ledger repair; ownership classification must continue.
+      log.warn(`local login marker binding failed for ${marker.mint_id}: ${e.message}`)
+    } finally {
+      localLedger.close()
+    }
+    if (marker.fleet_id) {
+      recordSessionIdentity({
+        fleet_id: marker.fleet_id,
+        session_id: marker.session_id || sessionId,
+        harness_kind: marker.harness_kind || harnessKind,
+        jsonl_path: jsonlPath,
+        tmux_session: marker.tmux_session,
+        model: marker.model,
+        cwd: marker.cwd,
+        friendly_name: marker.friendly_name,
+        machine_id: marker.machine_id,
+        env_name: marker.env_name,
+        daemon_key: marker.daemon_key,
+      })
+    }
+  }
+
+  function setJsonlOwnership(pw, state, marker = null) {
+    const entry = cursors[pw.sessionId] || (cursors[pw.sessionId] = {})
+    const prev = jsonlOwnershipState(entry, daemonKey)
+    entry.owner = {
+      state,
+      daemon_key: marker?.daemon_key || entry.owner?.daemon_key || daemonKey || null,
+      mint_id: marker?.mint_id || entry.owner?.mint_id || null,
+      fleet_id: marker?.fleet_id || entry.owner?.fleet_id || null,
+      decided_at: new Date().toISOString(),
+    }
+    pw.ownershipState = state
+    if (state === 'mine' && marker) {
+      persistLocalMarkerBinding(marker, {
+        sessionId: pw.sessionId,
+        jsonlPath: pw.jsonlPath,
+        harnessKind: pw.harnessKind,
+      })
+      if (prev !== 'mine' && isConnected()) {
+        sendActivityHealth(pw.primaryAgentId, {
+          state: ACTIVITY_HEALTH_OK,
+          boundary: ACTIVITY_HEALTH_BOUNDARIES.WATCH_ATTACHED,
+          reason: `${pw.harnessKind} watcher ownership confirmed`,
+          lastKnownGoodAt: new Date().toISOString(),
+          sessionId: pw.sessionId,
+          jsonlPath: pw.jsonlPath,
+        })
+      }
+    }
+    if (state === 'ignore') stopJsonlTail(pw, `foreign login marker for ${path.basename(pw.jsonlPath)}`)
+    scheduleCursorSave()
+  }
+
+  function applyLoginMarkerOwnership(pw, marker) {
+    if (!marker) return jsonlOwnershipState(cursors[pw.sessionId], daemonKey)
+    const state = classifyLoginMarkerOwner(marker, daemonKey)
+    if (state !== 'unknown') setJsonlOwnership(pw, state, marker)
+    return state
   }
 
   function syncSessionIdentityNamesFromAgents(agentList = getAgents()) {
@@ -1004,14 +1106,16 @@ export function createJsonlIngestor({
               terminalChat: !!harness.terminalChat,
               backfillSearch: !!harness.backfillSearch,
             })
-            sendActivityHealth(agent, {
-              state: ACTIVITY_HEALTH_OK,
-              boundary: ACTIVITY_HEALTH_BOUNDARIES.WATCH_ATTACHED,
-              reason: `${harness.kind} watcher updated`,
-              lastKnownGoodAt: new Date().toISOString(),
-              sessionId: fileSessionId,
-              jsonlPath,
-            })
+            if (pw.ownershipState === 'mine') {
+              sendActivityHealth(agent, {
+                state: ACTIVITY_HEALTH_OK,
+                boundary: ACTIVITY_HEALTH_BOUNDARIES.WATCH_ATTACHED,
+                reason: `${harness.kind} watcher updated`,
+                lastKnownGoodAt: new Date().toISOString(),
+                sessionId: fileSessionId,
+                jsonlPath,
+              })
+            }
           } catch (e) {
             // Retire this broken tail; other JSONL watchers must keep flowing.
             log.warn(`JSONL ingester update failed for ${path.basename(jsonlPath)}: ${e?.message || e}`)
@@ -1041,6 +1145,7 @@ export function createJsonlIngestor({
         })
         continue
       }
+      if (jsonlOwnershipState(cursors[sessionId], daemonKey) === 'ignore') continue
       const inode = stat.ino
       const stored = cursors[sessionId]
       let offset
@@ -1066,9 +1171,11 @@ export function createJsonlIngestor({
       }
 
       try {
-        if (harness.kind === 'codex') {
-          try {
-            const { identity, owners, endOffset } = scanFileIdentitySync(jsonlPath)
+        let initialMarker = null
+        try {
+          const { identity, owners, endOffset } = scanFileIdentitySync(jsonlPath)
+          initialMarker = identity?.marker || null
+          if (harness.kind === 'codex') {
             const claimedOwners = owners.length ? owners : [agent.id]
             recordSessionOwners(sessionId, claimedOwners, {
               jsonlPath,
@@ -1081,23 +1188,43 @@ export function createJsonlIngestor({
                 entry.identityScanned = true
                 scheduleCursorSave()
               }
+            }
           }
         } catch (e) {
           // Identity recovery is opportunistic; the JSONL watcher must still start.
-          log.warn(`codex identity scan failed for ${path.basename(jsonlPath)}: ${e.message}`)
+          log.warn(`identity scan failed for ${path.basename(jsonlPath)}: ${e.message}`)
         }
-      }
-        const pwState = startJsonlTail({ agent, jsonlPath, sessionId, harness, startOffset: offset, liveOffset: stat.size })
+        const initialOwnership = initialMarker
+          ? classifyLoginMarkerOwner(initialMarker, daemonKey)
+          : jsonlOwnershipState(cursors[sessionId], daemonKey)
+        if (initialOwnership === 'ignore') {
+          cursors[sessionId] = {
+            ...(cursors[sessionId] || {}),
+            owner: {
+              state: 'ignore',
+              daemon_key: initialMarker?.daemon_key || null,
+              mint_id: initialMarker?.mint_id || null,
+              fleet_id: initialMarker?.fleet_id || null,
+              decided_at: new Date().toISOString(),
+            },
+          }
+          scheduleCursorSave()
+          continue
+        }
+        const pwState = startJsonlTail({ agent, jsonlPath, sessionId, harness, startOffset: offset, liveOffset: stat.size, ownershipState: initialOwnership })
+        if (initialOwnership === 'mine' && initialMarker) setJsonlOwnership(pwState, 'mine', initialMarker)
         pathWatchers.set(jsonlPath, pwState)
         retainJsonlDirWatcher(jsonlPath)
-        sendActivityHealth(agent, {
-          state: ACTIVITY_HEALTH_OK,
-          boundary: ACTIVITY_HEALTH_BOUNDARIES.WATCH_ATTACHED,
-          reason: `${harness.kind} watcher attached`,
-          lastKnownGoodAt: new Date().toISOString(),
-          sessionId,
-          jsonlPath,
-        })
+        if (pwState.ownershipState === 'mine') {
+          sendActivityHealth(agent, {
+            state: ACTIVITY_HEALTH_OK,
+            boundary: ACTIVITY_HEALTH_BOUNDARIES.WATCH_ATTACHED,
+            reason: `${harness.kind} watcher attached`,
+            lastKnownGoodAt: new Date().toISOString(),
+            sessionId,
+            jsonlPath,
+          })
+        }
 
         log.info(`watching ${harness.kind} JSONL for ${agent.friendly_name || agent.id}: ${path.basename(jsonlPath)} @ offset=${offset}`)
       } catch (e) {
@@ -1195,7 +1322,7 @@ export function createJsonlIngestor({
     Promise.resolve(entry.watcher.close()).catch(e => log.warn(`chokidar close failed for ${dir}: ${e?.message || e}`))
   }
 
-  function startJsonlTail({ agent, jsonlPath, sessionId, harness, startOffset, liveOffset }) {
+  function startJsonlTail({ agent, jsonlPath, sessionId, harness, startOffset, liveOffset, ownershipState = 'unknown' }) {
     startJsonlIngester()
     const watchId = `${sessionId}:${agent.id}:${nowMs()}:${random().toString(36).slice(2)}`
     const replayThresholdBytes = Number(process.env.TLDA_JSONL_DISPLAY_REPLAY_MAX_BYTES || DEFAULT_DISPLAY_REPLAY_MAX_BYTES)
@@ -1211,6 +1338,7 @@ export function createJsonlIngestor({
       lastSavedOffset: startOffset,
       pendingDeliveries: 0,
       pendingFlushOffset: null,
+      ownershipState,
       catchupUntilOffset,
       catchupSuppressed: {},
     }
@@ -1336,10 +1464,15 @@ export function createJsonlIngestor({
   }
 
   function processJsonlChildOutputs(pw, outputs) {
-    if (!isConnected()) return false
     const agentId = pw.primaryAgentId
+    const connected = isConnected()
     let delivered = true
     for (const output of outputs) {
+      if (output.type === 'identity' && output.identity?.marker) {
+        applyLoginMarkerOwnership(pw, output.identity.marker)
+      }
+      if (!connected) continue
+      if (pw.ownershipState !== 'mine') continue
       if (pw.catchupUntilOffset != null && shouldSuppressCatchupOutput(output)) {
         countCatchupSuppressed(pw, output)
         continue

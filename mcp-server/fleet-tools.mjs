@@ -71,6 +71,7 @@ import {
   WsReconnectBuffer,
 } from '../shared/fleet-transport.mjs';
 import { createFleetOperationTransport } from '../shared/fleet-operation-transport.mjs';
+import { formatLoginMarker } from '../agent-runtime/daemon-jsonl-hot-path.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BIN = path.join(__dirname, 'bin');
@@ -2024,7 +2025,22 @@ export async function handleFleetTool(name, args) {
     }
     const machineId = process.env.TLDA_MACHINE_ID || os.hostname().split('.')[0];
     const envName = getActiveConfigName();
+    const daemonKey = process.env.FLEET_DAEMON_KEY || (machineId && envName ? `${machineId}:${envName}` : null);
     const currentHarness = harnessFromEnv();
+    const localMarker = extra => formatLoginMarker({
+      mint_id: process.env.FLEET_MINT_ID || localAgentId || shellId,
+      local_agent_id: localAgentId || undefined,
+      fleet_id: shellId || boundFleetId || undefined,
+      friendly_name: process.env.FLEET_NAME || undefined,
+      session_id: args.session_id || CLAUDE_SESSION || undefined,
+      daemon_key: daemonKey || undefined,
+      machine_id: machineId,
+      env_name: envName,
+      harness_kind: currentHarness.kind,
+      tmux_session: detectedTmux || undefined,
+      cwd: cwd || undefined,
+      ...extra,
+    });
     if (!shellId) {
       if (!localAgentId) {
         return { content: [{ type: 'text', text: 'No local or server agent identity is available.' }], isError: true };
@@ -2047,7 +2063,10 @@ export async function handleFleetTool(name, args) {
         metadata: { kind: currentHarness.kind },
       }, { agentId: localAgentId })?.catch(e => ({ error: e.message }));
       if (!mintResult || mintResult.error) {
-        return { content: [{ type: 'text', text: `Server binding unavailable; this agent remains usable locally as ${localAgentId}.` }], isError: true };
+        return { content: [{ type: 'text', text: [
+          localMarker({}),
+          `Server binding unavailable; this agent remains usable locally as ${localAgentId}.`,
+        ].join('\n') }], isError: true };
       }
       shellId = mintResult.server_agent_id || mintResult.agent?.id || null;
       if (!shellId) {
@@ -2082,10 +2101,16 @@ export async function handleFleetTool(name, args) {
     }
     const serverResult = await mcpFleetTransport.durable('login', loginBody)?.catch(e => ({ error: e.message }));
     if (!serverResult) {
-      return { content: [{ type: 'text', text: 'Login failed: fleet WS did not connect before the request deadline.' }], isError: true };
+      return { content: [{ type: 'text', text: [
+        localMarker({}),
+        'Login failed: fleet WS did not connect before the request deadline.',
+      ].join('\n') }], isError: true };
     }
     if (serverResult.error) {
-      return { content: [{ type: 'text', text: `Login rejected by server: ${serverResult.error}` }], isError: true };
+      return { content: [{ type: 'text', text: [
+        localMarker({}),
+        `Login rejected by server: ${serverResult.error}`,
+      ].join('\n') }], isError: true };
     }
     await flushFleetTransport({ limit: 100 }).catch(e => {
       process.stderr.write(`[fleet-transport] login flush failed: ${e.message}\n`);
@@ -2095,6 +2120,7 @@ export async function handleFleetTool(name, args) {
     const friendly = agent.friendly_name || shellId;
     ledger.upsertAgent(shellId, args.session_id || CLAUDE_SESSION, cwd, friendly);
     const msg = [
+      localMarker({ fleet_id: shellId, friendly_name: friendly }),
       `Logged in ${shellId}.`,
       `Your name: "${friendly}" — other agents and the user know you by this name.`,
       '',

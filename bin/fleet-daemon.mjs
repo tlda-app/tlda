@@ -58,6 +58,7 @@ import { createFleetOperationTransport } from '../shared/fleet-operation-transpo
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
+import net from 'node:net'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { fileURLToPath } from 'url'
 import {
@@ -152,6 +153,7 @@ const permissionLedger = createPermissionLedger(PERMISSION_LEDGER_FILE, {
 applyDaemonGrants(permissionLedger, daemonSpawnConfig)
 
 const LOG_FILE = path.join(CONFIG_DIR, `fleet-daemon${DAEMON_STATE_SUFFIX}.log`)
+const LOCAL_RPC_SOCKET = path.join(CONFIG_DIR, `fleet-daemon${DAEMON_STATE_SUFFIX}.sock`)
 const DAEMON_OUTBOX_FILE = defaultOutboxPath(CONFIG_DIR, DAEMON_STATE_SUFFIX)
 const LEGACY_DEAD_LETTER_FILE = path.join(CONFIG_DIR, `daemon-dead-letters${DAEMON_STATE_SUFFIX}.jsonl`)
 const PROJECTS_DIR = process.env.PROJECTS_DIR || path.join(os.homedir(), '.claude', 'projects')
@@ -782,6 +784,59 @@ machineRpc.register({
   'reaper-kill': devReaper.rpcKill,
   'reaper-sweep': devReaper.rpcSweep,
 })
+
+function startLocalLifecycleRpc() {
+  try {
+    fs.rmSync(LOCAL_RPC_SOCKET, { force: true })
+  } catch {
+    // Best-effort stale socket cleanup; listen will report real bind failures.
+  }
+  const server = net.createServer(socket => {
+    let raw = ''
+    let observing = true
+    const writeFrame = payload => {
+      if (!observing || socket.destroyed || !socket.writable) return
+      socket.write(`${JSON.stringify(payload)}\n`)
+    }
+    socket.setEncoding('utf8')
+    socket.on('data', chunk => { raw += chunk })
+    socket.on('error', () => { observing = false })
+    socket.on('close', () => { observing = false })
+    socket.on('end', () => {
+      let request
+      try {
+        request = JSON.parse(raw || '{}')
+        const op = String(request.op || '').trim()
+        if (op !== 'spawn' && op !== 'wake') throw new Error(`unsupported local daemon op: ${op || '(missing)'}`)
+        const handler = agentLauncher.handlers[op]
+        const params = {
+          ...(request.params || {}),
+          onLifecycleEvent: (event, data = {}) => writeFrame({ event, data }),
+        }
+        Promise.resolve(handler(params))
+          .then(result => {
+            if (observing) socket.end(`${JSON.stringify({ ok: true, result })}\n`)
+          })
+          .catch(e => {
+            if (observing) socket.end(`${JSON.stringify({ ok: false, error: e.message || String(e) })}\n`)
+          })
+      } catch (e) {
+        if (observing) socket.end(`${JSON.stringify({ ok: false, error: e.message || String(e) })}\n`)
+      }
+    })
+  })
+  server.on('error', error => log.warn(`local lifecycle rpc failed: ${error.message}`))
+  server.listen(LOCAL_RPC_SOCKET, () => {
+    try {
+      fs.chmodSync(LOCAL_RPC_SOCKET, 0o600)
+    } catch {
+      // Best-effort socket hardening; lifecycle RPC still remains local-only.
+    }
+    log.info(`local lifecycle rpc listening on ${LOCAL_RPC_SOCKET}`)
+  })
+}
+
+startLocalLifecycleRpc()
 
 async function handleRpc(msg) {
   return daemonOperationContext.run(msg.fleet_operation || null, () => machineRpc.handleRpc(msg))

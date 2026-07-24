@@ -140,7 +140,7 @@ export async function runWakeRouteLifecycle({
     return { action: 'surfaced', liveness, decision }
   }
 
-  const spawnResult = await sendDaemonDurable(daemonKey, 'spawn', { name: agentId, agent_id: agentId, respawn: true })
+  const spawnResult = await sendDaemonDurable(daemonKey, 'wake', { fleet_id: agentId })
   if (!spawnResult?.ok) {
     throw new Error(spawnResult?.error || spawnResult?.reason || 'daemon returned ok:false with no reason')
   }

@@ -12,6 +12,7 @@ import { Router } from 'express'
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
+import { randomUUID } from 'crypto'
 import { DEFAULT_PORT, resolveConfig } from '../../shared/config.mjs'
 import { parseFilter, evalExpr, labelsForAgent } from '../../shared/fleet-labels.mjs'
 import { fleetRosterCategory } from '../../shared/fleet-runtime-status.mjs'
@@ -128,6 +129,10 @@ function formatNameCollisions(collisions = []) {
     if (c.kind === 'self_id') return `${c.name} is this agent's durable id`
     return `${c.name} collides with ${c.kind}${c.agent_id ? ` on ${c.agent_id}` : ''}`
   }).join('; ')
+}
+
+function mintFleetId() {
+  return `fleet:${randomUUID().slice(0, 8)}`
 }
 
 function fleetTableLabelsForAgent(agent) {
@@ -1152,6 +1157,83 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   // authority again.
   router.post('/api/agents/move-daemon', async (req, res) => {
     res.status(410).json({ error: 'agent daemon route is not editable; use the durable seat binding event path' })
+  })
+
+  router.post('/api/agents/:agent/wake', async (req, res) => {
+    const agent = fleetStore?.findAgent?.(req.params.agent)
+    if (!agent || agent.dead || agent.human) {
+      res.status(404).json({ ok: false, error: `agent not found: ${req.params.agent}` })
+      return
+    }
+    const seat = currentSeatOrHttpError(res, agent)
+    if (!seat) return
+    try {
+      const result = await sendDaemonDurable(seat.daemon_key, 'wake', { fleet_id: agent.id })
+      broadcastState(agent.id)
+      res.json({ ok: true, agent_id: agent.id, result })
+    } catch (e) {
+      res.status(e.code === 'NO_DAEMON' ? 503 : 502).json({ ok: false, error: e.message })
+    }
+  })
+
+  router.post('/api/agents/mint', async (req, res) => {
+    const { name, model, doc, cwd, permissionRequest, mode, effort, iLikeToLiveDangerously, modelOptions: bodyModelOptions } = req.body || {}
+    if (!name) {
+      res.status(400).json({ ok: false, error: 'mint requires name' })
+      return
+    }
+    const collisions = fleetStore?.checkNameAvailable?.([name], { asFriendlyName: true }) || []
+    if (collisions.length) {
+      res.status(409).json({
+        ok: false,
+        code: 'spawn_name_collision',
+        error: `Spawn name "${name}" is unavailable: ${formatNameCollisions(collisions)}. Choose a different name, or wake the existing agent.`,
+        collisions,
+      })
+      return
+    }
+    const caller = { id: 'localhost', human: true }
+    const fleetId = mintFleetId()
+    const modelOptions = {
+      ...(bodyModelOptions && typeof bodyModelOptions === 'object' && !Array.isArray(bodyModelOptions) ? bodyModelOptions : {}),
+      ...(effort ? { effort } : {}),
+    }
+    try {
+      const route = resolveSpawnMachine({
+        caller,
+        targetAgent: null,
+        fresh: true,
+        respawn: false,
+        refresh: false,
+        fleetStore,
+        daemonConnections,
+      })
+      const result = await sendDaemonDurable(route.machine_id, 'spawn', {
+        agent_id: fleetId,
+        friendly_name: name,
+        name,
+        model: model || undefined,
+        modelOptions,
+        doc: doc || undefined,
+        cwd: cwd || undefined,
+        effort: effort || undefined,
+        mode: mode || undefined,
+        permissionRequest: permissionRequest || undefined,
+        acknowledgeNoSecurity: !!iLikeToLiveDangerously,
+        requester: {
+          id: caller.id,
+          human: true,
+        },
+        spawnRoute: route.source,
+        daemon_env_name: route.env_name,
+        fresh: true,
+        respawn: false,
+      })
+      broadcastState()
+      res.json({ ...result, agent_id: result?.agent_id || result?.fleetId || fleetId, fleet_id: result?.fleetId || result?.agent_id || fleetId })
+    } catch (e) {
+      res.status(e.code === 'NO_DAEMON' ? 503 : 502).json({ ok: false, fleet_id: fleetId, error: e.message })
+    }
   })
 
   // --- POST /api/agent-status ---
