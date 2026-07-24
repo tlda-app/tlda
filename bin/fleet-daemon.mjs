@@ -1262,9 +1262,9 @@ function handleServerMessage(msg, wsAttemptId) {
 
 if (!fs.existsSync(CONFIG_DIR)) fs.mkdirSync(CONFIG_DIR, { recursive: true })
 
-// INVARIANT: at most one fleet-daemon per active fleet origin on this machine.
-// This is the PRIMARY, STRUCTURAL guard — an origin-keyed exclusive OS lock that
-// a second daemon targeting the same origin (from ANY install/worktree) fails to
+// INVARIANT: at most one fleet-daemon per active environment on this machine.
+// This is the PRIMARY, STRUCTURAL guard — an environment-keyed exclusive OS lock
+// that a second daemon targeting the same environment (from ANY install/worktree) fails to
 // acquire and so REFUSES to start BEFORE it opens any WS to the server. The old
 // check here was a racy PID-file existence test; the server-side machine_id lease
 // (still in place, see the 'daemon-evict' handler) is now only defense-in-depth,
@@ -1276,13 +1276,13 @@ const _lock = acquireSingletonLock({ lockPath: LOCK_FILE, installPath: _ourInsta
 if (!_lock.ok) {
   const h = _lock.holder || {}
   log.error(
-    `another fleet-daemon already holds the origin lock ${LOCK_FILE} for ${SERVER} ` +
+    `another fleet-daemon already holds the environment lock ${LOCK_FILE} for ${ACTIVE_CONFIG} (${SERVER}) ` +
     `(holder pid=${h.pid ?? '?'} install=${h.installPath ?? '?'} origin=${h.origin ?? '?'}); ` +
-    `refusing to start this one (${_ourInstallPath}). At most one daemon per origin.`,
+    `refusing to start this one (${_ourInstallPath}). At most one daemon per environment.`,
   )
   process.stderr.write(
-    `fleet-daemon: refusing to start — origin lock for ${SERVER} held by pid=${h.pid ?? '?'} ` +
-    `(${h.installPath ?? 'unknown install'}). At most one daemon per origin.\n`,
+    `fleet-daemon: refusing to start — environment lock for ${ACTIVE_CONFIG} (${SERVER}) held by pid=${h.pid ?? '?'} ` +
+    `(${h.installPath ?? 'unknown install'}). At most one daemon per environment.\n`,
   )
   process.exit(1)
 }

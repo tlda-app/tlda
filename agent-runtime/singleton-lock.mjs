@@ -60,7 +60,9 @@ export function sessionReaderLockPath({ configDir }) {
 export function normalizeLockOrigin(origin) {
   const raw = String(origin || '').trim()
   if (!raw) throw new Error('daemon singleton lock requires a non-empty origin')
-  return new URL(raw).origin
+  const url = new URL(raw)
+  const pathname = url.pathname.replace(/\/+$/, '')
+  return `${url.origin}${pathname}${url.search}${url.hash}`
 }
 
 /**
