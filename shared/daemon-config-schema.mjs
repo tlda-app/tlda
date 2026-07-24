@@ -3,6 +3,7 @@ function isRecord(value) {
 }
 
 export const DAEMON_CONFIG_TOP_LEVEL_KEYS = Object.freeze([
+  'defaultServer',
   'machineId',
   'regions',
   'profiles',
@@ -12,6 +13,7 @@ export const DAEMON_CONFIG_TOP_LEVEL_KEYS = Object.freeze([
   'tmuxSocket',
   'taskDoc',
   'spawnMachineId',
+  'servers',
 ])
 
 export const SERVER_CONFIG_TOP_LEVEL_KEYS = Object.freeze([

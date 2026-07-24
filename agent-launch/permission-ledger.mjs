@@ -137,50 +137,16 @@ function validateDaemonDefault(config = {}) {
   return config
 }
 
-function normalizeDaemonConfig(parsed, { validateDefault = true } = {}) {
+function validateDaemonConfig(parsed, { validateDefault = true } = {}) {
   const root = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : parsed
   validateDaemonConfigTopLevel(root, 'daemon config')
-  const models = root.models && typeof root.models === 'object' && !Array.isArray(root.models)
-    ? root.models
-    : {}
-  const regions = normalizeDaemonRegions(root.regions)
-  const profiles = normalizeDaemonProfiles(root.profiles, regions)
-  const grants = root.grants && typeof root.grants === 'object' && !Array.isArray(root.grants)
-    ? root.grants
-    : {}
-  const defaultProfile = typeof root.default === 'string' && root.default.trim() ? root.default.trim() : null
-  const config = {
-    regions,
-    profiles,
-    grants,
-    models,
-    ...(defaultProfile ? { default: defaultProfile } : {}),
-    ...(typeof root.tmuxSocket === 'string' && root.tmuxSocket.trim() ? { tmuxSocket: root.tmuxSocket.trim() } : {}),
-    ...(root.taskDoc && typeof root.taskDoc === 'object' && !Array.isArray(root.taskDoc) ? { taskDoc: root.taskDoc } : {}),
-    ...(typeof root.spawnMachineId === 'string' && root.spawnMachineId.trim() ? { spawnMachineId: root.spawnMachineId.trim() } : {}),
-  }
-  return validateDefault ? validateDaemonDefault(config) : config
+  return validateDefault ? validateDaemonDefault(root) : root
 }
 
-function normalizeProjectDaemonOverride(parsed) {
+function validateProjectDaemonOverride(parsed) {
   const root = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : parsed
   validateProjectDaemonOverrideTopLevel(root, 'project daemon override')
-  const models = root.models && typeof root.models === 'object' && !Array.isArray(root.models)
-    ? root.models
-    : {}
-  const regions = normalizeDaemonRegions(root.regions)
-  const profiles = normalizeDaemonProfiles(root.profiles, regions)
-  const grants = root.grants && typeof root.grants === 'object' && !Array.isArray(root.grants)
-    ? root.grants
-    : {}
-  const defaultProfile = typeof root.default === 'string' && root.default.trim() ? root.default.trim() : null
-  return {
-    regions,
-    profiles,
-    grants,
-    models,
-    ...(defaultProfile ? { default: defaultProfile } : {}),
-  }
+  return root
 }
 
 // Deep-merge helper for the base ⊕ project-override join (project values win).
@@ -827,7 +793,7 @@ export class PermissionLedger {
 }
 
 export function readDaemonConfig(file = defaultDaemonConfigPath()) {
-  return normalizeDaemonConfig(readYamlFile(file, 'daemon config'))
+  return validateDaemonConfig(readYamlFile(file, 'daemon config'))
 }
 
 // Git-style project override: walk up from the agent's cwd for a `.tlda-daemon.yaml`.
@@ -873,16 +839,15 @@ export function readDaemonConfigForCwd(cwd, file = defaultDaemonConfigPath()) {
   const base = readDaemonConfig(file)
   const overridePath = projectDaemonOverridePath(cwd)
   if (!overridePath) return base
-  const override = normalizeProjectDaemonOverride(readYamlFile(overridePath, 'project daemon override'))
+  const override = validateProjectDaemonOverride(readYamlFile(overridePath, 'project daemon override'))
   return validateDaemonDefault(joinConfigs(base, override))
 }
 
 export function withDaemonModelAliases(config = {}, daemonConfig = {}) {
+  const regions = normalizeDaemonRegions(daemonConfig?.regions)
+  const daemonProfiles = normalizeDaemonProfiles(daemonConfig?.profiles, regions)
   const daemonModels = daemonConfig?.models && typeof daemonConfig.models === 'object' && !Array.isArray(daemonConfig.models)
     ? daemonConfig.models
-    : {}
-  const daemonProfiles = daemonConfig?.profiles && typeof daemonConfig.profiles === 'object' && !Array.isArray(daemonConfig.profiles)
-    ? daemonConfig.profiles
     : {}
   // No daemon models AND no daemon profiles: return an empty daemon authority.
   // Fail closed: no profiles means no permission profiles.
@@ -903,9 +868,8 @@ export function applyDaemonGrants(ledger, daemonConfig = {}) {
   const grants = daemonConfig?.grants && typeof daemonConfig.grants === 'object' && !Array.isArray(daemonConfig.grants)
     ? daemonConfig.grants
     : {}
-  const profiles = daemonConfig?.profiles && typeof daemonConfig.profiles === 'object' && !Array.isArray(daemonConfig.profiles)
-    ? daemonConfig.profiles
-    : {}
+  const regions = normalizeDaemonRegions(daemonConfig?.regions)
+  const profiles = normalizeDaemonProfiles(daemonConfig?.profiles, regions)
   let written = 0
   for (const [id, value] of Object.entries(grants)) {
     const permissionGrant = normalizePermissionGrant(value, { permissionProfiles: profiles })
