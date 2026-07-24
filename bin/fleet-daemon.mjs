@@ -820,7 +820,7 @@ machineRpc.register({
 
 function startLocalLifecycleRpc() {
   fs.rmSync(LOCAL_RPC_SOCKET, { force: true })
-  const server = net.createServer(socket => {
+  const server = net.createServer({ allowHalfOpen: true }, socket => {
     let raw = ''
     let observing = true
     const writeFrame = payload => {
@@ -1181,7 +1181,7 @@ function handleServerMessage(msg, wsAttemptId) {
     gooseSupervisor.startActivityPolling()
     promptPlan.startAutoAcceptSweep()
     agentLiveness.start()
-    log.info(`daemon-ready pid=${process.pid} server=${SERVER} machine_id=${MACHINE_ID} env_name=${ACTIVE_CONFIG} projects=${projects.length}`)
+    log.info(`daemon-ready pid=${process.pid} server=${SERVER} machine_id=${MACHINE_ID} env_name=${ACTIVE_CONFIG} projects=${projects.length} watchers=started`)
     return
   }
   if (msg.type === 'agent-status-events') {

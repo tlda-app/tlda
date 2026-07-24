@@ -1682,6 +1682,20 @@ async function cmdFleetWatch(sub) {
       const connectedTarget = lastDaemonConnectedTarget()
       const codeSha = currentDaemonCodeSha()
       const identity = daemonTargetIdentity()
+      const supervisedPid = await launchdDaemonPid()
+      const launchdOwnsExisting = !!(supervisedPid && processTreeOwnsPid(supervisedPid, existingPid))
+      if (launchdOwnsExisting) {
+        console.log(green('Fleet daemon launchd job already running') + dim(` (pid ${existingPid})`))
+        try {
+          await verifyTargetFleetDaemon(existingPid, { supervised: true })
+          console.log(dim(`  Verified target environment readiness for ${identity.machineId}:${identity.envName}.`))
+        } catch (e) {
+          // This operator command surfaces unhealthy supervision on stderr and exits nonzero.
+          console.error(red(`Fleet daemon is supervised but unhealthy: ${e?.message || String(e)}`))
+          process.exit(1)
+        }
+        return
+      }
       console.log(yellow('Fleet daemon is running outside launchd') + dim(` (pid ${existingPid})`))
       console.log(yellow('Starting bounded stop/start transition to launchd supervision.'))
       console.log(dim('  This is not a no-gap handoff.'))
@@ -1697,7 +1711,7 @@ async function cmdFleetWatch(sub) {
       try {
         const result = await runDaemonStartWithSupervisedNoop({
           existingPid,
-          getLaunchdPid: () => launchdDaemonPid(),
+          getLaunchdPid: async () => supervisedPid,
           launchdOwnsExisting: (launchdPid, daemonPid) => processTreeOwnsPid(launchdPid, daemonPid),
           verifyTargetDaemon: verifyTargetFleetDaemon,
           runBoundedTransition: () => runBoundedDaemonStartTransition({

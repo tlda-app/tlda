@@ -14,7 +14,6 @@ import {
   shouldClaimCodexWatcher,
 } from '../agent-runtime/daemon-guards.mjs'
 import { codexRolloutBelongsToAgent, codexRolloutHasOwnerEvidence, codexRolloutIsTopLevel } from '../agent-runtime/resolve-transcript.mjs'
-import { acquireSingletonLock, sessionReaderLockPath } from '../agent-runtime/singleton-lock.mjs'
 import {
   ACTIVITY_HEALTH_BOUNDARIES,
   ACTIVITY_HEALTH_OK,
@@ -457,8 +456,18 @@ export function createJsonlIngestor({
         })
       }
     }
+    if (state === 'mine') startOwnedJsonlBackfill(pw)
     if (state === 'ignore') stopJsonlTail(pw, `foreign login marker for ${path.basename(pw.jsonlPath)}`)
     scheduleCursorSave()
+  }
+
+  function startOwnedJsonlBackfill(pw) {
+    if (!pw?.backfillSearch || pw.ownershipState !== 'mine') return
+    backfillSearchEntries(pw.primaryAgentId, pw.jsonlPath, pw.sessionId, pw.harnessKind)
+    if (pw.backfillPriorSessions) {
+      pw.backfillPriorSessions = false
+      backfillAllPriorSessions(pw.primaryAgentId, pw.primaryAgentId)
+    }
   }
 
   function applyLoginMarkerOwnership(pw, marker) {
@@ -659,7 +668,6 @@ export function createJsonlIngestor({
   let _jsonlIngesterRestartTimer = null
   let _jsonlIngesterRestartPending = false
   let _shuttingDown = false
-  let _sessionReaderLock = null
   const pathWatchers = new Map()    // jsonlPath -> child-backed watcher state
   const agentPaths = new Map()      // agentId -> jsonlPath
   const jsonlDirWatchers = new Map() // dir -> { watcher, refs }
@@ -676,19 +684,6 @@ export function createJsonlIngestor({
       log.warn('JSONL ingester stale child handle found; resyncing live session tails')
       _jsonlIngester = null
       handleJsonlIngesterExit('stale-ipc', null)
-    }
-    if (!_sessionReaderLock) {
-      const lockPath = sessionReaderLockPath({ configDir })
-      const lock = acquireSingletonLock({
-        lockPath,
-        installPath: daemonDir,
-        origin: null,
-      })
-      if (!lock.ok) {
-        const holder = lock.holder?.pid ? ` pid=${lock.holder.pid}` : ''
-        throw new Error(`session JSONL reader already running for ${configDir}${holder}`)
-      }
-      _sessionReaderLock = { ...lock, lockPath }
     }
     const script = path.join(daemonDir, 'fleet-jsonl-ingester.mjs')
     if (!fs.existsSync(script)) throw new Error(`JSONL ingester child missing: ${script}`)
@@ -1161,10 +1156,6 @@ export function createJsonlIngestor({
       let offset
       if (stored && stored.inode === inode) {
         offset = Math.min(stored.offset, stat.size)
-        // Backfill search index if not done yet for this session.
-        if (!stored.searchBackfilled) {
-          if (harness.backfillSearch) backfillSearchEntries(agent.id, jsonlPath, sessionId, harness.kind)
-        }
       } else {
         // New file (or rotated): start at EOF for activity cards, but backfill
         // all historical content to the search index.
@@ -1174,10 +1165,6 @@ export function createJsonlIngestor({
         // turn the same live session back into an unclassified JSONL.
         cursors[sessionId] = { ...(stored || {}), inode, offset }
         scheduleCursorSave()
-        if (harness.backfillSearch) backfillSearchEntries(agent.id, jsonlPath, sessionId, harness.kind)
-        // Also backfill all prior sessions for this agent (other JSONLs that
-        // contain a registration line for this fleet ID).
-        if (harness.backfillSearch) backfillAllPriorSessions(agent.id, agent.id)
       }
 
       try {
@@ -1191,6 +1178,7 @@ export function createJsonlIngestor({
               jsonlPath,
               harnessKind: harness.kind,
               identity,
+              persistIdentity: false,
             })
             if (endOffset > 0) {
               const entry = cursors[sessionId] || (cursors[sessionId] = {})
@@ -1221,8 +1209,18 @@ export function createJsonlIngestor({
           scheduleCursorSave()
           continue
         }
-        const pwState = startJsonlTail({ agent, jsonlPath, sessionId, harness, startOffset: offset, liveOffset: stat.size, ownershipState: initialOwnership })
+        const pwState = startJsonlTail({
+          agent,
+          jsonlPath,
+          sessionId,
+          harness,
+          startOffset: offset,
+          liveOffset: stat.size,
+          ownershipState: initialOwnership,
+          backfillPriorSessions: !(stored && stored.inode === inode),
+        })
         if (initialOwnership === 'mine' && initialMarker) setJsonlOwnership(pwState, 'mine', initialMarker)
+        else if (initialOwnership === 'mine') startOwnedJsonlBackfill(pwState)
         pathWatchers.set(jsonlPath, pwState)
         retainJsonlDirWatcher(jsonlPath)
         if (pwState.ownershipState === 'mine') {
@@ -1332,7 +1330,16 @@ export function createJsonlIngestor({
     Promise.resolve(entry.watcher.close()).catch(e => log.warn(`chokidar close failed for ${dir}: ${e?.message || e}`))
   }
 
-  function startJsonlTail({ agent, jsonlPath, sessionId, harness, startOffset, liveOffset, ownershipState = 'unknown' }) {
+  function startJsonlTail({
+    agent,
+    jsonlPath,
+    sessionId,
+    harness,
+    startOffset,
+    liveOffset,
+    ownershipState = 'unknown',
+    backfillPriorSessions = false,
+  }) {
     startJsonlIngester()
     const watchId = `${sessionId}:${agent.id}:${nowMs()}:${random().toString(36).slice(2)}`
     const replayThresholdBytes = Number(process.env.TLDA_JSONL_DISPLAY_REPLAY_MAX_BYTES || DEFAULT_DISPLAY_REPLAY_MAX_BYTES)
@@ -1349,6 +1356,8 @@ export function createJsonlIngestor({
       pendingDeliveries: 0,
       pendingFlushOffset: null,
       ownershipState,
+      backfillSearch: !!harness.backfillSearch,
+      backfillPriorSessions,
       catchupUntilOffset,
       catchupSuppressed: {},
     }
