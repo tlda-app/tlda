@@ -61,11 +61,27 @@ const RESUME_RMS_THRESHOLD = resolveIntOpt('--resume-rms', 'resumeRmsThreshold',
 // the reconnect: when speech resumes we flush this buffer ahead of the live audio.
 const PREROLL_MS = resolveIntOpt('--preroll-ms', 'prerollMs', 300)
 const PREROLL_MAX_BYTES = Math.round(16000 * 2 * (PREROLL_MS / 1000)) // 16kHz · 2 bytes/sample
-// Backstop for the epoch carry, NOT the mechanism. The real release is the utterance's
-// own is_final; this only covers a recognizer that stops finalizing altogether, and it
-// releases FORWARD so the failure mode is a few duplicated words rather than swallowed
-// ones. Deliberately generous: it should effectively never fire, and it logs when it does.
-const CARRY_BACKSTOP_MS = 4000
+// Backstop for the epoch carry. It releases FORWARD, so its failure mode is a few
+// duplicated words rather than swallowed ones.
+//
+// It was 4000ms, sized on my belief that it "should effectively never fire" because the
+// explicit Finalize would reliably produce a prompt is_final. IT FIRED ON THE FIRST REAL
+// TRIGGER. While it is carrying, results are stamped with the dead epoch and the client
+// drops them — so an oversized backstop is a word-loss window, not a safety net. 800ms is
+// generous against a typical finalize latency of a few hundred ms and bounds the damage.
+//
+// THE PATTERN, because this is the third time in this file: I had already measured
+// from_finalize at 22 occurrences in an entire log — direct evidence that the flush
+// usually produces nothing — and then designed around the flush reliably answering. Same
+// shape as declaring the tail-loss diagnosis falsified and leaving the code that rested on
+// it, and as leaving a comment describing a flush window I had deleted. **When a
+// measurement invalidates a claim, re-examine everything you justified with that claim,
+// not just the claim.** The number was in hand every time; carrying it through was the
+// step that got skipped.
+//
+// If this is still firing on ordinary sends, the mechanism is wrong in a way we have not
+// understood — do not tune this constant a second time.
+const CARRY_BACKSTOP_MS = 800
 
 // RMS of a linear16 (Int16 LE) PCM buffer. Pure → unit-tested.
 function rmsOfPcm(buf) {
@@ -472,6 +488,12 @@ wss.on('connection', (browserWs) => {
 
       if (msg.type === 'SpeechStarted') {
         lastSpeechAt = Date.now()
+        // New speech beginning is a content signal that the previous utterance is done
+        // with — the same class of boundary as its is_final, and it arrives exactly when
+        // holding would start costing him words. Releasing here can let a late final from
+        // the old utterance through as a duplicate, which is the trade we want: he is
+        // audibly talking, so swallowing what he is saying now is the worse outcome.
+        releaseCarriedEpoch('speech started')
         pendingFinalSince = pendingFinalSince || lastSpeechAt
         console.log('[deepgram-sdk-bridge] speech started')
         sendToBrowser(browserWs, { type: 'speech_started', timestamp: Date.now(), epoch: activeEpoch })
