@@ -153,3 +153,43 @@ test('unsubscribing one panel keeps the connection alive for its others', () => 
   assert.deepEqual(subs.stats(), { distinctFilters: 1, subscriptions: 1, connections: 1 });
   assert.equal(subs.match(chat(TODD.id, SKIP)).length, 1);
 });
+
+// --- structural guard: one predicate, not two ---
+
+test('verdict() is the only place membership is decided', async () => {
+  // Skip: "the filtering code should just be one fucking thing. Not two
+  // fucking things that use the same object." Sharing the evaluator is not
+  // enough — two call sites that each decide membership are two
+  // implementations, and two implementations drift. That is how live and
+  // history ended up dropping different sets of protocol messages.
+  //
+  // This asserts it structurally rather than by convention: the module may
+  // call the evaluator exactly once, inside verdict(). match() delegates.
+  const { readFileSync } = await import('node:fs');
+  const { fileURLToPath } = await import('node:url');
+  const src = readFileSync(
+    fileURLToPath(new URL('../server/lib/filter-subscriptions.mjs', import.meta.url)),
+    'utf8'
+  );
+  const calls = src.match(/matchesFleetFilter\(/g) || [];
+  assert.equal(calls.length, 1,
+    `matchesFleetFilter is called ${calls.length} times; it must be called once, inside verdict()`);
+
+  const verdictBody = src.slice(src.indexOf('function verdict('), src.indexOf('function match('));
+  assert.ok(verdictBody.includes('matchesFleetFilter('),
+    'the single call must be the one inside verdict()');
+});
+
+test('match() and verdict() cannot disagree, because match() delegates', () => {
+  const subs = createFilterSubscriptions({ getAgents: agents });
+  const filter = [[['dm', 'chief2']]];
+  const who = { humanId: SKIP, humanName: 'skip' };
+  subs.subscribe({}, 'p', filter, who);
+  for (const event of [chat(CHIEF.id, SKIP), chat(TODD.id, SKIP), chat(SKIP, CHIEF.id)]) {
+    assert.equal(
+      subs.match(event).length > 0,
+      subs.verdict(filter, event, who),
+      `match() and verdict() disagree on ${JSON.stringify(event)}`
+    );
+  }
+});
