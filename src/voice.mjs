@@ -598,6 +598,7 @@ let _micLevelRaf = null
 let _micAudible = false
 let _healthDotTimer = null
 let _voiceHealthLabel = ''
+let _lastStatusWord = null   // last status word actually rendered, so the 1 Hz watchdog repaints only on a real change
 let _voiceLivenessInterval = null
 let _lastWhisperMessageTime = 0
 
@@ -744,6 +745,16 @@ function liveLivenessLabel() {
 function runVoiceLivenessWatchdog() {
   if (!_recording) return
   showVoiceLiveness(voiceLivenessStatus(), liveLivenessLabel())
+  // Computing the word honestly isn't enough on its own — the HUD only re-renders on
+  // events, and the events that go quiet are exactly the ones that mean trouble. So
+  // re-render whenever the true word changes. Bounded at 1 Hz and gated on an actual
+  // change, so a stable state never repaints: the word can be wrong for at most a
+  // second, and it cannot sit there lying while nothing happens to wake it.
+  const word = voiceStatusLabel()
+  if (word !== _lastStatusWord) {
+    _lastStatusWord = word
+    showRecordingHud()
+  }
 }
 
 function startVoiceLivenessWatchdog() {
@@ -1084,9 +1095,44 @@ export function setCallMicState(state) {
   }
 }
 
-// Show recording status — text uses agent color, dot shows health separately
+// Is a transcript actually coming back right now? This is the honest "receiving"
+// signal — it means the whole chain answered, not that the microphone heard something.
+// Damped by AUDIO_FLOWING_MS, so it can't flutter at syllable rate.
+function receivingRecently(now = Date.now()) {
+  return !!_lastResultTime && (now - _lastResultTime) < AUDIO_FLOWING_MS
+}
+
+// Show recording status — text uses agent color, dot shows health separately.
+//
+// THE WORD HAS TO BE TRUE. It used to read only `_voiceHealthLabel`, which is a cached
+// string with several writers and no single recompute path — so when the chain died,
+// nothing refreshed it and the HUD kept saying `mic live`. Measured 2026-07-25: 133
+// Deepgram redials in 80 minutes, and the status word did not change once. Skip's own
+// rule — a cache is a second copy of the truth that drifts; compute it instead.
+//
+// The lie only ran one way: the cache went stale *healthy* while the chain was down. A
+// cached UNHEALTHY value is a real event worth showing (transient things like
+// 'restarting voice' or a showDontSpeak reason live only there). So unhealthy from
+// either source wins, and reporting healthy requires the live chain check and the
+// cached label to agree.
 function voiceStatusLabel() {
-  return voiceIndicatorState(_recording, _voiceHealthLabel)
+  if (!_recording) return 'off'
+  const cached = voiceIndicatorState(true, _voiceHealthLabel)   // transient events
+  const live = voiceIndicatorState(true, liveLivenessLabel())   // live chain state, recomputed now
+  if (cached === 'reconnecting' || live === 'reconnecting') return 'reconnecting'
+  // The audio gate itself. This is the predicate the audio path already trusts to decide
+  // whether to send or backlog (see sendDeepgramAudioChunk), and it is the term that was
+  // false during every one of the 133 redials — `_deepgramReadyEpoch !== _speechEpoch`
+  // for the whole window his words were going into a buffer. Reusing it rather than
+  // inventing a second health notion that can disagree with the one the audio obeys.
+  if (_backend === 'deepgram' && !voiceCanReportRawAudioFlowing()) return 'reconnecting'
+  // Everything above is a readiness claim from our own side: socket up, bridge says
+  // connected, gate open. All of it can stay true while Deepgram silently stops
+  // answering. So one end-to-end check the readiness terms cannot give — he is audibly
+  // talking and nothing has come back for a long time. Gated on mic level so ordinary
+  // silence never trips it, and held at 2x the flowing window so it can't flutter.
+  if (_micAudible && _lastResultTime && Date.now() - _lastResultTime > AUDIO_FLOWING_MS * 2) return 'reconnecting'
+  return receivingRecently() ? 'speaking' : 'mic live'
 }
 
 function showRecordingHud() {
