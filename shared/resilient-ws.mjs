@@ -18,13 +18,14 @@ export class ResilientWS {
    * @param {number}        [options.stableConnectionMs=10000] — reset retry ramp only after this long connected
    * @param {() => number}  [options.random=Math.random] — injected by tests
    * @param {number}        [options.heartbeatTimeoutMs=0] — 0 = disabled
+   * @param {number}        [options.connectAttemptTimeoutMs=5000] — deadline while socket is CONNECTING; 0 = disabled
    * @param {(ws, attemptId: string) => void}  [options.onOpen] — called after connection opens,
    *   with the immutable attempt id captured at mint time for THIS socket generation
    * @param {(msg, attemptId: string) => void} options.onMessage — called with parsed JSON
    *   message and the immutable attempt id of the socket generation it arrived on
    * @param {(reason: string, attemptId: string|null) => void} [options.onClose] — called on
    *   connection loss (before retry); reason is one of
-   *   'close' | 'error' | 'heartbeat-timeout' | 'manual-reconnect'; attemptId is the id minted
+   *   'close' | 'error' | 'heartbeat-timeout' | 'connect-timeout' | 'manual-reconnect'; attemptId is the id minted
    *   for the socket that just ended (null if it ended before any socket was ever created,
    *   e.g. a URL-resolution failure)
    * @param {(reason: string) => void} [options.onActivity] — called on open/message/ping liveness
@@ -49,6 +50,11 @@ export class ResilientWS {
     this._stableConnectionMs = options.stableConnectionMs ?? 10_000
     this._random = options.random ?? Math.random
     this._heartbeatTimeoutMs = options.heartbeatTimeoutMs ?? 0
+    // Healthy live fleet connects were measured at ~329ms during the 2026-07-25
+    // incident. 5s is deliberately an order-of-magnitude ceiling: it catches
+    // wedged CONNECTING sockets without treating ordinary connection latency as
+    // failure. Consumers with different tolerances can override it.
+    this._connectAttemptTimeoutMs = options.connectAttemptTimeoutMs ?? 5_000
     this._onOpen = options.onOpen
     this._onMessage = options.onMessage
     this._onClose = options.onClose
@@ -61,6 +67,7 @@ export class ResilientWS {
     this._ws = null
     this._backoff = this._initialBackoff
     this._retryTimer = null
+    this._connectAttemptTimer = null
     this._heartbeatTimer = null
     this._stableTimer = null
     this._closed = false
@@ -121,8 +128,10 @@ export class ResilientWS {
       this._log(`[${this._label}] connecting to ${url.replace(/token=[^&]+/, 'token=***')} (attempt ${attemptId})`)
       const ws = new this._WebSocketImpl(url, isLocalWss ? { rejectUnauthorized: false } : undefined)
       this._ws = ws
+      this._resetConnectAttemptTimer(ws, attemptId)
 
       ws.on('open', () => {
+        this._clearConnectAttemptTimer()
         this._log(`[${this._label}] connected (attempt ${attemptId})`)
         this._onAttemptOpen?.(attemptId)
         if (this._stableTimer) clearTimeout(this._stableTimer)
@@ -197,6 +206,7 @@ export class ResilientWS {
   close() {
     this._closed = true
     if (this._retryTimer) { clearTimeout(this._retryTimer); this._retryTimer = null }
+    this._clearConnectAttemptTimer()
     if (this._heartbeatTimer) { clearTimeout(this._heartbeatTimer); this._heartbeatTimer = null }
     if (this._stableTimer) { clearTimeout(this._stableTimer); this._stableTimer = null }
     if (this._ws) { try { this._ws.close() } catch (e) { this._log(`[${this._label}] close error: ${e.message}`) } }
@@ -214,6 +224,7 @@ export class ResilientWS {
   _cleanup(ws = this._ws, reason = null, attemptId = this._lastAttemptId) {
     if (ws && this._ws !== ws) return false
     this._ws = null
+    this._clearConnectAttemptTimer()
     if (this._heartbeatTimer) { clearTimeout(this._heartbeatTimer); this._heartbeatTimer = null }
     if (this._stableTimer) { clearTimeout(this._stableTimer); this._stableTimer = null }
     this._onClose?.(reason, attemptId)
@@ -243,5 +254,29 @@ export class ResilientWS {
       if (ws) { try { ws.close() } catch (e) { this._log(`[${this._label}] close error: ${e.message}`) } }
       if (this._cleanup(ws, 'heartbeat-timeout', attemptId)) this._scheduleRetry(attemptId)
     }, this._heartbeatTimeoutMs)
+  }
+
+  _resetConnectAttemptTimer(ws, attemptId) {
+    if (!this._connectAttemptTimeoutMs) return
+    this._clearConnectAttemptTimer()
+    this._connectAttemptTimer = setTimeout(() => {
+      if (this._ws !== ws) return
+      const connectingState = this._WebSocketImpl.CONNECTING ?? WebSocket.CONNECTING
+      if (ws.readyState !== connectingState) return
+      this._log(`[${this._label}] connection attempt timed out after ${this._connectAttemptTimeoutMs}ms — reconnecting (attempt ${attemptId})`)
+      try {
+        if (typeof ws.terminate === 'function') ws.terminate()
+        else ws.close()
+      } catch (e) {
+        this._log(`[${this._label}] terminate error: ${e.message}`)
+      }
+      if (this._cleanup(ws, 'connect-timeout', attemptId)) this._scheduleRetry(attemptId)
+    }, this._connectAttemptTimeoutMs)
+  }
+
+  _clearConnectAttemptTimer() {
+    if (!this._connectAttemptTimer) return
+    clearTimeout(this._connectAttemptTimer)
+    this._connectAttemptTimer = null
   }
 }
