@@ -94,6 +94,16 @@ export function createHarnessRuntime({
         terminalChat: false,
       },
     },
+    bot: {
+      kind: 'bot',
+      processRe: /(?:^|\s|[/\\])node(?:\.exe)?(?:\s|$).*?(?:[/\\]bots[/\\].*\.mjs|[/\\][^/\\\s]*(?:-|_)bot\.mjs\b)/,
+      activity: {
+        kind: 'bot',
+        usesClaudeSessionIds: false,
+        backfillSearch: false,
+        terminalChat: false,
+      },
+    },
   }
 
   function harnessForAgent(agent) {

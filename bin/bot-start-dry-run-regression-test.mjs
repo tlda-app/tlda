@@ -49,6 +49,20 @@ try {
   assert.match(result.stdout, /Would start bot service:/)
   assert.match(result.stdout, /todd: com\.tlda\.bot\.todd/)
 
+  const blockedStart = spawnSync(process.execPath, [join(root, 'cli', 'tlda.mjs'), 'bot', 'start', 'todd'], {
+    cwd: root,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      HOME: home,
+      TLDA_CONFIG_DIR: configDir,
+      PATH: `${fakeBin}:${process.env.PATH || ''}`,
+    },
+  })
+  assert.notEqual(blockedStart.status, 0, 'normal start must refuse without an existing bot fleet id')
+  assert.match(blockedStart.stderr, /needs an existing fleet id/)
+  writeFileSync(join(configDir, 'todd.fleet-id'), 'fleet:todd-existing\n')
+
   const liveResult = spawnSync(process.execPath, [join(root, 'cli', 'tlda.mjs'), 'bot', 'start', 'todd'], {
     cwd: root,
     encoding: 'utf8',
@@ -62,6 +76,10 @@ try {
   assert.equal(liveResult.status, 0, liveResult.stderr || liveResult.stdout)
   assert.match(liveResult.stdout, /Started com\.tlda\.bot\.todd\./)
   assert.equal(existsSync(plist), true, 'normal start must retain its existing plist write')
+  const plistText = readFileSync(plist, 'utf8')
+  assert.match(plistText, /tlda agent wake (?:&quot;|")\$fleet_id(?:&quot;|")/, 'bot launchd job must wake the existing bot identity')
+  assert.doesNotMatch(plistText, /node['" ][^<]*bin\/bots\/todd\.mjs/, 'bot launchd job must not run the bot script directly')
+  assert.doesNotMatch(plistText, /tmux new-session/, 'launchd must not pre-create the bot tmux before wake')
   assert.match(readFileSync(calls, 'utf8'), /launchctl bootstrap/)
   assert.match(readFileSync(calls, 'utf8'), /launchctl kickstart/)
 

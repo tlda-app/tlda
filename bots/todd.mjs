@@ -43,8 +43,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 // name so anyone can run the same script under a different name. The key drives
 // the fleet id, pidfile, the display name, and the address verb Skip speaks.
 // Names are lowercase by fleet convention (fleet:skip, fleet:todd, …).
-const BOT_KEY = (process.env.TLDA_BOT_NAME || 'todd').toLowerCase()
-const AGENT_NAME = BOT_KEY
+const BOT_KEY = (process.env.TLDA_BOT_REQUESTED_NAME || process.env.TLDA_BOT_NAME || 'todd').toLowerCase()
+const AGENT_NAME = (process.env.FLEET_NAME || BOT_KEY).toLowerCase()
 const VERB = BOT_KEY  // what Skip says to address this bot, e.g. "todd cancel"
 const PID_FILE = process.env.TLDA_BOT_PIDFILE || path.join(CONFIG_DIR, `${BOT_KEY}.pid`)
 const HEARTBEAT_FILE = process.env.TLDA_BOT_HEARTBEAT || path.join(CONFIG_DIR, `${BOT_KEY}.heartbeat`)
@@ -88,6 +88,13 @@ const knownBotIds = new Set()
 let assignedName = null
 
 function loadOrCreateFleetId() {
+  if (/^fleet:[a-zA-Z0-9_-]+$/.test(process.env.FLEET_ID || '')) {
+    try {
+      fs.mkdirSync(path.dirname(ID_FILE), { recursive: true })
+      if (!fs.existsSync(ID_FILE)) fs.writeFileSync(ID_FILE, process.env.FLEET_ID)
+    } catch { /* best-effort idfile backfill */ }
+    return process.env.FLEET_ID
+  }
   try {
     const existing = fs.readFileSync(ID_FILE, 'utf8').trim()
     if (/^fleet:[a-zA-Z0-9_-]+$/.test(existing)) return existing
@@ -111,7 +118,7 @@ function updateAssignedNameFromAgent(agent) {
 }
 
 function isCanonicalBot() {
-  return assignedName === AGENT_NAME
+  return assignedName === BOT_KEY
 }
 
 // ---- Skip-in-the-room tracker ----
@@ -2715,7 +2722,7 @@ async function loginFleet() {
   const result = await sendRequest({ ...payload, type: 'login' })
   updateAssignedNameFromAgent(result?.agent)
   if (!isCanonicalBot()) {
-    console.log(`[todd] inert: requested "${AGENT_NAME}", assigned "${assignedName || '(none)'}"`)
+    console.log(`[todd] inert: requested "${BOT_KEY}", assigned "${assignedName || '(none)'}"`)
   }
   return result
 }

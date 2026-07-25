@@ -65,8 +65,10 @@ import {
   defaultDaemonConfigPath,
   permissionLedgerPathFromDaemonConfig,
   readDaemonConfig,
+  readDaemonConfigForCwd,
   withDaemonModelAliases,
 } from '../agent-launch/permission-ledger.mjs'
+import { MintStore } from '../daemon/mint-store.mjs'
 import { terminateTmuxSession } from '../agent-launch/tmux.mjs'
 import { bindAgentSeat } from '../agent-launch/seat-binding.mjs'
 import { projectWorldsPath, readProjectWorlds, writeProjectWorld } from '../shared/project-worlds.mjs'
@@ -196,7 +198,7 @@ const COMMAND_HELP = {
   delete:  'tlda doc delete <name>\n\n  Delete a project and all its data.',
   logs:    'tlda logs [agent] [--since 1h|2026-05-23] [--type chat,register] [-n 50] [-f] [--daemon] [--all]\n\n  Unified chronological log across all sources (DB events, daemon log, dead-letters).\n\n  agent      Filter by agent name (fuzzy match)\n  --since    Time range (e.g. 1h, 30m, 2d, or ISO date)\n  --type     Filter by event type (comma-separated)\n  -n N       Number of events (default: 50, or 10000 with --since)\n  -f         Follow mode (tail -f style)\n  --daemon   Include daemon log lines (heartbeats, WS, terminal exits)\n  --all      Include activity and client_error events (excluded by default)',
   server:  'tlda server [start|stop|status|log|install|uninstall]\n\n  start      Start the server (auto-restarts via launchd if installed)\n  stop       Stop the server\n  status     Check if server is running\n  log        Show recent server log\n  install    Install launchd service (macOS)\n  uninstall  Remove launchd service',
-  bot:     'tlda bot [list|install|uninstall|start|stop|status|log] [name] [--dry-run]\n\n  Manage configured fleet bots as launchd services. The bot process logs in like an agent; the daemon does not start it.',
+  bot:     'tlda bot [list|install|enlist|uninstall|start|stop|status|log] [name] [--dry-run]\n\n  Manage configured fleet bots as launchd services. Enlist records an existing bot fleet id for wake; start/install never mint a replacement.',
   system:  'tlda system status\n\n  Show server, daemon, deploy stamp, and fleet runtime identity.',
   daemon:  'tlda daemon [start|stop|status|log|run|install|uninstall]\n\n  Control the per-machine fleet daemon.\n  It watches project source directories and agent session activity,\n  then pushes events to the tlda server over WebSocket.',
   doctor:  'tlda doctor [--fix]\ntlda doctor yolo [--name yolo] --model <provider-model> [--kind codex] [--cwd /path] [--no-attach] [--dry-run]\n\n  Run a health check for local tools, server, SPA bundle, daemon, MCP setup,\n  project builds, and doc sync stores.\n\n  --fix  Apply the limited automatic repairs that doctor explicitly offers.\n\n  yolo   Break-glass: locally launch an unrestricted repair agent outside the\n         normal daemon/server/grant path. Deliberately shallow so it works when\n         the normal spawn path is broken.\n\n         --model names the provider model directly. --kind selects the harness\n         and defaults to codex. Run in a terminal and it attaches you into the\n         agent session when it comes up (--no-attach to skip). Non-interactive\n         calls report the local tmux session and local mint id; they do not claim\n         a fleet-recipient binding.',
@@ -1223,20 +1225,17 @@ function botCommandEnvironment(bot, paths) {
     .join(' ')
 }
 
-function botTmuxCommand(bot, paths) {
-  const script = resolveBotScriptForCli(bot.script)
+function botWakeCommand(bot, paths) {
   const envPrefix = botCommandEnvironment(bot, paths)
-  const signalExit = `tmux wait-for -S ${shellQuote(paths.waitChannel)}`
-  return `exec env ${envPrefix} ${shellQuote(process.execPath)} ${shellQuote(script)} >> ${shellQuote(paths.logFile)} 2>&1; ${signalExit}`
+  return [
+    `fleet_id=$(cat ${shellQuote(paths.idFile)})`,
+    `env ${envPrefix} tlda agent wake "$fleet_id" >> ${shellQuote(paths.logFile)} 2>&1`,
+    `tmux wait-for ${shellQuote(paths.waitChannel)}`,
+  ].join('; ')
 }
 
 function botLaunchCommand(bot, paths = botServicePaths(bot.name)) {
-  const tmuxCommand = botTmuxCommand(bot, paths)
-  return [
-    `tmux kill-session -t ${shellQuote(paths.tmuxSession)} 2>/dev/null || true`,
-    `tmux new-session -d -s ${shellQuote(paths.tmuxSession)} ${shellQuote(tmuxCommand)}`,
-    `tmux wait-for ${shellQuote(paths.waitChannel)}`,
-  ].join('\n')
+  return botWakeCommand(bot, paths)
 }
 
 function botPlistContent(bot, paths = botServicePaths(bot.name)) {
@@ -1563,6 +1562,88 @@ function printBotPlan(bot) {
   console.log(dim(`  Tmux: ${paths.tmuxSession}`))
   console.log(dim(`  Plist: ${paths.plist}`))
   console.log(dim(`  Log: ${paths.logFile}`))
+}
+
+function readBotFleetId(paths) {
+  const id = existsSync(paths.idFile) ? readFileSync(paths.idFile, 'utf8').trim() : ''
+  if (!/^fleet:[a-zA-Z0-9_-]+$/.test(id)) {
+    throw new Error(`bot ${paths.label} needs an existing fleet id at ${paths.idFile}; refusing to mint a replacement`)
+  }
+  return id
+}
+
+function botPermissionFacts() {
+  const cwd = FLEET_DAEMON_MAIN_ROOT
+  const daemonConfig = readDaemonConfigForCwd(cwd)
+  const config = withDaemonModelAliases(readDaemonConfig(defaultDaemonConfigPath(CONFIG_DIR)), daemonConfig)
+  const permissionLedger = createPermissionLedger(permissionLedgerPathFromDaemonConfig(daemonConfig, CONFIG_DIR))
+  try {
+    const requester = { id: 'localhost', human: true }
+    const spawnerGrant = permissionLedger.grantFor(requester)
+    const defaultProfile = daemonConfig?.default || null
+    const grantConfig = defaultProfile
+      ? { ...config, projectPermissionProfiles: { ...(config.projectPermissionProfiles || {}), [cwd]: defaultProfile } }
+      : config
+    return resolveDirectSpawnGrant({
+      requester,
+      spawnerPermissionSet: compilePermissionGrant(grantConfig, spawnerGrant.permissionGrant, { cwd }),
+      spawnerPermissionProfile: permissionGrantProfileName(spawnerGrant.permissionGrant),
+      model: 'bot',
+      kind: 'bot',
+      modelCap: null,
+      config: grantConfig,
+      cwd,
+    })
+  } finally {
+    void permissionLedger.close?.()
+  }
+}
+
+function enlistBot(bot) {
+  const configName = bot.server || getActiveConfigName()
+  const paths = botServicePaths(bot.name, { configName })
+  const fleetId = readBotFleetId(paths)
+  const mintId = `bot:${configName}:${bot.name}`
+  const script = resolveBotScriptForCli(bot.script)
+  const grant = botPermissionFacts()
+  const mintStore = new MintStore(join(CONFIG_DIR, 'daemon-mints.sqlite'))
+  try {
+    mintStore.ensure(mintId)
+    mintStore.setFact(mintId, 'fleet_id', fleetId)
+    mintStore.setFact(mintId, 'friendly_name', bot.name)
+    mintStore.setFact(mintId, 'metadata', { bot: bot.name, source: 'bot-enlist' })
+    mintStore.setFact(mintId, 'launch_recipe', {
+      name: bot.name,
+      kind: 'bot',
+      model: 'bot',
+      modelSpec: { alias: 'bot', id: 'bot', model: 'bot', harness: 'bot', kind: 'bot', provider: 'bot' },
+      cwd: FLEET_DAEMON_MAIN_ROOT,
+      botName: bot.name,
+      botScript: script,
+      botIdFile: paths.idFile,
+      botPidFile: paths.pidFile,
+      botHeartbeatFile: paths.heartbeatFile,
+      botWaitChannel: paths.waitChannel,
+      permissionGrant: grant.permissionGrant,
+      permissionSet: grant.permissionSet,
+      acknowledgeNoSecurity: true,
+    })
+    mintStore.setFact(mintId, 'process_state', {
+      fleet_id: fleetId,
+      name: bot.name,
+      tmux_session: paths.tmuxSession,
+      cwd: FLEET_DAEMON_MAIN_ROOT,
+      harness: 'bot',
+      model: 'bot',
+      permission_grant: grant.permissionGrant,
+      permission_set: grant.permissionSet,
+      alive: false,
+    })
+    mintStore.setFact(mintId, 'session_id', mintId)
+  } finally {
+    mintStore.close()
+  }
+  return { paths, fleetId, mintId }
 }
 
 function sandboxDaemonConfig(configDir, label) {
@@ -2081,6 +2162,17 @@ async function cmdBot() {
     return
   }
 
+  if (sub === 'enlist') {
+    const bots = findConfiguredBot(name)
+    for (const bot of bots) {
+      const result = enlistBot(bot)
+      console.log(green(`Enlisted ${result.paths.label}.`))
+      console.log(dim(`  Fleet id: ${result.fleetId}`))
+      console.log(dim(`  Mint id: ${result.mintId}`))
+    }
+    return
+  }
+
   if (sub === 'uninstall') {
     const bots = findConfiguredBot(name)
     requireLaunchd()
@@ -2097,12 +2189,14 @@ async function cmdBot() {
     const bots = findConfiguredBot(name)
     if (!dryRun) requireLaunchd()
     for (const bot of bots) {
+      const candidatePaths = botServicePaths(bot.name)
       if (dryRun) {
         console.log('Would start bot service:')
         printBotPlan(bot)
         continue
       }
-      const paths = existsSync(botServicePaths(bot.name).plist) ? botServicePaths(bot.name) : writeBotPlist(bot)
+      readBotFleetId(candidatePaths)
+      const paths = existsSync(candidatePaths.plist) ? candidatePaths : writeBotPlist(bot)
       await bootstrapBot(bot)
       console.log(green(`Started ${paths.label}.`))
       console.log(dim(`  Tmux: ${paths.tmuxSession}`))
@@ -2157,7 +2251,7 @@ async function cmdBot() {
   }
 
   console.error(`Unknown subcommand: tlda bot ${sub}`)
-  console.error('Usage: tlda bot [list|install|uninstall|start|stop|status|log] [name] [--dry-run]')
+  console.error('Usage: tlda bot [list|install|enlist|uninstall|start|stop|status|log] [name] [--dry-run]')
   process.exit(1)
 }
 
