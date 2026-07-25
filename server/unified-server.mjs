@@ -4798,6 +4798,14 @@ server.on('upgrade', async (req, socket, head) => {
           })
           daemonConnections.delete(ws._daemonKey)
           daemonActivityDeliverySnapshots.delete(ws._daemonKey)
+          // Drop the running set with the connection. A snapshot describes what a
+          // daemon sees RIGHT NOW, so once it stops reporting the set is stale and
+          // must not keep asserting those agents are running. Critically this is a
+          // delete, not a sweep to hibernating: silence from a daemon means we do
+          // not know, and marking live agents asleep because nobody is talking is
+          // the roster lying about live agents — the failure this whole change
+          // exists to remove.
+          daemonRunningAgents.delete(ws._daemonKey)
           fleetStore?.markDaemonDisconnected?.(ws._daemonKey)
           refreshRuntimeRoutesForDaemon(ws._daemonKey)
           // The daemon is gone; process-level visibility is unknown, not false.
@@ -4826,6 +4834,14 @@ server.on('upgrade', async (req, socket, head) => {
           })
           daemonConnections.delete(ws._daemonKey)
           daemonActivityDeliverySnapshots.delete(ws._daemonKey)
+          // Drop the running set with the connection. A snapshot describes what a
+          // daemon sees RIGHT NOW, so once it stops reporting the set is stale and
+          // must not keep asserting those agents are running. Critically this is a
+          // delete, not a sweep to hibernating: silence from a daemon means we do
+          // not know, and marking live agents asleep because nobody is talking is
+          // the roster lying about live agents — the failure this whole change
+          // exists to remove.
+          daemonRunningAgents.delete(ws._daemonKey)
           fleetStore?.markDaemonDisconnected?.(ws._daemonKey)
           refreshRuntimeRoutesForDaemon(ws._daemonKey)
           failPendingRpcsForDaemon(ws._machineId, ws._envName, 'daemon ws error')
