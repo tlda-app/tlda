@@ -193,3 +193,14 @@ test('match() and verdict() cannot disagree, because match() delegates', () => {
     );
   }
 });
+
+test('the module contains no raw NUL bytes — it must stay text to git', async () => {
+  // A raw NUL makes git treat the file as binary: no diff, no line-level
+  // review, and grep goes quiet. The separator itself is fine; embedding it
+  // as a byte instead of the escape is not. Caught in review after git
+  // refused to show a diff of this file.
+  const { readFileSync } = await import('node:fs');
+  const { fileURLToPath } = await import('node:url');
+  const buf = readFileSync(fileURLToPath(new URL('../server/lib/filter-subscriptions.mjs', import.meta.url)));
+  assert.equal(buf.includes(0), false, 'raw NUL byte in source — use the escape sequence');
+});
