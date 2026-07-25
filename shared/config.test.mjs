@@ -237,19 +237,25 @@ check('malformed tokens.json => getRwToken THROWS', throws(() => cfg.getRwToken(
 writeFileSync(join(DIR, 'tokens.json'), JSON.stringify({ tokenRw: 'RW123' }))
 check('valid tokens.json => token returned', cfg.getRwToken() === 'RW123')
 
-// --- B4/B5: a bot's declared `server:` routes it to that server's DATABASE axis ---
-// Mirrors the exact expression the bots use: getManagedBots().find(...).server
-// -> getFleetServerUrl(server). A pinned bot reaches its server's fleet axis; an
-// unpinned bot uses the default server's fleet axis.
+// --- B4/B5: bots are defined once; environments list bot names ---
+writeFileSync(join(DIR, 'bots.yaml'), `bots:\n  todd: { script: bin/bots/todd.mjs }\n  grammar: { script: bin/bots/grammar-bot.mjs }\nenvironments:\n  default: [todd]\n  unlicensed: [todd, grammar]\n`)
+const todd = cfg.getManagedBots().find(b => b.name === 'todd')
+const botEnvironments = cfg.getManagedBotEnvironments()
+check('bots.yaml definitions become named bot objects',
+      todd.script === 'bin/bots/todd.mjs')
+check('bots.yaml environments list bot names by environment',
+      botEnvironments.unlicensed.join(',') === 'todd,grammar')
+check('bot environment names route to fleet/database, never the store axis',
+      cfg.getFleetServerUrl('unlicensed') !== cfg.getServerUrl('unlicensed'))
 writeFileSync(join(DIR, 'bots.yaml'), `bots:\n  - name: pinned\n    script: bin/bots/x.mjs\n    server: unlicensed\n  - name: unpinned\n    script: bin/bots/y.mjs\n`)
 const pinned = cfg.getManagedBots().find(b => b.name === 'pinned')
-const unpinned = cfg.getManagedBots().find(b => b.name === 'unpinned')
-check('bot with server: routes to that server\'s database (fleet) axis',
-      cfg.getFleetServerUrl(pinned.server) === 'https://db2.example')
-check('bot without server: uses the default server\'s database axis',
-      cfg.getFleetServerUrl(unpinned.server) === 'https://db.example')
-check('bots route to fleet/database, never the store axis',
-      cfg.getFleetServerUrl(pinned.server) !== cfg.getServerUrl())
+const legacyEnvironments = cfg.getManagedBotEnvironments()
+check('legacy bots.yaml list shape still reads bot definitions',
+      pinned.script === 'bin/bots/x.mjs')
+check('legacy bots.yaml list shape maps pinned bots to their named environment',
+      legacyEnvironments.unlicensed.join(',') === 'pinned')
+check('legacy bots.yaml list shape maps unpinned bots to defaultServer',
+      legacyEnvironments.complete.join(',') === 'unpinned')
 
 // --- B3: machineId persists into daemon.yaml (NOT config.json), comments kept ---
 import { readFileSync } from 'fs'

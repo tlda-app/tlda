@@ -19,7 +19,7 @@ import { diffSourceHashes, normalizeSourceManifest } from '../shared/source-mani
 import { collectHtmlArtifactFiles, htmlArtifactMainForSource } from './lib/html-artifact-files.mjs'
 import {
   loadCliConfig, saveCliConfig, loadServerConfig, resolveConfig, getServerUrl, getFleetServerUrl, getRwToken, getReadToken, saveTokens, getActiveConfigName, DEFAULT_PORT,
-  CONFIG_DIR, hasTls, TLS_CA_PATH, getManagedBots, getMachineId,
+  CONFIG_DIR, hasTls, TLS_CA_PATH, getManagedBots, getManagedBotEnvironments, getMachineId,
 } from '../shared/config.mjs'
 import { tldaFetch } from '../shared/http-client.mjs'
 import { DEV_COMMANDS } from './lib/dev-commands.mjs'
@@ -1147,15 +1147,21 @@ function botServiceSuffix(name) {
   return suffix
 }
 
-function botLaunchdLabel(name) {
-  return `com.tlda.bot.${botServiceSuffix(name)}`
+function botEnvironmentSuffix(configName = null) {
+  if (!configName) return ''
+  return `.${String(configName).replace(/[^A-Za-z0-9_.-]/g, '-')}`
 }
 
-function botServicePaths(name) {
-  const suffix = botServiceSuffix(name)
+function botLaunchdLabel(name, { configName = null } = {}) {
+  return `com.tlda.bot.${botServiceSuffix(name)}${botEnvironmentSuffix(configName)}`
+}
+
+function botServicePaths(name, { configName = null } = {}) {
+  const suffix = `${botServiceSuffix(name)}${botEnvironmentSuffix(configName)}`
+  const label = botLaunchdLabel(name, { configName })
   return {
-    label: botLaunchdLabel(name),
-    plist: join(homedir(), 'Library', 'LaunchAgents', `${botLaunchdLabel(name)}.plist`),
+    label,
+    plist: join(homedir(), 'Library', 'LaunchAgents', `${label}.plist`),
     logFile: join(CONFIG_DIR, `${suffix}.log`),
     pidFile: join(CONFIG_DIR, `${suffix}.pid`),
     heartbeatFile: join(CONFIG_DIR, `${suffix}.heartbeat`),
@@ -1224,8 +1230,7 @@ function botTmuxCommand(bot, paths) {
   return `exec env ${envPrefix} ${shellQuote(process.execPath)} ${shellQuote(script)} >> ${shellQuote(paths.logFile)} 2>&1; ${signalExit}`
 }
 
-function botLaunchCommand(bot) {
-  const paths = botServicePaths(bot.name)
+function botLaunchCommand(bot, paths = botServicePaths(bot.name)) {
   const tmuxCommand = botTmuxCommand(bot, paths)
   return [
     `tmux kill-session -t ${shellQuote(paths.tmuxSession)} 2>/dev/null || true`,
@@ -1234,8 +1239,7 @@ function botLaunchCommand(bot) {
   ].join('\n')
 }
 
-function botPlistContent(bot) {
-  const paths = botServicePaths(bot.name)
+function botPlistContent(bot, paths = botServicePaths(bot.name)) {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -1246,7 +1250,7 @@ function botPlistContent(bot) {
     <array>
         <string>/bin/zsh</string>
         <string>-fc</string>
-        <string>${plistEscape(botLaunchCommand(bot))}</string>
+        <string>${plistEscape(botLaunchCommand(bot, paths))}</string>
     </array>
     <key>WorkingDirectory</key>
     <string>${plistEscape(FLEET_DAEMON_MAIN_ROOT)}</string>
@@ -1305,14 +1309,16 @@ function daemonJobForConfigName(configName) {
   }
 }
 
-function botJob(bot) {
-  const paths = botServicePaths(bot.name)
+function botJob(bot, configName = null) {
+  const effectiveConfigName = configName || bot.server || null
+  const effectiveBot = effectiveConfigName ? { ...bot, server: effectiveConfigName } : bot
+  const paths = botServicePaths(bot.name, { configName: effectiveConfigName })
   return {
     kind: 'bot',
-    name: bot.name,
+    name: effectiveConfigName ? `${bot.name}:${effectiveConfigName}` : bot.name,
     label: paths.label,
     plist: paths.plist,
-    content: botPlistContent(bot),
+    content: botPlistContent(effectiveBot, paths),
   }
 }
 
@@ -1395,9 +1401,20 @@ function serverJobIfInstalled() {
 function desiredLaunchdJobs() {
   const serverConfig = loadServerConfig()
   const serverNames = Object.keys(serverConfig.servers || {}).sort()
+  const botsByName = new Map(configuredBots().map(bot => [bot.name, bot]))
+  const botEnvironments = getManagedBotEnvironments()
+  const botJobs = []
+  for (const [serverName, botNames] of Object.entries(botEnvironments).sort(([a], [b]) => a.localeCompare(b))) {
+    if (!serverNames.includes(serverName)) throw new Error(`bots.yaml names unknown environment "${serverName}"`)
+    for (const botName of botNames) {
+      const bot = botsByName.get(botName)
+      if (!bot) throw new Error(`bots.yaml environment ${serverName} references unknown bot "${botName}"`)
+      botJobs.push(botJob(bot, serverName))
+    }
+  }
   const jobs = [
     ...serverNames.map(name => daemonJobForConfigName(name)),
-    ...configuredBots().map(botJob),
+    ...botJobs,
   ]
   const serverJob = serverJobIfInstalled()
   if (serverJob) jobs.push(serverJob)
