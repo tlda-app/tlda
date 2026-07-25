@@ -17,7 +17,11 @@ export function createAgentStatus({
   getAgents,
   harnessForAgent,
   isConnected,
-  statusScanMs = parseInt(process.env.TLDA_STATUS_SCAN_MS, 10) || 5000,
+  // Required, from daemon.yaml `statusScanSeconds` via getStatusScanMs(). No env
+  // var and no hardcoded default: a silent `|| 5000` is the generic-config
+  // fallback pattern this codebase is removing, and it hid the polling cadence
+  // from the one place operators look.
+  statusScanMs,
   statusLingerMs = parseInt(process.env.TLDA_STATUS_LINGER_MS, 10) || 30_000,
   idleConfirmScans = 2,
   setIntervalFn = setInterval,
@@ -25,6 +29,9 @@ export function createAgentStatus({
     [...(tmuxArgs || []), 'capture-pane', '-t', tmuxSession, '-p', '-S', `-${THINKING_SCAN_LINES}`],
     { timeout: 3000, encoding: 'utf8' }),
 }) {
+  if (!Number.isFinite(statusScanMs) || statusScanMs <= 0) {
+    throw new Error(`createAgentStatus requires statusScanMs (got ${JSON.stringify(statusScanMs)}) — set statusScanSeconds in daemon.yaml`)
+  }
   let statusScanInterval = null
   const armedSince = new Map()
   const idleScans = new Map()

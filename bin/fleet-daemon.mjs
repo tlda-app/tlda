@@ -64,7 +64,7 @@ import { fileURLToPath } from 'url'
 import {
   getRwToken, DEFAULT_PORT, hasTls,
   CONFIG_DIR as _SHARED_CONFIG_DIR, TLS_CA_PATH,
-  getMachineId, saveMachineId,
+  getMachineId, saveMachineId, getStatusScanMs,
 } from '../shared/config.mjs'
 const VERSION = '0.1.1'
 import { createLogger } from '../shared/logger.mjs'
@@ -610,6 +610,7 @@ const agentStatus = createAgentStatus({
   })),
   harnessForAgent: harnessRuntime.harnessForAgent,
   isConnected: () => _serverReady && _rws?.connected,
+  statusScanMs: getStatusScanMs(),
 })
 
 let gooseSupervisor

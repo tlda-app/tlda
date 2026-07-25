@@ -132,12 +132,10 @@ import { buildVoicePipelineSnapshot } from './lib/observability/voice-pipeline.m
 import { createNotificationAttemptRecorder } from './lib/notification-attempts.mjs'
 import { daemonEventFailureIncident } from './lib/daemon-event-failures.mjs'
 import { buildDaemonActivityRecord } from './lib/daemon-activity-ingest.mjs'
-import { currentSeatForDaemonEvent, daemonEventSeatDecision } from './lib/daemon-event-route-authority.mjs'
+import { currentSeatForDaemonEvent } from './lib/daemon-event-route-authority.mjs'
 import {
   agentLivenessTraceResponse,
   createAgentLivenessTraceStore,
-  decideAgentLivenessBatch,
-  recordLivenessIngress,
   recordLivenessProjection,
 } from './lib/agent-liveness-trace.mjs'
 import { createActivityDeliveryCounters, ACTIVITY_DELIVERY_STAGES } from '../shared/activity-delivery-counters.mjs'
@@ -156,6 +154,11 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const fleetWsLog = createBackendLogger('fleet-ws')
 const notificationAttemptLog = createBackendLogger('notification-attempts')
 const agentLivenessTrace = createAgentLivenessTraceStore()
+
+// Per daemon: the agent ids it last reported as running. This is the list the
+// snapshot REPLACES — it exists only to notice which agents stopped being
+// reported, so each departure is marked once instead of re-asserted forever.
+const daemonRunningAgents = new Map()
 const terminalBridgeLog = createBackendLogger('terminal-bridge')
 const syncSignalLog = createBackendLogger('sync-signals')
 const daemonEventLog = createBackendLogger('daemon-events')
@@ -8104,73 +8107,65 @@ async function handleDaemonWsMessage(ws, msg) {
     return
   }
 
+  // The daemon describes what is RUNNING on its box; we replace what we had.
+  // Present means running, absent means hibernating. No diff is sent and none is
+  // needed — see docs/fleet-design-rules.md, "Liveness protocol".
+  //
+  // This is also the ONLY producer of positive liveness evidence. The real-time
+  // `agent-status` path above is display-only by explicit design (it calls
+  // updateActivity, never markAlive), and AWAKE requires ALIVE evidence younger
+  // than POSITIVE_LIVENESS_TTL_MS (90s). So this report must keep arriving well
+  // inside that window or every agent projects hibernating — the daemon sends it
+  // every 30s, giving three chances before anything expires.
+  if (type === 'agent-liveness-snapshot') {
+    if (!fleetStore) return
+    // Message integrity: this socket's daemon speaks for itself only.
+    if (!msg.daemon_key || msg.daemon_boot_id == null || msg.report_seq == null) return
+    if (msg.daemon_key !== ws._daemonKey || msg.daemon_boot_id !== ws._bootId) return
+
+    const reportedTs = msg.ts || new Date().toISOString()
+    const atMs = Date.parse(reportedTs) || Date.now()
+    const reported = [...new Set((msg.running_agent_ids || []).filter(id => typeof id === 'string' && id))]
+
+    // Ownership, one query: a daemon may only report agents whose current seat
+    // lives on it, so it can never keep another daemon's agent looking awake.
+    const seats = fleetStore.getCurrentAgentSeats(reported)
+    const running = new Set(reported.filter(id => seats.get(id)?.daemon_key === ws._daemonKey))
+    const previous = daemonRunningAgents.get(ws._daemonKey) || new Set()
+
+    for (const id of running) {
+      spawnLibrarian.observeLiveness({ type, agent_id: id, state: 'alive', ts: reportedTs })
+      markAgentAlive(id, atMs, {
+        source: 'daemon-running-process-snapshot',
+        reason: msg.report_reason || msg.reason,
+        daemon_key: msg.daemon_key,
+        daemon_boot_id: msg.daemon_boot_id,
+        report_seq: msg.report_seq,
+      })
+    }
+    // Gone from the box. Marked once, on the report where it disappears — not
+    // re-asserted every 30s, which is what made this path cost ~1.24M roster
+    // comparisons per batch.
+    for (const id of previous) {
+      if (running.has(id)) continue
+      spawnLibrarian.observeLiveness({
+        type, agent_id: id, state: 'dead', reason: 'absent from daemon running-process snapshot', ts: reportedTs,
+      })
+      markAgentNotAlive(id, {
+        source: 'daemon-running-process-snapshot',
+        reason: 'absent from daemon running-process snapshot',
+        daemon_key: msg.daemon_key,
+        daemon_boot_id: msg.daemon_boot_id,
+        report_seq: msg.report_seq,
+      })
+    }
+    daemonRunningAgents.set(ws._daemonKey, running)
+    broadcastState()
+    return
+  }
+
   if (type === 'agent-liveness') {
     const { agent_id, state, pid, reason, ts } = msg
-    if (Array.isArray(msg.agent_ids) || Array.isArray(msg.checked_agent_ids)) {
-      const batchTs = ts || new Date().toISOString()
-      // One query for the whole batch instead of a seat lookup per agent. With
-      // ~190 agents per batch the per-agent version was ~190 synchronous reads
-      // on the event loop every 30s.
-      const batchSeats = fleetStore.getCurrentAgentSeats([
-        ...(msg.checked_agent_ids || []),
-        ...(msg.agent_ids || []),
-      ])
-      const decisions = decideAgentLivenessBatch({
-        message: msg,
-        socketDaemonKey: ws._daemonKey,
-        socketBootId: ws._bootId,
-        seatForAgent: id => daemonEventSeatDecision({
-          getCurrentAgentSeat: agentId => batchSeats.get(agentId) || null,
-        }, {
-          agentId: id,
-          daemonKey: ws._daemonKey,
-          family: 'daemon-liveness-batch',
-        }),
-      })
-      for (const decision of decisions) {
-        const id = decision.agent_id
-        const generation = decision.generation
-        recordLivenessIngress(agentLivenessTrace, decision, msg, {
-          socketDaemonKey: ws._daemonKey,
-          socketBootId: ws._bootId,
-        })
-        if (!decision.accepted) continue
-        const batchState = decision.alive ? 'alive' : 'dead'
-        spawnLibrarian.observeLiveness({
-          type,
-          agent_id: id,
-          state: batchState,
-          reason: batchState === 'dead' ? 'daemon liveness batch: not alive' : undefined,
-          ts: batchTs,
-        })
-        if (batchState === 'alive') {
-          // Liveness = "the tmux process still exists", NOT "the agent did work".
-          // markAgentAlive is idempotent for _aliveSince; real activity is recorded
-          // by agent-activity / agent-thinking / chat, not by this liveness ping.
-          markAgentAlive(id, Date.parse(batchTs) || Date.now(), {
-            source: 'daemon-hosted-session-refresh',
-            reason,
-            liveness_generation: generation,
-            daemon_key: msg.daemon_key,
-            daemon_boot_id: msg.daemon_boot_id,
-            report_seq: msg.report_seq,
-          })
-          agentLivenessTrace.record({ agent_id: id, generation, stage: 'runtime.markAlive', seat_identity_match: true, terminal_decision: decision.terminal_decision, mark_alive_applied: true })
-        } else {
-          markAgentNotAlive(id, {
-            source: 'daemon-hosted-session-refresh',
-            reason: 'daemon liveness batch: not alive',
-            liveness_generation: generation,
-            daemon_key: msg.daemon_key,
-            daemon_boot_id: msg.daemon_boot_id,
-            report_seq: msg.report_seq,
-          })
-          agentLivenessTrace.record({ agent_id: id, generation, stage: 'runtime.markNotAlive', seat_identity_match: true, terminal_decision: decision.terminal_decision, mark_alive_applied: false })
-        }
-      }
-      broadcastState()
-      return
-    }
     if (!agent_id || !state) return
     const currentSeat = currentSeatForDaemonEvent(fleetStore, {
       agentId: agent_id,

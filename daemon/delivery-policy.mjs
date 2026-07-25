@@ -28,6 +28,10 @@ const EPHEMERAL_FIFO_TYPES = new Set([
 
 const LATEST_WINS_TYPES = new Set([
   'agent-liveness',
+  // A snapshot is a complete description of what is running right now, so a
+  // newer one wholly supersedes an older one — queueing stale snapshots behind a
+  // reconnect would replay a past state over the present one.
+  'agent-liveness-snapshot',
   'reaper-status',
   'terminal-size',
 ])

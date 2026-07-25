@@ -9,8 +9,6 @@ import { daemonEventSeatDecision } from '../server/lib/daemon-event-route-author
 import {
   agentLivenessTraceResponse,
   createAgentLivenessTraceStore,
-  decideAgentLivenessBatch,
-  recordLivenessIngress,
   recordLivenessProjection,
 } from '../server/lib/agent-liveness-trace.mjs'
 
@@ -27,12 +25,13 @@ const reporter = createAgentLiveness({
 })
 await reporter.reportHostedSessions('test')
 await reporter.reportHostedSessions('test-again')
-assert.deepEqual(sent[0].agent_ids, ['alive'])
-assert.deepEqual(sent[0].checked_agent_ids, ['alive', 'not-alive'])
-assert.deepEqual(sent[0].liveness_generations, [
-  { daemon_key: 'mini:default', daemon_boot_id: 42, report_seq: 1, agent_id: 'alive' },
-  { daemon_key: 'mini:default', daemon_boot_id: 42, report_seq: 1, agent_id: 'not-alive' },
-])
+// The report describes what is RUNNING. 'not-alive' is hosted but its session is
+// absent, so it is simply not mentioned -- absent means hibernating, and nothing
+// enumerates it. See docs/fleet-design-rules.md, "Liveness protocol".
+assert.equal(sent[0].type, 'agent-liveness-snapshot')
+assert.deepEqual(sent[0].running_agent_ids, ['alive'])
+assert.equal('checked_agent_ids' in sent[0], false)
+assert.equal('liveness_generations' in sent[0], false)
 assert.equal(sent[1].report_seq, 2)
 
 const localBindings = [
@@ -52,13 +51,13 @@ const lifecycleReporter = createAgentLiveness({
   clearIntervalFn: token => { clearedToken = token },
 })
 await lifecycleReporter.start()
-assert.deepEqual(localReports[0].checked_agent_ids, ['local-agent'])
-assert.equal(localReports[0].liveness_generations[0].report_seq, 1)
+assert.deepEqual(localReports[0].running_agent_ids, ['local-agent'])
+assert.equal(localReports[0].report_seq, 1)
 lifecycleReporter.stop()
 assert.equal(clearedToken, intervalToken)
 await lifecycleReporter.start()
-assert.deepEqual(localReports[1].checked_agent_ids, ['local-agent'])
-assert.equal(localReports[1].liveness_generations[0].report_seq, 2)
+assert.deepEqual(localReports[1].running_agent_ids, ['local-agent'])
+assert.equal(localReports[1].report_seq, 2)
 
 const seat = { daemon_key: 'mini:default', terminal_capability: 'redacted-in-diagnostics' }
 const fleetStore = { getCurrentAgentSeat: id => id === 'known' ? seat : null }
@@ -96,105 +95,31 @@ projected = runtime.project({ id: 'known', metadata: {} })
 assert.equal(projected.status, 'unavailable')
 assert.deepEqual(projected.evidence.liveness_generation, generation)
 
-function decisionsFor(message, seats = {}) {
-  return decideAgentLivenessBatch({
-    message,
-    socketDaemonKey: 'mini:default',
-    socketBootId: 42,
-    seatForAgent: agentId => daemonEventSeatDecision({
-      getCurrentAgentSeat: () => seats[agentId] || null,
-    }, { agentId, daemonKey: 'mini:default', log: null }),
-  })
-}
+// The batch decision path (decideAgentLivenessBatch / recordLivenessIngress) and
+// its per-agent ingress trace were deleted with the 378-agent walk they served.
+// The daemon now sends a complete running-process snapshot and the server
+// replaces its list, so there is no per-agent accept/reject decision to trace.
+// Snapshot emission is asserted at the top of this file; the seat-ownership rule
+// it still relies on is asserted above via daemonEventSeatDecision.
 
-const batchMessage = {
-  agent_ids: ['alive'],
-  checked_agent_ids: ['alive', 'not-alive'],
-  daemon_key: 'mini:default',
-  daemon_boot_id: 42,
-  report_seq: 9,
-  reported_at: '2026-07-21T21:00:00.000Z',
-  session_id: 'daemon-supplied-session-must-not-affect-authority',
-}
-const accepted = decisionsFor(batchMessage, { alive: seat, 'not-alive': seat })
-assert.deepEqual(accepted.map(item => item.terminal_decision), ['accepted-alive', 'accepted-not-alive'])
-assert.equal(accepted.every(item => item.seat_identity_match === true), true)
-assert.equal(new Set(accepted.map(item => item.agent_id)).size, batchMessage.checked_agent_ids.length)
-
-const rejectionCases = [
-  [{ ...batchMessage, checked_agent_ids: ['key'], agent_ids: [], daemon_key: 'other' }, {}, 'daemon-key-mismatch'],
-  [{ ...batchMessage, checked_agent_ids: ['boot'], agent_ids: [], daemon_boot_id: 41 }, {}, 'daemon-boot-mismatch'],
-  // An ALIVE claim for an agent this daemon holds no seat for is still rejected:
-  // accepting it would let one daemon keep another daemon's agent looking awake.
-  [{ ...batchMessage, checked_agent_ids: ['none'], agent_ids: ['none'] }, {}, 'no-current-seat'],
-  // A seat owned by ANOTHER daemon rejects in BOTH directions — this daemon is
-  // the authority on its own box only.
-  [{ ...batchMessage, checked_agent_ids: ['elsewhere'], agent_ids: [] }, { elsewhere: { ...seat, daemon_key: 'other:default' } }, 'daemon-key-mismatch'],
-]
-for (const [message, seats, expected] of rejectionCases) {
-  const [decision] = decisionsFor(message, seats)
-  assert.equal(decision.terminal_decision, 'rejected')
-  assert.equal(decision.rejection_reason, expected)
-}
-
-// A "session is gone" report for an agent with NO current seat is accepted
-// without ownership proof. The daemon is the authority on what runs on its box,
-// and this report is the only thing that ever clears such an agent — discarding
-// it is what left ~190 dead agents being re-checked every 30s forever.
-const [unseatedDeath] = decisionsFor({ ...batchMessage, checked_agent_ids: ['gone'], agent_ids: [] }, {})
-assert.equal(unseatedDeath.terminal_decision, 'accepted-not-alive-unseated')
-assert.equal(unseatedDeath.accepted, true)
-assert.equal(unseatedDeath.alive, false)
-assert.equal(unseatedDeath.rejection_reason, null)
-const [missingInput] = decideAgentLivenessBatch({
-  message: { ...batchMessage, checked_agent_ids: ['missing-input'], agent_ids: [], report_seq: null },
-  socketDaemonKey: 'mini:default',
-  socketBootId: 42,
-  seatForAgent: () => { throw new Error('missing input must reject before seat lookup') },
-})
-assert.equal(missingInput.rejection_reason, 'missing-input')
-
+// recordLivenessProjection is still live -- _broadcastStateNow uses it -- so it
+// keeps its coverage, now with a locally-built store and generation instead of
+// borrowing them from the deleted batch path.
 const trace = createAgentLivenessTraceStore({ generationsPerAgent: 2, eventsPerGeneration: 8, now: () => '2026-07-21T21:00:01.000Z' })
-for (const decision of accepted) {
-  recordLivenessIngress(trace, decision, batchMessage, {
-    socketDaemonKey: 'mini:default', socketBootId: 42, receivedAt: '2026-07-21T21:00:00.500Z',
-  })
-  trace.record({
-    agent_id: decision.agent_id,
-    generation: decision.generation,
-    stage: decision.alive ? 'runtime.markAlive' : 'runtime.markNotAlive',
-    terminal_decision: decision.terminal_decision,
-  })
-}
-assert.deepEqual(trace.list('alive').map(entry => entry.stage), [
-  'daemon.report.emitted', 'server.received', 'seat.accepted', 'runtime.markAlive',
-])
-assert.deepEqual(trace.list('not-alive').map(entry => entry.stage), [
-  'daemon.report.emitted', 'server.received', 'seat.accepted', 'runtime.markNotAlive',
-])
-for (const agentId of ['alive', 'not-alive']) {
-  assert.equal(trace.list(agentId).filter(entry => entry.terminal_decision).length, 1)
-}
-
-const [bootRejected] = decisionsFor(rejectionCases[1][0], {})
-recordLivenessIngress(trace, bootRejected, rejectionCases[1][0], { socketDaemonKey: 'mini:default', socketBootId: 42 })
-assert.deepEqual(trace.list('boot').map(entry => entry.stage), ['daemon.report.emitted', 'server.received', 'seat.rejected'])
-assert.equal(trace.list('boot').filter(entry => entry.terminal_decision).length, 1)
-
+const projectionGeneration = { daemon_key: 'mini:default', daemon_boot_id: 42, report_seq: 1, agent_id: 'alive' }
+trace.record({ agent_id: 'alive', generation: projectionGeneration, stage: 'runtime.markAlive' })
 for (let index = 0; index < 12; index += 1) {
   recordLivenessProjection(trace, {
     agentId: 'alive',
-    generation: accepted[0].generation,
+    generation: projectionGeneration,
     runtime: { status: 'awake', reason: `projection-${index}`, route_reason: 'current-seat-routable', evidence: { liveness: 'alive', liveness_source: 'daemon-hosted-session-refresh', liveness_at: '2026-07-21T21:00:00.000Z' } },
     changedRowBuilt: index === 11,
   })
 }
 assert.deepEqual(trace.list('alive').map(entry => entry.stage), [
-  'daemon.report.emitted', 'server.received', 'seat.accepted', 'runtime.markAlive',
-  'runtime.projected', 'agentsDelta.changedRowBuilt',
+  'runtime.markAlive', 'runtime.projected', 'agentsDelta.changedRowBuilt',
 ])
 assert.equal(trace.list('alive').find(entry => entry.stage === 'runtime.projected').reason, 'projection-11')
-assert.equal(trace.list('alive').filter(entry => entry.terminal_decision).length, 1)
 
 const isolated = createAgentLivenessTraceStore({ generationsPerAgent: 2, eventsPerGeneration: 3 })
 const targetGeneration = { daemon_key: 'mini:default', daemon_boot_id: 42, report_seq: 1, agent_id: 'target' }

@@ -228,6 +228,31 @@ export function getMachineId() {
 }
 
 /**
+ * How often the daemon polls each box for agent status — `statusScanSeconds` in
+ * daemon.yaml. This is the loop that runs `list-sessions` (who is running) and
+ * `capture-pane` (what each agent is doing), so it is the cadence of the whole
+ * liveness picture.
+ *
+ * Skip, 2026-07-25, setting it himself:
+ *
+ *   "We use list-sessions for who's running and capture-pane for what an agent
+ *    is doing, and we do that at every two or three second polling interval.
+ *    It's a cheap operation and there's no reason not to do it."
+ *
+ * A named setting with no env var and no silent default — it replaces
+ * `TLDA_STATUS_SCAN_MS ... || 5000`, which is the generic-config-fallback
+ * pattern that is meant to be gone. A missing or non-positive value throws
+ * rather than quietly picking a number nobody chose.
+ */
+export function getStatusScanMs() {
+  const seconds = loadDaemonYaml().statusScanSeconds
+  if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds <= 0) {
+    throw new Error(`daemon.yaml: statusScanSeconds must be a positive number (got ${JSON.stringify(seconds)})`)
+  }
+  return Math.round(seconds * 1000)
+}
+
+/**
  * Persist a derived machineId into daemon.yaml (top-level `machineId`), used once
  * on a fresh host when it is unset. config.json is retired — the id lives with
  * the rest of the daemon's identity in daemon.yaml. Writes via the yaml Document

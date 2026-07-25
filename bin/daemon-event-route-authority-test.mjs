@@ -106,14 +106,21 @@ assertOrdered(statusBranch, [
   'runtimeStatusStore.updateActivity',
 ], 'agent-status branch')
 
-const livenessBranch = branchSource('agent-liveness')
-assertOrdered(livenessBranch, [
-  'daemonEventSeatDecision(fleetStore',
-  "family: 'daemon-liveness-batch'",
-  'if (!decision.accepted)',
-  'spawnLibrarian.observeLiveness',
+// The 378-agent batch branch is gone; the daemon now sends a complete
+// running-process snapshot and the server replaces its list. The ownership rule
+// survives the change: a daemon may only report agents seated on it, enforced
+// here by matching the seat's daemon_key before anything is marked alive.
+const snapshotBranch = branchSource('agent-liveness-snapshot')
+assertOrdered(snapshotBranch, [
+  'fleetStore.getCurrentAgentSeats(reported)',
+  'seats.get(id)?.daemon_key === ws._daemonKey',
+  'daemonRunningAgents.get(ws._daemonKey)',
   'markAgentAlive',
-], 'agent-liveness batch branch')
+  'markAgentNotAlive',
+  'daemonRunningAgents.set(ws._daemonKey, running)',
+], 'agent-liveness-snapshot branch')
+
+const livenessBranch = branchSource('agent-liveness')
 assertOrdered(livenessBranch, [
   'const currentSeat = currentSeatForDaemonEvent(fleetStore',
   "family: 'daemon-agent-liveness'",
