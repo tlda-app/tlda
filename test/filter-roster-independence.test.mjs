@@ -82,3 +82,33 @@ test('history-fetch targets collapse to empty on a partial roster', () => {
   assert.deepEqual([...resolveFleetFilter(filter, authoritative)], [AGENT.id]);
   assert.deepEqual([...resolveFleetFilter(filter, partial)], []);
 });
+
+// --- store-shaped events, found on live traffic by the liveness counters ---
+
+test('an event carrying from_id/to_id matches the same as one carrying from/to', () => {
+  // Events reaching the SERVER come straight off fleet-store, which emits
+  // { from_id, to_id }. Events reaching the CLIENT have been through
+  // convertChatEvent, which renames them to { from, to }. matchesFleetFilter
+  // read only the normalised pair, so every server-side evaluation resolved an
+  // undefined participant and no name term could match: eventsMatched stayed 0
+  // across 1,620 live evaluations while the roster was complete.
+  //
+  // The 27 tests all fed normalised events, so none of them could see it.
+  const normalised = { type: 'chat', from: AGENT.id, to: HUMAN.humanId, text: 'hi' };
+  const storeShaped = { type: 'chat', from_id: AGENT.id, to_id: HUMAN.humanId, text: 'hi' };
+
+  for (const [label, filter] of [
+    ['from:', [[['from', 'chief2']]]],
+    ['bare', [['chief2']]],
+    ['dm:', [[['dm', 'chief2']]]],
+  ]) {
+    assert.equal(
+      matchesFleetFilter(filter, storeShaped, authoritative),
+      matchesFleetFilter(filter, normalised, authoritative),
+      `${label} disagrees between store-shaped and normalised events`
+    );
+  }
+  assert.equal(matchesFleetFilter([[['from', 'chief2']]], storeShaped, authoritative), true);
+  assert.equal(matchesFleetFilter([[['to', 'chief2']]], storeShaped, authoritative), false,
+    'direction must still hold on store-shaped events');
+});
