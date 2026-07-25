@@ -77,7 +77,7 @@ import { resolveSpawnMachine, SPAWN_MACHINE_PREF_KEY } from './lib/spawn-routing
 import { normalizeSpawnRelayInput } from './lib/spawn-relay-input.mjs'
 import { resolveFreshSpawnAvailabilityModels } from './lib/spawn-availability-models.mjs'
 import { decideTaskRenudges, isWakeBreakerOpen, wakeBreakerBackoffMs } from './lib/task-renudge.mjs'
-import { canReportTask, completeTaskLifecycle } from './lib/task-lifecycle.mjs'
+import { canReportTask, completeTaskLifecycle, transferTaskLifecycle } from './lib/task-lifecycle.mjs'
 import { livenessFromCheckAliveResult, runWakeRouteLifecycle, shouldSendWakeNudge } from './lib/wake-route-lifecycle.mjs'
 import { recordAgentBindingEvent } from './lib/agent-binding-events.mjs'
 import { rejectMatchingWsRequests, startWsRequest } from '../shared/fleet-transport.mjs'
@@ -6388,8 +6388,9 @@ async function handleFleetWsMessage(ws, msg) {
   }
 
   if (type === 'delegate') {
-    const { agent: agentQuery, description, message: taskMsg, success_criteria, blocked_by, from, requires_approval, allow_pending_agent, operation_id } = msg
-    if (!agentQuery || !description) { error('missing agent or description'); return }
+    const { agent: agentQuery, description, message: taskMsg, success_criteria, blocked_by, from, requires_approval, allow_pending_agent, operation_id, task_id } = msg
+    if (!agentQuery || (!description && !task_id)) { error('missing agent or description'); return }
+    if (task_id && !taskMsg) { error('missing message for existing task delegation'); return }
     const previous = operation_id ? fleetStore.getDelegateOperationResult?.(operation_id) : null
     if (previous?.delegateEventId) {
       reply({
@@ -6417,38 +6418,62 @@ async function handleFleetWsMessage(ws, msg) {
         : null
     )
     if (!resolved) { error(`agent not found: ${agentQuery}`); return }
-    const taskId = previous?.taskId || `${resolved.id.slice(0, 10)}-${Date.now().toString(36)}`
+    const existingTask = task_id ? fleetStore.getTask?.(task_id) : null
+    if (task_id && !existingTask) { error(`task not found: ${task_id}`); return }
+    if (existingTask && (existingTask.status === 'done' || existingTask.status === 'retracted')) { error(`cannot delegate closed task: ${task_id}`); return }
+    const fromAgent = from ? fleetStore.findAgent(from) : null
+    const caller = fromAgent || (from ? { id: from } : null)
+    if (existingTask && !canReportTask({ caller, task: existingTask, fleetStore })) {
+      error('not authorized to delegate this task; only its assignee, delegator, their management chains, or a human may do so'); return
+    }
+    const taskId = previous?.taskId || task_id || `${resolved.id.slice(0, 10)}-${Date.now().toString(36)}`
     const now = new Date().toISOString()
     const metadata = {
       trace_id: traceId,
       ...(operation_id ? { client_operation_id: operation_id } : {}),
       ...(requires_approval ? { requires_approval: true } : {}),
       ...(allow_pending_agent && !fleetStore.findAgent(agentQuery) ? { pending_spawn_delegate: true } : {}),
+      ...(task_id ? { transfer: true, previous_agent: existingTask.agent } : {}),
     }
-    const task = {
-      id: taskId, agent: resolved.id, description,
-      message: taskMsg || description,
-      delegated_by: from || null, delegated_at: now,
-      status: blocked_by?.length ? 'blocked' : 'pending',
-      acknowledged: false,
-      blockedBy: blocked_by || undefined,
-      success_criteria: success_criteria || undefined,
-      metadata: Object.keys(metadata).length ? metadata : undefined,
-    }
-    fleetStore.upsertTask(task)
-    const fromAgent = from ? fleetStore.findAgent(from) : null
-    const delegateEvent = await fleetStore.delegate?.(from, resolved.id, taskId, description, {
+    const delegateMetadata = {
       trace_id: traceId,
       ...(operation_id ? { client_operation_id: operation_id } : {}),
       fromLabel: fromAgent?.friendly_name || from || '',
       toLabel: resolved.friendly_name || resolved.id,
       criteria: success_criteria || [],
       message: taskMsg || '',
-    })
+      ...(task_id ? { transfer: true, previous_agent: existingTask.agent } : {}),
+    }
+    let delegateEvent
+    if (existingTask) {
+      const transfer = await transferTaskLifecycle({
+        fleetStore,
+        task: existingTask,
+        fromAgentId: from || null,
+        toAgentId: resolved.id,
+        message: taskMsg,
+        delegatedAt: now,
+        eventMetadata: delegateMetadata,
+      })
+      delegateEvent = transfer.event
+    } else {
+      const task = {
+        id: taskId, agent: resolved.id, description,
+        message: taskMsg || description,
+        delegated_by: from || null, delegated_at: now,
+        status: blocked_by?.length ? 'blocked' : 'pending',
+        acknowledged: false,
+        blockedBy: blocked_by || undefined,
+        success_criteria: success_criteria || undefined,
+        metadata: Object.keys(metadata).length ? metadata : undefined,
+      }
+      fleetStore.upsertTask(task)
+      delegateEvent = await fleetStore.delegate?.(from, resolved.id, taskId, description, delegateMetadata)
+    }
     controlPlaneTraces.append({
       trace_id: traceId,
       component: 'fleet-store',
-      operation: 'delegate.insert',
+      operation: existingTask ? 'delegate.transfer' : 'delegate.insert',
       status: 'stored',
       detail: { task_id: taskId, event_id: delegateEvent?.id, from, to: resolved.id },
     })

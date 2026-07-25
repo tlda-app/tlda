@@ -1249,11 +1249,12 @@ export function getFleetTools() {
     // ---- Task Management ----
     {
       name: 'delegate',
-      description: 'Assign a task to an agent. Pass `spawn: {}` instead of `agent` to spawn a fresh agent and delegate in one call — no name required.',
+      description: 'Assign a task to an agent. Pass `task_id` to transfer an existing task by appending `message` and changing its owner. Pass `spawn: {}` instead of `agent` to spawn a fresh agent and delegate in one call — no name required.',
       inputSchema: {
         type: 'object',
         properties: {
           agent: { type: 'string', description: 'Agent identifier — session UUID, agent name, or friendly name. Omit when using spawn.' },
+          task_id: { type: 'string', description: 'Existing task ID to transfer to `agent`. The task keeps its identity and history; `message` is appended as the remaining work.' },
           spawn: {
             type: 'object',
             description: 'Spawn a fresh agent and delegate in one call. Mutually exclusive with agent.',
@@ -2195,6 +2196,9 @@ export async function handleFleetTool(name, args) {
     if (args.agent && args.spawn) {
       return { content: [{ type: 'text', text: 'Provide agent or spawn, not both.' }], isError: true };
     }
+    if (args.task_id && args.spawn) {
+      return { content: [{ type: 'text', text: 'Transfer an existing task to an existing agent; provide agent, not spawn.' }], isError: true };
+    }
 
     if (!args.agent && !args.spawn) {
       return { content: [{ type: 'text', text: 'Missing agent (or spawn).' }], isError: true };
@@ -2245,7 +2249,7 @@ export async function handleFleetTool(name, args) {
       });
 
       const operationId = args.operation_id || `${AGENT_ID}:mcp-delegate:${crypto.randomUUID()}`;
-      const delegateBody = { from: AGENT_ID, agent: targetAgent, description, message: routedMessage, success_criteria: criteria.length ? criteria : undefined, blocked_by: blockedBy.length ? blockedBy : undefined, requires_approval: args.requires_approval || undefined, allow_pending_agent: opts.allowPendingAgent || undefined, operation_id: operationId };
+      const delegateBody = { from: AGENT_ID, agent: targetAgent, task_id: args.task_id || undefined, description, message: routedMessage, success_criteria: criteria.length ? criteria : undefined, blocked_by: blockedBy.length ? blockedBy : undefined, requires_approval: args.requires_approval || undefined, allow_pending_agent: opts.allowPendingAgent || undefined, operation_id: operationId };
       const data = await mcpFleetTransport.durable('delegate', delegateBody, { operationId });
       rememberOriginatedEvents(data);
       if (!data.ok) throw new Error(`Delegate failed: ${JSON.stringify(data)}`);
@@ -2318,7 +2322,8 @@ export async function handleFleetTool(name, args) {
       if (spawnedInfo) {
         return { content: [{ type: 'text', text: `Spawned ${spawnedInfo.friendly_name} (${spawnedInfo.agent_id}) and delegated [${data.task_id}]: ${description}\nagent_id: ${spawnedInfo.agent_id}\nfriendly_name: ${spawnedInfo.friendly_name}` }] };
       }
-      return { content: [{ type: 'text', text: `Delegated to ${agent} [${data.task_id}]: ${description}` }] };
+      const verb = args.task_id ? 'Transferred' : 'Delegated';
+      return { content: [{ type: 'text', text: `${verb} to ${agent} [${data.task_id}]: ${description}` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Delegate failed before transport ACK: ${e.message}` }], isError: true };
     }

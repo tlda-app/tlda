@@ -29,6 +29,56 @@ export async function completeTaskLifecycle({
   }
 }
 
+export function appendDelegationMessage(task, {
+  fromAgentId = null,
+  toAgentId,
+  message,
+  delegatedAt = new Date().toISOString(),
+}) {
+  if (!task?.id) throw new Error('missing task')
+  if (!toAgentId) throw new Error('missing target agent')
+  if (!message) throw new Error('missing message')
+
+  const existing = task.message || task.description || ''
+  const header = `### Delegated to ${toAgentId}`
+  const details = [
+    fromAgentId ? `From: ${fromAgentId}` : null,
+    `At: ${delegatedAt}`,
+  ].filter(Boolean).join('\n')
+  const addition = `${header}\n\n${details}\n\n${message}`
+  return existing ? `${existing}\n\n---\n\n${addition}` : addition
+}
+
+export async function transferTaskLifecycle({
+  fleetStore,
+  task,
+  fromAgentId = null,
+  toAgentId,
+  message,
+  delegatedAt = new Date().toISOString(),
+  eventMetadata,
+}) {
+  if (!fleetStore) throw new Error('missing fleetStore')
+  if (!task?.id) throw new Error('missing task')
+  if (!toAgentId) throw new Error('missing target agent')
+  if (!message) throw new Error('missing message')
+  if (task.status === 'done' || task.status === 'retracted') throw new Error('cannot delegate a closed task')
+
+  const transferredTask = {
+    ...task,
+    agent: toAgentId,
+    message: appendDelegationMessage(task, { fromAgentId, toAgentId, message, delegatedAt }),
+  }
+
+  fleetStore.upsertTask(transferredTask)
+  const event = await fleetStore.delegate?.(fromAgentId, toAgentId, task.id, task.description, eventMetadata)
+  return {
+    task: transferredTask,
+    event: event || null,
+    eventId: event?.id || null,
+  }
+}
+
 // Coordination guard, not a security boundary. Active temporary delegation
 // markers intentionally grant manager cleanup authority. Do not replace this
 // with immutable or pre-existing delegation-lineage semantics.
