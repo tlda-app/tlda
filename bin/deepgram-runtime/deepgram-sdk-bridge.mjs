@@ -299,9 +299,11 @@ wss.on('connection', (browserWs) => {
     if (carriedEpoch === null) return
     clearTimeout(carryTimer)
     carryTimer = null
-    if (reason !== 'final') {
-      console.log(`[deepgram-sdk-bridge] carry released by ${reason} (epoch ${carriedEpoch} → ${activeEpoch})`)
-    }
+    // Log EVERY release, including the ordinary `final` one. Silencing the common path
+    // left no denominator: the log showed backstop firings with nothing to compare them
+    // against, so "is the backstop still the common path?" — the actual ship bar — was
+    // unanswerable from the data. A check you cannot evaluate is not a check.
+    console.log(`[deepgram-sdk-bridge] carry released by ${reason} (epoch ${carriedEpoch} → ${activeEpoch})`)
     carriedEpoch = null
   }
 
