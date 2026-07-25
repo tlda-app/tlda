@@ -62,6 +62,7 @@ function createHarness({ kind = 'codex' } = {}) {
   const sentToServer = []
   const children = []
   const dirWatchers = []
+  const bufferedActivity = []
   let ready = true
   let rows = []
   const syncCalls = []
@@ -107,7 +108,7 @@ function createHarness({ kind = 'codex' } = {}) {
     },
     jsonlTranscriptRoots: [projectsDir],
     permissionLedger: null,
-    bufferActivity() {},
+    bufferActivity(agentId, activity) { bufferedActivity.push({ agentId, activity }) },
     extractActivityEvents() { return [] },
     machineId: 'mini',
     envName: 'default',
@@ -137,6 +138,7 @@ function createHarness({ kind = 'codex' } = {}) {
     jsonlPath,
     sentToChild,
     sentToServer,
+    bufferedActivity,
     children,
     dirWatchers,
     syncCalls,
@@ -149,6 +151,10 @@ function createHarness({ kind = 'codex' } = {}) {
       rmSync(dir, { recursive: true, force: true })
     },
   }
+}
+
+async function wait(ms) {
+  await new Promise(resolve => setTimeout(resolve, ms))
 }
 
 function createBindingReconciler({ ledger, ingestor, daemonKey = 'mini:default' }) {
@@ -245,6 +251,57 @@ function assertTailCount(harness, expected) {
     assertWatcher(harness, false)
     assertTailCount(harness, 1)
     assert.equal(harness.sentToChild.find(m => m.type === 'watch')?.agentId, null)
+  } finally {
+    harness.cleanup()
+  }
+}
+
+{
+  const harness = createHarness()
+  try {
+    harness.setRows([])
+    await harness.sync('initial-empty-root')
+    assertTailCount(harness, 1)
+    const latePath = join(dirname(harness.jsonlPath), 'rollout-late-unknown.jsonl')
+    writeFileSync(latePath, '')
+    harness.dirWatchers[0].emit('add', latePath)
+    await wait(600)
+    const lateWatch = harness.sentToChild.find(message => message.type === 'watch' && message.jsonlPath === latePath)
+    assert.ok(lateWatch, JSON.stringify(harness.sentToChild, null, 2))
+    assert.equal(lateWatch.agentId, null)
+    assert.equal(lateWatch.startOffset, 0)
+    harness.children[0].child.emit('message', {
+      type: 'batch',
+      watchId: lateWatch.watchId,
+      seq: 1,
+      outputs: [
+        {
+          type: 'identity',
+          identity: {
+            marker: {
+              daemon_key: 'mini:default',
+              fleet_id: 'fleet:lateunknown',
+              mint_id: 'mint-late-unknown',
+              session_id: 'rollout-late-unknown',
+              harness_kind: 'codex',
+              model: 'gpt-test',
+              cwd: '/Users/skip/work/tlda',
+            },
+          },
+        },
+        {
+          type: 'activity',
+          events: [{ kind: 'turn', timestamp: '2026-07-25T22:00:00.000Z' }],
+        },
+      ],
+    })
+    assert.equal(harness.ingestor.hasWatcherForAgent({ id: 'fleet:lateunknown' }, 'codex'), true)
+    assert.equal(harness.bufferedActivity.length, 1)
+    assert.equal(harness.bufferedActivity[0].agentId, 'fleet:lateunknown')
+    assert.equal(
+      harness.sentToChild.some(message => message.type === 'update' && message.watchId === lateWatch.watchId && message.agentId === 'fleet:lateunknown'),
+      true,
+    )
   } finally {
     harness.cleanup()
   }

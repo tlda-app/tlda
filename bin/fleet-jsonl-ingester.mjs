@@ -6,9 +6,10 @@
 import os from 'os'
 import path from 'path'
 import fs from 'fs'
+import { PassThrough } from 'stream'
 import { createInterface } from 'readline'
 import { pathToFileURL } from 'url'
-import TailFile from '@logdna/tail-file'
+import chokidar from 'chokidar'
 import { parser as jsonlParser } from 'stream-json/jsonl/parser.js'
 import { parseCodexRecord } from '../agent-runtime/codex-activity.mjs'
 import {
@@ -27,6 +28,127 @@ const MAX_CONTEXT = 200_000
 const watchers = new Map()
 const pendingJobAcks = new Map()
 const activeJobs = new Map()
+
+export class WatchReadTailFile extends PassThrough {
+  constructor(filename, {
+    startPos = null,
+    watch = chokidar.watch,
+    readStream = fs.createReadStream,
+    stat = fs.promises.stat,
+    ...superOpts
+  } = {}) {
+    super(superOpts)
+    if (typeof filename !== 'string' || !filename.length) {
+      const err = new TypeError('filename must be a non-empty string')
+      err.code = 'EFILENAME'
+      throw err
+    }
+    if (startPos !== null && startPos !== undefined) {
+      if (!Number.isInteger(startPos) || startPos < 0) {
+        const err = new RangeError('startPos must be an integer >= 0')
+        err.code = 'ESTARTPOS'
+        throw err
+      }
+    }
+    this.filename = filename
+    this.offset = startPos >= 0 ? startPos : null
+    this.watch = watch
+    this.readStream = readStream
+    this.stat = stat
+    this.watcher = null
+    this.currentStream = null
+    this.quitting = false
+    this.reading = false
+    this.pendingRead = false
+  }
+
+  async start() {
+    this.watcher = this.watch(this.filename, {
+      ignoreInitial: true,
+      persistent: true,
+      awaitWriteFinish: false,
+      usePolling: false,
+      alwaysStat: false,
+    })
+      .on('add', () => this.requestRead())
+      .on('change', () => this.requestRead())
+      .on('error', e => this.emit('tail_error', e))
+    await this.readAvailable()
+  }
+
+  requestRead() {
+    if (this.quitting) return
+    if (this.reading) {
+      this.pendingRead = true
+      return
+    }
+    this.readAvailable().catch(e => {
+      if (!this.quitting) this.emit('tail_error', e)
+    })
+  }
+
+  async readAvailable() {
+    if (this.reading) {
+      this.pendingRead = true
+      return
+    }
+    this.reading = true
+    try {
+      do {
+        this.pendingRead = false
+        await this.readOnce()
+      } while (this.pendingRead && !this.quitting)
+    } finally {
+      this.reading = false
+    }
+  }
+
+  async readOnce() {
+    let stats
+    try {
+      stats = await this.stat(this.filename)
+    } catch (e) {
+      if (e?.code === 'ENOENT') return
+      throw e
+    }
+
+    if (this.offset === null) this.offset = stats.size
+    if (stats.size <= this.offset) {
+      this.emitFlush()
+      return
+    }
+
+    await this.streamRange(this.offset, stats.size)
+    this.emitFlush()
+  }
+
+  async streamRange(start, end) {
+    const stream = this.readStream(this.filename, { start, end: end - 1 })
+    this.currentStream = stream
+    try {
+      const iterator = stream.iterator ? stream.iterator({ destroyOnReturn: false }) : stream
+      for await (const chunk of iterator) {
+        this.offset += chunk.length
+        if (!this.write(chunk)) await new Promise(resolve => this.once('drain', resolve))
+      }
+    } finally {
+      if (this.currentStream === stream) this.currentStream = null
+    }
+  }
+
+  emitFlush() {
+    setImmediate(this.emit.bind(this), 'flush', { lastReadPosition: this.offset || 0 })
+  }
+
+  async quit() {
+    this.quitting = true
+    if (this.watcher) {
+      try { await this.watcher.close() } catch (e) { this.emit('tail_error', e) }
+    }
+    if (this.currentStream) this.currentStream.destroy()
+    this.end()
+  }
+}
 
 export function createSafeIpcSender(processLike = process, {
   onClosed = () => {},
@@ -332,9 +454,8 @@ function enqueueRecord(w, record) {
 function startWatch(msg) {
   stopWatch(msg.watchId, 'replace')
   const parser = jsonlParser.asStream({ ignoreErrors: true })
-  const tail = new TailFile(msg.jsonlPath, {
+  const tail = new WatchReadTailFile(msg.jsonlPath, {
     startPos: msg.startOffset,
-    pollFileIntervalMs: Number(process.env.TLDA_JSONL_TAIL_POLL_MS || 1000),
   })
   const w = {
     watchId: msg.watchId,
@@ -371,10 +492,8 @@ function startWatch(msg) {
     w.pendingFlushOffset = lastReadPosition
     maybeSendFlush(w)
   })
-  tail.on('tail_error', e => send({ type: 'warn', watchId: w.watchId, sessionId: w.sessionId, jsonlPath: w.jsonlPath, warning: `tail-file error: ${e?.message || e}` }))
+  tail.on('tail_error', e => send({ type: 'warn', watchId: w.watchId, sessionId: w.sessionId, jsonlPath: w.jsonlPath, warning: `watch-read tail error: ${e?.message || e}` }))
   tail.on('error', e => send({ type: 'warn', watchId: w.watchId, sessionId: w.sessionId, jsonlPath: w.jsonlPath, warning: `tail stream error: ${e?.message || e}` }))
-  tail.on('renamed', () => send({ type: 'renamed', watchId: w.watchId, sessionId: w.sessionId, jsonlPath: w.jsonlPath }))
-  tail.on('truncated', () => send({ type: 'truncated', watchId: w.watchId, sessionId: w.sessionId, jsonlPath: w.jsonlPath }))
   tail.pipe(parser)
   watchers.set(w.watchId, w)
   tail.start()
@@ -452,7 +571,7 @@ function stopWatch(watchId, reason = 'stop') {
     send({ type: 'warn', watchId: w.watchId, sessionId: w.sessionId, jsonlPath: w.jsonlPath, warning: `parser destroy failed (${reason}): ${e?.message || e}` })
   }
   Promise.resolve(w.tail?.quit?.()).catch(e => {
-    send({ type: 'warn', watchId: w.watchId, sessionId: w.sessionId, jsonlPath: w.jsonlPath, warning: `tail-file quit failed (${reason}): ${e?.message || e}` })
+    send({ type: 'warn', watchId: w.watchId, sessionId: w.sessionId, jsonlPath: w.jsonlPath, warning: `watch-read tail quit failed (${reason}): ${e?.message || e}` })
   })
 }
 
