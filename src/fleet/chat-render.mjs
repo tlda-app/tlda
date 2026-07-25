@@ -102,10 +102,23 @@ export function chatLineAttachmentRenderSignature(message) {
   })
 }
 
-export function timeShort(ts) {
+// Show the least that still identifies the moment unambiguously: a message from
+// today needs no date, one from this year needs no year, and anything older needs
+// both. Stamping every line with a date it doesn't need is noise; omitting the
+// year on an old message makes it ambiguous.
+export function timeShort(ts, now = new Date()) {
   if (!ts) return ''
   const d = new Date(ts)
-  return d.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' })
+  if (Number.isNaN(d.getTime())) return ''
+  const time = { hour: 'numeric', minute: '2-digit' }
+  const sameDay = d.getFullYear() === now.getFullYear()
+    && d.getMonth() === now.getMonth()
+    && d.getDate() === now.getDate()
+  if (sameDay) return d.toLocaleTimeString([], time)
+  if (d.getFullYear() === now.getFullYear()) {
+    return d.toLocaleString([], { month: 'short', day: 'numeric', ...time })
+  }
+  return d.toLocaleString([], { year: 'numeric', month: 'short', day: 'numeric', ...time })
 }
 
 // A pending countdown's message carries a "— say "<bot> cancel" to stop" hint.
