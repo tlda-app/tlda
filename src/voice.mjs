@@ -2319,6 +2319,18 @@ function onDeepgramMessage(event, relay = _deepgramWs) {
           msgEpoch: msg.epoch, speechEpoch: _speechEpoch, final: !!msg.is_final, text: msg.text.slice(0, 40),
         })
       }
+      // utterance_end is a RELEASE SIGNAL, not a notification — it is one of only two
+      // things that clear _dgIgnoreUntilUtteranceEnd, and while that guard is armed
+      // every transcript overlapping the submitted text is dropped. The bridge stamps
+      // it with activeEpoch at emit time, and the client arms the guard right AFTER
+      // advancing the epoch, so a UtteranceEnd that races the epoch bump lands here
+      // and strands the guard. Log it separately: losing this is not the same event as
+      // losing a transcript, and it has to be greppable on its own.
+      if (msg.type === 'utterance_end') {
+        vdiscard('epoch-mismatch-utterance-end', 'DROPPED utterance_end (epoch mismatch) — guard may be stranded', {
+          msgEpoch: msg.epoch, speechEpoch: _speechEpoch, guardArmed: _dgIgnoreUntilUtteranceEnd,
+        })
+      }
       return
     }
 
