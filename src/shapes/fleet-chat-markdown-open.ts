@@ -1,4 +1,5 @@
 import type { Editor, TLShapeId } from 'tldraw'
+import { log } from '../logger'
 import { createTemporaryMarkdownColumn } from './FleetPillShape'
 import { getDeviceId, getHumanId, isDeviceReady } from '../fleet/fleet-data.mjs'
 import { dispatchManagedAnnotationViewerRequest } from '../wm/annotation-viewer-surface'
@@ -179,7 +180,13 @@ export function openMarkdownChipFromTarget(options: OpenMarkdownChipOptions): bo
     // a plain file chip), never the rendered chat bubble text.
     fetchMarkdownChipText(chipUrl, chipPath)
       .then(text => openMarkdownColumn(title, text, mdChip, { path: chipPath, section: chipSection }))
-      .catch(() => openMarkdownColumn(title, `# Failed to load\n\n${chipPath || title}`, mdChip, { path: chipPath, section: chipSection }))
+      // A load failure opens NO document. It used to open a markdown column whose
+      // body was "# Failed to load", which reads to the user as a real but broken
+      // document rather than as a failure. The failure goes to the error surface.
+      .catch(err => log.error('chat-chip', 'source chip failed to load; opening no document', {
+        title, path: chipPath, url: chipUrl, section: chipSection,
+        error: err instanceof Error ? err.message : String(err),
+      }))
     return true
   }
 
@@ -198,8 +205,13 @@ export function openMarkdownChipFromTarget(options: OpenMarkdownChipOptions): bo
       }) : text
       openMarkdownColumn(title, resolved, mdChip, { path: chipPath })
     })
-    .catch(() => {
-      openMarkdownColumn(title, `# Failed to load\n\n${chipUrl || chipPath || title}`, mdChip, { path: chipPath })
-    })
+    // Same rule as above: a failed fetch produces no document at all. A chip whose
+    // path only exists on the sending agent's machine cannot resolve from the
+    // server, and fabricating a "Failed to load" document out of that made a
+    // delivery failure look like a broken file.
+    .catch(err => log.error('chat-chip', 'file chip failed to load; opening no document', {
+      title, path: chipPath, url: chipUrl,
+      error: err instanceof Error ? err.message : String(err),
+    }))
   return true
 }

@@ -48,6 +48,7 @@ import { highlightSyntax, langFromFilePath } from '../fleet/utils.mjs'
 import { getHumanId } from '../fleet/fleet-data.mjs'
 import { useIsInViewport } from './useIsInViewport'
 import { fetchMarkdownChipText, openChatMarkdownColumn, openMarkdownChipFromTarget } from './fleet-chat-markdown-open'
+import { log } from '../logger'
 import './fleet-chat.css'
 import './fleet-inbox.css'
 
@@ -772,18 +773,13 @@ function FleetInboxInner({ shape }: { shape: any }) {
           logPrefix: 'fleet-inbox',
         })
       })
-      .catch(() => {
-        const markdown = `# Failed to load\n\n${tag.url || tag.path || tag.label}`
-        openChatMarkdownColumn({
-          editor,
-          sourceShapeId: shape.id,
-          title: tag.label,
-          markdown,
-          sourceEl,
-          placementEl: containerRef.current,
-          logPrefix: 'fleet-inbox',
-        })
-    })
+      // A failed load opens NO document — same rule as the chat chip path. This
+      // used to open a markdown column whose body was "# Failed to load", which
+      // presents a delivery failure to the user as a real but broken document.
+      .catch(err => log.error('chat-chip', 'inbox chip failed to load; opening no document', {
+        label: tag.label, path: tag.path, url: tag.url,
+        error: err instanceof Error ? err.message : String(err),
+      }))
   }, [editor, shape])
 
   const openableItems = useMemo<DetailItem[]>(() => [
