@@ -634,6 +634,12 @@ export class PermissionLedger {
     return row
   }
 
+  // Deleting a row destroys the agent's permission grant, which is what `wake`
+  // reads — this is the documented cause of the "wake refused: no ledger entry"
+  // failure class. The existing callers are spawn-failure cleanup, where the
+  // agent never came into being. Do not reach for this to prune stale rows: to
+  // retire a dead session, clear `tmux_session` and leave the grant, so the
+  // agent stays wakeable (see the note in daemon/agent-liveness.mjs).
   async delete(id) {
     const key = String(id || '').trim()
     if (!key) return

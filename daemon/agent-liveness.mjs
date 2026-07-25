@@ -1,3 +1,15 @@
+// This is the liveness check list, and it never shrinks. A ledger row keeps its
+// `tmux_session` after the session is gone, so every agent this daemon has ever
+// launched stays here and gets re-checked and re-reported every 30s forever. On
+// the Mini on 2026-07-25 that was 378 rows for `mini:default`, none removed
+// since 2026-07-06.
+//
+// LANDMINE FOR WHOEVER FIXES THAT: do NOT fix it by deleting the ledger row.
+// These rows are permission grants, and deleting them is the documented cause of
+// the "wake refused: no ledger entry" failure class — it is why the delete-guard
+// in rpcSpawn exists. The safe prune clears `tmux_session` (the only field that
+// makes a row a liveness candidate, per the filter below) and leaves the grant
+// intact, so the agent stays wakeable.
 export function livenessAgentsFromProcessBindings(rows = [], { daemonKey } = {}) {
   return rows
     .filter(row => row?.id && row.daemonKey === daemonKey && row.tmuxSession)
