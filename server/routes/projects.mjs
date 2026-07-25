@@ -218,7 +218,7 @@ router.get('/:name', requireRead, (req, res) => {
 // pipeline that already backs project parts/notes.
 router.post('/:name/parts', requireRw, async (req, res) => {
   try {
-    const result = realizeProjectMarkdownArtifact({
+    const result = await realizeProjectMarkdownArtifact({
       project: req.params.name,
       markdown: req.body?.markdown,
       sourcePath: req.body?.sourcePath,
@@ -383,7 +383,7 @@ router.get('/:name/parts/:partId/markdown', requireRead, (req, res) => {
 // Write back a project-owned markdown artifact part.
 router.put('/:name/parts/:partId/markdown', requireRw, async (req, res) => {
   try {
-    const result = writeProjectMarkdownArtifact({
+    const result = await writeProjectMarkdownArtifact({
       project: req.params.name,
       projectArtifactId: req.params.partId,
       markdown: req.body?.markdown,
@@ -909,7 +909,7 @@ export async function processProjectPushSerialized(name, body, transactionTest =
   }
 
   const changedFiles = (files || []).map(f => f.path)
-  const changedPartFiles = refreshMaterializedPartsFromChangedSources(name, project, changedPushFiles)
+  const changedPartFiles = await refreshMaterializedPartsFromChangedSources(name, project, changedPushFiles)
   const projectPartsChanged = changedPartFiles.length > 0
   // Persisted buildStatus can lag dispatch. The queue is the authority for
   // whether an initial normal build is already queued or running. A `parts`
@@ -975,7 +975,7 @@ export async function processProjectPushSerialized(name, body, transactionTest =
   )
 }
 
-function refreshMaterializedPartsFromChangedSources(name, project, changedPushFiles) {
+async function refreshMaterializedPartsFromChangedSources(name, project, changedPushFiles) {
   if (!changedPushFiles.length) return []
   const manifest = readProjectPartsManifest(name)
   const sourceRoot = project.sourceDir || getSourceDir(name)
@@ -985,7 +985,7 @@ function refreshMaterializedPartsFromChangedSources(name, project, changedPushFi
     const sourcePath = resolve(sourceRoot, file.path)
     const matchingParts = manifest.parts.filter(part => part.metadata?.sourcePath === sourcePath)
     for (const part of matchingParts) {
-      const result = realizeProjectMarkdownArtifact({
+      const result = await realizeProjectMarkdownArtifact({
         project: name,
         markdown: bufferToUtf8(file.content),
         sourcePath,

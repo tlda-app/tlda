@@ -2519,7 +2519,7 @@ async function materializeProjectMarkdownAttachment({ eventId, recipient, source
   if (!isMarkdownAttachment(attachment)) return null
   const markdown = await fetchAttachmentTextForProjectArtifact(attachment)
   const sourceAgentRow = sourceAgent ? fleetStore.getAgent?.(sourceAgent) : null
-  return realizeProjectMarkdownArtifact({
+  return await realizeProjectMarkdownArtifact({
     cwd: recipient.cwd,
     markdown,
     title: attachment.name || null,

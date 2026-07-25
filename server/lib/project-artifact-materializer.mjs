@@ -1,12 +1,15 @@
-import { execFileSync } from 'node:child_process'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { existsSync, mkdirSync, readFileSync, realpathSync } from 'node:fs'
-import { join, resolve, sep } from 'node:path'
+import { dirname, join, resolve, sep } from 'node:path'
 import { randomUUID, createHash } from 'node:crypto'
 import { homedir } from 'node:os'
 
 import { createProjectPartRecord } from '../../shared/project-parts.mjs'
 import { parseMarkdownPart } from '../../shared/project-parts.mjs'
 import { readProject, listProjects, projectPartsRoot } from './project-store.mjs'
+
+const execFileP = promisify(execFile)
 import {
   readProjectPartsManifest,
   upsertProjectPartsManifest,
@@ -20,7 +23,7 @@ import { resolveContainedPath } from './path-containment.mjs'
 export const PROJECT_ARTIFACT_KIND = 'artifact'
 export const PROJECT_ARTIFACT_DIR = 'parts'
 
-export function realizeProjectMarkdownArtifact({
+export async function realizeProjectMarkdownArtifact({
   project = null,
   cwd = null,
   markdown = null,
@@ -110,7 +113,7 @@ export function realizeProjectMarkdownArtifact({
   })
 
   const actorInfo = normalizeActor(actor)
-  const gitResult = commitArtifact(root, {
+  const gitResult = await commitArtifact(root, {
     projectPath,
     manifestPath: join('.tlda', 'parts.json'),
     title: artifactTitle,
@@ -137,7 +140,7 @@ export function realizeProjectMarkdownArtifact({
   })
 }
 
-export function writeProjectMarkdownArtifact({
+export async function writeProjectMarkdownArtifact({
   project,
   projectArtifactId,
   projectPath = null,
@@ -203,7 +206,7 @@ export function writeProjectMarkdownArtifact({
   })
 
   const actorInfo = normalizeActor(actor)
-  const gitResult = commitArtifact(root, {
+  const gitResult = await commitArtifact(root, {
     projectPath: targetPath,
     manifestPath: join('.tlda', 'parts.json'),
     title: nextTitle,
@@ -431,15 +434,15 @@ function artifactRecipientRef({ id, title, projectPath, localPath, hash, sourceA
   }
 }
 
-function commitArtifact(root, { projectPath, manifestPath, title, actor, git, logger, messagePrefix = 'Realize markdown artifact', enabled = true }) {
+async function commitArtifact(root, { projectPath, manifestPath, title, actor, git, logger, messagePrefix = 'Realize markdown artifact', enabled = true }) {
   if (!enabled) return { committed: false, skipped: true, reason: 'writeback-not-landed' }
-  if (!isGitRepo(root, git)) return { committed: false, reason: 'not a git repo' }
+  if (!isGitRepo(root)) return { committed: false, reason: 'not a git repo' }
   try {
-    git(['add', projectPath, manifestPath], root)
-    const status = git(['status', '--porcelain=v1', '--', projectPath, manifestPath], root)
+    await git(['add', projectPath, manifestPath], root)
+    const status = await git(['status', '--porcelain=v1', '--', projectPath, manifestPath], root)
     if (!status.trim()) return { committed: false, reason: 'no changes' }
     const message = `${messagePrefix}: ${truncate(title, 72)}`
-    git([
+    await git([
       '-c', `user.name=${actor.name}`,
       '-c', `user.email=${actor.email}`,
       'commit',
@@ -496,20 +499,21 @@ function isReadableFile(path) {
   }
 }
 
-function isGitRepo(dir, git = runGit) {
-  try {
-    git(['rev-parse', '--is-inside-work-tree'], dir)
-    return true
-  } catch {
-    return false
-  }
+// Filesystem checks, not subprocesses -- identical reasoning and measurements to
+// task-doc-materializer: a `git rev-parse` to answer "is this a repo / where is
+// its root" cost ~47ms of blocked event loop per call. `.git` is a directory in
+// a clone and a FILE in a linked worktree, so existsSync is the correct test.
+function isGitRepo(dir) {
+  return gitTopLevel(dir) !== null
 }
 
 function gitTopLevel(cwd) {
-  try {
-    return runGit(['rev-parse', '--show-toplevel'], cwd)
-  } catch {
-    return null
+  let dir = resolve(cwd)
+  for (;;) {
+    if (existsSync(join(dir, '.git'))) return dir
+    const parent = dirname(dir)
+    if (parent === dir) return null
+    dir = parent
   }
 }
 
@@ -556,6 +560,9 @@ function truncate(value, max) {
   return s.length <= max ? s : `${s.slice(0, max - 3)}...`
 }
 
-function runGit(args, cwd) {
-  return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+async function runGit(args, cwd) {
+  // Async: the synchronous WAIT, not the subprocess, is what blocked the server
+  // event loop. See task-doc-materializer for the same fix and its measurements.
+  const { stdout } = await execFileP('git', args, { cwd, encoding: 'utf8' })
+  return stdout.trim()
 }
