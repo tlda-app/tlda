@@ -2886,10 +2886,14 @@ export async function handleFleetTool(name, args) {
       ? diff.split('\n').slice(0, 500).join('\n') + `\n\n... (${diffLines - 500} more lines truncated)`
       : diff;
 
-    const context = taskContextBlock(task, state);
-    const humanMsgs = findRelatedHumanMessages(state, task);
-    const humanMsgBlock = formatHumanMessages(humanMsgs, state);
-    const contextSection = [context, humanMsgBlock].filter(Boolean).join('\n\n');
+    // `state` was never defined here, so this whole block threw a ReferenceError
+    // and the self-review gate has been dead for every agent. taskContextBlock
+    // never read state — it only uses task.message / description / success_criteria.
+    //
+    // The human-message half is deleted rather than repaired: findRelatedHumanMessages
+    // returns [] unless state.messages is populated, and loadState() hardcodes
+    // `messages: []`, so it could never have produced output even without the crash.
+    const contextSection = taskContextBlock(task);
 
     const reviewPrompt = `## Self-Review Gate
 
