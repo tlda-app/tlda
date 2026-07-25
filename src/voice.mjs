@@ -900,11 +900,6 @@ function flushDeepgramAudioBacklog() {
   return drained
 }
 
-function finalizeDeepgramBridge() {
-  if (!_deepgramWs || !deepgramRecognizerConnected()) return
-  try { _deepgramWs.send(JSON.stringify({ type: 'finalize' })) } catch {}
-}
-
 function showHud(text, stateColor) {
   const hud = ensureHud()
   positionHud(hud)
@@ -2652,7 +2647,11 @@ function afterSend(submittedTextOverride) {
     return
   }
   if (_backend === 'deepgram') {
-    finalizeDeepgramBridge()
+    // No separate finalize here: the bridge's speech_epoch handler now sends Deepgram
+    // the Finalize itself, on a socket it keeps open long enough to receive the answer.
+    // Sending our own first raced it — the reply could arrive before the epoch bump
+    // opened the flush window — and two mechanisms flushing the same utterance is how
+    // this bug was built in the first place.
     if (_deepgramWs?.readyState === WebSocket.OPEN) {
       _deepgramPcmPaused = false
       _deepgramReadyEpoch = null

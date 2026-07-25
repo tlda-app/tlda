@@ -657,8 +657,6 @@ wss.on('connection', (browserWs) => {
           epochTransition = createEpochTransition(activeEpoch, connectionAttemptId + 1)
         }
         connectDeepgram(activeEpoch)
-      } else if (msg.type === 'finalize' || msg.type === 'flush') {
-        try { sendDeepgramJson(dg, { type: 'Finalize' }) } catch {}
       } else if (msg.type === 'stop') {
         // Voice OFF must end the upstream Deepgram session, or it stays open
         // (held by the 3 s KeepAlive) and keeps billing. The client tears down
