@@ -51,6 +51,33 @@ const MAX_PENDING = 2000
 const REPORT_EVERY_MS = 30_000
 const REPORT_EVERY_MS_SERVER_MISSED = 0
 
+// Counters, because SILENCE IS AMBIGUOUS and the deletion is gated on it.
+//
+// A quiet comparator and a comparator that never compared anything look
+// identical from the outside, and three of the four ways to get silence are
+// failures: only one branch deployed so no filter-event ever arrives; a
+// bufferKey/correlationKey mismatch so hasChatSubscription() suppresses every
+// comparison; a subscribe frame erroring server-side unnoticed. Deleting the
+// spool on the strength of silence that meant "not looking" is worse than the
+// bug, because the spool is what currently makes chat work.
+//
+// So the heartbeat below always reports, INCLUDING zeros, and the four cases
+// are distinguishable:
+//   comparisons > 0, disagreements 0      → the two agree. The proof.
+//   clientVerdicts > 0, serverDeliveries 0 → the server is not answering.
+//   clientVerdicts 0                       → the guard is suppressing everything.
+//   both 0                                 → nothing is running at all.
+const _stats = {
+  clientVerdicts: 0,
+  serverDeliveries: 0,
+  comparisons: 0,
+  agreed: 0,
+  serverMissed: 0,
+  clientMissed: 0,
+}
+const HEARTBEAT_MS = 60_000
+let _lastHeartbeat = 0
+
 /** @type {Map<string, {client: boolean, server: boolean, t: number, filterKey?: string}>} */
 const _pending = new Map()
 const _lastReport = new Map()
@@ -58,6 +85,11 @@ let _sweep = null
 
 function keyOf(subId, eventId) { return `${subId}|${eventId}` }
 
+// Started at module load, NOT on first comparison. An earlier version started it
+// from touch(), which meant the case "the guard suppressed every comparison"
+// produced no heartbeat either — the fix for an ambiguous silence, silent in one
+// of the cases it exists to distinguish. Same failure as the drop probe that was
+// quiet under the bug it tested.
 function ensureSweep() {
   if (_sweep || typeof window === 'undefined') return
   _sweep = setInterval(() => {
@@ -65,7 +97,9 @@ function ensureSweep() {
     for (const [k, v] of _pending) {
       if (now - v.t < GRACE_MS) continue
       _pending.delete(k)
-      if (v.client === v.server) continue
+      _stats.comparisons++
+      if (v.client === v.server) { _stats.agreed++; continue }
+      if (v.client) _stats.serverMissed++; else _stats.clientMissed++
       const [subId, eventId] = k.split('|')
       const direction = v.client ? 'server-missed' : 'client-missed'
       const throttle = direction === 'server-missed' ? REPORT_EVERY_MS_SERVER_MISSED : REPORT_EVERY_MS
@@ -81,6 +115,12 @@ function ensureSweep() {
         serverSentIt: v.server,
         filterKey: v.filterKey || null,
       })
+    }
+    // Always reports, zeros included. A heartbeat that goes quiet when there is
+    // nothing to say would reproduce the exact ambiguity it exists to remove.
+    if (now - _lastHeartbeat >= HEARTBEAT_MS) {
+      _lastHeartbeat = now
+      log.metric(NS, 'equivalence heartbeat', { ..._stats, pending: _pending.size })
     }
   }, 1000)
 }
@@ -107,13 +147,20 @@ function touch(subId, eventId, patch, filterKey) {
  * @param {string} [filterKey] for reading the record later
  */
 export function noteClientVerdict(subId, eventId, belongs, filterKey) {
+  _stats.clientVerdicts++
   touch(subId, eventId, { client: !!belongs }, filterKey)
 }
 
 /** The server sent this event for this subscription, so the server matched it. */
 export function noteServerDelivery(subId, eventId, filterKey) {
+  _stats.serverDeliveries++
   touch(subId, eventId, { server: true }, filterKey)
 }
 
+// Start the heartbeat now, so a session that never records a single verdict still
+// says so once a minute.
+ensureSweep()
+
 /** Diagnostics only. */
 export function equivalencePendingCount() { return _pending.size }
+export function equivalenceStats() { return { ..._stats, pending: _pending.size } }
