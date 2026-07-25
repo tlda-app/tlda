@@ -37,6 +37,7 @@ export function createTerminalRpc({
   thinkingScanLines,
   terminalSizePollMs,
   decideTerminalWatchExit,
+  ptyModuleImpl = null,
   onArmAgent,
   onArmBySession,
   onEmitAgentStatus,
@@ -50,7 +51,7 @@ export function createTerminalRpc({
   const TMUX_ARGS = tmuxArgs || []
   const TERMINAL_SIZE_POLL_MS = terminalSizePollMs || 5000
   const terminalWatchPtys = new Map()
-  let ptyModule = null
+  let ptyModule = ptyModuleImpl
 
   function checkSession(session) {
     if (!session || !SAFE_SESSION_RE.test(session)) {
@@ -342,6 +343,27 @@ export function createTerminalRpc({
     }
   }
 
+  async function sendTerminalSnapshot(agentId, tmuxSession, state) {
+    try {
+      const { stdout } = await execFileImpl('tmux',
+        [...TMUX_ARGS, ...terminalVisibleCaptureArgs(tmuxSession)],
+        { timeout: 3000, encoding: 'utf8' })
+      const snapshot = trimTerminalSeedBlankRows(stdout).replace(/\n/g, '\r\n')
+      if (snapshot.trim()) {
+        sendMsg({
+          type: 'terminal-data',
+          agent_id: agentId,
+          data: Buffer.from(snapshot).toString('base64'),
+        })
+        state.recentOutput = stripAnsi(snapshot).slice(-4000)
+        detectPromptFromPty(agentId, tmuxSession, state)
+      }
+    } catch (e) {
+      // Initial snapshot is optional; live PTY data follows after attach.
+      log.warn(`terminal-watch: initial capture failed for ${tmuxSession}: ${e?.message || e}`)
+    }
+  }
+
   async function queryWindowSize(tmux_session) {
     try {
       const { stdout } = await tmux('display-message', '-p', '-t', tmux_session, '#{window_width} #{window_height}')
@@ -369,17 +391,21 @@ export function createTerminalRpc({
     checkSession(tmuxSession)
     {
       const existing = terminalWatchPtys.get(tmuxSession)
-      if (existing) return { ok: true, already: true, cols: existing.cols, rows: existing.rows }
+      if (existing) {
+        sendMsg({ type: 'terminal-size', agent_id: agentId, cols: existing.cols, rows: existing.rows })
+        await sendTerminalSnapshot(agentId, tmuxSession, existing)
+        return { ok: true, already: true, cols: existing.cols, rows: existing.rows }
+      }
     }
 
-    try { await execFileP('tmux', [...TMUX_ARGS, 'set-option', '-t', tmuxSession, 'status', 'off'], { timeout: 3000 }) } catch {
+    try { await execFileImpl('tmux', [...TMUX_ARGS, 'set-option', '-t', tmuxSession, 'status', 'off'], { timeout: 3000 }) } catch {
       // Hiding tmux status is cosmetic; terminal streaming still works.
     }
 
     const PINNED_COLS = 120, PINNED_ROWS = 40
     try {
-      await execFileP('tmux', [...TMUX_ARGS, 'set-option', '-t', tmuxSession, 'window-size', 'manual'], { timeout: 3000 })
-      await execFileP('tmux', [...TMUX_ARGS, 'resize-window', '-t', tmuxSession, '-x', String(PINNED_COLS), '-y', String(PINNED_ROWS)], { timeout: 3000 })
+      await execFileImpl('tmux', [...TMUX_ARGS, 'set-option', '-t', tmuxSession, 'window-size', 'manual'], { timeout: 3000 })
+      await execFileImpl('tmux', [...TMUX_ARGS, 'resize-window', '-t', tmuxSession, '-x', String(PINNED_COLS), '-y', String(PINNED_ROWS)], { timeout: 3000 })
     } catch (e) {
       // Pinning improves stable rendering; existing tmux size remains usable.
       log.warn(`terminal-watch: failed to pin window for ${tmuxSession}: ${e?.message || e}`)
@@ -398,24 +424,7 @@ export function createTerminalRpc({
     terminalWatchPtys.set(tmuxSession, state)
 
     sendMsg({ type: 'terminal-size', agent_id: agentId, cols: size.cols, rows: size.rows })
-    try {
-      const { stdout } = await execFileP('tmux',
-        [...TMUX_ARGS, ...terminalVisibleCaptureArgs(tmuxSession)],
-        { timeout: 3000, encoding: 'utf8' })
-      const snapshot = trimTerminalSeedBlankRows(stdout).replace(/\n/g, '\r\n')
-      if (snapshot.trim()) {
-        sendMsg({
-          type: 'terminal-data',
-          agent_id: agentId,
-          data: Buffer.from(snapshot).toString('base64'),
-        })
-        state.recentOutput = stripAnsi(snapshot).slice(-4000)
-        detectPromptFromPty(agentId, tmuxSession, state)
-      }
-    } catch (e) {
-      // Initial snapshot is optional; live PTY data follows after attach.
-      log.warn(`terminal-watch: initial capture failed for ${tmuxSession}: ${e?.message || e}`)
-    }
+    await sendTerminalSnapshot(agentId, tmuxSession, state)
 
     state.sizePoll = setInterval(async () => {
       if (!state.alive) return

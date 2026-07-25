@@ -7,12 +7,12 @@ import { createTerminalRpc } from '../daemon/terminal-rpc.mjs'
 import { decideTerminalWatchExit } from '../agent-runtime/daemon-guards.mjs'
 import { createPermissionLedger } from '../agent-launch/permission-ledger.mjs'
 
-function createRpc({ ledgerRow = null, killSessionError = null } = {}) {
+function createRpc({ ledgerRow = null, killSessionError = null, sendMsg = () => {}, ptyModuleImpl = null, terminalStdout = 'live terminal\n' } = {}) {
   const calls = []
   const rpc = createTerminalRpc({
     tmuxArgs: [],
     log: { info() {}, warn() {}, error() {} },
-    sendMsg() {},
+    sendMsg,
     detectPrompt: () => ({ type: 'none' }),
     stripAnsi: s => s,
     promptCooldowns: new Map(),
@@ -22,6 +22,7 @@ function createRpc({ ledgerRow = null, killSessionError = null } = {}) {
     interruptHintRe: /$a/,
     thinkingScanLines: 10,
     decideTerminalWatchExit: () => ({ terminalDead: true }),
+    ptyModuleImpl,
     onArmAgent() {},
     onArmBySession() {},
     onEmitAgentStatus() {},
@@ -39,10 +40,34 @@ function createRpc({ ledgerRow = null, killSessionError = null } = {}) {
       calls.push({ cmd, args })
       if (args.includes('list-sessions')) return { stdout: `${ledgerRow?.tmuxSession || ''}\n` }
       if (args.includes('kill-session') && killSessionError) throw killSessionError
-      return { stdout: 'live terminal\n' }
+      return { stdout: typeof terminalStdout === 'function' ? terminalStdout({ cmd, args }) : terminalStdout }
     },
   })
   return { rpc, calls }
+}
+
+function fakePtyModule() {
+  const ptys = []
+  return {
+    ptys,
+    spawn() {
+      const handlers = { data: [], exit: [] }
+      const pty = {
+        writes: [],
+        resizeCalls: [],
+        killed: false,
+        onData(fn) { handlers.data.push(fn) },
+        onExit(fn) { handlers.exit.push(fn) },
+        write(data) { this.writes.push(data) },
+        resize(cols, rows) { this.resizeCalls.push({ cols, rows }) },
+        kill() { this.killed = true },
+        emitData(data) { for (const fn of handlers.data) fn(data) },
+        emitExit(exitCode = 0) { for (const fn of handlers.exit) fn({ exitCode }) },
+      }
+      ptys.push(pty)
+      return pty
+    },
+  }
 }
 
 {
@@ -233,6 +258,48 @@ for (const [name, payload] of [
     }),
     /permission denied/,
   )
+}
+
+{
+  const messages = []
+  const ptyModule = fakePtyModule()
+  let visibleSnapshot = 'first visible screen\n'
+  const ledgerRow = {
+    id: 'fleet:cap-test',
+    terminalCapability: 'termcap:live',
+    sessionId: 'rollout-live',
+    tmuxSession: 'daemon-local-tmux-live',
+    daemonKey: 'mini:prod',
+  }
+  const { rpc, calls } = createRpc({
+    ledgerRow,
+    sendMsg: msg => messages.push(msg),
+    ptyModuleImpl: ptyModule,
+    terminalStdout: ({ args }) => args.includes('display-message') ? '120 40\n' : visibleSnapshot,
+  })
+
+  await rpc.handlers['start-terminal-watch']({
+    agent_id: 'fleet:cap-test',
+    terminal_capability: 'termcap:live',
+  })
+  visibleSnapshot = 'second viewer current screen\n'
+  const second = await rpc.handlers['start-terminal-watch']({
+    agent_id: 'fleet:cap-test',
+    terminal_capability: 'termcap:live',
+  })
+  await rpc.handlers['stop-terminal-watch']({
+    agent_id: 'fleet:cap-test',
+    terminal_capability: 'termcap:live',
+  })
+
+  assert.equal(second.already, true)
+  assert.equal(ptyModule.ptys.length, 1, 'watch reuse should keep one PTY per tmux session')
+  const dataMessages = messages.filter(msg => msg.type === 'terminal-data')
+  assert.equal(dataMessages.length, 2, 'second subscriber must receive a current terminal snapshot')
+  assert.equal(Buffer.from(dataMessages[0].data, 'base64').toString(), 'first visible screen\r\n')
+  assert.equal(Buffer.from(dataMessages[1].data, 'base64').toString(), 'second viewer current screen\r\n')
+  const seedCaptures = calls.filter(call => call.args.includes('capture-pane') && call.args.includes('daemon-local-tmux-live'))
+  assert.equal(seedCaptures.length, 2, 'each subscriber attach should capture the current pane once')
 }
 
 {
