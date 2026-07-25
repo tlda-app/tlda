@@ -131,7 +131,7 @@ import { buildVoicePipelineSnapshot } from './lib/observability/voice-pipeline.m
 import { createNotificationAttemptRecorder } from './lib/notification-attempts.mjs'
 import { daemonEventFailureIncident } from './lib/daemon-event-failures.mjs'
 import { buildDaemonActivityRecord } from './lib/daemon-activity-ingest.mjs'
-import { currentSeatForDaemonEvent } from './lib/daemon-event-route-authority.mjs'
+import { currentSeatForDaemonEvent, daemonEventSeatDecision, isForeignDaemonRejection } from './lib/daemon-event-route-authority.mjs'
 import {
   agentLivenessTraceResponse,
   createAgentLivenessTraceStore,
@@ -163,6 +163,11 @@ const syncSignalLog = createBackendLogger('sync-signals')
 const daemonEventLog = createBackendLogger('daemon-events')
 const controlPlaneTraces = createControlPlaneTraceStore()
 const serverActivityDeliveryCounters = createActivityDeliveryCounters({ origin: 'server' })
+// Agents seen emitting activity with no seat row. Warn-once keys, so a seat
+// binding that never lands doesn't reprint every few seconds — the daemon's own
+// "pending seat binding rejected locally" loop wrote 431,202 lines that way on
+// 2026-07-25 and buried the signal it was trying to give.
+const seatlessActivityAgents = new Set()
 const daemonActivityDeliverySnapshots = new Map()
 const SERVER_PERF_MAX_EVENTS = Number(process.env.TLDA_SERVER_PERF_MAX_EVENTS || 500)
 const serverPerfEvents = []
@@ -8326,12 +8331,34 @@ async function handleDaemonWsMessage(ws, msg) {
     const serverReceivedAtMs = Date.now()
     const { agent_id, tool, arg, input } = msg
     if (!agent_id) return
-    const currentSeat = currentSeatForDaemonEvent(fleetStore, {
+    // Reject only what this authority exists to reject: an event from a daemon
+    // that does not own the agent. A missing seat row is a bookkeeping gap, not
+    // a routing error — nobody else claims the agent, and the tool call it is
+    // reporting genuinely happened.
+    //
+    // This used to be `if (!currentSeat) return`, a bare return with no log and
+    // no counter. On 2026-07-25 chief3 had no seat row, so every activity event
+    // the daemon extracted for it was destroyed at this line — its cards were
+    // absent from Skip's view for hours while the daemon shipped them every few
+    // seconds and every layer reported healthy.
+    const seatDecision = daemonEventSeatDecision(fleetStore, {
       agentId: agent_id,
       daemonKey: ws._daemonKey,
       family: 'daemon-activity-event',
     })
-    if (!currentSeat) return
+    if (isForeignDaemonRejection(seatDecision)) {
+      console.warn(`[fleet-daemon] ignored activity for ${agent_id}: seat daemon=${seatDecision.seat_daemon_key || 'none'} ws daemon=${ws._daemonKey}`)
+      return
+    }
+    const currentSeat = seatDecision.seat
+    if (!currentSeat && !seatlessActivityAgents.has(agent_id)) {
+      // Said out loud, once per agent: accepting this is correct, but an agent
+      // emitting activity with no seat row is still a defect upstream, and it
+      // must be visible WITHOUT anyone first noticing that cards are missing.
+      // Silence is what made this cost hours.
+      seatlessActivityAgents.add(agent_id)
+      console.warn(`[fleet-daemon] accepting activity for ${agent_id} with no current seat — seat binding is behind; cards will render but the seat row is missing`)
+    }
     markAgentAlive(agent_id, Date.parse(msg.ts) || serverReceivedAtMs, {
       source: 'daemon-activity-event',
     })
