@@ -37,18 +37,25 @@ const DB_PATH = path.join(os.homedir(), '.config', 'tlda', 'fleet.db');
 const FLEET_DIR = path.join(os.homedir(), '.fleet');
 const WIRETAP_EVENT_TYPES = new Set(['chat', 'delegate', 'task_done']);
 
-// Newest first. Compares the ISO-8601 timestamps as STRINGS, which for this
-// format is the same order as comparing instants, because a fixed-width UTC
-// `YYYY-MM-DDTHH:MM:SS.sssZ` sorts lexicographically exactly as it sorts
-// chronologically.
+// Newest first, bucketed to the MINUTE — Skip's design, from the screen rather
+// than from a profile:
 //
-// This is a CORRECTNESS fix before it is a speed one. The previous version
-// mapped every missing or unparseable timestamp to 0 via `new Date(x).getTime()
-// || 0`, so all such rows compared EQUAL to each other and `Array.prototype.sort`
-// was free to reorder them between renders — the roster visibly jumped. 261 of
-// the 6521 rows on the live database have a NULL timestamp, so this was not a
-// hypothetical. String comparison is total: equal strings are genuinely equal
-// and everything else has one stable order, so the list stops moving on its own.
+//   "the sort should be on what the active row actually shows — basically in
+//    minute increments... that way if agents are active they're not always
+//    jumping around in the list."
+//
+// The agents panel displays minutes, so ordering on milliseconds sorts on
+// precision the user cannot see. Every heartbeat rewrote a timestamp, changed
+// the order, and moved rows under him. Bucketing to the displayed granularity
+// means a row only moves when what it *shows* has changed.
+//
+// So this is a CORRECTNESS fix before it is a speed one, in two ways. The old
+// comparator also mapped every missing or unparseable timestamp to 0 via
+// `new Date(x).getTime() || 0`, so all such rows compared EQUAL and
+// `Array.prototype.sort` was free to reorder them between renders — 261 of the
+// 6521 live rows have a NULL timestamp, so that was not hypothetical. Minute
+// buckets plus the `id` tiebreak below make the order total and deterministic:
+// the list stops moving on its own.
 //
 // That invariant is not new here — the keyset pagination cursor below
 // (`agents.last_seen < @lastSeen OR (... AND agents.id < @id)`) already depends
@@ -67,11 +74,35 @@ const WIRETAP_EVENT_TYPES = new Set(['chat', 'delegate', 'task_done']);
 // class as the rest of that sweep — cost that scales with agents merely
 // existing. Measured at the live roster size: 2.85ms -> 0.21ms per sort, order
 // identical.
+// Compare two fixed-width ISO timestamps at MINUTE granularity without slicing
+// them (a substring per comparison would reallocate ~2.5M short strings per
+// liveness batch, which is the allocation pressure this whole change removes).
+// 'YYYY-MM-DDTHH:MM' is the first 16 characters.
+const ROSTER_MINUTE_CHARS = 16;
+function compareIsoMinute(x, y) {
+  if (x === y) return 0;
+  for (let i = 0; i < ROSTER_MINUTE_CHARS; i += 1) {
+    const cx = x.charCodeAt(i), cy = y.charCodeAt(i);
+    // NaN from a short/empty string sorts last, matching the old `|| 0` floor.
+    if (cx === cy) continue;
+    if (Number.isNaN(cx)) return 1;
+    if (Number.isNaN(cy)) return -1;
+    return cx < cy ? 1 : -1;
+  }
+  return 0;
+}
+
 function compareAgentsForRoster(a, b) {
-  const aSeen = a.last_seen || '', bSeen = b.last_seen || '';
-  if (aSeen !== bSeen) return aSeen < bSeen ? 1 : -1;
-  const aActive = a.last_active || '', bActive = b.last_active || '';
-  if (aActive !== bActive) return aActive < bActive ? 1 : -1;
+  const seen = compareIsoMinute(a.last_seen || '', b.last_seen || '');
+  if (seen !== 0) return seen;
+  const active = compareIsoMinute(a.last_active || '', b.last_active || '');
+  if (active !== 0) return active;
+  // Deterministic tiebreak so rows inside a minute bucket cannot swap places on
+  // a re-render or a re-insert. `id DESC` is the same tiebreak the keyset
+  // pagination cursor already uses (_getAliveAgentsPage), so the in-memory order
+  // and the SQL order agree instead of diverging on ties.
+  const aId = a.id || '', bId = b.id || '';
+  if (aId !== bId) return aId < bId ? 1 : -1;
   return 0;
 }
 
