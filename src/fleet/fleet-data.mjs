@@ -32,7 +32,7 @@ import {
 } from './fleet-data.ts'
 import { log } from '../logger'
 import { noteProjection, recordFilterNameIds } from './chat-freeze-probe.mjs'
-import { dispatchFilterEvent, setChatSubscriptionTransport } from './chat-subscription.mjs'
+import { dispatchFilterEvent, setChatSubscriptionTransport, refreshChatSubscriptionIdentity } from './chat-subscription.mjs'
 import { probe } from '../perf-probe'
 import { DATABASE_HTTP, DATABASE_WS } from '../activeConfig'
 import { isUsableIdentityName, sanitizeIdentityName, storedIdentityLoginFailureAction } from './identity-persistence.mjs'
@@ -203,6 +203,12 @@ function notify(channel, event) {
     try { sub.callback(event) } catch {}
   }
 }
+
+// Identity resolves after panels may already have subscribed. One place to
+// re-send them with the resolved identity, rather than every caller remembering.
+subscribe('identity', null, () => {
+  refreshChatSubscriptionIdentity(_humanId, _humanName)
+})
 
 export function matchesFilter(filter, event) {
   return matchesFleetFilter(filter, event, { agents: _agents, humanId: _humanId, humanName: _humanName })
