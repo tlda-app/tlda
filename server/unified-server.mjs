@@ -2468,24 +2468,21 @@ function patchRecipientAttachmentState(eventId, recipientId, attachmentId, recor
   ))
 }
 
-function notifyRecipientMaterializationSuccess({ eventId, recipientId, attachment, record }) {
-  const state = record?.state
-  if (!recipientId || !eventId || state !== 'available') return
-  const title = attachment?.name || record?.title || `attachment ${attachment?.id ?? ''}`.trim()
-  const location = record.localPath || record.projectPath || record.projectArtifactId || null
-  deliverTldaFeedbackChat({
-    from: 'tlda-materializer',
-    to: recipientId,
-    text: `Attachment materialized for message ${eventId}: ${title}${location ? `\n${location}` : ''}`,
-    metadata: {
-      source: 'materialization',
-      source_event_id: eventId,
-      attachment_id: attachment?.id != null ? String(attachment.id) : null,
-      state,
-      priority: 'normal',
-    },
-  })
-}
+// A successful materialization is deliberately SILENT. It used to post
+// "Attachment materialized for message N: file" to the recipient on every single
+// attachment, and Skip reads the fleet feed -- so agent-to-agent announcements are
+// noise in the one channel he cannot afford noise in ("This over chatty
+// materializer is exhausting").
+//
+// Note the announcement was already never sent to humans: materializeRecipientAttachment
+// returns early on `recipient.human`. Every one of these went to an *agent*. So
+// suppressing it "for humans" would have changed nothing he can see -- the message
+// itself had to go.
+//
+// The success record still lands in the event metadata via
+// patchRecipientAttachmentState and broadcasts as an `event-update`, so the
+// attachment chip and any agent that needs the fact still get it. An event is not a
+// notification; success is silent, and only failure is worth saying out loud.
 
 function notifyRecipientMaterializationFailures({ eventId, recipientId, failures }) {
   const text = formatMaterializationFailureNotification({ eventId, failures })
@@ -2598,10 +2595,7 @@ async function materializeRecipientAttachment({ eventId, recipientId, sourceAgen
       updated_at: new Date().toISOString(),
     }
     patchRecipientAttachmentState(eventId, recipientId, attachment.id, record)
-    if (record.state === 'available') {
-      notifyRecipientMaterializationSuccess({ eventId, recipientId, attachment, record })
-      return null
-    }
+    if (record.state === 'available') return null
     return { attachment, record }
   }
   const current = currentSeatOrError(recipient, { requireTerminal: false })
@@ -2640,7 +2634,6 @@ async function materializeRecipientAttachment({ eventId, recipientId, sourceAgen
       materialized_at: new Date().toISOString(),
     }
     patchRecipientAttachmentState(eventId, recipientId, attachment.id, record)
-    notifyRecipientMaterializationSuccess({ eventId, recipientId, attachment, record })
     return null
   } catch (e) {
     return fail(e.message || String(e))
