@@ -34,6 +34,15 @@ import { projectAgentRuntimeStatus } from './agent-runtime-status.mjs';
 // Excluded from Spotlight via a .metadata_never_index file next to the DB.
 const DB_PATH = path.join(os.homedir(), '.config', 'tlda', 'fleet.db');
 const FLEET_DIR = path.join(os.homedir(), '.fleet');
+// Largest result payload transport_operations will store for replay. Above this
+// the row is kept and the payload dropped; see recordTransportOperationResult.
+// 64 KiB clears every ordinary operation (chat, heartbeat, report-close are all
+// well under 1 KB) and excludes the bulk reads that filled the volume.
+const TRANSPORT_PAYLOAD_MAX_BYTES = Number(process.env.TLDA_TRANSPORT_PAYLOAD_MAX_BYTES) || 65536;
+// Marker key for a row whose payload was dropped. Deliberately unlikely to collide
+// with a real result field, since a result that happened to carry it would be
+// mistaken for an omitted one and re-executed.
+const TRANSPORT_PAYLOAD_OMITTED = '__tlda_payload_omitted';
 // Slow queries are appended here as JSON lines, alongside stdout. Readable after
 // the fact the way client.log is, so naming a slow query does not depend on
 // someone tailing `fly logs` at the instant it fires.
@@ -1644,9 +1653,15 @@ export class FleetStore {
       throw error
     }
     if (row.status === 'accepted' || !row.terminal_kind) return null
+    const payload = JSON.parse(row.terminal_payload)
+    // A row whose payload was dropped for size has nothing to replay. Returning
+    // null sends the caller down the ordinary re-execute path, the same one taken
+    // when no row was ever written. Replaying the marker would hand the client an
+    // object that looks like a result and isn't.
+    if (payload && typeof payload === 'object' && payload[TRANSPORT_PAYLOAD_OMITTED]) return null
     return {
       kind: row.terminal_kind,
-      payload: JSON.parse(row.terminal_payload),
+      payload,
       completedAt: row.completed_at,
     }
   }
@@ -1717,7 +1732,41 @@ export class FleetStore {
   recordTransportOperationResult(operationId, operationType, kind, payload, envelope = null) {
     if (!operationId) return
     const terminalKind = kind === 'error' ? 'error' : 'result'
-    const serialized = JSON.stringify(payload ?? null)
+    let serialized = JSON.stringify(payload ?? null)
+
+    // Oversized results are recorded WITHOUT their payload.
+    //
+    // This column stores a result so that a retry of the same operation_id can
+    // be answered from it instead of re-executing (see
+    // getTransportOperationResult and its use in handleFleetWsMessage). That
+    // makes it an idempotency cache, not just an audit trail — so it cannot be
+    // truncated in place: a retry would be replayed a mangled payload and
+    // believe it.
+    //
+    // Instead, drop the payload and store a marker object in its place.
+    // getTransportOperationResult recognises the marker and declines to replay,
+    // so the operation re-executes — exactly what already happens for any
+    // operation whose row was never written. Replay is an optimisation; losing
+    // it for a handful of bulk reads costs one repeated query.
+    //
+    // The marker goes in the payload rather than in terminal_kind because that
+    // column has a CHECK constraint (`terminal_kind IN ('result','error')`), and
+    // widening a CHECK in SQLite means rebuilding the table — a 28 GB rewrite on
+    // Skip's live database to fix a problem about disk space.
+    //
+    // Why this exists: on 2026-07-25 this table was 28.6 GB of a 40 GB volume
+    // with ~7 hours of headroom, and 21.95 GB of that was 3,776 `store-agents`
+    // rows averaging 5.81 MB each — the entire agent roster, stored as the
+    // audit record of having asked for the agent roster. Nothing pruned it.
+    if (serialized && serialized.length > TRANSPORT_PAYLOAD_MAX_BYTES) {
+      serialized = JSON.stringify({
+        [TRANSPORT_PAYLOAD_OMITTED]: true,
+        reason: 'payload-too-large',
+        bytes: serialized.length,
+        limit: TRANSPORT_PAYLOAD_MAX_BYTES,
+        operation_type: operationType,
+      })
+    }
     this.db.prepare(`
       INSERT INTO transport_operations (
         operation_id, operation_type, delivery_class, sender, destination,
