@@ -60,6 +60,8 @@ import {
   getPlaybackAgents,
 } from './playback-context'
 import { log } from './logger'
+import { noteSnapshot, forgetSnapshot } from './fleet/chat-freeze-probe.mjs'
+import { getLastEventId } from './fleet/fleet-data.mjs'
 import { loadPrefs } from './preferences'
 import { chatAgentSignature } from './fleet/chat-agent-signature'
 
@@ -338,6 +340,10 @@ export function useFleetEvents(dnfFilter?: [string, string][][] | null, frameId?
     if (cached?.key === eventViewKey) return cached.list
     const list = getFilteredFleetEvents(filter, { matchesFilter: liveMatcher, bufferKey })
     liveSnapshotRef.current = { key: eventViewKey, list }
+    // A recompute that yields the reference-identical array is React being handed
+    // "nothing changed" — a frozen panel, at the React boundary. Only reported
+    // when the transport has moved on meanwhile; see chat-freeze-probe.mjs.
+    noteSnapshot(eventViewKey, list, getLastEventId(), 'recompute')
     return list
   }, [filter, eventViewKey, liveMatcher, bufferKey])
   const subscribeLive = useCallback((onStoreChange: () => void) => {
@@ -359,6 +365,7 @@ export function useFleetEvents(dnfFilter?: [string, string][][] | null, frameId?
       unsubscribe()
       unsubscribeAgents()
       liveView.dispose()
+      forgetSnapshot(eventViewKey)
       if (liveSnapshotRef.current?.key === eventViewKey) liveSnapshotRef.current = null
     }
   }, [filter, eventViewKey, liveMatcher, bufferKey])

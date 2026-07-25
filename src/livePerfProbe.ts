@@ -210,7 +210,16 @@ function collectDomSummary() {
     iframes: document.querySelectorAll('iframe').length,
     fleetDocviews: document.querySelectorAll('.fleet-docview [data-viewport-id]').length,
     fleetShapes: document.querySelectorAll('.fleet-chat-shape, .fleet-inbox-shape, .fleet-agents-shape, .fleet-status-shape').length,
+    // NOTE: FleetSearchShape's results container also carries `.fleet-chat-shape`
+    // (FleetSearchShape.tsx:556) to inherit chat-line styling. That made
+    // fleetChatShapes/fleetChatLines silently conflate real chat panels with the
+    // search results list — a confound that cost real time reading the 2026-07-25
+    // freeze. Keep the original totals AND report the search-free counts, so no
+    // one reasons from the ambiguous number again.
     fleetChatShapes: document.querySelectorAll('.fleet-chat-shape').length,
+    chatPanelsOnly: document.querySelectorAll('.fleet-chat-shape:not(.fleet-search-results)').length,
+    chatPanelLinesOnly: document.querySelectorAll('.fleet-chat-shape:not(.fleet-search-results) .chat-line, .fleet-chat-shape:not(.fleet-search-results) [data-chat-line]').length,
+    searchResultShapes: document.querySelectorAll('.fleet-search-results').length,
     fleetInboxShapes: document.querySelectorAll('.fleet-inbox-shape').length,
     fleetAgentRows: document.querySelectorAll('.fleet-agents-row, .fleet-phone-agent').length,
     fleetChatLines: document.querySelectorAll('.fleet-chat-shape .chat-line, .fleet-chat-shape [data-chat-line]').length,

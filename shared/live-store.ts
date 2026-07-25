@@ -182,6 +182,18 @@ class MaintainedIndex<T extends Rec, K> implements Index<T, K> {
 
 type ViewSubscriber<T extends Rec> = (list: readonly T[], delta: Delta<T>) => void
 
+// Optional diagnostic observer. `shared/` is imported by the server too, so this
+// file must not import the browser logger; the browser injects a sink instead.
+// Both events below are otherwise INVISIBLE — the code's `if (this.disposed)
+// return` guards fail silently, which is precisely the shape of bug that leaves
+// a panel alive-looking and never updating.
+export type LiveStoreObserver = {
+  onDisposedViewTouched?: (key: string, op: 'notify' | 'subscribe') => void
+  onViewRef?: (key: string, how: 'create' | 'retain' | 'release', refCount: number) => void
+}
+let _observer: LiveStoreObserver | null = null
+export function setLiveStoreObserver(observer: LiveStoreObserver | null): void { _observer = observer }
+
 class MaintainedView<T extends Rec> implements LiveView<T> {
   readonly filter: Filter<T>
   private readonly atom: AtomLike<readonly T[]>
@@ -192,6 +204,7 @@ class MaintainedView<T extends Rec> implements LiveView<T> {
   private disposed = false
   private refCount = 1
   private current: readonly T[]
+  readonly viewKey: string
 
   constructor(
     filter: Filter<T>,
@@ -206,7 +219,8 @@ class MaintainedView<T extends Rec> implements LiveView<T> {
     this.orderOf = orderOf
     this.compare = compare
     this.current = compare ? [...initial].sort(compare) : initial
-    this.atom = makeAtom(`live-view:${key ?? 'anon'}`, this.current)
+    this.viewKey = key ?? 'anon'
+    this.atom = makeAtom(`live-view:${this.viewKey}`, this.current)
   }
 
   get list(): readonly T[] {
@@ -222,7 +236,7 @@ class MaintainedView<T extends Rec> implements LiveView<T> {
   }
 
   subscribe(cb: ViewSubscriber<T>): () => void {
-    if (this.disposed) return () => {}
+    if (this.disposed) { _observer?.onDisposedViewTouched?.(this.viewKey, 'subscribe'); return () => {} }
     this.subscribers.add(cb)
     return () => {
       this.subscribers.delete(cb)
@@ -232,6 +246,7 @@ class MaintainedView<T extends Rec> implements LiveView<T> {
   dispose(): void {
     if (this.disposed) return
     this.refCount -= 1
+    _observer?.onViewRef?.(this.viewKey, 'release', this.refCount)
     if (this.refCount > 0) return
     this.forceDispose()
     this.onZeroRefs(this)
@@ -247,8 +262,12 @@ class MaintainedView<T extends Rec> implements LiveView<T> {
   }
 
   retain(): void {
-    if (this.disposed) return
+    // A retain() on a disposed view is a NO-OP that still hands the caller the
+    // corpse. Report it — silently succeeding here is indistinguishable from
+    // working, and the caller then subscribes to something that never notifies.
+    if (this.disposed) { _observer?.onDisposedViewTouched?.(this.viewKey, 'subscribe'); return }
     this.refCount += 1
+    _observer?.onViewRef?.(this.viewKey, 'retain', this.refCount)
   }
 
   applyAdd(rec: T): boolean {
@@ -290,7 +309,7 @@ class MaintainedView<T extends Rec> implements LiveView<T> {
   }
 
   notify(delta: Delta<T>): void {
-    if (this.disposed) return
+    if (this.disposed) { _observer?.onDisposedViewTouched?.(this.viewKey, 'notify'); return }
     const list = this.atom.get()
     for (const cb of [...this.subscribers]) cb(list, delta)
   }

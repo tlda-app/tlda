@@ -29,6 +29,7 @@ import {
   upsertFleetEventsForBuffer,
 } from './fleet-data.ts'
 import { log } from '../logger'
+import { noteProjection } from './chat-freeze-probe.mjs'
 import { probe } from '../perf-probe'
 import { DATABASE_HTTP, DATABASE_WS } from '../activeConfig'
 import { isUsableIdentityName, sanitizeIdentityName, storedIdentityLoginFailureAction } from './identity-persistence.mjs'
@@ -175,9 +176,9 @@ function applyEventUpdateFields(ev, data) {
 }
 
 function projectStoreResult(result) {
-  if (!result) return
-  if (result.evicted?.length) replaceFleetEvents(_store.all())
-  else upsertFleetEvent(result.event)
+  if (!result) { noteProjection('dropped', _lastEventId); return }
+  if (result.evicted?.length) { noteProjection('replace', _lastEventId); replaceFleetEvents(_store.all()) }
+  else { noteProjection('upsert', _lastEventId); upsertFleetEvent(result.event) }
 }
 
 // --- Subscribers ---
@@ -216,6 +217,11 @@ export function getAgentTotals() { return _agentTotals }
 export function getTasks() { return _tasks }
 export function getItems() { return _items }
 export function getEvents() { return _store.all() }
+// The transport's high-water mark, for diagnostics that must report a panel's
+// own position and the stream's position in the SAME record (see
+// src/fleet/chat-freeze-probe.mjs). Reading it from getFleetRuntimeSummary()
+// would drag the whole summary into a hot path.
+export function getLastEventId() { return _lastEventId }
 export function getActivity(agentId) { return _store.all().filter(e => e._activity && e.agent === agentId) }
 export function getHumanId() { return _humanId }
 export function getHumanName() { return _humanName }

@@ -3,6 +3,18 @@ import { createLiveStore } from '../../shared/live-store.ts'
 import { labelsForAgent } from '../../shared/fleet-labels.mjs'
 // @ts-ignore - shared JS module
 import { isRuntimeAwake } from '../../shared/fleet-runtime-status.mjs'
+import { setLiveStoreObserver } from '../../shared/live-store.ts'
+import { noteBufferDrop, noteDisposedViewTouched, noteViewRef } from './chat-freeze-probe.mjs'
+import { getLastEventId } from './fleet-data.mjs'
+
+// Browser-side sink for the live-store's otherwise-silent diagnostics. `shared/`
+// can't import the browser logger (the server imports it too), so it exposes a
+// hook and we fill it in here — the one place that is browser-only and already
+// owns the fleet event store.
+setLiveStoreObserver({
+  onDisposedViewTouched: (key, op) => noteDisposedViewTouched(key, op),
+  onViewRef: (key, how, refCount) => noteViewRef(key, how, refCount),
+})
 
 export type FleetEvent = Record<string, unknown> & {
   id: string
@@ -130,12 +142,13 @@ function reconcileEventBuffer(buffer: EventBuffer): void {
 }
 
 function fanoutEventToBuffers(event: FleetEvent): void {
-  for (const buffer of eventBuffers.values()) {
+  for (const [bufferKey, buffer] of eventBuffers) {
     if (buffer.matchesFilter(buffer.filter, event)) {
       buffer.store.upsert(event)
       if (buffer.pinned) trimEventBuffer(buffer)
     } else {
       buffer.store.remove(event.id)
+      noteBufferDrop(bufferKey, getLastEventId())
     }
   }
 }

@@ -32,7 +32,12 @@ import { highlightSyntax, langFromFilePath, renderMarkdown as renderMarkdownUtil
 // @ts-ignore — vanilla JS module
 import { initVoice, setVoiceTarget, clearVoiceTarget, resetTranscript, restartRecording, toggleRecording, sendCurrentText, isRecording } from '../voice.mjs'
 // @ts-ignore — vanilla JS module
-import { getHumanId, getHumanName, getDeviceId, isDeviceReady, updateEventById, sendViewingContext, setViewingEnrichFn, setFleetEventsLiveTailPinned, clearFleetEventsLiveTailPinned, recordBrowserActivityRendered, fleetDurable, fleetEphemeral } from '../fleet/fleet-data.mjs'
+import { getHumanId, getHumanName, getDeviceId, isDeviceReady, updateEventById, sendViewingContext, setViewingEnrichFn, setFleetEventsLiveTailPinned, clearFleetEventsLiveTailPinned, recordBrowserActivityRendered, fleetDurable, fleetEphemeral, getLastEventId } from '../fleet/fleet-data.mjs'
+// Deliberately NOT calling forgetPanel() on unmount: a panel's tail state
+// surviving a remount is informative — the viewport-driven unmount at the bottom
+// of this file tears down every subscription, and a remount whose tail goes
+// BACKWARDS is exactly what that would look like.
+import { notePanelTail } from '../fleet/chat-freeze-probe.mjs'
 // @ts-ignore — vanilla JS module
 import { installChatImageRetry } from '../fleet/chat-image-retry.mjs'
 // @ts-ignore — vanilla JS module
@@ -2256,6 +2261,18 @@ function FleetChatInner({ shape }: { shape: any }) {
     }
 
     probe.stop(chatSortTimer, { eventCount: events.length, resultCount: sorted.length })
+    // What THIS panel believes its last message is, reported alongside what the
+    // transport has seen. Their divergence is the freeze; carrying both in one
+    // record is what makes it a subtraction instead of a timestamp join across
+    // two series. Transition-only — see chat-freeze-probe.mjs.
+    const tail: any = sorted.length ? sorted[sorted.length - 1] : null
+    notePanelTail(String(shape.id), {
+      messageCount: sorted.length,
+      lastDbId: tail?._dbId ?? null,
+      lastEventId: getLastEventId(),
+      filterKey,
+      bufferKey: chatEventBufferKey,
+    })
     return sorted
   }, [events, quietDmTraffic])
 
