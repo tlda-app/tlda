@@ -1167,6 +1167,11 @@ function currentVoiceCompositionText() {
   return `${_left || ''}${_interim || ''}${_right || ''}`
 }
 
+// Previous value of _left, so a write that shortens or rewrites COMMITTED text can be
+// told apart from ordinary interim revision. Committed words must only grow or be
+// deliberately cleared.
+let _asmPrevLeft = ''
+
 // Short tail of a string — enough to see a repeated segment without putting whole
 // sentences of Skip's dictation in the log.
 function vtail(s, n = 48) {
@@ -1617,6 +1622,39 @@ function fillTextarea(text) {
   })
   _filling = false
   if (!receipt.written) vlog('transcript not written', { target: targetLabel(), ...receipt })
+
+  // THE VANISHING. Skip: "I was just trying to talk, and it just kept vanishing on me."
+  // Nothing recorded the one thing that says literally: the composer got SHORTER. The
+  // receipt already carries the before/after lengths, so this costs a comparison.
+  //
+  // A shrinking DISPLAY is not automatically a fault — Deepgram revises an interim to
+  // something shorter routinely, and that is the trickle working. Committed text is
+  // different: once words are in `_left` they are his, and `_left` must only ever grow
+  // or be deliberately cleared. So the two are recorded separately, and only the second
+  // is a violation.
+  const prevLeft = _asmPrevLeft
+  _asmPrevLeft = _left || ''
+  // Deliberate clears (send, epoch advance, reset) empty _left and are recorded at their
+  // own sites; excluding them keeps this signal specific to words going missing.
+  // trimEnd on the previous value, not cosmetics: the re-partition branch re-seeds _left
+  // from the textarea, which can differ from the buffer by trailing whitespace. Tested —
+  // the strict form reports that as lost words, and a detector that cries vanishing when
+  // nothing vanished is worse than no detector.
+  const committedLost = !!prevLeft && !!_left && !String(_left).startsWith(prevLeft.trimEnd())
+  if (committedLost) {
+    // Never throttled: committed text disappearing is the reported symptom itself.
+    vlog('COMMITTED TEXT LOST (left no longer extends its previous value)', {
+      prevLeftLen: prevLeft.length, leftLen: _left.length,
+      prevLeftTail: vtail(prevLeft), leftTail: vtail(_left),
+      state: _state, target: targetLabel(),
+    })
+  } else if (receipt.afterLength < receipt.beforeLength) {
+    vdiscard('composer-shrank', 'composer text got shorter', {
+      before: receipt.beforeLength, after: receipt.afterLength,
+      leftLen: (_left || '').length, interimLen: (_interim || '').length, state: _state,
+    })
+  }
+
   if (!receipt.connectedBefore && _activeTextarea === ta) clearVoiceTarget(ta)
 }
 
@@ -2337,7 +2375,40 @@ function onDeepgramMessage(event, relay = _deepgramWs) {
       return
     }
 
-    if ((msg.type === 'transcript' || msg.type === 'speech_started' || msg.type === 'utterance_end') && msg.epoch !== _speechEpoch) {
+    // THE CARRIED TAIL. The bridge deliberately stamps results describing audio he spoke
+    // BEFORE a send with the epoch he was on BEFORE it (`carriedEpoch`,
+    // deepgram-sdk-bridge.mjs:advanceEpochOnLiveSocket). Its comment states the intent
+    // plainly: the tail "is already handled, content-first, on the client: after a send
+    // it holds _dgIgnoredSubmittedText and drops any result matching the text it just
+    // sent, releasing on the first result that doesn't match."
+    //
+    // That content guard never gets to run. This epoch check sits above it and discards
+    // the carried result first — so the two halves of one design disagree, and the words
+    // he spoke just before hitting send are destroyed. Observed 2026-07-25: "Never
+    // finalized anything." came back stamped epoch 93 while the client was on 94, was
+    // dropped here, and was absent from the message he actually sent.
+    //
+    // So: at the send boundary only, let a final from the immediately-preceding epoch
+    // reach the guard that was designed to judge it. The guard is content-based — it
+    // drops anything matching what was just sent and releases on genuinely new words —
+    // so a duplicate tail still cannot leak, and only words that were never delivered
+    // survive. `_dgIgnoreUntilUtteranceEnd` is set only by a send, which confines this
+    // to exactly the moment the bridge carries the epoch; any other reason for an epoch
+    // change (target switch, stop) leaves it false and old results stay stale.
+    //
+    // NOT keyed on `from_finalize`, deliberately: the bridge comment records only 22 of
+    // those in an entire log against ordinary is_final crossings being the common case,
+    // so keying on it would fix the observed instance and miss the general one.
+    const isCarriedTail = msg.type === 'transcript' && !!msg.text && !!msg.is_final &&
+      _dgIgnoreUntilUtteranceEnd && msg.epoch === _speechEpoch - 1
+    if (isCarriedTail) {
+      vlog('carried tail accepted (previous epoch, send boundary)', {
+        msgEpoch: msg.epoch, speechEpoch: _speechEpoch,
+        fromFinalize: !!msg.from_finalize, text: vtail(msg.text, 60),
+      })
+    }
+    if (!isCarriedTail &&
+        (msg.type === 'transcript' || msg.type === 'speech_started' || msg.type === 'utterance_end') && msg.epoch !== _speechEpoch) {
       // Speech dies here with no trace. Recording it is the whole point: an epoch
       // mismatch on a *transcript* means words came back and were thrown away.
       if (msg.type === 'transcript' && msg.text) {

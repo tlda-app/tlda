@@ -48,7 +48,14 @@ assert.match(voiceSource, /function afterSend\(submittedTextOverride\) \{\s+cons
 // fixed the cross-message leak. It now records the discard before returning (a dropped
 // transcript is speech that vanished), so pin the condition and the `return`, and pin
 // that the discard is recorded so it can't silently regress to a bare return again.
-assert.match(voiceSource, /if \(\(msg\.type === 'transcript' \|\| msg\.type === 'speech_started' \|\| msg\.type === 'utterance_end'\) && msg\.epoch !== _speechEpoch\) \{[\s\S]*?DROPPED transcript \(epoch mismatch\)[\s\S]*?return\s+\}/)
+assert.match(voiceSource, /if \(!isCarriedTail &&\s*\(msg\.type === 'transcript' \|\| msg\.type === 'speech_started' \|\| msg\.type === 'utterance_end'\) && msg\.epoch !== _speechEpoch\) \{[\s\S]*?DROPPED transcript \(epoch mismatch\)[\s\S]*?return\s+\}/)
+// The carried-tail exception must stay NARROW. The bridge stamps the in-flight tail with
+// the previous epoch on purpose and expects the client's content guard to judge it; this
+// exception exists only to let that guard run. Widening any of these four conditions
+// re-opens the cross-message leak the epoch mechanism exists to prevent.
+assert.match(voiceSource, /const isCarriedTail = msg\.type === 'transcript' && !!msg\.text && !!msg\.is_final &&\s*_dgIgnoreUntilUtteranceEnd && msg\.epoch === _speechEpoch - 1/)
+// Committed text disappearing is Skip's reported symptom; it must never be rate-limited.
+assert.match(voiceSource, /vlog\('COMMITTED TEXT LOST/)
 // All THREE message types the epoch check can drop must leave a record. Each carries
 // state, not just information: a transcript is words, utterance_end releases the echo
 // guard, and speech_started resets the liveness clock and the final-dedup state. Any one
