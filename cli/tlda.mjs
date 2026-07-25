@@ -3191,6 +3191,7 @@ export async function runFleetSpawn(spawnArgs, {
   loadDaemonConfigImpl = () => ({}),
   localAgentLedgerPath = null,
   apiImpl = api,
+  lifecycleImpl = callLocalDaemonLifecycle,
   cleanupFailedBindingImpl = cleanupFailedFreshBinding,
 } = {}) {
   if (spawnArgs.includes('--list-models')) {
@@ -3218,7 +3219,7 @@ export async function runFleetSpawn(spawnArgs, {
   const explicitCwd = hasRawFlag(spawnArgs, 'cwd')
   if (spawnMode === 'fresh') {
     const cwd = resolve(flagFromRaw(spawnArgs, 'cwd') || process.cwd())
-    const result = await callLocalDaemonLifecycle('mint', {
+    const result = await lifecycleImpl('mint', {
       name,
       model: flagFromRaw(spawnArgs, 'model') || undefined,
       cwd,
@@ -3249,7 +3250,12 @@ export async function runFleetSpawn(spawnArgs, {
     } finally {
       mintStore.close()
     }
-    const result = await callLocalDaemonLifecycle('wake', { fleet_id: restored.agentId })
+    const agent = await findSingleAgent(restored.agentId, { apiImpl })
+    const wakeGrant = await ensureAgentWakeGrant(agent, normalizeAgentMetadata(agent.metadata), {
+      source: 'agent-wake',
+      configDir,
+    })
+    const result = await lifecycleImpl('wake', { fleet_id: restored.agentId, ...wakeGrant })
     if (!result?.ok) throw new Error(result?.error || result?.reason || `wake failed for ${restored.agentId}`)
     printLocalDaemonOutcome(result)
     console.log(`Woke ${result.tmux_session || result.tmuxSession || restored.agentId} (${result.agent_id || result.fleetId || restored.agentId}) in ${restored.cwd}`)
@@ -4301,8 +4307,8 @@ async function copyMoveArtifacts(targetMachine, artifacts) {
   }
 }
 
-async function findSingleAgent(agentQuery) {
-  const state = await api('GET', '/api/state')
+async function findSingleAgent(agentQuery, { apiImpl = api } = {}) {
+  const state = await apiImpl('GET', '/api/state')
   const agents = Array.isArray(state?.agents) ? state.agents : []
   const agent = resolveAgentQuery(agents, agentQuery)
   if (!agent) throw new Error(`No existing agent found for "${agentQuery}".`)
@@ -4342,26 +4348,27 @@ async function waitForAgentSeatAddress(agentId, { machineId, envName, apiImpl = 
   throw new Error(`agent ${agentId} did not land on ${describeAgentAddress(machineId, envName)}; observed ${observed}`)
 }
 
-async function ensureAgentWakeGrant(agent, meta) {
-  if (!meta?.permissionGrant) {
-    throw new Error(`Agent ${agent.id} has no recorded permission grant; refusing to wake it under a fabricated grant`)
-  }
-  const daemonConfig = readDaemonConfig(defaultDaemonConfigPath(CONFIG_DIR))
+async function ensureAgentWakeGrant(agent, meta, { source = 'agent-move', configDir = CONFIG_DIR } = {}) {
+  const daemonConfig = readDaemonConfig(defaultDaemonConfigPath(configDir))
   const spawnConfig = withDaemonModelAliases({}, daemonConfig)
-  const permissionSet = compilePermissionGrant(spawnConfig, meta.permissionGrant, { cwd: agent.cwd || process.cwd() })
-  const ledger = createPermissionLedger(permissionLedgerPathFromDaemonConfig(daemonConfig, CONFIG_DIR))
+  const ledger = createPermissionLedger(permissionLedgerPathFromDaemonConfig(daemonConfig, configDir))
   try {
     const existing = ledger.get(agent.id)
-    if (JSON.stringify(existing?.permissionGrant || null) !== JSON.stringify(meta.permissionGrant)) {
+    const permissionGrant = meta?.permissionGrant || existing?.permissionGrant
+    if (!permissionGrant) {
+      throw new Error(`Agent ${agent.id} has no recorded permission grant; refusing to wake it under a fabricated grant`)
+    }
+    const permissionSet = compilePermissionGrant(spawnConfig, permissionGrant, { cwd: agent.cwd || process.cwd() })
+    if (JSON.stringify(existing?.permissionGrant || null) !== JSON.stringify(permissionGrant)) {
       await ledger.set(agent.id, {
-        permissionGrant: meta.permissionGrant,
-        source: 'agent-move',
+        permissionGrant,
+        source,
       })
     }
+    return { permissionGrant, permissionSet }
   } finally {
     await ledger.close()
   }
-  return { permissionGrant: meta.permissionGrant, permissionSet }
 }
 
 async function moveAgentToEnvironment({
