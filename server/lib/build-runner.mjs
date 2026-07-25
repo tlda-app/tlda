@@ -1071,7 +1071,10 @@ function summarizeDiff(diffText, projectName) {
   try {
     const pi = JSON.parse(readFileSync(join(outDir, `${primaryTexBase}-proof-info.json`), 'utf8'))
     proofPairs = pi.pairs || pi
-  } catch (e) { console.warn(`[build] proof-info.json parse failed for ${projectName}: ${e.message}`) }
+  } catch (e) {
+    // Optional metadata: a project without proof pairing still builds and renders.
+    console.warn(`[build] proof-info.json parse failed for ${projectName}: ${e.message}`)
+  }
 
   // 4. Load <primary>-source-map.json labels for numbering
   const labelNumbers = new Map()
@@ -1080,7 +1083,10 @@ function summarizeDiff(diffText, projectName) {
     for (const l of sm.labels || []) {
       labelNumbers.set(l.label, l.number)
     }
-  } catch (e) { console.warn(`[build] source-map.json parse failed for ${projectName}: ${e.message}`) }
+  } catch (e) {
+    // Optional metadata: label numbering is cosmetic, the build proceeds without it.
+    console.warn(`[build] source-map.json parse failed for ${projectName}: ${e.message}`)
+  }
 
   // 5. Parse result titles from tex source (the [...] optional argument)
   const resultTitles = new Map()
