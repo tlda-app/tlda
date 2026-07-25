@@ -2384,6 +2384,18 @@ function onDeepgramMessage(event, relay = _deepgramWs) {
           msgEpoch: msg.epoch, speechEpoch: _speechEpoch, guardArmed: _dgIgnoreUntilUtteranceEnd,
         })
       }
+      // The last silent return in this block. `speech_started` is not a notification
+      // either: its handler resets _lastResultTime and clears the final-dedup state, so
+      // dropping it means the client never learns he began speaking — the liveness word
+      // keeps ageing and the next final can be mistaken for a duplicate. It is also the
+      // only one of the three whose loss is invisible in the existing analysis: a stall
+      // run is DEFINED by lastResultMs climbing, and a processed speech_started resets
+      // that clock, so a dropped one cannot be distinguished from one that never came.
+      if (msg.type === 'speech_started') {
+        vdiscard('epoch-mismatch-speech-started', 'DROPPED speech_started (epoch mismatch)', {
+          msgEpoch: msg.epoch, speechEpoch: _speechEpoch,
+        })
+      }
       return
     }
 

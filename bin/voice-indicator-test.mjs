@@ -49,6 +49,13 @@ assert.match(voiceSource, /function afterSend\(submittedTextOverride\) \{\s+cons
 // transcript is speech that vanished), so pin the condition and the `return`, and pin
 // that the discard is recorded so it can't silently regress to a bare return again.
 assert.match(voiceSource, /if \(\(msg\.type === 'transcript' \|\| msg\.type === 'speech_started' \|\| msg\.type === 'utterance_end'\) && msg\.epoch !== _speechEpoch\) \{[\s\S]*?DROPPED transcript \(epoch mismatch\)[\s\S]*?return\s+\}/)
+// All THREE message types the epoch check can drop must leave a record. Each carries
+// state, not just information: a transcript is words, utterance_end releases the echo
+// guard, and speech_started resets the liveness clock and the final-dedup state. Any one
+// of them returning silently is the bug class this whole branch exists to close.
+assert.match(voiceSource, /DROPPED transcript \(epoch mismatch\)/)
+assert.match(voiceSource, /DROPPED utterance_end \(epoch mismatch\)/)
+assert.match(voiceSource, /DROPPED speech_started \(epoch mismatch\)/)
 // A dropped FINAL is a candidate spec violation and must never be rate-limited — the
 // shared limiter already suppressed one and we could not tell whether it was a final.
 assert.match(voiceSource, /if \(msg\.is_final\) vlog\('DROPPED transcript \(epoch mismatch\)'/)
