@@ -17,6 +17,7 @@
     "prepare": "vite build && mkdir -p server/public && cp -r dist/* server/public/",
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "deploy:live": "node scripts/live-deploy.mjs",
     "test:live-perf-upload": "node bin/live-perf-probe-upload-test.mjs",
     "build:tldraw-fork-runtime": "node scripts/build-tldraw-fork-runtime.mjs",
     "lint": "node bin/lineage-name-derivation-guard.mjs && eslint .",

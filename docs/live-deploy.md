@@ -29,13 +29,16 @@ live `phi` env.
 Run from `/Users/skip/work/tlda`:
 
 ```bash
-node scripts/live-deploy-preflight.mjs
-npm run build
-fly deploy -c fly.live.toml
+npm run deploy:live
 ```
 
 `fly.live.toml` is the live config for app `tldraw-sync-skip`. It uses
 `Dockerfile.live` and `scripts/fly-entrypoint-live.sh`.
+
+The wrapper runs the preflight, runs `npm run build`, and only then runs
+`fly deploy -c fly.live.toml`. It keeps bounded build output internally without
+piping through `tail`, so a failed build exits nonzero and cannot be turned into
+a successful deploy command by pipeline status.
 
 ## Do Not Use
 
@@ -61,8 +64,7 @@ used as a substitute for a named config.
 
 ```bash
 git log --oneline -5
-node scripts/live-deploy-preflight.mjs
-npm run build
+npm run deploy:live -- --dry-run
 ```
 
 Make sure the commits intended for `phi` are on `main`. The preflight refuses a
@@ -110,10 +112,12 @@ the deploy to someone who can.
 ## Deploy
 
 ```bash
-fly deploy -c fly.live.toml
+npm run deploy:live
 ```
 
 Report the exact command, the commit hash deployed, and whether Fly completed.
+Do not replace the wrapper with `npm run build | tail ... && fly deploy ...`;
+without shell `pipefail`, `tail` can hide the build's nonzero exit status.
 
 ## Verify
 
