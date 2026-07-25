@@ -1,5 +1,5 @@
-import { labelsForAgent, evalExprDirectional } from '../../shared/fleet-labels.mjs'
-import { runtimeStatusName } from '../../shared/fleet-runtime-status.mjs'
+import { labelsForAgent, evalExprDirectional } from './fleet-labels.mjs'
+import { runtimeStatusName } from './fleet-runtime-status.mjs'
 
 // The set of labels a participant (an event's from/to/agent id) answers to.
 // Label expansion has a single source of truth — `labelsForAgent` in

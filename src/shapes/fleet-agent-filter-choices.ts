@@ -1,7 +1,7 @@
 import {
   buildFleetAgentFilter,
   buildFleetDmFilter,
-} from '../fleet/filter-semantics.mjs'
+} from '../../shared/filter-semantics.mjs'
 
 export type FleetAgentFilterChoiceMode = 'dm' | 'agent'
 export type FleetFilterUpdate = {

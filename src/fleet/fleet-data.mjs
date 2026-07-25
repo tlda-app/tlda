@@ -15,7 +15,7 @@
 
 import { convertChatEvent } from './convert-chat-event.mjs'
 export { convertChatEvent } from './convert-chat-event.mjs'
-import { matchesFleetFilter, resolveFleetFilter } from './filter-semantics.mjs'
+import { matchesFleetFilter, resolveFleetFilter } from '../../shared/filter-semantics.mjs'
 import { makeEventStore } from './event-store.mjs'
 import { bumpIdentityEpoch } from './identity-epoch.mjs'
 import {
