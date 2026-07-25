@@ -327,10 +327,25 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       res.status(409).json({ ok: false, error: 'binding obligation retirement identity mismatch' })
       return
     }
-    fleetStore.markDead(obligation.agent_id)
+    // Retiring a BINDING must not kill an AGENT that has run.
+    //
+    // Skip's rule and its one carve-out, in his words: "Nothing should kill an
+    // agent, ever, other than a manual operation" — and "if an agent never
+    // exists, and we [made] a binding for them, and then we fail to actually
+    // have a process ever, then we can release the name."
+    //
+    // So: a reservation that never launched is released, because there was never
+    // an agent. Anything that has run keeps its row and its name; only the
+    // obligation and its seat go. This path was killing unconditionally, and it
+    // is wired to seat binding — the machinery currently failing in a loop.
+    const everRan = fleetStore.hasEverRun?.(obligation.agent_id)
+    if (everRan) {
+      fleetStore.retireCurrentAgentSeat?.(obligation.agent_id)
+    } else {
+      fleetStore.markDead(obligation.agent_id)
+    }
     clearEphemeralState?.(obligation.agent_id)
-    const agent = fleetStore.getAgent(obligation.agent_id)
-    const retired = agent?.dead === 1 && !fleetStore.getCurrentAgentSeat?.(obligation.agent_id)
+    const retired = !fleetStore.getCurrentAgentSeat?.(obligation.agent_id)
     if (!retired) { res.status(409).json({ ok: false, retired: false, error: 'agent reservation is not fully retired' }); return }
     broadcastState()
     res.json({ ok: true, retired: true })

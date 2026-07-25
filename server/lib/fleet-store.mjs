@@ -855,18 +855,42 @@ export class FleetStore {
       GROUP BY friendly_name HAVING cnt > 1
     `).all();
     if (dupes.length > 0) {
+      // A name collision RENAMES the loser. It does not kill it.
+      //
+      // Skip: "Nothing should kill an agent, ever, other than a manual
+      // operation" and "the name rotation doesn't kill an agent — it wipes
+      // their name, but it doesn't kill them."
+      //
+      // This used to mark every duplicate `dead = 1`, ordered by `last_seen`,
+      // so the quieter of two live agents was killed at startup for the crime
+      // of sharing a name — the duplicate-chief failure. Death was being used
+      // as the mechanism for freeing a name, because the live-name unique index
+      // only covers `dead = 0`. Rotating the name frees it just as well and
+      // costs nobody their session.
+      const renamed = [];
       this.db.transaction(() => {
         for (const { friendly_name } of dupes) {
           const rows = this.db.prepare(
             'SELECT id, last_seen FROM agents WHERE friendly_name = ? AND dead = 0 ORDER BY last_seen DESC'
           ).all(friendly_name);
-          // Keep the first (most recent), mark the rest dead
+          // The most-recently-seen keeps the name; everyone else rotates.
           for (let i = 1; i < rows.length; i++) {
-            this.db.prepare('UPDATE agents SET dead = 1 WHERE id = ?').run(rows[i].id);
+            // If a name can't be rotated (reserved label, alphabet exhausted),
+            // wipe it rather than kill the agent — the unique index is partial
+            // on `friendly_name IS NOT NULL`, so a nameless agent satisfies it
+            // and stays alive to be renamed later. This runs during schema init,
+            // so it must not be able to throw: a rename failure here would take
+            // the whole server down at startup.
+            let next = null;
+            try {
+              next = this.allocateFreshFriendlyName(friendly_name, { excludeId: rows[i].id });
+            } catch { next = null; }
+            this.db.prepare('UPDATE agents SET friendly_name = ? WHERE id = ?').run(next, rows[i].id);
+            renamed.push(`${friendly_name}→${next || '(name cleared)'}`);
           }
         }
       })();
-      console.log(`[fleet-store] deduplicated friendly_names: ${dupes.map(d => d.friendly_name).join(', ')}`);
+      console.log(`[fleet-store] rotated colliding friendly_names: ${renamed.join(', ')}`);
     }
     // Step 2: create partial unique index (idempotent)
     this.db.exec(`
@@ -2706,6 +2730,40 @@ export class FleetStore {
     this._updateAgentLastSeen.run(new Date().toISOString(), id);
     this._syncAgentRegistry(id);
     const _dt = Date.now() - _t0; if (_dt > 100) process.stderr.write(`[hb-slow] ${_dt}ms id=${id}\n`);
+  }
+
+  /**
+   * Did this agent ever actually run?
+   *
+   * Skip's rule: nothing kills an agent except a manual operation — with one
+   * carve-out he named, which is the whole reason this predicate exists:
+   *
+   *   "if an agent never exists, and we [made] a binding for them, and then we
+   *    fail to actually have a process ever, then we can release the name."
+   *
+   * A reservation that never became a process was never an agent, so releasing
+   * it is not a death. Anything that HAS run stays, however lost we are about
+   * where it sits — a missing seat, an unreachable process and a silent socket
+   * are all things to recover from, never grounds to kill.
+   *
+   * Evidence of having run is anything only a live process can produce: a
+   * harness session or resume handle, or activity after registration. Note that
+   * `last_seen` alone is NOT evidence — registration itself stamps it, so a seat
+   * reservation that never launched still carries one.
+   */
+  hasEverRun(id) {
+    const row = this._getAgent.get(id);
+    if (!row) return false;
+    if (row.session_id || row.resume_id) return true;
+    try {
+      const sessions = row.session_ids ? JSON.parse(row.session_ids) : null;
+      if (Array.isArray(sessions) && sessions.length) return true;
+    } catch { /* malformed session_ids is not evidence either way */ }
+    if (row.last_active) return true;
+    const ev = this.db.prepare(
+      'SELECT 1 FROM events WHERE from_id = ? OR agent_id = ? LIMIT 1'
+    ).get(id, id);
+    return !!ev;
   }
 
   markDead(id) {

@@ -5387,8 +5387,15 @@ async function handleFleetWsMessage(ws, msg) {
           if (holder.id === agentId || holder.dead || holder.friendly_name !== requestedName) continue
           const holderLabels = Array.isArray(holder.labels) ? holder.labels : []
           if (!holderLabels.includes('bot') || !holderLabels.includes(requestedName)) continue
-          console.log(`[register] retiring legacy bot row ${holder.id} so ${agentId} can claim ${requestedName}`)
-          fleetStore.markDead(holder.id)
+          // Rotate the previous holder off the name; do not kill it. Claiming a
+          // name is a naming operation, and the row being displaced may be a
+          // live bot. Skip: "the name rotation doesn't kill an agent — it wipes
+          // their name, but it doesn't kill them."
+          let rotated = null
+          try { rotated = fleetStore.allocateFreshFriendlyName(requestedName, { excludeId: holder.id }) } catch { rotated = null }
+          console.log(`[register] rotating legacy bot row ${holder.id} off ${requestedName} → ${rotated || '(name cleared)'} so ${agentId} can claim it`)
+          fleetStore.renameAgentFriendlyName(holder.id, rotated, { reason: 'name-claimed-by-new-holder' })
+            .catch(e => console.warn(`[register] could not rotate ${holder.id} off ${requestedName}: ${e.message}`))
         }
       }
       try {
