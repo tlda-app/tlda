@@ -2854,7 +2854,7 @@ export async function handleFleetTool(name, args) {
         : closeCompleted
           ? `Report accepted. Closed task: ${taskDescription}.`
           : closeRequested
-            ? `Report accepted; task remains open: ${data?.close_guard_message || 'the close request was not accepted.'}`
+            ? `Report accepted; task remains open: the close request was not accepted.`
           : `Report accepted for task: ${taskDescription}.`;
       msg += tldaMsg;
       msg += lintAdvisory;

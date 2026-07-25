@@ -91,7 +91,7 @@ import {
   decideTerminalWatchExit,
   unlinkPidfileIfOwnPid,
 } from '../agent-runtime/daemon-guards.mjs'
-import { createDevReaper } from '../bots/dev/reaper.mjs'
+import { createDevReaper } from '../agent-runtime/dev-reaper.mjs'
 import { createSourceSync } from '../daemon/source-sync.mjs'
 import { createJsonlIngestor } from '../daemon/jsonl-ingestor.mjs'
 import {

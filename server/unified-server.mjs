@@ -79,7 +79,6 @@ import { decideTaskRenudges, isWakeBreakerOpen, wakeBreakerBackoffMs } from './l
 import { canReportTask, completeTaskLifecycle } from './lib/task-lifecycle.mjs'
 import { livenessFromCheckAliveResult, runWakeRouteLifecycle, shouldSendWakeNudge } from './lib/wake-route-lifecycle.mjs'
 import { recordAgentBindingEvent } from './lib/agent-binding-events.mjs'
-import { decideReportClose } from '../bots/todd/report-close-guard.mjs'
 import { rejectMatchingWsRequests, startWsRequest } from '../shared/fleet-transport.mjs'
 import { createFleetOperationTransport } from '../shared/fleet-operation-transport.mjs'
 import { isPlanModeResponse, planModeResponseKey } from './lib/plan-mode-response.mjs'
@@ -6439,7 +6438,6 @@ async function handleFleetWsMessage(ws, msg) {
     if (task_id && !canReportTask({ caller: caller || { id: agent }, task, fleetStore })) {
       error('not authorized to report on this task; only its assignee, delegator, their management chains, or a human may do so'); return
     }
-    const closeDecision = close ? decideReportClose(summary) : { allowClose: true }
     if (close && task.metadata?.requires_approval) {
       if (!approval_id) { error('This task requires approval. Pass approval_id (event ID of a human approval message).'); return }
       const evt = fleetStore.getEventById(approval_id)
@@ -6502,7 +6500,7 @@ async function handleFleetWsMessage(ws, msg) {
       })
     }
 
-    if (close && closeDecision.allowClose && !closeEventId) {
+    if (close && !closeEventId) {
       const closeReason = reason || 'done'
       const { eventId } = await completeTaskLifecycle({
         fleetStore,
@@ -6536,9 +6534,6 @@ async function handleFleetWsMessage(ws, msg) {
       report_event_id: reportEventId,
       chat_event_id: chatEventId,
       close_event_id: closeEventId,
-      close_rejected: !!close && !closeDecision.allowClose,
-      close_guard_reason: closeDecision.reason,
-      close_guard_message: closeDecision.message || null,
       event_id: closeEventId || reportEventId,
       event_ids: [reportEventId, chatEventId, closeEventId].filter(id => id != null),
       operation_id,

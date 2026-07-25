@@ -5,9 +5,9 @@ import { promisify } from 'util'
 import {
   isPlaywrightBrowserArgs,
   selectOrphanAgentProcesses,
-} from '../../agent-runtime/daemon-guards.mjs'
-import { sweepOrphanPreviewDirs } from '../../cli/lib/dev-worktree.mjs'
-import { expiredLeases, formatLeaseMarkdownTable, listLeases, releaseLease, renewLease } from '../../cli/lib/resource-leases.mjs'
+} from './daemon-guards.mjs'
+import { sweepOrphanPreviewDirs } from '../cli/lib/dev-worktree.mjs'
+import { expiredLeases, formatLeaseMarkdownTable, listLeases, releaseLease, renewLease } from '../cli/lib/resource-leases.mjs'
 
 const execFileP = promisify(execFile)
 
