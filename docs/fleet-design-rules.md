@@ -112,6 +112,29 @@ server-side — the JSONLs carry their own login markers and are the record.
 **History is never destroyed.** Live code stops depending on old fields; existing rows
 stay as they are.
 
+## Skip reads the whole feed, not his own messages
+
+> "I don't read messages to me, for the most part. I watch what agents are doing and
+> receiving in their chat threads. So the materializer chatting at an agent is me being
+> bothered by the materializer as well as you being bothered by the materializer."
+
+**A message addressed to an agent is not private.** Skip watches the fleet feed, so
+noise anywhere in it costs him, regardless of the `to` field. "Don't notify Skip" is
+not satisfied by sending it to an agent instead.
+
+This is not theoretical: `materializeRecipientAttachment` already returned early for
+human recipients, so a "stop notifying humans" guard would have suppressed nothing
+while he kept reading them. The recipient list was never the problem. The message was.
+
+Consequences for anything that emits:
+
+- Bots do not narrate. An event is not a notification; success is silent. A failure
+  still speaks — suppressing that is the swallowed-error pattern.
+- Per-occurrence bookkeeping chatter ("materialized", "attempted", "queued") belongs in
+  event metadata or a log, not in a chat thread anyone reads.
+- Agent-to-agent status pings are read by Skip. Write them as if he is the audience,
+  because he is.
+
 ## Liveness protocol: send what's running, replace the list
 
 Skip, 2026-07-25, after the profiler traced ~1.24 million comparisons every 30
