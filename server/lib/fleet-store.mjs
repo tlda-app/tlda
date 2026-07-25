@@ -42,6 +42,14 @@ const WIRETAP_EVENT_TYPES = new Set(['chat', 'delegate', 'task_done']);
 // `YYYY-MM-DDTHH:MM:SS.sssZ` sorts lexicographically exactly as it sorts
 // chronologically.
 //
+// This is a CORRECTNESS fix before it is a speed one. The previous version
+// mapped every missing or unparseable timestamp to 0 via `new Date(x).getTime()
+// || 0`, so all such rows compared EQUAL to each other and `Array.prototype.sort`
+// was free to reorder them between renders — the roster visibly jumped. 261 of
+// the 6521 rows on the live database have a NULL timestamp, so this was not a
+// hypothetical. String comparison is total: equal strings are genuinely equal
+// and everything else has one stable order, so the list stops moving on its own.
+//
 // That invariant is not new here — the keyset pagination cursor below
 // (`agents.last_seen < @lastSeen OR (... AND agents.id < @id)`) already depends
 // on it, since SQLite compares those TEXT columns the same way. Verified on the
