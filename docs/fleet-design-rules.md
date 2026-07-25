@@ -206,18 +206,55 @@ Consequences for anything that emits:
 - Agent-to-agent status pings are read by Skip. Write them as if he is the audience,
   because he is.
 
-## Chips are file names. Project-name chips do not exist.
+## A status a person reads holds still
+
+> "The persistent flickering between receiving and listening, it's just nausea. Like,
+> it's like they have no fucking scope, like, no understanding of, like, visual
+> experience."
+
+> "It's like you do not write things that a person is supposed to look at. That fucking
+> flicker like that."
+
+Nothing on screen is allowed to strobe at him. Not a status label, not a badge, not a
+count.
+
+The defect here is a way of thinking, not one widget: the author checked that the label
+was **true at every instant** and never once watched it for ten seconds. Correct-per-frame
+is not the standard. **Not moving is the standard.** If the underlying state genuinely
+changes several times a second, the *display* damps it — an honest state machine does not
+license strobing a person who is trying to read.
+
+This is the same failure as the roster sort (ordering on milliseconds under text that
+only shows minutes) — a surface churning faster than the thing it depicts. When you write
+anything a person looks at, watch it run for ten seconds before you call it done.
+
+## Links are not chipified. Chips are for things inside the app.
 
 > "File name. We're not to have fucking project name chips."
+
+Corrected the same night, because the first quote got read too narrowly as *"chips are
+files"*:
+
+> "It's not all chips are files. It's just that links, no matter what they're to, are
+> not — like, links to other projects, links to exterior websites. They're not
+> chipified."
+
+> "We still have chips for shit that appears in chat and highlights and all that shit."
+
+So the rule is about **links**, not about files. A link renders as a link, whatever it
+points at — another project, an outside website, anything. Nothing chipifies it. Chips
+stay for the things that live in the app and appear in chat: files, highlights, and the
+rest of that family.
+
+And the instruction for removing what exists:
 
 > "We're not supposed to have them. Whether that is dead code or some asshole
 > implementing some garbage that I don't want on some obscure path that doesn't run very
 > often. I don't know."
 
-A chip in chat names a file. Nothing turns a project name into one. The second quote is
-the instruction for how to remove it: **find every path that can produce one and delete
-it — do not gate the deletion on reproducing it.** A path that runs rarely is exactly the
-one that won't reproduce, and that is his point, not an argument for leaving it.
+**Find every path that can chipify a link and delete it — do not gate the deletion on
+reproducing it.** A path that runs rarely is exactly the one that won't reproduce, and
+that is his point, not an argument for leaving it.
 
 Related, from the same night: the catch at `src/shapes/fleet-chat-markdown-open.ts:202`
 opened a markdown column whose body was `# Failed to load`. A swallowed error rendered as
