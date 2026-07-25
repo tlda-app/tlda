@@ -1339,15 +1339,40 @@ const filterSubscriptions = createFilterSubscriptions({
   getAgents: () => fleetStore?.getAllAgents?.() || [],
 })
 
+// Liveness counters for the filter push.
+//
+// The deletion of the client spool is gated on a comparator staying quiet — and
+// a quiet comparator is indistinguishable from one that never ran. These make
+// the difference checkable: subscriptions 0 or eventsSeen 0 on a live server
+// with panels open means the path is not running, not that it agrees.
+const filterPushCounters = {
+  eventsSeen: 0,
+  eventsMatched: 0,
+  deliveries: 0,
+  evaluations: 0,
+  matchFaults: 0,
+  lastEventAt: null,
+  lastDeliveryAt: null,
+}
+
 function pushFilteredEvent(data) {
   if (!data) return
+  filterPushCounters.eventsSeen++
+  filterPushCounters.lastEventAt = new Date().toISOString()
   let matched
   try {
     matched = filterSubscriptions.match(data)
   } catch (e) {
     // A filter fault must never take down the broadcast everyone still relies on.
+    filterPushCounters.matchFaults++
     console.warn('[filter-subs] match failed:', e.message)
     return
+  }
+  filterPushCounters.evaluations += matched.evaluations || 0
+  if (matched.length) {
+    filterPushCounters.eventsMatched++
+    filterPushCounters.deliveries += matched.length
+    filterPushCounters.lastDeliveryAt = filterPushCounters.lastEventAt
   }
   for (const { conn, subId } of matched) {
     try {
@@ -3058,6 +3083,19 @@ app.post('/api/log', (req, res) => {
     })
   }
   res.json({ ok: true, n: lines.length })
+})
+
+// Is the filter path running at all? Answers the question a silent comparator
+// cannot: subscriptions 0 means no client is asking; eventsSeen 0 means no
+// event reached the push; deliveries 0 with subscriptions > 0 means nothing
+// matched. Silence in the comparator is only evidence of agreement when these
+// are non-zero.
+app.get('/api/diagnostics/filter-subscriptions', requireRead, (req, res) => {
+  res.json({
+    ...filterSubscriptions.stats(),
+    ...filterPushCounters,
+    rosterSize: (fleetStore?.getAllAgents?.() || []).length,
+  })
 })
 
 app.get('/api/diagnostics/live-perf', requireRead, (req, res) => {
