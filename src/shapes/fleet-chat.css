@@ -1749,6 +1749,9 @@ html.mousemove .fleet-chat-shape .lifecycle-card:hover > .drag-handle {
 .fleet-agents-shape:hover .fleet-agents-footer {
   opacity: 0.7;
 }
+body:not(.fog-dark-mode) .tl-theme__dark .fleet-agents-shape .fleet-agents-footer:has(.fleet-agents-spawn-btns.is-open) {
+  opacity: 1;
+}
 
 /* --- Agent row (expandable 1→3 lines) --- */
 
@@ -2194,7 +2197,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   margin-left: 0;
   padding: 0 6px 0 8px;
   box-sizing: border-box;
-  background: var(--surface);
+  background: var(--surface, #161625);
 }
 .fleet-agents-shape .fleet-agents-mint-picker {
   position: absolute;
@@ -2205,7 +2208,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   display: grid;
   grid-template-columns: minmax(72px, 30%) 1fr;
   overflow: hidden;
-  background: var(--surface);
+  background: var(--surface, #161625);
   border-top: 1px solid var(--border);
   box-shadow: 0 -4px 12px var(--shadow-lg, rgba(0,0,0,0.3));
   opacity: 1;
