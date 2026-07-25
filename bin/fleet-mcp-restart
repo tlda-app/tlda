@@ -7,7 +7,13 @@
 #                     the caller knows the agent won't be in a mid-operation state
 #                     that needs clearing (e.g. daemon-mediated self-restart)
 #   session-name:    tmux session (default: current session)
-#   mcp-server-name: which MCP to restart (default: fleet)
+#   mcp-server-name: which MCP to restart (default: tlda)
+#
+# The default was `fleet` until 2026-07-25, long after the server was renamed to
+# `tlda`. Every no-argument and session-only invocation therefore hunted for a
+# menu entry that does not exist and died on a 5s timeout — which is what "restart-mcp
+# is broken" meant. `tlda-dev restart-mcp` passes no server name, so it could
+# never have worked.
 #
 # State-driven: each step waits for the expected pane content to appear
 # (with a per-step timeout) instead of guessing how long things take.
@@ -28,7 +34,7 @@ for arg in "$@"; do
   else POSITIONAL+=("$arg"); fi
 done
 SESSION="${POSITIONAL[0]:-$(tmux display-message -p '#S' 2>/dev/null || true)}"
-MCP_SERVER="${POSITIONAL[1]:-fleet}"
+MCP_SERVER="${POSITIONAL[1]:-tlda}"
 
 if [ -z "$SESSION" ]; then
   echo "Error: not in a tmux session and no session name given." >&2
@@ -149,7 +155,21 @@ tmux send-keys -t "$SESSION" Enter
 
 # Wait until the pane shows the MCP server list — fleet should appear with
 # a "·" separator per Claude Code's menu format.
-PANE=$(wait_for "/mcp menu to open" "^[[:space:]]*(❯[[:space:]]+)?${MCP_SERVER}[[:space:]]+·")
+# This whole script drives Claude Code's INTERACTIVE /mcp menu. Codex seats
+# answer /mcp with a static server listing and offer no reconnect action at all,
+# so there is nothing here to navigate — and most of the fleet runs gpt-5.5.
+# Say that, instead of timing out into a pane dump that reads like a bug in the
+# menu flow.
+if ! PANE=$(wait_for "/mcp menu to open" "^[[:space:]]*(❯[[:space:]]+)?${MCP_SERVER}[[:space:]]+·" 2>/dev/null); then
+  if capture | grep -qE '^[[:space:]]*• (Auth|Tools):'; then
+    echo "Error: $SESSION is a codex seat. Its /mcp only LISTS servers — there is no" >&2
+    echo "       reconnect action to drive, so this script cannot restart its MCP." >&2
+    echo "       A codex seat picks up new MCP code when its process restarts (wake)." >&2
+    exit 3
+  fi
+  wait_for "/mcp menu to open" "^[[:space:]]*(❯[[:space:]]+)?${MCP_SERVER}[[:space:]]+·" >/dev/null
+  exit 1
+fi
 
 # ---------- Step 2: navigate cursor to fleet ----------
 #
@@ -187,9 +207,12 @@ cursor_line() {
   local region="$1"
   awk '/^[[:space:]]*❯/ { print NR; exit }' <<< "$region"
 }
+# Was hardcoded to `fleet` while every other predicate used $MCP_SERVER, so even
+# an explicit server name produced an empty position and a broken direction
+# heuristic. Kept the function name; it means "the line the target server is on".
 fleet_line() {
   local region="$1"
-  awk '/^[[:space:]]*(❯[[:space:]]+)?fleet[[:space:]]+·/ { print NR; exit }' <<< "$region"
+  awk -v s="$MCP_SERVER" '$0 ~ "^[[:space:]]*(❯[[:space:]]+)?" s "[[:space:]]+·" { print NR; exit }' <<< "$region"
 }
 
 REGION=$(menu_region "$PANE")
