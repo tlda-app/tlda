@@ -3,8 +3,16 @@ import { readFileSync } from 'node:fs'
 import { PcmBacklog, composeVoiceText, deliverVoiceComposition, partitionAtCursor, pcmInputLevel, voiceIndicatorState } from '../src/voice-indicator.mjs'
 
 assert.equal(voiceIndicatorState(false, 'speech detected'), 'off')
-assert.equal(voiceIndicatorState(true, 'mic live'), 'listening')
-assert.equal(voiceIndicatorState(true, 'speech detected'), 'receiving audio')
+// The two steady states are rendered as visible text in a centered, fixed-width row,
+// so their equal width (8 chars each) is load-bearing — unequal lengths make the panel
+// shift on every transition. Asserted here so a future rename has to notice.
+assert.equal(voiceIndicatorState(true, 'mic live'), 'mic live')
+assert.equal(voiceIndicatorState(true, 'speech detected'), 'speaking')
+assert.equal(
+  voiceIndicatorState(true, 'mic live').length,
+  voiceIndicatorState(true, 'speech detected').length,
+  'steady-state labels must be equal width or the voice panel strobes while dictating',
+)
 assert.equal(voiceIndicatorState(true, 'connection lost; reconnecting'), 'reconnecting')
 assert.equal(voiceIndicatorState(true, 'speech lost; recognizer recovering'), 'reconnecting')
 assert.equal(voiceIndicatorState(true, 'waiting for recognizer'), 'reconnecting')

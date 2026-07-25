@@ -18,8 +18,22 @@ export function voiceIndicatorState(recording, healthLabel) {
       label.includes('waiting for recognizer') || label.includes('mic failed') ||
       label.includes('mic unavailable') || label === 'no mic input' ||
       label === 'starting voice') return 'reconnecting'
-  if (label === 'speech detected') return 'receiving audio'
-  return 'listening'
+  // These two strings are the steady states Skip sits in while dictating, and they are
+  // rendered as visible text — showRecordingHud() builds `${voiceStatusLabel()} -> ${who}`
+  // and centers it in a fixed-width row. So the WIDTH of these words is part of the
+  // design, not a cosmetic detail: both are 8 characters, which is why the panel holds
+  // still while he works.
+  //
+  // They were renamed to 'receiving audio' (15) and 'listening' (9) in b82f6e84 — a pure
+  // rename riding inside a real reliability fix, states and logic untouched. Centered
+  // text of different lengths shifts on every transition, so the panel strobed in his
+  // face while he read. His words: "the persistent flickering between receiving and
+  // listening, it's just nausea." 'listening' was invented; the app never had it.
+  //
+  // DO NOT "improve" this wording. If you change either string, match the other's
+  // width, or the panel starts moving again.
+  if (label === 'speech detected') return 'speaking'
+  return 'mic live'
 }
 
 export function composeVoiceText(left, interim, right) {
