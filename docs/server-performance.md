@@ -41,14 +41,24 @@ A loop of N cheap lookups is invisible to per-query instrumentation and lethal t
 the event loop. 190 × 4 ms is 760 ms of deafness that no slow-query log will ever
 print.
 
-### 3. Small, slow-changing, hot-path data belongs in memory
+### 3. Hot-path lookups go to the in-memory index, not the database
 
 Matching 2000 subscriptions in memory costs nothing. Doing 2000 database round
-trips per event is the failure. Data that is small, changes rarely, and is read
-on every event should be resident in the process and refreshed on change.
+trips per event is the failure.
 
-**One invalidation path only.** A cache that can go stale in a second way is the
-disease being removed, not the cure.
+The index already exists: `_agentRegistry`, `_aliveAgentRegistry`,
+`_aliveAgentByName`, `_aliveAgentByLabel` in `fleet-store.mjs`, maintained by
+`_syncAgentRegistry` on every agent change. `resolveChatRecipients` resolves
+entirely against them. `resolveWiretaps` sat directly beside it and went to
+SQLite per tap anyway — the replacement existed, the old path was never moved
+onto it.
+
+**This is an index, not a cache, and the distinction is load-bearing.** A cache
+is a second copy of the truth that drifts and needs invalidating. An index is
+maintained as the data changes: no second copy, nothing to go stale, no
+invalidation question. Do not build anything with an invalidation path. Use the
+existing indexes, and if they need to carry more, extend how they are maintained
+rather than adding a layer in front of them.
 
 ### 4. Cost must not scale with things merely existing
 
