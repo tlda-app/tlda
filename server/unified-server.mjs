@@ -50,7 +50,6 @@ import { listModels as listSpawnModels } from '../agent-launch/models.mjs'
 import { readDaemonConfig, readDaemonConfigForCwd, withDaemonModelAliases } from '../agent-launch/permission-ledger.mjs'
 import { labelsForAgent, parseFilter, parseMessageFilter, evalExpr } from '../shared/fleet-labels.mjs'
 import { parseAgentSelector as parseUnifiedAgentSelector } from '../shared/unified-filter-grammar.mjs'
-import { phaseFromName, baseName, PHASES, prettyNameForFriendlyName } from '../shared/lineage-name.mjs'
 import { daemonHelloDecision, resolveMainDaemonScript } from '../shared/daemon-identity.mjs'
 import { resolveServerIsolation } from '../shared/server-identity.mjs'
 import { initProjectStore, listProjects, readProject, updateProject, getProjectsDir, readProjectPartsManifest, sourceLifecycleStore } from './lib/project-store.mjs'
@@ -1772,19 +1771,6 @@ async function resolveSpawnTarget(name, respawn, { fresh = false, requested = {}
   return { name: resolved.name, respawn: resolved.respawn }
 }
 
-function assignSpawnPhase(agentQuery, phase) {
-  if (!agentQuery || !phase) return null
-  if (!PHASES.includes(phase)) throw new Error(`phase must be one of: ${PHASES.join(', ')}`)
-  const agent = fleetStore.findAgent(agentQuery)
-  if (!agent) throw new Error(`agent not found for lineage assignment: ${agentQuery}`)
-  const lineageName = agent.friendly_name || agentQuery
-  const lineage = fleetStore.getOrCreateLineage(lineageName)
-  fleetStore.makeRoomForPhase(lineage.id, phase)
-  fleetStore.assignPhase(agent.id, lineage.id, phase)
-  broadcastState(agent)
-  return { agent: agent.id, lineage: lineage.id, lineage_name: lineage.friendly_name, phase }
-}
-
 function spawnMailboxCompletionText(entry, status, detail) {
   const label = detail.label || detail.agentId || entry.meta?.name || 'spawn'
   if (status === 'completed') {
@@ -1818,7 +1804,8 @@ async function performSpawnRelay(caller, msg) {
   const {
     name, agent, model, doc, cwd, respawn, fresh, refresh, effort, mode,
     permissionRequest, session, sessionId, session_id, enroll, routeAgent,
-    iLikeToLiveDangerously, phase, mailboxTarget, requestedSession, modelOptions,
+    iLikeToLiveDangerously, mailboxTarget, requestedSession, modelOptions,
+    pretty_name: requestedPrettyName,
   } = normalizeSpawnRelayInput(msg)
   const sessionMode = !!requestedSession
   if (refresh) {
@@ -1879,7 +1866,6 @@ async function performSpawnRelay(caller, msg) {
       fresh: !!fresh || sessionMode,
       respawn: sessionMode ? false : (refresh ? false : resolved.respawn),
       refresh: !!refresh,
-      phase: phase || null,
     },
   })
   const readiness = pendingAgentId
@@ -1893,7 +1879,7 @@ async function performSpawnRelay(caller, msg) {
     fleetStore.upsertAgent({
       id: pendingAgentId,
       friendly_name: assignedName,
-      pretty_name: prettyNameForFriendlyName(assignedName),
+      pretty_name: requestedPrettyName ?? null,
       labels: [],
       registered_at: now,
       last_seen: now,
@@ -1909,7 +1895,7 @@ async function performSpawnRelay(caller, msg) {
   const spawnRequest = {
     agent_id: targetAgentId,
     friendly_name: reservedFriendlyName || undefined,
-    pretty_name: pendingAgentId ? prettyNameForFriendlyName(spawnName) : undefined,
+    pretty_name: pendingAgentId ? (requestedPrettyName ?? undefined) : undefined,
     name: resolved.name || undefined,
     model: model || undefined,
     modelOptions,
@@ -1990,16 +1976,6 @@ async function performSpawnRelay(caller, msg) {
       // Runtime route authority is the durable agent-seat binding path. Do not
       // patch legacy route columns from the spawn result; doing so lets generic
       // spawn completion bypass the current-seat binding.
-      let lineage = null
-      if (phase && agentRecord?.id) {
-        try {
-          lineage = assignSpawnPhase(agentRecord.id, phase)
-        } catch (e) {
-          const settled = mailboxLibrarian.fail(mailbox.id, e.message || 'lineage assignment failed', { ...result, phase, error: e.message })
-          if (settled) deliverSpawnMailboxCompletion(settled, 'failed', { ...result, error: `lineage assignment failed: ${e.message}` })
-          return
-        }
-      }
       const registeredPolicy = agentRecord?.metadata?.permissionGrant
       const permissionGrant = result?.permissionGrant || registeredPolicy
       const assignedName = agentRecord?.friendly_name || result?.assigned_name || result?.name || spawnName
@@ -5396,25 +5372,6 @@ async function handleFleetWsMessage(ws, msg) {
       ? `${lifecycleLabel} shell reserved`
       : `${lifecycleLabel} registered`
     fleetStore.share?.({ type: eventType, agent_id: agentId, from: agentId, to: agentId, text: eventText })
-    // Every non-human agent belongs to a lineage from birth, as its own `dawn`
-    // (the worker). This guarantees a handoff always has a chain to rotate within
-    // — a direct handoff promotes that dawn → day (manager). The lineage is an
-    // overlay, so a failure here must never block identity creation.
-    if (!agent.human && agent.friendly_name) {
-      const stored = fleetStore.getAgent?.(agentId)
-      if (stored && !stored.lineage_id) {
-        try {
-          // The name IS the lineage assignment: a "<base>:<phase>" name says which
-          // lineage and which phase. Map straight onto the <base> lineage — don't
-          // build a fresh lineage from the full suffixed name. A bare name → its
-          // own lineage at dawn, exactly as before.
-          const base = baseName(agent.friendly_name)
-          const phase = phaseFromName(agent.friendly_name) || 'dawn'
-          const lineage = fleetStore.getOrCreateLineage(base)
-          fleetStore.assignPhase(agentId, lineage.id, phase)
-        } catch (e) { console.error(`[lineage] auto-assign failed for ${agentId}: ${e.message}`) }
-      }
-    }
     const storedAgent = fleetStore.getAgent?.(agentId) || agent
     broadcastState(storedAgent)
     // Push through the current-seat projection; seatless reservations have no
@@ -6814,108 +6771,72 @@ async function handleFleetWsMessage(ws, msg) {
     return
   }
 
-  // ---- lineage-assign: assign an agent to a lineage with a phase ----
-  if (type === 'lineage-assign') {
-    const { agent: agentQuery, phase, lineage: lineageQuery } = msg
-    if (!agentQuery || !phase) { error('agent and phase required'); return }
-    if (!PHASES.includes(phase)) { error(`phase must be one of: ${PHASES.join(', ')}`); return }
-    const agent = fleetStore.findAgent(agentQuery)
-    if (!agent) { error('agent not found'); return }
-    const lineageName = lineageQuery || agent.friendly_name || agentQuery
-    const lineage = fleetStore.getOrCreateLineage(lineageName)
-    // Free the slot (age occupants one rung toward night, oldest retires)
-    // instead of erroring on "occupied" — "free the names you need, then place."
-    fleetStore.makeRoomForPhase(lineage.id, phase)
-    fleetStore.assignPhase(agent.id, lineage.id, phase)
-    broadcastState()
-    reply({ ok: true, agent: agent.id, lineage: lineage.id, lineage_name: lineage.friendly_name, phase })
-    return
-  }
-
-  // ---- lineage-retire: remove an agent from its lineage ----
-  if (type === 'lineage-retire') {
-    const { agent: agentQuery } = msg
-    if (!agentQuery) { error('agent required'); return }
-    const agent = fleetStore.findAgent(agentQuery)
-    if (!agent) { error('agent not found'); return }
-    if (!agent.lineage_id) { error('agent is not in a lineage'); return }
-    // Re-aim pending tasks to the new day
-    const lineage = fleetStore.getLineage(agent.lineage_id)
-    const dayAgent = fleetStore.getLineageDay(agent.lineage_id)
-    if (dayAgent && dayAgent.id !== agent.id) {
-      fleetStore.transferTasks(agent.id, dayAgent.id)
-    }
-    fleetStore.retireFromLineage(agent.id)
-    broadcastState()
-    reply({ ok: true, agent: agent.id, retired_from: lineage?.friendly_name || agent.lineage_id })
-    return
-  }
-
-  // ---- lineage-transition: change an agent's phase within its lineage ----
-  if (type === 'lineage-transition') {
-    const { agent: agentQuery, phase } = msg
-    if (!agentQuery || !phase) { error('agent and phase required'); return }
-    if (!PHASES.includes(phase)) { error(`phase must be one of: ${PHASES.join(', ')}`); return }
-    const agent = fleetStore.findAgent(agentQuery)
-    if (!agent) { error('agent not found'); return }
-    if (!agent.lineage_id) { error('agent is not in a lineage'); return }
-    // Free the target slot (age occupants one rung toward night, oldest retires)
-    // instead of erroring. Handoffs only move an agent DOWN the chain (dawn→day/
-    // dusk), so the moving agent sits above the target and isn't caught in the
-    // cascade.
-    fleetStore.makeRoomForPhase(agent.lineage_id, phase)
-    fleetStore.transitionPhase(agent.id, phase)
-    broadcastState()
-    reply({ ok: true, agent: agent.id, phase })
-    return
-  }
-
-  // ---- lineage-make-room: free a phase slot (age occupants toward night) ----
-  // "Free the names you need, then place." Used by a handoff to reserve a slot
-  // (e.g. :day for the briefer) before the new agent arrives.
-  if (type === 'lineage-make-room') {
-    const { phase, lineage: lineageQuery, agent: agentQuery } = msg
-    if (!phase) { error('phase required'); return }
-    if (!PHASES.includes(phase)) { error(`phase must be one of: ${PHASES.join(', ')}`); return }
-    let lineage = lineageQuery ? fleetStore.getLineage(lineageQuery) : null
-    if (!lineage && agentQuery) {
-      const a = fleetStore.findAgent(agentQuery)
-      if (a?.lineage_id) lineage = fleetStore.getLineage(a.lineage_id)
-    }
+  // ---- lineage-stack operations ----
+  if (type === 'lineage-stack') {
+    const lineage = fleetStore.getLineage(msg.lineage)
     if (!lineage) { error('lineage not found'); return }
-    fleetStore.makeRoomForPhase(lineage.id, phase)
-    broadcastState()
-    reply({ ok: true, lineage: lineage.id, phase })
+    reply({
+      lineage,
+      stack: fleetStore.getStack(lineage.id),
+      history: fleetStore.getLineageHistory(lineage.id),
+    })
     return
   }
 
-  // ---- lineage-rotate: rotate an agent in at `dawn` ----
-  // incoming → dawn (worker), dawn → day (manager), day → dusk (consultant),
-  // dusk → loses its name and drops out of the slots (stays in the lineage as
-  // history). Nothing is marked dead or unlinked. Direct handoff = one rotate;
-  // briefing handoff = two (briefer in, then the new worker in).
-  if (type === 'lineage-rotate') {
-    const { agent: agentQuery, lineage: lineageQuery } = msg
-    if (!agentQuery) { error('agent required'); return }
-    const agent = fleetStore.findAgent(agentQuery)
-    if (!agent) { error('agent not found'); return }
-    const lineageName = lineageQuery || agent.friendly_name || agentQuery
-    const lineage = fleetStore.getOrCreateLineage(lineageName)
-    fleetStore.rotateLineageIn(lineage.id, agent.id)
-    broadcastState()
-    reply({ ok: true, agent: agent.id, lineage: lineage.id, lineage_name: lineage.friendly_name, phase: 'dawn' })
-    return
-  }
-
-  // ---- lineage-roster: get the current roster for a lineage ----
-  if (type === 'lineage-roster') {
-    const { lineage: lineageQuery } = msg
-    if (!lineageQuery) { error('lineage required'); return }
-    const lineage = fleetStore.getLineage(lineageQuery)
-    if (!lineage) { error('lineage not found'); return }
-    const roster = fleetStore.getLineageRoster(lineage.id)
-    const history = fleetStore.getLineageHistory(lineage.id)
-    reply({ lineage, roster, history })
+  if (type === 'lineage-push' || type === 'lineage-pop' || type === 'lineage-swap') {
+    const assignments = Array.isArray(msg.name_assignments) ? msg.name_assignments : []
+    const normalized = assignments.map(item => ({
+      fleetId: item?.fleet_id,
+      friendlyName: item?.friendly_name ?? null,
+      prettyName: item?.pretty_name,
+      labels: Array.isArray(item?.labels) ? item.labels : undefined,
+    }))
+    if (normalized.some(item => !item.fleetId)) { error('every name assignment requires fleet_id'); return }
+    if (new Set(normalized.map(item => item.fleetId)).size !== normalized.length) {
+      error('duplicate fleet_id in name assignments')
+      return
+    }
+    try {
+      let result
+      if (type === 'lineage-push') {
+        const incoming = fleetStore.findAgent(msg.agent)
+        if (!incoming) { error('incoming agent not found'); return }
+        const lineage = fleetStore.getLineage(msg.lineage) || fleetStore.getOrCreateLineage(msg.lineage)
+        const allowed = new Set([...fleetStore.getStack(lineage.id).map(item => item.id), incoming.id])
+        if (normalized.some(item => !allowed.has(item.fleetId))) { error('name assignment is outside the affected lineage'); return }
+        result = await fleetStore.pushExisting(lineage.id, incoming.id, normalized, {
+          actorId: msg.caller || null,
+          reason: msg.reason || 'push-existing',
+        })
+      } else if (type === 'lineage-pop') {
+        const lineage = fleetStore.getLineage(msg.lineage)
+        if (!lineage) { error('lineage not found'); return }
+        const allowed = new Set(fleetStore.getStack(lineage.id).map(item => item.id))
+        if (normalized.some(item => !allowed.has(item.fleetId))) { error('name assignment is outside the affected lineage'); return }
+        result = await fleetStore.pop(lineage.id, normalized, {
+          actorId: msg.caller || null,
+          reason: msg.reason || 'pop',
+        })
+      } else {
+        const recipient = fleetStore.findAgent(msg.recipient)
+        const incoming = fleetStore.findAgent(msg.agent)
+        if (!recipient || !incoming) { error('swap recipient and incoming agent are required'); return }
+        const active = fleetStore.db.prepare(
+          'SELECT lineage_id FROM lineage_stack_entries WHERE fleet_id = ? AND active = 1'
+        ).get(recipient.id)
+        if (!active) { error('swap recipient is not on an active lineage stack'); return }
+        const allowed = new Set([...fleetStore.getStack(active.lineage_id).map(item => item.id), incoming.id])
+        if (normalized.some(item => !allowed.has(item.fleetId))) { error('name assignment is outside the affected lineage'); return }
+        result = await fleetStore.swap(recipient.id, incoming.id, normalized, {
+          actorId: msg.caller || null,
+          reason: msg.reason || 'swap',
+        })
+      }
+      broadcastState(result.affected)
+      reply({ ok: true, ...result })
+    } catch (e) {
+      error(e.message)
+    }
     return
   }
 

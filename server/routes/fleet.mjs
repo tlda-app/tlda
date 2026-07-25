@@ -415,16 +415,6 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     } catch (e) { res.status(500).json({ error: e.message }) }
   })
 
-  // --- POST /api/agents/:id/resurrect ---
-  router.post('/api/agents/:id/resurrect', (req, res) => {
-    if (!fleetStore) { res.status(503).json({ error: 'Fleet store not available' }); return }
-    try {
-      const result = fleetStore.resurrectAsZombie(req.params.id)
-      broadcastState()
-      res.json(result)
-    } catch (e) { res.status(500).json({ error: e.message }) }
-  })
-
   // --- GET /api/store/agents ---
   router.get('/api/store/agents', (req, res) => {
     res.status(410).json({ error: 'Full agent store dumps are disabled; use /api/agents, /api/agents/lookup, or search.' })

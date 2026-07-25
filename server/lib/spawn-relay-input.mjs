@@ -5,13 +5,14 @@ export function normalizeSpawnRelayInput(msg = {}) {
   const {
     name, agent, model, doc, cwd, respawn, fresh, refresh, effort, mode,
     permissionRequest, session, sessionId, session_id, enroll, routeAgent,
-    iLikeToLiveDangerously, phase, mailboxTarget,
+    iLikeToLiveDangerously, mailboxTarget, pretty_name,
   } = msg || {}
   const requestedSession = session || sessionId || session_id || null
   const spawnReservedKeys = new Set([
     'type', 'name', 'agent', 'model', 'doc', 'cwd', 'respawn', 'fresh', 'refresh',
     'effort', 'mode', 'permissionRequest', 'session', 'sessionId', 'session_id',
-    'enroll', 'routeAgent', 'iLikeToLiveDangerously', 'phase', 'mailboxTarget',
+    'enroll', 'routeAgent', 'iLikeToLiveDangerously', 'mailboxTarget',
+    'pretty_name',
     'modelOptions',
   ])
   const modelOptions = {
@@ -39,8 +40,8 @@ export function normalizeSpawnRelayInput(msg = {}) {
     enroll,
     routeAgent,
     iLikeToLiveDangerously,
-    phase,
     mailboxTarget,
+    pretty_name,
     requestedSession,
     modelOptions,
   }

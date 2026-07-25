@@ -475,7 +475,7 @@ async function validateSpawnRequest(opts = {}) {
   const config = withDaemonModelAliases({}, daemonConfig);
   const reserved = new Set([
     'agent', 'fresh', 'refresh', 'respawn', 'name', 'model', 'cwd', 'permission',
-    'permissions', 'policy', 'iLikeToLiveDangerously', 'mode', 'phase', 'kind',
+    'permissions', 'policy', 'iLikeToLiveDangerously', 'mode', 'kind',
   ]);
   const kwargs = { ...(opts.modelOptions && typeof opts.modelOptions === 'object' && !Array.isArray(opts.modelOptions) ? opts.modelOptions : {}) };
   for (const [key, value] of Object.entries(opts)) {
@@ -492,7 +492,7 @@ async function validateSpawnRequest(opts = {}) {
 function spawnModelOptionsFromArgs(opts = {}) {
   const reserved = new Set([
     'agent', 'fresh', 'refresh', 'respawn', 'name', 'model', 'cwd', 'permission',
-    'permissions', 'policy', 'iLikeToLiveDangerously', 'mode', 'phase', 'kind',
+    'permissions', 'policy', 'iLikeToLiveDangerously', 'mode', 'kind',
   ]);
   const out = { ...(opts.modelOptions && typeof opts.modelOptions === 'object' && !Array.isArray(opts.modelOptions) ? opts.modelOptions : {}) };
   for (const [key, value] of Object.entries(opts)) {

@@ -10,7 +10,6 @@ export {
 export type FleetSearchScope = 'any' | 'from' | 'to'
 export type FleetSearchExpansion = 'stack' | 'self'
 export type FleetSearchMatch = 'auto' | 'exact' | 'substring'
-export type FleetSearchPhase = 'bare' | 'dawn' | 'day' | 'dusk' | 'night' | 'zombie'
 
 export interface ReflogRange {
   from: number | null
@@ -22,7 +21,6 @@ export interface AgentResolveRequest {
   scope?: FleetSearchScope
   expansion?: FleetSearchExpansion
   match?: FleetSearchMatch
-  phase?: FleetSearchPhase | null
   position?: number
   range?: ReflogRange
 }
