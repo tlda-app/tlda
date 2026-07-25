@@ -42,11 +42,15 @@ export function setChatSubscriptionTransport(send) { _send = send }
  *   its own size; there is no magic number here on purpose.
  * @param {(events: readonly object[], meta: object) => void} onEvents
  */
-export function subscribeChat(filter, window, onEvents, { humanId = null, humanName = null } = {}) {
+export function subscribeChat(filter, window, onEvents, { humanId = null, humanName = null, correlationKey = null } = {}) {
   const subId = `sub${_nextSubId++}`
   // filter and window are retained so a reconnect can re-send the subscription
   // without the caller having to remember it — resubscribeAll needs them.
-  _subs.set(subId, { filter, window, onEvents, humanId, humanName })
+  // correlationKey ties this subscription to the client-side buffer that holds
+  // the same conversation, so the equivalence comparator can line up the two
+  // verdicts for one event. Without it the two streams are keyed differently and
+  // cannot be compared at all.
+  _subs.set(subId, { filter, window, onEvents, humanId, humanName, correlationKey })
   if (_send) {
     try {
       _send('subscribe-filter', { subId, filter, humanId, humanName })
@@ -86,7 +90,7 @@ export function dispatchFilterEvent(data) {
   // Record that the SERVER matched this event for this subscription. The client
   // records its own verdict from the path it already runs; the comparison of the
   // two on real traffic is the gate before the old path is deleted.
-  noteServerDelivery(data.subId, event.id ?? event._dbId, sub.filterKey)
+  noteServerDelivery(sub.correlationKey || data.subId, event.id ?? event._dbId, sub.filterKey)
   sub.onEvents([event], { subId: data.subId, reason: data.reason || 'live' })
   return true
 }

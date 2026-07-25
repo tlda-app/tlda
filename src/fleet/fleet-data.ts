@@ -5,6 +5,7 @@ import { labelsForAgent } from '../../shared/fleet-labels.mjs'
 import { isRuntimeAwake } from '../../shared/fleet-runtime-status.mjs'
 import { setLiveStoreObserver } from '../../shared/live-store.ts'
 import { noteBufferDrop, noteDisposedViewTouched, noteViewRef, startFreezeCensus, filterNameIds, noteBufferMatch } from './chat-freeze-probe.mjs'
+import { noteClientVerdict } from './filter-equivalence.mjs'
 import { getLastEventId } from './fleet-data.mjs'
 
 startFreezeCensus(getLastEventId)
@@ -199,7 +200,14 @@ function unresolvedParticipantDrop(buffer: EventBuffer, event: FleetEvent): Reco
 
 function fanoutEventToBuffers(event: FleetEvent): void {
   for (const [bufferKey, buffer] of eventBuffers) {
-    if (buffer.matchesFilter(buffer.filter, event)) {
+    const belongs = buffer.matchesFilter(buffer.filter, event)
+    // The client's own membership verdict, recorded for comparison against the
+    // server's. This IS the decision we intend to delete — recording it while it
+    // still runs is the only way to prove the replacement agrees before the old
+    // path goes. Keyed by bufferKey, which the subscription carries as its
+    // correlationKey so the two verdicts line up on one event.
+    if (event.type === 'chat') noteClientVerdict(bufferKey, event.id, belongs)
+    if (belongs) {
       // Count LIVE deliveries only — see _bulkIngestDepth above.
       if (_bulkIngestDepth === 0) noteBufferMatch(bufferKey)
       buffer.store.upsert(event)

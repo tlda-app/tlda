@@ -37,9 +37,19 @@ const NS = 'filter-equivalence'
 const GRACE_MS = 5000
 // Cap on outstanding comparisons, so a stalled sweep can't grow without bound.
 const MAX_PENDING = 2000
-// Report at most this often per (subId, direction), so one systematic
-// disagreement produces a finding rather than a flood.
+// The two directions are NOT equally throttled, and the asymmetry is the point.
+//
+// client-missed — a filter-event arrived and the client said no. This is the
+//   EXPECTED direction and tonight's bug caught in the act: the client's roster
+//   was partial. One systematic occurrence would flood, so it's throttled.
+//
+// server-missed — the client said belongs and no filter-event came. Every
+//   fleet-event was verified to route through the server's hook, so there is no
+//   benign explanation left: the server's evaluation is wrong. Rarer and more
+//   serious, so it is reported EVERY time. Throttling both the same buries the
+//   one that matters under the one that doesn't.
 const REPORT_EVERY_MS = 30_000
+const REPORT_EVERY_MS_SERVER_MISSED = 0
 
 /** @type {Map<string, {client: boolean, server: boolean, t: number, filterKey?: string}>} */
 const _pending = new Map()
@@ -58,11 +68,14 @@ function ensureSweep() {
       if (v.client === v.server) continue
       const [subId, eventId] = k.split('|')
       const direction = v.client ? 'server-missed' : 'client-missed'
+      const throttle = direction === 'server-missed' ? REPORT_EVERY_MS_SERVER_MISSED : REPORT_EVERY_MS
       const rk = `${subId}|${direction}`
       const last = _lastReport.get(rk) || 0
-      if (now - last < REPORT_EVERY_MS) continue
+      if (throttle > 0 && now - last < throttle) continue
       _lastReport.set(rk, now)
-      log.metric(NS, 'DISAGREEMENT between server and client membership', {
+      log.metric(NS, direction === 'server-missed'
+        ? 'DISAGREEMENT: server did not deliver an event the client matched'
+        : 'DISAGREEMENT: server delivered an event the client did not match', {
         subId, eventId, direction,
         clientSaysBelongs: v.client,
         serverSentIt: v.server,
