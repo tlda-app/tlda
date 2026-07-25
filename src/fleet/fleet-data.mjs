@@ -33,7 +33,7 @@ import {
 } from './fleet-data.ts'
 import { log } from '../logger'
 import { noteProjection, recordFilterNameIds } from './chat-freeze-probe.mjs'
-import { dispatchFilterEvent, dispatchFilterEvents, setChatSubscriptionTransport, refreshChatSubscriptionIdentity } from './chat-subscription.mjs'
+import { dispatchFilterEvent, dispatchFilterEvents, setChatSubscriptionTransport, refreshChatSubscriptionIdentity, resubscribeAll } from './chat-subscription.mjs'
 import { probe } from '../perf-probe'
 import { DATABASE_HTTP, DATABASE_WS } from '../activeConfig'
 import { isUsableIdentityName, sanitizeIdentityName, storedIdentityLoginFailureAction } from './identity-persistence.mjs'
@@ -1052,6 +1052,20 @@ export function connect() {
     _reconnectDelay = 1000
     _connected = true
     notify('connection', { type: 'connection', connected: true })
+    // Re-send every chat subscription. The server's subscription registry lives
+    // in the server PROCESS, so a restart or a dropped socket empties it while
+    // the browser still believes it is subscribed — and a chat panel's only
+    // source of events is now its subscription. Without this, every server
+    // restart silently freezes every open chat: the composer works, the list
+    // scrolls, and no new message ever arrives. That is precisely the failure
+    // this whole change exists to remove, so it must not be reintroduced by the
+    // replacement.
+    //
+    // resubscribeAll() was written for exactly this and was never called from
+    // anywhere — dead from the day it was added, harmless while panels still
+    // rendered from the client store, load-bearing the moment they stopped.
+    const resent = resubscribeAll()
+    if (resent) log.metric('chat-subscription', 're-subscribed after reconnect', { count: resent })
     flushBrowserDurableOutbox().catch(error => {
       log.error('fleet-transport', 'durable outbox flush failed', { error: error.message })
     })
