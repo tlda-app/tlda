@@ -250,6 +250,23 @@ function assertTailCount(harness, expected) {
   }
 }
 
+{
+  const harness = createHarness()
+  try {
+    const historicalPath = join(dirname(harness.jsonlPath), 'historical-session.jsonl')
+    writeFileSync(historicalPath, '{"type":"assistant","message":{"content":"old"}}\n')
+    harness.setRows([{ id: 'fleet:jsonl-owner', ...fullBinding({ sessionPath: harness.jsonlPath }) }])
+    await harness.sync('daemon-welcome-with-history')
+    assertTailCount(harness, 1)
+    assert.equal(
+      harness.sentToChild.some(m => m.type === 'watch' && m.jsonlPath === historicalPath),
+      false,
+    )
+  } finally {
+    harness.cleanup()
+  }
+}
+
 // Marker ownership is the only JSONL ownership path. An unmarked file is
 // not-yet: tail it from the beginning, emit nothing, and wait for the marker.
 {
