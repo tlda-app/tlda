@@ -775,13 +775,15 @@ const wakeMint = createDaemonWakeCore({
       return false
     }
   },
-  resumeSession: async facts => launchMintProcess({
+  resumeSession: async (facts, wakeParams = {}) => launchMintProcess({
     ...(facts.launchRecipe || {}),
     mintId: facts.mintId,
     fleetId: facts.fleetId,
     name: facts.friendlyName,
     resumeId: facts.sessionId,
     requestedKind: facts.processState?.harness || facts.launchRecipe?.kind || 'codex',
+    permissionGrant: wakeParams.permissionGrant || wakeParams.permission_grant || facts.launchRecipe?.permissionGrant,
+    permissionSet: wakeParams.permissionSet || wakeParams.permission_set || facts.launchRecipe?.permissionSet,
     activeConfigName: ACTIVE_CONFIG,
     machineId: MACHINE_ID,
     tmuxSocket: TMUX_SOCKET,
@@ -880,7 +882,7 @@ async function rpcMint(params = {}) {
 }
 
 async function rpcWake(params = {}) {
-  return wakeMint(params.fleet_id)
+  return wakeMint(params)
 }
 
 const pendingSeatBindings = createPendingSeatBindingManager({

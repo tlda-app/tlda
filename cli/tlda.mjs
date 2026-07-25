@@ -987,6 +987,14 @@ const FLEET_DAEMON_SCRIPT = _cliWorktreeMatch
   : join(_cliDir, '..', 'bin', 'fleet-daemon.mjs')
 const FLEET_DAEMON_DNS_ALIAS_PRELOAD = join(FLEET_DAEMON_MAIN_ROOT, 'shared', 'node-dns-alias.cjs')
 
+function daemonWorldSuffix(configName) {
+  return configName === 'default' ? '' : `.${String(configName).replace(/[^a-zA-Z0-9._-]+/g, '-')}`
+}
+
+function fleetDaemonSocketForConfig(configName) {
+  return join(CONFIG_DIR, `fleet-daemon${daemonWorldSuffix(configName)}.sock`)
+}
+
 function plistEscape(value) {
   return String(value)
     .replaceAll('&', '&amp;')
@@ -4272,6 +4280,118 @@ async function resolveFleetPrefUserId(query) {
   throw new Error(`No agent/user matched "${query}". Use an existing name or an explicit fleet:<id>.`)
 }
 
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
+
+async function waitForAgentSeatAddress(agentId, { machineId, envName, apiImpl = api, timeoutMs = 120000 } = {}) {
+  const deadline = Date.now() + timeoutMs
+  let lastSeat = null
+  let lastError = null
+  do {
+    try {
+      const data = await apiImpl('GET', `/api/agent-seat?agent=${encodeURIComponent(agentId)}`)
+      const seat = data?.seat || null
+      lastSeat = seat
+      if (seat?.machine_id === machineId && seat?.env_name === envName && seat?.terminal_capability) return seat
+    } catch (e) {
+      lastError = e
+    }
+    await sleep(1000)
+  } while (Date.now() < deadline)
+  const observed = lastSeat
+    ? describeAgentAddress(lastSeat.machine_id, lastSeat.env_name)
+    : (lastError?.message || 'no readable seat')
+  throw new Error(`agent ${agentId} did not land on ${describeAgentAddress(machineId, envName)}; observed ${observed}`)
+}
+
+async function ensureAgentWakeGrant(agent, meta) {
+  if (!meta?.permissionGrant) {
+    throw new Error(`Agent ${agent.id} has no recorded permission grant; refusing to wake it under a fabricated grant`)
+  }
+  const daemonConfig = readDaemonConfig(defaultDaemonConfigPath(CONFIG_DIR))
+  const spawnConfig = withDaemonModelAliases({}, daemonConfig)
+  const permissionSet = compilePermissionGrant(spawnConfig, meta.permissionGrant, { cwd: agent.cwd || process.cwd() })
+  const ledger = createPermissionLedger(permissionLedgerPathFromDaemonConfig(daemonConfig, CONFIG_DIR))
+  try {
+    const existing = ledger.get(agent.id)
+    if (JSON.stringify(existing?.permissionGrant || null) !== JSON.stringify(meta.permissionGrant)) {
+      await ledger.set(agent.id, {
+        permissionGrant: meta.permissionGrant,
+        source: 'agent-move',
+      })
+    }
+  } finally {
+    await ledger.close()
+  }
+  return { permissionGrant: meta.permissionGrant, permissionSet }
+}
+
+async function moveAgentToEnvironment({
+  agent,
+  agentQuery = null,
+  rawTarget = null,
+  targetEnv = null,
+  sourceEnv = null,
+  dryRun = hasFlag('dry-run'),
+  allowAlready = true,
+  apiImpl = api,
+  log = console,
+  logPrefix = '',
+} = {}) {
+  if (!agent) agent = await findSingleAgent(agentQuery)
+  const sourceMachine = localMachineId()
+  const effectiveSourceEnv = sourceEnv || getActiveConfigName()
+  let targetMachine = sourceMachine
+  let targetName = null
+  if (rawTarget) {
+    const parsedTarget = parseAgentMoveTarget(rawTarget)
+    targetName = parsedTarget.targetName || null
+    targetMachine = parsedTarget.machine_id || sourceMachine
+    targetEnv = parsedTarget.env_name
+  }
+  if (!targetEnv) throw new Error('missing target environment')
+  resolveConfig(targetEnv)
+  const name = agent.friendly_name || agent.name || agent.id
+  if (targetName && targetName !== name) throw new Error('move rename is parsed but not implemented in this slice')
+  if (!agent.machine_id || !agent.env_name) throw new Error(`Agent ${agent.id} has no daemon address; cannot prove this is the source daemon.`)
+  if (agent.machine_id !== sourceMachine) {
+    throw new Error(`Agent ${agent.id} belongs to ${describeAgentAddress(agent.machine_id, agent.env_name)}; run move from ${describeAgentAddress(agent.machine_id, agent.env_name)}.`)
+  }
+  if (targetMachine !== sourceMachine) {
+    throw new Error('cross-box agent move is not wired to the durable remote wake path yet; refusing to report a move without target-seat readback')
+  }
+  if (agent.env_name === targetEnv) {
+    if (!allowAlready) throw new Error(`Agent ${agent.id} is already on ${describeAgentAddress(targetMachine, targetEnv)}.`)
+    log.log(`${logPrefix}${name} (${agent.id}) already on ${describeAgentAddress(targetMachine, targetEnv)}.`)
+    return { ok: true, already: true, agent, name }
+  }
+  if (agent.env_name !== effectiveSourceEnv) {
+    throw new Error(`Agent ${agent.id} belongs to ${describeAgentAddress(agent.machine_id, agent.env_name)}, not expected source ${describeAgentAddress(sourceMachine, effectiveSourceEnv)}.`)
+  }
+
+  const meta = normalizeAgentMetadata(agent.metadata)
+  if (!meta.kind) throw new Error(`Agent ${agent.id} has no recorded harness kind; refusing to infer a wake command`)
+  const hibernateName = hibernateNameForAgent(agent, agentQuery || name)
+  const targetSocket = fleetDaemonSocketForConfig(targetEnv)
+  if (dryRun) {
+    log.log(`${logPrefix}[dry-run] would move ${name} (${agent.id}) ${describeAgentAddress(sourceMachine, effectiveSourceEnv)} -> ${describeAgentAddress(targetMachine, targetEnv)}`)
+    log.log(`${logPrefix}  mode: same-box durable wake`)
+    log.log(`${logPrefix}  hibernate: ${hibernateName}`)
+    log.log(`${logPrefix}  wake kind: ${meta.kind}`)
+    log.log(`${logPrefix}  wake socket: ${targetSocket}`)
+    return { ok: true, dryRun: true, agent, name }
+  }
+
+  log.log(`${logPrefix}Moving ${name} (${agent.id}) ${describeAgentAddress(sourceMachine, effectiveSourceEnv)} -> ${describeAgentAddress(targetMachine, targetEnv)}`)
+  const hibernate = await hibernateLocalAgent(hibernateName, { allowMissing: true })
+  if (hibernate.status !== 0) throw new Error(`failed to hibernate ${agent.id}`)
+  const wakeGrant = await ensureAgentWakeGrant(agent, meta)
+  const wake = await callLocalDaemonLifecycle('wake', { fleet_id: agent.id, ...wakeGrant }, { socketPath: targetSocket, timeoutMs: 120000 })
+  if (!wake?.ok) throw new Error(wake?.error || `wake failed for ${agent.id}`)
+  const seat = await waitForAgentSeatAddress(agent.id, { machineId: targetMachine, envName: targetEnv, apiImpl })
+  log.log(`${logPrefix}${name} (${agent.id}) landed on ${describeAgentAddress(seat.machine_id, seat.env_name)}.`)
+  return { ok: true, agent, name, seat, wake }
+}
+
 async function cmdAgentSetSpawnMachine() {
   const userQuery = getPositional(1)
   const machineId = getPositional(2) || getFlag('machine')
@@ -4305,71 +4425,16 @@ async function cmdAgentMove() {
   const agentQuery = getPositional(1)
   const rawTarget = getPositional(2)
   if (hasFlag('help')) {
-    console.log('Usage: tlda agent move <agent> [name@][box:]env\n\nRun from the agent current daemon address. Same-box env moves update the daemon lock and wake under the target config; cross-box moves copy resumable context with SSH/rsync first.')
+    console.log('Usage: tlda agent move <agent> [name@]env\n\nRun from the agent current daemon address. Same-box env moves hibernate the current runtime, wake through the target daemon, and verify the durable seat landed on the target config.')
     return
   }
   if (!agentQuery || !rawTarget) {
-    console.error('Usage: tlda agent move <agent> [name@][box:]env')
+    console.error('Usage: tlda agent move <agent> [name@]env')
     process.exit(1)
   }
   await assertNotAgentContext()
   await ensureServer()
-  const agent = await findSingleAgent(agentQuery)
-  const sourceMachine = localMachineId()
-  const sourceEnv = getActiveConfigName()
-  if (!agent.machine_id || !agent.env_name) throw new Error(`Agent ${agent.id} has no daemon address; cannot prove this is the source daemon.`)
-  if (agent.machine_id !== sourceMachine || agent.env_name !== sourceEnv) {
-    throw new Error(`Agent ${agent.id} belongs to ${describeAgentAddress(agent.machine_id, agent.env_name)}; run move from ${describeAgentAddress(agent.machine_id, agent.env_name)}.`)
-  }
-  const parsedTarget = parseAgentMoveTarget(rawTarget)
-  if (parsedTarget.targetName && parsedTarget.targetName !== (agent.friendly_name || agent.id)) {
-    throw new Error('move rename is parsed but not implemented in this slice')
-  }
-  const targetMachine = parsedTarget.machine_id || sourceMachine
-  const targetEnv = parsedTarget.env_name
-  if (sourceMachine === targetMachine && sourceEnv === targetEnv) {
-    throw new Error(`Agent ${agent.id} is already on ${describeAgentAddress(targetMachine, targetEnv)}.`)
-  }
-  const sameBox = sourceMachine === targetMachine
-
-  const artifacts = sameBox ? [] : moveArtifactsForAgent(agent)
-  await api('POST', '/api/agents/move-daemon', {
-    agent: agent.id,
-    machine_id: targetMachine,
-    env_name: targetEnv,
-    expected_from: sourceMachine,
-    expected_env: sourceEnv,
-    check_only: true,
-  })
-
-  const meta = normalizeAgentMetadata(agent.metadata)
-  if (!meta.kind) throw new Error(`Agent ${agent.id} has no recorded harness kind; refusing to infer a wake command`)
-  if (hasFlag('dry-run')) {
-    console.log(`[dry-run] would move ${agent.friendly_name || agent.id} (${agent.id}) ${describeAgentAddress(sourceMachine, sourceEnv)} -> ${describeAgentAddress(targetMachine, targetEnv)}`)
-    console.log(`  mode: ${sameBox ? 'same-box env relock' : 'cross-box rsync move'}`)
-    if (artifacts.length) console.log(`  artifacts: ${artifacts.map(a => a.rel).join(', ')}`)
-    console.log(`  hibernate: ${hibernateNameForAgent(agent, agentQuery)}`)
-    console.log(`  wake kind: ${meta.kind}`)
-    console.log(`  wake config: ${targetEnv}`)
-    return
-  }
-
-  console.log(`Moving ${agent.friendly_name || agent.id} (${agent.id}) ${describeAgentAddress(sourceMachine, sourceEnv)} -> ${describeAgentAddress(targetMachine, targetEnv)}`)
-  const hibernate = await hibernateLocalAgent(hibernateNameForAgent(agent, agentQuery), { allowMissing: true })
-  if (hibernate.status !== 0) throw new Error(`failed to hibernate ${agent.id}`)
-  if (!sameBox) await copyMoveArtifacts(targetMachine, artifacts)
-  await api('POST', '/api/agents/move-daemon', {
-    agent: agent.id,
-    machine_id: targetMachine,
-    env_name: targetEnv,
-    expected_from: sourceMachine,
-    expected_env: sourceEnv,
-  })
-  const spawnArgs = [agent.id]
-  if (meta.kind) spawnArgs.push('--kind', meta.kind)
-  const configPrefix = targetEnv ? `TLDA_CONFIG=${quoteCommandArg(targetEnv)} ` : ''
-  console.log(`Registry now points ${agent.id} at ${describeAgentAddress(targetMachine, targetEnv)}.`)
-  console.log(`Wake locally on the target machine with: ${configPrefix}${agentWakeSuggestion(spawnArgs)}`)
+  await moveAgentToEnvironment({ agentQuery, rawTarget, allowAlready: false })
 }
 
 async function cmdAgentPermissions() {
