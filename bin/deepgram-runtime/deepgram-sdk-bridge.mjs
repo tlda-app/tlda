@@ -61,6 +61,11 @@ const RESUME_RMS_THRESHOLD = resolveIntOpt('--resume-rms', 'resumeRmsThreshold',
 // the reconnect: when speech resumes we flush this buffer ahead of the live audio.
 const PREROLL_MS = resolveIntOpt('--preroll-ms', 'prerollMs', 300)
 const PREROLL_MAX_BYTES = Math.round(16000 * 2 * (PREROLL_MS / 1000)) // 16kHz · 2 bytes/sample
+// Backstop for the epoch carry, NOT the mechanism. The real release is the utterance's
+// own is_final; this only covers a recognizer that stops finalizing altogether, and it
+// releases FORWARD so the failure mode is a few duplicated words rather than swallowed
+// ones. Deliberately generous: it should effectively never fire, and it logs when it does.
+const CARRY_BACKSTOP_MS = 4000
 
 // RMS of a linear16 (Int16 LE) PCM buffer. Pure → unit-tested.
 function rmsOfPcm(buf) {
@@ -198,6 +203,11 @@ wss.on('connection', (browserWs) => {
   let lastUpstreamAudioAt = 0
   let lastTranscriptAt = 0
   let pendingFinalSince = 0
+  // While non-null, results are stamped with this epoch instead of activeEpoch: the
+  // previous utterance is still being finished by Deepgram after an epoch advance.
+  // Cleared by the utterance's own is_final (the real boundary), or by the backstop.
+  let carriedEpoch = null
+  let carryTimer = null
   let droppedChunks = 0
   let flushedChunks = 0
 
@@ -225,6 +235,7 @@ wss.on('connection', (browserWs) => {
   function retireEpoch(reason) {
     if (epochTransition?.pcmBytes > 0) emitEpochLoss(epochTransition, reason)
     epochTransition = null
+    releaseCarriedEpoch(`retired: ${reason}`)
     clearInterval(keepAliveInterval)
     keepAliveInterval = null
     clearInterval(idleTimer)
@@ -255,9 +266,47 @@ wss.on('connection', (browserWs) => {
     if (revoked) closeConnection(revoked, context)
   }
 
+  // Stop carrying the previous utterance's epoch: subsequent results belong to the new
+  // one. Releasing always moves FORWARD to activeEpoch — never back — because the two
+  // failure directions are not symmetric. Releasing early duplicates a few words;
+  // holding too long stamps fresh speech with a dead epoch and the client discards it.
+  // Skip has told us which of those hurts: "it keeps eating parts of my text." So every
+  // uncertain path here errs toward duplication.
+  function releaseCarriedEpoch(reason) {
+    if (carriedEpoch === null) return
+    clearTimeout(carryTimer)
+    carryTimer = null
+    if (reason !== 'final') {
+      console.log(`[deepgram-sdk-bridge] carry released by ${reason} (epoch ${carriedEpoch} → ${activeEpoch})`)
+    }
+    carriedEpoch = null
+  }
+
   // Advance the epoch on the LIVE socket. This is the path that used to be a full
   // teardown and redial of Deepgram after every message Skip sent.
   function advanceEpochOnLiveSocket(nextEpoch) {
+    // A result describing audio he spoke BEFORE the send must not be stamped with the
+    // epoch AFTER it — that is how the tail of one message reappeared as the head of the
+    // next. Deepgram finishes the in-flight utterance a moment after the bump, both as
+    // the `Finalize` reply and as an ordinary is_final, so the boundary is real and has
+    // to be carried across.
+    //
+    // The boundary is CONTENT — the utterance's own is_final — not a clock. An earlier
+    // version of this used a fixed 1200ms window, which is worse than the bug: any
+    // window that outlasts the boundary stamps fresh speech with the old epoch and loses
+    // his words. And it is not keyed on from_finalize either: only 22 of those exist in
+    // the whole log, while ordinary is_final crossings are the common case.
+    //
+    // Only arm when an utterance is genuinely mid-flight. If nothing is pending there is
+    // nothing to carry, and the common case costs nothing.
+    if (pendingFinalSince && activeEpoch !== null) {
+      carriedEpoch = activeEpoch
+      clearTimeout(carryTimer)
+      // Backstop only. If Deepgram never finalizes, release forward rather than keep
+      // holding — and log it, so a recognizer that stops finalizing shows up as data
+      // instead of as him noticing words go missing.
+      carryTimer = setTimeout(() => releaseCarriedEpoch('backstop timeout'), CARRY_BACKSTOP_MS)
+    }
     activeEpoch = nextEpoch
     epochTransition = null
     preroll = []; prerollBytes = 0
@@ -269,7 +318,8 @@ wss.on('connection', (browserWs) => {
     // epoch_ready (voice.mjs:871), so this line decides whether he is talking into a
     // recognizer or into a backlog buffer. Nothing needs to be waited for: Deepgram
     // takes a continuous stream and attributes post-Finalize audio to the next
-    // utterance.
+    // utterance. The carry above changes only how results are LABELLED, never when his
+    // microphone reopens.
     sendToBrowser(browserWs, { type: 'epoch_ready', epoch: activeEpoch })
     emitBridgeTelemetry()
   }
@@ -388,14 +438,18 @@ wss.on('connection', (browserWs) => {
         lastTranscriptAt = lastSpeechAt
         if (msg.is_final) pendingFinalSince = 0
         else if (!pendingFinalSince) pendingFinalSince = lastTranscriptAt
-        // THE ORDERING THAT MAKES A LIVE-SOCKET EPOCH SWITCH CORRECT — do not collapse
-        // this into `epoch: activeEpoch`, and do not "simplify" the flush window away.
-        // Everything up to and including Deepgram's from_finalize reply describes audio
-        // he spoke BEFORE he hit send, so it carries the OLD epoch and the client drops
-        // it at voice.mjs:2242. Only after that boundary does the new epoch apply.
-        // Tagging these with the new epoch would leak the previous message's tail into
-        // the box he is typing into now.
-        console.log(`[deepgram-sdk-bridge] transcript: is_final=${msg.is_final} speech_final=${msg.speech_final} from_finalize=${msg.from_finalize} epoch=${activeEpoch} "${text.slice(0, 60)}"`)
+        // THE BOUNDARY THAT KEEPS ONE MESSAGE'S TAIL OUT OF THE NEXT — do not collapse
+        // this to `activeEpoch`. When an epoch advances mid-utterance, Deepgram keeps
+        // finishing the OLD one for a moment; those results describe audio he spoke
+        // before he hit send, so they carry the old epoch and the client drops them at
+        // voice.mjs:2242. Stamping them with the new epoch is what made the tail of one
+        // message reappear as the head of the next.
+        //
+        // The release is this is_final — the utterance's own end, a content boundary.
+        // Inclusive: the final itself still belongs to the utterance it closes.
+        const stamped = carriedEpoch ?? activeEpoch
+        if (msg.is_final) releaseCarriedEpoch('final')
+        console.log(`[deepgram-sdk-bridge] transcript: is_final=${msg.is_final} speech_final=${msg.speech_final} from_finalize=${msg.from_finalize} epoch=${stamped} "${text.slice(0, 60)}"`)
         sendToBrowser(browserWs, {
           type: 'transcript',
           text,
@@ -403,7 +457,7 @@ wss.on('connection', (browserWs) => {
           speech_final: msg.speech_final || false,
           from_finalize: msg.from_finalize || false,
           timestamp: Date.now(),
-          epoch: activeEpoch,
+          epoch: stamped,
         })
         emitBridgeTelemetry()
         return
@@ -420,6 +474,9 @@ wss.on('connection', (browserWs) => {
 
       if (msg.type === 'UtteranceEnd') {
         pendingFinalSince = 0
+        // Another real end-of-utterance boundary. If we are still carrying (no is_final
+        // ever arrived), release forward here rather than wait for the backstop.
+        releaseCarriedEpoch('utterance end')
         sendToBrowser(browserWs, { type: 'utterance_end', timestamp: Date.now(), epoch: activeEpoch })
         emitBridgeTelemetry()
         return
@@ -519,6 +576,7 @@ wss.on('connection', (browserWs) => {
 
   function disconnectDeepgram() {
     manuallyClosed = true
+    releaseCarriedEpoch('upstream disconnected')
     clearInterval(keepAliveInterval)
     keepAliveInterval = null
     clearInterval(idleTimer)
