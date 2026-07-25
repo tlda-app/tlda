@@ -2481,6 +2481,21 @@ async function cmdDelete() {
   console.log(green(`Project "${name}" deleted.`))
 }
 
+async function fetchAgentsByExactCwd(cwd, { apiImpl = api } = {}) {
+  const agents = []
+  let cursor = null
+  do {
+    const query = new URLSearchParams({
+      limit: '500',
+    })
+    if (cursor) query.set('cursor', cursor)
+    const page = await apiImpl('GET', `/api/fleet-table?${query.toString()}`)
+    agents.push(...(Array.isArray(page?.agents) ? page.agents : []))
+    cursor = page?.nextCursor || null
+  } while (cursor)
+  return agents.filter(agent => resolve(agent.cwd || '') === cwd)
+}
+
 async function cmdMoveProject() {
   const name = getPositional(0) || await inferProjectName()
   const targetConfig = getPositional(1)
@@ -2494,20 +2509,33 @@ async function cmdMoveProject() {
   if (!project.sourceDir) throw new Error(`Project "${name}" has no local source directory; cannot change daemon ownership.`)
   const sourceDir = resolve(project.sourceDir)
   const projectWorlds = readProjectWorlds(projectWorldsPath(CONFIG_DIR))
-  const sourceConfig = projectWorlds[sourceDir] || selectedConfig
+  const serverConfig = loadServerConfig()
+  const recordedSourceConfig = projectWorlds[sourceDir]
+  const sourceConfig = recordedSourceConfig && serverConfig.servers?.[recordedSourceConfig]
+    ? recordedSourceConfig
+    : selectedConfig
   const alreadyOwned = sourceConfig === targetConfig
   if (sourceConfig !== selectedConfig) {
-    const source = cfg.configs?.[sourceConfig]
+    const source = serverConfig.servers?.[sourceConfig]
     if (!source || typeof source.store !== 'string') throw new Error(`Recorded source config "${sourceConfig}" is missing.`)
     project = await apiAt(source.store.replace(/\/+$/, ''), 'GET', `/api/projects/${encodeURIComponent(name)}`)
   }
   if (!existsSync(sourceDir)) throw new Error(`Project source directory does not exist: ${sourceDir}`)
-  const targetServer = target.store.replace(/\/+$/, '')
+  const targetServer = target.store.http.replace(/\/+$/, '')
+  const associatedAgents = await fetchAgentsByExactCwd(sourceDir)
   if (hasFlag('dry-run')) {
     console.log(`[dry-run] would ${alreadyOwned ? 'ensure' : 'move'} project "${name}" ${alreadyOwned ? `in ${targetConfig}` : `from ${sourceConfig} to ${targetConfig}`}`)
     console.log(`  working directory stays: ${sourceDir}`)
     console.log(`  daemon ownership becomes: ${targetConfig}`)
     console.log(`  target viewer: ${targetServer}/?doc=${encodeURIComponent(name)}`)
+    if (associatedAgents.length) {
+      console.log(`  associated agents: ${associatedAgents.map(agent => agent.friendly_name || agent.name || agent.id).join(', ')}`)
+      for (const agent of associatedAgents) {
+        await moveAgentToEnvironment({ agent, targetEnv: targetConfig, sourceEnv: sourceConfig, dryRun: true, logPrefix: '  ' })
+      }
+    } else {
+      console.log('  associated agents: none')
+    }
     return
   }
 
@@ -2548,6 +2576,17 @@ async function cmdMoveProject() {
   console.log(dim(`  Daemon ownership: ${targetConfig}`))
   console.log(dim(`  Target viewer: ${targetServer}/?doc=${encodeURIComponent(name)}`))
   console.log(green(`  ${targetConfig} daemon world is running.`))
+  if (!associatedAgents.length) {
+    console.log(dim('  Associated agents: none'))
+    return
+  }
+  console.log(`Moving ${associatedAgents.length} associated agent${associatedAgents.length === 1 ? '' : 's'} whose cwd is ${sourceDir}:`)
+  const moved = []
+  for (const agent of associatedAgents) {
+    const result = await moveAgentToEnvironment({ agent, targetEnv: targetConfig, sourceEnv: sourceConfig, logPrefix: '  ' })
+    moved.push(result)
+  }
+  console.log(green(`  Associated agents moved: ${moved.map(result => result.name).join(', ')}`))
 }
 
 async function cmdMcpSetup() {
