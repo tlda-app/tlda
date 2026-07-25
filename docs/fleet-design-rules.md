@@ -117,11 +117,17 @@ it to *look at*.
 > that we're not getting errors is just because there were fallbacks or whatever. Just
 > don't display it if it's not [there]."
 
-A display fallback is the no-fallback rule in its most damaging form: it manufactures a
-plausible value, so the absence never surfaces as an error and nobody learns the data
-stopped arriving. Model and effort disappearing from the panel went unnoticed for
-exactly this reason. A blank is information; an invented default is a lie that also
-suppresses the bug report.
+Skip's clarification, because the mechanism matters and I got it wrong first:
+*"It doesn't have any plausible value. It just doesn't fucking show the thing."*
+
+Nothing fabricates a fake model. The field simply vanishes. Not displaying an absent
+value is the **correct** behaviour and should stay — the defect is that the data stopped
+arriving and **the fallbacks upstream meant no error was ever raised**, so a field
+disappearing from his panel looked identical to a field that was never meant to be
+there.
+
+So: keep showing nothing, and make the *absence* loud somewhere it isn't a fallback's
+job to hide.
 
 The server holds the agent id, which daemon owns it, and the friendly name. Not the
 session id, not session lists, not resume ids, not tmux information.
