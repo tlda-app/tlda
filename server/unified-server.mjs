@@ -8173,12 +8173,19 @@ async function handleDaemonWsMessage(ws, msg) {
   if (type === 'agent-status') {
     const { agentId, state, tool, ts } = msg
     if (!agentId || !state || !fleetStore) return
-    const currentSeat = currentSeatForDaemonEvent(fleetStore, {
+    // Same rule as activity: drop only what belongs to ANOTHER daemon. A missing
+    // seat row is bookkeeping, and an agent that is visibly running a tool has a
+    // status whether or not we know which seat it sits in.
+    //
+    // Skip: "status in the app is horrible." This is one mechanism behind that —
+    // a seatless agent reported no status at all, silently, so the roster showed
+    // it doing nothing while the daemon described its every tool call.
+    const statusSeat = daemonEventSeatDecision(fleetStore, {
       agentId,
       daemonKey: ws._daemonKey,
       family: 'daemon-agent-status',
     })
-    if (!currentSeat) return
+    if (isForeignDaemonRejection(statusSeat)) return
     fleetStore.updateAgentStatus?.(agentId, state, tool, ts)
     // Display feed only — no liveness publishing (see the identical rule on
     // the WS agent-status handler above).
@@ -8248,12 +8255,20 @@ async function handleDaemonWsMessage(ws, msg) {
   if (type === 'agent-liveness') {
     const { agent_id, state, pid, reason, ts } = msg
     if (!agent_id || !state) return
-    const currentSeat = currentSeatForDaemonEvent(fleetStore, {
+    // Same rule again, and the liveness BATCH handler already worked this way:
+    // it honours a death report for an unseated agent rather than dropping it.
+    // This single-agent path disagreed with its own batch sibling, so whether an
+    // agent counted as alive depended on which message carried the news.
+    //
+    // A process either exists or it does not. Making that answer conditional on
+    // a seat row is how the roster comes to say an agent is hibernating while it
+    // is running — and a wrongly-hibernating agent can get reaped.
+    const livenessSeat = daemonEventSeatDecision(fleetStore, {
       agentId: agent_id,
       daemonKey: ws._daemonKey,
       family: 'daemon-agent-liveness',
     })
-    if (!currentSeat) return
+    if (isForeignDaemonRejection(livenessSeat)) return
     spawnLibrarian.observeLiveness({ type, agent_id, state, pid, reason, ts })
     if (state === 'alive') {
       // Liveness ≠ activity (see the batch handler above): this is a 30s "process
