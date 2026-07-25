@@ -25,3 +25,73 @@ selection such as `TLDA_CONFIG` and `TLDA_SERVER`. Until that lands,
 `scratch/restart-daemon.sh` is the manual recovery path: it kills the stale
 daemon, removes stale pid/lock files, strips the sandbox/DNS environment, starts
 the daemon from `/Users/skip/work/tlda`, and prints heartbeat plus `lsof` proof.
+
+## 2026-07-25: it dies silently, and launchd will not take it back
+
+Two more failures, found the hard way during a 25-minute outage of the
+`mini:default` daemon. Both are ours to fix — this is the app, not ops. The
+route-to-ops guidance exists so a *math* agent doesn't abandon a proof to chase
+infrastructure; it was never a lane boundary for app developers.
+
+### 1. A bad `daemon.yaml` kills the daemon with a zero-byte log
+
+`daemon.yaml` is validated against a **closed allow-list**
+(`DAEMON_CONFIG_TOP_LEVEL_KEYS` in `shared/daemon-config-schema.mjs`). An unknown
+key makes the daemon refuse to start:
+
+```
+Error: daemon config supports only defaultServer, machineId, regions, profiles,
+grants, models, default, tmuxSocket, taskDoc, spawnMachineId, servers;
+unknown key(s): statusScanSeconds
+```
+
+The trap is not the validation — it is that **nothing records it**. The daemon
+doesn't fail at edit time; it dies on its *next* restart, and
+`~/.config/tlda/fleet-daemon.log` stays **0 bytes**. So the symptom is: `pgrep -f
+fleet-daemon` returns nothing, the server shows no daemon connection, activity
+cards and terminal-agent chat stop, and there is no error anywhere on disk. The
+only way it was diagnosed was running the daemon in the foreground.
+
+**If the daemon is missing and its log is empty, run it in the foreground first
+— don't go looking for a cause that was never written down:**
+
+```bash
+cd /Users/skip/work/tlda
+PATH=/opt/homebrew/bin:$PATH TLDA_CONFIG=default \
+  /opt/homebrew/bin/node --import tsx bin/fleet-daemon.mjs
+```
+
+**Adding a new daemon.yaml setting requires naming it in the allow-list in the
+same change.** A named setting the schema rejects is not a named setting. Worth
+fixing properly: write the validation error somewhere durable before exiting, so
+this failure announces itself instead of presenting as an absence.
+
+### 2. `com.tlda.fleet-daemon` will not bootstrap; the running daemon is unsupervised
+
+```
+launchctl bootstrap gui/501 ~/Library/LaunchAgents/com.tlda.fleet-daemon.plist
+  → Bootstrap failed: 5: Input/output error
+launchctl print gui/501/com.tlda.fleet-daemon
+  → Could not find service "com.tlda.fleet-daemon" in domain for user gui: 501
+launchctl list | grep -i tlda
+  → (nothing; no tlda jobs loaded at all)
+```
+
+`bootout` first returns `3: No such process`, and `bootstrap` still fails the
+same way afterwards. The plist itself inspects fine — `KeepAlive`, `RunAtLoad`,
+correct node path, `TLDA_CONFIG=default` — so this reads as a launchd
+registration problem rather than a bad plist. Several `.plist.before-*` backups
+sit in `~/Library/LaunchAgents/` from earlier interventions and may be related.
+
+**Current state: `mini:default` runs under `nohup`, so nothing restarts it if it
+dies.** `mini:stable` is supervised normally. This likely predates the outage —
+`fleet-daemon.log` was 0 bytes dated 19:04 while `fleet-daemon.stable.log` was
+actively written through 22:51, so `default` was already running outside launchd
+beforehand.
+
+Two daemons on this machine is **correct**, not a duplicate: one per environment.
+Check `TLDA_CONFIG` per pid before concluding otherwise:
+
+```bash
+pgrep -f fleet-daemon | while read p; do ps eww $p | tr ' ' '\n' | grep ^TLDA_CONFIG=; done
+```
