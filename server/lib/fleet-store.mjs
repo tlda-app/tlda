@@ -3717,10 +3717,12 @@ export class FleetStore {
 
     const hasMore = events.length > cap;
     if (hasMore) events.shift();
-    events = events.filter(e => {
-      const t = e.text || '';
-      return !t.startsWith('<channel') && !t.startsWith('<task-notification') && !t.startsWith('<system-reminder');
-    });
+    // No content filtering here. It used to drop <channel/<task-notification/
+    // <system-reminder, which (a) disagreed with the live path's own drop list,
+    // so those messages appeared live and vanished on reload, and (b) ran AFTER
+    // hasMore and the shift(), so a page of `cap` containing protocol rows came
+    // back short with a nextCursor that looked correct. Display rules live in
+    // renderChatLine, which both paths go through.
 
     const agentMap = { ...this.getAgentNameMap() };
     if (serverOwnerId || serverOwnerName) {

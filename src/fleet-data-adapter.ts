@@ -52,7 +52,7 @@ import {
   viewFleetEvents,
   type FleetEvent,
 } from './fleet/fleet-data.ts'
-import { resolveFleetFilter } from './fleet/filter-semantics.mjs'
+import { resolveFleetFilter } from '../shared/filter-semantics.mjs'
 import {
   getPlaybackData,
   subscribePlayback,

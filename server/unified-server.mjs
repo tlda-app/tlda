@@ -23,6 +23,7 @@ if (!process.argv.includes('--i-am-tlda-cli')) {
   process.exit(1)
 }
 
+import { createFilterSubscriptions } from './lib/filter-subscriptions.mjs'
 import './lib/observability/otel-node.mjs'
 import express from 'express'
 import { createServer } from 'http'
@@ -1326,6 +1327,59 @@ setShadowMirrorHandler(createShadowMirrorRpcHandler({ readProject, sendDaemonEph
 // includes the event ID, which the client maps to its optimistic event
 // before the echo arrives (WS message ordering guarantees this).
 
+// Filter subscriptions — a chat is a filter, and the server answers it.
+//
+// ADDITIVE FOR NOW. Matching events are pushed as 'filter-event' ALONGSIDE the
+// unconditional 'fleet-event' broadcast; nothing is withheld from anyone. That
+// lets the client subscribe and compare the two streams on real traffic before
+// anything is deleted. Gating broadcastFleet itself is the deletion, and it
+// waits for that equivalence to be proven.
+const filterSubscriptions = createFilterSubscriptions({
+  getAgents: () => fleetStore?.getAllAgents?.() || [],
+})
+
+// Liveness counters for the filter push.
+//
+// The deletion of the client spool is gated on a comparator staying quiet — and
+// a quiet comparator is indistinguishable from one that never ran. These make
+// the difference checkable: subscriptions 0 or eventsSeen 0 on a live server
+// with panels open means the path is not running, not that it agrees.
+const filterPushCounters = {
+  eventsSeen: 0,
+  eventsMatched: 0,
+  deliveries: 0,
+  evaluations: 0,
+  matchFaults: 0,
+  lastEventAt: null,
+  lastDeliveryAt: null,
+}
+
+function pushFilteredEvent(data) {
+  if (!data) return
+  filterPushCounters.eventsSeen++
+  filterPushCounters.lastEventAt = new Date().toISOString()
+  let matched
+  try {
+    matched = filterSubscriptions.match(data)
+  } catch (e) {
+    // A filter fault must never take down the broadcast everyone still relies on.
+    filterPushCounters.matchFaults++
+    console.warn('[filter-subs] match failed:', e.message)
+    return
+  }
+  filterPushCounters.evaluations += matched.evaluations || 0
+  if (matched.length) {
+    filterPushCounters.eventsMatched++
+    filterPushCounters.deliveries += matched.length
+    filterPushCounters.lastDeliveryAt = filterPushCounters.lastEventAt
+  }
+  for (const { conn, subId } of matched) {
+    try {
+      if (conn.readyState === 1) conn.send(JSON.stringify({ event: 'filter-event', data: { subId, event: data } }))
+    } catch { /* the socket's own close path cleans up */ }
+  }
+}
+
 function broadcastFleet(msg) {
   const operation = fleetOperationContext.getStore()
   const data = JSON.stringify(operation && !msg.fleet_operation
@@ -1359,6 +1413,7 @@ function broadcastEvent(type, data) {
     })
   }
   broadcastFleet({ event: type, data })
+  if (type === 'fleet-event') pushFilteredEvent(data)
 }
 
 serverTimerScheduler = new ServerTimerScheduler({
@@ -3027,6 +3082,19 @@ app.post('/api/log', (req, res) => {
     })
   }
   res.json({ ok: true, n: lines.length })
+})
+
+// Is the filter path running at all? Answers the question a silent comparator
+// cannot: subscriptions 0 means no client is asking; eventsSeen 0 means no
+// event reached the push; deliveries 0 with subscriptions > 0 means nothing
+// matched. Silence in the comparator is only evidence of agreement when these
+// are non-zero.
+app.get('/api/diagnostics/filter-subscriptions', requireRead, (req, res) => {
+  res.json({
+    ...filterSubscriptions.stats(),
+    ...filterPushCounters,
+    rosterSize: (fleetStore?.getAllAgents?.() || []).length,
+  })
 })
 
 app.get('/api/diagnostics/live-perf', requireRead, (req, res) => {
@@ -4860,6 +4928,7 @@ server.on('upgrade', async (req, socket, head) => {
       ws.on('close', (code, reason) => {
         logWsClose('fleet', ws, code, reason?.toString?.() || '')
         wsFleetClients.delete(ws)
+        filterSubscriptions.dropConnection(ws)
         // Unsubscribe the agent from all tlda-feedback watches so stale
         // subscriptions don't accumulate across MCP respawns.
         if (ws._tldaAgentId) {
@@ -4873,6 +4942,7 @@ server.on('upgrade', async (req, socket, head) => {
       })
       ws.on('error', () => {
         wsFleetClients.delete(ws)
+        filterSubscriptions.dropConnection(ws)
         if (ws._tldaAgentId && agentFleetConnections.get(ws._tldaAgentId) === ws) {
           agentFleetConnections.delete(ws._tldaAgentId)
         }
@@ -7277,6 +7347,29 @@ async function handleFleetWsMessage(ws, msg) {
     fleetStore.markDead(agentId)
     broadcastState()
     reply({ ok: true })
+    return
+  }
+
+  // ---- filter subscriptions ----
+  if (type === 'subscribe-filter') {
+    try {
+      const { subId, filter } = msg
+      if (!subId) return error('subscribe-filter requires subId')
+      filterSubscriptions.subscribe(ws, subId, filter || null, {
+        humanId: msg.humanId || ws._tldaAgentId || null,
+        humanName: msg.humanName || null,
+      })
+      reply({ ok: true, ...filterSubscriptions.stats() })
+    } catch (e) { error(e.message) }
+    return
+  }
+
+  if (type === 'unsubscribe-filter') {
+    try {
+      if (!msg.subId) return error('unsubscribe-filter requires subId')
+      filterSubscriptions.unsubscribe(ws, msg.subId)
+      reply({ ok: true, ...filterSubscriptions.stats() })
+    } catch (e) { error(e.message) }
     return
   }
 

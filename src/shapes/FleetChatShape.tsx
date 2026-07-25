@@ -49,7 +49,7 @@ import {
   matchesFleetFilter,
   nextFleetComposerTrafficMode,
   quietTrafficSuppressesActivity,
-} from '../fleet/filter-semantics.mjs'
+} from '../../shared/filter-semantics.mjs'
 import { openTerminalTransport, type TerminalTransport } from '../fleet/terminal-transport'
 import { labelsForAgent } from '../../shared/fleet-labels.mjs'
 import { runtimeStatusName } from '../../shared/fleet-runtime-status.mjs'
