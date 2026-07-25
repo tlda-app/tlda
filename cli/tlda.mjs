@@ -18,7 +18,7 @@ import { collectSourceFiles, collectSourceHashes, collectSpecificFiles } from '.
 import { diffSourceHashes, normalizeSourceManifest } from '../shared/source-manifest.mjs'
 import { collectHtmlArtifactFiles, htmlArtifactMainForSource } from './lib/html-artifact-files.mjs'
 import {
-  loadCliConfig, saveCliConfig, resolveConfig, getServerUrl, getFleetServerUrl, getRwToken, getReadToken, saveTokens, getActiveConfigName, DEFAULT_PORT,
+  loadCliConfig, saveCliConfig, loadServerConfig, resolveConfig, getServerUrl, getFleetServerUrl, getRwToken, getReadToken, saveTokens, getActiveConfigName, DEFAULT_PORT,
   CONFIG_DIR, hasTls, TLS_CA_PATH, getManagedBots, getMachineId,
 } from '../shared/config.mjs'
 import { tldaFetch } from '../shared/http-client.mjs'
@@ -26,6 +26,7 @@ import { DEV_COMMANDS } from './lib/dev-commands.mjs'
 import { getFunnelUrl, findTailscaleIPv4, selectDevShareBase, selectDocShareBase, viewerLoginUrl } from './lib/share-url.mjs'
 import { scanMarkdownDeps } from '../shared/markdown-deps.mjs'
 import { cmdLogs } from './lib/unified-logs.mjs'
+import { planLaunchdApply } from './lib/config-apply-plan.mjs'
 import { formatSystemStatus } from './lib/system-status.mjs'
 import {
   bootstrapLaunchdJob,
@@ -200,7 +201,7 @@ const COMMAND_HELP = {
   daemon:  'tlda daemon [start|stop|status|log|run|install|uninstall]\n\n  Control the per-machine fleet daemon.\n  It watches project source directories and agent session activity,\n  then pushes events to the tlda server over WebSocket.',
   doctor:  'tlda doctor [--fix]\ntlda doctor yolo [--name yolo] --model <provider-model> [--kind codex] [--cwd /path] [--no-attach] [--dry-run]\n\n  Run a health check for local tools, server, SPA bundle, daemon, MCP setup,\n  project builds, and doc sync stores.\n\n  --fix  Apply the limited automatic repairs that doctor explicitly offers.\n\n  yolo   Break-glass: locally launch an unrestricted repair agent outside the\n         normal daemon/server/grant path. Deliberately shallow so it works when\n         the normal spawn path is broken.\n\n         --model names the provider model directly. --kind selects the harness\n         and defaults to codex. Run in a terminal and it attaches you into the\n         agent session when it comes up (--no-attach to skip). Non-interactive\n         calls report the local tmux session and local mint id; they do not claim\n         a fleet-recipient binding.',
   'repo-doctor': 'tlda doc repo-doctor <project> [--rescue|--apply|--rollback|--cleanup]\n\n  Diagnose a project source repo for tlda-induced damage.\n  No flag: diagnose only (read-only).\n  --rescue   Compute a rescue plan (dry run).\n  --apply    Execute the rescue plan.\n  --rollback Roll back a previous rescue apply.\n  --cleanup  Clean rescue apply state.',
-  config:  'tlda config [set <key> <value> | get [key]]\n\n  Manage persistent configuration.\n  Example: tlda config set server http://myhost:5176',
+  config:  'tlda config [apply | set <key> <value> | get [key]]\n\n  apply  Reconcile launchd jobs to daemon.yaml, bots.yaml, and the installed server job.\n  set    Manage CLI preferences.\n  get    Show CLI preferences.',
 }
 
 // Flags that take a value (--flag value). All others are boolean.
@@ -964,7 +965,12 @@ async function cmdInit() {
 // shorthand and `tlda daemon start` — Phase 1 doesn't deprecate
 // either. If the first positional is start/stop/status/log/run we
 // route here, otherwise we fall through to the existing watcher.
-const DAEMON_WORLD_NAME = getActiveConfigName() || 'default'
+let DAEMON_WORLD_NAME
+try {
+  DAEMON_WORLD_NAME = getActiveConfigName() || 'default'
+} catch {
+  DAEMON_WORLD_NAME = process.env.TLDA_CONFIG || 'default'
+}
 const DAEMON_WORLD_SUFFIX = DAEMON_WORLD_NAME === 'default' ? '' : `.${DAEMON_WORLD_NAME.replace(/[^a-zA-Z0-9._-]+/g, '-')}`
 const FLEET_DAEMON_LOGFILE = join(homedir(), '.config', 'tlda', `fleet-daemon${DAEMON_WORLD_SUFFIX}.log`)
 const FLEET_DAEMON_PIDFILE = join(homedir(), '.config', 'tlda', `fleet-daemon${DAEMON_WORLD_SUFFIX}.pid`)
@@ -1192,7 +1198,7 @@ function botEnvironmentEntries(bot, paths) {
     ['TLDA_BOT_TMUX_SESSION', paths.tmuxSession],
   ]
   if (existsSync(TLS_CA_PATH)) entries.push(['NODE_EXTRA_CA_CERTS', TLS_CA_PATH])
-  if (process.env.TLDA_CONFIG) entries.push(['TLDA_CONFIG', process.env.TLDA_CONFIG])
+  if (bot.server) entries.push(['TLDA_CONFIG', String(bot.server)])
   for (const [key, value] of Object.entries(bot.env || {})) entries.push([key, String(value)])
   return entries
 }
@@ -1271,6 +1277,255 @@ function writeBotPlist(bot) {
   if (!existsSync(dirname(paths.logFile))) mkdirSync(dirname(paths.logFile), { recursive: true })
   writeFileSync(paths.plist, botPlistContent(bot))
   return paths
+}
+
+function launchAgentsDir() {
+  return join(homedir(), 'Library', 'LaunchAgents')
+}
+
+function labelPlistPath(label) {
+  return join(launchAgentsDir(), `${label}.plist`)
+}
+
+function daemonConfigSuffix(configName) {
+  return configName === 'default' ? '' : `.${String(configName).replace(/[^a-zA-Z0-9._-]+/g, '-')}`
+}
+
+function daemonJobForConfigName(configName) {
+  const suffix = daemonConfigSuffix(configName)
+  const label = `com.tlda.fleet-daemon${suffix}`
+  const logFile = join(CONFIG_DIR, `fleet-daemon${suffix}.log`)
+  const plist = labelPlistPath(label)
+  return {
+    kind: 'daemon',
+    name: configName,
+    label,
+    plist,
+    content: daemonPlistContent({ label, logFile, configName }),
+  }
+}
+
+function botJob(bot) {
+  const paths = botServicePaths(bot.name)
+  return {
+    kind: 'bot',
+    name: bot.name,
+    label: paths.label,
+    plist: paths.plist,
+    content: botPlistContent(bot),
+  }
+}
+
+function serverLaunchdLabel() {
+  return 'com.tlda.server'
+}
+
+function serverPlistPath() {
+  return labelPlistPath(serverLaunchdLabel())
+}
+
+function serverScriptPath() {
+  return join(dirname(fileURLToPath(import.meta.url)), '..', 'server', 'unified-server.mjs')
+}
+
+function nodePathForLaunchd() {
+  try {
+    return execFileSync('which', ['node'], { stdio: 'pipe', encoding: 'utf8' }).trim()
+  } catch {
+    return '/opt/homebrew/bin/node'
+  }
+}
+
+function serverPlistContent({ nodePath = nodePathForLaunchd(), port = getPort(), logFile = LOGFILE } = {}) {
+  const tokenEnvLines = []
+  const tokenRw = getRwToken()
+  const tokenRead = getReadToken()
+  if (tokenRw) tokenEnvLines.push(`        <key>TLDA_TOKEN_RW</key>\n        <string>${plistEscape(tokenRw)}</string>`)
+  if (tokenRead) tokenEnvLines.push(`        <key>TLDA_TOKEN_READ</key>\n        <string>${plistEscape(tokenRead)}</string>`)
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>${serverLaunchdLabel()}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>${plistEscape(nodePath)}</string>
+        <string>--import</string>
+        <string>tsx</string>
+        <string>${plistEscape(serverScriptPath())}</string>
+        <string>--i-am-tlda-cli</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PORT</key>
+        <string>${plistEscape(port)}</string>
+        <key>PATH</key>
+        <string>${plistEscape(`${dirname(nodePath)}:/usr/local/bin:/usr/bin:/bin`)}</string>
+${tokenEnvLines.join('\n')}
+${hasTls ? `        <key>NODE_EXTRA_CA_CERTS</key>\n        <string>${plistEscape(TLS_CA_PATH)}</string>` : ''}
+    </dict>
+    <key>KeepAlive</key>
+    <true/>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>${plistEscape(logFile)}</string>
+    <key>StandardErrorPath</key>
+    <string>${plistEscape(logFile)}</string>
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+</dict>
+</plist>
+`
+}
+
+function serverJobIfInstalled() {
+  const plist = serverPlistPath()
+  if (!existsSync(plist)) return null
+  return {
+    kind: 'server',
+    name: 'server',
+    label: serverLaunchdLabel(),
+    plist,
+    content: serverPlistContent(),
+  }
+}
+
+function desiredLaunchdJobs() {
+  const serverConfig = loadServerConfig()
+  const serverNames = Object.keys(serverConfig.servers || {}).sort()
+  const jobs = [
+    ...serverNames.map(name => daemonJobForConfigName(name)),
+    ...configuredBots().map(botJob),
+  ]
+  const serverJob = serverJobIfInstalled()
+  if (serverJob) jobs.push(serverJob)
+  return jobs
+}
+
+function isManagedLaunchdLabel(label) {
+  return label === 'com.tlda.fleet-daemon' ||
+    label.startsWith('com.tlda.fleet-daemon.') ||
+    label.startsWith('com.tlda.bot.') ||
+    label === serverLaunchdLabel()
+}
+
+function existingManagedLaunchdJobs() {
+  const dir = launchAgentsDir()
+  if (!existsSync(dir)) return []
+  return readdirSync(dir)
+    .filter(file => file.endsWith('.plist'))
+    .map(file => {
+      const label = file.slice(0, -'.plist'.length)
+      if (!isManagedLaunchdLabel(label)) return null
+      const plist = join(dir, file)
+      return { label, plist, content: readFileSync(plist, 'utf8') }
+    })
+    .filter(Boolean)
+}
+
+function writeLaunchdJob(job) {
+  if (!existsSync(dirname(job.plist))) mkdirSync(dirname(job.plist), { recursive: true })
+  const logPath = job.content.match(/<key>StandardOutPath<\/key>\s*<string>([^<]+)/)?.[1]
+  if (logPath && !existsSync(dirname(logPath))) mkdirSync(dirname(logPath), { recursive: true })
+  writeFileSync(job.plist, job.content)
+}
+
+async function applyLaunchdOperation(job, operation) {
+  const target = daemonLaunchdTarget(job.label)
+  const bootoutIfLoaded = async () => {
+    try {
+      await runLaunchctl(['bootout', target])
+    } catch (e) {
+      const text = e?.message || String(e)
+      if (/No such process/i.test(text) || /Could not find service/i.test(text)) return
+      throw e
+    }
+  }
+  const bootstrapAndKickstart = async () => {
+    await bootstrapLaunchdJob({
+      plist: job.plist,
+      label: job.label,
+      domain: daemonLaunchdDomain(),
+      runLaunchctl,
+    })
+  }
+  try {
+    if (operation === 'add') {
+      writeLaunchdJob(job)
+      await bootstrapAndKickstart()
+    } else if (operation === 'update') {
+      writeLaunchdJob(job)
+      await bootoutIfLoaded()
+      await bootstrapAndKickstart()
+    } else if (operation === 'remove') {
+      await bootoutIfLoaded()
+      if (existsSync(job.plist)) unlinkSync(job.plist)
+    } else {
+      throw new Error(`unknown launchd apply operation: ${operation}`)
+    }
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, error: e?.message || String(e) }
+  }
+}
+
+function printApplyGroup(title, jobs) {
+  console.log(`${title}: ${jobs.length}`)
+  for (const job of jobs) {
+    console.log(`  ${job.label}`)
+    console.log(dim(`    ${job.plist}`))
+  }
+}
+
+async function cmdConfigApply() {
+  requireLaunchd()
+  const dryRun = hasFlag('dry-run')
+  const desired = desiredLaunchdJobs()
+  const existing = existingManagedLaunchdJobs()
+  const plan = planLaunchdApply({ desiredJobs: desired, existingJobs: existing })
+  const failures = []
+
+  if (dryRun) console.log(yellow('Dry run: no plists written and no launchctl commands run.'))
+  console.log(`Declaration: ${CONFIG_DIR}`)
+  console.log(`LaunchAgents: ${launchAgentsDir()}`)
+  printApplyGroup('Add', plan.add)
+  printApplyGroup('Update', plan.update)
+  printApplyGroup('Remove', plan.remove)
+  printApplyGroup('Unchanged', plan.unchanged)
+
+  if (dryRun) return
+
+  for (const job of plan.add) {
+    const result = await applyLaunchdOperation(job, 'add')
+    if (result.ok) console.log(green(`Added ${job.label}`))
+    else failures.push({ job, op: 'add', error: result.error })
+  }
+  for (const job of plan.update) {
+    const result = await applyLaunchdOperation(job, 'update')
+    if (result.ok) console.log(green(`Updated ${job.label}`))
+    else failures.push({ job, op: 'update', error: result.error })
+  }
+  for (const job of plan.remove) {
+    const result = await applyLaunchdOperation(job, 'remove')
+    if (result.ok) console.log(green(`Removed ${job.label}`))
+    else failures.push({ job, op: 'remove', error: result.error })
+  }
+
+  for (const job of plan.unchanged) {
+    console.log(dim(`Unchanged ${job.label}`))
+  }
+
+  if (failures.length) {
+    console.error(red(`tlda config apply failed for ${failures.length} job(s):`))
+    for (const failure of failures) {
+      console.error(red(`  ${failure.op} ${failure.job.label}: ${failure.error}`))
+    }
+    process.exit(1)
+  }
+
+  console.log(green('tlda config apply complete.'))
 }
 
 async function bootstrapBot(bot) {
@@ -2215,7 +2470,9 @@ async function cmdMcpSetup() {
 
 async function cmdConfig() {
   const sub = getPositional(0)
-  if (sub === 'set') {
+  if (sub === 'apply') {
+    await cmdConfigApply()
+  } else if (sub === 'set') {
     const key = getPositional(1)
     const value = getPositional(2)
     if (!key || !value) { console.error('Usage: tlda config set <key> <value>'); process.exit(1) }
@@ -2276,7 +2533,7 @@ function cmdCompletions() {
     'list', 'mint', 'wake', 'move', 'set-mint-machine',
     'check-ready', 'attach', 'hibernate', 'dismiss', 'permission', 'permissions', 'models',
   ].map(s => `'${s}'`).join(' ')
-  const configSubs = ['set', 'get', 'setup', 'mcp-setup', 'auth'].map(s => `'${s}'`).join(' ')
+  const configSubs = ['apply', 'set', 'get', 'setup', 'mcp-setup', 'auth'].map(s => `'${s}'`).join(' ')
 
   console.log(`#compdef tlda
 # Install: tlda completions > ~/.zsh/completions/_tlda && fpath=(~/.zsh/completions $fpath)
