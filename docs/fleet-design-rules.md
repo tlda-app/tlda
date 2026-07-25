@@ -146,6 +146,22 @@ server-side — the JSONLs carry their own login markers and are the record.
 **History is never destroyed.** Live code stops depending on old fields; existing rows
 stay as they are.
 
+## "Ask ops" is for math agents. App agents own the app.
+
+> "You guys are app developers. It's your fucking app. Why are you acting like this is
+> somebody else's problem? That instruction was for math agents."
+
+> "It was literally saying: if something is wrong with the app that's preventing you from
+> doing math, don't debug the app."
+
+The route-to-ops guidance exists so a **math** agent doesn't abandon a proof to debug
+infrastructure. It is not a lane boundary for people building tlda. If you are working
+on this app and you hit a broken daemon, an unloaded launchd job, a dead socket or a
+misconfigured box, that is your problem — infrastructure included.
+
+Handing it to ops is the same defect as everything else here: a second mechanism for a
+job you already own, and one that leaves the work undone when the other seat is asleep.
+
 ## A stray fleet shape is a permanent tax on every client
 
 Fleet panels are shapes in the shared Yjs canvas, so **every client instantiates every
