@@ -1344,6 +1344,15 @@ const filterSubscriptions = createFilterSubscriptions({
 // a quiet comparator is indistinguishable from one that never ran. These make
 // the difference checkable: subscriptions 0 or eventsSeen 0 on a live server
 // with panels open means the path is not running, not that it agrees.
+// startedAt/uptimeMs are NOT optional. These are process-lifetime counters, so a
+// zero after a restart is indistinguishable from a zero that never moved — and on
+// 2026-07-25 that ambiguity misled a teammate within minutes of shipping: a
+// sample taken between a 12:53:02Z restart and the 12:56:09Z resumption read
+// eventsMatched: 0 and was reported as "the rebuild matches nothing", when it had
+// matched at 12:52:29Z and matched again three minutes later.
+//
+// Invariant 5 in scratch/server-side-filter-handoff.md, closed here: a counter
+// that can reset must say when it started.
 const filterPushCounters = {
   eventsSeen: 0,
   eventsMatched: 0,
@@ -1353,6 +1362,7 @@ const filterPushCounters = {
   lastEventAt: null,
   lastDeliveryAt: null,
 }
+const filterPushStartedAt = new Date().toISOString()
 
 function pushFilteredEvent(data) {
   if (!data) return
@@ -3093,6 +3103,9 @@ app.get('/api/diagnostics/filter-subscriptions', requireRead, (req, res) => {
   res.json({
     ...filterSubscriptions.stats(),
     ...filterPushCounters,
+    // Read these before reading any zero above.
+    startedAt: filterPushStartedAt,
+    uptimeMs: Date.now() - Date.parse(filterPushStartedAt),
     rosterSize: (fleetStore?.getAllAgents?.() || []).length,
   })
 })
