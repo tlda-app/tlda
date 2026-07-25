@@ -70,6 +70,28 @@ export function createFilterSubscriptions({ getAgents } = {}) {
     let entry = byFilter.get(key)
     if (!entry) { entry = { filter, subs: new Map() }; byFilter.set(key, entry) }
     const sk = subKeyOf(conn, subId)
+    // Re-subscribing an existing subId REPLACES it. Without this, a panel that
+    // refilters keeps its old entry under the old filterKey — so it matches
+    // both filters and receives every qualifying event twice. Refiltering is
+    // the workaround people reach for when a panel looks stuck, which is
+    // exactly when a duplicate-delivery bug would land.
+    //
+    // Re-sending the SAME filter (the identity-refresh path) is unaffected:
+    // same filterKey means same entry, and the set() below overwrites in place.
+    for (const [otherKey, otherEntry] of byFilter) {
+      if (otherKey === key) continue
+      if (otherEntry.subs.delete(sk)) {
+        const keys = byConn.get(conn)
+        if (keys) {
+          let stillHeld = false
+          for (const sub of otherEntry.subs.values()) {
+            if (sub.conn === conn) { stillHeld = true; break }
+          }
+          if (!stillHeld) keys.delete(otherKey)
+        }
+        if (otherEntry.subs.size === 0) byFilter.delete(otherKey)
+      }
+    }
     entry.subs.set(sk, { conn, subId, humanId, humanName })
     let keys = byConn.get(conn)
     if (!keys) { keys = new Set(); byConn.set(conn, keys) }
