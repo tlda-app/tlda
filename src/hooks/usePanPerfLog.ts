@@ -1,4 +1,8 @@
 /**
+ * Client-side performance capture. Two hooks, one self-profiler:
+ *   - usePanPerfLog        — frame-health during a camera pan/zoom gesture.
+ *   - useLongTaskProfileLog — a JS self-profile whenever the main thread stalls.
+ *
  * usePanPerfLog — sample camera-pan frame-health and POST it to the client log.
  *
  * Captures real on-device numbers (median/max frame delta, dropped-frame count,
@@ -21,6 +25,12 @@ const MIN_FRAMES = 12 // ignore tiny nudges
 const PROFILE_SAMPLE_INTERVAL_MS = 10
 const PROFILE_MAX_BUFFER_SIZE = 2_000
 const PROFILE_SLOW_FRAME_MS = 50
+// Stall size worth a stack. The existing observer in livePerfProbe records every
+// task over 50ms; that is far too chatty to attach a profile to. This is tuned to
+// "uncomfortably bad", not "measurable".
+const LONGTASK_PROFILE_MS = 200
+const MAX_LONGTASK_PROFILES = 10
+const LONGTASK_PROFILE_MIN_GAP_MS = 15_000
 
 type PanSummary = {
   frames: number
@@ -59,7 +69,7 @@ declare global {
   }
 }
 
-function startPanProfiler(): SelfProfiler | null {
+function startSelfProfiler(): SelfProfiler | null {
   const Profiler = window.Profiler
   if (typeof Profiler !== 'function') return null
   try {
@@ -80,10 +90,10 @@ function hasReadableFrameName(trace: SelfProfilingTrace) {
   })
 }
 
-function postPanProfile(summary: PanSummary, trace: SelfProfilingTrace) {
+function postProfile(kind: string, summary: unknown, trace: SelfProfilingTrace) {
   const record = {
     ts: new Date().toISOString(),
-    kind: 'pan-profile',
+    kind,
     doc: new URLSearchParams(window.location.search).get('doc') || undefined,
     href: window.location.href,
     summary,
@@ -95,6 +105,97 @@ function postPanProfile(summary: PanSummary, trace: SelfProfilingTrace) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(record),
   }).catch(() => {})
+}
+
+/**
+ * useLongTaskProfileLog — the same self-profiler, pointed at main-thread stalls
+ * instead of only at pan gestures.
+ *
+ * Why it is shaped as a ROLLING profiler rather than "start one when a long task
+ * fires": the JS Self-Profiling API can only sample code that runs *after* the
+ * profiler starts. A stall cannot be captured retroactively. So one profiler runs
+ * continuously and the long-task observer *stops and posts* it — the trace it
+ * returns already contains the stall that just happened. A fresh one starts
+ * immediately after.
+ *
+ * `maxBufferSize` at a 10ms interval bounds the rolling window to roughly 20s, and
+ * the profiler stops itself when that buffer fills, so this cannot grow without
+ * limit. Posts are capped and rate-limited: a janky page fires long tasks
+ * continuously, and the point is to name what is eating the main thread, not to
+ * flood the sink.
+ *
+ * Independent of the editor — stalls are stalls whether or not tldraw has mounted.
+ * No UI. Unsupported browsers (no `window.Profiler`) bail and cost nothing.
+ */
+export function useLongTaskProfileLog() {
+  useEffect(() => {
+    if (typeof window.Profiler !== 'function') return
+    if (typeof PerformanceObserver === 'undefined') return
+
+    let profiler: SelfProfiler | null = null
+    let posted = 0
+    let lastPostAt = 0
+    let stopped = false
+    let restartTimer: ReturnType<typeof setTimeout> | null = null
+
+    const arm = () => {
+      if (stopped || profiler) return
+      profiler = startSelfProfiler()
+    }
+
+    // Stop the rolling profiler, post what it captured, and re-arm.
+    const captureStall = (entry: PerformanceEntry) => {
+      const active = profiler
+      profiler = null
+      if (!active) { arm(); return }
+      posted += 1
+      lastPostAt = Date.now()
+      void active.stop().then(trace => {
+        if (trace) {
+          postProfile('longtask-profile', {
+            name: entry.name,
+            startTime: Math.round(entry.startTime),
+            duration: Math.round(entry.duration),
+            threshold: LONGTASK_PROFILE_MS,
+          }, trace)
+        }
+      }).catch(() => {}).finally(() => {
+        // Re-arm on the next turn so the fresh profiler does not start inside the
+        // same task that just stalled.
+        if (restartTimer != null) clearTimeout(restartTimer)
+        restartTimer = setTimeout(arm, 0)
+      })
+    }
+
+    let observer: PerformanceObserver | null = null
+    try {
+      observer = new PerformanceObserver(list => {
+        if (stopped) return
+        for (const entry of list.getEntries()) {
+          if (entry.duration < LONGTASK_PROFILE_MS) continue
+          if (posted >= MAX_LONGTASK_PROFILES) return
+          if (Date.now() - lastPostAt < LONGTASK_PROFILE_MIN_GAP_MS) continue
+          captureStall(entry)
+          return
+        }
+      })
+      observer.observe({ entryTypes: ['longtask'] })
+    } catch {
+      observer = null
+      return
+    }
+
+    arm()
+
+    return () => {
+      stopped = true
+      if (restartTimer != null) clearTimeout(restartTimer)
+      observer?.disconnect()
+      const active = profiler
+      profiler = null
+      void active?.stop().catch(() => {})
+    }
+  }, [])
 }
 
 export function usePanPerfLog(editorRef: RefObject<Editor | null>, editorMounted: number) {
@@ -187,7 +288,7 @@ export function usePanPerfLog(editorRef: RefObject<Editor | null>, editorMounted
       log.metric('pan-perf', 'pan', summary)
       if (summary.max > PROFILE_SLOW_FRAME_MS || summary.over50 >= 1) {
         const trace = await tracePromise
-        if (trace) postPanProfile(summary, trace)
+        if (trace) postProfile('pan-profile', summary, trace)
       } else {
         await tracePromise
       }
@@ -207,7 +308,7 @@ export function usePanPerfLog(editorRef: RefObject<Editor | null>, editorMounted
         startCamera = cam
         startNodes = visibleNodes()
         startPages = visibleSvgPages().length
-        profiler = startPanProfiler()
+        profiler = startSelfProfiler()
         rafId = requestAnimationFrame(tick)
       }
       if (endTimer != null) clearTimeout(endTimer)

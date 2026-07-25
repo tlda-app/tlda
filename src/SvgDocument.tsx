@@ -117,7 +117,7 @@ import { useFleetTheme, getStoredScheme } from './hooks/useFleetTheme'
 import { useTimelineOverlay } from './hooks/useTimelineOverlay'
 import { useDocAutoOpen } from './hooks/useDocAutoOpen'
 import { usePanMode } from './hooks/usePanMode'
-import { usePanPerfLog } from './hooks/usePanPerfLog'
+import { usePanPerfLog, useLongTaskProfileLog } from './hooks/usePanPerfLog'
 import { STORE_WS, LICENSE_KEY as CFG_LICENSE_KEY } from './activeConfig'
 import { useShadowOverlay } from './hooks/useShadowOverlay'
 import { useDividerDiff } from './hooks/useDividerDiff'
@@ -555,6 +555,10 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
 
   // Sample pan-gesture frame-health into the client log (no UI; sink-only metric)
   usePanPerfLog(editorRef, editorMounted)
+
+  // Capture a JS self-profile whenever the main thread stalls, so a real stack
+  // names what is eating it instead of it being inferred (no UI; capped + rate-limited)
+  useLongTaskProfileLog()
 
   useYjsSignals({
     editorRef, document,
