@@ -6843,12 +6843,7 @@ async function handleFleetWsMessage(ws, msg) {
     const lineage = fleetStore.getLineage(agent.lineage_id)
     const dayAgent = fleetStore.getLineageDay(agent.lineage_id)
     if (dayAgent && dayAgent.id !== agent.id) {
-      const pendingTasks = fleetStore.db.prepare(
-        "SELECT id FROM tasks WHERE agent = ? AND status NOT IN ('done')"
-      ).all(agent.id)
-      for (const t of pendingTasks) {
-        fleetStore.db.prepare('UPDATE tasks SET agent = ? WHERE id = ?').run(dayAgent.id, t.id)
-      }
+      fleetStore.transferTasks(agent.id, dayAgent.id)
     }
     fleetStore.retireFromLineage(agent.id)
     broadcastState()
