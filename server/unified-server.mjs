@@ -5713,6 +5713,16 @@ async function handleFleetWsMessage(ws, msg) {
         const ids = fleetStore.resolveAgentQuery(msg.agentQuery);
         searchAgent = ids.length ? ids : [noMatch];
       }
+      const projectAgentQuery = String(msg.cwd || msg.project || '').trim()
+      if (projectAgentQuery) {
+        const results = stampNames(fleetStore.searchProjectAgents(projectAgentQuery, {
+          limit: msg.limit,
+          since: msg.since,
+          before: msg.before,
+        }))
+        reply({ results })
+        return
+      }
       const hasText = (msg.query || '').trim().length > 0;
       let results = fleetStore.searchAll(msg.query || '', {
         limit: msg.limit, agent: searchAgent, role: msg.role, type: msg.eventType, types: msg.eventTypes, since: msg.since, before: msg.before,

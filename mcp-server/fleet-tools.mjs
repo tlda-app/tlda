@@ -1458,8 +1458,8 @@ export function getFleetTools() {
       inputSchema: {
         type: 'object',
         properties: {
-          query: { type: 'string', description: 'Unified search query: literal text terms plus event filters such as from:, to:, agent:, type:, since:, before:. Agent filters use the fleet expression grammar: |, &, !, parens, labels/names/ids, and me.' },
-          project: { type: 'string', description: 'Filter to a specific project directory name (e.g. "-Users-skip-work-foo")' },
+          query: { type: 'string', description: 'Unified search query: literal text terms plus event filters such as from:, to:, agent:, cwd:, project:, type:, since:, before:. Agent filters use the fleet expression grammar: |, &, !, parens, labels/names/ids, and me. Use cwd:/path/to/project to list agents who worked in that directory by recency.' },
+          project: { type: 'string', description: 'List agents who worked in a project/working directory by chronological recency. Accepts a full cwd path or project basename.' },
           agent: { type: 'string', description: 'Filter to a specific agent selector. Uses the same unified fleet search grammar as the browser search box.' },
           role: { type: 'string', description: 'Filter by role: "user" (human messages), "assistant" (agent responses), "chat", "delegate", "task_done"' },
           limit: { type: 'number', description: 'Max results (default 20, max 100). Ignored when both since and before are set (bounded calls return full range, up to 500).' },
@@ -3645,6 +3645,8 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
         agentQuery: searchFilters.agentQuery,
         filterExpression: searchFilters.filterExpression,
         eventType: searchFilters.eventType,
+        cwd: searchFilters.cwd,
+        project: args.project || searchFilters.project,
       };
       const data = await mcpFleetTransport.ephemeral('fleet-search', searchParams);
       results = data?.results || [];
@@ -3739,10 +3741,32 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       return lines.join('\n');
     };
 
+    const formatProjectAgentForSearch = (r) => {
+      const row = r.agent_id ? r : r.projectActivityRow || {};
+      const agent = tag(row.agent_id, row.friendly_name, row.friendly_name);
+      const status = row.status?.dead ? 'dead/hibernated' : 'current/live';
+      const lines = [
+        `${agent}`,
+        `  cwd: ${row.cwd || '(unknown)'}`,
+        `  project: ${row.project || '(unknown)'}`,
+        `  status: ${status}`,
+        `  last relevant: ${row.latest_relevant_at ? `${fmtTs(row.latest_relevant_at)} (${row.latest_relevant_at})` : '(none indexed)'}`,
+        `  source: ${row.latest_activity?.source || 'agent_seat'}${row.latest_activity?.type ? ` / ${row.latest_activity.type}` : ''}${row.latest_activity?.event_id ? ` #${row.latest_activity.event_id}` : ''}`,
+        `  thread: ${row.thread?.query || `get_thread(agent: "${row.agent_id}")`}`,
+      ];
+      if (row.latest_activity?.session_id) lines.push(`  session: ${row.latest_activity.session_id}`);
+      const summary = (row.latest_activity?.summary || '').trim();
+      if (summary) lines.push(`  activity: ${summary.length > 240 ? `${summary.slice(0, 240)}...` : summary}`);
+      return lines.join('\n');
+    };
+
     const formatted = results.map(r => {
       const snippet = (r.snippet || '').replace(/⟨⟨/g, '**').replace(/⟩⟩/g, '**');
 
       if (r.source === 'fleet') {
+        if (r.type === 'project_agent') {
+          return { timestamp: r.timestamp, text: formatProjectAgentForSearch(r) };
+        }
         const from = tag(r.from, r.fromName, r.fromNameNow);
         const to = tag(r.to, r.toName, r.toNameNow);
         const direction = to ? `${from} → ${to}` : from;
@@ -3788,6 +3812,8 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     if (args.role || searchFilters.role) filters.push(`role=${args.role || searchFilters.role}`);
     if (searchFilters.filterExpression) filters.push(`filter=${searchFilters.filterExpression}`);
     if (searchFilters.eventType) filters.push(`type=${searchFilters.eventType}`);
+    if (searchFilters.cwd) filters.push(`cwd=${searchFilters.cwd}`);
+    if (args.project || searchFilters.project) filters.push(`project=${args.project || searchFilters.project}`);
     if (sinceTs) filters.push(`since=${sinceTs}`);
     if (beforeTs) filters.push(`before=${beforeTs}`);
     if (contextWindow > 0) filters.push(`context=${contextWindow}`);
@@ -3802,7 +3828,10 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
 
     const fleetCount = results.filter(r => r.source === 'fleet').length;
     const sessionCount = results.filter(r => r.source === 'session').length;
-    let header = `${results.length} results (${fleetCount} fleet, ${sessionCount} session)`;
+    const projectAgentCount = results.filter(r => r.type === 'project_agent').length;
+    let header = projectAgentCount > 0
+      ? `${projectAgentCount} project-agent result${projectAgentCount === 1 ? '' : 's'} in chronological recency order`
+      : `${results.length} results (${fleetCount} fleet, ${sessionCount} session)`;
     if (sinceTs) header += ` — since ${sinceTs}`;
     if (beforeTs) header += ` — before ${beforeTs}`;
     if (contextWindow > 0) header += ` — with ${contextWindow} context messages`;

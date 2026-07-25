@@ -40,6 +40,38 @@ function insertSessionEntry(store, entry) {
   `).run(entry);
 }
 
+function insertAgent(store, agent) {
+  store.db.prepare(`
+    INSERT INTO agents (id, friendly_name, cwd, registered_at, last_seen, last_active, dead)
+    VALUES (@id, @friendlyName, @cwd, @registeredAt, @lastSeen, @lastActive, @dead)
+  `).run({
+    id: agent.id,
+    friendlyName: agent.friendlyName || null,
+    cwd: agent.cwd || null,
+    registeredAt: agent.registeredAt || '2026-07-20T00:00:00.000Z',
+    lastSeen: agent.lastSeen || null,
+    lastActive: agent.lastActive || null,
+    dead: agent.dead ? 1 : 0,
+  });
+}
+
+function insertAgentSeat(store, seat) {
+  store.db.prepare(`
+    INSERT INTO agent_seats (agent_id, session_id, resume_id, kind, model, cwd, created_at, created_source, created_by_event_id)
+    VALUES (@agentId, @sessionId, @resumeId, @kind, @model, @cwd, @createdAt, @createdSource, @createdByEventId)
+  `).run({
+    agentId: seat.agentId,
+    sessionId: seat.sessionId,
+    resumeId: seat.resumeId || null,
+    kind: seat.kind || 'codex',
+    model: seat.model || 'test',
+    cwd: seat.cwd,
+    createdAt: seat.createdAt || '2026-07-20T00:00:00.000Z',
+    createdSource: seat.createdSource || 'test',
+    createdByEventId: seat.createdByEventId || null,
+  });
+}
+
 test('default search returns naming chat for original failing query ahead of activity echoes', () => withStore(store => {
   insertEvent(store, {
     type: 'chat',
@@ -163,6 +195,183 @@ test('fleet chat outranks matching session JSONL in global search', () => withSt
   assert.equal(results.length, 2);
   assert.equal(results[0].source, 'fleet');
   assert.equal(results[0].type, 'chat');
+}));
+
+test('filtered event search is a non-empty subset of unfiltered matching events', () => withStore(store => {
+  const rows = [
+    ['fleet:skip', 'fleet:apps', 'timer alpha from skip'],
+    ['fleet:apps', 'fleet:skip', 'timer beta to skip'],
+    ['fleet:noise', 'fleet:apps', 'timer gamma to apps'],
+    ['fleet:skip', 'fleet:noise', 'timer delta from skip'],
+  ];
+  rows.forEach(([from, to, text], i) => insertEvent(store, {
+    type: 'chat',
+    timestamp: `2026-07-19T00:00:0${i}.000Z`,
+    from,
+    to,
+    text,
+  }));
+
+  const unfiltered = store.searchAll('timer', { limit: 20, eventOnly: true });
+  const unfilteredKeys = new Set(unfiltered.map(row => row.id));
+  const fromSkip = store.searchAll('timer', { agent: 'fleet:skip', fromOnly: true, limit: 20, eventOnly: true });
+  const involvingApps = store.searchAll('timer', { agent: 'fleet:apps', limit: 20, eventOnly: true });
+
+  assert.equal(unfiltered.length, 4);
+  assert.equal(fromSkip.length, 2);
+  assert.ok(fromSkip.every(row => row.from === 'fleet:skip' && unfilteredKeys.has(row.id)));
+  assert.equal(involvingApps.length, 3);
+  assert.ok(involvingApps.every(row => (row.from === 'fleet:apps' || row.to === 'fleet:apps' || row.agentId === 'fleet:apps') && unfilteredKeys.has(row.id)));
+}));
+
+test('from-filtered event search finds a known sender even when global candidates are saturated', () => withStore(store => {
+  for (let i = 0; i < 1200; i++) {
+    insertEvent(store, {
+      type: 'chat',
+      timestamp: `2026-07-20T00:${String(i % 60).padStart(2, '0')}:00.000Z`,
+      from: `fleet:noise-${i}`,
+      to: 'fleet:observer',
+      text: `timer noise event ${i}`,
+    });
+  }
+  insertEvent(store, {
+    type: 'chat',
+    timestamp: '2026-07-21T00:00:00.000Z',
+    from: 'fleet:skip',
+    to: 'fleet:apps',
+    text: 'timer should wake for predictable events',
+  });
+
+  const unfiltered = store.searchAll('timer', { limit: 10 });
+  const filtered = store.searchAll('timer', { agent: 'fleet:skip', fromOnly: true, limit: 10 });
+
+  assert.ok(unfiltered.length > 0, 'unfiltered search should have matches');
+  assert.equal(filtered.length, 1, 'from-filter must not silently empty after global candidate limiting');
+  assert.equal(filtered[0].from, 'fleet:skip');
+  assert.match(filtered[0].text, /predictable events/);
+}));
+
+test('to-filtered and agent-filtered event search apply filters before the FTS candidate limit', () => withStore(store => {
+  for (let i = 0; i < 1200; i++) {
+    insertEvent(store, {
+      type: 'chat',
+      timestamp: `2026-07-20T01:${String(i % 60).padStart(2, '0')}:00.000Z`,
+      from: `fleet:noise-${i}`,
+      to: 'fleet:observer',
+      text: `timer distractor ${i}`,
+    });
+  }
+  insertEvent(store, {
+    type: 'chat',
+    timestamp: '2026-07-21T01:00:00.000Z',
+    from: 'fleet:skip',
+    to: 'fleet:apps',
+    text: 'timer belongs in the apps thread',
+  });
+
+  const toFiltered = store.searchAll('timer', { agent: 'fleet:apps', limit: 10 });
+  const agentFiltered = store.searchAll('timer', { agent: 'fleet:skip', limit: 10 });
+
+  assert.equal(toFiltered.length, 1);
+  assert.equal(toFiltered[0].to, 'fleet:apps');
+  assert.equal(agentFiltered.length, 1);
+  assert.equal(agentFiltered[0].from, 'fleet:skip');
+}));
+
+test('filtered session search applies agent and role before the FTS candidate limit', () => withStore(store => {
+  for (let i = 0; i < 1200; i++) {
+    insertSessionEntry(store, {
+      agentId: `fleet:noise-${i}`,
+      sessionId: `session-noise-${i}`,
+      role: 'assistant',
+      timestamp: `2026-07-20T02:${String(i % 60).padStart(2, '0')}:00.000Z`,
+      text: `timer session distractor ${i}`,
+    });
+  }
+  insertSessionEntry(store, {
+    agentId: 'fleet:skip',
+    sessionId: 'session-skip',
+    role: 'user',
+    timestamp: '2026-07-21T02:00:00.000Z',
+    text: 'timer is in Skip user history',
+  });
+
+  const results = store.searchAll('timer', { agent: 'fleet:skip', role: 'user', limit: 10 });
+
+  assert.equal(results.length, 1);
+  assert.equal(results[0].source, 'session');
+  assert.equal(results[0].agentId, 'fleet:skip');
+  assert.equal(results[0].role, 'user');
+}));
+
+test('project agent search lists agents in a cwd by latest relevant activity', () => withStore(store => {
+  insertAgent(store, {
+    id: 'fleet:alpha',
+    friendlyName: 'alpha',
+    cwd: '/Users/skip/work/tlda',
+    registeredAt: '2026-07-20T00:00:00.000Z',
+  });
+  insertAgent(store, {
+    id: 'fleet:beta',
+    friendlyName: 'beta',
+    cwd: '/Users/skip/work/tlda/',
+    registeredAt: '2026-07-20T00:00:00.000Z',
+  });
+  insertAgent(store, {
+    id: 'fleet:other',
+    friendlyName: 'other',
+    cwd: '/Users/skip/work/other',
+    registeredAt: '2026-07-20T00:00:00.000Z',
+  });
+  insertAgentSeat(store, {
+    agentId: 'fleet:alpha',
+    sessionId: 'session-alpha',
+    cwd: '/Users/skip/work/tlda',
+    createdAt: '2026-07-20T00:00:00.000Z',
+  });
+  insertAgentSeat(store, {
+    agentId: 'fleet:beta',
+    sessionId: 'session-beta',
+    cwd: '/Users/skip/work/tlda/',
+    createdAt: '2026-07-20T00:00:00.000Z',
+  });
+  insertEvent(store, {
+    type: 'chat',
+    timestamp: '2026-07-21T00:00:00.000Z',
+    from: 'fleet:alpha',
+    to: 'fleet:skip',
+    text: 'older project work',
+  });
+  insertSessionEntry(store, {
+    agentId: 'fleet:beta',
+    sessionId: 'session-beta',
+    role: 'assistant',
+    timestamp: '2026-07-22T00:00:00.000Z',
+    text: 'newer project work',
+  });
+  insertEvent(store, {
+    type: 'chat',
+    timestamp: '2026-07-23T00:00:00.000Z',
+    from: 'fleet:other',
+    to: 'fleet:skip',
+    text: 'wrong project',
+  });
+
+  const byPath = store.searchProjectAgents('/Users/skip/work/tlda', { limit: 10 });
+  assert.deepEqual(byPath.map(row => row.agent_id), ['fleet:beta', 'fleet:alpha']);
+  assert.equal(byPath[0].latest_activity.source, 'session');
+  assert.equal(byPath[0].thread.query, 'get_thread(agent: "fleet:beta")');
+
+  const byProjectName = store.searchProjectAgents('tlda', { limit: 10 });
+  assert.deepEqual(byProjectName.map(row => row.agent_id), ['fleet:beta', 'fleet:alpha']);
+
+  const bounded = store.searchProjectAgents('/Users/skip/work/tlda', {
+    since: '2026-07-21T12:00:00.000Z',
+    limit: 10,
+  });
+  assert.deepEqual(bounded.map(row => row.agent_id), ['fleet:beta', 'fleet:alpha']);
+  assert.equal(bounded[0].latest_relevant_at, '2026-07-22T00:00:00.000Z');
+  assert.equal(bounded[1].latest_relevant_at, '2026-07-20T00:00:00.000Z');
 }));
 
 test('search stats report corpus scale and index version', () => withStore(store => {

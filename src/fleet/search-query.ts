@@ -35,6 +35,8 @@ export interface SearchFilters {
   after?: string
   since?: string
   type?: string
+  cwd?: string
+  project?: string
   agentResolve?: AgentResolveRequest
   naturalAgentQuery?: string
   naturalAgentQueries?: string[]
@@ -60,4 +62,6 @@ export interface FleetSearchPayloadFilters {
   before?: string
   filterExpression?: string
   eventType?: string
+  cwd?: string
+  project?: string
 }

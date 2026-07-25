@@ -932,6 +932,8 @@ export interface FleetSearchFilters {
   before?: string
   filterExpression?: string
   eventType?: string
+  cwd?: string
+  project?: string
 }
 
 export async function searchFleet(query: string, limit = 50, filters: FleetSearchFilters = {}): Promise<any[]> {
@@ -951,6 +953,8 @@ export async function searchFleet(query: string, limit = 50, filters: FleetSearc
     if (filters.before) payload.before = filters.before
     if (filters.filterExpression) payload.filterExpression = filters.filterExpression
     if (filters.eventType) payload.eventType = filters.eventType
+    if (filters.cwd) payload.cwd = filters.cwd
+    if (filters.project) payload.project = filters.project
     const data = await _fleetEphemeral('fleet-search', payload)
     return data?.results || []
   } catch (e) { console.warn('[fleet] search failed:', (e as Error).message); return [] }

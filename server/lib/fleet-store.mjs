@@ -507,6 +507,11 @@ export class FleetStore {
         transition_reason TEXT,
         FOREIGN KEY (agent_id, session_id) REFERENCES agent_seats(agent_id, session_id)
       );
+      CREATE INDEX IF NOT EXISTS idx_agent_seats_cwd
+        ON agent_seats(cwd, agent_id);
+      CREATE INDEX IF NOT EXISTS idx_agent_seats_cwd_trimmed
+        ON agent_seats(rtrim(cwd, '/'), agent_id);
+
       CREATE TABLE IF NOT EXISTS daemon_agent_bindings (
         daemon_key TEXT NOT NULL,
         local_agent_id TEXT NOT NULL,
@@ -1159,6 +1164,8 @@ export class FleetStore {
       CREATE INDEX IF NOT EXISTS idx_agents_alive ON agents(dead, last_seen DESC);
       CREATE INDEX IF NOT EXISTS idx_agents_machine_env_alive ON agents(machine_id, env_name, dead);
       CREATE INDEX IF NOT EXISTS idx_agents_friendly_name ON agents(friendly_name);
+      CREATE INDEX IF NOT EXISTS idx_agents_cwd ON agents(cwd, id);
+      CREATE INDEX IF NOT EXISTS idx_agents_cwd_trimmed ON agents(rtrim(cwd, '/'), id);
       CREATE INDEX IF NOT EXISTS idx_unread_unread ON unread(event_id) WHERE read = 0;
     `);
 
@@ -4165,7 +4172,7 @@ export class FleetStore {
       if (sessionRole && row.role !== sessionRole) return false;
       if (since && row.timestamp < since) return false;
       if (before && row.timestamp >= before) return false;
-      if (hasAgent && !agentIds.includes(row.agent_id)) return false;
+      if (hasAgent && !agentIds.includes(row.agentId)) return false;
       return true;
     }
 
@@ -4193,37 +4200,38 @@ export class FleetStore {
           ftsRank: 0,
         })).sort((a, b) => (b.timestamp ?? '').localeCompare(a.timestamp ?? '')).slice(0, limit);
       } else {
-      let eClauses, eParams;
-      if (historyMode) {
-        eClauses = [];
-        eParams = [];
+        const eClauses = [];
+        const eParams = [];
         if (hasAgent) {
           const ac = agentClause('e.from_id', 'e.to_id', 'e.agent_id');
           eClauses.push(ac.clause);
           eParams.push(...ac.params);
         }
-      } else {
-        eClauses = [];
-        eParams = [];
-      }
-      if (historyMode) {
-        if (eventTypes) {
-          eClauses.push(`e.type IN (${eventTypes.map(() => '?').join(',')})`);
-          eParams.push(...eventTypes);
+        if (searchedEventTypes) {
+          eClauses.push(`e.type IN (${searchedEventTypes.map(() => '?').join(',')})`);
+          eParams.push(...searchedEventTypes);
         }
         if (since) { eClauses.push('e.timestamp >= ?'); eParams.push(since); }
         if (before) { eClauses.push('e.timestamp < ?'); eParams.push(before); }
-      }
-      eParams.push(historyMode ? limit : candidateLimit);
-      const eventWhere = eClauses.length ? `WHERE ${eClauses.join(' AND ')}` : '';
-      const searchTable = explicitActivitySearch ? 'activity_events_fts' : 'events_fts';
-      const snippetCol = historyMode ? 'substr(e.text, 1, 120) as snippet' : `snippet(${searchTable}, 0, '<<', '>>', '...', 40) as snippet`;
-      const eventSql = historyMode ? `
+        eParams.push(historyMode ? limit : candidateLimit);
+        const eventWhere = eClauses.length ? `WHERE ${eClauses.join(' AND ')}` : '';
+        const searchTable = explicitActivitySearch ? 'activity_events_fts' : 'events_fts';
+        const snippetCol = historyMode ? 'substr(e.text, 1, 120) as snippet' : `snippet(${searchTable}, 0, '<<', '>>', '...', 40) as snippet`;
+        const hasEventPreFilter = !historyMode && eClauses.length > 0;
+        const eventSql = historyMode ? `
         SELECT e.id, e.type, e.timestamp, e.from_id as "from", e.to_id as "to", e.text, e.metadata, e.agent_id,
                ${snippetCol}, 0 as fts_rank
         FROM events e
         ${eventWhere}
         ORDER BY e.timestamp DESC LIMIT ?
+      ` : hasEventPreFilter ? `
+        SELECT e.id, e.type, e.timestamp, e.from_id as "from", e.to_id as "to", e.text, e.metadata, e.agent_id,
+               ${snippetCol}, ${searchTable}.rank as fts_rank
+        FROM ${searchTable}
+        JOIN events e ON e.id = ${searchTable}.rowid
+        ${eventWhere ? `${eventWhere} AND` : 'WHERE'} ${searchTable} MATCH ?
+        ORDER BY ${searchTable}.rank
+        LIMIT ?
       ` : `
         SELECT e.id, e.type, e.timestamp, e.from_id as "from", e.to_id as "to", e.text, e.metadata, e.agent_id,
                ${snippetCol}, f.fts_rank
@@ -4239,20 +4247,24 @@ export class FleetStore {
         ${eventWhere}
         LIMIT ?
       `;
-      const eventParams = historyMode ? eParams : [ftsQuery, candidateLimit, ...eParams];
-      eventRows = this.db.prepare(eventSql).all(...eventParams).map(r => ({
-        source: 'fleet',
-        id: r.id,
-        type: r.type,
-        timestamp: r.timestamp,
-        from: r.from,
-        to: r.to,
-        text: r.text,
-        agentId: r.agent_id,
-        metadata: r.metadata ? JSON.parse(r.metadata) : null,
-        snippet: r.snippet?.replace(/<<(.*?)>>/g, '⟨⟨$1⟩⟩'),
-        ftsRank: r.fts_rank ?? 0,
-      })).filter(row => historyMode || eventRowMatches(row));
+        const eventParams = historyMode
+          ? eParams
+          : hasEventPreFilter
+            ? [...eParams.slice(0, -1), ftsQuery, candidateLimit]
+            : [ftsQuery, candidateLimit, ...eParams];
+        eventRows = this.db.prepare(eventSql).all(...eventParams).map(r => ({
+          source: 'fleet',
+          id: r.id,
+          type: r.type,
+          timestamp: r.timestamp,
+          from: r.from,
+          to: r.to,
+          text: r.text,
+          agentId: r.agent_id,
+          metadata: r.metadata ? JSON.parse(r.metadata) : null,
+          snippet: r.snippet?.replace(/<<(.*?)>>/g, '⟨⟨$1⟩⟩'),
+          ftsRank: r.fts_rank ?? 0,
+        })).filter(row => historyMode || eventRowMatches(row));
       }
     }
 
@@ -4265,37 +4277,38 @@ export class FleetStore {
     // 2. Session JSONL entries
     let sessionRows = [];
     if (includeSessions) {
-      let sClauses, sParams;
-      if (historyMode) {
-        sClauses = [];
-        sParams = [];
-        if (hasAgent) {
-          if (agentIds.length === 1) {
-            sClauses.push('s.agent_id = ?');
-            sParams.push(agentIds[0]);
-          } else {
-            sClauses.push(`s.agent_id IN (${agentPlaceholders})`);
-            sParams.push(...agentIds);
-          }
+      const sClauses = [];
+      const sParams = [];
+      if (hasAgent) {
+        if (agentIds.length === 1) {
+          sClauses.push('s.agent_id = ?');
+          sParams.push(agentIds[0]);
+        } else {
+          sClauses.push(`s.agent_id IN (${agentPlaceholders})`);
+          sParams.push(...agentIds);
         }
-      } else {
-        sClauses = [];
-        sParams = [];
       }
-      if (historyMode) {
-        if (sessionRole) { sClauses.push('s.role = ?'); sParams.push(sessionRole); }
-        if (since) { sClauses.push('s.timestamp >= ?'); sParams.push(since); }
-        if (before) { sClauses.push('s.timestamp < ?'); sParams.push(before); }
-      }
+      if (sessionRole) { sClauses.push('s.role = ?'); sParams.push(sessionRole); }
+      if (since) { sClauses.push('s.timestamp >= ?'); sParams.push(since); }
+      if (before) { sClauses.push('s.timestamp < ?'); sParams.push(before); }
       sParams.push(historyMode ? limit : candidateLimit);
       const sessionWhere = sClauses.length ? `WHERE ${sClauses.join(' AND ')}` : '';
       const sSnippetCol = historyMode ? 'substr(s.text, 1, 120) as snippet' : "snippet(session_entries_fts, 0, '<<', '>>', '...', 40) as snippet";
+      const hasSessionPreFilter = !historyMode && sClauses.length > 0;
       const sessionSql = historyMode ? `
         SELECT s.id, s.agent_id, s.session_id, s.role, s.timestamp, s.text,
                ${sSnippetCol}, 0 as fts_rank
         FROM session_entries s
         ${sessionWhere}
         ORDER BY s.timestamp DESC LIMIT ?
+      ` : hasSessionPreFilter ? `
+        SELECT s.id, s.agent_id, s.session_id, s.role, s.timestamp, s.text,
+               ${sSnippetCol}, session_entries_fts.rank as fts_rank
+        FROM session_entries_fts
+        JOIN session_entries s ON s.id = session_entries_fts.rowid
+        ${sessionWhere ? `${sessionWhere} AND` : 'WHERE'} session_entries_fts MATCH ?
+        ORDER BY session_entries_fts.rank
+        LIMIT ?
       ` : `
         SELECT s.id, s.agent_id, s.session_id, s.role, s.timestamp, s.text,
                ${sSnippetCol}, f.fts_rank
@@ -4311,7 +4324,11 @@ export class FleetStore {
         ${sessionWhere}
         LIMIT ?
       `;
-      const sessionParams = historyMode ? sParams : [ftsQuery, candidateLimit, ...sParams];
+      const sessionParams = historyMode
+        ? sParams
+        : hasSessionPreFilter
+          ? [...sParams.slice(0, -1), ftsQuery, candidateLimit]
+          : [ftsQuery, candidateLimit, ...sParams];
       sessionRows = this.db.prepare(sessionSql).all(...sessionParams).map(r => ({
         source: 'session',
         id: r.id,
@@ -4355,6 +4372,107 @@ export class FleetStore {
       sessionEntries: { total: sessionEntries, byRole: sessionRoles },
       fts: { eventsContentVersion: ftsContentVersion },
     };
+  }
+
+  searchProjectAgents(projectOrCwd, { limit = 50, since = null, before = null } = {}) {
+    const raw = String(projectOrCwd || '').trim();
+    if (!raw) return [];
+    const cap = Math.min(Math.max(parseInt(limit) || 50, 1), 100);
+    const isPath = raw.includes('/') || raw.startsWith('~');
+    const normalized = raw.replace(/\/+$/, '');
+    const params = [];
+    let cwdPredicate;
+    if (isPath) {
+      cwdPredicate = "rtrim(coalesce(cwd, ''), '/') = ?";
+      params.push(normalized);
+    } else {
+      cwdPredicate = "(cwd = ? OR cwd LIKE ? OR cwd LIKE ?)";
+      params.push(raw, `%/${raw}`, `%/${raw}/%`);
+    }
+    const timeClauses = [];
+    const timeParams = [];
+    if (since) { timeClauses.push('timestamp >= ?'); timeParams.push(since); }
+    if (before) { timeClauses.push('timestamp < ?'); timeParams.push(before); }
+    const eventTime = timeClauses.length ? `AND ${timeClauses.map(c => `e.${c}`).join(' AND ')}` : '';
+    const sessionTime = timeClauses.length ? `AND ${timeClauses.map(c => `s.${c}`).join(' AND ')}` : '';
+    const sql = `
+      WITH candidate_raw AS (
+        SELECT agent_id, cwd, created_at AS seat_created_at FROM agent_seats WHERE ${cwdPredicate}
+        UNION ALL
+        SELECT id AS agent_id, cwd, registered_at AS seat_created_at FROM agents WHERE ${cwdPredicate}
+      ),
+      candidate AS (
+        SELECT agent_id, max(cwd) AS cwd, max(seat_created_at) AS seat_created_at
+        FROM candidate_raw
+        WHERE agent_id IS NOT NULL AND agent_id != ''
+        GROUP BY agent_id
+      ),
+      activity AS (
+        SELECT c.agent_id, e.timestamp, e.id, 'fleet' AS source, e.type, e.text, e.metadata,
+               e.from_id, e.to_id, NULL AS role, NULL AS session_id
+        FROM candidate c
+        JOIN events e ON (e.from_id = c.agent_id OR e.to_id = c.agent_id OR e.agent_id = c.agent_id) ${eventTime}
+        UNION ALL
+        SELECT c.agent_id, s.timestamp, s.id, 'session' AS source, NULL AS type, s.text, NULL AS metadata,
+               NULL AS from_id, NULL AS to_id, s.role, s.session_id
+        FROM candidate c
+        JOIN session_entries s ON s.agent_id = c.agent_id ${sessionTime}
+      ),
+      ranked AS (
+        SELECT *, row_number() OVER (PARTITION BY agent_id ORDER BY timestamp DESC, id DESC) AS rn
+        FROM activity
+      )
+      SELECT c.agent_id, c.cwd, c.seat_created_at,
+             a.friendly_name, a.pretty_name, a.dead, a.last_seen, a.last_active, a.registered_at,
+             r.timestamp, r.id AS activity_id, r.source, r.type, r.text, r.metadata,
+             r.from_id, r.to_id, r.role, r.session_id
+      FROM candidate c
+      LEFT JOIN agents a ON a.id = c.agent_id
+      LEFT JOIN ranked r ON r.agent_id = c.agent_id AND r.rn = 1
+      ORDER BY coalesce(r.timestamp, a.last_active, a.last_seen, c.seat_created_at, a.registered_at, '') DESC
+      LIMIT ?
+    `;
+    const rows = this.db.prepare(sql).all(
+      ...params,
+      ...params,
+      ...timeParams,
+      ...timeParams,
+      cap,
+    );
+    return rows.map(r => ({
+      source: 'fleet',
+      id: r.activity_id || `project-agent:${r.agent_id}`,
+      type: 'project_agent',
+      timestamp: r.timestamp || r.last_active || r.last_seen || r.seat_created_at || r.registered_at || null,
+      from: r.agent_id,
+      to: null,
+      agentId: r.agent_id,
+      agentName: r.friendly_name || null,
+      agentNameNow: r.friendly_name || null,
+      text: r.text || '',
+      snippet: (r.text || '').slice(0, 220),
+      agent_id: r.agent_id,
+      friendly_name: r.friendly_name || null,
+      cwd: r.cwd || null,
+      project: r.cwd ? path.basename(String(r.cwd).replace(/\/+$/, '')) : null,
+      latest_relevant_at: r.timestamp || r.last_active || r.last_seen || r.seat_created_at || r.registered_at || null,
+      latest_activity: {
+        source: r.source || 'agent_seat',
+        type: r.type || r.role || 'seat',
+        event_id: r.activity_id || null,
+        session_id: r.session_id || null,
+        summary: (r.text || '').slice(0, 220),
+      },
+      status: {
+        dead: !!r.dead,
+        last_seen: r.last_seen || null,
+        last_active: r.last_active || null,
+      },
+      thread: {
+        agent: r.agent_id,
+        query: `get_thread(agent: "${r.agent_id}")`,
+      },
+    }));
   }
 
   // Get N chat events before/after a timestamp (for search context).

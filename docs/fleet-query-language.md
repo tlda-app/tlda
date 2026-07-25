@@ -81,6 +81,22 @@ type:chat since:2h search logs
 
 This means `teacher-bot` searches for the hyphenated text. It does not mean `teacher AND NOT bot`.
 
+## Project Agent History
+
+Use `cwd:` or `project:` in search to list agents who worked in a directory or
+project by chronological recency instead of searching for the path as text.
+
+Examples:
+
+```text
+cwd:/Users/skip/work/tlda
+project:tlda
+project:/Users/skip/work/tlda
+```
+
+Each row identifies the agent, working directory, last relevant event/session
+time, recent activity pointer, and a `get_thread(agent:"...")` opener.
+
 ## Surface Types
 
 | Surface | Field Type |
