@@ -183,6 +183,24 @@ made and verify it persisted. And never sweep shapes you did not create: the fix
 over-populated room is the code not instantiating foreign panels, plus the owner
 resetting their own layout — not an agent deleting other people's shapes.
 
+**And do not hold a playwright tab open on the document he is reading.** `AGENTS.md`
+already says to test on a document Skip is not using; the part that keeps getting missed
+is that a tab is a *running cost*, not an artifact left behind. Release it as part of the
+verification step, not as cleanup afterwards.
+
+Measured on the night of 2026-07-25, while he was telling us the app felt horrible:
+
+- Agent tabs on his document stalled **worse than his own session** — 9,773 ms cumulative
+  blocked against his 6,004 ms. Our browsers were the noisiest thing in the room he was
+  trying to read in.
+- **4 of the 5 profiles captured on his page were agent tabs.** A finished number — "React
+  commit ≈53%" — was nearly reported to him as a measurement of his app when it was mostly
+  us profiling ourselves.
+
+That second one is the worse half: an agent tab does not just cost him performance, it
+contaminates the instrument someone else is reading. Verifying on his live document and
+leaving the tab open turns your own presence into the finding.
+
 ## Don't change his shit. Renaming a label is changing it.
 
 > "This is just one of those things where the rules don't change my shit. In fact that is
