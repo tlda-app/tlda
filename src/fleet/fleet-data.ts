@@ -200,7 +200,8 @@ function unresolvedParticipantDrop(buffer: EventBuffer, event: FleetEvent): Reco
 function fanoutEventToBuffers(event: FleetEvent): void {
   for (const [bufferKey, buffer] of eventBuffers) {
     if (buffer.matchesFilter(buffer.filter, event)) {
-      noteBufferMatch(bufferKey)
+      // Count LIVE deliveries only — see _bulkIngestDepth above.
+      if (_bulkIngestDepth === 0) noteBufferMatch(bufferKey)
       buffer.store.upsert(event)
       if (buffer.pinned) trimEventBuffer(buffer)
     } else {
@@ -244,10 +245,24 @@ export function upsertFleetEvent(event: Record<string, unknown> | null | undefin
   fanoutEventToBuffers(fleetEvent)
 }
 
+// Bulk ingest is history, not delivery. It reaches fanoutEventToBuffers through
+// upsertFleetEvent exactly like a live event does, so without this depth guard a
+// mid-session history load (loadFleetHistoryForAgents, the scrollback path)
+// inflates every buffer's matched-event count by hundreds of OLD messages — and
+// the stall check then reports a panel as behind when nothing new ever arrived.
+// That is what produced matchGap frozen at 218 across three reports on
+// 2026-07-25; those records are inflated and are not evidence of anything.
+let _bulkIngestDepth = 0
+
 export function upsertFleetEvents(events: readonly Record<string, unknown>[]): void {
-  eventStore.bulk(() => {
-    for (const event of events) upsertFleetEvent(event)
-  })
+  _bulkIngestDepth += 1
+  try {
+    eventStore.bulk(() => {
+      for (const event of events) upsertFleetEvent(event)
+    })
+  } finally {
+    _bulkIngestDepth -= 1
+  }
 }
 
 export function upsertFleetEventsForBuffer(
