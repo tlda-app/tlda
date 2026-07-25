@@ -4,7 +4,7 @@ import { labelsForAgent } from '../../shared/fleet-labels.mjs'
 // @ts-ignore - shared JS module
 import { isRuntimeAwake } from '../../shared/fleet-runtime-status.mjs'
 import { setLiveStoreObserver } from '../../shared/live-store.ts'
-import { noteBufferDrop, noteDisposedViewTouched, noteViewRef, startFreezeCensus } from './chat-freeze-probe.mjs'
+import { noteBufferDrop, noteDisposedViewTouched, noteViewRef, startFreezeCensus, filterNameIds } from './chat-freeze-probe.mjs'
 import { getLastEventId } from './fleet-data.mjs'
 
 startFreezeCensus(getLastEventId)
@@ -173,11 +173,25 @@ function unresolvedParticipantDrop(buffer: EventBuffer, event: FleetEvent): Reco
   const unresolved = participants.filter((id) => !roster.some((a: FleetAgent) => a.id === id))
   if (unresolved.length === 0) return null
 
+  // EXACTNESS GATE. An unresolved participant is not enough — a panel filtered
+  // `dm:todd` correctly rejects traffic between two unrelated agents even when
+  // one of them is unhydrated, and flagging that would be noise dressed as the
+  // bug. Only report when the unresolved participant IS an id one of this
+  // panel's own filter names resolves to: then resolving would have flipped the
+  // verdict, and this panel should have shown this message.
+  const culprits: { id: string; name: string }[] = []
+  for (const name of namesInFilter) {
+    const ids = filterNameIds(name)
+    if (!ids) continue
+    for (const id of unresolved) if (ids.has(id)) culprits.push({ id, name })
+  }
+  if (culprits.length === 0) return null
+
   return {
     eventDbId: event._dbId ?? null,
     from: event.from ?? null,
     to: event.to ?? null,
-    unresolved,
+    culprits,
     namesInFilter,
     rosterSize: roster.length,
   }

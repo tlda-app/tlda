@@ -29,7 +29,7 @@ import {
   upsertFleetEventsForBuffer,
 } from './fleet-data.ts'
 import { log } from '../logger'
-import { noteProjection } from './chat-freeze-probe.mjs'
+import { noteProjection, recordFilterNameIds } from './chat-freeze-probe.mjs'
 import { probe } from '../perf-probe'
 import { DATABASE_HTTP, DATABASE_WS } from '../activeConfig'
 import { isUsableIdentityName, sanitizeIdentityName, storedIdentityLoginFailureAction } from './identity-persistence.mjs'
@@ -276,6 +276,14 @@ export async function hydrateFleetAgentsForFilter(filter) {
     }
     return pending
   }))
+  // Record what each NAME term resolved to. A name that resolves to nothing is
+  // permanently unresolvable for this tab — nothing re-runs hydration unless the
+  // filter changes — so every message from that agent is dropped by the panel
+  // while radio still shows it. chat-freeze-probe logs that at its source.
+  requests.forEach((req, i) => {
+    if (!req.key.startsWith('name:')) return
+    recordFilterNameIds(req.key.slice(5), (batches[i]?.agents || []).map(a => a.id))
+  })
   const agents = batches.flatMap(batch => batch?.agents || [])
   if (agents.length) applyAgentDelta(agents, [])
 }
