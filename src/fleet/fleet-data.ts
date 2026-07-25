@@ -6,6 +6,7 @@ import { isRuntimeAwake } from '../../shared/fleet-runtime-status.mjs'
 import { setLiveStoreObserver } from '../../shared/live-store.ts'
 import { noteBufferDrop, noteDisposedViewTouched, noteViewRef, startFreezeCensus, filterNameIds, noteBufferMatch } from './chat-freeze-probe.mjs'
 import { noteClientVerdict } from './filter-equivalence.mjs'
+import { hasChatSubscription } from './chat-subscription.mjs'
 import { getLastEventId } from './fleet-data.mjs'
 
 startFreezeCensus(getLastEventId)
@@ -206,7 +207,14 @@ function fanoutEventToBuffers(event: FleetEvent): void {
     // still runs is the only way to prove the replacement agrees before the old
     // path goes. Keyed by bufferKey, which the subscription carries as its
     // correlationKey so the two verdicts line up on one event.
-    if (event.type === 'chat') noteClientVerdict(bufferKey, event.id, belongs)
+    // Only compare when a subscription is actually live for this panel. A
+    // viewport-culled panel has no subscription, so recording its verdict would
+    // fabricate a server-missed disagreement for every event while it is
+    // off-screen — and that direction is unthrottled because it is supposed to
+    // have no benign explanation.
+    if (event.type === 'chat' && hasChatSubscription(bufferKey)) {
+      noteClientVerdict(bufferKey, event.id, belongs)
+    }
     if (belongs) {
       // Count LIVE deliveries only — see _bulkIngestDepth above.
       if (_bulkIngestDepth === 0) noteBufferMatch(bufferKey)

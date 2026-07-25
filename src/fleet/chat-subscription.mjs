@@ -106,5 +106,21 @@ export function resubscribeAll() {
   return n
 }
 
+/**
+ * Is there a live subscription for this correlation key?
+ *
+ * The equivalence comparator needs this. While a panel is viewport-culled its
+ * subscription is gone but `fanoutEventToBuffers` keeps running, so recording a
+ * client verdict would produce a `server-missed` disagreement for every event
+ * during every scroll — and `server-missed` is the direction reported
+ * unthrottled precisely because it has no benign explanation. Culling would hand
+ * it one and make the signal worthless. So: no subscription, no comparison.
+ */
+export function hasChatSubscription(correlationKey) {
+  if (!correlationKey) return false
+  for (const sub of _subs.values()) if (sub.correlationKey === correlationKey) return true
+  return false
+}
+
 /** Diagnostics only. */
 export function chatSubscriptionCount() { return _subs.size }
