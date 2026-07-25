@@ -67,8 +67,16 @@ export function matchesFleetFilter(filter, event, context = {}) {
   if (!event) return true  // broadcast (e.g. read-receipt refresh)
   if (!filter || filter.length === 0) return true
   if ((event.from_id === 'system' || event.from === 'system') && !event.to) return true
-  const fromLabels = labelSetForParticipant(event.from || event.agent, context)
-  const toLabels = labelSetForParticipant(event.to || event.agent, context)
+  // Accept the store's field names as well as the normalised ones. Events
+  // reaching the SERVER come straight off fleet-store (from_id/to_id); events
+  // reaching the CLIENT have been through convertChatEvent, which renames them
+  // to from/to. Reading only the normalised pair made every server-side
+  // evaluation resolve an undefined participant, so no name term could ever
+  // match — eventsMatched stayed 0 across 1,620 live evaluations.
+  // isDmWithTarget below already read both; this path did not. One file, two
+  // conventions.
+  const fromLabels = labelSetForParticipant(event.from || event.from_id || event.agent, context)
+  const toLabels = labelSetForParticipant(event.to || event.to_id || event.agent, context)
   const dirCtx = { fromLabels, toLabels }
   const matchTerm = (term) => {
     if (Array.isArray(term)) {
