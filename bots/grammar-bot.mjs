@@ -27,8 +27,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = path.resolve(__dirname, '..')
 
 // --- identity (env-driven, like todd) ---
-const BOT_KEY = (process.env.TLDA_BOT_NAME || 'grammar').toLowerCase()
-const AGENT_NAME = BOT_KEY
+const BOT_KEY = (process.env.TLDA_BOT_REQUESTED_NAME || process.env.TLDA_BOT_NAME || 'grammar').toLowerCase()
+const AGENT_NAME = (process.env.FLEET_NAME || BOT_KEY).toLowerCase()
 const PID_FILE = process.env.TLDA_BOT_PIDFILE || path.join(CONFIG_DIR, `${BOT_KEY}.pid`)
 const HEARTBEAT_FILE = process.env.TLDA_BOT_HEARTBEAT || path.join(CONFIG_DIR, `${BOT_KEY}.heartbeat`)
 const ID_FILE = process.env.TLDA_BOT_IDFILE || path.join(CONFIG_DIR, `${BOT_KEY}.fleet-id`)
@@ -49,6 +49,12 @@ const LINT_SERVER = path.join(REPO_ROOT, 'server/lib/lint-server.py')
 const MATH_RE = /\$[^$]+\$|\\\[|\\\(|\\begin\{(?:equation|align|gather|multline)/
 
 function loadOrCreateFleetId() {
+  if (/^fleet:[a-zA-Z0-9_-]+$/.test(process.env.FLEET_ID || '')) {
+    try {
+      if (!fs.existsSync(ID_FILE)) fs.writeFileSync(ID_FILE, process.env.FLEET_ID)
+    } catch { /* best-effort persist; env id is authoritative for this run */ }
+    return process.env.FLEET_ID
+  }
   try {
     const existing = fs.readFileSync(ID_FILE, 'utf8').trim()
     if (existing) return existing
@@ -58,6 +64,11 @@ function loadOrCreateFleetId() {
   return id
 }
 const AGENT_ID = loadOrCreateFleetId()
+let assignedName = null
+
+function isCanonicalBot() {
+  return assignedName === BOT_KEY
+}
 
 function writeHeartbeat(reason) {
   try {
@@ -159,7 +170,10 @@ function handleWsReply(msg) {
   else p.resolve(msg.result)
   return true
 }
-function sendChat(to, text) { send({ type: 'chat', from: AGENT_ID, to, message: text }) }
+function sendChat(to, text) {
+  if (!isCanonicalBot()) return
+  send({ type: 'chat', from: AGENT_ID, to, message: text })
+}
 
 async function loginFleet() {
   const payload = {
@@ -167,7 +181,10 @@ async function loginFleet() {
     labels: ['bot', BOT_KEY], metadata: { bot: BOT_KEY, pid: process.pid },
   }
   try { await sendRequest({ ...payload, type: 'reserve-shell' }) } catch { /* reserve is best-effort; login below is what matters */ }
-  return sendRequest({ ...payload, type: 'login' })
+  const result = await sendRequest({ ...payload, type: 'login' })
+  assignedName = result?.agent?.friendly_name || result?.assigned_name || null
+  if (!isCanonicalBot()) console.log(`[grammar-bot] inert: requested "${BOT_KEY}", assigned "${assignedName || '(none)'}"`)
+  return result
 }
 
 async function handleMessage(raw) {

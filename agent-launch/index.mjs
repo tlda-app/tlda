@@ -19,6 +19,7 @@ import {
 import * as claude from './harness/claude.mjs'
 import * as codex from './harness/codex.mjs'
 import * as goose from './harness/goose.mjs'
+import * as bot from './harness/bot.mjs'
 import { randomUUID } from 'node:crypto'
 
 export class SpawnError extends Error {
@@ -57,7 +58,23 @@ function lifecycleOutcome(params) {
     : {}
 }
 
-const ADAPTERS = { claude, codex, goose }
+const BOT_MODEL_SPEC = {
+  alias: 'bot',
+  id: 'bot',
+  model: 'bot',
+  harness: 'bot',
+  kind: 'bot',
+  provider: 'bot',
+  group: 'bot',
+  level: null,
+  description: 'local JavaScript bot harness',
+  options: {},
+  tags: [],
+  available: true,
+  verified: true,
+}
+
+const ADAPTERS = { claude, codex, goose, bot }
 
 function metadataOf(agent) {
   const meta = agent?.metadata || {}
@@ -178,7 +195,7 @@ function shellReservationOptions(params = {}) {
   return params.shellReservationTimeoutMs ? { timeoutMs: params.shellReservationTimeoutMs } : {}
 }
 
-async function buildCommand({ requestedKind, adapter, fleetId, localAgentId, tmuxSession, model, modelProvider = null, name, cwd, effort, permissionMode, permissionGrant, api, dnsAlias, resumeId = null, freshSessionId = null, includePrompt = true, leasePolicy = null, enforceFence = false, harnessOptions = {}, config = undefined, env = process.env }) {
+async function buildCommand({ requestedKind, adapter, fleetId, localAgentId, tmuxSession, model, modelProvider = null, name, cwd, effort, permissionMode, permissionGrant, api, dnsAlias, resumeId = null, freshSessionId = null, includePrompt = true, leasePolicy = null, enforceFence = false, harnessOptions = {}, config = undefined, env = process.env, botScript = null, botName = null, botIdFile = null, botPidFile = null, botHeartbeatFile = null, botWaitChannel = null }) {
   let cmd
   let sendKeys = false
   if (requestedKind === 'codex') {
@@ -220,6 +237,12 @@ async function buildCommand({ requestedKind, adapter, fleetId, localAgentId, tmu
       env,
       includePrompt,
       harnessOptions,
+      botScript,
+      botName,
+      botIdFile,
+      botPidFile,
+      botHeartbeatFile,
+      botWaitChannel,
     })
   }
   const commandBeforeFence = cmd
@@ -255,8 +278,11 @@ export async function launchMintProcess(params) {
   const fleetId = params.fleetId || params.fleet_id || null
   const cwd = resolveSpawnCwd(params.cwd)
   const config = params.config ?? withDaemonModelAliases({}, readDaemonConfigForCwd(cwd))
-  const modelSpec = params.modelSpec || resolveLaunchSpec(params.model, config, modelKwargs(params))
-  const requestedKind = params.requestedKind || params.kind || modelSpec.harness
+  const explicitKind = String(params.requestedKind || params.kind || '').trim().toLowerCase()
+  const modelSpec = params.modelSpec || (explicitKind === 'bot'
+    ? BOT_MODEL_SPEC
+    : resolveLaunchSpec(params.model, config, modelKwargs(params)))
+  const requestedKind = explicitKind || modelSpec.harness
   const adapter = ADAPTERS[requestedKind]
   if (!adapter) throw new SpawnError('launch-failed', `unsupported harness: ${requestedKind}`)
   applyNormalizedOptions(params, modelSpec)
@@ -306,6 +332,12 @@ export async function launchMintProcess(params) {
     harnessOptions: launchPolicy.harnessOptions,
     config,
     env: spawnEnv(params),
+    botScript: params.botScript || params.bot_script || params.script || null,
+    botName: params.botName || params.bot_name || null,
+    botIdFile: params.botIdFile || params.bot_id_file || null,
+    botPidFile: params.botPidFile || params.bot_pid_file || null,
+    botHeartbeatFile: params.botHeartbeatFile || params.bot_heartbeat_file || null,
+    botWaitChannel: params.botWaitChannel || params.bot_wait_channel || null,
   })
   const launched = await (params._deps?.spawnTmux || spawnTmux)(
     tmuxSession,
@@ -340,7 +372,7 @@ export async function launchMintProcess(params) {
     cwd,
     harness: requestedKind,
     model,
-    session_id: resumeId || freshSessionId,
+    session_id: requestedKind === 'bot' ? (resumeId || mintId) : (resumeId || freshSessionId),
     permission_grant: launchPolicy.permissionGrant,
     permission_set: launchPolicy.permissionSet,
     alive: true,

@@ -59,6 +59,7 @@ import fs from 'fs'
 import path from 'path'
 import os from 'os'
 import net from 'node:net'
+import { randomUUID } from 'node:crypto'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { fileURLToPath } from 'url'
 import {
@@ -145,6 +146,21 @@ const CONFIG_DIR = process.env.TLDA_DAEMON_CONFIG_DIR || _SHARED_CONFIG_DIR
 const PROJECT_WORLDS_FILE = projectWorldsPath(_SHARED_CONFIG_DIR)
 const DAEMON_CONFIG_FILE = defaultDaemonConfigPath(CONFIG_DIR)
 const daemonSpawnConfig = readDaemonConfig(DAEMON_CONFIG_FILE)
+const BOT_MODEL_SPEC = {
+  alias: 'bot',
+  id: 'bot',
+  model: 'bot',
+  harness: 'bot',
+  kind: 'bot',
+  provider: 'bot',
+  group: 'bot',
+  level: null,
+  description: 'local JavaScript bot harness',
+  options: {},
+  tags: [],
+  available: true,
+  verified: true,
+}
 function getDaemonFleetServerUrl() {
   return getFleetServerUrl()
 }
@@ -776,7 +792,10 @@ async function rpcMint(params = {}) {
   const cwd = params.cwd || process.cwd()
   const daemonConfig = readDaemonConfigForCwd(cwd)
   const spawnConfig = withDaemonModelAliases(loadDaemonLaunchConfig(), daemonConfig)
-  const modelSpec = resolveModelSpec(params.model, { config: spawnConfig })
+  const explicitKind = String(params.kind || '').trim().toLowerCase()
+  const modelSpec = explicitKind === 'bot'
+    ? BOT_MODEL_SPEC
+    : resolveModelSpec(params.model, { config: spawnConfig })
   const requester = params.requester || { id: 'localhost', human: true }
   const spawnerGrant = permissionLedger.get(requester.id) || permissionLedger.grantFor(requester)
   const defaultProfile = daemonConfig?.default || null
@@ -794,6 +813,32 @@ async function rpcMint(params = {}) {
     config: grantConfig,
     cwd,
   })
+  if (explicitKind === 'bot' && !(params.fleet_id || params.agent_id)) {
+    const requestedName = params.friendly_name || params.name || null
+    const mintId = params.mint_id || randomUUID()
+    const botSeat = await wsMintShell({
+      localAgentId: mintId,
+      name: requestedName,
+      tmuxSession: null,
+      cwd,
+      model: 'bot',
+      kind: 'bot',
+      metadata: params.metadata || null,
+      machineId: MACHINE_ID,
+      envName: ACTIVE_CONFIG,
+      daemonKey: `${MACHINE_ID}:${ACTIVE_CONFIG}`,
+    })
+    const assignedFleetId = botSeat?.fleet_id || botSeat?.server_agent_id || botSeat?.agent?.id || null
+    if (!assignedFleetId) throw new Error('bot mint returned no fleet_id')
+    const assignedName = botSeat?.friendly_name || botSeat?.assigned_name || botSeat?.agent?.friendly_name || requestedName
+    params = {
+      ...params,
+      mint_id: mintId,
+      fleet_id: assignedFleetId,
+      friendly_name: assignedName,
+      botName: params.botName || params.bot_name || requestedName,
+    }
+  }
   const facts = await daemonMintCore.mint({
     mint_id: params.mint_id || null,
     fleet_id: params.fleet_id || params.agent_id || null,
@@ -806,6 +851,12 @@ async function rpcMint(params = {}) {
       modelSpec,
       config: spawnConfig,
       kind: params.kind || modelSpec.harness,
+      botScript: params.botScript || params.bot_script || params.script || null,
+      botName: params.botName || params.bot_name || null,
+      botIdFile: params.botIdFile || params.bot_id_file || null,
+      botPidFile: params.botPidFile || params.bot_pid_file || null,
+      botHeartbeatFile: params.botHeartbeatFile || params.bot_heartbeat_file || null,
+      botWaitChannel: params.botWaitChannel || params.bot_wait_channel || null,
       cwd,
       effort: params.effort,
       mode: params.mode,
