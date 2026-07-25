@@ -4,7 +4,7 @@ import { labelsForAgent } from '../../shared/fleet-labels.mjs'
 // @ts-ignore - shared JS module
 import { isRuntimeAwake } from '../../shared/fleet-runtime-status.mjs'
 import { setLiveStoreObserver } from '../../shared/live-store.ts'
-import { noteBufferDrop, noteDisposedViewTouched, noteViewRef, startFreezeCensus, filterNameIds, noteBufferMatch } from './chat-freeze-probe.mjs'
+import { noteBufferDrop, noteDisposedViewTouched, noteViewRef, startFreezeCensus, filterNameIds, noteBufferMatch, isRenderableInPanel } from './chat-freeze-probe.mjs'
 import { noteClientVerdict } from './filter-equivalence.mjs'
 import { hasChatSubscription } from './chat-subscription.mjs'
 import { getLastEventId } from './fleet-data.mjs'
@@ -216,8 +216,10 @@ function fanoutEventToBuffers(event: FleetEvent): void {
       noteClientVerdict(bufferKey, event.id, belongs)
     }
     if (belongs) {
-      // Count LIVE deliveries only — see _bulkIngestDepth above.
-      if (_bulkIngestDepth === 0) noteBufferMatch(bufferKey)
+      // Count LIVE deliveries the panel would actually RENDER — see the
+      // _bulkIngestDepth note above for history, and isRenderableInPanel for the
+      // types the buffer accepts but chatMessages drops.
+      if (_bulkIngestDepth === 0 && isRenderableInPanel(event)) noteBufferMatch(bufferKey)
       buffer.store.upsert(event)
       if (buffer.pinned) trimEventBuffer(buffer)
     } else {
