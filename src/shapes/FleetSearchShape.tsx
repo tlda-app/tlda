@@ -12,6 +12,7 @@ import {
   useEditor,
   useValue,
   createShapeId,
+  type Editor,
   type TLShapeId,
 } from 'tldraw'
 import { beginNativeSnapDrag, createFleetShape, agentDisplayLabel, endNativeSnapDrag } from './fleet-utils'
@@ -19,7 +20,7 @@ import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import { fleetSearchProps } from '../../shared/shapes/fleet-panel-schema.mjs'
 import { useState, useCallback, useRef, useMemo, useEffect, memo } from 'react'
 import { searchFleet, fetchSharedDocs, useFleetAgents, useFleetTasks } from '../fleet-data-adapter'
-import { fleetSearchResultAgentChatFilter } from '../../shared/filter-semantics.mjs'
+import { fleetSearchResultAgentChatFilter, fleetSearchResultParticipantLabel } from '../../shared/filter-semantics.mjs'
 import katex from 'katex'
 import { getActiveMacros } from '../katexMacros'
 import MarkdownIt from 'markdown-it'
@@ -90,9 +91,11 @@ let nickIdx = 0
 
 
 const DRAG_THRESHOLD = 4
+type SearchPillType = 'agent' | 'msg'
 interface DragState {
-  pillId: string | null; pillType: 'agent'
+  pillId: string | null; pillType: SearchPillType
   value: string; displayName: string; color: string
+  content?: string
   startX: number; startY: number; started: boolean
 }
 
@@ -113,10 +116,17 @@ function usePillDrag() {
     }, { history: 'ignore' })
   }, [editor])
 
-  const startDrag = useCallback((e: React.PointerEvent, value: string, displayName: string, color: string) => {
+  const startDrag = useCallback((
+    e: React.PointerEvent,
+    pillType: SearchPillType,
+    value: string,
+    displayName: string,
+    color: string,
+    content?: string,
+  ) => {
     stopEventPropagation(e)
     e.preventDefault()
-    dragRef.current = { pillId: null, pillType: 'agent', value, displayName, color, startX: e.clientX, startY: e.clientY, started: false }
+    dragRef.current = { pillId: null, pillType, value, displayName, color, content, startX: e.clientX, startY: e.clientY, started: false }
     releaseRef.current = dragCoordinator.claim(
       (ev: PointerEvent) => {
         const drag = dragRef.current
@@ -134,7 +144,13 @@ function usePillDrag() {
           document.body.removeChild(measureEl)
           const pillId = createShapeId()
           editor.run(() => {
-            editor.createShape({ id: pillId, type: 'fleet-pill' as any, x: pagePos.x - pw / 2, y: pagePos.y - ph / 2, props: transientFleetPillProps({ w: pw, h: ph, pillType: 'agent', value: drag.value, displayName: drag.displayName, color: drag.color }) })
+            editor.createShape({
+              id: pillId,
+              type: 'fleet-pill',
+              x: pagePos.x - pw / 2,
+              y: pagePos.y - ph / 2,
+              props: transientFleetPillProps({ w: pw, h: ph, pillType: drag.pillType, value: drag.value, displayName: drag.displayName, color: drag.color }),
+            } as unknown as Parameters<Editor['createShape']>[0])
           }, { history: 'ignore' })
           drag.pillId = pillId as unknown as string
           markFleetPillActive(String(pillId))
@@ -157,7 +173,7 @@ function usePillDrag() {
         markFleetPillInactive(String(drag.pillId))
         const id = drag.pillId as TLShapeId
         const pagePos = fleetPointerEventPagePoint(editor, frame, ev)
-        dropPillOnTarget(editor, id, drag.value, pagePos)
+        dropPillOnTarget(editor, id, drag.value, pagePos, drag.content)
         editor.run(() => {
           if (editor.getShape(id)) editor.deleteShapes([id])
         }, { history: 'ignore' })
@@ -171,6 +187,27 @@ function usePillDrag() {
     cancelDrag()
   }, [cancelDrag])
   return { startDrag }
+}
+
+function searchResultMessageDrag(result: any, text: string, ctx: ReturnType<typeof makeChatCtx>, agents: any[]) {
+  const fromId = result.from || result.agentId || result.agent || ''
+  const label = fleetSearchResultParticipantLabel(result, fromId, { agents }) || ctx.agentLabel(fromId)
+  const ts = result.timestamp || ''
+  const time = ts ? new Date(ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : ''
+  const id = result.source === 'session'
+    ? (result.id ? `session:${result.id}` : `session:${fromId}:${ts}`)
+    : (result.id ? `msg:${result.id}` : `msg:${fromId}:${ts}`)
+  const content = [
+    ts ? `[${ts}]` : '',
+    label ? `${label}:` : '',
+    text,
+  ].filter(Boolean).join(' ')
+  return {
+    value: id,
+    displayName: `${label} ${time} search`.trim(),
+    color: '#8888a0',
+    content,
+  }
 }
 
 function makeChatCtx(agents: any[], tasks: any[]) {
@@ -634,10 +671,17 @@ function FleetSearchInner({ shape }: { shape: any }) {
                   const nick = (e.target as HTMLElement).closest('[data-agent-id]') as HTMLElement | null
                   if (nick) {
                     const agentId = nick.dataset.agentId || ''
-                    const value = agentFilterName(agentId)
-                    const name = agentName(agentId)
+                    const historicalName = fleetSearchResultParticipantLabel(r, agentId, { agents })
+                    const value = historicalName || agentFilterName(agentId)
+                    const name = historicalName || agentName(agentId)
                     const color = ctx.getAgentColor(agentId)
-                    startDrag(e, value, name, color)
+                    startDrag(e, 'agent', value, name, color)
+                    return
+                  }
+                  const tsEl = (e.target as HTMLElement).closest('.chat-ts, .pretty-search-ts, .pretty-ts') as HTMLElement | null
+                  if (tsEl) {
+                    const drag = searchResultMessageDrag(r, text, ctx, agents)
+                    startDrag(e, 'msg', drag.value, drag.displayName, drag.color, drag.content)
                   }
                 }}
               >

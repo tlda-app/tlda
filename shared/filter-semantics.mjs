@@ -164,21 +164,38 @@ function isHumanAgentId(id, { agents = [], humanId = null } = {}) {
   return !!agent?.human || status === 'human' || status === 'human-away'
 }
 
-function nonHumanAgentById(id, context = {}) {
-  if (!id || isHumanAgentId(id, context)) return null
-  const agent = findAgentById(context.agents, id)
-  if (!agent || agent.human) return null
-  return agent
+export function fleetSearchResultParticipantLabel(result, participantId, context = {}) {
+  if (!result || !participantId) return ''
+  const liveAgent = findAgentById(context.agents, participantId)
+  if (liveAgent?.friendly_name) return liveAgent.friendly_name
+
+  if (participantId === (result.agentId || result.agent)) {
+    const ownerName = result.agentNameNow || result.agentName
+    if (ownerName) return ownerName
+  }
+  if (participantId === result.from) {
+    const fromName = result.fromNameNow || result.fromName
+    if (fromName) return fromName
+  }
+  if (participantId === result.to) {
+    const toName = result.toNameNow || result.toName
+    if (toName) return toName
+  }
+  return ''
 }
 
 export function fleetSearchResultTargetAgentLabel(result, context = {}) {
   if (!result) return ''
-  const owningAgent = nonHumanAgentById(result.agentId || result.agent || '', context)
-  if (owningAgent?.friendly_name) return owningAgent.friendly_name
+  const ownerId = result.agentId || result.agent || ''
+  if (!isHumanAgentId(ownerId, context)) {
+    const owningName = fleetSearchResultParticipantLabel(result, ownerId, context)
+    if (owningName) return owningName
+  }
 
   for (const participant of [result.from, result.to]) {
-    const agent = nonHumanAgentById(participant, context)
-    if (agent?.friendly_name) return agent.friendly_name
+    if (isHumanAgentId(participant, context)) continue
+    const participantName = fleetSearchResultParticipantLabel(result, participant, context)
+    if (participantName) return participantName
   }
 
   return ''
