@@ -59,6 +59,7 @@ if (hasTls && !process.env.NODE_EXTRA_CA_CERTS) {
  */
 function _httpForm(u) { return u.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:').replace(/\/+$/, '') }
 function _wsForm(u) { return u.replace(/^https:/, 'wss:').replace(/^http:/, 'ws:').replace(/\/+$/, '') }
+function isRecord(value) { return !!value && typeof value === 'object' && !Array.isArray(value) }
 
 const DAEMON_FILE = join(CONFIG_DIR, 'daemon.yaml')
 const SERVER_FILE = join(CONFIG_DIR, 'server.yaml')
@@ -228,19 +229,58 @@ const BOTS_FILE = join(CONFIG_DIR, 'bots.yaml')
 /**
  * Managed bots for this machine, read directly from bots.yaml — the single
  * source of truth. Bots are independent, launchd-owned services; the daemon
- * does not manage them. Each entry: { name, script, machine_id?, server? }
- * where `script` is absolute or repo-relative, `machine_id` optionally pins the
- * bot to one machine, and `server` names an entry in server.yaml `servers:`
- * (omit for the machine default). No config.json fallback — if bots.yaml is
- * absent there are no managed bots; a malformed bots.yaml throws loudly.
+ * does not manage them. Shape:
+ *
+ *   bots:
+ *     todd: { script: bin/bots/todd.mjs }
+ *   environments:
+ *     testing: [todd]
+ *
+ * Bot definitions live exactly once. Environments list bot names only.
  */
-export function getManagedBots() {
+function loadBotsYaml() {
   if (!existsSync(BOTS_FILE)) return []
-  let doc
   try {
-    doc = parseYaml(readFileSync(BOTS_FILE, 'utf8'))
+    return parseYaml(readFileSync(BOTS_FILE, 'utf8')) || {}
   } catch (e) {
     throw new Error(`bots.yaml is malformed: ${e.message}`)
   }
-  return Array.isArray(doc?.bots) ? doc.bots : []
+}
+
+export function getManagedBots() {
+  const doc = loadBotsYaml()
+  if (!doc || !doc.bots) return []
+  if (Array.isArray(doc.bots)) return doc.bots
+  if (!isRecord(doc.bots)) throw new Error('bots.yaml: bots must be a map of name to definition')
+  return Object.entries(doc.bots).map(([name, value]) => {
+    if (!isRecord(value)) throw new Error(`bots.yaml: bot ${name} must be a mapping`)
+    return { name, ...value }
+  })
+}
+
+export function getManagedBotEnvironments() {
+  const doc = loadBotsYaml()
+  if (Array.isArray(doc?.bots)) {
+    const out = {}
+    const defaultName = resolveStrictServerAuthority(loadServerConfig()).name
+    for (const bot of doc.bots) {
+      const envName = bot?.server || defaultName
+      if (!out[envName]) out[envName] = []
+      if (bot?.name) out[envName].push(String(bot.name))
+    }
+    return out
+  }
+  if (!doc || !doc.environments) return {}
+  if (!isRecord(doc.environments)) throw new Error('bots.yaml: environments must be a map of environment name to bot-name list')
+  const botNames = new Set(getManagedBots().map(bot => bot.name))
+  const out = {}
+  for (const [envName, members] of Object.entries(doc.environments)) {
+    if (!Array.isArray(members)) throw new Error(`bots.yaml: environments.${envName} must be a list`)
+    out[envName] = members.map(member => {
+      const name = String(member)
+      if (!botNames.has(name)) throw new Error(`bots.yaml: environments.${envName} references unknown bot "${name}"`)
+      return name
+    })
+  }
+  return out
 }
