@@ -800,6 +800,33 @@ export function createJsonlIngestor({
     ].filter(Boolean).map(p => path.resolve(p)))]
   }
 
+  function listJsonlFilesUnder(root) {
+    const out = []
+    const stack = [root]
+    while (stack.length) {
+      const current = stack.pop()
+      let entries
+      try {
+        entries = fs.readdirSync(current, { withFileTypes: true })
+      } catch {
+        continue
+      }
+      for (const entry of entries) {
+        const full = path.join(current, entry.name)
+        if (entry.isDirectory()) {
+          stack.push(full)
+        } else if (entry.isFile() && entry.name.endsWith('.jsonl')) {
+          out.push(full)
+        }
+      }
+    }
+    return out
+  }
+
+  function discoverLocalJsonlFiles() {
+    return [...new Set(transcriptRoots().flatMap(listJsonlFilesUnder))].sort()
+  }
+
   function inferHarnessKindForJsonlPath(jsonlPath, agent = null) {
     const hinted = agent?.runtimeKind || agent?.metadata?.kind
     if (hinted && harnessAdapters[hinted]) return hinted
@@ -837,14 +864,10 @@ export function createJsonlIngestor({
   async function syncSessionWatchersOnce(agentList) {
     const activePaths = new Set()
     const agentsByPath = agentBySessionPath(agentList)
-    const candidatePaths = new Set([
-      ...pathWatchers.keys(),
-      ...agentsByPath.keys(),
-    ])
 
     retainJsonlRootWatchers()
 
-    for (const jsonlPath of [...candidatePaths].sort()) {
+    for (const jsonlPath of discoverLocalJsonlFiles()) {
       const resolvedPath = path.resolve(jsonlPath)
       activePaths.add(resolvedPath)
       const agent = agentsByPath.get(resolvedPath) || null
