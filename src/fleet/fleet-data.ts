@@ -38,6 +38,18 @@ type EventBuffer = {
   matchesFilter: FleetEventMatcher
   pinned: boolean
   maxEvents: number
+  // A server-fed buffer takes its rows from its own filter subscription and
+  // NOTHING else — not the global store, not the client-side matcher. That is
+  // the whole change: the panel's data source is the query for its filter,
+  // answered by the server against the full roster, instead of a client-side
+  // predicate run over a bounded local copy of everything.
+  //
+  // It is the local copy that was the bug. The browser holds a live-biased PAGE
+  // of a 7,000-agent fleet, so a filter naming an agent that had fallen off the
+  // page silently matched nothing while the same filter matched fine on the
+  // server. The panel then sat there, scrollable and composable, taking no new
+  // messages — which is exactly what a stuck chat looks like.
+  serverFed: boolean
 }
 const eventBuffers = new Map<string, EventBuffer>()
 const DEFAULT_BUFFER_MAX_EVENTS = 500
@@ -102,6 +114,12 @@ function removeEventIdFromStores(id: string): void {
   for (const buffer of eventBuffers.values()) buffer.store.remove(id)
 }
 
+// A chat panel's buffer is server-fed. Every other buffer keeps the old
+// client-matched behaviour until its owner is moved the same way.
+function isServerFedBufferKey(bufferKey: string): boolean {
+  return bufferKey.startsWith('chat:')
+}
+
 function eventBuffer(
   bufferKey: string,
   filter: FleetEventFilter | null,
@@ -115,14 +133,18 @@ function eventBuffer(
       matchesFilter,
       pinned: true,
       maxEvents: DEFAULT_BUFFER_MAX_EVENTS,
+      serverFed: isServerFedBufferKey(bufferKey),
     }
     eventBuffers.set(bufferKey, buffer)
-    seedEventBuffer(buffer)
+    // A server-fed buffer is seeded by its subscription's history page, which
+    // the server is already querying. Seeding it from the local store here
+    // would put back exactly the client-decided rows this change removes.
+    if (!buffer.serverFed) seedEventBuffer(buffer)
     return buffer
   }
   buffer.filter = filter
   buffer.matchesFilter = matchesFilter
-  reconcileEventBuffer(buffer)
+  if (!buffer.serverFed) reconcileEventBuffer(buffer)
   return buffer
 }
 
@@ -143,6 +165,37 @@ function reconcileEventBuffer(buffer: EventBuffer): void {
       if (buffer.matchesFilter(buffer.filter, event)) store.upsert(event)
     }
   })
+}
+
+/**
+ * Put the events a subscription delivered into that panel's buffer.
+ *
+ * The ONLY way rows enter a server-fed buffer. `bufferKey` is the
+ * subscription's correlationKey, which is the panel's own buffer key — the two
+ * were already the same string, because the comparator needed them to line up.
+ *
+ * Refiltering replaces the contents: the server answers the NEW filter from
+ * scratch, so keeping the old rows would leave a panel showing a mix of two
+ * filters, which is the "refilter to unstick it" path making things worse.
+ */
+export function applyFilterEvents(
+  bufferKey: string,
+  events: readonly Record<string, unknown>[],
+  opts: { replace?: boolean } = {}
+): number {
+  const buffer = eventBuffers.get(bufferKey)
+  if (!buffer || !buffer.serverFed) return 0
+  let added = 0
+  buffer.store.bulk((store) => {
+    if (opts.replace) for (const event of store.all()) store.remove(event.id)
+    for (const raw of events) {
+      const event = asFleetEvent(raw)
+      if (!store.get(event.id)) added++
+      store.upsert(event)
+    }
+  })
+  if (buffer.pinned) trimEventBuffer(buffer)
+  return added
 }
 
 // Is this drop the unhydrated-participant case? Returns a diagnostic payload
@@ -201,6 +254,9 @@ function unresolvedParticipantDrop(buffer: EventBuffer, event: FleetEvent): Reco
 
 function fanoutEventToBuffers(event: FleetEvent): void {
   for (const [bufferKey, buffer] of eventBuffers) {
+    // A server-fed buffer is not fed from here. Its rows arrive through
+    // applyFilterEvents, from the subscription that asked for them.
+    if (buffer.serverFed) continue
     const belongs = buffer.matchesFilter(buffer.filter, event)
     // The client's own membership verdict, recorded for comparison against the
     // server's. This IS the decision we intend to delete — recording it while it
@@ -316,6 +372,7 @@ export function upsertFleetEventsForBuffer(
       matchesFilter: () => true,
       pinned: true,
       maxEvents: DEFAULT_BUFFER_MAX_EVENTS,
+      serverFed: isServerFedBufferKey(bufferKey),
     })
   }
   const fleetEvents = events.map(asFleetEvent)
@@ -358,8 +415,13 @@ export function getFilteredFleetEvents(
       .filter((event) => opts.matchesFilter(filter, event))
       .sort(compareFleetEvents)
   }
-  return eventBuffer(opts.bufferKey, filter, opts.matchesFilter)
-    .store.all()
+  const buffer = eventBuffer(opts.bufferKey, filter, opts.matchesFilter)
+  // A server-fed buffer contains exactly what the server said belongs. Running
+  // the client predicate over it again would reinstate the decision this change
+  // removes — and would silently hide any row the browser's partial roster
+  // can't resolve, which is the original bug wearing a read-side hat.
+  if (buffer.serverFed) return buffer.store.all().slice().sort(compareFleetEvents)
+  return buffer.store.all()
     .filter((event) => opts.matchesFilter(filter, event))
     .sort(compareFleetEvents)
 }
@@ -370,7 +432,11 @@ export function viewFleetEvents(
 ): LiveView<FleetEvent> {
   const predicate = (event: FleetEvent) => opts.matchesFilter(filter, event)
   if (!opts.bufferKey) return eventStore.view(predicate, { key: opts.key, compare: compareFleetEvents })
-  return eventBuffer(opts.bufferKey, filter, opts.matchesFilter).store.view(predicate, {
+  const buffer = eventBuffer(opts.bufferKey, filter, opts.matchesFilter)
+  // Same rule as getFilteredFleetEvents: a server-fed buffer holds only rows the
+  // server said belong, so the view takes all of them.
+  const view = buffer.serverFed ? () => true : predicate
+  return buffer.store.view(view, {
     key: `${opts.key}:buffer:${opts.bufferKey}`,
     compare: compareFleetEvents,
   })

@@ -28,11 +28,12 @@ import {
   upsertFleetEvent,
   upsertFleetEvents,
   upsertFleetEventsForBuffer,
+  applyFilterEvents,
   inLiveDelivery,
 } from './fleet-data.ts'
 import { log } from '../logger'
 import { noteProjection, recordFilterNameIds } from './chat-freeze-probe.mjs'
-import { dispatchFilterEvent, setChatSubscriptionTransport, refreshChatSubscriptionIdentity } from './chat-subscription.mjs'
+import { dispatchFilterEvent, dispatchFilterEvents, setChatSubscriptionTransport, refreshChatSubscriptionIdentity } from './chat-subscription.mjs'
 import { probe } from '../perf-probe'
 import { DATABASE_HTTP, DATABASE_WS } from '../activeConfig'
 import { isUsableIdentityName, sanitizeIdentityName, storedIdentityLoginFailureAction } from './identity-persistence.mjs'
@@ -1244,11 +1245,15 @@ export function connect() {
         }
         notify('messages', isNew ? event : null)
       } else if (eventType === 'filter-event') {
-        // The server's membership verdict for a subscribed filter. Additive: the
-        // unconditional `fleet-event` above still carries everything, so this
-        // stream exists purely to be compared against the client's own decision
-        // until that comparison runs quiet and the client's decision is deleted.
+        // The server's membership verdict for a subscribed filter, and now the
+        // panel's only live source: dispatchFilterEvent hands it to the
+        // subscription's onEvents, which puts it in that panel's buffer.
         dispatchFilterEvent(data)
+        return
+      } else if (eventType === 'filter-events') {
+        // The initial window the server queried for a subscription — the panel's
+        // own history, decided by the same predicate as the live push above.
+        dispatchFilterEvents(data)
         return
       } else if (eventType === 'event-update') {
         const ev = _store.get('db:' + data.id)
@@ -1450,16 +1455,39 @@ function applyTaskDelta(delta) {
 export async function fetchHistory(agentIds = [], limit = 200) {
   const res = await browserFleetTransport.ephemeral('load-history', { agents: agentIds || [], limit })
 
-  const events = (res.events || [])
-    .filter(e => {
-      const t = e.event_type || e.type
-      return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'terminal_user' || t === 'terminal_assistant' || t === 'timer' || t === 'compacting' || t === 'activity' || t === 'terminal_attention' || t === 'terminal_card' || t === 'plan_approval' || t === 'kill-session' || t === 'interrupt'
-    })
-    .map(convertChatEvent)
+  const events = toRenderableChatEvents(res.events)
 
   return events.sort((a, b) =>
     (a.timestamp || '') < (b.timestamp || '') ? -1 : 1
   )
+}
+
+// The renderable set, shared by every intake path. Split out of loadBefore so
+// the subscription and the scrollback fetch can't disagree about what a chat
+// panel is willing to show — two lists that were meant to be the same one is
+// how live and history came to render different sets in the first place.
+const RENDERABLE_CHAT_TYPES = new Set([
+  'chat', 'delegate', 'task_done', 'terminal_user', 'terminal_assistant', 'timer',
+  'compacting', 'activity', 'terminal_attention', 'terminal_card', 'plan_approval',
+  'kill-session', 'interrupt',
+])
+
+function toRenderableChatEvents(rows) {
+  return (rows || [])
+    .filter(e => RENDERABLE_CHAT_TYPES.has(e.event_type || e.type))
+    .map(convertChatEvent)
+}
+
+/**
+ * Put a subscription's events into that panel's buffer. The ONE intake for a
+ * server-fed chat panel — history page and live push both land here, converted
+ * the same way, so a message renders identically whichever way it arrived.
+ */
+export function receiveFilterEvents(bufferKey, rows, { replace = false } = {}) {
+  if (!bufferKey) return 0
+  const added = applyFilterEvents(bufferKey, toRenderableChatEvents(rows), { replace })
+  if (added || replace) notify('messages', null)
+  return added
 }
 
 export async function loadBefore(agentIds = [], beforeTs, count = 100, opts = {}) {
@@ -1469,12 +1497,7 @@ export async function loadBefore(agentIds = [], beforeTs, count = 100, opts = {}
     limit: count,
   })
 
-  const events = (res.events || [])
-    .filter(e => {
-      const t = e.event_type || e.type
-      return t === 'chat' || t === 'delegate' || t === 'task_done' || t === 'terminal_user' || t === 'terminal_assistant' || t === 'timer' || t === 'compacting' || t === 'activity' || t === 'terminal_attention' || t === 'terminal_card' || t === 'plan_approval' || t === 'kill-session' || t === 'interrupt'
-    })
-    .map(convertChatEvent)
+  const events = toRenderableChatEvents(res.events)
 
   // Fold scrollback into either the shared global store (unfiltered/global chat)
   // or a named chat buffer (filtered chats). Return the count of genuinely-new

@@ -55,7 +55,7 @@ import { openTerminalTransport, type TerminalTransport } from '../fleet/terminal
 import { labelsForAgent } from '../../shared/fleet-labels.mjs'
 import { runtimeStatusName } from '../../shared/fleet-runtime-status.mjs'
 import { ACTIVITY_DELIVERY_STAGES } from '../../shared/activity-delivery-counters.mjs'
-import { useFleetAgents, useFleetChatAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useFleetStatusTargets, useFleetFilterHasMatchingAgent, useFleetUnreadCounts, useSuggestions, clearGroup, sendMessage, loadBefore, resolveFleetAgentLabelIds, injectOptimisticEvent, updateOptimisticEvent, removeOptimisticEvent } from '../fleet-data-adapter'
+import { useFleetAgents, useFleetChatAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useFleetStatusTargets, useFleetFilterHasMatchingAgent, useFleetUnreadCounts, useSuggestions, clearGroup, sendMessage, loadBefore, receiveFilterEvents, resolveFleetAgentLabelIds, injectOptimisticEvent, updateOptimisticEvent, removeOptimisticEvent } from '../fleet-data-adapter'
 import { isTerminalAvailableForAgent } from '../fleet/fleet-chat-visibility.mjs'
 import type { Suggestion } from '../fleet-data-adapter'
 import { dropPillOnTarget, chatInsertBus, filterDropPreview, chipContentStore } from './FleetPillShape'
@@ -5979,10 +5979,15 @@ function FleetChatInner({ shape }: { shape: any }) {
  * that comparison runs quiet on real traffic, this becomes the render source and
  * the client-side decision goes.
  *
- * No `window` is sent: the committed server contract is
- * { subId, filter, humanId?, humanName? }. Window-sizing from the shape's own
- * height is a later commit, once the server accepts it.
+ * The window is the panel's FIRST page, not a cap on what it can hold. The list
+ * is already virtualized and already pages — Virtuoso's startReached calls
+ * loadBefore for scrollback, exactly as the agents panel calls
+ * loadNextAgentsPage from endReached. So this asks for one page and the
+ * existing pagination does the rest; there is no "how many messages does chat
+ * keep" constant to get wrong.
  */
+const CHAT_FIRST_PAGE = 100
+
 function useChatFilterSubscription(shape: any) {
   const { filter } = shape.props as { filter: [string, string][][] }
   const filterKey = JSON.stringify(filter ?? [])
@@ -5996,11 +6001,17 @@ function useChatFilterSubscription(shape: any) {
   )
   useEffect(() => {
     if (!dnf) return
-    return subscribeChat(dnf, 0, () => {}, {
-      humanId: getHumanId(),
-      humanName: getHumanName(),
-      correlationKey: `chat:${shape.id}`,
-    })
+    const bufferKey = `chat:${shape.id}`
+    return subscribeChat(
+      dnf,
+      CHAT_FIRST_PAGE,
+      // The panel's rows land in the panel's own buffer, which is what
+      // useFleetEvents already reads. A history page REPLACES — the server has
+      // just answered this filter from scratch, so anything left over belongs to
+      // the previous filter.
+      (events, meta) => { receiveFilterEvents(bufferKey, events, { replace: meta.reason === 'history' }) },
+      { humanId: getHumanId(), humanName: getHumanName(), correlationKey: bufferKey },
+    )
   }, [dnf, shape.id])
 }
 

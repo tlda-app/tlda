@@ -3756,13 +3756,50 @@ export class FleetStore {
     return rows;
   }
 
+  // Give raw `events` rows the display fields a chat line needs: the aliases the
+  // renderer reads, the read flag, and the from/to labels.
+  //
+  // Extracted so the filter-subscription path and buildChatHistoryResponse cannot
+  // resolve rows differently. Two paths that shape the same row differently is
+  // how live and history came to disagree in the first place; a chat panel fed
+  // by a subscription must get rows indistinguishable from the ones the history
+  // fetch gives it, or the same message renders two ways depending on how it
+  // arrived.
+  resolveChatRows(events, { serverOwnerId = null, serverOwnerName = null } = {}) {
+    const rows = events.map(e => ({ ...e, event_type: e.event_type ?? e.type, from: e.from, to: e.to, agent: e.agent ?? e.agent_id }));
+
+    const agentMap = { ...this.getAgentNameMap() };
+    if (serverOwnerId || serverOwnerName) {
+      agentMap.web = agentMap[serverOwnerId] || serverOwnerName || serverOwnerId || 'web';
+    }
+
+    const unreadIds = new Set();
+    const eventIds = rows.map(e => e.id).filter(id => id != null);
+    if (eventIds.length) {
+      const placeholders = eventIds.map(() => '?').join(',');
+      try {
+        const unread = this.db.prepare(`SELECT event_id FROM unread WHERE read = 0 AND event_id IN (${placeholders})`).all(...eventIds);
+        for (const r of unread) unreadIds.add(r.event_id);
+      } catch (e) {
+        console.error('[fleet] unread query failed:', e.message);
+      }
+    }
+
+    return rows.map(e => ({
+      ...e,
+      read: !unreadIds.has(e.id),
+      fromLabel: agentMap[e.from] || (e.from ? e.from.substring(0, 8) : ''),
+      toLabel: agentMap[e.to] || agentMap[e.agent] || (e.to ? e.to.substring(0, 8) : ''),
+    }));
+  }
+
   buildChatHistoryResponse({ before = null, agents = [], limit = 50, serverOwnerId = null, serverOwnerName = null } = {}) {
     const cap = Math.min(parseInt(limit) || 50, 1000);
     let events = this.queryChatHistory({
       before,
       agents: Array.isArray(agents) ? agents : [],
       limit: cap + 1,
-    }).map(e => ({ ...e, event_type: e.type, from: e.from, to: e.to, agent: e.agent_id }));
+    });
 
     const hasMore = events.length > cap;
     if (hasMore) events.shift();
@@ -3773,29 +3810,7 @@ export class FleetStore {
     // back short with a nextCursor that looked correct. Display rules live in
     // renderChatLine, which both paths go through.
 
-    const agentMap = { ...this.getAgentNameMap() };
-    if (serverOwnerId || serverOwnerName) {
-      agentMap.web = agentMap[serverOwnerId] || serverOwnerName || serverOwnerId || 'web';
-    }
-
-    const unreadIds = new Set();
-    const eventIds = events.map(e => e.id).filter(id => id != null);
-    if (eventIds.length) {
-      const placeholders = eventIds.map(() => '?').join(',');
-      try {
-        const rows = this.db.prepare(`SELECT event_id FROM unread WHERE read = 0 AND event_id IN (${placeholders})`).all(...eventIds);
-        for (const r of rows) unreadIds.add(r.event_id);
-      } catch (e) {
-        console.error('[fleet] unread query failed:', e.message);
-      }
-    }
-
-    const resolved = events.map(e => ({
-      ...e,
-      read: !unreadIds.has(e.id),
-      fromLabel: agentMap[e.from] || (e.from ? e.from.substring(0, 8) : ''),
-      toLabel: agentMap[e.to] || agentMap[e.agent] || (e.to ? e.to.substring(0, 8) : ''),
-    }));
+    const resolved = this.resolveChatRows(events, { serverOwnerId, serverOwnerName });
     const nextCursor = hasMore && events.length > 0 ? events[0].timestamp : null;
     return { events: resolved, hasMore, nextCursor };
   }

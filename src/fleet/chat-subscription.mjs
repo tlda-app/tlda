@@ -40,7 +40,7 @@ export function setChatSubscriptionTransport(send) { _send = send }
  *   verbatim — the client never interprets it.
  * @param {number} window How many messages this chat can show. The shape knows
  *   its own size; there is no magic number here on purpose.
- * @param {(events: readonly object[], meta: object) => void} onEvents
+ * @param {(events: readonly object[], meta: {subId: string, reason: string, hasMore?: boolean, nextCursor?: string|null, truncated?: boolean, error?: string|null}) => void} onEvents
  * @param {{humanId?: string|null, humanName?: string|null, correlationKey?: string|null}} [identity]
  */
 export function subscribeChat(filter, window, onEvents, { humanId = null, humanName = null, correlationKey = null } = {}) {
@@ -57,7 +57,7 @@ export function subscribeChat(filter, window, onEvents, { humanId = null, humanN
   _subs.set(subId, { filter, window, onEvents, humanId, humanName, correlationKey, filterKey: JSON.stringify(filter ?? null) })
   if (_send) {
     try {
-      _send('subscribe-filter', { subId, filter, humanId, humanName })
+      _send('subscribe-filter', { subId, filter, humanId, humanName, window })
     } catch (e) {
       // Surfaced, never swallowed: a subscribe that silently fails is a panel
       // that shows nothing forever, which is the failure mode we are removing.
@@ -100,6 +100,39 @@ export function dispatchFilterEvent(data) {
 }
 
 /**
+ * Dispatch the initial window the server queried for a subscription.
+ *
+ * Same shape as a live push, one call with many events and `reason: 'history'`,
+ * so a panel has exactly one intake path and cannot render a message one way
+ * because it arrived live and another because it arrived from history. That
+ * divergence is the bug this whole design removes.
+ */
+export function dispatchFilterEvents(data) {
+  if (!data || !data.subId) return false
+  const sub = _subs.get(data.subId)
+  if (!sub) {
+    log.metric(NS, 'filter-events for an unknown subscription', { subId: data.subId })
+    return false
+  }
+  if (data.error) {
+    // A panel that silently shows nothing is the failure mode being removed, so
+    // a failed history query is recorded rather than left as an empty panel.
+    log.metric(NS, 'history query failed for a subscription', { subId: data.subId, error: data.error, filterKey: sub.filterKey })
+  }
+  const events = Array.isArray(data.events) ? data.events : []
+  for (const event of events) noteServerDelivery(sub.correlationKey || data.subId, event.id ?? event._dbId, sub.filterKey)
+  sub.onEvents(events, {
+    subId: data.subId,
+    reason: data.reason || 'history',
+    hasMore: !!data.hasMore,
+    nextCursor: data.nextCursor ?? null,
+    truncated: !!data.truncated,
+    error: data.error || null,
+  })
+  return true
+}
+
+/**
  * Re-send subscriptions whose identity has changed.
  *
  * Identity resolves ASYNCHRONOUSLY. A panel that subscribes before it lands
@@ -120,7 +153,7 @@ export function refreshChatSubscriptionIdentity(humanId, humanName) {
     sub.humanName = humanName
     if (!_send) continue
     try {
-      _send('subscribe-filter', { subId, filter: sub.filter, humanId, humanName })
+      _send('subscribe-filter', { subId, filter: sub.filter, humanId, humanName, window: sub.window })
       n++
     } catch (e) {
       log.metric(NS, 'identity re-subscribe failed', { subId, error: String(e) })
@@ -135,7 +168,7 @@ export function resubscribeAll() {
   if (!_send) return 0
   let n = 0
   for (const [subId, sub] of _subs) {
-    try { _send('subscribe-filter', { subId, filter: sub.filter, humanId: sub.humanId, humanName: sub.humanName }); n++ }
+    try { _send('subscribe-filter', { subId, filter: sub.filter, humanId: sub.humanId, humanName: sub.humanName, window: sub.window }); n++ }
     catch (e) { log.metric(NS, 'resubscribe failed', { subId, error: String(e) }) }
   }
   return n

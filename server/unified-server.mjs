@@ -7363,15 +7363,58 @@ async function handleFleetWsMessage(ws, msg) {
   }
 
   // ---- filter subscriptions ----
+  //
+  // A panel says "here is my filter and how much I can show". Subscribing gets
+  // it the live stream; `window` also gets it the matching history, decided by
+  // the SAME predicate, so the panel needs no global client-side buffer to
+  // replay. Without this the subscription only ever carried live events, so a
+  // panel had to be fed from the browser's event store — which is the thing
+  // being deleted, and which was the bug: it resolved names against a paged
+  // roster the server does not have to guess at.
   if (type === 'subscribe-filter') {
     try {
       const { subId, filter } = msg
       if (!subId) return error('subscribe-filter requires subId')
-      filterSubscriptions.subscribe(ws, subId, filter || null, {
-        humanId: msg.humanId || ws._tldaAgentId || null,
-        humanName: msg.humanName || null,
-      })
+      const humanId = msg.humanId || ws._tldaAgentId || null
+      const humanName = msg.humanName || null
+      filterSubscriptions.subscribe(ws, subId, filter || null, { humanId, humanName })
       reply({ ok: true, ...filterSubscriptions.stats() })
+
+      const window = Math.min(Math.max(parseInt(msg.window) || 0, 0), 500)
+      if (window > 0) {
+        // Deliberately after reply(): the subscription is live from the moment
+        // subscribe() returns, so an event arriving during this query is pushed
+        // rather than lost, and the client dedupes by id. The reverse order
+        // would open a window where an event is in neither stream.
+        filterSubscriptions.history(filter || null, {
+          humanId, humanName, limit: window, before: msg.before || null,
+          // history() walks newest-first and cuts at `limit`, so it must be fed
+          // newest-first or it keeps the OLDEST matches and reports a cursor from
+          // the wrong end. queryChatHistory reverses to chronological for its own
+          // callers, so undo that here rather than changing a shared query.
+          queryPage: ({ before, agentIds, limit }) =>
+            fleetStore.queryChatHistory({ before, agents: agentIds, limit }).slice().reverse(),
+        }).then(page => {
+          if (ws.readyState !== 1) return
+          // Back to chronological for the panel, which renders oldest at the top.
+          const events = fleetStore.resolveChatRows(page.events.slice().reverse(), {
+            serverOwnerId: SERVER_OWNER_ID, serverOwnerName: SERVER_OWNER_NAME,
+          })
+          ws.send(JSON.stringify({ event: 'filter-events', data: {
+            subId, events, reason: 'history',
+            hasMore: page.hasMore, nextCursor: page.nextCursor, truncated: page.truncated,
+          } }))
+        }).catch(e => {
+          // A panel that silently gets no history is the failure being removed,
+          // so this is reported to the client rather than only logged here.
+          console.warn('[filter-subs] history failed:', e.message)
+          try {
+            if (ws.readyState === 1) ws.send(JSON.stringify({ event: 'filter-events', data: {
+              subId, events: [], reason: 'history', error: e.message,
+            } }))
+          } catch { /* socket already gone */ }
+        })
+      }
     } catch (e) { error(e.message) }
     return
   }

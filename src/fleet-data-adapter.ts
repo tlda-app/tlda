@@ -24,6 +24,7 @@ import {
   sendMessage as _sendMessage,
   fetchHistory,
   loadBefore,
+  receiveFilterEvents,
   matchesFilter,
   resolveFilter,
   respawnAgent as _respawnAgent,
@@ -1093,4 +1094,4 @@ export const updateOptimisticEvent = _updateOptimisticEvent
 export const removeOptimisticEvent = _removeOptimisticEvent
 export const reconcileOptimistic = _reconcileOptimistic
 export const fleetEphemeral = _fleetEphemeral
-export { loadBefore, fetchHistory, resolveFilter }
+export { loadBefore, receiveFilterEvents, fetchHistory, resolveFilter }
