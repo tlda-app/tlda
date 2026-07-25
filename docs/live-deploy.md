@@ -84,10 +84,15 @@ The right first move is to get its owner to commit it. If that is not possible
 and the deploy is genuinely urgent, parking it is acceptable — but:
 
 **Parking someone's uncommitted work is a promise to restore it, and that promise
-has been broken more than once.** `git stash list` on this repo has carried
-entries like *"AGENTS.md process guard (not mine, stashing to unblock Gate2A
-deploy preflight)"* — parked by an agent that never came back for it. A stash is
-invisible: nobody discovers their work is missing until they look.
+is broken far more often than it is kept.** As of 2026-07-25 this repo carries
+**43 stash entries going back to March**, 26 of them named for exactly this
+situation — *"AGENTS.md process guard (not mine, stashing to unblock Gate2A
+deploy preflight)"*, *"orphaned-agent-wip-preserved"*, *"stranded ... edits"*,
+*"rescue: orphaned shared-checkout WIP"*, *"parked for clean ... deploy"*. Each
+was somebody's working state, parked to get a deploy out, and never restored.
+
+A stash is invisible. Nobody discovers their work is missing until they go
+looking for it, which is usually never. The stack is a graveyard, not a queue.
 
 So if you park it:
 
