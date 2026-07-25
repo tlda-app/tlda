@@ -71,6 +71,17 @@ const _stats = {
   clientVerdicts: 0,
   serverDeliveries: 0,
   comparisons: 0,
+  // Join accounting. The comparator's whole function is joining two streams on
+  // (subId, eventId) — so the one thing that must be true is that the join
+  // sometimes SUCCEEDS. It never did: the two sides carried different id shapes,
+  // and every touch() created a fresh entry instead of finding its partner.
+  //
+  // agreedBelongs: 0 was structurally impossible to escape, and nothing said so.
+  // These two counters make the join itself observable, so a future id-shape
+  // divergence is a loud record within a minute rather than a result somebody
+  // reports as a finding.
+  joinPaired: 0,
+  joinCreated: 0,
   // Agreement is split by POLARITY, because agreed-negative is not proof.
   //
   // The comparator detects disagreement. The one failure it cannot see by
@@ -155,6 +166,18 @@ function ensureSweep() {
     if (now - _lastHeartbeat >= HEARTBEAT_MS) {
       _lastHeartbeat = now
       log.metric(NS, 'equivalence heartbeat', { ..._stats, pending: _pending.size })
+      // The join never succeeding, while both sides are active, means the two
+      // streams are keyed differently and NO comparison can ever agree. That is
+      // not a finding about the client; it is the comparator being broken. Say
+      // so, rather than letting agreedBelongs: 0 be read as a result.
+      if (_stats.joinPaired === 0 && _stats.clientVerdicts > 20 && _stats.serverDeliveries > 20) {
+        log.metric(NS, 'COMPARATOR BROKEN — the two streams never join; check event id shapes', {
+          clientVerdicts: _stats.clientVerdicts,
+          serverDeliveries: _stats.serverDeliveries,
+          joinPaired: _stats.joinPaired,
+          joinCreated: _stats.joinCreated,
+        })
+      }
     }
   }, 1000)
 }
@@ -166,8 +189,11 @@ function touch(subId, eventId, patch, filterKey) {
   let v = _pending.get(k)
   if (!v) {
     if (_pending.size >= MAX_PENDING) return
+    _stats.joinCreated++
     v = { client: false, server: false, t: Date.now(), filterKey }
     _pending.set(k, v)
+  } else {
+    _stats.joinPaired++
   }
   Object.assign(v, patch)
   if (filterKey && !v.filterKey) v.filterKey = filterKey
