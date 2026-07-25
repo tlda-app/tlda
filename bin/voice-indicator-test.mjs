@@ -44,7 +44,11 @@ assert.match(voiceSource, /if \(msg\.type === 'utterance_end'\) \{[\s\S]*?_dgLas
 assert.doesNotMatch(voiceSource, /if \(msg\.is_final && !_dgHasSeenInterim && _state === 'edit'\) return/)
 assert.match(voiceSource, /const partition = partitionAtCursor\(ta\?\.value, ta\?\.selectionStart, ta\?\.selectionEnd\)/)
 assert.match(voiceSource, /function afterSend\(submittedTextOverride\) \{\s+const submittedText = submittedTextOverride \?\? currentSubmittedVoiceText\(\)/)
-assert.match(voiceSource, /if \(\(msg\.type === 'transcript' \|\| msg\.type === 'speech_started' \|\| msg\.type === 'utterance_end'\) && msg\.epoch !== _speechEpoch\) return/)
+// Cross-epoch messages must still be dropped, never applied — this is the guard that
+// fixed the cross-message leak. It now records the discard before returning (a dropped
+// transcript is speech that vanished), so pin the condition and the `return`, and pin
+// that the discard is recorded so it can't silently regress to a bare return again.
+assert.match(voiceSource, /if \(\(msg\.type === 'transcript' \|\| msg\.type === 'speech_started' \|\| msg\.type === 'utterance_end'\) && msg\.epoch !== _speechEpoch\) \{[\s\S]*?vdiscard\('epoch-mismatch'[\s\S]*?return\s+\}/)
 assert.doesNotMatch(voiceSource, /onaudioprocess[\s\S]*?fillTextarea|process =[\s\S]*?fillTextarea/)
 const backlog = new PcmBacklog()
 backlog.push(7, new Uint8Array([1]).buffer)

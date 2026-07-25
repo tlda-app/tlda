@@ -1548,7 +1548,10 @@ function maybeMarkFirstInterim(content) {
   if (_firstInterimLogged || !_recording || !_recordStartTime) return
   if (!content || !String(content).trim()) return
   _firstInterimLogged = true
-  log.info('voice', 'first-interim', {
+  // metric, not info: log.info is gated at the default `warn` threshold, so this
+  // never reached client.log in a normal session — the measurement it exists for
+  // was not being taken.
+  log.metric('voice', 'first-interim', {
     ms: Date.now() - _recordStartTime,
     backend: _backend,
     isTouch: _isTouchDevice,
@@ -1565,7 +1568,15 @@ function fillTextarea(text) {
     return
   }
   const ta = _activeTextarea
-  if (!ta) return
+  if (!ta) {
+    // No accumulator and no textarea: the transcript has nowhere to land and is
+    // dropped here with no trace. `_left` keeps growing but the next epoch advance
+    // erases it, so these words are gone.
+    vdiscard('no-target', 'DROPPED transcript (no target to write to)', {
+      targetLabel: targetLabel(), pending: String(text || '').slice(0, 40), state: _state,
+    })
+    return
+  }
   _filling = true
   const receipt = deliverVoiceComposition(ta, { left: _left, interim: _interim, right: _right }, (liveTextarea, nextText) => {
     liveTextarea.value = nextText
@@ -2211,6 +2222,11 @@ function handleSendMagicWord(leftTrimmed) {
     return submitTextareaViaMagicWord(cleanText, leftTrimmed)
   }
 
+  // He finished a sentence and said the send word with nothing focused. afterSend()
+  // is about to erase _left/_interim/_right, so this line is the only surviving copy
+  // of what he said. Recording it is a stopgap, not the answer — the text still is not
+  // retrievable from the UI, which is the open proposal.
+  vlog('DESTROYED speech (send word with no target)', { text: leftTrimmed })
   showHud('no chat focused', '#c8956a')
   fadeHud(2000)
   afterSend()
@@ -2295,7 +2311,16 @@ function onDeepgramMessage(event, relay = _deepgramWs) {
       return
     }
 
-    if ((msg.type === 'transcript' || msg.type === 'speech_started' || msg.type === 'utterance_end') && msg.epoch !== _speechEpoch) return
+    if ((msg.type === 'transcript' || msg.type === 'speech_started' || msg.type === 'utterance_end') && msg.epoch !== _speechEpoch) {
+      // Speech dies here with no trace. Recording it is the whole point: an epoch
+      // mismatch on a *transcript* means words came back and were thrown away.
+      if (msg.type === 'transcript' && msg.text) {
+        vdiscard('epoch-mismatch', 'DROPPED transcript (epoch mismatch)', {
+          msgEpoch: msg.epoch, speechEpoch: _speechEpoch, final: !!msg.is_final, text: msg.text.slice(0, 40),
+        })
+      }
+      return
+    }
 
     if (msg.type === 'status') {
       console.log('voice: deepgram status:', msg.status)
@@ -2647,11 +2672,31 @@ async function startDeepgramMic() {
     if (!_recording) return
     const ago = _lastAudioChunkTime ? Date.now() - _lastAudioChunkTime : null
     const ctxState = _deepgramContext?.state
+    // The old payload could not tell the two silent-discard states apart, which is
+    // why a night was spent guessing between them. `lastChunkMs` is stamped only on a
+    // SUCCESSFUL send, so it reads healthy in exactly one of them and dead in the
+    // other; the gate terms below say which:
+    //   readyEpoch !== speechEpoch  → client gate shut, audio going into the backlog
+    //                                 (which prunes at 3s — his words are being erased here)
+    //   readyEpoch === speechEpoch but no transcripts → we are sending and the far
+    //                                 side is dropping (see the bridge's `recovering` state)
+    const backlog = _deepgramAudioBacklog.snapshot(Date.now())
     vlog('audio heartbeat', {
       lastChunkMs: ago,
       wsOpen: _deepgramRelayConnected,
       hasMic: !!_deepgramStream,
       audioCtxState: ctxState,
+      speechEpoch: _speechEpoch,
+      readyEpoch: _deepgramReadyEpoch,
+      gateOpen: _deepgramReadyEpoch === _speechEpoch,
+      pcmPaused: _deepgramPcmPaused,
+      upstreamPaused: _dgUpstreamPaused,
+      recognizerStatus: currentDeepgramRecognizerStatus(),
+      backlogFrames: backlog.frames,
+      backlogDropped: backlog.droppedFrames,
+      lastResultMs: _lastResultTime ? Date.now() - _lastResultTime : null,
+      routed: voiceHasRoute(),
+      target: targetLabel(),
     })
     const action = micWatchdogAction(ctxState)
 
@@ -2813,9 +2858,31 @@ function vlog(msg, data) {
   console.log('voice:', entry)
   _voiceLogs.push(`${new Date().toISOString().slice(11,19)} ${entry}`)
   if (_voiceLogs.length > 50) _voiceLogs.shift()
+  // Durable sink. This used to be console + the bridge socket only, which meant the
+  // one channel reporting a failure died with the thing that was failing: a discard
+  // that happens while the bridge WS is down left no trace anywhere, and the 50-entry
+  // ring dies with the tab. log.metric is the ungated sink (log.debug/info are gated
+  // at `warn` by default, so they would capture nothing in his session) — batched at
+  // 250ms and queue-capped, so it cannot flood the renderer.
+  log.metric('voice', msg, data)
   if (_deepgramWs && _deepgramWs.readyState === 1) {
     try { _deepgramWs.send(JSON.stringify({ type: 'log', text: entry })) } catch {}
   }
+}
+
+// Rate-limited discard record. The discard points that matter fire per audio frame
+// (~50/s) or per interim transcript (~10/s), so an unthrottled line per event would
+// be its own incident. First occurrence lands immediately; after that, one line per
+// second carrying the suppressed count, so a stuck state reads as a rising count
+// rather than disappearing into volume.
+const _discardThrottle = new Map()
+function vdiscard(key, msg, data) {
+  const now = Date.now()
+  const prev = _discardThrottle.get(key)
+  if (prev && now - prev.at < 1000) { prev.suppressed++; return }
+  _discardThrottle.set(key, { at: now, suppressed: 0 })
+  const since = prev ? prev.suppressed : 0
+  vlog(msg, since ? { ...data, alsoSuppressed: since } : data)
 }
 // Expose logs for reading via fetch
 if (typeof window !== 'undefined') {

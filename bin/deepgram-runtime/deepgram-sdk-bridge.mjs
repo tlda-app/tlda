@@ -173,6 +173,20 @@ function sendToBrowser(ws, msg) {
   if (ws.readyState === WebSocket.OPEN) ws.send(str)
 }
 
+// Rate-limited discard record. Several of these fire per audio frame (~50/s), so an
+// unthrottled line each would be its own incident. First occurrence lands immediately;
+// after that one line per second carrying the count it stands for, so a stuck state
+// reads as a rising number instead of vanishing into volume.
+const _discardThrottle = new Map()
+function logDiscard(key, msg, data) {
+  const now = Date.now()
+  const prev = _discardThrottle.get(key)
+  if (prev && now - prev.at < 1000) { prev.suppressed++; return }
+  _discardThrottle.set(key, { at: now, suppressed: 0 })
+  const payload = prev && prev.suppressed ? { ...data, alsoSuppressed: prev.suppressed } : data
+  console.warn(`[deepgram-sdk-bridge] ${msg} ${JSON.stringify(payload)}`)
+}
+
 wss.on('connection', (browserWs) => {
   console.log(`[deepgram-sdk-bridge] browser connected (${wss.clients.size} total)`)
 
@@ -432,6 +446,12 @@ wss.on('connection', (browserWs) => {
           return
         }
         sendToBrowser(browserWs, { type: 'epoch_ready', epoch })
+      } else {
+        // 'stale' — the transition was superseded before this socket opened, so no
+        // epoch_ready goes out for `epoch`. The client's audio gate stays shut on
+        // that epoch and nothing retries it; only `status: connected` below is sent,
+        // which does NOT open the gate. This was silent.
+        console.warn(`[deepgram-sdk-bridge] epoch_ready SUPPRESSED (stale transition) epoch=${epoch} activeEpoch=${activeEpoch} attemptId=${attemptId}/${connectionAttemptId}`)
       }
       sendToBrowser(browserWs, { type: 'status', status: 'connected', implementation: 'sdk', epoch })
       // Clear before re-arming: without this, an `open` that fires twice on one socket
@@ -551,7 +571,10 @@ wss.on('connection', (browserWs) => {
   }
 
   async function connectDeepgram(epoch = activeEpoch) {
-    if (dg || connecting) return connecting
+    if (dg || connecting) {
+      if (!dg) logDiscard('connect-inflight', 'connect request joined an in-flight attempt', { epoch, activeEpoch })
+      return connecting
+    }
     const attemptId = ++connectionAttemptId
     // STORM GUARD — reconnects only happen here (driven by real audio or an
     // explicit `start`), never on a self-scheduled timer. After a failure/drop we
@@ -559,7 +582,14 @@ wss.on('connection', (browserWs) => {
     // timeout, a 402, etc.) can't loop — that loop was the 555K-reconnect storm.
     // An explicit `start` resets reconnectFailures, so user intent connects now.
     const backoff = reconnectFailures > 0 ? Math.min(30000, 1000 * 2 ** (reconnectFailures - 1)) : 0
-    if (backoff && Date.now() - lastConnectAt < backoff) return null
+    if (backoff && Date.now() - lastConnectAt < backoff) {
+      // Returns null with no connection and no message to the client. Callers that
+      // were waiting to flush audio silently drop it (see the pending-frame path).
+      logDiscard('connect-backoff', 'connect throttled by backoff', {
+        epoch, backoffMs: backoff, sinceLastMs: Date.now() - lastConnectAt, reconnectFailures,
+      })
+      return null
+    }
     lastConnectAt = Date.now()
     // A fresh connect (incl. voice OFF→ON after a stop-triggered disconnect)
     // re-arms auto-reconnect: clear the manual-close flag set by disconnectDeepgram().
@@ -585,6 +615,11 @@ wss.on('connection', (browserWs) => {
       if (epoch === activeEpoch && attemptId === connectionAttemptId) {
         if (epochTransition) emitEpochLoss(epochTransition, 'connect-failed')
         sendToBrowser(browserWs, { type: 'epoch_error', epoch, reason: 'connect-failed' })
+      } else {
+        // The connect failed for an epoch/attempt that has since been superseded, so
+        // the client is told nothing at all. If its gate was waiting on THIS epoch it
+        // waits forever. Silent before this line.
+        console.warn(`[deepgram-sdk-bridge] connect-failed NOT reported to client (superseded) epoch=${epoch}/${activeEpoch} attemptId=${attemptId}/${connectionAttemptId}: ${err.message}`)
       }
       if (epoch === activeEpoch && attemptId === connectionAttemptId) {
         sendToBrowser(browserWs, { type: 'status', status: 'error', error: err.message, implementation: 'sdk', epoch, attemptId })
@@ -599,7 +634,15 @@ wss.on('connection', (browserWs) => {
   // Marks idleClosed so we won't auto-reconnect and so incoming audio is dropped
   // until the client explicitly sends `start` again (no flap on a quiet mic).
   function idleCutoff() {
-    console.log(`[deepgram-sdk-bridge] idle cutoff — no speech for ${IDLE_CUTOFF_MS}ms, closing upstream`)
+    // `no speech` here means Deepgram reported no speech. lastSpeechAt is advanced ONLY
+    // by an upstream open, a non-empty transcript, or SpeechStarted — audio frames do
+    // not touch it. So this line firing while audio is arriving is not a quiet mic; it
+    // means frames are reaching us and not producing speech events, which is the
+    // discard, not the cause. `audioAgoMs` is what separates the two, and it was
+    // missing. (It also printed the global IDLE_CUTOFF_MS while checking per-connection
+    // idleMs — they differ whenever the client sends its own.)
+    const audioAgo = lastBrowserAudioAt ? Date.now() - lastBrowserAudioAt : null
+    console.log(`[deepgram-sdk-bridge] idle cutoff — no speech for ${idleMs}ms, closing upstream (audioAgoMs=${audioAgo} activeEpoch=${activeEpoch} transition=${epochTransition?.state ?? 'none'} droppedChunks=${droppedChunks})`)
     idleClosed = true
     disconnectDeepgram()
     sendToBrowser(browserWs, { type: 'status', status: 'idle', implementation: 'sdk', epoch: activeEpoch, attemptId: connectionAttemptId })
@@ -637,7 +680,19 @@ wss.on('connection', (browserWs) => {
         }
         return
       }
-      if (epochTransition?.state === 'recovering') { droppedChunks++; emitBridgeTelemetry(); return }
+      if (epochTransition?.state === 'recovering') {
+        droppedChunks++
+        // This is a silent discard of the user's speech, and it was invisible: a
+        // counter plus telemetry, no log line and no message to the client. The
+        // client meanwhile is sending happily, so its own heartbeat reads healthy.
+        // `recovering` is only left on a new, strictly-higher epoch — i.e. it does
+        // not self-heal, it waits for the user to restart.
+        logDiscard('recovering-drop', 'DROPPED audio frame (epoch transition recovering)', {
+          epoch: epochTransition.epoch, bytes: frame.length, droppedChunks,
+        })
+        emitBridgeTelemetry()
+        return
+      }
       // After an idle cutoff the upstream is closed. A continuously-streaming
       // client must NOT instantly reconnect (that defeats the cutoff and was the
       // storm). Resume ONLY when the audio actually contains sound (RMS), not on a
@@ -652,7 +707,16 @@ wss.on('connection', (browserWs) => {
         const frames = [...preroll, frame]
         preroll = []; prerollBytes = 0
         connectDeepgram().then(connection => {
-          if (!connection || browserWs.readyState !== WebSocket.OPEN) return
+          if (!connection || browserWs.readyState !== WebSocket.OPEN) {
+            // The reconnect that his first words after a pause were waiting on did not
+            // happen, so the pre-roll AND those words are discarded. Silent before this.
+            droppedChunks += frames.length
+            logDiscard('resume-no-connection', 'DROPPED preroll + speech (resume connect returned no connection)', {
+              frames: frames.length, browserWsOpen: browserWs.readyState === WebSocket.OPEN, droppedChunks,
+            })
+            emitBridgeTelemetry()
+            return
+          }
           for (const f of frames) {
             try {
               if (sendDeepgramAudio(connection, f)) flushedChunks++
@@ -671,7 +735,17 @@ wss.on('connection', (browserWs) => {
       }
       const pending = Buffer.from(data)
       connectDeepgram().then(connection => {
-        if (!connection || browserWs.readyState !== WebSocket.OPEN) return
+        if (!connection || browserWs.readyState !== WebSocket.OPEN) {
+          // Was dropped without even incrementing droppedChunks, so it did not show
+          // up in telemetry either. Reached when connectDeepgram resolves null
+          // (throttled or superseded).
+          droppedChunks++
+          logDiscard('pending-no-connection', 'DROPPED audio frame (no connection after connect attempt)', {
+            bytes: pending.length, browserWsOpen: browserWs.readyState === WebSocket.OPEN, droppedChunks,
+          })
+          emitBridgeTelemetry()
+          return
+        }
         try {
           if (!sendDeepgramAudio(connection, pending)) {
             console.warn('[deepgram-sdk-bridge] pending audio dropped: socket not open')
@@ -692,6 +766,9 @@ wss.on('connection', (browserWs) => {
       const msg = JSON.parse(data.toString())
       if (msg.type === 'speech_epoch') {
         if (!acceptsSpeechEpoch(activeEpoch, msg.epoch)) {
+          // The client has no recovery for epoch_error other than epoch_loss, so this
+          // leaves it PCM-paused with no way back short of a restart. Record it.
+          console.warn(`[deepgram-sdk-bridge] REJECTED speech_epoch (non-monotone) requested=${msg.epoch} activeEpoch=${activeEpoch}`)
           sendToBrowser(browserWs, { type: 'epoch_error', epoch: msg.epoch, reason: 'non-monotone-epoch' })
           return
         }
@@ -733,7 +810,13 @@ wss.on('connection', (browserWs) => {
       } else if (msg.type === 'log') {
         console.log(`[voice] ${msg.text}`)
       }
-    } catch {}
+    } catch (err) {
+      // This was a bare `catch {}`. The epoch_ready send at the end of
+      // advanceEpochOnLiveSocket runs inside this try, after a Finalize send that can
+      // throw — so a throw here left the client's audio gate shut with no epoch_error,
+      // no log, nothing. That is one of the two states we could not tell apart.
+      console.error(`[deepgram-sdk-bridge] browser message handler threw: ${err?.message}`, err?.stack)
+    }
   })
 
   browserWs.on('close', () => {
