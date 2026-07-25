@@ -112,6 +112,58 @@ server-side — the JSONLs carry their own login markers and are the record.
 **History is never destroyed.** Live code stops depending on old fields; existing rows
 stay as they are.
 
+## Liveness protocol: send what's running, replace the list
+
+Skip, 2026-07-25, after the profiler traced ~1.24 million comparisons every 30
+seconds to this path.
+
+> "It doesn't need to enumerate all of its agents to know who's running a process. It
+> just enumerates running processes."
+
+> "It can just send the complete list, and the server can wipe its old list."
+
+> "It doesn't even have to compute a diff. That's a waste of computation. You're not
+> gonna have more than 20 or so agents on a box."
+
+The protocol, whole:
+
+1. The daemon enumerates the **processes that are actually running** on its box.
+2. It sends that complete list.
+3. The server **replaces** what it had. Anything absent from the list is hibernating.
+
+No diff. No per-agent enumeration. No pruning, because no list is carried between
+reports — you are describing what is there, not maintaining a copy of what used to be.
+A dropped message costs nothing: the next one is complete and self-correcting.
+
+What this replaces: a hosted list that rows entered at mint and never left (378 for
+one box, none removed since 2026-07-06), walked every 30 s to re-assert that ~190
+sleeping agents were still asleep. The code already listed the live tmux sessions and
+then discarded that answer to walk the 378.
+
+**Do not "fix" this by pruning the old list.** Deleting a ledger row destroys the
+permission grant `wake` reads — that is the "wake refused: no ledger entry" class. The
+list stops existing; nothing needs pruning.
+
+## Sort on what the row shows
+
+> "The sort should be on what the active row actually shows. Which is basically in
+> minute increments... that way if agents are active they're not always jumping around
+> in the list."
+
+> "It shouldn't be lexicographic, obviously. I'm just saying it should be based on that
+> coarseness."
+
+Granularity, not representation. The agents panel displays minutes, so the ordering key
+is the minute, with a deterministic tiebreak (`id`, matching what the SQL page already
+uses). Ordering on milliseconds reorders a list whose visible text is identical.
+
+Measured on a live-sized roster: 70% less row movement, and 65% of renders became
+completely still, where previously every render moved something.
+
+And the sort/pagination belongs in SQL, which already does it —
+`_getAliveAgentsPage` is keyset-paginated, ordered and indexed. A JS comparator
+maintaining a second copy of that ordering is the duplicate-mechanism defect again.
+
 ## Vocabulary: agents are not processes
 
 The acts are **mint**, **wake**, **remint**, and **enlist**. Never spawn, never
