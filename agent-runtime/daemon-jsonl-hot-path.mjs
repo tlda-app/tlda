@@ -77,14 +77,6 @@ export function createOncePerKeyGate() {
 const LOGIN_OWNER_RE = /(?:Registered|Logged in) fleet:([A-Za-z0-9_-]+)/g
 const LOGIN_ID_RE = /(?:Registered|Logged in) (fleet:[A-Za-z0-9_-]+)/g
 const NAME_RE = /Your name: "([^"]+)"/
-// FIRST-LOGIN-WINS owner match. A genuine fleet id is 8 hex chars (newFleetId);
-// the agent's OWN login handshake is the FIRST such line in its rollout, emitted
-// before it does anything. Every later login marker is the
-// agent QUOTING another agent's log while working — a log-reader (esp. ops) accumulates
-// dozens and used to get cross-attributed onto ALL of them, hijacking their ledger
-// session pointers. Hex-only also rejects quoted junk (fleet:<id>, fleet:reconA). Not
-// global: we take the first match per scan and stop.
-const LOGIN_HEX_OWNER_RE = /(?:Registered|Logged in) fleet:([0-9a-f]{8})\b/
 export const TLDA_LOGIN_MARKER_PREFIX = 'TLDA_LOGIN_MARKER '
 
 function cleanString(value) {
@@ -206,81 +198,6 @@ export function extractIdentityFromRecord(record) {
   }
 }
 
-// Chunk-scan a file (optionally from a byte offset) collecting every owner id,
-// WITHOUT loading the whole file into one string. Returns the owners found in the
-// scanned range plus the byte offset scanned to (EOF). This is the one read that
-// classifies a session; after it, the caller caches `owners` and never re-reads.
-export function scanFileOwnersSync(filePath, { fromOffset = 0, chunkSize = 64 * 1024 } = {}) {
-  let fd
-  let offset = fromOffset
-  try {
-    fd = fs.openSync(filePath, 'r')
-    const buf = Buffer.allocUnsafe(chunkSize)
-    // Carry the tail of each chunk so a marker split across a chunk boundary is
-    // still matched. The marker phrase is short, so a small carry suffices.
-    let carry = ''
-    while (true) {
-      const bytesRead = fs.readSync(fd, buf, 0, buf.length, offset)
-      if (bytesRead <= 0) break
-      offset += bytesRead
-      const text = carry + buf.toString('utf8', 0, bytesRead)
-      // FIRST-LOGIN-WINS: the owner is the FIRST genuine login fleet id
-      // (the login handshake, emitted before the agent reads anything). Return it and
-      // stop — every later marker is the agent quoting another agent's log. This is
-      // what makes re-classification idempotent and stops log-reader cross-attribution.
-      const m = LOGIN_HEX_OWNER_RE.exec(text)
-      if (m) return { owners: ['fleet:' + m[1]], endOffset: offset }
-      carry = text.slice(-64)
-    }
-  } finally {
-    if (fd != null) fs.closeSync(fd)
-  }
-  return { owners: [], endOffset: offset }
-}
-
-export function scanFileIdentitySync(filePath, { fromOffset = 0, chunkSize = 64 * 1024 } = {}) {
-  let fd
-  let offset = fromOffset
-  let carry = ''
-  let best = null
-  // FIRST-LOGIN-WINS: a single genuine owner (first login fleet id),
-  // NOT a set of every id mentioned. Per-record fleet ids (from extractIdentityFromRecord)
-  // are NOT added to owners — they come from tool I/O too (a log-reader's grep of another
-  // agent's registration line). We still parse records for the name/cwd identity, which the
-  // caller only applies when its fleet_id equals the resolved owner.
-  let owner = null
-  try {
-    fd = fs.openSync(filePath, 'r')
-    const buf = Buffer.allocUnsafe(chunkSize)
-    while (true) {
-      const bytesRead = fs.readSync(fd, buf, 0, buf.length, offset)
-      if (bytesRead <= 0) break
-      offset += bytesRead
-      const text = carry + buf.toString('utf8', 0, bytesRead)
-      if (!owner) {
-        const m = LOGIN_HEX_OWNER_RE.exec(text)
-        if (m) owner = 'fleet:' + m[1]
-      }
-      for (const line of text.split('\n')) {
-        if (!line.includes('Registered fleet:') && !line.includes('Logged in fleet:') && !line.includes('"cwd"')) continue
-        try {
-          const rec = JSON.parse(line)
-          const identity = extractIdentityFromRecord(rec)
-          if (identity) best = { ...(best || {}), ...identity }
-        } catch (e) {
-          if (!(e instanceof SyntaxError)) throw e
-          const identity = extractIdentityFromText(line)
-          if (identity) best = { ...(best || {}), ...identity }
-        }
-      }
-      carry = text.slice(-1024)
-    }
-  } finally {
-    if (fd != null) fs.closeSync(fd)
-  }
-  return { identity: best, owners: owner ? [owner] : [], endOffset: offset }
-}
-
 // Read just the FIRST line of a file without loading the whole thing. Codex
 // rollout files are multi-MB; reading the entire file (readFileSync) only to grab
 // line 1 is the codex-side CPU/IO sink on daemon restart. Reads in chunks and stops
@@ -306,24 +223,6 @@ export function readFirstLineSync(filePath, { chunkSize = 64 * 1024, maxBytes = 
   } finally {
     if (fd != null) fs.closeSync(fd)
   }
-}
-
-// Decide whether a session file needs a full search-index backfill for `fleetId`,
-// classifying it (learning its owners) AT MOST ONCE. `entry` is the cursor entry
-// (or undefined). `scan()` runs the one-time owner scan and returns { owners }.
-// The whole point: a session already classified (or already search-backfilled) is
-// answered WITHOUT calling scan() — that's what stops the O(files × spawns) re-read.
-export function decideSessionBackfill(entry, fleetId, scan) {
-  if (entry?.searchBackfilled) {
-    return { owners: entry.owners || [], shouldBackfill: false, didScan: false }
-  }
-  let owners = entry?.owners || []
-  let didScan = false
-  if (!entry?.classified) {
-    owners = scan().owners
-    didScan = true
-  }
-  return { owners, shouldBackfill: owners.includes(fleetId), didScan }
 }
 
 export function fileContainsUtf8MarkerSync(filePath, marker, { chunkSize = 64 * 1024 } = {}) {

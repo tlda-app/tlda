@@ -17,7 +17,7 @@ import { docToCanvas, isHtmlDoc, pdfToCanvas, getPageWidth } from './formatCoord
 import { loadHtmlLayout } from './htmlCoords.mjs';
 import { readJson, readJsonSync, ensureDoc } from '../data-source.mjs';
 
-const DEFAULT_SERVER = process.env.TLDA_SYNC_SERVER || process.env.TLDA_SERVER || null;
+const DEFAULT_SERVER = process.env.TLDA_SYNC_SERVER || null;
 
 export function generateShapeId() {
   return 'shape:' + Math.random().toString(36).slice(2, 12) + Math.random().toString(36).slice(2, 12);

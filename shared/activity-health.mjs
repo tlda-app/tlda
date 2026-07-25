@@ -5,7 +5,6 @@ export const ACTIVITY_HEALTH_UNKNOWN = 'unknown'
 export const ACTIVITY_HEALTH_BOUNDARIES = {
   NO_TMUX: 'no-tmux',
   NO_HARNESS_KIND: 'no-harness-kind',
-  RESOLVE_JSONL_NULL: 'resolve-jsonl-null',
   WATCH_STAT_FAILED: 'watch-stat-failed',
   WATCH_CREATE_FAILED: 'watch-create-failed',
   WATCH_UPDATE_FAILED: 'watch-update-failed',
@@ -22,7 +21,6 @@ export const ACTIVITY_HEALTH_BOUNDARIES = {
 const BOUNDARY_LABELS = {
   [ACTIVITY_HEALTH_BOUNDARIES.NO_TMUX]: 'no tmux',
   [ACTIVITY_HEALTH_BOUNDARIES.NO_HARNESS_KIND]: 'no harness',
-  [ACTIVITY_HEALTH_BOUNDARIES.RESOLVE_JSONL_NULL]: 'no jsonl',
   [ACTIVITY_HEALTH_BOUNDARIES.WATCH_STAT_FAILED]: 'stat failed',
   [ACTIVITY_HEALTH_BOUNDARIES.WATCH_CREATE_FAILED]: 'watch failed',
   [ACTIVITY_HEALTH_BOUNDARIES.WATCH_UPDATE_FAILED]: 'update failed',
@@ -39,7 +37,6 @@ const BOUNDARY_LABELS = {
 const WATCHER_FAILURE_BOUNDARIES = new Set([
   ACTIVITY_HEALTH_BOUNDARIES.NO_TMUX,
   ACTIVITY_HEALTH_BOUNDARIES.NO_HARNESS_KIND,
-  ACTIVITY_HEALTH_BOUNDARIES.RESOLVE_JSONL_NULL,
   ACTIVITY_HEALTH_BOUNDARIES.WATCH_STAT_FAILED,
   ACTIVITY_HEALTH_BOUNDARIES.WATCH_CREATE_FAILED,
   ACTIVITY_HEALTH_BOUNDARIES.WATCH_UPDATE_FAILED,
@@ -75,7 +72,7 @@ export function normalizeActivityHealth(input = {}, now = new Date()) {
     : ACTIVITY_HEALTH_UNKNOWN
   const boundary = input.boundary || (state === ACTIVITY_HEALTH_OK
     ? ACTIVITY_HEALTH_BOUNDARIES.WATCH_ATTACHED
-    : ACTIVITY_HEALTH_BOUNDARIES.RESOLVE_JSONL_NULL)
+    : null)
   const ts = input.ts || now.toISOString()
   const lastKnownGoodAt = state === ACTIVITY_HEALTH_OK
     ? (input.lastKnownGoodAt || ts)
@@ -177,7 +174,7 @@ export function activityHealthForProjection(metadata = {}, runtimeStatus = null,
   const projected = incident ? {
     ...(health || {}),
     state: incident.state || ACTIVITY_HEALTH_UNAVAILABLE,
-    boundary: incident.boundary || health?.boundary || ACTIVITY_HEALTH_BOUNDARIES.RESOLVE_JSONL_NULL,
+    boundary: incident.boundary || health?.boundary || null,
     ts: incident.raisedAt || health?.ts || null,
   } : health
   if (

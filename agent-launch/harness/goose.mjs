@@ -27,6 +27,12 @@ function appendLaunchFlags(parts, harnessOptions = {}) {
   }
 }
 
+function passthroughConfigEnv(env = {}) {
+  return ['TLDA_CONFIG_DIR', 'TLDA_DAEMON_CONFIG_DIR']
+    .filter(key => env[key])
+    .map(key => [key, String(env[key])])
+}
+
 export function resolveModel(model, options = {}) {
   return resolveGooseModel(model, options)
 }
@@ -68,7 +74,6 @@ export function buildCmd({
     ...(localAgentId ? [`FLEET_MINT_ID=${sq(localAgentId)}`] : []),
     `FLEET_TMUX_SESSION=${sq(tmuxSession)}`,
     'FLEET_HARNESS=goose',
-    ...(api ? [`TLDA_SERVER=${sq(api)}`, `TLDA_SYNC_SERVER=${sq(api)}`] : []),
   ]
   // Fresh spawn names can still be tentative before server confirm/rename;
   // GIT_AUTHOR_EMAIL carries the stable fleet id for authoritative attribution.
@@ -77,6 +82,7 @@ export function buildCmd({
   const configName = activeConfigName(config, env)
   if (configName) parts.push(`TLDA_CONFIG=${sq(configName)}`)
   if (env.TLDA_MACHINE_ID && configName) parts.push(`FLEET_DAEMON_KEY=${sq(`${env.TLDA_MACHINE_ID}:${configName}`)}`)
+  for (const [key, value] of passthroughConfigEnv(env)) parts.push(`${key}=${sq(value)}`)
   const dnsAliasPreload = dnsAlias ? dnsAliasPreloadPath() : null
   if (dnsAlias && dnsAliasPreload) {
     parts.push(`NODE_OPTIONS=${sq(`--require=${dnsAliasPreload}`)}`)

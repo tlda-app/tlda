@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { EventEmitter } from 'node:events'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
@@ -93,7 +93,8 @@ test('JSONL ingestor respawns after parent-side EPIPE on stale child handle', as
   try {
     const configDir = join(dir, 'config')
     const projectsDir = join(dir, 'projects')
-    const jsonlPath = join(dir, 'rollout-stale-ipc.jsonl')
+    const jsonlPath = join(projectsDir, 'rollout-stale-ipc.jsonl')
+    mkdirSync(projectsDir, { recursive: true })
     writeFileSync(jsonlPath, '')
     const children = []
     const logs = []
@@ -109,6 +110,7 @@ test('JSONL ingestor respawns after parent-side EPIPE on stale child handle', as
       cwd: dir,
       session_id: 'rollout-stale-ipc',
       session_ids: ['rollout-stale-ipc'],
+      session_path: jsonlPath,
     }
     const ingestor = createJsonlIngestor({
       configDir,
@@ -131,12 +133,12 @@ test('JSONL ingestor respawns after parent-side EPIPE on stale child handle', as
         codex: {
           activity: {
             kind: 'codex',
-            resolveJsonl: async () => jsonlPath,
             terminalChat: false,
             backfillSearch: false,
           },
         },
       },
+      jsonlTranscriptRoots: [projectsDir],
       permissionLedger: { setSessionSync: () => {} },
       bufferActivity: () => true,
       extractActivityEvents: () => [],
@@ -204,7 +206,7 @@ test('daemon welcome carries no roster and restores local-binding liveness plus 
   assert.ok(welcomeHandler)
   assert.doesNotMatch(welcomeHandler, /msg\.agents|reconcileRoster|agentStatus\.start/)
   assert.match(welcomeHandler, /agentLiveness\.start\(\)/)
-  assert.match(welcomeHandler, /jsonlIngestor\.startOwnerHarvester\(\)/)
+  assert.doesNotMatch(welcomeHandler, /jsonlIngestor\.startOwnerHarvester\(\)/)
   assert.match(welcomeHandler, /reconcileJsonlProcessBindings\('daemon-welcome'\)/)
   assert.match(welcomeHandler, /jsonlIngestor\.resumeAfterServerReady\(\)/)
   assert.doesNotMatch(welcomePayload, /agents|agent_status/)

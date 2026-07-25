@@ -67,7 +67,7 @@ function createHarness({ kind = 'codex' } = {}) {
   const syncCalls = []
 
   function forkProcess(script, args = []) {
-    assert.ok(script.endsWith('fleet-jsonl-ingester.mjs') || script.endsWith('fleet-owner-harvester.mjs'))
+    assert.ok(script.endsWith('fleet-jsonl-ingester.mjs'))
     const child = new EventEmitter()
     child.send = message => sentToChild.push(message)
     child.kill = () => child.emit('exit', 0, null)
@@ -94,7 +94,6 @@ function createHarness({ kind = 'codex' } = {}) {
           kind: 'codex',
           terminalChat: false,
           backfillSearch: false,
-          resolveJsonl: agent => agent.session_path,
         },
       },
       claude: {
@@ -106,6 +105,7 @@ function createHarness({ kind = 'codex' } = {}) {
         },
       },
     },
+    jsonlTranscriptRoots: [projectsDir],
     permissionLedger: null,
     bufferActivity() {},
     extractActivityEvents() { return [] },
@@ -160,12 +160,16 @@ function createBindingReconciler({ ledger, ingestor, daemonKey = 'mini:default' 
   }).reconcile
 }
 
-function assertWatcher(harness, expected) {
+function assertWatcher(harness, expected, kind = 'codex') {
   assert.equal(
-    harness.ingestor.hasWatcherForAgent({ id: 'fleet:jsonl-owner' }, 'codex'),
+    harness.ingestor.hasWatcherForAgent({ id: 'fleet:jsonl-owner' }, kind),
     expected,
     JSON.stringify(harness.sentToServer.slice(-5), null, 2),
   )
+}
+
+function assertTailCount(harness, expected) {
+  assert.equal(harness.sentToChild.filter(m => m.type === 'watch').length, expected)
 }
 
 {
@@ -238,17 +242,16 @@ function assertWatcher(harness, expected) {
   try {
     harness.setRows([{ id: 'fleet:jsonl-owner', ...fullBinding({ sessionPath: harness.jsonlPath }) }])
     await harness.sync('daemon-welcome')
-    assertWatcher(harness, true)
-    assert.equal(harness.sentToChild.filter(m => m.type === 'watch').length, 1)
+    assertWatcher(harness, false)
+    assertTailCount(harness, 1)
+    assert.equal(harness.sentToChild.find(m => m.type === 'watch')?.agentId, null)
   } finally {
     harness.cleanup()
   }
 }
 
-// Regression: a Claude JSONL created after the one-shot startup harvest is
-// unclassified on the first binding sync. That sync must schedule bounded
-// classification of the exact file, then attach the same agent after the
-// ownership result arrives.
+// Marker ownership is the only JSONL ownership path. An unmarked file is
+// not-yet: tail it from the beginning, emit nothing, and wait for the marker.
 {
   const harness = createHarness({ kind: 'claude' })
   try {
@@ -258,23 +261,71 @@ function assertWatcher(harness, expected) {
       sessionPath: harness.jsonlPath,
     }) }])
     await harness.sync('post-startup-new-jsonl')
-    assert.equal(harness.sentToChild.some(message => message.type === 'watch'), false)
-    const targeted = harness.children.find(entry => entry.script.endsWith('fleet-owner-harvester.mjs'))
-    assert.deepEqual(targeted?.args, [harness.jsonlPath])
-    targeted.child.emit('message', {
-      type: 'owners',
-      sessionId: 'rollout-jsonl-owner',
-      jsonlPath: harness.jsonlPath,
-      harnessKind: 'claude',
-      owners: ['fleet:jsonl-owner'],
-      identity: { fleet_id: 'fleet:jsonl-owner', friendly_name: 'jsonl-owner' },
+    const watch = harness.sentToChild.find(message => message.type === 'watch')
+    assert.equal(watch?.startOffset, 0)
+    assert.equal(harness.sentToServer.length, 0)
+    harness.children[0].child.emit('message', {
+      type: 'batch',
+      watchId: watch.watchId,
+      seq: 1,
+      outputs: [{
+        type: 'identity',
+        identity: {
+          marker: {
+            daemon_key: 'mini:default',
+            fleet_id: 'fleet:jsonl-owner',
+            mint_id: 'mint-jsonl-owner',
+            session_id: 'rollout-jsonl-owner',
+            harness_kind: 'claude',
+            model: 'gpt-test',
+            cwd: '/Users/skip/work/tlda',
+          },
+        },
+      }],
     })
-    await new Promise(resolve => setTimeout(resolve, 550))
-    assert.equal(harness.sentToChild.some(message => message.type === 'watch'), true)
+    assert.equal(harness.sentToChild.some(message => message.type === 'ack' && message.watchId === watch.watchId), true)
+    assertWatcher(harness, true, 'claude')
+    assert.equal(harness.sentToServer.some(message => message.type === 'activity-health' && message.state === 'ok'), true)
     harness.ingestor.saveCursors()
     const saved = JSON.parse(readFileSync(join(harness.dir, 'config', 'cursors.json'), 'utf8'))
-    assert.deepEqual(saved['rollout-jsonl-owner'].owners, ['fleet:jsonl-owner'])
-    assert.equal(saved['rollout-jsonl-owner'].classified, true)
+    assert.equal(saved['rollout-jsonl-owner'].owner.state, 'mine')
+    assert.equal(saved['rollout-jsonl-owner'].owner.daemon_key, 'mini:default')
+  } finally {
+    harness.cleanup()
+  }
+}
+
+{
+  const harness = createHarness({ kind: 'claude' })
+  try {
+    harness.setRows([{ id: 'fleet:jsonl-owner', ...fullBinding({
+      sessionKind: 'claude',
+      sessionId: 'rollout-jsonl-owner',
+      sessionPath: harness.jsonlPath,
+    }) }])
+    await harness.sync('foreign-jsonl')
+    const watch = harness.sentToChild.find(message => message.type === 'watch')
+    harness.children[0].child.emit('message', {
+      type: 'batch',
+      watchId: watch.watchId,
+      seq: 1,
+      outputs: [{
+        type: 'identity',
+        identity: {
+          marker: {
+            daemon_key: 'mini:stable',
+            fleet_id: 'fleet:jsonl-owner',
+            mint_id: 'mint-jsonl-owner',
+          },
+        },
+      }],
+    })
+    assert.equal(harness.sentToChild.some(message => message.type === 'stop' && message.watchId === watch.watchId), true)
+    assert.equal(harness.sentToServer.some(message => message.type === 'activity-health'), false)
+    harness.ingestor.saveCursors()
+    const saved = JSON.parse(readFileSync(join(harness.dir, 'config', 'cursors.json'), 'utf8'))
+    assert.equal(saved['rollout-jsonl-owner'].owner.state, 'ignore')
+    assert.equal(saved['rollout-jsonl-owner'].owner.daemon_key, 'mini:stable')
   } finally {
     harness.cleanup()
   }
@@ -290,11 +341,11 @@ function assertWatcher(harness, expected) {
     ledger.onProcessBindingChange = () => { void reconcile('permission-ledger-session-binding') }
     ledger.setSessionSync('fleet:jsonl-owner', fullBinding({ sessionPath: harness.jsonlPath }))
     await new Promise(resolve => setImmediate(resolve))
-    assertWatcher(harness, true)
-    assert.equal(harness.sentToChild.filter(m => m.type === 'watch').length, 1)
+    assertWatcher(harness, false)
+    assertTailCount(harness, 1)
     ledger.setSessionSync('fleet:jsonl-owner', { terminalCapability: 'changed-only' })
     await new Promise(resolve => setImmediate(resolve))
-    assert.equal(harness.sentToChild.filter(m => m.type === 'watch').length, 1)
+    assertTailCount(harness, 1)
   } finally {
     cleanup()
     harness.cleanup()
@@ -312,11 +363,13 @@ function assertWatcher(harness, expected) {
     }
     ledger.setSessionSync('fleet:jsonl-owner', fullBinding({ sessionPath: harness.jsonlPath }))
     await reconcile('attach')
-    assertWatcher(harness, true)
+    assertTailCount(harness, 1)
+    assertWatcher(harness, false)
     await ledger.delete('fleet:jsonl-owner')
     await deleteReconcilePromise
     assertWatcher(harness, false)
-    assert.equal(harness.sentToChild.some(m => m.type === 'stop'), true)
+    assertTailCount(harness, 1)
+    assert.equal(harness.sentToChild.some(m => m.type === 'stop'), false)
   } finally {
     cleanup()
     harness.cleanup()
@@ -335,7 +388,8 @@ function assertWatcher(harness, expected) {
     harness.setReady(true)
     assert.equal(harness.ingestor.resumeAfterServerReady(), true)
     await new Promise(resolve => setImmediate(resolve))
-    assertWatcher(harness, true)
+    assertTailCount(harness, 2)
+    assertWatcher(harness, false)
   } finally {
     harness.cleanup()
   }

@@ -737,7 +737,7 @@ const DAEMON_CONFIG_DIR = join(homedir(), '.config', 'tlda')
 function daemonLockFile() {
   return daemonSingletonLockPath({
     configDir: DAEMON_CONFIG_DIR,
-    origin: `${process.env.TLDA_SERVER || resolveConfig().database.http}#${SERVER_ENV_NAME}`,
+    origin: `${resolveConfig().database.http}#${SERVER_ENV_NAME}`,
   })
 }
 const DAEMON_SCRIPT = (() => {

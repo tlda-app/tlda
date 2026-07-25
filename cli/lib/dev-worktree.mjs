@@ -442,17 +442,14 @@ export async function cmdServeWorktree(args) {
   if (!up) { console.error(`server didn't answer on ${base} within 30s — see ${logFile(branch)}`); process.exit(1) }
 
   // --sandbox: also bring up a fleet-daemon wired ONLY to this sandbox server.
-  // TLDA_SERVER=base satisfies the worktree-daemon isolation guard (a worktree
-  // daemon must declare its own target) AND equals the sandbox config's fleet host
-  // (database=base), so the server-coherence guard is happy too. TLDA_DEV_DAEMON
-  // names that same authorized base; fleet-daemon refuses to start unless its
-  // resolved SERVER equals it, on a non-:5176 port — so this daemon can never join
-  // the real fleet. Detached + unref'd so it outlives the launcher, like the server.
+  // TLDA_DEV_DAEMON names the authorized base; the sandbox config must resolve
+  // to that base on a non-:5176 port, so this daemon can never join the real
+  // fleet. Detached + unref'd so it outlives the launcher, like the server.
   let daemonPid = null
   if (flags.has('sandbox')) {
     // Give the sandbox daemon its own config dir with a DISTINCT machine_id so it
     // coexists with the real daemon (own pidfile = no singleton clash; own
-    // machine_id = no eviction). TLDA_SERVER (precedence) keeps its target = base.
+    // machine_id = no eviction). TLDA_CONFIG selects the sandbox server.
     const dcfg = daemonConfigDir(branch)
     mkdirSync(dcfg, { recursive: true })
     writeFileSync(join(dcfg, 'server.yaml'), [
@@ -486,7 +483,6 @@ export async function cmdServeWorktree(args) {
         ...process.env,
         TLDA_DAEMON_CONFIG_DIR: dcfg,    // own machine_id + pidfile (coexist with real daemon)
         TLDA_CONFIG_DIR: dcfg,           // resolve the sandbox's named server authority
-        TLDA_SERVER: base,               // isolation target == config fleet host (coherent)
         TLDA_DEV_DAEMON: base,           // the authorized sandbox target; arms the invariant
         TLDA_CONFIG: configName(branch),
         TLDA_FLEET_DB: fleetDb(branch),

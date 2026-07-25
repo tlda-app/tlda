@@ -1421,7 +1421,7 @@ function daemonTargetIdentity() {
   const envName = getActiveConfigName()
   if (!envName) throw new Error('cannot identify daemon target: active config name is missing')
   const machineId = getMachineId() || hostname().split('.')[0]
-  const lockScope = `${server}#${envName}`
+  const lockScope = `${machineId}:${envName}`
   const lockPath = daemonSingletonLockPath({ configDir: CONFIG_DIR, origin: lockScope })
   return { machineId, envName, server, lockScope, lockPath }
 }
@@ -2179,7 +2179,7 @@ async function cmdMoveProject() {
 async function cmdMcpSetup() {
   const tldaRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
   const nodePath = process.execPath
-  const serverUrl = getServer()
+  const configName = getActiveConfigName()
   const outPath = join(process.cwd(), '.mcp.json')
 
   let existing = {}
@@ -2193,7 +2193,7 @@ async function cmdMcpSetup() {
         type: 'stdio',
         command: nodePath,
         args: [join(tldaRoot, 'mcp-server', 'index.mjs')],
-        env: { TLDA_SERVER: serverUrl }
+        env: { TLDA_CONFIG: configName }
       },
       fleet: {
         type: 'stdio',
@@ -2208,7 +2208,7 @@ async function cmdMcpSetup() {
   console.log(`Wrote ${outPath}`)
   console.log(`  tlda MCP:  ${join(tldaRoot, 'mcp-server', 'index.mjs')}`)
   console.log(`  fleet MCP: ${join(tldaRoot, 'mcp-server', 'fleet.mjs')}`)
-  console.log(`  server:    ${serverUrl}`)
+  console.log(`  config:    ${configName}`)
   console.log()
   console.log(`Open Claude Code in this directory and the tlda + fleet tools will be available.`)
 }
@@ -4482,6 +4482,7 @@ async function cmdDoctor() {
     const tldaRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
     const tldaMcpEntry = join(tldaRoot, 'mcp-server', 'index.mjs')
     const fleetMcpEntry = join(tldaRoot, 'mcp-server', 'fleet.mjs')
+    const configName = getActiveConfigName()
 
     let tldaFound = false
     let fleetFound = false
@@ -4511,7 +4512,7 @@ async function cmdDoctor() {
             type: 'stdio',
             command: process.execPath,
             args: [tldaMcpEntry],
-            env: { TLDA_SERVER: serverUrl }
+            env: { TLDA_CONFIG: configName }
           }
         }
       }, null, 2).split('\n').join('\n  ')))

@@ -24,7 +24,6 @@ function wsForm(url) {
 }
 
 export function resolveApi({ env = process.env, config = null } = {}) {
-  if (env.TLDA_SERVER) return httpForm(env.TLDA_SERVER)
   if (config !== null) throw new TypeError('resolveApi no longer accepts a legacy config object')
   return httpForm(getFleetServerUrl())
 }

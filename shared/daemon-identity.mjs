@@ -4,10 +4,7 @@
 // Two complementary moves, both pure + unit-tested here:
 //   1. resolveDaemonIsolation() — daemon-side startup guard. Refuses to start
 //      when an isolation signal is set but isolation is INCOMPLETE, instead of
-//      silently falling through to the live config + shared machine_id. This is
-//      the footgun: setting TLDA_SERVER alone does NOT isolate (the daemon still
-//      reads the shared config's machineId="air" and connects to live Fly), so a
-//      worktree daemon silently joins the live fleet as "air".
+//      silently falling through to the live config + shared machine_id.
 //   2. daemonHelloDecision() — server-side backstop. When a daemon-hello arrives
 //      for a machine_id that another daemon ALREADY holds live, refuse the
 //      newcomer unless it's the same install restarting. Two distinct installs
@@ -50,31 +47,20 @@ export function resolveMainDaemonScript(scriptPath, resolveIdentity = resolveRep
 
 // Decide whether a daemon may start, and whether it is properly isolated.
 // Inputs are plain values so this is fully testable without process/env state.
-//   env:        { TLDA_DAEMON_CONFIG_DIR?, PROJECTS_DIR?, TLDA_SERVER? }
+//   env:        { TLDA_DAEMON_CONFIG_DIR?, PROJECTS_DIR?, TLDA_DEV_DAEMON? }
 //   scriptPath: the daemon's own resolved script path (import.meta path)
-//   configuredServer: active config's canonical fleet server, when known
-//   targetServer: server this daemon will connect to, when known
 // Returns { usingCustomConfigDir, isolated, refuseReason }. refuseReason is a
 // string when the daemon must abort with a loud error, or null when it's safe.
 //
 // A daemon is "isolated" from the live fleet when EITHER signal is present:
-//   - TLDA_DAEMON_CONFIG_DIR + PROJECTS_DIR — its own config and JSONL roots, or
-//   - TLDA_SERVER            — its own server target, but only when it differs
-//     from the canonical configured server or is the explicit dev-daemon target.
+//   - TLDA_DAEMON_CONFIG_DIR + PROJECTS_DIR — its own config and JSONL roots.
 // The leak is a WORKTREE daemon with NEITHER: it falls through to live Fly with
 // the shared machine_id ("air") and evicts the real daemon. That one is refused.
-export function resolveDaemonIsolation({ env = {}, scriptPath = '', configuredServer = null, targetServer = null, resolveIdentity = resolveRepoIdentity } = {}) {
+export function resolveDaemonIsolation({ env = {}, scriptPath = '', resolveIdentity = resolveRepoIdentity } = {}) {
   const usingCustomConfigDir = !!env.TLDA_DAEMON_CONFIG_DIR
   const usingCustomProjectsDir = !!env.PROJECTS_DIR
-  const norm = (u) => u ? String(u).replace(/\/+$/, '') : null
-  const explicitServer = !!env.TLDA_SERVER
-  const serverIsolated = explicitServer && (
-    !configuredServer ||
-    norm(targetServer || env.TLDA_SERVER) !== norm(configuredServer) ||
-    !!env.TLDA_DEV_DAEMON
-  )
   const customDataIsolated = usingCustomConfigDir && usingCustomProjectsDir
-  const isolated = customDataIsolated || serverIsolated
+  const isolated = customDataIsolated
   const worktree = isDaemonWorktree(scriptPath, resolveIdentity)
 
   if (usingCustomConfigDir && !usingCustomProjectsDir) {
@@ -99,8 +85,7 @@ export function resolveDaemonIsolation({ env = {}, scriptPath = '', configuredSe
         'This daemon is running from a git worktree (' + scriptPath + ') with no ' +
         'isolation signal. A worktree/dev-rig daemon must not join the live fleet ' +
         'as the shared machine_id (it would evict the real daemon). Set ' +
-        'TLDA_DAEMON_CONFIG_DIR plus PROJECTS_DIR (own config + JSONLs) or ' +
-        'TLDA_SERVER (own server target) to isolate it.',
+        'TLDA_DAEMON_CONFIG_DIR plus PROJECTS_DIR (own config + JSONLs) to isolate it.',
     }
   }
 

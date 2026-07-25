@@ -2,14 +2,12 @@ import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { parseCodexLine, parseCodexRecord } from '../agent-runtime/codex-activity.mjs'
 import { harnessKindForAgent } from '../agent-runtime/daemon-guards.mjs'
-import { resolveCodexTranscriptByKnownRollout } from '../agent-runtime/resolve-transcript.mjs'
 import { extractActivityEvents, parseSessionLine, parseSessionRecord } from './activity-events.mjs'
 
 export function createHarnessRuntime({
   tmuxArgs = [],
   log,
   execFileImpl = execFile,
-  resolveCodexTranscript = resolveCodexTranscriptByKnownRollout,
 } = {}) {
   const TMUX_ARGS = tmuxArgs || []
   const execFileP = promisify(execFileImpl)
@@ -60,10 +58,6 @@ export function createHarnessRuntime({
     return null
   }
 
-  async function resolveCodexJsonl(agent) {
-    return resolveCodexTranscript(agent)
-  }
-
   const harnessAdapters = {
     claude: {
       kind: 'claude',
@@ -84,7 +78,6 @@ export function createHarnessRuntime({
         kind: 'codex',
         parseLine: parseCodexLine,
         parseRecord: parseCodexRecord,
-        resolveJsonl: resolveCodexJsonl,
         usesClaudeSessionIds: false,
         backfillSearch: false,
         terminalChat: false,

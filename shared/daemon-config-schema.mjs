@@ -3,7 +3,6 @@ function isRecord(value) {
 }
 
 export const DAEMON_CONFIG_TOP_LEVEL_KEYS = Object.freeze([
-  'defaultServer',
   'machineId',
   'regions',
   'profiles',
@@ -13,7 +12,6 @@ export const DAEMON_CONFIG_TOP_LEVEL_KEYS = Object.freeze([
   'tmuxSocket',
   'taskDoc',
   'spawnMachineId',
-  'servers',
   // Read by getStatusScanMs(). This list is a CLOSED allow-list: the daemon
   // refuses to start on an unknown key, so a new setting is not usable until it
   // is named here. Adding the key to daemon.yaml without this line took the live

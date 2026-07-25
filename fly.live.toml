@@ -11,6 +11,7 @@ primary_region = "sjc"
 [env]
   PORT = "5176"
   NODE_ENV = "production"
+  TLDA_CONFIG = "testing"
   # The canonical fleet server URL reported from /api/fleet-config. Now the private
   # TAILNET name (the server is gated behind Tailscale): the SPA is served from this
   # same origin, so clients resolve fleet/chat to the tailnet name = their own origin.

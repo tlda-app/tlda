@@ -41,15 +41,10 @@ import {
 } from './lib/formatCoords.mjs';
 import { harnessFromEnv } from './lib/harness-adapters.mjs';
 
-import { getFleetServerUrl, getServerUrl, assertServerCoherence, DEFAULT_PORT } from '../shared/config.mjs'
+import { getFleetServerUrl, getServerUrl, DEFAULT_PORT } from '../shared/config.mjs'
 import { tldaFetch as _tldaFetch } from '../shared/http-client.mjs'
 import { uploadFileToServer } from '../shared/chat-file-processing.mjs'
 import { pushMcpSourceFiles } from './source-push-orchestration.mjs'
-
-// Fail loud if a hand-pinned TLDA_SERVER disagrees with the config this agent's
-// MCP resolved — the 6/27 split, refused at boot rather than joining the wrong
-// roster. Throws (no tools come up) instead of silently registering elsewhere.
-assertServerCoherence();
 
 const TLDA_TOKEN = resolveToken();
 const TLDA_AUTH_HEADERS = TLDA_TOKEN ? { 'Authorization': `Bearer ${TLDA_TOKEN}` } : {};

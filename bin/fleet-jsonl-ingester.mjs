@@ -12,9 +12,7 @@ import TailFile from '@logdna/tail-file'
 import { parser as jsonlParser } from 'stream-json/jsonl/parser.js'
 import { parseCodexRecord } from '../agent-runtime/codex-activity.mjs'
 import {
-  decideSessionBackfill,
   extractIdentityFromRecord,
-  scanFileIdentitySync,
 } from '../agent-runtime/daemon-jsonl-hot-path.mjs'
 import {
   defaultActivityExtractor,
@@ -227,76 +225,6 @@ export async function runSearchBackfillJob(job) {
   return { entries: sentEntries, identities }
 }
 
-function listJsonlFiles(projectsDir) {
-  const out = []
-  let dirs
-  try { dirs = fs.readdirSync(projectsDir) } catch (e) {
-    if (e?.code === 'ENOENT') return out
-    throw e
-  }
-  for (const dir of dirs) {
-    const dirPath = path.join(projectsDir, dir)
-    let files
-    try { files = fs.readdirSync(dirPath) } catch (e) {
-      if (e?.code === 'ENOTDIR' || e?.code === 'ENOENT') continue
-      throw e
-    }
-    for (const file of files) {
-      if (!file.endsWith('.jsonl')) continue
-      out.push({ sessionId: file.slice(0, -6), filePath: path.join(dirPath, file) })
-    }
-  }
-  return out
-}
-
-async function runPriorBackfillJob(job) {
-  let found = 0
-  const identities = []
-  for (const item of listJsonlFiles(job.projectsDir)) {
-    if (job.cursors?.[item.sessionId]?.searchBackfilled) continue
-    let decision
-    let scanned = null
-    try {
-      decision = decideSessionBackfill(job.cursors?.[item.sessionId], job.fleetId, () => {
-        scanned = scanFileIdentitySync(item.filePath)
-        return { owners: scanned.owners || [] }
-      })
-    } catch (e) {
-      send({ type: 'warn', jobId: job.jobId, warning: `prior backfill scan failed for ${item.filePath}: ${e?.message || e}` })
-      continue
-    }
-    if (scanned?.identity) {
-      identities.push({
-        session_id: item.sessionId,
-        harness_kind: 'claude',
-        jsonl_path: item.filePath,
-        ...scanned.identity,
-        classified: true,
-      })
-    } else if (decision.didScan) {
-      for (const owner of decision.owners || []) {
-        identities.push({
-          session_id: item.sessionId,
-          harness_kind: 'claude',
-          jsonl_path: item.filePath,
-          fleet_id: owner,
-          classified: true,
-        })
-      }
-    }
-    if (!decision.shouldBackfill) continue
-    await runSearchBackfillJob({
-      ...job,
-      sessionId: item.sessionId,
-      harnessKind: 'claude',
-      jsonlPath: item.filePath,
-    })
-    send({ type: 'job-session-complete', jobId: job.jobId, sessionId: item.sessionId, jsonlPath: item.filePath })
-    found++
-  }
-  return { found, identities }
-}
-
 async function startJob(msg) {
   const job = { ...msg, nextSeq: 0 }
   activeJobs.set(job.jobId, job)
@@ -304,8 +232,6 @@ async function startJob(msg) {
     let result
     if (job.jobKind === 'search') {
       result = await runSearchBackfillJob(job)
-    } else if (job.jobKind === 'prior') {
-      result = await runPriorBackfillJob(job)
     } else {
       throw new Error(`unknown job kind: ${job.jobKind}`)
     }

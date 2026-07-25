@@ -1,21 +1,22 @@
 /**
- * Per-origin singleton lock for the fleet-daemon.
+ * Per-environment singleton lock for the fleet-daemon.
  *
- * THE INVARIANT: at most ONE fleet-daemon process per active fleet origin on a
+ * THE INVARIANT: at most ONE fleet-daemon process per active environment on a
  * machine — no matter which install/worktree's `bin/fleet-daemon.mjs` is
- * launched. This must be STRUCTURALLY impossible to violate: a second same-origin
+ * launched. This must be STRUCTURALLY impossible to violate: a second same-environment
  * daemon is refused UP FRONT, before it opens any WebSocket to the server — not
  * "evicted by the server 10s later". The old server-side machine_id lease only
  * evicted the loser *after* it had already connected and started fighting over
- * the slot; this lock stops the second same-origin process before it ever gets
+ * the slot; this lock stops the second same-environment process before it ever gets
  * that far.
  *
  * Mechanism (darwin, the deployment target — the Mac Mini): an exclusive,
  * non-blocking advisory file lock via open(2) with O_EXLOCK|O_NONBLOCK on a
- * install-path-agnostic path derived from CONFIG_DIR + the normalized fleet
- * origin, NOT from __dirname. Because the path depends only on the machine's
- * config dir and target origin, every install/worktree aimed at that origin
- * contends for the SAME lock, while different origins can run side by side.
+ * install-path-agnostic path derived from CONFIG_DIR + the normalized
+ * environment key, NOT from __dirname. Because the path depends only on the
+ * machine's config dir and environment key, every install/worktree aimed at
+ * that environment contends for the SAME lock, while different environments
+ * can run side by side.
  *
  * Why a kernel lock and not the pw-lock.sh advisory-file pattern: pw-lock is a
  * cooperative timestamp+pid file built for QUEUE-not-steal playwright sessions —
@@ -44,7 +45,7 @@ import { createHash } from 'crypto'
 const O_EXLOCK_DARWIN = 0x20
 
 /**
- * Compute the daemon singleton lock path for a fleet origin.
+ * Compute the daemon singleton lock path for an environment key.
  */
 export function daemonSingletonLockPath({ configDir, origin }) {
   const normalized = normalizeLockOrigin(origin)
@@ -64,7 +65,7 @@ export function normalizeLockOrigin(origin) {
  * Acquire the daemon singleton lock.
  *
  * @param {object} opts
- * @param {string} opts.lockPath    — origin-keyed, install-path-agnostic lock file path
+ * @param {string} opts.lockPath    — environment-keyed, install-path-agnostic lock file path
  * @param {string} opts.installPath — this daemon's install/worktree path (for the holder record)
  * @returns {{ ok: true, fd: number } | { ok: false, holder: { pid?: number, installPath?: string, origin?: string, startedAt?: number } }}
  *   On success, `fd` MUST be kept open for the lifetime of the process — closing

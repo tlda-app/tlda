@@ -18,14 +18,6 @@ export const DEFAULT_PORT = 5176
 
 export { CONFIG_DIR }
 
-/**
- * Server URL resolution.
- * TLDA_SERVER env → config.server → local default. The local default is
- * https://localhost:5176 when mkcert localhost certs are present, otherwise
- * http://localhost:5176.
- *
- * The CLI adds --server flag support on top of this via getFlag().
- */
 const TLS_CERT_PATH = join(CONFIG_DIR, 'localhost+2.pem')
 const TLS_KEY_PATH  = join(CONFIG_DIR, 'localhost+2-key.pem')
 export const hasTls = existsSync(TLS_CERT_PATH) && existsSync(TLS_KEY_PATH)
@@ -142,42 +134,6 @@ export function getFleetServerUrl(serverName = null) {
 /** The active server's name — what TLDA_CONFIG/defaultServer selected. */
 export function getActiveConfigName(serverName = null) {
   return resolveConfig(serverName).name
-}
-
-/**
- * Coherence guard — fail loud when an explicit TLDA_SERVER URL disagrees with
- * the active config's resolved origin. This is the tripwire for the 6/27
- * config-split: a stray defaultServer (or a hand-pinned TLDA_SERVER) routing a
- * process to a different server than the rest of the fleet, silently. The one
- * selector is TLDA_CONFIG (or defaultServer) — every axis derives from it; a
- * leftover TLDA_SERVER that points somewhere else means the process refuses to
- * start rather than join a roster nobody else is on.
- *
- * Internal exception: launch harnesses project TLDA_SYNC_SERVER as the
- * room/signal/shapes transport target. It is not a user-facing config selector;
- * operators select complete named configs for database/store. (Read doc
- * assets from one origin, sync shapes to another — the published triage clone).
- * When it's set, we don't force TLDA_SERVER to match the active config.
- *
- * This THROWS — never catch-and-log. A coherent boot is the contract; every
- * entry point (daemon, MCP, server) calls this at startup. Checks store.http
- * (the historical meaning of TLDA_SERVER, and === database.http in every config
- * today); if the two axes ever split, TLDA_SERVER — a single URL — can't name
- * both, so store is the right one to pin.
- */
-export function assertServerCoherence(serverName = null) {
-  const envServer = process.env.TLDA_SERVER
-  if (!envServer) return
-  if (process.env.TLDA_SYNC_SERVER) return // internal harness-projected room target — see docs/live-deploy.md
-  const resolved = resolveConfig(serverName)
-  const want = resolved.store.http
-  const got = _httpForm(envServer)
-  if (got !== want) {
-    throw new Error(
-      `tlda config incoherent: TLDA_SERVER=${got} but active config "${resolved.name}" resolves to ${want}. ` +
-      `Don't pin a server by URL — select a server with TLDA_CONFIG=<name> (or fix "defaultServer" in server.yaml).`
-    )
-  }
 }
 
 /**

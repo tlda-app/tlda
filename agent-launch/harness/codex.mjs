@@ -129,6 +129,12 @@ function appendLaunchFlags(parts, harnessOptions = {}) {
   }
 }
 
+function passthroughConfigEnv(env = {}) {
+  return ['TLDA_CONFIG_DIR', 'TLDA_DAEMON_CONFIG_DIR', 'CODEX_SESSIONS_DIR']
+    .filter(key => env[key])
+    .map(key => [key, String(env[key])])
+}
+
 export function resolveModel(model, options = {}) {
   return resolveCodexModel(model, options)
 }
@@ -194,6 +200,7 @@ export function buildCmd({
   processEnv.push(...gitAuthorEnv(fleetId || localAgentId, name).map(v => sqEnv(v)))
   if (name) processEnv.push(`FLEET_NAME=${sq(name)}`)
   if (env.TLDA_MACHINE_ID) processEnv.push(`TLDA_MACHINE_ID=${sq(env.TLDA_MACHINE_ID)}`)
+  for (const [key, value] of passthroughConfigEnv(env)) processEnv.push(`${key}=${sq(value)}`)
   const dnsAliasPreload = dnsAlias ? dnsAliasPreloadPath() : null
   if (dnsAlias && dnsAliasPreload) {
     processEnv.push(`NODE_OPTIONS=${sq(`--require=${dnsAliasPreload}`)}`)
@@ -210,14 +217,11 @@ export function buildCmd({
   parts.push(cenv('FLEET_HARNESS', 'codex'))
   parts.push(cenv('FLEET_TMUX_SESSION', tmuxSession))
   parts.push(cenv('TLDA_MCP_FLEET_ONLY', '1'))
-  if (api) {
-    parts.push(cenv('TLDA_SERVER', api))
-    parts.push(cenv('TLDA_SYNC_SERVER', api))
-  }
   const configName = activeConfigName(config, env)
   if (configName) parts.push(cenv('TLDA_CONFIG', configName))
   if (env.TLDA_MACHINE_ID) parts.push(cenv('TLDA_MACHINE_ID', env.TLDA_MACHINE_ID))
   if (env.TLDA_MACHINE_ID && configName) parts.push(cenv('FLEET_DAEMON_KEY', `${env.TLDA_MACHINE_ID}:${configName}`))
+  for (const [key, value] of passthroughConfigEnv(env)) parts.push(cenv(key, value))
   if (dnsAlias && dnsAliasPreload) {
     parts.push(cenv('NODE_OPTIONS', `--require=${dnsAliasPreload}`))
     parts.push(cenv('TLDA_NODE_DNS_ALIAS_HOST', dnsAlias.host))

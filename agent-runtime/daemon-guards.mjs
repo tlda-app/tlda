@@ -176,38 +176,6 @@ export function codexPathMatchesKnownRollout(jsonlPath, agent) {
   return ids.length > 0 && ids.some(id => jsonlPath.endsWith(`-${id}.jsonl`))
 }
 
-export function shouldClaimCodexWatcher({
-  currentPrimaryId,
-  agent,
-  jsonlPath,
-  rolloutHasOwnerEvidence = null,
-  rolloutBelongsToAgent = null,
-} = {}) {
-  if (currentPrimaryId === agent?.id) return true
-  if (!codexPathMatchesKnownRollout(jsonlPath || '', agent)) return false
-
-  // A rollout id match proves the stored handle points at this file, but not
-  // that the handle still belongs to this fleet row. If the rollout itself
-  // contains fleet ownership evidence, require it to match before allowing a
-  // watcher takeover; stale session_ids must not steal another live agent's
-  // activity cards.
-  if (rolloutHasOwnerEvidence?.(jsonlPath)) {
-    return !!rolloutBelongsToAgent?.(jsonlPath, agent)
-  }
-  return true
-}
-
-export function claudeSessionBelongsToAgent(owners = [], agent) {
-  return !!agent?.id && owners.includes(agent.id)
-}
-
-export function shouldClaimClaudeWatcher({
-  agent,
-  owners = [],
-} = {}) {
-  return claudeSessionBelongsToAgent(owners, agent)
-}
-
 export function decideMissingLiveness({
   now,
   missingSince,

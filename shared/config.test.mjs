@@ -18,8 +18,7 @@ delete process.env.TLDA_SERVER
 delete process.env.TLDA_TOKEN
 delete process.env.TLDA_MACHINE_ID
 
-writeFileSync(join(DIR, 'daemon.yaml'), `
-defaultServer: complete
+const SERVER_COMPLETE = `defaultServer: complete
 servers:
   complete:
     database: https://db.example
@@ -29,6 +28,9 @@ servers:
     database: https://db2.example
     store: https://store2.example
     licenseKey: ""
+`
+
+const DAEMON_COMPLETE = `
 regions:
   cwd:
     - cwd
@@ -51,7 +53,10 @@ models:
         preferences: []
         controls: true
 default: wd
-`)
+`
+
+writeFileSync(join(DIR, 'server.yaml'), SERVER_COMPLETE)
+writeFileSync(join(DIR, 'daemon.yaml'), DAEMON_COMPLETE)
 
 const cfg = await import('./config.mjs?bust=' + Date.now())
 const ledger = await import('../agent-launch/permission-ledger.mjs?bust=' + Date.now())
@@ -71,22 +76,16 @@ check('complete: store axis resolves', r.store.http === 'https://store.example')
 check('complete: uses per-server license, NOT top-level',
       r.licenseKey === 'SERVER-LICENSE')
 const daemonConfig = ledger.readDaemonConfig(join(DIR, 'daemon.yaml'))
-check('daemon reader accepts strict defaultServer',
-      daemonConfig.defaultServer === r.name)
-check('daemon reader sees same selected database authority',
-      daemonConfig.servers[daemonConfig.defaultServer].database === r.database.http)
-check('daemon reader sees same selected store authority',
-      daemonConfig.servers[daemonConfig.defaultServer].store === r.store.http)
-check('daemon reader sees same selected license authority',
-      daemonConfig.servers[daemonConfig.defaultServer].licenseKey === r.licenseKey)
+check('daemon reader accepts local daemon-only config',
+      daemonConfig.default === 'wd')
 
 // --- B4: fleet URL = database axis, distinct from store URL ---
 check('getFleetServerUrl = database axis', cfg.getFleetServerUrl() === 'https://db.example')
 check('getServerUrl = store axis', cfg.getServerUrl() === 'https://store.example')
 check('fleet and store axes are distinct', cfg.getFleetServerUrl() !== cfg.getServerUrl())
 
-// --- B1: every fallback removed, and both readers reject the same legacy authority ---
-writeDaemon(`- not
+// --- B1: server.yaml owns server authority; daemon.yaml rejects authority keys as foreign ---
+writeBoth(`- not
 - a
 - map
 `)
@@ -94,13 +93,11 @@ check('list-valued daemon root THROWS in resolver',
       throws(() => cfg.resolveConfig()))
 check('list-valued daemon root THROWS in daemon reader',
       throws(() => ledger.readDaemonConfig(join(DIR, 'daemon.yaml'))))
-writeDaemon(`defaultServer: complete
+writeBoth(`defaultServer: complete
 `)
 check('absent servers THROWS in resolver',
       throws(() => cfg.resolveConfig()))
-check('absent servers THROWS in daemon reader',
-      throws(() => ledger.readDaemonConfig(join(DIR, 'daemon.yaml'))))
-writeDaemon(`defaultServer: missing
+writeBoth(`defaultServer: missing
 servers:
   complete:
     database: https://db.example
@@ -109,9 +106,7 @@ servers:
 `)
 check('defaultServer missing target THROWS in resolver',
       throws(() => cfg.resolveConfig()))
-check('defaultServer missing target THROWS in daemon reader',
-      throws(() => ledger.readDaemonConfig(join(DIR, 'daemon.yaml'))))
-writeDaemon(`defaultServer: ""
+writeBoth(`defaultServer: ""
 servers:
   complete:
     database: https://db.example
@@ -120,18 +115,14 @@ servers:
 `)
 check('empty defaultServer THROWS in resolver',
       throws(() => cfg.resolveConfig()))
-check('empty defaultServer THROWS in daemon reader',
-      throws(() => ledger.readDaemonConfig(join(DIR, 'daemon.yaml'))))
-writeDaemon(`defaultServer: urlonly
+writeBoth(`defaultServer: urlonly
 servers:
   urlonly:
     url: https://both.example
 `)
 check('legacy url-only entry THROWS in resolver (no url fallback)',
       throws(() => cfg.resolveConfig()))
-check('legacy url-only entry THROWS in daemon reader',
-      throws(() => ledger.readDaemonConfig(join(DIR, 'daemon.yaml'))))
-writeDaemon(`defaultServer: nostore
+writeBoth(`defaultServer: nostore
 servers:
   nostore:
     database: https://db.example
@@ -139,9 +130,7 @@ servers:
 `)
 check('missing store THROWS in resolver (no database->store fallback)',
       throws(() => cfg.resolveConfig()))
-check('missing store THROWS in daemon reader',
-      throws(() => ledger.readDaemonConfig(join(DIR, 'daemon.yaml'))))
-writeDaemon(`licenseKey: TOP-LEVEL-MUST-NOT-BE-USED
+writeBoth(`licenseKey: TOP-LEVEL-MUST-NOT-BE-USED
 defaultServer: nolicense
 servers:
   nolicense:
@@ -150,9 +139,7 @@ servers:
 `)
 check('top-level license fallback THROWS in resolver',
       throws(() => cfg.resolveConfig()))
-check('top-level license fallback THROWS in daemon reader',
-      throws(() => ledger.readDaemonConfig(join(DIR, 'daemon.yaml'))))
-writeDaemon(`defaultConfig: complete
+writeBoth(`defaultConfig: complete
 servers:
   complete:
     database: https://db.example
@@ -163,7 +150,7 @@ check('legacy defaultConfig selector THROWS in resolver',
       throws(() => cfg.resolveConfig()))
 check('legacy defaultConfig selector THROWS in daemon reader',
       throws(() => ledger.readDaemonConfig(join(DIR, 'daemon.yaml'))))
-writeDaemon(`defaultServer: complete
+writeBoth(`defaultServer: complete
 mystery: true
 servers:
   complete:
@@ -175,7 +162,7 @@ check('unknown top-level key THROWS in resolver',
       throws(() => cfg.resolveConfig()))
 check('unknown top-level key THROWS in daemon reader',
       throws(() => ledger.readDaemonConfig(join(DIR, 'daemon.yaml'))))
-writeDaemon(`servers:
+writeBoth(`servers:
   chosen:
     database: https://chosen-db.example
     store: https://chosen-store.example
@@ -187,9 +174,7 @@ check('TLDA_CONFIG selector cannot bypass missing defaultServer',
 delete process.env.TLDA_CONFIG
 check('explicit selector cannot bypass missing defaultServer',
       throws(() => cfg.resolveConfig('chosen')))
-check('daemon reader rejects missing defaultServer with otherwise valid chosen server',
-      throws(() => ledger.readDaemonConfig(join(DIR, 'daemon.yaml'))))
-writeDaemon(`defaultServer: missing
+writeBoth(`defaultServer: missing
 servers:
   chosen:
     database: https://chosen-db.example
@@ -202,42 +187,9 @@ check('TLDA_CONFIG selector cannot bypass invalid defaultServer target',
 delete process.env.TLDA_CONFIG
 check('explicit selector cannot bypass invalid defaultServer target',
       throws(() => cfg.resolveConfig('chosen')))
-check('daemon reader rejects invalid defaultServer target with otherwise valid chosen server',
-      throws(() => ledger.readDaemonConfig(join(DIR, 'daemon.yaml'))))
 
-writeDaemon(`defaultServer: complete
-servers:
-  complete:
-    database: https://db.example
-    store: https://store.example
-    licenseKey: SERVER-LICENSE
-  unlicensed:
-    database: https://db2.example
-    store: https://store2.example
-    licenseKey: ""
-regions:
-  cwd:
-    - cwd
-profiles:
-  wd:
-    read:
-      allow:
-        - cwd
-      deny: []
-grants:
-  localhost: wd
-models:
-  default: gpt
-  values:
-    gpt:
-      id: gpt
-      harness:
-        kind: codex
-        required: []
-        preferences: []
-        controls: true
-default: wd
-`)
+writeFileSync(join(DIR, 'server.yaml'), SERVER_COMPLETE)
+writeFileSync(join(DIR, 'daemon.yaml'), DAEMON_COMPLETE)
 
 const projectDir = join(DIR, 'project')
 mkdirSync(projectDir)
@@ -305,7 +257,7 @@ const DIR2 = mkdtempSync(join(tmpdir(), 'tlda-mid-test-'))
 const prevDir = process.env.TLDA_CONFIG_DIR
 // saveMachineId targets DAEMON_FILE resolved from the module's CONFIG_DIR (frozen
 // at import = DIR), so write the fixture there and assert against DIR's daemon.yaml.
-writeFileSync(join(DIR, 'daemon.yaml'), `# keep this comment\ndefaultServer: complete\nservers:\n  complete:\n    database: https://db.example\n    store: https://store.example\n    licenseKey: L\n`)
+writeFileSync(join(DIR, 'daemon.yaml'), `# keep this comment\nregions: {}\nprofiles: {}\ngrants: {}\nmodels: {}\n`)
 cfg.saveMachineId('mini-xyz')
 const after = readFileSync(join(DIR, 'daemon.yaml'), 'utf8')
 check('machineId written to daemon.yaml', /machineId:\s*mini-xyz/.test(after))
@@ -315,7 +267,12 @@ check('no config.json was created for machineId',
 rmSync(DIR2, { recursive: true, force: true })
 
 function existsSyncSafe(p) { try { readFileSync(p); return true } catch { return false } }
+function writeServer(text) { writeFileSync(join(DIR, 'server.yaml'), text) }
 function writeDaemon(text) { writeFileSync(join(DIR, 'daemon.yaml'), text) }
+function writeBoth(text) {
+  writeServer(text)
+  writeDaemon(text)
+}
 
 rmSync(DIR, { recursive: true, force: true })
 if (failures.length) {

@@ -4,7 +4,6 @@ import os from 'node:os'
 import path from 'node:path'
 
 import { sendActivityEvents } from '../agent-runtime/activity-send.mjs'
-import { resolveCodexTranscriptByKnownRollout } from '../agent-runtime/resolve-transcript.mjs'
 import { DaemonDeliveryRuntime } from '../daemon/delivery-runtime.mjs'
 import { createHarnessRuntime } from '../daemon/harness-runtime.mjs'
 import { DaemonOutbox } from '../daemon/outbox.mjs'
@@ -17,23 +16,6 @@ const outboxPath = path.join(dir, 'daemon-outbox.db')
 const fleetDbPath = path.join(dir, 'fleet.db')
 let outbox = null
 let store = null
-
-function writeCodexRollout(root, id, lines = []) {
-  const day = path.join(root, '2026', '07', '21')
-  fs.mkdirSync(day, { recursive: true })
-  const file = path.join(day, `rollout-2026-07-21T00-00-00-000Z-${id}.jsonl`)
-  fs.writeFileSync(file, [
-    JSON.stringify({
-      type: 'session_meta',
-      payload: {
-        timestamp: '2026-07-21T00:00:00.000Z',
-        cwd: dir,
-      },
-    }),
-    ...lines,
-  ].join('\n') + '\n')
-  return file
-}
 
 try {
   const daemonIdentity = { machineId: 'mini', envName: 'default', daemonKey: 'mini:default' }
@@ -58,31 +40,15 @@ try {
   assert.equal(jsonlWatchEligibility({ ...agent, session_id: null, session_ids: [] }, daemonIdentity).ok, false)
   assert.equal(jsonlWatchEligibility({ ...agent, human: true }, daemonIdentity).ok, false)
 
-  const root = path.join(dir, 'codex-sessions')
-  const owned = writeCodexRollout(root, 'rollout-local-identity')
-  assert.equal(resolveCodexTranscriptByKnownRollout(agent, { root }), owned)
-
-  const foreignRoot = path.join(dir, 'foreign-codex-sessions')
-  writeCodexRollout(foreignRoot, 'rollout-local-identity', [
-    JSON.stringify({ type: 'response_item', payload: { text: 'Registered fleet:bbbb2222' } }),
-  ])
-  assert.equal(resolveCodexTranscriptByKnownRollout(agent, { root: foreignRoot }), null)
-
   let livePaneCalls = 0
   const harnessRuntime = createHarnessRuntime({
     log: { warn() {}, error() {} },
-    resolveCodexTranscript: () => null,
     execFileImpl: (_cmd, _args, _opts, cb) => {
       livePaneCalls += 1
       cb(new Error('live pane lookup must not run'))
     },
   })
-  assert.equal(await harnessRuntime.harnessForAgent(agent).activity.resolveJsonl({
-    ...agent,
-    session_id: 'missing-rollout',
-    session_ids: ['missing-rollout'],
-    tmux_session: 'must-not-be-used',
-  }), null)
+  assert.equal(Object.hasOwn(harnessRuntime.harnessForAgent(agent).activity, 'resolve' + 'Jsonl'), false)
   assert.equal(livePaneCalls, 0)
 
   const seatEvent = sessionIdentitySeatEvent({

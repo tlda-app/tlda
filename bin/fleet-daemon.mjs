@@ -65,6 +65,7 @@ import {
   getRwToken, DEFAULT_PORT, hasTls,
   CONFIG_DIR as _SHARED_CONFIG_DIR, TLS_CA_PATH,
   getMachineId, saveMachineId, getStatusScanMs,
+  getFleetServerUrl, getServerUrl, getActiveConfigName,
 } from '../shared/config.mjs'
 const VERSION = '0.1.1'
 import { createLogger } from '../shared/logger.mjs'
@@ -136,50 +137,34 @@ import { MintStore } from '../daemon/mint-store.mjs'
 import { createDaemonWakeCore } from '../daemon/wake-core.mjs'
 import { projectBelongsToWorld, projectWorldsPath, readProjectWorlds } from '../shared/project-worlds.mjs'
 const log = createLogger('daemon')
-function daemonStateSuffix() {
-  const name = String(process.env.TLDA_CONFIG || '').trim()
-  if (!name || name === 'default') return ''
-  return `.${name.replace(/[^a-zA-Z0-9._-]+/g, '-')}`
-}
-const DAEMON_STATE_SUFFIX = daemonStateSuffix()
 // CONFIG_DIR holds daemon configuration, cursors, PID and log files. Defaults to
 // ~/.config/tlda. TLDA_DAEMON_CONFIG_DIR plus PROJECTS_DIR lets tests/dev rigs
 // start a second daemon without clobbering the live daemon's PID file or JSONL
 // tails.
 const CONFIG_DIR = process.env.TLDA_DAEMON_CONFIG_DIR || _SHARED_CONFIG_DIR
-const CURSORS_FILE = path.join(CONFIG_DIR, `daemon-cursors${DAEMON_STATE_SUFFIX}.json`)
-const PID_FILE = path.join(CONFIG_DIR, `fleet-daemon${DAEMON_STATE_SUFFIX}.pid`)
-const SOURCE_BINDINGS_FILE = path.join(CONFIG_DIR, `source-bindings${DAEMON_STATE_SUFFIX}.json`)
 const PROJECT_WORLDS_FILE = projectWorldsPath(_SHARED_CONFIG_DIR)
 const DAEMON_CONFIG_FILE = defaultDaemonConfigPath(CONFIG_DIR)
 const daemonSpawnConfig = readDaemonConfig(DAEMON_CONFIG_FILE)
-function resolveDaemonServer(config = daemonSpawnConfig, serverName = null) {
-  const servers = config?.servers
-  if (!servers || typeof servers !== 'object' || Array.isArray(servers)) {
-    throw new Error('daemon.yaml servers must be an object of named server entries')
-  }
-  const name = serverName || process.env.TLDA_CONFIG || config.defaultServer
-  if (typeof name !== 'string' || !name.trim()) {
-    throw new Error('daemon.yaml defaultServer must name the active remote server')
-  }
-  const raw = servers[name]
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-    throw new Error(`daemon.yaml has no server named "${name}"`)
-  }
-  if (typeof raw.database !== 'string' || !raw.database.trim()) {
-    throw new Error(`daemon.yaml server "${name}" must declare database`)
-  }
-  if (typeof raw.store !== 'string' || !raw.store.trim()) {
-    throw new Error(`daemon.yaml server "${name}" must declare store`)
-  }
-  return { name, database: raw.database.trim(), store: raw.store.trim() }
+function getDaemonFleetServerUrl() {
+  return getFleetServerUrl()
 }
-function getDaemonFleetServerUrl(config = daemonSpawnConfig) {
-  return resolveDaemonServer(config).database
+function getDaemonStoreUrl() {
+  return getServerUrl()
 }
-function getDaemonStoreUrl(config = daemonSpawnConfig) {
-  return resolveDaemonServer(config).store
+const ACTIVE_CONFIG = getActiveConfigName()
+if (!ACTIVE_CONFIG) {
+  console.error('[fleet-daemon] REFUSING to start without a named active config; daemon env is required')
+  process.exit(1)
 }
+function daemonStateSuffix(name) {
+  const clean = String(name || '').trim()
+  if (!clean) return ''
+  return `.${clean.replace(/[^a-zA-Z0-9._-]+/g, '-')}`
+}
+const DAEMON_STATE_SUFFIX = daemonStateSuffix(ACTIVE_CONFIG)
+const CURSORS_FILE = path.join(CONFIG_DIR, `daemon-cursors${DAEMON_STATE_SUFFIX}.json`)
+const PID_FILE = path.join(CONFIG_DIR, `fleet-daemon${DAEMON_STATE_SUFFIX}.pid`)
+const SOURCE_BINDINGS_FILE = path.join(CONFIG_DIR, `source-bindings${DAEMON_STATE_SUFFIX}.json`)
 const PERMISSION_LEDGER_FILE = permissionLedgerPathFromDaemonConfig(daemonSpawnConfig, CONFIG_DIR)
 let _onPermissionLedgerProcessBindingChange = null
 const permissionLedger = createPermissionLedger(PERMISSION_LEDGER_FILE, {
@@ -255,35 +240,24 @@ function deriveMachineId() {
 }
 
 const config = loadDaemonLaunchConfig()
-// The daemon is the local relay to THE server. There is one server (Fly); the
-// daemon watches local things (files, agents, terminals) and relays everything
-// to it — source-change → server builds in its shadow, activity/terminal/RPC →
-// fleet. Resolve the fleet server (config.fleetServer → Fly), not a local one.
-// Honor TLDA_SERVER on BOTH paths. Previously it was read only when a custom
-// config dir was set, so `TLDA_SERVER=… node fleet-daemon.mjs` silently fell
-// through to the active daemon.yaml server = live Fly — a rig that thought it was
-// isolated joined the live fleet. TLDA_SERVER set now always targets that server.
-const SERVER = process.env.TLDA_SERVER
-  ? process.env.TLDA_SERVER
-  : getDaemonFleetServerUrl()
+// The daemon is the local relay for the active named environment. The config
+// name selects the complete database/store authority; TLDA_SERVER is not a
+// second server selector.
+const SERVER = getDaemonFleetServerUrl()
 // The active server NAME (TLDA_CONFIG → defaultServer). This — not a URL — is the
 // single selector we propagate to spawned agents so their MCP resolves the SAME
 // complete config (database + store) the daemon did. A stray defaultConfig can't
 // then misroute a spawn, because the spawn carries the real active name.
-// Safe to resolve unconditionally: SERVER already ran resolveConfig via
-// getFleetServerUrl() above, so a broken config would have thrown there.
-const ACTIVE_CONFIG = resolveDaemonServer().name
-if (!ACTIVE_CONFIG) {
-  console.error('[fleet-daemon] REFUSING to start without a named active config; daemon env is required')
-  process.exit(1)
+let MACHINE_ID = getMachineId()
+if (!MACHINE_ID) {
+  MACHINE_ID = deriveMachineId()
+  saveMachineId(MACHINE_ID)
+  log.info(`derived machine_id=${MACHINE_ID} (saved to daemon.yaml)`)
 }
 {
-  const configuredServer = getDaemonFleetServerUrl()
   const { refuseReason } = resolveDaemonIsolation({
     env: process.env,
     scriptPath: INSTALL_PATH,
-    configuredServer,
-    targetServer: SERVER,
   })
   if (refuseReason) {
     log.error(`refusing to start: ${refuseReason}`)
@@ -291,23 +265,17 @@ if (!ACTIVE_CONFIG) {
     process.exit(1)
   }
 }
-// Scoped singleton lock. Same path for a given fleet origin + active config
-// lane no matter which install/worktree launched us, so daemons that claim the
-// same registry job collide while stable/unstable/test lanes can coexist.
-const DAEMON_LOCK_SCOPE = `${SERVER}#${ACTIVE_CONFIG}`
+// Scoped singleton lock. Same path for a given machine + environment no matter
+// which install/worktree launched us, so daemons that claim the same local
+// environment collide while stable/testing lanes can coexist.
+const DAEMON_LOCK_SCOPE = `${MACHINE_ID}:${ACTIVE_CONFIG}`
 const LOCK_FILE = daemonSingletonLockPath({ configDir: CONFIG_DIR, origin: DAEMON_LOCK_SCOPE })
 
 // HARD INVARIANT — a dev daemon literally cannot target the real fleet.
 // `tlda-dev serve --sandbox` starts its daemon with TLDA_DEV_DAEMON=<the exact
-// sandbox base it stood up>, plus TLDA_SERVER=<that same base> and TLDA_CONFIG=<the
-// sandbox config> (whose fleet host is also that base — so the worktree-isolation
-// guard and the server-coherence guard are both satisfied: the declared target
-// agrees with the config). When TLDA_DEV_DAEMON is set we additionally require the
-// resolved SERVER to be EXACTLY the URL serve authorized (catching a config drifted
-// to point at prod), on a port that is NOT the main :5176. Only `tlda-dev serve`
-// ever sets TLDA_DEV_DAEMON, and only ever to a this-machine sandbox on a free high
-// port — so the daemon can't reach prod. Any mismatch aborts before a single WS
-// connect. This is the whole reason raw `daemon start` is not exposed as a dev verb.
+// sandbox base it stood up> and TLDA_CONFIG=<the sandbox config>. When
+// TLDA_DEV_DAEMON is set, the named config must resolve to that authorized base
+// on a non-:5176 port, so this daemon can never join the real fleet.
 if (process.env.TLDA_DEV_DAEMON) {
   let ok = false
   try {
@@ -320,31 +288,9 @@ if (process.env.TLDA_DEV_DAEMON) {
   }
 }
 
-// True only when SERVER was derived from the named config (the normal path) —
-// not pinned via TLDA_SERVER or a custom config dir. Only then can a later edit
-// to daemon.yaml's defaultServer drift us off the origin we're connected to, so
-// only then does the runtime drift watcher (watchConfigDrift) arm.
-const _serverFromConfig = !process.env.TLDA_SERVER && !_usingCustomConfigDir
-
-// Fail loud if a hand-pinned TLDA_SERVER disagrees with the active config — the
-// 6/27 divergence, refused at the door rather than served silently. Bubbles.
-if (process.env.TLDA_SERVER) {
-  const got = String(process.env.TLDA_SERVER).replace(/\/+$/, '')
-  const want = String(getDaemonFleetServerUrl()).replace(/\/+$/, '')
-  if (got !== want) {
-    throw new Error(`tlda daemon config incoherent: TLDA_SERVER=${got} but daemon.yaml "${ACTIVE_CONFIG}" resolves to ${want}`)
-  }
-}
 const TOKEN = getRwToken()
 const TMUX_SOCKET = config.tmuxSocket || null
 const TMUX_ARGS = TMUX_SOCKET ? ['-L', TMUX_SOCKET] : []
-
-let MACHINE_ID = getMachineId()
-if (!MACHINE_ID) {
-  MACHINE_ID = deriveMachineId()
-  saveMachineId(MACHINE_ID)
-  log.info(`derived machine_id=${MACHINE_ID} (saved to daemon.yaml)`)
-}
 
 // boot_id — monotonic per process start. Used by the server to break ties
 // when two daemons claim the same machine_id (newer wins, older evicted).
@@ -1361,7 +1307,6 @@ function handleServerMessage(msg, wsAttemptId) {
     sendActivityDeliveryMetrics('daemon-welcome')
     sourceSync.sync(projects)
     sourceSync.flushPending()
-    jsonlIngestor.startOwnerHarvester()
     reconcileJsonlProcessBindings('daemon-welcome')
     jsonlIngestor.resumeAfterServerReady()
     gooseSupervisor.startActivityPolling()
@@ -1546,54 +1491,5 @@ if (process.env.TLDA_DAEMON_DEV_REAPER === '1') {
 // server message protocol. Its tmux/runtime dependencies are fully constructed
 // above; connectivity is checked inside each scan, and local activity explicitly
 // arms the owned agents that may be inspected.
-agentStatus.start()
-connect()
-watchConfigDrift()
-
-// ---------- config drift guard ----------
-// SERVER is frozen at startup. If daemon.yaml is later edited so the active
-// server resolves to a DIFFERENT fleet origin than the one this daemon is
-// connected to, every fresh CLI/MCP/spawn resolves the NEW origin while this
-// running daemon keeps serving the OLD one — exactly the 6/27 split, just
-// arriving over the daemon's lifetime instead of at boot. Don't serve a stale
-// roster silently: shout (daemon-warning) and exit non-zero. launchd's KeepAlive
-// relaunches us, re-reading daemon.yaml fresh, so we come back on the corrected
-// target. (Only armed when SERVER came from the named config — a URL-pinned or
-// custom-dir daemon has no config to drift against.) config.json is retired; the
-// authority is daemon.yaml `servers:`/`defaultServer`.
-function watchConfigDrift() {
-  if (!_serverFromConfig) return
-  const f = path.join(CONFIG_DIR, 'daemon.yaml')
-  if (!fs.existsSync(f)) return
-  const norm = (u) => String(u).replace(/\/+$/, '')
-  let fired = false
-  const onChange = () => {
-    if (fired) return
-    let fresh
-    try {
-      fresh = getDaemonFleetServerUrl(readDaemonConfig(DAEMON_CONFIG_FILE))
-    } catch (e) {
-      // A config that no longer resolves is itself a loud failure — surface it
-      // and exit so launchd reloads once it's fixed. Not a silent swallow: we
-      // re-raise as an exit after announcing.
-      fired = true
-      const msg = `daemon.yaml no longer resolves (${e.message}) — daemon exiting for launchd relaunch`
-      log.error(msg)
-      sendMsg({ type: 'daemon-warning', message: msg })
-      setTimeout(() => process.exit(1), 250)
-      return
-    }
-    if (norm(fresh) !== norm(SERVER)) {
-      fired = true
-      const msg = `config drift: daemon.yaml now targets ${fresh} but this daemon is connected to ${SERVER}. ` +
-        `Exiting so launchd relaunches on the corrected target.`
-      log.error(msg)
-      sendMsg({ type: 'daemon-warning', message: msg })
-      setTimeout(() => process.exit(1), 250)
-    }
-  }
-  fs.watchFile(f, { interval: 1500 }, (curr, prev) => {
-    if (curr.mtimeMs !== prev.mtimeMs) onChange()
-  })
-  log.info(`config drift watcher armed on ${f} (connected to ${SERVER})`)
-}
+  agentStatus.start()
+  connect()

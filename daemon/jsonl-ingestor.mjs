@@ -6,13 +6,8 @@ import path from 'path'
 
 import { recordPartialSkillReads } from '../shared/partial-skill-reads.mjs'
 import { ledgerSessionId, tailLedgerSessionInput } from '../agent-runtime/ledger-session-tail.mjs'
-import { scanFileIdentitySync } from '../agent-runtime/daemon-jsonl-hot-path.mjs'
-import {
-  codexKnownRolloutIds,
-  shouldClaimClaudeWatcher,
-  shouldClaimCodexWatcher,
-} from '../agent-runtime/daemon-guards.mjs'
-import { codexRolloutBelongsToAgent, codexRolloutHasOwnerEvidence, codexRolloutIsTopLevel } from '../agent-runtime/resolve-transcript.mjs'
+import { codexKnownRolloutIds } from '../agent-runtime/daemon-guards.mjs'
+import { codexRolloutIsTopLevel } from '../agent-runtime/resolve-transcript.mjs'
 import {
   ACTIVITY_HEALTH_BOUNDARIES,
   ACTIVITY_HEALTH_OK,
@@ -302,6 +297,7 @@ export function createJsonlIngestor({
   listSessions,
   selectAgentKind,
   harnessAdapters,
+  jsonlTranscriptRoots = null,
   permissionLedger,
   bufferActivity,
   extractActivityEvents,
@@ -419,13 +415,30 @@ export function createJsonlIngestor({
     }
     pw.ownershipState = state
     if (state === 'mine' && marker) {
+      if (marker.fleet_id) {
+        pw.primaryAgentId = marker.fleet_id
+        agentPaths.set(marker.fleet_id, pw.jsonlPath)
+        try {
+          sendJsonlIngesterMessage({
+            type: 'update',
+            watchId: pw.watchId,
+            agentId: pw.primaryAgentId,
+            harnessKind: pw.harnessKind,
+            terminalChat: !!pw.terminalChat,
+            backfillSearch: !!pw.backfillSearch,
+          })
+        } catch (e) {
+          // Best-effort child IPC: ownership is persisted and stale children respawn.
+          log.warn(`JSONL ingester ownership update failed for ${path.basename(pw.jsonlPath)}: ${e?.message || e}`)
+        }
+      }
       const bindingError = persistLocalMarkerBinding(marker, {
         sessionId: pw.sessionId,
         jsonlPath: pw.jsonlPath,
         harnessKind: pw.harnessKind,
       })
       if (bindingError) entry.owner.binding_error = bindingError
-      if (prev !== 'mine' && isConnected()) {
+      if (prev !== 'mine' && isConnected() && pw.primaryAgentId) {
         sendActivityHealth(pw.primaryAgentId, {
           state: ACTIVITY_HEALTH_OK,
           boundary: ACTIVITY_HEALTH_BOUNDARIES.WATCH_ATTACHED,
@@ -444,10 +457,6 @@ export function createJsonlIngestor({
   function startOwnedJsonlBackfill(pw) {
     if (!pw?.backfillSearch || pw.ownershipState !== 'mine') return
     backfillSearchEntries(pw.primaryAgentId, pw.jsonlPath, pw.sessionId, pw.harnessKind)
-    if (pw.backfillPriorSessions) {
-      pw.backfillPriorSessions = false
-      backfillAllPriorSessions(pw.primaryAgentId, pw.primaryAgentId)
-    }
   }
 
   function applyLoginMarkerOwnership(pw, marker) {
@@ -470,7 +479,7 @@ export function createJsonlIngestor({
   }
 
   function isIngestionCaughtUp() {
-    if (searchBackfillJobs.size > 0 || priorSessionBackfillPending.size > 0) return false
+    if (searchBackfillJobs.size > 0) return false
     for (const pw of pathWatchers.values()) {
       if (!pw || pw.stopped) continue
       if (pw.pendingDeliveries > 0 || pw.pendingFlushOffset != null) return false
@@ -487,163 +496,6 @@ export function createJsonlIngestor({
     // "caught up" should use the daemon's runtime state, not a sidecar file.
   }
 
-  // ---------- session-owner cache ----------
-  // Each cursor entry gains `owners: [fleetId,...]` — which agent(s) registered in
-  // that session file. Populated the one time we read the file. Once a session is
-  // classified, "which sessions does agent X own?" is a cache lookup, never a re-scan
-  // of every JSONL. This is the daemon's single writer of cursor state.
-  function recordSessionOwners(sessionId, owners, { jsonlPath = null, harnessKind = 'claude', identity = null, persistIdentity = true } = {}) {
-    // classified=true means we've fully read the file and `owners` is authoritative
-    // (empty owners on a fully-read file is a valid answer: "nobody registered here").
-    const changed = recordSessionOwnersInCache({
-      cursors,
-      sessionId,
-      owners,
-      persistIdentity,
-      recordIdentity: recordSessionIdentity,
-      identityInput: owner => ({
-        session_id: sessionId,
-        harness_kind: harnessKind,
-        jsonl_path: jsonlPath,
-        fleet_id: owner,
-        ...(identity?.fleet_id === owner ? identity : {}),
-        classified: true,
-      }),
-    })
-    if (changed) scheduleCursorSave()
-  }
-
-  function claudeOwnersForSessionFile(sessionId, jsonlPath) {
-    const entry = cursors[sessionId]
-    if (entry?.classified) return entry.owners || []
-    // Never byte-scan an unclassified rollout on the daemon's event loop. A
-    // restart can expose thousands of files; doing this here starves the fleet
-    // WebSocket heartbeat and makes the live UI disappear. The niced harvester
-    // performs classification off-process and schedules one resync afterward.
-    return []
-  }
-
-  function indexClaudeJsonlsByOwner() {
-    const byOwner = new Map()
-    try {
-      for (const dir of fs.readdirSync(projectsDir)) {
-        const dirPath = path.join(projectsDir, dir)
-        let files
-        try { files = fs.readdirSync(dirPath) } catch { continue }
-        for (const file of files) {
-          if (!file.endsWith('.jsonl')) continue
-          const sessionId = file.slice(0, -6)
-          const jsonlPath = path.join(dirPath, file)
-          let stat
-          try { stat = fs.statSync(jsonlPath) } catch { continue }
-          const owners = claudeOwnersForSessionFile(sessionId, jsonlPath)
-          for (const owner of owners) {
-            if (!byOwner.has(owner)) byOwner.set(owner, [])
-            byOwner.get(owner).push({ sessionId, jsonlPath, mtimeMs: stat.mtimeMs })
-          }
-        }
-      }
-    } catch (e) {
-      // Best-effort index: per-agent candidate paths below still run.
-      log.warn(`Claude JSONL owner index failed: ${e.message}`)
-    }
-    return byOwner
-  }
-
-  // The niced child that classifies every session's owners in the background
-  // (recent→old by mtime), so the daemon's main loop never byte-scans files on a spawn.
-  let _ownerHarvester = null
-  const _targetedOwnerHarvesters = new Map()
-  const _targetedOwnerRetryTimers = new Map()
-
-  function startTargetedOwnerHarvester(jsonlPath) {
-    if (!jsonlPath || _targetedOwnerHarvesters.has(jsonlPath)) return
-    const script = path.join(daemonDir, 'fleet-owner-harvester.mjs')
-    if (!fs.existsSync(script)) return
-    let child
-    try {
-      child = forkProcess(script, [jsonlPath], { execArgv: [], stdio: ['ignore', 'ignore', 'pipe', 'ipc'] })
-      _targetedOwnerHarvesters.set(jsonlPath, child)
-    } catch (e) {
-      log.warn(`targeted owner harvester failed to start for ${path.basename(jsonlPath)}: ${e.message}`)
-      if (!_targetedOwnerRetryTimers.has(jsonlPath)) {
-        const timer = setTimeout(() => {
-          _targetedOwnerRetryTimers.delete(jsonlPath)
-          startTargetedOwnerHarvester(jsonlPath)
-        }, 1000)
-        _targetedOwnerRetryTimers.set(jsonlPath, timer)
-      }
-      return
-    }
-    child.stderr?.on?.('data', chunk => {
-      const text = String(chunk || '').trim()
-      if (text) log.warn(`targeted owner harvester stderr: ${text}`)
-    })
-    child.on('message', msg => {
-      if (msg?.type !== 'owners') return
-      recordSessionOwners(msg.sessionId, msg.owners, {
-        jsonlPath: msg.jsonlPath,
-        harnessKind: msg.harnessKind || 'claude',
-        identity: msg.identity,
-        persistIdentity: false,
-      })
-      const retryTimer = _targetedOwnerRetryTimers.get(jsonlPath)
-      if (retryTimer) clearTimeout(retryTimer)
-      _targetedOwnerRetryTimers.delete(jsonlPath)
-      scheduleJsonlDirSync(`owner classified ${path.basename(jsonlPath)}`)
-    })
-    const clear = () => {
-      if (_targetedOwnerHarvesters.get(jsonlPath) === child) _targetedOwnerHarvesters.delete(jsonlPath)
-    }
-    child.on('exit', clear)
-    child.on('close', clear)
-    child.on('disconnect', clear)
-    child.on('error', e => {
-      clear()
-      log.warn(`targeted owner harvester failed for ${path.basename(jsonlPath)}: ${e.message}`)
-    })
-  }
-
-  function startOwnerHarvester() {
-    if (_ownerHarvester) return
-    const script = path.join(daemonDir, 'fleet-owner-harvester.mjs')
-    if (!fs.existsSync(script)) return
-    try {
-      // execArgv:[] so the child doesn't inherit --import tsx etc.; it's plain ESM.
-      _ownerHarvester = forkProcess(script, [], { execArgv: [], stdio: ['ignore', 'ignore', 'pipe', 'ipc'] })
-    } catch (e) {
-      log.warn(`owner harvester failed to start: ${e.message}`)
-      _ownerHarvester = null
-      return
-    }
-    const child = _ownerHarvester
-    child.stderr?.on?.('data', chunk => {
-      const text = String(chunk || '').trim()
-      if (text) log.warn(`owner harvester stderr: ${text}`)
-    })
-    child.on('message', (msg) => {
-      if (msg?.type === 'owners') {
-        recordSessionOwners(msg.sessionId, msg.owners, {
-          jsonlPath: msg.jsonlPath,
-          harnessKind: msg.harnessKind || 'claude',
-          identity: msg.identity,
-          persistIdentity: false,
-        })
-      } else if (msg?.type === 'harvest-complete') {
-        log.info(`owner harvest complete: ${msg.count} session(s) classified`)
-        scheduleJsonlDirSync('owner harvest complete')
-      }
-    })
-    const noteOwnerDown = (reason) => {
-      if (_ownerHarvester === child) _ownerHarvester = null
-      if (reason) log.warn(`owner harvester down: ${reason}`)
-    }
-    child.on('exit', (code, signal) => noteOwnerDown(`exit code=${code ?? 'null'} signal=${signal ?? 'null'}`))
-    child.on('close', (code, signal) => noteOwnerDown(`close code=${code ?? 'null'} signal=${signal ?? 'null'}`))
-    child.on('disconnect', () => noteOwnerDown('ipc disconnect'))
-    child.on('error', (e) => noteOwnerDown(`error: ${e.message}`))
-  }
-
   let _jsonlIngester = null
   let _jsonlIngesterRestartTimer = null
   let _jsonlIngesterRestartPending = false
@@ -651,11 +503,10 @@ export function createJsonlIngestor({
   const pathWatchers = new Map()    // jsonlPath -> child-backed watcher state
   const agentPaths = new Map()      // agentId -> jsonlPath
   const jsonlDirWatchers = new Map() // dir -> { watcher, refs }
+  const jsonlRootWatchers = new Map() // transcript root -> watcher
   const childWatchers = new Map() // watchId -> path watcher state
   const searchBackfillJobs = new Map() // jobId -> { sessionId, jsonlPath }
   const searchBackfillPendingBySession = new Set()
-  const priorSessionBackfillPending = new Set()
-  const priorSessionBackfillComplete = new Set()
   const sessionWatcherSyncRunner = createCoalescedSyncRunner(syncSessionWatchersOnce)
 
   function startJsonlIngester() {
@@ -939,149 +790,105 @@ export function createJsonlIngestor({
     await sessionWatcherSyncRunner.sync(agentList)
   }
 
-  async function syncSessionWatchersOnce(agentList) {
-    const activePaths = new Set()
-    const claudeJsonlsByOwner = indexClaudeJsonlsByOwner()
+  function transcriptRoots() {
+    if (Array.isArray(jsonlTranscriptRoots) && jsonlTranscriptRoots.length) {
+      return [...new Set(jsonlTranscriptRoots.filter(Boolean).map(p => path.resolve(p)))]
+    }
+    return [...new Set([
+      projectsDir,
+      process.env.CODEX_SESSIONS_DIR || path.join(os.homedir(), '.codex', 'sessions'),
+    ].filter(Boolean).map(p => path.resolve(p)))]
+  }
 
-    for (const agent of agentList) {
-      if (agent.dead) continue
-      const eligibility = jsonlWatchEligibility(agent, { machineId, envName, daemonKey })
-      if (!eligibility.ok) {
-        sendActivityHealth(agent, {
-          state: ACTIVITY_HEALTH_UNAVAILABLE,
-          boundary: ACTIVITY_HEALTH_BOUNDARIES.RESOLVE_JSONL_NULL,
-          reason: eligibility.reason,
-        })
+  function listJsonlFilesUnder(root) {
+    const out = []
+    const stack = [root]
+    while (stack.length) {
+      const current = stack.pop()
+      let entries
+      try {
+        entries = fs.readdirSync(current, { withFileTypes: true })
+      } catch {
         continue
       }
+      for (const entry of entries) {
+        const full = path.join(current, entry.name)
+        if (entry.isDirectory()) {
+          stack.push(full)
+        } else if (entry.isFile() && entry.name.endsWith('.jsonl')) {
+          out.push(full)
+        }
+      }
+    }
+    return out
+  }
+
+  function discoverLocalJsonlFiles() {
+    return [...new Set(transcriptRoots().flatMap(listJsonlFilesUnder))].sort()
+  }
+
+  function inferHarnessKindForJsonlPath(jsonlPath, agent = null) {
+    const hinted = agent?.runtimeKind || agent?.metadata?.kind
+    if (hinted && harnessAdapters[hinted]) return hinted
+    const base = path.basename(jsonlPath)
+    if (base.startsWith('rollout-') || jsonlPath.includes(`${path.sep}.codex${path.sep}sessions${path.sep}`)) return 'codex'
+    return 'claude'
+  }
+
+  async function harnessForJsonlPath(jsonlPath, agent = null) {
+    if (agent) {
+      try {
+        const selected = await selectAgentKind(agent)
+        if (harnessAdapters[selected]) return harnessAdapters[selected].activity
+      } catch {
+        // A ledger row can provide a hint, but it is not the authority for
+        // whether this local transcript should be tailed.
+      }
+    }
+    const kind = inferHarnessKindForJsonlPath(jsonlPath, agent)
+    const adapter = harnessAdapters[kind]
+    if (!adapter) throw new Error(`unknown harness kind "${kind}" for ${jsonlPath}`)
+    return adapter.activity
+  }
+
+  function agentBySessionPath(agentList = []) {
+    const byPath = new Map()
+    for (const agent of agentList || []) {
+      if (!agent?.session_path || agent.dead || agent.human) continue
+      if (agent.daemon_key && daemonKey && agent.daemon_key !== daemonKey) continue
+      byPath.set(path.resolve(agent.session_path), agent)
+    }
+    return byPath
+  }
+
+  async function syncSessionWatchersOnce(agentList) {
+    const activePaths = new Set()
+    const agentsByPath = agentBySessionPath(agentList)
+
+    retainJsonlRootWatchers()
+
+    for (const jsonlPath of discoverLocalJsonlFiles()) {
+      const resolvedPath = path.resolve(jsonlPath)
+      activePaths.add(resolvedPath)
+      const agent = agentsByPath.get(resolvedPath) || null
       let harness
       try {
-        const kind = await selectAgentKind(agent)
-        const adapter = harnessAdapters[kind]
-        if (!adapter) throw new Error(`unknown harness kind "${kind}" for ${agent?.friendly_name || agent?.id}`)
-        harness = adapter.activity
+        harness = await harnessForJsonlPath(resolvedPath, agent)
       } catch (e) {
-        sendActivityHealth(agent, {
-          state: ACTIVITY_HEALTH_UNKNOWN,
-          boundary: ACTIVITY_HEALTH_BOUNDARIES.NO_HARNESS_KIND,
-          reason: e.message,
-        })
         log.error(`activity harness selection failed: ${e.message}`)
         continue
       }
-      const cwd = agent.cwd ?? ''
-      // Strip worktree suffixes so the project hash matches where Claude Code
-      // stores the JSONL (at the original project root, not the worktree).
-      const canonicalCwd = cwd.replace(/\/\.claude\/worktrees\/[^/]+$/, '').replace(/\/\.worktrees\/[^/]+$/, '')
-      const projectHash = canonicalCwd.replace(/[/.]/g, '-')
 
-      // Pick the freshest JSONL across this agent's registered session_ids.
-      // Claude ownership is not inferred from roster aliases, tmux panes, or
-      // other agents' claimed session_id values. The JSONL's embedded
-      // "Registered fleet:<id>" owner is the only identity source.
-      const candidateIds = []
-      if (agent.session_id) candidateIds.push(agent.session_id)
-      for (const sid of (agent.session_ids || [])) {
-        if (!candidateIds.includes(sid)) candidateIds.push(sid)
-      }
-
-      let jsonlPath = null
-      let bestMtime = 0
-      if (harness.resolveJsonl) {
-        jsonlPath = await harness.resolveJsonl(agent)
-        if (!jsonlPath) {
-          sendActivityHealth(agent, {
-            state: ACTIVITY_HEALTH_UNAVAILABLE,
-            boundary: ACTIVITY_HEALTH_BOUNDARIES.RESOLVE_JSONL_NULL,
-            reason: `${harness.kind} JSONL resolver returned no path`,
-          })
-          continue
-        }
-      } else {
-        if (!harness.usesClaudeSessionIds) continue
-        for (const sid of candidateIds) {
-          let p = path.join(projectsDir, projectHash, sid + '.jsonl')
-          let foundStat = null
-          try {
-            foundStat = fs.statSync(p)
-          } catch {
-            // Not in cwd-derived dir — global search across all project dirs.
-            // Needed when agent's JSONL is in a worktree-specific project dir
-            // that doesn't match the stripped canonical cwd.
-            try {
-              for (const dir of fs.readdirSync(projectsDir)) {
-                const candidate = path.join(projectsDir, dir, sid + '.jsonl')
-                try { foundStat = fs.statSync(candidate); p = candidate; break } catch {
-                  // Global session search probes many project dirs; misses are expected.
-                }
-              }
-            } catch {
-              // If project-dir enumeration fails, this candidate simply remains unresolved.
-            }
-          }
-          if (foundStat) {
-            const owners = claudeOwnersForSessionFile(sid, p)
-            if (!cursors[sid]?.classified) startTargetedOwnerHarvester(p)
-            if (!shouldClaimClaudeWatcher({ currentPrimaryId: null, agent, owners })) continue
-          }
-          if (foundStat && foundStat.mtimeMs > bestMtime) {
-            bestMtime = foundStat.mtimeMs
-            jsonlPath = p
-          }
-        }
-        for (const owned of (claudeJsonlsByOwner.get(agent.id) || [])) {
-          if (owned.mtimeMs > bestMtime) {
-            bestMtime = owned.mtimeMs
-            jsonlPath = owned.jsonlPath
-          }
-        }
-      }
-      if (!jsonlPath) {
-        sendActivityHealth(agent, {
-          state: ACTIVITY_HEALTH_UNAVAILABLE,
-          boundary: ACTIVITY_HEALTH_BOUNDARIES.RESOLVE_JSONL_NULL,
-          reason: `${harness.kind} JSONL path not found for registered sessions`,
-        })
-        continue
-      }
-
-      activePaths.add(jsonlPath)
-      agentPaths.set(agent.id, jsonlPath)
-
-      if (pathWatchers.has(jsonlPath)) {
-        const pw = pathWatchers.get(jsonlPath)
+      if (pathWatchers.has(resolvedPath)) {
+        const pw = pathWatchers.get(resolvedPath)
         if (pw.stopped) {
-          pathWatchers.delete(jsonlPath)
-          releaseJsonlDirWatcher(jsonlPath)
+          pathWatchers.delete(resolvedPath)
+          releaseJsonlDirWatcher(resolvedPath)
         } else {
-          const fileSessionId = path.basename(jsonlPath, '.jsonl')
-          // The JSONL's embedded owner is authoritative for Claude. Roster
-          // session_id values are only candidate handles, not ownership evidence.
-          if (harness.kind === 'codex') {
-            if (shouldClaimCodexWatcher({
-              currentPrimaryId: pw.primaryAgentId,
-              agent,
-              jsonlPath,
-              rolloutHasOwnerEvidence: codexRolloutHasOwnerEvidence,
-              rolloutBelongsToAgent: codexRolloutBelongsToAgent,
-            })) {
-              pw.primaryAgentId = agent.id
-            }
-          } else if (!harness.usesClaudeSessionIds || harness.kind === 'claude') {
-            if (!harness.usesClaudeSessionIds) {
-              pw.primaryAgentId = agent.id
-            } else {
-              const owners = claudeOwnersForSessionFile(fileSessionId, jsonlPath)
-              if (shouldClaimClaudeWatcher({
-                currentPrimaryId: pw.primaryAgentId,
-                agent,
-                owners,
-              })) {
-                pw.primaryAgentId = agent.id
-              }
-            }
-          }
+          const fileSessionId = path.basename(resolvedPath, '.jsonl')
           pw.harnessKind = harness.kind
+          pw.terminalChat = !!harness.terminalChat
+          pw.backfillSearch = !!harness.backfillSearch
           try {
             sendJsonlIngesterMessage({
               type: 'update',
@@ -1091,26 +898,26 @@ export function createJsonlIngestor({
               terminalChat: !!harness.terminalChat,
               backfillSearch: !!harness.backfillSearch,
             })
-            if (pw.ownershipState === 'mine') {
-              sendActivityHealth(agent, {
+            if (pw.ownershipState === 'mine' && pw.primaryAgentId) {
+              sendActivityHealth(pw.primaryAgentId, {
                 state: ACTIVITY_HEALTH_OK,
                 boundary: ACTIVITY_HEALTH_BOUNDARIES.WATCH_ATTACHED,
                 reason: `${harness.kind} watcher updated`,
                 lastKnownGoodAt: new Date().toISOString(),
                 sessionId: fileSessionId,
-                jsonlPath,
+                jsonlPath: resolvedPath,
               })
             }
           } catch (e) {
             // Retire this broken tail; other JSONL watchers must keep flowing.
-            log.warn(`JSONL ingester update failed for ${path.basename(jsonlPath)}: ${e?.message || e}`)
+            log.warn(`JSONL ingester update failed for ${path.basename(resolvedPath)}: ${e?.message || e}`)
             retireJsonlTail(pw, `ingester update failed for ${path.basename(jsonlPath)}`)
-            sendActivityHealth(agent, {
+            sendActivityHealth(pw.primaryAgentId, {
               state: ACTIVITY_HEALTH_UNAVAILABLE,
               boundary: ACTIVITY_HEALTH_BOUNDARIES.WATCH_UPDATE_FAILED,
               reason: e?.message || String(e),
               sessionId: fileSessionId,
-              jsonlPath,
+              jsonlPath: resolvedPath,
             })
           }
           continue
@@ -1118,23 +925,28 @@ export function createJsonlIngestor({
       }
 
       // First time watching this JSONL — initialize cursor.
-      const sessionId = path.basename(jsonlPath, '.jsonl')
+      const sessionId = path.basename(resolvedPath, '.jsonl')
       let stat
-      try { stat = fs.statSync(jsonlPath) } catch (e) {
-        sendActivityHealth(agent, {
-          state: ACTIVITY_HEALTH_UNAVAILABLE,
-          boundary: ACTIVITY_HEALTH_BOUNDARIES.WATCH_STAT_FAILED,
-          reason: e?.message || String(e),
-          sessionId,
-          jsonlPath,
-        })
+      try { stat = fs.statSync(resolvedPath) } catch (e) {
+        if (e?.code !== 'ENOENT') {
+          sendActivityHealth(agent?.id, {
+            state: ACTIVITY_HEALTH_UNAVAILABLE,
+            boundary: ACTIVITY_HEALTH_BOUNDARIES.WATCH_STAT_FAILED,
+            reason: e?.message || String(e),
+            sessionId,
+            jsonlPath: resolvedPath,
+          })
+        }
         continue
       }
       if (jsonlOwnershipState(cursors[sessionId], daemonKey) === 'ignore') continue
       const inode = stat.ino
       const stored = cursors[sessionId]
       let offset
-      if (stored && stored.inode === inode) {
+      const storedOwnership = jsonlOwnershipState(stored, daemonKey)
+      if (storedOwnership === 'unknown') {
+        offset = 0
+      } else if (stored && stored.inode === inode) {
         offset = Math.min(stored.offset, stat.size)
       } else {
         // New file (or rotated): start at EOF for activity cards, but backfill
@@ -1148,82 +960,40 @@ export function createJsonlIngestor({
       }
 
       try {
-        let initialMarker = null
-        try {
-          const { identity, owners, endOffset } = scanFileIdentitySync(jsonlPath)
-          initialMarker = identity?.marker || null
-          if (harness.kind === 'codex') {
-            const claimedOwners = owners.length ? owners : [agent.id]
-            recordSessionOwners(sessionId, claimedOwners, {
-              jsonlPath,
-              harnessKind: harness.kind,
-              identity,
-              persistIdentity: false,
-            })
-            if (endOffset > 0) {
-              const entry = cursors[sessionId] || (cursors[sessionId] = {})
-              if (!entry.identityScanned) {
-                entry.identityScanned = true
-                scheduleCursorSave()
-              }
-            }
-          }
-        } catch (e) {
-          // Identity recovery is opportunistic; the JSONL watcher must still start.
-          log.warn(`identity scan failed for ${path.basename(jsonlPath)}: ${e.message}`)
-        }
-        const initialOwnership = initialMarker
-          ? classifyLoginMarkerOwner(initialMarker, daemonKey)
-          : jsonlOwnershipState(cursors[sessionId], daemonKey)
-        if (initialOwnership === 'ignore') {
-          cursors[sessionId] = {
-            ...(cursors[sessionId] || {}),
-            owner: {
-              state: 'ignore',
-              daemon_key: initialMarker?.daemon_key || null,
-              mint_id: initialMarker?.mint_id || null,
-              fleet_id: initialMarker?.fleet_id || null,
-              decided_at: new Date().toISOString(),
-            },
-          }
-          scheduleCursorSave()
-          continue
-        }
+        const initialOwnership = jsonlOwnershipState(cursors[sessionId], daemonKey)
         const pwState = startJsonlTail({
           agent,
-          jsonlPath,
+          jsonlPath: resolvedPath,
           sessionId,
           harness,
           startOffset: offset,
           liveOffset: stat.size,
           ownershipState: initialOwnership,
-          backfillPriorSessions: !(stored && stored.inode === inode),
         })
-        if (initialOwnership === 'mine' && initialMarker) setJsonlOwnership(pwState, 'mine', initialMarker)
-        else if (initialOwnership === 'mine') startOwnedJsonlBackfill(pwState)
-        pathWatchers.set(jsonlPath, pwState)
-        retainJsonlDirWatcher(jsonlPath)
-        if (pwState.ownershipState === 'mine') {
-          sendActivityHealth(agent, {
+        if (initialOwnership === 'mine') startOwnedJsonlBackfill(pwState)
+        pathWatchers.set(resolvedPath, pwState)
+        retainJsonlDirWatcher(resolvedPath)
+        if (pwState.ownershipState === 'mine' && pwState.primaryAgentId) {
+          sendActivityHealth(pwState.primaryAgentId, {
             state: ACTIVITY_HEALTH_OK,
             boundary: ACTIVITY_HEALTH_BOUNDARIES.WATCH_ATTACHED,
             reason: `${harness.kind} watcher attached`,
             lastKnownGoodAt: new Date().toISOString(),
             sessionId,
-            jsonlPath,
+            jsonlPath: resolvedPath,
           })
         }
 
-        log.info(`watching ${harness.kind} JSONL for ${agent.friendly_name || agent.id}: ${path.basename(jsonlPath)} @ offset=${offset}`)
+        log.info(`watching ${harness.kind} JSONL ${path.basename(resolvedPath)} @ offset=${offset}`)
       } catch (e) {
         // One failed watcher should not prevent other agents from being watched.
-        log.error(`watcher creation failed for ${jsonlPath}: ${e.message}`)
-        sendActivityHealth(agent, {
+        log.error(`watcher creation failed for ${resolvedPath}: ${e.message}`)
+        sendActivityHealth(agent?.id, {
           state: ACTIVITY_HEALTH_UNAVAILABLE,
           boundary: ACTIVITY_HEALTH_BOUNDARIES.WATCH_CREATE_FAILED,
           reason: e?.message || String(e),
           sessionId,
-          jsonlPath,
+          jsonlPath: resolvedPath,
         })
       }
     }
@@ -1242,7 +1012,7 @@ export function createJsonlIngestor({
       }
     }
     for (const aid of [...agentPaths.keys()]) {
-      if (!agentList.some(a => a.id === aid && jsonlWatchEligibility(a, { machineId, envName, daemonKey }).ok)) agentPaths.delete(aid)
+      if (!pathWatchers.has(agentPaths.get(aid))) agentPaths.delete(aid)
     }
   }
 
@@ -1274,6 +1044,32 @@ export function createJsonlIngestor({
       log.info(`JSONL directory change detected (${reason}); syncing live session tails`)
       void syncSessionWatchers(getAgents()).catch(e => log.error(`syncSessionWatchers failed: ${e.stack || e.message}`))
     }, 500)
+  }
+
+  function retainJsonlRootWatchers() {
+    const roots = new Set(transcriptRoots())
+    for (const root of roots) {
+      if (jsonlRootWatchers.has(root)) continue
+      const watcher = watchDir(root, {
+        ignoreInitial: true,
+        persistent: true,
+        awaitWriteFinish: false,
+      })
+      watcher.on?.('add', p => {
+        if (String(p).endsWith('.jsonl')) scheduleJsonlDirSync(`add ${path.basename(p)}`)
+      })
+      watcher.on?.('unlink', p => {
+        if (String(p).endsWith('.jsonl')) scheduleJsonlDirSync(`unlink ${path.basename(p)}`)
+      })
+      watcher.on?.('addDir', p => scheduleJsonlDirSync(`addDir ${path.basename(p)}`))
+      watcher.on?.('error', e => log.warn(`chokidar JSONL root watcher failed for ${root}: ${e?.message || e}`))
+      jsonlRootWatchers.set(root, watcher)
+    }
+    for (const [root, watcher] of jsonlRootWatchers) {
+      if (roots.has(root)) continue
+      jsonlRootWatchers.delete(root)
+      Promise.resolve(watcher.close()).catch(e => log.warn(`chokidar close failed for ${root}: ${e?.message || e}`))
+    }
   }
 
   function retainJsonlDirWatcher(jsonlPath) {
@@ -1311,23 +1107,23 @@ export function createJsonlIngestor({
   }
 
   function startJsonlTail({
-    agent,
+    agent = null,
     jsonlPath,
     sessionId,
     harness,
     startOffset,
     liveOffset,
     ownershipState = 'unknown',
-    backfillPriorSessions = false,
   }) {
     startJsonlIngester()
-    const watchId = `${sessionId}:${agent.id}:${nowMs()}:${random().toString(36).slice(2)}`
+    const initialAgentId = cursors[sessionId]?.owner?.fleet_id || null
+    const watchId = `${sessionId}:${initialAgentId || 'unowned'}:${nowMs()}:${random().toString(36).slice(2)}`
     const replayThresholdBytes = Number(process.env.TLDA_JSONL_DISPLAY_REPLAY_MAX_BYTES || DEFAULT_DISPLAY_REPLAY_MAX_BYTES)
     const catchupUntilOffset = catchupReplayBoundary({ startOffset, liveOffset, thresholdBytes: replayThresholdBytes })
     const pw = {
       watchId,
       jsonlPath,
-      primaryAgentId: agent.id,
+      primaryAgentId: initialAgentId,
       sessionId,
       harnessKind: harness.kind,
       stopped: false,
@@ -1336,13 +1132,13 @@ export function createJsonlIngestor({
       pendingDeliveries: 0,
       pendingFlushOffset: null,
       ownershipState,
+      terminalChat: !!harness.terminalChat,
       backfillSearch: !!harness.backfillSearch,
-      backfillPriorSessions,
       catchupUntilOffset,
       catchupSuppressed: {},
     }
     if (catchupUntilOffset != null) {
-      log.warn(`JSONL display catch-up for ${agent.friendly_name || agent.id}: suppressing backlog display events from offset ${startOffset} to ${catchupUntilOffset}`)
+      log.warn(`JSONL display catch-up for ${initialAgentId || path.basename(jsonlPath)}: suppressing backlog display events from offset ${startOffset} to ${catchupUntilOffset}`)
     }
     childWatchers.set(watchId, pw)
     try {
@@ -1351,7 +1147,7 @@ export function createJsonlIngestor({
         watchId,
         jsonlPath,
         sessionId,
-        agentId: agent.id,
+        agentId: initialAgentId,
         harnessKind: harness.kind,
         startOffset,
         terminalChat: !!harness.terminalChat,
@@ -1432,10 +1228,6 @@ export function createJsonlIngestor({
     if (msg.type === 'job-complete') {
       searchBackfillJobs.delete(msg.jobId)
       if (job?.sessionId) searchBackfillPendingBySession.delete(job.sessionId)
-      if (job?.kind === 'prior') {
-        priorSessionBackfillPending.delete(job.fleetId)
-        priorSessionBackfillComplete.add(job.fleetId)
-      }
       for (const identity of msg.result?.identities || []) recordSessionIdentity(identity)
       if (job?.sessionId) {
         cursors[job.sessionId] = { ...(cursors[job.sessionId] || {}), searchBackfilled: true }
@@ -1447,31 +1239,28 @@ export function createJsonlIngestor({
       if (job && (job.attempts || 0) < 3 && !_shuttingDown) {
         setTimeout(() => {
           if (searchBackfillJobs.has(msg.jobId)) {
-            startJsonlBackfillJob({
-              ...job,
-              ...(job.kind === 'prior' ? { cursors } : {}),
-            })
+            startJsonlBackfillJob(job)
           }
         }, 1000)
       } else {
         searchBackfillJobs.delete(msg.jobId)
         if (job?.sessionId) searchBackfillPendingBySession.delete(job.sessionId)
-        if (job?.kind === 'prior') priorSessionBackfillPending.delete(job.fleetId)
       }
     }
     refreshIngestionCaughtUp()
   }
 
   function processJsonlChildOutputs(pw, outputs) {
-    const agentId = pw.primaryAgentId
     const connected = isConnected()
     let delivered = true
     for (const output of outputs) {
       if (output.type === 'identity' && output.identity?.marker) {
         applyLoginMarkerOwnership(pw, output.identity.marker)
       }
+      const agentId = pw.primaryAgentId
       if (!connected) continue
       if (pw.ownershipState !== 'mine') continue
+      if (!agentId) continue
       if (pw.catchupUntilOffset != null && shouldSuppressCatchupOutput(output)) {
         countCatchupSuppressed(pw, output)
         continue
@@ -1675,32 +1464,6 @@ export function createJsonlIngestor({
     })
   }
 
-  // Find + search-index this agent's prior sessions. Consults the session-owner
-  // cache: a session already classified (owners known) is answered with ZERO I/O —
-  // if it isn't this agent's, we skip it cold. The bug this fixes: the old code
-  // only marked the agent's OWN files, so every *non-owned* file was byte-scanned
-  // again on every single spawn (O(files × spawns)). Now each file is classified
-  // once (chunked owner-scan, no JSON.parse), cached, and never re-read to answer a
-  // different agent. The niced child harvester pre-populates this cache in the
-  // background so even the first classification is off the daemon's main loop.
-  function backfillAllPriorSessions(agentId, fleetId) {
-    if (priorSessionBackfillComplete.has(fleetId)) return
-    if (priorSessionBackfillPending.has(fleetId)) return
-    priorSessionBackfillPending.add(fleetId)
-    const jobId = `prior:${fleetId}:${Date.now()}:${Math.random().toString(36).slice(2)}`
-    startJsonlBackfillJob({
-      jobId,
-      kind: 'prior',
-      jobKind: 'prior',
-      agentId,
-      fleetId,
-      projectsDir: projectsDir,
-      cursors,
-    })
-  }
-
-
-
   function syncIfRosterChanged({ agents, signature, reason, onChanged }) {
     const nextSignature = sessionWatcherRosterSignature(agents)
     if (nextSignature === signature) return signature
@@ -1711,10 +1474,9 @@ export function createJsonlIngestor({
   }
 
   function hasWatcherForAgent(agent, matchedKind) {
-    if (!matchedKind || matchedKind === 'claude') return true
     const watchedPath = agentPaths.get(agent.id)
     const watcher = watchedPath ? pathWatchers.get(watchedPath) : null
-    return !!watchedPath && !!watcher && watcher.harnessKind === matchedKind
+    return !!watchedPath && !!watcher && (!matchedKind || watcher.harnessKind === matchedKind)
   }
 
   function teardown() {
@@ -1734,21 +1496,24 @@ export function createJsonlIngestor({
       }
     }
     jsonlDirWatchers.clear()
+    for (const [, watcher] of jsonlRootWatchers) {
+      try {
+        const closed = watcher.close()
+        Promise.resolve(closed).catch(e => {
+          log.warn(`chokidar root teardown close failed: ${e?.message || e}`)
+        })
+      } catch (e) {
+        // Root watcher shutdown is cleanup-only; keep closing remaining watchers.
+        log.warn(`chokidar root teardown close threw: ${e?.message || e}`)
+      }
+    }
+    jsonlRootWatchers.clear()
   }
 
   function shutdown() {
     _shuttingDown = true
     saveCursors()
     teardown()
-    try { _ownerHarvester?.kill() } catch {
-      // Shutdown must keep progressing even if the helper has already exited.
-    }
-    for (const child of _targetedOwnerHarvesters.values()) {
-      try { child.kill() } catch { /* cleanup continues */ }
-    }
-    _targetedOwnerHarvesters.clear()
-    for (const timer of _targetedOwnerRetryTimers.values()) clearTimeout(timer)
-    _targetedOwnerRetryTimers.clear()
     try { _jsonlIngester?.send?.({ type: 'shutdown' }) } catch {
       // IPC may already be closed during shutdown; killing below is the fallback.
     }
@@ -1763,7 +1528,6 @@ export function createJsonlIngestor({
     syncIfRosterChanged,
     rosterSignature: sessionWatcherRosterSignature,
     scheduleJsonlDirSync,
-    startOwnerHarvester,
     resumeAfterServerReady: resumeJsonlIngesterAfterServerReady,
     resolveEditor,
     hasWatcherForAgent,

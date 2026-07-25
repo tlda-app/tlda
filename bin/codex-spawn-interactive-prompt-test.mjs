@@ -29,12 +29,38 @@ function configFor(cwd) {
     modelCatalog: { default: 'codex-test' },
     profiles: {
       test: {
-        read: { allow: ['**'], deny: [] },
-        write: { allow: ['**'], deny: [] },
-        spawn: { allow: ['**'], deny: [] },
+        read: { allow: ['cwd'], deny: [] },
+        write: { allow: ['cwd'], deny: [] },
       },
     },
     permissionGrant: { projectProfiles: { [cwd]: 'test' } },
+  }
+}
+
+function daemonConfigFor() {
+  return {
+    regions: { cwd: ['cwd'] },
+    profiles: {
+      test: {
+        read: { allow: ['cwd'], deny: [] },
+        write: { allow: ['cwd'], deny: [] },
+      },
+    },
+    models: {
+      default: 'gpt',
+      values: {
+        gpt: {
+          id: 'gpt-5.5',
+          harness: {
+            kind: 'codex',
+            required: [],
+            preferences: [],
+            controls: true,
+          },
+        },
+      },
+    },
+    default: 'test',
   }
 }
 
@@ -78,11 +104,21 @@ function testCodexLaunchForcesCiEnv() {
     name: 'test',
     cwd: '/tmp',
     api: 'https://example.invalid',
-    config: { defaultConfig: 'prod' },
-    env: {},
+    config: {},
+    env: {
+      TLDA_CONFIG: 'prod',
+      TLDA_CONFIG_DIR: '/tmp/tlda-config',
+      TLDA_DAEMON_CONFIG_DIR: '/tmp/tlda-daemon-config',
+      CODEX_SESSIONS_DIR: '/tmp/codex-sessions',
+    },
   })
   assert.match(cmd, /(?:^|\s)CODEX_CI=1(?:\s|$)/)
   assert.match(cmd, /mcp_servers\.tlda\.env\.CODEX_CI=.*"1"/)
+  assert.match(cmd, /mcp_servers\.tlda\.env\.TLDA_CONFIG=.*"prod"/)
+  assert.match(cmd, /mcp_servers\.tlda\.env\.TLDA_CONFIG_DIR=.*"\/tmp\/tlda-config"/)
+  assert.match(cmd, /mcp_servers\.tlda\.env\.TLDA_DAEMON_CONFIG_DIR=.*"\/tmp\/tlda-daemon-config"/)
+  assert.match(cmd, /mcp_servers\.tlda\.env\.CODEX_SESSIONS_DIR=.*"\/tmp\/codex-sessions"/)
+  assert.doesNotMatch(cmd, /TLDA_SERVER|TLDA_SYNC_SERVER/)
 }
 
 function testFreshClaudeLaunchPinsItsOwnSessionId() {
@@ -127,7 +163,6 @@ async function testFreshCodexPromptFailureFailsLoud() {
   await ledger.set('fleet:requester', {
     permissionSet: permissionSet('requester'),
     permissionGrant: 'test',
-    permissionGrant: 'ops',
   })
   const sent = []
   const launcher = createAgentLauncher({
@@ -137,6 +172,7 @@ async function testFreshCodexPromptFailureFailsLoud() {
     log: { info() {}, warn() {} },
     machineId: 'mini',
     permissionLedger: ledger,
+    loadDaemonConfigForCwd: () => daemonConfigFor(),
     sendMsg: msg => { sent.push(msg) },
     getProjects: () => [{ name: 'test-doc', sourceDir: cwd }],
     tmux: async (cmd, ...args) => {

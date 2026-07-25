@@ -25,6 +25,12 @@ function appendLaunchFlags(parts, harnessOptions = {}) {
   }
 }
 
+function passthroughConfigEnv(env = {}) {
+  return ['TLDA_CONFIG_DIR', 'TLDA_DAEMON_CONFIG_DIR']
+    .filter(key => env[key])
+    .map(key => [key, String(env[key])])
+}
+
 export function loginPrompt() {
   return LOGIN_PROMPT
 }
@@ -85,10 +91,7 @@ export function buildCmd({
   const configName = activeConfigName(config, env)
   if (configName) parts.push(`TLDA_CONFIG=${sq(configName)}`)
   if (env.TLDA_MACHINE_ID && configName) parts.push(`FLEET_DAEMON_KEY=${sq(`${env.TLDA_MACHINE_ID}:${configName}`)}`)
-  if (api) {
-    parts.push(`TLDA_SERVER=${sq(api)}`)
-    parts.push(`TLDA_SYNC_SERVER=${sq(api)}`)
-  }
+  for (const [key, value] of passthroughConfigEnv(env)) parts.push(`${key}=${sq(value)}`)
   const fleetOauthToken = path.join(env.HOME || process.env.HOME || '', '.claude', '.fleet-oauth-token')
   if (fs.existsSync(fleetOauthToken)) {
     parts.push(`CLAUDE_CODE_OAUTH_TOKEN=$(cat ${sq(fleetOauthToken)})`)

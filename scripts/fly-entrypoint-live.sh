@@ -30,8 +30,8 @@ ln -sfn "$PERSIST/data" /app/server/data
 git config --global user.name "${TLDA_GIT_USER_NAME:-tlda-friend-box}"
 git config --global user.email "${TLDA_GIT_USER_EMAIL:-tlda-friend-box@local}"
 
-# Ensure the strict daemon authority exists. The server resolves its active
-# database/store pair from daemon.yaml at startup and fails loudly when it is
+# Ensure the strict server authority exists. The server resolves its active
+# database/store pair from server.yaml at startup and fails loudly when it is
 # absent. The Fly server's authority is deterministic: it tells browsers to sync
 # against this machine. Friend boxes set TLDA_FLEET_SERVER to their own fly.dev
 # URL, so rewrite the persisted authority on startup for those boxes instead of
@@ -41,16 +41,18 @@ git config --global user.email "${TLDA_GIT_USER_EMAIL:-tlda-friend-box@local}"
 SERVER_YAML=/root/.config/tlda/server.yaml
 DAEMON_YAML=/root/.config/tlda/daemon.yaml
 CONFIG_ENDPOINT="${TLDA_FLEET_SERVER:-https://tlda-fly.cormorant-matrix.ts.net}"
+CONFIG_NAME="${TLDA_CONFIG:-testing}"
 if [ ! -f "$SERVER_YAML" ] || [ -n "$TLDA_FLEET_SERVER" ]; then
-  echo "[entrypoint] writing canonical Fly server authority for $CONFIG_ENDPOINT"
+  echo "[entrypoint] writing canonical Fly server authority $CONFIG_NAME for $CONFIG_ENDPOINT"
   cat > "$SERVER_YAML" <<'EOF'
-defaultServer: default
+defaultServer: __TLDA_CONFIG_NAME__
 servers:
-  default:
+  __TLDA_CONFIG_NAME__:
     database: __TLDA_CONFIG_ENDPOINT__
     store: __TLDA_CONFIG_ENDPOINT__
     licenseKey: tldraw-david-hirshberg-2031-06-29/WyJpTW00VFpraCIsWyIqLmNvcm1vcmFudC1tYXRyaXgudHMubmV0Il0sOSwiMjAzMS0wNi0yOSJd.76nwqwOXRChl0rxuqrgwvwOqZ+Aztw8sC+qFOFixTWyVpH96riTXLDVOY83AFmW0GRcHodjkGpjUvdh/GouzzA
 EOF
+  sed -i "s|__TLDA_CONFIG_NAME__|$CONFIG_NAME|g" "$SERVER_YAML"
   sed -i "s|__TLDA_CONFIG_ENDPOINT__|$CONFIG_ENDPOINT|g" "$SERVER_YAML"
 fi
 if [ ! -f "$DAEMON_YAML" ] || [ -n "$TLDA_FLEET_SERVER" ]; then

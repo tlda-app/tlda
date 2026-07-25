@@ -208,7 +208,6 @@ async function startDaemon() {
       TLDA_CONFIG_DIR: CONFIG_DIR,
       TLDA_DAEMON_CONFIG_DIR: CONFIG_DIR,
       TLDA_MACHINE_ID: MACHINE_ID,
-      TLDA_SERVER: BASE,
       TLDA_DEV_DAEMON: BASE,
       PROJECTS_DIR,
     },
