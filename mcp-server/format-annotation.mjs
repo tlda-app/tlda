@@ -70,7 +70,7 @@ export function formatMessage(event, agents = []) {
   const threadAgent = isHuman(event.from) ? event.to : event.from
   const body = `[msg] ${from} → ${to}, ${ts}\n> ${msgText.split('\n').join('\n> ')}`
   if (!iso || !threadAgent) return body
-  return `${body}\n↳ reference to the conversation history at this point. To read the surrounding thread: get_thread({ agent: "${threadAgent}", until: "${iso}" })`
+  return `${body}\n↳ reference to the conversation history at this point. To read the surrounding thread: thread({ agent: "${threadAgent}", until: "${iso}" })`
 }
 
 /**

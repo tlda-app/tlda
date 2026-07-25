@@ -3371,7 +3371,7 @@ export class FleetStore {
   // ---- Wiretap management ----
 
   addWiretap(agentId, filter, types) {
-    // Filter is a string EXPRESSION (same grammar as chat/fleet_table), with
+    // Filter is a string EXPRESSION (same grammar as chat/roster), with
     // directional `to:`/`from:` leaf prefixes — see evalExprDirectional.
     // parseFilter throws on malformed input so a typo'd tap fails loud.
     if (typeof filter !== 'string' || !filter.trim()) throw new Error('filter must be a non-empty string expression');

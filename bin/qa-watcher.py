@@ -229,7 +229,7 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "search_logs",
+            "name": "search",
             "description": "Search fleet chat logs for a keyword or phrase.",
             "parameters": {
                 "type": "object",
@@ -363,7 +363,7 @@ TOOL_DISPATCH = {
     "chat": lambda args: tool_chat(args["to"], args["message"]),
     "write_file": lambda args: tool_write_file(args["path"], args["content"]),
     "list_files": lambda args: tool_list_files(args["path"], args.get("pattern")),
-    "search_logs": lambda args: tool_search_logs(args["query"], args.get("limit", 20)),
+    "search": lambda args: tool_search_logs(args["query"], args.get("limit", 20)),
     "viewing_context": lambda args: tool_viewing_context(),
 }
 

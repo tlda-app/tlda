@@ -15,7 +15,7 @@
 //    attachments?: [{name, file}|{name, missing:true}]}
 // where `file` is a path relative to the export dir (attachments/<name>).
 // A "thread" is a conversation keyed by the non-Skip participant — matching
-// get_thread(agent), which reads chat events where that agent is from_id or
+// thread(agent), which reads chat events where that agent is from_id or
 // to_id. "Skip's threads" = every agent Skip has chatted with.
 //
 // Usage:

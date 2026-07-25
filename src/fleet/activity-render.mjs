@@ -35,9 +35,9 @@ function copySourceTemplate(text) {
 // --- Constants ---
 
 export const ACTIVITY_NOISE = new Set([
-  'wait_for_task', 'my_task', 'task_list', 'login', 'register', 'register_manager',
+  'wait_for_task', 'my_task', 'tasks', 'login', 'register', 'register_manager',
   'task_check', 'unregister_manager', 'task_done', 'timer',
-  'mcp__tlda__wait_for_task', 'mcp__tlda__my_task', 'mcp__tlda__task_list',
+  'mcp__tlda__wait_for_task', 'mcp__tlda__my_task', 'mcp__tlda__tasks',
   'mcp__tlda__login', 'mcp__tlda__register', 'mcp__tlda__register_manager', 'mcp__tlda__task_check',
   'mcp__tlda__task_done', 'mcp__tlda__timer',
   'ToolSearch',
@@ -63,7 +63,7 @@ function normalizedToolName(toolName) {
 function renderPrettyResult(toolName, text, ctx, input, ts) {
   text = normalizePrettyResult(text)
   const tool = normalizedToolName(toolName)
-  if (tool.includes('get_thread') || tool.includes('thread')) {
+  if (tool.includes('thread')) {
     return renderThreadResult(text, ctx)
   }
   if (tool.includes('search')) {
@@ -328,7 +328,7 @@ export function humanizeToolName(name) {
   let n = (name || '').replace(/^mcp__/, '').replace(/__/g, '/')
   const shorts = { 'tlda/chat': 'chat', 'tlda/delegate': 'delegate', 'tlda/task_done': 'done',
     'tlda/interrupt': 'interrupt', 'tlda/label_agent': 'label', 'tlda/respawn': 'respawn',
-    'tlda/spawn': 'spawn', 'tlda/name_agent': 'name', 'tlda/search_logs': 'search_logs' }
+    'tlda/spawn': 'spawn', 'tlda/name_agent': 'name', 'tlda/search': 'search' }
   return shorts[n] || n
 }
 

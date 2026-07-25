@@ -5570,8 +5570,8 @@ async function handleFleetWsMessage(ws, msg) {
     return
   }
 
-  // Full roster INCLUDING dead agents — history tooling (get_thread,
-  // search_logs) must keep dead agents addressable by name.
+  // Full roster INCLUDING dead agents — history tooling (thread,
+  // search) must keep dead agents addressable by name.
   if (type === 'store-agents-all') {
     error('Full agent store dumps are disabled; use resolve-agent, paged agents, or search.')
     return
@@ -7308,7 +7308,7 @@ async function handleFleetWsMessage(ws, msg) {
   if (type === 'wiretap-add') {
     const { agent, filter, types } = msg
     if (!agent || !filter) { error('missing agent or filter'); return }
-    // Filter is a string expression (same grammar as chat/fleet_table) with
+    // Filter is a string expression (same grammar as chat/roster) with
     // directional to:/from: leaf prefixes. addWiretap validates via parseFilter.
     let tap
     try { tap = fleetStore.addWiretap(agent, filter, types) }
@@ -7471,7 +7471,7 @@ async function handleFleetWsMessage(ws, msg) {
   if (type === 'store-events') {
     const afterId = parseInt(msg.after || '0')
     const beforeId = msg.before ? parseInt(msg.before) : null
-    // Timestamp-based pagination (ISO strings). Used by get_thread/MCP.
+    // Timestamp-based pagination (ISO strings). Used by thread/MCP.
     const sinceTs = msg.since || null
     const untilTs = msg.until || null
     const limit = Math.min(parseInt(msg.limit || '200'), 5000)
