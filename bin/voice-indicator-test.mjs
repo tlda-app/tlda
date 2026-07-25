@@ -48,7 +48,15 @@ assert.match(voiceSource, /function afterSend\(submittedTextOverride\) \{\s+cons
 // fixed the cross-message leak. It now records the discard before returning (a dropped
 // transcript is speech that vanished), so pin the condition and the `return`, and pin
 // that the discard is recorded so it can't silently regress to a bare return again.
-assert.match(voiceSource, /if \(\(msg\.type === 'transcript' \|\| msg\.type === 'speech_started' \|\| msg\.type === 'utterance_end'\) && msg\.epoch !== _speechEpoch\) \{[\s\S]*?vdiscard\('epoch-mismatch'[\s\S]*?return\s+\}/)
+assert.match(voiceSource, /if \(\(msg\.type === 'transcript' \|\| msg\.type === 'speech_started' \|\| msg\.type === 'utterance_end'\) && msg\.epoch !== _speechEpoch\) \{[\s\S]*?DROPPED transcript \(epoch mismatch\)[\s\S]*?return\s+\}/)
+// A dropped FINAL is a candidate spec violation and must never be rate-limited — the
+// shared limiter already suppressed one and we could not tell whether it was a final.
+assert.match(voiceSource, /if \(msg\.is_final\) vlog\('DROPPED transcript \(epoch mismatch\)'/)
+// The verdict that turns "a transcript was discarded" into "words were or were not lost".
+// Compared against the submitted text, NOT _left — afterSend has already cleared _left by
+// the time a stale transcript arrives, so _left would always read as a loss.
+assert.match(voiceSource, /const submitted = _dgIgnoredSubmittedText/)
+assert.match(voiceSource, /lost: alreadySent === false/)
 assert.doesNotMatch(voiceSource, /onaudioprocess[\s\S]*?fillTextarea|process =[\s\S]*?fillTextarea/)
 // Assembly instrument. `speech_final` must be RECORDED and never branched on — reading it
 // is diagnosis, branching on it is the fix the site's own comment says not to make blind.

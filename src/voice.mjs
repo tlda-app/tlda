@@ -2341,9 +2341,36 @@ function onDeepgramMessage(event, relay = _deepgramWs) {
       // Speech dies here with no trace. Recording it is the whole point: an epoch
       // mismatch on a *transcript* means words came back and were thrown away.
       if (msg.type === 'transcript' && msg.text) {
-        vdiscard('epoch-mismatch', 'DROPPED transcript (epoch mismatch)', {
-          msgEpoch: msg.epoch, speechEpoch: _speechEpoch, final: !!msg.is_final, text: msg.text.slice(0, 40),
-        })
+        // WAS ANYTHING ACTUALLY LOST? A dropped final is only a spec violation if those
+        // words never reached him. The obvious check — is the text already in `_left` —
+        // is useless here: the epoch only advances via afterSend(), which has already
+        // cleared _left/_interim/_right by the time this stale transcript arrives, so
+        // _left is always empty at this point and would always read "lost".
+        //
+        // `_dgIgnoredSubmittedText` is the normalized text of the message that was just
+        // sent, which is the thing to compare against: if the dropped words are inside
+        // it, they reached him and nothing was lost. Null when the epoch moved for a
+        // reason other than a send (target switch, stop) — reported as unknown rather
+        // than guessed either way.
+        const droppedNorm = normalizeDeepgramText(msg.text)
+        const submitted = _dgIgnoredSubmittedText
+        const alreadySent = submitted && droppedNorm ? submitted.includes(droppedNorm) : null
+        const record = {
+          msgEpoch: msg.epoch,
+          speechEpoch: _speechEpoch,
+          final: !!msg.is_final,
+          text: msg.text.slice(0, 60),
+          alreadySent,
+          lost: alreadySent === false,
+          submittedTail: vtail(submitted),
+        }
+        // Finals are never rate-limited. They are rare (4 in 11 minutes observed) and
+        // each one is a candidate spec violation, so losing one to a throttle would
+        // defeat the instrument — the earlier shared key already suppressed one and we
+        // cannot tell whether it was a final. Interims are high-volume and repeat
+        // themselves, so they keep the limiter.
+        if (msg.is_final) vlog('DROPPED transcript (epoch mismatch)', record)
+        else vdiscard('epoch-mismatch-interim', 'DROPPED transcript (epoch mismatch)', record)
       }
       // utterance_end is a RELEASE SIGNAL, not a notification — it is one of only two
       // things that clear _dgIgnoreUntilUtteranceEnd, and while that guard is armed
@@ -2769,6 +2796,10 @@ async function startDeepgramMic() {
       speechEpoch: _speechEpoch,
       readyEpoch: _deepgramReadyEpoch,
       gateOpen: _deepgramReadyEpoch === _speechEpoch,
+      // Whether he is actually making noise. Without this, a high lastResultMs is
+      // ambiguous between "his words are late" and "he stopped talking", and the
+      // latency distribution has to be recovered via the `speech started` proxy.
+      micAudible: _micAudible,
       pcmPaused: _deepgramPcmPaused,
       upstreamPaused: _dgUpstreamPaused,
       recognizerStatus: currentDeepgramRecognizerStatus(),
