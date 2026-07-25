@@ -2697,6 +2697,24 @@ export function completeMessageSend(submittedText) {
 // Deepgram backend forwards here when the bridge WS is open; the bridge writes
 // `[voice] <text>` to ~/.config/tlda/deepgram-sdk-bridge.log so Safari debug is
 // observable without Web Inspector / USB pairing.
+//
+// ⚠️ THIS LOG CANNOT RECORD A DISCONNECT. Read this before trusting it.
+//
+// These lines ship over the voice WebSocket itself, so any event at or after that
+// socket closes is unloggable by construction — including the close. Measured
+// 2026-07-25: 0 `bridge WS closed` lines against 129 bridge-side browser disconnects.
+// Every [voice] line in that file is survivorship-biased toward a healthy socket, so
+// the log is blind at exactly the moment you are trying to debug. A quiet log is not
+// a working microphone; it is frequently a dead socket.
+//
+// Two further traps in the same file: it carries NO timestamps at all (nothing can be
+// time-correlated against lag profiles or anything else), and its `browser connected`
+// count includes isBridgeUp() health probes, so it is not a client count. The only
+// count that means what it says is `connected to Deepgram`.
+//
+// Fix, when someone has the room for it: route this through src/logger.ts, which POSTs
+// to /api/log independently of the voice socket and timestamps every line — that closes
+// the blindness and the missing clock together. See docs/voice-path-known-defects.md.
 const _voiceLogs = []
 function vlog(msg, data) {
   const entry = data ? `${msg} ${JSON.stringify(data)}` : msg
