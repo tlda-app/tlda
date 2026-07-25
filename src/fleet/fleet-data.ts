@@ -4,7 +4,7 @@ import { labelsForAgent } from '../../shared/fleet-labels.mjs'
 // @ts-ignore - shared JS module
 import { isRuntimeAwake } from '../../shared/fleet-runtime-status.mjs'
 import { setLiveStoreObserver } from '../../shared/live-store.ts'
-import { noteBufferDrop, noteDisposedViewTouched, noteViewRef, startFreezeCensus } from './chat-freeze-probe.mjs'
+import { noteBufferDrop, noteDisposedViewTouched, noteViewRef, startFreezeCensus, filterNameIds } from './chat-freeze-probe.mjs'
 import { getLastEventId } from './fleet-data.mjs'
 
 startFreezeCensus(getLastEventId)
@@ -143,6 +143,60 @@ function reconcileEventBuffer(buffer: EventBuffer): void {
   })
 }
 
+// Is this drop the unhydrated-participant case? Returns a diagnostic payload
+// when the buffer's filter names an agent BY NAME and one of the event's
+// participants is a fleet: id absent from the roster — the exact condition
+// under which labelSetForParticipant (filter-semantics.mjs:9) answers only to
+// the raw id, so a name term cannot match. Returns null for ordinary drops
+// (every panel correctly rejects most traffic).
+//
+// Cheap by construction: only runs on the reject branch, and only for chat.
+function unresolvedParticipantDrop(buffer: EventBuffer, event: FleetEvent): Record<string, unknown> | null {
+  if (event.type !== 'chat') return null
+  const filter = buffer.filter as unknown[] | null
+  if (!Array.isArray(filter) || filter.length === 0) return null
+
+  const namesInFilter: string[] = []
+  for (const clause of filter) {
+    if (!Array.isArray(clause)) continue
+    for (const term of clause) {
+      const label = Array.isArray(term) ? term[1] : term
+      if (typeof label === 'string' && label && !label.startsWith('fleet:')) namesInFilter.push(label)
+    }
+  }
+  if (namesInFilter.length === 0) return null
+
+  const roster = getFleetAgents()
+  const participants = [event.from, event.to].filter(
+    (p): p is string => typeof p === 'string' && p.startsWith('fleet:')
+  )
+  const unresolved = participants.filter((id) => !roster.some((a: FleetAgent) => a.id === id))
+  if (unresolved.length === 0) return null
+
+  // EXACTNESS GATE. An unresolved participant is not enough — a panel filtered
+  // `dm:todd` correctly rejects traffic between two unrelated agents even when
+  // one of them is unhydrated, and flagging that would be noise dressed as the
+  // bug. Only report when the unresolved participant IS an id one of this
+  // panel's own filter names resolves to: then resolving would have flipped the
+  // verdict, and this panel should have shown this message.
+  const culprits: { id: string; name: string }[] = []
+  for (const name of namesInFilter) {
+    const ids = filterNameIds(name)
+    if (!ids) continue
+    for (const id of unresolved) if (ids.has(id)) culprits.push({ id, name })
+  }
+  if (culprits.length === 0) return null
+
+  return {
+    eventDbId: event._dbId ?? null,
+    from: event.from ?? null,
+    to: event.to ?? null,
+    culprits,
+    namesInFilter,
+    rosterSize: roster.length,
+  }
+}
+
 function fanoutEventToBuffers(event: FleetEvent): void {
   for (const [bufferKey, buffer] of eventBuffers) {
     if (buffer.matchesFilter(buffer.filter, event)) {
@@ -150,7 +204,7 @@ function fanoutEventToBuffers(event: FleetEvent): void {
       if (buffer.pinned) trimEventBuffer(buffer)
     } else {
       buffer.store.remove(event.id)
-      noteBufferDrop(bufferKey, getLastEventId())
+      noteBufferDrop(bufferKey, getLastEventId(), unresolvedParticipantDrop(buffer, event))
     }
   }
 }

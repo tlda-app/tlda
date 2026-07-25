@@ -188,7 +188,59 @@ export function noteProjection(branch, lastEventId) {
  */
 const _drops = new Map()
 const DROP_ROLLUP_MS = 60_000
-export function noteBufferDrop(bufferKey, lastEventId) {
+/** @param {string} bufferKey @param {number} lastEventId @param {Record<string,unknown>|null} [suspect] */
+// --- Filter name → id resolution -------------------------------------------
+//
+// A chat event carries participants as raw `fleet:` ids only; the name a filter
+// term uses lives in the roster. `hydrateFleetAgentsForFilter` resolves each
+// name via /api/agents/lookup and is the ONLY thing that can resolve an agent
+// the paged roster doesn't carry. Recording what it resolved to gives us the
+// two exact signals below — no adjacency, no "a participant happened to be
+// unhydrated" noise.
+/** @type {Map<string, Set<string>>} name → resolved fleet ids */
+const _filterNameIds = new Map()
+
+/**
+ * Called after a name lookup completes. An EMPTY result is chief3's mechanism
+ * caught at its source: this panel's name will never resolve for the life of
+ * the tab, because nothing re-runs hydration unless the filter changes — so
+ * every message from that agent is dropped and radio shows all of them.
+ * @param {string} name
+ * @param {readonly string[]} ids
+ */
+export function recordFilterNameIds(name, ids) {
+  const set = new Set(ids)
+  const had = _filterNameIds.get(name)
+  _filterNameIds.set(name, set)
+  if (set.size === 0) {
+    log.metric(NS, 'FILTER NAME RESOLVED TO NOTHING — panel is structurally dead', { name })
+  } else if (had && had.size === 0) {
+    log.metric(NS, 'filter name recovered after resolving to nothing', { name, ids: [...set] })
+  }
+}
+
+/** Ids a filter name is known to resolve to, or null if never looked up. */
+export function filterNameIds(name) { return _filterNameIds.get(name) || null }
+
+/**
+ * @param {string} bufferKey
+ * @param {number} lastEventId
+ * @param {Record<string, unknown>|null} [suspect]
+ */
+export function noteBufferDrop(bufferKey, lastEventId, suspect = null) {
+  // The self-checking half, and it must be EXACT — an earlier version of this
+  // fired whenever any participant was unhydrated and the filter held any name,
+  // which flags drops that are correct. That is the same defect as the withdrawn
+  // stall verdict: a flag on a condition adjacent to the bug. The caller now
+  // only passes a suspect when the dropped event's participant IS one of the
+  // ids this panel's own filter name resolves to — i.e. resolving would have
+  // flipped the verdict and the panel would have shown this message.
+  if (suspect) {
+    log.metric(NS, 'DROPPED a message from the very agent this panel filters on', {
+      bufferKey, lastEventId, ...suspect,
+    })
+    return
+  }
   const now = Date.now()
   let d = _drops.get(bufferKey)
   if (!d) { d = { n: 0, since: now }; _drops.set(bufferKey, d) }
