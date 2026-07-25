@@ -1,12 +1,9 @@
 #!/usr/bin/env node
+// The grammar bot's half of this test moved out with the bot to
+// ~/work/tlda-bots/grammar/source-edit-lint-test.mjs. This file keeps the
+// app-side half: the source-edit event machinery and changed-region diffing.
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import {
-  GRAMMAR_REPAIR_CHOICES,
-  lintSourceEditFiles,
-  ordinaryChatNudgeText,
-  sourceEditNudgeText,
-} from '../bots/grammar-source-edit.mjs'
 import { changedTextRegions } from '../server/lib/changed-text-regions.mjs'
 import { createSourceEditEvent, emitSourceEditEvent } from '../server/lib/source-edit-event.mjs'
 
@@ -70,25 +67,6 @@ assert.deepEqual(
   ],
 )
 assert.deepEqual(changedTextRegions('same', 'same'), [])
-
-const lintCalls = []
-const findings = await lintSourceEditFiles(files, async (content, file) => {
-  lintCalls.push({ content, file })
-  return [{ file, line: 1, snippet: 'x=5, y=6' }]
-})
-assert.deepEqual(lintCalls, [{ content: 'We have $x=5, y=6$.', file: 'main.tex' }])
-assert.deepEqual(findings, [{ file: 'main.tex', line: 3, snippet: 'x=5, y=6' }])
-assert.equal(
-  sourceEditNudgeText('lint-probe', findings),
-  '⚠ **Possible comma splice** at `lint-probe/main.tex:3`: `x=5, y=6`. Replace the comma with the connective you mean — for example “where”, “and”, “so”, or “we have”.',
-)
-assert.deepEqual(GRAMMAR_REPAIR_CHOICES, ['where', 'and', 'so', 'we have'])
-const ordinaryPrompt = ordinaryChatNudgeText([{ file: '<chat>', line: 1, snippet: 'x=5, y=6' }])
-const sourcePrompt = sourceEditNudgeText('lint-probe', findings)
-assert.match(ordinaryPrompt, /"where", "and", "so", "we have"/)
-assert.match(sourcePrompt, /“where”, “and”, “so”, or “we have”/)
-assert.doesNotMatch(ordinaryPrompt, /which gives/)
-assert.doesNotMatch(sourcePrompt, /which gives/)
 
 const projectsSource = readFileSync(new URL('../server/routes/projects.mjs', import.meta.url), 'utf8')
 const unifiedSource = readFileSync(new URL('../server/unified-server.mjs', import.meta.url), 'utf8')

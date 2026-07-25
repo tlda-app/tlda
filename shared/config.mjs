@@ -232,7 +232,7 @@ const BOTS_FILE = join(CONFIG_DIR, 'bots.yaml')
  * does not manage them. Shape:
  *
  *   bots:
- *     todd: { script: bin/bots/todd.mjs }
+ *     todd: { script: /Users/skip/work/tlda-bots/todd/todd.mjs }
  *   environments:
  *     testing: [todd]
  *

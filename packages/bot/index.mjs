@@ -242,3 +242,31 @@ export function createBot({ name = 'bot', pretty_name = null, labels = ['bot'], 
 }
 
 export function runBot(opts) { return createBot(opts).start(); }
+
+// ── App surface for out-of-repo bots ────────────────────────────────────────
+//
+// A bot repo (todd, grammar, dev, lint, disposition, teacher) lives outside this
+// repository and depends on it as `"@tlda/bot": "file:../tlda/packages/bot"`. npm
+// installs a `file:` directory dependency as a symlink, so the relative reaches
+// above resolve back into the real app checkout — that is why teacher has always
+// worked from `~/work/teacher`.
+//
+// Before the bots moved out they imported `../shared/config.mjs` and friends
+// directly, which only worked because they sat inside this tree. These
+// re-exports are that same access, routed through the package boundary instead
+// of a relative path that no longer exists.
+//
+// This list is exactly what the moved bots use, and nothing speculative — a
+// package surface is a promise. Do not add a symbol here "for completeness";
+// add it when a bot actually imports it.
+export {
+  CONFIG_DIR,          // todd, grammar, lint, disposition
+  getServerUrl,        // todd, disposition
+  getFleetServerUrl,   // grammar, lint, todd/disclosure/dataset
+  getManagedBots,      // grammar, lint
+  getReadToken,        // todd/disclosure/dataset
+} from '../../shared/config.mjs';
+export { labelsForAgent } from '../../shared/fleet-labels.mjs';        // todd, dev
+export { startWsRequest } from '../../shared/ws-request-policy.mjs';   // all bots
+export { checkChatRender } from '../../shared/chat-render-check.mjs';  // lint
+export { runtimeStatusName } from '../../shared/fleet-runtime-status.mjs'; // todd/kicks, todd/activity-report

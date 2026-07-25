@@ -1535,7 +1535,7 @@ function touchActivity(agentId) {
 // events DB. Because every share() is auto-broadcast as a fleet-event (see the
 // fleetStore.onEvent wiring below), bots can SUBSCRIBE to turn boundaries live
 // AND catch up after a disconnect by polling /api/store/events?type=turn_ended.
-// This is the signal the disposition self-check bot (bin/bots/disposition.mjs)
+// This is the signal the disposition self-check bot (~/work/tlda-bots/disposition)
 // rides on. The true→false edge is deduped upstream by _thinkingState, so this
 // fires exactly once per turn.
 function emitTurnEnded(agentId, startedAtMs) {
