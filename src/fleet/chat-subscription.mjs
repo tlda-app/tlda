@@ -21,6 +21,7 @@
 // decision, and it must never become one.
 
 import { log } from '../logger'
+import { noteServerDelivery } from './filter-equivalence.mjs'
 
 const NS = 'chat-subscription'
 
@@ -41,26 +42,26 @@ export function setChatSubscriptionTransport(send) { _send = send }
  *   its own size; there is no magic number here on purpose.
  * @param {(events: readonly object[], meta: object) => void} onEvents
  */
-export function subscribeChat(filter, window, onEvents) {
+export function subscribeChat(filter, window, onEvents, { humanId = null, humanName = null } = {}) {
   const subId = `sub${_nextSubId++}`
   // filter and window are retained so a reconnect can re-send the subscription
   // without the caller having to remember it — resubscribeAll needs them.
-  _subs.set(subId, { filter, window, onEvents })
+  _subs.set(subId, { filter, window, onEvents, humanId, humanName })
   if (_send) {
     try {
-      _send('chat-subscribe', { subId, filter, window })
+      _send('subscribe-filter', { subId, filter, humanId, humanName })
     } catch (e) {
       // Surfaced, never swallowed: a subscribe that silently fails is a panel
       // that shows nothing forever, which is the failure mode we are removing.
-      log.metric(NS, 'chat-subscribe send failed', { subId, error: String(e) })
+      log.metric(NS, 'subscribe-filter send failed', { subId, error: String(e) })
     }
   } else {
-    log.metric(NS, 'chat-subscribe before transport was set', { subId })
+    log.metric(NS, 'subscribe-filter before transport was set', { subId })
   }
   return () => {
     _subs.delete(subId)
     if (_send) {
-      try { _send('chat-unsubscribe', { subId }) } catch { /* socket already gone */ }
+      try { _send('unsubscribe-filter', { subId }) } catch { /* socket already gone */ }
     }
   }
 }
@@ -73,17 +74,20 @@ export function subscribeChat(filter, window, onEvents) {
  * server believes in a subscription this client does not, which is the kind of
  * disagreement that goes unnoticed until a panel is mysteriously empty.
  */
-export function dispatchChatEvents(data) {
+export function dispatchFilterEvent(data) {
   if (!data || !data.subId) return false
   const sub = _subs.get(data.subId)
   if (!sub) {
-    log.metric(NS, 'events for an unknown subscription', {
-      subId: data.subId, count: Array.isArray(data.events) ? data.events.length : null,
-    })
+    log.metric(NS, 'filter-event for an unknown subscription', { subId: data.subId })
     return false
   }
-  const events = Array.isArray(data.events) ? data.events : []
-  sub.onEvents(events, { subId: data.subId, reason: data.reason || 'live', hasMore: !!data.hasMore })
+  const event = data.event || null
+  if (!event) return false
+  // Record that the SERVER matched this event for this subscription. The client
+  // records its own verdict from the path it already runs; the comparison of the
+  // two on real traffic is the gate before the old path is deleted.
+  noteServerDelivery(data.subId, event.id ?? event._dbId, sub.filterKey)
+  sub.onEvents([event], { subId: data.subId, reason: data.reason || 'live' })
   return true
 }
 
@@ -92,7 +96,7 @@ export function resubscribeAll() {
   if (!_send) return 0
   let n = 0
   for (const [subId, sub] of _subs) {
-    try { _send('chat-subscribe', { subId, filter: sub.filter, window: sub.window }); n++ }
+    try { _send('subscribe-filter', { subId, filter: sub.filter, humanId: sub.humanId, humanName: sub.humanName }); n++ }
     catch (e) { log.metric(NS, 'resubscribe failed', { subId, error: String(e) }) }
   }
   return n
