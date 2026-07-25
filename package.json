@@ -19,7 +19,7 @@
     "build": "tsc -b && vite build",
     "test:live-perf-upload": "node bin/live-perf-probe-upload-test.mjs",
     "build:tldraw-fork-runtime": "node scripts/build-tldraw-fork-runtime.mjs",
-    "lint": "eslint . && node bin/lineage-name-derivation-guard.mjs",
+    "lint": "node bin/lineage-name-derivation-guard.mjs && eslint .",
     "preview": "vite preview",
     "start": "tlda server start && npm run dev",
     "smoke": "node scripts/smoke-test.mjs"
