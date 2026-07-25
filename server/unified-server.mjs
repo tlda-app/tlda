@@ -2045,7 +2045,6 @@ async function performSpawnRelay(caller, msg) {
         spawnerPermission: result?.spawnerPermission,
         projectPermission: result?.projectPermission,
         modelPermission: result?.modelPermission,
-        lineage,
       }
       const settled = mailboxLibrarian.complete(mailbox.id, completion)
       if (settled) deliverSpawnMailboxCompletion(settled, 'completed', completion)
