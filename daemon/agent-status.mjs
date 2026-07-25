@@ -21,6 +21,31 @@ export function createAgentStatus({
   // var and no hardcoded default: a silent `|| 5000` is the generic-config
   // fallback pattern this codebase is removing, and it hid the polling cadence
   // from the one place operators look.
+  //
+  // BEFORE YOU LOWER THIS — measure what it multiplies. Two commands run per
+  // scan and they cost very differently:
+  //
+  //   tmux list-sessions   ~18ms   ONCE for the whole box, flat in agent count
+  //   tmux capture-pane    ~18ms   PER ARMED AGENT, and run serially below
+  //
+  // Measured on the Mini, 2026-07-25, 13 live sessions: list-sessions 18.0ms
+  // (min 15.2, max 25.7, n=30); capture-pane across all 13 took 234.9ms serial,
+  // 77.2ms if issued in parallel — which this loop does not do.
+  //
+  // So the poll's cost is dominated by capture-pane and scales with the number
+  // of ARMED agents, not with the roster. Serially, 13 armed agents cost:
+  //
+  //   at 30s   0.78% of a core
+  //   at 2.5s  9.4%  of a core        ← 12x, permanently, per box
+  //
+  // Going parallel buys ~3x and would make a 2-3s cadence affordable; leaving it
+  // serial makes that cadence expensive. This is the enumerate-per-agent pattern
+  // (docs/fleet-design-rules.md) — list-sessions answers a question for the whole
+  // box in one command, capture-pane asks it once per agent.
+  //
+  // The daemon is not the only cost either: applying liveness on the SERVER has
+  // its own per-report cost that scales with roster size. That is a different
+  // machine and a different mechanism — neither number answers the other.
   statusScanMs,
   statusLingerMs = parseInt(process.env.TLDA_STATUS_LINGER_MS, 10) || 30_000,
   idleConfirmScans = 2,
