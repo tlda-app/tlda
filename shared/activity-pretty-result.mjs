@@ -61,7 +61,7 @@ export function truncatePrettyResult(text, toolName) {
   const unwrapped = normalizePrettyResult(text)
   if (unwrapped.length <= 5000) return unwrapped
   const tool = (toolName || '').toLowerCase()
-  if (tool.includes('get_thread') || tool.includes('thread')) {
+  if (tool.includes('thread')) {
     const sep = '\n\n---\n\n'
     const msgs = unwrapped.split(sep)
     if (msgs.length > 8) {
