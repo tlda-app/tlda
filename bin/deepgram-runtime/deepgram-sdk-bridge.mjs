@@ -208,6 +208,13 @@ wss.on('connection', (browserWs) => {
   // Cleared by the utterance's own is_final (the real boundary), or by the backstop.
   let carriedEpoch = null
   let carryTimer = null
+  // True while a non-final transcript is genuinely outstanding. Deliberately NOT
+  // pendingFinalSince, which SpeechStarted also sets (3942 times in one log) on bare VAD
+  // with no transcript behind it. Arming on that would carry when there is nothing to
+  // carry, and the next is_final — belonging to FRESH speech — would be stamped with the
+  // dead epoch and dropped. That loses his words, which is the one outcome worse than
+  // the duplication this fixes.
+  let interimOutstanding = false
   let droppedChunks = 0
   let flushedChunks = 0
 
@@ -299,7 +306,7 @@ wss.on('connection', (browserWs) => {
     //
     // Only arm when an utterance is genuinely mid-flight. If nothing is pending there is
     // nothing to carry, and the common case costs nothing.
-    if (pendingFinalSince && activeEpoch !== null) {
+    if (interimOutstanding && activeEpoch !== null) {
       carriedEpoch = activeEpoch
       clearTimeout(carryTimer)
       // Backstop only. If Deepgram never finalizes, release forward rather than keep
@@ -436,8 +443,8 @@ wss.on('connection', (browserWs) => {
 
         lastSpeechAt = Date.now() // speech activity → keep the upstream session alive
         lastTranscriptAt = lastSpeechAt
-        if (msg.is_final) pendingFinalSince = 0
-        else if (!pendingFinalSince) pendingFinalSince = lastTranscriptAt
+        if (msg.is_final) { pendingFinalSince = 0; interimOutstanding = false }
+        else { if (!pendingFinalSince) pendingFinalSince = lastTranscriptAt; interimOutstanding = true }
         // THE BOUNDARY THAT KEEPS ONE MESSAGE'S TAIL OUT OF THE NEXT — do not collapse
         // this to `activeEpoch`. When an epoch advances mid-utterance, Deepgram keeps
         // finishing the OLD one for a moment; those results describe audio he spoke
@@ -474,6 +481,7 @@ wss.on('connection', (browserWs) => {
 
       if (msg.type === 'UtteranceEnd') {
         pendingFinalSince = 0
+        interimOutstanding = false
         // Another real end-of-utterance boundary. If we are still carrying (no is_final
         // ever arrived), release forward here rather than wait for the backstop.
         releaseCarriedEpoch('utterance end')
