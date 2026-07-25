@@ -35,6 +35,10 @@ import { projectAgentRuntimeStatus } from './agent-runtime-status.mjs';
 // Excluded from Spotlight via a .metadata_never_index file next to the DB.
 const DB_PATH = path.join(os.homedir(), '.config', 'tlda', 'fleet.db');
 const FLEET_DIR = path.join(os.homedir(), '.fleet');
+// Slow queries are appended here as JSON lines, alongside stdout. Readable after
+// the fact the way client.log is, so naming a slow query does not depend on
+// someone tailing `fly logs` at the instant it fires.
+const SLOWQUERY_LOG_FILE = path.join(os.homedir(), '.config', 'tlda', 'slowquery.log');
 const WIRETAP_EVENT_TYPES = new Set(['chat', 'delegate', 'task_done']);
 
 // Newest first, bucketed to the MINUTE — Skip's design, from the screen rather
@@ -176,6 +180,17 @@ export class FleetStore {
               const flat = String(sql).replace(/\s+/g, ' ').trim().slice(0, 200);
               const n = Array.isArray(r) ? r.length : (r ? 1 : 0);
               console.warn(`[slowquery] ${ms.toFixed(0)}ms rows=${n} :: ${flat}`);
+              // Also append to a file. stdout alone means this is only readable by
+              // whoever happens to be tailing `fly logs` at the moment it fires --
+              // there is no server.log on the Fly machine, and the log buffer rolls
+              // in minutes. Two agents chasing a 1.5s query both lost it to the
+              // rolled window on the same night. An instrument that requires a
+              // witness is a stakeout, not an instrument.
+              fs.appendFile(
+                SLOWQUERY_LOG_FILE,
+                JSON.stringify({ ts: new Date().toISOString(), ms: Number(ms.toFixed(1)), rows: n, sql: flat }) + '\n',
+                err => { if (err) console.warn(`[slowquery] append failed: ${err.message}`); },
+              );
             }
             return r;
           };
@@ -1024,13 +1039,9 @@ export class FleetStore {
       UPDATE events SET metadata = json_patch(COALESCE(metadata, '{}'), ?) WHERE id = ?
     `);
 
-    this._getUnread = this.db.prepare(`
-      SELECT ${this._EVTE} FROM events e
-      JOIN unread u ON u.event_id = e.id
-      WHERE u.to_id = ? AND u.read = 0
-      ORDER BY e.timestamp ASC
-    `);
-
+    // No unbounded variant of this query exists on purpose. Fetching an agent's
+    // entire unread backlog to slice it in JS grows all day and blocks the event
+    // loop synchronously; the caller that did that is gone. Use the limited form.
     this._getUnreadLimited = this.db.prepare(`
       SELECT ${this._EVTE} FROM events e
       JOIN unread u ON u.event_id = e.id
@@ -3482,9 +3493,6 @@ export class FleetStore {
 
   // ---- Message/event queries ----
 
-  getUnread(agentId) {
-    return this._query(this._getUnread, agentId);
-  }
 
   getUnreadLimited(agentId, limit = 50) {
     const n = Math.max(1, Math.min(Number.parseInt(String(limit), 10) || 50, 200));
