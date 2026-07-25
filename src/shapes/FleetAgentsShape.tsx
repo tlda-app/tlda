@@ -21,7 +21,7 @@ import { Virtuoso } from 'react-virtuoso'
 import { useFleetAgents, useFleetAgentTotals, useFleetTasks, useFleetUnreadCounts, useFleetContext, useFleetProjects, useFleetIdentity, searchFleet, hibernateSession, spawnAgent, loadNextAgentsPage } from '../fleet-data-adapter'
 import { dropPillOnTarget } from './FleetPillShape'
 import { markFleetPillActive, markFleetPillInactive, transientFleetPillProps } from './fleet-pill-transient'
-import { agentDisplayLabel, agentExactName, beginNativeSnapDrag, endNativeSnapDrag } from './fleet-utils'
+import { agentDisplayLabel, agentExactName, beginFleetDragWithoutSnap, endFleetDragWithoutSnap } from './fleet-utils'
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import { dragCoordinator } from './dragCoordinator'
 import { useIsInViewport, useVisibilityViewportId } from './useIsInViewport'
@@ -220,12 +220,12 @@ export class FleetAgentsShapeUtil extends BaseBoxShapeUtil<any> {
 
   override canEdit = () => false
   override canResize = () => true
+  override onTranslateStart = () => beginFleetDragWithoutSnap(this.editor)
+  override onTranslateEnd = () => endFleetDragWithoutSnap(this.editor)
+  override onTranslateCancel = () => endFleetDragWithoutSnap(this.editor)
   override canSnap = () => true
   override canBind = () => false
   override hideRotateHandle = () => true
-  override onTranslateStart = () => beginNativeSnapDrag(this.editor)
-  override onTranslateEnd = () => endNativeSnapDrag(this.editor)
-  override onTranslateCancel = () => endNativeSnapDrag(this.editor)
 
   component(shape: any) {
     return <FleetAgentsComponent shape={shape} />

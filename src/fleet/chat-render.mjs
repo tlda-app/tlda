@@ -105,7 +105,7 @@ export function chatLineAttachmentRenderSignature(message) {
 export function timeShort(ts) {
   if (!ts) return ''
   const d = new Date(ts)
-  return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', timeZoneName: 'short' })
+  return d.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' })
 }
 
 // A pending countdown's message carries a "— say "<bot> cancel" to stop" hint.
