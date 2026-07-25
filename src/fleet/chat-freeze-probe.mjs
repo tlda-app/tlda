@@ -50,6 +50,29 @@ const STALL_REPEAT_MS = 60_000
 /** @type {Map<string, number>} */
 const _bufferMatches = new Map()
 
+// A buffer accepts anything its DNF filter matches. The PANEL then drops types
+// chatMessages never renders — terminal_user, terminal_assistant, compacting,
+// amend — and drops rows with _timer set. So counting raw buffer matches
+// overcounts: two accepted-but-unrenderable events look like two messages the
+// panel failed to show, which is a matchGap of 2 and a false PANEL STALLED.
+// That is what the small gaps (2, 5) on live are; the depth guard fixed the
+// inflated ones, not these.
+//
+// Mirrors the type list in FleetChatShape's chatMessages memo. It cannot mirror
+// `quietDmTraffic`, which is per-panel and suppresses activity at render — so an
+// activity-heavy DM panel in quiet mode can still overcount. This narrows the
+// class; it does not close it, and the metric should be read with that in mind.
+const RENDERABLE_TYPES = new Set([
+  'chat', 'delegate', 'task_done', 'activity', 'kill-session', 'interrupt',
+  'terminal_attention', 'terminal_card', 'plan_approval', 'timer',
+])
+
+/** Would this event have survived the panel's own type filter? */
+export function isRenderableInPanel(event) {
+  if (!event || event._timer) return false
+  return RENDERABLE_TYPES.has(event.type)
+}
+
 /** @param {string} bufferKey */
 export function noteBufferMatch(bufferKey) {
   _bufferMatches.set(bufferKey, (_bufferMatches.get(bufferKey) || 0) + 1)

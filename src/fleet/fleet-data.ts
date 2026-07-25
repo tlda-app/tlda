@@ -4,7 +4,7 @@ import { labelsForAgent } from '../../shared/fleet-labels.mjs'
 // @ts-ignore - shared JS module
 import { isRuntimeAwake } from '../../shared/fleet-runtime-status.mjs'
 import { setLiveStoreObserver } from '../../shared/live-store.ts'
-import { noteBufferDrop, noteDisposedViewTouched, noteViewRef, startFreezeCensus, filterNameIds, noteBufferMatch } from './chat-freeze-probe.mjs'
+import { noteBufferDrop, noteDisposedViewTouched, noteViewRef, startFreezeCensus, filterNameIds, noteBufferMatch, isRenderableInPanel } from './chat-freeze-probe.mjs'
 import { noteClientVerdict } from './filter-equivalence.mjs'
 import { hasChatSubscription } from './chat-subscription.mjs'
 import { getLastEventId } from './fleet-data.mjs'
@@ -212,12 +212,17 @@ function fanoutEventToBuffers(event: FleetEvent): void {
     // fabricate a server-missed disagreement for every event while it is
     // off-screen — and that direction is unthrottled because it is supposed to
     // have no benign explanation.
-    if (event.type === 'chat' && hasChatSubscription(bufferKey)) {
-      noteClientVerdict(bufferKey, event.id, belongs)
+    // Live deliveries only, and only while a subscription exists. Either gate
+    // missing turns server-missed — the direction reported unthrottled because
+    // it has no benign explanation — into noise with two.
+    if (_liveDeliveryDepth > 0 && event.type === 'chat' && hasChatSubscription(bufferKey)) {
+      noteClientVerdict(bufferKey, event.id, belongs, JSON.stringify(buffer.filter ?? null))
     }
     if (belongs) {
-      // Count LIVE deliveries only — see _bulkIngestDepth above.
-      if (_bulkIngestDepth === 0) noteBufferMatch(bufferKey)
+      // Count LIVE deliveries the panel would actually RENDER — see the
+      // _bulkIngestDepth note above for history, and isRenderableInPanel for the
+      // types the buffer accepts but chatMessages drops.
+      if (_bulkIngestDepth === 0 && isRenderableInPanel(event)) noteBufferMatch(bufferKey)
       buffer.store.upsert(event)
       if (buffer.pinned) trimEventBuffer(buffer)
     } else {
@@ -269,6 +274,18 @@ export function upsertFleetEvent(event: Record<string, unknown> | null | undefin
 // That is what produced matchGap frozen at 218 across three reports on
 // 2026-07-25; those records are inflated and are not evidence of anything.
 let _bulkIngestDepth = 0
+
+// Only the WS fleet-event handler is a LIVE delivery. Reconnect backfill and
+// scrollback reach fanoutEventToBuffers through the same functions, with
+// _bulkIngestDepth at 0 — so depth alone cannot tell them apart, and a
+// backfilled event recorded as a client verdict is a server-missed disagreement
+// the server was never going to answer. chief3 caught exactly that: six records
+// for event ids ~15,000 behind the head, all in one second.
+let _liveDeliveryDepth = 0
+export function inLiveDelivery<T>(fn: () => T): T {
+  _liveDeliveryDepth += 1
+  try { return fn() } finally { _liveDeliveryDepth -= 1 }
+}
 
 export function upsertFleetEvents(events: readonly Record<string, unknown>[]): void {
   _bulkIngestDepth += 1

@@ -51,7 +51,10 @@ export function subscribeChat(filter, window, onEvents, { humanId = null, humanN
   // the same conversation, so the equivalence comparator can line up the two
   // verdicts for one event. Without it the two streams are keyed differently and
   // cannot be compared at all.
-  _subs.set(subId, { filter, window, onEvents, humanId, humanName, correlationKey })
+  // filterKey is stored because dispatchFilterEvent read sub.filterKey and it
+  // was never set — every disagreement record came out with filterKey: null,
+  // which is the field you need to know WHICH panel disagreed.
+  _subs.set(subId, { filter, window, onEvents, humanId, humanName, correlationKey, filterKey: JSON.stringify(filter ?? null) })
   if (_send) {
     try {
       _send('subscribe-filter', { subId, filter, humanId, humanName })
