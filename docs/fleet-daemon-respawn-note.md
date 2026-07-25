@@ -95,3 +95,45 @@ Check `TLDA_CONFIG` per pid before concluding otherwise:
 ```bash
 pgrep -f fleet-daemon | while read p; do ps eww $p | tr ' ' '\n' | grep ^TLDA_CONFIG=; done
 ```
+
+### Why `bootstrap` fails: agents cannot register launchd jobs at all
+
+The `5: Input/output error` is not about the plist, the label, or the daemon.
+**Agent shells run in the wrong launchd domain.**
+
+```
+$ launchctl managername     → Background      (Skip's GUI session is "Aqua")
+$ launchctl manageruid      → 501
+$ ps -o sess= -p $$         → 0               (no audit session)
+
+$ launchctl print gui/501/com.tlda.fleet-daemon.stable  → works (domain = gui/501 [100003])
+$ launchctl bootstrap gui/501 <any plist>               → Bootstrap failed: 5: Input/output error
+```
+
+`gui/501` is **readable** from a Background-session process but not **writable**.
+Proven with a control: a probe plist with a fresh label whose `ProgramArguments`
+were `/bin/echo` — nothing to do with tlda — failed with the identical error. So
+it is neither this label nor this program; **no job of any kind can be
+bootstrapped into `gui/501` from an agent shell.** `sudo` is not available either,
+so `launchctl asuser` is not a route.
+
+**Consequences, both load-bearing:**
+
+- **Any fix that depends on an agent running `launchctl bootstrap` will always
+  fail.** Do not write one. Supervision has to come from something already inside
+  the login session.
+- **`~/Library/LaunchAgents/*.plist` is auto-bootstrapped at login**, so the job
+  returns by itself on next login/reboot. If a label is missing mid-session,
+  something *booted it out* during this session — that is the thing to find, not
+  the registration.
+
+**To register it now, from Skip's GUI session (a terminal he opened), one command:**
+
+```bash
+launchctl bootstrap gui/501 ~/Library/LaunchAgents/com.tlda.fleet-daemon.plist
+launchctl print gui/501/com.tlda.fleet-daemon | head -5   # expect state = running
+```
+
+Until then `mini:default` runs unsupervised and `mini:stable` does not, which is
+the asymmetry that makes the two-environment pair unreliable: one config error
+takes both down, and only one comes back on its own.
