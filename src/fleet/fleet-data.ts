@@ -142,9 +142,20 @@ function eventBuffer(
     if (!buffer.serverFed) seedEventBuffer(buffer)
     return buffer
   }
+  // A server-fed buffer is emptied when its FILTER changes and at no other time.
+  // The server is about to answer a different question, so rows belonging to the
+  // old filter must go or the panel shows a mix of two.
+  //
+  // It must NOT be emptied on a reconnect. That is the same filter being
+  // re-answered, and clearing it makes the list empty and refill, which drops
+  // the reader wherever the scroller lands — Skip was at the bottom of his chat
+  // and got thrown to the top by a reconnect. Merging by id leaves his position
+  // alone and converges to the same contents.
+  const filterChanged = JSON.stringify(buffer.filter ?? null) !== JSON.stringify(filter ?? null)
   buffer.filter = filter
   buffer.matchesFilter = matchesFilter
   if (!buffer.serverFed) reconcileEventBuffer(buffer)
+  else if (filterChanged) buffer.store.bulk(store => { for (const e of store.all()) store.remove(e.id) })
   return buffer
 }
 
@@ -174,20 +185,20 @@ function reconcileEventBuffer(buffer: EventBuffer): void {
  * subscription's correlationKey, which is the panel's own buffer key — the two
  * were already the same string, because the comparator needed them to line up.
  *
- * Refiltering replaces the contents: the server answers the NEW filter from
- * scratch, so keeping the old rows would leave a panel showing a mix of two
- * filters, which is the "refilter to unstick it" path making things worse.
+ * Always MERGES by id, never replaces. A reconnect re-sends the same
+ * subscription and gets the same history back, so replacing emptied and refilled
+ * the list under a reader who had asked for nothing — and threw them to the top
+ * of their chat. Clearing on a genuine filter change happens in eventBuffer(),
+ * which is the only place that knows the filter actually changed.
  */
 export function applyFilterEvents(
   bufferKey: string,
   events: readonly Record<string, unknown>[],
-  opts: { replace?: boolean } = {}
 ): number {
   const buffer = eventBuffers.get(bufferKey)
   if (!buffer || !buffer.serverFed) return 0
   let added = 0
   buffer.store.bulk((store) => {
-    if (opts.replace) for (const event of store.all()) store.remove(event.id)
     for (const raw of events) {
       const event = asFleetEvent(raw)
       if (!store.get(event.id)) added++

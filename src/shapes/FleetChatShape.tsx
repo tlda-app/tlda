@@ -6006,10 +6006,15 @@ function useChatFilterSubscription(shape: any) {
       dnf,
       CHAT_FIRST_PAGE,
       // The panel's rows land in the panel's own buffer, which is what
-      // useFleetEvents already reads. A history page REPLACES — the server has
-      // just answered this filter from scratch, so anything left over belongs to
-      // the previous filter.
-      (events, meta) => { receiveFilterEvents(bufferKey, events, { replace: meta.reason === 'history' }) },
+      // useFleetEvents already reads. Always MERGE by id — never replace.
+      //
+      // A history page used to replace the buffer, on the reasoning that the
+      // server had answered this filter from scratch. But a reconnect re-sends
+      // the same subscription and gets the same history, so replacing emptied
+      // and refilled the list under a reader who had not asked for anything —
+      // and the scroller went to the top. Clearing on a genuine filter CHANGE is
+      // handled where the filter is known, in fleet-data's eventBuffer.
+      (events) => { receiveFilterEvents(bufferKey, events) },
       { humanId: getHumanId(), humanName: getHumanName(), correlationKey: bufferKey },
     )
   }, [dnf, shape.id])

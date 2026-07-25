@@ -1497,10 +1497,10 @@ function toRenderableChatEvents(rows) {
  * server-fed chat panel — history page and live push both land here, converted
  * the same way, so a message renders identically whichever way it arrived.
  */
-export function receiveFilterEvents(bufferKey, rows, { replace = false } = {}) {
+export function receiveFilterEvents(bufferKey, rows) {
   if (!bufferKey) return 0
-  const added = applyFilterEvents(bufferKey, toRenderableChatEvents(rows), { replace })
-  if (added || replace) notify('messages', null)
+  const added = applyFilterEvents(bufferKey, toRenderableChatEvents(rows))
+  if (added) notify('messages', null)
   return added
 }
 
