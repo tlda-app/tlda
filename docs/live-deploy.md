@@ -73,6 +73,35 @@ clean check does not dirty the deploy commit. The live Docker image copies
 `dist/`, so `npm run build` must happen before deploy or the server can ship
 stale frontend assets.
 
+### If the checkout is dirty with someone else's work
+
+Preflight requires the **main checkout on branch `main`, clean** — it rejects
+worktrees explicitly (`identity.isWorktree`), so "deploy from a clean worktree at
+the commit" is not available as a way around a dirty tree. In a shared checkout
+that other agents work in, the blocker is usually somebody's uncommitted WIP.
+
+The right first move is to get its owner to commit it. If that is not possible
+and the deploy is genuinely urgent, parking it is acceptable — but:
+
+**Parking someone's uncommitted work is a promise to restore it, and that promise
+has been broken more than once.** `git stash list` on this repo has carried
+entries like *"AGENTS.md process guard (not mine, stashing to unblock Gate2A
+deploy preflight)"* — parked by an agent that never came back for it. A stash is
+invisible: nobody discovers their work is missing until they look.
+
+So if you park it:
+
+1. **Back it up outside git first** — `git diff HEAD -- <paths> > <scratch>/wip.patch`.
+   A stash you forget is recoverable only if you knew it existed.
+2. Stash **only the specific paths** that block preflight, never a bare `git stash`.
+3. Use a stash message naming who parked it and why.
+4. **Restore in the same session, and verify it** — diff the restored tree against
+   the backup patch and confirm they match. Do not assume `stash pop` was clean.
+5. Say in your report that you moved someone's work, and that you restored it.
+
+If you cannot commit to steps 1–5 before you start, do not stash — wait, or hand
+the deploy to someone who can.
+
 ## Deploy
 
 ```bash

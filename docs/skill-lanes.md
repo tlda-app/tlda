@@ -30,6 +30,18 @@ files are `lane-math.md`, `lane-app.md`, `lane-ops.md`, and `lane-guidance.md`.
 In tlda, `.CLAUDE.md` includes the app-lane reference and `bin/gen-agents.mjs`
 expands those includes into `AGENTS.md`.
 
+> **Unfinished change in flight (noted 2026-07-25).** There is an uncommitted
+> consolidation sitting in the shared `~/work/tlda` checkout that **deletes
+> `.CLAUDE.md`, `bin/gen-agents.mjs`, and `reference/lane-app.md`** and inlines
+> the guidance directly into `AGENTS.md` (`+14 / -242`). If that lands, the
+> paragraph above is wrong — there is no generator and no include to expand.
+>
+> It is incomplete: this file was never updated, and the work had been sitting
+> uncommitted and untouched for over five hours when it blocked a live deploy.
+> Whoever owns it should either finish it — including this paragraph — or drop
+> it, rather than leaving it parked in a shared tree where the next deploy has
+> to stash it and every reader here gets a stale mechanism.
+
 Lane routing decides which guidance a project receives. It does not currently
 select a generated per-lane skill directory.
 
