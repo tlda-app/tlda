@@ -84,11 +84,6 @@ function saveAnchorOffsets(editor: Editor, panOffset: number, cameraY: number) {
   }
 }
 
-/** Mutable flag: true when the HUD overlay is expanded. Read by
- *  getShapeVisibility on the main editor to hide fleet shapes from
- *  hit-testing (they're rendered by the overlay instead). */
-export const fleetHudOpenRef = { current: false }
-
 interface FleetHUDProps {
   mainEditor: Editor
   shapeUtils: TLAnyShapeUtilConstructor[]
@@ -708,7 +703,6 @@ export function FleetHUD({
   // since updating shapes triggers fleetBounds recalc which re-runs this effect)
   useEffect(() => {
     const isOpen = !!(expanded && fleetBounds)
-    fleetHudOpenRef.current = isOpen
     if (isOpen) {
       document.body.classList.add('fleet-hud-open')
     } else {
@@ -716,7 +710,6 @@ export function FleetHUD({
     }
     return () => {
       document.body.classList.remove('fleet-hud-open')
-      fleetHudOpenRef.current = false
     }
   }, [expanded, fleetBounds])
 

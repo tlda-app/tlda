@@ -1197,6 +1197,19 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
           // Expose editor for debugging/puppeteer access
           ;(window as unknown as { __tldraw_editor__: Editor }).__tldraw_editor__ = editor
           editorRef.current = editor
+          // A hidden shape must not stay selected. TLDraw refuses to SELECT a
+          // hidden shape (hit-testing checks isShapeHidden) but never DESELECTS
+          // one that becomes hidden later, and the selection foreground draws
+          // from getSelectedShapeIds() with no visibility filter — so the drag
+          // handles render over a shape that isn't there. isShapeHidden is a
+          // reactive computed, so this re-runs whenever a verdict changes.
+          react('prune-hidden-from-selection', () => {
+            const ids = editor.getSelectedShapeIds()
+            if (ids.length === 0) return
+            const visible = ids.filter(id => !editor.isShapeHidden(id))
+            if (visible.length === ids.length) return
+            editor.run(() => editor.setSelectedShapes(visible), { history: 'ignore' })
+          })
           installLivePerfProbe(editor, document, roomId, {
             getSyncStatus: () => ({
               status: storeWithStatus.status,

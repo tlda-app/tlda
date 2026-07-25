@@ -17,6 +17,7 @@ import { convertChatEvent } from './convert-chat-event.mjs'
 export { convertChatEvent } from './convert-chat-event.mjs'
 import { matchesFleetFilter, resolveFleetFilter } from './filter-semantics.mjs'
 import { makeEventStore } from './event-store.mjs'
+import { bumpIdentityEpoch } from './identity-epoch.mjs'
 import {
   removeFleetEvent,
   removeFleetAgents,
@@ -414,6 +415,7 @@ async function initDeviceId() {
   } finally {
     _deviceReady = true
     if (_deviceReadyResolve) { _deviceReadyResolve(); _deviceReadyResolve = null }
+    bumpIdentityEpoch()
   }
 }
 
@@ -487,6 +489,7 @@ export async function login(name) {
   writeStoredIdentity(res.name)
   clearTemporaryIdentity()
   notify('identity', { type: 'identity', id: _humanId, name: _humanName })
+  bumpIdentityEpoch()
   _startHeartbeat()
   return res
 }
@@ -508,6 +511,7 @@ export async function registerHuman(name, { persist = true } = {}) {
     writeTemporaryIdentity(sanitized)
   }
   notify('identity', { type: 'identity', id: _humanId, name: _humanName })
+  bumpIdentityEpoch()
   _startHeartbeat()
   return res
 }
@@ -527,6 +531,7 @@ function retryStoredIdentity(storedName) {
       clearIdentityRetry()
       clearTemporaryIdentity()
       notify('identity', { type: 'identity', id: _humanId, name: _humanName })
+      bumpIdentityEpoch()
       _startHeartbeat()
     }).catch(() => {
       _identifyPending = true

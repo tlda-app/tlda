@@ -1,5 +1,7 @@
 // @ts-ignore — vanilla JS module
 import { getHumanId, getDeviceId, isDeviceReady } from '../fleet/fleet-data.mjs'
+// @ts-ignore — vanilla JS module
+import { readIdentityEpoch } from '../fleet/identity-epoch.mjs'
 import { FLEET_SHAPE_TYPES } from './fleet-panel-registry'
 
 export const FLEET_HUD_ANCHOR_ID = 'shape:fleet-hud-anchor' as const
@@ -29,6 +31,10 @@ export function isFleetShapeForOwnerKey(s: any, userId: string, deviceId: string
  * one; callers must not claim them as a fallback.
  */
 export function isMyFleetShape(s: any): boolean {
+  // Read the epoch so TLDraw's isShapeHidden computed captures it as a parent
+  // and re-runs when identity or device id changes. Without this the verdict
+  // is pinned at first evaluation.
+  readIdentityEpoch()
   if (!isDeviceReady()) return false
   const myId = getHumanId()
   const myDevice = getDeviceId()
