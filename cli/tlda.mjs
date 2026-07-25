@@ -203,7 +203,7 @@ const COMMAND_HELP = {
   daemon:  'tlda daemon [start|stop|status|log|run|install|uninstall]\n\n  Control the per-machine fleet daemon.\n  It watches project source directories and agent session activity,\n  then pushes events to the tlda server over WebSocket.',
   doctor:  'tlda doctor [--fix]\ntlda doctor yolo [--name yolo] --model <provider-model> [--kind codex] [--cwd /path] [--no-attach] [--dry-run]\n\n  Run a health check for local tools, server, SPA bundle, daemon, MCP setup,\n  project builds, and doc sync stores.\n\n  --fix  Apply the limited automatic repairs that doctor explicitly offers.\n\n  yolo   Break-glass: locally launch an unrestricted repair agent outside the\n         normal daemon/server/grant path. Deliberately shallow so it works when\n         the normal spawn path is broken.\n\n         --model names the provider model directly. --kind selects the harness\n         and defaults to codex. Run in a terminal and it attaches you into the\n         agent session when it comes up (--no-attach to skip). Non-interactive\n         calls report the local tmux session and local mint id; they do not claim\n         a fleet-recipient binding.',
   'repo-doctor': 'tlda doc repo-doctor <project> [--rescue|--apply|--rollback|--cleanup]\n\n  Diagnose a project source repo for tlda-induced damage.\n  No flag: diagnose only (read-only).\n  --rescue   Compute a rescue plan (dry run).\n  --apply    Execute the rescue plan.\n  --rollback Roll back a previous rescue apply.\n  --cleanup  Clean rescue apply state.',
-  config:  'tlda config [apply | set <key> <value> | get [key]]\n\n  apply  Reconcile launchd jobs to daemon.yaml, bots.yaml, and the installed server job.\n  set    Manage CLI preferences.\n  get    Show CLI preferences.',
+  config:  'tlda config [apply | set <key> <value> | get [key]]\n\n  apply  Reconcile launchd jobs to daemon.yaml, bots.yaml, and the installed server job.\n         --dry-run       show the plan without writing plists or running launchctl.\n         --only <label>  apply only jobs whose label contains <label>, to stage one at a time.\n  set    Manage CLI preferences.\n  get    Show CLI preferences.',
 }
 
 // Flags that take a value (--flag value). All others are boolean.
@@ -212,7 +212,7 @@ const VALUE_FLAGS = new Set([
   'session', 'target', 'timeout', 'id', 'book', 'worktree', 'port', 'browser',
   'model', 'cwd', 'effort', 'mode', 'name', 'kind',
   'agent-id', 'policy', 'permissions', 'machine', 'limit', 'from', 'poll', 'config',
-  'label', 'plist',
+  'label', 'plist', 'only',
 ])
 
 const SPAWN_BOOLEAN_FLAGS = new Set([
@@ -1506,10 +1506,32 @@ function printApplyGroup(title, jobs) {
 async function cmdConfigApply() {
   requireLaunchd()
   const dryRun = hasFlag('dry-run')
+  const only = getFlag('only')
   const desired = desiredLaunchdJobs()
   const existing = existingManagedLaunchdJobs()
   const plan = planLaunchdApply({ desiredJobs: desired, existingJobs: existing })
   const failures = []
+
+  // --only <label-substring> narrows the apply to the jobs whose label matches,
+  // so a supervision change can be staged on one job and observed before the
+  // rest move. Without it this command is all-or-nothing across every managed
+  // job, which is not something you want to be true the first time a plist's
+  // launch model changes.
+  if (only) {
+    const match = label => label.includes(only)
+    let kept = 0
+    for (const group of ['add', 'update', 'remove', 'unchanged']) {
+      const before = plan[group].length
+      plan[group] = plan[group].filter(job => match(job.label))
+      kept += plan[group].length
+      const dropped = before - plan[group].length
+      if (dropped) console.log(dim(`Filtered out ${dropped} ${group} job(s) not matching --only ${only}`))
+    }
+    if (!kept) {
+      console.error(red(`--only ${only} matched no managed launchd job.`))
+      process.exit(1)
+    }
+  }
 
   if (dryRun) console.log(yellow('Dry run: no plists written and no launchctl commands run.'))
   console.log(`Declaration: ${CONFIG_DIR}`)
