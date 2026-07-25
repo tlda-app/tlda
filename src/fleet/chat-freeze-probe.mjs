@@ -25,10 +25,17 @@ import { log } from '../logger'
 
 const NS = 'chat-freeze'
 
-// A panel is "stalled" when its own last message id has not moved while the
-// transport's high-water mark has advanced past this many events. Sized so an
-// ordinary quiet moment (nobody talking) never trips it — only a panel that is
-// demonstrably behind a live stream does.
+// A panel is "stalled" when its own last message id has not moved while events
+// THAT MATCH ITS OWN FILTER kept arriving. The first version of this compared
+// against the GLOBAL transport high-water mark, which made every quiet filter
+// look broken: 25 global events pass in seconds on this fleet, so any panel that
+// simply had nothing to show for 20s was reported stalled. All 122 records it
+// produced on 2026-07-25 were false positives. The gap must be measured in the
+// panel's own stream, and 2 is a real threshold there — a panel that missed two
+// of its own messages is broken, not quiet.
+const STALL_MATCH_GAP = 2
+// Retained only for noteSnapshot, which legitimately asks "did the whole stream
+// move while React got an identical array".
 const STALL_EVENT_GAP = 25
 // ...and only after this long, so a slow render or a paused React tick is not
 // reported as a freeze.
@@ -37,13 +44,29 @@ const STALL_MIN_MS = 20_000
 // the repeats only establish how long it lasted.
 const STALL_REPEAT_MS = 60_000
 
-/** @type {Map<string, {lastDbId: number|null, count: number, eventIdAtLastChange: number, tAtLastChange: number, stalledReportedAt: number, stalled: boolean}>} */
+// How many events have matched each buffer's filter. Incremented by the fanout's
+// MATCHING branch, so it counts exactly the messages this panel was supposed to
+// receive — the denominator the stall check was missing.
+/** @type {Map<string, number>} */
+const _bufferMatches = new Map()
+
+/** @param {string} bufferKey */
+export function noteBufferMatch(bufferKey) {
+  _bufferMatches.set(bufferKey, (_bufferMatches.get(bufferKey) || 0) + 1)
+}
+
+/** @param {string|null|undefined} bufferKey */
+export function bufferMatchCount(bufferKey) {
+  return bufferKey ? (_bufferMatches.get(bufferKey) || 0) : 0
+}
+
+/** @type {Map<string, {lastDbId: number|null, count: number, eventIdAtLastChange: number, matchesAtLastChange: number, tAtLastChange: number, stalledReportedAt: number, stalled: boolean}>} */
 const _panels = new Map()
 
 function panelState(panelId) {
   let s = _panels.get(panelId)
   if (!s) {
-    s = { lastDbId: null, count: -1, eventIdAtLastChange: 0, tAtLastChange: Date.now(), stalledReportedAt: 0, stalled: false }
+    s = { lastDbId: null, count: -1, eventIdAtLastChange: 0, matchesAtLastChange: 0, tAtLastChange: Date.now(), stalledReportedAt: 0, stalled: false }
     _panels.set(panelId, s)
   }
   return s
@@ -69,6 +92,7 @@ export function notePanelTail(panelId, s) {
     st.lastDbId = s.lastDbId
     st.count = s.messageCount
     st.eventIdAtLastChange = s.lastEventId
+    st.matchesAtLastChange = bufferMatchCount(s.bufferKey)
     st.tAtLastChange = now
     st.stalled = false
     st.stalledReportedAt = 0
@@ -81,10 +105,12 @@ export function notePanelTail(panelId, s) {
     return
   }
 
-  // Tail unchanged. Is the transport still moving?
+  // Tail unchanged. Did events matching THIS PANEL'S filter arrive anyway?
+  // A quiet filter contributes nothing here and stays silent by construction.
+  const matchGap = bufferMatchCount(s.bufferKey) - st.matchesAtLastChange
   const eventGap = s.lastEventId - st.eventIdAtLastChange
   const stalledMs = now - st.tAtLastChange
-  if (eventGap < STALL_EVENT_GAP || stalledMs < STALL_MIN_MS) return
+  if (matchGap < STALL_MATCH_GAP || stalledMs < STALL_MIN_MS) return
   if (st.stalledReportedAt && now - st.stalledReportedAt < STALL_REPEAT_MS) return
 
   st.stalled = true
@@ -95,6 +121,7 @@ export function notePanelTail(panelId, s) {
     lastDbId: s.lastDbId,
     messageCount: s.messageCount,
     lastEventId: s.lastEventId,
+    matchGap,
     eventGap,
     stalledMs,
     filterKey: s.filterKey,
