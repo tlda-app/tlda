@@ -217,6 +217,31 @@ distribution** rather than from a guess about what counts as slow. A 200 ms thre
 picked before anyone had seen his numbers sat above nearly everything he actually feels
 (p50 72 ms, p90 248 ms).
 
+**The general rule — the question decides the instrument.** Playwright is not banned; he
+was explicit about that:
+
+> "Sure, you can use Playwright if you're developing UI features and you're able to use it
+> effectively. But if you're trying to understand what's going on for me —"
+
+So:
+
+| the question | the instrument |
+|---|---|
+| I changed a widget — does it render right? | your own browser, on a document he is **not** in, released when the check ends |
+| What is it doing for **him** right now? | `screenshot(doc, target: "screen")` — his whole visible area, through the viewer |
+| What is it **logging** for him? | `~/.config/tlda/client.log` — every `log.*` call from his tab, no DevTools needed |
+| Is it **slow** for him? | the client profiler on his session |
+
+Building a widget is the only reason to open a browser of our own. Any question whose
+subject is *his experience* is answered from *his session* — his screen, his log, his
+profile. A second browser is a different machine in a different state, and reporting it
+back is reporting on yourself.
+
+Note what this makes unnecessary: an agent almost never needs to "go look at the app." The
+label-width bug on 2026-07-25 was found by reading a diff and counting characters in a
+monospace font; the event-volume question was one SQL query; the stall stacks came from his
+session. Nobody needed to open anything.
+
 ## Don't change his shit. Renaming a label is changing it.
 
 > "This is just one of those things where the rules don't change my shit. In fact that is
