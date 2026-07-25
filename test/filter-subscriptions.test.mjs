@@ -204,3 +204,36 @@ test('the module contains no raw NUL bytes — it must stay text to git', async 
   const buf = readFileSync(fileURLToPath(new URL('../server/lib/filter-subscriptions.mjs', import.meta.url)));
   assert.equal(buf.includes(0), false, 'raw NUL byte in source — use the escape sequence');
 });
+
+test('re-subscribing a subId with a NEW filter replaces it — no duplicate delivery', () => {
+  // Answering a question chat-lock asked about this registry, which their
+  // identity re-send fix depends on. Their case (same subId, same filter,
+  // updated identity) was already correct. The case neither of us checked was
+  // not: a panel that REFILTERS kept its old entry under the old filterKey, so
+  // it matched both filters and received every qualifying event twice.
+  //
+  // Refiltering is the workaround people reach for when a panel looks stuck,
+  // which is exactly when duplicate delivery would land.
+  const s = createFilterSubscriptions({ getAgents: agents });
+  const conn = { id: 'tab' };
+  s.subscribe(conn, 'p', [[['from', 'chief2']]], { humanId: SKIP, humanName: 'skip' });
+  s.subscribe(conn, 'p', [[['to', 'chief2']]], { humanId: SKIP, humanName: 'skip' });
+  assert.deepEqual(s.stats(), { distinctFilters: 1, subscriptions: 1, connections: 1 },
+    'the old filter entry survived the refilter');
+  assert.equal(s.match(chat(CHIEF.id, SKIP)).length, 0,
+    'the replaced from: filter still matched — a stale entry is still delivering');
+  assert.equal(s.match(chat(SKIP, CHIEF.id)).length, 1);
+});
+
+test('re-subscribing the SAME filter updates identity in place', () => {
+  // The identity-refresh path chat-lock built. dm: cannot match a null humanId,
+  // so this is the difference between a dead subscription and a live one.
+  const s = createFilterSubscriptions({ getAgents: agents });
+  const conn = { id: 'tab' };
+  const F = [[['dm', 'chief2']]];
+  s.subscribe(conn, 'p', F, { humanId: null, humanName: null });
+  assert.equal(s.match(chat(CHIEF.id, SKIP)).length, 0, 'a null identity cannot match dm:');
+  s.subscribe(conn, 'p', F, { humanId: SKIP, humanName: 'skip' });
+  assert.equal(s.match(chat(CHIEF.id, SKIP)).length, 1, 'the re-send must revive it');
+  assert.deepEqual(s.stats(), { distinctFilters: 1, subscriptions: 1, connections: 1 });
+});
