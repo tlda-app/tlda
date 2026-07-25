@@ -201,6 +201,22 @@ That second one is the worse half: an agent tab does not just cost him performan
 contaminates the instrument someone else is reading. Verifying on his live document and
 leaving the tab open turns your own presence into the finding.
 
+**And for performance specifically, his instruction is to stop using an agent browser at
+all:**
+
+> "If you wonder if performance is shitty, use my fucking browser."
+
+A performance question is answered from **his** session — the client profiler and
+`~/.config/tlda/client.log` — never from a tab you opened. An agent browser is a different
+machine, a different page state, a different workload, and it is measurably *heavier* than
+his. Profiling one tells you about the agent, not about the app he is using.
+
+The instrument follows from that: skip any session where `?pw=1` or `navigator.webdriver`
+is set, so the whole budget goes to real users, and set thresholds from **his measured
+distribution** rather than from a guess about what counts as slow. A 200 ms threshold
+picked before anyone had seen his numbers sat above nearly everything he actually feels
+(p50 72 ms, p90 248 ms).
+
 ## Don't change his shit. Renaming a label is changing it.
 
 > "This is just one of those things where the rules don't change my shit. In fact that is
