@@ -100,6 +100,17 @@ or "for display", the answer was decided before you got here: no.
 
 > "The server needs to know which daemon owns the agent, and that's it."
 
+**Amended by Skip the same night:** *"I said the server doesn't need to know what model
+shit is, but it actually kind of does. Just for display."* Model belongs server-side
+because Skip has to see it — the UI is served from there, so display facts are the
+server's business.
+
+The line is **operational vs. display**, not server vs. daemon-holds-nothing. Session
+ids, tmux, launch recipes and cursors are operational and local: the server never needs
+them to do anything. Model, friendly name, and a wakeable indicator are things a person
+reads on a screen. When in doubt, ask whether the server needs it to *act* or Skip needs
+it to *look at*.
+
 The server holds the agent id, which daemon owns it, and the friendly name. Not the
 session id, not session lists, not resume ids, not tmux information.
 
