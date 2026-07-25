@@ -188,7 +188,24 @@ export function noteProjection(branch, lastEventId) {
  */
 const _drops = new Map()
 const DROP_ROLLUP_MS = 60_000
-export function noteBufferDrop(bufferKey, lastEventId) {
+/** @param {string} bufferKey @param {number} lastEventId @param {Record<string,unknown>|null} [suspect] */
+export function noteBufferDrop(bufferKey, lastEventId, suspect = null) {
+  // The self-checking half. A drop is only interesting when the filter names an
+  // AGENT BY NAME and a participant's id is absent from the roster — because
+  // labelSetForParticipant then answers only to the raw id, the name term
+  // cannot match, and the event is removed from this panel permanently while
+  // radio (which never runs the filter) still shows it. Caller supplies the
+  // verdict; null means an ordinary, correct drop.
+  //
+  // This is the discriminator between the two live theories: a burst of these
+  // at session start that then stops is a hydration race; a permanent stream on
+  // one bufferKey is a name that never resolves.
+  if (suspect) {
+    log.metric(NS, 'DROPPED a chat event whose participant is not in the roster', {
+      bufferKey, lastEventId, ...suspect,
+    })
+    return
+  }
   const now = Date.now()
   let d = _drops.get(bufferKey)
   if (!d) { d = { n: 0, since: now }; _drops.set(bufferKey, d) }

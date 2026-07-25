@@ -143,6 +143,46 @@ function reconcileEventBuffer(buffer: EventBuffer): void {
   })
 }
 
+// Is this drop the unhydrated-participant case? Returns a diagnostic payload
+// when the buffer's filter names an agent BY NAME and one of the event's
+// participants is a fleet: id absent from the roster — the exact condition
+// under which labelSetForParticipant (filter-semantics.mjs:9) answers only to
+// the raw id, so a name term cannot match. Returns null for ordinary drops
+// (every panel correctly rejects most traffic).
+//
+// Cheap by construction: only runs on the reject branch, and only for chat.
+function unresolvedParticipantDrop(buffer: EventBuffer, event: FleetEvent): Record<string, unknown> | null {
+  if (event.type !== 'chat') return null
+  const filter = buffer.filter as unknown[] | null
+  if (!Array.isArray(filter) || filter.length === 0) return null
+
+  const namesInFilter: string[] = []
+  for (const clause of filter) {
+    if (!Array.isArray(clause)) continue
+    for (const term of clause) {
+      const label = Array.isArray(term) ? term[1] : term
+      if (typeof label === 'string' && label && !label.startsWith('fleet:')) namesInFilter.push(label)
+    }
+  }
+  if (namesInFilter.length === 0) return null
+
+  const roster = getFleetAgents()
+  const participants = [event.from, event.to].filter(
+    (p): p is string => typeof p === 'string' && p.startsWith('fleet:')
+  )
+  const unresolved = participants.filter((id) => !roster.some((a: FleetAgent) => a.id === id))
+  if (unresolved.length === 0) return null
+
+  return {
+    eventDbId: event._dbId ?? null,
+    from: event.from ?? null,
+    to: event.to ?? null,
+    unresolved,
+    namesInFilter,
+    rosterSize: roster.length,
+  }
+}
+
 function fanoutEventToBuffers(event: FleetEvent): void {
   for (const [bufferKey, buffer] of eventBuffers) {
     if (buffer.matchesFilter(buffer.filter, event)) {
@@ -150,7 +190,7 @@ function fanoutEventToBuffers(event: FleetEvent): void {
       if (buffer.pinned) trimEventBuffer(buffer)
     } else {
       buffer.store.remove(event.id)
-      noteBufferDrop(bufferKey, getLastEventId())
+      noteBufferDrop(bufferKey, getLastEventId(), unresolvedParticipantDrop(buffer, event))
     }
   }
 }
