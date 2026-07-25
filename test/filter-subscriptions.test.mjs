@@ -106,3 +106,50 @@ test('two connections with the same filter still cost one evaluation', () => {
   assert.equal(matched.length, 2);
   assert.equal(matched.evaluations, 1, 'clause order must not split the evaluation');
 });
+
+// --- regressions from chat-lock's adversarial review of 150448ee ---
+
+test('humanName reaches the evaluator — a filter naming the human by name matches', () => {
+  // Defect 1: match() built { agents, humanId } while the browser passes
+  // { agents, humanId, humanName }. Without humanName the human answers to the
+  // label `user` instead of their own name, so one file behaved two ways.
+  const subs = createFilterSubscriptions({ getAgents: agents });
+  subs.subscribe({}, 'p', [[['from', 'skip']]], { humanId: SKIP, humanName: 'skip' });
+  assert.equal(subs.match(chat(SKIP, CHIEF.id)).length, 1,
+    'the human must answer to their own name, not to "user"');
+});
+
+test('verdict() answers the same question as match(), for live/history equivalence', () => {
+  const subs = createFilterSubscriptions({ getAgents: agents });
+  const filter = [[['from', 'chief2']]];
+  subs.subscribe({}, 'p', filter, { humanId: SKIP, humanName: 'skip' });
+  const event = chat(CHIEF.id, SKIP);
+  assert.equal(subs.verdict(filter, event, { humanId: SKIP, humanName: 'skip' }), true);
+  assert.equal(subs.match(event).length, 1);
+  const other = chat(TODD.id, SKIP);
+  assert.equal(subs.verdict(filter, other, { humanId: SKIP, humanName: 'skip' }), false);
+  assert.equal(subs.match(other).length, 0);
+});
+
+test('unsubscribe does not leak filter keys into byConn', () => {
+  // Defect 2: unsubscribe cleaned byFilter and never touched byConn, so a
+  // long-lived socket accumulated dead keys as its panels opened and refiltered.
+  const subs = createFilterSubscriptions({ getAgents: agents });
+  const conn = { id: 'long-lived' };
+  for (let i = 0; i < 50; i++) {
+    subs.subscribe(conn, 'panel', [[['from', `agent-${i}`]]], { humanId: SKIP });
+    subs.unsubscribe(conn, 'panel');
+  }
+  assert.deepEqual(subs.stats(), { distinctFilters: 0, subscriptions: 0, connections: 0 },
+    'a socket that subscribes and unsubscribes 50 times must retain nothing');
+});
+
+test('unsubscribing one panel keeps the connection alive for its others', () => {
+  const subs = createFilterSubscriptions({ getAgents: agents });
+  const conn = { id: 'tab' };
+  subs.subscribe(conn, 'a', [[['from', 'chief2']]], { humanId: SKIP });
+  subs.subscribe(conn, 'b', [[['from', 'todd']]], { humanId: SKIP });
+  subs.unsubscribe(conn, 'a');
+  assert.deepEqual(subs.stats(), { distinctFilters: 1, subscriptions: 1, connections: 1 });
+  assert.equal(subs.match(chat(TODD.id, SKIP)).length, 1);
+});
