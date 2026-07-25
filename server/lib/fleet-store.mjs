@@ -1490,10 +1490,18 @@ export class FleetStore {
 
     // Event queries for chat history
     const E = this._EVT;
+    // Selection is always DESC — the newest rows are the page — and the final
+    // order is applied by an outer sort so callers never reverse an array.
     this._queryEventsBefore = this.db.prepare(`
+      SELECT * FROM (SELECT ${E} FROM events WHERE timestamp < ? ORDER BY timestamp DESC LIMIT ?) ORDER BY timestamp ASC
+    `);
+    this._queryEventsBeforeDesc = this.db.prepare(`
       SELECT ${E} FROM events WHERE timestamp < ? ORDER BY timestamp DESC LIMIT ?
     `);
     this._queryEventsLatest = this.db.prepare(`
+      SELECT * FROM (SELECT ${E} FROM events ORDER BY timestamp DESC LIMIT ?) ORDER BY timestamp ASC
+    `);
+    this._queryEventsLatestDesc = this.db.prepare(`
       SELECT ${E} FROM events ORDER BY timestamp DESC LIMIT ?
     `);
     // Agent-scoped history matches the exact requested fleet ids. The SQL has
@@ -3716,7 +3724,15 @@ export class FleetStore {
 
   // `agents` is the exact set of fleet ids the normal chat history is filtered to.
   // Broad name-history or lineage expansion belongs only in explicit search.
-  queryChatHistory({ before, agents, limit = 50 } = {}) {
+  // `order` is the order rows come back in, done in SQL.
+  //
+  // The newest rows are always what's wanted, so the inner query is DESC either
+  // way — that's what the (col, timestamp DESC) indexes are for. `order` only
+  // decides how the already-selected page is sorted on the way out. Doing it
+  // here means no caller reverses an array: the subscription's history walker
+  // wants newest-first, the panel wants chronological, and both just ask.
+  queryChatHistory({ before, agents, limit = 50, order = 'asc' } = {}) {
+    const outer = order === 'desc' ? 'DESC' : 'ASC';
     let rows;
     const ids = Array.isArray(agents) ? agents : [];
     if (ids.length > 0) {
@@ -3733,26 +3749,25 @@ export class FleetStore {
       // from) ∪ (top-n of to), so the result is identical. UNION (not UNION ALL)
       // dedupes rows where the id is both sender and recipient.
       if (before) {
-        const sql = `SELECT * FROM (
+        const sql = `SELECT * FROM (SELECT * FROM (
             SELECT * FROM (SELECT ${E} FROM events WHERE timestamp < ? AND from_id IN (${ph}) ORDER BY timestamp DESC LIMIT ?)
             UNION
             SELECT * FROM (SELECT ${E} FROM events WHERE timestamp < ? AND to_id IN (${ph}) ORDER BY timestamp DESC LIMIT ?)
-          ) ORDER BY timestamp DESC LIMIT ?`;
+          ) ORDER BY timestamp DESC LIMIT ?) ORDER BY timestamp ${outer}`;
         rows = this._query(this.db.prepare(sql), before, ...exactIds, limit, before, ...exactIds, limit, limit);
       } else {
-        const sql = `SELECT * FROM (
+        const sql = `SELECT * FROM (SELECT * FROM (
             SELECT * FROM (SELECT ${E} FROM events WHERE from_id IN (${ph}) ORDER BY timestamp DESC LIMIT ?)
             UNION
             SELECT * FROM (SELECT ${E} FROM events WHERE to_id IN (${ph}) ORDER BY timestamp DESC LIMIT ?)
-          ) ORDER BY timestamp DESC LIMIT ?`;
+          ) ORDER BY timestamp DESC LIMIT ?) ORDER BY timestamp ${outer}`;
         rows = this._query(this.db.prepare(sql), ...exactIds, limit, ...exactIds, limit, limit);
       }
     } else if (before) {
-      rows = this._query(this._queryEventsBefore, before, limit);
+      rows = this._query(outer === 'DESC' ? this._queryEventsBeforeDesc : this._queryEventsBefore, before, limit);
     } else {
-      rows = this._query(this._queryEventsLatest, limit);
+      rows = this._query(outer === 'DESC' ? this._queryEventsLatestDesc : this._queryEventsLatest, limit);
     }
-    rows.reverse(); // chronological
     return rows;
   }
 

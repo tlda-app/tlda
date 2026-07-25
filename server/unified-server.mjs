@@ -7388,15 +7388,15 @@ async function handleFleetWsMessage(ws, msg) {
         // would open a window where an event is in neither stream.
         filterSubscriptions.history(filter || null, {
           humanId, humanName, limit: window, before: msg.before || null,
-          // history() walks newest-first and cuts at `limit`, so it must be fed
-          // newest-first or it keeps the OLDEST matches and reports a cursor from
-          // the wrong end. queryChatHistory reverses to chronological for its own
-          // callers, so undo that here rather than changing a shared query.
+          // history() walks newest-first and cuts at `limit`, so it asks for
+          // newest-first — from SQL, not by reversing an array afterwards.
           queryPage: ({ before, agentIds, limit }) =>
-            fleetStore.queryChatHistory({ before, agents: agentIds, limit }).slice().reverse(),
+            fleetStore.queryChatHistory({ before, agents: agentIds, limit, order: 'desc' }),
         }).then(page => {
           if (ws.readyState !== 1) return
-          // Back to chronological for the panel, which renders oldest at the top.
+          // Chronological for the panel, which renders oldest at the top. This
+          // is the one place the page is turned around, and it is turning around
+          // a list the walker built, not undoing a sort the database did.
           const events = fleetStore.resolveChatRows(page.events.slice().reverse(), {
             serverOwnerId: SERVER_OWNER_ID, serverOwnerName: SERVER_OWNER_NAME,
           })
