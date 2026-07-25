@@ -31,6 +31,7 @@ import {
 } from './fleet-data.ts'
 import { log } from '../logger'
 import { noteProjection, recordFilterNameIds } from './chat-freeze-probe.mjs'
+import { dispatchFilterEvent, setChatSubscriptionTransport } from './chat-subscription.mjs'
 import { probe } from '../perf-probe'
 import { DATABASE_HTTP, DATABASE_WS } from '../activeConfig'
 import { isUsableIdentityName, sanitizeIdentityName, storedIdentityLoginFailureAction } from './identity-persistence.mjs'
@@ -1085,6 +1086,8 @@ export function connect() {
     // Roster/task lists are loaded independently; the socket stays clear for
     // request replies and incremental deltas.
     // Catch up on missed chat events
+    // subscribe/unsubscribe ride the same request transport as everything else.
+    setChatSubscriptionTransport((name, payload) => browserFleetTransport.ephemeral(name, payload))
     if (_lastEventId > 0) {
       const reconnectTimer = probe.start('reconnect', 'reconnect-backfill')
       browserFleetTransport.ephemeral('store-events', { after: _lastEventId, limit: 500 })
@@ -1231,6 +1234,13 @@ export function connect() {
           maybeShowRadioSubtitleForIncomingChat(event, _agents, _humanId)
         }
         notify('messages', isNew ? event : null)
+      } else if (eventType === 'filter-event') {
+        // The server's membership verdict for a subscribed filter. Additive: the
+        // unconditional `fleet-event` above still carries everything, so this
+        // stream exists purely to be compared against the client's own decision
+        // until that comparison runs quiet and the client's decision is deleted.
+        dispatchFilterEvent(data)
+        return
       } else if (eventType === 'event-update') {
         const ev = _store.get('db:' + data.id)
         if (ev) {
