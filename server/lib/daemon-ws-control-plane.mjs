@@ -20,6 +20,7 @@ export function createDaemonWsControlPlane({
   clock = () => new Date().toISOString(),
   setTimeoutFn = setTimeout,
   log = console,
+  onPermanentServerDaemonOutboxError = null,
 } = {}) {
   function isProcessedDaemonOutboxMessage(msg) {
     const outboxId = daemonOutboxId(msg)
@@ -67,6 +68,13 @@ export function createDaemonWsControlPlane({
     const outboxId = msg?.outbox_id
     if (!outboxId) return
     const daemonKey = serverDaemonOutboxInflight.get(outboxId)
+    const row = serverDaemonOutbox.get?.(outboxId) || null
+    if (msg.permanent === true) {
+      serverDaemonOutbox.ack(outboxId)
+      serverDaemonOutboxInflight.delete(outboxId)
+      onPermanentServerDaemonOutboxError?.({ outboxId, daemonKey, msg, row })
+      return
+    }
     serverDaemonOutbox.markError(outboxId, msg.error || 'receiver did not accept delivery')
     serverDaemonOutboxInflight.delete(outboxId)
     if (daemonKey) {

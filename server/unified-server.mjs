@@ -94,7 +94,7 @@ import { readBuildInfo } from './lib/build-info.mjs'
 import { resolveTimerParticipants, timerDeliveryFailureResult, timerTerminalInputFailureResult } from './lib/timer-routing.mjs'
 import { ServerTimerScheduler } from './lib/timer-scheduler.mjs'
 import { ServerDaemonOutbox } from './lib/server-daemon-outbox.mjs'
-import { AgentSeatBindingObligations, verifyAgentSeatBindingTerminal } from './lib/agent-seat-binding-obligations.mjs'
+import { AgentSeatBindingObligations, isRetirableStaleAgentSeatBindingObligation, verifyAgentSeatBindingTerminal } from './lib/agent-seat-binding-obligations.mjs'
 import { createDaemonWsControlPlane } from './lib/daemon-ws-control-plane.mjs'
 import { clearTrustedHeartbeatProbes, shouldSkipHeartbeatSweepForLag, shouldTerminateForMissedPong, socketCanAcceptMore } from '../shared/fleet-ws-flow.mjs'
 import {
@@ -7893,7 +7893,27 @@ const {
   daemonOutboxProcessedGetStmt: _daemonOutboxProcessedGetStmt,
   daemonOutboxProcessedInsertStmt: _daemonOutboxProcessedInsertStmt,
   socketCanAcceptMore,
+  onPermanentServerDaemonOutboxError: ({ msg, row, daemonKey }) => {
+    const obligationId = row?.payload?.obligation_id || msg?.obligation_id || null
+    const obligation = obligationId ? agentSeatBindingObligations.get(obligationId) : null
+    if (retireStaleAgentSeatBindingObligation(obligation, { reason: msg?.error || 'permanent receiver rejection' })) return
+    console.warn(`[agent-seat-binding] permanent receiver rejection retained obligation=${obligationId || 'unknown'} daemon=${daemonKey || 'unknown'}: ${msg?.error || 'receiver did not accept delivery'}`)
+  },
 })
+
+function retireStaleAgentSeatBindingObligation(obligation, { reason = 'stale binding obligation' } = {}) {
+  if (!obligation?.obligation_id) return false
+  const agent = fleetStore.findAgent?.(obligation.agent_id)
+  const currentSeat = fleetStore.getCurrentAgentSeat?.(obligation.agent_id)
+  if (!isRetirableStaleAgentSeatBindingObligation({ obligation, agent, currentSeat })) return false
+  const removed = agentSeatBindingObligations.remove(obligation.obligation_id)
+  const dedupeKey = `agent-seat-binding:${obligation.obligation_id}`
+  const removedOutbox = serverDaemonOutbox.deleteByDedupeKey?.(obligation.daemon_key, dedupeKey) || 0
+  if (removed || removedOutbox) {
+    console.warn(`[agent-seat-binding] retired stale obligation=${obligation.obligation_id} agent=${obligation.agent_id} daemon=${obligation.daemon_key} outbox=${removedOutbox} reason=${reason}`)
+  }
+  return removed
+}
 
 function knownDaemonKeys() {
   const keys = new Set([...daemonConnections.keys()])
@@ -8247,6 +8267,7 @@ async function handleDaemonWsMessage(ws, msg) {
     // Send persisted backing file watch list to daemon.
     sendWatchBackingFiles()
     for (const obligation of agentSeatBindingObligations.listForDaemon(daemonKey)) {
+      if (retireStaleAgentSeatBindingObligation(obligation, { reason: 'daemon welcome reap' })) continue
       enqueueDaemonMessage(daemonKey, {
         type: 'agent-seat-binding-obligation',
         ...obligation,

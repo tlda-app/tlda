@@ -84,8 +84,17 @@ export class ServerDaemonOutbox {
     this.queue.markError(id, error)
   }
 
+  get(id) {
+    return parseRow(this.queue.get(id))
+  }
+
   ack(id) {
     this.queue.ack(id)
+  }
+
+  deleteByDedupeKey(daemonKey, dedupeKey) {
+    if (!daemonKey || !dedupeKey) return 0
+    return this.deleteDedupeStmt.run(daemonKey, dedupeKey).changes
   }
 
   count() {

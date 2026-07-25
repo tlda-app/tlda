@@ -983,14 +983,14 @@ const pendingSeatBindings = createPendingSeatBindingManager({
 
 function hydratePendingSeatBindingObligation(obligation) {
   if (!obligation?.local_agent_id) {
-    throw new Error(`pending seat binding ${obligation?.obligation_id || 'unknown'} is missing local_agent_id`)
+    throw new PermanentPendingSeatBindingError(`pending seat binding ${obligation?.obligation_id || 'unknown'} is missing local_agent_id`)
   }
   const localLedger = createLocalAgentLedger(path.join(CONFIG_DIR, 'fleet-daemon.db'))
   try {
     const local = localLedger.get(obligation.local_agent_id)
     const tmuxSession = local?.process?.tmuxName || null
     if (!tmuxSession) {
-      throw new Error(`pending seat binding ${obligation.obligation_id} has no local tmux recipe for ${obligation.local_agent_id}`)
+      throw new PermanentPendingSeatBindingError(`pending seat binding ${obligation.obligation_id} has no local tmux recipe for ${obligation.local_agent_id}`)
     }
     return {
       ...obligation,
@@ -1183,7 +1183,16 @@ function errorServerDaemonOutboxMessage(msg, error) {
     type: SERVER_DAEMON_OUTBOX_ERROR_TYPE,
     outbox_id: outboxId,
     error: String(error?.message || error || 'receiver did not accept delivery'),
+    permanent: error?.permanent === true,
   })
+}
+
+class PermanentPendingSeatBindingError extends Error {
+  constructor(message) {
+    super(message)
+    this.name = 'PermanentPendingSeatBindingError'
+    this.permanent = true
+  }
 }
 
 function teardownWatchers({ jsonl = true } = {}) {

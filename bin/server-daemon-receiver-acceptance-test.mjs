@@ -47,6 +47,54 @@ test('receiver rejection retains the server outbox row and schedules retry', asy
   assert.deepEqual(sent, [{ type: 'agent-seat-binding-obligation' }])
 })
 
+test('permanent receiver rejection deletes the server outbox row without retry', async () => {
+  const inflight = new Map([['outbox-3', 'mini:testing']])
+  const errors = []
+  const acks = []
+  const attempts = []
+  const timers = []
+  const permanent = []
+  const row = {
+    id: 'outbox-3',
+    type: 'agent-seat-binding-obligation',
+    payload: { type: 'agent-seat-binding-obligation', obligation_id: 'obligation-1' },
+  }
+  const outbox = {
+    ack: id => acks.push(id),
+    markError: (id, error) => errors.push([id, error]),
+    get: id => id === 'outbox-3' ? row : null,
+    pendingForDaemon: () => [{ id: 'outbox-3', type: 'agent-seat-binding-obligation', payload: row.payload }],
+    markAttempt: id => attempts.push(id),
+  }
+  const control = createDaemonWsControlPlane({
+    daemonConnections: new Map([['mini:testing', { readyState: 1, send: () => {} }]]),
+    serverDaemonOutbox: outbox,
+    serverDaemonOutboxInflight: inflight,
+    setTimeoutFn: (fn, ms) => {
+      timers.push({ fn, ms })
+      return { unref() {} }
+    },
+    onPermanentServerDaemonOutboxError: event => permanent.push(event),
+  })
+
+  const result = await control.handleDaemonOutboxEnvelope(
+    { readyState: 1, send() {} },
+    { type: SERVER_DAEMON_OUTBOX_ERROR_TYPE, outbox_id: 'outbox-3', error: 'no local tmux recipe', permanent: true },
+    async () => { throw new Error('error control frame reached domain handler') },
+  )
+
+  assert.equal(result.kind, 'server-daemon-outbox-error')
+  assert.deepEqual(acks, ['outbox-3'])
+  assert.deepEqual(errors, [])
+  assert.equal(inflight.has('outbox-3'), false)
+  assert.deepEqual(timers, [])
+  assert.deepEqual(attempts, [])
+  assert.equal(permanent.length, 1)
+  assert.equal(permanent[0].outboxId, 'outbox-3')
+  assert.equal(permanent[0].daemonKey, 'mini:testing')
+  assert.deepEqual(permanent[0].row, row)
+})
+
 test('receiver acceptance deletes the server outbox row', async () => {
   const inflight = new Map([['outbox-2', 'mini:default']])
   const acks = []

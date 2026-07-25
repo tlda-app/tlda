@@ -58,7 +58,15 @@ export class AgentSeatBindingObligations {
 
   parse(row) {
     if (!row) return null
-    return { ...JSON.parse(row.payload_json), obligation_id: row.id, created_at: row.created_at, updated_at: row.updated_at }
+    return {
+      ...JSON.parse(row.payload_json),
+      obligation_id: row.id,
+      agent_id: row.agent_id,
+      daemon_key: row.daemon_key,
+      local_agent_id: row.local_agent_id,
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+    }
   }
 }
 
@@ -73,4 +81,8 @@ export function verifyAgentSeatBindingTerminal({ obligation, message, daemonKey,
     throw new Error(`binding obligation terminal retirement is not verified for ${obligation.agent_id}`)
   }
   return true
+}
+
+export function isRetirableStaleAgentSeatBindingObligation({ obligation, agent, currentSeat } = {}) {
+  return !!obligation?.obligation_id && agent?.dead === 1 && !currentSeat
 }
