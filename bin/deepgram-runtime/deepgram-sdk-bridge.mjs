@@ -175,6 +175,25 @@ wss.on('connection', (browserWs) => {
   let clientVoiceParams = {}    // per-connection Deepgram recognition overrides (endpointing, utterance_end_ms)
   let activeEpoch = null
   let epochTransition = null
+  // Epoch belongs to the SESSION, not the socket. It used to be a closure parameter on
+  // the Deepgram connection, which meant the only way to advance it was to redial —
+  // that redial fired after every message Skip sent (~68 in 46 min, none caused by any
+  // failure) and each one closed an audio gate in front of his microphone.
+  //
+  // Advancing the epoch on a live socket needs one piece of care: results for audio he
+  // spoke BEFORE the send must not be labelled with the new epoch, or the previous
+  // message's tail leaks into the next box. So we keep tagging with the old epoch until
+  // Deepgram answers our Finalize, then switch.
+  let taggingEpoch = null       // epoch stamped on outgoing transcripts
+  let flushDeadline = 0         // while > now, we're still inside a flush window
+  let flushTimer = null
+  // Deepgram has never once answered a Finalize in production (0 of 5038 transcripts
+  // came back from_finalize=true, because we always destroyed the socket before it could
+  // reply). So this MUST NOT depend on that reply arriving. The timeout is the primary
+  // path, not the safety net: if no from_finalize lands, we promote anyway and behave
+  // exactly as if there were no flush. Never gate his microphone on a message we have
+  // never observed.
+  const FLUSH_WINDOW_MS = 1200
   let connectionAttemptId = 0
   let lastBrowserAudioAt = 0
   let lastUpstreamAudioAt = 0
@@ -207,6 +226,7 @@ wss.on('connection', (browserWs) => {
   function retireEpoch(reason) {
     if (epochTransition?.pcmBytes > 0) emitEpochLoss(epochTransition, reason)
     epochTransition = null
+    endFlushWindow(`retired: ${reason}`)
     clearInterval(keepAliveInterval)
     keepAliveInterval = null
     clearInterval(idleTimer)
@@ -235,6 +255,40 @@ wss.on('connection', (browserWs) => {
     const revoked = dg
     dg = null
     if (revoked) closeConnection(revoked, context)
+  }
+
+  // Leave the flush window: subsequent results describe audio spoken after the send, so
+  // they carry the new epoch. Called either by Deepgram's from_finalize reply or by the
+  // timeout — whichever lands first, and the timeout is expected to be the common case.
+  function endFlushWindow(reason) {
+    if (!flushDeadline) return
+    flushDeadline = 0
+    clearTimeout(flushTimer)
+    flushTimer = null
+    taggingEpoch = activeEpoch
+    console.log(`[deepgram-sdk-bridge] flush window closed (${reason}); tagging epoch ${taggingEpoch}`)
+  }
+
+  // Advance the epoch on the LIVE socket. This is the path that used to be a full
+  // teardown and redial of Deepgram after every message Skip sent.
+  function advanceEpochOnLiveSocket(nextEpoch) {
+    taggingEpoch = activeEpoch   // old epoch keeps tagging until the flush boundary
+    activeEpoch = nextEpoch
+    epochTransition = null
+    preroll = []; prerollBytes = 0
+    // Ask Deepgram to close out the utterance he just sent. Unlike before, the socket
+    // survives long enough to actually receive the answer.
+    sendDeepgramJson(dg, { type: 'Finalize' })
+    flushDeadline = Date.now() + FLUSH_WINDOW_MS
+    clearTimeout(flushTimer)
+    flushTimer = setTimeout(() => endFlushWindow('timeout'), FLUSH_WINDOW_MS)
+    // Open his audio gate NOW. The client refuses to send audio until it sees
+    // epoch_ready (voice.mjs:871), so this is the line that decides whether he is
+    // talking into a recognizer or into a backlog buffer. Deepgram accepts a continuous
+    // stream and attributes post-Finalize audio to the next utterance, so there is
+    // nothing to wait for.
+    sendToBrowser(browserWs, { type: 'epoch_ready', epoch: activeEpoch })
+    emitBridgeTelemetry()
   }
 
   function applyClientParams(msg) {
@@ -290,17 +344,27 @@ wss.on('connection', (browserWs) => {
     return true
   }
 
+  // A socket is current if it is the one we hold and its attempt has not been
+  // superseded. This is the WHOLE staleness test. It used to also compare a
+  // closure-captured epoch against activeEpoch, which is what welded the epoch to the
+  // socket; connection identity already rejects every retired socket, so nothing is
+  // lost by dropping the epoch from this check.
+  function connectionIsCurrent(connection, attemptId) {
+    return connection === dg && attemptId === connectionAttemptId
+  }
+
   function attachDeepgramConnection(connection, epoch, attemptId) {
     dg = connection
 
     connection.on('open', () => {
-      if (connection !== dg || epoch !== activeEpoch || attemptId !== connectionAttemptId) {
+      if (!connectionIsCurrent(connection, attemptId)) {
         closeConnection(connection, 'stale open')
         return
       }
       console.log('[deepgram-sdk-bridge] connected to Deepgram')
       reconnectFailures = 0
       lastSpeechAt = Date.now()
+      taggingEpoch = activeEpoch
       const readyResult = readyEpochTransition(epochTransition, epoch, attemptId, frame => sendDeepgramAudio(connection, frame))
       if (readyResult !== 'stale') {
         const transition = epochTransition
@@ -313,6 +377,10 @@ wss.on('connection', (browserWs) => {
         sendToBrowser(browserWs, { type: 'epoch_ready', epoch })
       }
       sendToBrowser(browserWs, { type: 'status', status: 'connected', implementation: 'sdk', epoch })
+      // Clear before re-arming: without this, an `open` that fires twice on one socket
+      // (the SDK carries its own reconnectAttempts) orphans the previous 3s interval,
+      // which then keeps a dead session alive forever and defeats the idle cutoff.
+      clearInterval(keepAliveInterval)
       keepAliveInterval = setInterval(() => {
         try { sendDeepgramJson(dg, { type: 'KeepAlive' }) } catch {}
       }, 3000)
@@ -327,7 +395,7 @@ wss.on('connection', (browserWs) => {
     })
 
     connection.on('message', (msg) => {
-      if (connection !== dg || epoch !== activeEpoch || attemptId !== connectionAttemptId) return
+      if (!connectionIsCurrent(connection, attemptId)) return
       if (msg.type === 'Results') {
         const alt = msg.channel?.alternatives?.[0]
         if (!alt || !alt.transcript) return
@@ -338,7 +406,16 @@ wss.on('connection', (browserWs) => {
         lastTranscriptAt = lastSpeechAt
         if (msg.is_final) pendingFinalSince = 0
         else if (!pendingFinalSince) pendingFinalSince = lastTranscriptAt
-        console.log(`[deepgram-sdk-bridge] transcript: is_final=${msg.is_final} speech_final=${msg.speech_final} from_finalize=${msg.from_finalize} "${text.slice(0, 60)}"`)
+        // THE ORDERING THAT MAKES A LIVE-SOCKET EPOCH SWITCH CORRECT — do not collapse
+        // this into `epoch: activeEpoch`, and do not "simplify" the flush window away.
+        // Everything up to and including Deepgram's from_finalize reply describes audio
+        // he spoke BEFORE he hit send, so it carries the OLD epoch and the client drops
+        // it at voice.mjs:2242. Only after that boundary does the new epoch apply.
+        // Tagging these with the new epoch would leak the previous message's tail into
+        // the box he is typing into now.
+        const stamped = taggingEpoch
+        if (msg.from_finalize) endFlushWindow('finalize-reply')
+        console.log(`[deepgram-sdk-bridge] transcript: is_final=${msg.is_final} speech_final=${msg.speech_final} from_finalize=${msg.from_finalize} epoch=${stamped} "${text.slice(0, 60)}"`)
         sendToBrowser(browserWs, {
           type: 'transcript',
           text,
@@ -346,7 +423,7 @@ wss.on('connection', (browserWs) => {
           speech_final: msg.speech_final || false,
           from_finalize: msg.from_finalize || false,
           timestamp: Date.now(),
-          epoch,
+          epoch: stamped,
         })
         emitBridgeTelemetry()
         return
@@ -356,14 +433,14 @@ wss.on('connection', (browserWs) => {
         lastSpeechAt = Date.now()
         pendingFinalSince = pendingFinalSince || lastSpeechAt
         console.log('[deepgram-sdk-bridge] speech started')
-        sendToBrowser(browserWs, { type: 'speech_started', timestamp: Date.now(), epoch })
+        sendToBrowser(browserWs, { type: 'speech_started', timestamp: Date.now(), epoch: taggingEpoch })
         emitBridgeTelemetry()
         return
       }
 
       if (msg.type === 'UtteranceEnd') {
         pendingFinalSince = 0
-        sendToBrowser(browserWs, { type: 'utterance_end', timestamp: Date.now(), epoch })
+        sendToBrowser(browserWs, { type: 'utterance_end', timestamp: Date.now(), epoch: taggingEpoch })
         emitBridgeTelemetry()
         return
       }
@@ -374,7 +451,11 @@ wss.on('connection', (browserWs) => {
     })
 
     connection.on('close', (event) => {
-      if (connection !== dg || epoch !== activeEpoch || attemptId !== connectionAttemptId) return
+      // Identity only. Comparing the closure epoch here would now silently swallow the
+      // close of a socket whose epoch advanced while it was alive — leaving `dg` set to
+      // a dead connection and never counting the drop.
+      if (!connectionIsCurrent(connection, attemptId)) return
+      endFlushWindow('upstream closed')
       clearInterval(keepAliveInterval)
       keepAliveInterval = null
       clearInterval(idleTimer)
@@ -395,9 +476,9 @@ wss.on('connection', (browserWs) => {
     })
 
     connection.on('error', (err) => {
-      if (connection !== dg || epoch !== activeEpoch || attemptId !== connectionAttemptId) return
+      if (!connectionIsCurrent(connection, attemptId)) return
       console.error('[deepgram-sdk-bridge] Deepgram error:', err.message)
-      sendToBrowser(browserWs, { type: 'status', status: 'error', error: err.message, implementation: 'sdk', epoch, attemptId })
+      sendToBrowser(browserWs, { type: 'status', status: 'error', error: err.message, implementation: 'sdk', epoch: activeEpoch, attemptId })
     })
   }
 
@@ -417,7 +498,11 @@ wss.on('connection', (browserWs) => {
     manuallyClosed = false
     connecting = (async () => {
       const connection = await client.listen.v1.connect(listenOptions(clientVoiceParams))
-      if (epoch !== activeEpoch || attemptId !== connectionAttemptId) {
+      // Attempt id is the single staleness notion. Every path that moves the epoch while
+      // a connect is in flight goes through retireEpoch(), which bumps the attempt id —
+      // so this covers what the old epoch comparison covered, without a second concept
+      // of "stale" that can disagree with the first.
+      if (attemptId !== connectionAttemptId) {
         closeConnection(connection, 'stale connect')
         return null
       }
@@ -455,6 +540,7 @@ wss.on('connection', (browserWs) => {
 
   function disconnectDeepgram() {
     manuallyClosed = true
+    endFlushWindow('upstream disconnected')
     clearInterval(keepAliveInterval)
     keepAliveInterval = null
     clearInterval(idleTimer)
@@ -541,8 +627,19 @@ wss.on('connection', (browserWs) => {
           sendToBrowser(browserWs, { type: 'epoch_error', epoch: msg.epoch, reason: 'non-monotone-epoch' })
           return
         }
+        // ONE path for advancing the epoch on a healthy session: keep the socket.
+        // This used to call retireEpoch('superseded') + connectDeepgram() every time,
+        // which redialed Deepgram after every message he sent. Nothing about a new
+        // epoch requires a new socket now that the epoch is session state.
+        if (isDeepgramOpen()) {
+          advanceEpochOnLiveSocket(msg.epoch)
+          return
+        }
+        // No live upstream (first epoch of a session, or after an idle cutoff) — there
+        // is nothing to flush, so connect and let `open` acknowledge the epoch.
         retireEpoch('superseded')
         activeEpoch = msg.epoch
+        taggingEpoch = msg.epoch
         preroll = []; prerollBytes = 0
         epochTransition = createEpochTransition(activeEpoch, connectionAttemptId + 1)
         manuallyClosed = false
