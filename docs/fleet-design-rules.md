@@ -146,6 +146,27 @@ server-side — the JSONLs carry their own login markers and are the record.
 **History is never destroyed.** Live code stops depending on old fields; existing rows
 stay as they are.
 
+## A stray fleet shape is a permanent tax on every client
+
+Fleet panels are shapes in the shared Yjs canvas, so **every client instantiates every
+one of them.** Ownership (`isMyFleetShape`, scoped by `userId` *and* `deviceId`) is
+decided inside the component, after mount — so a panel belonging to someone else still
+builds its buffers, subscriptions, sort memos and scroll effects in your browser before
+deciding not to render.
+
+Skip: *"I should only have two chat sheets — or two per device, anyway."* His page was
+measured at **98**, 93 of them filtered.
+
+So a throwaway identity with `?fleetLayout=…` doesn't leave clutter, it leaves a
+permanent per-client cost in a shared room, for everyone, forever. Two agents did this
+in one night — including the one writing this — and both only cleaned up because they
+happened to check.
+
+Do not create fleet layouts in a live shared room. If you must, remove every shape you
+made and verify it persisted. And never sweep shapes you did not create: the fix for an
+over-populated room is the code not instantiating foreign panels, plus the owner
+resetting their own layout — not an agent deleting other people's shapes.
+
 ## Skip reads the whole feed, not his own messages
 
 > "I don't read messages to me, for the most part. I watch what agents are doing and
