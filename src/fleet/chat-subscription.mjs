@@ -41,6 +41,7 @@ export function setChatSubscriptionTransport(send) { _send = send }
  * @param {number} window How many messages this chat can show. The shape knows
  *   its own size; there is no magic number here on purpose.
  * @param {(events: readonly object[], meta: object) => void} onEvents
+ * @param {{humanId?: string|null, humanName?: string|null, correlationKey?: string|null}} [identity]
  */
 export function subscribeChat(filter, window, onEvents, { humanId = null, humanName = null, correlationKey = null } = {}) {
   const subId = `sub${_nextSubId++}`

@@ -38,6 +38,7 @@ import { getHumanId, getHumanName, getDeviceId, isDeviceReady, updateEventById, 
 // of this file tears down every subscription, and a remount whose tail goes
 // BACKWARDS is exactly what that would look like.
 import { notePanelTail } from '../fleet/chat-freeze-probe.mjs'
+import { subscribeChat } from '../fleet/chat-subscription.mjs'
 // @ts-ignore — vanilla JS module
 import { installChatImageRetry } from '../fleet/chat-image-retry.mjs'
 // @ts-ignore — vanilla JS module
@@ -5963,8 +5964,49 @@ function FleetChatInner({ shape }: { shape: any }) {
  * one-time cost that is far cheaper than re-rendering on every fleet event
  * while off-screen.
  */
+/**
+ * Subscribe this chat's filter to the server, OUTSIDE the viewport-culling shell.
+ *
+ * Deliberately not inside FleetChatInner: culling unmounts that component, which
+ * would tear down and re-create the subscription every time a panel crosses the
+ * viewport edge. With nineteen panels a single pan becomes a burst of
+ * subscribe/unsubscribe frames for conversations whose membership never changed.
+ * Culling is an optimisation about *rendering*; it must not decide membership.
+ *
+ * During the additive phase the panel still renders from the existing client
+ * path — the events delivered here are consumed only by the equivalence
+ * comparator, which lines the server's verdict up against the client's. Once
+ * that comparison runs quiet on real traffic, this becomes the render source and
+ * the client-side decision goes.
+ *
+ * No `window` is sent: the committed server contract is
+ * { subId, filter, humanId?, humanName? }. Window-sizing from the shape's own
+ * height is a later commit, once the server accepts it.
+ */
+function useChatFilterSubscription(shape: any) {
+  const { filter } = shape.props as { filter: [string, string][][] }
+  const filterKey = JSON.stringify(filter ?? [])
+  // Memoised on the filter's VALUE, not its identity: shape.props hands back a
+  // fresh array each render, so depending on `filter` directly would resubscribe
+  // on every render. This keeps the effect's dependency honest instead of
+  // silencing exhaustive-deps.
+  const dnf = useMemo(
+    () => (filter && filter.length > 0 ? filter : null),
+    [filterKey],   // eslint-disable-line react-hooks/exhaustive-deps -- filterKey IS filter, serialised
+  )
+  useEffect(() => {
+    if (!dnf) return
+    return subscribeChat(dnf, 0, () => {}, {
+      humanId: getHumanId(),
+      humanName: getHumanName(),
+      correlationKey: `chat:${shape.id}`,
+    })
+  }, [dnf, shape.id])
+}
+
 const FleetChatComponent = memo(function FleetChatComponent({ shape }: { shape: any }) {
   const { w, h } = shape.props as { w: number; h: number }
+  useChatFilterSubscription(shape)
   const isInViewport = useIsInViewport(shape.id)
   if (!isInViewport) {
     return <HTMLContainer id={shape.id}><div style={{ width: w, height: h }} /></HTMLContainer>
