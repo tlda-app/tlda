@@ -152,6 +152,28 @@ export function matchFilter(filter, labels) {
  * The role prefixes `to:`/`from:` replace the old `[role, label]` DNF tuples:
  * `to:skip & from:math` is the string form of `[[["to","skip"],["from","math"]]]`.
  */
+// `subscriberLabels` is read by exactly one construct below — the `my_labels`
+// token. Every other filter ignores it entirely. Callers that would have to do
+// real work to produce it (resolveWiretaps loads an entire agent record per
+// subscription, per message) ask this first and skip that work when the answer
+// is no. Kept beside evalExprDirectional so the two cannot drift: if a new node
+// type starts reading `subscriber`, it must be added here too.
+export function astReadsSubscriberLabels(ast) {
+  if (!ast) return false
+  switch (ast.t) {
+    case 'lit': return ast.v === 'my_labels'
+    case 'my_labels': return true
+    case 'me': return false
+    case 'not': return astReadsSubscriberLabels(ast.x)
+    case 'from':
+    case 'to':
+    case 'involving': return astReadsSubscriberLabels(ast.x)
+    case 'and':
+    case 'or': return astReadsSubscriberLabels(ast.l) || astReadsSubscriberLabels(ast.r)
+    default: return false
+  }
+}
+
 export function evalExprDirectional(ast, { fromLabels = [], toLabels = [], subscriberLabels = [] } = {}) {
   if (!ast) return true
   const from = fromLabels instanceof Set ? fromLabels : new Set(fromLabels)

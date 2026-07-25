@@ -107,18 +107,45 @@ export function decideAgentLivenessBatch({ message, socketDaemonKey, socketBootI
     if (message.daemon_boot_id !== socketBootId) {
       return { agent_id: agentId, generation, accepted: false, seat_identity_match: null, rejection_reason: 'daemon-boot-mismatch', terminal_decision: 'rejected' }
     }
+    const alive = aliveIds.has(agentId)
     const seatDecision = seatForAgent(agentId)
     if (!seatDecision.accepted) {
+      // Liveness reports are not symmetric, so the seat check must not be either.
+      //
+      // An "alive" claim is an ownership assertion — accepting it from a daemon
+      // that does not hold the seat would let one daemon keep another daemon's
+      // agent looking awake. That guard stays.
+      //
+      // "This session is gone" asserts nothing about ownership. The daemon is
+      // the authority on what processes exist on its own box, and an agent no
+      // seat claims is precisely the one whose death nobody else will report.
+      // Discarding it is what left ~190 dead agents on the roster being
+      // re-checked every 30s forever, with the death signal that would have
+      // cleared them thrown away on arrival.
+      //
+      // A seat owned by ANOTHER daemon is still rejected in both directions:
+      // that daemon speaks for its own box, not for someone else's.
+      const acceptedDeath = !alive && seatDecision.rejection_reason === 'no-current-seat'
+      if (!acceptedDeath) {
+        return {
+          agent_id: agentId,
+          generation,
+          accepted: false,
+          seat_identity_match: seatDecision.seat ? false : null,
+          rejection_reason: seatDecision.rejection_reason,
+          terminal_decision: 'rejected',
+        }
+      }
       return {
         agent_id: agentId,
         generation,
-        accepted: false,
-        seat_identity_match: seatDecision.seat ? false : null,
-        rejection_reason: seatDecision.rejection_reason,
-        terminal_decision: 'rejected',
+        accepted: true,
+        seat_identity_match: null,
+        rejection_reason: null,
+        alive: false,
+        terminal_decision: 'accepted-not-alive-unseated',
       }
     }
-    const alive = aliveIds.has(agentId)
     return {
       agent_id: agentId,
       generation,

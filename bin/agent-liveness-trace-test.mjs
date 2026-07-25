@@ -124,13 +124,28 @@ assert.equal(new Set(accepted.map(item => item.agent_id)).size, batchMessage.che
 const rejectionCases = [
   [{ ...batchMessage, checked_agent_ids: ['key'], agent_ids: [], daemon_key: 'other' }, {}, 'daemon-key-mismatch'],
   [{ ...batchMessage, checked_agent_ids: ['boot'], agent_ids: [], daemon_boot_id: 41 }, {}, 'daemon-boot-mismatch'],
-  [{ ...batchMessage, checked_agent_ids: ['none'], agent_ids: [] }, {}, 'no-current-seat'],
+  // An ALIVE claim for an agent this daemon holds no seat for is still rejected:
+  // accepting it would let one daemon keep another daemon's agent looking awake.
+  [{ ...batchMessage, checked_agent_ids: ['none'], agent_ids: ['none'] }, {}, 'no-current-seat'],
+  // A seat owned by ANOTHER daemon rejects in BOTH directions — this daemon is
+  // the authority on its own box only.
+  [{ ...batchMessage, checked_agent_ids: ['elsewhere'], agent_ids: [] }, { elsewhere: { ...seat, daemon_key: 'other:default' } }, 'daemon-key-mismatch'],
 ]
 for (const [message, seats, expected] of rejectionCases) {
   const [decision] = decisionsFor(message, seats)
   assert.equal(decision.terminal_decision, 'rejected')
   assert.equal(decision.rejection_reason, expected)
 }
+
+// A "session is gone" report for an agent with NO current seat is accepted
+// without ownership proof. The daemon is the authority on what runs on its box,
+// and this report is the only thing that ever clears such an agent — discarding
+// it is what left ~190 dead agents being re-checked every 30s forever.
+const [unseatedDeath] = decisionsFor({ ...batchMessage, checked_agent_ids: ['gone'], agent_ids: [] }, {})
+assert.equal(unseatedDeath.terminal_decision, 'accepted-not-alive-unseated')
+assert.equal(unseatedDeath.accepted, true)
+assert.equal(unseatedDeath.alive, false)
+assert.equal(unseatedDeath.rejection_reason, null)
 const [missingInput] = decideAgentLivenessBatch({
   message: { ...batchMessage, checked_agent_ids: ['missing-input'], agent_ids: [], report_seq: null },
   socketDaemonKey: 'mini:default',

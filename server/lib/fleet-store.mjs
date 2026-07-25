@@ -23,7 +23,7 @@ import path from 'path';
 import os from 'os';
 
 import { createLiveStore } from '../../shared/live-store.ts';
-import { PSEUDO_LABELS, parseFilter, evalExpr, evalExprDirectional, labelsForAgent } from '../../shared/fleet-labels.mjs';
+import { PSEUDO_LABELS, parseFilter, evalExpr, evalExprDirectional, astReadsSubscriberLabels, labelsForAgent } from '../../shared/fleet-labels.mjs';
 import { baseName, nameForPhase, phaseFromName, ALL_PHASES, prettyNameForFriendlyName } from '../../shared/lineage-name.mjs';
 import { literalFtsQuery } from '../../shared/fts-query.mjs';
 import { fleetRosterCategory, isRuntimeAwake } from '../../shared/fleet-runtime-status.mjs';
@@ -3262,16 +3262,33 @@ export class FleetStore {
       if (tap.types && tap.types.length > 0 && eventType && !tap.types.includes(eventType)) continue;
       if (!tap._ast) continue; // unparseable filter (logged at hydrate) — never match-all
       // Directional expression: matches per to:/from: leaf semantics.
-      const subscriberLabels = this._agentLabelsById(tap.agent_id);
+      //
+      // Only a `my_labels` filter ever reads the subscriber's labels, and
+      // producing them means a full getAgent() + _hydrateAgent() — a whole agent
+      // record loaded to read a label. Doing that per tap, per event, made this
+      // the single largest CPU cost on the server (39% of busy time on live,
+      // with ~2000 taps), and it grew with the number of agents that merely
+      // exist. `_needsSubscriberLabels` is precomputed once when the tap is
+      // hydrated, so filters that don't reference `my_labels` — effectively all
+      // of them — now cost no agent load at all.
+      const subscriberLabels = tap._needsSubscriberLabels ? this._agentLabelsById(tap.agent_id) : [];
       const matches = evalExprDirectional(tap._ast, { fromLabels: senderLabels, toLabels: recipientLabels, subscriberLabels });
       if (matches) matched.add(tap.agent_id);
     }
     return [...matched];
   }
 
+  // Reads the in-memory agent registry, not the database. `resolveChatRecipients`
+  // right above already resolves entirely against these indexes; this path sat
+  // next to it and went to SQLite per tap instead — a full getAgent() +
+  // _hydrateAgent() per subscription per event. The registry holds fully
+  // hydrated agents (alive and dead) and is kept current by _syncAgentRegistry
+  // on every agent change, so this adds no second invalidation path: it uses the
+  // one that already exists.
   _agentLabelsById(agentId) {
     if (!agentId) return [];
-    const agent = this.getAgent(agentId);
+    this._ensureAgentRegistryLoaded();
+    const agent = this._agentRegistry.get(agentId);
     if (!agent) return [agentId];
     return labelsForAgent(agent);
   }
@@ -3288,6 +3305,9 @@ export class FleetStore {
     // _ast is an internal compiled form — non-enumerable so it never leaks into
     // JSON responses (GET /api/wiretaps, wiretap-list) but stays usable by matchers.
     Object.defineProperty(tap, '_ast', { value: ast, enumerable: false });
+    // Precomputed with the AST for the same reason: resolveWiretaps consults it
+    // per tap on every event and must not re-walk the tree to find out.
+    Object.defineProperty(tap, '_needsSubscriberLabels', { value: astReadsSubscriberLabels(ast), enumerable: false });
     return tap;
   }
 

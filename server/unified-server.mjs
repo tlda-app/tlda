@@ -43,7 +43,8 @@ const { homedir, hostname } = os
 import { randomUUID } from 'crypto'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { lookup as mimeLookup } from 'mime-types'
-import { DEFAULT_PORT, getActiveConfigName, getFleetServerUrl, hasTls, resolveConfig } from '../shared/config.mjs'
+import { CONFIG_DIR, DEFAULT_PORT, getActiveConfigName, getFleetServerUrl, hasTls, resolveConfig } from '../shared/config.mjs'
+import { createLagProfiler } from './lib/lag-profiler.mjs'
 import { BARE_METADATA, resolveAsset } from '../shared/doc-assets.mjs'
 import { listModels as listSpawnModels } from '../agent-launch/models.mjs'
 import { readDaemonConfig, readDaemonConfigForCwd, withDaemonModelAliases } from '../agent-launch/permission-ledger.mjs'
@@ -288,6 +289,21 @@ setInterval(() => {
   }
   eventLoopDelay.reset()
 }, 1000).unref()
+
+// The lag numbers above say WHEN the loop stalled but never WHAT stalled it, and
+// the per-query `[slowquery]` logger cannot close that gap: it thresholds each
+// query at 25ms, so 190 x 4ms is invisible, and it wraps only `.all()`/`.get()`,
+// so synchronous `.run()` writes are never measured at all. The sampler sees the
+// thread itself, so a stall names its own cause without anyone being attached.
+const lagProfiler = createLagProfiler({ dir: join(CONFIG_DIR, 'lag-profiles') })
+lagProfiler.start().catch(e => {
+  // A diagnostic failing to start must not take the server down with it, but it
+  // must not go quiet either — a sampler everyone believes is running and isn't
+  // is worse than none. Loud on the log AND in the perf ring that
+  // /api/diagnostics/live-perf serves, so its absence is discoverable.
+  console.error('[lag-profiler] FAILED TO START — stalls will not be captured:', e)
+  recordServerPerfEvent('lag-profiler-start-failed', { error: e?.message || String(e) })
+})
 
 async function measureHotOp(label, details, fn) {
   const start = performance.now()
@@ -3075,6 +3091,7 @@ app.get('/api/diagnostics/live-perf', requireRead, (req, res) => {
       eventLoopLag: lastEventLoopLag,
       ws: wsSummary(),
       events: serverEvents,
+      lagProfiler: lagProfiler.snapshot(),
     },
     activityDelivery: activityDeliverySnapshot(),
   })
