@@ -1163,8 +1163,23 @@ function fadeHud(delayMs = 2000) {
 
 // Enter Edit state — accept current textarea as ground truth, stop Chrome.
 // Safe to call multiple times (idempotent after first call per editing session).
-function enterEdit() {
+function currentVoiceCompositionText() {
+  return `${_left || ''}${_interim || ''}${_right || ''}`
+}
+
+function enterEdit(origin = 'unknown') {
   if (_state === 'edit') return
+  // Deepgram interim writes are reflected through the same textarea `input`
+  // surface as user edits. `_filling` covers the synchronous voice write, but
+  // a downstream component can re-emit the already-displayed composition after
+  // that guard has dropped. If the field still equals the voice composition,
+  // this is not an edit; keeping speech state lets the matching final replace
+  // the interim instead of appending it a second time. Keep this equality strict:
+  // if Skip changes the text mid-dictation, that must still interrupt speech so
+  // his correction becomes the new ground truth instead of being ignored.
+  if (_backend === 'deepgram' && origin === 'input' && _state === 'speech' && _activeTextarea?.value === currentVoiceCompositionText()) {
+    return
+  }
   // Whisper-stream: flush the bridge — drops old audio output for ~4s
   // so text the user just edited doesn't get overwritten.
   // Show amber glow so user knows voice is suppressed.
@@ -1237,7 +1252,7 @@ export function setVoiceTarget(textarea, targetHandle) {
       }
     }
     if (textarea) {
-      const onEdit = () => { if (!_filling) enterEdit() }
+      const onEdit = (event) => { if (!_filling) enterEdit(event?.type || 'unknown') }
       const onKeydown = (e) => {
         if (_filling) return
         if (['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Home','End'].includes(e.key)) {
