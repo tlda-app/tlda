@@ -99,6 +99,37 @@ export function dispatchFilterEvent(data) {
   return true
 }
 
+/**
+ * Re-send subscriptions whose identity has changed.
+ *
+ * Identity resolves ASYNCHRONOUSLY. A panel that subscribes before it lands
+ * sends humanId: null, and `dm:` filters can then never match, because
+ * isDmWithTarget requires knowing which participant is the human. Nothing
+ * re-read identity afterwards, so that subscription stayed dead for the life of
+ * the tab.
+ *
+ * This is the same defect as getShapeVisibility capturing getHumanId() once —
+ * diagnosed earlier tonight, then reproduced here. Async identity read at setup
+ * and never revisited is apparently the standing trap in this codebase.
+ */
+export function refreshChatSubscriptionIdentity(humanId, humanName) {
+  let n = 0
+  for (const [subId, sub] of _subs) {
+    if (sub.humanId === humanId && sub.humanName === humanName) continue
+    sub.humanId = humanId
+    sub.humanName = humanName
+    if (!_send) continue
+    try {
+      _send('subscribe-filter', { subId, filter: sub.filter, humanId, humanName })
+      n++
+    } catch (e) {
+      log.metric(NS, 'identity re-subscribe failed', { subId, error: String(e) })
+    }
+  }
+  if (n) log.metric(NS, 're-subscribed after identity changed', { count: n, humanId })
+  return n
+}
+
 /** Re-send every live subscription. For use after a reconnect. */
 export function resubscribeAll() {
   if (!_send) return 0
