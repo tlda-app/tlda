@@ -243,7 +243,10 @@ function sqEnv(entry) {
 }
 
 export function resumeId(handle) {
-  return handle?.rolloutId || null
+  const id = handle?.rolloutId || null
+  if (!id) return null
+  const match = String(id).match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i)
+  return match ? match[1] : id
 }
 
 export function kickoffPrompt(name) {
