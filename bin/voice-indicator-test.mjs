@@ -50,6 +50,13 @@ assert.match(voiceSource, /function afterSend\(submittedTextOverride\) \{\s+cons
 // that the discard is recorded so it can't silently regress to a bare return again.
 assert.match(voiceSource, /if \(\(msg\.type === 'transcript' \|\| msg\.type === 'speech_started' \|\| msg\.type === 'utterance_end'\) && msg\.epoch !== _speechEpoch\) \{[\s\S]*?vdiscard\('epoch-mismatch'[\s\S]*?return\s+\}/)
 assert.doesNotMatch(voiceSource, /onaudioprocess[\s\S]*?fillTextarea|process =[\s\S]*?fillTextarea/)
+// Assembly instrument. `speech_final` must be RECORDED and never branched on — reading it
+// is diagnosis, branching on it is the fix the site's own comment says not to make blind.
+assert.match(voiceSource, /speechFinal: !!msg\.speech_final/)
+assert.doesNotMatch(voiceSource, /if \([^)]*msg\.speech_final/)
+// The duplicate-append detector is the discriminator the whole instrument exists for.
+assert.match(voiceSource, /_asmLeftNorm\.endsWith\(normalizedFinal\)/)
+assert.match(voiceSource, /assembly: re-partitioned from textarea/)
 const backlog = new PcmBacklog()
 backlog.push(7, new Uint8Array([1]).buffer)
 backlog.push(7, new Uint8Array([2]).buffer)

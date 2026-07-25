@@ -1167,8 +1167,34 @@ function currentVoiceCompositionText() {
   return `${_left || ''}${_interim || ''}${_right || ''}`
 }
 
+// Short tail of a string — enough to see a repeated segment without putting whole
+// sentences of Skip's dictation in the log.
+function vtail(s, n = 48) {
+  const str = String(s ?? '')
+  return str.length > n ? '…' + str.slice(-n) : str
+}
+
 function enterEdit(origin = 'unknown') {
   if (_state === 'edit') return
+  // ASSEMBLY INSTRUMENT. A speech→edit transition mid-dictation is the suspected
+  // doubling engine: it clears _left/_interim/_right, and the next final then takes
+  // the `_state !== 'speech'` branch, re-partitions _left from the text ALREADY
+  // DISPLAYED, and appends the same words a second time. Record the transition and
+  // whether the composition-equality guard below held, because that guard is the only
+  // thing standing between an interim echo and a duplicated segment.
+  if (_backend === 'deepgram' && _state === 'speech') {
+    const value = _activeTextarea?.value
+    const composition = currentVoiceCompositionText()
+    vlog('assembly: enterEdit during speech', {
+      origin,
+      guardHolds: origin === 'input' && value === composition,
+      valueMatchesComposition: value === composition,
+      valueTail: vtail(value),
+      compositionTail: vtail(composition),
+      leftLen: (_left || '').length,
+      interimLen: (_interim || '').length,
+    })
+  }
   // Deepgram interim writes are reflected through the same textarea `input`
   // surface as user edits. `_filling` covers the synchronous voice write, but
   // a downstream component can re-emit the already-displayed composition after
@@ -2385,6 +2411,24 @@ function onDeepgramMessage(event, relay = _deepgramWs) {
     _lastResultTime = Date.now()
     dotAudioFlowing()
 
+    // ASSEMBLY INSTRUMENT — every transcript, before any buffer is touched. `speech_final`
+    // is RECORDED ONLY, never branched on: `is_final=true, speech_final=false` means the
+    // segment closed but the utterance continues, and whether we are wrongly committing
+    // those is one of the two hypotheses. Reading it here changes no behaviour.
+    const _asmStateBefore = _state
+    const _asmLeftBefore = _left || ''
+    vlog('assembly: transcript in', {
+      final: !!msg.is_final,
+      speechFinal: !!msg.speech_final,
+      fromFinalize: !!msg.from_finalize,
+      text: vtail(msg.text, 60),
+      state: _asmStateBefore,
+      hasSeenInterim: _dgHasSeenInterim,
+      leftTail: vtail(_asmLeftBefore),
+      interimTail: vtail(_interim),
+      valueMatchesComposition: _activeTextarea?.value === currentVoiceCompositionText(),
+    })
+
     if (_state !== 'speech') {
       _state = 'speech'
       const ta = _activeTextarea
@@ -2393,6 +2437,16 @@ function onDeepgramMessage(event, relay = _deepgramWs) {
       _interim = partition.interim
       _right = partition.right
       resetDeepgramTextState()
+      // THE SUSPECTED DOUBLING ENGINE. _left is re-seeded from what is already on
+      // screen — which includes the interim words just displayed — and a final carrying
+      // those same words is about to be appended to it. If `absorbedTail` ends with the
+      // words in the incoming text, the next append duplicates them.
+      vlog('assembly: re-partitioned from textarea', {
+        stateWas: _asmStateBefore,
+        absorbedTail: vtail(_left),
+        incoming: vtail(msg.text, 60),
+        final: !!msg.is_final,
+      })
     }
 
     const text = msg.text
@@ -2437,6 +2491,20 @@ function onDeepgramMessage(event, relay = _deepgramWs) {
         vlog('DROPPED transcript (duplicate final)', { text: text.slice(0, 30) })
         return
       }
+      // ASSEMBLY INSTRUMENT — the append itself. `duplicateAppend` is the whole
+      // question: it is true when _left ALREADY ends with the words we are about to
+      // add, which is duplication happening at this line rather than anywhere else.
+      // Computed on normalized text so punctuation and spacing can't hide it.
+      const _asmLeftNorm = normalizeDeepgramText(_left || '')
+      const _asmDuplicate = !!normalizedFinal && !!_asmLeftNorm && _asmLeftNorm.endsWith(normalizedFinal)
+      vlog(_asmDuplicate ? 'assembly: DUPLICATE APPEND' : 'assembly: append final', {
+        duplicateAppend: _asmDuplicate,
+        stateAtEntry: _asmStateBefore,
+        repartitioned: _asmStateBefore !== 'speech',
+        speechFinal: !!msg.speech_final,
+        appending: vtail(processed, 60),
+        leftTailBefore: vtail(_left),
+      })
       _left += (_left.length && !_left.endsWith(' ') ? ' ' : '') + processed
       _dgLastFinalNorm = normalizedFinal
       _dgLastFinalAt = Date.now()
