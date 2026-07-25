@@ -14,6 +14,12 @@ export const DAEMON_CONFIG_TOP_LEVEL_KEYS = Object.freeze([
   'taskDoc',
   'spawnMachineId',
   'servers',
+  // Read by getStatusScanMs(). This list is a CLOSED allow-list: the daemon
+  // refuses to start on an unknown key, so a new setting is not usable until it
+  // is named here. Adding the key to daemon.yaml without this line took the live
+  // daemon down for 25 minutes on 2026-07-25 — it died on its next restart, with
+  // a zero-byte log, so nothing pointed at the cause.
+  'statusScanSeconds',
 ])
 
 export const SERVER_CONFIG_TOP_LEVEL_KEYS = Object.freeze([
