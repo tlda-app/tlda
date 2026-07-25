@@ -1220,7 +1220,6 @@ export class FleetStore {
     `);
 
     this._getTask = this.db.prepare('SELECT * FROM tasks WHERE id = ?');
-    this._getTaskByAgent = this.db.prepare("SELECT * FROM tasks WHERE agent = ? AND status NOT IN ('done', 'retracted') ORDER BY delegated_at DESC LIMIT 1");
     this._getActiveTasksByAgent = this.db.prepare("SELECT * FROM tasks WHERE agent = ? AND status NOT IN ('done', 'retracted') ORDER BY delegated_at DESC");
     this._getActiveTasksByAgentLimited = this.db.prepare("SELECT * FROM tasks WHERE agent = ? AND status NOT IN ('done', 'retracted') ORDER BY delegated_at DESC LIMIT ?");
     this._getActiveTaskCountByAgent = this.db.prepare("SELECT COUNT(*) as c FROM tasks WHERE agent = ? AND status NOT IN ('done', 'retracted')");

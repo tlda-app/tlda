@@ -514,7 +514,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     const agentId = req.query.agent
     if (!agentId) { res.status(400).send('missing "agent" param'); return }
     if (fleetStore) fleetStore.updateHeartbeat(agentId)
-    const tasks = fleetStore?.getActiveTasksByAgentLimited?.(agentId, MY_TASK_TASK_LIMIT) || fleetStore?.getActiveTasksByAgent?.(agentId)?.slice(0, MY_TASK_TASK_LIMIT) || []
+    const tasks = fleetStore?.getActiveTasksByAgentLimited?.(agentId, MY_TASK_TASK_LIMIT) || []
     const taskCount = fleetStore?.getActiveTaskCountByAgent?.(agentId) ?? tasks.length
     const task = tasks[0] || fleetStore?.getTaskByAgent(agentId) || null
     const unread = fleetStore?.getUnreadLimited?.(agentId, MY_TASK_UNREAD_LIMIT) || []
