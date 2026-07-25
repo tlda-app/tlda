@@ -5515,6 +5515,14 @@ async function handleFleetWsMessage(ws, msg) {
     return
   }
 
+  // ---- fleet-search-stats: small diagnostic surface for search corpus scale ----
+  if (type === 'fleet-search-stats') {
+    try {
+      reply(fleetStore.getSearchStats())
+    } catch (e) { error(e.message) }
+    return
+  }
+
   // ---- fleet-search: unified search across fleet events + session JSONL text ----
   if (type === 'fleet-search') {
     try {

@@ -24,7 +24,7 @@ import os from 'os';
 
 import { createLiveStore } from '../../shared/live-store.ts';
 import { PSEUDO_LABELS, parseFilter, evalExpr, evalExprDirectional, astReadsSubscriberLabels, labelsForAgent } from '../../shared/fleet-labels.mjs';
-import { literalFtsQuery } from '../../shared/fts-query.mjs';
+import { anyTermFtsQuery, ftsQueryTerms } from '../../shared/fts-query.mjs';
 import { fleetRosterCategory, isRuntimeAwake } from '../../shared/fleet-runtime-status.mjs';
 import { createTaskDocMaterializer } from './task-doc-materializer.mjs';
 import { projectAgentRuntimeStatus } from './agent-runtime-status.mjs';
@@ -144,6 +144,44 @@ function parsePrettyName(value) {
     try { return JSON.parse(trimmed); } catch { return value; }
   }
   return value;
+}
+
+function rankUnifiedSearchRows(rows, { terms = [], query = '', explicitActivitySearch = false } = {}) {
+  const normalizedQuery = String(query || '').trim().toLowerCase();
+  const normalizedTerms = terms.map(t => String(t || '').toLowerCase()).filter(Boolean);
+  return rows
+    .map((row, index) => {
+      const text = `${row.snippet || ''}\n${row.text || ''}`.toLowerCase();
+      const rank = Number(row.ftsRank || 0);
+      let score = -rank;
+
+      if (row.source === 'fleet') score += 30;
+      if (row.source === 'session') score += 10;
+
+      if (row.type === 'chat') score += 90;
+      else if (row.type === 'delegate' || row.type === 'report') score += 75;
+      else if (row.type === 'task_update' || row.type === 'task_done') score += 55;
+      else if (row.type === 'activity') score += explicitActivitySearch ? 15 : -1000;
+
+      if (normalizedQuery && text.includes(normalizedQuery)) score += 300;
+      let matchedTerms = 0;
+      for (const term of normalizedTerms) {
+        if (text.includes(term)) {
+          matchedTerms++;
+          score += 25;
+        }
+      }
+      if (normalizedTerms.length > 0 && matchedTerms === normalizedTerms.length) score += 150;
+      score += matchedTerms * matchedTerms;
+
+      return { row, index, score };
+    })
+    .sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      const tc = (b.row.timestamp ?? '').localeCompare(a.row.timestamp ?? '');
+      return tc || a.index - b.index;
+    })
+    .map(x => x.row);
 }
 
 // Virtual labels emitted by the DNF chat-routing resolver based on liveness
@@ -328,76 +366,88 @@ export class FleetStore {
         content_rowid='id',
         tokenize='trigram'
       );
+      CREATE VIRTUAL TABLE IF NOT EXISTS activity_events_fts USING fts5(
+        text,
+        content='events',
+        content_rowid='id',
+        tokenize='trigram'
+      );
       DROP TRIGGER IF EXISTS events_ai;
       DROP TRIGGER IF EXISTS events_ad;
       DROP TRIGGER IF EXISTS events_au;
       CREATE TRIGGER events_ai AFTER INSERT ON events BEGIN
         INSERT INTO events_fts(rowid, text) VALUES (
           new.id,
-          CASE
-            WHEN new.type = 'activity' THEN trim(
-              coalesce(new.text, '') || ' ' ||
-              coalesce(json_extract(new.metadata, '$.tool'), '') || ' ' ||
-              coalesce(json_extract(new.metadata, '$.description'), '') || ' ' ||
-              coalesce(json_extract(new.metadata, '$.input.description'), '') || ' ' ||
-              coalesce(json_extract(new.metadata, '$.arg'), '') || ' ' ||
-              coalesce(json_extract(new.metadata, '$.input.command'), '') || ' ' ||
-              coalesce(json_extract(new.metadata, '$.prettyResult'), '')
-            )
-            ELSE new.text
-          END
+          CASE WHEN new.type = 'activity' THEN '' ELSE new.text END
         );
+        INSERT INTO activity_events_fts(rowid, text)
+        SELECT
+          new.id,
+          trim(
+            coalesce(new.text, '') || ' ' ||
+            coalesce(json_extract(new.metadata, '$.tool'), '') || ' ' ||
+            coalesce(json_extract(new.metadata, '$.description'), '') || ' ' ||
+            coalesce(json_extract(new.metadata, '$.input.description'), '') || ' ' ||
+            coalesce(json_extract(new.metadata, '$.arg'), '') || ' ' ||
+            coalesce(json_extract(new.metadata, '$.input.command'), '')
+          )
+        WHERE new.type = 'activity';
       END;
       CREATE TRIGGER events_ad AFTER DELETE ON events BEGIN
         INSERT INTO events_fts(events_fts, rowid, text) VALUES(
           'delete',
           old.id,
-          CASE
-            WHEN old.type = 'activity' THEN trim(
-              coalesce(old.text, '') || ' ' ||
-              coalesce(json_extract(old.metadata, '$.tool'), '') || ' ' ||
-              coalesce(json_extract(old.metadata, '$.description'), '') || ' ' ||
-              coalesce(json_extract(old.metadata, '$.input.description'), '') || ' ' ||
-              coalesce(json_extract(old.metadata, '$.arg'), '') || ' ' ||
-              coalesce(json_extract(old.metadata, '$.input.command'), '') || ' ' ||
-              coalesce(json_extract(old.metadata, '$.prettyResult'), '')
-            )
-            ELSE old.text
-          END
+          CASE WHEN old.type = 'activity' THEN '' ELSE old.text END
         );
+        INSERT INTO activity_events_fts(activity_events_fts, rowid, text)
+        SELECT
+          'delete',
+          old.id,
+          trim(
+            coalesce(old.text, '') || ' ' ||
+            coalesce(json_extract(old.metadata, '$.tool'), '') || ' ' ||
+            coalesce(json_extract(old.metadata, '$.description'), '') || ' ' ||
+            coalesce(json_extract(old.metadata, '$.input.description'), '') || ' ' ||
+            coalesce(json_extract(old.metadata, '$.arg'), '') || ' ' ||
+            coalesce(json_extract(old.metadata, '$.input.command'), '')
+          )
+        WHERE old.type = 'activity';
       END;
       CREATE TRIGGER events_au AFTER UPDATE OF type, text, metadata ON events BEGIN
         INSERT INTO events_fts(events_fts, rowid, text) VALUES(
           'delete',
           old.id,
-          CASE
-            WHEN old.type = 'activity' THEN trim(
-              coalesce(old.text, '') || ' ' ||
-              coalesce(json_extract(old.metadata, '$.tool'), '') || ' ' ||
-              coalesce(json_extract(old.metadata, '$.description'), '') || ' ' ||
-              coalesce(json_extract(old.metadata, '$.input.description'), '') || ' ' ||
-              coalesce(json_extract(old.metadata, '$.arg'), '') || ' ' ||
-              coalesce(json_extract(old.metadata, '$.input.command'), '') || ' ' ||
-              coalesce(json_extract(old.metadata, '$.prettyResult'), '')
-            )
-            ELSE old.text
-          END
+          CASE WHEN old.type = 'activity' THEN '' ELSE old.text END
         );
+        INSERT INTO activity_events_fts(activity_events_fts, rowid, text)
+        SELECT
+          'delete',
+          old.id,
+          trim(
+            coalesce(old.text, '') || ' ' ||
+            coalesce(json_extract(old.metadata, '$.tool'), '') || ' ' ||
+            coalesce(json_extract(old.metadata, '$.description'), '') || ' ' ||
+            coalesce(json_extract(old.metadata, '$.input.description'), '') || ' ' ||
+            coalesce(json_extract(old.metadata, '$.arg'), '') || ' ' ||
+            coalesce(json_extract(old.metadata, '$.input.command'), '')
+          )
+        WHERE old.type = 'activity';
         INSERT INTO events_fts(rowid, text) VALUES (
           new.id,
-          CASE
-            WHEN new.type = 'activity' THEN trim(
-              coalesce(new.text, '') || ' ' ||
-              coalesce(json_extract(new.metadata, '$.tool'), '') || ' ' ||
-              coalesce(json_extract(new.metadata, '$.description'), '') || ' ' ||
-              coalesce(json_extract(new.metadata, '$.input.description'), '') || ' ' ||
-              coalesce(json_extract(new.metadata, '$.arg'), '') || ' ' ||
-              coalesce(json_extract(new.metadata, '$.input.command'), '') || ' ' ||
-              coalesce(json_extract(new.metadata, '$.prettyResult'), '')
-            )
-            ELSE new.text
-          END
+          CASE WHEN new.type = 'activity' THEN '' ELSE new.text END
         );
+        INSERT INTO activity_events_fts(rowid, text)
+        SELECT
+          new.id,
+          trim(
+            coalesce(new.text, '') || ' ' ||
+            coalesce(json_extract(new.metadata, '$.tool'), '') || ' ' ||
+            coalesce(json_extract(new.metadata, '$.description'), '') || ' ' ||
+            coalesce(json_extract(new.metadata, '$.input.description'), '') || ' ' ||
+            coalesce(json_extract(new.metadata, '$.arg'), '') || ' ' ||
+            coalesce(json_extract(new.metadata, '$.input.command'), '')
+          )
+        WHERE new.type = 'activity';
       END;
 
       -- Materialized agent state (cache, rebuilt from events)
@@ -589,6 +639,10 @@ export class FleetStore {
         key TEXT NOT NULL,
         value TEXT NOT NULL,
         PRIMARY KEY (user_id, key)
+      );
+      CREATE TABLE IF NOT EXISTS search_index_meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
       );
     `);
 
@@ -840,18 +894,45 @@ export class FleetStore {
                 coalesce(json_extract(new.metadata, '$.description'), '') || ' ' ||
                 coalesce(json_extract(new.metadata, '$.input.description'), '') || ' ' ||
                 coalesce(json_extract(new.metadata, '$.arg'), '') || ' ' ||
-                coalesce(json_extract(new.metadata, '$.input.command'), '') || ' ' ||
-                coalesce(json_extract(new.metadata, '$.prettyResult'), '')
+                coalesce(json_extract(new.metadata, '$.input.command'), '')
               )
               ELSE new.text
             END
           );
         END;
         CREATE TRIGGER events_ad AFTER DELETE ON events BEGIN
-          INSERT INTO events_fts(events_fts, rowid, text) VALUES('delete', old.id, old.text);
+          INSERT INTO events_fts(events_fts, rowid, text) VALUES(
+            'delete',
+            old.id,
+            CASE
+              WHEN old.type = 'activity' THEN trim(
+                coalesce(old.text, '') || ' ' ||
+                coalesce(json_extract(old.metadata, '$.tool'), '') || ' ' ||
+                coalesce(json_extract(old.metadata, '$.description'), '') || ' ' ||
+                coalesce(json_extract(old.metadata, '$.input.description'), '') || ' ' ||
+                coalesce(json_extract(old.metadata, '$.arg'), '') || ' ' ||
+                coalesce(json_extract(old.metadata, '$.input.command'), '')
+              )
+              ELSE old.text
+            END
+          );
         END;
         CREATE TRIGGER events_au AFTER UPDATE ON events BEGIN
-          INSERT INTO events_fts(events_fts, rowid, text) VALUES('delete', old.id, old.text);
+          INSERT INTO events_fts(events_fts, rowid, text) VALUES(
+            'delete',
+            old.id,
+            CASE
+              WHEN old.type = 'activity' THEN trim(
+                coalesce(old.text, '') || ' ' ||
+                coalesce(json_extract(old.metadata, '$.tool'), '') || ' ' ||
+                coalesce(json_extract(old.metadata, '$.description'), '') || ' ' ||
+                coalesce(json_extract(old.metadata, '$.input.description'), '') || ' ' ||
+                coalesce(json_extract(old.metadata, '$.arg'), '') || ' ' ||
+                coalesce(json_extract(old.metadata, '$.input.command'), '')
+              )
+              ELSE old.text
+            END
+          );
           INSERT INTO events_fts(rowid, text) VALUES (
             new.id,
             CASE
@@ -861,8 +942,7 @@ export class FleetStore {
                 coalesce(json_extract(new.metadata, '$.description'), '') || ' ' ||
                 coalesce(json_extract(new.metadata, '$.input.description'), '') || ' ' ||
                 coalesce(json_extract(new.metadata, '$.arg'), '') || ' ' ||
-                coalesce(json_extract(new.metadata, '$.input.command'), '') || ' ' ||
-                coalesce(json_extract(new.metadata, '$.prettyResult'), '')
+                coalesce(json_extract(new.metadata, '$.input.command'), '')
               )
               ELSE new.text
             END
@@ -898,14 +978,117 @@ export class FleetStore {
       console.log('[fleet-store] migrated session_entries_fts tokenizer: unicode61 → trigram');
     }
 
-    // Backfill events_fts for existing events (one-time; trigger handles new inserts).
-    // Use FTS5 rebuild to populate the index from the content table.
+    this.db.exec(`
+      DROP TRIGGER IF EXISTS events_ai;
+      DROP TRIGGER IF EXISTS events_ad;
+      DROP TRIGGER IF EXISTS events_au;
+      CREATE TRIGGER events_ai AFTER INSERT ON events BEGIN
+        INSERT INTO events_fts(rowid, text) VALUES (
+          new.id,
+          CASE WHEN new.type = 'activity' THEN '' ELSE new.text END
+        );
+        INSERT INTO activity_events_fts(rowid, text)
+        SELECT
+          new.id,
+          trim(
+            coalesce(new.text, '') || ' ' ||
+            coalesce(json_extract(new.metadata, '$.tool'), '') || ' ' ||
+            coalesce(json_extract(new.metadata, '$.description'), '') || ' ' ||
+            coalesce(json_extract(new.metadata, '$.input.description'), '') || ' ' ||
+            coalesce(json_extract(new.metadata, '$.arg'), '') || ' ' ||
+            coalesce(json_extract(new.metadata, '$.input.command'), '')
+          )
+        WHERE new.type = 'activity';
+      END;
+      CREATE TRIGGER events_ad AFTER DELETE ON events BEGIN
+        INSERT INTO events_fts(events_fts, rowid, text) VALUES(
+          'delete',
+          old.id,
+          CASE WHEN old.type = 'activity' THEN '' ELSE old.text END
+        );
+        INSERT INTO activity_events_fts(activity_events_fts, rowid, text)
+        SELECT
+          'delete',
+          old.id,
+          trim(
+            coalesce(old.text, '') || ' ' ||
+            coalesce(json_extract(old.metadata, '$.tool'), '') || ' ' ||
+            coalesce(json_extract(old.metadata, '$.description'), '') || ' ' ||
+            coalesce(json_extract(old.metadata, '$.input.description'), '') || ' ' ||
+            coalesce(json_extract(old.metadata, '$.arg'), '') || ' ' ||
+            coalesce(json_extract(old.metadata, '$.input.command'), '')
+          )
+        WHERE old.type = 'activity';
+      END;
+      CREATE TRIGGER events_au AFTER UPDATE OF type, text, metadata ON events BEGIN
+        INSERT INTO events_fts(events_fts, rowid, text) VALUES(
+          'delete',
+          old.id,
+          CASE WHEN old.type = 'activity' THEN '' ELSE old.text END
+        );
+        INSERT INTO activity_events_fts(activity_events_fts, rowid, text)
+        SELECT
+          'delete',
+          old.id,
+          trim(
+            coalesce(old.text, '') || ' ' ||
+            coalesce(json_extract(old.metadata, '$.tool'), '') || ' ' ||
+            coalesce(json_extract(old.metadata, '$.description'), '') || ' ' ||
+            coalesce(json_extract(old.metadata, '$.input.description'), '') || ' ' ||
+            coalesce(json_extract(old.metadata, '$.arg'), '') || ' ' ||
+            coalesce(json_extract(old.metadata, '$.input.command'), '')
+          )
+        WHERE old.type = 'activity';
+        INSERT INTO events_fts(rowid, text) VALUES (
+          new.id,
+          CASE WHEN new.type = 'activity' THEN '' ELSE new.text END
+        );
+        INSERT INTO activity_events_fts(rowid, text)
+        SELECT
+          new.id,
+          trim(
+            coalesce(new.text, '') || ' ' ||
+            coalesce(json_extract(new.metadata, '$.tool'), '') || ' ' ||
+            coalesce(json_extract(new.metadata, '$.description'), '') || ' ' ||
+            coalesce(json_extract(new.metadata, '$.input.description'), '') || ' ' ||
+            coalesce(json_extract(new.metadata, '$.arg'), '') || ' ' ||
+            coalesce(json_extract(new.metadata, '$.input.command'), '')
+          )
+        WHERE new.type = 'activity';
+      END;
+    `);
+
+    // Backfill/migrate split event FTS indexes for existing events. The primary
+    // table indexes conversation/task rows; the activity table indexes compact
+    // diagnostics, not prettyResult copies of whole tool outputs.
     // Cheap existence check, NOT COUNT(*): FTS5 has no maintained row count, so
     // COUNT(*) scans the whole index — O(events), ~seconds on a large DB, every
     // startup. We only need to know whether the index is EMPTY (one-time backfill).
     const ftsHasRows = this.db.prepare("SELECT 1 FROM events_fts LIMIT 1").get();
-    if (!ftsHasRows) {
-      this.db.exec("INSERT INTO events_fts(events_fts) VALUES ('rebuild')");
+    const eventFtsVersion = this.db.prepare("SELECT value FROM search_index_meta WHERE key = 'events_fts_content_version'").get()?.value;
+    if (!ftsHasRows || eventFtsVersion !== 'primary-events-plus-activity-diagnostics-v2') {
+      this.db.exec(`
+        INSERT INTO events_fts(events_fts) VALUES ('delete-all');
+        INSERT INTO events_fts(rowid, text)
+        SELECT id,
+          CASE WHEN type = 'activity' THEN '' ELSE text END
+        FROM events;
+        INSERT INTO activity_events_fts(activity_events_fts) VALUES ('delete-all');
+        INSERT INTO activity_events_fts(rowid, text)
+        SELECT id,
+          trim(
+            coalesce(text, '') || ' ' ||
+            coalesce(json_extract(metadata, '$.tool'), '') || ' ' ||
+            coalesce(json_extract(metadata, '$.description'), '') || ' ' ||
+            coalesce(json_extract(metadata, '$.input.description'), '') || ' ' ||
+            coalesce(json_extract(metadata, '$.arg'), '') || ' ' ||
+            coalesce(json_extract(metadata, '$.input.command'), '')
+          )
+        FROM events
+        WHERE type = 'activity';
+        INSERT OR REPLACE INTO search_index_meta(key, value)
+        VALUES ('events_fts_content_version', 'primary-events-plus-activity-diagnostics-v2');
+      `);
     }
 
     this.db.exec(`
@@ -3615,9 +3798,11 @@ export class FleetStore {
   // ---- Search ----
 
   search(query, { limit = 50, type, agent } = {}) {
-    const ftsQuery = query.replace(/"/g, '""');
-    const clauses = ['events_fts MATCH ?'];
-    const params = [ftsQuery];
+    const ftsQuery = anyTermFtsQuery(query);
+    const searchTable = type === 'activity' ? 'activity_events_fts' : 'events_fts';
+    const clauses = [];
+    const params = [];
+    const candidateLimit = Math.min(Math.max(Number(limit || 50) * 100, 1000), 10000);
 
     if (type) { clauses.push('e.type = ?'); params.push(type); }
     if (agent) {
@@ -3626,22 +3811,32 @@ export class FleetStore {
     }
     params.push(limit);
 
+    const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
     const sql = `
-      SELECT ${this._EVTE}, snippet(events_fts, 0, '<<', '>>', '...', 40) as snippet
-      FROM events_fts f JOIN events e ON e.id = f.rowid
-      WHERE ${clauses.join(' AND ')}
-      ORDER BY e.timestamp DESC LIMIT ?
+      SELECT ${this._EVTE}, snippet(${searchTable}, 0, '<<', '>>', '...', 40) as snippet, f.fts_rank
+      FROM (
+        SELECT rowid, rank AS fts_rank
+        FROM ${searchTable}
+        WHERE ${searchTable} MATCH ?
+        ORDER BY rank
+        LIMIT ?
+      ) f
+      JOIN ${searchTable} ON ${searchTable}.rowid = f.rowid
+      JOIN events e ON e.id = f.rowid
+      ${where}
+      LIMIT ?
     `;
 
-    try {
-      return this.db.prepare(sql).all(...params).map(r => ({
-        ...r,
-        metadata: r.metadata ? JSON.parse(r.metadata) : null,
-        snippet: r.snippet?.replace(/<<(.*?)>>/g, '⟨⟨$1⟩⟩'),
-      }));
-    } catch {
-      return [];
-    }
+    return rankUnifiedSearchRows(
+      this.db.prepare(sql).all(ftsQuery, candidateLimit, ...params).map(r => ({
+          ...r,
+          source: 'fleet',
+          metadata: r.metadata ? JSON.parse(r.metadata) : null,
+          snippet: r.snippet?.replace(/<<(.*?)>>/g, '⟨⟨$1⟩⟩'),
+          ftsRank: r.fts_rank ?? 0,
+        })),
+      { terms: ftsQueryTerms(query), query, explicitActivitySearch: type === 'activity' },
+    ).slice(0, limit);
   }
 
   // ---- Session entry indexing (JSONL text for unified search) ----
@@ -3785,17 +3980,23 @@ export class FleetStore {
   }
 
   searchAll(query, { limit = 50, agent, role, type, types, since, before, agentOnly, historyOnly, eventOnly, fromOnly } = {}) {
-    const ftsQuery = literalFtsQuery(query);
-    const runQuery = (sql, params) => {
-      try { return this.db.prepare(sql).all(...params); } catch { return []; }
-    };
+    const terms = ftsQueryTerms(query);
+    const ftsQuery = anyTermFtsQuery(query);
 
     // Normalize agent to array for multi-ID lineage search
     const agentIds = Array.isArray(agent) ? agent : agent ? [agent] : [];
     const hasAgent = agentIds.length > 0;
     const agentPlaceholders = agentIds.map(() => '?').join(',');
     const historyMode = historyOnly ?? agentOnly ?? false;
-    const eventTypes = Array.isArray(types) && types.length ? types : type ? [type] : null;
+    let eventTypes = Array.isArray(types) && types.length ? types : type ? [type] : null;
+    const sessionRole = role === 'user' || role === 'assistant' ? role : null;
+    if (role && !sessionRole) eventTypes = eventTypes || [role];
+    const defaultEventTypes = ['chat', 'delegate', 'report', 'task_update', 'task_done'];
+    const searchedEventTypes = eventTypes || (historyMode ? null : defaultEventTypes);
+    const explicitActivitySearch = eventTypes?.includes('activity') || false;
+    const includeEvents = !sessionRole;
+    const includeSessions = !eventTypes || !!sessionRole;
+    const candidateLimit = Math.min(Math.max(Number(limit || 50) * 100, 1000), 10000);
 
     function agentClause(fromCol, toCol, agentCol) {
       // `from:` semantics — restrict to messages the agent SENT (from_id only).
@@ -3811,105 +4012,210 @@ export class FleetStore {
         params: [...agentIds, ...agentIds, ...agentIds]
       };
     }
+    function eventRowMatches(row) {
+      if (searchedEventTypes && !searchedEventTypes.includes(row.type)) return false;
+      if (since && row.timestamp < since) return false;
+      if (before && row.timestamp >= before) return false;
+      if (hasAgent) {
+        if (fromOnly) return agentIds.includes(row.from);
+        return agentIds.includes(row.from) || agentIds.includes(row.to) || agentIds.includes(row.agentId);
+      }
+      return true;
+    }
+    function sessionRowMatches(row) {
+      if (sessionRole && row.role !== sessionRole) return false;
+      if (since && row.timestamp < since) return false;
+      if (before && row.timestamp >= before) return false;
+      if (hasAgent && !agentIds.includes(row.agent_id)) return false;
+      return true;
+    }
 
     // 1. Fleet events
-    let eClauses, eParams;
-    if (historyMode) {
-      eClauses = [];
-      eParams = [];
-      if (hasAgent) {
-        const ac = agentClause('e.from_id', 'e.to_id', 'e.agent_id');
-        eClauses.push(ac.clause);
-        eParams.push(...ac.params);
+    let eventRows = [];
+    if (includeEvents) {
+      if (historyMode && hasAgent && eventOnly) {
+        const rows = agentIds.flatMap(agentId => this.queryAgentEvents({
+          agent: agentId,
+          types: eventTypes,
+          sinceTs: since,
+          untilTs: before,
+          limit,
+        }));
+        eventRows = rows.map(r => ({
+          source: 'fleet',
+          id: r.id,
+          type: r.type,
+          timestamp: r.timestamp,
+          from: r.from,
+          to: r.to,
+          text: r.text,
+          metadata: r.metadata ? JSON.parse(r.metadata) : null,
+          snippet: r.text?.slice(0, 120),
+          ftsRank: 0,
+        })).sort((a, b) => (b.timestamp ?? '').localeCompare(a.timestamp ?? '')).slice(0, limit);
+      } else {
+      let eClauses, eParams;
+      if (historyMode) {
+        eClauses = [];
+        eParams = [];
+        if (hasAgent) {
+          const ac = agentClause('e.from_id', 'e.to_id', 'e.agent_id');
+          eClauses.push(ac.clause);
+          eParams.push(...ac.params);
+        }
+      } else {
+        eClauses = [];
+        eParams = [];
       }
-    } else {
-      eClauses = ['events_fts MATCH ?'];
-      eParams = [ftsQuery];
-      if (hasAgent) { const ac = agentClause('e.from_id', 'e.to_id', 'e.agent_id'); eClauses.push(ac.clause); eParams.push(...ac.params); }
+      if (historyMode) {
+        if (eventTypes) {
+          eClauses.push(`e.type IN (${eventTypes.map(() => '?').join(',')})`);
+          eParams.push(...eventTypes);
+        }
+        if (since) { eClauses.push('e.timestamp >= ?'); eParams.push(since); }
+        if (before) { eClauses.push('e.timestamp < ?'); eParams.push(before); }
+      }
+      eParams.push(historyMode ? limit : candidateLimit);
+      const eventWhere = eClauses.length ? `WHERE ${eClauses.join(' AND ')}` : '';
+      const searchTable = explicitActivitySearch ? 'activity_events_fts' : 'events_fts';
+      const snippetCol = historyMode ? 'substr(e.text, 1, 120) as snippet' : `snippet(${searchTable}, 0, '<<', '>>', '...', 40) as snippet`;
+      const eventSql = historyMode ? `
+        SELECT e.id, e.type, e.timestamp, e.from_id as "from", e.to_id as "to", e.text, e.metadata, e.agent_id,
+               ${snippetCol}, 0 as fts_rank
+        FROM events e
+        ${eventWhere}
+        ORDER BY e.timestamp DESC LIMIT ?
+      ` : `
+        SELECT e.id, e.type, e.timestamp, e.from_id as "from", e.to_id as "to", e.text, e.metadata, e.agent_id,
+               ${snippetCol}, f.fts_rank
+        FROM (
+          SELECT rowid, rank AS fts_rank
+          FROM ${searchTable}
+          WHERE ${searchTable} MATCH ?
+          ORDER BY rank
+          LIMIT ?
+        ) f
+        JOIN ${searchTable} ON ${searchTable}.rowid = f.rowid
+        JOIN events e ON e.id = f.rowid
+        ${eventWhere}
+        LIMIT ?
+      `;
+      const eventParams = historyMode ? eParams : [ftsQuery, candidateLimit, ...eParams];
+      eventRows = this.db.prepare(eventSql).all(...eventParams).map(r => ({
+        source: 'fleet',
+        id: r.id,
+        type: r.type,
+        timestamp: r.timestamp,
+        from: r.from,
+        to: r.to,
+        text: r.text,
+        agentId: r.agent_id,
+        metadata: r.metadata ? JSON.parse(r.metadata) : null,
+        snippet: r.snippet?.replace(/<<(.*?)>>/g, '⟨⟨$1⟩⟩'),
+        ftsRank: r.fts_rank ?? 0,
+      })).filter(row => historyMode || eventRowMatches(row));
+      }
     }
-    if (eventTypes) {
-      eClauses.push(`e.type IN (${eventTypes.map(() => '?').join(',')})`);
-      eParams.push(...eventTypes);
-    }
-    if (since) { eClauses.push('e.timestamp >= ?'); eParams.push(since); }
-    if (before) { eClauses.push('e.timestamp < ?'); eParams.push(before); }
-    eParams.push(limit);
-    const eventWhere = eClauses.length ? `WHERE ${eClauses.join(' AND ')}` : '';
-    const ftsJoin = historyMode ? '' : 'events_fts f JOIN';
-    const ftsOn = historyMode ? '' : 'ON e.id = f.rowid';
-    const snippetCol = historyMode ? 'substr(e.text, 1, 120) as snippet' : "snippet(events_fts, 0, '<<', '>>', '...', 40) as snippet";
-    const eventRows = runQuery(`
-      SELECT e.id, e.type, e.timestamp, e.from_id as "from", e.to_id as "to", e.text, e.metadata,
-             ${snippetCol}
-      FROM ${ftsJoin} events e ${ftsOn}
-      ${eventWhere}
-      ORDER BY e.timestamp DESC LIMIT ?
-    `, eParams).map(r => ({
-      source: 'fleet',
-      id: r.id,
-      type: r.type,
-      timestamp: r.timestamp,
-      from: r.from,
-      to: r.to,
-      text: r.text,
-      metadata: r.metadata ? JSON.parse(r.metadata) : null,
-      snippet: r.snippet?.replace(/<<(.*?)>>/g, '⟨⟨$1⟩⟩'),
-    }));
 
     if (eventOnly) {
-      return eventRows.sort((a, b) => (b.timestamp ?? '').localeCompare(a.timestamp ?? '')).slice(0, limit);
+      return historyMode
+        ? eventRows.sort((a, b) => (b.timestamp ?? '').localeCompare(a.timestamp ?? '')).slice(0, limit)
+        : rankUnifiedSearchRows(eventRows, { terms, query, explicitActivitySearch }).slice(0, limit);
     }
 
     // 2. Session JSONL entries
-    let sClauses, sParams;
-    if (historyMode) {
-      sClauses = [];
-      sParams = [];
-      if (hasAgent) {
-        if (agentIds.length === 1) {
-          sClauses.push('s.agent_id = ?');
-          sParams.push(agentIds[0]);
-        } else {
-          sClauses.push(`s.agent_id IN (${agentPlaceholders})`);
-          sParams.push(...agentIds);
+    let sessionRows = [];
+    if (includeSessions) {
+      let sClauses, sParams;
+      if (historyMode) {
+        sClauses = [];
+        sParams = [];
+        if (hasAgent) {
+          if (agentIds.length === 1) {
+            sClauses.push('s.agent_id = ?');
+            sParams.push(agentIds[0]);
+          } else {
+            sClauses.push(`s.agent_id IN (${agentPlaceholders})`);
+            sParams.push(...agentIds);
+          }
         }
+      } else {
+        sClauses = [];
+        sParams = [];
       }
-    } else {
-      sClauses = ['session_entries_fts MATCH ?'];
-      sParams = [ftsQuery];
-      if (hasAgent) {
-        if (agentIds.length === 1) { sClauses.push('s.agent_id = ?'); sParams.push(agentIds[0]); }
-        else { sClauses.push(`s.agent_id IN (${agentPlaceholders})`); sParams.push(...agentIds); }
+      if (historyMode) {
+        if (sessionRole) { sClauses.push('s.role = ?'); sParams.push(sessionRole); }
+        if (since) { sClauses.push('s.timestamp >= ?'); sParams.push(since); }
+        if (before) { sClauses.push('s.timestamp < ?'); sParams.push(before); }
       }
+      sParams.push(historyMode ? limit : candidateLimit);
+      const sessionWhere = sClauses.length ? `WHERE ${sClauses.join(' AND ')}` : '';
+      const sSnippetCol = historyMode ? 'substr(s.text, 1, 120) as snippet' : "snippet(session_entries_fts, 0, '<<', '>>', '...', 40) as snippet";
+      const sessionSql = historyMode ? `
+        SELECT s.id, s.agent_id, s.session_id, s.role, s.timestamp, s.text,
+               ${sSnippetCol}, 0 as fts_rank
+        FROM session_entries s
+        ${sessionWhere}
+        ORDER BY s.timestamp DESC LIMIT ?
+      ` : `
+        SELECT s.id, s.agent_id, s.session_id, s.role, s.timestamp, s.text,
+               ${sSnippetCol}, f.fts_rank
+        FROM (
+          SELECT rowid, rank AS fts_rank
+          FROM session_entries_fts
+          WHERE session_entries_fts MATCH ?
+          ORDER BY rank
+          LIMIT ?
+        ) f
+        JOIN session_entries_fts ON session_entries_fts.rowid = f.rowid
+        JOIN session_entries s ON s.id = f.rowid
+        ${sessionWhere}
+        LIMIT ?
+      `;
+      const sessionParams = historyMode ? sParams : [ftsQuery, candidateLimit, ...sParams];
+      sessionRows = this.db.prepare(sessionSql).all(...sessionParams).map(r => ({
+        source: 'session',
+        id: r.id,
+        agentId: r.agent_id,
+        sessionId: r.session_id,
+        role: r.role,
+        timestamp: r.timestamp,
+        text: r.text,
+        snippet: r.snippet?.replace(/<<(.*?)>>/g, '⟨⟨$1⟩⟩'),
+        ftsRank: r.fts_rank ?? 0,
+      })).filter(row => historyMode || sessionRowMatches(row));
     }
-    if (role && (role === 'user' || role === 'assistant')) { sClauses.push('s.role = ?'); sParams.push(role); }
-    if (since) { sClauses.push('s.timestamp >= ?'); sParams.push(since); }
-    if (before) { sClauses.push('s.timestamp < ?'); sParams.push(before); }
-    sParams.push(limit);
-    const sessionWhere = sClauses.length ? `WHERE ${sClauses.join(' AND ')}` : '';
-    const sFtsJoin = historyMode ? '' : 'session_entries_fts f JOIN';
-    const sFtsOn = historyMode ? '' : 'ON s.id = f.rowid';
-    const sSnippetCol = historyMode ? 'substr(s.text, 1, 120) as snippet' : "snippet(session_entries_fts, 0, '<<', '>>', '...', 40) as snippet";
-    const sessionRows = runQuery(`
-      SELECT s.id, s.agent_id, s.session_id, s.role, s.timestamp, s.text,
-             ${sSnippetCol}
-      FROM ${sFtsJoin} session_entries s ${sFtsOn}
-      ${sessionWhere}
-      ORDER BY s.timestamp DESC LIMIT ?
-    `, sParams).map(r => ({
-      source: 'session',
-      id: r.id,
-      agentId: r.agent_id,
-      sessionId: r.session_id,
-      role: r.role,
-      timestamp: r.timestamp,
-      text: r.text,
-      snippet: r.snippet?.replace(/<<(.*?)>>/g, '⟨⟨$1⟩⟩'),
-    }));
 
-    return [...eventRows, ...sessionRows]
-      .sort((a, b) => (b.timestamp ?? '').localeCompare(a.timestamp ?? ''))
-      .slice(0, limit);
+    if (historyMode) {
+      return [...eventRows, ...sessionRows]
+        .sort((a, b) => (b.timestamp ?? '').localeCompare(a.timestamp ?? ''))
+        .slice(0, limit);
+    }
+
+    return rankUnifiedSearchRows([...eventRows, ...sessionRows], { terms, query, explicitActivitySearch }).slice(0, limit);
+  }
+
+  getSearchStats() {
+    const eventTypes = this.db.prepare(`
+      SELECT type, COUNT(*) AS count
+      FROM events
+      GROUP BY type
+      ORDER BY count DESC, type ASC
+    `).all();
+    const totalEvents = eventTypes.reduce((sum, row) => sum + row.count, 0);
+    const sessionEntries = this.db.prepare('SELECT COUNT(*) AS count FROM session_entries').get()?.count || 0;
+    const sessionRoles = this.db.prepare(`
+      SELECT role, COUNT(*) AS count
+      FROM session_entries
+      GROUP BY role
+      ORDER BY count DESC, role ASC
+    `).all();
+    const ftsContentVersion = this.db.prepare("SELECT value FROM search_index_meta WHERE key = 'events_fts_content_version'").get()?.value || null;
+    return {
+      events: { total: totalEvents, byType: eventTypes },
+      sessionEntries: { total: sessionEntries, byRole: sessionRoles },
+      fts: { eventsContentVersion: ftsContentVersion },
+    };
   }
 
   // Get N chat events before/after a timestamp (for search context).
