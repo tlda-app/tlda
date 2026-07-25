@@ -4,7 +4,7 @@ import { labelsForAgent } from '../../shared/fleet-labels.mjs'
 // @ts-ignore - shared JS module
 import { isRuntimeAwake } from '../../shared/fleet-runtime-status.mjs'
 import { setLiveStoreObserver } from '../../shared/live-store.ts'
-import { noteBufferDrop, noteDisposedViewTouched, noteViewRef, startFreezeCensus, filterNameIds } from './chat-freeze-probe.mjs'
+import { noteBufferDrop, noteDisposedViewTouched, noteViewRef, startFreezeCensus, filterNameIds, noteBufferMatch } from './chat-freeze-probe.mjs'
 import { getLastEventId } from './fleet-data.mjs'
 
 startFreezeCensus(getLastEventId)
@@ -200,6 +200,7 @@ function unresolvedParticipantDrop(buffer: EventBuffer, event: FleetEvent): Reco
 function fanoutEventToBuffers(event: FleetEvent): void {
   for (const [bufferKey, buffer] of eventBuffers) {
     if (buffer.matchesFilter(buffer.filter, event)) {
+      noteBufferMatch(bufferKey)
       buffer.store.upsert(event)
       if (buffer.pinned) trimEventBuffer(buffer)
     } else {
