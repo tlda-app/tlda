@@ -234,16 +234,30 @@ const _filterNameIds = new Map()
  * every message from that agent is dropped and radio shows all of them.
  * @param {string} name
  * @param {readonly string[]} ids
+ * @param {string} [outcome] 'ok' | 'http-<status>' | 'threw:<name>' | 'unknown'
  */
-export function recordFilterNameIds(name, ids) {
+export function recordFilterNameIds(name, ids, outcome = 'unknown') {
   const set = new Set(ids)
   const had = _filterNameIds.get(name)
   _filterNameIds.set(name, set)
-  if (set.size === 0) {
-    log.metric(NS, 'FILTER NAME RESOLVED TO NOTHING — panel is structurally dead', { name })
-  } else if (had && had.size === 0) {
-    log.metric(NS, 'filter name recovered after resolving to nothing', { name, ids: [...set] })
+  if (set.size > 0) {
+    if (had && had.size === 0) {
+      log.metric(NS, 'filter name recovered after resolving to nothing', { name, ids: [...set], outcome })
+    }
+    return
   }
+  // Empty. WHICH empty decides whether this is a fault.
+  if (outcome === 'ok') {
+    // The server answered and no agent carries this name. Correct, not a bug —
+    // this is what an id fragment or a typo in a filter term looks like. The
+    // panel will never match by name, and that is the filter's own doing.
+    log.metric(NS, 'filter name matches no agent (server answered; not a fault)', { name })
+    return
+  }
+  // The lookup did not complete. Nothing re-runs hydration unless the filter
+  // changes, so this name is unresolvable for the life of the tab: every message
+  // from that agent is dropped by the panel while radio still shows it.
+  log.metric(NS, 'FILTER NAME LOOKUP FAILED — unresolvable until refilter', { name, outcome })
 }
 
 /** Ids a filter name is known to resolve to, or null if never looked up. */
