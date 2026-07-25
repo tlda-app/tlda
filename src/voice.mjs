@@ -2901,6 +2901,70 @@ if (typeof window !== 'undefined') {
   window.__voiceLogs = _voiceLogs
 }
 
+// --- Session-independent state probe ---
+//
+// Every other voice diagnostic dies with the thing it is supposed to report on. The
+// audio heartbeat is created by startDeepgramMic and cleared by stopDeepgramMic, and
+// its callback opens with `if (!_recording) return`; runVoiceLivenessWatchdog is
+// started on record-start and stopped on record-stop. So in the state Skip actually
+// describes — "it'll just get locked up not recording, basically", with the HUD still
+// showing a target — every one of them is silent, and the gate terms that tell the
+// stuck states apart never get sampled.
+//
+// This interval is owned by the module, not by a recording session: it is never
+// cleared, so it keeps sampling across exactly the transitions we cannot currently
+// see. It emits only when the state fingerprint CHANGES — so an idle tab writes one
+// line and then goes quiet — plus a repeat while voice believes it is recording and
+// the pipeline is not delivering, which is the stuck state itself.
+let _lastStateFingerprint = null
+let _lastStateEmitAt = 0
+const VOICE_STATE_SAMPLE_MS = 2000
+const VOICE_STATE_STUCK_REPEAT_MS = 15000
+
+function voiceStateSnapshot() {
+  return {
+    recording: _recording,
+    backend: _backend,
+    target: targetLabel(),
+    routed: voiceHasRoute(),
+    speechEpoch: _speechEpoch,
+    readyEpoch: _deepgramReadyEpoch,
+    gateOpen: _deepgramReadyEpoch === _speechEpoch,
+    micAlive: !!_deepgramStream,
+    heartbeatAlive: !!_audioHeartbeatInterval,
+    relayConnected: _deepgramRelayConnected,
+    recognizerStatus: currentDeepgramRecognizerStatus(),
+    pcmPaused: _deepgramPcmPaused,
+    upstreamPaused: _dgUpstreamPaused,
+    guardArmed: _dgIgnoreUntilUtteranceEnd,
+    lastResultMs: _lastResultTime ? Date.now() - _lastResultTime : null,
+  }
+}
+
+// Voice thinks it is on, but something in front of the microphone is not delivering.
+// This is the shape of the failure, so it is the one state worth repeating.
+function voiceLooksStuck(s) {
+  if (!s.recording || s.backend !== 'deepgram') return false
+  return !s.gateOpen || !s.micAlive || !s.heartbeatAlive || !s.relayConnected
+}
+
+if (typeof window !== 'undefined') {
+  setInterval(() => {
+    const snapshot = voiceStateSnapshot()
+    // Volatile fields are excluded from the fingerprint so ordinary progress does not
+    // read as a state change; they still ride along on every line we do emit.
+    const { lastResultMs, ...stable } = snapshot
+    const fingerprint = JSON.stringify(stable)
+    const now = Date.now()
+    const changed = fingerprint !== _lastStateFingerprint
+    const stuckRepeat = voiceLooksStuck(snapshot) && now - _lastStateEmitAt >= VOICE_STATE_STUCK_REPEAT_MS
+    if (!changed && !stuckRepeat) return
+    _lastStateFingerprint = fingerprint
+    _lastStateEmitAt = now
+    vlog(changed ? 'voice state changed' : 'voice state STUCK', snapshot)
+  }, VOICE_STATE_SAMPLE_MS)
+}
+
 function startRecording() {
   vlog('startRecording', { backend: _backend, recording: _recording, hasTextarea: !!_activeTextarea, hasAccumulator: !!_accumulator })
   if (_recording) return
