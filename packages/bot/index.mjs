@@ -260,11 +260,13 @@ export function runBot(opts) { return createBot(opts).start(); }
 // package surface is a promise. Do not add a symbol here "for completeness";
 // add it when a bot actually imports it.
 export {
-  CONFIG_DIR,          // todd, grammar, lint, disposition
-  getServerUrl,        // todd, disposition
-  getFleetServerUrl,   // grammar, lint, todd/disclosure/dataset
-  getManagedBots,      // grammar, lint
-  getReadToken,        // todd/disclosure/dataset
+  CONFIG_DIR,                // todd, grammar, lint, dev, disposition
+  getServerUrl,              // todd, dev, disposition
+  getFleetServerUrl,         // grammar, lint, dev, todd/lib/disclosure/dataset
+  getManagedBots,            // grammar, lint, dev
+  getManagedBotEnvironments, // dev
+  getActiveConfigName,       // dev
+  getReadToken,              // todd/lib/disclosure/dataset
 } from '../../shared/config.mjs';
 export { labelsForAgent } from '../../shared/fleet-labels.mjs';        // todd, dev
 export { startWsRequest } from '../../shared/ws-request-policy.mjs';   // all bots

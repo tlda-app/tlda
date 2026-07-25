@@ -1629,7 +1629,7 @@ function botPermissionFacts() {
   }
 }
 
-function enlistBot(bot) {
+async function enlistBot(bot) {
   const configName = bot.server || getActiveConfigName()
   const paths = botServicePaths(bot.name, { configName })
   const fleetId = readBotFleetId(paths)
@@ -1673,6 +1673,23 @@ function enlistBot(bot) {
   } finally {
     mintStore.close()
   }
+
+  // Record the grant in the permission ledger, not only in the mint recipe.
+  // ensureAgentWakeGrant reads the agent's metadata or the LEDGER, so without
+  // this an enlisted bot still cannot be woken — it fails with "no recorded
+  // permission grant", which is what enlist exists to prevent. The mint path
+  // does the equivalent write after a spawn; enlist is the same act for a bot
+  // that already exists, so it belongs here too.
+  const ledger = createPermissionLedger(permissionLedgerPathFromDaemonConfig(
+    readDaemonConfig(defaultDaemonConfigPath(CONFIG_DIR)),
+    CONFIG_DIR,
+  ))
+  try {
+    await ledger.set(fleetId, { permissionGrant: grant.permissionGrant, source: 'bot-enlist' })
+  } finally {
+    await ledger.close()
+  }
+
   return { paths, fleetId, mintId }
 }
 
@@ -2195,7 +2212,7 @@ async function cmdBot() {
   if (sub === 'enlist') {
     const bots = findConfiguredBot(name)
     for (const bot of bots) {
-      const result = enlistBot(bot)
+      const result = await enlistBot(bot)
       console.log(green(`Enlisted ${result.paths.label}.`))
       console.log(dim(`  Fleet id: ${result.fleetId}`))
       console.log(dim(`  Mint id: ${result.mintId}`))
