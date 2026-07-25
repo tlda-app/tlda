@@ -268,9 +268,16 @@ export async function hydrateFleetAgentsForFilter(filter) {
   const batches = await Promise.all(requests.map(({ key, url }) => {
     let pending = _agentLookupPromises.get(key)
     if (!pending) {
+      // Keep WHY a lookup produced nothing. `.catch(() => ({agents: []}))` made a
+      // failed fetch and a legitimately-empty result arrive identically, so the
+      // probe could not tell "this name will never resolve for this tab" (a bug)
+      // from "no agent is called that" (correct — e.g. an id fragment typed as a
+      // filter term). Only the first is a fault.
       pending = fetch(url)
-        .then(r => r.ok ? r.json() : { agents: [] })
-        .catch(() => ({ agents: [] }))
+        .then(r => r.ok
+          ? r.json().then(j => ({ ...j, _outcome: 'ok' }))
+          : { agents: [], _outcome: `http-${r.status}` })
+        .catch(e => ({ agents: [], _outcome: `threw:${e?.name || 'error'}` }))
         .finally(() => _agentLookupPromises.delete(key))
       _agentLookupPromises.set(key, pending)
     }
@@ -282,7 +289,7 @@ export async function hydrateFleetAgentsForFilter(filter) {
   // while radio still shows it. chat-freeze-probe logs that at its source.
   requests.forEach((req, i) => {
     if (!req.key.startsWith('name:')) return
-    recordFilterNameIds(req.key.slice(5), (batches[i]?.agents || []).map(a => a.id))
+    recordFilterNameIds(req.key.slice(5), (batches[i]?.agents || []).map(a => a.id), batches[i]?._outcome || 'unknown')
   })
   const agents = batches.flatMap(batch => batch?.agents || [])
   if (agents.length) applyAgentDelta(agents, [])
