@@ -68,7 +68,7 @@ export function createFilterSubscriptions({ getAgents } = {}) {
     if (!conn || !subId) return null
     const key = filterKey(filter)
     let entry = byFilter.get(key)
-    if (!entry) { entry = { filter, subs: new Map() }; byFilter.set(key, entry) }
+    if (!entry) { entry = { filter, subs: new Map(), deliveries: 0, lastDeliveryAt: null }; byFilter.set(key, entry) }
     const sk = subKeyOf(conn, subId)
     entry.subs.set(sk, { conn, subId, humanId, humanName })
     let keys = byConn.get(conn)
@@ -154,6 +154,8 @@ export function createFilterSubscriptions({ getAgents } = {}) {
       if (humanKeys.size === 1) {
         const first = entry.subs.values().next().value
         if (verdict(entry.filter, event, first)) {
+          entry.deliveries += entry.subs.size
+          entry.lastDeliveryAt = new Date().toISOString()
           for (const sub of entry.subs.values()) out.push({ conn: sub.conn, subId: sub.subId })
         }
         continue
@@ -165,7 +167,11 @@ export function createFilterSubscriptions({ getAgents } = {}) {
           if (verdicts.size > 0) evaluations++
           verdicts.set(hk, verdict(entry.filter, event, sub))
         }
-        if (verdicts.get(hk)) out.push({ conn: sub.conn, subId: sub.subId })
+        if (verdicts.get(hk)) {
+          entry.deliveries += 1
+          entry.lastDeliveryAt = new Date().toISOString()
+          out.push({ conn: sub.conn, subId: sub.subId })
+        }
       }
     }
     out.evaluations = evaluations
@@ -226,10 +232,42 @@ export function createFilterSubscriptions({ getAgents } = {}) {
     }
   }
 
+  // Per-filter delivery counts. The aggregate endpoint could not answer "is THIS
+  // filter receiving anything", so a subscription that never matches — a dm:
+  // filter subscribed with a null humanId, say — was indistinguishable from a
+  // quiet one, and a real defect could not be established either way. That was
+  // the limitation that left chat-lock's identity finding unprovable on
+  // 2026-07-25 rather than confirmed or killed.
+  //
+  // Capped, because the count is bounded by distinct filters across all clients
+  // and this is a diagnostics payload, not a metrics pipeline.
+  const PER_FILTER_CAP = 50
+
+  function perFilter() {
+    const out = []
+    for (const [key, entry] of byFilter) {
+      if (out.length >= PER_FILTER_CAP) break
+      out.push({
+        filterKey: key,
+        filter: entry.filter,
+        subscriptions: entry.subs.size,
+        deliveries: entry.deliveries || 0,
+        lastDeliveryAt: entry.lastDeliveryAt || null,
+        humanScoped: [...entry.subs.values()].some((sub) => !!sub.humanId),
+      })
+    }
+    return out
+  }
+
   function stats() {
     let subs = 0
     for (const entry of byFilter.values()) subs += entry.subs.size
-    return { distinctFilters: byFilter.size, subscriptions: subs, connections: byConn.size }
+    return {
+      distinctFilters: byFilter.size,
+      subscriptions: subs,
+      connections: byConn.size,
+      perFilter: perFilter(),
+    }
   }
 
   return { subscribe, unsubscribe, dropConnection, match, verdict, history, stats }
