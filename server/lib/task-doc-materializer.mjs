@@ -1,7 +1,10 @@
-import { execFileSync } from 'node:child_process'
-import { mkdirSync, readFileSync, realpathSync } from 'node:fs'
-import { join, resolve, sep } from 'node:path'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+import { existsSync, mkdirSync, readFileSync, realpathSync } from 'node:fs'
+import { dirname, join, resolve, sep } from 'node:path'
 import { homedir } from 'node:os'
+
+const execFileP = promisify(execFile)
 
 import { CONFIG_DIR } from '../../shared/config.mjs'
 import { readDaemonConfig } from '../../agent-launch/permission-ledger.mjs'
@@ -43,7 +46,7 @@ export function createTaskDocMaterializer({
     const changes = pending
     pending = []
     try {
-      const result = materializeTaskDocs({ fleetStore, changes, globalDir, projectsProvider, writebackOptions, logger, git })
+      const result = await materializeTaskDocs({ fleetStore, changes, globalDir, projectsProvider, writebackOptions, logger, git })
       if (!result.ok) {
         logger.warn?.(`[task-doc] ${result.failures.length} writeback(s) did not land`)
       }
@@ -74,7 +77,7 @@ export function createTaskDocMaterializer({
   }
 }
 
-export function materializeTaskDocs({
+export async function materializeTaskDocs({
   fleetStore,
   changes = [],
   globalDir = resolveTaskDocGlobalDir(),
@@ -182,7 +185,7 @@ export function materializeTaskDocs({
   const commitMessage = describeChanges(changes)
   const actor = actorFromChanges(changes, agentById)
   for (const dir of touchedDirs) {
-    commitTaskDoc(dir, {
+    await commitTaskDoc(dir, {
       message: commitMessage,
       actor,
       git,
@@ -374,13 +377,13 @@ function writeTaskDocManifest(root, { id, title, writeback = null }) {
   }))
 }
 
-function commitTaskDoc(dir, { message, actor, git, logger }) {
+async function commitTaskDoc(dir, { message, actor, git, logger }) {
   if (!isGitRepo(dir)) return false
   try {
-    git(['add', TASK_DOC_FILENAME, join('.tlda', 'parts.json')], dir)
-    const status = git(['status', '--porcelain=v1', '--', TASK_DOC_FILENAME, join('.tlda', 'parts.json')], dir)
+    await git(['add', TASK_DOC_FILENAME, join('.tlda', 'parts.json')], dir)
+    const status = await git(['status', '--porcelain=v1', '--', TASK_DOC_FILENAME, join('.tlda', 'parts.json')], dir)
     if (!status.trim()) return false
-    git([
+    await git([
       '-c', `user.name=${actor.name}`,
       '-c', `user.email=${actor.email}`,
       'commit',
@@ -527,25 +530,39 @@ function escapeHtmlAttr(value) {
     .replace(/'/g, '&#39;')
 }
 
-function runGit(args, cwd) {
-  return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+// Async on purpose. This used to be execFileSync, and the synchronous WAIT --
+// not the subprocess -- blocked the server's event loop for 1.2-2.0s at a time,
+// every debounce, which is what Skip felt as the app locking up. The subprocess
+// always ran off-thread; we simply stood there waiting for it.
+async function runGit(args, cwd) {
+  const { stdout } = await execFileP('git', args, { cwd, encoding: 'utf8' })
+  return stdout.trim()
 }
 
+// Walk up for `.git` instead of spawning `git rev-parse --show-toplevel`.
+//
+// This is the hot one: resolveProjectCwd() is reached from enrichTask() for
+// EVERY task on every materialisation, so a subprocess here meant one git spawn
+// per task before any commit work started -- the dominant half of the stall the
+// profiler attributed to `spawn @ :0`. A stat walk answers the same question
+// with no process at all.
+//
+// `.git` is a directory in a normal clone and a FILE in a linked worktree, so
+// existsSync (not isDirectory) is the correct test for both.
 function gitTopLevel(cwd) {
-  try {
-    return runGit(['rev-parse', '--show-toplevel'], cwd)
-  } catch {
-    return null
+  let dir = resolve(cwd)
+  for (;;) {
+    if (existsSync(join(dir, '.git'))) return dir
+    const parent = dirname(dir)
+    if (parent === dir) return null
+    dir = parent
   }
 }
 
+// Same reasoning as gitTopLevel: a subprocess to answer a filesystem question.
+// Called once per touched directory per flush.
 function isGitRepo(dir) {
-  try {
-    runGit(['rev-parse', '--is-inside-work-tree'], dir)
-    return true
-  } catch {
-    return false
-  }
+  return gitTopLevel(dir) !== null
 }
 
 function safeRealpath(path) {

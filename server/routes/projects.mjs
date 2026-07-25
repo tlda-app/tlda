@@ -279,7 +279,7 @@ router.post('/:name/task-doc/refresh', requireRw, async (req, res) => {
     const taskTotal = isStatusDoc && typeof sourceFleetStore.getActiveTaskCount === 'function'
       ? sourceFleetStore.getActiveTaskCount()
       : null
-    const result = materializeTaskDocs({
+    const result = await materializeTaskDocs({
       fleetStore: sourceFleetStore,
       projectNames: [req.params.name],
       globalProjectNames: isStatusDoc ? [req.params.name] : [],
