@@ -111,6 +111,18 @@ them to do anything. Model, friendly name, and a wakeable indicator are things a
 reads on a screen. When in doubt, ask whether the server needs it to *act* or Skip needs
 it to *look at*.
 
+**And if a display value isn't there, show nothing — never a fallback.**
+
+> "Some of the model and effort and other stuff used to be in the display. And the fact
+> that we're not getting errors is just because there were fallbacks or whatever. Just
+> don't display it if it's not [there]."
+
+A display fallback is the no-fallback rule in its most damaging form: it manufactures a
+plausible value, so the absence never surfaces as an error and nobody learns the data
+stopped arriving. Model and effort disappearing from the panel went unnoticed for
+exactly this reason. A blank is information; an invented default is a lie that also
+suppresses the bug report.
+
 The server holds the agent id, which daemon owns it, and the friendly name. Not the
 session id, not session lists, not resume ids, not tmux information.
 
