@@ -71,7 +71,20 @@ const _stats = {
   clientVerdicts: 0,
   serverDeliveries: 0,
   comparisons: 0,
-  agreed: 0,
+  // Agreement is split by POLARITY, because agreed-negative is not proof.
+  //
+  // The comparator detects disagreement. The one failure it cannot see by
+  // disagreeing is both sides being wrong the same way: if the server's roster
+  // is also partial, neither side resolves the name, both say "does not belong",
+  // and that registers as agreement. markdown-check's rosterSize field catches it
+  // from the server end; this catches it from here.
+  //
+  // agreedBelongs 0 over a live session, with comparisons high, means no panel
+  // ever matched anything — which is what a globally-broken filter looks like
+  // from the inside, and it is indistinguishable from a quiet fleet unless the
+  // two polarities are counted apart.
+  agreedBelongs: 0,
+  agreedNotBelongs: 0,
   serverMissed: 0,
   clientMissed: 0,
 }
@@ -98,7 +111,10 @@ function ensureSweep() {
       if (now - v.t < GRACE_MS) continue
       _pending.delete(k)
       _stats.comparisons++
-      if (v.client === v.server) { _stats.agreed++; continue }
+      if (v.client === v.server) {
+        if (v.client) _stats.agreedBelongs++; else _stats.agreedNotBelongs++
+        continue
+      }
       if (v.client) _stats.serverMissed++; else _stats.clientMissed++
       const [subId, eventId] = k.split('|')
       const direction = v.client ? 'server-missed' : 'client-missed'
