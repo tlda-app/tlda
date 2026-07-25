@@ -113,3 +113,50 @@ moved; the old thing doesn't just sit there"* — as were the reconnect bug itse
 client-side finalize. That made **eight instances found in one night** across the
 codebase. The count is itself the evidence: this is not a series of unrelated oversights,
 it's the dominant way defects enter this system, and it's worth looking for first.
+
+---
+
+## OPEN BUG — a segment repeats inside a single message
+
+Found 2026-07-25, after the cross-message duplication was fixed. **Not fixed.** Diagnosed
+with the specimen preserved; see the comment at the `msg.is_final` branch in
+`src/voice.mjs`, which is where someone would write the wrong patch.
+
+Skip received *"Cool. Cool. Okay. So Cool. Cool. Okay. So so what do we do?"* and
+confirmed *"I didn't say that shit twice."*
+
+Preserved specimen, bridge log, **all at `epoch=27`**:
+
+```
+is_final=false  speech_final=false   "Cool. Cool. Okay. So"
+is_final=TRUE   speech_final=FALSE   "Cool. Cool. Okay. So"   ← segment-final, mid-utterance
+is_final=false  speech_final=false   "what do we do?"
+is_final=TRUE   speech_final=true    "so what do we do?"
+```
+
+**What's established:**
+
+- **It is not the epoch carry.** Every line is the same epoch — no advance, so the carry
+  never armed. The cross-message fix and its epoch-8/epoch-9 proof are untouched.
+- **The bridge is correct.** Both finals are legitimate Deepgram output and both flags are
+  relayed faithfully.
+- **The client never reads `speech_final`** — zero occurrences in `voice.mjs`. Deepgram
+  uses `is_final=true, speech_final=false` for "segment closed, utterance continues"; we
+  commit it as though the sentence ended.
+- **It is not new.** That path is unchanged. It was masked by the louder cross-message
+  leak — when every send leaked a tail, an extra repeat inside one message read as more of
+  the same noise.
+
+**The obvious explanation is wrong**, and this is the most useful thing recorded here. "The
+final appends while the interim is still displayed" does *not* reproduce the doubling —
+traced by hand through `resetDeepgramTextState({preserveLastFinal: true})`, the specimen
+yields one copy plus the `So so` stutter, not two. A ten-minute patch to that story ships a
+fix and leaves the bug.
+
+**Leading hypothesis, unverified:** a feedback loop through the textarea rather than the
+buffers — `fillTextarea()` triggering the `input` listener, which runs `enterEdit()` and
+re-partitions the field's contents into `_left`/`_right`, guarded by `_filling`. An
+unguarded write would absorb the displayed interim into `_left`, and the arriving final
+would append the same words again.
+
+**Reproduce the doubling before changing a line.**

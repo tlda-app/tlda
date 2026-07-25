@@ -2345,6 +2345,37 @@ function onDeepgramMessage(event, relay = _deepgramWs) {
 
     const text = msg.text
 
+    // ⚠️ OPEN BUG LIVES HERE — read before patching. Skip, 2026-07-25: he received
+    // "Cool. Cool. Okay. So Cool. Cool. Okay. So so what do we do?" and said "I didn't
+    // say that shit twice." A segment repeats INSIDE one message.
+    //
+    // We branch on `is_final` alone. Deepgram also sends `speech_final`, and
+    // `is_final=true, speech_final=false` means "this segment is closed, the utterance
+    // continues" — a mid-sentence commit, not the end of what he's saying. **`voice.mjs`
+    // never reads `speech_final` anywhere**, so a segment-final is committed exactly like
+    // a sentence-final. Preserved specimen: bridge log, all at epoch=27.
+    //
+    // NOT the epoch carry — every line of the specimen is the same epoch, no advance —
+    // and not new: this path is unchanged, it was just masked by the louder cross-message
+    // leak until that was fixed.
+    //
+    // THE OBVIOUS FIX IS WRONG. "The final appends while the interim is still displayed"
+    // is the natural reading and it does NOT reproduce the doubling: the branch below
+    // appends to _left, then resetDeepgramTextState({preserveLastFinal:true}) clears
+    // _deepgramInterim, _dgHasSeenInterim, _dgTrickleWords and _dgTrickleShown, and
+    // `_interim = ''` follows. Walked by hand, the specimen yields ONE copy plus the
+    // "So so" stutter — not two. Patch that story and the bug survives with a fix in
+    // front of it.
+    //
+    // Leading unconfirmed hypothesis: a feedback loop through the textarea, not the
+    // buffers. The interim path calls fillTextarea(), whose `input` listener runs
+    // enterEdit() and re-partitions the field's current contents back into _left/_right,
+    // guarded by `_filling`. A write reaching fillTextarea without that guard would
+    // absorb the displayed interim into _left, and the arriving final would then append
+    // the same words again — which matches the shape and explains why the buffer
+    // arithmetic looks correct. UNVERIFIED.
+    //
+    // REPRODUCE THE DOUBLING BEFORE CHANGING A LINE.
     if (msg.is_final) {
       // Final result — append to committed text, clear interim
       _dgTrickleFlush()
