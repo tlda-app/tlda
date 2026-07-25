@@ -206,6 +206,23 @@ Consequences for anything that emits:
 - Agent-to-agent status pings are read by Skip. Write them as if he is the audience,
   because he is.
 
+## Chips are file names. Project-name chips do not exist.
+
+> "File name. We're not to have fucking project name chips."
+
+> "We're not supposed to have them. Whether that is dead code or some asshole
+> implementing some garbage that I don't want on some obscure path that doesn't run very
+> often. I don't know."
+
+A chip in chat names a file. Nothing turns a project name into one. The second quote is
+the instruction for how to remove it: **find every path that can produce one and delete
+it — do not gate the deletion on reproducing it.** A path that runs rarely is exactly the
+one that won't reproduce, and that is his point, not an argument for leaving it.
+
+Related, from the same night: the catch at `src/shapes/fleet-chat-markdown-open.ts:202`
+opened a markdown column whose body was `# Failed to load`. A swallowed error rendered as
+document content. A failed load produces **no document** — not a nicer error document.
+
 ## Liveness protocol: send what's running, replace the list
 
 Skip, 2026-07-25, after the profiler traced ~1.24 million comparisons every 30
