@@ -191,14 +191,19 @@ resetting their own layout — not an agent deleting other people's shapes.
 
 Skip, 2026-07-25, on the voice HUD.
 
-`b82f6e84` ("Make voice state and reconnect capture trustworthy", 2026-07-22) kept all
-four voice states and all the logic, and renamed one word:
+`b82f6e84` ("Make voice state and reconnect capture trustworthy", 2026-07-22) kept every
+voice state and all the logic, and renamed the words:
 
-- **`speaking` → `receiving audio`**
+| was | now |
+|---|---|
+| `mic live` (8) | `listening` (9) |
+| `speaking` (8) | `receiving audio` (15) |
+| `reconnecting` (12) | `reconnecting` (12) |
 
-`speaking` is 8 characters and sits beside `listening` at 9, so the HUD held still.
-`receiving audio` is 15, so the panel now reflows every time he starts talking. He had
-specified equal-width status words deliberately, and says it made a massive difference.
+Both steady states — the two Skip sits in while working — were **exactly 8 characters**.
+That is the design: the panel never moves while he is using it. `listening` was not a
+word the app had; it was invented. `receiving audio` is nearly double, so the HUD reflows
+the instant he starts talking. He says the equal widths made a massive difference.
 
 Read the failure precisely, because it is not "someone made a bad UI decision":
 
