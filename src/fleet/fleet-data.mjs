@@ -28,6 +28,7 @@ import {
   upsertFleetEvent,
   upsertFleetEvents,
   upsertFleetEventsForBuffer,
+  inLiveDelivery,
 } from './fleet-data.ts'
 import { log } from '../logger'
 import { noteProjection, recordFilterNameIds } from './chat-freeze-probe.mjs'
@@ -1222,7 +1223,9 @@ export function connect() {
           for (const u of _pendingEventUpdates.get(data.id)) applyEventUpdateFields(event, u)
           _pendingEventUpdates.delete(data.id)
         }
-        projectStoreResult(result)
+        // The one genuinely live path. Marked so the equivalence comparator can
+        // tell a live delivery from a replay.
+        inLiveDelivery(() => projectStoreResult(result))
         if (data.id && data.id > _lastEventId) _lastEventId = data.id
         if (data.type === 'chat') {
           console.log(`[chat-recv] id=${data.id} from=${data.from_id||data.from} text=${(data.text||'').substring(0,30)}`)
