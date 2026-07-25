@@ -13,7 +13,14 @@ import path from 'path'
 import { randomUUID } from 'crypto'
 import { fileURLToPath } from 'url'
 
-import { CONFIG_DIR, getActiveConfigName, getFleetServerUrl, getManagedBots, getServerUrl } from '../shared/config.mjs'
+import {
+  CONFIG_DIR,
+  getActiveConfigName,
+  getFleetServerUrl,
+  getManagedBotEnvironments,
+  getManagedBots,
+  getServerUrl,
+} from '../shared/config.mjs'
 import { labelsForAgent } from '../shared/fleet-labels.mjs'
 import { startWsRequest } from '../shared/ws-request-policy.mjs'
 
@@ -34,6 +41,10 @@ const CONFIG_NAME = getActiveConfigName(MY_BOT.server)
 const FLEET_SERVER = getFleetServerUrl(MY_BOT.server)
 const STORE_SERVER = getServerUrl(MY_BOT.server)
 const WS_URL = FLEET_SERVER.replace(/^http/, 'ws') + '/ws/fleet'
+const BOT_ENVIRONMENTS = getManagedBotEnvironments()
+const ALLOWED_ENVIRONMENTS = Object.entries(BOT_ENVIRONMENTS)
+  .filter(([, members]) => members.some(member => String(member).toLowerCase() === BOT_KEY))
+  .map(([envName]) => envName)
 
 const INTERVAL_MS = parseInt(process.env.TLDA_DEV_BOT_INTERVAL_MS || '', 10) || 60_000
 const FAILURE_COOLDOWN_MS = parseInt(process.env.TLDA_DEV_BOT_FAILURE_COOLDOWN_MS || '', 10) || 5 * 60_000
@@ -46,8 +57,8 @@ const NUDGE_LABEL = (process.env.TLDA_DEV_BOT_NUDGE_LABEL || 'on-call').trim()
 const NUDGE_ON_SETUP = process.env.TLDA_DEV_BOT_NUDGE_SETUP === '1'
 const NUDGE_DRY_RUN = process.env.TLDA_DEV_BOT_NUDGE_DRY_RUN === '1'
 
-if (!ALLOW_NONDEFAULT && CONFIG_NAME !== 'default') {
-  throw new Error(`dev bot only probes testing config "default"; active config is "${CONFIG_NAME}"`)
+if (!ALLOW_NONDEFAULT && !ALLOWED_ENVIRONMENTS.includes(CONFIG_NAME)) {
+  throw new Error(`dev bot only probes configured environments ${JSON.stringify(ALLOWED_ENVIRONMENTS)}; active config is "${CONFIG_NAME}"`)
 }
 for (const url of [FLEET_SERVER, STORE_SERVER]) {
   if (/stable/i.test(new URL(url).hostname)) {
