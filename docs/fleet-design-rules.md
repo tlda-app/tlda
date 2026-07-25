@@ -183,6 +183,38 @@ made and verify it persisted. And never sweep shapes you did not create: the fix
 over-populated room is the code not instantiating foreign panels, plus the owner
 resetting their own layout — not an agent deleting other people's shapes.
 
+## Don't change his shit. Renaming a label is changing it.
+
+> "This is just one of those things where the rules don't change my shit. In fact that is
+> always the rule. Don't change my shit, dude. The statuses are exactly the fucking same.
+> The labels are different. And worse."
+
+Skip, 2026-07-25, on the voice HUD.
+
+`b82f6e84` ("Make voice state and reconnect capture trustworthy", 2026-07-22) kept all
+four voice states and all the logic, and renamed one word:
+
+- **`speaking` → `receiving audio`**
+
+`speaking` is 8 characters and sits beside `listening` at 9, so the HUD held still.
+`receiving audio` is 15, so the panel now reflows every time he starts talking. He had
+specified equal-width status words deliberately, and says it made a massive difference.
+
+Read the failure precisely, because it is not "someone made a bad UI decision":
+
+- The states were **unchanged**. Only the strings moved. A change that alters nothing
+  functional is not too small to be a drive-by — it is the *purest* form of one.
+- It rode inside a legitimate reliability fix, which is how it got through. A commit
+  doing a requested thing does not acquire permission for the unrequested thing next
+  to it.
+- "No UI changes unless asked" did not stop it, because nobody classified renaming a
+  string as a UI change. It is one.
+
+So: **a user-visible string is a specified artifact.** Its wording, and its width, are
+part of the design. If you did not get asked to change the words, do not change the
+words — not to clarify them, not to make them more accurate, not while you are in the
+file anyway.
+
 ## Skip reads the whole feed, not his own messages
 
 > "I don't read messages to me, for the most part. I watch what agents are doing and
