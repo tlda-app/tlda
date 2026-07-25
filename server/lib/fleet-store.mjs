@@ -2968,6 +2968,24 @@ export class FleetStore {
 
   // ---- Task state management ----
 
+  // Normalize the agent key at the single point where tasks enter the store, so a
+  // task keyed by a friendly name cannot exist rather than being compensated for on
+  // every read. getTaskByAgent used to carry a read-time fallback that re-queried by
+  // friendly_name; that made the bad state representable AND handled forever.
+  //
+  // Fast path: a `fleet:`-prefixed key is already canonical and costs nothing. Any
+  // other value is resolved through findAgent (which handles names and
+  // lineage:phase). If it cannot be resolved we keep it verbatim -- an id cannot be
+  // invented -- but we say so, because an unresolvable agent key is exactly the
+  // state this is meant to prevent and it must not pass silently.
+  normalizeTaskAgentKey(agentKey) {
+    if (!agentKey || String(agentKey).startsWith('fleet:')) return agentKey;
+    const resolved = this.findAgent(agentKey);
+    if (resolved?.id) return resolved.id;
+    console.warn(`[tasks] unresolvable agent key kept verbatim: ${String(agentKey).slice(0, 80)}`);
+    return agentKey;
+  }
+
   upsertTask(task) {
     const existing = task.id ? this.getTask(task.id) : null;
     const updatedAt = existing
@@ -2975,7 +2993,7 @@ export class FleetStore {
       : (task.updated_at || task.completed_at || task.last_checked || task.delegated_at || new Date().toISOString());
     this._upsertTask.run(
       task.id,
-      task.agent,
+      this.normalizeTaskAgentKey(task.agent),
       task.description || null,
       task.message || null,
       task.delegated_by || null,
@@ -3002,17 +3020,7 @@ export class FleetStore {
 
   getTaskByAgent(agentId) {
     const rows = this.getActiveTasksByAgent(agentId);
-    if (rows.length > 0) return rows[0];
-    {
-      // Fallback: check if agent has a friendly name, search tasks by that too
-      // (handles tasks stored with friendly_name before the fix)
-      const agent = this.getAgent(agentId);
-      if (agent?.friendly_name) {
-        const fallbackRows = this.getActiveTasksByAgent(agent.friendly_name);
-        if (fallbackRows.length > 0) return fallbackRows[0];
-      }
-    }
-    return null;
+    return rows.length > 0 ? rows[0] : null;
   }
 
   getActiveTasksByAgent(agentId) {
