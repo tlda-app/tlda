@@ -35,11 +35,15 @@ export function createAgentStatus({
   // So the poll's cost is dominated by capture-pane and scales with the number
   // of ARMED agents, not with the roster. Serially, 13 armed agents cost:
   //
-  //   at 30s   0.78% of a core
-  //   at 2.5s  9.4%  of a core        ← 12x, permanently, per box
+  //   at 5s    4.70% of a core   ← the cadence this replaced (the old `|| 5000`)
+  //   at 3s    7.83%             1.7x today
+  //   at 2.5s  9.40%             2.0x today
   //
-  // Going parallel buys ~3x and would make a 2-3s cadence affordable; leaving it
-  // serial makes that cadence expensive. This is the enumerate-per-agent pattern
+  // Anchor on 5s: that is what the box has actually been paying. (Do not compare
+  // against the 30s liveness batch — that was a different timer, now deleted, and
+  // measuring against it makes a 2x change look like 12x.)
+  //
+  // Going parallel buys ~3x. This is the enumerate-per-agent pattern
   // (docs/fleet-design-rules.md) — list-sessions answers a question for the whole
   // box in one command, capture-pane asks it once per agent.
   //
