@@ -210,6 +210,12 @@ export class FleetStore {
       );
 
       CREATE INDEX IF NOT EXISTS idx_events_type ON events(type, timestamp DESC);
+      -- The polling reads -- WHERE type = ? AND id > ? ORDER BY id ASC LIMIT ?,
+      -- in routes/fleet.mjs and the fleet WS events handler -- cannot use the
+      -- index above: it is ordered by timestamp, so id can only be filtered
+      -- after the fact and the whole type has to be read and re-sorted. Cost
+      -- grows with total history. This one answers those queries directly.
+      CREATE INDEX IF NOT EXISTS idx_events_type_id ON events(type, id);
       CREATE INDEX IF NOT EXISTS idx_events_ts ON events(timestamp DESC);
       CREATE INDEX IF NOT EXISTS idx_events_from ON events(from_id, timestamp DESC);
       CREATE INDEX IF NOT EXISTS idx_events_to ON events(to_id, timestamp DESC);
@@ -1696,6 +1702,28 @@ export class FleetStore {
 
   getCurrentAgentSeat(agentId) {
     return this._getCurrentAgentSeat.get(agentId) || null;
+  }
+
+  // One query for a whole batch. The daemon liveness batch checks ~190 agents
+  // every 30s and used to run ~190 separate seat lookups on the main thread —
+  // individually far under the slow-query threshold, collectively a stall no
+  // instrumentation could attribute. Returns a Map so callers keep O(1) access.
+  getCurrentAgentSeats(agentIds) {
+    const ids = [...new Set((agentIds || []).filter(Boolean))];
+    const seats = new Map();
+    if (!ids.length) return seats;
+    const placeholders = ids.map(() => '?').join(',');
+    const rows = this.db.prepare(`
+      SELECT c.agent_id, c.session_id,
+             s.resume_id, s.kind, s.model, s.cwd, s.created_at, s.created_source, s.created_by_event_id,
+             c.machine_id, c.env_name, c.daemon_key, c.terminal_capability,
+             c.activated_at, c.activated_by_event_id, c.transition_reason
+      FROM agent_current_seats c
+      JOIN agent_seats s ON s.agent_id = c.agent_id AND s.session_id = c.session_id
+      WHERE c.agent_id IN (${placeholders})
+    `).all(...ids);
+    for (const row of rows) seats.set(row.agent_id, row);
+    return seats;
   }
 
   getDaemonAgentBinding(daemonKey, localAgentId) {

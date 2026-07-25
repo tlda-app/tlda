@@ -8108,11 +8108,20 @@ async function handleDaemonWsMessage(ws, msg) {
     const { agent_id, state, pid, reason, ts } = msg
     if (Array.isArray(msg.agent_ids) || Array.isArray(msg.checked_agent_ids)) {
       const batchTs = ts || new Date().toISOString()
+      // One query for the whole batch instead of a seat lookup per agent. With
+      // ~190 agents per batch the per-agent version was ~190 synchronous reads
+      // on the event loop every 30s.
+      const batchSeats = fleetStore.getCurrentAgentSeats([
+        ...(msg.checked_agent_ids || []),
+        ...(msg.agent_ids || []),
+      ])
       const decisions = decideAgentLivenessBatch({
         message: msg,
         socketDaemonKey: ws._daemonKey,
         socketBootId: ws._bootId,
-        seatForAgent: id => daemonEventSeatDecision(fleetStore, {
+        seatForAgent: id => daemonEventSeatDecision({
+          getCurrentAgentSeat: agentId => batchSeats.get(agentId) || null,
+        }, {
           agentId: id,
           daemonKey: ws._daemonKey,
           family: 'daemon-liveness-batch',
