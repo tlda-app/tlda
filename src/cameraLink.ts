@@ -4,7 +4,11 @@
  * Stored per-browser in localStorage. Default: off.
  */
 
-function isAutomatedBrowser() {
+// Exported so the client profiler shares this exact predicate rather than adding
+// a fourth copy of it. Automated sessions must not be profiled: agent playwright
+// tabs consumed 4 of the first 5 long-task profiles ever captured, spending the
+// per-load budget on us instead of on a real user.
+export function isAutomatedBrowser() {
   return navigator.webdriver || new URL(window.location.href).searchParams.get('pw') === '1'
 }
 

@@ -19,18 +19,21 @@ import { useEffect } from 'react'
 import type { RefObject } from 'react'
 import { react, type Editor } from 'tldraw'
 import { log } from '../logger'
+import { isAutomatedBrowser } from '../cameraLink'
 
 const GESTURE_END_MS = 200 // camera quiet for this long ends the gesture
 const MIN_FRAMES = 12 // ignore tiny nudges
 const PROFILE_SAMPLE_INTERVAL_MS = 10
 const PROFILE_MAX_BUFFER_SIZE = 2_000
 const PROFILE_SLOW_FRAME_MS = 50
-// Stall size worth a stack. The existing observer in livePerfProbe records every
-// task over 50ms; that is far too chatty to attach a profile to. This is tuned to
-// "uncomfortably bad", not "measurable".
-const LONGTASK_PROFILE_MS = 200
-const MAX_LONGTASK_PROFILES = 10
-const LONGTASK_PROFILE_MIN_GAP_MS = 15_000
+// Stall size worth a stack. Tuned against Skip's measured session, not guessed:
+// his long-task p50 is ~72ms and p90 ~248ms, so the original 200ms threshold sat
+// above almost everything he actually feels and the 15s gap threw the rest away.
+// The existing observer in livePerfProbe still records EVERY task over 50ms for
+// frequency; these caps only bound how many get a full stack attached.
+const LONGTASK_PROFILE_MS = 150
+const MAX_LONGTASK_PROFILES = 30
+const LONGTASK_PROFILE_MIN_GAP_MS = 5_000
 
 type PanSummary = {
   frames: number
@@ -131,6 +134,10 @@ export function useLongTaskProfileLog() {
   useEffect(() => {
     if (typeof window.Profiler !== 'function') return
     if (typeof PerformanceObserver === 'undefined') return
+    // Never profile an automated session. Agent playwright tabs stall harder than
+    // the real user does, and they burned 4 of the first 5 profiles ever captured —
+    // spending the budget measuring ourselves and polluting the attribution.
+    if (isAutomatedBrowser()) return
 
     let profiler: SelfProfiler | null = null
     let posted = 0
