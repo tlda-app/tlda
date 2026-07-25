@@ -633,7 +633,12 @@ export function renderChatLine(m, ctx) {
     const _sectionHtml = _section ? `<span class="src-chip-section">§${_section}</span>` : ''
     const _title = `from ${esc(String(_src.file))}${_section ? ' §' + _section : ''}`
     const _sectionAttr = _section ? ` data-section="${_section}"` : ''
-    sourceChipHtml = ` <span class="ref-chip ref-chip-doc src-chip" data-path="${esc(String(_src.file))}"${_sectionAttr} title="${_title}" draggable="true"><span class="ref-chip-doc-icon">📄</span>${_fileName}${_sectionHtml}</span>`
+    // `source.file` is an absolute path on the SENDING agent's machine, which the
+    // reader's browser cannot fetch. `source.url` is the copy the sender uploaded
+    // at send time; it is what actually opens. Path stays as the provenance label
+    // and as the fallback for a message sent before uploads existed.
+    const _urlAttr = _src.url ? ` data-url="${esc(String(_src.url))}"` : ''
+    sourceChipHtml = ` <span class="ref-chip ref-chip-doc src-chip" data-path="${esc(String(_src.file))}"${_urlAttr}${_sectionAttr} title="${_title}" draggable="true"><span class="ref-chip-doc-icon">📄</span>${_fileName}${_sectionHtml}</span>`
   }
   // Amend version stepper (V{n} ◀▶) — present only on a message that's been
   // amended (folded by FleetChatShape, which sets m._amendStepper).

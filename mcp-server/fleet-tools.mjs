@@ -318,6 +318,26 @@ async function postChatAuthoredSuggestions(suggestions, recipients, { messageId 
 // body's refs to the served URL so they render inline. Resolution is relative to
 // the FILE's own directory (its includes are written relative to it), via the
 // shared scanMarkdownDeps detector. Returns { body, uploaded, missing }.
+// Give a shared file's provenance chip a URL the reader can actually fetch.
+//
+// `source.file` is an absolute path on the SENDING agent's machine. The reader's
+// browser talks to the fleet server, where that path does not exist, so a chip
+// carrying only the path is unopenable by construction — which is why clicking a
+// shared markdown file did nothing. Uploading the file here gives the chip a URL
+// that resolves from anywhere.
+//
+// Never throws: the body is already baked into the message, so a failed upload
+// costs the click-to-open affordance, not the content. The caller warns.
+async function withUploadedSourceFile(source, fleetServerUrl) {
+  if (!source?.file) return { source, error: null };
+  try {
+    const { url } = await uploadFileToServer(source.file, fleetServerUrl);
+    return { source: { ...source, url }, error: null };
+  } catch (e) {
+    return { source, error: e.message };
+  }
+}
+
 async function bundleSharedMarkdownImages(body, sourceFile, fleetServerUrl) {
   const baseDir = path.dirname(sourceFile);
   const deps = scanMarkdownDeps(body, baseDir);
@@ -2348,7 +2368,8 @@ export async function handleFleetTool(name, args) {
     // body so they render as a normal heading + list.
     const inlineSuggestions = parseInlineSuggestions(resolvedBody.body);
     if (inlineSuggestions.error) return { content: [{ type: 'text', text: `Message NOT sent — ${inlineSuggestions.error}` }], isError: true };
-    const { body: message, source } = { body: inlineSuggestions.body, source: resolvedBody.source };
+    let { body: message, source } = { body: inlineSuggestions.body, source: resolvedBody.source };
+    let sharedFileUploadError = null;
     const authoredSuggestions = inlineSuggestions.suggestions || [];
     const macros = await getMacrosForAgent();
     // Two classes, surfaced differently: render-VALIDITY prominently with the
@@ -2372,6 +2393,10 @@ export async function handleFleetTool(name, args) {
         if (source?.file) {
           const r = await bundleSharedMarkdownImages(message, source.file, `${TLDA_FLEET_SERVER}`);
           resolvedMessage = r.body;
+          // An amend re-bakes the body from the file, so it must re-upload too —
+          // otherwise the amended message shows the new text behind a chip that
+          // opens the version sent the first time, or nothing at all.
+          ({ source, error: sharedFileUploadError } = await withUploadedSourceFile(source, `${TLDA_FLEET_SERVER}`));
         } else {
           ({ resolvedMessage, inlineAttachments } = await processMessageText(message, agentCwd, `${TLDA_FLEET_SERVER}`));
         }
@@ -2397,6 +2422,9 @@ export async function handleFleetTool(name, args) {
         }
         if (inlineSuggestions.suggestions?.length) {
           extra += `\n\nNote: the inline \`.suggest\` section rendered cleanly, but its chips were NOT re-posted (amend edits the message text, not its already-posted chips).`;
+        }
+        if (sharedFileUploadError) {
+          extra += `\n\n⚠ **Shared file upload failed — the amended text is live, but its file chip won't open** (${sharedFileUploadError}).`;
         }
         return { content: [{ type: 'text', text: `Amended message ${data.event_id} in place.${extra}` }] };
       } catch (e) {
@@ -2485,6 +2513,8 @@ export async function handleFleetTool(name, args) {
     if (source?.file) {
       const r = await bundleSharedMarkdownImages(message, source.file, `${TLDA_FLEET_SERVER}`);
       resolvedMessage = r.body;
+      // Upload the shared file itself, not only its images, so its chip opens.
+      ({ source, error: sharedFileUploadError } = await withUploadedSourceFile(source, `${TLDA_FLEET_SERVER}`));
     } else {
       ({ resolvedMessage, inlineAttachments, brokenPaths } = await processMessageText(
         message, agentCwd, `${TLDA_FLEET_SERVER}`
@@ -2579,6 +2609,11 @@ export async function handleFleetTool(name, args) {
     // meant to be a shared artifact, re-send it with a real path.
     if (brokenPaths.length) {
       warning += `\n\n⚠ **Sent as text — these look like file paths but didn't resolve to a file** (if you meant to share one, resend with a real path):\n${brokenPaths.map(p => `- ${p}`).join('\n')}`;
+    }
+    // The shared file's content was delivered (it is the message body), but the
+    // upload that makes its chip openable failed, so clicking it will do nothing.
+    if (sharedFileUploadError) {
+      warning += `\n\n⚠ **Shared file uploaded failed — the message was delivered, but its file chip won't open** (${sharedFileUploadError}).`;
     }
 
     // Render-VALIDITY: prominent — Skip sees broken output unless the agent
