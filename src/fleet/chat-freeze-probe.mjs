@@ -155,7 +155,7 @@ export function noteViewRef(key, how, refCount) {
  * SEAMS 1 & 2 — a subscriber touched a view that is already disposed. Silent in
  * the code today (`if (this.disposed) return`), so it can only be found here.
  * @param {string} key
- * @param {'notify'|'subscribe'} op
+ * @param {'notify'|'subscribe'|'retain'} op
  */
 export function noteDisposedViewTouched(key, op) {
   log.metric(NS, 'operation on a DISPOSED live view', { key, op })
@@ -209,4 +209,47 @@ export function noteBufferDrop(bufferKey, lastEventId) {
  */
 export function noteFollowTransition(panelId, action, data) {
   log.metric(NS, 'follow intent changed', { panelId, action, ...data })
+}
+
+// --- Census -----------------------------------------------------------------
+//
+// Everything above is transition-only, which on 2026-07-25 turned out to be a
+// design bug I caught by trying to verify it: with one panel per view key and a
+// steady stream, NOTHING above ever fires, so the instrument is indistinguishable
+// from an instrument that isn't running. That is the same "a surface asserting
+// the opposite of the true state" failure this work exists to diagnose.
+//
+// So: one slow heartbeat. Once a minute, one record per panel carrying the
+// panel's last known tail and the CURRENT transport high-water mark. It gives a
+// positive liveness signal, and it makes a freeze readable straight out of
+// client.log as a time series — panel tail flat, lastEventId climbing — instead
+// of depending on a threshold having tripped.
+//
+// Volume: ~5 records/minute against a ~26 KB live-perf sample every 10s. Noise
+// floor, not a hot path.
+
+const CENSUS_MS = 60_000
+let _censusTimer = null
+let _getLastEventId = () => 0
+
+export function startFreezeCensus(getLastEventId) {
+  if (typeof getLastEventId === 'function') _getLastEventId = getLastEventId
+  if (_censusTimer || typeof window === 'undefined') return
+  _censusTimer = setInterval(() => {
+    if (_panels.size === 0) return
+    const lastEventId = _getLastEventId()
+    const now = Date.now()
+    const panels = []
+    for (const [panelId, st] of _panels) {
+      panels.push({
+        panelId,
+        lastDbId: st.lastDbId,
+        messageCount: st.count,
+        behindBy: lastEventId - st.eventIdAtLastChange,
+        staleMs: now - st.tAtLastChange,
+        stalled: st.stalled,
+      })
+    }
+    log.metric(NS, 'panel census', { lastEventId, panelCount: panels.length, panels })
+  }, CENSUS_MS)
 }

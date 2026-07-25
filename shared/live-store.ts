@@ -188,7 +188,7 @@ type ViewSubscriber<T extends Rec> = (list: readonly T[], delta: Delta<T>) => vo
 // return` guards fail silently, which is precisely the shape of bug that leaves
 // a panel alive-looking and never updating.
 export type LiveStoreObserver = {
-  onDisposedViewTouched?: (key: string, op: 'notify' | 'subscribe') => void
+  onDisposedViewTouched?: (key: string, op: 'notify' | 'subscribe' | 'retain') => void
   onViewRef?: (key: string, how: 'create' | 'retain' | 'release', refCount: number) => void
 }
 let _observer: LiveStoreObserver | null = null
@@ -265,7 +265,7 @@ class MaintainedView<T extends Rec> implements LiveView<T> {
     // A retain() on a disposed view is a NO-OP that still hands the caller the
     // corpse. Report it — silently succeeding here is indistinguishable from
     // working, and the caller then subscribes to something that never notifies.
-    if (this.disposed) { _observer?.onDisposedViewTouched?.(this.viewKey, 'subscribe'); return }
+    if (this.disposed) { _observer?.onDisposedViewTouched?.(this.viewKey, 'retain'); return }
     this.refCount += 1
     _observer?.onViewRef?.(this.viewKey, 'retain', this.refCount)
   }
@@ -417,6 +417,7 @@ class LiveStoreImpl<T extends Rec> implements LiveStore<T> {
       opts?.compare
     )
     this.views.add(view)
+    if (key) _observer?.onViewRef?.(key, 'create', 1)
     if (key) this.keyedViews.set(key, view)
     return view
   }

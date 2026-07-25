@@ -91,3 +91,7 @@ bin/fleet-resume.sh
 fleet.db
 .pw.lock
 .playwright/
+
+# TypeScript incremental build artifacts
+*.tsbuildinfo
+.tmp/

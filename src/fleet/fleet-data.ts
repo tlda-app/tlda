@@ -4,8 +4,10 @@ import { labelsForAgent } from '../../shared/fleet-labels.mjs'
 // @ts-ignore - shared JS module
 import { isRuntimeAwake } from '../../shared/fleet-runtime-status.mjs'
 import { setLiveStoreObserver } from '../../shared/live-store.ts'
-import { noteBufferDrop, noteDisposedViewTouched, noteViewRef } from './chat-freeze-probe.mjs'
+import { noteBufferDrop, noteDisposedViewTouched, noteViewRef, startFreezeCensus } from './chat-freeze-probe.mjs'
 import { getLastEventId } from './fleet-data.mjs'
+
+startFreezeCensus(getLastEventId)
 
 // Browser-side sink for the live-store's otherwise-silent diagnostics. `shared/`
 // can't import the browser logger (the server imports it too), so it exposes a
