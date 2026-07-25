@@ -117,17 +117,22 @@ it to *look at*.
 > that we're not getting errors is just because there were fallbacks or whatever. Just
 > don't display it if it's not [there]."
 
-Skip's clarification, because the mechanism matters and I got it wrong first:
-*"It doesn't have any plausible value. It just doesn't fucking show the thing."*
+> "It doesn't have any plausible value. It just doesn't show the thing."
 
-Nothing fabricates a fake model. The field simply vanishes. Not displaying an absent
-value is the **correct** behaviour and should stay — the defect is that the data stopped
-arriving and **the fallbacks upstream meant no error was ever raised**, so a field
-disappearing from his panel looked identical to a field that was never meant to be
-there.
+> "That's a decent behavior. Effort isn't a thing for every model. Ultimately effort is
+> just displaying the mint options."
 
-So: keep showing nothing, and make the *absence* loud somewhere it isn't a fallback's
-job to hide.
+> "Which are things that are enumerated in the daemon, per model."
+
+Nothing fabricates a value; the field simply doesn't render, and **that is correct.**
+What the panel shows is the mint options as they were given, and which options exist is
+**enumerated in the daemon, per model** — so effort on a model that has no effort has
+nothing to display, and its absence is normal rather than a defect. Don't add an error,
+a placeholder, or a default for it.
+
+Note where that puts the authority: the daemon knows which options a model has, the
+server carries the chosen values for display, and the panel renders what it's given.
+Nobody in that chain needs a table of model capabilities of their own.
 
 The server holds the agent id, which daemon owns it, and the friendly name. Not the
 session id, not session lists, not resume ids, not tmux information.
