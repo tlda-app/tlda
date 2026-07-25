@@ -44,7 +44,7 @@ export function runCommand(command, args, {
   cwd = REPO_ROOT,
   env = process.env,
   tailLines = 80,
-  stdio = process.stdio,
+  stdio = [process.stdin, process.stdout, process.stderr],
   spawnFn = spawn,
 } = {}) {
   return new Promise((resolvePromise, reject) => {
