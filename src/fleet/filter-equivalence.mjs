@@ -96,7 +96,25 @@ const _pending = new Map()
 const _lastReport = new Map()
 let _sweep = null
 
-function keyOf(subId, eventId) { return `${subId}|${eventId}` }
+// The two sides arrive with DIFFERENT id shapes, and until 2026-07-25 13:12 this
+// silently guaranteed that no comparison could ever agree:
+//
+//   client verdict  — event.id from asFleetEvent/keyOfEvent  ->  "db:1831211" (string)
+//   server delivery — the raw fleet-store event's id          ->   1831211    (number)
+//
+// So every client verdict aged out unmatched as serverMissed, every server
+// delivery aged out unmatched as clientMissed, and agreedBelongs could not be
+// non-zero BY CONSTRUCTION. The tell was clientMissed === serverDeliveries
+// exactly, and the two record types printing "db:1831211" and "1831430".
+//
+// agreedBelongs: 0 was this bug, not a client that matches nothing.
+function normEventId(eventId) {
+  if (eventId == null) return null
+  const s = String(eventId)
+  return s.startsWith('db:') || s.startsWith('tmp:') ? s : `db:${s}`
+}
+
+function keyOf(subId, eventId) { return `${subId}|${normEventId(eventId)}` }
 
 // Started at module load, NOT on first comparison. An earlier version started it
 // from touch(), which meant the case "the guard suppressed every comparison"
@@ -126,7 +144,7 @@ function ensureSweep() {
       log.metric(NS, direction === 'server-missed'
         ? 'DISAGREEMENT: server did not deliver an event the client matched'
         : 'DISAGREEMENT: server delivered an event the client did not match', {
-        subId, eventId, direction,
+        subId, eventId: normEventId(eventId), direction,
         clientSaysBelongs: v.client,
         serverSentIt: v.server,
         filterKey: v.filterKey || null,
