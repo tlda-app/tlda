@@ -517,7 +517,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     const tasks = fleetStore?.getActiveTasksByAgentLimited?.(agentId, MY_TASK_TASK_LIMIT) || fleetStore?.getActiveTasksByAgent?.(agentId)?.slice(0, MY_TASK_TASK_LIMIT) || []
     const taskCount = fleetStore?.getActiveTaskCountByAgent?.(agentId) ?? tasks.length
     const task = tasks[0] || fleetStore?.getTaskByAgent(agentId) || null
-    const unread = fleetStore?.getUnreadLimited?.(agentId, MY_TASK_UNREAD_LIMIT) || fleetStore?.getUnread(agentId)?.slice(0, MY_TASK_UNREAD_LIMIT) || []
+    const unread = fleetStore?.getUnreadLimited?.(agentId, MY_TASK_UNREAD_LIMIT) || []
     const unreadCount = fleetStore?.getUnreadCount?.(agentId) ?? unread.length
     const peek = req.query.peek === 'true'
     if (fleetStore && unread.length && !peek) {
