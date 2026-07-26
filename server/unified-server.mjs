@@ -1848,16 +1848,16 @@ async function resolveSpawnTarget(name, respawn, { fresh = false, requested = {}
 }
 
 function spawnMailboxCompletionText(entry, status, detail) {
-  const label = detail.label || detail.agentId || entry.meta?.name || 'spawn'
+  const label = detail.label || detail.agentId || entry.meta?.name || 'mint'
   if (status === 'completed') {
     const agentPart = detail.agentId ? ` (${detail.agentId})` : ''
     const policyPart = detail.permissionGrant ? ` Permission: \`${detail.permissionGrant}\`.` : ''
-    return `**Spawn mailbox ${entry.id} complete**: \`${label}\`${agentPart} has logged in and is ready for inbox pickup.${policyPart}`
+    return `**Mint mailbox ${entry.id} complete**: \`${label}\`${agentPart} has logged in and is ready for inbox pickup.${policyPart}`
   }
   if (status === 'indeterminate') {
-    return `**Spawn mailbox ${entry.id} indeterminate**: \`${label}\` — ${detail.error || detail.reason || 'spawn outcome is unknown'}.`
+    return `**Mint mailbox ${entry.id} indeterminate**: \`${label}\` — ${detail.error || detail.reason || 'mint outcome is unknown'}.`
   }
-  return `**Spawn mailbox ${entry.id} failed**: \`${label}\` — ${detail.error || detail.reason || 'spawn failed'}.`
+  return `**Mint mailbox ${entry.id} failed**: \`${label}\` — ${detail.error || detail.reason || 'mint failed'}.`
 }
 
 function deliverSpawnMailboxCompletion(entry, status, detail) {
@@ -8656,7 +8656,7 @@ async function handleDaemonWsMessage(ws, msg) {
     if (!agent_id) return
     const agent = fleetStore.getAgent?.(agent_id)
     const label = agent?.friendly_name || agent_name || agent_id.slice(0, 12)
-    const text = `Spawn startup failed for ${label}: ${reason || code || 'startup error'}`
+    const text = `Mint startup failed for ${label}: ${reason || code || 'startup error'}`
     const metadata = {
       type: 'spawn_startup_failed',
       agentId: agent_id,
@@ -8708,7 +8708,7 @@ async function handleDaemonWsMessage(ws, msg) {
           type: 'chat',
           from: 'fleet:tlda',
           to,
-          text: `**Spawn startup failed** for \`${label}\`\n\n${reason || 'The harness printed a fatal startup error before the agent logged in.'}`,
+          text: `**Mint startup failed** for \`${label}\`\n\n${reason || 'The harness printed a fatal startup error before the agent logged in.'}`,
           metadata,
           unread: true,
         })

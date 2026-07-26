@@ -28,7 +28,7 @@ These are different substrates for different parties — but both are first-clas
 
 **Agent's experience surfaces in Skip's UI:**
 - Agent reads a paginated thread → Skip's view shows the *boundary* of what they read (`'a...b'`), not just the beginning, so he can see whether they reached the end.
-- Agent calls `delegate(spawn:{...})` → Skip's view shows a card with the new agent's friendly name, task summary, and status.
+- Agent calls `delegate(mint:{...})` → Skip's view shows a card with the new agent's friendly name, task summary, and status.
 - Agent's `chat()` arrives → Skip's view renders the markdown the agent sent, intact.
 - Agent gets stuck on a startup prompt → Skip's view shows the stuck state (terminal hover into the agent's pane).
 - Agent is thinking / compacting / idle → Skip's view shows the thinking indicator next to their name.
