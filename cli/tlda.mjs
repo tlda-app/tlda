@@ -18,7 +18,7 @@ import { collectSourceFiles, collectSourceHashes, collectSpecificFiles } from '.
 import { diffSourceHashes, normalizeSourceManifest } from '../shared/source-manifest.mjs'
 import { collectHtmlArtifactFiles, htmlArtifactMainForSource } from './lib/html-artifact-files.mjs'
 import {
-  loadCliConfig, saveCliConfig, loadServerConfig, resolveConfig, getServerUrl, getFleetServerUrl, getRwToken, getReadToken, saveTokens, getActiveEnvName, DEFAULT_PORT,
+  loadCliConfig, saveCliConfig, loadServerConfig, resolveConfig, listEnvironments, getServerUrl, getFleetServerUrl, getRwToken, getReadToken, saveTokens, getActiveEnvName, DEFAULT_PORT,
   CONFIG_DIR, hasTls, TLS_CA_PATH, getManagedBots, getManagedBotEnvironments, getMachineId,
 } from '../shared/config.mjs'
 import { tldaFetch } from '../shared/http-client.mjs'
@@ -94,6 +94,7 @@ const TOP_LEVEL_COMMANDS = [
   ['daemon', 'fleet daemon (source watch + activity)'],
   ['bot', 'manage configured fleet bots'],
   ['agent', 'fleet agents on this machine'],
+  ['env', 'show configured environments'],
   ['config', 'configure tlda'],
   ['system', 'show server, daemon, deploy stamp, and fleet runtime identity'],
   ['doctor', 'health check'],
@@ -206,6 +207,7 @@ const COMMAND_HELP = {
   logs:    'tlda logs [agent] [--since 1h|2026-05-23] [--type chat,register] [-n 50] [-f] [--daemon] [--all]\n\n  Unified chronological log across all sources (DB events, daemon log, dead-letters).\n\n  agent      Filter by agent name (fuzzy match)\n  --since    Time range (e.g. 1h, 30m, 2d, or ISO date)\n  --type     Filter by event type (comma-separated)\n  -n N       Number of events (default: 50, or 10000 with --since)\n  -f         Follow mode (tail -f style)\n  --daemon   Include daemon log lines (heartbeats, WS, terminal exits)\n  --all      Include activity and client_error events (excluded by default)',
   server:  'tlda server [start|stop|status|log|install|uninstall]\n\n  start      Start the server (auto-restarts via launchd if installed)\n  stop       Stop the server\n  status     Check if server is running\n  log        Show recent server log\n  install    Install launchd service (macOS)\n  uninstall  Remove launchd service',
   bot:     'tlda bot [list|install|enlist|uninstall|start|stop|status|log] [name] [--dry-run]\n\n  Manage configured fleet bots as launchd services. Enlist records an existing bot fleet id for wake; start/install never mint a replacement.',
+  env:     'tlda env\n\n  Show the configured environments and mark the active one.\n  Use --env <name> with any tlda command to select an environment for that run only.',
   system:  'tlda system status\n\n  Show server, daemon, deploy stamp, and fleet runtime identity.',
   daemon:  'tlda daemon [start|stop|status|log|run|install|uninstall]\n\n  Control the per-machine fleet daemon.\n  It watches project source directories and agent session activity,\n  then pushes events to the tlda server over WebSocket.',
   doctor:  'tlda doctor [--fix]\ntlda doctor yolo [--name yolo] --model <provider-model> [--kind codex] [--cwd /path] [--no-attach] [--dry-run]\n\n  Run a health check for local tools, server, SPA bundle, daemon, MCP setup,\n  project builds, and doc sync stores.\n\n  --fix  Apply the limited automatic repairs that doctor explicitly offers.\n\n  yolo   Break-glass: locally launch an unrestricted repair agent outside the\n         normal daemon/server/grant path. Deliberately shallow so it works when\n         the normal spawn path is broken.\n\n         --model names the provider model directly. --kind selects the harness\n         and defaults to codex. Run in a terminal and it attaches you into the\n         agent session when it comes up (--no-attach to skip). Non-interactive\n         calls report the local tmux session and local mint id; they do not claim\n         a fleet-recipient binding.',
@@ -2674,6 +2676,17 @@ async function cmdMcpSetup() {
   console.log(`Open Claude Code in this directory and the tlda + fleet tools will be available.`)
 }
 
+function printEnvironments() {
+  const environments = listEnvironments()
+  console.log('Environments:')
+  for (const env of environments) {
+    console.log(`  ${env.active ? '* ' : '  '}${env.name}${env.active ? ' (active)' : ''}`)
+  }
+  console.log()
+  console.log('Use --env <name> with any tlda command to use a different environment for that run.')
+  console.log(`Settings: ${CONFIG_DIR}/daemon.yaml`)
+}
+
 async function cmdConfig() {
   const sub = getPositional(0)
   if (sub === 'apply') {
@@ -2690,7 +2703,7 @@ async function cmdConfig() {
     const config = loadCliConfig()
     console.log(key ? (config[key] || '') : JSON.stringify(config, null, 2))
   } else {
-    console.log(`Server: ${getServer()}`)
+    printEnvironments()
     console.log(`CLI config: ${CONFIG_DIR}/cli.yaml`)
   }
 }
@@ -5735,6 +5748,7 @@ async function main() {
       case 'init':   await cmdInit(); break
       case 'daemon': await cmdWatch(); break
       case 'bot': await cmdBot(); break
+      case 'env': printEnvironments(); break
       case 'open':   await cmdOpen(); break
       case 'share':  await cmdShare(); break
       case 'list':   await cmdList(); break
@@ -5772,7 +5786,7 @@ ${formatCommandRows(TOP_LEVEL_COMMANDS.map(([name, description]) => [`tlda ${nam
 Run \`tlda <noun>\` (e.g. \`tlda doc\`) to list that group's commands.
 Developer commands (hacking on tlda itself): \`tlda-dev --help\`
 
-Options: --server <url> · --dir <path> · --title "…" · --main file.tex`)
+Options: --env <name> · --server <url> · --dir <path> · --title "…" · --main file.tex`)
     }
   } catch (e) {
     console.error(red(`Error: ${e.message}`))

@@ -123,6 +123,12 @@ export function resolveConfig(envName = null) {
   }
 }
 
+export function listEnvironments(envName = null) {
+  const root = loadDaemonYaml()
+  const { name } = resolveStrictEnvironmentAuthority(root, envName)
+  return Object.keys(root.environments.values).map(env => ({ name: env, active: env === name }))
+}
+
 /** Server URL = the active config's STORE (doc assets + shape sync) over http. */
 export function getServerUrl(envName = null) {
   return resolveConfig(envName).store.http
