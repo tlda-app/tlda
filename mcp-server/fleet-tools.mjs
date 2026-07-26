@@ -3752,7 +3752,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
         `  status: ${status}`,
         `  last relevant: ${row.latest_relevant_at ? `${fmtTs(row.latest_relevant_at)} (${row.latest_relevant_at})` : '(none indexed)'}`,
         `  source: ${row.latest_activity?.source || 'agent_seat'}${row.latest_activity?.type ? ` / ${row.latest_activity.type}` : ''}${row.latest_activity?.event_id ? ` #${row.latest_activity.event_id}` : ''}`,
-        `  thread: ${row.thread?.query || `get_thread(agent: "${row.agent_id}")`}`,
+        `  thread: ${row.thread?.query || `thread(agent: "${row.agent_id}")`}`,
       ];
       if (row.latest_activity?.session_id) lines.push(`  session: ${row.latest_activity.session_id}`);
       const summary = (row.latest_activity?.summary || '').trim();

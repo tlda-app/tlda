@@ -4470,7 +4470,7 @@ export class FleetStore {
       },
       thread: {
         agent: r.agent_id,
-        query: `get_thread(agent: "${r.agent_id}")`,
+        query: `thread(agent: "${r.agent_id}")`,
       },
     }));
   }
