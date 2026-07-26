@@ -60,6 +60,21 @@ try {
   assert.equal(errRow.status, 'failed', 'an omitted error must still be recorded as failed')
   assert.equal(store.getTransportOperationResult('op-huge-err', 'store-agents'), null)
 
+  // 5. Old operation-cache rows are retained only inside the retry window.
+  const now = new Date()
+  const oldTerminal = new Date(now.getTime() - 25 * 60 * 60 * 1000).toISOString()
+  const oldAccepted = new Date(now.getTime() - 8 * 24 * 60 * 60 * 1000).toISOString()
+  store.recordTransportOperationResult('op-old-terminal', 'chat', 'result', { ok: true }, { ...envelope('chat'), operation_id: 'op-old-terminal', created_at: oldTerminal })
+  store.db.prepare('update transport_operations set completed_at = ? where operation_id = ?').run(oldTerminal, 'op-old-terminal')
+  store.beginTransportOperation({ ...envelope('heartbeat'), operation_id: 'op-old-accepted', created_at: oldAccepted })
+  store.beginTransportOperation({ ...envelope('heartbeat'), operation_id: 'op-fresh-accepted' })
+
+  const pruned = store.pruneTransportOperations({ now, terminalRetentionHours: 24, acceptedRetentionHours: 168, batchMax: 10 })
+  assert.deepEqual(pruned, { terminal: 1, accepted: 1 })
+  assert.equal(store.db.prepare('select count(*) n from transport_operations where operation_id in (?, ?)').get('op-old-terminal', 'op-old-accepted').n, 0)
+  assert.ok(store.getTransportOperationResult('op-small', 'chat'), 'fresh small payload remains replayable')
+  assert.ok(store.getTransportOperationStatus('op-fresh-accepted'), 'fresh accepted operation remains tracked')
+
   console.log(`transport payload cap: ok (${hugeBytes} B payload stored as ${row.len} B marker)`)
 } finally {
   try {
