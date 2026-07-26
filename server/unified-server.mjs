@@ -8095,51 +8095,6 @@ async function setSentinelSyncError(projectName, syncError) {
   }
 }
 
-// A machine whose source push is rejected as stale-base has stopped syncing —
-// the daemon retries once and then blocks that project locally, so its edits
-// stop reaching the server and the only trace is a line in fleet-daemon.log.
-// The server is the only party that sees this happen, so it records which
-// machines are diverged and clears a machine the moment it pushes successfully
-// again. Read back through GET /api/projects/:name/source-authority.
-function recordSourceDivergence(projectName, machineId, envName, result) {
-  if (!machineId || !readProject(projectName)) return
-  const key = `${machineId}:${envName || 'default'}`
-  const project = readProject(projectName)
-  const previous = project.divergedMachines && typeof project.divergedMachines === 'object'
-    ? project.divergedMachines
-    : {}
-  const diverged = result?.lifecycleStatus === 'stale-base' || result?.status === 'stale-base'
-  if (!diverged && !result?.ok) return // an unrelated failure is not a divergence
-  const next = { ...previous }
-  if (diverged) {
-    if (next[key]) return // already recorded; keep the first time it happened
-    next[key] = { machineId, envName: envName || null, since: new Date().toISOString() }
-  } else {
-    if (!next[key]) return
-    delete next[key]
-  }
-  updateProject(projectName, { divergedMachines: next })
-}
-
-// True while a message is still waiting for its own attachments to land on this
-// recipient's machine. Only `pending` holds — `failed` and `skipped` are
-// terminal and must be seen, rendered as visibly unavailable.
-//
-// Bounded on purpose: if materialization never reports back (the server died
-// mid-flight, a daemon went away), the message must still surface rather than
-// disappear. After MATERIALIZATION_HOLD_MS it is delivered with its refs shown
-// as unresolved, which is honest. Silence is the one outcome not allowed.
-const MATERIALIZATION_HOLD_MS = 60_000
-function hasUnsettledRefs(message, recipientId) {
-  const refs = message?.metadata?.recipient_refs?.[recipientId]?.attachments
-  if (!refs || typeof refs !== 'object') return false
-  const pending = Object.values(refs).some(ref => ref?.state === 'pending')
-  if (!pending) return false
-  const sentAt = Date.parse(message.timestamp)
-  if (!Number.isFinite(sentAt)) return false
-  return Date.now() - sentAt < MATERIALIZATION_HOLD_MS
-}
-
 async function handleDaemonWsMessage(ws, msg) {
   const { type } = msg
 
@@ -8874,12 +8829,6 @@ async function handleDaemonWsMessage(ws, msg) {
       resultCache.record(requestId, cached.hash, reply)
       ws.send(JSON.stringify(reply))
       replied = true
-      // A machine whose push is rejected as stale-base stops syncing: the daemon
-      // retries once, then blocks that project and says so only in its own log.
-      // The server is the one place that can see this, so record it here — a
-      // machine holding a conflict has to be visible to the person, not just to
-      // whoever reads fleet-daemon.log. Cleared when that machine pushes again.
-      recordSourceDivergence(project, ws._machineId, ws._envName, result)
       if (!result.ok) {
         console.error(`[fleet-daemon] source-change ${project}: ${result.error || 'unknown'}`)
       }
