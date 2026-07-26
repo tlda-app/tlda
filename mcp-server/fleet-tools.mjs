@@ -934,10 +934,11 @@ function requireManager() {
 
 function getAgent(state, id) {
   if (!state.agents) return null;
+  const idAlias = id && !String(id).startsWith('fleet:') ? `fleet:${id}` : null;
   // Phase is encoded in the friendly name now ("base:day"/"base:dusk"; dawn is
   // the bare base), so a lineage address is a plain name lookup.
   const exact = state.agents.find(a =>
-    a.id === id || a.friendly_name === id ||
+    a.id === id || (idAlias && a.id === idAlias) || a.friendly_name === id ||
     a.session_id === id || (a.session_ids && a.session_ids.includes(id))
   );
   if (exact) return exact;
@@ -4005,20 +4006,29 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
           isError: true,
         };
       }
-      const rawThreadFilter = args.filter || `agent:${args.agent}`;
-      let filterExpression;
       try {
-        filterExpression = normalizeThreadFilterExpression(rawThreadFilter);
+        if (args.agent) {
+          const threadState = await loadStateAll();
+          const agent = getAgent(threadState, args.agent);
+          const agentId = agent?.id || args.agent;
+          if (agent) resolvedAgents.set(agent.id, agent);
+          primaryId = agentId;
+          await fetchEventsForAgent(agentId);
+        } else {
+          const rawThreadFilter = args.filter;
+          let filterExpression;
+          try {
+            filterExpression = normalizeThreadFilterExpression(rawThreadFilter);
+          } catch (e) {
+            return { content: [{ type: 'text', text: `Bad thread filter "${rawThreadFilter}": ${e.message}` }], isError: true };
+          }
+          if (!filterExpression) {
+            return { content: [{ type: 'text', text: `thread filter "${rawThreadFilter}" did not produce a message filter. Use agent:name, from:name, to:name, or the agent argument.` }], isError: true };
+          }
+          await fetchEventsForFilter(filterExpression);
+        }
       } catch (e) {
-        return { content: [{ type: 'text', text: `Bad thread filter "${rawThreadFilter}": ${e.message}` }], isError: true };
-      }
-      if (!filterExpression) {
-        return { content: [{ type: 'text', text: `thread filter "${rawThreadFilter}" did not produce a message filter. Use agent:name, from:name, to:name, or the agent argument.` }], isError: true };
-      }
-      try {
-        await fetchEventsForFilter(filterExpression);
-      } catch (e) {
-        process.stderr.write(`[fleet] thread fleet-search fetch failed: ${e.message}\n`);
+        process.stderr.write(`[fleet] thread fetch failed: ${e.message}\n`);
       }
     } else {
       return { content: [{ type: 'text', text: 'Provide agent, filter, or task_id.' }], isError: true };
