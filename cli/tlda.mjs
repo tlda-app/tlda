@@ -3655,30 +3655,33 @@ async function postLifecycleSeatBinding(result, {
   sessionPath = null,
   model = result?.model,
   kind = result?.harness,
+  machineId = localMachineId(),
+  envName = getActiveEnvName(),
+  daemonKey = `${machineId}:${envName}`,
   existing = false,
   requireReadback = false,
+  transitionReason = 'agent-lifecycle-cli',
 } = {}) {
   if (!api) return { bound: false, pending: true }
-  const machineId = localMachineId()
-  const envName = getActiveEnvName()
-  const daemonKey = `${machineId}:${envName}`
+  const agentId = result?.fleetId || result?.agent_id || result?.agentId
+  const tmuxSession = result?.tmuxSession || result?.tmux_session
   const binding = await bindAgentSeat({
     ledger,
     identity: {
-      agentId: result.fleetId,
+      agentId,
       sessionId,
       resumeId: sessionId,
       kind,
       model,
       cwd,
       sessionPath,
-      friendlyName: name || result.name || result.fleetId,
+      friendlyName: name || result?.name || agentId,
     },
-    route: { machineId, envName, daemonKey, tmuxSession: result.tmuxSession },
+    route: { machineId, envName, daemonKey, tmuxSession },
     submit: (payload) => api('POST', '/api/agent-seat', payload),
     readback: (agentId) => api('GET', `/api/agent-seat?agent=${encodeURIComponent(agentId)}`),
     requireReadback,
-    transitionReason: 'agent-lifecycle-cli',
+    transitionReason,
   })
   return { ...binding, existing }
 }
@@ -4448,6 +4451,19 @@ async function ensureAgentWakeGrant(agent, meta, { source = 'agent-move', config
   }
 }
 
+async function clearAgentRouteBinding(agentId, { configDir = CONFIG_DIR } = {}) {
+  const daemonConfig = readDaemonConfig(defaultDaemonConfigPath(configDir))
+  const ledger = createPermissionLedger(permissionLedgerPathFromDaemonConfig(daemonConfig, configDir))
+  try {
+    if (!ledger.get(agentId)) {
+      throw new Error(`Agent ${agentId} has no daemon permission ledger entry; refusing to clear route binding`)
+    }
+    ledger.clearSessionSync(agentId)
+  } finally {
+    await ledger.close()
+  }
+}
+
 /**
  * Resolve an agent from this machine's daemon ledger, shaped like the server
  * roster rows the move path expects. No network: the ledger is the authority for
@@ -4498,7 +4514,7 @@ async function moveAgentToEnvironment({
   // this box in the permission ledger.
   if (!agent) agent = resolveAgentFromDaemonLedger(agentQuery)
   const sourceMachine = localMachineId()
-  const effectiveSourceEnv = sourceEnv || getActiveEnvName()
+  const effectiveSourceEnv = sourceEnv || agent.env_name
   let targetMachine = sourceMachine
   let targetName = null
   if (rawTarget) {
@@ -4549,6 +4565,7 @@ async function moveAgentToEnvironment({
   log.log(`${logPrefix}Moving ${name} (${agent.id}) ${describeAgentAddress(sourceMachine, effectiveSourceEnv)} -> ${describeAgentAddress(targetMachine, targetEnv)}`)
   const hibernate = await hibernateLocalAgent(hibernateName, { allowMissing: true })
   if (hibernate.status !== 0) throw new Error(`failed to hibernate ${agent.id}`)
+  await clearAgentRouteBinding(agent.id)
   // Environments are sealed databases: the agent's identity row lives on the
   // SOURCE server and does not exist on the target. Without a shell there,
   // login() is rejected ("No live shell for agent …") and the agent comes up
@@ -4566,6 +4583,40 @@ async function moveAgentToEnvironment({
   const wakeGrant = await ensureAgentWakeGrant(agent, meta)
   const wake = await callLocalDaemonLifecycle('wake', { fleet_id: agent.id, ...wakeGrant }, { socketPath: targetSocket, timeoutMs: 120000 })
   if (!wake?.ok) throw new Error(wake?.error || `wake failed for ${agent.id}`)
+  await clearAgentRouteBinding(agent.id)
+  const ledger = createPermissionLedger(permissionLedgerPathFromDaemonConfig(readDaemonConfig(defaultDaemonConfigPath(CONFIG_DIR)), CONFIG_DIR))
+  try {
+    const sessionId = wake.resumeId || wake.resume_id || wake.sessionId || wake.session_id || meta.sessionId
+    const tmuxSession = wake.tmuxSession || wake.tmux_session
+    if (!sessionId || !tmuxSession) {
+      throw new Error(`wake for ${agent.id} did not return session and tmux identity; cannot bind moved seat`)
+    }
+    await postLifecycleSeatBinding({
+      ...wake,
+      fleetId: agent.id,
+      agent_id: agent.id,
+      tmuxSession,
+      tmux_session: tmuxSession,
+      model: wake.model || meta.model,
+      harness: wake.harness || meta.kind,
+    }, {
+      api: targetApi,
+      ledger,
+      cwd: wake.cwd || meta.cwd || agent.cwd || process.cwd(),
+      name,
+      sessionId,
+      sessionPath: wake.sessionPath || wake.session_path || meta.sessionPath || null,
+      model: wake.model || meta.model,
+      kind: wake.harness || meta.kind,
+      machineId: targetMachine,
+      envName: targetEnv,
+      daemonKey: `${targetMachine}:${targetEnv}`,
+      requireReadback: true,
+      transitionReason: 'agent-move',
+    })
+  } finally {
+    await ledger.close()
+  }
   const seat = await waitForAgentSeatAddress(agent.id, { machineId: targetMachine, envName: targetEnv, apiImpl: targetApi })
   log.log(`${logPrefix}${name} (${agent.id}) landed on ${describeAgentAddress(seat.machine_id, seat.env_name)}.`)
   return { ok: true, agent, name, seat, wake }

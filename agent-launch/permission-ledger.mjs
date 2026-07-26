@@ -764,6 +764,33 @@ export class PermissionLedger {
     return updated
   }
 
+  clearSessionSync(id, { lastSeen = nowIso() } = {}) {
+    const key = String(id || '').trim()
+    if (!key) throw new Error('cannot clear daemon session identity without fleet id')
+    const existing = this.get(key)
+    if (!existing) return null
+    this.db.prepare(`
+      UPDATE permission_grants SET
+        session_id = NULL,
+        session_kind = NULL,
+        session_path = NULL,
+        tmux_session = NULL,
+        model = NULL,
+        machine_id = NULL,
+        env_name = NULL,
+        daemon_key = NULL,
+        terminal_capability = NULL,
+        cwd = NULL,
+        last_seen = ?
+      WHERE id = ?
+    `).run(lastSeen, key)
+    const updated = this.get(key)
+    if (hasProcessBinding(existing)) {
+      this.notifyProcessBindingChange({ id: key, row: updated, previous: existing })
+    }
+    return updated
+  }
+
   rotateTerminalCapabilitySync(id) {
     const key = String(id || '').trim()
     if (!key) throw new Error('cannot mint terminal capability without fleet id')
