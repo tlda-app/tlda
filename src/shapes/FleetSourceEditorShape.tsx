@@ -12,7 +12,7 @@ import {
 } from 'tldraw'
 import { fleetSourceEditorProps } from '../../shared/shapes/fleet-panel-schema.mjs'
 import { normalizeSourceManifest } from '../../shared/source-manifest.mjs'
-import { useContext, useEffect, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react'
+import { useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react'
 import { ChangeSet, EditorState, Prec, Text } from '@codemirror/state'
 import { EditorView, keymap, lineNumbers } from '@codemirror/view'
 import { defaultKeymap, history, historyKeymap, redo, undo } from '@codemirror/commands'
@@ -263,6 +263,23 @@ function stripVimRegexHints(root: HTMLElement) {
   }
 }
 
+// Pull this file's conflicted text out of a stale-base rejection. The server
+// stores each file's three-way merge on the evidence record as base64; a status
+// of 'conflict' means the merged text carries real git markers.
+function conflictedTextFor(payload: any, sourcePath: string): string | null {
+  const status = payload?.status ?? payload?.lifecycleStatus
+  if (status !== 'stale-base') return null
+  const classifications = payload?.evidence?.classifications
+  if (!Array.isArray(classifications)) return null
+  const match = classifications.find((c: any) => c?.path === sourcePath && c?.status === 'conflict' && c?.merged)
+  if (!match) return null
+  try {
+    return new TextDecoder().decode(Uint8Array.from(atob(match.merged), (c) => c.charCodeAt(0)))
+  } catch {
+    return null
+  }
+}
+
 function hasConflictMarkers(text: string) {
   return text.includes('<<<<<<<') || text.includes('=======') || text.includes('>>>>>>>')
 }
@@ -462,7 +479,19 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
   const [vimMode, setVimModeState] = useState('normal')
   const [status, setStatus] = useState<'loading' | 'ready' | 'dirty' | 'syncing' | 'synced' | 'error'>('loading')
   const [statusText, setStatusText] = useState('Loading source...')
-  const [conflictFiles, setConflictFiles] = useState<string[]>([])
+  // Conflicts have a source. `serverConflictFiles` is what the project reports
+  // (today: Overleaf's); `heldConflictFile` is the one this editor is holding
+  // right now from its own rejected write. They are separate because the project
+  // poll replaces its own list wholesale and would otherwise wipe ours. When the
+  // server represents conflicts per peer, the second collapses into the first.
+  const [serverConflictFiles, setServerConflictFiles] = useState<string[]>([])
+  const [heldConflictFile, setHeldConflictFile] = useState<string | null>(null)
+  const conflictFiles = useMemo(
+    () => (heldConflictFile && !serverConflictFiles.includes(heldConflictFile)
+      ? [...serverConflictFiles, heldConflictFile]
+      : serverConflictFiles),
+    [serverConflictFiles, heldConflictFile],
+  )
   const [sourceHasConflictMarkers, setSourceHasConflictMarkers] = useState(false)
   const [conflictMergeActive, setConflictMergeActive] = useState(false)
   const statusRef = useRef(status)
@@ -712,9 +741,9 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
         const files = info?.overleafSyncStatus === 'conflict' && Array.isArray(info?.overleafConflictFiles)
           ? info.overleafConflictFiles.map(normalizeFile)
           : []
-        setConflictFiles(files)
+        setServerConflictFiles(files)
       } catch {
-        if (!cancelled) setConflictFiles([])
+        if (!cancelled) setServerConflictFiles([])
       }
     }
     void loadProjectConflictState()
@@ -818,7 +847,19 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
       }),
     })
     const payload = await res.json().catch(() => ({}))
-    if (!res.ok || payload?.ok === false) throw new Error(payload?.error || `sync ${res.status}`)
+    if (!res.ok || payload?.ok === false) {
+      // A stale-base rejection already carries a real three-way merge for every
+      // file — the server ran `git merge-file -p`. Hand this file's conflicted
+      // text back so the editor can put the markers in front of the person
+      // instead of showing them "Sync failed".
+      const merged = conflictedTextFor(payload, sourcePath)
+      if (merged !== null) {
+        const conflict = new Error('Conflict — resolve the markers, then it syncs') as Error & { conflictText?: string }
+        conflict.conflictText = merged
+        throw conflict
+      }
+      throw new Error(payload?.error || `sync ${res.status}`)
+    }
     return payload
   }
 
@@ -841,6 +882,9 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
     try {
       const payload = await writeSourceFile(file, nextFullText)
       if (seq !== saveSeqRef.current) return
+      // The write landed, so whatever this editor was holding is resolved.
+      setHeldConflictFile((held) => (held === normalizeFile(file) ? null : held))
+      conflictRawTextRef.current = ''
       savedTextRef.current = nextFullText
       fullSourceRef.current = nextFullText
       setSourceHasConflictMarkers(hasConflictMarkers(nextFullText))
@@ -859,9 +903,31 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
       }
     } catch (err: any) {
       if (seq !== saveSeqRef.current) return
+      // A conflict is not an error to report — it is work to do. Put the merged
+      // text with its git markers into the buffer; that lights the resolve UI
+      // that already exists, and the write stays held until it is resolved.
+      if (typeof err?.conflictText === 'string') {
+        loadConflictIntoEditor(err.conflictText)
+        setStatus('dirty')
+        setStatusText('Conflict — resolve the markers, then it syncs')
+        return
+      }
       setStatus('error')
       setStatusText(err?.message || 'Sync failed')
     }
+  }
+
+  // Replace the buffer with the server's three-way merge. Not an edit of the
+  // person's text: their side is inside the markers, and resolving is how they
+  // get it back. `conflictFiles` is what stops the next write from firing.
+  const loadConflictIntoEditor = (conflictText: string) => {
+    fullSourceRef.current = conflictText
+    conflictRawTextRef.current = conflictText
+    setSourceHasConflictMarkers(true)
+    setHeldConflictFile(normalizeFile(file))
+    const view = cmViewRef.current
+    if (!view) return
+    view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: conflictText } })
   }
 
   // Writes are checkpoints, not a stream. Typing arms the idle boundary; the
