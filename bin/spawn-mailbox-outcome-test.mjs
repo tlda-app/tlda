@@ -247,7 +247,7 @@ async function run() {
     await request(spawnedWs, 'login', { agent_id: unknownStarted.agent_id, kind: 'codex' })
     const live = await waitForAgent(unknownStarted.agent_id)
     assert.ok(live, `indeterminate fresh spawn did not resolve to live login; server log:\n${serverLog}`)
-    const wrongFailure = await waitForChat(requesterWs, /Spawn mailbox .* failed.*unknown-started/, 500)
+    const wrongFailure = await waitForChat(requesterWs, /Mint mailbox .* failed.*unknown-started/, 500)
     assert.equal(wrongFailure, null)
     console.log('PASS: indeterminate fresh spawn resolves by observing login, not by reporting failure')
 
@@ -259,7 +259,7 @@ async function run() {
       cwd: process.cwd(),
       iLikeToLiveDangerously: true,
     })
-    const failed = await waitForChat(requesterWs, /Spawn mailbox .* failed.*known-failed.*daemon refused launch for test/)
+    const failed = await waitForChat(requesterWs, /Mint mailbox .* failed.*known-failed.*daemon refused launch for test/)
     assert.ok(failed, `real spawn failure was not reported as failed; server log:\n${serverLog}`)
     console.log('PASS: daemon-declared spawn failure still reports failed')
 
@@ -269,7 +269,7 @@ async function run() {
       respawn: true,
       iLikeToLiveDangerously: true,
     })
-    const indeterminate = await waitForChat(requesterWs, /Spawn mailbox .* indeterminate.*spawn-outcome-requester/)
+    const indeterminate = await waitForChat(requesterWs, /Mint mailbox .* indeterminate.*spawn-outcome-requester/)
     assert.ok(indeterminate, `unresolved wake outcome was not reported as indeterminate; server log:\n${serverLog}`)
     assert.doesNotMatch(indeterminate.text, / failed/)
     console.log('PASS: unresolved respawn outcome reports indeterminate, not failed')

@@ -1249,15 +1249,15 @@ export function getFleetTools() {
     // ---- Task Management ----
     {
       name: 'delegate',
-      description: 'Assign a task to an agent. Pass `task_id` to transfer an existing task by appending `message` and changing its owner. Pass `spawn: {}` instead of `agent` to spawn a fresh agent and delegate in one call — no name required.',
+      description: 'Assign a task to an agent. Pass `task_id` to transfer an existing task by appending `message` and changing its owner. Pass `mint: {}` instead of `agent` to mint a fresh agent and delegate in one call — no name required.',
       inputSchema: {
         type: 'object',
         properties: {
-          agent: { type: 'string', description: 'Agent identifier — session UUID, agent name, or friendly name. Omit when using spawn.' },
+          agent: { type: 'string', description: 'Agent identifier — session UUID, agent name, or friendly name. Omit when using mint.' },
           task_id: { type: 'string', description: 'Existing task ID to transfer to `agent`. The task keeps its identity and history; `message` is appended as the remaining work.' },
-          spawn: {
+          mint: {
             type: 'object',
-            description: 'Spawn a fresh agent and delegate in one call. Mutually exclusive with agent.',
+            description: 'Mint a fresh agent and delegate in one call. Mutually exclusive with agent.',
             properties: {
               name: { type: 'string', description: 'Agent name (auto-generated if omitted)' },
               cwd: { type: 'string', description: 'Working directory (inherits from caller if omitted)' },
@@ -1269,7 +1269,7 @@ export function getFleetTools() {
           description: { type: 'string', description: 'Short human-readable description (5-10 words). Auto-derived from message if omitted.' },
           message: { type: 'string', description: 'Full task message for the agent' },
           after: { description: 'Task ID or array of IDs — deferred until all complete.', oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }] },
-          friendly_name: { type: 'string', description: 'Rename an EXISTING target agent (two-call form, same as name_agent). Not allowed with spawn — a spawned agent\'s only name is spawn.name.' },
+          friendly_name: { type: 'string', description: 'Rename an EXISTING target agent (two-call form, same as name_agent). Not allowed with mint — a minted agent\'s only name is mint.name.' },
           success_criteria: { type: 'array', items: { type: 'string' }, description: 'Verifiable success criteria. Agent must verify each before marking done.' },
           template: { type: 'string', description: 'Task template name (e.g. "math-edit"). Auto-populates success_criteria; explicit criteria are appended.' },
           requires_approval: { type: 'boolean', description: 'If true, task_done requires an approval_id — the event ID of a message from Skip approving the work. Agent cannot close without it.' },
@@ -2193,26 +2193,26 @@ export async function handleFleetTool(name, args) {
   if (name === 'delegate') {
     if (!AGENT_ID) return { content: [{ type: 'text', text: 'Cannot delegate: not logged in. Call login() first.' }], isError: true };
 
-    if (args.agent && args.spawn) {
-      return { content: [{ type: 'text', text: 'Provide agent or spawn, not both.' }], isError: true };
+    if (args.agent && args.mint) {
+      return { content: [{ type: 'text', text: 'Provide agent or mint, not both.' }], isError: true };
     }
-    if (args.task_id && args.spawn) {
-      return { content: [{ type: 'text', text: 'Transfer an existing task to an existing agent; provide agent, not spawn.' }], isError: true };
-    }
-
-    if (!args.agent && !args.spawn) {
-      return { content: [{ type: 'text', text: 'Missing agent (or spawn).' }], isError: true };
+    if (args.task_id && args.mint) {
+      return { content: [{ type: 'text', text: 'Transfer an existing task to an existing agent; provide agent, not mint.' }], isError: true };
     }
 
-    // One name, enforced: on the spawn path the spawn name is the single source
+    if (!args.agent && !args.mint) {
+      return { content: [{ type: 'text', text: 'Missing agent (or mint).' }], isError: true };
+    }
+
+    // One name, enforced: on the mint path the mint name is the single source
     // of identity (shell reservation, FLEET_NAME, the login prompt, and the
     // roster all key off it). A separate `friendly_name` would rename the row to
-    // a second string after spawn — the exact desync that produces ghost rows
+    // a second string after mint — the exact desync that produces ghost rows
     // (a never-seen "math-historian" stub beside a live "math historian"). So
-    // forbid it: put the name in `spawn.name`. friendly_name remains valid only
+    // forbid it: put the name in `mint.name`. friendly_name remains valid only
     // for the two-call form (delegating to an existing `agent`).
-    if (args.spawn && args.friendly_name) {
-      return { content: [{ type: 'text', text: 'Do not pass friendly_name with spawn — the spawn name is the agent\'s only name. Put the name in spawn.name.' }], isError: true };
+    if (args.mint && args.friendly_name) {
+      return { content: [{ type: 'text', text: 'Do not pass friendly_name with mint — the mint name is the agent\'s only name. Put the name in mint.name.' }], isError: true };
     }
 
     const { message } = args;
@@ -2240,7 +2240,7 @@ export async function handleFleetTool(name, args) {
         message,
       });
       if (laneBlock) throw new Error(laneBlock);
-      const harnessKind = await harnessKindForDelegateTarget(targetAgent, args.spawn);
+      const harnessKind = await harnessKindForDelegateTarget(targetAgent, args.mint);
       const routedMessage = applyNonClaudeRolePack(message, {
         template: args.template,
         description,
@@ -2255,7 +2255,7 @@ export async function handleFleetTool(name, args) {
       if (!data.ok) throw new Error(`Delegate failed: ${JSON.stringify(data)}`);
       if (data.queued && !data.task_id) return { data, spawnedInfo: targetSpawnedInfo, queued: true, operationId };
 
-      // Set friendly name if provided (two-call form only; spawn form already has the name set)
+      // Set friendly name if provided (two-call form only; mint form already has the name set)
       if (args.friendly_name) {
         await mcpFleetTransport.durable('rename', { agent: targetAgent, name: args.friendly_name })?.catch(e => process.stderr.write(`[fleet] rename failed: ${e.message}\n`));
       }
@@ -2265,9 +2265,9 @@ export async function handleFleetTool(name, args) {
     let agent = args.agent;
     let spawnedInfo = null;
 
-    // Combined spawn+delegate: spawn a fresh agent, then delegate to its fleet ID
-    if (args.spawn) {
-      const spawnOpts = args.spawn;
+    // Combined mint+delegate: mint a fresh agent, then delegate to its fleet ID
+    if (args.mint) {
+      const spawnOpts = args.mint;
       const agentName = spawnOpts.name || `agent-${Date.now().toString(36).slice(-4)}`;
       const agentCwd = spawnOpts.cwd || getAgentCwd();
       let spawnResult = null;
@@ -2285,31 +2285,31 @@ export async function handleFleetTool(name, args) {
           permissionRequest: spawnOpts.permissionRequest,
         });
         if (spawnResult?.ok === false || spawnResult?.error) {
-          return { content: [{ type: 'text', text: `spawn failed before delegation: ${spawnResult.error || JSON.stringify(spawnResult)}` }], isError: true };
+          return { content: [{ type: 'text', text: `mint failed before delegation: ${spawnResult.error || JSON.stringify(spawnResult)}` }], isError: true };
         }
       } catch (e) {
         const msg = (e.message || '').trim();
-        return { content: [{ type: 'text', text: `spawn failed before delegation: ${msg}` }], isError: true };
+        return { content: [{ type: 'text', text: `mint failed before delegation: ${msg}` }], isError: true };
       }
 
       const shellAgentId = spawnResult?.agent_id || spawnResult?.agentId || spawnResult?.agent?.id;
       if (!shellAgentId) {
-        return { content: [{ type: 'text', text: `spawn accepted for ${agentName}, but returned no shell agent id. Not delegating.` }], isError: true };
+        return { content: [{ type: 'text', text: `mint accepted for ${agentName}, but returned no shell agent id. Not delegating.` }], isError: true };
       }
 
       try {
         const { data, queued, operationId } = await delegateToResolvedAgent(shellAgentId, { agent_id: shellAgentId, friendly_name: agentName }, { allowPendingAgent: true });
         if (queued) {
-          return { content: [{ type: 'text', text: `Spawn requested for ${agentName}; delegation queued durably for shell ${shellAgentId}: ${description}\noperation_id: ${data.operation_id || operationId}\nspawn_mailbox_id: ${spawnResult.mailbox_id || '(none)'}\nagent_id: ${shellAgentId}\nfriendly_name: ${agentName}\nSpawn completion or failure will arrive from the server mailbox.` }] };
+          return { content: [{ type: 'text', text: `Mint requested for ${agentName}; delegation queued durably for shell ${shellAgentId}: ${description}\noperation_id: ${data.operation_id || operationId}\nmint_mailbox_id: ${spawnResult.mailbox_id || '(none)'}\nagent_id: ${shellAgentId}\nfriendly_name: ${agentName}\nMint completion or failure will arrive from the server mailbox.` }] };
         }
         return {
           content: [{
             type: 'text',
-            text: `Spawn requested for ${agentName}; delegated [${data.task_id}] to shell ${shellAgentId}: ${description}\nspawn_mailbox_id: ${spawnResult.mailbox_id || '(none)'}\nagent_id: ${shellAgentId}\nfriendly_name: ${agentName}\nSpawn completion or failure will arrive from the server mailbox.`,
+            text: `Mint requested for ${agentName}; delegated [${data.task_id}] to shell ${shellAgentId}: ${description}\nmint_mailbox_id: ${spawnResult.mailbox_id || '(none)'}\nagent_id: ${shellAgentId}\nfriendly_name: ${agentName}\nMint completion or failure will arrive from the server mailbox.`,
           }],
         };
       } catch (e) {
-        return { content: [{ type: 'text', text: `spawn reserved ${agentName} (${shellAgentId}), but durable delegation failed: ${e.message}` }], isError: true };
+        return { content: [{ type: 'text', text: `mint reserved ${agentName} (${shellAgentId}), but durable delegation failed: ${e.message}` }], isError: true };
       }
     }
 
