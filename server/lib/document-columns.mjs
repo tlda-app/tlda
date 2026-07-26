@@ -50,19 +50,10 @@ export function listProjectPartColumns(name, { srcDir = getSourceDir(name) } = {
   return columns
 }
 
-// forceGroup: for parts attached to a non-markdown project, always group —
-// even a single part — so the client never reuses the default TLDraw page
-// (that page belongs to the project's own main document in this case).
-export function pageInfoFromDocumentColumns(name, columns, { forceGroup = false } = {}) {
-  if (columns.length <= 1 && !forceGroup) {
-    return columns.map(columnPageInfo)
-  }
-  return columns.map((column, idx) => ({
-    ...columnPageInfo(column),
-    group: `${name}-world`,
-    groupIndex: idx,
-    tabLabel: column.title,
-  }))
+// Placement is explicit. This helper describes separate project documents; it
+// must not synthesize a side-by-side column group for them.
+export function pageInfoFromDocumentColumns(_name, columns) {
+  return columns.map(columnPageInfo)
 }
 
 function listMarkdownDocumentColumns(name, { project, srcDir }) {
