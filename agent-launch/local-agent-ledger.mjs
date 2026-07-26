@@ -191,6 +191,13 @@ export class LocalAgentLedger {
     return row ? this.get(row.local_agent_id) : null
   }
 
+  list() {
+    return this.db.prepare(`
+      SELECT local_agent_id FROM local_agents
+      ORDER BY created_at DESC
+    `).all().map(row => this.get(row.local_agent_id))
+  }
+
   create({
     localAgentId = newLocalAgentId(),
     serverAgentId = null,

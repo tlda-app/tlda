@@ -68,6 +68,7 @@ import {
   readDaemonConfigForCwd,
   withDaemonModelAliases,
 } from '../agent-launch/permission-ledger.mjs'
+import { createLocalAgentLedger } from '../agent-launch/local-agent-ledger.mjs'
 import { MintStore } from '../daemon/mint-store.mjs'
 import { terminateTmuxSession } from '../agent-launch/tmux.mjs'
 import { bindAgentSeat } from '../agent-launch/seat-binding.mjs'
@@ -3819,97 +3820,108 @@ function agentWakeSuggestion(rawArgs) {
   return ['tlda', 'agent', 'wake', ...rawArgs].map(quoteCommandArg).join(' ')
 }
 
-async function listLocalAgents() {
-  const { spawnSync } = await import('child_process')
-  const res = spawnSync('tmux', [...tmuxBase(), 'list-sessions', '-F', '#{session_name}\t#{session_attached}'], { encoding: 'utf8' })
-  // tmux exits non-zero when there are zero sessions.
-  const rows = (res.status === 0 ? res.stdout.trim().split('\n') : [])
-    .map(l => l.split('\t'))
-    .filter(([n]) => n && n.startsWith('fleet-'))
-  if (rows.length === 0) {
-    console.log('No agent sessions on this machine.')
-    process.exit(0)
-  }
-  console.log(`Agents on this machine (${rows.length}):`)
-  for (const [name, attached] of rows) {
-    const mark = attached !== '0' ? ' (attached)' : ''
-    console.log(`  ${name.replace(/^fleet-/, '')}${mark}`)
-  }
-  process.exit(0)
-}
-
-function formatAge(seconds) {
-  if (seconds == null || Number.isNaN(seconds)) return 'unknown'
-  if (seconds < 60) return `${seconds}s`
-  const mins = Math.round(seconds / 60)
-  if (mins < 60) return `${mins}m`
-  const hours = Math.round(mins / 60)
-  if (hours < 48) return `${hours}h`
-  return `${Math.round(hours / 24)}d`
-}
-
 function padRight(value, width) {
   const s = String(value ?? '')
   return s.length >= width ? s : s + ' '.repeat(width - s.length)
 }
 
+function displayNameFromTmux(tmuxName) {
+  const name = String(tmuxName || '').trim()
+  return name ? name.replace(/^fleet-/, '') : null
+}
+
+function isRawFleetId(value) {
+  return /^fleet:[0-9a-f]{8,}$/i.test(String(value || '').trim())
+}
+
 async function listFleetAgents() {
-  if (hasFlag('local')) return listLocalAgents()
-  const limit = Number(getFlag('limit', '200')) || 200
-  const data = await api('GET', `/api/fleet-roster-truth?limit=${encodeURIComponent(String(limit))}`)
-  const agents = Array.isArray(data.agents) ? data.agents : []
-  const totals = data.totals || { awake: 0, hibernating: 0, dead: 0, total: agents.length }
-  const panes = data.panes || { fleet: 0, stale: 0, registry_without_pane: 0 }
-  console.log(`Fleet registry: ${totals.awake || 0} awake · ${totals.hibernating || 0} hibernating · ${totals.dead || 0} dead · ${totals.total || 0} total`)
-  console.log(`Tmux panes: ${panes.fleet || 0} fleet · ${panes.stale || 0} stale · ${panes.registry_without_pane || 0} registry-without-pane`)
-  if (data.matched > agents.length) {
-    console.log(dim(`Showing ${agents.length}/${data.matched}; use --limit ${data.matched} for the full table.`))
+  const limit = Number(getFlag('limit', '50')) || 50
+  const daemonConfig = readDaemonConfig(defaultDaemonConfigPath(CONFIG_DIR))
+  const dbPath = permissionLedgerPathFromDaemonConfig(daemonConfig, CONFIG_DIR)
+  const processLedger = createPermissionLedger(dbPath)
+  const localLedger = createLocalAgentLedger(dbPath)
+  let processRows
+  let localRows
+  try {
+    processRows = processLedger.listProcessBindings()
+    localRows = localLedger.list()
+  } finally {
+    processLedger.close()
+    localLedger.close()
   }
-  if (agents.length === 0) {
-    console.log('No fleet agents.')
+
+  const { spawnSync } = await import('child_process')
+  const tmuxSessions = new Map()
+  const tmuxResult = spawnSync('tmux', [...tmuxBase(), 'list-sessions', '-F', '#{session_name}\t#{session_attached}'], { encoding: 'utf8' })
+  if (tmuxResult.status === 0) {
+    for (const line of tmuxResult.stdout.split('\n')) {
+      if (!line.trim()) continue
+      const [name, attachedRaw] = line.split('\t')
+      if (!name) continue
+      tmuxSessions.set(name, {
+        name,
+        attached: attachedRaw !== '0',
+      })
+    }
+  }
+
+  const localByServerId = new Map()
+  const localByTmux = new Map()
+  for (const row of localRows) {
+    if (row?.serverAgentId) localByServerId.set(row.serverAgentId, row)
+    if (row?.process?.tmuxName) localByTmux.set(row.process.tmuxName, row)
+  }
+
+  const rowsByKey = new Map()
+  function upsertRow(key, next) {
+    const existing = rowsByKey.get(key) || {}
+    rowsByKey.set(key, { ...existing, ...next })
+  }
+
+  const localDaemonKey = `${localMachineId()}:${localDaemonEnvName()}`
+  for (const row of processRows) {
+    if (row.daemonKey !== localDaemonKey) continue
+    const local = localByServerId.get(row.id) || localByTmux.get(row.tmuxSession) || null
+    upsertRow(row.id, { process: row, local })
+  }
+
+  const rows = [...rowsByKey.values()].map(({ process, local }) => {
+    const tmuxName = process?.tmuxSession || local?.process?.tmuxName || null
+    const tmux = tmuxName ? tmuxSessions.get(tmuxName) || null : null
+    const friendly = [process?.friendlyName, local?.friendlyName]
+      .find(name => name && !isRawFleetId(name))
+    const tmuxDisplayName = displayNameFromTmux(tmuxName)
+    return {
+      id: process?.id || local?.serverAgentId || local?.localAgentId || 'unknown',
+      name: friendly || tmuxDisplayName || 'unnamed local agent',
+      state: tmux ? (tmux.attached ? 'attached' : 'awake') : 'hibernating',
+      tmuxName,
+      kind: process?.sessionKind || local?.conversation?.harness || '-',
+      model: process?.model || local?.conversation?.model || '-',
+      cwd: process?.cwd || local?.process?.cwd || '',
+    }
+  }).sort((a, b) => {
+    const statusRank = { attached: 0, awake: 0, hibernating: 1 }
+    return (statusRank[a.state] ?? 2) - (statusRank[b.state] ?? 2) || a.name.localeCompare(b.name)
+  })
+
+  const shown = rows.slice(0, limit)
+  const awake = rows.filter(row => row.state === 'awake' || row.state === 'attached').length
+  const hibernating = rows.length - awake
+  console.log(`Local daemon agents (${localDaemonKey}): ${awake} awake · ${hibernating} hibernating · ${rows.length} total`)
+  if (rows.length > shown.length) {
+    console.log(dim(`Showing ${shown.length}/${rows.length}; use --limit ${rows.length} for the full table.`))
+  }
+  if (!shown.length) {
+    console.log('No local daemon agents.')
     return
   }
 
-  const groups = new Map()
-  for (const m of data.machines || []) {
-    if (!groups.has(m.machine_id)) groups.set(m.machine_id, { rows: [], truth: m })
-  }
-  for (const a of agents) {
-    const machine = a.machine_id || 'unassigned'
-    if (!groups.has(machine)) groups.set(machine, { rows: [], truth: null })
-    groups.get(machine).rows.push(a)
-  }
-  const statusRank = { awake: 0, thinking: 0, compacting: 0, hibernating: 1, dead: 2 }
-  const sortedGroups = [...groups.entries()].sort(([a], [b]) => a.localeCompare(b))
-  for (const [machine, group] of sortedGroups) {
-    const rows = group.rows
-    const rowStatus = (row) => {
-      const { status: projectedStatus } = row
-      return runtimeStatusName({ ...row, runtime_status: row.runtime_status || { status: projectedStatus } })
-    }
-    rows.sort((a, b) => (statusRank[rowStatus(a)] ?? 3) - (statusRank[rowStatus(b)] ?? 3) || (a.name || a.id).localeCompare(b.name || b.id))
-    const truth = group.truth
-    const suffix = truth
-      ? ` — ${truth.registry.awake} awake, ${truth.registry.hibernating} hibernating, ${truth.registry.dead} dead; ${truth.panes.fleet} panes, ${truth.panes.stale} stale`
-      : ''
-    console.log(`\n${machine} (${rows.length})${suffix}`)
-    if (truth?.registry_without_pane) {
-      console.log(dim(`  ${truth.registry_without_pane} registry rows have no tmux pane on this connected daemon.`))
-    }
-    if (truth?.stale_panes?.length) {
-      const names = truth.stale_panes.slice(0, 6).map(p => p.tmux_session.replace(/^fleet-/, '')).join(', ')
-      console.log(dim(`  stale panes: ${names}${truth.stale_panes.length > 6 ? ', …' : ''}`))
-    }
-    console.log(`  ${padRight('status', 12)} ${padRight('agent', 24)} ${padRight('session', 28)} ${padRight('seen', 8)} cwd`)
-    for (const a of rows) {
-      const status = rowStatus(a) || 'unknown'
-      const name = a.name || a.id
-      const session = a.tmux_session || '-'
-      const seen = formatAge(a.last_seen_ago_s)
-      const cwd = a.cwd || ''
-      const activity = [a.activity, a.tool].filter(Boolean).join(':')
-      console.log(`  ${padRight(status, 12)} ${padRight(name, 24)} ${padRight(session, 28)} ${padRight(seen, 8)} ${cwd}${activity ? ` ${dim(activity)}` : ''}`)
-    }
+  console.log(`  ${padRight('state', 9)} ${padRight('agent', 30)} ${padRight('kind', 7)} ${padRight('model', 14)} cwd`)
+  for (const row of shown) {
+    const agent = row.name.length > 30 ? `${row.name.slice(0, 29)}…` : row.name
+    const model = row.model.length > 14 ? `${row.model.slice(0, 13)}…` : row.model
+    console.log(`  ${padRight(row.state, 9)} ${padRight(agent, 30)} ${padRight(row.kind, 7)} ${padRight(model, 14)} ${row.cwd}`)
   }
 }
 
@@ -4034,7 +4046,7 @@ function usageAgent() {
   console.log(`tlda agent — manage fleet agents
 
 Usage:
-  tlda agent list [--limit N] [--local]
+  tlda agent list [--limit N]
   tlda agent mint <name> [--model model] [--cwd path] [--permissions <profile>]
   tlda agent enroll --session <uuid> --kind <codex|claude> [name] [--permissions <profile>]
   tlda agent wake <agent> [--permissions <profile>]
@@ -4058,7 +4070,7 @@ move must be run on the agent's current daemon address; cross-box moves use SSH/
 set-mint-machine stores the caller's default mint machine in fleet prefs.
 The permissions command defaults to waking now; --on-wake stores only the next-wake profile.
 check-ready verifies registry + local tmux/runtime + recent login/inbox evidence.
-list reads the server roster by default; --local shows only tmux sessions on this machine.`)
+list reads the local daemon ledger and tmux panes, with awake agents first.`)
 }
 
 function permissionGrantNamesForError() {
@@ -4080,6 +4092,14 @@ function normalizeAgentMetadata(meta) {
 
 function localMachineId() {
   return getMachineId() || hostname().split('.')[0]
+}
+
+function localDaemonEnvName() {
+  try {
+    return getActiveConfigName()
+  } catch {
+    return loadServerConfig()?.defaultServer || process.env.TLDA_CONFIG || 'default'
+  }
 }
 
 function parseJsonMaybe(value) {
