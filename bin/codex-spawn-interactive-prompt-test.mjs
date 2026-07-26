@@ -106,7 +106,7 @@ function testCodexLaunchForcesCiEnv() {
     api: 'https://example.invalid',
     config: {},
     env: {
-      TLDA_CONFIG: 'prod',
+      TLDA_ENV: 'prod',
       TLDA_CONFIG_DIR: '/tmp/tlda-config',
       TLDA_DAEMON_CONFIG_DIR: '/tmp/tlda-daemon-config',
       CODEX_SESSIONS_DIR: '/tmp/codex-sessions',
@@ -114,7 +114,7 @@ function testCodexLaunchForcesCiEnv() {
   })
   assert.match(cmd, /(?:^|\s)CODEX_CI=1(?:\s|$)/)
   assert.match(cmd, /mcp_servers\.tlda\.env\.CODEX_CI=.*"1"/)
-  assert.match(cmd, /mcp_servers\.tlda\.env\.TLDA_CONFIG=.*"prod"/)
+  assert.match(cmd, /mcp_servers\.tlda\.env\.TLDA_ENV=.*"prod"/)
   assert.match(cmd, /mcp_servers\.tlda\.env\.TLDA_CONFIG_DIR=.*"\/tmp\/tlda-config"/)
   assert.match(cmd, /mcp_servers\.tlda\.env\.TLDA_DAEMON_CONFIG_DIR=.*"\/tmp\/tlda-daemon-config"/)
   assert.match(cmd, /mcp_servers\.tlda\.env\.CODEX_SESSIONS_DIR=.*"\/tmp\/codex-sessions"/)
@@ -166,7 +166,7 @@ async function testFreshCodexPromptFailureFailsLoud() {
   })
   const sent = []
   const launcher = createAgentLauncher({
-    activeConfigName: 'prod',
+    activeEnvName: 'prod',
     configDir: cwd,
     loadDaemonLaunchConfig: () => configFor(cwd),
     log: { info() {}, warn() {} },

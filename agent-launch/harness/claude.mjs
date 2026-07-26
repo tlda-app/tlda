@@ -4,7 +4,7 @@ import path from 'path'
 import { promisify } from 'util'
 import { resolveTranscript } from '../../agent-runtime/resolve-transcript.mjs'
 import { ledgerSessionId } from '../../agent-runtime/ledger-session-tail.mjs'
-import { activeConfigName, gitAuthorEnv } from '../identity.mjs'
+import { activeEnvName, gitAuthorEnv } from '../identity.mjs'
 import { resolveClaudeModel, resolveClaudeModelSelection } from '../models.mjs'
 import { resolveHarnessLaunchOptions } from '../permissions.mjs'
 import { dnsAliasPreloadPath } from './dns-alias-preload.mjs'
@@ -88,8 +88,8 @@ export function buildCmd({
   parts.push('NODE_TLS_REJECT_UNAUTHORIZED=0')
   if (name) parts.push(`FLEET_NAME=${sq(name)}`)
   if (env.TLDA_MACHINE_ID) parts.push(`TLDA_MACHINE_ID=${sq(env.TLDA_MACHINE_ID)}`)
-  const configName = activeConfigName(config, env)
-  if (configName) parts.push(`TLDA_CONFIG=${sq(configName)}`)
+  const configName = activeEnvName(config, env)
+  if (configName) parts.push(`TLDA_ENV=${sq(configName)}`)
   if (env.TLDA_MACHINE_ID && configName) parts.push(`FLEET_DAEMON_KEY=${sq(`${env.TLDA_MACHINE_ID}:${configName}`)}`)
   for (const [key, value] of passthroughConfigEnv(env)) parts.push(`${key}=${sq(value)}`)
   const fleetOauthToken = path.join(env.HOME || process.env.HOME || '', '.claude', '.fleet-oauth-token')

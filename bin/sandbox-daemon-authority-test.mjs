@@ -10,19 +10,20 @@ const output = join(root, 'output')
 const plist = join(output, 'sandbox.plist')
 mkdirSync(source, { recursive: true })
 
-writeFileSync(join(source, 'server.yaml'), `
-defaultServer: source
-servers:
+writeFileSync(join(source, 'server.yaml'), '')
+writeFileSync(join(source, 'daemon.yaml'), `
+machineId: shared-live-machine
+defaultEnv: source
+environments:
   source:
     database: https://isolated-db.example
     store: https://isolated-store.example
     licenseKey: ISOLATED-LICENSE
 `)
-writeFileSync(join(source, 'daemon.yaml'), 'machineId: shared-live-machine\n')
 writeFileSync(join(source, 'tokens.json'), JSON.stringify({ tokenRw: 'isolated-token' }))
 
 try {
-  const sourceEnv = { ...process.env, TLDA_CONFIG_DIR: source, TLDA_CONFIG: 'source' }
+  const sourceEnv = { ...process.env, TLDA_CONFIG_DIR: source, TLDA_ENV: 'source' }
   delete sourceEnv.TLDA_MACHINE_ID
   execFileSync(process.execPath, [
     'cli/tlda.mjs', 'daemon', 'write-test-plist',
@@ -42,11 +43,11 @@ try {
       store: c.getServerUrl(),
       token: c.getRwToken(),
       machineId: c.getMachineId(),
-      name: c.getActiveConfigName(),
+      name: c.getActiveEnvName(),
     }));
   `], {
     cwd: new URL('..', import.meta.url).pathname,
-    env: { ...sourceEnv, TLDA_CONFIG_DIR: configDir, TLDA_CONFIG: 'sandbox' },
+    env: { ...sourceEnv, TLDA_CONFIG_DIR: configDir, TLDA_ENV: 'sandbox' },
     encoding: 'utf8',
   }).trim())
 

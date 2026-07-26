@@ -63,9 +63,10 @@ async function run() {
   if (!await waitHealth()) fail(`server never healthy.\n${log}`)
   const toddConfigDir = join(TODD_HOME, '.config', 'tlda')
   mkdirSync(toddConfigDir, { recursive: true })
-  writeFileSync(join(toddConfigDir, 'server.yaml'), [
-    `defaultServer: ${TODD_CONFIG}`,
-    'servers:',
+  writeFileSync(join(toddConfigDir, 'server.yaml'), '')
+  writeFileSync(join(toddConfigDir, 'daemon.yaml'), [
+    `defaultEnv: ${TODD_CONFIG}`,
+    'environments:',
     `  ${TODD_CONFIG}:`,
     `    database: ${base}`,
     `    store: ${base}`,
@@ -123,7 +124,7 @@ async function run() {
   // app+bot integration test, so it spawns the real bot from its real home.
   todd = spawn('node', [TODD_SCRIPT], {
     cwd: ROOT,
-    env: { ...process.env, HOME: TODD_HOME, TLDA_CONFIG: TODD_CONFIG, TLDA_BOT_NAME: 'todd', TLDA_BOT_PIDFILE: TODD_PID,
+    env: { ...process.env, HOME: TODD_HOME, TLDA_ENV: TODD_CONFIG, TLDA_BOT_NAME: 'todd', TLDA_BOT_PIDFILE: TODD_PID,
            TLDA_BOT_IDFILE: TODD_ID, TLDA_BOT_MACHINE_ID: 'suggestions-test', TLDA_BOT_TMUX_SESSION: 'suggestions-test-todd',
            NODE_TLS_REJECT_UNAUTHORIZED: '0' },
     stdio: ['ignore', 'pipe', 'pipe'],

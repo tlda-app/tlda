@@ -20,8 +20,8 @@ import type {
   ManagedSurfacePlacement,
   ManagedSurfaceRequest,
 } from '../wm/managed-surfaces'
-import { isDocumentPageShape, sendCanvasPageShapesToBack } from '../shapes/document-pages'
-import { isMyFleetShape } from '../shapes/fleet-utils'
+import { sendCanvasPageShapesToBack } from '../shapes/document-pages'
+import { replanFleetLayoutForBounds } from '../shapes/fleet-utils'
 import './AnnotationViewer.css'
 
 type ViewerState = 'hovering' | 'pinned' | 'navigated'
@@ -93,7 +93,15 @@ export function AnnotationViewer({
   const [data, setData] = useState<ViewerData | null>(null)
   const [state, setState] = useState<ViewerState>('hovering')
   const [size, setSize] = useState({ w: 650, h: 450 })
+  // Back/forward over visited views. `back` holds where you came from, `forward`
+  // holds where Back took you away from — the same pair a browser keeps. Back
+  // used to pop and discard, which is why forward could not exist.
   const prevViewStackRef = useRef<ViewSnapshot[]>([])
+  const forwardViewStackRef = useRef<ViewSnapshot[]>([])
+  const [navDepth, setNavDepth] = useState({ back: 0, forward: 0 })
+  const syncNavDepth = useCallback(() => {
+    setNavDepth({ back: prevViewStackRef.current.length, forward: forwardViewStackRef.current.length })
+  }, [])
   const dismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const clickStartRef = useRef<{ x: number; y: number } | null>(null)
 
@@ -122,6 +130,8 @@ export function AnnotationViewer({
       setSize(nextSize)
       setState(request.persistence.pinned ? 'pinned' : 'hovering')
       prevViewStackRef.current = []
+      forwardViewStackRef.current = []
+      syncNavDepth()
       if (dismissTimerRef.current) clearTimeout(dismissTimerRef.current)
       requestAnimationFrame(() => sendCanvasPageShapesToBack(mainEditor))
     }
@@ -158,49 +168,11 @@ export function AnnotationViewer({
 
   const canvasWrapRef = useRef<HTMLDivElement>(null)
 
+  // The workspace travels with the reader and is laid out for the destination
+  // document's width — see replanFleetLayoutForBounds, which owns the placement.
   const shiftMarginShapesForTarget = useCallback((target: ClipBounds) => {
-    const viewport = mainEditor.getViewportPageBounds()
-    const viewportMidY = viewport.y + viewport.h / 2
-    let source: ClipBounds | null = null
-    let bestDistance = Infinity
-    for (const shape of mainEditor.getCurrentPageShapes().filter(isDocumentPageShape)) {
-      const bounds = mainEditor.getShapePageBounds(shape.id)
-      if (!bounds) continue
-      const distance = viewportMidY >= bounds.y && viewportMidY <= bounds.y + bounds.h
-        ? 0
-        : Math.min(Math.abs(viewportMidY - bounds.y), Math.abs(viewportMidY - (bounds.y + bounds.h)))
-      if (distance < bestDistance) {
-        bestDistance = distance
-        source = { x: bounds.x, y: bounds.y, w: bounds.w, h: bounds.h }
-      }
-    }
-    if (!source) return []
-
-    const sourceLeft = source.x
-    const sourceRight = source.x + source.w
-    const targetLeft = target.x
-    const targetRight = target.x + target.w
-    const moved: Array<{ id: TLShapeId; x: number; y: number }> = []
-    const updates: Array<{ id: TLShapeId; type: string; x: number; y: number }> = []
-
-    for (const shape of mainEditor.getCurrentPageShapes().filter(isMyFleetShape) as any[]) {
-      const bounds = mainEditor.getShapePageBounds(shape.id)
-      if (!bounds) continue
-      let dx = 0
-      if (bounds.x + bounds.w <= sourceLeft) {
-        dx = targetLeft - sourceLeft
-      } else if (bounds.x >= sourceRight) {
-        dx = targetRight - sourceRight
-      } else {
-        continue
-      }
-      if (Math.abs(dx) < 0.5) continue
-      moved.push({ id: shape.id, x: shape.x, y: shape.y })
-      updates.push({ id: shape.id, type: shape.type, x: shape.x + dx, y: shape.y })
-    }
-
-    if (updates.length > 0) {
-      mainEditor.updateShapes(updates as any)
+    const moved = replanFleetLayoutForBounds(mainEditor, target)
+    if (moved.length > 0) {
       try { window.dispatchEvent(new CustomEvent('fleet-hud-reset', { detail: { preserveAnchor: true } })) } catch {}
     }
     return moved
@@ -237,13 +209,16 @@ export function AnnotationViewer({
           camera: { x: cam.x, y: cam.y, z: cam.z },
         },
       ]
+      // A fresh move abandons any forward history, same as a browser.
+      forwardViewStackRef.current = []
+      syncNavDepth()
       setState('navigated')
     }
     window.addEventListener('annotation-viewer-navigation-start', onNavigationStart)
     return () => {
       window.removeEventListener('annotation-viewer-navigation-start', onNavigationStart)
     }
-  }, [data, mainEditor, shiftMarginShapesForTarget])
+  }, [data, mainEditor, shiftMarginShapesForTarget, syncNavDepth])
   useEffect(() => {
     const el = canvasWrapRef.current
     if (!el || !data) return
@@ -309,31 +284,72 @@ export function AnnotationViewer({
       )
     }
     window.setTimeout(() => sendCanvasPageShapesToBack(mainEditor), 350)
+    forwardViewStackRef.current = []
+    syncNavDepth()
     setState('navigated')
-  }, [data, mainEditor, shiftMarginShapesForTarget, targetBounds])
+  }, [data, mainEditor, shiftMarginShapesForTarget, targetBounds, syncNavDepth])
+
+  // Restore a stored view. Returns a snapshot of the view being left, so the
+  // opposite stack can bring the reader back to it.
+  const enterView = useCallback((view: ViewSnapshot): ViewSnapshot => {
+    const cam = mainEditor.getCamera()
+    const restoring = view.movedShapes || []
+    const departing: ViewSnapshot = {
+      pageId: mainEditor.getCurrentPageId(),
+      camera: { x: cam.x, y: cam.y, z: cam.z },
+      // Record where the same shapes sit now, so reversing this move puts them back.
+      movedShapes: restoring
+        .map((shape) => {
+          const current = mainEditor.getShape(shape.id) as any
+          return current ? { id: shape.id, x: current.x, y: current.y } : null
+        })
+        .filter(Boolean) as ViewSnapshot['movedShapes'],
+    }
+    sendCanvasPageShapesToBack(mainEditor)
+    suppressFleetHudCameraTracking()
+    if (mainEditor.getCurrentPageId() !== view.pageId) {
+      mainEditor.setCurrentPage(view.pageId)
+    }
+    if (restoring.length > 0) {
+      mainEditor.updateShapes(restoring.map((shape) => {
+        const current = mainEditor.getShape(shape.id) as any
+        return current ? { id: shape.id, type: current.type, x: shape.x, y: shape.y } : null
+      }).filter(Boolean) as any)
+      try { window.dispatchEvent(new CustomEvent('fleet-hud-reset', { detail: { preserveAnchor: true } })) } catch {}
+    }
+    mainEditor.setCamera(view.camera, { animation: { duration: 300 } })
+    window.setTimeout(() => sendCanvasPageShapesToBack(mainEditor), 350)
+    return departing
+  }, [mainEditor])
 
   // Go back
   const handleBack = useCallback((e: React.MouseEvent) => {
     stopEventPropagation(e)
     const prevView = prevViewStackRef.current.pop()
     if (!prevView) return
-    sendCanvasPageShapesToBack(mainEditor)
-    suppressFleetHudCameraTracking()
-    if (mainEditor.getCurrentPageId() !== prevView.pageId) {
-      mainEditor.setCurrentPage(prevView.pageId)
+    const departed = enterView(prevView)
+    if (prevViewStackRef.current.length === 0) {
+      // Back to where the viewer was pinned: that is the pinned surface again,
+      // not a place in the stack. Forward from here is the Go arrow's job.
+      forwardViewStackRef.current = []
+      syncNavDepth()
+      setState('pinned')
+      return
     }
-    const movedShapes = prevView.movedShapes || []
-    if (movedShapes.length > 0) {
-      mainEditor.updateShapes(movedShapes.map((shape) => {
-        const current = mainEditor.getShape(shape.id) as any
-        return current ? { id: shape.id, type: current.type, x: shape.x, y: shape.y } : null
-      }).filter(Boolean) as any)
-      try { window.dispatchEvent(new CustomEvent('fleet-hud-reset', { detail: { preserveAnchor: true } })) } catch {}
-    }
-    mainEditor.setCamera(prevView.camera, { animation: { duration: 300 } })
-    window.setTimeout(() => sendCanvasPageShapesToBack(mainEditor), 350)
-    setState(prevViewStackRef.current.length > 0 ? 'navigated' : 'pinned')
-  }, [mainEditor])
+    forwardViewStackRef.current = [...forwardViewStackRef.current, departed]
+    syncNavDepth()
+    setState('navigated')
+  }, [enterView, syncNavDepth])
+
+  // Go forward
+  const handleForward = useCallback((e: React.MouseEvent) => {
+    stopEventPropagation(e)
+    const nextView = forwardViewStackRef.current.pop()
+    if (!nextView) return
+    prevViewStackRef.current = [...prevViewStackRef.current, enterView(nextView)]
+    syncNavDepth()
+    setState('navigated')
+  }, [enterView, syncNavDepth])
 
   const closeViewer = useCallback(() => {
     const currentPageTemporaryMarkdownShapes = mainEditor.getCurrentPageShapes()
@@ -363,7 +379,9 @@ export function AnnotationViewer({
     setData(null)
     setState('hovering')
     prevViewStackRef.current = []
-  }, [data, mainEditor])
+    forwardViewStackRef.current = []
+    syncNavDepth()
+  }, [data, mainEditor, syncNavDepth])
 
   // Close
   const handleClose = useCallback((e: React.MouseEvent) => {
@@ -430,6 +448,10 @@ export function AnnotationViewer({
     <path d="M238 125 H12 M80 12 L12 125 L80 238" fill="none" stroke="currentColor"
       strokeWidth="48" strokeLinecap="square" strokeLinejoin="miter" />
   )
+  const forwardArrowPath = (
+    <path d="M12 125 H238 M170 12 L238 125 L170 238" fill="none" stroke="currentColor"
+      strokeWidth="48" strokeLinecap="square" strokeLinejoin="miter" />
+  )
 
   // Position on top of the chip — viewer overlaps, chip roughly centered vertically.
   const vw = typeof window !== 'undefined' ? window.innerWidth : 1200
@@ -475,15 +497,28 @@ export function AnnotationViewer({
         onPointerUp={stopEventPropagation}
         onWheel={stopEventPropagation}
       >
-        <button
-          className="annotation-viewer-nav-btn annotation-viewer-nav-left"
-          onPointerDown={stopEventPropagation}
-          onClick={handleBack}
-        >
-          <svg width="250" height="250" viewBox="0 0 250 250">
-            {backArrowPath}
-          </svg>
-        </button>
+        {navDepth.back > 0 && (
+          <button
+            className="annotation-viewer-nav-btn annotation-viewer-nav-left"
+            onPointerDown={stopEventPropagation}
+            onClick={handleBack}
+          >
+            <svg width="250" height="250" viewBox="0 0 250 250">
+              {backArrowPath}
+            </svg>
+          </button>
+        )}
+        {navDepth.forward > 0 && (
+          <button
+            className="annotation-viewer-nav-btn annotation-viewer-nav-left"
+            onPointerDown={stopEventPropagation}
+            onClick={handleForward}
+          >
+            <svg width="250" height="250" viewBox="0 0 250 250">
+              {forwardArrowPath}
+            </svg>
+          </button>
+        )}
       </div>
     )
   }

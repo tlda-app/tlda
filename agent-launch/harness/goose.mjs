@@ -1,7 +1,7 @@
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import { activeConfigName, gitAuthorEnv, repoRoot } from '../identity.mjs'
+import { activeEnvName, gitAuthorEnv, repoRoot } from '../identity.mjs'
 import { gooseModelVerified, resolveGooseModel, resolveGooseModelSelection } from '../models.mjs'
 import { dnsAliasPreloadPath } from './dns-alias-preload.mjs'
 
@@ -79,8 +79,8 @@ export function buildCmd({
   // GIT_AUTHOR_EMAIL carries the stable fleet id for authoritative attribution.
   parts.push(...gitAuthorEnv(fleetId || localAgentId, name).map(v => sqEnv(v)))
   if (env.TLDA_MACHINE_ID) parts.push(`TLDA_MACHINE_ID=${sq(env.TLDA_MACHINE_ID)}`)
-  const configName = activeConfigName(config, env)
-  if (configName) parts.push(`TLDA_CONFIG=${sq(configName)}`)
+  const configName = activeEnvName(config, env)
+  if (configName) parts.push(`TLDA_ENV=${sq(configName)}`)
   if (env.TLDA_MACHINE_ID && configName) parts.push(`FLEET_DAEMON_KEY=${sq(`${env.TLDA_MACHINE_ID}:${configName}`)}`)
   for (const [key, value] of passthroughConfigEnv(env)) parts.push(`${key}=${sq(value)}`)
   const dnsAliasPreload = dnsAlias ? dnsAliasPreloadPath() : null

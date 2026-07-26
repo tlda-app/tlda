@@ -9,7 +9,7 @@
 // name. The dev bot died at startup on
 //
 //   SyntaxError: The requested module '@tlda/bot' does not provide an export
-//   named 'getActiveConfigName'
+//   named 'getActiveEnvName'
 //
 // The miss came from reading only single-line imports; dev-bot.mjs imports its
 // symbols in a multi-line block. So this parses both forms, and compares

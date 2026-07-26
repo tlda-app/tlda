@@ -10,7 +10,7 @@ import {
   codexRolloutMatchesLaunch,
   resolveTranscript,
 } from '../../agent-runtime/resolve-transcript.mjs'
-import { activeConfigName, gitAuthorEnv } from '../identity.mjs'
+import { activeEnvName, gitAuthorEnv } from '../identity.mjs'
 import { resolveCodexModel, resolveCodexModelSelection } from '../models.mjs'
 import { loginPrompt } from './claude.mjs'
 import { dnsAliasPreloadPath } from './dns-alias-preload.mjs'
@@ -217,8 +217,8 @@ export function buildCmd({
   parts.push(cenv('FLEET_HARNESS', 'codex'))
   parts.push(cenv('FLEET_TMUX_SESSION', tmuxSession))
   parts.push(cenv('TLDA_MCP_FLEET_ONLY', '1'))
-  const configName = activeConfigName(config, env)
-  if (configName) parts.push(cenv('TLDA_CONFIG', configName))
+  const configName = activeEnvName(config, env)
+  if (configName) parts.push(cenv('TLDA_ENV', configName))
   if (env.TLDA_MACHINE_ID) parts.push(cenv('TLDA_MACHINE_ID', env.TLDA_MACHINE_ID))
   if (env.TLDA_MACHINE_ID && configName) parts.push(cenv('FLEET_DAEMON_KEY', `${env.TLDA_MACHINE_ID}:${configName}`))
   for (const [key, value] of passthroughConfigEnv(env)) parts.push(cenv(key, value))

@@ -265,7 +265,7 @@ export {
   getFleetServerUrl,         // grammar, lint, dev, todd/lib/disclosure/dataset
   getManagedBots,            // grammar, lint, dev
   getManagedBotEnvironments, // dev
-  getActiveConfigName,       // dev
+  getActiveEnvName,       // dev
   getReadToken,              // todd/lib/disclosure/dataset
 } from '../../shared/config.mjs';
 export { labelsForAgent } from '../../shared/fleet-labels.mjs';        // todd, dev

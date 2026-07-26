@@ -102,14 +102,14 @@ function writeConfig() {
   mkdirSync(CONFIG_DIR, { recursive: true })
   mkdirSync(HOME_DIR, { recursive: true })
   mkdirSync(PROJECTS_DIR, { recursive: true })
-  writeFileSync(join(CONFIG_DIR, 'server.yaml'), `defaultServer: loop
-servers:
+  writeFileSync(join(CONFIG_DIR, 'server.yaml'), '')
+  writeFileSync(join(CONFIG_DIR, 'daemon.yaml'), `machineId: ${MACHINE_ID}
+defaultEnv: loop
+environments:
   loop:
     database: ${BASE}
     store: ${BASE}
     licenseKey: test
-`)
-  writeFileSync(join(CONFIG_DIR, 'daemon.yaml'), `machineId: ${MACHINE_ID}
 regions:
   machine:
     - "**"
@@ -204,7 +204,7 @@ async function startDaemon() {
     env: {
       ...process.env,
       HOME: HOME_DIR,
-      TLDA_CONFIG: ENV_NAME,
+      TLDA_ENV: ENV_NAME,
       TLDA_CONFIG_DIR: CONFIG_DIR,
       TLDA_DAEMON_CONFIG_DIR: CONFIG_DIR,
       TLDA_MACHINE_ID: MACHINE_ID,
@@ -239,7 +239,7 @@ async function startServerAndDaemon() {
       ...process.env,
       HOME: HOME_DIR,
       PORT: String(PORT),
-      TLDA_CONFIG: ENV_NAME,
+      TLDA_ENV: ENV_NAME,
       TLDA_CONFIG_DIR: CONFIG_DIR,
       TLDA_FLEET_DB: DB,
       TLDA_DEV_SERVER: '1',
