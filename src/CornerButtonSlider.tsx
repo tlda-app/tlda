@@ -8,6 +8,14 @@ export type CornerButtonSliderOption = {
   render: (active: boolean) => React.ReactNode
 }
 
+type PersistentRailTarget = {
+  action: string
+  value: string | null
+  label: string
+  button: HTMLButtonElement
+  x: number
+}
+
 export function pickCornerSliderIndex({
   clientX,
   anchorRect,
@@ -78,15 +86,17 @@ export function CornerButtonSlider({
 export function PersistentCornerButtonSlider({
   className = '',
   children,
+  onSelect,
 }: {
   className?: string
   children: React.ReactNode
+  onSelect?: (action: string, value: string | null) => void
 }) {
   const railRef = useRef<HTMLDivElement>(null)
   const pointerRef = useRef<number | null>(null)
   const [active, setActive] = useState<{ label: string; x: number } | null>(null)
 
-  const pickButton = useCallback((clientX: number, clientY: number) => {
+  const pickTarget = useCallback((clientX: number, clientY: number): PersistentRailTarget | null => {
     const rail = railRef.current
     if (!rail) return null
     const buttons = Array.from(rail.querySelectorAll<HTMLButtonElement>('[data-composer-rail-action]:not(:disabled)'))
@@ -97,17 +107,40 @@ export function PersistentCornerButtonSlider({
       const distance = Math.hypot(clientX - (rect.left + rect.width / 2), clientY - (rect.top + rect.height / 2))
       if (distance < bestDistance) { best = button; bestDistance = distance }
     }
-    return best
+    if (!best) return null
+
+    const railRect = rail.getBoundingClientRect()
+    const buttonRect = best.getBoundingClientRect()
+    const action = best.dataset.composerRailAction || ''
+    const values = (best.dataset.composerRailValues || '').split(',').map(v => v.trim()).filter(Boolean)
+    const labels = (best.dataset.composerRailLabels || '').split('|').map(v => v.trim())
+    if (values.length > 0) {
+      const rawPosition = buttonRect.width > 0 ? (clientX - buttonRect.left) / buttonRect.width : 0
+      const clampedPosition = Math.max(0, Math.min(0.999999, rawPosition))
+      const index = Math.min(values.length - 1, Math.floor(clampedPosition * values.length))
+      return {
+        action,
+        value: values[index],
+        label: labels[index] || values[index],
+        button: best,
+        x: buttonRect.left + buttonRect.width * ((index + 0.5) / values.length) - railRect.left,
+      }
+    }
+
+    return {
+      action,
+      value: null,
+      label: best.dataset.composerRailLabel || best.title || best.getAttribute('aria-label') || '',
+      button: best,
+      x: buttonRect.left + buttonRect.width / 2 - railRect.left,
+    }
   }, [])
 
-  const pointAt = useCallback((button: HTMLButtonElement | null) => {
-    const rail = railRef.current
-    if (!rail || !button) { setActive(null); return }
-    const railRect = rail.getBoundingClientRect()
-    const buttonRect = button.getBoundingClientRect()
+  const pointAt = useCallback((target: PersistentRailTarget | null) => {
+    if (!target) { setActive(null); return }
     setActive({
-      label: button.dataset.composerRailLabel || button.title || button.getAttribute('aria-label') || '',
-      x: buttonRect.left + buttonRect.width / 2 - railRect.left,
+      label: target.label,
+      x: target.x,
     })
   }, [])
 
@@ -119,20 +152,23 @@ export function PersistentCornerButtonSlider({
       e.preventDefault()
       pointerRef.current = e.pointerId
       e.currentTarget.setPointerCapture(e.pointerId)
-      pointAt(pickButton(e.clientX, e.clientY))
+      pointAt(pickTarget(e.clientX, e.clientY))
     }}
     onPointerMove={(e) => {
       if (pointerRef.current !== e.pointerId) return
       stopEventPropagation(e)
-      pointAt(pickButton(e.clientX, e.clientY))
+      pointAt(pickTarget(e.clientX, e.clientY))
     }}
     onPointerUp={(e) => {
       if (pointerRef.current !== e.pointerId) return
       stopEventPropagation(e)
       pointerRef.current = null
-      const button = pickButton(e.clientX, e.clientY)
-      pointAt(button)
-      button?.click()
+      const target = pickTarget(e.clientX, e.clientY)
+      pointAt(target)
+      if (target) {
+        if (target.value !== null) onSelect?.(target.action, target.value)
+        else target.button.click()
+      }
       window.setTimeout(() => setActive(null), 140)
     }}
     onPointerCancel={(e) => {
