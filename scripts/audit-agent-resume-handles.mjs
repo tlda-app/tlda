@@ -3,7 +3,7 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 
-import { getActiveConfigName, getFleetServerUrl } from '../shared/config.mjs'
+import { getActiveEnvName, getFleetServerUrl } from '../shared/config.mjs'
 import { runtimeStatusName } from '../shared/fleet-runtime-status.mjs'
 import { tldaFetch } from '../shared/http-client.mjs'
 import { resolveCodexResumeHandle } from '../bin/lib/codex-resume-resolver.mjs'
@@ -14,7 +14,7 @@ const DEFAULT_CONFIG_DIR = path.join(os.homedir(), '.config', 'tlda')
 function parseArgs(argv) {
   const out = {
     server: getFleetServerUrl(),
-    configName: getActiveConfigName(),
+    envName: getActiveEnvName(),
     configDir: DEFAULT_CONFIG_DIR,
     json: false,
     examples: 8,
@@ -237,7 +237,7 @@ function summarize({ allAgents, audited, results, options }) {
     generated_at: new Date().toISOString(),
     source: {
       server: options.server,
-      active_config: options.configName,
+      env_name: options.envName,
       endpoint: '/api/store/agents',
       scope: options.scope,
     },

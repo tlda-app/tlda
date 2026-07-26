@@ -197,7 +197,7 @@ function directModelConfig(kind, model) {
 
 function spawnEnv(params = {}) {
   const env = { ...process.env }
-  if (params.activeConfigName) env.TLDA_CONFIG = params.activeConfigName
+  if (params.activeEnvName) env.TLDA_ENV = params.activeEnvName
   if (params.machineId) env.TLDA_MACHINE_ID = params.machineId
   return env
 }

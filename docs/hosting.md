@@ -2,14 +2,14 @@
 
 tlda can be served privately to friends and collaborators or deployed as the
 project's live Fly application. In both cases, clients select one complete named
-config and the server sits behind an explicit access boundary.
+environment and the server sits behind an explicit access boundary.
 
 ## The configuration shape
 
-Each entry in `~/.config/tlda/server.yaml` is a complete
+Each entry in `~/.config/tlda/daemon.yaml` under `environments:` is a complete
 `{ database, store, licenseKey }` record. `database` selects fleet/chat/agent
 state; `store` selects document assets and shape sync. Choose an entry with
-`defaultServer`, `--config <name>`, or `TLDA_CONFIG=<name>`.
+`defaultEnv`, `--env <name>`, or `TLDA_ENV=<name>`.
 
 Do not manually compose a deployment from separate URL variables. The internal
 `TLDA_SYNC_SERVER` value used by agent launch harnesses is not a hosting
@@ -18,9 +18,9 @@ interface.
 ## Private hosting for friends
 
 1. Install tlda, Node, and the TeX build dependencies on the serving machine.
-2. Define a named config whose database and store axes point at that server.
+2. Define a named environment whose database and store axes point at that server.
 3. Start the server with `tlda server start`.
-4. Start exactly one `tlda daemon start --config <name>` for each environment
+4. Start exactly one `tlda daemon start --env <name>` for each environment
    whose source trees or agent sessions the machine owns.
 5. Link a history-backed document with `tlda doc link`, then use
    `tlda doc share <name>` to print the reachable viewer URL.

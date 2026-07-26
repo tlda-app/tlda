@@ -24,7 +24,7 @@ import { resolveServerIsolation } from '../../shared/server-identity.mjs'
 //   serverScript  absolute path to server/unified-server.mjs (this checkout's)
 //   port          PORT to bind
 //   logFile       stdout+stderr go here (created if missing); null → /dev/null
-//   env           extra env merged over process.env (e.g. TLDA_CONFIG, PROJECTS_DIR)
+//   env           extra env merged over process.env (e.g. TLDA_ENV, PROJECTS_DIR)
 //   extraCaPath   NODE_EXTRA_CA_CERTS to set when TLS is on and it isn't already
 //   reclaimPort   SIGKILL a stale LISTENer on `port` first (true for the fixed
 //                 main port; FALSE for a dev server on an already-free port — we

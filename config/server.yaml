@@ -1,6 +1,0 @@
-defaultServer: local
-servers:
-  local:
-    database: http://localhost:5176
-    store: http://localhost:5176
-    licenseKey: ""

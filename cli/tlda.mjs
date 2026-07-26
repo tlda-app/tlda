@@ -18,7 +18,7 @@ import { collectSourceFiles, collectSourceHashes, collectSpecificFiles } from '.
 import { diffSourceHashes, normalizeSourceManifest } from '../shared/source-manifest.mjs'
 import { collectHtmlArtifactFiles, htmlArtifactMainForSource } from './lib/html-artifact-files.mjs'
 import {
-  loadCliConfig, saveCliConfig, loadServerConfig, resolveConfig, getServerUrl, getFleetServerUrl, getRwToken, getReadToken, saveTokens, getActiveConfigName, DEFAULT_PORT,
+  loadCliConfig, saveCliConfig, loadServerConfig, resolveConfig, getServerUrl, getFleetServerUrl, getRwToken, getReadToken, saveTokens, getActiveEnvName, DEFAULT_PORT,
   CONFIG_DIR, hasTls, TLS_CA_PATH, getManagedBots, getManagedBotEnvironments, getMachineId,
 } from '../shared/config.mjs'
 import { tldaFetch } from '../shared/http-client.mjs'
@@ -144,6 +144,27 @@ const BOT_COMMANDS = [
   ['log', 'Show recent bot logs'],
 ]
 let _nounUsed = null
+// Global `--env <name>`: select an alternate complete environment (= the
+// database+store pair) for THIS run only, WITHOUT editing the shared defaultEnv.
+// This is THE supported way to test against another environment. Parse before
+// noun routing so the flag works in any argument position, including before the
+// command. Remove it from argv so command dispatch sees the real noun/subcommand.
+{
+  for (let i = process.argv.length - 1; i >= 2; i--) {
+    if (process.argv[i] === '--config') {
+      console.error('`--config` was removed — use `--env <name>`.')
+      process.exit(1)
+    }
+    if (process.argv[i] !== '--env') continue
+    const value = process.argv[i + 1]
+    if (!value || value.startsWith('--')) {
+      console.error('`--env` requires an environment name.')
+      process.exit(1)
+    }
+    process.env.TLDA_ENV = value
+    process.argv.splice(i, 2)
+  }
+}
 {
   const noun = process.argv[2]
   const sub = process.argv[3]
@@ -157,20 +178,6 @@ let _nounUsed = null
 
 const args = process.argv.slice(2)
 const command = args[0]
-
-// Global `--config <name>`: select an alternate complete config (= an alternate
-// server, the whole database+store pair) for THIS run only, WITHOUT editing the
-// shared "defaultConfig". This is THE supported way to test against another
-// server — editing defaultConfig is what caused the 6/27 split, where a leftover
-// pointed every spawned agent at the wrong fleet. Set before any config
-// resolution (getServerUrl/getRwToken/resolveConfig all read TLDA_CONFIG), and it
-// flows into a spawned daemon via env inheritance (see ensureFleetDaemonRunning).
-{
-  const i = args.indexOf('--config')
-  if (i !== -1 && args[i + 1] && !args[i + 1].startsWith('--')) {
-    process.env.TLDA_CONFIG = args[i + 1]
-  }
-}
 
 // Noun-only: a command lives under its noun, not flat. No back-compat aliases —
 // reject the bare form and point at the noun. (Docs/callers use the noun forms.)
@@ -971,9 +978,9 @@ async function cmdInit() {
 // route here, otherwise we fall through to the existing watcher.
 let DAEMON_WORLD_NAME
 try {
-  DAEMON_WORLD_NAME = getActiveConfigName() || 'default'
+  DAEMON_WORLD_NAME = getActiveEnvName() || 'default'
 } catch {
-  DAEMON_WORLD_NAME = process.env.TLDA_CONFIG || 'default'
+  DAEMON_WORLD_NAME = process.env.TLDA_ENV || 'default'
 }
 const DAEMON_WORLD_SUFFIX = DAEMON_WORLD_NAME === 'default' ? '' : `.${DAEMON_WORLD_NAME.replace(/[^a-zA-Z0-9._-]+/g, '-')}`
 const FLEET_DAEMON_LOGFILE = join(homedir(), '.config', 'tlda', `fleet-daemon${DAEMON_WORLD_SUFFIX}.log`)
@@ -1025,13 +1032,13 @@ function daemonPathEnv() {
   ].join(':')
 }
 
-function daemonEnvironmentEntries({ configDir = null, configName = DAEMON_WORLD_NAME, processTitle = null } = {}) {
+function daemonEnvironmentEntries({ configDir = null, envName = DAEMON_WORLD_NAME, processTitle = null } = {}) {
   const entries = [
     ['PATH', daemonPathEnv()],
     ['NODE_OPTIONS', `--require=${FLEET_DAEMON_DNS_ALIAS_PRELOAD}`],
   ]
   if (existsSync(TLS_CA_PATH)) entries.push(['NODE_EXTRA_CA_CERTS', TLS_CA_PATH])
-  entries.push(['TLDA_CONFIG', configName])
+  entries.push(['TLDA_ENV', envName])
   if (configDir) {
     entries.push(['TLDA_CONFIG_DIR', configDir])
     entries.push(['TLDA_DAEMON_CONFIG_DIR', configDir])
@@ -1040,13 +1047,13 @@ function daemonEnvironmentEntries({ configDir = null, configName = DAEMON_WORLD_
   return entries
 }
 
-function daemonEnvironmentPlist({ configDir = null, configName = DAEMON_WORLD_NAME, processTitle = null } = {}) {
-  return daemonEnvironmentEntries({ configDir, configName, processTitle })
+function daemonEnvironmentPlist({ configDir = null, envName = DAEMON_WORLD_NAME, processTitle = null } = {}) {
+  return daemonEnvironmentEntries({ configDir, envName, processTitle })
     .map(([key, value]) => `        <key>${plistEscape(key)}</key>\n        <string>${plistEscape(value)}</string>`)
     .join('\n')
 }
 
-function daemonPlistContent({ label = FLEET_DAEMON_LABEL, logFile = FLEET_DAEMON_LOGFILE, configDir = null, configName = DAEMON_WORLD_NAME, cliPath = null, processTitle = null } = {}) {
+function daemonPlistContent({ label = FLEET_DAEMON_LABEL, logFile = FLEET_DAEMON_LOGFILE, configDir = null, envName = DAEMON_WORLD_NAME, cliPath = null, processTitle = null } = {}) {
   const command = `exec /opt/homebrew/bin/node --import tsx ${JSON.stringify(FLEET_DAEMON_SCRIPT)}`
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -1066,7 +1073,7 @@ function daemonPlistContent({ label = FLEET_DAEMON_LABEL, logFile = FLEET_DAEMON
     <string>Background</string>
     <key>EnvironmentVariables</key>
     <dict>
-${daemonEnvironmentPlist({ configDir, configName, processTitle })}
+${daemonEnvironmentPlist({ configDir, envName, processTitle })}
     </dict>
     <key>KeepAlive</key>
     <true/>
@@ -1083,10 +1090,10 @@ ${daemonEnvironmentPlist({ configDir, configName, processTitle })}
 `
 }
 
-async function writeDaemonPlist({ plist = FLEET_DAEMON_PLIST, label = FLEET_DAEMON_LABEL, logFile = FLEET_DAEMON_LOGFILE, configDir = null, configName = DAEMON_WORLD_NAME, cliPath = null, processTitle = null } = {}) {
+async function writeDaemonPlist({ plist = FLEET_DAEMON_PLIST, label = FLEET_DAEMON_LABEL, logFile = FLEET_DAEMON_LOGFILE, configDir = null, envName = DAEMON_WORLD_NAME, cliPath = null, processTitle = null } = {}) {
   if (!existsSync(dirname(plist))) mkdirSync(dirname(plist), { recursive: true })
   if (!existsSync(dirname(logFile))) mkdirSync(dirname(logFile), { recursive: true })
-  writeFileSync(plist, daemonPlistContent({ label, logFile, configDir, configName, cliPath, processTitle }))
+  writeFileSync(plist, daemonPlistContent({ label, logFile, configDir, envName, cliPath, processTitle }))
   return plist
 }
 
@@ -1216,14 +1223,14 @@ function botEnvironmentEntries(bot, paths) {
     ['TLDA_BOT_TMUX_SESSION', paths.tmuxSession],
   ]
   if (existsSync(TLS_CA_PATH)) entries.push(['NODE_EXTRA_CA_CERTS', TLS_CA_PATH])
-  if (bot.server) entries.push(['TLDA_CONFIG', String(bot.server)])
+  if (bot.environment) entries.push(['TLDA_ENV', String(bot.environment)])
   for (const [key, value] of Object.entries(bot.env || {})) entries.push([key, String(value)])
   return entries
 }
 
 function botEnvironmentPlist(bot, paths) {
   return botEnvironmentEntries(bot, paths)
-    .filter(([key]) => key === 'PATH' || key === 'NODE_EXTRA_CA_CERTS' || key === 'TLDA_CONFIG')
+    .filter(([key]) => key === 'PATH' || key === 'NODE_EXTRA_CA_CERTS' || key === 'TLDA_ENV')
     .map(([key, value]) => `        <key>${plistEscape(key)}</key>\n        <string>${plistEscape(value)}</string>`)
     .join('\n')
 }
@@ -1304,27 +1311,27 @@ function daemonConfigSuffix(configName) {
   return configName === 'default' ? '' : `.${String(configName).replace(/[^a-zA-Z0-9._-]+/g, '-')}`
 }
 
-function daemonJobForConfigName(configName) {
-  const suffix = daemonConfigSuffix(configName)
+function daemonJobForEnvName(envName) {
+  const suffix = daemonConfigSuffix(envName)
   const label = `com.tlda.fleet-daemon${suffix}`
   const logFile = join(CONFIG_DIR, `fleet-daemon${suffix}.log`)
   const plist = labelPlistPath(label)
   return {
     kind: 'daemon',
-    name: configName,
+    name: envName,
     label,
     plist,
-    content: daemonPlistContent({ label, logFile, configName }),
+    content: daemonPlistContent({ label, logFile, envName }),
   }
 }
 
-function botJob(bot, configName = null) {
-  const effectiveConfigName = configName || bot.server || null
-  const effectiveBot = effectiveConfigName ? { ...bot, server: effectiveConfigName } : bot
-  const paths = botServicePaths(bot.name, { configName: effectiveConfigName })
+function botJob(bot, envName = null) {
+  const effectiveEnvName = envName || bot.environment || null
+  const effectiveBot = effectiveEnvName ? { ...bot, environment: effectiveEnvName } : bot
+  const paths = botServicePaths(bot.name, { configName: effectiveEnvName })
   return {
     kind: 'bot',
-    name: effectiveConfigName ? `${bot.name}:${effectiveConfigName}` : bot.name,
+    name: effectiveEnvName ? `${bot.name}:${effectiveEnvName}` : bot.name,
     label: paths.label,
     plist: paths.plist,
     content: botPlistContent(effectiveBot, paths),
@@ -1408,21 +1415,21 @@ function serverJobIfInstalled() {
 }
 
 function desiredLaunchdJobs() {
-  const serverConfig = loadServerConfig()
-  const serverNames = Object.keys(serverConfig.servers || {}).sort()
+  const daemonConfig = readDaemonConfig(defaultDaemonConfigPath(CONFIG_DIR))
+  const envNames = Object.keys(daemonConfig.environments || {}).sort()
   const botsByName = new Map(configuredBots().map(bot => [bot.name, bot]))
   const botEnvironments = getManagedBotEnvironments()
   const botJobs = []
-  for (const [serverName, botNames] of Object.entries(botEnvironments).sort(([a], [b]) => a.localeCompare(b))) {
-    if (!serverNames.includes(serverName)) throw new Error(`bots.yaml names unknown environment "${serverName}"`)
+  for (const [envName, botNames] of Object.entries(botEnvironments).sort(([a], [b]) => a.localeCompare(b))) {
+    if (!envNames.includes(envName)) throw new Error(`bots.yaml names unknown environment "${envName}"`)
     for (const botName of botNames) {
       const bot = botsByName.get(botName)
-      if (!bot) throw new Error(`bots.yaml environment ${serverName} references unknown bot "${botName}"`)
-      botJobs.push(botJob(bot, serverName))
+      if (!bot) throw new Error(`bots.yaml environment ${envName} references unknown bot "${botName}"`)
+      botJobs.push(botJob(bot, envName))
     }
   }
   const jobs = [
-    ...serverNames.map(name => daemonJobForConfigName(name)),
+    ...envNames.map(name => daemonJobForEnvName(name)),
     ...botJobs,
   ]
   const serverJob = serverJobIfInstalled()
@@ -1632,7 +1639,7 @@ function botPermissionFacts() {
 }
 
 async function enlistBot(bot) {
-  const configName = bot.server || getActiveConfigName()
+  const configName = bot.environment || getActiveEnvName()
   const paths = botServicePaths(bot.name, { configName })
   const fleetId = readBotFleetId(paths)
   const mintId = `bot:${configName}:${bot.name}`
@@ -1697,21 +1704,20 @@ async function enlistBot(bot) {
 
 function sandboxDaemonConfig(configDir, label) {
   const source = resolveConfig()
-  const configName = 'sandbox'
+  const envName = 'sandbox'
   return {
-    configName,
-    server: {
-      defaultServer: configName,
-      servers: {
-        [configName]: {
+    envName,
+    server: {},
+    daemon: {
+      machineId: `${label}.${hostname().split('.')[0]}.${process.pid}`,
+      defaultEnv: envName,
+      environments: {
+        [envName]: {
           database: source.database.http,
           store: source.store.http,
           licenseKey: source.licenseKey,
         },
       },
-    },
-    daemon: {
-      machineId: `${label}.${hostname().split('.')[0]}.${process.pid}`,
       regions: {},
       profiles: {},
       grants: {},
@@ -1737,7 +1743,7 @@ async function writeSandboxDaemonPlist() {
     label,
     logFile,
     configDir,
-    configName: authority.configName,
+    envName: authority.envName,
     cliPath: join(_cliDir, 'tlda.mjs'),
     processTitle: `tlda-fleet-daemon-${label.replace(/[^A-Za-z0-9_.-]/g, '-')}`,
   })
@@ -1820,7 +1826,7 @@ function processTreeOwnsPid(ancestorPid, childPid) {
 
 function daemonTargetIdentity() {
   const server = getFleetServerUrl()
-  const envName = getActiveConfigName()
+  const envName = getActiveEnvName()
   if (!envName) throw new Error('cannot identify daemon target: active config name is missing')
   const machineId = getMachineId() || hostname().split('.')[0]
   const lockScope = `${machineId}:${envName}`
@@ -2544,22 +2550,21 @@ async function cmdMoveProject() {
     console.error('Usage: tlda doc move <project> <config>')
     process.exit(1)
   }
-  const selectedConfig = getActiveConfigName()
+  const selectedConfig = getActiveEnvName()
   const target = resolveConfig(targetConfig)
   let project = await api('GET', `/api/projects/${encodeURIComponent(name)}`)
   if (!project.sourceDir) throw new Error(`Project "${name}" has no local source directory; cannot change daemon ownership.`)
   const sourceDir = resolve(project.sourceDir)
   const projectWorlds = readProjectWorlds(projectWorldsPath(CONFIG_DIR))
-  const serverConfig = loadServerConfig()
+  const daemonConfig = readDaemonConfig(defaultDaemonConfigPath(CONFIG_DIR))
   const recordedSourceConfig = projectWorlds[sourceDir]
-  const sourceConfig = recordedSourceConfig && serverConfig.servers?.[recordedSourceConfig]
+  const sourceConfig = recordedSourceConfig && daemonConfig.environments?.[recordedSourceConfig]
     ? recordedSourceConfig
     : selectedConfig
   const alreadyOwned = sourceConfig === targetConfig
   if (sourceConfig !== selectedConfig) {
-    const source = serverConfig.servers?.[sourceConfig]
-    if (!source || typeof source.store !== 'string') throw new Error(`Recorded source config "${sourceConfig}" is missing.`)
-    project = await apiAt(source.store.replace(/\/+$/, ''), 'GET', `/api/projects/${encodeURIComponent(name)}`)
+    const source = resolveConfig(sourceConfig)
+    project = await apiAt(source.store.http.replace(/\/+$/, ''), 'GET', `/api/projects/${encodeURIComponent(name)}`)
   }
   if (!existsSync(sourceDir)) throw new Error(`Project source directory does not exist: ${sourceDir}`)
   const targetServer = target.store.http.replace(/\/+$/, '')
@@ -2603,10 +2608,10 @@ async function cmdMoveProject() {
   }, { timeoutMs: 120000 })
   writeProjectWorld(projectWorldsPath(CONFIG_DIR), sourceDir, targetConfig)
 
-  const daemonEnv = { ...process.env, TLDA_CONFIG: targetConfig }
+  const daemonEnv = { ...process.env, TLDA_ENV: targetConfig }
   delete daemonEnv.TLDA_SERVER
   delete daemonEnv.TLDA_SYNC_SERVER
-  execFileSync(process.execPath, [fileURLToPath(import.meta.url), 'daemon', 'start', '--config', targetConfig], {
+  execFileSync(process.execPath, [fileURLToPath(import.meta.url), 'daemon', 'start', '--env', targetConfig], {
     cwd: FLEET_DAEMON_MAIN_ROOT,
     stdio: 'inherit',
     env: daemonEnv,
@@ -2633,7 +2638,7 @@ async function cmdMoveProject() {
 async function cmdMcpSetup() {
   const tldaRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
   const nodePath = process.execPath
-  const configName = getActiveConfigName()
+  const configName = getActiveEnvName()
   const outPath = join(process.cwd(), '.mcp.json')
 
   let existing = {}
@@ -2647,7 +2652,7 @@ async function cmdMcpSetup() {
         type: 'stdio',
         command: nodePath,
         args: [join(tldaRoot, 'mcp-server', 'index.mjs')],
-        env: { TLDA_CONFIG: configName }
+        env: { TLDA_ENV: configName }
       },
       fleet: {
         type: 'stdio',
@@ -3483,7 +3488,7 @@ export async function createLifecycleSeatBindingObligation(result, {
     throw new Error('fresh/session pending requires an exact durable seat-binding obligation')
   }
   const machineId = localMachineId()
-  const envName = getActiveConfigName()
+  const envName = getActiveEnvName()
   const response = await api('POST', '/api/agent-seat-binding-obligation', {
     agent_id: result.fleetId,
     local_agent_id: result.localAgentId || null,
@@ -3640,7 +3645,7 @@ async function postLifecycleSeatBinding(result, {
 } = {}) {
   if (!api) return { bound: false, pending: true }
   const machineId = localMachineId()
-  const envName = getActiveConfigName()
+  const envName = getActiveEnvName()
   const daemonKey = `${machineId}:${envName}`
   const binding = await bindAgentSeat({
     ledger,
@@ -4097,9 +4102,9 @@ function localMachineId() {
 
 function localDaemonEnvName() {
   try {
-    return getActiveConfigName()
+    return getActiveEnvName()
   } catch {
-    return loadServerConfig()?.defaultServer || process.env.TLDA_CONFIG || 'default'
+    return readDaemonConfig(defaultDaemonConfigPath(CONFIG_DIR))?.defaultEnv || process.env.TLDA_ENV || 'default'
   }
 }
 
@@ -4196,7 +4201,7 @@ export async function collectAgentReadiness(query, spawnSync, apiGet = api) {
   } finally {
     await ledger.close()
   }
-  const localDaemonKey = `${localMachineId()}:${getActiveConfigName()}`
+  const localDaemonKey = `${localMachineId()}:${getActiveEnvName()}`
   if (seat.daemon_key !== localDaemonKey) {
     return { ok: false, query, agent, seat, error: `current durable seat belongs to ${seat.daemon_key || 'unknown daemon'}, not local ${localDaemonKey}` }
   }
@@ -4481,7 +4486,7 @@ async function moveAgentToEnvironment({
   // this box in the permission ledger.
   if (!agent) agent = resolveAgentFromDaemonLedger(agentQuery)
   const sourceMachine = localMachineId()
-  const effectiveSourceEnv = sourceEnv || getActiveConfigName()
+  const effectiveSourceEnv = sourceEnv || getActiveEnvName()
   let targetMachine = sourceMachine
   let targetName = null
   if (rawTarget) {
@@ -5078,7 +5083,7 @@ async function cmdDoctor() {
     const tldaRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
     const tldaMcpEntry = join(tldaRoot, 'mcp-server', 'index.mjs')
     const fleetMcpEntry = join(tldaRoot, 'mcp-server', 'fleet.mjs')
-    const configName = getActiveConfigName()
+    const configName = getActiveEnvName()
 
     let tldaFound = false
     let fleetFound = false
@@ -5108,7 +5113,7 @@ async function cmdDoctor() {
             type: 'stdio',
             command: process.execPath,
             args: [tldaMcpEntry],
-            env: { TLDA_CONFIG: configName }
+            env: { TLDA_ENV: configName }
           }
         }
       }, null, 2).split('\n').join('\n  ')))

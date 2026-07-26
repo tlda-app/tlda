@@ -44,7 +44,7 @@ const { homedir, hostname } = os
 import { randomUUID } from 'crypto'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { lookup as mimeLookup } from 'mime-types'
-import { CONFIG_DIR, DEFAULT_PORT, getActiveConfigName, getFleetServerUrl, hasTls, resolveConfig } from '../shared/config.mjs'
+import { CONFIG_DIR, DEFAULT_PORT, getActiveEnvName, getFleetServerUrl, hasTls, resolveConfig } from '../shared/config.mjs'
 import { createLagProfiler } from './lib/lag-profiler.mjs'
 import { BARE_METADATA, resolveAsset } from '../shared/doc-assets.mjs'
 import { listModels as listSpawnModels } from '../agent-launch/models.mjs'
@@ -707,7 +707,7 @@ setInterval(() => {
 // of a misfire (an extra short-lived daemon) is much smaller than the
 // cost of silent feature loss.
 const LOCAL_MACHINE_ID = (hostname() || '').split('.')[0] || 'localhost'
-const SERVER_ENV_NAME = getActiveConfigName()
+const SERVER_ENV_NAME = getActiveEnvName()
 const LOCAL_DAEMON_ADDRESS = daemonAddress(LOCAL_MACHINE_ID, SERVER_ENV_NAME)
 // Server owner — the human running this server process. Used as fallback
 // identity for MCP agents and CLI operations. Browser users identify
