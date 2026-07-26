@@ -3268,7 +3268,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   -webkit-user-select: none;
   -webkit-touch-callout: none;
 }
-.fleet-chat-shape .fleet-composer-rail-preview {
+.fleet-chat-shape .corner-button-slider-preview {
   position: absolute;
   top: -20px;
   transform: translateX(-50%) translateY(-2px);
@@ -3285,7 +3285,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   white-space: nowrap;
   animation: fleet-composer-rail-lift 140ms ease-out;
 }
-.tl-theme__dark .fleet-chat-shape .fleet-composer-rail-preview {
+.tl-theme__dark .fleet-chat-shape .corner-button-slider-preview {
   background: rgba(18, 18, 22, 0.9);
 }
 @keyframes fleet-composer-rail-lift {
