@@ -9,7 +9,7 @@ example daemon configurations in `config/`; the operator-owned file is
 `~/.config/tlda/daemon.yaml` contains named complete environments under
 `environments:`. Select one for a process with `TLDA_ENV=<name>` or for a CLI
 run with `--env <name>`. `tlda daemon start --env <name>` carries that selection
-through the daemon to agents it spawns. Do not edit the shared `defaultEnv` just
+through the daemon to agents it spawns. Do not edit the shared `environments.default` just
 to test another deployment.
 
 ## `daemon.yaml`

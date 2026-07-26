@@ -41,7 +41,7 @@ key makes the daemon refuse to start:
 
 ```
 Error: daemon config supports only machineId, regions, profiles, grants, models,
-default, tmuxSocket, taskDoc, spawnMachineId, defaultEnv, environments;
+default, tmuxSocket, taskDoc, spawnMachineId, environments;
 unknown key(s): statusScanSeconds
 ```
 

@@ -177,7 +177,7 @@ async function run() {
   mkdirSync(CONFIG_DIR, { recursive: true })
   const base = `${proto}://localhost:${PORT}`
   writeFileSync(`${CONFIG_DIR}/server.yaml`, '')
-  writeFileSync(`${CONFIG_DIR}/daemon.yaml`, `machineId: ${MACHINE_ID}\ndefaultEnv: test\nenvironments:\n  test:\n    database: ${base}\n    store: ${base}\n    licenseKey: \"\"\nregions:\n  machine: [\"**\"]\nprofiles:\n  ops:\n    read: { allow: [machine], deny: [] }\n    write: { allow: [machine], deny: [] }\ngrants:\n  localhost: ops\nmodels: {}\ndefault: ops\n`)
+  writeFileSync(`${CONFIG_DIR}/daemon.yaml`, `machineId: ${MACHINE_ID}\nenvironments:\n  default: test\n  values:\n    test:\n      database: ${base}\n      store: ${base}\n      licenseKey: \"\"\nregions:\n  machine: [\"**\"]\nprofiles:\n  ops:\n    read: { allow: [machine], deny: [] }\n    write: { allow: [machine], deny: [] }\ngrants:\n  localhost: ops\nmodels: {}\ndefault: ops\n`)
   srv = spawnProcess('node', ['server/unified-server.mjs', '--i-am-tlda-cli'], {
     cwd: process.cwd(),
     env: {

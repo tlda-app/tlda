@@ -13,12 +13,13 @@ mkdirSync(source, { recursive: true })
 writeFileSync(join(source, 'server.yaml'), '')
 writeFileSync(join(source, 'daemon.yaml'), `
 machineId: shared-live-machine
-defaultEnv: source
 environments:
-  source:
-    database: https://isolated-db.example
-    store: https://isolated-store.example
-    licenseKey: ISOLATED-LICENSE
+  default: source
+  values:
+    source:
+      database: https://isolated-db.example
+      store: https://isolated-store.example
+      licenseKey: ISOLATED-LICENSE
 `)
 writeFileSync(join(source, 'tokens.json'), JSON.stringify({ tokenRw: 'isolated-token' }))
 

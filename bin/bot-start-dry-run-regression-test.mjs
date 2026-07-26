@@ -20,7 +20,7 @@ try {
   mkdirSync(fakeBin, { recursive: true })
 
   writeFileSync(join(configDir, 'server.yaml'), '')
-  writeFileSync(join(configDir, 'daemon.yaml'), `machineId: test-machine\ndefaultEnv: test\nenvironments:\n  test:\n    database: https://example.invalid\n    store: https://example.invalid\n    licenseKey: test-license\nregions: {}\nprofiles: {}\ngrants: {}\nmodels: {}\n`)
+  writeFileSync(join(configDir, 'daemon.yaml'), `machineId: test-machine\nenvironments:\n  default: test\n  values:\n    test:\n      database: https://example.invalid\n      store: https://example.invalid\n      licenseKey: test-license\nregions: {}\nprofiles: {}\ngrants: {}\nmodels: {}\n`)
   writeFileSync(join(configDir, 'bots.yaml'), `bots:\n  - name: todd\n    script: bin/bots/todd.mjs\n`)
 
   for (const command of ['launchctl', 'tmux']) {

@@ -11,12 +11,13 @@ process.env.TLDA_ENV = 'testing'
 writeFileSync(join(configDir, 'server.yaml'), '')
 
 writeFileSync(join(configDir, 'daemon.yaml'), `machineId: mini
-defaultEnv: testing
 environments:
-  testing:
-    database: http://127.0.0.1:9
-    store: http://127.0.0.1:9
-    licenseKey: ""
+  default: testing
+  values:
+    testing:
+      database: http://127.0.0.1:9
+      store: http://127.0.0.1:9
+      licenseKey: ""
 regions:
   machine: ["**"]
 profiles:

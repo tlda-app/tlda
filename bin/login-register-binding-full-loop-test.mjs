@@ -104,12 +104,13 @@ function writeConfig() {
   mkdirSync(PROJECTS_DIR, { recursive: true })
   writeFileSync(join(CONFIG_DIR, 'server.yaml'), '')
   writeFileSync(join(CONFIG_DIR, 'daemon.yaml'), `machineId: ${MACHINE_ID}
-defaultEnv: loop
 environments:
-  loop:
-    database: ${BASE}
-    store: ${BASE}
-    licenseKey: test
+  default: loop
+  values:
+    loop:
+      database: ${BASE}
+      store: ${BASE}
+      licenseKey: test
 regions:
   machine:
     - "**"

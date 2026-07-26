@@ -6,10 +6,10 @@ environment and the server sits behind an explicit access boundary.
 
 ## The configuration shape
 
-Each entry in `~/.config/tlda/daemon.yaml` under `environments:` is a complete
-`{ database, store, licenseKey }` record. `database` selects fleet/chat/agent
-state; `store` selects document assets and shape sync. Choose an entry with
-`defaultEnv`, `--env <name>`, or `TLDA_ENV=<name>`.
+Each entry in `~/.config/tlda/daemon.yaml` under `environments.values` is a
+complete `{ database, store, licenseKey }` record. `database` selects
+fleet/chat/agent state; `store` selects document assets and shape sync. Choose
+an entry with `environments.default`, `--env <name>`, or `TLDA_ENV=<name>`.
 
 Do not manually compose a deployment from separate URL variables. The internal
 `TLDA_SYNC_SERVER` value used by agent launch harnesses is not a hosting

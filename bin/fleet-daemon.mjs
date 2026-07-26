@@ -261,9 +261,9 @@ const config = loadDaemonLaunchConfig()
 // environment name selects the complete database/store authority; TLDA_SERVER is
 // not a second selector.
 const SERVER = getDaemonFleetServerUrl()
-// The active environment NAME (TLDA_ENV → defaultEnv). This — not a URL — is the
-// single selector we propagate to spawned agents so their MCP resolves the SAME
-// complete environment (database + store) the daemon did. A stray defaultEnv can't
+// The active environment NAME (TLDA_ENV -> environments.default). This is the
+// single selector we propagate to spawned agents so their MCP resolves the same
+// complete environment (database + store) the daemon did. A stray default cannot
 // then misroute a spawn, because the spawn carries the real active name.
 let MACHINE_ID = getMachineId()
 if (!MACHINE_ID) {

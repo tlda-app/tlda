@@ -42,9 +42,10 @@ if (hasTls && !process.env.NODE_EXTRA_CA_CERTS) {
  * talk to." There is exactly one selection rule and one derivation; outside this
  * function nothing computes or branches on config.
  *
- * Model (git-style): daemon.yaml `environments` is a map of named environments,
- * each a COMPLETE { database, store, licenseKey }. `defaultEnv` names the active
- * one unless TLDA_ENV overrides it. That single selector is the only choice.
+ * Model (git-style): daemon.yaml `environments.values` is a map of named
+ * environments, each a COMPLETE { database, store, licenseKey }.
+ * `environments.default` names the active one unless TLDA_ENV overrides it.
+ * That single selector is the only choice.
  *
  *   database — fleet/chat/registry/agents (the one global event store)
  *   store    — shapes + doc assets sync (per-room/per-doc state)
@@ -98,11 +99,12 @@ export function saveCliConfig(value = {}) {
 }
 
 /**
- * Resolve the active environment from daemon.yaml `environments:` — the single
- * source of truth for which database/store pair this daemon and its agents use.
+ * Resolve the active environment from daemon.yaml `environments.values:` — the
+ * single source of truth for which database/store pair this daemon and its
+ * agents use.
  * The active environment is `envName` (a string override — used to route a
  * specific bot to its declared environment), else TLDA_ENV, else daemon.yaml
- * `defaultEnv`.
+ * `environments.default`.
  *
  * Each environment entry MUST be COMPLETE: an explicit `database`, `store`, and
  * `licenseKey` (licenseKey "" = explicitly unlicensed). There are NO fallbacks —
@@ -131,7 +133,7 @@ export function getFleetServerUrl(envName = null) {
   return resolveConfig(envName).database.http
 }
 
-/** The active environment's name — what TLDA_ENV/defaultEnv selected. */
+/** The active environment's name — what TLDA_ENV/environments.default selected. */
 export function getActiveEnvName(envName = null) {
   return resolveConfig(envName).name
 }

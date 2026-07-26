@@ -16,16 +16,17 @@ delete process.env.TLDA_TOKEN
 delete process.env.TLDA_MACHINE_ID
 
 const SERVER_COMPLETE = ''
-const DAEMON_COMPLETE = `defaultEnv: complete
-environments:
-  complete:
-    database: https://db.example
-    store: https://store.example
-    licenseKey: SERVER-LICENSE
-  unlicensed:
-    database: https://db2.example
-    store: https://store2.example
-    licenseKey: ""
+const DAEMON_COMPLETE = `environments:
+  default: complete
+  values:
+    complete:
+      database: https://db.example
+      store: https://store.example
+      licenseKey: SERVER-LICENSE
+    unlicensed:
+      database: https://db2.example
+      store: https://store2.example
+      licenseKey: ""
 regions:
   cwd:
     - cwd
@@ -81,44 +82,50 @@ writeDaemon(`- not
 check('list-valued daemon root THROWS in resolver', throws(() => cfg.resolveConfig()))
 check('list-valued daemon root THROWS in daemon reader',
       throws(() => ledger.readDaemonConfig(join(DIR, 'daemon.yaml'))))
-writeDaemon(`defaultEnv: complete
+writeDaemon(`environments:
+  default: complete
 `)
-check('absent environments THROWS in resolver', throws(() => cfg.resolveConfig()))
-writeDaemon(`defaultEnv: missing
-environments:
-  complete:
-    database: https://db.example
-    store: https://store.example
-    licenseKey: L
+check('absent environments.values THROWS in resolver', throws(() => cfg.resolveConfig()))
+writeDaemon(`environments:
+  default: missing
+  values:
+    complete:
+      database: https://db.example
+      store: https://store.example
+      licenseKey: L
 `)
-check('defaultEnv missing target THROWS in resolver', throws(() => cfg.resolveConfig()))
-writeDaemon(`defaultEnv: ""
-environments:
-  complete:
-    database: https://db.example
-    store: https://store.example
-    licenseKey: L
+check('environments.default missing target THROWS in resolver', throws(() => cfg.resolveConfig()))
+writeDaemon(`environments:
+  default: ""
+  values:
+    complete:
+      database: https://db.example
+      store: https://store.example
+      licenseKey: L
 `)
-check('empty defaultEnv THROWS in resolver', throws(() => cfg.resolveConfig()))
-writeDaemon(`defaultEnv: urlonly
-environments:
-  urlonly:
-    url: https://both.example
+check('empty environments.default THROWS in resolver', throws(() => cfg.resolveConfig()))
+writeDaemon(`environments:
+  default: urlonly
+  values:
+    urlonly:
+      url: https://both.example
 `)
 check('legacy url-only entry THROWS in resolver', throws(() => cfg.resolveConfig()))
-writeDaemon(`defaultEnv: nostore
-environments:
-  nostore:
-    database: https://db.example
-    licenseKey: L
+writeDaemon(`environments:
+  default: nostore
+  values:
+    nostore:
+      database: https://db.example
+      licenseKey: L
 `)
 check('missing store THROWS in resolver', throws(() => cfg.resolveConfig()))
 writeDaemon(`licenseKey: TOP-LEVEL-MUST-NOT-BE-USED
-defaultEnv: nolicense
 environments:
-  nolicense:
-    database: https://db.example
-    store: https://store.example
+  default: nolicense
+  values:
+    nolicense:
+      database: https://db.example
+      store: https://store.example
 `)
 check('top-level license fallback THROWS in resolver', throws(() => cfg.resolveConfig()))
 
@@ -139,15 +146,13 @@ models:
 `)
 check('project override accepts profile/model policy fields',
       ledger.readDaemonConfigForCwd(projectDir, join(DIR, 'daemon.yaml')).default === 'wd')
-writeFileSync(join(projectDir, '.tlda-daemon.yaml'), `defaultEnv: complete
-`)
-check('project override rejects defaultEnv authority',
-      throws(() => ledger.readDaemonConfigForCwd(projectDir, join(DIR, 'daemon.yaml'))))
 writeFileSync(join(projectDir, '.tlda-daemon.yaml'), `environments:
-  complete:
-    database: https://db.example
-    store: https://store.example
-    licenseKey: L
+  default: complete
+  values:
+    complete:
+      database: https://db.example
+      store: https://store.example
+      licenseKey: L
 `)
 check('project override rejects environments authority',
       throws(() => ledger.readDaemonConfigForCwd(projectDir, join(DIR, 'daemon.yaml'))))
