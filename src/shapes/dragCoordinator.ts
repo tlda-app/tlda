@@ -47,7 +47,15 @@ function installListeners() {
     handlers.onCancel?.()
   }
   document.addEventListener('pointercancel', cancelActive, { capture: true })
-  document.addEventListener('lostpointercapture', cancelActive, { capture: true })
+  // NOT lostpointercapture. Touch pointers are *implicitly* captured by the
+  // browser to the element that received pointerdown; that capture is released
+  // — firing lostpointercapture — as a normal part of a touch drag, e.g. when
+  // the origin element re-renders or the finger leaves it. Cancelling on it
+  // deleted the drag pill the instant a finger started moving, so a touch drag
+  // produced a pill that immediately vanished and the filter overlay (which is
+  // gated on the pill's bounds reaching the chat shape) never opened. Mouse was
+  // unaffected because mouse pointers are not implicitly captured.
+  // pointercancel already covers genuine interruption.
   document.addEventListener('keydown', (e: KeyboardEvent) => {
     if (e.key === 'Escape') cancelActive()
   }, { capture: true })
