@@ -250,6 +250,8 @@ let _recognition = null
 let _recording = false
 const VOICE_HUD_MIN_WIDTH = 240
 const VOICE_HUD_WIDTH = `${VOICE_HUD_MIN_WIDTH}px`
+const VOICE_METER_BACKGROUND = 'background'
+const VOICE_METER_EDGE = 'edge'
 const RADIO_HUD_MAX_CHARS = 700
 const RADIO_HUD_HISTORY_LIMIT = 4
 
@@ -536,13 +538,10 @@ function positionHud(hud) {
   hud.style.bottom = phone ? '' : '20px'
 }
 
-// Health dot: green at 20% when audio is flowing, amber at 40% when no audio.
-// Both states are visible while recording — green = hearing you, amber = not hearing you.
-// Dot is hidden when not recording.
+// HUD meter: fixed color; amplitude changes the painted area only. Voice state
+// remains text, not a meter color channel.
 const DOT_GREEN = '#7ab8a0'
 const DOT_AMBER = '#c8956a'
-const DOT_GREEN_OPACITY = '0.4'
-const DOT_AMBER_OPACITY = '0.4'
 const AUDIO_FLOWING_MS = 3000  // switch to amber after this long without a result
 const MIC_INPUT_TIMEOUT_MS = 1500  // no raw mic frame for this long → honest "no mic input"
 const VOICE_LIVENESS_INTERVAL_MS = 1000
@@ -590,8 +589,6 @@ function shouldAutoStartOnInit() {
   return false
 }
 
-let _healthDot = null
-let _micLevelFill = null
 let _micLevel = 0
 let _micLevelPending = 0
 let _micLevelRaf = null
@@ -602,39 +599,25 @@ let _lastStatusWord = null   // last status word actually rendered, so the 1 Hz 
 let _voiceLivenessInterval = null
 let _lastWhisperMessageTime = 0
 
-function ensureHealthDot() {
-  if (_healthDot) return _healthDot
-  _healthDot = document.createElement('span')
-  _healthDot.setAttribute('aria-hidden', 'true')
-  Object.assign(_healthDot.style, {
-    display: 'inline-block',
-    position: 'relative',
-    width: '54px',
-    height: '9px',
-    borderRadius: '3px',
-    marginRight: '8px',
-    flexShrink: '0',
-    overflow: 'hidden',
-    background: 'rgba(255,255,255,0.12)',
-  })
-  _micLevelFill = document.createElement('span')
-  Object.assign(_micLevelFill.style, {
-    display: 'block', width: '100%', height: '100%',
-    transformOrigin: 'left center', transform: 'scaleX(0)',
-    background: DOT_GREEN,
-    transition: 'transform 60ms linear, background-color 0.2s',
-  })
-  const micLevelGrid = document.createElement('span')
-  Object.assign(micLevelGrid.style, {
-    position: 'absolute',
-    inset: '0',
-    pointerEvents: 'none',
-    backgroundImage: 'repeating-linear-gradient(90deg, transparent 0 4px, rgba(0,0,0,0.3) 4px 5px, transparent 5px 6px)',
-    opacity: '0.65',
-  })
-  _healthDot.appendChild(_micLevelFill)
-  _healthDot.appendChild(micLevelGrid)
-  return _healthDot
+function normalizeVoiceMeterMode(value) {
+  return value === VOICE_METER_EDGE ? VOICE_METER_EDGE : VOICE_METER_BACKGROUND
+}
+
+function micLevelGradient(level, color, alpha) {
+  const pct = Math.round(Math.min(1, Math.max(0, level)) * 100)
+  return `linear-gradient(90deg, ${hexToRgba(color, alpha * 0.35)} 0%, ${hexToRgba(color, alpha)} ${pct}%, transparent ${pct}%, transparent 100%)`
+}
+
+function paintMicLevel(level = _micLevel) {
+  if (!_hud) return
+  const displayedLevel = _recording ? Math.max(0.025, Math.min(1, Math.max(0, level))) : 0
+  const mode = normalizeVoiceMeterMode(getPref('voice-hud-meter'))
+  const base = 'rgba(255,255,255,0.08)'
+  _hud.style.backgroundColor = base
+  _hud.style.backgroundImage = micLevelGradient(displayedLevel, DOT_GREEN, mode === VOICE_METER_EDGE ? 0.5 : 0.16)
+  _hud.style.backgroundRepeat = 'no-repeat'
+  _hud.style.backgroundSize = mode === VOICE_METER_EDGE ? '100% 2px' : '100% 100%'
+  _hud.style.backgroundPosition = mode === VOICE_METER_EDGE ? 'left bottom' : 'left top'
 }
 
 function setMicInputLevel(level) {
@@ -643,14 +626,10 @@ function setMicInputLevel(level) {
   _micLevelRaf = requestAnimationFrame(() => {
     _micLevelRaf = null
     _micLevel = Math.max(_micLevelPending, _micLevel * 0.72)
-    const meter = ensureHealthDot()
-    meter.style.opacity = _recording ? '1' : '0.35'
-    const displayedLevel = Math.min(1, Math.max(0, _micLevel))
-    if (_micLevelFill) _micLevelFill.style.transform = `scaleX(${_recording ? Math.max(0.025, displayedLevel) : 0})`
+    paintMicLevel()
     const audible = _recording && (_micAudible ? _micLevel >= 0.02 : _micLevel >= 0.035)
     if (audible !== _micAudible) {
       _micAudible = audible
-      if (_micLevelFill) _micLevelFill.style.backgroundColor = audible ? DOT_GREEN : DOT_AMBER
       _voiceHealthLabel = audible && voiceCanReportRawAudioFlowing() ? 'speech detected' : liveLivenessLabel()
       if (_recording) showRecordingHud()
       else showHud('off', '#9370db')
@@ -682,9 +661,7 @@ function dotAudioFlowing() {
   hideDontSpeak()
   _voiceHealthLabel = 'speech detected'
   showRecordingHud()
-  const dot = ensureHealthDot()
-  dot.style.opacity = '1'
-  if (_micLevelFill) _micLevelFill.style.backgroundColor = DOT_GREEN
+  paintMicLevel()
   setTextareaGlow(GLOW_GREEN)
   // Schedule transition to amber after silence
   clearTimeout(_healthDotTimer)
@@ -696,18 +673,14 @@ function dotAudioStale() {
   if (!_recording) return
   _voiceHealthLabel = liveLivenessLabel()
   showRecordingHud()
-  const dot = ensureHealthDot()
-  dot.style.opacity = '1'
-  if (_micLevelFill) _micLevelFill.style.backgroundColor = DOT_AMBER
+  paintMicLevel()
   setTextareaGlow(GLOW_AMBER)
 }
 
 // Show amber dot immediately (recording started, no audio yet)
 function dotRecordingStart() {
   _voiceHealthLabel = 'starting voice'
-  const dot = ensureHealthDot()
-  dot.style.opacity = '1'
-  if (_micLevelFill) _micLevelFill.style.backgroundColor = DOT_AMBER
+  paintMicLevel()
   setTextareaGlow(GLOW_AMBER)
 }
 
@@ -723,9 +696,7 @@ function showVoiceLiveness(status, liveLabel) {
   const nextLabel = status === 'dead' ? 'connection lost' : 'no mic input'
   if (_voiceHealthLabel === nextLabel) return
   _voiceHealthLabel = nextLabel
-  const dot = ensureHealthDot()
-  dot.style.opacity = '1'
-  if (_micLevelFill) _micLevelFill.style.backgroundColor = DOT_AMBER
+  paintMicLevel()
   setTextareaGlow(GLOW_AMBER)
   showRecordingHud()
 }
@@ -804,7 +775,7 @@ function hideHealthDot() {
   hideDontSpeak()
   _voiceHealthLabel = ''
   setTextareaGlow(null)
-  if (_healthDot) {
+  if (_hud) {
     setMicInputLevel(0)
   }
 }
@@ -925,9 +896,8 @@ function showHud(text, stateColor) {
   const hud = ensureHud()
   positionHud(hud)
   clearTimeout(_fadeTimer)
-  // Build HUD content with health dot + text. Radio subtitle, when active, is
+  // Build HUD content with text. Radio subtitle, when active, is
   // a second line in the same quiet plaque rather than a separate chat panel.
-  const dot = ensureHealthDot()
   hud.textContent = ''
   hud.style.display = 'flex'
   hud.style.alignItems = _radioExpanded && _radioSubtitle ? 'stretch' : 'center'
@@ -948,7 +918,6 @@ function showHud(text, stateColor) {
   })
   statusRow.dataset.voiceState = voiceIndicatorState(_recording, _voiceHealthLabel)
   statusRow.setAttribute('aria-label', `Voice ${statusRow.dataset.voiceState}`)
-  statusRow.appendChild(dot)
   const span = document.createElement('span')
   span.textContent = text
   Object.assign(span.style, {
@@ -1012,6 +981,7 @@ function showHud(text, stateColor) {
   if (phone) hud.prepend(statusRow)
   else hud.appendChild(statusRow)
   hud.style.color = activeAgentColor() || stateColor || 'rgba(255,255,255,0.7)'
+  paintMicLevel()
   requestAnimationFrame(() => { hud.style.opacity = '1' })
 }
 
@@ -3441,6 +3411,7 @@ export async function initVoice() {
   // before we know what the user actually selected. Cap at 2s.
   await Promise.race([whenPrefsLoaded(), new Promise(r => setTimeout(r, 2000))])
   let prefBackend = getPref('voice-backend')   // 'deepgram-sdk' | 'whisper' | 'chrome' | '' (off)
+  let prefMeter = getPref('voice-hud-meter')
 
   if (prefBackend === 'chrome') {
     _backend = 'chrome'
@@ -3495,9 +3466,15 @@ export async function initVoice() {
   // initialized voice shell alive and apply the saved backend when prefs arrive.
   subscribePref(() => {
     const nextPrefBackend = getPref('voice-backend')
-    if (nextPrefBackend === prefBackend) return
-    prefBackend = nextPrefBackend
-    setBackend(nextPrefBackend)
+    if (nextPrefBackend !== prefBackend) {
+      prefBackend = nextPrefBackend
+      setBackend(nextPrefBackend)
+    }
+    const nextPrefMeter = getPref('voice-hud-meter')
+    if (nextPrefMeter !== prefMeter) {
+      prefMeter = nextPrefMeter
+      paintMicLevel()
+    }
   })
 
   // Right Shift: tap counting within 300ms windows.
