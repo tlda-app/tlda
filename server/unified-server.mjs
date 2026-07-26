@@ -1314,7 +1314,13 @@ function sendDaemonDurable(machineId, operation, params = {}, rpcOptions = {}) {
 // Mirror-back is event-based and idempotent (same hash → same ref): use the
 // resilient sender so a daemon WS reconnect flap retries instead of throwing a
 // 10s timeout that masquerades as a failure. (Skip 7/22)
-setShadowMirrorHandler(createShadowMirrorRpcHandler({ readProject, sendDaemonEphemeral: sendDaemonDurable }))
+setShadowMirrorHandler(createShadowMirrorRpcHandler({
+  readProject,
+  sendDaemonEphemeral: sendDaemonDurable,
+  // Every connected daemon, not just the one that pushed last — a machine that
+  // does not hold the project declines for itself.
+  listDaemonKeys: () => [...daemonConnections.keys()],
+}))
 
 // No server-side echo suppression. Dedup is client-side: the WS reply
 // includes the event ID, which the client maps to its optimistic event
