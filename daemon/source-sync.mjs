@@ -47,6 +47,17 @@ export function createSourceChangeCorrelation({ makeId = randomUUID, log = conso
       return true
     },
     takeRetry() { return retries.shift() ?? null },
+    // The person now has conflict markers in their own copy, so the machine
+    // stops deciding: drop the automatic retry (it would re-send the pre-merge
+    // text and silently clobber the other peer) and do not block either, so the
+    // save that resolves the markers pushes normally against the revision we
+    // just learned.
+    holdForHuman(project) {
+      blocked.delete(project)
+      for (let i = retries.length - 1; i >= 0; i--) {
+        if (retries[i].payload?.project === project) retries.splice(i, 1)
+      }
+    },
     state(project) { return { revision: revisions.get(project) ?? null, blocked: blocked.has(project) } },
   }
 }
@@ -61,9 +72,41 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
     return sendMsg(message)
   }
 
+  // A rejected push already carries the server's three-way merge for every file
+  // it could compute one for. Write the conflicted text to this machine's own
+  // copy so it becomes an ordinary git conflict the person resolves with their
+  // own tools — the alternative is what happened before: the daemon goes quiet
+  // and the only trace is a line in this log.
+  function writeConflictsToWorkingCopy(message) {
+    const classifications = message?.evidence?.classifications
+    if (!Array.isArray(classifications)) return []
+    const state = sourceWatchers.get(message.project)
+    if (!state?.sourceDir) return []
+    const written = []
+    for (const entry of classifications) {
+      if (entry?.status !== 'conflict' || !entry.merged || !entry.path) continue
+      const full = path.join(state.sourceDir, entry.path)
+      if (!fs.existsSync(full)) continue
+      try {
+        const merged = Buffer.from(entry.merged, 'base64')
+        if (merged.equals(fs.readFileSync(full))) continue
+        fs.writeFileSync(full, merged)
+        written.push(entry.path)
+      } catch (e) {
+        log.warn(`could not write conflict into ${message.project}/${entry.path}: ${e.message}`)
+      }
+    }
+    if (written.length > 0) {
+      log.warn(`${message.project}: conflict written to ${written.join(', ')} — resolve the markers; the next save syncs`)
+    }
+    return written
+  }
+
   function handleSourceChangeResult(message) {
+    const conflicted = message?.status === 'stale-base' ? writeConflictsToWorkingCopy(message) : []
     const handled = sourceCorrelation.handle(message)
     if (!handled) return false
+    if (conflicted.length > 0) sourceCorrelation.holdForHuman(message.project)
     let retry
     while ((retry = sourceCorrelation.takeRetry())) sendSourceChange(retry.payload, retry.retried)
     return true
