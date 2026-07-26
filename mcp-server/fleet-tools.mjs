@@ -3689,21 +3689,13 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       return { content: [{ type: 'text', text: `No results for "${rawQuery}".` }] };
     }
 
-    // Format results — full roster (incl. dead) so dead agents' names render.
-    // Project-agent results already arrive with display names stamped by the
-    // server, and loading every historical agent is the slow path this search
-    // exists to avoid.
-    const needsFullRoster = results.some(r => r.type !== 'project_agent');
-    const state = needsFullRoster ? await loadStateAll() : { agents: [], tasks: [], messages: [] };
-    const resolveName = (id) => id ? (getAgent(state, id)?.friendly_name || id) : '';
-
     // Name-provenance tag: the name the agent held AT the event's time (period
     // name, server-resolved as `*Name`) paired with the durable fleet id, plus
-    // `→now:X` when it has since rotated. periodName === undefined means the row
-    // wasn't stamped (fall back to current name); null means nameless then.
+    // `→now:X` when it has since rotated. The server owns name stamping; this
+    // formatter must not load the full historical roster on every search.
     const tag = (id, periodName, nowName) => {
       if (!id) return '';
-      const nm = periodName === undefined ? (getAgent(state, id)?.friendly_name || null) : periodName;
+      const nm = periodName === undefined ? null : periodName;
       let s = `${nm || '(nameless)'} ${id}`;
       if (nowName != null && nowName !== nm) s += ` →now:${nowName}`;
       return s;

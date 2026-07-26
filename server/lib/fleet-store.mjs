@@ -4481,10 +4481,11 @@ export class FleetStore {
     };
   }
 
-  searchProjectAgents(projectOrCwd, { limit = 50, since = null, before = null } = {}) {
+  searchProjectAgents(projectOrCwd, { limit = 50, since = null, before = null, agentIds = null } = {}) {
     const raw = String(projectOrCwd || '').trim();
     if (!raw) return [];
     const cap = Math.min(Math.max(parseInt(limit) || 50, 1), 100);
+    const explicitAgentIds = Array.isArray(agentIds) ? agentIds.filter(Boolean) : [];
     const isPath = raw.includes('/') || raw.startsWith('~');
     const normalized = raw.replace(/\/+$/, '');
     const params = [];
@@ -4512,11 +4513,12 @@ export class FleetStore {
              a.friendly_name, a.pretty_name, a.dead, a.last_seen, a.last_active, a.registered_at
       FROM candidate c
       LEFT JOIN agents a ON a.id = c.agent_id
+      ${explicitAgentIds.length ? `WHERE c.agent_id IN (${explicitAgentIds.map(() => '?').join(',')})` : ''}
       ORDER BY coalesce(a.last_active, a.last_seen, c.seat_created_at, a.registered_at, '') DESC
       LIMIT ?
     `;
     const candidateCap = Math.min(Math.max(cap * 5, 50), 500);
-    const rows = this.db.prepare(sql).all(...params, ...params, candidateCap);
+    const rows = this.db.prepare(sql).all(...params, ...params, ...explicitAgentIds, candidateCap);
 
     const eventTimeClauses = [];
     const eventTimeParams = [];
@@ -4606,6 +4608,17 @@ export class FleetStore {
         },
       }
     }).sort((a, b) => (b.latest_relevant_at || '').localeCompare(a.latest_relevant_at || '')).slice(0, cap);
+  }
+
+  projectAgentRows(projectOrCwd, agentIds, { limit = 50, since = null, before = null } = {}) {
+    const wanted = new Set(Array.isArray(agentIds) ? agentIds.filter(Boolean) : []);
+    if (!wanted.size) return [];
+    return this.searchProjectAgents(projectOrCwd, {
+      limit,
+      since,
+      before,
+      agentIds: [...wanted],
+    }).filter(row => wanted.has(row.agentId)).slice(0, limit);
   }
 
   projectAgentIds(projectOrCwd) {

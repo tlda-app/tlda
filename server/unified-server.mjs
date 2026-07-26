@@ -5778,6 +5778,24 @@ async function handleFleetWsMessage(ws, msg) {
         eventOnly: msg.eventOnly,
         fromOnly: msg.fromOnly,
       })
+      if (projectAgentQuery && hasText) {
+        const projectIds = new Set(searchAgent)
+        const nameIds = fleetStore.resolveAgentQuery(msg.query || '').filter(id => projectIds.has(id))
+        const agentRows = fleetStore.projectAgentRows(projectAgentQuery, nameIds, {
+          limit: msg.limit || 50,
+          since: msg.since,
+          before: msg.before,
+        })
+        const seen = new Set(results.map(r => `${r.source}:${r.id}`))
+        for (const row of agentRows) {
+          const key = `${row.source}:${row.id}`
+          if (!seen.has(key)) {
+            seen.add(key)
+            results.push(row)
+          }
+        }
+        results = results.sort((a, b) => (b.timestamp ?? '').localeCompare(a.timestamp ?? '')).slice(0, msg.limit || 50)
+      }
       if (hasText && (msg.naturalAgentQuery || msg.naturalAgentQueries?.length) && !searchAgent && !msg.filterExpression) {
         const naturalQueries = msg.naturalAgentQueries?.length ? msg.naturalAgentQueries : [msg.naturalAgentQuery]
         const ids = [...new Set(naturalQueries.flatMap(query => (
