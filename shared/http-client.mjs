@@ -20,6 +20,7 @@ const DEFAULT_TIMEOUT_MS = 10_000
  * @param {object} [options.headers]      — merged with auth + content-type
  * @param {number} [options.timeoutMs=10000]
  * @param {string} [options.server]       — override server URL
+ * @param {string} [options.environmentName] — selected tlda environment name for errors
  * @param {string} [options.token]        — override auth token
  * @param {boolean} [options.raw=false]   — return Response instead of parsed JSON
  * @returns {Promise<any>}  parsed JSON response (or raw Response if options.raw)
@@ -32,6 +33,7 @@ export async function tldaFetch(path, options = {}) {
     headers: extraHeaders = {},
     timeoutMs = DEFAULT_TIMEOUT_MS,
     server = getServerUrl(),
+    environmentName = null,
     token = getRwToken(),
     raw = false,
   } = options
@@ -48,8 +50,9 @@ export async function tldaFetch(path, options = {}) {
   try {
     res = await fetch(url, fetchOpts)
   } catch (e) {
-    if (e.name === 'TimeoutError') throw new Error(`Request timed out: ${method} ${path}`)
-    throw new Error(`Server not reachable at ${server} (${e.cause?.code || e.message})`)
+    const env = environmentName ? ` for environment "${environmentName}"` : ''
+    if (e.name === 'TimeoutError') throw new Error(`Request timed out${env} at ${server}: ${method} ${path}`)
+    throw new Error(`Server not reachable${env} at ${server} (${e.cause?.code || e.message})`)
   }
 
   if (raw) return res

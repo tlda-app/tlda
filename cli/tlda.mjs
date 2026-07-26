@@ -306,6 +306,7 @@ async function api(method, path, body = null, { timeoutMs = 30000, token = getTo
   return tldaFetch(path, {
     method, body, timeoutMs,
     server: getServer(),
+    environmentName: getActiveEnvName(),
     token,
   })
 }
@@ -3964,7 +3965,6 @@ async function hibernateLocalAgent(name, { allowMissing = false } = {}) {
 }
 
 export async function dismissAgent(name, {
-  ensureServerImpl = ensureServer,
   apiImpl = api,
   log = console,
   exitImpl = code => process.exit(code),
@@ -3974,7 +3974,6 @@ export async function dismissAgent(name, {
     exitImpl(1)
     return { ok: false, error: 'missing-name' }
   }
-  await ensureServerImpl()
   const state = await apiImpl('GET', '/api/state')
   const agents = Array.isArray(state?.agents) ? state.agents : []
   const agent = resolveAgentQuery(agents, name)
@@ -4159,7 +4158,6 @@ async function cmdAgentCheckReady() {
     process.exit(1)
   }
   const { spawnSync } = await import('child_process')
-  await ensureServer()
   const timeoutSec = Math.max(0, Number(getFlag('timeout', '0') || 0))
   const deadline = Date.now() + timeoutSec * 1000
   let final = null
@@ -4573,7 +4571,6 @@ async function cmdAgentSetSpawnMachine() {
     process.exit(1)
   }
   await assertNotAgentContext()
-  await ensureServer()
   const userId = await resolveFleetPrefUserId(userQuery)
   if (hasFlag('dry-run')) {
     console.log(`[dry-run] would set ${SPAWN_MACHINE_PREF_KEY} for ${userId} to ${machineId}`)
@@ -4602,8 +4599,6 @@ async function cmdAgentMove() {
     process.exit(1)
   }
   await assertNotAgentContext()
-  // No ensureServer(): move is daemon-mediated and must work while the source
-  // environment is down. That is the whole reason the command exists.
   await moveAgentToEnvironment({ agentQuery, rawTarget, allowAlready: false })
 }
 
@@ -4627,7 +4622,6 @@ async function cmdAgentPermissions() {
   }
 
   if (!profileArg) {
-    await ensureServer()
     const agent = await findSingleAgent(agentQuery)
     const meta = normalizeAgentMetadata(agent.metadata)
     const stored = meta.permissionGrant || null
@@ -4661,7 +4655,6 @@ async function cmdAgentPermissions() {
     return
   }
 
-  await ensureServer()
   const agent = await findAgentForPermission(agentQuery)
   const spawnName = spawnNameForAgent(agent, agentQuery)
   await api('POST', '/api/set-metadata', {
@@ -5644,40 +5637,6 @@ export function formatServerStatus(status) {
   return red(`Server not running at ${status.serverUrl}.`)
 }
 
-async function serverHealthOk(serverUrl, { timeoutMs = 3000 } = {}) {
-  for (const path of ['/health', '/api/health']) {
-    try {
-      const res = await fetch(`${serverUrl}${path}`, { signal: AbortSignal.timeout(timeoutMs) })
-      if (res.ok) return true
-    } catch {
-      // Expected probe miss: try the alternate health endpoint.
-    }
-  }
-  return false
-}
-
-async function ensureServer() {
-  const server = getServer()
-  if (!isLocalServerUrl(server)) return
-  if (await serverHealthOk(server)) return
-
-  // Check if something is on the port (could be busy with a build)
-  const port = getPort()
-  try {
-    const { execSync } = await import('child_process')
-    const pids = execSync(`lsof -ti:${port}`, { stdio: 'pipe' }).toString().trim()
-    if (pids) {
-      // Process exists on port but health check failed — probably busy building
-      console.log('Server busy (likely building), proceeding...')
-      return
-    }
-  } catch {}
-
-  // Nothing on the port — auto-start
-  console.log('Server not running, starting...')
-  await cmdServer('start')
-}
-
 // --- Fleet dev setup ---
 
 async function cmdFleetDev() {
@@ -5770,22 +5729,22 @@ async function main() {
     switch (command) {
       case 'server': await cmdServer(); break
       case 'system': await cmdSystem(); break
-      case 'scratch': await ensureServer(); await cmdScratch(); break
-      case 'book':   await ensureServer(); await cmdBook(); break
-      case 'push':   await ensureServer(); await cmdPush(); break
-      case 'link':   await ensureServer(); await cmdLink(); break
+      case 'scratch': await cmdScratch(); break
+      case 'book':   await cmdBook(); break
+      case 'push':   await cmdPush(); break
+      case 'link':   await cmdLink(); break
       case 'init':   await cmdInit(); break
       case 'daemon': await cmdWatch(); break
       case 'bot': await cmdBot(); break
-      case 'open':   await ensureServer(); await cmdOpen(); break
+      case 'open':   await cmdOpen(); break
       case 'share':  await cmdShare(); break
-      case 'list':   await ensureServer(); await cmdList(); break
-      case 'ls':     await ensureServer(); await cmdList(); break
-      case 'status': await ensureServer(); await cmdStatus(); break
-      case 'errors': await ensureServer(); await cmdErrors(); break
-      case 'delete':  await ensureServer(); await cmdDelete(); break
-      case 'rm':      await ensureServer(); await cmdDelete(); break
-      case 'move':    await ensureServer(); await cmdMoveProject(); break
+      case 'list':   await cmdList(); break
+      case 'ls':     await cmdList(); break
+      case 'status': await cmdStatus(); break
+      case 'errors': await cmdErrors(); break
+      case 'delete':  await cmdDelete(); break
+      case 'rm':      await cmdDelete(); break
+      case 'move':    await cmdMoveProject(); break
       case 'logs':    await cmdLogs(args.slice(1)); break
       case 'log':     await cmdLogs(args.slice(1)); break
       case 'auth': await cmdAuth(); break
