@@ -609,10 +609,10 @@ function ensureHealthDot() {
   Object.assign(_healthDot.style, {
     display: 'inline-block',
     position: 'relative',
-    width: '34px',
-    height: '8px',
-    borderRadius: '2px',
-    marginRight: '7px',
+    width: '54px',
+    height: '9px',
+    borderRadius: '3px',
+    marginRight: '8px',
     flexShrink: '0',
     overflow: 'hidden',
     background: 'rgba(255,255,255,0.12)',
@@ -624,7 +624,16 @@ function ensureHealthDot() {
     background: DOT_GREEN,
     transition: 'transform 60ms linear, background-color 0.2s',
   })
+  const micLevelGrid = document.createElement('span')
+  Object.assign(micLevelGrid.style, {
+    position: 'absolute',
+    inset: '0',
+    pointerEvents: 'none',
+    backgroundImage: 'repeating-linear-gradient(90deg, transparent 0 4px, rgba(0,0,0,0.3) 4px 5px, transparent 5px 6px)',
+    opacity: '0.65',
+  })
   _healthDot.appendChild(_micLevelFill)
+  _healthDot.appendChild(micLevelGrid)
   return _healthDot
 }
 
@@ -636,7 +645,8 @@ function setMicInputLevel(level) {
     _micLevel = Math.max(_micLevelPending, _micLevel * 0.72)
     const meter = ensureHealthDot()
     meter.style.opacity = _recording ? '1' : '0.35'
-    if (_micLevelFill) _micLevelFill.style.transform = `scaleX(${_recording ? Math.max(0.025, _micLevel) : 0})`
+    const displayedLevel = Math.min(1, Math.max(0, _micLevel))
+    if (_micLevelFill) _micLevelFill.style.transform = `scaleX(${_recording ? Math.max(0.025, displayedLevel) : 0})`
     const audible = _recording && (_micAudible ? _micLevel >= 0.02 : _micLevel >= 0.035)
     if (audible !== _micAudible) {
       _micAudible = audible
