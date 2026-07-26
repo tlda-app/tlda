@@ -14,11 +14,6 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import { appendToken } from '../authToken'
 import { htmlPageUrlMatchesTargetFile } from '../html-page-navigation-helpers'
 import { htmlIframeElements } from '../htmlIframeRegistry'
-import {
-  installHtmlNavigationHistory,
-  recordHtmlNavigationEnd,
-  recordHtmlNavigationStart,
-} from '../html-page-navigation-history'
 import { useIsInViewport } from './useIsInViewport'
 import { PDF_HEIGHT } from '../layoutConstants'
 import { clearHtmlTextSelection, recordHtmlTextSelection } from '../htmlSelection'
@@ -318,8 +313,6 @@ function HtmlPageComponent({ shape }: { shape: any }) {
     return () => { htmlIframeElements.delete(shape.id) }
   }, [shape.id])
 
-  useEffect(() => installHtmlNavigationHistory(editor), [editor])
-
   // Iframes are pointer-events:none by default so TLDraw tools work normally.
   // Browse/text-select modes keep HTML clicks and text selection active; the
   // injected bridge reroutes canvas-navigation gestures by event type.
@@ -567,7 +560,6 @@ function HtmlPageComponent({ shape }: { shape: any }) {
           }
         }
         if (!targetShape) return
-        recordHtmlNavigationStart(editor)
         const sourceLeftScreen = isTemporaryMarkdownNavigation
           ? editor.pageToScreen({ x: sourceShape.x, y: sourceShape.y }).x
           : null
@@ -594,7 +586,6 @@ function HtmlPageComponent({ shape }: { shape: any }) {
             } else {
               editor.centerOnPoint({ x: cx, y: targetShape.y + yOff + vpHeight * 0.35 }, { animation: { duration: 300 } })
             }
-            recordHtmlNavigationEnd(editor)
           } else {
             // Anchor not resolved yet — center on page top, poll for anchor
             if (isTemporaryMarkdownNavigation) {
@@ -602,7 +593,6 @@ function HtmlPageComponent({ shape }: { shape: any }) {
             } else {
               editor.centerOnPoint({ x: cx, y: targetShape.y + vpHeight * 0.3 }, { animation: { duration: 300 } })
             }
-            recordHtmlNavigationEnd(editor)
             const poll = setInterval(() => {
               const yOff2 = htmlHeadingPositions.get(targetShape.id)?.[anchor!]
               if (yOff2 != null) {
@@ -626,7 +616,6 @@ function HtmlPageComponent({ shape }: { shape: any }) {
           } else {
             editor.centerOnPoint({ x: cx, y: targetShape.y + vpHeight * 0.3 }, { animation: { duration: 300 } })
           }
-          recordHtmlNavigationEnd(editor)
         }
         return
       }
@@ -644,7 +633,6 @@ function HtmlPageComponent({ shape }: { shape: any }) {
           const targetIdx = e.data.direction === 'next' ? currentIdx + 1 : currentIdx - 1
           const targetShape = samePageHtmlShapes[targetIdx]
           if (!targetShape) return
-          recordHtmlNavigationStart(editor)
           const sourceLeftScreen = isTemporaryMarkdownNavigation
             ? editor.pageToScreen({ x: sourceShape.x, y: sourceShape.y }).x
             : null
@@ -652,7 +640,6 @@ function HtmlPageComponent({ shape }: { shape: any }) {
             detail: { shapeId: shape.id },
           }))
           setCameraKeepingDocumentMargin(editor, targetShape, targetShape.y, 0.2, sourceLeftScreen)
-          recordHtmlNavigationEnd(editor)
           return
         }
 
@@ -661,7 +648,6 @@ function HtmlPageComponent({ shape }: { shape: any }) {
         const currentIdx = pages.findIndex(p => p.id === currentPageId)
         const targetIdx = e.data.direction === 'next' ? currentIdx + 1 : currentIdx - 1
         if (targetIdx >= 0 && targetIdx < pages.length) {
-          recordHtmlNavigationStart(editor)
           editor.setCurrentPage(pages[targetIdx].id)
           // Center on top of the new page's html-page shape
           setTimeout(() => {
@@ -673,7 +659,6 @@ function HtmlPageComponent({ shape }: { shape: any }) {
                 { x: htmlShape.x + htmlShape.props.w / 2, y: htmlShape.y + vpHeight * 0.3 },
                 { animation: { duration: 300 } }
               )
-              recordHtmlNavigationEnd(editor)
             }
           }, 100)
         }

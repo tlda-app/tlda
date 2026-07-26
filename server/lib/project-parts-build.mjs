@@ -8,7 +8,7 @@ import { getBuildReporter } from './build-runner.mjs'
 
 export function buildProjectPartsView(name) {
   const columns = listProjectPartColumns(name)
-  const pageInfo = pageInfoFromDocumentColumns(name, columns, { forceGroup: true })
+  const pageInfo = pageInfoFromDocumentColumns(name, columns)
   const outDir = getOutputDir(name)
   mkdirSync(outDir, { recursive: true })
   writeFileSync(join(outDir, 'page-info.json'), JSON.stringify(pageInfo, null, 2))

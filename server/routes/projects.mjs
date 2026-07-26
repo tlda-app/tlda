@@ -256,7 +256,7 @@ router.get('/:name/parts', requireRead, (req, res) => {
   const project = readProject(req.params.name)
   if (!project) return res.status(404).json({ error: 'Project not found' })
   const columns = listProjectPartColumns(req.params.name)
-  res.json(pageInfoFromDocumentColumns(req.params.name, columns, { forceGroup: true }))
+  res.json(pageInfoFromDocumentColumns(req.params.name, columns))
 })
 
 // Refresh the managed task document as a first-class project part. Unlike the
