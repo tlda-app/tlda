@@ -16,11 +16,13 @@ class FakeWebSocket extends EventEmitter {
   }
   send() {}
   close() { this.readyState = 3 } // CLOSED
+  terminate() { this.readyState = 3 } // CLOSED, without waiting for a handshake
   fakeOpen() { this.readyState = 1; this.emit('open') } // OPEN
   fakeClose(code = 1000, reason = '') { this.readyState = 3; this.emit('close', code, reason) }
   fakeError(err) { this.emit('error', err) }
 }
 FakeWebSocket.OPEN = 1
+FakeWebSocket.CONNECTING = 0
 
 function makeHarness(overrides = {}) {
   const created = []
@@ -126,6 +128,33 @@ test('manual reconnect() reports reason manual-reconnect', () => {
   } finally {
     rws.close()
   }
+})
+
+test('a socket stuck CONNECTING times out and retries as a failed attempt', () => {
+  const { rws, created, events } = makeHarness({
+    connectAttemptTimeoutMs: 10,
+  })
+  rws.connect()
+  assert.equal(created.length, 1)
+  assert.equal(rws.attemptId, '1')
+
+  return new Promise((resolve, reject) => {
+    setTimeout(() => {
+      try {
+        assert.equal(created.length, 2, 'connect-timeout should schedule a replacement socket')
+        assert.equal(rws.attemptId, '2')
+        const closeEvents = events.filter(e => e[0] === 'onClose')
+        assert.ok(closeEvents.some(e => e[1] === 'connect-timeout' && e[2] === '1'))
+        const retryEvents = events.filter(e => e[0] === 'retryScheduled')
+        assert.ok(retryEvents.some(e => e[1] === '1'), 'retry is attributed to the timed-out attempt')
+        rws.close()
+        resolve()
+      } catch (e) {
+        rws.close()
+        reject(e)
+      }
+    }, 30)
+  })
 })
 
 test('retry-scheduled carries the just-ended attempt id and a delay; next opened attempt is the following id', () => {
