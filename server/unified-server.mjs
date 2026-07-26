@@ -6719,8 +6719,18 @@ async function handleFleetWsMessage(ws, msg) {
     const tasks = fleetStore.getActiveTasksByAgentLimited?.(agentId, MY_TASK_TASK_LIMIT) || []
     const taskCount = fleetStore.getActiveTaskCountByAgent?.(agentId) ?? tasks.length
     const task = tasks[0] || fleetStore.getTaskByAgent?.(agentId) || null
-    const unread = fleetStore.getUnreadLimited?.(agentId, MY_TASK_UNREAD_LIMIT) || []
-    const unreadCount = fleetStore.getUnreadCount?.(agentId) ?? unread.length
+    const allUnread = fleetStore.getUnreadLimited?.(agentId, MY_TASK_UNREAD_LIMIT) || []
+    // A shared file has to be on this machine before its message is in this
+    // inbox — "by the time they see them in their inbox, they're on their file
+    // system". Materialization is queued after the event is inserted, so a
+    // message can arrive seconds before its bytes; hold it back until every
+    // reference is terminal. The row stays unread, so nothing is lost and it
+    // appears by itself the moment the file lands.
+    const unread = allUnread.filter(message => !hasUnsettledRefs(message, agentId))
+    // The store's own total, so `messages_truncated` stays honest — it is now
+    // true both when the limit clipped the list and when a message is being
+    // held for its bytes.
+    const unreadCount = fleetStore.getUnreadCount?.(agentId) ?? allUnread.length
     // peek=true: caller just wants to see unread (e.g., the channel-WS
     // flush-on-reconnect path that displays a count). Don't mark read in
     // that case — the actual inbox() call from the agent will do the
@@ -8109,6 +8119,25 @@ function recordSourceDivergence(projectName, machineId, envName, result) {
     delete next[key]
   }
   updateProject(projectName, { divergedMachines: next })
+}
+
+// True while a message is still waiting for its own attachments to land on this
+// recipient's machine. Only `pending` holds — `failed` and `skipped` are
+// terminal and must be seen, rendered as visibly unavailable.
+//
+// Bounded on purpose: if materialization never reports back (the server died
+// mid-flight, a daemon went away), the message must still surface rather than
+// disappear. After MATERIALIZATION_HOLD_MS it is delivered with its refs shown
+// as unresolved, which is honest. Silence is the one outcome not allowed.
+const MATERIALIZATION_HOLD_MS = 60_000
+function hasUnsettledRefs(message, recipientId) {
+  const refs = message?.metadata?.recipient_refs?.[recipientId]?.attachments
+  if (!refs || typeof refs !== 'object') return false
+  const pending = Object.values(refs).some(ref => ref?.state === 'pending')
+  if (!pending) return false
+  const sentAt = Date.parse(message.timestamp)
+  if (!Number.isFinite(sentAt)) return false
+  return Date.now() - sentAt < MATERIALIZATION_HOLD_MS
 }
 
 async function handleDaemonWsMessage(ws, msg) {
