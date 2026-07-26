@@ -12,6 +12,7 @@ export type AvailableSpawnModels = {
   aliases: string[]
   models: Array<{
     alias: string
+    id?: string
     kind: string | null
     group?: string | null
     level?: number | null

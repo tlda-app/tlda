@@ -11,6 +11,7 @@ export {
   formatFleetAgentActivityHealth,
   formatFleetAgentEffort,
   formatFleetAgentModel,
+  formatFleetAgentSpawnOptions,
   formatFleetAgentPermission,
   formatFleetAgentRelativeTime,
   getFleetAgentDirectoryRows,
@@ -123,7 +124,9 @@ export function FleetAgentDirectoryRow({
           <div className="fleet-agents-detail-meta">
             {row.machine && <span className="fleet-agents-detail-machine" title="machine">{row.machine}</span>}
             {row.model && <span className="fleet-agents-detail-model">{row.model}</span>}
-            {row.effort && <span className="fleet-agents-detail-effort">{row.effort}</span>}
+            {row.spawnOptions.map((option) => (
+              <span key={option} className="fleet-agents-detail-effort">{option}</span>
+            ))}
             {row.permission && <span className="fleet-agents-detail-cap" title="permission / fence">{row.permission}</span>}
             {row.notResumable && <span className="fleet-agents-detail-not-resumable" title="durable resume handle not written yet">{row.resumableStatus}</span>}
             {row.activityHealth && <span className="fleet-agents-detail-health" title="activity health">{row.activityHealth}</span>}

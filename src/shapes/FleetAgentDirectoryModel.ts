@@ -37,8 +37,25 @@ export function fleetAgentCategory(agent: any): 'awake' | 'hibernating' {
   return category === 'awake' ? 'awake' : 'hibernating'
 }
 
-export function formatFleetAgentModel(model: string | null | undefined): string {
+type SpawnModelCatalogEntry = {
+  alias?: string
+  id?: string
+  description?: string
+}
+
+type FleetAgentDirectoryFormatOptions = {
+  spawnModels?: SpawnModelCatalogEntry[]
+}
+
+function readableToken(value: string): string {
+  return value.replace(/[_-]+/g, ' ').trim()
+}
+
+export function formatFleetAgentModel(model: string | null | undefined, options: FleetAgentDirectoryFormatOptions = {}): string {
   if (!model) return ''
+  const catalog = options.spawnModels || []
+  const match = catalog.find((entry) => entry.alias === model || entry.id === model)
+  if (match) return match.description || match.alias || model
   let s = model.includes('/') ? model.split('/').pop()! : model
   s = s.replace(/^claude-/, '')
   return s.replace(/[.\-]/g, '')
@@ -53,9 +70,29 @@ export function formatFleetAgentPermission(meta: any): string {
   return ''
 }
 
-export function formatFleetAgentEffort(effort: string | null | undefined, kind: string | null | undefined): string {
-  if (!effort || kind !== 'claude') return ''
+export function formatFleetAgentEffort(effort: string | null | undefined, _kind?: string | null): string {
+  if (!effort) return ''
   return `${effort} effort`
+}
+
+function modelOptionsOf(meta: any): Record<string, string> {
+  const source = meta?.modelOptions && typeof meta.modelOptions === 'object' && !Array.isArray(meta.modelOptions)
+    ? meta.modelOptions
+    : {}
+  const out: Record<string, string> = {}
+  for (const [key, value] of Object.entries(source)) {
+    if (value != null && value !== '') out[key] = String(value)
+  }
+  if (meta?.effort && !out.effort) out.effort = String(meta.effort)
+  return out
+}
+
+export function formatFleetAgentSpawnOptions(meta: any): string[] {
+  return Object.entries(modelOptionsOf(meta))
+    .sort(([a], [b]) => (a === 'effort' ? -1 : b === 'effort' ? 1 : a.localeCompare(b)))
+    .map(([key, value]) => key === 'effort'
+      ? `${readableToken(value)} effort`
+      : `${readableToken(key)}: ${readableToken(value)}`)
 }
 
 export function formatFleetAgentRelativeTime(ts: number | undefined): string {
@@ -116,7 +153,7 @@ export type FleetAgentDirectoryRowModel = {
   nameOpacity: number
   machine: string
   model: string
-  effort: string
+  spawnOptions: string[]
   permission: string
   activityHealth: string
   notResumable: boolean
@@ -124,7 +161,7 @@ export type FleetAgentDirectoryRowModel = {
   hoverTitle: string
 }
 
-export function toFleetAgentDirectoryRow(agent: any): FleetAgentDirectoryRowModel {
+export function toFleetAgentDirectoryRow(agent: any, options: FleetAgentDirectoryFormatOptions = {}): FleetAgentDirectoryRowModel {
   const id = agent?.id || ''
   const exactName = fleetAgentExactName(agent)
   const bindingPending = !agent?.human && !agent?.dead && !agent?.session_id
@@ -133,15 +170,15 @@ export function toFleetAgentDirectoryRow(agent: any): FleetAgentDirectoryRowMode
   const meta = agent?.metadata || {}
   const ago = formatFleetAgentRelativeTime(ts)
   const machine = agent?.machine_id || ''
-  const model = formatFleetAgentModel(meta.model)
-  const effort = formatFleetAgentEffort(meta.effort, meta.kind)
+  const model = formatFleetAgentModel(meta.model, options)
+  const spawnOptions = formatFleetAgentSpawnOptions(meta)
   const permission = formatFleetAgentPermission(meta)
   const activityHealth = formatFleetAgentActivityHealthForAgent(agent)
   const notResumable = !agent?.human && !agent?.dead && (!agent?.session_id || !agent?.resume_id)
   const resumableStatus = notResumable ? 'starting · not resumable yet' : ''
   const secsAgo = ts ? (Date.now() - ts) / 1000 : Infinity
   const nameOpacity = secsAgo < 120 ? 1.0 : secsAgo < 600 ? 0.85 : 0.65
-  const hoverTitle = [displayName, resumableStatus, machine && `machine: ${machine}`, model && `model: ${model}`, activityHealth && `activity ${activityHealth}`, ago && `seen ${ago}`]
+  const hoverTitle = [displayName, resumableStatus, machine && `machine: ${machine}`, model && `model: ${model}`, spawnOptions.length && spawnOptions.join(' · '), activityHealth && `activity ${activityHealth}`, ago && `seen ${ago}`]
     .filter(Boolean)
     .join('  ·  ')
   return {
@@ -158,7 +195,7 @@ export function toFleetAgentDirectoryRow(agent: any): FleetAgentDirectoryRowMode
     nameOpacity,
     machine,
     model,
-    effort,
+    spawnOptions,
     permission,
     activityHealth,
     notResumable,
@@ -167,10 +204,10 @@ export function toFleetAgentDirectoryRow(agent: any): FleetAgentDirectoryRowMode
   }
 }
 
-export function getFleetAgentDirectoryRows(agents: any[]): FleetAgentDirectoryRowModel[] {
+export function getFleetAgentDirectoryRows(agents: any[], options: FleetAgentDirectoryFormatOptions = {}): FleetAgentDirectoryRowModel[] {
   return agents
     .filter((agent) => !agent.dead)
-    .map((agent) => toFleetAgentDirectoryRow(agent))
+    .map((agent) => toFleetAgentDirectoryRow(agent, options))
     .filter((row) => !!row.exactName)
 }
 

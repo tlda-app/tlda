@@ -14,6 +14,7 @@ export function flattenAvailableSpawnModels(capabilities) {
       aliases.push(model.alias)
       models.push({
         alias: model.alias,
+        id: model.id || model.model || '',
         kind: harness.kind || null,
         group: model.group || harness.kind || null,
         level: typeof model.level === 'number' ? model.level : null,
