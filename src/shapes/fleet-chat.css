@@ -3341,6 +3341,13 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
 .fleet-chat-shape .fleet-terminal-icon:hover {
   opacity: 0.55;
 }
+.fleet-chat-shape .fleet-terminal-icon.unavailable {
+  cursor: help;
+  opacity: 0.08;
+}
+.fleet-chat-shape .fleet-terminal-icon.unavailable:hover {
+  opacity: 0.5;
+}
 
 /* Composer traffic toggle — text-only control, a flex item in the gutter.
    The box is the full row height (36px) and hugs the glyph with side padding
