@@ -3330,7 +3330,10 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   opacity: 0.55;
 }
 .fleet-chat-shape .fleet-terminal-icon.unavailable {
-  cursor: help;
+  /* No cursor change. Skip: "It gives me a fucking question mark. I don't want
+     the fucking pointer to change." A `help` cursor on a dimmed icon is a
+     developer affordance; it tells a reader nothing and changes the pointer
+     over a surface that is meant to be quiet. */
   opacity: 0.08;
 }
 .fleet-chat-shape .fleet-terminal-icon.unavailable:hover {
