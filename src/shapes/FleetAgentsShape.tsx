@@ -251,6 +251,7 @@ interface DragState {
   startX: number
   startY: number
   started: boolean
+  onTap?: (e: PointerEvent) => void
 }
 
 const DRAG_THRESHOLD = 5
@@ -280,12 +281,13 @@ export function usePillDrag() {
     value: string,
     displayName: string,
     color: string,
+    onTap?: (e: PointerEvent) => void,
   ) => {
     stopEventPropagation(e)
     e.preventDefault()
     dragRef.current = {
       pillId: null, pillType, value, displayName, color,
-      startX: e.clientX, startY: e.clientY, started: false,
+      startX: e.clientX, startY: e.clientY, started: false, onTap,
     }
 
     // Claim the shared drag coordinator — one global listener pair handles
@@ -346,7 +348,12 @@ export function usePillDrag() {
       (ev: PointerEvent) => {
         const drag = dragRef.current
         dragRef.current = null
-        if (!drag || !drag.started || !drag.pillId) return
+        releaseRef.current = null
+        if (!drag) return
+        if (!drag.started || !drag.pillId) {
+          drag.onTap?.(ev)
+          return
+        }
         markFleetPillInactive(String(drag.pillId))
 
         const pagePos = fleetPointerEventPagePoint(editor, frame, ev)
@@ -778,6 +785,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
                 (() => {
                   const agentTasks = getTasksForAgent(item.agent.id)
                   const taskText = agentTasks[0]?.title || agentTasks[0]?.description || ''
+                  const toggleAgent = () => setExpandedId(prev => prev === item.agent.id ? null : item.agent.id)
                   return (
                     <FleetAgentDirectoryRow
                       row={toFleetAgentDirectoryRow(item.agent, { spawnModels: spawnModelInfo.models })}
@@ -787,10 +795,10 @@ function FleetAgentsInner({ shape }: { shape: any }) {
                       contextPct={contextPercent.get(item.agent.id)}
                       expanded={expandedId === item.agent.id}
                       lastMessage={lastMessages[agentExactName(item.agent)] || ''}
-                      onToggleExpand={() => setExpandedId(expandedId === item.agent.id ? null : item.agent.id)}
+                      onToggleExpand={toggleAgent}
                       onHibernate={() => hibernateSession(item.agent.id)}
-                      onAgentPointerDown={(e, row) => { e.stopPropagation(); startDrag(e, 'agent', row.exactName, row.displayName, row.color) }}
-                      onLabelPointerDown={(e, label) => startDrag(e, 'label', label, label, fleetAgentLabelColor(label))}
+                      onAgentPointerDown={(e, row) => { e.stopPropagation(); startDrag(e, 'agent', row.exactName, row.displayName, row.color, toggleAgent) }}
+                      onLabelPointerDown={(e, label) => startDrag(e, 'label', label, label, fleetAgentLabelColor(label), toggleAgent)}
                     />
                   )
                 })()

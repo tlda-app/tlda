@@ -20,7 +20,7 @@ function serverBase(): string {
   return STORE_HTTP
 }
 import { openInEditor } from './texsync'
-import { dropPillOnTarget } from './shapes/FleetPillShape'
+import { chatInsertBus, chipContentStore, dropPillOnTarget } from './shapes/FleetPillShape'
 import { markFleetPillActive, markFleetPillInactive, transientFleetPillProps } from './shapes/fleet-pill-transient'
 import { dragCoordinator } from './shapes/dragCoordinator'
 import { FLEET_HUD_VIEWPORT_ID } from './wm/fleet-hud-layer'
@@ -1170,8 +1170,12 @@ function showSourceContextCard(
         },
         // onUp
         (ev: PointerEvent) => {
-          if (dragState?.pillId) {
-            const pillId = dragState.pillId as TLShapeId
+          const drag = dragState
+          if (!drag?.started || !drag.pillId) {
+            chipContentStore.set(token, token)
+            chatInsertBus.dispatchEvent(new CustomEvent('insert', { detail: { text: token } }))
+          } else {
+            const pillId = drag.pillId as TLShapeId
             markFleetPillInactive(String(pillId))
             const dropPoint = fleetPointerEventPagePoint(pillEditor, frame, ev)
             dropPillOnTarget(pillEditor, pillId, token, dropPoint, token)
