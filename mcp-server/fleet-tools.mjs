@@ -3673,6 +3673,19 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     }
 
     if (results.length === 0) {
+      const selector = args.agent || searchFilters.agent || searchFilters.agentResolve?.fragment || null;
+      if (selector) {
+        const state = await loadStateAll();
+        const agent = getAgent(state, selector);
+        if (agent) {
+          return {
+            content: [{
+              type: 'text',
+              text: `No results for "${rawQuery}". Selector "${selector}" resolves to ${agent.id}, but no indexed fleet messages/session entries matched on this MCP environment.`,
+            }],
+          };
+        }
+      }
       return { content: [{ type: 'text', text: `No results for "${rawQuery}".` }] };
     }
 
@@ -4058,6 +4071,9 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     }
 
     if (filtered.length === 0) {
+      if (args.agent && primaryId) {
+        return { content: [{ type: 'text', text: `No messages found for the given criteria. Selector "${args.agent}" resolves to ${primaryId}, but no indexed fleet messages were found on this MCP environment.` }] };
+      }
       return { content: [{ type: 'text', text: 'No messages found for the given criteria.' }] };
     }
 

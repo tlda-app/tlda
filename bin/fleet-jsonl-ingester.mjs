@@ -218,15 +218,44 @@ export function terminalChatFromRecord(parsed) {
 }
 
 export function searchEntriesFromRecord(agentId, sessionId, parsed) {
-  if (parsed.type !== 'user' && parsed.type !== 'assistant') return []
-  const ts = parsed.timestamp || parsed.message?.timestamp || parsed.snapshot?.timestamp || null
+  return searchEntriesFromEvent(agentId, sessionId, parsed)
+}
+
+function searchTextFromEvent(event) {
+  const blocks = Array.isArray(event?.blocks) ? event.blocks : []
+  return blocks
+    .filter(block => block?.type === 'text' || block?.type === 'tool_result')
+    .map(block => block.text || '')
+    .filter(Boolean)
+    .join('\n')
+}
+
+export function searchEntriesFromEvent(agentId, sessionId, event) {
+  if (event?.type !== 'user' && event?.type !== 'assistant') return []
+  const ts = event.timestamp || event.message?.timestamp || event.snapshot?.timestamp || null
   if (!ts) return []
-  const content = parsed.message?.content
+  let text = searchTextFromEvent(event)
+  if (!text) {
+    const content = event.message?.content
+    if (typeof content === 'string') text = content
+    else if (Array.isArray(content)) text = content.filter(c => c?.type === 'text').map(c => c.text).join('\n')
+  }
+  if (!text || text.length < 3) return []
+  return [{ agent_id: agentId, session_id: sessionId, role: event.type, timestamp: ts, text }]
+}
+
+export function searchEntriesFromHarnessRecord(agentId, sessionId, harnessKind, record) {
+  const event = parseRecordForHarness(harnessKind, record)
+  if (event) return searchEntriesFromEvent(agentId, sessionId, event)
+  if (record?.type !== 'user' && record?.type !== 'assistant') return []
+  const ts = record.timestamp || record.message?.timestamp || record.snapshot?.timestamp || null
+  if (!ts) return []
+  const content = record.message?.content
   let text = ''
   if (typeof content === 'string') text = content
   else if (Array.isArray(content)) text = content.filter(c => c?.type === 'text').map(c => c.text).join('\n')
   if (!text || text.length < 3) return []
-  return [{ agent_id: agentId, session_id: sessionId, role: parsed.type, timestamp: ts, text }]
+  return [{ agent_id: agentId, session_id: sessionId, role: record.type, timestamp: ts, text }]
 }
 
 export function extractRecordOutputs({ agentId, sessionId, harnessKind, terminalChat, backfillSearch }, record) {
@@ -250,7 +279,7 @@ export function extractRecordOutputs({ agentId, sessionId, harnessKind, terminal
     if (chat) outputs.push({ type: 'terminalChat', ...chat })
   }
   if (backfillSearch) {
-    const entries = searchEntriesFromRecord(agentId, sessionId, record)
+    const entries = searchEntriesFromHarnessRecord(agentId, sessionId, harnessKind, record)
     if (entries.length > 0) outputs.push({ type: 'searchIndex', entries })
   }
   return outputs
@@ -331,7 +360,7 @@ export async function runSearchBackfillJob(job) {
         ownerPushed = true
       }
     }
-    const searchEntries = searchEntriesFromRecord(job.agentId, job.sessionId, parsed)
+    const searchEntries = searchEntriesFromHarnessRecord(job.agentId, job.sessionId, job.harnessKind, parsed)
     for (const entry of searchEntries) entries.push(entry)
     while (entries.length >= 200) {
       const batch = entries.splice(0, 200)

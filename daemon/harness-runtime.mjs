@@ -79,7 +79,7 @@ export function createHarnessRuntime({
         parseLine: parseCodexLine,
         parseRecord: parseCodexRecord,
         usesClaudeSessionIds: false,
-        backfillSearch: false,
+        backfillSearch: true,
         terminalChat: false,
       },
     },

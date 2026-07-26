@@ -16,6 +16,7 @@ import {
 } from '../shared/activity-health.mjs'
 
 const DEFAULT_DISPLAY_REPLAY_MAX_BYTES = 256 * 1024
+const CODEX_SEARCH_BACKFILL_VERSION = 'codex-normalized-text-v1'
 const CATCHUP_DISPLAY_OUTPUT_TYPES = new Set(['activity', 'context', 'qualification', 'terminalChat', 'nativeTask'])
 const JSONL_RUNTIME_FAILURE_BOUNDARIES = {
   'start-failed': ACTIVITY_HEALTH_BOUNDARIES.WATCH_START_FAILED,
@@ -1218,7 +1219,8 @@ export function createJsonlIngestor({
 
   function handleJsonlBackfillSessionComplete(msg) {
     if (!msg.sessionId) return
-    cursors[msg.sessionId] = { ...(cursors[msg.sessionId] || {}), searchBackfilled: true }
+    const job = msg.jobId ? searchBackfillJobs.get(msg.jobId) : null
+    cursors[msg.sessionId] = markSearchBackfilled(cursors[msg.sessionId], job?.harnessKind)
     scheduleCursorSave()
     refreshIngestionCaughtUp()
   }
@@ -1230,7 +1232,7 @@ export function createJsonlIngestor({
       if (job?.sessionId) searchBackfillPendingBySession.delete(job.sessionId)
       for (const identity of msg.result?.identities || []) recordSessionIdentity(identity)
       if (job?.sessionId) {
-        cursors[job.sessionId] = { ...(cursors[job.sessionId] || {}), searchBackfilled: true }
+        cursors[job.sessionId] = markSearchBackfilled(cursors[job.sessionId], job.harnessKind)
         scheduleCursorSave()
       }
       log.info(`JSONL ${job?.kind || 'backfill'} job complete: ${msg.jobId}`)
@@ -1380,7 +1382,7 @@ export function createJsonlIngestor({
     }
 
     if (harness.terminalChat && !sendTerminalChatFromRecord(agentId, pw.sessionId, record)) delivered = false
-    if (harness.backfillSearch && !sendSearchIndexFromRecord(agentId, pw.sessionId, record)) delivered = false
+    if (harness.backfillSearch && !sendSearchIndexFromRecord(pw, agentId, pw.sessionId, record)) delivered = false
     return delivered
   }
 
@@ -1424,16 +1426,26 @@ export function createJsonlIngestor({
     })
   }
 
-  function sendSearchIndexFromRecord(agentId, sessionId, parsed) {
-    if (parsed.type !== 'user' && parsed.type !== 'assistant') return true
-    const ts = parsed.timestamp || parsed.message?.timestamp || parsed.snapshot?.timestamp || null
+  function sendSearchIndexFromRecord(pw, agentId, sessionId, parsed) {
+    const harness = harnessAdapters[pw?.harnessKind]?.activity
+    const ev = harness?.parseRecord ? harness.parseRecord(parsed) : null
+    const source = ev || parsed
+    if (source.type !== 'user' && source.type !== 'assistant') return true
+    const ts = source.timestamp || source.message?.timestamp || source.snapshot?.timestamp || null
     if (!ts) return true
-    const content = parsed.message?.content
-    let text = ''
-    if (typeof content === 'string') text = content
-    else if (Array.isArray(content)) text = content.filter(c => c?.type === 'text').map(c => c.text).join('\n')
+    const blocks = Array.isArray(source.blocks) ? source.blocks : []
+    let text = blocks
+      .filter(block => block?.type === 'text' || block?.type === 'tool_result')
+      .map(block => block.text || '')
+      .filter(Boolean)
+      .join('\n')
+    if (!text) {
+      const content = source.message?.content
+      if (typeof content === 'string') text = content
+      else if (Array.isArray(content)) text = content.filter(c => c?.type === 'text').map(c => c.text).join('\n')
+    }
     if (!text || text.length < 3) return true
-    return sendMsg({ type: 'jsonl-index', entries: [{ agent_id: agentId, session_id: sessionId, role: parsed.type, timestamp: ts, text }] })
+    return sendMsg({ type: 'jsonl-index', entries: [{ agent_id: agentId, session_id: sessionId, role: source.type, timestamp: ts, text }] })
   }
 
   function startJsonlBackfillJob(job) {
@@ -1448,8 +1460,22 @@ export function createJsonlIngestor({
   // Called when the daemon first starts watching a new session. The child does the
   // file IO/parsing; main only delivers batches and marks searchBackfilled after
   // the child reports completion.
+  function markSearchBackfilled(entry = {}, harnessKind = null) {
+    return {
+      ...(entry || {}),
+      searchBackfilled: true,
+      ...(harnessKind === 'codex' ? { searchBackfillVersion: CODEX_SEARCH_BACKFILL_VERSION } : {}),
+    }
+  }
+
+  function searchBackfillCurrent(entry = {}, harnessKind = null) {
+    if (!entry?.searchBackfilled) return false
+    if (harnessKind === 'codex') return entry.searchBackfillVersion === CODEX_SEARCH_BACKFILL_VERSION
+    return true
+  }
+
   function backfillSearchEntries(agentId, jsonlPath, sessionId, harnessKind = null) {
-    if (cursors[sessionId]?.searchBackfilled) return
+    if (searchBackfillCurrent(cursors[sessionId], harnessKind)) return
     if (searchBackfillPendingBySession.has(sessionId)) return
     searchBackfillPendingBySession.add(sessionId)
     const jobId = `search:${sessionId}:${Date.now()}:${Math.random().toString(36).slice(2)}`
