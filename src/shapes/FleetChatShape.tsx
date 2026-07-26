@@ -53,7 +53,7 @@ import {
 } from '../../shared/filter-semantics.mjs'
 import { openTerminalTransport, type TerminalTransport } from '../fleet/terminal-transport'
 import { labelsForAgent } from '../../shared/fleet-labels.mjs'
-import { runtimeStatusName } from '../../shared/fleet-runtime-status.mjs'
+import { isTerminalRoutable, runtimeStatusForAgent, runtimeStatusName } from '../../shared/fleet-runtime-status.mjs'
 import { ACTIVITY_DELIVERY_STAGES } from '../../shared/activity-delivery-counters.mjs'
 import { useFleetAgents, useFleetChatAgents, useFleetEvents, useFleetTasks, useFleetThinking, useFleetCompacting, useFleetContext, useFleetStatusTargets, useFleetFilterHasMatchingAgent, useFleetUnreadCounts, useSuggestions, clearGroup, sendMessage, loadBefore, receiveFilterEvents, resolveFleetAgentLabelIds, injectOptimisticEvent, updateOptimisticEvent, removeOptimisticEvent } from '../fleet-data-adapter'
 import { isTerminalAvailableForAgent } from '../fleet/fleet-chat-visibility.mjs'
@@ -108,6 +108,25 @@ const DEFAULT_H = 600
 const FLEET_API = DATABASE_HTTP
 type ChatTrafficMode = 'normal' | 'quiet'
 type ComposerTrafficFilterMode = 'dm-quiet' | 'dm' | 'agent' | 'custom'
+type TerminalAgent = {
+  id?: string
+  dead?: boolean
+  human?: boolean
+  friendly_name?: string
+  name?: string
+  tmux_session?: string | null
+  runtime_status?: unknown
+  route_state?: string | null
+  route_reason?: string | null
+  status_reason?: string | null
+  activity?: string | null
+} & Record<string, unknown>
+type TerminalComposerControl = {
+  id: string
+  agent: TerminalAgent | null
+  label: string
+  unavailableReason: string | null
+}
 type FleetChatRenderCounter = {
   active?: boolean
   renderCount?: number
@@ -170,6 +189,33 @@ function recordFleetChatRender(shape: any) {
     t: typeof performance !== 'undefined' ? performance.now() : Date.now(),
     shapeId: shape?.id,
   })
+}
+
+function terminalUnavailableReason(agent: TerminalAgent | null): string | null {
+  if (!agent) return 'No terminal target selected'
+  if (!agent.id) return 'Terminal unavailable: target is unresolved'
+  if (agent.dead) return 'Terminal unavailable: agent is dead'
+  const runtime = runtimeStatusForAgent(agent)
+  if (runtime.status === 'shell') return 'Terminal unavailable: shell sessions have no managed terminal'
+  if (isTerminalRoutable(agent)) return null
+  switch (runtime.route_reason) {
+    case 'current-seat-missing':
+      return 'Terminal unavailable: no seat bound'
+    case 'current-seat-incomplete':
+      return 'Terminal unavailable: seat has no owning daemon'
+    case 'current-seat-missing-terminal-capability':
+      return 'Terminal unavailable: seat has no terminal capability'
+    case 'daemon-disconnected':
+      return 'Terminal unavailable: daemon disconnected'
+    case 'agent-dead':
+      return 'Terminal unavailable: agent is dead'
+    case 'agent-missing':
+      return 'Terminal unavailable: target is unresolved'
+    default:
+      return runtime.route_reason
+        ? `Terminal unavailable: ${runtime.route_reason.replaceAll('-', ' ')}`
+        : 'Terminal unavailable'
+  }
 }
 
 function isFleetPillRecord(record: any): boolean {
@@ -574,13 +620,17 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
 
   useEffect(() => {
     if (!agentId) return
-    terminalTransportRef.current?.close()
-    termRef.current?.clear()
-    setStatus('connecting')
-    let sawAuthoritativeSize = false
-    let fallbackFlushed = false
-    let fallbackTimer: ReturnType<typeof setTimeout> | null = null
-    const pendingOutput: TerminalOutputFrame[] = []
+    let cancelled = false
+    let retryTimer: ReturnType<typeof setTimeout> | null = null
+    let activeFallbackTimer: ReturnType<typeof setTimeout> | null = null
+
+    const clearActiveFallbackTimer = () => {
+      if (activeFallbackTimer) {
+        clearTimeout(activeFallbackTimer)
+        activeFallbackTimer = null
+      }
+    }
+
     const writeOutput = (msg: TerminalOutputFrame) => {
       const term = termRef.current
       if (!term) return
@@ -591,62 +641,90 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
         term.write(msg.data)
       }
     }
-    const flushPendingOutput = () => {
-      if (!termRef.current) return
-      for (const msg of pendingOutput) writeOutput(msg)
-      pendingOutput.length = 0
-    }
-    fallbackTimer = setTimeout(() => {
-      if (sawAuthoritativeSize) return
-      fallbackFlushed = true
-      for (const msg of pendingOutput) writeOutput(msg)
-    }, 1500)
-    // /ws/terminal must hit the fleet server (where the daemon is connected),
-    // NOT the page origin — on the local copy the page is served from 5176 but
-    // the daemon talks to Fly, so the page-origin socket had no daemon behind it.
-    const terminalTransport = openTerminalTransport({
-      agentId,
-      onOpen: () => {
-        setStatus('connected')
-      },
-      onFrame: (msg) => {
-        if (msg.type === 'size' && msg.cols && msg.rows) {
-          // The daemon reports the agent's real tmux window size. Resize the live
-          // grid to match so the absolute-positioned stream renders cleanly; the
-          // scale effect then re-fits it to the panel width.
-          setGridCols(msg.cols)
-          setGridRows(msg.rows)
-          try {
-            const term = termRef.current
-            term?.resize(msg.cols, msg.rows)
-            if (fallbackTimer) {
-              clearTimeout(fallbackTimer)
-              fallbackTimer = null
+
+    const connect = (attempt = 0) => {
+      if (cancelled) return
+      clearActiveFallbackTimer()
+      const previousTransport = terminalTransportRef.current
+      terminalTransportRef.current = null
+      previousTransport?.close()
+      termRef.current?.clear()
+      setStatus('connecting')
+      let sawAuthoritativeSize = false
+      let fallbackFlushed = false
+      const pendingOutput: TerminalOutputFrame[] = []
+      const flushPendingOutput = () => {
+        if (!termRef.current) return
+        for (const msg of pendingOutput) writeOutput(msg)
+        pendingOutput.length = 0
+      }
+      activeFallbackTimer = setTimeout(() => {
+        if (sawAuthoritativeSize || cancelled) return
+        fallbackFlushed = true
+        for (const msg of pendingOutput) writeOutput(msg)
+      }, 1500)
+
+      // /ws/terminal must hit the fleet server (where the daemon is connected),
+      // NOT the page origin — on the local copy the page is served from 5176 but
+      // the daemon talks to Fly, so the page-origin socket had no daemon behind it.
+      const terminalTransport = openTerminalTransport({
+        agentId,
+        onOpen: () => {
+          if (cancelled) { terminalTransport.close(); return }
+          setStatus('connected')
+        },
+        onFrame: (msg) => {
+          if (cancelled) return
+          if (msg.type === 'size' && msg.cols && msg.rows) {
+            // The daemon reports the agent's real tmux window size. Resize the live
+            // grid to match so the absolute-positioned stream renders cleanly; the
+            // scale effect then re-fits it to the panel width.
+            setGridCols(msg.cols)
+            setGridRows(msg.rows)
+            try {
+              const term = termRef.current
+              term?.resize(msg.cols, msg.rows)
+              clearActiveFallbackTimer()
+              if (!sawAuthoritativeSize) {
+                sawAuthoritativeSize = true
+                term?.clear()
+                flushPendingOutput()
+              }
+            } catch { void 0 }
+          } else if (msg.type === 'output' && msg.data && termRef.current) {
+            const output = { type: 'output', data: msg.data, encoding: msg.encoding }
+            if (sawAuthoritativeSize) {
+              writeOutput(output)
+            } else {
+              pendingOutput.push(output)
+              if (fallbackFlushed) writeOutput(output)
             }
-            if (!sawAuthoritativeSize) {
-              sawAuthoritativeSize = true
-              term?.clear()
-              flushPendingOutput()
-            }
-          } catch { void 0 }
-        } else if (msg.type === 'output' && msg.data && termRef.current) {
-          const output = { type: 'output', data: msg.data, encoding: msg.encoding }
-          if (sawAuthoritativeSize) {
-            writeOutput(output)
-          } else {
-            pendingOutput.push(output)
-            if (fallbackFlushed) writeOutput(output)
+          } else if (msg.type === 'error') {
+            setStatus('error')
           }
-        } else if (msg.type === 'error') {
-          setStatus('error')
-        }
-      },
-      onError: () => setStatus('error'),
-    })
-    terminalTransportRef.current = terminalTransport
+        },
+        onError: () => {
+          if (!cancelled) setStatus('error')
+        },
+        onClose: () => {
+          if (cancelled) return
+          if (terminalTransportRef.current !== terminalTransport) return
+          clearActiveFallbackTimer()
+          const delay = Math.min(5000, 500 * Math.max(1, attempt + 1))
+          setStatus('connecting')
+          retryTimer = setTimeout(() => connect(attempt + 1), delay)
+        },
+      })
+      terminalTransportRef.current = terminalTransport
+    }
+
+    connect()
     return () => {
-      if (fallbackTimer) clearTimeout(fallbackTimer)
-      terminalTransport.close()
+      cancelled = true
+      if (retryTimer) clearTimeout(retryTimer)
+      clearActiveFallbackTimer()
+      terminalTransportRef.current?.close()
+      terminalTransportRef.current = null
     }
   }, [agentId])
 
@@ -4554,13 +4632,9 @@ function FleetChatInner({ shape }: { shape: any }) {
     return agentList.filter((a: any) => !a.human && labelsForAgent(a).includes(label))
   }, [agentRouteName])
 
-  const isTerminalReadyAgent = useCallback((agent: any) => {
-    return isTerminalAvailableForAgent(agent)
-  }, [])
-
-  const terminalHoverAgents = useMemo(() => {
+  const terminalComposerControls = useMemo<TerminalComposerControl[]>(() => {
     const seen = new Set<string>()
-    const ready: any[] = []
+    const controls: TerminalComposerControl[] = []
     const diag: any[] = []
     for (const label of sendTargets) {
       const matches = resolveTargetAgents(label, agents)
@@ -4572,24 +4646,39 @@ function FleetChatInner({ shape }: { shape: any }) {
           tmux: agent?.tmux_session || null,
           dead: agent?.dead ?? null,
           hibernating: runtimeStatusName(agent) === 'hibernating',
-          terminalReady: isTerminalReadyAgent(agent),
+          terminalReady: isTerminalAvailableForAgent(agent),
+          routeState: runtimeStatusForAgent(agent).route_state,
+          routeReason: runtimeStatusForAgent(agent).route_reason,
         })),
       })
       for (const agent of matches) {
-        if (!isTerminalReadyAgent(agent) || seen.has(agent.id)) continue
+        if (!agent?.id || seen.has(agent.id)) continue
         seen.add(agent.id)
-        ready.push(agent)
+        controls.push({
+          id: agent.id,
+          agent,
+          label: agentDisplayName(agent) || agent.id.replace('fleet:', ''),
+          unavailableReason: terminalUnavailableReason(agent),
+        })
       }
     }
-    log.info('terminal-icon', ready.length ? 'resolved targets' : 'no terminal target', {
+    if (!controls.length) {
+      controls.push({
+        id: '__no-terminal-target',
+        agent: null,
+        label: 'Terminal',
+        unavailableReason: terminalUnavailableReason(null),
+      })
+    }
+    log.info('terminal-icon', controls.some(control => !control.unavailableReason) ? 'resolved targets' : 'no available terminal target', {
       sendTargets,
       source: 'send-targets',
-      fleetIds: ready.map((agent: any) => agent.id),
+      fleetIds: controls.map(control => control.agent?.id).filter(Boolean),
       diag,
       agentCount: agents.length,
     })
-    return ready
-  }, [sendTargets, agents, resolveTargetAgents, isTerminalReadyAgent])
+    return controls
+  }, [sendTargets, agents, resolveTargetAgents, agentDisplayName])
 
   void composerDraftVersion
   const composerHasText = !!((inputRef.current as HTMLTextAreaElement | null)?.value)
@@ -4643,6 +4732,10 @@ function FleetChatInner({ shape }: { shape: any }) {
     return null
   }, [sendTargets, agents, resolveTargetAgent, agentRouteName, agentDisplayName])
 
+  const terminalHoverAgents = useMemo(
+    () => terminalComposerControls.map(control => control.agent).filter((agent): agent is TerminalAgent => !!agent && !terminalUnavailableReason(agent)),
+    [terminalComposerControls],
+  )
   const terminalHoverAgentKey = useMemo(() => terminalHoverAgents.map((agent: any) => agent.id).join(','), [terminalHoverAgents])
   const selectedTerminalHoverAgent = useMemo(
     () => terminalHoverAgents.find((agent: any) => agent.id === termHoverAgentId) || null,
@@ -5582,7 +5675,7 @@ function FleetChatInner({ shape }: { shape: any }) {
           }}
         >
           {/* Terminal hover pane — floats below the input area when the terminal icon is hovered or pinned */}
-          {(termHoverVisible || termHoverPinned) && selectedTerminalHoverAgent && (
+          {(termHoverVisible || termHoverPinned) && selectedTerminalHoverAgent?.id && (
             <TerminalHoverPane
               agentId={selectedTerminalHoverAgent.id}
               pinned={termHoverPinned}
@@ -5707,21 +5800,30 @@ function FleetChatInner({ shape }: { shape: any }) {
                 </svg>
               )}
             </button>
-            {/* Terminal peek icons — one per resolved displayed send target. */}
-            {terminalHoverAgents.map((agent: any) => (
+            {/* Terminal peek icons — always present for the composer target.
+                Unavailable targets stay visible and explain their route state. */}
+            {terminalComposerControls.map((control) => {
+              const agent = control.agent
+              const unavailableReason = control.unavailableReason
+              const isUnavailable = !!unavailableReason
+              return (
               <button
-                key={agent.id}
-                className={`fleet-terminal-icon${termHoverPinned && termHoverAgentId === agent.id ? ' active' : ''}`}
-                data-composer-rail-action={`terminal-${agent.id}`}
-                data-composer-rail-label="Terminal"
+                key={control.id}
+                className={`fleet-terminal-icon${termHoverPinned && agent && termHoverAgentId === agent.id ? ' active' : ''}${isUnavailable ? ' unavailable' : ''}`}
+                data-composer-rail-action={`terminal-${control.id}`}
+                data-composer-rail-label={unavailableReason || 'Terminal'}
+                aria-disabled={isUnavailable}
+                onPointerDown={stopEventPropagation}
                 onClick={(e) => {
                   stopEventPropagation(e as any)
-                  if (termHoverPinned && termHoverAgentId === agent.id) {
+                  if (!agent?.id || unavailableReason) return
+                  const agentId = agent.id
+                  if (termHoverPinned && termHoverAgentId === agentId) {
                     setTermHoverPinned(false)
                     setTermHoverVisible(false)
                     setTermHoverAgentId(null)
                   } else {
-                    setTermHoverAgentId(agent.id)
+                    setTermHoverAgentId(agentId)
                     setTermHoverPinned(true)
                     setTermHoverVisible(true)
                   }
@@ -5731,6 +5833,10 @@ function FleetChatInner({ shape }: { shape: any }) {
                     clearTimeout(termHideTimerRef.current)
                     termHideTimerRef.current = null
                   }
+                  // The lifted label is the shared corner-button slider's job now;
+                  // it reads data-composer-rail-label off this button. The bespoke
+                  // rail preview state this used to set no longer exists.
+                  if (!agent?.id || unavailableReason) return
                   setTermHoverAgentId(agent.id)
                   setTermHoverVisible(true)
                 }}
@@ -5739,15 +5845,18 @@ function FleetChatInner({ shape }: { shape: any }) {
                     termHideTimerRef.current = setTimeout(() => setTermHoverVisible(false), 80)
                   }
                 }}
-                title={`${agentDisplayName(agent) || agent.id.replace('fleet:', '')} terminal`}
+                title={unavailableReason || `${control.label} terminal`}
+                aria-label={unavailableReason || `${control.label} terminal`}
               >
                 <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                   <rect x="1" y="1" width="8" height="8" rx="1.5"/>
                   <polyline points="2.5,4 4.5,6 2.5,8"/>
                   <line x1="5.5" y1="8" x2="7.5" y2="8"/>
+                  {isUnavailable && <line x1="1.3" y1="8.7" x2="8.7" y2="1.3" strokeWidth="1.7"/>}
                 </svg>
               </button>
-            ))}
+              )
+            })}
             <button
               className={`fleet-composer-traffic-toggle fleet-composer-traffic-toggle-${composerTrafficMode}`}
               data-composer-rail-action="traffic"
