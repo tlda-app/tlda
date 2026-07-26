@@ -2224,6 +2224,39 @@ function normalizeDeepgramText(text) {
     .toLowerCase()
 }
 
+function deepgramWordTokens(text) {
+  const tokens = []
+  const re = /[A-Za-z0-9]+(?:'[A-Za-z0-9]+)?/g
+  const source = String(text || '')
+  for (const match of source.matchAll(re)) {
+    tokens.push({
+      norm: normalizeDeepgramText(match[0]),
+      end: match.index + match[0].length,
+    })
+  }
+  return tokens.filter(token => token.norm)
+}
+
+function trimSubmittedPrefixFromDeepgramText(text, submittedNorm) {
+  const submitted = String(submittedNorm || '').trim()
+  if (!submitted) return { text, droppedWords: 0 }
+  const incomingWords = deepgramWordTokens(text)
+  let overlap = 0
+  for (let n = incomingWords.length; n > 0; n--) {
+    const incomingPrefix = incomingWords.slice(0, n).map(token => token.norm).join(' ')
+    if (submitted.endsWith(incomingPrefix)) {
+      overlap = n
+      break
+    }
+  }
+  if (overlap === 0) return { text, droppedWords: 0 }
+  if (overlap >= incomingWords.length) return { text: '', droppedWords: overlap }
+  return {
+    text: String(text || '').slice(incomingWords[overlap - 1].end).replace(/^[\s,.;:!?-]+/, ''),
+    droppedWords: overlap,
+  }
+}
+
 function resetDeepgramTextState({ ignoreUntilUtteranceEnd = false, submittedText = null, preserveLastFinal = false, preserveUtteranceGuard = false } = {}) {
   _deepgramInterim = ''
   _dgHasSeenInterim = false
@@ -2530,6 +2563,24 @@ function onDeepgramMessage(event, relay = _deepgramWs) {
       if (_dgIgnoredSubmittedText && (_dgIgnoredSubmittedText.includes(normalized) || normalized.includes(_dgIgnoredSubmittedText))) {
         vlog('DROPPED transcript (waiting for utterance end)', { final: !!msg.is_final, text: msg.text.slice(0, 30) })
         return
+      }
+      const trimmed = trimSubmittedPrefixFromDeepgramText(msg.text, _dgIgnoredSubmittedText)
+      if (trimmed.droppedWords > 0) {
+        if (!trimmed.text) {
+          vlog('DROPPED transcript (submitted prefix consumed full carried result)', {
+            final: !!msg.is_final,
+            droppedWords: trimmed.droppedWords,
+            text: msg.text.slice(0, 60),
+          })
+          return
+        }
+        vlog('trimmed submitted prefix from carried transcript', {
+          final: !!msg.is_final,
+          droppedWords: trimmed.droppedWords,
+          original: msg.text.slice(0, 60),
+          trimmed: trimmed.text.slice(0, 60),
+        })
+        msg.text = trimmed.text
       }
       vlog('released utterance-end guard on fresh transcript', { final: !!msg.is_final, text: msg.text.slice(0, 30) })
       _dgIgnoreUntilUtteranceEnd = false
