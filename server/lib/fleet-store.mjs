@@ -43,6 +43,15 @@ const TRANSPORT_PAYLOAD_MAX_BYTES = Number(process.env.TLDA_TRANSPORT_PAYLOAD_MA
 // with a real result field, since a result that happened to carry it would be
 // mistaken for an omitted one and re-executed.
 const TRANSPORT_PAYLOAD_OMITTED = '__tlda_payload_omitted';
+function envNumber(name, fallback) {
+  if (process.env[name] == null || process.env[name] === '') return fallback;
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) && value >= 0 ? value : fallback;
+}
+const TRANSPORT_OPERATION_RETENTION_HOURS = envNumber('TLDA_TRANSPORT_OPERATION_RETENTION_HOURS', 24);
+const TRANSPORT_OPERATION_ACCEPTED_RETENTION_HOURS = envNumber('TLDA_TRANSPORT_OPERATION_ACCEPTED_RETENTION_HOURS', 168);
+const TRANSPORT_OPERATION_PRUNE_INTERVAL_MS = envNumber('TLDA_TRANSPORT_OPERATION_PRUNE_INTERVAL_MS', 10 * 60 * 1000);
+const TRANSPORT_OPERATION_PRUNE_BATCH_MAX = envNumber('TLDA_TRANSPORT_OPERATION_PRUNE_BATCH_MAX', 500);
 // Slow queries are appended here as JSON lines, alongside stdout. Readable after
 // the fact the way client.log is, so naming a slow query does not depend on
 // someone tailing `fly logs` at the instant it fires.
@@ -274,6 +283,7 @@ export class FleetStore {
     this._prepareStatements();
     this._initAgentRegistry();
     this._wiretapCache = null;
+    this._lastTransportOperationPruneAt = 0;
     this._upgradeLegacyDefaultSubscriptions();
     this._backfillNameHistory();
     this._listeners = []; // SSE broadcast callbacks
@@ -389,6 +399,10 @@ export class FleetStore {
       );
       CREATE INDEX IF NOT EXISTS idx_transport_operations_parent
         ON transport_operations(parent_operation_id, created_at);
+      CREATE INDEX IF NOT EXISTS idx_transport_operations_terminal_retention
+        ON transport_operations(status, completed_at);
+      CREATE INDEX IF NOT EXISTS idx_transport_operations_accepted_retention
+        ON transport_operations(status, created_at);
       CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
         text,
         content='events',
@@ -1853,6 +1867,68 @@ export class FleetStore {
       serialized,
       new Date().toISOString(),
     )
+    this._maybePruneTransportOperations()
+  }
+
+  pruneTransportOperations({
+    now = new Date(),
+    terminalRetentionHours = TRANSPORT_OPERATION_RETENTION_HOURS,
+    acceptedRetentionHours = TRANSPORT_OPERATION_ACCEPTED_RETENTION_HOURS,
+    batchMax = TRANSPORT_OPERATION_PRUNE_BATCH_MAX,
+  } = {}) {
+    const limit = Math.floor(Number(batchMax) || 0)
+    if (limit <= 0) return { terminal: 0, accepted: 0 }
+
+    let terminal = 0
+    if (Number(terminalRetentionHours) > 0) {
+      const cutoff = new Date(now.getTime() - Number(terminalRetentionHours) * 60 * 60 * 1000).toISOString()
+      terminal = this.db.prepare(`
+        DELETE FROM transport_operations
+        WHERE operation_id IN (
+          SELECT operation_id
+          FROM transport_operations
+          WHERE status IN ('completed', 'failed')
+            AND completed_at IS NOT NULL
+            AND completed_at < ?
+          ORDER BY completed_at ASC
+          LIMIT ?
+        )
+      `).run(cutoff, limit).changes
+    }
+
+    let accepted = 0
+    if (terminal < limit && Number(acceptedRetentionHours) > 0) {
+      const cutoff = new Date(now.getTime() - Number(acceptedRetentionHours) * 60 * 60 * 1000).toISOString()
+      accepted = this.db.prepare(`
+        DELETE FROM transport_operations
+        WHERE operation_id IN (
+          SELECT operation_id
+          FROM transport_operations
+          WHERE status = 'accepted'
+            AND created_at < ?
+          ORDER BY created_at ASC
+          LIMIT ?
+        )
+      `).run(cutoff, limit - terminal).changes
+    }
+
+    return { terminal, accepted }
+  }
+
+  _maybePruneTransportOperations(nowMs = Date.now()) {
+    if (TRANSPORT_OPERATION_PRUNE_INTERVAL_MS <= 0 || TRANSPORT_OPERATION_PRUNE_BATCH_MAX <= 0) return
+    if (this._lastTransportOperationPruneAt && nowMs - this._lastTransportOperationPruneAt < TRANSPORT_OPERATION_PRUNE_INTERVAL_MS) return
+    this._lastTransportOperationPruneAt = nowMs
+    try {
+      this.pruneTransportOperations({ now: new Date(nowMs) })
+    } catch (e) {
+      // Deliberately swallowed: this is an opportunistic prune riding on the
+      // path that records a transport operation. Housekeeping must never fail
+      // the operation it piggybacks on — a prune that doesn't happen costs some
+      // disk until the next interval, while rethrowing here would break the
+      // thing the caller actually came to do. Logged, not raised.
+      console.warn(`[fleet-store] transport operation prune failed: ${e.message}`)
+    }
   }
 
   getReportCloseOperationResult(operationId) {
