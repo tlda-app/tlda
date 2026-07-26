@@ -4608,6 +4608,33 @@ export class FleetStore {
     }).sort((a, b) => (b.latest_relevant_at || '').localeCompare(a.latest_relevant_at || '')).slice(0, cap);
   }
 
+  projectAgentIds(projectOrCwd) {
+    const raw = String(projectOrCwd || '').trim();
+    if (!raw) return [];
+    const isPath = raw.includes('/') || raw.startsWith('~');
+    const normalized = raw.replace(/\/+$/, '');
+    const params = [];
+    let cwdPredicate;
+    if (isPath) {
+      cwdPredicate = "rtrim(coalesce(cwd, ''), '/') = ?";
+      params.push(normalized);
+    } else {
+      cwdPredicate = "(cwd = ? OR cwd LIKE ? OR cwd LIKE ?)";
+      params.push(raw, `%/${raw}`, `%/${raw}/%`);
+    }
+    const sql = `
+      WITH candidate_raw AS (
+        SELECT agent_id FROM agent_seats WHERE ${cwdPredicate}
+        UNION
+        SELECT id AS agent_id FROM agents WHERE ${cwdPredicate}
+      )
+      SELECT agent_id
+      FROM candidate_raw
+      WHERE agent_id IS NOT NULL AND agent_id != ''
+    `;
+    return this.db.prepare(sql).all(...params, ...params).map(r => r.agent_id);
+  }
+
   // Get N chat events before/after a timestamp (for search context).
   getChatContext(timestamp, window = 3) {
     const cap = Math.min(window, 20);

@@ -5745,7 +5745,8 @@ async function handleFleetWsMessage(ws, msg) {
         searchAgent = ids.length ? ids : [noMatch];
       }
       const projectAgentQuery = String(msg.cwd || msg.project || '').trim()
-      if (projectAgentQuery) {
+      const hasText = (msg.query || '').trim().length > 0;
+      if (projectAgentQuery && !hasText) {
         const results = stampNames(fleetStore.searchProjectAgents(projectAgentQuery, {
           limit: msg.limit,
           since: msg.since,
@@ -5754,7 +5755,20 @@ async function handleFleetWsMessage(ws, msg) {
         reply({ results })
         return
       }
-      const hasText = (msg.query || '').trim().length > 0;
+      if (projectAgentQuery) {
+        const projectAgentIds = fleetStore.projectAgentIds(projectAgentQuery)
+        if (!projectAgentIds.length) {
+          reply({ results: [] })
+          return
+        }
+        searchAgent = searchAgent
+          ? (Array.isArray(searchAgent) ? searchAgent : [searchAgent]).filter(id => projectAgentIds.includes(id))
+          : projectAgentIds
+        if (!searchAgent.length) {
+          reply({ results: [] })
+          return
+        }
+      }
       let results = fleetStore.searchAll(msg.query || '', {
         limit: msg.limit, agent: searchAgent, role: msg.role, type: msg.eventType, types: msg.eventTypes, since: msg.since, before: msg.before,
         // No keyword + an agent filter → return that agent's whole history
