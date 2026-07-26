@@ -3690,7 +3690,11 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     }
 
     // Format results — full roster (incl. dead) so dead agents' names render.
-    const state = await loadStateAll();
+    // Project-agent results already arrive with display names stamped by the
+    // server, and loading every historical agent is the slow path this search
+    // exists to avoid.
+    const needsFullRoster = results.some(r => r.type !== 'project_agent');
+    const state = needsFullRoster ? await loadStateAll() : { agents: [], tasks: [], messages: [] };
     const resolveName = (id) => id ? (getAgent(state, id)?.friendly_name || id) : '';
 
     // Name-provenance tag: the name the agent held AT the event's time (period
