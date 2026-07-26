@@ -138,7 +138,7 @@ try {
     liveness_source: 'daemon-agent-liveness',
     liveness_at_ms: nowMs,
     liveness_at: new Date(nowMs).toISOString(),
-    activity: 'tool_call:get_thread',
+    activity: 'tool_call:thread',
   }, {
     nowMs,
     seat: route,
@@ -174,7 +174,7 @@ try {
     liveness_source: 'daemon-agent-liveness',
     liveness_at_ms: nowMs,
     liveness_at: new Date(nowMs).toISOString(),
-    activity: 'tool_call:get_thread',
+    activity: 'tool_call:thread',
   }, {
     nowMs,
     seat: { ...route, terminal_capability: null },

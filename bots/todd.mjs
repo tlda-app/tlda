@@ -1984,7 +1984,7 @@ async function handleManagerEscalation(agentId, triggerText, mode = 'talk-to-ski
 
 **Before you do ANYTHING, read these skills:** \`manager-team-stewardship\` and \`partner-not-soloist\`. They contain the exact rules for this situation.
 
-**Your first move:** \`mcp__tlda__get_thread\` on ${agentName}'s thread (last 1–2 hours). Find what Skip was asking for — in his words, not yours. Read Skip's messages FIRST, form your understanding, THEN read the agent's messages.
+**Your first move:** \`mcp__tlda__thread\` on ${agentName}'s thread (last 1–2 hours). Find what Skip was asking for — in his words, not yours. Read Skip's messages FIRST, form your understanding, THEN read the agent's messages.
 
 **DO NOT:**
 - Send Skip a summary of the thread
@@ -2493,7 +2493,7 @@ This tells you *why* Skip triggered the handoff. Use it to focus your thread rea
 
 **Steps:**
 1. Read Skip's handoff message above. It tells you what to focus on.
-2. \`get_thread(agent: "${agentName}", types: ["chat"], include_delegations: true)\`
+2. \`thread(agent: "${agentName}", types: ["chat"], include_delegations: true)\`
 3. Read the thread through the lens of the handoff message. Find what Skip approved, rejected, and asked for — prioritizing what's relevant to the handoff reason. Pay attention to:
    - The level of detail Skip needed in chat to follow the argument — that's the floor for the document
    - Corrections Skip made repeatedly — these are the failure patterns the pickup agent must avoid

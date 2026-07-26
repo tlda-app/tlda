@@ -136,7 +136,7 @@ export function matchFilter(filter, labels) {
  * Evaluate a parsed filter AST (from `parseFilter`) in a DIRECTIONAL context —
  * a message that has sender labels (`fromLabels`) and recipient labels
  * (`toLabels`). This is what wiretap uses, so wiretap, chat-send, and
- * fleet_table all share ONE parser (`parseFilter`) and differ only in how a
+ * roster all share ONE parser (`parseFilter`) and differ only in how a
  * leaf token is tested.
  *
  * Leaf token interpretation:

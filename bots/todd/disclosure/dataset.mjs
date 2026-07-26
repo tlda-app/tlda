@@ -262,7 +262,7 @@ function rowToDisclosure(row, agents) {
     features: extractDisclosureFeatures(event),
     provenance: {
       source: row.source || 'sqlite',
-      getThread: `get_thread(agent: "${row.from_id}", since: "${context.since}", until: "${context.until}", types: ["chat"])`,
+      getThread: `thread(agent: "${row.from_id}", since: "${context.since}", until: "${context.until}", types: ["chat"])`,
       eventId: row.id,
     },
   }

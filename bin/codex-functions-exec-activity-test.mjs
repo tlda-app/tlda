@@ -61,13 +61,13 @@ function customExec(input, callId = 'call_outer') {
     payload: {
       type: 'mcp_tool_call_end',
       call_id: 'exec-214495b5',
-      invocation: { server: 'tlda', tool: 'get_thread', arguments: { agent: 'chiefdoc', types: ['chat'] } },
+      invocation: { server: 'tlda', tool: 'thread', arguments: { agent: 'chiefdoc', types: ['chat'] } },
       duration: { secs: 0, nanos: 222752542 },
       result: { Ok: { content: [{ type: 'text', text: 'INBOX RESULT' }] } },
     },
   }
   const event = parseCodexRecord(record)
-  assert.equal(event.blocks[0].name, 'mcp__tlda__get_thread')
+  assert.equal(event.blocks[0].name, 'mcp__tlda__thread')
   assert.deepEqual(event.blocks[0].input, { agent: 'chiefdoc', types: ['chat'] })
   assert.equal(event.blocks[0].id, 'exec-214495b5')
   assert.equal(event.blocks[1].text, 'INBOX RESULT')
@@ -77,7 +77,7 @@ function customExec(input, callId = 'call_outer') {
   const extractor = createActivityExtractor()
   const activity = extractor.extractActivityEvents([event])
   assert.equal(activity.length, 1)
-  assert.equal(activity[0].tool, 'tlda/get_thread')
+  assert.equal(activity[0].tool, 'tlda/thread')
   assert.deepEqual(activity[0].input, { agent: 'chiefdoc', types: ['chat'] })
   assert.equal(activity[0].prettyResult, 'INBOX RESULT')
   assert.equal(activity[0].status, 'completed')

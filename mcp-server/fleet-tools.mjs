@@ -743,7 +743,7 @@ async function loadState() {
 }
 
 // Like loadState but the agent roster INCLUDES dead agents. Used for name→id
-// resolution in history tooling (get_thread, search_logs): a dead agent must
+// resolution in history tooling (thread, search): a dead agent must
 // stay addressable by name — search is the only handle on it.
 async function loadStateAll() {
   try {
@@ -1001,7 +1001,7 @@ export function classifyTaskAgentHealth(task, agent, options = {}) {
         level: 'warning',
         code: 'stale-heartbeat',
         text: `⚠ no heartbeat from ${name} for ${Math.round(heartbeatAgeMs / 60000)}m`,
-        managerAction: 'Check terminal/get_thread; respawn or redelegate if the agent is stalled.',
+        managerAction: 'Check terminal/thread; respawn or redelegate if the agent is stalled.',
       };
     }
   } else if (taskAgeMs != null && taskAgeMs > pickupGraceMs) {
@@ -1009,7 +1009,7 @@ export function classifyTaskAgentHealth(task, agent, options = {}) {
       level: 'warning',
       code: 'no-heartbeat',
       text: `⚠ ${name} has no recorded heartbeat`,
-      managerAction: 'Registration may have failed; check terminal/get_thread before waiting.',
+      managerAction: 'Registration may have failed; check terminal/thread before waiting.',
     };
   }
 
@@ -1249,11 +1249,12 @@ export function getFleetTools() {
     // ---- Task Management ----
     {
       name: 'delegate',
-      description: 'Assign a task to an agent. Pass `spawn: {}` instead of `agent` to spawn a fresh agent and delegate in one call — no name required.',
+      description: 'Assign a task to an agent. Pass `task_id` to transfer an existing task by appending `message` and changing its owner. Pass `spawn: {}` instead of `agent` to spawn a fresh agent and delegate in one call — no name required.',
       inputSchema: {
         type: 'object',
         properties: {
           agent: { type: 'string', description: 'Agent identifier — session UUID, agent name, or friendly name. Omit when using spawn.' },
+          task_id: { type: 'string', description: 'Existing task ID to transfer to `agent`. The task keeps its identity and history; `message` is appended as the remaining work.' },
           spawn: {
             type: 'object',
             description: 'Spawn a fresh agent and delegate in one call. Mutually exclusive with agent.',
@@ -1357,7 +1358,7 @@ export function getFleetTools() {
       },
     },
     {
-      name: 'task_list',
+      name: 'tasks',
       description: 'List all active (non-done) tasks and registered agents. Call at session start.',
       inputSchema: { type: 'object', properties: {} },
     },
@@ -1453,8 +1454,8 @@ export function getFleetTools() {
     },
     // ---- Search & History ----
     {
-      name: 'search_logs',
-      description: 'Full-text search across all agent session logs and event history. Returns matching snippets with source info. Powered by FTS5 index (fast). NOTE: this returns snippets, not full conversations. To read a complete conversation thread, use get_thread(agent) instead.',
+      name: 'search',
+      description: 'Full-text search across all agent session logs and event history. Returns matching snippets with source info. Powered by FTS5 index (fast). NOTE: this returns snippets, not full conversations. To read a complete conversation thread, use thread(agent) instead.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -1482,7 +1483,7 @@ export function getFleetTools() {
       },
     },
     {
-      name: 'get_thread',
+      name: 'thread',
       description: 'Read a conversation thread. This is the PRIMARY tool for reading what was said — use it whenever you need to understand a conversation, review what an agent did, or read task history. Returns complete formatted messages in chronological order. Do NOT read JSONL files directly — use this instead.',
       inputSchema: {
         type: 'object',
@@ -1530,7 +1531,7 @@ export function getFleetTools() {
     },
     // ---- Fleet Operations ----
     {
-      name: 'fleet_table',
+      name: 'roster',
       description: "Fleet roster: whole-fleet awake/hibernating/dead totals plus a row per agent (name, status, last-seen, model, cwd, current activity). Passive read — reads the registry, wakes no one. Filter to a slice with a filter expression (the same one chat uses) so you don't pull the whole fleet: e.g. awake agents, a label, a name, cwd:<path>, or model:<model>.",
       inputSchema: {
         type: 'object',
@@ -2195,6 +2196,9 @@ export async function handleFleetTool(name, args) {
     if (args.agent && args.spawn) {
       return { content: [{ type: 'text', text: 'Provide agent or spawn, not both.' }], isError: true };
     }
+    if (args.task_id && args.spawn) {
+      return { content: [{ type: 'text', text: 'Transfer an existing task to an existing agent; provide agent, not spawn.' }], isError: true };
+    }
 
     if (!args.agent && !args.spawn) {
       return { content: [{ type: 'text', text: 'Missing agent (or spawn).' }], isError: true };
@@ -2245,7 +2249,7 @@ export async function handleFleetTool(name, args) {
       });
 
       const operationId = args.operation_id || `${AGENT_ID}:mcp-delegate:${crypto.randomUUID()}`;
-      const delegateBody = { from: AGENT_ID, agent: targetAgent, description, message: routedMessage, success_criteria: criteria.length ? criteria : undefined, blocked_by: blockedBy.length ? blockedBy : undefined, requires_approval: args.requires_approval || undefined, allow_pending_agent: opts.allowPendingAgent || undefined, operation_id: operationId };
+      const delegateBody = { from: AGENT_ID, agent: targetAgent, task_id: args.task_id || undefined, description, message: routedMessage, success_criteria: criteria.length ? criteria : undefined, blocked_by: blockedBy.length ? blockedBy : undefined, requires_approval: args.requires_approval || undefined, allow_pending_agent: opts.allowPendingAgent || undefined, operation_id: operationId };
       const data = await mcpFleetTransport.durable('delegate', delegateBody, { operationId });
       rememberOriginatedEvents(data);
       if (!data.ok) throw new Error(`Delegate failed: ${JSON.stringify(data)}`);
@@ -2318,7 +2322,8 @@ export async function handleFleetTool(name, args) {
       if (spawnedInfo) {
         return { content: [{ type: 'text', text: `Spawned ${spawnedInfo.friendly_name} (${spawnedInfo.agent_id}) and delegated [${data.task_id}]: ${description}\nagent_id: ${spawnedInfo.agent_id}\nfriendly_name: ${spawnedInfo.friendly_name}` }] };
       }
-      return { content: [{ type: 'text', text: `Delegated to ${agent} [${data.task_id}]: ${description}` }] };
+      const verb = args.task_id ? 'Transferred' : 'Delegated';
+      return { content: [{ type: 'text', text: `${verb} to ${agent} [${data.task_id}]: ${description}` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Delegate failed before transport ACK: ${e.message}` }], isError: true };
     }
@@ -2707,15 +2712,15 @@ export async function handleFleetTool(name, args) {
   }
 
 
-  // ---- task_list ----
-  if (name === 'task_list') {
+  // ---- tasks ----
+  if (name === 'tasks') {
     let agents, active;
     try {
       [agents, active] = await Promise.all([mcpFleetTransport.ephemeral('store-agents'), mcpFleetTransport.ephemeral('store-tasks', { active: true })]);
-      if (agents.error) return { content: [{ type: 'text', text: `task_list failed: ${agents.error}` }], isError: true };
-      if (active.error) return { content: [{ type: 'text', text: `task_list failed: ${active.error}` }], isError: true };
+      if (agents.error) return { content: [{ type: 'text', text: `tasks failed: ${agents.error}` }], isError: true };
+      if (active.error) return { content: [{ type: 'text', text: `tasks failed: ${active.error}` }], isError: true };
     } catch (e) {
-      return { content: [{ type: 'text', text: `task_list failed before transport ACK: ${e.message}` }], isError: true };
+      return { content: [{ type: 'text', text: `tasks failed before transport ACK: ${e.message}` }], isError: true };
     }
 
     let text = '';
@@ -3606,8 +3611,8 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     return { content: [{ type: 'text', text: output }] };
   }
 
-  // ---- search_logs ----
-  if (name === 'search_logs') {
+  // ---- search ----
+  if (name === 'search') {
     if (!AGENT_ID) return { content: [{ type: 'text', text: 'Not logged in. Call login() first.' }], isError: true };
     const rawQuery = args.query;
     if (!rawQuery || rawQuery.length < 2) {
@@ -3752,7 +3757,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
         `  status: ${status}`,
         `  last relevant: ${row.latest_relevant_at ? `${fmtTs(row.latest_relevant_at)} (${row.latest_relevant_at})` : '(none indexed)'}`,
         `  source: ${row.latest_activity?.source || 'agent_seat'}${row.latest_activity?.type ? ` / ${row.latest_activity.type}` : ''}${row.latest_activity?.event_id ? ` #${row.latest_activity.event_id}` : ''}`,
-        `  thread: ${row.thread?.query || `get_thread(agent: "${row.agent_id}")`}`,
+        `  thread: ${row.thread?.query || `thread(agent: "${row.agent_id}")`}`,
       ];
       if (row.latest_activity?.session_id) lines.push(`  session: ${row.latest_activity.session_id}`);
       const summary = (row.latest_activity?.summary || '').trim();
@@ -3851,14 +3856,14 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       searchBytes += entryBytes;
     }
     if (searchTruncated) {
-      header += `\n⚠️ Output truncated (showing ${searchLines.length} of ${formatted.length} results). For full conversation context, use get_thread(agent) — search_logs returns snippets, not complete conversations.`;
+      header += `\n⚠️ Output truncated (showing ${searchLines.length} of ${formatted.length} results). For full conversation context, use thread(agent) — search returns snippets, not complete conversations.`;
     }
 
     return { content: [{ type: 'text', text: `${header}\n\n${searchLines.join('\n\n')}` }] };
   }
 
-  // ---- get_thread ----
-  if (name === 'get_thread') {
+  // ---- thread ----
+  if (name === 'thread') {
     const tasks = args.task_id ? ((await mcpFleetTransport.ephemeral('store-tasks')) || []) : [];
     const resolvedAgents = new Map();
     let filtered = [];
@@ -3981,21 +3986,21 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       if (taskAgent) resolvedAgents.set(taskAgent.id, taskAgent);
       primaryId = taskAgent?.id || task.agent;
       try { await fetchEventsForAgent(task.agent); } catch (e) {
-        process.stderr.write(`[fleet] get_thread DB fetch failed: ${e.message}\n`);
+        process.stderr.write(`[fleet] thread DB fetch failed: ${e.message}\n`);
       }
     } else if (args.agent || args.filter) {
       // Reject Claude Code session UUIDs (8-4-4-4-12 hex). These are an
       // internal Claude Code identifier and have no place in fleet — the
       // primary key for agents is the agent name or fleet:UUID. Catching
       // them with a specific error stops agents from inventing workarounds
-      // (raw JSONL reads, search_logs misuse) when "Agent not found" looks
+      // (raw JSONL reads, search misuse) when "Agent not found" looks
       // ambiguous.
       const SESSION_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
       if (args.agent && SESSION_UUID.test(args.agent)) {
         return {
           content: [{
             type: 'text',
-            text: `"${args.agent}" looks like a Claude Code session UUID. Session IDs are not accepted in fleet — use the agent identifier (name like "pb" or "fleet:UUID"). If you don't know which agent ran a session, look at the JSONL's first message or use fleet_table.`,
+            text: `"${args.agent}" looks like a Claude Code session UUID. Session IDs are not accepted in fleet — use the agent identifier (name like "pb" or "fleet:UUID"). If you don't know which agent ran a session, look at the JSONL's first message or use roster.`,
           }],
           isError: true,
         };
@@ -4008,12 +4013,12 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
         return { content: [{ type: 'text', text: `Bad thread filter "${rawThreadFilter}": ${e.message}` }], isError: true };
       }
       if (!filterExpression) {
-        return { content: [{ type: 'text', text: `get_thread filter "${rawThreadFilter}" did not produce a message filter. Use agent:name, from:name, to:name, or the agent argument.` }], isError: true };
+        return { content: [{ type: 'text', text: `thread filter "${rawThreadFilter}" did not produce a message filter. Use agent:name, from:name, to:name, or the agent argument.` }], isError: true };
       }
       try {
         await fetchEventsForFilter(filterExpression);
       } catch (e) {
-        process.stderr.write(`[fleet] get_thread fleet-search fetch failed: ${e.message}\n`);
+        process.stderr.write(`[fleet] thread fleet-search fetch failed: ${e.message}\n`);
       }
     } else {
       return { content: [{ type: 'text', text: 'Provide agent, filter, or task_id.' }], isError: true };
@@ -4087,7 +4092,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     if (overflow) {
       header = `Showing the first ${filtered.length} message(s)${rangeStr}\n` +
         `⚠️ More messages exist after this page. Continue with ` +
-        `\`get_thread(${nextPageArg}, since: "${newest}"${untilHint})\``;
+        `\`thread(${nextPageArg}, since: "${newest}"${untilHint})\``;
     } else {
       header = `${filtered.length} messages${rangeStr}`;
     }
@@ -4124,7 +4129,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     let truncatedAt = null; // timestamp where we stopped
 
     // Name-provenance tag: period name (held at the event's time) + durable
-    // fleet id, with `→now:X` when the agent has since rotated. See search_logs.
+    // fleet id, with `→now:X` when the agent has since rotated. See search.
     const tag = (id, periodName, nowName) => {
       if (!id) return '';
       const nm = periodName === undefined ? (resolvedAgents.get(id)?.friendly_name || null) : periodName;
@@ -4157,7 +4162,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       const lastShownTs = filtered[shown - 1]?.timestamp;
       header = `Showing messages 1–${shown} of ${filtered.length}${overflow ? '+' : ''}${rangeStr}\n` +
         `⚠️ ${remaining}+ more — get the next page:\n` +
-        `\`get_thread(${nextPageArg}, since: "${lastShownTs}"${untilHint})\``;
+        `\`thread(${nextPageArg}, since: "${lastShownTs}"${untilHint})\``;
     }
 
     return { content: [{ type: 'text', text: `${header}${provenanceNote}\n\n${lines.join(SEP)}` }] };
@@ -4215,15 +4220,15 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     }
   }
 
-  // ---- fleet_table ----
-  if (name === 'fleet_table') {
+  // ---- roster ----
+  if (name === 'roster') {
     try {
       const qs = new URLSearchParams();
       if (args.filter) qs.set('filter', args.filter);
       if (args.limit) qs.set('limit', String(args.limit));
       const res = await fleetFetch(`${TLDA_FLEET_SERVER}/api/fleet-table${qs.toString() ? `?${qs}` : ''}`);
       const data = await res.json();
-      if (data.error) return { content: [{ type: 'text', text: `fleet_table failed: ${data.error}` }], isError: true };
+      if (data.error) return { content: [{ type: 'text', text: `roster failed: ${data.error}` }], isError: true };
 
       const t = data.totals || { awake: 0, hibernating: 0, dead: 0, total: 0 };
       const rows = data.agents || [];
@@ -4269,7 +4274,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       const colHead = `${'agent'.padEnd(wn)}  ${'status'.padEnd(ws)}  ${'seen'.padStart(wsa)}  ${'inbox'.padEnd(wi)}  ${'delivery'.padEnd(wc)}  ${'model'.padEnd(wm)}  ${'activity'.padEnd(14)}  cwd`;
       return { content: [{ type: 'text', text: `${header}${scope}${summaryText}\n\n${colHead}\n${lines.join('\n')}` }] };
     } catch (e) {
-      return { content: [{ type: 'text', text: `fleet_table failed before transport ACK: ${e.message}` }], isError: true };
+      return { content: [{ type: 'text', text: `roster failed before transport ACK: ${e.message}` }], isError: true };
     }
   }
 
@@ -4851,8 +4856,8 @@ async function handleChannelMessage(msg) {
   const toLabel = (data.to || data.to_id || '')?.replace(/^fleet:/, '') || '';
 
   if (isWiretapTarget && !isDirectTarget) {
-    // Wiretap: format identically to get_thread entries so the agent can
-    // concatenate wiretap output with get_thread history seamlessly.
+    // Wiretap: format identically to thread entries so the agent can
+    // concatenate wiretap output with thread history seamlessly.
     const ts = data.timestamp ? new Date(data.timestamp).toLocaleString() : '';
     const text = eventType === 'delegate'
       ? `[DELEGATE] ${data.description || ''}\n${data.message || data.text || ''}`

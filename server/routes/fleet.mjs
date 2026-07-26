@@ -19,7 +19,7 @@ import { fleetRosterCategory } from '../../shared/fleet-runtime-status.mjs'
 import { resolveSpawnMachine } from '../lib/spawn-routing.mjs'
 import { summarizeFleetRosterTruth } from '../lib/fleet-roster-truth.mjs'
 import { daemonAddress, describeAgentAddress } from '../../shared/agent-move-target.mjs'
-import { completeTaskLifecycle } from '../lib/task-lifecycle.mjs'
+import { canReportTask, completeTaskLifecycle, transferTaskLifecycle } from '../lib/task-lifecycle.mjs'
 import { recordAgentBindingEvent } from '../lib/agent-binding-events.mjs'
 import { projectActivityEventsPage, projectAgentActivityPage } from '../lib/activity-dashboard-projection.mjs'
 
@@ -688,14 +688,23 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
 
   // --- POST /api/tasks/delegate ---
   router.post('/api/tasks/delegate', async (req, res) => {
-    const { from: rawFrom, agent: agentQuery, description, message, success_criteria, blocked_by } = req.body || {}
-    if (!agentQuery || !description) { res.status(400).send('missing "agent" or "description"'); return }
+    const { from: rawFrom, agent: agentQuery, description, message, success_criteria, blocked_by, task_id } = req.body || {}
+    if (!agentQuery || (!description && !task_id)) { res.status(400).send('missing "agent" or "description"'); return }
+    if (task_id && !message) { res.status(400).send('missing "message" for existing task delegation'); return }
     const resolvedAgent = fleetStore?.findAgent(agentQuery)
     if (!resolvedAgent) { res.status(404).send(`Agent not found: "${agentQuery}"`); return }
     const agentId = resolvedAgent.id
     const from = rawFrom ? (fleetStore?.findAgent(rawFrom)?.id || rawFrom) : null
-    const taskId = `${agentId.slice(0, 10)}-${Date.now().toString(36)}`
     const now = new Date().toISOString()
+    const existingTask = task_id ? fleetStore?.getTask?.(task_id) : null
+    if (task_id && !existingTask) { res.status(404).send(`Task not found: "${task_id}"`); return }
+    if (existingTask && (existingTask.status === 'done' || existingTask.status === 'retracted')) { res.status(409).send(`Cannot delegate closed task: "${task_id}"`); return }
+    const caller = from ? (fleetStore?.findAgent(from) || { id: from }) : null
+    if (existingTask && !canReportTask({ caller, task: existingTask, fleetStore })) {
+      res.status(403).send('not authorized to delegate this task')
+      return
+    }
+    const taskId = task_id || `${agentId.slice(0, 10)}-${Date.now().toString(36)}`
     const task = {
       id: taskId, agent: agentId, description,
       message: message || description,
@@ -706,12 +715,27 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       success_criteria: success_criteria || undefined,
     }
     if (fleetStore) {
-      fleetStore.upsertTask(task)
-      await fleetStore.delegate(from, agentId, taskId, description, {
+      const metadata = {
         fromLabel: fleetStore.getAgent?.(from)?.friendly_name || from,
         toLabel: resolvedAgent.friendly_name || agentId,
         criteria: success_criteria || [],
-      })
+        message: message || '',
+        ...(existingTask ? { transfer: true, previous_agent: existingTask.agent } : {}),
+      }
+      if (existingTask) {
+        await transferTaskLifecycle({
+          fleetStore,
+          task: existingTask,
+          fromAgentId: from,
+          toAgentId: agentId,
+          message,
+          delegatedAt: now,
+          eventMetadata: metadata,
+        })
+      } else {
+        fleetStore.upsertTask(task)
+        await fleetStore.delegate(from, agentId, taskId, description, metadata)
+      }
     }
     broadcastState()
     res.json({ ok: true, task_id: taskId })
