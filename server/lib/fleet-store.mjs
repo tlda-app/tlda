@@ -58,6 +58,12 @@ const TRANSPORT_OPERATION_PRUNE_BATCH_MAX = envNumber('TLDA_TRANSPORT_OPERATION_
 const SLOWQUERY_LOG_FILE = path.join(os.homedir(), '.config', 'tlda', 'slowquery.log');
 const WIRETAP_EVENT_TYPES = new Set(['chat', 'delegate', 'task_done']);
 
+function cwdPathSegments(cwd) {
+  const normalized = String(cwd || '').trim().replace(/\/+$/, '');
+  if (!normalized) return [];
+  return [...new Set(normalized.split('/').filter(Boolean))];
+}
+
 // Newest first, bucketed to the MINUTE — Skip's design, from the screen rather
 // than from a profile:
 //
@@ -281,6 +287,9 @@ export class FleetStore {
     this.db.pragma('synchronous = NORMAL');
     this._createTables();
     this._prepareStatements();
+    this._closed = false;
+    this._cwdSegmentBackfillImmediate = null;
+    this._scheduleCwdSegmentBackfill();
     this._initAgentRegistry();
     this._wiretapCache = null;
     this._lastTransportOperationPruneAt = 0;
@@ -330,6 +339,57 @@ export class FleetStore {
       this._writeWaiters.set(id, { resolve, reject });
       this._worker.postMessage({ id, kind: 'run', sql, params });
     });
+  }
+
+  _replaceCwdSegments(source, agentId, cwd) {
+    if (!source || !agentId) return;
+    const segments = cwdPathSegments(cwd);
+    const tx = this.db.transaction(() => {
+      this.db.prepare('DELETE FROM agent_cwd_segments WHERE source = ? AND agent_id = ?').run(source, agentId);
+      const insert = this.db.prepare('INSERT OR IGNORE INTO agent_cwd_segments (source, agent_id, segment) VALUES (?, ?, ?)');
+      for (const segment of segments) insert.run(source, agentId, segment);
+    });
+    tx();
+  }
+
+  _scheduleCwdSegmentBackfill() {
+    const batchSize = Math.max(1, Number(process.env.TLDA_CWD_SEGMENT_BACKFILL_BATCH || 50) || 50);
+    const selectAgents = this.db.prepare(`
+      SELECT id AS agent_id, cwd FROM agents
+      WHERE cwd IS NOT NULL AND cwd != ''
+        AND NOT EXISTS (
+          SELECT 1 FROM agent_cwd_segments cs
+          WHERE cs.source = 'agent' AND cs.agent_id = agents.id
+        )
+      ORDER BY id
+      LIMIT ?
+    `);
+    const selectSeats = this.db.prepare(`
+      SELECT agent_id, cwd FROM agent_seats
+      WHERE cwd IS NOT NULL AND cwd != ''
+        AND NOT EXISTS (
+          SELECT 1 FROM agent_cwd_segments cs
+          WHERE cs.source = 'seat' AND cs.agent_id = agent_seats.agent_id
+        )
+      ORDER BY agent_id
+      LIMIT ?
+    `);
+    const runBatch = () => {
+      this._cwdSegmentBackfillImmediate = null;
+      if (this._closed || !this.db.open) return;
+      let rows = [];
+      try {
+        rows = selectSeats.all(batchSize).map(r => ({ ...r, source: 'seat' }))
+          .concat(selectAgents.all(batchSize).map(r => ({ ...r, source: 'agent' })));
+        for (const row of rows) this._replaceCwdSegments(row.source, row.agent_id, row.cwd);
+      } catch (e) {
+        if (this._closed || !this.db.open) return;
+        console.warn(`[fleet-store] cwd segment backfill failed: ${e.message}`);
+        return;
+      }
+      if (rows.length > 0 && !this._closed) this._cwdSegmentBackfillImmediate = setImmediate(runBatch);
+    };
+    this._cwdSegmentBackfillImmediate = setImmediate(runBatch);
   }
 
   _wBatchAwait(ops) {
@@ -778,6 +838,16 @@ export class FleetStore {
         transition_reason TEXT,
         FOREIGN KEY (agent_id, session_id) REFERENCES agent_seats(agent_id, session_id)
       );
+    `);
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS agent_cwd_segments (
+        source TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        segment TEXT NOT NULL,
+        PRIMARY KEY (source, agent_id, segment)
+      );
+      CREATE INDEX IF NOT EXISTS idx_agent_cwd_segments_segment
+        ON agent_cwd_segments(segment, source, agent_id);
     `);
     this._migrateAgentCurrentSeatsRouteSchema();
     const taskCols = this.db.prepare("PRAGMA table_info(tasks)").all();
@@ -2150,6 +2220,7 @@ export class FleetStore {
     if (existing) {
       const conflict = this._seatIdentityConflict(existing, normalized);
       if (conflict) throw new Error(`seat identity conflict for ${normalized.agent_id}/${normalized.session_id}: ${conflict}`);
+      this._replaceCwdSegments('seat', normalized.agent_id, normalized.cwd);
       return existing;
     }
     this._insertAgentSeat.run(
@@ -2163,6 +2234,7 @@ export class FleetStore {
       normalized.created_source,
       normalized.created_by_event_id,
     );
+    this._replaceCwdSegments('seat', normalized.agent_id, normalized.cwd);
     return this._getAgentSeat.get(normalized.agent_id);
   }
 
@@ -2319,6 +2391,7 @@ export class FleetStore {
       daemon_key || null,
       agentId,
     );
+    if (cwd != null) this._replaceCwdSegments('agent', agentId, cwd);
     this._bustAgentsCache();
     this._syncAgentRegistry(agentId);
   }
@@ -2377,6 +2450,7 @@ export class FleetStore {
         daemonKey,
         agent.resume_id || null
       );
+      if (agent.cwd != null) this._replaceCwdSegments('agent', agent.id, agent.cwd);
       this._bustAgentsCache();
       this._syncAgentRegistry(agent.id);
     } catch (e) {
@@ -4489,19 +4563,31 @@ export class FleetStore {
     const isPath = raw.includes('/') || raw.startsWith('~');
     const normalized = raw.replace(/\/+$/, '');
     const params = [];
-    let cwdPredicate;
+    let candidateRawSql;
     if (isPath) {
-      cwdPredicate = "rtrim(coalesce(cwd, ''), '/') = ?";
+      candidateRawSql = `
+        SELECT agent_id, cwd, created_at AS seat_created_at FROM agent_seats WHERE rtrim(cwd, '/') = ?
+        UNION ALL
+        SELECT id AS agent_id, cwd, registered_at AS seat_created_at FROM agents WHERE rtrim(cwd, '/') = ?
+      `;
       params.push(normalized);
     } else {
-      cwdPredicate = "(cwd = ? OR cwd LIKE ? OR cwd LIKE ?)";
-      params.push(raw, `%/${raw}`, `%/${raw}/%`);
+      candidateRawSql = `
+        SELECT s.agent_id, s.cwd, s.created_at AS seat_created_at
+        FROM agent_cwd_segments cs
+        JOIN agent_seats s ON s.agent_id = cs.agent_id
+        WHERE cs.segment = ? AND cs.source = 'seat'
+        UNION ALL
+        SELECT a.id AS agent_id, a.cwd, a.registered_at AS seat_created_at
+        FROM agent_cwd_segments cs
+        JOIN agents a ON a.id = cs.agent_id
+        WHERE cs.segment = ? AND cs.source = 'agent'
+      `;
+      params.push(raw);
     }
     const sql = `
       WITH candidate_raw AS (
-        SELECT agent_id, cwd, created_at AS seat_created_at FROM agent_seats WHERE ${cwdPredicate}
-        UNION ALL
-        SELECT id AS agent_id, cwd, registered_at AS seat_created_at FROM agents WHERE ${cwdPredicate}
+        ${candidateRawSql}
       ),
       candidate AS (
         SELECT agent_id, max(cwd) AS cwd, max(seat_created_at) AS seat_created_at
@@ -4627,19 +4713,31 @@ export class FleetStore {
     const isPath = raw.includes('/') || raw.startsWith('~');
     const normalized = raw.replace(/\/+$/, '');
     const params = [];
-    let cwdPredicate;
+    let candidateRawSql;
     if (isPath) {
-      cwdPredicate = "rtrim(coalesce(cwd, ''), '/') = ?";
+      candidateRawSql = `
+        SELECT agent_id FROM agent_seats WHERE rtrim(cwd, '/') = ?
+        UNION
+        SELECT id AS agent_id FROM agents WHERE rtrim(cwd, '/') = ?
+      `;
       params.push(normalized);
     } else {
-      cwdPredicate = "(cwd = ? OR cwd LIKE ? OR cwd LIKE ?)";
-      params.push(raw, `%/${raw}`, `%/${raw}/%`);
+      candidateRawSql = `
+        SELECT s.agent_id
+        FROM agent_cwd_segments cs
+        JOIN agent_seats s ON s.agent_id = cs.agent_id
+        WHERE cs.segment = ? AND cs.source = 'seat'
+        UNION
+        SELECT a.id AS agent_id
+        FROM agent_cwd_segments cs
+        JOIN agents a ON a.id = cs.agent_id
+        WHERE cs.segment = ? AND cs.source = 'agent'
+      `;
+      params.push(raw);
     }
     const sql = `
       WITH candidate_raw AS (
-        SELECT agent_id FROM agent_seats WHERE ${cwdPredicate}
-        UNION
-        SELECT id AS agent_id FROM agents WHERE ${cwdPredicate}
+        ${candidateRawSql}
       )
       SELECT agent_id
       FROM candidate_raw
@@ -4869,6 +4967,9 @@ export class FleetStore {
   }
 
   close() {
+    this._closed = true;
+    if (this._cwdSegmentBackfillImmediate) clearImmediate(this._cwdSegmentBackfillImmediate);
+    this._cwdSegmentBackfillImmediate = null;
     this._worker?.terminate?.();
     this.db.close();
   }

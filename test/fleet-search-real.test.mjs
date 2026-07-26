@@ -53,6 +53,7 @@ function insertAgent(store, agent) {
     lastActive: agent.lastActive || null,
     dead: agent.dead ? 1 : 0,
   });
+  store._replaceCwdSegments('agent', agent.id, agent.cwd || null);
 }
 
 function insertAgentSeat(store, seat) {
@@ -70,6 +71,7 @@ function insertAgentSeat(store, seat) {
     createdSource: seat.createdSource || 'test',
     createdByEventId: seat.createdByEventId || null,
   });
+  store._replaceCwdSegments('seat', seat.agentId, seat.cwd);
 }
 
 test('default search returns naming chat for original failing query ahead of activity echoes', () => withStore(store => {
@@ -335,6 +337,18 @@ test('project agent search lists agents in a cwd by latest relevant activity', (
     cwd: '/Users/skip/work/tlda/',
     createdAt: '2026-07-20T00:00:00.000Z',
   });
+  insertAgent(store, {
+    id: 'fleet:gamma',
+    friendlyName: 'gamma',
+    cwd: '/Users/skip/work/tlda/scratch/worktrees/foo',
+    registeredAt: '2026-07-20T00:00:00.000Z',
+  });
+  insertAgentSeat(store, {
+    agentId: 'fleet:gamma',
+    sessionId: 'session-gamma',
+    cwd: '/Users/skip/work/tlda/scratch/worktrees/foo',
+    createdAt: '2026-07-20T00:00:00.000Z',
+  });
   insertEvent(store, {
     type: 'chat',
     timestamp: '2026-07-21T00:00:00.000Z',
@@ -352,6 +366,13 @@ test('project agent search lists agents in a cwd by latest relevant activity', (
   insertEvent(store, {
     type: 'chat',
     timestamp: '2026-07-23T00:00:00.000Z',
+    from: 'fleet:gamma',
+    to: 'fleet:skip',
+    text: 'worktree project work',
+  });
+  insertEvent(store, {
+    type: 'chat',
+    timestamp: '2026-07-24T00:00:00.000Z',
     from: 'fleet:other',
     to: 'fleet:skip',
     text: 'wrong project',
@@ -360,10 +381,10 @@ test('project agent search lists agents in a cwd by latest relevant activity', (
   const byPath = store.searchProjectAgents('/Users/skip/work/tlda', { limit: 10 });
   assert.deepEqual(byPath.map(row => row.agent_id), ['fleet:beta', 'fleet:alpha']);
   assert.equal(byPath[0].latest_activity.source, 'session');
-  assert.equal(byPath[0].thread.query, 'get_thread(agent: "fleet:beta")');
+  assert.equal(byPath[0].thread.query, 'thread(agent: "fleet:beta")');
 
   const byProjectName = store.searchProjectAgents('tlda', { limit: 10 });
-  assert.deepEqual(byProjectName.map(row => row.agent_id), ['fleet:beta', 'fleet:alpha']);
+  assert.deepEqual(byProjectName.map(row => row.agent_id), ['fleet:gamma', 'fleet:beta', 'fleet:alpha']);
 
   const bounded = store.searchProjectAgents('/Users/skip/work/tlda', {
     since: '2026-07-21T12:00:00.000Z',
@@ -372,6 +393,22 @@ test('project agent search lists agents in a cwd by latest relevant activity', (
   assert.deepEqual(bounded.map(row => row.agent_id), ['fleet:beta', 'fleet:alpha']);
   assert.equal(bounded[0].latest_relevant_at, '2026-07-22T00:00:00.000Z');
   assert.equal(bounded[1].latest_relevant_at, '2026-07-20T00:00:00.000Z');
+}));
+
+test('project agent search replaces cwd segment membership when an agent moves', () => withStore(store => {
+  insertAgent(store, {
+    id: 'fleet:mover',
+    friendlyName: 'mover',
+    cwd: '/Users/skip/work/tlda',
+    registeredAt: '2026-07-20T00:00:00.000Z',
+  });
+  assert.deepEqual(store.projectAgentIds('tlda'), ['fleet:mover']);
+
+  store.db.prepare('UPDATE agents SET cwd = ? WHERE id = ?').run('/Users/skip/work/other', 'fleet:mover');
+  store._replaceCwdSegments('agent', 'fleet:mover', '/Users/skip/work/other');
+
+  assert.deepEqual(store.projectAgentIds('tlda'), []);
+  assert.deepEqual(store.projectAgentIds('other'), ['fleet:mover']);
 }));
 
 test('search stats report corpus scale and index version', () => withStore(store => {

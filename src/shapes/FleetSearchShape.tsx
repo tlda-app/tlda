@@ -217,6 +217,23 @@ function searchResultMessageDrag(result: any, text: string, ctx: ReturnType<type
   }
 }
 
+function renderProjectAgentSearchLine(result: any, ctx: ReturnType<typeof makeChatCtx>, agents: any[]) {
+  const agentId = result.agentId || result.agent_id || result.from || ''
+  const label = fleetSearchResultParticipantLabel(result, agentId, { agents }) || ctx.agentLabel(agentId)
+  const cls = ctx.getNickClass(agentId)
+  const latest = result.latest_activity || {}
+  const ts = result.latest_relevant_at || result.timestamp || ''
+  const latestType = latest.type || result.type || 'activity'
+  const summary = latest.summary || result.snippet || result.text || result.cwd || ''
+  const body = summary ? searchRenderMarkdown(esc(summary)) : esc(result.cwd || '')
+  return `<div class="chat-line" data-msg-ts="${esc(ts)}" data-msg-from="${esc(agentId)}">
+    <span class="chat-ts" draggable="true">${timeShort(ts)}</span>
+    <span class="chat-nick"><span class="agent-nick ${cls}" data-agent-id="${esc(agentId)}">${esc(label)}:</span></span>
+    <span class="pretty-search-source">${esc(latestType)}</span>
+    <span class="pretty-search-snippet">${body}</span>
+  </div>`
+}
+
 function makeChatCtx(agents: any[], tasks: any[]) {
   const agentLabel = (id: string) => {
     if (!id) return '[unknown]'
@@ -665,8 +682,9 @@ function FleetSearchInner({ shape }: { shape: any }) {
             const rawEvent = r.source === 'session'
               ? { type: r.role === 'user' ? 'terminal_user' : 'terminal_assistant', from: r.agentId, to: null, text, timestamp: r.timestamp, id: r.id }
               : { ...r, text, id: r.id }
-            const msgObj = convertChatEvent(rawEvent)
-            const lineHtml = renderChatLine(msgObj, ctx)
+            const lineHtml = r.type === 'project_agent'
+              ? renderProjectAgentSearchLine(r, ctx, agents)
+              : renderChatLine(convertChatEvent(rawEvent), ctx)
             if (!lineHtml) return null
             return (
               <div
