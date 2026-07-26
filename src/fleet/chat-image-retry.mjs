@@ -57,10 +57,33 @@ function scheduleRetry(img, opts = {}) {
   globalThis.setTimeout(() => {
     delete img.dataset.chatImageRetryPending
     if (!img.isConnected) return
-    const current = img.currentSrc || img.src || img.getAttribute('src') || ''
     if (img.dataset.chatImageRetrySrc !== failedSrc) return
-    if (img.style?.display === 'none') img.style.display = ''
-    img.src = retryImageUrl(failedSrc, attempt, opts.baseHref)
+    const nextSrc = retryImageUrl(failedSrc, attempt, opts.baseHref)
+
+    // Load the candidate on a detached image first, and only put it on the
+    // visible element once it has actually decoded. Assigning img.src directly
+    // clears the element while the request is in flight, so every attempt made
+    // the picture go broken -> blank -> broken. Retrying is meant to be
+    // invisible: while we retry, the reader keeps seeing one unchanging
+    // broken-link state, and the picture appears only when there is a picture
+    // to show.
+    const probe = img.ownerDocument?.createElement('img')
+    if (!probe) {
+      if (img.style?.display === 'none') img.style.display = ''
+      img.src = nextSrc
+      return
+    }
+    const stillOurs = () => img.isConnected && img.dataset.chatImageRetrySrc === failedSrc
+    probe.onload = () => {
+      if (!stillOurs()) return
+      if (img.style?.display === 'none') img.style.display = ''
+      img.src = nextSrc
+    }
+    probe.onerror = () => {
+      if (!stillOurs()) return
+      scheduleRetry(img, opts)
+    }
+    probe.src = nextSrc
   }, retryDelay(attempt, baseDelayMs))
   return true
 }
