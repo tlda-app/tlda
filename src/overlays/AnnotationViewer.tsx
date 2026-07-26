@@ -20,8 +20,8 @@ import type {
   ManagedSurfacePlacement,
   ManagedSurfaceRequest,
 } from '../wm/managed-surfaces'
-import { isDocumentPageShape, sendCanvasPageShapesToBack } from '../shapes/document-pages'
-import { isMyFleetShape } from '../shapes/fleet-utils'
+import { sendCanvasPageShapesToBack } from '../shapes/document-pages'
+import { replanFleetLayoutForBounds } from '../shapes/fleet-utils'
 import './AnnotationViewer.css'
 
 type ViewerState = 'hovering' | 'pinned' | 'navigated'
@@ -168,49 +168,11 @@ export function AnnotationViewer({
 
   const canvasWrapRef = useRef<HTMLDivElement>(null)
 
+  // The workspace travels with the reader and is laid out for the destination
+  // document's width — see replanFleetLayoutForBounds, which owns the placement.
   const shiftMarginShapesForTarget = useCallback((target: ClipBounds) => {
-    const viewport = mainEditor.getViewportPageBounds()
-    const viewportMidY = viewport.y + viewport.h / 2
-    let source: ClipBounds | null = null
-    let bestDistance = Infinity
-    for (const shape of mainEditor.getCurrentPageShapes().filter(isDocumentPageShape)) {
-      const bounds = mainEditor.getShapePageBounds(shape.id)
-      if (!bounds) continue
-      const distance = viewportMidY >= bounds.y && viewportMidY <= bounds.y + bounds.h
-        ? 0
-        : Math.min(Math.abs(viewportMidY - bounds.y), Math.abs(viewportMidY - (bounds.y + bounds.h)))
-      if (distance < bestDistance) {
-        bestDistance = distance
-        source = { x: bounds.x, y: bounds.y, w: bounds.w, h: bounds.h }
-      }
-    }
-    if (!source) return []
-
-    const sourceLeft = source.x
-    const sourceRight = source.x + source.w
-    const targetLeft = target.x
-    const targetRight = target.x + target.w
-    const moved: Array<{ id: TLShapeId; x: number; y: number }> = []
-    const updates: Array<{ id: TLShapeId; type: string; x: number; y: number }> = []
-
-    for (const shape of mainEditor.getCurrentPageShapes().filter(isMyFleetShape) as any[]) {
-      const bounds = mainEditor.getShapePageBounds(shape.id)
-      if (!bounds) continue
-      let dx = 0
-      if (bounds.x + bounds.w <= sourceLeft) {
-        dx = targetLeft - sourceLeft
-      } else if (bounds.x >= sourceRight) {
-        dx = targetRight - sourceRight
-      } else {
-        continue
-      }
-      if (Math.abs(dx) < 0.5) continue
-      moved.push({ id: shape.id, x: shape.x, y: shape.y })
-      updates.push({ id: shape.id, type: shape.type, x: shape.x + dx, y: shape.y })
-    }
-
-    if (updates.length > 0) {
-      mainEditor.updateShapes(updates as any)
+    const moved = replanFleetLayoutForBounds(mainEditor, target)
+    if (moved.length > 0) {
       try { window.dispatchEvent(new CustomEvent('fleet-hud-reset', { detail: { preserveAnchor: true } })) } catch {}
     }
     return moved
