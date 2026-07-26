@@ -412,12 +412,110 @@ const TLDA_WS_SERVER = TLDA_SERVER.replace(/^http/, 'ws');
 const TLDA_FLEET_SERVER = getFleetServerUrl();
 const TLDA_FLEET_WS_SERVER = TLDA_FLEET_SERVER.replace(/^http/, 'ws');
 const _tldaToken = getRwToken();
+let _activeToolEnv = null;
 let _fleetTransportDb = null;
 let _fleetTransportOutbox = null;
 let _fleetTransportAgentId = null;
 let _fleetTransportFlushTimer = null;
 let _fleetTransportFlushInFlight = null;
 const _fleetTransportRecoveredAgents = new Set();
+
+const ENV_SCOPED_TOOL_NAMES = new Set([
+  'delegate', 'chat', 'notify',
+  'tasks', 'read_terminal', 'inbox',
+  'set_inbox_status', 'set_delivery_channel',
+  'name_agent', 'spawn_models',
+  'search', 'observe', 'thread', 'get_refs',
+  'label_agent', 'interrupt', 'roster', 'viewing_context',
+  'timer', 'subscribe', 'subscriptions', 'unsubscribe',
+  'report',
+]);
+
+function normalizeEnvArg(args = {}) {
+  const env = typeof args?.env === 'string' ? args.env.trim() : '';
+  return env || null;
+}
+
+function activeEnvName() {
+  return getActiveEnvName(_activeToolEnv);
+}
+
+function activeFleetServerUrl() {
+  return _activeToolEnv ? getFleetServerUrl(_activeToolEnv) : TLDA_FLEET_SERVER;
+}
+
+function activeStoreServerUrl() {
+  return _activeToolEnv ? getServerUrl(_activeToolEnv) : TLDA_SERVER;
+}
+
+function rewriteActiveServerUrl(url) {
+  if (!_activeToolEnv || typeof url !== 'string') return url;
+  if (url.startsWith(TLDA_FLEET_SERVER)) return `${activeFleetServerUrl()}${url.slice(TLDA_FLEET_SERVER.length)}`;
+  if (url.startsWith(TLDA_SERVER)) return `${activeStoreServerUrl()}${url.slice(TLDA_SERVER.length)}`;
+  return url;
+}
+
+function annotateEnvResult(result, envName) {
+  if (!result?.content?.length || result.content[0]?.type !== 'text') return result;
+  const text = result.content[0].text || '';
+  if (text.startsWith('Environment: ')) return result;
+  return {
+    ...result,
+    content: [{ ...result.content[0], text: `Environment: ${envName}\n${text}` }, ...result.content.slice(1)],
+  };
+}
+
+function sendOneShotWS(envName, type, params = {}, opts = {}) {
+  const id = crypto.randomUUID();
+  const deadlineMs = opts.deadlineMs ?? opts.idleTimeoutMs ?? WS_REQUEST_IDLE_MS;
+  const wsUrl = `${getFleetServerUrl(envName).replace(/^http/, 'ws')}/ws/fleet?agent=${encodeURIComponent(AGENT_ID || '')}`;
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const ws = new WebSocket(wsUrl);
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      try { ws.close(); } catch { /* best-effort cleanup; timeout is already reported */ }
+      reject(new Error(`fleet WS request timed out after ${deadlineMs}ms (env=${envName}, type=${type})`));
+    }, deadlineMs);
+    function finish(fn, value) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try { ws.close(); } catch { /* best-effort cleanup; original WS result wins */ }
+      fn(value);
+    }
+    ws.on('open', () => {
+      ws.send(JSON.stringify({
+        type,
+        ...params,
+        id,
+        ...(opts.envelope ? {
+          operation_id: params.operation_id || opts.envelope.operation_id,
+          fleet_operation: opts.envelope,
+        } : {}),
+      }));
+    });
+    ws.on('message', data => {
+      let msg;
+      try { msg = JSON.parse(String(data)); } catch { return; }
+      if (msg.id !== id) return;
+      if (msg.error) {
+        const detail = typeof msg.error === 'object' && msg.error !== null ? msg.error : { message: msg.error };
+        const err = new Error(detail.message || String(msg.error));
+        Object.assign(err, detail);
+        finish(reject, err);
+      } else {
+        rememberOriginatedEvents(msg.result);
+        finish(resolve, msg.result);
+      }
+    });
+    ws.on('error', err => finish(reject, new Error(`fleet WS ${envName} not reachable: ${err.message}`)));
+    ws.on('close', () => {
+      if (!settled) finish(reject, new Error(`fleet WS ${envName} closed before ACK (type=${type})`));
+    });
+  });
+}
 
 function fleetTransportOutboxPath(agentId) {
   const digest = crypto.createHash('sha256').update(agentId).digest('hex').slice(0, 20);
@@ -446,7 +544,7 @@ function getFleetTransportOutbox(agentId) {
 function fleetFetch(url, opts = {}) {
   const timeoutMs = 10_000;
   if (!opts.signal) opts.signal = AbortSignal.timeout(timeoutMs);
-  return fetch(url, opts);
+  return fetch(rewriteActiveServerUrl(url), opts);
 }
 
 let _spawnModelCatalog = null;
@@ -1232,9 +1330,14 @@ let server = null;
 
 export const TLDA_INSTRUCTIONS = 'Fleet messages arrive as <channel source="tlda"> tags. When you see one, call inbox() to get full context and respond via chat().';
 
+const ENV_SCHEMA = {
+  type: 'string',
+  description: 'Explicit tlda environment name for this fleet call. Defaults to the caller\'s current environment.',
+};
+
 export function getFleetTools() {
   const spawnPermissionText = spawnPermissionDescriptions();
-  return [
+  const tools = [
     // ---- Registration & Identity ----
     {
       name: 'login',
@@ -1721,6 +1824,13 @@ export function getFleetTools() {
       },
     },
   ];
+  for (const tool of tools) {
+    if (!ENV_SCOPED_TOOL_NAMES.has(tool.name)) continue;
+    const schema = tool.inputSchema || { type: 'object', properties: {} };
+    schema.properties = { ...(schema.properties || {}), env: ENV_SCHEMA };
+    tool.inputSchema = schema;
+  }
+  return tools;
 }
 
 export function formatRecipientStatusSummary(recipients = [], agents = [], receipts = []) {
@@ -2009,6 +2119,20 @@ export function inboxViewForArgs(args = {}) {
 }
 
 export async function handleFleetTool(name, args) {
+  const requestedEnv = normalizeEnvArg(args);
+  if (requestedEnv && ENV_SCOPED_TOOL_NAMES.has(name) && !_activeToolEnv) {
+    const scopedArgs = { ...args };
+    delete scopedArgs.env;
+    const previous = _activeToolEnv;
+    _activeToolEnv = requestedEnv;
+    try {
+      const resolvedEnv = activeEnvName();
+      const result = await handleFleetTool(name, scopedArgs);
+      return annotateEnvResult(result, resolvedEnv);
+    } finally {
+      _activeToolEnv = previous;
+    }
+  }
   // Report tool_call status to dashboard (replaces pane scraping for idle detection)
   reportStatus('tool_call', name);
 
@@ -2397,14 +2521,14 @@ export async function handleFleetTool(name, args) {
       try {
         let resolvedMessage, inlineAttachments = [];
         if (source?.file) {
-          const r = await bundleSharedMarkdownImages(message, source.file, `${TLDA_FLEET_SERVER}`);
+          const r = await bundleSharedMarkdownImages(message, source.file, activeFleetServerUrl());
           resolvedMessage = r.body;
           // An amend re-bakes the body from the file, so it must re-upload too —
           // otherwise the amended message shows the new text behind a chip that
           // opens the version sent the first time, or nothing at all.
-          ({ source, error: sharedFileUploadError } = await withUploadedSourceFile(source, `${TLDA_FLEET_SERVER}`));
+          ({ source, error: sharedFileUploadError } = await withUploadedSourceFile(source, activeFleetServerUrl()));
         } else {
-          ({ resolvedMessage, inlineAttachments } = await processMessageText(message, agentCwd, `${TLDA_FLEET_SERVER}`));
+          ({ resolvedMessage, inlineAttachments } = await processMessageText(message, agentCwd, activeFleetServerUrl()));
         }
         const inlineMarkdownFileIssues = checkSharedMarkdownAttachments(inlineAttachments, macros);
         const body = { from: AGENT_ID, message: resolvedMessage, event_id: args.amend_id };
@@ -2517,13 +2641,13 @@ export async function handleFleetTool(name, args) {
     // (TLDA_SERVER), which post-cutover may be a different machine.
     let resolvedMessage, inlineAttachments = [], brokenPaths = [];
     if (source?.file) {
-      const r = await bundleSharedMarkdownImages(message, source.file, `${TLDA_FLEET_SERVER}`);
+      const r = await bundleSharedMarkdownImages(message, source.file, activeFleetServerUrl());
       resolvedMessage = r.body;
       // Upload the shared file itself, not only its images, so its chip opens.
-      ({ source, error: sharedFileUploadError } = await withUploadedSourceFile(source, `${TLDA_FLEET_SERVER}`));
+      ({ source, error: sharedFileUploadError } = await withUploadedSourceFile(source, activeFleetServerUrl()));
     } else {
       ({ resolvedMessage, inlineAttachments, brokenPaths } = await processMessageText(
-        message, agentCwd, `${TLDA_FLEET_SERVER}`
+        message, agentCwd, activeFleetServerUrl()
       ));
     }
     const inlineMarkdownFileIssues = checkSharedMarkdownAttachments(inlineAttachments, macros);
@@ -2879,7 +3003,7 @@ export async function handleFleetTool(name, args) {
           cwd: cwd || process.env.PWD || '/tmp',
           session: CLAUDE_SESSION,
           fetchImpl: _sharedFetch,
-          server: TLDA_SERVER,
+          server: activeStoreServerUrl(),
         });
         tldaMsg = `\n📄 Report pushed to tlda as **${docName}** [${reportStatus}]`;
         logEvent({ type: 'report_share', agent: AGENT_ID, doc: docName, task_id: reportTaskId, status: reportStatus });
@@ -3008,7 +3132,7 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       const data = await res.json().catch(() => ({}));
       if (res.ok && typeof data.pane === 'string') {
         result = { ok: true, text: data.pane };
-        targetLabel = `server:${TLDA_FLEET_SERVER}/api/capture-pane`;
+        targetLabel = `server:${activeFleetServerUrl()}/api/capture-pane`;
       } else {
         const detail = data.error || data.message || `HTTP ${res.status}`;
         result = { ok: false, error: `server capture-pane failed: ${detail}` };
@@ -3675,13 +3799,13 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     if (results.length === 0) {
       const selector = args.agent || searchFilters.agent || searchFilters.agentResolve?.fragment || null;
       if (selector) {
-        const state = await loadStateAll();
-        const agent = getAgent(state, selector);
+        let agent = null;
+        try { agent = await resolveAgent(selector); } catch { agent = null; }
         if (agent) {
           return {
             content: [{
               type: 'text',
-              text: `No results for "${rawQuery}". Selector "${selector}" resolves to ${agent.id}, but no indexed fleet messages/session entries matched on this MCP environment.`,
+              text: `No results for "${rawQuery}". Selector "${selector}" resolves to ${agent.id}, but no indexed fleet messages/session entries matched in environment "${activeEnvName()}". Pass env explicitly to search another environment.`,
             }],
           };
         }
@@ -4017,8 +4141,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       }
       try {
         if (args.agent) {
-          const threadState = await loadStateAll();
-          const agent = getAgent(threadState, args.agent);
+          const agent = await resolveAgent(args.agent).catch(() => null);
           const agentId = agent?.id || args.agent;
           if (agent) resolvedAgents.set(agent.id, agent);
           primaryId = agentId;
@@ -4053,12 +4176,11 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       return true;
     });
 
-    const threadState = await loadStateAll();
     for (const m of filtered) {
       for (const id of [m.from, m.to]) {
         if (!id || resolvedAgents.has(id)) continue;
-        const agent = getAgent(threadState, id);
-        if (agent) resolvedAgents.set(id, agent);
+        const agent = await resolveAgent(id).catch(() => null);
+        if (agent) resolvedAgents.set(agent.id, agent);
       }
     }
     if (!primaryId && args.agent) {
@@ -4068,9 +4190,9 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
 
     if (filtered.length === 0) {
       if (args.agent && primaryId) {
-        return { content: [{ type: 'text', text: `No messages found for the given criteria. Selector "${args.agent}" resolves to ${primaryId}, but no indexed fleet messages were found on this MCP environment.` }] };
+        return { content: [{ type: 'text', text: `No messages found for the given criteria. Selector "${args.agent}" resolves to ${primaryId}, but no indexed fleet messages were found in environment "${activeEnvName()}". Pass env explicitly to read another environment.` }] };
       }
-      return { content: [{ type: 'text', text: 'No messages found for the given criteria.' }] };
+      return { content: [{ type: 'text', text: `No messages found for the given criteria in environment "${activeEnvName()}". Pass env explicitly to read another environment.` }] };
     }
 
     // We fetched pageSize+1 — if we got more than a page, there's another page.
@@ -4541,6 +4663,7 @@ function _sendWSOnce(type, params = {}, opts = {}) {
 // needs to cover a live tool call's brief reconnect window, bounded by the
 // request deadline/idle timeout.
 async function sendFleetRequestAttempt(type, params = {}, opts = {}) {
+  if (_activeToolEnv) return sendOneShotWS(_activeToolEnv, type, params, opts);
   const startedAt = Date.now();
   const deadlineMs = opts.deadlineMs ?? opts.idleTimeoutMs ?? WS_REQUEST_IDLE_MS;
   while (Date.now() - startedAt < deadlineMs) {
@@ -4569,6 +4692,7 @@ function scheduleFleetTransportFlush(delayMs = 1000) {
 
 async function flushFleetTransport({ operationId = null, limit = 50, deadlineMs = 5000, agentId = AGENT_ID } = {}) {
   if (!agentId) return null;
+  if (_activeToolEnv) return null;
   if (_fleetTransportFlushInFlight && !operationId) return _fleetTransportFlushInFlight;
 
   const run = async () => {
@@ -4615,6 +4739,7 @@ async function flushFleetTransport({ operationId = null, limit = 50, deadlineMs 
 async function sendDurableFleet(type, params = {}, opts = {}) {
   const transportAgentId = opts.agentId || AGENT_ID;
   if (!transportAgentId) throw new Error(`cannot send durable ${type}: no transport identity`);
+  if (_activeToolEnv) return sendFleetRequestAttempt(type, params, opts);
   const outbox = getFleetTransportOutbox(transportAgentId);
   const operationId = opts.operationId || params?._tempId || `${transportAgentId}:mcp-${type}:${crypto.randomUUID()}`;
   const row = outbox.enqueue({
