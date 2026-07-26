@@ -4203,9 +4203,13 @@ export class FleetStore {
       return stackIds
     }
     const q = baseFragment;
+    const idAliases = q.startsWith('fleet:') ? [q] : [q, `fleet:${q}`];
     const like = `%${q}%`;
     const rows = this.db.prepare(`
       WITH matches AS (
+        SELECT id, coalesce(last_seen, registered_at, '') AS seen_at FROM agents
+          WHERE lower(id) IN (${idAliases.map(() => '?').join(',')})
+        UNION ALL
         SELECT id, coalesce(last_seen, registered_at, '') AS seen_at FROM agents
           WHERE friendly_name IS NOT NULL AND lower(friendly_name) LIKE ?
         UNION ALL
@@ -4215,7 +4219,7 @@ export class FleetStore {
       SELECT id FROM matches
       GROUP BY id
       ORDER BY max(seen_at) DESC, id ASC
-    `).all(like, like);
+    `).all(...idAliases, like, like);
     let ids = rows.map(r => r.id);
     if (selector.position != null) {
       const idx = Math.max(0, Number(selector.position) - 1);
