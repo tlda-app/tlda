@@ -976,14 +976,7 @@ function useWheelScroll(ref: { current: HTMLDivElement | null }, innerSelector?:
   }, [ref, innerSelector])
 }
 
-type StartDrag = (
-  e: React.PointerEvent,
-  pillType: 'agent' | 'label',
-  value: string,
-  displayName: string,
-  color: string,
-  onTap?: (e: PointerEvent) => void,
-) => void
+type StartDrag = (e: React.PointerEvent, pillType: 'agent' | 'label', value: string, displayName: string, color: string) => void
 
 // --- Row components — one per kind, shared by both the grouped and the
 // interleaved renderers so the two views can't visually drift. ---
@@ -1069,7 +1062,7 @@ function MessageRow({
         <span
           className={`fleet-inbox-thread-partner fleet-inbox-pill ${t.nickClass}`}
           style={{ cursor: 'grab', touchAction: 'none' }}
-          onPointerDown={(e) => { e.stopPropagation(); onStartDrag(e, 'agent', t.friendly, t.partnerName, t.color, () => onOpen(t)) }}
+          onPointerDown={(e) => { e.stopPropagation(); onStartDrag(e, 'agent', t.friendly, t.partnerName, t.color) }}
         >{t.partnerName}</span>
         <span className="fleet-inbox-thread-time">{timeShort(t.lastTs)}</span>
         {t.unread > 0 && <span className="fleet-inbox-thread-badge">{t.unread}</span>}

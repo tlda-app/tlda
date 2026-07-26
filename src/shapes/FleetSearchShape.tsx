@@ -97,7 +97,6 @@ interface DragState {
   value: string; displayName: string; color: string
   content?: string
   startX: number; startY: number; started: boolean
-  onTap?: (e: PointerEvent) => void
 }
 
 function usePillDrag() {
@@ -124,11 +123,10 @@ function usePillDrag() {
     displayName: string,
     color: string,
     content?: string,
-    onTap?: (e: PointerEvent) => void,
   ) => {
     stopEventPropagation(e)
     e.preventDefault()
-    dragRef.current = { pillId: null, pillType, value, displayName, color, content, startX: e.clientX, startY: e.clientY, started: false, onTap }
+    dragRef.current = { pillId: null, pillType, value, displayName, color, content, startX: e.clientX, startY: e.clientY, started: false }
     releaseRef.current = dragCoordinator.claim(
       (ev: PointerEvent) => {
         const drag = dragRef.current
@@ -171,12 +169,7 @@ function usePillDrag() {
       (ev: PointerEvent) => {
         const drag = dragRef.current
         dragRef.current = null
-        releaseRef.current = null
-        if (!drag) return
-        if (!drag.started || !drag.pillId) {
-          drag.onTap?.(ev)
-          return
-        }
+        if (!drag || !drag.started || !drag.pillId) return
         markFleetPillInactive(String(drag.pillId))
         const id = drag.pillId as TLShapeId
         const pagePos = fleetPointerEventPagePoint(editor, frame, ev)
