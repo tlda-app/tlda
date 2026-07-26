@@ -2536,6 +2536,18 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   font-weight: 400;
 }
 
+.fleet-chat-shape .ref-chip-pending {
+  border-style: dashed;
+  opacity: 0.88;
+}
+
+.fleet-chat-shape .chat-attachment-footnote {
+  margin-top: 4px;
+  font-size: 10px;
+  line-height: 1.25;
+  opacity: 0.72;
+}
+
 /* Amend version stepper (V{n} ◀▶) — subtle, reveals on row hover. Present only
    on an amended message; steps through prior versions in place. */
 .fleet-chat-shape .amend-versions {

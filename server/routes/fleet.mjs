@@ -22,6 +22,7 @@ import { daemonAddress, describeAgentAddress } from '../../shared/agent-move-tar
 import { canReportTask, completeTaskLifecycle, transferTaskLifecycle } from '../lib/task-lifecycle.mjs'
 import { recordAgentBindingEvent } from '../lib/agent-binding-events.mjs'
 import { projectActivityEventsPage, projectAgentActivityPage } from '../lib/activity-dashboard-projection.mjs'
+import { markPendingAttachmentPlaceholdersRead } from '../../shared/inbox-reference-materialization.mjs'
 
 // Server owner — the human running this server process. Browser users
 // log in via the WS 'login' message or register via 'register'.
@@ -44,6 +45,19 @@ const UPLOAD_DIR = process.env.TLDA_UPLOAD_DIR ||
 export const RESOLVED_UPLOAD_DIR = path.resolve(UPLOAD_DIR)
 const MY_TASK_TASK_LIMIT = 20
 const MY_TASK_UNREAD_LIMIT = 50
+
+function recordPlaceholderReadForMessages(fleetStore, broadcastEvent, agentId, messages = []) {
+  if (!fleetStore?.db || !agentId) return
+  const now = new Date().toISOString()
+  for (const message of messages || []) {
+    if (!message?.metadata?.recipient_refs?.[agentId]) continue
+    const next = markPendingAttachmentPlaceholdersRead(message.metadata, agentId, { now })
+    if (next === message.metadata) continue
+    fleetStore.db.prepare('UPDATE events SET metadata = ? WHERE id = ?')
+      .run(JSON.stringify(next), message.id)
+    broadcastEvent('event-update', { id: message.id, metadata_patch: next })
+  }
+}
 
 // Minimal multipart/form-data parser for the single-file case used by browser
 // drag-and-drop. Returns { filename, contentType, content } for the first
@@ -526,6 +540,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     const unreadCount = fleetStore?.getUnreadCount?.(agentId) ?? unread.length
     const peek = req.query.peek === 'true'
     if (fleetStore && unread.length && !peek) {
+      recordPlaceholderReadForMessages(fleetStore, broadcastEvent, agentId, unread)
       const readIds = fleetStore.markEventsRead?.(agentId, unread.map(m => m.id)) || []
       if (readIds.length) broadcastEvent('read-receipt', { event_ids: readIds, agent: agentId })
     }

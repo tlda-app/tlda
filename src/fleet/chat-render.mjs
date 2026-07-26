@@ -89,6 +89,59 @@ function recipientAttachmentProjectRef(message, idx) {
   }
 }
 
+const PENDING_ATTACHMENT_FOOTNOTE = '* reference has not materialized on this machine yet.'
+
+function recipientAttachmentRef(message, idx) {
+  const recipientId = message?.to
+  return recipientId
+    ? message?.metadata?.recipient_refs?.[recipientId]?.attachments?.[String(idx)]
+    : null
+}
+
+function pendingAttachmentPlaceholder(ref = {}, att = null) {
+  const label = ref.placeholderPath || ref.localPath || ref.path || ref.projectPath || ref.name || ref.title || att?.name || att?.path || 'attachment'
+  return `${label}*`
+}
+
+function pendingAttachmentFootnoteHtml(renderedPending) {
+  return renderedPending ? `<div class="chat-attachment-footnote">${esc(PENDING_ATTACHMENT_FOOTNOTE)}</div>` : ''
+}
+
+function attachmentTokenHtml(message, inlineAttachments, idx) {
+  const ref = recipientAttachmentRef(message, idx)
+  const att = inlineAttachments?.[+idx]
+  if (ref?.state === 'pending') {
+    const label = pendingAttachmentPlaceholder(ref, att)
+    return {
+      html: `<span class="ref-chip ref-chip-doc ref-chip-pending" title="Reference has not materialized on this machine yet"><span class="ref-chip-doc-icon">📎</span>${esc(label)}</span>`,
+      pending: true,
+    }
+  }
+  if (att?.type === 'file') {
+    const name = esc(att.name || att.path?.split('/').pop() || 'file')
+    const filePath = esc(att.path || '')
+    if (att.broken) return { html: `<span class="att-upload-failed" title="Upload failed">⚠ ${filePath}</span>`, pending: false }
+    const fileUrl = att.url ? esc(att.url) : ''
+    const isImage = /\.(png|jpg|jpeg|gif|webp|svg)$/i.test(att.name || att.path || '')
+    if (isImage && fileUrl) return { html: `<img class="chat-image" src="${fileUrl}" alt="${name}">`, pending: false }
+    const ext = (att.path || att.name || '').split('.').pop()?.toLowerCase() || ''
+    const icon = ext === 'pdf' ? '📕' : ext === 'md' ? '📄' : '📎'
+    const projectRef = recipientAttachmentProjectRef(message, idx)
+    const url = projectRef?.url || fileUrl
+    const urlAttr = url ? ` data-url="${esc(url)}"` : ''
+    const projectAttrs = projectRef
+      ? ` data-project="${esc(projectRef.project)}" data-project-artifact-id="${esc(projectRef.id)}" data-project-version="${esc(projectRef.version)}"${projectRef.hash ? ` data-project-hash="${esc(projectRef.hash)}"` : ''}`
+      : ''
+    const pathAttr = ` data-path="${esc(projectRef?.path || att.path || '')}"`
+    const titleAttr = projectRef ? ` title="Project version ${esc(projectRef.version)} for this message"` : ''
+    return {
+      html: `<span class="ref-chip ref-chip-doc"${pathAttr}${urlAttr}${projectAttrs}${titleAttr} draggable="true"><span class="ref-chip-doc-icon">${icon}</span>${name}${projectVersionChipHtml(projectRef)}</span>`,
+      pending: false,
+    }
+  }
+  return { html: `<span class="ref-chip"><span class="ref-chip-doc-icon">📎</span>att:${idx}</span>`, pending: false }
+}
+
 function projectVersionChipHtml(projectRef) {
   if (!projectRef) return ''
   return `<span class="ref-chip-version" title="project version ${esc(projectRef.version)}">@${esc(projectRef.shortVersion)}</span>`
@@ -132,7 +185,7 @@ export function timerDoneLabel(s) {
 // inlineAttachments) into HTML without the full chat-line wrapper — the immediate
 // local feedback before the authoritative event-update broadcast re-renders the
 // whole message. renderMarkdown is the same function passed via ctx to renderChatLine.
-export function resolveInlineAttachments(text, inlineAttachments, renderMarkdown) {
+export function resolveInlineAttachments(text, inlineAttachments, renderMarkdown, message = null) {
   // Expand ![alt]({{att:N}}) → ![alt](URL) before renderMarkdown sees it
   let processed = text
   if (inlineAttachments?.length) {
@@ -145,24 +198,14 @@ export function resolveInlineAttachments(text, inlineAttachments, renderMarkdown
     })
   }
   let html = chipifyMarkdownApiFileLinks(renderMarkdown(esc(processed)))
+  let renderedPendingPlaceholder = false
   // Replace remaining {{att:N}} markers
   html = html.replace(/\{\{att:(\d+)\}\}/g, (_, idx) => {
-    const att = inlineAttachments?.[+idx]
-    if (att?.type === 'file') {
-      const name = esc(att.name || att.path?.split('/').pop() || 'file')
-      const filePath = esc(att.path || '')
-      if (att.broken) return `<span class="att-upload-failed" title="Upload failed">⚠ ${filePath}</span>`
-      const fileUrl = att.url ? esc(att.url) : ''
-      const isImage = /\.(png|jpg|jpeg|gif|webp|svg)$/i.test(att.name || att.path || '')
-      if (isImage && fileUrl) return `<img class="chat-image" src="${fileUrl}" alt="${name}">`
-      const ext = (att.path || att.name || '').split('.').pop()?.toLowerCase() || ''
-      const icon = ext === 'pdf' ? '📕' : ext === 'md' ? '📄' : '📎'
-      const urlAttr = fileUrl ? ` data-url="${fileUrl}"` : ''
-      return `<span class="ref-chip ref-chip-doc" data-path="${filePath}"${urlAttr} draggable="true"><span class="ref-chip-doc-icon">${icon}</span>${name}</span>`
-    }
-    return `<span class="ref-chip"><span class="ref-chip-doc-icon">📎</span>att:${idx}</span>`
+    const rendered = attachmentTokenHtml(message, inlineAttachments, idx)
+    renderedPendingPlaceholder ||= rendered.pending
+    return rendered.html
   })
-  return html
+  return html + pendingAttachmentFootnoteHtml(renderedPendingPlaceholder)
 }
 
 // --- Main renderer ---
@@ -491,31 +534,13 @@ export function renderChatLine(m, ctx) {
   }
 
   // Replace remaining {{att:N}} markers (standalone, not in markdown image syntax)
+  let renderedPendingPlaceholder = false
   text = text.replace(/\{\{att:(\d+)\}\}/g, (_, idx) => {
-    const att = m._inlineAttachments?.[+idx]
-    if (att?.type === 'file') {
-      const name = esc(att.name || att.path?.split('/').pop() || 'file')
-      const filePath = esc(att.path || '')
-      if (att.broken) return `<span class="att-upload-failed" title="Upload failed">⚠ ${filePath}</span>`
-      const fileUrl = att.url ? esc(att.url) : ''
-      const isImage = /\.(png|jpg|jpeg|gif|webp|svg)$/i.test(att.name || att.path || '')
-      if (isImage && fileUrl) {
-        return `<img class="chat-image" src="${fileUrl}" alt="${name}">`
-      }
-      const ext = (att.path || att.name || '').split('.').pop()?.toLowerCase() || ''
-      const icon = ext === 'pdf' ? '📕' : ext === 'md' ? '📄' : '📎'
-      const projectRef = recipientAttachmentProjectRef(m, idx)
-      const url = projectRef?.url || fileUrl
-      const urlAttr = url ? ` data-url="${esc(url)}"` : ''
-      const projectAttrs = projectRef
-        ? ` data-project="${esc(projectRef.project)}" data-project-artifact-id="${esc(projectRef.id)}" data-project-version="${esc(projectRef.version)}"${projectRef.hash ? ` data-project-hash="${esc(projectRef.hash)}"` : ''}`
-        : ''
-      const pathAttr = ` data-path="${esc(projectRef?.path || att.path || '')}"`
-      const titleAttr = projectRef ? ` title="Project version ${esc(projectRef.version)} for this message"` : ''
-      return `<span class="ref-chip ref-chip-doc"${pathAttr}${urlAttr}${projectAttrs}${titleAttr} draggable="true"><span class="ref-chip-doc-icon">${icon}</span>${name}${projectVersionChipHtml(projectRef)}</span>`
-    }
-    return `<span class="ref-chip"><span class="ref-chip-doc-icon">📎</span>att:${idx}</span>`
+    const rendered = attachmentTokenHtml(m, m._inlineAttachments, idx)
+    renderedPendingPlaceholder ||= rendered.pending
+    return rendered.html
   })
+  text += pendingAttachmentFootnoteHtml(renderedPendingPlaceholder)
   const sender = (getAgents()).find(a => a.id === m.from)
   const msgAgo = m.timestamp ? (Date.now() - new Date(m.timestamp).getTime()) / 1000 : null
   const dimClass = msgAgo === null ? '' : msgAgo > 1800 ? 'chat-line-old' : msgAgo > 600 ? 'chat-line-mid' : 'chat-line-recent'

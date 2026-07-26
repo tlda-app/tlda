@@ -39,7 +39,10 @@ import {
   validateDeliveryChannel,
 } from '../shared/inbox-attention.mjs';
 import {
+  PENDING_ATTACHMENT_FOOTNOTE,
   formatRecipientAttachmentRef,
+  hasPendingAttachmentPlaceholders,
+  pendingAttachmentPlaceholder,
   recipientAttachmentRef,
 } from '../shared/inbox-reference-materialization.mjs';
 import { getActiveEnvName } from '../shared/config.mjs';
@@ -1887,13 +1890,14 @@ export async function resolveInboxMessage(message, resolvers) {
   const docHint = formatViewingHint(ctx);
   const { text: chipResolvedText, images: chipImages } = await resolvers.resolveChipTokens(message.text, message.metadata);
   const recipientId = message.to || AGENT_ID;
+  let renderedPendingPlaceholder = false;
   const attachmentResolvedText = chipResolvedText.replace(/\{\{att:(\d+)\}\}/g, (token, idx) => {
     const ref = recipientAttachmentRef(message.metadata, recipientId, idx);
     const att = message.metadata?.inline_attachments?.[+idx];
-    // Materialization state is delivery metadata, never authored message text.
-    // Until a usable local/project path exists, preserve the sender's filename;
-    // the separate materializer notification carries pending/failure detail.
-    if (ref && ref.state !== 'available') return att?.name || token;
+    if (ref?.state === 'pending') {
+      renderedPendingPlaceholder = true;
+      return pendingAttachmentPlaceholder(ref, att);
+    }
     const rendered = formatRecipientAttachmentRef(ref);
     if (rendered) return rendered;
     if (att?.url) return `${att.name || `attachment ${idx}`}: ${att.url}`;
@@ -1903,6 +1907,9 @@ export async function resolveInboxMessage(message, resolvers) {
   const { text: imgResolvedText, images } = await resolvers.resolveImages(refResolvedText);
   images.push(...chipImages);
   const reminder = message.metadata?.chatReminder ? `\n⚠️ ${message.metadata.chatReminder}` : '';
+  const pendingFootnote = renderedPendingPlaceholder || hasPendingAttachmentPlaceholders(message.metadata, recipientId)
+    ? `\n\n${PENDING_ATTACHMENT_FOOTNOTE}`
+    : '';
   const idHint = message.id ? `, id:${message.id}` : '';
   return {
     id: message.id,
@@ -1922,7 +1929,7 @@ export async function resolveInboxMessage(message, resolvers) {
     // a formatter, not a filter (Skip: "show me what you experience, nicely
     // formatted… written in proper markdown"). `\n` renders as a line break
     // (marked `breaks:true`).
-    line: `**${fromLabel}**${idHint}${docHint}  ·  reply \`chat(to: "${message.from}")\`\n${imgResolvedText}${reminder}`,
+    line: `**${fromLabel}**${idHint}${docHint}  ·  reply \`chat(to: "${message.from}")\`\n${imgResolvedText}${pendingFootnote}${reminder}`,
   };
 }
 

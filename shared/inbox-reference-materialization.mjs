@@ -5,6 +5,7 @@ import path from 'path'
 
 export const MATERIALIZATION_MAX_BYTES = 25 * 1024 * 1024
 export const MATERIALIZATION_STATES = new Set(['pending', 'available', 'failed', 'skipped'])
+export const PENDING_ATTACHMENT_FOOTNOTE = '* reference has not materialized on this machine yet.'
 
 export function sha256Buffer(buf) {
   return crypto.createHash('sha256').update(buf).digest('hex')
@@ -38,6 +39,40 @@ export function buildInboxRefPath({ root = inboxRefsRoot(), sourceAgent, date, e
     `event-${sanitizePathSegment(eventId)}`,
     sanitizeAttachmentName(name)
   )
+}
+
+export function pendingAttachmentPlaceholder(ref = {}, attachment = null) {
+  const label = ref.placeholderPath || ref.localPath || ref.path || ref.projectPath || ref.name || ref.title || attachment?.name || attachment?.path || 'attachment'
+  return `${label}*`
+}
+
+export function hasPendingAttachmentPlaceholders(metadata = {}, recipientId) {
+  const attachments = metadata?.recipient_refs?.[recipientId]?.attachments
+  if (!attachments || typeof attachments !== 'object') return false
+  return Object.values(attachments).some(ref => ref?.state === 'pending')
+}
+
+export function pendingAttachmentPlaceholderIds(metadata = {}, recipientId) {
+  const attachments = metadata?.recipient_refs?.[recipientId]?.attachments
+  if (!attachments || typeof attachments !== 'object') return []
+  return Object.entries(attachments)
+    .filter(([, ref]) => ref?.state === 'pending')
+    .map(([id]) => String(id))
+}
+
+export function markPendingAttachmentPlaceholdersRead(metadata = {}, recipientId, { now = new Date().toISOString() } = {}) {
+  const ids = pendingAttachmentPlaceholderIds(metadata, recipientId)
+  if (!ids.length) return metadata
+  const next = ensureRecipientRefs(metadata)
+  const currentRecipient = next.recipient_refs[recipientId] || {}
+  const seen = new Set((currentRecipient.placeholder_seen_attachment_ids || []).map(String))
+  for (const id of ids) seen.add(String(id))
+  next.recipient_refs[recipientId] = {
+    ...currentRecipient,
+    placeholder_seen_at: currentRecipient.placeholder_seen_at || now,
+    placeholder_seen_attachment_ids: Array.from(seen),
+  }
+  return next
 }
 
 export function ensureRecipientRefs(metadata = {}) {
@@ -80,6 +115,7 @@ export function initializeRecipientRefs(metadata = {}, recipientId, attachments 
       name: att.name || null,
       url: att.url || null,
       localPath: null,
+      placeholderPath: null,
       projectPath: null,
       projectArtifactId: null,
       contentType: att.mimeType || null,
@@ -109,7 +145,7 @@ export function formatRecipientAttachmentRef(ref) {
   if (ref.state === 'available' && (ref.localPath || ref.path || ref.projectPath || ref.projectArtifactId)) {
     return ref.localPath || ref.path || ref.projectPath || ref.projectArtifactId
   }
-  if (ref.state === 'pending') return `materializing on this machine...`
+  if (ref.state === 'pending') return pendingAttachmentPlaceholder(ref)
   if (ref.state === 'failed') return `materialization failed${ref.error ? `: ${ref.error}` : ''}`
   if (ref.state === 'skipped') return `materialization skipped${ref.reason ? `: ${ref.reason}` : ''}`
   return ''
