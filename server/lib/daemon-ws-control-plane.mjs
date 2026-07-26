@@ -20,6 +20,7 @@ export function createDaemonWsControlPlane({
   clock = () => new Date().toISOString(),
   setTimeoutFn = setTimeout,
   log = console,
+  classifyServerDaemonOutboxError = () => 'retry',
   onPermanentServerDaemonOutboxError = null,
 } = {}) {
   function isProcessedDaemonOutboxMessage(msg) {
@@ -69,7 +70,8 @@ export function createDaemonWsControlPlane({
     if (!outboxId) return
     const daemonKey = serverDaemonOutboxInflight.get(outboxId)
     const row = serverDaemonOutbox.get?.(outboxId) || null
-    if (msg.permanent === true) {
+    const disposition = classifyServerDaemonOutboxError({ outboxId, daemonKey, msg, row })
+    if (disposition === 'terminal') {
       serverDaemonOutbox.ack(outboxId)
       serverDaemonOutboxInflight.delete(outboxId)
       onPermanentServerDaemonOutboxError?.({ outboxId, daemonKey, msg, row })

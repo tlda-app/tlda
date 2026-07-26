@@ -7893,6 +7893,11 @@ const {
   daemonOutboxProcessedGetStmt: _daemonOutboxProcessedGetStmt,
   daemonOutboxProcessedInsertStmt: _daemonOutboxProcessedInsertStmt,
   socketCanAcceptMore,
+  classifyServerDaemonOutboxError: ({ msg, row }) => (
+    msg?.permanent === true && row?.type === 'agent-seat-binding-obligation'
+      ? 'terminal'
+      : 'retry'
+  ),
   onPermanentServerDaemonOutboxError: ({ msg, row, daemonKey }) => {
     const obligationId = row?.payload?.obligation_id || msg?.obligation_id || null
     const obligation = obligationId ? agentSeatBindingObligations.get(obligationId) : null

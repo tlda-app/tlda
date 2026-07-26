@@ -7,7 +7,7 @@ import {
   SERVER_DAEMON_OUTBOX_ERROR_TYPE,
 } from '../shared/daemon-delivery.mjs'
 
-test('receiver rejection retains the server outbox row and schedules retry', async () => {
+test('ordinary or old-daemon receiver rejection retains the server outbox row and schedules retry', async () => {
   const inflight = new Map([['outbox-1', 'mini:default']])
   const errors = []
   const acks = []
@@ -74,6 +74,11 @@ test('permanent receiver rejection deletes the server outbox row without retry',
       timers.push({ fn, ms })
       return { unref() {} }
     },
+    classifyServerDaemonOutboxError: ({ msg, row: outboxRow }) => (
+      msg.permanent === true && outboxRow?.type === 'agent-seat-binding-obligation'
+        ? 'terminal'
+        : 'retry'
+    ),
     onPermanentServerDaemonOutboxError: event => permanent.push(event),
   })
 
@@ -93,6 +98,57 @@ test('permanent receiver rejection deletes the server outbox row without retry',
   assert.equal(permanent[0].outboxId, 'outbox-3')
   assert.equal(permanent[0].daemonKey, 'mini:testing')
   assert.deepEqual(permanent[0].row, row)
+})
+
+test('permanent flag does not universalize terminal handling to another operation', async () => {
+  const inflight = new Map([['outbox-4', 'mini:testing']])
+  const errors = []
+  const acks = []
+  const timers = []
+  const row = {
+    id: 'outbox-4',
+    type: 'write-backing-file',
+    payload: { type: 'write-backing-file' },
+  }
+  const outbox = {
+    ack: id => acks.push(id),
+    markError: (id, error) => errors.push([id, error]),
+    get: id => id === row.id ? row : null,
+    pendingForDaemon: () => [],
+    markAttempt() {},
+  }
+  const control = createDaemonWsControlPlane({
+    daemonConnections: new Map([['mini:testing', { readyState: 1, send() {} }]]),
+    serverDaemonOutbox: outbox,
+    serverDaemonOutboxInflight: inflight,
+    setTimeoutFn: (fn, ms) => {
+      timers.push({ fn, ms })
+      return { unref() {} }
+    },
+    classifyServerDaemonOutboxError: ({ msg, row: outboxRow }) => (
+      msg.permanent === true && outboxRow?.type === 'agent-seat-binding-obligation'
+        ? 'terminal'
+        : 'retry'
+    ),
+  })
+
+  const result = await control.handleDaemonOutboxEnvelope(
+    { readyState: 1, send() {} },
+    {
+      type: SERVER_DAEMON_OUTBOX_ERROR_TYPE,
+      outbox_id: row.id,
+      error: 'future operation-specific permanent error',
+      permanent: true,
+    },
+    async () => { throw new Error('error control frame reached domain handler') },
+  )
+
+  assert.equal(result.kind, 'server-daemon-outbox-error')
+  assert.deepEqual(acks, [])
+  assert.deepEqual(errors, [[row.id, 'future operation-specific permanent error']])
+  assert.equal(inflight.has(row.id), false)
+  assert.equal(timers.length, 1)
+  assert.equal(timers[0].ms, 1000)
 })
 
 test('receiver acceptance deletes the server outbox row', async () => {
