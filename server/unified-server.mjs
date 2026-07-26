@@ -65,7 +65,7 @@ import { initAuth, isAuthEnabled, validateToken, extractToken, requireRead, requ
 import { initSyncRooms, getOrCreateRoom, flushAllRooms, closeAllRooms, replayCachedSignals, onGlobalEvent, broadcastSignal, getRoomRecords, listActiveRooms, updateShape, putShape } from './lib/sync-rooms.mjs'
 import * as tldaFeedback from './lib/tlda-feedback.mjs'
 import { injectBridge, injectSlidesBridge, injectChapterTitle } from './lib/html-injector.mjs'
-import { FleetStore } from './lib/fleet-store.mjs'
+import { FleetStore, isChatHistoryEventType } from './lib/fleet-store.mjs'
 import { agentsForTerminalWatchResume } from './lib/terminal-watch-resume.mjs'
 import { applyNativeTaskEvents } from './lib/native-task-wrapper.mjs'
 import { resolveMachine } from './lib/tailscale-peers.mjs'
@@ -1435,7 +1435,7 @@ function broadcastEvent(type, data) {
     })
   }
   broadcastFleet({ event: type, data })
-  if (type === 'fleet-event') pushFilteredEvent(data)
+  if (type === 'fleet-event' && isChatHistoryEventType(data?.type)) pushFilteredEvent(data)
 }
 
 serverTimerScheduler = new ServerTimerScheduler({

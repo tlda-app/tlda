@@ -199,6 +199,26 @@ function rankUnifiedSearchRows(rows, { terms = [], query = '', explicitActivityS
 // (statusLabels), re-exported here for the name-collision checks.
 export { PSEUDO_LABELS };
 
+export const CHAT_HISTORY_EVENT_TYPES = Object.freeze([
+  'chat',
+  'delegate',
+  'task_done',
+  'terminal_user',
+  'terminal_assistant',
+  'timer',
+  'compacting',
+  'activity',
+  'terminal_attention',
+  'terminal_card',
+  'plan_approval',
+  'kill-session',
+  'interrupt',
+]);
+
+export function isChatHistoryEventType(type) {
+  return CHAT_HISTORY_EVENT_TYPES.includes(type);
+}
+
 export class FleetStore {
   constructor(dbPath, options = {}) {
     dbPath = dbPath || DB_PATH;
@@ -1521,19 +1541,20 @@ export class FleetStore {
 
     // Event queries for chat history
     const E = this._EVT;
+    const chatTypePh = CHAT_HISTORY_EVENT_TYPES.map(() => '?').join(',');
     // Selection is always DESC — the newest rows are the page — and the final
     // order is applied by an outer sort so callers never reverse an array.
     this._queryEventsBefore = this.db.prepare(`
-      SELECT * FROM (SELECT ${E} FROM events WHERE timestamp < ? ORDER BY timestamp DESC LIMIT ?) ORDER BY timestamp ASC
+      SELECT * FROM (SELECT ${E} FROM events WHERE timestamp < ? AND type IN (${chatTypePh}) ORDER BY timestamp DESC LIMIT ?) ORDER BY timestamp ASC
     `);
     this._queryEventsBeforeDesc = this.db.prepare(`
-      SELECT ${E} FROM events WHERE timestamp < ? ORDER BY timestamp DESC LIMIT ?
+      SELECT ${E} FROM events WHERE timestamp < ? AND type IN (${chatTypePh}) ORDER BY timestamp DESC LIMIT ?
     `);
     this._queryEventsLatest = this.db.prepare(`
-      SELECT * FROM (SELECT ${E} FROM events ORDER BY timestamp DESC LIMIT ?) ORDER BY timestamp ASC
+      SELECT * FROM (SELECT ${E} FROM events WHERE type IN (${chatTypePh}) ORDER BY timestamp DESC LIMIT ?) ORDER BY timestamp ASC
     `);
     this._queryEventsLatestDesc = this.db.prepare(`
-      SELECT ${E} FROM events ORDER BY timestamp DESC LIMIT ?
+      SELECT ${E} FROM events WHERE type IN (${chatTypePh}) ORDER BY timestamp DESC LIMIT ?
     `);
     // Agent-scoped history matches the exact requested fleet ids. The SQL has
     // variable arity and is built per-call in queryChatHistory().
@@ -3803,6 +3824,7 @@ export class FleetStore {
     if (ids.length > 0) {
       const exactIds = [...new Set(ids)];
       const ph = exactIds.map(() => '?').join(',');
+      const typePh = CHAT_HISTORY_EVENT_TYPES.map(() => '?').join(',');
       const E = this._EVT;
       // OR-across-two-columns can't use an index's sort order, so the naive
       // `WHERE from_id IN(…) OR to_id IN(…) ORDER BY ts DESC LIMIT n` makes SQLite
@@ -3815,23 +3837,31 @@ export class FleetStore {
       // dedupes rows where the id is both sender and recipient.
       if (before) {
         const sql = `SELECT * FROM (SELECT * FROM (
-            SELECT * FROM (SELECT ${E} FROM events WHERE timestamp < ? AND from_id IN (${ph}) ORDER BY timestamp DESC LIMIT ?)
+            SELECT * FROM (SELECT ${E} FROM events WHERE timestamp < ? AND type IN (${typePh}) AND from_id IN (${ph}) ORDER BY timestamp DESC LIMIT ?)
             UNION
-            SELECT * FROM (SELECT ${E} FROM events WHERE timestamp < ? AND to_id IN (${ph}) ORDER BY timestamp DESC LIMIT ?)
+            SELECT * FROM (SELECT ${E} FROM events WHERE timestamp < ? AND type IN (${typePh}) AND to_id IN (${ph}) ORDER BY timestamp DESC LIMIT ?)
           ) ORDER BY timestamp DESC LIMIT ?) ORDER BY timestamp ${outer}`;
-        rows = this._query(this.db.prepare(sql), before, ...exactIds, limit, before, ...exactIds, limit, limit);
+        rows = this._query(this.db.prepare(sql),
+          before, ...CHAT_HISTORY_EVENT_TYPES, ...exactIds, limit,
+          before, ...CHAT_HISTORY_EVENT_TYPES, ...exactIds, limit,
+          limit);
       } else {
         const sql = `SELECT * FROM (SELECT * FROM (
-            SELECT * FROM (SELECT ${E} FROM events WHERE from_id IN (${ph}) ORDER BY timestamp DESC LIMIT ?)
+            SELECT * FROM (SELECT ${E} FROM events WHERE type IN (${typePh}) AND from_id IN (${ph}) ORDER BY timestamp DESC LIMIT ?)
             UNION
-            SELECT * FROM (SELECT ${E} FROM events WHERE to_id IN (${ph}) ORDER BY timestamp DESC LIMIT ?)
+            SELECT * FROM (SELECT ${E} FROM events WHERE type IN (${typePh}) AND to_id IN (${ph}) ORDER BY timestamp DESC LIMIT ?)
           ) ORDER BY timestamp DESC LIMIT ?) ORDER BY timestamp ${outer}`;
-        rows = this._query(this.db.prepare(sql), ...exactIds, limit, ...exactIds, limit, limit);
+        rows = this._query(this.db.prepare(sql),
+          ...CHAT_HISTORY_EVENT_TYPES, ...exactIds, limit,
+          ...CHAT_HISTORY_EVENT_TYPES, ...exactIds, limit,
+          limit);
       }
     } else if (before) {
-      rows = this._query(outer === 'DESC' ? this._queryEventsBeforeDesc : this._queryEventsBefore, before, limit);
+      rows = this._query(outer === 'DESC' ? this._queryEventsBeforeDesc : this._queryEventsBefore,
+        before, ...CHAT_HISTORY_EVENT_TYPES, limit);
     } else {
-      rows = this._query(outer === 'DESC' ? this._queryEventsLatestDesc : this._queryEventsLatest, limit);
+      rows = this._query(outer === 'DESC' ? this._queryEventsLatestDesc : this._queryEventsLatest,
+        ...CHAT_HISTORY_EVENT_TYPES, limit);
     }
     return rows;
   }
@@ -3883,12 +3913,9 @@ export class FleetStore {
 
     const hasMore = events.length > cap;
     if (hasMore) events.shift();
-    // No content filtering here. It used to drop <channel/<task-notification/
-    // <system-reminder, which (a) disagreed with the live path's own drop list,
-    // so those messages appeared live and vanished on reload, and (b) ran AFTER
-    // hasMore and the shift(), so a page of `cap` containing protocol rows came
-    // back short with a nextCursor that looked correct. Display rules live in
-    // renderChatLine, which both paths go through.
+    // No text-prefix filtering here. queryChatHistory already selects only
+    // conversation event types before LIMIT, so diagnostic telemetry cannot
+    // consume the page and then vanish in the renderer.
 
     const resolved = this.resolveChatRows(events, { serverOwnerId, serverOwnerName });
     const nextCursor = hasMore && events.length > 0 ? events[0].timestamp : null;
