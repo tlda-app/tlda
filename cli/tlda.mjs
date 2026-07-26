@@ -4430,6 +4430,36 @@ async function ensureAgentWakeGrant(agent, meta, { source = 'agent-move', config
   }
 }
 
+/**
+ * Resolve an agent from this machine's daemon ledger, shaped like the server
+ * roster rows the move path expects. No network: the ledger is the authority for
+ * agents living on this box, and move must work while the source server is down.
+ */
+function resolveAgentFromDaemonLedger(agentQuery) {
+  const daemonConfig = readDaemonConfig(defaultDaemonConfigPath(CONFIG_DIR))
+  const ledger = createPermissionLedger(permissionLedgerPathFromDaemonConfig(daemonConfig, CONFIG_DIR))
+  try {
+    const row = ledger.get(agentQuery) || ledger.findByFriendlyName(agentQuery)
+    if (!row) {
+      throw new Error(`No agent named "${agentQuery}" in this machine's daemon ledger; run move from the machine that owns the agent.`)
+    }
+    return {
+      id: row.id,
+      friendly_name: row.friendlyName,
+      machine_id: row.machineId,
+      env_name: row.envName,
+      metadata: {
+        kind: row.sessionKind,
+        model: row.model,
+        cwd: row.cwd,
+        sessionId: row.sessionId,
+      },
+    }
+  } finally {
+    ledger.close?.()
+  }
+}
+
 async function moveAgentToEnvironment({
   agent,
   agentQuery = null,
@@ -4442,7 +4472,13 @@ async function moveAgentToEnvironment({
   log = console,
   logPrefix = '',
 } = {}) {
-  if (!agent) agent = await findSingleAgent(agentQuery)
+  // Resolve the agent from the local daemon ledger, never the source server.
+  // move exists so an agent can be brought to a working environment WHEN THE
+  // SOURCE ENVIRONMENT IS DOWN; asking the source server to resolve a name made
+  // the command fail with a 500 in exactly the case it was built for. Everything
+  // needed below — id, name, owning machine, current env, harness kind — is on
+  // this box in the permission ledger.
+  if (!agent) agent = resolveAgentFromDaemonLedger(agentQuery)
   const sourceMachine = localMachineId()
   const effectiveSourceEnv = sourceEnv || getActiveConfigName()
   let targetMachine = sourceMachine
@@ -4538,7 +4574,8 @@ async function cmdAgentMove() {
     process.exit(1)
   }
   await assertNotAgentContext()
-  await ensureServer()
+  // No ensureServer(): move is daemon-mediated and must work while the source
+  // environment is down. That is the whole reason the command exists.
   await moveAgentToEnvironment({ agentQuery, rawTarget, allowAlready: false })
 }
 
