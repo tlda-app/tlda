@@ -46,7 +46,6 @@ import {
   classifyFleetComposerTrafficMode,
   filterForFleetComposerTrafficMode,
   matchesFleetFilter,
-  nextFleetComposerTrafficMode,
   quietTrafficSuppressesActivity,
 } from '../../shared/filter-semantics.mjs'
 import { openTerminalTransport, type TerminalTransport } from '../fleet/terminal-transport'
@@ -4343,9 +4342,9 @@ function FleetChatInner({ shape }: { shape: any }) {
     () => classifyFleetComposerTrafficMode(filter, trafficMode, humanFilterLabel, composerAgentLabel),
     [filterKey, trafficMode, humanFilterLabel, composerAgentLabel],
   )
-  const cycleComposerTrafficMode = useCallback(() => {
+  const setComposerTrafficFilterMode = useCallback((nextMode: ComposerTrafficFilterMode) => {
     if (!composerAgentLabel) return
-    const nextMode = nextFleetComposerTrafficMode(composerTrafficMode)
+    if (nextMode !== 'dm-quiet' && nextMode !== 'dm' && nextMode !== 'agent') return
     editor.updateShape({
       id: shape.id,
       type: shape.type,
@@ -4354,7 +4353,7 @@ function FleetChatInner({ shape }: { shape: any }) {
         trafficMode: nextMode === 'dm-quiet' ? 'quiet' : 'normal',
       },
     })
-  }, [composerAgentLabel, composerTrafficMode, editor, humanFilterLabel, shape.id, shape.type])
+  }, [composerAgentLabel, editor, humanFilterLabel, shape.id, shape.type])
 
   // --- Composer host callbacks ---------------------------------------------
   // The shared ChatComposer owns the textarea + voice registration + send-on-
@@ -5748,6 +5747,10 @@ function FleetChatInner({ shape }: { shape: any }) {
                 (no dead gap). Order is set via CSS `order`, not DOM order. */}
             <PersistentCornerButtonSlider
               className="fleet-composer-gutter"
+              onSelect={(action, value) => {
+                if (action !== 'traffic' || !value) return
+                setComposerTrafficFilterMode(value as ComposerTrafficFilterMode)
+              }}
             >
             {/* Unified follow / jump-to-bottom control. One button, fixed here:
                   - off bottom → ⇣ arrow; click jumps to bottom (does NOT change
@@ -5856,21 +5859,10 @@ function FleetChatInner({ shape }: { shape: any }) {
               className={`fleet-composer-traffic-toggle fleet-composer-traffic-toggle-${composerTrafficMode}`}
               data-composer-rail-action="traffic"
               data-composer-rail-label="Traffic"
-              // Cycle from click, because the enclosing PersistentCornerButtonSlider
-              // owns the gesture: it takes pointer capture on the rail, so this
-              // button never sees its own pointer events, and it resolves a
-              // press-drag-release by calling button.click() on whichever button
-              // the release landed nearest.
-              //
-              // This used to drive off pointerup instead, because a native tap on
-              // a text label does not synthesize a click on iPad. That reasoning
-              // was right and is now moot: the slider's click() is programmatic,
-              // so it fires on touch and mouse alike, and the tap-vs-drag guard
-              // that pointerup needed now lives in the slider.
+              data-composer-rail-values="dm-quiet,dm,agent"
+              data-composer-rail-labels="DM|DM tools|All"
               onClick={(e) => {
                 stopEventPropagation(e)
-                if (!composerAgentLabel) return
-                cycleComposerTrafficMode()
               }}
               disabled={!composerAgentLabel}
               title={!composerAgentLabel
