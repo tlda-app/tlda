@@ -1,4 +1,4 @@
-import type { Editor, TLShape, TLViewportId } from 'tldraw'
+import type { Editor, TLShape, TLShapeId, TLViewportId } from 'tldraw'
 import { createShapeId } from 'tldraw'
 // @ts-ignore — vanilla JS module
 import { getHumanId, getDeviceId, whenDeviceReady } from '../fleet/fleet-data.mjs'
