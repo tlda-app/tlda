@@ -72,6 +72,7 @@ import { createLocalAgentLedger } from '../agent-launch/local-agent-ledger.mjs'
 import { MintStore } from '../daemon/mint-store.mjs'
 import { terminateTmuxSession } from '../agent-launch/tmux.mjs'
 import { bindAgentSeat } from '../agent-launch/seat-binding.mjs'
+import { wsReserveShell } from '../agent-launch/register.mjs'
 import { projectWorldsPath, readProjectWorlds, writeProjectWorld } from '../shared/project-worlds.mjs'
 
 // --- Argument parsing ---
@@ -4468,7 +4469,7 @@ async function moveAgentToEnvironment({
   sourceEnv = null,
   dryRun = hasFlag('dry-run'),
   allowAlready = true,
-  apiImpl = api,
+  apiImpl = null,
   log = console,
   logPrefix = '',
 } = {}) {
@@ -4513,6 +4514,12 @@ async function moveAgentToEnvironment({
   if (!meta.kind) throw new Error(`Agent ${agent.id} has no recorded harness kind; refusing to infer a wake command`)
   const hibernateName = hibernateNameForAgent(agent, agentQuery || name)
   const targetSocket = fleetDaemonSocketForConfig(targetEnv)
+  // Everything the move writes or reads after this point belongs to the TARGET
+  // environment's server. The default `api` resolves through the active config,
+  // which is the source — polling it for the target seat never terminates.
+  const targetServer = getFleetServerUrl(targetEnv)
+  const targetApi = apiImpl || ((method, path, body = null, opts = {}) =>
+    apiAt(targetServer, method, path, body, { token: getToken(), ...opts }))
   if (dryRun) {
     log.log(`${logPrefix}[dry-run] would move ${name} (${agent.id}) ${describeAgentAddress(sourceMachine, effectiveSourceEnv)} -> ${describeAgentAddress(targetMachine, targetEnv)}`)
     log.log(`${logPrefix}  mode: same-box durable wake`)
@@ -4525,10 +4532,24 @@ async function moveAgentToEnvironment({
   log.log(`${logPrefix}Moving ${name} (${agent.id}) ${describeAgentAddress(sourceMachine, effectiveSourceEnv)} -> ${describeAgentAddress(targetMachine, targetEnv)}`)
   const hibernate = await hibernateLocalAgent(hibernateName, { allowMissing: true })
   if (hibernate.status !== 0) throw new Error(`failed to hibernate ${agent.id}`)
+  // Environments are sealed databases: the agent's identity row lives on the
+  // SOURCE server and does not exist on the target. Without a shell there,
+  // login() is rejected ("No live shell for agent …") and the agent comes up
+  // nameless — visible only as a raw fleet id nobody can address. Reserve the
+  // shell under the SAME fleet id and friendly name before waking.
+  await wsReserveShell({
+    fleetId: agent.id,
+    name,
+    cwd: meta.cwd || agent.cwd || null,
+    kind: meta.kind,
+    machineId: targetMachine,
+    envName: targetEnv,
+    api: targetServer,
+  })
   const wakeGrant = await ensureAgentWakeGrant(agent, meta)
   const wake = await callLocalDaemonLifecycle('wake', { fleet_id: agent.id, ...wakeGrant }, { socketPath: targetSocket, timeoutMs: 120000 })
   if (!wake?.ok) throw new Error(wake?.error || `wake failed for ${agent.id}`)
-  const seat = await waitForAgentSeatAddress(agent.id, { machineId: targetMachine, envName: targetEnv, apiImpl })
+  const seat = await waitForAgentSeatAddress(agent.id, { machineId: targetMachine, envName: targetEnv, apiImpl: targetApi })
   log.log(`${logPrefix}${name} (${agent.id}) landed on ${describeAgentAddress(seat.machine_id, seat.env_name)}.`)
   return { ok: true, agent, name, seat, wake }
 }
