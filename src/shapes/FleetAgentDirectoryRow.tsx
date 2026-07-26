@@ -141,11 +141,15 @@ export function FleetAgentDirectoryRow({
 
 export function FleetAgentDirectoryList({
   rows,
+  onAgentPointerDown,
   onAgentPointerUp,
+  onLabelPointerDown,
   onLabelPointerUp,
 }: {
   rows: FleetAgentDirectoryRowModel[]
+  onAgentPointerDown?: (e: React.PointerEvent, row: FleetAgentDirectoryRowModel) => void
   onAgentPointerUp?: (e: React.PointerEvent, row: FleetAgentDirectoryRowModel) => void
+  onLabelPointerDown?: (e: React.PointerEvent, label: string, row: FleetAgentDirectoryRowModel) => void
   onLabelPointerUp?: (e: React.PointerEvent, label: string, row: FleetAgentDirectoryRowModel) => void
 }) {
   if (rows.length === 0) return <div className="fleet-agents-empty">No agents</div>
@@ -155,7 +159,9 @@ export function FleetAgentDirectoryList({
         <FleetAgentDirectoryRow
           key={row.id || row.exactName}
           row={row}
+          onAgentPointerDown={onAgentPointerDown}
           onAgentPointerUp={onAgentPointerUp}
+          onLabelPointerDown={onLabelPointerDown}
           onLabelPointerUp={onLabelPointerUp}
         />
       ))}

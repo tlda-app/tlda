@@ -859,10 +859,7 @@ function FleetInboxInner({ shape }: { shape: any }) {
             filter={filterTargetChat.props?.filter || []}
             shapeId={filterTargetChat.id}
             editor={mainEd}
-            onClose={() => setFilterOpen(false)}
             externalPillOver={pillOver}
-            agents={agents}
-            sendTargets={[]}
             surface="overlay"
           />
         )}
