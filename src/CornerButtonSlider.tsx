@@ -16,6 +16,13 @@ type PersistentRailTarget = {
   x: number
 }
 
+type PersistentRailValueSource = {
+  action: string
+  values: string[]
+  labels: string[]
+  button: HTMLButtonElement
+}
+
 export function pickCornerSliderIndex({
   clientX,
   anchorRect,
@@ -94,9 +101,38 @@ export function PersistentCornerButtonSlider({
 }) {
   const railRef = useRef<HTMLDivElement>(null)
   const pointerRef = useRef<number | null>(null)
+  const valueSourceRef = useRef<PersistentRailValueSource | null>(null)
   const [active, setActive] = useState<{ label: string; x: number } | null>(null)
 
-  const pickTarget = useCallback((clientX: number, clientY: number): PersistentRailTarget | null => {
+  const valueSourceForButton = useCallback((button: HTMLButtonElement | null): PersistentRailValueSource | null => {
+    if (!button) return null
+    const values = (button.dataset.composerRailValues || '').split(',').map(v => v.trim()).filter(Boolean)
+    if (values.length === 0) return null
+    return {
+      action: button.dataset.composerRailAction || '',
+      values,
+      labels: (button.dataset.composerRailLabels || '').split('|').map(v => v.trim()),
+      button,
+    }
+  }, [])
+
+  const targetForValueSource = useCallback((source: PersistentRailValueSource, clientX: number): PersistentRailTarget | null => {
+    const rail = railRef.current
+    if (!rail) return null
+    const railRect = rail.getBoundingClientRect()
+    const rawPosition = railRect.width > 0 ? (clientX - railRect.left) / railRect.width : 0
+    const clampedPosition = Math.max(0, Math.min(0.999999, rawPosition))
+    const index = Math.min(source.values.length - 1, Math.floor(clampedPosition * source.values.length))
+    return {
+      action: source.action,
+      value: source.values[index],
+      label: source.labels[index] || source.values[index],
+      button: source.button,
+      x: railRect.width * ((index + 0.5) / source.values.length),
+    }
+  }, [])
+
+  const pickButton = useCallback((clientX: number, clientY: number) => {
     const rail = railRef.current
     if (!rail) return null
     const buttons = Array.from(rail.querySelectorAll<HTMLButtonElement>('[data-composer-rail-action]:not(:disabled)'))
@@ -107,25 +143,19 @@ export function PersistentCornerButtonSlider({
       const distance = Math.hypot(clientX - (rect.left + rect.width / 2), clientY - (rect.top + rect.height / 2))
       if (distance < bestDistance) { best = button; bestDistance = distance }
     }
-    if (!best) return null
+    return best
+  }, [])
 
+  const pickTarget = useCallback((clientX: number, clientY: number): PersistentRailTarget | null => {
+    const rail = railRef.current
+    if (!rail) return null
+    const best = pickButton(clientX, clientY)
+    if (!best) return null
     const railRect = rail.getBoundingClientRect()
     const buttonRect = best.getBoundingClientRect()
     const action = best.dataset.composerRailAction || ''
-    const values = (best.dataset.composerRailValues || '').split(',').map(v => v.trim()).filter(Boolean)
-    const labels = (best.dataset.composerRailLabels || '').split('|').map(v => v.trim())
-    if (values.length > 0) {
-      const rawPosition = buttonRect.width > 0 ? (clientX - buttonRect.left) / buttonRect.width : 0
-      const clampedPosition = Math.max(0, Math.min(0.999999, rawPosition))
-      const index = Math.min(values.length - 1, Math.floor(clampedPosition * values.length))
-      return {
-        action,
-        value: values[index],
-        label: labels[index] || values[index],
-        button: best,
-        x: buttonRect.left + buttonRect.width * ((index + 0.5) / values.length) - railRect.left,
-      }
-    }
+    const source = valueSourceForButton(best)
+    if (source) return targetForValueSource(source, clientX)
 
     return {
       action,
@@ -134,7 +164,7 @@ export function PersistentCornerButtonSlider({
       button: best,
       x: buttonRect.left + buttonRect.width / 2 - railRect.left,
     }
-  }, [])
+  }, [pickButton, targetForValueSource, valueSourceForButton])
 
   const pointAt = useCallback((target: PersistentRailTarget | null) => {
     if (!target) { setActive(null); return }
@@ -152,18 +182,24 @@ export function PersistentCornerButtonSlider({
       e.preventDefault()
       pointerRef.current = e.pointerId
       e.currentTarget.setPointerCapture(e.pointerId)
-      pointAt(pickTarget(e.clientX, e.clientY))
+      const button = pickButton(e.clientX, e.clientY)
+      const source = valueSourceForButton(button)
+      valueSourceRef.current = source
+      pointAt(source ? targetForValueSource(source, e.clientX) : pickTarget(e.clientX, e.clientY))
     }}
     onPointerMove={(e) => {
       if (pointerRef.current !== e.pointerId) return
       stopEventPropagation(e)
-      pointAt(pickTarget(e.clientX, e.clientY))
+      const source = valueSourceRef.current
+      pointAt(source ? targetForValueSource(source, e.clientX) : pickTarget(e.clientX, e.clientY))
     }}
     onPointerUp={(e) => {
       if (pointerRef.current !== e.pointerId) return
       stopEventPropagation(e)
       pointerRef.current = null
-      const target = pickTarget(e.clientX, e.clientY)
+      const source = valueSourceRef.current
+      valueSourceRef.current = null
+      const target = source ? targetForValueSource(source, e.clientX) : pickTarget(e.clientX, e.clientY)
       pointAt(target)
       if (target) {
         if (target.value !== null) onSelect?.(target.action, target.value)
@@ -175,6 +211,7 @@ export function PersistentCornerButtonSlider({
       if (pointerRef.current !== e.pointerId) return
       stopEventPropagation(e)
       pointerRef.current = null
+      valueSourceRef.current = null
       setActive(null)
     }}
   >
