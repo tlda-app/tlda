@@ -171,7 +171,14 @@ export function activityHealthForProjection(metadata = {}, runtimeStatus = null,
       .sort((a, b) => Date.parse(b.raisedAt || 0) - Date.parse(a.raisedAt || 0))
     : []
   const incident = incidents[0]
-  const projected = incident ? {
+  const healthTs = Date.parse(health?.ts || 0)
+  const incidentTs = Date.parse(incident?.raisedAt || 0)
+  const incidentIsLatest = incident && (
+    !Number.isFinite(healthTs) ||
+    !Number.isFinite(incidentTs) ||
+    incidentTs > healthTs
+  )
+  const projected = incidentIsLatest ? {
     ...(health || {}),
     state: incident.state || ACTIVITY_HEALTH_UNAVAILABLE,
     boundary: incident.boundary || health?.boundary || null,
