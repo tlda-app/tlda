@@ -43,8 +43,6 @@ import { subscribeChat } from '../fleet/chat-subscription.mjs'
 import { installChatImageRetry } from '../fleet/chat-image-retry.mjs'
 // @ts-ignore — vanilla JS module
 import {
-  buildFleetAgentFilter,
-  buildFleetDmFilter,
   classifyFleetComposerTrafficMode,
   filterForFleetComposerTrafficMode,
   matchesFleetFilter,
@@ -96,9 +94,9 @@ import { DATABASE_HTTP } from '../activeConfig'
 import {
   FleetAgentDirectoryList,
   getFleetAgentDirectoryRows,
+  fleetAgentLabelColor,
   sortFleetAgentDirectoryRowsByRecency,
 } from './FleetAgentDirectoryRow'
-import { fleetAgentFilterChoiceUpdate } from './fleet-agent-filter-choices'
 import { getUnreadAgentRailRows, isOnlyOwnedChat } from './fleet-unread-agent-rail'
 import './fleet-chat.css'
 
@@ -5504,10 +5502,7 @@ function FleetChatInner({ shape }: { shape: any }) {
               filter={filter}
               shapeId={shape.id}
               editor={editor}
-              onClose={() => setFilterOpen(false)}
               externalPillOver={pillOver}
-              agents={agents}
-              sendTargets={sendTargets}
             />
           )}
 
@@ -6173,19 +6168,13 @@ export function FleetChatFilterMode({
   filter,
   shapeId,
   editor,
-  onClose,
   externalPillOver,
-  agents,
-  sendTargets,
   surface = 'body',
 }: {
   filter: [string, string][][]
   shapeId: any
   editor: any
-  onClose: () => void
   externalPillOver?: { role: string; value: string; displayName: string } | null
-  agents: any[]
-  sendTargets: string[]
   surface?: 'body' | 'overlay'
 }) {
   // Native pointerup delegation on document capture — bypasses tldraw and works on touch.
@@ -6193,7 +6182,6 @@ export function FleetChatFilterMode({
   const viewportId = useVisibilityViewportId()
   const filterRef = useRef(filter)
   filterRef.current = filter
-  const humanLabel = getHumanName() || getHumanId() || 'user'
   const updateChatProps = useCallback((props: Record<string, unknown>) => {
     const shape = editor.getShape(shapeId)
     const wasLocked = !!shape?.isLocked
@@ -6205,44 +6193,15 @@ export function FleetChatFilterMode({
     })
     if (wasLocked) editor.updateShape({ id: shapeId, type: 'fleet-chat', isLocked: true })
   }, [editor, shapeId])
-  const activeAgentLabel = useMemo(() => {
-    for (const clause of filter) {
-      for (const [, label] of clause) {
-        if (isNonHumanAgentLabel(agents, label)) return label
-      }
-    }
-    for (const label of sendTargets) {
-      if (isNonHumanAgentLabel(agents, label)) return label
-    }
-    return ''
-  }, [agents, filter, sendTargets])
-  const applyPreset = useCallback((preset: 'all' | 'dm' | 'agent') => {
-    let nextFilter: [string, string][][] = []
-    if (preset === 'dm' && activeAgentLabel) {
-      nextFilter = buildFleetDmFilter(humanLabel, activeAgentLabel) as [string, string][][]
-    } else if (preset === 'agent' && activeAgentLabel) {
-      nextFilter = buildFleetAgentFilter(activeAgentLabel) as [string, string][][]
-    }
-    updateChatProps({ filter: nextFilter, trafficMode: 'normal' })
-  }, [activeAgentLabel, humanLabel, updateChatProps])
-  const applyChoice = useCallback((label: string, mode: 'dm' | 'agent') => {
-    updateChatProps(fleetAgentFilterChoiceUpdate(humanLabel, label, mode))
-  }, [humanLabel, updateChatProps])
   const choiceAgents = useFleetAgents()
   const filterRows = useMemo(() => sortFleetAgentDirectoryRowsByRecency(getFleetAgentDirectoryRows(choiceAgents)), [choiceAgents])
+  const { startDrag } = usePillDrag()
 
   useEffect(() => {
     function handlePointerUp(e: PointerEvent) {
       const target = e.target as HTMLElement
       const filterMode = filterModeRef.current
       if (!filterMode || !filterMode.contains(target)) return
-
-      const preset = target.closest('.fleet-filter-preset') as HTMLElement | null
-      if (preset) {
-        const mode = preset.dataset.preset as 'all' | 'dm' | 'agent' | undefined
-        if (mode) applyPreset(mode)
-        return
-      }
 
       // Remove term ×
       const termX = target.closest('.fleet-filter-term-x') as HTMLElement
@@ -6266,7 +6225,7 @@ export function FleetChatFilterMode({
     }
     document.addEventListener('pointerup', handlePointerUp, { capture: true })
     return () => document.removeEventListener('pointerup', handlePointerUp, { capture: true })
-  }, [shapeId, editor, onClose, applyPreset, applyChoice, updateChatProps])
+  }, [shapeId, editor, updateChatProps])
 
   // Detect pill hovering over the shape — show two-pane drop preview
   const fleetPillCount = useFleetPillCount(editor)
@@ -6594,11 +6553,6 @@ export function FleetChatFilterMode({
         <>
           <div className="fleet-filter-mode-header">
             <span style={{ fontSize: 9, opacity: 0.5, textTransform: 'uppercase', letterSpacing: 0.5 }}>Filter</span>
-            <span className="fleet-filter-presets">
-              <button className="fleet-filter-preset" data-preset="all" title="Show all chat traffic">All</button>
-              <button className="fleet-filter-preset" data-preset="dm" disabled={!activeAgentLabel} title={activeAgentLabel ? 'Show only human-agent direct messages' : 'Choose an agent first'}>DM</button>
-              <button className="fleet-filter-preset" data-preset="agent" disabled={!activeAgentLabel} title={activeAgentLabel ? 'Show all traffic involving this agent' : 'Choose an agent first'}>Agent</button>
-            </span>
           </div>
           {filter.length === 0 ? (
             <div className="fleet-filter-empty">
@@ -6616,14 +6570,8 @@ export function FleetChatFilterMode({
             <div className="fleet-agents-body">
               <FleetAgentDirectoryList
                 rows={filterRows}
-                onAgentPointerUp={(e, agentRow) => {
-                  e.stopPropagation()
-                  applyChoice(agentRow.exactName, 'dm')
-                }}
-                onLabelPointerUp={(e, label) => {
-                  e.stopPropagation()
-                  applyChoice(label, 'agent')
-                }}
+                onAgentPointerDown={(e, agentRow) => startDrag(e, 'agent', agentRow.exactName, agentRow.displayName, agentRow.color)}
+                onLabelPointerDown={(e, label) => startDrag(e, 'label', label, label, fleetAgentLabelColor(label))}
               />
             </div>
           </div>
