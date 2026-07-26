@@ -80,7 +80,16 @@ export function classifyThreeWay({ base, current, incoming, binary = false }) {
     writeFileSync(paths[0], String(current))
     writeFileSync(paths[1], String(base))
     writeFileSync(paths[2], String(incoming))
-    const result = spawnSync('git', ['merge-file', '-p', '--', ...paths], { encoding: 'utf8' })
+    // Label the sides. Without -L, git names the conflict after the temp files
+    // it was handed, so the person opening the file reads
+    // `<<<<<<< /tmp/tlda-source-merge-pXOqC9/current` — an path that does not
+    // exist and tells them nothing. These markers are read by a human resolving
+    // the conflict in their own editor, so they say which side is which.
+    const result = spawnSync(
+      'git',
+      ['merge-file', '-p', '-L', 'in the project', '-L', 'common ancestor', '-L', 'your change', '--', ...paths],
+      { encoding: 'utf8' },
+    )
     if (result.status === 0) return { status: 'clean-rebase-candidate', merged: result.stdout }
     if (result.status === 1 && result.stdout.includes('<<<<<<<')) return { status: 'conflict', merged: result.stdout }
     return { status: 'classification-unavailable', error: result.stderr || `git merge-file exited ${result.status}` }
