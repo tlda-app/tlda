@@ -1152,6 +1152,13 @@ function rpcErrorMessage(error) {
   try { return JSON.stringify(error) } catch { return String(error) }
 }
 
+function rpcReplyError(msg) {
+  const error = new Error(rpcErrorMessage(msg.error))
+  if (msg.reason) error.reason = msg.reason
+  if (msg.code) error.code = msg.code
+  return error
+}
+
 function logSpawnDaemonMiss(machineId, context, detail = {}) {
   if (!daemonWelcomeSeenAt.has(machineId)) return
   const ageMs = Date.now() - daemonWelcomeSeenAt.get(machineId)
@@ -1847,6 +1854,9 @@ function spawnMailboxCompletionText(entry, status, detail) {
     const policyPart = detail.permissionGrant ? ` Permission: \`${detail.permissionGrant}\`.` : ''
     return `**Spawn mailbox ${entry.id} complete**: \`${label}\`${agentPart} has logged in and is ready for inbox pickup.${policyPart}`
   }
+  if (status === 'indeterminate') {
+    return `**Spawn mailbox ${entry.id} indeterminate**: \`${label}\` — ${detail.error || detail.reason || 'spawn outcome is unknown'}.`
+  }
   return `**Spawn mailbox ${entry.id} failed**: \`${label}\` — ${detail.error || detail.reason || 'spawn failed'}.`
 }
 
@@ -1865,6 +1875,27 @@ function deliverSpawnMailboxCompletion(entry, status, detail) {
       status,
       ...detail,
     },
+  })
+}
+
+function isIndeterminateSpawnOutcome(value) {
+  const reason = value?.reason || value?.code
+  const message = value?.error || value?.message || String(value || '')
+  return reason === 'indeterminate-after-restart'
+    || /outcome is indeterminate after process restart/i.test(message)
+}
+
+function settleSpawnMailboxIndeterminate(mailbox, detail) {
+  const error = detail.error || 'spawn outcome is indeterminate after daemon restart'
+  const settled = mailboxLibrarian.indeterminate(mailbox.id, error, {
+    reason: 'indeterminate-after-restart',
+    ...detail,
+    error,
+  })
+  if (settled) deliverSpawnMailboxCompletion(settled, 'indeterminate', {
+    reason: 'indeterminate-after-restart',
+    ...detail,
+    error,
   })
 }
 
@@ -1994,12 +2025,27 @@ async function performSpawnRelay(caller, msg) {
       try {
         const operation = pendingAgentId ? 'mint' : (resolved.respawn ? 'wake' : 'spawn')
         result = await sendDaemonDurable(machineId, operation, spawnRequest)
+        if (isIndeterminateSpawnOutcome(result)) {
+          result = {
+            ok: false,
+            reason: 'indeterminate-after-restart',
+            error: result.error || 'previous daemon RPC execution outcome is indeterminate after process restart; operation was not replayed',
+          }
+        }
         if (pendingAgentId && result?.ok === false) {
-          spawnLibrarian.failPending(pendingAgentId, result.code || result.reason || 'launch-failed')
+          if (!isIndeterminateSpawnOutcome(result)) {
+            spawnLibrarian.failPending(pendingAgentId, result.code || result.reason || 'launch-failed')
+          }
         }
       } catch (e) {
         if (pendingAgentId && /RPC timeout .*op=spawn/.test(e.message || '')) {
           result = { ok: false, reason: 'spawning' }
+        } else if (isIndeterminateSpawnOutcome(e)) {
+          result = {
+            ok: false,
+            reason: 'indeterminate-after-restart',
+            error: e.message || 'previous daemon RPC execution outcome is indeterminate after process restart; operation was not replayed',
+          }
         } else {
           if (pendingAgentId) spawnLibrarian.failPending(pendingAgentId, 'launch-failed')
           const settled = mailboxLibrarian.fail(mailbox.id, e.message || 'launch-failed', {
@@ -2023,6 +2069,19 @@ async function performSpawnRelay(caller, msg) {
           }
           const settled = mailboxLibrarian.fail(mailbox.id, failed.error, failed)
           if (settled) deliverSpawnMailboxCompletion(settled, 'failed', failed)
+          return
+        }
+      }
+      if (isIndeterminateSpawnOutcome(result)) {
+        if (pendingAgentId && readiness) {
+          result = { ok: true, pending: true, reason: 'indeterminate-after-restart' }
+        } else {
+          settleSpawnMailboxIndeterminate(mailbox, {
+            label: spawnName,
+            agentId: targetAgentId,
+            machineId,
+            error: result.error || 'previous daemon RPC execution outcome is indeterminate after process restart; operation was not replayed',
+          })
           return
         }
       }
@@ -8717,7 +8776,7 @@ async function handleDaemonWsMessage(ws, msg) {
   if (type === 'rpc-reply') {
     const entry = pendingRpcs.get(msg.id)
     if (!entry) return // unknown / already-timed-out RPC
-    if (msg.error) entry.reject(new Error(rpcErrorMessage(msg.error)))
+    if (msg.error) entry.reject(rpcReplyError(msg))
     else entry.resolve(msg.result)
     return
   }
