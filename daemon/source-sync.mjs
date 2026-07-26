@@ -83,6 +83,7 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
     const state = sourceWatchers.get(message.project)
     if (!state?.sourceDir) return []
     const written = []
+    const failed = []
     for (const entry of classifications) {
       if (entry?.status !== 'conflict' || !entry.merged || !entry.path) continue
       const full = path.join(state.sourceDir, entry.path)
@@ -93,11 +94,26 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
         fs.writeFileSync(full, merged)
         written.push(entry.path)
       } catch (e) {
-        log.warn(`could not write conflict into ${message.project}/${entry.path}: ${e.message}`)
+        // Keep going so one unwritable file doesn't hide the others, but this
+        // is not swallowed: a conflict we cannot put in front of the person is
+        // the silent divergence this whole path exists to end, so it goes out
+        // as a critical warning below.
+        failed.push({ path: entry.path, error: e.message })
       }
     }
     if (written.length > 0) {
       log.warn(`${message.project}: conflict written to ${written.join(', ')} — resolve the markers; the next save syncs`)
+    }
+    if (failed.length > 0) {
+      const detail = failed.map(f => `${f.path} (${f.error})`).join(', ')
+      log.error(`${message.project}: could not write conflict into ${detail}`)
+      sendMsg({
+        type: 'daemon-warning',
+        warning: 'source-conflict-undeliverable',
+        severity: 'critical',
+        project: message.project,
+        message: `Conflict in ${message.project} could not be written to this machine's copy (${detail}). Its edits are diverged and will not sync until this is resolved.`,
+      })
     }
     return written
   }
