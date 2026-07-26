@@ -780,7 +780,7 @@ function FleetAgentsInner({ shape }: { shape: any }) {
                   const taskText = agentTasks[0]?.title || agentTasks[0]?.description || ''
                   return (
                     <FleetAgentDirectoryRow
-                      row={toFleetAgentDirectoryRow(item.agent)}
+                      row={toFleetAgentDirectoryRow(item.agent, { spawnModels: spawnModelInfo.models })}
                       taskDesc={taskText}
                       taskTitle={taskText}
                       unreadCount={unreadCounts[item.agent.id] || 0}

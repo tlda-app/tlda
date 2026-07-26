@@ -104,6 +104,17 @@ function applyNormalizedOptions(params = {}, modelSpec = {}) {
   }
 }
 
+function spawnOptionMetadata(params = {}) {
+  const options = params.modelOptions && typeof params.modelOptions === 'object' && !Array.isArray(params.modelOptions)
+    ? params.modelOptions
+    : {}
+  const clean = {}
+  for (const [key, value] of Object.entries(options)) {
+    if (value != null && value !== '') clean[key] = String(value)
+  }
+  return Object.keys(clean).length ? { modelOptions: clean } : {}
+}
+
 function resolveLaunchSpec(rawModel, config, kwargs = {}) {
   const normalized = normalizeSpawnModelKwargs({ ...kwargs, model: rawModel }, { config })
   return {
@@ -469,7 +480,7 @@ async function spawnFresh(params) {
                 model,
                 effort: params.effort,
                 kind: requestedKind,
-                metadata: permissionMetadata(launchPolicy.permissionGrant, launchPolicy.leasePolicy),
+                metadata: { ...permissionMetadata(launchPolicy.permissionGrant, launchPolicy.leasePolicy), ...spawnOptionMetadata(params) },
                 machineId: params.machineId,
                 api,
                 ...shellReservationOptions(params),
@@ -482,7 +493,7 @@ async function spawnFresh(params) {
                 model,
                 effort: params.effort,
                 kind: requestedKind,
-                metadata: permissionMetadata(launchPolicy.permissionGrant, launchPolicy.leasePolicy),
+                metadata: { ...permissionMetadata(launchPolicy.permissionGrant, launchPolicy.leasePolicy), ...spawnOptionMetadata(params) },
                 machineId: params.machineId,
                 api,
                 ...shellReservationOptions(params),
