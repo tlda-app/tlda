@@ -494,7 +494,7 @@ function clearIdentityRetry() {
 }
 
 /** Log in as an existing agent. Used by returning users and ?name= auto-login. */
-export async function login(name, { persist = true } = {}) {
+export async function login(name) {
   const clean = sanitizeIdentityName(name)
   if (!isUsableIdentityName(clean)) throw new Error('invalid identity name')
   _humanName = clean
@@ -503,12 +503,8 @@ export async function login(name, { persist = true } = {}) {
   _humanName = res.name
   _identifyPending = false
   clearIdentityRetry()
-  if (persist) {
-    writeStoredIdentity(res.name)
-    clearTemporaryIdentity()
-  } else {
-    writeTemporaryIdentity(res.name)
-  }
+  writeStoredIdentity(res.name)
+  clearTemporaryIdentity()
   notify('identity', { type: 'identity', id: _humanId, name: _humanName })
   bumpIdentityEpoch()
   _startHeartbeat()
@@ -1111,7 +1107,7 @@ export function connect() {
       _identifyPending = true
       _humanName = storedName
       notify('identity', { type: 'identity', id: null, name: storedName, needsIdentity: true })
-      login(storedName, { persist: !urlName }).catch((err) => {
+      login(storedName).catch((err) => {
         // A deploy/restart can drop or time out this login request. Do not erase
         // or mask the browser's chosen identity with a generated temporary human:
         // the stored name is the durable "who I am" claim, so keep retrying it.
