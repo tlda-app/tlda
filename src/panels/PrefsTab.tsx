@@ -272,6 +272,7 @@ function readAll() {
     knownDevices: getPref('known-devices'),
     deviceNames: getPref('device-names'),
     voiceBackend: getPref('voice-backend'),
+    voiceHudMeter: getPref('voice-hud-meter'),
     voiceSubmitWords: getPref('voice-submit-words'),
     voiceSinkShapeTypes: getPref('voice-sink-shape-types'),
     radioSubtitlesEnabled: getPref('radio-subtitles-enabled'),
@@ -554,6 +555,17 @@ export function PrefsTab() {
             {voiceBackends.map(backend => (
               <option key={backend.value || 'off'} value={backend.value}>{backend.label}</option>
             ))}
+          </select>
+        </PrefSubsection>
+
+        <PrefSubsection title="Meter">
+          <select
+            value={prefs.voiceHudMeter}
+            onChange={e => setPref('voice-hud-meter', e.target.value)}
+            className="prefs-select"
+          >
+            <option value="background">Background</option>
+            <option value="edge">Edge</option>
           </select>
         </PrefSubsection>
 

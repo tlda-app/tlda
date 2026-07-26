@@ -35,6 +35,7 @@ const DEFAULTS = {
   // a backend in Preferences; until then voice is silent. There is NO fallback:
   // a selected backend that's unreachable goes quiet, it never switches.
   'voice-backend': '' as string,
+  'voice-hud-meter': 'background' as string,
   'voice-submit-words': 'send, send it, sent' as string,
   'voice-sink-shape-types': 'fleet-agents' as string,
   'radio-subtitles-enabled': true as boolean,
