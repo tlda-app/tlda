@@ -23,7 +23,7 @@ import { DocContext } from '../PanelContext'
 import { STORE_HTTP } from '../activeConfig'
 import { htmlSourceLineAnchorAtCanvasY, type HtmlSourceLineAnchor } from '../htmlSourceAnchors'
 import { PDF_HEIGHT, PDF_WIDTH } from '../layoutConstants'
-import { subscribePref } from '../preferences'
+import { getPref, subscribePref } from '../preferences'
 import { readabilityStyleVars } from '../readabilityProfile'
 import { loadLookup, type LookupData } from '../synctexLookup'
 import {
@@ -42,7 +42,17 @@ import './fleet-chat.css'
 
 const DEFAULT_W = 560
 const DEFAULT_H = 520
-const WRITE_DEBOUNCE_MS = 900
+// Seconds of no typing before the editor commits on its own. This is the
+// third write boundary — see AGENTS.md "Project as world". Clamped so a
+// bad preference can't turn the editor back into a keystroke stream or
+// swallow a write for minutes.
+const MIN_IDLE_WRITE_SEC = 1
+const MAX_IDLE_WRITE_SEC = 60
+function idleWriteMs(): number {
+  const sec = Number(getPref('source-write-idle-sec'))
+  if (!Number.isFinite(sec)) return 4000
+  return Math.min(MAX_IDLE_WRITE_SEC, Math.max(MIN_IDLE_WRITE_SEC, sec)) * 1000
+}
 const SOURCE_CONTEXT_BEFORE = 28
 const SOURCE_CONTEXT_AFTER = 44
 const SOURCE_TRACK_INTERVAL_MS = 250
@@ -476,6 +486,7 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
   const voiceUpdateRef = useRef<((text: string) => void) | null>(null)
   const voiceStopRef = useRef<(() => void) | null>(null)
   const queueWriteRef = useRef<((text: string) => void) | null>(null)
+  const flushWriteRef = useRef<(() => void) | null>(null)
 
   if (!voiceUpdateRef.current) {
     voiceUpdateRef.current = (text: string) => {
@@ -839,6 +850,8 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
     }
   }
 
+  // Writes are checkpoints, not a stream. Typing arms the idle boundary; the
+  // click-out and leave-insert-mode boundaries flush it immediately.
   const queueWrite = (text: string) => {
     saveSeqRef.current += 1
     const seq = saveSeqRef.current
@@ -848,9 +861,21 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
     writeTimerRef.current = window.setTimeout(() => {
       writeTimerRef.current = null
       void writeSource(text, seq)
-    }, WRITE_DEBOUNCE_MS)
+    }, idleWriteMs())
   }
   queueWriteRef.current = queueWrite
+
+  // A boundary was reached — commit now instead of waiting out the idle timer.
+  const flushWrite = () => {
+    if (!writeTimerRef.current) return
+    window.clearTimeout(writeTimerRef.current)
+    writeTimerRef.current = null
+    const text = fullSourceRef.current
+    if (text === undefined) return
+    saveSeqRef.current += 1
+    void writeSource(text, saveSeqRef.current)
+  }
+  flushWriteRef.current = flushWrite
 
   const queueSecondaryWrite = (sourceFile: string, text: string) => {
     secondarySaveSeqRef.current += 1
@@ -869,7 +894,7 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
           setStatus('error')
           setStatusText(`${sourceFile}: ${err?.message || 'Sync failed'}`)
         })
-    }, WRITE_DEBOUNCE_MS)
+    }, idleWriteMs())
   }
 
   const runEditorUndoRedo = (view: EditorView, redoRequested: boolean) => {
@@ -991,9 +1016,18 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
         view.dom.addEventListener('keydown', handleNativeKeydown, { capture: true })
         const handleVoiceFocus = () => activateVoiceEditor(view)
         view.dom.addEventListener('focusin', handleVoiceFocus)
+        // Write boundary: clicking out commits. `focusout` fires for moves
+        // within the editor too, so only commit once focus has actually left.
+        const handleWriteOnBlur = (event: FocusEvent) => {
+          const next = event.relatedTarget as Node | null
+          if (next && view.dom.contains(next)) return
+          flushWriteRef.current?.()
+        }
+        view.dom.addEventListener('focusout', handleWriteOnBlur)
 	        cmKeydownCleanupRef.current = () => {
 	          view.dom.removeEventListener('keydown', handleNativeKeydown, { capture: true })
 	          view.dom.removeEventListener('focusin', handleVoiceFocus)
+	          view.dom.removeEventListener('focusout', handleWriteOnBlur)
 	        }
 	        stripVimRegexHints(view.dom)
 	        const panelObserver = new MutationObserver(() => stripVimRegexHints(view.dom))
@@ -1004,7 +1038,12 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
         const cm = useVim ? getCM(view) : null
         if (cm) {
           cm.setOption('pcre', true)
-          CM5.on(cm, 'vim-mode-change', (e: any) => setVimModeState(e.mode || 'normal'))
+          CM5.on(cm, 'vim-mode-change', (e: any) => {
+            const nextMode = e.mode || 'normal'
+            // Write boundary: leaving insert mode commits.
+            if (vimModeRef.current === 'insert' && nextMode !== 'insert') flushWriteRef.current?.()
+            setVimModeState(nextMode)
+          })
           Vim.defineEx('write', 'w', () => {
             const current = cmViewRef.current?.state.doc.toString()
             if (current !== undefined) queueWriteRef.current?.(current)
