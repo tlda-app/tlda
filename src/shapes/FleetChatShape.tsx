@@ -619,13 +619,17 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
 
   useEffect(() => {
     if (!agentId) return
-    terminalTransportRef.current?.close()
-    termRef.current?.clear()
-    setStatus('connecting')
-    let sawAuthoritativeSize = false
-    let fallbackFlushed = false
-    let fallbackTimer: ReturnType<typeof setTimeout> | null = null
-    const pendingOutput: TerminalOutputFrame[] = []
+    let cancelled = false
+    let retryTimer: ReturnType<typeof setTimeout> | null = null
+    let activeFallbackTimer: ReturnType<typeof setTimeout> | null = null
+
+    const clearActiveFallbackTimer = () => {
+      if (activeFallbackTimer) {
+        clearTimeout(activeFallbackTimer)
+        activeFallbackTimer = null
+      }
+    }
+
     const writeOutput = (msg: TerminalOutputFrame) => {
       const term = termRef.current
       if (!term) return
@@ -636,62 +640,90 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
         term.write(msg.data)
       }
     }
-    const flushPendingOutput = () => {
-      if (!termRef.current) return
-      for (const msg of pendingOutput) writeOutput(msg)
-      pendingOutput.length = 0
-    }
-    fallbackTimer = setTimeout(() => {
-      if (sawAuthoritativeSize) return
-      fallbackFlushed = true
-      for (const msg of pendingOutput) writeOutput(msg)
-    }, 1500)
-    // /ws/terminal must hit the fleet server (where the daemon is connected),
-    // NOT the page origin — on the local copy the page is served from 5176 but
-    // the daemon talks to Fly, so the page-origin socket had no daemon behind it.
-    const terminalTransport = openTerminalTransport({
-      agentId,
-      onOpen: () => {
-        setStatus('connected')
-      },
-      onFrame: (msg) => {
-        if (msg.type === 'size' && msg.cols && msg.rows) {
-          // The daemon reports the agent's real tmux window size. Resize the live
-          // grid to match so the absolute-positioned stream renders cleanly; the
-          // scale effect then re-fits it to the panel width.
-          setGridCols(msg.cols)
-          setGridRows(msg.rows)
-          try {
-            const term = termRef.current
-            term?.resize(msg.cols, msg.rows)
-            if (fallbackTimer) {
-              clearTimeout(fallbackTimer)
-              fallbackTimer = null
+
+    const connect = (attempt = 0) => {
+      if (cancelled) return
+      clearActiveFallbackTimer()
+      const previousTransport = terminalTransportRef.current
+      terminalTransportRef.current = null
+      previousTransport?.close()
+      termRef.current?.clear()
+      setStatus('connecting')
+      let sawAuthoritativeSize = false
+      let fallbackFlushed = false
+      const pendingOutput: TerminalOutputFrame[] = []
+      const flushPendingOutput = () => {
+        if (!termRef.current) return
+        for (const msg of pendingOutput) writeOutput(msg)
+        pendingOutput.length = 0
+      }
+      activeFallbackTimer = setTimeout(() => {
+        if (sawAuthoritativeSize || cancelled) return
+        fallbackFlushed = true
+        for (const msg of pendingOutput) writeOutput(msg)
+      }, 1500)
+
+      // /ws/terminal must hit the fleet server (where the daemon is connected),
+      // NOT the page origin — on the local copy the page is served from 5176 but
+      // the daemon talks to Fly, so the page-origin socket had no daemon behind it.
+      const terminalTransport = openTerminalTransport({
+        agentId,
+        onOpen: () => {
+          if (cancelled) { terminalTransport.close(); return }
+          setStatus('connected')
+        },
+        onFrame: (msg) => {
+          if (cancelled) return
+          if (msg.type === 'size' && msg.cols && msg.rows) {
+            // The daemon reports the agent's real tmux window size. Resize the live
+            // grid to match so the absolute-positioned stream renders cleanly; the
+            // scale effect then re-fits it to the panel width.
+            setGridCols(msg.cols)
+            setGridRows(msg.rows)
+            try {
+              const term = termRef.current
+              term?.resize(msg.cols, msg.rows)
+              clearActiveFallbackTimer()
+              if (!sawAuthoritativeSize) {
+                sawAuthoritativeSize = true
+                term?.clear()
+                flushPendingOutput()
+              }
+            } catch { void 0 }
+          } else if (msg.type === 'output' && msg.data && termRef.current) {
+            const output = { type: 'output', data: msg.data, encoding: msg.encoding }
+            if (sawAuthoritativeSize) {
+              writeOutput(output)
+            } else {
+              pendingOutput.push(output)
+              if (fallbackFlushed) writeOutput(output)
             }
-            if (!sawAuthoritativeSize) {
-              sawAuthoritativeSize = true
-              term?.clear()
-              flushPendingOutput()
-            }
-          } catch { void 0 }
-        } else if (msg.type === 'output' && msg.data && termRef.current) {
-          const output = { type: 'output', data: msg.data, encoding: msg.encoding }
-          if (sawAuthoritativeSize) {
-            writeOutput(output)
-          } else {
-            pendingOutput.push(output)
-            if (fallbackFlushed) writeOutput(output)
+          } else if (msg.type === 'error') {
+            setStatus('error')
           }
-        } else if (msg.type === 'error') {
-          setStatus('error')
-        }
-      },
-      onError: () => setStatus('error'),
-    })
-    terminalTransportRef.current = terminalTransport
+        },
+        onError: () => {
+          if (!cancelled) setStatus('error')
+        },
+        onClose: () => {
+          if (cancelled) return
+          if (terminalTransportRef.current !== terminalTransport) return
+          clearActiveFallbackTimer()
+          const delay = Math.min(5000, 500 * Math.max(1, attempt + 1))
+          setStatus('connecting')
+          retryTimer = setTimeout(() => connect(attempt + 1), delay)
+        },
+      })
+      terminalTransportRef.current = terminalTransport
+    }
+
+    connect()
     return () => {
-      if (fallbackTimer) clearTimeout(fallbackTimer)
-      terminalTransport.close()
+      cancelled = true
+      if (retryTimer) clearTimeout(retryTimer)
+      clearActiveFallbackTimer()
+      terminalTransportRef.current?.close()
+      terminalTransportRef.current = null
     }
   }, [agentId])
 
