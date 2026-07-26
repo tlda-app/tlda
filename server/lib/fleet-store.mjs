@@ -1899,10 +1899,13 @@ export class FleetStore {
     if (this._lastTransportOperationPruneAt && nowMs - this._lastTransportOperationPruneAt < TRANSPORT_OPERATION_PRUNE_INTERVAL_MS) return
     this._lastTransportOperationPruneAt = nowMs
     try {
-      const pruned = this.pruneTransportOperations({ now: new Date(nowMs) })
-      const total = pruned.terminal + pruned.accepted
-      if (total > 0) console.warn(`[fleet-store] pruned ${total} transport operation cache rows`)
+      this.pruneTransportOperations({ now: new Date(nowMs) })
     } catch (e) {
+      // Deliberately swallowed: this is an opportunistic prune riding on the
+      // path that records a transport operation. Housekeeping must never fail
+      // the operation it piggybacks on — a prune that doesn't happen costs some
+      // disk until the next interval, while rethrowing here would break the
+      // thing the caller actually came to do. Logged, not raised.
       console.warn(`[fleet-store] transport operation prune failed: ${e.message}`)
     }
   }
