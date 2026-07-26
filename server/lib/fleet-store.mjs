@@ -4513,8 +4513,10 @@ export class FleetStore {
       FROM candidate c
       LEFT JOIN agents a ON a.id = c.agent_id
       ORDER BY coalesce(a.last_active, a.last_seen, c.seat_created_at, a.registered_at, '') DESC
+      LIMIT ?
     `;
-    const rows = this.db.prepare(sql).all(...params, ...params);
+    const candidateCap = Math.min(Math.max(cap * 5, 50), 500);
+    const rows = this.db.prepare(sql).all(...params, ...params, candidateCap);
 
     const eventTimeClauses = [];
     const eventTimeParams = [];
