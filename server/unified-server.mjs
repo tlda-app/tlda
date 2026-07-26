@@ -1577,6 +1577,17 @@ const _daemonWarnDedup = new Map() // project → { eventId, count, lastSeen, ba
 const DAEMON_WARN_DEDUP_MS = 5 * 60 * 1000
 const MY_TASK_TASK_LIMIT = 20
 const MY_TASK_UNREAD_LIMIT = 50
+const MATERIALIZATION_HOLD_MS = 60_000
+
+function hasUnsettledRefs(message, recipientId) {
+  const refs = message?.metadata?.recipient_refs?.[recipientId]?.attachments
+  if (!refs || typeof refs !== 'object') return false
+  const pending = Object.values(refs).some(ref => ref?.state === 'pending')
+  if (!pending) return false
+  const sentAt = Date.parse(message.timestamp)
+  if (!Number.isFinite(sentAt)) return false
+  return Date.now() - sentAt < MATERIALIZATION_HOLD_MS
+}
 
 // daemon address → ts when the CURRENT uninterrupted daemon connection began. Reset on
 // every daemon-hello (i.e. every reconnect). Agent activity events arrive over the

@@ -1062,7 +1062,7 @@ export function useFleetConnection(): boolean {
 
 // --- Identity hook ---
 
-export function useFleetIdentity(): { id: string | null, name: string | null, needsIdentity: boolean, login: (name: string) => Promise<any>, register: (name: string, options?: { persist?: boolean }) => Promise<any> } {
+export function useFleetIdentity(): { id: string | null, name: string | null, needsIdentity: boolean, login: (name: string, options?: { persist?: boolean }) => Promise<any>, register: (name: string, options?: { persist?: boolean }) => Promise<any> } {
   const [identity, setIdentity] = useState({ id: getHumanId(), name: getHumanName(), needsIdentity: _needsIdentity() })
 
   useEffect(() => {

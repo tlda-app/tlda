@@ -33,8 +33,8 @@ export function IdentityPicker() {
         const candidate = attempt === 0 ? targetName : temporaryIdentityName()
         try {
           if (requestedName) {
-            try { await login(candidate) }
-            catch { await register(candidate) }
+            try { await login(candidate, { persist: false }) }
+            catch { await register(candidate, { persist: false }) }
           } else {
             await register(candidate, { persist: false })
           }
