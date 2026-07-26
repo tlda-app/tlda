@@ -51,8 +51,8 @@ a successful deploy command by pipeline status.
 
 ## Configuration boundary
 
-Operators select a complete named `{ database, store, licenseKey }` config with
-`--config` or `TLDA_CONFIG`; they do not manually split a deployment into
+Operators select a complete named `{ database, store, licenseKey }` environment with
+`--env` or `TLDA_ENV`; they do not manually split a deployment into
 independent URL variables.
 
 `TLDA_SYNC_SERVER` still exists as an internal transport value projected by the

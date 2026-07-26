@@ -53,7 +53,7 @@ To put *your own* local agents to work on the paper there, run this in your pape
 
 ```bash
 brew tap qtm285/tlda && brew install tlda   # if you don't already have the CLI
-TLDA_CONFIG=<host-config-name> tlda config mcp-setup
+TLDA_ENV=<host-config-name> tlda config mcp-setup
 ```
 
 Claude Code in that directory now has tlda's tools, pointed at their server.
@@ -101,7 +101,7 @@ Run `tlda doctor` to check things and `tlda help` (or `tlda doc`, `tlda agent`, 
 That gets you working on your own machine. To reach it from other devices — your iPad, your collaborators, or hosting it for other people — see [Access & security](#access--security).
 
 > Server on one machine, agents on another? Select the same named config on the
-> agents' machine and run `tlda daemon start --config <name>` there. The daemon
+> agents' machine and run `tlda daemon start --env <name>` there. The daemon
 > is the bridge to files, sessions, and RPC on that machine.
 
 ---
@@ -328,7 +328,7 @@ This is roughly how the project's own deployment runs — a container that joins
 - Run the server in a container (Node + a TeX distribution for builds; the SPA is served from the same process, so it's one origin — no separate static host).
 - Inside the container, bring up `tailscaled` with an auth key (supplied as a secret), then `tailscale serve` the app over the tailnet's HTTPS. Don't expose a public port.
 - Give the deployment a named config whose `database` and `store` axes point at
-  the container's tailnet origin; select it with `TLDA_CONFIG` or `--config`.
+  the container's tailnet origin; select it with `TLDA_ENV` or `--env`.
   Set `TLDA_NO_AUTH=1` only when the tailnet is the boundary (see below).
 - Mount a volume for the mutable data (`projects/`, `data/`, the fleet database) so it survives redeploys.
 - Put each history-backed paper on that volume as a server-side Git repo/worktree. The simplest setup is a named repo slot:
@@ -361,13 +361,13 @@ Local configuration, logs, and linters live in `~/.config/tlda/`. Fleet/chat
 state belongs to the active config's remote database; the local `fleet.db` is
 not authoritative.
 
-`server.yaml` contains a `servers` map. Each named server is a complete
-`{ database, store, licenseKey }` record: `database` selects fleet/chat/agent
-state, while `store` selects document assets and shape sync. `defaultServer`
-names the normal selection. Use `--config <name>` for one CLI run or
-`TLDA_CONFIG=<name>` for one process; do not edit `defaultServer` just to test a
-different server and do not manually split the axes with URL environment
-variables.
+`daemon.yaml` contains an `environments` block. Each named environment under
+`environments.values` is a complete `{ database, store, licenseKey }` record:
+`database` selects fleet/chat/agent state, while `store` selects document assets
+and shape sync. `environments.default` names the normal selection. Use
+`--env <name>` for one CLI run or `TLDA_ENV=<name>` for one process; do not edit
+`environments.default` just to test a different environment and do not manually
+split the axes with URL environment variables.
 
 Machine identity, permissions, models, tmux, and task-document settings live in
 `daemon.yaml`; managed bots live in `bots.yaml`; ordinary CLI preferences such
@@ -377,7 +377,7 @@ as browser selection live in `cli.yaml`; tokens live in `tokens.json`.
 
 | Variable | What it does |
 |----------|--------------|
-| `TLDA_CONFIG` | Select a named complete config for this process. |
+| `TLDA_ENV` | Select a named complete environment for this process. |
 | `TLDA_NO_AUTH=1` | Run the app open (no per-request token). Use only when the server is behind a network boundary. |
 | `TLDA_TOKEN_READ` / `TLDA_TOKEN_RW` | The read / read-write tokens, overriding `tokens.json`. |
 | `DEEPGRAM_API_KEY` | Enables server-side voice transcription (the [Deepgram](https://deepgram.com/) bridge) for everyone on the server. |

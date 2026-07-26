@@ -42,7 +42,7 @@ import {
   formatRecipientAttachmentRef,
   recipientAttachmentRef,
 } from '../shared/inbox-reference-materialization.mjs';
-import { getActiveConfigName } from '../shared/config.mjs';
+import { getActiveEnvName } from '../shared/config.mjs';
 import { listModels as listSpawnModels, normalizeSpawnModelKwargs } from '../agent-launch/models.mjs';
 import {
   defaultDaemonConfigPath,
@@ -2050,7 +2050,7 @@ export async function handleFleetTool(name, args) {
       if (project && project !== '~') labels.push(project);
     }
     const machineId = process.env.TLDA_MACHINE_ID || os.hostname().split('.')[0];
-    const envName = getActiveConfigName();
+    const envName = getActiveEnvName();
     const daemonKey = process.env.FLEET_DAEMON_KEY || (machineId && envName ? `${machineId}:${envName}` : null);
     const currentHarness = harnessFromEnv();
     const localMarker = extra => formatLoginMarker({
@@ -4737,7 +4737,7 @@ function startChannelWS({ bootstrap = false } = {}) {
         tmux_session: _tmuxSession || undefined,
         cwd: getAgentCwd() || process.cwd(),
         machine_id: process.env.TLDA_MACHINE_ID || os.hostname().split('.')[0],
-        env_name: getActiveConfigName(),
+        env_name: getActiveEnvName(),
       };
       mcpFleetTransport.durable('login', loginBody)
         ?.then(() => flushFleetTransport({ limit: 100 }))

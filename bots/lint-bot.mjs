@@ -47,10 +47,10 @@ const HEARTBEAT_FILE = process.env.TLDA_BOT_HEARTBEAT || path.join(CONFIG_DIR, `
 const ID_FILE = process.env.TLDA_BOT_IDFILE || path.join(CONFIG_DIR, `${BOT_KEY}.fleet-id`)
 const OWNER_ID = 'fleet:skip'
 // Bots connect to the FLEET/database axis (chat + registry live there), not the
-// store. A bot's declared `server:` in bots.yaml routes it to that named
-// daemon.yaml server; omit for the machine default.
+// store. A bot's declared `environment:` in bots.yaml routes it to that named
+// daemon.yaml environment; omit for the machine default.
 const MY_BOT = getManagedBots().find(b => String(b.name || '').toLowerCase() === BOT_KEY) || {}
-const SERVER = getFleetServerUrl(MY_BOT.server)
+const SERVER = getFleetServerUrl(MY_BOT.environment)
 const WS_URL = SERVER.replace(/^http/, 'ws') + '/ws/fleet'
 
 // Only run the (KaTeX-backed) render check when a message could plausibly have a

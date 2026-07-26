@@ -6,7 +6,7 @@ import path from 'path'
 import tls from 'tls'
 import { WebSocket } from 'ws'
 import { getFleetServerUrl, getMachineId } from '../shared/config.mjs'
-import { activeConfigName, sanitizeSessionName } from './identity.mjs'
+import { activeEnvName, sanitizeSessionName } from './identity.mjs'
 import { createPermissionLedger } from './permission-ledger.mjs'
 import { createLocalAgentLedger } from './local-agent-ledger.mjs'
 import { createFleetOperationTransport } from '../shared/fleet-operation-transport.mjs'
@@ -313,7 +313,7 @@ async function wsIdentityMessage(type, {
   if (shell) msg.shell = true
   const resolvedMachineId = machineId || getMachineId()
   if (resolvedMachineId) msg.machine_id = resolvedMachineId
-  const resolvedEnvName = envName || activeConfigName()
+  const resolvedEnvName = envName || activeEnvName()
   if (resolvedEnvName) {
     msg.env_name = resolvedEnvName
     if (resolvedMachineId) msg.daemon_key = `${resolvedMachineId}:${resolvedEnvName}`

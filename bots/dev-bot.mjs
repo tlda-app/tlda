@@ -15,7 +15,7 @@ import { fileURLToPath } from 'url'
 
 import {
   CONFIG_DIR,
-  getActiveConfigName,
+  getActiveEnvName,
   getFleetServerUrl,
   getManagedBotEnvironments,
   getManagedBots,
@@ -37,9 +37,9 @@ const TMUX_SESSION = process.env.TLDA_BOT_TMUX_SESSION || null
 const OWNER_ID = 'fleet:skip'
 
 const MY_BOT = getManagedBots().find(b => String(b.name || '').toLowerCase() === BOT_KEY) || {}
-const CONFIG_NAME = getActiveConfigName(MY_BOT.server)
-const FLEET_SERVER = getFleetServerUrl(MY_BOT.server)
-const STORE_SERVER = getServerUrl(MY_BOT.server)
+const CONFIG_NAME = getActiveEnvName(MY_BOT.environment)
+const FLEET_SERVER = getFleetServerUrl(MY_BOT.environment)
+const STORE_SERVER = getServerUrl(MY_BOT.environment)
 const WS_URL = FLEET_SERVER.replace(/^http/, 'ws') + '/ws/fleet'
 const BOT_ENVIRONMENTS = getManagedBotEnvironments()
 const ALLOWED_ENVIRONMENTS = Object.entries(BOT_ENVIRONMENTS)

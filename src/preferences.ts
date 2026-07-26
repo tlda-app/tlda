@@ -96,6 +96,11 @@ const DEFAULTS = {
   'bot-self-check-enabled': {} as Record<string, boolean>,
   'bot-self-check-countdown-sec': {} as Record<string, number>,
   'bot-model': {} as Record<string, string>,
+  // Source editor writes are checkpoints, not a stream — see AGENTS.md
+  // "Project as world". A write commits when you click out or leave insert
+  // mode; this is the third boundary, for when you stop without doing either.
+  // Seconds of no typing before the editor commits on its own.
+  'source-write-idle-sec': 4 as number,
   // Preferences panel disclosure state. Kept server-backed so touch-only
   // devices don't need localStorage access to recover usable panel space.
   'prefs-open-sections': ['account', 'appearance', 'voice'] as string[],

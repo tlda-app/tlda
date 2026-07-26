@@ -20,7 +20,7 @@ function readFileTail(file, max = 6000) {
 }
 
 export function createAgentLauncher({
-  activeConfigName,
+  activeEnvName,
   configDir,
   loadDaemonLaunchConfig,
   loadDaemonConfigForCwd = readDaemonConfigForCwd,
@@ -113,7 +113,7 @@ export function createAgentLauncher({
     source,
   }) {
     if (!fleetId || !sessionId || !harness || !model || !cwd || !tmuxSession) return false
-    const daemonKey = `${machineId}:${activeConfigName}`
+    const daemonKey = `${machineId}:${activeEnvName}`
     const binding = await bindAgentSeatImpl({
       ledger: permissionLedger,
       identity: {
@@ -128,7 +128,7 @@ export function createAgentLauncher({
       },
       route: {
         machineId,
-        envName: activeConfigName,
+        envName: activeEnvName,
         daemonKey,
         tmuxSession,
       },
@@ -151,7 +151,7 @@ export function createAgentLauncher({
 
   async function persistIdentityRecoveryObligation({ launched, agentName, cwd, launchKind, launchModel }) {
     if (!persistPendingSeatBinding || !launched?.fleetId || !launched?.localAgentId || !launched?.tmuxSession) return null
-    const daemonKey = `${machineId}:${activeConfigName}`
+    const daemonKey = `${machineId}:${activeEnvName}`
     const result = await persistPendingSeatBinding({
       agent_id: launched.fleetId,
       daemon_key: daemonKey,
@@ -405,7 +405,7 @@ export function createAgentLauncher({
           kind: launchKind,
           modelSpec: launchModelSpec,
           config: spawnConfig,
-          activeConfigName,
+          activeEnvName,
           permissionLedger,
           cwd: resolvedCwd,
           sessionId,

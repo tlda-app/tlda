@@ -44,7 +44,7 @@ const { homedir, hostname } = os
 import { randomUUID } from 'crypto'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { lookup as mimeLookup } from 'mime-types'
-import { CONFIG_DIR, DEFAULT_PORT, getActiveConfigName, getFleetServerUrl, hasTls, resolveConfig } from '../shared/config.mjs'
+import { CONFIG_DIR, DEFAULT_PORT, getActiveEnvName, getFleetServerUrl, hasTls, resolveConfig } from '../shared/config.mjs'
 import { createLagProfiler } from './lib/lag-profiler.mjs'
 import { BARE_METADATA, resolveAsset } from '../shared/doc-assets.mjs'
 import { listModels as listSpawnModels } from '../agent-launch/models.mjs'
@@ -707,7 +707,7 @@ setInterval(() => {
 // of a misfire (an extra short-lived daemon) is much smaller than the
 // cost of silent feature loss.
 const LOCAL_MACHINE_ID = (hostname() || '').split('.')[0] || 'localhost'
-const SERVER_ENV_NAME = getActiveConfigName()
+const SERVER_ENV_NAME = getActiveEnvName()
 const LOCAL_DAEMON_ADDRESS = daemonAddress(LOCAL_MACHINE_ID, SERVER_ENV_NAME)
 // Server owner — the human running this server process. Used as fallback
 // identity for MCP agents and CLI operations. Browser users identify
@@ -1314,7 +1314,13 @@ function sendDaemonDurable(machineId, operation, params = {}, rpcOptions = {}) {
 // Mirror-back is event-based and idempotent (same hash → same ref): use the
 // resilient sender so a daemon WS reconnect flap retries instead of throwing a
 // 10s timeout that masquerades as a failure. (Skip 7/22)
-setShadowMirrorHandler(createShadowMirrorRpcHandler({ readProject, sendDaemonEphemeral: sendDaemonDurable }))
+setShadowMirrorHandler(createShadowMirrorRpcHandler({
+  readProject,
+  sendDaemonEphemeral: sendDaemonDurable,
+  // Every connected daemon, not just the one that pushed last — a machine that
+  // does not hold the project declines for itself.
+  listDaemonKeys: () => [...daemonConnections.keys()],
+}))
 
 // No server-side echo suppression. Dedup is client-side: the WS reply
 // includes the event ID, which the client maps to its optimistic event
@@ -1828,35 +1834,25 @@ async function resolveSpawnTarget(name, respawn, { fresh = false, requested = {}
   return { name: resolved.name, respawn: resolved.respawn }
 }
 
-function spawnMailboxCompletionText(entry, status, detail) {
-  const label = detail.label || detail.agentId || entry.meta?.name || 'mint'
-  if (status === 'completed') {
-    const agentPart = detail.agentId ? ` (${detail.agentId})` : ''
-    const policyPart = detail.permissionGrant ? ` Permission: \`${detail.permissionGrant}\`.` : ''
-    return `**Mint mailbox ${entry.id} complete**: \`${label}\`${agentPart} has logged in and is ready for inbox pickup.${policyPart}`
-  }
-  if (status === 'indeterminate') {
-    return `**Mint mailbox ${entry.id} indeterminate**: \`${label}\` — ${detail.error || detail.reason || 'mint outcome is unknown'}.`
-  }
-  return `**Mint mailbox ${entry.id} failed**: \`${label}\` — ${detail.error || detail.reason || 'mint failed'}.`
-}
-
 function deliverSpawnMailboxCompletion(entry, status, detail) {
-  // Silence on success: a spawn that logged in is already in the roster and picks
-  // up its own inbox — no "it happened" chat. Only real failures surface. (Skip 7/22)
-  if (status === 'completed') return
-  deliverTldaFeedbackChat({
+  if (entry.kind !== 'spawn') return
+  const label = detail.label || entry.meta?.name || detail.agentId || entry.meta?.agentId || 'mint'
+  Promise.resolve(fleetStore?.share?.({
+    type: 'spawn_mailbox',
     from: 'fleet:tlda',
-    to: entry.ownerId,
-    text: spawnMailboxCompletionText(entry, status, detail),
+    text: `spawn mailbox ${status}: ${label}`,
+    unread: false,
+    agentId: detail.agentId || entry.meta?.agentId || null,
     metadata: {
       type: 'mailbox_complete',
       mailbox_id: entry.id,
       mailbox_kind: entry.kind,
+      owner_id: entry.ownerId,
+      label,
       status,
       ...detail,
     },
-  })
+  })).catch(e => console.error(`[spawn-mailbox] failed to record ${entry.id}: ${e.message}`))
 }
 
 function isIndeterminateSpawnOutcome(value) {
@@ -2041,16 +2037,6 @@ async function performSpawnRelay(caller, msg) {
         const shell = fleetStore?.getAgent?.(pendingAgentId)
         if (shell?.metadata?.shell) {
           result = { ok: true, pending: true, agent: shell }
-        } else {
-          spawnLibrarian.failPending(pendingAgentId, 'login-timeout')
-          const failed = {
-            ok: false,
-            reason: 'login-timeout',
-            error: `spawn started for ${spawnName}, but no reserved shell row exists for ${pendingAgentId}`,
-          }
-          const settled = mailboxLibrarian.fail(mailbox.id, failed.error, failed)
-          if (settled) deliverSpawnMailboxCompletion(settled, 'failed', failed)
-          return
         }
       }
       if (isIndeterminateSpawnOutcome(result)) {
@@ -6733,8 +6719,18 @@ async function handleFleetWsMessage(ws, msg) {
     const tasks = fleetStore.getActiveTasksByAgentLimited?.(agentId, MY_TASK_TASK_LIMIT) || []
     const taskCount = fleetStore.getActiveTaskCountByAgent?.(agentId) ?? tasks.length
     const task = tasks[0] || fleetStore.getTaskByAgent?.(agentId) || null
-    const unread = fleetStore.getUnreadLimited?.(agentId, MY_TASK_UNREAD_LIMIT) || []
-    const unreadCount = fleetStore.getUnreadCount?.(agentId) ?? unread.length
+    const allUnread = fleetStore.getUnreadLimited?.(agentId, MY_TASK_UNREAD_LIMIT) || []
+    // A shared file has to be on this machine before its message is in this
+    // inbox — "by the time they see them in their inbox, they're on their file
+    // system". Materialization is queued after the event is inserted, so a
+    // message can arrive seconds before its bytes; hold it back until every
+    // reference is terminal. The row stays unread, so nothing is lost and it
+    // appears by itself the moment the file lands.
+    const unread = allUnread.filter(message => !hasUnsettledRefs(message, agentId))
+    // The store's own total, so `messages_truncated` stays honest — it is now
+    // true both when the limit clipped the list and when a message is being
+    // held for its bytes.
+    const unreadCount = fleetStore.getUnreadCount?.(agentId) ?? allUnread.length
     // peek=true: caller just wants to see unread (e.g., the channel-WS
     // flush-on-reconnect path that displays a count). Don't mark read in
     // that case — the actual inbox() call from the agent will do the
@@ -8099,6 +8095,51 @@ async function setSentinelSyncError(projectName, syncError) {
   }
 }
 
+// A machine whose source push is rejected as stale-base has stopped syncing —
+// the daemon retries once and then blocks that project locally, so its edits
+// stop reaching the server and the only trace is a line in fleet-daemon.log.
+// The server is the only party that sees this happen, so it records which
+// machines are diverged and clears a machine the moment it pushes successfully
+// again. Read back through GET /api/projects/:name/source-authority.
+function recordSourceDivergence(projectName, machineId, envName, result) {
+  if (!machineId || !readProject(projectName)) return
+  const key = `${machineId}:${envName || 'default'}`
+  const project = readProject(projectName)
+  const previous = project.divergedMachines && typeof project.divergedMachines === 'object'
+    ? project.divergedMachines
+    : {}
+  const diverged = result?.lifecycleStatus === 'stale-base' || result?.status === 'stale-base'
+  if (!diverged && !result?.ok) return // an unrelated failure is not a divergence
+  const next = { ...previous }
+  if (diverged) {
+    if (next[key]) return // already recorded; keep the first time it happened
+    next[key] = { machineId, envName: envName || null, since: new Date().toISOString() }
+  } else {
+    if (!next[key]) return
+    delete next[key]
+  }
+  updateProject(projectName, { divergedMachines: next })
+}
+
+// True while a message is still waiting for its own attachments to land on this
+// recipient's machine. Only `pending` holds — `failed` and `skipped` are
+// terminal and must be seen, rendered as visibly unavailable.
+//
+// Bounded on purpose: if materialization never reports back (the server died
+// mid-flight, a daemon went away), the message must still surface rather than
+// disappear. After MATERIALIZATION_HOLD_MS it is delivered with its refs shown
+// as unresolved, which is honest. Silence is the one outcome not allowed.
+const MATERIALIZATION_HOLD_MS = 60_000
+function hasUnsettledRefs(message, recipientId) {
+  const refs = message?.metadata?.recipient_refs?.[recipientId]?.attachments
+  if (!refs || typeof refs !== 'object') return false
+  const pending = Object.values(refs).some(ref => ref?.state === 'pending')
+  if (!pending) return false
+  const sentAt = Date.parse(message.timestamp)
+  if (!Number.isFinite(sentAt)) return false
+  return Date.now() - sentAt < MATERIALIZATION_HOLD_MS
+}
+
 async function handleDaemonWsMessage(ws, msg) {
   const { type } = msg
 
@@ -8833,6 +8874,12 @@ async function handleDaemonWsMessage(ws, msg) {
       resultCache.record(requestId, cached.hash, reply)
       ws.send(JSON.stringify(reply))
       replied = true
+      // A machine whose push is rejected as stale-base stops syncing: the daemon
+      // retries once, then blocks that project and says so only in its own log.
+      // The server is the one place that can see this, so record it here — a
+      // machine holding a conflict has to be visible to the person, not just to
+      // whoever reads fleet-daemon.log. Cleared when that machine pushes again.
+      recordSourceDivergence(project, ws._machineId, ws._envName, result)
       if (!result.ok) {
         console.error(`[fleet-daemon] source-change ${project}: ${result.error || 'unknown'}`)
       }

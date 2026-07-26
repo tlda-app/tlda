@@ -9,7 +9,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
 import { parse as parseYaml, parseDocument } from 'yaml'
-import { resolveStrictServerAuthority, validateServerConfigTopLevel } from './daemon-config-schema.mjs'
+import { resolveStrictEnvironmentAuthority, validateServerConfigTopLevel } from './daemon-config-schema.mjs'
 
 // Preview servers receive an isolated config directory from `tlda-dev serve`.
 // Production keeps the normal shared location; previews must never mutate it.
@@ -42,9 +42,10 @@ if (hasTls && !process.env.NODE_EXTRA_CA_CERTS) {
  * talk to." There is exactly one selection rule and one derivation; outside this
  * function nothing computes or branches on config.
  *
- * Model (git-style): server.yaml `servers` is a map of named servers, each a
- * COMPLETE { database, store, licenseKey }. `defaultServer` names the active one
- * unless TLDA_CONFIG overrides it. That single selector is the only choice.
+ * Model (git-style): daemon.yaml `environments.values` is a map of named
+ * environments, each a COMPLETE { database, store, licenseKey }.
+ * `environments.default` names the active one unless TLDA_ENV overrides it.
+ * That single selector is the only choice.
  *
  *   database — fleet/chat/registry/agents (the one global event store)
  *   store    — shapes + doc assets sync (per-room/per-doc state)
@@ -98,21 +99,21 @@ export function saveCliConfig(value = {}) {
 }
 
 /**
- * Resolve the active server from server.yaml `servers:` — the single source of
- * truth for which server this machine talks to. The
- * active server is `serverName` (a string override — used to route a specific
- * bot to its declared `server:`), else TLDA_CONFIG, else server.yaml
- * `defaultServer`.
+ * Resolve the active environment from daemon.yaml `environments.values:` — the
+ * single source of truth for which database/store pair this daemon and its
+ * agents use.
+ * The active environment is `envName` (a string override — used to route a
+ * specific bot to its declared environment), else TLDA_ENV, else daemon.yaml
+ * `environments.default`.
  *
- * Each server entry MUST be COMPLETE: an explicit `database`, `store`, and
+ * Each environment entry MUST be COMPLETE: an explicit `database`, `store`, and
  * `licenseKey` (licenseKey "" = explicitly unlicensed). There are NO fallbacks —
  * no legacy `url` shorthand, no reusing `database` as `store`, no top-level
- * `licenseKey` shared across servers. A missing/partial entry THROWS. This is the
- * whole point of the migration: one declared authority per server, no guessing.
+ * `licenseKey` shared across environments. A missing/partial entry THROWS.
  *
  */
-export function resolveConfig(serverName = null) {
-  const { name, raw } = resolveStrictServerAuthority(loadServerConfig(), serverName)
+export function resolveConfig(envName = null) {
+  const { name, raw } = resolveStrictEnvironmentAuthority(loadDaemonYaml(), envName)
   const { database, store, licenseKey } = raw
   return {
     name,
@@ -123,18 +124,18 @@ export function resolveConfig(serverName = null) {
 }
 
 /** Server URL = the active config's STORE (doc assets + shape sync) over http. */
-export function getServerUrl(serverName = null) {
-  return resolveConfig(serverName).store.http
+export function getServerUrl(envName = null) {
+  return resolveConfig(envName).store.http
 }
 
 /** Fleet/event-store URL = the active config's DATABASE (chat/agents) over http. */
-export function getFleetServerUrl(serverName = null) {
-  return resolveConfig(serverName).database.http
+export function getFleetServerUrl(envName = null) {
+  return resolveConfig(envName).database.http
 }
 
-/** The active server's name — what TLDA_CONFIG/defaultServer selected. */
-export function getActiveConfigName(serverName = null) {
-  return resolveConfig(serverName).name
+/** The active environment's name — what TLDA_ENV/environments.default selected. */
+export function getActiveEnvName(envName = null) {
+  return resolveConfig(envName).name
 }
 
 /**
@@ -250,7 +251,6 @@ function loadBotsYaml() {
 export function getManagedBots() {
   const doc = loadBotsYaml()
   if (!doc || !doc.bots) return []
-  if (Array.isArray(doc.bots)) return doc.bots
   if (!isRecord(doc.bots)) throw new Error('bots.yaml: bots must be a map of name to definition')
   return Object.entries(doc.bots).map(([name, value]) => {
     if (!isRecord(value)) throw new Error(`bots.yaml: bot ${name} must be a mapping`)
@@ -260,16 +260,6 @@ export function getManagedBots() {
 
 export function getManagedBotEnvironments() {
   const doc = loadBotsYaml()
-  if (Array.isArray(doc?.bots)) {
-    const out = {}
-    const defaultName = resolveStrictServerAuthority(loadServerConfig()).name
-    for (const bot of doc.bots) {
-      const envName = bot?.server || defaultName
-      if (!out[envName]) out[envName] = []
-      if (bot?.name) out[envName].push(String(bot.name))
-    }
-    return out
-  }
   if (!doc || !doc.environments) return {}
   if (!isRecord(doc.environments)) throw new Error('bots.yaml: environments must be a map of environment name to bot-name list')
   const botNames = new Set(getManagedBots().map(bot => bot.name))

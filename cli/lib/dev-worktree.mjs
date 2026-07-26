@@ -35,7 +35,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, openSyn
 import { join } from 'path'
 import { homedir } from 'os'
 import { X509Certificate } from 'crypto'
-import { hasTls, loadServerConfig, CONFIG_DIR } from '../../shared/config.mjs'
+import { hasTls, resolveConfig, CONFIG_DIR } from '../../shared/config.mjs'
 import { resolveRepoRoot, findFreePort } from './dev-vite.mjs'
 import { spawnDetachedServer } from './server-start.mjs'
 import { findTailscaleIPv4 } from './share-url.mjs'
@@ -249,32 +249,21 @@ export function resolveReachableHost() {
 function previewConfigDir(branch) { return join(stateDir(branch), 'config') }
 
 function writePreviewConfig(branch, base, { realFleet = false } = {}) {
-  const cfg = loadServerConfig()
-  // Borrow a licenseKey from any existing config (tldraw sync license).
-  const donor = Object.values(cfg.servers).find(c => typeof c?.licenseKey === 'string')
-  const active = cfg.servers[cfg.defaultServer]
-  const database = realFleet && typeof active?.database === 'string' ? active.database : base
-  const serverConfig = {
-    defaultServer: configName(branch),
-    servers: {
-      [configName(branch)]: {
-    database,         // fleet/chat/agents → preview by default, or live with --real-fleet
-    store: base,      // shapes + doc assets → the preview server itself
-    licenseKey: donor?.licenseKey ?? '',
-      },
-    },
-  }
+  const source = resolveConfig()
+  const database = realFleet ? source.database.http : base
   // Preview servers get an isolated copy. Writing the shared config would both
   // corrupt the real daemon's authority surface and violate the app-dev fence.
   const dir = previewConfigDir(branch)
   mkdirSync(dir, { recursive: true })
-  writeFileSync(join(dir, 'server.yaml'), [
-    `defaultServer: ${JSON.stringify(serverConfig.defaultServer)}`,
-    'servers:',
-    `  ${JSON.stringify(configName(branch))}:`,
-    `    database: ${JSON.stringify(database)}`,
-    `    store: ${JSON.stringify(base)}`,
-    `    licenseKey: ${JSON.stringify(donor?.licenseKey ?? '')}`,
+  writeFileSync(join(dir, 'server.yaml'), '')
+  writeFileSync(join(dir, 'daemon.yaml'), [
+    'environments:',
+    `  default: ${JSON.stringify(configName(branch))}`,
+    '  values:',
+    `    ${JSON.stringify(configName(branch))}:`,
+    `      database: ${JSON.stringify(database)}`,
+    `      store: ${JSON.stringify(base)}`,
+    `      licenseKey: ${JSON.stringify(source.licenseKey ?? '')}`,
     '',
   ].join('\n'))
 }
@@ -419,7 +408,7 @@ export async function cmdServeWorktree(args) {
     pidFile: pidFile(branch),
     env: {
       HOST: '0.0.0.0',
-      TLDA_CONFIG: configName(branch),
+      TLDA_ENV: configName(branch),
       TLDA_CONFIG_DIR: previewConfigDir(branch),
       TLDA_DEV_SERVER: '1',          // no daemon supervisor / hibernate; isolated
       PROJECTS_DIR: projectsDir(branch),
@@ -449,20 +438,19 @@ export async function cmdServeWorktree(args) {
   if (flags.has('sandbox')) {
     // Give the sandbox daemon its own config dir with a DISTINCT machine_id so it
     // coexists with the real daemon (own pidfile = no singleton clash; own
-    // machine_id = no eviction). TLDA_CONFIG selects the sandbox server.
+    // machine_id = no eviction). TLDA_ENV selects the sandbox environment.
     const dcfg = daemonConfigDir(branch)
     mkdirSync(dcfg, { recursive: true })
-    writeFileSync(join(dcfg, 'server.yaml'), [
-      `defaultServer: ${JSON.stringify(configName(branch))}`,
-      'servers:',
-      `  ${JSON.stringify(configName(branch))}:`,
-      `    database: ${JSON.stringify(base)}`,
-      `    store: ${JSON.stringify(base)}`,
-      '    licenseKey: ""',
-      '',
-    ].join('\n'))
+    writeFileSync(join(dcfg, 'server.yaml'), '')
     writeFileSync(join(dcfg, 'daemon.yaml'), [
       `machineId: ${JSON.stringify(`dev-${sanitize(branch)}`)}`,
+      'environments:',
+      `  default: ${JSON.stringify(configName(branch))}`,
+      '  values:',
+      `    ${JSON.stringify(configName(branch))}:`,
+      `      database: ${JSON.stringify(base)}`,
+      `      store: ${JSON.stringify(base)}`,
+      '      licenseKey: ""',
       'regions:',
       '  machine: ["**"]',
       'profiles:',
@@ -484,7 +472,7 @@ export async function cmdServeWorktree(args) {
         TLDA_DAEMON_CONFIG_DIR: dcfg,    // own machine_id + pidfile (coexist with real daemon)
         TLDA_CONFIG_DIR: dcfg,           // resolve the sandbox's named server authority
         TLDA_DEV_DAEMON: base,           // the authorized sandbox target; arms the invariant
-        TLDA_CONFIG: configName(branch),
+        TLDA_ENV: configName(branch),
         TLDA_FLEET_DB: fleetDb(branch),
         PROJECTS_DIR: projectsDir(branch),
         TMUX: undefined,

@@ -82,19 +82,19 @@ fi
 # comes from TLDA_MACHINE_ID (distinct per friend so daemons don't evict each
 # other on the render box).
 if [ ! -f /root/.config/tlda/server.yaml ]; then
-  cat > /root/.config/tlda/server.yaml <<EOF
-defaultServer: default
-servers:
-  default:
-    database: "${TLDA_SERVER}"
-    store: "${TLDA_SERVER}"
-    licenseKey: ""
-EOF
+  : > /root/.config/tlda/server.yaml
 fi
 
 if [ ! -f /root/.config/tlda/daemon.yaml ]; then
   cat > /root/.config/tlda/daemon.yaml <<EOF
 machineId: "${TLDA_MACHINE_ID}"
+environments:
+  default: default
+  values:
+    default:
+      database: "${TLDA_SERVER}"
+      store: "${TLDA_SERVER}"
+      licenseKey: ""
 regions:
   machine: ["**"]
 profiles:

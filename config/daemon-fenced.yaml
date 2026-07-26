@@ -67,6 +67,14 @@ models:
       description: Codex Terra
       options: {}
 
+environments:
+  default: local
+  values:
+    local:
+      database: http://localhost:5176
+      store: http://localhost:5176
+      licenseKey: ""
+
 regions:
   cwd:
     - cwd

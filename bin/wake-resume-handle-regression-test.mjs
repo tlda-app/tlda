@@ -83,7 +83,7 @@ async function testFreshStartRetainsRuntimeWhenDurableRecoveryCannotBePersisted(
   })
   const sent = []
   const launcher = createAgentLauncher({
-    activeConfigName: 'prod',
+    activeEnvName: 'prod',
     configDir: cwd,
     loadDaemonLaunchConfig: () => configFor(cwd),
     log: { info() {}, warn() {} },
@@ -133,7 +133,7 @@ async function testPendingSeatBindingResultDoesNotCountAsWritten() {
   })
   let bindAttempts = 0
   const launcher = createAgentLauncher({
-    activeConfigName: 'prod',
+    activeEnvName: 'prod',
     configDir: cwd,
     loadDaemonLaunchConfig: () => configFor(cwd),
     log: { info() {}, warn() {} },
@@ -191,7 +191,7 @@ async function testFreshStartPersistsRecoveryBeforeReturningPending() {
   const persisted = []
   let killed = false
   const launcher = createAgentLauncher({
-    activeConfigName: 'prod', configDir: cwd, loadDaemonLaunchConfig: () => configFor(cwd),
+    activeEnvName: 'prod', configDir: cwd, loadDaemonLaunchConfig: () => configFor(cwd),
     log: { info() {}, warn() {} }, machineId: 'mini', permissionLedger: ledger,
     sendMsg: () => {}, getProjects: () => [{ name: 'test-doc', sourceDir: cwd }],
     tmux: async cmd => { if (cmd === 'kill-session') killed = true },
@@ -375,7 +375,7 @@ async function testRespawnKeepsExistingIdGrantAndReportsMissingResume() {
   }
   await ledger.set('fleet:existing', originalGrant)
   const launcher = createAgentLauncher({
-    activeConfigName: 'prod',
+    activeEnvName: 'prod',
     configDir: cwd,
     loadDaemonLaunchConfig: () => configFor(cwd),
     log: { info() {}, warn() {} },

@@ -207,8 +207,8 @@ async function startMockDaemon() {
 async function run() {
   mkdirSync(CONFIG_DIR, { recursive: true })
   const base = `${proto}://localhost:${PORT}`
-  writeFileSync(`${CONFIG_DIR}/server.yaml`, `defaultServer: test\nservers:\n  test:\n    database: ${base}\n    store: ${base}\n    licenseKey: ""\n`)
-  writeFileSync(`${CONFIG_DIR}/daemon.yaml`, `machineId: ${MACHINE_ID}\nregions:\n  machine: ["**"]\nprofiles:\n  ops:\n    read: { allow: [machine], deny: [] }\n    write: { allow: [machine], deny: [] }\ngrants:\n  localhost: ops\nmodels: {}\ndefault: ops\n`)
+  writeFileSync(`${CONFIG_DIR}/server.yaml`, '')
+  writeFileSync(`${CONFIG_DIR}/daemon.yaml`, `machineId: ${MACHINE_ID}\nenvironments:\n  default: test\n  values:\n    test:\n      database: ${base}\n      store: ${base}\n      licenseKey: ""\nregions:\n  machine: ["**"]\nprofiles:\n  ops:\n    read: { allow: [machine], deny: [] }\n    write: { allow: [machine], deny: [] }\ngrants:\n  localhost: ops\nmodels: {}\ndefault: ops\n`)
   srv = spawnProcess('node', ['server/unified-server.mjs', '--i-am-tlda-cli'], {
     cwd: process.cwd(),
     env: {
@@ -217,7 +217,7 @@ async function run() {
       TLDA_FLEET_DB: DB,
       TLDA_CONFIG_DIR: CONFIG_DIR,
       TLDA_DAEMON_CONFIG_DIR: CONFIG_DIR,
-      TLDA_CONFIG: 'test',
+      TLDA_ENV: 'test',
       TLDA_DEV_SERVER: '1',
       TLDA_SPAWN_LOGIN_DEADLINE_MS: '1200',
       TLDA_SPAWN_MAILBOX_DEADLINE_MS: '2500',

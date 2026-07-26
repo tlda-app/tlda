@@ -6,17 +6,18 @@ import { tmpdir } from 'node:os'
 
 const configDir = mkdtempSync(join(tmpdir(), 'tlda-agent-wake-grant-'))
 process.env.TLDA_DAEMON_CONFIG_DIR = configDir
-process.env.TLDA_CONFIG = 'testing'
+process.env.TLDA_ENV = 'testing'
 
-writeFileSync(join(configDir, 'server.yaml'), `defaultServer: testing
-servers:
-  testing:
-    database: http://127.0.0.1:9
-    store: http://127.0.0.1:9
-    licenseKey: ""
-`)
+writeFileSync(join(configDir, 'server.yaml'), '')
 
 writeFileSync(join(configDir, 'daemon.yaml'), `machineId: mini
+environments:
+  default: testing
+  values:
+    testing:
+      database: http://127.0.0.1:9
+      store: http://127.0.0.1:9
+      licenseKey: ""
 regions:
   machine: ["**"]
 profiles:

@@ -21,7 +21,7 @@ The real hardening is to make every supervisor/CLI daemon spawn use a stable cwd
 at the tlda repo root and a sanitized daemon environment. The sanitizer should
 remove tmux/fenced-agent variables and the tlda DNS-alias preload
 (`NODE_OPTIONS`, `TLDA_NODE_DNS_ALIAS_*`) while preserving intentional target
-selection such as `TLDA_CONFIG` and `TLDA_SERVER`. Until that lands,
+selection such as `TLDA_ENV` and `TLDA_SERVER`. Until that lands,
 `scratch/restart-daemon.sh` is the manual recovery path: it kills the stale
 daemon, removes stale pid/lock files, strips the sandbox/DNS environment, starts
 the daemon from `/Users/skip/work/tlda`, and prints heartbeat plus `lsof` proof.
@@ -40,8 +40,8 @@ infrastructure; it was never a lane boundary for app developers.
 key makes the daemon refuse to start:
 
 ```
-Error: daemon config supports only defaultServer, machineId, regions, profiles,
-grants, models, default, tmuxSocket, taskDoc, spawnMachineId, servers;
+Error: daemon config supports only machineId, regions, profiles, grants, models,
+default, tmuxSocket, taskDoc, spawnMachineId, environments;
 unknown key(s): statusScanSeconds
 ```
 
@@ -57,7 +57,7 @@ only way it was diagnosed was running the daemon in the foreground.
 
 ```bash
 cd /Users/skip/work/tlda
-PATH=/opt/homebrew/bin:$PATH TLDA_CONFIG=default \
+PATH=/opt/homebrew/bin:$PATH TLDA_ENV=default \
   /opt/homebrew/bin/node --import tsx bin/fleet-daemon.mjs
 ```
 
@@ -79,7 +79,7 @@ launchctl list | grep -i tlda
 
 `bootout` first returns `3: No such process`, and `bootstrap` still fails the
 same way afterwards. The plist itself inspects fine — `KeepAlive`, `RunAtLoad`,
-correct node path, `TLDA_CONFIG=default` — so this reads as a launchd
+correct node path, `TLDA_ENV=default` — so this reads as a launchd
 registration problem rather than a bad plist. Several `.plist.before-*` backups
 sit in `~/Library/LaunchAgents/` from earlier interventions and may be related.
 
@@ -90,10 +90,10 @@ actively written through 22:51, so `default` was already running outside launchd
 beforehand.
 
 Two daemons on this machine is **correct**, not a duplicate: one per environment.
-Check `TLDA_CONFIG` per pid before concluding otherwise:
+Check `TLDA_ENV` per pid before concluding otherwise:
 
 ```bash
-pgrep -f fleet-daemon | while read p; do ps eww $p | tr ' ' '\n' | grep ^TLDA_CONFIG=; done
+pgrep -f fleet-daemon | while read p; do ps eww $p | tr ' ' '\n' | grep ^TLDA_ENV=; done
 ```
 
 ### Why `bootstrap` fails: agents cannot register launchd jobs at all
