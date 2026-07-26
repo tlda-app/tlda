@@ -4748,21 +4748,24 @@ server.on('upgrade', async (req, socket, head) => {
       ws._machineId = seat.machine_id
       const terminalCapability = seat.terminal_capability
 
-      // Add to watcher set; start the daemon poll if first.
+      // Add to watcher set, then start the daemon poll. Always — this set only
+      // records which browsers are attached, and says nothing about whether the
+      // daemon's watch PTY is still alive. A daemon restart kills the watch while
+      // leaving these sockets open, so gating on "first watcher" meant every later
+      // viewer inherited a dead stream and its pane froze with the socket healthy.
+      // rpcStartTerminalWatch is idempotent: an existing watch re-sends size and a
+      // fresh snapshot and returns { already: true }.
       let set = terminalWatchers.get(agent.id)
       if (!set) { set = new Set(); terminalWatchers.set(agent.id, set) }
       set.add(ws)
-      const isFirst = set.size === 1
 
-      if (isFirst) {
-        try {
-          const res = await sendDaemonEphemeral(seat.daemon_key, 'start-terminal-watch', {
-            agent_id: agent.id, terminal_capability: terminalCapability, poll_ms: 500,
-          })
-          if (res && res.cols && res.rows) terminalSizes.set(agent.id, { cols: res.cols, rows: res.rows })
-        } catch (e) {
-          sendTerminalFrame(ws, { type: 'error', message: e.message }, { agentId: agent.id, operation: 'start-terminal-watch' })
-        }
+      try {
+        const res = await sendDaemonEphemeral(seat.daemon_key, 'start-terminal-watch', {
+          agent_id: agent.id, terminal_capability: terminalCapability, poll_ms: 500,
+        })
+        if (res && res.cols && res.rows) terminalSizes.set(agent.id, { cols: res.cols, rows: res.rows })
+      } catch (e) {
+        sendTerminalFrame(ws, { type: 'error', message: e.message }, { agentId: agent.id, operation: 'start-terminal-watch' })
       }
 
       // Tell the viewer the agent's real tmux window size BEFORE seeding content,
