@@ -1559,16 +1559,16 @@ export class FleetStore {
     // Selection is always DESC — the newest rows are the page — and the final
     // order is applied by an outer sort so callers never reverse an array.
     this._queryEventsBefore = this.db.prepare(`
-      SELECT * FROM (SELECT ${E} FROM events WHERE timestamp < ? AND type IN (${chatTypePh}) ORDER BY timestamp DESC LIMIT ?) ORDER BY timestamp ASC
+      SELECT * FROM (SELECT ${E} FROM events INDEXED BY idx_events_ts WHERE timestamp < ? AND type IN (${chatTypePh}) ORDER BY timestamp DESC LIMIT ?) ORDER BY timestamp ASC
     `);
     this._queryEventsBeforeDesc = this.db.prepare(`
-      SELECT ${E} FROM events WHERE timestamp < ? AND type IN (${chatTypePh}) ORDER BY timestamp DESC LIMIT ?
+      SELECT ${E} FROM events INDEXED BY idx_events_ts WHERE timestamp < ? AND type IN (${chatTypePh}) ORDER BY timestamp DESC LIMIT ?
     `);
     this._queryEventsLatest = this.db.prepare(`
-      SELECT * FROM (SELECT ${E} FROM events WHERE type IN (${chatTypePh}) ORDER BY timestamp DESC LIMIT ?) ORDER BY timestamp ASC
+      SELECT * FROM (SELECT ${E} FROM events INDEXED BY idx_events_ts WHERE type IN (${chatTypePh}) ORDER BY timestamp DESC LIMIT ?) ORDER BY timestamp ASC
     `);
     this._queryEventsLatestDesc = this.db.prepare(`
-      SELECT ${E} FROM events WHERE type IN (${chatTypePh}) ORDER BY timestamp DESC LIMIT ?
+      SELECT ${E} FROM events INDEXED BY idx_events_ts WHERE type IN (${chatTypePh}) ORDER BY timestamp DESC LIMIT ?
     `);
     // Agent-scoped history matches the exact requested fleet ids. The SQL has
     // variable arity and is built per-call in queryChatHistory().
