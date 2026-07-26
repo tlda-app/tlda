@@ -6752,16 +6752,12 @@ async function handleFleetWsMessage(ws, msg) {
     const taskCount = fleetStore.getActiveTaskCountByAgent?.(agentId) ?? tasks.length
     const task = tasks[0] || fleetStore.getTaskByAgent?.(agentId) || null
     const allUnread = fleetStore.getUnreadLimited?.(agentId, MY_TASK_UNREAD_LIMIT) || []
-    // A shared file has to be on this machine before its message is in this
-    // inbox — "by the time they see them in their inbox, they're on their file
-    // system". Materialization is queued after the event is inserted, so a
-    // message can arrive seconds before its bytes; hold it back until every
-    // reference is terminal. The row stays unread, so nothing is lost and it
-    // appears by itself the moment the file lands.
-    const unread = allUnread.filter(message => !hasUnsettledRefs(message, agentId))
-    // The store's own total, so `messages_truncated` stays honest — it is now
-    // true both when the limit clipped the list and when a message is being
-    // held for its bytes.
+    // Materialization is a prefetch, not a gate. Skip, 2026-07-26: "Nothing is
+    // even supposed to wait… materialization was supposed to be fucking
+    // prefetch." A message is in the inbox the moment it exists; the bytes race
+    // to catch up, and a reference that has not landed is the open path's
+    // problem, not a reason to withhold the message.
+    const unread = allUnread
     const unreadCount = fleetStore.getUnreadCount?.(agentId) ?? allUnread.length
     // peek=true: caller just wants to see unread (e.g., the channel-WS
     // flush-on-reconnect path that displays a count). Don't mark read in
