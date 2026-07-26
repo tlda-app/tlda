@@ -1,4 +1,4 @@
-import type { Editor, TLShape, TLViewportId } from 'tldraw'
+import type { Editor, TLShape, TLShapeId, TLViewportId } from 'tldraw'
 import { createShapeId } from 'tldraw'
 // @ts-ignore — vanilla JS module
 import { getHumanId, getDeviceId, whenDeviceReady } from '../fleet/fleet-data.mjs'
@@ -224,6 +224,7 @@ export async function placeFleetShapeAtScreenPoint(
   w: number,
   h: number,
   extraProps: Record<string, any> = {},
+  options: { select?: boolean } = {},
 ): Promise<string | null> {
   const hudEditor = getHudEditor()
   let x: number, y: number
@@ -238,8 +239,10 @@ export async function placeFleetShapeAtScreenPoint(
   }
   const id = await createFleetShape(editor, type, x, y, { w, h, ...extraProps })
   if (!id) return null
-  editor.setCurrentTool('select')
-  editor.select(id as any)
+  if (options.select !== false) {
+    editor.setCurrentTool('select')
+    editor.select(id as TLShapeId)
+  }
   return id
 }
 

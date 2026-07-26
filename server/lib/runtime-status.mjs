@@ -87,7 +87,7 @@ export function buildRuntimeStatus({
   agents = [],
   localHostname = hostname(),
 } = {}) {
-  const configName = env.TLDA_CONFIG || 'default'
+  const configName = env.TLDA_ENV || 'default'
   return {
     server: {
       mode: env.TLDA_DEV_SERVER ? 'test' : 'prod',

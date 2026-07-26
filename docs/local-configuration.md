@@ -4,13 +4,13 @@ Local runtime configuration lives under `~/.config/tlda/`. The repository ships
 example daemon configurations in `config/`; the operator-owned file is
 `~/.config/tlda/daemon.yaml`.
 
-## Named server selection
+## Named Environment Selection
 
-`~/.config/tlda/server.yaml` contains named complete server configs. Select one
-for a process with `TLDA_CONFIG=<name>` or for a CLI run with
-`--config <name>`. `tlda daemon start --config <name>` carries that selection
-through the daemon to agents it spawns. Do not edit the shared `defaultServer`
-just to test another deployment.
+`~/.config/tlda/daemon.yaml` contains named complete environments under
+`environments:`. Select one for a process with `TLDA_ENV=<name>` or for a CLI
+run with `--env <name>`. `tlda daemon start --env <name>` carries that selection
+through the daemon to agents it spawns. Do not edit the shared `defaultEnv` just
+to test another deployment.
 
 ## `daemon.yaml`
 

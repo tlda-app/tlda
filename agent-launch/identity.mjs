@@ -4,7 +4,7 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import { fileURLToPath } from 'url'
-import { getActiveConfigName } from '../shared/config.mjs'
+import { getActiveEnvName } from '../shared/config.mjs'
 
 export function repoRoot() {
   return path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -35,9 +35,9 @@ export function gitAuthorEnv(fleetId, friendlyName) {
   return env
 }
 
-export function activeConfigName(_config = null, env = process.env) {
-  if (env.TLDA_CONFIG) return env.TLDA_CONFIG
-  return getActiveConfigName()
+export function activeEnvName(_config = null, env = process.env) {
+  if (env.TLDA_ENV) return env.TLDA_ENV
+  return getActiveEnvName()
 }
 
 export async function resolveDnsAlias(api) {

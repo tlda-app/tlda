@@ -66,7 +66,7 @@ import {
   getRwToken, DEFAULT_PORT, hasTls,
   CONFIG_DIR as _SHARED_CONFIG_DIR, TLS_CA_PATH,
   getMachineId, saveMachineId, getStatusScanMs,
-  getFleetServerUrl, getServerUrl, getActiveConfigName,
+  getFleetServerUrl, getServerUrl, getActiveEnvName,
 } from '../shared/config.mjs'
 const VERSION = '0.1.1'
 import { createLogger } from '../shared/logger.mjs'
@@ -168,9 +168,9 @@ function getDaemonFleetServerUrl() {
 function getDaemonStoreUrl() {
   return getServerUrl()
 }
-const ACTIVE_CONFIG = getActiveConfigName()
-if (!ACTIVE_CONFIG) {
-  console.error('[fleet-daemon] REFUSING to start without a named active config; daemon env is required')
+const ACTIVE_ENV = getActiveEnvName()
+if (!ACTIVE_ENV) {
+  console.error('[fleet-daemon] REFUSING to start without a named active environment; daemon env is required')
   process.exit(1)
 }
 function daemonStateSuffix(name) {
@@ -178,7 +178,7 @@ function daemonStateSuffix(name) {
   if (!clean) return ''
   return `.${clean.replace(/[^a-zA-Z0-9._-]+/g, '-')}`
 }
-const DAEMON_STATE_SUFFIX = daemonStateSuffix(ACTIVE_CONFIG)
+const DAEMON_STATE_SUFFIX = daemonStateSuffix(ACTIVE_ENV)
 const CURSORS_FILE = path.join(CONFIG_DIR, `daemon-cursors${DAEMON_STATE_SUFFIX}.json`)
 const PID_FILE = path.join(CONFIG_DIR, `fleet-daemon${DAEMON_STATE_SUFFIX}.pid`)
 const SOURCE_BINDINGS_FILE = path.join(CONFIG_DIR, `source-bindings${DAEMON_STATE_SUFFIX}.json`)
@@ -257,13 +257,13 @@ function deriveMachineId() {
 }
 
 const config = loadDaemonLaunchConfig()
-// The daemon is the local relay for the active named environment. The config
-// name selects the complete database/store authority; TLDA_SERVER is not a
-// second server selector.
+// The daemon is the local relay for the active named environment. The
+// environment name selects the complete database/store authority; TLDA_SERVER is
+// not a second selector.
 const SERVER = getDaemonFleetServerUrl()
-// The active server NAME (TLDA_CONFIG → defaultServer). This — not a URL — is the
+// The active environment NAME (TLDA_ENV → defaultEnv). This — not a URL — is the
 // single selector we propagate to spawned agents so their MCP resolves the SAME
-// complete config (database + store) the daemon did. A stray defaultConfig can't
+// complete environment (database + store) the daemon did. A stray defaultEnv can't
 // then misroute a spawn, because the spawn carries the real active name.
 let MACHINE_ID = getMachineId()
 if (!MACHINE_ID) {
@@ -285,13 +285,13 @@ if (!MACHINE_ID) {
 // Scoped singleton lock. Same path for a given machine + environment no matter
 // which install/worktree launched us, so daemons that claim the same local
 // environment collide while stable/testing lanes can coexist.
-const DAEMON_LOCK_SCOPE = `${MACHINE_ID}:${ACTIVE_CONFIG}`
+const DAEMON_LOCK_SCOPE = `${MACHINE_ID}:${ACTIVE_ENV}`
 const LOCK_FILE = daemonSingletonLockPath({ configDir: CONFIG_DIR, origin: DAEMON_LOCK_SCOPE })
 
 // HARD INVARIANT — a dev daemon literally cannot target the real fleet.
 // `tlda-dev serve --sandbox` starts its daemon with TLDA_DEV_DAEMON=<the exact
-// sandbox base it stood up> and TLDA_CONFIG=<the sandbox config>. When
-// TLDA_DEV_DAEMON is set, the named config must resolve to that authorized base
+// sandbox base it stood up> and TLDA_ENV=<the sandbox environment>. When
+// TLDA_DEV_DAEMON is set, the named environment must resolve to that authorized base
 // on a non-:5176 port, so this daemon can never join the real fleet.
 if (process.env.TLDA_DEV_DAEMON) {
   let ok = false
@@ -360,7 +360,7 @@ function sendActivityDeliveryMetrics(reason = 'snapshot') {
     type: 'activity-delivery-metrics',
     reason,
     machine_id: MACHINE_ID,
-    env_name: ACTIVE_CONFIG,
+    env_name: ACTIVE_ENV,
     boot_id: BOOT_ID,
     metrics: daemonActivityDeliveryCounters.snapshot(),
   })
@@ -408,7 +408,7 @@ function bufferActivity(agentId, evts) {
 }
 
 function registerHostedTerminalCapabilities(reason) {
-  const daemonKey = `${MACHINE_ID}:${ACTIVE_CONFIG}`
+  const daemonKey = `${MACHINE_ID}:${ACTIVE_ENV}`
   for (const row of permissionLedger.listProcessBindings()) {
     if (!row?.id || row.daemonKey !== daemonKey || !row.sessionId || !row.tmuxSession) continue
     if (!row.sessionKind || !row.model || !row.cwd) continue
@@ -427,7 +427,7 @@ function registerHostedTerminalCapabilities(reason) {
         model: row.model,
         cwd: row.cwd,
         machine_id: MACHINE_ID,
-        env_name: ACTIVE_CONFIG,
+        env_name: ACTIVE_ENV,
         daemon_key: daemonKey,
         terminal_capability: terminalCapability,
         created_source: 'daemon-terminal-capability-refresh',
@@ -443,7 +443,7 @@ function registerHostedTerminalCapabilities(reason) {
 // ---------- JSONL ingestion ----------
 function currentJsonlBindingAgents() {
   return projectJsonlAgentsFromProcessBindings(permissionLedger.listProcessBindings(), {
-    daemonKey: `${MACHINE_ID}:${ACTIVE_CONFIG}`,
+    daemonKey: `${MACHINE_ID}:${ACTIVE_ENV}`,
   })
 }
 
@@ -480,14 +480,14 @@ jsonlIngestor = createJsonlIngestor({
       .catch(error => log.error(`mint marker fact write failed for ${marker.mint_id}: ${error.message}`))
   },
   machineId: MACHINE_ID,
-  envName: ACTIVE_CONFIG,
-  daemonKey: `${MACHINE_ID}:${ACTIVE_CONFIG}`,
+  envName: ACTIVE_ENV,
+  daemonKey: `${MACHINE_ID}:${ACTIVE_ENV}`,
 })
 
 jsonlBindingReconciler = createJsonlProcessBindingReconciler({
   listProcessBindings: () => permissionLedger.listProcessBindings(),
   sync: agents => jsonlIngestor.sync(agents),
-  daemonKey: `${MACHINE_ID}:${ACTIVE_CONFIG}`,
+  daemonKey: `${MACHINE_ID}:${ACTIVE_ENV}`,
   log,
 })
 
@@ -502,9 +502,9 @@ const sourceSync = createSourceSync({
 
 function applyProjectWorldOwnership(reason) {
   const projectWorlds = readProjectWorlds(PROJECT_WORLDS_FILE)
-  projects = serverProjects.filter(project => projectBelongsToWorld(project, ACTIVE_CONFIG, projectWorlds))
+  projects = serverProjects.filter(project => projectBelongsToWorld(project, ACTIVE_ENV, projectWorlds))
   sourceSync.sync(projects)
-  log.info(`project ownership applied (${reason}): ${projects.length}/${serverProjects.length} projects in ${ACTIVE_CONFIG}`)
+  log.info(`project ownership applied (${reason}): ${projects.length}/${serverProjects.length} projects in ${ACTIVE_ENV}`)
 }
 
 fs.watchFile(PROJECT_WORLDS_FILE, { interval: 500 }, () => applyProjectWorldOwnership('registry-change'))
@@ -581,12 +581,12 @@ let gooseSupervisor
 // liveness and every other daemon consumer read the same server authority.
 const agentLiveness = createAgentLiveness({
   getAgents: () => livenessAgentsFromProcessBindings(permissionLedger.listProcessBindings(), {
-    daemonKey: `${MACHINE_ID}:${ACTIVE_CONFIG}`,
+    daemonKey: `${MACHINE_ID}:${ACTIVE_ENV}`,
   }),
   listSessions: () => terminalRpc.listSessions(),
   sendMsg,
   log,
-  daemonKey: `${MACHINE_ID}:${ACTIVE_CONFIG}`,
+  daemonKey: `${MACHINE_ID}:${ACTIVE_ENV}`,
   daemonBootId: BOOT_ID,
 })
 
@@ -635,7 +635,7 @@ terminalRpc = createTerminalRpc({
   resolveTerminalCapability: ({ agentId, terminalCapability }) => (
     (() => {
       const row = permissionLedger.resolveTerminalCapability({ agentId, terminalCapability })
-      return row?.daemonKey === `${MACHINE_ID}:${ACTIVE_CONFIG}` ? row : null
+      return row?.daemonKey === `${MACHINE_ID}:${ACTIVE_ENV}` ? row : null
     })()
   ),
 })
@@ -658,7 +658,7 @@ const devReaper = createDevReaper({
 })
 
 const agentLauncher = createAgentLauncher({
-  activeConfigName: ACTIVE_CONFIG,
+  activeEnvName: ACTIVE_ENV,
   configDir: CONFIG_DIR,
   loadDaemonLaunchConfig,
   log,
@@ -704,7 +704,7 @@ daemonMintCore = createDaemonMintCore({
       mintId: params.mint_id,
       fleetId: params.fleet_id,
       requestedKind: params.kind,
-      activeConfigName: ACTIVE_CONFIG,
+      activeEnvName: ACTIVE_ENV,
       machineId: MACHINE_ID,
       tmuxSocket: TMUX_SOCKET,
     })
@@ -736,8 +736,8 @@ daemonMintCore = createDaemonMintCore({
     kind: launch.kind || 'codex',
     metadata,
     machineId: MACHINE_ID,
-    envName: ACTIVE_CONFIG,
-    daemonKey: `${MACHINE_ID}:${ACTIVE_CONFIG}`,
+    envName: ACTIVE_ENV,
+    daemonKey: `${MACHINE_ID}:${ACTIVE_ENV}`,
   }),
   bindSeat: async facts => {
     const processFact = facts.processState || {}
@@ -759,8 +759,8 @@ daemonMintCore = createDaemonMintCore({
       },
       route: {
         machineId: MACHINE_ID,
-        envName: ACTIVE_CONFIG,
-        daemonKey: `${MACHINE_ID}:${ACTIVE_CONFIG}`,
+        envName: ACTIVE_ENV,
+        daemonKey: `${MACHINE_ID}:${ACTIVE_ENV}`,
         tmuxSession: processFact.tmux_session,
       },
       createdSource: 'daemon-mint-join',
@@ -800,7 +800,7 @@ const wakeMint = createDaemonWakeCore({
       requestedKind: facts.processState?.harness || facts.launchRecipe?.kind || 'codex',
       permissionGrant: wakePermission.permissionGrant,
       permissionSet: wakePermission.permissionSet,
-      activeConfigName: ACTIVE_CONFIG,
+      activeEnvName: ACTIVE_ENV,
       machineId: MACHINE_ID,
       tmuxSocket: TMUX_SOCKET,
     })
@@ -844,8 +844,8 @@ async function rpcMint(params = {}) {
       kind: 'bot',
       metadata: params.metadata || null,
       machineId: MACHINE_ID,
-      envName: ACTIVE_CONFIG,
-      daemonKey: `${MACHINE_ID}:${ACTIVE_CONFIG}`,
+      envName: ACTIVE_ENV,
+      daemonKey: `${MACHINE_ID}:${ACTIVE_ENV}`,
     })
     const assignedFleetId = botSeat?.fleet_id || botSeat?.server_agent_id || botSeat?.agent?.id || null
     if (!assignedFleetId) throw new Error('bot mint returned no fleet_id')
@@ -1139,7 +1139,7 @@ const daemonOperationContext = new AsyncLocalStorage()
 function sendMsg(obj) {
   const parent = daemonOperationContext.getStore()
   return daemonServerTransport.durable(obj?.type || 'daemon-message', obj, {
-    sender: `${MACHINE_ID}:${ACTIVE_CONFIG}`,
+    sender: `${MACHINE_ID}:${ACTIVE_ENV}`,
     destination: 'server',
     parentOperationId: parent?.operation_id || null,
   })
@@ -1232,7 +1232,7 @@ function connect() {
     heartbeatTimeoutMs: 90_000,
     onRetryScheduled: (attemptId, delayMs) => {
       traceGate1('retry-scheduled', {
-        daemon_key: `${MACHINE_ID}:${ACTIVE_CONFIG}`,
+        daemon_key: `${MACHINE_ID}:${ACTIVE_ENV}`,
         boot_id: BOOT_ID,
         connection_attempt_id: attemptId ? `${BOOT_ID}:${attemptId}` : null,
         delay_ms: delayMs,
@@ -1240,7 +1240,7 @@ function connect() {
     },
     onAttemptOpen: (attemptId) => {
       traceGate1('attempt-opened', {
-        daemon_key: `${MACHINE_ID}:${ACTIVE_CONFIG}`,
+        daemon_key: `${MACHINE_ID}:${ACTIVE_ENV}`,
         boot_id: BOOT_ID,
         connection_attempt_id: `${BOOT_ID}:${attemptId}`,
       })
@@ -1257,7 +1257,7 @@ function connect() {
       const sent = sendMsg({
         type: 'daemon-hello',
         machine_id: MACHINE_ID,
-        env_name: ACTIVE_CONFIG,
+        env_name: ACTIVE_ENV,
         user: USER,
         hostname: HOSTNAME,
         version: VERSION,
@@ -1269,7 +1269,7 @@ function connect() {
         last_agent_status_seq: agents.length ? agentStatusSeq : 0,
       })
       traceGate1('hello-send', {
-        daemon_key: `${MACHINE_ID}:${ACTIVE_CONFIG}`,
+        daemon_key: `${MACHINE_ID}:${ACTIVE_ENV}`,
         boot_id: BOOT_ID,
         connection_attempt_id: connectionAttemptId,
         sent,
@@ -1287,7 +1287,7 @@ function connect() {
         { error: `${reason || 'unknown'}${uptimeMs == null ? '' : ` uptimeMs=${uptimeMs}`}` }
       )
       traceGate1('client-close-detected', {
-        daemon_key: `${MACHINE_ID}:${ACTIVE_CONFIG}`,
+        daemon_key: `${MACHINE_ID}:${ACTIVE_ENV}`,
         boot_id: BOOT_ID,
         connection_attempt_id: attemptId ? `${BOOT_ID}:${attemptId}` : null,
         reason,
@@ -1370,7 +1370,7 @@ function handleServerMessage(msg, wsAttemptId) {
   }
   if (msg.type === 'daemon-welcome') {
     traceGate1('welcome-received', {
-      daemon_key: `${MACHINE_ID}:${ACTIVE_CONFIG}`,
+      daemon_key: `${MACHINE_ID}:${ACTIVE_ENV}`,
       boot_id: BOOT_ID,
       connection_attempt_id: wsAttemptId ? `${BOOT_ID}:${wsAttemptId}` : null,
       server_ws_session_id: msg.server_ws_session_id || null,
@@ -1379,7 +1379,7 @@ function handleServerMessage(msg, wsAttemptId) {
     _serverReady = true
     serverProjects = msg.projects || []
     const projectWorlds = readProjectWorlds(PROJECT_WORLDS_FILE)
-    projects = serverProjects.filter(project => projectBelongsToWorld(project, ACTIVE_CONFIG, projectWorlds))
+    projects = serverProjects.filter(project => projectBelongsToWorld(project, ACTIVE_ENV, projectWorlds))
     applyDaemonGrants(permissionLedger, daemonSpawnConfig)
     log.info(`connected work received: ${projects.length} projects`)
     daemonDelivery.noteReady()
@@ -1391,7 +1391,7 @@ function handleServerMessage(msg, wsAttemptId) {
     gooseSupervisor.startActivityPolling()
     promptPlan.startAutoAcceptSweep()
     agentLiveness.start()
-    log.info(`daemon-ready pid=${process.pid} server=${SERVER} machine_id=${MACHINE_ID} env_name=${ACTIVE_CONFIG} projects=${projects.length} watchers=started`)
+    log.info(`daemon-ready pid=${process.pid} server=${SERVER} machine_id=${MACHINE_ID} env_name=${ACTIVE_ENV} projects=${projects.length} watchers=started`)
     return
   }
   if (msg.type === 'agent-status-events') {
@@ -1480,12 +1480,12 @@ const _lock = acquireSingletonLock({ lockPath: LOCK_FILE, installPath: _ourInsta
 if (!_lock.ok) {
   const h = _lock.holder || {}
   log.error(
-    `another fleet-daemon already holds the environment lock ${LOCK_FILE} for ${ACTIVE_CONFIG} (${SERVER}) ` +
+    `another fleet-daemon already holds the environment lock ${LOCK_FILE} for ${ACTIVE_ENV} (${SERVER}) ` +
     `(holder pid=${h.pid ?? '?'} install=${h.installPath ?? '?'} origin=${h.origin ?? '?'}); ` +
     `refusing to start this one (${_ourInstallPath}). At most one daemon per environment.`,
   )
   process.stderr.write(
-    `fleet-daemon: refusing to start — environment lock for ${ACTIVE_CONFIG} (${SERVER}) held by pid=${h.pid ?? '?'} ` +
+    `fleet-daemon: refusing to start — environment lock for ${ACTIVE_ENV} (${SERVER}) held by pid=${h.pid ?? '?'} ` +
     `(${h.installPath ?? 'unknown install'}). At most one daemon per environment.\n`,
   )
   process.exit(1)
@@ -1549,7 +1549,7 @@ function startHeartbeat() {
 log.info(`fleet-daemon ${VERSION} starting pid=${process.pid}`)
 log.info(`  server      = ${SERVER}`)
 log.info(`  machine_id  = ${MACHINE_ID}`)
-log.info(`  env_name    = ${ACTIVE_CONFIG}`)
+log.info(`  env_name    = ${ACTIVE_ENV}`)
 log.info(`  boot_id     = ${BOOT_ID}`)
 log.info(`  user        = ${USER}@${HOSTNAME}`)
 startHeartbeat()

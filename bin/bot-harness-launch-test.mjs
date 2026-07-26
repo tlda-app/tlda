@@ -29,7 +29,7 @@ const result = await launchMintProcess({
   },
   acknowledgeNoSecurity: true,
   config: {},
-  activeConfigName: 'testing',
+  activeEnvName: 'testing',
   machineId: 'mini',
   _deps: {
     resolveApi: () => ({ base: 'https://example.invalid' }),
