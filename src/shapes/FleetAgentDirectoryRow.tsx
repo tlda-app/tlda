@@ -80,17 +80,11 @@ export function FleetAgentDirectoryRow({
         >
           ×
         </span>
-        <span
-          className="fleet-agents-col-name fleet-agents-pill"
-          style={{ color: row.color, opacity: row.nameOpacity, display: 'flex', alignItems: 'center' }}
-          title={row.hoverTitle}
-          data-label={row.exactName}
-          data-mode="dm"
-          onPointerDown={(e) => onAgentPointerDown?.(e, row)}
-          onPointerUp={(e) => onAgentPointerUp?.(e, row)}
-        >
-          <PrettyName prettyName={row.prettyName} slotWidth={15} />
-        </span>
+        <FleetAgentDirectoryNameColumn
+          row={row}
+          onAgentPointerDown={onAgentPointerDown}
+          onAgentPointerUp={onAgentPointerUp}
+        />
         <span className="fleet-agents-col-seen">{row.ago}</span>
         <span
           className="fleet-agents-col-ctx"
@@ -139,6 +133,30 @@ export function FleetAgentDirectoryRow({
         </div>
       )}
     </div>
+  )
+}
+
+export function FleetAgentDirectoryNameColumn({
+  row,
+  onAgentPointerDown,
+  onAgentPointerUp,
+}: {
+  row: FleetAgentDirectoryRowModel
+  onAgentPointerDown?: (e: React.PointerEvent, row: FleetAgentDirectoryRowModel) => void
+  onAgentPointerUp?: (e: React.PointerEvent, row: FleetAgentDirectoryRowModel) => void
+}) {
+  return (
+    <span
+      className="fleet-agents-col-name fleet-agents-pill"
+      style={{ color: row.color, opacity: row.nameOpacity, display: 'flex', alignItems: 'center' }}
+      title={row.hoverTitle}
+      data-label={row.exactName}
+      data-mode="dm"
+      onPointerDown={(e) => onAgentPointerDown?.(e, row)}
+      onPointerUp={(e) => onAgentPointerUp?.(e, row)}
+    >
+      <PrettyName prettyName={row.prettyName} slotWidth={15} />
+    </span>
   )
 }
 

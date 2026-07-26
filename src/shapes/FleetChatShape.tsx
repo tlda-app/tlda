@@ -94,6 +94,7 @@ import { beginUiIntent, hashUiIntentState } from '../uiIntentTelemetry'
 import { DATABASE_HTTP } from '../activeConfig'
 import {
   FleetAgentDirectoryList,
+  FleetAgentDirectoryNameColumn,
   getFleetAgentDirectoryRows,
   fleetAgentLabelColor,
   sortFleetAgentDirectoryRowsByRecency,
@@ -6104,15 +6105,11 @@ function FleetUnreadAgentRail() {
   return (
     <div className="fleet-unread-agent-rail" aria-label="Unread conversations">
       {unreadRows.map((row) => (
-        <div
+        <FleetAgentDirectoryNameColumn
           key={row.id || row.exactName}
-          className="fleet-unread-agent-rail-item"
-          title={row.displayName}
-          style={{ color: row.color }}
-          onPointerDown={(event) => startDrag(event, 'agent', row.exactName, row.displayName, row.color)}
-        >
-          <PrettyName prettyName={row.prettyName} slotWidth={5} />
-        </div>
+          row={row}
+          onAgentPointerDown={(event, agentRow) => startDrag(event, 'agent', agentRow.exactName, agentRow.displayName, agentRow.color)}
+        />
       ))}
     </div>
   )
