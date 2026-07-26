@@ -881,6 +881,7 @@ async function rpcMint(params = {}) {
       mode: params.mode,
       permissionRequest: params.permissionRequest,
       permissionGrant: grant.permissionGrant,
+      permissionSet: grant.permissionSet,
       acknowledgeNoSecurity: params.acknowledgeNoSecurity,
       requester: params.requester,
     },

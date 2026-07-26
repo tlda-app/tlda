@@ -4,6 +4,11 @@ function resultFact(result, snake, camel = snake) {
   return result?.[snake] ?? result?.[camel] ?? null
 }
 
+function persistentLaunchRecipe(launch = {}) {
+  const { permissionSet: _permissionSet, permission_set: _permission_set, ...rest } = launch || {}
+  return rest
+}
+
 export function createDaemonMintCore({
   store,
   launchProcess,
@@ -72,7 +77,7 @@ export function createDaemonMintCore({
     store.ensure(id)
     if (name) store.setFact(id, 'friendly_name', name)
     if (metadata) store.setFact(id, 'metadata', metadata)
-    store.setFact(id, 'launch_recipe', launch)
+    store.setFact(id, 'launch_recipe', persistentLaunchRecipe(launch))
     if (suppliedFleetId) store.setFact(id, 'fleet_id', suppliedFleetId)
 
     // CLI mint starts both actions before awaiting either. Server mint supplies
