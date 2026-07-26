@@ -3357,7 +3357,6 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   border-radius: 0;
   background: transparent;
   color: inherit;
-  cursor: pointer;
   opacity: 0.22;
   transition: opacity 0.3s;
   padding: 0 6px;
@@ -3369,9 +3368,7 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   font-size: 9px;
   white-space: nowrap;
   /* Touch hygiene for a tap target whose content is text: don't let a tap or
-     long-press select the "DM"/"All" label, and remove the tap delay. (The
-     actual touch fix is driving the cycle from onPointerUp in the component —
-     on touch this text label never synthesizes a click; see FleetChatShape.) */
+     long-press select the "DM"/"All" label, and remove the tap delay. */
   user-select: none;
   -webkit-user-select: none;
   -webkit-touch-callout: none;
@@ -3405,7 +3402,6 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   opacity: 0.65;
 }
 .fleet-chat-shape .fleet-composer-traffic-toggle:disabled {
-  cursor: default;
   opacity: 0.05;
 }
 .fleet-chat-shape .fleet-composer-traffic-toggle-dm-quiet {
