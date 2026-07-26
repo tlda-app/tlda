@@ -201,7 +201,7 @@ body.phone-mode .fleet-chat-shape:has(.fleet-filter-mode) .fleet-btn-group .flee
 /* --- Filter mode --- */
 .fleet-chat-shape .fleet-filter-mode,
 .fleet-inbox-shape .fleet-filter-mode {
-  --fleet-filter-scroll-column-bg: rgba(0, 0, 0, 0.045);
+  --fleet-filter-scroll-column-bg: rgba(0, 0, 0, 0.025);
   position: relative;
   z-index: 15;
   padding: 12px;
@@ -218,7 +218,7 @@ body.phone-mode .fleet-chat-shape:has(.fleet-filter-mode) .fleet-btn-group .flee
 }
 .tl-theme__dark .fleet-chat-shape .fleet-filter-mode,
 .tl-theme__dark .fleet-inbox-shape .fleet-filter-mode {
-  --fleet-filter-scroll-column-bg: rgba(255, 255, 255, 0.07);
+  --fleet-filter-scroll-column-bg: rgba(255, 255, 255, 0.035);
 }
 .fleet-chat-body-filtering > .fleet-chat-log {
   display: none !important;
@@ -441,17 +441,6 @@ body.phone-mode .fleet-chat-shape:has(.fleet-filter-mode) .fleet-btn-group .flee
   min-height: 0;
   touch-action: pan-y;
 }
-.fleet-chat-shape .fleet-filter-choices .fleet-agents-body::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  right: 4px;
-  bottom: 0;
-  width: 4.5ch;
-  border-radius: 2px;
-  background: var(--fleet-filter-scroll-column-bg);
-  pointer-events: none;
-}
 .fleet-chat-shape .fleet-filter-choices .fleet-agents-row-main {
   position: relative;
   height: 28px;
@@ -476,6 +465,7 @@ body.phone-mode .fleet-chat-shape:has(.fleet-filter-mode) .fleet-btn-group .flee
   margin-right: 0;
   flex-shrink: 0;
   border-radius: 2px;
+  background: var(--fleet-filter-scroll-column-bg);
   touch-action: pan-y;
 }
 .fleet-chat-shape .fleet-filter-choices .fleet-agents-label-chip {
