@@ -15,7 +15,7 @@ import type {
 } from 'livekit-client'
 import { log } from '../logger'
 import { getDeviceId, getHumanId, getHumanName } from '../fleet/fleet-data.mjs'
-import { createFleetShape, isMyFleetShape } from '../shapes/fleet-utils'
+import { isMyFleetShape, placeFleetShapeAtScreenPoint } from '../shapes/fleet-utils'
 import { getLiveVideoTiles, removeLiveVideoTile, setLiveVideoTile } from './liveVideoRegistry'
 import './LiveRoomAudio.css'
 
@@ -765,11 +765,11 @@ export function LiveRoomAudio({ docName, editor }: LiveRoomAudioProps) {
     }
 
     let cancelled = false
-    void createFleetShape(editor, 'fleet-video', 24, 72, {
-      w: 260,
-      h: 172,
+    const w = 260
+    const h = 172
+    void placeFleetShapeAtScreenPoint(editor, 'fleet-video', 24 + w / 2, 72 + h / 2, w, h, {
       tileKeys,
-    }).then((id) => {
+    }, { select: false }).then((id) => {
       if (!id || cancelled) return
       videoShapeIdRef.current = id
       autoVideoShapeRef.current = true
