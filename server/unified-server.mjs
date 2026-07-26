@@ -503,23 +503,6 @@ function isSyncHeartbeat(raw) {
   return raw.toString('utf8', 0, Math.min(raw.length, 30)).includes('"ping"')
 }
 
-const _activeViewerDocs = new Set()
-
-function _recomputeActiveViewers() {
-  const prev = new Set(_activeViewerDocs)
-  _activeViewerDocs.clear()
-  for (const ws of _trackedWs) {
-    if (ws._wsKind === 'sync' && ws._wsDocName?.startsWith('doc-')) {
-      _activeViewerDocs.add(ws._wsDocName.slice(4))
-    }
-  }
-  if (prev.size !== _activeViewerDocs.size || ![...prev].every(d => _activeViewerDocs.has(d))) {
-    broadcastDaemonActiveViewers()
-  }
-}
-
-function getActiveViewerProjects() { return _activeViewerDocs }
-
 function trackWs(ws, meta) {
   ws._wsKind = meta.kind            // 'sync' | 'fleet'
   ws._wsDocName = meta.docName || null
@@ -560,11 +543,9 @@ function trackWs(ws, meta) {
       connectedForMs: Date.now() - ws._wsConnectedAt,
     })
     _trackedWs.delete(ws)
-    if (ws._wsKind === 'sync') _recomputeActiveViewers()
   }
   ws.on('close', cleanup)
   ws.on('error', cleanup)
-  if (meta.kind === 'sync') _recomputeActiveViewers()
 }
 
 function normalizeAddr(a) {
@@ -3854,6 +3835,8 @@ function sendWatchBackingFiles() {
     })
   }
   for (const [machineId, files] of byOwner) {
+    // This is a bare machine id, but daemon connections/outbox delivery use scoped
+    // `${machine_id}:${env_name}` keys; the first real registration will not route.
     enqueueDaemonMessage(machineId, { type: 'watch-backing-files', files }, { dedupeKey: 'watch-backing-files' })
   }
 }
@@ -8004,15 +7987,6 @@ function broadcastDaemonProjectsUpdated() {
   }
 }
 
-function broadcastDaemonActiveViewers() {
-  const daemonKeys = knownDaemonKeys()
-  if (daemonKeys.length === 0) return
-  const viewers = [...getActiveViewerProjects()]
-  for (const daemonKey of daemonKeys) {
-    enqueueDaemonMessage(daemonKey, { type: 'active-viewers', projects: viewers }, { dedupeKey: 'active-viewers' })
-  }
-}
-
 /**
  * If the shadow repo HEAD is not a "Build at" commit (i.e. an agent committed
  * directly to the shadow repo since the last build), copy the changed files to
@@ -8263,7 +8237,6 @@ async function handleDaemonWsMessage(ws, msg) {
         type: 'daemon-welcome',
         server_boot_id: SERVER_BOOT_ID,
         projects: projectsForDaemon(),
-        activeViewers: [...getActiveViewerProjects()],
         connection_attempt_id: ws._connectionAttemptId || null,
         server_ws_session_id: ws._wsSessionId || null,
       }))

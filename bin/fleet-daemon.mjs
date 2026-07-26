@@ -1432,12 +1432,6 @@ function handleServerMessage(msg, wsAttemptId) {
     ackServerDaemonOutboxMessage(msg)
     return
   }
-  if (msg.type === 'active-viewers') {
-    // Source watching is chokidar-backed per project now; active viewer updates
-    // no longer promote/demote a separate fs.watch layer.
-    ackServerDaemonOutboxMessage(msg)
-    return
-  }
   if (msg.type === 'daemon-evict') {
     if (msg.replaced_by_boot_id) {
       // Another live daemon took our slot — exit rather than loop-reconnecting.
