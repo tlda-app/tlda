@@ -76,6 +76,12 @@ assert.doesNotMatch(voiceSource, /onaudioprocess[\s\S]*?fillTextarea|process =[\
 // is diagnosis, branching on it is the fix the site's own comment says not to make blind.
 assert.match(voiceSource, /speechFinal: !!msg\.speech_final/)
 assert.doesNotMatch(voiceSource, /if \([^)]*msg\.speech_final/)
+// Programmatic textarea input generated downstream of voice writes must not be classified
+// by comparing DOM text to the voice buffers. Only browser-trusted input events are user
+// edits; untrusted ones are downstream echoes and leave speech state intact.
+assert.match(voiceSource, /function isDownstreamInputDuringSpeech\(trigger\) \{[\s\S]*?trigger\.type === 'input'[\s\S]*?trigger\.isTrusted === false/)
+assert.match(voiceSource, /if \(isDownstreamInputDuringSpeech\(trigger\)\) \{\s+return\s+\}/)
+assert.doesNotMatch(voiceSource, /origin === 'input' && _state === 'speech' && _activeTextarea\?\.value === currentVoiceCompositionText\(\)/)
 // The duplicate-append detector is the discriminator the whole instrument exists for.
 assert.match(voiceSource, /_asmLeftNorm\.endsWith\(normalizedFinal\)/)
 assert.match(voiceSource, /assembly: re-partitioned from textarea/)

@@ -1167,6 +1167,24 @@ function currentVoiceCompositionText() {
   return `${_left || ''}${_interim || ''}${_right || ''}`
 }
 
+function describeEditTrigger(trigger) {
+  if (!trigger || typeof trigger === 'string') {
+    return { origin: trigger || 'unknown', inputTrusted: null }
+  }
+  const origin = trigger.type || 'unknown'
+  const inputTrusted = origin === 'input' ? trigger.isTrusted === true : null
+  return { origin, inputTrusted }
+}
+
+function isDownstreamInputDuringSpeech(trigger) {
+  return _backend === 'deepgram' &&
+    _state === 'speech' &&
+    trigger &&
+    typeof trigger !== 'string' &&
+    trigger.type === 'input' &&
+    trigger.isTrusted === false
+}
+
 // Previous value of _left, so a write that shortens or rewrites COMMITTED text can be
 // told apart from ordinary interim revision. Committed words must only grow or be
 // deliberately cleared.
@@ -1179,8 +1197,9 @@ function vtail(s, n = 48) {
   return str.length > n ? '…' + str.slice(-n) : str
 }
 
-function enterEdit(origin = 'unknown') {
+function enterEdit(trigger = 'unknown') {
   if (_state === 'edit') return
+  const { origin, inputTrusted } = describeEditTrigger(trigger)
   // ASSEMBLY INSTRUMENT. A speech→edit transition mid-dictation is the suspected
   // doubling engine: it clears _left/_interim/_right, and the next final then takes
   // the `_state !== 'speech'` branch, re-partitions _left from the text ALREADY
@@ -1192,7 +1211,8 @@ function enterEdit(origin = 'unknown') {
     const composition = currentVoiceCompositionText()
     vlog('assembly: enterEdit during speech', {
       origin,
-      guardHolds: origin === 'input' && value === composition,
+      guardHolds: isDownstreamInputDuringSpeech(trigger),
+      inputTrusted,
       valueMatchesComposition: value === composition,
       valueTail: vtail(value),
       compositionTail: vtail(composition),
@@ -1200,15 +1220,13 @@ function enterEdit(origin = 'unknown') {
       interimLen: (_interim || '').length,
     })
   }
-  // Deepgram interim writes are reflected through the same textarea `input`
-  // surface as user edits. `_filling` covers the synchronous voice write, but
-  // a downstream component can re-emit the already-displayed composition after
-  // that guard has dropped. If the field still equals the voice composition,
-  // this is not an edit; keeping speech state lets the matching final replace
-  // the interim instead of appending it a second time. Keep this equality strict:
-  // if Skip changes the text mid-dictation, that must still interrupt speech so
-  // his correction becomes the new ground truth instead of being ignored.
-  if (_backend === 'deepgram' && origin === 'input' && _state === 'speech' && _activeTextarea?.value === currentVoiceCompositionText()) {
+  // Deepgram voice writes already dispatch a synthetic textarea `input` event,
+  // and React/downstream code can re-emit one after `_filling` has dropped.
+  // Do not infer authorship from text equality here: punctuation, autocorrect,
+  // or an empty field can make the DOM differ from the voice buffers while the
+  // event is still downstream of our own write. Browser-trusted `input` events
+  // are user edits and interrupt speech; untrusted ones are programmatic echoes.
+  if (isDownstreamInputDuringSpeech(trigger)) {
     return
   }
   // Whisper-stream: flush the bridge — drops old audio output for ~4s
@@ -1283,7 +1301,7 @@ export function setVoiceTarget(textarea, targetHandle) {
       }
     }
     if (textarea) {
-      const onEdit = (event) => { if (!_filling) enterEdit(event?.type || 'unknown') }
+      const onEdit = (event) => { if (!_filling) enterEdit(event || 'unknown') }
       const onKeydown = (e) => {
         if (_filling) return
         if (['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Home','End'].includes(e.key)) {
