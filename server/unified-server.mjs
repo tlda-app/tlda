@@ -1314,7 +1314,13 @@ function sendDaemonDurable(machineId, operation, params = {}, rpcOptions = {}) {
 // Mirror-back is event-based and idempotent (same hash → same ref): use the
 // resilient sender so a daemon WS reconnect flap retries instead of throwing a
 // 10s timeout that masquerades as a failure. (Skip 7/22)
-setShadowMirrorHandler(createShadowMirrorRpcHandler({ readProject, sendDaemonEphemeral: sendDaemonDurable }))
+setShadowMirrorHandler(createShadowMirrorRpcHandler({
+  readProject,
+  sendDaemonEphemeral: sendDaemonDurable,
+  // Every connected daemon, not just the one that pushed last — a machine that
+  // does not hold the project declines for itself.
+  listDaemonKeys: () => [...daemonConnections.keys()],
+}))
 
 // No server-side echo suppression. Dedup is client-side: the WS reply
 // includes the event ID, which the client maps to its optimistic event
@@ -6713,8 +6719,18 @@ async function handleFleetWsMessage(ws, msg) {
     const tasks = fleetStore.getActiveTasksByAgentLimited?.(agentId, MY_TASK_TASK_LIMIT) || []
     const taskCount = fleetStore.getActiveTaskCountByAgent?.(agentId) ?? tasks.length
     const task = tasks[0] || fleetStore.getTaskByAgent?.(agentId) || null
-    const unread = fleetStore.getUnreadLimited?.(agentId, MY_TASK_UNREAD_LIMIT) || []
-    const unreadCount = fleetStore.getUnreadCount?.(agentId) ?? unread.length
+    const allUnread = fleetStore.getUnreadLimited?.(agentId, MY_TASK_UNREAD_LIMIT) || []
+    // A shared file has to be on this machine before its message is in this
+    // inbox — "by the time they see them in their inbox, they're on their file
+    // system". Materialization is queued after the event is inserted, so a
+    // message can arrive seconds before its bytes; hold it back until every
+    // reference is terminal. The row stays unread, so nothing is lost and it
+    // appears by itself the moment the file lands.
+    const unread = allUnread.filter(message => !hasUnsettledRefs(message, agentId))
+    // The store's own total, so `messages_truncated` stays honest — it is now
+    // true both when the limit clipped the list and when a message is being
+    // held for its bytes.
+    const unreadCount = fleetStore.getUnreadCount?.(agentId) ?? allUnread.length
     // peek=true: caller just wants to see unread (e.g., the channel-WS
     // flush-on-reconnect path that displays a count). Don't mark read in
     // that case — the actual inbox() call from the agent will do the

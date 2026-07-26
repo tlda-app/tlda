@@ -12,7 +12,7 @@ import {
 } from 'tldraw'
 import { fleetSourceEditorProps } from '../../shared/shapes/fleet-panel-schema.mjs'
 import { normalizeSourceManifest } from '../../shared/source-manifest.mjs'
-import { useContext, useEffect, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react'
+import { useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react'
 import { ChangeSet, EditorState, Prec, Text } from '@codemirror/state'
 import { EditorView, keymap, lineNumbers } from '@codemirror/view'
 import { defaultKeymap, history, historyKeymap, redo, undo } from '@codemirror/commands'
@@ -23,7 +23,7 @@ import { DocContext } from '../PanelContext'
 import { STORE_HTTP } from '../activeConfig'
 import { htmlSourceLineAnchorAtCanvasY, type HtmlSourceLineAnchor } from '../htmlSourceAnchors'
 import { PDF_HEIGHT, PDF_WIDTH } from '../layoutConstants'
-import { subscribePref } from '../preferences'
+import { getPref, subscribePref } from '../preferences'
 import { readabilityStyleVars } from '../readabilityProfile'
 import { loadLookup, type LookupData } from '../synctexLookup'
 import {
@@ -42,7 +42,17 @@ import './fleet-chat.css'
 
 const DEFAULT_W = 560
 const DEFAULT_H = 520
-const WRITE_DEBOUNCE_MS = 900
+// Seconds of no typing before the editor commits on its own. This is the
+// third write boundary — see AGENTS.md "Project as world". Clamped so a
+// bad preference can't turn the editor back into a keystroke stream or
+// swallow a write for minutes.
+const MIN_IDLE_WRITE_SEC = 1
+const MAX_IDLE_WRITE_SEC = 60
+function idleWriteMs(): number {
+  const sec = Number(getPref('source-write-idle-sec'))
+  if (!Number.isFinite(sec)) return 4000
+  return Math.min(MAX_IDLE_WRITE_SEC, Math.max(MIN_IDLE_WRITE_SEC, sec)) * 1000
+}
 const SOURCE_CONTEXT_BEFORE = 28
 const SOURCE_CONTEXT_AFTER = 44
 const SOURCE_TRACK_INTERVAL_MS = 250
@@ -253,6 +263,23 @@ function stripVimRegexHints(root: HTMLElement) {
   }
 }
 
+// Pull this file's conflicted text out of a stale-base rejection. The server
+// stores each file's three-way merge on the evidence record as base64; a status
+// of 'conflict' means the merged text carries real git markers.
+function conflictedTextFor(payload: any, sourcePath: string): string | null {
+  const status = payload?.status ?? payload?.lifecycleStatus
+  if (status !== 'stale-base') return null
+  const classifications = payload?.evidence?.classifications
+  if (!Array.isArray(classifications)) return null
+  const match = classifications.find((c: any) => c?.path === sourcePath && c?.status === 'conflict' && c?.merged)
+  if (!match) return null
+  try {
+    return new TextDecoder().decode(Uint8Array.from(atob(match.merged), (c) => c.charCodeAt(0)))
+  } catch {
+    return null
+  }
+}
+
 function hasConflictMarkers(text: string) {
   return text.includes('<<<<<<<') || text.includes('=======') || text.includes('>>>>>>>')
 }
@@ -452,7 +479,19 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
   const [vimMode, setVimModeState] = useState('normal')
   const [status, setStatus] = useState<'loading' | 'ready' | 'dirty' | 'syncing' | 'synced' | 'error'>('loading')
   const [statusText, setStatusText] = useState('Loading source...')
-  const [conflictFiles, setConflictFiles] = useState<string[]>([])
+  // Conflicts have a source. `serverConflictFiles` is what the project reports
+  // (today: Overleaf's); `heldConflictFile` is the one this editor is holding
+  // right now from its own rejected write. They are separate because the project
+  // poll replaces its own list wholesale and would otherwise wipe ours. When the
+  // server represents conflicts per peer, the second collapses into the first.
+  const [serverConflictFiles, setServerConflictFiles] = useState<string[]>([])
+  const [heldConflictFile, setHeldConflictFile] = useState<string | null>(null)
+  const conflictFiles = useMemo(
+    () => (heldConflictFile && !serverConflictFiles.includes(heldConflictFile)
+      ? [...serverConflictFiles, heldConflictFile]
+      : serverConflictFiles),
+    [serverConflictFiles, heldConflictFile],
+  )
   const [sourceHasConflictMarkers, setSourceHasConflictMarkers] = useState(false)
   const [conflictMergeActive, setConflictMergeActive] = useState(false)
   const statusRef = useRef(status)
@@ -476,6 +515,7 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
   const voiceUpdateRef = useRef<((text: string) => void) | null>(null)
   const voiceStopRef = useRef<(() => void) | null>(null)
   const queueWriteRef = useRef<((text: string) => void) | null>(null)
+  const flushWriteRef = useRef<(() => void) | null>(null)
 
   if (!voiceUpdateRef.current) {
     voiceUpdateRef.current = (text: string) => {
@@ -700,9 +740,9 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
         const files = info?.overleafSyncStatus === 'conflict' && Array.isArray(info?.overleafConflictFiles)
           ? info.overleafConflictFiles.map(normalizeFile)
           : []
-        setConflictFiles(files)
+        setServerConflictFiles(files)
       } catch {
-        if (!cancelled) setConflictFiles([])
+        if (!cancelled) setServerConflictFiles([])
       }
     }
     void loadProjectConflictState()
@@ -803,7 +843,19 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
       }),
     })
     const payload = await res.json().catch(() => ({}))
-    if (!res.ok || payload?.ok === false) throw new Error(payload?.error || `sync ${res.status}`)
+    if (!res.ok || payload?.ok === false) {
+      // A stale-base rejection already carries a real three-way merge for every
+      // file — the server ran `git merge-file -p`. Hand this file's conflicted
+      // text back so the editor can put the markers in front of the person
+      // instead of showing them "Sync failed".
+      const merged = conflictedTextFor(payload, sourcePath)
+      if (merged !== null) {
+        const conflict = new Error('Conflict — resolve the markers, then it syncs') as Error & { conflictText?: string }
+        conflict.conflictText = merged
+        throw conflict
+      }
+      throw new Error(payload?.error || `sync ${res.status}`)
+    }
     return payload
   }
 
@@ -826,6 +878,9 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
     try {
       const payload = await writeSourceFile(file, nextFullText)
       if (seq !== saveSeqRef.current) return
+      // The write landed, so whatever this editor was holding is resolved.
+      setHeldConflictFile((held) => (held === normalizeFile(file) ? null : held))
+      conflictRawTextRef.current = ''
       savedTextRef.current = nextFullText
       fullSourceRef.current = nextFullText
       setSourceHasConflictMarkers(hasConflictMarkers(nextFullText))
@@ -834,11 +889,35 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
       setStatusText(payload?.building ? 'Synced; build queued' : 'Synced')
     } catch (err: any) {
       if (seq !== saveSeqRef.current) return
+      // A conflict is not an error to report — it is work to do. Put the merged
+      // text with its git markers into the buffer; that lights the resolve UI
+      // that already exists, and the write stays held until it is resolved.
+      if (typeof err?.conflictText === 'string') {
+        loadConflictIntoEditor(err.conflictText)
+        setStatus('dirty')
+        setStatusText('Conflict — resolve the markers, then it syncs')
+        return
+      }
       setStatus('error')
       setStatusText(err?.message || 'Sync failed')
     }
   }
 
+  // Replace the buffer with the server's three-way merge. Not an edit of the
+  // person's text: their side is inside the markers, and resolving is how they
+  // get it back. `conflictFiles` is what stops the next write from firing.
+  const loadConflictIntoEditor = (conflictText: string) => {
+    fullSourceRef.current = conflictText
+    conflictRawTextRef.current = conflictText
+    setSourceHasConflictMarkers(true)
+    setHeldConflictFile(normalizeFile(file))
+    const view = cmViewRef.current
+    if (!view) return
+    view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: conflictText } })
+  }
+
+  // Writes are checkpoints, not a stream. Typing arms the idle boundary; the
+  // click-out and leave-insert-mode boundaries flush it immediately.
   const queueWrite = (text: string) => {
     saveSeqRef.current += 1
     const seq = saveSeqRef.current
@@ -848,9 +927,21 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
     writeTimerRef.current = window.setTimeout(() => {
       writeTimerRef.current = null
       void writeSource(text, seq)
-    }, WRITE_DEBOUNCE_MS)
+    }, idleWriteMs())
   }
   queueWriteRef.current = queueWrite
+
+  // A boundary was reached — commit now instead of waiting out the idle timer.
+  const flushWrite = () => {
+    if (!writeTimerRef.current) return
+    window.clearTimeout(writeTimerRef.current)
+    writeTimerRef.current = null
+    const text = fullSourceRef.current
+    if (text === undefined) return
+    saveSeqRef.current += 1
+    void writeSource(text, saveSeqRef.current)
+  }
+  flushWriteRef.current = flushWrite
 
   const queueSecondaryWrite = (sourceFile: string, text: string) => {
     secondarySaveSeqRef.current += 1
@@ -869,7 +960,7 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
           setStatus('error')
           setStatusText(`${sourceFile}: ${err?.message || 'Sync failed'}`)
         })
-    }, WRITE_DEBOUNCE_MS)
+    }, idleWriteMs())
   }
 
   const runEditorUndoRedo = (view: EditorView, redoRequested: boolean) => {
@@ -991,9 +1082,18 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
         view.dom.addEventListener('keydown', handleNativeKeydown, { capture: true })
         const handleVoiceFocus = () => activateVoiceEditor(view)
         view.dom.addEventListener('focusin', handleVoiceFocus)
+        // Write boundary: clicking out commits. `focusout` fires for moves
+        // within the editor too, so only commit once focus has actually left.
+        const handleWriteOnBlur = (event: FocusEvent) => {
+          const next = event.relatedTarget as Node | null
+          if (next && view.dom.contains(next)) return
+          flushWriteRef.current?.()
+        }
+        view.dom.addEventListener('focusout', handleWriteOnBlur)
 	        cmKeydownCleanupRef.current = () => {
 	          view.dom.removeEventListener('keydown', handleNativeKeydown, { capture: true })
 	          view.dom.removeEventListener('focusin', handleVoiceFocus)
+	          view.dom.removeEventListener('focusout', handleWriteOnBlur)
 	        }
 	        stripVimRegexHints(view.dom)
 	        const panelObserver = new MutationObserver(() => stripVimRegexHints(view.dom))
@@ -1004,7 +1104,12 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
         const cm = useVim ? getCM(view) : null
         if (cm) {
           cm.setOption('pcre', true)
-          CM5.on(cm, 'vim-mode-change', (e: any) => setVimModeState(e.mode || 'normal'))
+          CM5.on(cm, 'vim-mode-change', (e: any) => {
+            const nextMode = e.mode || 'normal'
+            // Write boundary: leaving insert mode commits.
+            if (vimModeRef.current === 'insert' && nextMode !== 'insert') flushWriteRef.current?.()
+            setVimModeState(nextMode)
+          })
           Vim.defineEx('write', 'w', () => {
             const current = cmViewRef.current?.state.doc.toString()
             if (current !== undefined) queueWriteRef.current?.(current)
