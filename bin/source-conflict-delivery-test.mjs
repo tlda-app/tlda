@@ -65,8 +65,15 @@ try {
 
   // 3. And the project is NOT blocked, so resolving actually syncs. This is the
   //    half that used to strand the machine forever.
+  // The watcher here is inert, so the resolving save is picked up by the
+  // reconcile poll. Wait for the push rather than for a duration — a fixed
+  // sleep makes this fail about one run in six on a busy machine, which is
+  // worse than no test at all.
   writeFileSync(main, 'resolved by hand\n')
-  await new Promise(resolve => setTimeout(resolve, 350))
+  const deadline = Date.now() + 5000
+  while (sent.length < 2 && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 20))
+  }
   assert.equal(sent.length, 2, 'the save that resolves the markers pushes')
   assert.equal(
     sent[1].expectedRevision,
@@ -81,6 +88,9 @@ try {
 
   console.log('source conflict delivery: ok')
 } finally {
-  await sourceSync.stop?.()
+  // Stop the watchers and their reconcile timers BEFORE removing the tree —
+  // a pending flush that scans a deleted sourceDir throws from a timer, after
+  // the assertions have already passed, and reads as a failing test.
+  await sourceSync.closeAll()
   rmSync(root, { recursive: true, force: true })
 }
