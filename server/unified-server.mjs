@@ -1828,35 +1828,25 @@ async function resolveSpawnTarget(name, respawn, { fresh = false, requested = {}
   return { name: resolved.name, respawn: resolved.respawn }
 }
 
-function spawnMailboxCompletionText(entry, status, detail) {
-  const label = detail.label || detail.agentId || entry.meta?.name || 'mint'
-  if (status === 'completed') {
-    const agentPart = detail.agentId ? ` (${detail.agentId})` : ''
-    const policyPart = detail.permissionGrant ? ` Permission: \`${detail.permissionGrant}\`.` : ''
-    return `**Mint mailbox ${entry.id} complete**: \`${label}\`${agentPart} has logged in and is ready for inbox pickup.${policyPart}`
-  }
-  if (status === 'indeterminate') {
-    return `**Mint mailbox ${entry.id} indeterminate**: \`${label}\` — ${detail.error || detail.reason || 'mint outcome is unknown'}.`
-  }
-  return `**Mint mailbox ${entry.id} failed**: \`${label}\` — ${detail.error || detail.reason || 'mint failed'}.`
-}
-
 function deliverSpawnMailboxCompletion(entry, status, detail) {
-  // Silence on success: a spawn that logged in is already in the roster and picks
-  // up its own inbox — no "it happened" chat. Only real failures surface. (Skip 7/22)
-  if (status === 'completed') return
-  deliverTldaFeedbackChat({
+  if (entry.kind !== 'spawn') return
+  const label = detail.label || entry.meta?.name || detail.agentId || entry.meta?.agentId || 'mint'
+  Promise.resolve(fleetStore?.share?.({
+    type: 'spawn_mailbox',
     from: 'fleet:tlda',
-    to: entry.ownerId,
-    text: spawnMailboxCompletionText(entry, status, detail),
+    text: `spawn mailbox ${status}: ${label}`,
+    unread: false,
+    agentId: detail.agentId || entry.meta?.agentId || null,
     metadata: {
       type: 'mailbox_complete',
       mailbox_id: entry.id,
       mailbox_kind: entry.kind,
+      owner_id: entry.ownerId,
+      label,
       status,
       ...detail,
     },
-  })
+  })).catch(e => console.error(`[spawn-mailbox] failed to record ${entry.id}: ${e.message}`))
 }
 
 function isIndeterminateSpawnOutcome(value) {
@@ -2041,16 +2031,6 @@ async function performSpawnRelay(caller, msg) {
         const shell = fleetStore?.getAgent?.(pendingAgentId)
         if (shell?.metadata?.shell) {
           result = { ok: true, pending: true, agent: shell }
-        } else {
-          spawnLibrarian.failPending(pendingAgentId, 'login-timeout')
-          const failed = {
-            ok: false,
-            reason: 'login-timeout',
-            error: `spawn started for ${spawnName}, but no reserved shell row exists for ${pendingAgentId}`,
-          }
-          const settled = mailboxLibrarian.fail(mailbox.id, failed.error, failed)
-          if (settled) deliverSpawnMailboxCompletion(settled, 'failed', failed)
-          return
         }
       }
       if (isIndeterminateSpawnOutcome(result)) {
