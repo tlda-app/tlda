@@ -136,6 +136,7 @@ import { acquireSingletonLock, daemonSingletonLockPath } from '../agent-runtime/
 import { createDaemonMintCore } from '../daemon/mint-core.mjs'
 import { MintStore } from '../daemon/mint-store.mjs'
 import { createDaemonWakeCore } from '../daemon/wake-core.mjs'
+import { compileWakePermissionProfile } from '../daemon/wake-permission-profile.mjs'
 import { projectBelongsToWorld, projectWorldsPath, readProjectWorlds } from '../shared/project-worlds.mjs'
 const log = createLogger('daemon')
 // CONFIG_DIR holds daemon configuration, cursors, PID and log files. Defaults to
@@ -689,6 +690,11 @@ const agentLauncher = createAgentLauncher({
 })
 
 const mintStore = new MintStore(path.join(CONFIG_DIR, 'daemon-mints.sqlite'))
+function stripCompiledPermissionSet(processFact = {}) {
+  const { permission_set: _permissionSet, ...rest } = processFact || {}
+  return rest
+}
+
 daemonMintCore = createDaemonMintCore({
   store: mintStore,
   launchProcess: async params => {
@@ -702,8 +708,8 @@ daemonMintCore = createDaemonMintCore({
       machineId: MACHINE_ID,
       tmuxSocket: TMUX_SOCKET,
     })
-    if (processFact.session_id) return processFact
-    if (processFact.harness !== 'codex') return processFact
+    if (processFact.session_id) return stripCompiledPermissionSet(processFact)
+    if (processFact.harness !== 'codex') return stripCompiledPermissionSet(processFact)
     const live = await resolveLiveCodexSessionIdentity({
       agent: {
         id: processFact.fleet_id || params.fleet_id || null,
@@ -715,9 +721,10 @@ daemonMintCore = createDaemonMintCore({
       tmuxArgs: TMUX_ARGS,
       tmuxSocket: TMUX_SOCKET,
     })
-    return live?.sessionId
+    const recorded = live?.sessionId
       ? { ...processFact, session_id: live.sessionId, session_path: live.jsonlPath || null, model: live.model || processFact.model }
       : processFact
+    return stripCompiledPermissionSet(recorded)
   },
   requestSeat: ({ mint_id, name, metadata, launch }) => wsMintShell({
     localAgentId: mint_id,
@@ -736,7 +743,6 @@ daemonMintCore = createDaemonMintCore({
     const processFact = facts.processState || {}
     await permissionLedger.set(facts.fleetId, {
       permissionGrant: processFact.permission_grant,
-      permissionSet: processFact.permission_set,
       source: 'daemon-mint',
     })
     await bindAgentSeat({
@@ -775,19 +781,30 @@ const wakeMint = createDaemonWakeCore({
       return false
     }
   },
-  resumeSession: async (facts, wakeParams = {}) => launchMintProcess({
-    ...(facts.launchRecipe || {}),
-    mintId: facts.mintId,
-    fleetId: facts.fleetId,
-    name: facts.friendlyName,
-    resumeId: facts.sessionId,
-    requestedKind: facts.processState?.harness || facts.launchRecipe?.kind || 'codex',
-    permissionGrant: wakeParams.permissionGrant || wakeParams.permission_grant || facts.launchRecipe?.permissionGrant,
-    permissionSet: wakeParams.permissionSet || wakeParams.permission_set || facts.launchRecipe?.permissionSet,
-    activeConfigName: ACTIVE_CONFIG,
-    machineId: MACHINE_ID,
-    tmuxSocket: TMUX_SOCKET,
-  }),
+  resumeSession: async (facts, wakeParams = {}) => {
+    const wakePermission = compileWakePermissionProfile({
+      facts,
+      wakeParams,
+      loadDaemonLaunchConfig,
+      readDaemonConfigForCwd,
+      withDaemonModelAliases,
+      compilePermissionGrant,
+    })
+    return launchMintProcess({
+      ...(facts.launchRecipe || {}),
+      config: wakePermission.config || facts.launchRecipe?.config,
+      mintId: facts.mintId,
+      fleetId: facts.fleetId,
+      name: facts.friendlyName,
+      resumeId: facts.sessionId,
+      requestedKind: facts.processState?.harness || facts.launchRecipe?.kind || 'codex',
+      permissionGrant: wakePermission.permissionGrant,
+      permissionSet: wakePermission.permissionSet,
+      activeConfigName: ACTIVE_CONFIG,
+      machineId: MACHINE_ID,
+      tmuxSocket: TMUX_SOCKET,
+    })
+  },
 })
 
 async function rpcMint(params = {}) {
@@ -864,7 +881,6 @@ async function rpcMint(params = {}) {
       mode: params.mode,
       permissionRequest: params.permissionRequest,
       permissionGrant: grant.permissionGrant,
-      permissionSet: grant.permissionSet,
       acknowledgeNoSecurity: params.acknowledgeNoSecurity,
       requester: params.requester,
     },
