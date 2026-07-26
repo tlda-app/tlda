@@ -487,6 +487,7 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
   const voiceStopRef = useRef<(() => void) | null>(null)
   const queueWriteRef = useRef<((text: string) => void) | null>(null)
   const flushWriteRef = useRef<(() => void) | null>(null)
+  const divergedMachinesRef = useRef<Array<{ machineId: string; envName: string | null; since: string }>>([])
 
   if (!voiceUpdateRef.current) {
     voiceUpdateRef.current = (text: string) => {
@@ -803,6 +804,9 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
     const authorityRes = await fetch(projectApiPath(doc.docName, '/source-authority'))
     if (!authorityRes.ok) throw new Error(`source authority ${authorityRes.status}`)
     const sourceAuthority = await authorityRes.json()
+    divergedMachinesRef.current = Array.isArray(sourceAuthority.divergedMachines)
+      ? sourceAuthority.divergedMachines
+      : []
     const res = await fetch(projectApiPath(doc.docName, `/source/${encodeURIComponent(sourcePath)}`), {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -842,7 +846,17 @@ function FleetSourceEditorComponent({ shape }: { shape: any }) {
       setSourceHasConflictMarkers(hasConflictMarkers(nextFullText))
       sourceWindowRef.current = sourceWindowForText(nextFullText, sourceWindowRef.current.targetLine)
       setStatus('synced')
-      setStatusText(payload?.building ? 'Synced; build queued' : 'Synced')
+      // Your write landed, but another machine's has stopped landing — it is
+      // holding a conflict and has quietly stopped syncing. Say so here; the
+      // only other trace is a line in that machine's daemon log.
+      const stuck = divergedMachinesRef.current
+      if (stuck.length > 0) {
+        setStatusText(stuck.length === 1
+          ? `Synced — ${stuck[0].machineId} is holding a conflict and not syncing`
+          : `Synced — ${stuck.length} machines holding conflicts, not syncing`)
+      } else {
+        setStatusText(payload?.building ? 'Synced; build queued' : 'Synced')
+      }
     } catch (err: any) {
       if (seq !== saveSeqRef.current) return
       setStatus('error')

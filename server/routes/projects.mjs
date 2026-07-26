@@ -503,7 +503,15 @@ router.get('/:name/files', requireRead, (req, res) => {
 })
 
 router.get('/:name/source-authority', requireRead, (req, res) => {
-  try { res.json(sourceLifecycleStore(req.params.name).readAuthority()) }
+  try {
+    const authority = sourceLifecycleStore(req.params.name).readAuthority()
+    // Machines whose last push was rejected as stale-base have stopped syncing
+    // and say so only in their own daemon log. Carry them on the authority so
+    // the editor can tell the person a machine is holding a conflict.
+    const project = readProject(req.params.name)
+    const diverged = Object.values(project?.divergedMachines || {})
+    res.json(diverged.length ? { ...authority, divergedMachines: diverged } : authority)
+  }
   catch (e) { res.status(404).json({ error: e.message }) }
 })
 
