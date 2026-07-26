@@ -12,7 +12,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlink
 import { fileURLToPath } from 'url'
 import { homedir, hostname } from 'os'
 import { randomBytes } from 'crypto'
-import { execFileSync } from 'child_process'
+import { execFileSync, spawn as cpSpawn } from 'child_process'
 import { stringify as stringifyYaml } from 'yaml'
 import { collectSourceFiles, collectSourceHashes, collectSpecificFiles } from './lib/source-files.mjs'
 import { diffSourceHashes, normalizeSourceManifest } from '../shared/source-manifest.mjs'
@@ -44,8 +44,6 @@ import {
   parseFleetDaemonPids,
   parseLaunchdPid,
   pollTargetDaemonReadiness,
-  runDaemonStartWithSupervisedNoop,
-  runBoundedDaemonStartTransition,
   terminatePidAndWait,
 } from './lib/daemon-supervision-transition.mjs'
 import { resolveAgentQuery } from './lib/agent-resolve.mjs'
@@ -1899,6 +1897,27 @@ function hasDaemonReadyLogMarker(pid, identity) {
   }
 }
 
+function recentDaemonLogLines({ maxLines = 12 } = {}) {
+  try {
+    return readFileSync(FLEET_DAEMON_LOGFILE, 'utf8')
+      .split('\n')
+      .filter(line => line.trim())
+      .slice(-maxLines)
+  } catch {
+    return []
+  }
+}
+
+function printRecentDaemonLog({ maxLines = 12 } = {}) {
+  const lines = recentDaemonLogLines({ maxLines })
+  if (!lines.length) {
+    console.error(dim(`  No daemon log entries found at ${FLEET_DAEMON_LOGFILE}`))
+    return
+  }
+  console.error(dim(`  Recent daemon log (${FLEET_DAEMON_LOGFILE}):`))
+  for (const line of lines) console.error(dim(`    ${line}`))
+}
+
 async function inspectTargetFleetDaemonReadiness(expectedPid, { supervised = false } = {}) {
   const identity = daemonTargetIdentity()
   const lockInspection = inspectSingletonLock({ lockPath: identity.lockPath })
@@ -2065,7 +2084,6 @@ async function cmdFleetWatch(sub) {
 
   if (sub === 'run') {
     // Foreground — exec the daemon directly so SIGINT etc. work normally.
-    const { spawn: cpSpawn } = await import('child_process')
     const child = cpSpawn(process.execPath, ['--import', 'tsx', daemonScript], {
       stdio: 'inherit',
       ...(process.env.TLDA_DAEMON_PROCESS_TITLE ? { argv0: process.env.TLDA_DAEMON_PROCESS_TITLE } : {}),
@@ -2108,11 +2126,6 @@ async function cmdFleetWatch(sub) {
         return
       }
       console.log(yellow('Fleet daemon is running outside launchd') + dim(` (pid ${existingPid})`))
-      console.log(yellow('Starting bounded stop/start transition to launchd supervision.'))
-      console.log(dim('  This is not a no-gap handoff.'))
-      console.log(dim(`  Supervised readiness wait: ${DEFAULT_SUPERVISED_START_TIMEOUT_MS}ms.`))
-      console.log(dim('  Healthy means: launchd pid + target lock + pidfile + established target WS + daemon-ready watcher marker.'))
-      console.log(dim('  If launchd accepts the job but readiness is slow, this command reports pending without starting an unsupervised daemon.'))
       console.log(dim(`  Config target: ${getFleetServerUrl()}`))
       if (connectedTarget) console.log(dim(`  Last WS target: ${connectedTarget}`))
       if (codeSha) console.log(dim(`  Code SHA: ${codeSha}`))
@@ -2120,54 +2133,39 @@ async function cmdFleetWatch(sub) {
       console.log(dim(`  Target lock: ${identity.lockPath}`))
       console.log(dim(`  Log: ${FLEET_DAEMON_LOGFILE}`))
       try {
-        const result = await runDaemonStartWithSupervisedNoop({
-          existingPid,
-          getLaunchdPid: async () => supervisedPid,
-          launchdOwnsExisting: (launchdPid, daemonPid) => processTreeOwnsPid(launchdPid, daemonPid),
-          verifyTargetDaemon: verifyTargetFleetDaemon,
-          runBoundedTransition: () => runBoundedDaemonStartTransition({
-            existingPid,
-            writePlist: async () => {
-              await probeDaemonLaunchdStartCapability()
-              await writeDaemonPlist()
-            },
-            bootstrap: () => bootstrapDaemonPlist(),
-            stopExisting: terminateFleetDaemon,
-            waitSupervised: ({ previousPid, timeoutMs }) => waitForSupervisedFleetDaemonReady({ previousPid, timeoutMs }),
-            verifyTargetDaemon: verifyTargetFleetDaemon,
-            log: ({ supervisedTimeoutMs }) => {
-              console.log(dim(`  Bounded launchd readiness wait: ${supervisedTimeoutMs}ms`))
-            },
-          }),
-        })
-        if (result.mode === 'already-supervised') {
-          console.log(green('Fleet daemon launchd job already running') + dim(` (pid ${result.pid})`))
-          console.log(dim(`  Verified target environment readiness for ${identity.machineId}:${identity.envName}.`))
-          return
-        }
-        if (result.mode === 'launchd-pending') {
-          console.log(yellow('Fleet daemon launchd job accepted; readiness pending.'))
-          console.log(dim(`  ${result.reason}`))
-          console.log(dim('  Managed by launchd (auto-restarts).'))
-          console.log(dim(`  Target daemon: ${identity.machineId}:${identity.envName}`))
-          console.log(dim(`  Target lock: ${identity.lockPath}`))
-          console.log(dim(`  Log: ${FLEET_DAEMON_LOGFILE}`))
-          return
-        }
-        console.log(green('Fleet daemon launchd job started') + dim(` (pid ${result.pid})`))
-        console.log(dim(`  Verified target environment singleton lock for ${identity.machineId}:${identity.envName}.`))
-        console.log(dim(`  Launchd domain: ${daemonLaunchdDomain()}`))
-        console.log(dim(`  Plist: ${FLEET_DAEMON_PLIST}`))
-        console.log(dim(`  Log: ${FLEET_DAEMON_LOGFILE}`))
+        await verifyTargetFleetDaemon(existingPid, { supervised: false })
+        console.log(green('Fleet daemon is already running for the target environment') + dim(` (pid ${existingPid})`))
+        console.log(dim('  It is not currently supervised by launchd; `tlda daemon start` will not rewrite or bootstrap launchd jobs.'))
       } catch (e) {
-        console.error(red(e?.message || String(e)))
+        console.error(red(`Fleet daemon is running but unhealthy: ${e?.message || String(e)}`))
+        printRecentDaemonLog()
         process.exit(1)
       }
       return
     }
 
-    await writeDaemonPlist()
-    await bootstrapDaemonPlist()
+    const identity = daemonTargetIdentity()
+    const loadedPid = await launchdDaemonPid()
+    if (!loadedPid) {
+      try {
+        await runLaunchctl(['print', daemonLaunchdTarget()])
+      } catch (e) {
+        console.error(red(`Fleet daemon launchd job is not loaded: ${FLEET_DAEMON_LABEL}`))
+        console.error(dim(`  launchctl print ${daemonLaunchdTarget()}: ${e?.message || String(e)}`))
+        console.error(dim('  This command will not rewrite plists or run launchctl bootstrap from an agent/background shell.'))
+        console.error(dim('  Use an already-registered job, or run the daemon in the foreground with `tlda daemon run`.'))
+        printRecentDaemonLog()
+        process.exit(1)
+      }
+    }
+    try {
+      await runLaunchctl(['kickstart', daemonLaunchdTarget()])
+    } catch (e) {
+      // Operator command boundary: surface launchctl failure and exit nonzero here.
+      console.error(red(`Fleet daemon launchd kickstart failed: ${e?.message || String(e)}`))
+      printRecentDaemonLog()
+      process.exit(1)
+    }
     const result = await pollTargetDaemonReadiness({
       timeoutMs: 5_000,
       getCandidatePid: () => launchdDaemonPid(),
@@ -2178,9 +2176,10 @@ async function cmdFleetWatch(sub) {
     } else {
       console.log(yellow('Fleet daemon launchd job accepted; readiness pending.'))
       console.log(dim(`  Last readiness check: ${result.reason}`))
+      printRecentDaemonLog()
     }
     console.log(dim(`  Managed by launchd (auto-restarts).`))
-    console.log(dim(`  Plist: ${FLEET_DAEMON_PLIST}`))
+    console.log(dim(`  Target daemon: ${identity.machineId}:${identity.envName}`))
     console.log(dim(`  Log: ${FLEET_DAEMON_LOGFILE}`))
     return
   }
