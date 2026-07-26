@@ -4496,12 +4496,6 @@ export class FleetStore {
       cwdPredicate = "(cwd = ? OR cwd LIKE ? OR cwd LIKE ?)";
       params.push(raw, `%/${raw}`, `%/${raw}/%`);
     }
-    const timeClauses = [];
-    const timeParams = [];
-    if (since) { timeClauses.push('timestamp >= ?'); timeParams.push(since); }
-    if (before) { timeClauses.push('timestamp < ?'); timeParams.push(before); }
-    const eventTime = timeClauses.length ? `AND ${timeClauses.map(c => `e.${c}`).join(' AND ')}` : '';
-    const sessionTime = timeClauses.length ? `AND ${timeClauses.map(c => `s.${c}`).join(' AND ')}` : '';
     const sql = `
       WITH candidate_raw AS (
         SELECT agent_id, cwd, created_at AS seat_created_at FROM agent_seats WHERE ${cwdPredicate}
@@ -4513,73 +4507,103 @@ export class FleetStore {
         FROM candidate_raw
         WHERE agent_id IS NOT NULL AND agent_id != ''
         GROUP BY agent_id
-      ),
-      activity AS (
-        SELECT c.agent_id, e.timestamp, e.id, 'fleet' AS source, e.type, e.text, e.metadata,
-               e.from_id, e.to_id, NULL AS role, NULL AS session_id
-        FROM candidate c
-        JOIN events e ON (e.from_id = c.agent_id OR e.to_id = c.agent_id OR e.agent_id = c.agent_id) ${eventTime}
-        UNION ALL
-        SELECT c.agent_id, s.timestamp, s.id, 'session' AS source, NULL AS type, s.text, NULL AS metadata,
-               NULL AS from_id, NULL AS to_id, s.role, s.session_id
-        FROM candidate c
-        JOIN session_entries s ON s.agent_id = c.agent_id ${sessionTime}
-      ),
-      ranked AS (
-        SELECT *, row_number() OVER (PARTITION BY agent_id ORDER BY timestamp DESC, id DESC) AS rn
-        FROM activity
       )
       SELECT c.agent_id, c.cwd, c.seat_created_at,
-             a.friendly_name, a.pretty_name, a.dead, a.last_seen, a.last_active, a.registered_at,
-             r.timestamp, r.id AS activity_id, r.source, r.type, r.text, r.metadata,
-             r.from_id, r.to_id, r.role, r.session_id
+             a.friendly_name, a.pretty_name, a.dead, a.last_seen, a.last_active, a.registered_at
       FROM candidate c
       LEFT JOIN agents a ON a.id = c.agent_id
-      LEFT JOIN ranked r ON r.agent_id = c.agent_id AND r.rn = 1
-      ORDER BY coalesce(r.timestamp, a.last_active, a.last_seen, c.seat_created_at, a.registered_at, '') DESC
-      LIMIT ?
+      ORDER BY coalesce(a.last_active, a.last_seen, c.seat_created_at, a.registered_at, '') DESC
     `;
-    const rows = this.db.prepare(sql).all(
-      ...params,
-      ...params,
-      ...timeParams,
-      ...timeParams,
-      cap,
-    );
-    return rows.map(r => ({
-      source: 'fleet',
-      id: r.activity_id || `project-agent:${r.agent_id}`,
-      type: 'project_agent',
-      timestamp: r.timestamp || r.last_active || r.last_seen || r.seat_created_at || r.registered_at || null,
-      from: r.agent_id,
-      to: null,
-      agentId: r.agent_id,
-      agentName: r.friendly_name || null,
-      agentNameNow: r.friendly_name || null,
-      text: r.text || '',
-      snippet: (r.text || '').slice(0, 220),
-      agent_id: r.agent_id,
-      friendly_name: r.friendly_name || null,
-      cwd: r.cwd || null,
-      project: r.cwd ? path.basename(String(r.cwd).replace(/\/+$/, '')) : null,
-      latest_relevant_at: r.timestamp || r.last_active || r.last_seen || r.seat_created_at || r.registered_at || null,
-      latest_activity: {
-        source: r.source || 'agent_seat',
-        type: r.type || r.role || 'seat',
-        event_id: r.activity_id || null,
-        session_id: r.session_id || null,
-        summary: (r.text || '').slice(0, 220),
-      },
-      status: {
-        dead: !!r.dead,
-        last_seen: r.last_seen || null,
-        last_active: r.last_active || null,
-      },
-      thread: {
-        agent: r.agent_id,
-        query: `thread(agent: "${r.agent_id}")`,
-      },
-    }));
+    const rows = this.db.prepare(sql).all(...params, ...params);
+
+    const eventTimeClauses = [];
+    const eventTimeParams = [];
+    if (since) { eventTimeClauses.push('timestamp >= ?'); eventTimeParams.push(since); }
+    if (before) { eventTimeClauses.push('timestamp < ?'); eventTimeParams.push(before); }
+    const eventTimeWhere = eventTimeClauses.length ? `AND ${eventTimeClauses.join(' AND ')}` : '';
+    const sessionTimeWhere = eventTimeClauses.length ? `AND ${eventTimeClauses.join(' AND ')}` : '';
+    const eventSelect = `${this._EVTE}, 'fleet' AS source, NULL AS role, NULL AS session_id`;
+    const eventByFrom = this.db.prepare(`
+      SELECT ${eventSelect}
+      FROM events e
+      WHERE from_id = ? ${eventTimeWhere}
+      ORDER BY timestamp DESC, id DESC
+      LIMIT 1
+    `);
+    const eventByTo = this.db.prepare(`
+      SELECT ${eventSelect}
+      FROM events e
+      WHERE to_id = ? ${eventTimeWhere}
+      ORDER BY timestamp DESC, id DESC
+      LIMIT 1
+    `);
+    const eventByAgent = this.db.prepare(`
+      SELECT ${eventSelect}
+      FROM events e
+      WHERE agent_id = ? ${eventTimeWhere}
+      ORDER BY timestamp DESC, id DESC
+      LIMIT 1
+    `);
+    const sessionByAgent = this.db.prepare(`
+      SELECT id, agent_id, timestamp, text, 'session' AS source, NULL AS type, NULL AS metadata,
+             NULL AS from_id, NULL AS to_id, role, session_id
+      FROM session_entries
+      WHERE agent_id = ? ${sessionTimeWhere}
+      ORDER BY timestamp DESC, id DESC
+      LIMIT 1
+    `);
+    const latestFor = (agentId) => {
+      const args = [agentId, ...eventTimeParams];
+      const candidates = [
+        eventByFrom.get(...args),
+        eventByTo.get(...args),
+        eventByAgent.get(...args),
+        sessionByAgent.get(...args),
+      ].filter(Boolean);
+      candidates.sort((a, b) => {
+        const tc = (b.timestamp || '').localeCompare(a.timestamp || '');
+        return tc || ((b.id || 0) - (a.id || 0));
+      });
+      return candidates[0] || null;
+    };
+
+    return rows.map(r => {
+      const latest = latestFor(r.agent_id);
+      return {
+        source: 'fleet',
+        id: latest?.id || `project-agent:${r.agent_id}`,
+        type: 'project_agent',
+        timestamp: latest?.timestamp || r.last_active || r.last_seen || r.seat_created_at || r.registered_at || null,
+        from: r.agent_id,
+        to: null,
+        agentId: r.agent_id,
+        agentName: r.friendly_name || null,
+        agentNameNow: r.friendly_name || null,
+        text: latest?.text || '',
+        snippet: (latest?.text || '').slice(0, 220),
+        agent_id: r.agent_id,
+        friendly_name: r.friendly_name || null,
+        cwd: r.cwd || null,
+        project: r.cwd ? path.basename(String(r.cwd).replace(/\/+$/, '')) : null,
+        latest_relevant_at: latest?.timestamp || r.last_active || r.last_seen || r.seat_created_at || r.registered_at || null,
+        latest_activity: {
+          source: latest?.source || 'agent_seat',
+          type: latest?.type || latest?.role || 'seat',
+          event_id: latest?.source === 'fleet' ? latest.id : null,
+          session_id: latest?.session_id || null,
+          summary: (latest?.text || '').slice(0, 220),
+        },
+        status: {
+          dead: !!r.dead,
+          last_seen: r.last_seen || null,
+          last_active: r.last_active || null,
+        },
+        thread: {
+          agent: r.agent_id,
+          query: `thread(agent: "${r.agent_id}")`,
+        },
+      }
+    }).sort((a, b) => (b.latest_relevant_at || '').localeCompare(a.latest_relevant_at || '')).slice(0, cap);
   }
 
   // Get N chat events before/after a timestamp (for search context).
