@@ -7,7 +7,6 @@ import { BookViewer } from './BookViewer'
 import { IdentityPicker } from './IdentityPicker'
 import { STORE_HTTP } from './activeConfig'
 import type { BookMember } from './BookContext'
-import { HTML_NAV_STATE_KEY } from './html-page-navigation-history'
 import './App.css'
 import './themes.css'
 
@@ -147,17 +146,14 @@ function App() {
   const [state, setState] = useState<State | null>(null)
   const [initialCamera] = useState(parseInitialCamera)
 
-  // Handle browser back/forward — reload to cleanly reset TLDraw state.
-  // HtmlPageShape owns same-document column navigation states; those restore
-  // page/camera in-place and must not reload the whole viewer.
-  useEffect(() => {
-    const onPopState = (event: PopStateEvent) => {
-      if (event.state?.[HTML_NAV_STATE_KEY]) return
-      window.location.reload()
-    }
-    window.addEventListener('popstate', onPopState)
-    return () => window.removeEventListener('popstate', onPopState)
-  }, [])
+  // The browser's back button does not drive this app — see AGENTS.md
+  // "Project as world". It used to reload the whole viewer on popstate, which
+  // meant back had unknowable scope: it could rewind an in-document link you
+  // had forgotten making, or throw away the entire session. In-app forward and
+  // back are the controls with knowable scope.
+  //
+  // HtmlPageShape still owns same-document column navigation and restores
+  // page/camera in place from its own history states; that is untouched.
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
@@ -422,7 +418,11 @@ function App() {
           <DocumentPicker manifest={state.manifest} onSelect={(key, config) => {
             const newUrl = new URL(window.location.href)
             newUrl.searchParams.set('doc', key)
-            window.history.pushState({}, '', newUrl.toString())
+            // replaceState, not pushState: the address bar keeps naming the
+            // document you are in, so ?doc= links, bookmarks and agent probes
+            // keep working — but choosing a document does not put an entry on
+            // the browser's stack, because back is not an in-app control.
+            window.history.replaceState({}, '', newUrl.toString())
             const roomId = `doc-${key}`
             setState({ phase: 'loading', message: `Loading ${config.name}...`, roomId })
             loadDocument(key, roomId)
