@@ -65,12 +65,13 @@ async function run() {
   mkdirSync(toddConfigDir, { recursive: true })
   writeFileSync(join(toddConfigDir, 'server.yaml'), '')
   writeFileSync(join(toddConfigDir, 'daemon.yaml'), [
-    `defaultEnv: ${TODD_CONFIG}`,
     'environments:',
-    `  ${TODD_CONFIG}:`,
-    `    database: ${base}`,
-    `    store: ${base}`,
-    '    licenseKey: ""',
+    `  default: ${TODD_CONFIG}`,
+    '  values:',
+    `    ${TODD_CONFIG}:`,
+    `      database: ${base}`,
+    `      store: ${base}`,
+    '      licenseKey: ""',
     '',
   ].join('\n'))
   writeFileSync(join(toddConfigDir, 'bots.yaml'), 'bots: []\n')

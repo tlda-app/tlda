@@ -145,7 +145,7 @@ const BOT_COMMANDS = [
 ]
 let _nounUsed = null
 // Global `--env <name>`: select an alternate complete environment (= the
-// database+store pair) for THIS run only, WITHOUT editing the shared defaultEnv.
+// database+store pair) for THIS run only, WITHOUT editing shared `environments.default`.
 // This is THE supported way to test against another environment. Parse before
 // noun routing so the flag works in any argument position, including before the
 // command. Remove it from argv so command dispatch sees the real noun/subcommand.
@@ -1416,7 +1416,7 @@ function serverJobIfInstalled() {
 
 function desiredLaunchdJobs() {
   const daemonConfig = readDaemonConfig(defaultDaemonConfigPath(CONFIG_DIR))
-  const envNames = Object.keys(daemonConfig.environments || {}).sort()
+  const envNames = Object.keys(daemonConfig.environments?.values || {}).sort()
   const botsByName = new Map(configuredBots().map(bot => [bot.name, bot]))
   const botEnvironments = getManagedBotEnvironments()
   const botJobs = []
@@ -1710,12 +1710,14 @@ function sandboxDaemonConfig(configDir, label) {
     server: {},
     daemon: {
       machineId: `${label}.${hostname().split('.')[0]}.${process.pid}`,
-      defaultEnv: envName,
       environments: {
-        [envName]: {
-          database: source.database.http,
-          store: source.store.http,
-          licenseKey: source.licenseKey,
+        default: envName,
+        values: {
+          [envName]: {
+            database: source.database.http,
+            store: source.store.http,
+            licenseKey: source.licenseKey,
+          },
         },
       },
       regions: {},
@@ -2558,7 +2560,7 @@ async function cmdMoveProject() {
   const projectWorlds = readProjectWorlds(projectWorldsPath(CONFIG_DIR))
   const daemonConfig = readDaemonConfig(defaultDaemonConfigPath(CONFIG_DIR))
   const recordedSourceConfig = projectWorlds[sourceDir]
-  const sourceConfig = recordedSourceConfig && daemonConfig.environments?.[recordedSourceConfig]
+  const sourceConfig = recordedSourceConfig && daemonConfig.environments?.values?.[recordedSourceConfig]
     ? recordedSourceConfig
     : selectedConfig
   const alreadyOwned = sourceConfig === targetConfig
@@ -4104,7 +4106,7 @@ function localDaemonEnvName() {
   try {
     return getActiveEnvName()
   } catch {
-    return readDaemonConfig(defaultDaemonConfigPath(CONFIG_DIR))?.defaultEnv || process.env.TLDA_ENV || 'default'
+    return readDaemonConfig(defaultDaemonConfigPath(CONFIG_DIR))?.environments?.default || process.env.TLDA_ENV || 'default'
   }
 }
 

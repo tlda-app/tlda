@@ -88,12 +88,13 @@ fi
 if [ ! -f /root/.config/tlda/daemon.yaml ]; then
   cat > /root/.config/tlda/daemon.yaml <<EOF
 machineId: "${TLDA_MACHINE_ID}"
-defaultEnv: default
 environments:
-  default:
-    database: "${TLDA_SERVER}"
-    store: "${TLDA_SERVER}"
-    licenseKey: ""
+  default: default
+  values:
+    default:
+      database: "${TLDA_SERVER}"
+      store: "${TLDA_SERVER}"
+      licenseKey: ""
 regions:
   machine: ["**"]
 profiles:

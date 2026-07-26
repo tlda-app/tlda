@@ -12,7 +12,6 @@ export const DAEMON_CONFIG_TOP_LEVEL_KEYS = Object.freeze([
   'tmuxSocket',
   'taskDoc',
   'spawnMachineId',
-  'defaultEnv',
   'environments',
   // Read by getStatusScanMs(). This list is a CLOSED allow-list: the daemon
   // refuses to start on an unknown key, so a new setting is not usable until it
@@ -68,12 +67,22 @@ export function validateServerConfigTopLevel(root, label = 'server config') {
 
 export function validateStrictEnvironments(environments, label = 'daemon.yaml environments') {
   if (!isRecord(environments)) {
-    throw new Error(`${label} must be an object of named environment entries`)
+    throw new Error(`${label} must be an object with default and values`)
+  }
+  const extraTop = Object.keys(environments).filter(key => key !== 'default' && key !== 'values')
+  if (extraTop.length) {
+    throw new Error(`${label} supports only default, values; unknown key(s): ${extraTop.join(', ')}`)
+  }
+  if (typeof environments.default !== 'string' || !environments.default.trim()) {
+    throw new Error('tlda config: "environments.default" must be a nonempty string in daemon.yaml')
+  }
+  if (!isRecord(environments.values)) {
+    throw new Error(`${label}.values must be an object of named environment entries`)
   }
   const allowed = new Set(STRICT_SERVER_FIELDS)
-  for (const [name, raw] of Object.entries(environments)) {
+  for (const [name, raw] of Object.entries(environments.values)) {
     if (!isRecord(raw)) {
-      throw new Error(`tlda environment "${name}" must be an object in ${label}`)
+      throw new Error(`tlda environment "${name}" must be an object in ${label}.values`)
     }
     const extra = Object.keys(raw).filter(key => !allowed.has(key))
     if (extra.length) {
@@ -85,7 +94,7 @@ export function validateStrictEnvironments(environments, label = 'daemon.yaml en
       }
     }
   }
-  return environments
+  return environments.values
 }
 
 export function resolveStrictEnvironmentAuthority(root, envName = null) {
@@ -94,15 +103,12 @@ export function resolveStrictEnvironmentAuthority(root, envName = null) {
     throw new TypeError('tlda config: environment name override must be a string')
   }
   const environments = validateStrictEnvironments(config.environments)
-  if (typeof config.defaultEnv !== 'string' || !config.defaultEnv.trim()) {
-    throw new Error('tlda config: "defaultEnv" must be a nonempty string in daemon.yaml')
-  }
-  const fallbackName = config.defaultEnv.trim()
+  const fallbackName = config.environments.default.trim()
   if (!environments[fallbackName]) {
     throw new Error(`tlda config: no environment named "${fallbackName}" in daemon.yaml environments — known: ${Object.keys(environments).join(', ') || '(none)'}`)
   }
   const name = envName || process.env.TLDA_ENV || fallbackName
-  if (!name) throw new Error('tlda config: no active environment — set "defaultEnv" in daemon.yaml (or TLDA_ENV)')
+  if (!name) throw new Error('tlda config: no active environment — set "environments.default" in daemon.yaml (or TLDA_ENV)')
   const raw = environments[name]
   if (!raw) throw new Error(`tlda config: no environment named "${name}" in daemon.yaml environments — known: ${Object.keys(environments).join(', ') || '(none)'}`)
   return { name, raw }

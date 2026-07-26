@@ -72,9 +72,10 @@ models:
 regions: {}
 profiles: {}
 grants: {}
-defaultEnv: local
 environments:
-  local:
-    database: http://localhost:5176
-    store: http://localhost:5176
-    licenseKey: ""
+  default: local
+  values:
+    local:
+      database: http://localhost:5176
+      store: http://localhost:5176
+      licenseKey: ""

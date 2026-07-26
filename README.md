@@ -361,13 +361,13 @@ Local configuration, logs, and linters live in `~/.config/tlda/`. Fleet/chat
 state belongs to the active config's remote database; the local `fleet.db` is
 not authoritative.
 
-`daemon.yaml` contains an `environments` map. Each named environment is a
-complete `{ database, store, licenseKey }` record: `database` selects
-fleet/chat/agent state, while `store` selects document assets and shape sync.
-`defaultEnv` names the normal selection. Use `--env <name>` for one CLI run or
-`TLDA_ENV=<name>` for one process; do not edit `defaultEnv` just to test a
-different environment and do not manually split the axes with URL environment
-variables.
+`daemon.yaml` contains an `environments` block. Each named environment under
+`environments.values` is a complete `{ database, store, licenseKey }` record:
+`database` selects fleet/chat/agent state, while `store` selects document assets
+and shape sync. `environments.default` names the normal selection. Use
+`--env <name>` for one CLI run or `TLDA_ENV=<name>` for one process; do not edit
+`environments.default` just to test a different environment and do not manually
+split the axes with URL environment variables.
 
 Machine identity, permissions, models, tmux, and task-document settings live in
 `daemon.yaml`; managed bots live in `bots.yaml`; ordinary CLI preferences such

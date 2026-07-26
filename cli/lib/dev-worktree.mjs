@@ -257,12 +257,13 @@ function writePreviewConfig(branch, base, { realFleet = false } = {}) {
   mkdirSync(dir, { recursive: true })
   writeFileSync(join(dir, 'server.yaml'), '')
   writeFileSync(join(dir, 'daemon.yaml'), [
-    `defaultEnv: ${JSON.stringify(configName(branch))}`,
     'environments:',
-    `  ${JSON.stringify(configName(branch))}:`,
-    `    database: ${JSON.stringify(database)}`,
-    `    store: ${JSON.stringify(base)}`,
-    `    licenseKey: ${JSON.stringify(source.licenseKey ?? '')}`,
+    `  default: ${JSON.stringify(configName(branch))}`,
+    '  values:',
+    `    ${JSON.stringify(configName(branch))}:`,
+    `      database: ${JSON.stringify(database)}`,
+    `      store: ${JSON.stringify(base)}`,
+    `      licenseKey: ${JSON.stringify(source.licenseKey ?? '')}`,
     '',
   ].join('\n'))
 }
@@ -443,12 +444,13 @@ export async function cmdServeWorktree(args) {
     writeFileSync(join(dcfg, 'server.yaml'), '')
     writeFileSync(join(dcfg, 'daemon.yaml'), [
       `machineId: ${JSON.stringify(`dev-${sanitize(branch)}`)}`,
-      `defaultEnv: ${JSON.stringify(configName(branch))}`,
       'environments:',
-      `  ${JSON.stringify(configName(branch))}:`,
-      `    database: ${JSON.stringify(base)}`,
-      `    store: ${JSON.stringify(base)}`,
-      '    licenseKey: ""',
+      `  default: ${JSON.stringify(configName(branch))}`,
+      '  values:',
+      `    ${JSON.stringify(configName(branch))}:`,
+      `      database: ${JSON.stringify(base)}`,
+      `      store: ${JSON.stringify(base)}`,
+      '      licenseKey: ""',
       'regions:',
       '  machine: ["**"]',
       'profiles:',
