@@ -4338,7 +4338,6 @@ function FleetChatInner({ shape }: { shape: any }) {
   // fires on a deliberate tap (down AND up on the toggle, little movement) — not
   // on a stray touch or a scroll-drag that merely lifts off over it. This is the
   // `93aba2cd` spurious-filter-cycling fix.
-  const trafficTapRef = useRef<{ x: number; y: number; id: number } | null>(null)
   const composerTrafficMode = useMemo<ComposerTrafficFilterMode>(
     () => classifyFleetComposerTrafficMode(filter, trafficMode, humanFilterLabel, composerAgentLabel),
     [filterKey, trafficMode, humanFilterLabel, composerAgentLabel],
@@ -5856,24 +5855,19 @@ function FleetChatInner({ shape }: { shape: any }) {
               className={`fleet-composer-traffic-toggle fleet-composer-traffic-toggle-${composerTrafficMode}`}
               data-composer-rail-action="traffic"
               data-composer-rail-label="Traffic"
-              onPointerDown={(e) => {
-                trafficTapRef.current = { x: e.clientX, y: e.clientY, id: e.pointerId }
-              }}
-              onPointerUp={(e) => {
-                // Drive the cycle from pointerup, not click: on touch a tap on
-                // this text label never synthesizes a `click` (pointerdown +
-                // pointerup fire, click does not), so an onClick handler is dead
-                // on iPad. pointerup fires for both mouse and touch — one cycle
-                // per interaction, no double-fire.
+              // Cycle from click, because the enclosing PersistentCornerButtonSlider
+              // owns the gesture: it takes pointer capture on the rail, so this
+              // button never sees its own pointer events, and it resolves a
+              // press-drag-release by calling button.click() on whichever button
+              // the release landed nearest.
+              //
+              // This used to drive off pointerup instead, because a native tap on
+              // a text label does not synthesize a click on iPad. That reasoning
+              // was right and is now moot: the slider's click() is programmatic,
+              // so it fires on touch and mouse alike, and the tap-vs-drag guard
+              // that pointerup needed now lives in the slider.
+              onClick={(e) => {
                 stopEventPropagation(e)
-                // Only a deliberate tap on THIS button cycles: the pointerdown
-                // must have started here (same pointerId) and barely moved. A
-                // stray touch or a scroll-drag that lifts off over the button has
-                // no matching down (or drifted) → it must NOT change the filter.
-                const down = trafficTapRef.current
-                trafficTapRef.current = null
-                if (!down || down.id !== e.pointerId) return
-                if (Math.abs(e.clientX - down.x) > 16 || Math.abs(e.clientY - down.y) > 16) return
                 if (!composerAgentLabel) return
                 cycleComposerTrafficMode()
               }}
