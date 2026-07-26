@@ -110,8 +110,12 @@ import {
 } from '../shared/inbox-attention.mjs'
 import {
   MATERIALIZATION_MAX_BYTES,
+  buildInboxRefPath,
+  hasPendingAttachmentPlaceholders,
+  markPendingAttachmentPlaceholdersRead,
   initializeRecipientRefs,
   isMaterializableAttachment,
+  pendingAttachmentPlaceholder,
   setRecipientAttachmentState,
 } from '../shared/inbox-reference-materialization.mjs'
 import { realizeProjectMarkdownArtifact } from './lib/project-artifact-materializer.mjs'
@@ -2532,14 +2536,14 @@ function protectedAgentEditFields(agentData = {}) {
   return Object.keys(agentData).filter(key => PROTECTED_AGENT_EDIT_FIELDS.has(key))
 }
 
-function patchEventMetadata(eventId, updater) {
+function patchEventMetadata(eventId, updater, { broadcast = true } = {}) {
   const event = fleetStore.getEventById?.(eventId)
   if (!event) return null
   const current = event.metadata || {}
   const next = updater(current)
   fleetStore.db.prepare('UPDATE events SET metadata = ? WHERE id = ?')
     .run(JSON.stringify(next), eventId)
-  broadcastEvent('event-update', { id: eventId, metadata_patch: next })
+  if (broadcast) broadcastEvent('event-update', { id: eventId, metadata_patch: next })
   return next
 }
 
@@ -2549,21 +2553,115 @@ function patchRecipientAttachmentState(eventId, recipientId, attachmentId, recor
   ))
 }
 
-// A successful materialization is deliberately SILENT. It used to post
-// "Attachment materialized for message N: file" to the recipient on every single
-// attachment, and Skip reads the fleet feed -- so agent-to-agent announcements are
-// noise in the one channel he cannot afford noise in ("This over chatty
-// materializer is exhausting").
-//
-// Note the announcement was already never sent to humans: materializeRecipientAttachment
-// returns early on `recipient.human`. Every one of these went to an *agent*. So
-// suppressing it "for humans" would have changed nothing he can see -- the message
-// itself had to go.
-//
-// The success record still lands in the event metadata via
-// patchRecipientAttachmentState and broadcasts as an `event-update`, so the
-// attachment chip and any agent that needs the fact still get it. An event is not a
-// notification; success is silent, and only failure is worth saying out loud.
+function finalizeRecipientPlaceholderPaths(metadata = {}, { recipientId, eventId, sourceAgent, timestamp, attachments }) {
+  let next = metadata
+  for (const attachment of attachments || []) {
+    const ref = next?.recipient_refs?.[recipientId]?.attachments?.[String(attachment.id)]
+    if (ref?.state !== 'pending') continue
+    next = setRecipientAttachmentState(next, recipientId, attachment.id, {
+      ...ref,
+      placeholderPath: buildInboxRefPath({
+        sourceAgent: sourceAgent || 'unknown',
+        date: timestamp,
+        eventId,
+        name: attachment.name,
+      }),
+      provenance: {
+        ...(ref.provenance || {}),
+        eventId,
+      },
+    })
+  }
+  return next
+}
+
+function recordPlaceholderReadForMessages(agentId, messages = []) {
+  const now = new Date().toISOString()
+  for (const message of messages || []) {
+    if (!hasPendingAttachmentPlaceholders(message?.metadata, agentId)) continue
+    patchEventMetadata(message.id, metadata => (
+      markPendingAttachmentPlaceholdersRead(metadata, agentId, { now })
+    ))
+  }
+}
+
+function placeholderSeenByRecipient(metadata = {}, recipientId, attachmentId) {
+  const recipient = metadata?.recipient_refs?.[recipientId]
+  const seen = new Set((recipient?.placeholder_seen_attachment_ids || []).map(String))
+  return seen.has(String(attachmentId))
+}
+
+function placeholderSupersededForRecipient(metadata = {}, recipientId, attachmentId) {
+  const recipient = metadata?.recipient_refs?.[recipientId]
+  const superseded = new Set((recipient?.placeholder_superseded_attachment_ids || []).map(String))
+  return superseded.has(String(attachmentId))
+}
+
+function markPlaceholderSuperseded(metadata = {}, recipientId, attachmentId, { now = new Date().toISOString() } = {}) {
+  const next = { ...(metadata || {}) }
+  const refs = next.recipient_refs && typeof next.recipient_refs === 'object' ? next.recipient_refs : {}
+  const currentRecipient = refs[recipientId] || {}
+  const superseded = new Set((currentRecipient.placeholder_superseded_attachment_ids || []).map(String))
+  superseded.add(String(attachmentId))
+  next.recipient_refs = {
+    ...refs,
+    [recipientId]: {
+      ...currentRecipient,
+      placeholder_superseded_at: now,
+      placeholder_superseded_attachment_ids: Array.from(superseded),
+    },
+  }
+  return next
+}
+
+async function insertMaterializationAmend({ eventId, metadata }) {
+  const original = fleetStore.getEventById?.(eventId)
+  if (!original || original.type !== 'chat') return null
+  const ts = new Date().toISOString()
+  const meta = { ...(metadata || {}), amends: original.id }
+  const inserted = await measureHotOp('materialization amend event insert', `event=${eventId} to=${original.to}`, () => fleetStore._insertEventRecord({
+    type: 'amend',
+    timestamp: ts,
+    from: original.from,
+    to: original.to,
+    text: original.text,
+    metadata: meta,
+    unread: false,
+  }, { notify: false }))
+  const amendId = Number(inserted.id)
+  broadcastEvent('fleet-event', {
+    id: amendId,
+    type: 'amend',
+    timestamp: ts,
+    from_id: original.from,
+    to_id: original.to,
+    text: original.text,
+    metadata: meta,
+  })
+  return amendId
+}
+
+async function replaceMaterializedPlaceholder({ eventId, recipientId, attachment, metadata }) {
+  if (placeholderSupersededForRecipient(metadata, recipientId, attachment.id)) return
+  const finalMetadata = patchEventMetadata(eventId, current => (
+    markPlaceholderSuperseded(current, recipientId, attachment.id)
+  ))
+  await insertMaterializationAmend({ eventId, metadata: finalMetadata || metadata })
+  if (!placeholderSeenByRecipient(metadata, recipientId, attachment.id)) return
+  const ref = finalMetadata?.recipient_refs?.[recipientId]?.attachments?.[String(attachment.id)]
+  const label = ref ? pendingAttachmentPlaceholder(ref, attachment).replace(/\*$/, '') : (attachment.name || `attachment ${attachment.id}`)
+  deliverTldaFeedbackChat({
+    from: 'tlda-materializer',
+    to: recipientId,
+    text: `Reference materialized for message ${eventId}: ${label}`,
+    metadata: {
+      source: 'materialization',
+      source_event_id: eventId,
+      attachment_id: String(attachment.id),
+      state: 'available',
+    },
+  })
+}
 
 function notifyRecipientMaterializationFailures({ eventId, recipientId, failures }) {
   const text = formatMaterializationFailureNotification({ eventId, failures })
@@ -2714,7 +2812,8 @@ async function materializeRecipientAttachment({ eventId, recipientId, sourceAgen
       sha256: result.sha256,
       materialized_at: new Date().toISOString(),
     }
-    patchRecipientAttachmentState(eventId, recipientId, attachment.id, record)
+    const updatedMetadata = patchRecipientAttachmentState(eventId, recipientId, attachment.id, record)
+    await replaceMaterializedPlaceholder({ eventId, recipientId, attachment, metadata: updatedMetadata })
     return null
   } catch (e) {
     return fail(e.message || String(e))
@@ -6291,6 +6390,16 @@ async function handleFleetWsMessage(ws, msg) {
         unread: true,
       }, { notify: false }))
       const eventId = Number(inserted.id)
+      if (recipientAgent && !recipientAgent.human && materializableAttachments.length) {
+        combinedMetadata = finalizeRecipientPlaceholderPaths(combinedMetadata, {
+          recipientId: to,
+          eventId,
+          sourceAgent: from,
+          timestamp: ts,
+          attachments: materializableAttachments,
+        })
+        patchEventMetadata(eventId, () => combinedMetadata, { broadcast: false })
+      }
       controlPlaneTraces.append({
         trace_id: traceId,
         component: 'fleet-store',
@@ -6776,6 +6885,7 @@ async function handleFleetWsMessage(ws, msg) {
     // marking. Without this, peek silently consumes the unread queue and
     // the subsequent inbox() returns nothing.
     if (unread.length && !msg.peek) {
+      recordPlaceholderReadForMessages(agentId, unread)
       const readIds = await fleetStore.acknowledgeInboxRead(agentId, unread.map(m => m.id))
       // A successful inbox read is the durable acknowledgement for a wake.
       // Preserve the originating event/task/trace so operators can distinguish

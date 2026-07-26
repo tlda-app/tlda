@@ -2594,8 +2594,8 @@ function FleetChatInner({ shape }: { shape: any }) {
         const amends = (m._dbId != null) ? amendsByOrig.get(m._dbId) : undefined
         if (amends && amends.length) {
           const versions = [
-            { text: m.text, source: m.metadata?.source ?? null },
-            ...amends.map((a: any) => ({ text: a.text, source: a.metadata?.source ?? null })),
+            { text: m.text, metadata: m.metadata || null, inlineAttachments: m._inlineAttachments || null },
+            ...amends.map((a: any) => ({ text: a.text, metadata: a.metadata || null, inlineAttachments: a._inlineAttachments || null })),
           ]
           const total = versions.length
           const viewIdx = Math.min(amendView.get(m._dbId) ?? (total - 1), total - 1)
@@ -2604,7 +2604,8 @@ function FleetChatInner({ shape }: { shape: any }) {
           const oid = esc(String(m._dbId))
           const stepper = `<span class="amend-versions" data-orig="${oid}"><button class="amend-arrow"${backDis} data-orig="${oid}" data-total="${total}" data-dir="back" title="older version">◀</button><span class="amend-vlabel">V${viewIdx + 1}</span><button class="amend-arrow"${fwdDis} data-orig="${oid}" data-total="${total}" data-dir="fwd" title="newer version">▶</button></span>`
           const v = versions[viewIdx]
-          renderM = { ...m, text: v.text, metadata: { ...(m.metadata || {}), source: v.source }, _amendStepper: stepper }
+          const metadata = { ...(m.metadata || {}), ...(v.metadata || {}) }
+          renderM = { ...m, text: v.text, metadata, _inlineAttachments: v.inlineAttachments || metadata.inline_attachments || m._inlineAttachments, _amendStepper: stepper }
         }
         // Render this message's math with the SENDER's preamble (preambleRef.doc),
         // not the viewer's. Fall back to the viewer's preamble for messages with no
