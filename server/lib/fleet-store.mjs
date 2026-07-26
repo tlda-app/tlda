@@ -354,9 +354,14 @@ export class FleetStore {
 
   _scheduleCwdSegmentBackfill() {
     const batchSize = Math.max(1, Number(process.env.TLDA_CWD_SEGMENT_BACKFILL_BATCH || 50) || 50);
+    // Advance by cursor, not by "rows that still lack segments". A cwd of "/"
+    // normalizes to no segments, so nothing is inserted for it and the
+    // NOT EXISTS predicate stays true forever: the batch re-selects the same
+    // rows and setImmediate reschedules itself without end. Progress must not
+    // depend on the write having had an effect.
     const selectAgents = this.db.prepare(`
       SELECT id AS agent_id, cwd FROM agents
-      WHERE cwd IS NOT NULL AND cwd != ''
+      WHERE cwd IS NOT NULL AND cwd != '' AND id > ?
         AND NOT EXISTS (
           SELECT 1 FROM agent_cwd_segments cs
           WHERE cs.source = 'agent' AND cs.agent_id = agents.id
@@ -366,7 +371,7 @@ export class FleetStore {
     `);
     const selectSeats = this.db.prepare(`
       SELECT agent_id, cwd FROM agent_seats
-      WHERE cwd IS NOT NULL AND cwd != ''
+      WHERE cwd IS NOT NULL AND cwd != '' AND agent_id > ?
         AND NOT EXISTS (
           SELECT 1 FROM agent_cwd_segments cs
           WHERE cs.source = 'seat' AND cs.agent_id = agent_seats.agent_id
@@ -374,13 +379,18 @@ export class FleetStore {
       ORDER BY agent_id
       LIMIT ?
     `);
+    let seatCursor = '';
+    let agentCursor = '';
     const runBatch = () => {
       this._cwdSegmentBackfillImmediate = null;
       if (this._closed || !this.db.open) return;
       let rows = [];
       try {
-        rows = selectSeats.all(batchSize).map(r => ({ ...r, source: 'seat' }))
-          .concat(selectAgents.all(batchSize).map(r => ({ ...r, source: 'agent' })));
+        const seats = selectSeats.all(seatCursor, batchSize).map(r => ({ ...r, source: 'seat' }));
+        const agents = selectAgents.all(agentCursor, batchSize).map(r => ({ ...r, source: 'agent' }));
+        if (seats.length) seatCursor = seats[seats.length - 1].agent_id;
+        if (agents.length) agentCursor = agents[agents.length - 1].agent_id;
+        rows = seats.concat(agents);
         for (const row of rows) this._replaceCwdSegments(row.source, row.agent_id, row.cwd);
       } catch (e) {
         if (this._closed || !this.db.open) return;
