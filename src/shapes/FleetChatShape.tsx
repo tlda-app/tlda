@@ -63,6 +63,7 @@ import { agentDisplayLabel, agentExactName, beginFleetDragWithoutSnap, endFleetD
 import { usePillDrag } from './FleetAgentsShape'
 import { FleetPanelButtonGroup } from './FleetPanelChrome'
 import { ChatComposer } from './ChatComposer'
+import { PersistentCornerButtonSlider } from '../CornerButtonSlider'
 import { PrettyName } from './PrettyName'
 import { dragCoordinator } from './dragCoordinator'
 import { cancelDragBeforeRelease } from './fleet-pill-lifecycle'
@@ -3418,11 +3419,8 @@ function FleetChatInner({ shape }: { shape: any }) {
   const [termHoverVisible, setTermHoverVisible] = useState(false)
   const [termHoverPinned, setTermHoverPinned] = useState(false)
   const [termHoverAgentId, setTermHoverAgentId] = useState<string | null>(null)
-  const [composerRailActive, setComposerRailActive] = useState<{ label: string; x: number } | null>(null)
   const [composerDraftVersion, setComposerDraftVersion] = useState(0)
   const termHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const composerRailRef = useRef<HTMLDivElement | null>(null)
-  const composerRailTouchRef = useRef<{ id: number; startedOnButton: boolean } | null>(null)
   const clearedComposerDraftRef = useRef<string | null>(null)
   const termAutoPinnedRef = useRef(false)
   // Skill-state hover popover (hovering an agent name in chat)
@@ -4627,91 +4625,6 @@ function FleetChatInner({ shape }: { shape: any }) {
     ta.setSelectionRange(ta.value.length, ta.value.length)
   }
 
-  const findComposerRailButton = useCallback((clientX: number, clientY: number): HTMLButtonElement | null => {
-    const rail = composerRailRef.current
-    if (!rail) return null
-    const buttons = Array.from(
-      rail.querySelectorAll<HTMLButtonElement>('[data-composer-rail-action]:not(:disabled)')
-    )
-    if (buttons.length === 0) return null
-    let best: HTMLButtonElement | null = null
-    let bestDist = Number.POSITIVE_INFINITY
-    for (const button of buttons) {
-      const rect = button.getBoundingClientRect()
-      const dx = clientX - (rect.left + rect.width / 2)
-      const dy = clientY - (rect.top + rect.height / 2)
-      const dist = dx * dx + dy * dy
-      if (dist < bestDist) {
-        best = button
-        bestDist = dist
-      }
-    }
-    return best
-  }, [])
-
-  const setComposerRailCandidate = useCallback((button: HTMLButtonElement | null) => {
-    const rail = composerRailRef.current
-    if (!rail || !button) {
-      setComposerRailActive(null)
-      return
-    }
-    const railRect = rail.getBoundingClientRect()
-    const buttonRect = button.getBoundingClientRect()
-    setComposerRailActive({
-      label: button.dataset.composerRailLabel || button.title || button.getAttribute('aria-label') || '',
-      x: buttonRect.left + buttonRect.width / 2 - railRect.left,
-    })
-  }, [])
-
-  const handleComposerRailPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    stopEventPropagation(e)
-    const startedButton = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-composer-rail-action]')
-    const button = startedButton && !startedButton.disabled
-      ? startedButton
-      : findComposerRailButton(e.clientX, e.clientY)
-    composerRailTouchRef.current = { id: e.pointerId, startedOnButton: !!startedButton }
-    try { e.currentTarget.setPointerCapture?.(e.pointerId) } catch {
-      // Synthetic/offscreen verification events may not be capturable.
-    }
-    setComposerRailCandidate(button)
-  }, [findComposerRailButton, setComposerRailCandidate])
-
-  const handleComposerRailPointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    const touch = composerRailTouchRef.current
-    if (!touch || touch.id !== e.pointerId) return
-    stopEventPropagation(e)
-    setComposerRailCandidate(findComposerRailButton(e.clientX, e.clientY))
-  }, [findComposerRailButton, setComposerRailCandidate])
-
-  const handleComposerRailPointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    const touch = composerRailTouchRef.current
-    if (!touch || touch.id !== e.pointerId) return
-    stopEventPropagation(e)
-    composerRailTouchRef.current = null
-    const button = findComposerRailButton(e.clientX, e.clientY)
-    setComposerRailCandidate(button)
-    if (!touch.startedOnButton && button) {
-      const action = button.dataset.composerRailAction
-      if (action === 'traffic') {
-        if (composerAgentLabel) cycleComposerTrafficMode()
-      } else if (action === 'clear') {
-        toggleComposerClear()
-        setComposerDraftVersion(v => v + 1)
-      } else {
-        button.click()
-      }
-    }
-    window.setTimeout(() => setComposerRailActive(null), 140)
-  }, [composerAgentLabel, cycleComposerTrafficMode, findComposerRailButton, setComposerRailCandidate, toggleComposerClear])
-
-  const handleComposerRailPointerCancel = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    const touch = composerRailTouchRef.current
-    if (!touch || touch.id !== e.pointerId) return
-    stopEventPropagation(e)
-    composerRailTouchRef.current = null
-    setComposerRailActive(null)
-  }, [])
-
   const deadTargetAgent = useMemo(() => {
     for (const label of sendTargets) {
       const agent = resolveTargetAgent(label, agents)
@@ -5702,7 +5615,6 @@ function FleetChatInner({ shape }: { shape: any }) {
           {deadTargetAgent && (
             <div
               className="fleet-dead-agent-notice"
-              onPointerDown={stopEventPropagation}
             >
               <span>{deadTargetAgent.name} is dead</span>
               <span
@@ -5746,22 +5658,9 @@ function FleetChatInner({ shape }: { shape: any }) {
                 follow/hard-lock ("magnet") button laid out as a tight flex row
                 so they sit adjacent regardless of the traffic label's width
                 (no dead gap). Order is set via CSS `order`, not DOM order. */}
-            <div
-              ref={composerRailRef}
+            <PersistentCornerButtonSlider
               className="fleet-composer-gutter"
-              onPointerDown={handleComposerRailPointerDown}
-              onPointerMove={handleComposerRailPointerMove}
-              onPointerUp={handleComposerRailPointerUp}
-              onPointerCancel={handleComposerRailPointerCancel}
             >
-            {composerRailActive && (
-              <div
-                className="fleet-composer-rail-preview"
-                style={{ left: `${composerRailActive.x}px` }}
-              >
-                {composerRailActive.label}
-              </div>
-            )}
             {/* Unified follow / jump-to-bottom control. One button, fixed here:
                   - off bottom → ⇣ arrow; click jumps to bottom (does NOT change
                     follow mode — you return to the bottom first, then it's a
@@ -5815,7 +5714,6 @@ function FleetChatInner({ shape }: { shape: any }) {
                 className={`fleet-terminal-icon${termHoverPinned && termHoverAgentId === agent.id ? ' active' : ''}`}
                 data-composer-rail-action={`terminal-${agent.id}`}
                 data-composer-rail-label="Terminal"
-                onPointerDown={stopEventPropagation}
                 onClick={(e) => {
                   stopEventPropagation(e as any)
                   if (termHoverPinned && termHoverAgentId === agent.id) {
@@ -5855,7 +5753,6 @@ function FleetChatInner({ shape }: { shape: any }) {
               data-composer-rail-action="traffic"
               data-composer-rail-label="Traffic"
               onPointerDown={(e) => {
-                stopEventPropagation(e)
                 trafficTapRef.current = { x: e.clientX, y: e.clientY, id: e.pointerId }
               }}
               onPointerUp={(e) => {
@@ -5901,7 +5798,6 @@ function FleetChatInner({ shape }: { shape: any }) {
                 className={`fleet-composer-clear-toggle${canUnclearComposer ? ' unclear-mode' : ''}`}
                 data-composer-rail-action="clear"
                 data-composer-rail-label={canUnclearComposer ? 'Unclear' : 'Clear'}
-                onPointerDown={stopEventPropagation}
                 onClick={(e) => {
                   stopEventPropagation(e as any)
                   toggleComposerClear()
@@ -5913,7 +5809,7 @@ function FleetChatInner({ shape }: { shape: any }) {
                 {canUnclearComposer ? '↺' : '×'}
               </button>
             )}
-            </div>
+            </PersistentCornerButtonSlider>
             <ChatComposer
               sendTargets={sendTargets}
               agentNames={agentNames}
