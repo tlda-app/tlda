@@ -3,7 +3,7 @@ import { getLayoutReadabilityTokens } from '../readabilityProfile'
 import { isCanvasPageShape, isDocumentPageShape } from './document-pages'
 import { laneDy, layoutOffset } from './fleet-layout-geometry'
 import type { FleetLayoutPlanInput, FleetLayoutVariant } from './fleet-layout-plan'
-import { defaultFleetLayoutChatFilters, type FleetChatFilter } from './fleet-layout-seeding'
+import { defaultFleetLayoutChatFilters } from './fleet-layout-seeding'
 
 export type DocumentPageBounds = {
   pageShapes: any[]
@@ -25,7 +25,6 @@ export function buildFleetLayoutPlanInput({
   myId,
   myDevice,
   docBounds,
-  existingChatFilters,
   makeSlotId,
   viewport,
 }: {
@@ -35,7 +34,6 @@ export function buildFleetLayoutPlanInput({
   myId: string
   myDevice: string
   docBounds: DocumentPageBounds
-  existingChatFilters: Array<FleetChatFilter | undefined>
   makeSlotId: (slot: string) => string
   viewport?: FleetLayoutViewportBounds
 }): FleetLayoutPlanInput {
@@ -43,7 +41,6 @@ export function buildFleetLayoutPlanInput({
   const [filter1 = [], filter2 = [], filter3 = [], filter4 = []] = defaultFleetLayoutChatFilters({
     agents,
     humanId: myId,
-    existingChatFilters,
     panelCount,
   })
 

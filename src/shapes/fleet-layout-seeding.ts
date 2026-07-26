@@ -5,15 +5,19 @@ import { recentChatTargetAgents } from '../fleet/layout-targets.mjs'
 
 export type FleetChatFilter = [string, string][][]
 
+// Creating the default layout is a complete teardown and a complete recreation.
+// Chat targets are seeded from the live roster every time; nothing is carried
+// over from the layout being replaced. Carrying the previous panels' filters
+// forward meant a chat aimed at an agent that no longer existed was recreated
+// into every subsequent layout forever — one such corpse, pointed at an agent
+// gone since 7/13, is what kept the unread-sender rail permanently suppressed.
 export function defaultFleetLayoutChatFilters({
   agents,
   humanId,
-  existingChatFilters,
   panelCount,
 }: {
   agents: any[]
   humanId: string
-  existingChatFilters: (FleetChatFilter | undefined)[]
   panelCount: number
 }): FleetChatFilter[] {
   const nonHuman = agents.filter((a: any) => a.id !== humanId && !a.human)
@@ -39,16 +43,7 @@ export function defaultFleetLayoutChatFilters({
   const usedFilters = new Set<string>()
   let nextAgent = 0
 
-  return Array.from({ length: panelCount }, (_, i) => {
-    const existing = existingChatFilters[i]
-    if (existing?.length) {
-      const key = JSON.stringify(existing)
-      if (!usedFilters.has(key)) {
-        usedFilters.add(key)
-        return existing
-      }
-    }
-
+  return Array.from({ length: panelCount }, () => {
     while (nextAgent < topAgents.length) {
       const name = topAgents[nextAgent++]?.friendly_name as string | undefined
       if (!name) continue
