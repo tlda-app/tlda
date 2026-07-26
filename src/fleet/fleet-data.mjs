@@ -717,6 +717,16 @@ let _receiveWatchdogInterval = null
 // reaps the abandoned socket at 60s, and no message is lost across the gap.
 const WS_RECEIVE_TIMEOUT_MS = 30_000
 const WS_RECEIVE_CHECK_MS = 5_000
+// A socket that never reaches OPEN fires no open, no close, and no error, so
+// nothing above ever runs: the receive watchdog returns immediately because it
+// only looks at readyState 1, and connect() refuses to redial because `_ws` is
+// non-null. That is a permanent deafness with a working composer and no error,
+// and it is what a deploy produces — the edge accepts the TCP connection while
+// no backend is there to answer the upgrade. A healthy connect to the live
+// server was measured at ~329ms, so this ceiling is generous by an order of
+// magnitude: it catches wedged, not slow.
+const WS_CONNECT_TIMEOUT_MS = 5_000
+let _connectAttemptTimer = null
 let _lastWsOpenAt = 0
 let _lastWsCloseAt = 0
 let _lastWsActivityAt = 0
@@ -914,6 +924,30 @@ function _stopReceiveWatchdog() {
   if (_receiveWatchdogInterval) { clearInterval(_receiveWatchdogInterval); _receiveWatchdogInterval = null }
 }
 
+// The receive watchdog above only inspects an OPEN socket, so it cannot see a
+// socket that never opened. This covers that window, and only that window: it is
+// armed when the socket is constructed and cleared the moment it opens.
+function _armConnectTimeout(ws) {
+  _clearConnectTimeout()
+  _connectAttemptTimer = setTimeout(() => {
+    _connectAttemptTimer = null
+    // A later generation may already have replaced this socket; only the
+    // generation this timer was armed for may act on the timeout.
+    if (_ws !== ws) return
+    if (ws.readyState !== 0) return // 0 = CONNECTING; anything else is not wedged
+    log.metric('fleet-data', 'connect watchdog: socket never opened — forcing reconnect', {
+      waitedMs: WS_CONNECT_TIMEOUT_MS,
+    })
+    // close() drives the existing onclose path, which nulls _ws and schedules
+    // the retry with backoff. No second reconnect route.
+    try { ws.close() } catch { /* onclose still fires the reconnect path */ }
+  }, WS_CONNECT_TIMEOUT_MS)
+}
+
+function _clearConnectTimeout() {
+  if (_connectAttemptTimer) { clearTimeout(_connectAttemptTimer); _connectAttemptTimer = null }
+}
+
 let _lastViewingSent = 0
 let _viewingEnrichFn = null
 export function setViewingEnrichFn(fn) { _viewingEnrichFn = fn }
@@ -1044,8 +1078,10 @@ export function connect() {
   const token = params.get('token')
   const wsUrl = FLEET_WS + '/ws/fleet'
   _ws = new WebSocket(wsUrl)
+  _armConnectTimeout(_ws)
 
   _ws.onopen = () => {
+    _clearConnectTimeout()
     _lastWsOpenAt = Date.now()
     markWsActivity()
     _wsReconnectBuffer.resolveConnected()
@@ -1145,6 +1181,7 @@ export function connect() {
   }
 
   _ws.onclose = (ev) => {
+    _clearConnectTimeout()
     _lastWsCloseAt = Date.now()
     resetWsRequestIdleTimers(_wsCallbacks)
     _ws = null
