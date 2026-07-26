@@ -7,6 +7,7 @@ import { BookViewer } from './BookViewer'
 import { IdentityPicker } from './IdentityPicker'
 import { STORE_HTTP } from './activeConfig'
 import type { BookMember } from './BookContext'
+import { HTML_NAV_STATE_KEY } from './html-page-navigation-history'
 import './App.css'
 import './themes.css'
 
@@ -147,8 +148,11 @@ function App() {
   const [initialCamera] = useState(parseInitialCamera)
 
   // Handle browser back/forward — reload to cleanly reset TLDraw state.
+  // HtmlPageShape owns same-document column navigation states; those restore
+  // page/camera in-place and must not reload the whole viewer.
   useEffect(() => {
-    const onPopState = () => {
+    const onPopState = (event: PopStateEvent) => {
+      if (event.state?.[HTML_NAV_STATE_KEY]) return
       window.location.reload()
     }
     window.addEventListener('popstate', onPopState)
