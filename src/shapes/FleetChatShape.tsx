@@ -1906,6 +1906,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   void useValue('editing', () => editor.getEditingShapeId() === shape.id, [editor, shape.id])
   const [filterOpen, setFilterOpen] = useState(false)
   const [filterOpenByPill, setFilterOpenByPill] = useState(false)
+  const { startDrag: startUnreadRailDrag } = usePillDrag()
   const showUnreadAgentRail = useValue('show-unread-agent-rail', () => {
     if (filterOpen) return false
     const userId = getHumanId()
@@ -5519,7 +5520,7 @@ function FleetChatInner({ shape }: { shape: any }) {
 
           {!filterOpen && (
             <>
-              {showUnreadAgentRail && <FleetUnreadAgentRail />}
+              {showUnreadAgentRail && <FleetUnreadAgentRail startDrag={startUnreadRailDrag} />}
               {/* Messages — Virtuoso owns the scroll container and all virtualized
                   item measurement, including the status/suggestions trailing row. */}
               <Virtuoso
@@ -6100,10 +6101,19 @@ function SendHint({
   )
 }
 
-function FleetUnreadAgentRail() {
+function FleetUnreadAgentRail({
+  startDrag,
+}: {
+  startDrag: (
+    e: React.PointerEvent,
+    pillType: 'agent' | 'label',
+    value: string,
+    displayName: string,
+    color: string,
+  ) => void
+}) {
   const agents = useFleetAgents()
   const unreadCounts = useFleetUnreadCounts()
-  const { startDrag } = usePillDrag()
   const unreadRows = useMemo(() => getUnreadAgentRailRows(agents, unreadCounts), [agents, unreadCounts])
 
   if (unreadRows.length === 0) return null
