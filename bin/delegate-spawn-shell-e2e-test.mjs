@@ -43,6 +43,16 @@ function fail(message) {
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 
+async function waitFor(predicate, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const value = predicate()
+    if (value) return value
+    await sleep(50)
+  }
+  return null
+}
+
 async function waitHealth() {
   let lastError = null
   for (let i = 0; i < 60; i += 1) {
@@ -138,7 +148,7 @@ async function startMockDaemon() {
   })
   daemon.on('message', async raw => {
     const msg = JSON.parse(raw.toString())
-    if (msg.type !== 'rpc' || msg.op !== 'spawn') return
+    if (msg.type !== 'rpc' || !['spawn', 'mint'].includes(msg.op)) return
     captured.push(msg)
     try {
       assert.ok(msg.agent_id, `spawn RPC missing agent_id: ${JSON.stringify(msg)}`)
@@ -210,6 +220,7 @@ async function run() {
     })
     assert.equal(spawnResult.ok, true)
     assert.ok(spawnResult.agent_id, `spawn result missing agent_id: ${JSON.stringify(spawnResult)}`)
+    await waitFor(() => captured.length === 1)
     assert.equal(captured.length, 1)
     assert.equal(captured[0].agent_id, spawnResult.agent_id)
     console.log('PASS: delegate fresh spawn RPC carried a preallocated fleet agent_id')

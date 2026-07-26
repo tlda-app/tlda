@@ -1,6 +1,6 @@
 import { createLiveStore } from './live-store.ts'
 
-export type MailboxStatus = 'pending' | 'completed' | 'failed'
+export type MailboxStatus = 'pending' | 'completed' | 'failed' | 'indeterminate'
 
 export interface MailboxEntry<TMeta extends Record<string, unknown> = Record<string, unknown>> {
   id: string
@@ -86,6 +86,10 @@ export class MailboxLibrarian {
 
   fail(id: string, error: string, result: Record<string, unknown> = {}): MailboxEntry | null {
     return this.settle(id, 'failed', { error, result })
+  }
+
+  indeterminate(id: string, error: string, result: Record<string, unknown> = {}): MailboxEntry | null {
+    return this.settle(id, 'indeterminate', { error, result })
   }
 
   get(id: string): MailboxEntry | undefined {
