@@ -497,6 +497,7 @@ function clearIdentityRetry() {
 export async function login(name) {
   const clean = sanitizeIdentityName(name)
   if (!isUsableIdentityName(clean)) throw new Error('invalid identity name')
+  _humanName = clean
   const res = await browserFleetTransport.durable('login', { name: clean })
   _humanId = res.id
   _humanName = res.name
@@ -514,6 +515,7 @@ export async function login(name) {
 export async function registerHuman(name, { persist = true } = {}) {
   const sanitized = sanitizeIdentityName(name)
   if (!isUsableIdentityName(sanitized)) throw new Error('invalid identity name')
+  _humanName = sanitized
   const humanId = `fleet:${sanitized}`
   const res = await browserFleetTransport.durable('register', { agent_id: humanId, name: sanitized, human: true })
   _humanId = res.agent?.id || humanId
@@ -539,17 +541,8 @@ function retryStoredIdentity(storedName) {
     _identityRetryTimer = null
     if (!_ws || _ws.readyState !== 1) return
     if (readStoredIdentity() !== storedName) return
-    if (_humanName === storedName) return
-    browserFleetTransport.durable('login', { name: storedName }).then(res => {
-      _humanId = res.id
-      _humanName = res.name
-      _identifyPending = false
-      clearIdentityRetry()
-      clearTemporaryIdentity()
-      notify('identity', { type: 'identity', id: _humanId, name: _humanName })
-      bumpIdentityEpoch()
-      _startHeartbeat()
-    }).catch(() => {
+    if (_humanId && _humanName === storedName) return
+    login(storedName).catch(() => {
       _identifyPending = true
       notify('identity', { type: 'identity', id: null, name: storedName, needsIdentity: true })
       retryStoredIdentity(storedName)
@@ -1112,14 +1105,9 @@ export function connect() {
     const storedName = urlName || readStoredIdentity()
     if (storedName) {
       _identifyPending = true
+      _humanName = storedName
       notify('identity', { type: 'identity', id: null, name: storedName, needsIdentity: true })
-      browserFleetTransport.durable('login', { name: storedName }).then(res => {
-        _humanId = res.id
-        _humanName = res.name
-        _identifyPending = false
-        notify('identity', { type: 'identity', id: _humanId, name: _humanName })
-        _startHeartbeat()
-      }).catch((err) => {
+      login(storedName).catch((err) => {
         // A deploy/restart can drop or time out this login request. Do not erase
         // or mask the browser's chosen identity with a generated temporary human:
         // the stored name is the durable "who I am" claim, so keep retrying it.
