@@ -15,7 +15,7 @@ import { labelsForAgent } from '../../shared/fleet-labels.mjs'
  *  - the exact full route name (friendly_name, or name, or id) → its holder,
  *    preferring a LIVE holder over a dead namesake (a dead agent keeps its name
  *    for provenance, so name↔holder is many-to-one; the live holder IS the
- *    agent, and an all-dead name still resolves so resurrect-by-name works);
+ *    agent, and an all-dead name still resolves so reanimate-by-name works);
  *  - otherwise a carried label, but only when exactly ONE non-human agent
  *    carries it (an ambiguous label is a broadcast, not a single recipient).
  */

@@ -687,6 +687,34 @@ function stripCompiledPermissionSet(processFact = {}) {
   return rest
 }
 
+async function bindMintSeat(facts, processFact = facts?.processState || {}, createdSource = 'daemon-mint-join') {
+  await permissionLedger.set(facts.fleetId, {
+    permissionGrant: processFact.permission_grant,
+    source: createdSource,
+  })
+  await bindAgentSeat({
+    ledger: permissionLedger,
+    identity: {
+      agentId: facts.fleetId,
+      sessionId: facts.sessionId,
+      resumeId: facts.sessionId,
+      kind: processFact.harness,
+      model: processFact.model,
+      cwd: processFact.cwd,
+      sessionPath: facts.sessionPath,
+      friendlyName: facts.friendlyName,
+    },
+    route: {
+      machineId: MACHINE_ID,
+      envName: ACTIVE_ENV,
+      daemonKey: `${MACHINE_ID}:${ACTIVE_ENV}`,
+      tmuxSession: processFact.tmux_session,
+    },
+    createdSource,
+    submit: payload => sendMsg({ type: 'agent-seat', ...payload }),
+  })
+}
+
 daemonMintCore = createDaemonMintCore({
   store: mintStore,
   launchProcess: async params => {
@@ -733,31 +761,7 @@ daemonMintCore = createDaemonMintCore({
   }),
   bindSeat: async facts => {
     const processFact = facts.processState || {}
-    await permissionLedger.set(facts.fleetId, {
-      permissionGrant: processFact.permission_grant,
-      source: 'daemon-mint',
-    })
-    await bindAgentSeat({
-      ledger: permissionLedger,
-      identity: {
-        agentId: facts.fleetId,
-        sessionId: facts.sessionId,
-        resumeId: facts.sessionId,
-        kind: processFact.harness,
-        model: processFact.model,
-        cwd: processFact.cwd,
-        sessionPath: facts.sessionPath,
-        friendlyName: facts.friendlyName,
-      },
-      route: {
-        machineId: MACHINE_ID,
-        envName: ACTIVE_ENV,
-        daemonKey: `${MACHINE_ID}:${ACTIVE_ENV}`,
-        tmuxSession: processFact.tmux_session,
-      },
-      createdSource: 'daemon-mint-join',
-      submit: payload => sendMsg({ type: 'agent-seat', ...payload }),
-    })
+    await bindMintSeat(facts, processFact, 'daemon-mint-join')
   },
 })
 
@@ -782,7 +786,7 @@ const wakeMint = createDaemonWakeCore({
       withDaemonModelAliases,
       compilePermissionGrant,
     })
-    return launchMintProcess({
+    const processFact = await launchMintProcess({
       ...(facts.launchRecipe || {}),
       config: wakePermission.config || facts.launchRecipe?.config,
       mintId: facts.mintId,
@@ -796,6 +800,8 @@ const wakeMint = createDaemonWakeCore({
       machineId: MACHINE_ID,
       tmuxSocket: TMUX_SOCKET,
     })
+    await bindMintSeat({ ...facts, processState: processFact }, processFact, 'daemon-wake')
+    return processFact
   },
 })
 

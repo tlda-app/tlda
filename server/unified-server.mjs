@@ -715,7 +715,7 @@ setInterval(() => {
 //
 // The fleet daemon is a per-machine subprocess that watches Claude Code
 // session JSONLs and pushes activity-card / terminal events to the server.
-// When the daemon dies for any reason, no one resurrects it and the user
+// When the daemon dies for any reason, no one restarts it and the user
 // silently loses activity cards, terminal cards, and source watching.
 //
 // The server is the natural supervisor: it knows when a daemon connects
@@ -907,6 +907,162 @@ async function sendWakeNudge(daemonKey, agent, seat, nudgeText, phase, logTag = 
   }))
 }
 
+function timestampMs(value) {
+  if (!value) return null
+  const ms = Date.parse(String(value))
+  return Number.isFinite(ms) ? ms : null
+}
+
+function agentAwaySinceMs(agent) {
+  return timestampMs(agent?.last_active)
+    || timestampMs(agent?.last_seen)
+    || timestampMs(agent?.registered_at)
+}
+
+function formatAwayDuration(ms) {
+  if (!Number.isFinite(ms) || ms < 60_000) return 'less than a minute'
+  const units = [
+    ['day', 24 * 60 * 60_000],
+    ['hour', 60 * 60_000],
+    ['minute', 60_000],
+  ]
+  for (const [name, size] of units) {
+    const n = Math.floor(ms / size)
+    if (n >= 1) return `${n} ${name}${n === 1 ? '' : 's'}`
+  }
+  return 'less than a minute'
+}
+
+function agentReturnNotice(agent, status = 'hibernating', { reanimated = false } = {}) {
+  const sinceMs = agentAwaySinceMs(agent)
+  const duration = sinceMs ? formatAwayDuration(Date.now() - sinceMs) : 'an unknown amount of time'
+  const lines = [`You were away as ${status} for ${duration}.`]
+  if (reanimated) {
+    lines.push('You were killed and reanimated.')
+    lines.push('Your open tasks were retired when you were killed.')
+  }
+  return lines.join('\n')
+}
+
+function withAgentReturnNotice(agent, nudgeText, status = 'hibernating', opts = {}) {
+  const notice = agentReturnNotice(agent, status, opts)
+  return nudgeText ? `${notice}\n\n${nudgeText}` : notice
+}
+
+async function waitForCurrentAgentSeat(agentId, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const seat = fleetStore.getCurrentAgentSeat?.(agentId)
+    if (seat) return seat
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
+  return fleetStore.getCurrentAgentSeat?.(agentId) || null
+}
+
+async function sendReanimateNoticeWithRetry(agentId, agent, seat, noticeText) {
+  let currentSeat = seat
+  let lastErr = null
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      await sendWakeNudge(currentSeat.daemon_key, agent, currentSeat, noticeText, 'post-reanimate', 'reanimate')
+      return currentSeat
+    } catch (e) {
+      lastErr = e
+      if (attempt >= 2) break
+      await new Promise(resolve => setTimeout(resolve, 500))
+      currentSeat = fleetStore.getCurrentAgentSeat?.(agentId) || currentSeat
+    }
+  }
+  throw lastErr || new Error('reanimate notice failed')
+}
+
+async function reanimateAgent(agentQuery) {
+  if (!agentQuery) throw new Error('reanimate requires agent')
+  const before = fleetStore.findAgentStored?.(agentQuery) || fleetStore.findAgent(agentQuery)
+  if (!before) {
+    const err = new Error('agent not found')
+    err.status = 404
+    throw err
+  }
+  if (before.human) {
+    const err = new Error('cannot reanimate a human')
+    err.status = 400
+    throw err
+  }
+  if (!before.dead) {
+    const err = new Error(`${before.friendly_name || before.id} is not dead`)
+    err.status = 409
+    throw err
+  }
+  const daemonKey = before.daemon_key || (before.machine_id && before.env_name ? daemonAddress(before.machine_id, before.env_name) : null)
+  if (!daemonKey) {
+    const err = new Error(`${before.friendly_name || before.id} has no daemon address`)
+    err.status = 409
+    throw err
+  }
+  const ownerDaemon = daemonConnections.get(daemonKey)
+  if (!ownerDaemon || ownerDaemon.readyState !== 1) {
+    const err = new Error(`No fleet-daemon connected for ${daemonKey}`)
+    err.status = 503
+    throw err
+  }
+
+  const revived = fleetStore.markAlive(before.id)
+  markAgentNotAlive(before.id, { source: 'reanimate', reason: 'dead bit cleared; waking agent' })
+  broadcastState(before.id)
+  let spawnResult
+  try {
+    spawnResult = await sendDaemonDurable(daemonKey, 'wake', { fleet_id: before.id })
+    if (!spawnResult?.ok) {
+      throw new Error(spawnResult?.error || spawnResult?.reason || 'daemon returned ok:false with no reason')
+    }
+  } catch (e) {
+    const currentSeat = fleetStore.getCurrentAgentSeat?.(before.id)
+    if (!currentSeat) {
+      fleetStore.markDead(before.id)
+      markAgentNotAlive(before.id, { source: 'reanimate', reason: `wake failed: ${e.message}` })
+      broadcastState(before.id)
+    }
+    throw e
+  }
+  const nextSeat = await waitForCurrentAgentSeat(before.id)
+  if (!nextSeat?.daemon_key || !nextSeat?.terminal_capability || !nextSeat?.session_id) {
+    throw new Error(`reanimate for ${before.id} did not establish a current durable binding`)
+  }
+  const noticeText = agentReturnNotice(before, 'dead', { reanimated: true })
+  try {
+    await sendReanimateNoticeWithRetry(before.id, revived, nextSeat, noticeText)
+  } catch (e) {
+    let killError = null
+    try {
+      await sendDaemonDurable(nextSeat.daemon_key, 'kill-session', terminalRpcPayload(revived, nextSeat))
+    } catch (killErr) {
+      killError = killErr
+    }
+    fleetStore.markDead(before.id)
+    markAgentNotAlive(before.id, { source: 'reanimate', reason: `notice failed: ${e.message}` })
+    broadcastState(before.id)
+    const suffix = killError ? `; also failed to kill resumed session: ${killError.message}` : ''
+    throw new Error(`reanimate notice failed after wake; agent left dead${suffix}: ${e.message}`)
+  }
+  await measureHotOp('fleet-ws lifecycle reanimate insert', `agent=${before.id}`, () => fleetStore._insertEventRecord({
+    type: 'lifecycle',
+    timestamp: new Date().toISOString(),
+    from: before.id,
+    to: before.id,
+    text: 'agent reanimated',
+    unread: false,
+  }, { notify: false }))
+  broadcastState(before.id)
+  return {
+    ok: true,
+    agent_id: before.id,
+    agent: revived.friendly_name || before.id,
+    notice: noticeText,
+    wake: spawnResult,
+  }
+}
+
 function requestTaskWake(agentId, nudgeText = null, keys = []) {
   const agent = fleetStore?.getAgent?.(agentId)
   if (!agent || agent.dead || agent.human) return
@@ -991,7 +1147,7 @@ async function drainTaskWakeQueue() {
       }
       const nextSeat = fleetStore?.getCurrentAgentSeat?.(agentId)
       if (!nextSeat) throw new Error(`respawn for ${agentId} did not create a current durable seat`)
-      await sendWakeNudge(nextSeat.daemon_key, agent, nextSeat, nudgeText, 'post-respawn', 'task-renudge')
+      await sendWakeNudge(nextSeat.daemon_key, agent, nextSeat, withAgentReturnNotice(agent, nudgeText), 'post-respawn', 'task-renudge')
       onTaskWakeSuccess(agentId, taskKeys)
     } catch (e) {
       // Record a terminal wake failure → open/extend the agent's circuit breaker
@@ -4498,6 +4654,7 @@ const fleetRouter = createFleetRouter({
   enqueueDaemonMessage: (...args) => enqueueDaemonMessage(...args),
   agentSeatBindingObligations,
   hasOpenFleetSocketForAgent,
+  reanimateAgent,
   requireOperationRead: requireRw,
 })
 app.use(fleetRouter)
@@ -5342,11 +5499,10 @@ async function handleFleetWsMessage(ws, msg) {
     return
   }
 
-  if (type === 'resurrect') {
-    if (!msg.agent) { error('resurrect requires agent'); return }
+  if (type === 'reanimate') {
+    if (!msg.agent) { error('reanimate requires agent'); return }
     try {
-      const result = fleetStore.resurrectAsZombie(msg.agent)
-      broadcastState()
+      const result = await reanimateAgent(msg.agent)
       reply(result)
     } catch (e) {
       error(e)
@@ -6057,7 +6213,7 @@ async function handleFleetWsMessage(ws, msg) {
           seat,
           daemonKey,
           ownerDaemon: daemonConnections.get(daemonKey),
-          nudgeText,
+          nudgeText: withAgentReturnNotice(agent, nudgeText),
           asker,
           traceId,
           source,
@@ -6267,7 +6423,7 @@ async function handleFleetWsMessage(ws, msg) {
     // isn't running and can't act on a message; delivering to it also
     // double-fans a filter when a dead twin shares a live agent's name (e.g.
     // an old `preread` row + the live `preread`) → the sender sees their
-    // message twice. To reach a dead agent, resurrect it first (it goes live,
+    // message twice. To reach a dead agent, reanimate it first (it goes live,
     // then matches here). No "prefer the live one" — dead is simply excluded.
     const recipients = fleetStore.resolveChatRecipients(filterAst, { from, filter: rawTo })
     // Server-owner pseudo-recipient: not in the roster, so evaluate the filter

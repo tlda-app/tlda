@@ -4629,7 +4629,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     // a dead agent keeps its name for provenance (spec G.18), so the name
     // string outlives any single holder. The live holder IS the agent (G.22), so
     // prefer a non-dead match; fall back to a dead one only when the name has no
-    // live holder (which keeps resurrect-by-name working for an all-dead name).
+    // live holder (which keeps reanimate-by-name working for an all-dead name).
     const byName = agentList.filter((a: any) => agentRouteName(a) === label || a.id === label)
     if (byName.length) return byName.find((a: any) => !a.dead) || byName[0]
     const matched = agentList.filter((a: any) => !a.human && labelsForAgent(a).includes(label))
@@ -4733,10 +4733,10 @@ function FleetChatInner({ shape }: { shape: any }) {
       const agent = resolveTargetAgent(label, agents)
       if (agent?.dead) {
         // Spec G.22: a dead agent that shares its friendly name with a LIVE
-        // holder is just provenance, never a resurrect target — the live holder
-        // IS the agent. Only offer resurrect when the name has NO live holder
+        // holder is just provenance, never a reanimate target — the live holder
+        // IS the agent. Only offer reanimate when the name has NO live holder
         // (the legitimate "the only holder is dead" case). This is what stops
-        // dead namesakes nagging "resurrect?" in a chat with the live holder.
+        // dead namesakes nagging "reanimate?" in a chat with the live holder.
         const name = agentRouteName(agent)
         const hasLiveHolder = !!name && agents.some((a: any) => !a.dead && agentRouteName(a) === name)
         if (hasLiveHolder) continue
@@ -5722,14 +5722,14 @@ function FleetChatInner({ shape }: { shape: any }) {
             >
               <span>{deadTargetAgent.name} is dead</span>
               <span
-                className="fleet-dead-resurrect"
+                className="fleet-dead-reanimate"
                 // text <span>: onPointerUp so a finger/stylus tap fires (no
                 // synthesized click on touch); pointerup covers mouse too.
                 onPointerUp={(e) => {
                   stopEventPropagation(e as any)
-                  fleetDurable('resurrect', { agent: deadTargetAgent.id })
+                  fleetDurable('reanimate', { agent: deadTargetAgent.id })
                 }}
-              >resurrect?</span>
+              >reanimate?</span>
             </div>
           )}
           <div style={{ position: 'relative' }}>

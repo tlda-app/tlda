@@ -2779,7 +2779,7 @@ function cmdCompletions() {
   const daemonSubs = DAEMON_COMMANDS.map(([name]) => `'${name}'`).join(' ')
   const botSubs = BOT_COMMANDS.map(([name]) => `'${name}'`).join(' ')
   const agentSubs = [
-    'list', 'mint', 'wake', 'move', 'set-mint-machine',
+    'list', 'mint', 'wake', 'reanimate', 'move', 'set-mint-machine',
     'check-ready', 'attach', 'hibernate', 'dismiss', 'permission', 'permissions', 'models',
   ].map(s => `'${s}'`).join(' ')
   const configSubs = ['init', 'apply', 'set', 'get', 'setup', 'mcp-setup', 'auth'].map(s => `'${s}'`).join(' ')
@@ -4009,6 +4009,16 @@ async function hibernateLocalAgent(name, { allowMissing = false } = {}) {
   return { status: res.status ?? 0, hibernated: res.status === 0, session: sess }
 }
 
+async function reanimateAgentCommand(name) {
+  if (!name) {
+    console.error('Usage: tlda agent reanimate <name>')
+    process.exit(1)
+  }
+  const data = await api('POST', `/api/agents/${encodeURIComponent(name)}/reanimate`)
+  const label = data.agent || data.agent_id || name
+  console.log(`Reanimated ${label}.`)
+}
+
 export async function dismissAgent(name, {
   apiImpl = api,
   log = console,
@@ -4102,6 +4112,7 @@ Usage:
   tlda agent mint <name> [--model model] [--cwd path] [--permissions <profile>]
   tlda agent enroll --session <uuid> --kind <codex|claude> [name] [--permissions <profile>]
   tlda agent wake <agent> [--permissions <profile>]
+  tlda agent reanimate <agent>
   tlda agent move <agent> [name@][box:]env
   tlda agent set-mint-machine <agent-or-user> <machine>
   tlda agent check-ready <agent> [--timeout seconds]
@@ -4800,6 +4811,7 @@ async function cmdAgent() {
     case 'mint':      await runFleetSpawn(agentMintArgs(process.argv.slice(4))); break
     case 'enroll':    await runFleetSpawn(agentEnrollArgs(process.argv.slice(4))); break
     case 'wake':      await runFleetSpawn(process.argv.slice(4)); break
+    case 'reanimate': await reanimateAgentCommand(getPositional(1)); break
     case 'move':      await cmdAgentMove(); break
     case 'set-mint-machine': await cmdAgentSetSpawnMachine(); break
     case 'check-ready': await cmdAgentCheckReady(); break
@@ -4809,7 +4821,7 @@ async function cmdAgent() {
     case 'permissions': await cmdAgentPermissions(); break
     case 'models': await cmdAgentModels(); break
     default:
-      console.error('Usage: tlda agent <list|mint|enroll|wake|move|set-mint-machine|check-ready|attach|hibernate|dismiss|permissions|models> [name]')
+      console.error('Usage: tlda agent <list|mint|enroll|wake|reanimate|move|set-mint-machine|check-ready|attach|hibernate|dismiss|permissions|models> [name]')
       process.exit(1)
   }
 }
