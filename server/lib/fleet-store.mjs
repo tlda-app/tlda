@@ -2540,8 +2540,12 @@ export class FleetStore {
     if (!agent?.id) return agent;
     const seat = this.getCurrentAgentSeat(agent.id);
     if (!seat) return withoutProtectedAgentFields(agent);
+    const metadata = seat.model
+      ? { ...(agent.metadata || {}), model: seat.model }
+      : agent.metadata;
     return {
       ...agent,
+      metadata,
       session_id: seat.session_id,
       cwd: seat.cwd,
       machine_id: seat.machine_id,
