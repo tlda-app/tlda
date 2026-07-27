@@ -406,7 +406,22 @@ const runtimeStatusStore = createAgentRuntimeStatusStore({
   ttlMs: POSITIVE_LIVENESS_TTL_MS,
   isDaemonConnected: daemonKey => !!daemonKey && daemonConnections.get(daemonKey)?.readyState === 1,
   onChange: agentId => {
-    fleetStore?.refreshAgentLiveness?.(agentId)
+    // Not awaited, and these three are the only refreshes treated this way.
+    // refreshAgentLiveness returns nothing — it re-syncs the agent registry so
+    // the roster view and footer count see the change. Nothing downstream reads
+    // a result, and every caller that follows it with broadcastState hits a
+    // 50ms debounce, which is far longer than a worker round trip, so the
+    // refresh lands before the broadcast it feeds.
+    //
+    // .catch rather than bare `void`: a dropped rejection here would be an
+    // unhandled rejection, and a registry that stopped re-syncing is worth
+    // seeing in the log rather than discovering as a roster that quietly stops
+    // updating.
+    //
+    // The alternative was making markAgentAlive/markAgentNotAlive async, which
+    // cascades through the whole liveness path for a call whose value nobody
+    // uses.
+    fleetStore.refreshAgentLiveness(agentId).catch(e => console.error(`[runtime-status] liveness refresh failed for ${agentId}: ${e?.message || e}`))
     if (typeof broadcastState === 'function') broadcastState(agentId)
   },
 })
@@ -461,7 +476,8 @@ function markAgentAlive(agentId, now = Date.now(), detail = {}) {
   runtimeStatusStore.markAlive(agentId, detail.source || 'server-positive-evidence', { ...detail, atMs: now })
   scheduleRuntimeExpiry(agentId)
   if (!wasAlive) {
-    fleetStore?.refreshAgentLiveness?.(agentId)
+    // Fire-and-forget for the reason given where onChange does the same.
+    fleetStore.refreshAgentLiveness(agentId).catch(e => console.error(`[liveness] refresh failed for ${agentId}: ${e?.message || e}`))
     // Recovery: an agent transitioning to alive (login/reconnect) clears its
     // wake breaker so a restored session is nudged again immediately (§4.2).
     _wakeBreaker.delete(agentId)
@@ -478,7 +494,8 @@ function markAgentNotAlive(agentId, detail = {}) {
   if (detail.unknown) runtimeStatusStore.markUnknown(agentId, detail.source || 'runtime-unknown', detail)
   else runtimeStatusStore.markNotAlive(agentId, detail.source || 'runtime-negative-evidence', detail)
   clearEphemeralState(agentId)
-  if (wasAlive) fleetStore?.refreshAgentLiveness?.(agentId)
+  // Fire-and-forget for the reason given where onChange does the same.
+  if (wasAlive) fleetStore.refreshAgentLiveness(agentId).catch(e => console.error(`[liveness] refresh failed for ${agentId}: ${e?.message || e}`))
 }
 
 function recordExplicitCheckAliveLiveness(liveness) {
