@@ -8604,12 +8604,6 @@ async function handleDaemonWsMessage(ws, msg) {
     return
   }
 
-  if (type === 'qualification-warning') {
-    // Legacy: daemon still sends these but server now handles qualification
-    // checking directly via activity-event. Ignore.
-    return
-  }
-
   if (type === 'terminal-chat') {
     if (!fleetStore || !_terminalDedupStmt) return
     const { agent_id, from, text: rawText, ts, session_id } = msg
