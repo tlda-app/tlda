@@ -1,6 +1,6 @@
 /**
  * Share the orientation of rgl WebGL figures inside a slides deck across everyone
- * in the room, over the deck shape's Yjs-backed props.
+ * in the room, over the deck shape's Yjs-backed record.
  *
  * A Quarto deck built with `#| webgl: true` renders each 3D figure as an
  * rglwidget: a `.rglWebGL` div whose `.rglinstance` is the live widget object.
@@ -8,14 +8,14 @@
  * those instances directly through `iframe.contentDocument` — no postMessage
  * protocol involved.
  *
- * WHY PROPS AND NOT A SIGNAL. Figure orientation must converge: someone opening
- * the deck after the rotating has started has to arrive at the orientation
+ * WHY SHAPE STATE AND NOT A SIGNAL. Figure orientation must converge: someone
+ * opening the deck after the rotating has started has to arrive at the orientation
  * everyone else is looking at, and nothing later corrects them if they don't
  * (nobody is obliged to touch the figure again). `broadcastSignal` is
  * fire-and-forget; its `fire-if-recent` replay looks like late-joiner support but
  * only replays the last message inside a time window, so a friend joining ninety
- * seconds in would sit at the render-time default. Shape props ride the room's
- * Yjs document, so they converge, persist, and are handed to a client on connect.
+ * seconds in would sit at the render-time default. A shape record rides the room's
+ * Yjs document, so it converges, persists, and is handed to a client on connect.
  *
  * WHY ONE KEY PER FIGURE. tldraw merges concurrent edits at the granularity of
  * the key: two clients patching `rglPose0` and `rglPose1` both survive, but two
