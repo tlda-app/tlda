@@ -480,8 +480,6 @@ export function CanvasClipPanel({
     }
   }, [readOnly, viewportId, requestedShapeIdsKey])
 
-  if (!bounds && !wmSurface) return null
-
   // Shape predicate: filter shapes based on mode
   const shapePredicate = useMemo(() => {
     if (!lockCamera && !readOnly) return undefined
@@ -493,6 +491,8 @@ export function CanvasClipPanel({
       return true
     }
   }, [hostShapePredicate, lockCamera, readOnly])
+
+  if (!bounds && !wmSurface) return null
 
   const viewportEl = (
     <VisibilityViewportProvider viewportId={viewportId} keepMounted={disableCulling}>
