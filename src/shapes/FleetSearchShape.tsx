@@ -397,8 +397,15 @@ function FleetSearchInner({ shape }: { shape: any }) {
 
   const closeChat = useCallback(() => {
     if (chatShapeId) {
-      try { editor.run(() => { editor.deleteShapes([chatShapeId as any]) }, { history: 'ignore' }) } catch {}
+      try {
+        editor.run(() => { editor.deleteShapes([chatShapeId as TLShapeId]) }, { history: 'ignore' })
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e)
+        setQueryError(`Could not close chat panel: ${message}`)
+        return
+      }
     }
+    setQueryError(null)
     setChatShapeId(null)
   }, [editor, chatShapeId])
 

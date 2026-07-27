@@ -43,6 +43,7 @@ export function BuildWarningPill({ warnings, children }: BuildWarningPillProps) 
   const editor = useEditor()
   const [sentinelWarnings, setSentinelWarnings] = useState<BuildWarning[]>([])
   const [showList, setShowList] = useState(false)
+  const [cleanRebuildError, setCleanRebuildError] = useState('')
   const containerRef = useRef<HTMLDivElement>(null)
   const doc = useContext(DocContext)
 
@@ -85,8 +86,14 @@ export function BuildWarningPill({ warnings, children }: BuildWarningPillProps) 
   const handleCleanRebuild = async () => {
     if (!doc) return
     try {
-      await fetch(`/api/projects/${doc.docName}/build?clean=1`, { method: 'POST' })
-    } catch {}
+      const res = await fetch(`/api/projects/${doc.docName}/build?clean=1`, { method: 'POST' })
+      if (!res.ok) throw new Error(`clean rebuild failed: ${res.status}`)
+      setCleanRebuildError('')
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e)
+      setCleanRebuildError(message)
+      return
+    }
     setShowList(false)
   }
 
@@ -125,6 +132,11 @@ export function BuildWarningPill({ warnings, children }: BuildWarningPillProps) 
           >
             ↻ Clean rebuild
           </div>
+          {cleanRebuildError && (
+            <div className="build-warning-item">
+              Clean rebuild failed: {cleanRebuildError}
+            </div>
+          )}
         </div>
       )}
     </div>

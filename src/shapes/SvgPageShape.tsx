@@ -71,6 +71,15 @@ const processedSvgCache = new Map<string, { svgText: string; html: string }>()
 
 const BLUE_LINK_RE = /^(?:\d+(?:\.\d+)*|[A-Z](?:\.?\d+)*)$/
 
+function compareErrorSvg(width: number, height: number, message: string) {
+  const escaped = message
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><rect width="100%" height="100%" fill="#fff5f5"/><text x="24" y="42" fill="#991b1b" font-family="system-ui, sans-serif" font-size="16">Compare page failed to load</text><text x="24" y="70" fill="#7f1d1d" font-family="system-ui, sans-serif" font-size="12">${escaped}</text></svg>`
+}
+
 function installSyntheticRefLinks(svgEl: SVGSVGElement) {
   const candidates = svgEl.querySelectorAll<SVGElement>('text[fill], tspan[fill]')
   for (const el of candidates) {
@@ -155,19 +164,22 @@ function SvgPageComponent({ shape }: { shape: any }) {
         let hash7 = propHash7
         if (!hash7) {
           const sigRes = await fetch(`/api/projects/${docName}/signal/signal:compare`)
-          if (!sigRes.ok) return
+          if (!sigRes.ok) throw new Error(`compare signal failed: ${sigRes.status}`)
           const sig = await sigRes.json()
           const ref = sig?.data?.ref
-          if (!ref) return
+          if (!ref) throw new Error('compare signal has no ref')
           hash7 = ref.slice(0, 7)
         }
         const filename = getPageFilename(pageIdx) ?? `page-${pageIdx + 1}.svg`
         const url = `/docs/${docName}/history/shadow-${hash7}/${filename}`
         const res = await fetch(url)
-        if (!res.ok) return
+        if (!res.ok) throw new Error(`compare SVG failed: ${res.status}`)
         const text = await res.text()
         setSvgText(shape.id as string, text)
-      } catch {}
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e)
+        setSvgText(shape.id as string, compareErrorSvg(shape.props.w, shape.props.h, message))
+      }
     }
     fetchCompare()
   }, [docName, shape.id, shape.props.compareHash7, shape.props.compareRef, shape.props.pageIndex, svgText])

@@ -26,6 +26,7 @@ export function BuildErrorPill() {
   const editor = useEditor()
   const [errors, setErrors] = useState<BuildError[]>([])
   const [showList, setShowList] = useState(false)
+  const [cleanRebuildError, setCleanRebuildError] = useState('')
   const containerRef = useRef<HTMLDivElement>(null)
   const doc = useContext(DocContext)
 
@@ -56,8 +57,14 @@ export function BuildErrorPill() {
   const handleCleanRebuild = async () => {
     if (!doc) return
     try {
-      await fetch(`/api/projects/${doc.docName}/build?clean=1`, { method: 'POST' })
-    } catch {}
+      const res = await fetch(`/api/projects/${doc.docName}/build?clean=1`, { method: 'POST' })
+      if (!res.ok) throw new Error(`clean rebuild failed: ${res.status}`)
+      setCleanRebuildError('')
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e)
+      setCleanRebuildError(message)
+      return
+    }
     setShowList(false)
   }
 
@@ -89,6 +96,11 @@ export function BuildErrorPill() {
           <div className="build-error-item clickable clean-rebuild" onClick={handleCleanRebuild}>
             &#8635; Clean rebuild
           </div>
+          {cleanRebuildError && (
+            <div className="build-error-item">
+              Clean rebuild failed: {cleanRebuildError}
+            </div>
+          )}
         </div>
       )}
     </div>

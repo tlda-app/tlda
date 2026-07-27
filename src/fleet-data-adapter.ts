@@ -69,7 +69,9 @@ import { chatAgentSignature } from './fleet/chat-agent-signature'
 // Load prefs whenever the user's fleet identity is established
 subscribe('identity', null, (ev: any) => {
   const userId = ev.id || getHumanId()
-  if (userId) loadPrefs(userId)
+  if (userId) void loadPrefs(userId).catch(() => {
+    // loadPrefs handles failures internally so startup waiters still settle.
+  })
 })
 
 // --- Lazy initialization ---

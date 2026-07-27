@@ -45,12 +45,17 @@ export function NoteDropHandler() {
       if (custom) try {
         const p = JSON.parse(custom)
         return p?.type === 'shared-doc' ? null : p
-      } catch {}
+      } catch {
+        // Probe only: if this transfer type is not our JSON payload, keep
+        // looking at the other drag formats instead of claiming the drop.
+      }
       const plain = e.dataTransfer?.getData('text/plain')
       if (plain) try {
         const p = JSON.parse(plain)
         if (p._fleet && p.type !== 'shared-doc') return p
-      } catch {}
+      } catch {
+        // Probe only: arbitrary text/plain drags are allowed to fall through.
+      }
       return null
     }
 
@@ -104,7 +109,10 @@ export function NoteDropHandler() {
             } as any)
             return
           }
-        } catch {}
+        } catch {
+          // Accepted scratch-doc drops have no owned non-modal error surface in
+          // this document-level handler; leave the failed note uncreated.
+        }
       }
 
       // Accept fleet chat attachments — convert to tlda note format
@@ -140,7 +148,10 @@ export function NoteDropHandler() {
               fleetSource: JSON.stringify(item),
             },
           } as any)
-        } catch {}
+        } catch {
+          // Accepted fleet attachment drops have no owned non-modal error surface
+          // in this document-level handler; leave the failed note uncreated.
+        }
         return
       }
 
@@ -151,7 +162,10 @@ export function NoteDropHandler() {
           const p = JSON.parse(plain)
           // Accept _tlda note payloads, but skip chapter-note (those are for TOC drop)
           if (p._tlda && p.type !== 'chapter-note') json = plain
-        } catch {}
+        } catch {
+          // Probe only: plain text that is not a tlda note should keep its
+          // normal browser/TLDraw drop behavior.
+        }
       }
       if (!json) return
       e.preventDefault()
