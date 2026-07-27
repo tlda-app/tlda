@@ -272,3 +272,4 @@ export { labelsForAgent } from '../../shared/fleet-labels.mjs';        // todd, 
 export { startWsRequest } from '../../shared/ws-request-policy.mjs';   // all bots
 export { checkChatRender } from '../../shared/chat-render-check.mjs';  // lint
 export { runtimeStatusName } from '../../shared/fleet-runtime-status.mjs'; // todd/kicks, todd/activity-report
+export { reapIdlePreviews } from '../../cli/lib/dev-worktree.mjs';     // dev
