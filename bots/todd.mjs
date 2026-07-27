@@ -2616,7 +2616,13 @@ let reconnectTimer = null
 let reconnectDelay = 500 // fast first retry, backs off; reset on clean connect
 
 function connect() {
-  ws = new WebSocket(WS_URL)
+  // Reconnection is driven only by the 'close' event, so the opening handshake
+  // must be bounded: a peer that accepts the TCP connection and never answers
+  // the upgrade leaves the socket in CONNECTING with no 'open', 'error', or
+  // 'close' ever emitted, and the reconnect chain dies for the life of the
+  // process. `handshakeTimeout` makes that case emit error+close like any other
+  // failure, so the existing backoff picks it up.
+  ws = new WebSocket(WS_URL, { handshakeTimeout: 10_000 })
 
   ws.on('open', async () => {
     try {

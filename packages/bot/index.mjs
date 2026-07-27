@@ -90,7 +90,10 @@ export function createBot({ name = 'bot', pretty_name = null, labels = ['bot'], 
   }
 
   function connect() {
-    ws = new WebSocket(WS_URL, { rejectUnauthorized: false });
+    // Bounded handshake: reconnection is driven only by 'close', so a peer that
+    // accepts the TCP connection and never answers the upgrade would otherwise
+    // leave this socket in CONNECTING forever with no event to reconnect on.
+    ws = new WebSocket(WS_URL, { rejectUnauthorized: false, handshakeTimeout: 10_000 });
     ws.on('open', async () => {
       log(`connected to ${WS_URL}`);
       reconnectDelay = 500;
