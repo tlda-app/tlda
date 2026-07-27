@@ -1,13 +1,19 @@
 // tlda-feedback.mjs — push-channel subscription for document annotations.
 //
-// Agents call `monitor_add(doc)` via MCP → WS → server stores the
-// subscription. When a new feedback shape (math-note, draw, highlight, etc.)
-// appears in the doc's Yjs room, or when a ping signal fires, the server
-// posts a fleet chat message from `fleet:tlda` to every subscribed agent.
-// The message appears in the agent's context as a normal `<channel
-// source="fleet">` system-reminder — same delivery path as user chat.
+// An agent calls `subscribe(query: "doc:<name>")` → the server writes a
+// `document_monitor` row in the subscriptions table. When a new feedback shape
+// (math-note, draw, highlight, etc.) appears in the doc's Yjs room, or when a
+// ping signal fires, the server posts a fleet chat message from `fleet:tlda` to
+// every subscribed agent. The message appears in the agent's context as a
+// normal `<channel source="fleet">` system-reminder — same delivery path as
+// user chat.
 //
-// Replaces the tlda-listen-hook.sh PostToolUse polling approach.
+// The subscriptions TABLE is the only record of who is subscribed. This module
+// keeps no second copy: it holds room listeners (a real resource that must be
+// attached and detached) and reads the subscriber set from the store on every
+// delivery. A module-level Set used to mirror the table, and the two drifted —
+// a socket close dropped the in-memory entry while the row survived, so the
+// agent kept believing it was subscribed while nothing was armed.
 
 import { onShapeChange, onSignal } from './sync-rooms.mjs'
 
@@ -22,36 +28,47 @@ function toRoomName(projectName) {
   return projectName.startsWith('doc-') ? projectName : `doc-${projectName}`
 }
 
-/** @type {Map<string, Set<string>>} docName → Set<agent_id> */
-const subscriptions = new Map()
+function toDisplayName(docName) {
+  return docName.startsWith('doc-') ? docName.slice(4) : docName
+}
 
 /** @type {Map<string, { unsubShape: Function, unsubSignal: Function }>} */
 const activeListeners = new Map()
+
+/**
+ * Injected once at server startup. `listDocSubscriptions()` returns the durable
+ * `document_monitor` rows as `{ owner, doc }`; `deliverChat` runs the full
+ * share + addUnread + broadcast pipeline.
+ * @type {{ listDocSubscriptions: () => { owner: string, doc: string }[], deliverChat: Function } | null}
+ */
+let store = null
+
+export function configure({ listDocSubscriptions, deliverChat }) {
+  if (typeof listDocSubscriptions !== 'function') throw new Error('listDocSubscriptions required')
+  if (typeof deliverChat !== 'function') throw new Error('deliverChat required')
+  store = { listDocSubscriptions, deliverChat }
+}
 
 /** Feedback shape types that get reported as "drawings" */
 const DRAW_TYPES = new Set(['draw', 'highlight', 'arrow', 'geo', 'text', 'line'])
 
 /**
- * Lazy-attach sync-room listeners for a doc the first time anyone subscribes.
- * Detaches when the last subscriber leaves.
+ * Attach sync-room listeners for a doc. Idempotent — the listeners stay up for
+ * as long as the doc has at least one persisted subscriber, and are released
+ * only by `unsubscribe`.
  *
  * @param {string} docName
- * @param {(opts: { from: string, to: string, text: string, metadata: object }) => void} deliverChat
- *   Callback that performs the full delivery pipeline: fleetStore.share +
- *   fleetStore.addUnread + broadcastEvent. Supplied by the caller so we
- *   don't have to import unified-server internals here.
  */
-function ensureListeners(docName, deliverChat) {
+function ensureListeners(docName) {
   if (activeListeners.has(docName)) return
+  if (!store) throw new Error('tlda-feedback used before configure()')
 
-  const displayName = docName.startsWith('doc-') ? docName.slice(4) : docName
+  const displayName = toDisplayName(docName)
 
   const send = (text, extraMetadata = {}) => {
-    const subs = subscriptions.get(docName)
-    if (!subs || subs.size === 0) return
-    for (const agent of subs) {
+    for (const agent of subscribers(displayName)) {
       try {
-        deliverChat({
+        store.deliverChat({
           from: TLDA_FEEDBACK_FROM,
           to: agent,
           text,
@@ -122,83 +139,53 @@ function releaseListeners(docName) {
 }
 
 /**
- * Subscribe an agent to feedback notifications for a doc.
- * @param {string} agent_id
- * @param {string} docName
- * @param {(opts: { from: string, to: string, text: string, metadata: object }) => void} deliverChat
- *   Full delivery pipeline callback (share + addUnread + broadcast).
+ * Arm room listeners for a doc that has a persisted subscription. Call after
+ * the durable row is written — the subscriber set is read from the store, so a
+ * row that does not exist yet delivers to nobody.
+ * @param {string} projectName
  * @returns {{ ok: true }}
  */
-export function subscribe(agent_id, projectName, deliverChat) {
-  if (!agent_id || !projectName) throw new Error('missing agent_id or projectName')
-  if (typeof deliverChat !== 'function') throw new Error('deliverChat required')
-  const docName = toRoomName(projectName)
-  if (!subscriptions.has(docName)) subscriptions.set(docName, new Set())
-  subscriptions.get(docName).add(agent_id)
-  ensureListeners(docName, deliverChat)
+export function arm(projectName) {
+  if (!projectName) throw new Error('missing projectName')
+  ensureListeners(toRoomName(projectName))
   return { ok: true }
 }
 
 /**
- * Unsubscribe an agent from a doc.
- * @param {string} agent_id
- * @param {string} docName
+ * Release a doc's room listeners once its last persisted subscription is gone.
+ * Call after the durable row is deleted.
+ * @param {string} projectName
  * @returns {{ ok: true }}
  */
-export function unsubscribe(agent_id, projectName) {
-  const docName = toRoomName(projectName)
-  const subs = subscriptions.get(docName)
-  if (!subs) return { ok: true }
-  subs.delete(agent_id)
-  if (subs.size === 0) {
-    releaseListeners(docName)
-    subscriptions.delete(docName)
-  }
+export function releaseIfUnsubscribed(projectName) {
+  if (!projectName) return { ok: true }
+  if (subscribers(projectName).length === 0) releaseListeners(toRoomName(projectName))
   return { ok: true }
 }
 
 /**
- * Unsubscribe an agent from all docs. Called when the agent's WS disconnects.
- * @param {string} agent_id
+ * Arm every doc that has a persisted subscription. Called once at startup so a
+ * server restart brings the listeners back with the rows that outlived it.
+ * @returns {number} number of docs armed
  */
-export function unsubscribeAll(agent_id) {
-  if (!agent_id) return
-  for (const [docName, subs] of [...subscriptions.entries()]) {
-    if (subs.has(agent_id)) unsubscribe(agent_id, docName)
-  }
+export function armPersisted() {
+  if (!store) throw new Error('tlda-feedback used before configure()')
+  const docs = new Set(store.listDocSubscriptions().map(row => row.doc))
+  for (const doc of docs) ensureListeners(toRoomName(doc))
+  return docs.size
 }
 
 /**
- * Return the list of docs an agent is subscribed to.
- * @param {string} agent_id
- * @returns {string[]}
- */
-export function list(agent_id) {
-  const docs = []
-  for (const [docName, subs] of subscriptions) {
-    if (subs.has(agent_id)) docs.push(docName.startsWith('doc-') ? docName.slice(4) : docName)
-  }
-  return docs.sort()
-}
-
-/**
- * Get all agent IDs subscribed to a given project.
+ * Get all agent IDs subscribed to a given project, from the durable table.
  * @param {string} projectName
  * @returns {string[]}
  */
 export function subscribers(projectName) {
-  const docName = toRoomName(projectName)
-  const subs = subscriptions.get(docName)
-  return subs ? [...subs] : []
-}
-
-/**
- * Snapshot for debugging / admin.
- * @returns {{ docName: string, agents: string[] }[]}
- */
-export function snapshot() {
-  return [...subscriptions.entries()].map(([docName, subs]) => ({
-    docName,
-    agents: [...subs].sort(),
-  }))
+  if (!store) return []
+  const display = toDisplayName(toRoomName(projectName))
+  return [...new Set(
+    store.listDocSubscriptions()
+      .filter(row => row.doc === display)
+      .map(row => row.owner)
+  )]
 }

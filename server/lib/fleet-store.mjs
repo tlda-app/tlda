@@ -1678,6 +1678,7 @@ export class FleetStore {
     this._deleteWiretapsByAgent = this.db.prepare('DELETE FROM wiretaps WHERE agent_id = ?');
     this._addSubscription = this.db.prepare(`INSERT INTO subscriptions (owner, query, notification_policy, created_at, created_by, adapter, adapter_id) VALUES (?, ?, ?, ?, ?, ?, ?)`);
     this._getSubscriptionsByOwner = this.db.prepare('SELECT * FROM subscriptions WHERE owner = ? ORDER BY subscription_id DESC');
+    this._getSubscriptionsByAdapter = this.db.prepare('SELECT * FROM subscriptions WHERE adapter = ? ORDER BY subscription_id');
     this._getSubscription = this.db.prepare('SELECT * FROM subscriptions WHERE subscription_id = ?');
     this._deleteSubscription = this.db.prepare('DELETE FROM subscriptions WHERE subscription_id = ?');
     this._updateSubscriptionQuery = this.db.prepare('UPDATE subscriptions SET query = ?, adapter_id = ? WHERE subscription_id = ?');
@@ -3729,6 +3730,10 @@ export class FleetStore {
 
   getSubscriptionsByOwner(owner) {
     return this._getSubscriptionsByOwner.all(owner);
+  }
+
+  getSubscriptionsByAdapter(adapter) {
+    return this._getSubscriptionsByAdapter.all(adapter);
   }
 
   _upgradeLegacyDefaultSubscriptions() {

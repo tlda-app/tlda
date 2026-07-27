@@ -1782,11 +1782,11 @@ export function getFleetTools() {
     // ---- Report Gate ----
     {
       name: 'subscribe',
-      description: 'Create one persisted server-side notification subscription. Immediate delivery is supported for the current fleet message grammar; batch(spec) and hold are stored but not yet enforced.',
+      description: 'Create one persisted server-side notification subscription. Two query forms: a fleet label expression, which CCs you on matching chat; or "doc:<name>", which notifies you when someone adds a note or drawing to that document. Delivery is immediate; batch(spec) and hold are stored but not yet enforced.',
       inputSchema: {
         type: 'object',
         properties: {
-          query: { type: 'string', description: 'Required fleet event query. Unsupported document/annotation terms fail loudly.' },
+          query: { type: 'string', description: 'Required. Either a directional fleet label expression (e.g. "from:skip", "reviewers & !todd") or a single "doc:<name>". Anything else — event:, type:, since:, agent:, to:me, or a doc: term combined with other terms — is rejected.' },
           notification_policy: { type: 'string', description: 'Required: immediate, batch(spec), or hold.' },
           target: { type: 'string', description: 'Target agent to configure. Defaults to this agent; cross-target use requires delegator authority.' },
         },
@@ -2059,7 +2059,14 @@ export function formatInboxText({ mode, task, tasks, messages, counts = null, no
     lines.push('## RELATED UNREAD');
     if (!directRows.length) lines.push('- No direct unread messages.');
     pushInboxEntries(lines, directRows, m => m.line);
-    if (watchRows.length) lines.push('', `BACKGROUND: ${watchRows.length} watch item(s).`);
+    // Reading the inbox marks these rows read, so a count is a lost delivery:
+    // the agent never sees the content and the row never comes back. Render
+    // them like every other view does.
+    if (watchRows.length) {
+      lines.push('');
+      lines.push('## BACKGROUND');
+      pushInboxEntries(lines, watchRows, m => m.line);
+    }
     return lines.join('\n');
   }
 
@@ -4845,13 +4852,14 @@ async function _flushUnread() {
     if (!data) return;
     const msgs = (data.messages || []).filter(m => !m.read);
     const task = data.task;
-    if (msgs.length === 0 && !task) return;
+    // Unread is the whole trigger. This runs on every socket reconnect, and an
+    // agent's task stays open for its whole working life — announcing it again
+    // is not news, it is a 📬 on every WS flap. A task assigned while the
+    // socket was down arrives as an unread message, so real news still fires.
+    if (msgs.length === 0) return;
     sourceEventId = msgs[0]?.id || msgs[0]?.event_id || null;
-    const lines = [];
     const label = _inboxStatus[0].toUpperCase() + _inboxStatus.slice(1);
-    if (task) lines.push(`📬 ${label}: pending task: ${(task.description || '').slice(0, 80)}`);
-    if (msgs.length > 0) lines.push(`📬 ${label}: ${msgs.length} unread item(s). ${inboxCallText('triage')}`);
-    const content = lines.join('\n');
+    const content = `📬 ${label}: ${msgs.length} unread item(s). ${inboxCallText('triage')}`;
     let delivered = false;
     if (harnessFromEnv().channelNudge) {
       const sess = process.env.FLEET_TMUX_SESSION;
