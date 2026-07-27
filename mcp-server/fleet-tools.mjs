@@ -402,7 +402,6 @@ const LOG_FILE = `${os.homedir()}/.claude/agent-messages.jsonl`;
 
 // --- tlda integration ---
 import { CONFIG_DIR, getRwToken, getServerUrl, getFleetServerUrl } from '../shared/config.mjs';
-import { resolveLoginFleetId } from '../daemon/mint-store.mjs';
 import { tldaFetch as _sharedFetch } from '../shared/http-client.mjs';
 import { reportDocName, postReportDoc } from './report-doc-post.mjs';
 const TLDA_SERVER = getServerUrl();
@@ -1348,10 +1347,8 @@ export function getFleetTools() {
       description: 'Log this agent process into an existing server-created shell. Spawned agents call this at session start.',
       inputSchema: {
         type: 'object',
-        properties: {
-          session_id: { type: 'string', description: 'Agent session ID for JSONL/activity lookup' },
-          agent_id: { type: 'string', description: 'Existing shell id. Defaults to FLEET_ID.' },
-        },
+        properties: {},
+        additionalProperties: false,
       },
     },
     // ---- Task Management ----
@@ -2175,12 +2172,11 @@ export async function handleFleetTool(name, args) {
 
   // ---- login ----
   if (name === 'login') {
+    if (Object.keys(args || {}).length > 0) {
+      return { content: [{ type: 'text', text: 'login() takes no arguments; this process must get its fleet identity from FLEET_ID.' }], isError: true };
+    }
     const localAgentId = process.env.FLEET_MINT_ID || process.env.FLEET_LOCAL_ID || null;
-    const shellId = resolveLoginFleetId({
-      explicitFleetId: args.agent_id || AGENT_ID || process.env.FLEET_ID || null,
-      mintId: localAgentId,
-      storeFile: path.join(CONFIG_DIR, 'daemon-mints.sqlite'),
-    });
+    const shellId = process.env.FLEET_ID || null;
     const boundFleetId = process.env.FLEET_ID || null;
     if (boundFleetId && shellId !== boundFleetId) {
       return { content: [{ type: 'text', text: `Login rejected: requested ${shellId} but this process is bound to ${boundFleetId}.` }], isError: true };
@@ -2188,8 +2184,6 @@ export async function handleFleetTool(name, args) {
     if (AGENT_ID && shellId !== AGENT_ID) {
       return { content: [{ type: 'text', text: `Login rejected: session already bound to ${AGENT_ID}, cannot relogin as ${shellId}.` }], isError: true };
     }
-    if (args.session_id) CLAUDE_SESSION = args.session_id;
-
     let detectedTmux = process.env.FLEET_TMUX_SESSION || null;
     if (!detectedTmux && process.env.TMUX) {
       try {
@@ -2215,7 +2209,7 @@ export async function handleFleetTool(name, args) {
       local_agent_id: localAgentId || undefined,
       fleet_id: shellId || boundFleetId || undefined,
       friendly_name: process.env.FLEET_NAME || undefined,
-      session_id: args.session_id || CLAUDE_SESSION || undefined,
+      session_id: CLAUDE_SESSION || undefined,
       daemon_key: daemonKey || undefined,
       machine_id: machineId,
       env_name: envName,
@@ -2233,10 +2227,9 @@ export async function handleFleetTool(name, args) {
         `Fleet seat is not recorded yet for mint ${localAgentId}.`,
       ].join('\n') }], isError: true };
     }
-    AGENT_ID = shellId;
     const loginBody = {
       agent_id: shellId,
-      session_id: args.session_id || CLAUDE_SESSION || undefined,
+      session_id: CLAUDE_SESSION || undefined,
       tmux_session: detectedTmux || undefined,
       cwd: cwd || undefined,
       labels,
@@ -2246,13 +2239,13 @@ export async function handleFleetTool(name, args) {
     };
 
     if (!_channelRWS?.connected) {
-      startChannelWS();
+      startChannelWS({ bootstrap: true });
       const deadline = Date.now() + 2000;
       while (!_channelRWS?.connected && Date.now() < deadline) {
         await new Promise(r => setTimeout(r, 50));
       }
     }
-    const serverResult = await mcpFleetTransport.durable('login', loginBody)?.catch(e => ({ error: e.message }));
+    const serverResult = await sendFleetRequestAttempt('login', loginBody, { deadlineMs: 5000 })?.catch(e => ({ error: e.message }));
     if (!serverResult) {
       return { content: [{ type: 'text', text: [
         localMarker({}),
@@ -2265,13 +2258,14 @@ export async function handleFleetTool(name, args) {
         `Login rejected by server: ${serverResult.error}`,
       ].join('\n') }], isError: true };
     }
+    AGENT_ID = shellId;
     await flushFleetTransport({ limit: 100 }).catch(e => {
       process.stderr.write(`[fleet-transport] login flush failed: ${e.message}\n`);
     });
 
     const agent = serverResult.agent || {};
     const friendly = agent.friendly_name || shellId;
-    ledger.upsertAgent(shellId, args.session_id || CLAUDE_SESSION, cwd, friendly);
+    ledger.upsertAgent(shellId, CLAUDE_SESSION, cwd, friendly);
     const msg = [
       localMarker({ fleet_id: shellId, friendly_name: friendly }),
       `Logged in ${shellId}.`,
