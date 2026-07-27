@@ -1053,7 +1053,7 @@ async function drainTaskWakeQueue() {
   _taskWakeDraining = false
 }
 
-function taskInboxStatusFor(agentId) {
+async function taskInboxStatusFor(agentId) {
   const status = fleetStore?.getAgent?.(agentId)?.metadata?.inboxStatus
   return normalizeInboxStatus(status)
 }
@@ -1063,8 +1063,8 @@ function taskWakePreview(raw, max = 120) {
   return s.length > max ? `${s.slice(0, max)}…` : s
 }
 
-function taskDelegateWakeText(description, agentId) {
-  const status = taskInboxStatusFor(agentId)
+async function taskDelegateWakeText(description, agentId) {
+  const status = await taskInboxStatusFor(agentId)
   const prefix = status[0].toUpperCase() + status.slice(1)
   return `📬 ${prefix} new task assigned: ${taskWakePreview(description)}\nCall inbox() to see it.`
 }
@@ -1089,7 +1089,7 @@ async function runTaskRenudgeSweep() {
     // here (§5) — so a failing agent's 5-min throttle never stays warm; its
     // backoff is governed solely by the breaker. Pass the task key through so the
     // drain can stamp it on delivery.
-    requestTaskWake(nudge.task.agent, taskDelegateWakeText(nudge.task.description || nudge.event.text || nudge.task.id, nudge.task.agent), [nudge.key])
+    requestTaskWake(nudge.task.agent, await taskDelegateWakeText(nudge.task.description || nudge.event.text || nudge.task.id, nudge.task.agent), [nudge.key])
   }
 }
 
@@ -7780,10 +7780,10 @@ function qualTrackPartialSkillReads(agentId, command) {
   })
 }
 
-function qualLoadReadsFromDb() {
+async function qualLoadReadsFromDb() {
   if (!fleetStore) return
   try {
-    const readsByAgent = fleetStore.getAllSkillReadsByAgent?.() || new Map()
+    const readsByAgent = (await fleetStore.getAllSkillReadsByAgent()) || new Map()
     for (const [agentId, reads] of readsByAgent) {
       if (reads.size > 0) _qualAgentReads.set(agentId, reads)
     }
@@ -7935,7 +7935,11 @@ function checkQualifications(agentId, tool, arg, input) {
 }
 
 loadQualifications()
-qualLoadReadsFromDb()
+// Not awaited: this warms the _qualAgentReads cache, which starts empty and
+// whose readers already tolerate a miss. Top-level await here would delay
+// evaluation of the entire server module for a cache warm. Reported rather
+// than dropped so a store that cannot answer is visible.
+qualLoadReadsFromDb().catch(e => console.error(`[qualification] initial skill-read load failed: ${e?.message || e}`))
 fs.watchFile(QUALIFICATIONS_FILE, { interval: 5000 }, () => {
   console.log('[qualification] reloading rules')
   loadQualifications()
