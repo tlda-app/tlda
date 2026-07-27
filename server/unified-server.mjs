@@ -2687,8 +2687,9 @@ function patchEventMetadata(eventId, updater, { broadcast = true } = {}) {
   if (!event) return null
   const current = event.metadata || {}
   const next = updater(current)
-  fleetStore.db.prepare('UPDATE events SET metadata = ? WHERE id = ?')
-    .run(JSON.stringify(next), eventId)
+  // Replace, not patch: the updater was handed the current metadata and
+  // returns what it wants stored, so a key it dropped must stay dropped.
+  fleetStore.replaceEventMetadata(eventId, next)
   if (broadcast) broadcastEvent('event-update', { id: eventId, metadata_patch: next })
   return next
 }
@@ -6347,10 +6348,7 @@ async function handleFleetWsMessage(ws, msg) {
     const status = fleetStore.getAgent?.(agentId)?.metadata?.inboxStatus
     return normalizeInboxStatus(status)
   }
-  const unreadPendingFor = (eventId, agentId) => {
-    const row = fleetStore.db.prepare('SELECT read FROM unread WHERE event_id = ? AND to_id = ?').get(eventId, agentId)
-    return !!row && !row.read
-  }
+  const unreadPendingFor = (eventId, agentId) => fleetStore.isUnreadPending(eventId, agentId)
   const inboxCall = (action) => `Call inbox() to ${action}.`
   const wakeText = ({ status, event, preview, action }) => {
     const label = normalizeInboxStatus(status)
@@ -7729,20 +7727,14 @@ async function handleFleetWsMessage(ws, msg) {
   if (type === 'shared-docs-set') {
     const { doc, path: docPath, title, agent, ephemeral } = msg
     if (!doc) { error('missing doc'); return }
-    const now = new Date().toISOString()
-    fleetStore.db.prepare(`
-      INSERT INTO shared_docs (doc, path, title, agent, ephemeral, shared_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(doc) DO UPDATE SET path=excluded.path, title=excluded.title, agent=excluded.agent, ephemeral=excluded.ephemeral, updated_at=excluded.updated_at
-    `).run(doc, docPath || null, title || null, agent || null, ephemeral ? 1 : 0, now, now)
+    fleetStore.upsertSharedDoc({ doc, path: docPath, title, agent, ephemeral })
     reply({ ok: true })
     return
   }
 
   // ---- shared-docs-get ----
   if (type === 'shared-docs-get') {
-    const docs = fleetStore.db.prepare('SELECT * FROM shared_docs ORDER BY updated_at DESC').all() || []
-    reply(docs)
+    reply(fleetStore.getSharedDocs())
     return
   }
 
@@ -8146,29 +8138,6 @@ fs.watchFile(QUALIFICATIONS_FILE, { interval: 5000 }, () => {
 // Phase 2 will add `rpc` (server → daemon) and `rpc-reply` (daemon →
 // server) for tmux operations.
 
-// Server-side terminal-chat dedup. Claude Code can write duplicate user
-// messages to the JSONL (e.g. across compaction). Multiple daemons would
-// compound this. The daemon also dedups within its own offset, but the
-// authoritative dedup is here in the DB.
-const _terminalDedupStmt = fleetStore?.db.prepare(
-  `SELECT 1 FROM events WHERE timestamp = ? AND from_id = ? AND to_id = ? AND substr(text, 1, 500) = ? AND type = 'chat' LIMIT 1`
-)
-if (fleetStore?.db) {
-  fleetStore.db.exec(`
-    CREATE TABLE IF NOT EXISTS daemon_outbox_processed (
-      id TEXT PRIMARY KEY,
-      type TEXT NOT NULL,
-      processed_at TEXT NOT NULL
-    )
-  `)
-}
-const _daemonOutboxProcessedGetStmt = fleetStore?.db.prepare(
-  'SELECT 1 FROM daemon_outbox_processed WHERE id = ? LIMIT 1'
-)
-const _daemonOutboxProcessedInsertStmt = fleetStore?.db.prepare(
-  'INSERT OR IGNORE INTO daemon_outbox_processed (id, type, processed_at) VALUES (?, ?, ?)'
-)
-
 const {
   handleDaemonOutboxEnvelope,
   enqueueDaemonMessage,
@@ -8178,8 +8147,7 @@ const {
   daemonConnections,
   serverDaemonOutbox,
   serverDaemonOutboxInflight,
-  daemonOutboxProcessedGetStmt: _daemonOutboxProcessedGetStmt,
-  daemonOutboxProcessedInsertStmt: _daemonOutboxProcessedInsertStmt,
+  fleetStore,
   socketCanAcceptMore,
   classifyServerDaemonOutboxError: ({ msg, row }) => (
     msg?.permanent === true && row?.type === 'agent-seat-binding-obligation'
@@ -8833,13 +8801,12 @@ async function handleDaemonWsMessage(ws, msg) {
   }
 
   if (type === 'terminal-chat') {
-    if (!fleetStore || !_terminalDedupStmt) return
     const { agent_id, from, text: rawText, ts, session_id } = msg
     if (!agent_id || !rawText || !ts) return
     const text = rawText.length > 2000 ? rawText.slice(0, 2000) : rawText
     try {
-      const existing = _terminalDedupStmt.get(ts, from || SERVER_OWNER_ID, agent_id, text.slice(0, 500))
-      if (existing) return // duplicate, swallow silently
+      const duplicate = await fleetStore.terminalChatDuplicateExists(ts, from || SERVER_OWNER_ID, agent_id, text.slice(0, 500))
+      if (duplicate) return // duplicate, swallow silently
       await fleetStore.share({
         type: 'chat',
         from: from || SERVER_OWNER_ID,

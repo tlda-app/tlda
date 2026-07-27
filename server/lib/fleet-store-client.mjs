@@ -36,6 +36,9 @@ const AGENT_RESULT_SHAPE = {
 
 export class FleetStoreClient {
   constructor(dbPath, options = {}) {
+    // Mirrors FleetStore.dbPath so diagnostics that report which database the
+    // store opened keep working with no boundary crossing.
+    this.dbPath = dbPath
     this._seq = 0
     this._pending = new Map()
     this._listeners = []
