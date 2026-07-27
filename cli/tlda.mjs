@@ -378,6 +378,15 @@ function sourceManifestForFiles(files, context = {}) {
   return normalizeSourceManifest((files || []).map(f => f.path), context)
 }
 
+function generatedHtmlArtifactDirs(paths) {
+  const dirs = new Set()
+  for (const path of paths || []) {
+    const match = /^(.+_files)\//.exec(path)
+    if (match) dirs.add(match[1])
+  }
+  return dirs
+}
+
 async function currentSourceRevision(name) {
   const authority = await api('GET', `/api/projects/${name}/source-authority`)
   return authority.currentRevision
@@ -577,11 +586,29 @@ async function cmdCreate() {
     }
 
     console.log(`Pushing ${allFiles.length} artifact file(s)...`)
+    const artifactManifest = sourceManifestForFiles(allFiles, { format: 'slides' })
+    const serverHashes = (await api('GET', `/api/projects/${name}/hashes`)).hashes || {}
+    const currentArtifacts = new Set(artifactManifest)
+    const generatedDirs = generatedHtmlArtifactDirs(artifactManifest)
+    const isGeneratedArtifact = path => [...generatedDirs].some(dir => path.startsWith(`${dir}/`))
+    const serverPaths = Object.keys(serverHashes)
+    const preservedServerPaths = serverPaths
+      .filter(path => !currentArtifacts.has(path))
+      .filter(path => !isGeneratedArtifact(path))
+    const deletedFiles = serverPaths
+      .filter(path => !currentArtifacts.has(path))
+      .filter(isGeneratedArtifact)
+      .sort()
+    const sourceManifest = normalizeSourceManifest([...artifactManifest, ...preservedServerPaths], { format: 'slides' })
+    if (deletedFiles.length > 0) {
+      console.log(dim(`  Removing ${deletedFiles.length} stale artifact file(s) from server`))
+    }
     await api('POST', `/api/projects/${name}/push`, {
       files: allFiles,
-      sourceManifest: sourceManifestForFiles(allFiles, { format: 'slides' }),
+      sourceManifest,
       sourceDir: dir,
       expectedRevision: await currentSourceRevision(name),
+      ...(deletedFiles.length > 0 && { deletedFiles }),
     })
     console.log(green('Slides processed.'))
 
