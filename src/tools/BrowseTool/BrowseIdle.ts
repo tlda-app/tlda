@@ -34,12 +34,10 @@ import {
 import { exitFleetLayoutMode, fleetLayoutActiveRef } from '../../overlays/fleet-layout-mode'
 import { getOnSourceClick } from '../../stores'
 import { getHumanId } from '../../fleet/fleet-data.mjs'
-import { FLEET_SHAPE_TYPES } from '../../shapes/fleet-utils'
 import { probe } from '../../perf-probe'
 import { clientPointToPage } from '../../wm/viewport-coordinates'
+import { canBrowseSelectFleetShape, isFleetShape } from './fleetSelectionPolicy'
 
-// --- Fleet shape types that get DOM interaction ---
-const FLEET_TYPES = FLEET_SHAPE_TYPES
 type TransitionParent = StateNode & {
   transition?: (id: string, info?: unknown) => void
 }
@@ -184,7 +182,7 @@ export class BrowseIdle extends StateNode {
     if (fleetLayoutActiveRef.current && this.editor.getContainer().closest('.fleet-hud-wrap')) {
       const hasFleetSelected = this.editor.getSelectedShapeIds().some(id => {
         const s = this.editor.getShape(id)
-        return s && FLEET_TYPES.has(s.type)
+        return isFleetShape(s)
       })
       if (!hasFleetSelected) {
         exitFleetLayoutMode()
@@ -301,7 +299,7 @@ export class BrowseIdle extends StateNode {
     const newFleet = new Set<string>()
     for (const id of selected) {
       const shape = this.editor.getShape(id as any)
-      if (shape && FLEET_TYPES.has(shape.type as string)) {
+      if (isFleetShape(shape)) {
         newFleet.add(id)
         if (!this._selectedFleetIds.has(id)) {
           const els = container.querySelectorAll(`[data-shape-id="${id}"]`)
@@ -417,30 +415,33 @@ export class BrowseIdle extends StateNode {
         // ===== BROWSE ADDITION: fleet/HTML shape passthrough =====
         // Fleet shapes and locked HTML pages get DOM passthrough when NOT selected.
         // When selected (via ⊞ button), fall through so the shape can be dragged/resized.
-        if (hitShape && (FLEET_TYPES.has(hitShape.type as string) || hitShape.isLocked)) {
-          if (this.editor.getSelectedShapeIds().includes(hitShape.id)) {
+        if (hitShape) {
+          const hitIsFleet = isFleetShape(hitShape)
+          if ((hitIsFleet || hitShape.isLocked) && this.editor.getSelectedShapeIds().includes(hitShape.id) && canBrowseSelectFleetShape(hitShape)) {
             // Shape is selected — treat as pointing_selection for drag
             this.onPointerDown({ ...info, target: 'selection' })
             return
           }
-          // Fleet shapes: always pass through to DOM (content interaction)
-          if (FLEET_TYPES.has(hitShape.type as string)) {
+          if (hitIsFleet || hitShape.isLocked) {
+            // Fleet shapes: always pass through to DOM (content interaction)
+            if (hitIsFleet) {
+              this.editor.selectNone()
+              return
+            }
+            // Understanding-line shapes: click cycles status (owner only)
+            if ((hitShape.type as string) === 'understanding-line') {
+              if (this._cycleRibbonAtPoint()) return
+            }
+            // Locked non-fleet shapes (document pages, etc.) in the HUD overlay:
+            // treat as empty canvas so drag-box select works over document backgrounds.
+            // In the main canvas, keep passing through to DOM.
+            if (fleetLayoutActiveRef.current && this.editor.getContainer().closest('.fleet-hud-wrap')) {
+              this.parent.transition('pointing_canvas', info)
+              return
+            }
             this.editor.selectNone()
             return
           }
-          // Understanding-line shapes: click cycles status (owner only)
-          if ((hitShape.type as string) === 'understanding-line') {
-            if (this._cycleRibbonAtPoint()) return
-          }
-          // Locked non-fleet shapes (document pages, etc.) in the HUD overlay:
-          // treat as empty canvas so drag-box select works over document backgrounds.
-          // In the main canvas, keep passing through to DOM.
-          if (fleetLayoutActiveRef.current && this.editor.getContainer().closest('.fleet-hud-wrap')) {
-            this.parent.transition('pointing_canvas', info)
-            return
-          }
-          this.editor.selectNone()
-          return
         }
         // ===== END BROWSE ADDITION =====
 
@@ -459,7 +460,7 @@ export class BrowseIdle extends StateNode {
 
         if (
           selectedShapeIds.length > 1 ||
-          (onlySelectedShape && FLEET_TYPES.has(onlySelectedShape.type as string)) ||
+          (onlySelectedShape && isFleetShape(onlySelectedShape)) ||
           (onlySelectedShape &&
             !this.editor.getShapeUtil(onlySelectedShape).hideSelectionBoundsBg(onlySelectedShape))
         ) {
@@ -484,8 +485,8 @@ export class BrowseIdle extends StateNode {
 
         // ===== BROWSE ADDITION: fleet shapes =====
         // When selected: allow drag (pointing_selection). When not: DOM passthrough.
-        if (FLEET_TYPES.has(shape.type as string)) {
-          if (this.editor.getSelectedShapeIds().includes(shape.id)) {
+        if (isFleetShape(shape)) {
+          if (this.editor.getSelectedShapeIds().includes(shape.id) && canBrowseSelectFleetShape(shape)) {
             this.parent.transition('pointing_selection', info)
             break
           }
@@ -703,7 +704,7 @@ export class BrowseIdle extends StateNode {
           this.editor.inputs.getCurrentPagePoint(),
           { hitInside: true, hitLocked: false, hitLabels: false, renderingOnly: true,
             margin: this.editor.options.hitTestMargin / this.editor.getZoomLevel(),
-            filter: (s) => FLEET_TYPES.has(s.type as string) }
+            filter: (s) => isFleetShape(s) }
         )
         if (fleetHit) return
         // ===== END BROWSE ADDITION =====
@@ -766,7 +767,7 @@ export class BrowseIdle extends StateNode {
         const util = this.editor.getShapeUtil(shape)
 
         // ===== BROWSE ADDITION: fleet shapes don't edit — eat the double-click =====
-        if (FLEET_TYPES.has(shape.type as string)) return
+        if (isFleetShape(shape)) return
         // ===== END BROWSE ADDITION =====
 
         if (shape.type !== 'video' && shape.type !== 'embed' && this.editor.getIsReadonly()) break
@@ -836,7 +837,7 @@ export class BrowseIdle extends StateNode {
 
         if (
           selectedShapeIds.length > 1 ||
-          (onlySelectedShape && FLEET_TYPES.has(onlySelectedShape.type as string)) ||
+          (onlySelectedShape && isFleetShape(onlySelectedShape)) ||
           (onlySelectedShape &&
             !this.editor.getShapeUtil(onlySelectedShape).hideSelectionBoundsBg(onlySelectedShape))
         ) {
