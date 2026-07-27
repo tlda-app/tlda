@@ -1434,6 +1434,7 @@ function handleServerMessage(msg, wsAttemptId) {
     sendActivityDeliveryMetrics('daemon-welcome')
     sourceSync.flushPending()
     reconcileJsonlProcessBindings('daemon-welcome')
+    registerHostedTerminalCapabilities('daemon-welcome')
     jsonlIngestor.resumeAfterServerReady()
     gooseSupervisor.startActivityPolling()
     promptPlan.startAutoAcceptSweep()

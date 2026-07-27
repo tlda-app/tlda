@@ -266,6 +266,7 @@ test('daemon welcome carries no roster and restores local-binding liveness plus 
   assert.match(welcomeHandler, /agentLiveness\.start\(\)/)
   assert.doesNotMatch(welcomeHandler, /jsonlIngestor\.startOwnerHarvester\(\)/)
   assert.match(welcomeHandler, /reconcileJsonlProcessBindings\('daemon-welcome'\)/)
+  assert.match(welcomeHandler, /registerHostedTerminalCapabilities\('daemon-welcome'\)/)
   assert.match(welcomeHandler, /jsonlIngestor\.resumeAfterServerReady\(\)/)
   assert.doesNotMatch(welcomePayload, /agents|agent_status/)
   assert.match(daemonSource, /getAgents: \(\) => livenessAgentsFromProcessBindings\(permissionLedger\.listProcessBindings\(\)/)
