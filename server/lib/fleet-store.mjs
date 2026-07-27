@@ -1566,6 +1566,8 @@ export class FleetStore {
     this._getAgentsByDaemonKey = this.db.prepare(`SELECT ${AGENT_SELECT} ${AGENT_JOIN} WHERE agents.dead = 0 AND agents.id IN (SELECT agent_id FROM agent_current_seats WHERE daemon_key = @daemonKey)`);
     this._getAgentByName = this.db.prepare(`SELECT ${AGENT_SELECT} ${AGENT_JOIN} WHERE agents.friendly_name = ?`);
     this._getLiveAgentsByFriendlyName = this.db.prepare(`SELECT ${AGENT_SELECT} ${AGENT_JOIN} WHERE agents.dead = 0 AND agents.friendly_name = ?`);
+    this._getLiveHumanByFriendlyName = this.db.prepare('SELECT * FROM agents WHERE friendly_name = ? AND dead = 0 AND human = 1');
+    this._nameTakenByOther = this.db.prepare('SELECT id FROM agents WHERE friendly_name = ? AND dead = 0 AND id != ?');
     // findAgent's name branch. Deliberately the bare row, not AGENT_SELECT: the
     // branch this replaced also read `SELECT *`, so keeping it identical makes
     // removing the tie-break a pure deletion. (It means a name lookup returns no
@@ -2977,6 +2979,28 @@ export class FleetStore {
     return this._getLiveAgentsByFriendlyName.all(String(friendlyName)).map(row => this.projectAgentCurrentSeat(this._hydrateAgent(row)));
   }
 
+  // The live human holding this name, or null. Deliberately NOT
+  // getLiveAgentsByFriendlyName filtered by `human`: that one applies
+  // projectAgentCurrentSeat, which nulls the six seat fields when an agent has
+  // no seat, and the login path this serves writes the row it gets straight
+  // back through upsertAgent. Hydrated but unprojected is what that write
+  // needs. At most one row can exist — idx_agents_live_name makes a second
+  // live holder of a name unrepresentable.
+  getLiveHumanByFriendlyName(friendlyName) {
+    if (!friendlyName) return null;
+    const row = this._getLiveHumanByFriendlyName.get(String(friendlyName));
+    return row ? this._hydrateAgent(row) : null;
+  }
+
+  // Is this live name held by somebody other than `excludeId`? Narrower than
+  // checkNameAvailable on purpose: that gate also rejects pseudo-labels and
+  // names colliding with another agent's label, and the rename path this
+  // serves has never rejected either. Widening it is a product change.
+  nameTakenByOther(friendlyName, excludeId) {
+    if (!friendlyName) return false;
+    return !!this._nameTakenByOther.get(String(friendlyName), excludeId || '');
+  }
+
   getAliveAgentsPage({ limit = 100, cursor = null } = {}) {
     const size = Math.max(1, Math.min(Number(limit) || 100, 200));
     let boundary = { lastSeen: '9999-12-31T23:59:59.999Z', id: '\uffff' };
@@ -3219,6 +3243,14 @@ export class FleetStore {
          AND agents.friendly_name IS NOT NULL AND agents.dead = 0
        ORDER BY stack.stack_index`
     ).all(lineageId).map(r => this.projectAgentCurrentSeat(this._hydrateAgent(r)));
+  }
+
+  // The lineage this agent currently occupies a stack slot on, or null.
+  getActiveStackEntry(agentId) {
+    if (!agentId) return null;
+    return this.db.prepare(
+      'SELECT lineage_id FROM lineage_stack_entries WHERE fleet_id = ? AND active = 1'
+    ).get(agentId) || null;
   }
 
   // The live active stack (ascending by position) for a lineage.
@@ -4328,6 +4360,34 @@ export class FleetStore {
   // Get events after a known rowid (for SSE catch-up)
   getEventsSince(afterId, limit = 100) {
     return this._query(this._queryEventsAfterRowid, afterId, limit);
+  }
+
+  // One page of the global event stream, optionally narrowed to a set of types.
+  // `beforeId` pages backwards (newest-first selection, returned oldest-first);
+  // otherwise it pages forwards from `afterId`.
+  //
+  // Rows come back UNHYDRATED — `metadata` is the stored JSON string, not a
+  // parsed object. That is deliberate and it is not what getEventsSince does.
+  // The four raw queries this replaces (the store-events socket verb and
+  // GET /api/events) all returned the string, while the no-filter branch of
+  // those same two endpoints falls through to getEventsSince and returns an
+  // object. So one endpoint already answers with two different shapes for
+  // `metadata` depending on its query parameters. Hydrating here would change
+  // the wire payload for the ?type= and ?before= consumers — one of which is
+  // Grafana — so the inconsistency is preserved rather than quietly fixed.
+  queryEventsPage({ types = null, afterId = 0, beforeId = null, limit = 200 } = {}) {
+    const typeList = Array.isArray(types) && types.length ? types : null;
+    const typeClause = typeList ? `type IN (${typeList.map(() => '?').join(',')}) AND ` : '';
+    if (beforeId) {
+      const rows = this.db.prepare(
+        `SELECT ${this._EVT} FROM events WHERE ${typeClause}id < ? ORDER BY id DESC LIMIT ?`
+      ).all(...(typeList || []), beforeId, limit);
+      rows.reverse();
+      return rows;
+    }
+    return this.db.prepare(
+      `SELECT ${this._EVT} FROM events WHERE ${typeClause}id > ? ORDER BY id ASC LIMIT ?`
+    ).all(...(typeList || []), afterId, limit);
   }
 
   getLastEventId() {

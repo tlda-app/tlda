@@ -389,7 +389,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   })
 
   // --- GET /api/store/events ---
-  router.get('/api/store/events', (req, res) => {
+  router.get('/api/store/events', async (req, res) => {
     if (!fleetStore) { res.status(503).json({ error: 'Fleet store not available' }); return }
     const afterId = parseInt(req.query.after || '0')
     const beforeId = req.query.before ? parseInt(req.query.before) : null
@@ -401,27 +401,19 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     try {
       let events
       let total = null
-      const cols = 'id, type, timestamp, from_id as "from", to_id as "to", text, metadata, task_id, agent_id'
       if (agent) {
         // UNION of two indexed scans — see FleetStore.queryAgentEvents.
         events = fleetStore.queryAgentEvents({ agent, sinceTs: since, untilTs: until, afterId, beforeId, limit })
       } else if (type && beforeId) {
         // A bounded newest-first window for read-only consumers such as Grafana.
-        // `before` remains the ordered pagination cursor; reversing preserves the
-        // endpoint's chronological response contract without scanning history.
-        events = fleetStore.db.prepare(
-          `SELECT ${cols} FROM events WHERE type = ? AND id < ? ORDER BY id DESC LIMIT ?`
-        ).all(type, beforeId, limit)
-        events.reverse()
+        // `before` remains the ordered pagination cursor; queryEventsPage
+        // reverses so the endpoint's chronological response contract holds
+        // without scanning history.
+        events = await fleetStore.queryEventsPage({ types: [type], beforeId, limit })
       } else if (type) {
-        events = fleetStore.db.prepare(
-          `SELECT ${cols} FROM events WHERE type = ? AND id > ? ORDER BY id ASC LIMIT ?`
-        ).all(type, afterId, limit)
+        events = await fleetStore.queryEventsPage({ types: [type], afterId, limit })
       } else if (beforeId) {
-        events = fleetStore.db.prepare(
-          `SELECT ${cols} FROM events WHERE id < ? ORDER BY id DESC LIMIT ?`
-        ).all(beforeId, limit)
-        events.reverse()
+        events = await fleetStore.queryEventsPage({ beforeId, limit })
       } else {
         events = fleetStore.getEventsSince(afterId, limit)
       }
