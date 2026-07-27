@@ -1499,23 +1499,12 @@ async function surfaceFleetWsError(ws, msg, err) {
       fullStack.slice(0, 4000),
       '```',
     ].join('\n')
-    const event = await fleetStore.chat('fleet:tlda', SERVER_OWNER_ID, text, {
+    await fleetStore.chat('fleet:tlda', SERVER_OWNER_ID, text, {
       type: 'fleet_runtime_error',
       wsPeer: peer,
       messageType: type,
       requestId,
     })
-    if (event) {
-      broadcastEvent('fleet-event', {
-        type: 'chat',
-        from: 'fleet:tlda',
-        to: SERVER_OWNER_ID,
-        id: event.id,
-        text,
-        event_id: event.id,
-        metadata: event.metadata || null,
-      })
-    }
   } catch (reportErr) {
     fleetWsLog.error({
       originalError: err?.stack || err?.message || String(err),
@@ -2165,10 +2154,8 @@ if (fleetStore) {
 }
 
 // Full chat delivery pipeline used by tlda-feedback (push-channel
-// notifications for doc annotations). Mirrors the WS 'chat' handler:
-// share → addUnread → broadcast. Calling only fleetStore.share leaves
-// the message invisible to getUnread, so the recipient's MCP never
-// surfaces it as a <channel> system-reminder.
+// notifications for doc annotations). The store write owns unread creation and
+// live broadcast; hand-built echoes drift from the inserted row.
 // The subscriptions table is the record of who monitors which doc; tlda-feedback
 // reads it rather than keeping a second copy, and arms the room listeners for
 // every persisted row at startup.
@@ -2188,11 +2175,6 @@ function configureTldaFeedback() {
 function deliverTldaFeedbackChat({ from, to, text, metadata }) {
   if (!fleetStore) return
   Promise.resolve(fleetStore.share?.({ type: 'chat', from, to, text, metadata }))
-    .then(event => {
-      if (!event) return
-      fleetStore.addUnread?.(event.id, to)
-      broadcastEvent('fleet-event', { type: 'chat', from, to, id: event.id, text, event_id: event.id })
-    })
     .catch(e => console.error(`[fleet-feedback] delivery failed: ${e.message}`))
 }
 
@@ -2219,17 +2201,6 @@ async function reportFleetIncident({ severity = 'warning', component, operation,
     evidence,
     error,
   })
-  if (event) {
-    broadcastEvent('fleet-event', {
-      type: 'chat',
-      from: 'fleet:tlda',
-      to: SERVER_OWNER_ID,
-      id: event.id,
-      text,
-      event_id: event.id,
-      metadata: event.metadata || null,
-    })
-  }
   return event
 }
 
@@ -2258,17 +2229,6 @@ async function reportFleetIncidentClear({ key, agent, health, incident }) {
     cleared_at: health?.ts || new Date().toISOString(),
     previous_event_id: incident?.eventId || null,
   })
-  if (event) {
-    broadcastEvent('fleet-event', {
-      type: 'chat',
-      from: 'fleet:tlda',
-      to: SERVER_OWNER_ID,
-      id: event.id,
-      text,
-      event_id: event.id,
-      metadata: event.metadata || null,
-    })
-  }
   return event
 }
 
@@ -5462,7 +5422,6 @@ async function handleFleetWsMessage(ws, msg) {
     })
     const metadata = { pending: true, fire_at, message }
     const event = await fleetStore.share({ type: 'timer', from, to, text: `⏱ ${message}`, metadata })
-    broadcastEvent('fleet-event', { type: 'timer', from, to, id: event.id, event_id: event.id, text: `⏱ ${message}`, metadata })
     serverTimerScheduler?.refresh()
     reply({ ok: true, id: event.id })
     return
@@ -7415,11 +7374,6 @@ async function handleFleetWsMessage(ws, msg) {
       type: 'terminal_card', from: agent.id, to: SERVER_OWNER_ID, text,
       metadata: JSON.stringify({ reason: reason || null, agentId: agent.id, agentLabel: label }),
     })
-    broadcastEvent('fleet-event', {
-      type: 'terminal_card', from: agent.id, to: SERVER_OWNER_ID,
-      id: event?.id, event_id: event?.id, text,
-      metadata: { reason: reason || null, agentId: agent.id, agentLabel: label },
-    })
     reply({ ok: true, event_id: event?.id })
     return
   }
@@ -8880,25 +8834,13 @@ async function handleDaemonWsMessage(ws, msg) {
     globalThis._termAttentionDedup.set(dedupKey, now)
     const agent = fleetStore.getAgent(agent_id)
     const label = agent?.friendly_name || agent_id.slice(0, 12)
-    const event = await fleetStore.share({
+    await fleetStore.share({
       type: 'terminal_attention',
       from: agent_id,
       to: SERVER_OWNER_ID,
       text: text || `${label}: needs attention`,
       metadata: { agentId: agent_id, agentLabel: label, reason: reason || null, snippet: snippet || null },
     })
-    if (event) {
-      fleetStore.addUnread?.(event.id, SERVER_OWNER_ID)
-      broadcastEvent('fleet-event', {
-        type: 'terminal_attention',
-        from: agent_id,
-        to: SERVER_OWNER_ID,
-        id: event.id,
-        event_id: event.id,
-        text: text || `${label}: needs attention`,
-        metadata: { agentId: agent_id, agentLabel: label, reason: reason || null, snippet: snippet || null },
-      })
-    }
     return
   }
 
@@ -9046,8 +8988,6 @@ async function handleDaemonWsMessage(ws, msg) {
       } else {
         const event = await fleetStore?.share?.({ type: 'chat', from: 'fleet:tlda', to, text: baseText, metadata })
         if (event) {
-          fleetStore?.addUnread?.(event.id, to)
-          broadcastEvent('fleet-event', { type: 'chat', from: 'fleet:tlda', to, id: event.id, text: baseText, event_id: event.id })
           _daemonWarnDedup.set(key, { eventId: event.id, count: 1, lastSeen: now, baseText })
         }
       }
