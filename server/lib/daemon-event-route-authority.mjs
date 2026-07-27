@@ -6,14 +6,17 @@ export const DAEMON_EVENT_ROUTE_FAMILIES = Object.freeze([
   'daemon-activity-event',
 ])
 
-export function daemonEventSeatDecision(fleetStore, {
+// async because the seat read is now a worker round trip. Both this and
+// currentSeatForDaemonEvent below returned plain values before the store moved
+// off the event loop; the shape of what they return is unchanged.
+export async function daemonEventSeatDecision(fleetStore, {
   agentId,
   daemonKey,
   family,
   log = console,
 } = {}) {
   if (!fleetStore || !agentId || !daemonKey) return { seat: null, accepted: false, rejection_reason: 'missing-input' }
-  const seat = fleetStore.getCurrentAgentSeat?.(agentId) || null
+  const seat = (await fleetStore.getCurrentAgentSeat(agentId)) || null
   if (!seat) return { seat: null, accepted: false, rejection_reason: 'no-current-seat' }
   if (seat.daemon_key !== daemonKey) {
     return { seat, accepted: false, rejection_reason: 'daemon-key-mismatch', seat_daemon_key: seat.daemon_key }
@@ -47,9 +50,9 @@ export function isForeignDaemonRejection(decision) {
   return decision?.rejection_reason === 'daemon-key-mismatch'
 }
 
-export function currentSeatForDaemonEvent(fleetStore, options = {}) {
+export async function currentSeatForDaemonEvent(fleetStore, options = {}) {
   const { agentId, daemonKey, family, log = console } = options
-  const decision = daemonEventSeatDecision(fleetStore, options)
+  const decision = await daemonEventSeatDecision(fleetStore, options)
   if (decision.accepted) return decision.seat
   if (decision.rejection_reason === 'daemon-key-mismatch') {
     log?.warn?.(`[fleet-daemon] ignored ${family || 'daemon event'} for ${agentId}: current seat daemon=${decision.seat_daemon_key || 'none'} ws daemon=${daemonKey}`)

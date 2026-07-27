@@ -8592,7 +8592,7 @@ async function handleDaemonWsMessage(ws, msg) {
     // Skip: "status in the app is horrible." This is one mechanism behind that —
     // a seatless agent reported no status at all, silently, so the roster showed
     // it doing nothing while the daemon described its every tool call.
-    const statusSeat = daemonEventSeatDecision(fleetStore, {
+    const statusSeat = await daemonEventSeatDecision(fleetStore, {
       agentId,
       daemonKey: ws._daemonKey,
       family: 'daemon-agent-status',
@@ -8678,7 +8678,7 @@ async function handleDaemonWsMessage(ws, msg) {
     // A process either exists or it does not. Making that answer conditional on
     // a seat row is how the roster comes to say an agent is hibernating while it
     // is running — and a wrongly-hibernating agent can get reaped.
-    const livenessSeat = daemonEventSeatDecision(fleetStore, {
+    const livenessSeat = await daemonEventSeatDecision(fleetStore, {
       agentId: agent_id,
       daemonKey: ws._daemonKey,
       family: 'daemon-agent-liveness',
@@ -8709,7 +8709,7 @@ async function handleDaemonWsMessage(ws, msg) {
   if (type === 'agent-activity') {
     const { agent_id, jsonl_offset, ts } = msg
     if (!agent_id || typeof jsonl_offset !== 'number') return
-    const currentSeat = currentSeatForDaemonEvent(fleetStore, {
+    const currentSeat = await currentSeatForDaemonEvent(fleetStore, {
       agentId: agent_id,
       daemonKey: ws._daemonKey,
       family: 'daemon-agent-activity',
@@ -8771,7 +8771,7 @@ async function handleDaemonWsMessage(ws, msg) {
     // the daemon extracted for it was destroyed at this line — its cards were
     // absent from Skip's view for hours while the daemon shipped them every few
     // seconds and every layer reported healthy.
-    const seatDecision = daemonEventSeatDecision(fleetStore, {
+    const seatDecision = await daemonEventSeatDecision(fleetStore, {
       agentId: agent_id,
       daemonKey: ws._daemonKey,
       family: 'daemon-activity-event',

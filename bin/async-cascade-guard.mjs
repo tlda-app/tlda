@@ -60,6 +60,10 @@ export const ASYNC_CASCADE = Object.freeze([
   'broadcastDaemonProjectsUpdated',
   'backingFileRegister',
   'backingFileUnregister',
+  // The daemon-event seat authority: one store read, two exported functions,
+  // four call sites across the daemon WS message handler.
+  'daemonEventSeatDecision',
+  'currentSeatForDaemonEvent',
 ])
 
 const SEARCH_DIRS = ['server', 'bin', 'cli', 'mcp-server', 'shared', 'daemon']
