@@ -25,9 +25,11 @@ import os from 'os';
 import { createLiveStore } from '../../shared/live-store.ts';
 import { PSEUDO_LABELS, parseFilter, evalExpr, evalExprDirectional, astReadsSubscriberLabels, labelsForAgent } from '../../shared/fleet-labels.mjs';
 import { anyTermFtsQuery, ftsQueryTerms } from '../../shared/fts-query.mjs';
-import { fleetRosterCategory, isFleetRosterAgent } from '../../shared/fleet-runtime-status.mjs';
+// isFleetRosterAgent only. fleetRosterCategory went with the count's move:
+// the store no longer categorises an agent, it is told which ids are alive and
+// joins that against its own roster.
+import { isFleetRosterAgent } from '../../shared/fleet-runtime-status.mjs';
 import { createTaskDocMaterializer } from './task-doc-materializer.mjs';
-import { projectAgentRuntimeStatus } from './agent-runtime-status.mjs';
 
 // Persistent DB under ~/.config/tlda/ (survives macOS reboots).
 // Previously /tmp/fleet.db which got wiped on reboot — lost all agents/state.
@@ -2944,12 +2946,22 @@ export class FleetStore {
   // The agents panel materializes this roster in pages, but its footer is an
   // aggregate over the whole non-dead roster.  Keep that distinction explicit:
   // callers must not derive footer counts from a page or virtualized rows.
-  getAliveAgentCounts() {
+  // Takes the ids the caller considers awake, rather than deciding liveness
+  // itself. The roster lives here and the evidence lives on the main thread, so
+  // one of the two has to cross; a set of ids is small, and the alternative —
+  // shipping the roster out to be counted, or keeping a second copy of liveness
+  // in here — is either expensive or a copy of live state that can go stale.
+  //
+  // This is membership, not a liveness decision. `human` counting as awake and
+  // `human-away` counting as hibernating is resolved by the caller, which
+  // simply includes or omits those ids.
+  getAliveAgentCounts(awakeIds = []) {
     this._ensureAgentRegistryLoaded();
+    const awake = awakeIds instanceof Set ? awakeIds : new Set(awakeIds);
     const totals = { awake: 0, hibernating: 0, total: 0 };
     for (const agent of this._aliveAgentRosterView.list) {
       totals.total += 1;
-      if (fleetRosterCategory(agent) === 'awake') totals.awake += 1;
+      if (awake.has(agent.id)) totals.awake += 1;
       else totals.hibernating += 1;
     }
     return totals;
@@ -3111,10 +3123,6 @@ export class FleetStore {
     return this.getAgent(id);
   }
 
-  setRuntimeStatusProvider(fn) {
-    this._runtimeStatusProvider = fn;
-    this._bustAgentsCache();
-  }
 
   refreshAgentLiveness(id) {
     this._syncAgentRegistry(id);
@@ -3329,13 +3337,19 @@ export class FleetStore {
       // Names are opaque atoms. Stack position is separate lineage data.
       lineage_name: row.lineage_name || null,
     }
-    const runtimeStatus = this._runtimeStatusProvider
-      ? this._runtimeStatusProvider(baseAgent)
-      : projectAgentRuntimeStatus(baseAgent, null)
-    return {
-      ...baseAgent,
-      runtime_status: runtimeStatus,
-    };
+    // No runtime_status here. Liveness is a projection over things this thread
+    // cannot see — live WebSocket handles, daemon connections, heartbeat
+    // evidence — and it used to be stamped on via a closure injected from the
+    // main thread. That closure is why the store could not move off the event
+    // loop: a function cannot cross a worker boundary, and a worker calling
+    // back into the main thread mid-query while the main thread awaits the
+    // worker is a deadlock rather than a slow path.
+    //
+    // The agent row is what this store owns. Whoever holds the liveness
+    // evidence stamps runtime_status on the way out — see stampRuntimeStatus in
+    // fleet-store-client.mjs, which does it on the main thread where the
+    // evidence already lives.
+    return baseAgent;
   }
 
   // ---- Task state management ----

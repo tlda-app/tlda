@@ -13,6 +13,27 @@
 import { Worker } from 'node:worker_threads'
 import { FLEET_STORE_METHODS } from './fleet-store-methods.mjs'
 
+// Which methods hand back agent rows, and where the rows sit in what they
+// return. The store no longer stamps `runtime_status` — liveness is a
+// projection over live sockets and heartbeat evidence, none of which exists on
+// the thread holding the database — so it is stamped here instead, on the main
+// thread, where that evidence already lives.
+//
+// An explicit list rather than "walk the result and stamp anything that looks
+// like an agent": a shape-sniffing stamper silently misses a new method, and a
+// missing runtime_status reads as hibernating, which is the reap-a-live-agent
+// failure this whole change is trying not to cause.
+const AGENT_RESULT_SHAPE = {
+  getAgent: 'one',
+  findAgent: 'one',
+  getAgentsByIds: 'many',
+  getAgentsByDaemonKey: 'many',
+  getLiveAgentsByFriendlyName: 'many',
+  getAliveAgents: 'many',
+  getLineageRoster: 'many',
+  getAliveAgentsPage: 'page',
+}
+
 export class FleetStoreClient {
   constructor(dbPath, options = {}) {
     this._seq = 0
@@ -73,13 +94,36 @@ export class FleetStoreClient {
           'crosses its boundary, then regenerate.',
         )
       }
-      this[method] = (...args) => this._call(method, args)
+      const shape = AGENT_RESULT_SHAPE[method]
+      this[method] = shape
+        ? (...args) => this._call(method, args).then(r => this._stampAgents(r, shape))
+        : (...args) => this._call(method, args)
     }
   }
 
   _failAll(err) {
     for (const [, waiter] of this._pending) waiter.reject(err)
     this._pending.clear()
+  }
+
+  // The projector runs on this thread, against evidence this thread owns. It
+  // replaces setRuntimeStatusProvider, which handed the same closure to the
+  // store — the difference being that here nothing has to cross a boundary to
+  // call it.
+  setRuntimeProjector(fn) {
+    this._projectRuntimeStatus = fn
+  }
+
+  _stampAgents(result, shape) {
+    const project = this._projectRuntimeStatus
+    if (!project || result == null) return result
+    const one = (agent) => (agent ? { ...agent, runtime_status: project(agent) } : agent)
+    if (shape === 'one') return one(result)
+    if (shape === 'many') return Array.isArray(result) ? result.map(one) : result
+    if (shape === 'page') {
+      return Array.isArray(result?.agents) ? { ...result, agents: result.agents.map(one) } : result
+    }
+    return result
   }
 
   _call(method, args) {
