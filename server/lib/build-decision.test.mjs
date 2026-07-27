@@ -38,14 +38,14 @@ test('a new SVG project builds eagerly because no page can trigger the lazy buil
   )
 })
 
-test('an established SVG project keeps the lazy rebuild path', () => {
+test('an established SVG project builds eagerly so accepted edits enter history', () => {
   assert.deepEqual(
     shouldBuildOnPush(
       { format: 'svg', pages: 1, buildStatus: 'success' },
       'unused-established-svg-project',
       { changedFiles: [], anyChanged: true },
     ),
-    { build: true, eager: false, reason: 'svg-stale' },
+    { build: true, eager: true, reason: 'svg-eager' },
   )
 })
 
@@ -122,7 +122,7 @@ test('a page-zero SVG can retry after its initial build completes or fails', asy
   })
 })
 
-test('non-SVG formats remain eager while established SVG projects remain lazy', () => {
+test('all document formats build eagerly after an accepted source change', () => {
   for (const format of ['markdown', 'html', 'slides']) {
     assert.deepEqual(
       shouldBuildOnPush(
@@ -140,6 +140,6 @@ test('non-SVG formats remain eager while established SVG projects remain lazy', 
       'unused-established-svg-project',
       { anyChanged: true, building: true },
     ),
-    { build: true, eager: false, reason: 'svg-stale' },
+    { build: true, eager: true, reason: 'svg-eager' },
   )
 })

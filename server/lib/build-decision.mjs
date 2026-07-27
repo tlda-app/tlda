@@ -21,7 +21,7 @@ import { outputDir } from './project-store.mjs'
  * @param {boolean} options.building     — dispatcher-authoritative queued/in-flight state
  * @returns {{ build: boolean, eager: boolean, reason: string }}
  *   - build: whether a build should happen
- *   - eager: true = start now, false = mark stale for on-demand (SVG only)
+ *   - eager: true = start now
  *   - reason: human-readable explanation
  */
 export function shouldBuildOnPush(project, name, { changedFiles = [], anyChanged = false, building = false } = {}) {
@@ -35,9 +35,7 @@ export function shouldBuildOnPush(project, name, { changedFiles = [], anyChanged
     return { build: false, eager: false, reason: 'unchanged' }
   }
 
-  // A brand-new SVG project has no page artifact for the viewer to request,
-  // so the normal lazy/on-demand path cannot bootstrap itself. Build the first
-  // version eagerly; once pages exist, subsequent SVG pushes stay lazy.
+  // A brand-new SVG project builds eagerly, like every other changed project.
   if (format === 'svg' && Number(project.pages || 0) === 0) {
     return { build: true, eager: true, reason: 'initial-svg-build' }
   }
@@ -70,8 +68,10 @@ export function shouldBuildOnPush(project, name, { changedFiles = [], anyChanged
     }
   }
 
-  // SVG default: mark stale, let ensure handle it
-  return { build: true, eager: false, reason: 'svg-stale' }
+  // A successful build is also the project's automatic Git checkpoint.
+  // Deferring an SVG build until somebody requests a page leaves accepted
+  // source edits outside project history whenever nobody is viewing the paper.
+  return { build: true, eager: true, reason: 'svg-eager' }
 }
 
 /**
