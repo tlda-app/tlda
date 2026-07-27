@@ -54,6 +54,10 @@ const first = await processProjectPush('authority-http', {
 assert.equal(first.status, 200)
 assert.match(first.sourceRevision, /^sha256:/)
 assert.equal(readSourceFile('authority-http', 'main.tex'), 'base\n')
+assert.deepEqual(sourceLifecycleStore('authority-http').readCurrentFile('main.tex'), {
+  sourceRevision: first.sourceRevision,
+  content: Buffer.from('base\n'),
+})
 
 const second = await processProjectPush('authority-http', {
   expectedRevision: first.sourceRevision,
