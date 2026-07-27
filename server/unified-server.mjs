@@ -6227,8 +6227,29 @@ async function handleFleetWsMessage(ws, msg) {
   // Per-agent throttle so a repeatedly-failing wake doesn't spam Skip's chat.
   const _wakeFailWarned = new Map() // agentId → last-warned ms
   const WAKE_FAIL_WARN_MS = 5 * 60 * 1000
-  function requestWake(agentId, nudgeText = null, asker = null, traceId = null, source = {}) {
-    const agent = fleetStore.getAgent?.(agentId)
+  const WAKE_ACK_DEADLINE_MS = Number(process.env.TLDA_WAKE_ACK_DEADLINE_MS || 60_000)
+  const _pendingWakeAcks = new Map()
+  function awaitWakeAcknowledgment({ agentId, traceId, source = {}, asker = null }) {
+    if (!traceId || source.priority !== 'urgent' || _pendingWakeAcks.has(traceId)) return
+    const timer = setTimeout(async () => {
+      const pending = _pendingWakeAcks.get(traceId)
+      if (!pending) return
+      _pendingWakeAcks.delete(traceId)
+      broadcastEvent('agent-wedged', { agentId, reason: 'urgent wake was delivered but not acknowledged before deadline', ts: new Date().toISOString() })
+      if (asker) deliverTldaFeedbackChat({ from: 'fleet:tlda', to: asker, text: `⚠️ **Urgent wake timed out** for \`${agentId}\`; delivery was attempted but no inbox acknowledgment arrived.`, metadata: { type: 'wake_ack_timeout', trace_id: traceId, agentId } })
+    }, WAKE_ACK_DEADLINE_MS)
+    timer.unref?.()
+    _pendingWakeAcks.set(traceId, { agentId, timer })
+  }
+  function acknowledgeWakeTrace(traceId, agentId) {
+    const pending = _pendingWakeAcks.get(traceId)
+    if (!pending || pending.agentId !== agentId) return false
+    clearTimeout(pending.timer)
+    _pendingWakeAcks.delete(traceId)
+    return true
+  }
+  async function requestWake(agentId, nudgeText = null, asker = null, traceId = null, source = {}) {
+    const agent = await fleetStore.getAgent(agentId)
     if (!agent || agent.dead || agent.human) return
     if (isReservedShellAgent(agent)) {
       spawnLibrarian.observeLiveness({
@@ -6338,7 +6359,15 @@ async function handleFleetWsMessage(ws, msg) {
           sendWakeNudge,
           getCurrentSeat: (id) => fleetStore.getCurrentAgentSeat(id),
           recordRuntimeLiveness: recordExplicitCheckAliveLiveness,
-          queueRetry: () => setTimeout(() => requestWake(agentId, nudgeText, asker, traceId, source), 2000).unref?.(),
+          awaitWakeAcknowledgment,
+          // Not awaited: this fires from a timer, nothing awaits a timer, and
+          // the wake is the terminal action — no caller reads a result and
+          // nothing is sequenced after it. Reported so a retry that cannot
+          // even reach the store is visible.
+          queueRetry: () => setTimeout(() => {
+            requestWake(agentId, nudgeText, asker, traceId, source)
+              .catch(e => console.error(`[wake] retry failed for ${agentId}: ${e?.message || e}`))
+          }, 2000).unref?.(),
           broadcastEvent,
           insertWakeLifecycleEvent: async () => {
             const wakeTs = new Date().toISOString()
@@ -6401,8 +6430,11 @@ async function handleFleetWsMessage(ws, msg) {
     const s = String(raw || '')
     return s.length > max ? `${s.slice(0, max)}…` : s
   }
-  const inboxStatusFor = (agentId) => {
-    const status = fleetStore.getAgent?.(agentId)?.metadata?.inboxStatus
+  // Reads the agent, so async — and the read is immediately property-accessed,
+  // which is the `(await …)?.x` shape that must not be written as
+  // `await …?.x`: that reads .metadata off a Promise and normalises undefined.
+  const inboxStatusFor = async (agentId) => {
+    const status = (await fleetStore.getAgent(agentId))?.metadata?.inboxStatus
     return normalizeInboxStatus(status)
   }
   const unreadPendingFor = (eventId, agentId) => fleetStore.isUnreadPending(eventId, agentId)
@@ -6412,8 +6444,8 @@ async function handleFleetWsMessage(ws, msg) {
     const prefix = label[0].toUpperCase() + label.slice(1)
     return `📬 ${prefix} ${event}: ${preview}\n${inboxCall(action)}`
   }
-  const chatWakeText = (text, agentId) => wakeText({ status: inboxStatusFor(agentId), event: 'message arrived', preview: previewForWake(text), action: 'read and respond' })
-  const delegateWakeText = (description, agentId) => wakeText({ status: inboxStatusFor(agentId), event: 'new task assigned', preview: previewForWake(description), action: 'see it' })
+  const chatWakeText = async (text, agentId) => wakeText({ status: await inboxStatusFor(agentId), event: 'message arrived', preview: previewForWake(text), action: 'read and respond' })
+  const delegateWakeText = async (description, agentId) => wakeText({ status: await inboxStatusFor(agentId), event: 'new task assigned', preview: previewForWake(description), action: 'see it' })
 
   if (type === 'amend') {
     // Amend = a NEW event of type 'amend' that REFERENCES the original chat
@@ -6652,20 +6684,28 @@ async function handleFleetWsMessage(ws, msg) {
       // (the reply, not the DB row, is what normally carries _tempId).
       insertedEvents.push({ id: eventId, type: 'chat', timestamp: ts, from_id: from, to_id: to, text, metadata: Object.keys(combinedMetadata).length ? combinedMetadata : null, materializableAttachments, ...(msg._tempId ? { _tempId: msg._tempId } : {}) })
       if (deliveryDecision.delivery === 'notified') {
-        wakeRequests.push({ to, text: chatWakeText(text, to), asker: from, traceId, source: { sourceEventId: eventId, priority: basePriority } })
+        wakeRequests.push({ to, text: await chatWakeText(text, to), asker: from, traceId, source: { sourceEventId: eventId, priority: basePriority } })
       } else if (deliveryDecision.delivery === 'batched' && deliveryDecision.notifyBy) {
         const delay = Math.max(0, Date.parse(deliveryDecision.notifyBy) - Date.now())
-        setTimeout(() => {
-          const latestStatus = inboxStatusFor(to)
-          const unreadPending = unreadPendingFor(eventId, to)
+        // async callback: the batched-wake decision now reads the agent's inbox
+        // status and its unread row through the store. setTimeout discards the
+        // returned promise, so the body is wrapped — an async timer callback
+        // that throws is an unhandled rejection, and a batched wake that
+        // silently stopped deciding is exactly the quiet failure this branch
+        // exists to avoid.
+        setTimeout(() => { (async () => {
+          const latestStatus = await inboxStatusFor(to)
+          const unreadPending = await unreadPendingFor(eventId, to)
           if (shouldWakeBatchedMessage({ status: latestStatus, unreadPending })) {
-            requestWake(to, wakeText({
+            // Not awaited, for the same reason as the retry timer above.
+            void requestWake(to, wakeText({
               status: latestStatus,
               event: 'batched message ready',
               preview: previewForWake(text),
               action: 'read and respond',
             }), from, traceId, { sourceEventId: eventId, priority: basePriority })
           }
+        })().catch(e => console.error(`[wake] batched wake decision failed for ${to}: ${e?.message || e}`))
         }, delay)
       }
     }
@@ -6690,7 +6730,9 @@ async function handleFleetWsMessage(ws, msg) {
       const recipient = await fleetStore.getAgent?.(to)
       if (recipient && !recipient.human) spawnLibrarian.observeDelivery(to, deliveredAt)
     }
-    for (const wake of wakeRequests) requestWake(wake.to, wake.text, wake.asker, wake.traceId, wake.source)
+    // Awaited in sequence, which is exactly what the synchronous version did:
+    // each wake ran to completion before the next began.
+    for (const wake of wakeRequests) await requestWake(wake.to, wake.text, wake.asker, wake.traceId, wake.source)
 
     // Plan mode approval routing: if Skip sends an affirmative/negative and
     // there's a pending plan approval for the targeted agent (or any agent),
@@ -6941,7 +6983,7 @@ async function handleFleetWsMessage(ws, msg) {
       trace_id: traceId,
     })
     if (!Number.isFinite(notifyAtMs) || notifyAtMs <= Date.now()) {
-      requestWake(resolved.id, delegateWakeText(description, resolved.id), from, traceId, { sourceEventId: delegateEvent?.id || null, sourceTaskId: taskId, priority: 'urgent' })
+      await requestWake(resolved.id, await delegateWakeText(description, resolved.id), from, traceId, { sourceEventId: delegateEvent?.id || null, sourceTaskId: taskId, priority: 'urgent' })
     }
     return
   }
