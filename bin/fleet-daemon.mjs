@@ -138,7 +138,12 @@ import { createDaemonMintCore } from '../daemon/mint-core.mjs'
 import { MintStore } from '../daemon/mint-store.mjs'
 import { createDaemonWakeCore } from '../daemon/wake-core.mjs'
 import { compileWakePermissionProfile } from '../daemon/wake-permission-profile.mjs'
-import { projectBelongsToWorld, projectWorldsPath, readProjectWorlds } from '../shared/project-worlds.mjs'
+import {
+  invalidProjectSourceEnvironmentOwners,
+  projectBelongsToWorld as projectBelongsToEnvironment,
+  projectWorldsPath,
+  readProjectWorlds as readProjectSourceEnvironmentOwners,
+} from '../shared/project-worlds.mjs'
 const log = createLogger('daemon')
 // CONFIG_DIR holds daemon configuration, cursors, PID and log files. Defaults to
 // ~/.config/tlda. TLDA_DAEMON_CONFIG_DIR plus PROJECTS_DIR lets tests/dev rigs
@@ -148,6 +153,7 @@ const CONFIG_DIR = process.env.TLDA_DAEMON_CONFIG_DIR || _SHARED_CONFIG_DIR
 const PROJECT_WORLDS_FILE = projectWorldsPath(_SHARED_CONFIG_DIR)
 const DAEMON_CONFIG_FILE = defaultDaemonConfigPath(CONFIG_DIR)
 const daemonSpawnConfig = readDaemonConfig(DAEMON_CONFIG_FILE)
+const CONFIGURED_ENV_NAMES = Object.keys(daemonSpawnConfig.environments?.values || {})
 const BOT_MODEL_SPEC = {
   alias: 'bot',
   id: 'bot',
@@ -496,9 +502,43 @@ const sourceSync = createSourceSync({
   resolveEditor: jsonlIngestor.resolveEditor,
 })
 
+let lastInvalidSourceOwnerSignature = null
+
+function reportInvalidProjectSourceOwners(ownerMap) {
+  const invalid = invalidProjectSourceEnvironmentOwners(ownerMap, CONFIGURED_ENV_NAMES)
+  const signature = JSON.stringify(invalid)
+  if (!invalid.length) {
+    lastInvalidSourceOwnerSignature = null
+    return
+  }
+  if (signature === lastInvalidSourceOwnerSignature) return
+  lastInvalidSourceOwnerSignature = signature
+  const byOwner = new Map()
+  for (const entry of invalid) {
+    if (!byOwner.has(entry.owner)) byOwner.set(entry.owner, [])
+    byOwner.get(entry.owner).push(entry.sourceDir)
+  }
+  const known = CONFIGURED_ENV_NAMES.join(', ') || '(none)'
+  const detail = [...byOwner.entries()]
+    .map(([owner, dirs]) => `${owner} (not configured; known: ${known}): ${dirs.join(', ')}`)
+    .join('; ')
+  const message = `Project source directories have invalid environment owners and are not being watched by any daemon: ${detail}. Repair ${PROJECT_WORLDS_FILE}.`
+  log.error(message)
+  sendMsg({
+    type: 'daemon-warning',
+    warning: 'invalid-project-source-environment-owner',
+    severity: 'critical',
+    message,
+    invalidOwners: invalid,
+    knownEnvironments: CONFIGURED_ENV_NAMES,
+    file: PROJECT_WORLDS_FILE,
+  })
+}
+
 function applyProjectWorldOwnership(reason) {
-  const projectWorlds = readProjectWorlds(PROJECT_WORLDS_FILE)
-  projects = serverProjects.filter(project => projectBelongsToWorld(project, ACTIVE_ENV, projectWorlds))
+  const projectSourceOwners = readProjectSourceEnvironmentOwners(PROJECT_WORLDS_FILE)
+  reportInvalidProjectSourceOwners(projectSourceOwners)
+  projects = serverProjects.filter(project => projectBelongsToEnvironment(project, ACTIVE_ENV, projectSourceOwners))
   sourceSync.sync(projects)
   log.info(`project ownership applied (${reason}): ${projects.length}/${serverProjects.length} projects in ${ACTIVE_ENV}`)
 }
@@ -1377,13 +1417,11 @@ function handleServerMessage(msg, wsAttemptId) {
     })
     _serverReady = true
     serverProjects = msg.projects || []
-    const projectWorlds = readProjectWorlds(PROJECT_WORLDS_FILE)
-    projects = serverProjects.filter(project => projectBelongsToWorld(project, ACTIVE_ENV, projectWorlds))
+    applyProjectWorldOwnership('daemon-welcome')
     applyDaemonGrants(permissionLedger, daemonSpawnConfig)
     log.info(`connected work received: ${projects.length} projects`)
     daemonDelivery.noteReady()
     sendActivityDeliveryMetrics('daemon-welcome')
-    sourceSync.sync(projects)
     sourceSync.flushPending()
     reconcileJsonlProcessBindings('daemon-welcome')
     jsonlIngestor.resumeAfterServerReady()
