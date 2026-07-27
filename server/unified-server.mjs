@@ -344,23 +344,46 @@ function logWsClose(kind, ws, code, reason) {
 // server where the DB is — the MCP and client just display fromName/toName and
 // always pair them with the durable fleet id. Mutates rows in place and returns
 // them. A null period name means the agent was nameless then (reach it by id).
+// A thread is a few dozen agents talking across thousands of rows, so the same
+// ids repeat constantly. The two memos below live and die with one stampNames
+// call: nothing outlives the request, so there is nothing to invalidate when an
+// agent is renamed.
+//   - nameAt is TIME-dependent, so its key is (id, ts). Keying on id alone would
+//     collapse an agent's distinct historical names into whichever one resolved
+//     first and silently rewrite history in every thread view.
+//   - The current friendly_name is time-independent, so id alone is its key.
 function stampNames(rows) {
   if (!Array.isArray(rows)) return rows
+  const nameAtMemo = new Map()
+  const nameNowMemo = new Map()
+  const nameAt = (id, ts) => {
+    const key = `${id} ${ts ?? ''}`
+    if (nameAtMemo.has(key)) return nameAtMemo.get(key)
+    const name = fleetStore.nameAt(id, ts)
+    nameAtMemo.set(key, name)
+    return name
+  }
+  const nameNow = id => {
+    if (nameNowMemo.has(id)) return nameNowMemo.get(id)
+    const name = fleetStore.getAgent(id)?.friendly_name ?? null
+    nameNowMemo.set(id, name)
+    return name
+  }
   for (const r of rows) {
     const ts = r.timestamp
     if (r.from) {
-      r.fromName = fleetStore.nameAt(r.from, ts)
-      const cur = fleetStore.getAgent(r.from)?.friendly_name ?? null
+      r.fromName = nameAt(r.from, ts)
+      const cur = nameNow(r.from)
       if (cur !== r.fromName) r.fromNameNow = cur
     }
     if (r.to) {
-      r.toName = fleetStore.nameAt(r.to, ts)
-      const cur = fleetStore.getAgent(r.to)?.friendly_name ?? null
+      r.toName = nameAt(r.to, ts)
+      const cur = nameNow(r.to)
       if (cur !== r.toName) r.toNameNow = cur
     }
     if (r.agentId) {
-      r.agentName = fleetStore.nameAt(r.agentId, ts)
-      const cur = fleetStore.getAgent(r.agentId)?.friendly_name ?? null
+      r.agentName = nameAt(r.agentId, ts)
+      const cur = nameNow(r.agentId)
       if (cur !== r.agentName) r.agentNameNow = cur
     }
   }
