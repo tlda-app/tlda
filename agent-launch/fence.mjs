@@ -33,6 +33,15 @@ const FENCE_AGENT_WRITE_ROOTS = [
   '~/.config/tlda/dev-worktree/**',
   '~/.config/tlda/dev-server',
   '~/.config/tlda/dev-server/**',
+  // The MCP durable fleet outbox. login() enqueues into this SQLite file BEFORE
+  // it can reach the server, so a fenced agent that cannot write it never claims
+  // its shell: it sits at `status: shell` forever with a working MCP, and the
+  // only place the failure appears is the login tool's own return string.
+  // Prefix glob on purpose — fleetTransportOutboxPath() derives one file per
+  // agent id, plus SQLite's -wal/-shm/-journal siblings. Naming one exact
+  // filename is what rotted: the allowlist still said `mcp-fleet-transport.sqlite`
+  // after 7ae996fc (2026-07-24) split the outbox per agent.
+  '~/.config/tlda/mcp-fleet-transport*',
   '~/Library/Application Support/Google/Chrome for Testing',
   '~/Library/Application Support/Google/Chrome for Testing/**',
   '~/Library/Caches/ms-playwright',
@@ -76,6 +85,9 @@ const FENCE_AGENT_READ_ROOTS = [
   '/private/tmp/tlda-pw-sockets/**',
   '~/.config/tlda/dev-worktree',
   '~/.config/tlda/dev-worktree/**',
+  // Paired with the same entry in FENCE_AGENT_WRITE_ROOTS — SQLite reads the
+  // outbox it writes, so granting only write would leave login broken.
+  '~/.config/tlda/mcp-fleet-transport*',
   '~/Library/Application Support/Google/Chrome for Testing',
   '~/Library/Application Support/Google/Chrome for Testing/**',
   '~/Library/Caches/ms-playwright',
