@@ -63,11 +63,6 @@ volume, clones the friend's Git repository into its work directory, and seeds
 Codex authentication from a Fly secret.
 
 `tlda-fly friend plan` and `tlda-fly friend up` generate this render/agent pair.
-That helper is not currently a complete supported setup: its final project-link
-step still invokes the removed `tlda doc link` command, so `friend up` cannot
-finish successfully with the current CLI. The image and configuration path
-exist, but provisioning remains an operator-managed setup until that command is
-corrected.
 
 ## The live Fly deployment
 
