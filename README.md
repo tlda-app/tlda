@@ -136,10 +136,8 @@ the minimum is 15). Remote commits flow into tlda; source edits sent through
 tlda are committed and pushed back to the same remote. Pollers resume when the
 server restarts.
 
-The sync path reports fetch, build, and push failures, but automatic
-file-by-file Git conflict resolution is not implemented. The UI has readers for
-`overleafConflictFiles`, but the server does not currently produce that conflict
-state.
+Fetch, build, and push failures are reported. tlda does not resolve Git
+conflicts on the remote for you; when one occurs, resolve it in the repository.
 
 ---
 
@@ -163,7 +161,7 @@ Your paper renders as pages on the canvas and rebuilds live every time you save.
 
 ### Version history
 
-A stack of build timestamps sits in the top-left corner, most recent on top. Click an older one to open that version side by side with the current document, with a slider along the bottom to scrub through the full history; click the current timestamp to close it. Every successful build is committed to a per-project history kept by the server. When a daemon is connected to a linked Git working copy, tlda also attempts to mirror the build there as `shadow/<hash>` and may advance the current branch with a preservation commit. A mirror failure does not fail the document build. The project-list **Git mirror sync** checkbox currently controls linked remote/Overleaf synchronization; it does not enable or disable this build mirror.
+A stack of build timestamps sits in the top-left corner, most recent on top. Click an older one to open that version side by side with the current document, with a slider along the bottom to scrub through the full history; click the current timestamp to close it. Every successful build goes into the server's own per-project history, so the timeline is complete regardless of your git habits. If a daemon is connected to a linked working copy, each build is also mirrored into it — be warned that if you push to your remotes, the history you share will be fine-grained (a commit per build). The project-list **Git mirror sync** checkbox is about syncing the linked remote, not this build history.
 
 <img src="docs/images/tlda-compare-mode.png" alt="Two versions of a page side by side" width="100%">
 
