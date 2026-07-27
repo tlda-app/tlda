@@ -41,7 +41,6 @@ export class ServerDaemonOutbox {
       DELETE FROM server_daemon_outbox
       WHERE daemon_key = ? AND dedupe_key = ?
     `)
-    this.countForDaemonStmt = this.db.prepare('SELECT count(*) AS count FROM server_daemon_outbox WHERE daemon_key = ?')
     this.enqueueTxn = this.db.transaction(({ id, daemonKey, dedupeKey, type, payload, createdAt }) => {
       if (dedupeKey) this.deleteDedupeStmt.run(daemonKey, dedupeKey)
       this.queue.insert({
@@ -95,13 +94,5 @@ export class ServerDaemonOutbox {
   deleteByDedupeKey(daemonKey, dedupeKey) {
     if (!daemonKey || !dedupeKey) return 0
     return this.deleteDedupeStmt.run(daemonKey, dedupeKey).changes
-  }
-
-  count() {
-    return this.queue.count()
-  }
-
-  countForDaemon(daemonKey) {
-    return this.countForDaemonStmt.get(daemonKey).count
   }
 }

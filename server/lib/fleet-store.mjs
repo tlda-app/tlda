@@ -30,6 +30,8 @@ import { anyTermFtsQuery, ftsQueryTerms } from '../../shared/fts-query.mjs';
 // joins that against its own roster.
 import { isFleetRosterAgent } from '../../shared/fleet-runtime-status.mjs';
 import { createTaskDocMaterializer } from './task-doc-materializer.mjs';
+import { ServerDaemonOutbox } from './server-daemon-outbox.mjs';
+import { AgentSeatBindingObligations } from './agent-seat-binding-obligations.mjs';
 
 // Persistent DB under ~/.config/tlda/ (survives macOS reboots).
 // Previously /tmp/fleet.db which got wiped on reboot — lost all agents/state.
@@ -340,6 +342,14 @@ export class FleetStore {
     this.db.pragma('journal_size_limit = 67108864');
     this._createTables();
     this._prepareStatements();
+    // Two delivery ledgers that are nothing but tables in this database. They
+    // were constructed by unified-server from fleetStore.db, which cannot
+    // survive the store moving to a worker — and they should not have to,
+    // because neither reaches main-thread state. ServerDaemonOutbox in
+    // particular wraps its enqueue in a db.transaction(), and a transaction
+    // has to run on the thread that owns the connection.
+    this._serverDaemonOutbox = new ServerDaemonOutbox(this.db);
+    this._agentSeatBindingObligations = new AgentSeatBindingObligations(this.db);
     this._closed = false;
     this._cwdSegmentBackfillImmediate = null;
     this._scheduleCwdSegmentBackfill();
@@ -4217,6 +4227,61 @@ export class FleetStore {
 
   terminalChatDuplicateExists(timestamp, fromId, toId, textPrefix) {
     return !!this._terminalChatDuplicate.get(timestamp, fromId, toId, textPrefix);
+  }
+
+  // ---- Server → daemon outbox ----
+  // Flat pass-throughs rather than handing the object out: the client is
+  // generated from a method manifest, and an object cannot cross the boundary.
+  // Only the surface that is actually called is exposed — the ledger's count()
+  // and countForDaemon() had no callers and are deleted rather than proxied.
+
+  serverDaemonOutboxEnqueue(daemonKey, message, options) {
+    return this._serverDaemonOutbox.enqueue(daemonKey, message, options);
+  }
+
+  serverDaemonOutboxPendingForDaemon(daemonKey, limit) {
+    return this._serverDaemonOutbox.pendingForDaemon(daemonKey, limit);
+  }
+
+  serverDaemonOutboxGet(id) {
+    return this._serverDaemonOutbox.get(id);
+  }
+
+  serverDaemonOutboxAck(id) {
+    this._serverDaemonOutbox.ack(id);
+  }
+
+  serverDaemonOutboxMarkAttempt(id) {
+    this._serverDaemonOutbox.markAttempt(id);
+  }
+
+  // The error crosses as its message. An Error instance is not structured-
+  // cloneable in a way that survives usefully, and the ledger only ever stores
+  // String(error) anyway.
+  serverDaemonOutboxMarkError(id, error) {
+    this._serverDaemonOutbox.markError(id, error);
+  }
+
+  serverDaemonOutboxDeleteByDedupeKey(daemonKey, dedupeKey) {
+    return this._serverDaemonOutbox.deleteByDedupeKey(daemonKey, dedupeKey);
+  }
+
+  // ---- Agent seat-binding obligations ----
+
+  putAgentSeatBindingObligation(payload) {
+    return this._agentSeatBindingObligations.put(payload);
+  }
+
+  getAgentSeatBindingObligation(id) {
+    return this._agentSeatBindingObligations.get(id);
+  }
+
+  listAgentSeatBindingObligationsForDaemon(daemonKey) {
+    return this._agentSeatBindingObligations.listForDaemon(daemonKey);
+  }
+
+  removeAgentSeatBindingObligation(id) {
+    return this._agentSeatBindingObligations.remove(id);
   }
 
   daemonOutboxWasProcessed(outboxId) {

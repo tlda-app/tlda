@@ -94,8 +94,7 @@ import { daemonAddress, describeAgentAddress } from '../shared/agent-move-target
 import { readBuildInfo } from './lib/build-info.mjs'
 import { resolveTimerParticipants, timerDeliveryFailureResult, timerTerminalInputFailureResult } from './lib/timer-routing.mjs'
 import { ServerTimerScheduler } from './lib/timer-scheduler.mjs'
-import { ServerDaemonOutbox } from './lib/server-daemon-outbox.mjs'
-import { AgentSeatBindingObligations, isRetirableStaleAgentSeatBindingObligation, verifyAgentSeatBindingTerminal } from './lib/agent-seat-binding-obligations.mjs'
+import { isRetirableStaleAgentSeatBindingObligation, verifyAgentSeatBindingTerminal } from './lib/agent-seat-binding-obligations.mjs'
 import { createDaemonWsControlPlane } from './lib/daemon-ws-control-plane.mjs'
 import { clearTrustedHeartbeatProbes, shouldSkipHeartbeatSweepForLag, shouldTerminateForMissedPong, socketCanAcceptMore } from '../shared/fleet-ws-flow.mjs'
 import {
@@ -260,8 +259,6 @@ resetStaleBuildStates()
 // to isolate from the live /tmp/fleet.db.
 const fleetStore = new FleetStore(process.env.TLDA_FLEET_DB, { taskDoc: true })
 const fleetOperationContext = new AsyncLocalStorage()
-const serverDaemonOutbox = new ServerDaemonOutbox(fleetStore.db)
-const agentSeatBindingObligations = new AgentSeatBindingObligations(fleetStore.db)
 const serverDaemonOutboxInflight = new Map()
 let serverTimerScheduler = null
 
@@ -4731,7 +4728,6 @@ const fleetRouter = createFleetRouter({
   sendDaemonEphemeral, sendDaemonDurable, resolveRpc, daemonConnections, resolveSpawnTarget,
   broadcastDaemonAgentsUpdated,
   enqueueDaemonMessage: (...args) => enqueueDaemonMessage(...args),
-  agentSeatBindingObligations,
   hasOpenFleetSocketForAgent,
   reanimateAgent,
   requireOperationRead: requireRw,
@@ -8142,7 +8138,6 @@ const {
   clearServerDaemonOutboxInflightForDaemon,
 } = createDaemonWsControlPlane({
   daemonConnections,
-  serverDaemonOutbox,
   serverDaemonOutboxInflight,
   fleetStore,
   socketCanAcceptMore,
@@ -8151,22 +8146,22 @@ const {
       ? 'terminal'
       : 'retry'
   ),
-  onPermanentServerDaemonOutboxError: ({ msg, row, daemonKey }) => {
+  onPermanentServerDaemonOutboxError: async ({ msg, row, daemonKey }) => {
     const obligationId = row?.payload?.obligation_id || msg?.obligation_id || null
-    const obligation = obligationId ? agentSeatBindingObligations.get(obligationId) : null
-    if (retireStaleAgentSeatBindingObligation(obligation, { reason: msg?.error || 'permanent receiver rejection' })) return
+    const obligation = obligationId ? await fleetStore.getAgentSeatBindingObligation(obligationId) : null
+    if (await retireStaleAgentSeatBindingObligation(obligation, { reason: msg?.error || 'permanent receiver rejection' })) return
     console.warn(`[agent-seat-binding] permanent receiver rejection retained obligation=${obligationId || 'unknown'} daemon=${daemonKey || 'unknown'}: ${msg?.error || 'receiver did not accept delivery'}`)
   },
 })
 
-function retireStaleAgentSeatBindingObligation(obligation, { reason = 'stale binding obligation' } = {}) {
+async function retireStaleAgentSeatBindingObligation(obligation, { reason = 'stale binding obligation' } = {}) {
   if (!obligation?.obligation_id) return false
   const agent = fleetStore.findAgent?.(obligation.agent_id)
   const currentSeat = fleetStore.getCurrentAgentSeat?.(obligation.agent_id)
   if (!isRetirableStaleAgentSeatBindingObligation({ obligation, agent, currentSeat })) return false
-  const removed = agentSeatBindingObligations.remove(obligation.obligation_id)
+  const removed = await fleetStore.removeAgentSeatBindingObligation(obligation.obligation_id)
   const dedupeKey = `agent-seat-binding:${obligation.obligation_id}`
-  const removedOutbox = serverDaemonOutbox.deleteByDedupeKey?.(obligation.daemon_key, dedupeKey) || 0
+  const removedOutbox = await fleetStore.serverDaemonOutboxDeleteByDedupeKey(obligation.daemon_key, dedupeKey) || 0
   if (removed || removedOutbox) {
     console.warn(`[agent-seat-binding] retired stale obligation=${obligation.obligation_id} agent=${obligation.agent_id} daemon=${obligation.daemon_key} outbox=${removedOutbox} reason=${reason}`)
   }
@@ -8518,9 +8513,9 @@ async function handleDaemonWsMessage(ws, msg) {
     }
     // Send persisted backing file watch list to daemon.
     sendWatchBackingFiles()
-    for (const obligation of agentSeatBindingObligations.listForDaemon(daemonKey)) {
-      if (retireStaleAgentSeatBindingObligation(obligation, { reason: 'daemon welcome reap' })) continue
-      enqueueDaemonMessage(daemonKey, {
+    for (const obligation of await fleetStore.listAgentSeatBindingObligationsForDaemon(daemonKey)) {
+      if (await retireStaleAgentSeatBindingObligation(obligation, { reason: 'daemon welcome reap' })) continue
+      await enqueueDaemonMessage(daemonKey, {
         type: 'agent-seat-binding-obligation',
         ...obligation,
       }, { dedupeKey: `agent-seat-binding:${obligation.obligation_id}` })
@@ -8863,7 +8858,7 @@ async function handleDaemonWsMessage(ws, msg) {
   }
 
   if (type === 'agent-seat-binding-obligation-complete') {
-    const obligation = agentSeatBindingObligations.get(msg.obligation_id)
+    const obligation = await fleetStore.getAgentSeatBindingObligation(msg.obligation_id)
     if (!obligation) return
     const seat = fleetStore.getCurrentAgentSeat?.(obligation.agent_id)
     if (
@@ -8871,12 +8866,12 @@ async function handleDaemonWsMessage(ws, msg) {
       seat?.daemon_key !== obligation.daemon_key ||
       seat?.terminal_capability !== msg.terminal_capability
     ) throw new Error(`binding obligation completion readback mismatch for ${obligation.agent_id}`)
-    agentSeatBindingObligations.remove(obligation.obligation_id)
+    await fleetStore.removeAgentSeatBindingObligation(obligation.obligation_id)
     return
   }
 
   if (type === 'agent-seat-binding-obligation-terminal') {
-    const obligation = agentSeatBindingObligations.get(msg.obligation_id)
+    const obligation = await fleetStore.getAgentSeatBindingObligation(msg.obligation_id)
     if (!obligation) return
     const agent = fleetStore.findAgent(obligation.agent_id)
     verifyAgentSeatBindingTerminal({
@@ -8886,7 +8881,7 @@ async function handleDaemonWsMessage(ws, msg) {
       agent,
       seat: fleetStore.getCurrentAgentSeat?.(obligation.agent_id),
     })
-    agentSeatBindingObligations.remove(obligation.obligation_id)
+    await fleetStore.removeAgentSeatBindingObligation(obligation.obligation_id)
     return
   }
 

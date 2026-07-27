@@ -213,7 +213,7 @@ export function filteredFleetRosterPage(roster, {
   return { matched: ordered.length, rows: page, nextCursor }
 }
 
-export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, clearEphemeralState, suppressEchoFor, sendDaemonEphemeral, sendDaemonDurable, resolveRpc, daemonConnections, resolveSpawnTarget, broadcastDaemonAgentsUpdated, enqueueDaemonMessage, agentSeatBindingObligations, hasOpenFleetSocketForAgent = () => false, reanimateAgent, requireOperationRead }) {
+export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, clearEphemeralState, suppressEchoFor, sendDaemonEphemeral, sendDaemonDurable, resolveRpc, daemonConnections, resolveSpawnTarget, broadcastDaemonAgentsUpdated, enqueueDaemonMessage, hasOpenFleetSocketForAgent = () => false, reanimateAgent, requireOperationRead }) {
   const router = Router()
 
   router.get('/api/fleet/operations/:operationId', requireOperationRead, (req, res) => {
@@ -316,7 +316,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     }
   })
 
-  router.post('/api/agent-seat-binding-obligation', (req, res) => {
+  router.post('/api/agent-seat-binding-obligation', async (req, res) => {
     const body = req.body || {}
     const required = ['agent_id', 'daemon_key', 'local_agent_id', 'cwd', 'kind', 'model', 'friendly_name']
     const missing = required.filter(key => !body[key])
@@ -326,16 +326,16 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     }
     const agent = fleetStore?.findAgent(body.agent_id)
     if (!agent) { res.status(404).json({ ok: false, error: 'agent not found' }); return }
-    const obligation = agentSeatBindingObligations.put({ ...body, agent_id: agent.id })
-    enqueueDaemonMessage(obligation.daemon_key, {
+    const obligation = await fleetStore.putAgentSeatBindingObligation({ ...body, agent_id: agent.id })
+    await enqueueDaemonMessage(obligation.daemon_key, {
       type: 'agent-seat-binding-obligation',
       ...obligation,
     }, { dedupeKey: `agent-seat-binding:${obligation.obligation_id}` })
     res.status(202).json({ ok: true, pending: true, obligation })
   })
 
-  router.post('/api/agent-seat-binding-obligation/:id/retire', (req, res) => {
-    const obligation = agentSeatBindingObligations.get(req.params.id)
+  router.post('/api/agent-seat-binding-obligation/:id/retire', async (req, res) => {
+    const obligation = await fleetStore.getAgentSeatBindingObligation(req.params.id)
     const body = req.body || {}
     if (!obligation) { res.status(404).json({ ok: false, error: 'binding obligation not found' }); return }
     if (body.agent_id !== obligation.agent_id || body.daemon_key !== obligation.daemon_key) {

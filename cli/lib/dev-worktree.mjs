@@ -475,6 +475,12 @@ export async function cmdServeWorktree(args) {
       '  localhost: ops',
       'models: {}',
       'default: ops',
+      // Required by getStatusScanMs(), which deliberately has no default —
+      // a missing value throws at daemon startup rather than picking a number
+      // nobody chose. Without this line every sandbox daemon on every branch
+      // dies on import while `serve --sandbox` still prints its pid and says
+      // it started.
+      'statusScanSeconds: 3',
       '',
     ].join('\n'))
     const dlogFd = openSync(daemonLogFile(branch), 'a')
