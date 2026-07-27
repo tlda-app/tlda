@@ -122,6 +122,12 @@ function cenv(key, value) {
   return `-c ${sq(`mcp_servers.tlda.env.${key}=${tomlBasicString(value)}`)}`
 }
 
+function cprojectTrust(cwd) {
+  if (!cwd) return null
+  const project = fs.realpathSync(cwd)
+  return `-c ${sq(`projects.${tomlBasicString(project)}.trust_level="trusted"`)}`
+}
+
 function appendLaunchFlags(parts, harnessOptions = {}) {
   for (const flag of [...(harnessOptions.required || []), ...(harnessOptions.preferences || [])]) {
     if (typeof flag !== 'string' || !flag.trim()) continue
@@ -208,6 +214,8 @@ export function buildCmd({
     processEnv.push(`TLDA_NODE_DNS_ALIAS_ADDR=${sq(dnsAlias.address)}`)
   }
   const parts = [...processEnv, 'codex', '--no-alt-screen']
+  const trustOverride = cprojectTrust(cwd)
+  if (trustOverride) parts.push(trustOverride)
   if (resumeId) parts.push(`resume ${sq(resumeId)}`)
   parts.push(cenv('CODEX_CI', '1'))
   if (fleetId) parts.push(cenv('FLEET_ID', fleetId))
