@@ -47,7 +47,7 @@ function createLedger(onProcessBindingChange = () => {}) {
   }
 }
 
-function createHarness({ kind = 'codex', permissionLedger = null, jsonlFileName = 'rollout-jsonl-owner.jsonl' } = {}) {
+function createHarness({ kind = 'codex', permissionLedger = null, resolveMintFacts = null, jsonlFileName = 'rollout-jsonl-owner.jsonl' } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'tlda-jsonl-watchers-'))
   const configDir = join(dir, 'config')
   const projectsDir = join(dir, 'projects')
@@ -108,6 +108,7 @@ function createHarness({ kind = 'codex', permissionLedger = null, jsonlFileName 
     },
     jsonlTranscriptRoots: [projectsDir],
     permissionLedger,
+    resolveMintFacts,
     bufferActivity(agentId, activity) { bufferedActivity.push({ agentId, activity }) },
     extractActivityEvents() { return [] },
     machineId: 'mini',
@@ -240,6 +241,144 @@ function assertTailCount(harness, expected) {
   } finally {
     console.warn = originalWarn
     cleanup()
+  }
+}
+
+{
+  const sessionUuid = '019fa554-0000-7000-8000-000000000001'
+  const harness = createHarness({
+    jsonlFileName: `rollout-2026-07-27T17-00-00-${sessionUuid}.jsonl`,
+    permissionLedger: { setSessionSync() {} },
+    resolveMintFacts: marker => marker.mint_id === 'mint-jsonl-owner'
+      ? {
+          fleetId: 'fleet:jsonl-owner',
+          friendlyName: 'jsonl-owner',
+          sessionId: sessionUuid,
+          sessionPath: harness.jsonlPath,
+          processState: {
+            harness: 'codex',
+            model: 'gpt-from-mint',
+            tmux_session: 'fleet-jsonl-owner',
+            cwd: '/Users/skip/work/tlda',
+          },
+        }
+      : null,
+  })
+  try {
+    harness.setRows([])
+    await harness.sync('initial-empty-root')
+    const watch = harness.sentToChild.find(message => message.type === 'watch')
+    writeFileSync(harness.jsonlPath, '{"type":"session_meta","payload":{"thread_source":"user"}}\n')
+    harness.children[0].child.emit('message', {
+      type: 'batch',
+      watchId: watch.watchId,
+      seq: 1,
+      outputs: [{
+        type: 'identity',
+        identity: {
+          marker: {
+            daemon_key: 'mini:default',
+            machine_id: 'mini',
+            env_name: 'default',
+            fleet_id: 'fleet:jsonl-owner',
+            mint_id: 'mint-jsonl-owner',
+            harness_kind: 'codex',
+            cwd: '/Users/skip/work/tlda',
+          },
+        },
+      }],
+    })
+    assert.equal(harness.sentToServer.some(message =>
+      message.type === 'agent-seat' &&
+      message.agent_id === 'fleet:jsonl-owner' &&
+      message.session_id === sessionUuid &&
+      message.model === 'gpt-from-mint'
+    ), true)
+  } finally {
+    harness.cleanup()
+  }
+}
+
+{
+  const sessionUuid = '019fa554-0000-7000-8000-000000000002'
+  const harness = createHarness({
+    jsonlFileName: `rollout-2026-07-27T17-00-01-${sessionUuid}.jsonl`,
+    permissionLedger: { setSessionSync() {} },
+    resolveMintFacts: () => ({
+      processState: { model: 'gpt-from-mint' },
+      launchRecipe: { modelSpec: { id: 'gpt-from-launch-spec' }, model: 'launch-alias' },
+    }),
+  })
+  try {
+    harness.setRows([])
+    await harness.sync('initial-empty-root')
+    const watch = harness.sentToChild.find(message => message.type === 'watch')
+    writeFileSync(harness.jsonlPath, '{"type":"session_meta","payload":{"thread_source":"user"}}\n')
+    harness.children[0].child.emit('message', {
+      type: 'batch',
+      watchId: watch.watchId,
+      seq: 1,
+      outputs: [{
+        type: 'identity',
+        identity: {
+          marker: {
+            daemon_key: 'mini:default',
+            machine_id: 'mini',
+            env_name: 'default',
+            fleet_id: 'fleet:jsonl-owner',
+            mint_id: 'mint-jsonl-owner',
+            harness_kind: 'codex',
+            model: 'gpt-from-marker',
+            cwd: '/Users/skip/work/tlda',
+          },
+        },
+      }],
+    })
+    assert.equal(harness.sentToServer.some(message =>
+      message.type === 'agent-seat' &&
+      message.agent_id === 'fleet:jsonl-owner' &&
+      message.session_id === sessionUuid &&
+      message.model === 'gpt-from-marker'
+    ), true)
+  } finally {
+    harness.cleanup()
+  }
+}
+
+{
+  const sessionUuid = '019fa554-0000-7000-8000-000000000003'
+  const harness = createHarness({
+    jsonlFileName: `rollout-2026-07-27T17-00-02-${sessionUuid}.jsonl`,
+    permissionLedger: { setSessionSync() {} },
+    resolveMintFacts: () => null,
+  })
+  try {
+    harness.setRows([])
+    await harness.sync('initial-empty-root')
+    const watch = harness.sentToChild.find(message => message.type === 'watch')
+    writeFileSync(harness.jsonlPath, '{"type":"session_meta","payload":{"thread_source":"user"}}\n')
+    harness.children[0].child.emit('message', {
+      type: 'batch',
+      watchId: watch.watchId,
+      seq: 1,
+      outputs: [{
+        type: 'identity',
+        identity: {
+          marker: {
+            daemon_key: 'mini:default',
+            machine_id: 'mini',
+            env_name: 'default',
+            fleet_id: 'fleet:jsonl-owner',
+            mint_id: 'mint-jsonl-owner',
+            harness_kind: 'codex',
+            cwd: '/Users/skip/work/tlda',
+          },
+        },
+      }],
+    })
+    assert.equal(harness.sentToServer.some(message => message.type === 'agent-seat'), false)
+  } finally {
+    harness.cleanup()
   }
 }
 
