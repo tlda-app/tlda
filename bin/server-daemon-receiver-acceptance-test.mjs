@@ -7,6 +7,21 @@ import {
   SERVER_DAEMON_OUTBOX_ERROR_TYPE,
 } from '../shared/daemon-delivery.mjs'
 
+// The control plane reaches the outbox through the store now, not through an
+// injected outbox object — the ledger lives inside the worker with the database.
+// These fakes keep their original shape and are adapted here, so the assertions
+// below still describe delivery semantics rather than plumbing.
+function storeFor(outbox) {
+  return {
+    serverDaemonOutboxAck: id => outbox.ack?.(id),
+    serverDaemonOutboxMarkError: (id, error) => outbox.markError?.(id, error),
+    serverDaemonOutboxMarkAttempt: id => outbox.markAttempt?.(id),
+    serverDaemonOutboxGet: id => outbox.get?.(id) ?? null,
+    serverDaemonOutboxPendingForDaemon: (daemonKey, limit) => outbox.pendingForDaemon?.(daemonKey, limit) ?? [],
+    serverDaemonOutboxEnqueue: (daemonKey, message, options) => outbox.enqueue?.(daemonKey, message, options),
+  }
+}
+
 test('ordinary or old-daemon receiver rejection retains the server outbox row and schedules retry', async () => {
   const inflight = new Map([['outbox-1', 'mini:default']])
   const errors = []
@@ -22,7 +37,7 @@ test('ordinary or old-daemon receiver rejection retains the server outbox row an
   }
   const control = createDaemonWsControlPlane({
     daemonConnections: new Map([['mini:default', { readyState: 1, send: value => sent.push(JSON.parse(value)) }]]),
-    serverDaemonOutbox: outbox,
+    fleetStore: storeFor(outbox),
     serverDaemonOutboxInflight: inflight,
     setTimeoutFn: (fn, ms) => {
       timers.push({ fn, ms })
@@ -42,7 +57,7 @@ test('ordinary or old-daemon receiver rejection retains the server outbox row an
   assert.equal(inflight.has('outbox-1'), false)
   assert.equal(timers.length, 1)
   assert.equal(timers[0].ms, 1000)
-  timers[0].fn()
+  await timers[0].fn()
   assert.deepEqual(attempts, ['outbox-1'])
   assert.deepEqual(sent, [{ type: 'agent-seat-binding-obligation' }])
 })
@@ -68,7 +83,7 @@ test('permanent receiver rejection deletes the server outbox row without retry',
   }
   const control = createDaemonWsControlPlane({
     daemonConnections: new Map([['mini:testing', { readyState: 1, send: () => {} }]]),
-    serverDaemonOutbox: outbox,
+    fleetStore: storeFor(outbox),
     serverDaemonOutboxInflight: inflight,
     setTimeoutFn: (fn, ms) => {
       timers.push({ fn, ms })
@@ -119,7 +134,7 @@ test('permanent flag does not universalize terminal handling to another operatio
   }
   const control = createDaemonWsControlPlane({
     daemonConnections: new Map([['mini:testing', { readyState: 1, send() {} }]]),
-    serverDaemonOutbox: outbox,
+    fleetStore: storeFor(outbox),
     serverDaemonOutboxInflight: inflight,
     setTimeoutFn: (fn, ms) => {
       timers.push({ fn, ms })
@@ -156,11 +171,11 @@ test('receiver acceptance deletes the server outbox row', async () => {
   const acks = []
   const control = createDaemonWsControlPlane({
     daemonConnections: new Map(),
-    serverDaemonOutbox: {
+    fleetStore: storeFor({
       ack: id => acks.push(id),
       markError() {},
       pendingForDaemon: () => [],
-    },
+    }),
     serverDaemonOutboxInflight: inflight,
   })
 
