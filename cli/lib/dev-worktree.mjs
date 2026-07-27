@@ -36,6 +36,7 @@ import { join } from 'path'
 import { homedir } from 'os'
 import { X509Certificate } from 'crypto'
 import { hasTls, resolveConfig, CONFIG_DIR } from '../../shared/config.mjs'
+import { daemonLifecycleSocketPath } from '../../shared/daemon-socket-path.mjs'
 import { resolveRepoRoot, findFreePort } from './dev-vite.mjs'
 import { spawnDetachedServer } from './server-start.mjs'
 import { findTailscaleIPv4 } from './share-url.mjs'
@@ -294,6 +295,18 @@ async function health(base) {
   }
 }
 
+async function waitForSandboxDaemon(pid, socketPath, logPath) {
+  for (let i = 0; i < 60; i++) {
+    if (!alive(pid)) {
+      const detail = existsSync(logPath) ? ` — see ${logPath}` : ''
+      throw new Error(`sandbox daemon exited during startup${detail}`)
+    }
+    if (existsSync(socketPath)) return
+    await new Promise(r => setTimeout(r, 250))
+  }
+  throw new Error(`sandbox daemon did not create lifecycle socket ${socketPath} within 15s — see ${logPath}`)
+}
+
 // ---- verbs ----
 
 function parseArgs(args) {
@@ -444,6 +457,7 @@ export async function cmdServeWorktree(args) {
     writeFileSync(join(dcfg, 'server.yaml'), '')
     writeFileSync(join(dcfg, 'daemon.yaml'), [
       `machineId: ${JSON.stringify(`dev-${sanitize(branch)}`)}`,
+      'statusScanSeconds: 3',
       'environments:',
       `  default: ${JSON.stringify(configName(branch))}`,
       '  values:',
@@ -464,6 +478,7 @@ export async function cmdServeWorktree(args) {
       '',
     ].join('\n'))
     const dlogFd = openSync(daemonLogFile(branch), 'a')
+    const daemonSocket = daemonLifecycleSocketPath(dcfg, configName(branch))
     const dchild = spawn(process.execPath, [join(worktreeDir, 'bin', 'fleet-daemon.mjs')], {
       detached: true,
       stdio: ['ignore', dlogFd, dlogFd],
@@ -482,6 +497,15 @@ export async function cmdServeWorktree(args) {
     dchild.unref()
     daemonPid = dchild.pid
     writeFileSync(daemonPidFile(branch), String(daemonPid))
+    try {
+      await waitForSandboxDaemon(daemonPid, daemonSocket, daemonLogFile(branch))
+    } catch (error) {
+      try { process.kill(daemonPid) } catch { /* already exited */ }
+      try { process.kill(pid) } catch { /* already exited */ }
+      removePreviewConfig(branch)
+      console.error(error.message)
+      process.exit(1)
+    }
     console.log(`sandbox daemon started (pid ${daemonPid}) → ${base} (sandbox-locked, cannot reach prod)`)
   }
 

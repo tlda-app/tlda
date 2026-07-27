@@ -62,6 +62,7 @@ import net from 'node:net'
 import { randomUUID } from 'node:crypto'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { fileURLToPath } from 'url'
+import { daemonLifecycleSocketPath, daemonStateSuffix } from '../shared/daemon-socket-path.mjs'
 import {
   getRwToken, DEFAULT_PORT, hasTls,
   CONFIG_DIR as _SHARED_CONFIG_DIR, TLS_CA_PATH,
@@ -173,11 +174,6 @@ if (!ACTIVE_ENV) {
   console.error('[fleet-daemon] REFUSING to start without a named active environment; daemon env is required')
   process.exit(1)
 }
-function daemonStateSuffix(name) {
-  const clean = String(name || '').trim()
-  if (!clean) return ''
-  return `.${clean.replace(/[^a-zA-Z0-9._-]+/g, '-')}`
-}
 const DAEMON_STATE_SUFFIX = daemonStateSuffix(ACTIVE_ENV)
 const CURSORS_FILE = path.join(CONFIG_DIR, `daemon-cursors${DAEMON_STATE_SUFFIX}.json`)
 const PID_FILE = path.join(CONFIG_DIR, `fleet-daemon${DAEMON_STATE_SUFFIX}.pid`)
@@ -190,7 +186,7 @@ const permissionLedger = createPermissionLedger(PERMISSION_LEDGER_FILE, {
 applyDaemonGrants(permissionLedger, daemonSpawnConfig)
 
 const LOG_FILE = path.join(CONFIG_DIR, `fleet-daemon${DAEMON_STATE_SUFFIX}.log`)
-const LOCAL_RPC_SOCKET = path.join(CONFIG_DIR, `fleet-daemon${DAEMON_STATE_SUFFIX}.sock`)
+const LOCAL_RPC_SOCKET = daemonLifecycleSocketPath(CONFIG_DIR, ACTIVE_ENV)
 const DAEMON_OUTBOX_FILE = defaultOutboxPath(CONFIG_DIR, DAEMON_STATE_SUFFIX)
 const LEGACY_DEAD_LETTER_FILE = path.join(CONFIG_DIR, `daemon-dead-letters${DAEMON_STATE_SUFFIX}.jsonl`)
 const PROJECTS_DIR = process.env.PROJECTS_DIR || path.join(os.homedir(), '.claude', 'projects')
@@ -1017,6 +1013,7 @@ machineRpc.register({
 })
 
 function startLocalLifecycleRpc() {
+  fs.mkdirSync(path.dirname(LOCAL_RPC_SOCKET), { recursive: true })
   fs.rmSync(LOCAL_RPC_SOCKET, { force: true })
   const server = net.createServer({ allowHalfOpen: true }, socket => {
     let raw = ''

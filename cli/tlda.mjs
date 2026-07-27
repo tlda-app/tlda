@@ -22,6 +22,7 @@ import {
   CONFIG_DIR, hasTls, TLS_CA_PATH, getManagedBots, getManagedBotEnvironments, getMachineId,
 } from '../shared/config.mjs'
 import { tldaFetch } from '../shared/http-client.mjs'
+import { daemonLifecycleSocketPath, daemonStateSuffix } from '../shared/daemon-socket-path.mjs'
 import { DEV_COMMANDS } from './lib/dev-commands.mjs'
 import { getFunnelUrl, findTailscaleIPv4, findLanIPv4, selectDevShareBase, selectDocShareBase, viewerLoginUrl } from './lib/share-url.mjs'
 import { scanMarkdownDeps } from '../shared/markdown-deps.mjs'
@@ -1010,10 +1011,10 @@ try {
 } catch {
   DAEMON_WORLD_NAME = process.env.TLDA_ENV || 'default'
 }
-const DAEMON_WORLD_SUFFIX = DAEMON_WORLD_NAME === 'default' ? '' : `.${DAEMON_WORLD_NAME.replace(/[^a-zA-Z0-9._-]+/g, '-')}`
+const DAEMON_WORLD_SUFFIX = daemonStateSuffix(DAEMON_WORLD_NAME)
 const FLEET_DAEMON_LOGFILE = join(homedir(), '.config', 'tlda', `fleet-daemon${DAEMON_WORLD_SUFFIX}.log`)
 const FLEET_DAEMON_PIDFILE = join(homedir(), '.config', 'tlda', `fleet-daemon${DAEMON_WORLD_SUFFIX}.pid`)
-const FLEET_DAEMON_SOCKET = join(CONFIG_DIR, `fleet-daemon${DAEMON_WORLD_SUFFIX}.sock`)
+const FLEET_DAEMON_SOCKET = daemonLifecycleSocketPath(CONFIG_DIR, DAEMON_WORLD_NAME)
 const FLEET_DAEMON_LABEL = `com.tlda.fleet-daemon${DAEMON_WORLD_SUFFIX}`
 const FLEET_DAEMON_PLIST = join(homedir(), 'Library', 'LaunchAgents', `${FLEET_DAEMON_LABEL}.plist`)
 const _cliDir = dirname(fileURLToPath(import.meta.url))
@@ -1024,12 +1025,8 @@ const FLEET_DAEMON_SCRIPT = _cliWorktreeMatch
   : join(_cliDir, '..', 'bin', 'fleet-daemon.mjs')
 const FLEET_DAEMON_DNS_ALIAS_PRELOAD = join(FLEET_DAEMON_MAIN_ROOT, 'shared', 'node-dns-alias.cjs')
 
-function daemonWorldSuffix(configName) {
-  return configName === 'default' ? '' : `.${String(configName).replace(/[^a-zA-Z0-9._-]+/g, '-')}`
-}
-
 function fleetDaemonSocketForConfig(configName) {
-  return join(CONFIG_DIR, `fleet-daemon${daemonWorldSuffix(configName)}.sock`)
+  return daemonLifecycleSocketPath(CONFIG_DIR, configName)
 }
 
 function plistEscape(value) {
