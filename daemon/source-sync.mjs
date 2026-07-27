@@ -36,10 +36,10 @@ export function createSourceChangeCorrelation({ makeId = randomUUID, log = conso
   }
 
   return {
-    seed(project, revision) {
+    seed(project, revision, { authoritative = false } = {}) {
       const nextRevision = revision ?? null
       if (nextRevision !== revisions.get(project)) blocked.delete(project)
-      revisions.set(project, nextRevision)
+      if (!revisions.has(project) || authoritative) revisions.set(project, nextRevision)
     },
     prepare(payload, retried = false) {
       if (blocked.has(payload.project)) return null
@@ -493,11 +493,13 @@ export function createSourceSync({ sourceBindingsFile, log, sendMsg, isConnected
     }
   }
 
-  function sync(projectList) {
+  function sync(projectList, { authoritativeRevisions = false } = {}) {
     const activeNames = new Set()
     const bindings = loadSourceBindings()
     for (const p of projectList) {
-      sourceCorrelation.seed(p.name, p.sourceRevision)
+      sourceCorrelation.seed(p.name, p.sourceRevision, {
+        authoritative: authoritativeRevisions || !sourceWatchers.has(p.name),
+      })
       // Per-machine binding wins over the server-provided sourceDir (the host's
       // path). No binding → fall back to the server's sourceDir (single-host case).
       const sourceDir = bindings[p.name] || p.sourceDir
