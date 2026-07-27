@@ -84,7 +84,7 @@ function commandLine(cmd, args, env = {}) {
 
 function docLinkDisplayLine(plan) {
   return commandLine('tlda', [
-    'doc', 'link', plan.project, plan.mainFile,
+    'project', 'link', plan.project, plan.mainFile,
     '--server', plan.renderUrl,
     '--from', plan.overleafUrl,
   ], { TLDA_TOKEN: '<rw-token>' })
@@ -395,7 +395,7 @@ function printFriendPlan(plan, { execute, renderConfig, agentConfig, bundle }) {
     ['fly', ['volumes', 'create', plan.agentVolume, '-a', plan.agentApp, '-r', plan.region, '-s', '1']],
     ['fly', ['secrets', 'set', `CODEX_AUTH_JSON=$(cat ${plan.codexAuthJson})`, `TLDA_FRIEND_GIT_REMOTE=${plan.agentGitRemote}`, '-a', plan.agentApp], {}, `fly secrets set CODEX_AUTH_JSON="$(cat ${shellQuote(plan.codexAuthJson)})" TLDA_FRIEND_GIT_REMOTE=<git-remote-with-token> -a ${shellQuote(plan.agentApp)}`],
     ['fly', ['deploy', REPO_ROOT, '-c', agentConfig, '--remote-only']],
-    ['tlda', ['doc', 'link', plan.project, plan.mainFile, '--server', plan.renderUrl, '--from', plan.overleafUrl, '--token', plan.overleafToken, '--title', plan.title, '--poll', plan.poll], { TLDA_TOKEN: plan.rwToken }, docLinkDisplayLine(plan)],
+    ['tlda', ['project', 'link', plan.project, plan.mainFile, '--server', plan.renderUrl, '--from', plan.overleafUrl, '--token', plan.overleafToken, '--title', plan.title, '--poll', plan.poll], { TLDA_TOKEN: plan.rwToken }, docLinkDisplayLine(plan)],
   ]
   for (const [cmd, args, env, display] of commands) console.log(`  ${display || commandLine(cmd, args, env)}`)
   console.log(``)
@@ -462,7 +462,7 @@ Examples:
   } finally {
     cleanAgentBuildAssets()
   }
-  run(process.execPath, [TLDA_CLI, 'doc', 'link', plan.project, plan.mainFile, '--server', plan.renderUrl, '--from', plan.overleafUrl, '--token', plan.overleafToken, '--title', plan.title, '--poll', plan.poll], {
+  run(process.execPath, [TLDA_CLI, 'project', 'link', plan.project, plan.mainFile, '--server', plan.renderUrl, '--from', plan.overleafUrl, '--token', plan.overleafToken, '--title', plan.title, '--poll', plan.poll], {
     execute,
     env: { TLDA_TOKEN: plan.rwToken },
     displayLine: docLinkDisplayLine(plan),
