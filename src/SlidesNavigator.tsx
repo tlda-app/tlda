@@ -434,8 +434,6 @@ export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
     </div>
   )
 
-  // Swipe detection overlay — transparent, covers the canvas, captures horizontal swipes
-  // while letting vertical + short touches through to TLDraw
   return createPortal(
     <>
       {nav}
