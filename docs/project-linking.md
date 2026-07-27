@@ -1,6 +1,6 @@
 # Project linking
 
-`tlda doc link` connects an existing Git working copy to a tlda project. The
+`tlda project link` connects an existing Git working copy to a tlda project. The
 working copy remains the canonical authoring directory; tlda does not create a
 second repository or require a source-only subdirectory.
 
@@ -27,7 +27,7 @@ outbound remote synchronization is a separate, explicitly enabled feature.
 Example:
 
 ```sh
-tlda doc link eiv-paper \
+tlda project link eiv-paper \
   --dir /Users/skip/work/eiv-paper \
   --main least-squares.tex \
   --title "EIV Paper"

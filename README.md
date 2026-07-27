@@ -77,9 +77,9 @@ Then:
 ```bash
 tlda server start                                        # start the document/fleet server
 tlda daemon start                                        # watch this machine's documents and agents
-tlda doc link my-paper /path/to/paper/paper.tex
+tlda project link my-paper /path/to/paper/paper.tex
 tlda config mcp-setup                                    # (in your paper dir) so agents can work on it
-tlda doc open my-paper                                   # opens it on the canvas — run once
+tlda project open my-paper                                   # opens it on the canvas — run once
 ```
 
 `tlda server start` starts the server. `tlda daemon start` starts the machine
@@ -88,15 +88,15 @@ RPC. Run exactly one daemon for each environment being watched; two daemons
 watching the same environment is a bug. Link the project from the paper's main
 file; tlda finds the Git repository that contains it, uses that repo as the
 source root, and stores the main file relative to that root. That repo-backed
-path is the default. If there is no real repository to push, `tlda doc init ...`
+path is the default. If there is no real repository to push, `tlda project init ...`
 is the explicit fresh-start case. From there, edits in your normal editor rebuild
 live. `tlda config mcp-setup` gives agents in that directory tlda's tools.
 
-History is tied to the repository the server can see. If you create a project by uploading files, tlda can render the current pages, but it cannot reconstruct the paper's Git history from those files. `tlda doc link` expects a repository on the serving machine. `tlda doc init ...` creates that named repo slot. Between `init` and `link`, you can populate the slot with real history (`git push`, a Git bundle, or a server-side clone). If you skip that population step, `link` uses the blank repo, which is the explicit fresh-start case.
+History is tied to the repository the server can see. If you create a project by uploading files, tlda can render the current pages, but it cannot reconstruct the paper's Git history from those files. `tlda project link` expects a repository on the serving machine. `tlda project init ...` creates that named repo slot. Between `init` and `link`, you can populate the slot with real history (`git push`, a Git bundle, or a server-side clone). If you skip that population step, `link` uses the blank repo, which is the explicit fresh-start case.
 
-Running `tlda doc open` once opens the doc on the canvas and stores your authorization — from then on you just go back to the page in your browser.
+Running `tlda project open` once opens the doc on the canvas and stores your authorization — from then on you just go back to the page in your browser.
 
-Run `tlda doctor` to check things and `tlda help` (or `tlda doc`, `tlda agent`, …) for commands.
+Run `tlda doctor` to check things and `tlda help` (or `tlda project`, `tlda agent`, …) for commands.
 
 That gets you working on your own machine. To reach it from other devices — your iPad, your collaborators, or hosting it for other people — see [Access & security](#access--security).
 
@@ -306,7 +306,7 @@ A bot connects through `@tlda/client` (auth, doc assets, staging annotations) an
 ## Sharing & hosting
 
 ```bash
-tlda doc share my-paper
+tlda project share my-paper
 ```
 
 prints a shareable URL with your read-only token embedded — anyone with it can view and annotate. It detects [Tailscale](https://tailscale.com/) and [Tailscale Funnel](https://tailscale.com/kb/1223/funnel) automatically, so you get a network-reachable URL instead of `localhost` when one's available.
@@ -334,10 +334,10 @@ This is roughly how the project's own deployment runs — a container that joins
 - Put each history-backed paper on that volume as a server-side Git repo/worktree. The simplest setup is a named repo slot:
 
   ```bash
-  tlda doc init my-paper          # creates the server repo slot
+  tlda project init my-paper          # creates the server repo slot
   git remote add tlda <printed-url>
   git push tlda main              # optional: populate the slot with real history
-  tlda doc link my-paper paper.tex
+  tlda project link my-paper paper.tex
   ```
 
   The project name ties the steps together: `init my-paper` creates the repo endpoint, an optional push/import/clone populates it with real history, and `link my-paper paper.tex` links the tlda project to that repo's worktree. Other transports (`scp`/`sftp` a Git bundle or tarball, or `git clone` from a readable remote) are fine too. The invariant is that the tlda project points `sourceDir` at the resulting checkout; file upload alone is only a current-render path, not a history-backed setup.
@@ -351,7 +351,7 @@ Anyone you add to the tailnet opens the `.ts.net` URL and they're in; nobody els
 tlda runs **real terminals** on the server — that's remote code execution by design. So the server has to sit behind a boundary. Pick one:
 
 - **Network-gate it (recommended).** Put it on a private network — [Tailscale](https://tailscale.com/), a VPN, or a reverse proxy that authenticates — and run the app open inside it with `TLDA_NO_AUTH=1`. There are no tokens to manage; the network *is* the boundary. This is how the project's own deployment runs — it leans on battle-tested network crypto instead of an auth layer we'd have to get right ourselves.
-- **Token-gate it.** `tlda config auth init` generates a read token and an RW token; the server then requires a token on every request, and `tlda doc share` hands out URLs with the read token embedded. Use this if you want to expose a port directly without a private network.
+- **Token-gate it.** `tlda config auth init` generates a read token and an RW token; the server then requires a token on every request, and `tlda project share` hands out URLs with the read token embedded. Use this if you want to expose a port directly without a private network.
 
 On `localhost` you need neither — your own machine is the boundary, and with no tokens configured the app simply runs open locally. The **one thing not to do** is expose the standard port to the internet with no tokens *and* no network boundary: that's an open terminal for anyone who finds it.
 

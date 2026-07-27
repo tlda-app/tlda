@@ -663,7 +663,7 @@ let AGENT_ID = process.env.FLEET_ID || null;
 // Ref tokens created by tlda_highlight — keyed by «annotation:label» token
 const _refTokens = new Map();
 
-// Most recent tlda doc this agent is working with — set by monitor_add and
+// Most recent tlda project this agent is working with — set by monitor_add and
 // used by chat() to stamp outgoing messages with { doc, version } so the
 // recipient knows which document state the sender was reasoning about.
 let _currentDoc = null;

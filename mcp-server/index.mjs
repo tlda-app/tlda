@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Unified MCP Server — tlda doc tools + fleet agent tools.
+ * Unified MCP Server — tlda project tools + fleet agent tools.
  */
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';

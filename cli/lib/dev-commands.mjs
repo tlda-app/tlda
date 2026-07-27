@@ -32,7 +32,7 @@ daemon could target the real fleet; use \`serve\` instead.
                      starting a preview. Positional branch names are refused because
                      serve is worktree-relative.
   share [--project NAME] Print the reachable, tokenless URL + QR for this worktree's
-                     running preview (mirror of \`tlda doc share\`, per-worktree).
+                     running preview (mirror of \`tlda project share\`, per-worktree).
 
 Other commands:
   pw <verb> [args]   Drive the one shared playwright browser (goto, click,
