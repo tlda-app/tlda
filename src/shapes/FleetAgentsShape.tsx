@@ -357,9 +357,17 @@ export function usePillDrag() {
         markFleetPillInactive(String(drag.pillId))
 
         const pagePos = fleetPointerEventPagePoint(editor, frame, ev)
-        dropPillOnTarget(editor, drag.pillId as any, drag.value, pagePos)
+        dropPillOnTarget(editor, drag.pillId as TLShapeId, drag.value, pagePos)
         editor.run(() => {
-          try { editor.deleteShapes([drag.pillId as any]) } catch {}
+          try {
+            const id = drag.pillId as TLShapeId
+            if (editor.getShape(id)) {
+              editor.deleteShapes([id])
+            }
+          } catch {
+            // The drop already ran; leftover transient preview cleanup has no
+            // owned non-modal surface in this drag coordinator.
+          }
         }, { history: 'ignore' })
       },
       cancelDrag,

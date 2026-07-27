@@ -361,6 +361,14 @@ html[data-theme="dark"] .agent-indicator[data-agent="todd"].agent-stale {
   font-size: 11px;
   color: rgba(0, 0, 0, 0.7);
 }
+.prefs-load-error {
+  margin: 0 0 8px;
+  padding: 6px 8px;
+  border-left: 2px solid rgba(217, 52, 43, 0.55);
+  color: rgba(126, 35, 30, 0.9);
+  background: rgba(217, 52, 43, 0.06);
+  line-height: 1.35;
+}
 .prefs-section {
   margin-bottom: 6px;
   border-bottom: 1px solid rgba(0, 0, 0, 0.06);
@@ -504,6 +512,10 @@ html[data-theme="dark"] .agent-indicator[data-agent="todd"].agent-stale {
 /* Dark mode */
 [data-theme="dark"] .prefs-tab {
   color: rgba(255, 255, 255, 0.7);
+}
+[data-theme="dark"] .prefs-load-error {
+  color: rgba(255, 190, 185, 0.92);
+  background: rgba(217, 52, 43, 0.14);
 }
 [data-theme="dark"] .prefs-section-label {
   color: rgba(255, 255, 255, 0.4);

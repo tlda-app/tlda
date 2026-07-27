@@ -3,6 +3,7 @@ import {
   MAX_RADIO_SUBTITLE_DWELL_SEC,
   MIN_RADIO_SUBTITLE_DWELL_SEC,
   getPref,
+  getPrefsLoadError,
   normalizeRadioSubtitleDwellSec,
   setPref,
   subscribePref,
@@ -306,6 +307,7 @@ function readAll() {
     botSelfCheckEnabled: getPref('bot-self-check-enabled'),
     botSelfCheckCountdown: getPref('bot-self-check-countdown-sec'),
     botModel: getPref('bot-model'),
+    loadError: getPrefsLoadError(),
   }
 }
 
@@ -391,6 +393,11 @@ export function PrefsTab() {
 
   return (
     <div className="prefs-tab">
+      {prefs.loadError && (
+        <div className="prefs-load-error">
+          Preferences could not load; defaults are in use until preferences reconnect: {prefs.loadError}
+        </div>
+      )}
       <CollapsiblePrefsSection
         id="account"
         title="Account"

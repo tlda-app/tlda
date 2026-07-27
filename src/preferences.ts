@@ -112,6 +112,7 @@ export type PrefKey = keyof typeof DEFAULTS
 const _cache: Partial<typeof DEFAULTS> = {}
 const _listeners = new Set<() => void>()
 let _userId: string | null = null
+let _loadError: string | null = null
 
 let _loadedResolve: (() => void) | null = null
 const _loaded = new Promise<void>(r => { _loadedResolve = r })
@@ -128,6 +129,8 @@ export function subscribePref(cb: () => void): () => void {
   _listeners.add(cb)
   return () => _listeners.delete(cb)
 }
+
+export function getPrefsLoadError(): string | null { return _loadError }
 
 export function getPref<K extends PrefKey>(key: K): (typeof DEFAULTS)[K] {
   return (key in _cache ? _cache[key] : DEFAULTS[key]) as (typeof DEFAULTS)[K]
@@ -149,13 +152,20 @@ export function getAllPrefs(): typeof DEFAULTS {
 /** Fetch all prefs for a user and populate the local cache. Call after login. */
 export async function loadPrefs(userId: string): Promise<void> {
   _userId = userId
+  let loaded = false
   try {
     const data = await fleetEphemeral('prefs-get-all', { user: userId })
     Object.assign(_cache, data)
+    _loadError = null
     _notify()
-  } catch {}
+    loaded = true
+  } catch (e) {
+    _loadError = e instanceof Error ? e.message : String(e)
+    _notify()
+    console.warn('[prefs] load failed; using defaults until preferences reconnect:', e)
+  }
   finally {
-    if (_loadedResolve) { _loadedResolve(); _loadedResolve = null }
+    if ((loaded || _loadError) && _loadedResolve) { _loadedResolve(); _loadedResolve = null }
   }
 }
 

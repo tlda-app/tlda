@@ -285,6 +285,7 @@ export type FleetLayoutCreateReason =
   | 'device-missing'
   | 'layout-in-flight'
   | 'document-bounds-missing'
+  | 'cleanup-failed'
   | 'no-owned-shapes-created'
 
 export type FleetLayoutCreateResult = {
@@ -439,22 +440,25 @@ function _createFleetLayoutInner(editor: Editor, agents: any[], variant: string,
   }
 
   const existing = editor.getCurrentPageShapes().filter(s => isFleetShapeForOwnerKey(s, myId, myDevice))
-  editor.run(() => {
-    if (existing.length > 0) forceDeleteShapes(editor, existing.map(s => s.id as string))
+  try {
+    editor.run(() => {
+      if (existing.length > 0) forceDeleteShapes(editor, existing.map(s => s.id as string))
 
-    const anchorId = getAnchorIdForOwnerKey(myId, myDevice)
-    try {
+      const anchorId = getAnchorIdForOwnerKey(myId, myDevice)
       const anchor = editor.getShape(anchorId as any)
       if (anchor) {
         if (anchor.isLocked) editor.updateShape({ id: anchorId as any, type: 'geo', isLocked: false })
         editor.deleteShape(anchorId as any)
       }
-    } catch {}
-    try {
       const proxy = editor.getCurrentPageShapes().find(s => s.id === 'shape:fleet-hud-proxy')
       if (proxy) editor.deleteShape(proxy.id)
-    } catch {}
+    }, { history: 'ignore' })
+  } catch (e) {
+    console.warn('[FleetLayout] Refusing to create default layout after cleanup failed', e)
+    return makeFleetLayoutResult(editor, variant, 'cleanup-failed', myId, myDevice)
+  }
 
+  editor.run(() => {
     const layoutPlan = planFleetLayoutShapes(buildFleetLayoutPlanInput({
       editor,
       agents,

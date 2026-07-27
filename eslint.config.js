@@ -36,6 +36,21 @@ export default defineConfig([
       globals: globals.browser,
     },
   },
+  {
+    files: [
+      'src/shapes/FleetPillShape.tsx',
+      'src/shapes/MathNoteShape.tsx',
+      'src/shapes/ReadingAssistBarShape.tsx',
+      'src/shapes/UnderstandingLineShape.tsx',
+    ],
+    rules: {
+      // TLDraw calls BaseBoxShapeUtil.component(shape) as the render function for
+      // one custom shape instance. The React hooks here are top-level in that
+      // render method; eslint-plugin-react-hooks only sees a class method named
+      // component and misclassifies the whole TLDraw shape-util pattern.
+      'react-hooks/rules-of-hooks': 'off',
+    },
+  },
   // Server, daemon, CLI, bots and MCP are all .mjs and were linted by NOTHING.
   // On 2026-07-25 a hand-run no-undef sweep found five live undefined-variable
   // bugs in minutes: every spawn reporting success as failure, the self-review

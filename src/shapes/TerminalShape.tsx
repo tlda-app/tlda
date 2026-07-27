@@ -92,8 +92,9 @@ interface Agent {
   dead?: boolean
 }
 
-function useAgents(): Agent[] {
+function useAgents(): { agents: Agent[]; error: string } {
   const [agents, setAgents] = useState<Agent[]>([])
+  const [error, setError] = useState('')
 
   useEffect(() => {
     let cancelled = false
@@ -102,15 +103,22 @@ function useAgents(): Agent[] {
         const list: Agent[] = await fleetEphemeral('store-agents') || []
         if (!cancelled) {
           setAgents(list.filter(a => !a.dead && a.runtime_status?.status === 'awake' && (!a.runtime_status?.route_state || a.runtime_status.route_state === 'routable')))
+          setError('')
         }
-      } catch {}
+      } catch (e) {
+        if (!cancelled) {
+          setAgents([])
+          const message = e instanceof Error ? e.message : String(e)
+          setError(`Could not load agents: ${message}`)
+        }
+      }
     }
     load()
     const timer = setInterval(load, 10_000)
     return () => { cancelled = true; clearInterval(timer) }
   }, [])
 
-  return agents
+  return { agents, error }
 }
 
 // ---- Terminal component ----
@@ -129,7 +137,7 @@ function TerminalComponent({ shape }: { shape: any }) {
   const [statusMsg, setStatusMsg] = useState('')
   const [inputFocused, setInputFocused] = useState(false)
   const [inputValue, setInputValue] = useState('')
-  const agents = useAgents()
+  const { agents, error: agentsError } = useAgents()
 
   // Initialize xterm once
   useEffect(() => {
@@ -196,7 +204,11 @@ function TerminalComponent({ shape }: { shape: any }) {
         fit.fit()
         const term = termRef.current
         if (term) terminalTransport?.resize(term.cols, term.rows)
-      } catch {}
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e)
+        setStatus('error')
+        setStatusMsg(`Terminal resize failed: ${message}`)
+      }
     }, 50)
     return () => clearTimeout(timer)
   }, [w, h])
@@ -362,7 +374,7 @@ function TerminalComponent({ shape }: { shape: any }) {
         >
           {!agentId && (
             <div className="terminal-shape-status">
-              Pick an agent above to connect to its terminal
+              {agentsError || 'Pick an agent above to connect to its terminal'}
             </div>
           )}
           {agentId && status === 'error' && (

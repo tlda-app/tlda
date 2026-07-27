@@ -67,6 +67,7 @@ interface UseYjsSignalsParams {
   setProofFetchSeq: React.Dispatch<React.SetStateAction<number>>
   panelsLocalRef: React.MutableRefObject<boolean>
   onReloadResult?: (result: ReloadResult | null) => void
+  onReloadError?: (message: string) => void
   setScreenshotCapture?: (state: ScreenshotCaptureState | null) => void
 }
 
@@ -75,7 +76,7 @@ export function useYjsSignals({
   diffDataRef, setDiffFetchSeq,
   proofDataRef, setProofDataReady, setProofFetchSeq,
   panelsLocalRef: _panelsLocalRef,
-  onReloadResult, setScreenshotCapture,
+  onReloadResult, onReloadError, setScreenshotCapture,
 }: UseYjsSignalsParams) {
   const hasSynctex = !['html', 'markdown', 'png', 'slides'].includes(document.format || '')
   const slidesReloadingRef = useRef(false)
@@ -179,6 +180,7 @@ export function useYjsSignals({
   useEffect(() => {
     const docName = document.name
     let lastKnownBuild = ''
+    let reportedFailure = false
     const poll = async () => {
       try {
         const res = await fetch(`/api/projects/${encodeURIComponent(docName)}`)
@@ -195,10 +197,25 @@ export function useYjsSignals({
               return
             }
             console.log(`[Poll] New build detected (${buildTs}), reloading viewport pages`)
-            reloadPages(editor, document, null).then(result => onReloadResult?.(result))
+            reloadPages(editor, document, null)
+              .then(result => {
+                reportedFailure = false
+                onReloadResult?.(result)
+              })
+              .catch((e) => {
+                if (reportedFailure) return
+                reportedFailure = true
+                const message = e instanceof Error ? e.message : String(e)
+                onReloadError?.(`The document changed, but the viewer could not reload it: ${message}`)
+              })
           }
         }
-      } catch {}
+      } catch (e) {
+        if (reportedFailure) return
+        reportedFailure = true
+        const message = e instanceof Error ? e.message : String(e)
+        onReloadError?.(`The viewer could not check for a newer build: ${message}`)
+      }
     }
     const timer = setInterval(poll, 30_000)
     poll() // initial check

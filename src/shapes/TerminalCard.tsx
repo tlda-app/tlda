@@ -119,8 +119,14 @@ export function TerminalCard({ agentId, agentName, pinned, onDismiss, onMouseEnt
         const term = termRef.current
         const fit = fitRef.current
         if (term && fit) {
-          try { fit.fit() } catch {}
-          terminalTransport.resize(term.cols, term.rows)
+          try {
+            fit.fit()
+            terminalTransport.resize(term.cols, term.rows)
+          } catch (e) {
+            const message = e instanceof Error ? e.message : String(e)
+            setStatus('error')
+            setStatusMsg(`Terminal resize failed: ${message}`)
+          }
         }
         },
         onFrame: (msg) => {
@@ -178,7 +184,11 @@ export function TerminalCard({ agentId, agentName, pinned, onDismiss, onMouseEnt
         fitRef.current?.fit()
         const term = termRef.current
         if (term) terminalTransportRef.current?.resize(term.cols, term.rows)
-      } catch {}
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e)
+        setStatus('error')
+        setStatusMsg(`Terminal resize failed: ${message}`)
+      }
     })
     observer.observe(containerRef.current)
     return () => observer.disconnect()

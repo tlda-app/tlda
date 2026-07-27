@@ -502,7 +502,12 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
       try {
         const { pane } = await fleetEphemeral('capture-pane', { agent: agentId, lines: HISTORY_LINES })
         if (!cancelled && typeof pane === 'string') setHistoryText(pane)
-      } catch {}
+      } catch (e) {
+        if (!cancelled) {
+          const message = e instanceof Error ? e.message : String(e)
+          setHistoryText(`Failed to load terminal scrollback: ${message}`)
+        }
+      }
     })()
     return () => { cancelled = true }
   }, [lightboxed, agentId, historyTick])
@@ -560,7 +565,13 @@ function TerminalHoverPane({ agentId, pinned, anchorRef, onDismiss, onMouseEnter
     })
     term.open(containerRef.current)
     termRef.current = term
-    try { term.resize(gridColsRef.current, gridRowsRef.current) } catch {}
+    try {
+      term.resize(gridColsRef.current, gridRowsRef.current)
+    } catch (e) {
+      setStatus('error')
+      const message = e instanceof Error ? e.message : String(e)
+      term.write(`\r\nTerminal resize failed: ${message}\r\n`)
+    }
     return () => {
       term.dispose()
       termRef.current = null
@@ -1104,6 +1115,7 @@ async function uploadMarkdownWithImages(
   const mdDir = mdRelPath ? mdRelPath.split('/').slice(0, -1).join('/') : ''
   // Upload companions that match a local path by relative path or basename fallback
   const urlMap = new Map<string, string>()
+  const failedUploads = new Set<string>()
   for (const localPath of localPaths) {
     const ref = localPath.replace(/^\.\//, '')
     const resolvedPath = mdDir ? `${mdDir}/${ref}` : ref
@@ -1116,10 +1128,12 @@ async function uploadMarkdownWithImages(
       const fd = new FormData()
       fd.append('file', match.file, match.file.name)
       const r = await fetch(`${FLEET_API}/api/upload`, { method: 'POST', body: fd })
-      if (!r.ok) continue
+      if (!r.ok) { failedUploads.add(localPath); continue }
       const { url } = await r.json()
       urlMap.set(localPath, `${FLEET_API}${url}`)
-    } catch {}
+    } catch {
+      failedUploads.add(localPath)
+    }
   }
   // Rewrite markdown and upload
   let rewritten = text
@@ -1134,7 +1148,7 @@ async function uploadMarkdownWithImages(
   const { url, name } = await r.json()
   let link = `[${name}](${FLEET_API}${url})`
   if (warnOnUnresolved && localPaths.size > 0) {
-    const hasUnresolved = [...localPaths].some(p => !urlMap.has(p))
+    const hasUnresolved = [...localPaths].some(p => !urlMap.has(p) || failedUploads.has(p))
     if (hasUnresolved) {
       link += '\n⚠️ Some images couldn\'t be uploaded — drag the containing folder instead of the file.'
     }
@@ -1283,7 +1297,10 @@ async function enrichContextWithSourceLines(context: any): Promise<void> {
         endFile: bottomAnchor?.file,
       }
     }
-  } catch {}
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e)
+    context.sourceLineError = `source line lookup failed: ${message}`
+  }
   delete context._viewportEdges
 }
 
@@ -5310,7 +5327,16 @@ function FleetChatInner({ shape }: { shape: any }) {
           const onMain = !!drag._onMain
           if (outside && !onMain) {
             // Handoff: panel → main
-            try { editor.deleteShapes([drag.pillId as any]) } catch {}
+            try {
+              const id = drag.pillId as TLShapeId
+              if (editor.getShape(id)) {
+                editor.deleteShapes([id])
+              }
+            } catch {
+              // Drag-preview cleanup has no owned non-modal surface here. Do not
+              // create the second preview if deleting the first one failed.
+              return
+            }
             const mainPos = clientPointToPage(mainEditor, { x: e.clientX, y: e.clientY })
             mainEditor.createShape({
               id: drag.pillId as any,
@@ -5333,7 +5359,16 @@ function FleetChatInner({ shape }: { shape: any }) {
             drag._onMain = true
           } else if (!outside && onMain) {
             // Handoff back: main → panel
-            try { mainEditor.deleteShapes([drag.pillId as any]) } catch {}
+            try {
+              const id = drag.pillId as TLShapeId
+              if (mainEditor.getShape(id)) {
+                mainEditor.deleteShapes([id])
+              }
+            } catch {
+              // Drag-preview cleanup has no owned non-modal surface here. Do not
+              // create the second preview if deleting the first one failed.
+              return
+            }
             const panelPos = fleetPointerEventPagePoint(editor, frame, e)
             editor.createShape({
               id: drag.pillId as any,
@@ -5416,8 +5451,16 @@ function FleetChatInner({ shape }: { shape: any }) {
       const pagePos = onMain
         ? clientPointToPage(dropEditor, { x: e.clientX, y: e.clientY })
         : fleetPointerEventPagePoint(dropEditor, frame, e)
-      dropPillOnTarget(dropEditor, drag.pillId as any, drag.value, pagePos, drag.content)
-      try { dropEditor.deleteShapes([drag.pillId as any]) } catch {}
+      dropPillOnTarget(dropEditor, drag.pillId as TLShapeId, drag.value, pagePos, drag.content)
+      try {
+        const id = drag.pillId as TLShapeId
+        if (dropEditor.getShape(id)) {
+          dropEditor.deleteShapes([id])
+        }
+      } catch {
+        // The drop already ran; leftover transient preview cleanup has no owned
+        // non-modal surface in this drag coordinator.
+      }
     }
 
     document.addEventListener('pointerdown', onPointerDown, { capture: true })

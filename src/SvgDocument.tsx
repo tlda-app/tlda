@@ -518,8 +518,9 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
   })
 
 
-  // Remap warnings from reload (merged into buildWarnings below)
+  // Remap/reload warnings from reload paths (merged into buildWarnings below)
   const [remapWarnings, setRemapWarnings] = useState<BuildWarning[]>([])
+  const [reloadWarnings, setReloadWarnings] = useState<BuildWarning[]>([])
 
   // Fleet playback — listen for BroadcastChannel and swap annotation shapes
   const playbackState = useSyncedPlayback(editorRef, docName)
@@ -569,8 +570,10 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     onReloadResult: useCallback((result: ReloadResult | null) => {
       if (!result) {
         setRemapWarnings([])
+        setReloadWarnings([])
         return
       }
+      setReloadWarnings([])
       if (result.remapResult && result.remapResult.failed > 0) {
         const { failed, total } = result.remapResult
         setRemapWarnings([{
@@ -580,6 +583,9 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       } else {
         setRemapWarnings([])
       }
+    }, []),
+    onReloadError: useCallback((message: string) => {
+      setReloadWarnings([{ message, category: 'reload' as const }])
     }, []),
   })
 
@@ -595,7 +601,8 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     })
   }, [])
 
-  const buildWarnings = useMemo(() => [...texWarnings, ...remapWarnings], [texWarnings, remapWarnings])
+  const pillWarnings = useMemo(() => [...remapWarnings, ...reloadWarnings], [remapWarnings, reloadWarnings])
+  const buildWarnings = useMemo(() => [...texWarnings, ...pillWarnings], [texWarnings, pillWarnings])
 
   // File-backed notes: update shape text when the backing file changes on disk
   useEffect(() => {
@@ -1147,7 +1154,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
         )}
         <SyncErrorPill />
         <BuildErrorPill />
-        <BuildWarningPill warnings={remapWarnings}>
+        <BuildWarningPill warnings={pillWarnings}>
           <BuildProgressPill />
         </BuildWarningPill>
         {editorRef.current && <FleetIconPill mainEditor={editorRef.current} />}

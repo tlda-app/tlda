@@ -1074,7 +1074,11 @@ export function FleetHUD({
               mainEditor.deleteShape(myAnchorId as any)
             }, { history: 'ignore' })
           }
-        } catch {}
+        } catch {
+          // Reset cannot continue if the old anchor could not be removed, and
+          // this overlay has no owned non-modal error surface.
+          return
+        }
       }
       const nextBounds = resetFleetBoundsTracker()
       recenterHudForBounds(nextBounds)
