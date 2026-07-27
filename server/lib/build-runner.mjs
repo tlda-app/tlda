@@ -1700,10 +1700,23 @@ async function finalizeBuildVersion({
   lastBuildSuccess,
 }) {
   const result = await commitSnapshot(name)
-  if (!result) {
+  if (result.status !== 'committed') {
+    // 'unchanged' is correct and quiet — the source really is identical.
+    // 'no-scope' means this build recorded NO version. That is data not being
+    // recorded, so it goes on the surfaces someone actually reads: the build
+    // log, the server log, the event stream, and — because the viewer must not
+    // show a version it does not have — the doc's own warnings in the sentinel.
+    let warnings = buildWarnSnapshot
+    if (result.status === 'no-scope') {
+      const message = `No version recorded for this build: ${result.reason}`
+      console.error(`[build:${name}] ${message}`)
+      ctx.addLog(message)
+      warnings = [...(buildWarnSnapshot || []), { message, file: 'build', line: null, category: 'version' }]
+      _reporter.emitGlobalEvent('version-skipped', { name, reason: result.reason, timestamp: Date.now() })
+    }
     const current = await currentVersion(name)
     if (current?.hash) {
-      await updateDocVersionSentinel(name, current.hash, svgsReadyAt, buildErrSnapshot, buildWarnSnapshot, sourceVersion)
+      await updateDocVersionSentinel(name, current.hash, svgsReadyAt, buildErrSnapshot, warnings, sourceVersion)
     }
     return { hash: current?.hash || null, committed: false }
   }

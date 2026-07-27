@@ -180,8 +180,22 @@ export async function initShadowRepo(name) {
 const BUILD_ARTIFACT_RE = /\.(aux|log|toc|bbl|blg|fls|fdb_latexmk|out|synctex\.gz|nav|snm|vrb|dvi|lof|lot|bcf|run\.xml)$/
 
 export function readPaperScope(name) {
+  return diagnosePaperScope(name).scope
+}
+
+/**
+ * readPaperScope, plus WHY it came out empty.
+ *
+ * An empty scope means the build recorded no version at all. Every caller
+ * before this got a bare `null`, indistinguishable from "nothing changed" —
+ * so that failure had no surface anywhere. The reason string is what makes a
+ * skipped snapshot reportable; see commitSnapshot and finalizeBuildVersion.
+ */
+export function diagnosePaperScope(name) {
   const relPath = join(outputDir(name), 'relevant-files.json')
-  if (!existsSync(relPath)) return null
+  if (!existsSync(relPath)) {
+    return { scope: null, reason: `the build declared no paper scope (${relPath} does not exist)` }
+  }
   let parsed
   try {
     parsed = JSON.parse(readFileSync(relPath, 'utf8'))
@@ -191,14 +205,24 @@ export function readPaperScope(name) {
   const files = Array.isArray(parsed?.files) ? parsed.files : []
   const srcDir = sourceDir(name)
   const out = new Set()
+  let absent = 0
   for (const p of files) {
     if (typeof p !== 'string') continue
     if (!p.startsWith(srcDir + '/')) continue
     const rel = p.slice(srcDir.length + 1)
     if (BUILD_ARTIFACT_RE.test(rel)) continue
-    if (existsSync(join(srcDir, rel))) out.add(rel)
+    if (!existsSync(join(srcDir, rel))) { absent++; continue }
+    out.add(rel)
   }
-  return out.size === 0 ? null : [...out].sort()
+  if (out.size === 0) {
+    return {
+      scope: null,
+      reason: files.length === 0
+        ? `the build declared an empty paper scope (${relPath} lists no files)`
+        : `none of the ${files.length} declared paper file(s) resolved under ${srcDir} (${absent} absent)`,
+    }
+  }
+  return { scope: [...out].sort(), reason: null }
 }
 
 export async function readShadowSourceScope(name) {
@@ -231,7 +255,18 @@ export async function readShadowSourceScope(name) {
  * is missing — first build hasn't completed, or relevant-files generation
  * failed — we skip the snapshot rather than fall back to copy-everything.
  *
- * Returns null if nothing changed or paper-scope is unavailable.
+ * Always returns an outcome, never null — the two ways to record nothing are
+ * NOT the same event and callers must be able to tell them apart:
+ *
+ *   { status: 'committed', hash, timestamp }  a new version exists
+ *   { status: 'unchanged' }                   correct: the source is identical
+ *   { status: 'no-scope', reason }            a DEFECT: the build recorded no
+ *                                             version, and the reason says why
+ *
+ * `no-scope` used to be a bare `null` that read exactly like `unchanged`, so a
+ * build that versioned nothing was indistinguishable from one that had nothing
+ * to version. That is how shadow commits froze for weeks after the 2026-06-14
+ * persist-symlink migration without a single log line. Callers must report it.
  */
 export async function commitSnapshot(name) {
   const repoDir = await initShadowRepo(name)
@@ -241,12 +276,12 @@ export async function commitSnapshot(name) {
     throw new Error(`Source directory not found: ${srcDir}`)
   }
 
-  const scope = readPaperScope(name)
+  const { scope, reason } = diagnosePaperScope(name)
   if (!scope) {
-    // No paper-scope yet — first build hasn't produced relevant-files.json,
-    // or augmentation failed. Skip rather than fall back to copy-everything
-    // (which would re-introduce the bug class this whole change is fixing).
-    return null
+    // No paper-scope. Skip rather than fall back to copy-everything (which
+    // would re-introduce the bug class this whole change is fixing) — but hand
+    // the caller the reason so it lands on a surface someone reads.
+    return { status: 'no-scope', reason }
   }
 
   // Clear existing non-.git, non-.gitignore content from the shadow repo.
@@ -274,17 +309,15 @@ export async function commitSnapshot(name) {
   await execAsync('git add -A', { cwd: repoDir, timeout: 10000 })
 
   // Nothing changed? Don't make an empty commit.
-  try {
-    const { stdout: status } = await execAsync('git status --porcelain', { cwd: repoDir, timeout: 5000 })
-    if (!status.trim()) return null
-  } catch {}
+  const { stdout: status } = await execAsync('git status --porcelain', { cwd: repoDir, timeout: 5000 })
+  if (!status.trim()) return { status: 'unchanged' }
 
   const timestamp = new Date().toISOString()
   const message = `Build at ${timestamp}`
   await execAsync(`git commit -m "${message}"`, { cwd: repoDir, timeout: 15000 })
 
   const { stdout: hash } = await execAsync('git rev-parse HEAD', { cwd: repoDir, timeout: 5000 })
-  return { hash: hash.trim(), timestamp }
+  return { status: 'committed', hash: hash.trim(), timestamp }
 }
 
 /**
