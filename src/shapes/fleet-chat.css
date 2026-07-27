@@ -3357,7 +3357,6 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   border-radius: 0;
   background: transparent;
   color: inherit;
-  cursor: pointer;
   opacity: 0.22;
   transition: opacity 0.3s;
   padding: 0 6px;
@@ -3405,7 +3404,6 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   opacity: 0.65;
 }
 .fleet-chat-shape .fleet-composer-traffic-toggle:disabled {
-  cursor: default;
   opacity: 0.05;
 }
 .fleet-chat-shape .fleet-composer-traffic-toggle-dm-quiet {
