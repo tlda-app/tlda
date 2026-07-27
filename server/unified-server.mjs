@@ -65,7 +65,7 @@ import { initAuth, isAuthEnabled, validateToken, extractToken, requireRead, requ
 import { initSyncRooms, getOrCreateRoom, flushAllRooms, closeAllRooms, replayCachedSignals, onGlobalEvent, broadcastSignal, getRoomRecords, listActiveRooms, updateShape, putShape } from './lib/sync-rooms.mjs'
 import * as tldaFeedback from './lib/tlda-feedback.mjs'
 import { injectBridge, injectSlidesBridge, injectChapterTitle } from './lib/html-injector.mjs'
-import { FleetStore, isChatHistoryEventType } from './lib/fleet-store.mjs'
+import { FleetStore, isChatHistoryEventType, resolveNameAt } from './lib/fleet-store.mjs'
 import { agentsForTerminalWatchResume } from './lib/terminal-watch-resume.mjs'
 import { applyNativeTaskEvents } from './lib/native-task-wrapper.mjs'
 import { resolveMachine } from './lib/tailscale-peers.mjs'
@@ -345,43 +345,37 @@ function logWsClose(kind, ws, code, reason) {
 // always pair them with the durable fleet id. Mutates rows in place and returns
 // them. A null period name means the agent was nameless then (reach it by id).
 // A thread is a few dozen agents talking across thousands of rows, so the same
-// ids repeat constantly. Both lookups below are resolved once per agent and
-// then answered from memory, and both live and die with this one call —
-// nothing outlives the request, so a rename has nothing to invalidate.
-//   - The historical name is time-dependent, so it cannot be memoized on id
-//     alone; a per-request resolver reads each agent's name spans once and
-//     answers every timestamp from them. Memoizing the resolved name on id
-//     would collapse an agent's distinct historical names into whichever one
-//     resolved first and silently rewrite history in every thread view.
-//   - The current friendly_name is time-independent, so id alone is its key.
+// ids repeat constantly and the work should be proportional to the agents, not
+// to the rows. One call fetches every participant's name spans and current
+// name; everything after that is in memory. Nothing outlives the request, so a
+// rename has nothing to invalidate.
+//
+// This replaced a per-row lookup that ran `nameAt` + `getAgent` for each of
+// from/to/agentId on every row, against a limit of 5,000 — up to 30,000
+// synchronous point queries to render one events reply, each `getAgent`
+// hydrating an entire agent to read one column.
+//
+// The historical name is time-dependent and must NOT be memoized on id alone:
+// that would collapse an agent's distinct historical names into whichever
+// resolved first and silently rewrite history in every thread view. Resolving
+// against the spans keeps every instant distinct.
 function stampNames(rows) {
   if (!Array.isArray(rows)) return rows
-  const resolver = fleetStore.nameResolver()
-  const nameNowMemo = new Map()
-  const nameAt = (id, ts) => resolver.nameAt(id, ts)
-  const nameNow = id => {
-    if (nameNowMemo.has(id)) return nameNowMemo.get(id)
-    const name = fleetStore.getAgent(id)?.friendly_name ?? null
-    nameNowMemo.set(id, name)
-    return name
+  const names = fleetStore.nameSpansFor(
+    rows.flatMap(r => [r.from, r.to, r.agentId]),
+  )
+  const stamp = (r, id, nameKey, nowKey) => {
+    if (!id) return
+    const entry = names.get(id)
+    const at = resolveNameAt(entry, r.timestamp)
+    r[nameKey] = at
+    const current = entry?.current ?? null
+    if (current !== at) r[nowKey] = current
   }
   for (const r of rows) {
-    const ts = r.timestamp
-    if (r.from) {
-      r.fromName = nameAt(r.from, ts)
-      const cur = nameNow(r.from)
-      if (cur !== r.fromName) r.fromNameNow = cur
-    }
-    if (r.to) {
-      r.toName = nameAt(r.to, ts)
-      const cur = nameNow(r.to)
-      if (cur !== r.toName) r.toNameNow = cur
-    }
-    if (r.agentId) {
-      r.agentName = nameAt(r.agentId, ts)
-      const cur = nameNow(r.agentId)
-      if (cur !== r.agentName) r.agentNameNow = cur
-    }
+    stamp(r, r.from, 'fromName', 'fromNameNow')
+    stamp(r, r.to, 'toName', 'toNameNow')
+    stamp(r, r.agentId, 'agentName', 'agentNameNow')
   }
   return rows
 }
