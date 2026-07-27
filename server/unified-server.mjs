@@ -4344,8 +4344,13 @@ app.use('/docs', (req, res, next) => {
   const name = parts[0]
   const filePath = parts.slice(1).join('/')
 
-  // Serve history snapshots: /docs/{name}/history/{snapshotId}/<texBase>-page-N.svg
+  // Serve derived shadow render cache:
+  // /docs/{name}/history/shadow-{hash7}/<texBase>-page-N.svg
   if (filePath.startsWith('history/')) {
+    if (!filePath.startsWith('history/shadow-')) {
+      return res.status(404).json({ error: 'Not found' })
+    }
+
     const histPath = join(PROJECTS_DIR, name, filePath)
     if (existsSync(histPath)) {
       res.set('Cache-Control', 'public, max-age=86400') // snapshots are immutable

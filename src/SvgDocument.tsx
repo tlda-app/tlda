@@ -49,7 +49,7 @@ import { DocViewerStateShapeUtil } from './shapes/DocViewerStateShape'
 import { PlaybackFrameShapeUtil } from './shapes/PlaybackFrameShape'
 import { HighlighterSlider } from './shapes/HighlighterSliderShape'
 import { ToolNameHud } from './overlays/ToolNameHud'
-import { getSvgViewBox, setNavigateToAnchor, setOnSourceClick, anchorIndex, setChangeHighlights, dismissAllChanges, changedPages } from './stores'
+import { getSvgViewBox, setNavigateToAnchor, setOnSourceClick, anchorIndex, dismissAllChanges, changedPages } from './stores'
 import { BrowseTool } from './tools/BrowseTool/BrowseTool'
 import { SoftAxisHandTool } from './tools/SoftAxisHandTool'
 import { MathNoteTool } from './tools/MathNoteTool'
@@ -96,9 +96,7 @@ import { FollowingBadge } from './pills/FollowingBadge'
 import { FleetIconPill } from './pills/FleetIconPill'
 import { initRole, getRole, toggleRole, subscribeRole } from './viewerRole'
 import { setDraftMode } from './annotationVisibility'
-import { ChangePreviewPanel } from './overlays/ChangePreviewPanel'
 import { AnnotationViewer } from './overlays/AnnotationViewer'
-import { useHistoryOverlay } from './hooks/useHistoryOverlay'
 import { initSnapshots } from './snapshotStore'
 import { PDF_HEIGHT } from './layoutConstants'
 import { setupPulseForDiffLayout } from './diffHelpers'
@@ -106,7 +104,6 @@ import { openInEditor } from './texsync'
 import { setupSvgEditor, anchorIdToLabel, reloadPages, type ReloadResult } from './editorSetup'
 import * as sourceMap from './sourceMap'
 import { getFormatConfig, homeTool as getHomeTool } from './formatConfig'
-import { useSnapshotTimeline } from './hooks/useSnapshotTimeline'
 import { useCameraLink } from './hooks/useCameraLink'
 import { getCameraLinked } from './cameraLink'
 import { useDiffToggle } from './hooks/useDiffToggle'
@@ -417,71 +414,6 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
 
   // --- Hooks ---
   const projectName = document.name
-
-  const { historyEntries, activeHistoryIdx, historyLoading, historyChangedPages, historyChanges, handleHistoryChange } = useSnapshotTimeline(document, projectName)
-  const { overlayActive: showHistoryPanel, toggleOverlay: toggleHistoryOverlay, hideOverlay: hideHistoryOverlay } = useHistoryOverlay(
-    editorRef, document, shapeIdSetRef, shapeIdsArrayRef, updateCameraBoundsRef,
-  )
-  // Hide overlay when slider returns to current
-  const isAtEnd = activeHistoryIdx < 0 || activeHistoryIdx >= historyEntries.length - 1
-  useEffect(() => {
-    if (isAtEnd && showHistoryPanel) hideHistoryOverlay()
-  }, [isAtEnd])
-
-  // Selected change tracking — highlights selected change differently
-  const [selectedChangeId, setSelectedChangeId] = useState<string | null>(null)
-  const handleSelectChange = useCallback((id: string | null) => {
-    setSelectedChangeId(id)
-
-    // Auto-activate overlay if selecting a change and overlay isn't active
-    if (id && !showHistoryPanel && activeHistoryIdx >= 0 && activeHistoryIdx < historyEntries.length) {
-      toggleHistoryOverlay(projectName, historyEntries[activeHistoryIdx].id, historyChangedPages)
-    }
-
-    // Re-apply highlights with selection coloring
-    if (!historyChangedPages || historyChangedPages.length === 0) return
-    const SELECTED_NEW = '#1d4ed8'  // blue for selected (new side)
-    const DEFAULT_NEW = '#1d4ed8'   // blue when nothing selected (new side)
-    const SELECTED_OLD = '#dc2626'  // red for selected (old side)
-    const DEFAULT_OLD = '#dc2626'   // red when nothing selected (old side)
-    dismissAllChanges()
-    for (const pd of historyChangedPages) {
-      const pageData = document.pages[pd.page - 1]
-      if (!pageData?.shapeId) continue
-      if (!pd.changes || pd.changes.length === 0) continue
-
-      // New (current) side
-      const newRegions: Array<{ y: number; height: number; x?: number; width?: number; tint?: string }> = []
-      // Old side
-      const oldRegions: Array<{ y: number; height: number; x?: number; width?: number; tint?: string }> = []
-
-      for (const c of pd.changes) {
-        const newTint = id === null ? DEFAULT_NEW : c.id === id ? SELECTED_NEW : undefined
-        const oldTint = id === null ? DEFAULT_OLD : c.id === id ? SELECTED_OLD : undefined
-        if (c.newLines && c.newLines.length > 0) {
-          for (const l of c.newLines) {
-            newRegions.push({ y: l.y, height: l.height, x: l.x, width: l.width, tint: newTint })
-          }
-        } else if (c.y != null && c.height != null) {
-          newRegions.push({ y: c.y, height: c.height, x: c.x, width: c.width, tint: newTint })
-        }
-        if (c.oldLines && c.oldLines.length > 0) {
-          for (const l of c.oldLines) {
-            oldRegions.push({ y: l.y, height: l.height, x: l.x, width: l.width, tint: oldTint })
-          }
-        }
-      }
-      if (newRegions.length > 0) setChangeHighlights(pageData.shapeId, newRegions)
-
-      // Old page shape (only exists when overlay is active)
-      const oldShapeId = `shape:${projectName}-hist-old-${pd.page}`
-      if (oldRegions.length > 0) setChangeHighlights(oldShapeId, oldRegions)
-    }
-  }, [historyChangedPages, document, showHistoryPanel, activeHistoryIdx, historyEntries, toggleHistoryOverlay, projectName])
-  // Legacy aliases for backward compatibility with panel context
-  const snapshotCount = historyEntries.length
-  const snapshotSliderIdx = activeHistoryIdx
-  const handleSliderChange = handleHistoryChange
 
   const isPresentation = document.format === 'slides'
   const { suppressBroadcastRef, broadcastTimerRef } = useCameraLink(editorRef, isPresentation)
@@ -856,18 +788,6 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     onToggleRole: toggleRole,
     panelsLocal,
     onTogglePanelsLocal: togglePanelsLocal,
-    snapshotCount,
-    snapshotTimestamps: historyEntries.length > 0 ? historyEntries.map(e => e.timestamp) : undefined,
-    activeSnapshotIdx: snapshotSliderIdx,
-    onSliderChange: handleSliderChange,
-    historyEntries,
-    activeHistoryIdx,
-    historyLoading,
-    historyChangedPages,
-    historyChanges,
-    onHistoryChange: handleHistoryChange,
-    selectedChangeId,
-    onSelectChange: handleSelectChange,
     buildErrors,
     buildWarnings,
     timelineActive,
@@ -875,7 +795,7 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
     shadowHistoryVisible: shadowVisible,
     onToggleShadowHistory: toggleShadowOverlay,
     shadowActiveVersion,
-  }), [hasDiffBuiltin, hasDiffToggle, diffMode, diffLoading, toggleDiff, proofMode, proofLoading, proofDataReady, toggleProof, role, panelsLocal, togglePanelsLocal, snapshotCount, snapshotSliderIdx, handleSliderChange, historyEntries, activeHistoryIdx, historyLoading, historyChangedPages, historyChanges, handleHistoryChange, selectedChangeId, handleSelectChange, buildErrors, buildWarnings, timelineActive, toggleTimeline, shadowVisible, toggleShadowOverlay, shadowActiveVersion])
+  }), [hasDiffBuiltin, hasDiffToggle, diffMode, diffLoading, toggleDiff, proofMode, proofLoading, proofDataReady, toggleProof, role, panelsLocal, togglePanelsLocal, buildErrors, buildWarnings, timelineActive, toggleTimeline, shadowVisible, toggleShadowOverlay, shadowActiveVersion])
 
   // Hide non-owned fleet shapes (belong to another user or orphans). Owned fleet
   // shapes must remain visible to custom WM viewports; the HUD renders from the
@@ -1107,18 +1027,6 @@ export function SvgDocumentEditor({ document, roomId, diffConfig, initialCamera 
       )}
       {panelsLocal && getFormatConfig(document.format).showScrollyOverlay && editorMounted && editorRef.current && (
         <ScrollyOverlay mainEditor={editorRef.current} />
-      )}
-      {selectedChangeId && editorRef.current && (
-        <ChangePreviewPanel
-          mainEditor={editorRef.current}
-          selectedChangeId={selectedChangeId}
-          historyChanges={historyChanges}
-          projectName={projectName}
-          shapeUtils={shapeUtils}
-          tools={tools}
-          licenseKey={LICENSE_KEY}
-          onSelectChange={handleSelectChange}
-        />
       )}
       {editorRef.current && (
         <AnnotationViewer

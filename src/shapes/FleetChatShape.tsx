@@ -1311,8 +1311,8 @@ setViewingEnrichFn(async (ctx: any) => {
 
 /**
  * Resolve the document version the user is currently viewing, as a short hash
- * for chat metadata. If the user has scrubbed back (shadow slider or git-history
- * slider) the stamp reflects that historical version. Otherwise — the common
+ * for chat metadata. If the user has scrubbed back with the shadow slider, the
+ * stamp reflects that historical version. Otherwise — the common
  * case, viewing the live build — it reads the version straight from the
  * doc-version sentinel, the convergent source that also drives the rendered
  * pages and corner timestamp, so the stamp can't lag behind the actual build.
@@ -1322,17 +1322,9 @@ function currentDocVersion(panel: any, editor?: Editor | null): string | null {
   const sav = panel?.shadowActiveVersion
   if (sav?.hash) return String(sav.hash).slice(0, 7)
 
-  // Scrubbed back via the git-history slider → the entry you scrubbed to.
-  const idx = panel?.activeHistoryIdx
-  if (typeof idx === 'number' && idx >= 0 && idx < (panel?.historyEntries?.length ?? 0) - 1) {
-    const e = panel?.historyEntries?.[idx]
-    return e?.commitHash ? String(e.commitHash).slice(0, 7) : null
-  }
-
   // Not scrubbed → the current build (Built). Single canonical source: the
   // doc-version sentinel, which the build writes on every build. Never the lazy
-  // historyEntries list — it only refreshes on a full reload / text-changing
-  // rebuild, so it drifts out of date.
+  // history list, which can drift out of date.
   // Read from the MAIN editor: the chat shape can render in the HUD's copy
   // store, which does not contain the doc-room sentinel shape.
   const mainEd = (typeof window !== 'undefined' && (window as any).__tldraw_editor__) || editor

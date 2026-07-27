@@ -27,7 +27,6 @@ assert.doesNotMatch(
 )
 
 for (const expected of [
-  'useSnapshotTimeline(document, docName)',
   'useSyncedPlayback(editorRef, docName)',
   'useTimelineOverlay(editorRef, document, docName)',
   'useShadowOverlay(editorRef, document, docName',

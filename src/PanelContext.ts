@@ -1,7 +1,6 @@
 import { createContext, type ReactNode } from 'react'
 import type { PageTextData } from './TextSelectionLayer'
 import type { DiffChange, ProofPair } from './svgDocumentLoader'
-import type { HistoryEntry, PageDiff, ChangeItem } from './historyStore'
 import type { BuildError, BuildWarning } from './useYjsSync'
 
 /** Stable project info — set once per project load, never changes during session. */
@@ -28,20 +27,6 @@ export interface PanelContextValue {
   onToggleRole?: () => void
   panelsLocal?: boolean
   onTogglePanelsLocal?: () => void
-  // Legacy localStorage snapshots (kept for compatibility)
-  snapshotCount?: number
-  snapshotTimestamps?: number[]
-  activeSnapshotIdx?: number
-  onSliderChange?: (idx: number) => void
-  // Server-backed history
-  historyEntries?: HistoryEntry[]
-  activeHistoryIdx?: number
-  historyLoading?: boolean
-  historyChangedPages?: PageDiff[]
-  historyChanges?: ChangeItem[]
-  onHistoryChange?: (idx: number) => void
-  selectedChangeId?: string | null
-  onSelectChange?: (id: string | null) => void
   buildErrors?: BuildError[]
   buildWarnings?: BuildWarning[]
   // Spatial timeline overlay
