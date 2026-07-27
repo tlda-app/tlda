@@ -28,9 +28,9 @@ function soleConnectedDaemon(daemonConnections) {
   return daemons.length === 1 ? daemons[0] : null
 }
 
-async function getConfiguredSpawnMachine(fleetStore, identity) {
-  if (!identity?.id) return null
-  const value = await fleetStore.getFleetPref(identity.id, SPAWN_MACHINE_PREF_KEY)
+function getConfiguredSpawnMachine(fleetStore, identity) {
+  if (!identity?.id || !fleetStore?.getFleetPref) return null
+  const value = fleetStore.getFleetPref(identity.id, SPAWN_MACHINE_PREF_KEY)
   return typeof value === 'string' && value.trim() ? value.trim() : null
 }
 
@@ -75,11 +75,11 @@ function requireConnectedRoute(route, daemonConnections, context, onDaemonMissin
   return requireConnectedMachine(route?.machine_id, daemonConnections, context, onDaemonMissing)
 }
 
-async function normalizeConfiguredSpawnMachine(fleetStore, identity, rawValue, route) {
-  if (!identity?.id || !rawValue || !route?.machine_id || !route?.env_name) return
+function normalizeConfiguredSpawnMachine(fleetStore, identity, rawValue, route) {
+  if (!fleetStore?.setFleetPref || !identity?.id || !rawValue || !route?.machine_id || !route?.env_name) return
   const normalized = daemonKey(route.machine_id, route.env_name)
   if (rawValue === normalized) return
-  await fleetStore.setFleetPref(identity.id, SPAWN_MACHINE_PREF_KEY, normalized)
+  fleetStore.setFleetPref(identity.id, SPAWN_MACHINE_PREF_KEY, normalized)
 }
 
 function documentedDefaultMachine(identity, daemonConnections) {
@@ -106,7 +106,7 @@ function documentedDefaultMachine(identity, daemonConnections) {
   )
 }
 
-export async function resolveSpawnMachine({ caller, targetAgent, fresh, respawn, refresh, fleetStore, daemonConnections, onDaemonMissing }) {
+export function resolveSpawnMachine({ caller, targetAgent, fresh, respawn, refresh, fleetStore, daemonConnections, onDaemonMissing }) {
   if ((respawn || refresh) && targetAgent) {
     const label = `target ${targetAgent.id || targetAgent.friendly_name || 'agent'}`
     if (targetAgent.machine_id && targetAgent.env_name) {
@@ -163,11 +163,11 @@ export async function resolveSpawnMachine({ caller, targetAgent, fresh, respawn,
     }
   }
 
-  const configured = await getConfiguredSpawnMachine(fleetStore, caller)
+  const configured = getConfiguredSpawnMachine(fleetStore, caller)
   if (configured) {
     const configuredRoute = splitDaemonKey(configured)
     const route = requireConnectedRoute(configuredRoute, daemonConnections, `caller ${caller.id} configured spawn machine`, onDaemonMissing)
-    await normalizeConfiguredSpawnMachine(fleetStore, caller, configured, route)
+    normalizeConfiguredSpawnMachine(fleetStore, caller, configured, route)
     return {
       ...route,
       source: 'caller-configured-spawn-machine',

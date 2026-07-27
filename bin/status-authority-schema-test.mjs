@@ -80,7 +80,7 @@ try {
   assert(!obligationCols.includes('tmux_session'))
   assert(obligationCols.includes('local_agent_id'))
 
-  await store.upsertAgent({
+  store.upsertAgent({
     id: 'fleet:status-authority-test',
     friendly_name: 'status-authority-test',
     labels: [],
@@ -100,7 +100,7 @@ try {
     reason: 'daemon-agent-activity',
   }), /requires durable sessionId/)
 
-  await store.insertAgentSeat({
+  store.insertAgentSeat({
     agent_id: 'fleet:status-authority-test',
     session_id: 'rollout-status-authority-test',
     resume_id: 'rollout-status-authority-test',
@@ -110,7 +110,7 @@ try {
     created_source: 'status-authority-schema-test',
   })
 
-  const route = await store.activateAgentSeat({
+  const route = store.activateAgentSeat({
     agentId: 'fleet:status-authority-test',
     sessionId: 'rollout-status-authority-test',
     machineId: 'mini',
@@ -125,12 +125,12 @@ try {
   assert.equal(route.terminal_capability, 'termcap:status-authority-test')
   assert(!Object.hasOwn(route, 'tmux_session'))
 
-  const daemonRoster = await store.getAgentsByDaemonKey('mini:prod')
+  const daemonRoster = store.getAgentsByDaemonKey('mini:prod')
   assert.equal(daemonRoster.length, 1)
   assert.equal(daemonRoster[0].id, 'fleet:status-authority-test')
   assert.equal(daemonRoster[0].daemon_key, 'mini:prod')
 
-  const agent = await store.getAgent('fleet:status-authority-test')
+  const agent = store.getAgent('fleet:status-authority-test')
   assert(!Object.hasOwn(agent, 'tmux_session'))
   const nowMs = Date.now()
   const awake = projectAgentRuntimeStatus(agent, {
@@ -303,7 +303,7 @@ try {
   })
   assert.equal(otherHealthSummary.agents[0].activity_health.boundary, ACTIVITY_HEALTH_BOUNDARIES.WATCH_RUNTIME_ERROR)
 
-  await store.upsertAgent({
+  store.upsertAgent({
     id: 'fleet:stale-legacy-route',
     friendly_name: 'stale-legacy-route',
     labels: [],
@@ -320,12 +320,12 @@ try {
     session_id: 'rollout-stale-legacy-route',
   }, { allowProtectedAgentFields: true })
 
-  const staleProjected = await store.getAgent('fleet:stale-legacy-route')
+  const staleProjected = store.getAgent('fleet:stale-legacy-route')
   assert.equal(staleProjected.daemon_key, null)
   assert.equal(staleProjected.machine_id, null)
   assert.equal(staleProjected.env_name, null)
   assert(!Object.hasOwn(staleProjected, 'tmux_session'))
-  assert.deepEqual(await store.getAgentsByDaemonKey('legacy:prod'), [])
+  assert.deepEqual(store.getAgentsByDaemonKey('legacy:prod'), [])
 
   const staleRosterSummary = summarizeFleetRosterTruth({
     roster: [{
@@ -357,7 +357,7 @@ try {
   assert(!Object.hasOwn(staleRosterSummary.agents[0], 'tmux_session'))
   assert.equal(staleRosterSummary.machines.find(m => m.machine_id === 'legacy:prod').registry.total, 0)
 
-  await store.upsertAgent({
+  store.upsertAgent({
     id: 'fleet:skip-test-human',
     friendly_name: 'skip-test-human',
     labels: [],
@@ -374,10 +374,10 @@ try {
       },
     },
   })
-  const humanPageRows = (await store.getAliveAgentsPage({ limit: 10 })).agents
+  const humanPageRows = store.getAliveAgentsPage({ limit: 10 }).agents
   assert(humanPageRows.some(a => a.id === 'fleet:skip-test-human' && a.human))
   const apiAgentsPopulation = humanPageRows.map(a => a.id).sort()
-  assert.deepEqual(await store.getAliveAgentCounts(), {
+  assert.deepEqual(store.getAliveAgentCounts(), {
     awake: 1,
     hibernating: 2,
     total: 3,
@@ -394,7 +394,7 @@ try {
   })
   assert.deepEqual(fleetTableSummary.agents.map(a => a.id).sort(), apiAgentsPopulation)
   assert.deepEqual(humanRosterSummary.agents.map(a => a.id).sort(), apiAgentsPopulation)
-  assert.deepEqual(fleetTableSummary.totals, { ...await store.getAliveAgentCounts(), dead: 0 })
+  assert.deepEqual(fleetTableSummary.totals, { ...store.getAliveAgentCounts(), dead: 0 })
   assert.deepEqual(humanRosterSummary.totals, fleetTableSummary.totals)
   assert.deepEqual(
     humanPageRows.map(a => [a.id, fleetRosterCategory(a)]).sort(),
@@ -427,8 +427,8 @@ try {
   assert.equal(hibernatingFleetTableSummary.matched, hibernatingRows.length)
   assert.deepEqual(awakeFleetTableSummary.agents.map(a => a.id), ['fleet:skip-test-human'])
   assert(!hibernatingFleetTableSummary.agents.some(a => a.id === 'fleet:skip-test-human'))
-  async function endpointRosterProjection({ filter = '', limit = 1 } = {}) {
-    const roster = await store.getAliveAgents()
+  function endpointRosterProjection({ filter = '', limit = 1 } = {}) {
+    const roster = store.getAliveAgents()
     const filterAst = parseFilter(filter)
     const page = filteredFleetRosterPage(roster, {
       filterAst,
@@ -446,7 +446,7 @@ try {
       nextCursor: page.nextCursor,
     }
   }
-  const oneRowAll = await endpointRosterProjection({ limit: 1 })
+  const oneRowAll = endpointRosterProjection({ limit: 1 })
   assert.deepEqual(oneRowAll.totals, {
     awake: 1,
     hibernating: 2,
@@ -455,17 +455,17 @@ try {
   })
   assert.equal(oneRowAll.shown, 1)
   assert.equal(oneRowAll.matched, 3)
-  const oneRowAwake = await endpointRosterProjection({ filter: 'awake', limit: 1 })
+  const oneRowAwake = endpointRosterProjection({ filter: 'awake', limit: 1 })
   assert.deepEqual(oneRowAwake.totals, oneRowAll.totals)
   assert.equal(oneRowAwake.matched, 1)
   assert.deepEqual(oneRowAwake.agents.map(a => a.id), ['fleet:skip-test-human'])
   assert.equal(oneRowAwake.nextCursor, null)
-  const oneRowHibernating = await endpointRosterProjection({ filter: 'hibernating', limit: 1 })
+  const oneRowHibernating = endpointRosterProjection({ filter: 'hibernating', limit: 1 })
   assert.deepEqual(oneRowHibernating.totals, oneRowAll.totals)
   assert.equal(oneRowHibernating.matched, 2)
   assert(!oneRowHibernating.agents.some(a => a.id === 'fleet:skip-test-human'))
   assert(oneRowHibernating.nextCursor)
-  const hibernatingSecondPage = filteredFleetRosterPage(await store.getAliveAgents(), {
+  const hibernatingSecondPage = filteredFleetRosterPage(store.getAliveAgents(), {
     filterAst: hibernatingFilter,
     labelsForRow: labelsForAgent,
     limit: 1,

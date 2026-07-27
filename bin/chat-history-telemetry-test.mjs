@@ -37,22 +37,22 @@ try {
     })
   }
 
-  const global = await store.queryChatHistory({ agents: [], limit: 1, order: 'desc' })
+  const global = store.queryChatHistory({ agents: [], limit: 1, order: 'desc' })
   T('global chat history skips newer notification_attempt rows',
     global.length === 1 && global[0].type === 'chat' && global[0].text === 'real human chat',
     JSON.stringify(global))
 
-  const scoped = await store.queryChatHistory({ agents: ['fleet:agent'], limit: 1, order: 'desc' })
+  const scoped = store.queryChatHistory({ agents: ['fleet:agent'], limit: 1, order: 'desc' })
   T('agent-scoped chat history skips newer notification_attempt rows',
     scoped.length === 1 && scoped[0].type === 'chat' && scoped[0].text === 'real human chat',
     JSON.stringify(scoped))
 
-  const response = await store.buildChatHistoryResponse({ agents: ['fleet:agent'], limit: 1 })
+  const response = store.buildChatHistoryResponse({ agents: ['fleet:agent'], limit: 1 })
   T('buildChatHistoryResponse pages on conversation rows, not telemetry rows',
     response.events.length === 1 && response.events[0].event_type === 'chat' && response.events[0].text === 'real human chat',
     JSON.stringify(response))
 
-  const diagnostic = await store.queryAgentEvents({
+  const diagnostic = store.queryAgentEvents({
     agent: 'fleet:agent',
     types: ['notification_attempt'],
     limit: 20,

@@ -6,11 +6,11 @@ export function nativeTaskIdForEvent({ nativeSystem, agentId, sessionId, nativeT
   return `native:${nativeSystem}:${agentId}:${sessionId || 'session'}:${nativeTaskId}`
 }
 
-export async function applyNativeTaskEvents(fleetStore, msg) {
+export function applyNativeTaskEvents(fleetStore, msg) {
   if (!fleetStore) return { changed: false, tasks: [] }
   const { agent_id, harness, session_id, source_path, events } = msg || {}
   if (!agent_id || !Array.isArray(events)) return { changed: false, tasks: [] }
-  const agent = await fleetStore.getAgent(agent_id)
+  const agent = fleetStore.getAgent?.(agent_id)
   if (!agent) return { changed: false, tasks: [] }
 
   const tasks = []
@@ -19,7 +19,7 @@ export async function applyNativeTaskEvents(fleetStore, msg) {
     if (!nativeTaskId) continue
     const nativeSystem = event.nativeSystem || harness || 'unknown'
     const taskId = nativeTaskIdForEvent({ nativeSystem, agentId: agent_id, sessionId: session_id, nativeTaskId })
-    const existing = await fleetStore.getTask(taskId)
+    const existing = fleetStore.getTask?.(taskId)
     const now = event.timestamp || new Date().toISOString()
     const title = event.subject || event.activeForm || existing?.description || `Native task ${nativeTaskId}`
     const description = event.description || existing?.metadata?.native_payload?.description || ''
@@ -68,7 +68,7 @@ export async function applyNativeTaskEvents(fleetStore, msg) {
       reported: existing?.reported,
       metadata,
     }
-    await fleetStore.upsertTask(task)
+    fleetStore.upsertTask(task)
     tasks.push(task)
   }
   return { changed: tasks.length > 0, tasks }

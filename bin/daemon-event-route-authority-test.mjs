@@ -25,7 +25,7 @@ for (const family of DAEMON_EVENT_ROUTE_FAMILIES) {
       throw new Error('daemon event must not activate a current seat')
     },
   }
-  assert.equal(await currentSeatForDaemonEvent(noSeatStore, {
+  assert.equal(currentSeatForDaemonEvent(noSeatStore, {
     agentId: 'fleet:daemon-route-test',
     daemonKey: 'mini:prod',
     family,
@@ -43,7 +43,7 @@ for (const family of DAEMON_EVENT_ROUTE_FAMILIES) {
       throw new Error('daemon event must not switch a current seat')
     },
   }
-  assert.equal(await currentSeatForDaemonEvent(wrongDaemonStore, {
+  assert.equal(currentSeatForDaemonEvent(wrongDaemonStore, {
     agentId: 'fleet:daemon-route-test',
     daemonKey: 'mini:prod',
     family,
@@ -61,7 +61,7 @@ for (const family of DAEMON_EVENT_ROUTE_FAMILIES) {
       throw new Error('daemon event must not activate when a seat already matches')
     },
   }
-  assert.equal(await currentSeatForDaemonEvent(matchingStore, {
+  assert.equal(currentSeatForDaemonEvent(matchingStore, {
     agentId: 'fleet:daemon-route-test',
     daemonKey: 'mini:prod',
     family,
@@ -122,7 +122,7 @@ assertOrdered(snapshotBranch, [
 
 const livenessBranch = branchSource('agent-liveness')
 assertOrdered(livenessBranch, [
-  'const currentSeat = await currentSeatForDaemonEvent(fleetStore',
+  'const currentSeat = currentSeatForDaemonEvent(fleetStore',
   "family: 'daemon-agent-liveness'",
   'if (!currentSeat) return',
   'spawnLibrarian.observeLiveness',

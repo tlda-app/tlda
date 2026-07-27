@@ -46,10 +46,8 @@ try {
     i === 0 || (dir === 'asc' ? rows[i - 1].timestamp <= r.timestamp : rows[i - 1].timestamp >= r.timestamp))
 
   for (const [label, agents] of [['global', []], ['agent-scoped', ['fleet:aaa']]]) {
-    const asc = await store.queryChatHistory({ agents, limit: 10, order: 'asc' })
-    const desc = await store.queryChatHistory({ agents, limit: 10, order: 'desc' })
-    const fullAsc = await store.queryChatHistory({ agents, limit: 100, order: 'asc' })
-    const defaultRows = await store.queryChatHistory({ agents, limit: 10 })
+    const asc = store.queryChatHistory({ agents, limit: 10, order: 'asc' })
+    const desc = store.queryChatHistory({ agents, limit: 10, order: 'desc' })
 
     T(`${label}: asc is ascending`, isSorted(asc, 'asc'), texts(asc).join())
     T(`${label}: desc is descending`, isSorted(desc, 'desc'), texts(desc).join())
@@ -57,22 +55,22 @@ try {
       texts(asc).join() === texts(desc).slice().reverse().join(),
       `${texts(asc).join()}\n      vs ${texts(desc).slice().reverse().join()}`)
     T(`${label}: the page is the NEWEST rows`,
-      texts(asc).join() === texts(fullAsc).slice(-10).join(),
+      texts(asc).join() === texts(store.queryChatHistory({ agents, limit: 100, order: 'asc' })).slice(-10).join(),
       texts(asc).join())
     T(`${label}: defaults to ascending`,
-      texts(defaultRows).join() === texts(asc).join(),
-      texts(defaultRows).join())
+      texts(store.queryChatHistory({ agents, limit: 10 })).join() === texts(asc).join(),
+      texts(store.queryChatHistory({ agents, limit: 10 })).join())
   }
 
   // Agent scoping still holds with the extra sort wrapped around it.
-  const scoped = await store.queryChatHistory({ agents: ['fleet:aaa'], limit: 100, order: 'desc' })
+  const scoped = store.queryChatHistory({ agents: ['fleet:aaa'], limit: 100, order: 'desc' })
   T('agent-scoped excludes other traffic',
     scoped.every(r => r.from === 'fleet:aaa' || r.to === 'fleet:aaa') && scoped.length === 30,
     `${scoped.length} rows`)
 
   // Paging with `before` must be contiguous in both orders.
-  const first = await store.queryChatHistory({ agents: [], limit: 5, order: 'desc' })
-  const next = await store.queryChatHistory({ before: first[first.length - 1].timestamp, agents: [], limit: 5, order: 'desc' })
+  const first = store.queryChatHistory({ agents: [], limit: 5, order: 'desc' })
+  const next = store.queryChatHistory({ before: first[first.length - 1].timestamp, agents: [], limit: 5, order: 'desc' })
   T('before-cursor pages are contiguous and non-overlapping',
     next.every(r => r.timestamp < first[first.length - 1].timestamp),
     `${texts(first).join()} then ${texts(next).join()}`)

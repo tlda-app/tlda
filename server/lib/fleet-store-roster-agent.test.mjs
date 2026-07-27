@@ -19,7 +19,7 @@ function insertAgent(store, row) {
   })
 }
 
-test('shell reservations are not roster agents', async () => {
+test('shell reservations are not roster agents', () => {
   const dir = mkdtempSync(join(tmpdir(), 'tlda-fleet-roster-agent-'))
   const dbPath = join(dir, 'fleet.db')
   const store = new FleetStore(dbPath, { taskDoc: false })
@@ -38,9 +38,9 @@ test('shell reservations are not roster agents', async () => {
       metadata: { shell: true },
     })
 
-    assert.deepEqual((await store.getAliveAgents()).map(agent => agent.id), ['fleet:real'])
-    assert.deepEqual((await store.getAliveAgentsPage({ limit: 10 })).agents.map(agent => agent.id), ['fleet:real'])
-    assert.equal((await store.getAliveAgentCounts()).total, 1)
+    assert.deepEqual(store.getAliveAgents().map(agent => agent.id), ['fleet:real'])
+    assert.deepEqual(store.getAliveAgentsPage({ limit: 10 }).agents.map(agent => agent.id), ['fleet:real'])
+    assert.equal(store.getAliveAgentCounts().total, 1)
   } finally {
     store.close()
     rmSync(dir, { recursive: true, force: true })

@@ -367,7 +367,7 @@ async function testFreshCodexOpenRolloutAcceptsLaunchMatchedOwnerlessFile() {
   }
 }
 
-async function testAgentSeatBindingMirrorsRouteIdentityToRosterFields() {
+function testAgentSeatBindingMirrorsRouteIdentityToRosterFields() {
   const calls = []
   const fleetStore = {
     insertAgentSeat(seat) {
@@ -393,7 +393,7 @@ async function testAgentSeatBindingMirrorsRouteIdentityToRosterFields() {
     },
   }
 
-  await recordAgentBindingEvent(fleetStore, {
+  recordAgentBindingEvent(fleetStore, {
     agent_id: 'fleet:bound',
     session_id: '019f8802-99e3-7561-ae4c-7b64efd9f030',
     kind: 'codex',
@@ -425,5 +425,5 @@ await testLocalMintPersistsGrantBeforeBinding()
 await testClaudeWakeReusesExistingBinding()
 await testExistingResumeBindingUsesLedgerTerminalCapability()
 await testFreshCodexOpenRolloutAcceptsLaunchMatchedOwnerlessFile()
-await testAgentSeatBindingMirrorsRouteIdentityToRosterFields()
+testAgentSeatBindingMirrorsRouteIdentityToRosterFields()
 console.log('codex spawn interactive prompt tests passed')

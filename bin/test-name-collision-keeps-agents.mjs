@@ -79,14 +79,14 @@ try {
   T('one live holder per name', dupes.length === 0, JSON.stringify(dupes))
 
   // hasEverRun: the carve-out Skip named -- a reservation that never launched.
-  T('an agent with a session has run', await store.hasEverRun('fleet:aaa') === true, 'false')
+  T('an agent with a session has run', store.hasEverRun('fleet:aaa') === true, 'false')
   raw2: {
     const r2 = new Database(dbPath)
     r2.prepare("INSERT INTO agents (id, friendly_name, last_seen, dead) VALUES ('fleet:never', 'never', '2026-07-25T10:00:00Z', 0)").run()
     r2.close()
   }
   const store2 = new FleetStore(dbPath)
-  T('a reservation that never launched has NOT run', await store2.hasEverRun('fleet:never') === false, 'true')
+  T('a reservation that never launched has NOT run', store2.hasEverRun('fleet:never') === false, 'true')
   store2.db.close()
   store.db.close()
 } finally {

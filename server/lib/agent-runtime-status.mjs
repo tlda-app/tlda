@@ -26,6 +26,7 @@ export const LIVENESS = Object.freeze({
 export function createAgentRuntimeStatusStore({
   ttlMs = POSITIVE_LIVENESS_TTL_MS,
   now = () => Date.now(),
+  getSeat = () => null,
   isDaemonConnected = () => false,
   onChange = () => {},
 } = {}) {
@@ -126,16 +127,17 @@ export function createAgentRuntimeStatusStore({
     if (evidenceByAgent.delete(agentId)) onChange(agentId)
   }
 
-  // Projects the agent ROW it is given. It does not look anything up: the seat
-  // facts ride the row and the liveness evidence is right here. There is no
-  // isAwake(agentId) beside it any more — an id is not enough to project from,
-  // and the two callers that used one already held the agent row.
   function project(agent) {
     return projectAgentRuntimeStatus(agent, evidenceFor(agent?.id), {
       nowMs: now(),
       ttlMs,
+      seat: agent?.id ? getSeat(agent.id) : null,
       isDaemonConnected,
     })
+  }
+
+  function isAwake(agentId) {
+    return project({ id: agentId }).status === RUNTIME_STATUS.AWAKE
   }
 
   return {
@@ -147,6 +149,7 @@ export function createAgentRuntimeStatusStore({
     updateActivity,
     clear,
     project,
+    isAwake,
     ttlMs,
   }
 }
@@ -154,10 +157,11 @@ export function createAgentRuntimeStatusStore({
 export function projectAgentRuntimeStatus(agent, evidence = null, {
   nowMs = Date.now(),
   ttlMs = POSITIVE_LIVENESS_TTL_MS,
+  seat = null,
   isDaemonConnected = () => false,
 } = {}) {
   const metadata = agent?.metadata || {}
-  const route = routeStateFor({ agent, isDaemonConnected })
+  const route = routeStateFor({ agent, seat, isDaemonConnected })
   const baseEvidence = {
     liveness: evidence?.liveness || LIVENESS.UNKNOWN,
     liveness_source: evidence?.liveness_source || null,
@@ -257,30 +261,17 @@ export function projectAgentRuntimeStatus(agent, evidence = null, {
   })
 }
 
-// The seat's three facts come off the agent row (seat_present,
-// seat_daemon_key, seat_terminal_capability), attached by the store from
-// agent_current_seats. They used to arrive as a whole seat object fetched per
-// agent by an injected getSeat closure — an N+1 that would have become an N+1
-// of worker round trips, and a closure cannot cross a thread boundary at all.
-//
-// Only the daemon check is main-thread: which daemons hold a live socket right
-// now is not something the thread with the database can know.
-function routeStateFor({ agent, isDaemonConnected }) {
+function routeStateFor({ agent, seat, isDaemonConnected }) {
   if (!agent?.id) return { state: ROUTE_STATE.UNROUTABLE, reason: 'agent-missing' }
   if (agent.dead) return { state: ROUTE_STATE.UNROUTABLE, reason: 'agent-dead' }
-  if (!agent.seat_present) return { state: ROUTE_STATE.SEAT_MISSING, reason: 'current-seat-missing' }
-  // No daemon_key guard. agent_current_seats.daemon_key is NOT NULL, so a seat
-  // without one is unrepresentable — deleted on main by the barnacle sweep,
-  // and this branch had independently marked it unreachable. The deletion
-  // wins; the facts come off the row.
-  const daemonKey = agent.seat_daemon_key
-  if (!agent.seat_terminal_capability) {
-    return { state: ROUTE_STATE.UNROUTABLE, reason: 'current-seat-missing-terminal-capability', hasSeat: true, daemonKey }
+  if (!seat) return { state: ROUTE_STATE.SEAT_MISSING, reason: 'current-seat-missing' }
+  if (!seat.terminal_capability) {
+    return { state: ROUTE_STATE.UNROUTABLE, reason: 'current-seat-missing-terminal-capability', seat }
   }
-  if (!isDaemonConnected(daemonKey)) {
-    return { state: ROUTE_STATE.DAEMON_DISCONNECTED, reason: 'daemon-disconnected', hasSeat: true, daemonKey }
+  if (!isDaemonConnected(seat.daemon_key)) {
+    return { state: ROUTE_STATE.DAEMON_DISCONNECTED, reason: 'daemon-disconnected', seat }
   }
-  return { state: ROUTE_STATE.ROUTABLE, reason: 'current-seat-routable', hasSeat: true, daemonKey }
+  return { state: ROUTE_STATE.ROUTABLE, reason: 'current-seat-routable', seat }
 }
 
 function runtimeProjection({ status, activity, route, evidence, reason, nowMs }) {
@@ -289,12 +280,8 @@ function runtimeProjection({ status, activity, route, evidence, reason, nowMs })
     activity: activity || 'unknown',
     route_state: route.state,
     route_reason: route.reason,
-    // Null for the three early returns that never reached the seat check —
-    // agent-missing, agent-dead, current-seat-missing — exactly as when this
-    // read `route.seat ? … : null`. The `|| null` on daemon_key is gone with
-    // the guard above: the column is NOT NULL.
-    route: route.hasSeat ? {
-      daemon_key: route.daemonKey,
+    route: route.seat ? {
+      daemon_key: route.seat.daemon_key,
     } : null,
     evidence,
     reason,
