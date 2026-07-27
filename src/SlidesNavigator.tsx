@@ -153,7 +153,7 @@ export function SlidesNavigator({ editor, document }: SlidesNavigatorProps) {
     if (!applyingRemoteSlideRef.current && shapeId && getRole() === 'presenter') {
       broadcastSlideIndex(shapeId, clamped)
     }
-  }, [editor, document, totalSlides, slides])
+  }, [editor, document, totalSlides])
 
   useEffect(() => {
     return onSlideIndex((signal) => {
