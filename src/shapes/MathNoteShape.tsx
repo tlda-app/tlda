@@ -924,9 +924,12 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       setVoiceAccumulator(onVoiceUpdate, null, onVoiceStop, 'note')
 
       // Re-register accumulator whenever CodeMirror regains focus.
-      // If the chat shape called setVoiceTarget (which calls hardResetVoice and clears
-      // _accumulator), we need to reclaim it when the note is focused again — the
-      // isEditing effect won't re-fire since the note stays in edit mode throughout.
+      // If a chat composer took the sink via setVoiceTarget (which clears
+      // _accumulator), we reclaim it when the note is focused again — the isEditing
+      // effect won't re-fire since the note stays in edit mode throughout.
+      // This comment used to say setVoiceTarget "calls hardResetVoice"; it never did,
+      // and it did not clear _accumulator either. Believing it already enforced
+      // one-target-at-a-time is what left dictation welded to a voice note.
       const onCmFocus = () => setVoiceAccumulator(onVoiceUpdate, null, onVoiceStop, 'note')
       view.dom.addEventListener('focus', onCmFocus, true)
 
