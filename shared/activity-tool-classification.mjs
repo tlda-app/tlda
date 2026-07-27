@@ -5,7 +5,7 @@ export const ACTIVITY_NOISE = new Set([
   'name_agent', 'label_agent', 'observe', 'promote', 'cleanup',
   'mcp__tlda__wait_for_task', 'mcp__tlda__my_task', 'mcp__tlda__inbox', 'mcp__tlda__tasks',
   'mcp__tlda__login', 'mcp__tlda__task_check',
-  'mcp__tlda__task_done', 'mcp__tlda__timer',
+  'mcp__tlda__timer',
   'mcp__tlda__chat', 'mcp__tlda__delegate', 'mcp__tlda__report',
   'mcp__tlda__share', 'mcp__tlda__spawn', 'mcp__tlda__respawn',
   'mcp__tlda__interrupt', 'mcp__tlda__name_agent', 'mcp__tlda__label_agent',

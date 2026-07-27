@@ -16,7 +16,7 @@ export function daemonEventSeatDecision(fleetStore, {
   const seat = fleetStore.getCurrentAgentSeat?.(agentId) || null
   if (!seat) return { seat: null, accepted: false, rejection_reason: 'no-current-seat' }
   if (seat.daemon_key !== daemonKey) {
-    return { seat, accepted: false, rejection_reason: 'daemon-key-mismatch', seat_daemon_key: seat.daemon_key || null }
+    return { seat, accepted: false, rejection_reason: 'daemon-key-mismatch', seat_daemon_key: seat.daemon_key }
   }
   return { seat, accepted: true, rejection_reason: null }
 }

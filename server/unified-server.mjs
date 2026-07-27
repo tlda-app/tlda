@@ -944,7 +944,6 @@ async function drainTaskWakeQueue() {
     if (daemonKeys.length === 0) continue
     const daemonKey = seat.daemon_key
     try {
-      if (!seat.daemon_key) throw new Error(`agent ${agent.friendly_name || agentId} has no durable daemon key; cannot route task re-nudge`)
       const ownerDaemon = daemonConnections.get(daemonKey)
       if (!ownerDaemon || ownerDaemon.readyState !== 1) throw new Error(`No fleet-daemon connected for ${daemonKey}`)
       const serverAlive = isAgentAlive(agentId)
@@ -2483,9 +2482,6 @@ function agentDaemonAddress(agent) {
 function currentSeatOrError(agent, { requireTerminal = true } = {}) {
   const seat = agent?.id ? fleetStore?.getCurrentAgentSeat?.(agent.id) : null
   if (!seat) return { error: 'agent has no current durable seat' }
-  if (!seat.daemon_key) {
-    return { error: 'current durable route is missing daemon authority' }
-  }
   if (requireTerminal && !seat.terminal_capability) {
     return { error: 'current durable seat is missing owning daemon terminal capability' }
   }
@@ -4004,7 +4000,7 @@ function currentSeatOrHttpError(res, agent) {
     res.status(409).json({ error: 'agent has no current durable seat' })
     return null
   }
-  if (!seat.daemon_key || !seat.terminal_capability) {
+  if (!seat.terminal_capability) {
     res.status(409).json({ error: 'current durable seat is missing owning daemon terminal capability' })
     return null
   }
@@ -4792,7 +4788,7 @@ server.on('upgrade', async (req, socket, head) => {
     if (!agentId || !fleetStore) { socket.destroy(); return }
     const agent = fleetStore.findAgent(agentId)
     const seat = agent ? fleetStore.getCurrentAgentSeat?.(agent.id) : null
-    if (!agent || !seat?.daemon_key || !seat?.terminal_capability) {
+    if (!agent || !seat || !seat.terminal_capability) {
       // Decline cleanly with a JSON message before close so the UI shows
       // a useful error instead of "WebSocket error".
       terminalWss.handleUpgrade(req, socket, head, (ws) => {
@@ -8604,12 +8600,6 @@ async function handleDaemonWsMessage(ws, msg) {
     return
   }
 
-  if (type === 'qualification-warning') {
-    // Legacy: daemon still sends these but server now handles qualification
-    // checking directly via activity-event. Ignore.
-    return
-  }
-
   if (type === 'terminal-chat') {
     if (!fleetStore || !_terminalDedupStmt) return
     const { agent_id, from, text: rawText, ts, session_id } = msg
@@ -8804,7 +8794,7 @@ async function handleDaemonWsMessage(ws, msg) {
         from: agent_id,
         to: SERVER_OWNER_ID,
         text: plan_text,
-        metadata: { daemon_key: seat?.daemon_key || null },
+        metadata: { daemon_key: seat ? seat.daemon_key : null },
         unread: true,
         timestamp: new Date().toISOString(),
       })

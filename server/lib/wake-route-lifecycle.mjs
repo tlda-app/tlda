@@ -69,7 +69,7 @@ export async function runWakeRouteLifecycle({
     })
   }
 
-  if (!seat?.daemon_key || !seat?.terminal_capability) throw new Error(`agent ${agent.friendly_name || agentId} has no current durable terminal capability; cannot route wake/respawn`)
+  if (!seat?.terminal_capability) throw new Error(`agent ${agent.friendly_name || agentId} has no current durable terminal capability; cannot route wake/respawn`)
   if (!ownerDaemon || ownerDaemon.readyState !== 1) throw new Error(`No fleet-daemon connected for ${daemonKey}`)
 
   const serverAlive = isAgentAlive(agentId)

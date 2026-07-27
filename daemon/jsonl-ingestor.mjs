@@ -4,7 +4,6 @@ import fs from 'fs'
 import os from 'os'
 import path from 'path'
 
-import { recordPartialSkillReads } from '../shared/partial-skill-reads.mjs'
 import { ledgerSessionId, tailLedgerSessionInput } from '../agent-runtime/ledger-session-tail.mjs'
 import { codexKnownRolloutIds } from '../agent-runtime/daemon-guards.mjs'
 import { codexRolloutIsTopLevel } from '../agent-runtime/resolve-transcript.mjs'
@@ -633,18 +632,6 @@ export function createJsonlIngestor({
     }
   }
 
-  // ---------- Qualification checking ----------
-  // Detects agents editing files without having read required reference docs.
-  // Config: ~/.claude/qualifications.json — array of { edit: glob, requires: [paths] }
-
-  const QUALIFICATIONS_FILE = path.join(os.homedir(), '.claude', 'qualifications.json')
-  let _qualRules = []
-  // Per-agent read tracking: agentId → Set of resolved file paths they've Read
-  const _agentReads = new Map()
-  const _agentPartialSkillReads = new Map()
-  // Per-agent warnings already fired: agentId → Set of "editPath:requiredPath" to avoid spam
-  const _agentWarned = new Map()
-
   function sendActivityHealth(agent, patch) {
     const agentId = typeof agent === 'string' ? agent : agent?.id
     if (!agentId) return
@@ -659,102 +646,6 @@ export function createJsonlIngestor({
       last_activity_at: patch.lastActivityAt || null,
       session_id: patch.sessionId || null,
       jsonl_path: patch.jsonlPath || null,
-    })
-  }
-
-  function loadQualifications() {
-    try {
-      if (!fs.existsSync(QUALIFICATIONS_FILE)) return
-      const data = JSON.parse(fs.readFileSync(QUALIFICATIONS_FILE, 'utf8'))
-      // Only edit-gating rules build an editRe. `tool:`-gating rules have no
-      // `edit` field (they're enforced elsewhere) and must be skipped here — else
-      // globToRegex(undefined) throws and the whole load fails with
-      // "Cannot read properties of undefined (reading 'replace')".
-      _qualRules = (data.rules || [])
-        .filter(r => typeof r.edit === 'string' && r.edit)
-        .map(r => ({
-          editPattern: r.edit,
-          editRe: globToRegex(r.edit),
-          requires: r.requires || [],
-        }))
-      log.info(`loaded ${_qualRules.length} qualification rules`)
-    } catch (e) {
-      // Qualification rules are advisory gates; failed loads leave no rules active.
-      log.error(`failed to load qualifications: ${e.message}`)
-    }
-  }
-
-  function globToRegex(glob) {
-    const escaped = glob
-      .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-      .replace(/\*\*/g, '<<<GLOBSTAR>>>')
-      .replace(/\*/g, '[^/]*')
-      .replace(/<<<GLOBSTAR>>>/g, '.*')
-      .replace(/\?/g, '[^/]')
-    // Handle {a,b} alternation
-    const withAlts = escaped.replace(/\\\{([^}]+)\\\}/g, (_, inner) =>
-      '(' + inner.split(',').join('|') + ')')
-    return new RegExp('^' + withAlts + '$')
-  }
-
-  // Derive the virtual skill key from a skill SKILL.md path, e.g.
-  // ~/.claude/skills/writing/SKILL.md → 'skill:writing'
-  function skillKeyFromPath(resolvedPath) {
-    const home = os.homedir()
-    const skillsDir = path.join(home, '.claude', 'skills')
-    if (!resolvedPath.startsWith(skillsDir + path.sep)) return null
-    const rel = resolvedPath.slice(skillsDir.length + 1) // e.g. 'writing/SKILL.md'
-    const parts = rel.split(path.sep)
-    if (parts.length === 2 && parts[1] === 'SKILL.md') return 'skill:' + parts[0]
-    return null
-  }
-
-  function checkQualification(agentId, toolName, filePath) {
-    if (!filePath || _qualRules.length === 0) return
-    if (toolName !== 'Edit' && toolName !== 'Write') return
-
-    // Normalize path for matching — strip leading home dir for glob matching
-    const home = os.homedir()
-    const relative = filePath.startsWith(home) ? filePath.slice(home.length + 1) : filePath
-    const reads = _agentReads.get(agentId) || new Set()
-    const warned = _agentWarned.get(agentId) || new Set()
-
-    for (const rule of _qualRules) {
-      if (!rule.editRe.test(relative) && !rule.editRe.test(filePath)) continue
-      for (const req of rule.requires) {
-        const resolvedReq = req.startsWith('~') ? path.join(home, req.slice(2)) : req
-        // Satisfied by a literal Read of the file OR by invoking the corresponding skill
-        const skillKey = skillKeyFromPath(resolvedReq)
-        if (reads.has(resolvedReq)) continue
-        if (skillKey && reads.has(skillKey)) continue
-        const warnKey = `${filePath}:${resolvedReq}`
-        if (warned.has(warnKey)) continue
-        warned.add(warnKey)
-        if (!_agentWarned.has(agentId)) _agentWarned.set(agentId, warned)
-        // Fire warning
-        const reqShort = req.startsWith('~/') ? req : path.basename(req)
-        const fileShort = path.basename(filePath)
-        sendMsg({
-          type: 'qualification-warning',
-          agent_id: agentId,
-          file: filePath,
-          required: resolvedReq,
-          message: `⚠ ${agentId} edited ${fileShort} without reading \`${reqShort}\``,
-        })
-      }
-    }
-  }
-
-  function trackRead(agentId, filePath) {
-    if (!filePath) return
-    if (!_agentReads.has(agentId)) _agentReads.set(agentId, new Set())
-    _agentReads.get(agentId).add(filePath)
-  }
-
-  function trackPartialSkillReads(agentId, command) {
-    recordPartialSkillReads(_agentPartialSkillReads, agentId, command, (id, skillKey, filePath) => {
-      trackRead(id, filePath)
-      trackRead(id, skillKey)
     })
   }
 
@@ -783,9 +674,6 @@ export function createJsonlIngestor({
     }
     return best?.agentId || null
   }
-
-  loadQualifications()
-
 
   async function syncSessionWatchers(agentList) {
     await sessionWatcherSyncRunner.sync(agentList)
@@ -1392,11 +1280,7 @@ export function createJsonlIngestor({
       if (block.type !== 'tool_use') continue
       const input = block.input || {}
       const filePath = input.file_path || input.path || ''
-      if (block.name === 'Read' && filePath) trackRead(agentId, filePath)
-      if (block.name === 'Skill' && input.skill) trackRead(agentId, 'skill:' + input.skill)
-      if (block.name === 'Bash' && input.command) trackPartialSkillReads(agentId, input.command)
       if ((block.name === 'Edit' || block.name === 'Write' || block.name === 'MultiEdit') && filePath) {
-        checkQualification(agentId, block.name, filePath)
         recordEdit(agentId, filePath)
       }
     }

@@ -4251,7 +4251,7 @@ export async function collectAgentReadiness(query, spawnSync, apiGet = api) {
   }
   const localDaemonKey = `${localMachineId()}:${getActiveEnvName()}`
   if (seat.daemon_key !== localDaemonKey) {
-    return { ok: false, query, agent, seat, error: `current durable seat belongs to ${seat.daemon_key || 'unknown daemon'}, not local ${localDaemonKey}` }
+    return { ok: false, query, agent, seat, error: `current durable seat belongs to ${seat.daemon_key}, not local ${localDaemonKey}` }
   }
   if (!localRoute?.tmuxSession || localRoute.terminalCapability !== seat.terminal_capability) {
     return { ok: false, query, agent, seat, error: 'current durable seat capability has no matching local terminal route' }

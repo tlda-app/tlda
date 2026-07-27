@@ -1409,7 +1409,7 @@ export function getFleetTools() {
         type: 'object',
         properties: {
           reason: { type: 'string', description: 'Why this skill does not apply to your current action. Required. Shown to Skip.' },
-          skills: { type: 'array', items: { type: 'string' }, description: 'Skill name(s) to dismiss (e.g. ["writing-core","writing-process"]). Omit to dismiss everything currently blocking you.' },
+          skills: { type: 'array', items: { type: 'string' }, description: 'Optional specific skill name(s) to dismiss. Omit to dismiss everything currently blocking you.' },
         },
         required: ['reason'],
       },
