@@ -249,7 +249,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       res.status(409).json({ error: 'agent has no current durable seat' })
       return null
     }
-    if (!seat.daemon_key || !seat.terminal_capability) {
+    if (!seat.terminal_capability) {
       res.status(409).json({ error: 'current durable seat is missing owning daemon terminal capability' })
       return null
     }

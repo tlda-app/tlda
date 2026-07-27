@@ -267,9 +267,6 @@ function routeStateFor({ agent, seat, isDaemonConnected }) {
   if (!agent?.id) return { state: ROUTE_STATE.UNROUTABLE, reason: 'agent-missing' }
   if (agent.dead) return { state: ROUTE_STATE.UNROUTABLE, reason: 'agent-dead' }
   if (!seat) return { state: ROUTE_STATE.SEAT_MISSING, reason: 'current-seat-missing' }
-  if (!seat.daemon_key) {
-    return { state: ROUTE_STATE.UNROUTABLE, reason: 'current-seat-incomplete', seat }
-  }
   if (!seat.terminal_capability) {
     return { state: ROUTE_STATE.UNROUTABLE, reason: 'current-seat-missing-terminal-capability', seat }
   }
@@ -286,7 +283,7 @@ function runtimeProjection({ status, activity, route, evidence, reason, nowMs })
     route_state: route.state,
     route_reason: route.reason,
     route: route.seat ? {
-      daemon_key: route.seat.daemon_key || null,
+      daemon_key: route.seat.daemon_key,
     } : null,
     evidence,
     reason,
