@@ -22,6 +22,7 @@ import {
 import { useIsInViewport } from './useIsInViewport'
 import { PDF_HEIGHT } from '../layoutConstants'
 import { clearHtmlTextSelection, recordHtmlTextSelection } from '../htmlSelection'
+import { attachRglFigureSync } from '../rglFigureSync'
 
 // Heading Y positions reported by bridge scripts, keyed by shape ID
 export const htmlHeadingPositions = new Map<string, Record<string, number>>()
@@ -313,9 +314,15 @@ function HtmlPageComponent({ shape }: { shape: any }) {
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const docLinkHoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  const detachRglSyncRef = useRef<(() => void) | null>(null)
+
   // Register iframe ref for SvgFigureShape to send transform messages
   useEffect(() => {
-    return () => { htmlIframeElements.delete(shape.id) }
+    return () => {
+      htmlIframeElements.delete(shape.id)
+      detachRglSyncRef.current?.()
+      detachRglSyncRef.current = null
+    }
   }, [shape.id])
 
   useEffect(() => installHtmlNavigationHistory(editor), [editor])
@@ -393,7 +400,13 @@ function HtmlPageComponent({ shape }: { shape: any }) {
     if (!iframe?.contentWindow) return
     htmlIframeElements.set(shape.id, iframe)
     iframe.contentWindow.postMessage({ type: 'tlda-dark-mode', dark: isDark }, '*')
-  }, [isDark, shape.id])
+    // Bind any rgl WebGL figures in this deck to the shared orientation props.
+    // Runs on every load, including the remount that follows the viewport-gated
+    // teardown below — that remount is why a figure would otherwise silently
+    // return to its render-time orientation mid-session.
+    detachRglSyncRef.current?.()
+    detachRglSyncRef.current = attachRglFigureSync(editor, shape.id, iframe)
+  }, [isDark, shape.id, editor])
 
   // Listen for height reports from iframe content
   // Read current height from the store (not the closure) to avoid stale delta calculations
