@@ -481,6 +481,7 @@ jsonlIngestor = createJsonlIngestor({
       })
       .catch(error => log.error(`mint marker fact write failed for ${marker.mint_id}: ${error.message}`))
   },
+  resolveMintFacts: marker => mintStore.get(marker?.mint_id) || mintStore.getByFleetId(marker?.fleet_id),
   machineId: MACHINE_ID,
   envName: ACTIVE_ENV,
   daemonKey: `${MACHINE_ID}:${ACTIVE_ENV}`,

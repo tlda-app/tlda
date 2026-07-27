@@ -303,6 +303,7 @@ export function createJsonlIngestor({
   extractActivityEvents,
   activityDeliveryCounters = null,
   recordMintMarker = null,
+  resolveMintFacts = null,
   machineId = null,
   envName = null,
   daemonKey = null,
@@ -370,6 +371,34 @@ export function createJsonlIngestor({
     if (event) sendMsg(event)
   }
 
+  function cleanString(value) {
+    const text = String(value || '').trim()
+    return text || null
+  }
+
+  function modelFromMintFacts(facts) {
+    return cleanString(facts?.processState?.model)
+      || cleanString(facts?.launchRecipe?.modelSpec?.id)
+      || cleanString(facts?.launchRecipe?.model)
+      || null
+  }
+
+  function markerIdentityFromMintFacts(marker, facts, { sessionId, jsonlPath, harnessKind } = {}) {
+    return {
+      fleet_id: marker.fleet_id,
+      session_id: marker.session_id || sessionId,
+      harness_kind: marker.harness_kind || harnessKind,
+      jsonl_path: jsonlPath,
+      tmux_session: marker.tmux_session,
+      model: marker.model || modelFromMintFacts(facts),
+      cwd: marker.cwd,
+      friendly_name: marker.friendly_name,
+      machine_id: marker.machine_id,
+      env_name: marker.env_name,
+      daemon_key: marker.daemon_key,
+    }
+  }
+
   function persistLocalMarkerBinding(marker, { sessionId, jsonlPath, harnessKind } = {}) {
     if (!marker?.mint_id) return
     let bindingError = null
@@ -392,19 +421,19 @@ export function createJsonlIngestor({
       })
     }
     if (marker.fleet_id) {
-      recordSessionIdentity({
-        fleet_id: marker.fleet_id,
-        session_id: marker.session_id || sessionId,
-        harness_kind: marker.harness_kind || harnessKind,
-        jsonl_path: jsonlPath,
-        tmux_session: marker.tmux_session,
-        model: marker.model,
-        cwd: marker.cwd,
-        friendly_name: marker.friendly_name,
-        machine_id: marker.machine_id,
-        env_name: marker.env_name,
-        daemon_key: marker.daemon_key,
-      })
+      let facts = null
+      try {
+        facts = resolveMintFacts?.(marker) || null
+      } catch (e) {
+        sendMsg({
+          type: 'daemon-warning',
+          warning: 'daemon-mint-facts-lookup-failed',
+          mint_id: marker.mint_id,
+          fleet_id: marker.fleet_id,
+          error: e?.message || String(e),
+        })
+      }
+      recordSessionIdentity(markerIdentityFromMintFacts(marker, facts, { sessionId, jsonlPath, harnessKind }))
     }
     return bindingError
   }
