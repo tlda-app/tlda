@@ -235,10 +235,9 @@ export function isChatHistoryEventType(type) {
 }
 
 // The one place the "what was this agent called at instant ts" rule lives.
-// nameAt() and nameResolver() both go through it, so the single-shot and
-// memoized paths cannot drift apart. `spans` is every name_history row for the
-// agent, oldest first; `currentName` is a thunk so the fallback query only runs
-// when a branch actually reaches it.
+// Pure, and resolved against one entry from nameSpansFor(), so naming a page of
+// events is in-memory work over data already fetched rather than a query per
+// row. `entry.spans` is every name_history row for the agent, oldest first.
 //
 // The three no-covering-span outcomes are DIFFERENT and must stay that way:
 // before all recorded history is the earliest known name, after the last span
@@ -246,18 +245,24 @@ export function isChatHistoryEventType(type) {
 // at all is the current name. Flattening them silently rewrites history in
 // every thread view. Comparisons are on the ISO strings, matching the TEXT
 // comparison the SQL did.
-function resolveNameAt(spans, ts, currentName) {
-  if (ts) {
-    // Newest qualifying span wins; spans arrive oldest-first, so the last match
-    // is the one the old `ORDER BY from_ts DESC LIMIT 1` returned.
-    let covering = null;
-    for (const s of spans) {
-      if (s.from_ts <= ts && (s.to_ts === null || s.to_ts > ts)) covering = s;
+//
+// The ID is always the durable handle — callers pair this name WITH the id.
+export function resolveNameAt(entry, ts) {
+  if (!entry) return null;
+  const spans = entry.spans;
+  if (ts && spans.length) {
+    // Newest qualifying span wins. Spans arrive oldest-first, so walking back
+    // and taking the first match is the one `ORDER BY from_ts DESC LIMIT 1`
+    // returned.
+    for (let i = spans.length - 1; i >= 0; i -= 1) {
+      const span = spans[i];
+      if (span.from_ts <= ts && (span.to_ts == null || span.to_ts > ts)) {
+        return span.friendly_name; // may be null (nameless span)
+      }
     }
-    if (covering) return covering.friendly_name; // may be null (nameless span)
-    if (spans.length) return ts < spans[0].from_ts ? spans[0].friendly_name : null;
+    return ts < spans[0].from_ts ? spans[0].friendly_name : null;
   }
-  return currentName();
+  return entry.current ?? null;
 }
 
 export class FleetStore {
@@ -1573,14 +1578,6 @@ export class FleetStore {
     this._getDaemonRegistration = this.db.prepare('SELECT * FROM daemon_registry WHERE daemon_key = ?');
     this._listDaemonRegistrations = this.db.prepare('SELECT * FROM daemon_registry ORDER BY daemon_key');
 
-    // Name provenance: every span for one agent, oldest first. One read answers
-    // any number of instants, which is what nameResolver() is built on. The id
-    // tiebreak matches the (fleet_id, from_ts) index's own rowid ordering, so
-    // spans sharing a from_ts resolve the same way a LIMIT 1 scan resolved them.
-    this._nameSpansStmt = this.db.prepare(`
-      SELECT friendly_name, from_ts, to_ts FROM name_history WHERE fleet_id = ?
-      ORDER BY from_ts ASC, id ASC
-    `);
     this._nameHistoryStmt = this.db.prepare(`
       SELECT friendly_name, from_ts, to_ts FROM name_history WHERE fleet_id = ?
       ORDER BY from_ts ASC
@@ -2590,45 +2587,51 @@ export class FleetStore {
 
   // ---- Name provenance ----
 
-  // The friendly_name this agent held at instant `ts` (ISO string). Returns the
-  // span covering [from_ts, to_ts); a NULL friendly_name (nameless span) yields
-  // null. If `ts` predates all history, falls back to the earliest known name.
-  // If the agent has no history at all, falls back to its current friendly_name.
-  // The ID is always the durable handle — callers pair this name WITH the id.
-  nameAt(fleetId, ts) {
-    if (!fleetId) return null;
-    return resolveNameAt(this._nameSpansStmt.all(fleetId), ts, () => {
-      const a = this._getAgent.get(fleetId);
-      return a ? a.friendly_name : null;
-    });
-  }
+  // Everything needed to name a set of agents at arbitrary instants, in two
+  // queries regardless of how many rows are being named.
+  //
+  // This replaces a per-(id, ts) `nameAt` lookup. Its only caller was
+  // `stampNames` in unified-server.mjs, which ran SIX store calls per row —
+  // three `nameAt` and three `getAgent` — over a page capped at 5,000 rows.
+  // That is up to 30,000 point queries to render one events reply, and it was
+  // the largest single fan-out in the server. A page mentions a few dozen
+  // distinct agents at most, so the work was never proportional to the answer.
+  //
+  // The `getAgent` half was worse than a query: it hydrated the whole agent —
+  // JSON.parse of metadata, labels and session_ids, plus runtime-status and
+  // seat projection — to read one column off the row. `_hydrateAgent` is the
+  // top frame in six of the stalls in the live lag profiler.
+  //
+  // Returns a Map from fleet id to { spans, current }. `spans` is oldest-first,
+  // which is the order resolveNameAt walks.
+  nameSpansFor(ids) {
+    const unique = [...new Set((ids || []).filter(Boolean))];
+    const out = new Map();
+    if (!unique.length) return out;
+    for (const id of unique) out.set(id, { spans: [], current: null });
 
-  // A resolver for one request. It reads each agent's spans once and answers
-  // every (id, ts) after that from memory — the reason a 5,000-row page costs
-  // one query per participant instead of one per row. Both maps live on the
-  // returned object and die with it, so the store caches nothing and a rename
-  // has nothing to invalidate. Callers make one per request; they must not
-  // hold one across requests.
-  nameResolver() {
-    const spansById = new Map();
-    const currentById = new Map();
-    return {
-      nameAt: (fleetId, ts) => {
-        if (!fleetId) return null;
-        let spans = spansById.get(fleetId);
-        if (spans === undefined) {
-          spans = this._nameSpansStmt.all(fleetId);
-          spansById.set(fleetId, spans);
-        }
-        return resolveNameAt(spans, ts, () => {
-          if (currentById.has(fleetId)) return currentById.get(fleetId);
-          const a = this._getAgent.get(fleetId);
-          const name = a ? a.friendly_name : null;
-          currentById.set(fleetId, name);
-          return name;
-        });
-      },
-    };
+    // Chunked because a parameter list is bounded (SQLITE_MAX_VARIABLE_NUMBER
+    // is 999 on older builds). A page's distinct agents fit in one chunk in
+    // practice; the loop is so a caller passing a large id set cannot fail.
+    for (let i = 0; i < unique.length; i += 400) {
+      const chunk = unique.slice(i, i + 400);
+      const holes = chunk.map(() => '?').join(',');
+      const spans = this.db.prepare(`
+        SELECT fleet_id, friendly_name, from_ts, to_ts FROM name_history
+        WHERE fleet_id IN (${holes})
+        ORDER BY fleet_id, from_ts ASC, id ASC
+      `).all(...chunk);
+      for (const span of spans) out.get(span.fleet_id)?.spans.push(span);
+
+      const current = this.db.prepare(
+        `SELECT id, friendly_name FROM agents WHERE id IN (${holes})`,
+      ).all(...chunk);
+      for (const row of current) {
+        const entry = out.get(row.id);
+        if (entry) entry.current = row.friendly_name;
+      }
+    }
+    return out;
   }
 
   // Full span list for an agent, oldest first. Used for the thread-header
