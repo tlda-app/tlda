@@ -23,7 +23,7 @@ import type { ManagedSurfaceOwner } from '../wm/managed-surfaces'
 // ── Types ──────────────────────────────────────────────────────────────────
 
 export interface PageSource {
-  type: 'live' | 'shadow' | 'snapshot'
+  type: 'live' | 'shadow'
   projectName: string
   ref?: string
 }
@@ -61,8 +61,6 @@ function pageUrl(source: PageSource, projectName: string, pageNum: number): stri
       const hash7 = (source.ref || '').slice(0, 7)
       return `/docs/${projectName}/history/shadow-${hash7}/${filename}`
     }
-    case 'snapshot':
-      return `/docs/${projectName}/history/${source.ref}/${filename}`
   }
 }
 

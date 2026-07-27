@@ -1,6 +1,5 @@
 export { TocTab, DarkModeToggle, SchemeToggle, ThemeFamilyToggle } from './TocTab'
 export { SearchTab } from './SearchTab'
 export { ChangesTab } from './ChangesTab'
-export { HistoryTab, HistoryChanges } from './HistoryTab'
 export { ProofsTab } from './ProofsTab'
 export { NotesTab } from './NotesTab'

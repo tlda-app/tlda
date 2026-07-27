@@ -160,7 +160,6 @@ export function DocumentPanel() {
           <button className={`doc-panel-tab ${tab === 'toc' ? 'active' : ''}`} onClick={() => setTab('toc')}>
             TOC
           </button>
-          {/* History tab removed — version wheel + bottom scrubber replaces it */}
           <button className={`doc-panel-tab ${tab === 'notes' ? 'active' : ''}`} onClick={() => setTab('notes')}>
             Notes
           </button>
@@ -169,7 +168,6 @@ export function DocumentPanel() {
           </button>
         </div>
         {tab === 'toc' && <TocTab />}
-        {/* HistoryTab removed */}
         {tab === 'notes' && <NotesTab />}
         {tab === 'prefs' && <PrefsTab />}
         <ZoneWidthSlider />

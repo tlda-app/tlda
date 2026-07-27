@@ -58,7 +58,6 @@ import { fileURLToPath } from 'url'
 import { updateProject, sourceDir, outputDir, projectDir, readProject, listProjects, extractBuildErrors } from './project-store.mjs'
 import { broadcastSignal, putShape, updateShape, emitGlobalEvent } from './sync-rooms.mjs'
 import { writeSentinel } from './sentinel.mjs'
-import { snapshotBeforeBuild, recordGitSnapshot } from './history-store.mjs'
 import { commitSnapshot, currentVersion, initShadowFromProjectRepo, createShadowBundleBase64, readShadowSourceScope } from './shadow-repo.mjs'
 import { appendBuildEntry } from './changelog.mjs'
 import { emitBuildComplete } from './webhooks.mjs'
@@ -1738,7 +1737,6 @@ export async function recordBuildVersion({
   }
 
   await updateDocVersionSentinel(name, result.hash, readyAt, errors, warnings, sourceVersion)
-  recordGitSnapshot(name, { commitHash: result.hash, commitMessage: `Build at ${result.timestamp}`, pages })
   _reporter.emitGlobalEvent('version-committed', { name, hash: result.hash, timestamp: result.timestamp })
   return { hash: result.hash, committed: true, result }
 }
@@ -1983,16 +1981,6 @@ async function _runBuildInner(name, { priorityPages: explicitPriority } = {}) {
   const elapsed = () => ((Date.now() - buildStart) / 1000).toFixed(1)
 
   try {
-    // Snapshot current output in background — don't block the build
-    Promise.resolve().then(() => {
-      try {
-        const snap = snapshotBeforeBuild(name)
-        if (snap) ctx.addLog(`Snapshot saved: ${snap.id} (${snap.pages} pages)`)
-      } catch (e) {
-        ctx.addLog(`Snapshot failed (non-fatal): ${e.message}`)
-      }
-    })
-
     // Per-target phases (compile, publish DVI, extract macros / synctex /
     // proof-pairing / theorem-map / source-map / relevant-files). All
     // outputs land flat in outDir, prefixed by texBase:

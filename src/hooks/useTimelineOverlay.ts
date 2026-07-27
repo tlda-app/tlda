@@ -1,9 +1,9 @@
 /**
- * useTimelineOverlay — fetches timeline data from changelog + annotation history,
+ * useTimelineOverlay — fetches timeline data from shadow history + annotation history,
  * creates/removes the TimelineOverlayShape on toggle.
  *
  * Data sources:
- *   1. GET /api/projects/{name}/history — build changelog entries
+ *   1. GET /api/projects/{name}/history/shadow/changelog — build changelog entries
  *   2. GET /api/projects/{name}/shapes — current annotation shapes with createdAt meta
  *
  * Positions the timeline shape to the right of the document pages.
@@ -32,15 +32,15 @@ export function useTimelineOverlay(
 
     // Fetch data from both endpoints concurrently
     const [historyRes, shapesRes] = await Promise.all([
-      fetch(`/api/projects/${projectName}/history`).then(r => r.ok ? r.json() : { entries: [] }).catch(() => ({ entries: [] })),
+      fetch(`/api/projects/${projectName}/history/shadow/changelog`).then(r => r.ok ? r.json() : { commits: [] }).catch(() => ({ commits: [] })),
       fetch(`/api/projects/${projectName}/shapes`).then(r => r.ok ? r.json() : []).catch(() => []),
     ])
 
     const totalPages = document.pages.length
     const events: TimelineEvent[] = []
 
-    // Process build history entries
-    const historyEntries = historyRes.entries || []
+    // Process shadow build history entries
+    const historyEntries = historyRes.commits || []
     for (const entry of historyEntries) {
       if (!entry.timestamp) continue
 
@@ -54,10 +54,8 @@ export function useTimelineOverlay(
         page: primaryPage,
         pages: changedPages.length > 0 ? changedPages : [primaryPage],
         significance,
-        label: entry.commitMessage
-          ? `Build: ${entry.commitMessage.slice(0, 40)}`
-          : `Build: ${changedPages.length || '?'} page(s) changed`,
-        buildHash: entry.buildHash,
+        label: `Build: ${changedPages.length || '?'} page(s) changed`,
+        buildHash: entry.hash,
       })
     }
 
