@@ -43,7 +43,7 @@ export async function runWakeRouteLifecycle({
   nudgeText = null,
   traceId = null,
   source = {},
-  isAgentAlive,
+  isAgentAwake,
   sendDaemonDurable,
   sendDaemonEphemeral,
   spawnLibrarian,
@@ -68,7 +68,9 @@ export async function runWakeRouteLifecycle({
   if (!seat?.terminal_capability) throw new Error(`agent ${agent.friendly_name || agentId} has no current durable terminal capability; cannot route wake/respawn`)
   if (!ownerDaemon || ownerDaemon.readyState !== 1) throw new Error(`No fleet-daemon connected for ${daemonKey}`)
 
-  const serverAlive = isAgentAlive(agentId)
+  // The agent row, not an id: this used to hand an id to a function that went
+  // and re-read the seat that is already checked two lines above.
+  const serverAlive = isAgentAwake(agent)
   const liveness = await sendDaemonDurable(daemonKey, 'check-alive', { agent_id: agentId, terminal_capability: seat.terminal_capability })
     .then(result => livenessFromCheckAliveResult(agentId, result))
     .catch(e => ({

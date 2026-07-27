@@ -46,7 +46,7 @@ async function testLiveTmuxWakeDoesNotRespawnWhenServerStatusIsStale() {
         terminal_capability: 'termcap:live',
       },
       daemonKey: 'mini:prod', ownerDaemon: { readyState: 1 }, traceId: `trace-live-${attempt}`,
-      isAgentAlive: () => false,
+      isAgentAwake: () => false,
       sendRpcResilient: async (daemonKey, type, params) => {
         assert.equal(daemonKey, 'mini:prod')
         assert.equal(type, 'check-alive')
@@ -342,7 +342,7 @@ async function testRestartReplayReusesExactBoundSeatAndCapability() {
         daemonKey: obligation.daemon_key,
         ownerDaemon: { readyState: 1 },
         traceId: `trace-restart-${attempt}`,
-        isAgentAlive: () => false,
+        isAgentAwake: () => false,
         sendRpcResilient: async (_daemonKey, type, params) => {
           assert.equal(type, 'check-alive')
           assert.equal(params.terminal_capability, capability)
