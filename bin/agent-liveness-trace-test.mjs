@@ -64,16 +64,15 @@ assert.equal(localReports[1].report_seq, 2)
 
 const seat = { daemon_key: 'mini:default', terminal_capability: 'redacted-in-diagnostics' }
 const fleetStore = { getCurrentAgentSeat: id => id === 'known' ? seat : null }
-assert.deepEqual(daemonEventSeatDecision(fleetStore, { agentId: 'known', daemonKey: 'mini:default' }), {
+assert.deepEqual(await daemonEventSeatDecision(fleetStore, { agentId: 'known', daemonKey: 'mini:default' }), {
   seat, accepted: true, rejection_reason: null,
 })
-assert.equal(daemonEventSeatDecision(fleetStore, { agentId: 'known', daemonKey: 'other' }).rejection_reason, 'daemon-key-mismatch')
-assert.equal(daemonEventSeatDecision(fleetStore, { agentId: 'missing', daemonKey: 'mini:default' }).rejection_reason, 'no-current-seat')
+assert.equal((await daemonEventSeatDecision(fleetStore, { agentId: 'known', daemonKey: 'other' })).rejection_reason, 'daemon-key-mismatch')
+assert.equal((await daemonEventSeatDecision(fleetStore, { agentId: 'missing', daemonKey: 'mini:default' })).rejection_reason, 'no-current-seat')
 
 let nowMs = 1_000
 const runtime = createAgentRuntimeStatusStore({
   now: () => nowMs,
-  getSeat: () => seat,
   isDaemonConnected: () => true,
 })
 const generation = { daemon_key: 'mini:default', daemon_boot_id: 42, report_seq: 7, agent_id: 'known' }
@@ -84,7 +83,11 @@ runtime.markAlive('known', 'daemon-hosted-session-refresh', {
   daemon_boot_id: generation.daemon_boot_id,
   report_seq: generation.report_seq,
 })
-let projected = runtime.project({ id: 'known', metadata: {} })
+// The seat facts ride the agent row now, rather than being fetched by a
+// getSeat closure the store was configured with. Same three facts, same
+// projection — supplied by the caller that already has the row.
+const seated = { id: 'known', metadata: {}, seat_present: true, seat_daemon_key: seat.daemon_key, seat_terminal_capability: seat.terminal_capability }
+let projected = runtime.project(seated)
 assert.equal(projected.status, 'awake')
 assert.deepEqual(projected.evidence.liveness_generation, generation)
 runtime.markNotAlive('known', 'daemon-hosted-session-refresh', {
@@ -94,7 +97,11 @@ runtime.markNotAlive('known', 'daemon-hosted-session-refresh', {
   daemon_boot_id: generation.daemon_boot_id,
   report_seq: generation.report_seq,
 })
-projected = runtime.project({ id: 'known', metadata: {} })
+// The seated row is this branch's fixture — seat facts ride the agent now.
+// `hibernating` is main's expectation: three-agent-states removed `unavailable`
+// from the vocabulary, so a seated agent with negative evidence is simply not
+// running rather than being its own state.
+projected = runtime.project(seated)
 assert.equal(projected.status, 'hibernating')
 assert.deepEqual(projected.evidence.liveness_generation, generation)
 
