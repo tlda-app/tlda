@@ -4113,18 +4113,22 @@ function FleetChatInner({ shape }: { shape: any }) {
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ eventId: parseInt(eventId, 10), quoted: text, agentId }),
         })
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+        if (!resp.ok) {
+          const detail = await resp.json().catch(() => null)
+          throw new Error(detail?.error || `HTTP ${resp.status}`)
+        }
         const { resolvedMessage, inlineAttachments } = await resp.json()
         const rendered = resolveInlineAttachments(resolvedMessage, inlineAttachments || [], renderMarkdownUtil)
         const wrapper = document.createElement('span')
         wrapper.innerHTML = rendered
         spinner.replaceWith(...Array.from(wrapper.childNodes))
-      } catch {
-        // No daemon / unpersisted message: still drop the quote locally by
-        // re-rendering the interior as markdown (no upload possible offline).
+      } catch (err) {
         const wrapper = document.createElement('span')
-        wrapper.innerHTML = renderMarkdownUtil(esc(text))
-        spinner.replaceWith(...Array.from(wrapper.childNodes))
+        wrapper.className = 'att-upload-failed'
+        const reason = err instanceof Error ? err.message : String(err || 'unquote failed')
+        wrapper.title = `Reference unavailable: ${reason}`
+        wrapper.textContent = `⚠ ${text} unavailable: ${reason}`
+        spinner.replaceWith(wrapper)
       }
     }
 

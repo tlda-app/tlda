@@ -120,7 +120,13 @@ function attachmentTokenHtml(message, inlineAttachments, idx) {
   if (att?.type === 'file') {
     const name = esc(att.name || att.path?.split('/').pop() || 'file')
     const filePath = esc(att.path || '')
-    if (att.broken) return { html: `<span class="att-upload-failed" title="Upload failed">⚠ ${filePath}</span>`, pending: false }
+    const reason = att.error || att.reason || (att.broken ? 'upload failed or file not found' : '')
+    if (att.broken) {
+      return {
+        html: `<span class="att-upload-failed" title="File unavailable: ${esc(reason)}">⚠ ${filePath || name} unavailable: ${esc(reason)}</span>`,
+        pending: false,
+      }
+    }
     const fileUrl = att.url ? esc(att.url) : ''
     const isImage = /\.(png|jpg|jpeg|gif|webp|svg)$/i.test(att.name || att.path || '')
     if (isImage && fileUrl) return { html: `<img class="chat-image" src="${fileUrl}" alt="${name}">`, pending: false }
@@ -128,6 +134,12 @@ function attachmentTokenHtml(message, inlineAttachments, idx) {
     const icon = ext === 'pdf' ? '📕' : ext === 'md' ? '📄' : '📎'
     const projectRef = recipientAttachmentProjectRef(message, idx)
     const url = projectRef?.url || fileUrl
+    if (!url) {
+      return {
+        html: `<span class="att-upload-failed" title="File unavailable: no uploaded URL">⚠ ${filePath || name} unavailable: no uploaded URL</span>`,
+        pending: false,
+      }
+    }
     const urlAttr = url ? ` data-url="${esc(url)}"` : ''
     const projectAttrs = projectRef
       ? ` data-project="${esc(projectRef.project)}" data-project-artifact-id="${esc(projectRef.id)}" data-project-version="${esc(projectRef.version)}"${projectRef.hash ? ` data-project-hash="${esc(projectRef.hash)}"` : ''}`
