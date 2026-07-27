@@ -42,8 +42,14 @@ SERVER_YAML=/root/.config/tlda/server.yaml
 DAEMON_YAML=/root/.config/tlda/daemon.yaml
 CONFIG_ENDPOINT="${TLDA_FLEET_SERVER:-https://tlda-fly.cormorant-matrix.ts.net}"
 ENV_NAME="${TLDA_ENV:-testing}"
-if [ ! -f "$SERVER_YAML" ] || [ -n "$TLDA_FLEET_SERVER" ]; then
-  echo "[entrypoint] writing hosting-only Fly server config"
+# server.yaml is created empty if absent and then LEFT ALONE. It used to be
+# truncated on every boot whenever TLDA_FLEET_SERVER was set, to clear a stale
+# database/store authority carried over from another app — but that authority
+# moved to daemon.yaml (rewritten just below), so the truncation now only
+# destroys the operator settings server.yaml actually holds. `timezone:` is one
+# of them, and wiping it each deploy would silently put this box back on UTC.
+if [ ! -f "$SERVER_YAML" ]; then
+  echo "[entrypoint] creating empty hosting-only Fly server config"
   : > "$SERVER_YAML"
 fi
 if [ ! -f "$DAEMON_YAML" ] || [ -n "$TLDA_FLEET_SERVER" ]; then

@@ -16,6 +16,7 @@ import { SessionExtractor, EventExtractor, TldaExtractor } from './playback/extr
 import { createPlayback, getPlayback, listPlaybacks, editPlayback, playbackTranscript } from './playback/storage.mjs';
 import { ledger } from './identity.mjs';
 import { formatMessage, formatActivity, formatAnnotationRef } from './format-annotation.mjs';
+import { formatDisplayTimestamp, displayZoneOptions } from '../shared/display-time.mjs';
 import { formatViewingHint } from './viewing-hint.mjs';
 import { parseTimestamp } from './lib/parse-timestamp.mjs';
 import { processMessageText } from '../shared/message-processing.mjs';
@@ -3029,7 +3030,7 @@ export async function handleFleetTool(name, args) {
       const taskDescription = data?.task_description || task?.description || reportTaskId;
       const closeCompleted = closeRequested && Boolean(data?.close_event_id);
       const reportStatus = closeCompleted ? 'closed' : 'reported';
-      const reportContent = `# ${taskDescription}\n\n**Agent:** ${friendlyName}  \n**Status:** ${reportStatus}  \n**Filed:** ${new Date().toISOString()}\n\n---\n\n${args.summary}`;
+      const reportContent = `# ${taskDescription}\n\n**Agent:** ${friendlyName}  \n**Status:** ${reportStatus}  \n**Filed:** ${formatDisplayTimestamp(Date.now())}\n\n---\n\n${args.summary}`;
 
       try {
         await postReportDoc({
@@ -3505,7 +3506,7 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
                 if (a) agentName = a.friendly_name || a.name || agentName
               } catch {}
 
-              const ts = new Date(ev.timestamp).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+              const ts = new Date(ev.timestamp).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', ...displayZoneOptions() })
               let replacement = `\n[${agentName} → ${tool}, ${ts}]:`
               if (arg) replacement += `\n  ${arg}`
               if (prettyResult) replacement += `\n  ${prettyResult.slice(0, 500).split('\n').join('\n  ')}`
@@ -3688,7 +3689,7 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       }
       if (lifecycleEvents.length) {
         sections.push(`## Agent Lifecycle (${lifecycleEvents.length} events)\n\n` +
-          lifecycleEvents.map(e => `- **${new Date(e.time).toLocaleTimeString()}** ${e.type}: ${e.agent}${e.detail ? ` (${e.detail})` : ''}`).join('\n'));
+          lifecycleEvents.map(e => `- **${new Date(e.time).toLocaleTimeString(undefined, displayZoneOptions())}** ${e.type}: ${e.agent}${e.detail ? ` (${e.detail})` : ''}`).join('\n'));
       }
     }
 
@@ -3727,7 +3728,7 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       if (taskEvents.length || staleTasks.length) {
         let taskSection = `## Task Activity (${taskEvents.length} events)\n\n`;
         taskSection += taskEvents.map(e =>
-          `- **${new Date(e.time).toLocaleTimeString()}** ${e.type}: ${e.agent} — ${e.task}${e.summary ? `\n  Summary: ${e.summary}` : ''}`
+          `- **${new Date(e.time).toLocaleTimeString(undefined, displayZoneOptions())}** ${e.type}: ${e.agent} — ${e.task}${e.summary ? `\n  Summary: ${e.summary}` : ''}`
         ).join('\n');
         if (staleTasks.length) {
           taskSection += `\n\n### Potentially Stale Tasks\n\n` +
@@ -3747,7 +3748,7 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
     const activeTasks = (state.tasks || []).filter(t => t.status !== 'done' && !t.synthetic);
     const doneTasks = (state.tasks || []).filter(t => t.status === 'done' && !t.synthetic);
 
-    const summary = `## Fleet Summary\n\n- **Live agents:** ${liveAgents.length}\n- **Dead agents:** ${deadAgents.length}\n- **Active tasks:** ${activeTasks.length}\n- **Completed tasks (in state):** ${doneTasks.length}\n- **Period:** since ${new Date(sinceMs).toLocaleString()}`;
+    const summary = `## Fleet Summary\n\n- **Live agents:** ${liveAgents.length}\n- **Dead agents:** ${deadAgents.length}\n- **Active tasks:** ${activeTasks.length}\n- **Completed tasks (in state):** ${doneTasks.length}\n- **Period:** since ${new Date(sinceMs).toLocaleString(undefined, displayZoneOptions())}`;
     sections.unshift(summary);
 
     const output = `# Process Observer — Activity Report\n\n${sections.join('\n\n---\n\n')}
@@ -3861,13 +3862,19 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
       return s;
     };
 
+    // Same `M/D h:mm AM/PM` shape as before, but pinned to the display zone and
+    // labelled with it. The getHours()/getMinutes() version read whatever zone
+    // this process happened to be in, which is UTC on a Fly-hosted agent box.
     const fmtTs = (ts) => {
       if (!ts) return '';
       const d = new Date(ts);
-      const h = d.getHours();
-      const h12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
-      const ampm = h >= 12 ? 'PM' : 'AM';
-      return `${d.getMonth()+1}/${d.getDate()} ${h12}:${String(d.getMinutes()).padStart(2,'0')} ${ampm}`;
+      if (Number.isNaN(d.getTime())) return '';
+      const p = {};
+      for (const part of new Intl.DateTimeFormat('en-US', {
+        month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit',
+        ...displayZoneOptions(),
+      }).formatToParts(d)) p[part.type] = part.value;
+      return `${p.month}/${p.day} ${p.hour}:${p.minute} ${p.dayPeriod} ${p.timeZoneName}`;
     };
 
     const fmtCtxMsg = (c) => {
@@ -3956,7 +3963,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
           if (ctx.after.length > 0) text += '\n' + ctx.after.map(fmtCtxMsg).join('\n');
         } else {
           const parts = [];
-          if (r.timestamp) parts.push(new Date(r.timestamp).toLocaleString());
+          if (r.timestamp) parts.push(new Date(r.timestamp).toLocaleString(undefined, displayZoneOptions()));
           parts.push(`[fleet] [${r.type}] ${direction}`);
           parts.push(display);
           text = parts.join(' | ');
@@ -3966,7 +3973,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
         // session source
         const agentName = tag(r.agentId, r.agentName, r.agentNameNow) || r.agentId || '';
         const parts = [];
-        if (r.timestamp) parts.push(new Date(r.timestamp).toLocaleString());
+        if (r.timestamp) parts.push(new Date(r.timestamp).toLocaleString(undefined, displayZoneOptions()));
         parts.push(`[session] [${r.role}] ${agentName}`);
         parts.push(snippet);
         return { timestamp: r.timestamp, text: parts.join(' | ') };
@@ -4239,7 +4246,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     }
 
     // Build header with forward-pagination hint
-    const fmtShort = (ts) => ts ? new Date(ts).toLocaleString() : '';
+    const fmtShort = (ts) => ts ? new Date(ts).toLocaleString(undefined, displayZoneOptions()) : '';
     const oldest = filtered[0]?.timestamp;
     const newest = filtered[filtered.length - 1]?.timestamp;
     const rangeStr = oldest && newest ? ` (${fmtShort(oldest)} → ${fmtShort(newest)})` : '';
@@ -4319,7 +4326,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
     };
 
     for (const m of filtered) {
-      const ts = m.timestamp ? new Date(m.timestamp).toLocaleString() : '';
+      const ts = m.timestamp ? new Date(m.timestamp).toLocaleString(undefined, displayZoneOptions()) : '';
       const from = tag(m.from, m.fromName, m.fromNameNow);
       const to = tag(m.to, m.toName, m.toNameNow);
       const ver = args.doc ? versionAt(m.timestamp) : null;
@@ -4576,7 +4583,7 @@ Write your analysis to \`scratch/process-review-${new Date().toISOString().slice
 
     const lines = playbacks.map(pb => {
       const types = Object.entries(pb.event_types).map(([k, v]) => `${k}:${v}`).join(', ');
-      return `**${pb.title}** (${pb.id.slice(0, 8)})\n  ${pb.event_count} events (${types}) | ${(pb.duration_ms / 1000).toFixed(0)}s | ${new Date(pb.created).toLocaleString()}`;
+      return `**${pb.title}** (${pb.id.slice(0, 8)})\n  ${pb.event_count} events (${types}) | ${(pb.duration_ms / 1000).toFixed(0)}s | ${new Date(pb.created).toLocaleString(undefined, displayZoneOptions())}`;
     });
 
     return { content: [{ type: 'text', text: `${playbacks.length} playback(s):\n\n${lines.join('\n\n')}` }] };
@@ -5041,7 +5048,7 @@ async function handleChannelMessage(msg) {
   if (isWiretapTarget && !isDirectTarget) {
     // Wiretap: format identically to thread entries so the agent can
     // concatenate wiretap output with thread history seamlessly.
-    const ts = data.timestamp ? new Date(data.timestamp).toLocaleString() : '';
+    const ts = data.timestamp ? new Date(data.timestamp).toLocaleString(undefined, displayZoneOptions()) : '';
     const text = eventType === 'delegate'
       ? `[DELEGATE] ${data.description || ''}\n${data.message || data.text || ''}`
       : eventType === 'task_done'

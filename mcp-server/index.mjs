@@ -33,6 +33,7 @@ import { findRenderedText } from './svg-text.mjs';
 import { initDataSource, readJsonSync, readJson, readManifestSync, readManifest, localDocDir, isRemote } from './data-source.mjs';
 import { resolveToken } from './resolve-token.mjs';
 import { formatHighlight, formatNote } from './format-annotation.mjs';
+import { formatDisplayTimestamp } from '../shared/display-time.mjs';
 import { stageNote, stageHighlight } from './lib/annotate.mjs';
 import {
   isHtmlDoc, docToCanvas, canvasToDoc, getPageWidth,
@@ -224,7 +225,7 @@ function formatUnderstandingProvenance(seg) {
   const bits = [];
   const checker = seg.checkedByName || seg.checkedById;
   if (checker) bits.push(`checked by ${checker}`);
-  if (typeof seg.checkedAt === 'number') bits.push(new Date(seg.checkedAt).toISOString());
+  if (typeof seg.checkedAt === 'number') bits.push(formatDisplayTimestamp(seg.checkedAt));
   if (seg.method) bits.push(`method: ${seg.method}`);
   if (seg.taskId) bits.push(`task: ${seg.taskId}`);
   if (seg.eventId) bits.push(`event: ${seg.eventId}`);
@@ -3331,7 +3332,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         // Find the active version at that time
         const { version } = await serverFetch(`/api/projects/${doc}/history/shadow?timestamp=${ts}`);
         if (!version) return { content: [{ type: 'text', text: 'No version found at that time' }] };
-        const date = new Date(version.timestamp).toISOString().replace('T', ' ').slice(0, 19);
+        const date = formatDisplayTimestamp(version.timestamp);
         return { content: [{ type: 'text', text: `${date}  ${version.hash.slice(0, 7)}  ${version.message}` }] };
       }
 
@@ -3339,7 +3340,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (!versions || versions.length === 0) return { content: [{ type: 'text', text: 'No shadow repo history. Versions are recorded after each build.' }] };
 
       const lines = versions.map(v => {
-        const date = new Date(v.timestamp).toISOString().replace('T', ' ').slice(0, 19);
+        const date = formatDisplayTimestamp(v.timestamp);
         return `${date}  ${v.hash.slice(0, 7)}  ${v.message}`;
       });
       return { content: [{ type: 'text', text: lines.join('\n') }] };

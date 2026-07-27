@@ -7,6 +7,7 @@
 // All formatters return plain text strings suitable for agent consumption.
 
 import { normalizePrettyResult } from '../shared/activity-pretty-result.mjs'
+import { displayZoneOptions } from '../shared/display-time.mjs'
 
 /**
  * Format a highlight/highlighter shape.
@@ -63,7 +64,7 @@ export function formatMessage(event, agents = []) {
   const to = nameOf(event.to)
   const msgText = event.text || ''
   const d = new Date(event.timestamp)
-  const ts = d.toLocaleString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' })
+  const ts = d.toLocaleString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', ...displayZoneOptions() })
   const iso = isNaN(d.getTime()) ? null : d.toISOString()
   // The party whose thread to open for surrounding history: the non-human side.
   const isHuman = (id) => !!id && id.startsWith('fleet:skip')
@@ -90,7 +91,7 @@ export function formatActivity(events, agents = []) {
   }
   const agentName = nameOf(agentId)
   const firstTs = events[0]?.timestamp || new Date().toISOString()
-  const ts = new Date(firstTs).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+  const ts = new Date(firstTs).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', ...displayZoneOptions() })
 
   const toolLines = events
     .filter(e => {
