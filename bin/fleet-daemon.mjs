@@ -651,11 +651,7 @@ gooseSupervisor = createGooseSupervisor({
 })
 
 // ─── Dev reaper bot module wiring ──────────────────────────────────
-const devReaper = createDevReaper({
-  getAgents: () => agents,
-  tmuxArgs: TMUX_ARGS,
-  sendMsg,
-})
+const devReaper = createDevReaper({ sendMsg })
 
 const agentLauncher = createAgentLauncher({
   activeEnvName: ACTIVE_ENV,
