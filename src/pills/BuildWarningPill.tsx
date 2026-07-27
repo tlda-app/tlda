@@ -6,7 +6,7 @@
 import { useState, useEffect, useRef, useContext, useMemo } from 'react'
 import { useEditor } from 'tldraw'
 import type { TLShapeId } from 'tldraw'
-import { DocContext } from '../PanelContext'
+import { ProjectContext } from '../PanelContext'
 import { openInEditor } from '../texsync'
 import type { BuildWarning } from '../useYjsSync'
 import './BuildWarningPill.css'
@@ -45,7 +45,7 @@ export function BuildWarningPill({ warnings, children }: BuildWarningPillProps) 
   const [showList, setShowList] = useState(false)
   const [cleanRebuildError, setCleanRebuildError] = useState('')
   const containerRef = useRef<HTMLDivElement>(null)
-  const doc = useContext(DocContext)
+  const doc = useContext(ProjectContext)
 
   // A build's warning state must survive reconnects and late-opening viewers.
   // The doc-version sentinel is convergent Yjs state; warning props are only
@@ -86,7 +86,7 @@ export function BuildWarningPill({ warnings, children }: BuildWarningPillProps) 
   const handleCleanRebuild = async () => {
     if (!doc) return
     try {
-      const res = await fetch(`/api/projects/${doc.docName}/build?clean=1`, { method: 'POST' })
+      const res = await fetch(`/api/projects/${doc.projectName}/build?clean=1`, { method: 'POST' })
       if (!res.ok) throw new Error(`clean rebuild failed: ${res.status}`)
       setCleanRebuildError('')
     } catch (e) {
@@ -120,7 +120,7 @@ export function BuildWarningPill({ warnings, children }: BuildWarningPillProps) 
               <div
                 key={i}
                 className={'build-warning-item' + (hasLine ? ' clickable' : '')}
-                onClick={hasLine && doc ? () => openInEditor(doc.docName, w.file || '', w.line!) : undefined}
+                onClick={hasLine && doc ? () => openInEditor(doc.projectName, w.file || '', w.line!) : undefined}
               >
                 {cleanMessage(w.message)}
               </div>

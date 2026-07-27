@@ -23,7 +23,7 @@ type Status = 'idle' | 'connecting' | 'connected' | 'error'
 type SpatialStatus = 'off' | 'enabled' | 'unsupported' | 'error'
 
 interface LiveRoomAudioProps {
-  docName: string
+  projectName: string
   editor: Editor
 }
 
@@ -88,8 +88,8 @@ function asShapeId(id: string): TLShapeId {
   return id as TLShapeId
 }
 
-function sessionId(docName: string) {
-  return `doc-${docName}-live`
+function sessionId(projectName: string) {
+  return `doc-${projectName}-live`
 }
 
 function participantIdentity() {
@@ -103,13 +103,13 @@ function participantName() {
   return getHumanName() || getHumanId() || 'viewer'
 }
 
-async function requestToken(docName: string): Promise<TokenResponse> {
+async function requestToken(projectName: string): Promise<TokenResponse> {
   const resp = await fetch('/api/livekit/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      doc: docName,
-      session: sessionId(docName),
+      doc: projectName,
+      session: sessionId(projectName),
       identity: participantIdentity(),
       name: participantName(),
     }),
@@ -188,7 +188,7 @@ function spatialPositionForTrack(info: RemoteAudioTrackInfo, slot: number): Spat
   }
 }
 
-export function LiveRoomAudio({ docName, editor }: LiveRoomAudioProps) {
+export function LiveRoomAudio({ projectName, editor }: LiveRoomAudioProps) {
   const [status, setStatus] = useState<Status>('idle')
   const [micOn, setMicOn] = useState(false)
   const [cameraOn, setCameraOn] = useState(false)
@@ -481,7 +481,7 @@ export function LiveRoomAudio({ docName, editor }: LiveRoomAudioProps) {
     setError(null)
 
     try {
-      const info = await requestToken(docName)
+      const info = await requestToken(projectName)
       const room = new Room({
         adaptiveStream: false,
         dynacast: true,
@@ -492,7 +492,7 @@ export function LiveRoomAudio({ docName, editor }: LiveRoomAudioProps) {
         .on(RoomEvent.Connected, () => {
           setStatus('connected')
           refreshParticipants()
-          log.info('livekit', 'connected', { docName, room: info.room })
+          log.info('livekit', 'connected', { projectName, room: info.room })
         })
         .on(RoomEvent.Disconnected, () => {
           if (roomRef.current === room) void disconnect()
@@ -574,7 +574,7 @@ export function LiveRoomAudio({ docName, editor }: LiveRoomAudioProps) {
     cleanupSpatialTrack,
     detachTrack,
     disconnect,
-    docName,
+    projectName,
     refreshParticipants,
     removeLocalVideoTile,
     removePublicationVideo,

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useContext } from 'react'
 import { useEditor } from 'tldraw'
-import { DocContext, PanelContext } from '../PanelContext'
+import { ProjectContext, PanelContext } from '../PanelContext'
 import { pdfToCanvas } from '../synctexAnchor'
 import { readSignal, writeSignal, onDiffReview, onDiffSummaries } from '../useYjsSync'
 import { formatRelativeTime, navigateToPage, type ReviewMap, type SummaryMap, STATUS_LABELS, STATUS_FILLED } from './helpers'
@@ -97,7 +97,7 @@ export function HistoryTab() {
 
 export function HistoryChanges() {
   const editor = useEditor()
-  const doc = useContext(DocContext)
+  const doc = useContext(ProjectContext)
   const ctx = useContext(PanelContext)
   const changes = ctx?.historyChanges
   const [reviews, setReviews] = useState<ReviewMap>({})

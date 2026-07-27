@@ -66,7 +66,7 @@ import { PrettyName } from './PrettyName'
 import { dragCoordinator } from './dragCoordinator'
 import { cancelDragBeforeRelease } from './fleet-pill-lifecycle'
 import { markFleetPillActive, markFleetPillInactive, transientFleetPillProps } from './fleet-pill-transient'
-import { DocContext, PanelContext } from '../PanelContext'
+import { ProjectContext, PanelContext } from '../PanelContext'
 import { getPageRenderHash, getBuiltPageCount } from '../stores'
 import { loadLookup, type LookupData } from '../synctexLookup'
 import { getSourceAnchor } from '../synctexAnchor'
@@ -1213,7 +1213,7 @@ function gatherViewerContext(editor: any, doc: any, chatShapeId?: string, versio
   }
   const compareRef = (window as any).__tlda_compare_ref__ || null
   const ctx: any = {
-    doc: doc.docName || null,
+    doc: doc.projectName || null,
     version: version || null,
     compareRef,
     page: visiblePages.length === 1 ? visiblePages[0] : visiblePages.length > 1 ? visiblePages : null,
@@ -1914,7 +1914,7 @@ function FleetChatInner({ shape }: { shape: any }) {
   recordFleetChatRender(shape)
   const editor = useEditor()
   const viewportId = useVisibilityViewportId()
-  const doc = useContext(DocContext)
+  const doc = useContext(ProjectContext)
   const panel = useContext(PanelContext)
   const fleetStyleVars = useFleetStyleVars()
   const { w, h, filter, trafficMode = 'normal' } = shape.props as { w: number; h: number; filter: [string, string][][]; trafficMode?: ChatTrafficMode }
@@ -1952,15 +1952,15 @@ function FleetChatInner({ shape }: { shape: any }) {
   const [labelRegions, setLabelRegions] = useState<Record<string, LabelRegionInfo>>({})
   const [theoremMap, setTheoremMap] = useState<Record<string, TheoremMapEntry>>({})
   useEffect(() => {
-    if (!doc?.docName) return
-    loadLookup(doc.docName).then(setLookup)
-    fetchProofInfo(doc.docName).then(data => {
+    if (!doc?.projectName) return
+    loadLookup(doc.projectName).then(setLookup)
+    fetchProofInfo(doc.projectName).then(data => {
       if (data?.labelRegions) setLabelRegions(data.labelRegions)
     })
-    fetchTheoremMap(doc.docName).then(data => {
+    fetchTheoremMap(doc.projectName).then(data => {
       if (data) setTheoremMap(data)
     })
-  }, [doc?.docName])
+  }, [doc?.projectName])
 
   const refResolver = useMemo(() => lookup ? buildRefResolver(lookup, theoremMap) : null, [lookup, theoremMap])
 
@@ -2235,12 +2235,12 @@ function FleetChatInner({ shape }: { shape: any }) {
   // Preamble macros — fetched once per doc from /api/projects/:name/macros
   const [preambleMacros, setPreambleMacros] = useState<Record<string, string>>({})
   useEffect(() => {
-    if (!doc?.docName) return
-    fetch(`/api/projects/${doc.docName}/macros`)
+    if (!doc?.projectName) return
+    fetch(`/api/projects/${doc.projectName}/macros`)
       .then(r => r.ok ? r.json() : null)
       .then(data => { if (data?.macros) setPreambleMacros(data.macros) })
       .catch(e => console.warn('[fleet-chat] macros fetch failed:', e.message))
-  }, [doc?.docName])
+  }, [doc?.projectName])
 
   // Per-sender preamble: each message carries metadata.preambleRef.doc (the
   // sender's preamble document). We render that message's math with that doc's
@@ -2544,7 +2544,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       } else if (m.metadata?.type === 'build_result') {
         flushActivity()
         buildResultCount++
-        const { name: docName, hash, summary, lintFindings = [], mirrorFailed, buildFailed, errors = [] } = m.metadata
+        const { name: projectName, hash, summary, lintFindings = [], mirrorFailed, buildFailed, errors = [] } = m.metadata
         const hasDetails = !!(summary || lintFindings.length > 0 || mirrorFailed || buildFailed || errors.length > 0)
         const lintCount = lintFindings.length
         const lintBadge = lintCount > 0
@@ -2562,10 +2562,10 @@ function FleetChatInner({ shape }: { shape: any }) {
         const builtHash = String(hash || '').slice(0, 7)
         let statusCls = 'build-result-neutral'
         if (mirrorFailed || buildFailed) statusCls = 'build-result-failed'
-        else if (docName === doc) statusCls = (viewingVersion && viewingVersion === builtHash) ? 'build-result-current' : 'build-result-stale'
+        else if (projectName === doc) statusCls = (viewingVersion && viewingVersion === builtHash) ? 'build-result-current' : 'build-result-stale'
         const title = buildFailed
-          ? `Build failed — <strong>${esc(docName)}</strong>`
-          : `Build <code>${esc(hash)}</code> — <strong>${esc(docName)}</strong>`
+          ? `Build failed — <strong>${esc(projectName)}</strong>`
+          : `Build <code>${esc(hash)}</code> — <strong>${esc(projectName)}</strong>`
         const html = `<div class="build-result-card ${statusCls}">` +
           `<div class="build-result-header">` +
           `<span class="build-result-icon">🔨</span>` +
@@ -4460,7 +4460,7 @@ function FleetChatInner({ shape }: { shape: any }) {
       const refAttachments = buildRefAttachments(text, editor)
       const sendOpts: any = context ? { context, _tempId: tempId } : { _tempId: tempId }
       if (refAttachments.length > 0) sendOpts.attachments = refAttachments
-      if (doc?.docName) sendOpts.preambleRef = { doc: doc.docName, version: currentDocVersion(panel, editor) || null }
+      if (doc?.projectName) sendOpts.preambleRef = { doc: doc.projectName, version: currentDocVersion(panel, editor) || null }
       const sendWithRetry = (attempt: number) => {
         Promise.all(
           targets.map(t => sendMessage(t, text, sendOpts))
@@ -4500,7 +4500,7 @@ function FleetChatInner({ shape }: { shape: any }) {
     const refAttachments = buildRefAttachments(text, editor)
     const sendOpts: any = context ? { context, _tempId: tempId } : { _tempId: tempId }
     if (refAttachments.length > 0) sendOpts.attachments = refAttachments
-    if (doc?.docName) sendOpts.preambleRef = { doc: doc.docName, version: currentDocVersion(panel, editor) || null }
+    if (doc?.projectName) sendOpts.preambleRef = { doc: doc.projectName, version: currentDocVersion(panel, editor) || null }
     const sendWithRetry = (attempt: number) => {
       Promise.all(
         targets.map(t => sendMessage(t, text, sendOpts))
@@ -5133,11 +5133,11 @@ function FleetChatInner({ shape }: { shape: any }) {
         const tldaCard = target.closest('.tlda-card') as HTMLElement
         if (tldaCard) {
           const tldaSrc = tldaCard.dataset.tldaSrc || ''
-          const docName = tldaCard.querySelector('.doc-name')?.textContent || ''
+          const projectName = tldaCard.querySelector('.doc-name')?.textContent || ''
           // Use 'tlda:URL' to carry the full src URL for inline-doc creation
           drag = {
             pillId: null, pillType: 'doc' as any, value: `tlda:${tldaSrc}`,
-            displayName: docName, color: '#9370db', content: docName,
+            displayName: projectName, color: '#9370db', content: projectName,
             startX: e.clientX, startY: e.clientY,
             started: false, captureEl: logEl, pointerId: e.pointerId,
           }

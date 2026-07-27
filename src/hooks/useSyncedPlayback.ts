@@ -63,7 +63,7 @@ function migrateSegments(segments: any[]): any[] {
 
 export function useSyncedPlayback(
   editorRef: React.RefObject<Editor | null>,
-  docName: string,
+  projectName: string,
 ) {
   const [playbackState, setPlaybackState] = useState<PlaybackState>({
     active: false,
@@ -87,7 +87,7 @@ export function useSyncedPlayback(
     lastFetchedTs.current = ts
 
     try {
-      const res = await fetch(`/api/projects/${docName}/shapes/at/${ts}`)
+      const res = await fetch(`/api/projects/${projectName}/shapes/at/${ts}`)
       if (!res.ok) {
         console.warn(`[playback] shapes/at/${ts} failed: ${res.status}`)
         return
@@ -142,7 +142,7 @@ export function useSyncedPlayback(
     } finally {
       fetchingRef.current = false
     }
-  }, [editorRef, docName])
+  }, [editorRef, projectName])
 
   // Restore live shapes when playback ends
   const restoreLive = useCallback(() => {

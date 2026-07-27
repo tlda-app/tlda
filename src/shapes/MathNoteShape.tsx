@@ -15,7 +15,7 @@ import katex from 'katex'
 import 'katex/dist/katex.min.css'
 import MarkdownIt from 'markdown-it'
 import { getActiveMacros } from '../katexMacros'
-import { DocContext } from '../PanelContext'
+import { ProjectContext } from '../PanelContext'
 import { fetchProofInfo } from '../docInfoCache'
 import { linkifyArrowRefs, linkifyAtRefs, refToCanvas, type LabelRegionInfo, type ResolvedRef } from '../docLinks'
 import { PDF_HEIGHT } from '../layoutConstants'
@@ -384,7 +384,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       editor.updateShape({ id: shape.id, type: 'math-note' as any, props })
     }, [editor, shape.id])
 
-    const docName = shape.props.docName as string | undefined
+    const projectName = shape.props.docName as string | undefined
     const showDoc = !!(shape.props.docName && shape.props.docView)
     // True while this note is pushing content to the doc — prevents echo-back on next poll
     const pushingToDocRef = useRef(false)
@@ -392,14 +392,14 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     const textAtEditStartRef = useRef<string | null>(null)
 
     // Label regions from the current document (for [->label] links)
-    const pageDoc = useContext(DocContext)
+    const pageDoc = useContext(ProjectContext)
     const [labelRegions, setLabelRegions] = useState<Record<string, LabelRegionInfo>>({})
     useEffect(() => {
-      if (!pageDoc?.docName) return
-      fetchProofInfo(pageDoc.docName).then(data => {
+      if (!pageDoc?.projectName) return
+      fetchProofInfo(pageDoc.projectName).then(data => {
         if (data?.labelRegions) setLabelRegions(data.labelRegions)
       })
-    }, [pageDoc?.docName])
+    }, [pageDoc?.projectName])
 
     const isDark = useValue('isDarkMode', () => editor.user.getIsDarkMode(), [editor])
     const bgColor = NOTE_COLORS[shape.props.color] || NOTE_COLORS.yellow
@@ -439,25 +439,25 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
 
     // note → doc sync: push text to linked doc (debounced 1s)
     useEffect(() => {
-      if (!docName) return
+      if (!projectName) return
       const text = shape.props.text || ''
       const timer = setTimeout(async () => {
         pushingToDocRef.current = true
         try {
           // Auto-create the doc if it doesn't exist
-          const existsRes = await fetch(`/api/projects/${docName}`)
+          const existsRes = await fetch(`/api/projects/${projectName}`)
           if (!existsRes.ok) {
             await fetch('/api/projects', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ name: docName, title: docName, format: 'markdown', mainFile: 'main.md' }),
+              body: JSON.stringify({ name: projectName, title: projectName, format: 'markdown', mainFile: 'main.md' }),
             })
           }
           const files = [{ path: 'main.md', content: text }]
-          const authorityRes = await fetch(`/api/projects/${docName}/source-authority`)
+          const authorityRes = await fetch(`/api/projects/${projectName}/source-authority`)
           if (!authorityRes.ok) throw new Error(`source authority failed: ${authorityRes.status}`)
           const sourceAuthority = await authorityRes.json()
-          await fetch(`/api/projects/${docName}/push`, {
+          await fetch(`/api/projects/${projectName}/push`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -471,17 +471,17 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
         setTimeout(() => { pushingToDocRef.current = false }, 2500)
       }, 1000)
       return () => clearTimeout(timer)
-    }, [shape.props.text, docName])
+    }, [shape.props.text, projectName])
 
     // doc → note sync: poll source file every 3s and apply if changed
     useEffect(() => {
-      if (!docName) return
+      if (!projectName) return
       const shapeId = shape.id
       const poll = async () => {
         if (pushingToDocRef.current) return
         if (editor.getEditingShapeId() === shapeId) return
         try {
-          const res = await fetch(`/api/projects/${docName}/source/main.md`)
+          const res = await fetch(`/api/projects/${projectName}/source/main.md`)
           if (!res.ok) return
           const content = await res.text()
           const current = (editor.getShape(shapeId) as any)?.props?.text ?? ''
@@ -492,7 +492,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       }
       const interval = setInterval(poll, 3000)
       return () => clearInterval(interval)
-    }, [docName, shape.id, editor])
+    }, [projectName, shape.id, editor])
 
     // Backing file: register with the server so the daemon watches for changes
     const backingFile = shape.props.backingFile as string | undefined
@@ -503,14 +503,14 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
     const legacyBackfill = !backingName && !backingOwnerMachineId && !shape.props.backingSyncStatus
     const hasOutlineTabs = (shape.props.tabs as string[] | undefined)?.length === 3
     const isOutlineTabActive = hasOutlineTabs && (shape.props.activeTab as number | undefined) === 2
-    const activeDocName = pageDoc?.docName
+    const activeProjectName = pageDoc?.projectName
     useEffect(() => {
       if (!backingKey) return
-      if (!activeDocName) return
+      if (!activeProjectName) return
       fetch('/api/backing-file-register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ backingName, filePath: backingFile, ownerMachineId: backingOwnerMachineId, legacyBackfill, docName: activeDocName }),
+        body: JSON.stringify({ backingName, filePath: backingFile, ownerMachineId: backingOwnerMachineId, legacyBackfill, docName: activeProjectName }),
       }).then(async resp => {
         if (!resp.ok) {
           const data = await resp.json().catch(() => ({}))
@@ -520,12 +520,12 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
         setBackingSyncState('owner-unavailable')
         console.warn('[math-note] backing file register failed:', e.message)
       })
-    }, [backingKey, backingName, backingFile, backingOwnerMachineId, legacyBackfill, activeDocName, setBackingSyncState])
+    }, [backingKey, backingName, backingFile, backingOwnerMachineId, legacyBackfill, activeProjectName, setBackingSyncState])
 
     // Backing file: write to file only when the user actually changed the text
     useEffect(() => {
       if (!backingKey) return
-      if (!activeDocName) { setBackingSyncState('owner-missing'); return }
+      if (!activeProjectName) { setBackingSyncState('owner-missing'); return }
       if (isEditing) {
         textAtEditStartRef.current = (editor.getShape(shape.id) as any)?.props?.text ?? ''
         return
@@ -537,7 +537,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
       fetch('/api/backing-file-write', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ backingName, filePath: backingFile, ownerMachineId: backingOwnerMachineId, legacyBackfill, docName: activeDocName, content }),
+        body: JSON.stringify({ backingName, filePath: backingFile, ownerMachineId: backingOwnerMachineId, legacyBackfill, docName: activeProjectName, content }),
       }).then(async resp => {
         if (!resp.ok) {
           const data = await resp.json().catch(() => ({}))
@@ -546,7 +546,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
         }
         setBackingSyncState('synced', true)
       }).catch(() => setBackingSyncState('failed'))
-    }, [isEditing, backingKey, backingName, backingFile, backingOwnerMachineId, legacyBackfill, activeDocName, shape.id, editor, setBackingSyncState])
+    }, [isEditing, backingKey, backingName, backingFile, backingOwnerMachineId, legacyBackfill, activeProjectName, shape.id, editor, setBackingSyncState])
 
     // Backing file changed externally: the file is the source of truth for a
     // file-backed note, so update the note in place. (We must NOT spawn a sibling
@@ -1740,13 +1740,13 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
             >{backingSyncState === 'stale' ? '⇉' : '⇄'}</div>
           )}
           {/* Inject into document — converts markdown to LaTeX via pandoc */}
-          {pageDoc?.docName && shape.props.text && (
+          {pageDoc?.projectName && shape.props.text && (
             <div
               onPointerDown={(e) => {
                 stopEventPropagation(e)
                 const btn = e.currentTarget as HTMLElement
                 btn.textContent = '⏳'
-                fetch(`/api/projects/${pageDoc!.docName}/inject`, {
+                fetch(`/api/projects/${pageDoc!.projectName}/inject`, {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({
@@ -1766,7 +1766,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
               style={{
                 position: 'absolute',
                 top: 3,
-                right: docName ? 22 : 4,
+                right: projectName ? 22 : 4,
                 width: 16,
                 height: 16,
                 display: 'flex',
@@ -1784,8 +1784,8 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
               onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.opacity = '0.3' }}
             >↧</div>
           )}
-          {/* Toggle doc view — top-right tlda logo button (only when docName is set) */}
-          {docName && (
+          {/* Toggle doc view — top-right tlda logo button (only when projectName is set) */}
+          {projectName && (
             <div
               onPointerDown={(e) => {
                 stopEventPropagation(e)
@@ -1795,7 +1795,7 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
                   props: { docView: !shape.props.docView },
                 })
               }}
-              title={showDoc ? 'Show note' : `Open doc: ${docName}`}
+              title={showDoc ? 'Show note' : `Open doc: ${projectName}`}
               style={{
                 position: 'absolute',
                 top: 3,
@@ -1839,9 +1839,9 @@ export class MathNoteShapeUtil extends BaseBoxShapeUtil<any> {
           <div style={{
             flex: 1, minHeight: 0, overflow: 'hidden', position: 'relative',
           }}>
-            {showDoc && docName ? (
+            {showDoc && projectName ? (
               <iframe
-                src={appendToken(`/?project=${docName}`)}
+                src={appendToken(`/?project=${projectName}`)}
                 style={{
                   width: '100%',
                   height: '100%',

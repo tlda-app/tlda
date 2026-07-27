@@ -1,11 +1,11 @@
 import { useCallback, useContext } from 'react'
 import { useEditor } from 'tldraw'
-import { DocContext, PanelContext } from '../PanelContext'
+import { ProjectContext, PanelContext } from '../PanelContext'
 import { navigateTo } from './helpers'
 
 export function ProofsTab() {
   const editor = useEditor()
-  const doc = useContext(DocContext)
+  const doc = useContext(ProjectContext)
   const ctx = useContext(PanelContext)
   const pairs = ctx?.proofPairs
 

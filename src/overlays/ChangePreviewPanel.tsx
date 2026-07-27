@@ -19,7 +19,7 @@ interface ChangePreviewPanelProps {
   mainEditor: Editor
   selectedChangeId: string | null
   historyChanges: ChangeItem[]
-  docName: string
+  projectName: string
   shapeUtils: TLAnyShapeUtilConstructor[]
   tools: TLStateNodeConstructor[]
   licenseKey: string
@@ -30,7 +30,7 @@ export function ChangePreviewPanel({
   mainEditor,
   selectedChangeId,
   historyChanges,
-  docName,
+  projectName,
   shapeUtils,
   tools,
   licenseKey,
@@ -51,7 +51,7 @@ export function ChangePreviewPanel({
   const bounds = useMemo((): ClipBounds | null => {
     if (!selectedChange || !selectedChange.oldLines || selectedChange.oldLines.length === 0) return null
 
-    const oldShapeId = `shape:${docName}-hist-old-${selectedChange.page}`
+    const oldShapeId = `shape:${projectName}-hist-old-${selectedChange.page}`
     const shape = mainEditor.getShape(oldShapeId as any)
     if (!shape) return null
 
@@ -76,7 +76,7 @@ export function ChangePreviewPanel({
       w: shapeW - MARGIN_INSET * 2,
       h: Math.min(canvasBottom - canvasTop, shapeH),
     }
-  }, [selectedChange, docName, mainEditor])
+  }, [selectedChange, projectName, mainEditor])
 
   // Jump to old page location
   const handleGoThere = useCallback(() => {

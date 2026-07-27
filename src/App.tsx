@@ -79,11 +79,11 @@ type State =
 const ASSET_BASE = STORE_HTTP
 
 // Fetch a single document config from the API — fast path for ?project=X
-async function fetchDocConfig(docName: string): Promise<DocConfig | null> {
+async function fetchDocConfig(projectName: string): Promise<DocConfig | null> {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 8000)
   try {
-    const url = `${ASSET_BASE}/api/projects/${docName}`
+    const url = `${ASSET_BASE}/api/projects/${projectName}`
     const resp = await fetch(url, { signal: controller.signal })
     if (resp.status === 401 || resp.status === 403) {
       throw new Error('Authentication required. Add ?token=TOKEN to the URL.')
@@ -91,7 +91,7 @@ async function fetchDocConfig(docName: string): Promise<DocConfig | null> {
     if (resp.status === 404) return null
     if (!resp.ok) return null
     const data = await resp.json()
-    data.basePath = `${ASSET_BASE}/docs/${docName}/`
+    data.basePath = `${ASSET_BASE}/docs/${projectName}/`
     return data as DocConfig
   } catch (e) {
     if ((e as Error).name === 'AbortError') {
@@ -157,12 +157,12 @@ function App() {
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
-    const docName = params.get('project')
+    const projectName = params.get('project')
 
-    if (docName) {
-      const roomId = `doc-${docName}`
+    if (projectName) {
+      const roomId = `doc-${projectName}`
       setState({ phase: 'loading', message: 'Loading document...', roomId })
-      loadDocument(docName, roomId)
+      loadDocument(projectName, roomId)
     } else {
       // No doc specified — show document picker or auto-load single doc
       setState({ phase: 'loading', message: 'Loading...', roomId: '' })
@@ -200,7 +200,7 @@ function App() {
     }
   }, [])
 
-  async function loadDocument(docName: string, roomId: string) {
+  async function loadDocument(projectName: string, roomId: string) {
     // Bump generation and abort any in-flight load
     const gen = ++loadGeneration
     loadAbort?.abort()
@@ -210,7 +210,7 @@ function App() {
     // Fast path: fetch single doc config instead of full manifest
     let config: DocConfig | null
     try {
-      config = await fetchDocConfig(docName)
+      config = await fetchDocConfig(projectName)
     } catch (e) {
       const msg = (e as Error).message
       setState({ phase: 'error', message: msg, errorType: msg.includes('Authentication') ? 'auth' : 'generic' })
@@ -244,24 +244,24 @@ function App() {
         })
         .filter((m): m is BookMember => m !== null)
 
-      setState({ phase: 'book', bookName: docName, members })
+      setState({ phase: 'book', bookName: projectName, members })
       return
     }
 
     // If project is missing, still building, or has no pages yet, poll until ready
     if (!config || config.buildStatus === 'building' || config.pages === 0) {
       if (!config) {
-        setState({ phase: 'error', message: `Document "${docName}" not found.`, errorType: 'not-found' })
+        setState({ phase: 'error', message: `Document "${projectName}" not found.`, errorType: 'not-found' })
         return
       }
-      const label = config.name || docName
+      const label = config.name || projectName
       setState({ phase: 'loading', message: config.buildStatus === 'building' ? `Building ${label}...` : `Waiting for ${label}...`, roomId })
       const waitForBuild = async () => {
         while (gen === loadGeneration) {
           await new Promise(r => setTimeout(r, 2000))
           if (gen !== loadGeneration) return
           try {
-            const c = await fetchDocConfig(docName)
+            const c = await fetchDocConfig(projectName)
             if (c && c.pages > 0 && c.buildStatus !== 'building') break
           } catch (e) {
             if (e instanceof Error && e.message.includes('Authentication')) {
@@ -270,7 +270,7 @@ function App() {
             }
           }
         }
-        if (gen === loadGeneration) loadDocument(docName, roomId)
+        if (gen === loadGeneration) loadDocument(projectName, roomId)
       }
       waitForBuild()
       return
@@ -291,7 +291,7 @@ function App() {
 
       let document
       if (config.format === 'diff') {
-        document = await loadDiffDocument(docName, fullBasePath)
+        document = await loadDiffDocument(projectName, fullBasePath)
       } else if (config.format === 'html' || config.format === 'markdown') {
         document = await loadHtmlDocument(config.name, fullBasePath)
       } else if (config.format === 'slides') {
@@ -317,7 +317,7 @@ function App() {
           pages: t.pages,
           basePath: fullBasePath,
         }))
-        document = createSvgDocumentLayout(docName, config.pages, fullBasePath, targets)
+        document = createSvgDocumentLayout(projectName, config.pages, fullBasePath, targets)
       }
 
       if (gen !== loadGeneration) return  // superseded during fetch
@@ -328,7 +328,7 @@ function App() {
         try {
           const manifest = await fetchManifest()
           const diffEntry = Object.values(manifest).find(
-            c => c.format === 'diff' && c.sourceDoc === docName
+            c => c.format === 'diff' && c.sourceDoc === projectName
           )
           if (diffEntry) {
             const diffBasePath = diffEntry.basePath.startsWith('/')
@@ -346,24 +346,24 @@ function App() {
 
       // Check if a build is in progress — if so, wait and retry
       try {
-        const statusResp = await fetch(`/api/projects/${docName}/build/status`)
+        const statusResp = await fetch(`/api/projects/${projectName}/build/status`)
         if (statusResp.ok) {
           const status = await statusResp.json()
           if (status.status === 'building') {
-            setState({ phase: 'loading', message: `Building ${docName}...`, roomId })
+            setState({ phase: 'loading', message: `Building ${projectName}...`, roomId })
             // Poll until build completes, then retry
             const pollBuild = async () => {
               while (gen === loadGeneration) {
                 await new Promise(r => setTimeout(r, 2000))
                 if (gen !== loadGeneration) return
                 try {
-                  const r = await fetch(`/api/projects/${docName}/build/status`)
+                  const r = await fetch(`/api/projects/${projectName}/build/status`)
                   if (!r.ok) break
                   const s = await r.json()
                   if (s.status !== 'building') break
                 } catch { break }
               }
-              if (gen === loadGeneration) loadDocument(docName, roomId)
+              if (gen === loadGeneration) loadDocument(projectName, roomId)
             }
             pollBuild()
             return
@@ -375,7 +375,7 @@ function App() {
       const isAuth = msg.includes('401') || msg.includes('403') || msg.includes('Unauthorized') || msg.includes('Forbidden') || msg.includes('Authentication')
       setState({
         phase: 'error',
-        message: isAuth ? 'Authentication required. Add ?token=TOKEN to the URL.' : `Failed to load "${docName}": ${msg}`,
+        message: isAuth ? 'Authentication required. Add ?token=TOKEN to the URL.' : `Failed to load "${projectName}": ${msg}`,
         errorType: isAuth ? 'auth' : 'generic',
       })
     }

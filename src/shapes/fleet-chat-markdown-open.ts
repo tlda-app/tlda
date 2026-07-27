@@ -80,10 +80,10 @@ export async function materializeMarkdownChip({
   sourcePath?: string
   sourceSection?: string
 }): Promise<MaterializeChipResult> {
-  const docName = typeof window === 'undefined' ? null : new URLSearchParams(window.location.search).get('project')
-  if (!docName) return { ok: false, error: 'no open document to attach to' }
+  const projectName = typeof window === 'undefined' ? null : new URLSearchParams(window.location.search).get('project')
+  if (!projectName) return { ok: false, error: 'no open document to attach to' }
   try {
-    const res = await fetch(`/api/projects/${docName}/parts`, {
+    const res = await fetch(`/api/projects/${projectName}/parts`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -121,17 +121,17 @@ export function openChatMarkdownColumn(options: MarkdownColumnOptions) {
       }
     : chipAnchor
 
-  const docName = new URLSearchParams(window.location.search).get('project')
+  const projectName = new URLSearchParams(window.location.search).get('project')
 
   void materializeMarkdownChip({ markdown, title, sourcePath, sourceSection }).then((materialized) => {
-    if (!materialized.ok || !materialized.outputFile || !docName) {
+    if (!materialized.ok || !materialized.outputFile || !projectName) {
       console.warn(`[${logPrefix}] markdown materialize failed:`, materialized.error)
       return
     }
-    const url = `/docs/${docName}/${materialized.outputFile}?t=${Date.now()}`
+    const url = `/docs/${projectName}/${materialized.outputFile}?t=${Date.now()}`
     return createTemporaryMarkdownColumn(mainEditor, anchor, title, markdown || title, {
       sourceChatShapeId: sourceShapeId,
-      materializedDoc: docName,
+      materializedDoc: projectName,
       materializedFile: materialized.outputFile,
     }, url)
   }).then((result) => {

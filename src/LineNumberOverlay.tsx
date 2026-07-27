@@ -84,13 +84,13 @@ function buildRenderItems(labels: LineLabel[], mainFile: string | null): RenderI
 }
 
 export function LineNumberOverlay({
-  docName,
+  projectName,
   pageNum,
   shapeH,
   containerRef: _containerRef,
   svgText,
 }: {
-  docName: string
+  projectName: string
   pageNum: number
   shapeH: number
   containerRef: RefObject<HTMLDivElement | null>
@@ -105,13 +105,13 @@ export function LineNumberOverlay({
       return
     }
     let cancelled = false
-    loadLookup(docName).then(lookup => {
+    loadLookup(projectName).then(lookup => {
       if (cancelled || !lookup) return
       setLabels(computeLabels(lookup, pageNum, shapeH))
       setMainFile(lookup.meta.texFile || null)
     })
     return () => { cancelled = true }
-  }, [docName, pageNum, shapeH, svgText])
+  }, [projectName, pageNum, shapeH, svgText])
 
   if (labels.length === 0) return null
 

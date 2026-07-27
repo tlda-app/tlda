@@ -6,7 +6,7 @@
 import { useState, useEffect, useRef, useContext } from 'react'
 import { useEditor } from 'tldraw'
 import type { TLShapeId } from 'tldraw'
-import { DocContext } from '../PanelContext'
+import { ProjectContext } from '../PanelContext'
 import { isMyFleetShape } from '../shapes/fleet-utils'
 import { dispatchFleetHudReset, dispatchFleetHudToggle } from '../wm/editor-host-bridge'
 import { writeFleetHudExpanded } from '../wm/fleet-hud-state'
@@ -20,7 +20,7 @@ export function SyncErrorPill() {
   const [projectErrors, setProjectErrors] = useState<SyncError[]>([])
   const [showList, setShowList] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
-  const doc = useContext(DocContext)
+  const doc = useContext(ProjectContext)
   const errors = [...projectErrors, ...sentinelErrors]
 
   useEffect(() => {
@@ -36,11 +36,11 @@ export function SyncErrorPill() {
   }, [editor])
 
   useEffect(() => {
-    if (!doc?.docName) return
+    if (!doc?.projectName) return
     let cancelled = false
     const read = async () => {
       try {
-        const res = await fetch(`/api/projects/${encodeURIComponent(doc.docName)}`)
+        const res = await fetch(`/api/projects/${encodeURIComponent(doc.projectName)}`)
         if (!res.ok) throw new Error(`project ${res.status}`)
         const info = await res.json()
         if (cancelled) return
@@ -70,7 +70,7 @@ export function SyncErrorPill() {
       cancelled = true
       window.clearInterval(interval)
     }
-  }, [doc?.docName])
+  }, [doc?.projectName])
 
   const openConflictInSourceEditor = (file?: string) => {
     if (!file) return

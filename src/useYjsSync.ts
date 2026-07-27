@@ -8,7 +8,7 @@ import { SignalBus } from './signalBus'
 
 // --- Module-level connection state ---
 
-let activeDocName: string | null = null
+let activeProjectName: string | null = null
 let activeServerUrl: string = ''
 
 /** Local signal cache: populated by dispatchSignalDirect and writeSignal */
@@ -18,24 +18,24 @@ const signalCache = new Map<string, any>()
  * Initialize the signal connection for a document.
  * Called from SvgDocument when the editor mounts.
  */
-export function initSignalConnection(docName: string, serverUrl: string) {
-  activeDocName = docName
+export function initSignalConnection(projectName: string, serverUrl: string) {
+  activeProjectName = projectName
   // Convert ws:// to http:// for REST calls
   activeServerUrl = serverUrl.replace(/^ws(s?):\/\//, 'http$1://')
   signalCache.clear()
-  console.log(`[Signal] Initialized for ${docName} → ${activeServerUrl}`)
+  console.log(`[Signal] Initialized for ${projectName} → ${activeServerUrl}`)
 }
 
 /** Tear down the signal connection. Called on cleanup. */
 export function teardownSignalConnection() {
-  console.log(`[Signal] Teardown for ${activeDocName}`)
-  activeDocName = null
+  console.log(`[Signal] Teardown for ${activeProjectName}`)
+  activeProjectName = null
   signalCache.clear()
 }
 
 /** Check if signal connection is active (replaces getYRecords() null check) */
 export function isSignalConnected(): boolean {
-  return activeDocName !== null
+  return activeProjectName !== null
 }
 
 // Stable random viewer ID for this tab (prevents applying own signals)
@@ -257,7 +257,7 @@ export const onFileUpdatedSignal = fileUpdatedHandle.on
  * Also caches locally and dispatches to the signal bus so own UI reacts.
  */
 export function writeSignal(key: string, payload: Record<string, unknown>): void {
-  if (!activeDocName) return
+  if (!activeProjectName) return
   const data = { ...payload, timestamp: Date.now() }
   // Cache locally
   signalCache.set(key, data)
@@ -265,7 +265,7 @@ export function writeSignal(key: string, payload: Record<string, unknown>): void
   bus.dispatchDirect(key, data)
   // Fire-and-forget POST to server for broadcast to other clients.
   // Use a relative URL when the signal server is a different origin (dev proxy handles it).
-  const signalPath = `/api/projects/${activeDocName}/signal`
+  const signalPath = `/api/projects/${activeProjectName}/signal`
   const isCrossOrigin = activeServerUrl && typeof window !== 'undefined'
     && new URL(activeServerUrl).origin !== window.location.origin
   const signalUrl = isCrossOrigin ? signalPath : `${activeServerUrl}${signalPath}`

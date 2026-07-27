@@ -68,7 +68,7 @@ function buildLabelMap(lines: Record<string, LookupEntry>): Map<string, LookupEn
 export function useShadowOverlay(
   editorRef: React.MutableRefObject<Editor | null>,
   document: SvgDocument,
-  docName: string,
+  projectName: string,
   _shapeIdSetRef: React.MutableRefObject<Set<TLShapeId>>,
   _shapeIdsArrayRef: React.MutableRefObject<TLShapeId[]>,
   _updateCameraBoundsRef: React.MutableRefObject<((bounds: any) => void) | null>,
@@ -94,20 +94,20 @@ export function useShadowOverlay(
 
   // Fetch time bounds on mount and after new builds
   const fetchBounds = useCallback(async () => {
-    const bounds = await fetchShadowTimeBounds(docName)
+    const bounds = await fetchShadowTimeBounds(projectName)
     setTimeBounds(bounds)
     return bounds
-  }, [docName])
+  }, [projectName])
 
   useEffect(() => { fetchBounds() }, [fetchBounds])
 
   // Fetch changelog when scrubber becomes visible
   useEffect(() => {
     if (!visible) return
-    fetchShadowChangelog(docName).then(data => {
+    fetchShadowChangelog(projectName).then(data => {
       if (data) setChangelog(data)
     })
-  }, [visible, docName])
+  }, [visible, projectName])
 
   // Startup cleanup: sweep orphan shadow shapes left over from previous sessions.
   // Runs 1.5s after mount to ensure Yjs has synced and the editor is available.
@@ -141,10 +141,10 @@ export function useShadowOverlay(
       setShadowTotalPages(document.pages.length)
       return
     }
-    fetchShadowMeta(docName, committedVersion.hash).then(meta => {
+    fetchShadowMeta(projectName, committedVersion.hash).then(meta => {
       setShadowTotalPages(meta.pages ?? document.pages.length)
     })
-  }, [committedVersion?.hash, docName, document.pages.length])
+  }, [committedVersion?.hash, projectName, document.pages.length])
 
   // Align shadow column Y to viewport center using SyncTeX label matching.
   // 1. Find the source line nearest to the viewport center in the current doc's lookup.
@@ -157,7 +157,7 @@ export function useShadowOverlay(
     let cancelled = false
     const editor = editorRef.current
     const hash7 = committedVersion.hash.slice(0, 7)
-    const shadowLookupUrl = `/api/projects/${docName}/history/shadow/${hash7}/lookup`
+    const shadowLookupUrl = `/api/projects/${projectName}/history/shadow/${hash7}/lookup`
 
     let retryTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -167,7 +167,7 @@ export function useShadowOverlay(
       const vpCenterY = vp.y + vp.h / 2
 
       const [currentLines, shadowLines] = await Promise.all([
-        fetchLookupLines(`/docs/${docName}/lookup.json`),
+        fetchLookupLines(`/docs/${projectName}/lookup.json`),
         fetchLookupLines(shadowLookupUrl),
       ])
 
@@ -229,7 +229,7 @@ export function useShadowOverlay(
       cancelled = true
       if (retryTimer) clearTimeout(retryTimer)
     }
-  }, [committedVersion?.hash, docName, alignCounter])
+  }, [committedVersion?.hash, projectName, alignCounter])
 
   const columnOptions: PageColumnOptions | null = useMemo(() => {
     if (!committedVersion || !visible) return null
@@ -238,8 +238,8 @@ export function useShadowOverlay(
     const deviceId = getDeviceId()
     if (!userId || !deviceId) return null
 	    return {
-	      docName,
-	      source: { type: 'shadow' as const, docName, ref: committedVersion.hash },
+	      projectName,
+	      source: { type: 'shadow' as const, projectName, ref: committedVersion.hash },
 	      owner: { userId, deviceId },
 	      columnX,
       totalPages: shadowTotalPages,
@@ -247,7 +247,7 @@ export function useShadowOverlay(
       opacity: 0.9,
       yOffset: shadowYOffset,
     }
-  }, [committedVersion?.hash, visible, docName, columnX, shadowTotalPages, shadowYOffset])
+  }, [committedVersion?.hash, visible, projectName, columnX, shadowTotalPages, shadowYOffset])
 
   usePageColumn(editorRef.current, columnOptions)
 
@@ -258,12 +258,12 @@ export function useShadowOverlay(
     if (!bounds) return
     setVisible(true)
     // Start at the newest build (one step back from "current")
-    const version = await versionAtTime(docName, bounds.newest.timestamp)
+    const version = await versionAtTime(projectName, bounds.newest.timestamp)
     if (version) {
       setActiveVersion(version)
       setCommittedVersion(version)
     }
-  }, [timeBounds, fetchBounds, docName])
+  }, [timeBounds, fetchBounds, projectName])
 
   // Hide the overlay
   const hide = useCallback(() => {
@@ -291,14 +291,14 @@ export function useShadowOverlay(
     s.setLoading(true)
     scrubTimerRef.current = setTimeout(async () => {
       scrubTimerRef.current = null
-      const version = await versionAtTime(docName, timestamp)
+      const version = await versionAtTime(projectName, timestamp)
       if (version) {
         settersRef.current.setActiveVersion(version)
         settersRef.current.setCommittedVersion(version)
       }
       settersRef.current.setLoading(false)
     }, 200)
-  }, [docName])
+  }, [projectName])
 
   // Handle scrub by known version object (from VersionStamp clicks)
   const handleScrubVersion = useCallback((version: ShadowVersion | null) => {
@@ -329,14 +329,14 @@ export function useShadowOverlay(
       return
     }
     s.setLoading(true)
-    const adjacent = await fetchAdjacentShadowVersion(docName, hash, dir)
+    const adjacent = await fetchAdjacentShadowVersion(projectName, hash, dir)
     s.setLoading(false)
     if (adjacent) {
       s.setVisible(true)
       s.setActiveVersion(adjacent)
       s.setCommittedVersion(adjacent)
     }
-  }, [activeVersion, timeBounds, docName])
+  }, [activeVersion, timeBounds, projectName])
 
   // Re-run SyncTeX alignment on the current version without changing it.
   const realignShadow = useCallback(() => {

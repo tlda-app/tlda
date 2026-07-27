@@ -27,7 +27,7 @@ import { dragCoordinator } from './dragCoordinator'
 import { useIsInViewport, useVisibilityViewportId } from './useIsInViewport'
 import { fleetInteractionFrame, fleetPointerEventPagePoint } from '../wm/fleet-interaction-frame'
 import { useAvailableSpawnModels } from '../fleet/useAvailableSpawnModels'
-import { DocContext } from '../PanelContext'
+import { ProjectContext } from '../PanelContext'
 import { activeMintToken, applyMintCandidate, parseMintInput } from '../fleet/mint-input'
 import {
   FleetAgentDirectoryRow,
@@ -467,8 +467,8 @@ function FleetAgentsInner({ shape }: { shape: any }) {
   }, [editor])
 
   const frameId = shape.parentId as string | undefined
-  const docCtx = useContext(DocContext)
-  const currentDoc = docCtx?.docName || ''
+  const docCtx = useContext(ProjectContext)
+  const currentDoc = docCtx?.projectName || ''
   const agents = useFleetAgents(frameId)
   const agentTotals = useFleetAgentTotals(frameId)
   const tasks = useFleetTasks(frameId)

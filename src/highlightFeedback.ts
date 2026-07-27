@@ -131,10 +131,10 @@ export function createFeedbackFromHighlight(editor: Editor, shapeId: string): Hi
  * Broadcast highlight feedback via signal to the server.
  * This makes the feedback available to fleet agents via SSE/REST.
  */
-export async function broadcastHighlightFeedback(docName: string, feedback: HighlightFeedback) {
+export async function broadcastHighlightFeedback(projectName: string, feedback: HighlightFeedback) {
   try {
     const serverUrl = (window as any).__tlda_server || `${window.location.origin}`
-    const res = await fetch(`${serverUrl}/api/projects/${docName}/signal`, {
+    const res = await fetch(`${serverUrl}/api/projects/${projectName}/signal`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -156,9 +156,9 @@ export async function broadcastHighlightFeedback(docName: string, feedback: High
  *
  * @param editor - TLDraw editor instance
  * @param shapeId - The highlight shape ID
- * @param docName - The document name (for signal broadcasting)
+ * @param projectName - The document name (for signal broadcasting)
  */
-export function processHighlightFeedback(editor: Editor, shapeId: string, docName: string | null) {
+export function processHighlightFeedback(editor: Editor, shapeId: string, projectName: string | null) {
   // 1. Update overlapping understanding-line shapes
   updateOverlappingUnderstandingLines(editor, shapeId)
 
@@ -171,8 +171,8 @@ export function processHighlightFeedback(editor: Editor, shapeId: string, docNam
     console.log(`[highlight-feedback] ${feedback.type}: "${feedback.text.substring(0, 60)}..."`)
 
     // 3. Broadcast to server via signal
-    if (docName) {
-      broadcastHighlightFeedback(docName, feedback)
+    if (projectName) {
+      broadcastHighlightFeedback(projectName, feedback)
     }
   }, 200)
 }

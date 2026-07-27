@@ -122,15 +122,15 @@ function anchoredSourceLines(sourceLines: SourceLine[]): AnchoredSourceLine[] {
  * Attempt to extract text under a highlight shape and attach as metadata.
  * Call this after a highlight stroke is completed.
  */
-export function snapHighlighterToText(editor: Editor, shapeId: string, docName?: string, targets?: TargetInfo[]) {
+export function snapHighlighterToText(editor: Editor, shapeId: string, projectName?: string, targets?: TargetInfo[]) {
   try {
-    _snapHighlighterToText(editor, shapeId, docName, targets)
+    _snapHighlighterToText(editor, shapeId, projectName, targets)
   } catch (e: any) {
     console.warn('[highlighter-snap] Error:', e?.message || String(e))
   }
 }
 
-function _snapHighlighterToText(editor: Editor, shapeId: string, docName?: string, targets?: TargetInfo[]) {
+function _snapHighlighterToText(editor: Editor, shapeId: string, projectName?: string, targets?: TargetInfo[]) {
   const shape = editor.getShape(shapeId as any)
   if (!shape) { log.warn('outline-hl', 'snap: no shape', { shapeId }); return }
   log.info('outline-hl', 'snap enter', { shapeId, color: (shape.props as any)?.color })
@@ -319,19 +319,19 @@ function _snapHighlighterToText(editor: Editor, shapeId: string, docName?: strin
   const fragmentPositions = matchedFragments.map(f => ({ text: f.text, x: f.x, y: f.y, w: f.width }))
 
   const resolveAndStore = async () => {
-    const sourceLines = docName ? await findSourceLinesFromBounds(docName, bounds, editor, matchedText, shape, fragmentPositions, targets) : []
+    const sourceLines = projectName ? await findSourceLinesFromBounds(projectName, bounds, editor, matchedText, shape, fragmentPositions, targets) : []
 
     log.info('outline-hl', 'resolveAndStore', {
       hlColor,
       sourceLines: sourceLines.length,
       highlighted: sourceLines.filter(l => l.highlighted).length,
-      docName,
+      projectName,
     })
     // Outline highlighter: word-precise span → clause outline → file-backed
     // sticky note. Routed through this path so it reuses the same fragment
     // matching that gives us per-word hlStart/hlEnd columns.
     if (hlColor === 'light-violet') {
-      await handleOutlineSelection(editor, shape, bounds, sourceLines, docName)
+      await handleOutlineSelection(editor, shape, bounds, sourceLines, projectName)
       return
     }
 
@@ -346,7 +346,7 @@ function _snapHighlighterToText(editor: Editor, shapeId: string, docName?: strin
         pageShapeId: pageShape.id,
         glowRects,
         glowColor: hlColor,
-        docName,
+        projectName,
       },
     } as any)
 
@@ -355,7 +355,7 @@ function _snapHighlighterToText(editor: Editor, shapeId: string, docName?: strin
     const hasGoodMatch = hlEntries.some(sl => sl.hlStart != null && sl.hlEnd != null && sl.hlEnd > sl.hlStart)
 
     if (sourceLines.length > 0 && hasGoodMatch) {
-      showSourceContextCard(sourceLines, hlColor, bounds, editor, false, shape.id, docName)
+      showSourceContextCard(sourceLines, hlColor, bounds, editor, false, shape.id, projectName)
     } else {
       // Calibration failed — capture screenshot and store on shape meta
       const screenshotDataUrl = captureHighlightRegion(bounds, editor, pageShape.id)
@@ -394,10 +394,10 @@ async function handleOutlineSelection(
   shape: any,
   bounds: { minX: number; minY: number; maxX: number; maxY: number },
   sourceLines: SourceLine[],
-  docName?: string,
+  projectName?: string,
 ) {
-  log.info('outline-hl', 'handleOutlineSelection enter', { docName, sourceLines: sourceLines.length })
-  if (!docName) { log.warn('outline-hl', 'no docName'); return }
+  log.info('outline-hl', 'handleOutlineSelection enter', { projectName, sourceLines: sourceLines.length })
+  if (!projectName) { log.warn('outline-hl', 'no projectName'); return }
 
   // Outline extraction must be word-precise. Falling back to whole source lines
   // would turn an ambiguous ranker result into a fabricated source span.
@@ -444,7 +444,7 @@ async function handleOutlineSelection(
   let backingName = ''
   let slug = ''
   try {
-    const url = `${serverUrl}/api/projects/${docName}/outline?${qs}`
+    const url = `${serverUrl}/api/projects/${projectName}/outline?${qs}`
     log.info('outline-hl', 'fetching outline', { url })
     const resp = await fetch(url)
     log.info('outline-hl', 'outline response', { status: resp.status, ok: resp.ok })
@@ -471,7 +471,7 @@ async function handleOutlineSelection(
     fetch(`/api/backing-file-write`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ backingName, filePath: backingFile, docName, content: markdown, restore: true }),
+      body: JSON.stringify({ backingName, filePath: backingFile, projectName, content: markdown, restore: true }),
     }).catch(e => log.warn('outline-hl', 'backing-file-write failed', { error: String(e?.message || e) }))
   }
 
@@ -666,7 +666,7 @@ function samplePathForSynctex(
  * Decodes the highlight path, converts points to PDF coords, sends to server.
  */
 export async function findSourceLinesFromBounds(
-  docName: string,
+  projectName: string,
   bounds: { minX: number; minY: number; maxX: number; maxY: number },
   editor: Editor,
   highlightText = '',
@@ -731,7 +731,7 @@ export async function findSourceLinesFromBounds(
 
   const serverUrl = serverBase()
   try {
-    const resp = await fetch(`${serverUrl}/api/projects/${docName}/synctex-path`, {
+    const resp = await fetch(`${serverUrl}/api/projects/${projectName}/synctex-path`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -923,7 +923,7 @@ function showSourceContextCard(
   editor: Editor,
   persistent = false,
   shapeId?: string,
-  docName = '',
+  projectName = '',
 ): HTMLElement | null {
   const displayLines = anchoredSourceLines(sourceLines)
   if (displayLines.length === 0) return null
@@ -972,13 +972,13 @@ function showSourceContextCard(
     editBtn.addEventListener('pointerleave', () => { editBtn.style.opacity = '0.5' })
     editBtn.addEventListener('click', (e) => {
       e.stopPropagation()
-      openInEditor(docName, file, first.line)
+      openInEditor(projectName, file, first.line)
     })
     header.appendChild(editBtn)
   }
 
   // "Extract to scratch" button
-  if (first.line && last.line && docName) {
+  if (first.line && last.line && projectName) {
     const extractBtn = document.createElement('button')
     extractBtn.textContent = '↗'
     extractBtn.title = 'Extract to scratch note'
@@ -992,7 +992,7 @@ function showSourceContextCard(
       e.stopPropagation()
       extractBtn.textContent = '⏳'
       try {
-        const resp = await fetch(`/api/projects/${docName}/extract`, {
+        const resp = await fetch(`/api/projects/${projectName}/extract`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -1241,8 +1241,8 @@ export function showSourceContextCardForShape(editor: Editor, shapeId: string): 
   if (!bounds) return null
 
   const hlColor = meta?.glowColor || (shape.props as any).color || 'yellow'
-  const docName = typeof meta?.docName === 'string' ? meta.docName : ''
-  const card = showSourceContextCard(sourceLines, hlColor, bounds, editor, true, shapeId, docName)
+  const projectName = typeof meta?.projectName === 'string' ? meta.projectName : ''
+  const card = showSourceContextCard(sourceLines, hlColor, bounds, editor, true, shapeId, projectName)
   if (!card) return null
 
   return () => { card.remove() }

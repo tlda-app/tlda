@@ -5,7 +5,7 @@ import { createPortal } from 'react-dom'
 import { useEditor, useValue, stopEventPropagation, DefaultColorStyle } from 'tldraw'
 import { toolNameHud } from './overlays/ToolNameHud'
 import type { Editor, TLShapeId } from 'tldraw'
-import { DocContext } from './PanelContext'
+import { ProjectContext } from './PanelContext'
 import { isSignalConnected, writeSignal, onAgentHeartbeat } from './useYjsSync'
 import type { AgentHeartbeatSignal } from './useYjsSync'
 import { TocTab, ZoneWidthSlider } from './panels/TocTab'
@@ -81,7 +81,7 @@ export function PingButton() {
 type Tab = 'toc' | 'notes' | 'prefs'
 
 export function DocumentPanel() {
-  const doc = useContext(DocContext)
+  const doc = useContext(ProjectContext)
   const isHtml = doc?.format === 'html' || doc?.format === 'markdown'
   const [tab, setTab] = useState<Tab>('toc')
   const [open, setOpen] = useState(false)
@@ -593,7 +593,7 @@ function PhonePageIndicator() {
 }
 
 export function PhoneOverlay() {
-  const doc = useContext(DocContext)
+  const doc = useContext(ProjectContext)
   const [menuOpen, setMenuOpen] = useState(false)
   const [tab, setTab] = useState<Tab>('toc')
   const isPhone = usePhoneSizedViewport()

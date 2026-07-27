@@ -68,14 +68,14 @@ const serverBase = ''  // relative URLs work because Vite proxies /api
 /**
  * Fetch the unified timeline for a project.
  */
-export async function fetchHistory(docName: string): Promise<HistoryEntry[]> {
+export async function fetchHistory(projectName: string): Promise<HistoryEntry[]> {
   try {
-    const res = await fetch(`${serverBase}/api/projects/${docName}/history`)
+    const res = await fetch(`${serverBase}/api/projects/${projectName}/history`)
     if (!res.ok) return []
     const data = await res.json()
     return data.entries || []
   } catch (e) {
-    console.warn(`[history] fetch history failed for ${docName}:`, (e as Error).message)
+    console.warn(`[history] fetch history failed for ${projectName}:`, (e as Error).message)
     return []
   }
 }
@@ -83,14 +83,14 @@ export async function fetchHistory(docName: string): Promise<HistoryEntry[]> {
 /**
  * Fetch text-based diff between a snapshot and current output.
  */
-export async function fetchDiff(docName: string, snapshotId: string): Promise<PageDiff[]> {
+export async function fetchDiff(projectName: string, snapshotId: string): Promise<PageDiff[]> {
   try {
-    const res = await fetch(`${serverBase}/api/projects/${docName}/history/${snapshotId}/diff`)
+    const res = await fetch(`${serverBase}/api/projects/${projectName}/history/${snapshotId}/diff`)
     if (!res.ok) return []
     const data = await res.json()
     return data.pages || []
   } catch (e) {
-    console.warn(`[history] fetch diff failed for ${docName}/${snapshotId}:`, (e as Error).message)
+    console.warn(`[history] fetch diff failed for ${projectName}/${snapshotId}:`, (e as Error).message)
     return []
   }
 }
@@ -98,9 +98,9 @@ export async function fetchDiff(docName: string, snapshotId: string): Promise<Pa
 /**
  * Trigger a git build for a commit hash. Returns immediately.
  */
-export async function triggerGitBuild(docName: string, commitHash: string): Promise<'building' | 'cached' | 'error'> {
+export async function triggerGitBuild(projectName: string, commitHash: string): Promise<'building' | 'cached' | 'error'> {
   try {
-    const res = await fetch(`${serverBase}/api/projects/${docName}/history/git/${commitHash}/build`, {
+    const res = await fetch(`${serverBase}/api/projects/${projectName}/history/git/${commitHash}/build`, {
       method: 'POST',
     })
     const data = await res.json()
@@ -114,7 +114,7 @@ export async function triggerGitBuild(docName: string, commitHash: string): Prom
  * Poll git build status until cached or timeout.
  */
 export async function waitForGitBuild(
-  docName: string,
+  projectName: string,
   commitHash: string,
   onProgress?: () => void,
   timeoutMs = 300000,
@@ -122,7 +122,7 @@ export async function waitForGitBuild(
   const start = Date.now()
   while (Date.now() - start < timeoutMs) {
     try {
-      const res = await fetch(`${serverBase}/api/projects/${docName}/history/git/${commitHash}/status`)
+      const res = await fetch(`${serverBase}/api/projects/${projectName}/history/git/${commitHash}/status`)
       const data = await res.json()
       if (data.status === 'cached') return true
       if (data.status !== 'building') return false
@@ -138,9 +138,9 @@ export async function waitForGitBuild(
 /**
  * Get the URL for a snapshot's SVG page (page is 1-based).
  */
-export function snapshotPageUrl(docName: string, snapshotId: string, page: number): string {
+export function snapshotPageUrl(projectName: string, snapshotId: string, page: number): string {
   const filename = getPageFilename(page - 1) ?? `page-${page}.svg`
-  return `${serverBase}/docs/${docName}/history/${snapshotId}/${filename}`
+  return `${serverBase}/docs/${projectName}/history/${snapshotId}/${filename}`
 }
 
 /**
@@ -163,10 +163,10 @@ export interface ShadowTimeBounds {
 /**
  * Fetch the build active at a given timestamp (nearest build at or before that time).
  */
-export async function versionAtTime(docName: string, timestamp: number): Promise<ShadowVersion | null> {
+export async function versionAtTime(projectName: string, timestamp: number): Promise<ShadowVersion | null> {
   try {
     const res = await fetch(
-      `${serverBase}/api/projects/${docName}/history/shadow/at?time=${timestamp}`
+      `${serverBase}/api/projects/${projectName}/history/shadow/at?time=${timestamp}`
     )
     if (!res.ok) return null
     const data = await res.json()
@@ -179,9 +179,9 @@ export async function versionAtTime(docName: string, timestamp: number): Promise
 /**
  * Fetch the time bounds (oldest + newest build) for the shadow repo.
  */
-export async function fetchShadowTimeBounds(docName: string): Promise<ShadowTimeBounds | null> {
+export async function fetchShadowTimeBounds(projectName: string): Promise<ShadowTimeBounds | null> {
   try {
-    const res = await fetch(`${serverBase}/api/projects/${docName}/history/shadow/bounds`)
+    const res = await fetch(`${serverBase}/api/projects/${projectName}/history/shadow/bounds`)
     if (!res.ok) return null
     const data = await res.json()
     if (!data.oldest || !data.newest) return null
@@ -195,13 +195,13 @@ export async function fetchShadowTimeBounds(docName: string): Promise<ShadowTime
  * Get the build immediately adjacent to a known hash.
  */
 export async function fetchAdjacentShadowVersion(
-  docName: string,
+  projectName: string,
   hash: string,
   dir: 'older' | 'newer',
 ): Promise<ShadowVersion | null> {
   try {
     const res = await fetch(
-      `${serverBase}/api/projects/${docName}/history/shadow/adjacent?hash=${encodeURIComponent(hash)}&dir=${dir}`
+      `${serverBase}/api/projects/${projectName}/history/shadow/adjacent?hash=${encodeURIComponent(hash)}&dir=${dir}`
     )
     if (!res.ok) return null
     const data = await res.json()
@@ -214,9 +214,9 @@ export async function fetchAdjacentShadowVersion(
 /**
  * Fetch shadow repo versions for a project. Returns newest-first.
  */
-export async function fetchShadowVersions(docName: string, limit = 9999): Promise<ShadowVersion[]> {
+export async function fetchShadowVersions(projectName: string, limit = 9999): Promise<ShadowVersion[]> {
   try {
-    const res = await fetch(`${serverBase}/api/projects/${docName}/history/shadow?limit=${limit}`)
+    const res = await fetch(`${serverBase}/api/projects/${projectName}/history/shadow?limit=${limit}`)
     if (!res.ok) return []
     const data = await res.json()
     return data.versions || []
@@ -228,9 +228,9 @@ export async function fetchShadowVersions(docName: string, limit = 9999): Promis
 /**
  * Get the URL for a shadow snapshot's SVG page (page is 1-based).
  */
-export function shadowSnapshotPageUrl(docName: string, hash: string, page: number): string {
+export function shadowSnapshotPageUrl(projectName: string, hash: string, page: number): string {
   const filename = getPageFilename(page - 1) ?? `page-${page}.svg`
-  return `${serverBase}/docs/${docName}/history/shadow-${hash.slice(0, 7)}/${filename}`
+  return `${serverBase}/docs/${projectName}/history/shadow-${hash.slice(0, 7)}/${filename}`
 }
 
 /**
@@ -238,11 +238,11 @@ export function shadowSnapshotPageUrl(docName: string, hash: string, page: numbe
  * Returns { commits, totalPages } for the SpaceTimeDots overlay.
  */
 export async function fetchShadowChangelog(
-  docName: string,
+  projectName: string,
   limit = 200,
 ): Promise<{ commits: Array<{ hash: string; timestamp: number; changedPages: number[] }>; totalPages: number } | null> {
   try {
-    const res = await fetch(`${serverBase}/api/projects/${docName}/history/shadow/changelog?limit=${limit}`)
+    const res = await fetch(`${serverBase}/api/projects/${projectName}/history/shadow/changelog?limit=${limit}`)
     if (!res.ok) return null
     return await res.json()
   } catch {
@@ -254,10 +254,10 @@ export async function fetchShadowChangelog(
  * Fetch page count for a shadow version.
  * Returns null if not yet compiled.
  */
-export async function fetchShadowMeta(docName: string, hash: string): Promise<{ pages: number | null }> {
+export async function fetchShadowMeta(projectName: string, hash: string): Promise<{ pages: number | null }> {
   try {
     const hash7 = hash.slice(0, 7)
-    const res = await fetch(`${serverBase}/api/projects/${docName}/history/shadow/${hash7}/meta`)
+    const res = await fetch(`${serverBase}/api/projects/${projectName}/history/shadow/${hash7}/meta`)
     if (!res.ok) return { pages: null }
     return await res.json()
   } catch {
@@ -272,12 +272,12 @@ export interface RibbonStaleResult { stale: boolean; reason?: string }
  * Returns results in the same order as `segments`, or null if the call failed.
  */
 export async function checkRibbonStale(
-  docName: string,
+  projectName: string,
   segments: Array<{ file: string; startLine: number; endLine: number; approvedAtCommit: string }>,
   currentCommit: string,
 ): Promise<RibbonStaleResult[] | null> {
   try {
-    const res = await fetch(`${serverBase}/api/projects/${docName}/history/ribbon-stale`, {
+    const res = await fetch(`${serverBase}/api/projects/${projectName}/history/ribbon-stale`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ segments, currentCommit }),

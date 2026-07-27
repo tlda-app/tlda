@@ -2,7 +2,7 @@ import type { Editor, TLPageId, TLShape, TLShapeId } from 'tldraw'
 import katex from 'katex'
 import { getActiveMacros } from '../katexMacros'
 import type { LookupEntry } from '../synctexLookup'
-import type { DocContextValue } from '../PanelContext'
+import type { ProjectContextValue } from '../PanelContext'
 import { getHtmlHeadingY } from '../shapes/HtmlPageShape'
 
 // --- Helpers ---
@@ -48,7 +48,7 @@ export function navigateTo(editor: Editor, canvasX: number, canvasY: number, pag
   editor.centerOnPoint({ x, y: canvasY }, { animation: { duration: 300 } })
 }
 
-export function navigateToPage(editor: Editor, doc: Pick<DocContextValue, 'pages'>, pageNum: number) {
+export function navigateToPage(editor: Editor, doc: Pick<ProjectContextValue, 'pages'>, pageNum: number) {
   const pageIndex = pageNum - 1
   if (pageIndex < 0 || pageIndex >= doc.pages.length) return
   const page = doc.pages[pageIndex]
@@ -72,7 +72,7 @@ export function navigateToPage(editor: Editor, doc: Pick<DocContextValue, 'pages
   }
 }
 
-export function navigateToAnchor(editor: Editor, doc: Pick<DocContextValue, 'pages'>, pageNum: number, anchor: string) {
+export function navigateToAnchor(editor: Editor, doc: Pick<ProjectContextValue, 'pages'>, pageNum: number, anchor: string) {
   const pageIndex = pageNum - 1
   if (pageIndex < 0 || pageIndex >= doc.pages.length) return
   const page = doc.pages[pageIndex]

@@ -24,12 +24,12 @@ import type { ManagedSurfaceOwner } from '../wm/managed-surfaces'
 
 export interface PageSource {
   type: 'live' | 'shadow' | 'snapshot'
-  docName: string
+  projectName: string
   ref?: string
 }
 
 export interface PageColumnOptions {
-  docName: string
+  projectName: string
   source: PageSource
   owner?: Partial<ManagedSurfaceOwner>
   columnX: number
@@ -52,17 +52,17 @@ const PAGE_HEIGHT = PDF_HEIGHT * (TARGET_WIDTH / PDF_WIDTH)
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-function pageUrl(source: PageSource, docName: string, pageNum: number): string {
+function pageUrl(source: PageSource, projectName: string, pageNum: number): string {
   const filename = getPageFilename(pageNum - 1) ?? `page-${pageNum}.svg`
   switch (source.type) {
     case 'live':
-      return `/docs/${docName}/${filename}`
+      return `/docs/${projectName}/${filename}`
     case 'shadow': {
       const hash7 = (source.ref || '').slice(0, 7)
-      return `/docs/${docName}/history/shadow-${hash7}/${filename}`
+      return `/docs/${projectName}/history/shadow-${hash7}/${filename}`
     }
     case 'snapshot':
-      return `/docs/${docName}/history/${source.ref}/${filename}`
+      return `/docs/${projectName}/history/${source.ref}/${filename}`
   }
 }
 
@@ -73,7 +73,7 @@ function makeShapeId(columnId: string, pageNum: number): TLShapeId {
 }
 
 function sourceKey(source: PageSource): string {
-  return `${source.type}:${source.docName}:${source.ref || 'live'}`
+  return `${source.type}:${source.projectName}:${source.ref || 'live'}`
 }
 
 /** Find minimum x coordinate of <text> elements in SVG (PDF points), or null if none found */
@@ -332,7 +332,7 @@ class PageColumn {
     if (this.destroyed || this.loaded.has(pageNum) || this.fetching.has(pageNum)) return
     this.fetching.add(pageNum)
     try {
-      const url = pageUrl(this.options.source, this.options.docName, pageNum)
+      const url = pageUrl(this.options.source, this.options.projectName, pageNum)
       const resp = await fetch(url)
       if (!resp.ok || this.destroyed) return
       const svgText = await resp.text()
@@ -504,7 +504,7 @@ export function usePageColumn(
   const unsubRef = useRef<(() => void) | null>(null)
 
   const optionsKey = options
-    ? `${options.source.type}:${options.source.ref || 'live'}:${options.docName}`
+    ? `${options.source.type}:${options.source.ref || 'live'}:${options.projectName}`
     : null
 
   // Reconcile column state on every render.

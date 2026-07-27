@@ -6,15 +6,15 @@
 const sourceDirCache = new Map<string, string | null>()
 
 /** Fetch and cache the sourceDir for a project. */
-async function getSourceDir(docName: string): Promise<string | null> {
-  if (sourceDirCache.has(docName)) return sourceDirCache.get(docName)!
+async function getSourceDir(projectName: string): Promise<string | null> {
+  if (sourceDirCache.has(projectName)) return sourceDirCache.get(projectName)!
   try {
     const base = import.meta.env.BASE_URL || '/'
-    const res = await fetch(`${base}api/projects/${docName}`)
+    const res = await fetch(`${base}api/projects/${projectName}`)
     if (!res.ok) return null
     const info = await res.json()
     const dir = info?.sourceDir ?? null
-    sourceDirCache.set(docName, dir)
+    sourceDirCache.set(projectName, dir)
     return dir
   } catch {
     return null
@@ -22,8 +22,8 @@ async function getSourceDir(docName: string): Promise<string | null> {
 }
 
 /** Open a source file at a line in the local editor via texsync:// URL. */
-export async function openInEditor(docName: string, file: string, line: number) {
-  const sourceDir = await getSourceDir(docName)
+export async function openInEditor(projectName: string, file: string, line: number) {
+  const sourceDir = await getSourceDir(projectName)
   const filePath = sourceDir
     ? `${sourceDir.replace(/\/$/, '')}/${file}`
     : file

@@ -29,7 +29,7 @@ import { fleetDocviewProps } from '../../shared/shapes/fleet-panel-schema.mjs'
 import type { Editor } from 'tldraw'
 import { useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { CanvasClipPanel, type ClipBounds } from '../CanvasClipPanel'
-import { DocContext } from '../PanelContext'
+import { ProjectContext } from '../PanelContext'
 import { PDF_HEIGHT } from '../layoutConstants'
 import { onBuildStatusSignal, type BuildError } from '../useYjsSync'
 import { loadLookup } from '../synctexLookup'
@@ -112,7 +112,7 @@ interface NavEntry { label: string; page: number; yTop: number; yBottom: number;
 
 function FleetDocViewComponent({ shape }: { shape: any }) {
   const editor = useEditor()
-  const doc = useContext(DocContext)
+  const doc = useContext(ProjectContext)
   const isSelected = useValue('docview-selected', () => editor.getSelectedShapeIds().includes(shape.id), [editor, shape.id])
   const containerRef = useRef<HTMLDivElement>(null)
   const isSelectedRef = useRef(false)
@@ -161,10 +161,10 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
   }, [sourcesRaw])
 
   useEffect(() => {
-    if (!doc?.docName || buildErrors.length === 0) { setResolvedErrors([]); return }
+    if (!doc?.projectName || buildErrors.length === 0) { setResolvedErrors([]); return }
     let cancelled = false
     async function resolve() {
-      const lookup = await loadLookup(doc!.docName)
+      const lookup = await loadLookup(doc!.projectName)
       if (cancelled || !lookup) return
       const out: ResolvedErrorBounds[] = []
       for (const err of buildErrors) {
@@ -209,12 +209,12 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
   // --- Proof info ---
   const [proofInfo, setProofInfo] = useState<any>(null)
   useEffect(() => {
-    if (!doc?.docName) return
-    fetch(`/docs/${doc.docName}/proof-info.json?t=${Date.now()}`)
+    if (!doc?.projectName) return
+    fetch(`/docs/${doc.projectName}/proof-info.json?t=${Date.now()}`)
       .then(r => r.ok ? r.json() : null)
       .then(setProofInfo)
       .catch(e => console.warn('[doc-view] proof-info fetch failed:', e.message))
-  }, [doc?.docName])
+  }, [doc?.projectName])
 
   // Track main editor viewport for proof source — useValue can't track cross-editor
   // reactive reads, so poll the main editor's viewport on camera changes.
@@ -339,7 +339,7 @@ function FleetDocViewComponent({ shape }: { shape: any }) {
   }, [bounds, doc])
 
   useEffect(() => {
-    if (boundsPageIdx < 0 || !doc?.pages?.length || !doc?.docName) { setSvgReady(false); return }
+    if (boundsPageIdx < 0 || !doc?.pages?.length || !doc?.projectName) { setSvgReady(false); return }
     const p = doc.pages[boundsPageIdx]
     const sid = p.shapeId as string
     if (!sid) { setSvgReady(false); return }

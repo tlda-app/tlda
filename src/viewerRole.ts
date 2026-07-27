@@ -9,12 +9,12 @@
 
 export type Role = 'presenter' | 'viewer'
 
-let docName = ''
+let projectName = ''
 let role: Role = 'presenter'
 const listeners = new Set<() => void>()
 
 export function initRole(doc: string) {
-  docName = doc
+  projectName = doc
   const urlRole = new URL(window.location.href).searchParams.get('tldaRole')
   if (urlRole === 'presenter' || urlRole === 'viewer') {
     role = urlRole
@@ -29,7 +29,7 @@ export function getRole(): Role { return role }
 export function setRole(r: Role) {
   if (r === role) return
   role = r
-  localStorage.setItem(`tlda-role:${docName}`, r)
+  localStorage.setItem(`tlda-role:${projectName}`, r)
   listeners.forEach(fn => fn())
 }
 

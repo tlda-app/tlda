@@ -7,7 +7,7 @@ import type { SvgDocument } from '../svgDocumentLoader'
 // Also keep the old localStorage snapshots for immediate feedback
 import { onSnapshotUpdate } from '../snapshotStore'
 
-export function useSnapshotTimeline(document: SvgDocument, docName: string) {
+export function useSnapshotTimeline(document: SvgDocument, projectName: string) {
   const [entries, setEntries] = useState<HistoryEntry[]>([])
   const [activeIdx, setActiveIdx] = useState(-1) // -1 = current (no diff)
   const [loading, setLoading] = useState(false)
@@ -18,11 +18,11 @@ export function useSnapshotTimeline(document: SvgDocument, docName: string) {
 
   // Fetch history on mount and after rebuilds
   const refresh = useCallback(async () => {
-    const hist = await fetchHistory(docName)
+    const hist = await fetchHistory(projectName)
     // Server returns newest-first; reverse so slider left=oldest, right=newest
     hist.reverse()
     setEntries(hist)
-  }, [docName])
+  }, [projectName])
 
   useEffect(() => {
     refresh()
@@ -65,15 +65,15 @@ export function useSnapshotTimeline(document: SvgDocument, docName: string) {
     // For git entries that aren't built yet, trigger a build
     if (entry.type === 'git' && !entry.built) {
       setLoading(true)
-      const status = await triggerGitBuild(docName, entry.commitHash!)
+      const status = await triggerGitBuild(projectName, entry.commitHash!)
       if (status === 'building') {
-        const built = await waitForGitBuild(docName, entry.commitHash!)
+        const built = await waitForGitBuild(projectName, entry.commitHash!)
         if (built) {
           await refresh()
-          applyAndStore(await fetchDiff(docName, entry.id))
+          applyAndStore(await fetchDiff(projectName, entry.id))
         }
       } else if (status === 'cached') {
-        applyAndStore(await fetchDiff(docName, entry.id))
+        applyAndStore(await fetchDiff(projectName, entry.id))
       }
       setLoading(false)
       return
@@ -81,9 +81,9 @@ export function useSnapshotTimeline(document: SvgDocument, docName: string) {
 
     // For build snapshots and cached git entries, fetch diff from server
     setLoading(true)
-    applyAndStore(await fetchDiff(docName, entry.id))
+    applyAndStore(await fetchDiff(projectName, entry.id))
     setLoading(false)
-  }, [docName, document, refresh])
+  }, [projectName, document, refresh])
 
   return {
     historyEntries: entries,

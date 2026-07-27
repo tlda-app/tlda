@@ -4,9 +4,9 @@ import type { DiffChange, ProofPair } from './svgDocumentLoader'
 import type { HistoryEntry, PageDiff, ChangeItem } from './historyStore'
 import type { BuildError, BuildWarning } from './useYjsSync'
 
-/** Stable document info — set once per document load, never changes during session. */
-export interface DocContextValue {
-  docName: string
+/** Stable project info — set once per project load, never changes during session. */
+export interface ProjectContextValue {
+  projectName: string
   format?: 'svg' | 'png' | 'html' | 'diff' | 'slides' | 'markdown'
   pages: Array<{ bounds: { x: number; y: number; width: number; height: number }; width: number; height: number; textData?: PageTextData | null; shapeId?: string; tldrawPageId?: string }>
   targets?: Array<{ name: string; title: string; pages: number }>
@@ -50,12 +50,12 @@ export interface PanelContextValue {
   // Shadow history scrubber
   shadowHistoryVisible?: boolean
   onToggleShadowHistory?: () => void
-  // Currently displayed shadow version (null = showing current document).
-  // Used to stamp outgoing chats with the doc version the user is viewing.
+  // Currently displayed shadow version (null = showing the current project).
+  // Used to stamp outgoing chats with the project version the user is viewing.
   shadowActiveVersion?: { hash: string; timestamp: number } | null
 }
 
-export const DocContext = createContext<DocContextValue | null>(null)
+export const ProjectContext = createContext<ProjectContextValue | null>(null)
 export const PanelContext = createContext<PanelContextValue | null>(null)
 
 /** Bottom-left panels + agent pill — rendered inside InFrontOfTheCanvas for TLDraw event handling */

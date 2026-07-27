@@ -39,10 +39,10 @@ let _loading: Promise<void> | null = null
  * source-maps and merges them with global page offsets. For single-target docs,
  * fetches the bare source-map.json alias (which resolves to the primary target).
  */
-export function load(docName: string, targets?: Array<{ name: string; pages: number }>): Promise<void> {
-  if (_loaded && _docName === docName) return Promise.resolve()
+export function load(projectName: string, targets?: Array<{ name: string; pages: number }>): Promise<void> {
+  if (_loaded && _docName === projectName) return Promise.resolve()
   if (_loading) return _loading
-  _docName = docName
+  _docName = projectName
   _loading = (async () => {
     try {
       if (targets && targets.length > 1) {
@@ -52,7 +52,7 @@ export function load(docName: string, targets?: Array<{ name: string; pages: num
         let pageOffset = 0
         for (const target of targets) {
           try {
-            const r = await fetch(`/docs/${docName}/${target.name}-source-map.json`)
+            const r = await fetch(`/docs/${projectName}/${target.name}-source-map.json`)
             if (!r.ok) { pageOffset += target.pages; continue }
             const data = await r.json()
             for (const l of (data.labels || []) as Label[]) {
@@ -69,7 +69,7 @@ export function load(docName: string, targets?: Array<{ name: string; pages: num
         _pages = allPages
       } else {
         // Single-target or fallback: bare alias resolves to primary target's file
-        const r = await fetch(`/docs/${docName}/source-map.json`)
+        const r = await fetch(`/docs/${projectName}/source-map.json`)
         if (!r.ok) throw new Error(`${r.status}`)
         const data = await r.json()
         _labels = data.labels || []

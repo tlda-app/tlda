@@ -178,12 +178,12 @@ export function useYjsSignals({
   // Poll for new builds as a fallback — catches stale content if the reload signal
   // was missed (e.g. tldraw sync WebSocket died silently after a server restart).
   useEffect(() => {
-    const docName = document.name
+    const projectName = document.name
     let lastKnownBuild = ''
     let reportedFailure = false
     const poll = async () => {
       try {
-        const res = await fetch(`/api/projects/${encodeURIComponent(docName)}`)
+        const res = await fetch(`/api/projects/${encodeURIComponent(projectName)}`)
         if (!res.ok) return
         const data = await res.json()
         const buildTs = data.lastBuild || ''

@@ -6,7 +6,7 @@
  * Multiple shapes on the same canvas would otherwise each issue an independent
  * fetch with ?t=Date.now() (bypassing the browser cache), repeating 99KB × N
  * on every page load. This module serializes them into a single Promise per
- * docName and returns the same Promise to all callers.
+ * projectName and returns the same Promise to all callers.
  *
  * Cache is cleared on signal:reload so a LaTeX rebuild picks up new data.
  */
@@ -26,28 +26,28 @@ function assetBase(): string {
   return STORE_HTTP + '/'
 }
 
-export function fetchProofInfo(docName: string): Promise<any> {
-  if (!_proofInfoCache.has(docName)) {
+export function fetchProofInfo(projectName: string): Promise<any> {
+  if (!_proofInfoCache.has(projectName)) {
     const base = assetBase()
     _proofInfoCache.set(
-      docName,
-      fetch(`${base}docs/${docName}/proof-info.json`)
+      projectName,
+      fetch(`${base}docs/${projectName}/proof-info.json`)
         .then(r => r.ok ? r.json() : null)
         .catch(() => null)
     )
   }
-  return _proofInfoCache.get(docName)!
+  return _proofInfoCache.get(projectName)!
 }
 
-export function fetchTheoremMap(docName: string): Promise<any> {
-  if (!_theoremMapCache.has(docName)) {
+export function fetchTheoremMap(projectName: string): Promise<any> {
+  if (!_theoremMapCache.has(projectName)) {
     const base = assetBase()
     _theoremMapCache.set(
-      docName,
-      fetch(`${base}docs/${docName}/theorem-map.json`)
+      projectName,
+      fetch(`${base}docs/${projectName}/theorem-map.json`)
         .then(r => r.ok ? r.json() : null)
         .catch(() => null)
     )
   }
-  return _theoremMapCache.get(docName)!
+  return _theoremMapCache.get(projectName)!
 }
