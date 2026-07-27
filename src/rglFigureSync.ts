@@ -195,7 +195,6 @@ export function attachRglFigureSync(editor: Editor, shapeId: TLShapeId, iframe: 
     if (disposed || binding.applyingRemote) return
     const pose = readPose(binding.rgl)
     if (!pose || !posesDiffer(pose, binding.lastPublished)) return
-    binding.lastPublished = pose
     const shape = editor.store.get(shapeId) as { meta?: Record<string, unknown> } | undefined
     if (!shape) return
     // `editor.store.update`, NOT `editor.updateShape`. Deck shapes are created
@@ -210,6 +209,10 @@ export function attachRglFigureSync(editor: Editor, shapeId: TLShapeId, iframe: 
       ...s,
       meta: { ...s.meta, [figurePoseMetaKey(binding.index)]: JSON.stringify(pose) },
     }))
+    // Recorded only after the write, so a throw leaves us willing to retry on the
+    // next frame instead of believing we published something we didn't. The
+    // locked-shape bug above was exactly this failure with no throw to catch it.
+    binding.lastPublished = pose
   }
 
   const applyStored = (binding: FigureBinding) => {
