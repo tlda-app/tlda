@@ -2484,57 +2484,84 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
 
   if (name === 'read_project') {
-    // Document- and version-aware source read. Resolves a doc to its source
-    // file, reads a paginated line window, supports reading a past version (git
-    // show) and jumping to a label/theorem via the source map.
+    // Project- and version-aware source read. The store server owns both the
+    // current source and the per-project Git history; the MCP process may be
+    // running on another machine and must not look for a local server checkout.
     const doc = args?.project;
     if (!doc) return { content: [{ type: 'text', text: 'read_project: `project` is required.' }], isError: true };
-    const projDir = path.join(os.homedir(), 'work', 'tlda', 'server', 'projects', doc);
     let cfg;
-    try { cfg = JSON.parse(fs.readFileSync(path.join(projDir, 'project.json'), 'utf8')); }
-    catch { return { content: [{ type: 'text', text: `read_project: unknown project "${doc}" (no project.json).` }], isError: true }; }
-    const sourceDir = cfg.sourceDir;
-    if (!sourceDir || !fs.existsSync(sourceDir)) return { content: [{ type: 'text', text: `read_project: project "${doc}" has no source dir on this machine.` }], isError: true };
+    try { cfg = await serverFetch(`/api/projects/${encodeURIComponent(doc)}`); }
+    catch (e) { return { content: [{ type: 'text', text: `read_project: unknown project "${doc}" (${e.message}).` }], isError: true }; }
     const mainFile = cfg.mainFile || cfg.main;
     const file = args.file || mainFile;
     if (!file) return { content: [{ type: 'text', text: `read_project: no file given and project "${doc}" has no mainFile.` }], isError: true };
-    let relFile = (path.basename(file) === file) ? file : path.relative(sourceDir, path.resolve(sourceDir, file));
+    let relFile = String(file).replaceAll('\\', '/').replace(/^\.\/+/, '');
+    if (path.posix.isAbsolute(relFile) || relFile.split('/').includes('..')) {
+      return { content: [{ type: 'text', text: `read_project: file must be project-relative: ${file}` }], isError: true };
+    }
+
+    const fetchSource = async (sourceFile) => {
+      if (args.version) {
+        const result = await serverFetch(
+          `/api/projects/${encodeURIComponent(doc)}/history/shadow/source?version=${encodeURIComponent(args.version)}&file=${encodeURIComponent(sourceFile)}`,
+        );
+        return result.content;
+      }
+      return serverFetch(`/api/projects/${encodeURIComponent(doc)}/source/${encodeURIComponent(sourceFile)}`);
+    };
 
     // ref/label shorthand → anchor line. The source map's labels come from the
     // .aux file, which records page/number/title but NOT the source line — so we
-    // resolve the line from ground truth: the actual `\label{...}` location in
-    // the doc's source. We scan the doc's real build files (the distinct .tex
-    // files synctex recorded in the source map's `pages` index, which excludes
-    // junk/old .tex lying around the source dir). This also resolves a ref that
-    // lives in an \input'd file to the right file to read.
+    // resolve the line from the actual `\label{...}` location in source.
     let anchorLine = 0;
     let refNote = '';
     if (args.ref && !(args.startLine > 0)) {
       const texBase = String(mainFile || 'main').replace(/\.tex$/, '');
-      const smPath = path.join(projDir, 'output', `${texBase}-source-map.json`);
       let sm;
-      try { sm = JSON.parse(fs.readFileSync(smPath, 'utf8')); }
-      catch { return { content: [{ type: 'text', text: `read_project: ref lookup unavailable for ${doc} (no source map — build the project first).` }], isError: true }; }
+      try { sm = await serverFetch(`/docs/${encodeURIComponent(doc)}/${encodeURIComponent(texBase)}-source-map.json`); }
+      catch (e) { return { content: [{ type: 'text', text: `read_project: ref lookup unavailable for ${doc} (${e.message} — build the project first).` }], isError: true }; }
       const q = String(args.ref).trim();
       const e = (sm.labels || []).find(x => x.label === q || x.number === q)
             || (sm.labels || []).find(x => x.label?.includes(q) || x.number?.includes(q));
       if (!e) return { content: [{ type: 'text', text: `read_project: ref "${q}" not found in ${doc}'s source map.` }], isError: true };
-      const found = findLabelLine(sourceDir, sm, mainFile, e.label);
+      let found = null;
+      try {
+        const { files = [] } = await serverFetch(`/api/projects/${encodeURIComponent(doc)}/files`);
+        const candidates = [mainFile, ...files]
+          .filter((candidate, index, all) => candidate?.endsWith('.tex') && all.indexOf(candidate) === index);
+        const escapedLabel = String(e.label).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const labelPattern = new RegExp(String.raw`\\label\s*\{\s*${escapedLabel}\s*\}`);
+        for (const candidate of candidates) {
+          let candidateSource;
+          try {
+            candidateSource = await fetchSource(candidate);
+          } catch (sourceError) {
+            if (sourceError.status === 404) continue;
+            throw sourceError;
+          }
+          const sourceLines = candidateSource.split('\n');
+          const index = sourceLines.findIndex(line => labelPattern.test(line));
+          if (index >= 0) {
+            found = { file: candidate, line: index + 1 };
+            break;
+          }
+        }
+      } catch (e) {
+        return { content: [{ type: 'text', text: `read_project: failed to resolve ref "${q}" in ${doc}: ${e.message}` }], isError: true };
+      }
       if (!found) return { content: [{ type: 'text', text: `read_project: ref "${q}" matched label ${e.label} (p.${e.page}) but its \\label{} line wasn't found in the source files — the project may need a rebuild.` }], isError: true };
       anchorLine = found.line;
       relFile = found.file;   // read the file the label actually lives in
       refNote = ` (ref "${q}" → ${e.number || e.label} @ ${found.file}:${found.line})`;
     }
 
-    // Read content — current version (fs) or a past version (git show).
+    // Read current source or a past source directly from the store server.
     let data, versionNote = '';
-    if (args.version) {
-      if (!fs.existsSync(path.join(sourceDir, '.git'))) return { content: [{ type: 'text', text: `read_project: "${doc}" source has no git history for versioned reads.` }], isError: true };
-      try { data = execFileSync('git', ['show', `${args.version}:${relFile}`], { cwd: sourceDir, encoding: 'utf8', maxBuffer: 20 * 1024 * 1024 }); versionNote = ` @${args.version}`; }
-      catch (e) { return { content: [{ type: 'text', text: `read_project: couldn't read ${relFile} @${args.version}: ${String(e.message).split('\n')[0]}` }], isError: true }; }
-    } else {
-      try { data = fs.readFileSync(path.join(sourceDir, relFile), 'utf8'); }
-      catch (e) { return { content: [{ type: 'text', text: `read_project: ${e.code === 'ENOENT' ? 'no such file' : e.message}: ${relFile}` }], isError: true }; }
+    try {
+      data = await fetchSource(relFile);
+      if (args.version) versionNote = ` @${args.version}`;
+    } catch (e) {
+      return { content: [{ type: 'text', text: `read_project: couldn't read ${relFile}${args.version ? ` @${args.version}` : ''}: ${e.message}` }], isError: true };
     }
 
     const allLines = data.split('\n');
