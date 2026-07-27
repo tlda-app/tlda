@@ -8576,9 +8576,8 @@ async function handleDaemonWsMessage(ws, msg) {
         report_seq: msg.report_seq,
       })
     }
-    // Gone from the box. Marked once, on the report where it disappears — not
-    // re-asserted every 30s, which is what made this path cost ~1.24M roster
-    // comparisons per batch.
+    // Gone from the box. Mark liveness only. The durable current seat is the
+    // wake/respawn route; deleting it here strands hibernating agents.
     for (const id of absent) {
       if (running.has(id)) continue
       spawnLibrarian.observeLiveness({
@@ -8591,20 +8590,6 @@ async function handleDaemonWsMessage(ws, msg) {
         daemon_boot_id: msg.daemon_boot_id,
         report_seq: msg.report_seq,
       })
-      const seated = absentSeats.get(id)
-      if (seated?.session_id) {
-        try {
-          fleetStore.retireCurrentAgentSeat?.(id, {
-            sessionId: seated.session_id,
-            daemonKey: ws._daemonKey,
-            ...(seated.terminal_capability ? { terminalCapability: seated.terminal_capability } : {}),
-          })
-        } catch (e) {
-          const message = e?.message || String(e)
-          if (/current seat changed|no current durable seat/.test(message)) continue
-          throw e
-        }
-      }
     }
     daemonRunningAgents.set(ws._daemonKey, running)
     broadcastState()

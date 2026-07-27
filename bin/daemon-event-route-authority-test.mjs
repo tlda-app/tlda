@@ -99,9 +99,9 @@ function branchSource(typeLiteral) {
 
 const statusBranch = branchSource('agent-status')
 assertOrdered(statusBranch, [
-  'currentSeatForDaemonEvent(fleetStore',
+  'daemonEventSeatDecision(fleetStore',
   "family: 'daemon-agent-status'",
-  'if (!currentSeat) return',
+  'if (isForeignDaemonRejection(statusSeat)) return',
   'fleetStore.updateAgentStatus',
   'runtimeStatusStore.updateActivity',
 ], 'agent-status branch')
@@ -114,17 +114,21 @@ const snapshotBranch = branchSource('agent-liveness-snapshot')
 assertOrdered(snapshotBranch, [
   'fleetStore.getCurrentAgentSeats(reported)',
   'seats.get(id)?.daemon_key === ws._daemonKey',
-  'daemonRunningAgents.get(ws._daemonKey)',
   'markAgentAlive',
   'markAgentNotAlive',
   'daemonRunningAgents.set(ws._daemonKey, running)',
 ], 'agent-liveness-snapshot branch')
+assert.equal(
+  snapshotBranch.includes('retireCurrentAgentSeat'),
+  false,
+  'agent-liveness-snapshot must not retire the durable current seat',
+)
 
 const livenessBranch = branchSource('agent-liveness')
 assertOrdered(livenessBranch, [
-  'const currentSeat = currentSeatForDaemonEvent(fleetStore',
+  'daemonEventSeatDecision(fleetStore',
   "family: 'daemon-agent-liveness'",
-  'if (!currentSeat) return',
+  'if (isForeignDaemonRejection(livenessSeat)) return',
   'spawnLibrarian.observeLiveness',
   'markAgentAlive',
   'markAgentNotAlive',
@@ -142,9 +146,9 @@ assertOrdered(activityBranch, [
 
 const activityEventBranch = branchSource('activity-event')
 assertOrdered(activityEventBranch, [
-  'currentSeatForDaemonEvent(fleetStore',
+  'daemonEventSeatDecision(fleetStore',
   "family: 'daemon-activity-event'",
-  'if (!currentSeat) return',
+  'if (isForeignDaemonRejection(seatDecision))',
   'markAgentAlive',
   'runtimeStatusStore.updateActivity',
   'serverActivityDeliveryCounters.record',
