@@ -428,7 +428,7 @@ const ENV_SCOPED_TOOL_NAMES = new Set([
   'delegate', 'chat', 'notify',
   'tasks', 'read_terminal', 'inbox',
   'set_inbox_status', 'set_delivery_channel',
-  'name_agent', 'spawn_models',
+  'name_agent', 'reanimate', 'spawn_models',
   'search', 'observe', 'thread', 'get_refs',
   'label_agent', 'interrupt', 'roster', 'viewing_context',
   'timer', 'subscribe', 'subscriptions', 'unsubscribe',
@@ -1554,6 +1554,17 @@ export function getFleetTools() {
           friendly_name: { type: 'string', description: 'Friendly name (e.g. "sims guy", "survival paper")' },
         },
         required: ['agent', 'friendly_name'],
+      },
+    },
+    {
+      name: 'reanimate',
+      description: 'Reanimate a dead agent: clear its dead bit, wake it, and tell it what happened while it was away.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          agent: { type: 'string', description: 'Agent identifier — session UUID, fleet id, or friendly name' },
+        },
+        required: ['agent'],
       },
     },
     {
@@ -3621,6 +3632,18 @@ If it should remain open: call \`report(summary="...")\` with the current eviden
       return { content: [{ type: 'text', text: `Named ${args.agent}: "${args.friendly_name}"` }] };
     } catch (e) {
       return { content: [{ type: 'text', text: `Rename failed: ${e.message}` }], isError: true };
+    }
+  }
+
+  // ---- reanimate ----
+  if (name === 'reanimate') {
+    try {
+      const data = await mcpFleetTransport.durable('reanimate', { agent: args.agent });
+      if (data.error) return { content: [{ type: 'text', text: `Reanimate failed: ${data.error}` }], isError: true };
+      const label = data.agent || data.agent_id || args.agent;
+      return { content: [{ type: 'text', text: `Reanimated ${label}.` }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Reanimate failed: ${e.message}` }], isError: true };
     }
   }
 

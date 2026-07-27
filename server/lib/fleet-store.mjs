@@ -1357,7 +1357,7 @@ export class FleetStore {
                 COALESCE(NEW.registered_at, strftime('%Y-%m-%dT%H:%M:%fZ','now')), NULL);
       END;
 
-      -- friendly_name changed (incl. →NULL when aging out, or NULL→ on resurrect):
+      -- friendly_name changed (incl. →NULL when aging out, or NULL→ on reanimate):
       -- close the open span, then open a new one iff the new name is non-NULL.
       CREATE TRIGGER IF NOT EXISTS name_history_au AFTER UPDATE OF friendly_name ON agents
       WHEN NEW.friendly_name IS NOT OLD.friendly_name BEGIN
@@ -1611,6 +1611,7 @@ export class FleetStore {
     this._deleteAgent = this.db.prepare('DELETE FROM agents WHERE id = ?');
     this._updateAgentLastSeen = this.db.prepare('UPDATE agents SET last_seen = ? WHERE id = ?');
     this._markAgentDead = this.db.prepare('UPDATE agents SET dead = 1 WHERE id = ?');
+    this._markAgentAlive = this.db.prepare('UPDATE agents SET dead = 0 WHERE id = ?');
 
     // Task queries
     this._upsertTask = this.db.prepare(`
@@ -2710,7 +2711,7 @@ export class FleetStore {
       // index idx_agents_live_name (friendly_name WHERE dead = 0) makes a second
       // one unrepresentable — so there is nothing to disambiguate and liveness
       // never enters the question. Falls back to any row (incl. dead) only when
-      // no living agent holds the name, so resurrect-by-name still resolves
+      // no living agent holds the name, so reanimate-by-name still resolves
       // (Skip's spec G.22, scratch/registration-rules.md).
       row = this._getLiveAgentRowByFriendlyName.get(query) || this._getAgentByName.get(query);
     }
@@ -2719,6 +2720,18 @@ export class FleetStore {
       row = this.db.prepare('SELECT * FROM agents WHERE session_id = ?').get(query);
     }
     return row ? this.projectAgentCurrentSeat(this._hydrateAgent(row)) : null;
+  }
+
+  findAgentStored(query) {
+    if (!query) return null;
+    let row = this._getAgent.get(query);
+    if (!row) {
+      row = this._getLiveAgentRowByFriendlyName.get(query) || this._getAgentByName.get(query);
+    }
+    if (!row) {
+      row = this.db.prepare('SELECT * FROM agents WHERE session_id = ?').get(query);
+    }
+    return row ? this._hydrateAgent(row) : null;
   }
 
   getAllAgents() {
@@ -3036,6 +3049,26 @@ export class FleetStore {
     this.retireTasksForGoneAgent(id, 'agent marked dead');
     this._bustAgentsCache();
     this._syncAgentRegistry(id);
+  }
+
+  markAlive(id) {
+    const agent = this.getAgent(id);
+    if (!agent) throw new Error('agent not found');
+    if (agent.human) throw new Error('cannot reanimate a human');
+    if (!agent.dead) return agent;
+    const liveNamesakes = agent.friendly_name
+      ? this._getLiveAgentsByFriendlyName.all(agent.friendly_name)
+      : [];
+    const holder = liveNamesakes.find(row => row.id !== id);
+    if (holder) {
+      throw new Error(`cannot reanimate ${id}: live agent ${holder.id} already holds name "${agent.friendly_name}"`);
+    }
+    this.db.transaction(() => {
+      this._markAgentAlive.run(id);
+    })();
+    this._bustAgentsCache();
+    this._syncAgentRegistry(id);
+    return this.getAgent(id);
   }
 
   async renameAgentFriendlyName(id, friendlyName, { actorId = null, reason = 'rename', prettyName = undefined } = {}) {

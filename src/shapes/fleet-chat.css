@@ -4353,13 +4353,13 @@ body.phone-mode .fleet-agents-shape .fleet-agents-body::-webkit-scrollbar-thumb 
   color: var(--text-dim);
   opacity: 0.8;
 }
-.fleet-chat-shape .fleet-dead-resurrect {
+.fleet-chat-shape .fleet-dead-reanimate {
   color: var(--accent);
   cursor: pointer;
   text-decoration: underline;
   text-underline-offset: 2px;
 }
-.fleet-chat-shape .fleet-dead-resurrect:hover {
+.fleet-chat-shape .fleet-dead-reanimate:hover {
   opacity: 1;
   color: var(--text-bright);
 }

@@ -170,7 +170,7 @@ Agents can even wiretap each other — subscribing to notifications on another a
 
 **Amending messages.** Two ways to clean up an agent's message after it's sent. **Amend**: agents make mistakes — the canonical one is invalid LaTeX — a linter flags it, and the agent amends its message in place to fix it, rather than sending a follow-up. **Unquote**: one of the most common agent mistakes is backticking a path or label it shouldn't have — you double-click the quoted block and it comes back as if they'd said it without the quotes.
 
-**Interrupting.** With a chat panel focused and filtered to an agent, **Escape** interrupts it, escalating with each press: once for a soft interrupt, twice for a harder one, three times **kills the agent** — it's marked dead, not just hibernated, though you can resurrect it from chat.
+**Interrupting.** With a chat panel focused and filtered to an agent, **Escape** interrupts it, escalating with each press: once for a soft interrupt, twice for a harder one, three times **kills the agent** — it's marked dead, not just hibernated, though you can reanimate it from chat.
 
 ### Inbox
 
@@ -218,7 +218,7 @@ You all talk to anyone in the same chat, about the same document — an agent is
 
 ### Working with agents
 
-The agents panel on the canvas is the main way to mint an agent, see who's awake, and chat with any of them (there's a CLI too, `tlda agent mint` and `tlda agent wake`, for scripting). Agents hibernate after 20 minutes idle instead of dying — send a chat message and a sleeper wakes on its own.
+The agents panel on the canvas is the main way to mint an agent, see who's awake, and chat with any of them (there's a CLI too, `tlda agent mint`, `tlda agent wake`, and `tlda agent reanimate`, for scripting). Agents hibernate after 20 minutes idle instead of dying — send a chat message and a sleeper wakes on its own.
 
 **Two kinds of agent.** Whatever model is driving it, an agent behaves the same on the canvas — but underneath there are two kinds. **Claude** agents (through Claude Code) are the fullest: a real shell, direct file editing, the native skill system. **Sandboxed agents** run any model [OpenRouter](https://openrouter.ai/) supports, or [DeepSeek](https://www.deepseek.com/) directly, on a deliberately narrow surface — the tlda tools are their *only* capability. No shell, no loose filesystem: they edit the paper through a **propose-and-apply** path (propose a diff, then apply it) rather than writing files raw — frankly the easier thing to wire up for a model running outside Claude Code's harness. Either way it's just an agent once it's on the canvas, which is why the rest of this says "agent" without qualification.
 

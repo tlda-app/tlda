@@ -212,7 +212,7 @@ export function filteredFleetRosterPage(roster, {
   return { matched: ordered.length, rows: page, nextCursor }
 }
 
-export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, clearEphemeralState, suppressEchoFor, sendDaemonEphemeral, sendDaemonDurable, resolveRpc, daemonConnections, resolveSpawnTarget, broadcastDaemonAgentsUpdated, enqueueDaemonMessage, agentSeatBindingObligations, hasOpenFleetSocketForAgent = () => false, requireOperationRead }) {
+export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, clearEphemeralState, suppressEchoFor, sendDaemonEphemeral, sendDaemonDurable, resolveRpc, daemonConnections, resolveSpawnTarget, broadcastDaemonAgentsUpdated, enqueueDaemonMessage, agentSeatBindingObligations, hasOpenFleetSocketForAgent = () => false, reanimateAgent, requireOperationRead }) {
   const router = Router()
 
   router.get('/api/fleet/operations/:operationId', requireOperationRead, (req, res) => {
@@ -442,6 +442,17 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       broadcastState()
       res.json({ ok: true })
     } catch (e) { res.status(500).json({ error: e.message }) }
+  })
+
+  router.post('/api/agents/:id/reanimate', async (req, res) => {
+    if (!fleetStore) { res.status(503).json({ error: 'Fleet store not available' }); return }
+    if (!reanimateAgent) { res.status(503).json({ error: 'Reanimate is not available' }); return }
+    try {
+      const result = await reanimateAgent(req.params.id)
+      res.json(result)
+    } catch (e) {
+      res.status(e.status || 500).json({ error: e.message })
+    }
   })
 
   // --- GET /api/store/agents ---
