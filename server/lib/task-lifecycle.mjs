@@ -20,7 +20,7 @@ export async function completeTaskLifecycle({
     completedTask.metadata = { ...(task.metadata || {}), ...taskMetadataPatch }
   }
 
-  fleetStore.upsertTask(completedTask)
+  await fleetStore.upsertTask(completedTask)
   const event = await fleetStore.taskDone?.(agentId, completedTask.id, description, eventMetadata)
   return {
     task: completedTask,
@@ -70,7 +70,7 @@ export async function transferTaskLifecycle({
     message: appendDelegationMessage(task, { fromAgentId, toAgentId, message, delegatedAt }),
   }
 
-  fleetStore.upsertTask(transferredTask)
+  await fleetStore.upsertTask(transferredTask)
   const event = await fleetStore.delegate?.(fromAgentId, toAgentId, task.id, task.description, eventMetadata)
   return {
     task: transferredTask,
@@ -82,14 +82,14 @@ export async function transferTaskLifecycle({
 // Coordination guard, not a security boundary. Active temporary delegation
 // markers intentionally grant manager cleanup authority. Do not replace this
 // with immutable or pre-existing delegation-lineage semantics.
-export function canReportTask({ caller, task, fleetStore }) {
+export async function canReportTask({ caller, task, fleetStore }) {
   if (!caller?.id || !task?.id) return false
   if (caller.human || task.agent === caller.id || task.delegated_by === caller.id) return true
-  if (!fleetStore?.getActiveTasks) return false
+  if (!fleetStore) return false
 
   const managedAgents = new Set([caller.id])
   const pendingManagers = [caller.id]
-  const activeTasks = fleetStore.getActiveTasks()
+  const activeTasks = await fleetStore.getActiveTasks()
   while (pendingManagers.length > 0) {
     const manager = pendingManagers.shift()
     for (const delegatedTask of activeTasks) {

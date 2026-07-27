@@ -66,7 +66,8 @@ import { initAuth, isAuthEnabled, validateToken, extractToken, requireRead, requ
 import { initSyncRooms, getOrCreateRoom, flushAllRooms, closeAllRooms, replayCachedSignals, onGlobalEvent, broadcastSignal, getRoomRecords, listActiveRooms, updateShape, putShape } from './lib/sync-rooms.mjs'
 import * as tldaFeedback from './lib/tlda-feedback.mjs'
 import { injectBridge, injectSlidesBridge, injectChapterTitle } from './lib/html-injector.mjs'
-import { FleetStore, isChatHistoryEventType, resolveNameAt } from './lib/fleet-store.mjs'
+import { isChatHistoryEventType, resolveNameAt } from './lib/fleet-store.mjs'
+import { FleetStoreClient } from './lib/fleet-store-client.mjs'
 import { agentsForTerminalWatchResume } from './lib/terminal-watch-resume.mjs'
 import { applyNativeTaskEvents } from './lib/native-task-wrapper.mjs'
 import { resolveMachine } from './lib/tailscale-peers.mjs'
@@ -94,8 +95,7 @@ import { daemonAddress, describeAgentAddress } from '../shared/agent-move-target
 import { readBuildInfo } from './lib/build-info.mjs'
 import { resolveTimerParticipants, timerDeliveryFailureResult, timerTerminalInputFailureResult } from './lib/timer-routing.mjs'
 import { ServerTimerScheduler } from './lib/timer-scheduler.mjs'
-import { ServerDaemonOutbox } from './lib/server-daemon-outbox.mjs'
-import { AgentSeatBindingObligations, isRetirableStaleAgentSeatBindingObligation, verifyAgentSeatBindingTerminal } from './lib/agent-seat-binding-obligations.mjs'
+import { isRetirableStaleAgentSeatBindingObligation, verifyAgentSeatBindingTerminal } from './lib/agent-seat-binding-obligations.mjs'
 import { createDaemonWsControlPlane } from './lib/daemon-ws-control-plane.mjs'
 import { clearTrustedHeartbeatProbes, shouldSkipHeartbeatSweepForLag, shouldTerminateForMissedPong, socketCanAcceptMore } from '../shared/fleet-ws-flow.mjs'
 import {
@@ -260,10 +260,9 @@ resetStaleBuildStates()
 // Fleet store (SQLite-backed agent registry + chat).
 // TLDA_FLEET_DB overrides the default path — used by integration tests
 // to isolate from the live /tmp/fleet.db.
-const fleetStore = new FleetStore(process.env.TLDA_FLEET_DB, { taskDoc: true })
+const fleetStore = new FleetStoreClient(process.env.TLDA_FLEET_DB, { taskDoc: true })
+await fleetStore.ready()
 const fleetOperationContext = new AsyncLocalStorage()
-const serverDaemonOutbox = new ServerDaemonOutbox(fleetStore.db)
-const agentSeatBindingObligations = new AgentSeatBindingObligations(fleetStore.db)
 const serverDaemonOutboxInflight = new Map()
 let serverTimerScheduler = null
 
@@ -360,9 +359,9 @@ function logWsClose(kind, ws, code, reason) {
 // that would collapse an agent's distinct historical names into whichever
 // resolved first and silently rewrite history in every thread view. Resolving
 // against the spans keeps every instant distinct.
-function stampNames(rows) {
+async function stampNames(rows) {
   if (!Array.isArray(rows)) return rows
-  const names = fleetStore.nameSpansFor(
+  const names = await fleetStore.nameSpansFor(
     rows.flatMap(r => [r.from, r.to, r.agentId]),
   )
   const stamp = (r, id, nameKey, nowKey) => {
@@ -409,23 +408,62 @@ const _runtimeExpiryTimers = new Map()
 
 const runtimeStatusStore = createAgentRuntimeStatusStore({
   ttlMs: POSITIVE_LIVENESS_TTL_MS,
-  getSeat: agentId => fleetStore?.getCurrentAgentSeat?.(agentId) || null,
   isDaemonConnected: daemonKey => !!daemonKey && daemonConnections.get(daemonKey)?.readyState === 1,
   onChange: agentId => {
-    fleetStore?.refreshAgentLiveness?.(agentId)
+    // Not awaited, and these three are the only refreshes treated this way.
+    // refreshAgentLiveness returns nothing — it re-syncs the agent registry so
+    // the roster view and footer count see the change. Nothing downstream reads
+    // a result, and every caller that follows it with broadcastState hits a
+    // 50ms debounce, which is far longer than a worker round trip, so the
+    // refresh lands before the broadcast it feeds.
+    //
+    // .catch rather than bare `void`: a dropped rejection here would be an
+    // unhandled rejection, and a registry that stopped re-syncing is worth
+    // seeing in the log rather than discovering as a roster that quietly stops
+    // updating.
+    //
+    // The alternative was making markAgentAlive/markAgentNotAlive async, which
+    // cascades through the whole liveness path for a call whose value nobody
+    // uses.
+    fleetStore.refreshAgentLiveness(agentId).catch(e => console.error(`[runtime-status] liveness refresh failed for ${agentId}: ${e?.message || e}`))
     if (typeof broadcastState === 'function') broadcastState(agentId)
   },
 })
+fleetStore.setRuntimeProjector(agent => runtimeStatusStore.project(agent))
 
-function isAgentAlive(agentId) { return runtimeStatusStore.isAwake(agentId) }
+// Awake, projected from the agent ROW. It used to take an id and call back
+// into the store for a seat — per check — while both of its callers already
+// held the agent and its seat a couple of lines above. The seat facts now ride
+// the row, so this looks nothing up.
+function isAgentAwake(agent) { return runtimeStatusStore.project(agent).status === 'awake' }
+
+// The two facts the store needs to count the roster, and the reason they are
+// assembled at the call site rather than kept anywhere: they are inputs to one
+// computation. `liveEvidenceIds` is the agents whose positive evidence is still
+// inside the TTL; `connectedDaemonKeys` is who holds a socket right now. Both
+// are read fresh from this thread's own state every time.
+function rosterCountInputs() {
+  const nowMs = Date.now()
+  const liveEvidenceIds = []
+  for (const agentId of _aliveAgents) {
+    const evidence = runtimeStatusStore.evidenceFor(agentId)
+    if (evidence?.liveness !== 'alive') continue
+    const at = Number(evidence.liveness_at_ms)
+    if (!Number.isFinite(at) || (nowMs - at) > POSITIVE_LIVENESS_TTL_MS) continue
+    liveEvidenceIds.push(agentId)
+  }
+  const connectedDaemonKeys = []
+  for (const [key, ws] of daemonConnections) if (ws?.readyState === 1) connectedDaemonKeys.push(key)
+  return { liveEvidenceIds, connectedDaemonKeys, nowMs }
+}
 
 function scheduleRuntimeExpiry(agentId) {
   if (!agentId) return
   const previous = _runtimeExpiryTimers.get(agentId)
   if (previous) clearTimeout(previous)
-  const timer = setTimeout(() => {
+  const timer = setTimeout(async () => {
     _runtimeExpiryTimers.delete(agentId)
-    fleetStore?.refreshAgentLiveness?.(agentId)
+    await fleetStore?.refreshAgentLiveness?.(agentId)
     broadcastState(agentId)
   }, POSITIVE_LIVENESS_TTL_MS + 50)
   timer?.unref?.()
@@ -443,7 +481,8 @@ function markAgentAlive(agentId, now = Date.now(), detail = {}) {
   runtimeStatusStore.markAlive(agentId, detail.source || 'server-positive-evidence', { ...detail, atMs: now })
   scheduleRuntimeExpiry(agentId)
   if (!wasAlive) {
-    fleetStore?.refreshAgentLiveness?.(agentId)
+    // Fire-and-forget for the reason given where onChange does the same.
+    fleetStore.refreshAgentLiveness(agentId).catch(e => console.error(`[liveness] refresh failed for ${agentId}: ${e?.message || e}`))
     // Recovery: an agent transitioning to alive (login/reconnect) clears its
     // wake breaker so a restored session is nudged again immediately (§4.2).
     _wakeBreaker.delete(agentId)
@@ -460,7 +499,8 @@ function markAgentNotAlive(agentId, detail = {}) {
   if (detail.unknown) runtimeStatusStore.markUnknown(agentId, detail.source || 'runtime-unknown', detail)
   else runtimeStatusStore.markNotAlive(agentId, detail.source || 'runtime-negative-evidence', detail)
   clearEphemeralState(agentId)
-  if (wasAlive) fleetStore?.refreshAgentLiveness?.(agentId)
+  // Fire-and-forget for the reason given where onChange does the same.
+  if (wasAlive) fleetStore.refreshAgentLiveness(agentId).catch(e => console.error(`[liveness] refresh failed for ${agentId}: ${e?.message || e}`))
 }
 
 function recordExplicitCheckAliveLiveness(liveness) {
@@ -479,19 +519,21 @@ function recordExplicitCheckAliveLiveness(liveness) {
   else markAgentNotAlive(agentId, { ...detail, unknown: true })
 }
 
-function refreshRuntimeRoutesForDaemon(daemonKey) {
-  if (!daemonKey || !fleetStore?.getAllAgents) return
-  const affected = []
-  for (const agent of fleetStore.getAllAgents()) {
-    if (agent?.dead || agent?.human) continue
-    const seat = fleetStore.getCurrentAgentSeat?.(agent.id)
-    if (seat?.daemon_key === daemonKey) affected.push(agent.id)
-  }
-  for (const id of affected) fleetStore.refreshAgentLiveness?.(id)
+// Which agents this daemon connecting or dropping changes the route state of.
+//
+// Was a scan of the WHOLE roster plus one getCurrentAgentSeat per row, to find
+// the handful of agents seated on one daemon. getAgentsByDaemonKey answers it
+// with a single indexed query against agent_current_seats — the sole route
+// authority, and already the thing the scan was reconstructing by hand. It
+// filters dead agents in SQL, so only the human check is left out here.
+async function refreshRuntimeRoutesForDaemon(daemonKey) {
+  if (!daemonKey) return
+  const seated = await fleetStore.getAgentsByDaemonKey(daemonKey)
+  const affected = seated.filter(agent => agent && !agent.human).map(agent => agent.id)
+  for (const id of affected) await fleetStore.refreshAgentLiveness(id)
   if (affected.length) broadcastState(affected)
 }
 
-if (fleetStore?.setRuntimeStatusProvider) fleetStore.setRuntimeStatusProvider(agent => runtimeStatusStore.project(agent))
 
 // ─── Process reaper — zombie WebSocket detection ────────────────────
 // Agents leave wakes of playwright chromium windows pointed at our
@@ -907,8 +949,11 @@ async function sendWakeNudge(daemonKey, agent, seat, nudgeText, phase, logTag = 
   }))
 }
 
-function requestTaskWake(agentId, nudgeText = null, keys = []) {
-  const agent = fleetStore?.getAgent?.(agentId)
+// Same shape as requestWake: the agent read gates the early return, so it
+// cannot be dropped. Returns nothing, so each caller's only question is
+// ordering.
+async function requestTaskWake(agentId, nudgeText = null, keys = []) {
+  const agent = await fleetStore.getAgent(agentId)
   if (!agent || agent.dead || agent.human) return
   const prev = _taskWakeQueue.get(agentId)
   // Queue value carries the task keys riding this wake so the drain can refresh
@@ -936,9 +981,9 @@ async function drainTaskWakeQueue() {
     _taskWakeQueue.delete(agentId)
     const nudgeText = entry?.nudgeText || null
     const taskKeys = entry?.keys || []
-    const agent = fleetStore?.getAgent?.(agentId)
+    const agent = await fleetStore?.getAgent?.(agentId)
     if (!agent || agent.dead || agent.human) continue
-    const seat = fleetStore?.getCurrentAgentSeat?.(agentId)
+    const seat = await fleetStore?.getCurrentAgentSeat?.(agentId)
     if (!seat) continue
     const daemonKeys = [...daemonConnections.keys()]
     if (daemonKeys.length === 0) continue
@@ -946,7 +991,7 @@ async function drainTaskWakeQueue() {
     try {
       const ownerDaemon = daemonConnections.get(daemonKey)
       if (!ownerDaemon || ownerDaemon.readyState !== 1) throw new Error(`No fleet-daemon connected for ${daemonKey}`)
-      const serverAlive = isAgentAlive(agentId)
+      const serverAlive = isAgentAwake(agent)
       const liveness = serverAlive
         ? await sendDaemonDurable(daemonKey, 'check-alive', terminalRpcPayload(agent, seat))
           .then(result => livenessFromCheckAliveResult(agentId, result))
@@ -973,7 +1018,12 @@ async function drainTaskWakeQueue() {
         continue
       }
       if (decision.action === 'queue') {
-        setTimeout(() => requestTaskWake(agentId, nudgeText, taskKeys), 2000).unref?.()
+        // Not awaited: a retry timer, and the wake is terminal — nothing reads
+        // a result and nothing is sequenced after it. Reported, not dropped.
+        setTimeout(() => {
+          requestTaskWake(agentId, nudgeText, taskKeys)
+            .catch(e => console.error(`[task-wake] retry failed for ${agentId}: ${e?.message || e}`))
+        }, 2000).unref?.()
         continue
       }
       if (decision.action === 'hold') continue
@@ -989,7 +1039,7 @@ async function drainTaskWakeQueue() {
         // Don't drop a failed re-nudge silently — surface via the catch (agent-wedged).
         throw new Error(spawnResult?.error || spawnResult?.reason || 'daemon returned ok:false with no reason')
       }
-      const nextSeat = fleetStore?.getCurrentAgentSeat?.(agentId)
+      const nextSeat = await fleetStore?.getCurrentAgentSeat?.(agentId)
       if (!nextSeat) throw new Error(`respawn for ${agentId} did not create a current durable seat`)
       await sendWakeNudge(nextSeat.daemon_key, agent, nextSeat, nudgeText, 'post-respawn', 'task-renudge')
       onTaskWakeSuccess(agentId, taskKeys)
@@ -1014,8 +1064,8 @@ async function drainTaskWakeQueue() {
   _taskWakeDraining = false
 }
 
-function taskInboxStatusFor(agentId) {
-  const status = fleetStore?.getAgent?.(agentId)?.metadata?.inboxStatus
+async function taskInboxStatusFor(agentId) {
+  const status = (await fleetStore?.getAgent?.(agentId))?.metadata?.inboxStatus
   return normalizeInboxStatus(status)
 }
 
@@ -1024,22 +1074,22 @@ function taskWakePreview(raw, max = 120) {
   return s.length > max ? `${s.slice(0, max)}…` : s
 }
 
-function taskDelegateWakeText(description, agentId) {
-  const status = taskInboxStatusFor(agentId)
+async function taskDelegateWakeText(description, agentId) {
+  const status = await taskInboxStatusFor(agentId)
   const prefix = status[0].toUpperCase() + status.slice(1)
   return `📬 ${prefix} new task assigned: ${taskWakePreview(description)}\nCall inbox() to see it.`
 }
 
-function runTaskRenudgeSweep() {
+async function runTaskRenudgeSweep() {
   if (!fleetStore) return
-  const page = fleetStore.getActiveTasksPage?.({ limit: TASK_RENUDGE_SWEEP_LIMIT, cursor: _taskRenudgeCursor }) || { tasks: [], nextCursor: null }
+  const page = await fleetStore.getActiveTasksPage?.({ limit: TASK_RENUDGE_SWEEP_LIMIT, cursor: _taskRenudgeCursor }) || { tasks: [], nextCursor: null }
   const tasks = page.tasks || []
   _taskRenudgeCursor = page.nextCursor || null
   const taskStates = tasks.map(task => fleetStore.getTaskDeliveryState?.(task)).filter(Boolean)
   const agentIds = taskStates.map(state => state?.task?.agent).filter(Boolean)
   const nudges = decideTaskRenudges({
     taskStates,
-    agents: fleetStore.getAgentsByIds?.(agentIds) || [],
+    agents: await fleetStore.getAgentsByIds?.(agentIds) || [],
     now: Date.now(),
     lastRenudged: _taskRenudged,
     renudgeIntervalMs: TASK_RENUDGE_INTERVAL_MS,
@@ -1050,7 +1100,7 @@ function runTaskRenudgeSweep() {
     // here (§5) — so a failing agent's 5-min throttle never stays warm; its
     // backoff is governed solely by the breaker. Pass the task key through so the
     // drain can stamp it on delivery.
-    requestTaskWake(nudge.task.agent, taskDelegateWakeText(nudge.task.description || nudge.event.text || nudge.task.id, nudge.task.agent), [nudge.key])
+    await requestTaskWake(nudge.task.agent, await taskDelegateWakeText(nudge.task.description || nudge.event.text || nudge.task.id, nudge.task.agent), [nudge.key])
   }
 }
 
@@ -1296,6 +1346,7 @@ const serverDaemonTransport = createFleetOperationTransport({
   observe: event => {
     if (event.stage === 'started') {
       fleetStore.beginTransportOperation(event.envelope)
+        .catch(e => console.error(`[server-daemon] begin transport operation failed for ${event.envelope?.operation_id}: ${e?.message || e}`))
       return
     }
     fleetStore.recordTransportOperationResult(
@@ -1304,7 +1355,7 @@ const serverDaemonTransport = createFleetOperationTransport({
       event.ok ? 'result' : 'error',
       event.ok ? { ok: true, queued: event.queued === true } : { message: event.error },
       event.envelope,
-    )
+    ).catch(e => console.error(`[server-daemon] record transport result failed for ${event.operation_id}: ${e?.message || e}`))
   },
 })
 
@@ -1351,7 +1402,7 @@ setShadowMirrorHandler(createShadowMirrorRpcHandler({
 // anything is deleted. Gating broadcastFleet itself is the deletion, and it
 // waits for that equivalence to be proven.
 const filterSubscriptions = createFilterSubscriptions({
-  getAgents: () => fleetStore?.getAllAgents?.() || [],
+  getAgents: async () => await fleetStore?.getAllAgents?.() || [],
 })
 
 // Liveness counters for the filter push.
@@ -1446,7 +1497,10 @@ serverTimerScheduler = new ServerTimerScheduler({
   store: fleetStore,
   broadcast: broadcastEvent,
 })
-serverTimerScheduler.start()
+// Not awaited: this is module top level, where there is no async context to
+// await into. A failing first refresh is reported rather than becoming an
+// unhandled rejection at startup.
+serverTimerScheduler.start().catch(e => console.error(`[timer-scheduler] initial refresh failed: ${e?.message || e}`))
 
 function compactObject(obj = {}) {
   const out = {}
@@ -1532,8 +1586,8 @@ function hasOpenFleetSocketForAgent(agentId, exceptWs = null) {
 const spawnLibrarian = new SpawnLibrarian({
   loginDeadlineMs: Number(process.env.TLDA_SPAWN_LOGIN_DEADLINE_MS || 60_000),
   wedgedWindowMs: Number(process.env.TLDA_WEDGED_JOIN_MS || 90_000),
-  onWedged: ({ agent_id, liveness }) => {
-    const agent = fleetStore?.getAgent?.(agent_id)
+  onWedged: async ({ agent_id, liveness }) => {
+    const agent = await fleetStore?.getAgent?.(agent_id)
     const label = agent?.friendly_name || agent_id
     const metadata = {
       type: 'agent_wedged',
@@ -1608,10 +1662,10 @@ function touchActivity(agentId) {
 // This is the signal the disposition self-check bot (~/work/tlda-bots/disposition)
 // rides on. The true→false edge is deduped upstream by _thinkingState, so this
 // fires exactly once per turn.
-function emitTurnEnded(agentId, startedAtMs) {
+async function emitTurnEnded(agentId, startedAtMs) {
   if (!fleetStore || !agentId) return
   // Only real agents have turns — skip humans/bots (Skip, todd, tlda, …).
-  const a = fleetStore.getAgent?.(agentId)
+  const a = await fleetStore.getAgent?.(agentId)
   if (a?.human) return
   const endedAt = new Date()
   const durationMs = startedAtMs ? (endedAt.getTime() - startedAtMs) : null
@@ -1634,10 +1688,27 @@ function emitTurnEnded(agentId, startedAtMs) {
 // This function never changes agent state and never applies a policy threshold.
 // The returned duration is capped by continuous observed liveness, so a newly
 // rediscovered seat cannot inherit an older idle clock and immediately qualify.
-function getTrustedIdleSeconds() {
+// Iterates the agents this server currently believes are alive, not the whole
+// roster. That is not a shortcut — it is the same set, arrived at cheaply.
+//
+// The loop's fourth filter requires a finite alive_since_ms, and that field is
+// written only by runtimeStatusStore.markAlive and cleared only by
+// markNotAlive/markUnknown. Those are called from exactly two places,
+// markAgentAlive and markAgentNotAlive, each immediately after the matching
+// _aliveAgents.add / .delete. So _aliveAgents is a superset of the candidate
+// set: nothing outside it can survive filter four. Agents inside it whose
+// evidence has since aged past the TTL are still filtered by the awake check
+// below, exactly as before.
+//
+// The roster scan cost a full getAllAgents() plus a projection per row to
+// discover a handful of agents the main thread already had in a Set. One
+// bounded getAgentsByIds instead — the same inversion as the roster count.
+async function getTrustedIdleSeconds() {
   const now = Date.now()
   const result = {}
-  for (const agent of fleetStore?.getAllAgents?.() || []) {
+  const candidates = [..._aliveAgents]
+  if (!candidates.length) return result
+  for (const agent of await fleetStore.getAgentsByIds(candidates)) {
     if (!agent || agent.dead || agent.human || agent.metadata?.shell) continue
     const agentId = agent.id
     const runtime = runtimeStatusStore.project(agent)
@@ -1696,7 +1767,9 @@ function _agentWithEphemeralState(agent) {
   return agent
 }
 
-function _broadcastStateNow() {
+// async because building the delta reads each changed agent through the store.
+// The debounce below keeps one run in flight at a time — see the note there.
+async function _broadcastStateNow() {
   if (!fleetStore) return
   const pendingIds = [..._pendingBroadcastAgentIds]
   _pendingBroadcastAgentIds.clear()
@@ -1704,7 +1777,7 @@ function _broadcastStateNow() {
   const changed = []
   const removed = []
   for (const id of pendingIds) {
-    const a = _agentWithEphemeralState(fleetStore.getAgent(id))
+    const a = _agentWithEphemeralState(await fleetStore.getAgent(id))
     if (!a) {
       if (_lastAgentJson.has(id)) {
         _lastAgentJson.delete(id)
@@ -1735,8 +1808,8 @@ function _broadcastStateNow() {
       removed,
       // Footer totals cover the full non-dead roster, not only the bounded
       // client page receiving this delta.
-      ...(pendingIds.length ? { agentTotals: fleetStore.getAliveAgentCounts() } : {}),
-      task_delta: fleetStore.consumeTaskChanges?.() || { changed: [], removed: [], overflow: false },
+      ...(pendingIds.length ? { agentTotals: await fleetStore.getAliveAgentCounts(rosterCountInputs()) } : {}),
+      task_delta: await fleetStore.consumeTaskChanges?.() || { changed: [], removed: [], overflow: false },
       thinking: Object.fromEntries(_thinkingState),
       compacting: Object.fromEntries(_compactingState),
       context: Object.fromEntries(_contextState),
@@ -1750,7 +1823,24 @@ let _broadcastTimer = null
 function broadcastState(agentUpdates = null) {
   _queueBroadcastAgents(agentUpdates)
   if (_broadcastTimer) return
-  _broadcastTimer = setTimeout(() => { _broadcastTimer = null; _broadcastStateNow() }, 50)
+  // The timer handle is cleared only AFTER the run settles, not before it
+  // starts. _broadcastStateNow is async now, and it drains the pending set at
+  // the top but writes _lastAgentJson after its awaits — so two overlapping
+  // runs would compare against a half-updated map and re-broadcast rows that
+  // had not changed. Same interleaving the outbox flush had to be chained
+  // against; here holding the handle is enough, because the handle IS the
+  // "one in flight" flag.
+  //
+  // Anything queued while a run was in flight would otherwise sit there until
+  // the next unrelated call, so the drain re-arms itself if the set refilled.
+  _broadcastTimer = setTimeout(() => {
+    _broadcastStateNow()
+      .catch(e => console.error(`[broadcast] state broadcast failed: ${e?.message || e}`))
+      .finally(() => {
+        _broadcastTimer = null
+        if (_pendingBroadcastAgentIds.size) broadcastState()
+      })
+  }, 50)
 }
 
 function mintFleetId() {
@@ -1765,12 +1855,6 @@ function projectForCwd(cwd) {
     if (cwd.startsWith(serverProjectDir)) return p.name
   }
   return null
-}
-
-function liveAgentsByName(name) {
-  if (!name || !fleetStore) return []
-  const rows = fleetStore.db.prepare('SELECT * FROM agents WHERE friendly_name = ? AND dead = 0').all(name)
-  return rows.map(r => fleetStore._hydrateAgent(r))
 }
 
 function surfaceSpawnBounce(error) {
@@ -1813,7 +1897,12 @@ async function resolveSpawnTarget(name, respawn, { fresh = false, requested = {}
       respawn,
       fresh,
       requested,
-      liveMatches: liveAgentsByName(name),
+      // The store method runs the same query and additionally applies
+      // projectAgentCurrentSeat. That is behaviour-neutral here: the projection
+      // rewrites route/display fields, including metadata.model for display,
+      // while this path reads `dead` and `id` in resolveSpawnCollision and then
+      // in the share() and broadcastState() below. It touches neither.
+      liveMatches: await fleetStore.getLiveAgentsByFriendlyName(name),
       projectForCwd,
     })
   } catch (e) {
@@ -1899,7 +1988,7 @@ async function performSpawnRelay(caller, msg) {
   let refreshTarget = null
   let routeTarget = null
   if (!sessionMode && (shouldRespawn || refresh) && agent) {
-    const existing = fleetStore?.findAgent(agent)
+    const existing = await fleetStore?.findAgent(agent)
     routeTarget = existing || null
     // Carry the fleet-id (not the friendly name) so the wake targets that exact
     // identity's session — fleet-spawn re-resolves a name to the wrong namesake,
@@ -1909,15 +1998,15 @@ async function performSpawnRelay(caller, msg) {
     if (refresh) refreshTarget = existing
   }
   if (!sessionMode && fresh && routeAgent) {
-    routeTarget = fleetStore?.findAgent(routeAgent) || null
+    routeTarget = await fleetStore?.findAgent(routeAgent) || null
     if (!routeTarget) throw new Error(`spawn route anchor not found: ${routeAgent}`)
   }
   if (!sessionMode && !spawnName) throw new Error(fresh ? 'fresh spawn requires name' : 'agent name required')
-  if (refresh && !refreshTarget) refreshTarget = fleetStore?.findAgent(spawnName)
-  if (!sessionMode && (shouldRespawn || refresh) && !routeTarget) routeTarget = fleetStore?.findAgent(spawnName) || null
+  if (refresh && !refreshTarget) refreshTarget = await fleetStore?.findAgent(spawnName)
+  if (!sessionMode && (shouldRespawn || refresh) && !routeTarget) routeTarget = await fleetStore?.findAgent(spawnName) || null
   if (!sessionMode && (shouldRespawn || refresh) && !routeTarget) throw new Error(`spawn target not found: ${spawnName}`)
   const requestedSpec = { model, project: doc }
-  const route = resolveSpawnMachine({
+  const route = await resolveSpawnMachine({
     caller,
     targetAgent: routeTarget,
     fresh: !!fresh || sessionMode,
@@ -1957,9 +2046,9 @@ async function performSpawnRelay(caller, msg) {
   let reservedFriendlyName = null
   if (pendingAgentId) {
     const now = new Date().toISOString()
-    const assignedName = fleetStore.allocateFreshFriendlyName(spawnName, { excludeId: pendingAgentId })
+    const assignedName = await fleetStore.allocateFreshFriendlyName(spawnName, { excludeId: pendingAgentId })
     reservedFriendlyName = assignedName
-    fleetStore.upsertAgent({
+    await fleetStore.upsertAgent({
       id: pendingAgentId,
       friendly_name: assignedName,
       pretty_name: requestedPrettyName ?? null,
@@ -1973,7 +2062,7 @@ async function performSpawnRelay(caller, msg) {
       env_name: route.env_name,
       daemon_key: daemonAddress(route.machine_id, route.env_name),
     })
-    fleetStore.ensureDefaultSubscription?.(pendingAgentId)
+    await fleetStore.ensureDefaultSubscription?.(pendingAgentId)
   }
   const spawnRequest = {
     agent_id: targetAgentId,
@@ -2040,7 +2129,7 @@ async function performSpawnRelay(caller, msg) {
         }
       }
       if (pendingAgentId && mailboxTarget && result?.reason === 'spawning') {
-        const shell = fleetStore?.getAgent?.(pendingAgentId)
+        const shell = await fleetStore?.getAgent?.(pendingAgentId)
         if (shell?.metadata?.shell) {
           result = { ok: true, pending: true, agent: shell }
         }
@@ -2073,7 +2162,7 @@ async function performSpawnRelay(caller, msg) {
           return
         }
       }
-      let agentRecord = ready?.agent || result?.agent || (result?.agent_id ? fleetStore.findAgent(result.agent_id) : null) || (targetAgentId ? fleetStore.findAgent(targetAgentId) : null)
+      let agentRecord = ready?.agent || result?.agent || (result?.agent_id ? await fleetStore.findAgent(result.agent_id) : null) || (targetAgentId ? await fleetStore.findAgent(targetAgentId) : null)
       // Runtime route authority is the durable agent-seat binding path. Do not
       // patch legacy route columns from the spawn result; doing so lets generic
       // spawn completion bypass the current-seat binding.
@@ -2136,7 +2225,7 @@ scheduleSessionEntryBackfill()
 
 // Ensure server owner exists as a human agent in the DB on startup
 if (fleetStore) {
-  fleetStore.upsertAgent({
+  await fleetStore.upsertAgent({
     id: SERVER_OWNER_ID,
     friendly_name: SERVER_OWNER_NAME,
     human: true,
@@ -2146,8 +2235,8 @@ if (fleetStore) {
     last_seen: new Date().toISOString(),
   })
   const configuredSpawnMachine = process.env.TLDA_SPAWN_MACHINE_ID || readDaemonConfig().spawnMachineId
-  if (configuredSpawnMachine && !fleetStore.getFleetPref(SERVER_OWNER_ID, SPAWN_MACHINE_PREF_KEY)) {
-    fleetStore.setFleetPref(SERVER_OWNER_ID, SPAWN_MACHINE_PREF_KEY, configuredSpawnMachine)
+  if (configuredSpawnMachine && !await fleetStore.getFleetPref(SERVER_OWNER_ID, SPAWN_MACHINE_PREF_KEY)) {
+    await fleetStore.setFleetPref(SERVER_OWNER_ID, SPAWN_MACHINE_PREF_KEY, configuredSpawnMachine)
     console.log(`[spawn-route] configured ${SERVER_OWNER_ID} ${SPAWN_MACHINE_PREF_KEY}=${configuredSpawnMachine}`)
   }
 }
@@ -2233,7 +2322,7 @@ async function reportFleetIncidentClear({ key, agent, health, incident }) {
 
 async function reconcileActivityHealthIncident(agent, health) {
   if (!fleetStore || !agent || !health) return agent
-  const fresh = fleetStore.getAgent?.(agent.id) || agent
+  const fresh = await fleetStore.getAgent?.(agent.id) || agent
   const metadata = fresh.metadata || {}
   const incidents = { ...(metadata.activityHealthIncidents || {}) }
   const now = new Date()
@@ -2244,7 +2333,7 @@ async function reconcileActivityHealthIncident(agent, health) {
     for (const key of decision.clearKeys) {
       const incident = incidents[key]
       incidents[key] = { ...incident, clearedAt: health.ts || now.toISOString(), clearBoundary: health.boundary || null }
-      updatedAgent = fleetStore.updateAgentActivityHealthIncidents?.(agent.id, incidents) || updatedAgent
+      updatedAgent = await fleetStore.updateAgentActivityHealthIncidents?.(agent.id, incidents) || updatedAgent
       await reportFleetIncidentClear({ key, agent, health, incident })
     }
     return updatedAgent
@@ -2260,10 +2349,10 @@ async function reconcileActivityHealthIncident(agent, health) {
         clearedAt: null,
         pending: true,
       }
-      let updatedAgent = fleetStore.updateAgentActivityHealthIncidents?.(agent.id, incidents) || fresh
+      let updatedAgent = await fleetStore.updateAgentActivityHealthIncidents?.(agent.id, incidents) || fresh
       const payload = activityHealthIncidentPayload(agent, health, now)
       const event = await reportFleetIncident(payload)
-      const latest = fleetStore.getAgent?.(agent.id) || updatedAgent
+      const latest = await fleetStore.getAgent?.(agent.id) || updatedAgent
       const latestIncidents = { ...(latest.metadata?.activityHealthIncidents || {}) }
       if (latestIncidents[key] && !latestIncidents[key].clearedAt) {
         latestIncidents[key] = {
@@ -2271,7 +2360,7 @@ async function reconcileActivityHealthIncident(agent, health) {
           eventId: event?.id || null,
           pending: false,
         }
-        updatedAgent = fleetStore.updateAgentActivityHealthIncidents?.(agent.id, latestIncidents) || updatedAgent
+        updatedAgent = await fleetStore.updateAgentActivityHealthIncidents?.(agent.id, latestIncidents) || updatedAgent
       }
       return updatedAgent
     }
@@ -2282,7 +2371,7 @@ async function reconcileActivityHealthIncident(agent, health) {
 
 async function updateAgentActivityHealth(agentId, patch) {
   if (!fleetStore || !agentId) return null
-  const existing = fleetStore.getAgent?.(agentId)
+  const existing = await fleetStore.getAgent?.(agentId)
   if (!existing) return null
   const previousHealth = existing.metadata?.activityHealth || null
   const health = normalizeActivityHealth({
@@ -2295,7 +2384,7 @@ async function updateAgentActivityHealth(agentId, patch) {
     sessionId: patch.sessionId || null,
     jsonlPath: patch.jsonlPath || null,
   })
-  const updated = fleetStore.updateAgentActivityHealth?.(agentId, health)?.agent || fleetStore.getAgent?.(agentId)
+  const updated = (await fleetStore.updateAgentActivityHealth(agentId, health))?.agent || await fleetStore.getAgent(agentId)
   const withIncidentState = await reconcileActivityHealthIncident(updated, health)
   broadcastState(withIncidentState?.id || agentId)
   return withIncidentState
@@ -2303,7 +2392,7 @@ async function updateAgentActivityHealth(agentId, patch) {
 
 async function updateDaemonActivityTransportHealth(daemonKey, patch) {
   if (!fleetStore || !daemonKey) return
-  const agents = fleetStore.getAgentsByDaemonKey?.(daemonKey) || []
+  const agents = await fleetStore.getAgentsByDaemonKey?.(daemonKey) || []
   for (const agent of agents) {
     await updateAgentActivityHealth(agent.id, patch)
   }
@@ -2360,9 +2449,13 @@ const notificationAttempts = createNotificationAttemptRecorder({
 // project list to all connected fleet-daemons so they can start
 // watching its source files, and tell browsers to refresh their project
 // list (the spawn form / agents panel) so it stays live without a reload.
-onGlobalEvent((event) => {
+// async because broadcastDaemonProjectsUpdated now enqueues through the store,
+// which lives on a worker thread. emitGlobalEvent already handles a listener that
+// returns a promise — it attaches a rejection handler rather than letting one
+// listener's failure stop the broadcast reaching the others.
+onGlobalEvent(async (event) => {
   if (event?.type === 'project-changed') {
-    broadcastDaemonProjectsUpdated()
+    await broadcastDaemonProjectsUpdated()
     broadcastEvent('projects-updated', { name: event.name })
   }
   if (event?.type === 'source-edit') {
@@ -2376,17 +2469,17 @@ onGlobalEvent((event) => {
     if (fleetStore) {
       const docName = event.name
       const qaName = `qa-${docName}`
-      const existing = fleetStore.findAgent(qaName)
+      const existing = await fleetStore.findAgent(qaName)
       if (!existing || existing.dead) {
         const machineIds = [...daemonConnections.keys()]
         if (machineIds.length > 0) {
           const taskDesc = `Watch the ${docName} writing project. Read the qa-writing-watch skill for your full spec.`
           sendDaemonDurable(machineIds[0], 'spawn', { name: qaName, fresh: !existing })
-            .then(() => {
-              const agent = fleetStore.findAgent(qaName)
+            .then(async () => {
+              const agent = await fleetStore.findAgent(qaName)
               if (agent) {
                 const taskId = `qa-task-${docName}-${Date.now()}`
-                fleetStore.delegate('fleet:tlda', agent.id, taskId, taskDesc, { type: 'qa_watch', project: docName })
+                await fleetStore.delegate('fleet:tlda', agent.id, taskId, taskDesc, { type: 'qa_watch', project: docName })
                 console.log(`[qa-watch] delegated task to ${qaName} (${agent.id}) for project ${docName}`)
               } else {
                 console.warn(`[qa-watch] spawn succeeded but agent ${qaName} not found in store`)
@@ -2429,14 +2522,14 @@ onGlobalEvent((event) => {
     if (editedBy) subs.add(editedBy)
 
     for (const agentId of subs) {
-      fleetStore.chat('fleet:tlda', agentId, text, metadata)
+      await fleetStore.chat('fleet:tlda', agentId, text, metadata)
     }
   }
   if (event?.type === 'scratch-build-failed' && fleetStore && event.agentId) {
     const { doc, agentId, label, errors = [] } = event
     const errorList = errors.map(e => `  • ${e}`).join('\n')
     const text = `**Scratch build failed** — \`${label}\` in ${doc}\n\n${errorList}`
-    fleetStore.chat('fleet:tlda', agentId, text, { type: 'scratch_build_failed', doc, label })
+    await fleetStore.chat('fleet:tlda', agentId, text, { type: 'scratch_build_failed', doc, label })
   }
   if (event?.type === 'sync-error') {
     const { docName, shapeId, shapeType, error } = event
@@ -2479,8 +2572,8 @@ function agentDaemonAddress(agent) {
   return daemonAddress(agent?.machine_id, agent?.env_name)
 }
 
-function currentSeatOrError(agent, { requireTerminal = true } = {}) {
-  const seat = agent?.id ? fleetStore?.getCurrentAgentSeat?.(agent.id) : null
+async function currentSeatOrError(agent, { requireTerminal = true } = {}) {
+  const seat = agent?.id ? await fleetStore?.getCurrentAgentSeat?.(agent.id) : null
   if (!seat) return { error: 'agent has no current durable seat' }
   if (requireTerminal && !seat.terminal_capability) {
     return { error: 'current durable seat is missing owning daemon terminal capability' }
@@ -2513,18 +2606,19 @@ function protectedAgentEditFields(agentData = {}) {
   return Object.keys(agentData).filter(key => PROTECTED_AGENT_EDIT_FIELDS.has(key))
 }
 
-function patchEventMetadata(eventId, updater, { broadcast = true } = {}) {
-  const event = fleetStore.getEventById?.(eventId)
+async function patchEventMetadata(eventId, updater, { broadcast = true } = {}) {
+  const event = await fleetStore.getEventById?.(eventId)
   if (!event) return null
   const current = event.metadata || {}
   const next = updater(current)
-  fleetStore.db.prepare('UPDATE events SET metadata = ? WHERE id = ?')
-    .run(JSON.stringify(next), eventId)
+  // Replace, not patch: the updater was handed the current metadata and
+  // returns what it wants stored, so a key it dropped must stay dropped.
+  await fleetStore.replaceEventMetadata(eventId, next)
   if (broadcast) broadcastEvent('event-update', { id: eventId, metadata_patch: next })
   return next
 }
 
-function patchRecipientAttachmentState(eventId, recipientId, attachmentId, record) {
+async function patchRecipientAttachmentState(eventId, recipientId, attachmentId, record) {
   return patchEventMetadata(eventId, metadata => (
     setRecipientAttachmentState(metadata, recipientId, attachmentId, record)
   ))
@@ -2552,11 +2646,11 @@ function finalizeRecipientPlaceholderPaths(metadata = {}, { recipientId, eventId
   return next
 }
 
-function recordPlaceholderReadForMessages(agentId, messages = []) {
+async function recordPlaceholderReadForMessages(agentId, messages = []) {
   const now = new Date().toISOString()
   for (const message of messages || []) {
     if (!hasPendingAttachmentPlaceholders(message?.metadata, agentId)) continue
-    patchEventMetadata(message.id, metadata => (
+    await patchEventMetadata(message.id, metadata => (
       markPendingAttachmentPlaceholdersRead(metadata, agentId, { now })
     ))
   }
@@ -2592,7 +2686,7 @@ function markPlaceholderSuperseded(metadata = {}, recipientId, attachmentId, { n
 }
 
 async function insertMaterializationAmend({ eventId, metadata }) {
-  const original = fleetStore.getEventById?.(eventId)
+  const original = await fleetStore.getEventById?.(eventId)
   if (!original || original.type !== 'chat') return null
   const ts = new Date().toISOString()
   const meta = { ...(metadata || {}), amends: original.id }
@@ -2620,7 +2714,7 @@ async function insertMaterializationAmend({ eventId, metadata }) {
 
 async function replaceMaterializedPlaceholder({ eventId, recipientId, attachment, metadata }) {
   if (placeholderSupersededForRecipient(metadata, recipientId, attachment.id)) return
-  const finalMetadata = patchEventMetadata(eventId, current => (
+  const finalMetadata = await patchEventMetadata(eventId, current => (
     markPlaceholderSuperseded(current, recipientId, attachment.id)
   ))
   await insertMaterializationAmend({ eventId, metadata: finalMetadata || metadata })
@@ -2698,7 +2792,7 @@ async function fetchAttachmentTextForProjectArtifact(attachment) {
 async function materializeProjectMarkdownAttachment({ eventId, recipient, sourceAgent, attachment }) {
   if (!isMarkdownAttachment(attachment)) return null
   const markdown = await fetchAttachmentTextForProjectArtifact(attachment)
-  const sourceAgentRow = sourceAgent ? fleetStore.getAgent?.(sourceAgent) : null
+  const sourceAgentRow = sourceAgent ? await fleetStore.getAgent?.(sourceAgent) : null
   return await realizeProjectMarkdownArtifact({
     cwd: recipient.cwd,
     markdown,
@@ -2718,7 +2812,7 @@ async function materializeProjectMarkdownAttachment({ eventId, recipient, source
 }
 
 async function materializeRecipientAttachment({ eventId, recipientId, sourceAgent, attachment }) {
-  const recipient = fleetStore.getAgent?.(recipientId)
+  const recipient = await fleetStore.getAgent?.(recipientId)
   if (!recipient || recipient.human) return
   let projectArtifact = null
   try {
@@ -2754,7 +2848,7 @@ async function materializeRecipientAttachment({ eventId, recipientId, sourceAgen
     if (record.state === 'available') return null
     return { attachment, record }
   }
-  const current = currentSeatOrError(recipient, { requireTerminal: false })
+  const current = await currentSeatOrError(recipient, { requireTerminal: false })
   if (current.error) {
     return fail(`${current.error} (op=materialize-attachment)`)
   }
@@ -3118,7 +3212,7 @@ async function ensureDeepgramSdkBridge() {
 app.get('/health/services', async (req, res) => {
   const services = {
     tlda: { ok: true, uptime: process.uptime() },
-    fleet: { ok: true, agents: fleetStore.getAgentSummary?.().live ?? 0 },
+    fleet: { ok: true, agents: (await fleetStore.getAgentSummary())?.live ?? 0 },
     sync: { ok: true },
   }
 
@@ -3216,14 +3310,14 @@ app.post('/api/log', (req, res) => {
 // event reached the push; deliveries 0 with subscriptions > 0 means nothing
 // matched. Silence in the comparator is only evidence of agreement when these
 // are non-zero.
-app.get('/api/diagnostics/filter-subscriptions', requireRead, (req, res) => {
+app.get('/api/diagnostics/filter-subscriptions', requireRead, async (req, res) => {
   res.json({
     ...filterSubscriptions.stats(),
     ...filterPushCounters,
     // Read these before reading any zero above.
     startedAt: filterPushStartedAt,
     uptimeMs: Date.now() - Date.parse(filterPushStartedAt),
-    rosterSize: (fleetStore?.getAllAgents?.() || []).length,
+    rosterSize: (await fleetStore?.getAllAgents?.() || []).length,
   })
 })
 
@@ -3385,12 +3479,12 @@ app.get('/api/playback/stream', requireRead, (req, res) => {
   req.on('close', () => clearInterval(keepalive))
 })
 
-app.get('/api/fleet/viewing', requireRead, (req, res) => {
+app.get('/api/fleet/viewing', requireRead, async (req, res) => {
   const userId = req.query.user
   if (userId) {
     let ctx = _viewingContext.get(userId)
     if (!ctx && fleetStore) {
-      const agent = fleetStore.findAgent(userId)
+      const agent = await fleetStore.findAgent(userId)
       if (agent) ctx = _viewingContext.get(agent.id)
     }
     return res.json(ctx || { error: 'no viewing context' })
@@ -3463,45 +3557,45 @@ app.get('/api/fleet/spawn-availability', requireRead, async (req, res) => {
   res.json({ schema: 1, machines: results })
 })
 
-app.get('/api/fleet/prefs', requireRead, (req, res) => {
+app.get('/api/fleet/prefs', requireRead, async (req, res) => {
   const userId = req.query.user
   if (!userId || typeof userId !== 'string') return res.status(400).json({ error: 'Missing ?user= param' })
   if (!fleetStore) return res.status(503).json({ error: 'fleet store unavailable' })
-  res.json(fleetStore.getAllFleetPrefs(userId))
+  res.json(await fleetStore.getAllFleetPrefs(userId))
 })
 
 // Todd owns hibernation policy; the server owns only this read-only liveness
 // fact. Keeping the boundary explicit prevents a bot from deriving idleness
 // from roster labels or becoming a second status publisher.
-app.get('/api/fleet/trusted-idle', requireRead, (_req, res) => {
-  res.json({ idleSecondsByAgent: getTrustedIdleSeconds() })
+app.get('/api/fleet/trusted-idle', requireRead, async (_req, res) => {
+  res.json({ idleSecondsByAgent: await getTrustedIdleSeconds() })
 })
 
-app.get('/api/fleet/prefs/:key', requireRead, (req, res) => {
+app.get('/api/fleet/prefs/:key', requireRead, async (req, res) => {
   const userId = req.query.user
   if (!userId || typeof userId !== 'string') return res.status(400).json({ error: 'Missing ?user= param' })
   if (!fleetStore) return res.status(503).json({ error: 'fleet store unavailable' })
-  const value = fleetStore.getFleetPref(userId, req.params.key)
+  const value = await fleetStore.getFleetPref(userId, req.params.key)
   res.json({ key: req.params.key, value: value ?? null })
 })
 
-app.post('/api/fleet/prefs/:key', requireRead, (req, res) => {
+app.post('/api/fleet/prefs/:key', requireRead, async (req, res) => {
   const { user: userId, value } = req.body
   if (!userId || typeof userId !== 'string') return res.status(400).json({ error: 'Missing user in body' })
   if (value === undefined) return res.status(400).json({ error: 'Missing value in body' })
   if (!fleetStore) return res.status(503).json({ error: 'fleet store unavailable' })
-  fleetStore.setFleetPref(userId, req.params.key, value)
+  await fleetStore.setFleetPref(userId, req.params.key, value)
   res.json({ ok: true })
 })
 
-app.get('/api/runtime-status', requireRead, (_req, res) => {
+app.get('/api/runtime-status', requireRead, async (_req, res) => {
   res.json(buildRuntimeStatus({
     env: process.env,
     serverScriptPath: fileURLToPath(import.meta.url),
     fleetDbPath: process.env.TLDA_FLEET_DB || null,
     fleetStore,
     daemonConnections,
-    fleetSummary: fleetStore.getAgentSummary?.(),
+    fleetSummary: await fleetStore.getAgentSummary?.(),
     localHostname: hostname(),
   }))
 })
@@ -3512,7 +3606,7 @@ app.get('/api/runtime-status', requireRead, (_req, res) => {
 const pendingEducation = new Map()
 
 // Preventive check: hook sends tool+file, server runs qualifications inline
-app.get('/api/education/check/:agentId', (req, res) => {
+app.get('/api/education/check/:agentId', async (req, res) => {
   const agentId = req.params.agentId
   const tool = req.query.tool || ''
   const file = req.query.file || ''
@@ -3535,7 +3629,7 @@ app.get('/api/education/check/:agentId', (req, res) => {
     if (source) input.source = source
     if (name) input.name = name
     if (command) input.command = command
-    checkQualifications(agentId, tool, file, input)
+    await checkQualifications(agentId, tool, file, input)
   }
 
   // Return any owed skill(s). The block is STICKY: checkQualifications above
@@ -3582,9 +3676,9 @@ app.post('/api/education/dismiss/:agentId', (req, res) => {
 
 // Per-agent skill state — read vs owed vs dismissed (with reason). Powers the
 // name-hover popover in fleet chat.
-app.get('/api/education/skills/:agentId', (req, res) => {
+app.get('/api/education/skills/:agentId', async (req, res) => {
   const agentId = req.params.agentId
-  const readsSet = (fleetStore?.getSkillReads?.(agentId)) || _qualAgentReads.get(agentId) || new Set()
+  const readsSet = (await fleetStore?.getSkillReads?.(agentId)) || _qualAgentReads.get(agentId) || new Set()
   const read = [...readsSet]
     .filter(k => typeof k === 'string' && k.startsWith('skill:'))
     .map(k => k.slice('skill:'.length))
@@ -3593,7 +3687,7 @@ app.get('/api/education/skills/:agentId', (req, res) => {
     .map(([skill, d]) => ({ skill, scope: d.scope, trigger: d.triggerShort || null }))
   const dismissed = [...(_qualAgentDismissed.get(agentId) || new Map()).values()]
     .map(d => ({ skill: d.skill, reason: d.reason, scope: d.scope, trigger: d.trigger || null }))
-  const cards = (fleetStore?.getDrillCards?.(agentId)) || []
+  const cards = (await fleetStore?.getDrillCards?.(agentId)) || []
   const partial = partialSkillReadSummaries(_qualAgentPartialSkillReads, agentId)
     .filter(p => !readsSet.has(p.skillKey))
   res.json({ id: agentId, read, partial, owed, dismissed, cards })
@@ -3606,7 +3700,7 @@ app.post('/api/education/card/:agentId', async (req, res) => {
   const { drill, gradient = null, pass = null, card = {}, chat = null } = req.body || {}
   if (!drill) return res.status(400).json({ error: 'Missing drill in body' })
   if (!fleetStore) return res.status(503).json({ error: 'fleet store unavailable' })
-  fleetStore.addDrillCard(agentId, drill, { gradient, pass, card })
+  await fleetStore.addDrillCard(agentId, drill, { gradient, pass, card })
   // Post the card to the agent's chat (markdown), the same channel as any message.
   if (chat) {
     try {
@@ -3623,7 +3717,7 @@ app.post('/api/education/card/:agentId', async (req, res) => {
 // Post a single merged activity card for one or more dismissed skills.
 async function emitSkillDismissCard(agentId, dismissed, reason) {
   if (!fleetStore) return
-  const agent = fleetStore.getAgent?.(agentId)
+  const agent = await fleetStore.getAgent?.(agentId)
   const label = agent?.friendly_name || agentId.slice(0, 12)
   const names = dismissed.map(d => d.skill).join(', ')
   const ctx = dismissed.find(d => d.trigger)?.trigger
@@ -3868,7 +3962,7 @@ function resolveBackingRecord({ docName, backingName, filePath, ownerMachineId, 
   }
 }
 
-function backingFileRegister(record) {
+async function backingFileRegister(record) {
   const key = backingRegistryKey(record.project, record.backingName)
   if (!backingFileRegistry.has(key)) {
     backingFileRegistry.set(key, {
@@ -3881,22 +3975,22 @@ function backingFileRegister(record) {
   const entry = backingFileRegistry.get(key)
   if (!entry.ownerMachineId && record.ownerMachineId) entry.ownerMachineId = record.ownerMachineId
   entry.docNames.add(record.roomName)
-  sendWatchBackingFiles()
+  await sendWatchBackingFiles()
   persistBackingRegistry()
 }
 
-function backingFileUnregister(record) {
+async function backingFileUnregister(record) {
   const key = backingRegistryKey(record.project, record.backingName)
   const entry = backingFileRegistry.get(key)
   if (!entry) return
   entry.docNames.delete(record.roomName)
   if (entry.docNames.size > 0) { persistBackingRegistry(); return }
   backingFileRegistry.delete(key)
-  sendWatchBackingFiles()
+  await sendWatchBackingFiles()
   persistBackingRegistry()
 }
 
-function sendWatchBackingFiles() {
+async function sendWatchBackingFiles() {
   const byOwner = new Map()
   for (const entry of backingFileRegistry.values()) {
     if (!entry.ownerMachineId) continue
@@ -3910,7 +4004,7 @@ function sendWatchBackingFiles() {
   for (const [machineId, files] of byOwner) {
     // This is a bare machine id, but daemon connections/outbox delivery use scoped
     // `${machine_id}:${env_name}` keys; the first real registration will not route.
-    enqueueDaemonMessage(machineId, { type: 'watch-backing-files', files }, { dedupeKey: 'watch-backing-files' })
+    await enqueueDaemonMessage(machineId, { type: 'watch-backing-files', files }, { dedupeKey: 'watch-backing-files' })
   }
 }
 
@@ -3945,7 +4039,7 @@ async function rebuildBackingFileRegistry() {
             ownerMachineId: shape.props.backingOwnerMachineId,
             legacyBackfill: !shape.props.backingName && !shape.props.backingOwnerMachineId && !shape.props.backingSyncStatus,
           })
-          if (!record.error) backingFileRegister(record)
+          if (!record.error) await backingFileRegister(record)
         }
       }
     } catch (e) { console.warn(`[server] failed to scan backing files for ${docName}: ${e.message}`) }
@@ -3955,23 +4049,23 @@ async function rebuildBackingFileRegistry() {
 }
 
 // POST /api/backing-file-register — client registers a backing file watch
-app.post('/api/backing-file-register', requireRead, (req, res) => {
+app.post('/api/backing-file-register', requireRead, async (req, res) => {
   const { backingName, filePath, docName, ownerMachineId, legacyBackfill } = req.body || {}
   if ((!backingName && !filePath) || !docName) return res.status(400).json({ error: 'Missing backingName/filePath or docName' })
   const record = resolveBackingRecord({ docName, backingName, filePath, ownerMachineId, legacyBackfill })
   if (record.error) return res.status(409).json({ ok: false, error: record.error, status: record.status })
-  backingFileRegister(record)
+  await backingFileRegister(record)
   res.json({ ok: true, status: 'pending', project: record.project, backingName: record.backingName, ownerMachineId: record.ownerMachineId })
 })
 
 // POST /api/backing-file-unregister — client drops a backing file watch when its
 // note is deleted, so the daemon stops watching a file no note is backed by.
-app.post('/api/backing-file-unregister', requireRead, (req, res) => {
+app.post('/api/backing-file-unregister', requireRead, async (req, res) => {
   const { backingName, filePath, docName, ownerMachineId, legacyBackfill } = req.body || {}
   if (!backingName && !filePath) return res.status(400).json({ error: 'Missing backingName/filePath' })
   if (!docName) return res.status(400).json({ error: 'Missing docName' })
   const record = resolveBackingRecord({ docName, backingName, filePath, ownerMachineId, legacyBackfill })
-  if (!record.error) backingFileUnregister(record)
+  if (!record.error) await backingFileUnregister(record)
   res.json({ ok: true })
 })
 
@@ -3994,8 +4088,8 @@ app.post('/api/backing-file-write', requireRead, async (req, res) => {
 // ---------- Fleet action HTTP routes ----------
 // These mirror WS message handlers so UI buttons (fetch POST) can reach them.
 
-function currentSeatOrHttpError(res, agent) {
-  const seat = agent?.id ? fleetStore?.getCurrentAgentSeat?.(agent.id) : null
+async function currentSeatOrHttpError(res, agent) {
+  const seat = agent?.id ? await fleetStore?.getCurrentAgentSeat?.(agent.id) : null
   if (!seat) {
     res.status(409).json({ error: 'agent has no current durable seat' })
     return null
@@ -4011,9 +4105,9 @@ app.post('/api/send-text', requireRead, async (req, res) => {
   const { agent: agentQuery, text, enter } = req.body || {}
   if (!agentQuery) return res.status(400).json({ error: 'Missing agent' })
   if (!fleetStore) return res.status(503).json({ error: 'Fleet not initialized' })
-  const agent = fleetStore.findAgent(agentQuery)
+  const agent = await fleetStore.findAgent(agentQuery)
   if (!agent) return res.status(404).json({ error: 'agent not found' })
-  const seat = currentSeatOrHttpError(res, agent)
+  const seat = await currentSeatOrHttpError(res, agent)
   if (!seat) return
   try {
     const result = await sendDaemonDurable(seat.daemon_key, 'send-text', { agent_id: agent.id, terminal_capability: seat.terminal_capability, text, enter: enter !== false })
@@ -4025,9 +4119,9 @@ app.post('/api/send-key', requireRead, async (req, res) => {
   const { agent: agentQuery, key } = req.body || {}
   if (!agentQuery || !key) return res.status(400).json({ error: 'Missing agent or key' })
   if (!fleetStore) return res.status(503).json({ error: 'Fleet not initialized' })
-  const agent = fleetStore.findAgent(agentQuery)
+  const agent = await fleetStore.findAgent(agentQuery)
   if (!agent) return res.status(404).json({ error: 'agent not found' })
-  const seat = currentSeatOrHttpError(res, agent)
+  const seat = await currentSeatOrHttpError(res, agent)
   if (!seat) return
   try {
     const result = await sendDaemonDurable(seat.daemon_key, 'send-key', { agent_id: agent.id, terminal_capability: seat.terminal_capability, key })
@@ -4039,9 +4133,9 @@ app.post('/api/interrupt', requireRead, async (req, res) => {
   const { agent: agentQuery } = req.body || {}
   if (!agentQuery) return res.status(400).json({ error: 'Missing agent' })
   if (!fleetStore) return res.status(503).json({ error: 'Fleet not initialized' })
-  const agent = fleetStore.findAgent(agentQuery)
+  const agent = await fleetStore.findAgent(agentQuery)
   if (!agent) return res.status(404).json({ error: 'agent not found' })
-  const seat = currentSeatOrHttpError(res, agent)
+  const seat = await currentSeatOrHttpError(res, agent)
   if (!seat) return
   try {
     const result = await sendDaemonDurable(seat.daemon_key, 'interrupt', terminalRpcPayload(agent, seat))
@@ -4066,9 +4160,9 @@ app.post('/api/soft-interrupt', requireRead, async (req, res) => {
   const { agent: agentQuery } = req.body || {}
   if (!agentQuery) return res.status(400).json({ error: 'Missing agent' })
   if (!fleetStore) return res.status(503).json({ error: 'Fleet not initialized' })
-  const agent = fleetStore.findAgent(agentQuery)
+  const agent = await fleetStore.findAgent(agentQuery)
   if (!agent) return res.status(404).json({ error: 'agent not found' })
-  const seat = currentSeatOrHttpError(res, agent)
+  const seat = await currentSeatOrHttpError(res, agent)
   if (!seat) return
   try {
     const result = await sendDaemonDurable(seat.daemon_key, 'soft-interrupt', terminalRpcPayload(agent, seat))
@@ -4080,13 +4174,13 @@ app.post('/api/kill-session', requireRead, async (req, res) => {
   const { agent: agentQuery } = req.body || {}
   if (!agentQuery) return res.status(400).json({ error: 'Missing agent' })
   if (!fleetStore) return res.status(503).json({ error: 'Fleet not initialized' })
-  const agent = fleetStore.findAgent(agentQuery)
+  const agent = await fleetStore.findAgent(agentQuery)
   if (!agent) return res.status(404).json({ error: 'agent not found' })
-  const seat = currentSeatOrHttpError(res, agent)
+  const seat = await currentSeatOrHttpError(res, agent)
   if (!seat) return
   try {
     const result = await sendDaemonDurable(seat.daemon_key, 'kill-session', terminalRpcPayload(agent, seat))
-    fleetStore.retireCurrentAgentSeat(agent.id, {
+    await fleetStore.retireCurrentAgentSeat(agent.id, {
       sessionId: seat.session_id,
       daemonKey: seat.daemon_key,
       terminalCapability: seat.terminal_capability,
@@ -4103,20 +4197,20 @@ app.post('/api/plan-mode-respond', requireRead, async (req, res) => {
   const { agent: agentQuery, response } = req.body || {}
   if (!agentQuery) return res.status(400).json({ error: 'Missing agent' })
   if (!fleetStore) return res.status(503).json({ error: 'Fleet not initialized' })
-  const agent = fleetStore.findAgent(agentQuery)
+  const agent = await fleetStore.findAgent(agentQuery)
   if (!agent) return res.status(404).json({ error: 'agent not found' })
   if (!isPlanModeResponse(response)) return res.status(400).json({ error: 'response must be approve, supervised, or reject' })
-  const seat = currentSeatOrHttpError(res, agent)
+  const seat = await currentSeatOrHttpError(res, agent)
   if (!seat) return
   try {
     const result = await sendDaemonDurable(seat.daemon_key, 'send-text', terminalRpcPayload(agent, seat, { text: planModeResponseKey(response), enter: false }))
-    fleetStore.updateAgentMeta?.(agent.id, { permission_mode: null, inPlanMode: false, planModeType: null })
+    await fleetStore.updateAgentMeta?.(agent.id, { permission_mode: null, inPlanMode: false, planModeType: null })
     const pending = pendingPlanApprovals.get(agent.id)
     if (pending?.eventId) {
       const now = new Date().toISOString()
       const patch = response === 'reject' ? { rejectedAt: now } : { approvedAt: now, mode: response }
       try {
-        fleetStore.updateEventMetadata(pending.eventId, patch)
+        await fleetStore.updateEventMetadata(pending.eventId, patch)
         broadcastEvent('event-update', { id: pending.eventId, metadata_patch: patch })
       } catch (e) { console.warn(`[server] failed to update plan approval event: ${e.message}`) }
       pendingPlanApprovals.delete(agent.id)
@@ -4132,7 +4226,7 @@ app.post('/api/prompt-respond', requireRead, async (req, res) => {
   if (!fleetStore) return res.status(503).json({ error: 'Fleet not initialized' })
   try {
     const patch = response === 'approved' ? { approvedAt: new Date().toISOString() } : { rejectedAt: new Date().toISOString() }
-    fleetStore.updateEventMetadata(eventId, patch)
+    await fleetStore.updateEventMetadata(eventId, patch)
     broadcastEvent('event-update', { id: eventId, metadata_patch: patch })
     res.json({ ok: true })
   } catch (e) { res.status(500).json({ error: e.message }) }
@@ -4321,7 +4415,7 @@ app.use('/docs', (req, res, next) => {
           const source = readFileSync(join(PROJECTS_DIR, name, 'source', column.sourceFile), 'utf8')
           const isTaskDoc = /(^|\n)tlda-kind:\s*task-doc\s*(\n|$)/.test(source)
           const agentNames = isTaskDoc
-            ? fleetStore.getAllAgents().map(agent => ({
+            ? (await fleetStore.getAllAgents()).map(agent => ({
                 id: agent.id,
                 pretty_name: agent.pretty_name,
                 friendly_name: agent.friendly_name,
@@ -4496,7 +4590,6 @@ const fleetRouter = createFleetRouter({
   sendDaemonEphemeral, sendDaemonDurable, resolveRpc, daemonConnections, resolveSpawnTarget,
   broadcastDaemonAgentsUpdated,
   enqueueDaemonMessage: (...args) => enqueueDaemonMessage(...args),
-  agentSeatBindingObligations,
   hasOpenFleetSocketForAgent,
   requireOperationRead: requireRw,
 })
@@ -4786,8 +4879,8 @@ server.on('upgrade', async (req, socket, head) => {
   if (url.pathname === '/ws/terminal') {
     const agentId = url.searchParams.get('agent')
     if (!agentId || !fleetStore) { socket.destroy(); return }
-    const agent = fleetStore.findAgent(agentId)
-    const seat = agent ? fleetStore.getCurrentAgentSeat?.(agent.id) : null
+    const agent = await fleetStore.findAgent(agentId)
+    const seat = agent ? await fleetStore.getCurrentAgentSeat?.(agent.id) : null
     if (!agent || !seat || !seat.terminal_capability) {
       // Decline cleanly with a JSON message before close so the UI shows
       // a useful error instead of "WebSocket error".
@@ -4956,7 +5049,7 @@ server.on('upgrade', async (req, socket, head) => {
           onHandlerError: e => console.error('[daemon-ws] handler error:', e?.message),
         })
       })
-      ws.on('close', (code, reason) => {
+      ws.on('close', async (code, reason) => {
         logWsClose('daemon', ws, code, reason?.toString?.() || '')
         if (ws._daemonKey && daemonConnections.get(ws._daemonKey) === ws) {
           traceGate1('registry-removed', {
@@ -4977,8 +5070,14 @@ server.on('upgrade', async (req, socket, head) => {
           // the roster lying about live agents — the failure this whole change
           // exists to remove.
           daemonRunningAgents.delete(ws._daemonKey)
-          fleetStore?.markDaemonDisconnected?.(ws._daemonKey)
+          await fleetStore?.markDaemonDisconnected?.(ws._daemonKey)
+          // Not awaited: this runs in a socket close/error handler, which is
+          // not async and must not become so. Rejections are reported rather
+          // than dropped — a route refresh that fails leaves the roster
+          // showing stale routes for that daemon's agents, which is worth
+          // seeing in the log.
           refreshRuntimeRoutesForDaemon(ws._daemonKey)
+            .catch(e => console.error(`[runtime-routes] refresh failed for ${ws._daemonKey}: ${e?.message || e}`))
           // The daemon is gone; process-level visibility is unknown, not false.
           // Preserve prior liveness so a server/Fly redeploy or daemon restart
           // cannot make every working agent on that machine vanish.
@@ -4994,7 +5093,7 @@ server.on('upgrade', async (req, socket, head) => {
           console.log(`[fleet-daemon] disconnected: daemon=${ws._daemonKey}`)
         }
       })
-      ws.on('error', () => {
+      ws.on('error', async () => {
         if (ws._daemonKey && daemonConnections.get(ws._daemonKey) === ws) {
           traceGate1('registry-removed', {
             daemon_key: ws._daemonKey,
@@ -5013,8 +5112,14 @@ server.on('upgrade', async (req, socket, head) => {
           // the roster lying about live agents — the failure this whole change
           // exists to remove.
           daemonRunningAgents.delete(ws._daemonKey)
-          fleetStore?.markDaemonDisconnected?.(ws._daemonKey)
+          await fleetStore?.markDaemonDisconnected?.(ws._daemonKey)
+          // Not awaited: this runs in a socket close/error handler, which is
+          // not async and must not become so. Rejections are reported rather
+          // than dropped — a route refresh that fails leaves the roster
+          // showing stale routes for that daemon's agents, which is worth
+          // seeing in the log.
           refreshRuntimeRoutesForDaemon(ws._daemonKey)
+            .catch(e => console.error(`[runtime-routes] refresh failed for ${ws._daemonKey}: ${e?.message || e}`))
           failPendingRpcsForDaemon(ws._machineId, ws._envName, 'daemon ws error')
           clearServerDaemonOutboxInflightForDaemon(ws._daemonKey)
           updateDaemonActivityTransportHealth(ws._daemonKey, {
@@ -5221,7 +5326,8 @@ async function handleFleetWsMessage(ws, msg) {
   const clientOperationId = msg.operation_id || operationEnvelope?.operation_id || null
   const reply = (result) => {
     if (clientOperationId && fleetStore) {
-      fleetStore.recordTransportOperationResult(clientOperationId, type, 'result', result, operationEnvelope)
+    fleetStore.recordTransportOperationResult(clientOperationId, type, 'result', result, operationEnvelope)
+      .catch(e => console.error(`[fleet-ws] record transport result failed for ${clientOperationId}: ${e?.message || e}`))
     }
     if (id) {
       sendFleetResponseFrame(ws, { id, result })
@@ -5240,6 +5346,7 @@ async function handleFleetWsMessage(ws, msg) {
       : err
     if (clientOperationId && fleetStore) {
       fleetStore.recordTransportOperationResult(clientOperationId, type, 'error', payload, operationEnvelope)
+        .catch(e => console.error(`[fleet-ws] record transport error failed for ${clientOperationId}: ${e?.message || e}`))
     }
     if (err && typeof err === 'object') {
       sendFleetResponseFrame(ws, {
@@ -5256,8 +5363,8 @@ async function handleFleetWsMessage(ws, msg) {
   if (!fleetStore) { error('fleet store unavailable'); return }
   if (clientOperationId) {
     try {
-      if (operationEnvelope) fleetStore.beginTransportOperation(operationEnvelope)
-      const previous = fleetStore.getTransportOperationResult(clientOperationId, type)
+      if (operationEnvelope) await fleetStore.beginTransportOperation(operationEnvelope)
+      const previous = await fleetStore.getTransportOperationResult(clientOperationId, type)
       if (previous?.kind === 'error') {
         sendFleetResponseFrame(ws, { id, error: previous.payload })
         msg._fleetReplied = true
@@ -5329,7 +5436,7 @@ async function handleFleetWsMessage(ws, msg) {
 
   if (type === 'prefs-get-all') {
     if (!msg.user || typeof msg.user !== 'string') { error('prefs-get-all requires user'); return }
-    reply(fleetStore.getAllFleetPrefs(msg.user))
+    reply(await fleetStore.getAllFleetPrefs(msg.user))
     return
   }
 
@@ -5337,7 +5444,7 @@ async function handleFleetWsMessage(ws, msg) {
     if (!msg.user || typeof msg.user !== 'string') { error('prefs-set requires user'); return }
     if (!msg.key || typeof msg.key !== 'string') { error('prefs-set requires key'); return }
     if (msg.value === undefined) { error('prefs-set requires value'); return }
-    fleetStore.setFleetPref(msg.user, msg.key, msg.value)
+    await fleetStore.setFleetPref(msg.user, msg.key, msg.value)
     reply({ ok: true })
     return
   }
@@ -5358,7 +5465,7 @@ async function handleFleetWsMessage(ws, msg) {
     const agentId = msg.agent_id || msg.agent
     if (!agentId) { error('mark-dead requires agent'); return }
     try {
-      fleetStore.markDead(agentId)
+      await fleetStore.markDead(agentId)
       clearEphemeralState(agentId)
       broadcastState()
       reply({ ok: true })
@@ -5369,8 +5476,8 @@ async function handleFleetWsMessage(ws, msg) {
   }
 
   if (type === 'fleet-roster-truth') {
-    const agents = fleetStore.getAliveAgents?.() || []
-    const totals = fleetStore.getAgentSummary?.() || { total: agents.length }
+    const agents = await fleetStore.getAliveAgents?.() || []
+    const totals = await fleetStore.getAgentSummary?.() || { total: agents.length }
     reply({
       totals,
       agents: agents.slice(0, Math.max(1, Math.min(Number(msg.limit) || 50, 500))),
@@ -5382,20 +5489,20 @@ async function handleFleetWsMessage(ws, msg) {
   }
 
   if (type === 'agents-page') {
-    const page = fleetStore.getAliveAgentsPage({
+    const page = await fleetStore.getAliveAgentsPage({
       limit: msg.limit,
       cursor: msg.cursor || null,
     })
-    reply({ ...page, totals: fleetStore.getAliveAgentCounts() })
+    reply({ ...page, totals: await fleetStore.getAliveAgentCounts(rosterCountInputs()) })
     return
   }
 
   if (type === 'tasks-page') {
-    const page = fleetStore.getActiveTasksPage({
+    const page = await fleetStore.getActiveTasksPage({
       limit: msg.limit,
       cursor: msg.cursor || null,
     })
-    reply({ ...page, total: fleetStore.getActiveTaskCount() })
+    reply({ ...page, total: await fleetStore.getActiveTaskCount() })
     return
   }
 
@@ -5418,7 +5525,7 @@ async function handleFleetWsMessage(ws, msg) {
     })
     const metadata = { pending: true, fire_at, message }
     const event = await fleetStore.share({ type: 'timer', from, to, text: `⏱ ${message}`, metadata })
-    serverTimerScheduler?.refresh()
+    await serverTimerScheduler?.refresh()
     reply({ ok: true, id: event.id })
     return
   }
@@ -5429,15 +5536,15 @@ async function handleFleetWsMessage(ws, msg) {
       reply(timerTerminalInputFailureResult({ state, eventId }))
       return
     }
-    const event = fleetStore.getEventById?.(Number(eventId))
+    const event = await fleetStore.getEventById(Number(eventId))
     if (!event) {
       reply(timerTerminalInputFailureResult({ state, eventId }))
       return
     }
     try {
       const result = state === 'cancelled'
-        ? serverTimerScheduler.cancel(Number(eventId))
-        : serverTimerScheduler.fire(Number(eventId), { message: msg.message })
+        ? await serverTimerScheduler.cancel(Number(eventId))
+        : await serverTimerScheduler.fire(Number(eventId), { message: msg.message })
       reply(result)
     } catch (e) {
       reply(timerDeliveryFailureResult({ state, eventId, error: e }))
@@ -5465,11 +5572,11 @@ async function handleFleetWsMessage(ws, msg) {
       if (!local_agent_id) { error('mint-shell requires local_agent_id'); return }
       const daemonKey = msg.daemon_key || (machine_id && env_name ? `${machine_id}:${env_name}` : null)
       if (!daemonKey) { error('mint-shell requires daemon identity'); return }
-      const existingBinding = fleetStore.getDaemonAgentBinding?.(daemonKey, local_agent_id)
+      const existingBinding = await fleetStore.getDaemonAgentBinding?.(daemonKey, local_agent_id)
       agentId = existingBinding?.agent_id || mintFleetId()
       if (!existingBinding) {
         try {
-          fleetStore.bindDaemonAgent({ daemonKey, localAgentId: local_agent_id, agentId })
+          await fleetStore.bindDaemonAgent({ daemonKey, localAgentId: local_agent_id, agentId })
         } catch (e) {
           error(e)
           return
@@ -5485,7 +5592,7 @@ async function handleFleetWsMessage(ws, msg) {
     // subscriptions on close.
     ws._tldaAgentId = agentId
     const now = new Date().toISOString()
-    const existing = fleetStore.getAgent?.(agentId)
+    const existing = await fleetStore.getAgent?.(agentId)
     // The friendly name is set once (first identity creation) and is thereafter owned
     // by rename/rotation. Re-login must NOT clobber it with the spawn name
     // — that would undo a lineage rotation. So only the *first* name is taken
@@ -5496,7 +5603,7 @@ async function handleFleetWsMessage(ws, msg) {
     if (willSetName) {
       const incomingLabels = Array.isArray(labels) ? labels : []
       if (incomingLabels.includes('bot') && incomingLabels.includes(requestedName)) {
-        for (const holder of fleetStore.getLiveAgentsByFriendlyName?.(requestedName) || []) {
+        for (const holder of await fleetStore.getLiveAgentsByFriendlyName?.(requestedName) || []) {
           if (holder.id === agentId || holder.dead || holder.friendly_name !== requestedName) continue
           const holderLabels = Array.isArray(holder.labels) ? holder.labels : []
           if (!holderLabels.includes('bot') || !holderLabels.includes(requestedName)) continue
@@ -5505,14 +5612,14 @@ async function handleFleetWsMessage(ws, msg) {
           // live bot. Skip: "the name rotation doesn't kill an agent — it wipes
           // their name, but it doesn't kill them."
           let rotated = null
-          try { rotated = fleetStore.allocateFreshFriendlyName(requestedName, { excludeId: holder.id }) } catch { rotated = null }
+          try { rotated = await fleetStore.allocateFreshFriendlyName(requestedName, { excludeId: holder.id }) } catch { rotated = null }
           console.log(`[register] rotating legacy bot row ${holder.id} off ${requestedName} → ${rotated || '(name cleared)'} so ${agentId} can claim it`)
           fleetStore.renameAgentFriendlyName(holder.id, rotated, { reason: 'name-claimed-by-new-holder' })
             .catch(e => console.warn(`[register] could not rotate ${holder.id} off ${requestedName}: ${e.message}`))
         }
       }
       try {
-        assignedName = fleetStore.allocateFreshFriendlyName(requestedName, { excludeId: agentId })
+        assignedName = await fleetStore.allocateFreshFriendlyName(requestedName, { excludeId: agentId })
       } catch (e) {
         error(e.message)
         return
@@ -5555,9 +5662,9 @@ async function handleFleetWsMessage(ws, msg) {
     // session_id/session_ids are minted by the durable seat binding path, not
     // by generic registration.
     try {
-      fleetStore.upsertAgent(agent)
+      await fleetStore.upsertAgent(agent)
       if (isShellReservation && !agent.human) {
-        fleetStore.ensureDefaultSubscription?.(agent.id)
+        await fleetStore.ensureDefaultSubscription?.(agent.id)
       }
     } catch (e) {
       if (e.message?.includes('already taken')) {
@@ -5572,7 +5679,7 @@ async function handleFleetWsMessage(ws, msg) {
       ? `${lifecycleLabel} shell reserved`
       : `${lifecycleLabel} registered`
     void fleetStore.share?.({ type: eventType, agent_id: agentId, from: agentId, to: agentId, text: eventText })
-    const storedAgent = fleetStore.getAgent?.(agentId) || agent
+    const storedAgent = await fleetStore.getAgent?.(agentId) || agent
     broadcastState(storedAgent)
     // Push through the current-seat projection; seatless reservations have no
     // daemon route and therefore produce no update.
@@ -5596,7 +5703,7 @@ async function handleFleetWsMessage(ws, msg) {
   if (type === 'login') {
     const { agent_id, name, cwd, labels, manager, metadata, machine_id, env_name, kind } = msg
     if (agent_id) {
-      const existing = fleetStore.getAgent?.(agent_id)
+      const existing = await fleetStore.getAgent?.(agent_id)
       if (!existing || existing.dead) { error(`No live shell for agent "${agent_id}". Spawn must create the shell before login.`); return }
       agentFleetConnections.set(agent_id, ws)
       ws._tldaAgentId = agent_id
@@ -5624,8 +5731,8 @@ async function handleFleetWsMessage(ws, msg) {
       }
       // session_id/session_ids are minted by the durable seat binding path, not
       // by generic login.
-      fleetStore.upsertAgent(agent)
-      const storedAgent = fleetStore.projectAgentCurrentSeat?.(fleetStore.getAgent?.(agent_id) || agent) || fleetStore.getAgent?.(agent_id) || agent
+      await fleetStore.upsertAgent(agent)
+      const storedAgent = await fleetStore.projectAgentCurrentSeat?.(await fleetStore.getAgent?.(agent_id) || agent) || await fleetStore.getAgent?.(agent_id) || agent
       reply({ ok: true, agent: storedAgent, assigned_name: storedAgent.friendly_name || null })
       void fleetStore.share?.({ type: 'login', agent_id, from: agent_id, to: agent_id, text: `${agent.friendly_name || agent_id} logged in` })
       markAgentAlive(agent_id, Date.now(), { source: 'agent-login' })
@@ -5636,7 +5743,7 @@ async function handleFleetWsMessage(ws, msg) {
         state: 'alive',
         ts: now,
       })
-      spawnLibrarian.observeLogin(fleetStore.getAgent?.(agent_id) || agent)
+      spawnLibrarian.observeLogin(await fleetStore.getAgent?.(agent_id) || agent)
       broadcastState(storedAgent)
       broadcastDaemonAgentsUpdated(storedAgent)
       return
@@ -5646,13 +5753,12 @@ async function handleFleetWsMessage(ws, msg) {
     const sanitized = name.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '')
     if (!sanitized) { error('invalid name'); return }
     // Find existing agent by friendly_name
-    const nameRows = fleetStore.db.prepare('SELECT * FROM agents WHERE friendly_name = ? AND dead = 0 AND human = 1').all(sanitized)
-    if (nameRows.length === 0) {
+    const agent = await fleetStore.getLiveHumanByFriendlyName(sanitized)
+    if (!agent) {
       error(`No agent named "${sanitized}". Register first.`)
       return
     }
-    const agent = fleetStore._hydrateAgent(nameRows[0])
-    fleetStore.upsertAgent({ ...agent, last_seen: new Date().toISOString() })
+    await fleetStore.upsertAgent({ ...agent, last_seen: new Date().toISOString() })
     ws._tldaHumanId = agent.id
     broadcastState(agent.id)
     reply({ id: agent.id, name: agent.friendly_name, human: !!agent.human })
@@ -5662,7 +5768,7 @@ async function handleFleetWsMessage(ws, msg) {
   if (type === 'spawn') {
     const callerId = ws._tldaAgentId || ws._tldaHumanId
     if (!callerId) { error('spawn requires an authenticated fleet WS identity; call login() first'); return }
-    const caller = fleetStore.getAgent?.(callerId)
+    const caller = await fleetStore.getAgent?.(callerId)
     if (!caller) { error(`spawn caller ${callerId} is not registered`); return }
     try {
       reply(await performSpawnRelay(caller, msg))
@@ -5673,7 +5779,7 @@ async function handleFleetWsMessage(ws, msg) {
   }
 
   if (type === 'store-agents') {
-    reply(fleetStore.getAliveAgents())
+    reply(await fleetStore.getAliveAgents())
     return
   }
 
@@ -5685,7 +5791,7 @@ async function handleFleetWsMessage(ws, msg) {
   }
 
   if (type === 'resolve-agent') {
-    reply({ agent: fleetStore.findAgent(msg.agent) || null })
+    reply({ agent: await fleetStore.findAgent(msg.agent) || null })
     return
   }
 
@@ -5694,7 +5800,7 @@ async function handleFleetWsMessage(ws, msg) {
       error('Full task store dumps are disabled; use paged tasks or search.')
       return
     }
-    reply(fleetStore.getActiveTasksPage?.({ limit: 100 })?.tasks || [])
+    reply((await fleetStore.getActiveTasksPage({ limit: 100 }))?.tasks || [])
     return
   }
 
@@ -5718,7 +5824,7 @@ async function handleFleetWsMessage(ws, msg) {
   // ---- fleet-search-stats: small diagnostic surface for search corpus scale ----
   if (type === 'fleet-search-stats') {
     try {
-      reply(fleetStore.getSearchStats())
+      reply(await fleetStore.getSearchStats())
     } catch (e) { error(e.message) }
     return
   }
@@ -5732,23 +5838,23 @@ async function handleFleetWsMessage(ws, msg) {
         if (!me) throw new Error('fleet-search requires caller identity for `me`')
         return me
       }
-      const resolveAgentNode = (node) => {
+      const resolveAgentNode = async (node) => {
         if (!node) return new Set()
         switch (node.t) {
           case 'lit': {
             if (node.v?.startsWith?.('fleet:')) return new Set([node.v])
             const ids = node.selector
-              ? fleetStore.resolveAgentSelector(node.selector)
-              : fleetStore.resolveAgentQuery(node.v)
+              ? await fleetStore.resolveAgentSelector(node.selector)
+              : await fleetStore.resolveAgentQuery(node.v)
             return new Set(ids)
           }
           case 'me': return new Set([currentSearchActor()])
           case 'and': {
-            const left = resolveAgentNode(node.l)
-            const right = resolveAgentNode(node.r)
+            const left = await resolveAgentNode(node.l)
+            const right = await resolveAgentNode(node.r)
             return new Set([...left].filter(id => right.has(id)))
           }
-          case 'or': return new Set([...resolveAgentNode(node.l), ...resolveAgentNode(node.r)])
+          case 'or': return new Set([...await resolveAgentNode(node.l), ...await resolveAgentNode(node.r)])
           case 'not':
             // Search-side negated agent sets are enforced by the post-filter.
             // Do not broaden the SQL prefilter to "all agents" here.
@@ -5756,51 +5862,51 @@ async function handleFleetWsMessage(ws, msg) {
           default: return new Set()
         }
       }
-      const collectPrefilterIds = (node, out = new Set()) => {
+      const collectPrefilterIds = async (node, out = new Set()) => {
         if (!node) return out
         switch (node.t) {
           case 'from':
           case 'to':
-            for (const id of resolveAgentNode(node.x)) out.add(id)
+            for (const id of await resolveAgentNode(node.x)) out.add(id)
             break
           case 'lit':
           case 'me':
-            for (const id of resolveAgentNode(node)) out.add(id)
+            for (const id of await resolveAgentNode(node)) out.add(id)
             break
           case 'and':
           case 'or':
-            collectPrefilterIds(node.l, out); collectPrefilterIds(node.r, out)
+            await collectPrefilterIds(node.l, out); await collectPrefilterIds(node.r, out)
             break
           case 'not':
             break
         }
         return out
       }
-      const matchesAgentNode = (node, id) => {
+      const matchesAgentNode = async (node, id) => {
         if (!node) return true
         switch (node.t) {
           case 'lit':
-          case 'me': return resolveAgentNode(node).has(id)
-          case 'and': return matchesAgentNode(node.l, id) && matchesAgentNode(node.r, id)
-          case 'or': return matchesAgentNode(node.l, id) || matchesAgentNode(node.r, id)
-          case 'not': return !matchesAgentNode(node.x, id)
+          case 'me': return (await resolveAgentNode(node)).has(id)
+          case 'and': return await matchesAgentNode(node.l, id) && await matchesAgentNode(node.r, id)
+          case 'or': return await matchesAgentNode(node.l, id) || await matchesAgentNode(node.r, id)
+          case 'not': return !await matchesAgentNode(node.x, id)
           default: return false
         }
       }
       const rowId = (row, key) => row[key] || (key === 'from' ? row.agentId : null)
-      const matchesMessageNode = (node, row) => {
+      const matchesMessageNode = async (node, row) => {
         if (!node) return true
         switch (node.t) {
-          case 'from': return matchesAgentNode(node.x, rowId(row, 'from'))
-          case 'to': return matchesAgentNode(node.x, rowId(row, 'to'))
+          case 'from': return await matchesAgentNode(node.x, rowId(row, 'from'))
+          case 'to': return await matchesAgentNode(node.x, rowId(row, 'to'))
           case 'lit':
-          case 'me': return matchesAgentNode(node, rowId(row, 'from')) || matchesAgentNode(node, rowId(row, 'to')) || matchesAgentNode(node, row.agentId)
+          case 'me': return await matchesAgentNode(node, rowId(row, 'from')) || await matchesAgentNode(node, rowId(row, 'to')) || await matchesAgentNode(node, row.agentId)
           case 'since': return !row.timestamp || row.timestamp >= node.v
           case 'before': return !row.timestamp || row.timestamp < node.v
           case 'type': return row.type === node.v || row.role === node.v
-          case 'and': return matchesMessageNode(node.l, row) && matchesMessageNode(node.r, row)
-          case 'or': return matchesMessageNode(node.l, row) || matchesMessageNode(node.r, row)
-          case 'not': return !matchesMessageNode(node.x, row)
+          case 'and': return await matchesMessageNode(node.l, row) && await matchesMessageNode(node.r, row)
+          case 'or': return await matchesMessageNode(node.l, row) || await matchesMessageNode(node.r, row)
+          case 'not': return !await matchesMessageNode(node.x, row)
           default: return false
         }
       }
@@ -5809,7 +5915,7 @@ async function handleFleetWsMessage(ws, msg) {
       let searchAgent = msg.agents?.length ? msg.agents : msg.agent;
       const messageFilter = msg.filterExpression ? parseMessageFilter(msg.filterExpression) : null
       if (messageFilter) {
-        const ids = [...collectPrefilterIds(messageFilter)]
+        const ids = [...await collectPrefilterIds(messageFilter)]
         if (ids.length) searchAgent = ids
       }
       // A typed name fragment (agent:/from:) resolves on the SERVER to the set of
@@ -5817,13 +5923,13 @@ async function handleFleetWsMessage(ws, msg) {
       // dawn-aware. An empty match yields an impossible id (an empty result set),
       // NOT an unfiltered search.
       if (msg.agentQuery) {
-        const ids = fleetStore.resolveAgentQuery(msg.agentQuery);
+        const ids = await fleetStore.resolveAgentQuery(msg.agentQuery);
         searchAgent = ids.length ? ids : [noMatch];
       }
       const projectAgentQuery = String(msg.cwd || msg.project || '').trim()
       const hasText = (msg.query || '').trim().length > 0;
       if (projectAgentQuery && !hasText) {
-        const results = stampNames(fleetStore.searchProjectAgents(projectAgentQuery, {
+        const results = await stampNames(await fleetStore.searchProjectAgents(projectAgentQuery, {
           limit: msg.limit,
           since: msg.since,
           before: msg.before,
@@ -5832,7 +5938,7 @@ async function handleFleetWsMessage(ws, msg) {
         return
       }
       if (projectAgentQuery) {
-        const projectAgentIds = fleetStore.projectAgentIds(projectAgentQuery)
+        const projectAgentIds = await fleetStore.projectAgentIds(projectAgentQuery)
         if (!projectAgentIds.length) {
           reply({ results: [] })
           return
@@ -5845,7 +5951,7 @@ async function handleFleetWsMessage(ws, msg) {
           return
         }
       }
-      let results = fleetStore.searchAll(msg.query || '', {
+      let results = await fleetStore.searchAll(msg.query || '', {
         limit: msg.limit, agent: searchAgent, role: msg.role, type: msg.eventType, types: msg.eventTypes, since: msg.since, before: msg.before,
         // No keyword + an agent filter → return that agent's whole history
         // instead of FTS-matching the literal query text.
@@ -5856,8 +5962,8 @@ async function handleFleetWsMessage(ws, msg) {
       })
       if (projectAgentQuery && hasText) {
         const projectIds = new Set(searchAgent)
-        const nameIds = fleetStore.resolveAgentQuery(msg.query || '').filter(id => projectIds.has(id))
-        const agentRows = fleetStore.projectAgentRows(projectAgentQuery, nameIds, {
+        const nameIds = (await fleetStore.resolveAgentQuery(msg.query || '')).filter(id => projectIds.has(id))
+        const agentRows = await fleetStore.projectAgentRows(projectAgentQuery, nameIds, {
           limit: msg.limit || 50,
           since: msg.since,
           before: msg.before,
@@ -5874,14 +5980,14 @@ async function handleFleetWsMessage(ws, msg) {
       }
       if (hasText && (msg.naturalAgentQuery || msg.naturalAgentQueries?.length) && !searchAgent && !msg.filterExpression) {
         const naturalQueries = msg.naturalAgentQueries?.length ? msg.naturalAgentQueries : [msg.naturalAgentQuery]
-        const ids = [...new Set(naturalQueries.flatMap(query => (
+        const ids = [...new Set((await Promise.all(naturalQueries.map(async query => (
           String(query || '').trim() === 'me'
             ? [currentSearchActor()]
-            : fleetStore.resolveAgentSelector(parseUnifiedAgentSelector(query) || { fragment: query })
-        )))]
+            : await fleetStore.resolveAgentSelector(parseUnifiedAgentSelector(query) || { fragment: query })
+        )))).flat())]
         if (ids.length) {
           const naturalTextQuery = (msg.naturalTextQuery || '').trim()
-          const agentResults = fleetStore.searchAll(naturalTextQuery, {
+          const agentResults = await fleetStore.searchAll(naturalTextQuery, {
             limit: msg.limit, agent: ids, role: msg.role, type: msg.eventType, types: msg.eventTypes, since: msg.since, before: msg.before,
             agentOnly: !naturalTextQuery,
             historyOnly: msg.historyOnly,
@@ -5899,13 +6005,19 @@ async function handleFleetWsMessage(ws, msg) {
         }
       }
       if (msg.eventType) results = results.filter(r => r.type === msg.eventType || r.role === msg.eventType)
-      if (messageFilter) results = results.filter(r => matchesMessageNode(messageFilter, r))
-      results = stampNames(results)
+      if (messageFilter) {
+        const filtered = []
+        for (const row of results) {
+          if (await matchesMessageNode(messageFilter, row)) filtered.push(row)
+        }
+        results = filtered
+      }
+      results = await stampNames(results)
       const context = {}
       if (msg.context_timestamps?.length) {
         for (const ts of msg.context_timestamps) {
-          const ctx = fleetStore.getChatContext(ts, msg.context_window || 3)
-          stampNames(ctx.before); stampNames(ctx.after)
+          const ctx = await fleetStore.getChatContext(ts, msg.context_window || 3)
+          await stampNames(ctx.before); await stampNames(ctx.after)
           context[ts] = ctx
         }
       }
@@ -5950,8 +6062,14 @@ async function handleFleetWsMessage(ws, msg) {
     return notificationAttempts.record({ agentId, traceId, sourceEventId, sourceTaskId, priority, intendedSurface, policy: 'wake', outcome, nextAction, evidence: { reason, ...evidence } })
   }
 
-  function requestWake(agentId, nudgeText = null, asker = null, traceId = null, source = {}) {
-    const agent = fleetStore.getAgent?.(agentId)
+  // async because the very first thing it does is read the agent, and that
+  // read gates every branch below it — dead, human and reserved-shell all
+  // return early on it. There is no fire-and-forget option for a value the
+  // function's own control flow depends on.
+  //
+  // It returns nothing, so at each call site the only question is ordering.
+  async function requestWake(agentId, nudgeText = null, asker = null, traceId = null, source = {}) {
+    const agent = await fleetStore.getAgent(agentId)
     if (!agent || agent.dead || agent.human) return
     if (isReservedShellAgent(agent)) {
       spawnLibrarian.observeLiveness({
@@ -6015,7 +6133,7 @@ async function handleFleetWsMessage(ws, msg) {
       const asker = wakeEntry?.asker || null
       const traceId = wakeEntry?.traceId || null
       const source = wakeEntry?.source || {}
-      const agent = fleetStore.getAgent?.(agentId)
+      const agent = await fleetStore.getAgent?.(agentId)
       if (!agent || agent.dead || agent.human) {
         if (traceId) {
           controlPlaneTraces.append({
@@ -6042,7 +6160,7 @@ async function handleFleetWsMessage(ws, msg) {
         }
         continue
       }
-      const seat = fleetStore?.getCurrentAgentSeat?.(agentId)
+      const seat = await fleetStore?.getCurrentAgentSeat?.(agentId)
       if (!seat) {
         if (traceId) {
           await recordWakeAttempt({ agentId, traceId, ...source, outcome: 'no-route', reason: 'no-current-durable-seat', nextAction: 'retry-after-seat-enrollment' })
@@ -6061,7 +6179,7 @@ async function handleFleetWsMessage(ws, msg) {
           asker,
           traceId,
           source,
-          isAgentAlive,
+          isAgentAwake,
           sendDaemonDurable,
           sendDaemonEphemeral,
           spawnLibrarian,
@@ -6071,7 +6189,14 @@ async function handleFleetWsMessage(ws, msg) {
           getCurrentSeat: (id) => fleetStore.getCurrentAgentSeat(id),
           recordRuntimeLiveness: recordExplicitCheckAliveLiveness,
           awaitWakeAcknowledgment,
-          queueRetry: () => setTimeout(() => requestWake(agentId, nudgeText, asker, traceId, source), 2000).unref?.(),
+          // Not awaited: this fires from a timer, nothing awaits a timer, and
+          // the wake is the terminal action — no caller reads a result and
+          // nothing is sequenced after it. Reported so a retry that cannot
+          // even reach the store is visible.
+          queueRetry: () => setTimeout(() => {
+            requestWake(agentId, nudgeText, asker, traceId, source)
+              .catch(e => console.error(`[wake] retry failed for ${agentId}: ${e?.message || e}`))
+          }, 2000).unref?.(),
           broadcastEvent,
           insertWakeLifecycleEvent: async () => {
             const wakeTs = new Date().toISOString()
@@ -6135,22 +6260,22 @@ async function handleFleetWsMessage(ws, msg) {
     const s = String(raw || '')
     return s.length > max ? `${s.slice(0, max)}…` : s
   }
-  const inboxStatusFor = (agentId) => {
-    const status = fleetStore.getAgent?.(agentId)?.metadata?.inboxStatus
+  // Reads the agent, so async — and the read is immediately property-accessed,
+  // which is the `(await …)?.x` shape that must not be written as
+  // `await …?.x`: that reads .metadata off a Promise and normalises undefined.
+  const inboxStatusFor = async (agentId) => {
+    const status = (await fleetStore.getAgent(agentId))?.metadata?.inboxStatus
     return normalizeInboxStatus(status)
   }
-  const unreadPendingFor = (eventId, agentId) => {
-    const row = fleetStore.db.prepare('SELECT read FROM unread WHERE event_id = ? AND to_id = ?').get(eventId, agentId)
-    return !!row && !row.read
-  }
+  const unreadPendingFor = (eventId, agentId) => fleetStore.isUnreadPending(eventId, agentId)
   const inboxCall = (action) => `Call inbox() to ${action}.`
   const wakeText = ({ status, event, preview, action }) => {
     const label = normalizeInboxStatus(status)
     const prefix = label[0].toUpperCase() + label.slice(1)
     return `📬 ${prefix} ${event}: ${preview}\n${inboxCall(action)}`
   }
-  const chatWakeText = (text, agentId) => wakeText({ status: inboxStatusFor(agentId), event: 'message arrived', preview: previewForWake(text), action: 'read and respond' })
-  const delegateWakeText = (description, agentId) => wakeText({ status: inboxStatusFor(agentId), event: 'new task assigned', preview: previewForWake(description), action: 'see it' })
+  const chatWakeText = async (text, agentId) => wakeText({ status: await inboxStatusFor(agentId), event: 'message arrived', preview: previewForWake(text), action: 'read and respond' })
+  const delegateWakeText = async (description, agentId) => wakeText({ status: await inboxStatusFor(agentId), event: 'new task assigned', preview: previewForWake(description), action: 'see it' })
 
   if (type === 'amend') {
     // Amend = a NEW event of type 'amend' that REFERENCES the original chat
@@ -6162,26 +6287,26 @@ async function handleFleetWsMessage(ws, msg) {
     // version is being viewed (a string-form amend has no source → no chip).
     const { from: rawFrom, event_id, message: text, inline_attachments, source } = msg
     if (!text) { error('missing message'); return }
-    const resolveSingle = (id) => {
+    const resolveSingle = async (id) => {
       if (id === SERVER_OWNER_NAME) return SERVER_OWNER_ID
-      const a = fleetStore?.findAgent(id); return a ? a.id : null
+      const a = await fleetStore?.findAgent(id); return a ? a.id : null
     }
-    const from = rawFrom ? (resolveSingle(rawFrom) || rawFrom) : null
+    const from = rawFrom ? (await resolveSingle(rawFrom) || rawFrom) : null
     if (!from) { reply({ ok: false, error: 'missing from' }); return }
     let target
     if (event_id != null) {
-      target = fleetStore.getEventById(Number(event_id))
+      target = await fleetStore.getEventById(Number(event_id))
       if (!target) { reply({ ok: false, error: `no message with id ${event_id}` }); return }
       // getEventById aliases the sender column to `from` (not `from_id`).
       if (target.from !== from) { reply({ ok: false, error: `message ${event_id} was not sent by you` }); return }
     } else {
-      target = fleetStore.getLatestChatFrom?.(from)
+      target = await fleetStore.getLatestChatFrom?.(from)
       if (!target) { reply({ ok: false, error: 'you have no message to amend' }); return }
     }
     // All amends chain off the ORIGINAL chat event. If the target is itself an
     // amend (agent passed an amend id), follow its reference to the original.
     const origId = (target.type === 'amend' && target.metadata?.amends) ? target.metadata.amends : target.id
-    const orig = origId === target.id ? target : fleetStore.getEventById(Number(origId))
+    const orig = origId === target.id ? target : await fleetStore.getEventById(Number(origId))
     if (!orig || orig.type !== 'chat') { reply({ ok: false, error: `cannot resolve original message for ${target.id}` }); return }
 
     const ts = new Date().toISOString()
@@ -6240,7 +6365,7 @@ async function handleFleetWsMessage(ws, msg) {
       return
     }
     if (msg._tempId) {
-      const prev = fleetStore.getChatTempIdResult?.(msg._tempId)
+      const prev = await fleetStore.getChatTempIdResult?.(msg._tempId)
       if (prev) {
         _chatTempIds.set(msg._tempId, { ...prev, ts: Date.now() })
         controlPlaneTraces.append({
@@ -6254,11 +6379,11 @@ async function handleFleetWsMessage(ws, msg) {
         return
       }
     }
-    const resolveSingle = (id) => {
+    const resolveSingle = async (id) => {
       if (id === SERVER_OWNER_NAME) return SERVER_OWNER_ID
-      const a = fleetStore?.findAgent(id); return a ? a.id : null
+      const a = await fleetStore?.findAgent(id); return a ? a.id : null
     }
-    const from = rawFrom ? (resolveSingle(rawFrom) || rawFrom) : null
+    const from = rawFrom ? (await resolveSingle(rawFrom) || rawFrom) : null
     // `to` is a filter expression (e.g. "fleet:skip", "awake & reviewers",
     // "mathy & !goose"). Parse once, then test each agent's label set.
     let filterAst
@@ -6269,7 +6394,7 @@ async function handleFleetWsMessage(ws, msg) {
     // an old `preread` row + the live `preread`) → the sender sees their
     // message twice. To reach a dead agent, resurrect it first (it goes live,
     // then matches here). No "prefer the live one" — dead is simply excluded.
-    const recipients = fleetStore.resolveChatRecipients(filterAst, { from, filter: rawTo })
+    const recipients = await fleetStore.resolveChatRecipients(filterAst, { from, filter: rawTo })
     // Server-owner pseudo-recipient: not in the roster, so evaluate the filter
     // against its literal id/name label set. An empty filter (null) does NOT
     // fan out to the owner.
@@ -6279,7 +6404,7 @@ async function handleFleetWsMessage(ws, msg) {
     if (recipients.length === 0) { error(`No recipients matched: ${JSON.stringify(rawTo)}`); return }
     // Update sender heartbeat + activity tracking
     if (from) {
-      fleetStore.updateHeartbeat?.(from)
+      await fleetStore.updateHeartbeat?.(from)
       touchActivity(from)
     }
     // Resolve CC (still single-string list)
@@ -6290,7 +6415,7 @@ async function handleFleetWsMessage(ws, msg) {
     // Previously this wrote to an ephemeral container path that Fly wiped on every
     // redeploy, 404-ing the materialized attachment URLs afterward.
     const processedAttachments = copyAttachmentsToUploadDir(attachments, RESOLVED_UPLOAD_DIR)
-    const senderAgent = fleetStore.getAgent?.(from)
+    const senderAgent = await fleetStore.getAgent?.(from)
     const chatReminder = senderAgent?.metadata?.chatReminder || undefined
     // Stamp the human sender's physical machine onto the message context so any
     // agent can see what machine Skip is on without inferring from Tailscale.
@@ -6317,8 +6442,8 @@ async function handleFleetWsMessage(ws, msg) {
     })
     for (const to of recipients) {
       // Resolve wiretaps per recipient — tap labels are matched against this `to`.
-      const wiretapRecipients = fleetStore.resolveWiretaps(from, to, 'chat')
-      const recipientAgent = fleetStore.getAgent?.(to)
+      const wiretapRecipients = await fleetStore.resolveWiretaps(from, to, 'chat')
+      const recipientAgent = await fleetStore.getAgent?.(to)
       const inboxStatus = normalizeInboxStatus(recipientAgent?.metadata?.inboxStatus)
       const inboxStatusTag = recipientAgent?.metadata?.inboxStatusTag || null
       const deliveryChannel = normalizeDeliveryChannel(recipientAgent?.metadata?.deliveryChannel)
@@ -6364,7 +6489,7 @@ async function handleFleetWsMessage(ws, msg) {
           timestamp: ts,
           attachments: materializableAttachments,
         })
-        patchEventMetadata(eventId, () => combinedMetadata, { broadcast: false })
+        await patchEventMetadata(eventId, () => combinedMetadata, { broadcast: false })
       }
       controlPlaneTraces.append({
         trace_id: traceId,
@@ -6407,20 +6532,28 @@ async function handleFleetWsMessage(ws, msg) {
       // (the reply, not the DB row, is what normally carries _tempId).
       insertedEvents.push({ id: eventId, type: 'chat', timestamp: ts, from_id: from, to_id: to, text, metadata: Object.keys(combinedMetadata).length ? combinedMetadata : null, materializableAttachments, ...(msg._tempId ? { _tempId: msg._tempId } : {}) })
       if (deliveryDecision.delivery === 'notified') {
-        wakeRequests.push({ to, text: chatWakeText(text, to), asker: from, traceId, source: { sourceEventId: eventId, priority: basePriority } })
+        wakeRequests.push({ to, text: await chatWakeText(text, to), asker: from, traceId, source: { sourceEventId: eventId, priority: basePriority } })
       } else if (deliveryDecision.delivery === 'batched' && deliveryDecision.notifyBy) {
         const delay = Math.max(0, Date.parse(deliveryDecision.notifyBy) - Date.now())
-        setTimeout(() => {
-          const latestStatus = inboxStatusFor(to)
-          const unreadPending = unreadPendingFor(eventId, to)
+        // async callback: the batched-wake decision now reads the agent's inbox
+        // status and its unread row through the store. setTimeout discards the
+        // returned promise, so the body is wrapped — an async timer callback
+        // that throws is an unhandled rejection, and a batched wake that
+        // silently stopped deciding is exactly the quiet failure this branch
+        // exists to avoid.
+        setTimeout(() => { (async () => {
+          const latestStatus = await inboxStatusFor(to)
+          const unreadPending = await unreadPendingFor(eventId, to)
           if (shouldWakeBatchedMessage({ status: latestStatus, unreadPending })) {
-            requestWake(to, wakeText({
+            // Not awaited, for the same reason as the retry timer above.
+            void requestWake(to, wakeText({
               status: latestStatus,
               event: 'batched message ready',
               preview: previewForWake(text),
               action: 'read and respond',
             }), from, traceId, { sourceEventId: eventId, priority: basePriority })
           }
+        })().catch(e => console.error(`[wake] batched wake decision failed for ${to}: ${e?.message || e}`))
         }, delay)
       }
     }
@@ -6442,10 +6575,12 @@ async function handleFleetWsMessage(ws, msg) {
     }
     const deliveredAt = Date.parse(ts) || Date.now()
     for (const to of recipients) {
-      const recipient = fleetStore.getAgent?.(to)
+      const recipient = await fleetStore.getAgent?.(to)
       if (recipient && !recipient.human) spawnLibrarian.observeDelivery(to, deliveredAt)
     }
-    for (const wake of wakeRequests) requestWake(wake.to, wake.text, wake.asker, wake.traceId, wake.source)
+    // Awaited in sequence, which is exactly what the synchronous version did:
+    // each wake ran to completion before the next began.
+    for (const wake of wakeRequests) await requestWake(wake.to, wake.text, wake.asker, wake.traceId, wake.source)
 
     // Plan mode approval routing: if Skip sends an affirmative/negative and
     // there's a pending plan approval for the targeted agent (or any agent),
@@ -6462,8 +6597,8 @@ async function handleFleetWsMessage(ws, msg) {
           approval = a; pendingPlanApprovals.delete(aid)
         }
         if (approval?.agent_id) {
-          const agent = fleetStore.findAgent?.(approval.agent_id)
-          const { seat } = currentSeatOrError(agent)
+          const agent = await fleetStore.findAgent?.(approval.agent_id)
+          const { seat } = await currentSeatOrError(agent)
           if (seat) sendDaemonDurable(seat.daemon_key, 'send-text', terminalRpcPayload(agent, seat, {
             text: key,
             enter: false,
@@ -6476,8 +6611,8 @@ async function handleFleetWsMessage(ws, msg) {
     if (planKeywordMatch) {
       const keyword = planKeywordMatch[2].toLowerCase()
       for (const r of recipients) {
-        const agent = fleetStore.findAgent(r)
-        const { seat } = currentSeatOrError(agent)
+        const agent = await fleetStore.findAgent(r)
+        const { seat } = await currentSeatOrError(agent)
         if (!seat) continue
         sendDaemonDurable(seat.daemon_key, 'send-text', terminalRpcPayload(agent, seat, {
           text: '/plan',
@@ -6491,7 +6626,7 @@ async function handleFleetWsMessage(ws, msg) {
             })).catch(e => console.error(`[outline-keyword] skill nudge failed for ${r}: ${e.message}`))
           }, 2000)
         }
-        fleetStore.updateAgentMeta?.(agent.id, { inPlanMode: true, planModeType: keyword })
+        await fleetStore.updateAgentMeta?.(agent.id, { inPlanMode: true, planModeType: keyword })
         console.log(`[outline-keyword] forced plan mode on ${agent.friendly_name || r} (keyword: ${keyword})`)
       }
       broadcastState(recipients)
@@ -6501,7 +6636,7 @@ async function handleFleetWsMessage(ws, msg) {
 
   if (type === 'heartbeat') {
     const { agent } = msg
-    if (agent) fleetStore.updateHeartbeat?.(agent)
+    if (agent) await fleetStore.updateHeartbeat?.(agent)
     reply({ ok: true })
     return
   }
@@ -6518,7 +6653,7 @@ async function handleFleetWsMessage(ws, msg) {
     const before = msg.before || null
     const agents = Array.isArray(msg.agents) ? msg.agents : []
     try {
-      const { events: resolved, hasMore } = fleetStore.buildChatHistoryResponse({
+      const { events: resolved, hasMore } = await fleetStore.buildChatHistoryResponse({
         before,
         agents,
         limit,
@@ -6528,7 +6663,7 @@ async function handleFleetWsMessage(ws, msg) {
       // Period-correct names: render each historical message with the name its
       // sender/recipient held AT send time, plus `*NameNow` when since rotated.
       // The client nick prefers these over the current-name fallback.
-      stampNames(resolved)
+      await stampNames(resolved)
       reply({ events: resolved, hasMore })
     } catch (e) {
       error(e.message)
@@ -6540,7 +6675,7 @@ async function handleFleetWsMessage(ws, msg) {
     const { agent: agentQuery, description, message: taskMsg, success_criteria, blocked_by, from, requires_approval, allow_pending_agent, operation_id, task_id } = msg
     if (!agentQuery || (!description && !task_id)) { error('missing agent or description'); return }
     if (task_id && !taskMsg) { error('missing message for existing task delegation'); return }
-    const previous = operation_id ? fleetStore.getDelegateOperationResult?.(operation_id) : null
+    const previous = operation_id ? await fleetStore.getDelegateOperationResult?.(operation_id) : null
     if (previous?.delegateEventId) {
       reply({
         ok: true,
@@ -6561,18 +6696,18 @@ async function handleFleetWsMessage(ws, msg) {
       status: 'received',
       detail: { from, agent: agentQuery, operation_id: operation_id || null },
     })
-    const resolved = fleetStore.findAgent(agentQuery) || (
+    const resolved = await fleetStore.findAgent(agentQuery) || (
       allow_pending_agent && typeof agentQuery === 'string' && agentQuery.startsWith('fleet:')
         ? { id: agentQuery, friendly_name: null }
         : null
     )
     if (!resolved) { error(`agent not found: ${agentQuery}`); return }
-    const existingTask = task_id ? fleetStore.getTask?.(task_id) : null
+    const existingTask = task_id ? await fleetStore.getTask?.(task_id) : null
     if (task_id && !existingTask) { error(`task not found: ${task_id}`); return }
     if (existingTask && (existingTask.status === 'done' || existingTask.status === 'retracted')) { error(`cannot delegate closed task: ${task_id}`); return }
-    const fromAgent = from ? fleetStore.findAgent(from) : null
+    const fromAgent = from ? await fleetStore.findAgent(from) : null
     const caller = fromAgent || (from ? { id: from } : null)
-    if (existingTask && !canReportTask({ caller, task: existingTask, fleetStore })) {
+    if (existingTask && !await canReportTask({ caller, task: existingTask, fleetStore })) {
       error('not authorized to delegate this task; only its assignee, delegator, their management chains, or a human may do so'); return
     }
     const taskId = previous?.taskId || task_id || `${resolved.id.slice(0, 10)}-${Date.now().toString(36)}`
@@ -6581,7 +6716,7 @@ async function handleFleetWsMessage(ws, msg) {
       trace_id: traceId,
       ...(operation_id ? { client_operation_id: operation_id } : {}),
       ...(requires_approval ? { requires_approval: true } : {}),
-      ...(allow_pending_agent && !fleetStore.findAgent(agentQuery) ? { pending_spawn_delegate: true } : {}),
+      ...(allow_pending_agent && !await fleetStore.findAgent(agentQuery) ? { pending_spawn_delegate: true } : {}),
       ...(task_id ? { transfer: true, previous_agent: existingTask.agent } : {}),
     }
     const delegateMetadata = {
@@ -6616,7 +6751,7 @@ async function handleFleetWsMessage(ws, msg) {
         success_criteria: success_criteria || undefined,
         metadata: Object.keys(metadata).length ? metadata : undefined,
       }
-      fleetStore.upsertTask(task)
+      await fleetStore.upsertTask(task)
       delegateEvent = await fleetStore.delegate?.(from, resolved.id, taskId, description, delegateMetadata)
     }
     controlPlaneTraces.append({
@@ -6626,7 +6761,7 @@ async function handleFleetWsMessage(ws, msg) {
       status: 'stored',
       detail: { task_id: taskId, event_id: delegateEvent?.id, from, to: resolved.id },
     })
-    const targetAgent = fleetStore.getAgent?.(resolved.id)
+    const targetAgent = await fleetStore.getAgent?.(resolved.id)
     const deliveryChannel = normalizeDeliveryChannel(targetAgent?.metadata?.deliveryChannel)
     if (targetAgent && !targetAgent.human && deliveryChannel === 'channel' && !hasOpenFleetSocketForAgent(resolved.id)) {
       const inboxStatus = normalizeInboxStatus(targetAgent?.metadata?.inboxStatus)
@@ -6656,29 +6791,29 @@ async function handleFleetWsMessage(ws, msg) {
       operation_id: operation_id || null,
       trace_id: traceId,
     })
-    requestWake(resolved.id, delegateWakeText(description, resolved.id), from, traceId, { sourceEventId: delegateEvent?.id || null, sourceTaskId: taskId, priority: 'urgent' })
+    await requestWake(resolved.id, await delegateWakeText(description, resolved.id), from, traceId, { sourceEventId: delegateEvent?.id || null, sourceTaskId: taskId, priority: 'urgent' })
     return
   }
 
   if (type === 'task-done') {
     const { agent: rawAgent, task_id, skip_qa, approval_id } = msg
     if (!rawAgent) { error('missing agent'); return }
-    const agent = fleetStore.findAgent?.(rawAgent)?.id || rawAgent
+    const agent = (await fleetStore.findAgent(rawAgent))?.id || rawAgent
     const task = task_id
-      ? fleetStore.getTask?.(task_id)
-      : fleetStore.getTaskByAgent?.(agent)
+      ? await fleetStore.getTask?.(task_id)
+      : await fleetStore.getTaskByAgent?.(agent)
     if (!task) { error('no active task'); return }
     if (task.metadata?.requires_approval) {
       if (!approval_id) { error('This task requires approval. Pass approval_id (event ID of a human approval message).'); return }
-      const evt = fleetStore.getEventById(approval_id)
+      const evt = await fleetStore.getEventById(approval_id)
       if (!evt) { error(`approval_id ${approval_id} not found`); return }
-      const fromAgent = (evt.from_id || evt.from) ? fleetStore.getAgent(evt.from_id || evt.from) : null
+      const fromAgent = (evt.from_id || evt.from) ? await fleetStore.getAgent(evt.from_id || evt.from) : null
       if (!fromAgent?.human) { error(`approval_id ${approval_id} is not from a human`); return }
     }
     if (!skip_qa && fleetStore.getQaAgentIds) {
-      const qaIds = fleetStore.getQaAgentIds()
+      const qaIds = await fleetStore.getQaAgentIds()
       if (qaIds.length > 0) {
-        const qaStatus = fleetStore.getQaStatus(task.id)
+        const qaStatus = await fleetStore.getQaStatus(task.id)
         if (qaStatus.status === 'no_report') { error('Submit a report() first'); return }
         if (qaStatus.status === 'rejected') { error(`QA rejected: ${qaStatus.notes || 'no details'}. Fix and re-report.`); return }
         if (qaStatus.status === 'pending') {
@@ -6707,24 +6842,24 @@ async function handleFleetWsMessage(ws, msg) {
       status: 'received',
       detail: { agent: rawAgent, task_id, operation_id, close: !!close },
     })
-    const caller = fleetStore.findAgent?.(rawAgent)
+    const caller = await fleetStore.findAgent?.(rawAgent)
     const agent = caller?.id || rawAgent
     const task = task_id
-      ? fleetStore.getTask?.(task_id)
-      : fleetStore.getTaskByAgent?.(agent)
+      ? await fleetStore.getTask?.(task_id)
+      : await fleetStore.getTaskByAgent?.(agent)
     if (!task) { error('no active task'); return }
-    if (task_id && !canReportTask({ caller: caller || { id: agent }, task, fleetStore })) {
+    if (task_id && !await canReportTask({ caller: caller || { id: agent }, task, fleetStore })) {
       error('not authorized to report on this task; only its assignee, delegator, their management chains, or a human may do so'); return
     }
     if (close && task.metadata?.requires_approval) {
       if (!approval_id) { error('This task requires approval. Pass approval_id (event ID of a human approval message).'); return }
-      const evt = fleetStore.getEventById(approval_id)
+      const evt = await fleetStore.getEventById(approval_id)
       if (!evt) { error(`approval_id ${approval_id} not found`); return }
-      const fromAgent = (evt.from_id || evt.from) ? fleetStore.getAgent(evt.from_id || evt.from) : null
+      const fromAgent = (evt.from_id || evt.from) ? await fleetStore.getAgent(evt.from_id || evt.from) : null
       if (!fromAgent?.human) { error(`approval_id ${approval_id} is not from a human`); return }
     }
 
-    const previous = fleetStore.getReportCloseOperationResult?.(operation_id)
+    const previous = await fleetStore.getReportCloseOperationResult?.(operation_id)
     let reportEventId = previous?.reportEventId || null
     let chatEventId = previous?.chatEventId || null
     let closeEventId = previous?.closeEventId || null
@@ -6754,7 +6889,7 @@ async function handleFleetWsMessage(ws, msg) {
     }
 
     if (!chatEventId && task.delegated_by) {
-      const sender = fleetStore.getAgent?.(agent)
+      const sender = await fleetStore.getAgent?.(agent)
       const senderName = sender?.friendly_name || agent
       const insertedChat = await fleetStore.chat?.(
         agent,
@@ -6823,9 +6958,9 @@ async function handleFleetWsMessage(ws, msg) {
   if (type === 'delete-task') {
     const { task_id } = msg
     if (!task_id) { error('missing task_id'); return }
-    const task = fleetStore.getTask?.(task_id)
+    const task = await fleetStore.getTask?.(task_id)
     if (!task) { error('task not found'); return }
-    fleetStore.removeTask?.(task_id)
+    await fleetStore.removeTask?.(task_id)
     broadcastState()
     reply({ ok: true, task_id })
     return
@@ -6834,17 +6969,17 @@ async function handleFleetWsMessage(ws, msg) {
   if (type === 'my-task') {
     const agentId = msg.agent
     if (!agentId) { error('missing agent'); return }
-    const tasks = fleetStore.getActiveTasksByAgentLimited?.(agentId, MY_TASK_TASK_LIMIT) || []
-    const taskCount = fleetStore.getActiveTaskCountByAgent?.(agentId) ?? tasks.length
-    const task = tasks[0] || fleetStore.getTaskByAgent?.(agentId) || null
-    const allUnread = fleetStore.getUnreadLimited?.(agentId, MY_TASK_UNREAD_LIMIT) || []
+    const tasks = await fleetStore.getActiveTasksByAgentLimited?.(agentId, MY_TASK_TASK_LIMIT) || []
+    const taskCount = await fleetStore.getActiveTaskCountByAgent?.(agentId) ?? tasks.length
+    const task = tasks[0] || await fleetStore.getTaskByAgent?.(agentId) || null
+    const allUnread = await fleetStore.getUnreadLimited?.(agentId, MY_TASK_UNREAD_LIMIT) || []
     // Materialization is a prefetch, not a gate. Skip, 2026-07-26: "Nothing is
     // even supposed to wait… materialization was supposed to be fucking
     // prefetch." A message is in the inbox the moment it exists; the bytes race
     // to catch up, and a reference that has not landed is the open path's
     // problem, not a reason to withhold the message.
     const unread = allUnread
-    const unreadCount = fleetStore.getUnreadCount?.(agentId) ?? allUnread.length
+    const unreadCount = await fleetStore.getUnreadCount?.(agentId) ?? allUnread.length
     // peek=true: caller just wants to see unread (e.g., the channel-WS
     // flush-on-reconnect path that displays a count). Don't mark read in
     // that case — the actual inbox() call from the agent will do the
@@ -6899,7 +7034,7 @@ async function handleFleetWsMessage(ws, msg) {
     const { agent, status, tag } = msg
     if (!agent) { error('missing agent'); return }
     if (!INBOX_STATUSES.includes(status)) { error(`bad inbox status: ${status}`); return }
-    fleetStore.updateAgentMeta?.(agent, { inboxStatus: status, inboxStatusTag: tag || null })
+    await fleetStore.updateAgentMeta?.(agent, { inboxStatus: status, inboxStatusTag: tag || null })
     broadcastState()
     reply({ ok: true, agent, status, tag: tag || null })
     return
@@ -6910,21 +7045,21 @@ async function handleFleetWsMessage(ws, msg) {
     if (!callerQuery) { error('missing caller'); return }
     const channel = validateDeliveryChannel(rawChannel)
     if (!channel) { error(`bad delivery channel: ${rawChannel}; use ${DELIVERY_CHANNELS.join(', ')}`); return }
-    const caller = fleetStore.findAgent?.(callerQuery)
+    const caller = await fleetStore.findAgent?.(callerQuery)
     if (!caller) { error(`caller not found: ${callerQuery}`); return }
-    const row = fleetStore.findAgent?.(agentQuery || caller.id)
+    const row = await fleetStore.findAgent?.(agentQuery || caller.id)
     if (!row) { error(`agent not found: ${agentQuery || caller.id}`); return }
     const targetLabel = row.friendly_name || row.id
     const self = caller.id === row.id
-    if (!self && !fleetStore.isDelegatorForAgent?.(caller.id, row.id)) {
+    if (!self && !await fleetStore.isDelegatorForAgent?.(caller.id, row.id)) {
       error(`Cannot set delivery channel for ${targetLabel}: you are not that agent's manager. Delegate them a task first if you mean to take responsibility for their delivery channel, then retry.`)
       return
     }
     if (channel === 'tmux') {
-      const { seat, error: seatError } = currentSeatOrError(row)
+      const { seat, error: seatError } = await currentSeatOrError(row)
       if (!seat) { error(seatError); return }
     }
-    fleetStore.updateAgentMeta?.(row.id, { deliveryChannel: channel })
+    await fleetStore.updateAgentMeta?.(row.id, { deliveryChannel: channel })
     broadcastState()
     reply({ ok: true, agent: row.id, target_label: targetLabel, caller: caller.id, channel, self })
     return
@@ -6939,14 +7074,14 @@ async function handleFleetWsMessage(ws, msg) {
         return
       }
       if (agentData.friendly_name) {
-        const cols = fleetStore.checkNameAvailable([agentData.friendly_name], { excludeId: agentData.id, asFriendlyName: true })
+        const cols = await fleetStore.checkNameAvailable([agentData.friendly_name], { excludeId: agentData.id, asFriendlyName: true })
         if (cols.length) {
           error(`Name "${agentData.friendly_name}" unavailable: ${cols.map(c => c.kind === 'pseudo_label' ? 'reserved routing label' : `collides with ${c.kind} on ${c.agent_id}`).join('; ')}`)
           return
         }
       }
       try {
-        fleetStore.upsertAgent(agentData)
+        await fleetStore.upsertAgent(agentData)
       } catch (e) {
         if (e.message?.includes('already taken')) { error(e.message); return }
         throw e
@@ -6966,7 +7101,7 @@ async function handleFleetWsMessage(ws, msg) {
       // and dedupes: only the first false after a true reaches emitTurnEnded.
       const startedAt = _thinkingState.get(msg.agentId)
       _thinkingState.delete(msg.agentId)
-      if (startedAt !== undefined) emitTurnEnded(msg.agentId, startedAt)
+      if (startedAt !== undefined) await emitTurnEnded(msg.agentId, startedAt)
     }
     broadcastEvent('agent-thinking', { agent: msg.agentId, thinking: !!msg.thinking })
     reply({ ok: true })
@@ -6996,7 +7131,7 @@ async function handleFleetWsMessage(ws, msg) {
   if (type === 'agent-status') {
     const { agentId, state, tool, ts } = msg
     if (agentId && state && fleetStore) {
-      fleetStore.updateAgentStatus?.(agentId, state, tool, ts)
+      await fleetStore.updateAgentStatus?.(agentId, state, tool, ts)
       // Pane-status classification is a DISPLAY feed (thinking/idle/...), not a
       // liveness authority. It used to also publish alive/not-alive and fought
       // the daemon's process-observation liveness for the same fact — the
@@ -7015,10 +7150,10 @@ async function handleFleetWsMessage(ws, msg) {
   if (type === 'rename') {
     const { agent: agentQuery, name: newName } = msg
     if (!agentQuery || newName == null) { error('agent and name required'); return }
-    const agent = fleetStore.findAgent(agentQuery)
+    const agent = await fleetStore.findAgent(agentQuery)
     if (!agent) { error('agent not found'); return }
     if (newName) {
-      const conflict = fleetStore.db.prepare('SELECT id FROM agents WHERE friendly_name = ? AND dead = 0 AND id != ?').get(newName, agent.id)
+      const conflict = await fleetStore.nameTakenByOther(newName, agent.id)
       if (conflict || newName === SERVER_OWNER_NAME) { error(`Name "${newName}" already in use`); return }
     }
     try {
@@ -7033,12 +7168,12 @@ async function handleFleetWsMessage(ws, msg) {
 
   // ---- lineage-stack operations ----
   if (type === 'lineage-stack') {
-    const lineage = fleetStore.getLineage(msg.lineage)
+    const lineage = await fleetStore.getLineage(msg.lineage)
     if (!lineage) { error('lineage not found'); return }
     reply({
       lineage,
-      stack: fleetStore.getStack(lineage.id),
-      history: fleetStore.getLineageHistory(lineage.id),
+      stack: await fleetStore.getStack(lineage.id),
+      history: await fleetStore.getLineageHistory(lineage.id),
     })
     return
   }
@@ -7059,33 +7194,31 @@ async function handleFleetWsMessage(ws, msg) {
     try {
       let result
       if (type === 'lineage-push') {
-        const incoming = fleetStore.findAgent(msg.agent)
+        const incoming = await fleetStore.findAgent(msg.agent)
         if (!incoming) { error('incoming agent not found'); return }
-        const lineage = fleetStore.getLineage(msg.lineage) || fleetStore.getOrCreateLineage(msg.lineage)
-        const allowed = new Set([...fleetStore.getStack(lineage.id).map(item => item.id), incoming.id])
+        const lineage = await fleetStore.getLineage(msg.lineage) || await fleetStore.getOrCreateLineage(msg.lineage)
+        const allowed = new Set([...(await fleetStore.getStack(lineage.id)).map(item => item.id), incoming.id])
         if (normalized.some(item => !allowed.has(item.fleetId))) { error('name assignment is outside the affected lineage'); return }
         result = await fleetStore.pushExisting(lineage.id, incoming.id, normalized, {
           actorId: msg.caller || null,
           reason: msg.reason || 'push-existing',
         })
       } else if (type === 'lineage-pop') {
-        const lineage = fleetStore.getLineage(msg.lineage)
+        const lineage = await fleetStore.getLineage(msg.lineage)
         if (!lineage) { error('lineage not found'); return }
-        const allowed = new Set(fleetStore.getStack(lineage.id).map(item => item.id))
+        const allowed = new Set((await fleetStore.getStack(lineage.id)).map(item => item.id))
         if (normalized.some(item => !allowed.has(item.fleetId))) { error('name assignment is outside the affected lineage'); return }
         result = await fleetStore.pop(lineage.id, normalized, {
           actorId: msg.caller || null,
           reason: msg.reason || 'pop',
         })
       } else {
-        const recipient = fleetStore.findAgent(msg.recipient)
-        const incoming = fleetStore.findAgent(msg.agent)
+        const recipient = await fleetStore.findAgent(msg.recipient)
+        const incoming = await fleetStore.findAgent(msg.agent)
         if (!recipient || !incoming) { error('swap recipient and incoming agent are required'); return }
-        const active = fleetStore.db.prepare(
-          'SELECT lineage_id FROM lineage_stack_entries WHERE fleet_id = ? AND active = 1'
-        ).get(recipient.id)
+        const active = await fleetStore.getActiveStackEntry(recipient.id)
         if (!active) { error('swap recipient is not on an active lineage stack'); return }
-        const allowed = new Set([...fleetStore.getStack(active.lineage_id).map(item => item.id), incoming.id])
+        const allowed = new Set([...(await fleetStore.getStack(active.lineage_id)).map(item => item.id), incoming.id])
         if (normalized.some(item => !allowed.has(item.fleetId))) { error('name assignment is outside the affected lineage'); return }
         result = await fleetStore.swap(recipient.id, incoming.id, normalized, {
           actorId: msg.caller || null,
@@ -7104,16 +7237,16 @@ async function handleFleetWsMessage(ws, msg) {
   if (type === 'label') {
     const { agent: agentQuery, labels } = msg
     if (!agentQuery || !Array.isArray(labels)) { error('agent and labels[] required'); return }
-    const agent = fleetStore.findAgent(agentQuery)
+    const agent = await fleetStore.findAgent(agentQuery)
     if (!agent) { error('agent not found'); return }
-    const cols = fleetStore.checkNameAvailable(labels, { excludeId: agent.id, asFriendlyName: false })
+    const cols = await fleetStore.checkNameAvailable(labels, { excludeId: agent.id, asFriendlyName: false })
     if (cols.length) {
       const list = cols.map(c => c.kind === 'pseudo_label' ? `"${c.name}" is a reserved routing label` : `"${c.name}" is ${c.agent_id}'s friendly_name`).join('; ')
       error(`Label collision: ${list}. Pick a different label or rename the other agent first.`)
       return
     }
     agent.labels = labels
-    fleetStore.upsertAgent(agent)
+    await fleetStore.upsertAgent(agent)
     broadcastState()
     reply({ ok: true, agent: agent.id, labels })
     return
@@ -7122,7 +7255,7 @@ async function handleFleetWsMessage(ws, msg) {
   // ---- kick ----
   if (type === 'kick') {
     const { agent: agentQuery } = msg
-    const agent = fleetStore.findAgent(agentQuery)
+    const agent = await fleetStore.findAgent(agentQuery)
     if (!agent) { error('agent not found'); return }
     const route = resolveRpc('kick', agent)
     if (route.via === 'none') { error(route.error); return }
@@ -7137,13 +7270,13 @@ async function handleFleetWsMessage(ws, msg) {
   // ---- kill-session ----
   if (type === 'kill-session') {
     const { agent: agentQuery } = msg
-    const agent = fleetStore.findAgent(agentQuery)
+    const agent = await fleetStore.findAgent(agentQuery)
     if (!agent) { error('agent not found'); return }
-    const { seat, error: seatError } = currentSeatOrError(agent)
+    const { seat, error: seatError } = await currentSeatOrError(agent)
     if (!seat) { error(seatError); return }
     try {
       const result = await sendDaemonDurable(seat.daemon_key, 'kill-session', terminalRpcPayload(agent, seat))
-      fleetStore.retireCurrentAgentSeat(agent.id, {
+      await fleetStore.retireCurrentAgentSeat(agent.id, {
         sessionId: seat.session_id,
         daemonKey: seat.daemon_key,
         terminalCapability: seat.terminal_capability,
@@ -7160,13 +7293,13 @@ async function handleFleetWsMessage(ws, msg) {
   // ---- hibernate-session ----
   if (type === 'hibernate-session') {
     const { agent: agentQuery } = msg
-    const agent = fleetStore.findAgent(agentQuery)
+    const agent = await fleetStore.findAgent(agentQuery)
     if (!agent) { error('agent not found'); return }
-    const { seat, error: seatError } = currentSeatOrError(agent)
+    const { seat, error: seatError } = await currentSeatOrError(agent)
     if (!seat) { error(seatError); return }
     try {
       const result = await sendDaemonDurable(seat.daemon_key, 'kill-session', terminalRpcPayload(agent, seat))
-      fleetStore.retireCurrentAgentSeat(agent.id, {
+      await fleetStore.retireCurrentAgentSeat(agent.id, {
         sessionId: seat.session_id,
         daemonKey: seat.daemon_key,
         terminalCapability: seat.terminal_capability,
@@ -7181,9 +7314,9 @@ async function handleFleetWsMessage(ws, msg) {
   // ---- interrupt ----
   if (type === 'interrupt') {
     const { agent: agentQuery } = msg
-    const agent = fleetStore.findAgent(agentQuery)
+    const agent = await fleetStore.findAgent(agentQuery)
     if (!agent) { error('agent not found'); return }
-    const { seat, error: seatError } = currentSeatOrError(agent)
+    const { seat, error: seatError } = await currentSeatOrError(agent)
     if (!seat) { error(seatError); return }
     try {
       const result = await sendDaemonDurable(seat.daemon_key, 'interrupt', terminalRpcPayload(agent, seat))
@@ -7195,9 +7328,9 @@ async function handleFleetWsMessage(ws, msg) {
   // ---- soft-interrupt ----
   if (type === 'soft-interrupt') {
     const { agent: agentQuery } = msg
-    const agent = fleetStore.findAgent(agentQuery)
+    const agent = await fleetStore.findAgent(agentQuery)
     if (!agent) { error('agent not found'); return }
-    const { seat, error: seatError } = currentSeatOrError(agent)
+    const { seat, error: seatError } = await currentSeatOrError(agent)
     if (!seat) { error(seatError); return }
     try {
       const result = await sendDaemonDurable(seat.daemon_key, 'soft-interrupt', terminalRpcPayload(agent, seat))
@@ -7216,9 +7349,9 @@ async function handleFleetWsMessage(ws, msg) {
   // ---- send-key ----
   if (type === 'send-key') {
     const { agent: agentQuery, key } = msg
-    const agent = fleetStore.findAgent(agentQuery)
+    const agent = await fleetStore.findAgent(agentQuery)
     if (!agent) { error('agent not found'); return }
-    const { seat, error: seatError } = currentSeatOrError(agent)
+    const { seat, error: seatError } = await currentSeatOrError(agent)
     if (!seat) { error(seatError); return }
     try {
       const result = await sendDaemonDurable(seat.daemon_key, 'send-key', terminalRpcPayload(agent, seat, { key }))
@@ -7230,9 +7363,9 @@ async function handleFleetWsMessage(ws, msg) {
   // ---- send-text ----
   if (type === 'send-text') {
     const { agent: agentQuery, text, enter } = msg
-    const agent = fleetStore.findAgent(agentQuery)
+    const agent = await fleetStore.findAgent(agentQuery)
     if (!agent) { error('agent not found'); return }
-    const { seat, error: seatError } = currentSeatOrError(agent)
+    const { seat, error: seatError } = await currentSeatOrError(agent)
     if (!seat) { error(seatError); return }
     try {
       const result = await sendDaemonDurable(seat.daemon_key, 'send-text', { agent_id: agent.id, terminal_capability: seat.terminal_capability, text, enter: enter !== false })
@@ -7244,9 +7377,9 @@ async function handleFleetWsMessage(ws, msg) {
   // ---- capture-pane ----
   if (type === 'capture-pane') {
     const { agent: agentQuery, lines } = msg
-    const agent = fleetStore.findAgent(agentQuery)
+    const agent = await fleetStore.findAgent(agentQuery)
     if (!agent) { error('agent not found'); return }
-    const { seat, error: seatError } = currentSeatOrError(agent)
+    const { seat, error: seatError } = await currentSeatOrError(agent)
     if (!seat) { error(seatError); return }
     try {
       const result = await sendDaemonEphemeral(seat.daemon_key, 'capture-pane', { agent_id: agent.id, terminal_capability: seat.terminal_capability, lines: lines || 50 })
@@ -7258,9 +7391,9 @@ async function handleFleetWsMessage(ws, msg) {
   // ---- check-alive ----
   if (type === 'check-alive') {
     const { agent: agentQuery } = msg
-    const agent = fleetStore.findAgent(agentQuery)
+    const agent = await fleetStore.findAgent(agentQuery)
     if (!agent) { error('agent not found'); return }
-    const { seat, error: seatError } = currentSeatOrError(agent)
+    const { seat, error: seatError } = await currentSeatOrError(agent)
     if (!seat) { error(seatError); return }
     try {
       const result = await sendDaemonEphemeral(seat.daemon_key, 'check-alive', { agent_id: agent.id, terminal_capability: seat.terminal_capability })
@@ -7274,21 +7407,21 @@ async function handleFleetWsMessage(ws, msg) {
   // ---- plan-mode-respond ----
   if (type === 'plan-mode-respond') {
     const { agent: agentQuery, response } = msg
-    const agent = fleetStore.findAgent(agentQuery)
+    const agent = await fleetStore.findAgent(agentQuery)
     if (!agent) { error('agent not found'); return }
     if (!isPlanModeResponse(response)) { error('response must be approve, supervised, or reject'); return }
-    const { seat, error: seatError } = currentSeatOrError(agent)
+    const { seat, error: seatError } = await currentSeatOrError(agent)
     if (!seat) { error(seatError); return }
     try {
       let result = await sendDaemonDurable(seat.daemon_key, 'send-text', terminalRpcPayload(agent, seat, { text: planModeResponseKey(response), enter: false }))
-      fleetStore.updateAgentMeta?.(agent.id, { permission_mode: null, inPlanMode: false, planModeType: null })
+      await fleetStore.updateAgentMeta?.(agent.id, { permission_mode: null, inPlanMode: false, planModeType: null })
       // Persist response on the plan_approval event
       const pending = pendingPlanApprovals.get(agent.id)
       if (pending?.eventId) {
         const now = new Date().toISOString()
         const patch = response === 'reject' ? { rejectedAt: now } : { approvedAt: now, mode: response }
         try {
-          fleetStore.updateEventMetadata(pending.eventId, patch)
+          await fleetStore.updateEventMetadata(pending.eventId, patch)
           broadcastEvent('event-update', { id: pending.eventId, metadata_patch: patch })
         } catch {}
         pendingPlanApprovals.delete(agent.id)
@@ -7302,9 +7435,9 @@ async function handleFleetWsMessage(ws, msg) {
   // ---- plan-mode-toggle ----
   if (type === 'plan-mode-toggle') {
     const { agent: agentQuery } = msg
-    const agent = fleetStore.findAgent(agentQuery)
+    const agent = await fleetStore.findAgent(agentQuery)
     if (!agent) { error('agent not found'); return }
-    const { seat, error: seatError } = currentSeatOrError(agent)
+    const { seat, error: seatError } = await currentSeatOrError(agent)
     if (!seat) { error(seatError); return }
     try {
       const parseCCMode = (pane) => {
@@ -7322,7 +7455,7 @@ async function handleFleetWsMessage(ws, msg) {
       if (btabs > 0) await new Promise(r => setTimeout(r, 300))
       const cap2 = await sendDaemonEphemeral(seat.daemon_key, 'capture-pane', terminalRpcPayload(agent, seat, { lines: 5 }))
       const finalMode = parseCCMode(cap2?.content || '')
-      fleetStore.updateAgentMeta?.(agent.id, { permission_mode: finalMode === 'default' ? null : finalMode })
+      await fleetStore.updateAgentMeta?.(agent.id, { permission_mode: finalMode === 'default' ? null : finalMode })
       broadcastState()
       reply({ ok: true, mode: finalMode, was: currentMode })
     } catch (e) { error(e.message) }
@@ -7333,9 +7466,9 @@ async function handleFleetWsMessage(ws, msg) {
   if (type === 'mark-event-read') {
     const { event_id, agent: rawAgent } = msg
     if (!event_id || !rawAgent) { error('event_id and agent required'); return }
-    const agent = fleetStore.findAgent(rawAgent)
+    const agent = await fleetStore.findAgent(rawAgent)
     const agentId = agent?.id || rawAgent
-    const changed = fleetStore.markEventRead?.(parseInt(event_id, 10), agentId)
+    const changed = await fleetStore.markEventRead?.(parseInt(event_id, 10), agentId)
     if (changed) broadcastEvent('read-receipt', { event_ids: [parseInt(event_id, 10)], agent: agentId })
     reply({ ok: true, changed: !!changed })
     return
@@ -7349,7 +7482,7 @@ async function handleFleetWsMessage(ws, msg) {
       const patch = response === 'approved'
         ? { approvedAt: new Date().toISOString() }
         : { rejectedAt: new Date().toISOString() }
-      fleetStore.updateEventMetadata(eventId, patch)
+      await fleetStore.updateEventMetadata(eventId, patch)
       broadcastEvent('event-update', { id: eventId, metadata_patch: patch })
       reply({ ok: true })
     } catch (e) { error(e.message) }
@@ -7360,9 +7493,9 @@ async function handleFleetWsMessage(ws, msg) {
   if (type === 'terminal-card') {
     const { from: rawFrom, reason } = msg
     if (!rawFrom) { error('missing from'); return }
-    const agent = fleetStore.findAgent(rawFrom)
+    const agent = await fleetStore.findAgent(rawFrom)
     if (!agent) { error(`Agent not found: "${rawFrom}"`); return }
-    const { seat, error: seatError } = currentSeatOrError(agent)
+    const { seat, error: seatError } = await currentSeatOrError(agent)
     if (!seat) { error(seatError); return }
     const label = agent.friendly_name || agent.id.slice(0, 12)
     const text = reason ? `${label}: ${reason}` : `${label}: terminal requested`
@@ -7378,10 +7511,10 @@ async function handleFleetWsMessage(ws, msg) {
   if (type === 'subscribe') {
     const { caller: callerQuery, target: targetQuery, query, notification_policy: policy } = msg
     if (!callerQuery || !query || !policy) { error('missing caller, query, or notification_policy'); return }
-    const caller = fleetStore.findAgent?.(callerQuery)
-    const target = fleetStore.findAgent?.(targetQuery || callerQuery)
+    const caller = await fleetStore.findAgent?.(callerQuery)
+    const target = await fleetStore.findAgent?.(targetQuery || callerQuery)
     if (!caller || !target) { error('caller or target not found'); return }
-    if (caller.id !== target.id && !fleetStore.isDelegatorForAgent?.(caller.id, target.id)) {
+    if (caller.id !== target.id && !await fleetStore.isDelegatorForAgent?.(caller.id, target.id)) {
       error('not authorized to configure subscriptions for that target'); return
     }
     if (policy !== 'immediate' && policy !== 'hold' && !/^batch\(.+\)$/.test(policy)) {
@@ -7403,11 +7536,11 @@ async function handleFleetWsMessage(ws, msg) {
       if (docMatch) {
         adapter = 'document_monitor'
       } else {
-        const tap = fleetStore.addWiretap(target.id, query, null)
+        const tap = await fleetStore.addWiretap(target.id, query, null)
         adapterId = tap.id
       }
     } catch (e) { error(`subscription adapter failed: ${e.message}`); return }
-    const subscription = fleetStore.addSubscription({ owner: target.id, query, notificationPolicy: policy, createdBy: caller.id, adapter, adapterId })
+    const subscription = await fleetStore.addSubscription({ owner: target.id, query, notificationPolicy: policy, createdBy: caller.id, adapter, adapterId })
     // Arm after the row exists — the subscriber set is read from the table.
     if (docMatch) tldaFeedback.arm(docMatch[1])
     reply(subscription)
@@ -7417,27 +7550,27 @@ async function handleFleetWsMessage(ws, msg) {
   if (type === 'subscriptions') {
     const { caller: callerQuery, target: targetQuery } = msg
     if (!callerQuery) { error('missing caller'); return }
-    const caller = fleetStore.findAgent?.(callerQuery)
-    const target = fleetStore.findAgent?.(targetQuery || callerQuery)
+    const caller = await fleetStore.findAgent?.(callerQuery)
+    const target = await fleetStore.findAgent?.(targetQuery || callerQuery)
     if (!caller || !target) { error('caller or target not found'); return }
-    if (caller.id !== target.id && !fleetStore.isDelegatorForAgent?.(caller.id, target.id)) {
+    if (caller.id !== target.id && !await fleetStore.isDelegatorForAgent?.(caller.id, target.id)) {
       error('not authorized to inspect subscriptions for that target'); return
     }
-    reply(fleetStore.getSubscriptionsByOwner(target.id))
+    reply(await fleetStore.getSubscriptionsByOwner(target.id))
     return
   }
 
   if (type === 'unsubscribe') {
     const { caller: callerQuery, subscription_id: subscriptionId } = msg
     if (!callerQuery || !subscriptionId) { error('missing caller or subscription_id'); return }
-    const caller = fleetStore.findAgent?.(callerQuery)
-    const subscription = fleetStore.getSubscription(subscriptionId)
+    const caller = await fleetStore.findAgent?.(callerQuery)
+    const subscription = await fleetStore.getSubscription(subscriptionId)
     if (!caller || !subscription) { error('caller or subscription not found'); return }
-    if (caller.id !== subscription.owner && !fleetStore.isDelegatorForAgent?.(caller.id, subscription.owner)) {
+    if (caller.id !== subscription.owner && !await fleetStore.isDelegatorForAgent?.(caller.id, subscription.owner)) {
       error('not authorized to remove that subscription'); return
     }
-    if (subscription.adapter === 'wiretap' && subscription.adapter_id) fleetStore.removeWiretap(subscription.adapter_id)
-    fleetStore.removeSubscription(subscription.subscription_id)
+    if (subscription.adapter === 'wiretap' && subscription.adapter_id) await fleetStore.removeWiretap(subscription.adapter_id)
+    await fleetStore.removeSubscription(subscription.subscription_id)
     // Release after the row is gone — the remaining-subscriber check reads the table.
     if (subscription.adapter === 'document_monitor') {
       const docMatch = String(subscription.query || '').match(/^doc:([^\s]+)$/i)
@@ -7454,7 +7587,7 @@ async function handleFleetWsMessage(ws, msg) {
     // Filter is a string expression (same grammar as chat/roster) with
     // directional to:/from: leaf prefixes. addWiretap validates via parseFilter.
     let tap
-    try { tap = fleetStore.addWiretap(agent, filter, types) }
+    try { tap = await fleetStore.addWiretap(agent, filter, types) }
     catch (e) { error(`bad filter: ${e.message}`); return }
     reply(tap)
     return
@@ -7467,7 +7600,7 @@ async function handleFleetWsMessage(ws, msg) {
   if (type === 'wiretap-remove') {
     const { tap_id: tapId } = msg
     if (!tapId || isNaN(parseInt(tapId))) { error('invalid id'); return }
-    fleetStore.removeWiretap(parseInt(tapId))
+    await fleetStore.removeWiretap(parseInt(tapId))
     reply({ ok: true })
     return
   }
@@ -7475,7 +7608,7 @@ async function handleFleetWsMessage(ws, msg) {
   // ---- wiretap-list ----
   if (type === 'wiretap-list') {
     const { agent } = msg
-    const taps = agent ? fleetStore.getWiretapsByAgent?.(agent) : fleetStore.getWiretaps?.()
+    const taps = agent ? await fleetStore.getWiretapsByAgent?.(agent) : await fleetStore.getWiretaps?.()
     reply(taps || [])
     return
   }
@@ -7484,10 +7617,10 @@ async function handleFleetWsMessage(ws, msg) {
   if (type === 'retract') {
     const { agent: rawAgent, task_id } = msg
     if (!rawAgent) { error('missing agent'); return }
-    const agentId = fleetStore.findAgent(rawAgent)?.id || rawAgent
-    const task = task_id ? fleetStore.getTask?.(task_id) : fleetStore.getTaskByAgent?.(agentId)
+    const agentId = (await fleetStore.findAgent(rawAgent))?.id || rawAgent
+    const task = task_id ? await fleetStore.getTask?.(task_id) : await fleetStore.getTaskByAgent?.(agentId)
     if (!task) { error('no active task'); return }
-    const result = fleetStore.retractTask?.(task, {
+    const result = await fleetStore.retractTask?.(task, {
       recipientExposed: hasOpenFleetSocketForAgent(task.agent, ws),
       retractedBy: msg.from || null,
     }) || { task_id: task.id, mode: 'removed_task_only' }
@@ -7500,20 +7633,14 @@ async function handleFleetWsMessage(ws, msg) {
   if (type === 'shared-docs-set') {
     const { doc, path: docPath, title, agent, ephemeral } = msg
     if (!doc) { error('missing doc'); return }
-    const now = new Date().toISOString()
-    fleetStore.db.prepare(`
-      INSERT INTO shared_docs (doc, path, title, agent, ephemeral, shared_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(doc) DO UPDATE SET path=excluded.path, title=excluded.title, agent=excluded.agent, ephemeral=excluded.ephemeral, updated_at=excluded.updated_at
-    `).run(doc, docPath || null, title || null, agent || null, ephemeral ? 1 : 0, now, now)
+    await fleetStore.upsertSharedDoc({ doc, path: docPath, title, agent, ephemeral })
     reply({ ok: true })
     return
   }
 
   // ---- shared-docs-get ----
   if (type === 'shared-docs-get') {
-    const docs = fleetStore.db.prepare('SELECT * FROM shared_docs ORDER BY updated_at DESC').all() || []
-    reply(docs)
+    reply(await fleetStore.getSharedDocs())
     return
   }
 
@@ -7521,7 +7648,7 @@ async function handleFleetWsMessage(ws, msg) {
   if (type === 'mark-dead') {
     const { agent: agentId } = msg
     if (!agentId) { error('missing agent'); return }
-    fleetStore.markDead(agentId)
+    await fleetStore.markDead(agentId)
     broadcastState()
     reply({ ok: true })
     return
@@ -7557,12 +7684,12 @@ async function handleFleetWsMessage(ws, msg) {
           // newest-first — from SQL, not by reversing an array afterwards.
           queryPage: ({ before, agentIds, limit }) =>
             fleetStore.queryChatHistory({ before, agents: agentIds, limit, order: 'desc' }),
-        }).then(page => {
+        }).then(async page => {
           if (ws.readyState !== 1) return
           // Chronological for the panel, which renders oldest at the top. This
           // is the one place the page is turned around, and it is turning around
           // a list the walker built, not undoing a sort the database did.
-          const events = fleetStore.resolveChatRows(page.events.slice().reverse(), {
+          const events = await fleetStore.resolveChatRows(page.events.slice().reverse(), {
             serverOwnerId: SERVER_OWNER_ID, serverOwnerName: SERVER_OWNER_NAME,
           })
           ws.send(JSON.stringify({ event: 'filter-events', data: {
@@ -7598,7 +7725,7 @@ async function handleFleetWsMessage(ws, msg) {
     const { limit: rawLimit = 50, before, agents } = msg
     const limit = Math.min(parseInt(rawLimit) || 50, 1000)
     try {
-      const { events: resolved, hasMore, nextCursor } = fleetStore.buildChatHistoryResponse({
+      const { events: resolved, hasMore, nextCursor } = await fleetStore.buildChatHistoryResponse({
         before,
         agents: Array.isArray(agents) ? agents : [],
         limit,
@@ -7625,23 +7752,23 @@ async function handleFleetWsMessage(ws, msg) {
     try {
       let events
       let total = null
-      const cols = 'id, type, timestamp, from_id as "from", to_id as "to", text, metadata, task_id, agent_id'
       if (evtAgent) {
         // UNION of two indexed scans (see FleetStore.queryAgentEvents) — far
         // faster than `(from_id=? OR to_id=?)`. No COUNT: callers detect
         // overflow by fetching limit+1 and paginating forward.
-        events = fleetStore.queryAgentEvents({ agent: evtAgent, types: evtTypes, sinceTs, untilTs, afterId, beforeId, limit })
+        events = await fleetStore.queryAgentEvents({ agent: evtAgent, types: evtTypes, sinceTs, untilTs, afterId, beforeId, limit })
       } else if (evtTypes) {
-        const typeClause = `type IN (${evtTypes.map(() => '?').join(',')})`
-        events = fleetStore.db.prepare(`SELECT ${cols} FROM events WHERE ${typeClause} AND id > ? ORDER BY id ASC LIMIT ?`).all(...evtTypes, afterId, limit)
+        // beforeId is deliberately not passed: this branch has always paged
+        // forward from afterId even when the caller also sent `before`, and
+        // the store method would honour it. Preserved, not fixed.
+        events = await fleetStore.queryEventsPage({ types: evtTypes, afterId, limit })
       } else if (beforeId) {
-        events = fleetStore.db.prepare(`SELECT ${cols} FROM events WHERE id < ? ORDER BY id DESC LIMIT ?`).all(beforeId, limit)
-        events.reverse()
+        events = await fleetStore.queryEventsPage({ beforeId, limit })
       } else {
-        events = fleetStore.getEventsSince(afterId, limit)
+        events = await fleetStore.getEventsSince(afterId, limit)
       }
-      const lastId = fleetStore.getLastEventId()
-      reply({ events: stampNames(events), lastId, total })
+      const lastId = await fleetStore.getLastEventId()
+      reply({ events: await stampNames(events), lastId, total })
     } catch (e) { error(e.message) }
     return
   }
@@ -7715,7 +7842,7 @@ function qualGlobToRegex(glob) {
   return new RegExp('^' + withAlts + '$')
 }
 
-function qualTrackRead(agentId, key) {
+async function qualTrackRead(agentId, key) {
   if (!key) return
   if (!_qualAgentReads.has(agentId)) _qualAgentReads.set(agentId, new Set())
   _qualAgentReads.get(agentId).add(key)
@@ -7723,21 +7850,28 @@ function qualTrackRead(agentId, key) {
     // Reading the skill clears it from the owed set — the block lifts.
     const owed = _qualAgentOwed.get(agentId)
     if (owed) owed.delete(key.slice('skill:'.length))
-    if (fleetStore) { try { fleetStore.addSkillRead(agentId, key) } catch {} }
+    if (fleetStore) {
+      try { await fleetStore.addSkillRead(agentId, key) } catch (e) {
+        // Memory state already lifted this gate; persistence failure should be
+        // visible without re-blocking the action that read the skill.
+        console.warn(`[education] failed to persist skill read for ${agentId}: ${e?.message || e}`)
+      }
+    }
   }
 }
 
-function qualTrackPartialSkillReads(agentId, command) {
-  recordPartialSkillReads(_qualAgentPartialSkillReads, agentId, command, (id, skillKey, filePath) => {
-    qualTrackRead(id, filePath)
-    qualTrackRead(id, skillKey)
-  })
+async function qualTrackPartialSkillReads(agentId, command) {
+  const completed = recordPartialSkillReads(_qualAgentPartialSkillReads, agentId, command)
+  for (const rec of completed) {
+    await qualTrackRead(rec.agentId, rec.filePath)
+    await qualTrackRead(rec.agentId, rec.skillKey)
+  }
 }
 
-function qualLoadReadsFromDb() {
+async function qualLoadReadsFromDb() {
   if (!fleetStore) return
   try {
-    const readsByAgent = fleetStore.getAllSkillReadsByAgent?.() || new Map()
+    const readsByAgent = (await fleetStore.getAllSkillReadsByAgent()) || new Map()
     for (const [agentId, reads] of readsByAgent) {
       if (reads.size > 0) _qualAgentReads.set(agentId, reads)
     }
@@ -7793,7 +7927,7 @@ function qualToolConditionMet(condition, input) {
   return false
 }
 
-function checkQualifications(agentId, tool, arg, input) {
+async function checkQualifications(agentId, tool, arg, input) {
   if (_qualRules.length === 0 || !fleetStore) return
 
   const reads = _qualAgentReads.get(agentId) || new Set()
@@ -7808,27 +7942,27 @@ function checkQualifications(agentId, tool, arg, input) {
   const isFileRead = tool === 'Read' || toolBase === 'read_file'
   const summonSource = input?.source || input?.skill || input?.name || ''
   const isSummonLoad = (toolReadNorm.includes('summon') || toolBase === 'load') && toolBase !== 'read_file' && summonSource
-  if (tool === 'Bash' && input?.command) qualTrackPartialSkillReads(agentId, input.command)
+  if (tool === 'Bash' && input?.command) await qualTrackPartialSkillReads(agentId, input.command)
   if ((isFileRead || tool === 'Skill') && input) {
     if (isFileRead) {
       const fp = input.file_path || input.path || arg || ''
       if (fp) {
-        qualTrackRead(agentId, fp)
+        await qualTrackRead(agentId, fp)
         // A read whose path is …/skills/<name>/SKILL.md credits skill:<name> —
         // this is what lets native (Claude/codex) and MCP-read_file (goose)
         // reads register with the education gate in place of skill().
         const skillMatch = fp.match(/[/\\]skills[/\\]([^/\\]+)[/\\]SKILL\.md$/)
-        if (skillMatch) qualTrackRead(agentId, 'skill:' + skillMatch[1])
+        if (skillMatch) await qualTrackRead(agentId, 'skill:' + skillMatch[1])
       }
     }
     if (tool === 'Skill') {
       const skill = input.skill || ''
-      if (skill) qualTrackRead(agentId, 'skill:' + skill)
+      if (skill) await qualTrackRead(agentId, 'skill:' + skill)
     }
     return
   }
   if (isSummonLoad) {
-    qualTrackRead(agentId, 'skill:' + String(summonSource))
+    await qualTrackRead(agentId, 'skill:' + String(summonSource))
     return
   }
 
@@ -7889,7 +8023,11 @@ function checkQualifications(agentId, tool, arg, input) {
 }
 
 loadQualifications()
-qualLoadReadsFromDb()
+// Not awaited: this warms the _qualAgentReads cache, which starts empty and
+// whose readers already tolerate a miss. Top-level await here would delay
+// evaluation of the entire server module for a cache warm. Reported rather
+// than dropped so a store that cannot answer is visible.
+qualLoadReadsFromDb().catch(e => console.error(`[qualification] initial skill-read load failed: ${e?.message || e}`))
 fs.watchFile(QUALIFICATIONS_FILE, { interval: 5000 }, () => {
   console.log('[qualification] reloading rules')
   loadQualifications()
@@ -7917,29 +8055,6 @@ fs.watchFile(QUALIFICATIONS_FILE, { interval: 5000 }, () => {
 // Phase 2 will add `rpc` (server → daemon) and `rpc-reply` (daemon →
 // server) for tmux operations.
 
-// Server-side terminal-chat dedup. Claude Code can write duplicate user
-// messages to the JSONL (e.g. across compaction). Multiple daemons would
-// compound this. The daemon also dedups within its own offset, but the
-// authoritative dedup is here in the DB.
-const _terminalDedupStmt = fleetStore?.db.prepare(
-  `SELECT 1 FROM events WHERE timestamp = ? AND from_id = ? AND to_id = ? AND substr(text, 1, 500) = ? AND type = 'chat' LIMIT 1`
-)
-if (fleetStore?.db) {
-  fleetStore.db.exec(`
-    CREATE TABLE IF NOT EXISTS daemon_outbox_processed (
-      id TEXT PRIMARY KEY,
-      type TEXT NOT NULL,
-      processed_at TEXT NOT NULL
-    )
-  `)
-}
-const _daemonOutboxProcessedGetStmt = fleetStore?.db.prepare(
-  'SELECT 1 FROM daemon_outbox_processed WHERE id = ? LIMIT 1'
-)
-const _daemonOutboxProcessedInsertStmt = fleetStore?.db.prepare(
-  'INSERT OR IGNORE INTO daemon_outbox_processed (id, type, processed_at) VALUES (?, ?, ?)'
-)
-
 const {
   handleDaemonOutboxEnvelope,
   enqueueDaemonMessage,
@@ -7947,41 +8062,39 @@ const {
   clearServerDaemonOutboxInflightForDaemon,
 } = createDaemonWsControlPlane({
   daemonConnections,
-  serverDaemonOutbox,
   serverDaemonOutboxInflight,
-  daemonOutboxProcessedGetStmt: _daemonOutboxProcessedGetStmt,
-  daemonOutboxProcessedInsertStmt: _daemonOutboxProcessedInsertStmt,
+  fleetStore,
   socketCanAcceptMore,
   classifyServerDaemonOutboxError: ({ msg, row }) => (
     msg?.permanent === true && row?.type === 'agent-seat-binding-obligation'
       ? 'terminal'
       : 'retry'
   ),
-  onPermanentServerDaemonOutboxError: ({ msg, row, daemonKey }) => {
+  onPermanentServerDaemonOutboxError: async ({ msg, row, daemonKey }) => {
     const obligationId = row?.payload?.obligation_id || msg?.obligation_id || null
-    const obligation = obligationId ? agentSeatBindingObligations.get(obligationId) : null
-    if (retireStaleAgentSeatBindingObligation(obligation, { reason: msg?.error || 'permanent receiver rejection' })) return
+    const obligation = obligationId ? await fleetStore.getAgentSeatBindingObligation(obligationId) : null
+    if (await retireStaleAgentSeatBindingObligation(obligation, { reason: msg?.error || 'permanent receiver rejection' })) return
     console.warn(`[agent-seat-binding] permanent receiver rejection retained obligation=${obligationId || 'unknown'} daemon=${daemonKey || 'unknown'}: ${msg?.error || 'receiver did not accept delivery'}`)
   },
 })
 
-function retireStaleAgentSeatBindingObligation(obligation, { reason = 'stale binding obligation' } = {}) {
+async function retireStaleAgentSeatBindingObligation(obligation, { reason = 'stale binding obligation' } = {}) {
   if (!obligation?.obligation_id) return false
-  const agent = fleetStore.findAgent?.(obligation.agent_id)
-  const currentSeat = fleetStore.getCurrentAgentSeat?.(obligation.agent_id)
+  const agent = await fleetStore.findAgent?.(obligation.agent_id)
+  const currentSeat = await fleetStore.getCurrentAgentSeat?.(obligation.agent_id)
   if (!isRetirableStaleAgentSeatBindingObligation({ obligation, agent, currentSeat })) return false
-  const removed = agentSeatBindingObligations.remove(obligation.obligation_id)
+  const removed = await fleetStore.removeAgentSeatBindingObligation(obligation.obligation_id)
   const dedupeKey = `agent-seat-binding:${obligation.obligation_id}`
-  const removedOutbox = serverDaemonOutbox.deleteByDedupeKey?.(obligation.daemon_key, dedupeKey) || 0
+  const removedOutbox = await fleetStore.serverDaemonOutboxDeleteByDedupeKey(obligation.daemon_key, dedupeKey) || 0
   if (removed || removedOutbox) {
     console.warn(`[agent-seat-binding] retired stale obligation=${obligation.obligation_id} agent=${obligation.agent_id} daemon=${obligation.daemon_key} outbox=${removedOutbox} reason=${reason}`)
   }
   return removed
 }
 
-function knownDaemonKeys() {
+async function knownDaemonKeys() {
   const keys = new Set([...daemonConnections.keys()])
-  for (const row of fleetStore?.listDaemonRegistrations?.() || []) {
+  for (const row of await fleetStore?.listDaemonRegistrations?.() || []) {
     if (row.daemon_key) keys.add(row.daemon_key)
   }
   return [...keys].sort()
@@ -8055,12 +8168,12 @@ function broadcastDaemonAgentsUpdated(agentUpdates = null) {
   // makes daemon startup proportional to fleet history and can take chat down.
 }
 
-function broadcastDaemonProjectsUpdated() {
-  const daemonKeys = knownDaemonKeys()
+async function broadcastDaemonProjectsUpdated() {
+  const daemonKeys = await knownDaemonKeys()
   if (daemonKeys.length === 0) return
   const projects = projectsForDaemon()
   for (const daemonKey of daemonKeys) {
-    enqueueDaemonMessage(daemonKey, { type: 'projects-updated', projects }, { dedupeKey: 'projects-updated' })
+    await enqueueDaemonMessage(daemonKey, { type: 'projects-updated', projects }, { dedupeKey: 'projects-updated' })
   }
 }
 
@@ -8254,11 +8367,11 @@ async function handleDaemonWsMessage(ws, msg) {
       ws_session_id: ws._wsSessionId,
       readback_ok: daemonConnections.get(daemonKey) === ws,
     })
-    refreshRuntimeRoutesForDaemon(daemonKey)
+    await refreshRuntimeRoutesForDaemon(daemonKey)
     notifyDaemonReady(daemonKey) // wake any control-op RPCs waiting to retry across this reconnect
     clearServerDaemonOutboxInflightForDaemon(daemonKey)
     daemonWelcomeSeenAt.set(daemonKey, Date.now())
-    fleetStore?.upsertDaemonRegistration?.({
+    await fleetStore?.upsertDaemonRegistration?.({
       daemon_key: daemonKey,
       machine_id,
       env_name,
@@ -8324,14 +8437,16 @@ async function handleDaemonWsMessage(ws, msg) {
     }
     // Send persisted backing file watch list to daemon.
     sendWatchBackingFiles()
-    for (const obligation of agentSeatBindingObligations.listForDaemon(daemonKey)) {
-      if (retireStaleAgentSeatBindingObligation(obligation, { reason: 'daemon welcome reap' })) continue
-      enqueueDaemonMessage(daemonKey, {
+    for (const obligation of await fleetStore.listAgentSeatBindingObligationsForDaemon(daemonKey)) {
+      if (await retireStaleAgentSeatBindingObligation(obligation, { reason: 'daemon welcome reap' })) continue
+      await enqueueDaemonMessage(daemonKey, {
         type: 'agent-seat-binding-obligation',
         ...obligation,
       }, { dedupeKey: `agent-seat-binding:${obligation.obligation_id}` })
     }
-    flushServerDaemonOutbox(daemonKey)
+    // Not awaited: the obligations above are durable once enqueued, and
+    // daemon-welcome must not block on the socket draining them.
+    void flushServerDaemonOutbox(daemonKey)
 
     // Check each project's shadow repo for agent commits that haven't been built yet.
     // This catches the case where an agent committed directly to the shadow repo
@@ -8360,13 +8475,13 @@ async function handleDaemonWsMessage(ws, msg) {
     // Skip: "status in the app is horrible." This is one mechanism behind that —
     // a seatless agent reported no status at all, silently, so the roster showed
     // it doing nothing while the daemon described its every tool call.
-    const statusSeat = daemonEventSeatDecision(fleetStore, {
+    const statusSeat = await daemonEventSeatDecision(fleetStore, {
       agentId,
       daemonKey: ws._daemonKey,
       family: 'daemon-agent-status',
     })
     if (isForeignDaemonRejection(statusSeat)) return
-    fleetStore.updateAgentStatus?.(agentId, state, tool, ts)
+    await fleetStore.updateAgentStatus?.(agentId, state, tool, ts)
     // Display feed only — no liveness publishing (see the identical rule on
     // the WS agent-status handler above).
     runtimeStatusStore.updateActivity(agentId, state, { tool, atMs: Date.parse(ts) || Date.now() })
@@ -8400,9 +8515,9 @@ async function handleDaemonWsMessage(ws, msg) {
 
     // Ownership, one query: a daemon may only report agents whose current seat
     // lives on it, so it can never keep another daemon's agent looking awake.
-    const seats = fleetStore.getCurrentAgentSeats(reported)
+    const seats = await fleetStore.getCurrentAgentSeats(reported)
     const running = new Set(reported.filter(id => seats.get(id)?.daemon_key === ws._daemonKey))
-    const absentSeats = fleetStore.getCurrentAgentSeats(reportedAbsent)
+    const absentSeats = await fleetStore.getCurrentAgentSeats(reportedAbsent)
     const absent = new Set(reportedAbsent.filter(id => absentSeats.get(id)?.daemon_key === ws._daemonKey))
 
     for (const id of running) {
@@ -8433,7 +8548,7 @@ async function handleDaemonWsMessage(ws, msg) {
       const seated = absentSeats.get(id)
       if (seated?.session_id) {
         try {
-          fleetStore.retireCurrentAgentSeat?.(id, {
+          await fleetStore.retireCurrentAgentSeat?.(id, {
             sessionId: seated.session_id,
             daemonKey: ws._daemonKey,
             ...(seated.terminal_capability ? { terminalCapability: seated.terminal_capability } : {}),
@@ -8461,7 +8576,7 @@ async function handleDaemonWsMessage(ws, msg) {
     // A process either exists or it does not. Making that answer conditional on
     // a seat row is how the roster comes to say an agent is hibernating while it
     // is running — and a wrongly-hibernating agent can get reaped.
-    const livenessSeat = daemonEventSeatDecision(fleetStore, {
+    const livenessSeat = await daemonEventSeatDecision(fleetStore, {
       agentId: agent_id,
       daemonKey: ws._daemonKey,
       family: 'daemon-agent-liveness',
@@ -8492,7 +8607,7 @@ async function handleDaemonWsMessage(ws, msg) {
   if (type === 'agent-activity') {
     const { agent_id, jsonl_offset, ts } = msg
     if (!agent_id || typeof jsonl_offset !== 'number') return
-    const currentSeat = currentSeatForDaemonEvent(fleetStore, {
+    const currentSeat = await currentSeatForDaemonEvent(fleetStore, {
       agentId: agent_id,
       daemonKey: ws._daemonKey,
       family: 'daemon-agent-activity',
@@ -8504,7 +8619,7 @@ async function handleDaemonWsMessage(ws, msg) {
     })
     touchActivity(agent_id)
     if (fleetStore?.updateHeartbeat) {
-      fleetStore.updateHeartbeat(agent_id)
+      await fleetStore.updateHeartbeat(agent_id)
       broadcastState()
     }
     return
@@ -8517,7 +8632,7 @@ async function handleDaemonWsMessage(ws, msg) {
     // must not mutate the legacy agent row.
     const { agent_id, session_id, cwd } = msg
     if (!fleetStore || !agent_id || !session_id) return
-    const agent = fleetStore.getAgent(agent_id)
+    const agent = await fleetStore.getAgent(agent_id)
     if (!agent) return
     console.log(`[fleet-daemon] observed session for ${agent_id}: ${session_id}${cwd ? ` cwd=${cwd}` : ''}; route identity is updated only by agent-seat binding`)
     return
@@ -8554,7 +8669,7 @@ async function handleDaemonWsMessage(ws, msg) {
     // the daemon extracted for it was destroyed at this line — its cards were
     // absent from Skip's view for hours while the daemon shipped them every few
     // seconds and every layer reported healthy.
-    const seatDecision = daemonEventSeatDecision(fleetStore, {
+    const seatDecision = await daemonEventSeatDecision(fleetStore, {
       agentId: agent_id,
       daemonKey: ws._daemonKey,
       family: 'daemon-activity-event',
@@ -8594,12 +8709,12 @@ async function handleDaemonWsMessage(ws, msg) {
       await reportDaemonEventFailure(msg, 'activity-write', e)
       throw e
     }
-    checkQualifications(agent_id, tool, arg, input)
+    await checkQualifications(agent_id, tool, arg, input)
     return
   }
 
   if (type === 'native-task-event') {
-    const { changed } = applyNativeTaskEvents(fleetStore, msg)
+    const { changed } = await applyNativeTaskEvents(fleetStore, msg)
     if (changed) broadcastState()
     return
   }
@@ -8619,13 +8734,12 @@ async function handleDaemonWsMessage(ws, msg) {
   }
 
   if (type === 'terminal-chat') {
-    if (!fleetStore || !_terminalDedupStmt) return
     const { agent_id, from, text: rawText, ts, session_id } = msg
     if (!agent_id || !rawText || !ts) return
     const text = rawText.length > 2000 ? rawText.slice(0, 2000) : rawText
     try {
-      const existing = _terminalDedupStmt.get(ts, from || SERVER_OWNER_ID, agent_id, text.slice(0, 500))
-      if (existing) return // duplicate, swallow silently
+      const duplicate = await fleetStore.terminalChatDuplicateExists(ts, from || SERVER_OWNER_ID, agent_id, text.slice(0, 500))
+      if (duplicate) return // duplicate, swallow silently
       await fleetStore.share({
         type: 'chat',
         from: from || SERVER_OWNER_ID,
@@ -8667,7 +8781,7 @@ async function handleDaemonWsMessage(ws, msg) {
     const sessionId = msg.session_id || msg.sessionId
     if (!agentId || !sessionId) return
     try {
-      recordAgentBindingEvent(fleetStore, msg, {
+      await recordAgentBindingEvent(fleetStore, msg, {
         machineId: ws._machineId,
         envName: ws._envName,
         daemonKey: ws._daemonKey,
@@ -8685,30 +8799,30 @@ async function handleDaemonWsMessage(ws, msg) {
   }
 
   if (type === 'agent-seat-binding-obligation-complete') {
-    const obligation = agentSeatBindingObligations.get(msg.obligation_id)
+    const obligation = await fleetStore.getAgentSeatBindingObligation(msg.obligation_id)
     if (!obligation) return
-    const seat = fleetStore.getCurrentAgentSeat?.(obligation.agent_id)
+    const seat = await fleetStore.getCurrentAgentSeat?.(obligation.agent_id)
     if (
       seat?.session_id !== msg.session_id ||
       seat?.daemon_key !== obligation.daemon_key ||
       seat?.terminal_capability !== msg.terminal_capability
     ) throw new Error(`binding obligation completion readback mismatch for ${obligation.agent_id}`)
-    agentSeatBindingObligations.remove(obligation.obligation_id)
+    await fleetStore.removeAgentSeatBindingObligation(obligation.obligation_id)
     return
   }
 
   if (type === 'agent-seat-binding-obligation-terminal') {
-    const obligation = agentSeatBindingObligations.get(msg.obligation_id)
+    const obligation = await fleetStore.getAgentSeatBindingObligation(msg.obligation_id)
     if (!obligation) return
-    const agent = fleetStore.findAgent(obligation.agent_id)
+    const agent = await fleetStore.findAgent(obligation.agent_id)
     verifyAgentSeatBindingTerminal({
       obligation,
       message: msg,
       daemonKey: ws._daemonKey,
       agent,
-      seat: fleetStore.getCurrentAgentSeat?.(obligation.agent_id),
+      seat: await fleetStore.getCurrentAgentSeat?.(obligation.agent_id),
     })
-    agentSeatBindingObligations.remove(obligation.obligation_id)
+    await fleetStore.removeAgentSeatBindingObligation(obligation.obligation_id)
     return
   }
 
@@ -8716,7 +8830,7 @@ async function handleDaemonWsMessage(ws, msg) {
     if (!fleetStore) return
     const { agent_id, agent_name, harness, model, respawn, code, reason, snippet } = msg
     if (!agent_id) return
-    const agent = fleetStore.getAgent?.(agent_id)
+    const agent = await fleetStore.getAgent?.(agent_id)
     const label = agent?.friendly_name || agent_name || agent_id.slice(0, 12)
     const text = `Mint startup failed for ${label}: ${reason || code || 'startup error'}`
     const metadata = {
@@ -8735,8 +8849,8 @@ async function handleDaemonWsMessage(ws, msg) {
       // A shell that never booted (never claimed) must be marked dead so it
       // leaves the not-dead registry — otherwise the reserved identity
       // lingers as a phantom addressable agent that will never inhabit.
-      if (agent?.metadata?.shell) fleetStore.markDead?.(agent_id)
-      fleetStore.updateAgentMeta?.(agent_id, {
+      if (agent?.metadata?.shell) await fleetStore.markDead?.(agent_id)
+      await fleetStore.updateAgentMeta?.(agent_id, {
         startupFailure: {
           ts: new Date().toISOString(),
           code: metadata.code,
@@ -8745,12 +8859,12 @@ async function handleDaemonWsMessage(ws, msg) {
           model: metadata.model,
         },
       })
-      const task = fleetStore.getTaskByAgent?.(agent_id)
+      const task = await fleetStore.getTaskByAgent?.(agent_id)
       if (task) {
         task.status = 'failed'
         task.last_checked = new Date().toISOString()
         task.metadata = { ...(task.metadata || {}), startupFailure: metadata }
-        fleetStore.upsertTask(task)
+        await fleetStore.upsertTask(task)
         await fleetStore.taskUpdate?.(agent_id, task.id, 'failed', metadata)
       } else {
         await fleetStore.share?.({
@@ -8805,8 +8919,8 @@ async function handleDaemonWsMessage(ws, msg) {
     const { agent_id, plan_text } = msg
     if (!agent_id || !plan_text) return
     try {
-      const agent = fleetStore.findAgent(agent_id)
-      const seat = agent ? fleetStore.getCurrentAgentSeat?.(agent.id) : null
+      const agent = await fleetStore.findAgent(agent_id)
+      const seat = agent ? await fleetStore.getCurrentAgentSeat?.(agent.id) : null
       const event = await fleetStore.share({
         type: 'plan_approval',
         from: agent_id,
@@ -8820,9 +8934,9 @@ async function handleDaemonWsMessage(ws, msg) {
         agent_id,
         eventId: event?.id,
       })
-      const existing = fleetStore.getAgent(agent_id)
+      const existing = await fleetStore.getAgent(agent_id)
       const planModeType = existing?.metadata?.planModeType || 'plan'
-      fleetStore.updateAgentMeta?.(agent_id, { inPlanMode: true, planModeType })
+      await fleetStore.updateAgentMeta?.(agent_id, { inPlanMode: true, planModeType })
       broadcastState()
     } catch (e) {
       console.error(`[fleet-daemon] plan-mode-prompt write: ${e.message}`)
@@ -8840,7 +8954,7 @@ async function handleDaemonWsMessage(ws, msg) {
     const lastTs = globalThis._termAttentionDedup.get(dedupKey)
     if (lastTs && now - lastTs < 30_000) return
     globalThis._termAttentionDedup.set(dedupKey, now)
-    const agent = fleetStore.getAgent(agent_id)
+    const agent = await fleetStore.getAgent(agent_id)
     const label = agent?.friendly_name || agent_id.slice(0, 12)
     await fleetStore.share({
       type: 'terminal_attention',
@@ -8869,7 +8983,7 @@ async function handleDaemonWsMessage(ws, msg) {
         // thinking → idle edge = turn end (see emitTurnEnded; deduped by _thinkingState).
         const startedAt = _thinkingState.get(msg.agentId)
         _thinkingState.delete(msg.agentId)
-        if (startedAt !== undefined) emitTurnEnded(msg.agentId, startedAt)
+        if (startedAt !== undefined) await emitTurnEnded(msg.agentId, startedAt)
       }
       broadcastEvent('agent-thinking', { agent: msg.agentId, thinking: !!msg.thinking })
     }
@@ -8964,7 +9078,7 @@ async function handleDaemonWsMessage(ws, msg) {
           // likely editing it. Alert that one, not every alive agent sharing the
           // cwd (a busy project can have a dozen, and flooding them all is its
           // own kind of silent — the signal drowns).
-          for (const a of fleetStore.getAliveAgents()) {
+          for (const a of await fleetStore.getAliveAgents()) {
             if (a.human || !a.cwd) continue
             if (a.cwd === sd || a.cwd.startsWith(sd + '/')) { recipients.add(a.id); break }
           }
@@ -8991,7 +9105,7 @@ async function handleDaemonWsMessage(ws, msg) {
         existing.count++
         existing.lastSeen = now
         const updatedText = `${existing.baseText} (×${existing.count})`
-        fleetStore?.updateEventText(existing.eventId, updatedText)
+        await fleetStore?.updateEventText(existing.eventId, updatedText)
         broadcastEvent('event-update', { id: existing.eventId, text: updatedText })
       } else {
         const event = await fleetStore?.share?.({ type: 'chat', from: 'fleet:tlda', to, text: baseText, metadata })

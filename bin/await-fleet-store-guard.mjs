@@ -47,7 +47,14 @@ const MUST_ALLOW = {
   chained: 'fleetStore.share(e).catch(() => {})',
   'inside Promise.all': 'await Promise.all([fleetStore.share(e), fleetStore.share(e)])',
   'arrow body': 'return [e].map(x => fleetStore.share(x))',
-  'a method not on the async list': 'const a = fleetStore.getAgent(id); return a.dead',
+  // Was `fleetStore.getAgent(id)`, chosen when the async list was a partial
+  // set being grown one method at a time. The cutover finished: the list is now
+  // the whole FleetStore manifest, so getAgent IS async and this fixture was
+  // asserting the opposite. Replaced with a name the store genuinely does not
+  // have, which is what the case was always testing — that the rule stays quiet
+  // for something outside the manifest, rather than flagging every call on a
+  // receiver named fleetStore.
+  'a method not on the async list': 'const a = fleetStore.notAStoreMethodAtAll(id); return a.dead',
   'a different receiver entirely': 'const other = {}; other.share(e)',
   // Real shape in unified-server.mjs: adapt a maybe-promise, then handle it.
   'wrapped in Promise.resolve': 'Promise.resolve(fleetStore.share(e)).then(() => {})',

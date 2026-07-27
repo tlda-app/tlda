@@ -20,7 +20,7 @@
     "deploy:live": "node scripts/live-deploy.mjs",
     "test:live-perf-upload": "node bin/live-perf-probe-upload-test.mjs",
     "build:tldraw-fork-runtime": "node scripts/build-tldraw-fork-runtime.mjs",
-    "lint": "node bin/lineage-name-derivation-guard.mjs && node bin/sync-on-event-loop-guard.mjs && node bin/await-fleet-store-guard.mjs && eslint .",
+    "lint": "node bin/lineage-name-derivation-guard.mjs && node bin/sync-on-event-loop-guard.mjs && node bin/await-fleet-store-guard.mjs && node bin/async-cascade-guard.mjs && eslint .",
     "preview": "vite preview",
     "start": "tlda server start && npm run dev",
     "smoke": "node scripts/smoke-test.mjs"

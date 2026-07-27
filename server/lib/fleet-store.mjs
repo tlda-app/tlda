@@ -16,7 +16,6 @@
  */
 
 import Database from 'better-sqlite3';
-import { Worker } from 'node:worker_threads';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
@@ -25,9 +24,17 @@ import os from 'os';
 import { createLiveStore } from '../../shared/live-store.ts';
 import { PSEUDO_LABELS, parseFilter, evalExpr, evalExprDirectional, astReadsSubscriberLabels, labelsForAgent } from '../../shared/fleet-labels.mjs';
 import { anyTermFtsQuery, ftsQueryTerms } from '../../shared/fts-query.mjs';
-import { fleetRosterCategory, isFleetRosterAgent } from '../../shared/fleet-runtime-status.mjs';
+// isFleetRosterAgent only. fleetRosterCategory went with the count's move:
+// the store no longer categorises an agent, it is told which ids are alive and
+// joins that against its own roster.
+import { isFleetRosterAgent } from '../../shared/fleet-runtime-status.mjs';
 import { createTaskDocMaterializer } from './task-doc-materializer.mjs';
-import { projectAgentRuntimeStatus } from './agent-runtime-status.mjs';
+import { ServerDaemonOutbox } from './server-daemon-outbox.mjs';
+import { AgentSeatBindingObligations } from './agent-seat-binding-obligations.mjs';
+// The one liveness constant this file needs, and only as a threshold: the count
+// derives human-vs-human-away from last_seen on every call. Importing the same
+// number the projector uses is what stops the two drifting apart.
+import { HUMAN_HEARTBEAT_TTL_MS } from './agent-runtime-status.mjs';
 
 // Persistent DB under ~/.config/tlda/ (survives macOS reboots).
 // Previously /tmp/fleet.db which got wiped on reboot — lost all agents/state.
@@ -57,6 +64,11 @@ const TRANSPORT_OPERATION_PRUNE_BATCH_MAX = envNumber('TLDA_TRANSPORT_OPERATION_
 // someone tailing `fly logs` at the instant it fires.
 const SLOWQUERY_LOG_FILE = path.join(os.homedir(), '.config', 'tlda', 'slowquery.log');
 const WIRETAP_EVENT_TYPES = new Set(['chat', 'delegate', 'task_done']);
+
+function statementArgs(params) {
+  if (params === undefined) return [];
+  return Array.isArray(params) ? params : [params];
+}
 
 function cwdPathSegments(cwd) {
   const normalized = String(cwd || '').trim().replace(/\/+$/, '');
@@ -153,10 +165,15 @@ const PROTECTED_AGENT_UPSERT_FIELDS = [
   'resume_id',
 ];
 
+// Clears the fields that belong to the durable current-seat projection, not to
+// the mutable agents row. The flat seat_* fields are what runtime routing reads.
 function withoutProtectedAgentFields(agent) {
   if (!agent) return agent;
   const next = { ...agent };
   for (const field of PROTECTED_AGENT_UPSERT_FIELDS) next[field] = null;
+  next.seat_present = false;
+  next.seat_daemon_key = null;
+  next.seat_terminal_capability = null;
   return next;
 }
 
@@ -272,6 +289,12 @@ export class FleetStore {
     const dir = path.dirname(dbPath);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
+    // The file this store actually opened, as a plain property rather than
+    // something read back off the connection. Diagnostics compare it against
+    // the configured path to catch a store pointed at the wrong database, and
+    // the connection is not reachable from the main thread once this store
+    // runs on a worker — FleetStoreClient carries the same property.
+    this.dbPath = dbPath;
     this.db = new Database(dbPath);
     // Slow-query logger: any .all()/.get() >= TLDA_SLOWQUERY_MS (default 25ms)
     // logs its SQL + duration + rowcount to [slowquery] in server.log. Installed
@@ -310,10 +333,10 @@ export class FleetStore {
         return stmt;
       };
     }
-    // WAL (set here + by the writer worker; it's a persistent property of the
-    // file): lets THIS main connection READ concurrently while the worker holds
-    // the write lock during a slow FTS merge. NORMAL is durable across an app
-    // crash — only a power loss can lose the last txn, never corrupts.
+    // WAL is a persistent property of the file. The server uses this store
+    // through FleetStoreClient, so slow SQLite work stays on the store worker
+    // rather than the server event loop. NORMAL is durable across an app crash;
+    // only a power loss can lose the last txn, never corrupts.
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('synchronous = NORMAL');
     // The dominant cost of a read here is I/O, not the query plan: identical
@@ -332,6 +355,14 @@ export class FleetStore {
     this.db.pragma('journal_size_limit = 67108864');
     this._createTables();
     this._prepareStatements();
+    // Two delivery ledgers that are nothing but tables in this database. They
+    // were constructed by unified-server from fleetStore.db, which cannot
+    // survive the store moving to a worker — and they should not have to,
+    // because neither reaches main-thread state. ServerDaemonOutbox in
+    // particular wraps its enqueue in a db.transaction(), and a transaction
+    // has to run on the thread that owns the connection.
+    this._serverDaemonOutbox = new ServerDaemonOutbox(this.db);
+    this._agentSeatBindingObligations = new AgentSeatBindingObligations(this.db);
     this._closed = false;
     this._cwdSegmentBackfillImmediate = null;
     this._scheduleCwdSegmentBackfill();
@@ -345,45 +376,13 @@ export class FleetStore {
       ? createTaskDocMaterializer({ fleetStore: this, ...(options.taskDocOptions || {}) })
       : null;
 
-    // The writer worker owns the connection that writes the high-frequency
-    // `events` rows (every activity card / chat). better-sqlite3 is synchronous,
-    // so a ~1.5s FTS-merge on an events INSERT would freeze THIS thread's event
-    // loop — dropping fleet chat/health — if it ran here. On the worker it never
-    // touches the loop. (Lower-frequency agent/lineage writes still run
-    // synchronously on this connection; making the worker the SOLE writer for
-    // those too is a flagged follow-up.)
-    this._writeSeq = 0;
-    this._writeWaiters = new Map();
-    this._worker = new Worker(new URL('./db-writer.worker.mjs', import.meta.url), {
-      workerData: { dbPath },
-    });
-    this._worker.on('message', (m) => {
-      if (m && m.ready) return;
-      if (m.id == null) { if (m.error) console.error('[db-writer] fire-and-forget failed:', m.error, m.sql); return; }
-      const w = this._writeWaiters.get(m.id);
-      if (!w) return;
-      this._writeWaiters.delete(m.id);
-      m.error ? w.reject(new Error(m.error)) : w.resolve(m.result);
-    });
-    this._worker.on('error', (e) => console.error('[db-writer] worker crashed:', e));
   }
 
-  // Fire-and-forget write on the worker (no result awaited). Accepts a prepared
-  // statement (its `.source` SQL is reused) or a raw SQL string.
-  _w(stmtOrSql, params) {
-    const sql = typeof stmtOrSql === 'string' ? stmtOrSql : stmtOrSql.source;
-    this._worker.postMessage({ kind: 'run', sql, params });
-  }
-
-  // Await a write on the worker, resolving to { lastInsertRowid, changes }.
-  // Used where the caller needs the row id (share) or the constraint error.
+  // Await a write, resolving to { lastInsertRowid, changes }. Used where the
+  // caller needs the row id (share) or the constraint error.
   _wAwait(stmtOrSql, params) {
-    const sql = typeof stmtOrSql === 'string' ? stmtOrSql : stmtOrSql.source;
-    const id = ++this._writeSeq;
-    return new Promise((resolve, reject) => {
-      this._writeWaiters.set(id, { resolve, reject });
-      this._worker.postMessage({ id, kind: 'run', sql, params });
-    });
+    const stmt = typeof stmtOrSql === 'string' ? this.db.prepare(stmtOrSql) : stmtOrSql;
+    return stmt.run(...statementArgs(params));
   }
 
   _replaceCwdSegments(source, agentId, cwd) {
@@ -448,18 +447,15 @@ export class FleetStore {
   }
 
   _wBatchAwait(ops) {
-    const id = ++this._writeSeq;
-    return new Promise((resolve, reject) => {
-      this._writeWaiters.set(id, { resolve, reject });
-      this._worker.postMessage({
-        id,
-        kind: 'batch',
-        ops: ops.map(op => ({
-          sql: typeof op.stmtOrSql === 'string' ? op.stmtOrSql : op.stmtOrSql.source,
-          params: op.params || [],
-        })),
-      });
+    const tx = this.db.transaction(() => {
+      let result = null;
+      for (const op of ops) {
+        const stmt = typeof op.stmtOrSql === 'string' ? this.db.prepare(op.stmtOrSql) : op.stmtOrSql;
+        result = stmt.run(...statementArgs(op.params));
+      }
+      return result;
     });
+    return tx();
   }
 
   _createTables() {
@@ -749,6 +745,17 @@ export class FleetStore {
       );
 
       CREATE INDEX IF NOT EXISTS idx_subscriptions_owner ON subscriptions(owner);
+
+      -- Daemon outbox at-most-once ledger. A daemon redelivers an envelope it
+      -- did not see acked, so the server has to recognise one it already
+      -- handled. Owned here rather than created by unified-server at import,
+      -- which is where it lived until the store moved off the main thread and
+      -- the server stopped holding a database handle to create it with.
+      CREATE TABLE IF NOT EXISTS daemon_outbox_processed (
+        id TEXT PRIMARY KEY,
+        type TEXT NOT NULL,
+        processed_at TEXT NOT NULL
+      );
 
       -- Shared document metadata
       CREATE TABLE IF NOT EXISTS shared_docs (
@@ -1430,7 +1437,7 @@ export class FleetStore {
     // Incrementally bump last_active for the event's sender + recipient. Both
     // params are the event timestamp; MAX keeps the newest if events arrive out
     // of order. id IN (?, ?) is an O(1) PK lookup; null from/to simply matches
-    // nothing. Runs on the writer worker, off the main loop.
+    // nothing. The server runs this store on the store worker, off the main loop.
     this._updateAgentLastActive = this.db.prepare(`
       UPDATE agents SET last_active = MAX(COALESCE(last_active, ?), ?) WHERE id IN (?, ?)
     `);
@@ -1445,6 +1452,40 @@ export class FleetStore {
 
     this._updateEventMetadata = this.db.prepare(`
       UPDATE events SET metadata = json_patch(COALESCE(metadata, '{}'), ?) WHERE id = ?
+    `);
+
+    // Distinct from _updateEventMetadata above, which MERGES via json_patch.
+    // This one REPLACES. Callers that derive a complete metadata object and
+    // want a removed key to stay removed need replacement — json_patch would
+    // keep the old key, and additionally reads a null value as "delete this
+    // key", so the two are not interchangeable in either direction.
+    this._replaceEventMetadata = this.db.prepare(`
+      UPDATE events SET metadata = ? WHERE id = ?
+    `);
+
+    this._replaceEventTextAndMetadata = this.db.prepare(`
+      UPDATE events SET text = ?, metadata = ? WHERE id = ?
+    `);
+
+    this._unreadPendingRow = this.db.prepare(`
+      SELECT read FROM unread WHERE event_id = ? AND to_id = ?
+    `);
+
+    // Claude Code can write the same user message to its JSONL more than once
+    // (compaction, in particular), and several daemons compound that. The
+    // daemon dedups within its own offset; this is the authoritative check.
+    this._terminalChatDuplicate = this.db.prepare(`
+      SELECT 1 FROM events
+      WHERE timestamp = ? AND from_id = ? AND to_id = ? AND substr(text, 1, 500) = ? AND type = 'chat'
+      LIMIT 1
+    `);
+
+    this._daemonOutboxProcessedGet = this.db.prepare(`
+      SELECT 1 FROM daemon_outbox_processed WHERE id = ? LIMIT 1
+    `);
+
+    this._daemonOutboxProcessedInsert = this.db.prepare(`
+      INSERT OR IGNORE INTO daemon_outbox_processed (id, type, processed_at) VALUES (?, ?, ?)
     `);
 
     // No unbounded variant of this query exists on purpose. Fetching an agent's
@@ -1505,14 +1546,38 @@ export class FleetStore {
     // (2026-07-21 00:23:25), which flipped all four off COALESCE; 1ee5dd63
     // restored cwd 67 seconds later and left the rest. Do not re-add them here.
 
-    const AGENT_SELECT = 'agents.*, lineages.friendly_name AS lineage_name';
-    const AGENT_JOIN = 'FROM agents LEFT JOIN lineages ON lineages.id = agents.lineage_id';
+    // The three seat facts the runtime projection needs — whether a seat
+    // exists, its daemon_key, its terminal_capability — come along with the
+    // row, aliased so they cannot be confused with the agent's own columns.
+    //
+    // They used to be fetched per agent by a getCurrentAgentSeat call from the
+    // main-thread projector: an N+1 that became an N+1 of BOUNDARY CROSSINGS
+    // once the store moved to a worker. agent_current_seats is the sole route
+    // authority and this was already a join, so the facts arrive for free.
+    //
+    // Three flat scalars, deliberately, not one nested object. Structured clone
+    // is priced by shape and count rather than by bytes — nested objects are
+    // what make an agent row eight times the cost of an event row — so a nested
+    // `{ daemon_key, terminal_capability }` per row would be the expensive
+    // shape for no gain.
+    const AGENT_SELECT = [
+      'agents.*',
+      'lineages.friendly_name AS lineage_name',
+      'seat.agent_id IS NOT NULL AS seat_present',
+      'seat.daemon_key AS seat_daemon_key',
+      'seat.terminal_capability AS seat_terminal_capability',
+    ].join(', ');
+    const AGENT_JOIN = `FROM agents
+      LEFT JOIN lineages ON lineages.id = agents.lineage_id
+      LEFT JOIN agent_current_seats seat ON seat.agent_id = agents.id`;
     this._getAgent = this.db.prepare(`SELECT ${AGENT_SELECT} ${AGENT_JOIN} WHERE agents.id = ?`);
     // A daemon's agents are the ones whose current durable seat lives on that
     // daemon. agent_current_seats is the sole route authority.
     this._getAgentsByDaemonKey = this.db.prepare(`SELECT ${AGENT_SELECT} ${AGENT_JOIN} WHERE agents.dead = 0 AND agents.id IN (SELECT agent_id FROM agent_current_seats WHERE daemon_key = @daemonKey)`);
     this._getAgentByName = this.db.prepare(`SELECT ${AGENT_SELECT} ${AGENT_JOIN} WHERE agents.friendly_name = ?`);
     this._getLiveAgentsByFriendlyName = this.db.prepare(`SELECT ${AGENT_SELECT} ${AGENT_JOIN} WHERE agents.dead = 0 AND agents.friendly_name = ?`);
+    this._getLiveHumanByFriendlyName = this.db.prepare('SELECT * FROM agents WHERE friendly_name = ? AND dead = 0 AND human = 1');
+    this._nameTakenByOther = this.db.prepare('SELECT id FROM agents WHERE friendly_name = ? AND dead = 0 AND id != ?');
     // findAgent's name branch. Deliberately the bare row, not AGENT_SELECT: the
     // branch this replaced also read `SELECT *`, so keeping it identical makes
     // removing the tie-break a pure deletion. (It means a name lookup returns no
@@ -1656,15 +1721,22 @@ export class FleetStore {
     this._deleteUnreadForEvent = this.db.prepare('DELETE FROM unread WHERE event_id = ? AND to_id = ? AND read = 0');
 
     // Shared doc queries
+    // A null path/title/agent CLEARS the stored value; it does not preserve it.
+    // This statement used to COALESCE those three, but nothing called the
+    // method — the two live share paths (the shared-docs-set socket verb and
+    // POST /api/shared-docs) each ran their own copy of this SQL with plain
+    // `= excluded.x`, so clearing is the behaviour the app actually has. The
+    // method now matches the app rather than the app matching the method.
+    // shared_at is left alone on conflict: the first share is when it was
+    // shared.
     this._upsertSharedDoc = this.db.prepare(`
       INSERT INTO shared_docs (doc, path, title, agent, ephemeral, shared_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(doc) DO UPDATE SET
-        path = COALESCE(excluded.path, shared_docs.path),
-        title = COALESCE(excluded.title, shared_docs.title),
-        agent = COALESCE(excluded.agent, shared_docs.agent),
+        path = excluded.path,
+        title = excluded.title,
+        agent = excluded.agent,
         ephemeral = excluded.ephemeral,
-        shared_at = COALESCE(shared_docs.shared_at, excluded.shared_at),
         updated_at = excluded.updated_at
     `);
 
@@ -1771,8 +1843,9 @@ export class FleetStore {
     }
     const meta = metadata ? JSON.stringify(metadata) : null;
 
-    // The events INSERT runs on the writer worker: a slow FTS merge here never
-    // freezes the main event loop. We await it because we need the real row id.
+    // The events INSERT runs inside fleet-store.worker.mjs: a slow FTS merge
+    // here never freezes the main event loop. We await it because we need the
+    // real row id.
     const result = await this._wAwait(this._insertEvent, [
       event.type,
       ts,
@@ -1786,14 +1859,14 @@ export class FleetStore {
 
     const eventId = result.lastInsertRowid;
 
-    // Maintain agents.last_active incrementally (writer worker, ordered after
-    // the insert) so getAllAgents never scans events.
+    // Maintain agents.last_active incrementally, ordered after the insert, so
+    // getAllAgents never scans events.
     if (event.from || event.to) {
-      this._w(this._updateAgentLastActive, [ts, ts, event.from || null, event.to || null]);
+      await this._wAwait(this._updateAgentLastActive, [ts, ts, event.from || null, event.to || null]);
     }
 
     // Track unread before returning so callers that immediately retract can
-    // operate on a real mailbox row instead of racing the writer worker.
+    // operate on a real mailbox row.
     if (event.unread !== false && event.to && (event.type === 'chat' || event.type === 'delegate')) {
       // Direct, explicit-CC, and wiretap recipients must all have the same
       // durable inbox path. Channel notifications are only previews.
@@ -2552,6 +2625,9 @@ export class FleetStore {
       env_name: seat.env_name,
       daemon_key: seat.daemon_key,
       resume_id: seat.resume_id,
+      seat_present: true,
+      seat_daemon_key: seat.daemon_key,
+      seat_terminal_capability: seat.terminal_capability,
     };
   }
 
@@ -2917,6 +2993,28 @@ export class FleetStore {
     return this._getLiveAgentsByFriendlyName.all(String(friendlyName)).map(row => this.projectAgentCurrentSeat(this._hydrateAgent(row)));
   }
 
+  // The live human holding this name, or null. Deliberately NOT
+  // getLiveAgentsByFriendlyName filtered by `human`: that one applies
+  // projectAgentCurrentSeat, which rewrites route/display fields when an agent
+  // has a current seat, and the login path this serves writes the row straight
+  // back through upsertAgent. Hydrated but unprojected is what that write
+  // needs. At most one row can exist — idx_agents_live_name makes a second
+  // live holder of a name unrepresentable.
+  getLiveHumanByFriendlyName(friendlyName) {
+    if (!friendlyName) return null;
+    const row = this._getLiveHumanByFriendlyName.get(String(friendlyName));
+    return row ? this._hydrateAgent(row) : null;
+  }
+
+  // Is this live name held by somebody other than `excludeId`? Narrower than
+  // checkNameAvailable on purpose: that gate also rejects pseudo-labels and
+  // names colliding with another agent's label, and the rename path this
+  // serves has never rejected either. Widening it is a product change.
+  nameTakenByOther(friendlyName, excludeId) {
+    if (!friendlyName) return false;
+    return !!this._nameTakenByOther.get(String(friendlyName), excludeId || '');
+  }
+
   getAliveAgentsPage({ limit = 100, cursor = null } = {}) {
     const size = Math.max(1, Math.min(Number(limit) || 100, 200));
     let boundary = { lastSeen: '9999-12-31T23:59:59.999Z', id: '\uffff' };
@@ -2944,15 +3042,74 @@ export class FleetStore {
   // The agents panel materializes this roster in pages, but its footer is an
   // aggregate over the whole non-dead roster.  Keep that distinction explicit:
   // callers must not derive footer counts from a page or virtualized rows.
-  getAliveAgentCounts() {
+  // Counting is a JOIN, and the two sides of it live on different threads.
+  // Roster membership and seats are here; who is alive and which daemons hold a
+  // socket are on the main thread. So one side has to cross, and the choice of
+  // WHICH is the whole design.
+  //
+  // Shipping the roster OUT to be counted was measured and rejected: p99
+  // 63/75/120 ms at 1000/5000/9000 rows, on every agents-delta broadcast, which
+  // costs more than the freeze the worker was moved to remove. Maintaining an
+  // awake set incrementally on the main thread was rejected too — agent-row and
+  // seat changes have no hook, so it needs an invalidation map that is complete,
+  // and an incomplete one yields a count that is WRONG rather than stale.
+  //
+  // So the two small main-thread facts come IN, and the join happens here. A
+  // few dozen flat strings each way; the answer is three numbers.
+  //
+  // THESE ARE PARAMETERS. THEY ARE NOT STORED.
+  //
+  // Nothing on this instance remembers liveEvidenceIds or connectedDaemonKeys
+  // after this call returns, and nothing else may read them. That is deliberate
+  // and it is the condition on which this design was accepted: a retained copy
+  // of live state is the thing that goes stale and reaps working agents, and a
+  // set sitting on the store as a field would look authoritative enough that the
+  // next reader routes off it. The store is TOLD who is alive for the duration
+  // of one computation; it never decides, and it never remembers.
+  //
+  // This recomputes the same predicate the roster-wide version computed, from
+  // the same inputs — it is not a cache and not an approximation. `human` vs
+  // `human-away` is derived from last_seen against nowMs on EVERY call, which is
+  // why no timer is needed to keep the count honest as a human goes idle.
+  getAliveAgentCounts({ liveEvidenceIds = [], connectedDaemonKeys = [], nowMs = Date.now() } = {}) {
     this._ensureAgentRegistryLoaded();
+    const alive = liveEvidenceIds instanceof Set ? liveEvidenceIds : new Set(liveEvidenceIds);
+    const daemons = connectedDaemonKeys instanceof Set ? connectedDaemonKeys : new Set(connectedDaemonKeys);
     const totals = { awake: 0, hibernating: 0, total: 0 };
     for (const agent of this._aliveAgentRosterView.list) {
       totals.total += 1;
-      if (fleetRosterCategory(agent) === 'awake') totals.awake += 1;
+      if (this._countsAsAwake(agent, alive, daemons, nowMs)) totals.awake += 1;
       else totals.hibernating += 1;
     }
     return totals;
+  }
+
+  // fleetRosterCategory(agent) === 'awake', with the projection inlined against
+  // the row's own fields. Mirrors projectAgentRuntimeStatus branch for branch:
+  // dead, then human by heartbeat recency, then shell, then positive evidence
+  // over a routable seat. Anything else is hibernating.
+  //
+  // Note what this does NOT consult: agent.runtime_status. It computes from
+  // dead / human / last_seen / evidence / seat directly, so the `unknown` that
+  // runtimeStatusForAgent now returns for an unstamped row can never reach the
+  // count and be silently bucketed as hibernating. That was the fabrication
+  // coming back through a different door, and this shape is immune to it by
+  // construction rather than by a check.
+  //
+  // The shell branch is kept although isFleetRosterAgent already excludes shells
+  // from the roster this iterates. It costs one property read, and it keeps this
+  // predicate a faithful mirror of the projection rather than something that is
+  // only correct given a filter applied somewhere else.
+  _countsAsAwake(agent, aliveIds, connectedDaemonKeys, nowMs) {
+    if (!agent || agent.dead) return false;
+    if (agent.human) {
+      if (!agent.last_seen) return false;
+      return (nowMs - new Date(agent.last_seen).getTime()) < HUMAN_HEARTBEAT_TTL_MS;
+    }
+    if (agent.metadata?.shell) return false;
+    if (!aliveIds.has(agent.id)) return false;
+    if (!agent.seat_present || !agent.seat_daemon_key || !agent.seat_terminal_capability) return false;
+    return connectedDaemonKeys.has(agent.seat_daemon_key);
   }
 
   removeAgent(id) {
@@ -3111,10 +3268,6 @@ export class FleetStore {
     return this.getAgent(id);
   }
 
-  setRuntimeStatusProvider(fn) {
-    this._runtimeStatusProvider = fn;
-    this._bustAgentsCache();
-  }
 
   refreshAgentLiveness(id) {
     this._syncAgentRegistry(id);
@@ -3153,6 +3306,14 @@ export class FleetStore {
          AND agents.friendly_name IS NOT NULL AND agents.dead = 0
        ORDER BY stack.stack_index`
     ).all(lineageId).map(r => this.projectAgentCurrentSeat(this._hydrateAgent(r)));
+  }
+
+  // The lineage this agent currently occupies a stack slot on, or null.
+  getActiveStackEntry(agentId) {
+    if (!agentId) return null;
+    return this.db.prepare(
+      'SELECT lineage_id FROM lineage_stack_entries WHERE fleet_id = ? AND active = 1'
+    ).get(agentId) || null;
   }
 
   // The live active stack (ascending by position) for a lineage.
@@ -3328,14 +3489,28 @@ export class FleetStore {
       lineage_id: row.lineage_id || null,
       // Names are opaque atoms. Stack position is separate lineage data.
       lineage_name: row.lineage_name || null,
+      // The seat facts the runtime projection needs, and only those three.
+      // Route STATE is not decided here: whether a routable-looking seat is
+      // actually reachable depends on which daemons currently hold a socket,
+      // which is main-thread knowledge. This thread reports what the route
+      // authority says; the main thread applies the daemon check.
+      seat_present: !!row.seat_present,
+      seat_daemon_key: row.seat_daemon_key || null,
+      seat_terminal_capability: row.seat_terminal_capability || null,
     }
-    const runtimeStatus = this._runtimeStatusProvider
-      ? this._runtimeStatusProvider(baseAgent)
-      : projectAgentRuntimeStatus(baseAgent, null)
-    return {
-      ...baseAgent,
-      runtime_status: runtimeStatus,
-    };
+    // No runtime_status here. Liveness is a projection over things this thread
+    // cannot see — live WebSocket handles, daemon connections, heartbeat
+    // evidence — and it used to be stamped on via a closure injected from the
+    // main thread. That closure is why the store could not move off the event
+    // loop: a function cannot cross a worker boundary, and a worker calling
+    // back into the main thread mid-query while the main thread awaits the
+    // worker is a deadlock rather than a slow path.
+    //
+    // The agent row is what this store owns. Whoever holds the liveness
+    // evidence stamps runtime_status on the way out — see stampRuntimeStatus in
+    // fleet-store-client.mjs, which does it on the main thread where the
+    // evidence already lives.
+    return baseAgent;
   }
 
   // ---- Task state management ----
@@ -3672,20 +3847,17 @@ export class FleetStore {
     );
   }
 
+  // Rows as stored, with `ephemeral` still 0/1. The hydrator that turned it
+  // into a boolean was only ever reachable from here, and both live readers
+  // (the shared-docs-get socket verb and GET /api/shared-docs) put these rows
+  // straight on the wire — hydrating would change a client-visible payload
+  // from 0/1 to false/true, which nobody asked for.
   getSharedDocs() {
-    return this._getAllSharedDocs.all().map(r => this._hydrateSharedDoc(r));
+    return this._getAllSharedDocs.all();
   }
 
   getSharedDoc(name) {
-    const row = this._getSharedDoc.get(name);
-    return row ? this._hydrateSharedDoc(row) : null;
-  }
-
-  _hydrateSharedDoc(row) {
-    return {
-      ...row,
-      ephemeral: !!row.ephemeral,
-    };
+    return this._getSharedDoc.get(name) || null;
   }
 
   // ---- Wiretap management ----
@@ -4008,11 +4180,8 @@ export class FleetStore {
     return markOne(ids);
   }
 
-  // Inbox acknowledgement is on the request path while activity/chat writes
-  // are already flowing through the writer worker. Keep its heartbeat and
-  // read-receipt updates on that same single writer: a main-connection
-  // transaction here can otherwise race the worker and expose SQLITE_BUSY to
-  // the inbox caller.
+  // Inbox acknowledgement is on the request path. Keep its heartbeat and
+  // read-receipt updates in one transaction on the store connection.
   async acknowledgeInboxRead(agentId, eventIds = []) {
     const ids = [...new Set((eventIds || []).map(id => Number(id)).filter(Number.isFinite))];
     const ops = [{ stmtOrSql: this._updateAgentLastSeen, params: [new Date().toISOString(), agentId] }];
@@ -4060,6 +4229,92 @@ export class FleetStore {
 
   updateEventMetadata(eventId, patch) {
     this._updateEventMetadata.run(JSON.stringify(patch), eventId);
+  }
+
+  // Overwrite metadata wholesale. NOT updateEventMetadata with a different
+  // name: that one merges with json_patch, so a key the caller deliberately
+  // dropped would survive, and a null value would delete a key rather than
+  // store one. Callers here have already derived the complete object.
+  replaceEventMetadata(eventId, metadata) {
+    this._replaceEventMetadata.run(JSON.stringify(metadata), eventId);
+  }
+
+  replaceEventTextAndMetadata(eventId, newText, metadata) {
+    this._replaceEventTextAndMetadata.run(newText, JSON.stringify(metadata), eventId);
+  }
+
+  // Has this recipient's copy of the event not been read yet? Absent row and
+  // read row are both "nothing pending"; only an existing unread row counts.
+  isUnreadPending(eventId, agentId) {
+    const row = this._unreadPendingRow.get(eventId, agentId);
+    return !!row && !row.read;
+  }
+
+  terminalChatDuplicateExists(timestamp, fromId, toId, textPrefix) {
+    return !!this._terminalChatDuplicate.get(timestamp, fromId, toId, textPrefix);
+  }
+
+  // ---- Server → daemon outbox ----
+  // Flat pass-throughs rather than handing the object out: the client is
+  // generated from a method manifest, and an object cannot cross the boundary.
+  // Only the surface that is actually called is exposed — the ledger's count()
+  // and countForDaemon() had no callers and are deleted rather than proxied.
+
+  serverDaemonOutboxEnqueue(daemonKey, message, options) {
+    return this._serverDaemonOutbox.enqueue(daemonKey, message, options);
+  }
+
+  serverDaemonOutboxPendingForDaemon(daemonKey, limit) {
+    return this._serverDaemonOutbox.pendingForDaemon(daemonKey, limit);
+  }
+
+  serverDaemonOutboxGet(id) {
+    return this._serverDaemonOutbox.get(id);
+  }
+
+  serverDaemonOutboxAck(id) {
+    this._serverDaemonOutbox.ack(id);
+  }
+
+  serverDaemonOutboxMarkAttempt(id) {
+    this._serverDaemonOutbox.markAttempt(id);
+  }
+
+  // The error crosses as its message. An Error instance is not structured-
+  // cloneable in a way that survives usefully, and the ledger only ever stores
+  // String(error) anyway.
+  serverDaemonOutboxMarkError(id, error) {
+    this._serverDaemonOutbox.markError(id, error);
+  }
+
+  serverDaemonOutboxDeleteByDedupeKey(daemonKey, dedupeKey) {
+    return this._serverDaemonOutbox.deleteByDedupeKey(daemonKey, dedupeKey);
+  }
+
+  // ---- Agent seat-binding obligations ----
+
+  putAgentSeatBindingObligation(payload) {
+    return this._agentSeatBindingObligations.put(payload);
+  }
+
+  getAgentSeatBindingObligation(id) {
+    return this._agentSeatBindingObligations.get(id);
+  }
+
+  listAgentSeatBindingObligationsForDaemon(daemonKey) {
+    return this._agentSeatBindingObligations.listForDaemon(daemonKey);
+  }
+
+  removeAgentSeatBindingObligation(id) {
+    return this._agentSeatBindingObligations.remove(id);
+  }
+
+  daemonOutboxWasProcessed(outboxId) {
+    return !!this._daemonOutboxProcessedGet.get(outboxId);
+  }
+
+  markDaemonOutboxProcessed(outboxId, type, processedAt) {
+    this._daemonOutboxProcessedInsert.run(outboxId, type || 'unknown', processedAt);
   }
 
   updateEventText(eventId, newText) {
@@ -4228,6 +4483,34 @@ export class FleetStore {
   // Get events after a known rowid (for SSE catch-up)
   getEventsSince(afterId, limit = 100) {
     return this._query(this._queryEventsAfterRowid, afterId, limit);
+  }
+
+  // One page of the global event stream, optionally narrowed to a set of types.
+  // `beforeId` pages backwards (newest-first selection, returned oldest-first);
+  // otherwise it pages forwards from `afterId`.
+  //
+  // Rows come back UNHYDRATED — `metadata` is the stored JSON string, not a
+  // parsed object. That is deliberate and it is not what getEventsSince does.
+  // The four raw queries this replaces (the store-events socket verb and
+  // GET /api/events) all returned the string, while the no-filter branch of
+  // those same two endpoints falls through to getEventsSince and returns an
+  // object. So one endpoint already answers with two different shapes for
+  // `metadata` depending on its query parameters. Hydrating here would change
+  // the wire payload for the ?type= and ?before= consumers — one of which is
+  // Grafana — so the inconsistency is preserved rather than quietly fixed.
+  queryEventsPage({ types = null, afterId = 0, beforeId = null, limit = 200 } = {}) {
+    const typeList = Array.isArray(types) && types.length ? types : null;
+    const typeClause = typeList ? `type IN (${typeList.map(() => '?').join(',')}) AND ` : '';
+    if (beforeId) {
+      const rows = this.db.prepare(
+        `SELECT ${this._EVT} FROM events WHERE ${typeClause}id < ? ORDER BY id DESC LIMIT ?`
+      ).all(...(typeList || []), beforeId, limit);
+      rows.reverse();
+      return rows;
+    }
+    return this.db.prepare(
+      `SELECT ${this._EVT} FROM events WHERE ${typeClause}id > ? ORDER BY id ASC LIMIT ?`
+    ).all(...(typeList || []), afterId, limit);
   }
 
   getLastEventId() {
@@ -5123,7 +5406,6 @@ export class FleetStore {
     this._closed = true;
     if (this._cwdSegmentBackfillImmediate) clearImmediate(this._cwdSegmentBackfillImmediate);
     this._cwdSegmentBackfillImmediate = null;
-    this._worker?.terminate?.();
     this.db.close();
   }
 }

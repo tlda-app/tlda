@@ -93,7 +93,7 @@ export function buildRuntimeStatus({
       mode: env.TLDA_DEV_SERVER ? 'test' : 'prod',
       config: configName,
       fleet_db: fleetDbPath || env.TLDA_FLEET_DB || null,
-      store_target: fleetStore?.db?.name || fleetDbPath || env.TLDA_FLEET_DB || null,
+      store_target: fleetStore?.dbPath || fleetDbPath || env.TLDA_FLEET_DB || null,
       identity: resolveIdentity(serverScriptPath),
     },
     daemon: daemonRuntimeStatus({ daemonConnections, localHostname, resolveIdentity }),

@@ -14,34 +14,34 @@ const storeWith = (...tasks) => ({
   getActiveTasks: () => tasks,
 })
 
-test('intentionally grants authority through an active post-target marker', () => {
+test('intentionally grants authority through an active post-target marker', async () => {
   const target = task('target', 'worker', 'owner', '2026-07-20T12:00:00.000Z')
   const marker = task('marker', 'owner', 'caller', '2026-07-23T19:51:14.000Z')
 
-  assert.equal(canReportTask({
+  assert.equal(await canReportTask({
     caller: { id: 'caller' },
     task: target,
     fleetStore: storeWith(target, marker),
   }), true)
 })
 
-test('grants authority through an active legitimate management chain', () => {
+test('grants authority through an active legitimate management chain', async () => {
   const managerToLead = task('manager-to-lead', 'lead', 'manager', '2026-07-23T12:00:00.000Z')
   const leadToOwner = task('lead-to-owner', 'owner', 'lead', '2026-07-23T13:00:00.000Z')
   const target = task('target', 'worker', 'owner', '2026-07-20T12:00:00.000Z')
 
-  assert.equal(canReportTask({
+  assert.equal(await canReportTask({
     caller: { id: 'manager' },
     task: target,
     fleetStore: storeWith(target, managerToLead, leadToOwner),
   }), true)
 })
 
-test('rejects an unrelated caller without an active management chain', () => {
+test('rejects an unrelated caller without an active management chain', async () => {
   const managerToOwner = task('manager-to-owner', 'owner', 'manager', '2026-07-23T12:00:00.000Z')
   const target = task('target', 'worker', 'owner', '2026-07-20T12:00:00.000Z')
 
-  assert.equal(canReportTask({
+  assert.equal(await canReportTask({
     caller: { id: 'stranger' },
     task: target,
     fleetStore: storeWith(target, managerToOwner),

@@ -46,15 +46,16 @@ export const RESOLVED_UPLOAD_DIR = path.resolve(UPLOAD_DIR)
 const MY_TASK_TASK_LIMIT = 20
 const MY_TASK_UNREAD_LIMIT = 50
 
-function recordPlaceholderReadForMessages(fleetStore, broadcastEvent, agentId, messages = []) {
-  if (!fleetStore?.db || !agentId) return
+async function recordPlaceholderReadForMessages(fleetStore, broadcastEvent, agentId, messages = []) {
+  if (!agentId) return
   const now = new Date().toISOString()
   for (const message of messages || []) {
     if (!message?.metadata?.recipient_refs?.[agentId]) continue
     const next = markPendingAttachmentPlaceholdersRead(message.metadata, agentId, { now })
     if (next === message.metadata) continue
-    fleetStore.db.prepare('UPDATE events SET metadata = ? WHERE id = ?')
-      .run(JSON.stringify(next), message.id)
+    // Replace, not patch: markPendingAttachmentPlaceholdersRead returns the
+    // complete metadata object it wants stored.
+    await fleetStore.replaceEventMetadata(message.id, next)
     broadcastEvent('event-update', { id: message.id, metadata_patch: next })
   }
 }
@@ -212,11 +213,11 @@ export function filteredFleetRosterPage(roster, {
   return { matched: ordered.length, rows: page, nextCursor }
 }
 
-export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, clearEphemeralState, suppressEchoFor, sendDaemonEphemeral, sendDaemonDurable, resolveRpc, daemonConnections, resolveSpawnTarget, broadcastDaemonAgentsUpdated, enqueueDaemonMessage, agentSeatBindingObligations, hasOpenFleetSocketForAgent = () => false, requireOperationRead }) {
+export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, clearEphemeralState, suppressEchoFor, sendDaemonEphemeral, sendDaemonDurable, resolveRpc, daemonConnections, resolveSpawnTarget, broadcastDaemonAgentsUpdated, enqueueDaemonMessage, hasOpenFleetSocketForAgent = () => false, requireOperationRead }) {
   const router = Router()
 
-  router.get('/api/fleet/operations/:operationId', requireOperationRead, (req, res) => {
-    const operation = fleetStore.getTransportOperationStatus(req.params.operationId)
+  router.get('/api/fleet/operations/:operationId', requireOperationRead, async (req, res) => {
+    const operation = await fleetStore.getTransportOperationStatus(req.params.operationId)
     if (!operation) {
       res.status(404).json({ ok: false, error: 'operation not found' })
       return
@@ -243,8 +244,8 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     }
   }
 
-  function currentSeatOrHttpError(res, agent) {
-    const seat = agent?.id ? fleetStore?.getCurrentAgentSeat?.(agent.id) : null
+  async function currentSeatOrHttpError(res, agent) {
+    const seat = agent?.id ? await fleetStore.getCurrentAgentSeat(agent.id) : null
     if (!seat) {
       res.status(409).json({ error: 'agent has no current durable seat' })
       return null
@@ -266,16 +267,16 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   })
 
   // --- GET /api/state ---
-  router.get('/api/state', (req, res) => {
-    if (fleetStore) fleetStore.updateHeartbeat(SERVER_OWNER_ID)
-    const agentsPage = fleetStore?.getAliveAgentsPage?.({ limit: 100 }) || { agents: [], nextCursor: null }
-    const tasksPage = fleetStore?.getActiveTasksPage?.({ limit: 100 }) || { tasks: [], nextCursor: null }
+  router.get('/api/state', async (req, res) => {
+    if (fleetStore) await fleetStore.updateHeartbeat(SERVER_OWNER_ID)
+    const agentsPage = await fleetStore?.getAliveAgentsPage?.({ limit: 100 }) || { agents: [], nextCursor: null }
+    const tasksPage = await fleetStore?.getActiveTasksPage?.({ limit: 100 }) || { tasks: [], nextCursor: null }
     res.json({
       agents: agentsPage.agents || [],
       tasks: tasksPage.tasks || [],
       counts: {
-        agents: fleetStore?.getAgentSummary?.() || null,
-        tasks: fleetStore?.getActiveTaskCount?.() ?? (tasksPage.tasks || []).length,
+        agents: await fleetStore?.getAgentSummary?.() || null,
+        tasks: await fleetStore?.getActiveTaskCount?.() ?? (tasksPage.tasks || []).length,
       },
       cursors: {
         agents: agentsPage.nextCursor || null,
@@ -284,26 +285,26 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     })
   })
 
-  router.get('/api/agent-seat', (req, res) => {
+  router.get('/api/agent-seat', async (req, res) => {
     const query = req.query.agent || req.query.id
-    const agent = fleetStore?.findAgent(query)
+    const agent = await fleetStore?.findAgent(query)
     if (!agent) { res.status(404).json({ ok: false, error: 'agent not found' }); return }
-    const seat = fleetStore?.getCurrentAgentSeat?.(agent.id)
+    const seat = await fleetStore?.getCurrentAgentSeat?.(agent.id)
     if (!seat) { res.status(404).json({ ok: false, error: 'agent has no current durable seat' }); return }
     res.json({ ok: true, seat })
   })
 
-  router.post('/api/agent-seat', (req, res) => {
+  router.post('/api/agent-seat', async (req, res) => {
     if (!fleetStore) { res.status(503).json({ ok: false, error: 'Fleet store not available' }); return }
     const body = req.body || {}
     const agentId = body.agent_id || body.agentId
-    const agent = fleetStore.findAgent(agentId)
+    const agent = await fleetStore.findAgent(agentId)
     if (!agent) { res.status(404).json({ ok: false, error: 'agent not found' }); return }
     const machineId = body.machine_id || body.machineId || null
     const envName = body.env_name || body.envName || null
     const daemonKey = body.daemon_key || body.daemonKey || (machineId && envName ? `${machineId}:${envName}` : null)
     try {
-      const seat = recordAgentBindingEvent(fleetStore, { ...body, agent_id: agent.id, daemon_key: daemonKey }, {
+      const seat = await recordAgentBindingEvent(fleetStore, { ...body, agent_id: agent.id, daemon_key: daemonKey }, {
         machineId,
         envName,
         daemonKey,
@@ -315,7 +316,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     }
   })
 
-  router.post('/api/agent-seat-binding-obligation', (req, res) => {
+  router.post('/api/agent-seat-binding-obligation', async (req, res) => {
     const body = req.body || {}
     const required = ['agent_id', 'daemon_key', 'local_agent_id', 'cwd', 'kind', 'model', 'friendly_name']
     const missing = required.filter(key => !body[key])
@@ -323,18 +324,18 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       res.status(400).json({ ok: false, error: `invalid runtime binding obligation: missing ${missing.join(', ')}` })
       return
     }
-    const agent = fleetStore?.findAgent(body.agent_id)
+    const agent = await fleetStore?.findAgent(body.agent_id)
     if (!agent) { res.status(404).json({ ok: false, error: 'agent not found' }); return }
-    const obligation = agentSeatBindingObligations.put({ ...body, agent_id: agent.id })
-    enqueueDaemonMessage(obligation.daemon_key, {
+    const obligation = await fleetStore.putAgentSeatBindingObligation({ ...body, agent_id: agent.id })
+    await enqueueDaemonMessage(obligation.daemon_key, {
       type: 'agent-seat-binding-obligation',
       ...obligation,
     }, { dedupeKey: `agent-seat-binding:${obligation.obligation_id}` })
     res.status(202).json({ ok: true, pending: true, obligation })
   })
 
-  router.post('/api/agent-seat-binding-obligation/:id/retire', (req, res) => {
-    const obligation = agentSeatBindingObligations.get(req.params.id)
+  router.post('/api/agent-seat-binding-obligation/:id/retire', async (req, res) => {
+    const obligation = await fleetStore.getAgentSeatBindingObligation(req.params.id)
     const body = req.body || {}
     if (!obligation) { res.status(404).json({ ok: false, error: 'binding obligation not found' }); return }
     if (body.agent_id !== obligation.agent_id || body.daemon_key !== obligation.daemon_key) {
@@ -352,14 +353,14 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     // an agent. Anything that has run keeps its row and its name; only the
     // obligation and its seat go. This path was killing unconditionally, and it
     // is wired to seat binding — the machinery currently failing in a loop.
-    const everRan = fleetStore.hasEverRun?.(obligation.agent_id)
+    const everRan = await fleetStore.hasEverRun?.(obligation.agent_id)
     if (everRan) {
-      fleetStore.retireCurrentAgentSeat?.(obligation.agent_id)
+      await fleetStore.retireCurrentAgentSeat?.(obligation.agent_id)
     } else {
-      fleetStore.markDead(obligation.agent_id)
+      await fleetStore.markDead(obligation.agent_id)
     }
     clearEphemeralState?.(obligation.agent_id)
-    const retired = !fleetStore.getCurrentAgentSeat?.(obligation.agent_id)
+    const retired = !await fleetStore.getCurrentAgentSeat?.(obligation.agent_id)
     if (!retired) { res.status(409).json({ ok: false, retired: false, error: 'agent reservation is not fully retired' }); return }
     broadcastState()
     res.json({ ok: true, retired: true })
@@ -388,7 +389,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   })
 
   // --- GET /api/store/events ---
-  router.get('/api/store/events', (req, res) => {
+  router.get('/api/store/events', async (req, res) => {
     if (!fleetStore) { res.status(503).json({ error: 'Fleet store not available' }); return }
     const afterId = parseInt(req.query.after || '0')
     const beforeId = req.query.before ? parseInt(req.query.before) : null
@@ -400,31 +401,23 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     try {
       let events
       let total = null
-      const cols = 'id, type, timestamp, from_id as "from", to_id as "to", text, metadata, task_id, agent_id'
       if (agent) {
         // UNION of two indexed scans — see FleetStore.queryAgentEvents.
-        events = fleetStore.queryAgentEvents({ agent, sinceTs: since, untilTs: until, afterId, beforeId, limit })
+        events = await fleetStore.queryAgentEvents({ agent, sinceTs: since, untilTs: until, afterId, beforeId, limit })
       } else if (type && beforeId) {
         // A bounded newest-first window for read-only consumers such as Grafana.
-        // `before` remains the ordered pagination cursor; reversing preserves the
-        // endpoint's chronological response contract without scanning history.
-        events = fleetStore.db.prepare(
-          `SELECT ${cols} FROM events WHERE type = ? AND id < ? ORDER BY id DESC LIMIT ?`
-        ).all(type, beforeId, limit)
-        events.reverse()
+        // `before` remains the ordered pagination cursor; queryEventsPage
+        // reverses so the endpoint's chronological response contract holds
+        // without scanning history.
+        events = await fleetStore.queryEventsPage({ types: [type], beforeId, limit })
       } else if (type) {
-        events = fleetStore.db.prepare(
-          `SELECT ${cols} FROM events WHERE type = ? AND id > ? ORDER BY id ASC LIMIT ?`
-        ).all(type, afterId, limit)
+        events = await fleetStore.queryEventsPage({ types: [type], afterId, limit })
       } else if (beforeId) {
-        events = fleetStore.db.prepare(
-          `SELECT ${cols} FROM events WHERE id < ? ORDER BY id DESC LIMIT ?`
-        ).all(beforeId, limit)
-        events.reverse()
+        events = await fleetStore.queryEventsPage({ beforeId, limit })
       } else {
-        events = fleetStore.getEventsSince(afterId, limit)
+        events = await fleetStore.getEventsSince(afterId, limit)
       }
-      const lastId = fleetStore.getLastEventId()
+      const lastId = await fleetStore.getLastEventId()
       const page = { events, lastId, total }
       res.json(req.query.view === 'activity-dashboard' ? projectActivityEventsPage(page) : page)
     } catch (e) {
@@ -434,10 +427,10 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
 
   // --- POST /api/agents/:id/mark-dead ---
   // Called by the daemon when it detects an agent's process is gone.
-  router.post('/api/agents/:id/mark-dead', (req, res) => {
+  router.post('/api/agents/:id/mark-dead', async (req, res) => {
     if (!fleetStore) { res.status(503).json({ error: 'Fleet store not available' }); return }
     try {
-      fleetStore.markDead(req.params.id)
+      await fleetStore.markDead(req.params.id)
       clearEphemeralState?.(req.params.id)
       broadcastState()
       res.json({ ok: true })
@@ -449,13 +442,13 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     res.status(410).json({ error: 'Full agent store dumps are disabled; use /api/agents, /api/agents/lookup, or search.' })
   })
 
-  router.get('/api/agents/summary', (req, res) => {
+  router.get('/api/agents/summary', async (req, res) => {
     if (!fleetStore) { res.status(503).json({ error: 'Fleet store not available' }); return }
-    try { res.json(fleetStore.getAgentSummary?.() || { total: 0, live: 0, dead: 0, byMachine: {} }) }
+    try { res.json(await fleetStore.getAgentSummary?.() || { total: 0, live: 0, dead: 0, byMachine: {} }) }
     catch (e) { res.status(500).json({ error: e.message }) }
   })
 
-  router.get('/api/agents/lookup', (req, res) => {
+  router.get('/api/agents/lookup', async (req, res) => {
     if (!fleetStore) { res.status(503).json({ error: 'Fleet store not available' }); return }
     const rawIds = Array.isArray(req.query.ids) ? req.query.ids.join(',') : (req.query.ids || '')
     const ids = [...new Set(String(rawIds).split(',').map(s => s.trim()).filter(Boolean))].slice(0, 200)
@@ -463,8 +456,8 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     if (name && ids.length) { res.status(400).json({ error: 'provide ids or name, not both' }); return }
     try {
       const agents = name
-        ? [fleetStore.findAgent(name)].filter(Boolean)
-        : (fleetStore.getAgentsByIds?.(ids) || [])
+        ? [await fleetStore.findAgent(name)].filter(Boolean)
+        : (await fleetStore.getAgentsByIds?.(ids) || [])
       res.json({ agents })
     }
     catch (e) { res.status(500).json({ error: e.message }) }
@@ -474,14 +467,14 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   // The browser agents panel is deliberately live-only.  Historical/dead
   // agents remain available through the existing targeted lookup/search
   // operations; they must never turn connection setup into a roster dump.
-  router.get('/api/agents', (req, res) => {
+  router.get('/api/agents', async (req, res) => {
     if (!fleetStore) { res.status(503).json({ error: 'Fleet store not available' }); return }
     const requested = Number.parseInt(req.query.limit, 10)
     const limit = Number.isFinite(requested) ? Math.max(1, Math.min(requested, 200)) : 100
     try {
       const page = {
-        ...fleetStore.getAliveAgentsPage({ limit, cursor: req.query.cursor || null }),
-        totals: fleetStore.getAliveAgentCounts(),
+        ...await fleetStore.getAliveAgentsPage({ limit, cursor: req.query.cursor || null }),
+        totals: await fleetStore.getAliveAgentCounts(),
       }
       res.json(req.query.view === 'activity-dashboard' ? projectAgentActivityPage(page) : page)
     } catch (e) { res.status(500).json({ error: e.message }) }
@@ -492,12 +485,12 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   // { ok: true } or { ok: false, collisions: [...] }. The same check
   // also runs in the register and label WS handlers — this endpoint
   // lets fleet-spawn fail before launching claude.
-  router.get('/api/check-name', (req, res) => {
+  router.get('/api/check-name', async (req, res) => {
     if (!fleetStore) { res.status(503).json({ error: 'Fleet store not available' }); return }
     const name = req.query.name
     if (!name || typeof name !== 'string') { res.status(400).json({ error: 'missing name param' }); return }
     try {
-      const collisions = fleetStore.checkNameAvailable([name], { excludeId: req.query.exclude || null, asFriendlyName: true })
+      const collisions = await fleetStore.checkNameAvailable([name], { excludeId: req.query.exclude || null, asFriendlyName: true })
       if (name === SERVER_OWNER_NAME) collisions.push({ name, kind: 'server_owner' })
       res.json({
         ok: collisions.length === 0,
@@ -515,33 +508,33 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   // --- GET /api/tasks?limit=100&cursor=<opaque> ---
   // Automatic browser surfaces use this bounded first page plus task_delta. The
   // unbounded /api/store/tasks endpoint remains explicit tooling/history.
-  router.get('/api/tasks', (req, res) => {
+  router.get('/api/tasks', async (req, res) => {
     if (!fleetStore) { res.status(503).json({ error: 'Fleet store not available' }); return }
     const requested = Number.parseInt(req.query.limit, 10)
     const limit = Number.isFinite(requested) ? Math.max(1, Math.min(requested, 200)) : 100
     try {
-      const page = fleetStore.getActiveTasksPage({ limit, cursor: req.query.cursor || null })
+      const page = await fleetStore.getActiveTasksPage({ limit, cursor: req.query.cursor || null })
       res.json({
         ...page,
-        total: fleetStore.getActiveTaskCount?.() ?? page.tasks.length,
+        total: await fleetStore.getActiveTaskCount?.() ?? page.tasks.length,
       })
     } catch (e) { res.status(500).json({ error: e.message }) }
   })
 
   // --- GET /api/my-task ---
-  router.get('/api/my-task', (req, res) => {
+  router.get('/api/my-task', async (req, res) => {
     const agentId = req.query.agent
     if (!agentId) { res.status(400).send('missing "agent" param'); return }
-    if (fleetStore) fleetStore.updateHeartbeat(agentId)
-    const tasks = fleetStore?.getActiveTasksByAgentLimited?.(agentId, MY_TASK_TASK_LIMIT) || []
-    const taskCount = fleetStore?.getActiveTaskCountByAgent?.(agentId) ?? tasks.length
-    const task = tasks[0] || fleetStore?.getTaskByAgent(agentId) || null
-    const unread = fleetStore?.getUnreadLimited?.(agentId, MY_TASK_UNREAD_LIMIT) || []
-    const unreadCount = fleetStore?.getUnreadCount?.(agentId) ?? unread.length
+    if (fleetStore) await fleetStore.updateHeartbeat(agentId)
+    const tasks = await fleetStore?.getActiveTasksByAgentLimited?.(agentId, MY_TASK_TASK_LIMIT) || []
+    const taskCount = await fleetStore?.getActiveTaskCountByAgent?.(agentId) ?? tasks.length
+    const task = tasks[0] || await fleetStore?.getTaskByAgent(agentId) || null
+    const unread = await fleetStore?.getUnreadLimited?.(agentId, MY_TASK_UNREAD_LIMIT) || []
+    const unreadCount = await fleetStore?.getUnreadCount?.(agentId) ?? unread.length
     const peek = req.query.peek === 'true'
     if (fleetStore && unread.length && !peek) {
-      recordPlaceholderReadForMessages(fleetStore, broadcastEvent, agentId, unread)
-      const readIds = fleetStore.markEventsRead?.(agentId, unread.map(m => m.id)) || []
+      await recordPlaceholderReadForMessages(fleetStore, broadcastEvent, agentId, unread)
+      const readIds = await fleetStore.markEventsRead?.(agentId, unread.map(m => m.id)) || []
       if (readIds.length) broadcastEvent('read-receipt', { event_ids: readIds, agent: agentId })
     }
     if (!peek) broadcastState()
@@ -561,7 +554,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   })
 
   // --- GET /api/chat/history ---
-  router.get('/api/chat/history', (req, res) => {
+  router.get('/api/chat/history', async (req, res) => {
     const limit = Math.min(parseInt(req.query.limit || '50'), 1000)
     const before = req.query.before || null
     // ?agents=a&agents=b (array) or ?agents=a (string) → normalize to array
@@ -572,7 +565,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
         res.json({ events: [], hasMore: false, nextCursor: null })
         return
       }
-      res.json(fleetStore.buildChatHistoryResponse({
+      res.json(await fleetStore.buildChatHistoryResponse({
         before,
         agents,
         limit,
@@ -592,12 +585,12 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   // DNF-filterable, capped slice of rows.
   //   ?filter=<json DNF>  scope rows (e.g. [[["awake"]]], a label, a name)
   //   ?limit=<n>          cap rows (default 50); totals are always whole-fleet
-  router.get('/api/fleet-table', (req, res) => {
+  router.get('/api/fleet-table', async (req, res) => {
     try {
       if (!fleetStore) { res.json({ totals: { awake: 0, hibernating: 0, dead: 0, total: 0 }, agents: [], shown: 0, matched: 0 }); return }
       const now = Date.now()
       const limit = Math.max(1, Math.min(parseInt(req.query.limit) || 50, 500))
-      const roster = fleetStore.getAliveAgents?.() || []
+      const roster = await fleetStore.getAliveAgents?.() || []
 
       // Whole-fleet totals (independent of the filter) — the at-a-glance load.
       // Optional filter expression from the query (e.g. "awake & reviewers").
@@ -617,7 +610,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       const summary = summarizeFleetRosterTruth({ roster, matched: page.rows, limit, now })
       res.json({
         totals: summary.totals,
-        wholeFleet: fleetStore.getAgentSummary?.() || null,
+        wholeFleet: await fleetStore.getAgentSummary?.() || null,
         summary: summary.summary,
         agents: summary.agents,
         shown: summary.shown,
@@ -636,7 +629,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       }
       const now = Date.now()
       const limit = Math.max(1, Math.min(parseInt(req.query.limit) || 50, 500))
-      const roster = fleetStore.getAliveAgents?.() || []
+      const roster = await fleetStore.getAliveAgents?.() || []
       let filterAst = null
       if (req.query.filter) {
         try { filterAst = parseFilter(req.query.filter) } catch (e) { res.status(400).json({ error: `bad filter: ${e.message}` }); return }
@@ -661,7 +654,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       res.json({
         ...summary,
         matched: page.matched,
-        wholeFleet: fleetStore.getAgentSummary?.() || null,
+        wholeFleet: await fleetStore.getAgentSummary?.() || null,
         nextCursor: page.nextCursor,
         page_limited: true,
       })
@@ -669,10 +662,10 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   })
 
   // --- GET /api/wiretaps ---
-  router.get('/api/wiretaps', (req, res) => {
+  router.get('/api/wiretaps', async (req, res) => {
     if (!fleetStore) { res.status(503).send('no store'); return }
     const agent = req.query.agent
-    const taps = agent ? fleetStore.getWiretapsByAgent(agent) : fleetStore.getWiretaps()
+    const taps = agent ? await fleetStore.getWiretapsByAgent(agent) : await fleetStore.getWiretaps()
     res.json(taps)
   })
 
@@ -706,16 +699,16 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     const { from: rawFrom, agent: agentQuery, description, message, success_criteria, blocked_by, task_id } = req.body || {}
     if (!agentQuery || (!description && !task_id)) { res.status(400).send('missing "agent" or "description"'); return }
     if (task_id && !message) { res.status(400).send('missing "message" for existing task delegation'); return }
-    const resolvedAgent = fleetStore?.findAgent(agentQuery)
+    const resolvedAgent = await fleetStore?.findAgent(agentQuery)
     if (!resolvedAgent) { res.status(404).send(`Agent not found: "${agentQuery}"`); return }
     const agentId = resolvedAgent.id
-    const from = rawFrom ? (fleetStore?.findAgent(rawFrom)?.id || rawFrom) : null
+    const from = rawFrom ? ((await fleetStore.findAgent(rawFrom))?.id || rawFrom) : null
     const now = new Date().toISOString()
-    const existingTask = task_id ? fleetStore?.getTask?.(task_id) : null
+    const existingTask = task_id ? await fleetStore?.getTask?.(task_id) : null
     if (task_id && !existingTask) { res.status(404).send(`Task not found: "${task_id}"`); return }
     if (existingTask && (existingTask.status === 'done' || existingTask.status === 'retracted')) { res.status(409).send(`Cannot delegate closed task: "${task_id}"`); return }
-    const caller = from ? (fleetStore?.findAgent(from) || { id: from }) : null
-    if (existingTask && !canReportTask({ caller, task: existingTask, fleetStore })) {
+    const caller = from ? (await fleetStore?.findAgent(from) || { id: from }) : null
+    if (existingTask && !await canReportTask({ caller, task: existingTask, fleetStore })) {
       res.status(403).send('not authorized to delegate this task')
       return
     }
@@ -731,7 +724,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     }
     if (fleetStore) {
       const metadata = {
-        fromLabel: fleetStore.getAgent?.(from)?.friendly_name || from,
+        fromLabel: (await fleetStore.getAgent(from))?.friendly_name || from,
         toLabel: resolvedAgent.friendly_name || agentId,
         criteria: success_criteria || [],
         message: message || '',
@@ -748,7 +741,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
           eventMetadata: metadata,
         })
       } else {
-        fleetStore.upsertTask(task)
+        await fleetStore.upsertTask(task)
         await fleetStore.delegate(from, agentId, taskId, description, metadata)
       }
     }
@@ -757,12 +750,12 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   })
 
   // --- POST /api/tasks/delete ---
-  router.post('/api/tasks/delete', (req, res) => {
+  router.post('/api/tasks/delete', async (req, res) => {
     const { task_id } = req.body || {}
     if (!task_id) { res.status(400).send('missing task_id'); return }
-    const task = fleetStore?.getTask?.(task_id)
+    const task = await fleetStore?.getTask?.(task_id)
     if (!task) { res.status(404).send('task not found'); return }
-    fleetStore?.removeTask?.(task_id)
+    await fleetStore?.removeTask?.(task_id)
     broadcastState()
     res.json({ ok: true, task_id })
   })
@@ -772,7 +765,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   // each row. The caller passes the exact ids and the reason — the server holds
   // no staleness rule of its own, so it can never decide to wipe on its own.
   // `dry_run: true` reports what would happen and changes nothing.
-  router.post('/api/tasks/retire', (req, res) => {
+  router.post('/api/tasks/retire', async (req, res) => {
     if (!fleetStore) { res.status(503).json({ error: 'Fleet store not available' }); return }
     const { task_ids, reason, by, dry_run } = req.body || {}
     if (!Array.isArray(task_ids) || task_ids.length === 0) { res.status(400).json({ error: 'missing task_ids' }); return }
@@ -788,13 +781,13 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       let skipped = []
       if (dryRun) {
         for (const id of task_ids) {
-          const task = fleetStore.getTask?.(id)
+          const task = await fleetStore.getTask?.(id)
           if (!task) { skipped.push({ task_id: id, why: 'not found' }); continue }
           if (task.status === 'done' || task.status === 'retracted') { skipped.push({ task_id: id, why: `already ${task.status}` }); continue }
           retired.push({ task_id: id, agent: task.agent, description: task.description })
         }
       } else {
-        ({ retired, skipped } = fleetStore.retireTasks(task_ids, { reason, retiredBy: by || null }))
+        ({ retired, skipped } = await fleetStore.retireTasks(task_ids, { reason, retiredBy: by || null }))
       }
       if (!dryRun && retired.length) broadcastState()
       res.json({ ok: true, dry_run: dryRun, reason, retired_count: retired.length, skipped_count: skipped.length, retired, skipped })
@@ -824,7 +817,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     // fail closed here instead of treating all HTTP callers as the server owner.
     // MCP/agent spawns use the /ws/fleet `spawn` operation, where the caller is
     // bound to the registered WebSocket identity.
-    const caller = req.fleetCallerId ? fleetStore?.getAgent?.(req.fleetCallerId) : null
+    const caller = req.fleetCallerId ? await fleetStore?.getAgent?.(req.fleetCallerId) : null
     if (!caller) {
       res.status(403).json({ error: 'spawn requires authenticated caller identity; HTTP /api/spawn has no per-caller identity. Use the fleet WS spawn path.' })
       return
@@ -834,11 +827,11 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     let spawnName = name
     let routeTarget = null
     if (respawn && agent) {
-      const a = fleetStore?.findAgent(agent)
+      const a = await fleetStore?.findAgent(agent)
       routeTarget = a || null
       spawnName = a?.id || agent
     } else if (respawn && spawnName) {
-      routeTarget = fleetStore?.findAgent(spawnName) || null
+      routeTarget = await fleetStore?.findAgent(spawnName) || null
       spawnName = routeTarget?.id || spawnName
     }
     if (respawn && !routeTarget) {
@@ -846,7 +839,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       return
     }
     if (fresh && name) {
-      const cols = fleetStore?.checkNameAvailable?.([name], { asFriendlyName: true }) || []
+      const cols = await fleetStore?.checkNameAvailable?.([name], { asFriendlyName: true }) || []
       if (cols.length) {
         res.status(409).json({
           ok: false,
@@ -858,7 +851,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       }
     }
     try {
-      const route = resolveSpawnMachine({
+      const route = await resolveSpawnMachine({
         caller,
         targetAgent: routeTarget,
         fresh: !!fresh,
@@ -916,7 +909,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   // server still emits the broadcast itself.
   router.post('/api/kick', async (req, res) => {
     const { agent: agentQuery } = req.body || {}
-    const agent = fleetStore?.findAgent(agentQuery)
+    const agent = await fleetStore?.findAgent(agentQuery)
     if (!agent) { res.status(404).json({ error: 'agent not found' }); return }
     const result = await rpcAgent(res, agent, 'kick', { agent_id: agent.id })
     if (result === null) return // rpcAgent already wrote the response
@@ -928,10 +921,10 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   router.post('/api/rename', async (req, res) => {
     const { agent: agentQuery, name: newName } = req.body || {}
     if (!agentQuery || newName == null) { res.status(400).json({ error: 'agent and name required' }); return }
-    const agent = fleetStore?.findAgent(agentQuery)
+    const agent = await fleetStore?.findAgent(agentQuery)
     if (!agent) { res.status(404).json({ error: 'agent not found' }); return }
     if (newName) {
-      const collisions = fleetStore?.checkNameAvailable([newName], { excludeId: agent.id, asFriendlyName: true }) || []
+      const collisions = await fleetStore?.checkNameAvailable([newName], { excludeId: agent.id, asFriendlyName: true }) || []
       if (newName === SERVER_OWNER_NAME) collisions.push({ name: newName, kind: 'server_owner' })
       if (collisions.length) {
         res.status(400).json({ error: `Name "${newName}" unavailable: ${formatNameCollisions(collisions)}` })
@@ -944,12 +937,12 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   })
 
   // --- POST /api/label ---
-  router.post('/api/label', (req, res) => {
+  router.post('/api/label', async (req, res) => {
     const { agent: agentQuery, labels } = req.body || {}
     if (!agentQuery || !Array.isArray(labels)) { res.status(400).json({ error: 'agent and labels[] required' }); return }
-    const agent = fleetStore?.findAgent(agentQuery)
+    const agent = await fleetStore?.findAgent(agentQuery)
     if (!agent) { res.status(404).json({ error: 'agent not found' }); return }
-    const collisions = fleetStore?.checkNameAvailable(labels, { excludeId: agent.id, asFriendlyName: false }) || []
+    const collisions = await fleetStore?.checkNameAvailable(labels, { excludeId: agent.id, asFriendlyName: false }) || []
     for (const label of labels) {
       if (label === SERVER_OWNER_NAME) collisions.push({ name: label, kind: 'server_owner' })
       if (label === agent.id) collisions.push({ name: label, kind: 'self_id' })
@@ -959,21 +952,21 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       return
     }
     agent.labels = labels
-    if (fleetStore) fleetStore.upsertAgent(agent)
+    if (fleetStore) await fleetStore.upsertAgent(agent)
     broadcastState()
     res.json({ ok: true, agent: agent.id, labels })
   })
 
   // --- POST /api/set-metadata ---
   // Merge key/value pairs into an agent's metadata JSON.
-  router.post('/api/set-metadata', (req, res) => {
+  router.post('/api/set-metadata', async (req, res) => {
     const { agent: agentQuery, ...fields } = req.body || {}
     if (!agentQuery) { res.status(400).json({ error: 'agent required' }); return }
-    const agent = fleetStore?.findAgent(agentQuery)
+    const agent = await fleetStore?.findAgent(agentQuery)
     if (!agent) { res.status(404).json({ error: 'agent not found' }); return }
     const meta = { ...(agent.metadata || {}), ...fields }
     agent.metadata = meta
-    if (fleetStore) fleetStore.upsertAgent(agent)
+    if (fleetStore) await fleetStore.upsertAgent(agent)
     broadcastState()
     res.json({ ok: true, agent: agent.id, metadata: meta })
   })
@@ -983,9 +976,9 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   // start/stop-terminal-watch RPC pair.
   router.post('/api/capture-pane', async (req, res) => {
     const { agent: agentQuery, lines } = req.body || {}
-    const agent = fleetStore?.findAgent(agentQuery)
+    const agent = await fleetStore?.findAgent(agentQuery)
     if (!agent) { res.status(404).json({ error: 'agent not found' }); return }
-    const seat = currentSeatOrHttpError(res, agent)
+    const seat = await currentSeatOrHttpError(res, agent)
     if (!seat) return
     try {
       const result = await sendDaemonEphemeral(seat.daemon_key, 'capture-pane', {
@@ -1005,9 +998,9 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   // body: { agent: <id|name> }
   router.post('/api/plan-mode-toggle', async (req, res) => {
     const { agent: agentQuery } = req.body || {}
-    const agent = fleetStore?.findAgent(agentQuery)
+    const agent = await fleetStore?.findAgent(agentQuery)
     if (!agent) { res.status(404).json({ error: 'agent not found' }); return }
-    const seat = currentSeatOrHttpError(res, agent)
+    const seat = await currentSeatOrHttpError(res, agent)
     if (!seat) return
 
     const parseCCMode = (pane) => {
@@ -1037,7 +1030,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       const finalMode = parseCCMode(cap2?.content || '')
 
       // Store permission mode in agent metadata so UI can show persistent badge
-      fleetStore?.updateAgentMeta(agent.id, { permission_mode: finalMode === 'default' ? null : finalMode })
+      await fleetStore?.updateAgentMeta(agent.id, { permission_mode: finalMode === 'default' ? null : finalMode })
       broadcastState()
 
       res.json({ ok: true, mode: finalMode, was: currentMode })
@@ -1100,7 +1093,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     if (!eventId || !rawText || !agentId) {
       return res.status(400).json({ error: 'eventId, quoted, and agentId required' })
     }
-    const agent = fleetStore.findAgent?.(agentId) || fleetStore.getAgent?.(agentId)
+    const agent = await fleetStore.findAgent?.(agentId) || await fleetStore.getAgent?.(agentId)
     if (!agent) return res.status(404).json({ error: `agent not found: ${agentId}` })
 
     const route = resolveRpc('rechat', agent)
@@ -1125,7 +1118,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     const brokenAtts = (inlineAttachments || []).filter(a => a && a.broken)
     if (brokenAtts.length && typeof fleetStore?.chat === 'function') {
       const paths = brokenAtts.map(a => a.path).join(', ')
-      fleetStore.chat(
+      await fleetStore.chat(
         SERVER_OWNER_ID,
         agentId,
         `⚠ ${SERVER_OWNER_NAME} unquoted a file path that isn't on your machine: ${paths}. Fix the reference (the file may be at a different path) and re-send — that link is rendering dead in chat.`
@@ -1136,7 +1129,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       for (const fileIssue of markdownRenderIssues) {
         const fileLabel = fileIssue.name || path.basename(fileIssue.path || 'markdown file')
         const issues = Array.isArray(fileIssue.issues) ? fileIssue.issues : []
-        fleetStore.chat(
+        await fleetStore.chat(
           SERVER_OWNER_ID,
           agentId,
           `⚠ ${SERVER_OWNER_NAME} unquoted a shared markdown file that won't render properly: ${fileLabel}. The problem is in the file, not the chat wrapper. Edit the markdown file; the shared surface should update from the file:\n${issues.map(l => `- ${l}`).join('\n')}`
@@ -1147,7 +1140,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     // Patch the stored event: replace `rawText` (with or without backticks) in the text,
     // and merge new inline_attachments into the event's metadata.
     const evId = parseInt(eventId, 10)
-    const event = fleetStore.getEventById?.(evId)
+    const event = await fleetStore.getEventById?.(evId)
     if (event && event.text) {
       // Offset new attachment indices so they don't collide with existing ones
       const existingMeta = event.metadata || {}
@@ -1190,8 +1183,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       if (newText !== event.text || inlineAttachments?.length) {
         const mergedAtts = [...existingAtts, ...(inlineAttachments || [])]
         const newMeta = { ...existingMeta, inline_attachments: mergedAtts }
-        fleetStore.db.prepare('UPDATE events SET text = ?, metadata = ? WHERE id = ?')
-          .run(newText, JSON.stringify(newMeta), evId)
+        await fleetStore.replaceEventTextAndMetadata(evId, newText, newMeta)
         broadcastEvent('event-update', { id: evId, text: newText, inline_attachments: mergedAtts })
       }
     }
@@ -1217,12 +1209,12 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   })
 
   router.post('/api/agents/:agent/wake', async (req, res) => {
-    const agent = fleetStore?.findAgent?.(req.params.agent)
+    const agent = await fleetStore?.findAgent?.(req.params.agent)
     if (!agent || agent.dead || agent.human) {
       res.status(404).json({ ok: false, error: `agent not found: ${req.params.agent}` })
       return
     }
-    const seat = currentSeatOrHttpError(res, agent)
+    const seat = await currentSeatOrHttpError(res, agent)
     if (!seat) return
     try {
       const result = await sendDaemonDurable(seat.daemon_key, 'wake', { fleet_id: agent.id })
@@ -1239,7 +1231,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       res.status(400).json({ ok: false, error: 'mint requires name' })
       return
     }
-    const collisions = fleetStore?.checkNameAvailable?.([name], { asFriendlyName: true }) || []
+    const collisions = await fleetStore?.checkNameAvailable?.([name], { asFriendlyName: true }) || []
     if (collisions.length) {
       res.status(409).json({
         ok: false,
@@ -1256,7 +1248,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       ...(effort ? { effort } : {}),
     }
     try {
-      const route = resolveSpawnMachine({
+      const route = await resolveSpawnMachine({
         caller,
         targetAgent: null,
         fresh: true,
@@ -1294,12 +1286,12 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   })
 
   // --- POST /api/agent-status ---
-  router.post('/api/agent-status', (req, res) => {
+  router.post('/api/agent-status', async (req, res) => {
     const { agent: rawAgent, state, tool } = req.body || {}
     if (!rawAgent || !state) { res.status(400).send('missing agent or state'); return }
-    const agent = fleetStore?.findAgent(rawAgent)?.id || rawAgent
+    const agent = (await fleetStore.findAgent(rawAgent))?.id || rawAgent
     const ts = new Date().toISOString()
-    if (fleetStore) fleetStore.updateAgentStatus?.(agent, state, tool || null, ts)
+    if (fleetStore) await fleetStore.updateAgentStatus?.(agent, state, tool || null, ts)
     broadcastEvent('agent-status', { agent, state, tool: tool || null, ts })
     res.json({ ok: true })
   })
@@ -1308,12 +1300,12 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   // Mark a single event read for a recipient. Used by terminal-card
   // dismissal so the dismissed card doesn't auto-pop again on reload.
   // Body: { event_id, agent }
-  router.post('/api/mark-event-read', (req, res) => {
+  router.post('/api/mark-event-read', async (req, res) => {
     const { event_id, agent: rawAgent } = req.body || {}
     if (!event_id || !rawAgent) { res.status(400).json({ error: 'event_id and agent required' }); return }
-    const agent = fleetStore?.findAgent(rawAgent)
+    const agent = await fleetStore?.findAgent(rawAgent)
     const agentId = agent?.id || rawAgent
-    const changed = fleetStore?.markEventRead?.(parseInt(event_id, 10), agentId)
+    const changed = await fleetStore?.markEventRead?.(parseInt(event_id, 10), agentId)
     if (changed) {
       broadcastEvent('read-receipt', { event_ids: [parseInt(event_id, 10)], agent: agentId })
     }
@@ -1332,9 +1324,9 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   router.post('/api/terminal-card', async (req, res) => {
     const { from: rawFrom, reason } = req.body || {}
     if (!rawFrom) { res.status(400).json({ error: 'missing "from"' }); return }
-    const agent = fleetStore?.findAgent(rawFrom)
+    const agent = await fleetStore?.findAgent(rawFrom)
     if (!agent) { res.status(404).json({ error: `Agent not found: "${rawFrom}"` }); return }
-    const seat = currentSeatOrHttpError(res, agent)
+    const seat = await currentSeatOrHttpError(res, agent)
     if (!seat) return
     const label = agent.friendly_name || agent.id.slice(0, 12)
     const text = reason ? `${label}: ${reason}` : `${label}: terminal requested`
@@ -1362,7 +1354,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
   })
 
   // --- POST /api/wiretap ---
-  router.post('/api/wiretap', (req, res) => {
+  router.post('/api/wiretap', async (req, res) => {
     if (!fleetStore) { res.status(503).send('no store'); return }
     const { agent, filter, types } = req.body || {}
     if (!agent) { res.status(400).send('missing agent'); return }
@@ -1370,49 +1362,41 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     // Filter is a string expression with directional to:/from: prefixes;
     // addWiretap validates it via parseFilter and throws on bad syntax.
     let tap
-    try { tap = fleetStore.addWiretap(agent, filter, types) }
+    try { tap = await fleetStore.addWiretap(agent, filter, types) }
     catch (e) { res.status(400).json({ error: `bad filter: ${e.message}` }); return }
     res.json(tap)
   })
 
   // --- DELETE /api/wiretap/:id ---
-  router.delete('/api/wiretap/:id', (req, res) => {
+  router.delete('/api/wiretap/:id', async (req, res) => {
     if (!fleetStore) { res.status(503).send('no store'); return }
     const id = parseInt(req.params.id)
     if (isNaN(id)) { res.status(400).send('invalid id'); return }
-    fleetStore.removeWiretap(id)
+    await fleetStore.removeWiretap(id)
     res.json({ ok: true })
   })
 
   // --- GET /api/shared-docs ---
-  router.get('/api/shared-docs', (req, res) => {
-    const docs = fleetStore?.db?.prepare('SELECT * FROM shared_docs ORDER BY updated_at DESC').all() || []
-    res.json(docs)
+  router.get('/api/shared-docs', async (req, res) => {
+    res.json(await fleetStore.getSharedDocs())
   })
 
   // --- POST /api/shared-docs ---
-  router.post('/api/shared-docs', (req, res) => {
+  router.post('/api/shared-docs', async (req, res) => {
     const { doc, path: docPath, title, agent, ephemeral } = req.body || {}
     if (!doc) { res.status(400).send('missing doc'); return }
-    const now = new Date().toISOString()
-    if (fleetStore) {
-      fleetStore.db.prepare(`
-        INSERT INTO shared_docs (doc, path, title, agent, ephemeral, shared_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(doc) DO UPDATE SET path=excluded.path, title=excluded.title, agent=excluded.agent, ephemeral=excluded.ephemeral, updated_at=excluded.updated_at
-      `).run(doc, docPath || null, title || null, agent || null, ephemeral ? 1 : 0, now, now)
-    }
+    await fleetStore.upsertSharedDoc({ doc, path: docPath, title, agent, ephemeral })
     res.json({ ok: true })
   })
 
   // --- POST /api/retract ---
-  router.post('/api/retract', (req, res) => {
+  router.post('/api/retract', async (req, res) => {
     const { agent: rawAgent, task_id } = req.body || {}
     if (!rawAgent) { res.status(400).send('missing agent'); return }
-    const agent = fleetStore?.findAgent(rawAgent)?.id || rawAgent
-    const task = task_id ? fleetStore?.getTask?.(task_id) : fleetStore?.getTaskByAgent(agent)
+    const agent = (await fleetStore.findAgent(rawAgent))?.id || rawAgent
+    const task = task_id ? await fleetStore?.getTask?.(task_id) : await fleetStore?.getTaskByAgent(agent)
     if (!task) { res.status(404).send('no active task'); return }
-    const result = fleetStore?.retractTask?.(task, {
+    const result = await fleetStore?.retractTask?.(task, {
       recipientExposed: hasOpenFleetSocketForAgent(task.agent),
       retractedBy: req.body?.from || null,
     }) || { task_id: task.id, mode: 'removed_task_only' }

@@ -213,11 +213,11 @@ function createSchedulerHarness(nowMs) {
       fireAt: '2026-07-20T08:20:05.000Z',
       message: 'process may exit',
     })
-    h.scheduler.start()
+    await h.scheduler.start()
     assert.equal(h.broadcasts.length, 0)
     assert.equal(h.scheduled.length, 1)
     h.setNow(Date.parse('2026-07-20T08:20:05.000Z'))
-    h.scheduled[0].fn()
+    await h.scheduled[0].fn()
     assert.equal(h.broadcasts.length, 1)
     assert.equal(h.store.db.prepare('SELECT read FROM unread WHERE event_id = ? AND to_id = ?').get(event.id, owner).read, 0)
   } finally {
@@ -233,7 +233,7 @@ function createSchedulerHarness(nowMs) {
       fireAt: '2026-07-20T08:21:00.000Z',
       message: 'future restart',
     })
-    h.scheduler.start()
+    await h.scheduler.start()
     assert.equal(h.broadcasts.length, 0)
     assert.equal(h.scheduled.length, 1)
     assert.equal(h.scheduled[0].delay, 60_000)
@@ -250,9 +250,9 @@ function createSchedulerHarness(nowMs) {
       fireAt: '2026-07-20T08:20:00.000Z',
       message: 'overdue recovery',
     })
-    h.scheduler.start()
+    await h.scheduler.start()
     assert.equal(h.broadcasts.length, 1)
-    assert.equal(h.store.listPendingTimerEvents().length, 0)
+    assert.equal((await h.store.listPendingTimerEvents()).length, 0)
   } finally {
     h.close()
   }
@@ -267,8 +267,8 @@ function createSchedulerHarness(nowMs) {
       fireAt: '2026-07-20T08:20:05.000Z',
       message: 'duplicate callback',
     })
-    assert.equal(h.scheduler.fire(event.id).notified, true)
-    assert.equal(h.scheduler.fire(event.id).duplicate, true)
+    assert.equal((await h.scheduler.fire(event.id)).notified, true)
+    assert.equal((await h.scheduler.fire(event.id)).duplicate, true)
     assert.equal(h.broadcasts.length, 1)
   } finally {
     h.close()
@@ -284,10 +284,10 @@ function createSchedulerHarness(nowMs) {
       fireAt: '2026-07-20T08:21:00.000Z',
       message: 'cancel before fire',
     })
-    assert.equal(h.scheduler.cancel(event.id).ok, true)
-    h.scheduler.start()
+    assert.equal((await h.scheduler.cancel(event.id)).ok, true)
+    await h.scheduler.start()
     h.setNow(Date.parse('2026-07-20T08:21:00.000Z'))
-    h.scheduler.refresh()
+    await h.scheduler.refresh()
     assert.equal(h.broadcasts.filter(entry => entry.data.metadata_patch?.state === 'fired').length, 0)
     assert.equal(h.store.db.prepare('SELECT * FROM unread WHERE event_id = ? AND to_id = ?').get(event.id, owner), undefined)
   } finally {
@@ -308,7 +308,7 @@ function createSchedulerHarness(nowMs) {
       fireAt: '2026-07-20T08:20:05.000Z',
       message: 'same time 2',
     })
-    h.scheduler.start()
+    await h.scheduler.start()
     assert.equal(h.broadcasts.length, 2)
   } finally {
     h.close()
