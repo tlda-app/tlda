@@ -2748,7 +2748,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   if (name === 'read_annotations') {
-    const { doc } = args;
+    const { project: doc } = args;
     const typeFilter = args.type || null;
     const sortOrder = args.sort || 'document';
     const sinceMinutes = args.since || args.since_minutes || null;
@@ -3330,7 +3330,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   if (name === 'get_understanding') {
-    const { doc } = args;
+    const { project: doc } = args;
     if (!doc) return { content: [{ type: 'text', text: 'Missing required parameter: project' }], isError: true };
     try {
       const shapes = await fetchShapes(doc, 'understanding-line');
