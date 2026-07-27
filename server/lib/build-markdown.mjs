@@ -913,11 +913,7 @@ export async function buildMarkdownDocument(name, addLog = console.log) {
 
   const buildReadyAt = Date.now()
   reporter.updateProject(name, { buildStatus: 'success', pages: pageInfo.length, lastBuild: new Date(buildReadyAt).toISOString() })
-  await reporter.writeSentinel(`doc-${name}`, {
-    commitHash: `markdown-${buildReadyAt}`,
-    timestamp: buildReadyAt,
-    buildReadyAt,
-  })
+  // The sentinel is written by recordBuildVersion, with the real commit hash.
   reporter.broadcastSignal(`doc-${name}`, 'signal:reload', { pages: pageInfo.length, timestamp: buildReadyAt })
 
   // Re-aggregate any book that contains this doc as a member

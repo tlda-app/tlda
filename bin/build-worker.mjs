@@ -7,7 +7,7 @@
 // writes) are shipped back to the parent over IPC, which performs them in the
 // server process where the live rooms actually are. See setBuildReporter.
 
-import { runBuild, setBuildReporter } from '../server/lib/build-runner.mjs'
+import { runBuild, recordBuildVersion, setBuildReporter } from '../server/lib/build-runner.mjs'
 import { initProjectStore, readProject } from '../server/lib/project-store.mjs'
 import { buildMarkdown, buildHtml, buildSlides } from '../server/lib/format-builders.mjs'
 import { buildProjectPartsView } from '../server/lib/project-parts-build.mjs'
@@ -73,8 +73,16 @@ process.on('message', async (msg) => {
       await buildProjectPartsView(msg.name)
     } else {
       const builder = { markdown: buildMarkdown, html: buildHtml, slides: buildSlides }[readProject(msg.name)?.format]
-      if (builder) await builder(msg.name)
-      else await runBuild(msg.name, { priorityPages: msg.priorityPages })
+      if (builder) {
+        await builder(msg.name)
+        // A build happened, so it gets a version — same as LaTeX, which reaches
+        // recordBuildVersion through runBuild's finalizer. Versioning used to
+        // live inside the LaTeX branch, which is why these formats built for
+        // months without ever recording one.
+        await recordBuildVersion({ name: msg.name })
+      } else {
+        await runBuild(msg.name, { priorityPages: msg.priorityPages })
+      }
     }
     process.send?.({ t: 'done', ok: true })
     process.exit(0)

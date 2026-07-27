@@ -1683,6 +1683,66 @@ export function emitDocArrived(name) {
   } catch {}
 }
 
+/**
+ * Record the version for a build that just succeeded — the one path EVERY
+ * format goes through.
+ *
+ * This is the abstraction the versioning was missing. It used to live inside
+ * the LaTeX branch, so markdown, HTML and slides built without ever recording
+ * a version and wrote a fabricated `<format>-<timestamp>` hash into the
+ * sentinel instead — a hash the viewer accepted as real and that only failed
+ * when someone clicked it.
+ *
+ * Everything a format cannot supply is derived from the project, so a caller
+ * that just knows "a build happened" can call this with only the name.
+ */
+export async function recordBuildVersion({
+  name,
+  ctx = { addLog: (m) => console.log(`[build:${name}] ${m}`) },
+  expectedPages,
+  svgsReadyAt,
+  buildErrSnapshot,
+  buildWarnSnapshot,
+  sourceVersion,
+} = {}) {
+  const project = readProject(name)
+  const pages = expectedPages ?? project?.pages ?? 0
+  const readyAt = svgsReadyAt ?? Date.now()
+  let errors = buildErrSnapshot
+  let warnings = buildWarnSnapshot
+  if (errors === undefined || warnings === undefined) {
+    const extracted = extractBuildErrors(name)
+    errors = errors ?? extracted.errors
+    warnings = warnings ?? extracted.warnings
+  }
+
+  const result = await commitSnapshot(name)
+  if (result.status !== 'committed') {
+    // 'unchanged' is correct and quiet — the source really is identical.
+    // 'no-scope' means this build recorded NO version. That is data not being
+    // recorded, so it goes on the surfaces someone actually reads: the build
+    // log, the server log, the event stream, and — because the viewer must not
+    // show a version it does not have — the doc's own warnings in the sentinel.
+    if (result.status === 'no-scope') {
+      const message = `No version recorded for this build: ${result.reason}`
+      console.error(`[build:${name}] ${message}`)
+      ctx.addLog(message)
+      warnings = [...(warnings || []), { message, file: 'build', line: null, category: 'version' }]
+      _reporter.emitGlobalEvent('version-skipped', { name, reason: result.reason, timestamp: Date.now() })
+    }
+    const current = await currentVersion(name)
+    if (current?.hash) {
+      await updateDocVersionSentinel(name, current.hash, readyAt, errors, warnings, sourceVersion)
+    }
+    return { hash: current?.hash || null, committed: false }
+  }
+
+  await updateDocVersionSentinel(name, result.hash, readyAt, errors, warnings, sourceVersion)
+  recordGitSnapshot(name, { commitHash: result.hash, commitMessage: `Build at ${result.timestamp}`, pages })
+  _reporter.emitGlobalEvent('version-committed', { name, hash: result.hash, timestamp: result.timestamp })
+  return { hash: result.hash, committed: true, result }
+}
+
 async function finalizeBuildVersion({
   name,
   ctx,
@@ -1694,31 +1754,11 @@ async function finalizeBuildVersion({
   sourceVersion,
   lastBuildSuccess,
 }) {
-  const result = await commitSnapshot(name)
-  if (result.status !== 'committed') {
-    // 'unchanged' is correct and quiet — the source really is identical.
-    // 'no-scope' means this build recorded NO version. That is data not being
-    // recorded, so it goes on the surfaces someone actually reads: the build
-    // log, the server log, the event stream, and — because the viewer must not
-    // show a version it does not have — the doc's own warnings in the sentinel.
-    let warnings = buildWarnSnapshot
-    if (result.status === 'no-scope') {
-      const message = `No version recorded for this build: ${result.reason}`
-      console.error(`[build:${name}] ${message}`)
-      ctx.addLog(message)
-      warnings = [...(buildWarnSnapshot || []), { message, file: 'build', line: null, category: 'version' }]
-      _reporter.emitGlobalEvent('version-skipped', { name, reason: result.reason, timestamp: Date.now() })
-    }
-    const current = await currentVersion(name)
-    if (current?.hash) {
-      await updateDocVersionSentinel(name, current.hash, svgsReadyAt, buildErrSnapshot, warnings, sourceVersion)
-    }
-    return { hash: current?.hash || null, committed: false }
-  }
-
-  await updateDocVersionSentinel(name, result.hash, svgsReadyAt, buildErrSnapshot, buildWarnSnapshot, sourceVersion)
-  recordGitSnapshot(name, { commitHash: result.hash, commitMessage: result.message || `Build at ${new Date().toISOString()}`, pages: expectedPages ?? 0 })
-  _reporter.emitGlobalEvent('version-committed', { name, hash: result.hash, timestamp: result.timestamp })
+  const recorded = await recordBuildVersion({
+    name, ctx, expectedPages, svgsReadyAt, buildErrSnapshot, buildWarnSnapshot, sourceVersion,
+  })
+  if (!recorded.committed) return recorded
+  const result = recorded.result
 
   const hash7 = result.hash.slice(0, 7)
   try {
