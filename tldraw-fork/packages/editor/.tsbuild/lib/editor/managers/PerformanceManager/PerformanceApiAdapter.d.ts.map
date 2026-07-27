@@ -1,0 +1,1 @@
+{"version":3,"file":"PerformanceApiAdapter.d.ts","sourceRoot":"","sources":["../../../../../src/lib/editor/managers/PerformanceManager/PerformanceApiAdapter.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,kBAAkB,EAAE,MAAM,sBAAsB,CAAA;AAW9D;;;;;;;;;;;;;;GAcG;AACH,qBAAa,qBAAqB;IACjC,OAAO,CAAC,QAAQ,CAAqB;IAErC,YAAY,WAAW,EAAE,kBAAkB,EA2C1C;IAED,2DAA2D;IAC3D,OAAO,SAKN;CACD"}

@@ -1,0 +1,1 @@
+{"version":3,"file":"DefaultContextMenu.d.ts","sourceRoot":"","sources":["../../../../../src/lib/ui/components/ContextMenu/DefaultContextMenu.tsx"],"names":[],"mappings":"AAEA,OAAO,EAAE,SAAS,EAAwC,MAAM,OAAO,CAAA;AAMvE,cAAc;AACd,MAAM,WAAW,oBAAoB;IACpC,QAAQ,CAAC,EAAE,SAAS,CAAA;IACpB,QAAQ,CAAC,EAAE,OAAO,CAAA;CAClB;AAED,qBAAqB;AACrB,eAAO,MAAM,kBAAkB,4DAiI7B,CAAA"}

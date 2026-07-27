@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
+  "workspaces": [
+    "tldraw-fork/packages/*"
+  ],
   "scripts": {
     "start": "node --import tsx unified-server.mjs"
   },
@@ -14,12 +17,12 @@
     "@opentelemetry/exporter-trace-otlp-http": "^0.220.0",
     "@opentelemetry/sdk-metrics": "^2.9.0",
     "@opentelemetry/sdk-node": "^0.220.0",
-    "@tldraw/state": "5.2.0",
-    "@tldraw/store": "5.2.0",
-    "@tldraw/sync-core": "5.2.0",
-    "@tldraw/tlschema": "5.2.0",
-    "@tldraw/utils": "5.2.0",
-    "@tldraw/validate": "5.2.0",
+    "@tldraw/state": "file:./tldraw-fork/packages/state",
+    "@tldraw/store": "file:./tldraw-fork/packages/store",
+    "@tldraw/sync-core": "file:./tldraw-fork/packages/sync-core",
+    "@tldraw/tlschema": "file:./tldraw-fork/packages/tlschema",
+    "@tldraw/utils": "file:./tldraw-fork/packages/utils",
+    "@tldraw/validate": "file:./tldraw-fork/packages/validate",
     "better-sqlite3": "^12.8.0",
     "express": "^5.2.1",
     "katex": "^0.16.22",

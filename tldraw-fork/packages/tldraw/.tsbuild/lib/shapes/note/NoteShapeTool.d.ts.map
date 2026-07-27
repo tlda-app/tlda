@@ -1,0 +1,1 @@
+{"version":3,"file":"NoteShapeTool.d.ts","sourceRoot":"","sources":["../../../../src/lib/shapes/note/NoteShapeTool.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,SAAS,EAAE,sBAAsB,EAAE,MAAM,gBAAgB,CAAA;AAIlE,cAAc;AACd,qBAAa,aAAc,SAAQ,SAAS;IAC3C,OAAgB,EAAE,SAAS;IAC3B,OAAgB,OAAO,SAAS;IAChC,OAAgB,QAAQ,IAAI,sBAAsB,EAAE,CAEnD;IACQ,SAAS,SAAS;CAC3B"}

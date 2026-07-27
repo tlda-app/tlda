@@ -1,0 +1,1 @@
+{"version":3,"file":"GeoShapeTool.d.ts","sourceRoot":"","sources":["../../../../src/lib/shapes/geo/GeoShapeTool.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,SAAS,EAAE,sBAAsB,EAAE,MAAM,gBAAgB,CAAA;AAIlE,cAAc;AACd,qBAAa,YAAa,SAAQ,SAAS;IAC1C,OAAgB,EAAE,SAAQ;IAC1B,OAAgB,OAAO,SAAS;IAChC,OAAgB,QAAQ,IAAI,sBAAsB,EAAE,CAEnD;IACQ,SAAS,SAAQ;CAC1B"}

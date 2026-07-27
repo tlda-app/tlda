@@ -1,0 +1,1 @@
+{"version":3,"file":"TLRemoteSyncError.d.ts","sourceRoot":"","sources":["../../src/lib/TLRemoteSyncError.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,2BAA2B,EAAE,MAAM,gBAAgB,CAAA;AAE5D;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;GAwCG;AACH,qBAAa,iBAAkB,SAAQ,KAAK;aAWf,MAAM,EAAE,2BAA2B,GAAG,MAAM;IAV/D,IAAI,SAAoB;IAEjC;;;;;;;OAOG;IACH,YAA4B,MAAM,EAAE,2BAA2B,GAAG,MAAM,EAEvE;CACD"}

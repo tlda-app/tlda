@@ -1,0 +1,1 @@
+{"version":3,"file":"Idle.d.ts","sourceRoot":"","sources":["../../../../../src/lib/shapes/line/toolStates/Idle.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,SAAS,EAAE,SAAS,EAAE,MAAM,gBAAgB,CAAA;AAErD,qBAAa,IAAK,SAAQ,SAAS;IAClC,OAAgB,EAAE,SAAS;IAE3B,OAAO,CAAC,OAAO,CAAkB;IAExB,OAAO,CAAC,IAAI,EAAE;QAAE,OAAO,EAAE,SAAS,CAAA;KAAE,QAG5C;IAEQ,aAAa,SAErB;IAEQ,QAAQ,SAEhB;CACD"}
