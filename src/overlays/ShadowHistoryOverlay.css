@@ -257,6 +257,8 @@
   position: absolute;
   width: 1px;
   height: 1px;
+  padding: 0;
+  border: 0;
   background: rgba(245, 158, 11, 0.8);
   transform: translate(-50%, -50%);
   cursor: pointer;

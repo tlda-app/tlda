@@ -15,9 +15,9 @@
  * TLDraw from calling setPointerCapture on the canvas and stealing the drag.
  */
 
-import { useCallback, useRef, useState, useMemo } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import type { ShadowVersion, ShadowTimeBounds } from '../historyStore'
-import type { ChangelogCommit } from './SpaceTimeDots'
+import { SpaceTimeDots, type ChangelogCommit } from './SpaceTimeDots'
 import './ShadowHistoryOverlay.css'
 
 const SLIDER_STEPS = 1000  // resolution of the time-axis slider
@@ -95,11 +95,6 @@ export function ShadowHistoryOverlay({ timeBounds, activeVersion, loading, onScr
     onScrubTime(sliderPosToTimestamp(clamped, timeBounds))
   }, [onScrubTime, timeBounds])
 
-  // Hover state for space-time dots
-  const [hoveredDot, setHoveredDot] = useState<{
-    x: number; y: number; commit: ChangelogCommit; page: number
-  } | null>(null)
-
   const isCurrent = activeVersion === null
   const isAtOldest = activeVersion?.hash === timeBounds.oldest.hash
 
@@ -122,54 +117,6 @@ export function ShadowHistoryOverlay({ timeBounds, activeVersion, loading, onScr
     )
   }
 
-  // Compute space-time dots
-  const { dots, yLabels } = useMemo(() => {
-    if (!changelog || changelog.commits.length === 0 || changelog.totalPages === 0) {
-      return { dots: [], yLabels: [] }
-    }
-    const { commits, totalPages } = changelog
-    // Use the changelog's own time range so dots spread across the full panel,
-    // not the global shadow bounds which may span months of sparse history.
-    const commitTs = commits.map(c => c.timestamp)
-    const tMin = Math.min(...commitTs)
-    const tMax = Math.max(...commitTs)
-    const tSpan = Math.max(tMax - tMin, 1)
-
-    const dotData: Array<{
-      xPct: number; yPct: number
-      commit: ChangelogCommit; page: number; isMulti: boolean
-    }> = []
-
-    for (const commit of commits) {
-      const xPct = ((commit.timestamp - tMin) / tSpan) * 100
-      for (const page of commit.changedPages) {
-        const yPct = totalPages === 1 ? 50 : ((page - 1) / (totalPages - 1)) * 100
-        dotData.push({
-          xPct: Math.max(0, Math.min(100, xPct)),
-          yPct: Math.max(0, Math.min(100, yPct)),
-          commit, page,
-          isMulti: commit.changedPages.length > 1,
-        })
-      }
-    }
-
-    // Y axis labels — evenly spaced page numbers
-    const labels: Array<{ page: number; yPct: number }> = []
-    if (totalPages <= 1) {
-      labels.push({ page: 1, yPct: 50 })
-    } else {
-      const step = Math.max(1, Math.ceil(totalPages / 5))
-      for (let p = 1; p <= totalPages; p += step) {
-        labels.push({ page: p, yPct: ((p - 1) / (totalPages - 1)) * 100 })
-      }
-      if (labels[labels.length - 1].page !== totalPages) {
-        labels.push({ page: totalPages, yPct: 100 })
-      }
-    }
-
-    return { dots: dotData, yLabels: labels }
-  }, [changelog, timeBounds])
-
   const handleDotClick = useCallback((commit: ChangelogCommit) => {
     onScrubTime(commit.timestamp)
   }, [onScrubTime])
@@ -180,39 +127,8 @@ export function ShadowHistoryOverlay({ timeBounds, activeVersion, loading, onScr
       style={isHidden ? { display: 'none' } : undefined}
     >
       {/* Space-time dots panel — above the scrubber bar */}
-      {dots.length > 0 && (
-        <div className="spacetime-panel">
-          <div className="spacetime-y-axis">
-            {yLabels.map(l => (
-              <span
-                key={l.page}
-                className="spacetime-y-label"
-                style={{ top: `${l.yPct}%` }}
-              >
-                {l.page}
-              </span>
-            ))}
-          </div>
-          <div className="spacetime-field">
-            {dots.map((d, i) => (
-              <span
-                key={i}
-                className={`spacetime-dot${d.isMulti ? ' multi' : ''}`}
-                style={{ left: `${d.xPct}%`, top: `${d.yPct}%` }}
-                onPointerEnter={(e) => {
-                  const rect = (e.target as HTMLElement).getBoundingClientRect()
-                  setHoveredDot({
-                    x: rect.left + rect.width / 2,
-                    y: rect.top,
-                    commit: d.commit, page: d.page,
-                  })
-                }}
-                onPointerLeave={() => setHoveredDot(null)}
-                onClick={() => handleDotClick(d.commit)}
-              />
-            ))}
-          </div>
-        </div>
+      {changelog && (
+        <SpaceTimeDots changelog={changelog} onSelect={handleDotClick} />
       )}
 
       {/* Scrubber bar */}
@@ -256,21 +172,6 @@ export function ShadowHistoryOverlay({ timeBounds, activeVersion, loading, onScr
         </button>
       </div>
 
-      {/* Hover tooltip — positioned via fixed coordinates */}
-      {hoveredDot && (
-        <div
-          className="spacetime-tooltip"
-          style={{ left: hoveredDot.x, top: hoveredDot.y - 8 }}
-        >
-          <span className="spacetime-tooltip-page">p.{hoveredDot.page}</span>
-          <span className="spacetime-tooltip-time">{formatTime(hoveredDot.commit.timestamp)}</span>
-          {hoveredDot.commit.changedPages.length > 1 && (
-            <span className="spacetime-tooltip-multi">
-              +{hoveredDot.commit.changedPages.length - 1} pg
-            </span>
-          )}
-        </div>
-      )}
     </div>
   )
 }

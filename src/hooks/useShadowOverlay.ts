@@ -315,6 +315,18 @@ export function useShadowOverlay(
     }
   }, [])
 
+  const initialHistoryHandledRef = useRef(false)
+  useEffect(() => {
+    if (initialHistoryHandledRef.current) return
+    const params = new URLSearchParams(window.location.search)
+    const hash = params.get('history')
+    const historyTime = params.get('historyTime')
+    const timestamp = Number(historyTime)
+    if (!hash || historyTime === null || !Number.isFinite(timestamp)) return
+    initialHistoryHandledRef.current = true
+    handleScrubVersion({ hash, timestamp })
+  }, [handleScrubVersion])
+
   // Handle step: fetch adjacent build and jump to it
   const handleStep = useCallback(async (dir: 'older' | 'newer') => {
     const s = settersRef.current
