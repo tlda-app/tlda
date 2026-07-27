@@ -2355,6 +2355,18 @@ function FleetChatInner({ shape }: { shape: any }) {
     return sorted
   }, [events, quietDmTraffic])
 
+  const displayedUnreadSenderIds = useMemo(() => {
+    const humanId = getHumanId()
+    const ids = new Set<string>()
+    if (!humanId) return ids
+    for (const message of chatMessages) {
+      if (message.type === 'chat' && message.read !== true && message.to === humanId && message.from) {
+        ids.add(message.from)
+      }
+    }
+    return ids
+  }, [chatMessages])
+
   // Standing diagnostic — does the message list momentarily empty? When
   // chatMessages hits 0 the render swaps the Virtuoso list for the "No messages"
   // div (a different DOM node), which remounts the scroller and can read as a
@@ -5518,7 +5530,7 @@ function FleetChatInner({ shape }: { shape: any }) {
 
           {!filterOpen && (
             <>
-              {showUnreadAgentRail && <FleetUnreadAgentRail startDrag={startUnreadRailDrag} />}
+              {showUnreadAgentRail && <FleetUnreadAgentRail displayedUnreadSenderIds={displayedUnreadSenderIds} startDrag={startUnreadRailDrag} />}
               {/* Messages — Virtuoso owns the scroll container and all virtualized
                   item measurement, including the status/suggestions trailing row. */}
               <Virtuoso
@@ -6107,8 +6119,10 @@ function SendHint({
 }
 
 function FleetUnreadAgentRail({
+  displayedUnreadSenderIds,
   startDrag,
 }: {
+  displayedUnreadSenderIds: ReadonlySet<string>
   startDrag: (
     e: React.PointerEvent,
     pillType: 'agent' | 'label',
@@ -6119,7 +6133,10 @@ function FleetUnreadAgentRail({
 }) {
   const agents = useFleetAgents()
   const unreadCounts = useFleetUnreadCounts()
-  const unreadRows = useMemo(() => getUnreadAgentRailRows(agents, unreadCounts), [agents, unreadCounts])
+  const unreadRows = useMemo(
+    () => getUnreadAgentRailRows(agents, unreadCounts, displayedUnreadSenderIds),
+    [agents, unreadCounts, displayedUnreadSenderIds],
+  )
 
   if (unreadRows.length === 0) return null
   return (

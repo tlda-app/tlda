@@ -4,6 +4,7 @@ import { isCanvasPageShape, isDocumentPageShape } from './document-pages'
 import { laneDy, layoutOffset } from './fleet-layout-geometry'
 import type { FleetLayoutPlanInput, FleetLayoutVariant } from './fleet-layout-plan'
 import { defaultFleetLayoutChatFilters } from './fleet-layout-seeding'
+import { currentVisibleViewportSize, singleChatViewportPanelSize } from './fleet-layout-sizing'
 
 export type DocumentPageBounds = {
   pageShapes: any[]
@@ -44,7 +45,7 @@ export function buildFleetLayoutPlanInput({
     panelCount,
   })
 
-  const vp = viewport ?? editor.getViewportScreenBounds()
+  const vp = viewport ?? currentVisibleViewportSize() ?? editor.getViewportScreenBounds()
   const layoutTokens = getLayoutReadabilityTokens(vp)
   const leftW = layoutTokens.leftW
   const gap = layoutTokens.gap
@@ -66,7 +67,7 @@ export function buildFleetLayoutPlanInput({
   // Everything is laid out relative to the document edges — never relative to
   // the HUD position, which is a separate offset (the anchor shape).
   const leftContentW =
-    variant === 'single-chat' ? Math.round(vp.w)
+    variant === 'single-chat' ? singleChatViewportPanelSize(vp).w
     : variant === 'big-chat' ? leftW + gap + Math.round(chatW3 * 2)
     : variant === 'both-margins' ? leftW + gap + Math.round(chatW3 * 1.5)
     : leftW + gap + rightW

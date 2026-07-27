@@ -18,8 +18,10 @@ function lastActiveMs(agent: any): number {
 export function getUnreadAgentRailRows(
   agents: any[],
   unreadCounts: Record<string, number>,
+  displayedUnreadSenderIds: ReadonlySet<string> = new Set(),
 ): FleetAgentDirectoryRowModel[] {
   return getFleetAgentDirectoryRows(agents)
     .filter((row) => (unreadCounts[row.id] || 0) > 0)
+    .filter((row) => !displayedUnreadSenderIds.has(row.id))
     .sort((a, b) => lastActiveMs(b.agent) - lastActiveMs(a.agent))
 }
