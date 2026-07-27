@@ -30,3 +30,14 @@ export function projectBelongsToWorld(project, configName, worlds) {
   const owner = worlds[path.resolve(project.sourceDir)]
   return !owner || owner === configName
 }
+
+export function invalidProjectSourceEnvironmentOwners(ownerMap, environmentNames) {
+  const known = new Set((environmentNames || []).filter(name => typeof name === 'string' && name.trim()))
+  const invalid = []
+  for (const [sourceDir, owner] of Object.entries(ownerMap || {})) {
+    if (typeof owner !== 'string' || !owner.trim() || known.has(owner)) continue
+    invalid.push({ sourceDir: path.resolve(sourceDir), owner })
+  }
+  invalid.sort((a, b) => a.owner.localeCompare(b.owner) || a.sourceDir.localeCompare(b.sourceDir))
+  return invalid
+}
