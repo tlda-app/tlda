@@ -14,7 +14,7 @@ import { promisify } from 'util'
 const execAsync = promisify(execCb)
 const execFileAsync = promisify(execFileCb)
 import { requireRead, requireRw } from '../lib/auth.mjs'
-import { readProject, outputDir, projectDir, sourceDir as getSourceDir } from '../lib/project-store.mjs'
+import { readProject, outputDir, projectDir, sourceDir as getSourceDir, validateSourceFilePath } from '../lib/project-store.mjs'
 import { dispatchBuild } from '../lib/build-dispatch.mjs'
 import { listHistory, getSnapshotPath, hasGitSnapshot } from '../lib/history-store.mjs'
 import { listCommits, buildAtRef, getGitBuildStatus } from '../lib/git-history.mjs'
@@ -533,6 +533,42 @@ function cleanExtractedText(text) {
     .replace(/  +/g, ' ')
     .trim()
 }
+
+/**
+ * GET /shadow/source?version=<hash>&file=<project-relative-path>
+ * Read one source file from the per-project Git history.
+ */
+router.get('/shadow/source', requireRead, async (req, res) => {
+  const { name } = req.params
+  const version = String(req.query.version || '')
+  const file = String(req.query.file || '')
+
+  if (!/^[0-9a-f]{7,40}$/i.test(version)) {
+    return res.status(400).json({ error: 'version must be a Git commit hash' })
+  }
+  if (!file) return res.status(400).json({ error: 'file is required' })
+
+  const project = readProject(name)
+  if (!project) return res.status(404).json({ error: 'Project not found' })
+
+  try {
+    validateSourceFilePath(name, file)
+  } catch (e) {
+    return res.status(400).json({ error: e.message })
+  }
+
+  try {
+    const repoDir = getShadowRepoDir(name)
+    const { stdout } = await execFileAsync(
+      'git',
+      ['show', `${version}:${file}`],
+      { cwd: repoDir, encoding: 'utf8', timeout: 10000, maxBuffer: 20 * 1024 * 1024 },
+    )
+    res.json({ project: name, version, file, content: stdout })
+  } catch (e) {
+    res.status(404).json({ error: `Could not read ${file} at ${version}: ${e.message}` })
+  }
+})
 
 /**
  * GET /shadow/:hash7/lookup — SyncTeX lookup table for a shadow version.
