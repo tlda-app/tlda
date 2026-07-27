@@ -7,7 +7,22 @@ import { defineConfig, globalIgnores } from 'eslint/config'
 import awaitFleetStore from './eslint-rules/await-fleet-store.mjs'
 
 export default defineConfig([
-  globalIgnores(['dist']),
+  globalIgnores([
+    '**/node_modules/**',
+    '.claude/**',
+    '.daemon/**',
+    '.home/**',
+    '.playwright*/**',
+    '.tlda-dev/**',
+    '.tlda-fly/**',
+    '.worktrees/**',
+    'dist/**',
+    'server/public/**',
+    'server/projects/**',
+    'scratch/**',
+    'telemetry/**',
+    'tldraw-fork/**',
+  ]),
   {
     files: ['**/*.{ts,tsx}'],
     extends: [
