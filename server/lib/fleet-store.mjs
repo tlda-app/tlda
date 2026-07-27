@@ -3123,6 +3123,18 @@ export class FleetStore {
   // the row's own fields. Mirrors projectAgentRuntimeStatus branch for branch:
   // dead, then human by heartbeat recency, then shell, then positive evidence
   // over a routable seat. Anything else is hibernating.
+  //
+  // Note what this does NOT consult: agent.runtime_status. It computes from
+  // dead / human / last_seen / evidence / seat directly, so the `unknown` that
+  // runtimeStatusForAgent now returns for an unstamped row can never reach the
+  // count and be silently bucketed as hibernating. That was the fabrication
+  // coming back through a different door, and this shape is immune to it by
+  // construction rather than by a check.
+  //
+  // The shell branch is kept although isFleetRosterAgent already excludes shells
+  // from the roster this iterates. It costs one property read, and it keeps this
+  // predicate a faithful mirror of the projection rather than something that is
+  // only correct given a filter applied somewhere else.
   _countsAsAwake(agent, aliveIds, connectedDaemonKeys, nowMs) {
     if (!agent || agent.dead) return false;
     if (agent.human) {
