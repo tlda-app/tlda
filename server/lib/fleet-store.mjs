@@ -1445,9 +1445,6 @@ export class FleetStore {
       ON CONFLICT(id) DO UPDATE SET
         friendly_name = COALESCE(excluded.friendly_name, agents.friendly_name),
         pretty_name = COALESCE(excluded.pretty_name, agents.pretty_name),
-        session_id = COALESCE(excluded.session_id, agents.session_id),
-        session_ids = COALESCE(excluded.session_ids, agents.session_ids),
-        cwd = COALESCE(excluded.cwd, agents.cwd),
         labels = COALESCE(excluded.labels, agents.labels),
         registered_at = COALESCE(excluded.registered_at, agents.registered_at),
         last_seen = excluded.last_seen,
@@ -1458,12 +1455,24 @@ export class FleetStore {
           WHEN excluded.metadata IS NULL THEN agents.metadata
           WHEN agents.metadata IS NULL THEN excluded.metadata
           ELSE json_patch(agents.metadata, excluded.metadata)
-        END,
-        machine_id = excluded.machine_id,
-        env_name = excluded.env_name,
-        daemon_key = excluded.daemon_key,
-        resume_id = excluded.resume_id
+        END
     `);
+    // PROTECTED_AGENT_UPSERT_FIELDS are deliberately absent from DO UPDATE SET:
+    // an agent's identity is WRITE-ONCE through this path. They stay in the
+    // INSERT so a brand-new row can carry them, but no update here can ever
+    // change them again — not to a value, and (the bug this fixes) not to null.
+    // mirrorAgentSeatIdentity() is the sole authority that may change them,
+    // because the seat is where that identity actually lives.
+    //
+    // Why this is load-bearing: upsertAgent() strips all seven to null before
+    // every write, so while machine_id/env_name/daemon_key/resume_id sat in
+    // this clause as `= excluded.x`, EVERY routine upsert (a label change, a
+    // login, a shell reservation) silently wiped them. That stranded agents
+    // with no daemon address — unmovable, and unable to say what project they
+    // belong to — and threw away resume_id, which is the "lost the session
+    // handle" failure AGENTS.md insists must never happen. Broken by 27ccf6a7
+    // (2026-07-21 00:23:25), which flipped all four off COALESCE; 1ee5dd63
+    // restored cwd 67 seconds later and left the rest. Do not re-add them here.
 
     const AGENT_SELECT = 'agents.*, lineages.friendly_name AS lineage_name';
     const AGENT_JOIN = 'FROM agents LEFT JOIN lineages ON lineages.id = agents.lineage_id';
