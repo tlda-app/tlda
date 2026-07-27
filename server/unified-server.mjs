@@ -1684,10 +1684,27 @@ async function emitTurnEnded(agentId, startedAtMs) {
 // This function never changes agent state and never applies a policy threshold.
 // The returned duration is capped by continuous observed liveness, so a newly
 // rediscovered seat cannot inherit an older idle clock and immediately qualify.
-function getTrustedIdleSeconds() {
+// Iterates the agents this server currently believes are alive, not the whole
+// roster. That is not a shortcut — it is the same set, arrived at cheaply.
+//
+// The loop's fourth filter requires a finite alive_since_ms, and that field is
+// written only by runtimeStatusStore.markAlive and cleared only by
+// markNotAlive/markUnknown. Those are called from exactly two places,
+// markAgentAlive and markAgentNotAlive, each immediately after the matching
+// _aliveAgents.add / .delete. So _aliveAgents is a superset of the candidate
+// set: nothing outside it can survive filter four. Agents inside it whose
+// evidence has since aged past the TTL are still filtered by the awake check
+// below, exactly as before.
+//
+// The roster scan cost a full getAllAgents() plus a projection per row to
+// discover a handful of agents the main thread already had in a Set. One
+// bounded getAgentsByIds instead — the same inversion as the roster count.
+async function getTrustedIdleSeconds() {
   const now = Date.now()
   const result = {}
-  for (const agent of fleetStore?.getAllAgents?.() || []) {
+  const candidates = [..._aliveAgents]
+  if (!candidates.length) return result
+  for (const agent of await fleetStore.getAgentsByIds(candidates)) {
     if (!agent || agent.dead || agent.human || agent.metadata?.shell) continue
     const agentId = agent.id
     const runtime = runtimeStatusStore.project(agent)
@@ -3547,8 +3564,8 @@ app.get('/api/fleet/prefs', requireRead, async (req, res) => {
 // Todd owns hibernation policy; the server owns only this read-only liveness
 // fact. Keeping the boundary explicit prevents a bot from deriving idleness
 // from roster labels or becoming a second status publisher.
-app.get('/api/fleet/trusted-idle', requireRead, (_req, res) => {
-  res.json({ idleSecondsByAgent: getTrustedIdleSeconds() })
+app.get('/api/fleet/trusted-idle', requireRead, async (_req, res) => {
+  res.json({ idleSecondsByAgent: await getTrustedIdleSeconds() })
 })
 
 app.get('/api/fleet/prefs/:key', requireRead, async (req, res) => {
