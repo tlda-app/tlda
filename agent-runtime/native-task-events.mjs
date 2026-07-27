@@ -6,6 +6,12 @@ const CLAUDE_STATUS_MAP = new Map([
   ['completed', 'done'],
   ['complete', 'done'],
   ['done', 'done'],
+  // A natively-deleted task is terminal. Without this it fell through
+  // claudeStatus()'s passthrough as the literal 'deleted', which the active-task
+  // query does not exclude — so every task an agent deleted in its own list
+  // stayed open in the fleet ledger forever.
+  ['deleted', 'retracted'],
+  ['delete', 'retracted'],
 ])
 
 function contentBlocks(record) {
