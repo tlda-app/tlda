@@ -24,6 +24,10 @@ export const DAEMON_CONFIG_TOP_LEVEL_KEYS = Object.freeze([
 export const SERVER_CONFIG_TOP_LEVEL_KEYS = Object.freeze([
   'buildMaxConcurrency',
   'buildPriority',
+  // IANA zone name (e.g. "America/New_York") that human-readable times render
+  // in. DISPLAY ONLY — stored timestamps stay UTC. Read by getDisplayTimeZone()
+  // in shared/display-time.mjs. Absent = render in the host machine's own zone.
+  'timezone',
 ])
 
 export const PROJECT_DAEMON_OVERRIDE_TOP_LEVEL_KEYS = Object.freeze([
@@ -62,7 +66,26 @@ export function validateProjectDaemonOverrideTopLevel(root, label = 'project dae
 }
 
 export function validateServerConfigTopLevel(root, label = 'server config') {
-  return validateTopLevelKeys(root, SERVER_CONFIG_TOP_LEVEL_KEYS, label)
+  const config = validateTopLevelKeys(root, SERVER_CONFIG_TOP_LEVEL_KEYS, label)
+  if (config.timezone !== undefined) validateTimeZone(config.timezone, label)
+  return config
+}
+
+/**
+ * A bad zone name must fail at config load, not silently at the first render.
+ * Intl is the authority on what names exist, so ask it rather than keeping a
+ * list here that would rot.
+ */
+export function validateTimeZone(value, label = 'server config') {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new Error(`${label}: "timezone" must be a nonempty IANA zone name, e.g. America/New_York`)
+  }
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: value })
+  } catch {
+    throw new Error(`${label}: "timezone" is not a zone this system knows: ${value} (expected an IANA name like America/New_York)`)
+  }
+  return value
 }
 
 export function validateStrictEnvironments(environments, label = 'daemon.yaml environments') {
