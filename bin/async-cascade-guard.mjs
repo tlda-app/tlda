@@ -103,6 +103,8 @@ export const ASYNC_CASCADE = Object.freeze([
   'inboxStatusFor',
   'chatWakeText',
   'delegateWakeText',
+  'requestTaskWake',
+  '_broadcastStateNow',
 ])
 
 const SEARCH_DIRS = ['server', 'bin', 'cli', 'mcp-server', 'shared', 'daemon']

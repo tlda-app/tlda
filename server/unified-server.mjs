@@ -946,8 +946,11 @@ async function sendWakeNudge(daemonKey, agent, seat, nudgeText, phase, logTag = 
   }))
 }
 
-function requestTaskWake(agentId, nudgeText = null, keys = []) {
-  const agent = fleetStore?.getAgent?.(agentId)
+// Same shape as requestWake: the agent read gates the early return, so it
+// cannot be dropped. Returns nothing, so each caller's only question is
+// ordering.
+async function requestTaskWake(agentId, nudgeText = null, keys = []) {
+  const agent = await fleetStore.getAgent(agentId)
   if (!agent || agent.dead || agent.human) return
   const prev = _taskWakeQueue.get(agentId)
   // Queue value carries the task keys riding this wake so the drain can refresh
@@ -1012,7 +1015,12 @@ async function drainTaskWakeQueue() {
         continue
       }
       if (decision.action === 'queue') {
-        setTimeout(() => requestTaskWake(agentId, nudgeText, taskKeys), 2000).unref?.()
+        // Not awaited: a retry timer, and the wake is terminal — nothing reads
+        // a result and nothing is sequenced after it. Reported, not dropped.
+        setTimeout(() => {
+          requestTaskWake(agentId, nudgeText, taskKeys)
+            .catch(e => console.error(`[task-wake] retry failed for ${agentId}: ${e?.message || e}`))
+        }, 2000).unref?.()
         continue
       }
       if (decision.action === 'hold') continue
@@ -1089,7 +1097,7 @@ async function runTaskRenudgeSweep() {
     // here (§5) — so a failing agent's 5-min throttle never stays warm; its
     // backoff is governed solely by the breaker. Pass the task key through so the
     // drain can stamp it on delivery.
-    requestTaskWake(nudge.task.agent, await taskDelegateWakeText(nudge.task.description || nudge.event.text || nudge.task.id, nudge.task.agent), [nudge.key])
+    await requestTaskWake(nudge.task.agent, await taskDelegateWakeText(nudge.task.description || nudge.event.text || nudge.task.id, nudge.task.agent), [nudge.key])
   }
 }
 
@@ -1738,7 +1746,9 @@ function _agentWithEphemeralState(agent) {
   return agent
 }
 
-function _broadcastStateNow() {
+// async because building the delta reads each changed agent through the store.
+// The debounce below keeps one run in flight at a time — see the note there.
+async function _broadcastStateNow() {
   if (!fleetStore) return
   const pendingIds = [..._pendingBroadcastAgentIds]
   _pendingBroadcastAgentIds.clear()
@@ -1746,7 +1756,7 @@ function _broadcastStateNow() {
   const changed = []
   const removed = []
   for (const id of pendingIds) {
-    const a = _agentWithEphemeralState(fleetStore.getAgent(id))
+    const a = _agentWithEphemeralState(await fleetStore.getAgent(id))
     if (!a) {
       if (_lastAgentJson.has(id)) {
         _lastAgentJson.delete(id)
@@ -1777,8 +1787,8 @@ function _broadcastStateNow() {
       removed,
       // Footer totals cover the full non-dead roster, not only the bounded
       // client page receiving this delta.
-      ...(pendingIds.length ? { agentTotals: fleetStore.getAliveAgentCounts(rosterCountInputs()) } : {}),
-      task_delta: fleetStore.consumeTaskChanges?.() || { changed: [], removed: [], overflow: false },
+      ...(pendingIds.length ? { agentTotals: await fleetStore.getAliveAgentCounts(rosterCountInputs()) } : {}),
+      task_delta: await fleetStore.consumeTaskChanges?.() || { changed: [], removed: [], overflow: false },
       thinking: Object.fromEntries(_thinkingState),
       compacting: Object.fromEntries(_compactingState),
       context: Object.fromEntries(_contextState),
@@ -1792,7 +1802,24 @@ let _broadcastTimer = null
 function broadcastState(agentUpdates = null) {
   _queueBroadcastAgents(agentUpdates)
   if (_broadcastTimer) return
-  _broadcastTimer = setTimeout(() => { _broadcastTimer = null; _broadcastStateNow() }, 50)
+  // The timer handle is cleared only AFTER the run settles, not before it
+  // starts. _broadcastStateNow is async now, and it drains the pending set at
+  // the top but writes _lastAgentJson after its awaits — so two overlapping
+  // runs would compare against a half-updated map and re-broadcast rows that
+  // had not changed. Same interleaving the outbox flush had to be chained
+  // against; here holding the handle is enough, because the handle IS the
+  // "one in flight" flag.
+  //
+  // Anything queued while a run was in flight would otherwise sit there until
+  // the next unrelated call, so the drain re-arms itself if the set refilled.
+  _broadcastTimer = setTimeout(() => {
+    _broadcastStateNow()
+      .catch(e => console.error(`[broadcast] state broadcast failed: ${e?.message || e}`))
+      .finally(() => {
+        _broadcastTimer = null
+        if (_pendingBroadcastAgentIds.size) broadcastState()
+      })
+  }, 50)
 }
 
 function mintFleetId() {
