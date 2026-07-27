@@ -99,7 +99,7 @@ export function gooseMessageEvents(row, isNoise) {
       }
       const base = toolBaseName(name)
       if (isNoise && isNoise(base)) continue
-      const humanName = humanToolName(name)  // tlda__read_doc → tlda/read_doc
+      const humanName = humanToolName(name)  // tlda__read_project → tlda/read_project
       const arg = input.file_path || input.path || input.command || input.cat || input.pattern ||
         input.message || input.query || input.description || input.reason ||
         input.doc || input.ref || input.text || ''

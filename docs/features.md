@@ -484,7 +484,7 @@ Agents interact with the canvas through MCP tools. Key tools:
 | `build` / `build_status` | Trigger and poll builds | Working |
 | `push` | Push source files and trigger build | Working |
 | **Versioning** | | |
-| `doc_version` | List version history | Working |
+| `project_version` | List version history | Working |
 | `doc_view` | View an old version temporarily | Working |
 | `lookup_theorem` | Find a theorem by number or label | Untested |
 | **Chat/rendering** | | |

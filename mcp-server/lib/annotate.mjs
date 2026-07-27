@@ -15,7 +15,7 @@ import { getIndexAbove } from '@tldraw/utils';
 import { tldaFetch } from '../../shared/http-client.mjs';
 import { docToCanvas, isHtmlDoc, pdfToCanvas, getPageWidth } from './formatCoords.mjs';
 import { loadHtmlLayout } from './htmlCoords.mjs';
-import { readJson, readJsonSync, ensureDoc } from '../data-source.mjs';
+import { readJson, readJsonSync, ensureProject } from '../data-source.mjs';
 
 const DEFAULT_SERVER = process.env.TLDA_SYNC_SERVER || null;
 
@@ -24,7 +24,7 @@ export function generateShapeId() {
 }
 
 // Resolve a source line to its lookup entry. Sync: reads the cached/disk
-// lookup.json (callers pre-fetch via ensureDoc so remote mode is warm).
+// lookup.json (callers pre-fetch via ensureProject so remote mode is warm).
 function lookupLineInData(lookup, lineNum, file) {
   let entry = null;
   if (file) entry = lookup.lines[`${path.basename(file)}:${lineNum}`];
@@ -32,8 +32,8 @@ function lookupLineInData(lookup, lineNum, file) {
   if (!entry) return null;
   return { page: entry.page, x: entry.x, y: entry.y, content: entry.content, texFile: lookup.meta?.texFile };
 }
-export function lookupLine(docName, lineNum, file) {
-  const lookup = readJsonSync(docName, 'lookup.json');
+export function lookupLine(projectName, lineNum, file) {
+  const lookup = readJsonSync(projectName, 'lookup.json');
   if (!lookup?.lines) return null;
   return lookupLineInData(lookup, lineNum, file);
 }
@@ -52,17 +52,17 @@ export function resolveSize({ size, width, height }) {
   };
 }
 
-async function postShape(docName, shape, server) {
-  return tldaFetch(`/api/projects/${docName}/shapes`, {
+async function postShape(projectName, shape, server) {
+  return tldaFetch(`/api/projects/${projectName}/shapes`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(shape),
     server: server || DEFAULT_SERVER,
   });
 }
-async function getShapes(docName, server, typeFilter) {
+async function getShapes(projectName, server, typeFilter) {
   const qs = typeFilter ? `?type=${typeFilter}` : '';
-  return tldaFetch(`/api/projects/${docName}/shapes${qs}`, { server: server || DEFAULT_SERVER });
+  return tldaFetch(`/api/projects/${projectName}/shapes${qs}`, { server: server || DEFAULT_SERVER });
 }
 
 /**
@@ -77,7 +77,7 @@ export async function stageNote(doc, line, text, {
   const dims = resolveSize({ size, width, height });
   width = dims.width;
   height = dims.height;
-  await ensureDoc(doc); // warm lookup + manifest so the sync coord calls resolve in remote mode
+  await ensureProject(doc); // warm lookup + manifest so the sync coord calls resolve in remote mode
 
   let linePos;
   if (line) {
@@ -136,16 +136,16 @@ export async function stageNote(doc, line, text, {
 
 // ---- highlight staging (full-line line-range; the drill cue primitive) ----
 
-export async function lookupLineAsync(docName, lineNum, file) {
-  const lookup = await readJson(docName, 'lookup.json');
+export async function lookupLineAsync(projectName, lineNum, file) {
+  const lookup = await readJson(projectName, 'lookup.json');
   if (!lookup?.lines) return null;
   return lookupLineInData(lookup, lineNum, file);
 }
 
-async function getNextShapeIndex(docName, server) {
+async function getNextShapeIndex(projectName, server) {
   let maxIndex = 'a1';
   try {
-    const all = await getShapes(docName, server);
+    const all = await getShapes(projectName, server);
     for (const s of all) if (s.typeName === 'shape' && s.index && s.index > maxIndex) maxIndex = s.index;
   } catch (e) { process.stderr.write(`[annotate] shape index scan failed: ${e.message}\n`); }
   return getIndexAbove(maxIndex);
@@ -201,7 +201,7 @@ export async function stageHighlight(doc, startLine, endLine, {
   color = 'orange', file, server, fleetId = process.env.FLEET_ID, fleetName = process.env.FLEET_NAME,
 } = {}) {
   endLine = endLine ?? startLine;
-  await ensureDoc(doc);
+  await ensureProject(doc);
   const startPos = await lookupLineAsync(doc, startLine, file);
   const endPos = await lookupLineAsync(doc, endLine, file);
   if (!startPos) return { ok: false, error: `Line ${startLine} not found in lookup` };

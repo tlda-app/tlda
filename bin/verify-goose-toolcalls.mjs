@@ -4,7 +4,7 @@
 //
 // OpenRouter advertising "tools" support is necessary but NOT sufficient: some
 // models (deepseek-r1 was the first we hit) emit tool-calls as text in a native
-// format (`function<｜tool▁sep｜>tlda__read_doc …`) instead of invoking them,
+// format (`function<｜tool▁sep｜>tlda__read_project …`) instead of invoking them,
 // which leaves a fleet agent unable to act. This probe spawns a throwaway goose
 // agent on the model, lets it run its login()+inbox() boot kickoff (both
 // real tool-calls), then reads goose's own sqlite to see whether those came

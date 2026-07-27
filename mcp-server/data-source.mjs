@@ -5,7 +5,7 @@
  * HTTP. Otherwise: reads from PROJECT_ROOT/server/projects.
  *
  * Provides both sync (from cache/disk) and async (fetch + cache) APIs.
- * Call ensureDoc(docName) at the start of tool handlers to pre-fetch.
+ * Call ensureProject(projectName) at the start of tool handlers to pre-fetch.
  */
 
 import fs from 'fs'
@@ -18,7 +18,7 @@ let serverUrl = null
 const TLDA_TOKEN = resolveToken()
 const authHeaders = TLDA_TOKEN ? { 'Authorization': `Bearer ${TLDA_TOKEN}` } : {}
 
-// In-memory cache: docName → { filename → { data, fetchedAt } }
+// In-memory cache: projectName → { filename → { data, fetchedAt } }
 const cache = new Map()
 const CACHE_TTL = {
   'lookup.json': 30_000,       // 30s — changes on rebuild
@@ -44,24 +44,24 @@ export function isRemote() {
  * Get the local path for a doc file. Returns null if remote-only.
  * Resolves files from server/projects/{name}/output/.
  */
-export function localPath(docName, filename) {
+export function localPath(projectName, filename) {
   if (!projectRoot) return null
   // resolveAsset (shared with the server route) applies the bare->texBase alias
   // for metadata files like lookup.json, so disk mode resolves the same file
   // the server serves over HTTP.
   const projectsDir = path.join(projectRoot, 'server', 'projects')
-  const resolved = resolveAsset(projectsDir, docName, filename)
+  const resolved = resolveAsset(projectsDir, projectName, filename)
   if (resolved) return resolved
-  return path.join(projectsDir, docName, 'output', filename) // default for new files
+  return path.join(projectsDir, projectName, 'output', filename) // default for new files
 }
 
 /**
  * Get the local doc directory path. Returns null if remote-only.
  * Resolves directories from server/projects/{name}/output/.
  */
-export function localDocDir(docName) {
+export function localProjectDir(projectName) {
   if (!projectRoot) return null
-  const serverDir = path.join(projectRoot, 'server', 'projects', docName, 'output')
+  const serverDir = path.join(projectRoot, 'server', 'projects', projectName, 'output')
   return serverDir
 }
 
@@ -69,9 +69,9 @@ export function localDocDir(docName) {
  * Read a JSON file for a doc. Sync — reads from disk or cache.
  * Returns parsed JSON or null.
  */
-export function readJsonSync(docName, filename) {
+export function readJsonSync(projectName, filename) {
   // Check cache first (used for both remote and local)
-  const cached = getCached(docName, filename)
+  const cached = getCached(projectName, filename)
   if (cached !== undefined) return cached
 
   if (serverUrl) {
@@ -80,22 +80,22 @@ export function readJsonSync(docName, filename) {
   }
 
   // Local mode: read from disk with mtime caching
-  return readJsonFromDisk(docName, filename)
+  return readJsonFromDisk(projectName, filename)
 }
 
 /**
  * Read a JSON file, fetching from server if needed. Async.
  */
-export async function readJson(docName, filename) {
+export async function readJson(projectName, filename) {
   // Check cache
-  const cached = getCached(docName, filename)
+  const cached = getCached(projectName, filename)
   if (cached !== undefined) return cached
 
   if (serverUrl) {
-    return await fetchJson(docName, filename)
+    return await fetchJson(projectName, filename)
   }
 
-  return readJsonFromDisk(docName, filename)
+  return readJsonFromDisk(projectName, filename)
 }
 
 /**
@@ -142,17 +142,17 @@ export async function readManifest() {
  * Read a text file (e.g. SVG) for a doc. Sync only (no HTTP fetch for SVGs).
  * For remote mode, SVGs should be pre-fetched or accessed differently.
  */
-export function readTextSync(docName, filename) {
-  const cached = getCached(docName, filename)
+export function readTextSync(projectName, filename) {
+  const cached = getCached(projectName, filename)
   if (cached !== undefined) return cached
 
   if (serverUrl) return null
 
-  const filePath = localPath(docName, filename)
+  const filePath = localPath(projectName, filename)
   if (!filePath) return null
   try {
     const data = fs.readFileSync(filePath, 'utf8')
-    setCache(docName, filename, data)
+    setCache(projectName, filename, data)
     return data
   } catch {
     return null
@@ -162,41 +162,41 @@ export function readTextSync(docName, filename) {
 /**
  * Read a text file, fetching from server if needed. Async.
  */
-export async function readText(docName, filename) {
-  const cached = getCached(docName, filename)
+export async function readText(projectName, filename) {
+  const cached = getCached(projectName, filename)
   if (cached !== undefined) return cached
 
   if (serverUrl) {
     try {
-      const res = await fetch(`${serverUrl}/docs/${docName}/${filename}`, { headers: authHeaders })
+      const res = await fetch(`${serverUrl}/docs/${projectName}/${filename}`, { headers: authHeaders })
       if (!res.ok) return null
       const data = await res.text()
-      setCache(docName, filename, data)
+      setCache(projectName, filename, data)
       return data
     } catch {
       return null
     }
   }
 
-  return readTextSync(docName, filename)
+  return readTextSync(projectName, filename)
 }
 
 /**
  * Pre-fetch commonly needed files for a doc. Call at start of tool handlers.
  */
-export async function ensureDoc(docName) {
+export async function ensureProject(projectName) {
   if (!serverUrl) return // disk mode — no pre-fetch needed
 
   await Promise.all([
-    readJson(docName, 'lookup.json'),
+    readJson(projectName, 'lookup.json'),
     readManifest(),
   ])
 }
 
 // ---- Internal ----
 
-function getCached(docName, filename) {
-  const docCache = cache.get(docName)
+function getCached(projectName, filename) {
+  const docCache = cache.get(projectName)
   if (!docCache) return undefined
   const entry = docCache.get(filename)
   if (!entry) return undefined
@@ -208,29 +208,29 @@ function getCached(docName, filename) {
   return entry.data
 }
 
-function setCache(docName, filename, data) {
-  if (!cache.has(docName)) cache.set(docName, new Map())
-  cache.get(docName).set(filename, { data, fetchedAt: Date.now() })
+function setCache(projectName, filename, data) {
+  if (!cache.has(projectName)) cache.set(projectName, new Map())
+  cache.get(projectName).set(filename, { data, fetchedAt: Date.now() })
 }
 
-function readJsonFromDisk(docName, filename) {
-  const filePath = localPath(docName, filename)
+function readJsonFromDisk(projectName, filename) {
+  const filePath = localPath(projectName, filename)
   if (!filePath) return null
   try {
     const data = JSON.parse(fs.readFileSync(filePath, 'utf8'))
-    setCache(docName, filename, data)
+    setCache(projectName, filename, data)
     return data
   } catch {
     return null
   }
 }
 
-async function fetchJson(docName, filename) {
+async function fetchJson(projectName, filename) {
   try {
-    const res = await fetch(`${serverUrl}/docs/${docName}/${filename}`, { headers: authHeaders })
+    const res = await fetch(`${serverUrl}/docs/${projectName}/${filename}`, { headers: authHeaders })
     if (!res.ok) return null
     const data = await res.json()
-    setCache(docName, filename, data)
+    setCache(projectName, filename, data)
     return data
   } catch {
     return null
