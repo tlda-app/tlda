@@ -474,15 +474,18 @@ function recordExplicitCheckAliveLiveness(liveness) {
   else markAgentNotAlive(agentId, { ...detail, unknown: true })
 }
 
-function refreshRuntimeRoutesForDaemon(daemonKey) {
-  if (!daemonKey || !fleetStore?.getAllAgents) return
-  const affected = []
-  for (const agent of fleetStore.getAllAgents()) {
-    if (agent?.dead || agent?.human) continue
-    const seat = fleetStore.getCurrentAgentSeat?.(agent.id)
-    if (seat?.daemon_key === daemonKey) affected.push(agent.id)
-  }
-  for (const id of affected) fleetStore.refreshAgentLiveness?.(id)
+// Which agents this daemon connecting or dropping changes the route state of.
+//
+// Was a scan of the WHOLE roster plus one getCurrentAgentSeat per row, to find
+// the handful of agents seated on one daemon. getAgentsByDaemonKey answers it
+// with a single indexed query against agent_current_seats — the sole route
+// authority, and already the thing the scan was reconstructing by hand. It
+// filters dead agents in SQL, so only the human check is left out here.
+async function refreshRuntimeRoutesForDaemon(daemonKey) {
+  if (!daemonKey) return
+  const seated = await fleetStore.getAgentsByDaemonKey(daemonKey)
+  const affected = seated.filter(agent => agent && !agent.human).map(agent => agent.id)
+  for (const id of affected) await fleetStore.refreshAgentLiveness(id)
   if (affected.length) broadcastState(affected)
 }
 
@@ -5210,7 +5213,13 @@ server.on('upgrade', async (req, socket, head) => {
           // exists to remove.
           daemonRunningAgents.delete(ws._daemonKey)
           fleetStore?.markDaemonDisconnected?.(ws._daemonKey)
+          // Not awaited: this runs in a socket close/error handler, which is
+          // not async and must not become so. Rejections are reported rather
+          // than dropped — a route refresh that fails leaves the roster
+          // showing stale routes for that daemon's agents, which is worth
+          // seeing in the log.
           refreshRuntimeRoutesForDaemon(ws._daemonKey)
+            .catch(e => console.error(`[runtime-routes] refresh failed for ${ws._daemonKey}: ${e?.message || e}`))
           // The daemon is gone; process-level visibility is unknown, not false.
           // Preserve prior liveness so a server/Fly redeploy or daemon restart
           // cannot make every working agent on that machine vanish.
@@ -5246,7 +5255,13 @@ server.on('upgrade', async (req, socket, head) => {
           // exists to remove.
           daemonRunningAgents.delete(ws._daemonKey)
           fleetStore?.markDaemonDisconnected?.(ws._daemonKey)
+          // Not awaited: this runs in a socket close/error handler, which is
+          // not async and must not become so. Rejections are reported rather
+          // than dropped — a route refresh that fails leaves the roster
+          // showing stale routes for that daemon's agents, which is worth
+          // seeing in the log.
           refreshRuntimeRoutesForDaemon(ws._daemonKey)
+            .catch(e => console.error(`[runtime-routes] refresh failed for ${ws._daemonKey}: ${e?.message || e}`))
           failPendingRpcsForDaemon(ws._machineId, ws._envName, 'daemon ws error')
           clearServerDaemonOutboxInflightForDaemon(ws._daemonKey)
           updateDaemonActivityTransportHealth(ws._daemonKey, {
@@ -8443,7 +8458,7 @@ async function handleDaemonWsMessage(ws, msg) {
       ws_session_id: ws._wsSessionId,
       readback_ok: daemonConnections.get(daemonKey) === ws,
     })
-    refreshRuntimeRoutesForDaemon(daemonKey)
+    await refreshRuntimeRoutesForDaemon(daemonKey)
     notifyDaemonReady(daemonKey) // wake any control-op RPCs waiting to retry across this reconnect
     clearServerDaemonOutboxInflightForDaemon(daemonKey)
     daemonWelcomeSeenAt.set(daemonKey, Date.now())
