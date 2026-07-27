@@ -1466,8 +1466,14 @@ export function getFleetTools() {
     },
     {
       name: 'tasks',
-      description: 'List all active (non-done) tasks and registered agents. Call at session start.',
-      inputSchema: { type: 'object', properties: {} },
+      description: 'List a page of active (non-done) tasks, plus registered agents. Call at session start. Paginated: the reply always states the whole-fleet total, and gives a cursor to pass back when more pages remain.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          limit: { type: 'number', description: 'Tasks per page (default 50, max 200).' },
+          cursor: { type: 'string', description: 'Cursor from a previous tasks() reply. Omit for the first page.' },
+        },
+      },
     },
     {
       name: 'read_terminal',
@@ -2846,14 +2852,26 @@ export async function handleFleetTool(name, args) {
 
   // ---- tasks ----
   if (name === 'tasks') {
-    let agents, active;
+    // Paged, and it says so. This tool used to take the first 100 rows the
+    // transport happened to return and present them as the whole list — which is
+    // how the open-task count drifted from "501" to 851 with nobody noticing.
+    // Every reply now carries the whole-fleet total, and a cursor when the page
+    // does not cover it, so the surface can never imply completeness it lacks.
+    const requestedLimit = Number(args.limit);
+    const pageLimit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(requestedLimit, 200)) : 50;
+    let agents, page;
     try {
-      [agents, active] = await Promise.all([mcpFleetTransport.ephemeral('store-agents'), mcpFleetTransport.ephemeral('store-tasks', { active: true })]);
+      [agents, page] = await Promise.all([
+        mcpFleetTransport.ephemeral('store-agents'),
+        mcpFleetTransport.ephemeral('tasks-page', { limit: pageLimit, cursor: args.cursor || null }),
+      ]);
       if (agents.error) return { content: [{ type: 'text', text: `tasks failed: ${agents.error}` }], isError: true };
-      if (active.error) return { content: [{ type: 'text', text: `tasks failed: ${active.error}` }], isError: true };
+      if (page.error) return { content: [{ type: 'text', text: `tasks failed: ${page.error}` }], isError: true };
     } catch (e) {
       return { content: [{ type: 'text', text: `tasks failed before transport ACK: ${e.message}` }], isError: true };
     }
+    const active = page.tasks || [];
+    const total = Number.isFinite(page.total) ? page.total : active.length;
 
     let text = '';
 
@@ -2878,9 +2896,14 @@ export async function handleFleetTool(name, args) {
     }
 
     if (!active.length) {
-      text += 'No active tasks.';
+      text += args.cursor ? `No further active tasks (${total} total).` : 'No active tasks.';
       return { content: [{ type: 'text', text }] };
     }
+
+    const hasMore = !!page.nextCursor;
+    text += hasMore || active.length < total
+      ? `Showing ${active.length} of ${total} open tasks, newest first.\n\n`
+      : `${total} open task(s).\n\n`;
 
     const showOwner = false;
 
@@ -2930,13 +2953,19 @@ export async function handleFleetTool(name, args) {
     const unread = AGENT_ID ? await getUnread(null, AGENT_ID) : [];
 
     let nudge = '';
+    if (hasMore) {
+      nudge += `\n\n${total - active.length} more open task(s) not shown. Next page: tasks({ cursor: "${page.nextCursor}"${pageLimit === 50 ? '' : `, limit: ${pageLimit}`} }).`;
+    }
+    // These counts describe THIS PAGE, not the fleet — say so whenever the page
+    // is not the whole list, so a partial count is never read as a total.
+    const scope = hasMore ? ' on this page' : '';
     if (unread.length > 0) nudge += `\n\n📬 ${unread.length} unread message(s). Check them.`;
-    if (idle.length > 0) nudge += `\n\n${idle.length} idle — review and delegate or mark done.`;
-    if (working.length > 0) nudge += `\n\n${working.length} working.`;
-    if (pending.length > 0) nudge += ` ${pending.length} pending (awaiting agent pickup).`;
-    if (blocked.length > 0) nudge += ` ${blocked.length} blocked.`;
-    if (actionableUnhealthy.length > 0) nudge += `\n\n⚠ ${actionableUnhealthy.length} active task(s) have actionable agent-health warnings — inspect or redelegate instead of waiting silently.`;
-    if (staleBacklogUnhealthy.length > 0) nudge += `\n\n${staleBacklogUnhealthy.length} stale backlog task(s) have non-actionable agent-health warnings older than the Todd kick window — owner cleanup should delete/archive/redelegate; they are not counted as live liveness failures.`;
+    if (idle.length > 0) nudge += `\n\n${idle.length} idle${scope} — review and delegate or mark done.`;
+    if (working.length > 0) nudge += `\n\n${working.length} working${scope}.`;
+    if (pending.length > 0) nudge += ` ${pending.length} pending${scope} (awaiting agent pickup).`;
+    if (blocked.length > 0) nudge += ` ${blocked.length} blocked${scope}.`;
+    if (actionableUnhealthy.length > 0) nudge += `\n\n⚠ ${actionableUnhealthy.length} active task(s)${scope} have actionable agent-health warnings — inspect or redelegate instead of waiting silently.`;
+    if (staleBacklogUnhealthy.length > 0) nudge += `\n\n${staleBacklogUnhealthy.length} stale backlog task(s)${scope} have non-actionable agent-health warnings older than the Todd kick window — owner cleanup should delete/archive/redelegate; they are not counted as live liveness failures.`;
     return { content: [{ type: 'text', text: text + nudge }] };
   }
 
