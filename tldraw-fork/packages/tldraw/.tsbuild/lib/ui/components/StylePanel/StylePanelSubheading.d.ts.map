@@ -1,1 +1,0 @@
-{"version":3,"file":"StylePanelSubheading.d.ts","sourceRoot":"","sources":["../../../../../src/lib/ui/components/StylePanel/StylePanelSubheading.tsx"],"names":[],"mappings":"AAAA,cAAc;AACd,MAAM,WAAW,yBAAyB;IACzC,QAAQ,EAAE,KAAK,CAAC,SAAS,CAAA;CACzB;AAED,qBAAqB;AACrB,wBAAgB,oBAAoB,CAAC,EAAE,QAAQ,EAAE,EAAE,yBAAyB,2CAE3E"}

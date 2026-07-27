@@ -1,1 +1,0 @@
-{"version":3,"file":"ArrowShapeTool.d.ts","sourceRoot":"","sources":["../../../../src/lib/shapes/arrow/ArrowShapeTool.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,SAAS,EAAE,sBAAsB,EAAE,MAAM,gBAAgB,CAAA;AAIlE,cAAc;AACd,qBAAa,cAAe,SAAQ,SAAS;IAC5C,OAAgB,EAAE,SAAU;IAC5B,OAAgB,OAAO,SAAS;IAChC,OAAgB,QAAQ,IAAI,sBAAsB,EAAE,CAEnD;IAEQ,SAAS,SAAU;CAC5B"}

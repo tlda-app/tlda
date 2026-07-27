@@ -1,1 +1,0 @@
-{"version":3,"file":"DefaultDebugMenu.d.ts","sourceRoot":"","sources":["../../../../../src/lib/ui/components/DebugMenu/DefaultDebugMenu.tsx"],"names":[],"mappings":"AACA,OAAO,EAAE,SAAS,EAAa,MAAM,OAAO,CAAA;AAW5C,cAAc;AACd,MAAM,WAAW,kBAAkB;IAClC,QAAQ,CAAC,EAAE,SAAS,CAAA;CACpB;AAED,qBAAqB;AACrB,wBAAgB,gBAAgB,CAAC,EAAE,QAAQ,EAAE,EAAE,kBAAkB,2CA+BhE"}

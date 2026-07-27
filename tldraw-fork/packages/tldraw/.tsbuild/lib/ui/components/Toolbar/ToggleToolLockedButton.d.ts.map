@@ -1,1 +1,0 @@
-{"version":3,"file":"ToggleToolLockedButton.d.ts","sourceRoot":"","sources":["../../../../../src/lib/ui/components/Toolbar/ToggleToolLockedButton.tsx"],"names":[],"mappings":"AAWA,cAAc;AACd,MAAM,WAAW,2BAA2B;IAC3C,YAAY,CAAC,EAAE,MAAM,CAAA;CACrB;AAED,qBAAqB;AACrB,wBAAgB,sBAAsB,CAAC,EAAE,YAAY,EAAE,EAAE,2BAA2B,kDAgCnF"}

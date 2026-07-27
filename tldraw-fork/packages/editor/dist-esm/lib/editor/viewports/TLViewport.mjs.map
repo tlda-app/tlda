@@ -1,7 +1,0 @@
-{
-  "version": 3,
-  "sources": ["../../../../src/lib/editor/viewports/TLViewport.ts"],
-  "sourcesContent": ["import { BoxModel, TLCamera, TLPageId } from '@tldraw/tlschema'\nimport { Box } from '../../primitives/Box'\n\n/** @public */\nexport type TLViewportId = string\n\n/** @public */\nexport const DEFAULT_VIEWPORT_ID: TLViewportId = 'default'\n\n/** @public */\nexport interface TLViewport {\n\tid: TLViewportId\n\tpageId?: TLPageId\n\tscreenBounds: BoxModel\n\tcamera: Pick<TLCamera, 'x' | 'y' | 'z'>\n}\n\n/** @public */\nexport interface TLViewportOptions {\n\tviewportId?: TLViewportId\n\tviewport?: TLViewport\n}\n\n/** @public */\nexport function getViewportPageBounds(viewport: Pick<TLViewport, 'screenBounds' | 'camera'>) {\n\tconst { w, h } = viewport.screenBounds\n\tconst { x, y, z } = viewport.camera\n\treturn new Box(-x, -y, w / z, h / z)\n}\n"],
-  "mappings": "AACA,SAAS,WAAW;AAMb,MAAM,sBAAoC;AAiB1C,SAAS,sBAAsB,UAAuD;AAC5F,QAAM,EAAE,GAAG,EAAE,IAAI,SAAS;AAC1B,QAAM,EAAE,GAAG,GAAG,EAAE,IAAI,SAAS;AAC7B,SAAO,IAAI,IAAI,CAAC,GAAG,CAAC,GAAG,IAAI,GAAG,IAAI,CAAC;AACpC;",
-  "names": []
-}

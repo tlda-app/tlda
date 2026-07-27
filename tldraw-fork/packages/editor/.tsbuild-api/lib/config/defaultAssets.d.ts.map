@@ -1,1 +1,0 @@
-{"version":3,"file":"defaultAssets.d.ts","sourceRoot":"","sources":["../../../src/lib/config/defaultAssets.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,sBAAsB,EAAE,MAAM,4BAA4B,CAAA;AAEnE,cAAc;AACd,MAAM,MAAM,yBAAyB,GAAG,sBAAsB,CAAC,GAAG,CAAC,CAAA;AAEnE,wBAAgB,WAAW,CAAC,YAAY,EAAE,SAAS,yBAAyB,EAAE,+BAa7E"}
