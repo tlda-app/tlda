@@ -3377,7 +3377,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   if (name === 'build') {
-    const { doc } = args;
+    const doc = args?.project;
     if (!doc) return { content: [{ type: 'text', text: 'project is required.' }], isError: true };
     try {
       // Check current status first
