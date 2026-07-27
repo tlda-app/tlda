@@ -50,6 +50,20 @@ export function resetDisplayTimeZoneCache() {
   cached = null
 }
 
+/**
+ * Spread into an existing toLocaleString/toLocaleTimeString options object to
+ * pin it to the display zone and label which zone that is. Every other option
+ * the call site already passes is preserved, so the format does not change —
+ * `11:27 PM` becomes `11:27 PM EDT`, not a different layout.
+ *
+ * The label is the point, not decoration: a bare `3:04 PM` from a fleet tool is
+ * a value the reader cannot check, and an agent relaying it to a person states
+ * a time with confidence in a zone it never established.
+ */
+export function displayZoneOptions() {
+  return { timeZone: getDisplayTimeZone(), timeZoneName: 'short' }
+}
+
 function toDate(value) {
   if (value instanceof Date) return value
   if (typeof value === 'number') return new Date(value)
