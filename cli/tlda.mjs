@@ -18,7 +18,7 @@ import { collectSourceFiles, collectSourceHashes, collectSpecificFiles } from '.
 import { diffSourceHashes, normalizeSourceManifest } from '../shared/source-manifest.mjs'
 import { collectHtmlArtifactFiles, htmlArtifactMainForSource } from './lib/html-artifact-files.mjs'
 import {
-  loadCliConfig, saveCliConfig, loadServerConfig, resolveConfig, listEnvironments, getServerUrl, getFleetServerUrl, getRwToken, getReadToken, saveTokens, getActiveEnvName, DEFAULT_PORT,
+  loadCliConfig, saveCliConfig, loadServerConfig, initConfig, resolveConfig, listEnvironments, getServerUrl, getFleetServerUrl, getRwToken, getReadToken, saveTokens, getActiveEnvName, DEFAULT_PORT,
   CONFIG_DIR, hasTls, TLS_CA_PATH, getManagedBots, getManagedBotEnvironments, getMachineId,
 } from '../shared/config.mjs'
 import { tldaFetch } from '../shared/http-client.mjs'
@@ -212,7 +212,7 @@ const COMMAND_HELP = {
   daemon:  'tlda daemon [start|stop|status|log|run|install|uninstall]\n\n  Control the per-machine fleet daemon.\n  It watches project source directories and agent session activity,\n  then pushes events to the tlda server over WebSocket.',
   doctor:  'tlda doctor [--fix]\ntlda doctor yolo [--name yolo] --model <provider-model> [--kind codex] [--cwd /path] [--no-attach] [--dry-run]\n\n  Run a health check for local tools, server, SPA bundle, daemon, MCP setup,\n  project builds, and doc sync stores.\n\n  --fix  Apply the limited automatic repairs that doctor explicitly offers.\n\n  yolo   Break-glass: locally launch an unrestricted repair agent outside the\n         normal daemon/server/grant path. Deliberately shallow so it works when\n         the normal spawn path is broken.\n\n         --model names the provider model directly. --kind selects the harness\n         and defaults to codex. Run in a terminal and it attaches you into the\n         agent session when it comes up (--no-attach to skip). Non-interactive\n         calls report the local tmux session and local mint id; they do not claim\n         a fleet-recipient binding.',
   'repo-doctor': 'tlda doc repo-doctor <project> [--rescue|--apply|--rollback|--cleanup]\n\n  Diagnose a project source repo for tlda-induced damage.\n  No flag: diagnose only (read-only).\n  --rescue   Compute a rescue plan (dry run).\n  --apply    Execute the rescue plan.\n  --rollback Roll back a previous rescue apply.\n  --cleanup  Clean rescue apply state.',
-  config:  'tlda config [apply | set <key> <value> | get [key]]\n\n  apply  Reconcile launchd jobs to daemon.yaml, bots.yaml, and the installed server job.\n         --dry-run       show the plan without writing plists or running launchctl.\n         --only <label>  apply only jobs whose label contains <label>, to stage one at a time.\n  set    Manage CLI preferences.\n  get    Show CLI preferences.',
+  config:  'tlda config [init | apply | set <key> <value> | get [key]]\n\n  init   Create the config files a fresh install needs (daemon.yaml, server.yaml)\n         pointing at this machine. Only writes files that are missing; an\n         existing config is never merged into or overwritten.\n  apply  Reconcile launchd jobs to daemon.yaml, bots.yaml, and the installed server job.\n         --dry-run       show the plan without writing plists or running launchctl.\n         --only <label>  apply only jobs whose label contains <label>, to stage one at a time.\n  set    Manage CLI preferences.\n  get    Show CLI preferences.',
 }
 
 // Flags that take a value (--flag value). All others are boolean.
@@ -2718,6 +2718,12 @@ async function cmdConfig() {
   const sub = getPositional(0)
   if (sub === 'apply') {
     await cmdConfigApply()
+  } else if (sub === 'init') {
+    for (const { path, created } of initConfig()) {
+      console.log(created ? `${green('✓')} created ${path}` : `${dim('·')} ${path} already exists — unchanged`)
+    }
+    console.log()
+    printEnvironments()
   } else if (sub === 'set') {
     const key = getPositional(1)
     const value = getPositional(2)
@@ -2779,7 +2785,7 @@ function cmdCompletions() {
     'list', 'mint', 'wake', 'move', 'set-mint-machine',
     'check-ready', 'attach', 'hibernate', 'dismiss', 'permission', 'permissions', 'models',
   ].map(s => `'${s}'`).join(' ')
-  const configSubs = ['apply', 'set', 'get', 'setup', 'mcp-setup', 'auth'].map(s => `'${s}'`).join(' ')
+  const configSubs = ['init', 'apply', 'set', 'get', 'setup', 'mcp-setup', 'auth'].map(s => `'${s}'`).join(' ')
 
   console.log(`#compdef tlda
 # Install: tlda completions > ~/.zsh/completions/_tlda && fpath=(~/.zsh/completions $fpath)
