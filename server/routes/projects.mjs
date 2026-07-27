@@ -972,13 +972,9 @@ export async function processProjectPushSerialized(name, body, transactionTest =
     broadcastProjectPartsChanged(name, changedPartFiles)
   }
 
-  // SVG: mark stale, let ensure handle it on next page request
-  markProjectStale(name)
-  broadcastSignal(`doc-${name}`, 'signal:source-changed', { timestamp: Date.now() })
-  return withAcceptedChangedFiles(
-    { status: 200, ok: true, filesWritten: files?.length || 0, building: false },
-    changedPushFiles,
-  )
+  // No accepted source change should reach this branch. Every changed format
+  // builds eagerly so that the successful build records its Git checkpoint.
+  throw new Error(`Build decision for ${name} was neither filtered nor eager`)
 }
 
 async function refreshMaterializedPartsFromChangedSources(name, project, changedPushFiles) {
@@ -1123,20 +1119,6 @@ function sourcePushWouldChange(name, { files, deletedFiles }) {
     if (isClientOwnedSourcePath(name, filePath) && existsSync(join(getSourceDir(name), filePath))) return true
   }
   return false
-}
-
-/**
- * Mark a project's source as stale. Writes a source.stamp file whose mtime
- * is compared against output/build.stamp by the ensure system — if
- * source.stamp is newer, the next page request triggers a full LaTeX rebuild.
- */
-function markProjectStale(name) {
-  const dir = getProjectDir(name)
-  try {
-    writeFileSync(join(dir, 'source.stamp'), new Date().toISOString())
-  } catch (e) {
-    console.error(`[${name}] Failed to write source.stamp: ${e.message}`)
-  }
 }
 
 // Push files + trigger build
