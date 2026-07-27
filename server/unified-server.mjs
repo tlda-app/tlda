@@ -1927,12 +1927,6 @@ function projectForCwd(cwd) {
   return null
 }
 
-function liveAgentsByName(name) {
-  if (!name || !fleetStore) return []
-  const rows = fleetStore.db.prepare('SELECT * FROM agents WHERE friendly_name = ? AND dead = 0').all(name)
-  return rows.map(r => fleetStore._hydrateAgent(r))
-}
-
 function surfaceSpawnBounce(error) {
   const payload = {
     ...(error.payload || {}),
@@ -1973,7 +1967,13 @@ async function resolveSpawnTarget(name, respawn, { fresh = false, requested = {}
       respawn,
       fresh,
       requested,
-      liveMatches: liveAgentsByName(name),
+      // The store method runs the same query and additionally applies
+      // projectAgentCurrentSeat. That is behaviour-neutral here: the projection
+      // only ever rewrites the six seat fields (session_id, cwd, machine_id,
+      // env_name, daemon_key, resume_id), and this path reads `dead` and `id`
+      // — in resolveSpawnCollision, then in the share() and broadcastState()
+      // below. It touches neither.
+      liveMatches: await fleetStore.getLiveAgentsByFriendlyName(name),
       projectForCwd,
     })
   } catch (e) {
@@ -5892,12 +5892,11 @@ async function handleFleetWsMessage(ws, msg) {
     const sanitized = name.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '')
     if (!sanitized) { error('invalid name'); return }
     // Find existing agent by friendly_name
-    const nameRows = fleetStore.db.prepare('SELECT * FROM agents WHERE friendly_name = ? AND dead = 0 AND human = 1').all(sanitized)
-    if (nameRows.length === 0) {
+    const agent = await fleetStore.getLiveHumanByFriendlyName(sanitized)
+    if (!agent) {
       error(`No agent named "${sanitized}". Register first.`)
       return
     }
-    const agent = fleetStore._hydrateAgent(nameRows[0])
     fleetStore.upsertAgent({ ...agent, last_seen: new Date().toISOString() })
     ws._tldaHumanId = agent.id
     broadcastState(agent.id)
@@ -7239,7 +7238,7 @@ async function handleFleetWsMessage(ws, msg) {
     const agent = fleetStore.findAgent(agentQuery)
     if (!agent) { error('agent not found'); return }
     if (newName) {
-      const conflict = fleetStore.db.prepare('SELECT id FROM agents WHERE friendly_name = ? AND dead = 0 AND id != ?').get(newName, agent.id)
+      const conflict = await fleetStore.nameTakenByOther(newName, agent.id)
       if (conflict || newName === SERVER_OWNER_NAME) { error(`Name "${newName}" already in use`); return }
     }
     try {
@@ -7302,9 +7301,7 @@ async function handleFleetWsMessage(ws, msg) {
         const recipient = fleetStore.findAgent(msg.recipient)
         const incoming = fleetStore.findAgent(msg.agent)
         if (!recipient || !incoming) { error('swap recipient and incoming agent are required'); return }
-        const active = fleetStore.db.prepare(
-          'SELECT lineage_id FROM lineage_stack_entries WHERE fleet_id = ? AND active = 1'
-        ).get(recipient.id)
+        const active = await fleetStore.getActiveStackEntry(recipient.id)
         if (!active) { error('swap recipient is not on an active lineage stack'); return }
         const allowed = new Set([...fleetStore.getStack(active.lineage_id).map(item => item.id), incoming.id])
         if (normalized.some(item => !allowed.has(item.fleetId))) { error('name assignment is outside the affected lineage'); return }
@@ -7846,18 +7843,18 @@ async function handleFleetWsMessage(ws, msg) {
     try {
       let events
       let total = null
-      const cols = 'id, type, timestamp, from_id as "from", to_id as "to", text, metadata, task_id, agent_id'
       if (evtAgent) {
         // UNION of two indexed scans (see FleetStore.queryAgentEvents) — far
         // faster than `(from_id=? OR to_id=?)`. No COUNT: callers detect
         // overflow by fetching limit+1 and paginating forward.
         events = fleetStore.queryAgentEvents({ agent: evtAgent, types: evtTypes, sinceTs, untilTs, afterId, beforeId, limit })
       } else if (evtTypes) {
-        const typeClause = `type IN (${evtTypes.map(() => '?').join(',')})`
-        events = fleetStore.db.prepare(`SELECT ${cols} FROM events WHERE ${typeClause} AND id > ? ORDER BY id ASC LIMIT ?`).all(...evtTypes, afterId, limit)
+        // beforeId is deliberately not passed: this branch has always paged
+        // forward from afterId even when the caller also sent `before`, and
+        // the store method would honour it. Preserved, not fixed.
+        events = await fleetStore.queryEventsPage({ types: evtTypes, afterId, limit })
       } else if (beforeId) {
-        events = fleetStore.db.prepare(`SELECT ${cols} FROM events WHERE id < ? ORDER BY id DESC LIMIT ?`).all(beforeId, limit)
-        events.reverse()
+        events = await fleetStore.queryEventsPage({ beforeId, limit })
       } else {
         events = fleetStore.getEventsSince(afterId, limit)
       }
