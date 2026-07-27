@@ -48,6 +48,12 @@ assert.equal(daemon.handle({
   ok: true,
   sourceRevision: 'revision-rapid-2',
 }), true)
+daemon.seed('paper', 'revision-rapid-1')
+assert.equal(
+  daemon.state('paper').revision,
+  'revision-rapid-2',
+  'an ordinary projects-updated snapshot cannot regress a revision learned from its source-change result',
+)
 
 const disconnected = daemon.prepare({
   type: 'source-change',
@@ -62,7 +68,7 @@ assert.equal(daemon.prepare({
 assert.equal(daemon.takeRetry(), null, 'without reconnect, a lost response wedges the queued edit')
 daemon.beginReconnect()
 assert.equal(daemon.state('paper').pending, false)
-daemon.seed('paper', 'revision-after-reconnect')
+daemon.seed('paper', 'revision-after-reconnect', { authoritative: true })
 const [afterReconnect] = daemon.finishReconnect()
 assert.deepEqual(afterReconnect.files, [{ path: 'main.tex', content: 'edit made while disconnected' }])
 const resumed = daemon.prepare(afterReconnect)
@@ -102,9 +108,9 @@ assert.equal(daemon.handle({
 assert.equal(daemon.takeRetry(), null)
 assert.equal(daemon.state('paper').blocked, true)
 assert.equal(daemon.prepare({ type: 'source-change', project: 'paper', files: [] }), null)
-daemon.seed('paper', 'revision-4')
+daemon.seed('paper', 'revision-4', { authoritative: true })
 assert.equal(daemon.state('paper').blocked, true)
-daemon.seed('paper', 'revision-5')
+daemon.seed('paper', 'revision-5', { authoritative: true })
 assert.equal(daemon.state('paper').blocked, false)
 
 const laterEdit = daemon.prepare({
@@ -120,8 +126,23 @@ assert.equal(daemon.handle({ requestId: unrecoverableStale.requestId, project: '
 assert.equal(daemon.state('paper').blocked, true)
 assert.equal(daemon.prepare({ type: 'source-change', project: 'paper', files: [] }), null)
 assert.equal(warnings.length, 3)
-daemon.seed('paper', 'revision-6')
+daemon.seed('paper', 'revision-6', { authoritative: true })
 assert.equal(daemon.state('paper').blocked, false)
+
+daemon.seed('blocked-paper', 'blocked-revision-1')
+const blockedRequest = daemon.prepare({ type: 'source-change', project: 'blocked-paper', files: [] })
+assert.equal(daemon.handle({
+  requestId: blockedRequest.requestId,
+  project: 'blocked-paper',
+  ok: false,
+  status: 'stale-base',
+}), true)
+assert.equal(daemon.state('blocked-paper').blocked, true)
+daemon.seed('blocked-paper', 'blocked-revision-2')
+assert.equal(daemon.state('blocked-paper').blocked, false, 'an ordinary changed snapshot still releases a blocked project')
+const afterUnblock = daemon.prepare({ type: 'source-change', project: 'blocked-paper', files: [] })
+assert.ok(afterUnblock, 'the project can push again after the ordinary refresh')
+assert.equal(afterUnblock.expectedRevision, 'blocked-revision-1', 'ordinary refresh does not overwrite the learned revision')
 
 const server = createSourceChangeResultCache()
 const request = { requestId: 'r1', project: 'paper', expectedRevision: 'revision-1', files: [], sourceManifest: [] }

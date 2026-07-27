@@ -535,11 +535,11 @@ function reportInvalidProjectSourceOwners(ownerMap) {
   })
 }
 
-function applyProjectWorldOwnership(reason) {
+function applyProjectWorldOwnership(reason, { authoritativeRevisions = false } = {}) {
   const projectSourceOwners = readProjectSourceEnvironmentOwners(PROJECT_WORLDS_FILE)
   reportInvalidProjectSourceOwners(projectSourceOwners)
   projects = serverProjects.filter(project => projectBelongsToEnvironment(project, ACTIVE_ENV, projectSourceOwners))
-  sourceSync.sync(projects)
+  sourceSync.sync(projects, { authoritativeRevisions })
   log.info(`project ownership applied (${reason}): ${projects.length}/${serverProjects.length} projects in ${ACTIVE_ENV}`)
 }
 
@@ -1422,7 +1422,7 @@ function handleServerMessage(msg, wsAttemptId) {
     // the dead socket has to be folded into the queue before that seed lands,
     // and re-sent after it.
     sourceSync.beginReconnect()
-    applyProjectWorldOwnership('daemon-welcome')
+    applyProjectWorldOwnership('daemon-welcome', { authoritativeRevisions: true })
     sourceSync.finishReconnect()
     applyDaemonGrants(permissionLedger, daemonSpawnConfig)
     log.info(`connected work received: ${projects.length} projects`)
