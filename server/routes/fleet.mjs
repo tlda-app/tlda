@@ -19,7 +19,7 @@ import { fleetRosterCategory } from '../../shared/fleet-runtime-status.mjs'
 import { resolveSpawnMachine } from '../lib/spawn-routing.mjs'
 import { summarizeFleetRosterTruth } from '../lib/fleet-roster-truth.mjs'
 import { daemonAddress, describeAgentAddress } from '../../shared/agent-move-target.mjs'
-import { canReportTask, completeTaskLifecycle, transferTaskLifecycle } from '../lib/task-lifecycle.mjs'
+import { canReportTask, transferTaskLifecycle } from '../lib/task-lifecycle.mjs'
 import { recordAgentBindingEvent } from '../lib/agent-binding-events.mjs'
 import { projectActivityEventsPage, projectAgentActivityPage } from '../lib/activity-dashboard-projection.mjs'
 import { markPendingAttachmentPlaceholdersRead } from '../../shared/inbox-reference-materialization.mjs'
@@ -754,27 +754,6 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     }
     broadcastState()
     res.json({ ok: true, task_id: taskId })
-  })
-
-  // --- POST /api/tasks/done ---
-  router.post('/api/tasks/done', async (req, res) => {
-    const { agent: rawAgent, task_id, skip_qa } = req.body || {}
-    if (!rawAgent) { res.status(400).send('missing "agent"'); return }
-    const agent = fleetStore?.findAgent(rawAgent)?.id || rawAgent
-    const task = task_id ? fleetStore?.getTask(task_id) : fleetStore?.getTaskByAgent(agent)
-    if (!task) { res.status(404).send('no active task'); return }
-    if (!skip_qa && fleetStore) {
-      const qaIds = fleetStore.getQaAgentIds?.() || []
-      if (qaIds.length > 0) {
-        const qaStatus = fleetStore.getQaStatus?.(task.id)
-        if (qaStatus?.status === 'no_report') { res.status(403).json({ ok: false, error: 'Submit a report() first' }); return }
-        if (qaStatus?.status === 'rejected') { res.status(403).json({ ok: false, error: `QA rejected: ${qaStatus.notes || 'no details'}` }); return }
-        if (qaStatus?.status === 'pending') { res.status(403).json({ ok: false, error: `Waiting for QA sign-off` }); return }
-      }
-    }
-    await completeTaskLifecycle({ fleetStore, agentId: agent, task })
-    broadcastState()
-    res.json({ ok: true, task_id: task.id })
   })
 
   // --- POST /api/tasks/delete ---
