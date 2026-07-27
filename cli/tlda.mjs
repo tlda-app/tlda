@@ -5553,6 +5553,15 @@ ${hasTls ? `        <key>NODE_EXTRA_CA_CERTS</key>\n        <string>${TLS_CA_PAT
   }
 
   if (sub === 'start') {
+    // The server child loads both configs at import, so on a fresh install it
+    // dies before it can ever answer /health — and every read below is inside a
+    // catch, so the real reason would surface 90 seconds later as "Server failed
+    // to start, check the log". Read the same authorities here, in the parent,
+    // so a missing config fails immediately with the error that names
+    // `tlda config init`. This is the loader itself, not a copy of its rules.
+    resolveConfig()
+    loadServerConfig()
+
     // Check if already running
     try {
       const res = await fetch(`${getServer()}/health`, { signal: AbortSignal.timeout(3000) })
