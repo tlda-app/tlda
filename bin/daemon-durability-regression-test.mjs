@@ -250,6 +250,14 @@ test('daemon records drop and websocket lifecycle counters', () => {
   assert.match(daemonSource, /activityDeliveryCounters: daemonActivityDeliveryCounters/)
 })
 
+test('agent-seat daemon outbox errors surface as visible warnings', () => {
+  assert.match(daemonSource, /function surfaceDaemonOutboxError\(msg\)/)
+  assert.match(daemonSource, /payload\?\.type !== 'agent-seat'/)
+  assert.match(daemonSource, /warning: 'agent-seat-delivery-failed'/)
+  assert.match(daemonSource, /fleet_id: payload\.agent_id \|\| null/)
+  assert.match(daemonSource, /error,\n\s+permanent: msg\.permanent === true/)
+})
+
 test('daemon welcome carries no roster and restores local-binding liveness plus JSONL lifecycle', () => {
   const welcomeHandler = daemonSource.match(/if \(msg\.type === 'daemon-welcome'\) \{([\s\S]*?)\n  \}\n  if \(msg\.type === 'agent-status-events'\)/)?.[1] || ''
   const welcomePayload = serverSource.match(/type: 'daemon-welcome',([\s\S]*?)projects: projectsForDaemon\(\)/)?.[1] || ''

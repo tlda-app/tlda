@@ -1389,7 +1389,10 @@ function handleServerMessage(msg, wsAttemptId) {
     return
   }
   if (msg.type === DAEMON_OUTBOX_ERROR_TYPE) {
-    if (msg.outbox_id) daemonDelivery.handleError(msg.outbox_id, msg.error || 'delivery failed', { permanent: msg.permanent === true })
+    if (msg.outbox_id) {
+      surfaceDaemonOutboxError(msg)
+      daemonDelivery.handleError(msg.outbox_id, msg.error || 'delivery failed', { permanent: msg.permanent === true })
+    }
     return
   }
   if (msg.type === 'agent-seat-binding-obligation') {
@@ -1504,6 +1507,22 @@ function handleServerMessage(msg, wsAttemptId) {
     return
   }
   // Unknown message — ignore for forward compatibility.
+}
+
+function surfaceDaemonOutboxError(msg) {
+  const row = daemonOutbox.get(msg.outbox_id)
+  const payload = row?.payload || null
+  if (payload?.type !== 'agent-seat') return
+  const error = msg.error || 'delivery failed'
+  log.warn(`agent-seat delivery failed for ${payload.agent_id || 'unknown'}: ${error}`)
+  sendMsg({
+    type: 'daemon-warning',
+    warning: 'agent-seat-delivery-failed',
+    fleet_id: payload.agent_id || null,
+    session_id: payload.session_id || null,
+    error,
+    permanent: msg.permanent === true,
+  })
 }
 
 // ---------- lifecycle ----------
