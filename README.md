@@ -49,10 +49,20 @@ Two ways you end up in tlda: someone is **hosting it for you**, or you're **runn
 
 Open the URL they gave you and pick a name — you're on their canvas. Nothing to install.
 
+The easiest way to start is the Overleaf level of involvement: use the source
+editor in the browser, whose shared state is synchronized through Yjs. If
+someone else is serving tlda for you, you do not have to set anything up on
+your computer to read and edit the paper there.
+
+If you want more control, use your own text editor and bring your own agents.
+That is when you run the daemon on your machine: it carries your local edits
+and agent sessions into the project.
+
 To put *your own* local agents to work on the paper there, run this in your paper's directory:
 
 ```bash
 brew tap qtm285/tlda && brew install tlda   # if you don't already have the CLI
+tlda daemon start --env <host-config-name>
 TLDA_ENV=<host-config-name> tlda config mcp-setup
 ```
 
