@@ -16,6 +16,7 @@ import { SessionExtractor, EventExtractor, TldaExtractor } from './playback/extr
 import { createPlayback, getPlayback, listPlaybacks, editPlayback, playbackTranscript } from './playback/storage.mjs';
 import { ledger } from './identity.mjs';
 import { formatMessage, formatActivity, formatAnnotationRef } from './format-annotation.mjs';
+import { formatDisplayTimestamp } from '../shared/display-time.mjs';
 import { formatViewingHint } from './viewing-hint.mjs';
 import { parseTimestamp } from './lib/parse-timestamp.mjs';
 import { processMessageText } from '../shared/message-processing.mjs';
@@ -3000,7 +3001,7 @@ export async function handleFleetTool(name, args) {
       const taskDescription = data?.task_description || task?.description || reportTaskId;
       const closeCompleted = closeRequested && Boolean(data?.close_event_id);
       const reportStatus = closeCompleted ? 'closed' : 'reported';
-      const reportContent = `# ${taskDescription}\n\n**Agent:** ${friendlyName}  \n**Status:** ${reportStatus}  \n**Filed:** ${new Date().toISOString()}\n\n---\n\n${args.summary}`;
+      const reportContent = `# ${taskDescription}\n\n**Agent:** ${friendlyName}  \n**Status:** ${reportStatus}  \n**Filed:** ${formatDisplayTimestamp(Date.now())}\n\n---\n\n${args.summary}`;
 
       try {
         await postReportDoc({

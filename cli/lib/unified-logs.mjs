@@ -23,6 +23,7 @@ import { join } from 'path'
 import { createInterface } from 'readline'
 import Database from 'better-sqlite3'
 import { CONFIG_DIR } from '../../shared/config.mjs'
+import { formatDisplayTimestamp } from '../../shared/display-time.mjs'
 
 const DB_PATH = join(CONFIG_DIR, 'fleet.db')
 const DAEMON_LOG = join(CONFIG_DIR, 'fleet-daemon.log')
@@ -97,7 +98,7 @@ function resolveAgent(db, query) {
 
 function formatEvent(ev) {
   const c = TYPE_COLORS[ev.type] || COLORS.reset
-  const ts = ev.timestamp.replace('T', ' ').replace(/\.\d+Z$/, 'Z')
+  const ts = formatDisplayTimestamp(ev.timestamp)
   const typeTag = `${c}${ev.type.padEnd(12)}${COLORS.reset}`
 
   let agent = ''
@@ -123,7 +124,7 @@ function formatDaemonLine(line) {
   const ts = line.slice(0, 24)
   const rest = line.slice(25).replace(/^\[daemon\]\s*/, '')
   const c = COLORS.yellow
-  return `${COLORS.gray}${ts.replace('T', ' ').replace(/\.\d+Z$/, 'Z')}${COLORS.reset} ${c}${'daemon'.padEnd(12)}${COLORS.reset} ${COLORS.dim}${rest}${COLORS.reset}`
+  return `${COLORS.gray}${formatDisplayTimestamp(ts)}${COLORS.reset} ${c}${'daemon'.padEnd(12)}${COLORS.reset} ${COLORS.dim}${rest}${COLORS.reset}`
 }
 
 function queryDb(db, { since, agentId, types, limit, includeActivity }) {

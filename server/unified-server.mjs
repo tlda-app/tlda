@@ -47,6 +47,7 @@ import { lookup as mimeLookup } from 'mime-types'
 import { CONFIG_DIR, DEFAULT_PORT, getActiveEnvName, getFleetServerUrl, hasTls, resolveConfig } from '../shared/config.mjs'
 import { createLagProfiler } from './lib/lag-profiler.mjs'
 import { BARE_METADATA, resolveAsset } from '../shared/doc-assets.mjs'
+import { formatDisplayTimestamp } from '../shared/display-time.mjs'
 import { listModels as listSpawnModels } from '../agent-launch/models.mjs'
 import { readDaemonConfig, readDaemonConfigForCwd, withDaemonModelAliases } from '../agent-launch/permission-ledger.mjs'
 import { labelsForAgent, parseFilter, parseMessageFilter, evalExpr } from '../shared/fleet-labels.mjs'
@@ -2226,7 +2227,7 @@ async function reportFleetIncidentClear({ key, agent, health, incident }) {
     `**Fleet incident cleared: activity-health/${incident?.boundary || health?.boundary || 'unknown'}**`,
     '',
     `Agent: \`${agent?.friendly_name || agent?.id || 'unknown'}\``,
-    `Recovered at: \`${health?.ts || new Date().toISOString()}\``,
+    `Recovered at: \`${formatDisplayTimestamp(health?.ts || Date.now())}\``,
     '',
     '```json',
     JSON.stringify(compactObject({

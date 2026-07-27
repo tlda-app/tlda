@@ -18,6 +18,7 @@ import { execSync } from 'child_process'
 import { existsSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
+import { formatDisplayTimestamp } from '../../shared/display-time.mjs'
 
 // The CLI runs without a server context, so we read the project's JSON
 // directly rather than going through the project-store (which needs init).
@@ -733,7 +734,7 @@ export function formatRescuePlan(r) {
   }
   const lines = []
   const short = (h) => h ? h.slice(0, 7) : '?'
-  const fmtTime = (ts) => ts ? new Date(ts).toISOString().slice(0, 19).replace('T', ' ') + ' UTC' : '?'
+  const fmtTime = (ts) => ts ? formatDisplayTimestamp(ts) : '?'
 
   lines.push(`== Rescue plan (DRY RUN — no action taken) ==`)
   lines.push(`Project: ${r.diag.project}`)
@@ -825,7 +826,7 @@ export function formatRescueResult(r) {
 export function formatDiagnose(r) {
   if (!r.ok) return `repo-doctor: ${r.error}`
   const lines = []
-  const fmtTime = (ts) => ts ? new Date(ts).toISOString().slice(0, 19).replace('T', ' ') + ' UTC' : '?'
+  const fmtTime = (ts) => ts ? formatDisplayTimestamp(ts) : '?'
   const short = (h) => h ? h.slice(0, 7) : '?'
 
   lines.push(`== ${r.project} ==`)
