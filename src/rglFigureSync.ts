@@ -203,6 +203,12 @@ export function attachRglFigureSync(editor: Editor, shapeId: TLShapeId, iframe: 
     // debug. The store-level write is the path this file already uses for the
     // same locked shape in the `tlda-resize` handler.
     //
+    // The other idiom in this repo is unlock-then-`updateShape` (SvgDocument,
+    // FleetChatShape, and the `fleet-docview` branch below). Deliberately not
+    // that one: it is for a deliberate user action on one shape, whereas this
+    // fires every animation frame of a drag, and leaving the deck unlocked would
+    // make it draggable on the canvas — a product change nobody asked for.
+    //
     // Spread-then-set writes one key; tldraw diffs meta per key, so a peer
     // rotating a different figure is not clobbered by this write.
     editor.store.update(shapeId, (s: any) => ({
