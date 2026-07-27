@@ -195,7 +195,6 @@ function terminalUnavailableReason(agent: TerminalAgent | null): string | null {
   if (!agent.id) return 'Terminal unavailable: target is unresolved'
   if (agent.dead) return 'Terminal unavailable: agent is dead'
   const runtime = runtimeStatusForAgent(agent)
-  if (runtime.status === 'shell') return 'Terminal unavailable: shell sessions have no managed terminal'
   if (isTerminalRoutable(agent)) return null
   switch (runtime.route_reason) {
     case 'current-seat-missing':

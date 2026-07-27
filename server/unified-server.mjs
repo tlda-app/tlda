@@ -8398,12 +8398,16 @@ async function handleDaemonWsMessage(ws, msg) {
     const reportedTs = msg.ts || new Date().toISOString()
     const atMs = Date.parse(reportedTs) || Date.now()
     const reported = [...new Set((msg.running_agent_ids || []).filter(id => typeof id === 'string' && id))]
+    const reportedAbsent = msg.snapshot_complete === true
+      ? [...new Set((msg.absent_agent_ids || []).filter(id => typeof id === 'string' && id))]
+      : []
 
     // Ownership, one query: a daemon may only report agents whose current seat
     // lives on it, so it can never keep another daemon's agent looking awake.
     const seats = fleetStore.getCurrentAgentSeats(reported)
     const running = new Set(reported.filter(id => seats.get(id)?.daemon_key === ws._daemonKey))
-    const previous = daemonRunningAgents.get(ws._daemonKey) || new Set()
+    const absentSeats = fleetStore.getCurrentAgentSeats(reportedAbsent)
+    const absent = new Set(reportedAbsent.filter(id => absentSeats.get(id)?.daemon_key === ws._daemonKey))
 
     for (const id of running) {
       spawnLibrarian.observeLiveness({ type, agent_id: id, state: 'alive', ts: reportedTs })
@@ -8418,7 +8422,7 @@ async function handleDaemonWsMessage(ws, msg) {
     // Gone from the box. Marked once, on the report where it disappears — not
     // re-asserted every 30s, which is what made this path cost ~1.24M roster
     // comparisons per batch.
-    for (const id of previous) {
+    for (const id of absent) {
       if (running.has(id)) continue
       spawnLibrarian.observeLiveness({
         type, agent_id: id, state: 'dead', reason: 'absent from daemon running-process snapshot', ts: reportedTs,
@@ -8430,6 +8434,20 @@ async function handleDaemonWsMessage(ws, msg) {
         daemon_boot_id: msg.daemon_boot_id,
         report_seq: msg.report_seq,
       })
+      const seated = absentSeats.get(id)
+      if (seated?.session_id) {
+        try {
+          fleetStore.retireCurrentAgentSeat?.(id, {
+            sessionId: seated.session_id,
+            daemonKey: ws._daemonKey,
+            ...(seated.terminal_capability ? { terminalCapability: seated.terminal_capability } : {}),
+          })
+        } catch (e) {
+          const message = e?.message || String(e)
+          if (/current seat changed|no current durable seat/.test(message)) continue
+          throw e
+        }
+      }
     }
     daemonRunningAgents.set(ws._daemonKey, running)
     broadcastState()

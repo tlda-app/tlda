@@ -10,6 +10,10 @@ export function runtimeStatusForAgent(agent) {
   }
 }
 
+export function isFleetRosterAgent(agent) {
+  return !!agent && !agent.dead && !agent.metadata?.shell
+}
+
 export function runtimeStatusName(agent) {
   return runtimeStatusForAgent(agent).status
 }
@@ -29,10 +33,6 @@ export function fleetRosterCategory(agent) {
 export function isRuntimeHibernating(agent) {
   const status = runtimeStatusName(agent)
   return status === 'hibernating' || status === 'human-away'
-}
-
-export function isRuntimeUnavailable(agent) {
-  return runtimeStatusName(agent) === 'unavailable'
 }
 
 export function isTerminalRoutable(agent) {

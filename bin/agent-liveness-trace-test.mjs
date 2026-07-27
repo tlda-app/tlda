@@ -25,11 +25,12 @@ const reporter = createAgentLiveness({
 })
 await reporter.reportHostedSessions('test')
 await reporter.reportHostedSessions('test-again')
-// The report describes what is RUNNING. 'not-alive' is hosted but its session is
-// absent, so it is simply not mentioned -- absent means hibernating, and nothing
-// enumerates it. See docs/fleet-design-rules.md, "Liveness protocol".
+// The report describes what is RUNNING, and separately names locally hosted
+// sessions that were affirmatively absent from a successful tmux inventory.
 assert.equal(sent[0].type, 'agent-liveness-snapshot')
 assert.deepEqual(sent[0].running_agent_ids, ['alive'])
+assert.deepEqual(sent[0].absent_agent_ids, ['not-alive'])
+assert.equal(sent[0].snapshot_complete, true)
 assert.equal('checked_agent_ids' in sent[0], false)
 assert.equal('liveness_generations' in sent[0], false)
 assert.equal(sent[1].report_seq, 2)
@@ -52,11 +53,13 @@ const lifecycleReporter = createAgentLiveness({
 })
 await lifecycleReporter.start()
 assert.deepEqual(localReports[0].running_agent_ids, ['local-agent'])
+assert.deepEqual(localReports[0].absent_agent_ids, [])
 assert.equal(localReports[0].report_seq, 1)
 lifecycleReporter.stop()
 assert.equal(clearedToken, intervalToken)
 await lifecycleReporter.start()
 assert.deepEqual(localReports[1].running_agent_ids, ['local-agent'])
+assert.deepEqual(localReports[1].absent_agent_ids, [])
 assert.equal(localReports[1].report_seq, 2)
 
 const seat = { daemon_key: 'mini:default', terminal_capability: 'redacted-in-diagnostics' }
@@ -92,7 +95,7 @@ runtime.markNotAlive('known', 'daemon-hosted-session-refresh', {
   report_seq: generation.report_seq,
 })
 projected = runtime.project({ id: 'known', metadata: {} })
-assert.equal(projected.status, 'unavailable')
+assert.equal(projected.status, 'hibernating')
 assert.deepEqual(projected.evidence.liveness_generation, generation)
 
 // The batch decision path (decideAgentLivenessBatch / recordLivenessIngress) and

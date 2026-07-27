@@ -24,14 +24,13 @@
  * The reserved routing labels derived from an agent's status. A friendly_name
  * or explicit label may not collide with these (see fleet-store name checks).
  */
-export const PSEUDO_LABELS = Object.freeze(['awake', 'hibernating', 'unavailable', 'human', 'human-away'])
+export const PSEUDO_LABELS = Object.freeze(['awake', 'hibernating', 'human', 'human-away'])
 
 /** Pseudo-labels implied by an agent's status. */
 export function statusLabels(status) {
   switch (status) {
     case 'awake': return ['awake']
     case 'hibernating': return ['hibernating']
-    case 'unavailable': return ['unavailable']
     case 'human': return ['human']
     case 'human-away': return ['human', 'human-away']
     default: return []
