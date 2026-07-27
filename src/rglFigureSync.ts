@@ -17,12 +17,32 @@
  * seconds in would sit at the render-time default. Shape props ride the room's
  * Yjs document, so they converge, persist, and are handed to a client on connect.
  *
- * WHY ONE PROP PER FIGURE. tldraw merges concurrent edits at the granularity of
- * the prop key: two clients patching `figureView0` and `figureView1` both survive,
- * but two clients read-modify-writing one JSON blob clobber each other, because
- * each computes its new value from its own stale copy. Several friends rotating
+ * WHY ONE KEY PER FIGURE. tldraw merges concurrent edits at the granularity of
+ * the key: two clients patching `rglPose0` and `rglPose1` both survive, but two
+ * clients read-modify-writing one JSON blob clobber each other, because each
+ * computes its new value from its own stale copy. Several friends rotating
  * *different* figures at once is the normal case here, so the storage granularity
- * has to match the contention granularity. Hence N flat props rather than one map.
+ * has to match the contention granularity. Hence one key per figure.
+ *
+ * WHY `meta` AND NOT PROPS — READ THIS BEFORE "FIXING" IT BACK.
+ * The TLDraw-native rule in AGENTS.md says shape state lives in shape props,
+ * "not in meta fields *coordinated across multiple shapes*". That qualifier is
+ * the whole rule: its hazard is state smeared across several records that can
+ * disagree with each other. This is one shape, one owner, one writer per key, so
+ * that hazard does not exist here.
+ *
+ * Props were tried first and were worse in three concrete ways. Props are a fixed
+ * schema, so figures need a fixed number of slots (`figureView0..7`) and a deck
+ * with more figures silently loses them — a cap that has to be policed. Props
+ * must be mirrored exactly in `server/lib/sync-rooms.mjs`, and a mismatch is not
+ * a bug you find later, it is a `TLSyncError` outage for everyone in the room.
+ * And `html-page` is shared by every markdown, HTML and Quarto document, so those
+ * slots would appear on pages that have no figures at all.
+ *
+ * `meta` is free-form, so there is no cap, no mirror, and no schema change — the
+ * same per-key merge behaviour with two failure modes and a limit deleted rather
+ * than managed. If you are about to move this to props, you are reintroducing
+ * all three.
  *
  * WHO MAY DRIVE: anyone in the room, deliberately. No capability check and no
  * permission UI — the demo is "you can do this". Don't harden this without Skip
@@ -32,16 +52,8 @@
 import type { Editor, TLShapeId } from 'tldraw'
 import { log } from './logger'
 
-/**
- * Number of figures in a deck whose orientation can be shared.
- *
- * Flat props, so the count is fixed by the shape schema. Skip's talk deck has 4.
- * A deck with more figures than this reports the overflow rather than dropping
- * them quietly — see `attachRglFigureSync`.
- */
-export const MAX_SHARED_FIGURES = 8
-
-export const figureViewPropKey = (index: number) => `figureView${index}` as const
+/** Meta key holding figure `index`'s shared pose. Position-keyed — see `bind`. */
+export const figurePoseMetaKey = (index: number) => `rglPose${index}` as const
 
 /** The complete viewing state of one rgl subscene: 34 numbers plus a timestamp. */
 type FigurePose = {
@@ -122,27 +134,28 @@ function writePose(rgl: RglInstance, pose: FigurePose) {
 }
 
 /**
- * An absent prop is the normal "nobody has rotated this yet" case and reads as
+ * An absent key is the normal "nobody has rotated this yet" case and reads as
  * null. Unparseable content is not normal — it means something wrote a pose we
  * can't honour, so it is reported rather than swallowed.
  */
 function parsePose(raw: unknown, shapeId: string, index: number): FigurePose | null {
   if (raw === undefined || raw === null || raw === '') return null
   if (typeof raw !== 'string') {
-    log.metric('rgl-sync', 'figure pose prop was not a string', { shapeId, index, type: typeof raw })
+    log.metric('rgl-sync', 'figure pose was not a string', { shapeId, index, type: typeof raw })
+    console.error('[rgl-sync] figure pose was not a string', { shapeId, index })
     return null
   }
   let parsed: unknown
   try {
     parsed = JSON.parse(raw)
   } catch (error) {
-    log.metric('rgl-sync', 'figure pose prop was not valid JSON', { shapeId, index, raw: raw.slice(0, 120) })
+    log.metric('rgl-sync', 'figure pose was not valid JSON', { shapeId, index, raw: raw.slice(0, 120) })
     console.error('[rgl-sync] unparseable figure pose', { shapeId, index }, error)
     return null
   }
   const pose = parsed as Partial<FigurePose>
   if (!pose || !Array.isArray(pose.m) || typeof pose.z !== 'number' || typeof pose.f !== 'number') {
-    log.metric('rgl-sync', 'figure pose prop had unexpected shape', { shapeId, index })
+    log.metric('rgl-sync', 'figure pose had unexpected shape', { shapeId, index })
     console.error('[rgl-sync] figure pose missing required fields', { shapeId, index })
     return null
   }
@@ -173,8 +186,8 @@ export function attachRglFigureSync(editor: Editor, shapeId: TLShapeId, iframe: 
   let removeStoreListener: (() => void) | null = null
 
   const readStoredPose = (index: number): FigurePose | null => {
-    const shape = editor.store.get(shapeId) as { props?: Record<string, unknown> } | undefined
-    return parsePose(shape?.props?.[figureViewPropKey(index)], shapeId, index)
+    const shape = editor.store.get(shapeId) as { meta?: Record<string, unknown> } | undefined
+    return parsePose(shape?.meta?.[figurePoseMetaKey(index)], shapeId, index)
   }
 
   const publish = (binding: FigureBinding) => {
@@ -183,12 +196,14 @@ export function attachRglFigureSync(editor: Editor, shapeId: TLShapeId, iframe: 
     const pose = readPose(binding.rgl)
     if (!pose || !posesDiffer(pose, binding.lastPublished)) return
     binding.lastPublished = pose
-    const shape = editor.store.get(shapeId) as { type?: string; props?: Record<string, unknown> } | undefined
+    const shape = editor.store.get(shapeId) as { type?: string; meta?: Record<string, unknown> } | undefined
     if (!shape) return
+    // Spread-then-set writes one key; tldraw diffs meta per key, so a peer
+    // rotating a different figure is not clobbered by this write.
     editor.updateShape({
       id: shapeId,
       type: shape.type,
-      props: { ...shape.props, [figureViewPropKey(binding.index)]: JSON.stringify(pose) },
+      meta: { ...shape.meta, [figurePoseMetaKey(binding.index)]: JSON.stringify(pose) },
     } as Parameters<typeof editor.updateShape>[0])
   }
 
@@ -219,13 +234,9 @@ export function attachRglFigureSync(editor: Editor, shapeId: TLShapeId, iframe: 
     const live = widgets.filter(el => !!(el as { rglinstance?: RglInstance }).rglinstance)
     if (live.length === 0) return false
 
-    if (live.length > MAX_SHARED_FIGURES) {
-      const message = `deck has ${live.length} rgl figures but only ${MAX_SHARED_FIGURES} can be shared`
-      log.metric('rgl-sync', message, { shapeId, figures: live.length })
-      console.error(`[rgl-sync] ${message} — figures past index ${MAX_SHARED_FIGURES - 1} are not shared`)
-    }
-
-    live.slice(0, MAX_SHARED_FIGURES).forEach((el, index) => {
+    // Every figure binds — meta keys are free-form, so there is no slot limit and
+    // no deck can quietly end up with an unshareable figure.
+    live.forEach((el, index) => {
       const rgl = (el as { rglinstance?: RglInstance }).rglinstance
       if (!rgl) return
       const binding: FigureBinding = { index, rgl, applyingRemote: false, lastPublished: null, pendingFrame: null }

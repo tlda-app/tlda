@@ -268,24 +268,11 @@ async function syncMermaidDiagrams(
 
 export class HtmlPageShapeUtil extends BaseBoxShapeUtil<any> {
   static override type = 'html-page' as const
-  // figureView0..7 carry the shared orientation of the deck's rgl WebGL figures,
-  // one prop per figure so people rotating different figures don't clobber each
-  // other — tldraw merges concurrent edits per prop key, so a single JSON blob
-  // would lose one writer's figure to the other's. See src/rglFigureSync.ts.
-  // This list must stay mirrored exactly in server/lib/sync-rooms.mjs.
   static override props = {
     w: T.number,
     h: T.number,
     url: T.string,
     source: T.optional(T.string),
-    figureView0: T.optional(T.string),
-    figureView1: T.optional(T.string),
-    figureView2: T.optional(T.string),
-    figureView3: T.optional(T.string),
-    figureView4: T.optional(T.string),
-    figureView5: T.optional(T.string),
-    figureView6: T.optional(T.string),
-    figureView7: T.optional(T.string),
   }
 
   getDefaultProps() {
