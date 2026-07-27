@@ -285,6 +285,20 @@ export class FleetStore {
     // crash — only a power loss can lose the last txn, never corrupts.
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('synchronous = NORMAL');
+    // The dominant cost of a read here is I/O, not the query plan: identical
+    // SQL returning identical rows has spanned 1,575x (113ms to 178s). Measured
+    // on the live file 2026-07-26: a 16MB page cache against a 29.2GB database,
+    // mmap off. Both defaults, neither chosen.
+    //
+    // 256MB of cache on a 4GB machine, and 1GB of mmap so hot pages are read
+    // through the page table instead of copied per query. Sized to leave room
+    // for the Node heap; raise deliberately with a measurement, not by feel.
+    this.db.pragma('cache_size = -262144');
+    this.db.pragma('mmap_size = 1073741824');
+    // Keep the WAL from growing without bound. Both live WALs reached ~1GB —
+    // roughly 250x the checkpoint target — before being truncated by hand.
+    this.db.pragma('wal_autocheckpoint = 1000');
+    this.db.pragma('journal_size_limit = 67108864');
     this._createTables();
     this._prepareStatements();
     this._closed = false;
