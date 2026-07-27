@@ -1,5 +1,6 @@
 import type { FleetChatFilter } from './fleet-layout-seeding'
 import { fleetPanelDefaultProps, type FleetPanelType } from './fleet-panel-registry'
+import { singleChatViewportPanelSize } from './fleet-layout-sizing'
 
 export type FleetLayoutVariant = 'single-chat' | '3-col' | '2x2' | 'big-chat' | 'both-margins'
 
@@ -80,6 +81,7 @@ export function planFleetLayoutShapes(input: FleetLayoutPlanInput): FleetLayoutP
   } = input
 
   if (variant === 'single-chat') {
+    const size = singleChatViewportPanelSize(input.viewport)
     return {
       shapes: [
         panelShape('fleet-chat', {
@@ -87,7 +89,7 @@ export function planFleetLayoutShapes(input: FleetLayoutPlanInput): FleetLayoutP
           x: anchorX,
           y: anchorY,
           isLocked: false,
-          props: { w: input.viewport.w, h: input.viewport.h, filter: filter1 },
+          props: { w: size.w, h: size.h, filter: filter1 },
         }, myId, myDevice),
       ],
       dispatchHudReset: false,

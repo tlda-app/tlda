@@ -15,6 +15,7 @@ import { useFleetIdentity } from '../fleet-data-adapter'
 // @ts-ignore — vanilla JS module
 import { getHumanId, getDeviceId, isDeviceReady, whenDeviceReady } from '../fleet/fleet-data.mjs'
 import { getMyAnchorId, isMyFleetShape, isFleetShapeForOwnerKey, FLEET_INTERACTION_SHAPE_SELECTOR, FLEET_SHAPE_TYPES, adoptLegacyFleetShapes, layoutOffset, ensureMyLaneDisjoint } from '../shapes/fleet-utils'
+import { FLEET_HUD_DEFAULT_TOP_PAD_PX } from '../shapes/fleet-layout-sizing'
 import { isDocumentPageShape } from '../shapes/document-pages'
 import { fleetTouchGestureActiveRef, postTouchTelemetry, setTouchDiagStatus, useFleetGestures } from './useFleetGestures'
 import { shouldRenderLockedFleetViewportShape } from './fleet-viewport-predicate'
@@ -502,7 +503,7 @@ export function FleetHUD({
   // transform in the long-lived WMCore. X tracks the main-camera layer through
   // recursive composition; Y is pinned by the overlay policy. Persisted via an
   // invisible anchor shape in Yjs (survives across sessions/devices).
-  const TOP_PAD = 80
+  const TOP_PAD = FLEET_HUD_DEFAULT_TOP_PAD_PX
   const ignoreSavedAnchorRef = useRef(false)
   // True once the user has deliberately panned this session. Guards the
   // adopt-anchor-on-late-arrival listener so a late-syncing anchor can't

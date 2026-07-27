@@ -45,7 +45,7 @@ const ITEM_GAP = 4         // px between tiles
 type LayoutId = FleetLayoutVariant
 type LayoutSource = 'badge-drag-release' | 'fan-preset' | 'url-auto' | 'phone-default'
 const LAYOUT_PRESETS: { id: LayoutId; title: string }[] = [
-  { id: 'single-chat', title: 'Chat: single full-screen chat' },
+  { id: 'single-chat', title: 'Chat: single inset chat' },
   { id: '3-col', title: 'Three-column: agents + search | chat | chat + docview' },
   { id: '2x2', title: '2×2: agents + search | four chats' },
   { id: 'big-chat', title: 'Big chat: large chat over source editor' },
@@ -92,7 +92,7 @@ function LayoutIcon({ id, size = 20 }: { id: LayoutId; size?: number }) {
   const layouts: Record<LayoutId, React.JSX.Element> = {
     'single-chat': (
       <>
-        <rect x={s*0.08} y={s*0.05} width={s*0.7} height={s*0.9} rx={r} fill={ch} />
+        <rect x={s*0.18} y={s*0.12} width={s*0.42} height={s*0.76} rx={r} fill={ch} />
         {docEl()}
       </>
     ),
