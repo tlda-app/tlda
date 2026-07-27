@@ -8,6 +8,7 @@ import { extractTextFromSvgAsync } from '../TextSelectionLayer'
 import { setSvgText, svgViewBoxStore, anchorIndex, setPageUrl } from '../stores'
 import { TARGET_WIDTH, PAGE_GAP, PDF_WIDTH, PDF_HEIGHT } from '../layoutConstants'
 import type { SvgPage, SvgDocument, TargetInfo, DiffData, DiffHighlight, DiffChange } from './types'
+import { layoutPageBounds } from './pageLayout'
 
 export const pageSpacing = PAGE_GAP
 
@@ -21,10 +22,16 @@ export function createSvgDocumentLayout(name: string, pageCount: number, basePat
   const pages: SvgPage[] = []
   const width = TARGET_WIDTH
   const height = PDF_HEIGHT * (TARGET_WIDTH / PDF_WIDTH)
-  let top = 0
   let globalIdx = 0
 
   const effectiveTargets = targets || [{ name, title: name, pages: pageCount, basePath }]
+  const pageBounds = layoutPageBounds(
+    effectiveTargets.flatMap(target =>
+      Array.from({ length: target.pages }, () => ({ width, height }))
+    ),
+    'vertical',
+    pageSpacing,
+  )
 
   for (const target of effectiveTargets) {
     for (let i = 0; i < target.pages; i++) {
@@ -35,7 +42,7 @@ export function createSvgDocumentLayout(name: string, pageCount: number, basePat
       setPageUrl(globalIdx, svgUrl)
       pages.push({
         src: '',
-        bounds: new Box(0, top, width, height),
+        bounds: pageBounds[globalIdx],
         assetId: AssetRecordType.createId(pageId),
         shapeId: createShapeId(pageId),
         width,
@@ -44,7 +51,6 @@ export function createSvgDocumentLayout(name: string, pageCount: number, basePat
         pageInTarget: i + 1,
         targetName: target.name,
       })
-      top += height + pageSpacing
       globalIdx++
     }
   }

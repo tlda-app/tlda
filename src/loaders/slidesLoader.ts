@@ -1,17 +1,11 @@
-import {
-  Box,
-  AssetRecordType,
-  createShapeId,
-} from 'tldraw'
+import { AssetRecordType, createShapeId } from 'tldraw'
+import { PAGE_GAP } from '../layoutConstants'
 import type { SvgPage, SvgDocument, SlideInfo } from './types'
+import { layoutPageBounds } from './pageLayout'
 
 export type SlidePageEntry = SlideInfo
 
-/**
- * Load a slides document (Quarto reveal.js deck).
- * The deck is one rendered html-page shape. Logical slides live in slideInfo;
- * SlidesNavigator drives Reveal inside the single iframe.
- */
+/** Load a reveal.js deck as pages laid out on the horizontal page axis. */
 export async function loadSlidesDocument(
   name: string,
   basePath: string,
@@ -23,21 +17,21 @@ export async function loadSlidesDocument(
 
   console.log(`Found ${pageInfos.length} slides`)
 
-  const first = pageInfos[0]
-  if (!first) {
-    return { name, pages: [], basePath, format: 'slides', slideInfo: [] }
-  }
+  const bounds = layoutPageBounds(pageInfos, 'horizontal', PAGE_GAP)
+  const pages: SvgPage[] = pageInfos.map((info, index) => {
+    const pageId = `${name}-slide-${index}`
+    const indexh = info.indexh ?? info.slideIndex
+    const indexv = info.indexv ?? 0
+    return {
+      src: `${basePath}${info.file}?_tldaH=${indexh}&_tldaV=${indexv}`,
+      bounds: bounds[index],
+      assetId: AssetRecordType.createId(pageId),
+      shapeId: createShapeId(pageId),
+      width: info.width,
+      height: info.height,
+    }
+  })
 
-  const pageId = `${name}-deck`
-  const pages: SvgPage[] = [{
-    src: basePath + first.file + '?_tldaDeck=1',
-    bounds: new Box(0, 0, first.width, first.height),
-    assetId: AssetRecordType.createId(pageId),
-    shapeId: createShapeId(pageId),
-    width: first.width,
-    height: first.height,
-  }]
-
-  console.log(`Slides document ready (${pageInfos.length} slides, single deck iframe)`)
+  console.log(`Slides document ready (${pageInfos.length} slides, horizontal page axis)`)
   return { name, pages, basePath, format: 'slides', slideInfo: pageInfos }
 }
