@@ -15,7 +15,7 @@ import katex from 'katex'
 import { normalizeChatDisplayMathDelimiters } from '../../shared/chat-math-normalize.mjs'
 import { readFileSync, writeFileSync, mkdirSync, cpSync, existsSync, readdirSync } from 'fs'
 import { join, basename, dirname } from 'path'
-import { readProject, listProjects, aggregateBookToc, sourceDir as getSourceDir, outputDir as getOutputDir, readProjectPartsManifest } from './project-store.mjs'
+import { readProject, listProjects, aggregateBookToc, sourceDir as getSourceDir, outputDir as getOutputDir } from './project-store.mjs'
 import { listDocumentColumns, pageInfoFromDocumentColumns } from './document-columns.mjs'
 import { getBuildReporter } from './build-runner.mjs'
 
@@ -876,29 +876,36 @@ export async function buildMarkdownDocument(name, addLog = console.log) {
   }
 
 
-  // Write relevant-files.json — the markdown analog of .fls.
-  // Daemon uses this to watch only the files this build actually reads.
-  // Paths must be under the authoring sourceDir (not the server mirror)
-  // so they match what the daemon pushes from.
+  // Write relevant-files.json — the markdown analog of .fls, and the same
+  // interface every other format uses. Entries are PROJECT-RELATIVE, so they
+  // name the same file in the server mirror, on the author's machine, and in
+  // the version; each consumer joins them against the root it holds.
+  //
+  // Scope is decided here, as it is in the LaTeX emitter: a reference that does
+  // not resolve to a file inside this project is not part of the document and
+  // never enters a version. That is why an external part's absolute source path
+  // is not written out — it belongs to the project that owns it.
   const authorDir = project.sourceDir || srcDir
-  const referencedFiles = []
+  const referencedFiles = new Set()
+  const addRef = (rel) => {
+    if (!rel || rel.startsWith('/')) return
+    if (existsSync(join(srcDir, rel)) || existsSync(join(authorDir, rel))) referencedFiles.add(rel)
+  }
   for (const column of columns) {
-    referencedFiles.push(join(authorDir, column.sourceFile))
+    addRef(column.sourceFile)
     const columnSource = readFileSync(join(srcDir, column.sourceFile), 'utf8')
     for (const raw of [
       ...[...columnSource.matchAll(/!\[[^\]]*\]\(([^)]+)\)/g)].map(m => m[1]),
       ...[...columnSource.matchAll(/<img\s[^>]*src=["']([^"']+)["']/g)].map(m => m[1]),
     ]) {
       const ref = raw.split(/[#?]/)[0].trim()
-      if (ref && !ref.startsWith('http://') && !ref.startsWith('https://') && !ref.startsWith('data:')) {
-        referencedFiles.push(join(authorDir, ref))
-      }
+      if (ref && !/^(https?:|data:|\/\/)/i.test(ref)) addRef(ref)
     }
   }
-  for (const sourcePath of externalProjectPartSourcePaths(name)) {
-    referencedFiles.push(sourcePath)
-  }
-  writeFileSync(join(outDir, 'relevant-files.json'), JSON.stringify({ files: referencedFiles }, null, 2))
+  writeFileSync(
+    join(outDir, 'relevant-files.json'),
+    JSON.stringify({ generated_at: new Date().toISOString(), files: [...referencedFiles].sort() }, null, 2),
+  )
 
   const pageInfo = pageInfoFromDocumentColumns(name, columns)
   writeFileSync(join(outDir, 'page-info.json'), JSON.stringify(pageInfo, null, 2))
@@ -906,11 +913,7 @@ export async function buildMarkdownDocument(name, addLog = console.log) {
 
   const buildReadyAt = Date.now()
   reporter.updateProject(name, { buildStatus: 'success', pages: pageInfo.length, lastBuild: new Date(buildReadyAt).toISOString() })
-  await reporter.writeSentinel(`doc-${name}`, {
-    commitHash: `markdown-${buildReadyAt}`,
-    timestamp: buildReadyAt,
-    buildReadyAt,
-  })
+  // The sentinel is written by recordBuildVersion, with the real commit hash.
   reporter.broadcastSignal(`doc-${name}`, 'signal:reload', { pages: pageInfo.length, timestamp: buildReadyAt })
 
   // Re-aggregate any book that contains this doc as a member
@@ -921,15 +924,4 @@ export async function buildMarkdownDocument(name, addLog = console.log) {
   }
 
   addLog(`[markdown] ${name}: indexed ${pageInfo.length} column${pageInfo.length === 1 ? '' : 's'}`)
-}
-
-function externalProjectPartSourcePaths(name) {
-  try {
-    const manifest = readProjectPartsManifest(name)
-    return (manifest.parts || [])
-      .map(part => part?.metadata?.sourcePath)
-      .filter(path => typeof path === 'string' && path.length > 0)
-  } catch {
-    return []
-  }
 }

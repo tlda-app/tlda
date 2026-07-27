@@ -54,9 +54,8 @@ if (!existsSync(relPath)) {
 
 const relData = JSON.parse(readFileSync(relPath, 'utf8'))
 const allFiles = Array.isArray(relData?.files) ? relData.files : []
-const scope = allFiles
-  .filter(p => typeof p === 'string' && p.startsWith(sourceDir + '/'))
-  .map(p => p.slice(sourceDir.length + 1))
+// Scope is project-relative — the working copy names the same files the same way.
+const scope = allFiles.filter(p => typeof p === 'string' && p.length > 0)
 
 if (scope.length === 0) {
   console.error(`Paper-scope is empty for "${projectName}". Aborting.`)

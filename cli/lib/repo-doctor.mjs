@@ -275,18 +275,14 @@ export function findContentFork(g, originRef, opts = {}) {
  * pdflatex actually opened in the last build — bib/svg are included by
  * writeRelevantFiles in build-runner.mjs.
  */
-function readPaperScopePaths(projectName, sourceDir) {
+function readPaperScopePaths(projectName) {
   const path = join(SERVER_PROJECTS_DIR, projectName, 'output', 'relevant-files.json')
   if (!existsSync(path)) return null
   let parsed
   try { parsed = JSON.parse(readFileSync(path, 'utf8')) } catch { return null }
   if (!Array.isArray(parsed?.files)) return null
-  const prefix = sourceDir + '/'
-  const out = new Set()
-  for (const p of parsed.files) {
-    if (typeof p !== 'string' || !p.startsWith(prefix)) continue
-    out.add(p.slice(prefix.length))
-  }
+  // Scope is project-relative — already in the working copy's own space.
+  const out = new Set(parsed.files.filter(p => typeof p === 'string' && p.length > 0))
   return out.size === 0 ? null : [...out].sort()
 }
 
@@ -373,7 +369,7 @@ export async function rescuePlan(projectName) {
   // where local trees are paper-scope-only but origin trees include
   // figures/etc., so whole-tree hashes never match even on the same paper
   // content). Fall back to whole-tree match if no paper-scope is available.
-  const paperScope = readPaperScopePaths(projectName, diag.sourceDir)
+  const paperScope = readPaperScopePaths(projectName)
   let fork = null
   if (paperScope) {
     fork = findPaperScopeFork(g, diag.upstream.ref, paperScope)
