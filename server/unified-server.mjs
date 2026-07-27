@@ -2169,6 +2169,22 @@ if (fleetStore) {
 // share → addUnread → broadcast. Calling only fleetStore.share leaves
 // the message invisible to getUnread, so the recipient's MCP never
 // surfaces it as a <channel> system-reminder.
+// The subscriptions table is the record of who monitors which doc; tlda-feedback
+// reads it rather than keeping a second copy, and arms the room listeners for
+// every persisted row at startup.
+function configureTldaFeedback() {
+  tldaFeedback.configure({
+    listDocSubscriptions: () => (fleetStore?.getSubscriptionsByAdapter?.('document_monitor') || [])
+      .map(row => {
+        const match = String(row.query || '').match(/^doc:([^\s]+)$/i)
+        return match ? { owner: row.owner, doc: match[1] } : null
+      })
+      .filter(Boolean),
+    deliverChat: deliverTldaFeedbackChat,
+  })
+  tldaFeedback.armPersisted()
+}
+
 function deliverTldaFeedbackChat({ from, to, text, metadata }) {
   if (!fleetStore) return
   Promise.resolve(fleetStore.share?.({ type: 'chat', from, to, text, metadata }))
@@ -2179,6 +2195,8 @@ function deliverTldaFeedbackChat({ from, to, text, metadata }) {
     })
     .catch(e => console.error(`[fleet-feedback] delivery failed: ${e.message}`))
 }
+
+configureTldaFeedback()
 
 async function reportFleetIncident({ severity = 'warning', component, operation, actors, impact, evidence, error }) {
   const text = [
@@ -5090,15 +5108,11 @@ server.on('upgrade', async (req, socket, head) => {
         logWsClose('fleet', ws, code, reason?.toString?.() || '')
         wsFleetClients.delete(ws)
         filterSubscriptions.dropConnection(ws)
-        // Unsubscribe the agent from all tlda-feedback watches so stale
-        // subscriptions don't accumulate across MCP respawns.
-        if (ws._tldaAgentId) {
-          if (agentFleetConnections.get(ws._tldaAgentId) === ws) {
-            agentFleetConnections.delete(ws._tldaAgentId)
-          }
-          if (!hasOpenFleetSocketForAgent(ws._tldaAgentId, ws)) {
-            tldaFeedback.unsubscribeAll(ws._tldaAgentId)
-          }
+        // A doc subscription is durable and outlives this socket. Closing it
+        // used to tear down the agent's tlda-feedback watches, which silently
+        // disarmed every subscription whose row was still in the table.
+        if (ws._tldaAgentId && agentFleetConnections.get(ws._tldaAgentId) === ws) {
+          agentFleetConnections.delete(ws._tldaAgentId)
         }
       })
       ws.on('error', () => {
@@ -5589,12 +5603,6 @@ async function handleFleetWsMessage(ws, msg) {
       fleetStore.upsertAgent(agent)
       if (isShellReservation && !agent.human) {
         fleetStore.ensureDefaultSubscription?.(agent.id)
-      }
-      for (const row of fleetStore.getSubscriptionsByOwner?.(agent.id) || []) {
-        const docMatch = String(row.query || '').match(/^doc:([^\s]+)$/i)
-        if (row.adapter === 'document_monitor' && docMatch) {
-          tldaFeedback.subscribe(row.owner, docMatch[1], deliverTldaFeedbackChat)
-        }
       }
     } catch (e) {
       if (e.message?.includes('already taken')) {
@@ -7048,34 +7056,6 @@ async function handleFleetWsMessage(ws, msg) {
     return
   }
 
-  // ---- tlda-monitor: subscribe to per-doc feedback notifications ----
-  // The agent calls `monitor_add(doc)` as an MCP tool → fleet MCP forwards
-  // here → we attach shape-change + signal listeners for that doc → when
-  // feedback fires, we push a fleet chat message from fleet:tlda to the
-  // subscribed agent(s). Replaces the old PostToolUse polling hook.
-  if (type === 'tlda-monitor-add') {
-    const { agentId, doc } = msg
-    if (!agentId || !doc) { error('missing agentId or doc'); return }
-    try {
-      tldaFeedback.subscribe(agentId, doc, deliverTldaFeedbackChat)
-      reply({ ok: true, doc, subscriptions: tldaFeedback.list(agentId) })
-    } catch (e) { error(e.message) }
-    return
-  }
-  if (type === 'tlda-monitor-remove') {
-    const { agentId, doc } = msg
-    if (!agentId || !doc) { error('missing agentId or doc'); return }
-    tldaFeedback.unsubscribe(agentId, doc)
-    reply({ ok: true, subscriptions: tldaFeedback.list(agentId) })
-    return
-  }
-  if (type === 'tlda-monitor-list') {
-    const { agentId } = msg
-    if (!agentId) { error('missing agentId'); return }
-    reply({ ok: true, subscriptions: tldaFeedback.list(agentId) })
-    return
-  }
-
   // ---- rename ----
   if (type === 'rename') {
     const { agent: agentQuery, name: newName } = msg
@@ -7472,13 +7452,14 @@ async function handleFleetWsMessage(ws, msg) {
     try {
       if (docMatch) {
         adapter = 'document_monitor'
-        tldaFeedback.subscribe(target.id, docMatch[1], deliverTldaFeedbackChat)
       } else {
         const tap = fleetStore.addWiretap(target.id, query, null)
         adapterId = tap.id
       }
     } catch (e) { error(`subscription adapter failed: ${e.message}`); return }
     const subscription = fleetStore.addSubscription({ owner: target.id, query, notificationPolicy: policy, createdBy: caller.id, adapter, adapterId })
+    // Arm after the row exists — the subscriber set is read from the table.
+    if (docMatch) tldaFeedback.arm(docMatch[1])
     reply(subscription)
     return
   }
@@ -7492,14 +7473,7 @@ async function handleFleetWsMessage(ws, msg) {
     if (caller.id !== target.id && !fleetStore.isDelegatorForAgent?.(caller.id, target.id)) {
       error('not authorized to inspect subscriptions for that target'); return
     }
-    const rows = fleetStore.getSubscriptionsByOwner(target.id)
-    for (const row of rows) {
-      if (row.adapter === 'document_monitor') {
-        const docMatch = String(row.query || '').match(/^doc:([^\s]+)$/i)
-        if (docMatch) tldaFeedback.subscribe(row.owner, docMatch[1], deliverTldaFeedbackChat)
-      }
-    }
-    reply(rows)
+    reply(fleetStore.getSubscriptionsByOwner(target.id))
     return
   }
 
@@ -7513,11 +7487,12 @@ async function handleFleetWsMessage(ws, msg) {
       error('not authorized to remove that subscription'); return
     }
     if (subscription.adapter === 'wiretap' && subscription.adapter_id) fleetStore.removeWiretap(subscription.adapter_id)
+    fleetStore.removeSubscription(subscription.subscription_id)
+    // Release after the row is gone — the remaining-subscriber check reads the table.
     if (subscription.adapter === 'document_monitor') {
       const docMatch = String(subscription.query || '').match(/^doc:([^\s]+)$/i)
-      if (docMatch) tldaFeedback.unsubscribe(subscription.owner, docMatch[1])
+      if (docMatch) tldaFeedback.releaseIfUnsubscribed(docMatch[1])
     }
-    fleetStore.removeSubscription(subscription.subscription_id)
     reply({ ok: true, subscription_id: subscription.subscription_id })
     return
   }
