@@ -20,7 +20,7 @@ export async function completeTaskLifecycle({
     completedTask.metadata = { ...(task.metadata || {}), ...taskMetadataPatch }
   }
 
-  fleetStore.upsertTask(completedTask)
+  await fleetStore.upsertTask(completedTask)
   const event = await fleetStore.taskDone?.(agentId, completedTask.id, description, eventMetadata)
   return {
     task: completedTask,
@@ -70,7 +70,7 @@ export async function transferTaskLifecycle({
     message: appendDelegationMessage(task, { fromAgentId, toAgentId, message, delegatedAt }),
   }
 
-  fleetStore.upsertTask(transferredTask)
+  await fleetStore.upsertTask(transferredTask)
   const event = await fleetStore.delegate?.(fromAgentId, toAgentId, task.id, task.description, eventMetadata)
   return {
     task: transferredTask,

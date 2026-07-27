@@ -6,11 +6,9 @@
 // voice and task-close all stop together. On this thread a slow query blocks
 // only this thread, and the main loop keeps serving.
 //
-// This thread holds the ONLY connection. That is the point, and it is what
-// makes the existing db-writer worker deletable: today two connections write to
-// one WAL — the main thread and that writer — and neither sets a busy_timeout,
-// so a collision mid-FTS-merge blocks the loop for up to five seconds and then
-// throws SQLITE_BUSY. After this there is one writer, one reader, one thread.
+// This thread holds the ONLY connection. That is the point: with one
+// connection there is no second writer colliding mid-FTS-merge, and no write
+// path can block the main loop for up to five seconds on SQLITE_BUSY.
 //
 // It also means the 15 read-then-write transactions need no protocol at all.
 // They stay exactly as they are, synchronous, inside this thread. Splitting
@@ -32,9 +30,8 @@ store.onEvent(event => {
 parentPort.on('message', async (msg) => {
   const { id, method, args } = msg
   // Lifecycle, not a query. The store has to be closed from in here — it owns
-  // the connection, a WAL checkpoint, the cwd-segment backfill timer and (until
-  // it goes) the db-writer worker. Terminating the thread without this kills it
-  // mid-write.
+  // the connection, a WAL checkpoint and the cwd-segment backfill timer.
+  // Terminating the thread without this kills it mid-write.
   if (msg.kind === 'close') {
     try { store.close() } catch (e) {
       parentPort.postMessage({ kind: 'result', id, error: { message: e?.message || String(e), stack: e?.stack || null } })
