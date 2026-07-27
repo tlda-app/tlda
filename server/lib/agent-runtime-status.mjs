@@ -158,10 +158,6 @@ export function projectAgentRuntimeStatus(agent, evidence = null, {
 } = {}) {
   const metadata = agent?.metadata || {}
   const route = routeStateFor({ agent, isDaemonConnected })
-  // "Has a seat" is now a fact on the row rather than a fetched object. It
-  // forks unavailable-vs-hibernating below: an agent with a seat we cannot
-  // reach is unavailable, one with no seat at all is simply not running.
-  const seat = !!agent?.seat_present
   const baseEvidence = {
     liveness: evidence?.liveness || LIVENESS.UNKNOWN,
     liveness_source: evidence?.liveness_source || null,
