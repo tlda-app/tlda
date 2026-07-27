@@ -96,6 +96,13 @@ export const ASYNC_CASCADE = Object.freeze([
   'taskInboxStatusFor',
   'taskDelegateWakeText',
   'qualLoadReadsFromDb',
+  // The wake path. requestWake's first act is a store read that gates every
+  // branch below it, so it cannot be fire-and-forget; the two timer callers
+  // are, with the reason written where they drop it.
+  'requestWake',
+  'inboxStatusFor',
+  'chatWakeText',
+  'delegateWakeText',
 ])
 
 const SEARCH_DIRS = ['server', 'bin', 'cli', 'mcp-server', 'shared', 'daemon']
