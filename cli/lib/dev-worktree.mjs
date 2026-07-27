@@ -609,6 +609,99 @@ export function sweepOrphanPreviewDirs() {
   return { swept, kept }
 }
 
+// ---- idle-preview reaper (access-based) ----
+
+// Skip's rule: a dev server nobody has been *using* for ~15 minutes is
+// abandoned. Using, not owning, not running — a preview whose process is alive
+// tells you nothing, which is why the lease reaper (renewing on process
+// liveness) could never reap an abandoned one.
+const PREVIEW_IDLE_MS = parseInt(process.env.REAPER_PREVIEW_IDLE_MS, 10) || 15 * 60_000
+
+// First-observed-idle, keyed by pid:port. In a short-lived CLI process this is
+// always empty, so a sweep there can never reap on its first look; in the bot
+// it persists. A bot restart therefore grants every preview a fresh grace
+// period, which errs toward keeping a server alive.
+const _previewIdleSince = new Map()
+
+/**
+ * Inbound client connections per `pid:port`, counted from the SERVER side of
+ * the socket — the records whose local end is the preview port.
+ *
+ * Deliberately does not look at what the client is. Only the server end is
+ * local, so any check on the client process can see local clients only, and
+ * would report a preview as idle while it is being read from another machine.
+ * Previews exist to be opened from Skip's iPad and phone over Tailscale, so
+ * that check would reap the page he is reading. Anyone holding a connection
+ * counts, wherever they are.
+ */
+function previewClientsByPidPort() {
+  const out = spawnSync('lsof', ['-nP', '-iTCP', '-sTCP:ESTABLISHED'], { encoding: 'utf8' }).stdout || ''
+  const counts = new Map()
+  for (const line of out.split('\n').slice(1)) {
+    const parts = line.trim().split(/\s+/)
+    if (parts.length < 9) continue
+    const pid = Number(parts[1])
+    const m = parts.slice(8).join(' ').match(/:(\d+)->/)
+    if (!m || !Number.isInteger(pid)) continue
+    const port = Number(m[1])
+    if (port < PREVIEW_PORT_MIN || port > PREVIEW_PORT_MAX) continue
+    const key = `${pid}:${port}`
+    counts.set(key, (counts.get(key) || 0) + 1)
+  }
+  return counts
+}
+
+/**
+ * Reap preview servers nobody has been connected to for `idleMs`. Intended to
+ * run on an interval from the dev bot; returns what it did so a caller can
+ * report, and logs every reap itself so a kill is never silent.
+ */
+export function reapIdlePreviews({ now = Date.now(), idleMs = PREVIEW_IDLE_MS } = {}) {
+  const listeners = previewListeners()
+  const clients = previewClientsByPidPort()
+  const reaped = [], inUse = [], waiting = [], failed = []
+  const seen = new Set()
+
+  for (const l of listeners) {
+    const key = `${l.pid}:${l.port}`
+    seen.add(key)
+
+    const open = clients.get(key) || 0
+    if (open > 0) {
+      _previewIdleSince.delete(key)
+      inUse.push({ pid: l.pid, port: l.port, clients: open })
+      continue
+    }
+
+    if (!_previewIdleSince.has(key)) _previewIdleSince.set(key, now)
+    const idle = now - _previewIdleSince.get(key)
+    if (idle < idleMs) {
+      waiting.push({ pid: l.pid, port: l.port, idleMs: idle })
+      continue
+    }
+    // Our port range is ours by convention, not by ownership. Never signal a
+    // process that isn't one of our node preview servers.
+    if (!/^node/i.test(l.command)) {
+      waiting.push({ pid: l.pid, port: l.port, idleMs: idle, skipped: 'not-a-node-preview' })
+      continue
+    }
+
+    try {
+      process.kill(l.pid, 'SIGTERM')
+      console.log(`[preview-reaper] reaped pid=${l.pid} port=${l.port} — no client connected for ${Math.round(idle / 60000)}m`)
+      reaped.push({ pid: l.pid, port: l.port, idleMs: idle })
+      _previewIdleSince.delete(key)
+    } catch (e) {
+      if (e?.code === 'ESRCH') { _previewIdleSince.delete(key); continue }  // exited on its own
+      console.error(`[preview-reaper] kill pid=${l.pid} port=${l.port} failed: ${e.message}`)
+      failed.push({ pid: l.pid, port: l.port, error: e.message })
+    }
+  }
+
+  for (const k of [..._previewIdleSince.keys()]) if (!seen.has(k)) _previewIdleSince.delete(k)
+  return { reaped, inUse, waiting, failed }
+}
+
 function reapOrphanPreviews(json) {
   const orphans = orphanPreviewListeners()
   const reaped = []
