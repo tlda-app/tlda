@@ -444,7 +444,7 @@ async function reloadHtmlPages(editor: Editor, document: SvgDocument): Promise<R
  * it.
  */
 async function refreshSvgProjectParts(editor: Editor, document: SvgDocument) {
-  if (FORMATS_WITH_OWN_PAGE_INFO.has(document.format)) return
+  if (document.format && FORMATS_WITH_OWN_PAGE_INFO.has(document.format)) return
   const basePath = document.basePath || `${import.meta.env.BASE_URL || '/'}docs/${document.name}/`
   // Distinct namespace from the main document's own page/shape ids — the
   // main document already owns `${name}-page-N`; parts must never collide
