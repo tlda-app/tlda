@@ -299,7 +299,6 @@ function readAll() {
     hlZone: getPref('hl-zone-enabled'),
     cornerRail: getPref('corner-rail-enabled'),
     cornerSize: getPref('corner-control-size'),
-    slidesNavigationMode: getPref('slides-navigation-mode'),
     provenanceMode: getPref('provenance-display-mode'),
     selfCheckEnabled: getPref('todd-self-check-auto-enabled'),
     selfCheckCountdown: getPref('todd-self-check-countdown-sec'),
@@ -525,22 +524,6 @@ export function PrefsTab() {
           </select>
         </PrefSubsection>
 
-        <PrefSubsection title="Slide advance">
-          <label className="prefs-row">
-            <span>Mode</span>
-            <select
-              value={prefs.slidesNavigationMode}
-              onChange={e => {
-                const mode = e.target.value === 'orthogonal-fragments' ? 'orthogonal-fragments' : 'inline-fragments'
-                setPref('slides-navigation-mode', mode)
-              }}
-              className="prefs-select"
-            >
-              <option value="inline-fragments">Click through fragments</option>
-              <option value="orthogonal-fragments">Slides left/right, fragments vertical</option>
-            </select>
-          </label>
-        </PrefSubsection>
       </CollapsiblePrefsSection>
 
       <CollapsiblePrefsSection
