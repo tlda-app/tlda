@@ -772,8 +772,8 @@ Common substitutions: giving a summary when asked for a specific thing, doing a 
     cooldown: 300_000,
   },
   {
-    pattern: /\bdefine\s+(?:your|the|that)\s+notation\b|\byou\s+(?:didn'?t|never)\s+define(?:d|\s+(?:your|the|that))?\b|\bundefined\s+notation\b|\bnotation\s+(?:that\s+)?(?:you|they)\s+(?:didn'?t|never)\s+define\b|\bin\s+your\s+head\b|\bI\s+(?:didn'?t|don'?t|never)\s+(?:want|ask(?:ed)?\s+for)\s+a\s+(?:fucking\s+)?book\b|\bwhat\s+you\s+actually\s+said\b/i,
-    skill: 'math-report',
+    pattern: /\bdefine\s+(?:your|the|that)\s+notation\b|\byou\s+(?:didn'?t|never)\s+define(?:d|\s+(?:your|the|that))?\b|\bundefined\s+notation\b|\bnotation\s+(?:that\s+)?(?:you|they)\s+(?:didn'?t|never)\s+define\b|\bin\s+your\s+head\b|\bI\s+(?:didn'?t|don'?t|never)\s+(?:want|ask(?:ed)?\s+for)\s+a\s+(?:fucking\s+)?book\b/i,
+    skill: 'explain-math-concretely',
     message: `🛑 **Skip asked you to pin down your notation — restate, do NOT re-derive.** You used a symbol you never defined, or defined it somewhere he'd have to hunt for (an unrequested file, far up the scrollback). That makes him do work he can't afford. It reads as rude.
 
 The only correct answer:
@@ -782,7 +782,7 @@ The only correct answer:
 - Keep it to ≤2 sentences. He asked what you meant, not for a book.
 - If the original was incomplete or ill-defined, the honest answer is "here's precisely what I meant" — or "I was hand-waving, here's the gap." Do not bury the dodge in a wall of fresh notation.
 
-Read \`math-report\` before you send: it's the self-review checklist for exactly this — dropped variables, notation drift, unanswered questions.`,
+Read \`explain-math-concretely\` before you send: it's the self-review checklist for exactly this — dropped variables, notation drift, unanswered questions.`,
     cooldown: 300_000,
   },
 

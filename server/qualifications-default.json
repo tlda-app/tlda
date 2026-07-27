@@ -1,8 +1,8 @@
 {
   "rules": [
-    { "edit": "*.tex", "requires": ["writing-core", "writing-process", "argument-outline", "writing-arguments-output"] },
+    { "edit": "*.tex", "requires": ["writing-core", "argument-outline", "writing-arguments-output"] },
     { "edit": "*.bib", "requires": ["writing-core"] },
-    { "edit": "*.md",  "requires": ["writing-core", "writing-process", "argument-outline"], "condition": "latex-project" },
+    { "edit": "*.md",  "requires": ["writing-core", "argument-outline"], "condition": "latex-project" },
 
     { "edit": "*.css", "requires": ["app-development", "app-testing", "appearance-requires-permission"] },
     { "edit": "*.tsx", "requires": ["app-development", "app-testing", "appearance-requires-permission", "code-patterns"] },
@@ -13,12 +13,9 @@
     { "edit": "*.R",   "requires": ["math-implementation"] },
 
     { "tool": "playwright/*", "requires": ["app-testing"] },
-    { "tool": "tlda/spawn", "requires": ["agent-guide"] },
     { "tool": "tlda/delegate", "requires": ["point-dont-paraphrase", "manager-team-stewardship"] },
     { "tool": "Agent", "requires": ["subagents"] },
-    { "tool": "tlda/input_scratch", "requires": ["scratch-files", "where-to-write"] },
-    { "tool": "tlda/report", "requires": ["math-report", "explain-math-concretely"] },
-    { "tool": "tlda/chat", "requires": ["explain-math-concretely"], "condition": "math-heavy" },
-    { "tool": "tlda/compose", "requires": ["math-report"] }
+    { "tool": "tlda/input_scratch", "requires": ["where-to-write"] },
+    { "tool": "tlda/chat", "requires": ["explain-math-concretely"], "condition": "math-heavy" }
   ]
 }
