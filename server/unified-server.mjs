@@ -406,7 +406,6 @@ const _runtimeExpiryTimers = new Map()
 
 const runtimeStatusStore = createAgentRuntimeStatusStore({
   ttlMs: POSITIVE_LIVENESS_TTL_MS,
-  getSeat: agentId => fleetStore?.getCurrentAgentSeat?.(agentId) || null,
   isDaemonConnected: daemonKey => !!daemonKey && daemonConnections.get(daemonKey)?.readyState === 1,
   onChange: agentId => {
     fleetStore?.refreshAgentLiveness?.(agentId)
@@ -414,7 +413,31 @@ const runtimeStatusStore = createAgentRuntimeStatusStore({
   },
 })
 
-function isAgentAlive(agentId) { return runtimeStatusStore.isAwake(agentId) }
+// Awake, projected from the agent ROW. It used to take an id and call back
+// into the store for a seat — per check — while both of its callers already
+// held the agent and its seat a couple of lines above. The seat facts now ride
+// the row, so this looks nothing up.
+function isAgentAwake(agent) { return runtimeStatusStore.project(agent).status === 'awake' }
+
+// The two facts the store needs to count the roster, and the reason they are
+// assembled at the call site rather than kept anywhere: they are inputs to one
+// computation. `liveEvidenceIds` is the agents whose positive evidence is still
+// inside the TTL; `connectedDaemonKeys` is who holds a socket right now. Both
+// are read fresh from this thread's own state every time.
+function rosterCountInputs() {
+  const nowMs = Date.now()
+  const liveEvidenceIds = []
+  for (const agentId of _aliveAgents) {
+    const evidence = runtimeStatusStore.evidenceFor(agentId)
+    if (evidence?.liveness !== 'alive') continue
+    const at = Number(evidence.liveness_at_ms)
+    if (!Number.isFinite(at) || (nowMs - at) > POSITIVE_LIVENESS_TTL_MS) continue
+    liveEvidenceIds.push(agentId)
+  }
+  const connectedDaemonKeys = []
+  for (const [key, ws] of daemonConnections) if (ws?.readyState === 1) connectedDaemonKeys.push(key)
+  return { liveEvidenceIds, connectedDaemonKeys, nowMs }
+}
 
 function scheduleRuntimeExpiry(agentId) {
   if (!agentId) return
@@ -491,7 +514,6 @@ async function refreshRuntimeRoutesForDaemon(daemonKey) {
   if (affected.length) broadcastState(affected)
 }
 
-if (fleetStore?.setRuntimeStatusProvider) fleetStore.setRuntimeStatusProvider(agent => runtimeStatusStore.project(agent))
 
 // ─── Process reaper — zombie WebSocket detection ────────────────────
 // Agents leave wakes of playwright chromium windows pointed at our
@@ -946,7 +968,7 @@ async function drainTaskWakeQueue() {
     try {
       const ownerDaemon = daemonConnections.get(daemonKey)
       if (!ownerDaemon || ownerDaemon.readyState !== 1) throw new Error(`No fleet-daemon connected for ${daemonKey}`)
-      const serverAlive = isAgentAlive(agentId)
+      const serverAlive = isAgentAwake(agent)
       const liveness = serverAlive
         ? await sendDaemonDurable(daemonKey, 'check-alive', terminalRpcPayload(agent, seat))
           .then(result => livenessFromCheckAliveResult(agentId, result))
@@ -1735,7 +1757,7 @@ function _broadcastStateNow() {
       removed,
       // Footer totals cover the full non-dead roster, not only the bounded
       // client page receiving this delta.
-      ...(pendingIds.length ? { agentTotals: fleetStore.getAliveAgentCounts() } : {}),
+      ...(pendingIds.length ? { agentTotals: fleetStore.getAliveAgentCounts(rosterCountInputs()) } : {}),
       task_delta: fleetStore.consumeTaskChanges?.() || { changed: [], removed: [], overflow: false },
       thinking: Object.fromEntries(_thinkingState),
       compacting: Object.fromEntries(_compactingState),
@@ -5398,7 +5420,7 @@ async function handleFleetWsMessage(ws, msg) {
       limit: msg.limit,
       cursor: msg.cursor || null,
     })
-    reply({ ...page, totals: fleetStore.getAliveAgentCounts() })
+    reply({ ...page, totals: fleetStore.getAliveAgentCounts(rosterCountInputs()) })
     return
   }
 
@@ -6072,7 +6094,7 @@ async function handleFleetWsMessage(ws, msg) {
           asker,
           traceId,
           source,
-          isAgentAlive,
+          isAgentAwake,
           sendDaemonDurable,
           sendDaemonEphemeral,
           spawnLibrarian,

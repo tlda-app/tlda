@@ -32,6 +32,10 @@ import { isFleetRosterAgent } from '../../shared/fleet-runtime-status.mjs';
 import { createTaskDocMaterializer } from './task-doc-materializer.mjs';
 import { ServerDaemonOutbox } from './server-daemon-outbox.mjs';
 import { AgentSeatBindingObligations } from './agent-seat-binding-obligations.mjs';
+// The one liveness constant this file needs, and only as a threshold: the count
+// derives human-vs-human-away from last_seen on every call. Importing the same
+// number the projector uses is what stops the two drifting apart.
+import { HUMAN_HEARTBEAT_TTL_MS } from './agent-runtime-status.mjs';
 
 // Persistent DB under ~/.config/tlda/ (survives macOS reboots).
 // Previously /tmp/fleet.db which got wiped on reboot — lost all agents/state.
@@ -1568,8 +1572,30 @@ export class FleetStore {
     // (2026-07-21 00:23:25), which flipped all four off COALESCE; 1ee5dd63
     // restored cwd 67 seconds later and left the rest. Do not re-add them here.
 
-    const AGENT_SELECT = 'agents.*, lineages.friendly_name AS lineage_name';
-    const AGENT_JOIN = 'FROM agents LEFT JOIN lineages ON lineages.id = agents.lineage_id';
+    // The three seat facts the runtime projection needs — whether a seat
+    // exists, its daemon_key, its terminal_capability — come along with the
+    // row, aliased so they cannot be confused with the agent's own columns.
+    //
+    // They used to be fetched per agent by a getCurrentAgentSeat call from the
+    // main-thread projector: an N+1 that became an N+1 of BOUNDARY CROSSINGS
+    // once the store moved to a worker. agent_current_seats is the sole route
+    // authority and this was already a join, so the facts arrive for free.
+    //
+    // Three flat scalars, deliberately, not one nested object. Structured clone
+    // is priced by shape and count rather than by bytes — nested objects are
+    // what make an agent row eight times the cost of an event row — so a nested
+    // `{ daemon_key, terminal_capability }` per row would be the expensive
+    // shape for no gain.
+    const AGENT_SELECT = [
+      'agents.*',
+      'lineages.friendly_name AS lineage_name',
+      'seat.agent_id IS NOT NULL AS seat_present',
+      'seat.daemon_key AS seat_daemon_key',
+      'seat.terminal_capability AS seat_terminal_capability',
+    ].join(', ');
+    const AGENT_JOIN = `FROM agents
+      LEFT JOIN lineages ON lineages.id = agents.lineage_id
+      LEFT JOIN agent_current_seats seat ON seat.agent_id = agents.id`;
     this._getAgent = this.db.prepare(`SELECT ${AGENT_SELECT} ${AGENT_JOIN} WHERE agents.id = ?`);
     // A daemon's agents are the ones whose current durable seat lives on that
     // daemon. agent_current_seats is the sole route authority.
@@ -3038,25 +3064,62 @@ export class FleetStore {
   // The agents panel materializes this roster in pages, but its footer is an
   // aggregate over the whole non-dead roster.  Keep that distinction explicit:
   // callers must not derive footer counts from a page or virtualized rows.
-  // Takes the ids the caller considers awake, rather than deciding liveness
-  // itself. The roster lives here and the evidence lives on the main thread, so
-  // one of the two has to cross; a set of ids is small, and the alternative —
-  // shipping the roster out to be counted, or keeping a second copy of liveness
-  // in here — is either expensive or a copy of live state that can go stale.
+  // Counting is a JOIN, and the two sides of it live on different threads.
+  // Roster membership and seats are here; who is alive and which daemons hold a
+  // socket are on the main thread. So one side has to cross, and the choice of
+  // WHICH is the whole design.
   //
-  // This is membership, not a liveness decision. `human` counting as awake and
-  // `human-away` counting as hibernating is resolved by the caller, which
-  // simply includes or omits those ids.
-  getAliveAgentCounts(awakeIds = []) {
+  // Shipping the roster OUT to be counted was measured and rejected: p99
+  // 63/75/120 ms at 1000/5000/9000 rows, on every agents-delta broadcast, which
+  // costs more than the freeze the worker was moved to remove. Maintaining an
+  // awake set incrementally on the main thread was rejected too — agent-row and
+  // seat changes have no hook, so it needs an invalidation map that is complete,
+  // and an incomplete one yields a count that is WRONG rather than stale.
+  //
+  // So the two small main-thread facts come IN, and the join happens here. A
+  // few dozen flat strings each way; the answer is three numbers.
+  //
+  // THESE ARE PARAMETERS. THEY ARE NOT STORED.
+  //
+  // Nothing on this instance remembers liveEvidenceIds or connectedDaemonKeys
+  // after this call returns, and nothing else may read them. That is deliberate
+  // and it is the condition on which this design was accepted: a retained copy
+  // of live state is the thing that goes stale and reaps working agents, and a
+  // set sitting on the store as a field would look authoritative enough that the
+  // next reader routes off it. The store is TOLD who is alive for the duration
+  // of one computation; it never decides, and it never remembers.
+  //
+  // This recomputes the same predicate the roster-wide version computed, from
+  // the same inputs — it is not a cache and not an approximation. `human` vs
+  // `human-away` is derived from last_seen against nowMs on EVERY call, which is
+  // why no timer is needed to keep the count honest as a human goes idle.
+  getAliveAgentCounts({ liveEvidenceIds = [], connectedDaemonKeys = [], nowMs = Date.now() } = {}) {
     this._ensureAgentRegistryLoaded();
-    const awake = awakeIds instanceof Set ? awakeIds : new Set(awakeIds);
+    const alive = liveEvidenceIds instanceof Set ? liveEvidenceIds : new Set(liveEvidenceIds);
+    const daemons = connectedDaemonKeys instanceof Set ? connectedDaemonKeys : new Set(connectedDaemonKeys);
     const totals = { awake: 0, hibernating: 0, total: 0 };
     for (const agent of this._aliveAgentRosterView.list) {
       totals.total += 1;
-      if (awake.has(agent.id)) totals.awake += 1;
+      if (this._countsAsAwake(agent, alive, daemons, nowMs)) totals.awake += 1;
       else totals.hibernating += 1;
     }
     return totals;
+  }
+
+  // fleetRosterCategory(agent) === 'awake', with the projection inlined against
+  // the row's own fields. Mirrors projectAgentRuntimeStatus branch for branch:
+  // dead, then human by heartbeat recency, then shell, then positive evidence
+  // over a routable seat. Anything else is hibernating.
+  _countsAsAwake(agent, aliveIds, connectedDaemonKeys, nowMs) {
+    if (!agent || agent.dead) return false;
+    if (agent.human) {
+      if (!agent.last_seen) return false;
+      return (nowMs - new Date(agent.last_seen).getTime()) < HUMAN_HEARTBEAT_TTL_MS;
+    }
+    if (agent.metadata?.shell) return false;
+    if (!aliveIds.has(agent.id)) return false;
+    if (!agent.seat_present || !agent.seat_daemon_key || !agent.seat_terminal_capability) return false;
+    return connectedDaemonKeys.has(agent.seat_daemon_key);
   }
 
   removeAgent(id) {
@@ -3436,6 +3499,14 @@ export class FleetStore {
       lineage_id: row.lineage_id || null,
       // Names are opaque atoms. Stack position is separate lineage data.
       lineage_name: row.lineage_name || null,
+      // The seat facts the runtime projection needs, and only those three.
+      // Route STATE is not decided here: whether a routable-looking seat is
+      // actually reachable depends on which daemons currently hold a socket,
+      // which is main-thread knowledge. This thread reports what the route
+      // authority says; the main thread applies the daemon check.
+      seat_present: !!row.seat_present,
+      seat_daemon_key: row.seat_daemon_key || null,
+      seat_terminal_capability: row.seat_terminal_capability || null,
     }
     // No runtime_status here. Liveness is a projection over things this thread
     // cannot see — live WebSocket handles, daemon connections, heartbeat
