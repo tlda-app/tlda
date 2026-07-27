@@ -6,6 +6,7 @@ export const DELIVERY_DIRECT = 'direct'
 const DURABLE_TYPES = new Set([
   'activity-event',
   'activity-health',
+  'agent-seat',
   'agent-compacting',
   'agent-context',
   'agent-status',
