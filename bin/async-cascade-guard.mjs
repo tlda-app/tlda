@@ -64,6 +64,28 @@ export const ASYNC_CASCADE = Object.freeze([
   // four call sites across the daemon WS message handler.
   'daemonEventSeatDecision',
   'currentSeatForDaemonEvent',
+  // Spawn machine routing: two fleet-pref reads at the bottom pulled
+  // resolveSpawnMachine up with them, and its four call sites were all already
+  // async (the spawn relay, /api/spawn, /api/agents/mint, and the availability
+  // model resolver).
+  'getConfiguredSpawnMachine',
+  'normalizeConfiguredSpawnMachine',
+  'resolveSpawnMachine',
+  // Task and binding leaves, each pulled up by one or more store reads.
+  'canReportTask',
+  'applyNativeTaskEvents',
+  'recordAgentBindingEvent',
+  // The timer scheduler's whole surface: it reads pending timers and claims
+  // terminals through the store, and refresh/fire/cancel call each other.
+  // Receiver-qualified because these names are far too common to watch bare.
+  'serverTimerScheduler.refresh',
+  'serverTimerScheduler.fire',
+  'serverTimerScheduler.cancel',
+  'scheduler.refresh',
+  'scheduler.fire',
+  'scheduler.cancel',
+  'this.refresh',
+  'this.fire',
 ])
 
 const SEARCH_DIRS = ['server', 'bin', 'cli', 'mcp-server', 'shared', 'daemon']
@@ -100,6 +122,26 @@ function* walk(node, parent = null) {
   }
 }
 
+// An entry may be a bare name (`recordAgentBindingEvent`) or receiver-qualified
+// (`serverTimerScheduler.refresh`). Qualified entries exist because some method
+// names are far too common to match bare: watching `refresh`, `fire` and
+// `cancel` flagged build-queue's `handle.cancel()` and a dozen unrelated calls.
+// The guard's own advice is to rename rather than drop — but renaming another
+// subsystem's methods from inside a threading cutover is the drive-by this
+// branch is not allowed to make.
+function receiverQualifiedName(callee) {
+  if (callee?.type === 'ChainExpression') return receiverQualifiedName(callee.expression)
+  if (callee?.type !== 'MemberExpression' || callee.computed) return null
+  const prop = callee.property?.name
+  if (!prop) return null
+  const obj = callee.object
+  const objName = obj?.type === 'Identifier' ? obj.name
+    : obj?.type === 'ThisExpression' ? 'this'
+    : obj?.type === 'MemberExpression' && !obj.computed ? obj.property?.name
+    : null
+  return objName ? `${objName}.${prop}` : null
+}
+
 function calleeName(callee) {
   if (!callee) return null
   if (callee.type === 'Identifier') return callee.name
@@ -111,7 +153,13 @@ function calleeName(callee) {
 }
 
 function isConsumed(call) {
-  const parent = call.__parent
+  // `await x?.foo()` is AwaitExpression > ChainExpression > CallExpression, so
+  // the call's immediate parent is the chain, not the await. Step through it or
+  // every optional call reads as unconsumed — which it did, on a line that
+  // already said `await`.
+  let node = call
+  while (node.__parent?.type === 'ChainExpression') node = node.__parent
+  const parent = node.__parent
   if (!parent) return true
   switch (parent.type) {
     case 'AwaitExpression':
@@ -123,7 +171,7 @@ function isConsumed(call) {
       return parent.operator === 'void'
     case 'MemberExpression':
       // f().then(...) / .catch / .finally
-      return parent.object === call && PROMISE_HANDLERS.has(parent.property?.name)
+      return parent.object === node && PROMISE_HANDLERS.has(parent.property?.name)
     case 'ArrayExpression': {
       // an element of Promise.all([...]) and friends
       const gp = parent.__parent
@@ -166,8 +214,10 @@ function check(files, names) {
     }
     for (const node of walk(ast)) {
       if (node.type !== 'CallExpression') continue
-      const name = calleeName(node.callee)
-      if (!name || !watched.has(name)) continue
+      const bare = calleeName(node.callee)
+      const qualified = receiverQualifiedName(node.callee)
+      const name = watched.has(qualified) ? qualified : (watched.has(bare) ? bare : null)
+      if (!name) continue
       // No import check needed alongside this: a module cannot both declare
       // and import the same binding, so declaring it settles the question.
       if (declaredHere.has(name)) continue

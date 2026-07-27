@@ -294,7 +294,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     res.json({ ok: true, seat })
   })
 
-  router.post('/api/agent-seat', (req, res) => {
+  router.post('/api/agent-seat', async (req, res) => {
     if (!fleetStore) { res.status(503).json({ ok: false, error: 'Fleet store not available' }); return }
     const body = req.body || {}
     const agentId = body.agent_id || body.agentId
@@ -304,7 +304,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     const envName = body.env_name || body.envName || null
     const daemonKey = body.daemon_key || body.daemonKey || (machineId && envName ? `${machineId}:${envName}` : null)
     try {
-      const seat = recordAgentBindingEvent(fleetStore, { ...body, agent_id: agent.id, daemon_key: daemonKey }, {
+      const seat = await recordAgentBindingEvent(fleetStore, { ...body, agent_id: agent.id, daemon_key: daemonKey }, {
         machineId,
         envName,
         daemonKey,
@@ -719,7 +719,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
     if (task_id && !existingTask) { res.status(404).send(`Task not found: "${task_id}"`); return }
     if (existingTask && (existingTask.status === 'done' || existingTask.status === 'retracted')) { res.status(409).send(`Cannot delegate closed task: "${task_id}"`); return }
     const caller = from ? (fleetStore?.findAgent(from) || { id: from }) : null
-    if (existingTask && !canReportTask({ caller, task: existingTask, fleetStore })) {
+    if (existingTask && !await canReportTask({ caller, task: existingTask, fleetStore })) {
       res.status(403).send('not authorized to delegate this task')
       return
     }
@@ -862,7 +862,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       }
     }
     try {
-      const route = resolveSpawnMachine({
+      const route = await resolveSpawnMachine({
         caller,
         targetAgent: routeTarget,
         fresh: !!fresh,
@@ -1259,7 +1259,7 @@ export function createFleetRouter({ fleetStore, broadcastEvent, broadcastState, 
       ...(effort ? { effort } : {}),
     }
     try {
-      const route = resolveSpawnMachine({
+      const route = await resolveSpawnMachine({
         caller,
         targetAgent: null,
         fresh: true,

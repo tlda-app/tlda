@@ -49,8 +49,10 @@ export class ServerTimerScheduler {
     this.timer = null
   }
 
-  start() {
-    this.refresh()
+  // start/refresh/fire/cancel are async because each reads or claims through
+  // the store, which is a worker round trip now.
+  async start() {
+    await this.refresh()
   }
 
   stop() {
@@ -58,9 +60,9 @@ export class ServerTimerScheduler {
     this.timer = null
   }
 
-  refresh() {
+  async refresh() {
     this.stop()
-    const pending = this.store.listPendingTimerEvents?.() || []
+    const pending = (await this.store.listPendingTimerEvents()) || []
     const nowMs = this.now()
     const overdue = []
     const future = []
@@ -71,35 +73,43 @@ export class ServerTimerScheduler {
       else future.push({ event, fireAtMs })
     }
     for (const event of overdue.sort((a, b) => Date.parse(a.metadata.fire_at) - Date.parse(b.metadata.fire_at) || a.id - b.id)) {
-      this.fire(event.id)
+      await this.fire(event.id)
     }
     if (future.length) {
       future.sort((a, b) => a.fireAtMs - b.fireAtMs || a.event.id - b.event.id)
       const delay = Math.max(0, future[0].fireAtMs - this.now())
-      this.timer = this.setTimeoutFn(() => this.refresh(), delay)
+      // A refresh that throws is reported rather than becoming an unhandled
+      // rejection. The promise is RETURNED rather than dropped: setTimeout
+      // ignores it, so returning costs nothing, and it means a caller holding
+      // the callback — a test harness with a fake clock, in practice — can wait
+      // for the refresh instead of racing it.
+      this.timer = this.setTimeoutFn(
+        () => this.refresh().catch(e => console.error(`[timer-scheduler] refresh failed: ${e?.message || e}`)),
+        delay,
+      )
       this.timer?.unref?.()
     }
   }
 
-  fire(eventId, { message } = {}) {
-    const event = this.store.getEventById?.(Number(eventId))
+  async fire(eventId, { message } = {}) {
+    const event = await this.store.getEventById(Number(eventId))
     if (!event) return { ok: false, error: `timer fired event ${eventId} not found` }
     const to = event.to || event.from
     if (!to) return { ok: false, error: `timer fired event ${eventId} has no target` }
     const nowMs = this.now()
     const taskId = event.metadata?.task_id
     if (event.metadata?.task_expiry && taskId) {
-      this.store.retractTask?.(taskId, { retractedBy: 'timer' })
+      await this.store.retractTask?.(taskId, { retractedBy: 'timer' })
       return this.cancel(eventId)
     }
     const expiresAtMs = Date.parse(event.metadata?.expires_at || '')
     if (Number.isFinite(expiresAtMs) && expiresAtMs <= nowMs) return this.cancel(eventId)
     if (taskId) {
-      const task = this.store.getTask?.(taskId)
+      const task = await this.store.getTask?.(taskId)
       if (!task || ['done', 'retracted'].includes(task.status)) return this.cancel(eventId)
     }
     const metadataPatch = timerFirePatch({ to, now: new Date(nowMs).toISOString() })
-    const claimed = this.store.claimTimerTerminal?.(Number(eventId), {
+    const claimed = await this.store.claimTimerTerminal(Number(eventId), {
       to,
       metadataPatch,
       unread: true,
@@ -117,24 +127,24 @@ export class ServerTimerScheduler {
           fire_at: nextFireAt,
           last_fired_at: metadataPatch.timer_fire_notified_at,
         }
-        this.store.updateEventMetadata?.(Number(eventId), repeatPatch)
+        await this.store.updateEventMetadata?.(Number(eventId), repeatPatch)
         this.broadcast?.('event-update', {
           ...timerFireBroadcast({ event, to, metadataPatch: repeatPatch, message }),
           text: event.text || `⏱ ${event.metadata?.message || message || 'Timer'}`,
         })
-        this.refresh()
+        await this.refresh()
         return { ok: true, to, notified: true, recurring: true, next_fire_at: nextFireAt }
       }
     }
     return { ok: true, to, notified: true, recurring: false }
   }
 
-  cancel(eventId) {
-    const event = this.store.getEventById?.(Number(eventId))
+  async cancel(eventId) {
+    const event = await this.store.getEventById(Number(eventId))
     if (!event) return { ok: false, error: `timer cancelled event ${eventId} not found` }
     const to = event.to || event.from
     const metadataPatch = timerCancelPatch({ now: new Date(this.now()).toISOString() })
-    const claimed = this.store.claimTimerTerminal?.(Number(eventId), {
+    const claimed = await this.store.claimTimerTerminal(Number(eventId), {
       to,
       metadataPatch,
       unread: false,
@@ -155,7 +165,7 @@ export class ServerTimerScheduler {
       },
       metadata_patch: metadataPatch,
     })
-    this.refresh()
+    await this.refresh()
     return { ok: true, to, notified: false }
   }
 }
