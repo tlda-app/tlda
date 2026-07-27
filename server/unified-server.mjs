@@ -53,7 +53,7 @@ import { labelsForAgent, parseFilter, parseMessageFilter, evalExpr } from '../sh
 import { parseAgentSelector as parseUnifiedAgentSelector } from '../shared/unified-filter-grammar.mjs'
 import { daemonHelloDecision, resolveMainDaemonScript } from '../shared/daemon-identity.mjs'
 import { resolveServerIsolation } from '../shared/server-identity.mjs'
-import { initProjectStore, listProjects, readProject, updateProject, getProjectsDir, readProjectPartsManifest, sourceLifecycleStore } from './lib/project-store.mjs'
+import { initProjectStore, listProjects, readProject, updateProject, getProjectsDir, readProjectPartsManifest, readClientSourceManifest, sourceLifecycleStore } from './lib/project-store.mjs'
 import { createSourceChangeResultCache } from './lib/source-change-correlation.mjs'
 import { resumeOverleafPollers } from './lib/overleaf-sync.mjs'
 import { resetStaleBuildStates, killAllBuilds, setShadowMirrorHandler } from './lib/build-runner.mjs'
@@ -8083,7 +8083,7 @@ function projectsForDaemon() {
         mainFile: p.mainFile || null,
         extraInputCommands: p.extraInputCommands || null,
         sourceRevision: sourceLifecycleStore(p.name).readAuthority().currentRevision,
-        sourceManifest: Array.isArray(p.clientSourceManifest) ? p.clientSourceManifest : [],
+        sourceManifest: readClientSourceManifest(p.name),
       }
     })
 }

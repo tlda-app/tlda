@@ -29,6 +29,7 @@ import {
   projectPartsRoot, readProjectPartsManifest, writeProjectPartsManifest,
   isClientOwnedSourcePath, readClientSourceManifest, validateSourceFilePath,
   beginProjectSourceTransaction,
+  updateClientSourceManifest,
   sourceLifecycleStore,
 } from '../lib/project-store.mjs'
 import { changedTextRegions } from '../lib/changed-text-regions.mjs'
@@ -743,7 +744,7 @@ export async function processProjectPushSerialized(name, body, transactionTest =
     const current = authorityBefore.currentRevision ? lifecycle.readRevision(authorityBefore.currentRevision) : null
     const candidate = new Map((current?.files || []).map(file => [file.path, { ...file, encoding: 'base64' }]))
     const inheritedManifest = authorityBefore.state === 'uninitialized'
-      ? new Set(Array.isArray(project.clientSourceManifest) ? project.clientSourceManifest : [])
+      ? new Set(readClientSourceManifest(name))
       : new Set()
     if (authorityBefore.state === 'uninitialized') {
       for (const filePath of normalizeSourceManifest(sourceManifest, sourceManifestContext(project))) {
@@ -827,12 +828,14 @@ export async function processProjectPushSerialized(name, body, transactionTest =
         if (transactionTest.failAt === `delete:${index + 1}`) throw new Error(`Injected failure at delete:${index + 1}`)
       }
     }
+    const nextManifest = Array.isArray(sourceManifest)
+      ? normalizeSourceManifest(sourceManifest, sourceManifestContext(project))
+      : null
     const metadata = {
       ...(sourceDir && !project.sourceDir ? { sourceDir } : {}),
       ...(session ? { session, sessionAt: sessionAt || Date.now() } : {}),
       ...(editedBy ? { lastEditedBy: editedBy, lastEditedByAt: Date.now() } : {}),
       ...(members && Array.isArray(members) ? { members } : {}),
-      ...(Array.isArray(sourceManifest) ? { clientSourceManifest: normalizeSourceManifest(sourceManifest, sourceManifestContext(project)) } : {}),
       ...(preparedOverleaf ? {
         overleafHead: preparedOverleaf.head,
         overleafLastPullAt: Date.now(),
@@ -841,6 +844,7 @@ export async function processProjectPushSerialized(name, body, transactionTest =
       } : {}),
     }
     updateProject(name, metadata)
+    if (nextManifest) updateClientSourceManifest(name, nextManifest)
     if (lifecycleCandidate) {
       const { observedServerFiles, observedSourceManifest, ...candidate } = lifecycleCandidate
       const lifecycleResult = authorityBefore.state === 'uninitialized'

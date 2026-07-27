@@ -3,6 +3,7 @@
 import assert from 'assert/strict'
 import { execFileSync } from 'child_process'
 import { createHash } from 'crypto'
+import Database from 'better-sqlite3'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
@@ -15,6 +16,7 @@ import {
 } from '../shared/source-manifest.mjs'
 import {
   createProject,
+  beginProjectSourceTransaction,
   hashSourceFiles,
   initProjectStore,
   projectDir,
@@ -85,6 +87,28 @@ function snapshotProject(name) {
 
 function assertSnapshotEqual(name, before) {
   assert.deepEqual(snapshotProject(name), before)
+}
+
+function assertProjectJsonHasNoClientManifest(name) {
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(readProject(name), 'clientSourceManifest'),
+    false,
+    `${name} project.json must not store clientSourceManifest`,
+  )
+}
+
+function assertProjectFilesDbPragmas(root) {
+  const db = new Database(path.join(root, '..', 'data', 'project-files.sqlite'), { readonly: true })
+  try {
+    assert.equal(db.pragma('auto_vacuum', { simple: true }), 2, 'project-files DB must use INCREMENTAL auto_vacuum')
+    assert.equal(db.pragma('journal_mode', { simple: true }), 'wal', 'project-files DB must use WAL')
+    assert.equal(db.pragma('synchronous', { simple: true }), 1, 'project-files DB must use NORMAL synchronous mode')
+    assert.equal(db.pragma('wal_autocheckpoint', { simple: true }), 1000, 'project-files DB must keep default WAL checkpoint target')
+  } finally {
+    db.close()
+  }
+  const projectStore = fs.readFileSync(path.join(process.cwd(), 'server/lib/project-store.mjs'), 'utf8')
+  assert.match(projectStore, /journal_size_limit = 67108864/, 'project-files DB connection must cap retained journal size')
 }
 
 function git(args, cwd, options = {}) {
@@ -222,8 +246,8 @@ function assertPutRequiresCallerManifest() {
 }
 
 function assertMcpCallersCarryManifest() {
-  const fleetTools = fs.readFileSync(path.join(process.cwd(), 'mcp-server/fleet-tools.mjs'), 'utf8')
-  assert.match(fleetTools, /sourceManifest:\s*normalizeSourceManifest\(\[mainFile\]/, 'MCP report sharing must send sourceManifest')
+  const reportDocPost = fs.readFileSync(path.join(process.cwd(), 'mcp-server/report-doc-post.mjs'), 'utf8')
+  assert.match(reportDocPost, /sourceManifest:\s*normalizeSourceManifest\(\[mainFile\]/, 'MCP report sharing must send sourceManifest')
   const index = fs.readFileSync(path.join(process.cwd(), 'mcp-server/index.mjs'), 'utf8')
   const pushStart = index.indexOf("if (name === 'push')")
   const pushEnd = index.indexOf('// Shadow-branch commit', pushStart)
@@ -315,8 +339,9 @@ function assertInitCreatesOnlyRequestedMainFile() {
 }
 
 async function main() {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-source-manifest-'))
-  initProjectStore(root)
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tlda-source-manifest-'))
+    initProjectStore(root)
+    assertProjectFilesDbPragmas(root)
   try {
     assert.equal(isSourceFilePath('main.synctex.gz', { mainFile: 'main.tex' }), false)
     assert.equal(isSourceFilePath('main.run.xml', { mainFile: 'main.tex' }), false)
@@ -343,6 +368,7 @@ async function main() {
     assert.equal(result.ok, true)
     let expectedRevision = result.sourceRevision
     assert.deepEqual(readClientSourceManifest('latex-doc'), ['main.tex'])
+    assertProjectJsonHasNoClientManifest('latex-doc')
     assert.deepEqual(Object.keys(hashSourceFiles('latex-doc')).sort(), ['main.tex'])
     updateProject('latex-doc', {
       members: ['original-member'],
@@ -352,6 +378,26 @@ async function main() {
       lastEditedBy: 'original-editor',
       lastEditedByAt: 43,
     })
+    assertProjectJsonHasNoClientManifest('latex-doc')
+
+    const legacyDir = path.join(root, 'legacy-json')
+    fs.mkdirSync(path.join(legacyDir, 'source'), { recursive: true })
+    fs.mkdirSync(path.join(legacyDir, 'output'), { recursive: true })
+    write(path.join(legacyDir, 'source', 'main.tex'), 'legacy main\n')
+    write(path.join(legacyDir, 'source', 'notes.tex'), 'legacy notes\n')
+    fs.writeFileSync(path.join(legacyDir, 'project.json'), JSON.stringify({
+      name: 'legacy-json',
+      title: 'Legacy JSON',
+      mainFile: 'main.tex',
+      format: 'svg',
+      pages: 1,
+      buildStatus: 'success',
+      clientSourceManifest: ['notes.tex', 'main.tex'],
+    }, null, 2))
+    initProjectStore(root)
+    assert.deepEqual(readClientSourceManifest('legacy-json'), ['main.tex', 'notes.tex'])
+    assertProjectJsonHasNoClientManifest('legacy-json')
+    assert.deepEqual(Object.keys(hashSourceFiles('legacy-json')).sort(), ['main.tex', 'notes.tex'])
 
     let beforeRejected = snapshotProject('latex-doc')
     result = await processProjectPush('latex-doc', {
@@ -468,6 +514,7 @@ async function main() {
     assert.equal(readSourceFile('latex-doc', 'main.tex'), null)
     assert.equal(readSourceFile('latex-doc', 'notes.tex'), 'notes\n')
     assert.deepEqual(readClientSourceManifest('latex-doc'), ['notes.tex'])
+    assertProjectJsonHasNoClientManifest('latex-doc')
 
     result = await processProjectPush('latex-doc', {
       expectedRevision,
@@ -479,6 +526,7 @@ async function main() {
     expectedRevision = result.sourceRevision
     assert.equal(readSourceFile('latex-doc', 'notes.tex'), null)
     assert.deepEqual(readClientSourceManifest('latex-doc'), ['main.tex'])
+    assertProjectJsonHasNoClientManifest('latex-doc')
 
     for (const [failAt, body] of [
       ['write:2', {
@@ -745,6 +793,21 @@ async function main() {
       { id: result.recovery.id, state: 'snapshot-rolled-back-cleaned' },
     ], 'startup recovery must clean a durable pre-mutation snapshot for a non-Overleaf project')
     assertSnapshotEqual('snapshot-ready-crash', beforeRejected)
+
+    createProject({ name: 'manifest-row-recovery', title: 'Manifest row recovery', mainFile: 'main.tex', format: 'svg' })
+    updateProject('manifest-row-recovery', { pages: 1, buildStatus: 'success' })
+    write(path.join(sourceDir('manifest-row-recovery'), 'main.tex'), 'original\n')
+    updateClientSourceManifest('manifest-row-recovery', ['main.tex'])
+    beforeRejected = snapshotProject('manifest-row-recovery')
+    const manifestTransaction = beginProjectSourceTransaction('manifest-row-recovery')
+    write(path.join(sourceDir('manifest-row-recovery'), 'notes.tex'), 'crashed write\n')
+    updateClientSourceManifest('manifest-row-recovery', ['notes.tex'])
+    assert.deepEqual(readClientSourceManifest('manifest-row-recovery'), ['notes.tex'])
+    initProjectStore(root)
+    assert.deepEqual(await recoverProjectSourceTransactions('manifest-row-recovery'), [
+      { id: manifestTransaction.identity().id, state: 'snapshot-rolled-back-cleaned' },
+    ], 'startup recovery must restore manifest table rows from the source transaction snapshot')
+    assertSnapshotEqual('manifest-row-recovery', beforeRejected)
 
     positive = setupOverleafProject(root, 'clone-restore-fail')
     beforeRejected = snapshotProject('clone-restore-fail')

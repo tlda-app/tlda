@@ -11,6 +11,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, rmSync, unlinkSync, realpathSync, cpSync, renameSync, openSync, fsyncSync, closeSync, statSync } from 'fs'
 import { join, relative, dirname } from 'path'
 import { createHash, randomUUID } from 'crypto'
+import Database from 'better-sqlite3'
 import { isSourceFilePath, isIgnoredSourceDir, normalizeSourceManifest, sourceManifestContext } from '../../shared/source-manifest.mjs'
 import {
   projectPartsManifestPath as partsManifestPathForRoot,
@@ -22,14 +23,81 @@ import { resolveContainedPath } from './path-containment.mjs'
 import { createSourceLifecycleStore } from './source-lifecycle.mjs'
 
 let projectsDir = null
+let projectFilesDb = null
+let projectFilesDbPath = null
 
 export function initProjectStore(dir) {
   projectsDir = dir
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+  initProjectFilesStore()
 }
 
 export function getProjectsDir() {
   return projectsDir
+}
+
+function initProjectFilesStore() {
+  if (!projectsDir) throw new Error('Project store not initialized')
+  const dataDir = join(projectsDir, '..', 'data')
+  if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true })
+  const dbPath = join(dataDir, 'project-files.sqlite')
+  if (projectFilesDb && projectFilesDbPath !== dbPath) {
+    projectFilesDb.close()
+    projectFilesDb = null
+  }
+  if (!projectFilesDb) {
+    projectFilesDb = new Database(dbPath)
+    projectFilesDbPath = dbPath
+    projectFilesDb.pragma('auto_vacuum = INCREMENTAL')
+    projectFilesDb.pragma('journal_mode = WAL')
+    projectFilesDb.pragma('synchronous = NORMAL')
+    projectFilesDb.pragma('foreign_keys = ON')
+    projectFilesDb.pragma('busy_timeout = 5000')
+    projectFilesDb.pragma('wal_autocheckpoint = 1000')
+    projectFilesDb.pragma('journal_size_limit = 67108864')
+    projectFilesDb.exec(`
+      CREATE TABLE IF NOT EXISTS project_files (
+        project TEXT NOT NULL,
+        path TEXT NOT NULL,
+        PRIMARY KEY (project, path)
+      );
+      CREATE INDEX IF NOT EXISTS project_files_path_project
+        ON project_files(path, project);
+    `)
+  }
+  migrateLegacyClientSourceManifests()
+}
+
+function requireProjectFilesDb() {
+  if (!projectFilesDb) initProjectFilesStore()
+  return projectFilesDb
+}
+
+function migrateLegacyClientSourceManifests() {
+  if (!existsSync(projectsDir)) return
+  const db = requireProjectFilesDb()
+  const count = db.prepare('SELECT COUNT(*) AS count FROM project_files WHERE project = ?')
+  const insert = db.prepare('INSERT OR IGNORE INTO project_files (project, path) VALUES (?, ?)')
+  const seed = db.transaction((name, paths) => {
+    for (const filePath of paths) insert.run(name, filePath)
+  })
+  for (const name of readdirSync(projectsDir)) {
+    const path = join(projectsDir, name, 'project.json')
+    if (!existsSync(path)) continue
+    let project
+    try {
+      project = JSON.parse(readFileSync(path, 'utf8'))
+    } catch {
+      continue
+    }
+    if (Array.isArray(project.clientSourceManifest) && count.get(name).count === 0) {
+      seed(name, normalizeSourceManifest(project.clientSourceManifest, sourceManifestContext(project)))
+    }
+    if (Object.prototype.hasOwnProperty.call(project, 'clientSourceManifest')) {
+      delete project.clientSourceManifest
+      writeFileSync(path, JSON.stringify(project, null, 2))
+    }
+  }
 }
 
 export function listProjects() {
@@ -86,6 +154,9 @@ export function createProject({ name, title, mainFile = 'main.tex', format = 'sv
 export function updateProject(name, updates) {
   const project = readProject(name)
   if (!project) throw new Error(`Project "${name}" not found`)
+  if (Object.prototype.hasOwnProperty.call(updates, 'clientSourceManifest')) {
+    throw new Error('clientSourceManifest is stored in project_files; use updateClientSourceManifest()')
+  }
 
   Object.assign(project, updates)
   writeFileSync(
@@ -142,8 +213,10 @@ export function beginProjectSourceTransaction(name, { originalLocalHead = null, 
   const metadata = join(dir, 'project.json')
   const clone = join(dir, 'overleaf-clone')
   const lifecycleAuthority = join(dir, '.source-lifecycle', 'authority.json')
+  const manifest = readClientSourceManifest(name)
   if (existsSync(source)) cpSync(source, join(snapshotRoot, 'source'), { recursive: true, preserveTimestamps: true })
   cpSync(metadata, join(snapshotRoot, 'project.json'), { preserveTimestamps: true })
+  writeFileSync(join(snapshotRoot, 'client-source-manifest.json'), JSON.stringify(manifest, null, 2))
   if (existsSync(clone)) {
     const cloneSnapshot = join(snapshotRoot, 'overleaf-worktree')
     mkdirSync(cloneSnapshot, { recursive: true })
@@ -197,6 +270,7 @@ export function beginProjectSourceTransaction(name, { originalLocalHead = null, 
       const metadataRestore = join(dir, `.project.json.rollback-${process.pid}-${Date.now()}`)
       cpSync(join(snapshotRoot, 'project.json'), metadataRestore, { preserveTimestamps: true })
       renameSync(metadataRestore, metadata)
+      restoreClientSourceManifestSnapshot(name, snapshotRoot)
       restoreCloneWorktree(clone, join(snapshotRoot, 'overleaf-worktree'))
       rmSync(lifecycleAuthority, { force: true })
       if (existsSync(join(snapshotRoot, 'source-lifecycle-authority.json'))) {
@@ -248,6 +322,7 @@ export function rollbackProjectSourceRecovery(name, id) {
   const metadataRestore = join(dir, `.project.json.rollback-${process.pid}-${Date.now()}`)
   cpSync(join(snapshotRoot, 'project.json'), metadataRestore, { preserveTimestamps: true })
   renameSync(metadataRestore, metadata)
+  restoreClientSourceManifestSnapshot(name, snapshotRoot)
   restoreCloneWorktree(join(dir, 'overleaf-clone'), join(snapshotRoot, 'overleaf-worktree'))
   const lifecycleAuthority = join(dir, '.source-lifecycle', 'authority.json')
   rmSync(lifecycleAuthority, { force: true })
@@ -321,6 +396,7 @@ export function deleteProject(name) {
     throw new Error(`Project "${name}" not found`)
   }
   rmSync(dir, { recursive: true })
+  requireProjectFilesDb().prepare('DELETE FROM project_files WHERE project = ?').run(name)
 }
 
 export function projectDir(name) {
@@ -413,9 +489,8 @@ export function hashSourceFiles(name) {
 }
 
 function clientOwnedSourceSet(project) {
-  const manifest = project?.clientSourceManifest
-  if (!Array.isArray(manifest)) return new Set()
-  return new Set(manifest.filter(p => typeof p === 'string'))
+  if (!project?.name) return new Set()
+  return new Set(readClientSourceManifest(project.name))
 }
 
 // Client-owned means authored source supplied by an external authoring ingress
@@ -433,16 +508,45 @@ export function isClientOwnedSourcePath(name, filePath) {
 }
 
 export function readClientSourceManifest(name) {
-  const project = readProject(name)
-  if (!project) throw new Error(`Project "${name}" not found`)
-  return [...clientOwnedSourceSet(project)].sort()
+  if (!readProject(name)) throw new Error(`Project "${name}" not found`)
+  return requireProjectFilesDb()
+    .prepare('SELECT path FROM project_files WHERE project = ? ORDER BY path')
+    .all(name)
+    .map(row => row.path)
 }
 
 export function updateClientSourceManifest(name, sourceManifest) {
   const project = readProject(name)
   if (!project) throw new Error(`Project "${name}" not found`)
   const context = sourceManifestContext(project)
-  updateProject(name, { clientSourceManifest: normalizeSourceManifest(sourceManifest, context) })
+  replaceClientSourceManifestRows(name, normalizeSourceManifest(sourceManifest, context))
+}
+
+function replaceClientSourceManifestRows(name, manifest) {
+  const db = requireProjectFilesDb()
+  const replace = db.transaction((projectName, paths) => {
+    db.prepare('DELETE FROM project_files WHERE project = ?').run(projectName)
+    const insert = db.prepare('INSERT INTO project_files (project, path) VALUES (?, ?)')
+    for (const filePath of paths) insert.run(projectName, filePath)
+  })
+  replace(name, manifest)
+}
+
+function restoreClientSourceManifestSnapshot(name, snapshotRoot) {
+  const snapshot = join(snapshotRoot, 'client-source-manifest.json')
+  let manifest = []
+  if (existsSync(snapshot)) {
+    manifest = JSON.parse(readFileSync(snapshot, 'utf8'))
+  } else {
+    const legacyProjectJson = join(snapshotRoot, 'project.json')
+    if (existsSync(legacyProjectJson)) {
+      const project = JSON.parse(readFileSync(legacyProjectJson, 'utf8'))
+      if (Array.isArray(project.clientSourceManifest)) {
+        manifest = normalizeSourceManifest(project.clientSourceManifest, sourceManifestContext(project))
+      }
+    }
+  }
+  replaceClientSourceManifestRows(name, manifest)
 }
 
 /**
