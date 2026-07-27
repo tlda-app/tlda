@@ -1,7 +1,7 @@
 /**
  * CanvasClipPanel — fork-viewport panel that shows a clipped region of the
  * main canvas. Used by ChangePreviewPanel, AnnotationViewer, ScreenshotCapture,
- * FleetHUD, FleetDocViewShape, and BuildErrorOverlay.
+ * FleetHUD and FleetDocViewShape.
  *
  * Uses the tldraw fork's multi-viewport API:
  * - Registers a named viewport with the main editor
