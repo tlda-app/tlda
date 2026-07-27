@@ -17,6 +17,64 @@ assert.equal(daemon.handle({ requestId: first.requestId, project: 'paper', ok: t
 assert.equal(daemon.state('paper').revision, 'revision-2')
 assert.equal(daemon.handle({ requestId: first.requestId, project: 'paper', ok: true, sourceRevision: 'duplicate' }), false)
 
+const rapidFirst = daemon.prepare({
+  type: 'source-change',
+  project: 'paper',
+  files: [{ path: 'main.tex', content: 'first edit' }],
+  sourceManifest: ['main.tex'],
+})
+assert.equal(rapidFirst.expectedRevision, 'revision-2')
+assert.equal(daemon.prepare({
+  type: 'source-change',
+  project: 'paper',
+  files: [{ path: 'main.tex', content: 'second edit' }],
+  sourceManifest: ['main.tex'],
+}), null, 'a second edit waits for the first source mutation')
+assert.equal(daemon.state('paper').queued, true)
+assert.equal(daemon.handle({
+  requestId: rapidFirst.requestId,
+  project: 'paper',
+  ok: true,
+  sourceRevision: 'revision-rapid-1',
+}), true)
+const rapidQueued = daemon.takeRetry()
+assert.equal(rapidQueued.retried, false)
+assert.deepEqual(rapidQueued.payload.files, [{ path: 'main.tex', content: 'second edit' }])
+const rapidSecond = daemon.prepare(rapidQueued.payload, rapidQueued.retried)
+assert.equal(rapidSecond.expectedRevision, 'revision-rapid-1')
+assert.equal(daemon.handle({
+  requestId: rapidSecond.requestId,
+  project: 'paper',
+  ok: true,
+  sourceRevision: 'revision-rapid-2',
+}), true)
+
+const disconnected = daemon.prepare({
+  type: 'source-change',
+  project: 'paper',
+  files: [{ path: 'main.tex', content: 'edit sent before disconnect' }],
+})
+assert.equal(daemon.prepare({
+  type: 'source-change',
+  project: 'paper',
+  files: [{ path: 'main.tex', content: 'edit made while disconnected' }],
+}), null)
+assert.equal(daemon.takeRetry(), null, 'without reconnect, a lost response wedges the queued edit')
+daemon.beginReconnect()
+assert.equal(daemon.state('paper').pending, false)
+daemon.seed('paper', 'revision-after-reconnect')
+const [afterReconnect] = daemon.finishReconnect()
+assert.deepEqual(afterReconnect.files, [{ path: 'main.tex', content: 'edit made while disconnected' }])
+const resumed = daemon.prepare(afterReconnect)
+assert.notEqual(resumed.requestId, disconnected.requestId, 'reconnect sends a fresh request')
+assert.equal(resumed.expectedRevision, 'revision-after-reconnect')
+assert.equal(daemon.handle({
+  requestId: resumed.requestId,
+  project: 'paper',
+  ok: true,
+  sourceRevision: 'revision-after-queued-edit',
+}), true)
+
 const stale = daemon.prepare({ type: 'source-change', project: 'paper', files: [] })
 assert.equal(daemon.handle({
   requestId: stale.requestId,
